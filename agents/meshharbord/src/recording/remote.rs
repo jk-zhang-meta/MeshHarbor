@@ -1163,7 +1163,7 @@ impl Handler {
                     "no_indicator_surface",
                     Some(
                         "nothing on this device can show that it is being recorded (no banner, \
-                         and the Roomler desktop app is not running)"
+                         and the MeshHarbor desktop app is not running)"
                             .into(),
                     ),
                 ));
@@ -1266,7 +1266,7 @@ impl Handler {
                 crate::consent::PromptSurface::Companion
             },
         };
-        // The marker is written either way (`roomlerd consent --list` shows a
+        // The marker is written either way (`meshharbord consent --list` shows a
         // natively-prompted question too); without it the companion has
         // nothing to render, so it is part of "could anyone be asked".
         let marker = match self.ctx.consent.write_prompt(&prompt_id, &prompt) {
@@ -2200,13 +2200,13 @@ mod tests {
     #[test]
     fn the_controller_is_told_a_file_name_never_a_path() {
         let p = if cfg!(windows) {
-            r"C:\Users\someone\Videos\Roomler\Roomler Recording 2026-09-25 14-30-12.mp4"
+            r"C:\Users\someone\Videos\MeshHarbor\MeshHarbor Recording 2026-09-25 14-30-12.mp4"
         } else {
-            "/home/someone/Videos/Roomler/Roomler Recording 2026-09-25 14-30-12.mp4"
+            "/home/someone/Videos/MeshHarbor/MeshHarbor Recording 2026-09-25 14-30-12.mp4"
         };
         assert_eq!(
             file_name(Some(p)).as_deref(),
-            Some("Roomler Recording 2026-09-25 14-30-12.mp4")
+            Some("MeshHarbor Recording 2026-09-25 14-30-12.mp4")
         );
         assert_eq!(file_name(None), None);
     }
@@ -2266,7 +2266,7 @@ mod tests {
         );
         made(dir.path(), "bare.mp4", None);
         made(dir.path(), "broken.mp4", None);
-        std::fs::write(dir.path().join("broken.mp4.roomler.json"), b"{nope").unwrap();
+        std::fs::write(dir.path().join("broken.mp4.meshharbor.json"), b"{nope").unwrap();
 
         assert!(owned_by(dir.path(), "mine.mp4", &me));
         for name in [

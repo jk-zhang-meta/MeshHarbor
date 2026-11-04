@@ -20,7 +20,7 @@
 //!   - `input`: `OpenInputDesktop` → swap. Reproduces what the M3
 //!     supervisor's poll loop will do every 250 ms.
 //!   - `winlogon`: explicitly opens `winsta0\Winlogon`. Requires
-//!     SYSTEM context (run via `psexec -s -i 1 roomlerd system-
+//!     SYSTEM context (run via `psexec -s -i 1 meshharbord system-
 //!     capture-smoke --desktop winlogon` from an elevated shell).
 //!
 //! Reports first frame size, frame-arrived count over a 5-second

@@ -38,7 +38,7 @@
 //!   the sender's own network. The `(network_id, pubkey)` registry key makes a
 //!   cross-network delivery structurally impossible.
 //!
-//! Placement (v1): on the `roomler2` API pods (hostNetwork, :443), behind the
+//! Placement (v1): on the `meshharbor2` API pods (hostNetwork, :443), behind the
 //! dedicated `/derp` nginx `location`. The registry is in-memory on a
 //! single-replica Recreate deployment, so a web deploy severs all DERP links
 //! (they rebuild via the carrier `dead` latch) and it can't scale past one

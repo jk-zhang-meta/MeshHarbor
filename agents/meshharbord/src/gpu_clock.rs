@@ -13,7 +13,7 @@
 //!
 //! Design constraints:
 //!
-//! * **Default OFF** (`ROOMLERD_GPU_CLOCK_PIN` unset/`0`). Locking
+//! * **Default OFF** (`MESHHARBORD_GPU_CLOCK_PIN` unset/`0`). Locking
 //!   clocks raises idle power/heat while engaged — strictly an opt-in until
 //!   field hours accumulate. `1`/`true` = auto (pin graphics clocks to
 //!   [70% of max, max] on every NVIDIA device); `"<min>,<max>"` = explicit
@@ -48,7 +48,7 @@ const NVML_CLOCK_GRAPHICS: c_uint = 0;
 /// `NVML_DEVICE_NAME_V2_BUFFER_SIZE`.
 const NAME_BUF: usize = 96;
 
-/// Parsed `ROOMLERD_GPU_CLOCK_PIN` value.
+/// Parsed `MESHHARBORD_GPU_CLOCK_PIN` value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinMode {
     /// Unset / `0` / `false` / unparsable — feature disabled (default).

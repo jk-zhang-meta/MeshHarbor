@@ -167,7 +167,7 @@ pub async fn run(
     .await
 }
 
-/// `roomler socks5` — the userspace-mode SOCKS5 proxy. Same transport +
+/// `meshharbor socks5` — the userspace-mode SOCKS5 proxy. Same transport +
 /// server policy + agent allowlist as a static forward; the destination is taken
 /// from each connection's SOCKS5 CONNECT instead of a fixed `--remote`.
 pub async fn run_socks5(

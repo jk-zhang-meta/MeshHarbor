@@ -353,11 +353,11 @@ mod imp {
             // FR-43 P2a — tell the worker it is ours, and that its
             // delegation-channel secret is waiting on stdin.
             //
-            // ⚠️ This REPLACES the `ROOMLER_MACOS_SUPERVISED` environment
+            // ⚠️ This REPLACES the `MESHHARBOR_MACOS_SUPERVISED` environment
             // marker P1 shipped, which never arrived at a single worker:
             // `sudo` runs under the stock `Defaults env_reset` and discards the
             // parent's environment. Measured on the MacBook 2026-08-31 —
-            // `ps -E` on a live supervised worker showed ZERO `ROOMLER_MACOS*`
+            // `ps -E` on a live supervised worker showed ZERO `MESHHARBOR_MACOS*`
             // variables. Nothing had noticed because nothing read the marker
             // yet, which is precisely what made it worth checking before
             // building on it.
@@ -625,7 +625,7 @@ mod imp {
                         "macOS supervisor: the GUI worker died on arrival too many times — \
                          NOT retrying. Almost always this Mac has no per-user enrollment: \
                          the worker runs AS the console user and loads THAT user's config. \
-                         Check with: launchctl asuser <uid> sudo -u '#<uid>' roomlerd caps"
+                         Check with: launchctl asuser <uid> sudo -u '#<uid>' meshharbord caps"
                     );
                 } else {
                     tracing::info!(?action, console_uid = ?uid_now, "macOS supervisor state");

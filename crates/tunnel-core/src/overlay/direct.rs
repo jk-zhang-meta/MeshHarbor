@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use tokio::net::UdpSocket;
 
-/// `ROOMLERD_OVERLAY_DIRECT` (the older `ROOMLER_NODE_OVERLAY_DIRECT` still
+/// `MESHHARBORD_OVERLAY_DIRECT` (the older `MESHHARBOR_NODE_OVERLAY_DIRECT` still
 /// honoured — see [`crate::env::node_env`]) — default **ON**. Set
 /// `0`/`false`/`no`/`off` to disable the direct LAN path and force pure relay
 /// (the pre-rc.131 behaviour) if a field host misbehaves. Matches the node's
@@ -114,7 +114,7 @@ pub fn direct_port_candidates(base: u16) -> impl Iterator<Item = u16> + Clone {
 }
 
 /// Stable UDP port for the overlay's direct sockets
-/// (`ROOMLERD_OVERLAY_DIRECT_PORT`; config key `overlay_direct_port`).
+/// (`MESHHARBORD_OVERLAY_DIRECT_PORT`; config key `overlay_direct_port`).
 ///
 /// Per-interface LAN sockets bind `(iface_ip, port)`; the public/srflx
 /// dialer binds `(0.0.0.0, port+1)` (a wildcard bind on the SAME port as a
@@ -379,7 +379,7 @@ pub fn first_non_vpn_uplink() -> Option<(Ipv4Addr, Option<u32>)> {
 
 /// Net-change poke acceleration — gate for arming forced revalidation pokes on
 /// every established direct carrier when an OS addr/iface event fires
-/// (`ROOMLERD_OVERLAY_NETCHANGE_POKE`). Default **ON**; set
+/// (`MESHHARBORD_OVERLAY_NETCHANGE_POKE`). Default **ON**; set
 /// `0`/`false`/`no`/`off` to fall back to the passive gates
 /// (`POKE_SILENCE_AFTER` + rx-stale) if forced pokes ever misbehave in the
 /// field. The mechanism is safe by construction — an answered poke clears with
@@ -398,7 +398,7 @@ pub fn netchange_poke_enabled() -> bool {
 }
 
 /// rc.275 hygiene — gate for the LAN-gather virtual-interface filter
-/// (`ROOMLERD_OVERLAY_LAN_IFACE_FILTER` — see [`crate::env::node_env`]).
+/// (`MESHHARBORD_OVERLAY_LAN_IFACE_FILTER` — see [`crate::env::node_env`]).
 /// Default **ON**; set `0`/`false`/`no`/`off` to restore the unfiltered
 /// pre-rc.275 gather if the deny-list ever misclassifies a real NIC in the
 /// field (the failure mode is benign either way — a skipped interface just
@@ -417,7 +417,7 @@ pub fn lan_iface_filter_enabled() -> bool {
 }
 
 /// Gate for the WSL2 **mirrored-networking** guard
-/// (`ROOMLERD_OVERLAY_WSL_MIRRORED_GUARD`; config `overlay_wsl_mirrored_guard`).
+/// (`MESHHARBORD_OVERLAY_WSL_MIRRORED_GUARD`; config `overlay_wsl_mirrored_guard`).
 /// Default **ON**; set `0`/`false`/`no`/`off` to restore the pre-guard gather.
 pub fn wsl_mirrored_guard_enabled() -> bool {
     crate::env::flag("OVERLAY_WSL_MIRRORED_GUARD", true)
@@ -522,7 +522,7 @@ pub fn lan_iface_denied(name: &str, description: &str) -> bool {
     // wg0, ppp0, bridge100). Prefix (not substring) so real adapters whose
     // names merely CONTAIN these stay allowed.
     const NAME_PREFIX: &[&str] = &[
-        "docker", "veth", "virbr", "br-", "bridge", "tun", "tap", "utun", "wg", "ppp", "roomler",
+        "docker", "veth", "virbr", "br-", "bridge", "tun", "tap", "utun", "wg", "ppp", "meshharbor",
     ];
     let n = name.to_ascii_lowercase();
     let d = description.to_ascii_lowercase();
@@ -645,13 +645,13 @@ pub fn force_egress_interface(sock: &tokio::net::UdpSocket, ifindex: u32) {
 pub fn force_egress_interface(_sock: &tokio::net::UdpSocket, _ifindex: u32) {}
 
 /// Gate for **bind-to-interface-by-route** LAN-carrier egress selection
-/// (`ROOMLERD_OVERLAY_BIND_BY_ROUTE`). **Default OFF** until field-proven,
+/// (`MESHHARBORD_OVERLAY_BIND_BY_ROUTE`). **Default OFF** until field-proven,
 /// mirroring the QUIC / `public_direct` arc. When on, a LAN direct carrier's
 /// egress interface is chosen per-destination from the OS route table (the
 /// connect-trick, [`os_src_ip_for`]) + [`classify_egress`], and the socket is
 /// re-pinned to the CURRENT ifindex — instead of relying on the same-subnet
 /// heuristic and a pin computed once at startup. This is Tailscale's
-/// `bindToInterfaceByRoute` (net/netns) adapted to roomler: an on-link `/24`
+/// `bindToInterfaceByRoute` (net/netns) adapted to meshharbor: an on-link `/24`
 /// beats a full-tunnel VPN's `/1` default, so a genuine same-LAN peer stays on
 /// the physical NIC even under a corporate VPN, and a peer the OS routes
 /// elsewhere (VPN-captured) falls to relay honestly instead of flapping a
@@ -669,7 +669,7 @@ pub fn bind_by_route_enabled() -> bool {
     }
 }
 
-/// Gate for **VPN-bypass** carrier egress (`ROOMLERD_OVERLAY_VPN_BYPASS`).
+/// Gate for **VPN-bypass** carrier egress (`MESHHARBORD_OVERLAY_VPN_BYPASS`).
 /// **Default OFF** opt-in. When on (and an uplink ifindex is resolved), EVERY
 /// overlay underlay carrier socket — the `public_sock`, the single-relay
 /// dialer, and the coturn TURN underlay — has its egress pinned
@@ -696,7 +696,7 @@ pub fn vpn_bypass_enabled() -> bool {
 }
 
 /// Operator-pinned physical-uplink OS interface index for [`vpn_bypass_enabled`]
-/// (`ROOMLERD_OVERLAY_UPLINK_IF` = a numeric ifindex, e.g. the Wi-Fi
+/// (`MESHHARBORD_OVERLAY_UPLINK_IF` = a numeric ifindex, e.g. the Wi-Fi
 /// adapter's index from `Get-NetIPInterface`). This explicit override
 /// field-proves the bypass mechanism before auto-discovery of the physical
 /// uplink beneath a captured VPN is built. `None` when unset/unparseable.
@@ -806,7 +806,7 @@ fn is_cgnat(ip: Ipv4Addr) -> bool {
 }
 
 /// NAT-traversal Phase A — opt-in gate for the **direct-to-public** carrier
-/// tier (`ROOMLERD_OVERLAY_PUBLIC_DIRECT` — see [`crate::env::node_env`]).
+/// tier (`MESHHARBORD_OVERLAY_PUBLIC_DIRECT` — see [`crate::env::node_env`]).
 /// **Default OFF** until field-proven, mirroring the QUIC gate's arc (CC8 in
 /// the NAT-traversal plan). Gates the whole tier: dialing a peer's public
 /// endpoint, AND the accept side (the runtime only wires the inbound-handshake
@@ -826,13 +826,13 @@ pub fn public_direct_enabled() -> bool {
     }
 }
 
-/// Gate for **make-before-break** carrier upgrades (`ROOMLERD_OVERLAY_MBB`).
+/// Gate for **make-before-break** carrier upgrades (`MESHHARBORD_OVERLAY_MBB`).
 /// **Default ON since rc.210** — field-proven 2026-07-25 on the netns NAT lab
 /// (buildhost↔fleet-host-2, the false-same-/24-LAN-match freeze scenario):
 /// MBB=1 held the relay while a doomed direct upgrade was probed then dropped
 /// it ("kept relay (no stall)"), where MBB=0 tore the relay down ("upgrading
 /// relay peer to direct LAN carrier"). Disable per-host with
-/// `ROOMLERD_OVERLAY_MBB=0` (kill-switch): only an explicit
+/// `MESHHARBORD_OVERLAY_MBB=0` (kill-switch): only an explicit
 /// `0`/`false`/`no`/`off` turns it back off; unset / truthy / anything else
 /// keeps the default ON.
 ///
@@ -895,7 +895,7 @@ pub fn make_before_break_enabled() -> bool {
 }
 
 /// NAT-traversal Phase B/C — gate for the **srflx** carrier tier
-/// (`ROOMLERD_OVERLAY_SRFLX`). **Default ON** since 2026-07-20 (field-proven:
+/// (`MESHHARBORD_OVERLAY_SRFLX`). **Default ON** since 2026-07-20 (field-proven:
 /// a cone↔cone pair hole-punches to a DIRECT carrier — buildhost↔fleet-host-2
 /// netns lab, 0% loss, ~0.6 ms, half the relay RTT). Turns on the whole srflx
 /// tier: gathering + advertising this node's own server-reflexive candidates
@@ -918,7 +918,7 @@ pub fn srflx_enabled() -> bool {
 }
 
 /// NAT-traversal Phase D — gate for the **single-relay** carrier tier
-/// (`ROOMLERD_OVERLAY_RELAY_SINGLE`). **Default ON** since 2026-07-20. When on
+/// (`MESHHARBORD_OVERLAY_RELAY_SINGLE`). **Default ON** since 2026-07-20. When on
 /// (and both ends advertise the capability), a relay-tier pair uses ONE coturn
 /// allocation — the ANCHOR (smaller pubkey) allocates + runs the QUIC server +
 /// permits the dialer's IP; the DIALER (larger pubkey) sends raw UDP to the
@@ -945,9 +945,9 @@ pub fn relay_single_enabled() -> bool {
 }
 
 /// rc.276 (B-probe) — force ALL overlay coturn allocations onto the
-/// **TURNS/TCP (TLS) tier** (`ROOMLERD_OVERLAY_RELAY_TLS`). **Default OFF**
+/// **TURNS/TCP (TLS) tier** (`MESHHARBORD_OVERLAY_RELAY_TLS`). **Default OFF**
 /// opt-in (positive truthy only), mirroring `public_direct_enabled` — this is
-/// the field-diagnostic twin of remote-control's `ROOMLERD_ICE_RELAY_TCP`: the
+/// the field-diagnostic twin of remote-control's `MESHHARBORD_ICE_RELAY_TCP`: the
 /// WebRTC screen-share survives corp endpoint VPNs via `turns:coturn:443?tcp`
 /// (real TLS + SNI, OS-native trust — indistinguishable from HTTPS), while the
 /// overlay's Tier-2 UDP allocate "succeeds" and then runs silently one-way, so
@@ -976,7 +976,7 @@ pub fn relay_tls_forced() -> bool {
 }
 
 /// Phase D (DERP) — is the pubkey-addressed `/derp` relay carrier ENABLED?
-/// (`ROOMLERD_OVERLAY_DERP`.) **Default ON** since 2026-07-21 (field-proven).
+/// (`MESHHARBORD_OVERLAY_DERP`.) **Default ON** since 2026-07-21 (field-proven).
 /// DERP is the last-resort carrier for two BOTH-UDP-blocked peers (a strict
 /// corp firewall that permits only TCP/TLS-443), which no other tier can
 /// serve; both peers dial OUT to the relay over WSS:443 and WG rides
@@ -1002,7 +1002,7 @@ pub fn derp_enabled() -> bool {
 }
 
 /// U2 — does this node accept a SERVER-COMPUTED relay-tier verdict
-/// (`ROOMLERD_OVERLAY_SERVER_RELAY_STRATEGY`) in place of its own local
+/// (`MESHHARBORD_OVERLAY_SERVER_RELAY_STRATEGY`) in place of its own local
 /// `relay_strategy()` derivation? **Default-OFF** (the inverse polarity of
 /// `derp_enabled`): server-authoritative tier selection is the U2 program,
 /// and it stays inert until deliberately enabled per host for soak, then
@@ -1040,7 +1040,7 @@ pub fn org_relay_enabled() -> bool {
 /// `/derp` mux at startup UNCONDITIONALLY (not just when the srflx gather
 /// came up empty), advertise `supports_derp_floor`, and (A2) install the
 /// DERP carrier as every fresh pair's floor while better tiers upgrade over
-/// it MBB-style. `ROOMLERD_OVERLAY_DERP_FLOOR`, config-surface key
+/// it MBB-style. `MESHHARBORD_OVERLAY_DERP_FLOOR`, config-surface key
 /// `overlay_derp_floor`. **Default-ON since rc.400** (devbox+corplap soak
 /// 08-17: floor pairs carried straight through corplap's latch re-earn windows
 /// — the class that used to block ~2 min per 30 — and the rc.398 post-roll
@@ -1057,7 +1057,7 @@ pub fn derp_floor_enabled() -> bool {
 /// egress capabilities (relay-band reachability over the exact dialer
 /// path, STUN/NAT snapshot, `/derp` WS health) and publish the
 /// [`CapVector`](super::netcheck::CapVector) selection consumes instead of
-/// presence folklore. `ROOMLERD_OVERLAY_NETCHECK`, config-surface key
+/// presence folklore. `MESHHARBORD_OVERLAY_NETCHECK`, config-surface key
 /// `overlay_netcheck`. Default-ON: measurement-only in PR-B1 (nothing
 /// selects on it until PR-B3), one dedicated TURN allocation per ~20 min.
 pub fn netcheck_enabled() -> bool {
@@ -1079,7 +1079,7 @@ pub fn srflx_gather_active() -> bool {
 }
 
 /// Phase C — the srflx keepalive/re-gather interval in seconds
-/// (`ROOMLERD_OVERLAY_SRFLX_KEEPALIVE_SECS`, default 20). The task re-runs a
+/// (`MESHHARBORD_OVERLAY_SRFLX_KEEPALIVE_SECS`, default 20). The task re-runs a
 /// STUN Binding on the punch socket every interval to (a) hold the NAT mapping
 /// open on an idle link and (b) detect + re-advertise a changed mapping. **`0`
 /// disables the task entirely** — the startup gather still advertises once, but
@@ -1334,7 +1334,7 @@ pub async fn resolve_stun_server(stun_urls: &[String], exclude: &[Ipv4Addr]) -> 
     None
 }
 
-/// Diagnostic (`ROOMLERD_OVERLAY_SESSION_TRACE`, default **off**): emit
+/// Diagnostic (`MESHHARBORD_OVERLAY_SESSION_TRACE`, default **off**): emit
 /// per-session INFO traces from the plane demux (inbound src vs expected_src
 /// vs verdict) and the carrier-health sweep (poke/proof/rx state per direct
 /// carrier). For field-diagnosing a specific peer's carrier (e.g. a
@@ -1345,7 +1345,7 @@ pub fn session_trace_enabled() -> bool {
 }
 
 /// C2 — PROBE peers with out-of-tunnel disco echoes and record per-path
-/// loss + RTT (`ROOMLERD_OVERLAY_DISCO_PROBE`; default **ON** since A).
+/// loss + RTT (`MESHHARBORD_OVERLAY_DISCO_PROBE`; default **ON** since A).
 ///
 /// Strictly measurement: the table it fills is read by the LocalAPI and the
 /// summary log, never by anything that moves traffic. Scoring is C3 and
@@ -1369,7 +1369,7 @@ pub fn disco_probe_enabled() -> bool {
 }
 
 /// C1 — answer out-of-tunnel disco echoes on the carrier socket
-/// (`ROOMLERD_OVERLAY_DISCO_RESPOND`; default **ON**). Answering is
+/// (`MESHHARBORD_OVERLAY_DISCO_RESPOND`; default **ON**). Answering is
 /// unconditional and costs a map lookup + one X25519 per verified ping;
 /// nothing on this node ASKS yet (the prober is C2).
 ///
@@ -1381,7 +1381,7 @@ pub fn disco_respond_enabled() -> bool {
 }
 
 /// B4 — carrier-plane socket-liveness watchdog
-/// (`ROOMLERD_OVERLAY_PLANE_WATCHDOG`; default **ON**): when the plane's
+/// (`MESHHARBORD_OVERLAY_PLANE_WATCHDOG`; default **ON**): when the plane's
 /// punch-socket keepalive fails [`PLANE_WATCHDOG_FAILS`] consecutive cycles (a
 /// reader-less / wedged socket — the 2026-08-10 class of bug B1 fixed
 /// structurally), self-heal by requesting a debounced plane rebuild that
@@ -1397,7 +1397,7 @@ pub fn plane_watchdog_enabled() -> bool {
 /// re-resolve at 3 handles) never trips it, short enough to bound the wedge.
 pub const PLANE_WATCHDOG_FAILS: u32 = 6;
 
-/// A3 — WG-style endpoint roaming (`ROOMLERD_OVERLAY_ROAM`; default **ON**):
+/// A3 — WG-style endpoint roaming (`MESHHARBORD_OVERLAY_ROAM`; default **ON**):
 /// adopt a peer's observed source after an AUTHENTICATED inbound from it,
 /// repointing the carrier in place. The kill switch reverts to the strict
 /// no-roam demux. Off ⇒ a symmetric-NAT peer whose real per-destination
@@ -1407,7 +1407,7 @@ pub fn roam_enabled() -> bool {
     crate::env::flag("OVERLAY_ROAM", true)
 }
 
-/// W5 — srflx SEEKING mode (`ROOMLERD_OVERLAY_SRFLX_SEEK`; default **ON**):
+/// W5 — srflx SEEKING mode (`MESHHARBORD_OVERLAY_SRFLX_SEEK`; default **ON**):
 /// when the plane's srflx gather yields NO candidate, keep the plane srflx
 /// task alive in a query-only state that periodically re-gathers (backoff 20 s
 /// → ×3 → 300 s cap, plus an immediate poke on interface events). Before this,
@@ -1423,7 +1423,7 @@ pub fn srflx_seek_enabled() -> bool {
 }
 
 /// C4 stage 1 — the standing warm TURN/UDP allocation
-/// (`ROOMLERD_OVERLAY_WARM_RELAY`; default **OFF**): established
+/// (`MESHHARBORD_OVERLAY_WARM_RELAY`; default **OFF**): established
 /// whenever the srflx tier proves UDP egress works, kept alive so
 /// corp-VPN flow-grandfathering preserves a UDP relay leg across a VPN
 /// connect. Measurement-only in stage 1 — nothing routes over it; see
@@ -1434,7 +1434,7 @@ pub fn warm_relay_enabled() -> bool {
 
 /// R2 (corp-laptop program) — rescue the srflx gather via the wildcard
 /// PUBLIC-DIAL socket when every LAN-bound vantage yields nothing
-/// (`ROOMLERD_OVERLAY_VPN_VANTAGE`; default **ON**). A full-tunnel
+/// (`MESHHARBORD_OVERLAY_VPN_VANTAGE`; default **ON**). A full-tunnel
 /// endpoint VPN (field 2026-08-15: corplap-3, Cisco AnyConnect with
 /// local-LAN access disabled) filters the physical NICs BOTH directions
 /// while the tunnel itself passes UDP — so the LAN-bound socks are dead but
@@ -1446,7 +1446,7 @@ pub fn vpn_vantage_enabled() -> bool {
 }
 
 /// W6 phase 3 — raw-first QUIC-over-TURN upgrade
-/// (`ROOMLERD_OVERLAY_QUIC_ASYNC`; default **ON**): commit the raw
+/// (`MESHHARBORD_OVERLAY_QUIC_ASYNC`; default **ON**): commit the raw
 /// relay carrier immediately and run the QUIC rendezvous in the
 /// background with a 90 s window, swapping in on success. OFF restores
 /// the blocking 8 s pre-install window (the pair is dark for the whole
@@ -1458,7 +1458,7 @@ pub fn quic_async_enabled() -> bool {
 }
 
 /// Auth-first type-1 routing on a MULTI-ORG carrier plane
-/// (`ROOMLERD_OVERLAY_INIT_AUTH_FIRST`; default **ON**): with more than one
+/// (`MESHHARBORD_OVERLAY_INIT_AUTH_FIRST`; default **ON**): with more than one
 /// engine attached, an inbound handshake initiation is routed by
 /// trial-authentication against each engine's static
 /// (candidates-with-a-session-at-that-source first), never by the source-keyed
@@ -1875,7 +1875,7 @@ fn epoch_ms_now() -> u64 {
 
 /// #33 — answer a peer's direct handshake initiation even while that tier is
 /// suppressed, when accepting cannot cost us the relay
-/// (`ROOMLERD_OVERLAY_ANSWER_WHILE_FOLLOWED`; default **ON** since 0.4.2).
+/// (`MESHHARBORD_OVERLAY_ANSWER_WHILE_FOLLOWED`; default **ON** since 0.4.2).
 ///
 /// The #30 demote-follow hold-down exists to stop us PROMOTING into a flap. It
 /// also made `PathMonitor::inbound_init` refuse — and that verdict is
@@ -1948,8 +1948,8 @@ mod tests {
     /// (Serialises env mutation; the overlay-l3 suite runs `--test-threads=1`.)
     #[test]
     fn make_before_break_defaults_on_with_kill_switch() {
-        let n = "ROOMLERD_OVERLAY_MBB";
-        let a = "ROOMLERD_OVERLAY_MBB";
+        let n = "MESHHARBORD_OVERLAY_MBB";
+        let a = "MESHHARBORD_OVERLAY_MBB";
         let (rn, ra) = (std::env::var(n).ok(), std::env::var(a).ok());
         unsafe {
             std::env::remove_var(n);
@@ -2002,8 +2002,8 @@ mod tests {
     /// ephemeral (a typo must not turn the feature off fleet-wide).
     #[test]
     fn direct_port_resolution() {
-        let n = "ROOMLERD_OVERLAY_DIRECT_PORT";
-        let a = "ROOMLERD_OVERLAY_DIRECT_PORT";
+        let n = "MESHHARBORD_OVERLAY_DIRECT_PORT";
+        let a = "MESHHARBORD_OVERLAY_DIRECT_PORT";
         let (rn, ra) = (std::env::var(n).ok(), std::env::var(a).ok());
         unsafe {
             std::env::remove_var(n);
@@ -2186,7 +2186,7 @@ mod tests {
             ("utun3", "", true),
             ("wg0", "", true),
             ("ppp0", "", true),
-            ("roomler0", "", true),
+            ("meshharbor0", "", true),
             ("tailscale0", "", true),
             // TAP/OpenVPN on Windows hides behind a generic name too:
             ("Ethernet 2", "TAP-Windows Adapter V9", true),
@@ -2243,8 +2243,8 @@ mod tests {
     /// suite runs `--test-threads=1`.)
     #[test]
     fn lan_iface_filter_defaults_on_with_kill_switch() {
-        let n = "ROOMLERD_OVERLAY_LAN_IFACE_FILTER";
-        let a = "ROOMLERD_OVERLAY_LAN_IFACE_FILTER";
+        let n = "MESHHARBORD_OVERLAY_LAN_IFACE_FILTER";
+        let a = "MESHHARBORD_OVERLAY_LAN_IFACE_FILTER";
         let (rn, ra) = (std::env::var(n).ok(), std::env::var(a).ok());
         unsafe {
             std::env::remove_var(n);
@@ -2276,8 +2276,8 @@ mod tests {
     /// mutation; the overlay-l3 suite runs `--test-threads=1`.)
     #[test]
     fn relay_tls_forced_defaults_off_with_opt_in() {
-        let n = "ROOMLERD_OVERLAY_RELAY_TLS";
-        let a = "ROOMLERD_OVERLAY_RELAY_TLS";
+        let n = "MESHHARBORD_OVERLAY_RELAY_TLS";
+        let a = "MESHHARBORD_OVERLAY_RELAY_TLS";
         let (rn, ra) = (std::env::var(n).ok(), std::env::var(a).ok());
         unsafe {
             std::env::remove_var(n);
@@ -2308,8 +2308,8 @@ mod tests {
     /// mirroring `public_direct_enabled`. (Serialises env mutation.)
     #[test]
     fn bind_by_route_defaults_off_with_opt_in() {
-        let n = "ROOMLERD_OVERLAY_BIND_BY_ROUTE";
-        let a = "ROOMLERD_OVERLAY_BIND_BY_ROUTE";
+        let n = "MESHHARBORD_OVERLAY_BIND_BY_ROUTE";
+        let a = "MESHHARBORD_OVERLAY_BIND_BY_ROUTE";
         let (rn, ra) = (std::env::var(n).ok(), std::env::var(a).ok());
         unsafe {
             std::env::remove_var(n);
@@ -2341,10 +2341,10 @@ mod tests {
     /// env mutation; the overlay-l3 suite runs `--test-threads=1`.)
     #[test]
     fn vpn_bypass_gate_and_ifindex_override() {
-        let g = "ROOMLERD_OVERLAY_VPN_BYPASS";
-        let ga = "ROOMLERD_OVERLAY_VPN_BYPASS";
-        let u = "ROOMLERD_OVERLAY_UPLINK_IF";
-        let ua = "ROOMLERD_OVERLAY_UPLINK_IF";
+        let g = "MESHHARBORD_OVERLAY_VPN_BYPASS";
+        let ga = "MESHHARBORD_OVERLAY_VPN_BYPASS";
+        let u = "MESHHARBORD_OVERLAY_UPLINK_IF";
+        let ua = "MESHHARBORD_OVERLAY_UPLINK_IF";
         let save = [g, ga, u, ua].map(|k| (k, std::env::var(k).ok()));
         unsafe {
             for k in [g, ga, u, ua] {
@@ -2511,7 +2511,7 @@ mod tests {
     #[test]
     fn wsl_mirrored_guard_defaults_on_with_kill_switch() {
         // SAFETY: single-threaded test, restored before returning.
-        let key = "ROOMLERD_OVERLAY_WSL_MIRRORED_GUARD";
+        let key = "MESHHARBORD_OVERLAY_WSL_MIRRORED_GUARD";
         unsafe { std::env::remove_var(key) };
         assert!(wsl_mirrored_guard_enabled(), "default ON");
         unsafe { std::env::set_var(key, "0") };

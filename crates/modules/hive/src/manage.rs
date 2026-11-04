@@ -21,7 +21,7 @@
 //! 3. the org is not archived — `org_archived`; `HIVE_RUN` — `no_permission`;
 //! 4. no asking of it in flight — `in_progress`;
 //! 5. an adopted session — `not_adopted`; ended — `not_ended`; by its
-//!    terminal's own end — `stopped` for a stop from Roomler, after which its
+//!    terminal's own end — `stopped` for a stop from MeshHarbor, after which its
 //!    terminal went on, `ended_otherwise` for any other end;
 //! 6. the device that adopted it, live in the org, connected here, and making
 //!    one (`hive-manage`) — `device_offline` / `device_unsupported`;
@@ -117,8 +117,8 @@ impl ManageDenyReason {
                  session ends"
             }
             Self::Stopped => {
-                "its mirroring was stopped from Roomler, and what its terminal did after that \
-                 is not Roomler's to take"
+                "its mirroring was stopped from MeshHarbor, and what its terminal did after that \
+                 is not MeshHarbor's to take"
             }
             Self::EndedOtherwise => {
                 "it ended for another reason than its terminal's own end (its device, its \
@@ -160,7 +160,7 @@ async fn authorize(
         return Ok(Err(ManageDenyReason::NotEnded));
     }
     // The terminal's own end is the device's `ended`, recorded `exited`; a
-    // stop from Roomler records `stopped`, and its terminal went on after it.
+    // stop from MeshHarbor records `stopped`, and its terminal went on after it.
     match s.end_reason.as_deref() {
         Some("exited") => {}
         Some("stopped") => return Ok(Err(ManageDenyReason::Stopped)),

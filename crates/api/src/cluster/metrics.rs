@@ -26,7 +26,7 @@ pub async fn snapshot(state: &crate::state::AppState) -> serde_json::Value {
     // Alive pods per the advisory directory records.
     let pods_alive: Vec<String> = match &state.cluster_directory {
         Some(dir) => dir
-            .scan_keys("roomler:pod-alive:*")
+            .scan_keys("meshharbor:pod-alive:*")
             .await
             .unwrap_or_default()
             .into_iter()

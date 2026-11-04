@@ -9,7 +9,7 @@
 //! that vanished — left its peer in the map for the life of the connection,
 //! with every ICE socket, the eight-channel DC pool and, on the relayed
 //! flavours, the TURN allocation. Field-measured on 0.4.110 against a macOS
-//! exit agent: five `roomler kill`s of the same forward took the daemon's UDP
+//! exit agent: five `meshharbor kill`s of the same forward took the daemon's UDP
 //! sockets 5 → 11 → 16, still held minutes later.
 //!
 //! This channel is the agent's own observation of the data plane, independent

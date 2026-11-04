@@ -91,7 +91,7 @@ pub trait TunIo: Send + Sync {
     /// Endpoint, 2026-07-31):
     ///
     /// ```text
-    /// 100.64.0.28/32  ifIndex 46 (roomler)      0.0.0.0          metric 256
+    /// 100.64.0.28/32  ifIndex 46 (meshharbor)      0.0.0.0          metric 256
     /// 100.64.0.28/32  ifIndex 17 (Check Point)  172.30.226.132   metric 1   ← WINS
     /// ```
     ///
@@ -597,10 +597,10 @@ mod uplink_pin_tests {
     /// the physical default, our `/1`s, two pins and an on-link LAN route.
     const LINUX_V4: &str = "\
 default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.5 metric 600
-0.0.0.0/1 dev roomler scope link
+0.0.0.0/1 dev meshharbor scope link
 94.130.141.98 via 192.168.1.1 dev wlan0
 5.9.157.226 via 192.168.1.1 dev wlan0 onlink
-128.0.0.0/1 dev roomler scope link
+128.0.0.0/1 dev meshharbor scope link
 192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.5 metric 600
 ";
 
@@ -1156,10 +1156,10 @@ mod floor_tests {
 /// module) because the runtime's NAT fallback needs it under plain
 /// `overlay` too.
 #[cfg(target_os = "windows")]
-pub const IF_NAME: &str = "roomler";
+pub const IF_NAME: &str = "meshharbor";
 
 #[cfg(target_os = "linux")]
-pub const IF_NAME: &str = "roomler0";
+pub const IF_NAME: &str = "meshharbor0";
 
 /// macOS (and any other non-Windows/Linux platform) ignores a requested
 /// name — utun numbers are kernel-assigned — so this is only the REQUESTED
@@ -1605,7 +1605,7 @@ mod system {
             match t.note((dest, plen), std::time::Instant::now()) {
                 // #1237 — carry the competitor's alias so a reader (and the
                 // acceptance grep) can tell a real foreign product from a
-                // sibling roomler adapter that slipped the exemption.
+                // sibling meshharbor adapter that slipped the exemption.
                 Some(suppressed) => tracing::warn!(
                     dest = %dest,
                     plen,
@@ -1978,7 +1978,7 @@ mod system {
             }
         }
 
-        /// N3 — the LUID for an interface ALIAS (`"roomler"`), for callers
+        /// N3 — the LUID for an interface ALIAS (`"meshharbor"`), for callers
         /// with NO live device handle: the boot reconciler and the last-gasp
         /// crash-path purge, which previously targeted the alias through
         /// `netsh`/PowerShell spawns — from a process that was, by
@@ -1996,8 +1996,8 @@ mod system {
             }
         }
 
-        /// #1237 — the friendly interface alias for a LUID (`roomler`,
-        /// `roomler-6a712a5`, `Ethernet 2`, …). The cross-process belt for the
+        /// #1237 — the friendly interface alias for a LUID (`meshharbor`,
+        /// `meshharbor-6a712a5`, `Ethernet 2`, …). The cross-process belt for the
         /// sibling-exemption: a second co-tenant daemon's adapters are not in
         /// this process's own-LUID registry, but their alias carries our
         /// naming. `None` when the LUID has no alias (a gone adapter).
@@ -2158,7 +2158,7 @@ mod system {
                         }
                         continue;
                     }
-                    if !dest.is_unspecified() || is_ours_or_roomler(r.InterfaceLuid.Value) {
+                    if !dest.is_unspecified() || is_ours_or_meshharbor(r.InterfaceLuid.Value) {
                         continue;
                     }
                     let Some((if_metric, connected)) = iface_metric(r.InterfaceLuid.Value, family)
@@ -2183,9 +2183,9 @@ mod system {
 
         /// One of this process's adapters, or any adapter named like ours.
         /// Never an uplink, whatever the sibling-exempt switch says.
-        pub(super) fn is_ours_or_roomler(luid: u64) -> bool {
+        pub(super) fn is_ours_or_meshharbor(luid: u64) -> bool {
             super::own_adapters::is_own_luid(luid)
-                || alias_for_luid(luid).is_some_and(|a| super::is_roomler_adapter_name(&a))
+                || alias_for_luid(luid).is_some_and(|a| super::is_meshharbor_adapter_name(&a))
         }
 
         /// FR-97 N14 — the LUID of interface `ifindex`: netstate names an
@@ -2636,9 +2636,9 @@ mod system {
         #[cfg(target_os = "macos")]
         uplinks: std::sync::Mutex<BsdUplinks>,
         /// WFP hard-permit guard. Holds a dynamic WFP session whose `Drop`
-        /// reaps the `roomler`-adapter permit filters, so it must live as
+        /// reaps the `meshharbor`-adapter permit filters, so it must live as
         /// long as the device. `None` when disabled
-        /// (`ROOMLERD_WFP_PERMIT=0`) or when install failed
+        /// (`MESHHARBORD_WFP_PERMIT=0`) or when install failed
         /// (best-effort — the overlay still works on non-locked hosts).
         #[cfg(windows)]
         _wfp: Option<crate::overlay::wfp::WfpGuard>,
@@ -2726,7 +2726,7 @@ mod system {
     ///   WG dials (LAN direct, srflx punch) die at the Public profile's
     ///   default-deny. A home laptop could not accept LAN-direct until exactly
     ///   this rule was added by hand. Rule name carries the exe stem so
-    ///   `roomlerd` and the `roomler` tunnel client don't fight; delete+add
+    ///   `meshharbord` and the `meshharbor` tunnel client don't fight; delete+add
     ///   keeps the recorded program path current across upgrades. The ONE
     ///   definition is [`crate::winfw::UdpInAllowRule`], shared with the SCM
     ///   service host — #1698: P9's premise that "a Windows *service* never
@@ -2738,7 +2738,7 @@ mod system {
     ///   pass is the self-heal — which heals only when the store does not
     ///   already hold exactly our rule, because delete+add is not atomic and a
     ///   bind landing in that gap is the same prompt again.
-    /// * **`NetworkCategory=Private` for the roomler adapter**: belt and
+    /// * **`NetworkCategory=Private` for the meshharbor adapter**: belt and
     ///   braces for hosts where the WFP hard-permit could not install
     ///   (GPO-locked) — an Unidentified-network TUN otherwise lands in the
     ///   Public profile.
@@ -2754,7 +2754,7 @@ mod system {
     #[cfg(windows)]
     fn spawn_windows_net_hygiene(if_name: String) {
         if crate::winfw::hygiene_disabled(crate::env::node_env("TUN_HYGIENE").as_deref()) {
-            tracing::info!("overlay: Windows net hygiene disabled via ROOMLERD_TUN_HYGIENE");
+            tracing::info!("overlay: Windows net hygiene disabled via MESHHARBORD_TUN_HYGIENE");
             return;
         }
         std::thread::spawn(move || {
@@ -2827,7 +2827,7 @@ mod system {
         });
     }
 
-    /// rc.279 — the roomler overlay adapter's constant requested GUID (see
+    /// rc.279 — the meshharbor overlay adapter's constant requested GUID (see
     /// the `device_guid` call in [`SystemTun::up_with`]). The value is
     /// arbitrary but MUST stay fixed forever: Windows keys the interface's
     /// persistent identity on it (the ifIndex/LUID mapping and the NLA
@@ -2836,17 +2836,17 @@ mod system {
     /// Ungated (multi-org v2): [`TunOptions::legacy`] and [`org_tun_guid`]
     /// reference it on every platform; only the `device_guid` platform call
     /// itself is Windows-only.
-    const ROOMLER_TUN_GUID: u128 = 0xB5A7_D160_53F8_4E2D_9A6B_2C4E_71A0_D5C3;
+    const MESHHARBOR_TUN_GUID: u128 = 0xB5A7_D160_53F8_4E2D_9A6B_2C4E_71A0_D5C3;
 
     /// Multi-org v2 — a stable per-(machine,org) Wintun GUID: SHA-256 of
-    /// "roomler-tun-v1" ‖ base GUID ‖ tenant_id, truncated to 128 bits with the
+    /// "meshharbor-tun-v1" ‖ base GUID ‖ tenant_id, truncated to 128 bits with the
     /// RFC 4122 version/variant bits forced (version 4 shape). Stable across
     /// restarts and adapter recreates — the rc.279 identity property, per org.
     pub fn org_tun_guid(tenant_id: &str) -> u128 {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
-        h.update(b"roomler-tun-v1");
-        h.update(ROOMLER_TUN_GUID.to_be_bytes());
+        h.update(b"meshharbor-tun-v1");
+        h.update(MESHHARBOR_TUN_GUID.to_be_bytes());
         h.update(tenant_id.as_bytes());
         let digest = h.finalize();
         let mut b = [0u8; 16];
@@ -2881,7 +2881,7 @@ mod system {
         pub fn legacy(ip: Ipv4Addr, netmask: Ipv4Addr, mtu: u16) -> Self {
             Self {
                 name: IF_NAME.to_string(),
-                guid: ROOMLER_TUN_GUID,
+                guid: MESHHARBOR_TUN_GUID,
                 ip,
                 netmask,
                 mtu,
@@ -2892,7 +2892,7 @@ mod system {
 
     /// rc.279 — kill-switch for the stable adapter identity (constant
     /// requested GUID + boot stray-adapter sweep):
-    /// `ROOMLERD_OVERLAY_TUN_STABLE_GUID` (the older `ROOMLER_NODE_…`
+    /// `MESHHARBORD_OVERLAY_TUN_STABLE_GUID` (the older `MESHHARBOR_NODE_…`
     /// honoured; config key `overlay_tun_stable_guid`). Default **ON**;
     /// `0`/`false`/`no`/`off` reverts to the pre-rc.279 random-GUID
     /// adapters if the undocumented requested-GUID path ever misbehaves on
@@ -2903,8 +2903,8 @@ mod system {
     }
 
     /// rc.279 — kill-switch for the route-war eviction (peer `/32`s since
-    /// rc.208, our own `/32` since rc.278): `ROOMLERD_OVERLAY_ROUTE_EVICT`
-    /// (the older `ROOMLER_NODE_…` honoured; config key `overlay_route_evict`).
+    /// rc.208, our own `/32` since rc.278): `MESHHARBORD_OVERLAY_ROUTE_EVICT`
+    /// (the older `MESHHARBOR_NODE_…` honoured; config key `overlay_route_evict`).
     /// Default **ON** — without it the overlay is unusable under a hostile
     /// full-tunnel VPN — but managed sites whose security tooling alarms on
     /// route deletion can turn it off and accept that trade.
@@ -2914,7 +2914,7 @@ mod system {
     }
 
     /// #1405 — evict a competing route only when it WINS the FIB decision
-    /// (`ROOMLERD_OVERLAY_ROUTE_EVICT_WINNERS_ONLY`, config
+    /// (`MESHHARBORD_OVERLAY_ROUTE_EVICT_WINNERS_ONLY`, config
     /// `overlay_route_evict_winners_only`). Default **ON**. A competitor row
     /// that loses every lookup carries no traffic, while deleting it is a
     /// route-change event that re-arms the guard. `0` restores evicting every
@@ -3154,7 +3154,7 @@ mod system {
     }
 
     /// #1328 — kill-switch for the generalised stand-down:
-    /// `ROOMLERD_OVERLAY_ROUTE_YIELD`. Default **ON**.
+    /// `MESHHARBORD_OVERLAY_ROUTE_YIELD`. Default **ON**.
     ///
     /// Default-on because the alternative is measured, not hypothetical: with
     /// the yield gated to metric-0 (and metric-0 itself default-off), a
@@ -3170,7 +3170,7 @@ mod system {
     }
 
     /// #1237 — a multi-org host runs ONE daemon with N overlay adapters
-    /// (`roomler`, `roomler-<org>`, …). The route-eviction helpers below were
+    /// (`meshharbor`, `meshharbor-<org>`, …). The route-eviction helpers below were
     /// written for one adapter per host (the corp-VPN route war) and delete
     /// any competing row on "an interface other than ours" — so on a multi-org
     /// host each org runtime's guard wave deletes the OTHER org's derived-ULA
@@ -3178,7 +3178,7 @@ mod system {
     /// ping-pong ~40×/min per prefix. Every deletion is a route-change
     /// notification that force-rekeys every peer (neo16 2026-09-02: 718
     /// evictions/day → ~100 revalidations/min). Default ON = exempt sibling
-    /// roomler adapters (this process's own LUIDs, plus any adapter whose alias
+    /// meshharbor adapters (this process's own LUIDs, plus any adapter whose alias
     /// matches our naming — the belt for a second co-tenant process). OFF =
     /// the pre-#1237 "only the exact `ours` LUID is spared" behaviour.
     #[cfg(windows)]
@@ -3201,7 +3201,7 @@ mod system {
     /// so the eviction helpers never delete a sibling org adapter's route and
     /// the block-floor gate never counts a sibling's overlay address as a
     /// foreign CGNAT address. Keyed by interface name (unique per adapter:
-    /// `roomler`, `roomler-<org>`, `utunN`); the value is the Windows LUID
+    /// `meshharbor`, `meshharbor-<org>`, `utunN`); the value is the Windows LUID
     /// (`0` off-Windows, where the registry is populated but unconsumed). An
     /// entry is added at the end of [`SystemTun::up_with`] and removed by
     /// [`SystemTun`]'s `Drop`; the Windows caches hold each `Arc<SystemTun>`
@@ -3317,7 +3317,7 @@ mod system {
 
         /// FR-97 N14 — is `name` one of our own live adapters? Off Windows
         /// the registry key is the device name netstate's lookup reports
-        /// (`roomler0`, or the kernel-assigned `utunN`).
+        /// (`meshharbor0`, or the kernel-assigned `utunN`).
         #[cfg(not(windows))]
         pub(super) fn is_own_name(name: &str) -> bool {
             OWN.lock().map(|g| g.contains_key(name)).unwrap_or(false)
@@ -3366,12 +3366,12 @@ mod system {
             /// #1237 sibling war re-opens.
             #[test]
             fn a_carved_block_nested_in_a_legacy_ten_is_reported() {
-                let existing = reg(&[("roomler", Some((Ipv4Addr::new(100, 64, 0, 0), 10)))]);
+                let existing = reg(&[("meshharbor", Some((Ipv4Addr::new(100, 64, 0, 0), 10)))]);
                 let mine = (Ipv4Addr::new(100, 65, 4, 0), 22);
-                let hit = overlapping_sibling(&existing, "roomler-abc", mine);
+                let hit = overlapping_sibling(&existing, "meshharbor-abc", mine);
                 assert_eq!(
                     hit,
-                    Some(("roomler".to_string(), (Ipv4Addr::new(100, 64, 0, 0), 10))),
+                    Some(("meshharbor".to_string(), (Ipv4Addr::new(100, 64, 0, 0), 10))),
                     "the nested pair must be named, and by the SIBLING's block so the \
                      operator knows which org to renumber"
                 );
@@ -3382,9 +3382,9 @@ mod system {
             /// fire on every healthy multi-org host and train people to ignore it.
             #[test]
             fn two_carved_blocks_are_silent() {
-                let existing = reg(&[("roomler", Some((Ipv4Addr::new(100, 65, 4, 0), 22)))]);
+                let existing = reg(&[("meshharbor", Some((Ipv4Addr::new(100, 65, 4, 0), 22)))]);
                 let mine = (Ipv4Addr::new(100, 65, 8, 0), 22);
-                assert_eq!(overlapping_sibling(&existing, "roomler-abc", mine), None);
+                assert_eq!(overlapping_sibling(&existing, "meshharbor-abc", mine), None);
             }
 
             /// A re-registration of the SAME adapter (a reconnect reuses the
@@ -3393,8 +3393,8 @@ mod system {
             #[test]
             fn an_adapter_does_not_report_itself() {
                 let mine = (Ipv4Addr::new(100, 65, 4, 0), 22);
-                let existing = reg(&[("roomler", Some(mine))]);
-                assert_eq!(overlapping_sibling(&existing, "roomler", mine), None);
+                let existing = reg(&[("meshharbor", Some(mine))]);
+                assert_eq!(overlapping_sibling(&existing, "meshharbor", mine), None);
             }
 
             /// A sibling registered with an UNKNOWN mask carries no block, and
@@ -3402,9 +3402,9 @@ mod system {
             /// about a pairing nobody can act on.
             #[test]
             fn a_sibling_without_a_block_is_not_a_hit() {
-                let existing = reg(&[("roomler", None)]);
+                let existing = reg(&[("meshharbor", None)]);
                 let mine = (Ipv4Addr::new(100, 65, 4, 0), 22);
-                assert_eq!(overlapping_sibling(&existing, "roomler-abc", mine), None);
+                assert_eq!(overlapping_sibling(&existing, "meshharbor-abc", mine), None);
             }
         }
     }
@@ -3500,13 +3500,13 @@ mod system {
         }
     }
 
-    /// #1237 — an interface name that belongs to a roomler overlay adapter:
-    /// the primary [`IF_NAME`] or a `roomler-<org>` sibling. Used as the
+    /// #1237 — an interface name that belongs to a meshharbor overlay adapter:
+    /// the primary [`IF_NAME`] or a `meshharbor-<org>` sibling. Used as the
     /// cross-process belt (a second co-tenant daemon's adapters are not in
     /// THIS process's [`own_adapters`] registry, but they carry our naming)
     /// and by the block-floor gate.
     #[cfg(windows)]
-    fn is_roomler_adapter_name(name: &str) -> bool {
+    fn is_meshharbor_adapter_name(name: &str) -> bool {
         let n = name.trim();
         n == IF_NAME || n.starts_with(&format!("{IF_NAME}-"))
     }
@@ -3547,7 +3547,7 @@ mod system {
             return false;
         }
         own_adapters::is_own_luid(row_luid)
-            || winroute::alias_for_luid(row_luid).is_some_and(|a| is_roomler_adapter_name(&a))
+            || winroute::alias_for_luid(row_luid).is_some_and(|a| is_meshharbor_adapter_name(&a))
     }
 
     /// corplap route war v3 (#23) — gate for the stolen-path reclaim (detect →
@@ -3556,7 +3556,7 @@ mod system {
     /// is what fed the route-flap → netstate-Major → forced-poke treadmill;
     /// with reclaim covering genuine theft on demand, the blind wave only
     /// needs to fire when the foreign row SET changes).
-    /// `ROOMLERD_OVERLAY_ROUTE_RECLAIM` (config key
+    /// `MESHHARBORD_OVERLAY_ROUTE_RECLAIM` (config key
     /// `overlay_route_reclaim`). Default **ON**; OFF restores the pre-rc.409
     /// behaviour exactly (evict every wave, never pin). Subordinate to
     /// [`route_evict_enabled`] — reclaim deletes foreign rows, so the master
@@ -3568,7 +3568,7 @@ mod system {
 
     /// rc.287 — install defended peer `/32`s (and assert the ULA `/96` + the
     /// connected `/10`) at route metric **0** instead of 1:
-    /// `ROOMLERD_OVERLAY_ROUTE_METRIC0` (config key
+    /// `MESHHARBORD_OVERLAY_ROUTE_METRIC0` (config key
     /// `overlay_route_metric0`).
     ///
     /// **rc.289: default flipped to OFF.** Field result on the only host that
@@ -3604,7 +3604,7 @@ mod system {
     }
 
     /// #1342 — WIN the contested prefixes outright instead of evicting a
-    /// competitor off them forever: `ROOMLERD_OVERLAY_ROUTE_WIN` (config key
+    /// competitor off them forever: `MESHHARBORD_OVERLAY_ROUTE_WIN` (config key
     /// `overlay_route_win`), default **OFF**.
     ///
     /// ⚠️ It is named `route`, not `v6`, because it moves BOTH prefixes that
@@ -3673,7 +3673,7 @@ mod system {
     }
 
     /// rc.410 (#23) — the overlay NIC's IPv4 INTERFACE metric.
-    /// `ROOMLERD_OVERLAY_IFACE_METRIC` (config key
+    /// `MESHHARBORD_OVERLAY_IFACE_METRIC` (config key
     /// `overlay_iface_metric`), default **0**.
     ///
     /// This is the route war's decisive lever, and the one a corp endpoint
@@ -3699,14 +3699,14 @@ mod system {
             .unwrap_or(0)
     }
 
-    /// rc.279 — one-shot per process: remove stray roomler Wintun devices
+    /// rc.279 — one-shot per process: remove stray meshharbor Wintun devices
     /// left by crashed prior runs (hard exits skip `Drop`, so
     /// close-of-created never removed them; the boot reconciler cleans
     /// routes/DNS only). `Status -ne 'Up'` protects any LIVE adapter (an
     /// orphan with no owning process reports Disconnected), and
     /// once-per-process means a WS-reconnect bring-up can't touch the
     /// previous session's still-closing adapter. A leftover suffixed dupe
-    /// ("roomler 2") would otherwise capture the alias-targeted config (the
+    /// ("meshharbor 2") would otherwise capture the alias-targeted config (the
     /// metric pin, derived v6, and Private-profile set all address the
     /// NAME). Best-effort: `pnputil /remove-device` needs admin; unelevated
     /// it just leaves the strays in place.
@@ -3715,21 +3715,21 @@ mod system {
     /// SURVIVE the sweep: with per-org adapters, a sibling org's persisted
     /// adapter between sessions (its runtime not yet started, so the device
     /// reports non-Up) is NOT a stray, and removing it would discard that
-    /// org's stable interface identity. Only `^roomler` Wintun devices NOT
+    /// org's stable interface identity. Only `^meshharbor` Wintun devices NOT
     /// in the set are removed. The legacy caller passes just its own
     /// requested name — with the stable requested GUID, create re-binds the
     /// surviving orphan's identity by name+GUID, so protecting it is
     /// equivalent to the old remove-and-recreate. NOTE the `Once` guard:
     /// the FIRST bring-up's expected set is the one that runs.
     ///
-    /// Per-org adapters (`roomler-<suffix>`, Phase 2c) are structurally
-    /// EXEMPT (`-notmatch '^roomler-'`) rather than enumerated into
+    /// Per-org adapters (`meshharbor-<suffix>`, Phase 2c) are structurally
+    /// EXEMPT (`-notmatch '^meshharbor-'`) rather than enumerated into
     /// `expected`: orgs come up at their own pace, so the first org's sweep
     /// cannot know its siblings' names — and a per-org adapter is
     /// deliberately persistent anyway (explicit org REMOVAL owns its
     /// cleanup, not the boot sweep). The sweep therefore only ever removes
-    /// legacy-shaped strays ("roomler", Windows duplicate-name "roomler 2",
-    /// "roomler0", …).
+    /// legacy-shaped strays ("meshharbor", Windows duplicate-name "meshharbor 2",
+    /// "meshharbor0", …).
     #[cfg(target_os = "windows")]
     fn sweep_stray_adapters_once(expected: &[String]) {
         static ONCE: std::sync::Once = std::sync::Once::new();
@@ -3747,7 +3747,7 @@ mod system {
             let script = format!(
                 "$keep = @({keep}); Get-NetAdapter -IncludeHidden | Where-Object {{ \
                  $_.PnPDeviceID -like 'SWD\\WINTUN\\*' -and \
-                 $_.Name -match '^roomler' -and $_.Name -notmatch '^roomler-' -and \
+                 $_.Name -match '^meshharbor' -and $_.Name -notmatch '^meshharbor-' -and \
                  $_.Status -ne 'Up' -and \
                  ($keep -notcontains $_.Name) }} | \
                  ForEach-Object {{ \
@@ -3769,7 +3769,7 @@ mod system {
                     if !removed.is_empty() {
                         tracing::info!(
                             ?removed,
-                            "overlay: swept stray roomler Wintun adapters from prior runs"
+                            "overlay: swept stray meshharbor Wintun adapters from prior runs"
                         );
                     }
                 }
@@ -4006,7 +4006,7 @@ mod system {
             config.tun_name(opts.name.as_str());
             // Linux — a virtio-net header on every read and write lets the
             // device carry TCP super-packets both ways (`tun_offload`).
-            // `ROOMLERD_OVERLAY_TUN_OFFLOAD=0` opens the plain device instead,
+            // `MESHHARBORD_OVERLAY_TUN_OFFLOAD=0` opens the plain device instead,
             // exactly the pre-offload behaviour.
             #[cfg(target_os = "linux")]
             let offload = crate::env::flag("OVERLAY_TUN_OFFLOAD", true);
@@ -4033,7 +4033,7 @@ mod system {
             #[cfg(not(target_os = "windows"))]
             const CREATE_ATTEMPTS: usize = 1;
             // rc.279 — before this process's first create, sweep stray
-            // roomler Wintun devices left by crashed prior runs; see
+            // meshharbor Wintun devices left by crashed prior runs; see
             // [`sweep_stray_adapters_once`]. This adapter's own requested
             // name survives the sweep (multi-org v2 expected-set semantics).
             #[cfg(target_os = "windows")]
@@ -4100,7 +4100,7 @@ mod system {
             // prefixes at route metric 1 on a NIC whose own interface metric
             // is also 1 — a FULL tie at every prefix length, which Windows
             // breaks by lower ifIndex, i.e. reliably in the VPN's favour
-            // (corplap: Ethernet 2 = ifIndex 10 vs roomler = 20). At a tie the
+            // (corplap: Ethernet 2 = ifIndex 10 vs meshharbor = 20). At a tie the
             // per-destination pick is also STICKY, so peers stayed captured
             // across restarts: node-initiated traffic died 100 % while
             // strong-host source pinning kept replies flowing, and the RTT
@@ -4182,7 +4182,7 @@ mod system {
                             luid = format_args!("{luid:#x}"),
                             adapter = %if_name,
                             filters = crate::overlay::wfp::FILTERS_PER_ADAPTER,
-                            "overlay: WFP hard-permit installed for the roomler adapter"
+                            "overlay: WFP hard-permit installed for the meshharbor adapter"
                         );
                         Some(g)
                     }
@@ -4190,13 +4190,13 @@ mod system {
                         tracing::warn!(
                             error = %e,
                             "overlay: WFP permit NOT installed; if inbound traffic fails behind a \
-                             GPO-locked firewall, request an IT-managed exception for the roomler adapter"
+                             GPO-locked firewall, request an IT-managed exception for the meshharbor adapter"
                         );
                         None
                     }
                 }
             } else {
-                tracing::info!("overlay: WFP permit disabled via ROOMLERD_WFP_PERMIT");
+                tracing::info!("overlay: WFP permit disabled via MESHHARBORD_WFP_PERMIT");
                 None
             };
 
@@ -4334,7 +4334,7 @@ mod system {
         }
 
         /// Linux — what the TUN offload has done on this device, `None` for a
-        /// device opened without it (`ROOMLERD_OVERLAY_TUN_OFFLOAD=0`).
+        /// device opened without it (`MESHHARBORD_OVERLAY_TUN_OFFLOAD=0`).
         #[cfg(target_os = "linux")]
         pub fn offload_stats(&self) -> Option<crate::overlay::tun_offload::OffloadStats> {
             self.vnet.as_ref().map(|v| v.stats())
@@ -4351,12 +4351,12 @@ mod system {
     #[cfg(windows)]
     fn non_overlay_v4_addrs(overlay_if: &str) -> Option<Vec<Ipv4Addr>> {
         let addrs = if_addrs::get_if_addrs().ok()?;
-        // #1237 — a per-org SIBLING adapter (`roomler-<org>`) carries an
+        // #1237 — a per-org SIBLING adapter (`meshharbor-<org>`) carries an
         // overlay address on a DIFFERENT interface than `overlay_if`, so the
         // old single-name filter counted it as a foreign CGNAT address and
         // WITHHELD the primary's block floor on every multi-org host. Treat
-        // any roomler adapter as ours.
-        let is_ours = |name: &str| name == overlay_if || is_roomler_adapter_name(name);
+        // any meshharbor adapter as ours.
+        let is_ours = |name: &str| name == overlay_if || is_meshharbor_adapter_name(name);
         if !addrs.iter().any(|a| a.name == overlay_if) {
             return None;
         }
@@ -5126,7 +5126,7 @@ mod system {
             if !exit_client_macos_enabled() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Unsupported,
-                    "the macOS exit client is switched off (ROOMLERD_EXIT_CLIENT_MACOS=0)",
+                    "the macOS exit client is switched off (MESHHARBORD_EXIT_CLIENT_MACOS=0)",
                 ));
             }
             let v6 = ip.is_ipv6();
@@ -5575,14 +5575,14 @@ mod system {
     /// [`SystemTun`]. Removes EXACTLY the
     /// [`SPLIT_DEFAULT_V4`](crate::overlay::runtime::SPLIT_DEFAULT_V4) and
     /// [`SPLIT_DEFAULT_V6`](crate::overlay::runtime::SPLIT_DEFAULT_V6) the
-    /// installer installs (one source of truth), scoped to the roomler NIC so it
+    /// installer installs (one source of truth), scoped to the meshharbor NIC so it
     /// never touches another VPN's `/1`.
     ///
     /// Two callers, both bypassing the runtime's RAII teardown:
     ///
     /// - the **boot-time reconciler** — heals a `/1` a crash / kill / unclean
     ///   reboot left behind. Critical on Windows: Wintun's adapter persists by
-    ///   name across a crash, so a stale `0.0.0.0/1 interface=roomler` blackholes
+    ///   name across a crash, so a stale `0.0.0.0/1 interface=meshharbor` blackholes
     ///   ALL egress to a dead NIC until the next clean run. (On Linux a
     ///   `dev`-scoped route auto-culls when the TUN dies, but a kill mid-reroute
     ///   can still leave one, so we heal there too.)
@@ -5660,7 +5660,7 @@ mod system {
                 .parse::<u32>()
                 .ok()
                 .and_then(winroute::luid_of_index)
-                .is_some_and(winroute::is_ours_or_roomler)
+                .is_some_and(winroute::is_ours_or_meshharbor)
         }
         #[cfg(not(windows))]
         {
@@ -6151,7 +6151,7 @@ mod system {
         }
     }
 
-    /// FR-97 P1a — `ROOMLERD_EXIT_CLIENT_MACOS=0` puts the macOS exit client
+    /// FR-97 P1a — `MESHHARBORD_EXIT_CLIENT_MACOS=0` puts the macOS exit client
     /// back where P0a left it: every exemption is refused, so the exit is
     /// withheld and `meshharbor status` says why. Default ON.
     #[cfg(target_os = "macos")]
@@ -6604,7 +6604,7 @@ mod system {
             );
         }
 
-        /// Live field probe against the local `roomler` adapter — run
+        /// Live field probe against the local `meshharbor` adapter — run
         /// manually with `--ignored --nocapture`. This is the probe that
         /// caught the `list_v4` byte-flip (2.0.64.100 for 100.64.0.2) that
         /// unit tests structurally can't: the FFI read only lies against a
@@ -6613,7 +6613,7 @@ mod system {
         #[test]
         #[ignore]
         fn manual_list_v4_probe() {
-            let luid = super::winroute::luid_for_alias("roomler").expect("no roomler adapter");
+            let luid = super::winroute::luid_for_alias("meshharbor").expect("no meshharbor adapter");
             println!("luid={luid}");
             let addrs = super::winaddr::list_v4(luid);
             println!("list_v4 -> {addrs:?}");
@@ -6723,8 +6723,8 @@ mod system {
             assert_ne!(a, c);
             // Neither derived GUID may collide with the legacy base GUID —
             // the primary adapter keeps it.
-            assert_ne!(a, super::ROOMLER_TUN_GUID);
-            assert_ne!(c, super::ROOMLER_TUN_GUID);
+            assert_ne!(a, super::MESHHARBOR_TUN_GUID);
+            assert_ne!(c, super::MESHHARBOR_TUN_GUID);
             for g in [a, c] {
                 let bytes = g.to_be_bytes();
                 assert_eq!(bytes[6] & 0xF0, 0x40, "version nibble must be 4");
@@ -6749,7 +6749,7 @@ mod system {
                 1280,
             );
             assert_eq!(o.name, super::IF_NAME);
-            assert_eq!(o.guid, super::ROOMLER_TUN_GUID);
+            assert_eq!(o.guid, super::MESHHARBOR_TUN_GUID);
             assert_eq!(o.ip, Ipv4Addr::new(100, 64, 0, 2));
             assert_eq!(o.netmask, Ipv4Addr::new(255, 192, 0, 0));
             assert_eq!(o.mtu, 1280);
@@ -6853,7 +6853,7 @@ mod system {
         fn linux_default_route_lowest_metric_skips_overlay() {
             use std::net::Ipv4Addr;
             // Legacy instance name, as the single-adapter `up()` passes it.
-            let parse = |o: &str| super::parse_linux_default_route(o, "roomler0");
+            let parse = |o: &str| super::parse_linux_default_route(o, "meshharbor0");
             // Lowest metric wins on a multi-homed host.
             let out = "default via 192.168.1.1 dev eth0 proto dhcp metric 100\n\
                        default via 10.8.0.1 dev tun0 metric 50\n";
@@ -6864,16 +6864,16 @@ mod system {
             let r2 = parse("default via 192.168.1.1 dev eth0\n").unwrap();
             assert_eq!(r2.gateway, Ipv4Addr::new(192, 168, 1, 1));
             // A default via our own overlay NIC is ignored.
-            let out3 = "default via 100.64.0.1 dev roomler0 metric 1\n\
+            let out3 = "default via 100.64.0.1 dev meshharbor0 metric 1\n\
                         default via 192.168.1.1 dev eth0 metric 100\n";
             assert_eq!(parse(out3).unwrap().interface, "eth0");
             // Multi-org v2 — the filter keys on the INSTANCE name: a per-org
             // adapter skips itself, and the legacy name is then an ordinary
             // (if implausible) uplink like any other NIC.
-            let out_org = "default via 100.65.4.1 dev roomler-acme metric 1\n\
+            let out_org = "default via 100.65.4.1 dev meshharbor-acme metric 1\n\
                            default via 192.168.1.1 dev eth0 metric 100\n";
             assert_eq!(
-                super::parse_linux_default_route(out_org, "roomler-acme")
+                super::parse_linux_default_route(out_org, "meshharbor-acme")
                     .unwrap()
                     .interface,
                 "eth0"
@@ -6901,7 +6901,7 @@ mod system {
         fn linux_default_route_v6_lowest_metric_skips_overlay() {
             use std::net::Ipv6Addr;
             // Legacy instance name, as the single-adapter `up()` passes it.
-            let parse = |o: &str| super::parse_linux_default_route_v6(o, "roomler0");
+            let parse = |o: &str| super::parse_linux_default_route_v6(o, "meshharbor0");
             // Lowest metric wins; a link-local gateway is accepted.
             let out = "default via fe80::1 dev eth0 proto ra metric 1024 pref medium\n\
                        default via 2a01:4f8::1 dev eth0 metric 100\n";
@@ -6909,7 +6909,7 @@ mod system {
             assert_eq!(r.gateway, "2a01:4f8::1".parse::<Ipv6Addr>().unwrap());
             assert_eq!(r.interface, "eth0");
             // A default via our own overlay NIC is ignored.
-            let out2 = "default via fe80::a dev roomler0 metric 1\n\
+            let out2 = "default via fe80::a dev meshharbor0 metric 1\n\
                         default via fe80::1 dev eth0 metric 100\n";
             assert_eq!(parse(out2).unwrap().interface, "eth0");
             // An `onlink` v6 default (point-to-point uplink) is flagged so the
@@ -6934,7 +6934,7 @@ mod system {
 /// has none". That stopped being true: a `macos-latest` runner has sudo and
 /// utun, so the code is exercised on every push instead of being trusted.
 ///
-/// Needs root, hence the `ROOMLER_TUN_KERNEL_TEST=1` opt-in; skips silently
+/// Needs root, hence the `MESHHARBOR_TUN_KERNEL_TEST=1` opt-in; skips silently
 /// everywhere else, including on non-macOS hosts.
 #[cfg(all(test, feature = "overlay-l3"))]
 mod macos_kernel_tests {
@@ -6965,8 +6965,8 @@ mod macos_kernel_tests {
             eprintln!("skipping: macOS-only (utun + BSD route/ifconfig)");
             return;
         }
-        if std::env::var("ROOMLER_TUN_KERNEL_TEST").as_deref() != Ok("1") {
-            eprintln!("skipping: set ROOMLER_TUN_KERNEL_TEST=1 (needs root)");
+        if std::env::var("MESHHARBOR_TUN_KERNEL_TEST").as_deref() != Ok("1") {
+            eprintln!("skipping: set MESHHARBOR_TUN_KERNEL_TEST=1 (needs root)");
             return;
         }
 
@@ -7054,8 +7054,8 @@ mod macos_kernel_tests {
             eprintln!("skipping: macOS-only (utun + BSD route/ifconfig)");
             return;
         }
-        if std::env::var("ROOMLER_TUN_KERNEL_TEST").as_deref() != Ok("1") {
-            eprintln!("skipping: set ROOMLER_TUN_KERNEL_TEST=1 (needs root)");
+        if std::env::var("MESHHARBOR_TUN_KERNEL_TEST").as_deref() != Ok("1") {
+            eprintln!("skipping: set MESHHARBOR_TUN_KERNEL_TEST=1 (needs root)");
             return;
         }
 
@@ -7159,8 +7159,8 @@ mod macos_kernel_tests {
             eprintln!("skipping: macOS-only (utun + BSD route/ifconfig)");
             return;
         }
-        if std::env::var("ROOMLER_TUN_KERNEL_TEST").as_deref() != Ok("1") {
-            eprintln!("skipping: set ROOMLER_TUN_KERNEL_TEST=1 (needs root)");
+        if std::env::var("MESHHARBOR_TUN_KERNEL_TEST").as_deref() != Ok("1") {
+            eprintln!("skipping: set MESHHARBOR_TUN_KERNEL_TEST=1 (needs root)");
             return;
         }
 
@@ -7263,8 +7263,8 @@ mod macos_kernel_tests {
             eprintln!("skipping: macOS-only (utun + BSD route/ifconfig)");
             return;
         }
-        if std::env::var("ROOMLER_TUN_KERNEL_TEST").as_deref() != Ok("1") {
-            eprintln!("skipping: set ROOMLER_TUN_KERNEL_TEST=1 (needs root)");
+        if std::env::var("MESHHARBOR_TUN_KERNEL_TEST").as_deref() != Ok("1") {
+            eprintln!("skipping: set MESHHARBOR_TUN_KERNEL_TEST=1 (needs root)");
             return;
         }
         /// Whatever happens, the host route this test makes is removed.
@@ -7349,8 +7349,8 @@ mod macos_kernel_tests {
             eprintln!("skipping: macOS-only (utun + BSD route/ifconfig)");
             return;
         }
-        if std::env::var("ROOMLER_TUN_KERNEL_TEST").as_deref() != Ok("1") {
-            eprintln!("skipping: set ROOMLER_TUN_KERNEL_TEST=1 (needs root)");
+        if std::env::var("MESHHARBOR_TUN_KERNEL_TEST").as_deref() != Ok("1") {
+            eprintln!("skipping: set MESHHARBOR_TUN_KERNEL_TEST=1 (needs root)");
             return;
         }
 
@@ -7507,8 +7507,8 @@ mod macos_kernel_tests {
             eprintln!("skipping: macOS-only (utun + BSD route/ifconfig)");
             return;
         }
-        if std::env::var("ROOMLER_TUN_KERNEL_TEST").as_deref() != Ok("1") {
-            eprintln!("skipping: set ROOMLER_TUN_KERNEL_TEST=1 (needs root)");
+        if std::env::var("MESHHARBOR_TUN_KERNEL_TEST").as_deref() != Ok("1") {
+            eprintln!("skipping: set MESHHARBOR_TUN_KERNEL_TEST=1 (needs root)");
             return;
         }
 
@@ -7534,7 +7534,7 @@ mod macos_kernel_tests {
         }
     }
 
-    /// FR-97 P1a — `ROOMLERD_EXIT_CLIENT_MACOS=0` puts the client back where
+    /// FR-97 P1a — `MESHHARBORD_EXIT_CLIENT_MACOS=0` puts the client back where
     /// P0a left it: every exemption refused, so the gate withholds, and
     /// nothing written. Safe to set here: the kernel lane runs with
     /// `--test-threads=1`, every other lane returns above, and nothing off
@@ -7545,8 +7545,8 @@ mod macos_kernel_tests {
             eprintln!("skipping: macOS-only (utun + BSD route/ifconfig)");
             return;
         }
-        if std::env::var("ROOMLER_TUN_KERNEL_TEST").as_deref() != Ok("1") {
-            eprintln!("skipping: set ROOMLER_TUN_KERNEL_TEST=1 (needs root)");
+        if std::env::var("MESHHARBOR_TUN_KERNEL_TEST").as_deref() != Ok("1") {
+            eprintln!("skipping: set MESHHARBOR_TUN_KERNEL_TEST=1 (needs root)");
             return;
         }
         let _restore = crate::env::test_env::Saved::cleared("EXIT_CLIENT_MACOS");

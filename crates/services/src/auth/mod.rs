@@ -53,7 +53,7 @@ pub enum TokenType {
     /// operator. Exchanged for a long-lived `TunnelClient` token via
     /// `POST /api/tunnel-client/enroll`.
     TunnelEnrollment,
-    /// Long-lived token carried by an enrolled `roomler` client
+    /// Long-lived token carried by an enrolled `meshharbor` client
     /// on its WebSocket connection (`role=tunnel-client`). Audience
     /// distinct from `Agent` — agents serve forwards, clients open them.
     TunnelClient,
@@ -73,7 +73,7 @@ pub enum TokenType {
     /// device or a person.
     NetGrant,
     /// FR-90 P3-8-1a — the vault's ticket for one agent session's command on
-    /// another device over Roomler SSH (`rc:vault.ssh`), which the network
+    /// another device over MeshHarbor SSH (`rc:vault.ssh`), which the network
     /// module verifies at `rc:ssh.request` (P3-8-1b). Its own audience, so no
     /// other gate accepts it and it accepts no other credential, a net grant
     /// included: it acts for a session, never for the device or a person.
@@ -144,7 +144,7 @@ pub struct AgentServiceClaims {
     pub token_type: TokenType,
 }
 
-/// Claims carried by a `roomler` client token. Long-lived,
+/// Claims carried by a `meshharbor` client token. Long-lived,
 /// one per enrolled laptop. `owner_user_id` lets the WS handler
 /// associate every forward decision with the operating user for
 /// audit + policy evaluation.
@@ -336,7 +336,7 @@ fn map_jwt_error(e: jsonwebtoken::errors::Error) -> AuthError {
 fn kid_for(secret: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(b"roomler-jwt-kid-v1\0");
+    h.update(b"meshharbor-jwt-kid-v1\0");
     h.update(secret.as_bytes());
     hex::encode(&h.finalize()[..8])
 }
@@ -1073,7 +1073,7 @@ mod tests {
             previous_secrets: previous.to_string(),
             access_token_ttl_secs: 3600,
             refresh_token_ttl_secs: 604_800,
-            issuer: "roomler-ai-test".to_string(),
+            issuer: "meshharbor-test".to_string(),
         })
     }
 
@@ -1559,7 +1559,7 @@ mod tests {
             tenant_id: ObjectId::new().to_hex(),
             iat: Utc::now().timestamp(),
             exp: (Utc::now() + Duration::seconds(60)).timestamp(),
-            iss: "roomler-ai-test".to_string(),
+            iss: "meshharbor-test".to_string(),
             token_type: TokenType::Agent,
             generation: 0,
         };
@@ -1717,7 +1717,7 @@ mod tests {
             tenant_id: ObjectId::new().to_hex(),
             iat: (Utc::now() - Duration::seconds(7200)).timestamp(),
             exp: (Utc::now() - Duration::seconds(3600)).timestamp(),
-            iss: "roomler-ai-test".to_string(),
+            iss: "meshharbor-test".to_string(),
             token_type: TokenType::Agent,
             generation: 0,
         };
@@ -1740,7 +1740,7 @@ mod tests {
                 tenant_id: ObjectId::new().to_hex(),
                 iat: Utc::now().timestamp() - 400 * 24 * 3600,
                 exp: Utc::now().timestamp() + exp_offset,
-                iss: "roomler-ai-test".to_string(),
+                iss: "meshharbor-test".to_string(),
                 token_type: TokenType::Agent,
                 generation: 3,
             };
@@ -1805,7 +1805,7 @@ mod tests {
                 tenant_id: ObjectId::new().to_hex(),
                 iat: Utc::now().timestamp(),
                 exp: Utc::now().timestamp() + 60,
-                iss: "roomler-ai-test".to_string(),
+                iss: "meshharbor-test".to_string(),
                 token_type: TokenType::Agent,
             },
             &s.signing.encoding,
@@ -1829,7 +1829,7 @@ mod tests {
             "tenant_id": ObjectId::new().to_hex(),
             "iat": Utc::now().timestamp(),
             "exp": (Utc::now() + Duration::seconds(600)).timestamp(),
-            "iss": "roomler-ai-test",
+            "iss": "meshharbor-test",
             "token_type": "agent",
         });
         use base64::Engine as _;
@@ -1985,7 +1985,7 @@ mod tests {
             jti: ObjectId::new().to_hex(),
             iat: now,
             exp: now + 60,
-            iss: "roomler-ai-test".into(),
+            iss: "meshharbor-test".into(),
             token_type: TokenType::NetGrant,
         };
         let signed = |c: &NetGrantClaims| encode(&s.header(), c, &s.signing.encoding).unwrap();
@@ -2038,7 +2038,7 @@ mod tests {
             jti: ObjectId::new().to_hex(),
             iat: now - 65,
             exp: now - 5,
-            iss: "roomler-ai-test".into(),
+            iss: "meshharbor-test".into(),
             token_type: TokenType::NetGrant,
         };
         let t = encode(&s.header(), &lapsed, &s.signing.encoding).unwrap();
@@ -2177,7 +2177,7 @@ mod tests {
             jti: ObjectId::new().to_hex(),
             iat: now,
             exp: now + 60,
-            iss: "roomler-ai-test".into(),
+            iss: "meshharbor-test".into(),
             token_type: TokenType::SshTicket,
         };
         let signed = |c: &SshTicketClaims| encode(&s.header(), c, &s.signing.encoding).unwrap();
@@ -2227,7 +2227,7 @@ mod tests {
             jti: ObjectId::new().to_hex(),
             iat: now - 65,
             exp: now - 5,
-            iss: "roomler-ai-test".into(),
+            iss: "meshharbor-test".into(),
             token_type: TokenType::SshTicket,
         };
         let t = encode(&s.header(), &lapsed, &s.signing.encoding).unwrap();

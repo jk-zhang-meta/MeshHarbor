@@ -465,7 +465,7 @@ pub async fn section(state: &AppState, day: NaiveDate) -> Result<GithubSection, 
     let Some(repo) = g.github_repo() else {
         fn none<T>() -> Measured<T> {
             Measured::NotMeasured(NotMeasured::now(
-                "no repository configured (ROOMLER__GROWTH__GITHUB_REPO)",
+                "no repository configured (MESHHARBOR__GROWTH__GITHUB_REPO)",
             ))
         }
         return Ok(GithubSection {
@@ -519,7 +519,7 @@ pub async fn section(state: &AppState, day: NaiveDate) -> Result<GithubSection, 
                 ),
             )
         } else {
-            NotMeasured::now("no GitHub token configured (ROOMLER__GROWTH__GITHUB_TOKEN)")
+            NotMeasured::now("no GitHub token configured (MESHHARBOR__GROWTH__GITHUB_TOKEN)")
         })
     } else {
         Measured::Value(traffic_at(day, &t.rows, &t.ok))

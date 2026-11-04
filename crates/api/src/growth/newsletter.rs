@@ -69,7 +69,7 @@ const DAY_MS: i64 = 86_400_000;
 
 /// Why an issue's delivery is not measured.
 pub const WEBHOOK_OFF: &str = "the SendGrid Event Webhook is not verified on this server \
-     (no usable ROOMLER__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY)";
+     (no usable MESHHARBOR__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY)";
 pub const SENT_UNRECORDED: &str =
     "sent before delivery events were recorded (or while the webhook key was unset)";
 pub const UNTAGGED: &str = "the issue's links carried no campaign tags";

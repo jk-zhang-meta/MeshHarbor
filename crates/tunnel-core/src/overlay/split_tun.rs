@@ -5,7 +5,7 @@
 //!
 //! # Why this exists
 //!
-//! Roomler SSH (and any future in-daemon overlay service) has to answer on
+//! MeshHarbor SSH (and any future in-daemon overlay service) has to answer on
 //! `<self overlay ip>:<port>`. The obvious implementation — bind a listener on
 //! that address — fails on most of the fleet, as the 2026-08-19 survey showed:
 //!
@@ -97,7 +97,7 @@ pub struct SplitTun {
     /// This node's overlay address — the only destination we intercept for.
     self_ip: Ipv4Addr,
     /// The intercepted TCP ports; the first is [`SplitTun::listen`]'s. A
-    /// handful at most (FR-105: roomler SSH's 2222 and the Windows SYSTEM
+    /// handful at most (FR-105: meshharbor SSH's 2222 and the Windows SYSTEM
     /// service's 2223), so a scan beats a set.
     ports: Vec<u16>,
     /// Merged outbound queue fed by both pumps.
@@ -543,7 +543,7 @@ mod tests {
         );
     }
 
-    /// FR-105 — two services on one stack: roomler SSH's port and the Windows
+    /// FR-105 — two services on one stack: meshharbor SSH's port and the Windows
     /// SYSTEM service's. Each is diverted, a third port is not, and only an
     /// intercepted port can be listened on.
     #[tokio::test]

@@ -10,7 +10,7 @@
 //! | This daemon runs as | The recorder runs as |
 //! |---|---|
 //! | an ordinary user at normal integrity (a per-user install, a user unit) | the same: nothing to change |
-//! | an ELEVATED user: the default Windows service worker of a UAC-split administrator (`ROOMLERD_ELEVATE_WORKER`) | a restricted copy of the same token: admin groups deny-only, no privileges, medium integrity |
+//! | an ELEVATED user: the default Windows service worker of a UAC-split administrator (`MESHHARBORD_ELEVATE_WORKER`) | a restricted copy of the same token: admin groups deny-only, no privileges, medium integrity |
 //! | SYSTEM, with someone signed in at the console | that person's own token |
 //! | root on Linux, with someone signed in at the active graphical session | that person: their uid, gid and groups, in their session's environment |
 //! | SYSTEM or Linux root, a screen showing that nobody is signed in to: Windows' sign-in screen, a Linux display manager's greeter or root's own desktop, or (Linux) a display or scanout the recorder could reach with no session registered | refused, by name ([`Refusal::LoginScreen`], decision 6): nobody to record as, and someone may be standing at it |
@@ -104,7 +104,7 @@ pub enum Refusal {
     /// root on macOS: no WindowServer, so no screen. A supervised Mac records
     /// in its GUI worker (P1e-mac); this refusal is the root daemon's own.
     RootDaemon,
-    /// `ROOMLERD_RECORDING=0`: the device's own kill switch.
+    /// `MESHHARBORD_RECORDING=0`: the device's own kill switch.
     SwitchedOff,
 }
 
@@ -136,17 +136,17 @@ impl Refusal {
             Self::RootDaemon => {
                 "this device service runs as root, which cannot see the screen on macOS: \
                  recordings are made by its GUI worker, in your own session \
-                 (`macos_supervise_gui_worker`), or by `roomlerd record` run in your session"
+                 (`macos_supervise_gui_worker`), or by `meshharbord record` run in your session"
             }
             Self::SwitchedOff => {
-                "recording is switched off on this device (ROOMLERD_RECORDING=0 in the \
+                "recording is switched off on this device (MESHHARBORD_RECORDING=0 in the \
                  service's environment)"
             }
         }
     }
 }
 
-/// `ROOMLERD_RECORDING` switches recording off with `0`, `false`, `off` or
+/// `MESHHARBORD_RECORDING` switches recording off with `0`, `false`, `off` or
 /// `no`, in any case. Anything else, unset included, leaves it on: a
 /// misspelt value must not quietly disable a feature someone relies on, and
 /// the gates that keep it closed by default are elsewhere.
@@ -305,7 +305,7 @@ pub fn decide_fresh() -> Result<Identity, Refusal> {
     decide_from(facts_with(true))
 }
 
-/// What `roomlerd record --whoami` prints: the identity a recorder actually
+/// What `meshharbord record --whoami` prints: the identity a recorder actually
 /// got, for the tests and for a field question ("what does it run as here?").
 pub fn describe_self() -> serde_json::Value {
     #[cfg(windows)]
@@ -955,7 +955,7 @@ pub(crate) mod win {
                 "--remote-user-name=Ana \"--out C:\\Windows\" Maria",
                 "\" --out C:\\Windows\\System32 \"",
                 "Ведран Јовановић",
-                "C:\\Users\\a b\\Videos\\Roomler",
+                "C:\\Users\\a b\\Videos\\MeshHarbor",
             ];
             let args: Vec<OsString> = cases.iter().map(OsString::from).collect();
             let cmd = command_line(Path::new(r"C:\Program Files\MeshHarbor\meshharbord.exe"), &args);
@@ -1128,7 +1128,7 @@ pub(crate) mod win {
                 // The CI lane runs elevated on purpose; there, skipping
                 // would pass without proving anything.
                 assert!(
-                    std::env::var_os("ROOMLERD_TEST_REQUIRE_ELEVATED").is_none(),
+                    std::env::var_os("MESHHARBORD_TEST_REQUIRE_ELEVATED").is_none(),
                     "this lane must run elevated for the refusal to be proven"
                 );
                 println!("not elevated: there is no higher right to withhold here");
@@ -1188,7 +1188,7 @@ pub(crate) mod win {
         fn the_unattended_folder_is_the_service_sides_alone() {
             if admin_group_enabled() != Some(true) {
                 assert!(
-                    std::env::var_os("ROOMLERD_TEST_REQUIRE_ELEVATED").is_none(),
+                    std::env::var_os("MESHHARBORD_TEST_REQUIRE_ELEVATED").is_none(),
                     "this lane must run elevated for the refusal to be proven"
                 );
                 println!("not elevated: there is no service side to keep a person out for");
@@ -1213,12 +1213,12 @@ pub(crate) mod win {
             let base = vec![
                 (OsString::from("Path"), OsString::from("C:\\x")),
                 (
-                    OsString::from("ROOMLERD_SYNTHETIC_FRAMES"),
+                    OsString::from("MESHHARBORD_SYNTHETIC_FRAMES"),
                     OsString::from("0"),
                 ),
                 (OsString::from("=C:"), OsString::from("C:\\")),
             ];
-            let block = env_block(base, &[("roomlerd_synthetic_frames".into(), "1".into())]);
+            let block = env_block(base, &[("meshharbord_synthetic_frames".into(), "1".into())]);
             // SAFETY: `env_block` builds a double-NUL-terminated block.
             let back = unsafe { parse_env_block(block.as_ptr()) };
             let get = |k: &str| {
@@ -1227,7 +1227,7 @@ pub(crate) mod win {
                     .map(|(_, v)| v.to_string_lossy().into_owned())
                     .collect::<Vec<_>>()
             };
-            assert_eq!(get("ROOMLERD_SYNTHETIC_FRAMES"), vec!["1".to_string()]);
+            assert_eq!(get("MESHHARBORD_SYNTHETIC_FRAMES"), vec!["1".to_string()]);
             assert_eq!(get("PATH"), vec!["C:\\x".to_string()]);
             assert_eq!(get("=C:"), vec!["C:\\".to_string()]);
         }
@@ -1528,8 +1528,8 @@ pub(crate) mod unix {
         fn root() -> bool {
             // SAFETY: reads our own credentials.
             let root = unsafe { libc::geteuid() } == 0;
-            if !root && std::env::var_os("ROOMLERD_TEST_REQUIRE_ROOT").is_some() {
-                panic!("ROOMLERD_TEST_REQUIRE_ROOT is set and this test is not running as root");
+            if !root && std::env::var_os("MESHHARBORD_TEST_REQUIRE_ROOT").is_some() {
+                panic!("MESHHARBORD_TEST_REQUIRE_ROOT is set and this test is not running as root");
             }
             root
         }

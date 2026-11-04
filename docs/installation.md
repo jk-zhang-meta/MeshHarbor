@@ -75,7 +75,7 @@ script installs yourself, say what you are:
 ```bash
 roomlerd enroll --server … --token … --name … --install-method deb --install-scope system
 # or, equivalently, for a daemon of any version (an older one ignores the variables):
-ROOMLER_INSTALL_METHOD=container ROOMLER_INSTALL_SCOPE=system roomlerd enroll …
+MESHHARBOR_INSTALL_METHOD=container MESHHARBOR_INSTALL_SCOPE=system roomlerd enroll …
 ```
 
 `--install-method` ∈ `wizard` `script-sh` `script-ps1` `msi` `deb` `pkg` `manual`
@@ -283,7 +283,7 @@ curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
   (measured on the FR-93 lab's GNOME 50 per-user guest, 0.4.132). A daemon
   enabled before the fix enables itself again once at start
   (`service.rs`, `repair_session_wants_at_start`; kill switch
-  `ROOMLERD_UNIT_REPAIR=0`), through `systemctl --user enable`: the sandbox
+  `MESHHARBORD_UNIT_REPAIR=0`), through `systemctl --user enable`: the sandbox
   leaves `~/.config/systemd/user` read-only to the daemon itself.
 - ⚠️ **Until #1997 the per-user daemon could not start wherever the sandbox
   applies**, Fedora among them: it restarted every 5 s with `acquiring
@@ -381,7 +381,7 @@ Disconnect and its consent prompt. As that user:
   to `sudo roomler …`.
 
 The socket follows the active graphical session, so there is none over SSH or at the
-login screen. Turn it off with `ROOMLERD_PERSON_SOCKET=0` in a `meshharbord.service`
+login screen. Turn it off with `MESHHARBORD_PERSON_SOCKET=0` in a `meshharbord.service`
 drop-in. Details: [`desktop-companion.md`](desktop-companion.md) §12 and the
 [security baseline](security-baseline.md) §4.
 

@@ -405,11 +405,11 @@ impl Drop for RecordingAudio {
     }
 }
 
-// ── a synthetic source, for tests and `ROOMLERD_SYNTHETIC_AUDIO` ─────────────
+// ── a synthetic source, for tests and `MESHHARBORD_SYNTHETIC_AUDIO` ─────────────
 
 /// A sine wave at `hz`, delivered in real time in 10 ms buffers of
 /// `sample_rate` / `channels` — the shape a real device has, including a rate
-/// that is not 48 kHz. `ROOMLERD_SYNTHETIC_AUDIO=1` makes `roomlerd record`
+/// that is not 48 kHz. `MESHHARBORD_SYNTHETIC_AUDIO=1` makes `meshharbord record`
 /// use it for computer audio (builds with `synthetic-frame-source` only).
 pub struct SineCapture {
     hz: f32,

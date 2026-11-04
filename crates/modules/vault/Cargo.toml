@@ -32,7 +32,7 @@ cedar-policy.workspace = true
 chacha20poly1305.workspace = true
 zeroize.workspace = true
 # P3-3b — a leased value crosses to the device as a libsodium sealed box for
-# the vault key its daemon holds (`roomlerd`'s `vault` feature opens it).
+# the vault key its daemon holds (`meshharbord`'s `vault` feature opens it).
 crypto_box.workspace = true
 base64.workspace = true
 # One lease queue per agent connection.

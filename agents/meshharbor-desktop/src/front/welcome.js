@@ -13,7 +13,7 @@
  * half-way loses nothing. Keys the daemon applies only at a restart join the
  * app's ONE pending set (Settings' restart bar shows the same keys) and are
  * applied together by ONE service restart — through the ONE restart flow,
- * `window.Roomler.restartDaemon` (settings.js, FR-84 D3): the
+ * `window.MeshHarbor.restartDaemon` (settings.js, FR-84 D3): the
  * private-network step restarts at once (it has to, to show the address it
  * gets), and anything chosen after that is applied from the last step.
  *
@@ -25,7 +25,7 @@
  */
 (function () {
   'use strict';
-  const { $, invoke, show, hide, setText, on, get, navigate, refreshStatus } = window.Roomler;
+  const { $, invoke, show, hide, setText, on, get, navigate, refreshStatus } = window.MeshHarbor;
 
   const STEPS = ['device', 'network', 'consent', 'files', 'login', 'done'];
   const OVERLAY_WAIT_MS = 60000;
@@ -41,23 +41,23 @@
   const localPending = new Set();
   const pending = {
     add(key) {
-      const shared = window.Roomler.settingsPendingRestart;
+      const shared = window.MeshHarbor.settingsPendingRestart;
       if (shared) shared.add(key);
       else localPending.add(key);
     },
     size() {
-      const shared = window.Roomler.settingsPendingRestart;
+      const shared = window.MeshHarbor.settingsPendingRestart;
       return shared ? shared.keys().length : localPending.size;
     },
     keys() {
-      const shared = window.Roomler.settingsPendingRestart;
+      const shared = window.MeshHarbor.settingsPendingRestart;
       return shared ? shared.keys() : [...localPending];
     },
     has(key) {
       return this.keys().includes(key);
     },
     clear() {
-      const shared = window.Roomler.settingsPendingRestart;
+      const shared = window.MeshHarbor.settingsPendingRestart;
       if (shared) shared.clear();
       localPending.clear();
     },
@@ -124,7 +124,7 @@
    * (the service's own words) or did not come back; {manual:true} when the
    * service predates "Apply now" — or this page has no restart flow at all. */
   async function restartService(reason, progress) {
-    const R = window.Roomler;
+    const R = window.MeshHarbor;
     if (typeof R.restartDaemon === 'function') {
       return R.restartDaemon(reason, progress);
     }
@@ -133,8 +133,8 @@
 
   function manualRestartHint() {
     return installScope() === 'user'
-      ? 'Saved. It takes effect the next time the Roomler service starts — sign out and back in, or restart it from Settings → Background service.'
-      : 'Saved. It takes effect the next time the Roomler service starts — for example after the next restart of this computer.';
+      ? 'Saved. It takes effect the next time the MeshHarbor service starts — sign out and back in, or restart it from Settings → Background service.'
+      : 'Saved. It takes effect the next time the MeshHarbor service starts — for example after the next restart of this computer.';
   }
 
   /* ── step rendering ─────────────────────────────────────────────── */
@@ -175,7 +175,7 @@
   function networkState() {
     if (platform.name === 'macos') {
       return platform.macosPrivilegedHalf
-        ? "Run by Roomler's system service on this Mac"
+        ? "Run by MeshHarbor's system service on this Mac"
         : 'Not installed on this Mac';
     }
     const dv = get('deviceView');
@@ -202,10 +202,10 @@
       setText(
         'wl-net-user-text',
         platform.macosPrivilegedHalf
-          ? "The private network runs in Roomler's system service, which has its own " +
+          ? "The private network runs in MeshHarbor's system service, which has its own " +
               'enrollment (it appears among your devices with "-daemon" after its name). ' +
               'There is nothing to turn on here.'
-          : "On a Mac the private network runs in Roomler's system service, which the " +
+          : "On a Mac the private network runs in MeshHarbor's system service, which the " +
               'installer adds when given a second enrollment token (install.sh --daemon-token). ' +
               'Screen sharing works without it.',
       );
@@ -226,13 +226,13 @@
           'wl-net-user-text',
           'This is a per-user installation, and this computer is set to join several ' +
             "organisations' networks at once (overlay_multi_org). Userspace mode can serve only " +
-            'one, so the private network here needs the machine-wide Roomler service (installed ' +
+            'one, so the private network here needs the machine-wide MeshHarbor service (installed ' +
             'by an administrator).',
         );
       } else {
         setText(
           'wl-net-user-text',
-          'Roomler was installed for your account only, so it cannot add a network adapter ' +
+          'MeshHarbor was installed for your account only, so it cannot add a network adapter ' +
             '(that needs an administrator). It can join in userspace mode instead: remote desktop ' +
             'works as usual, and other apps reach your devices through a local SOCKS5 proxy on ' +
             'this computer.',
@@ -281,7 +281,7 @@
       setText(
         'wl-files-note',
         v.reason === 'daemon_unreachable'
-          ? 'The Roomler service is not running, so the folder cannot be shown or changed right now.'
+          ? 'The MeshHarbor service is not running, so the folder cannot be shown or changed right now.'
           : 'Could not read the setting: ' + (v.reason || 'unknown error'),
       );
       actions.hidden = true;
@@ -291,7 +291,7 @@
     if (!v.supported) {
       setText(
         'wl-files-note',
-        'This version of the Roomler service always uses your Downloads folder; updating it lets you choose.',
+        'This version of the MeshHarbor service always uses your Downloads folder; updating it lets you choose.',
       );
       actions.hidden = true;
       return;
@@ -358,8 +358,8 @@
       setText(
         'wl-pending-text',
         n === 1
-          ? '1 setting takes effect after the Roomler service restarts.'
-          : n + ' settings take effect after the Roomler service restarts.',
+          ? '1 setting takes effect after the MeshHarbor service restarts.'
+          : n + ' settings take effect after the MeshHarbor service restarts.',
       );
     }
   }
@@ -387,7 +387,7 @@
   async function waitForOverlayIp(deadlineMs) {
     const until = Date.now() + deadlineMs;
     while (Date.now() < until) {
-      await window.Roomler.refreshDeviceView();
+      await window.MeshHarbor.refreshDeviceView();
       const dv = get('deviceView');
       const ip = dv && dv.available && dv.status && dv.status.overlay_ip;
       if (ip) return ip;
@@ -401,7 +401,7 @@
   async function whyNoAddress() {
     const dv = get('deviceView');
     if (!dv || !dv.available) {
-      return 'The Roomler service did not come back. Settings → Service log says why.';
+      return 'The MeshHarbor service did not come back. Settings → Service log says why.';
     }
     const st = dv.status || {};
     if (st.join_refusal && (st.join_refusal.detail || st.join_refusal.reason)) {
@@ -409,7 +409,7 @@
         (st.join_refusal.detail || st.join_refusal.reason);
     }
     if (!st.connected) {
-      return 'The service is not connected to the Roomler server yet, so it has no address to join with.';
+      return 'The service is not connected to the MeshHarbor server yet, so it has no address to join with.';
     }
     try {
       const tail = await invoke('cmd_tail_log', { source: 'daemon', maxBytes: 32768 });
@@ -500,7 +500,7 @@
       say(
         'wl-consent-result',
         entry.restart_required
-          ? 'Saved — applies when the Roomler service restarts (you can do that at the end of this tour).'
+          ? 'Saved — applies when the MeshHarbor service restarts (you can do that at the end of this tour).'
           : 'Saved.',
       );
     } catch (e) {
@@ -539,7 +539,7 @@
     try {
       autostartState = await invoke('cmd_autostart_set', { enabled });
       outcome.login = autostartState.enabled ? 'On' : 'Off';
-      say(resultId, enabled ? 'Roomler starts when you sign in.' : 'Roomler no longer starts when you sign in.');
+      say(resultId, enabled ? 'MeshHarbor starts when you sign in.' : 'MeshHarbor no longer starts when you sign in.');
     } catch (e) {
       say(resultId, 'Could not change it: ' + e, 'error');
     }
@@ -576,7 +576,7 @@
     } catch (e) {
       console.warn('welcome: could not record the finished tour', e);
     }
-    window.Roomler.welcomePending = false;
+    window.MeshHarbor.welcomePending = false;
     navigate('overview');
   }
 
@@ -600,15 +600,15 @@
   async function refreshWelcomePending() {
     try {
       const st = await invoke('cmd_desktop_state');
-      window.Roomler.welcomePending = !st.first_run_done;
+      window.MeshHarbor.welcomePending = !st.first_run_done;
       platform.name = st.platform || null;
       platform.macosPrivilegedHalf = !!st.macos_privileged_half;
     } catch (e) {
-      window.Roomler.welcomePending = false;
+      window.MeshHarbor.welcomePending = false;
     }
   }
 
-  document.addEventListener('roomler:view', (ev) => {
+  document.addEventListener('meshharbor:view', (ev) => {
     if (ev.detail === 'welcome') void enter();
     if (ev.detail === 'settings') {
       void paintAutostart('st-autostart-toggle', 'st-autostart-note', 'st-autostart-label');
@@ -621,12 +621,12 @@
     // Live state keeps the visible step honest (an enrollment that lands, an
     // address that arrives while the person reads).
     on('status', () => {
-      if (window.Roomler.currentView() !== 'welcome') return;
+      if (window.MeshHarbor.currentView() !== 'welcome') return;
       if (STEPS[step] === 'device') paintDevice();
       if (STEPS[step] === 'network' && !busy) paintNetwork();
     });
     on('deviceView', (dv) => {
-      if (window.Roomler.currentView() !== 'welcome') return;
+      if (window.MeshHarbor.currentView() !== 'welcome') return;
       if (STEPS[step] === 'device') paintDevice();
       if (STEPS[step] === 'network' && !busy) setText('wl-net-state', networkState());
       // The daemon's effective folder moved (a change made elsewhere, a

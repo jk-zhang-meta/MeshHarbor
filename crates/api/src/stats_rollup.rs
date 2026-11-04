@@ -616,7 +616,7 @@ pub fn spawn_stats_rollup(state: AppState) {
         loop {
             tokio::time::sleep(interval).await;
             if let Some(redis) = &state.redis_pubsub {
-                let key = format!("roomler:stats-rollup:{}", state.db.name());
+                let key = format!("meshharbor:stats-rollup:{}", state.db.name());
                 let ttl = ROLLUP_INTERVAL_SECS.saturating_sub(5);
                 match redis.try_claim(&key, ttl).await {
                     Ok(true) => {}

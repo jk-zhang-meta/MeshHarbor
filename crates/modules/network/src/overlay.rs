@@ -1577,7 +1577,7 @@ pub async fn handle_overlay_leave(state: &NetworkState, ident: NodeIdentity) {
     let epoch = next_epoch();
     // Grey the row out; do NOT delete it. A `removes` delta made every
     // connected peer drop the node from `current_peers` entirely, so a host
-    // that merely restarted VANISHED from `roomler peers` — while a host that
+    // that merely restarted VANISHED from `meshharbor peers` — while a host that
     // was already down when you joined rendered a normal `offline` row (it
     // arrives in the full netmap with P9 presence). Same server state, two
     // renderings, decided purely by when you happened to join.
@@ -2010,14 +2010,14 @@ pub fn churn_note_replacement(pc: &mut PairChurn, now: Instant, replacing: Optio
     churn_note_request(pc, now)
 }
 
-/// P7 — kill-switch: `ROOMLER__OVERLAY__FORCED_DERP=0|false` disables the
+/// P7 — kill-switch: `MESHHARBOR__OVERLAY__FORCED_DERP=0|false` disables the
 /// escalation entirely (default ON — it is additionally gated on both ends'
 /// advertised capability and the churn threshold).
 fn forced_derp_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         !matches!(
-            std::env::var("ROOMLER__OVERLAY__FORCED_DERP").as_deref(),
+            std::env::var("MESHHARBOR__OVERLAY__FORCED_DERP").as_deref(),
             Ok("0") | Ok("false") | Ok("off")
         )
     })
@@ -2271,14 +2271,14 @@ pub fn org_loss_pin(pc: &mut PairChurn, now: Instant) {
     }
 }
 
-/// Kill switch: `ROOMLER__OVERLAY__ORG_LOSS_PIN=0|false|off` keeps every ORG
+/// Kill switch: `MESHHARBOR__OVERLAY__ORG_LOSS_PIN=0|false|off` keeps every ORG
 /// carrier whatever it loses; reports are then logged only. Default ON. The
 /// pin also needs [`forced_derp_enabled`] and both ends' DERP capability.
 fn org_loss_pin_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         !matches!(
-            std::env::var("ROOMLER__OVERLAY__ORG_LOSS_PIN").as_deref(),
+            std::env::var("MESHHARBOR__OVERLAY__ORG_LOSS_PIN").as_deref(),
             Ok("0") | Ok("false") | Ok("off")
         )
     })

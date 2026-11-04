@@ -25,33 +25,33 @@ pub const DEFAULT_SERVER: &str = "https://www.itachi.fans/meshharbor";
 const AGENT_SUFFIX: &str = "/api/agent/installer";
 
 /// Default proxy base for the tunnel-CLI archive endpoint family.
-/// NB: `/api/tunnel/installer` serves the `roomler` CLI
+/// NB: `/api/tunnel/installer` serves the `meshharbor` CLI
 /// tarball; the (P4c-2-retired) `/api/tunnel-wizard` family served
 /// the wizard EXE itself — pointing here at the latter made the
 /// wizard install ITSELF (rc.60 bug, fixed rc.61).
 const TUNNEL_SUFFIX: &str = "/api/tunnel/installer";
 
 /// Resolve the daemon-MSI proxy base at runtime. Env override
-/// `ROOMLER_INSTALLER_PROXY_BASE` (inherited from the legacy agent
+/// `MESHHARBOR_INSTALLER_PROXY_BASE` (inherited from the legacy agent
 /// wizard so staging fixtures keep working) — else the selected center,
 /// including its deployment prefix. Returned without a trailing slash.
 pub fn agent_base(server: &str) -> String {
-    let raw = std::env::var("ROOMLER_INSTALLER_PROXY_BASE")
+    let raw = std::env::var("MESHHARBOR_INSTALLER_PROXY_BASE")
         .ok()
         .unwrap_or_else(|| format!("{}{}", normalise(server), AGENT_SUFFIX));
     normalise(&raw)
 }
 
 /// Resolve the tunnel-CLI proxy base at runtime. Env override chain
-/// `ROOMLER_TUNNEL_CLI_PROXY_BASE` → legacy alias
-/// `ROOMLER_TUNNEL_WIZARD_PROXY_BASE` (back-compat with any test
+/// `MESHHARBOR_TUNNEL_CLI_PROXY_BASE` → legacy alias
+/// `MESHHARBOR_TUNNEL_WIZARD_PROXY_BASE` (back-compat with any test
 /// fixture that pre-dates the rc.61 rename) → the selected center, including
 /// its deployment prefix.
 /// Always returned without a trailing slash.
 pub fn tunnel_base(server: &str) -> String {
-    let raw = std::env::var("ROOMLER_TUNNEL_CLI_PROXY_BASE")
+    let raw = std::env::var("MESHHARBOR_TUNNEL_CLI_PROXY_BASE")
         .ok()
-        .or_else(|| std::env::var("ROOMLER_TUNNEL_WIZARD_PROXY_BASE").ok())
+        .or_else(|| std::env::var("MESHHARBOR_TUNNEL_WIZARD_PROXY_BASE").ok())
         .unwrap_or_else(|| format!("{}{}", normalise(server), TUNNEL_SUFFIX));
     normalise(&raw)
 }

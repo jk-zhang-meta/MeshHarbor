@@ -88,7 +88,7 @@ fn update_redirect_policy(origin: origin::UpdateOrigin, asset: bool) -> reqwest:
 /// quota (field 2026-04-27: 8 MSI installs across 5 NAT'd boxes hit 403)
 /// — the enrolled center now owns that cache/channel. There is no automatic
 /// fallback to another publisher. Operators tune the same cadence through
-/// `update_check_interval_h` / `ROOMLERD_UPDATE_INTERVAL_H`.
+/// `update_check_interval_h` / `MESHHARBORD_UPDATE_INTERVAL_H`.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(4 * 3600);
 
 /// Minimum download size before we trust an installer artifact. A
@@ -627,7 +627,7 @@ fn consume_wake(wake: &std::path::Path) -> WakeConsumed {
 /// #1683 — how long after an installer was spawned a service stop is read as
 /// **the installer's own stop**, not an operator's or the OS's.
 ///
-/// On Windows the MSI always stops the `Roomler` service (a `StopServices`
+/// On Windows the MSI always stops the `MeshHarbor` service (a `StopServices`
 /// standard action / the `RegisterService` CA's `delete_service`), and by then
 /// the worker that spawned `msiexec` has already exited 0 and the SCM host has
 /// respawned a fresh one. That fresh worker receives the stop as an
@@ -636,7 +636,7 @@ fn consume_wake(wake: &std::path::Path) -> WakeConsumed {
 /// would come up holding a dead token, exactly what FR-51 rules out ("the
 /// internal arm is the updater restarting us; de-enrolling there would delete
 /// the device on every update"). Linux never had this: `dpkg -i` does not
-/// restart `roomlerd` at all.
+/// restart `meshharbord` at all.
 ///
 /// 10 minutes because the MSI's stop can lag the spawn by minutes under EDR /
 /// a slow host. The cost of a long window is small and fails safe: an operator
@@ -835,12 +835,12 @@ pub fn classify_install_flavour_from_path(p: &std::path::Path) -> WindowsInstall
 }
 
 /// The MSI install folder name since P4b — both wxs files set
-/// `APPLICATIONFOLDER Name='Roomler'`. `pub` (not `pub(crate)`): the
+/// `APPLICATIONFOLDER Name='MeshHarbor'`. `pub` (not `pub(crate)`): the
 /// meshharbor-setup wizard's daemon orchestrator derives the CLI's
 /// post-install path from it (same visibility-lift precedent as the
 /// rc.27 wizard helpers).
 #[cfg(target_os = "windows")]
-pub const INSTALL_FOLDER_NAME: &str = "Roomler";
+pub const INSTALL_FOLDER_NAME: &str = "MeshHarbor";
 
 /// The pre-P4b install folder name both MSI flavours used through
 /// rc.194. The `cleanup-legacy-install` vacated-dir sweep targets
@@ -848,7 +848,7 @@ pub const INSTALL_FOLDER_NAME: &str = "Roomler";
 #[cfg(target_os = "windows")]
 // RETIRED-NAME-ANCHOR: the cleanup sweep needs the OLD folder name to find the
 // vacated directory after a rename-hop upgrade. See docs/fr/FR-21.
-pub(crate) const LEGACY_INSTALL_FOLDER_NAME: &str = "roomler-agent";
+pub(crate) const LEGACY_INSTALL_FOLDER_NAME: &str = "meshharbor-agent";
 
 /// Resolve a flavour's MSI install directory for a given folder name:
 /// perUser → `%LOCALAPPDATA%\Programs\<name>`, perMachine →
@@ -897,8 +897,8 @@ pub fn pick_asset_for_platform(assets: &[GithubAsset]) -> Option<&GithubAsset> {
 // renamed and the picker matches them, so they stay verbatim. docs/fr/FR-21
 /// Pure Windows asset picker. Filters by the `-perMachine-` infix in
 /// the asset filename (cargo-wix names them
-/// `roomler-agent-<v>-perMachine-x86_64-…msi`; the perUser MSI uses
-/// `roomler-agent-<v>-x86_64-…msi` with no infix). Falls back to "any
+/// `meshharbor-agent-<v>-perMachine-x86_64-…msi`; the perUser MSI uses
+/// `meshharbor-agent-<v>-x86_64-…msi` with no infix). Falls back to "any
 /// MSI" only if the matching flavour is missing — better to attempt a
 /// cross-flavour install (which will silently no-op) than to skip the
 /// update entirely on a release that, for whatever reason, only shipped
@@ -1011,7 +1011,7 @@ fn host_has_debian_tooling() -> bool {
 ///
 /// Positive match, not a denylist of names we happen to know today. The
 /// daemon's published asset names are a deliberately immutable surface
-/// (`roomler-agent-…`, plus cargo-deb's `roomlerd_…` spelling on old
+/// (`meshharbor-agent-…`, plus cargo-deb's `meshharbord_…` spelling on old
 /// releases), so naming them is safe and a new sibling asset cannot creep
 /// through by being unlisted. Locked by
 /// `pick_linux_asset_never_takes_the_desktop_companion`.
@@ -1020,7 +1020,7 @@ fn host_has_debian_tooling() -> bool {
 #[cfg(any(not(target_os = "windows"), test))]
 #[cfg_attr(target_os = "windows", allow(dead_code))]
 // RETIRED-NAME-ANCHOR(2): the legacy arm. Since FR-46 (#1051) new releases publish
-// `roomlerd-…`, so this prefix names only ALREADY-PUBLISHED assets — but it is a LIVE
+// `meshharbord-…`, so this prefix names only ALREADY-PUBLISHED assets — but it is a LIVE
 // fallback, not decoration: a host updating from a release cut before the rename still
 // finds its own `.deb` through it. Deletable once no such release is a candidate.
 // Locked by `pick_linux_asset_takes_the_renamed_daemon_deb`. docs/fr/FR-46
@@ -1029,7 +1029,7 @@ fn is_daemon_asset(lower_name: &str) -> bool {
     let meshharbor = lower_name
         .strip_prefix("meshharbor-")
         .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
-    meshharbor || lower_name.starts_with("roomler-agent") || lower_name.starts_with("roomlerd")
+    meshharbor || lower_name.starts_with("meshharbor-agent") || lower_name.starts_with("meshharbord")
 }
 
 /// Choose the Linux asset: the right ARCH always, and the format this host
@@ -1097,7 +1097,7 @@ async fn fetch_releases_from(url: &str) -> Result<Vec<GithubRelease>> {
         bail!("manifest URL differs from the configured trusted update feed");
     }
     let client = reqwest::Client::builder()
-        .user_agent(concat!("roomlerd/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("meshharbord/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(30))
         .redirect(update_redirect_policy(origin, false))
         .build()
@@ -1172,14 +1172,14 @@ pub fn pick_latest_release(mut releases: Vec<GithubRelease>) -> Option<GithubRel
 /// Name prefix of a private per-download staging directory. A cleanup
 /// recognises its own by this prefix and removes nothing else.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-const STAGING_DIR_PREFIX: &str = "roomlerd-update.";
+const STAGING_DIR_PREFIX: &str = "meshharbord-update.";
 
 /// Where a just-downloaded installer is staged before it runs.
 ///
 /// ⚠️ Linux: a FRESH private directory per download (mkdtemp — a random name,
 /// created 0700 then relaxed to 0755, owned by the caller). NEVER the old fixed
-/// `/tmp/roomlerd-update/<asset>`: `/tmp` is sticky but a SUBDIRECTORY of it is
-/// not, so any local user could `mkdir /tmp/roomlerd-update` first (and own
+/// `/tmp/meshharbord-update/<asset>`: `/tmp` is sticky but a SUBDIRECTORY of it is
+/// not, so any local user could `mkdir /tmp/meshharbord-update` first (and own
 /// it), then — in the window between this download's in-memory signature check
 /// and the installer's own read of the PATH (`apt-get install <path>`,
 /// `tar -xzf <path>`) — `rename` an attacker package over the genuine one,
@@ -1210,7 +1210,7 @@ fn stage_dir() -> std::io::Result<PathBuf> {
 /// `GetTempPath` behaviour and resolves to the SHARED `C:\Windows\Temp`,
 /// whose default ACL lets any authenticated standard user create a
 /// subdirectory there and own it. That is Linux's #2055 shape one OS over: a
-/// local user pre-creates `roomlerd-update\`, owns it, and in the window
+/// local user pre-creates `meshharbord-update\`, owns it, and in the window
 /// between this download's in-memory verification and `msiexec`'s own
 /// re-read of the PATH, swaps in their own MSI — SYSTEM installs it.
 ///
@@ -1395,7 +1395,7 @@ fn create_fresh_protected_dir(base: &std::path::Path) -> std::io::Result<PathBuf
 /// already a trust boundary, so the historical shared dir is kept as-is.
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn stage_dir() -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join("roomlerd-update");
+    let dir = std::env::temp_dir().join("meshharbord-update");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -1427,7 +1427,7 @@ fn write_installer(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> 
 /// Whether `dir` is one of our private staging directories, by name
 /// (`STAGING_DIR_PREFIX` + a random suffix) and location (directly in
 /// `temp_dir()`). Name-and-place only, on purpose: the guard's job is to stop a
-/// cleanup touching a path that is NOT ours — the old fixed `roomlerd-update`
+/// cleanup touching a path that is NOT ours — the old fixed `meshharbord-update`
 /// (no trailing dot, so excluded) from a pre-fix build, or a wizard-supplied
 /// installer elsewhere.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -1582,7 +1582,7 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
         .asset_url(&asset.browser_download_url)
         .map_err(anyhow::Error::msg)?;
     let client = reqwest::Client::builder()
-        .user_agent(concat!("roomlerd/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("meshharbord/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(600))
         .redirect(update_redirect_policy(origin.clone(), true))
         .build()
@@ -1730,7 +1730,7 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
         // Not a refusal: nothing was proved either way. Since FR-97 P6a the
         // `.deb`, `.pkg` and tarball are bound too, so this is now a format no
         // reader handles, a reader that cannot run here (a `.deb` with no
-        // `dpkg-deb`), or `ROOMLERD_ARTIFACT_VERSION_CHECK=0`. Logged at INFO:
+        // `dpkg-deb`), or `MESHHARBORD_ARTIFACT_VERSION_CHECK=0`. Logged at INFO:
         // a warning per update check would train operators to ignore it.
         Err(e @ crate::artifact_version::VersionError::Unsupported(_)) => {
             tracing::info!(asset = %asset.name, reason = %e, "no artifact-version binding available");
@@ -1896,7 +1896,7 @@ pub fn spawn_installer(installer_path: &std::path::Path) -> Result<()> {
 
 /// Spawn the installer for `installer_path` AND, when an
 /// `expected_version` tag is provided, spawn a sibling
-/// `roomlerd post-install-watch` process that captures the
+/// `meshharbord post-install-watch` process that captures the
 /// installer's exit code + verifies the new binary's `--version`.
 ///
 /// The watcher must be spawned *before* this function returns so the
@@ -1911,15 +1911,15 @@ pub fn spawn_installer_with_watch(
     installer_path: &std::path::Path,
     expected_version: Option<&str>,
 ) -> Result<()> {
-    // FR-90 P1d-1 — a DEBUG build under ROOMLERD_UPDATE_DRY_RUN installs
+    // FR-90 P1d-1 — a DEBUG build under MESHHARBORD_UPDATE_DRY_RUN installs
     // nothing by ANY path. The periodic and pushed updates stop earlier, in
     // `act_on_outcome`; this also covers the crash-loop rollback and the CLI.
     // Its field checks run on workstations whose packaged daemon must not be
     // replaced. Not compiled into a release build.
     #[cfg(debug_assertions)]
-    if std::env::var_os("ROOMLERD_UPDATE_DRY_RUN").is_some() {
+    if std::env::var_os("MESHHARBORD_UPDATE_DRY_RUN").is_some() {
         bail!(
-            "ROOMLERD_UPDATE_DRY_RUN is set: this debug build installs nothing ({})",
+            "MESHHARBORD_UPDATE_DRY_RUN is set: this debug build installs nothing ({})",
             installer_path.display()
         );
     }
@@ -2099,13 +2099,13 @@ pub fn spawn_installer_inner(installer_path: &std::path::Path) -> Result<Install
 /// CA is conditioned on `ENABLE_SYSTEM_CONTEXT="0" AND NOT
 /// (REMOVE="ALL")` (see `wix-perMachine/main.wxs:344-346`).
 /// The CA runs `meshharbord disable-system-context` which
-/// strips `ROOMLERD_ENABLE_SYSTEM_SWAP` from the SCM
+/// strips `MESHHARBORD_ENABLE_SYSTEM_SWAP` from the SCM
 /// Environment block and restarts the service. After auto-update
 /// the supervisor sees env-var-off, doesn't perform the M3 A1
 /// winlogon-token swap, and the resulting LocalSystem worker
 /// tries to read its config from `%APPDATA%` (LocalSystem
 /// profile, empty) instead of the rc.52 machine-global
-/// `%PROGRAMDATA%\roomler\roomler-agent\config.toml` path. Net
+/// `%PROGRAMDATA%\meshharbor\meshharbor-agent\config.toml` path. Net
 /// effect: every SystemContext-enabled host that auto-updates
 /// loses pre-logon capability and crash-loops until an operator
 /// re-runs the wizard. Field-reproduced 2026-05-24 on WINHOST-A
@@ -2138,7 +2138,7 @@ pub fn spawn_installer_as_flavour(
 }
 
 /// rc.56: read the current SCM Environment block. If the perMachine
-/// service has `ROOMLERD_ENABLE_SYSTEM_SWAP=1` set, return
+/// service has `MESHHARBORD_ENABLE_SYSTEM_SWAP=1` set, return
 /// `vec![("ENABLE_SYSTEM_CONTEXT", "1")]` so the auto-update msiexec
 /// invocation re-asserts the env var via the WiX `EnableSystemContext`
 /// CA instead of stripping it via `DisableSystemContext`.
@@ -2149,11 +2149,11 @@ pub fn spawn_installer_as_flavour(
 #[cfg(target_os = "windows")]
 fn preserve_system_context_property(flavour: WindowsInstallFlavour) -> Vec<(String, String)> {
     let env_value =
-        crate::win_service::environment::read_service_env_var("ROOMLERD_ENABLE_SYSTEM_SWAP")
+        crate::win_service::environment::read_service_env_var("MESHHARBORD_ENABLE_SYSTEM_SWAP")
             .map_err(|e| {
                 tracing::warn!(
                     error = %e,
-                    "updater: failed to read SCM env var ROOMLERD_ENABLE_SYSTEM_SWAP; \
+                    "updater: failed to read SCM env var MESHHARBORD_ENABLE_SYSTEM_SWAP; \
                      not passing ENABLE_SYSTEM_CONTEXT to msiexec (auto-update will proceed \
                      but may strip SystemContext if it was enabled)"
                 );
@@ -2162,7 +2162,7 @@ fn preserve_system_context_property(flavour: WindowsInstallFlavour) -> Vec<(Stri
     let result = preserve_system_context_property_for(flavour, env_value);
     if !result.is_empty() {
         tracing::info!(
-            "updater: detected ROOMLERD_ENABLE_SYSTEM_SWAP=1 in service env; \
+            "updater: detected MESHHARBORD_ENABLE_SYSTEM_SWAP=1 in service env; \
              passing ENABLE_SYSTEM_CONTEXT=1 to msiexec to preserve SystemContext mode \
              across auto-update (rc.56 hotfix)"
         );
@@ -2350,7 +2350,7 @@ const TARBALL_REQUIRED: &[&str] = &["usr/bin/meshharbord", "usr/bin/meshharbor"]
 
 /// Units ship in the tarball but are only written when ABSENT. An upgrade
 /// must never revert a unit the operator edited — the field host carries a
-/// hand-written unit with `ROOMLERD_VIRTUAL_DESKTOP=1`, and silently
+/// hand-written unit with `MESHHARBORD_VIRTUAL_DESKTOP=1`, and silently
 /// reverting that would be a data-loss-class bug. A package manager does not
 /// clobber modified conffiles either.
 #[cfg(target_os = "linux")]
@@ -2597,14 +2597,14 @@ fn spawn_installer_for_flavour_inner(installer_path: &std::path::Path) -> Result
         // RETIRED-NAME-ANCHOR(21): the pre-P4b /Applications/meshharbor-agent.app path
         // this sweep still has to name, plus the .app bundle itself, which keys the
         // TCC grants and stays frozen until P5b. The macOS LOG path is no longer
-        // among them — FR-46 P5a moved it to /var/log/roomler. docs/fr/FR-46
+        // among them — FR-46 P5a moved it to /var/log/meshharbor. docs/fr/FR-46
         if euid != 0 {
             bail!(
                 "refusing to self-update: `installer -target /` requires root, but this \
                  agent runs as uid {euid} (the per-user LaunchAgent). Exiting here would \
                  take the agent offline without installing anything. Updates on macOS are \
                  owned by the root update helper (fans.itachi.meshharbor.update) — wake it with \
-                 `touch {MACOS_UPDATE_TRIGGER}` and watch /var/log/roomler/update.log, \
+                 `touch {MACOS_UPDATE_TRIGGER}` and watch /var/log/meshharbor/update.log, \
                  or install by hand: `sudo installer -pkg <pkg> -target /`."
             );
         }
@@ -2614,7 +2614,7 @@ fn spawn_installer_for_flavour_inner(installer_path: &std::path::Path) -> Result
         // RETIRED-NAME-ANCHOR(3): the PRE-P4b /Applications bundle, swept on upgrade.
         // Without the old name the vacated .app is orphaned forever. docs/fr/FR-21
         // The pkg's payload is absolute: /Applications/meshharbor-agent.app plus
-        // /usr/local/bin/roomler, and BOTH launchd plists name the bundle path
+        // /usr/local/bin/meshharbor, and BOTH launchd plists name the bundle path
         // literally. A home-directory install relocates the payload under
         // ~/Applications, so the update "succeeds" and launchd keeps starting
         // the OLD binary at the path it still points to — an update that
@@ -2655,7 +2655,7 @@ pub fn spawn_msiexec_elevated(argv: &[String]) -> Result<u32> {
 
 /// FR-104 — [`spawn_msiexec_elevated`] for any program: `ShellExecuteExW`
 /// with the `runas` verb, so Windows shows its administrator prompt, and the
-/// PID of the elevated process. The setup wizard runs `roomlerd anchor
+/// PID of the elevated process. The setup wizard runs `meshharbord anchor
 /// create` this way after it enrolls a machine-wide install: the anchor's
 /// POST, and the SYSTEM service's credential it returns, must stay inside an
 /// elevated process (FR-94 §4).
@@ -2910,7 +2910,7 @@ fn stage_watcher_exe(
             tracing::debug!(error = %e, dest = %fixed.display(), "watcher stage copy (fixed name) failed; trying pid-suffixed name")
         }
     }
-    let suffixed = staging.join(format!("roomlerd-watch-{}.exe", std::process::id()));
+    let suffixed = staging.join(format!("meshharbord-watch-{}.exe", std::process::id()));
     match std::fs::copy(exe, &suffixed) {
         Ok(_) => (suffixed, true),
         Err(e) => {
@@ -2926,7 +2926,7 @@ fn stage_watcher_exe(
 
 /// Resolve the effective update-check cadence for this run. Order:
 ///
-/// 1. `ROOMLERD_UPDATE_INTERVAL_H` env var (parses an unsigned
+/// 1. `MESHHARBORD_UPDATE_INTERVAL_H` env var (parses an unsigned
 ///    integer count of hours; non-positive or non-numeric is ignored
 ///    so a typo can't accidentally disable updates).
 /// 2. `update_check_interval_h` field on `AgentConfig`, if set.
@@ -3046,7 +3046,7 @@ fn act_on_outcome(outcome: CheckOutcome, shutdown_tx: &tokio::sync::watch::Sende
             // nothing (a debug daemon on a workstation must not replace the
             // packaged one there). Not compiled into a release build.
             #[cfg(debug_assertions)]
-            if std::env::var_os("ROOMLERD_UPDATE_DRY_RUN").is_some() {
+            if std::env::var_os("MESHHARBORD_UPDATE_DRY_RUN").is_some() {
                 tracing::warn!(
                     current = %current,
                     latest = %latest,
@@ -3571,7 +3571,7 @@ enum UpdateOwner {
 ///
 /// - A **root** daemon installs its own updates, helper or not. The helper is
 ///   the root half of a PER-USER install; a system install already has one.
-/// - `ROOMLERD_UPDATE_HELPER=0` (`helper_switch == false`) gives back today's
+/// - `MESHHARBORD_UPDATE_HELPER=0` (`helper_switch == false`) gives back today's
 ///   in-process path exactly — FR-96's kill switch.
 /// - Otherwise a per-user daemon steps aside iff the helper is enabled.
 ///
@@ -3589,7 +3589,7 @@ fn decide_update_owner(euid: u32, helper_switch: bool, enabled_by: Option<PathBu
     }
     if !helper_switch {
         return UpdateOwner::InProcess(
-            "ROOMLERD_UPDATE_HELPER=0 — the in-process path, as before FR-96",
+            "MESHHARBORD_UPDATE_HELPER=0 — the in-process path, as before FR-96",
         );
     }
     match enabled_by {
@@ -3687,13 +3687,13 @@ async fn forward_triggers_to(
                 }
                 // RETIRED-NAME-ANCHOR(2): the anchor now covers only this comment's own
                 // mention of the legacy paths. FR-46 P5a moved the live strings below to
-                // /var/log/roomler and /etc/meshharbor; the legacy /var/log/roomler-agent and
-                // /etc/roomler-agent are migrated by the .pkg postinstall. docs/fr/FR-46
+                // /var/log/meshharbor and /etc/meshharbor; the legacy /var/log/meshharbor-agent and
+                // /etc/meshharbor-agent are migrated by the .pkg postinstall. docs/fr/FR-46
                 match queue_update_check_at(wake) {
                     Ok(()) if cfg!(target_os = "macos") => tracing::info!(
                         trigger = %wake.display(),
                         "rc:agent.update queued for the root update helper (fans.itachi.meshharbor.update); \
-                         watch /var/log/roomler/update.log"
+                         watch /var/log/meshharbor/update.log"
                     ),
                     Ok(()) => tracing::info!(
                         trigger = %wake.display(),
@@ -3889,7 +3889,7 @@ pub async fn run_update_helper() -> anyhow::Result<()> {
     // Deletable once no Mac can still have one. docs/fr/FR-46
     const OPT_OUT: [&str; 2] = [
         "/etc/meshharbor/disable-auto-update",
-        "/etc/roomler-agent/disable-auto-update",
+        "/etc/meshharbor-agent/disable-auto-update",
     ];
     if let Some(marker) = OPT_OUT.iter().find(|p| std::path::Path::new(p).exists()) {
         tracing::info!(marker = %marker, "auto-update opted out — exiting");
@@ -4300,7 +4300,7 @@ mod tests {
         );
 
         assert_eq!(
-            strip_deleted_suffix(Path::new("/opt/my (deleted) tools/roomlerd")),
+            strip_deleted_suffix(Path::new("/opt/my (deleted) tools/meshharbord")),
             None,
             "the marker only counts as a SUFFIX; a path that merely contains it is real"
         );
@@ -4660,13 +4660,13 @@ mod tests {
     fn pick_asset_matches_platform_extension() {
         let assets = vec![
             GithubAsset {
-                name: "roomler-agent-0.1.36-x86_64-pc-windows-msvc-unsigned.msi".into(),
+                name: "meshharbor-agent-0.1.36-x86_64-pc-windows-msvc-unsigned.msi".into(),
                 browser_download_url: "https://example.invalid/foo.msi".into(),
                 size: 1234,
                 digest: None,
             },
             GithubAsset {
-                name: "roomler-agent-0.1.36_amd64.deb".into(),
+                name: "meshharbor-agent-0.1.36_amd64.deb".into(),
                 browser_download_url: "https://example.invalid/foo.deb".into(),
                 size: 2345,
                 digest: None,
@@ -4677,7 +4677,7 @@ mod tests {
             // (found by running this suite on a real arm64 agent, a target
             // CI has no job for).
             GithubAsset {
-                name: "roomler-agent-0.1.36-aarch64-unknown-linux-gnu.deb".into(),
+                name: "meshharbor-agent-0.1.36-aarch64-unknown-linux-gnu.deb".into(),
                 browser_download_url: "https://example.invalid/foo-arm64.deb".into(),
                 size: 2346,
                 digest: None,
@@ -4689,19 +4689,19 @@ mod tests {
             // Carrying both keeps the assertion about the PLATFORM, not about
             // whatever package manager the runner happens to have.
             GithubAsset {
-                name: "roomler-agent-0.1.36-x86_64-unknown-linux-gnu.tar.gz".into(),
+                name: "meshharbor-agent-0.1.36-x86_64-unknown-linux-gnu.tar.gz".into(),
                 browser_download_url: "https://example.invalid/foo.tgz".into(),
                 size: 2347,
                 digest: None,
             },
             GithubAsset {
-                name: "roomler-agent-0.1.36-aarch64-unknown-linux-gnu.tar.gz".into(),
+                name: "meshharbor-agent-0.1.36-aarch64-unknown-linux-gnu.tar.gz".into(),
                 browser_download_url: "https://example.invalid/foo-arm64.tgz".into(),
                 size: 2348,
                 digest: None,
             },
             GithubAsset {
-                name: "roomler-agent-0.1.36-x86_64-apple-darwin.pkg".into(),
+                name: "meshharbor-agent-0.1.36-x86_64-apple-darwin.pkg".into(),
                 browser_download_url: "https://example.invalid/foo.pkg".into(),
                 size: 3456,
                 digest: None,
@@ -4920,7 +4920,7 @@ mod tests {
     fn discard_staging_removes_only_our_own_dir() {
         // Our own dir, with the installer in it: removed whole.
         let ours = stage_dir().expect("stage_dir");
-        let installer = ours.join("roomlerd-0.4.0-x86_64-unknown-linux-gnu.deb");
+        let installer = ours.join("meshharbord-0.4.0-x86_64-unknown-linux-gnu.deb");
         std::fs::write(&installer, b"x").expect("write installer");
         discard_staging(&installer);
         assert!(!ours.exists(), "our own staging dir is removed");
@@ -5213,7 +5213,7 @@ mod tests {
     #[test]
     fn discard_staging_removes_only_our_own_dir_windows() {
         let ours = stage_dir().expect("stage_dir");
-        let installer = ours.join("roomlerd-0.4.0-x86_64-pc-windows-msvc.msi");
+        let installer = ours.join("meshharbord-0.4.0-x86_64-pc-windows-msvc.msi");
         std::fs::write(&installer, b"x").expect("write installer");
         discard_staging(&installer);
         assert!(!ours.exists(), "our own staging dir is removed");
@@ -5463,7 +5463,7 @@ mod tests {
                 decide_update_owner(1000, false, link()),
                 UpdateOwner::InProcess(_)
             ),
-            "ROOMLERD_UPDATE_HELPER=0 must give back the in-process path"
+            "MESHHARBORD_UPDATE_HELPER=0 must give back the in-process path"
         );
         assert_eq!(
             decide_update_owner(0, true, link()),
@@ -5793,7 +5793,7 @@ mod tests {
     #[test]
     fn only_the_exact_capabilities_query_is_answered_before_parsing() {
         assert!(is_capabilities_query([
-            "roomlerd",
+            "meshharbord",
             "update-helper",
             "--capabilities"
         ]));
@@ -5803,13 +5803,13 @@ mod tests {
             "--capabilities"
         ]));
         for argv in [
-            &["roomlerd"][..],
-            &["roomlerd", "update-helper"],
-            &["roomlerd", "--capabilities"],
-            &["roomlerd", "--capabilities", "update-helper"],
-            &["roomlerd", "update-helper", "--capabilities", "extra"],
-            &["roomlerd", "update-helper", "--capabilitie"],
-            &["roomlerd", "run"],
+            &["meshharbord"][..],
+            &["meshharbord", "update-helper"],
+            &["meshharbord", "--capabilities"],
+            &["meshharbord", "--capabilities", "update-helper"],
+            &["meshharbord", "update-helper", "--capabilities", "extra"],
+            &["meshharbord", "update-helper", "--capabilitie"],
+            &["meshharbord", "run"],
         ] {
             assert!(!is_capabilities_query(argv), "{argv:?}");
         }
@@ -5821,7 +5821,7 @@ mod tests {
     // root daemon must never route through an escalator that can block
     // on a polkit agent that does not exist on a headless host.
 
-    const DEB: &str = "/tmp/roomler-agent-update/meshharbor-agent.deb";
+    const DEB: &str = "/tmp/meshharbor-agent-update/meshharbor-agent.deb";
 
     #[test]
     fn linux_install_root_never_escalates() {
@@ -5944,10 +5944,10 @@ mod tests {
         // .deb-only fixture would make the test's outcome depend on the
         // runner's distro instead of on the arch logic under test.
         let assets = vec![
-            mk("roomler-agent-0.3.0-rc.366-aarch64-unknown-linux-gnu.deb"),
-            mk("roomler-agent-0.3.0-rc.366-aarch64-unknown-linux-gnu.tar.gz"),
-            mk("roomler-agent-0.3.0-rc.366-x86_64-unknown-linux-gnu.deb"),
-            mk("roomler-agent-0.3.0-rc.366-x86_64-unknown-linux-gnu.tar.gz"),
+            mk("meshharbor-agent-0.3.0-rc.366-aarch64-unknown-linux-gnu.deb"),
+            mk("meshharbor-agent-0.3.0-rc.366-aarch64-unknown-linux-gnu.tar.gz"),
+            mk("meshharbor-agent-0.3.0-rc.366-x86_64-unknown-linux-gnu.deb"),
+            mk("meshharbor-agent-0.3.0-rc.366-x86_64-unknown-linux-gnu.tar.gz"),
         ];
         let name = &pick_asset_for_unix(&assets)
             .expect("a Linux asset must match")
@@ -5966,7 +5966,7 @@ mod tests {
     #[test]
     fn pick_asset_skips_x86_only_release_on_arm64() {
         let assets = vec![GithubAsset {
-            name: "roomler-agent-0.3.0-rc.366-x86_64-unknown-linux-gnu.deb".into(),
+            name: "meshharbor-agent-0.3.0-rc.366-x86_64-unknown-linux-gnu.deb".into(),
             browser_download_url: "https://example.invalid/x.deb".into(),
             size: 1,
             digest: None,
@@ -5988,8 +5988,8 @@ mod tests {
             digest: None,
         };
         let both = vec![
-            mk("roomler-agent-0.3.0-x86_64-unknown-linux-gnu.deb"),
-            mk("roomler-agent-0.3.0-x86_64-unknown-linux-gnu.tar.gz"),
+            mk("meshharbor-agent-0.3.0-x86_64-unknown-linux-gnu.deb"),
+            mk("meshharbor-agent-0.3.0-x86_64-unknown-linux-gnu.tar.gz"),
         ];
         let x86 = &["x86_64", "amd64"][..];
 
@@ -6009,7 +6009,7 @@ mod tests {
 
         // A Debian host whose .deb is missing still updates via the tarball
         // rather than treating an absent artifact as a dead end.
-        let tar_only = vec![mk("roomler-agent-0.3.0-x86_64-unknown-linux-gnu.tar.gz")];
+        let tar_only = vec![mk("meshharbor-agent-0.3.0-x86_64-unknown-linux-gnu.tar.gz")];
         assert!(
             pick_linux_asset(&tar_only, x86, true)
                 .expect("falls back")
@@ -6019,7 +6019,7 @@ mod tests {
 
         // …but a host with no dpkg and only a .deb published must SKIP, not
         // download something it cannot install.
-        let deb_only = vec![mk("roomler-agent-0.3.0-x86_64-unknown-linux-gnu.deb")];
+        let deb_only = vec![mk("meshharbor-agent-0.3.0-x86_64-unknown-linux-gnu.deb")];
         assert!(pick_linux_asset(&deb_only, x86, false).is_none());
     }
 
@@ -6045,13 +6045,13 @@ mod tests {
         // test pass against names no release actually carries. docs/fr/FR-21
         let release = vec![
             mk("meshharbor-desktop-0.4.15-x86_64-unknown-linux-gnu.deb"),
-            mk("roomler-agent-0.4.15-x86_64-unknown-linux-gnu.deb"),
-            mk("roomler-agent-0.4.15-x86_64-unknown-linux-gnu.tar.gz"),
+            mk("meshharbor-agent-0.4.15-x86_64-unknown-linux-gnu.deb"),
+            mk("meshharbor-agent-0.4.15-x86_64-unknown-linux-gnu.tar.gz"),
         ];
         let picked = pick_linux_asset(&release, x86, true).expect("must still find the daemon deb");
         assert_eq!(
             picked.name,
-            "roomler-agent-0.4.15-x86_64-unknown-linux-gnu.deb"
+            "meshharbor-agent-0.4.15-x86_64-unknown-linux-gnu.deb"
         );
 
         // With ONLY the companion published, there is nothing installable —
@@ -6061,16 +6061,16 @@ mod tests {
 
         // cargo-deb's own spelling, as old releases carry it, still counts.
         // RETIRED-NAME-ANCHOR(4): same published-asset surface as above. docs/fr/FR-21
-        assert!(is_daemon_asset("roomlerd_0.4.15-1_amd64.deb"));
+        assert!(is_daemon_asset("meshharbord_0.4.15-1_amd64.deb"));
         assert!(is_daemon_asset(
-            "roomler-agent-0.4.15-x86_64-unknown-linux-gnu.tar.gz"
+            "meshharbor-agent-0.4.15-x86_64-unknown-linux-gnu.tar.gz"
         ));
         assert!(!is_daemon_asset(
             "meshharbor-desktop-0.4.15-x86_64-unknown-linux-gnu.deb"
         ));
     }
 
-    /// FR-46 (#1051): the daemon's published asset is named `roomlerd-…` from
+    /// FR-46 (#1051): the daemon's published asset is named `meshharbord-…` from
     /// this release on. The rename was argued from reading every picker; this
     /// asserts it instead, on the one path where the prefix is load-bearing.
     ///
@@ -6096,24 +6096,24 @@ mod tests {
         // Companion FIRST again — asset order is GitHub's, not ours.
         let release = vec![
             mk("meshharbor-desktop-0.4.38-x86_64-unknown-linux-gnu.deb"),
-            mk("roomlerd-0.4.38-x86_64-unknown-linux-gnu.deb"),
-            mk("roomlerd-0.4.38-x86_64-unknown-linux-gnu.tar.gz"),
+            mk("meshharbord-0.4.38-x86_64-unknown-linux-gnu.deb"),
+            mk("meshharbord-0.4.38-x86_64-unknown-linux-gnu.tar.gz"),
         ];
         let picked =
             pick_linux_asset(&release, x86, true).expect("must find the renamed daemon deb");
-        assert_eq!(picked.name, "roomlerd-0.4.38-x86_64-unknown-linux-gnu.deb");
+        assert_eq!(picked.name, "meshharbord-0.4.38-x86_64-unknown-linux-gnu.deb");
 
         assert!(is_daemon_asset(
-            "roomlerd-0.4.38-x86_64-unknown-linux-gnu.deb"
+            "meshharbord-0.4.38-x86_64-unknown-linux-gnu.deb"
         ));
         assert!(is_daemon_asset(
-            "roomlerd-0.4.38-x86_64-unknown-linux-gnu.tar.gz"
+            "meshharbord-0.4.38-x86_64-unknown-linux-gnu.tar.gz"
         ));
 
         // RETIRED-NAME-ANCHOR(3): the legacy arm is a LIVE fallback for releases
         // already published under the old name — not decoration. docs/fr/FR-46
         assert!(is_daemon_asset(
-            "roomler-agent-0.4.15-x86_64-unknown-linux-gnu.deb"
+            "meshharbor-agent-0.4.15-x86_64-unknown-linux-gnu.deb"
         ));
     }
 
@@ -6129,10 +6129,10 @@ mod tests {
         };
         // Wrong arch listed FIRST for both formats.
         let assets = vec![
-            mk("roomler-agent-0.3.0-aarch64-unknown-linux-gnu.tar.gz"),
-            mk("roomler-agent-0.3.0-aarch64-unknown-linux-gnu.deb"),
-            mk("roomler-agent-0.3.0-x86_64-unknown-linux-gnu.tar.gz"),
-            mk("roomler-agent-0.3.0-x86_64-unknown-linux-gnu.deb"),
+            mk("meshharbor-agent-0.3.0-aarch64-unknown-linux-gnu.tar.gz"),
+            mk("meshharbor-agent-0.3.0-aarch64-unknown-linux-gnu.deb"),
+            mk("meshharbor-agent-0.3.0-x86_64-unknown-linux-gnu.tar.gz"),
+            mk("meshharbor-agent-0.3.0-x86_64-unknown-linux-gnu.deb"),
         ];
         let x86 = &["x86_64", "amd64"][..];
         for tooling in [true, false] {
@@ -6149,7 +6149,7 @@ mod tests {
     #[test]
     fn pick_asset_returns_none_when_no_platform_match() {
         let assets = vec![GithubAsset {
-            name: "roomler-agent-0.1.36.tar.gz".into(),
+            name: "meshharbor-agent-0.1.36.tar.gz".into(),
             browser_download_url: "https://example.invalid/foo.tgz".into(),
             size: 10,
             digest: None,
@@ -6177,8 +6177,8 @@ mod tests {
     #[test]
     fn pick_asset_per_user_skips_per_machine_msi() {
         let assets = vec![
-            mk_msi("roomler-agent-0.2.5-perMachine-x86_64-pc-windows-msvc-unsigned.msi"),
-            mk_msi("roomler-agent-0.2.5-x86_64-pc-windows-msvc-unsigned.msi"),
+            mk_msi("meshharbor-agent-0.2.5-perMachine-x86_64-pc-windows-msvc-unsigned.msi"),
+            mk_msi("meshharbor-agent-0.2.5-x86_64-pc-windows-msvc-unsigned.msi"),
         ];
         let pick = pick_asset_for_windows(&assets, WindowsInstallFlavour::PerUser)
             .expect("perUser must find its MSI");
@@ -6192,8 +6192,8 @@ mod tests {
     #[test]
     fn pick_asset_per_machine_picks_per_machine_msi() {
         let assets = vec![
-            mk_msi("roomler-agent-0.2.5-x86_64-pc-windows-msvc-unsigned.msi"),
-            mk_msi("roomler-agent-0.2.5-perMachine-x86_64-pc-windows-msvc-unsigned.msi"),
+            mk_msi("meshharbor-agent-0.2.5-x86_64-pc-windows-msvc-unsigned.msi"),
+            mk_msi("meshharbor-agent-0.2.5-perMachine-x86_64-pc-windows-msvc-unsigned.msi"),
         ];
         let pick = pick_asset_for_windows(&assets, WindowsInstallFlavour::PerMachine)
             .expect("perMachine must find its MSI");
@@ -6213,7 +6213,7 @@ mod tests {
     #[test]
     fn pick_asset_per_machine_falls_back_when_only_per_user_present() {
         let assets = vec![mk_msi(
-            "roomler-agent-0.2.0-x86_64-pc-windows-msvc-unsigned.msi",
+            "meshharbor-agent-0.2.0-x86_64-pc-windows-msvc-unsigned.msi",
         )];
         let pick = pick_asset_for_windows(&assets, WindowsInstallFlavour::PerMachine)
             .expect("fallback must produce something");
@@ -6223,7 +6223,7 @@ mod tests {
     #[test]
     fn pick_asset_per_user_falls_back_when_only_per_machine_present() {
         let assets = vec![mk_msi(
-            "roomler-agent-0.2.5-perMachine-x86_64-pc-windows-msvc-unsigned.msi",
+            "meshharbor-agent-0.2.5-perMachine-x86_64-pc-windows-msvc-unsigned.msi",
         )];
         let pick = pick_asset_for_windows(&assets, WindowsInstallFlavour::PerUser)
             .expect("fallback must produce something");
@@ -6233,7 +6233,7 @@ mod tests {
     #[test]
     fn pick_asset_per_user_returns_none_when_no_msi_at_all() {
         let assets = vec![GithubAsset {
-            name: "roomler-agent-0.2.5_amd64.deb".into(),
+            name: "meshharbor-agent-0.2.5_amd64.deb".into(),
             browser_download_url: "https://example.invalid/foo.deb".into(),
             size: 2_000_000,
             digest: None,
@@ -6260,7 +6260,7 @@ mod tests {
         // future 32-bit MSI doesn't get mis-classified as perUser.
         assert_eq!(
             classify_install_flavour_from_path(std::path::Path::new(
-                r"C:\Program Files (x86)\roomler-agent\meshharbor-agent.exe"
+                r"C:\Program Files (x86)\meshharbor-agent\meshharbor-agent.exe"
             )),
             WindowsInstallFlavour::PerMachine
         );
@@ -6310,7 +6310,7 @@ mod tests {
         // a perMachine MSI, Windows Installer returned 1625
         // ERROR_INSTALL_PACKAGE_REJECTED.
         let wizard_paths = [
-            r"C:\Users\operator\Downloads\roomler-installer-0.3.0-rc.28-x86_64-pc-windows-msvc.exe",
+            r"C:\Users\operator\Downloads\meshharbor-installer-0.3.0-rc.28-x86_64-pc-windows-msvc.exe",
             r"C:\Users\operator\Desktop\meshharbor-installer.exe",
             r"C:\Users\operator\AppData\Local\Temp\meshharbor-installer.exe",
             r"D:\Installers\meshharbor-installer.exe",

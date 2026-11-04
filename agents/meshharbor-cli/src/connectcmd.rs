@@ -36,14 +36,14 @@ pub async fn run(args: ConnectArgs, json: bool) -> Result<()> {
     {
         Response::Connected { id, endpoint } => (id, endpoint),
         Response::Error { message } => bail!("{}", refused(&message)),
-        other => bail!("the roomler daemon answered something else: {other:?}"),
+        other => bail!("the meshharbor daemon answered something else: {other:?}"),
     };
     // The files a client reads by path. Nothing in them is secret, and they
     // go when this does.
     let dir = if files_of(&endpoint).is_empty() {
         None
     } else {
-        Some(PrivateDir::named("roomler-connect")?)
+        Some(PrivateDir::named("meshharbor-connect")?)
     };
     let written = match &dir {
         Some(dir) => write_files(dir, &endpoint)?,
@@ -85,9 +85,9 @@ async fn hold(client: &mut localapi::Client, id: u64, json: bool) -> Result<()> 
         let state = match answer {
             Ok(Response::ConnectState(state)) => state,
             Ok(Response::Error { message }) => bail!("the endpoint is gone: {message}"),
-            Ok(other) => bail!("the roomler daemon answered something else: {other:?}"),
+            Ok(other) => bail!("the meshharbor daemon answered something else: {other:?}"),
             Err(e) => {
-                bail!("the roomler daemon ended the connection, and the endpoint with it: {e}")
+                bail!("the meshharbor daemon ended the connection, and the endpoint with it: {e}")
             }
         };
         if json {
@@ -135,7 +135,7 @@ fn news(last: Option<&EndpointState>, now: &EndpointState) -> Option<String> {
 /// know it, which is not a refusal at all.
 fn refused(message: &str) -> String {
     if message.starts_with("bad request: unknown variant") {
-        return "this device's roomler daemon is older than `meshharbor connect`: update it".into();
+        return "this device's meshharbor daemon is older than `meshharbor connect`: update it".into();
     }
     message.to_string()
 }
@@ -253,7 +253,7 @@ mod tests {
     fn an_older_daemon_is_told_apart_from_a_refusal() {
         assert_eq!(
             refused("bad request: unknown variant `connect`, expected one of `status`"),
-            "this device's roomler daemon is older than `meshharbor connect`: update it"
+            "this device's meshharbor daemon is older than `meshharbor connect`: update it"
         );
         let word = "meshharbor connect lends this device's owner's vault grants, so here only root";
         assert_eq!(refused(word), word);
@@ -281,13 +281,13 @@ mod tests {
         );
         let written = [(
             "KUBECONFIG",
-            PathBuf::from("/tmp/roomler-connect-x/kubeconfig"),
+            PathBuf::from("/tmp/meshharbor-connect-x/kubeconfig"),
         )];
         assert_eq!(
             describe(3, &endpoint, &written),
             "endpoint 3: kubernetes to https://api.k8s.internal:6443, signed in as the \
              secret's user\n  uri           http://127.0.0.1:50123\n  KUBECONFIG    \
-             /tmp/roomler-connect-x/kubeconfig\n  its leases    300 s, renewed before they \
+             /tmp/meshharbor-connect-x/kubeconfig\n  its leases    300 s, renewed before they \
              end\nWrite kubeconfig to a file of your own.\nLeave this running while you use \
              it: Ctrl-C closes it.\n"
         );
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn the_files_go_with_the_directory() {
         let endpoint = json!({ "known_hosts": "[db.internal]:22 ssh-ed25519 KEY\n" });
-        let dir = PrivateDir::named("roomler-connect-test").unwrap();
+        let dir = PrivateDir::named("meshharbor-connect-test").unwrap();
         let root = dir.path().to_path_buf();
         let written = write_files(&dir, &endpoint).unwrap();
         assert_eq!(written, [("known_hosts", root.join("known_hosts"))]);

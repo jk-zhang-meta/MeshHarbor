@@ -23,7 +23,7 @@
 //!
 //! The supervisor calls this when [`crate::win_service::supervisor::
 //! decide_spawn`] returns the SystemContext variant (carrying the
-//! target session id). The spawned child runs the same `roomlerd
+//! target session id). The spawned child runs the same `meshharbord
 //! run` binary; its [`super::worker_role::probe_self`] returns
 //! `WorkerRole::SystemContext` and downstream construction sites pick
 //! the M3 A1 plumbing.

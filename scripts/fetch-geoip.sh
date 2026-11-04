@@ -16,7 +16,7 @@
 #   releases stay downloadable for a few months.
 #     https://download.db-ip.com/free/dbip-country-lite-YYYY-MM.mmdb.gz
 #   It lands as dbip-country-lite.mmdb, the path the image's
-#   ROOMLER__STATS__GEOIP_MMDB names, with dbip-country-lite.provenance.txt
+#   MESHHARBOR__STATS__GEOIP_MMDB names, with dbip-country-lite.provenance.txt
 #   beside it: the release, URL, SHA-256, licence and credit.
 #
 # WHY THIS DATABASE

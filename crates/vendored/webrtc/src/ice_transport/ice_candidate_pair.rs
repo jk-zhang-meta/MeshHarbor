@@ -38,7 +38,7 @@ impl RTCIceCandidatePair {
         }
     }
 
-    /// The local candidate of the selected pair. Exposed (roomler patch) so
+    /// The local candidate of the selected pair. Exposed (meshharbor patch) so
     /// the agent can inspect the negotiated path's candidate `typ`/`protocol`
     /// at runtime (per-session TURN-relay detection for adaptive bitrate).
     pub fn local(&self) -> &RTCIceCandidate {

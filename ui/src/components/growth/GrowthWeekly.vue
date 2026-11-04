@@ -21,7 +21,7 @@
         Recompute (no send)
       </v-btn>
       <span v-if="list" class="text-caption text-medium-emphasis">
-        {{ list.scheduled ? 'mailed every Monday after the digest hour' : 'the scheduler is off on this server (ROOMLER__GROWTH__WEEKLY_ENABLED)' }}
+        {{ list.scheduled ? 'mailed every Monday after the digest hour' : 'the scheduler is off on this server (MESHHARBOR__GROWTH__WEEKLY_ENABLED)' }}
       </span>
     </div>
 

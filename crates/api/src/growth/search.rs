@@ -319,7 +319,7 @@ pub async fn google(
                 )
             } else {
                 NotMeasured::now(
-                    "no Search Console key configured (ROOMLER__GROWTH__SEARCH_CONSOLE_KEY)",
+                    "no Search Console key configured (MESHHARBOR__GROWTH__SEARCH_CONSOLE_KEY)",
                 )
             },
         ));
@@ -430,7 +430,7 @@ pub async fn bing(state: &AppState, day: NaiveDate) -> Result<Measured<BingRepor
         return Ok(Measured::NotMeasured(
             if !state.settings.growth.bing_configured() {
                 NotMeasured::now(
-                    "no Bing Webmaster API key configured (ROOMLER__GROWTH__BING_API_KEY)",
+                    "no Bing Webmaster API key configured (MESHHARBOR__GROWTH__BING_API_KEY)",
                 )
             } else {
                 let days = BING_PULL_LOOKBACK_DAYS + 1;
@@ -736,9 +736,9 @@ mod tests {
             site("2026-10-09", "clicks", 1),
         ];
         let weekly = vec![
-            week("2026-10-10", "roomler", "clicks", 3),
-            week("2026-10-10", "roomler", "impressions", 50),
-            week("2026-10-10", "roomler", "avg_impression_position_x10", 40),
+            week("2026-10-10", "meshharbor", "clicks", 3),
+            week("2026-10-10", "meshharbor", "impressions", 50),
+            week("2026-10-10", "meshharbor", "avg_impression_position_x10", 40),
             week("2026-10-03", "old", "clicks", 9),
         ];
         let b = bing_report(d("2026-10-16"), &daily, &weekly, "2026-10-15");

@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 pub const SOCKET_NAME: &str = "adopt.sock";
 
 /// FR-97 P4c — the adopt socket on Windows: one named pipe per machine.
-pub const PIPE_NAME: &str = r"\\.\pipe\roomler-hive-adopt";
+pub const PIPE_NAME: &str = r"\\.\pipe\meshharbor-hive-adopt";
 
 /// The most transcript bytes one [`Request::Lines`] carries. Whole lines only,
 /// so a hook stops before the line that would cross this and sends it next.
@@ -362,7 +362,7 @@ pub mod refusal {
     pub const OFFLINE: &str = "offline";
     /// The server refused it; its word follows after a colon.
     pub const SERVER: &str = "server";
-    /// Mirroring was stopped for this terminal session (from Roomler, or
+    /// Mirroring was stopped for this terminal session (from MeshHarbor, or
     /// because it ended); nothing more is taken for it.
     pub const STOPPED: &str = "stopped";
     /// Another account's terminal session.
@@ -445,7 +445,7 @@ mod tests {
     /// A pipe name of a test's own, never the daemon's.
     #[cfg(windows)]
     fn test_pipe(tag: &str) -> String {
-        format!(r"\\.\pipe\roomler-adopt-test-{tag}-{}", std::process::id())
+        format!(r"\\.\pipe\meshharbor-adopt-test-{tag}-{}", std::process::id())
     }
 
     /// FR-97 P4c — the hook keeps a pipe its own account serves (an attended

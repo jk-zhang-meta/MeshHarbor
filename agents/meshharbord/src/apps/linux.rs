@@ -13,7 +13,7 @@
 //! * one X window per session, so focus works.
 //!
 //! We launch our own windows with a known title
-//! (`roomler:tmux:<session>` / `roomler:app:<key>`) so [`super::classify_title`]
+//! (`meshharbor:tmux:<session>` / `meshharbor:app:<key>`) so [`super::classify_title`]
 //! can map a window back to its session/app without pid/xprop games.
 //!
 //! A tmux session with **no live xterm** (after an agent restart, or the
@@ -361,7 +361,7 @@ impl WindowManager for LinuxWm {
             if !is_safe_session(session) {
                 bail!("invalid session name");
             }
-            let title = format!("roomler:tmux:{session}");
+            let title = format!("meshharbor:tmux:{session}");
             self.spawn_detached(
                 "xterm",
                 &["-T", title.as_str(), "-e", "tmux", "attach", "-t", session],
@@ -410,7 +410,7 @@ impl WindowManager for LinuxWm {
             }
 
             // Attach it in an xterm titled by our convention.
-            let title = format!("roomler:tmux:{session}");
+            let title = format!("meshharbor:tmux:{session}");
             self.spawn_detached(
                 "xterm",
                 &[
@@ -434,7 +434,7 @@ impl WindowManager for LinuxWm {
 
         if app.terminal {
             // TUI app in an xterm titled by our convention.
-            let title = format!("roomler:app:{}", app.key);
+            let title = format!("meshharbor:app:{}", app.key);
             let mut args: Vec<&str> = vec!["-T", title.as_str(), "-e"];
             args.extend(app.command.iter().map(String::as_str));
             self.spawn_detached("xterm", &args, "xterm")?;
@@ -595,7 +595,7 @@ fn discover_with(
 
 /// One log line per refusal, at `debug!` because on a headless server this
 /// is the normal state and runs on every boot (the hello asks). The reason
-/// reaches the operator through the reply and `roomlerd apps-probe` — the
+/// reaches the operator through the reply and `meshharbord apps-probe` — the
 /// point of AC10 is that the log is no longer the only place it lives.
 fn refused(why: Unavailable) -> Result<Target, Unavailable> {
     tracing::debug!(
@@ -713,11 +713,11 @@ mod tests {
     /// `on_path_in`; only "reads the process's own `PATH`" needs the child.
     #[test]
     fn on_path_answers_about_the_daemons_own_path() {
-        const CHILD: &str = "ROOMLERD_TEST_ON_PATH_CHILD";
+        const CHILD: &str = "MESHHARBORD_TEST_ON_PATH_CHILD";
         const PROBES: [&str; 3] = [
-            "roomler-p5-probe",
-            "roomler-p5-notexec",
-            "roomler-p5-does-not-exist",
+            "meshharbor-p5-probe",
+            "meshharbor-p5-notexec",
+            "meshharbor-p5-does-not-exist",
         ];
         const EXPECT: [(bool, &str); 3] = [
             (true, "an executable file on PATH must be found"),
@@ -739,12 +739,12 @@ mod tests {
         }
 
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("roomler-p5-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("meshharbor-p5-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("roomler-p5-probe");
+        let exe = dir.join("meshharbor-p5-probe");
         std::fs::write(&exe, b"#!/bin/sh\ntrue\n").unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let plain = dir.join("roomler-p5-notexec");
+        let plain = dir.join("meshharbor-p5-notexec");
         std::fs::write(&plain, b"not executable").unwrap();
         std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
 

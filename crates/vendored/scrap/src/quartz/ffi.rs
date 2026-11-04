@@ -9,7 +9,7 @@ pub type CFBooleanRef = *mut c_void;
 pub type CFNumberRef = *mut c_void;
 pub type CFStringRef = *mut c_void;
 pub type CGDisplayStreamUpdateRef = *mut c_void;
-// ROOMLER PATCH: see `CGDisplayCopyDisplayMode` below.
+// MESHHARBOR PATCH: see `CGDisplayCopyDisplayMode` below.
 pub type CGDisplayModeRef = *mut c_void;
 pub type IOSurfaceRef = *mut c_void;
 pub type DispatchQueue = *mut c_void;
@@ -162,7 +162,7 @@ extern {
     pub fn CGDisplayPixelsWide(display: u32) -> usize;
     pub fn CGDisplayPixelsHigh(display: u32) -> usize;
 
-    // ROOMLER PATCH: the display's size in PIXELS rather than POINTS.
+    // MESHHARBOR PATCH: the display's size in PIXELS rather than POINTS.
     //
     // `CGDisplayPixelsWide/High` are named for pixels but return POINTS —
     // on a Retina panel they are half the real count (a 3024x1964 MacBook
@@ -193,7 +193,7 @@ extern {
     // IOSurface
 
     pub fn IOSurfaceGetAllocSize(buffer: IOSurfaceRef) -> usize;
-    // ROOMLER PATCH: the surface's true row pitch. Upstream binds only
+    // MESHHARBOR PATCH: the surface's true row pitch. Upstream binds only
     // GetAllocSize, which is the page-rounded TOTAL allocation — a consumer
     // that divides it by the height to recover a stride gets a number that is
     // too large and usually not even a multiple of 4. There is no other way
@@ -224,7 +224,7 @@ extern {
         object: DispatchQueue
     );
 
-    // ROOMLER PATCH: a barrier on the stream's serial queue — see
+    // MESHHARBOR PATCH: a barrier on the stream's serial queue — see
     // `capturer::Owned::release_off_queue`. It returns once every item queued
     // before it, CoreGraphics' own frame deliveries included, has finished.
     pub fn dispatch_sync_f(

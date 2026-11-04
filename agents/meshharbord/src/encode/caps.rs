@@ -138,24 +138,24 @@ mod child {
     /// Marks the line carrying the child's JSON, so log output on the same
     /// stream cannot be mistaken for the result. Parsing the last line, or
     /// all of stdout, would break the first time anything logged there.
-    pub(super) const MARKER: &str = "ROOMLER_CAPS_JSON:";
+    pub(super) const MARKER: &str = "MESHHARBOR_CAPS_JSON:";
     /// FR-77 P3c — the 4:4:4 phase's answer: a JSON array of the encoder
     /// names whose 4:4:4 form opened.
-    pub(super) const MARKER_444: &str = "ROOMLER_CAPS_444:";
+    pub(super) const MARKER_444: &str = "MESHHARBOR_CAPS_444:";
     /// FR-77 P3c — printed by the child BEFORE each open it attempts. On a
     /// service host the child's stderr reaches no log, so this is the only
     /// record of which open a dying child was inside; the parent quotes the
     /// last one in its verdict.
-    pub(super) const PROGRESS: &str = "ROOMLER_CAPS_PROGRESS:";
+    pub(super) const PROGRESS: &str = "MESHHARBOR_CAPS_PROGRESS:";
 
     /// Set in the child's environment. A belt-and-braces recursion guard:
     /// `detect()` in a process carrying this must never spawn again.
-    pub(super) const CHILD_ENV: &str = "ROOMLERD_CAPS_CHILD";
+    pub(super) const CHILD_ENV: &str = "MESHHARBORD_CAPS_CHILD";
     /// FR-77 P3c — which phase the child runs: `base` (every 4:2:0 open, no
     /// FFmpeg 4:4:4 attempt) or `444` (only the 4:4:4 forms named in
     /// [`NAMES_444_ENV`]). Unset = the pre-P3c single-phase probe.
-    pub(super) const PHASE_ENV: &str = "ROOMLERD_CAPS_PHASE";
-    pub(super) const NAMES_444_ENV: &str = "ROOMLERD_CAPS_444_NAMES";
+    pub(super) const PHASE_ENV: &str = "MESHHARBORD_CAPS_PHASE";
+    pub(super) const NAMES_444_ENV: &str = "MESHHARBORD_CAPS_444_NAMES";
 
     /// Generous, because a cold GPU driver init on a loaded corp laptop is
     /// genuinely slow (~300 ms per codec, several codecs, plus process
@@ -184,7 +184,7 @@ mod child {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(super) enum Phase {
         /// The pre-P3c shape: everything in one process (a bare
-        /// `roomlerd caps-probe`).
+        /// `meshharbord caps-probe`).
         Full,
         /// Every 4:2:0 open, the software cells, the IDR verdict — and NO
         /// FFmpeg 4:4:4 attempt.
@@ -796,7 +796,7 @@ fn linux_audio_word(
         ),
         _ => Unavailable::new(
             "no-monitor",
-            "This host sends no sound: session audio is switched off on it (ROOMLERD_AUDIO_SESSION=0), and no capture device is named for it (ROOMLERD_AUDIO_SOURCE)",
+            "This host sends no sound: session audio is switched off on it (MESHHARBORD_AUDIO_SESSION=0), and no capture device is named for it (MESHHARBORD_AUDIO_SOURCE)",
         ),
     }
 }
@@ -976,7 +976,7 @@ fn cached_or_probed() -> AgentCaps {
             ),
         },
         _ if !enabled => {
-            tracing::info!("caps probe: cache disabled (ROOMLERD_CAPS_CACHE=0) — probing")
+            tracing::info!("caps probe: cache disabled (MESHHARBORD_CAPS_CACHE=0) — probing")
         }
         (Some(_), None) => {
             tracing::debug!("caps probe: no directory to cache in — probing")
@@ -1137,7 +1137,7 @@ fn input_permission_granted() -> bool {
 
 /// `AgentCaps.video`: properties of the video wire this build speaks.
 /// `chunk-framing` always (FR-17); `bench` only on a bench target (FR-16 L4:
-/// the synthetic source selected and `ROOMLERD_BENCH` on), so a viewer sends
+/// the synthetic source selected and `MESHHARBORD_BENCH` on), so a viewer sends
 /// its probes only where a frame will answer them. The probe child inherits
 /// the environment, so it reads the same answer the daemon would.
 fn video_features() -> Vec<String> {
@@ -1147,7 +1147,7 @@ fn video_features() -> Vec<String> {
         features.push("bench".to_string());
     }
     // FR-119 P1 — the viewer may ask for more than 60 fps (`rc:fps`); the
-    // answer rides `rc:video-info`. Off unless `ROOMLERD_FPS_HIGH=1`.
+    // answer rides `rc:video-info`. Off unless `MESHHARBORD_FPS_HIGH=1`.
     if crate::encode::fps_high_enabled() {
         features.push(crate::encode::frame_rate::CAP.to_string());
     }
@@ -1281,7 +1281,7 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
     // rc.77 — FFmpeg HEVC over DataChannel.
     //
     // **DEFAULT ON** since rc.107 — `ffmpeg_backend_enabled()` is an explicit
-    // opt-OUT (`ROOMLERD_USE_FFMPEG=0`), not the rc.77 opt-IN this comment
+    // opt-OUT (`MESHHARBORD_USE_FFMPEG=0`), not the rc.77 opt-IN this comment
     // used to describe. The flip was forced in the field: an MSI
     // MajorUpgrade WIPES the service env block, so the dropped `=1`
     // silently disabled HEVC fleet-wide (black canvas, rc.105→rc.106).
@@ -1370,7 +1370,7 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
                     // do get GOP 64800 + on-demand-only keys (kills the
                     // residual ~1 Hz natural-key pulse on VP9-over-DC);
                     // hosts that don't keep the rc.219 containment. Escape
-                    // hatch ROOMLERD_VP9_QSV_IDR_PROBE=0.
+                    // hatch MESHHARBORD_VP9_QSV_IDR_PROBE=0.
                     if tunnel_core::env::node_env("VP9_QSV_IDR_PROBE").as_deref() != Some("0") {
                         let t_idr = std::time::Instant::now();
                         if let Some((lp1, lp0)) =
@@ -1385,7 +1385,7 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
                         }
                     } else {
                         tracing::info!(
-                            "caps probe: vp9_qsv IDR probe disabled (ROOMLERD_VP9_QSV_IDR_PROBE=0) — keeping GOP-60 containment"
+                            "caps probe: vp9_qsv IDR probe disabled (MESHHARBORD_VP9_QSV_IDR_PROBE=0) — keeping GOP-60 containment"
                         );
                     }
                 }
@@ -1413,14 +1413,14 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
         // P2 (Parsec-class plan) — H.264 over DataChannel joins the reliable-
         // DC + WebCodecs + canvas pipeline (the RTP track + <video> path stays
         // as the universal fallback). The bitstream is Annex-B with in-band
-        // SPS/PPS — the contract the HEVC path ships. `ROOMLERD_DC_H264=0`
+        // SPS/PPS — the contract the HEVC path ships. `MESHHARBORD_DC_H264=0`
         // stops that advertisement without a rebuild; the H.264 cells are
         // then not probed either (a cell nobody can negotiate is noise).
         let dc_h264 = tunnel_core::env::node_env("DC_H264").as_deref() != Some("0");
         for codec in [VideoCodec::Hevc, VideoCodec::Av1, VideoCodec::H264] {
             if codec == VideoCodec::H264 && !dc_h264 {
                 tracing::info!(
-                    "caps probe: data-channel-h264 advertisement disabled (ROOMLERD_DC_H264=0)"
+                    "caps probe: data-channel-h264 advertisement disabled (MESHHARBORD_DC_H264=0)"
                 );
                 continue;
             }
@@ -1833,7 +1833,7 @@ fn apps_caps_for(cfg: &crate::apps::VirtualDesktopAppsConfig) -> Vec<String> {
 /// the caps-probe child's struct wholesale, and the child loads no config, so
 /// a files block inside `compute_caps` read `REMOTE_BROWSE_ENABLED` at its
 /// built-in default (`true`) and advertised `browse` on a device whose owner
-/// had set `enable_remote_browse = false` (or `ROOMLERD_DISABLE_BROWSE`) — on
+/// had set `enable_remote_browse = false` (or `MESHHARBORD_DISABLE_BROWSE`) — on
 /// every release's first boot and on every boot of a host with no hardware
 /// cell (a no-hardware answer is never cached). The `files:dir` handler still
 /// refused, so the controller drew a Browse affordance that failed when used:
@@ -1841,7 +1841,7 @@ fn apps_caps_for(cfg: &crate::apps::VirtualDesktopAppsConfig) -> Vec<String> {
 ///
 /// `upload` / `download` / `download-folder` are always built into this agent;
 /// `resume` (rc.19) says the agent stages uploads under
-/// `<dest_dir>/.roomler-partial/<id>/` and can resume a mid-flight transfer
+/// `<dest_dir>/.meshharbor-partial/<id>/` and can resume a mid-flight transfer
 /// after a DC drop, and a browser that does not see it keeps the rc.18
 /// fail-fast path. `browse` alone follows the config. Old browsers that see
 /// an empty `files` list fall back to `supports_file_transfer` (upload-only),
@@ -1872,7 +1872,7 @@ fn files_caps_for(browse_enabled: bool) -> Vec<String> {
     files
 }
 
-/// Fleet-RPC + roomler-SSH verb capabilities.
+/// Fleet-RPC + meshharbor-SSH verb capabilities.
 ///
 /// `exec` / `originate` are build-independent (the exec engine is std process
 /// spawning). `ssh` is NOT: it is gated on the `ssh-server` feature, because
@@ -2121,7 +2121,7 @@ fn rpc_caps() -> Vec<String> {
 /// Concurrent-INPUT chaos is prevented server-side (one INPUT holder per
 /// agent until the P6 arbitration modes land).
 ///
-/// `ROOMLERD_RC_MAX_SESSIONS` env > `rc_max_sessions` config key
+/// `MESHHARBORD_RC_MAX_SESSIONS` env > `rc_max_sessions` config key
 /// (bridged via the S2 fallback map) > built-in 2.
 pub(crate) fn rc_max_sessions() -> u8 {
     tunnel_core::env::node_env("RC_MAX_SESSIONS")
@@ -2197,7 +2197,7 @@ fn activates(codec: CodecProbe) -> ProbeResult {
                 tracing::warn!(
                     codec = ?codec,
                     elapsed_ms,
-                    "caps probe: codec activates only on SW — NOT advertising (H.264 HW likely better). Set ROOMLERD_ALLOW_SW_HEAVY=1 to override."
+                    "caps probe: codec activates only on SW — NOT advertising (H.264 HW likely better). Set MESHHARBORD_ALLOW_SW_HEAVY=1 to override."
                 );
                 ProbeResult::SoftwareOnly
             }
@@ -2257,7 +2257,7 @@ pub fn pick_best_codec(browser_caps: &[String], agent_caps: &[String]) -> String
 mod tests {
     use super::*;
 
-    /// FR-119 P1 — `fps-high` is off unless `ROOMLERD_FPS_HIGH=1`: until P2
+    /// FR-119 P1 — `fps-high` is off unless `MESHHARBORD_FPS_HIGH=1`: until P2
     /// builds the grant, a viewer must not be offered a picker the agent can
     /// never honour. `chunk-framing` stays unconditional (FR-17).
     #[test]
@@ -2836,7 +2836,7 @@ mod tests {
         // route's own reason.
         use crate::audio_source::AudioUnavailableCode as Why;
         for (why, code, names) in [
-            (Why::NoMonitor, "no-monitor", "ROOMLERD_AUDIO_SESSION=0"),
+            (Why::NoMonitor, "no-monitor", "MESHHARBORD_AUDIO_SESSION=0"),
             (Why::NoSoundServer, "no-sound-server", "libpulse-simple"),
             (Why::NoSession, "no-session", "session helper"),
         ] {
@@ -3440,8 +3440,8 @@ mod tests {
     #[test]
     fn the_phase_is_read_from_the_environment() {
         // These env vars are private to the probe child, so the plain
-        // std::env API is the contract (no ROOMLERD_ prefix bridging).
-        // SAFETY: no other test in this crate touches ROOMLERD_CAPS_PHASE.
+        // std::env API is the contract (no MESHHARBORD_ prefix bridging).
+        // SAFETY: no other test in this crate touches MESHHARBORD_CAPS_PHASE.
         unsafe { std::env::remove_var(child::PHASE_ENV) };
         assert_eq!(child::phase_from_env(), child::Phase::Full);
         unsafe { std::env::set_var(child::PHASE_ENV, "base") };

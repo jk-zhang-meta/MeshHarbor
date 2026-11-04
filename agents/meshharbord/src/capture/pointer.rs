@@ -296,7 +296,7 @@ mod tests {
     }
 }
 
-/// The X11 source against a REAL X server. `ROOMLERD_TEST_X11=1` makes a
+/// The X11 source against a REAL X server. `MESHHARBORD_TEST_X11=1` makes a
 /// missing server a failure rather than a skip, so the CI lane that runs this
 /// under Xvfb cannot pass by running nothing.
 #[cfg(all(test, target_os = "linux", feature = "scrap-capture"))]
@@ -308,7 +308,7 @@ mod x11_tests {
     use x11rb::wrapper::ConnectionExt as _;
 
     fn required() -> bool {
-        std::env::var("ROOMLERD_TEST_X11").as_deref() == Ok("1")
+        std::env::var("MESHHARBORD_TEST_X11").as_deref() == Ok("1")
     }
 
     /// Put the server's pointer at (`x`, `y`) on the root window and wait
@@ -322,8 +322,8 @@ mod x11_tests {
     #[test]
     fn xfixes_says_where_the_pointer_is_in_the_frames_own_pixels() {
         let Ok((conn, screen)) = x11rb::connect(None) else {
-            assert!(!required(), "ROOMLERD_TEST_X11=1 but there is no X server");
-            eprintln!("no X server — skipping (ROOMLERD_TEST_X11=1 makes this a failure)");
+            assert!(!required(), "MESHHARBORD_TEST_X11=1 but there is no X server");
+            eprintln!("no X server — skipping (MESHHARBORD_TEST_X11=1 makes this a failure)");
             return;
         };
         let root = conn.setup().roots[screen].root;

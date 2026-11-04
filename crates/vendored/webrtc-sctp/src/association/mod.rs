@@ -63,10 +63,10 @@ pub(crate) const DEFAULT_MAX_MESSAGE_SIZE: u32 = 65536;
 /// other constants
 pub(crate) const ACCEPT_CH_SIZE: usize = 16;
 
-/// roomler (#1856): while sends keep failing, log at most this often.
+/// meshharbor (#1856): while sends keep failing, log at most this often.
 const SEND_FAILURE_LOG_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// roomler (#1856): a run of consecutive failed `net_conn` sends. The write
+/// meshharbor (#1856): a run of consecutive failed `net_conn` sends. The write
 /// loop drops the packet and lets SCTP retransmit it; this only decides what
 /// gets logged: the first failure of a run, then at most one line per
 /// [`SEND_FAILURE_LOG_EVERY`], and one line when sends recover.
@@ -529,7 +529,7 @@ impl Association {
                 {
                     Ok(Ok(mut buf)) => {
                         let raw = buf.as_ref();
-                        // roomler (#1856): a failed send is a LOST PACKET, not a
+                        // meshharbor (#1856): a failed send is a LOST PACKET, not a
                         // dead association. Upstream ended the loop here, which
                         // closed the association and every stream on it, so one
                         // datagram a route change bounced (EHOSTUNREACH on a
@@ -545,7 +545,7 @@ impl Association {
                                 if let Some((dropped, over)) =
                                     send_failures.sent(std::time::Instant::now())
                                 {
-                                    // roomler (#1867): warn, like the failure line it
+                                    // meshharbor (#1867): warn, like the failure line it
                                     // closes. The agent keeps `webrtc_sctp` at warn, so
                                     // at info the field saw failures and never this.
                                     log::warn!(

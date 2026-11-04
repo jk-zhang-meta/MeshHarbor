@@ -24,8 +24,8 @@
 // the tests pin both. Removing the retired arm breaks upgrades from any
 // tunnel release older than FR-21. docs/fr/FR-21 D6
 //! The archives produced by `release-tunnel.yml` carry a single
-//! top-level directory (`roomler-tunnel-<version>-<target>/`); the
-//! caller (orchestrator) walks one level deep to find the `roomler-
+//! top-level directory (`meshharbor-tunnel-<version>-<target>/`); the
+//! caller (orchestrator) walks one level deep to find the `meshharbor-
 //! tunnel` binary after extraction.
 
 use std::fs;
@@ -247,9 +247,9 @@ fn check_within(dest_dir: &Path, candidate: &Path) -> Result<()> {
 
 /// Walk one level into `extracted_root` looking for the tunnel CLI
 /// binary. The CLI archive layout is
-/// `<extracted_root>/roomler-tunnel-<version>-<target>/<binary>`,
+/// `<extracted_root>/meshharbor-tunnel-<version>-<target>/<binary>`,
 /// where `<binary>` has shipped under BOTH names since the P3d
-/// rename: `roomler{.exe}` (current) and `roomler-tunnel{.exe}`
+/// rename: `meshharbor{.exe}` (current) and `meshharbor-tunnel{.exe}`
 /// (compat alias). P4b flips the preference to the NEW name so
 /// installs land the end-state binary; the legacy name stays as a
 /// fallback so pre-P3d archives still resolve. Returns the full path
@@ -263,7 +263,7 @@ pub fn find_tunnel_binary(extracted_root: &Path) -> Result<PathBuf> {
     } else {
         // RETIRED-NAME-ANCHOR: member names inside ALREADY-PUBLISHED tarballs.
         // The extractor must keep accepting them. docs/fr/FR-21
-        ["roomler", "roomler-tunnel"]
+        ["meshharbor", "meshharbor-tunnel"]
     };
 
     // Flat layout? New name wins when both are present.
@@ -327,14 +327,14 @@ mod tests {
         build_zip_to_path(
             &archive,
             &[
-                ("roomler-tunnel-1.2.3-target/meshharbor-tunnel.exe", b"binary"),
-                ("roomler-tunnel-1.2.3-target/README.txt", b"readme"),
+                ("meshharbor-tunnel-1.2.3-target/meshharbor-tunnel.exe", b"binary"),
+                ("meshharbor-tunnel-1.2.3-target/README.txt", b"readme"),
             ],
         )
         .unwrap();
         extract_zip(&archive, &dest).unwrap();
         let bin = dest
-            .join("roomler-tunnel-1.2.3-target")
+            .join("meshharbor-tunnel-1.2.3-target")
             .join("meshharbor-tunnel.exe");
         assert!(bin.is_file());
         let bytes = std::fs::read(&bin).unwrap();
@@ -424,12 +424,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let sub = tmp
             .path()
-            .join("roomler-tunnel-0.3.0-rc.46-x86_64-pc-windows-msvc");
+            .join("meshharbor-tunnel-0.3.0-rc.46-x86_64-pc-windows-msvc");
         std::fs::create_dir_all(&sub).unwrap();
         let bin_name = if cfg!(target_os = "windows") {
             "meshharbor-tunnel.exe"
         } else {
-            "roomler-tunnel"
+            "meshharbor-tunnel"
         };
         std::fs::write(sub.join(bin_name), b"binary").unwrap();
         let found = find_tunnel_binary(tmp.path()).unwrap();
@@ -442,7 +442,7 @@ mod tests {
         let bin_name = if cfg!(target_os = "windows") {
             "meshharbor-tunnel.exe"
         } else {
-            "roomler-tunnel"
+            "meshharbor-tunnel"
         };
         std::fs::write(tmp.path().join(bin_name), b"binary").unwrap();
         let found = find_tunnel_binary(tmp.path()).unwrap();
@@ -463,7 +463,7 @@ mod tests {
         let (new_name, old_name) = if cfg!(target_os = "windows") {
             ("meshharbor.exe", "meshharbor-tunnel.exe")
         } else {
-            ("roomler", "roomler-tunnel")
+            ("meshharbor", "meshharbor-tunnel")
         };
         // Flat layout.
         let tmp = TempDir::new().unwrap();
@@ -475,7 +475,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let sub = tmp
             .path()
-            .join("roomler-tunnel-0.3.0-rc.195-x86_64-pc-windows-msvc");
+            .join("meshharbor-tunnel-0.3.0-rc.195-x86_64-pc-windows-msvc");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join(new_name), b"new").unwrap();
         std::fs::write(sub.join(old_name), b"old").unwrap();
@@ -488,7 +488,7 @@ mod tests {
         let new_name = if cfg!(target_os = "windows") {
             "meshharbor.exe"
         } else {
-            "roomler"
+            "meshharbor"
         };
         let tmp = TempDir::new().unwrap();
         let sub = tmp.path().join("some-archive-dir");

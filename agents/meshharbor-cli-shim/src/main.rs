@@ -14,7 +14,7 @@
 //!
 //! So the daemon now owns that command surface (`meshharbord cli <args>` →
 //! `meshharbor_cli::cli::run_from`), and this ~150 KB launcher keeps the
-//! user-facing `roomler` command, its PATH entry, and the installer-smoke
+//! user-facing `meshharbor` command, its PATH entry, and the installer-smoke
 //! payload assertions exactly where they were. Tunnel-ONLY hosts are
 //! unaffected — they still install the real standalone binary from
 //! `release-tunnel.yml`.
@@ -31,7 +31,7 @@
 //!   parent ignores, child resets to default in pre_exec (P3e Phase 2: the
 //!   .deb ships this launcher as /usr/bin/meshharbor on daemon hosts).
 //! * The child is located next to this executable rather than via PATH, so a
-//!   different Roomler install elsewhere on PATH can never be dispatched to.
+//!   different MeshHarbor install elsewhere on PATH can never be dispatched to.
 
 use std::process::Command;
 
@@ -70,7 +70,7 @@ fn ignore_ctrl_c() {}
 
 /// Where the daemon might be, in priority order.
 ///
-/// A sibling `roomlerd` covers the Linux .deb and the Windows MSI, which
+/// A sibling `meshharbord` covers the Linux .deb and the Windows MSI, which
 /// install both binaries into one directory. macOS cannot: the daemon lives
 /// inside an .app bundle (its executable is named after the bundle, and
 /// renaming it would change the binary's TCC identity and void every existing
@@ -99,13 +99,13 @@ fn main() -> ! {
     let daemon = match candidates.iter().find(|p| p.is_file()) {
         Some(p) => p.clone(),
         None if candidates.is_empty() => {
-            eprintln!("roomler: could not resolve this executable's own path");
+            eprintln!("meshharbor: could not resolve this executable's own path");
             std::process::exit(EXIT_NO_DAEMON);
         }
         None => {
             eprintln!(
-                "roomler: the daemon binary is missing (looked in: {}) — reinstall the \
-                 Roomler package, or use the standalone tunnel CLI on hosts without a daemon.",
+                "meshharbor: the daemon binary is missing (looked in: {}) — reinstall the \
+                 MeshHarbor package, or use the standalone tunnel CLI on hosts without a daemon.",
                 candidates
                     .iter()
                     .map(|p| p.display().to_string())
@@ -118,8 +118,8 @@ fn main() -> ! {
 
     ignore_ctrl_c();
 
-    // argv[0] is dropped: the daemon re-labels it as `roomler` before handing
-    // the vector to clap, so usage/help text still reads `roomler ...`.
+    // argv[0] is dropped: the daemon re-labels it as `meshharbor` before handing
+    // the vector to clap, so usage/help text still reads `meshharbor ...`.
     let mut cmd = Command::new(&daemon);
     cmd.arg("cli").args(std::env::args_os().skip(1));
 
@@ -150,7 +150,7 @@ fn main() -> ! {
             std::process::exit(s.code().unwrap_or(1))
         }
         Err(e) => {
-            eprintln!("roomler: failed to launch {}: {e}", daemon.display());
+            eprintln!("meshharbor: failed to launch {}: {e}", daemon.display());
             std::process::exit(EXIT_NO_DAEMON);
         }
     }
@@ -165,4 +165,4 @@ const DAEMON_FILE_NAME: &str = "meshharbord";
 /// and CI asserts the launchd plists point here — FR-46 P5b moved all three
 /// together, which is the only way a bundle rename is safe.
 #[cfg(target_os = "macos")]
-const MACOS_BUNDLE_DAEMON: &str = "/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd";
+const MACOS_BUNDLE_DAEMON: &str = "/Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord";

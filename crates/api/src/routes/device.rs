@@ -11,7 +11,7 @@
 //!
 //! ⚠️ The overlay network is resolved with `find_for_tenant`, NEVER
 //! `get_or_create`: the create half inserts a network row and (under
-//! `ROOMLER__OVERLAY__BLOCKS_ENABLED`) carves a global P2b `/22` block that
+//! `MESHHARBOR__OVERLAY__BLOCKS_ENABLED`) carves a global P2b `/22` block that
 //! is quarantined forever once freed — a resource allocation no GET may
 //! perform. A tenant with no network simply lists devices with no overlay
 //! columns.

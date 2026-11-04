@@ -77,24 +77,24 @@ type InitCanvasMessage = {
    *  for 4K60. Tests may override. */
   codec?: string
   /** 2026-07-24 decode-stall A/B — optional `VideoDecoder.hardwareAcceleration`
-   *  override from the composable (localStorage `roomler-rc-decode-pref`).
+   *  override from the composable (localStorage `meshharbor-rc-decode-pref`).
    *  Unset → `'no-preference'`, today's behaviour. */
   decodePref?: 'prefer-software' | 'prefer-hardware' | 'no-preference'
-  /** P1 — 2D-context A/B mode (localStorage `roomler-rc-ctx-mode`).
+  /** P1 — 2D-context A/B mode (localStorage `meshharbor-rc-ctx-mode`).
    *  Remembered across the idempotent visible-canvas re-init. */
   ctxMode?: string
   /** P1 — restore the legacy per-decoded-frame `frame-decoded` postMessage
-   *  (localStorage `roomler-rc-per-frame-msg`). Default OFF — see the
+   *  (localStorage `meshharbor-rc-per-frame-msg`). Default OFF — see the
    *  vp9-444 worker's comment. */
   perFrameMsg?: boolean
   /** P6 — backlog-drop threshold override (localStorage
-   *  `roomler-rc-max-queue`). Sticks across the idempotent visible-canvas
+   *  `meshharbor-rc-max-queue`). Sticks across the idempotent visible-canvas
    *  re-init (which omits it), like `ctxMode`. */
   maxQueue?: number
-  /** P7 — FSR sharpening mode (localStorage `roomler-rc-sharpen`).
+  /** P7 — FSR sharpening mode (localStorage `meshharbor-rc-sharpen`).
    *  Sticks across the idempotent visible-canvas re-init, like `ctxMode`. */
   sharpen?: string
-  /** P7 — RCAS sharpness stops (localStorage `roomler-rc-fsr-sharpness`). */
+  /** P7 — RCAS sharpness stops (localStorage `meshharbor-rc-fsr-sharpness`). */
   sharpness?: number
   /** FR-16 L4 — bench mode: sample the probe marker while a probe is armed.
    *  Set only when the knob is on AND the agent advertised `bench`; sticks
@@ -187,7 +187,7 @@ let framesSkippedAwaitingKey = 0
 // WITHOUT the destructive drop+IDR-storm that used to freeze the screen. The
 // composable's `struggling` rule trips at a lower queue depth, so the cap
 // reacts before we ever reach this drop threshold.
-// P6 — init-canvas-configurable (localStorage `roomler-rc-max-queue`) for the
+// P6 — init-canvas-configurable (localStorage `meshharbor-rc-max-queue`) for the
 // flow-control field-tuning round; default unchanged.
 let maxDecodeQueue = DEFAULT_MAX_DECODE_QUEUE
 let framesDroppedBacklog = 0

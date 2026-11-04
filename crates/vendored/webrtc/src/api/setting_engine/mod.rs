@@ -76,7 +76,7 @@ pub struct SettingEngine {
     pub(crate) udp_network: UDPNetwork,
     pub(crate) disable_media_engine_copy: bool,
     pub(crate) srtp_protection_profiles: Vec<SrtpProtectionProfile>,
-    /// roomler patch (FR-101): the DTLS cipher suites to offer and accept.
+    /// meshharbor patch (FR-101): the DTLS cipher suites to offer and accept.
     /// Empty keeps webrtc-dtls' own default list, which still carries the
     /// AES-256-CBC-SHA suites.
     pub(crate) dtls_cipher_suites: Vec<dtls::cipher_suite::CipherSuiteId>,
@@ -87,7 +87,7 @@ pub struct SettingEngine {
     /// 0 = upstream default (1 MB via `INITIAL_RECV_BUF_SIZE` in
     /// webrtc-sctp). Set to a higher value (e.g. 8 MiB) on native-to-
     /// native peers to keep single-stream DC throughput link-bound at
-    /// high BDP. Roomler patch — not in upstream webrtc-rs 0.12.
+    /// high BDP. MeshHarbor patch — not in upstream webrtc-rs 0.12.
     pub(crate) sctp_max_receive_buffer_size: u32,
 }
 
@@ -106,14 +106,14 @@ impl SettingEngine {
     /// upstream `INITIAL_RECV_BUF_SIZE` fallback of 1 MiB. Pass a
     /// larger value (e.g. `8 * 1024 * 1024`) on native-to-native peers
     /// to keep single-stream DC throughput link-bound at high BDP.
-    /// Roomler patch — not in upstream webrtc-rs 0.12.
+    /// MeshHarbor patch — not in upstream webrtc-rs 0.12.
     pub fn set_sctp_max_receive_buffer_size(&mut self, bytes: u32) {
         self.sctp_max_receive_buffer_size = bytes;
     }
 
     /// get_sctp_max_receive_buffer_size returns the configured SCTP
     /// receive-buffer ceiling. 0 means "use upstream default".
-    /// Roomler patch — consumed by `RTCSctpTransport::start`.
+    /// MeshHarbor patch — consumed by `RTCSctpTransport::start`.
     pub(crate) fn get_sctp_max_receive_buffer_size(&self) -> u32 {
         self.sctp_max_receive_buffer_size
     }
@@ -134,7 +134,7 @@ impl SettingEngine {
     /// set_dtls_cipher_suites restricts the DTLS handshake to `suites`. Empty
     /// (the default) keeps webrtc-dtls' own list.
     ///
-    /// roomler patch (FR-101): upstream has no way to drop the CBC suites from
+    /// meshharbor patch (FR-101): upstream has no way to drop the CBC suites from
     /// a peer connection's handshake.
     pub fn set_dtls_cipher_suites(&mut self, suites: Vec<dtls::cipher_suite::CipherSuiteId>) {
         self.dtls_cipher_suites = suites;

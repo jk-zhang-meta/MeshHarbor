@@ -337,7 +337,7 @@ export function chromaSelectable(a: Availability, codec: PickerCodec, chroma: Pi
 
 // ── Remembered decode failures (per device × cell, per browser build) ─────
 
-export const CELL_FAILURE_PREFIX = 'roomler-rc-cell-failed.v1:'
+export const CELL_FAILURE_PREFIX = 'meshharbor-rc-cell-failed.v1:'
 
 interface StoredFailures {
   [key: string]: { ua: string; at: number }

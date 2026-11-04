@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P1j-2 — terminal sessions this device's people adopted (`roomler
+//! FR-90 P1j-2 — terminal sessions this device's people adopted (`meshharbor
 //! hive adopt`), mirrored into the store and offered to the server for a
 //! record their owner alone reads (decision 11, spec §3h).
 //!
@@ -17,7 +17,7 @@
 //! | the account's `hive_accounts` keys, every one of them, go to the server, which adopts only for ONE person | [`Supervisor::adopt_keys`] |
 //! | the daemon never opens a path a hook names; it takes the lines the hook read | [`Supervisor::adopt_lines`] |
 //! | a terminal session belongs to the account that first offered it; another account's lines are refused | [`Supervisor::adopt_lines`] |
-//! | nothing is taken for a session stopped from Roomler, or ended | [`Supervisor::adopt_stop`] |
+//! | nothing is taken for a session stopped from MeshHarbor, or ended | [`Supervisor::adopt_stop`] |
 //! | a terminal killed outright is found by its process (pid + start time) and ended | [`Supervisor::adopt_sweep`] |
 //! | an ended session is forgotten as a live one (a resume is offered afresh), and stays its owner's to read | [`AdoptedFile::retire`] |
 //!
@@ -139,7 +139,7 @@ pub(crate) struct Adopted {
     pub terminal_pid: Option<u32>,
     #[serde(default)]
     pub terminal_started: Option<String>,
-    /// Stopped from Roomler: nothing more is taken for it.
+    /// Stopped from MeshHarbor: nothing more is taken for it.
     #[serde(default)]
     pub stopped: bool,
     /// FR-90 P2f-4a — the folder the terminal ran in, as its hook said at
@@ -165,7 +165,7 @@ pub(crate) struct EndedTerminal {
     pub folder: Option<String>,
     /// Turns begun: a managed session counts on from them.
     pub turns: u32,
-    /// Its mirroring was stopped from Roomler before its terminal ended.
+    /// Its mirroring was stopped from MeshHarbor before its terminal ended.
     #[serde(default)]
     pub stopped: bool,
 }
@@ -1220,7 +1220,7 @@ impl Supervisor {
     /// |---|---|
     /// | no terminal runs it here, mirrored, stopped or resumed afresh | two harnesses on one history would both write it (spec §3d), and a history being written is copied cut short |
     /// | it ended here since this device keeps whose terminal it was | the account is this device's record, the one the kernel named at the hello: a server that named another would pour that person's terminal into this owner's session |
-    /// | its mirroring was not stopped from Roomler | the terminal went on after the stop, and what it did then is not Roomler's to take |
+    /// | its mirroring was not stopped from MeshHarbor | the terminal went on after the stop, and what it did then is not MeshHarbor's to take |
     /// | the start names the terminal's conversation | |
     /// | the starter maps to the account it ran as, and that account is still the one with its uid | the history is in that account's home; a remapped starter must not carry it into another's |
     ///
@@ -1289,8 +1289,8 @@ impl Supervisor {
             if t.stopped {
                 return Err(Answer::refused(
                     HiveRefusal::Other,
-                    "its mirroring was stopped from Roomler: what its terminal did after that is \
-                     not Roomler's to take",
+                    "its mirroring was stopped from MeshHarbor: what its terminal did after that is \
+                     not MeshHarbor's to take",
                 ));
             }
             if t.harness_session != order.harness_session {
@@ -1638,7 +1638,7 @@ mod tests {
     /// Decision 11 on the device: a terminal session is offered with the
     /// account's keys, mirrored from the lines the hook sends (the person's
     /// conversation only), reported turn by turn, named in the manifest, and
-    /// stopped from Roomler for good.
+    /// stopped from MeshHarbor for good.
     #[tokio::test]
     async fn a_terminal_session_is_offered_mirrored_and_stopped() {
         if me().is_none() {
@@ -1762,7 +1762,7 @@ mod tests {
         );
         assert!(r.sup.adopt_holds(sid));
 
-        // Stopped from Roomler: ended, and nothing more is taken for it.
+        // Stopped from MeshHarbor: ended, and nothing more is taken for it.
         r.sup.stop(sid, 1, "owner".into());
         let detail = next_report(&mut r, |m| match m {
             ClientMsg::HiveState {
@@ -2307,7 +2307,7 @@ mod tests {
 
     /// P2f-4a — a terminal session is made a managed one only once its
     /// terminal has ended, and never one whose mirroring was stopped from
-    /// Roomler: its terminal went on after the stop.
+    /// MeshHarbor: its terminal went on after the stop.
     #[tokio::test]
     async fn only_an_ended_terminal_session_whose_mirroring_went_on_is_made_managed() {
         let Some(_) = me() else { return };
@@ -2330,7 +2330,7 @@ mod tests {
         );
         assert!(!r.sup.holds_live(sid), "nothing launched");
 
-        // Stopped from Roomler: its terminal runs on, and so the refusal.
+        // Stopped from MeshHarbor: its terminal runs on, and so the refusal.
         r.sup.stop(sid, 1, "owner".into());
         let answer = r.sup.start(made_managed(&r, sid), true).await;
         assert!(
@@ -2362,7 +2362,7 @@ mod tests {
                 .detail
                 .as_deref()
                 .unwrap_or("")
-                .contains("mirroring was stopped from Roomler"),
+                .contains("mirroring was stopped from MeshHarbor"),
             "refused once its stopped terminal ended, in words: {answer:?}"
         );
         assert!(!r.sup.holds_live(sid), "nothing launched");

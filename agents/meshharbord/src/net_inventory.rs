@@ -916,7 +916,7 @@ mod linux {
 
     fn owner(table: &str, chain: &str) -> FirewallOwner {
         let t = table.to_ascii_lowercase();
-        if t.starts_with("meshharbor") || t.starts_with("roomler") {
+        if t.starts_with("meshharbor") || t.starts_with("meshharbor") {
             FirewallOwner::Meshharbor
         } else if t == "firewalld" {
             FirewallOwner::Firewalld

@@ -53,7 +53,7 @@ are master `4fc8ea7bb`.
 | P9 | Host / Client (relative) / Auto mouse modes | absolute only; `cursor:hide` already emitted; no Pointer Lock | gap: relative-mouse FR (wave 3) |
 | P10 | system keys reach the host | Keyboard Lock API in fullscreen | **parity** |
 | P11 | 200+ touch key-mapping presets, macro keys | `MobileKeyboard.vue` only; the viewer sends no touch input; `InputMsg::Touch` is parsed and ignored | gap: touch FR (wave 3) |
-| P12 | "300+ relay nodes", P2P first | regional relay PoPs with a measured `relay_home` (behind `ROOMLER__RELAY__REGIONS_ENABLED`), DERP floor, FR-19 peer relays | parity in design; node count is an ops decision |
+| P12 | "300+ relay nodes", P2P first | regional relay PoPs with a measured `relay_home` (behind `MESHHARBOR__RELAY__REGIONS_ENABLED`), DERP floor, FR-19 peer relays | parity in design; node count is an ops decision |
 | P13 | remote audio, mute host | WASAPI / Pulse, opt-in; silent on macOS; no host mute | partial: [FR-99](../fr/FR-99-privacy-mode.md) |
 | S1 | E2E, mutual authentication, "zero-knowledge" | ephemeral per-session ECDSA and mutual DTLS, but on master the fingerprints are bound to nothing the device can check: the hub rebuilds the offer around the raw SDP (`crates/modules/fleet/src/hub.rs` L1391, L1450). FR-52's open PR #1628 binds them for outsiders only | gap: [FR-100](../fr/FR-100-controller-identity.md) |
 | S2 | DTLS 1.2/1.3, AES-128, ECDHE with PFS | DTLS 1.2, ECDHE, SRTP AEAD-GCM including AES-256; CBC suites still offered | parity, harden: [FR-101](../fr/FR-101-rc-session-hygiene.md) |

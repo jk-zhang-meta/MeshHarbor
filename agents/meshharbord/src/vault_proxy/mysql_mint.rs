@@ -7,8 +7,8 @@
 //! | Step | What happens |
 //! |---|---|
 //! | the issuer | the bundle's `admin_user` and `admin_password`, signed in by `caching_sha2_password` over verified TLS (its `ca`, or the system's roots), to its `database`, at the bundle's one audience ([`Issuer::from_bundle`]) |
-//! | the sweep | first, each `roomler_` user whose `ATTRIBUTE` says its lease has ended, dropped where the issuer may: what an event that never ran left |
-//! | the mint | `CREATE USER 'roomler_<lease>'@'%' IDENTIFIED WITH caching_sha2_password AS '<form>' ATTRIBUTE '{"roomler": …}'`, each grant and `SET DEFAULT ROLE ALL`, then its end: `CREATE EVENT … ON SCHEDULE AT FROM_UNIXTIME(<end>) ON COMPLETION NOT PRESERVE DO DROP USER IF EXISTS …` in its `database` ([`mint`]) |
+//! | the sweep | first, each `meshharbor_` user whose `ATTRIBUTE` says its lease has ended, dropped where the issuer may: what an event that never ran left |
+//! | the mint | `CREATE USER 'meshharbor_<lease>'@'%' IDENTIFIED WITH caching_sha2_password AS '<form>' ATTRIBUTE '{"meshharbor": …}'`, each grant and `SET DEFAULT ROLE ALL`, then its end: `CREATE EVENT … ON SCHEDULE AT FROM_UNIXTIME(<end>) ON COMPLETION NOT PRESERVE DO DROP USER IF EXISTS …` in its `database` ([`mint`]) |
 //! | the password | 32 random bytes, base64url; sent as its `caching_sha2_password` form ([`sha_crypt::mysql_caching_sha2`]), never itself |
 //! | the revocation | `ACCOUNT LOCK`; its connections ended where the issuer may (`KILL`); `DROP USER`; `DROP EVENT` ([`revoke`]) |
 //!
@@ -16,7 +16,7 @@
 //! half-made user back. A step refused takes the user back here, and the mint
 //! is refused: no user is left without its end.
 //!
-//! ⚠️ A user is never dropped unless its name is a minted one (`roomler_` and
+//! ⚠️ A user is never dropped unless its name is a minted one (`meshharbor_` and
 //! a lease's id). That is checked before a revocation dials, and again before
 //! each drop, whatever the sweep's query returns.
 
@@ -88,11 +88,11 @@ fn account(role: &str) -> Result<String, String> {
     Ok(format!("'{name}'@'{host}'"))
 }
 
-/// The event that ends `user` (a minted one): `roomler_end_` and its lease's
+/// The event that ends `user` (a minted one): `meshharbor_end_` and its lease's
 /// id.
 fn event_of(user: &str) -> String {
     format!(
-        "roomler_end_{}",
+        "meshharbor_end_{}",
         user.strip_prefix(ROLE_PREFIX).unwrap_or(user)
     )
 }
@@ -141,7 +141,7 @@ async fn make(
         s,
         &format!(
             "CREATE USER {u} IDENTIFIED WITH caching_sha2_password AS '{form}' \
-             ATTRIBUTE '{{\"roomler\": {{\"lease\": \"{lease_id}\", \"until\": {until}}}}}'"
+             ATTRIBUTE '{{\"meshharbor\": {{\"lease\": \"{lease_id}\", \"until\": {until}}}}}'"
         ),
     )
     .await
@@ -186,8 +186,8 @@ pub(crate) async fn revoke(issuer: &Issuer, user: &str) -> Result<(), String> {
 async fn sweep(s: &mut Session, database: &str) {
     let ended = match mysql::query(
         s,
-        "SELECT USER FROM information_schema.USER_ATTRIBUTES WHERE USER LIKE 'roomler\\_%' \
-         AND CAST(JSON_EXTRACT(ATTRIBUTE, '$.roomler.until') AS UNSIGNED) < UNIX_TIMESTAMP()",
+        "SELECT USER FROM information_schema.USER_ATTRIBUTES WHERE USER LIKE 'meshharbor\\_%' \
+         AND CAST(JSON_EXTRACT(ATTRIBUTE, '$.meshharbor.until') AS UNSIGNED) < UNIX_TIMESTAMP()",
     )
     .await
     {

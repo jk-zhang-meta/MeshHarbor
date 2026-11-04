@@ -89,7 +89,7 @@ impl TunnelPeer {
         // `0.0.0.0:5353` per agent. Disabling it removes ~2/3 of the sockets
         // an agent holds (see the `Drop` impl for the leak this compounded)
         // and stops us contending for a port the OS resolver already owns on
-        // Windows — the same unreliability `roomlerd`'s
+        // Windows — the same unreliability `meshharbord`'s
         // `mdns_resolve` module exists to route around.
         setting_engine.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
 
@@ -272,14 +272,14 @@ impl TunnelPeer {
 /// because the ICE agent's sockets belong to spawned tasks rather than to
 /// this struct, dropping the `Arc` freed nothing.
 ///
-/// Measured on devbox the day this was found: `roomlerd` held **15,446 UDP
+/// Measured on devbox the day this was found: `meshharbord` held **15,446 UDP
 /// sockets** after 12 h — 10,367 of them on `0.0.0.0:5353`, the rest one per
 /// local address per leaked agent — which is the entire 16,384-port ephemeral
 /// range. Every socket allocation on the host then failed with `WSAENOBUFS`,
 /// so **the whole machine lost DNS** (`ping 1.1.1.1` fine, every name
 /// unresolvable). With flows retrying at ~1 s backoff the observed rate was
 /// ~1 socket/second, i.e. a host wedged in under five hours. The blast radius
-/// is every application on the box, not just roomler.
+/// is every application on the box, not just meshharbor.
 ///
 /// `Drop` cannot await, so this spawns the close. Outside a runtime there is
 /// nothing to spawn onto — that only happens in teardown paths where the

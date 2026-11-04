@@ -12,12 +12,12 @@
 //! Operator who wants live tail can request again every few seconds.
 //!
 //! Path resolution: uses `logging::log_dir()` as the source-of-truth,
-//! then picks the lexicographically-latest `roomlerd.log.*` file (or a
+//! then picks the lexicographically-latest `meshharbord.log.*` file (or a
 // RETIRED-NAME-ANCHOR-BEGIN
 // Rolled log files written BEFORE the rename are still on disk on every
 // upgraded host, and this is what fetches them. Accepting only the current
 // prefix would make an upgraded agent report that it has no logs.
-//! legacy `roomler-agent.log.*` on a pre-rename host — P3d Slice B).
+//! legacy `meshharbor-agent.log.*` on a pre-rename host — P3d Slice B).
 //! `tracing_appender::rolling::daily` rotates daily so the latest by
 //! name is also the latest by mtime — no I/O needed to choose.
 //!
@@ -41,13 +41,13 @@ pub const MAX_TAIL_LINES: usize = 5000;
 
 /// Resolve the current log file path. Returns `Err` when log dir is
 /// unresolvable (rare — only on platforms without a data dir) or
-/// when no `roomlerd.log*` (or legacy `roomler-agent.log*`) file exists
+/// when no `meshharbord.log*` (or legacy `meshharbor-agent.log*`) file exists
 /// yet (e.g. agent just started and `tracing_appender` hasn't created
 /// the first file).
 ///
-/// P3d Slice B: the live basename is now `roomlerd.log`; a pre-rename host
-/// may still have `roomler-agent.log*` files. Accept BOTH prefixes. The
-/// lexicographic pick naturally prefers `roomlerd.*` over `roomler-agent.*`
+/// P3d Slice B: the live basename is now `meshharbord.log`; a pre-rename host
+/// may still have `meshharbor-agent.log*` files. Accept BOTH prefixes. The
+/// lexicographic pick naturally prefers `meshharbord.*` over `meshharbor-agent.*`
 /// (`'d'` > `'-'`), which matches "the new-basename file is the current one".
 pub fn current_log_path() -> Result<PathBuf> {
     let dir = crate::logging::log_dir()
@@ -57,11 +57,11 @@ pub fn current_log_path() -> Result<PathBuf> {
     let mut best: Option<(String, PathBuf)> = None;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with("roomlerd.log") {
+        if !name.starts_with("meshharbord.log") {
             continue;
         }
         // Prefer the lexicographically-latest filename. tracing's
-        // daily rotation creates `roomlerd.log.YYYY-MM-DD` so
+        // daily rotation creates `meshharbord.log.YYYY-MM-DD` so
         // the latest day sorts last. The current-day's file (no
         // suffix yet on some appender versions) is fine too — we
         // pick whichever sorts highest.
@@ -72,7 +72,7 @@ pub fn current_log_path() -> Result<PathBuf> {
     }
     best.map(|(_, p)| p).ok_or_else(|| {
         anyhow!(
-            "no roomlerd.log* or roomler-agent.log* file in {}",
+            "no meshharbord.log* or meshharbor-agent.log* file in {}",
             dir.display()
         )
     })
@@ -86,7 +86,7 @@ pub fn current_log_path() -> Result<PathBuf> {
 /// {
 ///   "t": "rc:logs-fetch.reply",
 ///   "ok": true,
-///   "path": "C:\\Users\\...\\roomler-agent.log.2026-05-12",
+///   "path": "C:\\Users\\...\\meshharbor-agent.log.2026-05-12",
 ///   "lines": ["[2026-05-12T11:00:01Z] INFO ...", "..."],
 ///   "truncated": false
 /// }

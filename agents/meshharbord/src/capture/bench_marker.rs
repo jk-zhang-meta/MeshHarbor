@@ -12,7 +12,7 @@
 //! is the reference.
 //!
 //! Always compiled: the synthetic source paints it (re-exported as
-//! `synthetic_backend::marker`), and so does `roomlerd probe-target`, the
+//! `synthetic_backend::marker`), and so does `meshharbord probe-target`, the
 //! L4 window a release build runs.
 
 pub const BLOCK: u32 = 16;
@@ -57,7 +57,7 @@ pub fn word(seq: u16) -> u16 {
 
 /// Which corner a marker sits in. The frame's own sequence number is
 /// bottom-left; the last bench probe the source saw is bottom-right
-/// (FR-16 L4, `synthetic_backend::probe`; `roomlerd probe-target` paints
+/// (FR-16 L4, `synthetic_backend::probe`; `meshharbord probe-target` paints
 /// the same corner from real OS input).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Corner {

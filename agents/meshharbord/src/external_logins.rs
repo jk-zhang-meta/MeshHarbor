@@ -83,7 +83,7 @@ const MAX_ID_LEN: usize = 64;
 
 /// The label that scopes [`AppKey`]. Part of the wire: the browser derives the
 /// same key from the same bytes.
-const APP_KEY_LABEL: &[u8] = b"roomler-extauth-v1 app-key";
+const APP_KEY_LABEL: &[u8] = b"meshharbor-extauth-v1 app-key";
 
 /// Why a login step was refused. Each maps to a different line in the audit
 /// log, so none of them may be folded into another.
@@ -220,7 +220,7 @@ pub fn sdp_fingerprint(sdp: &str) -> Result<String, BindingError> {
 }
 
 /// The label that scopes the transport MAC. Part of the wire.
-const TRANSPORT_LABEL: &[u8] = b"roomler-extauth-v1 transport";
+const TRANSPORT_LABEL: &[u8] = b"meshharbor-extauth-v1 transport";
 
 /// `HMAC-SHA256(app key, label ‖ u16be(len) ‖ role ‖ u16be(len) ‖ fingerprint)`.
 ///

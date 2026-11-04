@@ -6,7 +6,7 @@ diff -ruN --strip-trailing-cr upstream/src/common/dxgi.rs vendored/src/common/dx
          self.0.height() as usize
      }
 +
-+    /// ROOMLER PATCH: where this display sits on the virtual desktop, so a
++    /// MESHHARBOR PATCH: where this display sits on the virtual desktop, so a
 +    /// point in screen coordinates (the mouse pointer) can be placed in its
 +    /// frame. See `dxgi::Display::origin`.
 +    pub fn origin(&self) -> (i32, i32) {
@@ -21,7 +21,7 @@ diff -ruN --strip-trailing-cr upstream/src/common/quartz.rs vendored/src/common/
  }
  
  impl Capturer {
-+    /// ROOMLER PATCH: capture at an EXPLICIT size, letting CoreGraphics scale.
++    /// MESHHARBOR PATCH: capture at an EXPLICIT size, letting CoreGraphics scale.
 +    ///
 +    /// `CGDisplayStreamCreateWithDispatchQueue` takes an arbitrary output
 +    /// size and does the reduction itself — on the GPU, for free. Capturing
@@ -52,7 +52,7 @@ diff -ruN --strip-trailing-cr upstream/src/common/quartz.rs vendored/src/common/
              display.0,
 -            display.width(),
 -            display.height(),
-+            // ROOMLER PATCH: size the stream in PIXELS, not POINTS.
++            // MESHHARBOR PATCH: size the stream in PIXELS, not POINTS.
 +            //
 +            // Upstream passes `display.width()/height()`, which are
 +            // `CGDisplayPixelsWide/High` — misleadingly named, they return
@@ -70,7 +70,7 @@ diff -ruN --strip-trailing-cr upstream/src/common/quartz.rs vendored/src/common/
 +            out_h,
              quartz::PixelFormat::Argb8888,
 -            Default::default(),
-+            // ROOMLER PATCH: composite the cursor INTO the frame.
++            // MESHHARBOR PATCH: composite the cursor INTO the frame.
 +            //
 +            // Upstream passes `Default::default()`, whose `cursor` is FALSE.
 +            // On macOS that is not a cosmetic default — it is the only way a
@@ -101,7 +101,7 @@ diff -ruN --strip-trailing-cr upstream/src/common/quartz.rs vendored/src/common/
  );
  
 +impl<'a> Frame<'a> {
-+    /// ROOMLER PATCH: the surface's true row pitch, in bytes.
++    /// MESHHARBOR PATCH: the surface's true row pitch, in bytes.
 +    ///
 +    /// `Deref`'s slice is `IOSurfaceGetAllocSize` bytes long (page-rounded),
 +    /// so `len() / height` is NOT the stride. Callers that walk rows must use
@@ -119,7 +119,7 @@ diff -ruN --strip-trailing-cr upstream/src/common/quartz.rs vendored/src/common/
          self.0.height()
      }
 +
-+    /// ROOMLER PATCH: the display's TRUE pixel size (see `quartz::Display::
++    /// MESHHARBOR PATCH: the display's TRUE pixel size (see `quartz::Display::
 +    /// pixel_size` — `CGDisplayModeGetPixelWidth/Height`, with the point-size
 +    /// fallback). `width()/height()` stay POINTS on purpose (pointer mapping);
 +    /// these exist for callers that must know the panel's real resolution
@@ -143,7 +143,7 @@ diff -ruN --strip-trailing-cr upstream/src/common/x11.rs vendored/src/common/x11
          self.0.rect().h as usize
      }
 +
-+    /// ROOMLER PATCH: where this monitor sits on the X screen, in root-window
++    /// MESHHARBOR PATCH: where this monitor sits on the X screen, in root-window
 +    /// pixels. The capturer reads exactly this rectangle of the root, so a
 +    /// point in root coordinates (the mouse pointer) is in the frame at
 +    /// `point - origin`. Upstream keeps the rectangle to the capturer.
@@ -159,7 +159,7 @@ diff -ruN --strip-trailing-cr upstream/src/dxgi/mod.rs vendored/src/dxgi/mod.rs
          self.desc.Rotation
      }
  
-+    /// ROOMLER PATCH: the output's top-left on the virtual desktop.
++    /// MESHHARBOR PATCH: the output's top-left on the virtual desktop.
 +    ///
 +    /// `Displays::new().next()` is the FIRST output DXGI enumerates, not
 +    /// necessarily the primary monitor, so it need not sit at (0, 0). Screen
@@ -188,7 +188,7 @@ diff -ruN --strip-trailing-cr upstream/src/quartz/capturer.rs vendored/src/quart
  pub struct Capturer {
      stream: CGDisplayStreamRef,
      queue: DispatchQueue,
-+    // ROOMLER PATCH: see `Drop`.
++    // MESHHARBOR PATCH: see `Drop`.
 +    stop: Arc<StopLatch>,
  
      width: usize,
@@ -205,7 +205,7 @@ diff -ruN --strip-trailing-cr upstream/src/quartz/capturer.rs vendored/src/quart
                  if status == FrameComplete {
                      handler(unsafe { Frame::new(surface) });
 +                } else if status == Stopped {
-+                    // ROOMLER PATCH: the stream's last word — see `Drop`.
++                    // MESHHARBOR PATCH: the stream's last word — see `Drop`.
 +                    on_stop.stopped();
                  }
              }).copy();
@@ -223,7 +223,7 @@ diff -ruN --strip-trailing-cr upstream/src/quartz/capturer.rs vendored/src/quart
  }
  
  impl Drop for Capturer {
-+    /// ROOMLER PATCH: release the stream only once CoreGraphics is done with it.
++    /// MESHHARBOR PATCH: release the stream only once CoreGraphics is done with it.
 +    ///
 +    /// Upstream stopped the stream and released it on the next line, with a
 +    /// `TODO: Maybe it should wait until Stopped before releasing?` — and the
@@ -259,7 +259,7 @@ diff -ruN --strip-trailing-cr upstream/src/quartz/capturer.rs vendored/src/quart
 +    }
 +}
 +
-+/// ROOMLER PATCH: what `Drop` and the `Stopped` delivery agree on. Whichever
++/// MESHHARBOR PATCH: what `Drop` and the `Stopped` delivery agree on. Whichever
 +/// of the two comes second starts the release, so neither order can release
 +/// early and neither can lose the stream.
 +#[derive(Default)]
@@ -306,7 +306,7 @@ diff -ruN --strip-trailing-cr upstream/src/quartz/capturer.rs vendored/src/quart
 +    }
 +}
 +
-+/// ROOMLER PATCH: the two references `Capturer` owns, once it no longer can.
++/// MESHHARBOR PATCH: the two references `Capturer` owns, once it no longer can.
 +struct Owned {
 +    stream: CGDisplayStreamRef,
 +    queue: DispatchQueue
@@ -349,7 +349,7 @@ diff -ruN --strip-trailing-cr upstream/src/quartz/display.rs vendored/src/quartz
          unsafe { CGDisplayPixelsHigh(self.0) }
      }
  
-+    /// ROOMLER PATCH: the display's true width in PIXELS.
++    /// MESHHARBOR PATCH: the display's true width in PIXELS.
 +    ///
 +    /// [`Display::width`] is named for pixels but returns POINTS. Both are
 +    /// kept, because the distinction is load-bearing: a capture stream wants
@@ -361,7 +361,7 @@ diff -ruN --strip-trailing-cr upstream/src/quartz/display.rs vendored/src/quartz
 +        self.pixel_size().0
 +    }
 +
-+    /// ROOMLER PATCH: the display's true height in PIXELS. See
++    /// MESHHARBOR PATCH: the display's true height in PIXELS. See
 +    /// [`Display::pixel_width`].
 +    pub fn pixel_height(self) -> usize {
 +        self.pixel_size().1
@@ -401,7 +401,7 @@ diff -ruN --strip-trailing-cr upstream/src/quartz/ffi.rs vendored/src/quartz/ffi
  pub type CFNumberRef = *mut c_void;
  pub type CFStringRef = *mut c_void;
  pub type CGDisplayStreamUpdateRef = *mut c_void;
-+// ROOMLER PATCH: see `CGDisplayCopyDisplayMode` below.
++// MESHHARBOR PATCH: see `CGDisplayCopyDisplayMode` below.
 +pub type CGDisplayModeRef = *mut c_void;
  pub type IOSurfaceRef = *mut c_void;
  pub type DispatchQueue = *mut c_void;
@@ -410,7 +410,7 @@ diff -ruN --strip-trailing-cr upstream/src/quartz/ffi.rs vendored/src/quartz/ffi
      pub fn CGDisplayPixelsWide(display: u32) -> usize;
      pub fn CGDisplayPixelsHigh(display: u32) -> usize;
  
-+    // ROOMLER PATCH: the display's size in PIXELS rather than POINTS.
++    // MESHHARBOR PATCH: the display's size in PIXELS rather than POINTS.
 +    //
 +    // `CGDisplayPixelsWide/High` are named for pixels but return POINTS —
 +    // on a Retina panel they are half the real count (a 3024x1964 MacBook
@@ -434,7 +434,7 @@ diff -ruN --strip-trailing-cr upstream/src/quartz/ffi.rs vendored/src/quartz/ffi
      // IOSurface
  
      pub fn IOSurfaceGetAllocSize(buffer: IOSurfaceRef) -> usize;
-+    // ROOMLER PATCH: the surface's true row pitch. Upstream binds only
++    // MESHHARBOR PATCH: the surface's true row pitch. Upstream binds only
 +    // GetAllocSize, which is the page-rounded TOTAL allocation — a consumer
 +    // that divides it by the height to recover a stride gets a number that is
 +    // too large and usually not even a multiple of 4. There is no other way
@@ -447,7 +447,7 @@ diff -ruN --strip-trailing-cr upstream/src/quartz/ffi.rs vendored/src/quartz/ffi
          object: DispatchQueue
      );
  
-+    // ROOMLER PATCH: a barrier on the stream's serial queue — see
++    // MESHHARBOR PATCH: a barrier on the stream's serial queue — see
 +    // `capturer::Owned::release_off_queue`. It returns once every item queued
 +    // before it, CoreGraphics' own frame deliveries included, has finished.
 +    pub fn dispatch_sync_f(
@@ -468,7 +468,7 @@ diff -ruN --strip-trailing-cr upstream/src/quartz/frame.rs vendored/src/quartz/f
      surface: IOSurfaceRef,
 -    inner: &'static [u8]
 +    inner: &'static [u8],
-+    // ROOMLER PATCH: see `bytes_per_row` below.
++    // MESHHARBOR PATCH: see `bytes_per_row` below.
 +    bytes_per_row: usize
  }
  
@@ -483,7 +483,7 @@ diff -ruN --strip-trailing-cr upstream/src/quartz/frame.rs vendored/src/quartz/f
 +        Frame { surface, inner, bytes_per_row }
 +    }
 +
-+    /// ROOMLER PATCH: bytes between the starts of two consecutive rows.
++    /// MESHHARBOR PATCH: bytes between the starts of two consecutive rows.
 +    ///
 +    /// This is NOT derivable from the slice: `len()` is
 +    /// `IOSurfaceGetAllocSize`, the page-rounded total allocation, so

@@ -264,7 +264,7 @@ impl Inner {
         let (ready_tx, ready_rx) = std_mpsc::channel::<Result<()>>();
 
         thread::Builder::new()
-            .name("roomlerd-indicator".into())
+            .name("meshharbord-indicator".into())
             .spawn(move || {
                 match run_pump(state_for_thread, hwnd_for_thread, rx, kill_tx, consent_tx) {
                     Ok(()) => {
@@ -479,7 +479,7 @@ fn run_pump(
         let hinstance = GetModuleHandleW(None).context("GetModuleHandleW")?;
 
         // Border class (colorkey, click-through).
-        let border_class = w!("RoomlerIndicatorWClass");
+        let border_class = w!("MeshHarborIndicatorWClass");
         let magenta_brush = CreateSolidBrush(COLORREF(COLORKEY_RGB));
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -500,7 +500,7 @@ fn run_pump(
         }
 
         // Badge class (opaque, interactive).
-        let badge_class = w!("RoomlerIndicatorBadgeWClass");
+        let badge_class = w!("MeshHarborIndicatorBadgeWClass");
         let badge_wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: CS_HREDRAW | CS_VREDRAW,
@@ -522,7 +522,7 @@ fn run_pump(
         // FR-27 — consent-panel class. Opaque and INTERACTIVE (no
         // `WS_EX_TRANSPARENT`): unlike the border, this one exists to be
         // clicked.
-        let consent_class = w!("RoomlerConsentWClass");
+        let consent_class = w!("MeshHarborConsentWClass");
         let consent_wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: CS_HREDRAW | CS_VREDRAW,
@@ -572,7 +572,7 @@ fn run_pump(
         let border_hwnd = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
             border_class,
-            w!("Roomler viewer indicator"),
+            w!("MeshHarbor viewer indicator"),
             WS_POPUP,
             0,
             0,
@@ -591,7 +591,7 @@ fn run_pump(
         let badge_hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
             badge_class,
-            w!("Roomler viewer badge"),
+            w!("MeshHarbor viewer badge"),
             WS_POPUP,
             badge_x,
             badge_y,
@@ -611,7 +611,7 @@ fn run_pump(
         let consent_hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
             consent_class,
-            w!("Roomler consent"),
+            w!("MeshHarbor consent"),
             WS_POPUP,
             (screen_w - CONSENT_W) / 2,
             48,
@@ -1013,7 +1013,7 @@ unsafe fn paint_consent(hwnd: HWND) {
 // ---------------------------------------------------------------------------
 // FR-99 — the privacy curtain.
 
-const CURTAIN_CLASS: windows::core::PCWSTR = w!("RoomlerPrivacyCurtainWClass");
+const CURTAIN_CLASS: windows::core::PCWSTR = w!("MeshHarborPrivacyCurtainWClass");
 
 /// The whole virtual desktop: every monitor, in physical pixels.
 unsafe fn virtual_screen() -> RECT {
@@ -1040,7 +1040,7 @@ unsafe fn create_curtain(p: *mut PumpState) -> Result<HWND> {
         let hwnd = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
             CURTAIN_CLASS,
-            w!("Roomler privacy curtain"),
+            w!("MeshHarbor privacy curtain"),
             WS_POPUP,
             r.left,
             r.top,

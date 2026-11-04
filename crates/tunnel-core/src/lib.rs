@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! Roomler AI tunnel core.
+//! MeshHarbor tunnel core.
 //!
-//! Shared building blocks for the `roomler` CLI (controller side)
-//! and the `roomlerd` tunnel service (target side):
+//! Shared building blocks for the `meshharbor` CLI (controller side)
+//! and the `meshharbord` tunnel service (target side):
 //!
 //! * [`transport`] — pluggable data-plane (`webrtc-dc-v1` today;
 //!   `wireguard-v1` in v0.5). Capability-negotiated at peer setup.
@@ -29,7 +29,7 @@
 //! locks this; do not relax it.
 
 pub mod auth;
-/// Node env-var reads: `ROOMLERD_*`, then the older `ROOMLER_NODE_*`.
+/// Node env-var reads: `MESHHARBORD_*`, then the older `MESHHARBOR_NODE_*`.
 /// #2187 — the daemon's own control-plane names, resolved so that no caller
 /// ever waits on a resolver that has stopped answering for a name it has
 /// resolved before.

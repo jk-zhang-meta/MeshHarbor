@@ -364,7 +364,7 @@ deserialisation errors / ERROR / panics across 3 258 log lines.
 
 **AI document recognition removed entirely** (#974, `8d8d07a04`, deployed
 `v20260830-eaba9f4b0554`) after verifying it unused in prod — `recognized_content` on 0 of 22
-files, 0 recognition tasks ever. −643/+52 across 25 files, including the `ROOMLER__CLAUDE__*`
+files, 0 recognition tasks ever. −643/+52 across 25 files, including the `MESHHARBOR__CLAUDE__*`
 config surface. `POST …/recognize` now returns **404**.
 
 **Free video 0 → 4** (#959, deployed `v20260830-078ebef47b2a`), advertised publicly.

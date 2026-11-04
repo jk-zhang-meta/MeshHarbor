@@ -40,8 +40,8 @@ c=d[0]; root=sys.argv[1]; dest=sys.argv[2]
 assert type(c["State"]["Running"]) is bool
 m=[m for m in c["Mounts"] if m["Destination"]==dest]
 assert len(m)==1 and m[0]["Type"]=="bind" and m[0]["Source"]==root and m[0]["RW"] is False
-env=[e for e in c["Config"]["Env"] if e.startswith("ROOMLER__STATS__GEOIP_MMDB=")]
-assert env==["ROOMLER__STATS__GEOIP_MMDB="+dest+"/current/dbip-country-lite.mmdb"]
+env=[e for e in c["Config"]["Env"] if e.startswith("MESHHARBOR__STATS__GEOIP_MMDB=")]
+assert env==["MESHHARBOR__STATS__GEOIP_MMDB="+dest+"/current/dbip-country-lite.mmdb"]
 values=[c["Id"],c["Image"],c["State"]["StartedAt"],str(int(c["State"]["Running"]))]
 assert all(isinstance(v,str) and v and "|" not in v and "\n" not in v for v in values)
 print("|".join(values))

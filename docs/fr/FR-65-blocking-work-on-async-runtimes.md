@@ -101,7 +101,7 @@ A per-iteration wall-clock watch on the pump loop, threshold-gated.
   per-phase breakdown, session id, `constrained`, encoder name and target.
 - ⚠️ **Rate-limit the WARN** (≤1 per 2 s per session): a stall storm that floods
   its own log becomes a second performance problem.
-- Kill switch `pump_stall_watch` (env `ROOMLERD_PUMP_STALL_WATCH`, default **on** —
+- Kill switch `pump_stall_watch` (env `MESHHARBORD_PUMP_STALL_WATCH`, default **on** —
   it is near-free, and its absence is what cost us the months above).
 
 **Generalisation is deliberately deferred**: P0 ships pump-local. If P3 needs the

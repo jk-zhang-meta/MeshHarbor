@@ -176,7 +176,7 @@ struct RttEstimator {
     timestamp: Option<(Instant, TcpSeqNumber)>,
     max_seq_sent: Option<TcpSeqNumber>,
     rto_count: u8,
-    /// ROOMLER PATCH: the floor `sample` clamps the RTO to (see
+    /// MESHHARBOR PATCH: the floor `sample` clamps the RTO to (see
     /// `Socket::set_min_rto`), RFC 6298's 1 s unless set.
     min_rto: u32,
 }
@@ -277,7 +277,7 @@ impl RttEstimator {
         }
     }
 
-    /// ROOMLER PATCH: a fast retransmit, or entering SACK recovery, is not a
+    /// MESHHARBOR PATCH: a fast retransmit, or entering SACK recovery, is not a
     /// timeout, and RFC 6298 (5.5) backs the timer off only when it expires.
     /// Backing off on every loss event let the RTO climb 1 → 2 → 4 → 8 s
     /// under steady loss, and the third event cleared SRTT, which stopped the
@@ -551,13 +551,13 @@ pub struct Socket<'a> {
     /// The congestion control algorithm.
     congestion_controller: congestion::AnyController,
 
-    /// ROOMLER PATCH: send pacing (see `pacing_rate`). Off unless set.
+    /// MESHHARBOR PATCH: send pacing (see `pacing_rate`). Off unless set.
     pacing: bool,
     /// Bytes the pacer may let out at `pace_at`, refilled at the pacing rate.
     pace_credit: usize,
     pace_at: Option<Instant>,
 
-    /// ROOMLER PATCH: SACK loss recovery (see `set_sack_recovery_enabled`).
+    /// MESHHARBOR PATCH: SACK loss recovery (see `set_sack_recovery_enabled`).
     sack_recovery: bool,
     /// What the peer has SACKed above `local_seq_no`: sorted, disjoint,
     /// half-open ranges, the lowest first.
@@ -590,7 +590,7 @@ pub struct Socket<'a> {
 
 const DEFAULT_MSS: usize = 536;
 
-/// ROOMLER PATCH: SACKed ranges the sender remembers. A full scoreboard keeps
+/// MESHHARBOR PATCH: SACKed ranges the sender remembers. A full scoreboard keeps
 /// the lowest ranges, which are the ones that locate the next holes.
 const SACK_SCOREBOARD: usize = 32;
 
@@ -858,14 +858,14 @@ impl<'a> Socket<'a> {
         self.nagle = enabled
     }
 
-    /// ROOMLER PATCH: pace data segments at gain × cwnd / srtt instead of
+    /// MESHHARBOR PATCH: pace data segments at gain × cwnd / srtt instead of
     /// sending each window in one burst. Off by default. Without a congestion
     /// controller there is no rate to pace at, so nothing is paced.
     pub fn set_pacing_enabled(&mut self, enabled: bool) {
         self.pacing = enabled
     }
 
-    /// ROOMLER PATCH: the pacing rate in bytes per second, `None` when nothing
+    /// MESHHARBOR PATCH: the pacing rate in bytes per second, `None` when nothing
     /// is paced (pacing off, no RTT sample yet, or no congestion window). The
     /// gain follows Linux (`tcp_update_pacing_rate`): 200% in slow start so the
     /// window can still double per round trip, then 125% (Linux: 120%).
@@ -883,7 +883,7 @@ impl<'a> Socket<'a> {
         Some((cwnd as u64 * gain_pct * 10_000 / srtt_us).max(1))
     }
 
-    /// ROOMLER PATCH: the pacer's credit at `now`. It refills at `rate` up to
+    /// MESHHARBOR PATCH: the pacer's credit at `now`. It refills at `rate` up to
     /// two segments or 2 ms of the rate, whichever is more: the netstack's poll
     /// loop wakes on a millisecond timer, so a smaller cap would idle the path.
     fn pace_credit_at(&self, now: Instant, rate: u64) -> usize {
@@ -898,7 +898,7 @@ impl<'a> Socket<'a> {
         self.pace_credit.saturating_add(refill).min(cap)
     }
 
-    /// ROOMLER PATCH: when the pacer lets a `seg`-byte segment out, if not now.
+    /// MESHHARBOR PATCH: when the pacer lets a `seg`-byte segment out, if not now.
     fn pace_wait(&self, now: Instant, seg: usize) -> Option<Instant> {
         let rate = self.pacing_rate()?;
         let credit = self.pace_credit_at(now, rate);
@@ -908,7 +908,7 @@ impl<'a> Socket<'a> {
         })
     }
 
-    /// ROOMLER PATCH: recover losses from the peer's SACK blocks (RFC 6675,
+    /// MESHHARBOR PATCH: recover losses from the peer's SACK blocks (RFC 6675,
     /// simplified). A loss resends only the holes below the highest SACKed
     /// byte, and SACKed bytes stop counting against the congestion window.
     /// A timeout still resends go-back-N. The receiver side reports up to
@@ -919,7 +919,7 @@ impl<'a> Socket<'a> {
         self.sack_clear();
     }
 
-    /// ROOMLER PATCH: the floor under the computed retransmission timeout.
+    /// MESHHARBOR PATCH: the floor under the computed retransmission timeout.
     /// Upstream keeps RFC 6298's 1 s (2.4, a SHOULD); Linux (`TCP_RTO_MIN`)
     /// and gVisor use 200 ms. With 1 s every timeout on a lossy 50 ms path
     /// idles the connection for 20 round trips. The RTO before the first RTT
@@ -928,7 +928,7 @@ impl<'a> Socket<'a> {
         self.rtte.min_rto = (min.total_millis() as u32).clamp(1, RTTE_MAX_RTO);
     }
 
-    /// ROOMLER PATCH: whether SACK recovery applies to this connection.
+    /// MESHHARBOR PATCH: whether SACK recovery applies to this connection.
     fn sack_on(&self) -> bool {
         self.sack_recovery && self.remote_has_sack
     }
@@ -1073,7 +1073,7 @@ impl<'a> Socket<'a> {
         Some((seq, len))
     }
 
-    /// ROOMLER PATCH: SACK recovery's part of processing an ACK, after
+    /// MESHHARBOR PATCH: SACK recovery's part of processing an ACK, after
     /// `local_seq_no` has moved to it.
     fn sack_on_ack(&mut self, now: Instant, repr: &TcpRepr, advanced: bool) {
         if let Some(point) = self.recovery_point
@@ -1232,7 +1232,7 @@ impl<'a> Socket<'a> {
 
         self.state = State::Closed;
         self.timer = Timer::new();
-        // ROOMLER PATCH: the RTO floor is configuration, not connection state.
+        // MESHHARBOR PATCH: the RTO floor is configuration, not connection state.
         self.rtte = RttEstimator {
             min_rto: self.rtte.min_rto,
             ..RttEstimator::default()
@@ -1850,7 +1850,7 @@ impl<'a> Socket<'a> {
                     .map(|(left, right)| (left.0 as u32, right.0 as u32));
             }
 
-            // ROOMLER PATCH: with SACK recovery on, fill the other two blocks
+            // MESHHARBOR PATCH: with SACK recovery on, fill the other two blocks
             // with the lowest other ranges (RFC 2018: report as many distinct
             // blocks as fit), so a sender learns several holes per ACK.
             if self.sack_recovery {
@@ -2434,7 +2434,7 @@ impl<'a> Socket<'a> {
                         }
                     );
 
-                    // ROOMLER PATCH: SACK recovery enters on its own below.
+                    // MESHHARBOR PATCH: SACK recovery enters on its own below.
                     if self.local_rx_dup_acks == 3 && !self.sack_on() {
                         self.timer.set_for_fast_retransmit();
                         net_debug!("started fast retransmit");
@@ -2460,7 +2460,7 @@ impl<'a> Socket<'a> {
             if self.remote_last_seq < self.local_seq_no {
                 self.remote_last_seq = self.local_seq_no
             }
-            // ROOMLER PATCH: SACK recovery (see `set_sack_recovery_enabled`).
+            // MESHHARBOR PATCH: SACK recovery (see `set_sack_recovery_enabled`).
             if self.sack_on() {
                 self.sack_on_ack(cx.now(), repr, ack_len > 0);
             }
@@ -2619,12 +2619,12 @@ impl<'a> Socket<'a> {
             return true;
         }
 
-        // ROOMLER PATCH: in SACK recovery a hole the window admits goes first.
+        // MESHHARBOR PATCH: in SACK recovery a hole the window admits goes first.
         if self.recovery_hole(cx.now(), effective_mss).is_some() {
             return true;
         }
 
-        // max sequence number we can send. ROOMLER PATCH: the congestion
+        // max sequence number we can send. MESHHARBOR PATCH: the congestion
         // window bounds the bytes IN FLIGHT, like the remote window, rather
         // than clipping only the space the remote window leaves (upstream
         // `max_send.min(window())` let a sender fill the whole remote window
@@ -2665,7 +2665,7 @@ impl<'a> Socket<'a> {
             can_send = false;
         }
 
-        // ROOMLER PATCH: sender-side silly-window avoidance against the
+        // MESHHARBOR PATCH: sender-side silly-window avoidance against the
         // congestion window (RFC 9293 §3.8.6.2.1). With data in flight a
         // window with less than a segment of room waits for the next ACK
         // rather than sending the sliver, unless the sliver is all there is.
@@ -2681,7 +2681,7 @@ impl<'a> Socket<'a> {
             }
         }
 
-        // ROOMLER PATCH: and the pacer must have credit for the next segment.
+        // MESHHARBOR PATCH: and the pacer must have credit for the next segment.
         if can_send && self.pace_wait(cx.now(), max_send.min(effective_mss)).is_some() {
             can_send = false;
         }
@@ -2797,7 +2797,7 @@ impl<'a> Socket<'a> {
         } else if !self.seq_to_transmit(cx) && self.timer.should_retransmit(cx.now()) {
             // If a retransmit timer expired, we should resend data starting at the last ACK.
             net_debug!("retransmitting");
-            // ROOMLER PATCH: only an expired timer backs the RTO off, not
+            // MESHHARBOR PATCH: only an expired timer backs the RTO off, not
             // three duplicate ACKs (see `RttEstimator::on_fast_retransmit`).
             let timed_out = matches!(self.timer, Timer::Retransmit { .. });
 
@@ -2805,7 +2805,7 @@ impl<'a> Socket<'a> {
             // had sent them. This will cause all data in the queue
             // to be sent again.
             self.remote_last_seq = self.local_seq_no;
-            // ROOMLER PATCH: a timeout ends SACK recovery and forgets the
+            // MESHHARBOR PATCH: a timeout ends SACK recovery and forgets the
             // scoreboard; the receiver may have reneged (RFC 2018 §8).
             self.sack_clear();
 
@@ -2892,7 +2892,7 @@ impl<'a> Socket<'a> {
 
         let mut is_zero_window_probe = false;
 
-        // ROOMLER PATCH: SACK recovery resends a hole before any new data.
+        // MESHHARBOR PATCH: SACK recovery resends a hole before any new data.
         let hole = self.recovery_hole(
             cx.now(),
             self.remote_mss
@@ -2927,7 +2927,7 @@ impl<'a> Socket<'a> {
                 }
             }
 
-            // ROOMLER PATCH: a hole lies below data already sent, so it never
+            // MESHHARBOR PATCH: a hole lies below data already sent, so it never
             // carries PSH or FIN.
             State::Established
             | State::FinWait1
@@ -2974,7 +2974,7 @@ impl<'a> Socket<'a> {
                     is_zero_window_probe = true;
                 }
 
-                // ROOMLER PATCH: and no segment may take the bytes in flight
+                // MESHHARBOR PATCH: and no segment may take the bytes in flight
                 // past the congestion window (see `seq_to_transmit`). A
                 // zero-window probe is exempt: it is one byte, and the remote
                 // window, not cwnd, is what it tests.
@@ -2982,7 +2982,7 @@ impl<'a> Socket<'a> {
                     let in_flight = self.remote_last_seq - self.local_seq_no;
                     let cwnd = self.congestion_controller.inner().window();
                     win_limit = win_limit.min(cwnd.saturating_sub(self.pipe()));
-                    // ROOMLER PATCH: and the pacer's credit. Short of the next
+                    // MESHHARBOR PATCH: and the pacer's credit. Short of the next
                     // segment it lets no data out, so an ACK sent meanwhile
                     // carries no tinygram. A go-back-N resend is paced too.
                     let unsent = self.tx_buffer.len().saturating_sub(in_flight);
@@ -2995,7 +2995,7 @@ impl<'a> Socket<'a> {
                     {
                         win_limit = 0;
                     }
-                    // ROOMLER PATCH: and no sliver (see `seq_to_transmit`).
+                    // MESHHARBOR PATCH: and no sliver (see `seq_to_transmit`).
                     if in_flight > 0 && win_limit < mss && unsent > win_limit {
                         win_limit = 0;
                     }
@@ -3112,7 +3112,7 @@ impl<'a> Socket<'a> {
         }
 
         // We've sent a packet successfully, so we can update the internal state now.
-        // ROOMLER PATCH: a resent hole moves HighRxt, not the last byte sent.
+        // MESHHARBOR PATCH: a resent hole moves HighRxt, not the last byte sent.
         if is_hole {
             self.rexmit_next = repr.seq_number + repr.segment_len();
             self.rexmit_mark = Some(self.remote_last_seq);
@@ -3122,7 +3122,7 @@ impl<'a> Socket<'a> {
         self.remote_last_ack = repr.ack_number;
         self.remote_last_win = repr.window_len;
 
-        // ROOMLER PATCH: the segment spent the pacer's credit.
+        // MESHHARBOR PATCH: the segment spent the pacer's credit.
         if !repr.payload.is_empty()
             && let Some(rate) = self.pacing_rate()
         {
@@ -3197,7 +3197,7 @@ impl<'a> Socket<'a> {
                 (_, _) => PollAt::Ingress,
             };
 
-            // ROOMLER PATCH: unsent data the pacer holds goes when it has credit.
+            // MESHHARBOR PATCH: unsent data the pacer holds goes when it has credit.
             let pace_poll_at = if self.pacing_rate().is_some() {
                 let in_flight = self.remote_last_seq - self.local_seq_no;
                 let unsent = self.tx_buffer.len().saturating_sub(in_flight);
@@ -6784,7 +6784,7 @@ mod test {
         }));
     }
 
-    /// ROOMLER PATCH: with data in flight, a window with less than a segment
+    /// MESHHARBOR PATCH: with data in flight, a window with less than a segment
     /// of room sends nothing until the next ACK, unless the sliver is all
     /// that is left to send. Nagle is off, so it is not what holds it.
     #[test]
@@ -6931,7 +6931,7 @@ mod test {
         });
     }
 
-    /// ROOMLER PATCH: with SACK recovery, the same loss resends only the two
+    /// MESHHARBOR PATCH: with SACK recovery, the same loss resends only the two
     /// holes, then neither the SACKed segments nor anything else.
     #[test]
     fn test_sack_recovery_resends_only_the_holes() {
@@ -7018,7 +7018,7 @@ mod test {
         assert!(s.tx_buffer.is_empty());
     }
 
-    /// ROOMLER PATCH: a loss recovered from duplicate ACKs, by SACK recovery
+    /// MESHHARBOR PATCH: a loss recovered from duplicate ACKs, by SACK recovery
     /// or by the go-back-N fast retransmit, leaves the RTO and SRTT alone.
     #[test]
     fn test_loss_recovery_does_not_back_off_the_rto() {
@@ -7068,7 +7068,7 @@ mod test {
         }
     }
 
-    /// ROOMLER PATCH: a resent hole that is lost again is resent once data
+    /// MESHHARBOR PATCH: a resent hole that is lost again is resent once data
     /// sent after it is SACKed, not left to the retransmission timeout.
     #[test]
     fn test_sack_recovery_resends_a_lost_resend() {
@@ -7136,7 +7136,7 @@ mod test {
         recv_nothing!(s, time 1160);
     }
 
-    /// ROOMLER PATCH: with SACK recovery the receiver reports three blocks.
+    /// MESHHARBOR PATCH: with SACK recovery the receiver reports three blocks.
     #[test]
     fn test_sack_recovery_receiver_reports_three_blocks() {
         let mut s = socket_established();
@@ -9488,7 +9488,7 @@ mod test {
         }
     }
 
-    /// ROOMLER PATCH: only a timeout backs the RTO off; loss events that are
+    /// MESHHARBOR PATCH: only a timeout backs the RTO off; loss events that are
     /// not timeouts keep it and SRTT.
     #[test]
     fn test_rtt_estimator_fast_retransmit_keeps_the_rto() {
@@ -9503,7 +9503,7 @@ mod test {
         assert_eq!(r.retransmission_timeout(), Duration::from_millis(12000));
     }
 
-    /// ROOMLER PATCH: `set_min_rto` lowers the floor under a computed RTO,
+    /// MESHHARBOR PATCH: `set_min_rto` lowers the floor under a computed RTO,
     /// keeps 1 s before the first sample (RFC 6298 2.1), survives a reset.
     #[test]
     fn test_min_rto_floor() {

@@ -119,7 +119,7 @@ async fn record(state: &NetworkState, r: Reported) {
     };
     let leg = if r.peer_leg { "peer" } else { "client" };
     let key = format!(
-        "roomler:turn_counted:{}:{}:{}:{}",
+        "meshharbor:turn_counted:{}:{}:{}:{}",
         state.db.name(),
         r.username,
         r.allocation,
@@ -270,6 +270,6 @@ mod tests {
             ),
             None
         );
-        assert_eq!(parse("roomler:ws", "{}"), None);
+        assert_eq!(parse("meshharbor:ws", "{}"), None);
     }
 }

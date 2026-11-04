@@ -515,7 +515,7 @@ pub async fn test_send(
 
     let Some(mailer) = state.email.clone() else {
         return Err(ApiError::BadRequest(
-            "no mailer configured — set ROOMLER__EMAIL__API_KEY or SMTP host/port".into(),
+            "no mailer configured — set MESHHARBOR__EMAIL__API_KEY or SMTP host/port".into(),
         ));
     };
     let to = body.email.trim().to_string();
@@ -575,7 +575,7 @@ pub async fn send(
     // misconfigured pod would be strictly worse than refusing loudly.
     if state.email.is_none() {
         return Err(ApiError::BadRequest(
-            "no mailer configured — set ROOMLER__EMAIL__API_KEY or SMTP host/port".into(),
+            "no mailer configured — set MESHHARBOR__EMAIL__API_KEY or SMTP host/port".into(),
         ));
     }
 

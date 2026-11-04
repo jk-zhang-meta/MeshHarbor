@@ -17,7 +17,7 @@
  */
 (function () {
   'use strict';
-  const { $, invoke, show, hide, setText, fmtBytes } = window.Roomler;
+  const { $, invoke, show, hide, setText, fmtBytes } = window.MeshHarbor;
 
   /* ── pure helpers (exported for the unit tests) ─────────────────── */
 
@@ -302,7 +302,7 @@
   let canEdit = false;
 
   function askEngine() {
-    const editor = window.RoomlerEditor;
+    const editor = window.MeshHarborEditor;
     if (!editor) return;
     void editor.engineAvailable().then((ok) => {
       canEdit = ok;
@@ -313,7 +313,7 @@
   async function editRecording(name) {
     hide($('rec-list-error'));
     try {
-      await window.RoomlerEditor.open(name);
+      await window.MeshHarborEditor.open(name);
     } catch (e) {
       const el = $('rec-list-error');
       el.textContent = errorText(e);
@@ -528,11 +528,11 @@
     $('rec-remote-audio').addEventListener('change', (ev) => {
       void setRemote('record_remote_audio', ev.target.checked);
     });
-    document.addEventListener('roomler:view', (ev) => {
+    document.addEventListener('meshharbor:view', (ev) => {
       if (ev.detail === 'recordings') void refresh({ force: true });
     });
     // An export lands in the folder: the list shows it on the way back.
-    document.addEventListener('roomler:editor-closed', () => void refresh({ force: true }));
+    document.addEventListener('meshharbor:editor-closed', () => void refresh({ force: true }));
     askEngine();
     setInterval(tick, 1000);
   }
@@ -549,5 +549,5 @@
     void refresh({ force: true });
   }
 
-  window.RoomlerRecordings = { fmtDuration, describeEnding, describeLast, render, refresh, showError };
+  window.MeshHarborRecordings = { fmtDuration, describeEnding, describeLast, render, refresh, showError };
 })();

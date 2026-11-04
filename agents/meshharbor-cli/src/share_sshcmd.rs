@@ -125,7 +125,7 @@ pub(crate) async fn run_with_token(
         .arg("IdentityAgent=none")
         .arg("-p")
         .arg(addr.port().to_string())
-        .arg("roomler@127.0.0.1")
+        .arg("meshharbor@127.0.0.1")
         .args(args)
         .kill_on_drop(true)
         .spawn()

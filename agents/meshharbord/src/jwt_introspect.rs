@@ -143,14 +143,14 @@ mod tests {
     #[test]
     fn parses_typical_enrollment_token() {
         let token = forge_token(serde_json::json!({
-            "iss": "roomler-ai",
+            "iss": "meshharbor",
             "aud": "agent-enrollment",
             "exp": 1_900_000_000_i64,
             "sub": "tenant-abc",
             "jti": "deadbeef",
         }));
         let view = parse_unverified(&token).unwrap();
-        assert_eq!(view.issuer.as_deref(), Some("roomler-ai"));
+        assert_eq!(view.issuer.as_deref(), Some("meshharbor"));
         assert_eq!(view.audience.as_deref(), Some("agent-enrollment"));
         assert_eq!(view.expires_at_unix, Some(1_900_000_000));
         assert_eq!(view.subject.as_deref(), Some("tenant-abc"));
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn parses_token_with_audience_array() {
         let token = forge_token(serde_json::json!({
-            "iss": "roomler-ai",
+            "iss": "meshharbor",
             "aud": ["agent-enrollment", "agent-access"],
             "exp": 1_900_000_000_i64,
         }));

@@ -45,7 +45,7 @@ The only genuinely new component is the **native agent** (a separate Rust binary
 
 > **See also — the `roomler` subsystem.** A sibling of remote-control that reuses the same agent binary, `rc:*` signaling, and coturn cluster, but for **TCP port-forwarding** (operator's `127.0.0.1:<port>` → agent → an internal service) rather than screen capture + input. Its data plane defaults to **QUIC** (`quic-v1`, quinn) with a WebRTC-data-channel fallback, and crosses corporate NAT / firewalls via the same direct → TURN(UDP) → TURNS/TCP tier walk. The server negotiates `quic-v1` only for agents new enough to speak it (≥ rc.104). Operator guide: [`docs/tunnel-install.md`](./tunnel-install.md).
 
-> **See also — the L3 overlay & its Windows firewall override.** The `overlay-l3` feature evolves the tunnel into a Tailscale-style per-tenant WireGuard+DERP mesh (Wintun NIC `roomler`, overlay IPs `100.64.0.0/10`). On a GPO-locked Windows host the corporate Defender Firewall drops unsolicited inbound on the overlay adapter; the agent overrides this by programming the Windows Filtering Platform directly (a LUID-scoped, high-weight hard-permit sublayer) from its LocalSystem service. Design, limits (callout/IPsec), and the `ROOMLERD_WFP_PERMIT` disable: [`docs/overlay-wfp.md`](./overlay-wfp.md).
+> **See also — the L3 overlay & its Windows firewall override.** The `overlay-l3` feature evolves the tunnel into a Tailscale-style per-tenant WireGuard+DERP mesh (Wintun NIC `roomler`, overlay IPs `100.64.0.0/10`). On a GPO-locked Windows host the corporate Defender Firewall drops unsolicited inbound on the overlay adapter; the agent overrides this by programming the Windows Filtering Platform directly (a LUID-scoped, high-weight hard-permit sublayer) from its LocalSystem service. Design, limits (callout/IPsec), and the `MESHHARBORD_WFP_PERMIT` disable: [`docs/overlay-wfp.md`](./overlay-wfp.md).
 
 ## 3. High-level topology
 
@@ -274,9 +274,9 @@ The overlay reaches a session's ICE three ways. The interface-name rule RC alway
 |---|---|---|---|
 | Windows 10+ | `Windows.Graphics.Capture` (WGC) via `windows` crate | DXGI surface, no permission prompt for own session, handles DPI, supports per-window | DXGI Desktop Duplication |
 | macOS | CoreGraphics `CGDisplayStream`, through `scrap` (`agents/meshharbord/src/capture/scrap_backend.rs:8`) | The one macOS capture path today: there is no ScreenCaptureKit code. It reports no damage, so every frame counts as changed | — |
-| Linux, a host with scanout (X11 or Wayland) | **DRM/KMS** — the scanout plane read below the compositor (FR-36, opt-in `ROOMLERD_DRM_CAPTURE=1`) | Compositor-independent, needs no consent, sees the greeter and a locked screen — the unattended path | the portal, then X11 |
-| Linux Wayland, **no** scanout (WSL2, containers, nested compositors) | **`xdg-desktop-portal` ScreenCast → PipeWire**, through a privilege-dropped helper in the user's session (FR-45, opt-in `ROOMLERD_PORTAL_CAPTURE=1`) — or `org.gnome.Mutter.ScreenCast` directly where no portal backend can run (`ROOMLERD_MUTTER_CAPTURE=1`, GNOME only, unattended). A **per-user** install in its own Wayland session with no key set switches these on by itself: mutter on GNOME, else the portal (FR-93 P2) | The only route a Wayland compositor sanctions; **attended** — a logged-in user and a consent dialog, never the greeter or a locked screen | X11 |
-| Linux X11 | `XShm` via scrap, with XDamage deciding whether a frame is worth taking (FR-29) | Zero-copy via shared memory; on a headless box the daemon starts its own Xvfb (`ROOMLERD_VIRTUAL_DESKTOP=1`) | `NoopCapture` carrying the reason (§5.1a) |
+| Linux, a host with scanout (X11 or Wayland) | **DRM/KMS** — the scanout plane read below the compositor (FR-36, opt-in `MESHHARBORD_DRM_CAPTURE=1`) | Compositor-independent, needs no consent, sees the greeter and a locked screen — the unattended path | the portal, then X11 |
+| Linux Wayland, **no** scanout (WSL2, containers, nested compositors) | **`xdg-desktop-portal` ScreenCast → PipeWire**, through a privilege-dropped helper in the user's session (FR-45, opt-in `MESHHARBORD_PORTAL_CAPTURE=1`) — or `org.gnome.Mutter.ScreenCast` directly where no portal backend can run (`MESHHARBORD_MUTTER_CAPTURE=1`, GNOME only, unattended). A **per-user** install in its own Wayland session with no key set switches these on by itself: mutter on GNOME, else the portal (FR-93 P2) | The only route a Wayland compositor sanctions; **attended** — a logged-in user and a consent dialog, never the greeter or a locked screen | X11 |
+| Linux X11 | `XShm` via scrap, with XDamage deciding whether a frame is worth taking (FR-29) | Zero-copy via shared memory; on a headless box the daemon starts its own Xvfb (`MESHHARBORD_VIRTUAL_DESKTOP=1`) | `NoopCapture` carrying the reason (§5.1a) |
 
 The portal path, and macOS's Screen Recording grant, produce a system permission prompt the *first* time. That's a feature, not a bug — it's the user consent layer. The Linux arms, their order and their gates are [`linux-capture.md`](linux-capture.md).
 
@@ -393,7 +393,7 @@ is tested on every OS.
 | Feature | When | What the hello says | What the viewer does |
 |---|---|---|---|
 | `audio` | the `audio` feature is built and the OS has no capture backend (macOS, until FR-97 P2a) | `audio` empty, so the daemon's session gate never adds a track ([`signaling.rs:3280`](../agents/meshharbord/src/signaling.rs#L3280)); `no-backend` | the receive-audio toggle is off, with the device's reason |
-| `audio` | Linux with no way to the computer's sound (FR-97 P3c, §5.1c) | `audio` empty; `no-sound-server` (no Pulse client library), `no-session` (a root build without the session helper), or `no-monitor` (`ROOMLERD_AUDIO_SESSION=0` with nothing named) | the same |
+| `audio` | Linux with no way to the computer's sound (FR-97 P3c, §5.1c) | `audio` empty; `no-sound-server` (no Pulse client library), `no-session` (a root build without the session helper), or `no-monitor` (`MESHHARBORD_AUDIO_SESSION=0` with nothing named) | the same |
 | `clipboard` | a root Linux daemon with neither `DISPLAY` nor `WAYLAND_DISPLAY` ([`caps.rs:795`](../agents/meshharbord/src/encode/caps.rs#L795)) | `supports_clipboard: false`, no clipboard words; `no-session` | send, get and auto-sync are greyed, with the reason |
 | `clipboard-image-events` | everywhere but Windows and (FR-97 P3e-3a) a Linux X11 session, whose watchers report copied images | the words stay: text syncs, and an image moves on request; `not-watched` | the auto-sync tooltip stops promising host images |
 | `sas` | Windows, Linux | `keys-only`: the button types three ordinary keys. Windows' lock and sign-in screens ignore them; Linux desktops bind them, GNOME and KDE to log out. A Windows host that can send the real sequence advertises `input: sas` instead and drops this entry (P4a, §5.1e) | the button stays, and says what the keys reach |
@@ -437,7 +437,7 @@ OS may open, and the session says why when it opens nothing.
 | OS | What a session captures | Where it cannot |
 |---|---|---|
 | Windows | WASAPI loopback of the default output device | no output device, usual on a server or a VM with no sound device: `no_output` |
-| Linux | the default output's monitor (`@DEFAULT_MONITOR@`) through Pulse's client library, in the daemon for a per-user install and through the seat user's helper for a root one (P3c-2, [`audio_source.rs:209`](../agents/meshharbord/src/audio_source.rs#L209)); a device named in `ROOMLERD_AUDIO_SOURCE` wins | no Pulse client library: the hello offers no track (`no-sound-server`, [`caps.rs:753`](../agents/meshharbord/src/encode/caps.rs#L753)); a root daemon with nobody at the screen: `no_session`; a named device that is not there: `source_not_found`; `ROOMLERD_AUDIO_SESSION=0`: P3c-1's rule, a named device or `no-monitor` |
+| Linux | the default output's monitor (`@DEFAULT_MONITOR@`) through Pulse's client library, in the daemon for a per-user install and through the seat user's helper for a root one (P3c-2, [`audio_source.rs:209`](../agents/meshharbord/src/audio_source.rs#L209)); a device named in `MESHHARBORD_AUDIO_SOURCE` wins | no Pulse client library: the hello offers no track (`no-sound-server`, [`caps.rs:753`](../agents/meshharbord/src/encode/caps.rs#L753)); a root daemon with nobody at the screen: `no_session`; a named device that is not there: `source_not_found`; `MESHHARBORD_AUDIO_SESSION=0`: P3c-1's rule, a named device or `no-monitor` |
 | macOS | nothing yet (ScreenCaptureKit audio is FR-97 P2a) | the hello offers no track (`no-backend`, §5.1b) |
 
 ⚠️ **On Linux the default input is a microphone, and before P3c-1 it was the
@@ -447,20 +447,20 @@ ALSA, so it lists ALSA devices and never a sound server's sources. Measured
 
 - the devices were exactly `pipewire`, `pulse` and `default`;
 - the auto-pick, a name ending in `.monitor`, never matched, and neither did
-  the documented `ROOMLERD_AUDIO_SOURCE=<sink>.monitor`;
+  the documented `MESHHARBORD_AUDIO_SOURCE=<sink>.monitor`;
 - so every session fell back to `default`, and PulseAudio showed the capture
   on the microphone while the speakers' monitor stayed suspended.
 
 P3c-1 removed that fallback ([`cpal_backend.rs:247`](../agents/meshharbord/src/audio/cpal_backend.rs#L247)).
 A Linux host now offers no track until a device is named for it.
 
-**Naming the device (a per-user daemon).** `ROOMLERD_AUDIO_SOURCE` takes an ALSA
+**Naming the device (a per-user daemon).** `MESHHARBORD_AUDIO_SOURCE` takes an ALSA
 device name, as `arecord -L` prints it, not a PulseAudio source. To capture the
 speakers through PulseAudio or PipeWire's Pulse server, set both in the
 daemon's environment and restart it:
 
 ```text
-ROOMLERD_AUDIO_SOURCE=pulse
+MESHHARBORD_AUDIO_SOURCE=pulse
 PULSE_SOURCE=@DEFAULT_MONITOR@
 ```
 
@@ -477,9 +477,9 @@ decides, for the hello and for every session alike:
 
 ```mermaid
 flowchart TD
-    A["linux_route<br/>(audio_source.rs)"] --> N{"a device named in<br/>ROOMLERD_AUDIO_SOURCE?"}
+    A["linux_route<br/>(audio_source.rs)"] --> N{"a device named in<br/>MESHHARBORD_AUDIO_SOURCE?"}
     N -->|yes| C["cpal: that ALSA device<br/>(the owner's choice)"]
-    N -->|no| K{"ROOMLERD_AUDIO_SESSION=0?"}
+    N -->|no| K{"MESHHARBORD_AUDIO_SESSION=0?"}
     K -->|yes| R1["refuse: no_monitor<br/>(P3c-1's rule)"]
     K -->|no| L{"libpulse-simple.so.0<br/>present?"}
     L -->|no| R2["refuse: no_sound_server"]
@@ -507,7 +507,7 @@ flowchart TD
   ([`pulse.rs:124`](../agents/meshharbord/src/audio/pulse.rs#L124)). libpulse pulls
   a dozen libraries into whatever loads it, and a root daemon never needs them
   itself. A library somewhere unusual reads as absent: an honest no.
-- **Kill switch:** `ROOMLERD_AUDIO_SESSION=0` puts Linux back on P3c-1's rule.
+- **Kill switch:** `MESHHARBORD_AUDIO_SESSION=0` puts Linux back on P3c-1's rule.
 
 ⚠️ **None of these routes is the default input.** Each one records the
 default sink's monitor, or the device the owner named.
@@ -539,7 +539,7 @@ and puts it on the toggle's title
 | `code` | Means |
 |---|---|
 | `no_monitor` | Linux: nothing among the capture devices is the computer's sound, and the default input is not opened |
-| `source_not_found` | the device `ROOMLERD_AUDIO_SOURCE` names is not there, and no microphone is opened in its place |
+| `source_not_found` | the device `MESHHARBORD_AUDIO_SOURCE` names is not there, and no microphone is opened in its place |
 | `no_output` | Windows: no output device to loop back |
 | `backend_error` | the device failed to open, the Opus encoder did not start, or capture stopped mid-session; `detail` is the backend's own words |
 | `not_supported` | an OS with no capture backend |
@@ -578,7 +578,7 @@ The pump's overlay and the input path keep reading the Windows probe, which
 says Unlocked on both. Feeding the hint there would blank a lock screen the
 viewer can see and stop the very keystrokes that unlock it. On a Mac the
 consent probe alone reads it (`probe_lock_state_service`), as on Windows.
-`ROOMLERD_LOCK_HINT=0` turns the hint off on both.
+`MESHHARBORD_LOCK_HINT=0` turns the hint off on both.
 
 ⚠️ **The inhibitor is the FR-55 half, and it sits beside FR-93 P5h's.** P5h
 holds a logind **delay** inhibitor during a session so that a sleep the person
@@ -743,7 +743,7 @@ Key design choices:
 
 Wayland has no equivalent of XTest. The supported path is `/dev/uinput`, which requires the agent to be in the `input` group (or have `CAP_SYS_ADMIN`). No package adds that group or a udev rule: uinput is an opt-in of a root (system) install, `uinput = true` (`agents/meshharbord/packaging/linux/README.Debian`). If permission isn't granted, the agent runs in **view-only** mode and the UI clearly says so.
 
-As shipped: uinput is FR-36's arm (`ROOMLERD_UINPUT=1`, paired with DRM capture; host-global, it injects into whatever has focus). Where the compositor is **nested** — WSL2, a compositor inside another — uinput publishes events that nothing reads, so the only input path is the portal's RemoteDesktop interface riding the capture session (FR-45 P4, `ROOMLERD_PORTAL_INPUT=1`), and on GNOME the person at the screen must also flip the dialog's *Allow Remote Interaction* switch. A per-user Wayland session whose portal switched itself on (FR-93 P4b, KDE and other desktops without mutter) asks for remote control with no key set. Both are in [`linux-capture.md`](linux-capture.md#43-input-rides-the-same-session-p4).
+As shipped: uinput is FR-36's arm (`MESHHARBORD_UINPUT=1`, paired with DRM capture; host-global, it injects into whatever has focus). Where the compositor is **nested** — WSL2, a compositor inside another — uinput publishes events that nothing reads, so the only input path is the portal's RemoteDesktop interface riding the capture session (FR-45 P4, `MESHHARBORD_PORTAL_INPUT=1`), and on GNOME the person at the screen must also flip the dialog's *Allow Remote Interaction* switch. A per-user Wayland session whose portal switched itself on (FR-93 P4b, KDE and other desktops without mutter) asks for remote control with no key set. Both are in [`linux-capture.md`](linux-capture.md#43-input-rides-the-same-session-p4).
 
 **Saying so (FR-93 P1).** An injector that reaches nothing does not fail. XTest
 into Xwayland *succeeds*, and moves only Xwayland's own pointer, which the
@@ -948,7 +948,7 @@ crates/
 ```
 
 > **Same-worker TURN affinity (invariant I6).** With ≥2 coturn workers
-> configured (`ROOMLER__TURN__WORKER_URLS`), `turn_creds::issue_for_session`
+> configured (`MESHHARBOR__TURN__WORKER_URLS`), `turn_creds::issue_for_session`
 > puts one session-picked worker's URLs first in the creds issued
 > independently to controller and agent, so both ICE stacks converge on the
 > same worker — cross-worker relay↔relay drops under the dual-public-IP
@@ -1212,7 +1212,7 @@ is a refusal, and both signals are read from one stream, in the server's order.
 is not `native`, so a new word would have a companion that starts late ask the
 question a second time. The helper's D-Bus work runs on a plain thread, because
 zbus's blocking API panics on a runtime thread: the first candidate's helper
-panicked there before it posted anything. Kill switch `ROOMLERD_NOTIFY_CONSENT=0`.
+panicked there before it posted anything. Kill switch `MESHHARBORD_NOTIFY_CONSENT=0`.
 
 ⚠️ **The X11 panel's unmap must be flushed** (FR-93 P6a). x11rb buffers
 requests, and the panel's loop flushed only when it repainted, which it stops
@@ -1234,7 +1234,7 @@ at 1× into a pixmap, scaled up nearest-neighbour, and written in requests the
 server takes (`blit`, `:493`); a click maps back to the 1× layout. Measured:
 KDE at `Xft.dpi` 259 draws at 3× and GNOME at 192 at 2×, the size of the
 companion's own prompt, and **Approve** on the scaled panel granted the
-session. At 1× nothing changes. `ROOMLERD_CONSENT_PANEL_SCALE` overrides the
+session. At 1× nothing changes. `MESHHARBORD_CONSENT_PANEL_SCALE` overrides the
 scale; `1` is the kill switch. ⚠️ GNOME shows no X11 window during its
 Activities overview, which it opens after every login, so a prompt raised
 there is seen once the person leaves the overview.
@@ -1256,7 +1256,7 @@ companion from popping a second panel over a native one.
 display connects.**
 <!-- RETIRED-NAME-ANCHOR: the LEGACY env spelling FR-21 P3 kept working, and
      the one every affected host actually carries in its systemd drop-in. -->
-`ROOMLER_AGENT_VIRTUAL_DESKTOP=1` means the daemon started
+`MESHHARBOR_AGENT_VIRTUAL_DESKTOP=1` means the daemon started
 the Xvfb itself so a headless box can be remote-controlled — so the display's
 only viewer is a remote controller, which is the worst possible place to ask
 "may this remote controller in?". Field-measured on mars, jupiter and the WSL
@@ -1595,7 +1595,7 @@ session up itself and scheduled the reconnect ladder — so the audit said
 | the hub forwards it to the controller **before** echoing it to the agent, and audits `SessionEnded { HostDisconnect }` | `Hub::terminate` | — |
 | only the **device** may claim it: a controller's `host_disconnect` is recorded as `controller_hangup` | the hub's `rc:terminate` arm | `host_disconnect_is_the_devices_claim_only` |
 | the viewer closes as "ended by the host", cancels the ladder, drops its replay args, then tears the peer down with the phase already `closed`, so the control DC's `onclose` stays quiet | `useRemoteControl.ts`, the `rc:terminate` handler | `FR-27 P10` in `useRemoteControl.spec.ts` |
-| the bare connection closes after a grace, off the loop | `ROOMLERD_HOST_DISCONNECT_GRACE_MS`, default 1000, `0` = the pre-P10 timing, capped at the 5 s close budget | `host_disconnect_grace_is_bounded_and_switchable` |
+| the bare connection closes after a grace, off the loop | `MESHHARBORD_HOST_DISCONNECT_GRACE_MS`, default 1000, `0` = the pre-P10 timing, capped at the 5 s close budget | `host_disconnect_grace_is_bounded_and_switchable` |
 
 ⚠️ The grace holds the **transport**, never the session's powers. A grace
 that kept the peer serving would hand the controller up to a second more of
@@ -1791,7 +1791,7 @@ asking (`ui/src/composables/rcSessionRating.ts`), and the server (`remote`,
 `POST /api/tenant/{tid}/session/{sid}/feedback`) accepts one rating per session per party to
 it (the controller and each watcher once), not before 30 s after the request, codes only, and
 answers the empty 404 while
-`ROOMLER__GROWTH__FEEDBACK=false`. Nothing here touches the session's data path: the rating is a
+`MESHHARBOR__GROWTH__FEEDBACK=false`. Nothing here touches the session's data path: the rating is a
 question asked after it. The rules, the row and the field plan:
 [growth-observability.md](growth-observability.md#the-post-session-rating-p9b).
 
@@ -1851,7 +1851,7 @@ delegation marker.
 
 Two practical observations:
 
-1. The single biggest WAN latency contributor is TURN relaying through a far-away region. Co-locate TURN with users; roomler already runs `coturn.roomler.live` — for a global rollout, deploy regional TURN endpoints and let the agent pick the lowest-RTT one at registration. **SHIPPED (multi-region relay PoPs, 2026-08)**: `ROOMLER__RELAY__REGIONS` declares regional coturn+DERP PoPs (`scripts/relay-pop/` provisions one per cheap VPS); agents advertising `supports_relay_regions` receive the region list (`rc:relay.regions`), time a STUN binding per PoP, and report (`rc:relay.probe_report`); the server derives a hysteresis-guarded `relay_home` per agent and issues every RC-session / overlay-pair / tunnel TURN grant from the nearest region (sticky per pair, same-worker pin preserved within a region). Regional DERP rides EdDSA admission tickets (`crates/derp-relay`, public-key-only PoPs) and is applied to force-DERP-pinned pairs; the ladder DERP tier stays central pending netmap self-home. Master gate `ROOMLER__RELAY__REGIONS_ENABLED` (default off = legacy single-region, byte-identical).
+1. The single biggest WAN latency contributor is TURN relaying through a far-away region. Co-locate TURN with users; roomler already runs `coturn.roomler.live` — for a global rollout, deploy regional TURN endpoints and let the agent pick the lowest-RTT one at registration. **SHIPPED (multi-region relay PoPs, 2026-08)**: `MESHHARBOR__RELAY__REGIONS` declares regional coturn+DERP PoPs (`scripts/relay-pop/` provisions one per cheap VPS); agents advertising `supports_relay_regions` receive the region list (`rc:relay.regions`), time a STUN binding per PoP, and report (`rc:relay.probe_report`); the server derives a hysteresis-guarded `relay_home` per agent and issues every RC-session / overlay-pair / tunnel TURN grant from the nearest region (sticky per pair, same-worker pin preserved within a region). Regional DERP rides EdDSA admission tickets (`crates/derp-relay`, public-key-only PoPs) and is applied to force-DERP-pinned pairs; the ladder DERP tier stays central pending netmap self-home. Master gate `MESHHARBOR__RELAY__REGIONS_ENABLED` (default off = legacy single-region, byte-identical).
 2. The single biggest CPU/battery contributor is encoding *unchanged frames*. Dirty-rect skipping is non-negotiable.
 
 ### 12.1 Time-to-first-frame — the connect timeline (FR-22)
@@ -2251,7 +2251,7 @@ number that falls.
 | | |
 |---|---|
 | Where | Linux/glibc only (`malloc_trim` is a glibc extension). Windows and macOS were not measured |
-| Kill switch | `ROOMLERD_MEM_TRIM=0` |
+| Kill switch | `MESHHARBORD_MEM_TRIM=0` |
 | Field signal | `mem-trim: handed the memory finished sessions freed back to the OS (#2024)` with `rss_before_mb`, `rss_after_mb`, `elapsed_ms` |
 
 ⚠️ **RSS is not the heap.** Read what is *in use* before calling anything a leak:
@@ -2379,7 +2379,7 @@ Three places, in decreasing priority:
 
 1. **CLI flag**: `roomler-agent run --encoder hardware` (also
    accepts `auto`, `software`, `hw`, `sw`, `mf`, `openh264`).
-2. **Env var**: `ROOMLER_AGENT_ENCODER=hardware`. Mostly for
+2. **Env var**: `MESHHARBOR_AGENT_ENCODER=hardware`. Mostly for
    systemd-user / Task Scheduler entries where editing the TOML is
    less convenient.
 3. **Config file** (`config.toml`): `encoder_preference = "hardware"`.
@@ -2466,7 +2466,7 @@ Three pieces, each tractable on its own:
 
 Status: **Phase 3 commits 1 + 2 + 3 landed**. Auto cascade on
 Windows now prefers MF-HW (commit 1A.3, 0.1.26) with
-`ROOMLER_AGENT_HW_AUTO=0` escape hatch. Async pipeline (commit
+`MESHHARBOR_AGENT_HW_AUTO=0` escape hatch. Async pipeline (commit
 1A.2) remains tracked for Intel QSV boxes.
 
 Live verification (2026-04-20, Win11 + RTX 5090 Laptop + AMD
@@ -2474,7 +2474,7 @@ Radeon 610M): cascade enumerates 2 adapters + 5 H.264 MFTs, winner
 is AMD Radeon 610M + H264 Encoder MFT, `encoder-smoke --encoder
 hardware` produces 1 keyframe + 9 P-frames, total 4212 bytes over
 10 frames. `encoder-smoke --encoder auto` picks `mf-h264` unless
-`ROOMLER_AGENT_HW_AUTO=0` is set, in which case it picks
+`MESHHARBOR_AGENT_HW_AUTO=0` is set, in which case it picks
 `openh264`.
 
 ### Future phases beyond Windows
@@ -2533,7 +2533,7 @@ to-activate, so the browser never sees a bait-and-switch.
   now renders black + white-outline rather than the old solid-white
   blob). The WGC backend's in-video cursor bake-in
   (`SetIsCursorCaptureEnabled`) is disabled by default
-  (`ROOMLER_AGENT_WGC_CURSOR=1` re-enables) so the low-latency overlay /
+  (`MESHHARBOR_AGENT_WGC_CURSOR=1` re-enables) so the low-latency overlay /
   CSS cursor is the single source with no double cursor. Additive +
   back-compat: old browsers ignore `css` and draw the bitmap.
 - **Clipboard DC** (0.1.32): thread-pinned `arboard::Clipboard` worker;
@@ -2601,7 +2601,7 @@ to-activate, so the browser never sees a bait-and-switch.
   push. Trust model = the TURN probe's: loopback-only bind + strict
   browser-origin CORS/PNA allowlist + no capability a local process
   doesn't already have (any local app can write the OS clipboard).
-  Escape `ROOMLER_AGENT_CLIPBOARD_BRIDGE=0`. Without a local bridge
+  Escape `MESHHARBOR_AGENT_CLIPBOARD_BRIDGE=0`. Without a local bridge
   (no viewer-side agent) the flow degrades to the v2.1 html lane.
 - **The watcher on X11 (FR-97 P3e-3a)**: an X11 session gets Windows'
   sequence number in another form. XFixes reports every change of the
@@ -2620,7 +2620,7 @@ to-activate, so the browser never sees a bait-and-switch.
   Wayland: the clipboard is the compositor's there, and Xwayland's copy
   of it is unmeasured. A broken gate connection drops back to text
   polling with images unwatched. Kill switch
-  `ROOMLERD_CLIPBOARD_X11_WATCH=0`.
+  `MESHHARBORD_CLIPBOARD_X11_WATCH=0`.
 - **File DC** (0.1.33): browser drag/pick → `files:begin` →
   64 KiB ArrayBuffer chunks with `bufferedAmount` back-pressure →
   `files:end` → agent writes into the controlled host's Downloads
@@ -2709,7 +2709,7 @@ to drop straight to VK_PACKET (which conhost ignores). Now
   post `WM_INPUTLANGCHANGEREQUEST` to the foreground window (the OS's
   own ALT+SHIFT) → verify-poll ≤100 ms → inject real VK+scancode under
   the new layout. Verify timeout → VK_PACKET + 3 s cooldown; ≤8
-  switches/call. Kill switch `ROOMLER_AGENT_AUTO_LAYOUT=0`. Switch
+  switches/call. Kill switch `MESHHARBOR_AGENT_AUTO_LAYOUT=0`. Switch
   logs carry a script class only — never the char (passwords).
 - **`rc:layout`** (control DC, agent→browser): active + installed
   layouts as opaque 8-hex HKL strings + BCP-47 tags, published on
@@ -2771,7 +2771,7 @@ sequenceDiagram
 | Switch | `WM_INPUTLANGCHANGEREQUEST` to the foreground window | `XkbLatchLockState`, then read back for up to 300 ms (`layout_x11.rs:360`) |
 | Switch while typing | yes, per character | no: typing on X11 (`enigo.text`, over XTest) maps each character to a spare keycode, and reaches it on any layout |
 | Offered | in every session | in an X11 session: `DISPLAY` set and no `WAYLAND_DISPLAY` (`layout_x11.rs:62`); `set` too, except under GNOME (`layout_x11.rs:79`, below) |
-| Kill switch | `ROOMLERD_AUTO_LAYOUT=0` (the auto-switch only) | `ROOMLERD_X11_LAYOUT=0`: no `layout` in the hello, so no chip |
+| Kill switch | `MESHHARBORD_AUTO_LAYOUT=0` (the auto-switch only) | `MESHHARBORD_X11_LAYOUT=0`: no `layout` in the hello, so no chip |
 
 ⚠️ **GNOME reports, and does not switch.** GNOME Shell keeps its own input
 source on Xorg as well: an XKB group locked from outside it is back on GNOME's
@@ -3074,7 +3074,7 @@ back to its 5 s tick.
 ### 19.2 Update-path hardening (0.1.51)
 
 **Configurable update cadence**: `update_check_interval_h: Option<u32>`
-config field + `ROOMLER_AGENT_UPDATE_INTERVAL_H` env var override.
+config field + `MESHHARBOR_AGENT_UPDATE_INTERVAL_H` env var override.
 Pure resolver `resolve_check_interval_with(env_value, cfg_value)`
 extracted so tests don't race on process env. Defaults to the
 existing 24 h built-in.
@@ -3347,7 +3347,7 @@ PowerShell. Future per-machine MSI flavour can revisit.
 
 Everything queued at the end of this cycle subsequently shipped: M3 pre-logon
 SystemContext capture (rc.1–rc.7, hardened through rc.26 behind
-`ROOMLER_AGENT_ENABLE_SYSTEM_SWAP`), M5 field verification, and the perMachine
+`MESHHARBOR_AGENT_ENABLE_SYSTEM_SWAP`), M5 field verification, and the perMachine
 MSI flavour (`wix-perMachine/`). The operator-facing verification procedure lives
 in [operator-systemcontext-smoke.md](operator-systemcontext-smoke.md).
 

@@ -42,8 +42,8 @@
 //!
 //! # Naming
 //!
-//! Server-side crates are `roomler-ai-*`; this crate is the one exception by
-//! design, `meshharbor-core`. Module crates are `roomler-ai-mod-<name>`. The
+//! Server-side crates are `meshharbor-*`; this crate is the one exception by
+//! design, `meshharbor-core`. Module crates are `meshharbor-mod-<name>`. The
 //! daemon's shared building blocks are `meshharbor-node-core`
 //! (`crates/agent-core`), which held the name `meshharbor-core` from FR-21 until
 //! FR-69.

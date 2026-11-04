@@ -570,13 +570,13 @@ mod tests {
     /// the capture tests on the same display).
     static ONE_DISPLAY: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Against a REAL X server: `ROOMLERD_TEST_X11=1 xvfb-run -a cargo test
+    /// Against a REAL X server: `MESHHARBORD_TEST_X11=1 xvfb-run -a cargo test
     /// -p meshharbord --features enigo-input --lib keep_busy::host_x11 --
     /// --test-threads=1`. XTest motion resets the idle counter, and the host
     /// sees our display as a plain X server with an idle clock and a geometry.
     #[test]
     fn against_a_real_x_server_the_idle_clock_sees_xtest_motion() {
-        if std::env::var_os("ROOMLERD_TEST_X11").is_none() {
+        if std::env::var_os("MESHHARBORD_TEST_X11").is_none() {
             return;
         }
         let _turn = ONE_DISPLAY.lock().unwrap_or_else(|e| e.into_inner());
@@ -625,7 +625,7 @@ mod tests {
     /// person. Ticks are driven here, so the interleaving is deterministic.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn against_a_real_x_server_keep_busy_runs_and_a_typed_key_pauses_it() {
-        if std::env::var_os("ROOMLERD_TEST_X11").is_none() {
+        if std::env::var_os("MESHHARBORD_TEST_X11").is_none() {
             return;
         }
         // The arbiter captures the runtime at its first call, from in here.

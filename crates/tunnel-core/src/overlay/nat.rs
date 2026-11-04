@@ -35,7 +35,7 @@ use tracing::{info, warn};
 
 /// WinNAT instance name (Windows only).
 #[cfg(target_os = "windows")]
-const NAT_NAME: &str = "roomler-overlay";
+const NAT_NAME: &str = "meshharbor-overlay";
 
 /// RAII guard for the OS forwarding/NAT state. `Drop` reverts whatever `enable`
 /// installed. A guard with `active == false` (nothing advertised, or setup
@@ -152,7 +152,7 @@ pub struct RouteOffer {
 /// service without its management class (#2077). This asks first, so such a
 /// node advertises nothing and says why: in `meshharbor status`, and in its join.
 ///
-/// `ROOMLERD_ROUTE_OFFER_UNPROBED=1` skips the probe and offers as before.
+/// `MESHHARBORD_ROUTE_OFFER_UNPROBED=1` skips the probe and offers as before.
 ///
 /// FR-97 P0c-3 — `netstack`: this node's device is the userspace netstack,
 /// which offers nothing whatever the host's NAT could do ([`netstack_offer`]).
@@ -458,7 +458,7 @@ async fn setup(
     // Forwarding on the overlay NIC **and on the EGRESS NIC for each advertised
     // route**.
     //
-    // The previous version enabled only `roomler`, on the assumption that "the
+    // The previous version enabled only `meshharbor`, on the assumption that "the
     // LAN adapter's forwarding is normally already on". That is FALSE on
     // Windows: every interface ships `Forwarding: Disabled`, and Windows only
     // forwards a packet when forwarding is enabled on BOTH the ingress and the
@@ -466,7 +466,7 @@ async fn setup(
     // silently dropped them — peers had the OS route installed and every TCP
     // connection still timed out.
     //
-    // Field-diagnosed on winhost-a 2026-08-03: `roomler` Enabled, every other NIC
+    // Field-diagnosed on winhost-a 2026-08-03: `meshharbor` Enabled, every other NIC
     // Disabled, `Get-NetNat` healthy — the subnet router had been dead for a
     // week while the agent logged "forwarding + NAT enabled".
     //
@@ -492,7 +492,7 @@ async fn setup(
         .collect::<Vec<_>>()
         .join(",");
     // Multi-org v2 — the overlay NIC is the INSTANCE adapter, not the
-    // historical `roomler` literal. Quote-sanitized like `targets` (the name
+    // historical `meshharbor` literal. Quote-sanitized like `targets` (the name
     // comes from our own constants/config, but a `'` must never break out).
     let alias = if_name.trim().replace('\'', "");
     let (fwd_ok, report) = run_capture(vec![
@@ -947,7 +947,7 @@ mod offer_tests {
                 routes: routes(&["0.0.0.0/0"]),
                 withheld: None
             },
-            "ROOMLERD_ROUTE_OFFER_UNPROBED=1 offers as before"
+            "MESHHARBORD_ROUTE_OFFER_UNPROBED=1 offers as before"
         );
     }
 

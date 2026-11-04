@@ -22,7 +22,7 @@
 //! The cache is per-pod and in-process. With N pods a freshly published
 //! release is invisible for up to one TTL on each pod *independently*, so
 //! the answer a client gets depends on which pod the load balancer picked
-//! — and `roomlerd self-update` reads exactly this data
+//! — and `meshharbord self-update` reads exactly this data
 //! (`updater.rs::DEFAULT_PROXY_URL`). Field repro 2026-08-04:
 //! `agent-v0.3.0-rc.305` published 21:14 UTC; at 21:33 the endpoint still
 //! answered `rc.304` on 4/4 samples because both pods had warmed their
@@ -49,7 +49,7 @@ use meshharbor_core::ApiError;
 use crate::{FleetState, agent_release::AgentRelease};
 
 /// GitHub repo slug. A fork can override here without touching agents.
-pub(crate) const RELEASES_REPO: &str = "jk-zhang-meta/roomler-ai";
+pub(crate) const RELEASES_REPO: &str = "jk-zhang-meta/meshharbor";
 
 /// GitHub page size — the API max. See the module docs: the shallow
 /// 30-deep page the agent/tunnel caches used loses the rarely-tagged
@@ -490,7 +490,7 @@ async fn refresh_peers(state: &FleetState, expect_tag: Option<&str>) -> Vec<PodR
     };
     // Same enumeration the C-6 status snapshot uses (`cluster::metrics`).
     let peer_ids: Vec<String> = dir
-        .scan_keys("roomler:pod-alive:*")
+        .scan_keys("meshharbor:pod-alive:*")
         .await
         .unwrap_or_default()
         .into_iter()
@@ -539,7 +539,7 @@ fn authorize(state: &FleetState, headers: &HeaderMap) -> Result<(), ApiError> {
         .filter(|t| !t.is_empty())
         .ok_or_else(|| {
             ApiError::ServiceUnavailable(
-                "releases refresh endpoint disabled (ROOMLER__RELEASES__REFRESH_TOKEN unset)"
+                "releases refresh endpoint disabled (MESHHARBOR__RELEASES__REFRESH_TOKEN unset)"
                     .to_string(),
             )
         })?;

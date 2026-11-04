@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! Roomler Setup — lib surface of the unified wizard.
+//! MeshHarbor Setup — lib surface of the unified wizard.
 //!
 //! The wizard's binary entry point lives in `src/main.rs`; everything
 //! else (Tauri invoke handlers, the two install orchestrators, proxy

@@ -2,8 +2,8 @@
 // Copyright (C) 2026 G ROX EOOD
 //! Daemon-originated tunnel-**client** flows (unification P3b-2 PR-C).
 //!
-//! Lets the roomler daemon act as a tunnel *client* — `meshharbor forward` /
-//! `roomler socks5` over the LocalAPI — by driving
+//! Lets the meshharbor daemon act as a tunnel *client* — `meshharbor forward` /
+//! `meshharbor socks5` over the LocalAPI — by driving
 //! [`tunnel_core::driver::run_tunnel_session`] over the daemon's **existing
 //! agent WebSocket** (agent JWT, `Principal::Agent` server-side) instead of a
 //! second `TunnelClient` identity + second WS. The server half (accepting an
@@ -936,7 +936,7 @@ impl ProbeTimer {
     }
 }
 
-/// FR-86 P2 kill switch. `ROOMLERD_TUNNEL_REUPGRADE=0` (or the `tunnel_reupgrade`
+/// FR-86 P2 kill switch. `MESHHARBORD_TUNNEL_REUPGRADE=0` (or the `tunnel_reupgrade`
 /// config key via the env bridge) turns off all probing — behaviour is exactly
 /// P1. Default ON. Read once per serving epoch, so the env var flips it live on
 /// the next cycle.
@@ -2759,7 +2759,7 @@ mod tests {
         unsafe { tunnel_core::env::test_env::set("TUNNEL_REUPGRADE", "0") };
         assert!(
             !reupgrade_enabled(),
-            "ROOMLERD_TUNNEL_REUPGRADE=0 turns it off"
+            "MESHHARBORD_TUNNEL_REUPGRADE=0 turns it off"
         );
         unsafe { tunnel_core::env::test_env::set("TUNNEL_REUPGRADE", "1") };
         assert!(reupgrade_enabled(), "=1 turns it back on");

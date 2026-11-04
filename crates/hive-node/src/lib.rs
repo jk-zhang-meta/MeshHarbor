@@ -24,7 +24,7 @@
 //! to the network. The daemon does those, with the one privilege path it
 //! already has (`meshharbord::exec::apply_run_as`).
 //!
-//! Design: `docs/roomler-hive-design.md` §4.3–§4.4; spec:
+//! Design: `docs/meshharbor-hive-design.md` §4.3–§4.4; spec:
 //! `docs/fr/FR-90-hive-agent-sessions.md`.
 
 pub mod chain;

@@ -81,7 +81,7 @@ Receiver-side completion; the symmetric side needs no protocol change.
 ## Rollout
 
 - Config-surface tribool `overlay_observed_punch`
-  (`ROOMLERD_OVERLAY_OBSERVED_PUNCH`), default ON after one cohort
+  (`MESHHARBORD_OVERLAY_OBSERVED_PUNCH`), default ON after one cohort
   soak; env-bridge + enrollment default + list/get/set tests per the
   config-surface rule.
 - Unit tests: spoofed/unauthenticated source rejected; authenticated

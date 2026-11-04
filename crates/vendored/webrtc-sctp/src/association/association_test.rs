@@ -2615,7 +2615,7 @@ async fn test_association_handle_packet_before_init() -> Result<()> {
     Ok(())
 }
 
-/// roomler (#1856) — delegates to `inner`, failing the next N sends the way a
+/// meshharbor (#1856) — delegates to `inner`, failing the next N sends the way a
 /// UDP socket does when its route vanishes underneath it.
 struct FailNextSends {
     inner: Arc<dyn Conn + Send + Sync>,
@@ -2680,7 +2680,7 @@ impl Conn for FailNextSends {
     }
 }
 
-/// roomler (#1856): one failed send is a lost packet, not a dead association.
+/// meshharbor (#1856): one failed send is a lost packet, not a dead association.
 /// A remote-desktop peer whose overlay route vanished for ~3 ms got a single
 /// `EHOSTUNREACH`; the write loop treated it as fatal, closed the association
 /// and every data channel on it, and the session died. The dropped DATA chunk

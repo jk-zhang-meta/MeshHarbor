@@ -359,7 +359,7 @@ every prefix. No micro-frontends, no module federation, one `bun run build`, one
 
 `meshharbor-config` stays whole (930 lines, `crates/config/src/settings.rs`). Each module reads
 its section. At boot, core logs a WARN for any non-default section whose module is not compiled
-(`ROOMLER__MEDIASOUP__*` on a `mesh` image). P1 adds one section, `[modules]`, holding the
+(`MESHHARBOR__MEDIASOUP__*` on a `mesh` image). P1 adds one section, `[modules]`, holding the
 per-module runtime switches.
 
 - *Pros*: zero configmap churn; config is parseable before any module exists, which the startup
@@ -1122,8 +1122,8 @@ carrier class, a DERP-floor host, an SSH session — read from the fleet, not fr
 - **The self-host publish gains the `profile` input**: `<tag>` for full, `<tag>-<profile>`
   otherwise (the merge job re-derives it — it has no env from the build job), `latest` refused
   for a non-full profile, the build cache scoped per arch AND profile, and the smoke asserts the
-  module set. Compose passes `PROFILE=${ROOMLER_PROFILE:-full}` + `SAAS=0`; the env example
-  documents both ways of choosing (tag for a pull, `ROOMLER_PROFILE` for a build).
+  module set. Compose passes `PROFILE=${MESHHARBOR_PROFILE:-full}` + `SAAS=0`; the env example
+  documents both ways of choosing (tag for a pull, `MESHHARBOR_PROFILE` for a build).
 - Outcomes: the composition baseline stayed byte-identical (run 33916410333 — the `full` profile is the feature set it always was); PR #1348 green on all thirteen checks (Rust checks 25 min cold, the suite 15 min 43 s at 407/0, the new `profiles` job 8 min 21 s); AC3 measured on the PR: `profile-remote` 411 crates, `profile-mesh` 471, `profile-access` 472 — none lists `mediasoup`; `profile-collab` 433 crates, no `meshharbor-tunnel-core`; both positive controls found their crate in the full graph. Merged as `618c763e`.
 - **Still open**: AC4 (the Docker build-time measurement for a non-conference profile — two
   publish dry-runs, `full` vs `mesh`) and the daemon half of AC5 (a `mesh` image boots under
@@ -1209,7 +1209,7 @@ carrier class, a DERP-floor host, an SSH session — read from the fleet, not fr
 ### 2026-09-05 — AC7 on a local `mesh` stack, and what the console said
 
 
-Built the `mesh` profile from source through the self-host compose (`ROOMLER_PROFILE=mesh`,
+Built the `mesh` profile from source through the self-host compose (`MESHHARBOR_PROFILE=mesh`,
 `SAAS=0`; the Rust stage compiled fleet + network and no mediasoup), booted it with its own
 Mongo, Redis and MinIO on port 8090, and ran a dedicated Playwright spec against it
 (`ui/e2e/mesh-profile.spec.ts`, which skips itself on any server that mounts `chat`, so the
@@ -1243,7 +1243,7 @@ to run.
 ### 2026-09-05 — AC5, the daemon half: a release daemon enrols and joins the `mesh` overlay
 
 
-The cell: the `mesh` image built from master `89ea3128` through the self-host compose (`ROOMLER_PROFILE=mesh`, Mongo + Redis + MinIO, no coturn), and the **signed release daemon** `roomlerd 0.4.65` from the Linux `.deb` (`gpg`: `Good signature from "Roomler Release Signing"` against the pinned release key) extracted into a `debian:bookworm-slim` container that shares the server container's network namespace — the daemon upgrades any non-loopback `http://` enrollment URL to TLS, and loopback is the exemption a local trial gets. Overlay in **userspace netstack** mode (`overlay_enabled = true` + `netstack_socks_port = 1080`: no TUN, no `NET_ADMIN`, no routing changes), `auto_update = false`.
+The cell: the `mesh` image built from master `89ea3128` through the self-host compose (`MESHHARBOR_PROFILE=mesh`, Mongo + Redis + MinIO, no coturn), and the **signed release daemon** `roomlerd 0.4.65` from the Linux `.deb` (`gpg`: `Good signature from "Roomler Release Signing"` against the pinned release key) extracted into a `debian:bookworm-slim` container that shares the server container's network namespace — the daemon upgrades any non-loopback `http://` enrollment URL to TLS, and loopback is the exemption a local trial gets. Overlay in **userspace netstack** mode (`overlay_enabled = true` + `netstack_socks_port = 1080`: no TUN, no `NET_ADMIN`, no routing changes), `auto_update = false`.
 
 | Step | Daemon log (`docker logs`) | Server side |
 |---|---|---|

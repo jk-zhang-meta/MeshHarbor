@@ -4,13 +4,13 @@ services:
     ports:
       - "27019:27017"
     volumes:
-      - roomler_ai_mongo_data:/data/db
+      - meshharbor_mongo_data:/data/db
     # LOCAL DEVELOPMENT ONLY. These defaults exist so `docker compose up` works
     # with no setup; they are published in this repo and must never reach a
     # reachable deployment. Override per-environment via a local .env
     # (gitignored) rather than editing this file.
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-roomler}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-meshharbor}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-local-dev-only-CHANGE-ME}
 
   redis:
@@ -42,9 +42,9 @@ services:
       - ./turnserver.conf:/etc/turnserver.conf:ro
 
 volumes:
-  roomler_ai_mongo_data:
+  meshharbor_mongo_data:
   minio_data:
 
 networks:
-  roomler-ai-network:
-    name: roomler-ai-network
+  meshharbor-network:
+    name: meshharbor-network

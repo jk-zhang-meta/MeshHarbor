@@ -20,12 +20,12 @@ order, and demotes to the next tier if it can't establish:
 
 | Tier | Carrier | When it wins | Flag (default) |
 |---|---|---|---|
-| LAN direct | UDP on the shared interface socket | peer shares one of our /24s | `ROOMLERD_OVERLAY_DIRECT` (**on**) |
-| **A** direct-to-public | UDP via an unbound egress socket | peer's NIC holds a public IP | `ROOMLERD_OVERLAY_PUBLIC_DIRECT` (**off**) |
-| **C** srflx hole-punch | UDP via the **punch socket** | both ends NAT'd (not both symmetric) | `ROOMLERD_OVERLAY_SRFLX` (**on** since rc.200) |
-| **D** single-relay | ONE coturn allocation + a raw dialer, QUIC-over-TURN | nothing direct works **and ≥1 side is UDP-capable** | `ROOMLERD_OVERLAY_RELAY_SINGLE` (**on** since rc.200) |
-| **D″** DERP | `/derp` WSS on `roomler.ai:443`, pubkey-addressed, raw WG | **both** ends UDP-blocked (TCP-only net) | `ROOMLERD_OVERLAY_DERP` (**on** since rc.203) |
-| **D‴** org relay | a tenant-owned `roomlerd` forwarding Geneve-framed WG ciphertext on UDP 3478 (FR-19) | the server **minted a session** for the pair (org switch, ACL grant per member, an approved + serving relay) — a relay *kind* beside TURN/DERP, not a new tier | `ROOMLERD_OVERLAY_ORG_RELAY` (**off**) |
+| LAN direct | UDP on the shared interface socket | peer shares one of our /24s | `MESHHARBORD_OVERLAY_DIRECT` (**on**) |
+| **A** direct-to-public | UDP via an unbound egress socket | peer's NIC holds a public IP | `MESHHARBORD_OVERLAY_PUBLIC_DIRECT` (**off**) |
+| **C** srflx hole-punch | UDP via the **punch socket** | both ends NAT'd (not both symmetric) | `MESHHARBORD_OVERLAY_SRFLX` (**on** since rc.200) |
+| **D** single-relay | ONE coturn allocation + a raw dialer, QUIC-over-TURN | nothing direct works **and ≥1 side is UDP-capable** | `MESHHARBORD_OVERLAY_RELAY_SINGLE` (**on** since rc.200) |
+| **D″** DERP | `/derp` WSS on `roomler.ai:443`, pubkey-addressed, raw WG | **both** ends UDP-blocked (TCP-only net) | `MESHHARBORD_OVERLAY_DERP` (**on** since rc.203) |
+| **D‴** org relay | a tenant-owned `roomlerd` forwarding Geneve-framed WG ciphertext on UDP 3478 (FR-19) | the server **minted a session** for the pair (org switch, ACL grant per member, an approved + serving relay) — a relay *kind* beside TURN/DERP, not a new tier | `MESHHARBORD_OVERLAY_ORG_RELAY` (**off**) |
 | **D′** both-allocate relay | two coturn allocations (raw / QUIC) | single-relay off, or a mixed-capability pair | always available (fall-through) |
 
 LAN direct and the relay predate this work (rc.131–rc.135; the relay is the
@@ -120,7 +120,7 @@ flowchart TD
 > filter drops the LAN traffic too (FR-33 pktmon, 2026-09-03), so nothing could
 > pass anyway, and pretending otherwise would bring back FR-33's futile probes.
 
-Switch: `ROOMLERD_OVERLAY_LAN_ROUTE_REPAIR` / config `overlay_lan_route_repair`
+Switch: `MESHHARBORD_OVERLAY_LAN_ROUTE_REPAIR` / config `overlay_lan_route_repair`
 (Windows; default on; off removes the halves). Each install is one WARN line
 naming the prefix, the interface and the dead next hop.
 
@@ -182,7 +182,7 @@ filter, so the mismatch is harmless there.)
 
 A UDP NAT mapping expires on an idle node (30 s – 5 min). A gather-once srflx
 goes stale for a peer that joins later. The keepalive task (`run_srflx_keepalive`,
-`ROOMLERD_OVERLAY_SRFLX_KEEPALIVE_SECS`, default 20, `0` = off) re-runs a
+`MESHHARBORD_OVERLAY_SRFLX_KEEPALIVE_SECS`, default 20, `0` = off) re-runs a
 STUN Binding on the punch socket every interval — both holding the mapping open
 and detecting a change.
 
@@ -288,7 +288,7 @@ protocols. Mainland ISP gateways mostly speak only UPnP.
 - **Visibility:** `roomler status` shows `gateway pcp <ip:port>` on the srflx
   line, in plane mode. Legacy mode logs the grant (`gateway port mapping
   granted`) but its status keeps the startup snapshot.
-- **Kill switch:** `ROOMLERD_OVERLAY_PORTMAP=0`, config key `overlay_portmap`.
+- **Kill switch:** `MESHHARBORD_OVERLAY_PORTMAP=0`, config key `overlay_portmap`.
 - **Lab-verified against miniupnpd 2.3.9** (nftables backend), using three
   network namespaces: LAN client, router and WAN. The ignored test
   `portmap::tests::portmap_live_gateway` runs the real `PortMapper` against
@@ -341,7 +341,7 @@ direct.
 - **Exit nodes:** while an exit is active, IPv6 is captured too (`::/1` +
   `8000::/1`, fail-closed). So an IPv6 carrier's destination goes into the
   exemption set like an IPv4 one and is pinned through the IPv6 uplink.
-- **Kill switch:** `ROOMLERD_OVERLAY_IPV6=0`.
+- **Kill switch:** `MESHHARBORD_OVERLAY_IPV6=0`.
 - **Lab-verified** (five network namespaces):
   - **Setup:** two nodes, each behind a router with a symmetric IPv4 NAT
     (`masquerade random,fully-random`) and a stateful IPv6 firewall
@@ -351,7 +351,7 @@ direct.
   - **With IPv6:** the pair went direct 3.5 s after start, and router A's
     conntrack showed the ASSURED `2001:db8:a::2 ↔ 2001:db8:b::2` UDP flow.
     The F0 cut and heal on that path stalled 1.8 s and returned in 4.6 s.
-  - **With `ROOMLERD_OVERLAY_IPV6=0`:** the pair "never settled on direct
+  - **With `MESHHARBORD_OVERLAY_IPV6=0`:** the pair "never settled on direct
     within 120 s" and stayed on relay.
 - **Address changes** (privacy-address rotation, or a new prefix after a
   PPPoE redial): both keepalive owners re-derive the IPv6 candidates from the
@@ -453,7 +453,7 @@ sequenceDiagram
 - **Not sprayed:** both-symmetric pairs (that needs ~65 K probes a side),
   a pair behind one public IP (a hairpin), unknown NAT types, cross-border
   pairs, pairs a path trial owns or the server pins to DERP.
-- **Kill switch / gate:** `ROOMLERD_OVERLAY_BIRTHDAY`, default **off**. Both
+- **Kill switch / gate:** `MESHHARBORD_OVERLAY_BIRTHDAY`, default **off**. Both
   ends must run it: with one end alone nothing is found, and only that
   end's packets are spent.
 
@@ -685,7 +685,7 @@ cascade's guarantees while replacing its reactive counters:
   against it, because only the server can flip both ends of a pair
   atomically.
 
-`ROOMLERD_OVERLAY_PATHMON` (default `on`) now governs only telemetry
+`MESHHARBORD_OVERLAY_PATHMON` (default `on`) now governs only telemetry
 verbosity (the 10-min decision summaries); selection is always
 monitor-driven — rollback is a release revert, not an env flip.
 
@@ -868,7 +868,7 @@ each behind its own nftables NAT gateway:
   a mid-punch mapping rotation.
 
 Server = prod `roomler.ai` (already wire-capable); test daemons run the branch
-build via `--config` with `ROOMLERD_OVERLAY_SRFLX=1` set only on them. The
+build via `--config` with `MESHHARBORD_OVERLAY_SRFLX=1` set only on them. The
 matrix: cone↔cone punches ≤ ~10 s (both `Direct`, zero coturn allocations for
 the pair); cone↔symmetric attempts once then relays; symmetric↔symmetric skips
 up-front to relay; install skew converges via the re-upgrade tick; stale-srflx

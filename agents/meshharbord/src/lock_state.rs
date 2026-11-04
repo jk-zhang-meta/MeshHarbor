@@ -304,7 +304,7 @@ mod nowin {
     /// FR-97 P2d-1 — except a Mac's GUI session, which can say: a consent
     /// panel is out of sight behind a locked screen, as Windows' is on the
     /// secure desktop, so the controller is told to unlock first. Still `None`
-    /// outside a GUI session (the root half) and with `ROOMLERD_LOCK_HINT=0`.
+    /// outside a GUI session (the root half) and with `MESHHARBORD_LOCK_HINT=0`.
     pub fn probe_lock_state_service() -> Option<LockState> {
         #[cfg(target_os = "macos")]
         if super::lock_hint_enabled() {
@@ -342,7 +342,7 @@ pub const HINT_POLL: Duration = Duration::from_secs(2);
 /// captured like any other screen, and input reaches it: the person at the
 /// viewer unlocks by typing. This feeds only the viewer's chip
 /// (`rc:host_locked` with `input: "passes"`), never the overlay or the input
-/// path. `ROOMLERD_LOCK_HINT=0` turns it off.
+/// path. `MESHHARBORD_LOCK_HINT=0` turns it off.
 #[cfg(target_os = "linux")]
 pub fn linux_locked_hint() -> bool {
     crate::lock_on_end::linux_active_session()
@@ -366,7 +366,7 @@ pub fn mac_locked_hint() -> Option<bool> {
 }
 
 /// FR-97 P3b's kill switch for the lock hints (and P2d-1's on a Mac): on
-/// unless `ROOMLERD_LOCK_HINT=0`.
+/// unless `MESHHARBORD_LOCK_HINT=0`.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn lock_hint_enabled() -> bool {
     tunnel_core::env::node_env("LOCK_HINT").is_none_or(|v| v.trim() != "0")

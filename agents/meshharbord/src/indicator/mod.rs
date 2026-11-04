@@ -229,7 +229,7 @@ impl ViewerIndicator {
     /// panel nor the desktop companion could show it (a system daemon under
     /// GNOME or KDE Wayland with no companion package). `false` where there is
     /// none: no graphical session, a notification server without buttons,
-    /// another OS, `ROOMLERD_NOTIFY_CONSENT=0`.
+    /// another OS, `MESHHARBORD_NOTIFY_CONSENT=0`.
     ///
     /// Answers arrive on the same `ConsentSender` as the native panel's, and
     /// [`Self::hide_prompt`] takes it down.

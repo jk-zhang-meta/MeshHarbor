@@ -121,8 +121,8 @@ impl FlipTracker {
 /// visibly smoother than HEVC on the same direct path (13.1 vs 8.7 Mbps;
 /// encode times were fine for both).
 ///
-/// Operator override per codec: `ROOMLERD_RATE_FACTOR_<LABEL>` (legacy
-/// `ROOMLER_NODE_` prefix + the `rate_factor_*` config keys accepted via
+/// Operator override per codec: `MESHHARBORD_RATE_FACTOR_<LABEL>` (legacy
+/// `MESHHARBOR_NODE_` prefix + the `rate_factor_*` config keys accepted via
 /// [`tunnel_core::env::node_env`]). Clamped to 50–400; garbage falls back
 /// to the built-in. The pump re-reads per frame, so a REAL env var applies
 /// live; config-key changes need a service restart (set-once fallback map).
@@ -150,7 +150,7 @@ pub fn codec_rate_factor_pct(codec_label: &str) -> usize {
 /// cell applies ON TOP of [`codec_rate_factor_pct`]. Built-in 150 for every
 /// codec — what the libvpx 4:4:4 pump used before the column existed —
 /// until a cell's field test sets its own through
-/// `ROOMLERD_RATE_FACTOR_<CODEC>_444` (config `rate_factor_<codec>_444`),
+/// `MESHHARBORD_RATE_FACTOR_<CODEC>_444` (config `rate_factor_<codec>_444`),
 /// clamped 50–400 like the codec factors. Always 100 for 4:2:0.
 pub fn chroma_rate_factor_pct(codec_label: &str, chroma444: bool) -> usize {
     if !chroma444 {
@@ -277,7 +277,7 @@ pub fn h264_cq_adjust(encoder_name: &str, cq: u32) -> u32 {
 /// `verdict` = `Some((honors_lp1, honors_lp0))` from the startup probe
 /// (does the encoder emit a key-flagged packet after a runtime force, per
 /// `low_power` mode?), `None` when the probe is disabled or never ran.
-/// `forced_lp` = the `ROOMLERD_QSV_LOW_POWER` operator override.
+/// `forced_lp` = the `MESHHARBORD_QSV_LOW_POWER` operator override.
 ///
 /// The long GOP (on-demand-only keys — kills the residual ~1 Hz natural-key
 /// pulse on VP9-over-DC Intel hosts) is granted ONLY for a mode the probe
@@ -332,7 +332,7 @@ pub fn scale_cq_bias(enc_w: u32, enc_h: u32, native_w: u32, native_h: u32, max_s
 }
 
 /// Env-resolved `max_steps` for [`scale_cq_bias`]:
-/// `ROOMLERD_SCALE_CQ_BOOST`, default 4, `0` disables the bias.
+/// `MESHHARBORD_SCALE_CQ_BOOST`, default 4, `0` disables the bias.
 pub fn scale_cq_boost_steps() -> u32 {
     tunnel_core::env::node_env("SCALE_CQ_BOOST")
         .and_then(|v| v.trim().parse().ok())
@@ -361,7 +361,7 @@ pub fn apply_cq_bias(cq: u32, steps: i32) -> u32 {
 /// viewer-rate divisor at 3 (the reported "9 fps, not fully smooth").
 /// Softer motion frames are the fluidity lever the dial promises; the
 /// at-rest image is untouched (native ⇒ bias 0 ⇒ base CQ + polish).
-/// Env `ROOMLERD_CONSTRAINED_CQ_RELIEF` / config
+/// Env `MESHHARBORD_CONSTRAINED_CQ_RELIEF` / config
 /// `constrained_cq_relief` (default 4, 0 = no relief, max 12).
 pub fn constrained_cq_relief() -> i32 {
     tunnel_core::env::node_env("CONSTRAINED_CQ_RELIEF")
@@ -378,7 +378,7 @@ pub fn constrained_cq_relief() -> i32 {
 /// freeze) and the "window drags seconds behind" lag. Budgeting the
 /// in-flight bytes to a fraction of a second converts queue-lag into an
 /// immediate production skip the viewer perceives as a lower — but
-/// current — frame rate. Env `ROOMLERD_CONSTRAINED_QUEUE_MS` /
+/// current — frame rate. Env `MESHHARBORD_CONSTRAINED_QUEUE_MS` /
 /// config `constrained_queue_ms` (default 450, 0 = unbounded, max 2000).
 pub fn constrained_queue_ms() -> u64 {
     tunnel_core::env::node_env("CONSTRAINED_QUEUE_MS")
@@ -411,7 +411,7 @@ pub fn constrained_queue_budget_bytes_at(ceiling_bps: u32, queue_ms: u64) -> usi
 }
 
 /// FR-59 P5 — a link at or below this remembered rate opens in the
-/// slow-link profile (bps). Env `ROOMLERD_SLOW_LINK_PROFILE_BPS` /
+/// slow-link profile (bps). Env `MESHHARBORD_SLOW_LINK_PROFILE_BPS` /
 /// config `slow_link_profile_bps` (default 1 000 000, 0 = never).
 pub fn slow_link_profile_bps() -> u32 {
     tunnel_core::env::node_env("SLOW_LINK_PROFILE_BPS")
@@ -522,7 +522,7 @@ pub fn constrained_queue_reference_bps(
 /// forced IDR rather than QP-clamping), and the follow-on encode call
 /// hung in the driver. corplap had run av1_qsv all day on rc.441's 2×
 /// window with zero errors. Sub-100 values remain available per-host
-/// for experiments (env `ROOMLERD_CONSTRAINED_HRD_PCT` / config
+/// for experiments (env `MESHHARBORD_CONSTRAINED_HRD_PCT` / config
 /// `constrained_hrd_pct`, clamp [25, 200]) but the DEFAULT must not
 /// undercut a codec's forced-IDR floor; bounding IDR transit properly
 /// is the measured-rate program's job (derive the window per codec
@@ -542,7 +542,7 @@ pub fn constrained_hrd_pct() -> usize {
 /// immediate production skip, exactly the rc.442 constrained rationale.
 /// Tighter default than the relay's 450 (a LAN's round trip is ~1 ms —
 /// there is no transit to hide the queue behind). Env
-/// `ROOMLERD_DIRECT_QUEUE_MS` / config `direct_queue_ms`
+/// `MESHHARBORD_DIRECT_QUEUE_MS` / config `direct_queue_ms`
 /// (default 150, 0 = unbounded, max 2000).
 pub fn direct_queue_ms() -> u64 {
     tunnel_core::env::node_env("DIRECT_QUEUE_MS")
@@ -652,7 +652,7 @@ pub fn direct_gate_trips(
 /// window at 200 regardless: Intel's AV1 VDENC ERRORS (then hangs the
 /// driver) on a forced IDR that exceeds the reservoir instead of
 /// QP-clamping like the H.264/HEVC paths — the rc.443 incident. Env
-/// `ROOMLERD_DIRECT_HRD_PCT` / config `direct_hrd_pct`
+/// `MESHHARBORD_DIRECT_HRD_PCT` / config `direct_hrd_pct`
 /// (clamp [25, 200]).
 pub fn direct_hrd_pct() -> usize {
     tunnel_core::env::node_env("DIRECT_HRD_PCT")
@@ -664,7 +664,7 @@ pub fn direct_hrd_pct() -> usize {
 /// Real frames since the last settle that make a motion episode "a burst"
 /// worth an idle-settle resync IDR. A window-drag produces hundreds; a caret
 /// blink, a clock tick, or a couple of keystrokes produce 1-3 and must NOT
-/// qualify. Env `ROOMLERD_SETTLE_KF_MIN_BURST` overrides; `0` restores
+/// qualify. Env `MESHHARBORD_SETTLE_KF_MIN_BURST` overrides; `0` restores
 /// the legacy rc.187 fire-on-every-settle behaviour.
 pub const SETTLE_KF_MIN_BURST: u32 = 10;
 
@@ -706,7 +706,7 @@ impl SettleKeyframeGate {
         }
     }
 
-    /// Defaults + the `ROOMLERD_SETTLE_KF_MIN_BURST` override. `0` =
+    /// Defaults + the `MESHHARBORD_SETTLE_KF_MIN_BURST` override. `0` =
     /// legacy (fire on the first settle of every episode, no cooldown).
     pub fn from_env() -> Self {
         let min_burst = tunnel_core::env::node_env("SETTLE_KF_MIN_BURST")
@@ -802,7 +802,7 @@ pub const REFINE_SPARSE_MAX: u32 = 2;
 /// deltas, hover highlights — invisible to the state machine. Terminal
 /// text compresses hard, so a few scrolled lines at the LOW rung can duck
 /// under this — harmless: the stream just refines sooner. Env
-/// `ROOMLERD_IDLE_REFINE_MIN_FRAME_KB` (0 = legacy: every real frame
+/// `MESHHARBORD_IDLE_REFINE_MIN_FRAME_KB` (0 = legacy: every real frame
 /// counts).
 ///
 /// P7c-2 — the threshold is defined AT the reference rung below and
@@ -854,7 +854,7 @@ pub const REFINE_MIN_BYTES_FLOOR: usize = 2048;
 /// mechanisms (maxrate, AIMD, send-channel shedding, viewer-rate
 /// divisor) own link protection, not the rung. Untracked backends keep
 /// the byte leg unchanged. Env
-/// `ROOMLERD_IDLE_REFINE_MAJOR_AREA_PERMILLE` (0 = any non-empty
+/// `MESHHARBORD_IDLE_REFINE_MAJOR_AREA_PERMILLE` (0 = any non-empty
 /// tracked damage counts, i.e. the pre-P8a-2 posture).
 pub const REFINE_MAJOR_AREA_PERMILLE: u32 = 400;
 
@@ -981,12 +981,12 @@ impl IdleRefine {
         }
     }
 
-    /// Kill switch `ROOMLERD_IDLE_REFINE=0` (or `false`); byte floor
-    /// `ROOMLERD_IDLE_REFINE_MIN_FRAME_KB` (0 = count every real
+    /// Kill switch `MESHHARBORD_IDLE_REFINE=0` (or `false`); byte floor
+    /// `MESHHARBORD_IDLE_REFINE_MIN_FRAME_KB` (0 = count every real
     /// frame); major-area floor
-    /// `ROOMLERD_IDLE_REFINE_MAJOR_AREA_PERMILLE` (0 = any non-empty
+    /// `MESHHARBORD_IDLE_REFINE_MAJOR_AREA_PERMILLE` (0 = any non-empty
     /// tracked damage restores the cap — the pre-P8a-2 posture); tracked
-    /// settle `ROOMLERD_IDLE_REFINE_SETTLE_MS` (clamped 100-5000).
+    /// settle `MESHHARBORD_IDLE_REFINE_SETTLE_MS` (clamped 100-5000).
     /// node_env so the config-surface keys reach every read.
     pub fn from_env() -> Self {
         let enabled = !matches!(
@@ -1334,15 +1334,15 @@ mod tests {
         // SAFETY: serialised by RELAY_ENV_LOCK against every test that reads
         // `RATE_FACTOR_*` (set_var is unsafe in edition 2024 because of
         // cross-thread env races).
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "RATE_FACTOR_HEVC", "140") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "RATE_FACTOR_HEVC", "140") };
         assert_eq!(codec_rate_factor_pct("HEVC"), 140);
         // Clamped to 50–400.
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "RATE_FACTOR_HEVC", "10") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "RATE_FACTOR_HEVC", "10") };
         assert_eq!(codec_rate_factor_pct("HEVC"), 50);
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "RATE_FACTOR_HEVC", "9000") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "RATE_FACTOR_HEVC", "9000") };
         assert_eq!(codec_rate_factor_pct("HEVC"), 400);
         // Garbage falls back to the built-in.
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "RATE_FACTOR_HEVC", "fast") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "RATE_FACTOR_HEVC", "fast") };
         assert_eq!(codec_rate_factor_pct("HEVC"), 125);
         unsafe { tunnel_core::env::test_env::clear("RATE_FACTOR_HEVC") };
         // Other codecs untouched by the HEVC var.
@@ -1366,7 +1366,7 @@ mod tests {
             assert_eq!(chroma_rate_factor_pct(codec, false), 100);
             assert_eq!(chroma_rate_factor_pct(codec, true), 150);
         }
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "RATE_FACTOR_VP9_444", "120") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "RATE_FACTOR_VP9_444", "120") };
         assert_eq!(chroma_rate_factor_pct("VP9", true), 120);
         assert_eq!(
             chroma_rate_factor_pct("VP9", false),
@@ -1378,11 +1378,11 @@ mod tests {
             150,
             "another codec's column is untouched"
         );
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "RATE_FACTOR_VP9_444", "10") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "RATE_FACTOR_VP9_444", "10") };
         assert_eq!(chroma_rate_factor_pct("VP9", true), 50);
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "RATE_FACTOR_VP9_444", "9000") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "RATE_FACTOR_VP9_444", "9000") };
         assert_eq!(chroma_rate_factor_pct("VP9", true), 400);
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "RATE_FACTOR_VP9_444", "crisp") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "RATE_FACTOR_VP9_444", "crisp") };
         assert_eq!(chroma_rate_factor_pct("VP9", true), 150);
         unsafe { tunnel_core::env::test_env::clear("RATE_FACTOR_VP9_444") };
         assert_eq!(chroma_rate_factor_pct("VP9", true), 150);
@@ -1426,7 +1426,7 @@ mod tests {
         assert_eq!(chroma_rate_factor_pct("HEVC", false), 100);
         // The pump's compose rule at the HEVC built-in (125): 4:4:4 → 187 %
         // of the base band; 4:2:0 leaves it unchanged. Literals only — the
-        // codec-factor env test above mutates ROOMLERD_RATE_FACTOR_HEVC
+        // codec-factor env test above mutates MESHHARBORD_RATE_FACTOR_HEVC
         // and cargo runs tests in parallel threads.
         assert_eq!(125 * chroma_rate_factor_pct("HEVC", true) / 100, 187);
         assert_eq!(125 * chroma_rate_factor_pct("HEVC", false) / 100, 125);

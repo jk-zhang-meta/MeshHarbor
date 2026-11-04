@@ -24,7 +24,7 @@ pub(super) trait Controller {
 
     fn on_duplicate_ack(&mut self, now: Instant) {}
 
-    /// ROOMLER PATCH: SACK recovery (`tcp.rs`) found a loss, possibly before
+    /// MESHHARBOR PATCH: SACK recovery (`tcp.rs`) found a loss, possibly before
     /// three duplicate ACKs arrived; react as to a fast retransmit.
     fn on_fast_retransmit(&mut self, now: Instant) {
         self.on_retransmit(now)
@@ -37,7 +37,7 @@ pub(super) trait Controller {
     /// Set the maximum segment size.
     fn set_mss(&mut self, mss: usize) {}
 
-    /// ROOMLER PATCH: whether the window is in slow start, which sets the
+    /// MESHHARBOR PATCH: whether the window is in slow start, which sets the
     /// pacing gain (the window doubles per round trip there).
     fn in_slow_start(&self) -> bool {
         false

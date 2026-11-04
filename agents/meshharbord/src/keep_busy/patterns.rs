@@ -628,7 +628,7 @@ mod tests {
     const ALL_SHAPES: [Pattern; 11] = SHUFFLE_ORDER;
 
     /// FR-92 P10 — the LocalAPI's copy of the pattern names (what
-    /// `roomler keep-busy on --pattern` offers) is exactly this list, in this
+    /// `meshharbor keep-busy on --pattern` offers) is exactly this list, in this
     /// order: the companion and the CLI cannot link the agent.
     #[test]
     fn the_localapi_pattern_list_is_ours() {

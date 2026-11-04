@@ -4,7 +4,7 @@ license = "MPL-2.0"
 publish = false
 version.workspace = true
 edition.workspace = true
-description = "Unified install + onboarding wizard for the Roomler daemon (Windows MSI flavours) and the roomler tunnel CLI (Win/Linux/macOS)."
+description = "Unified install + onboarding wizard for the MeshHarbor daemon (Windows MSI flavours) and the meshharbor tunnel CLI (Win/Linux/macOS)."
 
 [lib]
 # Lib name DELIBERATELY avoids the "install"/"setup"/"update"/"patch"
@@ -92,7 +92,7 @@ toml = { workspace = true }
 # driver, like every agent-side consumer); `uuid` mints the per-run id
 # (a v4's simple form is exactly the 32 hex chars the server accepts);
 # `reqwest` posts a record and tells a network failure from a refusal on
-# the enroll's error chain. All three already compile for `roomlerd`.
+# the enroll's error chain. All three already compile for `meshharbord`.
 meshharbor-remote-control = { path = "../../crates/remote_control", default-features = false }
 uuid = { workspace = true }
 reqwest = { workspace = true }
@@ -104,7 +104,7 @@ reqwest = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 # `config::test_fixture()` for the orchestrator's config-shaping tests — the
-# same escape roomlerd uses: the fixture is feature-gated so a downstream
+# same escape meshharbord uses: the fixture is feature-gated so a downstream
 # crate's test build can see it while no production build ever carries it.
 meshharbor-node-core = { path = "../../crates/agent-core", features = ["test-fixtures"] }
 

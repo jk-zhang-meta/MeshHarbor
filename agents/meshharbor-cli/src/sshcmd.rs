@@ -5,7 +5,7 @@
 //!
 //! ## Why this execs the system `ssh` instead of embedding a client
 //!
-//! What roomler adds is *discovery, authorization and host-key distribution*:
+//! What meshharbor adds is *discovery, authorization and host-key distribution*:
 //! which device, may you, where does it live, and what key will answer. Once
 //! those are known, the remaining problem — terminal raw mode, window resize,
 //! escape sequences, agent forwarding, `scp`, everything a user expects — is
@@ -32,12 +32,12 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use crate::localclient;
 
-/// Username presented to the target. Cosmetic: the roomler SSH server
+/// Username presented to the target. Cosmetic: the meshharbor SSH server
 /// authenticates by KEY and resolves the local account from the device's
 /// policy (`account_mode`), so this never selects an identity. A fixed,
 /// recognisable value beats echoing the local username, which would imply a
 /// correspondence that does not exist.
-const SSH_USER: &str = "roomler";
+const SSH_USER: &str = "meshharbor";
 
 pub async fn run(device: &str, session_secs: u64, args: &[String]) -> Result<i32> {
     let (node, socks_port) = localclient::ssh_target(device).await?;
@@ -95,7 +95,7 @@ pub async fn run(device: &str, session_secs: u64, args: &[String]) -> Result<i32
     .context("writing the session key")?;
     let kh_path = dir.path().join("known_hosts");
     // Bracketed host form — required whenever the port is not 22, which for
-    // roomler SSH is the normal case (default 2222).
+    // meshharbor SSH is the normal case (default 2222).
     write_private(
         &kh_path,
         format!("[{ssh_address}]:{ssh_port} {host_pubkey}\n").as_bytes(),
@@ -192,30 +192,30 @@ async fn socks_bridge(
     Ok(())
 }
 
-/// `roomler proxy <host> <port>` — a stdio↔TCP pipe for OpenSSH's
+/// `meshharbor proxy <host> <port>` — a stdio↔TCP pipe for OpenSSH's
 /// `ProxyCommand` (P6c).
 ///
 /// ```text
-/// Host *.roomler
-///   ProxyCommand roomler proxy %h %p
+/// Host *.meshharbor
+///   ProxyCommand meshharbor proxy %h %p
 ///   Port 2222
 /// ```
 ///
-/// `%h` arrives as `corplap-3.roomler`; the lookup strips that suffix, and a
+/// `%h` arrives as `corplap-3.meshharbor`; the lookup strips that suffix, and a
 /// MagicDNS name's, before matching (#1573 — before it did, this very recipe
-/// failed for every host). `Port 2222` is roomler SSH's default intercept
+/// failed for every host). `Port 2222` is meshharbor SSH's default intercept
 /// port; without it `%p` is 22, which reaches only a device's own `sshd`.
 ///
 /// This is TRANSPORT AND NAME RESOLUTION ONLY, and the distinction matters.
 /// `ProxyCommand` hands the client a byte pipe; it cannot supply an identity
 /// or a host key, because by the time it runs, `ssh` has already decided which
-/// key to offer and which `known_hosts` to check. A roomler grant is a
+/// key to offer and which `known_hosts` to check. A meshharbor grant is a
 /// single-use key with a ~60 s life, so it cannot live in a static
 /// `~/.ssh/config` either — which is exactly why [`run`] exists and why this
 /// is a *different* tool rather than the same one.
 ///
 /// So: use this to reach a device **by name** with keys you already manage —
-/// a host running its own `sshd`, or a roomler-SSH device where your key is in
+/// a host running its own `sshd`, or a meshharbor-SSH device where your key is in
 /// `ssh_authorized_keys` (the break-glass path). Use `meshharbor ssh` when you
 /// want the grant, the policy-resolved account, and host-key verification
 /// handled for you.
@@ -235,7 +235,7 @@ pub async fn proxy(host: &str, port: u16) -> Result<()> {
             Some(ip) => ip,
             None => bail!(
                 "no device named {host:?} on this mesh (or it has no overlay address). \
-                 A device is matched by its bare name, as <name>.roomler, or by its \
+                 A device is matched by its bare name, as <name>.meshharbor, or by its \
                  MagicDNS name; `meshharbor peers` lists what is reachable."
             ),
         }
@@ -266,7 +266,7 @@ pub async fn proxy(host: &str, port: u16) -> Result<()> {
 const HOSTNAME_BEFORE_PERCENT_H: &str = " (not a mesh overlay address — if you \
      meant a device by name, check ssh_config for a `HostName` line: OpenSSH \
      substitutes it into %h before running the ProxyCommand, so the name \
-     never reached roomler)";
+     never reached meshharbor)";
 
 /// Whether `ip` lies in the overlay's own space: IPv4 `100.64.0.0/10`, which
 /// every tenant's block is carved from, or the derived IPv6
@@ -333,7 +333,7 @@ pub(crate) fn mint_session_key() -> Result<ssh_key::PrivateKey> {
     // this way: no need to agree with anyone about `rand_core` generations.
     let seed: [u8; 32] = rand::random();
     let mut key = PrivateKey::from(Ed25519Keypair::from_seed(&seed));
-    key.set_comment("roomler-session");
+    key.set_comment("meshharbor-session");
     Ok(key)
 }
 
@@ -342,10 +342,10 @@ pub(crate) struct PrivateDir(PathBuf);
 
 impl PrivateDir {
     fn new() -> Result<Self> {
-        Self::named("roomler-ssh")
+        Self::named("meshharbor-ssh")
     }
 
-    /// FR-90 P3-9-2b — one whose name starts `prefix-`, for `roomler
+    /// FR-90 P3-9-2b — one whose name starts `prefix-`, for `meshharbor
     /// connect`'s files too.
     pub(crate) fn named(prefix: &str) -> Result<Self> {
         // Name from the OS CSPRNG, not the pid or the clock: a predictable
@@ -548,7 +548,7 @@ mod tests {
         tokio::spawn(async move {
             let (mut s, _) = listener.accept().await.unwrap();
             // Speak first, like a real sshd, and only then close.
-            s.write_all(b"SSH-2.0-RoomlerTest\r\n").await.unwrap();
+            s.write_all(b"SSH-2.0-MeshHarborTest\r\n").await.unwrap();
             s.shutdown().await.unwrap();
         });
 
@@ -559,7 +559,7 @@ mod tests {
 
         assert_eq!(
             String::from_utf8_lossy(&out),
-            "SSH-2.0-RoomlerTest\r\n",
+            "SSH-2.0-MeshHarborTest\r\n",
             "input EOF must half-close, not abandon the peer's reply"
         );
     }

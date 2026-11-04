@@ -45,7 +45,7 @@ pub struct PortalCapture {
     /// FR-93 P5f — whether this user's display session is the one on its
     /// seat (a user switch, the login screen), as [`watch_session`] last read
     /// it. `None` where nothing watches: a root daemon, or
-    /// `ROOMLERD_SESSION_WATCH=0`.
+    /// `MESHHARBORD_SESSION_WATCH=0`.
     watch: Option<std::sync::Arc<SessionWatch>>,
     /// When the last frame arrived: proof the compositor draws this session,
     /// newer than the watch's read on the way back (see [`away_now`]).
@@ -74,7 +74,7 @@ impl PortalOpen {
             && (!mutter || super::mutter::input_enabled());
         Self {
             // P4 — input rides the same portal session ONLY when the operator
-            // opts in (`ROOMLERD_PORTAL_INPUT=1`). Default OFF, deliberately: a
+            // opts in (`MESHHARBORD_PORTAL_INPUT=1`). Default OFF, deliberately: a
             // `WithInput` session uses a SEPARATE consent grant and restore
             // token from capture-only, so defaulting it on would make every
             // portal capture — even on a host that already granted+persisted
@@ -130,7 +130,7 @@ impl PortalCapture {
         }
         if window_capture {
             tracing::info!(
-                "portal capture: asking for ONE WINDOW (ROOMLERD_WINDOW_CAPTURE=1) — the portal \
+                "portal capture: asking for ONE WINDOW (MESHHARBORD_WINDOW_CAPTURE=1) — the portal \
                  will show a picker, so somebody has to be at the screen"
             );
         }
@@ -289,7 +289,7 @@ impl Drop for PortalCapture {
 /// on its seat: a D-Bus property read, no process.
 const SESSION_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// FR-93 P5f kill switch `ROOMLERD_SESSION_WATCH=0`: no watcher, and a
+/// FR-93 P5f kill switch `MESHHARBORD_SESSION_WATCH=0`: no watcher, and a
 /// session switched away reads as it did before, its last frame kept alive.
 fn session_watch_enabled() -> bool {
     tunnel_core::env::flag("SESSION_WATCH", true)
@@ -622,7 +622,7 @@ impl ScreenCapture for PortalCapture {
     }
 }
 
-/// FR-93 P6c kill switch `ROOMLERD_SCREEN_STOP=0`: a share stopped at the
+/// FR-93 P6c kill switch `MESHHARBORD_SCREEN_STOP=0`: a share stopped at the
 /// screen is reopened, as before P6c.
 fn screen_stop_enabled() -> bool {
     tunnel_core::env::flag("SCREEN_STOP", true)
@@ -740,7 +740,7 @@ mod tests {
     }
 
     /// FR-93 P6c — only the person's Stop is typed, so only it ends the
-    /// session, and `ROOMLERD_SCREEN_STOP=0` makes it the plain error that
+    /// session, and `MESHHARBORD_SCREEN_STOP=0` makes it the plain error that
     /// reopens. Every other end keeps the error it was, with its status.
     #[test]
     fn only_the_stop_at_the_screen_is_typed_and_the_switch_turns_it_off() {

@@ -646,7 +646,7 @@ pub struct CampaignRow {
     /// Goal conversions — `not_measured` when the purestat site has no
     /// definition for a goal (the row's visitors are still real).
     pub goals: Measured<CampaignGoals>,
-    /// Roomler's own sign-ups of the day with the same key.
+    /// MeshHarbor's own sign-ups of the day with the same key.
     pub signups: i64,
 }
 
@@ -1023,7 +1023,7 @@ pub struct Quality {
     #[serde(default = "quality_before_p9a")]
     pub by_agent_version: Measured<Vec<VersionDayRow>>,
     /// P9b — the viewer's post-session ratings; `not_measured` while the
-    /// prompt is off on this server (`ROOMLER__GROWTH__FEEDBACK`).
+    /// prompt is off on this server (`MESHHARBOR__GROWTH__FEEDBACK`).
     #[serde(default = "quality_before_p9b")]
     pub ratings: Measured<Ratings>,
 }
@@ -2864,7 +2864,7 @@ async fn blog_section(ps: &mut Purestat, w: &Windows) -> Result<Blog, PurestatEr
 const CAMPAIGN_GOALS: [&str; 4] = ["signup", "subscribe", "install-copy", "github-outbound"];
 
 /// The join key: the taxonomy's spelling of source and medium (purestat's
-/// rows are normalised here, roomler's were at ingress), the campaign
+/// rows are normalised here, meshharbor's were at ingress), the campaign
 /// trimmed and lowercased.
 fn campaign_key(
     source: &str,
@@ -3125,7 +3125,7 @@ pub async fn compute(
     let ratings = match &remote {
         None => Measured::unmounted("remote"),
         Some(_) if !state.settings.growth.feedback => Measured::NotMeasured(NotMeasured::now(
-            "the rating prompt is off on this server (ROOMLER__GROWTH__FEEDBACK)",
+            "the rating prompt is off on this server (MESHHARBOR__GROWTH__FEEDBACK)",
         )),
         Some(_) => Measured::Value(ratings_section(state, &w, set).await?),
     };
@@ -3159,7 +3159,7 @@ pub async fn compute(
         Measured::Value(super::alerts::day_section(state, &w).await?)
     } else {
         Measured::NotMeasured(NotMeasured::now(
-            "alerts are off on this server (ROOMLER__GROWTH__ALERTS)",
+            "alerts are off on this server (MESHHARBOR__GROWTH__ALERTS)",
         ))
     };
     // P7 — the repository's counters and traffic, as the `saas` puller

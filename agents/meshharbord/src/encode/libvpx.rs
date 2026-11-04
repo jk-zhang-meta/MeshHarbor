@@ -15,7 +15,7 @@
 //!   - VP9 profile 1, 8-bit 4:4:4 (codec string `vp09.01.10.08`)
 //!   - `tune=screen-content` for desktop content
 //!   - `cpu-used` defaults to 6, env-overridable via
-//!     `ROOMLERD_VP9_CPU_USED` in 4..=9. Was 8 (fastest) pre-rc.33;
+//!     `MESHHARBORD_VP9_CPU_USED` in 4..=9. Was 8 (fastest) pre-rc.33;
 //!     6 matches RustDesk's default and doubles the per-macroblock
 //!     mode-search budget so motion frames stop falling back to
 //!     SKIP/INTRA at the CBR ceiling.
@@ -235,7 +235,7 @@ impl Vp9Encoder {
         };
         cfg.rc_target_bitrate = DEFAULT_BITRATE_BPS / 1000; // libvpx wants kbps
         // rc.42 — rate-control mode env-var opt-in. Default stays CBR
-        // (pre-rc.42 behaviour); ROOMLERD_VP9_RC_MODE=vbr lets the
+        // (pre-rc.42 behaviour); MESHHARBORD_VP9_RC_MODE=vbr lets the
         // encoder burst on scene changes at the cost of a spikier
         // bitrate envelope. Plan rc.43 flips the default after one
         // cycle of field data. See [[plan]] cycle 1.1.
@@ -255,7 +255,7 @@ impl Vp9Encoder {
         // while the deltas are what progressively re-sharpen static text.
         // The reliable SCTP DataChannel needs no periodic IDRs — first frame,
         // late join, and resync are all ON-DEMAND (`request_keyframe` is
-        // synchronous on libvpx). `ROOMLERD_VP9_KF_SECONDS=<1..60>`
+        // synchronous on libvpx). `MESHHARBORD_VP9_KF_SECONDS=<1..60>`
         // restores a periodic cadence for operators who prefer the old
         // behaviour (rc.38/rc.171 history in git).
         match kf_seconds_from_env() {
@@ -353,7 +353,7 @@ impl Vp9Encoder {
         // budget per macroblock vs the pre-rc.33 default of 8, which
         // restores motion-frame quality at the cost of ~35-45% more
         // encode CPU on the encode thread. Operator escape hatch via
-        // `ROOMLERD_VP9_CPU_USED` (clamped 4..=9) lets a CPU-
+        // `MESHHARBORD_VP9_CPU_USED` (clamped 4..=9) lets a CPU-
         // starved host roll back to 7 or 8 without a rebuild.
         let cpu_used = cpu_used_from_env();
         self.set_ctrl(
@@ -842,7 +842,7 @@ fn num_cpus_for_encode() -> c_uint {
     logical.clamp(1, 8) as c_uint
 }
 
-/// Read the `ROOMLERD_VP9_CPU_USED` escape hatch. Default 6
+/// Read the `MESHHARBORD_VP9_CPU_USED` escape hatch. Default 6
 /// (RustDesk-aligned, motion-quality optimal). Clamp to 4..=9 — values
 /// outside that range are libvpx-internally undefined for VP9. Any
 /// unparseable / unset value falls back to the default.
@@ -860,7 +860,7 @@ pub(crate) fn cpu_used_from_env() -> c_int {
 /// 14.0-14.7 Mbps of a 20.7 Mbps target) and the one that holds every
 /// wheel-notch frame at a quality a reader can use. Relay/constrained
 /// sessions keep libvpx's 63 — there the rate cap is what matters. Env
-/// `ROOMLERD_VP9_DIRECT_MAX_Q` overrides in both directions (63 restores the
+/// `MESHHARBORD_VP9_DIRECT_MAX_Q` overrides in both directions (63 restores the
 /// pre-P3 behaviour); clamp [0, 63].
 pub(crate) fn vp9_direct_max_q_from_env() -> u32 {
     const DEFAULT_DIRECT_MAX_Q: u32 = 16;
@@ -880,7 +880,7 @@ pub(crate) const VP9_MAX_Q_UNCAPPED: u32 = 63;
 /// field proved the old ~3 s default was the "text blurs every ~3 s"
 /// pulse the operator reported (each periodic key QP-starves under the
 /// rate cap; deltas do the re-sharpening). Setting
-/// `ROOMLERD_VP9_KF_SECONDS=<1..60>` restores a periodic cadence.
+/// `MESHHARBORD_VP9_KF_SECONDS=<1..60>` restores a periodic cadence.
 pub(crate) fn kf_seconds_from_env() -> Option<u32> {
     node_env("VP9_KF_SECONDS")
         .and_then(|v| v.trim().parse::<u32>().ok())
@@ -888,7 +888,7 @@ pub(crate) fn kf_seconds_from_env() -> Option<u32> {
         .map(|s| s.clamp(1, 60))
 }
 
-/// Read the `ROOMLERD_VP9_RC_MODE` env var. Default `cbr` (pre-
+/// Read the `MESHHARBORD_VP9_RC_MODE` env var. Default `cbr` (pre-
 /// rc.42 behaviour). Accepted: `cbr` | `vbr` | `cq`. Any unrecognised
 /// value falls back to `cbr` with a debug-log line.
 ///
@@ -897,7 +897,7 @@ pub(crate) fn kf_seconds_from_env() -> Option<u32> {
 /// envelope is acceptable.
 /// Resolve the VP9 chroma format for this session. rc.61.
 ///
-/// Env var `ROOMLERD_VP9_CHROMA` values:
+/// Env var `MESHHARBORD_VP9_CHROMA` values:
 ///   - `""` / `"yuv444"` / `"444"` → [`Vp9Chroma::Yuv444`] (default).
 ///   - `"yuv420"` / `"420"` → [`Vp9Chroma::Yuv420`].
 ///
@@ -912,7 +912,7 @@ pub fn vp9_chroma_from_env() -> Vp9Chroma {
         other => {
             tracing::debug!(
                 value = other,
-                "vp9-444: unrecognised ROOMLERD_VP9_CHROMA — falling back to yuv444"
+                "vp9-444: unrecognised MESHHARBORD_VP9_CHROMA — falling back to yuv444"
             );
             Vp9Chroma::Yuv444
         }
@@ -934,7 +934,7 @@ fn rc_mode_from_env() -> vpx::vpx_rc_mode {
         other => {
             tracing::debug!(
                 value = other,
-                "vp9-444: unrecognised ROOMLERD_VP9_RC_MODE — falling back to cbr"
+                "vp9-444: unrecognised MESHHARBORD_VP9_RC_MODE — falling back to cbr"
             );
             vpx::vpx_rc_mode::VPX_CBR
         }
@@ -1092,11 +1092,11 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         unsafe { tunnel_core::env::test_env::clear("VP9_DIRECT_MAX_Q") };
         assert_eq!(vp9_direct_max_q_from_env(), 16);
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "VP9_DIRECT_MAX_Q", "24") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "VP9_DIRECT_MAX_Q", "24") };
         assert_eq!(vp9_direct_max_q_from_env(), 24);
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "VP9_DIRECT_MAX_Q", "200") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "VP9_DIRECT_MAX_Q", "200") };
         assert_eq!(vp9_direct_max_q_from_env(), 63);
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "VP9_DIRECT_MAX_Q", "junk") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "VP9_DIRECT_MAX_Q", "junk") };
         assert_eq!(vp9_direct_max_q_from_env(), 16);
         unsafe { tunnel_core::env::test_env::clear("VP9_DIRECT_MAX_Q") };
         assert_eq!(VP9_MAX_Q_UNCAPPED, 63);
@@ -1263,8 +1263,8 @@ mod tests {
                 TARGET_BPS
             };
             unsafe {
-                tunnel_core::env::test_env::set_as("ROOMLERD_", "VP9_RC_MODE", rc);
-                tunnel_core::env::test_env::set_as("ROOMLERD_", "VP9_CPU_USED", cpu);
+                tunnel_core::env::test_env::set_as("MESHHARBORD_", "VP9_RC_MODE", rc);
+                tunnel_core::env::test_env::set_as("MESHHARBORD_", "VP9_CPU_USED", cpu);
             }
             let mut enc = Vp9Encoder::new_with_fps(W, H, 30).expect("encoder init");
             VideoEncoder::set_bitrate(&mut enc, target);

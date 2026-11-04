@@ -124,7 +124,7 @@ plan doc is retired):
   every consumer (LocalAPI `status`/`peers`, the tray, the admin nodes table via
   a TS mirror of the derivation) computes it locally.
 - **MagicDNS answers AAAA** with the derived v6 by default;
-  `ROOMLERD_DNS_AAAA=0` reverts to A-only — the mixed-fleet escape hatch,
+  `MESHHARBORD_DNS_AAAA=0` reverts to A-only — the mixed-fleet escape hatch,
   since a pre-v6 peer's OS doesn't own its derived address and v6 toward it
   blackholes (happy-eyeballs apps fall back on their own).
 - `roomler ping <name> -6` resolves a peer's derived v6; the netstack SOCKS
@@ -166,7 +166,7 @@ Two consequences worth knowing:
   the operator recovery step when a previously rotated device (`key_epoch > 0`)
   loses its local config and reconnects with a fresh key at `key_epoch = 0`
   (which `rehydrate` otherwise rejects as stale epoch). Note that
-  `ROOMLER_OVERLAY_KEY_TTL_SECS` applies to all newly created node rows regardless
+  `MESHHARBOR_OVERLAY_KEY_TTL_SECS` applies to all newly created node rows regardless
   of agent version; legacy agents without `key-rotate` capability require manual
   update/intervention upon key expiry. To remove a device for good, delete it.
   There is deliberately no per-machine overlay denylist.
@@ -276,7 +276,7 @@ so in a WARN line. Raise `net.core.rmem_max` and `net.core.wmem_max` to at least
 reader falls behind the arrival rate. Datagrams then wait rather than vanish,
 and for TCP inside the tunnel a drop costs more than the wait. The kernel
 charges a socket only for what is queued, so an idle carrier costs nothing.
-Kill switch: `ROOMLERD_OVERLAY_SOCKBUF=0`.
+Kill switch: `MESHHARBORD_OVERLAY_SOCKBUF=0`.
 
 ---
 
@@ -315,7 +315,7 @@ flowchart TD
     style T6 fill:#f0f0f0
 ```
 
-| # | Tier | Carrier | Wins when | Flag — `ROOMLERD_OVERLAY_…` |
+| # | Tier | Carrier | Wins when | Flag — `MESHHARBORD_OVERLAY_…` |
 |---|---|---|---|---|
 | 1 | LAN direct | UDP, interface socket | peer shares a /24 | `DIRECT` (**on**) |
 | 2 | direct-to-public | UDP, egress socket | peer's NIC is public | `PUBLIC_DIRECT` (off) |
@@ -600,7 +600,7 @@ a zone's rich rules ("2 rich rules") rather than guessing what they admit, and
 a zone bound to a source range can admit more than the interface's zone says.
 
 ⚠️ **ufw needs root to answer**, so a per-user daemon reports no ufw line rather
-than a guess. `ROOMLERD_HOST_FW_PROBE=0` switches the probe off. macOS's
+than a guess. `MESHHARBORD_HOST_FW_PROBE=0` switches the probe off. macOS's
 Application Firewall is not asked: it passes forwarded traffic and filters per
 application ([`overlay-exit-nodes.md`](overlay-exit-nodes.md)).
 
@@ -936,12 +936,12 @@ rejected with HTTP `409 Conflict`.
 
 ## 8c. Optional Post-Quantum WireGuard PSK (B7)
 
-By default (`ROOMLERD_OVERLAY_PQ_PSK=off`), WireGuard peers use `preshared_key = None`
+By default (`MESHHARBORD_OVERLAY_PQ_PSK=off`), WireGuard peers use `preshared_key = None`
 and emit zero post-quantum control frames. Operators can enable out-of-band
 ML-KEM-768 (NIST FIPS 203) hybrid pre-shared key negotiation and periodic
 rotation (`crates/tunnel-core/src/overlay/pq_psk.rs`) in two modes:
 
-* **`Optional` / `Preferred` (`ROOMLERD_OVERLAY_PQ_PSK=optional` or `preferred`):**
+* **`Optional` / `Preferred` (`MESHHARBORD_OVERLAY_PQ_PSK=optional` or `preferred`):**
   Negotiates an ML-KEM-768 hybrid PSK with peers that support B7, and downgrades
   cleanly to classical `PSK=None` only when the remote peer replies with an
   authenticated `REJECT_MODE_OFF` (`HMAC-SHA256` keyed by the domain-separated
@@ -953,7 +953,7 @@ rotation (`crates/tunnel-core/src/overlay/pq_psk.rs`) in two modes:
     static DH key, an adversary that has *already* compromised a peer's static
     X25519 key in real time could forge `REJECT_MODE_OFF`; deployments requiring
     mandatory post-quantum authentication must use `Required`.
-* **`Required` (`ROOMLERD_OVERLAY_PQ_PSK=required` / `1` / `true`):**
+* **`Required` (`MESHHARBORD_OVERLAY_PQ_PSK=required` / `1` / `true`):**
   Fail-closed mode. On peer installation, `Tunn` is initialized with a fresh
   32-byte CSPRNG guard PSK (`initial_tunn_psk`) so no classical `PSK=None`
   WireGuard handshake can succeed before ML-KEM-768 agreement completes. On key
@@ -1001,9 +1001,9 @@ rotation (`crates/tunnel-core/src/overlay/pq_psk.rs`) in two modes:
 
 ## 8d. On-Demand Pair Tunneling (B6) & B1/B5/B6/B7 Composition
 
-By default (`ROOMLERD_OVERLAY_ON_DEMAND=off`), installed WireGuard peers
+By default (`MESHHARBORD_OVERLAY_ON_DEMAND=off`), installed WireGuard peers
 initiate handshakes immediately and maintain 25 s persistent keepalives plus
-periodic rekeys. When `ROOMLERD_OVERLAY_ON_DEMAND=on` (`1`/`true`/`yes`,
+periodic rekeys. When `MESHHARBORD_OVERLAY_ON_DEMAND=on` (`1`/`true`/`yes`,
 `crates/tunnel-core/src/overlay/on_demand.rs`), idle peer sessions transition
 through `Dormant -> Waking -> Active -> Dormant`:
 
@@ -1059,7 +1059,7 @@ through `Dormant -> Waking -> Active -> Dormant`:
 
 <!-- RETIRED-NAME-ANCHOR(4): names the legacy env prefix env::node_env still honours; an
      operator with it in a script needs to be able to grep for it. -->
-All flags take the `ROOMLERD_OVERLAY_` prefix; the legacy `ROOMLER_AGENT_`
+All flags take the `MESHHARBORD_OVERLAY_` prefix; the legacy `MESHHARBOR_AGENT_`
 prefix is still honoured.
 
 | Variable | Default | Effect |

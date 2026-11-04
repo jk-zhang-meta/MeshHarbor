@@ -28,10 +28,10 @@ async fn main() -> anyhow::Result<()> {
         // silent at every level, with nothing anywhere saying so.
         //
         // That is not hypothetical. FR-69 moved the pillars out of
-        // `meshharbor_api` into `roomler-ai-mod-*` + `meshharbor-core`, and this
+        // `meshharbor_api` into `meshharbor-mod-*` + `meshharbor-core`, and this
         // default was not moved with them — so in prod, where `RUST_LOG` is
         // unset (checked: absent from the deployment env AND the
-        // `roomler2-config` configmap, `printenv RUST_LOG` in the pod says
+        // `meshharbor2-config` configmap, `printenv RUST_LOG` in the pod says
         // UNSET), **425 of the server's 522 log statements were dropped**:
         // the whole overlay engine, the DERP cluster, the ephemeral reaper,
         // the org-relay mint, the agent socket, fleet RPC, the Hub. Measured
@@ -111,19 +111,19 @@ async fn main() -> anyhow::Result<()> {
     // The built-in JWT secret ("change-me-in-production") lets anyone forge
     // tokens. In development that's a loud warning; with
     // `app.environment=production` (prod configmap sets
-    // ROOMLER__APP__ENVIRONMENT=production) it's a REFUSAL to boot — a
+    // MESHHARBOR__APP__ENVIRONMENT=production) it's a REFUSAL to boot — a
     // production deployment on the default secret is strictly worse than
     // downtime.
     if settings.jwt.secret == "change-me-in-production" {
         if settings.app.environment == "production" {
             anyhow::bail!(
                 "Refusing to start: app.environment=production but the JWT secret \
-                 is still the built-in default — set ROOMLER__JWT__SECRET."
+                 is still the built-in default — set MESHHARBOR__JWT__SECRET."
             );
         }
         error!(
             "JWT secret is the built-in default \"change-me-in-production\" — \
-             set ROOMLER__JWT__SECRET before exposing this server."
+             set MESHHARBOR__JWT__SECRET before exposing this server."
         );
     }
 
@@ -141,12 +141,12 @@ async fn main() -> anyhow::Result<()> {
         if settings.app.environment == "production" {
             anyhow::bail!(
                 "Refusing to start: app.environment=production but the built-in default \
-                 secret is listed in ROOMLER__JWT__PREVIOUS_SECRETS — tokens signed with \
+                 secret is listed in MESHHARBOR__JWT__PREVIOUS_SECRETS — tokens signed with \
                  it are still accepted, so this is not a rotation."
             );
         }
         error!(
-            "The built-in default secret is listed in ROOMLER__JWT__PREVIOUS_SECRETS — \
+            "The built-in default secret is listed in MESHHARBOR__JWT__PREVIOUS_SECRETS — \
              tokens signed with it are still accepted."
         );
     }
@@ -172,14 +172,14 @@ async fn main() -> anyhow::Result<()> {
             "app.environment=production but app.frontend_url is still the built-in \
              development default. OAuth returns, invitation and activation links, the \
              CORS origin policy and the SERVER baked into /api/setup/install.{{sh,ps1}} \
-             all resolve from it - set ROOMLER__APP__FRONTEND_URL to this deployment's \
+             all resolve from it - set MESHHARBOR__APP__FRONTEND_URL to this deployment's \
              public URL."
         );
     }
 
     // Stripe half-configuration is a silent checkout-killer: with a secret
     // key but empty price ids, every valid-plan checkout errors (prod hit
-    // exactly this — empty ROOMLER__STRIPE__PRICE_PRO/BUSINESS in the
+    // exactly this — empty MESHHARBOR__STRIPE__PRICE_PRO/BUSINESS in the
     // configmap). Loud at startup; the checkout path also refuses cleanly
     // (StripeError::PriceNotConfigured).
     if !settings.stripe.secret_key.is_empty()
@@ -187,13 +187,13 @@ async fn main() -> anyhow::Result<()> {
     {
         error!(
             "Stripe secret key is set but price_pro/price_business is empty — \
-             checkout WILL fail; set ROOMLER__STRIPE__PRICE_PRO and \
-             ROOMLER__STRIPE__PRICE_BUSINESS."
+             checkout WILL fail; set MESHHARBOR__STRIPE__PRICE_PRO and \
+             MESHHARBOR__STRIPE__PRICE_BUSINESS."
         );
     }
 
     info!(
-        "Starting Roomler2 API on {}:{}",
+        "Starting MeshHarbor2 API on {}:{}",
         settings.app.host, settings.app.port
     );
     info!(

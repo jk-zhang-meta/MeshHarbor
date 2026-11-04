@@ -20,8 +20,8 @@ use crate::util::*;
 
 const STUN_GATHER_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Roomler patch (media dodges the overlay): type-preference slot for host
-/// candidates whose interface IP sits inside the Roomler overlay ranges.
+/// MeshHarbor patch (media dodges the overlay): type-preference slot for host
+/// candidates whose interface IP sits inside the MeshHarbor overlay ranges.
 /// Chosen BELOW server-reflexive (100) and ABOVE relay (0), so ICE prefers a
 /// working real-path pair (srflx↔srflx, ~free of overlay weather) over
 /// tunnelling media through the mesh, while overlay-host pairs stay available
@@ -33,22 +33,22 @@ const OVERLAY_HOST_TYPE_PREFERENCE: u32 = 90;
 
 /// Returns a `priority` override for a host candidate on `ip`, or 0 (meaning
 /// "no override — compute the RFC 8445 value") for non-overlay interfaces.
-/// Escape hatch: `ROOMLER_ICE_OVERLAY_HOST_DEPRIORITIZE=0` restores upstream
+/// Escape hatch: `MESHHARBOR_ICE_OVERLAY_HOST_DEPRIORITIZE=0` restores upstream
 /// behaviour for every interface.
 fn overlay_host_priority_override(ip: &std::net::IpAddr, component: u16) -> u32 {
-    if std::env::var("ROOMLER_ICE_OVERLAY_HOST_DEPRIORITIZE").as_deref() == Ok("0") {
+    if std::env::var("MESHHARBOR_ICE_OVERLAY_HOST_DEPRIORITIZE").as_deref() == Ok("0") {
         return 0;
     }
-    if !is_roomler_overlay_ip(ip) {
+    if !is_meshharbor_overlay_ip(ip) {
         return 0;
     }
     (1 << 24) * OVERLAY_HOST_TYPE_PREFERENCE + (1 << 8) * 65535 + (256 - u32::from(component))
 }
 
-/// The Roomler overlay addresses: CGNAT 100.64.0.0/10 (v4) and the mesh ULA
+/// The MeshHarbor overlay addresses: CGNAT 100.64.0.0/10 (v4) and the mesh ULA
 /// fd72:6f6f:6d6c::/48 (v6). Matching by range (not interface name) keeps the
 /// check OS-independent and immune to adapter renames.
-pub(crate) fn is_roomler_overlay_ip(ip: &std::net::IpAddr) -> bool {
+pub(crate) fn is_meshharbor_overlay_ip(ip: &std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
             let o = v4.octets();
@@ -678,7 +678,7 @@ impl Agent {
                             // network type gets "No available ipv6 IP address
                             // found" — benign (the host simply has no IPv6), but
                             // it fired a WARN per url per gather → thousands of
-                            // noise lines on corp v4-only endpoints (roomler fleet
+                            // noise lines on corp v4-only endpoints (meshharbor fleet
                             // diag 2026-07-13: ~1770× on the overlay hosts). Log
                             // the no-address-of-that-family case at DEBUG; keep a
                             // genuine DNS failure at WARN.
@@ -966,7 +966,7 @@ impl Agent {
                     Ok(conn) => Arc::new(conn),
                     Err(err) => {
                         let _ = client.close().await;
-                        // Roomler vendor diagnostic (2026-05-18 a third field-test host
+                        // MeshHarbor vendor diagnostic (2026-05-18 a third field-test host
                         // / a second field-test host): include the scheme + transport
                         // so we can correlate which TURN URL flavour
                         // failed. `err` is typically just "attribute
@@ -1065,7 +1065,7 @@ mod overlay_priority_tests {
         let above_cgnat: IpAddr = "100.128.0.1".parse().unwrap();
         let other_ula: IpAddr = "fd00:dead:beef::1".parse().unwrap();
 
-        std::env::remove_var("ROOMLER_ICE_OVERLAY_HOST_DEPRIORITIZE");
+        std::env::remove_var("MESHHARBOR_ICE_OVERLAY_HOST_DEPRIORITIZE");
 
         let p = overlay_host_priority_override(&overlay_v4, COMPONENT_RTP);
         assert_ne!(p, 0, "overlay v4 host must get an override");
@@ -1086,8 +1086,8 @@ mod overlay_priority_tests {
         }
 
         // Escape hatch restores upstream behaviour everywhere.
-        std::env::set_var("ROOMLER_ICE_OVERLAY_HOST_DEPRIORITIZE", "0");
+        std::env::set_var("MESHHARBOR_ICE_OVERLAY_HOST_DEPRIORITIZE", "0");
         assert_eq!(overlay_host_priority_override(&overlay_v4, COMPONENT_RTP), 0);
-        std::env::remove_var("ROOMLER_ICE_OVERLAY_HOST_DEPRIORITIZE");
+        std::env::remove_var("MESHHARBOR_ICE_OVERLAY_HOST_DEPRIORITIZE");
     }
 }

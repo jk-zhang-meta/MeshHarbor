@@ -141,7 +141,7 @@ On every enable and resume, the engine moves the pointer **3 px out and back**
 On Wayland nothing tells an unprivileged process where the pointer is, and XTest
 moves only Xwayland's private pointer. A **root** daemon can still drive the
 real one: the uinput device the arbiter already owns for remote control
-(`ROOMLERD_UINPUT=1`, FR-36), below the compositor. What it cannot do is read
+(`MESHHARBORD_UINPUT=1`, FR-36), below the compositor. What it cannot do is read
 the pointer back. So the GNOME host (`keep_busy/host_gnome.rs`) is **blind**:
 
 ```mermaid
@@ -431,7 +431,7 @@ flowchart TD
   row 43). On Windows, exec runs in the worker that holds the agent socket,
   and that worker lives in the console session: as the signed-in user (their
   elevated token) on an attended install, and as SYSTEM in that session in
-  SystemContext mode (`ROOMLERD_ENABLE_SYSTEM_SWAP`). P10b refuses the
+  SystemContext mode (`MESHHARBORD_ENABLE_SYSTEM_SWAP`). P10b refuses the
   SystemContext case. On an attended install,
   `roomler exec <win> -- roomler keep-busy on` still passes, and the start is
   named "the person at this computer". On Unix exec arrives as root and is

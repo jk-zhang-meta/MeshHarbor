@@ -8,7 +8,7 @@
 //!   entities, NX for server-materialized ones), three shared Lua ops.
 //! - [`bus`]: per-pod channels + request/reply with deadlines; the RPC
 //!   deadline is the ACTIVE failure detector, directory TTLs the passive
-//!   backstop, `roomler:pod-alive:*` advisory only.
+//!   backstop, `meshharbor:pod-alive:*` advisory only.
 
 // FR-69 P1b — the three pieces above are core (`meshharbor_core::cluster`);
 // re-exported so every `crate::cluster::{bus, directory, identity}` path in

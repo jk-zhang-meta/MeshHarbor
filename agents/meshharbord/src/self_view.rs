@@ -219,7 +219,7 @@ pub struct SelfView {
 /// roots, the platform's proxy settings) with this module's budgets.
 fn build_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent(concat!("roomlerd-localapi/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("meshharbord-localapi/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()
@@ -337,7 +337,7 @@ impl SelfView {
         let Some(row) = row else {
             return Err(Upstream::new(
                 "unknown_org",
-                format!("this device has no enrollment labelled {want:?} (see `roomlerd org ls`)"),
+                format!("this device has no enrollment labelled {want:?} (see `meshharbord org ls`)"),
             ));
         };
         if !row.enabled {

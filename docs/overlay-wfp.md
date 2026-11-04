@@ -85,7 +85,7 @@ for the sublayer above) and a reverse-direction ping/curl.
 
 ## Disabling it
 
-Set `ROOMLERD_WFP_PERMIT=0` (or `false`/`no`/`off`) to skip WFP
+Set `MESHHARBORD_WFP_PERMIT=0` (or `false`/`no`/`off`) to skip WFP
 programming entirely — e.g. on a host where IT installed a managed
 exception, or to silence an AV "firewall tampering" alert. Default is **ON**
 whenever `overlay-l3` is active.
@@ -101,7 +101,7 @@ overrides a GPO firewall block is exactly the pattern some EDRs flag as
   created.
 - **Additive permit only** — never shields-up, never a discard/block.
 - Runs as **LocalSystem** (the service privilege that makes BFE writable).
-- **Break-glass disable** via `ROOMLERD_WFP_PERMIT=0` — an IT/security
+- **Break-glass disable** via `MESHHARBORD_WFP_PERMIT=0` — an IT/security
   team can neutralize it without rebuilding.
 
 Implementation: `crates/tunnel-core/src/overlay/wfp.rs` (raw `windows-sys`
@@ -121,7 +121,7 @@ writes itself an allow rule at every TUN bring-up:
 | Name | `Roomler UDP-In (roomlerd)` — the exe stem, so the `roomler` tunnel client gets its own (`Roomler UDP-In (roomler)`) |
 | Shape | `dir=in action=allow protocol=udp program=<full path of meshharbord.exe>`, all profiles, every port |
 | Definition | `crates/tunnel-core/src/winfw.rs` — `UdpInAllowRule` is the ONE definition; both writers build their `netsh` calls from it |
-| Kill switch | `ROOMLERD_TUN_HYGIENE=0` — skips both writers (and the adapter's Private-profile set) |
+| Kill switch | `MESHHARBORD_TUN_HYGIENE=0` — skips both writers (and the adapter's Private-profile set) |
 
 ### Who writes it, and when — the attended-install prompt
 
@@ -200,7 +200,7 @@ decision; its table test holds every neighbour it must not touch.
   is never written: the firewall service owns writes.
 - GPO-delivered rules live under `SOFTWARE\Policies\…` and are neither read
   nor removable. The daemon-side switch for the whole pass is
-  `ROOMLERD_TUN_HYGIENE=0`.
+  `MESHHARBORD_TUN_HYGIENE=0`.
 
 ### The self-heal, without the gap
 

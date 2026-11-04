@@ -144,12 +144,12 @@ fn probe_tunnel_install() -> TunnelDetect {
 
 /// Hostname (no domain) — the wizard pre-fills the device-name input
 /// with this so the operator usually just hits Enter. Falls back to
-/// `"roomler-device"` if the OS won't yield a name (rare).
+/// `"meshharbor-device"` if the OS won't yield a name (rare).
 #[tauri::command]
 pub fn cmd_default_device_name() -> String {
     gethostname::gethostname()
         .into_string()
-        .unwrap_or_else(|_| "roomler-device".to_string())
+        .unwrap_or_else(|_| "meshharbor-device".to_string())
 }
 
 /// Default MeshHarbor center URL. Operators usually leave this as-is;
@@ -162,7 +162,7 @@ pub fn cmd_default_server_url() -> String {
 // ─── Token introspection ─────────────────────────────────────────────────────
 
 /// Parsed view of an enrollment token. NEVER carries the raw token
-/// bytes back (H5). The Roomler server's enrollment JWTs carry the
+/// bytes back (H5). The MeshHarbor server's enrollment JWTs carry the
 /// discriminant in a custom `token_type` claim (snake_case, e.g.
 /// `"tunnel_enrollment"`) and NO `aud` claim — `audience` stays None
 /// for them; the SPA renders `token_type` in the info card.
@@ -256,7 +256,7 @@ pub fn cmd_save_state(state: wizard_shared::wizard_state::WizardState) -> Result
 /// extras (flavour for daemon roles; binary/PATH details for
 /// whichever pipeline delivered a CLI; config path for both).
 ///
-/// P4b (role→action composition): daemon MSIs carry the `roomler`
+/// P4b (role→action composition): daemon MSIs carry the `meshharbor`
 /// CLI, so daemon roles now also populate `binary_path` /
 /// `path_updated` and set `cli_included` from a post-install
 /// existence check (`Some(false)` = an old pre-P4b MSI was served —
@@ -414,21 +414,21 @@ mod tests {
     // wizard's command tests.
     const FAKE_HEADER: &str = "eyJhbGciOiJub25lIn0"; // {"alg":"none"}
 
-    /// {"iss":"roomler-ai","token_type":"tunnel_enrollment","exp":9999999999}
+    /// {"iss":"meshharbor","token_type":"tunnel_enrollment","exp":9999999999}
     fn tunnel_enrollment_jwt() -> String {
         format!(
             "{FAKE_HEADER}.eyJpc3MiOiJyb29tbGVyLWFpIiwidG9rZW5fdHlwZSI6InR1bm5lbF9lbnJvbGxtZW50IiwiZXhwIjo5OTk5OTk5OTk5fQ.sig"
         )
     }
 
-    /// {"iss":"roomler-ai","token_type":"enrollment","exp":9999999999}
+    /// {"iss":"meshharbor","token_type":"enrollment","exp":9999999999}
     fn agent_enrollment_jwt() -> String {
         format!(
             "{FAKE_HEADER}.eyJpc3MiOiJyb29tbGVyLWFpIiwidG9rZW5fdHlwZSI6ImVucm9sbG1lbnQiLCJleHAiOjk5OTk5OTk5OTl9.sig"
         )
     }
 
-    /// {"iss":"roomler-ai","exp":1000000}
+    /// {"iss":"meshharbor","exp":1000000}
     fn expired_jwt() -> String {
         format!("{FAKE_HEADER}.eyJpc3MiOiJyb29tbGVyLWFpIiwiZXhwIjoxMDAwMDAwfQ.sig")
     }
@@ -472,8 +472,8 @@ mod tests {
             flavour: None,
             // RETIRED-NAME-ANCHOR(4): fixtures of the INSTALLED layout on hosts that
             // predate the rename.
-            binary_path: Some("/usr/local/bin/roomler-tunnel".to_string()),
-            config_path: Some("/home/foo/.config/roomler-tunnel/config.toml".to_string()),
+            binary_path: Some("/usr/local/bin/meshharbor-tunnel".to_string()),
+            config_path: Some("/home/foo/.config/meshharbor-tunnel/config.toml".to_string()),
             path_updated: Some(true),
             shortcut_created: Some(false),
             cli_included: None,
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn token_validation_serialises_camel_case() {
         let v = TokenValidation {
-            issuer: Some("roomler-ai".to_string()),
+            issuer: Some("meshharbor".to_string()),
             audience: None,
             subject: Some("507f1f77bcf86cd799439011".to_string()),
             jti: Some("abc".to_string()),
@@ -537,7 +537,7 @@ mod tests {
         let v = cmd_validate_token(tunnel_enrollment_jwt(), Some(Role::TunnelClient)).unwrap();
         assert_eq!(v.audience_matches, Some(true));
         assert_eq!(v.token_type.as_deref(), Some("tunnel_enrollment"));
-        assert_eq!(v.issuer.as_deref(), Some("roomler-ai"));
+        assert_eq!(v.issuer.as_deref(), Some("meshharbor"));
         // Daemon role: no client-side gate (None), token_type still
         // surfaced for the info card.
         let v = cmd_validate_token(tunnel_enrollment_jwt(), Some(Role::DaemonSystem)).unwrap();

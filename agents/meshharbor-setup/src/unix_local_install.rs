@@ -58,7 +58,7 @@ fn native_command(script: &str, args: &[String]) -> Command {
     command
         .env_remove("TOKEN")
         .env_remove("DAEMON_TOKEN")
-        .args(["-c", script, "roomler-local-install"])
+        .args(["-c", script, "meshharbor-local-install"])
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
@@ -258,7 +258,7 @@ mod tests {
             }
             .into(),
             package_sha256: "a".repeat(64),
-            cli_path: "/reviewed/roomler".into(),
+            cli_path: "/reviewed/meshharbor".into(),
             cli_sha256: "b".repeat(64),
             server: "https://center.example/private/prefix/".into(),
             device_name: "fixture name; literal".into(),

@@ -6,8 +6,8 @@
 //! byte-identical until both were retired in P4c-2.)
 //!
 //! Layering rule (also spelled out in Cargo.toml): this crate is the
-//! EVENT-SHAPE-FREE mechanics layer. No `tauri`, no `roomlerd`,
-//! no `roomler` — the apps own the Tauri surface, the
+//! EVENT-SHAPE-FREE mechanics layer. No `tauri`, no `meshharbord`,
+//! no `meshharbor` — the apps own the Tauri surface, the
 //! ProgressEvent wire shapes, and the agent/tunnel lib calls.
 //! Mechanics here communicate through plain callbacks (`FnMut(u64)`
 //! byte ticks) and returned reports, which is what lets one copy

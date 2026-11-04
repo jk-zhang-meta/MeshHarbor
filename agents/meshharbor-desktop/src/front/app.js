@@ -18,10 +18,10 @@
  * Central pollers (one LocalAPI/status source instead of one per view):
  *   - `cmd_status` every 10 s      → store key `status`
  *   - `cmd_device_view` every 2 s  → store key `deviceView`
- * View files subscribe via `Roomler.on(key, cb)` and re-render; per-view
+ * View files subscribe via `MeshHarbor.on(key, cb)` and re-render; per-view
  * data (routes/flows) stays in the view file, gated on visibility.
  */
-window.Roomler = (function () {
+window.MeshHarbor = (function () {
   'use strict';
 
   const invoke = (name, payload) => window.__TAURI__.core.invoke(name, payload || {});
@@ -125,7 +125,7 @@ window.Roomler = (function () {
       a.classList.toggle('active', a.dataset.view === view);
     });
     // Views listen for this to kick an immediate refresh on entry.
-    document.dispatchEvent(new CustomEvent('roomler:view', { detail: view }));
+    document.dispatchEvent(new CustomEvent('meshharbor:view', { detail: view }));
   }
 
   /* ── sidebar chrome ─────────────────────────────────────────────── */

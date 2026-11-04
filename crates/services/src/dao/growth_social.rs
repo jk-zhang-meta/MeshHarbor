@@ -266,7 +266,7 @@ mod tests {
             id: None,
             platform: "linkedin".into(),
             platform_id: "urn:li:share:7123".into(),
-            account: "roomler-ai".into(),
+            account: "meshharbor".into(),
             format: "post".into(),
             url: "https://www.linkedin.com/feed/update/urn:li:share:7123".into(),
             published_at: DateTime::now(),

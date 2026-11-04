@@ -91,7 +91,7 @@ flowchart LR
 2. **How many agents.** ~~Two (the template's)~~ → **three, decided 2026-10-19**: one per recording state the recording
    specs need, by pod ordinal: `agent-e2e-0` records but its owner has not opted in (`remote-recording-refused`),
    `agent-e2e-1` has opted in (`record_remote_enabled`, `remote-recording-smoke`), `agent-e2e-2` has no recorder
-   (`ROOMLERD_RECORDING=0`, `remote-recording-refused` P3c-2). The switch-device spec still has somewhere to switch to.
+   (`MESHHARBORD_RECORDING=0`, `remote-recording-refused` P3c-2). The switch-device spec still has somewhere to switch to.
    Measured: on two agents, neither opted in, the rehearsal skipped two of the seven tests. The opt-in is device-owned
    (the server cannot push it), so the agent's bootstrap writes it as the owner would.
 

@@ -165,14 +165,14 @@ async fn send_confirmation(state: &SaasState, email: &str, token: &str) {
     // to a page "so an email prefetcher can't auto-approve via a GET".
     let link = format!("{base}/newsletter/confirm/{token}");
     let html = format!(
-        "<p>Please confirm you want product updates about Roomler.</p>\
+        "<p>Please confirm you want product updates about MeshHarbor.</p>\
          <p><a href=\"{link}\">Confirm my address</a></p>\
          <p style=\"color:#666;font-size:13px\">If you did not ask for this, ignore this \
          message — nothing is sent to an address that never confirms, and the link \
          stops working once the confirmation is used.</p>"
     );
     if let Err(e) = mailer
-        .send(email, "Confirm your Roomler updates", &html)
+        .send(email, "Confirm your MeshHarbor updates", &html)
         .await
     {
         warn!("subscribe: confirmation mail failed to send: {e:?}");

@@ -309,7 +309,7 @@ fn refusal_is_inhibition(err: &str) -> Option<bool> {
         .then_some(true)
 }
 
-/// FR-93 P4 kill switch (`ROOMLERD_MUTTER_INPUT` / `mutter_input`), default
+/// FR-93 P4 kill switch (`MESHHARBORD_MUTTER_INPUT` / `mutter_input`), default
 /// ON: a mutter screencast that carries input is driven by mutter's
 /// RemoteDesktop, and the viewer's mouse and keyboard reach the whole desktop
 /// through it. `false` gives back P2a's view-only mutter arm.

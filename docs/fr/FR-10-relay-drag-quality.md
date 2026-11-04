@@ -44,7 +44,7 @@ stays untouched. On a thin relay a full-frame refresh costs more in lag than it 
 in crispness; CQ deltas re-crystallise the static image progressively anyway (the
 rc.234 argument).
 
-Under `relay_idr_thrift` (env `ROOMLERD_RELAY_IDR_THRIFT`, `0` restores):
+Under `relay_idr_thrift` (env `MESHHARBORD_RELAY_IDR_THRIFT`, `0` restores):
 
 1. **Settle-IDR suppression on constrained transports** — both DC pumps skip the
    `idle-settle keyframe` when the session is constrained; a heartbeat counter

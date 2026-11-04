@@ -68,7 +68,7 @@ roomler_agent               201 hits /  40 files
 roomler-agent-tray           21 hits /  15 files
 roomler-tunnel              269 hits /  70 files
 roomler_tunnel               22 hits /  14 files
-ROOMLER_AGENT_*             407 hits /  69 files   (107 DISTINCT variables)
+MESHHARBOR_AGENT_*             407 hits /  69 files   (107 DISTINCT variables)
 roomler-installer /
   roomler-tunnel-installer   14 hits /   5 files
                           ─────────────────────────
@@ -138,7 +138,7 @@ directory names, test names. *≈ 1 400 of the 1 765 hits.*
 
 Anything a deployed host — or a deployed *operator runbook* — already depends on:
 
-- the **107 `ROOMLER_AGENT_*` variables**. An operator-facing surface: only **4** are documented
+- the **107 `MESHHARBOR_AGENT_*` variables**. An operator-facing surface: only **4** are documented
   in `crates/agent-core/src/config_surface.rs`, so the other 103 exist solely in code and in
   people's shell history.
 - residual on-disk paths not yet behind `appdirs` (§5).
@@ -246,7 +246,7 @@ P2 is wrong and stops.
 | **P1b** | The bulk prose sweep | the ~1 700 remaining prose hits, *after* P2 has moved what they describe; historical appendices keep the retired name behind a block anchor | `git revert` |
 | **P2a** ✅ | Build-graph identity, agent side | packages `roomler-agent`→`roomlerd`, `roomler-agent-tray`→`meshharbor-desktop`, `roomler-agent-core`→`meshharbor-core`; libs `roomler_agent`→`roomlerd`, `roomler_agent_core`→`meshharbor_core`; dirs `agents/meshharbord`→`agents/meshharbord`, `agents/meshharbor-desktop`→`agents/meshharbor-desktop`; every `-p` selector in the workflows + `Dockerfile.agent-e2e` + `scripts/` | one atomic PR, `git revert`; gated on an **empty artifact-name diff** |
 | **P2b** | Build-graph identity, CLI side | package `roomler-tunnel`→`meshharbor-cli`, lib `roomler_tunnel`→`meshharbor_cli`, dir `agents/meshharbor-tunnel`→`agents/meshharbor-cli`; `release-tunnel.yml` | same; separate PR so `release-tunnel.yml` moves in a reviewable diff |
-| **P3** | Env-var namespace | 107 vars `ROOMLER_AGENT_<REST>` → **`ROOMLERD_<REST>`** (D1), **dual-read**: new spelling wins, old spelling honoured and logged once at WARN | the old spelling never stops working; the WARN is the only new behaviour |
+| **P3** | Env-var namespace | 107 vars `MESHHARBOR_AGENT_<REST>` → **`MESHHARBORD_<REST>`** (D1), **dual-read**: new spelling wins, old spelling honoured and logged once at WARN | the old spelling never stops working; the WARN is the only new behaviour |
 | **P4** | Residual live paths | fix the §5 staging defect by calling a resolver instead of a constant (expose `machine_global_dir()` over LocalAPI); sweep the remaining hardcoded `roomler-agent` paths | every path keeps a new-then-old fallback, exactly like `appdirs` |
 | **P5** | Ratify + enforce | freeze list reviewed and justified in-tree; `name-audit --check` flips to **blocking**; a deliberately-red run proves it fails | revert the `continue-on-error` removal |
 | **P6** | Field verification | the §9.4 matrix on Windows / Linux / macOS, fresh **and** upgrade-from-0.4.x, including a pre-rename host | n/a — verification, not a change |
@@ -436,14 +436,14 @@ Field verification runs through `roomler exec` after the roll, per the standing 
 
 ## 10. Decisions
 
-**D1 — target namespace for the 107 env vars: `ROOMLERD_*` or `ROOMLER_*`?**
-**RESOLVED 2026-08-28 (operator): `ROOMLERD_*`.** The precedent exists already
-(`ROOMLERD_CONFIG`, used by `packaging/linux/meshharbord.service:48`), and `ROOMLER_*` sits one
-underscore from the **server's** `ROOMLER__` double-underscore config prefix —
-`ROOMLER_OVERLAY_DEMOTE` beside `ROOMLER__OVERLAY__…` is a confusion this FR would be
+**D1 — target namespace for the 107 env vars: `MESHHARBORD_*` or `MESHHARBOR_*`?**
+**RESOLVED 2026-08-28 (operator): `MESHHARBORD_*`.** The precedent exists already
+(`MESHHARBORD_CONFIG`, used by `packaging/linux/meshharbord.service:48`), and `MESHHARBOR_*` sits one
+underscore from the **server's** `MESHHARBOR__` double-underscore config prefix —
+`MESHHARBOR_OVERLAY_DEMOTE` beside `MESHHARBOR__OVERLAY__…` is a confusion this FR would be
 *creating*, not removing.
 
-The full mapping is therefore mechanical: `ROOMLER_AGENT_<REST>` → `ROOMLERD_<REST>`, for all
+The full mapping is therefore mechanical: `MESHHARBOR_AGENT_<REST>` → `MESHHARBORD_<REST>`, for all
 107, with the old spelling honoured forever (D2).
 
 **D2 — do the 107 vars move at all?** They are the largest Class-B block and the lowest
@@ -489,7 +489,7 @@ whole of it.
   pickers key on extension + arch + the `-permachine-` infix, **not** on the `roomler-agent-`
   prefix (`agents/meshharbord/src/updater.rs:414-484`) — verified, not assumed. This is why P2
   is low-risk and why no asset rename is forced.
-- The `ROOMLER__` **server** config prefix — a different product surface, not a retired name.
+- The `MESHHARBOR__` **server** config prefix — a different product surface, not a retired name.
 - `meshharbor-setup`'s own naming, including the UAC lib-naming rule (`wizard_app` / `wizard_shared`
   dodge "install"/"setup"/"update"/"patch" deliberately).
 - `derp-relay`, `tcp-turn-conn`, `tunnel-core`, `localapi` — current names.

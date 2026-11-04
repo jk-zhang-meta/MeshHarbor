@@ -125,7 +125,7 @@ pub struct SignupAttribution {
     /// The page the visitor landed on, path only (`/blog/x/`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landing_path: Option<String>,
-    /// The answer to "How did you hear about Roomler?" — a slug from the
+    /// The answer to "How did you hear about MeshHarbor?" — a slug from the
     /// register form's select, or whatever the client sent within the same
     /// character rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]

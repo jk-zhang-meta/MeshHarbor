@@ -89,7 +89,7 @@ pub const MAX_SIGNATURE_SKEW_SECS: i64 = 5 * 60;
 pub fn verifier_from_settings(raw: &str) -> Option<EventVerifier> {
     if raw.trim().is_empty() {
         info!(
-            "SendGrid Event Webhook off: no ROOMLER__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY — \
+            "SendGrid Event Webhook off: no MESHHARBOR__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY — \
              newsletter delivery reads \"not measured\""
         );
         return None;
@@ -102,7 +102,7 @@ pub fn verifier_from_settings(raw: &str) -> Option<EventVerifier> {
         Err(e) => {
             warn!(
                 error = %e,
-                "ROOMLER__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY is not usable — the SendGrid \
+                "MESHHARBOR__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY is not usable — the SendGrid \
                  webhook refuses every request until it is fixed"
             );
             None

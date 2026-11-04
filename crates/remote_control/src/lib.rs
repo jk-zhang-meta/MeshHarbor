@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! `meshharbor-remote-control` — TeamViewer-style remote desktop subsystem for Roomler AI.
+//! `meshharbor-remote-control` — TeamViewer-style remote desktop subsystem for MeshHarbor.
 //!
 //! This crate is signaling and state-management only. It never touches video
 //! frames or input events; those flow over a direct WebRTC PeerConnection

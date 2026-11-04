@@ -139,7 +139,7 @@ BASELINE_FILE="scripts/name-audit-baseline.txt"
 # covers `roomler-tunnel-installer`. The CamelCase and spaced forms are the
 # Windows service/task identifiers and the WiX DisplayName — user-visible
 # surfaces that belong in the inventory, not just the snake/kebab code forms.
-TOKENS='roomler-agent|roomler_agent|ROOMLER_AGENT_|RoomlerAgent|Roomler Agent|roomler-tunnel|roomler_tunnel|Roomler Tunnel|roomler-installer'
+TOKENS='roomler-agent|roomler_agent|MESHHARBOR_AGENT_|RoomlerAgent|Roomler Agent|roomler-tunnel|roomler_tunnel|Roomler Tunnel|roomler-installer'
 
 # Files excluded from the scan, each for a reason that is about the FILE'S JOB,
 # not about it being inconvenient. This list must stay this short: a growing
@@ -522,7 +522,7 @@ EOF
     #
     # A site that genuinely needs both spellings live at once (proving which one
     # WINS) marks itself RAW-ENV-DELIBERATE on or just above the line.
-    raw_env=$(grep -rnE '(set_var|remove_var)\("(ROOMLERD_|ROOMLER_NODE_|ROOMLER_AGENT_)' \
+    raw_env=$(grep -rnE '(set_var|remove_var)\("(MESHHARBORD_|MESHHARBOR_NODE_|MESHHARBOR_AGENT_)' \
         --include=*.rs agents crates 2>/dev/null \
         | grep -v '^crates/tunnel-core/src/env.rs:' || true)
     unmarked=""

@@ -7,7 +7,7 @@
 //!   detects the output device driven as input and opens a loopback
 //!   client, so we capture exactly what's playing out of the speakers.
 //! * **Linux** — an ALSA capture device, picked by name
-//!   ([`crate::audio_source::pick_linux`]): the one `ROOMLERD_AUDIO_SOURCE`
+//!   ([`crate::audio_source::pick_linux`]): the one `MESHHARBORD_AUDIO_SOURCE`
 //!   names, else one whose name says monitor, else NOTHING. ⚠️ Never the
 //!   default input: cpal 0.15 lists only ALSA devices, never a sound server's
 //!   sources, and through PipeWire or PulseAudio the default input is the
@@ -279,12 +279,12 @@ fn pick_device(host: &cpal::Host, source: Source) -> Result<(cpal::Device, bool)
         let (name, dev) = devices.swap_remove(i);
         match named.as_deref() {
             Some(want) if want == name => {
-                tracing::info!(source = %name, "audio: opening the ROOMLERD_AUDIO_SOURCE device");
+                tracing::info!(source = %name, "audio: opening the MESHHARBORD_AUDIO_SOURCE device");
             }
             Some(want) => tracing::warn!(
                 source = %want,
                 monitor = %name,
-                "audio: ROOMLERD_AUDIO_SOURCE is not a capture device here; opening the device named as a monitor"
+                "audio: MESHHARBORD_AUDIO_SOURCE is not a capture device here; opening the device named as a monitor"
             ),
             None => tracing::info!(source = %name, "audio: opening the device named as a monitor"),
         }

@@ -7,7 +7,7 @@
 // every module-level doc-comment in the crate.
 #![allow(clippy::doc_lazy_continuation, clippy::doc_overindented_list_items)]
 
-//! Roomler desktop (`meshharbor-desktop`) — the node stack's control
+//! MeshHarbor desktop (`meshharbor-desktop`) — the node stack's control
 //! surface. Tauri 2, lives in the system tray, one window with a
 //! sidebar SPA (`src/front/`): Overview / Devices / Tunnels /
 //! Settings / Onboarding + the remote-control consent modal.
@@ -20,7 +20,7 @@
 //! - Enrollment goes through `meshharbor_node_core::enrollment::enroll` as a
 //!   direct lib call (no subprocess).
 //! - Service control / self-update shell out to the daemon CLI
-//!   (`meshharbord service install`, `roomlerd self-update`).
+//!   (`meshharbord service install`, `meshharbord self-update`).
 //! - Closing the window HIDES it (close-to-hide below) — the tray icon
 //!   and the consent watcher must outlive the window, since surfacing
 //!   consent prompts is this app's safety-relevant job.
@@ -165,7 +165,7 @@ fn main() {
             commands::cmd_open_files_dir,
             commands::cmd_tail_log,
             commands::cmd_open_remote,
-            commands::cmd_open_roomler,
+            commands::cmd_open_meshharbor,
             commands::cmd_open_account,
             // FR-85 — the Recordings view.
             commands::cmd_recordings_view,
@@ -201,7 +201,7 @@ fn main() {
             // process (Tauri default) and take the consent watcher down with
             // it — remote-control prompts would silently stop surfacing.
             //
-            // S7: label-gated — the embedded Roomler web window must really
+            // S7: label-gated — the embedded MeshHarbor web window must really
             // close (default destroy), else it becomes a hidden WebView2
             // zombie holding memory. The main window stays alive, so window
             // count never hits zero and the app keeps running.
@@ -270,7 +270,7 @@ async fn consent_watch_loop(app: tauri::AppHandle) {
                     .into_iter()
                     // FR-27 — ignore anything the DAEMON is already showing
                     // natively. It still writes a marker for those (that list
-                    // is also what `roomlerd consent --list` reads), so without
+                    // is also what `meshharbord consent --list` reads), so without
                     // this filter a host with a native overlay would get two
                     // Approve buttons for one decision.
                     .filter(|p| p.surface != "native")

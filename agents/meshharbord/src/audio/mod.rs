@@ -13,7 +13,7 @@
 //!   * **Linux** — the default output's monitor through Pulse's client
 //!     library ([`pulse`], FR-97 P3c-2): in this process for a per-user
 //!     daemon, through the seat user's helper for a root one. A device the
-//!     host's owner names in `ROOMLERD_AUDIO_SOURCE` wins, through cpal.
+//!     host's owner names in `MESHHARBORD_AUDIO_SOURCE` wins, through cpal.
 //!     ⚠️ Never the default input, which is the microphone
 //!     ([`crate::audio_source::linux_route`]).
 //!   * **Windows** — WASAPI loopback: cpal opens the default OUTPUT

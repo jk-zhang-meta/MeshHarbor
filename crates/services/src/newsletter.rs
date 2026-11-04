@@ -248,7 +248,7 @@ fn style_rendered_html(body: &str) -> String {
 
 const FONT_STACK: &str = "system-ui,-apple-system,'Segoe UI',Roboto,sans-serif";
 
-/// The branded 600 px light-only wrapper (Roomler Field Notes). Returns the
+/// The branded 600 px light-only wrapper (MeshHarbor Field Notes). Returns the
 /// COMPLETE email HTML with [`UNSUB_PLACEHOLDER`] where the recipient's
 /// unsubscribe URL belongs — the exact bytes a recipient receives, which is
 /// also exactly what the admin preview serves.
@@ -300,7 +300,7 @@ pub fn render_issue_html(issue: &NewsletterIssue, tags: Option<&LinkTags>) -> St
          <td align=\"center\" style=\"padding:24px 12px;\">\n\
          <table role=\"presentation\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:600px;max-width:100%;\">\n\
          <tr><td style=\"padding:0 8px 14px;font-family:{font};font-size:18px;font-weight:700;color:#1a1a2e;\">\
-         Roomler <span style=\"color:#009688;\">Field Notes</span></td></tr>\n\
+         MeshHarbor <span style=\"color:#009688;\">Field Notes</span></td></tr>\n\
          <tr><td style=\"background:#ffffff;border:1px solid rgba(0,150,136,0.18);border-radius:12px;overflow:hidden;\">\n\
          {hero}\n\
          <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr>\
@@ -313,7 +313,7 @@ pub fn render_issue_html(issue: &NewsletterIssue, tags: Option<&LinkTags>) -> St
          You subscribed at roomler.ai. Product updates only, never more than monthly.<br />\n\
          No tracking pixels — the only per-recipient thing in this email is your unsubscribe link.<br />\n\
          <a href=\"{unsub}\" style=\"color:#00796B;\">Unsubscribe</a>&nbsp;&middot;&nbsp;<a href=\"{home}\" style=\"color:#00796B;\">roomler.ai</a><br />\n\
-         Roomler &middot; G ROX LTD, Pazardzhik, Bulgaria\n\
+         MeshHarbor &middot; G ROX LTD, Pazardzhik, Bulgaria\n\
          </td></tr>\n\
          </table>\n</td></tr></table>\n</body>\n</html>\n",
         subject = subject,

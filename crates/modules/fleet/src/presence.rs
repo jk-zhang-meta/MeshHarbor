@@ -316,7 +316,7 @@ pub fn spawn_sweeper(state: FleetState) {
         loop {
             tokio::time::sleep(interval).await;
             if let Some(redis) = &state.redis_pubsub {
-                let key = format!("roomler:presence-sweep:{}", state.db.name());
+                let key = format!("meshharbor:presence-sweep:{}", state.db.name());
                 let ttl = state
                     .settings
                     .rc

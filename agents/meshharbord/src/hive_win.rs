@@ -13,7 +13,7 @@
 //! The daemon that hosts sessions is the service's WORKER. On a device
 //! installed with SystemContext it runs as SYSTEM, in the console session,
 //! all the time; without SystemContext, as the console user, elevated
-//! (`ROOMLERD_ELEVATE_WORKER`). [`console_user`] reaches the same person from
+//! (`MESHHARBORD_ELEVATE_WORKER`). [`console_user`] reaches the same person from
 //! either, at Medium integrity: FR-85's recorder rule, whose token code
 //! [`crate::win_token`] now holds for both.
 //!
@@ -942,7 +942,7 @@ pub unsafe fn run_prep(who: SpawnAs, cmdline: &str, timeout: Duration) -> Result
 //
 // On Windows the daemon that hosts sessions is the WORKER: SYSTEM on a device
 // installed with SystemContext, else the console user, elevated
-// (`ROOMLERD_ELEVATE_WORKER`); a remote-desktop connection changes neither.
+// (`MESHHARBORD_ELEVATE_WORKER`); a remote-desktop connection changes neither.
 // Either reaches the service's machine-wide directory, so the store, what the
 // device hosts and each session's runtime files live there, and a new worker
 // finds what the last one hosted. Every directory is owned by
@@ -1028,7 +1028,7 @@ pub fn adopt_pipe_sddl(daemon: &str) -> String {
     format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{daemon})(A;;0x12008b;;;IU)S:(ML;;NW;;;ME)")
 }
 
-/// The replica store's directory, `%ProgramData%\roomler\roomler\hive`, also
+/// The replica store's directory, `%ProgramData%\meshharbor\meshharbor\hive`, also
 /// holding what the device hosts.
 pub fn store_dir() -> PathBuf {
     meshharbor_node_core::appdirs::machine_global_dir().join("hive")
@@ -1378,7 +1378,7 @@ mod tests {
     use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
 
     /// What a command line reads back as, by the rules a C-runtime program
-    /// (Claude Code's `.exe`, `roomlerd`) parses it with.
+    /// (Claude Code's `.exe`, `meshharbord`) parses it with.
     fn argv(line: &str) -> Vec<String> {
         let wide: Vec<u16> = line.encode_utf16().chain(std::iter::once(0)).collect();
         let mut n = 0i32;
@@ -1524,7 +1524,7 @@ mod tests {
             r#"a\"b"#,
             r"trailing\\",
             "tab\there",
-            "mcp__roomler__approve",
+            "mcp__meshharbor__approve",
         ];
         let line =
             harness_command_line(Path::new(r"C:\Users\dev\.local\bin\claude.exe"), &os(&args))
@@ -1566,11 +1566,11 @@ mod tests {
     #[test]
     fn prep_args_read_back_from_their_command_line() {
         let a = PrepArgs {
-            config_dir: PathBuf::from(r"C:\Users\dev\.roomler\hive\s1\claude"),
+            config_dir: PathBuf::from(r"C:\Users\dev\.meshharbor\hive\s1\claude"),
             folder: PathBuf::from(r"C:\work\my app"),
             memory_dir: None,
             auto_memory_dir: PathBuf::from(
-                r"C:\Users\dev\.roomler\hive\s1\claude\projects\hive-s1\memory",
+                r"C:\Users\dev\.meshharbor\hive\s1\claude\projects\hive-s1\memory",
             ),
         };
         let line = a
@@ -2187,7 +2187,7 @@ mod tests {
     async fn the_adopt_pipe_names_its_client_by_its_token() {
         use std::os::windows::io::{AsRawHandle, IntoRawHandle};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let name = format!(r"\\.\pipe\roomler-adopt-peer-test-{}", std::process::id());
+        let name = format!(r"\\.\pipe\meshharbor-adopt-peer-test-{}", std::process::id());
         let mut sddl = Sddl::new(&adopt_pipe_sddl(&own_sid().unwrap())).unwrap();
         // SAFETY: the attributes outlive the call; the descriptor is copied.
         let mut server = unsafe {

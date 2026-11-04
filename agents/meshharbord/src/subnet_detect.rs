@@ -108,7 +108,7 @@ fn is_advertisable_v4(ip: &Ipv4Addr) -> bool {
 /// srflx / UDP relay). Returns `false` on enumeration failure (fail toward the
 /// relay pin — the safe default for an unknown host). Note: a cloud VM whose
 /// public IP is NAT'd (not on a local interface) reads as non-public here — the
-/// operator overrides with an explicit `ROOMLERD_ICE_RELAY_TCP` in that case.
+/// operator overrides with an explicit `MESHHARBORD_ICE_RELAY_TCP` in that case.
 pub fn host_has_public_ipv4() -> bool {
     let Ok(ifaces) = if_addrs::get_if_addrs() else {
         return false;

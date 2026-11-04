@@ -254,7 +254,7 @@ export function orgPresets(items: unknown): TouchPreset[] {
 
 /** The overlay is remembered per device, in this browser: a host that runs a
  *  game keeps its WASD, a work laptop its office row. */
-export const CONTROLS_STORAGE_PREFIX = 'roomler-rc-touch-controls:'
+export const CONTROLS_STORAGE_PREFIX = 'meshharbor-rc-touch-controls:'
 
 /** The preset this browser chose for `deviceId`, or `null` for none (the
  *  default). An id this build does not know, say from a newer one, reads as

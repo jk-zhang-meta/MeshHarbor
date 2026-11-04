@@ -2281,7 +2281,7 @@ mod tests {
     const TOKEN: &str = "0123456789abcdef0123456789abcdef";
     const TURN_USER: &str = "hive-tester";
     const TURN_PASS: &str = "turn-secret";
-    const TURN_REALM: &str = "roomler.test";
+    const TURN_REALM: &str = "meshharbor.test";
 
     /// Long-term-credential auth for the one test user.
     struct StaticAuth;

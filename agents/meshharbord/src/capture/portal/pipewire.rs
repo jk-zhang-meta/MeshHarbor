@@ -10,7 +10,7 @@
 //!
 //! ## Why `dlopen`, spelled out once
 //!
-//! Linking `libpipewire` puts it in `roomlerd`'s `DT_NEEDED` on **every** Linux
+//! Linking `libpipewire` puts it in `meshharbord`'s `DT_NEEDED` on **every** Linux
 //! build. A missing `.so` there does not degrade a feature — the loader refuses
 //! to start the process at all. Cluster nodes, containers and headless fleet
 //! hosts would carry it for nothing and break if it went missing. This project
@@ -18,8 +18,8 @@
 //! path into the macOS agent and dyld killed it at launch on every end-user
 //! Mac.
 //!
-//! ⚠️ **A helper subcommand does not fix this.** `roomlerd portal-helper` is the
-//! same ELF as `roomlerd`; linking for the helper's sake links for everyone.
+//! ⚠️ **A helper subcommand does not fix this.** `meshharbord portal-helper` is the
+//! same ELF as `meshharbord`; linking for the helper's sake links for everyone.
 //! The subcommand bought the *session context* (P2a); only `dlopen` buys the
 //! *linkage*. It would have been easy to reach here believing P2a settled it.
 //!
@@ -1073,7 +1073,7 @@ fn negotiate_blocking(
     let props_str = CString::new("media.type=Video media.category=Capture media.role=Screen")
         .map_err(|e| PwError::Other(e.to_string()))?;
     let props = unsafe { (lib.syms.pw_properties_new_string)(props_str.as_ptr()) };
-    let name = CString::new("roomler-portal-capture").expect("literal has no NUL");
+    let name = CString::new("meshharbor-portal-capture").expect("literal has no NUL");
     // ⚠️ `pw_stream_new` TAKES OWNERSHIP of `props` — it must not be freed
     // here, on success or failure.
     let stream = unsafe { (lib.syms.pw_stream_new)(conn.core, name.as_ptr(), props) };

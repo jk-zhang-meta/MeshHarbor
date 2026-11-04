@@ -151,7 +151,7 @@ pub fn consent_line(
         .then_some("They may also cover this screen while they work.")
 }
 
-/// `roomlerd curtain-smoke` — put a curtain up through the PRODUCTION overlay
+/// `meshharbord curtain-smoke` — put a curtain up through the PRODUCTION overlay
 /// for `seconds`, print whether it went up out of capture, and take it down.
 /// A field check that needs no server and no viewer: a screenshot of the host
 /// shows the curtain while a session's stream shows the desktop under it.

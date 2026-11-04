@@ -97,14 +97,14 @@ jobs:
         run: |
           set -euo pipefail
           sudo mkdir -p /var/log/roomler-ci
-          # ROOMLERD_AUTO_UPDATE=0 is load-bearing, not tidiness: this
+          # MESHHARBORD_AUTO_UPDATE=0 is load-bearing, not tidiness: this
           # daemon is built FROM SOURCE on a branch, so its version usually
           # lags the newest release and the updater would download it, spawn
           # the installer and exit — killing the test seconds after start.
           # Observed exactly that (run 31336223450: "new release available —
           # spawning installer and exiting", 3 s in). The earlier green run
           # only passed because the branch happened to equal the latest tag.
-          sudo bash -c 'ROOMLERD_AUTO_UPDATE=0 \
+          sudo bash -c 'MESHHARBORD_AUTO_UPDATE=0 \
             RUST_LOG=info,tunnel_core::overlay=debug \
             ./target/release/roomlerd --config /etc/roomler-ci/config.toml run \
             > /var/log/roomler-ci/agent.log 2>&1 &'

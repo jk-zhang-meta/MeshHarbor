@@ -160,15 +160,15 @@ flowchart LR
     picture inside any lock or greeter window.
 - [x] **AC4** — Explicit keys win, and `x11_auto_system = false` gives back 0.4.143's behaviour exactly; Wayland hosts
   are unchanged.
-  ✅ **On the candidate** (§8). `ROOMLERD_X11_AUTO_SYSTEM=0` logged exactly what 0.4.143 did: no picture,
+  ✅ **On the candidate** (§8). `MESHHARBORD_X11_AUTO_SYSTEM=0` logged exactly what 0.4.143 did: no picture,
   `code="no_display"`, reach `none`. The same cell switched back to Wayland was captured as before: FR-95's plan,
   `idle_skip=Flips`, 56 of 56 samples with a picture. Explicit keys are `capture_keys_set`, unchanged, and are pinned
   by unit tests.
   ✅ **On the release 0.4.144** (2026-10-19). Each switch was proven applied in the unit's environment (names only).
-  - With `ROOMLERD_X11_AUTO_SYSTEM`: no picture, `code="no_display"`, reach `none`, and `no_display` on prod's viewer.
+  - With `MESHHARBORD_X11_AUTO_SYSTEM`: no picture, `code="no_display"`, reach `none`, and `no_display` on prod's viewer.
   - Back on Wayland with the drop-in removed: FR-95's plan, `idle_skip=Flips`, 64 of 64 samples with a picture.
 - [x] **AC5** — A plan that cannot capture an X11 seat names the X11 session and the key, never `no_display`.
-  ✅ **On the candidate** (§8). With `ROOMLERD_VIEWING_NOTICE=0` nobody could be told, and the agent sent
+  ✅ **On the candidate** (§8). With `MESHHARBORD_VIEWING_NOTICE=0` nobody could be told, and the agent sent
   `code="x11_not_enabled"`, detail *logind shows an X11 session on this seat, and this daemon has no display of its
   own…*. Prod's viewer showed the hint: *This computer is showing an X11 desktop, and it is not captured by itself
   because nobody at the screen could be told they are being viewed…*.
@@ -178,7 +178,7 @@ flowchart LR
   told they are being viewed…*, with the code `x11_not_enabled`.
 - [x] **AC6** — An idle X11 desktop through DRM costs within 2× of FR-29's X11 figure.
   ✅ **On the candidate** (§8; `linux-capture.md` §3.2). An idle GNOME/Xorg desktop, two 60 s windows, every
-  `roomlerd` process: **5.5 % and 5.5 %** of a core, inside 6.8 %. Every frame read (`ROOMLERD_DRM_IDLE_SKIP=0`)
+  `roomlerd` process: **5.5 % and 5.5 %** of a core, inside 6.8 %. Every frame read (`MESHHARBORD_DRM_IDLE_SKIP=0`)
   costs 46.3 % and 46.5 %.
   ✅ **On the release 0.4.144** (2026-10-19, the release's full feature set, `ffmpeg-encoder` included):
   **6.1 % and 6.1 %** of a core, inside 6.8 %. All 268 samples had a picture.
@@ -194,7 +194,7 @@ flowchart LR
 |---|---|---|
 | **D1** | On by default for X11 system installs | *(Recommended: yes, as FR-95. The seat guard is what makes it safe, and AC3 proves it.)* **P1 implements the recommendation**; it ships in no release before the field run, and the operator can still overturn it. |
 | **D2** | DRM first, or the session's own X server (`DISPLAY` from logind's session, plus its Xauthority, whose path depends on the display manager) | *(Recommended: DRM first, as it is display-manager agnostic and proven here. The Xauthority path only for a host without DRM access.)* |
-| **D3** | The switch's name | *(Recommended: `x11_auto_system`, default on.)* **As implemented** (`ROOMLERD_X11_AUTO_SYSTEM`); off gives back 0.4.143 exactly, including P2's reason (`no_display`) and the X11 idle skip (every frame read). `wayland_auto = false` and `wayland_aware = false` turn it off too. |
+| **D3** | The switch's name | *(Recommended: `x11_auto_system`, default on.)* **As implemented** (`MESHHARBORD_X11_AUTO_SYSTEM`); off gives back 0.4.143 exactly, including P2's reason (`no_display`) and the X11 idle skip (every frame read). `wayland_auto = false` and `wayland_aware = false` turn it off too. |
 | **D4** | A locker that never sets logind's `LockedHint` | Found while writing P1. The seat guard knows a lock only by `LockedHint` (`seat_guard::guard`). GNOME sets it on Xorg too, and LightDM's `light-locker` locks by switching to a greeter session, which the guard already reads as away. An in-session locker that does not set it (xscreensaver, i3lock, slock, some xfce4-screensaver versions) would have its lock screen read, and its password field typed into by the automatic `uinput`. **Decided in P1, on the PR review (#2471):** refuse such a desktop by default. The X11 half switches on only where `gnome-shell` or `ksmserver` runs as the person (`lock_reporting_shell`, read from `/proc`, since logind's `Desktop` is empty for GDM's auto-login session). Anything else plans `SystemPlan::LockUnreported`, before the surface is probed, and `x11_not_enabled` says so and offers the explicit keys. An allowlist entry for another desktop must first show its locker setting `LockedHint` (AC2's desktop is the first candidate). **Measured (2026-10-18, §8):** XFCE 4.18.3 on Ubuntu 24.04 (`xfce4-screensaver` 4.18.3) left `LockedHint` at `no` through `loginctl lock-session`, so it stays refused, and was refused in the field with the hint shown on prod's viewer. |
 
 ## 7. Out of scope
@@ -210,9 +210,9 @@ flowchart LR
 | 2026-10-18 14:28Z | a new kept cell, the same image (GNOME 46, GDM switched to Xorg, auto-login), the system daemon re-enrolled on a DEFAULT config | the released 0.4.143 | the red again, on this cell | 🔴 no picture; `code="no_display"`; input reach `none`; brief `kind=x11 capture_arm=x11` |
 | 2026-10-18 14:34–14:39Z | the same cell and config | candidate `c1ea719ab` (the release's Linux features minus `ffmpeg-encoder`), auto-update off | AC1 | ✅ 62/62 samples with a picture, `idle_skip=InPlace`, the automatic `uinput`. The pointer, parked at (100, 100), stood at (716, 448) after the viewer's move (`xdotool`, in the person's X session) |
 | 2026-10-18 14:40Z | the same | the same | AC3: `loginctl lock-session`, then `unlock-session` | ✅ the guard closed on `LockedHint` and read nothing; the viewer named the lock +2.8 s after; a picture +0.6 s after the unlock, live +1.1 s. One new frame 2.1 s before the guard closed (the shield's first, likely) |
-| 2026-10-18 14:43–14:57Z | the same | the same; then `ROOMLERD_DRM_IDLE_SKIP=0` | AC6: an idle desktop, two 60 s windows | ✅ 5.5 %, 5.5 % (and 5.5 % in a first run's second window) against 46.3 %, 46.5 % reading every frame |
-| 2026-10-18 15:01Z | the same | the same, `ROOMLERD_X11_AUTO_SYSTEM=0` | AC4: the kill switch | ✅ exactly 0.4.143's lines: no picture, `no_display`, reach `none` |
-| 2026-10-18 15:06Z | the same | the same, `ROOMLERD_VIEWING_NOTICE=0` | AC5: nobody to tell | ✅ `code="x11_not_enabled"`, its detail, and the no-surface hint on prod's viewer |
+| 2026-10-18 14:43–14:57Z | the same | the same; then `MESHHARBORD_DRM_IDLE_SKIP=0` | AC6: an idle desktop, two 60 s windows | ✅ 5.5 %, 5.5 % (and 5.5 % in a first run's second window) against 46.3 %, 46.5 % reading every frame |
+| 2026-10-18 15:01Z | the same | the same, `MESHHARBORD_X11_AUTO_SYSTEM=0` | AC4: the kill switch | ✅ exactly 0.4.143's lines: no picture, `no_display`, reach `none` |
+| 2026-10-18 15:06Z | the same | the same, `MESHHARBORD_VIEWING_NOTICE=0` | AC5: nobody to tell | ✅ `code="x11_not_enabled"`, its detail, and the no-surface hint on prod's viewer |
 | 2026-10-18 15:12Z | the same cell switched back to Wayland | the same, defaults | AC4: Wayland unchanged | ✅ FR-95's plan, `idle_skip=Flips`, the P3d line, 56/56 samples with a picture |
 | 2026-10-18 19:31Z | the same cell, back on Xorg (GNOME) | candidate `8be890c19` (D4, after the PR review) | AC1 again: `lock_reporting_shell` must find GNOME Shell | ✅ 64/64 samples with a picture, `InPlace`, the automatic `uinput`; the pointer (100,100) → (716,448) |
 | 2026-10-18 19:39Z | the same cell, the auto-login switched to **XFCE 4.18.3 on Xorg** (no `gnome-shell`, no `ksmserver`) | the same | D4: a desktop that does not report its lock | ✅ refused: no picture, no DRM read, `code="x11_not_enabled"`, and prod's viewer showed *…an X11 desktop whose screen locker does not report a lock to the system (GNOME and KDE do…)*. Measured: `loginctl lock-session` left `LockedHint` at `no` with `xfce4-screensaver` 4.18.3 running, which is exactly the case D4 exists for |
@@ -221,8 +221,8 @@ flowchart LR
 | 2026-10-19 08:31–08:35Z | the GNOME cell | the release | AC3: lock, unlock, switch-user, switch-back, lock-switch, switch-back, unlock (`verdict.py`, with `wlab-probe --x11` ticking on the desktop) | ✅ 7/7 PASS: named +2.7 / +2.6 / +2.6 / +0.2 s, live (the probe's counter moving) +2.3 / +1.6 / +2.3 s; no new picture inside any lock or greeter window |
 | 2026-10-19 08:35–08:37Z | the same | the release | AC3: logout, then a typed login | 🔴 black, nothing said. `terminate-session`: GDM's auto-login session worker ignored SIGTERM (`session-26.scope: … SIGKILL … Failed with result 'timeout'` at +90 s), so logind kept the session `closing` and the seat's active one; the guard (id, class, `LockedHint`) stayed open and the DRM capture read on (`frames_captured` 72 → 144); no greeter for 90 s, so the typed login had nothing to type into → **P4** |
 | 2026-10-19 08:47–08:49Z | the same, back on Xorg | the release | AC6 | ✅ 6.1 %, 6.1 % of a core (268/268 samples with a picture) |
-| 2026-10-19 08:52Z | the same, `ROOMLERD_VIEWING_NOTICE=0` (proven in the unit's environment) | the release | AC5 | ✅ `code="x11_not_enabled"`, and the hint on prod's viewer |
-| 2026-10-19 08:56Z | the same, `ROOMLERD_X11_AUTO_SYSTEM=0` (proven) | the release | AC4: the kill switch | ✅ no picture, `code="no_display"`, reach `none` |
+| 2026-10-19 08:52Z | the same, `MESHHARBORD_VIEWING_NOTICE=0` (proven in the unit's environment) | the release | AC5 | ✅ `code="x11_not_enabled"`, and the hint on prod's viewer |
+| 2026-10-19 08:56Z | the same, `MESHHARBORD_X11_AUTO_SYSTEM=0` (proven) | the release | AC4: the kill switch | ✅ no picture, `code="no_display"`, reach `none` |
 | 2026-10-19 08:58Z | the same, GDM back on Wayland, the drop-in removed | the release | AC4: Wayland unchanged; #2473 on Wayland | ✅ FR-95's plan, `idle_skip=Flips`, 64/64 samples with a picture; the brief `kind=wayland capture_arm=drm input_reach=full` |
 | 2026-10-19 09:04–09:10Z | the GNOME cell back on Xorg (auto-login), the release kept as `/usr/bin/roomlerd.rel` | **candidate `73539996e` (P4)**, the release's Linux features minus `ffmpeg-encoder`, sha256 `17463b8a…`, re-enrolled on defaults | AC3: logout, then a typed login; then a new viewer session | ✅ `verdict.py` PASS 2/2. The guard: `closing=true` 29 ms after `terminate-session`, before Xorg exited; nothing read after (the encoder's last window ended 09:05:49.15); named +2.5 s; one black transition frame from those 29 ms. GDM hung 90 s again, and the viewer said why throughout. The typed login went through once the greeter was up; a new viewer session bound to it: 34/34 samples with a picture, the pointer (100,100) → (716,448) |
 | 2026-10-19 09:10–09:14Z | the same, the new login, the probe restarted | the same | AC3 regression: lock, unlock, both user switches | ✅ 7/7 PASS: lock named +2.5 s, unlock live +2.1 s, switch-user named +2.9 s, switch-back live +1.9 s, lock-switch named +2.9 s, switch-back (still locked) named +0.0 s, unlock live +2.2 s; no new picture inside any lock or greeter window |

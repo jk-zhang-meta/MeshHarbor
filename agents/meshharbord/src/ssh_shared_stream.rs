@@ -253,7 +253,7 @@ mod tests {
     async fn auth(c: &mut russh::client::Handle<Client>, k: PrivateKey) -> bool {
         let hash = c.best_supported_rsa_hash().await.unwrap().flatten();
         c.authenticate_publickey(
-            "roomler",
+            "meshharbor",
             russh::keys::PrivateKeyWithHashAlg::new(Arc::new(k), hash),
         )
         .await

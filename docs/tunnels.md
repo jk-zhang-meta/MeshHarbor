@@ -813,7 +813,7 @@ mid-flight never touches the live carrier, the listener or the flow's demux — 
 `CandidateGuard` reaps its own pending-open / session entries, and its `TerminateOnDrop`
 tells the exit. Only the backoff grows.
 
-⚠️ **The kill switch is `ROOMLERD_TUNNEL_REUPGRADE=0`** (or the `tunnel_reupgrade`
+⚠️ **The kill switch is `MESHHARBORD_TUNNEL_REUPGRADE=0`** (or the `tunnel_reupgrade`
 config key). Off ⇒ no probe is ever opened and the flow behaves exactly as after P1.
 Read once per serving epoch, so the env var flips it on the next cycle; the config key
 applies on the next daemon restart.
@@ -838,7 +838,7 @@ Locked by lib tests, each shown red with a one-line negative control:
 | `…probe_timer_deadlines_follow_the_ladder` | the ladder mapped onto injected-time deadlines | — |
 | `…transport_ranking_and_better_set` | the order, and "below best" only for webrtc-dc / quic-derp | — |
 | `…reupgrade_gate_respects_pinned_and_kill_switch` | pinned never probes; kill switch off disables it | NC86P2K: gate ignores `pref` · NC86P2S: gate ignores the switch |
-| `…kill_switch_reads_the_env` | `ROOMLERD_TUNNEL_REUPGRADE=0` turns probing off | NC86P2E: `reupgrade_enabled` hardcoded true |
+| `…kill_switch_reads_the_env` | `MESHHARBORD_TUNNEL_REUPGRADE=0` turns probing off | NC86P2E: `reupgrade_enabled` hardcoded true |
 | `…drain_carrier_keeps_the_old_carrier_until_active_reaches_zero` | the old carrier is not dropped while it carries a connection, and IS dropped at 0 | NC86P2P: drop the old carrier at promotion (promote-by-cut) |
 | `…an_aborted_drain_reaper_still_reaps_its_demux_entry_carrier_first` | an ABORTED reaper drops the carrier AND reaps its demux entry — the carrier first (#1816) | NC1816-1: the reap on the reaper's last line (master) · NC1816-1b: the entry reaped before the carrier drops |
 | `flow_listener::tests::install_cannot_complete_while_a_carry_on_the_old_carrier_is_in_progress` | `install(B)` waits for a `carry` in progress on A — the count and the swap serialise (#1816) | NC1816-2: carry after releasing the lock (master) |

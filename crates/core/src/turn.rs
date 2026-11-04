@@ -48,7 +48,7 @@ pub fn build_turn_config(turn: &TurnSettings) -> Option<TurnConfig> {
 
 /// Build the region-keyed [`TurnMap`]: the legacy `turn.*` config as the
 /// default region plus one [`TurnConfig`] per enabled spec in
-/// `ROOMLER__RELAY__REGIONS`. A malformed JSON or a region without any usable
+/// `MESHHARBOR__RELAY__REGIONS`. A malformed JSON or a region without any usable
 /// shared secret is logged and skipped — never fatal, and with
 /// `relay.regions_enabled=false` the map degrades to exactly the legacy
 /// behaviour.
@@ -95,7 +95,7 @@ pub fn build_turn_map(settings: &Settings) -> TurnMap {
                 }
             }
             Err(e) => {
-                tracing::error!(%e, "ROOMLER__RELAY__REGIONS is not valid JSON; ignoring regions");
+                tracing::error!(%e, "MESHHARBOR__RELAY__REGIONS is not valid JSON; ignoring regions");
             }
         }
     }

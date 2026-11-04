@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! FR-102 P1b — the campaign key: one taxonomy, checked at both ends.
 //!
-//! The anonymous plane (purestat) and the account plane (roomler) meet only
+//! The anonymous plane (purestat) and the account plane (meshharbor) meet only
 //! at the campaign key `(source, medium, campaign, content)` and at counts
 //! (spec §3a). A join by key is only a join when both ends spell the key the
 //! same way — and the field found `youtub`, `YouTube` and an empty medium in

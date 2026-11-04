@@ -8,7 +8,7 @@
 //!
 //! | What | Where | Deleted |
 //! |---|---|---|
-//! | its state directory: its Claude Code config directory, and the shadow repository of a folder in no repository | `~/.roomler/hive/<sid>` | whole, never through a link |
+//! | its state directory: its Claude Code config directory, and the shadow repository of a folder in no repository | `~/.meshharbor/hive/<sid>` | whole, never through a link |
 //! | what its checkpoints left in the folder's own repository | `refs/hive/<sid>/*`, and `hive-<sid>.index` with its lock in the git directory | each ref by `git update-ref -d`, the index files removed ([`workspace::forget`]) |
 //!
 //! Never the person's working tree, their branches, their index or any other
@@ -19,7 +19,7 @@
 //! the session's workplace says ([`super::store`]), never the server's word.
 //! It starts `meshharbord hive-purge` as the account, as `hive-pack` runs. The
 //! child holds the request to the account's own home: a state directory that
-//! is not `$HOME/.roomler/hive/<sid>` exactly is refused, so a record that went
+//! is not `$HOME/.meshharbor/hive/<sid>` exactly is refused, so a record that went
 //! wrong cannot make it delete anything else of the account's.
 
 use std::path::{Path, PathBuf};
@@ -93,7 +93,7 @@ pub(crate) fn produce(req: &Request, home: &Path, git: &Git) -> Result<Done, Str
     {
         return Err(format!("{sid:?} is not a session id"));
     }
-    let own = home.join(".roomler").join("hive").join(sid);
+    let own = home.join(".meshharbor").join("hive").join(sid);
     if req.state_dir != own {
         return Err(format!(
             "{} is not this account's state directory for the session: left as it is",
@@ -293,7 +293,7 @@ pub fn purge_main() -> i32 {
     match run() {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("roomlerd {PURGE_SUBCOMMAND}: {e}");
+            eprintln!("meshharbord {PURGE_SUBCOMMAND}: {e}");
             1
         }
     }
@@ -343,7 +343,7 @@ mod tests {
     fn rig() -> Rig {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
-        let state_dir = home.join(".roomler").join("hive").join(SID);
+        let state_dir = home.join(".meshharbor").join("hive").join(SID);
         std::fs::create_dir_all(state_dir.join("claude").join("projects")).unwrap();
         std::fs::write(state_dir.join("claude").join("history.jsonl"), "{}\n").unwrap();
         let folder = root.path().join("work");
@@ -429,7 +429,7 @@ mod tests {
     }
 
     /// The request is held to the account's own home: a state directory that
-    /// is not `$HOME/.roomler/hive/<sid>` is refused, and nothing is deleted.
+    /// is not `$HOME/.meshharbor/hive/<sid>` is refused, and nothing is deleted.
     #[test]
     fn only_the_accounts_own_state_directory_for_the_session_goes() {
         let r = rig();
@@ -439,7 +439,7 @@ mod tests {
             (
                 "another session's",
                 r.home
-                    .join(".roomler")
+                    .join(".meshharbor")
                     .join("hive")
                     .join("6aca8ef5dac84dd57e492eb8"),
             ),

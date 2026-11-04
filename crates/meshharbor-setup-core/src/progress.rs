@@ -126,7 +126,7 @@ pub enum ProgressEvent {
         tenant_id: String,
     },
 
-    /// FR-104 — the elevated `roomlerd anchor create` started: the token may
+    /// FR-104 — the elevated `meshharbord anchor create` started: the token may
     /// also anchor the device it just enrolled, and Windows shows a second
     /// administrator prompt for it.
     AnchorStarted,

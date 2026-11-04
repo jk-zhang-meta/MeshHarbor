@@ -36,7 +36,7 @@
 //! an X11 session, [`x11_offered`]): the one active output switched to a mode
 //! it already lists, with a restore guard that a crash cannot strand, since an
 //! X11 mode outlives the process that set it. Who is at that screen comes from
-//! the X idle clock (`presence`). Kill switch `ROOMLERD_X11_DISPLAY_MATCH=0`.
+//! the X idle clock (`presence`). Kill switch `MESHHARBORD_X11_DISPLAY_MATCH=0`.
 
 use crate::config::DisplayMatchPolicy;
 use crate::presence::Presence;
@@ -71,7 +71,7 @@ pub fn pick_display_mode(modes: &[(u32, u32)], req_w: u32, req_h: u32) -> Option
     best
 }
 
-/// FR-108 P2 — a 60 Hz modeline for exactly `w × h`, named `roomler-WxH`: the
+/// FR-108 P2 — a 60 Hz modeline for exactly `w × h`, named `meshharbor-WxH`: the
 /// name, and the timings as `xrandr --newmode` and an xorg.conf `Modeline`
 /// take them. The dummy driver takes any size (spec §8 row 5), so the timings
 /// only have to sit inside the virtual desktop's Monitor ranges: fixed reduced
@@ -93,7 +93,7 @@ pub fn modeline(w: u32, h: u32) -> (String, String) {
         h + 8,
         vtotal
     );
-    (format!("roomler-{w}x{h}"), timings)
+    (format!("meshharbor-{w}x{h}"), timings)
 }
 
 /// FR-108 P2 — the mode a virtual desktop takes for a viewer's `req_w × req_h`.
@@ -150,7 +150,7 @@ fn parse_xrandr_current(s: &str) -> Option<(String, String, (u32, u32))> {
 }
 
 /// FR-108 P2 — the Linux virtual desktop's switch, through `xrandr` on the
-/// daemon's own Xorg with the dummy driver: a `roomler-WxH` mode added for the
+/// daemon's own Xorg with the dummy driver: a `meshharbor-WxH` mode added for the
 /// request, then made current, and on restore the start mode made current
 /// again and the added modes removed (in that order: X refuses to delete the
 /// mode in use). Nobody else drives this display, so the start mode read at
@@ -249,7 +249,7 @@ fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// FR-97 P3e-2 — kill switch `ROOMLERD_X11_DISPLAY_MATCH=0`.
+/// FR-97 P3e-2 — kill switch `MESHHARBORD_X11_DISPLAY_MATCH=0`.
 pub fn x11_enabled() -> bool {
     tunnel_core::env::flag("X11_DISPLAY_MATCH", true)
 }
@@ -280,7 +280,7 @@ struct XOutput {
 
 /// FR-97 P3e-2 — `xrandr --current`: the connected outputs, each with its
 /// modes and the one it shows. A mode's size is read from its name
-/// (`1920x1080`, `1920x1080i`, `roomler-1920x1080`). Pure.
+/// (`1920x1080`, `1920x1080i`, `meshharbor-1920x1080`). Pure.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_xrandr_outputs(s: &str) -> Vec<XOutput> {
     fn size_of(name: &str) -> Option<(u32, u32)> {
@@ -406,7 +406,7 @@ mod x11 {
 
     fn guard_path() -> Option<PathBuf> {
         let dir = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty())?;
-        Some(PathBuf::from(dir).join("roomler-display-match.json"))
+        Some(PathBuf::from(dir).join("meshharbor-display-match.json"))
     }
 
     fn outputs() -> Result<Vec<XOutput>, ApplyError> {
@@ -1237,7 +1237,7 @@ mod fr108_tests {
     #[test]
     fn a_modeline_for_any_size() {
         let (name, t) = modeline(1920, 1080);
-        assert_eq!(name, "roomler-1920x1080");
+        assert_eq!(name, "meshharbor-1920x1080");
         assert_eq!(
             t,
             "138.52 1920 1968 2000 2080 1080 1083 1088 1110 +hsync +vsync"
@@ -1245,7 +1245,7 @@ mod fr108_tests {
         // An odd viewer size keeps its own width: the dummy driver takes it, and
         // `cvt` would have rounded 946 up to 952.
         let (name, t) = modeline(946, 598);
-        assert_eq!(name, "roomler-946x598");
+        assert_eq!(name, "meshharbor-946x598");
         assert_eq!(t, "41.67 946 994 1026 1106 598 601 606 628 +hsync +vsync");
     }
 
@@ -1347,12 +1347,12 @@ mod fr108_tests {
     fn xrandr_current_is_read() {
         let s = "Screen 0: minimum 64 x 64, current 1920 x 1080, maximum 32767 x 32767\n\
                  DUMMY0 connected primary 1920x1080+0+0 0mm x 0mm\n   \
-                 roomler-1920x1080  60.00*+\n   2048x1536     60.00  \n   1920x1440     75.00    60.00  \n";
+                 meshharbor-1920x1080  60.00*+\n   2048x1536     60.00  \n   1920x1440     75.00    60.00  \n";
         assert_eq!(
             parse_xrandr_current(s),
-            Some(("DUMMY0".into(), "roomler-1920x1080".into(), (1920, 1080)))
+            Some(("DUMMY0".into(), "meshharbor-1920x1080".into(), (1920, 1080)))
         );
-        // The dummy driver's own default, before any roomler mode.
+        // The dummy driver's own default, before any meshharbor mode.
         let d = "Screen 0: minimum 64 x 64, current 2048 x 1536, maximum 32767 x 32767\n\
                  DUMMY0 connected primary 2048x1536+0+0 0mm x 0mm\n   2048x1536     60.00* \n";
         assert_eq!(

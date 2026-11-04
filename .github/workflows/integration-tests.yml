@@ -126,10 +126,10 @@ jobs:
           --health-retries 12
 
     env:
-      ROOMLER__DATABASE__URL: mongodb://localhost:27019
+      MESHHARBOR__DATABASE__URL: mongodb://localhost:27019
       # File storage defaults to local disk in dev/test (see
       # crates/api/src/storage.rs), so no MinIO/S3 is needed here. Leaving
-      # ROOMLER__S3__* unset is what selects that backend.
+      # MESHHARBOR__S3__* unset is what selects that backend.
       RUST_BACKTRACE: 1
       # FR-6 wave 21b (#773): line tables only, as ci.yml has had since wave 14.
       # This lane was still building with FULL debuginfo, for a 1.1 GB cache

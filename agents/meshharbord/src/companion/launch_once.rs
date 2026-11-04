@@ -458,8 +458,8 @@ mod windows {
         // SAFETY: a live WTSQueryUserToken token, held for the call.
         let roaming = unsafe { companion_spawn::roaming_app_data_for_token(token.raw()) }?;
         let path = roaming
-            .join("roomler")
-            .join("roomler")
+            .join("meshharbor")
+            .join("meshharbor")
             .join("config")
             .join("config.toml");
         crate::config::read_if_present(&path)

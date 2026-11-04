@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! Roomler SSH — the server side.
+//! MeshHarbor SSH — the server side.
 //!
 //! This module is the POLICY DECISION POINT, the twin of [`agent_exec`]. The
 //! agent decides what happens on the box (its own `ssh_enabled` key, the grant
@@ -184,7 +184,7 @@ pub struct Caller {
 /// request arrived ([`bind_ssh_ticket`]) and carried here so [`dispatch`]
 /// audits every outcome in its one place, a refused ticket's included.
 pub enum CallerSession {
-    /// A person's request (`roomler ssh`, the HTTP route): no ticket.
+    /// A person's request (`meshharbor ssh`, the HTTP route): no ticket.
     None,
     /// An agent session's, its ticket held: the SESSION is the principal and
     /// `Caller::user_id` the person it acts for.
@@ -2103,7 +2103,7 @@ mod session_tests {
             previous_secrets: String::new(),
             access_token_ttl_secs: 3600,
             refresh_token_ttl_secs: 3600,
-            issuer: "roomler-ai-test".into(),
+            issuer: "meshharbor-test".into(),
         })
     }
 

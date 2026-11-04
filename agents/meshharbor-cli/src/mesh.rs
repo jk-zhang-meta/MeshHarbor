@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! SOCKS5 **mesh** mode (`roomler socks5` with no `--agent`).
+//! SOCKS5 **mesh** mode (`meshharbor socks5` with no `--agent`).
 //!
 //! One local SOCKS5 proxy that reaches the WHOLE tenant: each CONNECT names an
 //! agent, and the mesh routes the flow to that agent. It reuses the proven
@@ -94,7 +94,7 @@ pub async fn run_mesh(cfg: TunnelConfig, local: u16, transport: TransportPref) -
     info!(
         local = %listener.local_addr()?,
         ?transport,
-        "roomler SOCKS5 mesh listening (address an agent by its name or 24-hex id as the SOCKS hostname)"
+        "meshharbor SOCKS5 mesh listening (address an agent by its name or 24-hex id as the SOCKS hostname)"
     );
     let ports: ProxyPorts = Arc::new(Mutex::new(HashMap::new()));
 

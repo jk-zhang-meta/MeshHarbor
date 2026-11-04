@@ -362,7 +362,7 @@ positional arguments, never interpolated, and that script runs as the account:
 is yet, `cd` into the folder, and `exec` Claude Code. The environment is cleared
 first and rebuilt from `HOME`, `USER`, `LOGNAME`, `PATH` (the account's
 `~/.local/bin` and `~/.cargo/bin` before the system's) and `LANG`, then Hive's own
-variables, so none of the daemon's `ROOMLERD_*` knobs reaches a session. The harness
+variables, so none of the daemon's `MESHHARBORD_*` knobs reaches a session. The harness
 leads its own process group, so a stop reaches the tools it started.
 
 | What | Where |
@@ -418,7 +418,7 @@ flowchart LR
 
 | Rule | Why | Where |
 |---|---|---|
-| ⚠️ A SystemContext worker is SYSTEM from the start and stays SYSTEM. With `ROOMLERD_ENABLE_SYSTEM_SWAP` on, every cycle of the service reads as if a controller were connected, so the worker is never swapped as one connects or leaves. Without SystemContext the worker is the console user throughout, elevated (`ROOMLERD_ELEVATE_WORKER`, on by default) | P1i-0 expected a remote-desktop connection to swap the worker and cut the running turns, from a gate 0.3.0-rc.7 retired. P1i-4 measured that it does not | [`win_service/supervisor.rs:891`](../agents/meshharbord/src/win_service/supervisor.rs#L891), [`:768`](../agents/meshharbord/src/win_service/supervisor.rs#L768) `decide_spawn` |
+| ⚠️ A SystemContext worker is SYSTEM from the start and stays SYSTEM. With `MESHHARBORD_ENABLE_SYSTEM_SWAP` on, every cycle of the service reads as if a controller were connected, so the worker is never swapped as one connects or leaves. Without SystemContext the worker is the console user throughout, elevated (`MESHHARBORD_ELEVATE_WORKER`, on by default) | P1i-0 expected a remote-desktop connection to swap the worker and cut the running turns, from a gate 0.3.0-rc.7 retired. P1i-4 measured that it does not | [`win_service/supervisor.rs:891`](../agents/meshharbord/src/win_service/supervisor.rs#L891), [`:768`](../agents/meshharbord/src/win_service/supervisor.rs#L768) `decide_spawn` |
 | Either way the session is the same person at Medium. A SYSTEM worker takes the console session's token; a worker that is the user takes a restricted, Medium copy of its own token: every administrator group deny-only, no privilege but traverse (FR-85's recorder rule) | a session never holds an administrator's rights on Windows | [`hive_win.rs:135`](../agents/meshharbord/src/hive_win.rs#L135) `console_user`, [`win_token.rs:209`](../agents/meshharbord/src/win_token.rs#L209) |
 | `roomlerd hive-prep` does the wrapper's work as the user, in a Job Object of its own with a 30 s deadline: the config directory, core memory copied where nothing is, and the folder opened as the user | the daemon never writes into the user's profile | [`hive_win.rs:844`](../agents/meshharbord/src/hive_win.rs#L844) `prep`, [`:897`](../agents/meshharbord/src/hive_win.rs#L897) `run_prep` |
 | The harness is created suspended, assigned to its own Job Object (`KILL_ON_JOB_CLOSE`, no breakaway), and only then resumed. It inherits its three standard handles and nothing else | none of its tools escapes the job, and no other session's pipe leaks into it | [`spawn_into_job`](../agents/meshharbord/src/win_service/supervisor.rs#L2390), [`JobObject`](../agents/meshharbord/src/win_service/supervisor.rs#L2273) |
@@ -795,7 +795,7 @@ tools, and the device says so.
 ## 9. The org gate on the server
 
 The module switch (`[modules] hive`) is all or nothing for a server, so it has a
-second dial: `hive.tenants` (`ROOMLER__HIVE__TENANTS`), the organizations agent
+second dial: `hive.tenants` (`MESHHARBOR__HIVE__TENANTS`), the organizations agent
 sessions serve, as comma-separated ids ([`scope.rs`](../crates/modules/hive/src/scope.rs)).
 Empty or `*` means every organization, which is what a self-hosted server wants.
 
@@ -803,7 +803,7 @@ Empty or `*` means every organization, which is what a self-hosted server wants.
 with no `[modules] hive`, and `/api/capabilities` says so
 ([`settings.rs:1538`](../crates/config/src/settings.rs#L1538) `Settings::hive_on`). A
 hosted server sets only the list, because that form fails safe. An image from before
-P1g never reads the list, so with `ROOMLER__MODULES__HIVE=true` beside it, promoting
+P1g never reads the list, so with `MESHHARBOR__MODULES__HIVE=true` beside it, promoting
 such an image (a rollback, or another session's older tag) would open the pillar to
 every organization on the server. With the list alone, every older image leaves it
 off. Clearing the list is the kill switch.
@@ -4044,7 +4044,7 @@ sequenceDiagram
     participant C as the container (first start)
     participant S as server
     participant A as an ADMINISTRATOR
-    O->>C: docker run -v vol:/data -e ROOMLER_SERVER -e ROOMLER_ENROLL_TOKEN …
+    O->>C: docker run -v vol:/data -e MESHHARBOR_SERVER -e MESHHARBOR_ENROLL_TOKEN …
     C->>C: no /data/config.toml: enroll --archive-replica (fresh config, standard token)
     C->>S: enroll: the device, named after the fixed hostname
     C->>C: config written WITH the archive posture, then run
@@ -4057,8 +4057,8 @@ sequenceDiagram
 ```sh
 docker run -d --name hive-archive --hostname hive-archive-1 \
   --restart unless-stopped -v hive-archive:/data \
-  -e ROOMLER_SERVER=https://roomler.ai \
-  -e ROOMLER_ENROLL_TOKEN=<an ADMINISTRATOR's enrollment token> \
+  -e MESHHARBOR_SERVER=https://roomler.ai \
+  -e MESHHARBOR_ENROLL_TOKEN=<an ADMINISTRATOR's enrollment token> \
   ghcr.io/gjovanov/roomler-ai/hive-archive:<tag>
 ```
 
@@ -4075,7 +4075,7 @@ docker run -d --name hive-archive --hostname hive-archive-1 \
 |---|---|---|
 | The posture is written with the enrolled config, before its first save | the first start is already an archive replica; a script appending keys to the file afterwards would land them under whatever `[table]` came last | [`archive_replica.rs:66`](../agents/meshharbord/src/archive_replica.rs#L66), [`main.rs:2562`](../agents/meshharbord/src/main.rs#L2562) |
 | Refused before the single-use token is spent: an existing config, an ephemeral enrollment, a build that holds no copies | the volume is the device, and folding an existing enrollment into one would make some other device an archive replica in place; FR-51 deletes an ephemeral device once it falls silent | [`archive_replica.rs:40`](../agents/meshharbord/src/archive_replica.rs#L40), [`main.rs:2469`](../agents/meshharbord/src/main.rs#L2469) |
-| An archive replica enrolled before P2k-4 joins the mesh at its first start in a newer image, and its config is saved once; a port it already had is kept. Only in the image, which says so in its environment (`ROOMLERD_ARCHIVE_IMAGE=1`) | it updates by a new container on the same volume, so that start is the one place an older enrollment can take the newer posture; a device whose owner offers it as an archive replica outside the image keeps the overlay its owner chose | [`archive_replica.rs:111`](../agents/meshharbord/src/archive_replica.rs#L111), [`main.rs:3283`](../agents/meshharbord/src/main.rs#L3283) |
+| An archive replica enrolled before P2k-4 joins the mesh at its first start in a newer image, and its config is saved once; a port it already had is kept. Only in the image, which says so in its environment (`MESHHARBORD_ARCHIVE_IMAGE=1`) | it updates by a new container on the same volume, so that start is the one place an older enrollment can take the newer posture; a device whose owner offers it as an archive replica outside the image keeps the overlay its owner chose | [`archive_replica.rs:111`](../agents/meshharbord/src/archive_replica.rs#L111), [`main.rs:3283`](../agents/meshharbord/src/main.rs#L3283) |
 | The entrypoint enrolls only when the volume holds no config, and never prints the token; a failed enrollment writes nothing, so the next start tries again | the token is single use and 10 minutes long; every later start runs from the volume | [`hive-archive-entrypoint.sh:24`](../scripts/hive-archive-entrypoint.sh#L24) |
 | Not root: its own account, uid 10001, whose home is the volume, so the store and every file the daemon keeps live there with the config | it runs no session as anyone, so it needs no account but its own | [`Dockerfile.hive-archive:73`](../Dockerfile.hive-archive#L73) |
 | Built and smoke-tested on every PR that touches it; published only by a dispatch, `dry_run` on by default | publishing puts a public package under the operator's account, as the self-host image (FR-42) | [`hive-archive-image.yml:23`](../.github/workflows/hive-archive-image.yml#L23) |
@@ -4117,7 +4117,7 @@ sequenceDiagram
     A->>S: GET …/hive/policy · GET …/agent
     A->>S: Add an archive replica: POST …/agent/enroll-token
     S-->>A: a single-use token, 10 minutes
-    Note over A: docker run … -e ROOMLER_SERVER=<this origin> -e ROOMLER_ENROLL_TOKEN=…
+    Note over A: docker run … -e MESHHARBOR_SERVER=<this origin> -e MESHHARBOR_ENROLL_TOKEN=…
     A->>C: the operator runs it
     C->>S: enroll --archive-replica, then rc:agent.hello with hive-archive
     A->>S: Designated: PUT …/hive/policy {…, archive_devices + it, revision}

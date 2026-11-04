@@ -490,7 +490,7 @@ sequenceDiagram
   the carrier.
 - **Direct is untouched.** The pin governs the relay tier only, so a pair that can go
   direct still re-upgrades.
-- **Kill switches:** `ROOMLER__OVERLAY__ORG_LOSS_PIN=0` on the server keeps every org
+- **Kill switches:** `MESHHARBOR__OVERLAY__ORG_LOSS_PIN=0` on the server keeps every org
   carrier (reports are logged only), and `OVERLAY_ORG_LOSS_REPORT=0` on a member stops
   its reports.
 
@@ -529,7 +529,7 @@ one-hop session and is never told the private endpoint.
 A pair that is direct but slow can move onto an org relay that is faster, and back once
 direct is no slower. This is latency-first routing (EasyTier's `--latency-first`);
 Tailscale never leaves a working direct path. It is **off by default**: the member
-needs `ROOMLERD_PATH_TRIAL=1`, and the tenant's peer-relay mode must be `on` (an
+needs `MESHHARBORD_PATH_TRIAL=1`, and the tenant's peer-relay mode must be `on` (an
 `auto` tenant gets the ranked mint, not trials).
 
 1. A member with a direct peer asks the server for a trial on a relay that discovery

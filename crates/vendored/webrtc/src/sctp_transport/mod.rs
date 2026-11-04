@@ -156,7 +156,7 @@ impl RTCSctpTransport {
                     },
                     association = sctp::association::Association::client(sctp::association::Config {
                         net_conn: Arc::clone(net_conn) as Arc<dyn Conn + Send + Sync>,
-                        // Roomler patch: pull rwnd from SettingEngine
+                        // MeshHarbor patch: pull rwnd from SettingEngine
                         // (was hardcoded 0 = 1 MiB upstream default).
                         max_receive_buffer_size: self.setting_engine.get_sctp_max_receive_buffer_size(),
                         max_message_size: 0,

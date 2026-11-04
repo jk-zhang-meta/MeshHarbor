@@ -111,7 +111,7 @@ impl HiveConfig {
     }
 }
 
-/// The local account a Roomler user's sessions run as, or `no_account`.
+/// The local account a MeshHarbor user's sessions run as, or `no_account`.
 ///
 /// By user id first — it never changes — then by the address the server sent:
 /// that is the account's PROVEN address, or the `.invalid` placeholder
@@ -248,9 +248,9 @@ mod tests {
     /// placeholder, and a map entry spelled like it must not let it in.
     #[test]
     fn an_unproven_address_matches_nothing() {
-        let c = cfg(&[("x@users.roomler.invalid", "dev")]);
+        let c = cfg(&[("x@users.meshharbor.invalid", "dev")]);
         assert_eq!(
-            account_for(&c, &ObjectId::new(), "x@users.roomler.invalid"),
+            account_for(&c, &ObjectId::new(), "x@users.meshharbor.invalid"),
             Err(HiveRefusal::NoAccount)
         );
         assert_eq!(

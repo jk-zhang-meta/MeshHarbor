@@ -134,7 +134,7 @@ pub struct ConnectedAgent {
     /// root, so after a rollback the row's promise would be exactly that.
     /// `false` ⇒ [`Hub::exec_on_agent`] refuses such a frame.
     pub supports_console_user: bool,
-    /// Roomler SSH — the agent advertises `AgentCaps.rpc` containing `ssh`,
+    /// MeshHarbor SSH — the agent advertises `AgentCaps.rpc` containing `ssh`,
     /// i.e. it was built with the `ssh-server` feature and will record an
     /// `rc:ssh.grant`. Same rationale as [`Self::supports_exec`]: pushing a
     /// grant to a build that drops it would leave the caller dialling a port
@@ -297,7 +297,7 @@ pub enum KickOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RecordSupport {
     /// No recorder can serve a remote session here: an agent that predates
-    /// recording, a build without it, `ROOMLERD_RECORDING=0`, or a host that
+    /// recording, a build without it, `MESHHARBORD_RECORDING=0`, or a host that
     /// cannot record at all. Nothing to offer a controller.
     #[default]
     None,
@@ -408,7 +408,7 @@ impl PrivacySupport {
 /// a name the stranger chose, and is the only one placed to see what that
 /// stranger then does: a curtain would hide it from them. The same sessions
 /// are never recorded (`controller_not_allowed`, FR-52 §10). The device
-/// strips both again on its own terms (`roomlerd`'s `extauth::admit_session`),
+/// strips both again on its own terms (`meshharbord`'s `extauth::admit_session`),
 /// so this gate is not the only thing keeping them out.
 ///
 /// A device that cannot curtain at all is named FIRST, as in
@@ -1154,7 +1154,7 @@ impl Hub {
             reason: AgentCloseReason::AgentDeleted,
             message: "This device was removed from its organization. Re-enrol it with a \
                       fresh enrollment token from the admin UI \
-                      (`roomlerd re-enroll --token <jwt>`)."
+                      (`meshharbord re-enroll --token <jwt>`)."
                 .into(),
         };
         match entry.tx.try_send(msg) {
@@ -2520,7 +2520,7 @@ impl Hub {
     /// `SendFailed` if the channel is full (rare — the agent rx pump
     /// reads as fast as it can serialise + write to the socket).
     ///
-    /// Used by the `roomler` relay path in
+    /// Used by the `meshharbor` relay path in
     /// `crates/api/src/ws/tunnel.rs` to forward
     /// `ServerMsg::TcpForwardForward` / `TcpHalfClose` /
     /// `TcpClosed` / `TunnelTerminate` to the agent on behalf of a

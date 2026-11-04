@@ -5,7 +5,7 @@
 //! Agent-side forward allowlist — the second gate after the
 //! server-side ACL in `api/ws/tunnel.rs`.
 //!
-//! Config-driven via `[tunnel]` block in `~/.config/roomler-agent/
+//! Config-driven via `[tunnel]` block in `~/.config/meshharbor-agent/
 //! config.toml`. Operators on org-controlled hosts narrow what the
 //! server's tenant-wide policies permit (e.g. "this VM only ever
 //! forwards to db.intranet:5432, never ssh"). On self-controlled

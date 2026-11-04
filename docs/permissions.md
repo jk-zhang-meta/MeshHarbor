@@ -189,7 +189,7 @@ after the `update_many` it describes, so the two cannot drift.
 ⚠️ An idempotent run writes **nothing** — otherwise every restart buries the one
 row that matters.
 
-**Kill switch:** `ROOMLER__AUTH__RECONCILE_MANAGED_ROLES=false` (default on;
+**Kill switch:** `MESHHARBOR__AUTH__RECONCILE_MANAGED_ROLES=false` (default on;
 the daemon warns at startup when it is off). Two legitimate uses and no
 others: a deployment that has deliberately edited a managed role *down* and
 wants it left alone — the reconcile is additive, so it would restore the bit

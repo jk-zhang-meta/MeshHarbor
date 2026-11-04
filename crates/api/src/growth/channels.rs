@@ -715,7 +715,7 @@ mod tests {
             id: None,
             platform: platform.into(),
             platform_id: id.into(),
-            account: "roomler-ai".into(),
+            account: "meshharbor".into(),
             format: "post".into(),
             url: format!("https://{platform}.example/{id}"),
             published_at: at("2026-10-12T09:00:00Z"),

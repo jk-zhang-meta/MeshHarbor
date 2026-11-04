@@ -78,7 +78,7 @@ pub(crate) enum Plan {
 /// The decision, from what the host reports.
 pub(crate) fn plan(enabled: bool, installed: Option<(PkgDb, String)>, own: &str) -> Plan {
     if !enabled {
-        return Plan::Nothing("ROOMLERD_COMPANION_SYNC=0");
+        return Plan::Nothing("MESHHARBORD_COMPANION_SYNC=0");
     }
     let Some((db, version)) = installed else {
         return Plan::Nothing("no meshharbor-desktop package is installed");
@@ -500,8 +500,8 @@ mod tests {
     /// The release 0.4.147 actually published, in GitHub's order.
     fn release_0_4_147() -> Vec<GithubAsset> {
         [
-            "roomlerd-0.4.147-aarch64-unknown-linux-gnu.deb",
-            "roomlerd-0.4.147-aarch64-unknown-linux-gnu.tar.gz",
+            "meshharbord-0.4.147-aarch64-unknown-linux-gnu.deb",
+            "meshharbord-0.4.147-aarch64-unknown-linux-gnu.tar.gz",
             "meshharbor-desktop-0.4.147-aarch64-unknown-linux-gnu.deb",
             "meshharbor-desktop-0.4.147-aarch64-unknown-linux-gnu.deb.asc",
             "meshharbor-desktop-0.4.147-aarch64-unknown-linux-gnu.rpm",
@@ -511,8 +511,8 @@ mod tests {
             "meshharbor-desktop-0.4.147-x86_64-unknown-linux-gnu.deb",
             "meshharbor-desktop-0.4.147-x86_64-unknown-linux-gnu.deb.sha256",
             "meshharbor-desktop-0.4.147-x86_64-unknown-linux-gnu.rpm",
-            "roomlerd-0.4.147-x86_64-unknown-linux-gnu.deb",
-            "roomlerd-0.4.147-x86_64-unknown-linux-gnu.tar.gz",
+            "meshharbord-0.4.147-x86_64-unknown-linux-gnu.deb",
+            "meshharbord-0.4.147-x86_64-unknown-linux-gnu.tar.gz",
         ]
         .into_iter()
         .map(asset)
@@ -571,7 +571,7 @@ mod tests {
         // The kill switch wins over everything.
         assert!(matches!(
             plan(false, pkg(PkgDb::Rpm, "0.4.139"), own),
-            Plan::Nothing("ROOMLERD_COMPANION_SYNC=0")
+            Plan::Nothing("MESHHARBORD_COMPANION_SYNC=0")
         ));
         // A version nobody can compare is not a reason to install anything.
         assert!(matches!(
@@ -613,7 +613,7 @@ mod tests {
         // A release without it (a pre-FR-27 one) has nothing to pick.
         let daemon_only: Vec<GithubAsset> = release_0_4_147()
             .into_iter()
-            .filter(|a| a.name.starts_with("roomlerd-"))
+            .filter(|a| a.name.starts_with("meshharbord-"))
             .collect();
         assert!(pick_asset(&daemon_only, &x86, PkgDb::Dpkg).is_none());
         // An arch the release does not carry picks nothing.
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn a_deb_installs_through_apt_alone_never_removing_never_half_installing() {
-        let p = "/tmp/roomler-update.x/c.deb";
+        let p = "/tmp/meshharbor-update.x/c.deb";
         let c = install_commands(PkgDb::Dpkg, p, |_| true);
         // ONE command: a `dpkg --install` fallback would half-configure a
         // companion whose dependency apt could not meet, and break apt.
@@ -641,7 +641,7 @@ mod tests {
 
     #[test]
     fn an_rpm_installs_with_the_first_tool_present_in_install_shs_order() {
-        let p = "/tmp/roomler-update.x/c.rpm";
+        let p = "/tmp/meshharbor-update.x/c.rpm";
         let only = |t: &'static str| move |tool: &str| tool == t;
         assert_eq!(install_commands(PkgDb::Rpm, p, |_| true)[0].0, "dnf");
         assert_eq!(

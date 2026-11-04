@@ -290,11 +290,11 @@ impl Aac {
     }
 }
 
-/// Whether the tests of this lane REQUIRE AAC (`ROOMLER_EXPECT_FFMPEG_AAC=1`):
+/// Whether the tests of this lane REQUIRE AAC (`MESHHARBOR_EXPECT_FFMPEG_AAC=1`):
 /// set where the vendored FFmpeg carries the encoder, so a lane that quietly
 /// fell back to Opus fails instead of passing on the wrong codec.
 pub fn aac_expected() -> bool {
-    std::env::var("ROOMLER_EXPECT_FFMPEG_AAC").is_ok_and(|v| v == "1")
+    std::env::var("MESHHARBOR_EXPECT_FFMPEG_AAC").is_ok_and(|v| v == "1")
 }
 
 #[cfg(test)]
@@ -359,7 +359,7 @@ mod tests {
             Err(e) => {
                 assert!(
                     !aac_expected(),
-                    "ROOMLER_EXPECT_FFMPEG_AAC=1 but AAC did not open: {e:#}"
+                    "MESHHARBOR_EXPECT_FFMPEG_AAC=1 but AAC did not open: {e:#}"
                 );
                 eprintln!("skipped: this FFmpeg has no AAC encoder ({e:#})");
                 return;

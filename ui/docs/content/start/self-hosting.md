@@ -29,8 +29,8 @@ cp .env.selfhost.example .env.selfhost
 Fill in the required values in `.env.selfhost`. Generate the secrets:
 
 ```bash
-openssl rand -hex 32   # ROOMLER_JWT_SECRET
-openssl rand -hex 32   # ROOMLER_TURN_SECRET
+openssl rand -hex 32   # MESHHARBOR_JWT_SECRET
+openssl rand -hex 32   # MESHHARBOR_TURN_SECRET
 openssl rand -hex 24   # MONGO_ROOT_PASSWORD
 openssl rand -hex 24   # MINIO_ROOT_PASSWORD
 ```

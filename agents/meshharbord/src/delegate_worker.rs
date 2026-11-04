@@ -12,7 +12,7 @@
 //! Because the environment does not arrive. The spawn chain runs through
 //! `sudo`, and this host's `/etc/sudoers` carries the stock `Defaults
 //! env_reset`, so everything the parent sets is discarded — measured on a real
-//! Mac, and the reason P1's `ROOMLER_MACOS_SUPERVISED` marker turned out never
+//! Mac, and the reason P1's `MESHHARBOR_MACOS_SUPERVISED` marker turned out never
 //! to have reached a single worker. Nothing noticed because nothing read it
 //! yet.
 //!
@@ -345,7 +345,7 @@ async fn attach_once(
                                 "delegation: the daemon's overlay footprint received"
                             );
                         }
-                        // FR-92 — a `roomler keep-busy status|off` reached the
+                        // FR-92 — a `meshharbor keep-busy status|off` reached the
                         // DAEMON's LocalAPI (a root caller never sees our
                         // per-user socket), and keep busy runs HERE. Answered
                         // inline: a status is immediate and an `off` waits at

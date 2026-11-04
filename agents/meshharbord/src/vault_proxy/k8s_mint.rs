@@ -11,7 +11,7 @@
 //! |---|---|
 //! | the issuer | the bundle's `namespace` and `service_account`, signed in to the API server at the bundle's one audience, an origin, by `admin_token` or by `admin_cert` and `admin_key`, over TLS verified against its `ca` or the system's roots ([`Issuer::from_bundle`]) |
 //! | the sweep | first, where the issuer may list its namespace's Secrets, every one a mint made whose end has passed, deleted on its uid: what a daemon that died before revoking left |
-//! | the mint | an empty Secret `roomler-<lease>`, labelled with its lease and annotated with its end; then a `TokenRequest` bound to it by name and uid, for the lease's TTL or 600 s, whichever is longer ([`mint`]) |
+//! | the mint | an empty Secret `meshharbor-<lease>`, labelled with its lease and annotated with its end; then a `TokenRequest` bound to it by name and uid, for the lease's TTL or 600 s, whichever is longer ([`mint`]) |
 //! | the revocation | the Secret deleted on its uid ([`revoke`]): the API server refuses a token whose bound object is gone |
 //!
 //! ⚠️ `namespace` and `service_account` go into a request's path, so each is
@@ -40,7 +40,7 @@ use super::bundle::Opened;
 use super::tls;
 
 /// What every minted Secret's name begins with.
-pub(crate) const SECRET_PREFIX: &str = "roomler-";
+pub(crate) const SECRET_PREFIX: &str = "meshharbor-";
 /// The label every minted Secret carries, its lease's id: the sweep's mark.
 const LEASE_LABEL: &str = "roomler.ai/lease";
 /// The same, as a query names it.

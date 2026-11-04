@@ -85,7 +85,7 @@ pub const NETSTACK_SOCKS_PORT: u16 = 11080;
 
 /// The process runs in the archive replica image, which says so in its
 /// environment (`Dockerfile.hive-archive`).
-pub const IMAGE_ENV: &str = "ROOMLERD_ARCHIVE_IMAGE";
+pub const IMAGE_ENV: &str = "MESHHARBORD_ARCHIVE_IMAGE";
 
 /// FR-90 P2k-4 (F4) — the mesh half of the posture: on the overlay, in the
 /// userspace stack. A port already configured is kept. True when it changed

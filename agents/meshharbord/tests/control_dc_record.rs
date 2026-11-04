@@ -82,7 +82,7 @@ fn setup() -> &'static Setup {
                 .with_service_identity(false)
                 .with_unattended_dir(unattended.clone())
                 .with_reattach_grace(GRACE)
-                .with_child_env([("ROOMLERD_SYNTHETIC_FRAMES", "1")]),
+                .with_child_env([("MESHHARBORD_SYNTHETIC_FRAMES", "1")]),
         );
         remote::install(manager.clone());
         Setup {

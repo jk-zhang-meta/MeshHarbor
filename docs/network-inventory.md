@@ -65,7 +65,7 @@ per-section tables. Everything there is labelled reported configuration.
 
 ## Turning it off
 
-The agent config key `net_inventory = false` (env `ROOMLERD_NET_INVENTORY=0`)
+The agent config key `net_inventory = false` (env `MESHHARBORD_NET_INVENTORY=0`)
 stops reporting. A device enrolled in more than one org never reports: the
 host inventory would show each org the other enrollments' overlay interfaces
 and routes.

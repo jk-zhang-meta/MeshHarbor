@@ -259,7 +259,7 @@ pub fn feed_url_allowed(url: &str) -> bool {
 async fn read_feed(url: &str) -> Result<Vec<FeedPost>, String> {
     if !feed_url_allowed(url) {
         return Err(
-            "feed refused: its URL is not https (ROOMLER__GROWTH__BLOG_FEED_URL)".to_string(),
+            "feed refused: its URL is not https (MESHHARBOR__GROWTH__BLOG_FEED_URL)".to_string(),
         );
     }
     let http = reqwest::Client::builder()
@@ -277,7 +277,7 @@ async fn read_feed(url: &str) -> Result<Vec<FeedPost>, String> {
     let status = resp.status().as_u16();
     if (300..400).contains(&status) {
         return Err(format!(
-            "feed unreachable: HTTP {status}, a redirect, not followed (point ROOMLER__GROWTH__BLOG_FEED_URL at its target)"
+            "feed unreachable: HTTP {status}, a redirect, not followed (point MESHHARBOR__GROWTH__BLOG_FEED_URL at its target)"
         ));
     }
     if status == 404 {
@@ -508,7 +508,7 @@ mod tests {
     const FEED: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en">
   <id>https://roomler.ai/blog/</id>
-  <title>Roomler blog</title>
+  <title>MeshHarbor blog</title>
   <link rel="self" type="application/atom+xml" href="https://roomler.ai/blog/feed.xml"/>
   <updated>2026-10-13T14:49:49Z</updated>
   <entry>

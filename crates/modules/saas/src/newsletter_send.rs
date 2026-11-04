@@ -266,7 +266,7 @@ mod tests {
                 .into(),
             hero_url: Some("https://roomler.ai/newsletter-img/october-notes-v1.png".into()),
             hero_alt: Some("One daemon".into()),
-            cta_text: Some("Try Roomler".into()),
+            cta_text: Some("Try MeshHarbor".into()),
             cta_url: Some("https://roomler.ai/register".into()),
             audience: None,
             status: IssueStatus::Sending,

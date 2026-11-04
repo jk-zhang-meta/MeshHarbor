@@ -61,7 +61,7 @@ mod host_win;
 #[cfg(all(target_os = "linux", feature = "enigo-input"))]
 mod host_x11;
 /// FR-92 P9 — the child the daemon runs inside a person's GNOME session
-/// (`roomlerd portal-helper --keep-busy`), and the daemon's link to it.
+/// (`meshharbord portal-helper --keep-busy`), and the daemon's link to it.
 #[cfg(all(target_os = "linux", feature = "portal-capture"))]
 pub mod session_helper;
 
@@ -329,7 +329,7 @@ pub async fn answer_local(off: bool) -> tunnel_core::localapi::KeepBusyInfo {
     local_info(&s)
 }
 
-/// The LocalAPI's view of a snapshot (`roomler keep-busy status`, the tray).
+/// The LocalAPI's view of a snapshot (`meshharbor keep-busy status`, the tray).
 pub fn local_info(s: &Snapshot) -> tunnel_core::localapi::KeepBusyInfo {
     tunnel_core::localapi::KeepBusyInfo {
         available: s.available,

@@ -208,7 +208,7 @@ capture, no input).
 
 ### Encoders — load the `encoder-cells` skill
 
-Preference resolution: **CLI `--encoder` > env `ROOMLERD_ENCODER` >
+Preference resolution: **CLI `--encoder` > env `MESHHARBORD_ENCODER` >
 `encoder_preference` in config TOML > `Auto`**.
 
 Everything else about the encoder surface — the child-process capability probe and
@@ -231,7 +231,7 @@ VAAPI / D3D12 / Vulkan / VideoToolbox) — lives in the **`encoder-cells` skill*
 
 ```
 crates/
-  config/           → Settings (env vars via ROOMLER__ prefix)
+  config/           → Settings (env vars via MESHHARBOR__ prefix)
   db/               → MongoDB models + indexes (18 collections) + native driver v3.2
   services/         → auth, DAOs, export, background tasks, OAuth, push, email, Giphy, Claude AI
   remote_control/   → wire-only for the server: signalling, consent, audit, TURN creds,
@@ -359,7 +359,7 @@ see Security Baseline below.
 ## Auth Pattern
 
 JWT (jsonwebtoken 9) + Argon2. Access token 7 d, refresh 30 d, both configurable
-via `ROOMLER__JWT__*` (secret `ROOMLER__JWT__SECRET`, issuer `ROOMLER__JWT__ISSUER`).
+via `MESHHARBOR__JWT__*` (secret `MESHHARBOR__JWT__SECRET`, issuer `MESHHARBOR__JWT__ISSUER`).
 Middleware extracts the user from `Authorization: Bearer`; OAuth via Google,
 Facebook, GitHub, LinkedIn, Microsoft.
 
@@ -442,7 +442,7 @@ Suites, harnesses and the nightly lane: **`docs/testing.md`**.
   `navigator.mediaDevices` is undefined, and in the pod the app is
   `http://127.0.0.1`, which is both a secure context and the address mediasoup
   announces. A Job cannot replace the sidecar — it cannot share the app's network
-  namespace, which is the whole mechanism. ⚠️ `ROOMLER__APP__FRONTEND_URL` must
+  namespace, which is the whole mechanism. ⚠️ `MESHHARBOR__APP__FRONTEND_URL` must
   equal the browser's origin (**a port is part of an Origin**) or the
   cookie-authenticated `/ws` upgrade is refused 403 and every realtime spec fails
   for that one reason. ⚠️ An entry in `e2e-expected-failures.txt` is a claim that
@@ -453,7 +453,7 @@ Suites, harnesses and the nightly lane: **`docs/testing.md`**.
 
 ## Environment
 
-`.env` for development (gitignored). Config via `ROOMLER__`-prefixed env vars
+`.env` for development (gitignored). Config via `MESHHARBOR__`-prefixed env vars
 (double-underscore separator). `docker-compose.yml` runs MongoDB 7, Redis 7, MinIO
 and coturn locally; default DB URL `mongodb://localhost:27019` (tests use no auth).
 
@@ -810,7 +810,7 @@ Fixed-and-shipped issues live in `git log` and the docs. Currently open:
 <!-- RETIRED-NAME-ANCHOR: the env-var spelling on the line below carries a
      retired product name deliberately — it is what the daemon actually reads,
      so renaming it would silently disable every virtual-desktop host. FR-27. -->
-  ⚠️ A `ROOMLER_AGENT_VIRTUAL_DESKTOP=1` host is **not** a consent surface even
+  ⚠️ A `MESHHARBOR_AGENT_VIRTUAL_DESKTOP=1` host is **not** a consent surface even
   though its X display connects: the only viewer of that Xvfb is a remote
   controller, so an unattended host reports `timeout` where the truth is
   `no_prompt_surface`, and an attended one lets viewer A approve viewer B.

@@ -112,7 +112,7 @@ const SYNCHRONIZE: u32 = 0x0010_0000;
 /// user session, i.e. session ≥ 1) can open an event the host created in
 /// session 0. The host is SYSTEM and holds `SeCreateGlobalPrivilege`; opening a
 /// `Global\` object needs no privilege.
-const STOP_EVENT_NAME_PREFIX: &str = "Global\\roomler-worker-stop-";
+const STOP_EVENT_NAME_PREFIX: &str = "Global\\meshharbor-worker-stop-";
 
 /// How often the worker probes the event. Each probe is a non-blocking
 /// `WaitForSingleObject(h, 0)`, and the sleep between probes is a plain tokio
@@ -133,7 +133,7 @@ fn to_wide(s: &str) -> Vec<u16> {
         .collect()
 }
 
-/// The unique name for the next spawn's stop event: `Global\roomler-worker-stop-
+/// The unique name for the next spawn's stop event: `Global\meshharbor-worker-stop-
 /// <host-pid>-<seq>`. Host PID keeps names from colliding across concurrent
 /// hosts (there is only ever one, but a stale PID-reused name would still not
 /// collide with a live one); the sequence keeps them unique within a host's
@@ -335,7 +335,7 @@ pub async fn wait_for_stop_event(name: &str) -> io::Result<()> {
 /// gains anything. Keyed by the config, as the single-instance lock is: one
 /// person may run two daemons on two configs, and `service stop` must reach the
 /// one its own config names.
-pub const USER_STOP_EVENT_PREFIX: &str = "Local\\roomler-user-stop-";
+pub const USER_STOP_EVENT_PREFIX: &str = "Local\\meshharbor-user-stop-";
 
 /// The per-user stop event's name for the daemon of `instance_id`.
 pub fn user_stop_event_name(instance_id: &str) -> String {
@@ -613,7 +613,7 @@ mod tests {
     /// that would stop a per-user daemon running on this machine.
     fn user_test_name() -> String {
         format!(
-            "Local\\roomler-user-stop-test-{}-{}",
+            "Local\\meshharbor-user-stop-test-{}-{}",
             std::process::id(),
             SPAWN_SEQ.fetch_add(1, Ordering::Relaxed)
         )
@@ -785,7 +785,7 @@ mod tests {
         let b = user_stop_event_name(&crate::instance_lock::instance_id(std::path::Path::new(
             "C:\\b\\config.toml",
         )));
-        assert!(a.starts_with("Local\\roomler-user-stop-"), "{a}");
+        assert!(a.starts_with("Local\\meshharbor-user-stop-"), "{a}");
         assert_ne!(a, b, "two configs, two daemons, two events");
     }
 
@@ -810,7 +810,7 @@ mod tests {
     fn waiting_on_a_missing_event_errs() {
         let rt = current_thread_rt();
         let r = rt.block_on(wait_for_stop_event(
-            "Global\\roomler-worker-stop-nonexistent-1683",
+            "Global\\meshharbor-worker-stop-nonexistent-1683",
         ));
         assert!(
             r.is_err(),

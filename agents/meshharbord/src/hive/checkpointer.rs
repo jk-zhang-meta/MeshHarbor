@@ -322,7 +322,7 @@ pub(crate) enum Runner {
     /// `meshharbord hive-checkpoint`, as the account: what a device does.
     Subprocess,
     /// In this process, through the same frames and checks: tests, where the
-    /// binary is the test harness and not `roomlerd`. Git's discovery stops at
+    /// binary is the test harness and not `meshharbord`. Git's discovery stops at
     /// `ceiling`, so a repository around the test's temp directory is never
     /// written to.
     /// The supervisor's tests are Unix's; so is every test runner. An
@@ -663,7 +663,7 @@ pub(crate) fn run_as_console_user(
     Ok((cp, blobs))
 }
 
-/// This process's own request, when it was started as `roomlerd
+/// This process's own request, when it was started as `meshharbord
 /// hive-checkpoint <request>`.
 pub fn checkpoint_args() -> Option<PathBuf> {
     let mut args = std::env::args_os().skip(1);
@@ -694,7 +694,7 @@ pub fn checkpoint_main(request: &Path) -> i32 {
     match run() {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("roomlerd {CHECKPOINT_SUBCOMMAND}: {e}");
+            eprintln!("meshharbord {CHECKPOINT_SUBCOMMAND}: {e}");
             1
         }
     }

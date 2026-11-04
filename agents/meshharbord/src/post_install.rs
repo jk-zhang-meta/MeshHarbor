@@ -52,7 +52,7 @@
 //!
 //! 1. Updater downloads installer.
 //! 2. Updater spawns msiexec / dpkg / installer(8) as a child.
-//! 3. Updater spawns `roomlerd post-install-watch
+//! 3. Updater spawns `meshharbord post-install-watch
 //!    --installer-pid <pid> --installer-path <path>
 //!    --expected-version <tag>` — on Windows from a staged COPY of
 //!    the EXE with `--origin-exe <install-dir exe>` appended (see
@@ -69,7 +69,7 @@
 //!    --version`, compares against the expected tag. Windows: when
 //!    the own-path probe can't verify (P4b renamed the install
 //!    folder, so a rename-hop watcher runs from the vacated dir),
-//!    it falls back to probing `…\Roomler\meshharbord.exe` for the
+//!    it falls back to probing `…\MeshHarbor\meshharbord.exe` for the
 //!    running flavour.
 //! 7. Watcher writes `last-install.json` and exits. Windows
 //!    perMachine: as a last act the watcher runs `sc start` on the
@@ -331,8 +331,8 @@ fn install_flavour(origin: Option<&std::path::Path>) -> crate::updater::WindowsI
 /// new binary's `--version`. Through rc.194 the watcher's own
 /// current_exe path was ALSO the path the installer wrote to (msiexec
 /// replaced the file in place while we were running; our memory map
-/// stayed valid). P4b renamed the install folder (`roomler-agent` →
-/// `Roomler`), so on the rename hop the watcher — spawned from the OLD
+/// stayed valid). P4b renamed the install folder (`meshharbor-agent` →
+/// `MeshHarbor`), so on the rename hop the watcher — spawned from the OLD
 /// directory — only ever sees the stale pending-delete binary at its
 /// own path; when that probe can't verify the expected version, fall
 /// back to the flavour-derived RENAMED directory.
@@ -579,9 +579,9 @@ fn ensure_service_running(
 // the directory being vacated, which still carries the retired name.
 /// P4b folder-rename fallback: probe the daemon at the RENAMED
 /// install directory for this flavour
-/// (`…\Roomler\meshharbord.exe`) when the own-path probe couldn't
+/// (`…\MeshHarbor\meshharbord.exe`) when the own-path probe couldn't
 /// verify the expected version. On the rename-hop upgrade the
-/// watcher runs from the vacated `roomler-agent\` directory, so its
+/// watcher runs from the vacated `meshharbor-agent\` directory, so its
 /// own path never sees the freshly-installed binary. Record-only,
 /// like the rest of the watcher: a version match here upgrades the
 /// outcome to `SucceededVerified` with a rename-aware note; anything
@@ -617,7 +617,7 @@ fn try_renamed_dir_fallback(
     }
 }
 
-/// The daemon EXE path inside the post-P4b (`Roomler\`) install dir
+/// The daemon EXE path inside the post-P4b (`MeshHarbor\`) install dir
 /// for the given flavour. Split out of [`try_renamed_dir_fallback`]
 /// so the pure path derivation is unit-testable without shelling
 /// anything. The flavour comes from [`install_flavour`] — origin-
@@ -628,7 +628,7 @@ fn renamed_daemon_candidate(flavour: crate::updater::WindowsInstallFlavour) -> O
         .map(|dir| dir.join("meshharbord.exe"))
 }
 
-/// Whether a `--version` line (e.g. "roomlerd 0.1.50") contains
+/// Whether a `--version` line (e.g. "meshharbord 0.1.50") contains
 /// the version triple from `expected_tag` (e.g. "agent-v0.1.50").
 /// Tolerant on the prefix so we don't have to track release-tool
 /// formatting changes.
@@ -768,7 +768,7 @@ mod tests {
     // is host-state-independent.
     #[cfg(target_os = "windows")]
     #[test]
-    fn renamed_daemon_candidate_targets_the_roomler_dir() {
+    fn renamed_daemon_candidate_targets_the_meshharbor_dir() {
         use crate::updater::WindowsInstallFlavour;
         let per_user = renamed_daemon_candidate(WindowsInstallFlavour::PerUser)
             .expect("install root env var set on Windows");
@@ -887,19 +887,19 @@ mod tests {
 
     #[test]
     fn version_matches_when_output_contains_triple() {
-        assert!(version_matches("roomlerd 0.1.50", "agent-v0.1.50"));
-        assert!(version_matches("roomlerd 0.1.50", "0.1.50"));
-        assert!(version_matches("roomlerd 0.1.50", "v0.1.50"));
-        assert!(version_matches("roomlerd 1.2.3 (some-build-id)", "v1.2.3"));
+        assert!(version_matches("meshharbord 0.1.50", "agent-v0.1.50"));
+        assert!(version_matches("meshharbord 0.1.50", "0.1.50"));
+        assert!(version_matches("meshharbord 0.1.50", "v0.1.50"));
+        assert!(version_matches("meshharbord 1.2.3 (some-build-id)", "v1.2.3"));
         // RETIRED-NAME-ANCHOR(2): a ROLLBACK re-runs the previous binary, which
         // still prints the pre-FR-21 name. Prefix tolerance is the contract.
-        assert!(version_matches("roomler-agent 0.1.50", "agent-v0.1.50"));
+        assert!(version_matches("meshharbor-agent 0.1.50", "agent-v0.1.50"));
     }
 
     #[test]
     fn version_does_not_match_different_triple() {
-        assert!(!version_matches("roomlerd 0.1.49", "agent-v0.1.50"));
-        assert!(!version_matches("roomlerd 1.0.0", "agent-v0.0.1"));
+        assert!(!version_matches("meshharbord 0.1.49", "agent-v0.1.50"));
+        assert!(!version_matches("meshharbord 1.0.0", "agent-v0.0.1"));
         assert!(!version_matches(
             "totally unrelated string",
             "agent-v0.1.50"
@@ -911,8 +911,8 @@ mod tests {
         // We refuse to match against malformed tags so a
         // server-side typo can't smuggle a "successful" verdict
         // through.
-        assert!(!version_matches("roomlerd 0.1.50", "not-a-version"));
-        assert!(!version_matches("roomlerd 0.1.50", ""));
+        assert!(!version_matches("meshharbord 0.1.50", "not-a-version"));
+        assert!(!version_matches("meshharbord 0.1.50", ""));
     }
 
     #[test]
@@ -925,7 +925,7 @@ mod tests {
             finished_unix: Some(200),
             installer_exit_code: Some(0),
             new_binary_path: Some("C:/agent.exe".into()),
-            new_binary_version: Some("roomlerd 0.1.50".into()),
+            new_binary_version: Some("meshharbord 0.1.50".into()),
             status: InstallStatus::SucceededVerified,
             note: "ok".into(),
         };

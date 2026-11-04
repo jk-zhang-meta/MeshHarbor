@@ -411,11 +411,11 @@ mod duplicate_key_tests {
     use super::*;
 
     /// The exact string MongoDB 7 produces for a single-field unique index.
-    const EMAIL: &str = "E11000 duplicate key error collection: roomler.users \
+    const EMAIL: &str = "E11000 duplicate key error collection: meshharbor.users \
 index: email_1 dup key: { email: \"victim@corp.example\" }";
-    const USERNAME: &str = "E11000 duplicate key error collection: roomler.users \
+    const USERNAME: &str = "E11000 duplicate key error collection: meshharbor.users \
 index: username_1 dup key: { username: \"victim_a1b2c3\" }";
-    const COMPOUND: &str = "E11000 duplicate key error collection: roomler.agents \
+    const COMPOUND: &str = "E11000 duplicate key error collection: meshharbor.agents \
 index: tenant_id_1_machine_id_1 dup key: { tenant_id: ObjectId('68a1'), machine_id: \"m-1\" }";
 
     #[test]
@@ -453,7 +453,7 @@ index: tenant_id_1_machine_id_1 dup key: { tenant_id: ObjectId('68a1'), machine_
     /// legal in our field names, so the name cannot be split back into fields.
     #[test]
     fn a_field_that_merely_prefixes_another_does_not_match() {
-        let msg = "E11000 duplicate key error collection: roomler.users \
+        let msg = "E11000 duplicate key error collection: meshharbor.users \
 index: email_verified_1 dup key: { email_verified: true }";
         assert!(duplicate_key_is_on(msg, "email_verified"));
         assert!(!duplicate_key_is_on(msg, "email"));

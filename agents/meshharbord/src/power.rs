@@ -169,7 +169,7 @@ impl Drop for ActivityGuard {
 /// Why the OS is being asked to stay awake — shown in `pmset -g assertions` and
 /// `powercfg /requests`, so an operator inspecting the machine finds a sentence
 /// rather than a process name.
-const REASON: &str = "roomler: keeping this device reachable";
+const REASON: &str = "meshharbor: keeping this device reachable";
 
 /// Holds (and releases) the platform's stay-awake request.
 ///
@@ -249,7 +249,7 @@ impl Drop for PowerKeeper {
 
 /// What the display assertions are called in `pmset -g assertions`.
 #[cfg(target_os = "macos")]
-const DISPLAY_REASON: &str = "roomler: a remote viewer is watching this screen";
+const DISPLAY_REASON: &str = "meshharbor: a remote viewer is watching this screen";
 
 /// macOS — the screen a remote viewer is watching has to be ON.
 ///
@@ -585,7 +585,7 @@ mod imp {
         // ⚠️ `PowerCreateRequest`, NOT `SetThreadExecutionState`: the latter is
         // per-THREAD, so it is tied to whichever tokio worker happened to run
         // the call and is documented as unreliable from a service — which is
-        // exactly how `roomlerd` runs on a fleet host.
+        // exactly how `meshharbord` runs on a fleet host.
         let mut wide: Vec<u16> = reason.encode_utf16().collect();
         wide.push(0);
         let ctx = REASON_CONTEXT {
@@ -676,7 +676,7 @@ mod imp {
                 "/org/freedesktop/login1",
                 Some("org.freedesktop.login1.Manager"),
                 "Inhibit",
-                &(what, "roomlerd", why, "block"),
+                &(what, "meshharbord", why, "block"),
             ) {
                 Ok(reply) => {
                     let fd = reply

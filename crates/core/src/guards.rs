@@ -13,7 +13,7 @@ use meshharbor_db::models::role::permissions;
 use crate::{Core, error::ApiError, extractors::auth::AuthUser};
 
 /// Platform-operator gate. 404 by design: the allowlist is
-/// `ROOMLER__STATS__PLATFORM_ADMINS`, and a non-admin must not be able to tell
+/// `MESHHARBOR__STATS__PLATFORM_ADMINS`, and a non-admin must not be able to tell
 /// the surface exists.
 pub fn require_platform_admin(state: &Core, auth: &AuthUser) -> Result<(), ApiError> {
     if state.platform_admins.contains(&auth.user_id) {

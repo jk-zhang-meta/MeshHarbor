@@ -693,7 +693,7 @@ fn deny_message(reason: ExecDenyReason, os: OsKind) -> String {
         }
         ExecDenyReason::SystemRequired => {
             "this organization requires Windows commands to run as SYSTEM, and this device \
-             cannot: an administrator has not anchored it (`roomlerd anchor`), or its service \
+             cannot: an administrator has not anchored it (`meshharbord anchor`), or its service \
              is not running"
                 .to_string()
         }
@@ -702,7 +702,7 @@ fn deny_message(reason: ExecDenyReason, os: OsKind) -> String {
         }
         ExecDenyReason::RunAsUnavailable if matches!(os, OsKind::Windows) => {
             "this device's policy runs commands as the signed-in user, which only its SYSTEM \
-             service can do: an administrator has not anchored it (`roomlerd anchor`), or its \
+             service can do: an administrator has not anchored it (`meshharbord anchor`), or its \
              service is not running"
                 .to_string()
         }
@@ -827,7 +827,7 @@ pub async fn exec(
 /// `POST /api/tenant/{tenant_id}/agent/exec` — the fleet sweep.
 ///
 /// An empty `agent_ids` means "every device whose policy allows it", which is
-/// the whole point: `roomler exec --all -- <probe>` across a heterogeneous
+/// the whole point: `meshharbor exec --all -- <probe>` across a heterogeneous
 /// fleet in one round-trip.
 pub async fn exec_bulk(
     State(state): State<FleetState>,
@@ -1251,7 +1251,7 @@ mod tests {
     #[test]
     fn console_user_unavailable_names_the_path_its_os_takes() {
         let windows = deny_message(ExecDenyReason::RunAsUnavailable, OsKind::Windows);
-        assert!(windows.contains("roomlerd anchor"), "{windows}");
+        assert!(windows.contains("meshharbord anchor"), "{windows}");
         for os in [OsKind::Linux, OsKind::Macos] {
             let m = deny_message(ExecDenyReason::RunAsUnavailable, os);
             assert!(m.contains("person at its screen"), "{m}");

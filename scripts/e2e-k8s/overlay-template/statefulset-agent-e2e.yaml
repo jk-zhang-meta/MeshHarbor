@@ -19,7 +19,7 @@ metadata:
 spec:
   serviceName: agent-e2e
   # FR-114 — three, one per recording state the specs need (see the
-  # ROOMLER_E2E_*_ORDINALS env below); every other spec takes any of them,
+  # MESHHARBOR_E2E_*_ORDINALS env below); every other spec takes any of them,
   # and the switch-device spec has a second device to switch to.
   replicas: 3
   selector:
@@ -57,14 +57,14 @@ spec:
           env:
             # The loopback proxy above, never `http://roomler2` itself: the
             # agent would promote that to https:// and time out.
-            - name: ROOMLER_E2E_SERVER
+            - name: MESHHARBOR_E2E_SERVER
               value: http://127.0.0.1:18080
-            - name: ROOMLER_E2E_ADMIN_EMAIL
+            - name: MESHHARBOR_E2E_ADMIN_EMAIL
               valueFrom:
                 secretKeyRef:
                   name: agent-e2e-bootstrap
                   key: admin_email
-            - name: ROOMLER_E2E_ADMIN_PASSWORD
+            - name: MESHHARBOR_E2E_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: agent-e2e-bootstrap
@@ -72,32 +72,32 @@ spec:
             # FR-114 — the tenant is found by its SLUG (`GET /api/tenant`),
             # never pasted into a Secret: a wiped e2e DB gets a fresh id and
             # the agents still find it.
-            - name: ROOMLER_E2E_TENANT_SLUG
+            - name: MESHHARBOR_E2E_TENANT_SLUG
               value: agent-e2e
             # Capture cascade short-circuit — see capture/mod.rs:open_default.
-            - name: ROOMLERD_SYNTHETIC_FRAMES
+            - name: MESHHARBORD_SYNTHETIC_FRAMES
               value: "1"
             # Image carries the version we want to test; don't let
             # the auto-updater swap it mid-test.
-            - name: ROOMLERD_AUTO_UPDATE
+            - name: MESHHARBORD_AUTO_UPDATE
               value: "0"
             # AutoGrant consent — no operator-prompt in CI.
-            - name: ROOMLERD_AUTO_GRANT_SESSION
+            - name: MESHHARBORD_AUTO_GRANT_SESSION
               value: "1"
             # FR-102 — the install trace: these devices are a container
             # image's entrypoint enrolling itself (an older image ignores it).
-            - name: ROOMLER_INSTALL_METHOD
+            - name: MESHHARBOR_INSTALL_METHOD
               value: container
-            - name: ROOMLER_INSTALL_SCOPE
+            - name: MESHHARBOR_INSTALL_SCOPE
               value: system
             # FR-114 — the recording states, by pod ordinal: agent-e2e-0 is a
             # recorder whose owner has NOT opted in (remote-recording-refused),
             # agent-e2e-1 has opted in (`record_remote_enabled`, remote-
             # recording-smoke), agent-e2e-2 has no recorder at all
-            # (`ROOMLERD_RECORDING=0`; remote-recording-refused P3c-2).
-            - name: ROOMLER_E2E_RECORD_REMOTE_ORDINALS
+            # (`MESHHARBORD_RECORDING=0`; remote-recording-refused P3c-2).
+            - name: MESHHARBOR_E2E_RECORD_REMOTE_ORDINALS
               value: "1"
-            - name: ROOMLER_E2E_NO_RECORDER_ORDINALS
+            - name: MESHHARBOR_E2E_NO_RECORDER_ORDINALS
               value: "2"
           volumeMounts:
             - name: config

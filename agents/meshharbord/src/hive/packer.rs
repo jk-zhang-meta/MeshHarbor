@@ -435,7 +435,7 @@ pub fn pack_main() -> i32 {
     match run() {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("roomlerd {PACK_SUBCOMMAND}: {e}");
+            eprintln!("meshharbord {PACK_SUBCOMMAND}: {e}");
             1
         }
     }

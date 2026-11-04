@@ -31,7 +31,7 @@
 //!
 //! ## Kill switch
 //!
-//! `ROOMLERD_UNICODE_TEXT=1` reverts to the old `enigo.text()`
+//! `MESHHARBORD_UNICODE_TEXT=1` reverts to the old `enigo.text()`
 //! (KEYEVENTF_UNICODE) path without a redeploy, in case the real-VK path
 //! regresses on some host.
 
@@ -110,7 +110,7 @@ pub(super) fn decode_vk_scan(res: i16) -> Option<(u16, bool, bool, bool)> {
 }
 
 /// Whether pre-held-modifier neutralization is enabled (default ON).
-/// `ROOMLERD_TEXT_MOD_NEUTRALIZE=0` (or the `text_mod_neutralize`
+/// `MESHHARBORD_TEXT_MOD_NEUTRALIZE=0` (or the `text_mod_neutralize`
 /// config key) reverts to the pre-2026-08 behaviour of layering the
 /// layout's wanted modifiers ON TOP of whatever is physically held.
 fn neutralize_enabled() -> bool {

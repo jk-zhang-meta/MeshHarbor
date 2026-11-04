@@ -20,7 +20,7 @@ name = "wizard_shared"
 path = "src/lib.rs"
 
 # DEP HYGIENE (review-enforced): this crate must stay free of
-# `roomlerd`, `roomler`, and `tauri`. It is the
+# `meshharbord`, `meshharbor`, and `tauri`. It is the
 # event-shape-free mechanics layer shared by the wizard apps — the
 # apps own the Tauri surface, the ProgressEvent wire shapes, and the
 # agent/tunnel lib calls. Mechanics here communicate through plain
@@ -71,7 +71,7 @@ tar = "0.4"
 #                      (SendMessageTimeoutW WM_SETTINGCHANGE broadcast)
 # NB Win32_UI_WindowsAndMessaging was declared by NEITHER legacy
 # crate — it compiled there only via cargo feature-unification with
-# roomlerd's windows-sys features. This crate declares what it
+# meshharbord's windows-sys features. This crate declares what it
 # actually uses. Shell/Com/PropertiesSystem from the legacy manifests
 # are unused by the moved code and deliberately dropped.
 windows-sys = { version = "0.59", features = [

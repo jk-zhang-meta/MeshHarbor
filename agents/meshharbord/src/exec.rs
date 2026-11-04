@@ -58,13 +58,13 @@ use tracing::{info, warn};
 use meshharbor_remote_control::models::exec_limits;
 
 /// Bytes for a command's stdin, in order; dropping the sender is end-of-input.
-/// Roomler SSH feeds a client's stdin through this. Fleet RPC passes none, so
+/// MeshHarbor SSH feeds a client's stdin through this. Fleet RPC passes none, so
 /// its commands keep reading NUL / `/dev/null` exactly as before.
 pub type StdinFeed = tokio::sync::mpsc::Receiver<Vec<u8>>;
 
 // ─── Streaming (FR-89) ──────────────────────────────────────────────────────
 //
-// Roomler SSH's `ssh <node> 'cmd'` wants a command's output AS IT IS PRODUCED,
+// MeshHarbor SSH's `ssh <node> 'cmd'` wants a command's output AS IT IS PRODUCED,
 // with no ceiling: `cat bigfile`, `tar c`, `journalctl -f`. Fleet RPC wants
 // the opposite — one bounded answer it can persist. Both go through the same
 // spawn, identity model, concurrency cap, redaction and tree kill; only the
@@ -132,11 +132,11 @@ pub struct ExecRequest {
     /// Fleet RPC leaves this [`RunAs::Daemon`] — its whole purpose is
     /// privileged diagnostics — unless the device's policy names the person
     /// at the screen, which the frame's `run_as` says (FR-97 P5a, Linux and
-    /// macOS). Roomler SSH sets it from the device's policy.
+    /// macOS). MeshHarbor SSH sets it from the device's policy.
     #[allow(dead_code)]
     pub run_as: RunAs,
     /// FR-97 P5b — with no [`Self::cwd`], start in the account's home, as
-    /// sshd starts a session. Roomler SSH's exec channel sets it; Fleet RPC
+    /// sshd starts a session. MeshHarbor SSH's exec channel sets it; Fleet RPC
     /// never does, so its commands start where they always have. Only a
     /// person's identity has a home to start in ([`apply_run_as_at_home`]).
     pub start_in_home: bool,
@@ -151,7 +151,7 @@ pub struct ExecOutcome {
     pub stdout: String,
     pub stderr: String,
     /// The output as the command wrote it, redacted the same way. A byte
-    /// stream (Roomler SSH) sends THESE: decoding first turned a binary file
+    /// stream (MeshHarbor SSH) sends THESE: decoding first turned a binary file
     /// fetched with `ssh <node> cat f > f` into U+FFFD soup (2026-10-06).
     pub stdout_bytes: Vec<u8>,
     pub stderr_bytes: Vec<u8>,
@@ -729,7 +729,7 @@ pub fn deliver_response(request_id: &str, outcome: ExecOutcome) -> bool {
 /// The identity a command should run under.
 ///
 /// [`Daemon`](RunAs::Daemon) is what Fleet RPC has always done and stays the
-/// default, so nothing about exec changes. Roomler SSH sets the others from
+/// default, so nothing about exec changes. MeshHarbor SSH sets the others from
 /// the device's `SshPolicy`.
 ///
 /// # The rule this type exists to enforce
@@ -854,7 +854,7 @@ pub(crate) fn apply_run_as(cmd: &mut tokio::process::Command, who: &RunAs) -> Re
 /// drop, as the person, so their own rights decide (a root-squashed NFS home
 /// refuses root), and a home they cannot enter leaves the child where it
 /// was, `/`, which is sshd's fallback too. Off with
-/// `ROOMLERD_SSH_START_IN_HOME=0`. Windows' `console_user` starts in the
+/// `MESHHARBORD_SSH_START_IN_HOME=0`. Windows' `console_user` starts in the
 /// profile through its own spawn (`win_console`, `pty::windows`).
 pub(crate) fn apply_run_as_at_home(
     cmd: &mut tokio::process::Command,
@@ -872,7 +872,7 @@ pub(crate) fn apply_run_as_at_home(
 }
 
 /// FR-97 P5b — does a person's SSH session start in their home? Default on;
-/// `ROOMLERD_SSH_START_IN_HOME=0` keeps the old start, the daemon's own
+/// `MESHHARBORD_SSH_START_IN_HOME=0` keeps the old start, the daemon's own
 /// directory.
 pub(crate) fn ssh_starts_in_home() -> bool {
     tunnel_core::env::flag("SSH_START_IN_HOME", true)
@@ -927,7 +927,7 @@ pub(crate) fn apply_session_run_as(
 /// and no wall clock. `abort` kills its process tree. It starts in the user's
 /// profile, where OpenSSH starts it.
 ///
-/// For Roomler SSH's `sftp` subsystem on Windows, where `tokio::process`
+/// For MeshHarbor SSH's `sftp` subsystem on Windows, where `tokio::process`
 /// cannot take a user token. The bytes are a binary protocol, which redaction
 /// (`run_streamed`'s stage) would corrupt, and the program is `sftp-server`
 /// itself, which no shell may stand in front of. The token is the console
@@ -1587,7 +1587,7 @@ mod unix_priv {
             );
 
             assert!(admin_gids().contains(&0));
-            assert_eq!(group_gid("roomler-no-such-group-p1h3"), None);
+            assert_eq!(group_gid("meshharbor-no-such-group-p1h3"), None);
             #[cfg(target_os = "linux")]
             assert_eq!(group_gid("root"), Some(0));
             #[cfg(target_os = "macos")]
@@ -1728,7 +1728,7 @@ impl ExecEngine {
 
     /// [`run`](Self::run), with the command's stdin fed from `stdin` when it
     /// is `Some`: every chunk in order, then end-of-input when the sender is
-    /// dropped. Roomler SSH passes the client's stdin here, so
+    /// dropped. MeshHarbor SSH passes the client's stdin here, so
     /// `ssh node 'cat > f' < file` and `tar c . | ssh node 'tar x'` work.
     /// Before, the command read NUL and the client's bytes were dropped
     /// without a word.
@@ -1827,7 +1827,7 @@ impl ExecEngine {
         outcome
     }
 
-    /// FR-89 — [`run_fed`](Self::run_fed)'s streaming twin, for Roomler SSH:
+    /// FR-89 — [`run_fed`](Self::run_fed)'s streaming twin, for MeshHarbor SSH:
     /// the command's output goes to `sink` as it is read, redacted on the
     /// way, with **no ceiling and no wall clock**. `req.timeout_ms` and
     /// `req.max_output_bytes` are ignored; what bounds the run is the caller:
@@ -2131,7 +2131,7 @@ enum Output {
     /// Fleet RPC: collect both streams up to ONE combined ceiling, then hand
     /// them back in the outcome.
     Buffered { max_output: u64 },
-    /// Roomler SSH (FR-89): hand each read to the redaction stage as it
+    /// MeshHarbor SSH (FR-89): hand each read to the redaction stage as it
     /// arrives; the outcome carries no bytes.
     Streamed {
         raw: tokio::sync::mpsc::Sender<Chunk>,
@@ -2516,11 +2516,11 @@ mod tests {
     }
 
     /// The caller's stdin reaches the command in order, and the caller's
-    /// end-of-input ends it (roomler SSH's `ssh node 'cat > f' < file`).
+    /// end-of-input ends it (meshharbor SSH's `ssh node 'cat > f' < file`).
     #[tokio::test]
     async fn a_fed_stdin_reaches_the_command_in_order() {
         let (tx, rx) = tokio::sync::mpsc::channel(4);
-        tx.send(b"roomler-".to_vec()).await.unwrap();
+        tx.send(b"meshharbor-".to_vec()).await.unwrap();
         tx.send(b"stdin-ok".to_vec()).await.unwrap();
         drop(tx); // end-of-input
         let out = engine()
@@ -2528,7 +2528,7 @@ mod tests {
             .await;
         assert_eq!(out.error, None, "stderr was: {}", out.stderr);
         assert!(
-            out.stdout.contains("roomler-stdin-ok"),
+            out.stdout.contains("meshharbor-stdin-ok"),
             "the fed bytes never reached the command: stdout {:?}",
             out.stdout
         );
@@ -2890,7 +2890,7 @@ mod tests {
         let r = Redactor::default();
         for sample in [
             "0.0.0.0/0 via 192.168.68.1 dev eth0",
-            "roomlerd 0.3.0-rc.310",
+            "meshharbord 0.3.0-rc.310",
             "Ethernet 2   Up   00-15-5D-01-02-03",
             "a.b.c",
             "file.tar.gz",
@@ -3127,7 +3127,7 @@ mod tests {
         // a route table, a version string or a path any worse than `apply`.
         let r = Redactor::new([shaped("agenttoken", 16)]);
         for sample in [
-            "0.0.0.0/0 via 192.168.68.1 dev eth0\nroomlerd 0.4.116\n".as_bytes(),
+            "0.0.0.0/0 via 192.168.68.1 dev eth0\nmeshharbord 0.4.116\n".as_bytes(),
             b"a.b.c file.tar.gz\n",
             b"line one\nline two\nline three\n",
         ] {
@@ -3372,7 +3372,7 @@ mod tests {
     }
 }
 
-/// Running a command as the signed-in console user (roomler SSH P5b).
+/// Running a command as the signed-in console user (meshharbor SSH P5b).
 ///
 /// Windows has no way to hand `tokio::process::Command` a token — the identity
 /// is chosen at `CreateProcessAsUserW` time — so this path cannot reuse the
@@ -3477,8 +3477,8 @@ mod win_console {
     ///
     /// FR-89: `output` decides the drain — to a `Vec` against the combined
     /// budget (Fleet RPC), or chunk by chunk into the redaction stage's raw
-    /// channel (Roomler SSH), through the very same three pipes. The
-    /// `docs/roomler-ssh.md` note that `CreateProcessAsUserW` had "no pipes
+    /// channel (MeshHarbor SSH), through the very same three pipes. The
+    /// `docs/meshharbor-ssh.md` note that `CreateProcessAsUserW` had "no pipes
     /// variant" was outdated the day this module shipped (P5b); what was
     /// missing was a drain that hands bytes on instead of collecting them.
     async fn run_cmdline(
@@ -3514,7 +3514,7 @@ mod win_console {
                 return ExecOutcome::failed(format!(
                     "cannot obtain the console user's token ({e}): only a process running as \
                      SYSTEM may. On an attended Windows install the worker runs as the signed-in \
-                     user; anchor the device (`roomlerd anchor create`) so commands run through \
+                     user; anchor the device (`meshharbord anchor create`) so commands run through \
                      its SYSTEM service."
                 ));
             }

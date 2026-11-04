@@ -80,7 +80,7 @@ impl TestApp {
     /// Spawn a new test server connected to the test MongoDB.
     ///
     /// Requires a running MongoDB at localhost:27019.
-    /// Set ROOMLER__DATABASE__URL env var to override the connection string.
+    /// Set MESHHARBOR__DATABASE__URL env var to override the connection string.
     /// Each test gets a unique database name for isolation.
     pub async fn spawn() -> Self {
         init_tracing();
@@ -91,7 +91,7 @@ impl TestApp {
             test_settings()
         });
         // Allow env var override for database URL
-        if let Ok(url) = std::env::var("ROOMLER__DATABASE__URL") {
+        if let Ok(url) = std::env::var("MESHHARBOR__DATABASE__URL") {
             settings.database.url = url;
         }
         settings.database.name = db_name.clone();
@@ -194,7 +194,7 @@ impl TestApp {
         let db_name = format!("roomler_ai_test_{}", uuid::Uuid::new_v4().simple());
 
         let mut settings = Settings::load().unwrap_or_else(|_| test_settings());
-        if let Ok(url) = std::env::var("ROOMLER__DATABASE__URL") {
+        if let Ok(url) = std::env::var("MESHHARBOR__DATABASE__URL") {
             settings.database.url = url;
         }
         settings.database.name = db_name.clone();
@@ -270,7 +270,7 @@ impl TestApp {
         let db_name = format!("roomler_ai_test_{}", uuid::Uuid::new_v4().simple());
 
         let mut settings = Settings::load().unwrap_or_else(|_| test_settings());
-        if let Ok(url) = std::env::var("ROOMLER__DATABASE__URL") {
+        if let Ok(url) = std::env::var("MESHHARBOR__DATABASE__URL") {
             settings.database.url = url;
         }
         settings.database.name = db_name.clone();

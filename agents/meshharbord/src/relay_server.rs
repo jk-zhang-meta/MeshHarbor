@@ -241,7 +241,7 @@ async fn report_loop(stats: Arc<RelayStats>) {
 /// FR-19 P4b — install a server-minted session into the running relay
 /// (`rc:overlay.relay_serve`). Every lifetime is RE-CLAMPED against this
 /// node's own ceilings and its own clock — server values only ever shorten
-/// (the Roomler SSH rule). A malformed member (bad base64, wrong length)
+/// (the MeshHarbor SSH rule). A malformed member (bad base64, wrong length)
 /// drops the whole frame: a session with one unverifiable member is a
 /// session nobody can bind to safely. A node that is not serving ignores it
 /// with a warning: the server mints only onto nodes advertising

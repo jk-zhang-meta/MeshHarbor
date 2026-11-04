@@ -225,7 +225,7 @@ pub fn cmd_free_port(preferred: Option<u16>, exclude: Option<Vec<u16>>) -> Resul
 pub struct AutostartState {
     /// The toggle can be changed here.
     pub supported: bool,
-    /// Roomler starts when this person signs in.
+    /// MeshHarbor starts when this person signs in.
     pub enabled: bool,
     /// `machine` | `user` | `xdg` | `macos` | `none`.
     pub scope: String,
@@ -345,7 +345,7 @@ fn autostart_state(device_on: bool) -> AutostartState {
                 note: if !device_on || !registered {
                     DEVICE_OFF_NOTE.into()
                 } else {
-                    "Roomler is installed for everyone on this computer; this choice is for your \
+                    "MeshHarbor is installed for everyone on this computer; this choice is for your \
                      account only."
                         .into()
                 },
@@ -481,7 +481,7 @@ fn set_autostart(enabled: bool, device_on: bool) -> Result<(), String> {
     let path = xdg_user_file().ok_or("no home directory")?;
     let system = std::path::Path::new(XDG_SYSTEM_AUTOSTART).exists();
     let ours = std::fs::read_to_string(&path)
-        .map(|c| c.contains("X-Roomler-Managed=true"))
+        .map(|c| c.contains("X-MeshHarbor-Managed=true"))
         .unwrap_or(false);
     if enabled && system && (ours || !path.exists()) {
         // The package's entry applies again once our override is gone.

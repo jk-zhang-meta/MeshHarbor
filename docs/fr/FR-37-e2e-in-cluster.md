@@ -39,7 +39,7 @@ is on the CNI network, which the build host has no route to. The failure is
 going to arrive. ⚠️ I assumed DNAT was needed and it is not; the browser is
 simply in the wrong network.
 
-The e2e configmap also sets no `ROOMLER__MEDIASOUP__ANNOUNCED_IP` at all (only
+The e2e configmap also sets no `MESHHARBOR__MEDIASOUP__ANNOUNCED_IP` at all (only
 `NUM_WORKERS: 1`), so whatever it announces, no one outside the cluster can
 route to it.
 
@@ -90,7 +90,7 @@ seam for a production-shaped hazard on a node that also runs real workloads.
       not skipped, not stubbed (`conference.spec.ts` 4/4, `conference-multi.spec.ts`
       5/5 on 2026-08-29)
 - [x] The suite runs with **zero** `kubectl port-forward` invocations
-- [x] `ROOMLER__APP__FRONTEND_URL` matches the browser's real origin
+- [x] `MESHHARBOR__APP__FRONTEND_URL` matches the browser's real origin
       (`http://127.0.0.1`, the sidecar's view) and the WS authenticates.
       ⚠️ NOT the service name, as this criterion originally assumed — the
       browser is in the pod, so the app is localhost to it

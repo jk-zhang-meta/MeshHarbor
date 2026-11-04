@@ -157,7 +157,7 @@ struct Gl {
     egl_image_target_texture_2d: unsafe extern "C" fn(GlEnum, *mut c_void),
 }
 
-/// FR-107 P3 — kill switch `ROOMLERD_DRM_GPU=0`: the CPU reads the scanout,
+/// FR-107 P3 — kill switch `MESHHARBORD_DRM_GPU=0`: the CPU reads the scanout,
 /// as before P3.
 pub fn enabled() -> bool {
     tunnel_core::env::flag("DRM_GPU", true)

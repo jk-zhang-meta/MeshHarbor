@@ -100,7 +100,7 @@ const TCP_RX_BUF: usize = 8 * 1024 * 1024;
 /// of it: paced+SACK at 1–4 MiB is never below 512 KiB in that matrix, and on
 /// the real HK↔Tokyo path (43 ms) 512 KiB is the cap (~89 Mbit/s) where 4 MiB
 /// carried 179–268. Hence 2 MiB, until the SSH channel window that every one
-/// of those field runs went through was raised (roomlerd `c9e11e19`). With it
+/// of those field runs went through was raised (meshharbord `c9e11e19`). With it
 /// out of the way, 8 MiB on both sides carried the most (see [`TCP_RX_BUF`]).
 /// `OVERLAY_NETSTACK_TCP_TX_BUF` overrides it.
 const TCP_TX_BUF: usize = 8 * 1024 * 1024;
@@ -140,7 +140,7 @@ const UDP_CHAN_CAP: usize = 256;
 const ICMP_BUF: usize = 4 * 1024;
 const ICMP_META: usize = 8;
 /// Payload carried in each echo request (the peer echoes it back verbatim).
-const PING_PAYLOAD: &[u8] = b"roomler-netstack-ping";
+const PING_PAYLOAD: &[u8] = b"meshharbor-netstack-ping";
 
 use super::router::OVERLAY_V6_ONLINK_PREFIX;
 /// Overlay-v6 derivation lives in [`super::router`] (compiled under plain

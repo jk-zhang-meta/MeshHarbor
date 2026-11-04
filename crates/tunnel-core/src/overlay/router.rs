@@ -13,7 +13,7 @@
 //! header → [`Router::route`] → the peer's pubkey → the peer's `Tunn`.
 //!
 //! **IPv6 (dual-stack)**: a node's overlay v6 is *derived* from its overlay
-//! v4 — the v4 embedded in the low 32 bits of Roomler's ULA `/96`
+//! v4 — the v4 embedded in the low 32 bits of MeshHarbor's ULA `/96`
 //! ([`derive_overlay_v6`], `docs/overlay-communication.md`). Routing therefore
 //! needs **no v6 table**: [`Router::dst_of_ip_packet`] unmaps a derived-ULA
 //! destination back to its embedded v4 and routes on the existing v4 entries,
@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-/// Roomler's overlay IPv6 ULA — `fd72:6f6f:6d6c::/48` (`fd` + ASCII "rooml").
+/// MeshHarbor's overlay IPv6 ULA — `fd72:6f6f:6d6c::/48` (`fd` + ASCII "rooml").
 /// A node's overlay v6 is its overlay v4 embedded in the low 32 bits of the
 /// fixed `/96` inside this ULA, so v6 is *derived*, never separately allocated
 /// (see `docs/overlay-communication.md`). Pinned once — every derived address
@@ -46,7 +46,7 @@ pub const OVERLAY_V6_ONLINK_PREFIX: u8 = 96;
 pub const OVERLAY_ULA_V6_CIDR: &str = "fd72:6f6f:6d6c::/96";
 
 /// Derive a node's overlay IPv6 from its overlay IPv4: embed the 32-bit v4 in
-/// the low 32 bits of Roomler's ULA `/96` (`fd72:6f6f:6d6c::<v4>`). Deterministic
+/// the low 32 bits of MeshHarbor's ULA `/96` (`fd72:6f6f:6d6c::<v4>`). Deterministic
 /// and reversible ([`embedded_v4_of_overlay_v6`]), so a node self-derives its
 /// own v6 and every peer's v6 from the v4 the server already assigns — no
 /// server allocation, no wire change.
@@ -66,7 +66,7 @@ pub fn derive_overlay_v6(v4: Ipv4Addr) -> Ipv6Addr {
 }
 
 /// The inverse of [`derive_overlay_v6`]: the overlay v4 embedded in a
-/// derived-ULA v6, or `None` if `v6` is not inside Roomler's ULA `/96`.
+/// derived-ULA v6, or `None` if `v6` is not inside MeshHarbor's ULA `/96`.
 pub fn embedded_v4_of_overlay_v6(v6: Ipv6Addr) -> Option<Ipv4Addr> {
     let seg = v6.segments();
     if seg[..6] != OVERLAY_ULA_HEXTETS {
@@ -78,7 +78,7 @@ pub fn embedded_v4_of_overlay_v6(v6: Ipv6Addr) -> Option<Ipv4Addr> {
 }
 
 /// P4 — reverse-path filtering mode (`overlay_rpf` config /
-/// `ROOMLERD_OVERLAY_RPF`): `off` (deliver everything — the pre-P4
+/// `MESHHARBORD_OVERLAY_RPF`): `off` (deliver everything — the pre-P4
 /// behaviour) | `warn` (evaluate + count + throttled-log, still deliver — the
 /// built-in default) | `enforce` (drop).
 ///

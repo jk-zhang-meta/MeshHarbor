@@ -64,7 +64,7 @@ const MAX_TRANSFER_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Process-global flag for the `files:dir` browse capability. Set
 /// once at startup from `AgentConfig::enable_remote_browse` (and the
-/// `ROOMLERD_DISABLE_BROWSE` env-var escape hatch). Readers in
+/// `MESHHARBORD_DISABLE_BROWSE` env-var escape hatch). Readers in
 /// the DC hot path use [`is_remote_browse_enabled`] which compiles
 /// to a single relaxed atomic load.
 ///
@@ -256,7 +256,7 @@ fn process_home() -> Option<String> {
 /// root's rights, and the staging folder's `meta.json`, which a resume reads,
 /// is theirs to edit. "The person" is the one at seat0
 /// (`companion::seat0_user`, FR-97 P5a's definition), never whoever asked.
-/// `ROOMLERD_FILES_AS_SEAT_USER=0` keeps the daemon's own identity.
+/// `MESHHARBORD_FILES_AS_SEAT_USER=0` keeps the daemon's own identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FsAs {
     /// This process: every Windows and macOS install, every user install,
@@ -565,7 +565,7 @@ pub fn active_transfer_count() -> usize {
 /// transfer `id`. Populated by three writers:
 ///
 /// 1. [`sweep_orphans`] at startup — walks known dest roots, registers
-///    surviving `.roomler-partial/<id>/` dirs (after deleting any with
+///    surviving `.meshharbor-partial/<id>/` dirs (after deleting any with
 ///    `created_at_unix` > 24h).
 /// 2. [`FilesHandler::begin`] when a resumable upload starts — writes
 ///    `id → meta.json_path` so a same-process resume request on a
@@ -611,7 +611,7 @@ pub fn reset_partial_registry() {
 }
 
 /// Per-partial metadata persisted next to the staging `data` file as
-/// `<dest_dir>/.roomler-partial/<id>/meta.json`. Survives agent
+/// `<dest_dir>/.meshharbor-partial/<id>/meta.json`. Survives agent
 /// restart so [`sweep_orphans`] can rebuild [`PARTIAL_REGISTRY`] from
 /// disk at startup. `protocol_version` is bumped if the on-disk
 /// format ever changes (v2 will add per-chunk SHA roots).
@@ -653,9 +653,9 @@ pub(crate) const PARTIAL_ORPHAN_TTL_SECS: i64 = 24 * 3600;
 pub(crate) const FSYNC_THRESHOLD_BYTES: u64 = 256 * 1024;
 
 /// rc.22 — staging-strategy flag. When `true`, all upload staging on
-/// Windows happens under `%PROGRAMDATA%\roomler\<segment>\staging\`
+/// Windows happens under `%PROGRAMDATA%\meshharbor\<segment>\staging\`
 /// regardless of the upload's `dest_dir`. When `false`, staging lives
-/// under `<dest_dir>/.roomler-partial/` (rc.19–rc.21 legacy layout).
+/// under `<dest_dir>/.meshharbor-partial/` (rc.19–rc.21 legacy layout).
 ///
 /// **Why**: the field-test host field repro 2026-05-11 — ESET Security real-time
 /// scanner intercepts per-chunk writes under `C:\Users\<user>\Downloads\`
@@ -668,7 +668,7 @@ pub(crate) const FSYNC_THRESHOLD_BYTES: u64 = 256 * 1024;
 /// ESET's hot path narrow.
 ///
 /// Hypothesis-driven, not yet confirmed on the field; the env-var
-/// escape hatch `ROOMLERD_STAGING_LEGACY_PER_DEST=1` reverts the
+/// escape hatch `MESHHARBORD_STAGING_LEGACY_PER_DEST=1` reverts the
 /// behavior without a rebuild if Option B turns out wrong. Cycles
 /// back to `Option D` (escalate corporate-AV exclusion request) if
 /// rc.22 still fails.
@@ -702,9 +702,9 @@ pub(crate) fn stage_in_programdata() -> bool {
 
 // RETIRED-NAME-ANCHOR(3): names the pre-rename segment because explaining the
 // conditional resolution requires naming both halves. docs/fr/FR-21
-/// Windows-only staging root: `%PROGRAMDATA%\roomler\<segment>\staging\`,
+/// Windows-only staging root: `%PROGRAMDATA%\meshharbor\<segment>\staging\`,
 /// where `<segment>` is resolved per host by `appdirs::machine_global_dir()`
-/// (the `roomler` segment on a fresh install; the pre-rename `roomler-agent`
+/// (the `meshharbor` segment on a fresh install; the pre-rename `meshharbor-agent`
 /// one only where that tree already exists). Do NOT restate it as a literal —
 /// FR-21 P4 fixed a viewer that did exactly that.
 /// SYSTEM-writable, persistent across reboots, present on every Windows
@@ -716,10 +716,10 @@ pub(crate) fn staging_root_windows() -> PathBuf {
 }
 
 /// Compute the canonical staging dir path for an upload `id`. On
-/// Windows in production this is `%PROGRAMDATA%\roomler\<segment>\
+/// Windows in production this is `%PROGRAMDATA%\meshharbor\<segment>\
 /// staging\<id>` (rc.22, ESET fix; segment per `machine_global_dir()`). On other platforms or when the
 /// legacy-per-dest escape hatch is set, falls back to the rc.19 layout
-/// at `<dest_dir>/.roomler-partial/<id>`.
+/// at `<dest_dir>/.meshharbor-partial/<id>`.
 pub(crate) fn partial_dir_for(dest_dir: &std::path::Path, id: &str) -> PathBuf {
     #[cfg(target_os = "windows")]
     {
@@ -727,7 +727,7 @@ pub(crate) fn partial_dir_for(dest_dir: &std::path::Path, id: &str) -> PathBuf {
             return staging_root_windows().join(id);
         }
     }
-    dest_dir.join(".roomler-partial").join(id)
+    dest_dir.join(".meshharbor-partial").join(id)
 }
 
 /// rc.22 — detect a "rename crosses devices" error from `tokio::fs::rename`.
@@ -773,7 +773,7 @@ fn set_hidden(_path: &std::path::Path) {
     // Unix relies on the dot-prefix; nothing to do.
 }
 
-/// Walk the Downloads folder's `.roomler-partial/` dir at agent
+/// Walk the Downloads folder's `.meshharbor-partial/` dir at agent
 /// startup, deleting any per-id subdir whose `meta.json` is older
 /// than [`PARTIAL_ORPHAN_TTL_SECS`] and registering the survivors in
 /// [`PARTIAL_REGISTRY`]. Returns the count of (kept, swept) pairs.
@@ -792,9 +792,9 @@ fn set_hidden(_path: &std::path::Path) {
 /// cleans them (no automated cleanup for non-Downloads in v1).
 pub async fn sweep_orphans() -> (usize, usize) {
     // rc.22 — when always-PROGRAMDATA staging is active, the sweep
-    // scans `staging_root_windows()` DIRECTLY (no `.roomler-partial/`
+    // scans `staging_root_windows()` DIRECTLY (no `.meshharbor-partial/`
     // parent — the staging root IS that parent). Otherwise fall back
-    // to the legacy `<Downloads>/.roomler-partial/` layout.
+    // to the legacy `<Downloads>/.meshharbor-partial/` layout.
     #[cfg(target_os = "windows")]
     {
         if stage_in_programdata() {
@@ -836,7 +836,7 @@ pub async fn sweep_orphans() -> (usize, usize) {
     }
     let (mut kept, mut swept) = (0, 0);
     for root in &roots {
-        let (k, s) = sweep_orphans_dir_as(&who, root.join(".roomler-partial")).await;
+        let (k, s) = sweep_orphans_dir_as(&who, root.join(".meshharbor-partial")).await;
         kept += k;
         swept += s;
     }
@@ -844,8 +844,8 @@ pub async fn sweep_orphans() -> (usize, usize) {
 }
 
 /// rc.22 — sweep a directory whose CHILDREN are per-id staging dirs.
-/// Used when the staging root is `%PROGRAMDATA%\roomler\<segment>\
-/// staging\` (no `.roomler-partial` parent). Mirror of [`sweep_orphans_in`]
+/// Used when the staging root is `%PROGRAMDATA%\meshharbor\<segment>\
+/// staging\` (no `.meshharbor-partial` parent). Mirror of [`sweep_orphans_in`]
 /// minus the parent-join — the contents-of-directory loop is identical.
 pub async fn sweep_orphans_root(dir: &std::path::Path) -> (usize, usize) {
     sweep_orphans_dir_as(&FsAs::Daemon, dir.to_path_buf()).await
@@ -858,14 +858,14 @@ pub async fn sweep_orphans_root(dir: &std::path::Path) -> (usize, usize) {
 /// Windows (where `download_dir()` ignores HOME and resolves via
 /// `KNOWNFOLDERID`).
 pub async fn sweep_orphans_in(root: &std::path::Path) -> (usize, usize) {
-    sweep_orphans_dir_as(&FsAs::Daemon, root.join(".roomler-partial")).await
+    sweep_orphans_dir_as(&FsAs::Daemon, root.join(".meshharbor-partial")).await
 }
 
 /// Shared sweep body — reads `dir` as a directory whose children are
 /// `<id>/{meta.json,data}` triples, removes those older than
 /// [`PARTIAL_ORPHAN_TTL_SECS`] and registers survivors. Used by both
-/// the legacy `<Downloads>/.roomler-partial/` layout and the rc.22
-/// `%PROGRAMDATA%\roomler\<segment>\staging\` layout. FR-97 P3d — the
+/// the legacy `<Downloads>/.meshharbor-partial/` layout and the rc.22
+/// `%PROGRAMDATA%\meshharbor\<segment>\staging\` layout. FR-97 P3d — the
 /// walk and every removal run as `who`, and a survivor is registered as
 /// staged by `who`, so a later resume acts as them too.
 async fn sweep_orphans_dir_as(who: &FsAs, dir: PathBuf) -> (usize, usize) {
@@ -1023,7 +1023,7 @@ pub(crate) enum FilesIncoming {
     /// Browser → Agent: cancel an in-flight transfer. file-DC v3
     /// (rc.19) extends this to also cancel incoming uploads — the
     /// agent removes the in-flight `IncomingTransfer` state AND the
-    /// `.roomler-partial/<id>/` staging dir + PARTIAL_REGISTRY entry.
+    /// `.meshharbor-partial/<id>/` staging dir + PARTIAL_REGISTRY entry.
     /// Sent by the browser when the resume reconnect budget is
     /// exhausted (6 attempts) so the partial doesn't sit until the
     /// 24h orphan sweep.
@@ -1163,7 +1163,7 @@ pub(crate) struct IncomingTransfer {
     /// Last byte count reported via files:progress. Progress is sent
     /// every ~256 KiB to keep the browser UI lively without flooding.
     pub last_progress: u64,
-    /// rc.19: staging dir `<dest_dir>/.roomler-partial/<id>/`. The
+    /// rc.19: staging dir `<dest_dir>/.meshharbor-partial/<id>/`. The
     /// `data` file is inside; `meta.json` is alongside. `end()`
     /// renames `<dir>/data` to a fresh unique_path under `dest_dir`
     /// and removes this dir + the registry entry.
@@ -1340,7 +1340,7 @@ impl FilesHandler {
         };
         let filename = sanitize_filename(&name);
 
-        // rc.19: stage at <dest_dir>/.roomler-partial/<id>/data so a
+        // rc.19: stage at <dest_dir>/.meshharbor-partial/<id>/data so a
         // mid-upload DC drop leaves the partial discoverable (B1 +
         // B2 fixes). `end()` renames to a freshly-resolved final path.
         let partial_dir = partial_dir_for(&target_dir, &id);
@@ -1520,7 +1520,7 @@ impl FilesHandler {
 
     /// Finalize the active incoming transfer. Flushes + fsyncs the
     /// staging `data` file, renames it to a freshly-resolved unique
-    /// final path under `dest_dir`, removes the `.roomler-partial/
+    /// final path under `dest_dir`, removes the `.meshharbor-partial/
     /// <id>/` dir + registry entry. Returns the *actual* final path
     /// (may differ from the begin-time reservation per M4 fix).
     pub async fn end(&self, id: &str) -> Result<(PathBuf, u64)> {
@@ -1620,7 +1620,7 @@ impl FilesHandler {
                 }
 
                 // Cleanup: remove the per-id staging dir, then the parent
-                // `.roomler-partial/` dir if it's now empty so the staging
+                // `.meshharbor-partial/` dir if it's now empty so the staging
                 // convention stays invisible (best-effort).
                 let _ = std::fs::remove_dir_all(&partial_dir);
                 if let Some(parent) = partial_dir.parent() {
@@ -1695,7 +1695,7 @@ impl FilesHandler {
                 Ok(g) => g,
                 Err(_) => return cleared_state,
             };
-            // meta_path is <dest_dir>/.roomler-partial/<id>/meta.json;
+            // meta_path is <dest_dir>/.meshharbor-partial/<id>/meta.json;
             // parent is the per-id staging dir.
             g.get(id).and_then(|e| {
                 e.meta_path
@@ -1733,7 +1733,7 @@ impl FilesHandler {
     ///
     /// Errors when:
     /// - the registry has no entry for this id AND no canonical
-    ///   `Downloads/.roomler-partial/<id>/meta.json` exists on disk;
+    ///   `Downloads/.meshharbor-partial/<id>/meta.json` exists on disk;
     /// - `meta.json` is corrupt;
     /// - the `incoming` Mutex on this DC already has another upload
     ///   in-flight (browser must not interleave begins/resumes).
@@ -1760,7 +1760,7 @@ impl FilesHandler {
                 // partial lives under the staging root but registry
                 // was cleared). rc.22 — the staging root depends on
                 // the strategy: PROGRAMDATA on Windows (always-on by
-                // default), or `<Downloads>/.roomler-partial/` for the
+                // default), or `<Downloads>/.meshharbor-partial/` for the
                 // legacy escape-hatch path / non-Windows. FR-97 P3d —
                 // probed, like everything after, as whoever a drop would
                 // be written as now.
@@ -1773,7 +1773,7 @@ impl FilesHandler {
                         } else {
                             download_dir()
                                 .context("resolving Downloads for on-demand resume probe")?
-                                .join(".roomler-partial")
+                                .join(".meshharbor-partial")
                                 .join(id)
                                 .join("meta.json")
                         }
@@ -1783,7 +1783,7 @@ impl FilesHandler {
                         download_dir_for(&who)
                             .await
                             .context("resolving Downloads for on-demand resume probe")?
-                            .join(".roomler-partial")
+                            .join(".meshharbor-partial")
                             .join(id)
                             .join("meta.json")
                     }
@@ -2165,9 +2165,9 @@ const AGENT_STATE_RUNS: &[&[&str]] = &[
     &["programdata", "meshharbor"],
     &["appdata", "roaming", "meshharbor"],
     &["appdata", "local", "meshharbor"],
-    &["programdata", "roomler"],
-    &["appdata", "roaming", "roomler"],
-    &["appdata", "local", "roomler"],
+    &["programdata", "meshharbor"],
+    &["appdata", "roaming", "meshharbor"],
+    &["appdata", "local", "meshharbor"],
 ];
 #[cfg(target_os = "macos")]
 const AGENT_STATE_RUNS: &[&[&str]] = &[
@@ -2179,16 +2179,16 @@ const AGENT_STATE_RUNS: &[&[&str]] = &[
     ],
     &["library", "caches", "live.meshharbor.meshharbor"],
     &["var", "log", "meshharbor"],
-    &["etc", "roomler"],
-    &["library", "application support", "live.roomler.roomler"],
-    &["library", "caches", "live.roomler.roomler"],
+    &["etc", "meshharbor"],
+    &["library", "application support", "live.meshharbor.meshharbor"],
+    &["library", "caches", "live.meshharbor.meshharbor"],
     // RETIRED-NAME-ANCHOR(4): a pre-rename Mac keeps its state (its config included) in the old segment's folder.
     &[
         "library",
         "application support",
-        "live.roomler.roomler-agent",
+        "live.meshharbor.meshharbor-agent",
     ],
-    &["var", "log", "roomler"],
+    &["var", "log", "meshharbor"],
 ];
 #[cfg(all(unix, not(target_os = "macos")))]
 const AGENT_STATE_RUNS: &[&[&str]] = &[
@@ -2198,15 +2198,15 @@ const AGENT_STATE_RUNS: &[&[&str]] = &[
     &[".local", "state", "meshharbor"],
     &[".cache", "meshharbor"],
     &["var", "log", "meshharbor"],
-    &["etc", "roomler"],
-    &[".config", "roomler"],
-    &[".local", "share", "roomler"],
-    &[".local", "state", "roomler"],
+    &["etc", "meshharbor"],
+    &[".config", "meshharbor"],
+    &[".local", "share", "meshharbor"],
+    &[".local", "state", "meshharbor"],
     // RETIRED-NAME-ANCHOR(2): a pre-rename host keeps its config and data in the old segment's trees.
-    &[".config", "roomler-agent"],
-    &[".local", "share", "roomler-agent"],
-    &[".cache", "roomler"],
-    &["var", "log", "roomler"],
+    &[".config", "meshharbor-agent"],
+    &[".local", "share", "meshharbor-agent"],
+    &[".cache", "meshharbor"],
+    &["var", "log", "meshharbor"],
 ];
 
 /// File names inside the agent's state that carry secrets: the config and
@@ -2301,16 +2301,16 @@ const DIR_LIST_TIMEOUT_SECS: u64 = 3;
 ///
 /// FR-21 P4. The viewer used to hardcode
 // RETIRED-NAME-ANCHOR-BEGIN
-// appdirs::app_segment() keeps resolving the pre-rename `roomler-agent`
+// appdirs::app_segment() keeps resolving the pre-rename `meshharbor-agent`
 // segment while that tree exists, so a host installed before the rename
 // keeps finding its own staging dir and uploads. Every occurrence below is
 // that fallback or a test pinning it — the retired name is the INPUT.
-/// `C:\ProgramData\meshharbor\roomler-agent\staging`, but `machine_global_dir()`
-/// resolves the `roomler` segment on a fresh install and only falls back to the
-/// pre-rename `roomler-agent` segment when that tree already exists — so the
+/// `C:\ProgramData\meshharbor\meshharbor-agent\staging`, but `machine_global_dir()`
+/// resolves the `meshharbor` segment on a fresh install and only falls back to the
+/// pre-rename `meshharbor-agent` segment when that tree already exists — so the
 /// literal was correct on exactly one class of host and silently wrong on the
 /// rest. Confirmed on a real SYSTEM-mode Windows host, where
-/// `%PROGRAMDATA%\roomler\roomler-agent` does not exist at all.
+/// `%PROGRAMDATA%\meshharbor\meshharbor-agent` does not exist at all.
 ///
 /// A hardcoded copy of a path that a resolver made conditional is a defect
 /// waiting for the resolver to take its other branch. The fix is not a better
@@ -2377,7 +2377,7 @@ async fn list_staging() -> Result<DirListing> {
     list_canonical(&target).await
 }
 
-/// Non-Windows hosts stage per-destination (`<dest>/.roomler-partial/<id>`),
+/// Non-Windows hosts stage per-destination (`<dest>/.meshharbor-partial/<id>`),
 /// so there is no single staging root to open. Say so rather than inventing a
 /// path that would then be wrong in a new way.
 #[cfg(not(target_os = "windows"))]
@@ -2928,7 +2928,7 @@ fn default_download_dir(log: bool) -> Result<PathBuf> {
     // any `.exe`-named write. Defender held the staging `data` file
     // open during write, `write_all` never landed bytes, browser SCTP
     // buffer overflowed, retry budget exhausted. Switch the final
-    // fallback to `%PROGRAMDATA%\roomler\roomler-agent\uploads\` —
+    // fallback to `%PROGRAMDATA%\meshharbor\meshharbor-agent\uploads\` —
     // SYSTEM-writable, persistent across reboots, NOT under
     // Defender's SystemTemp-scan policy. Operator can find their
     // landed files there via the `files:complete { path }` reply.
@@ -2959,7 +2959,7 @@ mod tests {
 
     /// FR-21 P4 — the sentinel must resolve on the AGENT, never in the viewer.
     ///
-    /// The viewer used to hardcode `C:\ProgramData\meshharbor\roomler-agent\staging`,
+    /// The viewer used to hardcode `C:\ProgramData\meshharbor\meshharbor-agent\staging`,
     /// which `machine_global_dir()` only resolves to on a host that already
     /// carries the pre-rename tree. Verified broken on a real SYSTEM-mode
     /// Windows host, where that parent does not exist at all.
@@ -2983,7 +2983,7 @@ mod tests {
             );
             // And it must NOT be the literal the viewer used to hold.
             assert!(
-                !got.contains("roomler-agent") || root_s.contains("roomler-agent"),
+                !got.contains("meshharbor-agent") || root_s.contains("meshharbor-agent"),
                 "resolved {got} used the pre-rename segment on a host whose root is {root_s}"
             );
         }
@@ -3037,7 +3037,7 @@ mod tests {
         } else {
             std::env::temp_dir()
         };
-        base.join(format!("roomler-files-dir-{tag}-{}", std::process::id()))
+        base.join(format!("meshharbor-files-dir-{tag}-{}", std::process::id()))
     }
 
     /// Where an upload with no `dest_path` lands for the length of a test:
@@ -3108,9 +3108,9 @@ mod tests {
         assert!(dir.is_dir(), "created on first use");
 
         let bad = if cfg!(windows) {
-            r"C:\Windows\Temp\roomler-drops"
+            r"C:\Windows\Temp\meshharbor-drops"
         } else {
-            "/usr/roomler-drops"
+            "/usr/meshharbor-drops"
         };
         set_files_dir(Some(bad.to_string()));
         assert_eq!(
@@ -3362,7 +3362,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_dest_path_accepts_existing_dir() {
         let base = scratch_drop_dir(&format!(
-            "roomler-dest-ok-{}",
+            "meshharbor-dest-ok-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -3383,7 +3383,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_dest_path_rejects_file() {
         let base = std::env::temp_dir().join(format!(
-            "roomler-dest-file-{}",
+            "meshharbor-dest-file-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -3413,7 +3413,7 @@ mod tests {
     /// platform, with a stand-in config holding a marker "secret".
     fn agent_state_fixture(tag: &str) -> (PathBuf, PathBuf) {
         let base = std::env::temp_dir().join(format!(
-            "roomler-statefixture-{tag}-{}",
+            "meshharbor-statefixture-{tag}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -3422,14 +3422,14 @@ mod tests {
         let state = if cfg!(target_os = "windows") {
             base.join("AppData")
                 .join("Roaming")
-                .join("roomler")
-                .join("roomler")
+                .join("meshharbor")
+                .join("meshharbor")
         } else if cfg!(target_os = "macos") {
             base.join("Library")
                 .join("Application Support")
-                .join("live.roomler.roomler")
+                .join("live.meshharbor.meshharbor")
         } else {
-            base.join(".config").join("roomler")
+            base.join(".config").join("meshharbor")
         };
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(state.join("config.toml"), AGENT_SECRET_MARKER).unwrap();
@@ -3448,17 +3448,17 @@ mod tests {
         #[cfg(target_os = "windows")]
         {
             for p in [
-                r"C:\ProgramData\meshharbor\roomler\config.toml",
-                r"\\?\C:\PROGRAMDATA\MeshHarbor\ROOMLER\service-logs\x.log",
-                r"C:\Users\u\AppData\Roaming\roomler\roomler\config\config.toml",
-                r"C:\Users\u\AppData\Local\roomler\roomler\data\desktop\desktop.log",
+                r"C:\ProgramData\meshharbor\meshharbor\config.toml",
+                r"\\?\C:\PROGRAMDATA\MeshHarbor\MESHHARBOR\service-logs\x.log",
+                r"C:\Users\u\AppData\Roaming\meshharbor\meshharbor\config\config.toml",
+                r"C:\Users\u\AppData\Local\meshharbor\meshharbor\data\desktop\desktop.log",
             ] {
                 assert!(agent_state_run(Path::new(p)).is_some(), "{p}");
             }
             for p in [
-                r"C:\Users\u\Documents\roomler\notes.txt",
+                r"C:\Users\u\Documents\meshharbor\notes.txt",
                 r"C:\ProgramData\Microsoft\x",
-                r"C:\Users\u\AppData\Local\Temp\roomler-x\y",
+                r"C:\Users\u\AppData\Local\Temp\meshharbor-x\y",
             ] {
                 assert!(agent_state_run(Path::new(p)).is_none(), "{p}");
             }
@@ -3469,11 +3469,11 @@ mod tests {
                 "/etc/meshharbor/config.toml",
                 "/private/etc/meshharbor/config.toml",
                 "/home/u/.config/meshharbor/config.toml",
-                "/root/.local/share/meshharbor/logs/roomlerd.log",
+                "/root/.local/share/meshharbor/logs/meshharbord.log",
             ] {
                 assert!(agent_state_run(Path::new(p)).is_some(), "{p}");
             }
-            for p in ["/home/u/Documents/roomler/x", "/tmp/roomler-x/y"] {
+            for p in ["/home/u/Documents/meshharbor/x", "/tmp/meshharbor-x/y"] {
                 assert!(agent_state_run(Path::new(p)).is_none(), "{p}");
             }
         }
@@ -3500,7 +3500,7 @@ mod tests {
         let (base, state) = agent_state_fixture("down");
         std::fs::write(state.join("config.toml.prev"), AGENT_SECRET_MARKER).unwrap();
         std::fs::create_dir_all(state.join("logs")).unwrap();
-        std::fs::write(state.join("logs").join("roomlerd.log"), b"a log line\n").unwrap();
+        std::fs::write(state.join("logs").join("meshharbord.log"), b"a log line\n").unwrap();
         let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
         let config = FilesHandler::new()
             .begin_outgoing("o1".into(), &path(&state.join("config.toml")))
@@ -3513,7 +3513,7 @@ mod tests {
         // Support still works: the drawer lists the agent's folders and a
         // log downloads — only the secret-bearing files are refused.
         let log_ok = FilesHandler::new()
-            .begin_outgoing("o3".into(), &path(&state.join("logs").join("roomlerd.log")))
+            .begin_outgoing("o3".into(), &path(&state.join("logs").join("meshharbord.log")))
             .await
             .is_ok();
         let listing_ok = list_dir(&path(&state)).await.is_ok();
@@ -3554,7 +3554,7 @@ mod tests {
     #[tokio::test]
     async fn a_privileged_upload_stays_inside_the_active_profile() {
         let base = std::env::temp_dir().join(format!(
-            "roomler-destpriv-{}",
+            "meshharbor-destpriv-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -3602,7 +3602,7 @@ mod tests {
         // End-to-end: a `begin` call with dest_path should produce a
         // path under the dest dir, not under Downloads.
         let base = scratch_drop_dir(&format!(
-            "roomler-dest-e2e-{}",
+            "meshharbor-dest-e2e-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -3680,7 +3680,7 @@ mod tests {
 
     #[test]
     fn resolve_folder_upload_simple_two_component() {
-        let dir = std::env::temp_dir().join("roomler-folder-resolve-test");
+        let dir = std::env::temp_dir().join("meshharbor-folder-resolve-test");
         std::fs::create_dir_all(&dir).ok();
         let p = resolve_folder_upload_path(&dir, "MyFolder/file.txt").expect("simple");
         let s = p.to_string_lossy();
@@ -3690,7 +3690,7 @@ mod tests {
 
     #[test]
     fn resolve_folder_upload_deep_nesting() {
-        let dir = std::env::temp_dir().join("roomler-folder-deep-test");
+        let dir = std::env::temp_dir().join("meshharbor-folder-deep-test");
         std::fs::create_dir_all(&dir).ok();
         let p = resolve_folder_upload_path(&dir, "a/b/c/d/file.txt").expect("deep");
         let s = p.to_string_lossy();
@@ -3703,7 +3703,7 @@ mod tests {
     fn resolve_folder_upload_rejects_traversal_components() {
         // Sanitisation strips `..` and `.` components. Result is
         // safe even on a malicious browser.
-        let dir = std::env::temp_dir().join("roomler-folder-traversal-test");
+        let dir = std::env::temp_dir().join("meshharbor-folder-traversal-test");
         std::fs::create_dir_all(&dir).ok();
         let p = resolve_folder_upload_path(&dir, "MyFolder/../../etc/passwd").expect("traversal");
         let s = p.to_string_lossy();
@@ -3718,7 +3718,7 @@ mod tests {
 
     #[test]
     fn resolve_folder_upload_rejects_single_component() {
-        let dir = std::env::temp_dir().join("roomler-folder-single-test");
+        let dir = std::env::temp_dir().join("meshharbor-folder-single-test");
         std::fs::create_dir_all(&dir).ok();
         // No "/" → can't be a folder upload; caller should fall back
         // to flat upload.
@@ -3727,7 +3727,7 @@ mod tests {
 
     #[test]
     fn resolve_folder_upload_rejects_empty() {
-        let dir = std::env::temp_dir().join("roomler-folder-empty-test");
+        let dir = std::env::temp_dir().join("meshharbor-folder-empty-test");
         std::fs::create_dir_all(&dir).ok();
         assert!(resolve_folder_upload_path(&dir, "").is_none());
     }
@@ -3737,7 +3737,7 @@ mod tests {
         // A buggy browser that sends Windows-style separators
         // shouldn't break; we normalise to forward slashes before
         // splitting.
-        let dir = std::env::temp_dir().join("roomler-folder-backslash-test");
+        let dir = std::env::temp_dir().join("meshharbor-folder-backslash-test");
         std::fs::create_dir_all(&dir).ok();
         let p = resolve_folder_upload_path(&dir, "MyFolder\\sub\\file.txt").expect("backslash");
         let s = p.to_string_lossy();
@@ -3748,7 +3748,7 @@ mod tests {
 
     #[test]
     fn resolve_folder_upload_caps_extreme_depth() {
-        let dir = std::env::temp_dir().join("roomler-folder-deep-cap-test");
+        let dir = std::env::temp_dir().join("meshharbor-folder-deep-cap-test");
         std::fs::create_dir_all(&dir).ok();
         let mut deep = String::from("a");
         for i in 1..50 {
@@ -3950,7 +3950,7 @@ mod tests {
         // listing is sorted dirs-first and each entry has the right
         // is_dir flag.
         let base = std::env::temp_dir().join(format!(
-            "roomler-list-{}",
+            "meshharbor-list-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -3989,7 +3989,7 @@ mod tests {
     #[tokio::test]
     async fn begin_outgoing_stats_a_real_file() {
         let base = std::env::temp_dir().join(format!(
-            "roomler-out-{}",
+            "meshharbor-out-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -4020,7 +4020,7 @@ mod tests {
         // backbone of Phase 4 — sanitisation, recursion, and the
         // compat_write pipeline through async_zip.
         let base = std::env::temp_dir().join(format!(
-            "roomler-zip-{}",
+            "meshharbor-zip-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -4083,7 +4083,7 @@ mod tests {
         // the invariant: incoming + outgoing each have their own
         // mutex; one can be active while the other progresses.
         let base = std::env::temp_dir().join(format!(
-            "roomler-concurrent-{}",
+            "meshharbor-concurrent-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -4157,7 +4157,7 @@ mod tests {
         // creating `configured_files_dir_is_used…`'s folder mid-test).
         let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let base = std::env::temp_dir().join(format!(
-            "roomler-session-end-{}",
+            "meshharbor-session-end-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -4212,7 +4212,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_outgoing_flips_flag() {
         let base = std::env::temp_dir().join(format!(
-            "roomler-cancel-{}",
+            "meshharbor-cancel-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -4274,7 +4274,7 @@ mod tests {
     /// the staging dir is fully under our control on every platform.
     async fn stage_tmpdir() -> PathBuf {
         let base = scratch_drop_dir(&format!(
-            "roomler-rc19-stage-{}-{}",
+            "meshharbor-rc19-stage-{}-{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
             std::process::id()
         ));
@@ -4313,12 +4313,12 @@ mod tests {
         .await
         .expect("begin");
 
-        // .roomler-partial/<id>/data + meta.json must exist before
+        // .meshharbor-partial/<id>/data + meta.json must exist before
         // any chunk arrives. `dest_path` is canonicalised by
         // `validate_outgoing_path` (Win adds `\\?\` UNC prefix), so
         // compare against the canonicalised root.
         let canonical_dest = tokio::fs::canonicalize(&dest).await.unwrap();
-        let staging = canonical_dest.join(".roomler-partial").join(&id);
+        let staging = canonical_dest.join(".meshharbor-partial").join(&id);
         assert!(
             staging.exists(),
             "staging dir missing: {}",
@@ -4381,9 +4381,9 @@ mod tests {
         // File on disk has the payload.
         let got = tokio::fs::read(&final_path).await.unwrap();
         assert_eq!(got, b"hello");
-        // Staging dir + per-id dir + parent .roomler-partial/ are
+        // Staging dir + per-id dir + parent .meshharbor-partial/ are
         // all gone.
-        let staging_parent = dest.join(".roomler-partial");
+        let staging_parent = dest.join(".meshharbor-partial");
         assert!(!staging_parent.join(&id).exists(), "per-id dir leaked");
         // Registry entry removed. (Block-scoped for await_holding_lock.)
         {
@@ -4672,7 +4672,7 @@ mod tests {
         .await
         .expect("begin");
         let canonical_dest = tokio::fs::canonicalize(&dest).await.unwrap();
-        let staging = canonical_dest.join(".roomler-partial").join(&id);
+        let staging = canonical_dest.join(".meshharbor-partial").join(&id);
         assert!(staging.exists(), "staging dir absent pre-cancel");
         // Confirm registry has the id pre-cancel.
         {
@@ -4693,7 +4693,7 @@ mod tests {
     async fn sweep_orphans_deletes_stale_and_keeps_fresh() {
         let dest = stage_tmpdir().await;
         // Build two fake partial dirs by hand: one 25h old, one 1h old.
-        let root = dest.join(".roomler-partial");
+        let root = dest.join(".meshharbor-partial");
         let now = chrono::Utc::now().timestamp();
         let mk = |id: &str, age_secs: i64| {
             let dir = root.join(id);
@@ -4747,7 +4747,7 @@ mod tests {
     #[test]
     fn rc22_stage_in_programdata_is_false_under_cfg_test() {
         // cfg(test) forces the legacy per-dest layout so the existing
-        // in-crate assertions on `<dest>/.roomler-partial/<id>` still
+        // in-crate assertions on `<dest>/.meshharbor-partial/<id>` still
         // hold. Production on Windows flips this true; tests stay
         // false to keep isolation cheap.
         assert!(
@@ -4763,7 +4763,7 @@ mod tests {
         // staging-strategy-flag lock is `STAGE_IN_PROGRAMDATA`.
         let dest = std::path::Path::new("C:\\some\\dest");
         let got = partial_dir_for(dest, "abc-123");
-        let want = dest.join(".roomler-partial").join("abc-123");
+        let want = dest.join(".meshharbor-partial").join("abc-123");
         assert_eq!(got, want);
     }
 
@@ -4830,14 +4830,14 @@ mod tests {
             "staging root must live under ProgramData: {}",
             root.display()
         );
-        // S1b: either segment is valid — `roomler` on fresh/migrated
-        // machines, legacy `roomler-agent` pre-migration.
+        // S1b: either segment is valid — `meshharbor` on fresh/migrated
+        // machines, legacy `meshharbor-agent` pre-migration.
         assert!(
-            s.ends_with("roomler\\roomler-agent\\staging")
-                || s.ends_with("roomler/roomler-agent/staging")
-                || s.ends_with("roomler\\roomler\\staging")
-                || s.ends_with("roomler/roomler/staging"),
-            "staging root must end in roomler\\<segment>\\staging: {}",
+            s.ends_with("meshharbor\\meshharbor-agent\\staging")
+                || s.ends_with("meshharbor/meshharbor-agent/staging")
+                || s.ends_with("meshharbor\\meshharbor\\staging")
+                || s.ends_with("meshharbor/meshharbor/staging"),
+            "staging root must end in meshharbor\\<segment>\\staging: {}",
             root.display()
         );
     }
@@ -4846,12 +4846,12 @@ mod tests {
     async fn rc22_sweep_orphans_dir_handles_flat_layout() {
         // The new sweep_orphans_dir helper scans a directory whose
         // CHILDREN are per-id staging dirs — used when PROGRAMDATA
-        // staging is active and there's no `.roomler-partial` parent.
+        // staging is active and there's no `.meshharbor-partial` parent.
         // This test mirrors `sweep_orphans_deletes_stale_and_keeps_fresh`
         // but writes the partials directly under the root instead of
-        // under root/.roomler-partial/.
+        // under root/.meshharbor-partial/.
         let root = std::env::temp_dir().join(format!(
-            "roomler-rc22-flat-{}-{}",
+            "meshharbor-rc22-flat-{}-{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
             std::process::id()
         ));
@@ -4897,7 +4897,7 @@ mod tests {
 
 /// FR-97 P3d — a received file on a Linux system install, written as the
 /// person at seat0. The identity half needs root: CI runs this module under
-/// sudo with `ROOMLERD_TEST_REQUIRE_ROOT`, so it cannot pass by skipping.
+/// sudo with `MESHHARBORD_TEST_REQUIRE_ROOT`, so it cannot pass by skipping.
 /// `xdg_download_dir` is pure and runs everywhere.
 #[cfg(test)]
 mod seat_user_tests {
@@ -4941,8 +4941,8 @@ mod seat_user_tests {
         fn root() -> bool {
             // SAFETY: reads our own credentials.
             let root = unsafe { libc::geteuid() } == 0;
-            if !root && std::env::var_os("ROOMLERD_TEST_REQUIRE_ROOT").is_some() {
-                panic!("ROOMLERD_TEST_REQUIRE_ROOT is set and this test is not running as root");
+            if !root && std::env::var_os("MESHHARBORD_TEST_REQUIRE_ROOT").is_some() {
+                panic!("MESHHARBORD_TEST_REQUIRE_ROOT is set and this test is not running as root");
             }
             root
         }
@@ -5005,7 +5005,7 @@ mod seat_user_tests {
             );
             assert_eq!(std::fs::read(&path).unwrap(), b"hello");
             assert!(
-                !home.path().join(".roomler-partial").exists(),
+                !home.path().join(".meshharbor-partial").exists(),
                 "the staging is gone"
             );
         }
@@ -5024,7 +5024,7 @@ mod seat_user_tests {
             let roots_only = tempfile::tempdir().unwrap();
             std::fs::set_permissions(roots_only.path(), std::fs::Permissions::from_mode(0o700))
                 .unwrap();
-            let link = home.path().join(".roomler-partial");
+            let link = home.path().join(".meshharbor-partial");
             std::os::unix::fs::symlink(roots_only.path(), &link).unwrap();
             std::os::unix::fs::lchown(&link, Some(person.uid), Some(person.gid)).unwrap();
 

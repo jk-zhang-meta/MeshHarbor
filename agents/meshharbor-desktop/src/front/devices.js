@@ -37,7 +37,7 @@
  */
 (function () {
   'use strict';
-  const R = window.Roomler;
+  const R = window.MeshHarbor;
   const { $, invoke, show, hide, fmtRelative, on, get, currentView } = R;
 
   // ConnectionType (snake_case) → label; the badge class is `badge-<key>`.
@@ -1033,7 +1033,7 @@
       paintNotes(currentRows(dv)); // keeps "N min ago" / "retrying in" current
     });
 
-    document.addEventListener('roomler:view', (ev) => {
+    document.addEventListener('meshharbor:view', (ev) => {
       if (ev.detail === 'devices') {
         paint();
         void refresh({ force: true });

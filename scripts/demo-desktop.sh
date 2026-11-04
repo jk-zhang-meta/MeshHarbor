@@ -3,7 +3,7 @@
 # something worth filming, instead of two small windows on black.
 #
 # Run as root on the agent host, AFTER the daemon is up with
-# ROOMLERD_VIRTUAL_DESKTOP=1:
+# MESHHARBORD_VIRTUAL_DESKTOP=1:
 #
 #   sudo bash scripts/demo-desktop.sh
 #
@@ -32,7 +32,7 @@ set -u
 
 # --- discover the display the daemon actually brought up --------------------
 DPY="$(pgrep -a Xvfb | grep -oE ':[0-9]+' | head -1)"
-[ -n "$DPY" ] || { echo "no Xvfb running — is ROOMLERD_VIRTUAL_DESKTOP=1 set?"; exit 1; }
+[ -n "$DPY" ] || { echo "no Xvfb running — is MESHHARBORD_VIRTUAL_DESKTOP=1 set?"; exit 1; }
 export DISPLAY="$DPY"
 echo "display: $DISPLAY"
 

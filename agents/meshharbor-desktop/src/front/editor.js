@@ -6,12 +6,12 @@
  *
  * Editing is non-destructive. The page keeps an EDIT LIST, saved beside the
  * recording as `<name>.edit.json` after every change, and the recording is
- * never written. The export is `roomlerd media`, which the companion runs as
+ * never written. The export is `meshharbord media`, which the companion runs as
  * the person; this page asks, and polls `cmd_export_status`.
  *
  * The pieces always cover the recording from 0 to its end, in order: a split
  * makes two, and each is kept, cut or sped up on its own. The file is
- * roomlerd's (`recording/edit.rs`), which validates it again and refuses by
+ * meshharbord's (`recording/edit.rs`), which validates it again and refuses by
  * name. The preview approximates the export with the player: a
  * cut is skipped, a speed-up plays at its rate, muted as the export mutes it.
  *
@@ -19,7 +19,7 @@
  */
 (function () {
   'use strict';
-  const { $, invoke, show, hide, setText, fmtBytes } = window.Roomler;
+  const { $, invoke, show, hide, setText, fmtBytes } = window.MeshHarbor;
 
   /* ── pure helpers (exported for the unit tests) ─────────────────── */
 
@@ -85,7 +85,7 @@
     return segs.every((s) => s.action === 'cut');
   }
 
-  // The file roomlerd reads. Defaults stay out of it: an untouched volume is
+  // The file meshharbord reads. Defaults stay out of it: an untouched volume is
   // "as recorded", not a number.
   function toEditList(source, segs, sound) {
     const list = {
@@ -130,7 +130,7 @@
   // A saved list back into pieces, fitted to this recording. A list that
   // does not fit (another length, a gap, a bad speed) starts over from the
   // whole recording, and `fitted` says so; what follows the last piece is
-  // kept, as roomlerd keeps it.
+  // kept, as meshharbord keeps it.
   function fromEditList(list, durationMs) {
     const sound = { originalVolume: 1, music: null };
     const fresh = { segs: whole(durationMs), sound, fitted: false };
@@ -191,7 +191,7 @@
     };
   }
 
-  // One phrase per closed refusal code of `roomlerd media` (and the
+  // One phrase per closed refusal code of `meshharbord media` (and the
   // companion's own `engine_failed`). A code this page has never heard of
   // (a newer service) reads as itself.
   const REFUSALS = {
@@ -714,7 +714,7 @@
     cur = null;
     hide($('rec-editor'));
     show($('rec-main'));
-    document.dispatchEvent(new CustomEvent('roomler:editor-closed'));
+    document.dispatchEvent(new CustomEvent('meshharbor:editor-closed'));
   }
 
   /* ── boot ───────────────────────────────────────────────────────── */
@@ -761,7 +761,7 @@
     const quiet = () => {
       if (!v.paused) v.pause();
     };
-    document.addEventListener('roomler:view', (ev) => {
+    document.addEventListener('meshharbor:view', (ev) => {
       if (ev.detail !== 'recordings') quiet();
     });
     document.addEventListener('visibilitychange', () => {
@@ -772,7 +772,7 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 
-  window.RoomlerEditor = {
+  window.MeshHarborEditor = {
     // pure helpers
     SPEEDS,
     MIN_PIECE_MS,

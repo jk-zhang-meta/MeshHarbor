@@ -51,7 +51,7 @@ pub struct RecordOptions {
     /// Its file name (see [`folder::unique_recording_name`]).
     pub file_name: String,
     /// Where the partial is written while recording. `None` = the in-folder
-    /// staging dir `<dest_dir>/.roomler-partial/`.
+    /// staging dir `<dest_dir>/.meshharbor-partial/`.
     pub staging_dir: Option<PathBuf>,
     pub fps: u32,
     /// Seconds between keyframes (and so between fragments).
@@ -897,7 +897,7 @@ const MAX_AUDIO_BEFORE_VIDEO: usize = 3000;
 /// kernel however that recorder dies.
 ///
 /// ⚠️ Without it the reconciler cannot tell a dead recorder's partial from a
-/// live one's — a second recorder in the same folder (a manual `roomlerd
+/// live one's — a second recorder in the same folder (a manual `meshharbord
 /// record` beside the daemon's) would remux a file under its writer, or,
 /// finding no complete fragment yet, DELETE it as unrecoverable.
 pub struct PartialLock {
@@ -1232,7 +1232,7 @@ mod tests {
                 Err(e) => {
                     assert!(
                         !crate::recording::audio_codec::aac_expected(),
-                        "ROOMLER_EXPECT_FFMPEG_AAC=1 but AAC did not open: {e:#}"
+                        "MESHHARBOR_EXPECT_FFMPEG_AAC=1 but AAC did not open: {e:#}"
                     );
                     eprintln!("skipped: this FFmpeg has no AAC encoder ({e:#})");
                     return;

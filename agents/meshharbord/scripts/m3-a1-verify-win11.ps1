@@ -5,7 +5,7 @@ Companion to m5-verify-win11.ps1 (which validated the M2 user-context
 SCM service path). This one validates the M3 A1 lock-screen-unlock
 path that ships with the perMachine MSI build of 0.3.0+:
 
-  - SCM service `Roomler` runs as LocalSystem,
+  - SCM service `MeshHarbor` runs as LocalSystem,
     Session 0.
   - When a controller is mid-session AND the active console session
     is on the lock screen, the supervisor's
@@ -59,7 +59,7 @@ param(
     # RETIRED-NAME-ANCHOR(2): the PUBLISHED MSI asset name. Release asset
     # names are frozen (FR-21 D6) — the updater matches on extension +
     # arch + the -permachine- infix, never the prefix.
-    # Path to the perMachine roomler-agent MSI. Default: the per-tag
+    # Path to the perMachine meshharbor-agent MSI. Default: the per-tag
     # release asset name pattern from .github/workflows/release-agent.yml.
     [string]$MsiPath = 'C:\Users\Public\Downloads\meshharbor-agent-perMachine.msi',
 
@@ -110,7 +110,7 @@ function Get-AgentVersion {
 }
 
 function Get-ServiceState {
-    $svc = Get-Service -Name 'Roomler' -ErrorAction SilentlyContinue
+    $svc = Get-Service -Name 'MeshHarbor' -ErrorAction SilentlyContinue
     if (-not $svc) { return $null }
     return [pscustomobject]@{
         Status    = $svc.Status
@@ -123,11 +123,11 @@ function Get-ServiceState {
 # profile's local-app-data path. The user-context worker (when it
 # exists) writes to whichever user owns the session. The
 # tracing-appender uses daily rolling files named
-# `roomlerd.log.YYYY-MM-DD` (NOT `*.log`). Search both
+# `meshharbord.log.YYYY-MM-DD` (NOT `*.log`). Search both
 # directories and pick the most recent file across them so the
 # operator always gets the freshest log.
 function Get-SystemWorkerLogDir {
-    return 'C:\Windows\System32\config\systemprofile\AppData\Local\roomler\roomler\data\logs'
+    return 'C:\Windows\System32\config\systemprofile\AppData\Local\meshharbor\meshharbor\data\logs'
 }
 
 function Get-UserWorkerLogDirs {
@@ -138,7 +138,7 @@ function Get-UserWorkerLogDirs {
     $users = Get-ChildItem -Path 'C:\Users' -Directory -ErrorAction SilentlyContinue
     $dirs = @()
     foreach ($u in $users) {
-        $cand = Join-Path $u.FullName 'AppData\Local\roomler\roomler\data\logs'
+        $cand = Join-Path $u.FullName 'AppData\Local\meshharbor\meshharbor\data\logs'
         if (Test-Path $cand) { $dirs += $cand }
     }
     return $dirs
@@ -153,10 +153,10 @@ function Get-SupervisorLogDir {
 function Get-LatestLog {
     param([string]$Dir)
     if (-not (Test-Path $Dir)) { return $null }
-    # tracing-appender's daily roller uses `roomlerd.log.<date>`
+    # tracing-appender's daily roller uses `meshharbord.log.<date>`
     # so we match both the rolled name AND any `.log` files (in case
     # a future config writes to the unsuffixed name).
-    return Get-ChildItem -Path $Dir -Filter 'roomlerd*.log*' -ErrorAction SilentlyContinue |
+    return Get-ChildItem -Path $Dir -Filter 'meshharbord*.log*' -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
 }
@@ -379,12 +379,12 @@ function Action-Rollback {
     # Locate the installed product code via msiexec query — perMachine
     # MSI's UpgradeCode is the one in wix-perMachine/main.wxs.
     $upgradeCode = '{2A8E9C2D-3F1A-5E3F-C2B4-7C2F3D8F5E02}'
-    # RETIRED-NAME-ANCHOR: "Roomler Agent (per-Machine)" IS the ARP
+    # RETIRED-NAME-ANCHOR: "MeshHarbor Agent (per-Machine)" IS the ARP
     # DisplayName (wix-perMachine/main.wxs). Changing it here finds
     # nothing; changing it THERE orphans every installed agent.
-    $product = Get-CimInstance Win32_Product -Filter "Name LIKE '%Roomler Agent (per-Machine)%'" -ErrorAction SilentlyContinue
+    $product = Get-CimInstance Win32_Product -Filter "Name LIKE '%MeshHarbor Agent (per-Machine)%'" -ErrorAction SilentlyContinue
     if (-not $product) {
-        Write-Host 'No perMachine Roomler install found. Nothing to roll back.' -ForegroundColor Yellow
+        Write-Host 'No perMachine MeshHarbor install found. Nothing to roll back.' -ForegroundColor Yellow
         return
     }
     Write-Host "Uninstalling $($product.Name) ($($product.Version)) ..."

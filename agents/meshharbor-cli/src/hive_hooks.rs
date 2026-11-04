@@ -13,7 +13,7 @@
 //! |---|---|
 //! | every other setting stays byte for byte; inside `hooks`, every other event and group too | the file is the person's, and other tools keep their hooks there (FR-8's session restore on the dev box that built this) |
 //! | a file that is not a JSON object, or `hooks` that is not one, is refused, never rewritten | a parse that guessed would destroy the person's settings |
-//! | a symbolic link is followed and its target rewritten in place; the previous bytes are kept as `<file>.bak-roomler` | dotfile managers link this file; replacing the link would break their setup |
+//! | a symbolic link is followed and its target rewritten in place; the previous bytes are kept as `<file>.bak-meshharbor` | dotfile managers link this file; replacing the link would break their setup |
 //! | the hook prints nothing and always exits 0 | Claude Code may show a hook's stderr and add its stdout to the model's context; a broken hook must never break a session |
 //! | `SessionStart` and `Stop` run in the background (`async`); `SessionEnd` runs in the foreground | nobody at the terminal waits; `SessionEnd` gets a short shared budget and only flushes |
 
@@ -48,7 +48,7 @@ const WINDOWS_HOOK_COMMAND: &str = "meshharbor.exe hive hook";
 /// What a hook entry runs: this very binary, with `hive hook`, as ONE shell
 /// command line.
 ///
-/// ⚠️ Shell form, never exec form (`command` + `args`). `roomlerd` with no
+/// ⚠️ Shell form, never exec form (`command` + `args`). `meshharbord` with no
 /// arguments RUNS THE DAEMON, so a Claude Code that dropped an `args` list it
 /// did not know would start a daemon as the person at every hook. A command
 /// line is run whole by every version.
@@ -59,7 +59,7 @@ pub struct HookCommand {
 
 impl HookCommand {
     /// The running binary. Embedded in the daemon (`meshharbord cli`, which the
-    /// installed `roomler` shim re-execs) the entry runs `meshharbord cli hive
+    /// installed `meshharbor` shim re-execs) the entry runs `meshharbord cli hive
     /// hook` directly, without the shim's hop. On Windows, [`Self::on_path`].
     pub fn this_binary(embedded: bool) -> Result<Self> {
         if cfg!(windows) {
@@ -145,7 +145,7 @@ fn first_word(command: &str) -> (String, &str) {
 }
 
 /// Whether a hook handler is one `adopt` installed: a command line that runs
-/// a Roomler binary with `hive hook` (or `cli hive hook`) and nothing else.
+/// a MeshHarbor binary with `hive hook` (or `cli hive hook`) and nothing else.
 pub fn ours(handler: &Value) -> bool {
     let command = handler.get("command").and_then(Value::as_str).unwrap_or("");
     let (program, rest) = first_word(command);
@@ -156,7 +156,7 @@ pub fn ours(handler: &Value) -> bool {
     let rest: Vec<&str> = rest.split_whitespace().collect();
     matches!(
         stem,
-        "meshharbor" | "meshharbord" | "roomler" | "roomlerd" | "roomler-shim"
+        "meshharbor" | "meshharbord" | "meshharbor" | "meshharbord" | "meshharbor-shim"
     ) && (rest == ["hive", "hook"] || rest == ["cli", "hive", "hook"])
 }
 
@@ -344,10 +344,10 @@ fn write_settings(path: &Path, previous: Option<&[u8]>, text: &str) -> Result<Pa
         .unwrap_or("settings.json")
         .to_string();
     if let Some(bytes) = previous {
-        let bak = target.with_file_name(format!("{name}.bak-roomler"));
+        let bak = target.with_file_name(format!("{name}.bak-meshharbor"));
         std::fs::write(&bak, bytes).with_context(|| format!("writing {}", bak.display()))?;
     }
-    let tmp = target.with_file_name(format!(".{name}.roomler-{}", std::process::id()));
+    let tmp = target.with_file_name(format!(".{name}.meshharbor-{}", std::process::id()));
     std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
     #[cfg(unix)]
     {
@@ -405,7 +405,7 @@ pub fn adopt(explicit: Option<PathBuf>, embedded: bool) -> Result<()> {
     if changed {
         let written = write_settings(&path, previous.as_deref(), &next)?;
         println!(
-            "Adopted: the Claude Code sessions you run in a terminal here are mirrored into Roomler, where only you see them."
+            "Adopted: the Claude Code sessions you run in a terminal here are mirrored into MeshHarbor, where only you see them."
         );
         println!("  hooks added to {}", written.display());
     } else {
@@ -443,7 +443,7 @@ pub fn unadopt(explicit: Option<PathBuf>) -> Result<()> {
             written.display()
         );
     } else {
-        println!("Nothing to undo: no Roomler hooks in {}.", path.display());
+        println!("Nothing to undo: no MeshHarbor hooks in {}.", path.display());
     }
     Ok(())
 }
@@ -861,13 +861,13 @@ mod tests {
     }
 
     #[test]
-    fn only_a_roomler_hive_hook_is_ours() {
+    fn only_a_meshharbor_hive_hook_is_ours() {
         let c = |s: &str| json!({ "type": "command", "command": s });
         assert!(ours(&c("'/usr/bin/meshharbor' hive hook")));
         assert!(ours(&c("'/usr/bin/meshharbord' cli hive hook")));
-        assert!(ours(&c("/usr/local/bin/roomler hive hook")));
+        assert!(ours(&c("/usr/local/bin/meshharbor hive hook")));
         assert!(
-            ours(&c("'/opt/my apps/roomler' hive hook")),
+            ours(&c("'/opt/my apps/meshharbor' hive hook")),
             "a path with a space"
         );
         assert!(!ours(&c("'/usr/bin/meshharbor' peers")));
@@ -883,13 +883,13 @@ mod tests {
     }
 
     /// The entry runs the very binary, quoted, whatever its path holds: a
-    /// `roomlerd` reached with no arguments would run the daemon.
+    /// `meshharbord` reached with no arguments would run the daemon.
     #[test]
     fn the_entry_is_one_command_line_for_this_binary() {
-        let h = HookCommand::for_binary("/opt/it's here/roomlerd", true);
-        assert_eq!(h.command, r"'/opt/it'\''s here/roomlerd' cli hive hook");
+        let h = HookCommand::for_binary("/opt/it's here/meshharbord", true);
+        assert_eq!(h.command, r"'/opt/it'\''s here/meshharbord' cli hive hook");
         let (program, rest) = first_word(&h.command);
-        assert_eq!(program, "/opt/it's here/roomlerd");
+        assert_eq!(program, "/opt/it's here/meshharbord");
         assert_eq!(
             rest.split_whitespace().collect::<Vec<_>>(),
             ["cli", "hive", "hook"]

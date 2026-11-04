@@ -140,7 +140,7 @@ impl HwKind {
         }
     }
 
-    /// The config key (as the `ROOMLERD_*` suffix) that pins this kind's
+    /// The config key (as the `MESHHARBORD_*` suffix) that pins this kind's
     /// device.
     // The stub (macOS) never opens a device, so these are dead there.
     #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]

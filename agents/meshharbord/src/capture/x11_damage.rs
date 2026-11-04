@@ -91,13 +91,13 @@ impl DamageTracker {
     /// restoring it).
     fn open_on(display: Option<&str>) -> Option<Self> {
         // Kill switch, through the canonical gate helper rather than a raw
-        // `std::env::var`: that is what gives it the `ROOMLERD_` prefix, the
+        // `std::env::var`: that is what gives it the `MESHHARBORD_` prefix, the
         // legacy prefix fallbacks, AND the config-file fallback — so an
         // operator can pin this in config.toml like any other gate instead of
         // only via the unit's environment.
         if !tunnel_core::env::flag("X11_DAMAGE", true) {
             tracing::info!(
-                "capture: X11 damage tracking disabled by ROOMLERD_X11_DAMAGE — every tick will do a full readback"
+                "capture: X11 damage tracking disabled by MESHHARBORD_X11_DAMAGE — every tick will do a full readback"
             );
             return None;
         }
@@ -327,7 +327,7 @@ mod tests {
         assert_eq!((b.x, b.y, b.w, b.h), (r.x, r.y, r.w, r.h));
     }
 
-    /// Both tests below write `ROOMLERD_X11_DAMAGE`, and libtest runs them on
+    /// Both tests below write `MESHHARBORD_X11_DAMAGE`, and libtest runs them on
     /// parallel threads of one process. Unserialised, the second could clear
     /// the kill switch between the first's set and its `open()`, which on a
     /// host WITH an X server hands back a tracker and fails the assertion.
@@ -340,7 +340,7 @@ mod tests {
         let _serial = KILL_SWITCH.lock().unwrap_or_else(|e| e.into_inner());
         // SAFETY: serialised with the other writer by KILL_SWITCH, and only
         // `DamageTracker::open` reads this variable.
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "X11_DAMAGE", "0") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "X11_DAMAGE", "0") };
         assert!(DamageTracker::open().is_none());
         unsafe { tunnel_core::env::test_env::clear("X11_DAMAGE") };
     }

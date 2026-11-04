@@ -36,7 +36,7 @@
 //!   gone) by closing the helper's stdin. The helper closes the notification
 //!   and exits, so no Approve button outlives its question.
 //!
-//! Kill switch `ROOMLERD_NOTIFY_CONSENT=0`.
+//! Kill switch `MESHHARBORD_NOTIFY_CONSENT=0`.
 
 use serde::{Deserialize, Serialize};
 
@@ -56,13 +56,13 @@ pub struct Request {
 }
 
 /// Marks the line saying the notification is up (with its id).
-const SHOWN: &str = "ROOMLER_NOTIFY_SHOWN:";
+const SHOWN: &str = "MESHHARBOR_NOTIFY_SHOWN:";
 /// Marks the line saying it could not be posted, and why.
-const FAILED: &str = "ROOMLER_NOTIFY_FAILED:";
+const FAILED: &str = "MESHHARBOR_NOTIFY_FAILED:";
 /// Marks the key of the button the person pressed.
-const ACTION: &str = "ROOMLER_NOTIFY_ACTION:";
+const ACTION: &str = "MESHHARBOR_NOTIFY_ACTION:";
 /// Marks the server's `NotificationClosed` reason.
-const CLOSED: &str = "ROOMLER_NOTIFY_CLOSED:";
+const CLOSED: &str = "MESHHARBOR_NOTIFY_CLOSED:";
 
 /// What the helper said, one marked line at a time.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,7 +171,7 @@ fn escape_markup(s: &str) -> String {
     out
 }
 
-/// FR-93 P6f kill switch `ROOMLERD_NOTIFY_CONSENT=0`: no notification, as
+/// FR-93 P6f kill switch `MESHHARBORD_NOTIFY_CONSENT=0`: no notification, as
 /// before P6f.
 fn enabled() -> bool {
     tunnel_core::env::flag("NOTIFY_CONSENT", true)
@@ -184,14 +184,14 @@ pub(crate) use parent::{viewing, viewing_ended};
 /// **Disconnect** does.
 const DISCONNECT: &str = "disconnect";
 
-/// FR-93 P6g kill switch `ROOMLERD_VIEWING_NOTICE=0`: a session the compositor
+/// FR-93 P6g kill switch `MESHHARBORD_VIEWING_NOTICE=0`: a session the compositor
 /// says nothing about stays unseen at the screen, as before P6g.
 fn viewing_enabled() -> bool {
     tunnel_core::env::flag("VIEWING_NOTICE", true)
 }
 
 /// Marks the probe's answer: `yes`, or `no` and why.
-const CAN: &str = "ROOMLER_NOTIFY_CAN:";
+const CAN: &str = "MESHHARBOR_NOTIFY_CAN:";
 
 /// How long the probe may take: a session bus round trip, and the start of a
 /// notification server that is activated on demand.
@@ -203,7 +203,7 @@ const PROBE_BUDGET: std::time::Duration = std::time::Duration::from_secs(4);
 /// notification with Disconnect. Asked LIVE, at the capture's open: a
 /// companion that is installed but not running for them is not counted on
 /// its own, and a session whose notification server shows no buttons is no
-/// surface. `false` with the notice switched off (`ROOMLERD_VIEWING_NOTICE=0`).
+/// surface. `false` with the notice switched off (`MESHHARBORD_VIEWING_NOTICE=0`).
 /// Blocking: a helper is started in the session.
 pub(crate) fn can_tell(uid: u32) -> bool {
     if !viewing_enabled() {
@@ -233,7 +233,7 @@ pub(crate) fn can_tell(uid: u32) -> bool {
     }
 }
 
-/// The probe's session half: `roomlerd portal-helper --notify-probe`. Posts
+/// The probe's session half: `meshharbord portal-helper --notify-probe`. Posts
 /// nothing. On a plain thread, for the reason [`run_helper`] gives.
 pub fn run_probe_helper() {
     let answer = match std::thread::Builder::new()
@@ -319,7 +319,7 @@ mod parent {
         /// callers run it off the runtime.
         pub(crate) fn show(&self, view: &PromptView) -> bool {
             if !enabled() {
-                tracing::info!("no notification prompt (ROOMLERD_NOTIFY_CONSENT=0, FR-93 P6f)");
+                tracing::info!("no notification prompt (MESHHARBORD_NOTIFY_CONSENT=0, FR-93 P6f)");
                 return false;
             }
             let now = std::time::Instant::now();
@@ -606,7 +606,7 @@ mod parent {
     }
 }
 
-/// The session helper's half: `roomlerd portal-helper --notify`. Reads one
+/// The session helper's half: `meshharbord portal-helper --notify`. Reads one
 /// [`Request`] line on stdin, posts it, says what happened on stdout, and
 /// closes the notification when stdin closes or its lifetime ends.
 ///
@@ -813,7 +813,7 @@ mod helper {
             .call_method(
                 "Notify",
                 &(
-                    "Roomler",
+                    "MeshHarbor",
                     0u32,
                     "preferences-desktop-remote-desktop",
                     req.summary.as_str(),
@@ -941,15 +941,15 @@ mod tests {
 
     #[test]
     fn marked_lines_are_found_among_chatter() {
-        assert_eq!(parse("ROOMLER_NOTIFY_SHOWN:17"), Some(Said::Shown));
+        assert_eq!(parse("MESHHARBOR_NOTIFY_SHOWN:17"), Some(Said::Shown));
         assert_eq!(
-            parse("  ROOMLER_NOTIFY_ACTION:deny\n"),
+            parse("  MESHHARBOR_NOTIFY_ACTION:deny\n"),
             Some(Said::Action("deny".into()))
         );
-        assert_eq!(parse("ROOMLER_NOTIFY_CLOSED:2"), Some(Said::Closed(2)));
-        assert_eq!(parse("ROOMLER_NOTIFY_CLOSED:x"), Some(Said::Closed(4)));
+        assert_eq!(parse("MESHHARBOR_NOTIFY_CLOSED:2"), Some(Said::Closed(2)));
+        assert_eq!(parse("MESHHARBOR_NOTIFY_CLOSED:x"), Some(Said::Closed(4)));
         assert_eq!(
-            parse("ROOMLER_NOTIFY_FAILED:no buttons"),
+            parse("MESHHARBOR_NOTIFY_FAILED:no buttons"),
             Some(Said::Failed("no buttons".into()))
         );
         assert_eq!(parse("Gtk-WARNING: something"), None);

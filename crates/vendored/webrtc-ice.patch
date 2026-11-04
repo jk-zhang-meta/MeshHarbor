@@ -64,10 +64,10 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_gather.rs vendored/src/ag
 +
 +/// Returns a `priority` override for a host candidate on `ip`, or 0 (meaning
 +/// "no override — compute the RFC 8445 value") for non-overlay interfaces.
-+/// Escape hatch: `ROOMLER_ICE_OVERLAY_HOST_DEPRIORITIZE=0` restores upstream
++/// Escape hatch: `MESHHARBOR_ICE_OVERLAY_HOST_DEPRIORITIZE=0` restores upstream
 +/// behaviour for every interface.
 +fn overlay_host_priority_override(ip: &std::net::IpAddr, component: u16) -> u32 {
-+    if std::env::var("ROOMLER_ICE_OVERLAY_HOST_DEPRIORITIZE").as_deref() == Ok("0") {
++    if std::env::var("MESHHARBOR_ICE_OVERLAY_HOST_DEPRIORITIZE").as_deref() == Ok("0") {
 +        return 0;
 +    }
 +    if !is_roomler_overlay_ip(ip) {
@@ -305,7 +305,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_gather.rs vendored/src/ag
 +        let above_cgnat: IpAddr = "100.128.0.1".parse().unwrap();
 +        let other_ula: IpAddr = "fd00:dead:beef::1".parse().unwrap();
 +
-+        std::env::remove_var("ROOMLER_ICE_OVERLAY_HOST_DEPRIORITIZE");
++        std::env::remove_var("MESHHARBOR_ICE_OVERLAY_HOST_DEPRIORITIZE");
 +
 +        let p = overlay_host_priority_override(&overlay_v4, COMPONENT_RTP);
 +        assert_ne!(p, 0, "overlay v4 host must get an override");
@@ -326,9 +326,9 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_gather.rs vendored/src/ag
 +        }
 +
 +        // Escape hatch restores upstream behaviour everywhere.
-+        std::env::set_var("ROOMLER_ICE_OVERLAY_HOST_DEPRIORITIZE", "0");
++        std::env::set_var("MESHHARBOR_ICE_OVERLAY_HOST_DEPRIORITIZE", "0");
 +        assert_eq!(overlay_host_priority_override(&overlay_v4, COMPONENT_RTP), 0);
-+        std::env::remove_var("ROOMLER_ICE_OVERLAY_HOST_DEPRIORITIZE");
++        std::env::remove_var("MESHHARBOR_ICE_OVERLAY_HOST_DEPRIORITIZE");
 +    }
 +}
 diff -ruN --strip-trailing-cr upstream/src/agent/agent_internal.rs vendored/src/agent/agent_internal.rs
@@ -492,7 +492,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
 +///   equal/lower priority included.
 +///
 +/// Unparseable remotes (mDNS names) are conservatively treated as
-+/// overlay-possible. Env overrides: `ROOMLER_ICE_FOLLOW_RENOMINATION=0`
++/// overlay-possible. Env overrides: `MESHHARBOR_ICE_FOLLOW_RENOMINATION=0`
 +/// never follows (rc.262 semantics), `=1` always follows (rc.260 semantics).
 +fn selected_pair_inbound_age(pair: &CandidatePair, use_pair_proof: bool) -> Duration {
 +    let authenticated = if use_pair_proof {
@@ -531,7 +531,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
 +        .unwrap_or(false);
 +    let current_stale = selected_pair_inbound_age(current, use_pair_proof) > FOLLOW_STALE_AFTER;
 +    follow_renomination_policy(
-+        std::env::var("ROOMLER_ICE_FOLLOW_RENOMINATION")
++        std::env::var("MESHHARBOR_ICE_FOLLOW_RENOMINATION")
 +            .ok()
 +            .as_deref(),
 +        new_remote_is_real_path,
@@ -597,7 +597,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
 +        check_unvalidated: bool,
 +    ) {
 +        if self.migration_terminal()
-+            || std::env::var("ROOMLER_ICE_WARM_STANDBY").as_deref() == Ok("0")
++            || std::env::var("MESHHARBOR_ICE_WARM_STANDBY").as_deref() == Ok("0")
 +        {
 +            return;
 +        }
@@ -840,7 +840,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
 +                // agent-srflx validates one-way through the home-NAT masquerade;
 +                // the reverse direction routes into the TUN with a physical
 +                // source) — SCTP died ~4 s in, every session. Opt-in via
-+                // ROOMLER_ICE_FOLLOW_RENOMINATION=1 until the follow policy
++                // MESHHARBOR_ICE_FOLLOW_RENOMINATION=1 until the follow policy
 +                // validates pair liveness both ways.
 +                // v2 (2026-07-28): policy in should_follow_renomination() —
 +                // real-path remotes always, overlay remotes only off a stale
@@ -952,7 +952,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
 +                    // (browser-TUN-host × agent-srflx validates one-way through
 +                    // the home-NAT masquerade; the reverse direction routes into
 +                    // the TUN with a physical source) — SCTP died ~4 s in, every
-+                    // session. Opt-in via ROOMLER_ICE_FOLLOW_RENOMINATION=1 until
++                    // session. Opt-in via MESHHARBOR_ICE_FOLLOW_RENOMINATION=1 until
 +                    // the follow policy validates pair liveness both ways.
 +                    // v2 (2026-07-28): see should_follow_renomination().
 +                    let follow_renomination = {

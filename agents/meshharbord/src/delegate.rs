@@ -33,7 +33,7 @@
 //!
 //! - **the environment** — `sudo` in the spawn chain runs under the stock
 //!   `Defaults env_reset` and discards it. This is not hypothetical: P1's
-//!   `ROOMLER_MACOS_SUPERVISED` marker went out this way and never reached a
+//!   `MESHHARBOR_MACOS_SUPERVISED` marker went out this way and never reached a
 //!   single worker, unnoticed because nothing read it yet.
 //! - **an inherited socketpair**, where possession of the fd would BE the
 //!   authorisation — strictly better, but `sudo` closes inherited descriptors
@@ -143,8 +143,8 @@ pub enum DelegateFrame {
     OverlayFootprint {
         v4_nets: Vec<(std::net::Ipv4Addr, u8)>,
     },
-    /// FR-92 — daemon → worker: a `roomler keep-busy status|off` that reached
-    /// the DAEMON's LocalAPI. A root caller — `meshharbor exec <mac> roomler
+    /// FR-92 — daemon → worker: a `meshharbor keep-busy status|off` that reached
+    /// the DAEMON's LocalAPI. A root caller — `meshharbor exec <mac> meshharbor
     /// keep-busy off` — never sees the worker's per-user socket, while on a
     /// supervised Mac it is the worker that runs keep busy. So the daemon
     /// asks; `off` stops it first. The answer is
@@ -1432,7 +1432,7 @@ mod tests {
         }
     }
 
-    /// FR-92 — `meshharbor exec <mac> roomler keep-busy off` reaches the ROOT
+    /// FR-92 — `meshharbor exec <mac> meshharbor keep-busy off` reaches the ROOT
     /// daemon, while on a supervised Mac keep busy runs in the WORKER. The
     /// daemon asks the worker and answers with what it says. Field, 0.4.126:
     /// it answered for its own engine — "off" — while the worker kept moving
@@ -1687,7 +1687,7 @@ mod socket_tests {
     /// in review, so they are asserted.
     #[tokio::test]
     async fn the_socket_is_0600_and_the_directory_is_traversable_only() {
-        let tmp = std::env::temp_dir().join(format!("roomler-deleg-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("meshharbor-deleg-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let host = DelegateHost::new();
         let uid = unsafe { libc::getuid() };
@@ -1717,7 +1717,7 @@ mod socket_tests {
     #[tokio::test]
     async fn a_real_connection_is_greeted_or_silently_closed() {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        let tmp = std::env::temp_dir().join(format!("roomler-deleg-e2e-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("meshharbor-deleg-e2e-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let host = DelegateHost::new();
         let uid = unsafe { libc::getuid() };

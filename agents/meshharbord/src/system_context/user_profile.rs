@@ -31,16 +31,16 @@
 //! 2. `WTSQuerySessionInformationW(NULL, sid, WTSUserName)` — look
 //!    up the username for that session. Returns "Administrator"
 //!    or whatever; empty string if no user is logged in.
-//! 3. Build `C:\Users\<username>\AppData\Roaming\roomler\
-//!    roomler\config\config.toml` (a host installed before the
-//!    rename keeps `roomler-agent` there, so both are tried — see
+//! 3. Build `C:\Users\<username>\AppData\Roaming\meshharbor\
+//!    meshharbor\config\config.toml` (a host installed before the
+//!    rename keeps `meshharbor-agent` there, so both are tried — see
 //!    `config_candidates_under`). Uses the standard Win11
 //!    profile location; fails gracefully (returns `None`) if the
 //!    profile isn't there.
 //!
 //!
 // RETIRED-NAME-ANCHOR-BEGIN
-// From here down, `roomler-agent` names the PRE-RENAME appdirs segment that
+// From here down, `meshharbor-agent` names the PRE-RENAME appdirs segment that
 // a host installed before P4b still has. The resolver returns both segments
 // and the tests pin the order; dropping the retired one is what removed the
 // user-config rung from every post-rename install in the first place.
@@ -86,8 +86,8 @@ pub fn active_user_profile_root() -> Option<PathBuf> {
 
 /// Per-user config candidates under `root`, most-current first.
 ///
-/// The segment under `%APPDATA%\roomler\` is the appdirs *application*
-/// name, which P4b renamed `roomler-agent` -> `roomler`. A host installed
+/// The segment under `%APPDATA%\meshharbor\` is the appdirs *application*
+/// name, which P4b renamed `meshharbor-agent` -> `meshharbor`. A host installed
 /// before that rename still has the old tree, so both are candidates.
 ///
 /// This cannot just call `appdirs`: a SystemContext worker runs as
@@ -97,10 +97,10 @@ pub fn active_user_profile_root() -> Option<PathBuf> {
 /// purpose, and `appdirs`'s own constants are the thing to keep it in step
 /// with.
 fn config_candidates_under(root: &Path) -> [PathBuf; 2] {
-    let base = root.join("AppData").join("Roaming").join("roomler");
+    let base = root.join("AppData").join("Roaming").join("meshharbor");
     [
-        base.join("roomler").join("config").join("config.toml"),
-        base.join("roomler-agent")
+        base.join("meshharbor").join("config").join("config.toml"),
+        base.join("meshharbor-agent")
             .join("config")
             .join("config.toml"),
     ]
@@ -260,8 +260,8 @@ mod tests {
             "path should be under C:\\Users: {p:?}"
         );
         assert!(
-            s.ends_with("\\roomler\\config\\config.toml")
-                || s.ends_with("\\roomler-agent\\config\\config.toml"),
+            s.ends_with("\\meshharbor\\config\\config.toml")
+                || s.ends_with("\\meshharbor-agent\\config\\config.toml"),
             "path should end with a known config segment: {p:?}"
         );
     }
@@ -277,11 +277,11 @@ mod tests {
         let a = got[0].to_string_lossy().to_lowercase();
         let b = got[1].to_string_lossy().to_lowercase();
         assert!(
-            a.ends_with("\\roomler\\roomler\\config\\config.toml"),
+            a.ends_with("\\meshharbor\\meshharbor\\config\\config.toml"),
             "current segment must come first: {a}"
         );
         assert!(
-            b.ends_with("\\roomler\\roomler-agent\\config\\config.toml"),
+            b.ends_with("\\meshharbor\\meshharbor-agent\\config\\config.toml"),
             "pre-rename segment must still be offered: {b}"
         );
     }

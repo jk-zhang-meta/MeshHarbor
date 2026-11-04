@@ -124,7 +124,7 @@ COW-clone golden image → boot → SSH in
   exit 1), `roomler status --json` (`agents/meshharbor-cli/src/cli.rs`).
 - **Ephemeral (FR-51)**: reusable keys gated by org `ephemeral_keys_enabled` (re-checked per
   use ⇒ flipping it off is class-wide revocation); reaper
-  `ROOMLER__RC__EPHEMERAL_REAPER_ENABLED` already on in prod; graceful shutdown self-unenrolls.
+  `MESHHARBOR__RC__EPHEMERAL_REAPER_ENABLED` already on in prod; graceful shutdown self-unenrolls.
   The wizard smoke cannot use an ephemeral key (wrong JWT audience for plain `enroll`) — it
   mints a single-use standard enrollment token and deletes its row afterwards.
 
@@ -262,7 +262,7 @@ a DataChannel → a canvas, not `<video>`** (transport-agnostic frame oracle); o
    *silent* matrix-killer that reads like an overlay bug.
 2. **Per-user overlay is broken out of the box on BOTH OSes** — an unprivileged per-user daemon
    can't create a WireGuard TUN, and a vanilla per-user install doesn't auto-configure the
-   userspace netstack (`ROOMLERD_OVERLAY_NETSTACK_SOCKS`), so `overlay_mode=tun` never gets an
+   userspace netstack (`MESHHARBORD_OVERLAY_NETSTACK_SOCKS`), so `overlay_mode=tun` never gets an
    address. The installer should set netstack up for a per-user role.
 
 **The last two lanes, and what they cost:**
@@ -347,4 +347,4 @@ run's `results.tsv`):
 | **Wayland RD** (`ubuntu/*#rd`) | `20260902-002533` `#rd FAIL` → #1210; `20260902-004405` → #1212 (cookie-only sessions #1211; the DataChannel→canvas transport #1213). Again `20260904-000906` on all four Ubuntu cells → #1295/#1298/#1300 (the RTP-shaped oracle blind to that transport, #1297; the static-desktop keepalive, #1301) | as cited | `20260902-010001`; `20260904-010310` / `014606` / `015150` |
 | **ARM install** | `20260902-034419` `arm/{script,installer}/system#enroll FAIL roomlerd enroll --ephemeral rc=127` — guest.log: `roomlerd depends on libasound2; however: Package libasound2 is not installed` (the aarch64 `.deb` left unconfigured; rc=127 is the loader failing on `libasound.so.2`) → #1220. `20260905-202405` `arm/installer/system#install FAIL dpkg/apt install failed` (the `unattended-upgrades` lock race) → #1403 | the ALSA runtime dependency in the guest driver; apt timers stopped + masked, `DPkg::Lock::Timeout=300` | `20260902-041405`; `20260905-205517` |
 | **wizard** (`win11/wizard/user`) | `20260902-030033` `#install FAIL wizard fetch/launch failed` (no `setup-v*` release — `/api/setup/windows` 404), recorded as an expected failure; after `setup-v0.4.48`: `20260902-083823` `#install FAIL wizard CDP walk failed` + `#enroll FAIL no device row` → #1224, then `084120` → #1225, `084413` → #1226, → #1227 (guessed selectors; a guest clock ~3 h ahead of UTC rejecting a fresh token) | #1222 (`skip_macos`), the wizard's own stable ids, a `w32time` resync | `20260902-084901` `wizard walked Welcome→Done over CDP` |
-| Linux **`.deb`** install (`ubuntu/installer/*`) | **no install-check red exists**: `#install PASS .deb installed (x86_64)` on the first recorded run, `20260902-012127`, for both types. The cells' first red was `ubuntu/installer/user#overlay FAIL no overlay self address within 90s` (a per-user daemon cannot create a TUN — the netstack finding) in that same run → #1214 | `ROOMLERD_OVERLAY_NETSTACK_SOCKS` for the per-user role | `20260902-015346` |
+| Linux **`.deb`** install (`ubuntu/installer/*`) | **no install-check red exists**: `#install PASS .deb installed (x86_64)` on the first recorded run, `20260902-012127`, for both types. The cells' first red was `ubuntu/installer/user#overlay FAIL no overlay self address within 90s` (a per-user daemon cannot create a TUN — the netstack finding) in that same run → #1214 | `MESHHARBORD_OVERLAY_NETSTACK_SOCKS` for the per-user role | `20260902-015346` |

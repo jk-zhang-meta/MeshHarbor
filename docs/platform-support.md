@@ -77,7 +77,7 @@ flowchart LR
 ```
 
 - An install that runs as the person cannot create an OS adapter. Netstack mode
-  (`ROOMLERD_OVERLAY_NETSTACK_SOCKS`, in every OS's release build) still gives it the mesh,
+  (`MESHHARBORD_OVERLAY_NETSTACK_SOCKS`, in every OS's release build) still gives it the mesh,
   outbound, through a loopback SOCKS5 front. Other nodes cannot reach the host's own services
   that way, but Roomler SSH answers, because it terminates inside the daemon
   (`agents/meshharbord/src/overlay.rs:334-340`).

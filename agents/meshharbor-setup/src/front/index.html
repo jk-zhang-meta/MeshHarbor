@@ -5,7 +5,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Roomler Setup</title>
+  <title>MeshHarbor Setup</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -23,7 +23,7 @@
 
     <!-- Step 1: Welcome + detection + role pick -->
     <section id="step-welcome" class="step" hidden>
-      <h1>Roomler Setup</h1>
+      <h1>MeshHarbor Setup</h1>
       <p class="lead">One wizard for everything: the always-on daemon (so this machine
       can be accessed) or the tunnel client (so you can reach others). No terminal
       commands required.</p>
@@ -70,7 +70,7 @@
             <input type="radio" name="role" value="tunnel-client">
             <div>
               <strong>Reach others only — tunnel client</strong>
-              <p class="muted">Installs the <code>roomler</code> CLI and enrolls it,
+              <p class="muted">Installs the <code>meshharbor</code> CLI and enrolls it,
               so this machine can forward ports through enrolled agents. No daemon.</p>
             </div>
           </label>
@@ -189,7 +189,7 @@
     <!-- Step 3: Enrollment token -->
     <section id="step-token" class="step" hidden>
       <h1>Enrollment token</h1>
-      <p class="lead" id="token-lead">Paste a fresh token from the Roomler admin UI.</p>
+      <p class="lead" id="token-lead">Paste a fresh token from the MeshHarbor admin UI.</p>
 
       <div class="card">
         <label class="field">
@@ -304,7 +304,7 @@
       </div>
 
       <div id="done-path-note" class="info" hidden>
-        The <code>roomler</code> CLI is on your PATH after you open a new
+        The <code>meshharbor</code> CLI is on your PATH after you open a new
         shell. If it isn't found, run it directly via the path above.
       </div>
 
@@ -319,12 +319,12 @@
       <div id="done-systemcontext-note" class="info" hidden>
         <strong>SystemContext mode active.</strong>
         <p>The perMachine MSI is installed, the daemon is enrolled, and the SCM
-        service runs with <code>ROOMLERD_ENABLE_SYSTEM_SWAP=1</code> in its
+        service runs with <code>MESHHARBORD_ENABLE_SYSTEM_SWAP=1</code> in its
         <code>Environment</code> block. Remote control can now drive the Windows
         lock screen, UAC dialogs, and admin apps when an operator connects from
         the browser.</p>
         <p class="muted">To disable SystemContext mode later, run
-        <code>roomlerd disable-system-context</code> from an elevated shell,
+        <code>meshharbord disable-system-context</code> from an elevated shell,
         or re-run this wizard and pick the attended-service role.</p>
       </div>
 

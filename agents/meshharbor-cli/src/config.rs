@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! On-disk config for `roomler`.
+//! On-disk config for `meshharbor`.
 //!
-//! Mirrors `roomlerd`'s pattern: TOML file at the platform-specific
+//! Mirrors `meshharbord`'s pattern: TOML file at the platform-specific
 //! per-user config dir, populated by `meshharbor enroll` and read
-//! by `forward` / `run` / `diagnose`. Env vars `ROOMLER_TUNNEL_SERVER`
-//! and `ROOMLER_TUNNEL_TOKEN` override the file when both are set, so
+//! by `forward` / `run` / `diagnose`. Env vars `MESHHARBOR_TUNNEL_SERVER`
+//! and `MESHHARBOR_TUNNEL_TOKEN` override the file when both are set, so
 //! CI / smoke tests don't need to drop a real file.
 
 use anyhow::{Context, Result, bail};
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelConfig {
-    /// Base URL of the Roomler API (no trailing slash needed,
+    /// Base URL of the MeshHarbor API (no trailing slash needed,
     /// e.g. `https://roomler.ai`). Used to derive the WS URL by
     /// rewriting the scheme to `wss://` and appending `/ws`.
     pub server_url: String,
@@ -34,7 +34,7 @@ pub struct TunnelConfig {
     /// (`meshharbor_remote_control::server_url`), so the token renewal, the
     /// self-update and the tunnel's socket all go over TLS. For a lab whose
     /// server serves no TLS; loopback is never promoted. The environment form
-    /// is `ROOMLER_TUNNEL_ALLOW_PLAINTEXT=1`.
+    /// is `MESHHARBOR_TUNNEL_ALLOW_PLAINTEXT=1`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_plaintext_server: bool,
 }
@@ -53,7 +53,7 @@ impl TunnelConfig {
                 was = %self.server_url,
                 now = %s.url,
                 "a plaintext server URL is read as TLS; set allow_plaintext_server = true \
-                 (or ROOMLER_TUNNEL_ALLOW_PLAINTEXT=1) to keep plaintext"
+                 (or MESHHARBOR_TUNNEL_ALLOW_PLAINTEXT=1) to keep plaintext"
             );
             self.server_url = s.url;
         }
@@ -78,32 +78,32 @@ pub fn enrollment_server_url(raw: &str) -> String {
 // RETIRED-NAME-ANCHOR(4): ProjectDirs segment holding the ENROLLED credential on
 // tunnel-only hosts.
 /// Resolve the default per-user config path. On Windows this lands at
-/// `%APPDATA%\roomler\roomler-tunnel\config.toml`; on Linux/macOS the
+/// `%APPDATA%\meshharbor\meshharbor-tunnel\config.toml`; on Linux/macOS the
 /// `directories` crate's `ProjectDirs::config_dir()` is honoured.
 pub fn default_config_path() -> Result<PathBuf> {
     // RETIRED-NAME-ANCHOR(2): tunnel-only hosts keep their ENROLLED config here.
     // Renaming the segment orphans it, exactly as it would for appdirs::OLD_APP.
     // Migrating it needs the same new-then-old resolution appdirs has — P4, not a
     // drive-by. See docs/fr/FR-21.
-    let dirs = directories::ProjectDirs::from("ai", "roomler", "roomler-tunnel")
-        .context("no platform config dir available for roomler-tunnel")?;
+    let dirs = directories::ProjectDirs::from("ai", "meshharbor", "meshharbor-tunnel")
+        .context("no platform config dir available for meshharbor-tunnel")?;
     Ok(dirs.config_dir().join("config.toml"))
 }
 
 /// Load config from `path` (or the default). Env-var overrides
-/// short-circuit the file read when BOTH `ROOMLER_TUNNEL_SERVER` and
-/// `ROOMLER_TUNNEL_TOKEN` are set — useful for CI / smoke tests where
+/// short-circuit the file read when BOTH `MESHHARBOR_TUNNEL_SERVER` and
+/// `MESHHARBOR_TUNNEL_TOKEN` are set — useful for CI / smoke tests where
 /// dropping a file is more friction than setting two env vars.
 pub fn load(path: Option<PathBuf>) -> Result<TunnelConfig> {
     if let (Ok(server), Ok(token)) = (
-        std::env::var("ROOMLER_TUNNEL_SERVER"),
-        std::env::var("ROOMLER_TUNNEL_TOKEN"),
+        std::env::var("MESHHARBOR_TUNNEL_SERVER"),
+        std::env::var("MESHHARBOR_TUNNEL_TOKEN"),
     ) {
         let mut cfg = TunnelConfig {
             server_url: server,
             tunnel_client_token: token,
-            machine_name: std::env::var("ROOMLER_TUNNEL_NAME").unwrap_or_default(),
-            allow_plaintext_server: std::env::var("ROOMLER_TUNNEL_ALLOW_PLAINTEXT")
+            machine_name: std::env::var("MESHHARBOR_TUNNEL_NAME").unwrap_or_default(),
+            allow_plaintext_server: std::env::var("MESHHARBOR_TUNNEL_ALLOW_PLAINTEXT")
                 .is_ok_and(|v| v == "1"),
         };
         cfg.secure_server_url();
@@ -134,11 +134,11 @@ pub fn load(path: Option<PathBuf>) -> Result<TunnelConfig> {
     Ok(cfg)
 }
 
-/// Is the config coming from `ROOMLER_TUNNEL_SERVER` + `ROOMLER_TUNNEL_TOKEN`
+/// Is the config coming from `MESHHARBOR_TUNNEL_SERVER` + `MESHHARBOR_TUNNEL_TOKEN`
 /// rather than a file? Then [`load`] never reads one, and nothing may be
 /// saved to one on its behalf.
 pub fn from_environment() -> bool {
-    std::env::var("ROOMLER_TUNNEL_SERVER").is_ok() && std::env::var("ROOMLER_TUNNEL_TOKEN").is_ok()
+    std::env::var("MESHHARBOR_TUNNEL_SERVER").is_ok() && std::env::var("MESHHARBOR_TUNNEL_TOKEN").is_ok()
 }
 
 /// Persist `cfg` to `path` (or the default). Creates the parent
@@ -354,7 +354,7 @@ mod tests {
     /// FR-101 P1b — a saved plaintext URL to a remote host is read as TLS,
     /// so the tunnel dials `wss://`; loopback stays as written, and so does
     /// everything under the owner's escape. Tested through a file: a test
-    /// that set `ROOMLER_TUNNEL_*` would race every other test here.
+    /// that set `MESHHARBOR_TUNNEL_*` would race every other test here.
     #[test]
     fn a_plaintext_server_url_is_read_as_tls_unless_loopback_or_kept() {
         let tmp = tempfile::tempdir().unwrap();

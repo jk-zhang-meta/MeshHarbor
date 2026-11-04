@@ -9,7 +9,7 @@
 //! — the agent never picks its own region, so both ends of any pair always
 //! agree on whose home applies.
 //!
-//! Kill switch: `ROOMLERD_RELAY_PROBE` (default ON; config-surface key
+//! Kill switch: `MESHHARBORD_RELAY_PROBE` (default ON; config-surface key
 //! `relay_probe`). Probing runs at connection start (on the first push), on
 //! every region-set `rev` change, and every ~20 min ±20 % jitter.
 
@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::debug;
 
-/// `ROOMLERD_RELAY_PROBE` — default ON.
+/// `MESHHARBORD_RELAY_PROBE` — default ON.
 pub fn probing_enabled() -> bool {
     tunnel_core::env::flag("RELAY_PROBE", true)
 }

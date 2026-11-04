@@ -10,7 +10,7 @@
 //! |---|---|
 //! | the call | `handle` (a structured secret, by its path or this org's RRN, with no `#field`), `engine` (`postgres`, from P3-5c-2 `mongodb`, from P3-5d-2 `http`, from P3-5e-2 `kubernetes`, from P3-5f-2 `ssh`), `upstream` (`host:port` for a database, an origin `https://host[:port]` for `http` and `kubernetes`, `ssh://[user@]host[:port]` for `ssh`, exactly as the secret's `audiences` names it), `auth` (`http`'s and `kubernetes`'s: `basic`, `bearer` or `client-cert`), `database` (optional), `ca` (optional: a secret whose value is the upstream's CA, PEM), `auth_source` (MongoDB's: the database the user is defined in, default `admin`), `ttl_s` (30 to 900, default 300) |
 //! | the leases | the secret's `user` and `password` (for `bearer`, its `token`; for `client-cert`, its `cert` and `key`; for `ssh`, its `key` and `host_keys`), and `ca`'s, each in `proxy` mode toward the upstream: the vault's `proxy-only-named-audiences` refuses an upstream the secret does not name, recorded. A lease asked for ahead toward the same upstream is taken as it is |
-//! | the endpoint | a database's on Unix: `<runtime>/<session>/proxies/<id>/.s.PGSQL.5432`, which a Postgres client dials as `host=<that directory>`, or `…/mongodb-27017.sock`, which a MongoDB client dials by its path; (P3-5f-2) an SSH agent's, `…/ssh-agent.sock`, named in `SSH_AUTH_SOCK`: each directory the daemon's own (`0711`), the socket handed to the session's account (`0600`), and each connection's peer uid checked again. Every database endpoint on Windows (P3-5b-4), and an HTTP one everywhere (P3-5d-2): `127.0.0.1` on a port the system picks, each connection's account read from the system's table of connections and served only if it is the session's. An SSH agent on Windows (P3-5f-3): a named pipe, `\\.\pipe\roomler-vault-<id>`, its DACL the session's account's to open as Win32-OpenSSH does, each connection's account read from its token by SID |
+//! | the endpoint | a database's on Unix: `<runtime>/<session>/proxies/<id>/.s.PGSQL.5432`, which a Postgres client dials as `host=<that directory>`, or `…/mongodb-27017.sock`, which a MongoDB client dials by its path; (P3-5f-2) an SSH agent's, `…/ssh-agent.sock`, named in `SSH_AUTH_SOCK`: each directory the daemon's own (`0711`), the socket handed to the session's account (`0600`), and each connection's peer uid checked again. Every database endpoint on Windows (P3-5b-4), and an HTTP one everywhere (P3-5d-2): `127.0.0.1` on a port the system picks, each connection's account read from the system's table of connections and served only if it is the session's. An SSH agent on Windows (P3-5f-3): a named pipe, `\\.\pipe\meshharbor-vault-<id>`, its DACL the session's account's to open as Win32-OpenSSH does, each connection's account read from its token by SID |
 //! | a connection | the call's engine, [`crate::vault_proxy::pg`], [`crate::vault_proxy::mongo`], [`crate::vault_proxy::http`] or [`crate::vault_proxy::ssh_agent`]: the client never authenticates; the upstream, by SCRAM-SHA-256 or by `Authorization` or a client certificate inside verified TLS, with the values read from the leases as each connection starts. An agent relays nothing: it signs the session's own `ssh` in to the host |
 //! | its life | closed, with every connection it holds, when its first lease is let go: its expiry, `rc:vault.revoke`, the run's end; every one an earlier process left, at the daemon's start |
 //!
@@ -1592,10 +1592,10 @@ mod endpoint {
     /// it, one context, one user with no credential. Nothing in it is secret.
     fn kubeconfig(server: &str) -> String {
         format!(
-            "apiVersion: v1\nkind: Config\nclusters:\n- name: roomler-vault\n  cluster:\n    \
-             server: {server}\ncontexts:\n- name: roomler-vault\n  context:\n    cluster: \
-             roomler-vault\n    user: roomler-vault\ncurrent-context: roomler-vault\nusers:\n- \
-             name: roomler-vault\n  user: {{}}\n"
+            "apiVersion: v1\nkind: Config\nclusters:\n- name: meshharbor-vault\n  cluster:\n    \
+             server: {server}\ncontexts:\n- name: meshharbor-vault\n  context:\n    cluster: \
+             meshharbor-vault\n    user: meshharbor-vault\ncurrent-context: meshharbor-vault\nusers:\n- \
+             name: meshharbor-vault\n  user: {{}}\n"
         )
     }
 
@@ -2218,7 +2218,7 @@ mod endpoint {
             }
         }
 
-        /// A new endpoint's pipe, `\\.\pipe\roomler-vault-<id>`: its first
+        /// A new endpoint's pipe, `\\.\pipe\meshharbor-vault-<id>`: its first
         /// instance made now, so the name is the daemon's before the session
         /// is told it.
         pub(crate) fn bind(at: &At<'_>) -> Result<Bound, String> {
@@ -2229,7 +2229,7 @@ mod endpoint {
         /// connections: one and the same account, but for a test that
         /// proves the comparison.
         pub(crate) fn bind_as(grantee: &str, peer: &str) -> Result<Bound, String> {
-            let name = format!(r"\\.\pipe\roomler-vault-{:016x}", rand::random::<u64>());
+            let name = format!(r"\\.\pipe\meshharbor-vault-{:016x}", rand::random::<u64>());
             let sddl = crate::hive_win::agent_pipe_sddl(grantee);
             let first = pipe_instance(&name, &sddl, true).map_err(|e| format!("{name}: {e}"))?;
             Ok(Bound {

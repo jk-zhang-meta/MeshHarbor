@@ -108,13 +108,13 @@ exists to serve, and is no longer on the critical path for this host.
 
 | Phase | What | Kill switch |
 |---|---|---|
-| **P1** ✅ | DRM/KMS capture as a fifth `ScreenCapture` backend (`capture/drm_backend.rs`): enumerate CRTCs, `drmModeGetFB2` the active scanout, PRIME-export, mmap, deliver `Frame`s. Handles **`XR24` + `XR30`** (both measured in the field). | **`ROOMLERD_DRM_CAPTURE=1` to opt IN** — see below |
+| **P1** ✅ | DRM/KMS capture as a fifth `ScreenCapture` backend (`capture/drm_backend.rs`): enumerate CRTCs, `drmModeGetFB2` the active scanout, PRIME-export, mmap, deliver `Frame`s. Handles **`XR24` + `XR30`** (both measured in the field). | **`MESHHARBORD_DRM_CAPTURE=1` to opt IN** — see below |
 | **P2** | **Detiling** — EGL import + convert to linear. **NOT needed on Apple Silicon** (plane is LINEAR-only, measured); required for Intel `*_RC_CCS`, Nvidia block-linear. Deferred off the critical path. | same flag ⇒ fall back to portal/X11 |
 | **P3** | **Privilege split.** A minimal helper holding `CAP_SYS_ADMIN`, passing **DMA-BUF fds over `SCM_RIGHTS`**; the daemon never needs the capability itself. | same flag |
-| **P4** ✅ | Input on Wayland via **`uinput`** (`input/uinput_backend.rs`) — a virtual kernel device, so events enter through evdev beneath the display server. XTest reaches Xwayland clients ONLY, so without this a captured Wayland session is read-only. | **`ROOMLERD_UINPUT=1` to opt IN** |
+| **P4** ✅ | Input on Wayland via **`uinput`** (`input/uinput_backend.rs`) — a virtual kernel device, so events enter through evdev beneath the display server. XTest reaches Xwayland clients ONLY, so without this a captured Wayland session is read-only. | **`MESHHARBORD_UINPUT=1` to opt IN** |
 
 **Backend priority: DRM/KMS → portal/PipeWire → X11**, but DRM is **opt-in**
-(`ROOMLERD_DRM_CAPTURE=1`) rather than the Linux default — the inverse of this
+(`MESHHARBORD_DRM_CAPTURE=1`) rather than the Linux default — the inverse of this
 repo's usual kill-switch shape, and deliberately so.
 
 Measured on one host, one session, back to back at 1080p: scrap delivered **1 of
@@ -358,7 +358,7 @@ Reopen this if a 4K Wayland session is measured behaving worse than that.
 | 2026-08-29 | portal probe | `xdg-desktop-portal` reachable (4 portal names on the session bus) but **exposes neither `ScreenCast` nor `RemoteDesktop`** in an XFCE/**X11** session — those come from a compositor-matching backend. `-gnome` + `-gtk` installed; **`-kde` is NOT**. The agent must therefore *detect* ScreenCast, never assume it |
 | 2026-08-29 | **P1 probe, X11 (XFCE)** | ✅ `card2`/`apple-drm`, `fb 49 1920×1080 XR24 modifier=0x0`. Correct image. Liveness confirmed (new window ⇒ 859,916 differing bytes). Read **1.58 ms** cached / 2.07 ms remap-per-frame |
 | 2026-08-29 | **P1 probe, GNOME Wayland** | ✅ session switched to `gnome-wayland` (mutter 48.8). `fb 51 4096×2160 **XR30** modifier=0x0`, `allocated by = gnome-shell`. First decode was psychedelic — probe assumed 8-bit; with `XR30` unpacking the image is correct. Read **15.2 ms** cached (35.4 MB). Host reverted to XFCE; `roomlerd` PID unchanged across this switch pair |
-| 2026-08-29 | **P1 backend, X11 (XFCE), 1080p** | ✅ `open_default` picks `backend=drm` under `ROOMLERD_DRM_CAPTURE=1`; correct desktop image. **5.84 ms/frame, 30/30 delivered.** Same host, same session, scrap: **5.11 ms** but **1/30 delivered, 29 proven unchanged** — FR-29 damage tracking working, and the reason DRM must not be the default |
+| 2026-08-29 | **P1 backend, X11 (XFCE), 1080p** | ✅ `open_default` picks `backend=drm` under `MESHHARBORD_DRM_CAPTURE=1`; correct desktop image. **5.84 ms/frame, 30/30 delivered.** Same host, same session, scrap: **5.11 ms** but **1/30 delivered, 29 proven unchanged** — FR-29 damage tracking working, and the reason DRM must not be the default |
 | 2026-08-29 | **P1 backend, GNOME Wayland, 4K** | ✅ **before:** the shipping path logs `scrap capture unavailable — falling back to NoopCapture (no primary display: connection refused)` — **zero frames**. **after:** `backend=drm`, **30/30 at 4096×2160 XR30**, correct image. ⚠️ **42.9 ms/frame raw, 52.9 ms with `Auto` downscale** ⇒ ~19 fps. Memory-bandwidth bound (~70 MB/frame). A vectorisable-loop rewrite was tried and **REFUTED** (43.8 vs 42.4 ms — no change) |
 | 2026-08-29 | daemon impact | `roomlerd` restarted **once** during the whole session (`NRestarts=1`, 18:04), not coincident with either lightdm restart; ended `active/running`. The FR-19 relay it also hosts stayed reachable throughout (every measurement above arrived over its own control WS) |
 | 2026-08-29 | **P1 at the LOGIN GREETER** | ✅ autologin disabled, lightdm restarted, **nobody logged in** (`loginctl`: only a `greeter` session for user `lightdm`). Shipping path: `NoopCapture`, zero frames. DRM: **20/20 at 1920×1080, 6.85 ms**, image is the lightdm greeter — user dropdown, password field, Log In button. This is the case the portal structurally refuses (no session ⇒ no portal) |

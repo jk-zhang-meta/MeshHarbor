@@ -19,7 +19,7 @@
 import { framed, fromBase64Url, sdpFingerprint, toBase64Url } from '@/utils/extauth'
 
 /** The label every peer-auth signature is scoped by. Part of the wire. */
-export const PEER_AUTH_LABEL = 'roomler-peer-auth-v1'
+export const PEER_AUTH_LABEL = 'meshharbor-peer-auth-v1'
 
 export type PeerAuthRole = 'offer' | 'answer'
 
@@ -160,8 +160,8 @@ export function shouldAskPeerAuth(opts: {
   return rpc.some((w) => w === 'peer-auth') && deviceKeyPoint(opts.peerAuthKey) !== null
 }
 
-/** The kill switch: `localStorage['roomler.peerAuth.ask'] = 'off'` stops asking. */
-export const PEER_AUTH_ASK_KEY = 'roomler.peerAuth.ask'
+/** The kill switch: `localStorage['meshharbor.peerAuth.ask'] = 'off'` stops asking. */
+export const PEER_AUTH_ASK_KEY = 'meshharbor.peerAuth.ask'
 
 export function peerAuthAskDisabled(storage: Pick<Storage, 'getItem'> | undefined): boolean {
   try {
@@ -189,7 +189,7 @@ export interface PeerAuthPins {
   set(userId: string, agentId: string, key: string): void
 }
 
-const PINS_KEY = 'roomler.peerAuth.pins.v1'
+const PINS_KEY = 'meshharbor.peerAuth.pins.v1'
 
 /**
  * The pins in `localStorage`. Public keys only, so nothing here is secret;
@@ -438,7 +438,7 @@ export async function controllerKeyFor(
 }
 
 /**
- * The keys in this origin's IndexedDB (`roomler-peer-auth` / `controller-keys`,
+ * The keys in this origin's IndexedDB (`meshharbor-peer-auth` / `controller-keys`,
  * keyed by user id), or `null` where there is none: a CryptoKey is stored as
  * itself, non-extractable as it was made.
  */
@@ -456,7 +456,7 @@ export function indexedDbKeyBackend(idb?: IDBFactory): ControllerKeyBackend | nu
   const STORE = 'controller-keys'
   const open = () =>
     new Promise<IDBDatabase>((resolve, reject) => {
-      const req = db.open('roomler-peer-auth', 1)
+      const req = db.open('meshharbor-peer-auth', 1)
       req.onupgradeneeded = () => req.result.createObjectStore(STORE)
       req.onsuccess = () => resolve(req.result)
       req.onerror = () => reject(req.error)

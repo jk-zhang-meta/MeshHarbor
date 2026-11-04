@@ -6,7 +6,7 @@ criterion field-verified on a release (§9).
   **56.2** where it sends 28.7, and a still screen costs 15 % CPU instead of 44 %.
 - **AC3 found a flap**: the pace's hysteresis held nothing, so a pace on a step boundary moved every window it
   crossed. P2d (a step-up margin) and its review's follow-ups are in **0.4.143**. There a host that cannot
-  sustain 60 settles with no pace change at all, and `ROOMLERD_SW_PACE_UP_MARGIN=0` gives back the old flapping
+  sustain 60 settles with no pace change at all, and `MESHHARBORD_SW_PACE_UP_MARGIN=0` gives back the old flapping
   (11 moves in 40 s).
 - P4's docs: [#2425](https://github.com/gjovanov/roomler-ai/pull/2425).
 - P3 (macOS, Windows) moved to [#2430](https://github.com/gjovanov/roomler-ai/issues/2430), and the hardware
@@ -31,7 +31,7 @@ at 30 by a constant, and on a fast host the constant is not even the limit: the 
 
 | Path | Today | Anchor |
 |---|---|---|
-| VP9-444 over the DataChannel | 30, or 60 with `ROOMLERD_VP9_FPS=60` | `agents/meshharbord/src/peer.rs:9435` |
+| VP9-444 over the DataChannel | 30, or 60 with `MESHHARBORD_VP9_FPS=60` | `agents/meshharbord/src/peer.rs:9435` |
 | H.264 over RTP (OpenH264) | 30: `TARGET_FPS_SW`, and the encoder's own `max_frame_rate(30)` | `peer.rs:98`, `encode/openh264_backend.rs:50` |
 | Hardware encoders | 60 | `peer.rs:105`, `ffmpeg_target_fps` (`peer.rs:9459`) |
 
@@ -39,12 +39,12 @@ at 30 by a constant, and on a fast host the constant is not even the limit: the 
 
 An Apple M2 Pro (6 performance + 4 efficiency cores), Fedora Asahi Remix 42, GNOME at 4096×2160 **60 Hz**, the
 scanout read by the GPU and encoded at 2048×1080 (FR-107). The released 0.4.141, one viewer 17 ms away on a direct
-path, a spinning cube in a window, each arm a fresh session (`ROOMLERD_VP9_*` as a systemd drop-in, removed after):
+path, a spinning cube in a window, each arm a fresh session (`MESHHARBORD_VP9_*` as a systemd drop-in, removed after):
 
 | VP9-444 arm | target | encoded | captured | avg QP | ceiling | roomlerd CPU |
 |---|---|---|---|---|---|---|
 | today (`cpu-used` 6, 4:4:4) | 30 | **27.0** | 27.0 | 10 | 17.5 Mbps | ~3.8 cores |
-| `ROOMLERD_VP9_FPS=60` | 60 | **27.1** | 27.1 | 7 | 30.4 Mbps | ~4.0 cores |
+| `MESHHARBORD_VP9_FPS=60` | 60 | **27.1** | 27.1 | 7 | 30.4 Mbps | ~4.0 cores |
 | + `cpu-used` 8 | 60 | 28.9 | 28.9 | 5 | 24.5 Mbps | ~3.5 cores |
 | + `cpu-used` 9 | 60 | 30.0 | 30.0 | 6 | 24.3 Mbps | ~3.4 cores |
 | + 4:2:0 | 60 | 28.1 | 28.1 | 10 | 21.1 Mbps | ~3.8 cores |
@@ -87,7 +87,7 @@ OpenH264 as roomlerd pins it (0.9.3 over openh264-sys2 0.9.6):
   slower was not established.) Measure on the host.
 
 **VP9 (libvpx 1.15)** through roomlerd's own `Vp9Encoder::encode_sync` (BGRA → I444 included), at the direct
-path's quality cap (q-index 16, `ROOMLERD_VP9_DIRECT_MAX_Q`):
+path's quality cap (q-index 16, `MESHHARBORD_VP9_DIRECT_MAX_Q`):
 
 | VP9 configuration (2048×1080, 4:4:4 unless said) | ms per frame | max fps | bytes per frame |
 |---|---|---|---|
@@ -165,14 +165,14 @@ flowchart LR
   heartbeat says it (`avg_encode_ms`). The tier below steers by it.
 - **Software paths target 60, and FR-1's `FpsPace` paces them down.** `FpsPace` already does exactly this for
   hardware encoders: from the encode EWMA it computes the sustainable rate, quantised to 5 fps.
-  Wiring it into the two software pumps turns the constant into a measurement. An explicit `ROOMLERD_VP9_FPS`
+  Wiring it into the two software pumps turns the constant into a measurement. An explicit `MESHHARBORD_VP9_FPS`
   still pins the rate.
 - **A step up waits for headroom (P2d).** `FpsPace` was meant to be hysteretic: an engaged pace moved only when
   the new step differed from it by 5 fps. Two different 5-fps steps always do, so the check held nothing, and an
   estimate hovering on a step boundary moved the pace every window it crossed. The 0.4.142 field trace (§9) has
   55 → 50 → 55 → 50 → 45 → 50, five moves in ten windows. The software pace now steps down at once (a pace the encoder
   cannot hold is the judder pacing exists to remove) and up only when the estimate clears the higher step by
-  2.5 fps (`SW_PACE_UP_MARGIN_FPS`, `encode/encode_pressure.rs`; `ROOMLERD_SW_PACE_UP_MARGIN=0` restores 0.4.142's
+  2.5 fps (`SW_PACE_UP_MARGIN_FPS`, `encode/encode_pressure.rs`; `MESHHARBORD_SW_PACE_UP_MARGIN=0` restores 0.4.142's
   pace). Half a step is narrower than a step, so a recovering encoder still climbs. It absorbs an EWMA that swings
   less than that across a step boundary, but not every swing: the trace's settled windows moved the EWMA by up to
   ±3.4 fps, and one reversal survives there, three windows apart (the unit test's 8 moves). The 2-moves-in-40-s
@@ -186,7 +186,7 @@ flowchart LR
   the floor `FpsPace` would step a 27 fps host down to 25, below what it sends today.
 - **On by default on Linux only.** The clock is Linux's (P1), and the tier was measured there. On a host whose
   clock was never the limit, 60 frames cost twice the CPU of 30, and an attended desktop pays for it, so Windows
-  and macOS opt in (`ROOMLERD_SW_FPS_60=1`) until P3 measures them on their own hardware.
+  and macOS opt in (`MESHHARBORD_SW_FPS_60=1`) until P3 measures them on their own hardware.
 - **The bitrate ceiling follows the effective rate, sub-linearly.** OpenH264's cost follows bits per frame (§2:
   4.6 → 2.4 ms when they halve), and the link pays the bitrate on every path. A ceiling computed for 60 while the
   pump runs at 30 doubles every frame's bits, so the ceiling is computed from the paced rate. It grows by
@@ -214,7 +214,7 @@ flowchart LR
   `ui/src/composables/useRemoteControl.ts:5044`) overrides it: the field already encodes 2048×1080, and with its
   clock that costs 5.5 ms a frame. So P2c, which would have decided the cap from the measured encode, is dropped.
 - **No VP9 quality trade on this host.** With its clock, today's settings (`cpu-used` 6, four tile columns, the
-  q-index-16 cap) send 56 fps. `ROOMLERD_VP9_CPU_USED` stays the lever for a host that measures short.
+  q-index-16 cap) send 56 fps. `MESHHARBORD_VP9_CPU_USED` stays the lever for a host that measures short.
 - **Static screens cost what they cost today.** The idle skip (FR-93 P3d) and the keepalive cadence do not change;
   a 60 target only spends frames on a screen that moves.
 
@@ -222,10 +222,10 @@ flowchart LR
 
 | Phase | What | Kill switch | Proven on | Size |
 |---|---|---|---|---|
-| **P1** | the encoder asks for its clock: on Linux a `uclamp_min` on the encoder thread (libvpx's workers inherit it), OpenH264's worker and the capture worker; the VP9-444 pump times its encode (`avg_encode_ms`); the VP9 bench kept as an ignored test | `ROOMLERD_ENCODER_CLOCK=0` | ✅ released in 0.4.142, field-verified on the Asahi host and a per-user lab guest (§9) | S |
-| **P2a** | the VP9-444 pump's tier: target 60, `FpsPace` fed by its encode EWMA and never below 30, the ceiling from the rate it runs at (×√2 at 60); on by default on Linux | `ROOMLERD_SW_FPS_60=0` (back to 30) | ✅ released in 0.4.142, field-verified on the Asahi host (§9) | M |
-| **P2b** | the H.264 RTP pump's tier: target 60 on Linux, the same pace (`SoftwarePace`, shared with P2a) and ceiling, OpenH264's frame rate following the rate it runs at, its runtime settings held until its first frame and its max bitrate moving with the target, the auto-fps-cap left to Windows | `ROOMLERD_SW_FPS_60=0` | ✅ released in 0.4.142, field-verified on the Asahi host (§9) | M |
-| **P2d** | the software pace's steps up wait for headroom: down at once, up only once the estimate clears the higher step by 2.5 fps (`SW_PACE_UP_MARGIN_FPS`); the hardware pace keeps margin 0 until it is measured ([#2432](https://github.com/gjovanov/roomler-ai/issues/2432)) | `ROOMLERD_SW_PACE_UP_MARGIN=0` (0.4.142's pace) | ✅ released in **0.4.143**, field-verified on it (§9): no pace change in 38 and 43 windows where 0.4.142 flapped, and the switch gives the flapping back. Before it: a candidate on the Asahi host (0.4.142's pace 14 moves in 40 s, the margin 2); unit: margin 0 replays 0.4.142's logged field trace window for window | S |
+| **P1** | the encoder asks for its clock: on Linux a `uclamp_min` on the encoder thread (libvpx's workers inherit it), OpenH264's worker and the capture worker; the VP9-444 pump times its encode (`avg_encode_ms`); the VP9 bench kept as an ignored test | `MESHHARBORD_ENCODER_CLOCK=0` | ✅ released in 0.4.142, field-verified on the Asahi host and a per-user lab guest (§9) | S |
+| **P2a** | the VP9-444 pump's tier: target 60, `FpsPace` fed by its encode EWMA and never below 30, the ceiling from the rate it runs at (×√2 at 60); on by default on Linux | `MESHHARBORD_SW_FPS_60=0` (back to 30) | ✅ released in 0.4.142, field-verified on the Asahi host (§9) | M |
+| **P2b** | the H.264 RTP pump's tier: target 60 on Linux, the same pace (`SoftwarePace`, shared with P2a) and ceiling, OpenH264's frame rate following the rate it runs at, its runtime settings held until its first frame and its max bitrate moving with the target, the auto-fps-cap left to Windows | `MESHHARBORD_SW_FPS_60=0` | ✅ released in 0.4.142, field-verified on the Asahi host (§9) | M |
+| **P2d** | the software pace's steps up wait for headroom: down at once, up only once the estimate clears the higher step by 2.5 fps (`SW_PACE_UP_MARGIN_FPS`); the hardware pace keeps margin 0 until it is measured ([#2432](https://github.com/gjovanov/roomler-ai/issues/2432)) | `MESHHARBORD_SW_PACE_UP_MARGIN=0` (0.4.142's pace) | ✅ released in **0.4.143**, field-verified on it (§9): no pace change in 38 and 43 windows where 0.4.142 flapped, and the switch gives the flapping back. Before it: a candidate on the Asahi host (0.4.142's pace 14 moves in 40 s, the margin 2); unit: margin 0 replays 0.4.142's logged field trace window for window | S |
 | ~~**P2c**~~ | ~~software H.264's ≤ 1280-px cap decided by the measured encode~~ — dropped: the viewer's default `original` already overrides the cap (§3), and the host encodes 2048×1080 in 5.5 ms | — | — | — |
 | ~~**P3**~~ | ~~the clock elsewhere: macOS (the encoder threads' QoS class) and Windows (no power throttling for the encode thread), each measured on its own hardware first~~ — moved to [#2430](https://github.com/gjovanov/roomler-ai/issues/2430), so this FR can close on what Linux measured | per OS | → #2430 | S |
 | **P4** | docs: `docs/rate-control.md` (the software tier, the ceiling), `docs/encoders.md` (the clock, why one slice), the `docs/README.md` index row | — | ✅ `encoders.md` § Software encoders (the clock, the tier, OpenH264's settings), `rate-control.md` § Software encoders and two config rows, both index rows | S |
@@ -256,19 +256,19 @@ flowchart LR
 - [x] **AC3** — A host that cannot sustain 60 settles at the rate it sustains: never below its 0.4.141 rate, and
   at most one pace change in any 10 s once settled.
   ✅ **The released 0.4.143** (P2d), the Asahi host's system service updated to it, every arm one session (§9):
-  - With `ROOMLERD_ENCODER_CLOCK=0` the host cannot sustain 60. It encodes **28.0 fps** against 27.0 on 0.4.141,
+  - With `MESHHARBORD_ENCODER_CLOCK=0` the host cannot sustain 60. It encodes **28.0 fps** against 27.0 on 0.4.141,
     paced 30 in all 38 windows, **no pace change**.
-  - With the estimate put on the 40 fps step (the clock off and `ROOMLERD_VP9_CPU_USED=9`): **32.3 fps**, paced 35
+  - With the estimate put on the 40 fps step (the clock off and `MESHHARBORD_VP9_CPU_USED=9`): **32.3 fps**, paced 35
     in all 43 windows, **no pace change**.
-  - `ROOMLERD_SW_PACE_UP_MARGIN=0` on the same host gives back 0.4.142's pace: **11 moves** in 40 s, 3 undone
+  - `MESHHARBORD_SW_PACE_UP_MARGIN=0` on the same host gives back 0.4.142's pace: **11 moves** in 40 s, 3 undone
     within two windows. That arm's fps is void because the lab viewer stalled; its pace log is the agent's own.
   - The history below is how AC3 got here.
-  🟡 0.4.142 with `ROOMLERD_ENCODER_CLOCK=0` (the Asahi host made one that cannot: a 31 ms VP9-444 encode)
+  🟡 0.4.142 with `MESHHARBORD_ENCODER_CLOCK=0` (the Asahi host made one that cannot: a 31 ms VP9-444 encode)
   settles at 30, 27.7 fps encoded against 27.0 on 0.4.141, with no pace change in 38 windows (§9). But the
   same host's other arm, its encode getting cheaper as the lab viewer stalled, undid a step three times within
   one or two windows. The cause is `FpsPace`'s hysteresis, which held nothing (§3), so a settled host whose
   estimate sits on a step boundary would flap too. P2d fixes it. On a candidate, with the estimate on the 40 fps
-  step, the pace moved twice in 40 s against 0.4.142's 14 times, and `ROOMLERD_SW_PACE_UP_MARGIN=0` restored
+  step, the pace moved twice in 40 s against 0.4.142's 14 times, and `MESHHARBORD_SW_PACE_UP_MARGIN=0` restored
   0.4.142's pace (§9). AC3 ticks on P2d's release.
 - [x] **AC4** — A still screen costs what it cost on 0.4.141 (FR-93 AC8's idle CPU, within its noise).
   ✅ Less: **15 %** of a core on 0.4.142 against 44 % on 0.4.141, the same 60 s still arm (§9).
@@ -277,10 +277,10 @@ flowchart LR
   ✅ The spinning cube: QP 15 at 56.2 fps against QP 10 at 27.7 fps (0.4.142 with both kill switches, 0.4.141's
   behaviour), within 6. A still screen refines to an average QP of 1 on 0.4.142 and on 0.4.141 (§9).
 - [x] **AC6** — Every kill switch restores 0.4.141's behaviour (30 fps, no clamp).
-  ✅ 0.4.142 with `ROOMLERD_ENCODER_CLOCK=0` and `ROOMLERD_SW_FPS_60=0`: VP9-444 27.7 fps at the 30 target and
+  ✅ 0.4.142 with `MESHHARBORD_ENCODER_CLOCK=0` and `MESHHARBORD_SW_FPS_60=0`: VP9-444 27.7 fps at the 30 target and
   H.264 28.7 with a 16.4 ms encode (0.4.141: 27.0; 28.7 with 16.6 ms), and no thread clamped. Each alone:
-  `ROOMLERD_SW_FPS_60=0` puts the target back at 30 (29.1 fps, the clock still on), and
-  `ROOMLERD_ENCODER_CLOCK=0` leaves 0 of 84 threads clamped (§9). P2d's own switch is checked under AC3.
+  `MESHHARBORD_SW_FPS_60=0` puts the target back at 30 (29.1 fps, the clock still on), and
+  `MESHHARBORD_ENCODER_CLOCK=0` leaves 0 of 84 threads clamped (§9). P2d's own switch is checked under AC3.
 - [x] **AC7** — Docs: `docs/rate-control.md` and `docs/encoders.md` in the house style, and a `docs/README.md`
   index row.
   ✅ `encoders.md` § *Software encoders: the clock and 60 fps* (a mermaid flow, the field table, `file:line`
@@ -289,7 +289,7 @@ flowchart LR
 - [x] **AC8** — The clock: on the Asahi host at a 30 fps target, the H.264 encode costs **≤ 8 ms** (16.1 on
   0.4.141), the encoding and capture threads (and the threads they start) carry the clamp and no other thread
   does, and a per-user install gets it too or says why not.
-  ✅ 0.4.142 with `ROOMLERD_SW_FPS_60=0`: **6.2 ms** (5–7 ms a window). Half-way through each session, the
+  ✅ 0.4.142 with `MESHHARBORD_SW_FPS_60=0`: **6.2 ms** (5–7 ms a window). Half-way through each session, the
   clamped threads were the DRM capture worker, the encoder (VP9: `rc-enc` and its 7 libvpx workers; H.264:
   OpenH264's worker) and Mesa's shader-cache thread, which the capture worker's EGL starts. Every other daemon
   thread read 0: 74 of 84, 75 of 78. On the per-user GNOME lab guest, 0.4.142 clamped the encoder and its three
@@ -303,7 +303,7 @@ flowchart LR
 | **D1** | On by default for every software host, or opt-in | *(Recommended: on. It is adaptive: a host that cannot sustain 60 is paced to what it can, and the floor is today's behaviour.)* |
 | **D2** | The ceiling at 60 | *(Recommended: ×√2 of the 30 fps ceiling. ×2 is what starved the encoder in §2; ×1 halves each frame's bits, which the dial's Sharper exists to avoid.)* |
 | **D3** | The Priority dial | *(Recommended: unchanged meaning — it scales the ceiling. The frame rate is measured, not chosen.)* |
-| **D4** | VP9's speed settings under motion | *(Recommended: unchanged. With its clock, today's settings reach 56 fps on the host; `ROOMLERD_VP9_CPU_USED` stays the lever for a host that measures short.)* |
+| **D4** | VP9's speed settings under motion | *(Recommended: unchanged. With its clock, today's settings reach 56 fps on the host; `MESHHARBORD_VP9_CPU_USED` stays the lever for a host that measures short.)* |
 | **D5** | The clock's strength | *(Recommended: 1024, full speed while the encoder runs. A clamp counts only while the thread is runnable, so a still screen costs nothing more; a lower value hands per-frame latency back.)* |
 
 ## 8. Out of scope
@@ -319,7 +319,7 @@ flowchart LR
 
 | Date | Host | Build | What | Result |
 |---|---|---|---|---|
-| 2026-10-17 15:52–16:19Z | the Asahi host, its 4096×2160 60 Hz desktop, one viewer 17 ms away | the released 0.4.141 (sha256 `381ae5ca…`), `ROOMLERD_VP9_*` drop-ins per arm, removed after | the red, and the levers | 🔴 §2's table: 27.0 fps at the 30 target, 27.1 at 60; no speed, chroma or quality setting passed 30.5. The display is 60 Hz (GNOME's current mode `4096x2160@60.000`), and the capture reached 44 fps when the encode let it. ⚠️ `ROOMLERD_RATE_FACTOR_VP9_444` looked like the ceiling's knob, and the arms that set it kept 30 Mbps: the libvpx pump hard-codes its 4:4:4 headroom (`peer.rs:4629`), and the factor reaches only the FFmpeg cells |
+| 2026-10-17 15:52–16:19Z | the Asahi host, its 4096×2160 60 Hz desktop, one viewer 17 ms away | the released 0.4.141 (sha256 `381ae5ca…`), `MESHHARBORD_VP9_*` drop-ins per arm, removed after | the red, and the levers | 🔴 §2's table: 27.0 fps at the 30 target, 27.1 at 60; no speed, chroma or quality setting passed 30.5. The display is 60 Hz (GNOME's current mode `4096x2160@60.000`), and the capture reached 44 fps when the encode let it. ⚠️ `MESHHARBORD_RATE_FACTOR_VP9_444` looked like the ceiling's knob, and the arms that set it kept 30 Mbps: the libvpx pump hard-codes its 4:4:4 headroom (`peer.rs:4629`), and the factor reaches only the FFmpeg cells |
 | 2026-10-17 16:22–16:34Z | the Asahi host, natively (aarch64, toolchain 1.95.0) | master `2ba695cc8`'s `Vp9Encoder` + an ignored bench test; a standalone OpenH264 bench on the pinned crates | P1's benches (§2) | VP9 at 4:4:4: 47.0 ms a frame today, 21.9 with eight tile columns and `cpu-used` 9, ~45 fps at best. H.264: convert + encode 5.97 ms at 30 fps and 5.48 at 60, against the 16.6 ms the RTP pump reported in the field. ⚠️ **Wrong turns:** the first VP9 run built without `vp9-444` and ran no test ("0 passed, 1916 filtered out"); Linux releases build with `full,vp9-444,vp9-444-bindgen`. The first OpenH264 run was on an x86-64 Windows laptop: 17.1 ms a frame, and slices looked 1.7× faster; on the host they are 2.2× slower. That run blamed missing assembly, which was wrong: openh264-sys2 builds none for aarch64 either. And both host benches ran unclamped, so they measured the throttled clock (next row) |
 | 2026-10-17 16:36–17:10Z | the Asahi host: the OpenH264 bench, then live sessions on the released 0.4.141 | — | the clock (§2) | ✅ The same OpenH264 frame takes 5.97 ms back to back and 20.07 ms with a 30 fps idle gap, even pinned to the performance cores, and per-frame time tracks the gap (5.95 / 9.43 / 13.82 / 16.76 / 20.68 ms for 0 / 5 / 11 / 16 / 28 ms). Live, a spin loop holding the performance cluster's clock changed nothing (16.3 → 15.8 ms), and `uclampset -a -m 1024` on the daemon's threads took the H.264 encode from 16.1 to **5.3 ms**, VP9-444 at a 30 target from 26.8 to 29.1 fps, and **VP9-444 at a 60 target from 19.4 to 56.3 fps** (QP 13, 25.2 Mbps). Every clamp was reset (`min: 0`) and every drop-in removed. ⚠️ **Wrong turns:** `scaling_cur_freq` reads 702 MHz throughout even while the bench runs at full speed, so `apple-cpufreq` does not report the real clock and the gap sweep stands in for it; a `pgrep -f` wait loop matched its own shell and hung until killed; and the spinner's two VP9 arms are void, because the rate controller fell to 2–3 Mbps for a reason unrelated to the arm |
 | 2026-10-17 17:26–17:42Z | the Asahi host, the system service | a P1 + P2 candidate built on the host with the Linux release's features (sha256 `5345a841…`, reports 0.4.141) | first pass | ✅ H.264/RTP at the 30 target: `avg_encode_ms` **5.2** (16.1 on 0.4.141), with no clamp set by hand: P1's own. A still screen: 13 % CPU. ⚠️ The VP9 arm read 21.8 fps encoded of 33.4 captured, the rate controller falling from 18.4 to 2.3 Mbps while the encode took 5.7 ms: the viewer, not the agent. Its decode reports said 4, 9, 18 (struggling), 7 and 1 fps, its paint age reached 2.9 s, and the agent's viewer-rate cap dropped frames to match. The same signature voided the earlier spinner arms and, in the second pass, the release's own moving arm (20.9 fps, `frames_skipped_decode` 144), so it belongs to the lab viewer (headless Chromium on the lab host), not to a build. ⚠️ **Wrong turns:** the harness's still arm returned its killed viewer's exit status, which ended the run early, and the viewer's container still held the lab lock, so the restore refused and the host stayed on the candidate until 17:42, when the lock freed and it was put back by hand. The mid-session clamp dump was empty: a quoting error two shells deep |
@@ -331,7 +331,7 @@ flowchart LR
 | the candidate, every daemon thread clamped by hand | 56.3 | 7.0 | 1.5 cores | all 84 |
 | the candidate, the async runtime's threads clamped by hand | 56.2 | 7.3 | 1.6 cores | the above + 65 runtime threads |
 | the candidate again | **56.3** (QP 14, 20.0 Mbps) | 7.3 | 1.7 cores | the encoder, its workers, the capture worker |
-| both kill switches (`ROOMLERD_ENCODER_CLOCK=0`, `ROOMLERD_SW_FPS_60=0`) | 27.9 at the 30 target (QP 10, 17.5 Mbps) | 30.7 | 3.5 cores | none |
+| both kill switches (`MESHHARBORD_ENCODER_CLOCK=0`, `MESHHARBORD_SW_FPS_60=0`) | 27.9 at the 30 target (QP 10, 17.5 Mbps) | 30.7 | 3.5 cores | none |
 | both kill switches, H.264/RTP | 28.7 | 16.6 | 0.6 cores | none |
 | still: the candidate · the kill switches · the release | — | 4.8 · 15.7 · — | **13 %** · 36 % · 44 % | encoder + workers + capture · none · none |
 
@@ -377,10 +377,10 @@ for a per-session live check, and the host ended on the release's bytes with no 
 | VP9-444 over the DataChannel | **56.2** (captured 56.2, target 60, never paced; QP 15, 19.5 Mbps) | 8.1 (p50) | 1.9 cores | `drm-capture`, `rc-enc` and its 7 libvpx workers, Mesa's `roomler:disk$0`; 74 of 84 at 0 |
 | H.264/RTP | **56.2** (target 60, never paced) | 5.2 | 0.4 cores | `drm-capture`, `roomlerd-encode`, `roomler:disk$0`; 75 of 78 at 0 |
 | still, VP9-444 | 5.7 (QP 1, max 13) | 5.5 (p50) | **15 %** | the same three roles; 75 of 85 at 0 |
-| H.264, `ROOMLERD_SW_FPS_60=0` (the clock on, the 30 target) | 29.1 | **6.2** (5–7 a window) | 0.25 cores | `drm-capture`, `roomlerd-encode`, `roomler:disk$0` |
+| H.264, `MESHHARBORD_SW_FPS_60=0` (the clock on, the 30 target) | 29.1 | **6.2** (5–7 a window) | 0.25 cores | `drm-capture`, `roomlerd-encode`, `roomler:disk$0` |
 | VP9-444, both kill switches | 27.7 at the 30 target (QP 10, 17.5 Mbps) | 31.5 (p50) | 3.8 cores | none: 0 of 83 |
 | H.264, both kill switches | 28.7 at the 30 target | 16.4 | 0.6 cores | none: 0 of 78 |
-| AC3: VP9-444, `ROOMLERD_ENCODER_CLOCK=0` (the tier on) | 27.7, paced 30 in all 38 windows (QP 11) | 31.3 (p50) | 3.7 cores | none: 0 of 84 |
+| AC3: VP9-444, `MESHHARBORD_ENCODER_CLOCK=0` (the tier on) | 27.7, paced 30 in all 38 windows (QP 11) | 31.3 (p50) | 3.7 cores | none: 0 of 84 |
 | AC3, the same, the arm before it | void: 30.8 of 32.9 captured, the lab viewer stalled (decode reports 29, 6, 12) and the rate controller fell to 2.4 Mbps | 19.0 (p50) | 3.3 cores | none: 0 of 84 |
 
 - **AC1, AC2, AC4–AC6 and AC8 pass on the release.** The 0.4.141 references are §2's and the second pass's:
@@ -411,9 +411,9 @@ live check, and the host ended on the release's bytes with no drop-in left.
 |---|---|---|---|---|
 | the clock on, 20 s | **56.4** (QP 14) | 7.4 · 7.5 · 7.6 | 60×37 | 0 · 0 |
 | H.264/RTP, the clock on, 20 s | **56.1** | 5.4 (the average) | 60×39 | 0 · 0 |
-| `ROOMLERD_ENCODER_CLOCK=0`, 40 s | 28.9 (QP 11) | 26.6 · 29.6 · 31.1 | 35×4 30×35 | 1 · 0 |
-| the clock off and `ROOMLERD_VP9_CPU_USED=9`, 40 s | 35.5 | 22.3 · 23.5 · 25.4 | 35×5 40×40 35×3 | 2 · 0 |
-| the same, `ROOMLERD_SW_PACE_UP_MARGIN=0` (0.4.142's pace) | 33.9 | 22.5 · 24.6 · 27.1 | 40×2 35 40×2 35 40 35×4 40×3 35×5 40×11 35×5 40×3 35 40 35×3 40×2 | **14 · 6** |
+| `MESHHARBORD_ENCODER_CLOCK=0`, 40 s | 28.9 (QP 11) | 26.6 · 29.6 · 31.1 | 35×4 30×35 | 1 · 0 |
+| the clock off and `MESHHARBORD_VP9_CPU_USED=9`, 40 s | 35.5 | 22.3 · 23.5 · 25.4 | 35×5 40×40 35×3 | 2 · 0 |
+| the same, `MESHHARBORD_SW_PACE_UP_MARGIN=0` (0.4.142's pace) | 33.9 | 22.5 · 24.6 · 27.1 | 40×2 35 40×2 35 40 35×4 40×3 35×5 40×11 35×5 40×3 35 40 35×3 40×2 | **14 · 6** |
 | the same, the margin back on | 34.8 | 21.3 · 23.7 · 25.9 | 35×9 40×29 35×10 | 2 · 0 |
 
 - 🔴→✅ **The red and the green under the same conditions.** With the clock off and `cpu-used` 9, the VP9-444 encode
@@ -432,9 +432,9 @@ waited for the per-session live check.
 
 | Arm (VP9-444, a spinning cube, 40 s) | encoded fps | encode ms (p10 · p50 · p90) | the pace per heartbeat | moves · undone within two windows |
 |---|---|---|---|---|
-| `ROOMLERD_ENCODER_CLOCK=0` (cannot sustain 60) | 28.0 (QP 11; 0.4.141: 27.0) | 28.9 · 31.2 · 32.8 | 30×38 | **0 · 0** |
-| + `ROOMLERD_VP9_CPU_USED=9` (the estimate on the 40 fps step) | 32.3 (QP 8) | 23.9 · 25.7 · 28.9 | 35×43 | **0 · 0** |
-| the same, `ROOMLERD_SW_PACE_UP_MARGIN=0` (0.4.142's pace) | void: the lab viewer stalled (decode reports 0–15) | 19.7 · 23.5 · 33.1 | 35×4 30×6 35×3 40×3 30×2 35×2 40×2 45×2 50×2 45×2 50×3 45×4 | 11 · 3 |
+| `MESHHARBORD_ENCODER_CLOCK=0` (cannot sustain 60) | 28.0 (QP 11; 0.4.141: 27.0) | 28.9 · 31.2 · 32.8 | 30×38 | **0 · 0** |
+| + `MESHHARBORD_VP9_CPU_USED=9` (the estimate on the 40 fps step) | 32.3 (QP 8) | 23.9 · 25.7 · 28.9 | 35×43 | **0 · 0** |
+| the same, `MESHHARBORD_SW_PACE_UP_MARGIN=0` (0.4.142's pace) | void: the lab viewer stalled (decode reports 0–15) | 19.7 · 23.5 · 33.1 | 35×4 30×6 35×3 40×3 30×2 35×2 40×2 45×2 50×2 45×2 50×3 45×4 | 11 · 3 |
 
 - **AC3 passes on the release.** Both margin-on arms settled with no pace change at all, and the encoded rate never
   fell below 0.4.141's 27.0.

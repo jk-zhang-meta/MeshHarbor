@@ -27,9 +27,9 @@ jobs:
 
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      ROOMLER__DATABASE__URL: mongodb://localhost:27019
-      ROOMLER__DATABASE__NAME: roomler_ai_health_check
-      ROOMLER__REDIS__URL: redis://localhost:6379
+      MESHHARBOR__DATABASE__URL: mongodb://localhost:27019
+      MESHHARBOR__DATABASE__NAME: roomler_ai_health_check
+      MESHHARBOR__REDIS__URL: redis://localhost:6379
 
     steps:
       - name: Checkout app repo

@@ -55,7 +55,7 @@ on top of it. It also inflates the baseline FR-35's "carried" gate measures agai
 
 | phase | what | kill switch |
 |---|---|---|
-| **P0** | Bisect on the local rig: neo16's own daemon with `ROOMLERD_ICE_RELAY_TCP=1` (the FR-31 relay stand-in), the FR-31 viewer harness reading per-frame bytes, a held-constant static screen; builds rc.474 / 0.4.10 / 0.4.15 / 0.4.20, then the suspects' switches (`ROOMLERD_IDLE_REFINE=0`, the #781 off-runtime/parallel-convert keys, the #750 knobs). | — (measurement) |
+| **P0** | Bisect on the local rig: neo16's own daemon with `MESHHARBORD_ICE_RELAY_TCP=1` (the FR-31 relay stand-in), the FR-31 viewer harness reading per-frame bytes, a held-constant static screen; builds rc.474 / 0.4.10 / 0.4.15 / 0.4.20, then the suspects' switches (`MESHHARBORD_IDLE_REFINE=0`, the #781 off-runtime/parallel-convert keys, the #750 knobs). | — (measurement) |
 | **P0b** | QP telemetry for HW encoders (packet side data / encoder stats) so "still refining" vs "skip" is visible in the heartbeat. | — (telemetry) |
 | **P1** | Fix what P0 names. Fallback if it is the encoder's steady state: a slower keepalive cadence on constrained transports (60 → 250 ms halves the spend at zero code risk) and/or a bounded refinement window after motion. | config key (P1 decides) |
 

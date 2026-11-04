@@ -63,7 +63,7 @@ pub mod permissions {
     pub const REMOTE_CONTROL: u64 = 1 << 25;
     /// View the remote-control audit log (`remote_audit`).
     pub const VIEW_REMOTE_AUDIT: u64 = 1 << 26;
-    /// Run a command on a device via Fleet RPC (`roomler exec`, the device
+    /// Run a command on a device via Fleet RPC (`meshharbor exec`, the device
     /// console). Gate 2 of four — the org kill-switch, the device's own
     /// `ExecPolicy`, and the agent-local `exec_enabled` key each deny
     /// independently. Deliberately NOT implied by `MANAGE_AGENTS`: managing a
@@ -71,7 +71,7 @@ pub mod permissions {
     pub const EXEC_DEVICE: u64 = 1 << 27;
     /// View the Fleet-RPC audit log (`exec_audit`) — who ran what, where.
     pub const VIEW_EXEC_AUDIT: u64 = 1 << 28;
-    /// Open a roomler SSH session to a device (`roomler ssh`). Gate 2 of four,
+    /// Open a meshharbor SSH session to a device (`meshharbor ssh`). Gate 2 of four,
     /// mirroring [`EXEC_DEVICE`].
     ///
     /// Deliberately a SEPARATE bit rather than a reuse of `EXEC_DEVICE`, for
@@ -81,7 +81,7 @@ pub mod permissions {
     /// land — so "may run one clamped diagnostic" and "may hold a live session"
     /// have to be grantable independently.
     pub const SSH_DEVICE: u64 = 1 << 29;
-    /// View the roomler-SSH audit log (`ssh_audit`) — who was granted, or
+    /// View the meshharbor-SSH audit log (`ssh_audit`) — who was granted, or
     /// refused, a session on which device.
     ///
     /// Separate from [`VIEW_EXEC_AUDIT`] for the same reason [`SSH_DEVICE`] is
@@ -100,7 +100,7 @@ pub mod permissions {
     /// that outlives both. An org grants it on purpose or not at all.
     pub const RECORD_REMOTE_SCREEN: u64 = 1 << 31;
     /// FR-90 — start and drive Hive agent sessions on a device
-    /// (`docs/roomler-hive-design.md` §3.4). The first bit above 31: the UI
+    /// (`docs/meshharbor-hive-design.md` §3.4). The first bit above 31: the UI
     /// mirror's mask arithmetic is exact to bit 52 since #888.
     ///
     /// ⚠️ In NO managed row below the ADMINISTRATOR bypass, like

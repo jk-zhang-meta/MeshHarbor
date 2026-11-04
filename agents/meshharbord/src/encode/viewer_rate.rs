@@ -43,19 +43,19 @@ fn env_u32(suffix: &str, default: u32) -> u32 {
 
 /// Lowest fps the controller will cap down to. Below this, motion is a
 /// slideshow; deeper relief is the (manual) resolution lever's job, not more
-/// fps shedding. Env `ROOMLERD_VIEWER_RATE_MIN_FPS` (default 12).
+/// fps shedding. Env `MESHHARBORD_VIEWER_RATE_MIN_FPS` (default 12).
 fn min_fps() -> u32 {
     env_u32("VIEWER_RATE_MIN_FPS", 12).max(1)
 }
 
 /// fps step per adjustment — down on struggle, and (unless overridden) up on
-/// recovery. Env `ROOMLERD_VIEWER_RATE_STEP` (default 10).
+/// recovery. Env `MESHHARBORD_VIEWER_RATE_STEP` (default 10).
 fn fps_step() -> u32 {
     env_u32("VIEWER_RATE_STEP", 10).max(1)
 }
 
 /// P6 — separate fps step for the recovery climb, so burst-recovery is fast
-/// without coarsening the shed clamp. Env `ROOMLERD_VIEWER_RATE_STEP_UP`;
+/// without coarsening the shed clamp. Env `MESHHARBORD_VIEWER_RATE_STEP_UP`;
 /// defaults to 2× the down-step (P6 field bake 2026-07-26 — with recover=3
 /// this recovers a shallow clamp in one ~3 s probe and a deep clamp in ~9 s;
 /// the shed still steps down by the small `step`).
@@ -65,7 +65,7 @@ fn fps_step_up(default_step: u32) -> u32 {
 
 /// Consecutive clean windows before the cap probes back UP one step. Lazy so a
 /// viewer parked just under its ceiling doesn't oscillate every window.
-/// Env `ROOMLERD_VIEWER_RATE_RECOVER` (default 3 — P6 field bake
+/// Env `MESHHARBORD_VIEWER_RATE_RECOVER` (default 3 — P6 field bake
 /// 2026-07-26: the old 6 measured 15.5 s deep-clamp recovery on the canonical
 /// pair (cap 12 → divisor 1, probes every 3.1 s, model-exact); 3 plus the 2×
 /// up-step brings the common shallow clamp to ≤3 s and a deep clamp to ~9 s.
@@ -83,7 +83,7 @@ fn recover_windows() -> u32 {
 /// (12→36→56→60 at 60 capture: ~5 s where the additive climb took ~9 s)
 /// while the ceiling-parked oscillation guard is preserved — a re-struggle
 /// drops out of slow-start and the next climb needs full confirmation again.
-/// Env `ROOMLERD_VIEWER_RATE_SLOW_START=0` restores the pure additive
+/// Env `MESHHARBORD_VIEWER_RATE_SLOW_START=0` restores the pure additive
 /// climb.
 fn slow_start_enabled() -> bool {
     !matches!(
@@ -128,7 +128,7 @@ impl ViewerRateController {
             recover: recover_windows(),
             climbing: false,
             slow_start: slow_start_enabled(),
-            // Kill switch — default ON; `ROOMLERD_VIEWER_RATE=0` (or
+            // Kill switch — default ON; `MESHHARBORD_VIEWER_RATE=0` (or
             // `false`) pins the cap at the capture rate (divisor 1, no shedding)
             // so a misbehaving field host reverts without a rebuild.
             enabled: !matches!(

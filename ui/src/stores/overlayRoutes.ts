@@ -51,7 +51,7 @@ export interface EvictedNode {
 }
 
 // A node's *derived* overlay IPv6: its overlay v4 embedded in the low 32 bits
-// of Roomler's ULA /96 (`fd72:6f6f:6d6c::<v4>`). Mirrors
+// of MeshHarbor's ULA /96 (`fd72:6f6f:6d6c::<v4>`). Mirrors
 // `crates/tunnel-core/src/overlay/router.rs::derive_overlay_v6` — display-only
 // here (routing derives it node-side), so the server never has to publish v6.
 // Matches Rust's `Ipv6Addr` Display: `::` swallows the zero run, hex segments

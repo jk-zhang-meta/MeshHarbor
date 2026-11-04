@@ -14,7 +14,7 @@
 //! On by default since FR-98 P5's field A/B (2026-10-16): on a vmtest guest,
 //! with OpenH264 on the track, Chrome's buffer went from an average of 193 ms
 //! (and growing) to 0.1 ms, and L4 input to photon from p50 78–362 ms to
-//! 35–40 ms. `ROOMLERD_RTP_PLAYOUT_DELAY_ZERO=0` turns it off, read once per
+//! 35–40 ms. `MESHHARBORD_RTP_PLAYOUT_DELAY_ZERO=0` turns it off, read once per
 //! session. Off, the extension is not even registered, so the answer SDP and
 //! every packet stay byte-identical to the agents before it. On, it is
 //! registered on the media engine, negotiated only if the browser offers it
@@ -31,7 +31,7 @@ use webrtc::rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCod
 pub const URI: &str = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay";
 
 /// Is the switch on? It defaults ON: only an explicit off (`0`, `false`,
-/// `no`, `off`, the spellings `ROOMLERD_HW_AUTO` reads) turns it off. An
+/// `no`, `off`, the spellings `MESHHARBORD_HW_AUTO` reads) turns it off. An
 /// unset, empty or unrecognised value keeps the default, so a typo cannot
 /// take a host back to the buffered path.
 pub fn parse(raw: Option<&str>) -> bool {

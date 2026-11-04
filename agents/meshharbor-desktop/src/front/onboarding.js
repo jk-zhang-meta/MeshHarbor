@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 /*
  * Onboarding view: enroll this device into a tenant.
- *   1. Operator pastes an enrollment token (from the Roomler admin UI).
+ *   1. Operator pastes an enrollment token (from the MeshHarbor admin UI).
  *   2. Operator confirms the device name (defaulted to the hostname).
  *   3. Enroll → `cmd_enroll` → on success offer per-user auto-start and a
  *      jump back to the Overview.
@@ -12,7 +12,7 @@
  */
 (function () {
   'use strict';
-  const { $, invoke, show, on, navigate, refreshStatus } = window.Roomler;
+  const { $, invoke, show, on, navigate, refreshStatus } = window.MeshHarbor;
 
   async function prefillDeviceName() {
     try {
@@ -75,7 +75,7 @@
     actions.appendChild(install);
 
     // FR-84 D6 — enrolled from the Welcome tour (a first run): back into it.
-    if (window.Roomler.welcomePending) {
+    if (window.MeshHarbor.welcomePending) {
       const tour = document.createElement('button');
       tour.type = 'button';
       tour.textContent = 'Continue the Welcome tour';

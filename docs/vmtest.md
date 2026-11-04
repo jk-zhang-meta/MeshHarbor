@@ -76,7 +76,7 @@ matrix-killers wearing an overlay bug's clothes: the test org was on the **Free
 plan's 3-device cap**, so every enroll past the anchor plus two orphans got
 `403 Device limit reached`; and **per-user overlay is not netstack-configured out
 of the box on either OS** — an unprivileged daemon cannot create a WireGuard TUN,
-so `overlay_mode=tun` never gets an address until `ROOMLERD_OVERLAY_NETSTACK_SOCKS`
+so `overlay_mode=tun` never gets an address until `MESHHARBORD_OVERLAY_NETSTACK_SOCKS`
 is set (the per-user cells now exercise the "no OS privileges required"
 commitment end to end).
 

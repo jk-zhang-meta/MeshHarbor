@@ -31,7 +31,7 @@
 //!
 //! Config: `overlay_netmon` (default ON) + `overlay_netmon_debounce_ms`
 //! (default 750, clamped 100–5000) via the standard env bridge
-//! (`ROOMLERD_OVERLAY_NETMON*`).
+//! (`MESHHARBORD_OVERLAY_NETMON*`).
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -41,7 +41,7 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{debug, info, warn};
 
-/// Master switch (`ROOMLERD_OVERLAY_NETMON`, default ON).
+/// Master switch (`MESHHARBORD_OVERLAY_NETMON`, default ON).
 pub(crate) fn netmon_enabled() -> bool {
     crate::env::flag("OVERLAY_NETMON", true)
 }
@@ -50,7 +50,7 @@ pub(crate) fn netmon_enabled() -> bool {
 /// the runtime's net-change arm; formerly `route_events`').
 pub(crate) const ROUTE_WAVE_MIN_INTERVAL: Duration = Duration::from_secs(3);
 
-/// `ROOMLERD_OVERLAY_ROUTE_EVENTS` — the legacy per-runtime consumer
+/// `MESHHARBORD_OVERLAY_ROUTE_EVENTS` — the legacy per-runtime consumer
 /// kill-switch, still honored (default ON; `0`/`false`/`off` = the runtime
 /// ignores net deltas and keeps the 2 s tick-only route guard, the pre-P4
 /// behaviour). The subsystem-wide switch is [`netmon_enabled`].
@@ -64,7 +64,7 @@ pub(crate) fn route_events_enabled() -> bool {
 }
 
 /// Debounce window: further raw signals inside this quiet period are
-/// absorbed into one delta (`ROOMLERD_OVERLAY_NETMON_DEBOUNCE_MS`).
+/// absorbed into one delta (`MESHHARBORD_OVERLAY_NETMON_DEBOUNCE_MS`).
 fn debounce() -> Duration {
     let ms = crate::env::node_env("OVERLAY_NETMON_DEBOUNCE_MS")
         .and_then(|v| v.trim().parse::<u64>().ok())
@@ -438,7 +438,7 @@ pub fn handle() -> Option<&'static NetstateHandle> {
 
 fn spawn() -> Option<NetstateHandle> {
     if !netmon_enabled() {
-        debug!("netstate: disabled (ROOMLERD_OVERLAY_NETMON=0)");
+        debug!("netstate: disabled (MESHHARBORD_OVERLAY_NETMON=0)");
         return None;
     }
     let (raw_tx, raw_rx) = mpsc::unbounded_channel();
@@ -621,7 +621,7 @@ pub fn sample_snapshot() -> NetSnapshot {
 /// lands on one ([`NetSnapshot::uplink_v4`]), else the default itself. Read
 /// by the code the exemption pins use (`tun::uplink_beneath`), so the
 /// network monitor and the pins agree on what the uplink is.
-/// `ROOMLERD_OVERLAY_NETMON_UPLINK=0` puts netstate back to the lookup alone.
+/// `MESHHARBORD_OVERLAY_NETMON_UPLINK=0` puts netstate back to the lookup alone.
 fn uplink_beneath_own(default: Option<&DefaultRoute>, v6: bool) -> Option<DefaultRoute> {
     #[cfg(feature = "overlay-l3")]
     if let Some(d) = default
@@ -1292,7 +1292,7 @@ mod tests {
     /// `snap` with an exit active: the lookup lands on our TUN, and the
     /// uplink beneath it is `uplink_if` via `gateway`.
     fn under_exit(ifaces: &[(&str, &[&str])], uplink_if: &str, gateway: &str) -> NetSnapshot {
-        let mut s = snap(ifaces, Some("roomler0"));
+        let mut s = snap(ifaces, Some("meshharbor0"));
         s.uplink_v4 = Some(DefaultRoute {
             ifref: uplink_if.to_string(),
             gateway: Some(gateway.parse().unwrap()),
@@ -1317,7 +1317,7 @@ mod tests {
         assert_eq!(d.severity, Severity::Major);
         assert!(d.default_route_moved);
         assert!(
-            d.summary.contains("v4_default=roomler0 uplink=eth1"),
+            d.summary.contains("v4_default=meshharbor0 uplink=eth1"),
             "the log names the uplink beneath the TUN: {}",
             d.summary
         );

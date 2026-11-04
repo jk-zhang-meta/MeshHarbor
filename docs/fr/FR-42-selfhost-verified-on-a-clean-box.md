@@ -15,7 +15,7 @@ It shipped a one-command stack to close that.
 
 What it did **not** do is run it. What was verified was that the compose *renders*
 (`docker compose config` exits 0), that it fails fast with a useful message when a secret
-is missing, and that every `ROOMLER__*` key it sets exists in `settings.rs`. None of that
+is missing, and that every `MESHHARBOR__*` key it sets exists in `settings.rs`. None of that
 is the same as watching the thing come up.
 
 ⚠️ This is the exact path a launch post sends strangers down, and the audience it sends
@@ -110,7 +110,7 @@ automatic TLS · arm64 validation · backup/restore drills beyond the documented
 | 2026-08-30 | FR-39 shipped the stack unrun | `docker compose config` exit 0; missing-secret guard exits 1 with the `openssl rand` hint; `auth.auto_verify` and `s3.enabled` exist; the production JWT refusal is real (`crates/api/src/main.rs:32`). **None of this is a run.** |
 | 2026-08-30 | target host | Docker Desktop + WSL2 integration on neo16; Ubuntu 24.04.4, 45 GB RAM, 272 GB free |
 | 2026-08-30 | **P0: the documented path WORKS from a clean clone** | `git clone` → `cp .env.selfhost.example` → fill 4 secrets → `up -d --build` exited **rc=0 in 359 s (5m59s)**. All five services running (mongo/redis/minio healthy). `/health` answered 200 twenty seconds later: `{"status":"ok","version":"0.4.23"}`. `GET /` 200, `/api/setup/install.sh` 200, `/api/stripe/plans` 200 |
-| 2026-08-30 | **the documented user journey works** | register → **201** (`auto-verified`, as `ROOMLER_AUTO_VERIFY=true` intends) · login → 200 · create organization → 200 (`Self Host Demo`, plan `free`) · mint agent enrolment token → 200 |
+| 2026-08-30 | **the documented user journey works** | register → **201** (`auto-verified`, as `MESHHARBOR_AUTO_VERIFY=true` intends) · login → 200 · create organization → 200 (`Self Host Demo`, plan `free`) · mint agent enrolment token → 200 |
 | 2026-08-30 | ⚠️ **DEFECT — the installer would enroll against the WRONG SERVER** | `scripts/install.sh` line 46 hardcodes `SERVER="https://roomler.ai"` and `install.ps1` line 64 `$Server = 'https://roomler.ai'`. Both are piped from the network, so **neither can see which host it was fetched from**. `docs/self-hosting.md` omitted `--server`, so a self-hoster would download the installer from their own server and then enroll the agent against the **hosted** service using a token only their own server can verify — an authentication failure that says nothing about the real cause, on the first thing anyone does after the stack comes up. Doc fixed |
 | 2026-08-30 | ⚠️ **DEFECT — `irm … | iex` cannot pass arguments at all** | The Windows one-liner in `docs/self-hosting.md` **and in the README** could pass neither `-Server` nor `-Token`. `scripts/install.ps1`'s own header documents the `& ([scriptblock]::Create((irm …))) -Role … -Token …` form; both docs now use it. Pre-existing in the README, propagated by FR-39 |
 | 2026-09-01 | **the installer defect is CLOSED, and proven on the served bytes** | FR-50 (#1083) made the route substitute `app.frontend_url` at serve time. The self-hosted stack now serves `SERVER="http://localhost:8080"`, and prod serves the committed script byte-for-byte. The doc no longer tells the reader to pass `--server` |

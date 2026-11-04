@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! `network` — pillar 2's server side as a module (FR-69 P7a): the overlay
 //! mesh (IPAM, netmaps, leases, the L3 ACL, relay grants, the DERP ACL
-//! cache), tunnels (clients, policies, audit), peer relays (FR-19), Roomler
+//! cache), tunnels (clients, policies, audit), peer relays (FR-19), MeshHarbor
 //! SSH (the grant decision, its audit and the device-reported activity) and
 //! overlay-key rotation.
 //!
@@ -150,7 +150,7 @@ pub struct NetworkState {
     pub overlay_ctrl_tx: mpsc::Sender<serde_json::Value>,
 
     // Decision logs
-    /// Roomler-SSH grant log — every session request, granted or refused.
+    /// MeshHarbor-SSH grant log — every session request, granted or refused.
     pub ssh_audit: Arc<SshAuditDao>,
     /// P8 — device-reported session activity. Separate from `ssh_audit`
     /// because one is the server's decision and the other is a claim by the
@@ -193,7 +193,7 @@ pub struct NetworkState {
     /// keep using the central `/derp`.
     pub derp_ticket: Option<Arc<meshharbor_remote_control::derp_ticket::DerpTicketSigner>>,
     /// C-3 — directory owner-tokens for LOCAL tunnel sessions
-    /// (`roomler:own:tunnel:<session>`). Written on open; refreshed by the
+    /// (`meshharbor:own:tunnel:<session>`). Written on open; refreshed by the
     /// directory heartbeat while the session map still holds the session;
     /// never explicitly released — the 90 s TTL reaps ≤90 s after any of
     /// the four teardown paths drops the map entry.
@@ -234,7 +234,7 @@ pub struct NetworkState {
         >,
     >,
     /// C-5 — directory owner-tokens for LOCAL derp registrations
-    /// (`roomler:own:derp:<net>:<pubkey>`); refreshed by the directory
+    /// (`meshharbor:own:derp:<net>:<pubkey>`); refreshed by the directory
     /// heartbeat while the registry holds the key.
     pub derp_presence_tokens: Arc<DashMap<derp_types::DerpKey, String>>,
     /// C-5 — per-(network, pubkey) rehome pacing (60 s cooldown, 3
@@ -281,7 +281,7 @@ impl Module for NetworkState {
                         Some(Arc::new(s))
                     }
                     Err(e) => {
-                        tracing::error!(%e, "ROOMLER__RELAY__DERP_TICKET_PRIVATE_KEY is unusable; regional DERP disabled");
+                        tracing::error!(%e, "MESHHARBOR__RELAY__DERP_TICKET_PRIVATE_KEY is unusable; regional DERP disabled");
                         None
                     }
                 }
@@ -290,7 +290,7 @@ impl Module for NetworkState {
                 if core.turn_map.enabled && core.turn_map.specs.iter().any(|s| s.derp_url.is_some())
                 {
                     tracing::warn!(
-                        "relay regions carry derp_urls but no ROOMLER__RELAY__DERP_TICKET_PRIVATE_KEY is set — regional DERP disabled"
+                        "relay regions carry derp_urls but no MESHHARBOR__RELAY__DERP_TICKET_PRIVATE_KEY is set — regional DERP disabled"
                     );
                 }
                 None
@@ -471,7 +471,7 @@ impl Module for NetworkState {
                 "/{agent_id}/overlay-key/ttl",
                 put(routes::overlay_key::set_overlay_key_ttl),
             )
-            // Roomler SSH — ask for a session on one device. Answers 200 with
+            // MeshHarbor SSH — ask for a session on one device. Answers 200 with
             // either where to dial or which gate refused; a denial is a policy
             // outcome the caller must read, not a transport failure.
             .route("/{agent_id}/ssh", post(routes::agent_ssh::request_session))
@@ -582,7 +582,7 @@ impl Module for NetworkState {
         let peer_relay_audit = Router::new().route("/", get(routes::peer_relay::audit));
         let ssh_audit = Router::new().route("/", get(routes::agent_ssh::audit));
         let ssh_activity = Router::new().route("/", get(routes::agent_ssh::activity));
-        // Roomler SSH — its own org kill-switch (gate 1). A separate switch
+        // MeshHarbor SSH — its own org kill-switch (gate 1). A separate switch
         // from the exec one on purpose: allowing bounded diagnostic commands
         // is not the same decision as allowing interactive sessions.
         let ssh_settings = Router::new().route(
@@ -898,7 +898,7 @@ impl Module for NetworkState {
                     index_ttl(bson::doc! { "at": 1 }, 90 * 24 * 60 * 60),
                 ],
             },
-            // Roomler-SSH grant decisions. Same three questions as
+            // MeshHarbor-SSH grant decisions. Same three questions as
             // `exec_audit`, same 90-day TTL — an SSH session is the bigger
             // power of the two, so its log must not be the shorter-lived one.
             IndexSet {
@@ -911,7 +911,7 @@ impl Module for NetworkState {
                     index_ttl(bson::doc! { "at": 1 }, 90 * 24 * 60 * 60),
                 ],
             },
-            // Roomler-SSH session activity (P8) — what devices REPORT doing
+            // MeshHarbor-SSH session activity (P8) — what devices REPORT doing
             // inside a session, as opposed to `ssh_audit`'s record of what the
             // server DECIDED. Separate collection on purpose (see
             // `SshActivityEvent`): one is authoritative, the other is a claim

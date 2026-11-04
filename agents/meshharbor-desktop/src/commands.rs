@@ -140,7 +140,7 @@ fn daemon_identity(s: &NodeStatus) -> Option<DaemonIdentity> {
 /// Fill a report the config FILE could not answer with the daemon's word.
 ///
 /// ⚠️ #1701: on a SystemContext install the config sits in
-/// `%PROGRAMDATA%\roomler\roomler\`, which W4(c) restricts to SYSTEM +
+/// `%PROGRAMDATA%\meshharbor\meshharbor\`, which W4(c) restricts to SYSTEM +
 /// Administrators — rightly, it holds the agent token — so the companion,
 /// the signed-in user on a filtered token, gets access denied, and
 /// `enrolled` read `false` on an enrolled, connected device: the Welcome
@@ -277,7 +277,7 @@ fn explain_save_error(err: impl std::fmt::Display, path: &Path, machine_global: 
         format!(
             "Saving config at {}: {err}. This is the machine-wide configuration — \
              administrator rights are required (run the desktop app elevated, or \
-             use the `roomlerd` CLI from an elevated shell).",
+             use the `meshharbord` CLI from an elevated shell).",
             path.display()
         )
     } else {
@@ -398,7 +398,7 @@ pub async fn cmd_ping(
     Ok(PingResult { overlay_ip, rtt_ms })
 }
 
-/// First-time enrollment flow. Args mirror the CLI's `roomlerd
+/// First-time enrollment flow. Args mirror the CLI's `meshharbord
 /// enroll --server --token --name`. On success writes config.toml +
 /// returns a redacted `StatusReport` (no agent_token).
 #[tauri::command]
@@ -474,7 +474,7 @@ pub async fn cmd_re_enroll(token: String) -> Result<StatusReport, String> {
     })
     .await
     .map_err(|e| format!("Re-enrollment failed: {e:#}"))?;
-    // As `roomlerd re-enroll`: a token for another org is an ADD, which is
+    // As `meshharbord re-enroll`: a token for another org is an ADD, which is
     // the Enroll flow's job, not a refresh of this one.
     if fresh.tenant_id != existing.tenant_id {
         return Err(
@@ -484,7 +484,7 @@ pub async fn cmd_re_enroll(token: String) -> Result<StatusReport, String> {
         );
     }
     // FR-103 — fold the fresh identity into the EXISTING config, as
-    // `roomlerd re-enroll` does. Saving the fresh, default-everything config
+    // `meshharbord re-enroll` does. Saving the fresh, default-everything config
     // wholesale dropped every operator setting and every `[[orgs]]`
     // enrollment on the machine.
     let (merged, _outcome) = enrollment::apply_enrollment(Some(existing), fresh, None, false)
@@ -934,10 +934,10 @@ pub async fn cmd_open_files_dir() -> Result<(), String> {
 /// process holding memory. Windows-only, like [`open_web_window`] — the
 /// other platforms open the default browser instead.
 #[cfg(windows)]
-pub const WEB_WINDOW_LABEL: &str = "roomler-web";
+pub const WEB_WINDOW_LABEL: &str = "meshharbor-web";
 
 /// S7 — open (or focus + navigate) the embedded WebView2 window on the
-/// Roomler web app. The URL is an EXTERNAL origin, which Tauri keeps
+/// MeshHarbor web app. The URL is an EXTERNAL origin, which Tauri keeps
 /// outside the app's capability set — the page gets no `__TAURI__` IPC,
 /// it's a plain Chromium view; sign-in persists in the webview profile
 /// between opens.
@@ -955,16 +955,16 @@ pub fn open_web_window<R: tauri::Runtime>(
         // Reuse the window (and its signed-in session): navigate in place.
         existing
             .navigate(parsed)
-            .map_err(|e| format!("navigating the Roomler window: {e}"))?;
+            .map_err(|e| format!("navigating the MeshHarbor window: {e}"))?;
         let _ = existing.show();
         let _ = existing.set_focus();
         return Ok(());
     }
     tauri::WebviewWindowBuilder::new(app, WEB_WINDOW_LABEL, tauri::WebviewUrl::External(parsed))
-        .title("Roomler")
+        .title("MeshHarbor")
         .inner_size(1280.0, 800.0)
         .build()
-        .map_err(|e| format!("opening the Roomler window: {e}"))?;
+        .map_err(|e| format!("opening the MeshHarbor window: {e}"))?;
     Ok(())
 }
 
@@ -997,7 +997,7 @@ pub fn open_web_or_browser<R: tauri::Runtime>(
 }
 
 /// The configured server origin (normalised, validated) — the target for
-/// the S7 "Open Roomler" entry points. Blocking (config load + service
+/// the S7 "Open MeshHarbor" entry points. Blocking (config load + service
 /// probe): call from the blocking pool.
 pub fn server_origin_blocking() -> Result<String, String> {
     let is_scm = probe_service_state().0 == "scmService";
@@ -1011,10 +1011,10 @@ pub fn server_origin_blocking() -> Result<String, String> {
     Ok(server)
 }
 
-/// S7 — open the Roomler web app (this device's configured server) in
+/// S7 — open the MeshHarbor web app (this device's configured server) in
 /// the embedded window / browser.
 #[tauri::command]
-pub async fn cmd_open_roomler(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn cmd_open_meshharbor(app: tauri::AppHandle) -> Result<(), String> {
     let url = tokio::task::spawn_blocking(server_origin_blocking)
         .await
         .map_err(|e| format!("task join: {e}"))??;
@@ -1209,7 +1209,7 @@ pub fn cmd_default_device_name() -> String {
         .unwrap_or_else(|_| "my-device".to_string())
 }
 
-/// Spawn `roomlerd self-update --check-only` and parse the
+/// Spawn `meshharbord self-update --check-only` and parse the
 /// stdout — looks for the "Update available" sentinel line and
 /// extracts the version pair.
 #[tauri::command]
@@ -2190,7 +2190,7 @@ pub async fn cmd_pick_record_dir(
         let mut dialog = app
             .dialog()
             .file()
-            .set_title("Where Roomler saves screen recordings");
+            .set_title("Where MeshHarbor saves screen recordings");
         if let Some(dir) = current.as_deref().filter(|d| Path::new(d).is_dir()) {
             dialog = dialog.set_directory(dir);
         }
@@ -2453,7 +2453,7 @@ fn load_optional_config(is_scm: bool) -> Option<AgentConfig> {
 
 /// A `Command` that never flashes a console window on Windows. The tray is a GUI
 /// app (`windows_subsystem = "windows"`), so a plain `std::process::Command`
-/// spawning the console-mode `roomlerd` pops a console each time — and
+/// spawning the console-mode `meshharbord` pops a console each time — and
 /// `cmd_status` polls the service state every 10 s, so without this the tray
 /// flashes a terminal every 10 s. No-op on non-Windows.
 pub(crate) fn no_window_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
@@ -2495,7 +2495,7 @@ fn probe_service_state() -> (String, bool) {
 }
 
 /// What `meshharbord service status --as-service` answered: its
-/// `Roomler: <InstalledStatus:?>` line.
+/// `MeshHarbor: <InstalledStatus:?>` line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScmAnswer {
     Running,
@@ -2504,7 +2504,7 @@ enum ScmAnswer {
     NotInstalled,
 }
 
-/// #1681 — a probe is read from its ANSWER line only. `roomlerd` writes its
+/// #1681 — a probe is read from its ANSWER line only. `meshharbord` writes its
 /// tracing INFO lines to STDOUT for these subcommands, and one of them —
 /// logged on every start while this companion runs, i.e. on every probe —
 /// says "migration skipped: desktop companion is running". The substring
@@ -2522,8 +2522,8 @@ fn answer_line(stdout: &str, prefix: &str) -> Option<String> {
 }
 
 fn scm_answer(stdout: &str) -> Option<ScmAnswer> {
-    // `println!("{}: {:?}", NEW_SERVICE_NAME, status)` — "Roomler: Running".
-    let state = answer_line(stdout, "roomler:")?;
+    // `println!("{}: {:?}", NEW_SERVICE_NAME, status)` — "MeshHarbor: Running".
+    let state = answer_line(stdout, "meshharbor:")?;
     Some(match state.as_str() {
         "running" => ScmAnswer::Running,
         "notinstalled" => ScmAnswer::NotInstalled,
@@ -2556,9 +2556,9 @@ fn classify_service_state(task: Option<&str>, scm: Option<&str>) -> (String, boo
 /// tray and daemon ship in the same dir (per the MSI layout). For dev
 /// builds, fall back to PATH lookup.
 ///
-/// P3d Slice B renamed the daemon OUTPUT binary `roomlerd` -> `roomlerd`.
-/// Resolution prefers a sibling `roomlerd[.exe]` (so a fresh tray spawns the
-/// new daemon), then falls back to the legacy `roomler-agent[.exe]` (which the
+/// P3d Slice B renamed the daemon OUTPUT binary `meshharbord` -> `meshharbord`.
+/// Resolution prefers a sibling `meshharbord[.exe]` (so a fresh tray spawns the
+/// new daemon), then falls back to the legacy `meshharbor-agent[.exe]` (which the
 /// MSI still ships as the inert `AgentExeAlias`, so a mixed / in-flight install
 /// still resolves), then finally the bare new name relying on PATH.
 // RETIRED-NAME-ANCHOR(5): the legacy pair is the fallback that lets a mixed or
@@ -2567,7 +2567,7 @@ pub(crate) fn agent_exe_path() -> Result<PathBuf, String> {
     let (new_name, old_name) = if cfg!(windows) {
         ("meshharbord.exe", "meshharbor-agent.exe")
     } else {
-        ("roomlerd", "roomler-agent")
+        ("meshharbord", "meshharbor-agent")
     };
     let mut tried: Vec<PathBuf> = Vec::new();
 
@@ -2590,7 +2590,7 @@ pub(crate) fn agent_exe_path() -> Result<PathBuf, String> {
     //
     // The sibling probe above is a Windows assumption. The macOS .pkg puts the
     // companion in `/Applications/MeshHarbor.app/Contents/MacOS/` and the daemon
-    // in `/Library/Roomler/…` with a `/usr/local/bin/roomlerd` symlink, so the
+    // in `/Library/MeshHarbor/…` with a `/usr/local/bin/meshharbord` symlink, so the
     // probe always missed — and the PATH fallback missed too, because a
     // LaunchAgent inherits launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:
     // /sbin`), which does NOT include `/usr/local/bin`. That is the whole of
@@ -2605,13 +2605,13 @@ pub(crate) fn agent_exe_path() -> Result<PathBuf, String> {
     }
 
     // Last resort: the bare name on PATH (dev runs; a distro install that put
-    // roomlerd somewhere we don't know about). Only reachable when nothing
+    // meshharbord somewhere we don't know about). Only reachable when nothing
     // above existed, so name what we looked at — a bare "not found" from the
     // spawn is what made this take so long to see.
     let bare = PathBuf::from(new_name);
     tracing::warn!(
         tried = ?tried,
-        "no installed roomlerd found at any known path — falling back to {new_name} on PATH"
+        "no installed meshharbord found at any known path — falling back to {new_name} on PATH"
     );
     Ok(bare)
 }
@@ -2625,11 +2625,11 @@ fn installed_daemon_candidates() -> Vec<PathBuf> {
         vec![
             // The pkg's symlink into the bundle. Preferred: every launchd
             // plist and TCC grant keys on the bundle path it points at.
-            PathBuf::from("/usr/local/bin/roomlerd"),
+            PathBuf::from("/usr/local/bin/meshharbord"),
             // The bundle itself, if the symlink is missing. Every launchd plist
             // and TCC grant keys on this path, so it moves only with a rename that
             // moves the plists too (FR-46 P5b).
-            PathBuf::from("/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd"),
+            PathBuf::from("/Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord"),
         ]
     }
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -2638,7 +2638,7 @@ fn installed_daemon_candidates() -> Vec<PathBuf> {
         // /usr/local/bin.
         vec![
             PathBuf::from("/usr/bin/meshharbord"),
-            PathBuf::from("/usr/local/bin/roomlerd"),
+            PathBuf::from("/usr/local/bin/meshharbord"),
         ]
     }
     #[cfg(windows)]
@@ -2779,7 +2779,7 @@ mod tests {
         // no task, the SCM service running, the noise in BOTH outputs.
         let got = classify_service_state(
             Some(&out("Auto-start: not installed")),
-            Some(&out("Roomler: Running")),
+            Some(&out("MeshHarbor: Running")),
         );
         assert_eq!(got, ("scmService".to_string(), true));
     }
@@ -2788,7 +2788,7 @@ mod tests {
     fn a_per_user_task_is_read_from_its_answer_line() {
         let got = classify_service_state(
             Some(&out("Auto-start: installed")),
-            Some(&out("Roomler: NotInstalled")),
+            Some(&out("MeshHarbor: NotInstalled")),
         );
         assert_eq!(got, ("scheduledTask".to_string(), false));
         // `--as-service` failing outright (no answer line at all) is the same.
@@ -2806,7 +2806,7 @@ mod tests {
         assert_eq!(
             classify_service_state(
                 Some(&out("Auto-start: not installed")),
-                Some(&out("Roomler: NotInstalled"))
+                Some(&out("MeshHarbor: NotInstalled"))
             ),
             ("none".to_string(), false)
         );
@@ -2822,7 +2822,7 @@ mod tests {
             assert_eq!(
                 classify_service_state(
                     Some(&out("Auto-start: not installed")),
-                    Some(&out(&format!("Roomler: {state}")))
+                    Some(&out(&format!("MeshHarbor: {state}")))
                 ),
                 ("scmService".to_string(), false),
                 "{state}"
@@ -2833,14 +2833,14 @@ mod tests {
         assert_eq!(
             classify_service_state(
                 Some(&out("Auto-start: installed")),
-                Some(&out("Roomler: Stopped"))
+                Some(&out("MeshHarbor: Stopped"))
             ),
             ("scheduledTask".to_string(), false)
         );
         assert_eq!(
             classify_service_state(
                 Some(&out("Auto-start: installed")),
-                Some(&out("Roomler: Running"))
+                Some(&out("MeshHarbor: Running"))
             ),
             ("scmService".to_string(), true)
         );
@@ -2849,7 +2849,7 @@ mod tests {
     /// FR-85 — the page hands the companion a NAME to open, never a path.
     #[test]
     fn only_a_bare_mp4_name_is_opened() {
-        assert!(check_recording_name("Roomler Recording 2026-09-25 14-30-12.mp4").is_ok());
+        assert!(check_recording_name("MeshHarbor Recording 2026-09-25 14-30-12.mp4").is_ok());
         assert!(check_recording_name("x.MP4").is_ok());
         for bad in [
             "",
@@ -2857,7 +2857,7 @@ mod tests {
             "sub/x.mp4",
             r"sub\x.mp4",
             "C:x.mp4",
-            "x.mp4.roomler.json",
+            "x.mp4.meshharbor.json",
             "notes.txt",
         ] {
             assert!(check_recording_name(bad).is_err(), "{bad}");

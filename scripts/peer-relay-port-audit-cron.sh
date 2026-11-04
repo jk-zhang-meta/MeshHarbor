@@ -19,12 +19,12 @@
 # originating device's permission + the target's policy + the target's own
 # `exec_enabled`). So the only requirement on the cron host is that the CLI can
 # reach its daemon's LocalAPI socket (root-owned) and that daemon is permitted to
-# originate. LIVE HOME: mars — set `ROOMLER_EXEC="sudo -n roomler exec"` (its
+# originate. LIVE HOME: mars — set `MESHHARBOR_EXEC="sudo -n roomler exec"` (its
 # daemon runs as root, and gjovanov has passwordless sudo + gh + the sibling
 # mediasoup cron). Prove the fire path without issue churn: `DRY_RUN=1 PEER_RELAY_PORT=3479`.
 #
 # Env: PEER_RELAY_PORT (default 3478), PEER_RELAY_AGENTS ("label=agent-id …"),
-#      ROOMLER_EXEC (default "roomler exec"; "sudo -n roomler exec" on mars),
+#      MESHHARBOR_EXEC (default "roomler exec"; "sudo -n roomler exec" on mars),
 #      DRY_RUN=1 (log "WOULD file issue" instead of creating one).
 
 set -u
@@ -33,9 +33,9 @@ CANON="$DIR/peer-relay-port-audit.sh"
 PORT="${PEER_RELAY_PORT:-3478}"
 DRY="${DRY_RUN:-0}"
 # How to invoke Fleet RPC. Default assumes a root-context CLI; on mars (cron runs
-# as gjovanov) set ROOMLER_EXEC="sudo -n roomler exec" — no user token is needed,
+# as gjovanov) set MESHHARBOR_EXEC="sudo -n roomler exec" — no user token is needed,
 # the local root-owned daemon relays it.
-ROOMLER_EXEC="${ROOMLER_EXEC:-roomler exec}"
+MESHHARBOR_EXEC="${MESHHARBOR_EXEC:-roomler exec}"
 # Relay-serving agents: label=agent-id. Expand this as relays are approved.
 AGENTS="${PEER_RELAY_AGENTS:-scw-m2-asahi=6a7f91d64f1248bba31904ce}"
 LOG_DIR="${LOG_DIR:-$HOME/peer-relay-port-audit}"
@@ -52,7 +52,7 @@ for entry in $AGENTS; do
   aid="${entry#*=}"
   echo "=== $name ($aid) port=$PORT $(date -u +%FT%TZ) ===" >> "$LOG"
   # Push the check over the control WS, run it as root, clean up, propagate rc.
-  if ! $ROOMLER_EXEC "$aid" \
+  if ! $MESHHARBOR_EXEC "$aid" \
         "printf '%s' '$B64' | base64 -d > /tmp/pra.sh && sudo bash /tmp/pra.sh explain $PORT; rc=\$?; rm -f /tmp/pra.sh; exit \$rc" \
         >> "$LOG" 2>&1; then
     FAILED="$FAILED $name(drift)"

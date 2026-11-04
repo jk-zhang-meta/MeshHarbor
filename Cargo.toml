@@ -55,7 +55,7 @@ exclude = [
     "crates/vendored/webrtc-ice",
     # Vendored upstream with a SettingEngine setter that exposes the
     # SCTP `a_rwnd` (was hardcoded to 0 = 1 MiB upstream default).
-    # Needed for roomler native-to-native peers to advertise
+    # Needed for meshharbor native-to-native peers to advertise
     # 8 MiB so DC throughput stays link-bound at high BDP.
     # FR-101: plus `set_dtls_cipher_suites`, so a remote-desktop session
     # can drop the AES-256-CBC-SHA suites upstream's DTLS default carries.
@@ -100,7 +100,7 @@ exclude = [
 # over raw multicast with a query that ends only when answered — no
 # deadline, and it never notices the agent closing. A browser off the
 # agent's LAN never answers, so a session whose names the OS resolver
-# could not answer either (`roomlerd`'s `mdns_resolve`) left that query
+# could not answer either (`meshharbord`'s `mdns_resolve`) left that query
 # asking once a second FOREVER, holding the closed ICE agent and every
 # socket its candidates owned. Field 2026-09-27 on a vmtest guest: +17 UDP
 # sockets and +2 mDNS queries/s per ended session, cumulative. Our vendored
@@ -111,7 +111,7 @@ exclude = [
 # `max_receive_buffer_size` — `RTCSctpTransport::start` hardcodes 0
 # which falls back to the 1 MiB INITIAL_RECV_BUF_SIZE constant in
 # webrtc-sctp-0.11.0. At 50-100 ms RTT this caps single-stream DC
-# throughput at ~80-167 Mbps. roomler native-to-native peers
+# throughput at ~80-167 Mbps. meshharbor native-to-native peers
 # need 8 MiB rwnd to stay link-bound on home-broadband paths. Our
 # vendored copy adds set_sctp_max_receive_buffer_size to
 # SettingEngine and threads it through the SCTP `Config` constructor.
@@ -121,7 +121,7 @@ exclude = [
 # `winreg` feature — which `tun` hard-requests — deletes every
 # `NetworkList\Profiles` / `NetworkList\Signatures\Unmanaged` registry
 # entry whose ProfileName/Description matches the adapter NAME, on every
-# adapter drop. That erases the roomler network's NLA identity (and the
+# adapter drop. That erases the meshharbor network's NLA identity (and the
 # operator's Private-profile firewall categorization) that the constant
 # requested GUID (rc.279) exists to keep stable across sessions. Our
 # vendored copy removes the deletion; the feature flag stays declared so
@@ -281,7 +281,7 @@ web-push = "0.10"
 
 # Misc
 rand = "0.9"
-# `roomler ssh` mints a per-session ephemeral keypair in the CLI process, so
+# `meshharbor ssh` mints a per-session ephemeral keypair in the CLI process, so
 # the private half never crosses the LocalAPI socket. Version is PINNED to the
 # one russh 0.62 already resolves — a second `ssh-key` generation in the tree
 # would mean two incompatible `PublicKey` types across the server and client
@@ -322,7 +322,7 @@ chacha20poly1305 = "0.10"
 zeroize = "1"
 # FR-90 P3-3 — a leased value crosses to a device as a libsodium-compatible
 # sealed box (`crypto_box_seal`: X25519, XSalsa20-Poly1305) for the key the
-# daemon holds. The device's half is `roomlerd`'s `vault` feature. RustCrypto,
+# daemon holds. The device's half is `meshharbord`'s `vault` feature. RustCrypto,
 # on the `curve25519-dalek` 4 and `aead` 0.5 the tree already builds.
 crypto_box = { version = "0.9.1", features = ["seal"] }
 

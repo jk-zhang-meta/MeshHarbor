@@ -11,7 +11,7 @@ use std::thread;
 pub struct Capturer {
     stream: CGDisplayStreamRef,
     queue: DispatchQueue,
-    // ROOMLER PATCH: see `Drop`.
+    // MESHHARBOR PATCH: see `Drop`.
     stop: Arc<StopLatch>,
 
     width: usize,
@@ -37,7 +37,7 @@ impl Capturer {
                 if status == FrameComplete {
                     handler(unsafe { Frame::new(surface) });
                 } else if status == Stopped {
-                    // ROOMLER PATCH: the stream's last word — see `Drop`.
+                    // MESHHARBOR PATCH: the stream's last word — see `Drop`.
                     on_stop.stopped();
                 }
             }).copy();
@@ -79,7 +79,7 @@ impl Capturer {
 }
 
 impl Drop for Capturer {
-    /// ROOMLER PATCH: release the stream only once CoreGraphics is done with it.
+    /// MESHHARBOR PATCH: release the stream only once CoreGraphics is done with it.
     ///
     /// Upstream stopped the stream and released it on the next line, with a
     /// `TODO: Maybe it should wait until Stopped before releasing?` — and the
@@ -114,7 +114,7 @@ impl Drop for Capturer {
     }
 }
 
-/// ROOMLER PATCH: what `Drop` and the `Stopped` delivery agree on. Whichever
+/// MESHHARBOR PATCH: what `Drop` and the `Stopped` delivery agree on. Whichever
 /// of the two comes second starts the release, so neither order can release
 /// early and neither can lose the stream.
 #[derive(Default)]
@@ -161,7 +161,7 @@ impl StopLatch {
     }
 }
 
-/// ROOMLER PATCH: the two references `Capturer` owns, once it no longer can.
+/// MESHHARBOR PATCH: the two references `Capturer` owns, once it no longer can.
 struct Owned {
     stream: CGDisplayStreamRef,
     queue: DispatchQueue

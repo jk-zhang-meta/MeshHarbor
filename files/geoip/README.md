@@ -5,7 +5,7 @@ connect time and then **drops the address**, so no IP is ever stored. That
 lookup needs a MaxMind-format country database. The server image carries
 one: DB-IP's **IP to Country Lite**, at
 `/usr/share/roomler/geoip/dbip-country-lite.mmdb`, the path the image's
-`ROOMLER__STATS__GEOIP_MMDB` names (#1896).
+`MESHHARBOR__STATS__GEOIP_MMDB` names (#1896).
 
 It is never committed. `scripts/fetch-geoip.sh` stages it in this
 directory before `docker build`, and both image workflows run it
@@ -64,8 +64,8 @@ build host dropped `GeoLite2-Country.mmdb` here by hand; the GitHub lane
 ## Your own database, or none
 
 - **Your own** (a licensed GeoIP2 Country, or a GeoLite2 you are entitled
-  to use): mount it and set `ROOMLER__STATS__GEOIP_MMDB=/path/to/it.mmdb`.
-- **None**: set `ROOMLER__STATS__GEOIP_MMDB=` (empty). Lookups stop; the
+  to use): mount it and set `MESHHARBOR__STATS__GEOIP_MMDB=/path/to/it.mmdb`.
+- **None**: set `MESHHARBOR__STATS__GEOIP_MMDB=` (empty). Lookups stop; the
   security freshness monitor warns that geographic zone evidence is unavailable.
 - ⚠️ An environment variable outranks `config/*.toml`, and the image sets
   this one. `[stats] geoip_mmdb` in a config file cannot override it; set

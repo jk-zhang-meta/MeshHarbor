@@ -63,7 +63,7 @@ rejects ("maxSurge=0 means every drained second is downtime for this node"). It 
 no delay: it is a broadcast on the way out, and the process stops accepting exactly
 when it does today.
 
-⚠️ Kill switch: `ROOMLER__DERP__DRAIN_ON_SHUTDOWN` (default on once proven; off ⇒
+⚠️ Kill switch: `MESHHARBOR__DERP__DRAIN_ON_SHUTDOWN` (default on once proven; off ⇒
 today's behaviour byte-for-byte).
 
 ### Why P0 failed — the premise, not the primitive

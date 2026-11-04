@@ -191,7 +191,7 @@ pub fn apply(next: HashMap<ObjectId, u64>) {
 /// Redis this pod is the only one and always runs it).
 pub async fn run_job_once(state: &NetworkState, now: DateTime) -> Option<usize> {
     if let Some(redis) = &state.redis_pubsub {
-        let claim = format!("roomler:relay_allowance_job:{}", state.db.name());
+        let claim = format!("meshharbor:relay_allowance_job:{}", state.db.name());
         match redis
             .try_claim(&claim, JOB_EVERY.as_secs().saturating_sub(30).max(1))
             .await

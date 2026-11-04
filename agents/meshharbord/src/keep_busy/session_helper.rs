@@ -40,7 +40,7 @@ const DISPLAY_IFACE: &str = "org.gnome.Mutter.DisplayConfig";
 /// another when it needs one).
 const HELPER_IDLE_EXIT: Duration = Duration::from_secs(60);
 
-// ── The child: `roomlerd portal-helper --keep-busy`, run AS the person ─────
+// ── The child: `meshharbord portal-helper --keep-busy`, run AS the person ─────
 
 /// The helper's body. ⚠️ zbus's blocking API panics inside a tokio runtime,
 /// and the subcommand is reached from `#[tokio::main]`, so the D-Bus work

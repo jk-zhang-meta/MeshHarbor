@@ -99,7 +99,7 @@ agent stack layers on shared leaf crates so thin clients never link the world.
 
 ```mermaid
 flowchart BT
-    config["crates/config<br/>settings (ROOMLER__ env)"]
+    config["crates/config<br/>settings (MESHHARBOR__ env)"]
     db["crates/db<br/>Mongo models + indexes"]
     core["crates/core → meshharbor-core<br/>Core · module contract · composition snapshot"]
     saas["crates/modules/saas → meshharbor-mod-saas<br/>Stripe · newsletter · plan compliance (add-on)"]

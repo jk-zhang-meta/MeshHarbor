@@ -10,7 +10,7 @@
 //!   the netmap carries, derived from the fleet name. The dashboard's
 //!   `display_name` deliberately never enters the netmap
 //!   (`docs/device-naming.md`), so the only place a CLI can learn it is the
-//!   device list the daemon fetches for this device (`roomler devices`, FR-84
+//!   device list the daemon fetches for this device (`meshharbor devices`, FR-84
 //!   D5b). Everything here is a JOIN of those two lists; nothing on the wire
 //!   changes.
 //! * `exec` / `ssh` targets are resolved by the SERVER (hex id, then the fleet
@@ -57,7 +57,7 @@ pub fn row_for_peer<'a>(p: &PeerInfo, rows: &'a [DeviceRowLite]) -> Option<&'a D
 }
 
 /// The local peer behind a listed device: by overlay node id, else by the
-/// backing agent id. `roomler devices` fills its CONN column with this.
+/// backing agent id. `meshharbor devices` fills its CONN column with this.
 pub fn peer_for_device<'a>(r: &DeviceRowLite, peers: &'a [PeerInfo]) -> Option<&'a PeerInfo> {
     if let Some(node) = r.overlay_node_id.as_deref()
         && !node.is_empty()
@@ -420,7 +420,7 @@ mod tests {
     // ── the join ───────────────────────────────────────────────────────────
 
     /// The NAME column reads the display name through the same two join keys
-    /// `roomler devices` uses the other way round — node id first, then the
+    /// `meshharbor devices` uses the other way round — node id first, then the
     /// backing agent id — and a blank label is no label.
     #[test]
     fn peers_are_named_by_node_id_then_agent_id_and_blank_labels_are_none() {
@@ -601,7 +601,7 @@ mod tests {
         for typed in [
             "home-server.acme.roomler.net",
             "HOME-SERVER.acme.roomler.net.",
-            "home-server.roomler",
+            "home-server.meshharbor",
         ] {
             assert_eq!(
                 resolve_selector(typed, Some(&rows), Need::OverlayIp),

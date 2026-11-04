@@ -252,7 +252,7 @@ the grid honest for a device that has not yet updated to it — a 0.4.25 device 
 
 | key | where | default | effect |
 |---|---|---|---|
-| `overlay_key_rotation` | device config (tribool), config surface, env `ROOMLERD_OVERLAY_KEY_ROTATION` (`crates/agent-core/src/config.rs:980-868`, `config_surface.rs:1096-1069`) | **on** | `false` ⇒ every order is answered `refused: disabled`, key unchanged. Read from the start-time snapshot — **restart required** |
+| `overlay_key_rotation` | device config (tribool), config surface, env `MESHHARBORD_OVERLAY_KEY_ROTATION` (`crates/agent-core/src/config.rs:980-868`, `config_surface.rs:1096-1069`) | **on** | `false` ⇒ every order is answered `refused: disabled`, key unchanged. Read from the start-time snapshot — **restart required** |
 | `overlay_wg_key_epoch` | persisted next to the key, primary scalar and per `[[orgs]]` entry (`config.rs:1861`, `:1975-1977`) | `0` | bumped per rotation; presented on every join, shown in the grid |
 | server switch | — | — | **none, deliberately**: the route is admin-initiated and permission-gated; a defective push is stopped by the device switch |
 
@@ -349,8 +349,8 @@ The server cannot see the device switch, so a switched-off device is still order
      `key_issued_at` resets to `now`, while `key_ttl_secs` inherits
      `min(default_key_ttl_secs(), latest_row_on_same_machine.key_ttl_secs)` so an operator-assigned
      shorter per-node TTL is preserved across tombstone + re-create.
-- **Legacy agents under `ROOMLER_OVERLAY_KEY_TTL_SECS`.** `OverlayNodeDao::create` applies
-  `ROOMLER_OVERLAY_KEY_TTL_SECS` (clamped to `>= 60` seconds when non-zero) to all newly
+- **Legacy agents under `MESHHARBOR_OVERLAY_KEY_TTL_SECS`.** `OverlayNodeDao::create` applies
+  `MESHHARBOR_OVERLAY_KEY_TTL_SECS` (clamped to `>= 60` seconds when non-zero) to all newly
   created overlay nodes regardless of agent version. Pre-`0.4.25` agents that do not
   advertise `key-rotate` cannot execute automatic `rc:agent.key_rotate` orders and require
   manual agent update or operator intervention when their key TTL expires.

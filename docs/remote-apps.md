@@ -78,7 +78,7 @@ Three properties of the wire are load-bearing:
 
 Until FR-56 P1 the gate was literally `env::var_os("DISPLAY").is_some()` on
 the **daemon**, which is true only when the daemon started its own Xvfb
-(`ROOMLERD_VIRTUAL_DESKTOP=1`). On every real login session the daemon has no
+(`MESHHARBORD_VIRTUAL_DESKTOP=1`). On every real login session the daemon has no
 `DISPLAY`, so the feature never failed — it never engaged. `discover()`
 (`agents/meshharbord/src/apps/linux.rs:480`) replaces that with the walk below.
 
@@ -143,7 +143,7 @@ caps-probe child (§4.3).
 
 | Tier / path | Hello `apps` on 0.4.102 | `rc:apps.list.reply` on 0.4.102 | Reason reached the screen? | After P6 |
 |---|---|---|---|---|
-| **Xvfb virtual desktop** (`ROOMLERD_VIRTUAL_DESKTOP=1`) | `list · focus · launch` | full list; `sources: x11`, nothing unlisted | n/a — complete. Field: three cluster nodes, one root xterm each | `+ status`; otherwise untouched (AC3) |
+| **Xvfb virtual desktop** (`MESHHARBORD_VIRTUAL_DESKTOP=1`) | `list · focus · launch` | full list; `sources: x11`, nothing unlisted | n/a — complete. Field: three cluster nodes, one root xterm each | `+ status`; otherwise untouched (AC3) |
 | **X11 login session** | `list · focus · launch` | full list | n/a | `+ status` |
 | **Wayland session with Xwayland** (GNOME, KDE) | `list · focus · launch` | Xwayland windows; `unlisted: "native Wayland windows: this compositor exposes no protocol to enumerate them"` | `unlisted` **yes** (P2) | `+ status` |
 | ↳ **GNOME native windows** (P3) | — | named by `unlisted` | yes — GNOME *refuses* `Introspect.GetWindows` (`Access denied`, two D-Bus clients, Shell 48.8) and has no activate at all, so this is a reported limit, not a TODO | — |
@@ -159,7 +159,7 @@ caps-probe child (§4.3).
 | **Windows** | `list · focus · launch` whenever enabled | `EnumWindows` on the active desktop; `sources: win32`, nothing to miss | n/a | `+ status`. ⚠️ Unverified: a SYSTEM worker with nobody logged in or a locked screen — `EnumWindows` on the wrong window station returns few or no windows, which is the P2 shape ("quiet desktop"); `windows.rs` names `SetThreadDesktop` as the fix *when observed* |
 | **user logs in after the daemon booted** | absent — **for the process lifetime** | the live reply says `supported:true` | NO — the button was hidden, so nobody asked | `status` shows the entry; the dialog is live |
 | **session gone by click time** (advertised at hello, user logged out) | `list · focus · launch` | bare `supported:false`; the entry greyed out with no tooltip | **NO** | reason in the dialog; the entry is never disabled |
-| **per-window capture** (P4, `ROOMLERD_WINDOW_CAPTURE=1`) | not a capability on this wire | the portal shows a picker on the host; unanswered, the helper times out and the capture cascade falls through | the *capture* reason travels as FR-80's `rc:media-unavailable` only if every later arm fails too | out of scope here; see [`linux-capture.md`](linux-capture.md#7-configuration) |
+| **per-window capture** (P4, `MESHHARBORD_WINDOW_CAPTURE=1`) | not a capability on this wire | the portal shows a picker on the host; unanswered, the helper times out and the capture cascade falls through | the *capture* reason travels as FR-80's `rc:media-unavailable` only if every later arm fails too | out of scope here; see [`linux-capture.md`](linux-capture.md#7-configuration) |
 
 Two numbers from the audit's denominator, read from the server rather than an
 exec sweep (an exec sweep reaches only what is online): on 0.4.102 **every**
@@ -313,7 +313,7 @@ server outlives both), it is `ssh`-attachable from a real login
 Streaming **one application window** instead of the monitor reuses FR-45's
 whole portal pipeline with a single change: `SelectSources(types = WINDOW)`
 (`SOURCE_WINDOW`, `agents/meshharbord/src/capture/portal/screencast.rs:95`) behind
-`ROOMLERD_WINDOW_CAPTURE` (`agents/meshharbord/src/capture/portal/backend.rs:77`,
+`MESHHARBORD_WINDOW_CAPTURE` (`agents/meshharbord/src/capture/portal/backend.rs:77`,
 config key `window_capture`, `crates/agent-core/src/config.rs:924`). It is
 **attended by construction**: the portal answers by showing the person at the
 screen a window picker, and nothing agent-side can name a window — GNOME
@@ -382,8 +382,8 @@ label    = "Text editor"
 |---|---|---|---|
 | `virtual_desktop_apps.enabled` | config (`crates/agent-core/src/apps_config.rs:21`); `roomler config get virtual_desktop_apps` prints the JSON (`config_surface.rs:1502`) | `true` | the kill switch; the hello stops advertising `list` (on a caps-cache hit **and** a miss, since the review of #1667 — §4.3), and a request answers `disabled` |
 | `virtual_desktop_apps.allowlist.<key>` | config | `bash` on Linux, `cmd` on Windows | `command` is argv; an empty command is skipped from `launchable` and refused on launch |
-| `window_capture` | config / `ROOMLERD_WINDOW_CAPTURE` (`config_surface.rs:1044`) | **off** | P4 — attended by construction; restart required |
-| `ROOMLERD_VIRTUAL_DESKTOP` | env | off | the daemon's own Xvfb (§2 of [`linux-capture.md`](linux-capture.md)); when set, the Daemon arm wins and no session is discovered |
+| `window_capture` | config / `MESHHARBORD_WINDOW_CAPTURE` (`config_surface.rs:1044`) | **off** | P4 — attended by construction; restart required |
+| `MESHHARBORD_VIRTUAL_DESKTOP` | env | off | the daemon's own Xvfb (§2 of [`linux-capture.md`](linux-capture.md)); when set, the Daemon arm wins and no session is discovered |
 
 `roomlerd apps-probe` (`agents/meshharbord/src/main.rs:5893`) answers the whole
 question on the host with no session and no browser, the way `capture-smoke`

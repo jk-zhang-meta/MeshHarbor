@@ -7,7 +7,7 @@ use super::*;
 use crate::error::flatten_errs;
 use crate::track::RTP_OUTBOUND_MTU;
 
-/// Roomler patch (#2284), not in upstream webrtc-rs 0.12: when a sample's
+/// MeshHarbor patch (#2284), not in upstream webrtc-rs 0.12: when a sample's
 /// RTP clock advance is spent.
 #[derive(Debug, Clone, Copy)]
 enum Advance {
@@ -97,7 +97,7 @@ impl TrackLocalStaticSample {
             .await
     }
 
-    /// Roomler patch (#2284), not in upstream webrtc-rs 0.12: write a sample
+    /// MeshHarbor patch (#2284), not in upstream webrtc-rs 0.12: write a sample
     /// stamped after the RTP clock has advanced by `gap`, and do not advance
     /// it afterwards.
     ///

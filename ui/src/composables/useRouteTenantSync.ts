@@ -16,7 +16,7 @@ import { useTenantStore } from '@/stores/tenant'
  * ⚠️ It watches the org LIST as well as the param, and runs at once. On a deep
  * link or a reload the param never changes, and the list arrives after the
  * shell mounts — `fetchTenants()` then sets `current` to the org last picked in
- * this browser (`roomler-current-tenant`). A watcher on the param alone never
+ * this browser (`meshharbor-current-tenant`). A watcher on the param alone never
  * fired in that case, so the page kept the other org's name until the user
  * happened to leave the org's pages and come back.
  */

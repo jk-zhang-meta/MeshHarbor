@@ -26,7 +26,7 @@ use std::path::PathBuf;
 /// `C:\Windows\System32\config\systemprofile\AppData\Roaming\…`
 /// — invisible to a human operator and missed by every fleet-mgmt
 /// scanner that greps user profiles. Prefer
-/// `%PROGRAMDATA%\roomler\roomler-agent\needs-attention.txt` in that
+/// `%PROGRAMDATA%\meshharbor\meshharbor-agent\needs-attention.txt` in that
 /// case so the file is findable by both a logged-in operator
 /// (`dir %PROGRAMDATA%`) AND a fleet scanner.
 ///

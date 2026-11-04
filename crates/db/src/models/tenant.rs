@@ -204,7 +204,7 @@ pub struct TenantSettings {
     /// working as the worker, and reports so in the audit (`ran_as: worker`).
     #[serde(default)]
     pub exec_require_system: bool,
-    /// Roomler SSH — the org-wide kill-switch (gate 1 of four), the twin of
+    /// MeshHarbor SSH — the org-wide kill-switch (gate 1 of four), the twin of
     /// [`Self::remote_exec_enabled`] and deliberately a SEPARATE switch: an org
     /// that allows bounded diagnostic commands has not thereby allowed
     /// interactive sessions. `false` by default and for every pre-feature row;

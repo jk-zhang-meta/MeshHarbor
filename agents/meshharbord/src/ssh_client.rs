@@ -138,7 +138,7 @@ pub fn check_command(command: &str) -> Result<(), RunError> {
 pub fn mint_key() -> PrivateKey {
     let seed: [u8; 32] = rand::random();
     let mut key = PrivateKey::from(Ed25519Keypair::from_seed(&seed));
-    key.set_comment("roomler-hive-session");
+    key.set_comment("meshharbor-hive-session");
     key
 }
 
@@ -224,7 +224,7 @@ pub trait OverlayDialer: Send + Sync {
 }
 
 /// The OS's routes: an overlay with a TUN, where the overlay's addresses
-/// route like any other, as `roomler proxy` dials them.
+/// route like any other, as `meshharbor proxy` dials them.
 pub struct OsDialer;
 
 /// How long a dial may take before it is given up.
@@ -312,7 +312,7 @@ where
             .flatten();
         let auth = session
             .authenticate_publickey(
-                "roomler",
+                "meshharbor",
                 russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), hash),
             )
             .await

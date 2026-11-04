@@ -13,14 +13,14 @@
  *   `setRemoteDescription` — so whoever relays the signalling (the server
  *   included) cannot stand in for the device.
  *
- * Every byte here is a wire surface shared with `roomlerd`
+ * Every byte here is a wire surface shared with `meshharbord`
  * (`agents/meshharbord/src/external_logins.rs`): the labels, the length
  * prefixes, the field order, the hashes, the encoding. The tests pin the
  * same known-answer vectors the device's tests pin.
  */
 
-const APP_KEY_LABEL = 'roomler-extauth-v1 app-key'
-const TRANSPORT_LABEL = 'roomler-extauth-v1 transport'
+const APP_KEY_LABEL = 'meshharbor-extauth-v1 app-key'
+const TRANSPORT_LABEL = 'meshharbor-extauth-v1 transport'
 
 /**
  * The password stretching, PINNED: Argon2id, 64 MiB (`memory` is in KiB),

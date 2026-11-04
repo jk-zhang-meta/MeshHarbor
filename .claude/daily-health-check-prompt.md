@@ -1,5 +1,5 @@
 # =============================================================================
-# DAILY AUTOMATED HEALTH CHECK — ROOMLER AI (Rust/Axum + Vue 3 + MongoDB)
+# DAILY AUTOMATED HEALTH CHECK — MESHHARBOR AI (Rust/Axum + Vue 3 + MongoDB)
 # =============================================================================
 #
 # Usage: Schedule via cron, GitHub Actions, or CI runner:

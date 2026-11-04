@@ -14,7 +14,7 @@
 //!
 //! ## Path
 //!
-//! `%PROGRAMDATA%\roomler\last-system-context-attempt.json` —
+//! `%PROGRAMDATA%\meshharbor\last-system-context-attempt.json` —
 //! `%PROGRAMDATA%` is admin-write / world-read by default, so the
 //! LocalSystem-running CA can write it AND the operator's non-
 //! elevated wizard process can read it.
@@ -53,7 +53,7 @@ pub const DISABLE_COMMAND: &str = "disable-system-context";
 /// The record is the evidence because nothing else survives an install:
 /// every install deletes and recreates the service (and a major upgrade
 /// runs the old product's `service uninstall` first), taking
-/// `ROOMLERD_ENABLE_SYSTEM_SWAP` with it, while this file is only ever
+/// `MESHHARBORD_ENABLE_SYSTEM_SWAP` with it, while this file is only ever
 /// written by an enable or a disable — every MSI since rc.44 runs one.
 ///
 /// ON only for an enable that got past writing the variable: `ok`, or a
@@ -144,13 +144,13 @@ impl Attempt {
     }
 }
 
-/// Location where attempts are persisted. `%PROGRAMDATA%\roomler\` on
+/// Location where attempts are persisted. `%PROGRAMDATA%\meshharbor\` on
 /// Windows; the parent directory is created on first write.
 pub fn path() -> PathBuf {
     let base = std::env::var_os("PROGRAMDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
-    base.join("roomler")
+    base.join("meshharbor")
         .join("last-system-context-attempt.json")
 }
 
@@ -308,10 +308,10 @@ mod tests {
     }
 
     #[test]
-    fn path_lives_under_programdata_roomler() {
+    fn path_lives_under_programdata_meshharbor() {
         let p = path();
         let s = p.to_string_lossy().to_lowercase();
-        assert!(s.contains("roomler"));
+        assert!(s.contains("meshharbor"));
         assert!(s.ends_with("last-system-context-attempt.json"));
     }
 

@@ -2,13 +2,13 @@
 // Copyright (C) 2026 G ROX EOOD
 // RETIRED-NAME-ANCHOR(4): names the PRE-RENAME appdirs segment a host installed before
 // P4b still has; appdirs::app_segment resolves it, so it is an input.
-//! Detect existing `roomlerd` installs on a Windows host.
+//! Detect existing `meshharbord` installs on a Windows host.
 //!
 //! Used by the rc.28 installation wizard (and any future CLI tooling)
 //! to decide whether the operator is doing a clean install, a
 //! same-flavour upgrade (preserves enrollment), or a cross-flavour
-//! switch (wipes `%APPDATA%\roomler\roomler\config.toml`, or the
-//! pre-rename `\roomler-agent\` tree on a host that still has one —
+//! switch (wipes `%APPDATA%\meshharbor\meshharbor\config.toml`, or the
+//! pre-rename `\meshharbor-agent\` tree on a host that still has one —
 //! operator needs a fresh enrollment token).
 //!
 //! Probes the Windows registry directly via the packed-UpgradeCode
@@ -47,9 +47,9 @@ pub enum ExistingInstall {
     /// No prior install detected (neither HKCU perUser nor HKLM
     /// perMachine UpgradeCode keys present).
     Clean,
-    /// perUser MSI installed; HKLM has no roomlerd UpgradeCode.
+    /// perUser MSI installed; HKLM has no meshharbord UpgradeCode.
     PerUser(InstallInfo),
-    /// perMachine MSI installed; HKCU has no roomlerd UpgradeCode.
+    /// perMachine MSI installed; HKCU has no meshharbord UpgradeCode.
     PerMachine(InstallInfo),
     /// BOTH flavours appear installed simultaneously. Should never
     /// happen post-rc.18 (cross-flavour cleanup custom actions scrub
@@ -89,7 +89,7 @@ pub(crate) fn decide_from_probe(probe: InstallProbe) -> ExistingInstall {
     }
 }
 
-/// Probe the Windows registry for existing roomlerd installs.
+/// Probe the Windows registry for existing meshharbord installs.
 ///
 /// On non-Windows platforms returns `ExistingInstall::Clean`
 /// unconditionally — the installer wizard is Windows-only for v1.
@@ -125,7 +125,7 @@ impl Flavour {
     }
 }
 
-/// One installed roomlerd MSI product, discovered by walking
+/// One installed meshharbord MSI product, discovered by walking
 /// **all** ProductCode values under an UpgradeCode key — unlike
 /// [`detect_existing_install`], which reports only the first. The
 /// obsolete-version sweep ([`crate::version_sweep`]) uses this to find
@@ -146,7 +146,7 @@ pub struct InstalledProduct {
     pub version: Option<String>,
 }
 
-/// Enumerate **all** installed roomlerd MSI products across both
+/// Enumerate **all** installed meshharbord MSI products across both
 /// flavours (perUser HKCU + perMachine HKLM). Returns every ProductCode
 /// registered under either UpgradeCode key, each with its
 /// `DisplayVersion`. Non-Windows hosts return an empty vec.

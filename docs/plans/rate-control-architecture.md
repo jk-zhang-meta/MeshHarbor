@@ -82,7 +82,7 @@ rc_max_rate = target; rc_buffer_size = target × hrd_pct/100`** (CBR: TargetKbps
 MaxKbps). Fix the existing NVENC bug: :1615 writes `rc_buffer_size = target` while the open sized it
 `maxrate × hrd_pct/100` (:262) — store `hrd_pct` on the struct. Dead-band: InPlace applies raw
 targets when `|Δ| ≥ 3 %` (a QSV Reset flushes the pipeline). Kill switch `encoder_inplace_rate`
-(env `ROOMLERD_ENCODER_INPLACE_RATE`), **default OFF in the PR, ON after A0 passes on CORPLAP-1**
+(env `MESHHARBORD_ENCODER_INPLACE_RATE`), **default OFF in the PR, ON after A0 passes on CORPLAP-1**
 (six places: `config_surface.rs` KEYS near :630 / get :877 / set :1290; `config.rs` field :879,
 default :1996, `env_bridge_bools` :2122 array 72→73; `enrollment.rs:203`; parity test :1935).
 Counters `rate_moves, rebuilds, idr_count` on `FfmpegEncoder` → heartbeat (`peer.rs:6818–6771`) with
@@ -99,7 +99,7 @@ optionally behind a private `reconfig_idr` option so it is upstreamable),
 (written, disabled, unmeasured). Applied in all three builders: Linux `patch -p1` after the tarball
 (`vendor-ffmpeg-windows.yml:198–200`), macOS after the clone (`vendor-ffmpeg-macos.yml:62–64`),
 Windows by injecting `PATCHES` into the copied portfile's `vcpkg_from_github(` (same anchor-replace
-technique :75–95). Drift gate: each builder writes `ROOMLER-PATCHES.txt` (sha256 per patch) into
+technique :75–95). Drift gate: each builder writes `MESHHARBOR-PATCHES.txt` (sha256 per patch) into
 the asset and `release-agent.yml`'s three fetch steps (:341–352, :1002–1004, :1926–1934) assert it
 matches `.github/ffmpeg-patches/*`. `const NVENC_RECONFIG_FORCES_IDR: bool` flips to false in the
 asset-bump PR; the pump's `held_increase` arm (`peer.rs:6294–6274`) keys on it.
@@ -223,7 +223,7 @@ before B2).
 ## FR-C — The right data path (decision: never for RC)
 
 **C1 — ICE never selects an overlay address for remote desktop.** Three mechanisms, one kill switch
-`overlay_ice_candidates` (env `ROOMLERD_ICE_OVERLAY_CANDIDATES`; ON restores today):
+`overlay_ice_candidates` (env `MESHHARBORD_ICE_OVERLAY_CANDIDATES`; ON restores today):
 
 1. **Own-adapter `ip_filter` at gather** — `SettingEngine::set_ip_filter` next to `peer.rs:338`
    (`vendored/webrtc/src/api/setting_engine/mod.rs:195–197`, evaluated per address in

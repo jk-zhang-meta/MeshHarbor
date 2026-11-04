@@ -2,7 +2,7 @@
 /* Account data lives in an unprivileged embedded server window, not agent IPC. */
 (function () {
   'use strict';
-  const R = window.Roomler;
+  const R = window.MeshHarbor;
   const choices = [['account-devices', 'devices'], ['account-received', 'received'], ['account-sent', 'sent']];
   let busy = false;
   choices.forEach(([id, section]) => {

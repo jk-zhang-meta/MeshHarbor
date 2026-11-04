@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 /*
- * FR-84 D5c — the mesh graph (`window.Roomler.Mesh`), a vanilla-SVG port of
+ * FR-84 D5c — the mesh graph (`window.MeshHarbor.Mesh`), a vanilla-SVG port of
  * the web dashboard's ui/src/components/stats/MeshGraph.vue.
  *
  * Same picture, same rules: the control plane at the centre, one node per
@@ -25,7 +25,7 @@
  *
  * The edge-reading rules (qualifiedCarrier / edgeSides /
  * participatingCarriers) are NOT reimplemented here: they come from
- * `window.RoomlerMesh`, generated from ui/src/utils/mesh.ts (mesh-util.js),
+ * `window.MeshHarborMesh`, generated from ui/src/utils/mesh.ts (mesh-util.js),
  * so the web and desktop graphs read an edge identically.
  *
  * Colours are CSS custom properties (--mesh-direct/relay/derp/tunnel/blocked,
@@ -51,7 +51,7 @@
 
   function util() {
     // Generated from ui/src/utils/mesh.ts — see mesh-util.js.
-    return window.RoomlerMesh;
+    return window.MeshHarborMesh;
   }
 
   function svgEl(tag, attrs, parent) {
@@ -424,5 +424,5 @@
     return { render };
   }
 
-  window.Roomler.Mesh = { create, layout, chordPath, angleDelta, nodesFromView, CARRIERS };
+  window.MeshHarbor.Mesh = { create, layout, chordPath, angleDelta, nodesFromView, CARRIERS };
 })();

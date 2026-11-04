@@ -188,7 +188,7 @@ pub(crate) mod resample;
 /// so `policy::tests` can take the same lock.
 // RETIRED-NAME-ANCHOR-BEGIN
 // Every retired name below is a test deliberately feeding the RETIRED
-// `ROOMLER_AGENT_*` spelling in, to prove it does NOTHING. Until FR-46 P2b it
+// `MESHHARBOR_AGENT_*` spelling in, to prove it does NOTHING. Until FR-46 P2b it
 // proved the opposite — that field hosts kept working — and the names are the
 // same either way, so rewriting them deletes the coverage while leaving the
 // tests green.
@@ -196,7 +196,7 @@ pub(crate) mod resample;
 // docs/fr/FR-46
 #[cfg(test)]
 pub(crate) static RELAY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-/// FR-77 — `ROOMLERD_ENCODER_CELLS_DENY` has the same shape: three tests set
+/// FR-77 — `MESHHARBORD_ENCODER_CELLS_DENY` has the same shape: three tests set
 /// it (`cells.rs` x2, `caps.rs`), `test_env` serialises nothing, and the
 /// harness runs them in parallel — it flaked once in four native runs. A test
 /// that only READS it twice and compares (`caps::tests::
@@ -266,7 +266,7 @@ pub const MIN_BITRATE_BPS: u32 = 1_500_000;
 /// disabling the multiplicative decrease entirely (the rc.171
 /// starvation class). The AIMD additionally caps the floor at its live
 /// ceiling, so a mid-session flip to relay can never invert the two.
-/// Hatch: `ROOMLERD_AREA_MIN_BITRATE=0` / config
+/// Hatch: `MESHHARBORD_AREA_MIN_BITRATE=0` / config
 /// `area_min_bitrate` restores the flat 1.5 M floor.
 #[cfg_attr(
     not(any(feature = "ffmpeg-encoder", feature = "vp9-444")),
@@ -294,7 +294,7 @@ fn area_min_bitrate_enabled() -> bool {
 /// tops out just under the pipe instead of rediscovering it by
 /// congesting the send queue on every drag burst. See
 /// `encode::goodput` for the sampling rules. Hatch:
-/// `ROOMLERD_MEASURED_CEILING=0` / config `measured_ceiling`.
+/// `MESHHARBORD_MEASURED_CEILING=0` / config `measured_ceiling`.
 #[cfg_attr(
     not(any(feature = "ffmpeg-encoder", feature = "vp9-444")),
     allow(dead_code)
@@ -320,7 +320,7 @@ pub fn slow_link_floor_enabled() -> bool {
 /// FR-62 A1 — apply a rate move IN PLACE on QSV (and keep NVENC's corrected
 /// HRD sizing) instead of rebuilding the encoder. Default **OFF**: the PR
 /// ships inert and this flips on only after A0 clears the QSV `MFXVideoENCODE_Reset`
-/// on real Iris-Xe silicon. Env `ROOMLERD_ENCODER_INPLACE_RATE` / config
+/// on real Iris-Xe silicon. Env `MESHHARBORD_ENCODER_INPLACE_RATE` / config
 /// `encoder_inplace_rate`. OFF = the pre-A1 behaviour byte-for-byte.
 pub fn encoder_inplace_rate_enabled() -> bool {
     tunnel_core::env::node_env("ENCODER_INPLACE_RATE").as_deref() == Some("1")
@@ -332,7 +332,7 @@ pub fn encoder_inplace_rate_enabled() -> bool {
 /// reconfigure DESPITE the vendored-FFmpeg patch. Default **OFF** — the patch
 /// dropped `resetEncoder=forceIDR=1` from `nvenc.c` and A0 measured 0/20
 /// rate-caused IDRs on the RTX (default AND constrained). Env-only, like
-/// `ROOMLERD_HW_AUTO`; the tell that would justify flipping it is a rising
+/// `MESHHARBORD_HW_AUTO`; the tell that would justify flipping it is a rising
 /// `idr_count` on a constrained NVENC heartbeat.
 pub fn nvenc_assume_reconfig_idr() -> bool {
     tunnel_core::env::node_env("ENCODER_NVENC_ASSUME_IDR").as_deref() == Some("1")
@@ -342,7 +342,7 @@ pub fn nvenc_assume_reconfig_idr() -> bool {
 /// roughly this a full-resolution frame is illegible at any QP and the
 /// honest lever is fewer PIXELS, not fewer bits; the relief exists to let
 /// the AIMD converge, not to chase a pipe to zero. Env
-/// `ROOMLERD_SLOW_LINK_MIN_BITRATE` / config `slow_link_min_bitrate`
+/// `MESHHARBORD_SLOW_LINK_MIN_BITRATE` / config `slow_link_min_bitrate`
 /// (default 200 000, clamped to [50 000, `MIN_BITRATE_BPS`] — a value
 /// above the nominal floor is inert by construction, see
 /// `goodput::measured_floor_bps`).
@@ -455,14 +455,14 @@ pub fn slow_link_profile_enabled() -> bool {
 /// stall, no dead air, and rate DROPS finally land DURING motion as
 /// smaller frames instead of production skips. `0` restores the rc.445
 /// motion-defer (applies held until 1.2 s of quiet, then a blocking
-/// re-open). Hatch: `ROOMLERD_BG_REBUILD=0` / config `bg_rebuild`.
+/// re-open). Hatch: `MESHHARBORD_BG_REBUILD=0` / config `bg_rebuild`.
 #[cfg_attr(not(feature = "ffmpeg-encoder"), allow(dead_code))]
 pub fn bg_rebuild_enabled() -> bool {
     tunnel_core::env::node_env("BG_REBUILD").as_deref() != Some("0")
 }
 
 /// FR-62 — run a rebuild-bound rate apply OFF-THREAD on CONSTRAINED sessions
-/// too. Default **on**; `ROOMLERD_BG_REBUILD_CONSTRAINED=0` restores the inline
+/// too. Default **on**; `MESHHARBORD_BG_REBUILD_CONSTRAINED=0` restores the inline
 /// rebuild.
 ///
 /// Measured on Iris Xe (CORPLAP-1, 2026-09-02): a QSV encoder open costs
@@ -489,7 +489,7 @@ pub fn bg_rebuild_constrained_enabled() -> bool {
 /// 🔑 Its absence is why a 2 s encoder open hid for months. The pump already
 /// measured `capture`/`scale`/`encode`/`send`, and the stall appeared in NONE of
 /// them: the apply/rebuild phase was untimed, and a per-heartbeat AVERAGE cannot
-/// represent a single outlier even where it is counted. `ROOMLERD_PUMP_STALL_WATCH=0`
+/// represent a single outlier even where it is counted. `MESHHARBORD_PUMP_STALL_WATCH=0`
 /// disables.
 pub fn pump_stall_watch_enabled() -> bool {
     tunnel_core::env::node_env("PUMP_STALL_WATCH").as_deref() != Some("0")
@@ -498,7 +498,7 @@ pub fn pump_stall_watch_enabled() -> bool {
 /// FR-63 — open a session with [`slow_start`] instead of committing to a
 /// constant. **Default OFF**: this is a controller change, and the FR's own
 /// rule is that none ships live without a release of field evidence first.
-/// `ROOMLERD_RATE_SLOW_START=1` enables it per host for that measurement.
+/// `MESHHARBORD_RATE_SLOW_START=1` enables it per host for that measurement.
 ///
 /// The evidence it exists to answer (CORPLAP-1 over a corp VPN): a session
 /// opened at the nominal `2_550_000` into a path measured at `213_180` and
@@ -516,13 +516,13 @@ pub fn rate_slow_start_enabled() -> bool {
 /// Default **on** since 0.4.70: M1c met its gate on all three CORPLAP hosts on
 /// 0.4.69 (encode and capture averages unchanged, the worst pass per window down
 /// on every host); `media_thread = false` per device restores the inline path.
-/// Env `ROOMLERD_MEDIA_THREAD` / config `media_thread`.
+/// Env `MESHHARBORD_MEDIA_THREAD` / config `media_thread`.
 pub fn media_thread_enabled() -> bool {
     tunnel_core::env::flag("MEDIA_THREAD", true)
 }
 
 /// FR-65 P0 — an iteration slower than this (ms) is logged once, with its phase
-/// breakdown. `ROOMLERD_PUMP_STALL_WARN_MS`.
+/// breakdown. `MESHHARBORD_PUMP_STALL_WARN_MS`.
 ///
 /// **100 ms, lowered from the 250 ms this shipped with**, because the first field
 /// data said 250 was blind to the class that actually hurts: CORPLAP-1 on the
@@ -547,7 +547,7 @@ pub fn pump_stall_warn_ms() -> u64 {
 /// frames run the BGRA→NV12/I444 conversion in row bands across scoped
 /// threads (byte-identical output; ~25→~15 ms of "encode" time at
 /// 2880×1800). `0` restores the single-threaded dcv call. Hatch:
-/// `ROOMLERD_PAR_CONVERT=0` / config `par_convert`.
+/// `MESHHARBORD_PAR_CONVERT=0` / config `par_convert`.
 #[cfg_attr(not(feature = "ffmpeg-encoder"), allow(dead_code))]
 pub fn par_convert_enabled() -> bool {
     tunnel_core::env::node_env("PAR_CONVERT").as_deref() != Some("0")
@@ -560,7 +560,7 @@ pub fn par_convert_enabled() -> bool {
 /// (see [`relay_deferred_apply_allowed`]). Field (CORPLAP-3, 2026-08-27): each
 /// such IDR was a single ~300 KB frame ≈ 1.2–1.5 s of a ~2 Mbps relay —
 /// the "bulky" lumps. `0` restores the previous relay behaviour. Hatch:
-/// `ROOMLERD_RELAY_IDR_THRIFT=0` / config `relay_idr_thrift`.
+/// `MESHHARBORD_RELAY_IDR_THRIFT=0` / config `relay_idr_thrift`.
 #[cfg_attr(
     not(any(feature = "ffmpeg-encoder", feature = "vp9-444")),
     allow(dead_code)
@@ -571,7 +571,7 @@ pub fn relay_idr_thrift_enabled() -> bool {
 
 /// FR-15 — whether the constrained-transport age loop (viewer paint-age →
 /// fps cap + multiplicative decrease) is active. Default ON; kill switch
-/// `relay_age_feedback=false` / `ROOMLERD_RELAY_AGE_FEEDBACK=0`
+/// `relay_age_feedback=false` / `MESHHARBORD_RELAY_AGE_FEEDBACK=0`
 /// reverts relay rate control to the open-loop 0.4.7 posture.
 pub fn relay_age_feedback_enabled() -> bool {
     tunnel_core::env::node_env("RELAY_AGE_FEEDBACK").as_deref() != Some("0")
@@ -733,17 +733,17 @@ pub(crate) fn bitrate_base_for_fps(width: u32, height: u32, fps: u32) -> u32 {
 /// bitrate base following the rate they actually run at: the VP9-444 pump
 /// (P2a) and the RTP pump's OpenH264 (P2b). Default **on for Linux**, where the
 /// encoder asks for its clock (P1) and the tier was measured; Windows and
-/// macOS opt in with `ROOMLERD_SW_FPS_60=1` until P3 measures them on their own
+/// macOS opt in with `MESHHARBORD_SW_FPS_60=1` until P3 measures them on their own
 /// hardware (60 frames cost twice the CPU of 30 on a host whose clock was
 /// never the limit, and an attended desktop pays for it).
-/// `ROOMLERD_SW_FPS_60=0` restores 0.4.141's 30 fps and its base.
+/// `MESHHARBORD_SW_FPS_60=0` restores 0.4.141's 30 fps and its base.
 pub fn sw_fps_60_enabled() -> bool {
     tunnel_core::env::flag("SW_FPS_60", cfg!(target_os = "linux"))
 }
 
 /// FR-119 P1 — advertise `fps-high` in `AgentCaps.video`, so a viewer offers
 /// frame rates above 60 and asks for one with `rc:fps`, and (P2b) let the pump
-/// grant one. `ROOMLERD_FPS_HIGH`, or the `fps_high` config key through the
+/// grant one. `MESHHARBORD_FPS_HIGH`, or the `fps_high` config key through the
 /// bridge. Default **off** until the field has proven the grant. The probe child
 /// inherits the environment, so it reads the same answer the daemon would.
 pub fn fps_high_enabled() -> bool {
@@ -757,7 +757,7 @@ pub const SW_PACE_FLOOR_FPS: u32 = 30;
 
 /// True when the ICE transport is forced to a TURN relay — on TCP (WSL,
 /// corp-UDP-blocked nets) that path is bandwidth- + head-of-line-constrained.
-/// Set by virtual-desktop mode and the corp path via ROOMLERD_ICE_RELAY_TCP.
+/// Set by virtual-desktop mode and the corp path via MESHHARBORD_ICE_RELAY_TCP.
 ///
 /// Only the VP9-444 DC pump (`vp9-444`) and the FFmpeg DC pump
 /// (`ffmpeg-encoder`) consume this; the default-feature build has neither, so
@@ -774,7 +774,7 @@ pub(crate) fn transport_is_constrained() -> bool {
 }
 
 /// Bitrate ceiling (bps) for a constrained relay-TCP transport. Default 3 Mbps;
-/// override with ROOMLERD_RELAY_MAX_KBPS. A single TURN-TCP relay carries
+/// override with MESHHARBORD_RELAY_MAX_KBPS. A single TURN-TCP relay carries
 /// ~1-4 Mbps; the VP9-444 0.20-bpp ~12 Mbps target collapses it (27s freeze).
 ///
 /// See `transport_is_constrained` for why the `dead_code` allow is keyed on the
@@ -791,7 +791,7 @@ pub(crate) fn relay_max_bps() -> u32 {
         .unwrap_or(3_000_000)
 }
 
-/// Shared-pipeline egress split (default ON; `ROOMLERD_SHARED_RATE_SPLIT=0` /
+/// Shared-pipeline egress split (default ON; `MESHHARBORD_SHARED_RATE_SPLIT=0` /
 /// `false` reverts). On a CONSTRAINED (relay) transport every viewer of a
 /// shared encoder gets its OWN ciphertext copy over the SAME host uplink to
 /// the relay, so N viewers = N× egress; the DC pumps divide the ceiling by the
@@ -833,8 +833,8 @@ pub(crate) fn shared_split_ceiling_bps(
 
 /// FR-35 — the upper bound the LEARNED constrained ceiling may reach (bps).
 /// `0` = learning off (today's fixed ceiling, no rate memory). Env
-/// `ROOMLERD_RELAY_MAX_HI_KBPS` / config `relay_max_hi_kbps`, gated by the
-/// tribool `relay_ceiling_learn` (`ROOMLERD_RELAY_CEILING_LEARN`, default on).
+/// `MESHHARBORD_RELAY_MAX_HI_KBPS` / config `relay_max_hi_kbps`, gated by the
+/// tribool `relay_ceiling_learn` (`MESHHARBORD_RELAY_CEILING_LEARN`, default on).
 /// Default 8 000 kbps — from ONE pair's measurement (`neo16 → CORPLAP-2`
 /// sustained ~6–9 Mbps and choked at 12.8); revisit with a second pair.
 #[cfg_attr(
@@ -856,7 +856,7 @@ pub(crate) fn relay_max_hi_bps() -> u32 {
 /// stream at 3 Mbps starves into the blur↔crystallize AIMD sawtooth (field
 /// DEVBOX→WINHOST-A 2026-07-16) — fewer pixels per bit is the actual fix, so the
 /// DC pumps also cap the encode resolution. Default 1280 long edge (≈1280×800
-/// at 3 Mbps is smooth); env `ROOMLERD_RELAY_MAX_EDGE`, `0` disables.
+/// at 3 Mbps is smooth); env `MESHHARBORD_RELAY_MAX_EDGE`, `0` disables.
 /// Hard cap: clamps even an explicit controller pick (it's link physics).
 #[cfg_attr(
     not(any(feature = "vp9-444", feature = "ffmpeg-encoder")),
@@ -895,7 +895,7 @@ pub(crate) fn relay_addr_is_fast_local(addr: &str) -> bool {
 /// rc.190 (B2) — long-edge RESOLUTION cap for the SOFTWARE-encoded DC pump
 /// (libvpx). Mirrors the RTP pump's SW auto-downscale: a 4K panel through
 /// libvpx crawls (~25 fps at cpu-used 6, host CPU pinned — field WINHOST-H
-/// 2026-07-16). Default 1920 long edge; env `ROOMLERD_SW_MAX_EDGE`,
+/// 2026-07-16). Default 1920 long edge; env `MESHHARBORD_SW_MAX_EDGE`,
 /// `0` disables. Soft cap: fills in only when the controller left resolution
 /// at Native — an explicit rc:resolution pick wins ("operator can override",
 /// same contract as the RTP pump's auto-downscale).
@@ -910,7 +910,7 @@ pub(crate) fn sw_res_cap_long_edge() -> Option<u32> {
 /// rc.199 — the "Smoother" priority resolution cap (long-edge px). Chosen
 /// BELOW the relay hard cap (1280) so that even a direct-but-weak path sheds
 /// pixels in exchange for frame-rate + latency when the operator explicitly
-/// picks Smoother. Default 1024 long edge; env `ROOMLERD_SMOOTH_MAX_EDGE`,
+/// picks Smoother. Default 1024 long edge; env `MESHHARBORD_SMOOTH_MAX_EDGE`,
 /// `0` disables (falls back to native, subject to any independent SW soft cap).
 #[cfg_attr(
     not(any(feature = "vp9-444", feature = "ffmpeg-encoder")),
@@ -982,7 +982,7 @@ pub(crate) fn priority_relay_cap(priority: u8, constrained: bool) -> Option<u32>
     // on every host — i.e. never flipping beats the rung's steady-state
     // benefit. The rung's bit-shedding job moved to the continuous,
     // rebuild-free dial CEILING factor (`dial_rate_factor_pct` — the HRD
-    // raises QP during motion by itself). `ROOMLERD_PRIORITY_RES_CAP=1`
+    // raises QP during motion by itself). `MESHHARBORD_PRIORITY_RES_CAP=1`
     // / config `priority_res_cap` restores the rc.443 caps for A/B.
     if !priority_res_cap_enabled() {
         return None;
@@ -1000,7 +1000,7 @@ pub(crate) fn priority_relay_cap(priority: u8, constrained: bool) -> Option<u32>
     )
 }
 
-/// rc.445 — are the Priority dial's dims-caps restored (`ROOMLERD_PRIORITY_RES_CAP`
+/// rc.445 — are the Priority dial's dims-caps restored (`MESHHARBORD_PRIORITY_RES_CAP`
 /// / config `priority_res_cap`)? Off by default; see [`priority_relay_cap`].
 #[cfg_attr(
     not(any(feature = "vp9-444", feature = "ffmpeg-encoder")),
@@ -1084,7 +1084,7 @@ pub(crate) fn priority_relay_cap_for(
 /// and an untouched at-rest polish (a settled desktop never reaches the
 /// ceiling, so CQ-quality stills are unaffected). Smoother trades the
 /// most bits for fluidity; Sharper none. Env overrides
-/// `ROOMLERD_SMOOTHER_RATE_PCT` / `ROOMLERD_BALANCED_RATE_PCT`
+/// `MESHHARBORD_SMOOTHER_RATE_PCT` / `MESHHARBORD_BALANCED_RATE_PCT`
 /// (clamped [30, 100]).
 #[cfg_attr(
     not(any(feature = "vp9-444", feature = "ffmpeg-encoder")),
@@ -1115,7 +1115,7 @@ pub(crate) fn dial_rate_factor_pct(priority: u8) -> usize {
 /// opt-in at v1, default ON since P7c: a full field day on the winhost-b
 /// relay (2026-08-20) showed clean refine cycles at exactly this IDR
 /// cost, and the un-refined Balanced rung was the user-visible "still
-/// blurred" report. `ROOMLERD_IDLE_REFINE_BALANCED=0` restores the
+/// blurred" report. `MESHHARBORD_IDLE_REFINE_BALANCED=0` restores the
 /// old behaviour. Sharper has no cap to lift. The vp9-444 SW pump is
 /// excluded entirely (refined-native keepalives would cost ~16 fps of
 /// native libvpx SW encode while "idle" — a real CPU tax with none of
@@ -1138,7 +1138,7 @@ pub(crate) fn idle_refine_applies(priority: u8, constrained: bool) -> bool {
 /// P7 — long-edge cap for the REFINED rung. Default 0 = full native (rc.191
 /// field data: even a 0.85× resample mushes ClearType, so a half-rung pays
 /// the same rebuild + IDR without delivering 1:1 crispness). Safety valve
-/// `ROOMLERD_IDLE_REFINE_MAX_EDGE` (e.g. 1600) bounds the refined IDR
+/// `MESHHARBORD_IDLE_REFINE_MAX_EDGE` (e.g. 1600) bounds the refined IDR
 /// size if the field disagrees.
 #[cfg_attr(not(feature = "ffmpeg-encoder"), allow(dead_code))]
 pub(crate) fn idle_refine_cap_long_edge() -> Option<u32> {
@@ -1308,7 +1308,7 @@ impl EncoderPreference {
 /// FR-84 D4 — the encoder preference `run` RESOLVED (CLI > env > config >
 /// `Auto`), published once so the LocalAPI reports what is actually in force
 /// rather than re-deriving it from a config that a CLI flag or an env var may
-/// have overridden. Unset in a process that never resolved one (`roomlerd
+/// have overridden. Unset in a process that never resolved one (`meshharbord
 /// caps`, tests) — reported as absent, never guessed.
 static RESOLVED_PREFERENCE: std::sync::OnceLock<EncoderPreference> = std::sync::OnceLock::new();
 
@@ -1351,7 +1351,7 @@ pub fn resolved_preference() -> Option<EncoderPreference> {
 /// on the RTP track, against 37 ms for OpenH264 on the same host. OpenH264
 /// takes its place wherever it is compiled in ([`keeps_mf`]).
 ///
-/// Escape hatch: setting `ROOMLERD_HW_AUTO=0` reverts Auto to
+/// Escape hatch: setting `MESHHARBORD_HW_AUTO=0` reverts Auto to
 /// openh264-first (for diagnosing regressions in the field without
 /// a rebuild). `--encoder software` and `encoder_preference=software`
 /// still force openh264 unconditionally.
@@ -1431,7 +1431,7 @@ pub fn open_default(
             // Windows builds that didn't opt into MF.
         }
     } else if preference == EncoderPreference::Auto {
-        tracing::info!("ROOMLERD_HW_AUTO=0 — skipping MF-HW on Auto, going straight to openh264");
+        tracing::info!("MESHHARBORD_HW_AUTO=0 — skipping MF-HW on Auto, going straight to openh264");
     }
 
     #[cfg(feature = "openh264-encoder")]
@@ -1568,7 +1568,7 @@ fn open_for_codec_av1(width: u32, height: u32) -> (Box<dyn VideoEncoder>, &'stat
 
 /// HEVC opener — same fail-closed semantics as `open_for_codec_av1`.
 ///
-/// rc.72: when `ROOMLERD_USE_FFMPEG=1` is set AND the
+/// rc.72: when `MESHHARBORD_USE_FFMPEG=1` is set AND the
 /// `ffmpeg-encoder` feature is compiled in, try the FFmpeg backend first
 /// (`hevc_nvenc` → `hevc_qsv` → `hevc_amf`). Falls through to MF on
 /// FFmpeg construction failure so a misconfigured opt-in doesn't break
@@ -1590,7 +1590,7 @@ fn open_for_codec_hevc(width: u32, height: u32) -> (Box<dyn VideoEncoder>, &'sta
                 Err(err) => {
                     tracing::warn!(
                         %err,
-                        "ROOMLERD_USE_FFMPEG=1 but ffmpeg HEVC construction failed; falling back to MF cascade"
+                        "MESHHARBORD_USE_FFMPEG=1 but ffmpeg HEVC construction failed; falling back to MF cascade"
                     );
                 }
             }
@@ -1634,7 +1634,7 @@ fn keeps_mf(preference: EncoderPreference, pure_software: bool, openh264: bool) 
     !(preference == EncoderPreference::Auto && pure_software && openh264)
 }
 
-/// Check the `ROOMLERD_HW_AUTO` escape hatch. Any value equal to
+/// Check the `MESHHARBORD_HW_AUTO` escape hatch. Any value equal to
 /// `"0"`, `"false"`, `"no"`, or `"off"` (case-insensitive) disables the
 /// MF-HW-first branch of the Auto cascade. Unset or any other value
 /// leaves the default (MF-HW first) in place.
@@ -1851,8 +1851,8 @@ mod tests {
 
     #[test]
     fn hw_auto_disabled_reads_env() {
-        // Both spellings must work: `node_env` prefers ROOMLERD_* and falls
-        // back to the retired ROOMLER_AGENT_* alias, and hosts in the field
+        // Both spellings must work: `node_env` prefers MESHHARBORD_* and falls
+        // back to the retired MESHHARBOR_AGENT_* alias, and hosts in the field
         // still carry the alias in service units and wrapper scripts. Driving
         // the loop over both proves the PRIMARY name — which nothing covered
         // before FR-21 — and the fallback in one pass.
@@ -1864,8 +1864,8 @@ mod tests {
         // every assertion below, silently — which is what it did before.
         // FR-46 P2b: only the CURRENT spelling is read. The retired one is
         // asserted separately below — it must be inert, not merely absent.
-        const NAMES: [&str; 1] = ["ROOMLERD_HW_AUTO"];
-        const RETIRED: &str = "ROOMLER_AGENT_HW_AUTO";
+        const NAMES: [&str; 1] = ["MESHHARBORD_HW_AUTO"];
+        const RETIRED: &str = "MESHHARBOR_AGENT_HW_AUTO";
         let clear = || {
             for n in NAMES.iter().copied().chain([RETIRED]) {
                 unsafe { std::env::remove_var(n) };
@@ -1951,7 +1951,7 @@ mod tests {
             assert_eq!(priority_relay_cap(dial, false), None);
         }
         // The restore switch brings back the rc.443 caps for A/B.
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "PRIORITY_RES_CAP", "1") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "PRIORITY_RES_CAP", "1") };
         assert_eq!(priority_relay_cap(priority::BALANCED, true), Some(1280));
         assert_eq!(priority_relay_cap(priority::BALANCED, false), None);
         assert_eq!(priority_relay_cap(priority::SHARPER, true), None);
@@ -1999,7 +1999,7 @@ mod tests {
                 assert_eq!(priority_relay_cap_for(dial, constrained, &caps), None);
             }
         }
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "PRIORITY_RES_CAP", "1") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "PRIORITY_RES_CAP", "1") };
         let caps = PriorityCaps::from_env();
         assert!(caps.dims_caps);
         for dial in dials {
@@ -2043,7 +2043,7 @@ mod tests {
         let _guard = RELAY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // SAFETY: same hermetic save/restore contract as the sibling env
         // tests; serialised on RELAY_ENV_LOCK.
-        let prior = std::env::var("ROOMLERD_IDLE_REFINE_BALANCED").ok();
+        let prior = std::env::var("MESHHARBORD_IDLE_REFINE_BALANCED").ok();
         unsafe { tunnel_core::env::test_env::clear("IDLE_REFINE_BALANCED") };
 
         // Smoother refines on EVERY path (its cap applies on every path).
@@ -2056,17 +2056,17 @@ mod tests {
         assert!(idle_refine_applies(priority::BALANCED, true));
         assert!(!idle_refine_applies(priority::BALANCED, false));
         // The kill switch restores the un-refined Balanced rung.
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "IDLE_REFINE_BALANCED", "0") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "IDLE_REFINE_BALANCED", "0") };
         assert!(!idle_refine_applies(priority::BALANCED, true));
         assert!(!idle_refine_applies(priority::BALANCED, false));
         // The old opt-in spelling stays valid.
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "IDLE_REFINE_BALANCED", "1") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "IDLE_REFINE_BALANCED", "1") };
         assert!(idle_refine_applies(priority::BALANCED, true));
         assert!(!idle_refine_applies(priority::BALANCED, false));
 
         match prior {
             Some(v) => unsafe {
-                tunnel_core::env::test_env::set_as("ROOMLERD_", "IDLE_REFINE_BALANCED", v)
+                tunnel_core::env::test_env::set_as("MESHHARBORD_", "IDLE_REFINE_BALANCED", v)
             },
             None => unsafe { tunnel_core::env::test_env::clear("IDLE_REFINE_BALANCED") },
         }
@@ -2092,7 +2092,7 @@ mod tests {
         assert_eq!(split(2_500_000, 2, FLOOR, true, true), FLOOR);
     }
 
-    // rc.191 — BOTH tests below read/write ROOMLERD_RELAY_MAX_KBPS;
+    // rc.191 — BOTH tests below read/write MESHHARBORD_RELAY_MAX_KBPS;
     // cargo's parallel runner interleaved them once the peer::tests grew
     // (field flake 2026-07-16: the clamp test observed the reader test's
     // mid-flight "4200" write). Serialise them on one lock — module-scoped
@@ -2102,19 +2102,19 @@ mod tests {
     #[test]
     fn relay_max_bps_reads_env() {
         let _guard = RELAY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // `relay_max_bps` reads through `node_env`, which prefers ROOMLERD_*
-        // and falls back to the retired ROOMLER_AGENT_*. This test used to set
+        // `relay_max_bps` reads through `node_env`, which prefers MESHHARBORD_*
+        // and falls back to the retired MESHHARBOR_AGENT_*. This test used to set
         // ONLY the retired name, so it proved the third link of that chain and
         // left the spelling the code and docs actually use covered by nothing —
         // and, because it cleared only that one name, an inherited
-        // ROOMLERD_RELAY_MAX_KBPS would have decided every assertion below.
+        // MESHHARBORD_RELAY_MAX_KBPS would have decided every assertion below.
         //
         // SAFETY: set_var/remove_var are unsafe in Rust 2024 because concurrent
         // reads can race. Every test that touches these vars holds
         // RELAY_ENV_LOCK, and `clear` removes BOTH spellings before each read.
         // FR-46 P2b — see hw_auto_disabled_reads_env.
-        const NAMES: [&str; 1] = ["ROOMLERD_RELAY_MAX_KBPS"];
-        const RETIRED: &str = "ROOMLER_AGENT_RELAY_MAX_KBPS";
+        const NAMES: [&str; 1] = ["MESHHARBORD_RELAY_MAX_KBPS"];
+        const RETIRED: &str = "MESHHARBOR_AGENT_RELAY_MAX_KBPS";
         let prior: Vec<Option<String>> = NAMES.iter().map(|n| std::env::var(n).ok()).collect();
         let clear = || {
             for n in NAMES.iter().copied().chain([RETIRED]) {
@@ -2185,7 +2185,7 @@ mod tests {
         // 0.20-bpp 2560x1600@30 VP9-444 target (12_441_600 bps) down to the
         // 3 Mbps relay ceiling. Only the CURRENT spelling needs clearing: FR-46
         // P2b retired the other, so an inherited one cannot decide this ceiling.
-        const NAMES: [&str; 1] = ["ROOMLERD_RELAY_MAX_KBPS"];
+        const NAMES: [&str; 1] = ["MESHHARBORD_RELAY_MAX_KBPS"];
         let prior: Vec<Option<String>> = NAMES.iter().map(|n| std::env::var(n).ok()).collect();
         for n in NAMES {
             unsafe { std::env::remove_var(n) };

@@ -20,7 +20,7 @@ measured-rate line (#678: a sender cannot see capacity it is not using). Operato
 
 ## The measurement (P0, 2026-08-29, the REAL pair `neo16 → CORPLAP-2`, DERP relay)
 
-`ROOMLERD_FFMPEG_MAXRATE_KBPS=25500` on CORPLAP-2 (machine env + scheduled restart), viewer on neo16
+`MESHHARBORD_FFMPEG_MAXRATE_KBPS=25500` on CORPLAP-2 (machine env + scheduled restart), viewer on neo16
 with the FR-31 harness, one 20 s synthetic drag; CORPLAP-2's own heartbeats read afterwards.
 
 | what | today (cap 2.55 Mbps) | cap 25.5 Mbps |

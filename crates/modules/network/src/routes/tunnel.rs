@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! REST surface for the `roomler` subsystem.
+//! REST surface for the `meshharbor` subsystem.
 //!
 //! Mirrors `crates/api/src/routes/remote_control.rs` for the
 //! enrollment flow. The tunnel client (a laptop running
-//! `roomler`) is enrolled in the same two-step shape as a
+//! `meshharbor`) is enrolled in the same two-step shape as a
 //! remote-control agent: admin issues a single-use `TunnelEnrollment`
-//! token, then the operator runs `roomler enroll` which
+//! token, then the operator runs `meshharbor enroll` which
 //! exchanges it for a long-lived `TunnelClient` token.
 //!
 //! Signalling, forwarding, audit + policy CRUD land in T2.
@@ -48,7 +48,7 @@ pub struct TunnelEnrollmentTokenResponse {
 
 /// POST /api/tenant/{tenant_id}/tunnel-client/enroll-token —
 /// admin/member issues a single-use token the operator pastes into
-/// `roomler enroll`. Mirrors `issue_enrollment_token` for
+/// `meshharbor enroll`. Mirrors `issue_enrollment_token` for
 /// agents.
 pub async fn issue_tunnel_enrollment_token(
     State(state): State<NetworkState>,
@@ -194,7 +194,7 @@ pub struct TunnelAgentInfo {
 }
 
 /// GET /api/tunnel-client/agents — the tenant's agent roster, so
-/// `roomler socks5` (mesh mode) can route a CONNECT by friendly agent
+/// `meshharbor socks5` (mesh mode) can route a CONNECT by friendly agent
 /// name instead of the raw 24-hex id. Authenticated by the caller's TunnelClient
 /// JWT (`Authorization: Bearer <token>`) and scoped to that token's tenant.
 pub async fn list_tenant_agents(
@@ -308,7 +308,7 @@ pub struct RenewedTunnelClientToken {
     pub expires_at: String,
 }
 
-/// POST /api/tunnel-client/renew — FR-103: a `roomler` client buys a fresh
+/// POST /api/tunnel-client/renew — FR-103: a `meshharbor` client buys a fresh
 /// token with the one it holds, up to `RENEWAL_GRACE_SECS` past its `exp`.
 /// The row is checked as on every tunnel-client route, and the new token keeps
 /// the same owner. Idempotent; `rc.token_renewal = false` answers 404.

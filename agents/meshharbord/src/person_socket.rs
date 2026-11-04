@@ -41,7 +41,7 @@
 //! without endpoints, and its own status with the root half's network fields
 //! ([`with_machine_network`]).
 //!
-//! Kill switch: `ROOMLERD_PERSON_SOCKET=0` (or `false` / `off` / `no`) — the
+//! Kill switch: `MESHHARBORD_PERSON_SOCKET=0` (or `false` / `off` / `no`) — the
 //! pre-P11 behaviour, and on a Mac the pre-P2g one, since with no socket the
 //! per-user half keeps its own answer.
 
@@ -142,7 +142,7 @@ fn overlay_reason(r: &Response) -> Option<&str> {
 /// FR-97 P2g — on a Mac, `own` replaced by the root half's answer to `req`
 /// where [`machine_view_wanted`] and [`machine_view_usable`] say so; `own`
 /// itself in every other case, on every other OS, and whenever the root half
-/// does not answer (an older one, `ROOMLERD_PERSON_SOCKET=0`, no root half).
+/// does not answer (an older one, `MESHHARBORD_PERSON_SOCKET=0`, no root half).
 pub async fn or_machine_view(own: Response, req: tunnel_core::localapi::Request) -> Response {
     #[cfg(target_os = "macos")]
     {
@@ -310,8 +310,8 @@ impl Listener {
 /// Run until `shutdown`. Inert unless this is a root daemon with the switch on.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub async fn run(state: Arc<dyn LocalApiState>, mut shutdown: watch::Receiver<bool>) {
-    if !enabled_by_env(std::env::var("ROOMLERD_PERSON_SOCKET").ok().as_deref()) {
-        tracing::info!("person socket: off (ROOMLERD_PERSON_SOCKET) — FR-27 P11");
+    if !enabled_by_env(std::env::var("MESHHARBORD_PERSON_SOCKET").ok().as_deref()) {
+        tracing::info!("person socket: off (MESHHARBORD_PERSON_SOCKET) — FR-27 P11");
         return;
     }
     // SAFETY: geteuid never fails.
@@ -393,7 +393,7 @@ mod tests {
     /// an unreadable root means nobody (and no `loginctl`).
     #[test]
     fn only_a_non_root_runtime_dir_counts_as_someone_logged_in() {
-        let base = std::env::temp_dir().join(format!("roomler-p11-run-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("meshharbor-p11-run-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("0")).unwrap();
         std::fs::create_dir_all(base.join("not-a-uid")).unwrap();

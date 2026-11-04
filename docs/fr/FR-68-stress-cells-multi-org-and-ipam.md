@@ -214,7 +214,7 @@ proves nothing that `a35720b6`/`182a4121` do not already prove.
 Growth is gated server-side on `overlay.multi_block_enabled`
 (`crates/api/src/ws/overlay.rs:393`). The prod configmap
 (`k8s/base/configmap-roomler2-config.yaml:62`) sets
-`ROOMLER__OVERLAY__BLOCKS_ENABLED: "true"` and **sets `MULTI_BLOCK` nowhere**, so
+`MESHHARBOR__OVERLAY__BLOCKS_ENABLED: "true"` and **sets `MULTI_BLOCK` nowhere**, so
 production runs the code default `false`. Turning it on is a **one-way door for
 that database**: once any network holds two assigned blocks the
 one-block-per-network index cannot be recreated and the boot fails loudly —
@@ -286,7 +286,7 @@ it IS wanted.
   org B's (`teardown-b`).
 
 Remaining cost is the stack itself, not the harness: an `e2e` deployment
-carrying `ROOMLER__OVERLAY__MULTI_BLOCK_ENABLED: "true"`, plus an org and an
+carrying `MESHHARBOR__OVERLAY__MULTI_BLOCK_ENABLED: "true"`, plus an org and an
 anchor on it.
 
 The multi-org cell has no such problem: it needs two orgs, not a server flag,
@@ -341,8 +341,8 @@ is a multi-org host again. CORPLAP-3 is the other.
 - ⚠️ **WSL and Windows cargo share `target/` and thrash** — every switch forces
   a full ~11–13 min rebuild. Use a WSL-local `CARGO_TARGET_DIR` on ext4: 4m34s
   cold, seconds incremental.
-- Integration tests need BOTH `ROOMLER__DATABASE__URL` and
-  `ROOMLER__REDIS__URL` on this box; without mongo auth every test dies in
+- Integration tests need BOTH `MESHHARBOR__DATABASE__URL` and
+  `MESHHARBOR__REDIS__URL` on this box; without mongo auth every test dies in
   ~0.03 s with `Command createIndexes requires authentication`.
 - `roomler ssh mars` is refused (policy off); `roomler exec` works but
   re-splits argv, so multi-word commands need care.

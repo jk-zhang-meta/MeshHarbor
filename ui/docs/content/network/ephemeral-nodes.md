@@ -77,7 +77,7 @@ every update would silently delete the device it was updating.
 
 ```bash
 curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
-  --role daemon --system --token "$ROOMLER_ENROLL_KEY" \
+  --role daemon --system --token "$MESHHARBOR_ENROLL_KEY" \
   --server https://roomler.ai --name "ci-$CI_JOB_ID" --ephemeral
 ```
 

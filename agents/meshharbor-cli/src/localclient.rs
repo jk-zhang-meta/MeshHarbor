@@ -10,7 +10,7 @@
 //! [`tunnel_core::localapi::Client`]: no server, no token, no config — the OS
 //! endpoint ACL is the trust boundary. This is the CLI half of the
 //! unification's "thin clients over the LocalAPI" story; at the P3d rename
-//! `roomler-tunnel <verb>` becomes `roomler <verb>`.
+//! `meshharbor-tunnel <verb>` becomes `meshharbor <verb>`.
 //!
 //! Everything below the command handlers is a **pure** formatter (`now_ms` is
 //! injected, never read from the clock) so the table rendering is unit-tested
@@ -65,11 +65,11 @@ async fn print_other_daemon_hint() {
     if let Some(other) = localapi::other_daemon_socket().await {
         eprintln!();
         eprintln!(
-            "note: a second roomler daemon is running on this host ({}).",
+            "note: a second meshharbor daemon is running on this host ({}).",
             other.display()
         );
         eprintln!("      This is the per-user half; the overlay runs in the privileged one.");
-        eprintln!("      Use `sudo roomler …` to ask that one instead.");
+        eprintln!("      Use `sudo meshharbor …` to ask that one instead.");
     }
 }
 
@@ -79,7 +79,7 @@ async fn print_other_daemon_hint() {
 /// them the only way to read a remote agent's log was to guess its path through
 /// a shell, and that path is genuinely hard: it depends on whether the process
 /// carries a service role and, failing that, on which USER it runs as. A
-/// Windows host therefore has three plausible `roomlerd.log*` files and two are
+/// Windows host therefore has three plausible `meshharbord.log*` files and two are
 /// decoys — the SCM supervisor's (~30 lines/day, no overlay events) and the
 /// updater's (a few KB, written only at update time). On 2026-08-07 that cost a
 /// wrong "the agent's logging is dead" conclusion.
@@ -142,7 +142,7 @@ pub async fn logs(
     Ok(())
 }
 
-/// `roomler netcheck` — the measured capability vector (overlay v3 B4),
+/// `meshharbor netcheck` — the measured capability vector (overlay v3 B4),
 /// read from the daemon's status payload. What selection actually keys on,
 /// plus how old the measurement is.
 pub async fn netcheck(json: bool) -> Result<()> {
@@ -242,7 +242,7 @@ pub async fn peers(args: PeersArgs) -> Result<()> {
         && orgs.is_empty()
         && peers.is_empty()
     {
-        println!("No enrollment labelled {want:?} — see `roomlerd org ls`.");
+        println!("No enrollment labelled {want:?} — see `meshharbord org ls`.");
         return Ok(());
     }
     // The device list of each org on screen, for the column and for the
@@ -517,13 +517,13 @@ fn print_dark_orgs(orgs: &[tunnel_core::localapi::OrgStatus], peers: &[PeerInfo]
              It is not \"no peers online\".)"
         );
         println!(
-            "  join it with: roomlerd org overlay {} netstack   (then restart the daemon)",
+            "  join it with: meshharbord org overlay {} netstack   (then restart the daemon)",
             o.label
         );
     }
 }
 
-/// FR-84 D5b — the flags of `roomler devices`.
+/// FR-84 D5b — the flags of `meshharbor devices`.
 #[derive(Debug, Clone, Default)]
 pub struct DevicesArgs {
     /// An enrollment label (`primary` or an `[[orgs]]` label); `None` = the
@@ -537,7 +537,7 @@ pub struct DevicesArgs {
     pub json: bool,
 }
 
-/// `roomler devices` — FR-84 D5b: the devices this device's private network
+/// `meshharbor devices` — FR-84 D5b: the devices this device's private network
 /// lets it see, itself included, as the SERVER lists them (display names,
 /// OS, version, presence, MagicDNS), with this node's live carrier merged in
 /// from `peers`.
@@ -587,9 +587,9 @@ fn peers_of_org(peers: Vec<PeerInfo>, org: &str) -> Vec<PeerInfo> {
 /// A [`localapi::DirectoryError`] as the one line an operator acts on.
 fn explain_directory_error(e: localapi::DirectoryError) -> anyhow::Error {
     match e.code() {
-        "daemon_unreachable" => anyhow!("roomler daemon not running (is the service started?)"),
+        "daemon_unreachable" => anyhow!("meshharbor daemon not running (is the service started?)"),
         "unsupported_daemon" => anyhow!(
-            "the roomler daemon on this machine predates `roomler devices` — update it \
+            "the meshharbor daemon on this machine predates `meshharbor devices` — update it \
              (`meshharbor peers` lists what its mesh carries)"
         ),
         "unsupported_server" => anyhow!(
@@ -617,7 +617,7 @@ fn upstream_message(e: &localapi::DirectoryError) -> String {
     }
 }
 
-/// `roomler why <peer>` — F: explain, for ONE pair, why it rides the carrier
+/// `meshharbor why <peer>` — F: explain, for ONE pair, why it rides the carrier
 /// it rides.
 ///
 /// Everything printed here was already being computed by the selector on every
@@ -831,7 +831,7 @@ fn why_tier_row(t: &TierWhy) -> String {
     )
 }
 
-/// `roomler flows` — active forwards / SOCKS5 listeners + throughput. Empty on
+/// `meshharbor flows` — active forwards / SOCKS5 listeners + throughput. Empty on
 /// today's agent daemon until the tunnel data plane folds in (P3b).
 pub async fn flows(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
@@ -844,7 +844,7 @@ pub async fn flows(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `roomler rename <name>` — persist a new device name through the running
+/// `meshharbor rename <name>` — persist a new device name through the running
 /// daemon (it writes its OWN config, so this works unelevated even when the
 /// daemon is a SYSTEM service). Announced on the next server reconnect. An old
 /// daemon that predates the verb reports a clean error.
@@ -930,7 +930,7 @@ async fn run_remote(node: &str, shell: &str, command: &str, timeout_ms: u64) -> 
     }
 }
 
-/// Resolve a roomler device NAME to its overlay address (P6c).
+/// Resolve a meshharbor device NAME to its overlay address (P6c).
 ///
 /// Case-insensitive, matching the server's `resolve_exec_target`, because
 /// device names are display strings and nobody types `CORPLAP-3`.
@@ -938,8 +938,8 @@ async fn run_remote(node: &str, shell: &str, command: &str, timeout_ms: u64) -> 
 /// something arbitrary.
 ///
 /// The name may also arrive QUALIFIED, in the two spellings a user is steered
-/// toward (#1573): `corplap-3.roomler`, which the `Host *.roomler` recipe in
-/// `roomler proxy --help` hands over as `%h` — until this, the documented
+/// toward (#1573): `corplap-3.meshharbor`, which the `Host *.meshharbor` recipe in
+/// `meshharbor proxy --help` hands over as `%h` — until this, the documented
 /// setup failed for every host — and the MagicDNS name,
 /// `corplap-3.<magic domain>`. [`mesh_label`] says why no other suffix is
 /// stripped.
@@ -962,7 +962,7 @@ pub async fn resolve_overlay_ip(name: &str) -> Result<Option<String>> {
     }
     // Only a qualified name pays for the second round-trip. A daemon that
     // cannot say (MagicDNS off for the tenant, or older than the field) still
-    // gets `.roomler`.
+    // gets `.meshharbor`.
     let magic = client
         .status()
         .await
@@ -976,11 +976,11 @@ pub async fn resolve_overlay_ip(name: &str) -> Result<Option<String>> {
 /// carries no suffix this resolver owns.
 ///
 /// Owned: the tenant's MagicDNS domain (when the daemon reports one) and
-/// `.roomler`, both case-insensitive, with an absolute name's trailing dot
+/// `.meshharbor`, both case-insensitive, with an absolute name's trailing dot
 /// ignored.
 ///
 /// ⚠️ Deliberately NOT "everything after the first dot". A `ProxyCommand`
-/// scoped wider than `Host *.roomler` would then turn `github.com` into a
+/// scoped wider than `Host *.meshharbor` would then turn `github.com` into a
 /// lookup for a device named `github` and hand the user's `git` to it. A mesh
 /// lookup must fail on a name it does not own, never find a different
 /// destination — the same rule that keeps the OS resolver away from mesh
@@ -992,7 +992,7 @@ fn mesh_label<'a>(name: &'a str, magic_domain: Option<&str>) -> Option<&'a str> 
         .filter(|d| !d.is_empty());
     magic
         .into_iter()
-        .chain(["roomler"])
+        .chain(["meshharbor"])
         .find_map(|domain| strip_domain(name, domain))
 }
 
@@ -1129,7 +1129,7 @@ const WINDOWS_BUNDLE: &[BundleSection] = &[
         command: "Get-NetFirewallProfile | Format-Table -Auto Name,Enabled,DefaultInboundAction,DefaultOutboundAction | Out-String -Width 200",
     },
     BundleSection {
-        title: "firewall rules mentioning roomler",
+        title: "firewall rules mentioning meshharbor",
         command: "Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like '*oomler*' } | Format-Table -Auto DisplayName,Enabled,Direction,Action,Profile | Out-String -Width 200",
     },
     BundleSection {
@@ -1142,11 +1142,11 @@ const WINDOWS_BUNDLE: &[BundleSection] = &[
     },
     BundleSection {
         title: "overlay peers",
-        command: "& \"$env:ProgramFiles\\Roomler\\meshharbor.exe\" peers 2>&1 | Out-String -Width 200",
+        command: "& \"$env:ProgramFiles\\MeshHarbor\\meshharbor.exe\" peers 2>&1 | Out-String -Width 200",
     },
     BundleSection {
         title: "node status",
-        command: "& \"$env:ProgramFiles\\Roomler\\meshharbor.exe\" status 2>&1 | Out-String -Width 200",
+        command: "& \"$env:ProgramFiles\\MeshHarbor\\meshharbor.exe\" status 2>&1 | Out-String -Width 200",
     },
 ];
 
@@ -1179,14 +1179,14 @@ const UNIX_BUNDLE: &[BundleSection] = &[
     },
     BundleSection {
         title: "recent overlay log lines",
-        command: "journalctl -u roomler -n 400 --no-pager 2>/dev/null | grep -iE 'overlay|carrier|relay' | tail -30 || echo 'no journal access'",
+        command: "journalctl -u meshharbor -n 400 --no-pager 2>/dev/null | grep -iE 'overlay|carrier|relay' | tail -30 || echo 'no journal access'",
     },
 ];
 
 /// Marker the bundle prints between sections, so one exec can carry the whole
 /// set and the client can split it apart. Chosen to be something no diagnostic
 /// output produces on its own.
-const SECTION_MARK: &str = "===ROOMLER-DIAG-SECTION===";
+const SECTION_MARK: &str = "===MESHHARBOR-DIAG-SECTION===";
 
 /// Detect the target's family with ONE cheap round trip.
 ///
@@ -1311,8 +1311,8 @@ fn split_sections(out: &str) -> Vec<(String, String)> {
 /// LOCAL daemon to open + supervise a static forward over its OWN agent WS
 /// (identity model b: no separate tunnel-client token — the pipe/socket ACL is
 /// the trust boundary). Returns as soon as the daemon registers the flow; the
-/// flow runs IN the daemon and survives this CLI's exit. `roomler flows` shows
-/// it; `roomler kill <id>` stops it. A daemon-side error (bad node/remote, port
+/// flow runs IN the daemon and survives this CLI's exit. `meshharbor flows` shows
+/// it; `meshharbor kill <id>` stops it. A daemon-side error (bad node/remote, port
 /// in use) surfaces verbatim; only a *connect* failure maps through [`daemon_err`].
 pub async fn create_forward(
     node: &str,
@@ -1331,12 +1331,12 @@ pub async fn create_forward(
         "  127.0.0.1:{local} → {remote}  via node {}",
         short_id(node)
     );
-    println!("  roomler flows          # show it");
-    println!("  roomler kill {id}      # stop it");
+    println!("  meshharbor flows          # show it");
+    println!("  meshharbor kill {id}      # stop it");
     Ok(())
 }
 
-/// `roomler socks5 --daemon --agent <node> --local L` — ask the LOCAL daemon to
+/// `meshharbor socks5 --daemon --agent <node> --local L` — ask the LOCAL daemon to
 /// open + supervise a SOCKS5 listener (userspace mode; per-connection target)
 /// toward `node`. Same lifecycle as [`create_forward`].
 pub async fn create_socks5(node: &str, local: u16, transport: &str) -> Result<()> {
@@ -1350,12 +1350,12 @@ pub async fn create_socks5(node: &str, local: u16, transport: &str) -> Result<()
         "  127.0.0.1:{local} → node {} (per-connection target)",
         short_id(node)
     );
-    println!("  roomler flows          # show it");
-    println!("  roomler kill {id}      # stop it");
+    println!("  meshharbor flows          # show it");
+    println!("  meshharbor kill {id}      # stop it");
     Ok(())
 }
 
-/// `roomler kill <flow-id>` — stop + deregister a daemon flow. Reports whether
+/// `meshharbor kill <flow-id>` — stop + deregister a daemon flow. Reports whether
 /// the id matched.
 pub async fn kill(id: &str) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
@@ -1371,7 +1371,7 @@ pub async fn kill(id: &str) -> Result<()> {
 // Declared routes (P6)
 // ---------------------------------------------------------------------------
 
-/// `roomler route add …` — declare a daemon-supervised route. `remote`
+/// `meshharbor route add …` — declare a daemon-supervised route. `remote`
 /// present ⇒ static forward; absent ⇒ SOCKS5 listener. The daemon
 /// persists it (config `[[tunnel_routes]]`) and reconciles it into a live
 /// flow; it comes back on every daemon start until `route rm`.
@@ -1416,14 +1416,14 @@ pub async fn route_add(
         ),
     }
     if !eff.enabled {
-        println!("  declared DISABLED — `roomler route enable {}`", eff.id);
+        println!("  declared DISABLED — `meshharbor route enable {}`", eff.id);
     }
-    println!("  roomler route ls            # live state");
-    println!("  roomler route rm {}   # remove", eff.id);
+    println!("  meshharbor route ls            # live state");
+    println!("  meshharbor route rm {}   # remove", eff.id);
     Ok(())
 }
 
-/// `roomler route rm <id>` — remove a declared route (kills its live flow,
+/// `meshharbor route rm <id>` — remove a declared route (kills its live flow,
 /// deletes it from the daemon config).
 pub async fn route_rm(id: &str) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
@@ -1435,7 +1435,7 @@ pub async fn route_rm(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// `roomler route ls` — declared routes + live state.
+/// `meshharbor route ls` — declared routes + live state.
 pub async fn route_ls(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let routes = client.route_list().await.map_err(daemon_err)?;
@@ -1447,7 +1447,7 @@ pub async fn route_ls(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// What `roomler route edit` may change. Every field is optional; the
+/// What `meshharbor route edit` may change. Every field is optional; the
 /// route's other settings (enabled state, org) are carried over unchanged.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RouteEdit {
@@ -1494,7 +1494,7 @@ pub fn apply_route_edit(
     Ok(route)
 }
 
-/// `roomler route edit <id> …` — replace a declared route in ONE step (the
+/// `meshharbor route edit <id> …` — replace a declared route in ONE step (the
 /// FR-84 `RouteUpdate` verb). The daemon validates the result exactly like
 /// an add and refuses it without touching the running route.
 pub async fn route_edit(edit: RouteEdit) -> Result<()> {
@@ -1507,7 +1507,7 @@ pub async fn route_edit(edit: RouteEdit) -> Result<()> {
     let eff = client.route_update(wanted).await.map_err(|e| {
         let msg = e.to_string();
         if msg.contains("unknown variant") {
-            anyhow!("the roomler daemon predates `route edit` — update it, then retry")
+            anyhow!("the meshharbor daemon predates `route edit` — update it, then retry")
         } else {
             anyhow!("{msg}")
         }
@@ -1526,13 +1526,13 @@ pub async fn route_edit(edit: RouteEdit) -> Result<()> {
         ),
     }
     if !eff.enabled {
-        println!("  declared DISABLED — `roomler route enable {}`", eff.id);
+        println!("  declared DISABLED — `meshharbor route enable {}`", eff.id);
     }
-    println!("  roomler route ls            # live state");
+    println!("  meshharbor route ls            # live state");
     Ok(())
 }
 
-/// `roomler route enable|disable <id>`.
+/// `meshharbor route enable|disable <id>`.
 pub async fn route_set_enabled(id: &str, enabled: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     if client
@@ -1617,23 +1617,23 @@ pub async fn config_set(key: &str, value: Option<&str>) -> Result<()> {
     // either restart a healthy daemon for nothing or assume they are still
     // exposed.
     if entry.restart_required {
-        println!("takes effect on the next daemon restart (apply it now: `roomler restart`)");
+        println!("takes effect on the next daemon restart (apply it now: `meshharbor restart`)");
     } else {
         println!("in effect now — no restart needed");
     }
     Ok(())
 }
 
-/// How long `roomler restart` waits for the relaunched daemon to answer.
+/// How long `meshharbor restart` waits for the relaunched daemon to answer.
 const RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// `roomler restart` — FR-84 D3. Ask the daemon to restart itself through its
+/// `meshharbor restart` — FR-84 D3. Ask the daemon to restart itself through its
 /// supervisor; the daemon decides, and a refusal exits non-zero with its
 /// reason. Then wait for the NEW daemon (a different pid) to answer, running
 /// `meshharbord service start` along the way when the answer says the relaunch
 /// is ours (`restart_by: caller` — the Windows Scheduled Task).
 ///
-/// ⚠️ Through Fleet RPC (`meshharbor exec <host> -- roomler restart`) the daemon
+/// ⚠️ Through Fleet RPC (`meshharbor exec <host> -- meshharbor restart`) the daemon
 /// relaying the command is the one restarting, so the caller sees "no answer"
 /// even though it ran; `meshharbor exec <host> -- meshharbor status` afterwards
 /// shows the new pid and version.
@@ -1643,7 +1643,7 @@ pub async fn restart(
     daemon_exe: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let reason = if reason.trim().is_empty() {
-        "roomler restart"
+        "meshharbor restart"
     } else {
         reason
     };
@@ -1660,8 +1660,8 @@ pub async fn restart(
         } => (supervisor, restart_by, exit_code, leaving, restart_within_s),
         localapi::RestartAnswer::Refused(why) => bail!("the daemon refused to restart: {why}"),
         localapi::RestartAnswer::Unsupported(_) => bail!(
-            "this daemon predates `roomler restart` — restart it through its service manager \
-             (Windows: the Roomler service or scheduled task; Linux: systemctl; macOS: launchctl)"
+            "this daemon predates `meshharbor restart` — restart it through its service manager \
+             (Windows: the MeshHarbor service or scheduled task; Linux: systemctl; macOS: launchctl)"
         ),
     };
     let caller_starts = restart_by == "caller";
@@ -1712,7 +1712,7 @@ pub async fn restart(
 /// Scheduled Task. The daemon it starts is spawned by the scheduler, never as
 /// a child of this process.
 async fn start_daemon_service(exe: Option<std::path::PathBuf>) -> Result<(), String> {
-    let exe = exe.ok_or_else(|| "roomlerd was not found next to this command".to_string())?;
+    let exe = exe.ok_or_else(|| "meshharbord was not found next to this command".to_string())?;
     let run = tokio::process::Command::new(&exe)
         .args(["service", "start"])
         .stdin(std::process::Stdio::null())
@@ -1783,7 +1783,7 @@ fn fmt_recording_end(last: &localapi::RecordingEnded) -> String {
     line
 }
 
-/// `roomler record start` — record this device's screen until `record stop`.
+/// `meshharbor record start` — record this device's screen until `record stop`.
 /// Answers once the recorder is encoding, naming the file and the encoder.
 pub async fn record_start(
     fps: Option<u32>,
@@ -1820,11 +1820,11 @@ pub async fn record_start(
     if let Some(reason) = &st.folder_reason {
         println!("  folder: {reason}");
     }
-    println!("stop with `roomler record stop`");
+    println!("stop with `meshharbor record stop`");
     Ok(())
 }
 
-/// `roomler record stop` — answers once the file is final.
+/// `meshharbor record stop` — answers once the file is final.
 pub async fn record_stop(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let st = client.record_stop().await.map_err(daemon_err)?;
@@ -1833,14 +1833,14 @@ pub async fn record_stop(json: bool) -> Result<()> {
         return Ok(());
     }
     match (&st.last, st.active) {
-        (_, true) => println!("still finalizing — check `roomler record status`"),
+        (_, true) => println!("still finalizing — check `meshharbor record status`"),
         (Some(last), false) => println!("{}", fmt_recording_end(last)),
         (None, false) => println!("nothing was recording"),
     }
     Ok(())
 }
 
-/// `roomler record status` — is a recording running, and how the last ended.
+/// `meshharbor record status` — is a recording running, and how the last ended.
 pub async fn record_status(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let st = client.record_status().await.map_err(daemon_err)?;
@@ -1867,17 +1867,17 @@ pub async fn record_status(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `roomler keep-busy status` — FR-92.
+/// `meshharbor keep-busy status` — FR-92.
 pub async fn keep_busy_status(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let s = client.keep_busy_status().await.map_err(daemon_err)?;
     print_keep_busy(&s, json)
 }
 
-/// FR-92 P10 — what `roomler keep-busy on` asks for (the LocalAPI's type).
+/// FR-92 P10 — what `meshharbor keep-busy on` asks for (the LocalAPI's type).
 pub type KeepBusyStart = localapi::KeepBusyStartOpts;
 
-/// `roomler keep-busy on` — FR-92 P10. Only the person at this computer may:
+/// `meshharbor keep-busy on` — FR-92 P10. Only the person at this computer may:
 /// the daemon refuses root, services and `meshharbor exec`, and checks every
 /// value with the viewer's own parser.
 pub async fn keep_busy_on(opts: KeepBusyStart, json: bool) -> Result<()> {
@@ -1885,18 +1885,18 @@ pub async fn keep_busy_on(opts: KeepBusyStart, json: bool) -> Result<()> {
     let s = client.keep_busy_on(opts).await.map_err(daemon_err)?;
     print_keep_busy(&s, json)?;
     if !s.on && !json && s.reason.is_none() {
-        println!("(the start is being applied — `roomler keep-busy status` will show it)");
+        println!("(the start is being applied — `meshharbor keep-busy status` will show it)");
     }
     Ok(())
 }
 
-/// `roomler keep-busy off` — FR-92. Stopping is always allowed here.
+/// `meshharbor keep-busy off` — FR-92. Stopping is always allowed here.
 pub async fn keep_busy_off(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let s = client.keep_busy_off().await.map_err(daemon_err)?;
     print_keep_busy(&s, json)?;
     if s.on && !json {
-        println!("(the stop is being applied — `roomler keep-busy status` will show it)");
+        println!("(the stop is being applied — `meshharbor keep-busy status` will show it)");
     }
     Ok(())
 }
@@ -1915,7 +1915,7 @@ fn print_keep_busy(s: &localapi::KeepBusyInfo, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// One line for `roomler keep-busy status`. The agent's own sentence for
+/// One line for `meshharbor keep-busy status`. The agent's own sentence for
 /// the reason, never a CLI paraphrase.
 pub(crate) fn keep_busy_line(s: &localapi::KeepBusyInfo) -> String {
     let sentence = s.sentence.as_deref();
@@ -1942,7 +1942,7 @@ pub(crate) fn keep_busy_line(s: &localapi::KeepBusyInfo) -> String {
     line
 }
 
-/// `roomler record ls` — the recordings folder, why it is that one, and what
+/// `meshharbor record ls` — the recordings folder, why it is that one, and what
 /// is in it (newest first).
 pub async fn recordings_ls(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
@@ -1987,7 +1987,7 @@ pub async fn recordings_ls(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `roomler record rm <name>` — delete one recording and its sidecar.
+/// `meshharbor record rm <name>` — delete one recording and its sidecar.
 pub async fn recording_rm(name: &str) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     client.recording_delete(name).await.map_err(daemon_err)?;
@@ -1995,7 +1995,7 @@ pub async fn recording_rm(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// FR-52 gate 4 — `roomler rc password set`.
+/// FR-52 gate 4 — `meshharbor rc password set`.
 ///
 /// The password is read here, handed to the daemon over the local pipe, and
 /// registered THERE: this process never derives, stores or transmits anything
@@ -2037,7 +2037,7 @@ fn read_new_password(from_stdin: bool) -> Result<String> {
     Ok(first)
 }
 
-/// `roomler rc password set [--stdin]`.
+/// `meshharbor rc password set [--stdin]`.
 pub async fn rc_password_set(from_stdin: bool) -> Result<()> {
     // Connect FIRST, before asking for a password: on a host with no daemon
     // this fails in one clean line instead of making someone type a password
@@ -2053,7 +2053,7 @@ pub async fn rc_password_set(from_stdin: bool) -> Result<()> {
     Ok(())
 }
 
-/// `roomler rc password clear`.
+/// `meshharbor rc password clear`.
 pub async fn rc_password_clear() -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let state = client
@@ -2069,7 +2069,7 @@ pub async fn rc_password_clear() -> Result<()> {
     Ok(())
 }
 
-/// `roomler rc password status [--json]`.
+/// `meshharbor rc password status [--json]`.
 pub async fn rc_password_status(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let state = client
@@ -2115,7 +2115,7 @@ pub async fn rc_password_status(json: bool) -> Result<()> {
 /// all twenty-two verb names it does know. That is what the operator sees, and it
 /// says nothing about the one thing they can do. Version skew is normal here: on
 /// tunnel-only hosts the CLI self-updates independently of any daemon, and a
-/// locally built `roomler` against an installed service is exactly this case.
+/// locally built `meshharbor` against an installed service is exactly this case.
 ///
 /// ⚠️ The hint is **additive and the raw error is kept**. Matching a foreign
 /// library's message text is brittle — the same reason a Windows error string is
@@ -2145,7 +2145,7 @@ fn print_password_next_steps(state: &localapi::ExternalPasswordState) {
         return;
     }
     if !state.password_set {
-        println!("  → `roomler rc password set` to set one");
+        println!("  → `meshharbor rc password set` to set one");
     }
     if !state.enabled {
         println!("  → `meshharbor config set external_access_enabled true` to open gate 3");
@@ -2163,9 +2163,9 @@ fn print_password_next_steps(state: &localapi::ExternalPasswordState) {
 /// so `--json | jq` on a dead daemon fails cleanly with empty stdout.
 pub(crate) fn daemon_err(e: io::Error) -> anyhow::Error {
     if e.kind() == io::ErrorKind::NotFound {
-        anyhow!("roomler daemon not running (is the service started?)")
+        anyhow!("meshharbor daemon not running (is the service started?)")
     } else {
-        anyhow!("talking to the roomler daemon: {e}")
+        anyhow!("talking to the meshharbor daemon: {e}")
     }
 }
 
@@ -2729,7 +2729,7 @@ fn print_status(s: &NodeStatus) {
         && !present.is_empty()
     {
         println!(
-            "  retired env {} SET and IGNORED: {} (rename to ROOMLERD_*)",
+            "  retired env {} SET and IGNORED: {} (rename to MESHHARBORD_*)",
             present.len(),
             present.join(", ")
         );
@@ -2877,7 +2877,7 @@ fn print_orgs(orgs: &[tunnel_core::localapi::OrgStatus]) {
     if !dark.is_empty() {
         println!(
             "                   ⚠️ enrolled but NOT on the mesh: {} \
-             (`roomlerd org overlay <label> netstack`)",
+             (`meshharbord org overlay <label> netstack`)",
             dark.join(", ")
         );
     }
@@ -3163,7 +3163,7 @@ fn print_flows(flows: &[FlowInfo]) {
 
 fn print_routes(routes: &[RouteInfo]) {
     if routes.is_empty() {
-        println!("No declared routes. Declare one with `roomler route add`.");
+        println!("No declared routes. Declare one with `meshharbor route add`.");
         return;
     }
     println!(
@@ -3512,7 +3512,7 @@ mod tests {
     fn the_host_firewall_line_says_what_a_mesh_peer_reaches() {
         let public = tunnel_core::localapi::HostFirewallStatus {
             kind: "firewalld".into(),
-            interface: "roomler0".into(),
+            interface: "meshharbor0".into(),
             zone: Some("public".into()),
             zone_is_default: true,
             admits_all: false,
@@ -3521,7 +3521,7 @@ mod tests {
         assert_eq!(
             host_firewall_line(&public).as_deref(),
             Some(
-                "firewalld has roomler0 in no zone, so the default zone public applies: \
+                "firewalld has meshharbor0 in no zone, so the default zone public applies: \
                  mesh peers reach only dhcpv6-client, ssh here"
             )
         );
@@ -3533,7 +3533,7 @@ mod tests {
         };
         assert_eq!(
             host_firewall_line(&work).as_deref(),
-            Some("firewalld has roomler0 in zone work: mesh peers reach nothing here")
+            Some("firewalld has meshharbor0 in zone work: mesh peers reach nothing here")
         );
         let ufw = tunnel_core::localapi::HostFirewallStatus {
             kind: "ufw".into(),
@@ -3544,7 +3544,7 @@ mod tests {
         };
         assert_eq!(
             host_firewall_line(&ufw).as_deref(),
-            Some("ufw limits incoming on roomler0: mesh peers reach only 22/tcp here")
+            Some("ufw limits incoming on meshharbor0: mesh peers reach only 22/tcp here")
         );
         let trusted = tunnel_core::localapi::HostFirewallStatus {
             admits_all: true,
@@ -3985,13 +3985,13 @@ mod tests {
 
     #[test]
     fn an_empty_section_still_appears() {
-        // "the firewall has no roomler rules" is a FINDING, not a missing
+        // "the firewall has no meshharbor rules" is a FINDING, not a missing
         // section — dropping it would read as "we didn't check".
         let out =
-            format!("{SECTION_MARK}firewall rules mentioning roomler\n{SECTION_MARK}routes\nx\n");
+            format!("{SECTION_MARK}firewall rules mentioning meshharbor\n{SECTION_MARK}routes\nx\n");
         let sections = split_sections(&out);
         assert_eq!(sections.len(), 2);
-        assert_eq!(sections[0].0, "firewall rules mentioning roomler");
+        assert_eq!(sections[0].0, "firewall rules mentioning meshharbor");
         assert_eq!(sections[0].1, "");
     }
 
@@ -4037,15 +4037,15 @@ mod tests {
 
     #[test]
     fn the_recipe_suffix_and_the_magicdns_name_both_yield_the_label() {
-        // #1573: `Host *.roomler` guarantees `%h` arrives WITH the suffix, so
+        // #1573: `Host *.meshharbor` guarantees `%h` arrives WITH the suffix, so
         // a proxy that looked the name up verbatim failed for every host.
         let magic = Some("grox.roomler.ai");
-        assert_eq!(mesh_label("zeus.roomler", magic), Some("zeus"));
-        assert_eq!(mesh_label("zeus.roomler", None), Some("zeus"));
+        assert_eq!(mesh_label("zeus.meshharbor", magic), Some("zeus"));
+        assert_eq!(mesh_label("zeus.meshharbor", None), Some("zeus"));
         assert_eq!(mesh_label("zeus.grox.roomler.ai", magic), Some("zeus"));
         // Absolute form, and any casing a user or a config file produces.
         assert_eq!(mesh_label("zeus.grox.roomler.ai.", magic), Some("zeus"));
-        assert_eq!(mesh_label("CORPLAP-3.ROOMLER", None), Some("CORPLAP-3"));
+        assert_eq!(mesh_label("CORPLAP-3.MESHHARBOR", None), Some("CORPLAP-3"));
         assert_eq!(mesh_label("zeus.Grox.Roomler.AI", magic), Some("zeus"));
         // A domain reported with dots around it is the same domain.
         assert_eq!(
@@ -4057,7 +4057,7 @@ mod tests {
     #[test]
     fn a_suffix_the_mesh_does_not_own_is_never_stripped() {
         // The failure this prevents: a ProxyCommand scoped wider than
-        // `*.roomler` turning `github.com` into a lookup for a device named
+        // `*.meshharbor` turning `github.com` into a lookup for a device named
         // `github` and handing the user's git to it.
         let magic = Some("grox.roomler.ai");
         assert_eq!(mesh_label("github.com", magic), None);
@@ -4065,14 +4065,14 @@ mod tests {
         // Without the daemon's word for it, a MagicDNS name is not guessed at.
         assert_eq!(mesh_label("zeus.grox.roomler.ai", None), None);
         // A suffix that merely ENDS the same way is not the suffix.
-        assert_eq!(mesh_label("zeusroomler", None), None);
-        assert_eq!(mesh_label("zeus.xroomler", None), None);
+        assert_eq!(mesh_label("zeusmeshharbor", None), None);
+        assert_eq!(mesh_label("zeus.xmeshharbor", None), None);
     }
 
     #[test]
     fn nothing_left_after_the_suffix_is_no_label() {
-        assert_eq!(mesh_label(".roomler", None), None);
-        assert_eq!(mesh_label("roomler", None), None);
+        assert_eq!(mesh_label(".meshharbor", None), None);
+        assert_eq!(mesh_label("meshharbor", None), None);
         assert_eq!(mesh_label("grox.roomler.ai", Some("grox.roomler.ai")), None);
         assert_eq!(mesh_label("", None), None);
         // An empty domain must not turn every dotted name into a match.
@@ -4084,8 +4084,8 @@ mod tests {
     fn a_non_ascii_name_is_a_non_match_not_a_panic() {
         // The cut is a BYTE offset; in the last two it lands inside a
         // character (`ž` is two bytes, `€` three).
-        assert_eq!(mesh_label("ž.roomler", None), Some("ž"));
-        assert_eq!(mesh_label("a.žroomler", None), None);
+        assert_eq!(mesh_label("ž.meshharbor", None), Some("ž"));
+        assert_eq!(mesh_label("a.žmeshharbor", None), None);
         assert_eq!(mesh_label("€€€€", None), None);
     }
 }
@@ -4311,7 +4311,7 @@ mod devices_tests {
             message: "unknown variant".into(),
         })
         .to_string();
-        assert!(msg.contains("predates `roomler devices`"), "{msg}");
+        assert!(msg.contains("predates `meshharbor devices`"), "{msg}");
         let msg = explain_directory_error(up("unsupported_server", Some(404))).to_string();
         assert!(msg.contains("update the server"), "{msg}");
         let msg = explain_directory_error(up("unauthorized", Some(401))).to_string();

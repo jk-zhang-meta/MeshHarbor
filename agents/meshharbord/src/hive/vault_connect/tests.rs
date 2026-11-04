@@ -642,7 +642,7 @@ async fn the_agent_pipe_opens_as_win32_openssh_opens_it() {
     ] {
         assert!(!sddl.contains(";BA)") && !sddl.contains(";SY)"), "{sddl}");
         let name = format!(
-            r"\\.\pipe\roomler-vault-test-{:016x}",
+            r"\\.\pipe\meshharbor-vault-test-{:016x}",
             rand::random::<u64>()
         );
         let _server = super::super::toolbelt::pipe_instance(&name, &sddl, true).unwrap();

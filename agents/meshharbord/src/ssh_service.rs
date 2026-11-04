@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-105 — roomler SSH through a Windows device's SYSTEM service
-//! (`docs/fr/FR-105-roomler-ssh-as-system.md`).
+//! FR-105 — meshharbor SSH through a Windows device's SYSTEM service
+//! (`docs/fr/FR-105-meshharbor-ssh-as-system.md`).
 //!
 //! On an attended install the worker, the process that holds the overlay and
 //! intercepts the SSH port, runs as the signed-in user, and every input its own
@@ -51,12 +51,12 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio::sync::{mpsc, oneshot};
 
 /// The SSH pipe. One per machine, like the doorbell, and made with its DACL.
-pub const PIPE_NAME: &str = r"\\.\pipe\roomler-ssh-service";
+pub const PIPE_NAME: &str = r"\\.\pipe\meshharbor-ssh-service";
 
-/// `ROOMLERD_SSH_VIA_SERVICE=0` (or `false`/`off`/`no`) withdraws `ssh-system`
+/// `MESHHARBORD_SSH_VIA_SERVICE=0` (or `false`/`off`/`no`) withdraws `ssh-system`
 /// from every connection, so the server routes no SSH grant to the service,
 /// and the worker refuses one that arrives anyway.
-pub const KILL_SWITCH_ENV: &str = "ROOMLERD_SSH_VIA_SERVICE";
+pub const KILL_SWITCH_ENV: &str = "MESHHARBORD_SSH_VIA_SERVICE";
 
 /// The largest [`Frame::Data`] payload. A peer that announces more is cut off
 /// unread.
@@ -622,7 +622,7 @@ const PUBLISH_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(all(windows, feature = "ssh-server"))]
 fn http(total: Duration) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent(concat!("roomlerd-ssh-service/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("meshharbord-ssh-service/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(5))
         .timeout(total)
         .build()
@@ -666,7 +666,7 @@ pub(crate) async fn claim_grant(
     use meshharbor_remote_control::models::SshServiceCeiling;
     if anchor.ssh == SshServiceCeiling::Off {
         return Err(
-            "SSH through the SYSTEM service is off on this device (`roomlerd anchor ssh`, \
+            "SSH through the SYSTEM service is off on this device (`meshharbord anchor ssh`, \
              elevated)"
                 .into(),
         );
@@ -1270,10 +1270,10 @@ mod tests {
     #[cfg(all(windows, feature = "ssh-server"))]
     #[test]
     fn the_service_says_it_holds_one_command_and_a_claimed_grant_carries_it() {
-        let url = claim_url("https://roomler.example", "g1", "t1");
+        let url = claim_url("https://meshharbor.example", "g1", "t1");
         assert_eq!(
             url,
-            "https://roomler.example/api/agent/service/ssh/g1/claim?tid=t1&one_command=true"
+            "https://meshharbor.example/api/agent/service/ssh/g1/claim?tid=t1&one_command=true"
         );
         let body = endpoint_body(
             "a host key",

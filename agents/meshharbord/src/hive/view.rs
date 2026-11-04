@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 //! FR-90 P0d-2 — the viewer peer: a session's transcript, served to a browser
-//! over a data-only WebRTC peer (`docs/roomler-hive-design.md` §5.2).
+//! over a data-only WebRTC peer (`docs/meshharbor-hive-design.md` §5.2).
 //!
 //! # The handshake
 //!

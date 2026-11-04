@@ -23,7 +23,7 @@
 //! `features` (FR-102 P9b) are server-wide switches a client must read
 //! before offering something — unlike a module, a feature is something the
 //! SPA fails **closed** on: `session_feedback` is the post-session rating,
-//! off by `ROOMLER__GROWTH__FEEDBACK=false`, and a viewer that has not read
+//! off by `MESHHARBOR__GROWTH__FEEDBACK=false`, and a viewer that has not read
 //! `true` never offers it.
 
 use axum::{Json, extract::State};

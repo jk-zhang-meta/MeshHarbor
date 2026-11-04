@@ -2,36 +2,36 @@
 # The README demo: real machines, one browser tab, each desktop full screen.
 #
 # Records against whatever server you point it at, usually production: for each
-# device in ROOMLER_DEMO_DEVICES it opens the device's remote page with the
+# device in MESHHARBOR_DEMO_DEVICES it opens the device's remote page with the
 # sidebar collapsed, presses Connect, and enters the viewer's fullscreen. Then
 # ui/e2e/video/cut-demo.ts cuts the take into the README MP4 and GIF.
 #
 # What you need before running:
 #   - an account that can sign in, and the org (tenant) id the devices are in
-#   - each device ONLINE. ROOMLER_DEMO_DEVICES finds it by display name, and
-#     ROOMLER_DEMO_LABELS sets the name the video SHOWS: a display name says
+#   - each device ONLINE. MESHHARBOR_DEMO_DEVICES finds it by display name, and
+#     MESHHARBOR_DEMO_LABELS sets the name the video SHOWS: a display name says
 #     whose machine it is, so give every device a neutral label
 #   - bun, and ffmpeg on PATH (or in WSL)
 #
 # Usage:
 #   ./scripts/record-demo.sh --login     once: sign in with the credentials below and
 #                                        save the session to ~/.roomler-demo-state.json
-#                                        (ROOMLER_DEMO_STATE); later takes need no password
-#   ROOMLER_DEMO_USER=…  ROOMLER_DEMO_PASS=…  ROOMLER_DEMO_TENANT=<org id> \
-#   ROOMLER_DEMO_DEVICES="office-mac,laptop-17,laptop-42" \
-#   ROOMLER_DEMO_LABELS="MacBook|Windows laptop|Second laptop" \
-#   ROOMLER_DEMO_CAPTIONS="A MacBook — in a browser tab|…|…" \
-#   ROOMLER_DEMO_BLUR='[{"device":0,"phase":"full","rect":[136,46,400,394]}]' \
+#                                        (MESHHARBOR_DEMO_STATE); later takes need no password
+#   MESHHARBOR_DEMO_USER=…  MESHHARBOR_DEMO_PASS=…  MESHHARBOR_DEMO_TENANT=<org id> \
+#   MESHHARBOR_DEMO_DEVICES="office-mac,laptop-17,laptop-42" \
+#   MESHHARBOR_DEMO_LABELS="MacBook|Windows laptop|Second laptop" \
+#   MESHHARBOR_DEMO_CAPTIONS="A MacBook — in a browser tab|…|…" \
+#   MESHHARBOR_DEMO_BLUR='[{"device":0,"phase":"full","rect":[136,46,400,394]}]' \
 #   ./scripts/record-demo.sh
 #
-# ROOMLER_DEMO_BLUR (optional) blurs regions of a device's desktop, per layout:
+# MESHHARBOR_DEMO_BLUR (optional) blurs regions of a device's desktop, per layout:
 # see cut-demo.ts. Measure the rectangles on the take's own frames.
 #
 # Optional scenes, each documented where it is defined in record-demo.spec.ts:
-#   ROOMLER_DEMO_RECORD / ROOMLER_DEMO_RECORD_PROBE   the viewer's Record button, filmed
-#   ROOMLER_DEMO_STEPS                                 scripted input on a remote app
-#   ROOMLER_DEMO_NETWORK=1                             the dashboard's Network card
-# ROOMLER_DEMO_LOCKCHECK (strongly advised): `roomler exec` selectors to check
+#   MESHHARBOR_DEMO_RECORD / MESHHARBOR_DEMO_RECORD_PROBE   the viewer's Record button, filmed
+#   MESHHARBOR_DEMO_STEPS                                 scripted input on a remote app
+#   MESHHARBOR_DEMO_NETWORK=1                             the dashboard's Network card
+# MESHHARBOR_DEMO_LOCKCHECK (strongly advised): `roomler exec` selectors to check
 # for a signed-in screen right before the take — see below.
 # `bun ui/e2e/video/list-demo-devices.ts` lists, from the saved session, the
 # orgs and device display names the account can film.
@@ -71,7 +71,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 UI_DIR="$PROJECT_DIR/ui"
 
-BASE_URL="${ROOMLER_DEMO_URL:-https://roomler.ai}"
+BASE_URL="${MESHHARBOR_DEMO_URL:-https://roomler.ai}"
 
 # `--login` signs in once and saves the browser session to $STATE; every take
 # after that starts from the session and never loads the password, so a take
@@ -79,28 +79,28 @@ BASE_URL="${ROOMLER_DEMO_URL:-https://roomler.ai}"
 # lasts as long as the refresh token (30 days); then run --login again.
 LOGIN=0
 [ "${1:-}" = "--login" ] && LOGIN=1
-STATE="${ROOMLER_DEMO_STATE:-$HOME/.roomler-demo-state.json}"
+STATE="${MESHHARBOR_DEMO_STATE:-$HOME/.roomler-demo-state.json}"
 
 if [ $LOGIN -eq 1 ] || [ ! -f "$STATE" ]; then
   # Credentials may come from the environment or from a 0600 file, so a
   # re-record does not need them re-typed. The file is never echoed.
-  for envfile in "${ROOMLER_DEMO_ENV:-}" "$HOME/.roomler-demo.env" ./.roomler-demo.env; do
+  for envfile in "${MESHHARBOR_DEMO_ENV:-}" "$HOME/.roomler-demo.env" ./.roomler-demo.env; do
     if [ -n "$envfile" ] && [ -f "$envfile" ]; then
       set -a; . "$envfile"; set +a
       echo "credentials: loaded from $envfile"
       break
     fi
   done
-  : "${ROOMLER_DEMO_USER:?set ROOMLER_DEMO_USER, or put it in ~/.roomler-demo.env}"
-  : "${ROOMLER_DEMO_PASS:?set ROOMLER_DEMO_PASS, or put it in ~/.roomler-demo.env}"
+  : "${MESHHARBOR_DEMO_USER:?set MESHHARBOR_DEMO_USER, or put it in ~/.roomler-demo.env}"
+  : "${MESHHARBOR_DEMO_PASS:?set MESHHARBOR_DEMO_PASS, or put it in ~/.roomler-demo.env}"
 fi
 
 if [ $LOGIN -eq 1 ]; then
   echo "=== Roomler demo: sign in once and save the session ==="
   cd "$UI_DIR" || exit 1
   E2E_BASE_URL="$BASE_URL" \
-  E2E_USERNAME="$ROOMLER_DEMO_USER" \
-  E2E_PASSWORD="$ROOMLER_DEMO_PASS" \
+  E2E_USERNAME="$MESHHARBOR_DEMO_USER" \
+  E2E_PASSWORD="$MESHHARBOR_DEMO_PASS" \
   E2E_SAVE_STATE=1 \
   E2E_STORAGE_STATE="$STATE" \
     bunx playwright test e2e/video/record-demo.spec.ts \
@@ -115,18 +115,18 @@ if [ $LOGIN -eq 1 ]; then
   exit 0
 fi
 
-: "${ROOMLER_DEMO_TENANT:?set ROOMLER_DEMO_TENANT — the org id the devices are in}"
-: "${ROOMLER_DEMO_DEVICES:?set ROOMLER_DEMO_DEVICES — display names, comma-separated, in filming order}"
+: "${MESHHARBOR_DEMO_TENANT:?set MESHHARBOR_DEMO_TENANT — the org id the devices are in}"
+: "${MESHHARBOR_DEMO_DEVICES:?set MESHHARBOR_DEMO_DEVICES — display names, comma-separated, in filming order}"
 
 # ⚠️ OUTSIDE ui/e2e/video/output: Playwright empties its outputDir at the start
 # of every run, so a take kept there is lost to the next run of anything.
-TAKE="${ROOMLER_DEMO_TAKE:-$HOME/Videos/Roomler/demo/$(date +%Y-%m-%d-%H%M%S)}"
+TAKE="${MESHHARBOR_DEMO_TAKE:-$HOME/Videos/Roomler/demo/$(date +%Y-%m-%d-%H%M%S)}"
 mkdir -p "$TAKE"
 
 echo "=== Roomler demo recording ==="
 echo "server  : $BASE_URL"
-echo "org     : $ROOMLER_DEMO_TENANT"
-echo "devices : $ROOMLER_DEMO_DEVICES"
+echo "org     : $MESHHARBOR_DEMO_TENANT"
+echo "devices : $MESHHARBOR_DEMO_DEVICES"
 echo "take    : $TAKE"
 echo ""
 
@@ -139,12 +139,12 @@ fi
 # ⚠️ Every screen signed in, checked right before THIS take. A locked screen takes typed text
 # as a sign-in attempt (2026-10-06: a take that started after a Mac had locked typed a folder
 # path into its password field), and a managed laptop's lock screen prints its name and
-# addresses on every frame. ROOMLER_DEMO_LOCKCHECK lists `roomler exec` selectors, each with
+# addresses on every frame. MESHHARBOR_DEMO_LOCKCHECK lists `roomler exec` selectors, each with
 # the OS that decides how to ask: "laptop-17:win,office-mac:mac". A screen that is locked, or a
 # check that cannot answer, stops the take before anything is filmed. Selectors are machine
 # names: pass them at run time, never write them down here.
-if [ -n "${ROOMLER_DEMO_LOCKCHECK:-}" ]; then
-  IFS=',' read -ra lockchecks <<< "$ROOMLER_DEMO_LOCKCHECK"
+if [ -n "${MESHHARBOR_DEMO_LOCKCHECK:-}" ]; then
+  IFS=',' read -ra lockchecks <<< "$MESHHARBOR_DEMO_LOCKCHECK"
   for c in "${lockchecks[@]}"; do
     sel="${c%%:*}"
     os="${c##*:}"
@@ -183,7 +183,7 @@ if [ -n "${ROOMLER_DEMO_LOCKCHECK:-}" ]; then
         fi
         ;;
       *)
-        echo "ERROR: ROOMLER_DEMO_LOCKCHECK entry '$c' needs :win or :mac."
+        echo "ERROR: MESHHARBOR_DEMO_LOCKCHECK entry '$c' needs :win or :mac."
         exit 1
         ;;
     esac
@@ -197,19 +197,19 @@ if [ -f "$STATE" ]; then
   echo "session : $STATE (no password)"
   AUTH=(E2E_STORAGE_STATE="$STATE")
 else
-  AUTH=(E2E_USERNAME="$ROOMLER_DEMO_USER" E2E_PASSWORD="$ROOMLER_DEMO_PASS")
+  AUTH=(E2E_USERNAME="$MESHHARBOR_DEMO_USER" E2E_PASSWORD="$MESHHARBOR_DEMO_PASS")
 fi
 # The spec refuses an unknown or offline device before it films anything.
 env "${AUTH[@]}" \
 E2E_BASE_URL="$BASE_URL" \
-E2E_TENANT_ID="$ROOMLER_DEMO_TENANT" \
-E2E_DEMO_DEVICES="$ROOMLER_DEMO_DEVICES" \
-E2E_DEMO_LABELS="${ROOMLER_DEMO_LABELS:-}" \
-E2E_DEMO_NETWORK="${ROOMLER_DEMO_NETWORK:-}" \
-E2E_DEMO_RECORD="${ROOMLER_DEMO_RECORD:-}" \
-E2E_DEMO_RECORD_PROBE="${ROOMLER_DEMO_RECORD_PROBE:-}" \
-E2E_DEMO_STEPS="${ROOMLER_DEMO_STEPS:-}" \
-E2E_DEMO_LOCKCHECK="${ROOMLER_DEMO_LOCKCHECK:-}" \
+E2E_TENANT_ID="$MESHHARBOR_DEMO_TENANT" \
+E2E_DEMO_DEVICES="$MESHHARBOR_DEMO_DEVICES" \
+E2E_DEMO_LABELS="${MESHHARBOR_DEMO_LABELS:-}" \
+E2E_DEMO_NETWORK="${MESHHARBOR_DEMO_NETWORK:-}" \
+E2E_DEMO_RECORD="${MESHHARBOR_DEMO_RECORD:-}" \
+E2E_DEMO_RECORD_PROBE="${MESHHARBOR_DEMO_RECORD_PROBE:-}" \
+E2E_DEMO_STEPS="${MESHHARBOR_DEMO_STEPS:-}" \
+E2E_DEMO_LOCKCHECK="${MESHHARBOR_DEMO_LOCKCHECK:-}" \
 E2E_DEMO_OUT="$TAKE" \
   bunx playwright test e2e/video/record-demo.spec.ts \
     --config=playwright.video.config.ts --reporter=list

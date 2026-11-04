@@ -65,7 +65,7 @@
 //! The governor applies `ceiling := min(nominal, derived)` — the
 //! measurement may only ever LOWER the clamp, because the nominal clamp
 //! also protects the TURN path. Kill switch:
-//! `ROOMLERD_MEASURED_CEILING=0` / config `measured_ceiling`.
+//! `MESHHARBORD_MEASURED_CEILING=0` / config `measured_ceiling`.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

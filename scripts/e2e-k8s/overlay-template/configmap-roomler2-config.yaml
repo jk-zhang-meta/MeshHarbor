@@ -3,9 +3,9 @@ kind: ConfigMap
 metadata:
   name: roomler2-config
 data:
-  ROOMLER__APP__HOST: "0.0.0.0"
-  ROOMLER__APP__PORT: "3000"
-  ROOMLER__APP__FRONTEND_URL: "http://roomler2"
+  MESHHARBOR__APP__HOST: "0.0.0.0"
+  MESHHARBOR__APP__PORT: "3000"
+  MESHHARBOR__APP__FRONTEND_URL: "http://roomler2"
   # CORS_ORIGINS deserializes as Vec<String>; the config crate
   # rejects scalar strings ('*' would crash with `invalid type:
   # string "*", expected a sequence`). Leaving it unset uses the
@@ -13,23 +13,23 @@ data:
   # browser and the API are same-origin (`http://roomler2`)
   # in-cluster, so the CORS middleware never trips.
 
-  ROOMLER__DATABASE__URL: "mongodb://mongodb.roomler-ai-e2e.svc.cluster.local:27017"
-  ROOMLER__DATABASE__NAME: "roomler_ai_e2e"
+  MESHHARBOR__DATABASE__URL: "mongodb://mongodb.roomler-ai-e2e.svc.cluster.local:27017"
+  MESHHARBOR__DATABASE__NAME: "roomler_ai_e2e"
 
-  ROOMLER__REDIS__URL: "redis://redis.roomler-ai-e2e.svc.cluster.local:6379"
+  MESHHARBOR__REDIS__URL: "redis://redis.roomler-ai-e2e.svc.cluster.local:6379"
 
-  ROOMLER__S3__ENDPOINT: "http://minio.roomler-ai-e2e.svc.cluster.local:9000"
-  ROOMLER__S3__BUCKET: "roomler2-e2e"
-  ROOMLER__S3__REGION: "us-east-1"
+  MESHHARBOR__S3__ENDPOINT: "http://minio.roomler-ai-e2e.svc.cluster.local:9000"
+  MESHHARBOR__S3__BUCKET: "roomler2-e2e"
+  MESHHARBOR__S3__REGION: "us-east-1"
 
-  ROOMLER__JWT__ISSUER: "roomler-ai-e2e"
+  MESHHARBOR__JWT__ISSUER: "roomler-ai-e2e"
 
   # Rate limit bumped — Playwright Job runs from a single Pod IP and
   # blasts ~5-10 reqs per spec across ~50 specs, easily blowing past
   # the prod 60/min default. 1000 tokens/sec + 5000 burst is
   # effectively "no rate limit" for the duration of an e2e run.
-  ROOMLER__APP__RATE_LIMIT_PER_SEC: "1000"
-  ROOMLER__APP__RATE_LIMIT_BURST: "5000"
+  MESHHARBOR__APP__RATE_LIMIT_PER_SEC: "1000"
+  MESHHARBOR__APP__RATE_LIMIT_BURST: "5000"
 
   # E2E ACTIVATION SHORTCUT — Phase 1 unblocker for Cycle 3.
   # When set, `auth::register` immediately marks the new user
@@ -40,7 +40,7 @@ data:
   # to verify SMTP delivery and the activation-link round-trip
   # WITHOUT having to flip this off and break the 100+ specs
   # that depend on register → login working in one round-trip.
-  ROOMLER__AUTH__AUTO_VERIFY: "true"
+  MESHHARBOR__AUTH__AUTO_VERIFY: "true"
 
   # E2E EMAIL CAPTURE (Cycle 4 Chunk 1) — flip the EmailService
   # backend from SendGrid HTTP (prod default, gated on api_key)
@@ -49,16 +49,16 @@ data:
   # lettre's `builder_dangerous` path (no TLS, no auth) which
   # matches that. With `email.api_key` left empty (default), the
   # service picks SMTP when both smtp_host + smtp_port are set.
-  ROOMLER__EMAIL__SMTP_HOST: "mailpit.roomler-ai-e2e.svc.cluster.local"
-  ROOMLER__EMAIL__SMTP_PORT: "1025"
-  ROOMLER__EMAIL__FROM_EMAIL: "noreply@e2e.local"
+  MESHHARBOR__EMAIL__SMTP_HOST: "mailpit.roomler-ai-e2e.svc.cluster.local"
+  MESHHARBOR__EMAIL__SMTP_PORT: "1025"
+  MESHHARBOR__EMAIL__FROM_EMAIL: "noreply@e2e.local"
 
   # Phase 4 will set these when in-cluster coturn / oauth2-mock-server
   # land. Until then, the specs that depend on them are filtered
   # out via the testIgnore block in ui/playwright.config.cjs
   # gated on E2E_SKIP_PHASE_3=1.
-  ROOMLER__TURN__URL: ""
+  MESHHARBOR__TURN__URL: ""
 
-  ROOMLER__MEDIASOUP__NUM_WORKERS: "1"
+  MESHHARBOR__MEDIASOUP__NUM_WORKERS: "1"
 
   RUST_LOG: "info,roomler_ai=debug"

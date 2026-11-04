@@ -194,7 +194,7 @@ impl AppState {
                     Err(_) => {
                         tracing::warn!(
                             entry = %s,
-                            "ROOMLER__STATS__PLATFORM_ADMINS entry is not a 24-hex ObjectId — skipped"
+                            "MESHHARBOR__STATS__PLATFORM_ADMINS entry is not a 24-hex ObjectId — skipped"
                         );
                         None
                     }

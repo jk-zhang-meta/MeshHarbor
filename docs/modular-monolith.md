@@ -226,7 +226,7 @@ Three properties of the design are load-bearing:
 - **A dropped module answers 404, never 500.** 500 would mean a route mounted onto absent state.
 - **The browser runs inside the server VM**, against loopback. RTP does not survive a
   port-forward; a LAN URL is not a secure context, so `navigator.mediaDevices` is `undefined`; and
-  `ROOMLER__APP__FRONTEND_URL` must **equal** the browser's Origin or the cookie-authenticated
+  `MESHHARBOR__APP__FRONTEND_URL` must **equal** the browser's Origin or the cookie-authenticated
   `/ws` upgrade is 403'd. The prod e2e lane uses an in-pod sidecar for the same three reasons.
 
 ⚠️ **A second machine needs TLS.** `roomlerd enroll` rewrites `http://` to `https://` for any

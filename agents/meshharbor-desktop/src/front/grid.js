@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 /*
- * FR-84 D5c — a keyed, column-configurable table (`window.Roomler.Grid`).
+ * FR-84 D5c — a keyed, column-configurable table (`window.MeshHarbor.Grid`).
  *
  * The web app's device grid lets each person hide and reorder columns
  * (ui/src/composables/useGridColumns.ts); this is that logic, ported to the
@@ -434,5 +434,5 @@
     };
   }
 
-  window.Roomler.Grid = { create, orderedKeys, visibleKeys, NEVER_HIDE };
+  window.MeshHarbor.Grid = { create, orderedKeys, visibleKeys, NEVER_HIDE };
 })();

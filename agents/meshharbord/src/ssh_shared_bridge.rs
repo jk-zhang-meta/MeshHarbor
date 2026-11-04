@@ -354,7 +354,7 @@ mod tests {
         let hash = ssh.best_supported_rsa_hash().await.unwrap().flatten();
         assert!(
             ssh.authenticate_publickey(
-                "roomler",
+                "meshharbor",
                 russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), hash)
             )
             .await

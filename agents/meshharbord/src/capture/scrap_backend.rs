@@ -130,7 +130,7 @@ impl ScrapCapture {
         let desired_worker = desired.clone();
 
         thread::Builder::new()
-            .name("roomlerd-capture".into())
+            .name("meshharbord-capture".into())
             .spawn(move || {
                 // macOS — a sleeping display composites nothing, so a stream
                 // opened on it never delivers a frame and the viewer hangs up

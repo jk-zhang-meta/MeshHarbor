@@ -34,10 +34,10 @@
 
 ### Pod identity (`crates/api/src/cluster/identity.rs`)
 
-`pod_id` — stable across restarts: `ROOMLER__APP__POD_ID` override (tests
-inject per-app values) → `ROOMLER__POD_HOST_IP` (hostNetwork ⇒ ≤1 API pod
+`pod_id` — stable across restarts: `MESHHARBOR__APP__POD_ID` override (tests
+inject per-app values) → `MESHHARBOR__POD_HOST_IP` (hostNetwork ⇒ ≤1 API pod
 per node, so the node IP IS the pod identity — the same key the LB
-upstream list and `ROOMLER__MEDIASOUP__ANNOUNCED_IP_MAP` use) → hostname →
+upstream list and `MESHHARBOR__MEDIASOUP__ANNOUNCED_IP_MAP` use) → hostname →
 random dev id. `epoch` — a per-process random token: a restarted pod
 re-subscribes to the same bus channel but must never be mistaken for the
 process that owned the previous epoch's entities.

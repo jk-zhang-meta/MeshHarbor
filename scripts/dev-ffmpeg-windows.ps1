@@ -95,7 +95,7 @@ if (-not $ready) {
   if (Test-Path $ffRoot) { Remove-Item -Recurse -Force $ffRoot }
   New-Item -ItemType Directory -Path $ffRoot -Force | Out-Null
   Expand-Archive -Path $zip -DestinationPath $ffRoot -Force
-  # The zip carries lib/ + include/ (+ ROOMLER-PATCHES.txt) at its top level,
+  # The zip carries lib/ + include/ (+ MESHHARBOR-PATCHES.txt) at its top level,
   # or one wrapping directory — normalise to $ffRoot\lib.
   if (-not (Test-Path (Join-Path $ffRoot 'lib'))) {
     $inner = Get-ChildItem $ffRoot -Directory | Select-Object -First 1
@@ -130,8 +130,8 @@ if (-not $ready) {
 
   Set-Content -Path $stamp -Value (Get-Date -Format o) -Encoding ascii -NoNewline
   Write-Step "staged: $ffRoot (FFmpeg) + $vpxRoot (libvpx) + $binDir\pkg-config.exe"
-  if (Test-Path (Join-Path $ffRoot 'ROOMLER-PATCHES.txt')) {
-    Write-Step "vendored FFmpeg carries roomler patches:"; Get-Content (Join-Path $ffRoot 'ROOMLER-PATCHES.txt')
+  if (Test-Path (Join-Path $ffRoot 'MESHHARBOR-PATCHES.txt')) {
+    Write-Step "vendored FFmpeg carries roomler patches:"; Get-Content (Join-Path $ffRoot 'MESHHARBOR-PATCHES.txt')
   }
 }
 

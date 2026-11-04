@@ -36,11 +36,11 @@ pub const CONSENT: &str = "consent";
 pub const VIEWING: &str = "viewing";
 
 /// The banner window's title. #2286's KWin script finds the banner by it.
-pub const BANNER_TITLE: &str = "Roomler — session active";
+pub const BANNER_TITLE: &str = "MeshHarbor — session active";
 
 // ── FR-27 P9: the banner's Windows manners, here ──────────────────────────
 //
-// The native Windows badge (`roomlerd/src/indicator/win.rs`) hides until the
+// The native Windows badge (`meshharbord/src/indicator/win.rs`) hides until the
 // pointer rests at the top edge, can be dragged, and leaves a thin red frame
 // round the screen for the whole session. This banner showed and STAYED, and
 // on macOS every show took keyboard focus from whatever the person was using.
@@ -66,8 +66,8 @@ static BANNER_FRESH: AtomicBool = AtomicBool::new(false);
 static REVEAL_WATCH: Mutex<bool> = Mutex::new(false);
 
 /// `=0` (or `false`/`off`) turns a P9 behaviour off — each is its own kill
-/// switch: `ROOMLER_DESKTOP_BANNER_AUTOHIDE` (the banner then stays, as
-/// before P9) and `ROOMLER_DESKTOP_FRAME` (no red frame).
+/// switch: `MESHHARBOR_DESKTOP_BANNER_AUTOHIDE` (the banner then stays, as
+/// before P9) and `MESHHARBOR_DESKTOP_FRAME` (no red frame).
 fn switched_off(name: &str) -> bool {
     matches!(
         std::env::var(name).ok().as_deref(),
@@ -75,13 +75,13 @@ fn switched_off(name: &str) -> bool {
     )
 }
 
-/// Escape hatch, both ways. `ROOMLER_DESKTOP_BANNER=0` turns the banner off
+/// Escape hatch, both ways. `MESHHARBOR_DESKTOP_BANNER=0` turns the banner off
 /// where the native overlay already covers it; `=1` forces it on for an A/B
 /// against that overlay.
 ///
 /// Default: ON everywhere except Windows, which has the better one already.
 pub fn banner_enabled() -> bool {
-    match std::env::var("ROOMLER_DESKTOP_BANNER").ok().as_deref() {
+    match std::env::var("MESHHARBOR_DESKTOP_BANNER").ok().as_deref() {
         Some("0") | Some("false") | Some("off") => false,
         Some(_) => true,
         None => !cfg!(windows),
@@ -96,7 +96,7 @@ pub fn show_consent<R: Runtime>(app: &AppHandle<R>) {
         app,
         CONSENT,
         "panel-consent.html",
-        "Roomler — permission needed",
+        "MeshHarbor — permission needed",
         460.0,
         260.0,
         // Focused: this one is a question, and a prompt nobody's keyboard can
@@ -128,10 +128,10 @@ pub fn show_banner<R: Runtime>(app: &AppHandle<R>) {
     std::thread::spawn(|| crate::pin::ensure_kwin_pin(BANNER_TITLE));
     BANNER_FRESH.store(true, Ordering::SeqCst);
     BANNER_WANTED.store(true, Ordering::SeqCst);
-    if !switched_off("ROOMLER_DESKTOP_FRAME") {
+    if !switched_off("MESHHARBOR_DESKTOP_FRAME") {
         frame::show(app);
     }
-    if !switched_off("ROOMLER_DESKTOP_BANNER_AUTOHIDE") {
+    if !switched_off("MESHHARBOR_DESKTOP_BANNER_AUTOHIDE") {
         spawn_reveal_watch(app);
     }
 }

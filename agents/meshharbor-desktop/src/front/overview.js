@@ -11,7 +11,7 @@
  */
 (function () {
   'use strict';
-  const { $, invoke, show, hide, setText, on, get, navigate, currentView } = window.Roomler;
+  const { $, invoke, show, hide, setText, on, get, navigate, currentView } = window.MeshHarbor;
 
   let routesActive = null; // painted by tunnels.js via the shared event below
 
@@ -562,7 +562,7 @@
     on('deviceView', paintDeviceView);
     // FR-84 D4 — the encoder matrix and the drop folder.
     on('deviceView', watchDaemon);
-    document.addEventListener('roomler:view', (ev) => {
+    document.addEventListener('meshharbor:view', (ev) => {
       if (ev.detail !== 'overview' || lastDaemonKey === null) return;
       // A change made on the Settings page shows up on the way back, and a
       // matrix still waiting for the first probe resumes its poll.
@@ -615,12 +615,12 @@
     $('ov-btn-onboard').addEventListener('click', () => navigate('onboarding'));
     $('ov-attention-reenroll').addEventListener('click', () => navigate('onboarding'));
 
-    // S7 — the embedded Roomler web window (WebView2 on Windows).
+    // S7 — the embedded MeshHarbor web window (WebView2 on Windows).
     $('ov-btn-open-web').addEventListener('click', async () => {
       try {
-        await invoke('cmd_open_roomler');
+        await invoke('cmd_open_meshharbor');
       } catch (e) {
-        pushOutput('Could not open Roomler: ' + e);
+        pushOutput('Could not open MeshHarbor: ' + e);
       }
     });
 
@@ -653,8 +653,8 @@
 
     // Tray's "Check for Updates" menu item evals a global + dispatches this
     // event (tray.rs) — surface the result where it's visible.
-    window.addEventListener('roomler-update-check', () => {
-      const r = window.__roomler_check_update_result;
+    window.addEventListener('meshharbor-update-check', () => {
+      const r = window.__meshharbor_check_update_result;
       if (r && r.check) {
         navigate('overview');
         pushOutput(r.check);
@@ -665,7 +665,7 @@
     });
 
     // tunnels.js broadcasts its route list; the overview only needs the count.
-    document.addEventListener('roomler:routes', (ev) => {
+    document.addEventListener('meshharbor:routes', (ev) => {
       const routes = ev.detail || [];
       routesActive = routes.filter(
         (r) => r.state && r.state.state === 'active',

@@ -85,7 +85,7 @@ pub struct Core {
     /// Writers gate on `settings.stats.enabled`.
     pub stats: Arc<StatsDao>,
     /// Stats PR-3 — platform-operator allowlist parsed from
-    /// `ROOMLER__STATS__PLATFORM_ADMINS` (user OBJECTIDS, deliberately not
+    /// `MESHHARBOR__STATS__PLATFORM_ADMINS` (user OBJECTIDS, deliberately not
     /// emails: OAuth links accounts by bare email, so an email allowlist
     /// would turn a provider-asserted address into platform-root).
     pub platform_admins: Arc<HashSet<ObjectId>>,

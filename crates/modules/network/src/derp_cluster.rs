@@ -12,7 +12,7 @@
 //!
 //! The cure is **rehome, never forward**: no WG-rate bytes ever ride
 //! the bus. Each registration writes an LWW record
-//! (`roomler:own:derp:<net>:<pubkey>`) plus a per-network member index,
+//! (`meshharbor:own:derp:<net>:<pubkey>`) plus a per-network member index,
 //! then runs one convergence sweep: the pod of the NEWEST registration
 //! is the target (the newest dial reflects the LB's *current* verdict —
 //! rehoming toward a parked majority would chase the past), and every

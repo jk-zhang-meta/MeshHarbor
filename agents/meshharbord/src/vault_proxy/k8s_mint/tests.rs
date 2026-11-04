@@ -61,7 +61,7 @@ async fn a_token_is_minted_bound_to_a_secret_made_for_its_lease() {
     let lease = lease();
     let until = in_ms(60);
     let m = mint(&issuer, &lease, 60, until).await.unwrap();
-    let secret = format!("roomler-{lease}");
+    let secret = format!("meshharbor-{lease}");
     assert_eq!(m.secret, secret);
     {
         let st = k.state();
@@ -172,7 +172,7 @@ async fn a_refused_token_takes_its_secret_back() {
     assert_eq!(last.method, "DELETE");
     assert_eq!(
         last.target,
-        format!("/api/v1/namespaces/hive-tokens/secrets/roomler-{lease}")
+        format!("/api/v1/namespaces/hive-tokens/secrets/meshharbor-{lease}")
     );
     assert!(last.body["preconditions"]["uid"].is_string(), "{last:?}");
 }
@@ -204,9 +204,9 @@ async fn the_revocation_deletes_the_secret_on_its_uid_and_nothing_else() {
     let asked = k.state().saw.len();
     for name in [
         "app-config",
-        "roomler-",
-        "roomler-0123456789ABCDEF01234567",
-        "roomler-0123456789abcdef0123456",
+        "meshharbor-",
+        "meshharbor-0123456789ABCDEF01234567",
+        "meshharbor-0123456789abcdef0123456",
     ] {
         assert!(revoke(&issuer, name, "uid-1").await.is_err(), "{name}");
     }
@@ -224,9 +224,9 @@ async fn the_revocation_deletes_the_secret_on_its_uid_and_nothing_else() {
 async fn the_sweep_deletes_the_ended_secrets_a_mint_made_and_nothing_else() {
     let k = fake_k8s(false).await;
     let (ended, live, endless) = (
-        format!("roomler-{}", lease()),
-        format!("roomler-{}", lease()),
-        format!("roomler-{}", lease()),
+        format!("meshharbor-{}", lease()),
+        format!("meshharbor-{}", lease()),
+        format!("meshharbor-{}", lease()),
     );
     let label = json!({"roomler.ai/lease": "an-earlier-lease"});
     {
@@ -265,7 +265,7 @@ async fn the_sweep_deletes_the_ended_secrets_a_mint_made_and_nothing_else() {
 #[tokio::test]
 async fn an_issuer_that_may_not_list_mints_with_no_sweep() {
     let k = fake_k8s(false).await;
-    let ended = format!("roomler-{}", lease());
+    let ended = format!("meshharbor-{}", lease());
     {
         let mut st = k.state();
         st.refuse_list = true;
@@ -383,8 +383,8 @@ fn an_issuer_whose_names_could_leave_its_path_is_refused() {
 #[test]
 fn a_lease_names_one_secret_and_only_a_minted_name_is_deleted() {
     let lease = lease();
-    assert_eq!(secret_for(&lease).unwrap(), format!("roomler-{lease}"));
-    assert!(minted(&format!("roomler-{lease}")).is_ok());
+    assert_eq!(secret_for(&lease).unwrap(), format!("meshharbor-{lease}"));
+    assert!(minted(&format!("meshharbor-{lease}")).is_ok());
     for bad in [
         "abc",
         "ABCDEF0123456789ABCDEF01",
@@ -396,9 +396,9 @@ fn a_lease_names_one_secret_and_only_a_minted_name_is_deleted() {
     }
     for bad in [
         "app-config",
-        "roomler-",
-        "roomler_0123456789abcdef01234567",
-        "x-roomler-0123456789abcdef01234567",
+        "meshharbor-",
+        "meshharbor_0123456789abcdef01234567",
+        "x-meshharbor-0123456789abcdef01234567",
     ] {
         assert!(minted(bad).is_err(), "{bad}");
     }

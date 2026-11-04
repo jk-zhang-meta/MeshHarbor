@@ -239,7 +239,7 @@ impl AgentDao {
     ///
     /// `install` (FR-102 P3) is refreshed only when the re-enrolling request
     /// SAID how it was installed: a re-enroll by an agent from before P3, or
-    /// a `roomlerd re-enroll` (which sends nothing), must not downgrade a
+    /// a `meshharbord re-enroll` (which sends nothing), must not downgrade a
     /// known method to `unknown`.
     pub async fn rehydrate(
         &self,
@@ -786,7 +786,7 @@ impl AgentDao {
             .await
     }
 
-    /// Replace the device's roomler-SSH policy (gate 3). A `MANAGE_AGENTS`
+    /// Replace the device's meshharbor-SSH policy (gate 3). A `MANAGE_AGENTS`
     /// admin action, exactly like [`Self::update_exec_policy`] — and kept
     /// separate from it so enabling one can never be a side effect of
     /// enabling the other.

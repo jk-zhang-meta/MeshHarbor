@@ -10,10 +10,10 @@ import { api } from '@/api/client'
  * machine doesn't leak one person's state to the next:
  *
  *  - **seen**: has the welcome tour ever been auto-opened for this user
- *    (`roomler-tour-seen:<userId>`). Set on the FIRST auto-open and never
+ *    (`meshharbor-tour-seen:<userId>`). Set on the FIRST auto-open and never
  *    cleared by normal use, so the tour can never ambush someone twice.
  *  - **progress**: which chapters they ticked off
- *    (`roomler:tour-progress:<userId>`) — same storage conventions as
+ *    (`meshharbor:tour-progress:<userId>`) — same storage conventions as
  *    `useGridColumns`.
  *
  * Every access is try/catch'd: localStorage throws in private windows and
@@ -21,8 +21,8 @@ import { api } from '@/api/client'
  * that breaks the app shell.
  */
 
-export const TOUR_SEEN_PREFIX = 'roomler-tour-seen:'
-export const TOUR_PROGRESS_PREFIX = 'roomler:tour-progress:'
+export const TOUR_SEEN_PREFIX = 'meshharbor-tour-seen:'
+export const TOUR_PROGRESS_PREFIX = 'meshharbor:tour-progress:'
 
 export function tourSeenKey(userId: string): string {
   return `${TOUR_SEEN_PREFIX}${userId || 'anon'}`

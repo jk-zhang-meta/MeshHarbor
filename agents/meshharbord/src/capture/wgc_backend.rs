@@ -142,7 +142,7 @@ pub struct WgcCapture {
     target_frame_period: Duration,
     last_frame_at: Option<Instant>,
     /// FR-98 C1 — `Some` when this open runs the slot-first gate
-    /// (`ROOMLERD_CAPTURE_GATE=slot_first`); `None` keeps the legacy gate
+    /// (`MESHHARBORD_CAPTURE_GATE=slot_first`); `None` keeps the legacy gate
     /// above, whose code path is unchanged.
     slot_first: Option<super::gate::SlotFirst>,
     /// FR-119 P2b — the gate the open chose, which a rate moved back to 60 or
@@ -164,13 +164,13 @@ pub struct WgcCapture {
     start: Instant,
     /// FR-85 P1d — the session was opened with cursor capture ON, so the
     /// pointer is in every frame (a recording's session; or the live one
-    /// under `ROOMLERD_WGC_CURSOR=1`).
+    /// under `MESHHARBORD_WGC_CURSOR=1`).
     pointer_in_frame: bool,
 }
 
 /// FR-85 P1d — whether a WGC session draws the pointer into its frames.
 ///
-/// ⚠️ The live path stays OFF unless `ROOMLERD_WGC_CURSOR=1`: it streams the
+/// ⚠️ The live path stays OFF unless `MESHHARBORD_WGC_CURSOR=1`: it streams the
 /// pointer on its own channel, and a baked one would show twice, the baked
 /// copy lagging by the video's latency. A recording has no other channel, so
 /// it is always ON there.
@@ -243,7 +243,7 @@ impl WgcCapture {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<SizeInt32>>();
 
         let worker = thread::Builder::new()
-            .name("roomlerd-wgc-capture".into())
+            .name("meshharbord-wgc-capture".into())
             .spawn(move || {
                 let hmon = HMONITOR(hmon_value as *mut _);
                 if let Err(e) = worker_main(
@@ -558,7 +558,7 @@ fn worker_main(
     // browser renders either the native OS cursor (via the CSS keyword
     // hint) or the shape bitmap. Baking it in too would double the
     // cursor (baked one lags at video latency behind the low-latency
-    // overlay). Escape hatch: ROOMLERD_WGC_CURSOR=1 re-bakes it
+    // overlay). Escape hatch: MESHHARBORD_WGC_CURSOR=1 re-bakes it
     // without a rebuild if a field regression appears. FR-85 P1d: a
     // RECORDING's session always bakes it — the file has no other channel
     // (`bake_cursor`, decided by the constructor).

@@ -119,14 +119,14 @@ export const PERMISSION_FLAGS: PermissionFlag[] = [
     label: 'SSH to devices',
     group: 'Fleet access',
     description:
-      'Open an interactive roomler SSH session to a device. Strictly more than a single command: it lasts, and it carries file transfer.',
+      'Open an interactive meshharbor SSH session to a device. Strictly more than a single command: it lasts, and it carries file transfer.',
   },
   {
     key: 'VIEW_SSH_AUDIT',
     bit: 1 << 30,
     label: 'View SSH audit log',
     group: 'Fleet access',
-    description: 'Read the roomler-SSH audit trail — who was granted, or refused, a session.',
+    description: 'Read the meshharbor-SSH audit trail — who was granted, or refused, a session.',
   },
   {
     key: 'RECORD_REMOTE_SCREEN',

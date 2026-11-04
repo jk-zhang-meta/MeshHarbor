@@ -61,7 +61,7 @@ pub fn package_needs_sync() -> bool {
     package_sync::needs_sync()
 }
 
-/// FR-117 — the switch for what FR-117 added (`ROOMLERD_COMPANION_SYNC=0`): the
+/// FR-117 — the switch for what FR-117 added (`MESHHARBORD_COMPANION_SYNC=0`): the
 /// Linux package sync and the Windows retry. Windows' refresh at start is older
 /// than FR-117 and stays either way.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
@@ -121,7 +121,7 @@ pub fn scm_companion_autostart() -> bool {
     launch_once::scm_worker_config(token.as_ref()).is_none_or(|c| c.companion_autostart)
 }
 
-/// FR-84 D6 — `HKLM\…\Run\Roomler Desktop`: present iff the device switch is
+/// FR-84 D6 — `HKLM\…\Run\MeshHarbor Desktop`: present iff the device switch is
 /// on and the companion sits beside this daemon. Elevated callers only (the
 /// SCM host, `service install --as-service`). Logs a change, not a no-op.
 #[cfg(target_os = "windows")]
@@ -132,7 +132,7 @@ pub fn sync_machine_autostart_logged(companion_autostart: bool) {
     sync_login_autostart(Hive::LocalMachine, companion_autostart, false);
 }
 
-/// FR-84 D6 — `HKCU\…\Run\Roomler Desktop` for a per-user install: present
+/// FR-84 D6 — `HKCU\…\Run\MeshHarbor Desktop` for a per-user install: present
 /// iff the device switch is on, the companion is installed, and THIS person
 /// has not switched "Start at login" off (the companion's own state).
 #[cfg(target_os = "windows")]
@@ -260,7 +260,7 @@ pub async fn ensure_running() -> bool {
         Ok(EnsureOutcome::Unsupported) => {
             tracing::info!(
                 "no desktop companion on this host — an on-screen prompt is not possible; \
-                 answer with `roomlerd consent --list` / `--approve`, or set this device to \
+                 answer with `meshharbord consent --list` / `--approve`, or set this device to \
                  email/push consent"
             );
             false

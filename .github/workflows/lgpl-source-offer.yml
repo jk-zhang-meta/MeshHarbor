@@ -71,22 +71,22 @@ jobs:
           shopt -s nullglob
 
           # 1. Our patches, byte for byte, with the same `<sha256>  <name>`
-          #    manifest the vendor builds write as ROOMLER-PATCHES.txt.
+          #    manifest the vendor builds write as MESHHARBOR-PATCHES.txt.
           mkdir -p bundle/patches
           patches=( .github/ffmpeg-patches/*.patch )
           for p in "${patches[@]}"; do cp "$p" bundle/patches/; done
           # ⚠️ Never `sha256sum *.patch` with nothing to match: under nullglob it
           # gets no arguments and hashes STDIN, writing a bogus `…  -` line.
           if [ "${#patches[@]}" -gt 0 ]; then
-            ( cd bundle/patches && sha256sum *.patch ) > bundle/patches/ROOMLER-PATCHES.txt
+            ( cd bundle/patches && sha256sum *.patch ) > bundle/patches/MESHHARBOR-PATCHES.txt
           else
-            : > bundle/patches/ROOMLER-PATCHES.txt
+            : > bundle/patches/MESHHARBOR-PATCHES.txt
           fi
           shipped=( bundle/patches/*.patch )
           if [ "${#shipped[@]}" -ne "${#patches[@]}" ]; then
             echo "::error::bundle carries ${#shipped[@]} patch(es) but ${#patches[@]} are committed"; exit 1
           fi
-          echo "roomler patches in the bundle: ${#shipped[@]}"; cat bundle/patches/ROOMLER-PATCHES.txt
+          echo "roomler patches in the bundle: ${#shipped[@]}"; cat bundle/patches/MESHHARBOR-PATCHES.txt
 
           # 2. The vcpkg port the Windows build starts from, at the SAME
           #    baseline the recipe pins — read from the recipe, never restated
@@ -121,7 +121,7 @@ jobs:
           #    options changed (P4a added the h264 decoder and the aac encoder)
           #    passed the release gate against an offer describing the old one.
           {
-            cat bundle/patches/ROOMLER-PATCHES.txt
+            cat bundle/patches/MESHHARBOR-PATCHES.txt
             echo "$BASELINE  vcpkg-baseline"
             for r in vendor-ffmpeg-windows.yml vendor-ffmpeg-macos.yml; do
               printf '%s  recipe/%s\n' "$(sha256sum ".github/workflows/$r" | cut -d' ' -f1)" "$r"
@@ -145,7 +145,7 @@ jobs:
           ours=( bundle/patches/*.patch )
           if [ "${#ours[@]}" -gt 0 ]; then
             OURS_LIST=$(for p in "${ours[@]}"; do printf -- '  * `patches/%s`\n' "$(basename "$p")"; done)
-            OURS_SUMMARY="We apply ${#ours[@]} patch(es) of our own, listed below with SHA-256 in \`patches/ROOMLER-PATCHES.txt\`."
+            OURS_SUMMARY="We apply ${#ours[@]} patch(es) of our own, listed below with SHA-256 in \`patches/MESHHARBOR-PATCHES.txt\`."
           else
             OURS_LIST="  * (none)"
             OURS_SUMMARY="We apply no patches of our own."

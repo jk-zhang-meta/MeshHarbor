@@ -187,7 +187,7 @@ jobs:
 ## Risks
 
 - **mediasoup native build in CI**: Requires libclang-dev + cmake. GitHub Actions ubuntu-latest may need explicit install.
-- **MongoDB auth in CI**: docker-compose uses auth but cargo tests default to `mongodb://localhost:27019` without auth. CI needs `ROOMLER__DATABASE__URL` env var.
+- **MongoDB auth in CI**: docker-compose uses auth but cargo tests default to `mongodb://localhost:27019` without auth. CI needs `MESHHARBOR__DATABASE__URL` env var.
 - **Rust compilation time in CI**: Full workspace build ~5-10 min. Using Swatinem/rust-cache mitigates.
 - **No cargo-tarpaulin**: Rust code coverage requires additional tooling (not blocking).
 - **Claude Code API costs**: Daily health check consumes API tokens. ~50 turns per run.

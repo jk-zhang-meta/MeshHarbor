@@ -38,7 +38,7 @@ pub(crate) const FFMPEG_444_CAPABLE: &[&str] = &[
 /// Cells this build will not open or advertise until a field test takes
 /// them off the list. `name:chroma`. HEVC 4:4:4 on QSV and VAAPI start here
 /// (the code called QSV Rext encode unreliable before it was ever opened);
-/// the operator's `ROOMLERD_ENCODER_CELLS_DENY` / the `encoder_cells_deny`
+/// the operator's `MESHHARBORD_ENCODER_CELLS_DENY` / the `encoder_cells_deny`
 /// config key REPLACES this default.
 // `vp9_qsv:yuv444` joined on 2026-09-08: CORPLAP-3's Intel media runtime died
 // with 0xc0000005 on the first VUYX open (FR-77 P3b field read) — the cell
@@ -57,7 +57,7 @@ pub(crate) const DEFAULT_DENIED_CELLS: &[&str] = &[
     // cannot be decoded: dav1d fails every frame header ("Error parsing
     // frame header"), libaom aborts, Chrome paints garbage where the picture
     // changed. Reproduced with the FFmpeg CLI's own `av1_vulkan` on the same
-    // GPU, with no roomler code in the loop — an FFmpeg 9.0.1 / NVIDIA
+    // GPU, with no meshharbor code in the loop — an FFmpeg 9.0.1 / NVIDIA
     // driver defect, not our packaging (the missing temporal delimiter WAS
     // ours to fix, and is). Leaves the list when a driver or FFmpeg release
     // decodes; the read is on the FR-78 spec.

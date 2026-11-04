@@ -494,7 +494,7 @@ impl Module for FleetState {
             .route("/{token}/approve", post(consent::approve_consent))
             .route("/{token}/deny", post(consent::deny_consent));
 
-        // `/api/tunnel/{latest-release,installer/{platform}}` — the roomler
+        // `/api/tunnel/{latest-release,installer/{platform}}` — the meshharbor
         // CLI binary's proxy, a separate namespace from the agent's.
         let public_tunnel_release = Router::new()
             .route("/latest-release", get(tunnel_release::latest_release))

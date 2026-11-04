@@ -38,7 +38,7 @@ pub fn reset_input_diag_counter() {
     INPUT_DIAG_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Parse the `ROOMLERD_VIRTUAL_SCREEN` env-var value into a
+/// Parse the `MESHHARBORD_VIRTUAL_SCREEN` env-var value into a
 /// `bool`. Accepts `1`, `true`, `yes`, `on` (case-insensitive, trimmed)
 /// as truthy; anything else (including `None`) is false.
 ///
@@ -169,10 +169,10 @@ pub enum TouchPhase {
     Cancel,
 }
 
-/// FR-109 — the kill switch for relative mode. `ROOMLERD_INPUT_MOUSE_REL=0`
+/// FR-109 — the kill switch for relative mode. `MESHHARBORD_INPUT_MOUSE_REL=0`
 /// (or `false`, `no`, `off`) stops this agent advertising `mouse-rel`, so no
 /// viewer sends it `mouse_rel`. Read where the caps are built.
-pub const MOUSE_REL_ENV: &str = "ROOMLERD_INPUT_MOUSE_REL";
+pub const MOUSE_REL_ENV: &str = "MESHHARBORD_INPUT_MOUSE_REL";
 
 /// FR-109 — does this agent advertise `mouse-rel` in `AgentCaps.input`?
 /// Only where the injector a session opens now carries relative motion, and
@@ -205,7 +205,7 @@ fn injector_carries_rel() -> bool {
 /// answered when the caps are announced, which is before any session (a
 /// capture that is alive only during one would come too late). Never when the
 /// device cannot be opened: `open_default` then falls through to enigo.
-/// - opted in (`ROOMLERD_UINPUT=1`);
+/// - opted in (`MESHHARBORD_UINPUT=1`);
 /// - an automatic system capture (FR-95) already alive;
 /// - the brief planning the DRM arm with `uinput` unset: a system install's
 ///   automatic capture pairs that arm with uinput (`planned_input_route` leaves
@@ -279,7 +279,7 @@ pub(crate) fn macos_injector_carries_rel(gui_session: bool, accessibility: bool)
 
 /// FR-109 P2 — on Linux, whether the input a session opens now carries
 /// relative motion. Each yes below carries it, whichever takes an event:
-/// - **uinput** (`uinput_injects`: opted in with `ROOMLERD_UINPUT=1` and the
+/// - **uinput** (`uinput_injects`: opted in with `MESHHARBORD_UINPUT=1` and the
 ///   device opens, or the input of the automatic system capture, FR-95), the
 ///   first injector [`open_default`] tries. Its relative pointer (P2b) sits
 ///   below the compositor, so it carries relative motion whatever the session:
@@ -606,8 +606,8 @@ pub fn open_default() -> Box<dyn InputInjector + Send> {
     // FR-36 P4 — uinput, below the compositor. Opt-in for the same reason the
     // DRM capture backend is: a virtual input device is host-global and shows
     // up in every application's device list, so one must never appear merely
-    // because a host upgraded. `ROOMLERD_UINPUT=1`, normally paired with
-    // `ROOMLERD_DRM_CAPTURE=1` on a Wayland host.
+    // because a host upgraded. `MESHHARBORD_UINPUT=1`, normally paired with
+    // `MESHHARBORD_DRM_CAPTURE=1` on a Wayland host.
     //
     // ⚠️ Placed AHEAD of enigo deliberately: on a native Wayland desktop XTest
     // reaches only Xwayland clients, so enigo does not fail — it succeeds and
@@ -620,7 +620,7 @@ pub fn open_default() -> Box<dyn InputInjector + Send> {
                 Err(e) => {
                     tracing::warn!(
                         error = %format!("{e:#}"),
-                        "ROOMLERD_UINPUT=1 but uinput init failed — falling through to the standard backend"
+                        "MESHHARBORD_UINPUT=1 but uinput init failed — falling through to the standard backend"
                     );
                 }
             }

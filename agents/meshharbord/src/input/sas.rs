@@ -83,7 +83,7 @@ impl SasRefusal {
     pub fn reason(self) -> &'static str {
         match self {
             Self::NoService => {
-                "Ctrl+Alt+Del is sent as ordinary keys: apps on the desktop get it, but the Windows lock and sign-in screens do not. Only the Roomler service can send the real one, through a worker running as SYSTEM, and this install has none"
+                "Ctrl+Alt+Del is sent as ordinary keys: apps on the desktop get it, but the Windows lock and sign-in screens do not. Only the MeshHarbor service can send the real one, through a worker running as SYSTEM, and this install has none"
             }
             Self::Policy(_) => {
                 "Ctrl+Alt+Del is sent as ordinary keys: apps on the desktop get it, but the Windows lock and sign-in screens do not. Windows' software Secure Attention Sequence policy (SoftwareSASGeneration) lets no service send the real one here"
@@ -308,7 +308,7 @@ mod tests {
     /// lock screen and what would change it.
     #[test]
     fn each_refusal_says_why() {
-        assert!(SasRefusal::NoService.reason().contains("Roomler service"));
+        assert!(SasRefusal::NoService.reason().contains("MeshHarbor service"));
         assert!(
             SasRefusal::Policy(SasPolicy::Nothing)
                 .reason()

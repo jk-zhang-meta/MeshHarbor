@@ -157,7 +157,7 @@ Four layers, each defending against a different way to cut yourself off:
   heartbeat while the subscription is live (`…_ROUTE_TICK_SECS` overrides;
   `2` = the pre-demotion cadence) and returns to 2 s automatically if the
   subscription is unavailable or dies. Kill-switch:
-  `ROOMLERD_OVERLAY_ROUTE_EVENTS=0` reverts to the 2 s tick-only guard.
+  `MESHHARBORD_OVERLAY_ROUTE_EVENTS=0` reverts to the 2 s tick-only guard.
 
 Teardown is symmetric: a clean exit reverts everything; an unclean exit
 self-heals because the OS default route is *never deleted* (the `/1`s just
@@ -201,7 +201,7 @@ The mechanism reuses what's already there — **zero new wire or model fields**:
   #1 for every name, while the MagicDNS zone (its own key, below) keeps its
   names. Every key is a **temporary** value of one session the daemon holds
   for its whole life, so configd removes them when the process ends, however
-  it ends: nothing for a boot purge to find. `ROOMLERD_MACOS_DNS_STEER=0`
+  it ends: nothing for a boot purge to find. `MESHHARBORD_MACOS_DNS_STEER=0`
   turns it off.
 
 ```mermaid
@@ -325,7 +325,7 @@ flowchart LR
 | On Windows the uplink is read from a FIB snapshot, not `GetBestRoute2` | `winroute::exemption_view` | The exit's `/1`s out-match any default toward the unspecified address. The snapshot ranks routes as the OS does (longest prefix covering it, then route plus interface metric, connected interfaces only), with our adapters left out |
 | A Windows re-pin removes the old route once the new one is in | `add_host_exemption` (Windows) via `host_ledger::pin_record` | Windows keys a route by (interface, prefix, next hop), so the old pin would stay beside the new one and could still win the lookup. Linux's `ip route replace` supersedes it in one step |
 | A delete removes the route as it was installed | `del_host_exemption` via `host_ledger::pin_record` | A pin still on an uplink the host has left must come out too |
-| (N14) While an exit is active, the network monitor also reads the uplink **beneath** it, and a move there is a Major | `netstate::uplink_beneath_own` via `tun::uplink_beneath`; off: `ROOMLERD_OVERLAY_NETMON_UPLINK=0` | netstate reads "the default" by looking up a far address, and the `/1`s answer that with our own TUN. So a network change under the exit was a Minor, and no control-WS probe or carrier revalidation ran. On the field's Linux client the old WS died with `eth0`, and only the keepalive's second strike found it, 56 s in |
+| (N14) While an exit is active, the network monitor also reads the uplink **beneath** it, and a move there is a Major | `netstate::uplink_beneath_own` via `tun::uplink_beneath`; off: `MESHHARBORD_OVERLAY_NETMON_UPLINK=0` | netstate reads "the default" by looking up a far address, and the `/1`s answer that with our own TUN. So a network change under the exit was a Minor, and no control-WS probe or carrier revalidation ran. On the field's Linux client the old WS died with `eth0`, and only the keepalive's second strike found it, 56 s in |
 | (N14) Our own exit coming or going is still a Major, but it does not spend the flap cooldown | `netstate::major_demoted`; the delta's `own_capture_only` | The lookup moving onto or off our adapter, with the uplink beneath unchanged and no address lost, moves no socket. As an ordinary Major it opened the 120 s window, and the field's uplink move 13 s later was demoted to Minor, `uplink=eth1` and all. Now a Major like that is damped only by a recent Major of its own kind (so a flapping exit still cannot storm), and its activation no longer swallows a real move |
 
 N14 in one picture. The pins already followed the uplink (N12); the network
@@ -445,7 +445,7 @@ sequenceDiagram
 > but queries go to whatever resolver the Mac already uses. A LAN resolver is
 > on-link, so a `/1` never captures it. `roomler status` says `DNS NOT steered`.
 
-> 🔑 **Kill switch:** `ROOMLERD_EXIT_CLIENT_MACOS=0` refuses every exemption
+> 🔑 **Kill switch:** `MESHHARBORD_EXIT_CLIENT_MACOS=0` refuses every exemption
 > again, as 0.4.132 did, so the exit is withheld with that reason. The Linux
 > and Windows arms do not read it.
 
@@ -522,7 +522,7 @@ sequenceDiagram
 
 > ⚠️ **Root only.** `pfctl` needs root, so a per-user daemon's probe refuses
 > and the Mac offers nothing, with the reason in `roomler status` and the admin
-> routes table (FR-97 P0b). `ROOMLERD_PF_NAT=0` refuses the same way.
+> routes table (FR-97 P0b). `MESHHARBORD_PF_NAT=0` refuses the same way.
 
 > ⚠️ **Still unmeasured:** what the common corporate VPN clients do to pf
 > (FR-97 §3.5). The re-assert loop restores our anchor after a `pfctl -F all`,
@@ -540,7 +540,7 @@ sequenceDiagram
 
 ### A netstack client (FR-97 P0c-3)
 
-A node in netstack mode (`ROOMLERD_OVERLAY_NETSTACK_SOCKS`, or
+A node in netstack mode (`MESHHARBORD_OVERLAY_NETSTACK_SOCKS`, or
 `netstack_socks_port` in its config) has no TUN and no routing table: the
 mesh lives in a userspace stack inside the daemon, reached through a SOCKS5
 front on `127.0.0.1`. Selecting an exit there installs the split-default in
@@ -674,7 +674,7 @@ depend on DNS.)
 
 - **Per client:** remove `overlay_exit_node` from `config.toml` and restart the
   agent (clean teardown reverts routes + DNS). On a Mac,
-  `ROOMLERD_EXIT_CLIENT_MACOS=0` withholds the exit without touching the config.
+  `MESHHARBORD_EXIT_CLIENT_MACOS=0` withholds the exit without touching the config.
 - **Stop offering:** set `overlay_exit_node_enabled = false` on the exit; the
   admin can also un-approve via `PUT …/exit-node { "enabled": false }` (clears
   `/0` from `approved_routes`).

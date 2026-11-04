@@ -26,7 +26,7 @@
 //! Who answers: a driver who reads the session, while it is live — hive's
 //! own rule for its approvals (`meshharbor_mod_hive::access::may_answer`) —
 //! and whose yes the policy accepts. A policy may name its approvers
-//! (`context.approval.approver in Roomler::Group::"admin"`), so a yes is
+//! (`context.approval.approver in MeshHarbor::Group::"admin"`), so a yes is
 //! decided by Cedar with the person as the approver when it is given, and
 //! again when a lease would spend it; and a card is posted only when one of
 //! the session's drivers could give a yes that counts.

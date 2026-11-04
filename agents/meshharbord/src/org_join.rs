@@ -657,7 +657,7 @@ pub fn apply_relay_server_flag(
     }
 }
 
-/// FR-49 — `roomlerd org overlay <label> <off|netstack|tun>`.
+/// FR-49 — `meshharbord org overlay <label> <off|netstack|tun>`.
 pub fn set_org_overlay(
     cfg: &mut crate::config::AgentConfig,
     label: &str,
@@ -680,7 +680,7 @@ pub fn set_org_overlay(
     let primary_server = cfg.server_url.clone();
     let claimed = netstack_ports_claimed(cfg, label);
     let Some(entry) = cfg.orgs.iter_mut().find(|o| o.label == label) else {
-        bail!("no org labelled {label:?} — see `roomlerd org ls`");
+        bail!("no org labelled {label:?} — see `meshharbord org ls`");
     };
     let before = entry.overlay_mode;
     entry.overlay_mode = parsed;

@@ -402,7 +402,7 @@ mod tests {
         ));
     }
 
-    /// As root (CI's sudo lane; `ROOMLERD_TEST_REQUIRE_ROOT=1` turns a skip
+    /// As root (CI's sudo lane; `MESHHARBORD_TEST_REQUIRE_ROOT=1` turns a skip
     /// into a failure): a tree owned by uid 1001 with a group-writable
     /// directory comes back root's, write taken from group and others, no bit
     /// added; a root-owned path is left alone.
@@ -410,8 +410,8 @@ mod tests {
     fn as_root_the_tree_comes_back_root_s() {
         if !running_as_root() {
             assert!(
-                std::env::var_os("ROOMLERD_TEST_REQUIRE_ROOT").is_none(),
-                "ROOMLERD_TEST_REQUIRE_ROOT is set, and this test is not root"
+                std::env::var_os("MESHHARBORD_TEST_REQUIRE_ROOT").is_none(),
+                "MESHHARBORD_TEST_REQUIRE_ROOT is set, and this test is not root"
             );
             return;
         }

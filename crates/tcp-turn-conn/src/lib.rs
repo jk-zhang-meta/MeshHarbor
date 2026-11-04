@@ -20,7 +20,7 @@
 //! Upstream tracking: <https://github.com/webrtc-rs/webrtc/issues/690>
 //! — closed 2026-01-31 as **NOT_PLANNED**.
 //!
-//! For our `roomlerd` deployed on corporate Windows endpoints
+//! For our `meshharbord` deployed on corporate Windows endpoints
 //! that block ALL outbound UDP but allow outbound TCP/443, the only
 //! viable relay path is TURNS-over-TLS-over-TCP. This module adapts
 //! a `tokio_rustls::client::TlsStream<TcpStream>` into the

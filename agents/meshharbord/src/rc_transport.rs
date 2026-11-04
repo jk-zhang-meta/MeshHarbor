@@ -7,8 +7,8 @@
 //!
 //! | Setting | Default | Why | Undo |
 //! |---|---|---|---|
-//! | SRTP + SRTCP replay window | 64 | Pinned, not switched on. webrtc-srtp's `Session::new` already gives the remote context a 64-packet window when its config has none, so the agent's sessions refused replays before FR-101 too. Setting it here keeps it 64 should a release change that default | `ROOMLERD_SRTP_REPLAY_WINDOW=N` sizes it; `0` sets none, leaving the library's 64 |
-//! | DTLS cipher suites | the two ECDHE-AES-128-GCM-SHA256 suites | webrtc-dtls' default list still offers ECDHE-AES-256-CBC-SHA. Every browser we support negotiates GCM | `ROOMLERD_DTLS_LEGACY_SUITES=1` |
+//! | SRTP + SRTCP replay window | 64 | Pinned, not switched on. webrtc-srtp's `Session::new` already gives the remote context a 64-packet window when its config has none, so the agent's sessions refused replays before FR-101 too. Setting it here keeps it 64 should a release change that default | `MESHHARBORD_SRTP_REPLAY_WINDOW=N` sizes it; `0` sets none, leaving the library's 64 |
+//! | DTLS cipher suites | the two ECDHE-AES-128-GCM-SHA256 suites | webrtc-dtls' default list still offers ECDHE-AES-256-CBC-SHA. Every browser we support negotiates GCM | `MESHHARBORD_DTLS_LEGACY_SUITES=1` |
 //!
 //! ⚠️ **No setting here switches replay protection off.** FR-101's P0
 //! evidence said the agent ran without it. That read the fallback in
@@ -79,8 +79,8 @@ impl Policy {
         }
     }
 
-    /// The policy from `ROOMLERD_SRTP_REPLAY_WINDOW` and
-    /// `ROOMLERD_DTLS_LEGACY_SUITES` (or their config fallbacks).
+    /// The policy from `MESHHARBORD_SRTP_REPLAY_WINDOW` and
+    /// `MESHHARBORD_DTLS_LEGACY_SUITES` (or their config fallbacks).
     pub fn from_env() -> Self {
         #[cfg(feature = "synthetic-frame-source")]
         if let Some(forced) = *TEST_OVERRIDE.lock().unwrap_or_else(|p| p.into_inner()) {

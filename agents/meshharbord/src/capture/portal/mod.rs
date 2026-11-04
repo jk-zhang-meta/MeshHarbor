@@ -26,7 +26,7 @@
 //!
 //! `zbus` is **pure Rust** — it speaks the D-Bus wire protocol itself and does
 //! not link `libdbus`. That matters here: FR-45's central risk is that linking
-//! `libpipewire` would put a system `.so` in `roomlerd`'s `DT_NEEDED` and stop
+//! `libpipewire` would put a system `.so` in `meshharbord`'s `DT_NEEDED` and stop
 //! the daemon *starting* on headless hosts that will never run a portal. zbus
 //! carries none of that hazard, which is why detection can land ahead of the
 //! decision about how to reach PipeWire.
@@ -296,7 +296,7 @@ fn is_missing_bus(e: &zbus::Error) -> bool {
 ///
 /// ## Why a child at all
 ///
-/// FR-45 P1 measured the thing that shapes this whole phase: `roomlerd` runs
+/// FR-45 P1 measured the thing that shapes this whole phase: `meshharbord` runs
 /// as **root**, and the portal is **per-user-session**. Detection from the
 /// daemon returns `NoSessionBus` on a host with a perfectly good GNOME Wayland
 /// session running three feet away. No amount of care in the D-Bus code fixes
@@ -306,8 +306,8 @@ fn is_missing_bus(e: &zbus::Error) -> bool {
 /// ## Why a subcommand and not a separate binary
 ///
 /// The near-miss worth recording: a helper **subcommand does not by itself**
-/// solve FR-45's dependency problem. `roomlerd portal-helper` is the same ELF
-/// as `roomlerd`, so linking `libpipewire` for the helper would put it in the
+/// solve FR-45's dependency problem. `meshharbord portal-helper` is the same ELF
+/// as `meshharbord`, so linking `libpipewire` for the helper would put it in the
 /// daemon's `DT_NEEDED` and stop the daemon *starting* on every headless host
 /// that will never run a portal. The subcommand buys the session context; the
 /// `dlopen` that P3 will use buys the linkage. Both are needed, and it is easy
@@ -340,7 +340,7 @@ pub mod helper {
     /// Marks the line carrying the child's JSON. Scanned for by prefix, never
     /// taken as "the last line" — the child's own logging shares this stream
     /// and would be mistaken for the result the first time it said anything.
-    const MARKER: &str = "ROOMLER_PORTAL_JSON:";
+    const MARKER: &str = "MESHHARBOR_PORTAL_JSON:";
 
     /// What we ask the compositor for as an upper bound. It is a *range* max,
     /// not a demand — the source picks its own rate within it, and asking for
@@ -355,11 +355,11 @@ pub mod helper {
     /// P2b's marker. A **separate** marker rather than a variant inside one
     /// payload, so a parent asking for detection can never be handed a session
     /// report (or the reverse) by a helper built from a different revision.
-    const SESSION_MARKER: &str = "ROOMLER_PORTAL_SESSION:";
+    const SESSION_MARKER: &str = "MESHHARBOR_PORTAL_SESSION:";
 
     /// Set in the child's environment; `detect_in_session` refuses to spawn
     /// when it sees it.
-    pub(super) const CHILD_ENV: &str = "ROOMLERD_PORTAL_CHILD";
+    pub(super) const CHILD_ENV: &str = "MESHHARBORD_PORTAL_CHILD";
 
     /// Generous for a handful of D-Bus round-trips, and deliberately larger
     /// than nothing: a wedged session bus blocks `Introspect` for D-Bus's own
@@ -427,7 +427,7 @@ pub mod helper {
     /// Marks the streaming handshake line. A THIRD marker, distinct from the
     /// other two, so a parent expecting a stream can never be handed a
     /// detection result by a helper built from another revision.
-    const STREAM_MARKER: &str = "ROOMLER_PORTAL_STREAM:";
+    const STREAM_MARKER: &str = "MESHHARBOR_PORTAL_STREAM:";
 
     /// FR-93 P2d-4 — marks the line a streaming helper writes when it fails
     /// before its stream starts: why, as a JSON string, in the words the
@@ -437,7 +437,7 @@ pub mod helper {
     /// 0.4.135, where the person at the screen had declined both dialogs.
     /// [`STREAM_MARKER`] is not a prefix of it (`:` against `_`), so neither is
     /// ever read as the other. A parent from before it skips the line as noise.
-    const STREAM_FAILED_MARKER: &str = "ROOMLER_PORTAL_STREAM_FAILED:";
+    const STREAM_FAILED_MARKER: &str = "MESHHARBOR_PORTAL_STREAM_FAILED:";
 
     /// Child side: say why on stdout for the parent, log it, and exit `1`.
     fn fail_stream(why: impl std::fmt::Display) -> ! {

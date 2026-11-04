@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 //! FR-85 P5c — the Edit view's commands: an edit list saved beside its
-//! recording, the export engine (`roomlerd media`) run as the person, and a
+//! recording, the export engine (`meshharbord media`) run as the person, and a
 //! preview the webview may play.
 //!
 //! - **The page never names a path.** Every file here is the daemon's
@@ -31,14 +31,14 @@ use crate::commands::{
     no_window_command,
 };
 
-/// The recorder's line protocol, which `roomlerd media` speaks too
-/// (`recording::child::EVENT_PREFIX` in roomlerd).
-const EVENT_PREFIX: &str = "ROOMLER_REC_JSON:";
+/// The recorder's line protocol, which `meshharbord media` speaks too
+/// (`recording::child::EVENT_PREFIX` in meshharbord).
+const EVENT_PREFIX: &str = "MESHHARBOR_REC_JSON:";
 
 /// An edit list this app writes is a few KiB; a bigger file is not one.
 const MAX_EDIT_LIST_BYTES: usize = 256 * 1024;
 
-/// What the engine reads as music (symphonia's formats in roomlerd).
+/// What the engine reads as music (symphonia's formats in meshharbord).
 pub const MUSIC_EXTENSIONS: &[&str] = &["mp3", "m4a", "aac", "flac", "ogg", "oga", "wav"];
 
 /// How much of the engine's stderr a failed export keeps.
@@ -48,7 +48,7 @@ fn parse_event_line(line: &str) -> Option<serde_json::Value> {
     serde_json::from_str(line.trim_end().strip_prefix(EVENT_PREFIX)?).ok()
 }
 
-/// `<name>.edit.json`, where roomlerd looks for it (`EditList::path_for`).
+/// `<name>.edit.json`, where meshharbord looks for it (`EditList::path_for`).
 fn edit_list_name(name: &str) -> String {
     format!("{name}.edit.json")
 }
@@ -102,7 +102,7 @@ fn join_err(e: tokio::task::JoinError) -> String {
     format!("task join: {e}")
 }
 
-/// Whether this device's `roomlerd` has the export engine. The Edit button
+/// Whether this device's `meshharbord` has the export engine. The Edit button
 /// shows only when it does: an older service refuses the subcommand.
 #[tauri::command]
 pub async fn cmd_media_available() -> bool {
@@ -297,7 +297,7 @@ pub async fn cmd_export_start(
 /// holds to the child (the #1035 class, where a DAEMON-lifetime child kept a
 /// companion's ports). This child is the person's own, lives for one export,
 /// and needs its three pipes, the one thing a bounded handle list would keep;
-/// `cmd_check_update` spawns `roomlerd` the same way.
+/// `cmd_check_update` spawns `meshharbord` the same way.
 fn start_export(dir: &Path, name: &str, encoder: &str) -> Result<ExportStatus, String> {
     recording_path(dir, name)?;
     let mut job = lock(&JOB);
@@ -435,19 +435,19 @@ mod tests {
 
     #[test]
     fn the_prefix_is_the_recorders() {
-        // roomlerd's `recording::child::EVENT_PREFIX`. A change there that is
+        // meshharbord's `recording::child::EVENT_PREFIX`. A change there that is
         // not made here leaves every export looking like it never answered.
-        let ev = parse_event_line("ROOMLER_REC_JSON:{\"ev\":\"done\",\"frames\":3}\r\n").unwrap();
+        let ev = parse_event_line("MESHHARBOR_REC_JSON:{\"ev\":\"done\",\"frames\":3}\r\n").unwrap();
         assert_eq!(ev["frames"], 3);
         assert!(parse_event_line("INFO a log line").is_none());
-        assert!(parse_event_line("ROOMLER_REC_JSON:not json").is_none());
+        assert!(parse_event_line("MESHHARBOR_REC_JSON:not json").is_none());
     }
 
     #[test]
     fn the_probe_answer_skips_log_lines_and_keeps_a_refusal() {
-        let out = "starting\nROOMLER_REC_JSON:{\"ev\":\"probe\",\"editable\":true}\n";
+        let out = "starting\nMESHHARBOR_REC_JSON:{\"ev\":\"probe\",\"editable\":true}\n";
         assert_eq!(probe_answer(out).unwrap()["editable"], true);
-        let out = "ROOMLER_REC_JSON:{\"ev\":\"refused\",\"code\":\"source_unreadable\"}\n";
+        let out = "MESHHARBOR_REC_JSON:{\"ev\":\"refused\",\"code\":\"source_unreadable\"}\n";
         assert_eq!(probe_answer(out).unwrap()["code"], "source_unreadable");
         assert!(probe_answer("nothing\n").is_none());
     }
@@ -512,7 +512,7 @@ mod tests {
         save_edit_list(d.path(), "a.mp4", &list).unwrap();
         assert!(
             d.path().join("a.mp4.edit.json").is_file(),
-            "roomlerd's name"
+            "meshharbord's name"
         );
         assert_eq!(load_edit_list(d.path(), "a.mp4").unwrap(), Some(list));
         let left: Vec<_> = std::fs::read_dir(d.path())

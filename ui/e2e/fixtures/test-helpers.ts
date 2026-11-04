@@ -348,8 +348,8 @@ type MailpitListItem = {
  * from other concurrent tests in the same run.
  *
  * NOTE: requires the e2e overlay's roomler2 to have its EmailService
- * routed through SMTP → Mailpit (set via `ROOMLER__EMAIL__SMTP_HOST`
- * + `ROOMLER__EMAIL__SMTP_PORT` in `configmap-roomler2-config.yaml`).
+ * routed through SMTP → Mailpit (set via `MESHHARBOR__EMAIL__SMTP_HOST`
+ * + `MESHHARBOR__EMAIL__SMTP_PORT` in `configmap-roomler2-config.yaml`).
  * Outside that overlay, this helper will time out.
  */
 export async function fetchActivationEmail(

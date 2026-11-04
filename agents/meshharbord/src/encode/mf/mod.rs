@@ -185,7 +185,7 @@ impl MfEncoder {
         let (cmd_tx, cmd_rx) = std_mpsc::channel::<Cmd>();
 
         thread::Builder::new()
-            .name(format!("roomlerd-mf-encoder-{}", codec.backend_name()))
+            .name(format!("meshharbord-mf-encoder-{}", codec.backend_name()))
             .spawn(move || {
                 // 1. Initialise COM for this thread. MTA because MF is
                 //    happy with it and we never touch UI.

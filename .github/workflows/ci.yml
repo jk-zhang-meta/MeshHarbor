@@ -595,7 +595,7 @@ jobs:
         #     uinput is plain ioctls, and no test opens /dev/uinput or needs X.
         #     FR-97 P3f's keymap tests compile real XKB keymaps (us, de, fr)
         #     through a dlopen'd libxkbcommon, which GTK's dev packages above
-        #     bring; ROOMLERD_TEST_XKB=1 makes its absence a failure, not a skip.
+        #     bring; MESHHARBORD_TEST_XKB=1 makes its absence a failure, not a skip.
         #   - FR-52's device half (`external-access`): a seventh. The OPAQUE
         #     login's replies, the device's admission (its own ceiling and
         #     consent mode, and the RECORD/PRIVACY an outsider never holds),
@@ -605,7 +605,7 @@ jobs:
         #     own tests never run. opaque-ke and argon2 are pure Rust; the suite
         #     takes ~20 s.
         env:
-          ROOMLERD_TEST_XKB: "1"
+          MESHHARBORD_TEST_XKB: "1"
         run: cargo test -p meshharbord --features vp9-444,vp9-444-bindgen,clipboard,ssh-server,hive,vault,portal-capture,drm-capture,uinput-input,enigo-input,external-access --lib
 
       - name: Test tunnel-core --features overlay-l3,overlay-netstack
@@ -650,7 +650,7 @@ jobs:
                   --no-run --message-format=json \
                 | jq -r 'select(.profile.test == true) | .executable' | head -1)
           echo "test binary: $BIN"
-          sudo ROOMLER_TUN_KERNEL_TEST=1 "$BIN" tun_kernel_tests \
+          sudo MESHHARBOR_TUN_KERNEL_TEST=1 "$BIN" tun_kernel_tests \
             --test-threads=1 --nocapture
 
       - name: DERP dialer — unit tests (#2512)
@@ -799,25 +799,25 @@ jobs:
         # signed in at the screen, and does its own work in their folder with
         # the thread's fsuid, fsgid and groups switched to theirs. None of it
         # can be exercised without root, so the lib test binary is built as
-        # the runner and then run under sudo. ROOMLERD_TEST_REQUIRE_ROOT
+        # the runner and then run under sudo. MESHHARBORD_TEST_REQUIRE_ROOT
         # turns a skip into a failure: the step cannot pass by not running.
         run: |
           cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --lib --no-run --message-format=json > /tmp/p1eu.json
           BIN=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' /tmp/p1eu.json | head -1)
           if [ -z "$BIN" ]; then echo "::error::no roomlerd lib test binary in the build output"; exit 1; fi
-          sudo ROOMLERD_TEST_REQUIRE_ROOT=1 "$BIN" recording::launch
+          sudo MESHHARBORD_TEST_REQUIRE_ROOT=1 "$BIN" recording::launch
 
       - name: The tarball repair, as root — another account's tree comes back root's, and no symlink is followed
         # Up to 0.4.126 a tarball install left /usr and the unit directories
         # another account's; the daemon repairs at start, as root
         # (agents/meshharbord/src/tarball_owner.rs). Only root can chown, so the
-        # lib test binary runs under sudo, and ROOMLERD_TEST_REQUIRE_ROOT turns
+        # lib test binary runs under sudo, and MESHHARBORD_TEST_REQUIRE_ROOT turns
         # the test's skip into a failure.
         run: |
           cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --lib --no-run --message-format=json > /tmp/tob.json
           BIN=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' /tmp/tob.json | head -1)
           if [ -z "$BIN" ]; then echo "::error::no roomlerd lib test binary in the build output"; exit 1; fi
-          sudo ROOMLERD_TEST_REQUIRE_ROOT=1 "$BIN" tarball_owner
+          sudo MESHHARBORD_TEST_REQUIRE_ROOT=1 "$BIN" tarball_owner
 
       - name: Received files on a Linux system install (FR-97 P3d) — as root, born the person's
         # FR-97 P3d. A root daemon writes a received file into the person's
@@ -825,12 +825,12 @@ jobs:
         # and a link planted in that folder gets only their rights (the test's
         # control shows root's own rights go straight through it). Only root
         # can take on another identity, so the lib test binary runs under sudo,
-        # and ROOMLERD_TEST_REQUIRE_ROOT turns the tests' skip into a failure.
+        # and MESHHARBORD_TEST_REQUIRE_ROOT turns the tests' skip into a failure.
         run: |
           cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --lib --no-run --message-format=json > /tmp/p3d.json
           BIN=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' /tmp/p3d.json | head -1)
           if [ -z "$BIN" ]; then echo "::error::no roomlerd lib test binary in the build output"; exit 1; fi
-          sudo ROOMLERD_TEST_REQUIRE_ROOT=1 "$BIN" files::seat_user_tests
+          sudo MESHHARBORD_TEST_REQUIRE_ROOT=1 "$BIN" files::seat_user_tests
 
       - name: The Linux user unit's sandbox (FR-85 P2c) — it starts on a fresh host, and the recorder writes ~/Videos
         # FR-85 P2c. `meshharbor.service` (the per-user install; what
@@ -1037,7 +1037,7 @@ jobs:
         # on the root window. A unit test cannot fake a server's answer, so
         # this one runs against Xvfb: the pointer warped to a known place
         # reads back there, less its hotspot and less a monitor's origin.
-        # ROOMLERD_TEST_X11 turns a missing server into a failure: the step
+        # MESHHARBORD_TEST_X11 turns a missing server into a failure: the step
         # cannot pass by running nothing.
         #
         # FR-92 P3 — keep busy's X11 host, against the same Xvfb: XTest motion
@@ -1088,7 +1088,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends xvfb xauth
-          xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" env ROOMLERD_TEST_X11=1 cargo test -p meshharbord --features scrap-capture,enigo-input,viewer-indicator-x11,clipboard --lib -- capture::pointer capture::x11_cursor keep_busy::host_x11 capture::xwayland_probe_tests indicator::x11 input::layout_x11 clipboard::x11_gate_tests --nocapture --test-threads=1 | tee /tmp/x11-tests.log
+          xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" env MESHHARBORD_TEST_X11=1 cargo test -p meshharbord --features scrap-capture,enigo-input,viewer-indicator-x11,clipboard --lib -- capture::pointer capture::x11_cursor keep_busy::host_x11 capture::xwayland_probe_tests indicator::x11 input::layout_x11 clipboard::x11_gate_tests --nocapture --test-threads=1 | tee /tmp/x11-tests.log
           grep -q "x11-real: XTest motion reset the idle counter" /tmp/x11-tests.log
           grep -q "x11-real: ran with idle" /tmp/x11-tests.log
           grep -q "x11-real: Xvfb does not advertise XWAYLAND" /tmp/x11-tests.log
@@ -1302,7 +1302,7 @@ jobs:
                   --no-run --message-format=json \
                 | jq -r 'select(.profile.test == true) | .executable' | head -1)
           echo "test binary: $BIN"
-          sudo ROOMLER_TUN_KERNEL_TEST=1 "$BIN" macos_kernel_tests \
+          sudo MESHHARBOR_TUN_KERNEL_TEST=1 "$BIN" macos_kernel_tests \
             --test-threads=1 --nocapture
 
       # FR-6 wave 22 (#773): the job's LAST step. Only a master push
@@ -1443,7 +1443,7 @@ jobs:
     #
     # ⚠️ GitHub's Windows runner is ELEVATED, which is what makes this lane
     # worth having: the elevated branch of each cell runs for real.
-    # `ROOMLERD_TEST_REQUIRE_ELEVATED` turns a runner that is not elevated
+    # `MESHHARBORD_TEST_REQUIRE_ELEVATED` turns a runner that is not elevated
     # into a failure instead of a quiet skip that proves nothing.
     #
     # A job of its own (not a step of the one above) so the recorder's
@@ -1456,7 +1456,7 @@ jobs:
     permissions:
       contents: write
     env:
-      ROOMLERD_TEST_REQUIRE_ELEVATED: "1"
+      MESHHARBORD_TEST_REQUIRE_ELEVATED: "1"
       CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@v4
@@ -1500,7 +1500,7 @@ jobs:
       # release-agent.yml, at tag time. `wgc-capture`, `mf-encoder` and
       # `scrap-capture` bring them in. The units: a recording's WGC session
       # draws the pointer and the live one does not (unless
-      # ROOMLERD_WGC_CURSOR=1), and the pointer's placement.
+      # MESHHARBORD_WGC_CURSOR=1), and the pointer's placement.
       - name: The recorder's pointer — Windows capture compiles, lints, and its units pass
         if: ${{ !cancelled() }}
         run: |
@@ -1671,8 +1671,8 @@ jobs:
     # `recording`. Nothing else compiles the two together, and the codec a
     # recording carries is decided by exactly that pairing at runtime.
     #
-    # ⚠️ `ROOMLER_EXPECT_FFMPEG_AAC=1` turns "this FFmpeg has no AAC encoder"
-    # from a skip into a FAILURE, and `ROOMLER_EXPECT_FFMPEG_H264_DECODER=1`
+    # ⚠️ `MESHHARBOR_EXPECT_FFMPEG_AAC=1` turns "this FFmpeg has no AAC encoder"
+    # from a skip into a FAILURE, and `MESHHARBOR_EXPECT_FFMPEG_H264_DECODER=1`
     # does the same for the decoder. Without them, a wrong asset (or a flip
     # back) would fall back to Opus and to `decoder_unavailable`, and every
     # test here would pass on the path this lane exists NOT to take.
@@ -1761,8 +1761,8 @@ jobs:
         # recorder step (no FFmpeg), prove they are refused
         # `decoder_unavailable` by name.
         env:
-          ROOMLER_EXPECT_FFMPEG_AAC: "1"
-          ROOMLER_EXPECT_FFMPEG_H264_DECODER: "1"
+          MESHHARBOR_EXPECT_FFMPEG_AAC: "1"
+          MESHHARBOR_EXPECT_FFMPEG_H264_DECODER: "1"
         run: |
           cargo test -p meshharbord --features "$REC_FEATURES" --lib recording::
           cargo test -p meshharbord --features "$REC_FEATURES" --test recorder

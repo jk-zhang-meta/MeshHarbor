@@ -3,7 +3,7 @@
 //! C-1 — the inter-pod control bus: per-pod Redis channels + a thin
 //! request/reply layer.
 //!
-//! Each pod subscribes to `roomler:pod:<pod_id>` (STABLE across restarts —
+//! Each pod subscribes to `meshharbor:pod:<pod_id>` (STABLE across restarts —
 //! a new process re-subscribes to the same channel and NACKs requests for
 //! entities it doesn't hold, actively pruning the previous epoch's stale
 //! directory records). Envelope:
@@ -45,7 +45,7 @@ pub const POD_ALIVE_TTL_SECS: u64 = 45;
 pub const POD_ALIVE_REFRESH: Duration = Duration::from_secs(15);
 
 fn pod_channel(pod_id: &str) -> String {
-    format!("roomler:pod:{pod_id}")
+    format!("meshharbor:pod:{pod_id}")
 }
 
 #[derive(Debug, Serialize, Deserialize)]

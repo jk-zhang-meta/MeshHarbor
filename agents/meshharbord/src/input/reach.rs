@@ -80,7 +80,7 @@ pub(crate) enum EiRoute {
     /// An EI socket handed over by KWin (6.1 and later), which gates XTest
     /// behind its own prompt. `granted`: the person let this agent through
     /// without one, in Legacy X11 App Support. Measured on Plasma 6.7 with
-    /// `XwaylandEisNoPromptApps=roomlerd`: the viewer's pointer, click, wheel
+    /// `XwaylandEisNoPromptApps=meshharbord`: the viewer's pointer, click, wheel
     /// and typing all reached a native Wayland window.
     Compositor { granted: bool },
 }
@@ -135,8 +135,8 @@ const WAYLAND_FIX: &str = "On a system install switch on uinput. A per-user one 
 const KWIN_FIX: &str = "A per-user install asks the person at the screen for remote \
      control by itself, unless portal_input is set to false: reconnect, and allow \
      remote control when the desktop asks. Or the person at the screen allows \
-     roomlerd once in System Settings, Legacy X11 App Support (kwinrc [Xwayland] \
-     XwaylandEisNoPromptApps=roomlerd), then logs in again. On a system install, \
+     meshharbord once in System Settings, Legacy X11 App Support (kwinrc [Xwayland] \
+     XwaylandEisNoPromptApps=meshharbord), then logs in again. On a system install, \
      switch on uinput.";
 
 /// The reach `input::open_default` would give a session with these facts.
@@ -509,7 +509,7 @@ fn kwin_granted() -> bool {
     let user = user_dir.map(|d| read(d.join("kwinrc"))).unwrap_or_default();
     let system = read(std::path::PathBuf::from("/etc/xdg/kwinrc"));
     // Xwayland names an X11 client's EI connection after the process: the
-    // grant measured on the lab was `XwaylandEisNoPromptApps=roomlerd`.
+    // grant measured on the lab was `XwaylandEisNoPromptApps=meshharbord`.
     let me = std::fs::read_to_string("/proc/self/comm").unwrap_or_default();
     kwinrc_grants(&user, &system, me.trim())
 }
@@ -747,13 +747,13 @@ mod tests {
         );
         // Then the narrow grant, for this agent alone.
         assert!(
-            r.reason.contains("XwaylandEisNoPromptApps=roomlerd"),
+            r.reason.contains("XwaylandEisNoPromptApps=meshharbord"),
             "{}",
             r.reason
         );
     }
 
-    /// The same guest once the person allowed roomlerd in Legacy X11 App
+    /// The same guest once the person allowed meshharbord in Legacy X11 App
     /// Support: the viewer's pointer, click, wheel and typing reached a native
     /// window (FR-93 lab, 2026-10-11).
     #[test]
@@ -965,8 +965,8 @@ mod tests {
 
     #[test]
     fn kwinrc_grants_are_read() {
-        let lab = "[Desktops]\nNumber=1\n\n[Xwayland]\nScale=1\nXwaylandEisNoPromptApps=roomlerd\n";
-        assert!(kwinrc_grants(lab, "", "roomlerd"));
+        let lab = "[Desktops]\nNumber=1\n\n[Xwayland]\nScale=1\nXwaylandEisNoPromptApps=meshharbord\n";
+        assert!(kwinrc_grants(lab, "", "meshharbord"));
         assert!(
             !kwinrc_grants(lab, "", "xdotool"),
             "the grant names one app"
@@ -974,29 +974,29 @@ mod tests {
         assert!(kwinrc_grants(
             "[Xwayland]\nXwaylandEisNoPrompt=true\n",
             "",
-            "roomlerd"
+            "meshharbord"
         ));
         assert!(kwinrc_grants(
-            "[Xwayland]\nXwaylandEisNoPromptApps=a,roomlerd ,b\\,c\n",
+            "[Xwayland]\nXwaylandEisNoPromptApps=a,meshharbord ,b\\,c\n",
             "",
-            "roomlerd"
+            "meshharbord"
         ));
         // Stock: no keys anywhere.
-        assert!(!kwinrc_grants("[Xwayland]\nScale=1\n", "", "roomlerd"));
+        assert!(!kwinrc_grants("[Xwayland]\nScale=1\n", "", "meshharbord"));
         // The same key in another group is not the grant.
         assert!(!kwinrc_grants(
             "[Wayland]\nXwaylandEisNoPrompt=true\n",
             "",
-            "roomlerd"
+            "meshharbord"
         ));
         // The system file counts where the user's says nothing…
         let system = "[Xwayland][$i]\nXwaylandEisNoPrompt[$i]=true\n";
-        assert!(kwinrc_grants("", system, "roomlerd"));
+        assert!(kwinrc_grants("", system, "meshharbord"));
         // …and the user's own value wins where it does.
         assert!(!kwinrc_grants(
             "[Xwayland]\nXwaylandEisNoPrompt=false\n",
             system,
-            "roomlerd"
+            "meshharbord"
         ));
         assert!(!kwinrc_grants(lab, "", ""), "no name of our own, no grant");
     }

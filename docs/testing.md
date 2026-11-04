@@ -316,7 +316,7 @@ sequenceDiagram
   `synthetic-frame-source` build; no release profile has it. The input handler
   ([`peer.rs`](../agents/meshharbord/src/peer.rs), `attach_input_handler`) hands a probe to
   `synthetic_backend::probe` before it parses input, so a probe never reaches an injector. It
-  is recorded only with `ROOMLERD_BENCH=1`. The hello advertises `bench` in `AgentCaps.video`
+  is recorded only with `MESHHARBORD_BENCH=1`. The hello advertises `bench` in `AgentCaps.video`
   only when the synthetic source is selected **and** bench mode is on. Only a session holding
   INPUT gets the input handler at all.
 - **The two markers never overlap.** The frame's own number stays bottom-left. The probe's
@@ -356,8 +356,8 @@ sequenceDiagram
     Note over P: round trip = paintedAt − t_send<br/>every ~40 round trips → console + one rc.l4 record
 ```
 
-**Run it.** Start an agent built with `synthetic-frame-source` with `ROOMLERD_SYNTHETIC_FRAMES=1`
-and `ROOMLERD_BENCH=1`; its hello then advertises `bench` in `AgentCaps.video`. In the viewer's
+**Run it.** Start an agent built with `synthetic-frame-source` with `MESHHARBORD_SYNTHETIC_FRAMES=1`
+and `MESHHARBORD_BENCH=1`; its hello then advertises `bench` in `AgentCaps.video`. In the viewer's
 browser, set `localStorage['roomler-rc-bench'] = '1'`, reload, and connect with input. About
 every ten seconds the console prints `[rc] bench L4 n=… lost=… p50=… p95=… max=… path=…`, and
 the same batch is posted as one `rc.l4` line to `agent_logs`.

@@ -122,7 +122,7 @@ existing `send` delegates, so the seven transactional callers are untouched.
 - ⚠️ Subject/preheader are stripped of control characters and length-capped at the
   route: a `\r\n` in a subject is SMTP header injection on the lettre backend. Every
   operator string entering the wrapper passes a (new, first-in-tree) `escape_html`.
-- A separate newsletter From (`ROOMLER__NEWSLETTER__FROM_EMAIL`/`__FROM_NAME`, fallback
+- A separate newsletter From (`MESHHARBOR__NEWSLETTER__FROM_EMAIL`/`__FROM_NAME`, fallback
   to `email.from_*`) isolates campaign reputation from transactional (activation) mail.
 
 ### Gate
@@ -263,7 +263,7 @@ immutable cache, so **filenames are versioned and never edited in place**.
 | date | what was checked | result |
 |---|---|---|
 | 2026-09-01 | P0 prod measures | subscribers = **0 rows ever** (the 404 measured at population level); SendGrid configured + delivering; `platform_admins` already set |
-| 2026-09-02 | Deploy `v20260901-bfc5f58ef358` (HEAD `e8e72131`) | both pods rolled, health 200; configmap `ROOMLER__NEWSLETTER__FROM_NAME` live |
+| 2026-09-02 | Deploy `v20260901-bfc5f58ef358` (HEAD `e8e72131`) | both pods rolled, health 200; configmap `MESHHARBOR__NEWSLETTER__FROM_NAME` live |
 | 2026-09-02 | Anonymous surfaces (fresh-profile headless Chrome) | deferred prompt rendered bottom-right; CTA + footer forms present; served bundle carries the latch key |
 | 2026-09-02 | Real form click (Playwright, live landing) | `POST https://roomler.ai/api/subscribe` → **202** — the wire path that had 404'd for months; first subscriber row ever created |
 | 2026-09-02 | Confirmation mail | landed in Gmail **INBOX**; ⚠️ confirmed by Gmail's link scanner before any human click (finding above); token burned single-use; outcome page renders |

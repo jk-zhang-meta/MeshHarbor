@@ -3,7 +3,7 @@
 //! Wizard-state persistence for the unified `meshharbor-setup` app.
 //!
 //! The wizard writes its in-progress state to
-//! `%LOCALAPPDATA%\roomler\meshharbor-setup\data\wizard-state.json`
+//! `%LOCALAPPDATA%\meshharbor\meshharbor-setup\data\wizard-state.json`
 //! (Windows; the `\data` segment comes from directories-6's
 //! `data_local_dir()`) on every form-blur from the SPA so a
 //! force-killed (or crash-rebooted) wizard resumes mid-flow on the
@@ -64,7 +64,7 @@ pub const CURRENT_SCHEMA: u32 = 1;
 
 /// Resolve the path the wizard reads/writes state to.
 pub fn default_state_path() -> Result<PathBuf> {
-    let dirs = directories::ProjectDirs::from("ai", "roomler", "meshharbor-setup")
+    let dirs = directories::ProjectDirs::from("ai", "meshharbor", "meshharbor-setup")
         .context("resolving wizard state dir via directories::ProjectDirs")?;
     Ok(dirs.data_local_dir().join("wizard-state.json"))
 }

@@ -9,7 +9,7 @@ import { computed, ref, type ComputedRef, type Ref, type WritableComputedRef } f
  * remote-control page (the same checkbox under Settings › Display). Default
  * ON: once someone has named a device, the machine-reported title is noise.
  *
- * Storage: `roomler:grid-name-pref:<scope>:devices` → '1' | '0', where the
+ * Storage: `meshharbor:grid-name-pref:<scope>:devices` → '1' | '0', where the
  * caller's scope is `${userId}:${tenantId}` (as for useGridColumns). The key
  * predates this composable — the Devices grid kept it inline — and stays
  * byte-identical so every saved choice carries over.
@@ -21,7 +21,7 @@ import { computed, ref, type ComputedRef, type Ref, type WritableComputedRef } f
 
 /** The storage key for one scope (`${userId}:${tenantId}`). */
 export function hideDeviceNameKey(scope: string): string {
-  return `roomler:grid-name-pref:${scope || 'anon'}:devices`
+  return `meshharbor:grid-name-pref:${scope || 'anon'}:devices`
 }
 
 function read(key: string): boolean {
@@ -41,7 +41,7 @@ function listenAcrossTabs() {
   listening = true
   window.addEventListener('storage', (e: StorageEvent) => {
     // `key === null` is another tab's localStorage.clear().
-    if (e.key === null || e.key.startsWith('roomler:grid-name-pref:')) revision.value++
+    if (e.key === null || e.key.startsWith('meshharbor:grid-name-pref:')) revision.value++
   })
 }
 

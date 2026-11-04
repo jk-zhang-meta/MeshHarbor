@@ -17,11 +17,11 @@
 //! ## Two writer contexts on Windows
 //!
 //! - **Worker** (user-context): writes under `logging::log_dir()/
-//!   crashes/` which resolves to `%LOCALAPPDATA%\roomler\
-//!   roomler-agent\data\logs\crashes\`. The user-context uploader
+//!   crashes/` which resolves to `%LOCALAPPDATA%\meshharbor\
+//!   meshharbor-agent\data\logs\crashes\`. The user-context uploader
 //!   reads from this same dir on startup.
 //! - **Supervisor** (LocalSystem, Windows-only): writes under
-//!   `%PROGRAMDATA%\roomler\roomler-agent\crashes\` because
+//!   `%PROGRAMDATA%\meshharbor\meshharbor-agent\crashes\` because
 //!   `directories::ProjectDirs::data_local_dir()` under LocalSystem
 //!   resolves to `C:\Windows\System32\config\systemprofile\…` which
 //!   the user-context worker can't read. PROGRAMDATA is world-
@@ -103,7 +103,7 @@ pub enum WriterContext {
     // RETIRED-NAME-ANCHOR(3): the PRE-RENAME tree appdirs still resolves on an upgraded
     // host.
     /// LocalSystem SCM supervisor. Writes under
-    /// `%PROGRAMDATA%\roomler\roomler-agent\crashes\` on Windows,
+    /// `%PROGRAMDATA%\meshharbor\meshharbor-agent\crashes\` on Windows,
     /// falls back to the Worker dir on non-Windows: on macOS that is
     /// the root daemon's, recording its GUI worker (FR-97 P6e-2).
     Supervisor,
@@ -642,7 +642,7 @@ fn scrub_password_param(input: &str, count: &mut usize) -> String {
 /// params (`token=eyJ…`). The agent's `config.toml` stores the
 /// long-lived Agent JWT this way; a crash sidecar that logs config
 /// contents would otherwise leak it into the (world-readable until
-/// rc.52's dir-ACL) `%PROGRAMDATA%\roomler\…\crashes\` tree.
+/// rc.52's dir-ACL) `%PROGRAMDATA%\meshharbor\…\crashes\` tree.
 /// `scrub_jwt_shape` misses this case because the surrounding quotes
 /// break its whitespace-delimited-word boundary detection.
 ///

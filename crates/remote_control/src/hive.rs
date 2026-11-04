@@ -9,7 +9,7 @@
 //! output or a line of transcript, and the tests in `signaling` lock their
 //! field sets so they cannot grow one: content travels device-to-browser
 //! over the viewer peer and device-to-device between replicas, never through
-//! the server (`docs/roomler-hive-design.md` §3.3).
+//! the server (`docs/meshharbor-hive-design.md` §3.3).
 //!
 //! The viewer peer's signalling (P0d-2, `rc:hive.view.*`) is a grant, its
 //! answer, and the SDP and ICE of a data-only WebRTC peer — the server relays
@@ -1017,7 +1017,7 @@ pub mod promote_limits {
     /// (80 s), then the grace its sidecar serves model calls for after it
     /// last heard from the server (120 s), and a margin (30 s). By then the
     /// device makes no model call, whatever it still runs. ⚠️ Couples to
-    /// `WS_RX_DEADLINE` and `OFFLINE_GRACE` in `roomlerd`: a test there holds
+    /// `WS_RX_DEADLINE` and `OFFLINE_GRACE` in `meshharbord`: a test there holds
     /// this to their sum.
     pub const UNREACHABLE_SECS: u64 = 80 + 120 + 30;
 

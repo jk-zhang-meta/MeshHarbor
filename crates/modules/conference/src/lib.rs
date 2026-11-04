@@ -71,7 +71,7 @@ pub struct ConferenceState {
     pub rooms: Arc<RoomDao>,
     pub recordings: Arc<RecordingDao>,
     pub room_manager: Arc<RoomManager>,
-    /// C-4 — media rooms this pod OWNS (`roomler:own:media:<room>` claim
+    /// C-4 — media rooms this pod OWNS (`meshharbor:own:media:<room>` claim
     /// tokens) — refreshed every 10 s, compare-DELed on close/shutdown.
     pub media_claim_tokens: Arc<DashMap<ObjectId, String>>,
     /// C-4 — connections that joined a room owned by ANOTHER pod

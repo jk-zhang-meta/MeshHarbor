@@ -22,7 +22,7 @@
  * account access that survived a password change and a logout. Those are gone;
  * [`clearLegacyTokens`] removes what earlier versions left behind.
  */
-const SIGNED_IN = 'roomler-signed-in'
+const SIGNED_IN = 'meshharbor-signed-in'
 
 /** Keys earlier versions used to store real credentials in. */
 const LEGACY_TOKEN_KEYS = ['access_token', 'refresh_token']

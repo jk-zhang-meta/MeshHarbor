@@ -16,7 +16,7 @@ diff -ruN --strip-trailing-cr upstream/src/adapter.rs vendored/src/adapter.rs
 -            // Delete registry related to network card
 -            _ = delete_adapter_info_from_reg(&name);
 -        }
-+        // ROOMLER PATCH (crates/vendored/wintun-bindings.patch): upstream's
++        // MESHHARBOR PATCH (crates/vendored/wintun-bindings.patch): upstream's
 +        // `winreg` feature deleted every `NetworkList\Profiles` /
 +        // `NetworkList\Signatures\Unmanaged` registry entry whose
 +        // ProfileName/Description matched the adapter NAME on every drop —

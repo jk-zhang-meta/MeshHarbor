@@ -325,7 +325,7 @@ pub fn spawn_puller(core: Core) {
     let client = match ScClient::from_settings(growth) {
         None => {
             info!(
-                "growth search console puller: no key configured (ROOMLER__GROWTH__SEARCH_CONSOLE_KEY) — nothing is pulled"
+                "growth search console puller: no key configured (MESHHARBOR__GROWTH__SEARCH_CONSOLE_KEY) — nothing is pulled"
             );
             return;
         }

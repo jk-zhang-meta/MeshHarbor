@@ -34,7 +34,7 @@ pub enum Role {
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Role advertised in `rc:tunnel.hello`. Distinguishes the
-/// `roomler` CLI (which initiates forwards) from the agent
+/// `meshharbor` CLI (which initiates forwards) from the agent
 /// (which serves them). Wire form: `"client"` | `"agent"`.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -241,7 +241,7 @@ pub struct PeerAuthAnswer {
 
 /// FR-100 P1b — the label every peer-auth signature is scoped by. Part of the
 /// wire: changing it invalidates every signature in both directions.
-pub const PEER_AUTH_LABEL: &[u8] = b"roomler-peer-auth-v1";
+pub const PEER_AUTH_LABEL: &[u8] = b"meshharbor-peer-auth-v1";
 
 /// FR-100 P1b — the bytes a peer-auth signature covers: the label, then each
 /// field as `u16be(len) ‖ bytes` (FR-52's transport MAC frames its fields the
@@ -601,7 +601,7 @@ pub enum ClientMsg {
         #[serde(default)]
         supports_relay_regions: bool,
         /// P6 — the OpenSSH **public** half of this device's SSH host key
-        /// (`ssh-ed25519 AAAA… roomler-host`), so a caller can verify what it
+        /// (`ssh-ed25519 AAAA… meshharbor-host`), so a caller can verify what it
         /// dialled instead of trusting it on first use.
         ///
         /// Reported here rather than in [`AgentCaps`] because it is an
@@ -856,7 +856,7 @@ pub enum ClientMsg {
         error: Option<String>,
     },
 
-    /// Device-originated exec against ANOTHER device — the `roomler exec`
+    /// Device-originated exec against ANOTHER device — the `meshharbor exec`
     /// CLI leg, where the local daemon's own agent WS carries the request so
     /// the CLI needs no user credentials of its own.
     ///
@@ -877,8 +877,8 @@ pub enum ClientMsg {
         timeout_ms: u64,
     },
 
-    /// Device-originated roomler-SSH against ANOTHER device — the
-    /// `roomler ssh` CLI leg, the twin of [`Self::RpcExecRequest`].
+    /// Device-originated meshharbor-SSH against ANOTHER device — the
+    /// `meshharbor ssh` CLI leg, the twin of [`Self::RpcExecRequest`].
     ///
     /// The caller mints an **ephemeral** keypair per session and sends only
     /// the public half. If the server authorizes, it pushes the key to the
@@ -903,7 +903,7 @@ pub enum ClientMsg {
         /// ticket (`rc:vault.ssh.granted`), under which the SESSION is the
         /// principal, never the device's owner. A request whose ticket does
         /// not hold is refused, never served as the owner's. Absent from
-        /// every request a person makes (`roomler ssh`), so that frame is
+        /// every request a person makes (`meshharbor ssh`), so that frame is
         /// byte for byte what it was.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ssh_ticket: Option<String>,
@@ -1152,7 +1152,7 @@ pub enum ClientMsg {
     /// ⚠️ Never what was asked or answered, never a tool's name, argument or
     /// output — the field set is locked by test. The server turns this into a
     /// message in the session's room; the content streams to a viewer from a
-    /// replica, never through the server (`docs/roomler-hive-design.md` §5.1).
+    /// replica, never through the server (`docs/meshharbor-hive-design.md` §5.1).
     #[serde(rename = "rc:hive.turn")]
     HiveTurn {
         #[serde(with = "oid_hex")]
@@ -1227,7 +1227,7 @@ pub enum ClientMsg {
         sessions: Vec<crate::hive::HiveManifestEntry>,
     },
 
-    /// FR-90 P1j — a terminal session this device mirrors (`roomler hive
+    /// FR-90 P1j — a terminal session this device mirrors (`meshharbor hive
     /// adopt`), offered for a record. Sent once per Claude Code session, when
     /// its first hook reaches the device, and answered by
     /// [`ServerMsg::HiveAdoptAck`]. What follows is the usual `rc:hive.state`
@@ -1684,7 +1684,7 @@ pub enum ClientMsg {
     },
 
     /// FR-90 P3-8-1a — a session on this device asks to run one command on
-    /// `target` over Roomler SSH (`ssh_run`). Believed as a lease request is
+    /// `target` over MeshHarbor SSH (`ssh_run`). Believed as a lease request is
     /// (the session's record, at its fence, on this device), decided by
     /// Cedar's `ssh:run`, and answered with [`ServerMsg::VaultSshGranted`] or
     /// [`ServerMsg::VaultRefused`], naming `req_id`.
@@ -1707,7 +1707,7 @@ pub enum ClientMsg {
     },
 
     /// FR-90 P3-9-1 — a PERSON on this device asks for one field of a secret,
-    /// for an endpoint the device serves them (`roomler connect`): always in
+    /// for an endpoint the device serves them (`meshharbor connect`): always in
     /// `proxy` mode, toward `audience`, the upstream the endpoint signs in to.
     /// One frame per field, as a session's `vault_connect` asks its leases.
     /// Decided by Cedar's `secret:connect` for the device's OWNER, and
@@ -1845,7 +1845,7 @@ pub enum ClientMsg {
         /// `"yuv420"` (VP9 profile 0; ~30% lower bandwidth; slight
         /// ClearType softening) and `"yuv444"` (VP9 profile 1; sharpest
         /// text; current default). `None` / unset means "use the
-        /// agent's `ROOMLERD_VP9_CHROMA` env-var default". Only
+        /// agent's `MESHHARBORD_VP9_CHROMA` env-var default". Only
         /// applies when `preferred_transport` is `data-channel-vp9-444`;
         /// ignored otherwise. Forwarded verbatim to the agent in the
         /// matching server-side [`ServerMsg::SessionRequest`].
@@ -1942,14 +1942,14 @@ pub enum ClientMsg {
     // Plan v2 §"What changed from v1" #1 + #2:
     //   * Wire types fold into the existing `rc:*` namespace, NOT a
     //     separate `rc-tunnel:*` namespace or WS endpoint.
-    //   * Each `roomler forward` invocation owns ONE peer; many
+    //   * Each `meshharbor forward` invocation owns ONE peer; many
     //     TCP flows multiplex onto a fixed DC pool via `flow_id`
     //     framing (see `tunnel-core::mux`). No per-flow DC creation.
     //   * Server is the auth boundary — `TcpForwardRequest` rides the
     //     WS so the server can apply the cross-tenant gate + policy
     //     eval before forwarding to the agent.
     //
-    /// Sent right after WS upgrade by either a `roomler` client
+    /// Sent right after WS upgrade by either a `meshharbor` client
     /// or an agent that wants to advertise tunnel support. Locks in
     /// the wire transport for the rest of the session.
     ///
@@ -1979,10 +1979,10 @@ pub enum ClientMsg {
         transport: String,
         /// Client-chosen correlation id, echoed verbatim on the matching
         /// `TunnelOpened` (success) or open-failure `Error`. Lets ONE WS
-        /// carry N concurrent opens: the `roomlerd` daemon (P3b-2)
+        /// carry N concurrent opens: the `meshharbord` daemon (P3b-2)
         /// multiplexes many client sessions over its single agent WS and
         /// demuxes the reply by this nonce (post-open it switches to the
-        /// server-minted `session_id`). The standalone `roomler`
+        /// server-minted `session_id`). The standalone `meshharbor`
         /// CLI has a single in-flight open and sends `None`, matching the
         /// reply positionally. `None` is omitted on the wire, so a
         /// pre-P3b-2 server/client stays byte-identical.
@@ -2258,20 +2258,20 @@ pub enum ClientMsg {
         #[serde(default)]
         endpoints: Vec<String>,
         /// rc.142 — the node can carry WG over a QUIC-over-TURN relay carrier
-        /// (`ROOMLERD_OVERLAY_QUIC=1`). The server persists it and echoes it
+        /// (`MESHHARBORD_OVERLAY_QUIC=1`). The server persists it and echoes it
         /// per-peer in the netmap so QUIC is only attempted when BOTH ends
         /// advertise it (a QUIC/raw split would silently break the pair).
         #[serde(default)]
         supports_quic: bool,
         /// Phase D — the node can carry WG over the v1 single-relay carrier (ONE
-        /// anchor allocation + a raw dialer, `ROOMLERD_OVERLAY_RELAY_SINGLE=1`).
+        /// anchor allocation + a raw dialer, `MESHHARBORD_OVERLAY_RELAY_SINGLE=1`).
         /// Persisted + echoed per-peer like `supports_quic`, so single-relay is
         /// only chosen when BOTH ends advertise it (a mixed pair stays on the
         /// both-allocate relay). Absent from a pre-Phase-D node ⇒ `false`.
         #[serde(default)]
         supports_relay_single: bool,
         /// Phase D (DERP) — the node can carry WG over the pubkey-addressed
-        /// `/derp` WS relay (`ROOMLERD_OVERLAY_DERP=1`), the last-resort
+        /// `/derp` WS relay (`MESHHARBORD_OVERLAY_DERP=1`), the last-resort
         /// carrier for two BOTH-UDP-blocked peers. Persisted + echoed per-peer
         /// like `supports_relay_single`, so DERP is only chosen when BOTH ends
         /// advertise it. Absent from a pre-DERP node ⇒ `false`.
@@ -3457,7 +3457,7 @@ pub enum ServerMsg {
         /// rc.62 — per-session VP9 chroma override forwarded verbatim
         /// from the controller's [`ClientMsg::SessionRequest::chroma_pref`].
         /// `None` / unset means "use the agent's
-        /// `ROOMLERD_VP9_CHROMA` env-var default".
+        /// `MESHHARBORD_VP9_CHROMA` env-var default".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chroma_pref: Option<String>,
         /// FR-17 — forwarded verbatim from the controller's
@@ -3805,7 +3805,7 @@ pub enum ServerMsg {
 
     /// Multi-org — join an ADDITIONAL org from the admin UI ("Add to another
     /// organization"), so a device that can't be reached for a hands-on
-    /// `roomler enroll` still gets a second enrollment.
+    /// `meshharbor enroll` still gets a second enrollment.
     ///
     /// The agent exchanges the token for its own agent JWT in the target
     /// tenant, APPENDS an `[[orgs]]` entry (with a freshly minted per-org WG
@@ -3912,14 +3912,14 @@ pub enum ServerMsg {
     #[serde(rename = "rc:rpc.cancel")]
     RpcCancel { request_id: String },
 
-    /// Authorize ONE inbound roomler-SSH session on this device.
+    /// Authorize ONE inbound meshharbor-SSH session on this device.
     ///
     /// Pushed to the **target** after the server has cleared gates 1-3 (org
     /// kill-switch, the caller's `SSH_DEVICE` permission, the device's
     /// `SshPolicy`). The agent holds it briefly and consumes it when a
     /// connection authenticates with the named key.
     ///
-    /// This is why roomler SSH needs no key distribution and no shared secret
+    /// This is why meshharbor SSH needs no key distribution and no shared secret
     /// with the server: the agent does not *verify* the grant cryptographically,
     /// it receives it over the control WS it is already authenticated on —
     /// the same trust path `rc:request` uses to open a remote-control session.
@@ -3968,7 +3968,7 @@ pub enum ServerMsg {
     },
 
     /// Answer to a device-originated [`ClientMsg::SshRequest`] — the
-    /// `roomler ssh` CLI leg. Carries where to connect, or why not.
+    /// `meshharbor ssh` CLI leg. Carries where to connect, or why not.
     #[serde(rename = "rc:ssh.response")]
     SshResponse {
         request_id: String,
@@ -3984,7 +3984,7 @@ pub enum ServerMsg {
         /// P6a — the target's SSH host public key, so the dialling device can
         /// verify what it reached instead of trusting it on first use.
         ///
-        /// This leg needs it MORE than the HTTP one, not less: `roomler ssh`
+        /// This leg needs it MORE than the HTTP one, not less: `meshharbor ssh`
         /// originates here, and it is the caller that has no other channel to
         /// learn the key. Absent ⇒ the device reported none, which means it
         /// cannot prove itself — never "any key is fine".
@@ -4009,7 +4009,7 @@ pub enum ServerMsg {
     },
 
     /// Answer to a device-originated [`ClientMsg::RpcExecRequest`] — the
-    /// `roomler exec` CLI leg. Carries the same payload the HTTP caller would
+    /// `meshharbor exec` CLI leg. Carries the same payload the HTTP caller would
     /// have received, plus `error` for a gate refusal the server itself made.
     #[serde(rename = "rc:rpc.response")]
     RpcExecResponse {
@@ -5671,7 +5671,7 @@ pub struct AgentSysStats {
     /// peer-to-peer data channel, which is why `tunnel_audit.bytes_in`/
     /// `bytes_out` have held a literal 0 on every row ever written. These
     /// two are DEVICE-attributed — a daemon-supervised forward belongs to
-    /// the host, not to a person. A dedicated `roomler` client's
+    /// the host, not to a person. A dedicated `meshharbor` client's
     /// flows are user-owned and still report nothing; that needs the same
     /// counters wired into the CLI's own heartbeat.
     ///
@@ -5826,7 +5826,7 @@ pub struct LocalRelayDescriptor {
     /// UDP port the local agent's TURN server listens on (loopback + overlay).
     pub turn_port: u16,
     /// The local agent's assigned overlay IP (100.64.x.y) — the relay-candidate
-    /// address the remote agent routes to over the roomler adapter. The Hub
+    /// address the remote agent routes to over the meshharbor adapter. The Hub
     /// validates this is inside the overlay range before trusting it.
     pub overlay_ip: String,
     /// coturn-REST username (`{expiry}:{user_id}`) minted by the local agent.
@@ -6712,7 +6712,7 @@ mod tests {
     /// FR-90 — the start frame carries metadata and nothing else. Its field
     /// set is spelled out here so adding a `prompt`, a `context` or an
     /// `env` is a deliberate edit to this test — the server never carries
-    /// session content (`docs/roomler-hive-design.md` §3.3), and the first
+    /// session content (`docs/meshharbor-hive-design.md` §3.3), and the first
     /// prompt reaches the harness over the viewer peer. Also locks that it
     /// names no ACCOUNT: which local account runs a session is the device's
     /// decision (`hive_accounts`), never the server's.
@@ -8374,7 +8374,7 @@ mod tests {
 
     #[test]
     fn ssh_response_carries_the_host_key_on_the_device_leg() {
-        // `roomler ssh` originates on THIS leg, and the dialling device has no
+        // `meshharbor ssh` originates on THIS leg, and the dialling device has no
         // other channel to learn the key — so if it goes missing here, the
         // client is back to TOFU with no way to notice. It went missing once
         // already: the HTTP body gained the field and the hand-written wire
@@ -8421,7 +8421,7 @@ mod tests {
     }
 
     /// FR-90 P3-8-1b — an agent session's three fields cross only when set:
-    /// a person's `roomler ssh` request, every grant to a device, and every
+    /// a person's `meshharbor ssh` request, every grant to a device, and every
     /// answer stay byte for byte what older builds parse, and each field reads
     /// back as sent.
     #[test]
@@ -8707,7 +8707,7 @@ mod tests {
     #[test]
     fn a_peer_auth_transcript_frames_each_field_with_its_length() {
         let t = peer_auth_transcript("offer", "a", "b", "c", "d", "e", "f").unwrap();
-        let mut want = b"roomler-peer-auth-v1".to_vec();
+        let mut want = b"meshharbor-peer-auth-v1".to_vec();
         want.extend_from_slice(&[0, 5]);
         want.extend_from_slice(b"offer");
         for field in [b"a", b"b", b"c", b"d", b"e", b"f"] {

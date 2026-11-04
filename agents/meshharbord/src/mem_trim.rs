@@ -21,7 +21,7 @@
 //!
 //! glibc only: `malloc_trim` is a glibc extension, and Linux/glibc is where the
 //! growth was measured. Windows and macOS were not. Kill switch
-//! `ROOMLERD_MEM_TRIM=0`.
+//! `MESHHARBORD_MEM_TRIM=0`.
 
 #[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
@@ -192,9 +192,9 @@ mod tests {
     #[test]
     fn vm_rss_is_read_from_proc_status() {
         let status =
-            "Name:\troomlerd\nVmPeak:\t  412000 kB\nVmRSS:\t  303104 kB\nRssAnon:\t  256224 kB\n";
+            "Name:\tmeshharbord\nVmPeak:\t  412000 kB\nVmRSS:\t  303104 kB\nRssAnon:\t  256224 kB\n";
         assert_eq!(vm_rss_kb(status), Some(303_104));
-        assert_eq!(vm_rss_kb("Name:\troomlerd\n"), None);
+        assert_eq!(vm_rss_kb("Name:\tmeshharbord\n"), None);
     }
 
     #[cfg(all(target_os = "linux", target_env = "gnu"))]

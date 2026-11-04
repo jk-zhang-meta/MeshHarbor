@@ -49,10 +49,10 @@
 //! | `.msi` | `ProductVersion` in the `Property` table | the Windows Installer database API |
 //! | `.deb` | `Version` in its control file (`0.4.142-1`; the `-1` is the Debian revision) | `dpkg-deb --field`, which ships with the dpkg the updater requires before picking a `.deb` |
 //! | `.pkg` | `version` on the component `PackageInfo`'s `<pkg-info identifier="fans.itachi.meshharbor.agent">` | `pkgutil --expand` |
-//! | `.tar.gz` | its one top directory, `roomlerd-<version>-<target>` | `tar -tzf`, which the tarball install runs anyway |
+//! | `.tar.gz` | its one top directory, `meshharbord-<version>-<target>` | `tar -tzf`, which the tarball install runs anyway |
 //!
 //! ⚠️ A wrong reader refuses every update fleet-wide, so the three new readers
-//! sit behind `ROOMLERD_ARTIFACT_VERSION_CHECK=0`, and each was read against
+//! sit behind `MESHHARBORD_ARTIFACT_VERSION_CHECK=0`, and each was read against
 //! real published releases before it shipped (FR-97 §8).
 
 use std::path::Path;
@@ -127,7 +127,7 @@ pub fn verify_artifact_version(path: &Path, claimed: &str) -> Result<String, Ver
             let format = if tarball { "tar.gz" } else { ext.as_str() };
             Err(VersionError::Unsupported(format!(
                 ".{format} artifacts while the binding is switched off \
-                 (ROOMLERD_ARTIFACT_VERSION_CHECK=0)"
+                 (MESHHARBORD_ARTIFACT_VERSION_CHECK=0)"
             )))
         }
         "deb" => verify_deb(path, claimed),
@@ -142,7 +142,7 @@ pub fn verify_artifact_version(path: &Path, claimed: &str) -> Result<String, Ver
 }
 
 /// FR-97 P6a — is the `.deb`, `.pkg` and tarball binding on? Default on;
-/// `ROOMLERD_ARTIFACT_VERSION_CHECK=0` turns those three readers off (the
+/// `MESHHARBORD_ARTIFACT_VERSION_CHECK=0` turns those three readers off (the
 /// MSI's, older and proven, stays). A wrong reader would refuse every update
 /// fleet-wide, so the switch is the way out that needs no new release.
 fn unix_binding_enabled() -> bool {
@@ -213,13 +213,13 @@ fn deb_upstream_version(v: &str) -> String {
 }
 
 /// The release a tarball's top directory names:
-/// `roomlerd-0.4.142-x86_64-unknown-linux-gnu` → `0.4.142`
-/// (`roomlerd-0.3.0-rc.458-…` → `0.3.0-rc.458`). `None` for any other shape.
+/// `meshharbord-0.4.142-x86_64-unknown-linux-gnu` → `0.4.142`
+/// (`meshharbord-0.3.0-rc.458-…` → `0.3.0-rc.458`). `None` for any other shape.
 #[cfg(any(unix, test))]
 fn tarball_version(top: &str) -> Option<String> {
     let rest = top
         .strip_prefix("meshharbor-")
-        .or_else(|| top.strip_prefix("roomlerd-"))?;
+        .or_else(|| top.strip_prefix("meshharbord-"))?;
     let mut parts = rest.split('-');
     let fields = numeric_fields(parts.next()?)?;
     match parts.next()? {
@@ -382,7 +382,7 @@ fn verify_rpm(_path: &Path, _claimed: &str) -> Result<String, VersionError> {
 }
 
 /// FR-97 P6a — a tarball states its version in its one top directory,
-/// `roomlerd-<version>-<target>`, inside the signed bytes. Listed by `tar`,
+/// `meshharbord-<version>-<target>`, inside the signed bytes. Listed by `tar`,
 /// which the tarball install itself runs.
 #[cfg(unix)]
 fn verify_tarball(path: &Path, claimed: &str) -> Result<String, VersionError> {
@@ -442,7 +442,7 @@ fn verify_pkg(path: &Path, claimed: &str) -> Result<String, VersionError> {
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     let dir = Expanded(std::env::temp_dir().join(format!(
-        "roomler-pkg-version-{}-{nanos}",
+        "meshharbor-pkg-version-{}-{nanos}",
         std::process::id()
     )));
     let out = std::process::Command::new("/usr/sbin/pkgutil")
@@ -883,7 +883,7 @@ mod tests {
 
     #[test]
     fn formats_with_no_reader_report_unsupported_rather_than_refusing() {
-        for name in ["roomlerd.tgz", "roomlerd.zip", "roomlerd.gz", "roomlerd"] {
+        for name in ["meshharbord.tgz", "meshharbord.zip", "meshharbord.gz", "meshharbord"] {
             let err = verify_artifact_version(&PathBuf::from(name), "agent-v0.4.142")
                 .expect_err("no binding is implemented for this format");
             assert!(
@@ -916,7 +916,7 @@ mod tests {
             ("meshharbord.deb", cfg!(target_os = "linux") && dpkg),
             ("meshharbor-desktop.rpm", cfg!(target_os = "linux") && rpm),
             ("meshharbord.pkg", cfg!(target_os = "macos")),
-            ("roomlerd.tar.gz", cfg!(unix)),
+            ("meshharbord.tar.gz", cfg!(unix)),
         ] {
             let path = dir.join(name);
             std::fs::write(&path, b"this is not a package").unwrap();
@@ -988,21 +988,21 @@ mod tests {
     #[test]
     fn a_tarballs_top_directory_names_its_release() {
         assert_eq!(
-            tarball_version("roomlerd-0.4.142-x86_64-unknown-linux-gnu").as_deref(),
+            tarball_version("meshharbord-0.4.142-x86_64-unknown-linux-gnu").as_deref(),
             Some("0.4.142")
         );
         assert_eq!(
-            tarball_version("roomlerd-0.4.142-aarch64-unknown-linux-gnu").as_deref(),
+            tarball_version("meshharbord-0.4.142-aarch64-unknown-linux-gnu").as_deref(),
             Some("0.4.142")
         );
         assert_eq!(
-            tarball_version("roomlerd-0.3.0-rc.458-x86_64-unknown-linux-gnu").as_deref(),
+            tarball_version("meshharbord-0.3.0-rc.458-x86_64-unknown-linux-gnu").as_deref(),
             Some("0.3.0-rc.458")
         );
         for bad in [
-            "roomlerd-0.4.142",
+            "meshharbord-0.4.142",
             "other-0.4.142-x86_64",
-            "roomlerd-x-y",
+            "meshharbord-x-y",
             "usr",
         ] {
             assert_eq!(tarball_version(bad), None, "{bad:?}");
@@ -1034,7 +1034,7 @@ mod tests {
         let build = |top: &str| -> std::path::PathBuf {
             let root = base.join(top).join("usr/bin");
             std::fs::create_dir_all(&root).unwrap();
-            std::fs::write(root.join("roomlerd"), b"x").unwrap();
+            std::fs::write(root.join("meshharbord"), b"x").unwrap();
             let out = base.join(format!("{top}.tar.gz"));
             let st = std::process::Command::new("tar")
                 .arg("-czf")
@@ -1047,7 +1047,7 @@ mod tests {
             assert!(st.success());
             out
         };
-        let real = build("roomlerd-0.4.142-x86_64-unknown-linux-gnu");
+        let real = build("meshharbord-0.4.142-x86_64-unknown-linux-gnu");
         assert_eq!(
             verify_artifact_version(&real, "agent-v0.4.142").unwrap(),
             "0.4.142"
@@ -1072,11 +1072,11 @@ mod tests {
         std::fs::create_dir_all(pkg.join("DEBIAN")).unwrap();
         std::fs::write(
             pkg.join("DEBIAN/control"),
-            "Package: roomlerd\nVersion: 0.4.142-1\nArchitecture: all\n\
+            "Package: meshharbord\nVersion: 0.4.142-1\nArchitecture: all\n\
              Maintainer: test <test@example.invalid>\nDescription: P6a test\n",
         )
         .unwrap();
-        let deb = base.join("roomlerd-0.4.142.deb");
+        let deb = base.join("meshharbord-0.4.142.deb");
         match std::process::Command::new("dpkg-deb")
             .arg("--build")
             .arg(&pkg)
@@ -1130,19 +1130,19 @@ mod tests {
     /// ```text
     /// gh release download agent-v0.3.0-rc.458 --repo gjovanov/roomler-ai \
     ///   --pattern '*perMachine*.msi' --dir /tmp
-    /// ROOMLER_TEST_MSI=/tmp/roomler-agent-0.3.0-rc.458-perMachine-x86_64-pc-windows-msvc.msi \
-    /// ROOMLER_TEST_MSI_TAG=agent-v0.3.0-rc.458 \
+    /// MESHHARBOR_TEST_MSI=/tmp/meshharbor-agent-0.3.0-rc.458-perMachine-x86_64-pc-windows-msvc.msi \
+    /// MESHHARBOR_TEST_MSI_TAG=agent-v0.3.0-rc.458 \
     ///   cargo test -p meshharbord --lib -- --ignored real_published_msi
     /// ```
     #[cfg(windows)]
     #[test]
     #[ignore = "needs a published MSI; see the doc comment for the invocation"]
     fn real_published_msi_binds_to_its_own_tag_and_refuses_a_forged_one() {
-        let Ok(msi) = std::env::var("ROOMLER_TEST_MSI") else {
-            panic!("set ROOMLER_TEST_MSI to a downloaded release MSI");
+        let Ok(msi) = std::env::var("MESHHARBOR_TEST_MSI") else {
+            panic!("set MESHHARBOR_TEST_MSI to a downloaded release MSI");
         };
-        let tag = std::env::var("ROOMLER_TEST_MSI_TAG")
-            .expect("set ROOMLER_TEST_MSI_TAG to the tag that MSI was published under");
+        let tag = std::env::var("MESHHARBOR_TEST_MSI_TAG")
+            .expect("set MESHHARBOR_TEST_MSI_TAG to the tag that MSI was published under");
         let path = PathBuf::from(&msi);
 
         let found = verify_artifact_version(&path, &tag)

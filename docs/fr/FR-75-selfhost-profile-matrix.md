@@ -8,7 +8,7 @@
 
 Boot a throwaway VM per **self-host profile** (`full`, `collab`, `remote`, `mesh`, `access`),
 install it the way a self-hoster does — `docker-compose.selfhost.yml` + `.env.selfhost` +
-`ROOMLER_IMAGE=<tag>-<profile>` — and then **make the profile do the thing it claims**: chat and a
+`MESHHARBOR_IMAGE=<tag>-<profile>` — and then **make the profile do the thing it claims**: chat and a
 real two-party video call for `collab`, remote-desktop frames for `remote`, a real overlay
 `peers`+`ping` between **two** agents for `mesh`, both for `access`, everything for `full`. Assert
 positively that what a profile drops is **absent**. End with a repeatable skill.
@@ -58,7 +58,7 @@ FR-46 lesson, where an audit died silently at the moment it succeeded.
 ```
 audit host capacity → boot server VM (COW off the docker golden)
   → clone the repo, cp .env.selfhost.example .env.selfhost, fill 4 secrets,
-    ROOMLER_IMAGE=ghcr.io/gjovanov/roomler-ai:<tag>[-<profile>]
+    MESHHARBOR_IMAGE=ghcr.io/gjovanov/roomler-ai:<tag>[-<profile>]
   → docker compose … pull && up -d          ← the documented order; `up` alone BUILDS
   → wait /health
   → GATE 1  /health .modules == WANT_<profile> AND /api/capabilities agrees
@@ -87,7 +87,7 @@ all do.
 1. **RTP does not survive a port-forward.** A forward carries one TCP port and no media.
 2. **A LAN URL is not a secure context** ⇒ `navigator.mediaDevices` is `undefined` ⇒ no
    `getUserMedia` ⇒ no call to measure.
-3. **`ROOMLER__APP__FRONTEND_URL` must equal the browser's origin** — *a port is part of an
+3. **`MESHHARBOR__APP__FRONTEND_URL` must equal the browser's origin** — *a port is part of an
    Origin* — or the cookie-authenticated `/ws` upgrade is refused **403**
    (`crates/api/src/ws/handler.rs`), and every realtime check fails for that one reason.
 
@@ -100,7 +100,7 @@ a one-VM browser and multi-VM agents coexist.
 ### Media ports — the choice, recorded
 
 Keep the compose file's **default port-mapped form** (`40000-40031` UDP+TCP published,
-`ROOMLER_ANNOUNCED_IP=127.0.0.1`), not `network_mode: host`. Reasons:
+`MESHHARBOR_ANNOUNCED_IP=127.0.0.1`), not `network_mode: host`. Reasons:
 
 - it is what a self-hoster gets out of the box, so the cell measures the **documented** path;
 - with the browser on the VM itself, `127.0.0.1` is exactly the case the doc says it works for;
@@ -154,9 +154,9 @@ here, per the handover.
 
 - **Profiles** are Cargo feature aggregates in `crates/api/Cargo.toml`; `default = ["profile-full",
   "saas"]` is the hosted build, and no published `v*` image carries `saas`.
-- **Compose**: `docker-compose.selfhost.yml` publishes `${ROOMLER_HTTP_PORT:-8080}:80` plus
-  `40000-40031` UDP+TCP; `ROOMLER__APP__FRONTEND_URL` = `${ROOMLER_PUBLIC_URL:-http://localhost:8080}`;
-  `ROOMLER__AUTH__AUTO_VERIFY` defaults **true**, so a registered account is usable with no SMTP.
+- **Compose**: `docker-compose.selfhost.yml` publishes `${MESHHARBOR_HTTP_PORT:-8080}:80` plus
+  `40000-40031` UDP+TCP; `MESHHARBOR__APP__FRONTEND_URL` = `${MESHHARBOR_PUBLIC_URL:-http://localhost:8080}`;
+  `MESHHARBOR__AUTH__AUTO_VERIFY` defaults **true**, so a registered account is usable with no SMTP.
 - ⚠️ **`up -d` alone BUILDS** — Compose treats a service with a `build:` section as buildable, so a
   missing image is compiled from source instead of pulled. `pull` first, or the cell measures a
   20-minute build and calls it an install.

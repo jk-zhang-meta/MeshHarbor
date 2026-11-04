@@ -75,7 +75,7 @@ async fn a_user_is_minted_with_a_verifier_and_signs_in_by_its_password() {
     let id = lease();
     let until = "2099-01-01T00:00:00Z";
     let m = mint(&issuer, &id, until).await.unwrap();
-    assert_eq!(m.user, format!("roomler_{id}"));
+    assert_eq!(m.user, format!("meshharbor_{id}"));
     assert_eq!(
         (m.host.as_str(), m.port, m.database.as_str()),
         ("localhost", f.port, "orders")
@@ -108,7 +108,7 @@ async fn a_user_is_minted_with_a_verifier_and_signs_in_by_its_password() {
         (
             until,
             &["readonly".to_string(), "reporting".to_string()][..],
-            Some(format!("roomler lease {id}").as_str()),
+            Some(format!("meshharbor lease {id}").as_str()),
             true
         )
     );
@@ -181,9 +181,9 @@ async fn a_revocation_drops_the_minted_role_and_nothing_else() {
     for name in [
         "admin",
         "postgres",
-        "roomler_",
-        "roomler_1234",
-        "roomler_zzzzzzzzzzzzzzzzzzzzzzzz",
+        "meshharbor_",
+        "meshharbor_1234",
+        "meshharbor_zzzzzzzzzzzzzzzzzzzzzzzz",
     ] {
         let dialled = f.dialled.load(SeqCst);
         assert!(revoke(&issuer, name).await.is_err(), "{name}");
@@ -231,23 +231,23 @@ async fn the_expired_are_swept_at_the_next_mint() {
     {
         let mut roles = f.roles.lock().unwrap();
         roles.insert(
-            format!("roomler_{old}"),
-            role("2001-01-01T00:00:00Z", Some(format!("roomler lease {old}"))),
+            format!("meshharbor_{old}"),
+            role("2001-01-01T00:00:00Z", Some(format!("meshharbor lease {old}"))),
         );
         roles.insert(
-            format!("roomler_{live}"),
+            format!("meshharbor_{live}"),
             role(
                 "2099-01-01T00:00:00Z",
-                Some(format!("roomler lease {live}")),
+                Some(format!("meshharbor lease {live}")),
             ),
         );
         roles.insert(
-            format!("roomler_{theirs}"),
+            format!("meshharbor_{theirs}"),
             role("2001-01-01T00:00:00Z", Some("someone else's".into())),
         );
         roles.insert(
-            "roomler_admin".into(),
-            role("2001-01-01T00:00:00Z", Some("roomler lease forged".into())),
+            "meshharbor_admin".into(),
+            role("2001-01-01T00:00:00Z", Some("meshharbor lease forged".into())),
         );
     }
     let issuer = Issuer::from_bundle(&bundle(&f, &admin, ""), upstream_of).unwrap();
@@ -256,13 +256,13 @@ async fn the_expired_are_swept_at_the_next_mint() {
         .unwrap();
     let roles = f.roles.lock().unwrap();
     assert!(
-        !roles.contains_key(&format!("roomler_{old}")),
+        !roles.contains_key(&format!("meshharbor_{old}")),
         "the expired one is swept"
     );
     for kept in [
-        format!("roomler_{live}"),
-        format!("roomler_{theirs}"),
-        "roomler_admin".into(),
+        format!("meshharbor_{live}"),
+        format!("meshharbor_{theirs}"),
+        "meshharbor_admin".into(),
         m.user.clone(),
     ] {
         assert!(roles.contains_key(&kept), "{kept}");
@@ -331,12 +331,12 @@ async fn a_refused_mint_or_a_short_issuer_says_why() {
 
 #[test]
 fn names_are_identifiers_and_values_literals() {
-    assert_eq!(ident("roomler_ab"), "\"roomler_ab\"");
+    assert_eq!(ident("meshharbor_ab"), "\"meshharbor_ab\"");
     assert_eq!(ident("we\"ird"), "\"we\"\"ird\"");
     assert_eq!(literal("it's"), "'it''s'");
     assert_eq!(
         role_for("0123456789abcdef01234567"),
-        Ok("roomler_0123456789abcdef01234567".into())
+        Ok("meshharbor_0123456789abcdef01234567".into())
     );
     for bad in [
         "",

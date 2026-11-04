@@ -26,7 +26,7 @@ The design must keep one invariant (§4): **nothing the signed-in user can write
 | The console-session **worker** holds the agent socket and runs exec, SSH and LocalAPI | process list on 0.4.129; SSH interception installed at `overlay.rs` L332, its services built at `signaling.rs` L1366 | Every remote action has the worker's identity |
 | Fleet RPC always asks for `RunAs::Daemon` | `agents/meshharbord/src/signaling.rs` L4107 | "Daemon" means the worker |
 | An attended worker runs on the signed-in user's token: the elevated linked token when they are an admin, their filtered token otherwise | `win_service/supervisor.rs` L392 `worker_elevation_requested`, L447 `elevated_primary_token` | Measured on 0.4.129: `<host>\<user>`, session 1, **High** integrity |
-| SystemContext mode runs a SYSTEM worker in the console session from cold start | `supervisor.rs` L869 `peer_presence_is_signaled` = L885 `system_swap_enabled` (`ROOMLERD_ENABLE_SYSTEM_SWAP`) | A controller connecting swaps nothing (since 0.3.0-rc.7; #2032) |
+| SystemContext mode runs a SYSTEM worker in the console session from cold start | `supervisor.rs` L869 `peer_presence_is_signaled` = L885 `system_swap_enabled` (`MESHHARBORD_ENABLE_SYSTEM_SWAP`) | A controller connecting swaps nothing (since 0.3.0-rc.7; #2032) |
 | Attended, nobody signed in: no worker at all | `supervisor.rs` L1634 (no user token: idle), L1689 (logout terminates the worker) | The device is offline; there is no exec |
 | `console_user` needs `WTSQueryUserToken`, so SeTcbPrivilege, so SYSTEM | `exec.rs` L3128–3205 (`win_console`), `pty/windows.rs` L686–705, `ssh.rs` L755–758 | Refused on **every attended install**, Fleet RPC and SSH alike, with a message blaming "not a perMachine service install" (`exec.rs` L3205). That is the wrong diagnosis on a perMachine attended install |
 | An attended worker's config is the **user's** `%APPDATA%` | `agents/meshharbord/src/main.rs` L839 `pick_config_path` (the machine-global path applies to SystemContext workers only) | The agent token, the server origin and `exec_enabled` are **user-writable** on attended installs |
@@ -186,7 +186,7 @@ stateDiagram-v2
     was needed.
   - Routing (`exec_service.rs` L62) needs **both** halves: the server's anchor record and the device's
     `exec-system` word. Either alone would route a command into a timeout.
-  - Server kill switch: `rc.exec_via_service` (`ROOMLER__RC__EXEC_VIA_SERVICE=false` ⇒ never routes via a
+  - Server kill switch: `rc.exec_via_service` (`MESHHARBOR__RC__EXEC_VIA_SERVICE=false` ⇒ never routes via a
     service; default on, inert until a device is anchored **and** advertises the word).
   - The org's `exec_require_system` (decision 4; `TenantSettings`, default off): a Windows command that
     cannot take the service path is refused as `system_required` (`agent_exec.rs` L341) rather than run
@@ -217,7 +217,7 @@ stateDiagram-v2
 | P0 | This spec, the issue and the registry row. The wording PR, so today's identity is said truthfully. The P0 measurements (§10) | docs only | ✅ #2036, #2039, #2086 |
 | P1 | The machine trust anchor. **Server:** `AgentService` credentials bound to an `anchor_id`, `POST /api/agent/anchor` (explicit device), renew, un-anchor. **Agent:** `roomlerd anchor` (elevated) writing the anchor under a hardened dir; the wizard doing the same | no anchor ⇒ today's behaviour | ✅ server #2099, `roomlerd anchor` #2105; field rows 8, 11, 15, 19. The wizard writing the anchor was **not built**: devices are anchored with `roomlerd anchor` (§9) |
 | P2 | Server: `exec_pending`, the claim and result routes, dispatch writing the row, the claim window, the worker-answer withdrawal, `exec_require_system`, the composition baseline | `rc.exec_via_service = false` ⇒ never routes via the service | ✅ #2099; field rows 9, 17–19 |
-| P3 | Agent: the service runner, the doorbell, the `exec-system` cap word | `ROOMLERD_EXEC_VIA_SERVICE=0` withdraws the cap word ⇒ the server never routes | ✅ #2105, in 0.4.133; field rows 8, 12, 15 |
+| P3 | Agent: the service runner, the doorbell, the `exec-system` cap word | `MESHHARBORD_EXEC_VIA_SERVICE=0` withdraws the cap word ⇒ the server never routes | ✅ #2105, in 0.4.133; field rows 8, 12, 15 |
 | P4 | `console_user` for Fleet RPC: policy, UI, audit; the refusal text | the policy defaults to `system`; absent in a PUT keeps it | ✅ the device #2105, the policy + UI #2110; field rows 10, 13, 20; the refusal's wording #2135 (0.4.135) |
 | P5 | `ran_as` everywhere, the device's identity in the UI, docs, field | — | ✅ #2105 + #2110 + #2135; field rows 7–20 |
 

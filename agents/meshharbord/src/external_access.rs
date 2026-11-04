@@ -227,7 +227,7 @@ fn b64() -> base64::engine::general_purpose::GeneralPurpose {
 /// config and is never shared, so there is nothing for an identity to
 /// disambiguate — and binding to a device id would invalidate every stored
 /// password the first time a device is re-enrolled and gets a new one.
-const IDENTITY: &[u8] = b"roomler-external-access";
+const IDENTITY: &[u8] = b"meshharbor-external-access";
 
 /// First-time registration with a freshly minted setup — **a test shorthand**,
 /// private on purpose.

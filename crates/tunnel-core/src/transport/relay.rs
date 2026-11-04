@@ -1363,7 +1363,7 @@ mod turn_tests {
     use turn::server::config::{ConnConfig, ServerConfig};
     use webrtc_util::vnet::net::Net;
 
-    const REALM: &str = "roomler.test";
+    const REALM: &str = "meshharbor.test";
     const USER: &str = "quic-tester";
     const PASS: &str = "turn-secret";
 
@@ -1555,7 +1555,7 @@ mod turn_tests {
     }
 
     /// Phase-0 spike for the **loopback-TURN corp-relay** plan
-    /// (`~/.claude/plans/roomler-loopback-turn-corp-relay.md`).
+    /// (`~/.claude/plans/meshharbor-loopback-turn-corp-relay.md`).
     ///
     /// The make-or-break unknown: will TWO **webrtc-rs** peers (the browser
     /// and the remote agent both speak webrtc-rs' TURN client) converge on a
@@ -1715,9 +1715,9 @@ mod turn_tests {
     // work against live coturn, isolating the relay primitives from the
     // agent/client signaling (which is covered by the wire-lock + glue
     // tests). `#[ignore]` + env-gated so they never run in CI: provide
-    //   ROOMLER_TEST_TURN_HOST   = coturn.roomler.ai
-    //   ROOMLER_TEST_TURN_SECRET = coturn's static-auth-secret (from the
-    //                              k8s secret / ROOMLER__TURN__SHARED_SECRET)
+    //   MESHHARBOR_TEST_TURN_HOST   = coturn.roomler.ai
+    //   MESHHARBOR_TEST_TURN_SECRET = coturn's static-auth-secret (from the
+    //                              k8s secret / MESHHARBOR__TURN__SHARED_SECRET)
     // and run on a host with outbound UDP/3478 (UDP smoke) or TCP/443
     // (TURNS/TCP smoke) to coturn. The secret stays in the env — never in
     // source. Run e.g.:
@@ -1788,8 +1788,8 @@ mod turn_tests {
     fn live_coturn_creds(
         urls_for: impl Fn(&str) -> Vec<String>,
     ) -> Option<(Vec<String>, String, String)> {
-        let host = std::env::var("ROOMLER_TEST_TURN_HOST").ok()?;
-        let secret = std::env::var("ROOMLER_TEST_TURN_SECRET").ok()?;
+        let host = std::env::var("MESHHARBOR_TEST_TURN_HOST").ok()?;
+        let secret = std::env::var("MESHHARBOR_TEST_TURN_SECRET").ok()?;
         let cfg = meshharbor_remote_control::turn_creds::TurnConfig {
             workers: vec![],
             urls: urls_for(&host),
@@ -1801,12 +1801,12 @@ mod turn_tests {
     }
 
     /// LIVE Tier-2: UDP relay against the production coturn cluster.
-    /// `ROOMLER_TEST_TURN_UDP_PORT=443` points it at the udp/443 DNAT
+    /// `MESHHARBOR_TEST_TURN_UDP_PORT=443` points it at the udp/443 DNAT
     /// (the corp-escape tier the fleet + relay PoPs expose) instead of 3478.
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "hits live coturn; set ROOMLER_TEST_TURN_HOST + ROOMLER_TEST_TURN_SECRET"]
+    #[ignore = "hits live coturn; set MESHHARBOR_TEST_TURN_HOST + MESHHARBOR_TEST_TURN_SECRET"]
     async fn relay_against_real_coturn_udp() {
-        let port = std::env::var("ROOMLER_TEST_TURN_UDP_PORT").unwrap_or_else(|_| "3478".into());
+        let port = std::env::var("MESHHARBOR_TEST_TURN_UDP_PORT").unwrap_or_else(|_| "3478".into());
         let Some((urls, user, cred)) =
             live_coturn_creds(|h| vec![format!("turn:{h}:{port}?transport=udp")])
         else {
@@ -1819,12 +1819,12 @@ mod turn_tests {
     /// LIVE Tier-3: TURNS/TCP relay (TLS over TCP/443 — the UDP-blocked-net
     /// path). The url list has no `turn:…udp` entry, so
     /// `allocate_relay_from_ice` falls through to the TURNS/TCP tier.
-    /// `ROOMLER_TEST_TURN_TLS_PORT=5349` targets coturn's own TLS listener
+    /// `MESHHARBOR_TEST_TURN_TLS_PORT=5349` targets coturn's own TLS listener
     /// directly — isolates a PoP's nginx SNI hop from coturn itself.
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "hits live coturn over TLS/TCP; set ROOMLER_TEST_TURN_HOST + ROOMLER_TEST_TURN_SECRET"]
+    #[ignore = "hits live coturn over TLS/TCP; set MESHHARBOR_TEST_TURN_HOST + MESHHARBOR_TEST_TURN_SECRET"]
     async fn relay_against_real_coturn_turns_tcp() {
-        let port = std::env::var("ROOMLER_TEST_TURN_TLS_PORT").unwrap_or_else(|_| "443".into());
+        let port = std::env::var("MESHHARBOR_TEST_TURN_TLS_PORT").unwrap_or_else(|_| "443".into());
         let Some((urls, user, cred)) =
             live_coturn_creds(|h| vec![format!("turns:{h}:{port}?transport=tcp")])
         else {
@@ -1839,20 +1839,20 @@ mod turn_tests {
     /// intra-worker "relay-to-relay hairpin")? both-allocate needs A's
     /// allocation to relay a datagram to B's allocation; single-relay never does
     /// (one allocation + a raw dialer), which is why single-relay carries where
-    /// both-allocate deadlocks. Pins BOTH allocations to `ROOMLER_TEST_TURN_WORKER`
+    /// both-allocate deadlocks. Pins BOTH allocations to `MESHHARBOR_TEST_TURN_WORKER`
     /// (an off-host worker, else the sender hairpins on the local host DNAT) and
     /// sends RAW datagrams both ways — no QUIC/WG, so a failure is coturn's, not
     /// a handshake-timing artifact.
     ///
-    ///   ROOMLER_TEST_TURN_HOST=coturn.roomler.ai \
-    ///   ROOMLER_TEST_TURN_SECRET=<secret> ROOMLER_TEST_TURN_WORKER=5.9.157.221 \
+    ///   MESHHARBOR_TEST_TURN_HOST=coturn.roomler.ai \
+    ///   MESHHARBOR_TEST_TURN_SECRET=<secret> MESHHARBOR_TEST_TURN_WORKER=5.9.157.221 \
     ///   cargo test -p meshharbor-tunnel-core --features overlay-l3 \
     ///     --lib relay_to_relay_hairpin_against_real_coturn -- --ignored --nocapture
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "hits live coturn; set ROOMLER_TEST_TURN_HOST/SECRET + ROOMLER_TEST_TURN_WORKER"]
+    #[ignore = "hits live coturn; set MESHHARBOR_TEST_TURN_HOST/SECRET + MESHHARBOR_TEST_TURN_WORKER"]
     async fn relay_to_relay_hairpin_against_real_coturn() {
-        let Some(worker) = std::env::var("ROOMLER_TEST_TURN_WORKER").ok() else {
-            eprintln!("SKIP relay_to_relay_hairpin: ROOMLER_TEST_TURN_WORKER unset");
+        let Some(worker) = std::env::var("MESHHARBOR_TEST_TURN_WORKER").ok() else {
+            eprintln!("SKIP relay_to_relay_hairpin: MESHHARBOR_TEST_TURN_WORKER unset");
             return;
         };
         let Some((urls, user, cred)) =

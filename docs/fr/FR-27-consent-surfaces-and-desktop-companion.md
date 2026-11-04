@@ -219,7 +219,7 @@ lets the channel handlers go, stops the media pumps and removes the session
 from the input arbiter, so its next event is denied and anything it holds is
 released. No channel closes, so the browser has nothing to react to yet. Only
 the bare connection then waits, closed in a task of its own after a grace
-(`ROOMLERD_HOST_DISCONNECT_GRACE_MS`, default 1000 ms, capped at the close
+(`MESHHARBORD_HOST_DISCONNECT_GRACE_MS`, default 1000 ms, capped at the close
 budget; a failed send closes at once — nothing to wait for on a dead WS). The
 banner comes down immediately. ⚠️ The grace holds the transport, never the
 session's powers: the first cut kept the peer serving through it, which handed
@@ -262,7 +262,7 @@ Locked by `pre_p10_end_reason_rejects_host_disconnect_so_old_servers_drop_the_fr
 (the "new agent, old server" cell, the way the rc.53 `Goodbye` lock documents
 its own cell) and the hub's `host_disconnect_is_the_devices_claim_only`.
 
-**Kill switch.** `ROOMLERD_HOST_DISCONNECT_GRACE_MS=0` closes the peer at once
+**Kill switch.** `MESHHARBORD_HOST_DISCONNECT_GRACE_MS=0` closes the peer at once
 (the pre-P10 timing; the reason still goes out). The viewer needs none: an
 unknown or missing reason is terminal by the allowlist's default.
 
@@ -300,7 +300,7 @@ The root-only `/var/run/roomler` socket is **unchanged**. A per-user daemon star
 person socket: its own socket already is its person's. Windows (the pipe admits
 Interactive Users) and macOS (the per-user worker, FR-43) are unaffected.
 
-**Kill switch.** `ROOMLERD_PERSON_SOCKET=0` (or `false` / `off` / `no`) is the pre-P11
+**Kill switch.** `MESHHARBORD_PERSON_SOCKET=0` (or `false` / `off` / `no`) is the pre-P11
 behaviour.
 
 **Version matrix.** The companion and the CLI need no change: they already try the
@@ -321,9 +321,9 @@ in place of `Permission denied (os error 13)` for everything else.
 | 6 | Field test on the GROX fleet | n/a | **partly done, 2026-08-29 on 0.4.16** — the Windows native panel is verified end to end and the field log below lists exactly what is not. The test itself found 3 defects (#877), one of which froze the whole pre-0.4.16 Linux fleet |
 | 8 | Field fixes — release-asset ordering, the virtual-desktop guard, the CLI name, and phase 2d's `companion_version` | the ordering fix is server-only and additive; the x11 guard only ever DECLINES | **deployed** (#877; API `v20260829-0d5078f44e42`, agents ≥ 0.4.18) — the guard and the ordering were field-verified 2026-08-29; `companion_version` read on the live grid 2026-09-25: on the wire for all 21 devices, rendered only on a skew, and the fleet has none (AC10 half; see the log) |
 | 7 | Docs — `docs/remote-control.md` §11.2, `CLAUDE.md` known-issues | n/a | **done** — §11.2 rewritten (76bd6ef6) and the 2026-04-17 known-issue replaced rather than deleted; the resolution diagram + the floor's field line added to §11.2 on 2026-09-25; the docs criterion is in the list below |
-| 9 | The companion banner's Windows manners (macOS, Linux) — shown **without taking focus** (`orderFrontRegardless`; on macOS `show()` made it KEY, so the first click into the person's own window after every session start was lost), hides 2.5 s after the pointer leaves (after a 4 s first show), comes back after a 1.2 s rest at the top edge, stays while anything records, and a 2 px red frame round the screen for the session (macOS). Docs: `docs/desktop-companion.md` §12 | `ROOMLER_DESKTOP_BANNER_AUTOHIDE=0` (banner stays, as before), `ROOMLER_DESKTOP_FRAME=0` (no frame) | **field-verified on the Mac, 0.4.117, 2026-10-08** (field log) — every clause held; the reveal logic's 6 unit tests stand |
-| 10 | **The host's Disconnect ends the session for good** — the agent says it FIRST (`host_disconnect`, a new `EndReason`) and closes the peer after a grace; the hub forwards it to the controller as the device's word only; the viewer shows "The person at the device ended the session." with an explicit Reconnect and does not auto-reconnect; ordinary drops still do. Design + version matrix above. Docs: `docs/remote-control.md` §11.5, `docs/desktop-companion.md` §12 | `ROOMLERD_HOST_DISCONNECT_GRACE_MS=0` (close at once, the pre-P10 timing); the viewer needs none — an unknown reason is terminal | **shipped** — #1886 in agent **0.4.121** + `hosted-20261009-cac4761` (promoted 2026-10-09 07:42Z). RED on record: 0.4.119 + `hosted-20261005-d2dc0ef`, 2026-10-08 14:38:43Z. **GREEN on all three surfaces, 2026-10-09** (the field log). The Mac's banner: the reason at the viewer 72 ms after the click, 65 s held with no request, Reconnect explicit, an ordinary drop back in 6.3 s with no click. The Windows badge: told the server 1 ms after the click, 67 s held, Reconnect explicit, an ordinary drop back in 0.95 s. The Linux banner, where the companion reaches its daemon: 33 ms, 65.8 s held, 0.54 s Reconnect, 4.0 s drop. ⚠️ A Linux SYSTEM install's companion cannot reach its root daemon at all, so it has no banner and no Disconnect: #1911, which P11 fixes |
-| 11 | **The person at a Linux system install's screen reaches the daemon (#1911).** A socket in the person's own runtime dir, 0600 and theirs, admitting them or root (`SO_PEERCRED`), serving only the safety surface: status, the viewing sessions, their Disconnect, consent, and the recording state. It follows the active graphical session's user. The daemon's root-only socket is unchanged. Design above. Docs: `docs/desktop-companion.md` §12, `docs/security-baseline.md`, `docs/installation.md` | `ROOMLERD_PERSON_SOCKET=0` (the pre-P11 behaviour) | **field-verified on the 0.4.124 candidate** (2026-10-10, the log): RED on the released 0.4.123, then GREEN on the same vmtest system install after the upgrade, with the daemon's socket untouched and the companion left on 0.4.123. Ships in 0.4.124, whose tag waits on the operator's call on #1915, which rides with it |
+| 9 | The companion banner's Windows manners (macOS, Linux) — shown **without taking focus** (`orderFrontRegardless`; on macOS `show()` made it KEY, so the first click into the person's own window after every session start was lost), hides 2.5 s after the pointer leaves (after a 4 s first show), comes back after a 1.2 s rest at the top edge, stays while anything records, and a 2 px red frame round the screen for the session (macOS). Docs: `docs/desktop-companion.md` §12 | `MESHHARBOR_DESKTOP_BANNER_AUTOHIDE=0` (banner stays, as before), `MESHHARBOR_DESKTOP_FRAME=0` (no frame) | **field-verified on the Mac, 0.4.117, 2026-10-08** (field log) — every clause held; the reveal logic's 6 unit tests stand |
+| 10 | **The host's Disconnect ends the session for good** — the agent says it FIRST (`host_disconnect`, a new `EndReason`) and closes the peer after a grace; the hub forwards it to the controller as the device's word only; the viewer shows "The person at the device ended the session." with an explicit Reconnect and does not auto-reconnect; ordinary drops still do. Design + version matrix above. Docs: `docs/remote-control.md` §11.5, `docs/desktop-companion.md` §12 | `MESHHARBORD_HOST_DISCONNECT_GRACE_MS=0` (close at once, the pre-P10 timing); the viewer needs none — an unknown reason is terminal | **shipped** — #1886 in agent **0.4.121** + `hosted-20261009-cac4761` (promoted 2026-10-09 07:42Z). RED on record: 0.4.119 + `hosted-20261005-d2dc0ef`, 2026-10-08 14:38:43Z. **GREEN on all three surfaces, 2026-10-09** (the field log). The Mac's banner: the reason at the viewer 72 ms after the click, 65 s held with no request, Reconnect explicit, an ordinary drop back in 6.3 s with no click. The Windows badge: told the server 1 ms after the click, 67 s held, Reconnect explicit, an ordinary drop back in 0.95 s. The Linux banner, where the companion reaches its daemon: 33 ms, 65.8 s held, 0.54 s Reconnect, 4.0 s drop. ⚠️ A Linux SYSTEM install's companion cannot reach its root daemon at all, so it has no banner and no Disconnect: #1911, which P11 fixes |
+| 11 | **The person at a Linux system install's screen reaches the daemon (#1911).** A socket in the person's own runtime dir, 0600 and theirs, admitting them or root (`SO_PEERCRED`), serving only the safety surface: status, the viewing sessions, their Disconnect, consent, and the recording state. It follows the active graphical session's user. The daemon's root-only socket is unchanged. Design above. Docs: `docs/desktop-companion.md` §12, `docs/security-baseline.md`, `docs/installation.md` | `MESHHARBORD_PERSON_SOCKET=0` (the pre-P11 behaviour) | **field-verified on the 0.4.124 candidate** (2026-10-10, the log): RED on the released 0.4.123, then GREEN on the same vmtest system install after the upgrade, with the daemon's socket untouched and the companion left on 0.4.123. Ships in 0.4.124, whose tag waits on the operator's call on #1915, which rides with it |
 
 ## Acceptance criteria
 
@@ -517,7 +517,7 @@ pre-0.4.16 Linux agent, because their picker takes the FIRST `.deb` for their ar
      the one those hosts set (read as a fallback by indicator/x11.rs), and the
      retired binary name is the defect being described — rewriting either
      would make the log describe something that did not happen. -->
-`ROOMLER_AGENT_VIRTUAL_DESKTOP=1` host wrongly counted as a consent surface, and that the one
+`MESHHARBOR_AGENT_VIRTUAL_DESKTOP=1` host wrongly counted as a consent surface, and that the one
 line a headless operator gets still named the FR-21-retired `roomler-agent`.
 
 ⚠️ **Not verified, and why**

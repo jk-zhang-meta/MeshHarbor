@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 //! FR-84 D6 — registering the desktop companion to start at login, on the
-//! platforms where Roomler owns that registration.
+//! platforms where MeshHarbor owns that registration.
 //!
 //! | platform | mechanism | who writes it | a person's opt-out |
 //! |---|---|---|---|
-//! | Windows perMachine | `HKLM\…\Run\Roomler Desktop` | the elevated `service install --as-service` (MSI CA), self-healed by the SCM host at every start | the companion's per-user state; an `--autostart` launch exits |
-//! | Windows perUser | `HKCU\…\Run\Roomler Desktop` | the per-user `service install` (MSI CA) and the companion itself | the companion deletes the value and records the choice |
+//! | Windows perMachine | `HKLM\…\Run\MeshHarbor Desktop` | the elevated `service install --as-service` (MSI CA), self-healed by the SCM host at every start | the companion's per-user state; an `--autostart` launch exits |
+//! | Windows perUser | `HKCU\…\Run\MeshHarbor Desktop` | the per-user `service install` (MSI CA) and the companion itself | the companion deletes the value and records the choice |
 //! | Linux (.deb) | `/etc/xdg/autostart/meshharbor-desktop.desktop` | the package | `~/.config/autostart/meshharbor-desktop.desktop` with `Hidden=true` |
 //! | macOS (.pkg) | the `fans.itachi.meshharbor.desktop` LaunchAgent (`RunAtLoad`) | the package's postinstall | macOS Login Items — not ours to write |
 //!
@@ -30,7 +30,7 @@ pub const WINDOWS_RUN_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion
 /// The value name under [`WINDOWS_RUN_SUBKEY`]. A compatibility surface:
 /// renaming it strands every existing registration (two entries, then one
 /// that nothing removes).
-pub const WINDOWS_RUN_VALUE_NAME: &str = "Roomler Desktop";
+pub const WINDOWS_RUN_VALUE_NAME: &str = "MeshHarbor Desktop";
 
 /// The companion's desktop-entry file name — the system autostart entry and
 /// the per-user override MUST share it, since XDG autostart matches the two
@@ -171,7 +171,7 @@ pub fn xdg_entry_hidden(content: &str) -> bool {
 }
 
 /// A per-user autostart entry for the companion at `exe`, switched off
-/// (`Hidden=true`) or on. Marked `X-Roomler-Managed=true` so the companion
+/// (`Hidden=true`) or on. Marked `X-MeshHarbor-Managed=true` so the companion
 /// knows the file is its own to rewrite or delete.
 pub fn xdg_user_entry(exe: &str, hidden: bool) -> String {
     // The Exec key quotes an argument with a space in double quotes.
@@ -183,14 +183,14 @@ pub fn xdg_user_entry(exe: &str, hidden: bool) -> String {
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
-         Name=Roomler\n\
-         Comment=Start the Roomler companion at login\n\
+         Name=MeshHarbor\n\
+         Comment=Start the MeshHarbor companion at login\n\
          Exec={exec} {AUTOSTART_ARG}\n\
          Icon=meshharbor-desktop\n\
          Terminal=false\n\
          X-GNOME-Autostart-Phase=Applications\n\
          X-GNOME-Autostart-Delay=5\n\
-         X-Roomler-Managed=true\n\
+         X-MeshHarbor-Managed=true\n\
          Hidden={hidden}\n"
     )
 }
@@ -335,13 +335,13 @@ pub mod registry {
         use windows_sys::Win32::System::Registry::RegDeleteTreeW;
         // Refuse anything that is not a scratch key: this must never be able
         // to take a real key with it.
-        assert!(subkey.starts_with(r"Software\RoomlerTest\"), "{subkey}");
+        assert!(subkey.starts_with(r"Software\MeshHarborTest\"), "{subkey}");
         let k = wide(subkey);
         // SAFETY: NUL-terminated wide buffer; absent key is a no-op error.
         unsafe { RegDeleteTreeW(hive.hkey(), k.as_ptr()) };
         // And the (empty) scratch parent — `RegDeleteKeyW` refuses a key that
         // still has subkeys, so a concurrent test's key is never touched.
-        let parent = wide(r"Software\RoomlerTest");
+        let parent = wide(r"Software\MeshHarborTest");
         // SAFETY: as above.
         unsafe {
             windows_sys::Win32::System::Registry::RegDeleteKeyW(hive.hkey(), parent.as_ptr())
@@ -472,11 +472,11 @@ mod tests {
     #[test]
     fn hidden_is_read_from_the_desktop_entry_group_only() {
         assert!(xdg_entry_hidden(
-            "[Desktop Entry]\nName=Roomler\nHidden=true\n"
+            "[Desktop Entry]\nName=MeshHarbor\nHidden=true\n"
         ));
         assert!(xdg_entry_hidden("[Desktop Entry]\nHidden = True\n"));
         assert!(!xdg_entry_hidden("[Desktop Entry]\nHidden=false\n"));
-        assert!(!xdg_entry_hidden("[Desktop Entry]\nName=Roomler\n"));
+        assert!(!xdg_entry_hidden("[Desktop Entry]\nName=MeshHarbor\n"));
         assert!(
             !xdg_entry_hidden("[Desktop Entry]\nName=R\n[Desktop Action x]\nHidden=true\n"),
             "a key in another group does not hide the entry"
@@ -492,7 +492,7 @@ mod tests {
             off.contains("Exec=/usr/bin/meshharbor-desktop --autostart\n"),
             "{off}"
         );
-        assert!(off.contains("X-Roomler-Managed=true\n"), "{off}");
+        assert!(off.contains("X-MeshHarbor-Managed=true\n"), "{off}");
         assert!(xdg_entry_hidden(&off));
         let on = xdg_user_entry("/usr/bin/meshharbor-desktop", false);
         assert!(!xdg_entry_hidden(&on));
@@ -510,7 +510,7 @@ mod tests {
     fn registry_sync_round_trip_on_a_scratch_key() {
         use registry::{Hive, delete_tree, read_value, sync_value};
         let scratch = format!(
-            r"Software\RoomlerTest\companion-autostart-{}-{}",
+            r"Software\MeshHarborTest\companion-autostart-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

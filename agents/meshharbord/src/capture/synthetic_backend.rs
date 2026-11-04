@@ -19,7 +19,7 @@
 //!   which inside a Pod means `Xvfb :99` running on the same Pod.
 //!   `synthetic` just produces bytes — no display dependency at all.
 //!
-//! Selected by setting `ROOMLERD_SYNTHETIC_FRAMES=1` at runtime
+//! Selected by setting `MESHHARBORD_SYNTHETIC_FRAMES=1` at runtime
 //! AND building with the `synthetic-frame-source` feature. Production
 //! agents (`full`, `full-hw` feature sets) never opt in.
 //!
@@ -33,9 +33,9 @@
 //!
 //! | Env | Effect |
 //! |---|---|
-//! | `ROOMLERD_SYNTHETIC_SIZE=WxH` | frame size (even, 64×64 … 3840×2160); default 320×240 |
-//! | `ROOMLERD_BENCH=1` | bench mode: the fps clamp rises from 60 to 240, and the gate below is honoured |
-//! | `ROOMLERD_SYNTHETIC_GATE_MS=N` | bench only: hold each frame N ms after it is stamped, a planted capture-stage delay. The L0 test's negative control: a harness that cannot see it is not measuring latency |
+//! | `MESHHARBORD_SYNTHETIC_SIZE=WxH` | frame size (even, 64×64 … 3840×2160); default 320×240 |
+//! | `MESHHARBORD_BENCH=1` | bench mode: the fps clamp rises from 60 to 240, and the gate below is honoured |
+//! | `MESHHARBORD_SYNTHETIC_GATE_MS=N` | bench only: hold each frame N ms after it is stamped, a planted capture-stage delay. The L0 test's negative control: a harness that cannot see it is not measuring latency |
 //!
 //! FR-98 C1: [`set_test_compositor`] (a test hook, bench mode only) makes
 //! the source emulate an event-driven backend, frames landing on their own
@@ -62,7 +62,7 @@ pub const DEFAULT_FPS: u32 = 15;
 const MAX_FPS: u32 = 60;
 const MAX_FPS_BENCH: u32 = 240;
 
-/// The largest synthetic frame (`ROOMLERD_SYNTHETIC_SIZE`).
+/// The largest synthetic frame (`MESHHARBORD_SYNTHETIC_SIZE`).
 const MAX_W: u32 = 3840;
 const MAX_H: u32 = 2160;
 const MIN_SIDE: u32 = 64;
@@ -265,7 +265,7 @@ static TEST_GATE_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 
 /// Set (or clear, with zero) the planted capture-stage delay every NEW
 /// synthetic session uses. Honoured in bench mode only, like
-/// `ROOMLERD_SYNTHETIC_GATE_MS`, which it overrides.
+/// `MESHHARBORD_SYNTHETIC_GATE_MS`, which it overrides.
 pub fn set_test_gate(gate: Duration) {
     TEST_GATE_US.store(
         gate.as_micros().min(5_000_000) as u64,
@@ -273,7 +273,7 @@ pub fn set_test_gate(gate: Duration) {
     );
 }
 
-/// `ROOMLERD_BENCH` — truthy the way every other agent switch is.
+/// `MESHHARBORD_BENCH` — truthy the way every other agent switch is.
 fn bench_enabled() -> bool {
     matches!(
         node_env("BENCH").as_deref().map(str::trim),
@@ -480,13 +480,13 @@ impl ScreenCapture for SyntheticCapture {
 
 /// Construct the synthetic capture honouring the same `target_fps` +
 /// `_downscale` plumbing as scrap_backend / wgc_backend. Downscale is
-/// ignored — the synthetic frames are sized by `ROOMLERD_SYNTHETIC_SIZE`.
+/// ignored — the synthetic frames are sized by `MESHHARBORD_SYNTHETIC_SIZE`.
 pub fn primary(target_fps: u32, _downscale: DownscalePolicy) -> SyntheticCapture {
     SyntheticCapture::new(target_fps)
 }
 
 /// FR-16 L4 — the frame marker, now `capture::bench_marker` so release builds
-/// (`roomlerd probe-target`) can paint it too. Re-exported under its old path.
+/// (`meshharbord probe-target`) can paint it too. Re-exported under its old path.
 pub use super::bench_marker as marker;
 
 /// Is this process a bench target: the synthetic source selected AND bench
@@ -501,7 +501,7 @@ pub fn bench_active() -> bool {
 /// paints the last `N` it saw into the bottom-right [`marker`] of every frame
 /// that follows, and the viewer times send → first decoded frame carrying
 /// `N`. That is input to photon through the real pipeline, minus only the
-/// host's own input stack, which `roomlerd probe-target` covers.
+/// host's own input stack, which `meshharbord probe-target` covers.
 ///
 /// A probe never reaches an injector. Outside bench mode it is consumed and
 /// dropped.

@@ -4,7 +4,7 @@ license = "MPL-2.0"
 publish = false
 version.workspace = true
 edition.workspace = true
-description = "Roomler AI tunnel core — shared transport, signalling, ACL, and forwarding pump for the roomler CLI client and the agent's tunnel service."
+description = "MeshHarbor tunnel core — shared transport, signalling, ACL, and forwarding pump for the meshharbor CLI client and the agent's tunnel service."
 
 [lib]
 name = "tunnel_core"
@@ -162,7 +162,7 @@ smoltcp = { version = "0.13", optional = true, default-features = false, feature
     "socket-udp",
     "socket-icmp",
     # Auto-answer ICMP echo requests to our own overlay IP at the iface layer, so
-    # a netstack host is `roomler ping`-able like a normal host (no app socket
+    # a netstack host is `meshharbor ping`-able like a normal host (no app socket
     # needed to reply). The `ping` verb itself is `socket-icmp` (above).
     "auto-icmp-echo-reply",
     # The congestion controller the netstack selects (the vendored smoltcp's
@@ -208,7 +208,7 @@ system-configuration-sys = "0.6"
 core-foundation = "0.9"
 
 # FR-110: `SO_RCVBUFFORCE` / `SO_SNDBUFFORCE` for the carrier sockets (socket2
-# has no FORCE options). Already in the lock through roomlerd and agent-core, so
+# has no FORCE options). Already in the lock through meshharbord and agent-core, so
 # no new crate.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"

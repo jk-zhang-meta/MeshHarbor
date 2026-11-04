@@ -111,7 +111,7 @@ locked by test).
 Handler in the WS loop that received the order (`signaling.rs`, next to `ConfigPush`):
 
 1. kill switch `overlay_key_rotation` (tribool, default on; config-surface key + env
-   `ROOMLERD_OVERLAY_KEY_ROTATION`) — off ⇒ report `refused: disabled`;
+   `MESHHARBORD_OVERLAY_KEY_ROTATION`) — off ⇒ report `refused: disabled`;
 2. rate limit: an order < 60 s after the last rotation on this org ⇒ `refused: rate_limited`;
 3. `WgKeypair::generate()` (same mint as enrollment); take the daemon write lock,
    `config::load(path)`, set `overlay_wg_secret_key` on the primary scalar or on the `[[orgs]]`

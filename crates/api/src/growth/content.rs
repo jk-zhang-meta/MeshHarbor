@@ -405,7 +405,7 @@ pub async fn compute(
                 NotMeasured::now("no final Search Console day pulled yet")
             } else {
                 NotMeasured::now(
-                    "no Search Console key configured (ROOMLER__GROWTH__SEARCH_CONSOLE_KEY)",
+                    "no Search Console key configured (MESHHARBOR__GROWTH__SEARCH_CONSOLE_KEY)",
                 )
             }),
             BTreeMap::new(),

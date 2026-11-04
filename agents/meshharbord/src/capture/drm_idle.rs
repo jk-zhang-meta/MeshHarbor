@@ -73,7 +73,7 @@ pub const IN_PLACE_ROW_GAP: u32 = 8;
 /// How the DRM worker may skip a frame nothing changed in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdleSkip {
-    /// Every frame is read: the kill switch (`ROOMLERD_DRM_IDLE_SKIP=0`), the
+    /// Every frame is read: the kill switch (`MESHHARBORD_DRM_IDLE_SKIP=0`), the
     /// console, or an X11 seat with `x11_auto_system = false` (0.4.143 read
     /// every frame there, and that switch gives 0.4.143 back).
     Off,

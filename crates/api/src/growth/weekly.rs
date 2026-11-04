@@ -442,7 +442,7 @@ pub async fn compute(
         Measured::Value(alerts::window_section(state, start_ms, end_ms).await?)
     } else {
         Measured::NotMeasured(NotMeasured::now(
-            "alerts are off on this server (ROOMLER__GROWTH__ALERTS)",
+            "alerts are off on this server (MESHHARBOR__GROWTH__ALERTS)",
         ))
     };
     let quality = quality::compute(state, set, monday, sunday, include_internal, now).await?;

@@ -5,7 +5,7 @@
 //! layer).
 //!
 //! Menu items:
-//!   - Open Roomler       — show the main window (Overview view)
+//!   - Open MeshHarbor       — show the main window (Overview view)
 //!   - Start/Stop recording — FR-85: record this screen through the device
 //!                           service; the label and the tray tooltip follow
 //!                           the recorder (a light poll, every 3 s), and
@@ -39,7 +39,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let open_status = MenuItem::with_id(app, "open_status", "Device status", true, None::<&str>)?;
     // S7 — the embedded web-app window (WebView2 on Windows; browser
     // elsewhere). Distinct from the LOCAL status window above.
-    let open_web = MenuItem::with_id(app, "open_web", "Open Roomler…", true, None::<&str>)?;
+    let open_web = MenuItem::with_id(app, "open_web", "Open MeshHarbor…", true, None::<&str>)?;
     // FR-85 — disabled until the service says it has a recorder.
     let record = MenuItem::with_id(app, RECORD_ITEM_ID, "Start recording", false, None::<&str>)?;
     // FR-92 — disabled until the service says what keep busy is doing.
@@ -78,7 +78,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     let on_menu = |app: &AppHandle<R>, event: tauri::menu::MenuEvent| match event.id.as_ref() {
         "open_status" => show_window(app, "/overview"),
-        "open_web" => open_roomler_web(app),
+        "open_web" => open_meshharbor_web(app),
         RECORD_ITEM_ID => toggle_recording(app),
         KEEP_BUSY_ITEM_ID => toggle_keep_busy(app),
         "onboarding" => show_window(app, "/onboarding"),
@@ -140,7 +140,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         "no config-declared tray icon found — building one with the embedded fallback image"
     );
     let mut builder = TrayIconBuilder::with_id(FALLBACK_TRAY_ID)
-        .tooltip("Roomler")
+        .tooltip("MeshHarbor")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(on_menu)
@@ -164,7 +164,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
 /// The id Tauri gives the tray it creates from `app.trayIcon`. Set explicitly
 /// in `tauri.conf.json` so this lookup does not depend on Tauri's default.
-const CONFIG_TRAY_ID: &str = "roomler";
+const CONFIG_TRAY_ID: &str = "meshharbor";
 /// The fallback tray's id (see `install`).
 const FALLBACK_TRAY_ID: &str = "meshharbor-desktop-tray";
 
@@ -179,7 +179,7 @@ const KEEP_BUSY_ITEM_ID: &str = "keep_busy_toggle";
 /// - Off where it can run: a Start (P10, the person's own "on").
 /// - Off where it cannot (the owner switched it off, the org denies it, no
 ///   permission, an unsupported desktop): disabled. The agent's reason is in
-///   `roomler keep-busy status`.
+///   `meshharbor keep-busy status`.
 /// - `None` (no service answered yet, or one older than FR-92): disabled.
 fn keep_busy_labels(state: Option<&meshharbor_localapi::KeepBusyInfo>) -> (String, bool) {
     match state {
@@ -416,19 +416,19 @@ fn record_labels(state: Option<&meshharbor_localapi::RecordingState>) -> (String
             let secs = s.duration_ms / 1000;
             let t = format!("{}:{:02}", secs / 60, secs % 60);
             let tooltip = match s.remote_controller.as_deref() {
-                Some(who) => format!("Roomler — {who} is recording, {t}"),
-                None => format!("Roomler — recording {t}"),
+                Some(who) => format!("MeshHarbor — {who} is recording, {t}"),
+                None => format!("MeshHarbor — recording {t}"),
             };
             (format!("Stop recording ({t})"), true, tooltip)
         }
         // Start only where the service says a recording can start at all.
-        Some(s) => ("Start recording".into(), s.available, "Roomler".into()),
-        None => ("Start recording".into(), false, "Roomler".into()),
+        Some(s) => ("Start recording".into(), s.available, "MeshHarbor".into()),
+        None => ("Start recording".into(), false, "MeshHarbor".into()),
     }
 }
 
 /// Keep the menu item, the tooltip and the icon in step with the recorder,
-/// started by this item, the Recordings view, `roomler record` or a
+/// started by this item, the Recordings view, `meshharbor record` or a
 /// controller alike. One LocalAPI request every 3 s — the listener keeps a
 /// pool of instances (FR-84 D1).
 fn spawn_recording_watch<R: Runtime>(app: AppHandle<R>, item: MenuItem<R>) {
@@ -526,7 +526,7 @@ fn toggle_recording<R: Runtime>(app: &AppHandle<R>) {
             if let Some(window) = app.get_webview_window("main") {
                 let text = serde_json::to_string(&message).unwrap_or_else(|_| "\"\"".into());
                 let _ = window.eval(format!(
-                    "window.RoomlerRecordings && window.RoomlerRecordings.showError({text})"
+                    "window.MeshHarborRecordings && window.MeshHarborRecordings.showError({text})"
                 ));
             }
         }
@@ -548,18 +548,18 @@ fn show_window<R: Runtime>(app: &AppHandle<R>, path: &str) {
 /// S7 — resolve the server origin OFF the menu thread (config load +
 /// service-flavour probe spawn), then open the web window ON the main
 /// thread (window creation is main-thread-only on Windows).
-fn open_roomler_web<R: Runtime>(app: &AppHandle<R>) {
+fn open_meshharbor_web<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || match crate::commands::server_origin_blocking() {
         Ok(url) => {
             let app2 = app.clone();
             let _ = app.run_on_main_thread(move || {
                 if let Err(e) = crate::commands::open_web_or_browser(&app2, &url) {
-                    tracing::warn!(%e, "open roomler web failed");
+                    tracing::warn!(%e, "open meshharbor web failed");
                 }
             });
         }
-        Err(e) => tracing::warn!(%e, "open roomler web: no server origin"),
+        Err(e) => tracing::warn!(%e, "open meshharbor web: no server origin"),
     });
 }
 
@@ -571,7 +571,7 @@ fn check_updates<R: Runtime>(app: &AppHandle<R>) {
             if let Some(window) = app.get_webview_window("main") {
                 let payload = serde_json::json!({ "check": stdout }).to_string();
                 let _ = window.eval(format!(
-                    "window.__roomler_check_update_result = {payload}; window.dispatchEvent(new Event('meshharbor-update-check'))"
+                    "window.__meshharbor_check_update_result = {payload}; window.dispatchEvent(new Event('meshharbor-update-check'))"
                 ));
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -662,7 +662,7 @@ mod tests {
         };
         assert_eq!(
             record_labels(Some(&idle)),
-            ("Start recording".into(), true, "Roomler".into())
+            ("Start recording".into(), true, "MeshHarbor".into())
         );
         // A service that cannot record here (no recorder, or SYSTEM/root
         // until P1e) answers idle — and the item stays greyed out.
@@ -679,12 +679,12 @@ mod tests {
             (
                 "Stop recording (1:23)".into(),
                 true,
-                "Roomler — recording 1:23".into()
+                "MeshHarbor — recording 1:23".into()
             )
         );
         assert_eq!(
             record_labels(None),
-            ("Start recording".into(), false, "Roomler".into())
+            ("Start recording".into(), false, "MeshHarbor".into())
         );
         // A controller's recording names them: the person at the device sees
         // who is recording, not just that something is.
@@ -700,7 +700,7 @@ mod tests {
             (
                 "Stop recording (0:05)".into(),
                 true,
-                "Roomler — Tester is recording, 0:05".into()
+                "MeshHarbor — Tester is recording, 0:05".into()
             )
         );
     }

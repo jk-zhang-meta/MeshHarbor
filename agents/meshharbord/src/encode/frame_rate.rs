@@ -525,7 +525,7 @@ pub fn fps_denied(list: &[(String, u32)], encoder: &str, fps: u32) -> bool {
         .any(|(name, f)| *f == fps && (name == "*" || name == encoder))
 }
 
-/// `ROOMLERD_FPS_DENY`, read once per pump (FR-70: no knob read in the frame
+/// `MESHHARBORD_FPS_DENY`, read once per pump (FR-70: no knob read in the frame
 /// path).
 pub fn fps_deny_from_env() -> Vec<(String, u32)> {
     tunnel_core::env::node_env("FPS_DENY")

@@ -159,7 +159,7 @@ impl Clipboard {
         let (tx, rx) = std_mpsc::channel::<ClipboardCmd>();
 
         thread::Builder::new()
-            .name("roomlerd-clipboard".into())
+            .name("meshharbord-clipboard".into())
             .spawn(move || {
                 let mut cb = match arboard::Clipboard::new() {
                     Ok(c) => {
@@ -627,7 +627,7 @@ fn gate_tick(gate: &mut Option<x11_gate::Gate>) -> Option<u32> {
 /// - A connection that breaks drops the gate, and the watcher falls back to
 ///   reading text every tick and leaving images alone.
 ///
-/// Kill switch `ROOMLERD_CLIPBOARD_X11_WATCH=0`: no gate, as before P3e-3a.
+/// Kill switch `MESHHARBORD_CLIPBOARD_X11_WATCH=0`: no gate, as before P3e-3a.
 #[cfg(target_os = "linux")]
 pub(crate) mod x11_gate {
     use std::sync::OnceLock;
@@ -638,7 +638,7 @@ pub(crate) mod x11_gate {
     use x11rb::protocol::xproto::{self, ConnectionExt as _};
     use x11rb::rust_connection::RustConnection;
 
-    /// FR-97 P3e-3a — kill switch `ROOMLERD_CLIPBOARD_X11_WATCH=0`.
+    /// FR-97 P3e-3a — kill switch `MESHHARBORD_CLIPBOARD_X11_WATCH=0`.
     pub fn enabled() -> bool {
         tunnel_core::env::flag("CLIPBOARD_X11_WATCH", true)
     }
@@ -1796,8 +1796,8 @@ pub(crate) fn split_into_chunks(text: &str) -> Vec<&str> {
 }
 
 /// FR-97 P3e-3a — the change gate against a real X server (CI's Xvfb step,
-/// `ROOMLERD_TEST_X11=1`): another client takes CLIPBOARD, as a copy does, and
-/// the gate counts it and then holds. Only under `ROOMLERD_TEST_X11=1`: taking
+/// `MESHHARBORD_TEST_X11=1`): another client takes CLIPBOARD, as a copy does, and
+/// the gate counts it and then holds. Only under `MESHHARBORD_TEST_X11=1`: taking
 /// CLIPBOARD empties the clipboard of whoever is at that display.
 #[cfg(all(test, target_os = "linux"))]
 mod x11_gate_tests {
@@ -1808,11 +1808,11 @@ mod x11_gate_tests {
 
     #[test]
     fn x11_real_the_gate_counts_a_copy() {
-        if std::env::var("ROOMLERD_TEST_X11").as_deref() != Ok("1") {
-            eprintln!("ROOMLERD_TEST_X11 unset — skipping (the Xvfb lane sets it)");
+        if std::env::var("MESHHARBORD_TEST_X11").as_deref() != Ok("1") {
+            eprintln!("MESHHARBORD_TEST_X11 unset — skipping (the Xvfb lane sets it)");
             return;
         }
-        let mut gate = Gate::connect().expect("ROOMLERD_TEST_X11=1 but the gate did not open");
+        let mut gate = Gate::connect().expect("MESHHARBORD_TEST_X11=1 but the gate did not open");
         let before = gate.seq().expect("a counter");
         let (conn, screen) = x11rb::connect(None).expect("the same X server");
         let root = conn.setup().roots[screen].root;
@@ -2562,7 +2562,7 @@ mod tests {
             eprintln!("arboard not available in this env — skipping");
             return;
         };
-        let payload = "roomler clipboard smoke test";
+        let payload = "meshharbor clipboard smoke test";
         cb.write(payload.to_string()).await.unwrap();
         // Soft read — another process may have already clobbered the
         // clipboard. Only enforce content equality when the read

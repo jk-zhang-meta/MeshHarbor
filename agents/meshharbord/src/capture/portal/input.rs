@@ -408,7 +408,7 @@ impl InputContext {
             super::PORTAL_PATH,
             super::REMOTE_DESKTOP_IFACE,
         )?;
-        // FR-93 P4b — kill switch `ROOMLERD_PORTAL_KDE_SCROLL_FIX=0`, should
+        // FR-93 P4b — kill switch `MESHHARBORD_PORTAL_KDE_SCROLL_FIX=0`, should
         // KDE's backend ever stop negating.
         let quirks = BackendQuirks {
             negated_smooth_y: tunnel_core::env::flag("PORTAL_KDE_SCROLL_FIX", true)
@@ -538,10 +538,10 @@ pub fn run_pump(ctx: InputContext, stdin: std::io::Stdin) {
     if ctx.quirks.negated_smooth_y {
         eprintln!(
             "portal-helper: KDE's portal backend negates the vertical smooth scroll; negating it \
-             first (ROOMLERD_PORTAL_KDE_SCROLL_FIX=0 stops this)"
+             first (MESHHARBORD_PORTAL_KDE_SCROLL_FIX=0 stops this)"
         );
     }
-    // FR-93 P4b — `ROOMLERD_PORTAL_INPUT_TRACE=1`: every event and every call
+    // FR-93 P4b — `MESHHARBORD_PORTAL_INPUT_TRACE=1`: every event and every call
     // made for it, on the wall clock, so a lab can line what was SENT up against
     // what a probe RECEIVED. Off by default: a keystroke log does not belong in
     // a journal.
@@ -929,7 +929,7 @@ mod tests {
     fn portal_calls_wait_for_their_replies() {
         let portal = Target::Portal {
             session: zbus::zvariant::OwnedObjectPath::try_from(
-                "/org/freedesktop/portal/desktop/session/1_42/roomler",
+                "/org/freedesktop/portal/desktop/session/1_42/meshharbor",
             )
             .unwrap(),
             node_id: 42,

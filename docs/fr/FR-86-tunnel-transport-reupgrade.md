@@ -92,7 +92,7 @@ sequenceDiagram
   `active()` reaches 0 it is closed (terminate → the exit frees its peer). **No maximum drain time** — an RDP
   connection that lives for hours keeps its old carrier for hours; cutting it would break the goal.
 - **Failure:** a candidate that fails is closed (terminate), the backoff grows, the active carrier is untouched.
-- **Kill switch:** `ROOMLERD_TUNNEL_REUPGRADE=0` (and the config key `tunnel_reupgrade = false`) — no probes; the
+- **Kill switch:** `MESHHARBORD_TUNNEL_REUPGRADE=0` (and the config key `tunnel_reupgrade = false`) — no probes; the
   flow behaves exactly as after P1.
 
 ### Compatibility
@@ -117,7 +117,7 @@ sequenceDiagram
 |---|---|---|---|
 | P0 | spec + ledger row + issue | — | **merged** #1770 `8408efccc` |
 | P1 | flow-owned listener, `Carrier` split, held connections during reconnect; tests; docs | revert (pure refactor, no wire change) | **merged** #1771 `ebab24eeb`: `establish_tunnel_session` + `Carrier` (`crates/tunnel-core/src/driver.rs`), `FlowListener` + `HoldPolicy` (`crates/tunnel-core/src/flow_listener.rs`, ≤ 64 held, ≤ 30 s), the daemon flow binds once (`agents/meshharbord/src/tunnel/client_mgr.rs` `run_flow_cycle`); 9 new tests, 5 negative controls shown red; `docs/tunnels.md` §"The flow owns the listener" |
-| P2 | re-upgrade probe, promotion, drain; tests; docs | `ROOMLERD_TUNNEL_REUPGRADE=0` / `tunnel_reupgrade = false` (the key applies on the next daemon restart) | **merged** #1773 `31c7e813a`: probe schedule (`ReupgradeBackoff`/`ProbeTimer`), ranking (`better_transports`/`below_best`), `spawn_candidate`/`establish_candidate` (background probe into a throwaway `FlowLive`), promotion + drain (`run_flow_cycle` serving loop, `drain_carrier`), `Carrier::drained` (`crates/tunnel-core/src/driver.rs`), the `ROOMLERD_TUNNEL_REUPGRADE` kill switch + `tunnel_reupgrade` config key, the `--start-transport` test lever (LocalAPI `CreateForward.start_transport`); 11 new tests, 6 negative controls shown red; `docs/tunnels.md` §"Re-upgrade: probe → promote → drain" |
+| P2 | re-upgrade probe, promotion, drain; tests; docs | `MESHHARBORD_TUNNEL_REUPGRADE=0` / `tunnel_reupgrade = false` (the key applies on the next daemon restart) | **merged** #1773 `31c7e813a`: probe schedule (`ReupgradeBackoff`/`ProbeTimer`), ranking (`better_transports`/`below_best`), `spawn_candidate`/`establish_candidate` (background probe into a throwaway `FlowLive`), promotion + drain (`run_flow_cycle` serving loop, `drain_carrier`), `Carrier::drained` (`crates/tunnel-core/src/driver.rs`), the `MESHHARBORD_TUNNEL_REUPGRADE` kill switch + `tunnel_reupgrade` config key, the `--start-transport` test lever (LocalAPI `CreateForward.start_transport`); 11 new tests, 6 negative controls shown red; `docs/tunnels.md` §"Re-upgrade: probe → promote → drain" |
 | P3 | agent release; field verification (AC7, AC8); close | as P2 | **shipped** `agent-v0.4.114` → `a0c027b23` (#1774), published 2026-09-28 22:58:55Z; **field-verified** 2026-09-28/29, see the log |
 
 ## Acceptance criteria
@@ -152,7 +152,7 @@ sequenceDiagram
   log shows `agent flow ended`, then `tunnel peer's client is gone — reaping the session (#1754)` ~60 ms later,
   then `rc:tunnel.terminate — closing peer` for the same session. The three idle routes' old carriers closed the
   moment they were promoted, since they had 0 connections.)*
-- [x] **AC6** — Kill switch: with `ROOMLERD_TUNNEL_REUPGRADE=0` no probe is ever opened. *(P2: `reupgrade_active`
+- [x] **AC6** — Kill switch: with `MESHHARBORD_TUNNEL_REUPGRADE=0` no probe is ever opened. *(P2: `reupgrade_active`
   + `reupgrade_enabled` gate the whole probe path — `reupgrade_gate_respects_pinned_and_kill_switch`,
   `kill_switch_reads_the_env`; off ⇒ the serving phase is exactly P1's `active.dead().await`. ⚠️ **Verified by
   tests + NCs only:** the `tunnel_reupgrade` config key applies on the next daemon **restart** (not live; an

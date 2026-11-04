@@ -9,7 +9,7 @@
 //! `POST /api/tenant/{tenant_id}/agent/{agent_id}/logs` (auth: agent
 //! JWT).
 //!
-//! Default ON. Kill switch: `ROOMLERD_LOGS_UPLOAD_DISABLED=1`.
+//! Default ON. Kill switch: `MESHHARBORD_LOGS_UPLOAD_DISABLED=1`.
 //!
 //! Failure modes:
 //! - Channel full (uploader too slow / network dead) → newest events
@@ -383,7 +383,7 @@ fn shed_oldest_half_if_full(buf: &mut Vec<LogLine>) {
     }
 }
 
-/// Parse the `ROOMLERD_LOGS_UPLOAD_DISABLED` env-var. Accepts
+/// Parse the `MESHHARBORD_LOGS_UPLOAD_DISABLED` env-var. Accepts
 /// `1`, `true`, `yes`, `on` (case-insensitive, trimmed) as truthy;
 /// anything else (including `None`) is false — i.e. uploads stay ON
 /// per the rc.58 default-on policy.

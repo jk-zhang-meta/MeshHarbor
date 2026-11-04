@@ -474,7 +474,7 @@ mod tests {
     }
 
     /// #1754 — a client that drops its connection and endpoint (a crash,
-    /// a `roomler kill` on a CLI too old to send `rc:tunnel.terminate`)
+    /// a `meshharbor kill` on a CLI too old to send `rc:tunnel.terminate`)
     /// ends the accept loop, and the loop reports the session on the
     /// reap channel so the signaling loop drops the peer — endpoint socket
     /// and all. Nothing is reported while the client lives, and

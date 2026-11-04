@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! Library crate for `roomlerd`. The binary at `src/main.rs` is a thin
+//! Library crate for `meshharbord`. The binary at `src/main.rs` is a thin
 //! CLI shell around these modules; exposing them here lets integration
 //! tests drive the agent in-process against a `TestApp` server.
 
@@ -137,7 +137,7 @@ pub mod person_socket;
 /// so the CLI's `self-update` shares it. Re-exported, so `crate::pgp_verify`
 /// still names it.
 pub use tunnel_core::pgp_verify;
-/// Roomler SSH — the in-daemon SSH surface served on this node's overlay
+/// MeshHarbor SSH — the in-daemon SSH surface served on this node's overlay
 /// address, intercepted before the OS (`ssh_enabled`, default off). Gated with
 /// [`overlay`]: without an overlay there is no address to serve on.
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
@@ -154,12 +154,12 @@ pub mod presence;
 /// FR-99 P1b — privacy mode: the owner's gate, the `privacy-*` words, and the
 /// session's `privacy` channel that puts the overlay's curtain up.
 pub mod privacy;
-/// FR-16 L4 — `roomlerd probe-target`: a corner window whose marker changes
+/// FR-16 L4 — `meshharbord probe-target`: a corner window whose marker changes
 /// on real pointer moves, so a bench viewer times input to photon on a
 /// release build. The layout is pure and tested everywhere; the window is
 /// Windows-only.
 pub mod probe_target;
-/// Pseudo-terminals for Roomler SSH interactive sessions (P4a, Unix only —
+/// Pseudo-terminals for MeshHarbor SSH interactive sessions (P4a, Unix only —
 /// the module gates itself, so the `cfg` here would be redundant).
 pub mod pty;
 pub mod rc_local_turn;
@@ -207,11 +207,11 @@ pub mod ssh;
 /// command on another device. With the SSH server, whose `russh` it shares.
 #[cfg(feature = "ssh-server")]
 pub mod ssh_client;
-/// The ORIGINATING side of Roomler SSH. Ungated on purpose — [`ssh`] needs an
+/// The ORIGINATING side of MeshHarbor SSH. Ungated on purpose — [`ssh`] needs an
 /// overlay to serve on, but an answer to a request WE sent arrives on the
 /// plain control WS and must be deliverable in every build.
 pub mod ssh_origin;
-/// FR-105 — roomler SSH through a Windows device's SYSTEM service: the framed
+/// FR-105 — meshharbor SSH through a Windows device's SYSTEM service: the framed
 /// SSH pipe between the worker and the service, the service's grant claim and
 /// endpoint publisher, and the worker's word. Compiled everywhere; off
 /// Windows it advertises nothing.
@@ -289,7 +289,7 @@ pub mod ws_connect;
 /// `signaling` / `main` can call it WITHOUT an overlay-feature gate — the
 /// `overlay` module itself is `cfg`-gated. No-op unless this is an `overlay-l3`
 /// build (only the OS-TUN surface installs OS routes; the userspace netstack has
-/// none). Best-effort + scoped to the roomler NIC.
+/// none). Best-effort + scoped to the meshharbor NIC.
 pub fn purge_exit_routes() {
     #[cfg(feature = "overlay-l3")]
     {
@@ -319,7 +319,7 @@ pub fn purge_exit_routes() {
 }
 
 /// #1690 — [`purge_exit_routes`] for a process that may NOT own the overlay
-/// adapter: `roomlerd self-update` run by hand or through `meshharbor exec`.
+/// adapter: `meshharbord self-update` run by hand or through `meshharbor exec`.
 /// While a daemon is running (it answers the LocalAPI), the routes, the
 /// exit split-default and the DNS steer are that daemon's: its route guard
 /// would re-add the routes within seconds, but nothing re-asserts the DNS
@@ -337,7 +337,7 @@ pub fn purge_exit_routes_unless_owned(daemon_running: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    /// #1690 — a running daemon keeps its routes: `roomlerd self-update`, a
+    /// #1690 — a running daemon keeps its routes: `meshharbord self-update`, a
     /// second process, must not purge them. Only this branch is exercised —
     /// the other deletes real routes on an `overlay-l3` build.
     #[test]
@@ -347,7 +347,7 @@ mod tests {
 
     /// The MeshHarbor rename moved the daemon's `[[bin]]` to `meshharbord`, but
     /// build.rs kept scoping its Windows link args (the 8 MiB main-thread stack
-    /// and the VERSIONINFO resource) to `roomlerd` — and cargo refuses a
+    /// and the VERSIONINFO resource) to `meshharbord` — and cargo refuses a
     /// `rustc-link-arg-bin` for a bin the package does not have, so EVERY
     /// Windows build of the daemon failed. Linux/macOS never run those arms,
     /// so nothing else could see it. Every bin build.rs names must exist.

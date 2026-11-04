@@ -457,7 +457,7 @@ pub fn import_main() -> i32 {
     match run() {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("roomlerd {IMPORT_SUBCOMMAND}: {e}");
+            eprintln!("meshharbord {IMPORT_SUBCOMMAND}: {e}");
             1
         }
     }
@@ -522,7 +522,7 @@ mod tests {
         assert_eq!(project_name("/home/alice/x"), "-home-alice-x");
         assert_eq!(project_name("/srv/my_app.v2"), "-srv-my-app-v2");
         assert_eq!(
-            project_name(r"C:\dev\gjovanov\roomler-ai"),
+            project_name(r"C:\dev\gjovanov\meshharbor"),
             "C--dev-gjovanov-roomler-ai"
         );
     }

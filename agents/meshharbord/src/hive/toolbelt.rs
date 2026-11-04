@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P1a — a session's toolbelt: the `roomler` MCP server, one per
+//! FR-90 P1a — a session's toolbelt: the `meshharbor` MCP server, one per
 //! session, and in P1 its one tool, `approve` — Claude Code's
 //! `--permission-prompt-tool`, which it calls and waits on before every tool
-//! call nothing else allowed (`docs/roomler-hive-design.md` §7.1).
+//! call nothing else allowed (`docs/meshharbor-hive-design.md` §7.1).
 //!
 //! # How the harness reaches it
 //!
 //! Claude Code starts its MCP servers itself, as the session's account, and
-//! talks to them over stdio. So the server it starts is a relay — `roomlerd
+//! talks to them over stdio. So the server it starts is a relay — `meshharbord
 //! hive-mcp <socket>` ([`relay`]) — that pipes its stdin and stdout to the
 //! session's socket, and the daemon speaks MCP on the other end. The socket
 //! is `<runtime>/<sid>/toolbelt.sock`: owned by the session's account, `0600`,
@@ -17,7 +17,7 @@
 //! is deliberately not the LocalAPI socket: on a root daemon that one is
 //! root-only, and most of its verbs trust the socket alone.
 //!
-//! On Windows (P1i-2) it is a named pipe, `\\.\pipe\roomler-hive-<session>-<nonce>`,
+//! On Windows (P1i-2) it is a named pipe, `\\.\pipe\meshharbor-hive-<session>-<nonce>`,
 //! whose DACL admits SYSTEM and Administrators (the daemon is one or the
 //! other) and the session's account by SID, to read and write only, and whose
 //! clients' accounts are checked again by SID.
@@ -36,7 +36,7 @@
 //! ⚠️ What fails, fails CLOSED: a relay that cannot reach the socket leaves
 //! Claude Code without its permission tool, and every call that needs one
 //! then errors and the harness exits (measured: "MCP tool
-//! mcp__roomler__approve … not found", exit 1). Nothing runs unapproved.
+//! mcp__meshharbor__approve … not found", exit 1). Nothing runs unapproved.
 //!
 //! ⚠️ Claude Code's permission prompts are UX, not the boundary: the device's
 //! own gates — the mapped account, `hive_roots` — are. A process running as
@@ -79,7 +79,7 @@
 //! # `ssh_run` (FR-90 P3-8-2b-2)
 //!
 //! Where the device's owner turned `hive_ssh` on, one command on another
-//! device of the organization over Roomler SSH ([`super::ssh_tools`]). The
+//! device of the organization over MeshHarbor SSH ([`super::ssh_tools`]). The
 //! vault decides it (`ssh:run`) and answers with a ticket; this daemon's own
 //! SSH client then runs it as the account the target maps, with a key minted
 //! for the call, which the session never holds. Asked for in the settings on
@@ -420,7 +420,7 @@ fn is_vault_tool(name: &str) -> bool {
 /// settings wherever they are offered, since they read and their gate is the
 /// vault's own `secret:list`, not a person's approval.
 pub(crate) const VAULT_TOOLS: [&str; 2] =
-    ["mcp__roomler__vault_list", "mcp__roomler__vault_describe"];
+    ["mcp__meshharbor__vault_list", "mcp__meshharbor__vault_describe"];
 
 /// FR-90 P3-4c — the vault's uses, as Claude Code names them: ASKED for in
 /// the session's settings (`permissions.ask`) wherever they are offered.
@@ -430,27 +430,27 @@ pub(crate) const VAULT_TOOLS: [&str; 2] =
 /// settings file, so this ask prompts whatever another file allows.
 #[cfg(feature = "vault")]
 pub(crate) const VAULT_USE_TOOLS: [&str; 3] = [
-    "mcp__roomler__vault_exec",
-    "mcp__roomler__vault_render",
-    "mcp__roomler__vault_connect",
+    "mcp__meshharbor__vault_exec",
+    "mcp__meshharbor__vault_render",
+    "mcp__meshharbor__vault_connect",
 ];
 
 /// FR-90 P3-4c-3 — asking a lease ahead, as Claude Code names it: allowed
 /// with the reads wherever it is offered.
 #[cfg(feature = "vault")]
-pub(crate) const VAULT_AHEAD_TOOLS: [&str; 1] = ["mcp__roomler__vault_request"];
+pub(crate) const VAULT_AHEAD_TOOLS: [&str; 1] = ["mcp__meshharbor__vault_request"];
 
 /// FR-90 P3-7-3c — a session's own egress, as its settings name it: asked of
 /// a person on every call, like the vault's uses. Each opens a listener this
 /// session reaches a network through.
 #[cfg(feature = "vault")]
-pub(crate) const NET_TOOLS: [&str; 2] = ["mcp__roomler__net_socks", "mcp__roomler__net_forward"];
+pub(crate) const NET_TOOLS: [&str; 2] = ["mcp__meshharbor__net_socks", "mcp__meshharbor__net_forward"];
 
 /// FR-90 P3-8-2b-2 — `ssh_run`, as the session's settings name it: asked of
 /// a person on every call. Each runs a command on another device, as the
 /// account that device maps.
 #[cfg(feature = "vault")]
-pub(crate) const SSH_TOOLS: [&str; 1] = ["mcp__roomler__ssh_run"];
+pub(crate) const SSH_TOOLS: [&str; 1] = ["mcp__meshharbor__ssh_run"];
 
 /// FR-90 P3-4b — the daemon's vault for a run's toolbelt: its lease client,
 /// where the primary connection takes leases; otherwise none, and the vault
@@ -774,7 +774,7 @@ async fn serve(listener: UnixListener, ctx: Arc<Ctx>, stop: CancellationToken) {
 }
 
 /// P1i-2 — one session's toolbelt on Windows: a named pipe,
-/// `\\.\pipe\roomler-hive-<session>-<nonce>`, made with
+/// `\\.\pipe\meshharbor-hive-<session>-<nonce>`, made with
 /// `FILE_FLAG_FIRST_PIPE_INSTANCE`, so a name someone already holds is
 /// refused, never joined. Its DACL ([`crate::hive_win::toolbelt_pipe_sddl`])
 /// admits SYSTEM and Administrators (the daemon is one or the other), and the
@@ -790,7 +790,7 @@ pub(crate) fn open(
 ) -> Result<Toolbelt, String> {
     let session = run.session;
     let name = format!(
-        r"\\.\pipe\roomler-hive-{}-{}",
+        r"\\.\pipe\meshharbor-hive-{}-{}",
         session.to_hex(),
         hex::encode(rand::random::<[u8; 16]>())
     );
@@ -899,7 +899,7 @@ fn error(id: &Value, code: i64, message: &str) -> String {
 fn approve_tool() -> Value {
     json!({
         "name": "approve",
-        "description": "Asks a driver of this Roomler session whether a tool call may run. \
+        "description": "Asks a driver of this MeshHarbor session whether a tool call may run. \
                         Claude Code calls it before any tool call that needs approval.",
         "inputSchema": {
             "type": "object",
@@ -922,7 +922,7 @@ fn vault_tools() -> Vec<Value> {
     let mut tools = vec![
         json!({
             "name": "vault_list",
-            "description": "Lists the Roomler vault secrets this session's role may list, under a \
+            "description": "Lists the MeshHarbor vault secrets this session's role may list, under a \
                             folder when one is given: each one's RRN, kind, fields, audiences, \
                             and the programs a value may be handed to. Never a value.",
             "inputSchema": {
@@ -935,7 +935,7 @@ fn vault_tools() -> Vec<Value> {
         }),
         json!({
             "name": "vault_describe",
-            "description": "Describes one Roomler vault secret this session's role may list, by \
+            "description": "Describes one MeshHarbor vault secret this session's role may list, by \
                             its path or RRN: its kind, fields, audiences, the programs a value \
                             may be handed to, and whether it is disabled. Never a value.",
             "inputSchema": {
@@ -951,7 +951,7 @@ fn vault_tools() -> Vec<Value> {
     #[cfg(feature = "vault")]
     tools.push(json!({
         "name": "vault_exec",
-        "description": "Runs one command with values from the Roomler vault in its environment, \
+        "description": "Runs one command with values from the MeshHarbor vault in its environment, \
                         as this session's account, from its folder. argv[0] is the program's bare \
                         name: it must be on each stored secret's exec_allow, and installed in the \
                         system's own directories. env maps each variable to a secret (a path, or \
@@ -984,7 +984,7 @@ fn vault_tools() -> Vec<Value> {
     #[cfg(feature = "vault")]
     tools.push(json!({
         "name": "vault_render",
-        "description": "Writes a template with values from the Roomler vault into this session's \
+        "description": "Writes a template with values from the MeshHarbor vault into this session's \
                         secrets directory, as a file only this session's account can read, and \
                         answers its path. Put each secret in the template as {{ a/path }} (or \
                         {{ rrn:<org>:secret:<path>#<field> }}). A dynamic secret's placeholders \
@@ -1008,7 +1008,7 @@ fn vault_tools() -> Vec<Value> {
     tools.push(json!({
         "name": "vault_connect",
         "description": "Opens an endpoint on this device that signs in to a database (Postgres or \
-                        MongoDB) as a Roomler vault secret's user; that presents a secret's \
+                        MongoDB) as a MeshHarbor vault secret's user; that presents a secret's \
                         credential on every request it sends on to an HTTP upstream (an API, a \
                         git server) or a Kubernetes API server; or that is an SSH agent holding \
                         a secret's key, which signs ssh in to one host; and answers how to \
@@ -1049,7 +1049,7 @@ fn vault_tools() -> Vec<Value> {
     #[cfg(feature = "vault")]
     tools.push(json!({
         "name": "vault_request",
-        "description": "Asks the Roomler vault for a lease ahead of using it, and answers the \
+        "description": "Asks the MeshHarbor vault for a lease ahead of using it, and answers the \
                         lease's id and how long it lasts, never a value. mode is exec (for \
                         vault_exec, audience the program's bare name), file (for vault_render, \
                         audience the file's bare name) or proxy (for vault_connect, audience the \
@@ -1084,13 +1084,13 @@ fn vault_tools() -> Vec<Value> {
 /// `hive_net` on and the vault is offered ([`Run::net`]).
 #[cfg(feature = "vault")]
 fn net_tools() -> Vec<Value> {
-    let exit = json!({"type": "string", "description": "the id of the Roomler device of this organization the flows leave from (24 hex characters)"});
+    let exit = json!({"type": "string", "description": "the id of the MeshHarbor device of this organization the flows leave from (24 hex characters)"});
     let ttl = json!({"type": "integer", "minimum": 30, "maximum": 900});
     vec![
         json!({
             "name": super::net_tools::SOCKS,
             "description": "Opens a SOCKS5 proxy on this device whose connections leave from another \
-                            Roomler device of the organization (exit), as the organization's vault \
+                            MeshHarbor device of the organization (exit), as the organization's vault \
                             and tunnel policies allow this session, and answers its proxy URL, \
                             socks5h://user:password@127.0.0.1:port (curl -x, or ALL_PROXY), and how \
                             long it serves. Only this session's account may connect, with the URL's \
@@ -1106,7 +1106,7 @@ fn net_tools() -> Vec<Value> {
         json!({
             "name": super::net_tools::FORWARD,
             "description": "Opens a port on this device's loopback that forwards to one destination \
-                            (host:port) from another Roomler device of the organization (exit), as \
+                            (host:port) from another MeshHarbor device of the organization (exit), as \
                             the organization's vault and tunnel policies allow this session, and \
                             answers the address to connect to and how long it serves. Only this \
                             session's account may connect. It closes at its end (ttl_s, 30 to 900 \
@@ -1127,7 +1127,7 @@ fn net_tools() -> Vec<Value> {
 }
 
 /// FR-90 P3-8-2b-2 — one command on another device of the organization over
-/// Roomler SSH. Offered where the device's owner turned `hive_ssh` on and the
+/// MeshHarbor SSH. Offered where the device's owner turned `hive_ssh` on and the
 /// vault is offered ([`Run::ssh`]).
 #[cfg(all(feature = "vault", feature = "ssh-server"))]
 fn ssh_tools() -> Vec<Value> {
@@ -1136,8 +1136,8 @@ fn ssh_tools() -> Vec<Value> {
     vec![json!({
         "name": RUN,
         "description": format!(
-            "Runs one command on another Roomler device of the organization (device) over \
-             Roomler SSH, as the account that device's SSH policy maps, which may be SYSTEM or \
+            "Runs one command on another MeshHarbor device of the organization (device) over \
+             MeshHarbor SSH, as the account that device's SSH policy maps, which may be SYSTEM or \
              root there, and answers the device's os, the account it ran as, the exit code, \
              stdout and stderr (each at most 64 KiB, truncated says whether either was cut). \
              The organization's vault decides whether this session may, and the device's own \
@@ -1150,7 +1150,7 @@ fn ssh_tools() -> Vec<Value> {
         "inputSchema": {
             "type": "object",
             "properties": {
-                "device": {"type": "string", "description": "the id of the Roomler device of this organization to run on (24 hex characters), never this one"},
+                "device": {"type": "string", "description": "the id of the MeshHarbor device of this organization to run on (24 hex characters), never this one"},
                 "command": {"type": "string", "description": "the command, one line, for that device's shell"},
                 "timeout_s": {"type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECS},
             },
@@ -1285,7 +1285,7 @@ fn initialize(params: &Value) -> Value {
     json!({
         "protocolVersion": version,
         "capabilities": {"tools": {}},
-        "serverInfo": {"name": "roomler", "version": env!("CARGO_PKG_VERSION")},
+        "serverInfo": {"name": "meshharbor", "version": env!("CARGO_PKG_VERSION")},
     })
 }
 

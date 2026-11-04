@@ -7,8 +7,8 @@
 //! `meshharbord service install` registers the agent so it launches
 //! automatically on the next interactive login:
 //!
-//!   - **Windows**: Scheduled Task named `Roomler` (pre-P3D-rename hosts
-//!     have `RoomlerAgent`, which `install()` retires and `uninstall()`
+//!   - **Windows**: Scheduled Task named `MeshHarbor` (pre-P3D-rename hosts
+//!     have `MeshHarborAgent`, which `install()` retires and `uninstall()`
 //!     deletes), ONLOGON trigger, LIMITED run level (matches the agent's
 //!     un-elevated-by-design posture from `packaging/windows/README.txt`).
 //!   - **Linux**: systemd user unit. The .deb already drops the unit
@@ -28,12 +28,12 @@ use std::path::Path;
 
 /// #2293 — how this host's daemon is run, which decides what starts it again
 /// after a removal stopped it (exit 7, `AGENT_DELETED_EXIT_CODE`), and so what
-/// `roomlerd re-enroll` and the removal's sentinel tell the person:
+/// `meshharbord re-enroll` and the removal's sentinel tell the person:
 ///
 /// | Install | After exit 7 |
 /// |---|---|
 /// | Linux, the system or the user unit | nothing: `RestartPreventExitStatus=7 8` |
-/// | Windows, the `Roomler` service | its supervisor, at most 60 s apart, for good |
+/// | Windows, the `MeshHarbor` service | its supervisor, at most 60 s apart, for good |
 /// | Windows, the per-user task | `<RestartOnFailure>`: ten times, a minute apart |
 /// | macOS, the LaunchDaemon or the LaunchAgent | launchd, on any failed exit |
 ///
@@ -46,7 +46,7 @@ pub enum Install {
     LinuxSystem,
     /// `meshharbor.service`, the person's user unit.
     LinuxUser,
-    /// The `Roomler` SCM service, whose supervisor runs the worker. It owns
+    /// The `MeshHarbor` SCM service, whose supervisor runs the worker. It owns
     /// attended installs too, whose config is the person's.
     WindowsService,
     /// The per-user Scheduled Task (the perUser MSI).
@@ -95,7 +95,7 @@ impl Install {
         }
     }
 
-    /// What `roomlerd re-enroll` ends with. `primary`: the enrollment it
+    /// What `meshharbord re-enroll` ends with. `primary`: the enrollment it
     /// refreshed is the config's own. A secondary organization's loop ended
     /// at its goodbye, and only a daemon restart starts it again.
     pub fn after_re_enroll(self, primary: bool) -> &'static str {
@@ -103,40 +103,40 @@ impl Install {
             return match self {
                 Self::LinuxSystem => {
                     "This organization connects again when the daemon restarts: \
-                     `sudo systemctl restart roomlerd`."
+                     `sudo systemctl restart meshharbord`."
                 }
                 Self::Other => "This organization connects again when the daemon restarts.",
                 _ => {
                     "This organization connects again when the daemon restarts: \
-                     `roomler restart`."
+                     `meshharbor restart`."
                 }
             };
         }
         match self {
             Self::LinuxSystem => {
-                "Start the daemon: `sudo systemctl start roomlerd`. systemd does not \
+                "Start the daemon: `sudo systemctl start meshharbord`. systemd does not \
                  restart a daemon the server removed (exit 7). If it is still running, \
-                 `sudo systemctl restart roomlerd` makes it use the new token now."
+                 `sudo systemctl restart meshharbord` makes it use the new token now."
             }
             Self::LinuxUser => {
                 "Start the daemon: `meshharbord service start`. systemd does not restart \
                  a daemon the server removed (exit 7). If it is still running, \
-                 `roomler restart` makes it use the new token now."
+                 `meshharbor restart` makes it use the new token now."
             }
             Self::WindowsService => {
-                "The Roomler service starts the agent again within a minute, with the \
-                 new token. If it is still running, `roomler restart` makes it use the \
+                "The MeshHarbor service starts the agent again within a minute, with the \
+                 new token. If it is still running, `meshharbor restart` makes it use the \
                  new token now."
             }
             Self::WindowsTask => {
                 "The agent's task starts it again within a minute, with the new token, \
                  but only ten times after a removal: if it is not back, start it with \
-                 `meshharbord service start`. If it is still running, `roomler restart` \
+                 `meshharbord service start`. If it is still running, `meshharbor restart` \
                  makes it use the new token now."
             }
             Self::MacOs => {
                 "launchd starts the agent again within seconds, with the new token. If \
-                 it is still running, `roomler restart` makes it use the new token now."
+                 it is still running, `meshharbor restart` makes it use the new token now."
             }
             Self::Other => "Start the daemon again: `meshharbord run`, or your service manager.",
         }
@@ -153,36 +153,36 @@ impl Install {
             return match self {
                 Self::LinuxSystem => {
                     "This organization connects when the daemon restarts: \
-                     `sudo systemctl restart roomlerd`."
+                     `sudo systemctl restart meshharbord`."
                 }
                 Self::Other => "This organization connects when the daemon restarts.",
-                _ => "This organization connects when the daemon restarts: `roomler restart`.",
+                _ => "This organization connects when the daemon restarts: `meshharbor restart`.",
             };
         }
         match self {
             Self::LinuxSystem => {
-                "Start the daemon: `sudo systemctl restart roomlerd`, which starts it \
+                "Start the daemon: `sudo systemctl restart meshharbord`, which starts it \
                  whether it was stopped, failed or running. On a host without the \
                  package: `meshharbord run`."
             }
             Self::LinuxUser => {
                 "Start the daemon: `meshharbord service start` (`meshharbord service install` \
                  also starts it at every login). If it is running already, \
-                 `roomler restart` connects it now. On a host without the package: \
+                 `meshharbor restart` connects it now. On a host without the package: \
                  `meshharbord run`."
             }
             Self::WindowsService => {
-                "The Roomler service starts the agent within a minute. If it is running \
-                 already, `roomler restart` connects it now."
+                "The MeshHarbor service starts the agent within a minute. If it is running \
+                 already, `meshharbor restart` connects it now."
             }
             Self::WindowsTask => {
                 "Start the agent: `meshharbord service start` (`meshharbord service install` \
                  first, if this account has no task). If it is running already, \
-                 `roomler restart` connects it now."
+                 `meshharbor restart` connects it now."
             }
             Self::MacOs => {
                 "launchd starts the agent within seconds. If it is running already, \
-                 `roomler restart` connects it now."
+                 `meshharbor restart` connects it now."
             }
             Self::Other => "Start the daemon: `meshharbord run`, or your service manager.",
         }
@@ -193,7 +193,7 @@ impl Install {
     pub fn after_removal(self) -> &'static str {
         match self {
             Self::LinuxSystem => {
-                "then start it: sudo systemctl start roomlerd\n\
+                "then start it: sudo systemctl start meshharbord\n\
                  (systemd does not restart a daemon the server removed)."
             }
             Self::LinuxUser => {
@@ -201,7 +201,7 @@ impl Install {
                  (systemd does not restart a daemon the server removed)."
             }
             Self::WindowsService => {
-                "and the Roomler service starts it again within a minute, with the new token."
+                "and the MeshHarbor service starts it again within a minute, with the new token."
             }
             Self::WindowsTask => {
                 "and its task starts it again within a minute, but only ten times;\n\
@@ -287,7 +287,7 @@ pub fn uninstall() -> Result<()> {
 ///
 /// The caller half of `Request::RestartDaemon` (`restart_by: "caller"`): the
 /// Scheduled Task's own `<RestartOnFailure>` is a minute away at best, so the
-/// companion / `roomler restart` runs this once the old daemon is gone. In
+/// companion / `meshharbor restart` runs this once the old daemon is gone. In
 /// every flavour the daemon is then spawned by the OS's scheduler / service
 /// manager — never as a child of the process calling this — so nothing of
 /// the caller's is inherited by the daemon (#1035 is the reverse direction:
@@ -364,7 +364,7 @@ pub fn stop(config_path: &Path) -> Result<String> {
 /// it (it was enabled before that target joined the unit's `[Install]`), enables
 /// it again once, so the next login starts it again. Runs on its own thread and
 /// never blocks the caller; a no-op as root and off Linux. Kill switch
-/// `ROOMLERD_UNIT_REPAIR=0`.
+/// `MESHHARBORD_UNIT_REPAIR=0`.
 pub fn repair_session_wants_at_start() {
     #[cfg(target_os = "linux")]
     linux::repair_session_wants_at_start();
@@ -445,12 +445,12 @@ pub mod system {
     /// The plist the `.pkg` carries inside the bundle; its postinstall copies
     /// it to [`MACOS_PLIST`] when the marker below exists.
     pub const MACOS_PLIST_SOURCE: &str =
-        "/Library/Roomler/meshharbord.app/Contents/Resources/fans.itachi.meshharbor.daemon.plist";
+        "/Library/MeshHarbor/meshharbord.app/Contents/Resources/fans.itachi.meshharbor.daemon.plist";
     /// The postinstall's opt-in for the root half. Its ABSENCE makes the next
     /// package upgrade remove the LaunchDaemon, so install writes it and
     /// uninstall removes it: the verb and every later upgrade agree.
     pub const MACOS_MARKER: &str = "/etc/meshharbor/enable-daemon";
-    const MACOS_DAEMON_BIN: &str = "/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd";
+    const MACOS_DAEMON_BIN: &str = "/Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord";
 
     /// Why `service install --as-service` cannot go ahead, or `None`. Asked
     /// before the service manager is touched, so a refusal changes nothing.
@@ -510,7 +510,7 @@ pub mod system {
     pub fn enroll_hint(os: Os) -> String {
         match os {
             Os::Linux => format!(
-                "sudo roomlerd --config {CONFIG} enroll --server <url> --token <enrollment-jwt> \
+                "sudo meshharbord --config {CONFIG} enroll --server <url> --token <enrollment-jwt> \
                  --name <label>"
             ),
             Os::MacOs => format!(
@@ -522,8 +522,8 @@ pub mod system {
 
     /// The `service status --as-service` answer on Linux and macOS.
     ///
-    /// ⚠️ It names its own unit and never reads `Roomler: …`: the companion
-    /// polls this command every 10 s on every OS and reads a `Roomler:` line
+    /// ⚠️ It names its own unit and never reads `MeshHarbor: …`: the companion
+    /// polls this command every 10 s on every OS and reads a `MeshHarbor:` line
     /// as WINDOWS' SCM service (`scm_answer` in meshharbor-desktop). A Unix host
     /// answering in that shape would be shown as one. Pinned by a test.
     pub fn status_line(os: Os, loaded: &str, enabled: &str) -> String {
@@ -542,12 +542,12 @@ pub mod system {
             .and_then(|uid| uid.parse().ok())
     }
 
-    /// The warning for a `roomlerd` that runs as another account beside the
+    /// The warning for a `meshharbord` that runs as another account beside the
     /// root one: one daemon per machine (CLAUDE.md), and the person's unit
     /// is theirs to stop.
     pub fn other_daemon_warning(pid: u32, uid: u32) -> String {
         format!(
-            "another roomlerd runs as uid {uid} (pid {pid}). One daemon per machine: as that \
+            "another meshharbord runs as uid {uid} (pid {pid}). One daemon per machine: as that \
              account, run `systemctl --user disable --now meshharbor.service`"
         )
     }
@@ -683,12 +683,12 @@ mod windows {
     }
 
     /// Canonical scheduled-task name after the P3D rename.
-    pub const NEW_TASK_NAME: &str = "Roomler";
+    pub const NEW_TASK_NAME: &str = "MeshHarbor";
     /// Pre-rename scheduled-task name, retired best-effort by `install()`
     /// and deleted by `uninstall()`.
     // RETIRED-NAME-ANCHOR: without this the pre-rename scheduled task survives an
     // upgrade forever, so the host runs TWO daemons. See docs/fr/FR-21.
-    pub const LEGACY_TASK_NAME: &str = "RoomlerAgent";
+    pub const LEGACY_TASK_NAME: &str = "MeshHarborAgent";
 
     pub fn install() -> Result<()> {
         let exe = std::env::current_exe().context("locating current exe")?;
@@ -862,7 +862,7 @@ mod windows {
         } else {
             bail!(
                 "no per-user auto-start task is registered, so there is no task to end. A \
-                 device that runs as the Roomler service stops with `meshharbord service stop \
+                 device that runs as the MeshHarbor service stops with `meshharbord service stop \
                  --as-service`, elevated"
             );
         };
@@ -1025,9 +1025,9 @@ mod windows {
             r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Author>roomlerd</Author>
-    <Description>Roomler Daemon — keeps this device on your private Roomler mesh network and available for secure remote control (auto-start on logon, restart on failure).</Description>
-    <URI>\Roomler</URI>
+    <Author>meshharbord</Author>
+    <Description>MeshHarbor Daemon — keeps this device on your private MeshHarbor mesh network and available for secure remote control (auto-start on logon, restart on failure).</Description>
+    <URI>\MeshHarbor</URI>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
@@ -1094,7 +1094,7 @@ mod windows {
     /// fail with "The argument is incorrect" on Win10 22H2.
     fn write_temp_xml(xml_utf8: &str) -> Result<PathBuf> {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("roomlerd-task-{}.xml", std::process::id()));
+        let path = dir.join(format!("meshharbord-task-{}.xml", std::process::id()));
         let mut buf = Vec::with_capacity(xml_utf8.len() * 2 + 2);
         buf.extend_from_slice(&[0xFF, 0xFE]); // UTF-16-LE BOM
         for c in xml_utf8.encode_utf16() {
@@ -1372,7 +1372,7 @@ mod linux {
         (ask("is-enabled"), ask("is-active"))
     }
 
-    /// Every `roomlerd` that runs as an account other than root, from /proc.
+    /// Every `meshharbord` that runs as an account other than root, from /proc.
     fn other_daemons() -> Vec<(u32, u32)> {
         let mut found = Vec::new();
         let Ok(entries) = std::fs::read_dir("/proc") else {
@@ -1600,7 +1600,7 @@ mod linux {
     pub(super) fn user_unit_text(exe: &str) -> String {
         format!(
             "[Unit]\n\
-             Description=Roomler Daemon — keeps this device on your private Roomler mesh network and available for secure remote control\n\
+             Description=MeshHarbor Daemon — keeps this device on your private MeshHarbor mesh network and available for secure remote control\n\
              After=graphical-session.target\n\
              PartOf=graphical-session.target\n\
              \n\
@@ -1609,7 +1609,7 @@ mod linux {
              ExecStart={exe} run\n\
              Restart=on-failure\n\
              RestartSec=5\n\
-             Environment=RUST_LOG=roomlerd=info,tunnel_core=info,warn\n\
+             Environment=RUST_LOG=meshharbord=info,tunnel_core=info,warn\n\
              \n\
              [Install]\n\
              WantedBy=default.target graphical-session.target\n"
@@ -1934,7 +1934,7 @@ mod macos {
             .context("running launchctl kickstart")?;
         if !out.status.success() {
             bail!(
-                "launchctl kickstart {} failed ({}): {} (is it registered? `sudo roomlerd \
+                "launchctl kickstart {} failed ({}): {} (is it registered? `sudo meshharbord \
                  service install --as-service` registers it)",
                 target(),
                 out.status,
@@ -2045,7 +2045,7 @@ mod macos {
              \t<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n\
              \t<key>ProcessType</key><string>Interactive</string>\n\
              \t<key>EnvironmentVariables</key>\n\
-             \t<dict><key>RUST_LOG</key><string>roomlerd=info,tunnel_core=info,warn</string></dict>\n\
+             \t<dict><key>RUST_LOG</key><string>meshharbord=info,tunnel_core=info,warn</string></dict>\n\
              </dict>\n\
              </plist>\n"
         );
@@ -2088,7 +2088,7 @@ mod tests {
     fn the_enroll_hint_writes_the_config_the_service_reads() {
         use system::{CONFIG, Os, enroll_hint};
         let linux = enroll_hint(Os::Linux);
-        assert!(linux.starts_with("sudo roomlerd --config /etc/meshharbor/config.toml enroll "));
+        assert!(linux.starts_with("sudo meshharbord --config /etc/meshharbor/config.toml enroll "));
         let mac = enroll_hint(Os::MacOs);
         assert!(mac.contains(&format!("--config {CONFIG} enroll ")), "{mac}");
         // The root half exists for the overlay, as `install.sh --daemon-token`.
@@ -2100,7 +2100,7 @@ mod tests {
     }
 
     /// The companion polls `service status --as-service` on every OS and
-    /// reads a `Roomler:` line as WINDOWS' SCM service (`scm_answer` in
+    /// reads a `MeshHarbor:` line as WINDOWS' SCM service (`scm_answer` in
     /// meshharbor-desktop). A Unix answer must never take that shape.
     #[test]
     fn the_unix_status_line_never_reads_as_windows_scm_answer() {
@@ -2113,7 +2113,7 @@ mod tests {
             ] {
                 let line = status_line(os, loaded, enabled);
                 assert!(
-                    !line.to_ascii_lowercase().starts_with("roomler:"),
+                    !line.to_ascii_lowercase().starts_with("meshharbor:"),
                     "{line} would read as the SCM service"
                 );
             }
@@ -2130,7 +2130,7 @@ mod tests {
 
     #[test]
     fn the_real_uid_comes_from_the_status_uid_line() {
-        let status = "Name:\troomlerd\nUmask:\t0022\nState:\tS (sleeping)\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
+        let status = "Name:\tmeshharbord\nUmask:\t0022\nState:\tS (sleeping)\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
         assert_eq!(system::uid_of_status(status), Some(1000));
         assert_eq!(system::uid_of_status("Uid:\t0\t0\t0\t0\n"), Some(0));
         assert_eq!(system::uid_of_status("Name:\tx\n"), None);
@@ -2169,7 +2169,7 @@ mod tests {
     #[test]
     fn only_the_companions_two_probes_skip_the_daemon_startup() {
         let argv = |a: &[&str]| -> Vec<String> {
-            std::iter::once("roomlerd")
+            std::iter::once("meshharbord")
                 .chain(a.iter().copied())
                 .map(String::from)
                 .collect()
@@ -2252,14 +2252,14 @@ mod tests {
     fn linux_names_the_start_systemd_will_not_make() {
         // exit 7 is in `RestartPreventExitStatus` for both units.
         let system = Install::LinuxSystem.after_re_enroll(true);
-        assert!(system.contains("sudo systemctl start roomlerd"), "{system}");
+        assert!(system.contains("sudo systemctl start meshharbord"), "{system}");
         let user = Install::LinuxUser.after_re_enroll(true);
         assert!(user.contains("meshharbord service start"), "{user}");
         assert!(!user.contains("sudo"), "a user unit needs no root: {user}");
         assert!(
             Install::LinuxSystem
                 .after_removal()
-                .contains("sudo systemctl start roomlerd")
+                .contains("sudo systemctl start meshharbord")
         );
         assert!(
             Install::LinuxUser
@@ -2297,12 +2297,12 @@ mod tests {
         assert!(
             Install::LinuxSystem
                 .after_re_enroll(false)
-                .contains("sudo systemctl restart roomlerd")
+                .contains("sudo systemctl restart meshharbord")
         );
         assert!(
             Install::WindowsService
                 .after_re_enroll(false)
-                .contains("roomler restart")
+                .contains("meshharbor restart")
         );
     }
 
@@ -2316,7 +2316,7 @@ mod tests {
     }
 
     #[test]
-    fn an_enrollment_never_leads_with_roomlerd_run_beside_a_service_manager() {
+    fn an_enrollment_never_leads_with_meshharbord_run_beside_a_service_manager() {
         // The same orphan #2293 removed from `re-enroll`: `meshharbord run` may
         // only be the fallback, for a host without the package, and is first
         // only where this code knows no service manager.
@@ -2337,7 +2337,7 @@ mod tests {
         // looping on a missing config) or running: `restart` starts all three.
         assert_eq!(
             first_command(Install::LinuxSystem.after_enroll(false)),
-            Some("sudo systemctl restart roomlerd")
+            Some("sudo systemctl restart meshharbord")
         );
         assert_eq!(
             first_command(Install::LinuxUser.after_enroll(false)),
@@ -2346,7 +2346,7 @@ mod tests {
         assert!(
             Install::LinuxUser
                 .after_enroll(false)
-                .contains("`roomler restart`")
+                .contains("`meshharbor restart`")
         );
     }
 
@@ -2360,11 +2360,11 @@ mod tests {
         }
         assert_eq!(
             first_command(Install::LinuxSystem.after_enroll(true)),
-            Some("sudo systemctl restart roomlerd")
+            Some("sudo systemctl restart meshharbord")
         );
         assert_eq!(
             first_command(Install::MacOs.after_enroll(true)),
-            Some("roomler restart")
+            Some("meshharbor restart")
         );
     }
 

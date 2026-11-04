@@ -30,7 +30,7 @@ landing at ~6 MB compressed delta in the agent MSI (vs ~20 MB for upstream).
 |----|--------|
 | rc.64 (this RC) | Port files checked in. **NOT wired to CI.** Documentation-only. The portfile emits `FATAL_ERROR` if vcpkg tries to build it, so an accidental install fails fast. |
 | rc.65 | Port wired into `release-agent.yml`. CI installs it via `vcpkg install --x-overlay-ports=agents/meshharbord/vcpkg-ports/`. `ffmpeg-next` 7.x dep added to Cargo.toml. Version pair verified to compile with `hevc_qsv` + `vp9_qsv` symbols reachable. MSI size delta measured. HARD STOP if >+8 MB compressed. |
-| rc.66 | `src/encode/ffmpeg/` module gains a real `FfmpegEncoder` that implements the existing `VideoEncoder` trait. D3D11VA zero-copy from day 1. Behind `ROOMLERD_USE_FFMPEG=1` env var; MF cascade still default. |
+| rc.66 | `src/encode/ffmpeg/` module gains a real `FfmpegEncoder` that implements the existing `VideoEncoder` trait. D3D11VA zero-copy from day 1. Behind `MESHHARBORD_USE_FFMPEG=1` env var; MF cascade still default. |
 | rc.67 | `caps::detect` advertises `data-channel-hevc`. HEVC DC framer reuses VP9-444's 13-byte header. Anti-IDR-storm coalescer included. |
 | rc.68 | Browser HEVC worker. Pre-flight WebCodecs spike (2026-05-26) locked the design: Annex-B, 4-byte start codes, no description. |
 | rc.69 | `vp9_qsv` HW path for Intel iGPU. Unlocks Iris Xe field-test host from CPU-bound 17 fps → ~60 fps target. |

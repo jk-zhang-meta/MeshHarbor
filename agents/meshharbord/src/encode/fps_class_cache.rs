@@ -7,14 +7,14 @@
 //! FAILED. Both verdicts are facts about this build on this hardware with
 //! these knobs. So they live next to the encoder probe's cache, under the very
 //! same key (`caps_cache::CacheKey`: the build, the hardware fingerprint, a
-//! hash of every `ROOMLERD_*` knob), and any change of key forgets them all.
+//! hash of every `MESHHARBORD_*` knob), and any change of key forgets them all.
 //!
 //! Rules:
 //! - **A key mismatch, an unreadable file or another format version reads as
 //!   empty**: an unproven host, the safe answer. It is never an error.
 //! - **The newest verdict for a class wins**: a later trial overwrites an
 //!   earlier one.
-//! - **`ROOMLERD_CAPS_CACHE=0` switches this off too**: no read, no write.
+//! - **`MESHHARBORD_CAPS_CACHE=0` switches this off too**: no read, no write.
 //!   Every class is then unproven on every start, and trials repeat.
 //! - **A verdict older than [`MAX_AGE_SECS`] is forgotten**: the safety net for
 //!   a dependency the key does not model, as for the probe cache.
@@ -45,7 +45,7 @@ pub(crate) struct CacheFile {
 }
 
 /// Next to the probe cache, in the daemon's log directory. `None` when the
-/// cache is switched off (`ROOMLERD_CAPS_CACHE=0`), so a caller with no path
+/// cache is switched off (`MESHHARBORD_CAPS_CACHE=0`), so a caller with no path
 /// neither reads nor writes.
 pub(crate) fn path() -> Option<PathBuf> {
     if !caps_cache::enabled() {

@@ -359,7 +359,7 @@ impl AgentPeer {
     /// rc.62 — `chroma_pref` is the per-session VP9 chroma override
     /// forwarded from `ClientMsg::SessionRequest::chroma_pref`. When
     /// `Some("yuv420" | "yuv444")` the VP9-444 pump uses it instead
-    /// of the agent's `ROOMLERD_VP9_CHROMA` env var. `None` →
+    /// of the agent's `MESHHARBORD_VP9_CHROMA` env var. `None` →
     /// fall back to env var (= operator default).
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
@@ -502,7 +502,7 @@ impl AgentPeer {
         // rc.162: hostile-NAT hosts (WSL2 + wsl-vpnkit, other userspace-VPN
         // stacks) mangle UDP source ports, breaking the TURN allocation
         // refresh — the media peer flaps Connected/Disconnected and the
-        // desktop freezes. `ROOMLERD_ICE_RELAY_TCP=1` pins the media to
+        // desktop freezes. `MESHHARBORD_ICE_RELAY_TCP=1` pins the media to
         // the TURNS/TCP relay (the vendored webrtc-ice TCP branch), a single
         // stable TCP connection that survives it — the same escape hatch the
         // tunnel uses on corp VPNs. Opt-in: the default path is unchanged.
@@ -563,7 +563,7 @@ impl AgentPeer {
         let video_track = Arc::new(TrackLocalStaticSample::new(
             build_video_codec_cap(&track_codec),
             "video".to_string(),
-            "roomler-agent".to_string(),
+            "meshharbor-agent".to_string(),
         ));
         let video_sender = pc
             .add_track(video_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
@@ -596,7 +596,7 @@ impl AgentPeer {
             let audio_track = Arc::new(TrackLocalStaticSample::new(
                 build_audio_codec_cap(),
                 "audio".to_owned(),
-                "roomler-agent".to_owned(),
+                "meshharbor-agent".to_owned(),
             ));
             pc.add_track(audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
                 .await
@@ -913,7 +913,7 @@ impl AgentPeer {
         //
         // RETIRED-NAME-ANCHOR(4): names the PRE-RENAME appdirs segment a host installed
         // before P4b still has; appdirs::app_segment resolves it, so it is an input.
-        // The marker file (`%PROGRAMDATA%\roomler-agent\
+        // The marker file (`%PROGRAMDATA%\meshharbor-agent\
         // peer-connected.lock`) is the supervisor's signal for
         // "swap user-context worker for SystemContext worker
         // because a controller is currently driving this host".
@@ -1061,7 +1061,7 @@ impl AgentPeer {
         // CONNECT_DEADLINE, or (b) sits in Disconnected past
         // DISCONNECTED_GRACE. `Failed` needs no handling here — the
         // state-change handler above already Terminates on it. Kill switch:
-        // `ROOMLERD_SESSION_WATCHDOG=0`.
+        // `MESHHARBORD_SESSION_WATCHDOG=0`.
         {
             let pc_watch = std::sync::Arc::downgrade(&pc);
             let tx_watch = outbound.clone();
@@ -1977,7 +1977,7 @@ impl Drop for AgentPeer {
 /// especially over TCP on WSL / corp-UDP-blocked nets) is bandwidth- and
 /// head-of-line-constrained, so the DC pumps clamp their bitrate ceiling to
 /// `relay_max_bps()` for it. Unlike the process-wide
-/// `ROOMLERD_ICE_RELAY_TCP` env flag, this is PER SESSION — the same
+/// `MESHHARBORD_ICE_RELAY_TCP` env flag, this is PER SESSION — the same
 /// agent process serves both direct-local and cross-host-relay controllers
 /// (e.g. the WSL virtual-desktop agent advertises a direct mirrored-network
 /// path to a LAN browser AND a TURN-relayed path to a remote one), so the
@@ -2262,12 +2262,12 @@ async fn current_pair_is_relay(
 /// Fail-OPEN by design: hatch off, non-overlay remote, daemon unreachable,
 /// peer unknown, or a slow pipe (>400 ms) → `false`, i.e. exactly today's
 /// behaviour — a broken LocalAPI can never degrade a healthy direct session.
-/// Escape hatch: `ROOMLERD_OVERLAY_TIER_DETECT=0`.
+/// Escape hatch: `MESHHARBORD_OVERLAY_TIER_DETECT=0`.
 #[cfg(any(feature = "vp9-444", feature = "ffmpeg-encoder"))]
 async fn overlay_remote_is_relay_tier(remote_addr: &str, session_id: bson::oid::ObjectId) -> bool {
     use tunnel_core::localapi::ConnectionType;
 
-    // node_env: accepts ROOMLERD_/ROOMLER_NODE_ prefixes + the
+    // node_env: accepts MESHHARBORD_/MESHHARBOR_NODE_ prefixes + the
     // `overlay_tier_detect` config key via the S2 fallback map.
     if tunnel_core::env::node_env("OVERLAY_TIER_DETECT").as_deref() == Some("0") {
         return false;
@@ -2305,7 +2305,7 @@ async fn overlay_remote_is_relay_tier(remote_addr: &str, session_id: bson::oid::
     }
 }
 
-/// True when an ICE candidate address string is inside the Roomler overlay
+/// True when an ICE candidate address string is inside the MeshHarbor overlay
 /// ranges: CGNAT `100.64.0.0/10` (v4) or the mesh ULA `fd72:6f6f:6d6c::/48`
 /// (v6, the exact prefix the runtime derives peer v6 addresses from — NOT all
 /// of fc00::/7, so a user's own VPN ULA never triggers a daemon query).
@@ -2361,7 +2361,7 @@ async fn media_pump(
     control_dc: Arc<tokio::sync::Mutex<Option<Arc<RTCDataChannel>>>>,
     // Adaptive bitrate — the peer connection, so the DC pumps can detect
     // THIS session's actual ICE path (relay vs direct) at runtime instead
-    // of the process-wide `ROOMLERD_ICE_RELAY_TCP` env flag.
+    // of the process-wide `MESHHARBORD_ICE_RELAY_TCP` env flag.
     pc: Arc<RTCPeerConnection>,
     // Published each frame with the native (pre-downscale) capture dims so
     // the cursor pump can scale the OS cursor position into the encoded
@@ -2425,7 +2425,7 @@ async fn media_pump(
     // the `video-bytes` channel, route to the FFmpeg-encoder DC pump.
     // Falls through to the VP9-444 path or legacy track-based pump
     // when not selected — including when the feature is compiled in
-    // but `ROOMLERD_USE_FFMPEG=1` isn't set on this process
+    // but `MESHHARBORD_USE_FFMPEG=1` isn't set on this process
     // (caps probe wouldn't have advertised the transport, but a
     // mismatched / old controller could still ask for it).
     // rc.190 — AV1 over DataChannel. Mirrors the HEVC block below; the
@@ -2463,7 +2463,7 @@ async fn media_pump(
             }
             tracing::warn!(
                 %session_id,
-                "negotiated_transport=data-channel-av1 but ROOMLERD_USE_FFMPEG isn't set — falling back to WebRTC video track"
+                "negotiated_transport=data-channel-av1 but MESHHARBORD_USE_FFMPEG isn't set — falling back to WebRTC video track"
             );
         }
         #[cfg(not(feature = "ffmpeg-encoder"))]
@@ -2507,7 +2507,7 @@ async fn media_pump(
             }
             tracing::warn!(
                 %session_id,
-                "negotiated_transport=data-channel-hevc but ROOMLERD_USE_FFMPEG isn't set — falling back to WebRTC video track"
+                "negotiated_transport=data-channel-hevc but MESHHARBORD_USE_FFMPEG isn't set — falling back to WebRTC video track"
             );
         }
         #[cfg(not(feature = "ffmpeg-encoder"))]
@@ -2548,7 +2548,7 @@ async fn media_pump(
             }
             tracing::warn!(
                 %session_id,
-                "negotiated_transport=data-channel-h264 but ROOMLERD_USE_FFMPEG isn't set — falling back to WebRTC video track"
+                "negotiated_transport=data-channel-h264 but MESHHARBORD_USE_FFMPEG isn't set — falling back to WebRTC video track"
             );
         }
         #[cfg(not(feature = "ffmpeg-encoder"))]
@@ -3200,7 +3200,7 @@ async fn media_pump(
                         target_fps,
                         codec = %chosen_codec,
                         encoder = enc_ref.name(),
-                        "FR-112: software encoder at a 60 fps target, paced to what it sustains (never below 30; ROOMLERD_SW_FPS_60=0 restores 30)"
+                        "FR-112: software encoder at a 60 fps target, paced to what it sustains (never below 30; MESHHARBORD_SW_FPS_60=0 restores 30)"
                     );
                 }
                 if backend_is_sw && target_fps > 30 && !sw_live {
@@ -3814,7 +3814,7 @@ async fn run_vp9_444_dc_session(
 /// - DC backpressure AIMD: `dc.buffered_amount` over 1 MiB cuts the
 ///   target by 20% (MD); under 64 KiB for ≥ 5 s adds 10% (AI). Replaces
 ///   the absent REMB feedback path for the DC-transport.
-/// - Optional 60 fps via `ROOMLERD_VP9_FPS` env var (operator
+/// - Optional 60 fps via `MESHHARBORD_VP9_FPS` env var (operator
 ///   opt-in escape hatch — full warmup-probe / control-DC plumbing
 ///   deferred to a follow-up).
 #[cfg(feature = "vp9-444")]
@@ -3870,7 +3870,7 @@ async fn media_pump_vp9_444_dc(
 
     // rc.33: opt-in 60 fps via env var. Default 30 (the pre-rc.33
     // behaviour). Operators on hosts that can sustain SW VP9 encode at
-    // 4K@60 with cpu-used 6 can flip `ROOMLERD_VP9_FPS=60` to
+    // 4K@60 with cpu-used 6 can flip `MESHHARBORD_VP9_FPS=60` to
     // halve perceptual motion latency. No warmup probe in rc.33 — the
     // env var is operator-acknowledged; a CPU-starved host will see
     // frame drops surface in the heartbeat log (`frames_encoded /
@@ -3938,7 +3938,7 @@ async fn media_pump_vp9_444_dc(
 
     // rc.166 freeze fix — relay-aware bitrate clamp + tighter backpressure.
     // The WSL / corp path forces all media over a single TURN-TCP relay
-    // (ROOMLERD_ICE_RELAY_TCP=1), which carries only ~1-4 Mbps and is
+    // (MESHHARBORD_ICE_RELAY_TCP=1), which carries only ~1-4 Mbps and is
     // head-of-line-blocked. The 0.20-bpp VP9-444 target (~12 Mbps at
     // 2560×1600) collapses it. Clamp the encoder to relay_max_bps (3 Mbps
     // default) and, per Change D, trip AIMD at a shallower 256 KiB buffered
@@ -4088,7 +4088,7 @@ async fn media_pump_vp9_444_dc(
     // repainted the "blur pulse on every scroll / window switch" the whole
     // rc.234 round exists to kill. The encoder codes an uncovered region as
     // intra blocks within the same budget anyway. The DETECTOR stays live —
-    // the rc.45 cpu-used motion boost rides it. `ROOMLERD_SCENE_KF=1`
+    // the rc.45 cpu-used motion boost rides it. `MESHHARBORD_SCENE_KF=1`
     // restores the rc.39/43 forcing.
     let scene_kf_enabled = node_env("SCENE_KF").as_deref() == Some("1");
 
@@ -4619,7 +4619,7 @@ async fn media_pump_vp9_444_dc(
             // rc.61 — resolve chroma format. Priority order:
             //   1. Per-session `chroma_pref` from `rc:session.request`
             //      (rc.62 — controller's UI choice).
-            //   2. `ROOMLERD_VP9_CHROMA` env var (rc.61, operator
+            //   2. `MESHHARBORD_VP9_CHROMA` env var (rc.61, operator
             //      default at the host).
             //   3. Yuv444 (pre-rc.61 default, sharpest text).
             // Read at every rebuild so a mid-session env-var flip
@@ -5094,7 +5094,7 @@ async fn media_pump_vp9_444_dc(
 
         if frames_encoded.is_multiple_of(30) {
             // rc.36 — surface target_fps so field operators can verify
-            // ROOMLERD_VP9_FPS env-var was honored. If target_fps
+            // MESHHARBORD_VP9_FPS env-var was honored. If target_fps
             // shows 30 when the operator set 60, the env var didn't
             // reach the agent process (wrong service-block scope, or
             // process wasn't restarted to inherit the new block).
@@ -5701,7 +5701,7 @@ const MEDIA_WAITING_HINT_SLEEP: &str = "This computer is going to sleep. The ses
 
 /// FR-93 P5h — the `rc:media-waiting` a session's controller is sent as the
 /// computer goes to sleep, or `None` under P2d-2's kill switch
-/// (`ROOMLERD_MEDIA_WAITING=0`), which silences every waiting notice. No sleep
+/// (`MESHHARBORD_MEDIA_WAITING=0`), which silences every waiting notice. No sleep
 /// has a known end, so it counts as long as any other host wait.
 #[cfg_attr(
     not(all(target_os = "linux", feature = "portal-capture")),
@@ -5716,7 +5716,7 @@ pub(crate) fn host_sleep_notice() -> Option<String> {
     })
 }
 
-/// FR-93 P2d-2 kill switch `ROOMLERD_MEDIA_WAITING=0`: no `rc:media-waiting`
+/// FR-93 P2d-2 kill switch `MESHHARBORD_MEDIA_WAITING=0`: no `rc:media-waiting`
 /// is sent, and the viewer behaves as before P2d-2. P3e's pumps then keep
 /// their keepalives through a dark display too, as before P3e: with nothing
 /// said, a viewer that saw no frames would re-create its session every ~10 s.
@@ -5832,7 +5832,7 @@ impl CaptureWait {
 /// ([`crate::capture::open_default_async`]): if the open parks on the person at
 /// the screen (a portal dialog, P5b's locked screen, P3e's dark display), tell
 /// the controller, retrying until the control channel takes it.
-/// `ROOMLERD_MEDIA_WAITING=0` turns the notice off.
+/// `MESHHARBORD_MEDIA_WAITING=0` turns the notice off.
 ///
 /// The hook fires on the blocking pool, so it holds the runtime's handle
 /// rather than relying on a context that thread may not have entered.
@@ -6346,7 +6346,7 @@ async fn media_pump_ffmpeg_dc(
     // to direct (fps was baked into the capture pacer at pump start). The
     // live AIMD ceiling clamp still follows EVERY flip immediately; the
     // tracker only gates the heavyweight rebuild. Escape hatch
-    // `ROOMLERD_RATE_PROFILE_REBUILD=0` restores the AIMD-only
+    // `MESHHARBORD_RATE_PROFILE_REBUILD=0` restores the AIMD-only
     // behaviour.
     let mut flip_tracker = crate::encode::rate_profile::FlipTracker::new(constrained);
     let rate_profile_rebuild = node_env("RATE_PROFILE_REBUILD").as_deref() != Some("0");
@@ -6553,7 +6553,7 @@ async fn media_pump_ffmpeg_dc(
     // plumbed: rebuild-on-dims-change → guaranteed IDR of the settled
     // native `last_good_frame` (stored pre-downscale), aimd.force_reapply,
     // video_info resend, encoded_dims → cursor scale. Kill switch
-    // `ROOMLERD_IDLE_REFINE=0`; see rate_profile::IdleRefine.
+    // `MESHHARBORD_IDLE_REFINE=0`; see rate_profile::IdleRefine.
     let mut idle_refine = crate::encode::rate_profile::IdleRefine::from_env();
     // rc.130 — 60 ms (was 1 s). Doubles as the SPARSE-INPUT DRAIN. With the
     // HW encoder's output queue capped to ~1 frame (encoder.rs delay=0 /
@@ -6860,7 +6860,7 @@ async fn media_pump_ffmpeg_dc(
     // frame-skip divisor; keyframes never skipped), the rc.186
     // encode-pressure maxrate factor (stepped once per heartbeat), and
     // the 2026-07-27 encode-bound auto-downscale tier (soft slot of the
-    // dims plan; kill `ROOMLERD_AUTO_DOWNSCALE=0`). The governor
+    // dims plan; kill `MESHHARBORD_AUTO_DOWNSCALE=0`). The governor
     // emits continuous bitrate targets; `FfmpegEncoder::set_bitrate`
     // coarsens them to a ladder and applies in-place (NVENC reconfigure)
     // or as a debounced QSV/AMF rebuild whose first frame is an IDR.
@@ -7209,7 +7209,7 @@ async fn media_pump_ffmpeg_dc(
         // AIMD's rate DROPS land DURING motion as smaller frames instead
         // of production skips. Replaces the rc.445 motion-defer when
         // `bg_rebuild` is on; the defer machinery stays as the
-        // kill-switch fallback (`ROOMLERD_BG_REBUILD=0`).
+        // kill-switch fallback (`MESHHARBORD_BG_REBUILD=0`).
         // FR-65 — `handle.await` on a finished task is cheap, but `is_finished`
         // is a race: the task can complete between the check and the await, and
         // the adopt itself touches the live encoder. Timed so a swap that turns
@@ -8590,7 +8590,7 @@ async fn media_pump_ffmpeg_dc(
             };
             // FR-65 — the open is BLOCKING (0.62-0.73 s measured on Iris Xe at
             // session start, 2026-09-03) and this pump runs under
-            // `tokio::spawn`, i.e. on a SHARED runtime worker. `roomlerd` is one
+            // `tokio::spawn`, i.e. on a SHARED runtime worker. `meshharbord` is one
             // process: overlay, DERP, tunnels and the WS control plane are on
             // those same workers, so a synchronous open here is not merely a
             // late first frame.
@@ -9823,10 +9823,10 @@ fn log_plan_stale_swap(
     );
 }
 
-/// The VP9-444 pump's target rate. An explicit `ROOMLERD_VP9_FPS` pins it (30
+/// The VP9-444 pump's target rate. An explicit `MESHHARBORD_VP9_FPS` pins it (30
 /// or 60, any other value rounding to the nearer). Otherwise FR-112 P2: **60**,
 /// paced down by the pump to what the encoder sustains, or 30 with
-/// `ROOMLERD_SW_FPS_60=0` (0.4.141's default, when a CPU-starved host was the
+/// `MESHHARBORD_SW_FPS_60=0` (0.4.141's default, when a CPU-starved host was the
 /// reason for it; the pacing now covers that host).
 #[cfg(feature = "vp9-444")]
 fn vp9_444_target_fps_from_env() -> u32 {
@@ -9850,13 +9850,13 @@ fn vp9_444_target_fps(pinned: Option<u32>, sw_fps_60: bool) -> u32 {
 /// Target fps for the FFmpeg HW DC pump (HEVC / vp9_qsv): explicit env wins,
 /// else pick per-session by transport (Phase B).
 ///
-/// An explicit `ROOMLERD_FFMPEG_FPS` ALWAYS wins (clamped 1..=240) — a
+/// An explicit `MESHHARBORD_FFMPEG_FPS` ALWAYS wins (clamped 1..=240) — a
 /// high-refresh host can force 60 even on a relay, or pin 30 on a direct link.
 /// With no override: a direct/LAN link defaults to **60** (HW encode sustains
 /// it and the capture backend caps the real delivered rate anyway); a
 /// constrained relay-TCP link defaults to **30**, because 60 fps of HEVC
 /// overruns the ~1-4 Mbps pipe and just sheds frames. Deliberately distinct
-/// from the libvpx VP9-444 pump's `ROOMLERD_VP9_FPS` (default 30 — SW
+/// from the libvpx VP9-444 pump's `MESHHARBORD_VP9_FPS` (default 30 — SW
 /// 4:4:4 can't keep up at 60).
 ///
 /// Pre-rc.93 the pump hardcoded 30, which throttled the scrap backend's
@@ -10709,7 +10709,7 @@ fn attach_cursor_handler(
         // dedupe via the tracker's per-shape cache so we don't burn
         // DC bandwidth on a static cursor.
         // FR-98 C4 — the period is a knob for the field A/B
-        // (`ROOMLERD_CURSOR_POLL_MS`), read once per session; 8 ms unless set.
+        // (`MESHHARBORD_CURSOR_POLL_MS`), read once per session; 8 ms unless set.
         let poll = crate::capture::cursor::poll_interval(node_env("CURSOR_POLL_MS").as_deref());
         if poll != crate::capture::cursor::DEFAULT_POLL {
             info!(
@@ -10847,7 +10847,7 @@ pub(crate) fn aspect_preserved_target(src_w: u32, src_h: u32, cap_long_edge: u32
 /// near-1:1 NON-INTEGER resample is the worst case for any filter —
 /// text mush + "pixely" form aliasing — while saving almost no bits.
 /// Snapping to Native keeps the chain 1:1 (crisp) whenever the request
-/// is within ~15% of the source. Env `ROOMLERD_SNAP_NATIVE_PCT`
+/// is within ~15% of the source. Env `MESHHARBORD_SNAP_NATIVE_PCT`
 /// (percent, default 85; `0` disables snapping).
 #[cfg_attr(
     not(any(feature = "vp9-444", feature = "ffmpeg-encoder")),
@@ -12321,7 +12321,7 @@ async fn handle_files_control(
             // rc.19: try both directions. cancel_outgoing flips a
             // flag if the id matches an in-flight download.
             // cancel_incoming clears upload state + removes the
-            // .roomler-partial/<id>/ staging dir + registry entry so
+            // .meshharbor-partial/<id>/ staging dir + registry entry so
             // the partial doesn't sit until the 24h orphan sweep.
             // Browsers send files:cancel on terminal upload failure
             // (6 reconnect attempts exhausted).
@@ -12892,8 +12892,8 @@ async fn or_stopped<T>(
 
 /// Is this the overlay's own TUN interface?
 ///
-/// The names come from `tunnel_core::overlay::tun`: `roomler` on Windows,
-/// `roomler0` on Linux, and a kernel-assigned `utunN` on macOS — which we
+/// The names come from `tunnel_core::overlay::tun`: `meshharbor` on Windows,
+/// `meshharbor0` on Linux, and a kernel-assigned `utunN` on macOS — which we
 /// cannot match by name. The masking-srflx failure this guards against
 /// needs a host whose STUN is blocked on the physical NIC, which is the
 /// corp-Windows case. The macOS candidate is NOT inert, though (#1882: a
@@ -12903,17 +12903,17 @@ async fn or_stopped<T>(
 ///
 /// Prefix-matched rather than compared exactly so a suffixed variant (a
 /// second adapter, a `:N` alias) is caught too. Anything else — including a
-/// user interface merely CONTAINING "roomler" further in the name — is left
+/// user interface merely CONTAINING "meshharbor" further in the name — is left
 /// alone; a false positive here silently removes a real candidate.
 ///
-/// Multi-org v2: per-org adapters are named `roomler-<suffix>`, so the
-/// `roomler-` prefix is ours as well.
+/// Multi-org v2: per-org adapters are named `meshharbor-<suffix>`, so the
+/// `meshharbor-` prefix is ours as well.
 pub(crate) fn is_overlay_iface(name: &str) -> bool {
     let n = name.trim().to_ascii_lowercase();
-    n == "roomler"
-        || n.starts_with("roomler-")
-        || n.starts_with("roomler0")
-        || n.starts_with("roomler.")
+    n == "meshharbor"
+        || n.starts_with("meshharbor-")
+        || n.starts_with("meshharbor0")
+        || n.starts_with("meshharbor.")
 }
 
 pub(crate) fn map_ice_servers(servers: &[IceServer]) -> Vec<RTCIceServer> {
@@ -12928,7 +12928,7 @@ pub(crate) fn map_ice_servers(servers: &[IceServer]) -> Vec<RTCIceServer> {
 }
 
 /// Filter mapped ICE servers to the TURNS-over-TCP relay only, for
-/// `ROOMLERD_ICE_RELAY_TCP` mode. Hostile-NAT hosts (WSL2 +
+/// `MESHHARBORD_ICE_RELAY_TCP` mode. Hostile-NAT hosts (WSL2 +
 /// wsl-vpnkit, other userspace-VPN stacks) mangle UDP source ports so the
 /// TURN allocation refresh fails and the media peer flaps; a single
 /// TURNS/TCP connection (handled by the vendored `webrtc-ice` TCP branch)
@@ -12976,17 +12976,17 @@ mod overlay_iface_filter_tests {
 
     #[test]
     fn matches_the_overlay_tun_on_every_platform_we_name_it() {
-        // tunnel_core::overlay::tun — `roomler` (Windows), `roomler0` (Linux).
-        assert!(is_overlay_iface("roomler"));
-        assert!(is_overlay_iface("roomler0"));
-        assert!(is_overlay_iface("ROOMLER")); // Windows aliases are case-y
-        assert!(is_overlay_iface(" roomler ")); // and can carry whitespace
-        assert!(is_overlay_iface("roomler0:1")); // suffixed alias
-        // Multi-org v2 — per-org adapters (`roomler-<suffix>`) are overlay
+        // tunnel_core::overlay::tun — `meshharbor` (Windows), `meshharbor0` (Linux).
+        assert!(is_overlay_iface("meshharbor"));
+        assert!(is_overlay_iface("meshharbor0"));
+        assert!(is_overlay_iface("MESHHARBOR")); // Windows aliases are case-y
+        assert!(is_overlay_iface(" meshharbor ")); // and can carry whitespace
+        assert!(is_overlay_iface("meshharbor0:1")); // suffixed alias
+        // Multi-org v2 — per-org adapters (`meshharbor-<suffix>`) are overlay
         // ifaces too: their addresses must never leak into ICE candidates.
-        assert!(is_overlay_iface("roomler-acme"));
-        assert!(is_overlay_iface("ROOMLER-ACME"));
-        assert!(is_overlay_iface("roomler-acme:1"));
+        assert!(is_overlay_iface("meshharbor-acme"));
+        assert!(is_overlay_iface("MESHHARBOR-ACME"));
+        assert!(is_overlay_iface("meshharbor-acme:1"));
     }
 
     /// A false positive silently deletes a real ICE candidate, so the match
@@ -12998,8 +12998,8 @@ mod overlay_iface_filter_tests {
             "eth0",
             "utun3",
             "vEthernet (Default Switch)",
-            "my-roomler-vpn", // contains it, is NOT ours
-            "roomlerx",       // near-miss
+            "my-meshharbor-vpn", // contains it, is NOT ours
+            "meshharborx",       // near-miss
             "",
         ] {
             assert!(!is_overlay_iface(n), "must not filter {n:?}");
@@ -13975,7 +13975,7 @@ mod tests {
         assert_eq!(super::target_fps_with_tier(P::Software, false), 30);
     }
 
-    /// FR-112 P2 — the VP9-444 target: an explicit `ROOMLERD_VP9_FPS` pins it;
+    /// FR-112 P2 — the VP9-444 target: an explicit `MESHHARBORD_VP9_FPS` pins it;
     /// otherwise 60 with the software tier on, and 30 with it off.
     #[cfg(feature = "vp9-444")]
     #[test]
@@ -14807,7 +14807,7 @@ mod overlay_tier_tests {
         // where a real daemon happens to be running).
         // SAFETY: no other test touches this var (set_var is unsafe in
         // edition 2024 because of cross-thread env races).
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "OVERLAY_TIER_DETECT", "0") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "OVERLAY_TIER_DETECT", "0") };
         assert!(!overlay_remote_is_relay_tier("100.64.0.29", sid).await);
         unsafe { tunnel_core::env::test_env::clear("OVERLAY_TIER_DETECT") };
     }

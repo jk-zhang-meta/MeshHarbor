@@ -12,7 +12,7 @@
 //! ceiling by design (`role.rs`, #888). Approval therefore rides
 //! `MANAGE_AGENTS` **and** `EXEC_DEVICE`, which is coherent rather than a
 //! stand-in: an `EXEC_DEVICE` holder can already run
-//! `roomler config set relay_server_enabled true` on any exec-enabled device
+//! `meshharbor config set relay_server_enabled true` on any exec-enabled device
 //! as root, so the coupling grants nothing new. What it cannot express —
 //! relay approvers who may NOT run root commands — waits on the BigInt
 //! migration. The audit reads behind `VIEW_EXEC_AUDIT` for the same reason.

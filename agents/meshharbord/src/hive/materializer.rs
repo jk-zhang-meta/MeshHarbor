@@ -5,7 +5,7 @@
 //! ACCOUNT, from what the daemon streams to its stdin.
 //!
 //! The reverse of `hive-checkpoint` (P2b-3a), for the same reason: the daemon
-//! never writes a path in an account's tree (spec §3b). It starts `roomlerd
+//! never writes a path in an account's tree (spec §3b). It starts `meshharbord
 //! hive-materialize` as the account and streams it the checkpoint it
 //! materializes:
 //!

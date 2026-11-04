@@ -4287,7 +4287,7 @@ impl Supervisor {
                 HiveRefusal::LaunchFailed,
                 format!(
                     "{account} cannot run {relay}, the session's toolbelt relay — install \
-                     roomlerd where every account may execute it"
+                     meshharbord where every account may execute it"
                 ),
             ));
         }
@@ -4369,7 +4369,7 @@ impl Supervisor {
         });
         cmd.arg("-c")
             .arg(WRAPPER)
-            .arg("roomler-hive")
+            .arg("meshharbor-hive")
             .arg(spec.config_dir())
             .arg(&spec.folder)
             .arg(
@@ -4381,7 +4381,7 @@ impl Supervisor {
             .arg(&spec.harness)
             .args(spec.args());
         // A clean environment: none of the daemon's (root's, with its
-        // ROOMLERD_* knobs) reaches a user's session.
+        // MESHHARBORD_* knobs) reaches a user's session.
         let path = harness_path(&home);
         cmd.env_clear()
             .envs(unix_base_env(&home, account, Some(&path)))
@@ -4453,7 +4453,7 @@ impl Supervisor {
     }
 
     /// P1i-2 — the same on Windows, as the user signed in at the console, whom
-    /// `account` must name (D2: nobody else, never SYSTEM). `roomlerd
+    /// `account` must name (D2: nobody else, never SYSTEM). `meshharbord
     /// hive-prep` does the wrapper's work as that user first. The harness then
     /// starts SUSPENDED into a Job Object of its own and is resumed only once
     /// it is in it, with the folder as its working directory.
@@ -5042,7 +5042,7 @@ pub(super) fn own_exe() -> Result<String, String> {
 /// A session's state directory in its account's home: its config directory,
 /// and a shadow repository of its folder, live there.
 fn session_state_dir(home: &Path, sid: &str) -> PathBuf {
-    home.join(".roomler").join("hive").join(sid)
+    home.join(".meshharbor").join("hive").join(sid)
 }
 
 /// The `PATH` a session's harness, and its children run as its account,
@@ -6174,7 +6174,7 @@ pub(crate) mod tests {
                     .is_ok_and(|m| m.file_type().is_symlink() && m.uid() == 0)
             });
         if let Some(link) = system {
-            let under = link.join("roomler-p1h3-probe");
+            let under = link.join("meshharbor-p1h3-probe");
             assert_eq!(
                 untrusted_link(&under),
                 None,
@@ -8063,7 +8063,7 @@ done
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let home = root.path().join("home");
         std::fs::create_dir(&home).unwrap();
-        let bin = home.join("roomlerd");
+        let bin = home.join("meshharbord");
         std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let me = std::fs::metadata(&bin).unwrap();
@@ -8260,7 +8260,7 @@ done
         let pair = |a: &str, b: &str| argv.windows(2).any(|w| w[0] == a && w[1] == b);
         assert!(pair("--permission-mode", "default"), "{argv:?}");
         assert!(
-            pair("--permission-prompt-tool", "mcp__roomler__approve"),
+            pair("--permission-prompt-tool", "mcp__meshharbor__approve"),
             "{argv:?}"
         );
         assert!(
@@ -8278,7 +8278,7 @@ done
         assert!(pair("--mcp-config", mcp_path.to_str().unwrap()), "{argv:?}");
         let mcp: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
-        let server = &mcp["mcpServers"]["roomler"];
+        let server = &mcp["mcpServers"]["meshharbor"];
         assert_eq!(
             server["args"],
             json!(["hive-mcp", toolbelt_socket(&r, sid).to_str().unwrap()])
@@ -8925,7 +8925,7 @@ done
         let history = r
             .root
             .path()
-            .join("home/.roomler/hive")
+            .join("home/.meshharbor/hive")
             .join(sid.to_hex())
             .join("claude/projects")
             .join(format!("hive-{}", o.harness_session))
@@ -8987,7 +8987,7 @@ done
     fn config_claude_md(r: &Rig, sid: ObjectId) -> PathBuf {
         r.root
             .path()
-            .join("home/.roomler/hive")
+            .join("home/.meshharbor/hive")
             .join(sid.to_hex())
             .join("claude/CLAUDE.md")
     }
@@ -10280,7 +10280,7 @@ done
             .root
             .path()
             .join("home")
-            .join(".roomler")
+            .join(".meshharbor")
             .join("hive")
             .join(sid.to_hex());
         std::fs::remove_dir_all(&state).unwrap();
@@ -10391,7 +10391,7 @@ done
             .root
             .path()
             .join("home")
-            .join(".roomler")
+            .join(".meshharbor")
             .join("hive")
             .join(&hex);
         let run_dir = r.root.path().join("run").join(&hex);
@@ -10487,7 +10487,7 @@ done
             .root
             .path()
             .join("home")
-            .join(".roomler")
+            .join(".meshharbor")
             .join("hive")
             .join(&hex);
         let elsewhere = r.root.path().join("elsewhere");

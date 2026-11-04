@@ -5,7 +5,7 @@
 // the extract step, not by this module, and the release zip still carries a
 // meshharbor-tunnel.exe alias for hosts that already have it on PATH — so the
 // occurrences below describe a layout this module only appends to.
-// The LINUX half is done: FR-46 flipped the symlink to `~/.local/bin/roomler`
+// The LINUX half is done: FR-46 flipped the symlink to `~/.local/bin/meshharbor`
 // and REMOVES a pre-rename one instead of stranding it, which is what the
 // objection recorded here actually asked for. docs/fr/FR-46
 //! Per-platform integration after the CLI archive is extracted.
@@ -15,10 +15,10 @@
 //! - **Windows**: append the install dir to the user-PATH registry
 //!   value at `HKCU\Environment`. Best-effort Start-Menu shortcut
 //!   creation in v1 — the .lnk write is deferred to Phase B; v1 just
-//!   ensures `roomler-tunnel` is on PATH so the operator can run it
+//!   ensures `meshharbor-tunnel` is on PATH so the operator can run it
 //!   from any shell.
-//! - **Linux**: symlink the binary into `~/.local/bin/roomler`, and
-//!   remove a pre-rename `roomler-tunnel` symlink if one is there.
+//! - **Linux**: symlink the binary into `~/.local/bin/meshharbor`, and
+//!   remove a pre-rename `meshharbor-tunnel` symlink if one is there.
 //!   `.desktop` file is deferred to Phase B (it's only useful with
 //!   the first-forward feature so the desktop entry has a meaningful
 //!   `Exec=…` line).
@@ -54,13 +54,13 @@ pub struct IntegrationReport {
     /// Resolved path the operator should run / add to their shell rc.
     /// e.g. `C:\Users\foo\AppData\Local\Programs\meshharbor-tunnel\
     /// meshharbor-tunnel.exe` (Windows) or `/home/foo/.local/bin/
-    /// roomler` (Linux).
+    /// meshharbor` (Linux).
     pub binary_path: PathBuf,
 }
 
 /// Wire up the freshly-extracted CLI into the operator's shell PATH.
 ///
-/// `tunnel_binary` is the absolute path to the `roomler-tunnel(.exe)`
+/// `tunnel_binary` is the absolute path to the `meshharbor-tunnel(.exe)`
 /// the extractor located inside `<install_root>`. `install_root` is
 /// the per-user install dir (`%LOCALAPPDATA%\Programs\meshharbor-tunnel`
 /// on Windows; the extractor's dest dir on Linux/macOS).
@@ -293,12 +293,12 @@ fn integrate_unix(tunnel_binary: &Path) -> Result<IntegrationReport> {
     })
 }
 
-/// Remove the pre-rename `roomler-tunnel` symlink this wizard used to create.
+/// Remove the pre-rename `meshharbor-tunnel` symlink this wizard used to create.
 ///
 /// FR-46: the anchor that used to sit on this module argued, correctly, that
 /// flipping the name is a BEHAVIOUR change because it "leaves the old entry
 /// stranded". That objection is answered by removing it rather than by not
-/// renaming — an operator ends up with exactly one `roomler` on PATH instead of
+/// renaming — an operator ends up with exactly one `meshharbor` on PATH instead of
 /// one working name and one dangling one.
 ///
 /// ⚠️ Only a SYMLINK is removed. This wizard has only ever created symlinks
@@ -312,7 +312,7 @@ fn retire_legacy_symlink(current: &Path) {
     let Some(parent) = current.parent() else {
         return;
     };
-    let legacy = parent.join("roomler-tunnel");
+    let legacy = parent.join("meshharbor-tunnel");
     if legacy
         .symlink_metadata()
         .is_ok_and(|m| m.file_type().is_symlink())
@@ -321,7 +321,7 @@ fn retire_legacy_symlink(current: &Path) {
     }
 }
 
-/// Resolve `~/.local/bin/roomler`. The XDG-style path works
+/// Resolve `~/.local/bin/meshharbor`. The XDG-style path works
 /// on both Linux and macOS — modern shells include it in PATH by
 /// default; for the operators where it isn't, the Done step surfaces
 /// a one-line `export PATH=…` they can drop into their shell rc.
@@ -329,7 +329,7 @@ fn retire_legacy_symlink(current: &Path) {
 fn unix_local_bin_path() -> Result<PathBuf> {
     let dirs = directories::UserDirs::new()
         .ok_or_else(|| anyhow::anyhow!("could not resolve user home dir"))?;
-    Ok(dirs.home_dir().join(".local").join("bin").join("roomler"))
+    Ok(dirs.home_dir().join(".local").join("bin").join("meshharbor"))
 }
 
 #[cfg(test)]
@@ -344,7 +344,7 @@ mod tests {
             binary_path: PathBuf::from(if cfg!(windows) {
                 r"C:\Users\foo\bin\meshharbor.exe"
             } else {
-                "/home/foo/.local/bin/roomler"
+                "/home/foo/.local/bin/meshharbor"
             }),
         };
         let json = serde_json::to_string(&report).unwrap();

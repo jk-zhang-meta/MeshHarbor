@@ -2,12 +2,12 @@
 // Copyright (C) 2026 G ROX EOOD
 // RETIRED-NAME-ANCHOR-BEGIN
 // Serves PUBLISHED release assets. The `tunnel-v*` tag and the
-// roomler-tunnel-<version>-<target> asset names are fixed by what is already
+// meshharbor-tunnel-<version>-<target> asset names are fixed by what is already
 // on GitHub Releases — renaming them here serves 404s to every existing
 // installer. Release asset names are frozen by FR-21 D6; the test fixtures
 // below are copies of real asset lists and must match byte-for-byte.
 //! `/api/tunnel/{latest-release,installer/{platform}}` — cached
-//! GitHub-Releases proxy for the `roomler-tunnel` binary. Mirrors
+//! GitHub-Releases proxy for the `meshharbor-tunnel` binary. Mirrors
 //! [`routes::agent_release`] but targets `tunnel-v*` tags and
 //! platform-keyed archives instead of perUser/perMachine MSI flavours.
 //!
@@ -56,7 +56,7 @@ pub struct InstallerHealth {
 /// `latest-release` so the CLI / installer logic can reuse one parser.
 ///
 /// FILTERS to `tunnel-v*` tags. The cache holds the raw repo release list
-/// (`agent-v*`, `vendored-ffmpeg-*`, `tunnel-v*`, …); `roomler-tunnel
+/// (`agent-v*`, `vendored-ffmpeg-*`, `tunnel-v*`, …); `meshharbor-tunnel
 /// self-update` takes `.first()` as "latest". Without this filter the newest
 /// UNRELATED release — e.g. a `vendored-ffmpeg-*` helper published for the
 /// agent's HEVC libs — was served as the latest tunnel, so self-update reported
@@ -271,11 +271,11 @@ mod tests {
     #[test]
     fn pick_installer_asset_keeps_the_linux_arches_apart() {
         let names = [
-            "roomler-tunnel-0.4.148-aarch64-unknown-linux-gnu.tar.gz",
-            "roomler-tunnel-0.4.148-aarch64-unknown-linux-gnu.tar.gz.sha256",
-            "roomler-tunnel-0.4.148-aarch64-unknown-linux-gnu.deb",
-            "roomler-tunnel-0.4.148-x86_64-unknown-linux-gnu.tar.gz",
-            "roomler-tunnel-0.4.148-x86_64-unknown-linux-gnu.deb",
+            "meshharbor-tunnel-0.4.148-aarch64-unknown-linux-gnu.tar.gz",
+            "meshharbor-tunnel-0.4.148-aarch64-unknown-linux-gnu.tar.gz.sha256",
+            "meshharbor-tunnel-0.4.148-aarch64-unknown-linux-gnu.deb",
+            "meshharbor-tunnel-0.4.148-x86_64-unknown-linux-gnu.tar.gz",
+            "meshharbor-tunnel-0.4.148-x86_64-unknown-linux-gnu.deb",
         ];
         let arm_first: Vec<_> = names.iter().map(|n| asset(n)).collect();
         let x86_first: Vec<_> = names.iter().rev().map(|n| asset(n)).collect();
@@ -283,25 +283,25 @@ mod tests {
             let pick = |p| pick_installer_asset(assets, p).unwrap().name.as_str();
             assert_eq!(
                 pick("linux-x86_64"),
-                "roomler-tunnel-0.4.148-x86_64-unknown-linux-gnu.tar.gz"
+                "meshharbor-tunnel-0.4.148-x86_64-unknown-linux-gnu.tar.gz"
             );
             assert_eq!(
                 pick("linux-deb"),
-                "roomler-tunnel-0.4.148-x86_64-unknown-linux-gnu.deb"
+                "meshharbor-tunnel-0.4.148-x86_64-unknown-linux-gnu.deb"
             );
             assert_eq!(
                 pick("linux-aarch64"),
-                "roomler-tunnel-0.4.148-aarch64-unknown-linux-gnu.tar.gz"
+                "meshharbor-tunnel-0.4.148-aarch64-unknown-linux-gnu.tar.gz"
             );
             assert_eq!(
                 pick("linux-deb-aarch64"),
-                "roomler-tunnel-0.4.148-aarch64-unknown-linux-gnu.deb"
+                "meshharbor-tunnel-0.4.148-aarch64-unknown-linux-gnu.deb"
             );
         }
         // A release from before P7b: aarch64 is a clean 404, never x86_64.
         let before = vec![
-            asset("roomler-tunnel-0.4.147-x86_64-unknown-linux-gnu.tar.gz"),
-            asset("roomler-tunnel-0.4.147-x86_64-unknown-linux-gnu.deb"),
+            asset("meshharbor-tunnel-0.4.147-x86_64-unknown-linux-gnu.tar.gz"),
+            asset("meshharbor-tunnel-0.4.147-x86_64-unknown-linux-gnu.deb"),
         ];
         assert!(pick_installer_asset(&before, "linux-aarch64").is_none());
         assert!(pick_installer_asset(&before, "linux-deb-aarch64").is_none());
@@ -316,36 +316,36 @@ mod tests {
     #[test]
     fn pick_installer_asset_matches_by_triple_and_suffix() {
         let assets = vec![
-            asset("roomler-tunnel-0.3.0-x86_64-unknown-linux-gnu.tar.gz"),
-            asset("roomler-tunnel-0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256"),
-            asset("roomler-tunnel-0.3.0-x86_64-unknown-linux-gnu.deb"),
-            asset("roomler-tunnel-0.3.0-universal-apple-darwin.tar.gz"),
-            asset("roomler-tunnel-0.3.0-x86_64-pc-windows-msvc.zip"),
+            asset("meshharbor-tunnel-0.3.0-x86_64-unknown-linux-gnu.tar.gz"),
+            asset("meshharbor-tunnel-0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256"),
+            asset("meshharbor-tunnel-0.3.0-x86_64-unknown-linux-gnu.deb"),
+            asset("meshharbor-tunnel-0.3.0-universal-apple-darwin.tar.gz"),
+            asset("meshharbor-tunnel-0.3.0-x86_64-pc-windows-msvc.zip"),
         ];
         assert_eq!(
             pick_installer_asset(&assets, "linux-x86_64").unwrap().name,
-            "roomler-tunnel-0.3.0-x86_64-unknown-linux-gnu.tar.gz"
+            "meshharbor-tunnel-0.3.0-x86_64-unknown-linux-gnu.tar.gz"
         );
         assert_eq!(
             pick_installer_asset(&assets, "linux-deb").unwrap().name,
-            "roomler-tunnel-0.3.0-x86_64-unknown-linux-gnu.deb"
+            "meshharbor-tunnel-0.3.0-x86_64-unknown-linux-gnu.deb"
         );
         assert_eq!(
             pick_installer_asset(&assets, "macos").unwrap().name,
-            "roomler-tunnel-0.3.0-universal-apple-darwin.tar.gz"
+            "meshharbor-tunnel-0.3.0-universal-apple-darwin.tar.gz"
         );
         assert_eq!(
             pick_installer_asset(&assets, "windows-x86_64")
                 .unwrap()
                 .name,
-            "roomler-tunnel-0.3.0-x86_64-pc-windows-msvc.zip"
+            "meshharbor-tunnel-0.3.0-x86_64-pc-windows-msvc.zip"
         );
     }
 
     #[test]
     fn pick_installer_asset_skips_sha256_sidecars() {
         let assets = vec![asset(
-            "roomler-tunnel-0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256",
+            "meshharbor-tunnel-0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256",
         )];
         assert!(pick_installer_asset(&assets, "linux-x86_64").is_none());
     }
@@ -359,12 +359,12 @@ mod tests {
             release(
                 "tunnel-v0.3.0-rc.5",
                 true,
-                &["roomler-tunnel-0.3.0-rc.5-x86_64-pc-windows-msvc.zip"],
+                &["meshharbor-tunnel-0.3.0-rc.5-x86_64-pc-windows-msvc.zip"],
             ),
             release(
                 "tunnel-v0.3.0",
                 false,
-                &["roomler-tunnel-0.3.0-x86_64-pc-windows-msvc.zip"],
+                &["meshharbor-tunnel-0.3.0-x86_64-pc-windows-msvc.zip"],
             ),
             release("agent-v0.3.0", false, &[]),
         ];
@@ -401,7 +401,7 @@ mod tests {
             release(
                 "tunnel-v0.3.0-rc.167",
                 false,
-                &["roomler-tunnel-0.3.0-rc.167-x86_64-pc-windows-msvc.zip"],
+                &["meshharbor-tunnel-0.3.0-rc.167-x86_64-pc-windows-msvc.zip"],
             ),
             release("tunnel-v0.3.0-rc.166", false, &[]),
         ];

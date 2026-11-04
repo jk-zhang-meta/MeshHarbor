@@ -37,7 +37,7 @@
 //! renewal back: nothing is rotated, so the token on disk stays valid, and
 //! the new one is used until a restart reads the file again.
 //!
-//! Kill switch: `ROOMLERD_TOKEN_RENEWAL=0` turns all of it off, and the
+//! Kill switch: `MESHHARBORD_TOKEN_RENEWAL=0` turns all of it off, and the
 //! daemon keeps the token it started with, as before FR-103.
 
 use std::sync::Arc;
@@ -92,8 +92,8 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// `ROOMLERD_TOKEN_RENEWAL` (default on) and
-    /// `ROOMLERD_TOKEN_RENEW_BEFORE_DAYS` (1–3650 days, an exact override of
+    /// `MESHHARBORD_TOKEN_RENEWAL` (default on) and
+    /// `MESHHARBORD_TOKEN_RENEW_BEFORE_DAYS` (1–3650 days, an exact override of
     /// the default rule; a value above the token's lifetime makes it due at
     /// once and at every look after, so it is a testing knob).
     pub fn from_env() -> Self {
@@ -177,7 +177,7 @@ pub async fn request(server_url: &str, token: &str) -> anyhow::Result<Reply> {
     let url = format!("{base}/api/agent/self/renew");
     let client = reqwest::Client::builder()
         .user_agent(concat!(
-            "roomlerd-token-renewal/",
+            "meshharbord-token-renewal/",
             env!("CARGO_PKG_VERSION")
         ))
         .timeout(REQUEST_TIMEOUT)
@@ -320,7 +320,7 @@ pub async fn renew(enrollment: &Enrollment, remote_cfg: &RemoteConfigServices) -
 /// waits it out:
 ///
 /// 1. a token in the config file that is not the one in use, written by
-///    `roomlerd re-enroll` (or the companion) while this daemon ran;
+///    `meshharbord re-enroll` (or the companion) while this daemon ran;
 /// 2. a renewal, which the server grants up to 90 days past expiry.
 ///
 /// `true` = a different token is in use now, and a reconnect is worth trying
@@ -566,7 +566,7 @@ mod tests {
         (e, svc)
     }
 
-    /// A 401 with a newer token on disk (`roomlerd re-enroll` ran while the
+    /// A 401 with a newer token on disk (`meshharbord re-enroll` ran while the
     /// daemon did) switches to it without asking the server anything.
     #[tokio::test]
     async fn a_refused_token_switches_to_a_newer_one_on_disk() {

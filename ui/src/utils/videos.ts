@@ -31,9 +31,9 @@ export interface SiteVideo {
 export const VIDEOS: readonly SiteVideo[] = [
   {
     id: 'C1YdfmhbAKM',
-    title: 'Self-hosted TeamViewer alternative: Roomler on Windows, Mac and Linux',
+    title: 'Self-hosted TeamViewer alternative: MeshHarbor on Windows, Mac and Linux',
     description:
-      'Install the Roomler agent on Windows, macOS and Linux, connect from a browser tab, and go through ' +
+      'Install the MeshHarbor agent on Windows, macOS and Linux, connect from a browser tab, and go through ' +
       'consent and unattended access, the Windows lock screen, hardware encoding and sharp text, files ' +
       'and the clipboard, and the private network the same agent builds.',
     uploadDate: '2026-10-15T18:00:00Z',

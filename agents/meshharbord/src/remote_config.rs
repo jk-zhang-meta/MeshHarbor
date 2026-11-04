@@ -167,7 +167,7 @@ impl RemoteConfigServices {
     /// FR-52 P3 — gate 3 and the gate-4 record, read from the config FILE at
     /// the moment an outsider knocks.
     ///
-    /// Live for the reason `exec_enabled` is live: `roomler rc password clear`
+    /// Live for the reason `exec_enabled` is live: `meshharbor rc password clear`
     /// and `config set external_access_enabled false` are how the person at the
     /// machine REVOKES cross-org access. A revocation that took effect only at
     /// the next restart would leave an outsider able to log in after the owner
@@ -225,7 +225,7 @@ impl RemoteConfigServices {
 
     /// Re-seed the live flags from a config the LOCAL owner just wrote.
     ///
-    /// Called by the LocalAPI's `ConfigSet` (the desktop companion, `roomler
+    /// Called by the LocalAPI's `ConfigSet` (the desktop companion, `meshharbor
     /// config set`) after a successful save, and it closes a genuine inversion:
     /// [`Self::apply`] made a SERVER push to `exec_enabled` take effect
     /// immediately, while an owner's own edit sat in the file until the daemon

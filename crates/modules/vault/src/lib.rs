@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //! `vault` — IAM for secrets, the server side (FR-90 P3,
-//! `docs/roomler-hive-design.md` §8, `docs/vault.md`).
+//! `docs/meshharbor-hive-design.md` §8, `docs/vault.md`).
 //!
 //! ⚠️ **Managed custody.** This module holds the key-encryption key and can
 //! decrypt every secret it stores, so a compromised server can read them
@@ -20,10 +20,10 @@
 //! by one of its drivers. A session's own egress is the vault's to decide
 //! too (P3-7-1b, [`net`]): a grant, signed under its own audience, that the
 //! network module checks without calling the vault. So is a session's command
-//! on another device over Roomler SSH (P3-8-1a, [`ssh`]): a ticket, likewise
+//! on another device over MeshHarbor SSH (P3-8-1a, [`ssh`]): a ticket, likewise
 //! under its own audience, never naming the device the session runs on.
 //! And from P3-9-1 a PERSON's use, through an endpoint their device serves
-//! them (`roomler connect`, [`connect`]): decided by Cedar's own
+//! them (`meshharbor connect`, [`connect`]): decided by Cedar's own
 //! `secret:connect` for the device's owner as its row names them, and lent
 //! only to the organizations `vault.people` lists.
 //!

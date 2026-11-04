@@ -251,11 +251,11 @@ fn clean_path(raw: &str) -> Option<String> {
 /// claimed anyway.
 pub const OAUTH_PARK_TTL_SECS: u64 = 600;
 
-/// `roomler:oauth_attr:<csrf_state>` — the `roomler:` namespace every other
+/// `meshharbor:oauth_attr:<csrf_state>` — the `meshharbor:` namespace every other
 /// key this server writes lives in. The state is a server-minted UUID, so
 /// the key cannot be guessed or chosen by a client.
 pub fn oauth_park_key(csrf_state: &str) -> String {
-    format!("roomler:oauth_attr:{csrf_state}")
+    format!("meshharbor:oauth_attr:{csrf_state}")
 }
 
 /// How long either parking-spot call may take before it is abandoned.
@@ -722,7 +722,7 @@ mod tests {
         assert_eq!(back, attr);
         assert_eq!(
             oauth_park_key("11111111-2222-3333-4444-555555555555"),
-            "roomler:oauth_attr:11111111-2222-3333-4444-555555555555"
+            "meshharbor:oauth_attr:11111111-2222-3333-4444-555555555555"
         );
     }
 

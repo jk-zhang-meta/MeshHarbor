@@ -248,7 +248,7 @@ pub fn plan(own: &[OwnAddr], rows: &[Row], enabled: bool) -> Vec<Action> {
     actions
 }
 
-/// The repair switch: `ROOMLERD_OVERLAY_LAN_ROUTE_REPAIR` / config
+/// The repair switch: `MESHHARBORD_OVERLAY_LAN_ROUTE_REPAIR` / config
 /// `overlay_lan_route_repair`. Default ON. Off removes every pair of halves
 /// this module could have installed.
 pub fn enabled() -> bool {

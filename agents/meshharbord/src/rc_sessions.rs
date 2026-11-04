@@ -29,7 +29,7 @@ use tunnel_core::localapi::RcSessionInfo;
 /// and an `ObjectId` names one session daemon-wide.
 static ASKING: LazyLock<Mutex<HashMap<ObjectId, usize>>> = LazyLock::new(Mutex::default);
 
-/// `ROOMLERD_BANNER_WAITS_FOR_DIALOG=0` — never mark a session as asking, so
+/// `MESHHARBORD_BANNER_WAITS_FOR_DIALOG=0` — never mark a session as asking, so
 /// the banner shows from the session's start, as before P6h.
 fn asking_marks_enabled() -> bool {
     tunnel_core::env::flag("BANNER_WAITS_FOR_DIALOG", true)

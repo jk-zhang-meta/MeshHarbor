@@ -19,7 +19,7 @@
 //!   (which would require inheritance), so the child gets no std handles.
 //! * `DETACHED_PROCESS` — a console-subsystem build (debug) gets no console
 //!   of ours; a GUI build ignores it.
-//! * `CREATE_NEW_PROCESS_GROUP` — a Ctrl+C aimed at an attended `roomlerd
+//! * `CREATE_NEW_PROCESS_GROUP` — a Ctrl+C aimed at an attended `meshharbord
 //!   run` does not reach the tray.
 //! * `CREATE_BREAKAWAY_FROM_JOB`, when the job allows it — the per-user
 //!   Scheduled Task runs the daemon inside a job, and a companion left in it

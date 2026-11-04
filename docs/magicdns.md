@@ -76,7 +76,7 @@ The name map is re-synced from the peer set whenever the netmap changes
 
 ⚠️ **AAAA is on by default and is a mixed-fleet hazard.** An old peer's OS does
 not own its derived overlay v6, so v6 traffic to it blackholes; happy-eyeballs
-clients fall back, strictly-sequential ones hang. `ROOMLERD_DNS_AAAA=0` reverts
+clients fall back, strictly-sequential ones hang. `MESHHARBORD_DNS_AAAA=0` reverts
 to A-only without a rebuild.
 
 ## The OS steer, per platform
@@ -85,7 +85,7 @@ to A-only without a rebuild.
 |---|---|---|
 | **Windows** | `Add-DnsClientNrptRule -Namespace '.<domain>' -NameServers '<ip>'` (`dns.rs:356`) | ⚠️ The NRPT is **registry-global**, not per-interface — which is why a steer at a dead resolver breaks the domain for the whole host. ⚠️ NRPT nameservers carry **no port**: `-NameServers 'ip:port'` silently stores an *empty* list, so "just use another port" is not available here. ⚠️⚠️ **On a GPO-managed host a locally-written rule may not take effect until a policy refresh** — see below. |
 | **Linux** | `resolvectl dns/domain <link>` (`dns.rs:382`) | ⚠️ `resolvectl` **replaces** a link's settings, so multi-org hosts must write all orgs' entries together rather than one at a time. ⚠️ The steer lives in systemd-resolved, so it reaches only lookups that ask resolved. When nsswitch has no `resolve` and `/etc/resolv.conf` does not name resolved's stub (`127.0.0.53`), nothing asks it. WSL is that case: its generated `resolv.conf` names the Windows host's DNS proxy. `roomler status` then says `steered but BYPASSED` and where lookups go instead (FR-97 P3h, `dns.rs`, `resolver_bypass`). |
-| **macOS** (FR-97 P1c) | a supplemental resolver in the SCDynamicStore: `State:/Network/Service/roomler-dns-<utun>/DNS` = `ServerAddresses [<ip>]`, `SupplementalMatchDomains [<domain>]`, `SupplementalMatchDomainsNoSearch 1` (`dns.rs`, `mod scdns`) | Per utun, so sibling orgs' zones coexist. Added as a **temporary** value of the daemon's one store session, so configd removes it when the daemon ends, crash included (measured: gone within 1–4 s of a SIGKILL). Honoured by the system resolver, not by `dig` (which reads `/etc/resolv.conf`); check with `scutil --dns`. `ROOMLERD_MACOS_DNS_STEER=0` turns it off. |
+| **macOS** (FR-97 P1c) | a supplemental resolver in the SCDynamicStore: `State:/Network/Service/roomler-dns-<utun>/DNS` = `ServerAddresses [<ip>]`, `SupplementalMatchDomains [<domain>]`, `SupplementalMatchDomainsNoSearch 1` (`dns.rs`, `mod scdns`) | Per utun, so sibling orgs' zones coexist. Added as a **temporary** value of the daemon's one store session, so configd removes it when the daemon ends, crash included (measured: gone within 1–4 s of a SIGKILL). Honoured by the system resolver, not by `dig` (which reads `/etc/resolv.conf`); check with `scutil --dns`. `MESHHARBORD_MACOS_DNS_STEER=0` turns it off. |
 | **everything else** | none — `setup_os` returns `false` | Names still resolve through the SOCKS path (which does its own DOMAIN resolution); the OS itself is simply not steered, and `roomler status` reports `os_steer_active=false` honestly. |
 
 The rule is owned by a `DnsOsGuard` (`dns.rs:315`) that reverts it on `Drop`, so
@@ -168,7 +168,7 @@ climb back. A check that cannot fail is not a check.
 
 ### The hosts rung, and what it is careful about
 
-Enabled by `ROOMLERD_MAGICDNS_HOSTS` (default off). ⚠️ **The hazard is a stale
+Enabled by `MESHHARBORD_MAGICDNS_HOSTS` (default off). ⚠️ **The hazard is a stale
 entry, not the write**: overlay addresses are recycled, so a line left behind
 can route to a *different machine* — the same class of bug as pooling an address
 before its tombstone.

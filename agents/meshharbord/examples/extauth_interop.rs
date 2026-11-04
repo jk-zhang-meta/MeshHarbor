@@ -10,7 +10,7 @@
 //! every device in the field. A Rust-to-Rust test cannot catch a mismatch with
 //! the browser library, because both halves share whatever this crate got wrong.
 //!
-//! It registers a password exactly as `roomler rc password set` does
+//! It registers a password exactly as `meshharbor rc password set` does
 //! ([`set_password`]), then answers ONE login:
 //!
 //! ```text

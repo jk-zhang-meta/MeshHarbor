@@ -48,7 +48,7 @@ export const CARRIED_KEYS = [...CAMPAIGN_KEYS, 'referrer_host', 'landing_path'] 
  *  an oversized campaign tag must not be able to break a sign-in. */
 export const MAX_VALUE_CHARS = 64
 
-/** "How did you hear about Roomler?": the values sent as `self_reported`.
+/** "How did you hear about MeshHarbor?": the values sent as `self_reported`.
  *  The labels are i18n (`auth.heardAboutOptions.<value>`). */
 export const SELF_REPORTED_OPTIONS = [
   'search',

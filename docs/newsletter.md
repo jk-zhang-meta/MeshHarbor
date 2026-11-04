@@ -23,7 +23,7 @@ again (and confirming) or the signed-in toggle lifts it.
 ## Issues and sending (platform-admin surface)
 
 Everything under `/api/admin/newsletter/*` is gated by the existing
-`ROOMLER__STATS__PLATFORM_ADMINS` ObjectId allowlist and answers **404** on missing
+`MESHHARBOR__STATS__PLATFORM_ADMINS` ObjectId allowlist and answers **404** on missing
 authority (never 403 — the allowlist is itself what is being hidden, and a 403 would
 confirm the surface exists). Allowlist unset ⇒ the whole
 surface does not exist; that inherent gate is the kill switch.
@@ -71,11 +71,11 @@ issue's canonical `.md` source (frontmatter + markdown body).
 
 | Key | Meaning |
 |---|---|
-| `ROOMLER__NEWSLETTER__FROM_EMAIL` / `__FROM_NAME` | The campaign From (falls back per-field to `ROOMLER__EMAIL__FROM_*`). Kept separate so campaign reputation can't drag the transactional From down. |
-| `ROOMLER__EMAIL__API_KEY` or `__SMTP_HOST`+`__SMTP_PORT` | The mail backend (SendGrid / SMTP). Absent ⇒ subscribe still stores rows (unconfirmed), send refuses. |
-| `ROOMLER__STATS__PLATFORM_ADMINS` | The admin allowlist (ObjectIds, comma-separated — ids, not emails). |
-| `ROOMLER__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY` | FR-102 P5 — the key SendGrid signs its Event Webhook with (base64 DER, as SendGrid shows it, or PEM). Empty (default) ⇒ the webhook answers 404 and delivery reads "not measured". |
-| `ROOMLER__NEWSLETTER__LINK_TAGS` | FR-102 P5 — the per-issue UTM tags on links to this site. Default `true`. |
+| `MESHHARBOR__NEWSLETTER__FROM_EMAIL` / `__FROM_NAME` | The campaign From (falls back per-field to `MESHHARBOR__EMAIL__FROM_*`). Kept separate so campaign reputation can't drag the transactional From down. |
+| `MESHHARBOR__EMAIL__API_KEY` or `__SMTP_HOST`+`__SMTP_PORT` | The mail backend (SendGrid / SMTP). Absent ⇒ subscribe still stores rows (unconfirmed), send refuses. |
+| `MESHHARBOR__STATS__PLATFORM_ADMINS` | The admin allowlist (ObjectIds, comma-separated — ids, not emails). |
+| `MESHHARBOR__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY` | FR-102 P5 — the key SendGrid signs its Event Webhook with (base64 DER, as SendGrid shows it, or PEM). Empty (default) ⇒ the webhook answers 404 and delivery reads "not measured". |
+| `MESHHARBOR__NEWSLETTER__LINK_TAGS` | FR-102 P5 — the per-issue UTM tags on links to this site. Default `true`. |
 
 ## Ops prerequisites for a real campaign
 
@@ -89,7 +89,7 @@ issue's canonical `.md` source (frontmatter + markdown body).
 - **Delivery events** (FR-102 P5): in SendGrid → Mail Settings → Event Webhook, POST to
   `https://roomler.ai/api/sendgrid/webhook` with **Delivered, Bounced, Dropped, Spam
   Reports** selected (never Opened or Clicked), enable **Signature Verification** and put
-  the public key it shows in `ROOMLER__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY`. At boot the
+  the public key it shows in `MESHHARBOR__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY`. At boot the
   module reads the account's open/click tracking and logs a WARN if either is on — give the
   API key the `tracking_settings.read` scope so it can.
 - Hero images ship as versioned files under `ui/public/newsletter-img/<slug>-vN.png`

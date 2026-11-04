@@ -7,7 +7,7 @@
 //! crash, a `TerminateProcess`) leaves its worker running: connected, holding
 //! the config's single-instance lock, and supervised by nobody. Every host the
 //! SCM's recovery (#2087) started next spawned a worker that lost that lock, so
-//! the service could only flap while a `roomlerd` it no longer controlled kept
+//! the service could only flap while a `meshharbord` it no longer controlled kept
 //! the device online, and a deliberate `Stop-Service` could not stop it.
 //!
 //! **The rule** ([`is_orphaned_worker`]): the SCM runs one host process per
@@ -381,10 +381,10 @@ mod tests {
     #[test]
     fn an_scm_worker_is_recognised() {
         for c in [
-            r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor scm --stop-event Global\roomler-worker-stop-2452-3"#,
-            r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor scm --stop-event Global\roomler-worker-stop-1812-0 --sas-event Global\roomler-sas-1812"#,
-            r"C:\Roomler\meshharbord.exe run --supervisor scm",
-            r"C:\Roomler\meshharbord.exe run --supervisor=scm",
+            r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor scm --stop-event Global\meshharbor-worker-stop-2452-3"#,
+            r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor scm --stop-event Global\meshharbor-worker-stop-1812-0 --sas-event Global\meshharbor-sas-1812"#,
+            r"C:\MeshHarbor\meshharbord.exe run --supervisor scm",
+            r"C:\MeshHarbor\meshharbord.exe run --supervisor=scm",
         ] {
             assert!(is_scm_worker_cmdline(c), "{c}");
         }
@@ -428,7 +428,7 @@ mod tests {
     /// non-worker are all left alone.
     #[test]
     fn the_rule_needs_every_condition() {
-        let worker = r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor scm --stop-event Global\roomler-worker-stop-2452-3"#;
+        let worker = r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor scm --stop-event Global\meshharbor-worker-stop-2452-3"#;
         let own = 1812;
         assert!(is_orphaned_worker(&cand(3248, EXE, worker), own, &[]));
         assert!(
@@ -452,7 +452,7 @@ mod tests {
     /// stop cleanly beside it.
     #[test]
     fn a_worker_whose_file_was_renamed_away_is_still_an_orphan() {
-        let worker = r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor scm --stop-event Global\roomler-worker-stop-2452-3"#;
+        let worker = r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor scm --stop-event Global\meshharbor-worker-stop-2452-3"#;
         let renamed = cand(3248, r"C:\Config.Msi\3f1a2b.rbf", worker);
         assert!(is_orphaned_worker(&renamed, 1812, &[]));
     }

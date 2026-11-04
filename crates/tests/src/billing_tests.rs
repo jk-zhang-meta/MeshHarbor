@@ -1667,7 +1667,7 @@ mod fr115 {
 /// cargo test -p meshharbor-tests fr115_testmode -- --ignored --nocapture
 /// ```
 ///
-/// The names are this module's own. Every TestApp reads `ROOMLER__STRIPE__*`,
+/// The names are this module's own. Every TestApp reads `MESHHARBOR__STRIPE__*`,
 /// so a key exported under those names would reach every test in the process.
 /// Whatever a test creates in Stripe, it removes again.
 mod fr115_testmode {

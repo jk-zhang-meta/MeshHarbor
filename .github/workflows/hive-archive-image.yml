@@ -103,21 +103,21 @@ jobs:
           test "$(docker run --rm --entrypoint id "$IMG" -u)" = 10001
           # It says it is the archive image, so an archive replica enrolled
           # before the posture joined the mesh joins it here (FR-90 P2k-4).
-          test "$(docker run --rm --entrypoint printenv "$IMG" ROOMLERD_ARCHIVE_IMAGE)" = 1
+          test "$(docker run --rm --entrypoint printenv "$IMG" MESHHARBORD_ARCHIVE_IMAGE)" = 1
           # A first start with nothing to enroll with says why, and fails.
           set +e
           out=$(docker run --rm "$IMG" 2>&1); rc=$?
           set -e
           echo "$out"
           test "$rc" -ne 0
-          echo "$out" | grep -q 'ROOMLER_SERVER'
+          echo "$out" | grep -q 'MESHHARBOR_SERVER'
           # An enrollment that fails writes nothing: the volume stays empty,
           # and the next start enrolls again. (Port 9 refuses at once: no
           # network is needed, and no server is told anything.)
           docker volume create hive-archive-smoke >/dev/null
           set +e
           out=$(docker run --rm -v hive-archive-smoke:/data \
-            -e ROOMLER_SERVER=http://127.0.0.1:9 -e ROOMLER_ENROLL_TOKEN=not-a-token \
+            -e MESHHARBOR_SERVER=http://127.0.0.1:9 -e MESHHARBOR_ENROLL_TOKEN=not-a-token \
             "$IMG" 2>&1); rc=$?
           set -e
           echo "$out" | grep -v 'not-a-token' || true

@@ -46,7 +46,7 @@ age 11-42 ms), so slow-start could not engage and the A/B could not run —
 the arc's constrained measurements had all been opportunistic, taken whenever
 one laptop's corporate VPN happened to be up.
 
-`ice_relay_tcp` (a config key since #1271; `ROOMLERD_ICE_RELAY_TCP` before
+`ice_relay_tcp` (a config key since #1271; `MESHHARBORD_ICE_RELAY_TCP` before
 that) pins ICE to a real TURN relay, which is what virtual-desktop mode
 already used. Both arms of an A/B then run on **one host, one build, one
 encoder, minutes apart**, differing in exactly one flag. It is a test pin and

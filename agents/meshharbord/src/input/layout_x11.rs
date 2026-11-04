@@ -33,7 +33,7 @@
 //!   hello says `report` without `set`, and the viewer shows the chip with no
 //!   picker ([`switchable`]).
 //!
-//! Kill switch `ROOMLERD_X11_LAYOUT=0`: no `layout` in the hello, no chip.
+//! Kill switch `MESHHARBORD_X11_LAYOUT=0`: no `layout` in the hello, no chip.
 
 use std::sync::{Condvar, LazyLock, Mutex, Once};
 use std::time::{Duration, Instant};
@@ -50,7 +50,7 @@ const RETRY_MAX: Duration = Duration::from_secs(30);
 /// XKB's limit: a keymap has at most four groups.
 const MAX_GROUPS: usize = 4;
 
-/// FR-97 P3e — kill switch `ROOMLERD_X11_LAYOUT=0`.
+/// FR-97 P3e — kill switch `MESHHARBORD_X11_LAYOUT=0`.
 pub fn enabled() -> bool {
     tunnel_core::env::flag("X11_LAYOUT", true)
 }
@@ -121,7 +121,7 @@ pub fn subscribe() -> tokio::sync::watch::Receiver<Option<LayoutSnapshot>> {
     if offered() {
         READER.call_once(|| {
             if let Err(e) = std::thread::Builder::new()
-                .name("roomlerd-layout-x11".into())
+                .name("meshharbord-layout-x11".into())
                 .spawn(reader)
             {
                 tracing::warn!(%e, "layout: could not start the X11 layout reader");
@@ -216,7 +216,7 @@ pub fn request_set_layout(token: String) {
         return;
     }
     let spawned = std::thread::Builder::new()
-        .name("roomlerd-layout-set".into())
+        .name("meshharbord-layout-set".into())
         .spawn(move || {
             let Some(x) = Xkb::open() else {
                 tracing::warn!(%token, "layout: no X connection for the switch");
@@ -807,7 +807,7 @@ mod tests {
     }
 
     fn required() -> bool {
-        std::env::var("ROOMLERD_TEST_X11").as_deref() == Ok("1")
+        std::env::var("MESHHARBORD_TEST_X11").as_deref() == Ok("1")
     }
 
     fn setxkbmap(layouts: &str) -> bool {
@@ -826,7 +826,7 @@ mod tests {
     }
 
     /// The real thing, on the X server the CI lane starts (`DISPLAY` from
-    /// `xvfb-run`; `ROOMLERD_TEST_X11=1` makes its absence a failure): two
+    /// `xvfb-run`; `MESHHARBORD_TEST_X11=1` makes its absence a failure): two
     /// layouts configured as `setxkbmap` does it, read back as the snapshot
     /// the viewer gets, and a switch to the second and back.
     #[test]
@@ -834,9 +834,9 @@ mod tests {
         let Some(x) = Xkb::open() else {
             assert!(
                 !required(),
-                "ROOMLERD_TEST_X11=1 but there is no X server with XKB"
+                "MESHHARBORD_TEST_X11=1 but there is no X server with XKB"
             );
-            eprintln!("no X server — skipping (ROOMLERD_TEST_X11=1 makes this a failure)");
+            eprintln!("no X server — skipping (MESHHARBORD_TEST_X11=1 makes this a failure)");
             return;
         };
         // xvfb depends on x11-xkb-utils, the server's own keymap compiler.

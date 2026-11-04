@@ -85,7 +85,7 @@ pub enum Supervision {
     None,
 }
 
-/// The launchd label prefix every roomler job carries. A LaunchServices app's
+/// The launchd label prefix every meshharbor job carries. A LaunchServices app's
 /// `XPC_SERVICE_NAME` never starts with it. Both jobs that run `meshharbord run`
 /// (`fans.itachi.meshharbor.agent`, `fans.itachi.meshharbor.daemon`) set
 /// `KeepAlive{SuccessfulExit:false}` — asserted against the packaged plists by
@@ -780,7 +780,7 @@ mod tests {
         for label in [
             "0",
             "application.com.apple.Terminal.12345",
-            "com.example.roomler",
+            "com.example.meshharbor",
             "",
         ] {
             assert_eq!(
@@ -868,7 +868,7 @@ mod tests {
         );
         for not_ours in [
             "0::/system.slice/meshharbord.service.d\n",
-            "0::/system.slice/xroomlerd.service\n",
+            "0::/system.slice/xmeshharbord.service\n",
             "0::/meshharbord.service.slice/foo.scope\n",
             "",
             "garbage without colons\n",
@@ -1103,7 +1103,7 @@ mod tests {
     #[test]
     fn restart_rate_limit_survives_the_process() {
         let dir = std::env::temp_dir().join(format!(
-            "roomlerd-restart-record-{}-{}",
+            "meshharbord-restart-record-{}-{}",
             std::process::id(),
             line!()
         ));

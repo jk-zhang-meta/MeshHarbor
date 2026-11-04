@@ -779,7 +779,7 @@ impl StripeService {
         use crate::dao::billing_event::{BillingEventDao, BillingKind, BillingSource, Recorded};
         if self.settings.secret_key.trim().is_empty() {
             return Err(StripeError::ApiError(
-                "no Stripe secret key configured (ROOMLER__STRIPE__SECRET_KEY)".into(),
+                "no Stripe secret key configured (MESHHARBOR__STRIPE__SECRET_KEY)".into(),
             ));
         }
         let dao = BillingEventDao::new(db);

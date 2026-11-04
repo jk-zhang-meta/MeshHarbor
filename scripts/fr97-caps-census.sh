@@ -15,12 +15,12 @@
 # mongosh in mongodb-0 over stdin: it is never printed, and it never appears in
 # an argument list on the build host. Only counts come out: no names, no ids.
 set -euo pipefail
-NS="${ROOMLER_NS:-roomler-ai}"
+NS="${MESHHARBOR_NS:-roomler-ai}"
 DAYS="${1:-30}"
 case "$DAYS" in '' | *[!0-9]*) echo "days must be a number" >&2; exit 2 ;; esac
 
-url="$(kubectl -n "$NS" exec deploy/roomler2 -- printenv ROOMLER__DATABASE__URL)"
-name="$(kubectl -n "$NS" exec deploy/roomler2 -- printenv ROOMLER__DATABASE__NAME)"
+url="$(kubectl -n "$NS" exec deploy/roomler2 -- printenv MESHHARBOR__DATABASE__URL)"
+name="$(kubectl -n "$NS" exec deploy/roomler2 -- printenv MESHHARBOR__DATABASE__NAME)"
 [ -n "$url" ] || { echo "could not read the database URL" >&2; exit 3; }
 case "$name" in '' | *[!A-Za-z0-9_-]*) echo "unexpected database name" >&2; exit 3 ;; esac
 

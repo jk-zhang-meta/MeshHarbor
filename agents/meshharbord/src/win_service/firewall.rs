@@ -46,7 +46,7 @@ pub(crate) const REMOVE_TIMEOUT: Duration = Duration::from_secs(30);
 /// startup-sequence tests. Never a reason not to spawn the worker.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct FirewallPrep {
-    /// The kill switch (`ROOMLERD_TUN_HYGIENE=0`) was set; nothing ran.
+    /// The kill switch (`MESHHARBORD_TUN_HYGIENE=0`) was set; nothing ran.
     pub skipped: bool,
     /// `netsh add` returned success for the worker's rule.
     pub rule_installed: bool,
@@ -63,7 +63,7 @@ pub(crate) struct FirewallPrep {
 pub(crate) fn prepare_before_first_spawn(worker_exe: &Path) -> FirewallPrep {
     if winfw::hygiene_disabled(tunnel_core::env::node_env("TUN_HYGIENE").as_deref()) {
         tracing::info!(
-            "service: firewall prep skipped — Windows net hygiene disabled via ROOMLERD_TUN_HYGIENE"
+            "service: firewall prep skipped — Windows net hygiene disabled via MESHHARBORD_TUN_HYGIENE"
         );
         return FirewallPrep {
             skipped: true,

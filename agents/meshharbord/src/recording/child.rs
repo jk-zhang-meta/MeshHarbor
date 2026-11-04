@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-85 — `roomlerd record`, the recorder as a process of its own.
+//! FR-85 — `meshharbord record`, the recorder as a process of its own.
 //!
 //! Spawned by the worker (P2/P3) and runnable by hand. A driver fault inside a
 //! recording's encoder costs this process, never the daemon or a live session
@@ -35,7 +35,7 @@ use super::recorder::{
 };
 use super::sidecar::{Initiator, StopReason};
 
-/// Command-line options of `roomlerd record`.
+/// Command-line options of `meshharbord record`.
 #[derive(Debug, Clone)]
 pub struct RecordArgs {
     /// Destination folder; `None` = the configured or default folder.
@@ -91,7 +91,7 @@ fn open_audio(
         if system || microphone {
             return Err((
                 StartRefusal::AudioUnavailable,
-                "this build of roomlerd has no audio capture".into(),
+                "this build of meshharbord has no audio capture".into(),
             ));
         }
         Ok(AudioSources)
@@ -103,12 +103,12 @@ fn open_audio(
 /// ⚠️ The platform rule is [`super::system_audio_supported`]'s, not this
 /// function's (#1760): the daemon's gates read that fn, and each arm below
 /// asserts at compile time that it agrees, so the two cannot drift again.
-/// The synthetic tone (a test's `ROOMLERD_SYNTHETIC_AUDIO`) is answered
+/// The synthetic tone (a test's `MESHHARBORD_SYNTHETIC_AUDIO`) is answered
 /// first, on any platform: it is what the audio tests record with.
 #[cfg(feature = "audio")]
 fn open_system_audio() -> Result<Box<dyn crate::audio::AudioCapture>> {
     #[cfg(feature = "synthetic-frame-source")]
-    if std::env::var_os("ROOMLERD_SYNTHETIC_AUDIO").is_some() {
+    if std::env::var_os("MESHHARBORD_SYNTHETIC_AUDIO").is_some() {
         // A 440 Hz tone at 44.1 kHz mono: the shape of a real device,
         // including a rate that is not 48 kHz.
         return Ok(Box::new(super::audio::SineCapture::new(
@@ -152,7 +152,7 @@ fn open_system_audio() -> Result<Box<dyn crate::audio::AudioCapture>> {
 #[cfg(feature = "audio")]
 fn open_microphone() -> Result<Box<dyn crate::audio::AudioCapture>> {
     #[cfg(feature = "synthetic-frame-source")]
-    if std::env::var_os("ROOMLERD_SYNTHETIC_AUDIO").is_some() {
+    if std::env::var_os("MESHHARBORD_SYNTHETIC_AUDIO").is_some() {
         return Ok(Box::new(crate::audio::NoopAudioCapture));
     }
     #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -241,9 +241,9 @@ pub fn register_encoder_fallbacks(cfg: &meshharbor_node_core::config::AgentConfi
 }
 
 /// Every protocol line starts with this, like the probe children's
-/// `ROOMLER_CAPS_JSON:` — the daemon's tracing writes to stdout too, so a
+/// `MESHHARBOR_CAPS_JSON:` — the daemon's tracing writes to stdout too, so a
 /// parent that parsed every line would choke on the first log line.
-pub const EVENT_PREFIX: &str = "ROOMLER_REC_JSON:";
+pub const EVENT_PREFIX: &str = "MESHHARBOR_REC_JSON:";
 
 pub(crate) fn emit(value: &serde_json::Value) {
     let mut out = std::io::stdout().lock();
@@ -327,7 +327,7 @@ pub(crate) fn encoder_factory(
     Ok((f, true))
 }
 
-/// Body of `roomlerd record`. Returns once the file is final.
+/// Body of `meshharbord record`. Returns once the file is final.
 pub async fn run(args: RecordArgs, config_path: &std::path::Path) -> Result<()> {
     if args.whoami {
         let mut ev = super::launch::describe_self();
@@ -430,7 +430,7 @@ pub async fn run(args: RecordArgs, config_path: &std::path::Path) -> Result<()> 
     {
         let stop_tx = stop_tx.clone();
         std::thread::Builder::new()
-            .name("roomlerd-rec-stdin".into())
+            .name("meshharbord-rec-stdin".into())
             .spawn(move || {
                 use std::io::BufRead as _;
                 for line in std::io::stdin().lock().lines() {
@@ -539,17 +539,17 @@ mod tests {
 
     #[test]
     fn only_prefixed_lines_are_protocol() {
-        let v = parse_event_line(r#"ROOMLER_REC_JSON:{"ev":"started"}"#).unwrap();
+        let v = parse_event_line(r#"MESHHARBOR_REC_JSON:{"ev":"started"}"#).unwrap();
         assert_eq!(v["ev"], "started");
         // A log line on the same stdout is ignored, not an error.
         assert!(
-            parse_event_line("2026-09-25T15:00:00Z INFO roomlerd: recording: started").is_none()
+            parse_event_line("2026-09-25T15:00:00Z INFO meshharbord: recording: started").is_none()
         );
         assert!(
             parse_event_line(r#"{"ev":"started"}"#).is_none(),
             "unprefixed JSON is not protocol"
         );
         // CRLF from a Windows child.
-        assert!(parse_event_line("ROOMLER_REC_JSON:{\"ev\":\"stopped\"}\r").is_some());
+        assert!(parse_event_line("MESHHARBOR_REC_JSON:{\"ev\":\"stopped\"}\r").is_some());
     }
 }

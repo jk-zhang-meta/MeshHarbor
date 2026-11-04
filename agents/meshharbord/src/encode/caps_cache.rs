@@ -4,7 +4,7 @@
 //!
 //! The matrix probe opens every encoder × chroma cell for real (P1): 3.9 s on
 //! the dev box, 5.4 s on CORPLAP-3, paid on every daemon start for an answer
-//! that changes only when the GPU, its driver, the OS build or the roomlerd
+//! that changes only when the GPU, its driver, the OS build or the meshharbord
 //! build changes. This caches the CHILD PROBE's answer on disk under a key
 //! made of exactly those, and re-probes on any mismatch or after
 //! [`MAX_AGE_SECS`].
@@ -21,11 +21,11 @@
 //!   they change without any driver changing (`caps::merge_cached`).
 //! - **`probe_ms` on a hit is the CACHED probe's duration** and
 //!   `probe_cached` says so, so the fleet read of probe cost keeps meaning.
-//! - **The key hashes every `ROOMLERD_*` knob** of the process (env + the S2
-//!   config fallbacks): a denylist edit, `ROOMLERD_DC_H264=0`, an encoder
+//! - **The key hashes every `MESHHARBORD_*` knob** of the process (env + the S2
+//!   config fallbacks): a denylist edit, `MESHHARBORD_DC_H264=0`, an encoder
 //!   preference all change what the probe would answer. Hashed, never stored
 //!   in clear — an env block can carry a token.
-//! - **`ROOMLERD_CAPS_CACHE=0`** (config `caps_cache = false`) disables the
+//! - **`MESHHARBORD_CAPS_CACHE=0`** (config `caps_cache = false`) disables the
 //!   read AND the write; the `caps-probe` child never touches the file.
 
 use meshharbor_remote_control::models::AgentCaps;
@@ -49,7 +49,7 @@ pub(crate) struct CacheKey {
     pub build: String,
     /// [`super::hwid::fingerprint`]: GPUs, driver versions, OS build.
     pub hardware: String,
-    /// SHA-256 over the sorted `ROOMLERD_*` knobs (env + config fallbacks).
+    /// SHA-256 over the sorted `MESHHARBORD_*` knobs (env + config fallbacks).
     pub knobs: String,
 }
 
@@ -104,9 +104,9 @@ impl Miss {
             Miss::FormatVersion(v) => {
                 format!("cache format {v} (this build writes {FORMAT_VERSION})")
             }
-            Miss::Build => "roomlerd build changed".into(),
+            Miss::Build => "meshharbord build changed".into(),
             Miss::Hardware => "GPU / driver / OS build changed".into(),
-            Miss::Knobs => "a ROOMLERD_* knob changed".into(),
+            Miss::Knobs => "a MESHHARBORD_* knob changed".into(),
             Miss::Stale { age_secs } => {
                 format!("cached probe is {age_secs} s old (max {MAX_AGE_SECS})")
             }
@@ -114,7 +114,7 @@ impl Miss {
     }
 }
 
-/// `ROOMLERD_CAPS_CACHE=0` / `caps_cache = false` switches the cache off.
+/// `MESHHARBORD_CAPS_CACHE=0` / `caps_cache = false` switches the cache off.
 pub(crate) fn enabled() -> bool {
     tunnel_core::env::node_env("CAPS_CACHE")
         .map(|v| {
@@ -162,7 +162,7 @@ fn build_identity() -> String {
 }
 
 /// FR-78 P2 — driver-facing environment that changes what the drivers
-/// answer without changing anything the `ROOMLERD_*` knobs or the hardware
+/// answer without changing anything the `MESHHARBORD_*` knobs or the hardware
 /// fingerprint see. Measured on jupiter: RADV lists no video extensions
 /// without `RADV_PERFTEST=video_encode` and three with it, and a restart that
 /// added the flag replayed the cached no-Vulkan answer until the cache was
@@ -182,7 +182,7 @@ const DRIVER_ENV: &[&str] = &[
     "CUDA_VISIBLE_DEVICES",
 ];
 
-/// Every `ROOMLERD_*` knob the probe child could read, env AND config
+/// Every `MESHHARBORD_*` knob the probe child could read, env AND config
 /// fallbacks (the child receives both as real env), plus the driver-facing
 /// variables in [`DRIVER_ENV`], hashed.
 fn knobs_hash() -> String {
@@ -199,10 +199,10 @@ fn knobs_hash() -> String {
     hash_knobs(&knobs)
 }
 
-/// Which environment variables are part of the key: every `ROOMLERD_*`
+/// Which environment variables are part of the key: every `MESHHARBORD_*`
 /// knob and the driver-facing names in [`DRIVER_ENV`].
 fn knob_selected(name: &str) -> bool {
-    name.starts_with("ROOMLERD_") || DRIVER_ENV.contains(&name)
+    name.starts_with("MESHHARBORD_") || DRIVER_ENV.contains(&name)
 }
 
 fn hash_knobs(knobs: &std::collections::BTreeMap<String, String>) -> String {
@@ -287,14 +287,14 @@ mod tests {
     /// `RADV_PERFTEST` edit re-probes, an unrelated variable does not.
     #[test]
     fn driver_env_is_part_of_the_key() {
-        assert!(knob_selected("ROOMLERD_ENCODER_CELLS_DENY"));
+        assert!(knob_selected("MESHHARBORD_ENCODER_CELLS_DENY"));
         assert!(knob_selected("RADV_PERFTEST"));
         assert!(knob_selected("LIBVA_DRIVERS_PATH"));
         assert!(knob_selected("VK_ICD_FILENAMES"));
         assert!(!knob_selected("PATH"));
         assert!(!knob_selected("HOME"));
         let mut a = std::collections::BTreeMap::new();
-        a.insert("ROOMLERD_X".to_string(), "1".to_string());
+        a.insert("MESHHARBORD_X".to_string(), "1".to_string());
         let mut b = a.clone();
         b.insert("RADV_PERFTEST".to_string(), "video_encode".to_string());
         assert_ne!(hash_knobs(&a), hash_knobs(&b));
@@ -325,7 +325,7 @@ mod tests {
 
     fn tmp_path(tag: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("roomler-caps-cache-{}-{tag}", std::process::id()));
+            std::env::temp_dir().join(format!("meshharbor-caps-cache-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir.join(FILE_NAME)
     }
@@ -412,19 +412,19 @@ mod tests {
     #[test]
     fn the_knob_hash_is_order_independent_and_value_sensitive() {
         let mut a = std::collections::BTreeMap::new();
-        a.insert("ROOMLERD_DC_H264".to_string(), "0".to_string());
+        a.insert("MESHHARBORD_DC_H264".to_string(), "0".to_string());
         a.insert(
-            "ROOMLERD_ENCODER_CELLS_DENY".to_string(),
+            "MESHHARBORD_ENCODER_CELLS_DENY".to_string(),
             "none".to_string(),
         );
         let mut b = std::collections::BTreeMap::new();
         b.insert(
-            "ROOMLERD_ENCODER_CELLS_DENY".to_string(),
+            "MESHHARBORD_ENCODER_CELLS_DENY".to_string(),
             "none".to_string(),
         );
-        b.insert("ROOMLERD_DC_H264".to_string(), "0".to_string());
+        b.insert("MESHHARBORD_DC_H264".to_string(), "0".to_string());
         assert_eq!(hash_knobs(&a), hash_knobs(&b));
-        b.insert("ROOMLERD_DC_H264".to_string(), "1".to_string());
+        b.insert("MESHHARBORD_DC_H264".to_string(), "1".to_string());
         assert_ne!(hash_knobs(&a), hash_knobs(&b));
         assert_eq!(hash_knobs(&a).len(), 64);
     }

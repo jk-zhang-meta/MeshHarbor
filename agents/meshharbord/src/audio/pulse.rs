@@ -55,8 +55,8 @@ const CHANNEL_DEPTH: usize = 64;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// The helper's first stdout line before PCM, or its one line of refusal.
-const STREAM_MARKER: &str = "ROOMLER_AUDIO_STREAM:";
-const FAILED_MARKER: &str = "ROOMLER_AUDIO_FAILED:";
+const STREAM_MARKER: &str = "MESHHARBOR_AUDIO_STREAM:";
+const FAILED_MARKER: &str = "MESHHARBOR_AUDIO_FAILED:";
 
 const CANDIDATES: &[&str] = &["libpulse-simple.so.0", "libpulse-simple.so"];
 
@@ -247,7 +247,7 @@ impl Stream {
                 format!("no Pulse client library: {why}"),
             )
         })?;
-        let name = CString::new("roomlerd").expect("no NUL");
+        let name = CString::new("meshharbord").expect("no NUL");
         let stream_name = CString::new("remote session audio").expect("no NUL");
         let dev = CString::new(device).map_err(|_| {
             AudioUnavailable::new(
@@ -434,7 +434,7 @@ impl AudioCapture for PulseCapture {
     }
 }
 
-// ── The seat user's half: `roomlerd portal-helper --audio` ─────────────────
+// ── The seat user's half: `meshharbord portal-helper --audio` ─────────────────
 
 /// The helper's whole job, run AS the person at the screen: record the
 /// session's monitor and write raw 48 kHz stereo s16le on stdout until the

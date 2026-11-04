@@ -93,7 +93,7 @@ impl Openh264Encoder {
         Self::spawn(
             width,
             height,
-            "roomlerd-encoder",
+            "meshharbord-encoder",
             Some(IDR_EVERY_S),
             move || {
                 tracing::info!(bitrate_bps, width, height, "openh264 encoder init");
@@ -141,7 +141,7 @@ impl Openh264Encoder {
         let gop = gop_frames.max(1);
         // `None`: the recording's GOP is its own (fragment boundaries), and no
         // frame-rate change moves it.
-        Self::spawn(width, height, "roomlerd-rec-encoder", None, move || {
+        Self::spawn(width, height, "meshharbord-rec-encoder", None, move || {
             tracing::info!(
                 bitrate_bps,
                 width,

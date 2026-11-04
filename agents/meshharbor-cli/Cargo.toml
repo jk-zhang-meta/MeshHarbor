@@ -4,21 +4,21 @@ license = "MPL-2.0"
 publish = false
 version.workspace = true
 edition.workspace = true
-description = "Roomler AI tunnel client — TeamViewer-style native CLI that forwards local TCP ports to a roomlerd's intranet via the existing Roomler WebRTC plane."
+description = "MeshHarbor tunnel client — TeamViewer-style native CLI that forwards local TCP ports to a meshharbord's intranet via the existing MeshHarbor WebRTC plane."
 
 [lib]
 name = "meshharbor_cli"
 path = "src/lib.rs"
 
 [[bin]]
-# P3d Slice B: OUTPUT binary is `roomler` (the unified CLI). FR-21 P2b then
+# P3d Slice B: OUTPUT binary is `meshharbor` (the unified CLI). FR-21 P2b then
 # brought the package (`meshharbor-cli`) and lib (`meshharbor_cli`) names into line
 # with it. CI stages a
 # RETIRED-NAME-ANCHOR(3): the alias name is what the DEPLOYED self-updater
 # extracts. It is an input to code already running in the field.
 # `meshharbor-tunnel.exe` alias into the release zip so the deployed fleet's
 # self-updater (which extracts `meshharbor-tunnel.exe`) is never orphaned.
-name = "roomler"
+name = "meshharbor"
 path = "src/main.rs"
 
 [dependencies]
@@ -44,7 +44,7 @@ toml = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
-# `raw_value`: `roomler hive adopt` keeps every setting it does not own
+# `raw_value`: `meshharbor hive adopt` keeps every setting it does not own
 # exactly as written (FR-90 P1j-3).
 serde_json = { workspace = true, features = ["raw_value"] }
 # ... and in the order written.
@@ -64,7 +64,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 
 # RETIRED-NAME-ANCHOR(2): same alias as above, same reason.
-# Self-update: extract the roomler-tunnel binary from the release .zip.
+# Self-update: extract the meshharbor-tunnel binary from the release .zip.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # ObjectId for session keys (mirrors the shared protocol)
@@ -98,7 +98,7 @@ socket2 = "0.5"
 # the one it saves a dependency on. This crate restores on drop.
 rpassword = "7.5.4"
 
-# SIGPIPE reset at the CLI entry (cli::run_from) so `roomler … | head` dies
+# SIGPIPE reset at the CLI entry (cli::run_from) so `meshharbor … | head` dies
 # quietly on EPIPE instead of panicking — Rust starts with SIGPIPE ignored.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -121,7 +121,7 @@ tokio-test = { workspace = true }
 tempfile = { workspace = true }
 
 # ---------------------------------------------------------------------------
-# Packaging metadata — mirrors roomlerd. release-tunnel.yml CI lands
+# Packaging metadata — mirrors meshharbord. release-tunnel.yml CI lands
 # in T4 (or release-agent.yml extended with a second matrix entry).
 # ---------------------------------------------------------------------------
 
@@ -132,10 +132,10 @@ maintainer = "G ROX LTD <goran.jovanov@gmail.com>"
 copyright = "2026, G ROX LTD"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
-Native tunnel client for the Roomler AI platform. Runs on the \
+Native tunnel client for the MeshHarbor platform. Runs on the \
 operator's laptop, opens a local TCP listener, and forwards bytes \
-over a WebRTC P2P data channel to an enrolled roomlerd that \
-dials the corresponding intranet destination. The Roomler API is \
+over a WebRTC P2P data channel to an enrolled meshharbord that \
+dials the corresponding intranet destination. The MeshHarbor API is \
 signalling-only — server never sees the payload."""
 section = "net"
 priority = "optional"
@@ -147,22 +147,22 @@ depends = "libc6 (>= 2.34), libssl3 (>= 3.0.0) | libssl3t64 (>= 3.0.0)"
 # RETIRED-NAME-ANCHOR-BEGIN
 # The dpkg takeover has to name the REAL predecessor package. A rename here
 # is not a typo, it is a silently broken upgrade: dpkg would see a brand new
-# package and leave the old one owning /usr/bin/roomler.
-# FR-21 P2b: the crate renamed `roomler-tunnel` -> `meshharbor-cli`, and cargo-deb
+# package and leave the old one owning /usr/bin/meshharbor.
+# FR-21 P2b: the crate renamed `meshharbor-tunnel` -> `meshharbor-cli`, and cargo-deb
 # derives the Debian `Package:` from the crate name, so without these dpkg would
-# see a brand-new package and collide with the installed `roomler-tunnel` over
-# `/usr/bin/roomler`. Same shape and same reasoning as roomlerd's block: `name`
+# see a brand-new package and collide with the installed `meshharbor-tunnel` over
+# `/usr/bin/meshharbor`. Same shape and same reasoning as meshharbord's block: `name`
 # is stated EXPLICITLY so a future crate rename cannot move the Debian package
 # name by accident, and there is deliberately NO `conflicts` — that would demand
 # the old package be removed first, which the CLI's `dpkg -i` install path
 # cannot do.
 name = "meshharbor-cli"
-provides = "roomler-tunnel"
-replaces = "roomler-tunnel"
+provides = "meshharbor-tunnel"
+replaces = "meshharbor-tunnel"
 # RETIRED-NAME-ANCHOR-END
 assets = [
-    # P3d Slice B: installed CLI binary is `roomler` (the [[bin]] output name).
-    ["target/release/roomler", "usr/bin/", "755"],
+    # P3d Slice B: installed CLI binary is `meshharbor` (the [[bin]] output name).
+    ["target/release/meshharbor", "usr/bin/", "755"],
 ]
 
 # cargo-wix (Windows .msi)

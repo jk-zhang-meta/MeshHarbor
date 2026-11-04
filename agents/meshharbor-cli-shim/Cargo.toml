@@ -4,14 +4,14 @@ license = "MPL-2.0"
 publish = false
 version.workspace = true
 edition.workspace = true
-description = "Tiny launcher installed as meshharbor.exe on daemon hosts — re-execs `roomlerd cli`."
+description = "Tiny launcher installed as meshharbor.exe on daemon hosts — re-execs `meshharbord cli`."
 
 # Installed AS `meshharbor.exe` (the wxs File element renames it). The build
-# output can NOT be called `roomler` because the standalone tunnel CLI
+# output can NOT be called `meshharbor` because the standalone tunnel CLI
 # already emits that name and `cargo build --workspace` refuses two bins
 # with the same output path.
 [[bin]]
-name = "roomler-shim"
+name = "meshharbor-shim"
 path = "src/main.rs"
 
 # No lib target, so cargo derives no test-binary name from one — nothing here

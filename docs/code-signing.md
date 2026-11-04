@@ -375,12 +375,12 @@ flowchart LR
 
 ⚠️ **`Unsupported` is not a refusal.** It means nothing was proved either way:
 a `.deb` on a host with no `dpkg-deb` (whose install would fail anyway), or
-`ROOMLERD_ARTIFACT_VERSION_CHECK=0`. Logged at INFO and the install proceeds.
+`MESHHARBORD_ARTIFACT_VERSION_CHECK=0`. Logged at INFO and the install proceeds.
 An **unreadable** artifact *is* a refusal — it is about to run as root, and
 nobody can say what it is.
 
 ⚠️ **A wrong reader refuses every update, fleet-wide.** So the three new
-readers sit behind `ROOMLERD_ARTIFACT_VERSION_CHECK=0` (the MSI's, older and
+readers sit behind `MESHHARBORD_ARTIFACT_VERSION_CHECK=0` (the MSI's, older and
 proven, does not), and each was read against the real artifacts of the last
 three releases before it shipped: 12 Linux artifacts × {their own release,
 a neighbour, a fabricated `0.4.999`} gave 12 binds and 24 refusals, and the
@@ -435,8 +435,8 @@ change to either:
 ```bash
 gh release download agent-v<version> --repo gjovanov/roomler-ai \
   --pattern '*perMachine*.msi' --dir /tmp
-ROOMLER_TEST_MSI=/tmp/roomler-agent-<version>-perMachine-x86_64-pc-windows-msvc.msi \
-ROOMLER_TEST_MSI_TAG=agent-v<version> \
+MESHHARBOR_TEST_MSI=/tmp/roomler-agent-<version>-perMachine-x86_64-pc-windows-msvc.msi \
+MESHHARBOR_TEST_MSI_TAG=agent-v<version> \
   cargo test -p meshharbord --lib -- --ignored real_published_msi
 ```
 

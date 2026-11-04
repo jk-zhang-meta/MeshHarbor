@@ -6,7 +6,7 @@
 //! ```text
 //! demux (ProgressiveFile) → decode (openh264 | FFmpeg h264) → pick the frame each output
 //! tick shows (edit::Plan) → encode (the recording profile) → fragmented MP4
-//! staged in .roomler-partial → finalize (moov-first)
+//! staged in .meshharbor-partial → finalize (moov-first)
 //! ```
 //!
 //! - **The sound (P5b)** is [`super::export_audio`]'s: the recording's own
@@ -95,11 +95,11 @@ impl ExportError {
             Self::Source(d) | Self::Encoder(d) | Self::Decode(d) | Self::Write(d) => d.clone(),
             Self::Music(d) => d.clone(),
             Self::AudioUnavailable => {
-                "this build of roomlerd has no audio encoder, so it cannot add music".into()
+                "this build of meshharbord has no audio encoder, so it cannot add music".into()
             }
             Self::DecoderUnavailable { profile } => format!(
                 "this recording's video is H.264 profile {profile} (a hardware encoder's), and \
-                 this build of roomlerd has no decoder for it (its FFmpeg carries no H.264 \
+                 this build of meshharbord has no decoder for it (its FFmpeg carries no H.264 \
                  decoder). Recordings made with the software encoder (profile 66) can be edited"
             ),
             Self::EditList(e) => e.to_string(),
@@ -413,13 +413,13 @@ mod tests {
     #[test]
     fn an_export_never_replaces_a_file() {
         let dir = tempfile::tempdir().unwrap();
-        let src = dir.path().join("Roomler Recording 1.mp4");
+        let src = dir.path().join("MeshHarbor Recording 1.mp4");
         let first = edited_name(&src).unwrap();
-        assert!(first.ends_with("Roomler Recording 1 (edited).mp4"));
+        assert!(first.ends_with("MeshHarbor Recording 1 (edited).mp4"));
         std::fs::write(&first, b"x").unwrap();
         let second = edited_name(&src).unwrap();
         assert!(
-            second.ends_with("Roomler Recording 1 (edited 2).mp4"),
+            second.ends_with("MeshHarbor Recording 1 (edited 2).mp4"),
             "{}",
             second.display()
         );

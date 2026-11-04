@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 
 /**
- * FR-105 — who a Roomler SSH session runs as, said truthfully.
+ * FR-105 — who a MeshHarbor SSH session runs as, said truthfully.
  *
  * Two facts decide it, and neither is enough alone:
  * - the grant's `account_mode`, what the policy asked for;

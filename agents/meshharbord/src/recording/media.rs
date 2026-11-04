@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-85 P5a — `roomlerd media`: the editor's engine as a process of its own.
+//! FR-85 P5a — `meshharbord media`: the editor's engine as a process of its own.
 //!
 //! meshharbor-desktop launches it AS THE PERSON (never the daemon): the files are
 //! theirs, in their folder, and a codec fault in an export costs this process,
 //! nothing else. It speaks the recorder's protocol — one JSON event per stdout
-//! line, prefixed like `roomlerd record`'s ([`super::child::parse_event_line`]
+//! line, prefixed like `meshharbord record`'s ([`super::child::parse_event_line`]
 //! reads both).
 //!
 //! - `probe <file>` → one `probe` event: length, size, rate, and whether this
@@ -30,7 +30,7 @@ use super::edit::EditList;
 use super::export::{self, ExportError};
 use super::mp4::{self, ProgressiveFile};
 
-/// `roomlerd media probe <file>`.
+/// `meshharbord media probe <file>`.
 pub fn probe(file: &Path) -> Result<()> {
     let read = || -> Result<serde_json::Value> {
         let pf = ProgressiveFile::open(file)?;
@@ -73,7 +73,7 @@ pub fn probe(file: &Path) -> Result<()> {
     }
 }
 
-/// `roomlerd media export --edl <file> [--encoder …]`.
+/// `meshharbord media export --edl <file> [--encoder …]`.
 pub async fn export(edl_path: &Path, encoder: &str) -> Result<()> {
     let refuse = |code: &str, detail: String| -> Result<()> {
         emit(&json!({"ev": "refused", "code": code, "detail": detail}));

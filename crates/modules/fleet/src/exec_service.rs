@@ -75,7 +75,7 @@ pub fn routes_via_service(state: &FleetState, agent: &Agent) -> bool {
 // The anchor
 // ────────────────────────────────────────────────────────────────────────────
 
-/// `POST /api/agent/anchor` — body of `roomlerd anchor`, run elevated by an
+/// `POST /api/agent/anchor` — body of `meshharbord anchor`, run elevated by an
 /// administrator on the device.
 #[derive(Debug, Deserialize)]
 pub struct AnchorRequest {
@@ -101,7 +101,7 @@ pub struct AnchorRequest {
 pub struct AnchorResponse {
     pub agent_id: String,
     pub tenant_id: String,
-    /// The device's name, for `roomlerd anchor` to confirm what it anchored.
+    /// The device's name, for `meshharbord anchor` to confirm what it anchored.
     pub name: String,
     /// The SYSTEM service's credential (`TokenType::AgentService`). Shown
     /// once. The server keeps who anchored the device, when, and the anchor's

@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 # Device-side only. The server never reads a transcript — FR-90 D1 keeps them on a
 # replicaset of the org's own devices — so nothing here is linked by the server, and
-# SQLite stays out of the server's build. Kept free of tokio and of `roomlerd`
+# SQLite stays out of the server's build. Kept free of tokio and of `meshharbord`
 # itself so its tests run in seconds; the daemon applies the privilege drop and
 # owns the processes.
 [dependencies]

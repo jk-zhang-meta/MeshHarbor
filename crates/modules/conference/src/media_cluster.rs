@@ -3,7 +3,7 @@
 //! C-4 — media claim-or-route: mediasoup rooms become cluster-safe.
 //!
 //! A conference room is server-materialized state with no client-owned
-//! socket, so ownership is a **SET-NX claim** (`roomler:own:media:<room>`)
+//! socket, so ownership is a **SET-NX claim** (`meshharbor:own:media:<room>`)
 //! — creation itself is mutually exclusive, which kills the S6 belt's
 //! split-brain class (two pods silently building rival router islands
 //! for one room). Every `media:*` command resolves placement first:

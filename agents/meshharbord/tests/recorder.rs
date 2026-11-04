@@ -619,7 +619,7 @@ fn decode_audio(path: &Path) -> Vec<i16> {
 
 /// FR-85 P4 — the audio codec this build records: AAC when its FFmpeg has
 /// the encoder, Opus otherwise. A lane that declares AAC
-/// (`ROOMLER_EXPECT_FFMPEG_AAC=1`) fails here if it fell back.
+/// (`MESHHARBOR_EXPECT_FFMPEG_AAC=1`) fails here if it fell back.
 #[cfg(feature = "audio")]
 fn expected_audio_codec() -> &'static str {
     #[cfg(feature = "ffmpeg-encoder")]
@@ -629,7 +629,7 @@ fn expected_audio_codec() -> &'static str {
             Ok(_) => return "aac",
             Err(e) => assert!(
                 !aac_expected(),
-                "ROOMLER_EXPECT_FFMPEG_AAC=1 but AAC did not open: {e:#}"
+                "MESHHARBOR_EXPECT_FFMPEG_AAC=1 but AAC did not open: {e:#}"
             ),
         }
     }
@@ -767,7 +767,7 @@ mod process {
             .arg(out)
             .args(extra_args)
             .envs(extra_env.iter().copied())
-            .env("ROOMLERD_SYNTHETIC_FRAMES", "1")
+            .env("MESHHARBORD_SYNTHETIC_FRAMES", "1")
             // No config on the runner; point it at a path that does not exist
             // so the test never reads a developer's real config.
             .arg("--config")
@@ -1004,7 +1004,7 @@ mod process {
 
         let m = RecordingManager::new(PathBuf::from(env!("CARGO_BIN_EXE_roomlerd")), cfg_path)
             .with_service_identity(false)
-            .with_child_env([("ROOMLERD_SYNTHETIC_FRAMES", "1")]);
+            .with_child_env([("MESHHARBORD_SYNTHETIC_FRAMES", "1")]);
         let software = || RecordStartOpts {
             encoder: Some("software".into()),
             ..Default::default()
@@ -1084,7 +1084,7 @@ mod process {
         meshharbor_node_core::config::save(&cfg_path, &cfg).unwrap();
         let m = RecordingManager::new(PathBuf::from(env!("CARGO_BIN_EXE_roomlerd")), cfg_path)
             .with_service_identity(false)
-            .with_child_env([("ROOMLERD_SYNTHETIC_FRAMES", "1")])
+            .with_child_env([("MESHHARBORD_SYNTHETIC_FRAMES", "1")])
             // Far shorter than a process spawn: the deadline always wins.
             .with_start_timeout(Duration::from_millis(1));
         let opts = RecordStartOpts {
@@ -1128,7 +1128,7 @@ mod process {
         let mut r = spawn_with(
             dir.path(),
             &["--system-audio"],
-            &[("ROOMLERD_SYNTHETIC_AUDIO", "1")],
+            &[("MESHHARBORD_SYNTHETIC_AUDIO", "1")],
         );
         let started = r.wait_for("started", Duration::from_secs(30));
         assert_eq!(started["system_audio"], true);
@@ -1263,7 +1263,7 @@ mod process {
         }
     }
 
-    /// `ROOMLERD_RECORDING=0` closes every path at once, and says so: the
+    /// `MESHHARBORD_RECORDING=0` closes every path at once, and says so: the
     /// state a client greys Start out with, a start, what the device
     /// advertises (`available`), the listing and the folder a download is
     /// served from.
@@ -1294,7 +1294,7 @@ mod process {
                 assert!(
                     st.unavailable_reason
                         .as_deref()
-                        .is_some_and(|r| r.contains("ROOMLERD_RECORDING=0")),
+                        .is_some_and(|r| r.contains("MESHHARBORD_RECORDING=0")),
                     "{st:?}"
                 );
             }
@@ -1302,7 +1302,7 @@ mod process {
         }
         match m.start(RecordStartOpts::default()).await {
             Response::Error { message } => {
-                assert!(message.contains("ROOMLERD_RECORDING=0"), "{message}")
+                assert!(message.contains("MESHHARBORD_RECORDING=0"), "{message}")
             }
             other => panic!("{other:?}"),
         }
@@ -1364,7 +1364,7 @@ mod process {
         println!("the daemon: {parent}\nits recorder, as {expected:?}: {child}");
         // The CI lane runs elevated ON PURPOSE and says so: there, a medium
         // run would prove nothing and must not pass as if it had.
-        if std::env::var_os("ROOMLERD_TEST_REQUIRE_ELEVATED").is_some() {
+        if std::env::var_os("MESHHARBORD_TEST_REQUIRE_ELEVATED").is_some() {
             assert!(
                 parent["integrity_rid"]
                     .as_u64()
@@ -1424,7 +1424,7 @@ mod process {
         let manager = || {
             RecordingManager::new(exe.clone(), cfg_path.clone())
                 .with_identity(Ok(identity))
-                .with_child_env([("ROOMLERD_SYNTHETIC_FRAMES", "1")])
+                .with_child_env([("MESHHARBORD_SYNTHETIC_FRAMES", "1")])
         };
 
         // A fresh manager has no answer cached: this one comes from the

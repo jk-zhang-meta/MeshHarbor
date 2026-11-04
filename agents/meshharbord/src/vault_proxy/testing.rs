@@ -596,15 +596,15 @@ pub(crate) fn made() -> String {
 }
 
 /// P3-6d-1 — the real MySQL a run names, as its `root`'s upstream:
-/// `ROOMLER_TEST_MYSQL` (`host:port`), its CA's PEM at
-/// `ROOMLER_TEST_MYSQL_CA`, and `root`'s sign-in word in the file at
-/// `ROOMLER_TEST_MYSQL_AUTH_FILE`. `None` when the run names none: the tests
+/// `MESHHARBOR_TEST_MYSQL` (`host:port`), its CA's PEM at
+/// `MESHHARBOR_TEST_MYSQL_CA`, and `root`'s sign-in word in the file at
+/// `MESHHARBOR_TEST_MYSQL_AUTH_FILE`. `None` when the run names none: the tests
 /// that need one are ignored by default.
 pub(crate) fn real_mysql() -> Option<super::pg::Upstream> {
-    let at = std::env::var("ROOMLER_TEST_MYSQL").ok()?;
+    let at = std::env::var("MESHHARBOR_TEST_MYSQL").ok()?;
     let (host, port) = at.rsplit_once(':')?;
-    let ca = std::fs::read_to_string(std::env::var("ROOMLER_TEST_MYSQL_CA").ok()?).ok()?;
-    let word = std::fs::read_to_string(std::env::var("ROOMLER_TEST_MYSQL_AUTH_FILE").ok()?).ok()?;
+    let ca = std::fs::read_to_string(std::env::var("MESHHARBOR_TEST_MYSQL_CA").ok()?).ok()?;
+    let word = std::fs::read_to_string(std::env::var("MESHHARBOR_TEST_MYSQL_AUTH_FILE").ok()?).ok()?;
     Some(super::pg::Upstream {
         host: host.to_string(),
         port: port.parse().ok()?,
@@ -940,7 +940,7 @@ fn mysql_answer(sql: &str, mysql: &MysqlState) -> Vec<Vec<u8>> {
         let until = |a: &Option<String>| {
             a.as_deref()
                 .and_then(|a| serde_json::from_str::<serde_json::Value>(a).ok())
-                .and_then(|v| v["roomler"]["until"].as_i64())
+                .and_then(|v| v["meshharbor"]["until"].as_i64())
         };
         let ended = users
             .iter()

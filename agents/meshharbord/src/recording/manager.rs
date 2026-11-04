@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 //! FR-85 P2a — the daemon's side of a LOCAL recording: it launches
-//! `roomlerd record` for the LocalAPI verbs, follows its events, and answers
+//! `meshharbord record` for the LocalAPI verbs, follows its events, and answers
 //! "what is recording, and how did the last one end".
 //!
 //! The recorder stays a process of its own (a driver fault costs it, never the
@@ -123,7 +123,7 @@ pub struct RecordingManager {
     active: Mutex<Option<Active>>,
     /// Set by a test; `None` = decide from this process ([`launch::decide`]).
     identity_override: StdMutex<Option<Result<Identity, Refusal>>>,
-    /// `ROOMLERD_RECORDING=0`, read once at start like every `ROOMLERD_*`
+    /// `MESHHARBORD_RECORDING=0`, read once at start like every `MESHHARBORD_*`
     /// kill switch: the whole recording surface answers "switched off".
     switched_off: bool,
     /// The folder the recorder last decided (`record --where`).
@@ -349,7 +349,7 @@ impl RecordingManager {
         }
     }
 
-    /// Set the kill switch the way `ROOMLERD_RECORDING=0` would — for the
+    /// Set the kill switch the way `MESHHARBORD_RECORDING=0` would — for the
     /// test that proves it closes every path.
     pub fn with_switched_off(mut self, switched_off: bool) -> Self {
         self.switched_off = switched_off;
@@ -845,7 +845,7 @@ impl RecordingManager {
         }
     }
 
-    /// `roomlerd record --where`, launched as `identity`: the folder and why
+    /// `meshharbord record --where`, launched as `identity`: the folder and why
     /// it is that one.
     async fn where_via_recorder(
         &self,
@@ -1185,7 +1185,7 @@ mod tests {
 
     #[test]
     fn only_a_bare_mp4_name_can_be_deleted() {
-        assert!(check_recording_name("Roomler Recording 2026-09-25 14-30-12.mp4").is_ok());
+        assert!(check_recording_name("MeshHarbor Recording 2026-09-25 14-30-12.mp4").is_ok());
         for bad in [
             "",
             "../x.mp4",
@@ -1193,7 +1193,7 @@ mod tests {
             r"a\b.mp4",
             "C:x.mp4",
             "notes.txt",
-            "x.mp4.roomler.json",
+            "x.mp4.meshharbor.json",
         ] {
             assert!(check_recording_name(bad).is_err(), "{bad}");
         }
@@ -1233,7 +1233,7 @@ mod tests {
         };
         std::fs::write(Sidecar::path_for(&b), sc.to_json()).unwrap();
         std::fs::write(dir.path().join("notes.txt"), b"x").unwrap();
-        std::fs::create_dir(dir.path().join(".roomler-partial")).unwrap();
+        std::fs::create_dir(dir.path().join(".meshharbor-partial")).unwrap();
         let items = list_recordings(dir.path());
         let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["b.mp4", "a.mp4"]);

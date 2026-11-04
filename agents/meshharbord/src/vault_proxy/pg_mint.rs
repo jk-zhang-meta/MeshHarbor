@@ -8,7 +8,7 @@
 //! |---|---|
 //! | the issuer | the bundle's `admin_user` and `admin_password`, signed in by SCRAM-SHA-256 over verified TLS (its `ca`, or the system's roots) to its `database`, at the bundle's one audience ([`Issuer::from_bundle`]) |
 //! | the sweep | first, every minted role whose `VALID UNTIL` has passed, found by its comment, dropped where the issuer may: what a daemon that died before revoking left |
-//! | the mint | `CREATE ROLE "roomler_<lease>" LOGIN PASSWORD '<verifier>' VALID UNTIL '<end>' IN ROLE <grants>`, and its comment, in one transaction ([`mint`]) |
+//! | the mint | `CREATE ROLE "meshharbor_<lease>" LOGIN PASSWORD '<verifier>' VALID UNTIL '<end>' IN ROLE <grants>`, and its comment, in one transaction ([`mint`]) |
 //! | the password | 32 random bytes, base64url; sent as its SCRAM-SHA-256 verifier ([`scram::verifier`]), never itself, so a database that logs its statements logs no password |
 //! | the revocation | `NOLOGIN`, its sessions ended where the issuer may, what it owns given to the issuer, then `DROP ROLE` ([`revoke`]) |
 //!
@@ -31,9 +31,9 @@ use super::pg::{self, Upstream};
 use super::scram;
 
 /// What every minted role's name begins with.
-pub(crate) const ROLE_PREFIX: &str = "roomler_";
+pub(crate) const ROLE_PREFIX: &str = "meshharbor_";
 /// What every minted role's comment begins with: the sweep's mark.
-const COMMENT_PREFIX: &str = "roomler lease ";
+const COMMENT_PREFIX: &str = "meshharbor lease ";
 
 /// A dynamic secret's Postgres issuer, read from its lease's bundle.
 pub(crate) struct Issuer {

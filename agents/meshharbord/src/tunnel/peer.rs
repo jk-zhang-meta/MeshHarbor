@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! Agent-side answerer for the `roomler` WebRTC handshake.
+//! Agent-side answerer for the `meshharbor` WebRTC handshake.
 //!
 //! Mirror of `meshharbor-cli`'s offerer-side [`TunnelPeer`] usage —
 //! same crate type, just the answerer half of the handshake. One
@@ -461,7 +461,7 @@ mod tests {
     }
 
     /// #1754 — the fast path: a client that closes its peer cleanly (the
-    /// CLI's Ctrl-C, `roomler kill` on a daemon-run forward) is reported
+    /// CLI's Ctrl-C, `meshharbor kill` on a daemon-run forward) is reported
     /// within milliseconds through a pool DC's `on_close`, whether or not
     /// its `rc:tunnel.terminate` ever reaches us. Also locks the latch:
     /// nine handlers fire, ONE report arrives.

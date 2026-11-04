@@ -44,7 +44,7 @@ pub const SAS_RELAY_SDDL: &str = "D:P(A;;0x1f0003;;;SY)";
 
 /// `Global\`, so a worker in the person's session opens what the host made in
 /// session 0. Completed by the host's PID: one relay per host.
-const SAS_RELAY_PREFIX: &str = "Global\\roomler-sas-";
+const SAS_RELAY_PREFIX: &str = "Global\\meshharbor-sas-";
 
 /// `SDDL_REVISION_1`, the only defined SDDL revision.
 const SDDL_REVISION_1: u32 = 1;
@@ -77,7 +77,7 @@ fn start() -> Option<String> {
         }
     };
     let spawned = std::thread::Builder::new()
-        .name("roomlerd-sas-relay".into())
+        .name("meshharbord-sas-relay".into())
         .spawn(move || serve(handle));
     match spawned {
         Ok(_) => {

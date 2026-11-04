@@ -1,4 +1,4 @@
-//! ROOMLER PATCH: CUBIC per RFC 9438 in place of upstream's, which worked in
+//! MESHHARBOR PATCH: CUBIC per RFC 9438 in place of upstream's, which worked in
 //! bytes from a 2 KiB `w_max`, never left slow start's own ssthresh logic and
 //! ran its cubic curve from `pre_transmit` on a 100 ms timer. Like the
 //! NewReno-lite in `reno.rs` it is only useful with the `tcp.rs` patch that

@@ -51,7 +51,7 @@
 //!
 //! 1. *Fault isolation.* This project already paid for putting third-party
 //!    driver code in the daemon's address space: a vendor probe that faulted
-//!    took `roomlerd` down and the service manager restarted it straight back
+//!    took `meshharbord` down and the service manager restarted it straight back
 //!    into the same fault — a crash-loop, not a degraded agent (`encode::caps`
 //!    is a child process for that reason). `libpipewire` loads SPA plugins and
 //!    sits on the same vendor GPU stacks. A fault there should cost capture,
@@ -146,7 +146,7 @@ impl SourceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {
     /// ScreenCast only: pixels, no input. Detection, `capture-smoke`, and the
-    /// kill-switch (`ROOMLERD_PORTAL_INPUT=0`) path.
+    /// kill-switch (`MESHHARBORD_PORTAL_INPUT=0`) path.
     CaptureOnly,
     /// RemoteDesktop: the same pixels, plus keyboard+pointer injection.
     WithInput,
@@ -594,7 +594,7 @@ pub struct TokenStore {
 }
 
 impl TokenStore {
-    /// `$XDG_STATE_HOME/roomler/portal-restore-token[-rd]`, falling back to
+    /// `$XDG_STATE_HOME/meshharbor/portal-restore-token[-rd]`, falling back to
     /// the spec's default of `$HOME/.local/state`.
     pub fn for_current_user(kind: SessionKind, source: SourceKind) -> Self {
         let base = std::env::var_os("XDG_STATE_HOME")
@@ -616,7 +616,7 @@ impl TokenStore {
             (SessionKind::WithInput, SourceKind::Window) => "portal-restore-token-rd-win",
         };
         Self {
-            path: base.join("roomler").join(file),
+            path: base.join("meshharbor").join(file),
         }
     }
 
@@ -727,7 +727,7 @@ fn request_path_for(unique_name: &str, token: &str) -> String {
 fn next_token(kind: &str) -> String {
     static N: AtomicU32 = AtomicU32::new(0);
     format!(
-        "roomler_{kind}_{}_{}",
+        "meshharbor_{kind}_{}_{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     )
@@ -824,8 +824,8 @@ mod tests {
     #[test]
     fn request_path_strips_the_colon_and_replaces_dots() {
         assert_eq!(
-            request_path_for(":1.284", "roomler_cs_9_0"),
-            "/org/freedesktop/portal/desktop/request/1_284/roomler_cs_9_0"
+            request_path_for(":1.284", "meshharbor_cs_9_0"),
+            "/org/freedesktop/portal/desktop/request/1_284/meshharbor_cs_9_0"
         );
     }
 
@@ -948,9 +948,9 @@ mod tests {
     /// read it can re-open the grant.
     #[test]
     fn the_restore_token_round_trips_and_is_owner_only() {
-        let dir = std::env::temp_dir().join(format!("roomler-portal-tok-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("meshharbor-portal-tok-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let store = TokenStore::at(dir.join("roomler").join("portal-restore-token"));
+        let store = TokenStore::at(dir.join("meshharbor").join("portal-restore-token"));
 
         // Absent is not an error — it costs one dialog, nothing more.
         assert_eq!(store.load(), None);
@@ -961,7 +961,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.join("roomler").join("portal-restore-token"))
+            let mode = std::fs::metadata(dir.join("meshharbor").join("portal-restore-token"))
                 .unwrap()
                 .permissions()
                 .mode()
@@ -982,7 +982,7 @@ mod tests {
     /// failure would look like a revoked grant rather than a corrupt file.
     #[test]
     fn a_blank_token_file_reads_as_absent() {
-        let dir = std::env::temp_dir().join(format!("roomler-portal-blank-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("meshharbor-portal-blank-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("portal-restore-token");
         std::fs::create_dir_all(&dir).unwrap();

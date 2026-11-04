@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 //! FR-84 D6 — the desktop companion's own per-user state: has this person
-//! been through the Welcome tour, and did they turn "Start Roomler at login"
+//! been through the Welcome tour, and did they turn "Start MeshHarbor at login"
 //! off for their account.
 //!
 //! It lives here rather than in the companion because TWO processes read it:
@@ -28,7 +28,7 @@ pub struct DesktopState {
     /// The person finished (or explicitly skipped) the Welcome tour.
     #[serde(default)]
     pub first_run_done: bool,
-    /// The person turned "Start Roomler at login" off for their account.
+    /// The person turned "Start MeshHarbor at login" off for their account.
     #[serde(default)]
     pub autostart_opt_out: bool,
     #[serde(flatten)]

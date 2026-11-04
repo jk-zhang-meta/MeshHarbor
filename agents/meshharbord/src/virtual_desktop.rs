@@ -128,7 +128,7 @@ fn pick_xorg_dummy(exists: impl Fn(&str) -> bool, xrandr: bool) -> Option<std::p
 }
 
 /// FR-108 P2 — the dummy driver's config. The start mode is the configured
-/// resolution exactly, as a `roomler-WxH` modeline: the dummy driver's own
+/// resolution exactly, as a `meshharbor-WxH` modeline: the dummy driver's own
 /// default would be 2048x1536. ⚠️ `ReducedBlanking` is not decoration: the
 /// modelines carry reduced blanking, and without the option Xorg drops the
 /// start mode ("monitor doesn't support reduced blanking") and starts at its
@@ -148,21 +148,21 @@ fn xorg_conf(w: u32, h: u32) -> String {
   Option "OffTime" "0"
 EndSection
 Section "Device"
-  Identifier "roomler-dummy"
+  Identifier "meshharbor-dummy"
   Driver "dummy"
   VideoRam {XORG_VIDEO_RAM_KIB}
 EndSection
 Section "Monitor"
-  Identifier "roomler-monitor"
+  Identifier "meshharbor-monitor"
   HorizSync 1.0 - 2000.0
   VertRefresh 1.0 - 200.0
   Option "ReducedBlanking" "true"
   Modeline "{name}" {timings}
 EndSection
 Section "Screen"
-  Identifier "roomler-screen"
-  Device "roomler-dummy"
-  Monitor "roomler-monitor"
+  Identifier "meshharbor-screen"
+  Device "meshharbor-dummy"
+  Monitor "meshharbor-monitor"
   DefaultDepth 24
   SubSection "Display"
     Depth 24
@@ -202,7 +202,7 @@ fn xorg_args(display: &str, conf: &Path, configdir: &Path, log: &Path) -> Vec<St
 
 /// Where the desktop's Xorg keeps its config and log: private to the daemon.
 fn xorg_dir(display: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("roomler-xorg-{}", display.trim_start_matches(':')))
+    std::env::temp_dir().join(format!("meshharbor-xorg-{}", display.trim_start_matches(':')))
 }
 
 /// The running desktop's display and server, for display match (FR-108 P2).
@@ -265,7 +265,7 @@ impl Drop for VirtualDesktop {
 // Teardown — reach every descendant, not just our direct children (#1684)
 // ---------------------------------------------------------------------------
 //
-// The failure this fixes: on a host running a virtual desktop, `roomler
+// The failure this fixes: on a host running a virtual desktop, `meshharbor
 // restart` took 96 s and the CLI reported failure at 60 s though the restart
 // worked. The daemon runs under systemd `KillMode=control-group`,
 // `TimeoutStopSec=90s`; once the daemon exits, systemd must empty the unit's
@@ -991,10 +991,10 @@ mod tests {
         assert!(c.contains(&format!("VideoRam {XORG_VIDEO_RAM_KIB}")), "{c}");
         assert!(c.contains(r#"Option "ReducedBlanking" "true""#), "{c}");
         assert!(
-            c.contains(r#"Modeline "roomler-1920x1080" 138.52 1920 1968 2000 2080 1080 1083 1088 1110 +hsync +vsync"#),
+            c.contains(r#"Modeline "meshharbor-1920x1080" 138.52 1920 1968 2000 2080 1080 1083 1088 1110 +hsync +vsync"#),
             "{c}"
         );
-        assert!(c.contains(r#"Modes "roomler-1920x1080""#), "{c}");
+        assert!(c.contains(r#"Modes "meshharbor-1920x1080""#), "{c}");
         assert!(c.contains(r#"Option "AutoAddDevices" "false""#), "{c}");
         assert!(c.contains(r#"Option "BlankTime" "0""#), "{c}");
     }
@@ -1405,7 +1405,7 @@ mod tests {
         use std::io::Write as _;
 
         let dir = std::env::temp_dir().join(format!(
-            "roomler-vdesk-teardown-{}-{}",
+            "meshharbor-vdesk-teardown-{}-{}",
             std::process::id(),
             line!()
         ));

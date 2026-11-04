@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 // RETIRED-NAME-ANCHOR-BEGIN
-// Two survivors, both narrowed by FR-46 P2c. The `roomler-agent.log*` prefix is no
+// Two survivors, both narrowed by FR-46 P2c. The `meshharbor-agent.log*` prefix is no
 // longer READ — measured first: no such file exists on any reachable host, against a
 // control of 5-30 current log files each — but RETENTION still matches it, so a host
-// that turns one up ages it out instead of leaking it forever. The `roomler_agent`
+// that turns one up ages it out instead of leaking it forever. The `meshharbor_agent`
 // tracing target is gone from all four SHIPPED specs (they already carried
-// `roomlerd=info` beside it, so dropping it changed nothing), and
+// `meshharbord=info` beside it, so dropping it changed nothing), and
 // `mirror_legacy_log_target` now serves only units ALREADY on disk in the field.
 // INVARIANT: a retired name here must be one the daemon must still READ. If you
 // add one that is not, that is a bug, not a new exemption. docs/fr/FR-21
@@ -14,20 +14,20 @@
 //!
 //! Stdout output is preserved for foreground / interactive runs; a daily-
 //! rolling file appender writes everything to
-//! `<data-local-dir>/logs/roomlerd.log[.YYYY-MM-DD]` so a Scheduled-
+//! `<data-local-dir>/logs/meshharbord.log[.YYYY-MM-DD]` so a Scheduled-
 //! Task / systemd / launchd-supervised agent (where stdout is `/dev/null`)
 //! still leaves a forensic trail.
 //!
-//! P3d Slice B renamed the daemon (`roomler-agent` -> `roomlerd`); the log
-//! basename moved to match. Old rolled `roomler-agent.log*` files on an
+//! P3d Slice B renamed the daemon (`meshharbor-agent` -> `meshharbord`); the log
+//! basename moved to match. Old rolled `meshharbor-agent.log*` files on an
 //! upgraded host stay readable — [`active_log_path`] and [`prune_old_logs_at`]
 //! (and `logs_fetch`) accept BOTH prefixes.
 //!
 //! The log DIR is resolved by `appdirs` (new-then-old segment). On a fresh
-//! Windows install that's `%LOCALAPPDATA%\roomler\roomler\data\logs\`; a
-//! pre-rename host keeps `...\roomler\roomler-agent\data\logs\`. Linux:
+//! Windows install that's `%LOCALAPPDATA%\meshharbor\meshharbor\data\logs\`; a
+//! pre-rename host keeps `...\meshharbor\meshharbor-agent\data\logs\`. Linux:
 //! `~/.local/share/meshharbor/logs/` (or `.../meshharbor-agent/logs/` on an upgraded
-//! host). macOS: `~/Library/Application Support/live.roomler.roomler/logs/`.
+//! host). macOS: `~/Library/Application Support/live.meshharbor.meshharbor/logs/`.
 //!
 //! A process-wide panic hook captures the message + backtrace and writes
 //! it synchronously to `<log_dir>/panic-<pid>-<unix_ts>.log` *before*
@@ -78,7 +78,7 @@ const KEEP_DAYS: u64 = 14;
 /// worker into the SYSTEM profile
 /// (`C:\Windows\System32\config\systemprofile\…`), invisible to
 /// operators. When a role is set BEFORE [`init`], the file appender
-/// writes into `%PROGRAMDATA%\roomler\<segment>\service-logs` instead,
+/// writes into `%PROGRAMDATA%\meshharbor\<segment>\service-logs` instead,
 /// with a per-role basename so the host and the worker (both possibly
 /// live at once) never contend for one rolling file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +87,7 @@ pub enum ServiceLogRole {
     Host,
     /// The SystemContext (LocalSystem) worker.
     Worker,
-    /// Track A — the session-independent network daemon (`roomlerd netd`,
+    /// Track A — the session-independent network daemon (`meshharbord netd`,
     /// session 0). Own basename: up to THREE SYSTEM processes may log at
     /// once (host + worker + netd).
     Netd,
@@ -102,38 +102,38 @@ pub fn set_service_logging(role: ServiceLogRole) {
 }
 
 /// The rolling-log basename for this process. The Host gets its own
-/// (`roomlerd-service.log`) so two SYSTEM processes never append the
-/// same daily file; everything else keeps `roomlerd.log`.
+/// (`meshharbord-service.log`) so two SYSTEM processes never append the
+/// same daily file; everything else keeps `meshharbord.log`.
 fn log_basename() -> &'static str {
     match SERVICE_ROLE.get() {
-        Some(ServiceLogRole::Host) => "roomlerd-service.log",
-        Some(ServiceLogRole::Netd) => "roomlerd-netd.log",
-        _ => "roomlerd.log",
+        Some(ServiceLogRole::Host) => "meshharbord-service.log",
+        Some(ServiceLogRole::Netd) => "meshharbord-netd.log",
+        _ => "meshharbord.log",
     }
 }
 
-/// Mirror a legacy `roomler_agent=<level>` directive onto `roomlerd=<level>`.
+/// Mirror a legacy `meshharbor_agent=<level>` directive onto `meshharbord=<level>`.
 ///
-/// FR-21 P2a renamed the daemon LIB `roomler_agent` -> `roomlerd`, and a tracing
+/// FR-21 P2a renamed the daemon LIB `meshharbor_agent` -> `meshharbord`, and a tracing
 /// target IS the crate name — so every `RUST_LOG` that names the old target stopped
 /// matching the daemon's own events the moment the rename shipped. That is not a
 /// theoretical concern: five places set an explicit override that BEATS the dual
 /// default above, three of them shipped units already on disk in the field
-/// (`packaging/linux/{roomler,roomlerd}.service`, `fans.itachi.meshharbor.agent.plist`) plus the
+/// (`packaging/linux/{meshharbor,meshharbord}.service`, `fans.itachi.meshharbor.agent.plist`) plus the
 /// two units `service.rs` generates. A host whose unit is not rewritten would keep
 /// running and log nothing but `warn` from the daemon — a silent, fleet-wide
 /// observability blackout with no error anywhere.
 ///
 /// So the new target is ADDED rather than substituted: an operator who deliberately
-/// set `roomler_agent=debug` gets `roomlerd=debug` too, and anyone already naming
-/// `roomlerd` is left alone. Directives for other targets, and the bare global level,
+/// set `meshharbor_agent=debug` gets `meshharbord=debug` too, and anyone already naming
+/// `meshharbord` is left alone. Directives for other targets, and the bare global level,
 /// pass through untouched.
 ///
-// RETIRED-NAME-ANCHOR(2): `roomler_agent` is the retired target this exists to keep
+// RETIRED-NAME-ANCHOR(2): `meshharbor_agent` is the retired target this exists to keep
 // working. Deleting it re-creates the blackout described above.
 fn mirror_legacy_log_target(spec: &str) -> String {
-    const LEGACY: &str = "roomler_agent";
-    const CURRENT: &str = "roomlerd";
+    const LEGACY: &str = "meshharbor_agent";
+    const CURRENT: &str = "meshharbord";
     if !spec.contains(LEGACY) {
         return spec.to_string();
     }
@@ -175,13 +175,13 @@ pub fn init() {
 
     // Default filter. `RUST_LOG` (env, or the SCM service Environment
     // block for the SystemContext service) overrides wholesale when
-    // set. The fallback keeps `roomler_agent` at info + everything
+    // set. The fallback keeps `meshharbor_agent` at info + everything
     // else at warn, with ONE addition: `tunnel_core=info`.
     //
     // rc.74: `tunnel_core=info` surfaces the per-flow throughput
     // logger (`tunnel flow throughput (2s window) …` + the
     // flow-closed totals) added in rc.66. Those live in the
-    // `tunnel_core` target, so under the old `roomler_agent=info,warn`
+    // `tunnel_core` target, so under the old `meshharbor_agent=info,warn`
     // default they were filtered out of BOTH the on-disk rolling log
     // AND the centralized upload layer — invisible unless an operator
     // hand-set `RUST_LOG`. The throughput lines are low-volume (one
@@ -194,11 +194,11 @@ pub fn init() {
         .ok()
         .map(|spec| EnvFilter::new(mirror_legacy_log_target(&spec)))
         .unwrap_or_else(|| {
-            // S1b follow-up: `roomlerd=info` — events emitted from the BIN
+            // S1b follow-up: `meshharbord=info` — events emitted from the BIN
             // (target = the binary crate name) were silently capped at warn,
             // hiding the migration notes + DPI/timer diagnostics the code
             // clearly intended to be visible.
-            EnvFilter::new("roomler_agent=info,roomlerd=info,tunnel_core=info,warn")
+            EnvFilter::new("meshharbor_agent=info,meshharbord=info,tunnel_core=info,warn")
         })
         // rc.181 — silence the `turn` crate's periodic refresh-failure warns
         // (`refresh allocation/permissions failed`, target `turn::client::relay_conn`).
@@ -218,7 +218,7 @@ pub fn init() {
         // FR-110 — each carrier socket's granted buffer sizes, said once per
         // bind (startup and plane rebuilds: a handful of lines a day). On
         // Windows nothing like `ss -m` exists, so the line is the only evidence
-        // of the size. The packaged Linux units set `RUST_LOG=roomlerd=info,warn`,
+        // of the size. The packaged Linux units set `RUST_LOG=meshharbord=info,warn`,
         // which drops `tunnel_core` INFO, so this is appended UNCONDITIONALLY,
         // like the directive above.
         .add_directive(
@@ -245,8 +245,8 @@ pub fn init() {
         && std::fs::create_dir_all(d).is_ok()
     {
         prune_old_logs(d, KEEP_DAYS);
-        // P3d Slice B: write under the new `roomlerd.log` basename
-        // (S1b: `roomlerd-service.log` for the SCM host — see
+        // P3d Slice B: write under the new `meshharbord.log` basename
+        // (S1b: `meshharbord-service.log` for the SCM host — see
         // [`ServiceLogRole`]).
         let appender = tracing_appender::rolling::daily(d, log_basename());
         let (nb, guard) = tracing_appender::non_blocking(appender);
@@ -311,13 +311,13 @@ pub fn say_on_stderr(msg: impl std::fmt::Display) {
 /// dir resolved (test harness / no-home environment).
 ///
 /// The path is computed deterministically from the rolling
-/// appender's daily-rotation convention: `<log_dir>/roomlerd.log.YYYY-MM-DD`
-/// for archived days; `<log_dir>/roomlerd.log` is the symlink-ish "current"
+/// appender's daily-rotation convention: `<log_dir>/meshharbord.log.YYYY-MM-DD`
+/// for archived days; `<log_dir>/meshharbord.log` is the symlink-ish "current"
 /// name on some platforms but in practice tracing-appender writes to the dated
 /// name from the very first line.
 ///
-/// P3d Slice B: probe the new `roomlerd.log[.date]` basenames first, then fall
-/// back to the legacy `roomler-agent.log[.date]` so an upgraded host whose most
+/// P3d Slice B: probe the new `meshharbord.log[.date]` basenames first, then fall
+/// back to the legacy `meshharbor-agent.log[.date]` so an upgraded host whose most
 /// recent rolled file predates the rename is still found.
 pub fn active_log_path() -> Option<PathBuf> {
     let dir = log_dir()?;
@@ -333,10 +333,10 @@ pub fn active_log_path() -> Option<PathBuf> {
     // Host log tail; then the standard + legacy names.
     let mut bases = vec![log_basename()];
     // FR-46 P2c: the legacy rolled-log name is gone from the READ paths. Measured
-    // first — no `roomler-agent.log*` exists on any reachable host, against a control
+    // first — no `meshharbor-agent.log*` exists on any reachable host, against a control
     // of 5-30 current log files per host. Retention below still matches it, so a host
     // that turns one up ages it out rather than leaking it forever.
-    for b in ["roomlerd.log", "roomlerd-service.log"] {
+    for b in ["meshharbord.log", "meshharbord-service.log"] {
         if !bases.contains(&b) {
             bases.push(b);
         }
@@ -402,14 +402,14 @@ pub fn tail_source_path(source: &str) -> Option<PathBuf> {
         // default dir for the newest daemon rolling file instead.
         "daemon" => active_log_path().or_else(|| {
             let dir = resolve_log_dir()?;
-            newest_file_matching(&[dir], |name| name.starts_with("roomlerd.log"))
+            newest_file_matching(&[dir], |name| name.starts_with("meshharbord.log"))
         }),
         "service" => {
             #[cfg(target_os = "windows")]
             {
                 let dir = crate::appdirs::machine_global_dir().join("service-logs");
                 newest_file_matching(&[dir], |name| {
-                    name.starts_with("roomlerd-service.log") || name.starts_with("roomlerd.log")
+                    name.starts_with("meshharbord-service.log") || name.starts_with("meshharbord.log")
                 })
             }
             #[cfg(not(target_os = "windows"))]
@@ -506,13 +506,13 @@ fn prune_old_logs(dir: &Path, keep_days: u64) {
 
 /// Same as [`prune_old_logs`] but takes the cutoff as a parameter so
 /// tests can drive it deterministically. Files matching one of our
-/// prefixes (`roomlerd.log` / legacy `roomler-agent.log` rolling files,
+/// prefixes (`meshharbord.log` / legacy `meshharbor-agent.log` rolling files,
 /// `panic-` panic dumps) and with mtime older than `cutoff` are unlinked.
 /// Anything else in the directory is left alone — the operator may have
 /// stashed notes there.
 ///
-/// P3d Slice B: prunes BOTH the new `roomlerd.log*` files and the legacy
-/// `roomler-agent.log*` files so an upgraded host's old rolled logs age out
+/// P3d Slice B: prunes BOTH the new `meshharbord.log*` files and the legacy
+/// `meshharbor-agent.log*` files so an upgraded host's old rolled logs age out
 /// under the same retention policy instead of accreting forever.
 fn prune_old_logs_at(dir: &Path, cutoff: SystemTime) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -527,11 +527,11 @@ fn prune_old_logs_at(dir: &Path, cutoff: SystemTime) {
         };
         let name = entry.file_name();
         let lossy = name.to_string_lossy();
-        let is_ours = lossy.starts_with("roomlerd.log")
-            || lossy.starts_with("roomlerd-service.log")
+        let is_ours = lossy.starts_with("meshharbord.log")
+            || lossy.starts_with("meshharbord-service.log")
             // RETIRED-NAME-ANCHOR: legacy rolled logs must still AGE OUT; dropping this
             // leaks them forever on an upgraded host. See docs/fr/FR-21.
-            || lossy.starts_with("roomler-agent.log")
+            || lossy.starts_with("meshharbor-agent.log")
             || lossy.starts_with("panic-");
         if is_ours && mtime < cutoff {
             let _ = std::fs::remove_file(entry.path());
@@ -620,7 +620,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn stderr_child() {
-        match std::env::var("ROOMLER_STDERR_CHILD").as_deref() {
+        match std::env::var("MESHHARBOR_STDERR_CHILD").as_deref() {
             Ok("helper") => super::say_on_stderr("a line /dev/full refuses"),
             // The control: what the daemon's own lines did before.
             Ok("eprintln") => eprintln!("a line /dev/full refuses"),
@@ -642,7 +642,7 @@ mod tests {
                 "--nocapture",
                 "--test-threads=1",
             ])
-            .env("ROOMLER_STDERR_CHILD", mode)
+            .env("MESHHARBOR_STDERR_CHILD", mode)
             .stdout(std::process::Stdio::null())
             .stderr(full)
             .status()
@@ -670,13 +670,13 @@ mod tests {
     fn legacy_log_target_is_mirrored_onto_the_new_one() {
         // Exactly what packaging/linux/meshharbord.service ships today.
         assert_eq!(
-            mirror_legacy_log_target("roomler_agent=info,warn"),
-            "roomler_agent=info,roomlerd=info,warn"
+            mirror_legacy_log_target("meshharbor_agent=info,warn"),
+            "meshharbor_agent=info,meshharbord=info,warn"
         );
         // And what service.rs generates.
         assert_eq!(
-            mirror_legacy_log_target("roomler_agent=info,tunnel_core=info,warn"),
-            "roomler_agent=info,roomlerd=info,tunnel_core=info,warn"
+            mirror_legacy_log_target("meshharbor_agent=info,tunnel_core=info,warn"),
+            "meshharbor_agent=info,meshharbord=info,tunnel_core=info,warn"
         );
     }
 
@@ -685,8 +685,8 @@ mod tests {
         // A hand-set `debug` must reach the renamed target, or the rename
         // silently downgrades exactly the person who asked for more detail.
         assert_eq!(
-            mirror_legacy_log_target("roomler_agent=debug,webrtc=info"),
-            "roomler_agent=debug,roomlerd=debug,webrtc=info"
+            mirror_legacy_log_target("meshharbor_agent=debug,webrtc=info"),
+            "meshharbor_agent=debug,meshharbord=debug,webrtc=info"
         );
     }
 
@@ -694,7 +694,7 @@ mod tests {
     fn a_spec_already_naming_the_new_target_is_left_alone() {
         // Idempotence: the shim must not accumulate duplicates when the
         // shipped units are eventually rewritten to name both.
-        let both = "roomler_agent=info,roomlerd=info,warn";
+        let both = "meshharbor_agent=info,meshharbord=info,warn";
         assert_eq!(mirror_legacy_log_target(both), both);
         assert_eq!(
             mirror_legacy_log_target(&mirror_legacy_log_target(both)),
@@ -707,7 +707,7 @@ mod tests {
         for spec in [
             "info",
             "warn",
-            "roomlerd=debug,warn",
+            "meshharbord=debug,warn",
             "tunnel_core=info,warn",
         ] {
             assert_eq!(mirror_legacy_log_target(spec), spec, "spec: {spec}");
@@ -717,18 +717,18 @@ mod tests {
     #[test]
     fn a_bare_legacy_target_with_no_level_still_mirrors() {
         assert_eq!(
-            mirror_legacy_log_target("roomler_agent"),
-            "roomler_agent,roomlerd"
+            mirror_legacy_log_target("meshharbor_agent"),
+            "meshharbor_agent,meshharbord"
         );
     }
 
     #[test]
     fn a_target_merely_containing_the_legacy_name_is_not_mistaken_for_it() {
-        // `roomler_agent_core` starts with `roomler_agent`; a `starts_with`
-        // or `contains` match would wrongly mirror it onto `roomlerd`.
+        // `meshharbor_agent_core` starts with `meshharbor_agent`; a `starts_with`
+        // or `contains` match would wrongly mirror it onto `meshharbord`.
         assert_eq!(
-            mirror_legacy_log_target("roomler_agent_core=debug,warn"),
-            "roomler_agent_core=debug,warn"
+            mirror_legacy_log_target("meshharbor_agent_core=debug,warn"),
+            "meshharbor_agent_core=debug,warn"
         );
     }
 
@@ -803,12 +803,12 @@ mod tests {
     #[test]
     fn prune_with_future_cutoff_drops_matching_files() {
         let tmp = tempfile::tempdir().unwrap();
-        // New (roomlerd) + legacy (roomler-agent) rolling files must BOTH be
+        // New (meshharbord) + legacy (meshharbor-agent) rolling files must BOTH be
         // pruned (P3d Slice B both-name retention).
-        let logd = tmp.path().join("roomlerd.log.2026-07-15");
-        let logd_root = tmp.path().join("roomlerd.log");
-        let log = tmp.path().join("roomler-agent.log.2026-04-29");
-        let log_root = tmp.path().join("roomler-agent.log");
+        let logd = tmp.path().join("meshharbord.log.2026-07-15");
+        let logd_root = tmp.path().join("meshharbord.log");
+        let log = tmp.path().join("meshharbor-agent.log.2026-04-29");
+        let log_root = tmp.path().join("meshharbor-agent.log");
         let panic = tmp.path().join("panic-1234-100.log");
         let unrelated = tmp.path().join("readme.txt");
         for p in [&logd, &logd_root, &log, &log_root, &panic, &unrelated] {
@@ -834,7 +834,7 @@ mod tests {
     #[test]
     fn prune_with_past_cutoff_keeps_everything() {
         let tmp = tempfile::tempdir().unwrap();
-        let log = tmp.path().join("roomler-agent.log.2026-04-29");
+        let log = tmp.path().join("meshharbor-agent.log.2026-04-29");
         std::fs::write(&log, b"x").unwrap();
         // Cutoff 1 day in the past — every fresh file is newer.
         let past = SystemTime::now() - Duration::from_secs(86_400);

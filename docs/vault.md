@@ -130,8 +130,8 @@ is that recipe as a test).
 
 | Setting | Env | Holds |
 |---|---|---|
-| `vault.kek` | `ROOMLER__VAULT__KEK` | the identity, `AGE-SECRET-KEY-1…`, or an `age-keygen` file's whole text |
-| `vault.kek_file` | `ROOMLER__VAULT__KEK_FILE` | the path of an `age-keygen` file |
+| `vault.kek` | `MESHHARBOR__VAULT__KEK` | the identity, `AGE-SECRET-KEY-1…`, or an `age-keygen` file's whole text |
+| `vault.kek_file` | `MESHHARBOR__VAULT__KEK_FILE` | the path of an `age-keygen` file |
 
 ```sh
 age-keygen -o kek.txt          # keep it out of every backup the database is in
@@ -203,9 +203,9 @@ to sweep, never a secret brought back.
 
 | Switch | Effect |
 |---|---|
-| `[modules] vault` (`ROOMLER__MODULES__VAULT`) | **default OFF**, like `hive`: no route is mounted |
-| `vault.tenants` (`ROOMLER__VAULT__TENANTS=<id>,<id>`) | the organizations the vault serves. A list alone mounts the module, the form a hosted server uses, because no older image reads it. Clearing it is the kill switch |
-| `vault.people` (`ROOMLER__VAULT__PEOPLE=<id>,<id>`, P3-9-1) | the served organizations whose PEOPLE it lends to through `roomler connect` (§23). **Opt-in**: empty, the default, is none, and `*` is every one the vault serves. Clearing it takes every person's lease back at the next sweep |
+| `[modules] vault` (`MESHHARBOR__MODULES__VAULT`) | **default OFF**, like `hive`: no route is mounted |
+| `vault.tenants` (`MESHHARBOR__VAULT__TENANTS=<id>,<id>`) | the organizations the vault serves. A list alone mounts the module, the form a hosted server uses, because no older image reads it. Clearing it is the kill switch |
+| `vault.people` (`MESHHARBOR__VAULT__PEOPLE=<id>,<id>`, P3-9-1) | the served organizations whose PEOPLE it lends to through `roomler connect` (§23). **Opt-in**: empty, the default, is none, and `*` is every one the vault serves. Clearing it takes every person's lease back at the next sweep |
 
 `vault.tenants` reads like `hive.tenants`: empty or `*` is every organization,
 and an entry that is not an organization id matches nothing
@@ -721,7 +721,7 @@ the device's key, the device.
 | the wire | `rc:vault.revoke` ([`signaling.rs`](../crates/remote_control/src/signaling.rs)); the words (`RevokeReason`) and `lease_limits::MAX_REVOKE_IDS`, 64 a frame ([`vault.rs`](../crates/remote_control/src/vault.rs)) |
 | the checks | [`revoke.rs`](../crates/modules/vault/src/revoke.rs): `verdict` (pure), `check_device`, `sweep_once`, `reconcile` at a hello, `secret_changed`, `device_removed` |
 | the connections | `Revoker` in `revoke.rs`, fed by the lease socket's lifecycle ([`lease.rs`](../crates/modules/vault/src/lease.rs)): a hello links its connection and reconciles the device, a close unlinks it unless a newer connection took over |
-| the setting | `vault.revoke_sweep_secs` (`ROOMLER__VAULT__REVOKE_SWEEP_SECS`); 0 or absent is 10 |
+| the setting | `vault.revoke_sweep_secs` (`MESHHARBOR__VAULT__REVOKE_SWEEP_SECS`); 0 or absent is 10 |
 
 ## 12. The daemon's lease client (P3-4a)
 
@@ -1679,7 +1679,7 @@ sequenceDiagram
 | the bundle | every issuer field that holds a value, each opened at its version ([`lease.rs:1214`](../crates/modules/vault/src/lease.rs#L1214)), in one JSON object, `{"audience": …, "fields": {…}}`, sealed to the device's key. The frame says `provider`, and `n: 0`. The buffer is sized for the worst escaping before it is written, so it never grows and leaves no copy behind ([`dynamic.rs:144`](../crates/modules/vault/src/dynamic.rs#L144)) |
 | its row | `field: ""`, `n: 0`, and `bundle`: each field at the version it carried. It ends at its TTL, or at the first of its versions' `expires_at` |
 | its standing | a new version of any of the issuer's fields takes it back. The write takes back every lease of the secret at once, and a sweep compares each field with the bundle's ([`revoke.rs:258`](../crates/modules/vault/src/revoke.rs#L258)). A provider this build cannot name stands for nothing |
-| the kill switch | `vault.providers` (`ROOMLER__VAULT__PROVIDERS`): empty or `*` is every provider built, and a list only those ([`dynamic.rs:31`](../crates/modules/vault/src/dynamic.rs#L31)). A word that names none serves nothing, so `none` turns them all off. Per secret, `disabled` |
+| the kill switch | `vault.providers` (`MESHHARBOR__VAULT__PROVIDERS`): empty or `*` is every provider built, and a list only those ([`dynamic.rs:31`](../crates/modules/vault/src/dynamic.rs#L31)). A word that names none serves nothing, so `none` turns them all off. Per secret, `disabled` |
 | the daemon | holds the bundle of a provider it mints for (`postgres`, `mysql`), lent to no tool ("The caller", below), and refuses any other provider's unopened, as `unsupported`: it never takes a bundle for a stored value ([`vault.rs:917`](../agents/meshharbord/src/vault.rs#L917)) |
 
 - ⚠️ **The vault never mints.** For `postgres` the device does: only it
@@ -2215,7 +2215,7 @@ again (decision 25, P3-9-2).
 | the decision | `secret:connect` in the schema ([`policy.cedarschema:107`](../crates/modules/vault/src/policy.cedarschema#L107)); `ACTION_CONNECT` and `NAMED_ONLY` ([`policy.rs:81`](../crates/modules/vault/src/policy.rs#L81)); the three guardrails ([`policy.rs:184`](../crates/modules/vault/src/policy.rs#L184)); `Ask::ConnectSecret` ([`policy.rs:570`](../crates/modules/vault/src/policy.rs#L570)) |
 | the handler | [`connect.rs`](../crates/modules/vault/src/connect.rs) `connect` ([`connect.rs:105`](../crates/modules/vault/src/connect.rs#L105): the checks above), answered in order on the lease queue (§10, [`lease.rs:462`](../crates/modules/vault/src/lease.rs#L462)) |
 | the revocation | `verdict`'s person's branch ([`revoke.rs:288`](../crates/modules/vault/src/revoke.rs#L288)), its owner read once a check ([`revoke.rs:412`](../crates/modules/vault/src/revoke.rs#L412)) |
-| the switch | `vault.people` (`ROOMLER__VAULT__PEOPLE`, [`settings.rs:123`](../crates/config/src/settings.rs#L123)), read by `TenantScope::parse_opt_in` ([`scope.rs:54`](../crates/modules/vault/src/scope.rs#L54)) |
+| the switch | `vault.people` (`MESHHARBOR__VAULT__PEOPLE`, [`settings.rs:123`](../crates/config/src/settings.rs#L123)), read by `TenantScope::parse_opt_in` ([`scope.rs:54`](../crates/modules/vault/src/scope.rs#L54)) |
 | `simulate` | `secret:connect` ([`policy_routes.rs:899`](../crates/modules/vault/src/policy_routes.rs#L899)): the principal the device's owner, no mode, and `approver_id` for what a yes would change |
 | the device's half | P3-9-2a, below: the daemon's ask and the endpoint it serves, renewed |
 | the person's command | P3-9-2b, below: the LocalAPI's `Connect`, on the daemon's own endpoint only, held to decision 26, and `roomler connect` in the foreground |

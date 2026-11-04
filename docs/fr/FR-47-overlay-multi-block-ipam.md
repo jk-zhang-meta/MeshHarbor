@@ -28,7 +28,7 @@ Two properties, stated as the acceptance bar rather than as slogans:
 
 ### 1a. Carving is OFF in production, so isolation is opt-in and nobody opts in
 
-There is no `ROOMLER__OVERLAY__*` key in the prod configmap
+There is no `MESHHARBOR__OVERLAY__*` key in the prod configmap
 (`k8s/base/configmap-roomler2-config.yaml` in the deploy repo), so the shipped default
 `blocks_enabled: false` applies (`crates/config/src/settings.rs:144`, `:822`). Every
 organization created today lands on the shared `100.64.0.0/10` with its cursor seeded at 1.

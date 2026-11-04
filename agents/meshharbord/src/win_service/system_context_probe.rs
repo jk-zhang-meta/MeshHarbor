@@ -44,7 +44,7 @@
 //!
 //! All three exit non-zero on hard failure, write a structured one-line
 //! summary to stdout that the operator can paste into a chat, and write
-//! a more verbose JSON report to `%TEMP%\roomlerd-probe-{mode}.json`
+//! a more verbose JSON report to `%TEMP%\meshharbord-probe-{mode}.json`
 //! for the implementer to consume offline.
 
 #![cfg(target_os = "windows")]
@@ -162,7 +162,7 @@ fn run_winlogon_token() -> Result<()> {
 
     // Step 5: spawn `cmd.exe /c whoami /all > %TEMP%\winlogon-token-probe.txt`
     // using the primary token via CreateProcessAsUserW.
-    let probe_out = std::env::temp_dir().join("roomlerd-probe-winlogon-token.txt");
+    let probe_out = std::env::temp_dir().join("meshharbord-probe-winlogon-token.txt");
     let _ = std::fs::remove_file(&probe_out); // best-effort wipe stale data
     let cmdline = format!(
         "cmd.exe /c \"whoami /user >\"{}\" 2>&1 && whoami /priv >>\"{}\" 2>&1\"",

@@ -15,7 +15,7 @@
 //! * **`overlay-netstack`** — a userspace smoltcp stack + a loopback SOCKS5
 //!   front, the OS-free twin: on a locked-down host (full-tunnel VPN) the mesh
 //!   is reachable with NO OS routing. Opt in with the env var
-//!   `ROOMLERD_OVERLAY_NETSTACK_SOCKS=<port>`.
+//!   `MESHHARBORD_OVERLAY_NETSTACK_SOCKS=<port>`.
 //!
 //! Default-OFF regardless: `overlay_enabled` config **and** a build carrying
 //! the relevant feature are both required to join the mesh.
@@ -295,7 +295,7 @@ pub async fn maybe_start(
     let (evt_tx, evt_rx) = mpsc::channel::<OverlayEvent>(64);
 
     // Pick the overlay surface: the userspace netstack (+ loopback SOCKS front)
-    // when `ROOMLERD_OVERLAY_NETSTACK_SOCKS` names a port, else the OS TUN.
+    // when `MESHHARBORD_OVERLAY_NETSTACK_SOCKS` names a port, else the OS TUN.
     // Either surface can be absent at build time; the helper warns + `None`s,
     // and `?` aborts the (mis)configured start.
     //
@@ -331,7 +331,7 @@ pub async fn maybe_start(
             None => systun_tun_factory()?,
         }
     };
-    // Roomler SSH — when this node opts in, splice a port-intercept shim over
+    // MeshHarbor SSH — when this node opts in, splice a port-intercept shim over
     // whichever device we just chose, so `<overlay ip>:<ssh_port>` terminates in
     // the daemon. Deliberately applied AFTER the mode selection: it decorates
     // the OS-TUN, per-org and netstack factories identically, so SSH behaves the
@@ -503,7 +503,7 @@ async fn resolve_server_ips(server_url: &str) -> Vec<std::net::IpAddr> {
 /// This org's loopback SOCKS5 port for **netstack mode**. `None` (the
 /// default) selects OS-TUN mode; a zero value is treated as unset.
 ///
-/// The PRIMARY reads `ROOMLERD_OVERLAY_NETSTACK_SOCKS`, exactly as
+/// The PRIMARY reads `MESHHARBORD_OVERLAY_NETSTACK_SOCKS`, exactly as
 /// before. A SECONDARY gets whatever its `[[orgs]]` entry declares and
 /// deliberately does NOT fall back to the env key: the port is one TCP
 /// listener, so inheriting it would put two orgs on one front — the very
@@ -545,7 +545,7 @@ static SYSTUN_CACHE: std::sync::Mutex<
 
 /// OS-TUN factory (`overlay-l3`). The agent is privileged, so the device +
 /// routes come up directly in `SystemTun::up`. Kill-switch for the cache:
-/// `overlay_tun_persist` / `ROOMLERD_OVERLAY_TUN_PERSIST`, default ON —
+/// `overlay_tun_persist` / `MESHHARBORD_OVERLAY_TUN_PERSIST`, default ON —
 /// `0` restores the per-session create/remove cycle.
 #[cfg(feature = "overlay-l3")]
 fn systun_tun_factory() -> Option<TunFactory> {
@@ -574,7 +574,7 @@ fn systun_tun_factory() -> Option<TunFactory> {
 fn systun_tun_factory() -> Option<TunFactory> {
     warn!(
         "overlay: OS-TUN mode requested but this build lacks `overlay-l3` \
-         (set ROOMLERD_OVERLAY_NETSTACK_SOCKS for netstack mode); not joining"
+         (set MESHHARBORD_OVERLAY_NETSTACK_SOCKS for netstack mode); not joining"
     );
     None
 }
@@ -652,11 +652,11 @@ static ORG_TUN_CACHE: std::sync::Mutex<
 
 /// Multi-org v2 — a per-org adapter name that FITS the OS limit. Linux caps
 /// interface names at `IFNAMSIZ-1` = 15 usable chars, and the base `IF_NAME`
-/// differs per platform (`roomler` on Windows = 7, `roomler0` on Linux = 8),
-/// so the naive `roomler0-<7hex>` (16) overflows on Linux and the kernel
+/// differs per platform (`meshharbor` on Windows = 7, `meshharbor0` on Linux = 8),
+/// so the naive `meshharbor0-<7hex>` (16) overflows on Linux and the kernel
 /// rejects it — the secondary org's TUN never comes up. The tenant suffix is
 /// truncated to whatever fits after `<IF_NAME>-`: Windows keeps 7 hex
-/// (`roomler-6a712a5`), Linux keeps 6 (`roomler0-6a712a`). Deterministic per
+/// (`meshharbor-6a712a5`), Linux keeps 6 (`meshharbor0-6a712a`). Deterministic per
 /// (machine, org) — the suffix is a stable tenant-id prefix, and the FULL
 /// tenant still drives the distinct per-org GUID, so a 6-hex-prefix clash
 /// (negligible for a machine's handful of orgs) can't alias two devices.
@@ -673,7 +673,7 @@ fn per_org_ifname(if_name: &str, org_key: &str) -> String {
 /// on-link NARROWED to its block (`96 + v4_plen`), so N adapters hold
 /// nested-or-disjoint v6 prefixes and longest-prefix picks the right one.
 ///
-/// Naming: the primary KEEPS the legacy `IF_NAME` (`roomler` / `roomler0`) +
+/// Naming: the primary KEEPS the legacy `IF_NAME` (`meshharbor` / `meshharbor0`) +
 /// GUID (no adapter churn on the mode flip); a secondary is
 /// [`per_org_ifname`] (length-clamped for Linux IFNAMSIZ) with a stable
 /// per-org GUID. The primary's on-link is narrowed too: its whole-/96 would
@@ -866,7 +866,7 @@ static SOCKS_BOUND: std::sync::Mutex<Option<std::collections::BTreeSet<u16>>> =
 
 /// The netstack ICMP backend for the `meshharbor ping` LocalAPI verb, watching the
 /// shared handle channel. `None` unless this node is in netstack mode
-/// (`ROOMLERD_OVERLAY_NETSTACK_SOCKS` set) — an OS-TUN node has no OS-free
+/// (`MESHHARBORD_OVERLAY_NETSTACK_SOCKS` set) — an OS-TUN node has no OS-free
 /// ICMP path (the OS `ping` works there).
 #[cfg(feature = "overlay-netstack")]
 pub fn netstack_pinger(
@@ -1029,7 +1029,7 @@ fn netstack_tun_factory(
     _org_key: &str,
 ) -> Option<TunFactory> {
     warn!(
-        "overlay: netstack mode requested (ROOMLERD_OVERLAY_NETSTACK_SOCKS set) \
+        "overlay: netstack mode requested (MESHHARBORD_OVERLAY_NETSTACK_SOCKS set) \
          but this build lacks `overlay-netstack`; not joining"
     );
     None
@@ -1288,27 +1288,27 @@ mod ifname_tests {
     use super::per_org_ifname;
 
     /// The per-org adapter name must never exceed Linux's 15-char IFNAMSIZ
-    /// limit — the bug the fleet-host-2 canary caught: `roomler0-<7hex>` = 16.
+    /// limit — the bug the fleet-host-2 canary caught: `meshharbor0-<7hex>` = 16.
     #[test]
     fn per_org_ifname_fits_ifnamsiz_on_every_platform() {
         let tenant = "6a712a572ceed780ac1ccbce";
-        // Linux base "roomler0" (8): 15 - 9 = 6-hex suffix → 15 total.
-        let linux = per_org_ifname("roomler0", tenant);
-        assert_eq!(linux, "roomler0-6a712a");
+        // Linux base "meshharbor0" (8): 15 - 9 = 6-hex suffix → 15 total.
+        let linux = per_org_ifname("meshharbor0", tenant);
+        assert_eq!(linux, "meshharbor0-6a712a");
         assert!(linux.len() <= 15, "linux name too long: {linux}");
-        // Windows base "roomler" (7): 15 - 8 = 7-hex suffix → 15 total
+        // Windows base "meshharbor" (7): 15 - 8 = 7-hex suffix → 15 total
         // (unchanged from the pre-fix Windows behavior, which already fit).
-        let win = per_org_ifname("roomler", tenant);
-        assert_eq!(win, "roomler-6a712a5");
+        let win = per_org_ifname("meshharbor", tenant);
+        assert_eq!(win, "meshharbor-6a712a5");
         assert!(win.len() <= 15, "windows name too long: {win}");
         // A short org key never overflows and keeps its full suffix.
-        assert_eq!(per_org_ifname("roomler0", "abc"), "roomler0-abc");
+        assert_eq!(per_org_ifname("meshharbor0", "abc"), "meshharbor0-abc");
         // Distinct tenants that share a 6-hex prefix would clash on NAME —
         // acceptable (the full-tenant GUID still differs), and real fleet
         // tenants (grox 69a1…, jovanov 6a71…) don't even share the first char.
         assert_ne!(
-            per_org_ifname("roomler0", "69a1dbbad2000f26adc875ce"),
-            per_org_ifname("roomler0", "6a712a572ceed780ac1ccbce")
+            per_org_ifname("meshharbor0", "69a1dbbad2000f26adc875ce"),
+            per_org_ifname("meshharbor0", "6a712a572ceed780ac1ccbce")
         );
     }
 }

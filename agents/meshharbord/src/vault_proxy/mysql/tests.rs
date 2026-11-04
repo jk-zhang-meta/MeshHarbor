@@ -154,7 +154,7 @@ async fn a_server_that_asks_for_a_local_file_is_sent_none() {
 /// sign-in, then its cached one), a query's rows and NULLs, a refusal in
 /// the server's words, and a wrong password refused.
 #[tokio::test]
-#[ignore = "needs a MySQL: ROOMLER_TEST_MYSQL, ROOMLER_TEST_MYSQL_CA, ROOMLER_TEST_MYSQL_AUTH_FILE"]
+#[ignore = "needs a MySQL: MESHHARBOR_TEST_MYSQL, MESHHARBOR_TEST_MYSQL_CA, MESHHARBOR_TEST_MYSQL_AUTH_FILE"]
 async fn a_real_mysql_is_signed_in_to_and_queried() {
     let up = real_mysql().expect("a MySQL named by the environment");
     for _ in 0..2 {

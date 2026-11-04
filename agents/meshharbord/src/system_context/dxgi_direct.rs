@@ -48,7 +48,7 @@
 //!
 //! D3D11 device/context + the duplication object have thread affinity at
 //! runtime. The capture pump owns one of these on its dedicated
-//! `roomlerd-system-capture` thread and drives it synchronously;
+//! `meshharbord-system-capture` thread and drives it synchronously;
 //! nobody else touches it. We never send it across threads.
 //!
 //! ## Feature gating
@@ -101,7 +101,7 @@ use crate::capture::{Damage, DirtyRect};
 use crate::fp16;
 
 /// Phase B — kill switch for the GPU scale-before-readback path.
-/// `ROOMLERD_GPU_SCALE=0` (config key `gpu_scale`) reverts to the
+/// `MESHHARBORD_GPU_SCALE=0` (config key `gpu_scale`) reverts to the
 /// Phase-A CPU resample per session — a field A/B is one env flip.
 fn gpu_scale_enabled() -> bool {
     !matches!(

@@ -90,7 +90,7 @@ async fn a_user_is_minted_from_its_form_with_its_grants_and_its_end() {
     let id = lease();
     let until = now() + 600;
     let m = mint(&issuer, &id, until).await.unwrap();
-    assert_eq!(m.user, format!("roomler_{id}"));
+    assert_eq!(m.user, format!("meshharbor_{id}"));
     assert_eq!(
         (m.host.as_str(), m.port, m.database.as_str()),
         ("localhost", f.port, "orders")
@@ -109,7 +109,7 @@ async fn a_user_is_minted_from_its_form_with_its_grants_and_its_end() {
     );
     assert!(
         create.ends_with(&format!(
-            " ATTRIBUTE '{{\"roomler\": {{\"lease\": \"{id}\", \"until\": {until}}}}}'"
+            " ATTRIBUTE '{{\"meshharbor\": {{\"lease\": \"{id}\", \"until\": {until}}}}}'"
         )),
         "{create}"
     );
@@ -121,8 +121,8 @@ async fn a_user_is_minted_from_its_form_with_its_grants_and_its_end() {
     assert_eq!(
         queries[5],
         format!(
-            "CREATE EVENT `orders`.`roomler_end_{id}` ON SCHEDULE AT FROM_UNIXTIME({until}) \
-             ON COMPLETION NOT PRESERVE DO DROP USER IF EXISTS 'roomler_{id}'@'%'"
+            "CREATE EVENT `orders`.`meshharbor_end_{id}` ON SCHEDULE AT FROM_UNIXTIME({until}) \
+             ON COMPLETION NOT PRESERVE DO DROP USER IF EXISTS 'meshharbor_{id}'@'%'"
         )
     );
     let u = f.users.lock().unwrap().get(&m.user).cloned().unwrap();
@@ -132,7 +132,7 @@ async fn a_user_is_minted_from_its_form_with_its_grants_and_its_end() {
         f.events
             .lock()
             .unwrap()
-            .contains(&format!("roomler_end_{id}"))
+            .contains(&format!("meshharbor_end_{id}"))
     );
 
     assert_eq!(signs_in_as(&f, &m.user, &m.password).await, Ok(()));
@@ -213,9 +213,9 @@ async fn a_revocation_locks_ends_and_drops_the_user_and_nothing_else() {
     for name in [
         "admin",
         "root",
-        "roomler_",
-        "roomler_1234",
-        "roomler_zzzzzzzzzzzzzzzzzzzzzzzz",
+        "meshharbor_",
+        "meshharbor_1234",
+        "meshharbor_zzzzzzzzzzzzzzzzzzzzzzzz",
     ] {
         let dialled = f.dialled.load(SeqCst);
         assert!(revoke(&issuer, name).await.is_err(), "{name}");
@@ -245,29 +245,29 @@ async fn the_ended_are_swept_at_the_next_mint() {
     let f = fake_mysql(&admin).await;
     let marked = |id: &str, until: i64| FakeUser {
         attribute: Some(format!(
-            "{{\"roomler\": {{\"lease\": \"{id}\", \"until\": {until}}}}}"
+            "{{\"meshharbor\": {{\"lease\": \"{id}\", \"until\": {until}}}}}"
         )),
         ..FakeUser::default()
     };
     let (old, live) = (lease(), lease());
     {
         let mut users = f.users.lock().unwrap();
-        users.insert(format!("roomler_{old}"), marked(&old, now() - 60));
-        users.insert(format!("roomler_{live}"), marked(&live, now() + 600));
+        users.insert(format!("meshharbor_{old}"), marked(&old, now() - 60));
+        users.insert(format!("meshharbor_{live}"), marked(&live, now() + 600));
         users.insert("app_reader".into(), marked(&old, now() - 60));
-        users.insert("roomler_admin".into(), marked("forged", now() - 60));
+        users.insert("meshharbor_admin".into(), marked("forged", now() - 60));
     }
     let issuer = Issuer::from_bundle(&fake_bundle(&f, &admin, ""), upstream_of).unwrap();
     let m = mint(&issuer, &lease(), now() + 600).await.unwrap();
     let users = f.users.lock().unwrap();
     assert!(
-        !users.contains_key(&format!("roomler_{old}")),
+        !users.contains_key(&format!("meshharbor_{old}")),
         "the ended one is swept"
     );
     for kept in [
-        format!("roomler_{live}"),
+        format!("meshharbor_{live}"),
         "app_reader".into(),
-        "roomler_admin".into(),
+        "meshharbor_admin".into(),
         m.user.clone(),
     ] {
         assert!(users.contains_key(&kept), "{kept}");
@@ -352,8 +352,8 @@ fn names_are_quoted_and_a_name_that_would_be_sql_is_refused() {
         assert!(account(bad).is_err(), "{bad}");
     }
     assert_eq!(
-        event_of("roomler_0123456789abcdef01234567"),
-        "roomler_end_0123456789abcdef01234567"
+        event_of("meshharbor_0123456789abcdef01234567"),
+        "meshharbor_end_0123456789abcdef01234567"
     );
 }
 
@@ -382,7 +382,7 @@ async fn issuer_world(root: &Upstream, word: &str) {
 
 /// The issuer, as a lease's bundle would carry it.
 fn issuer(root: &Upstream, word: &str) -> Issuer {
-    let ca = std::fs::read_to_string(std::env::var("ROOMLER_TEST_MYSQL_CA").unwrap()).unwrap();
+    let ca = std::fs::read_to_string(std::env::var("MESHHARBOR_TEST_MYSQL_CA").unwrap()).unwrap();
     let bundle = serde_json::to_vec(&json!({
         "audience": format!("{}:{}", root.host, root.port),
         "fields": {
@@ -430,7 +430,7 @@ async fn events(root: &Upstream, name: &str) -> usize {
 /// event; taken back, after which it signs in no more and its event is gone;
 /// an ended user swept at the next mint; a name no mint made refused.
 #[tokio::test]
-#[ignore = "needs a MySQL: ROOMLER_TEST_MYSQL, ROOMLER_TEST_MYSQL_CA, ROOMLER_TEST_MYSQL_AUTH_FILE"]
+#[ignore = "needs a MySQL: MESHHARBOR_TEST_MYSQL, MESHHARBOR_TEST_MYSQL_CA, MESHHARBOR_TEST_MYSQL_AUTH_FILE"]
 async fn a_real_mysql_user_is_minted_ended_and_taken_back() {
     let root = real_mysql().expect("a MySQL named by the environment");
     let word = made();
@@ -439,7 +439,7 @@ async fn a_real_mysql_user_is_minted_ended_and_taken_back() {
 
     let id = lease();
     let m = mint(&issuer, &id, now() + 600).await.unwrap();
-    assert_eq!(m.user, format!("roomler_{id}"));
+    assert_eq!(m.user, format!("meshharbor_{id}"));
     assert_eq!(m.password.len(), 43, "32 random bytes, base64url");
     assert_eq!(
         reads_as(&m, &root).await.unwrap(),
@@ -448,12 +448,12 @@ async fn a_real_mysql_user_is_minted_ended_and_taken_back() {
             Some("1".to_string())
         ]]
     );
-    assert_eq!(events(&root, &format!("roomler_end_{id}")).await, 1);
+    assert_eq!(events(&root, &format!("meshharbor_end_{id}")).await, 1);
 
     revoke(&issuer, &m.user).await.unwrap();
     let why = reads_as(&m, &root).await.unwrap_err();
     assert!(why.contains("1045 (28000)"), "{why}");
-    assert_eq!(events(&root, &format!("roomler_end_{id}")).await, 0);
+    assert_eq!(events(&root, &format!("meshharbor_end_{id}")).await, 0);
     revoke(&issuer, &m.user).await.unwrap();
 
     // Ended before its event could run (its time already past): the next
@@ -467,7 +467,7 @@ async fn a_real_mysql_user_is_minted_ended_and_taken_back() {
     assert!(reads_as(&old, &root).await.is_err(), "swept");
     revoke(&issuer, &fresh.user).await.unwrap();
 
-    for name in ["root", "mint_issuer", "roomler_", "roomler_zz"] {
+    for name in ["root", "mint_issuer", "meshharbor_", "meshharbor_zz"] {
         assert!(revoke(&issuer, name).await.is_err(), "{name}");
     }
 }

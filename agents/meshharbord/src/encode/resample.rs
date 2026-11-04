@@ -23,7 +23,7 @@
 //! deliberately NOT pooled — it moves into an `Arc<Frame>` that
 //! `last_good_frame`/the encoder/the send path may hold arbitrarily long.
 //!
-//! `ROOMLERD_SCALE_THREADS` (config key `scale_threads`, default
+//! `MESHHARBORD_SCALE_THREADS` (config key `scale_threads`, default
 //! `min(available_parallelism, 4)` since FR-65 — it was 1) row-bands both
 //! passes across N scoped threads — both are embarrassingly parallel, and on
 //! HW-encode hosts the cores are idle during motion. It shipped as "a lever
@@ -46,7 +46,7 @@ use crate::peer::TargetResolution;
 const Q12_ONE: i32 = 4096;
 
 /// rc.191 — kill switch for the Lanczos-3 downscale path.
-/// `ROOMLERD_LANCZOS=0` (or `false`) reverts every downscale to the
+/// `MESHHARBORD_LANCZOS=0` (or `false`) reverts every downscale to the
 /// box filter without a rebuild.
 fn lanczos_enabled() -> bool {
     !matches!(
@@ -80,7 +80,7 @@ fn use_lanczos_for_scale(scale: f32, min_scale: f32, enabled: bool) -> bool {
 
 /// Phase A — worker count for the row-banded passes. Read once per
 /// [`Resampler`] (per pump instance), clamped 1..=8; 1 = inline, no
-/// threads spawned. Env `ROOMLERD_SCALE_THREADS` / config key
+/// threads spawned. Env `MESHHARBORD_SCALE_THREADS` / config key
 /// `scale_threads`.
 ///
 /// **FR-65: the default is now `min(available_parallelism, 4)`, was 1.** The
@@ -432,8 +432,8 @@ pub(crate) fn target_dims(native: (u32, u32), target: TargetResolution) -> (u32,
 /// ratio (rc.191 field: relay 0.67× and fit 0.75× "blurred/pixely" — and
 /// the Smoother 1024 cap, 1920→1024 = 0.533×, fell straight through the
 /// old `> 0.55` gate onto box: the exact text-mush case Lanczos was added
-/// for). Kill switches: `ROOMLERD_LANCZOS=0` (box everywhere),
-/// `ROOMLERD_LANCZOS_MIN_PCT=56` (restore the pre-P7 gate).
+/// for). Kill switches: `MESHHARBORD_LANCZOS=0` (box everywhere),
+/// `MESHHARBORD_LANCZOS_MIN_PCT=56` (restore the pre-P7 gate).
 pub(crate) fn apply_target_resolution(
     rs: &mut Resampler,
     frame: Arc<Frame>,

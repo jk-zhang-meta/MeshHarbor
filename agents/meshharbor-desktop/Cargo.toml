@@ -4,7 +4,7 @@ license = "MPL-2.0"
 publish = false
 version.workspace = true
 edition.workspace = true
-description = "Roomler desktop — tray-resident control surface: overview, devices, tunnels, settings, onboarding, consent."
+description = "MeshHarbor desktop — tray-resident control surface: overview, devices, tunnels, settings, onboarding, consent."
 
 [[bin]]
 # The tray/desktop companion. P3d Slice B moved the OUTPUT binary to
@@ -17,7 +17,7 @@ path = "src/main.rs"
 # P3e lever E: the tray calls `enrollment::enroll`, `config::save`,
 # `machine::derive_machine_id`, the log tail, and the sentinel reader — all of
 # which live in agent-core now. Before the split this was a lib dep on the
-# FULL `roomlerd`, which pulled the entire data plane (webrtc family,
+# FULL `meshharbord`, which pulled the entire data plane (webrtc family,
 # quinn, turn, openh264-sys2, tokio-tungstenite, async_zip, …) into a GUI that
 # never opens a session. One deliberate loss: `win_service::default_log_dir`
 # — replaced by the same one-liner over `appdirs` (see commands.rs).
@@ -70,7 +70,7 @@ gethostname = "0.5"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
-    # FR-84 D3 — `roomlerd service start` spawned with `CreateProcessW`
+    # FR-84 D3 — `meshharbord service start` spawned with `CreateProcessW`
     # (bInheritHandles = FALSE, CREATE_NO_WINDOW): std's `Command` always
     # inherits every inheritable handle (#1035). `Win32_Security` only because
     # `CreateProcessW`'s signature names `SECURITY_ATTRIBUTES`.
@@ -81,7 +81,7 @@ windows-sys = { version = "0.59", features = [
 # FR-27 P9 — the session banner shown WITHOUT taking key status
 # (`orderFrontRegardless`), `NSWindowSharingNone` on the panels, and the red
 # frame round the screen (`panels.rs`). All three crates are already in the
-# lockfile (tauri pulls them on macOS, `roomlerd` declares them the same way),
+# lockfile (tauri pulls them on macOS, `meshharbord` declares them the same way),
 # so this is a target-scoped direct dep, not new supply-chain surface.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -110,7 +110,7 @@ tempfile = { workspace = true }
 
 # FR-27 — the Linux companion, as its OWN Debian package.
 #
-# Deliberately NOT folded into the `roomlerd` .deb. That package installs on
+# Deliberately NOT folded into the `meshharbord` .deb. That package installs on
 # every headless node in the fleet — k8s workers, build hosts, relays — and
 # adding webkit2gtk + GTK + an app-indicator library to their dependency graph
 # to ship a menu-bar app none of them can display would be a real regression
@@ -118,7 +118,7 @@ tempfile = { workspace = true }
 # never hears about it. A CI guard asserts the daemon package's `depends`
 # gains no GTK/webkit entry.
 #
-# `roomlerd` is a hard dependency: this app is a thin client over the daemon's
+# `meshharbord` is a hard dependency: this app is a thin client over the daemon's
 # LocalAPI and does nothing at all without one.
 #
 # ⚠️ The runtime deps are the SONAME packages, not the `-dev` ones CI installs
@@ -132,10 +132,10 @@ maintainer = "G ROX LTD <goran.jovanov@gmail.com>"
 copyright = "2026, G ROX LTD"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
-Roomler desktop — the menu-bar companion for the Roomler daemon: device \
+MeshHarbor desktop — the menu-bar companion for the MeshHarbor daemon: device \
 status, network peers, tunnel routes, and the on-screen consent prompt and \
 "being viewed" banner for remote-control sessions."""
-depends = "libc6, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, roomlerd"
+depends = "libc6, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, meshharbord"
 section = "net"
 priority = "optional"
 assets = [
@@ -169,10 +169,10 @@ assets = [
 # every RPM distro provides. Plus the tray's library, which `tray-icon`
 # dlopens (so no DT_NEEDED names it), as the .deb's `depends` does. No
 # `ld-linux-*` (glibc carries the loader, and its name is per-arch) and no
-# `roomlerd`: these hosts install the daemon from the tarball, not a package.
+# `meshharbord`: these hosts install the daemon from the tarball, not a package.
 [package.metadata.generate-rpm]
 name = "meshharbor-desktop"
-summary = "Roomler desktop: the consent prompt, banner and tray for the Roomler daemon"
+summary = "MeshHarbor desktop: the consent prompt, banner and tray for the MeshHarbor daemon"
 release = "1"
 url = "https://roomler.ai"
 auto-req = "no"

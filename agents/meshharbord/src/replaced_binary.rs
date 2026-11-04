@@ -190,12 +190,12 @@ pub fn decide(pending: Option<&Pending>, now: Instant, busy: &Busy) -> Step {
 }
 
 /// `meshharbord --version`'s answer, against the version this process runs.
-/// Pure. The answer must be clap's `roomlerd <version>` exactly: anything else
+/// Pure. The answer must be clap's `meshharbord <version>` exactly: anything else
 /// at the exec path (another program, a truncated file that still runs) is not
 /// restarted onto.
 pub fn verdict_from(stdout: &str, running: &str) -> Verdict {
     let out = stdout.trim();
-    match out.strip_prefix("roomlerd ") {
+    match out.strip_prefix("meshharbord ") {
         Some(v) if !v.is_empty() && !v.contains(char::is_whitespace) => {
             if v == running {
                 Verdict::Same
@@ -249,7 +249,7 @@ pub fn spawn(
     }
     if !tunnel_core::env::flag("UPDATE_HELPER", true) {
         tracing::info!(
-            "replaced-binary watch: off (ROOMLERD_UPDATE_HELPER=0) — after an upgrade this daemon \
+            "replaced-binary watch: off (MESHHARBORD_UPDATE_HELPER=0) — after an upgrade this daemon \
              runs the old binary until it is restarted"
         );
         return None;
@@ -655,23 +655,23 @@ mod tests {
     }
 
     #[test]
-    fn the_version_answer_must_be_roomlerd_and_one_word() {
+    fn the_version_answer_must_be_meshharbord_and_one_word() {
         assert_eq!(
-            verdict_from("roomlerd 0.4.134\n", "0.4.133"),
+            verdict_from("meshharbord 0.4.134\n", "0.4.133"),
             Verdict::Other("0.4.134".into())
         );
-        assert_eq!(verdict_from("roomlerd 0.4.133\n", "0.4.133"), Verdict::Same);
+        assert_eq!(verdict_from("meshharbord 0.4.133\n", "0.4.133"), Verdict::Same);
         // An admin's downgrade is still what is installed.
         assert_eq!(
-            verdict_from("roomlerd 0.4.120", "0.4.133"),
+            verdict_from("meshharbord 0.4.120", "0.4.133"),
             Verdict::Other("0.4.120".into())
         );
         for junk in [
             "",
-            "roomlerd",
-            "roomlerd ",
-            "roomler 0.4.134",
-            "roomlerd 0.4.134 extra",
+            "meshharbord",
+            "meshharbord ",
+            "meshharbor 0.4.134",
+            "meshharbord 0.4.134 extra",
             "Segmentation fault",
         ] {
             assert!(
@@ -685,17 +685,17 @@ mod tests {
     fn the_exec_path_is_argv0_when_absolute_else_the_resolved_executable() {
         use std::ffi::OsStr;
         use std::path::PathBuf;
-        let exe = Some(PathBuf::from("/usr/lib/roomler/roomlerd"));
+        let exe = Some(PathBuf::from("/usr/lib/meshharbor/meshharbord"));
         assert_eq!(
             pick_exec_path(Some(OsStr::new("/usr/bin/meshharbord")), exe.clone()),
             Some(PathBuf::from("/usr/bin/meshharbord"))
         );
         assert_eq!(
-            pick_exec_path(Some(OsStr::new("roomlerd")), exe.clone()),
+            pick_exec_path(Some(OsStr::new("meshharbord")), exe.clone()),
             exe
         );
         assert_eq!(pick_exec_path(None, exe.clone()), exe);
-        assert_eq!(pick_exec_path(Some(OsStr::new("./roomlerd")), None), None);
+        assert_eq!(pick_exec_path(Some(OsStr::new("./meshharbord")), None), None);
     }
 
     #[test]
@@ -729,12 +729,12 @@ mod tests {
     #[test]
     fn a_rename_over_gives_the_path_another_identity() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let bin = tmp.path().join("roomlerd");
+        let bin = tmp.path().join("meshharbord");
         std::fs::write(&bin, b"old").expect("write");
         // Hold the old file open, as a running image is held.
         let held = std::fs::File::open(&bin).expect("open");
         let before = file_id(&bin).expect("id");
-        let staged = tmp.path().join(".roomlerd.new");
+        let staged = tmp.path().join(".meshharbord.new");
         std::fs::write(&staged, b"new").expect("write");
         // The tarball's `place`: the old one to `.prev`, the new one in.
         std::fs::rename(&bin, bin.with_extension("prev")).expect("prev");

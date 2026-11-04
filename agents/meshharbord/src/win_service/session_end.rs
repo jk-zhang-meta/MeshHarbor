@@ -123,7 +123,7 @@ fn wait_for_clean_stop(budget: Duration) -> bool {
 /// The window, once it exists (tests send it messages).
 static WINDOW: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
-/// `ROOMLERD_SESSION_END`, on unless set false. Off, no window is made, and a
+/// `MESHHARBORD_SESSION_END`, on unless set false. Off, no window is made, and a
 /// sign-out or shutdown ends the daemon unannounced, as before P4d.
 pub fn enabled() -> bool {
     tunnel_core::env::flag("SESSION_END", true)
@@ -136,11 +136,11 @@ pub fn watch() {
     static START: Once = Once::new();
     START.call_once(|| {
         if !enabled() {
-            tracing::info!("no session-end window (ROOMLERD_SESSION_END=0)");
+            tracing::info!("no session-end window (MESHHARBORD_SESSION_END=0)");
             return;
         }
         let spawned = std::thread::Builder::new()
-            .name("roomlerd-session-end".into())
+            .name("meshharbord-session-end".into())
             .spawn(|| {
                 if let Err(e) = run_window() {
                     tracing::warn!(
@@ -161,8 +161,8 @@ fn wide(s: &str) -> Vec<u16> {
 }
 
 fn run_window() -> std::io::Result<()> {
-    let class = wide("RoomlerdSessionEnd");
-    let title = wide("roomlerd");
+    let class = wide("MeshHarbordSessionEnd");
+    let title = wide("meshharbord");
     // SAFETY: every pointer handed over is valid for its call: `class` and
     // `title` are NUL-terminated buffers that outlive the window (this function
     // never returns while the window lives), `wc` is a fully initialised local,

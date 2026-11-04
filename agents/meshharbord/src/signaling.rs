@@ -112,7 +112,7 @@ const PEER_CLOSE_BUDGET: Duration = Duration::from_secs(5);
 /// its own peer down. The grace only covers a slow signalling path. On a
 /// dead control WS there is nothing to wait for and the close is immediate.
 ///
-/// `ROOMLERD_HOST_DISCONNECT_GRACE_MS` overrides it, `0` restoring the
+/// `MESHHARBORD_HOST_DISCONNECT_GRACE_MS` overrides it, `0` restoring the
 /// pre-P10 timing (the kill switch), capped at [`PEER_CLOSE_BUDGET`].
 const HOST_DISCONNECT_GRACE_DEFAULT: Duration = Duration::from_millis(1000);
 
@@ -121,7 +121,7 @@ const HOST_DISCONNECT_GRACE_DEFAULT: Duration = Duration::from_millis(1000);
 /// nobody will set.
 fn host_disconnect_grace() -> Duration {
     host_disconnect_grace_from(
-        std::env::var("ROOMLERD_HOST_DISCONNECT_GRACE_MS")
+        std::env::var("MESHHARBORD_HOST_DISCONNECT_GRACE_MS")
             .ok()
             .as_deref(),
     )
@@ -1009,12 +1009,12 @@ pub async fn run(
                 // sentinel is primary-only; a secondary org's auth death
                 // is surfaced via the LocalAPI `OrgStatus` + logs.
                 if auth_failures == 3 && ctx.is_primary {
-                    let msg = "Roomler agent: re-enrollment required.\n\n\
+                    let msg = "MeshHarbor agent: re-enrollment required.\n\n\
                               The server is rejecting this agent's token. \
                               Either the device was removed or re-enrolled \
                               elsewhere, or its token expired and could not \
                               be renewed. Run:\n\n\
-                              \troomlerd re-enroll --token <new-jwt>\n\n\
+                              \tmeshharbord re-enroll --token <new-jwt>\n\n\
                               with a fresh enrollment JWT from the admin UI \
                               to restore service.";
                     match notify::raise_attention_with_reason(notify::REASON_AUTH, msg) {
@@ -1063,10 +1063,10 @@ pub async fn run(
                 let after =
                     crate::service::Install::detect(remote_cfg.config_path()).after_removal();
                 let body = format!(
-                    "Roomler agent: server-side close — {reason:?}.\n\n{message}\n\n\
+                    "MeshHarbor agent: server-side close — {reason:?}.\n\n{message}\n\n\
                      The agent will not reconnect. Re-enrol with a fresh enrollment \
                      JWT from the admin UI:\n\n\
-                     \troomlerd re-enroll --token <new-jwt>\n\n\
+                     \tmeshharbord re-enroll --token <new-jwt>\n\n\
                      {after}"
                 );
                 match notify::raise_attention_machine_aware_with_reason(
@@ -1278,7 +1278,7 @@ pub(crate) fn replaced_backoff_for(displacements: usize) -> Duration {
 /// 3rd displacement in the window), whether or not the legacy exit is on.
 fn write_replaced_sentinel(message: &str, displacements: usize) {
     let body = format!(
-        "Roomler agent: duplicate-instance duel detected.\n\n{message}\n\n\
+        "MeshHarbor agent: duplicate-instance duel detected.\n\n{message}\n\n\
          This connection has been displaced {displacements} times in the current \
          window — another process (different physical host with a copy of this \
          config.toml, or a stale half-open connection through a TLS-inspecting \
@@ -1316,9 +1316,9 @@ fn write_replaced_sentinel(message: &str, displacements: usize) {
 #[error(
     "server goodbye ({reason:?}): {message} — org {label:?} refuses this machine \
      (removed, quarantined or refused by policy there). Re-enroll it with \
-     `roomlerd re-enroll --org {label} --token <new-jwt>`, or stop serving it: \
-     `roomlerd org disable {label}` (kept; `roomlerd org enable {label}` restores it) \
-     or `roomlerd org rm {label}`. Restart the daemon to apply"
+     `meshharbord re-enroll --org {label} --token <new-jwt>`, or stop serving it: \
+     `meshharbord org disable {label}` (kept; `meshharbord org enable {label}` restores it) \
+     or `meshharbord org rm {label}`. Restart the daemon to apply"
 )]
 pub struct SecondaryGoodbye {
     pub label: String,
@@ -1788,7 +1788,7 @@ async fn connect_once(
     // rc.62: same lifecycle as `pending_transports` but for the
     // per-session VP9 chroma override forwarded from the controller's
     // `rc:session.request.chroma_pref`. `None` → fall back to the
-    // agent's `ROOMLERD_VP9_CHROMA` env-var default.
+    // agent's `MESHHARBORD_VP9_CHROMA` env-var default.
     let mut pending_chroma: HashMap<bson::oid::ObjectId, Option<String>> = HashMap::new();
     // FR-17 — whether THIS controller can parse the framed DataChannel wire
     // format. Same lifecycle as `pending_chroma`: stashed by the Request
@@ -1815,7 +1815,7 @@ async fn connect_once(
     // `rc:request`, consumed at `rc:sdp.offer` so AgentPeer can register
     // the session with the InputArbiter (participants rail + mode seed).
     let mut pending_session_meta: HashMap<bson::oid::ObjectId, SessionMeta> = HashMap::new();
-    // T2.10d: one `AgentTunnelPeer` per active `roomler`
+    // T2.10d: one `AgentTunnelPeer` per active `meshharbor`
     // session. Distinct map from `peers` (remote-control sessions)
     // because the namespaces don't overlap and the lifecycles
     // differ — tunnel peers live until `TunnelTerminate` /
@@ -2862,7 +2862,7 @@ async fn connect_once(
                             match tag {
                                 Some(t) if t.starts_with("rc:") => warn!(
                                     %e, %t,
-                                    "DROPPED a roomler frame this build cannot decode — the \
+                                    "DROPPED a meshharbor frame this build cannot decode — the \
                                      server sent a shape we do not understand; anything it \
                                      carried (a netmap, a session) did not arrive"
                                 ),
@@ -3870,7 +3870,7 @@ async fn handle_server_msg(
                     detail: privacy_line,
                     // The marker is written EITHER WAY — it is the
                     // machine-readable record that a decision is outstanding,
-                    // and `roomlerd consent --list` must show a
+                    // and `meshharbord consent --list` must show a
                     // natively-prompted session too. This field is what stops
                     // the companion from ALSO popping a panel and asking the
                     // same question twice.
@@ -4103,7 +4103,7 @@ async fn handle_server_msg(
                 crate::peer::rtp_track_codec(&chosen_codec, negotiated_transport.as_deref(), &sdp);
             // rc.62 — pull the per-session chroma override stashed by
             // the Request handler. `None` → AgentPeer falls back to
-            // `ROOMLERD_VP9_CHROMA` env-var default.
+            // `MESHHARBORD_VP9_CHROMA` env-var default.
             let chroma_pref = pending_chroma.remove(&session_id).unwrap_or(None);
             // FR-17 — absent (older controller, or a test harness that skipped
             // rc:request) means the legacy unframed format, which is the only
@@ -4413,7 +4413,7 @@ async fn handle_server_msg(
             }
             peers.insert(session_id, peer);
             // 2026-07-27 — first live session engages the GPU-clock pin
-            // (opt-in, `ROOMLERD_GPU_CLOCK_PIN`; no-op otherwise).
+            // (opt-in, `MESHHARBORD_GPU_CLOCK_PIN`; no-op otherwise).
             crate::gpu_clock::on_sessions_changed(peers.len());
             info!(%session_id, "rc:sdp.answer sent; peer is live");
         }
@@ -5067,7 +5067,7 @@ async fn handle_server_msg(
                 // operator greps for the key they set.
                 warn!(
                     "update trigger dropped — auto-update is off on this device \
-                     (auto_update = false / ROOMLERD_AUTO_UPDATE=0), or 4 triggers \
+                     (auto_update = false / MESHHARBORD_AUTO_UPDATE=0), or 4 triggers \
                      are already queued"
                 );
             }
@@ -5485,7 +5485,7 @@ async fn handle_server_msg(
             });
         }
 
-        // Roomler SSH — the server authorized ONE inbound session against this
+        // MeshHarbor SSH — the server authorized ONE inbound session against this
         // device. Recording it is all that happens here; the grant is redeemed
         // (and consumed) when a connection authenticates with the named key.
         //
@@ -6236,7 +6236,7 @@ async fn handle_server_msg(
             debug!(grant = %grant_id, %reason, "rc:hive.replica.close ignored — this build carries no streams");
         }
 
-        // Roomler SSH — the answer to a session THIS device asked for
+        // MeshHarbor SSH — the answer to a session THIS device asked for
         // (`meshharbor ssh`). Handed to whichever LocalAPI call is parked on it;
         // an unknown id means that caller already gave up.
         ServerMsg::SshResponse {
@@ -6826,7 +6826,7 @@ async fn close_all_tunnel_quic_peers(tunnel_quic_peers: &mut TunnelQuicPeers) {
 /// control-WS reattach. QUIC flows self-signal over their own streams (no
 /// welded control-WS sender — see `tunnel_core::forward::run_flow_quic`), so
 /// an established QUIC/derp data plane keeps flowing while the control WS
-/// re-establishes; the server-side grace (`ROOMLER__RC__TUNNEL_GRACE_SECS`)
+/// re-establishes; the server-side grace (`MESHHARBOR__RC__TUNNEL_GRACE_SECS`)
 /// keeps the session from being terminated meanwhile. Gated on
 /// `tunnel_peers_survive_reattach` (default off ⇒ pre-R3 byte-identical).
 /// Size-capped so a long agent outage (client re-opened elsewhere ⇒ orphaned
@@ -6842,7 +6842,7 @@ static TUNNEL_QUIC_SURVIVAL: std::sync::LazyLock<
 /// Max surviving QUIC sessions stashed per tenant (orphan-leak bound).
 const TUNNEL_QUIC_SURVIVAL_CAP: usize = 32;
 
-/// The R3 agent gate (`ROOMLERD_TUNNEL_PEERS_SURVIVE_REATTACH`, default
+/// The R3 agent gate (`MESHHARBORD_TUNNEL_PEERS_SURVIVE_REATTACH`, default
 /// off). Read per exit so a live `meshharbor config set` + restart flips it.
 fn tunnel_peers_survive_enabled() -> bool {
     tunnel_core::env::flag("TUNNEL_PEERS_SURVIVE_REATTACH", false)
@@ -7202,7 +7202,7 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool) -> AgentCaps {
         caps.input.push("keep-busy".into());
     }
     // FR-109 — `mouse-rel` where this build's injector carries relative
-    // motion and `ROOMLERD_INPUT_MOUSE_REL` has not switched it off. A viewer
+    // motion and `MESHHARBORD_INPUT_MOUSE_REL` has not switched it off. A viewer
     // sends `mouse_rel` only to an agent that says so: an older one cannot
     // parse it.
     if crate::input::advertises_mouse_rel() {
@@ -7724,10 +7724,10 @@ mod tests {
         let text = gone("demo", AgentCloseReason::AgentDeleted).to_string();
         for want in [
             "server goodbye (AgentDeleted): agent has been deleted",
-            "roomlerd re-enroll --org demo --token <new-jwt>",
-            "roomlerd org disable demo",
-            "roomlerd org enable demo",
-            "roomlerd org rm demo",
+            "meshharbord re-enroll --org demo --token <new-jwt>",
+            "meshharbord org disable demo",
+            "meshharbord org enable demo",
+            "meshharbord org rm demo",
         ] {
             assert!(text.contains(want), "{want:?} missing from: {text}");
         }

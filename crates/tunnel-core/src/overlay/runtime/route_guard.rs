@@ -33,7 +33,7 @@ pub(super) const ROUTE_GUARD_HEARTBEAT: Duration = Duration::from_secs(30);
 /// Effective route-guard cadence. No live subscription (env-disabled,
 /// platform-unavailable, or died) ⇒ [`ROUTE_GUARD_TICK`] — pre-P4 behaviour
 /// exactly. With one ⇒ [`ROUTE_GUARD_HEARTBEAT`], overridable via
-/// `ROOMLERD_OVERLAY_ROUTE_TICK_SECS` (2–300 s; `2` is the operator
+/// `MESHHARBORD_OVERLAY_ROUTE_TICK_SECS` (2–300 s; `2` is the operator
 /// revert to the old cadence; garbage/out-of-range falls back to the
 /// default so a typo can never disable the guard).
 pub(super) fn route_guard_cadence(watch_live: bool, env: Option<String>) -> Duration {

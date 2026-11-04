@@ -162,7 +162,7 @@ pub async fn drain_and_upload(cfg: &AgentConfig, token: &crate::token_slot::Toke
 fn build_client() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .user_agent(concat!(
-            "roomlerd-crash-uploader/",
+            "meshharbord-crash-uploader/",
             env!("CARGO_PKG_VERSION")
         ))
         .timeout(POST_TIMEOUT)

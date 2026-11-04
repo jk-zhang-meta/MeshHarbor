@@ -2,13 +2,13 @@
 // Copyright (C) 2026 G ROX EOOD
 //! FR-85 — where a recording goes.
 //!
-//! **The default folder**, per user: Windows `Videos\Roomler` *only if* that
+//! **The default folder**, per user: Windows `Videos\MeshHarbor` *only if* that
 //! folder is local, not inside a cloud-sync root, and survives a real
 //! create + write + delete probe — Defender's Controlled Folder Access lets
 //! `metadata()` succeed and then blocks the write, and OneDrive's Known Folder
 //! Move would upload gigabytes of screen recordings by default. Otherwise
-//! `%USERPROFILE%\Roomler Recordings`. macOS `~/Movies/Roomler`; Linux the XDG
-//! videos dir + `Roomler`. The reason for a fallback is carried to the UI.
+//! `%USERPROFILE%\MeshHarbor Recordings`. macOS `~/Movies/MeshHarbor`; Linux the XDG
+//! videos dir + `MeshHarbor`. The reason for a fallback is carried to the UI.
 //!
 //! **The override** (`record_dir`) is validated by [`validate_record_dir`]: an
 //! absolute local path, no `~`, no UNC or `\\?\` device path, no `..`, and no
@@ -16,9 +16,9 @@
 //!
 //! **The write rule.** The recorder writes into a folder only as that folder's
 //! user (the identity rule — it runs as the console user at normal integrity),
-//! staging in `<dir>/.roomler-partial/` and renaming on finish. When the folder
+//! staging in `<dir>/.meshharbor-partial/` and renaming on finish. When the folder
 //! refuses the write (CFA, a folder policy, the Linux user unit's sandbox) it
-//! falls back — the default folder, then `~/Roomler Recordings`, then its own
+//! falls back — the default folder, then `~/MeshHarbor Recordings`, then its own
 //! data dir — and the Recordings view says why.
 //!
 //! FR-85 P2c — the Linux user unit (`meshharbor.service`) runs the daemon with
@@ -45,7 +45,7 @@ pub struct FolderChoice {
 }
 
 /// Name of the in-folder staging directory.
-pub const PARTIAL_DIR: &str = ".roomler-partial";
+pub const PARTIAL_DIR: &str = ".meshharbor-partial";
 /// Suffix of a recording still being written.
 pub const PARTIAL_SUFFIX: &str = ".partial";
 
@@ -152,7 +152,7 @@ pub fn sandboxed(e: &anyhow::Error) -> Option<&'static str> {
             .is_some_and(|io| io.kind() == std::io::ErrorKind::ReadOnlyFilesystem)
     });
     (cfg!(target_os = "linux") && read_only).then_some(
-        "read-only for the Roomler service (on a Linux desktop it runs sandboxed: it can write \
+        "read-only for the MeshHarbor service (on a Linux desktop it runs sandboxed: it can write \
          only in ~/Videos and its own folders)",
     )
 }
@@ -160,8 +160,8 @@ pub fn sandboxed(e: &anyhow::Error) -> Option<&'static str> {
 fn default_choice() -> FolderChoice {
     let home = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf());
     let videos = directories::UserDirs::new().and_then(|u| u.video_dir().map(Path::to_path_buf));
-    let preferred = videos.map(|v| v.join("Roomler"));
-    let alt = home.as_ref().map(|h| h.join("Roomler Recordings"));
+    let preferred = videos.map(|v| v.join("MeshHarbor"));
+    let alt = home.as_ref().map(|h| h.join("MeshHarbor Recordings"));
 
     // Why the preferred folder was passed over — or it is the answer.
     let passed_over = match &preferred {
@@ -249,7 +249,7 @@ fn starts_with_ci(path: &Path, prefix: &Path) -> bool {
 pub fn ensure_writable(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     let probe = dir.join(format!(
-        ".roomler-write-probe-{}-{}",
+        ".meshharbor-write-probe-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -273,7 +273,7 @@ pub fn ensure_writable(dir: &Path) -> Result<()> {
 /// in `dir` by appending ` (2)`, ` (3)`, … — a recording never replaces
 /// another one.
 pub fn unique_recording_name(dir: &Path, now: chrono::DateTime<chrono::Local>) -> String {
-    let stem = format!("Roomler Recording {}", now.format("%Y-%m-%d %H-%M-%S"));
+    let stem = format!("MeshHarbor Recording {}", now.format("%Y-%m-%d %H-%M-%S"));
     let taken = |name: &str| {
         dir.join(name).exists()
             || dir
@@ -321,7 +321,7 @@ mod tests {
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "roomler-fr85-folder-{}-{}",
+            "meshharbor-fr85-folder-{}-{}",
             std::process::id(),
             name
         ));
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn a_onedrive_folder_is_not_a_default() {
         let root = PathBuf::from(r"C:\Users\someone\OneDrive - Contoso");
-        let inside = root.join("Videos").join("Roomler");
+        let inside = root.join("Videos").join("MeshHarbor");
         assert!(cloud_synced_reason_in(&inside, std::slice::from_ref(&root)).is_some());
         // Case-insensitive, as Windows paths are.
         let upper = PathBuf::from(r"C:\USERS\SOMEONE\ONEDRIVE - CONTOSO\Videos");
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn a_network_share_is_not_a_default() {
-        assert!(cloud_synced_reason_in(Path::new(r"\\nas\videos\Roomler"), &[]).is_some());
+        assert!(cloud_synced_reason_in(Path::new(r"\\nas\videos\MeshHarbor"), &[]).is_some());
     }
 
     #[test]
@@ -442,7 +442,7 @@ mod tests {
         if cfg!(target_os = "linux") {
             let why = sandboxed(&erofs).expect("a read-only file system is the sandbox");
             assert!(
-                why.contains("Roomler service") && why.contains("~/Videos"),
+                why.contains("MeshHarbor service") && why.contains("~/Videos"),
                 "{why}"
             );
         } else {

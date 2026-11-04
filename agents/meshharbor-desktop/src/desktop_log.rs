@@ -7,7 +7,7 @@
 //! swallowed was gone the moment it happened. The Routes page blanked every
 //! few seconds for weeks with nothing anywhere saying why. This writes the
 //! same `tracing` events to a small size-capped file under the per-user data
-//! dir (`…/roomler/roomler/data/desktop/desktop.log`, one rotated generation
+//! dir (`…/meshharbor/meshharbor/data/desktop/desktop.log`, one rotated generation
 //! kept as `desktop.log.1`), so "what did the companion see" has an answer.
 //!
 //! Size-capped rather than daily-rolling on purpose: a companion on a

@@ -1010,7 +1010,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Cmd>, handle: tokio::runtime::Handle) {
 /// send anything. Linux only — the race is libinput's — and an injector
 /// without the OS's permission is not cached, by `keep_busy_op`'s rule: one
 /// cached before a display exists would break every later controller's input.
-/// `ROOMLERD_INPUT_WARM=0` keeps the first event as the opener.
+/// `MESHHARBORD_INPUT_WARM=0` keeps the first event as the opener.
 fn warm(injector: &mut Option<Box<dyn super::InputInjector + Send>>) {
     if !cfg!(target_os = "linux") || !tunnel_core::env::flag("INPUT_WARM", true) {
         return;

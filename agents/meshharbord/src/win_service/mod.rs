@@ -78,22 +78,22 @@ use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
 /// Canonical SCM short name after the P3D rename. Everything we create,
 /// start, and operate on going forward uses this name.
-pub const NEW_SERVICE_NAME: &str = "Roomler";
+pub const NEW_SERVICE_NAME: &str = "MeshHarbor";
 
 /// Pre-rename SCM short name. A host installed before the P3D migration
 // RETIRED-NAME-ANCHOR-BEGIN
-// RoomlerAgentService is the SCM name on a host installed before the rename.
+// MeshHarborAgentService is the SCM name on a host installed before the rename.
 // install() must find and retire it and uninstall() must remove it, so the
 // string is an input. LEGACY_SERVICE_NAME is asserted against this literal
 // precisely so a rename here fails a test instead of stranding a fleet.
-/// still has a `RoomlerAgentService` entry; the takeover install starts
+/// still has a `MeshHarborAgentService` entry; the takeover install starts
 /// the new service first, then retires this one.
 // RETIRED-NAME-ANCHOR: without this the takeover install cannot find the running
 // pre-rename service to retire, leaving two services or none. See docs/fr/FR-21.
-pub const LEGACY_SERVICE_NAME: &str = "RoomlerAgentService";
+pub const LEGACY_SERVICE_NAME: &str = "MeshHarborAgentService";
 
-/// The SCM service to operate on: the NEW `Roomler` service if registered,
-/// else the LEGACY `RoomlerAgentService` (a pre-rename host mid-migration).
+/// The SCM service to operate on: the NEW `MeshHarbor` service if registered,
+/// else the LEGACY `MeshHarborAgentService` (a pre-rename host mid-migration).
 /// Used by the env-block R/W and status so they follow the service across the
 /// takeover. NOT cached — the name changes during an in-process install().
 pub fn resolved_service_name() -> &'static str {
@@ -112,13 +112,13 @@ fn service_present(name: &str) -> bool {
 }
 
 /// Display name shown in services.msc, Get-Service output, and Server Manager.
-// Distinct from the legacy service's "Roomler AI Remote-Control Agent" display so
+// Distinct from the legacy service's "MeshHarbor Remote-Control Agent" display so
 // the two can never collide (ERROR_DUPLICATE_SERVICE_NAME) during the migration
 // overlap — two services must not share a display name.
-pub const SERVICE_DISPLAY_NAME: &str = "Roomler";
+pub const SERVICE_DISPLAY_NAME: &str = "MeshHarbor";
 
 /// One-line description shown in services.msc properties dialog.
-pub const SERVICE_DESCRIPTION: &str = "Roomler Daemon — keeps this device on your private Roomler mesh network and \
+pub const SERVICE_DESCRIPTION: &str = "MeshHarbor Daemon — keeps this device on your private MeshHarbor mesh network and \
      available for secure remote control.";
 
 /// Argument the SCM passes when starting the service. The agent's
@@ -137,9 +137,9 @@ pub fn default_log_dir() -> Option<PathBuf> {
 
 /// Transactional takeover install (P3D rename).
 ///
-/// Register the NEW `Roomler` service (AutoStart, LocalSystem via
+/// Register the NEW `MeshHarbor` service (AutoStart, LocalSystem via
 /// `account_name: None`), then **start it and wait until Running BEFORE
-/// retiring the LEGACY `RoomlerAgentService`**. If the new service never
+/// retiring the LEGACY `MeshHarborAgentService`**. If the new service never
 /// reaches Running, we return `Err` and DO NOT touch the legacy service —
 /// the MSI custom action swallows the error and the host keeps its old
 /// daemon. That ordering is the no-serviceless-window guarantee: at no
@@ -447,21 +447,21 @@ fn service_main_inner() -> Result<()> {
         .context("set_service_status(Running)")?;
 
     // S1a — refresh the meshharbor-desktop companion from the SYSTEM side.
-    // This host runs as LocalSystem, so it can write %ProgramFiles%\Roomler
+    // This host runs as LocalSystem, so it can write %ProgramFiles%\MeshHarbor
     // even for the plain-SCM flavour whose worker runs user-context (and
     // therefore skips the swap itself). Detached thread + its own small
     // runtime: service_main is sync and must not block on a download.
     //
     // FR-84 D6 — then, in the same thread and AFTER the refresh (so a launch
     // never races a swap of the file it launches): self-heal the machine's
-    // login start (`HKLM\…\Run\Roomler Desktop`) and run the post-install
+    // login start (`HKLM\…\Run\MeshHarbor Desktop`) and run the post-install
     // launcher. The SCM host owns both on a perMachine install: it is the one
     // process that can write HKLM and can start the companion with the
     // console user's own NON-elevated token — the worker may be running with
     // that user's elevated one.
     {
         let _ = thread::Builder::new()
-            .name("roomler-svc-companion".into())
+            .name("meshharbor-svc-companion".into())
             .spawn(|| {
                 if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -510,14 +510,14 @@ enum HostOutcome {
     /// No supervisor at all: the worker path or the startup sequence failed.
     StartupFailed,
     /// #2465 — the worker found another daemon holding this config's
-    /// single-instance lock, and the orphan check read every roomlerd process
+    /// single-instance lock, and the orphan check read every meshharbord process
     /// without finding an earlier host's worker: a second installed flavour.
     /// The service stops CLEANLY, as the supervisor's `Stop` arm intends. A
     /// failure code would have the SCM restart a service that can only stop
     /// again, every minute, for as long as that flavour runs.
     Redundant,
     /// #2465 — the same refusal, but the orphan check could not read every
-    /// roomlerd process, so an earlier host's worker cannot be ruled out. A
+    /// meshharbord process, so an earlier host's worker cannot be ruled out. A
     /// failure on purpose: the SCM's retry is what recovers the device once a
     /// worker this host could not see has gone.
     RedundantUnconfirmed,
@@ -676,7 +676,7 @@ impl StartupSteps for HostSteps {
             .take()
             .context("supervisor already spawned once this start")?;
         let handle = thread::Builder::new()
-            .name("roomler-svc-supervisor".into())
+            .name("meshharbor-svc-supervisor".into())
             .spawn(move || supervisor::run(worker_exe, worker_args, sup_rx))
             .context("spawning supervisor thread")?;
         self.handle = Some(handle);
@@ -774,8 +774,8 @@ mod tests {
         // canonical name is what operators now script against, and the
         // legacy name is what `install()`/`uninstall()` must still target
         // to migrate a pre-rename host.
-        assert_eq!(NEW_SERVICE_NAME, "Roomler");
-        assert_eq!(LEGACY_SERVICE_NAME, "RoomlerAgentService");
+        assert_eq!(NEW_SERVICE_NAME, "MeshHarbor");
+        assert_eq!(LEGACY_SERVICE_NAME, "MeshHarborAgentService");
         assert_eq!(RUN_SUBCOMMAND, "service-run");
     }
 
@@ -799,7 +799,7 @@ mod tests {
         assert!(dir.is_some());
         let s = dir.unwrap().to_string_lossy().to_string();
         assert!(
-            s.contains("roomler") && s.contains("service-logs"),
+            s.contains("meshharbor") && s.contains("service-logs"),
             "log dir layout drifted: {s}"
         );
     }

@@ -792,6 +792,6 @@ async fn the_digest_differences_snapshots_and_never_reads_a_gap_as_zero() {
     assert_eq!(j["github"]["counters"]["stars"], 105);
     assert_eq!(
         j["github"]["traffic"]["not_measured"],
-        "no GitHub token configured (ROOMLER__GROWTH__GITHUB_TOKEN)"
+        "no GitHub token configured (MESHHARBOR__GROWTH__GITHUB_TOKEN)"
     );
 }

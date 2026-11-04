@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 //! FR-90 P3-8-2b-2 — `ssh_run`: a session's one command on another device of
-//! its organization over Roomler SSH (the FR-90 spec's §3e "P3-8, `ssh_run`,
+//! its organization over MeshHarbor SSH (the FR-90 spec's §3e "P3-8, `ssh_run`,
 //! as designed").
 //!
 //! Each call:
@@ -167,7 +167,7 @@ pub(crate) async fn call(
         })
         .await?;
     // Never the command: what a session runs is its own, as a terminal's
-    // content is (docs/roomler-ssh.md).
+    // content is (docs/meshharbor-ssh.md).
     let ran = runner
         .run(ask.target, &ticket, &ask.command, ask.timeout)
         .await;

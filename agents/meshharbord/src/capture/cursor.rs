@@ -32,11 +32,11 @@
 use crate::capture::CursorInfo;
 use std::time::Duration;
 
-/// FR-98 C4 — the cursor poller's period unless `ROOMLERD_CURSOR_POLL_MS`
+/// FR-98 C4 — the cursor poller's period unless `MESHHARBORD_CURSOR_POLL_MS`
 /// says otherwise: 8 ms, 125 Hz (rc.38).
 pub const DEFAULT_POLL: Duration = Duration::from_millis(8);
 
-/// The poller's period from `ROOMLERD_CURSOR_POLL_MS`, read once per
+/// The poller's period from `MESHHARBORD_CURSOR_POLL_MS`, read once per
 /// session. Clamped to 2–50 ms: below 2 the poll and its data-channel send
 /// stop being cheap, above 50 the remote cursor visibly trails the pointer.
 /// Anything unparseable keeps the default. A knob for the field A/B: FR-98

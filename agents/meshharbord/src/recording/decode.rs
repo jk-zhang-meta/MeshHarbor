@@ -47,11 +47,11 @@ pub fn h264_decoder_available() -> bool {
 }
 
 /// Whether the tests of this lane REQUIRE FFmpeg's H.264 decoder
-/// (`ROOMLER_EXPECT_FFMPEG_H264_DECODER=1`): set where the vendored FFmpeg
+/// (`MESHHARBOR_EXPECT_FFMPEG_H264_DECODER=1`): set where the vendored FFmpeg
 /// carries it, so a lane that lost it fails instead of passing on the
 /// refusal path.
 pub fn h264_decoder_expected() -> bool {
-    std::env::var("ROOMLER_EXPECT_FFMPEG_H264_DECODER").is_ok_and(|v| v == "1")
+    std::env::var("MESHHARBOR_EXPECT_FFMPEG_H264_DECODER").is_ok_and(|v| v == "1")
 }
 
 /// An export's video decoder.
@@ -75,7 +75,7 @@ impl VideoDecoder {
         }
         #[cfg(not(feature = "ffmpeg-encoder"))]
         {
-            Err("this build of roomlerd has no FFmpeg".into())
+            Err("this build of meshharbord has no FFmpeg".into())
         }
     }
 
@@ -276,7 +276,7 @@ mod tests {
         let available = h264_decoder_available();
         assert!(
             available || !h264_decoder_expected(),
-            "ROOMLER_EXPECT_FFMPEG_H264_DECODER=1 but the linked FFmpeg has no H.264 decoder"
+            "MESHHARBOR_EXPECT_FFMPEG_H264_DECODER=1 but the linked FFmpeg has no H.264 decoder"
         );
         assert_eq!(can_decode(100), available);
         match VideoDecoder::for_profile(100) {

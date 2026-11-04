@@ -3,7 +3,7 @@
 //! FR-85 — HQ screen recording (P1: the recorder core).
 //!
 //! A recording is encoded **at the source**, in a pipeline of its own, and
-//! written to a local file: `roomlerd record` ([`child`]) opens its own
+//! written to a local file: `meshharbord record` ([`child`]) opens its own
 //! capturer at native resolution ([`recorder`]), paces it to a constant frame
 //! rate on its own clock ([`pacer`]), encodes with a recording profile, and
 //! writes a fragmented MP4 that survives a crash, remuxed on stop to a
@@ -89,7 +89,7 @@ pub mod folder;
 /// device, at normal integrity), and launching it as that.
 pub mod launch;
 pub mod manager;
-/// FR-85 P5a — `roomlerd media probe|export`, the engine as its own process.
+/// FR-85 P5a — `meshharbord media probe|export`, the engine as its own process.
 #[cfg(feature = "openh264-encoder")]
 pub mod media;
 pub mod mp4;

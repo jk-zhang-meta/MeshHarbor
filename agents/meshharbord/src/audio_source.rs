@@ -16,7 +16,7 @@
 //!
 //! - the devices were exactly `pipewire`, `pulse`, `default`;
 //! - no name ended in `.monitor`, so the auto-pick before this module never
-//!   matched, and neither did the documented `ROOMLERD_AUDIO_SOURCE=<sink>.monitor`;
+//!   matched, and neither did the documented `MESHHARBORD_AUDIO_SOURCE=<sink>.monitor`;
 //! - the fallback to the default input recorded the microphone (`RDPSource`
 //!   running) while the speakers' monitor stayed suspended.
 //!
@@ -24,7 +24,7 @@
 //! named ([`named`]) or one whose name says monitor; otherwise it refuses,
 //! with the reason.
 //!
-//! ⚠️ `ROOMLERD_AUDIO_SOURCE` names an ALSA device (`arecord -L`), not a
+//! ⚠️ `MESHHARBORD_AUDIO_SOURCE` names an ALSA device (`arecord -L`), not a
 //! PulseAudio source. `pulse` with `PULSE_SOURCE=@DEFAULT_MONITOR@` in the
 //! daemon's environment captures the speakers through either server (measured
 //! on the same host).
@@ -82,7 +82,7 @@ pub enum AudioUnavailableCode {
     /// Linux: no capture device is the computer's own sound, and the default
     /// input is a microphone.
     NoMonitor,
-    /// `ROOMLERD_AUDIO_SOURCE` names a device this host does not have.
+    /// `MESHHARBORD_AUDIO_SOURCE` names a device this host does not have.
     SourceNotFound,
     /// Windows: no output device to loop back.
     NoOutput,
@@ -121,10 +121,10 @@ impl AudioUnavailableCode {
             Self::NoMonitor => {
                 "This host sends no sound. A session carries what the computer plays, never its \
                  microphone, and this agent finds nothing here that captures the computer's sound. \
-                 The host's owner can name a capture device for it in ROOMLERD_AUDIO_SOURCE."
+                 The host's owner can name a capture device for it in MESHHARBORD_AUDIO_SOURCE."
             }
             Self::SourceNotFound => {
-                "This host sends no sound: the capture device named in its ROOMLERD_AUDIO_SOURCE is \
+                "This host sends no sound: the capture device named in its MESHHARBORD_AUDIO_SOURCE is \
                  not there, and the agent does not open a microphone in its place."
             }
             Self::NoOutput => {
@@ -150,7 +150,7 @@ impl AudioUnavailableCode {
     }
 }
 
-/// FR-97 P3c-2's kill switch: `ROOMLERD_AUDIO_SESSION=0` puts Linux back on
+/// FR-97 P3c-2's kill switch: `MESHHARBORD_AUDIO_SESSION=0` puts Linux back on
 /// P3c-1's rule (a named device, or nothing). On by default.
 pub fn session_audio_enabled() -> bool {
     tunnel_core::env::node_env("AUDIO_SESSION").is_none_or(|v| v.trim() != "0")
@@ -160,7 +160,7 @@ pub fn session_audio_enabled() -> bool {
 /// again for each session, by the same function ([`linux_route`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinuxRoute {
-    /// The ALSA device the host's owner named (`ROOMLERD_AUDIO_SOURCE`),
+    /// The ALSA device the host's owner named (`MESHHARBORD_AUDIO_SOURCE`),
     /// through cpal. An explicit choice, so it wins.
     Named,
     /// The default output's monitor, recorded in this process through Pulse's
@@ -213,7 +213,7 @@ pub fn linux_route(f: LinuxAudioFacts) -> Result<LinuxRoute, AudioUnavailable> {
     if !f.session_audio {
         return Err(AudioUnavailable::new(
             AudioUnavailableCode::NoMonitor,
-            "session audio is switched off on this host (ROOMLERD_AUDIO_SESSION=0), and no capture \
+            "session audio is switched off on this host (MESHHARBORD_AUDIO_SESSION=0), and no capture \
              device is named",
         ));
     }
@@ -237,7 +237,7 @@ pub fn linux_route(f: LinuxAudioFacts) -> Result<LinuxRoute, AudioUnavailable> {
 }
 
 /// The capture device the host's owner named for computer audio
-/// (`ROOMLERD_AUDIO_SOURCE`), trimmed, if any.
+/// (`MESHHARBORD_AUDIO_SOURCE`), trimmed, if any.
 ///
 /// - The picker opens it first ([`pick_linux`]).
 /// - On Linux the hello's `audio` promise rests on it (`encode::caps::HostFacts`).
@@ -267,7 +267,7 @@ pub fn pick_linux(named: Option<&str>, devices: &[&str]) -> Result<usize, AudioU
     Err(match named {
         Some(want) => AudioUnavailable::new(
             AudioUnavailableCode::SourceNotFound,
-            format!("ROOMLERD_AUDIO_SOURCE={want} is not a capture device here (devices: {here})"),
+            format!("MESHHARBORD_AUDIO_SOURCE={want} is not a capture device here (devices: {here})"),
         ),
         None => AudioUnavailable::new(
             AudioUnavailableCode::NoMonitor,
@@ -395,7 +395,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(off.code, AudioUnavailableCode::NoMonitor);
         assert!(
-            off.detail.contains("ROOMLERD_AUDIO_SESSION=0"),
+            off.detail.contains("MESHHARBORD_AUDIO_SESSION=0"),
             "{}",
             off.detail
         );

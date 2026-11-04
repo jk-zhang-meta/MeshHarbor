@@ -15,8 +15,8 @@
 //! The daemon does not change the firewall. It belongs to the host's owner,
 //! and trusting the adapter would open every service on the host to every
 //! peer the overlay ACL admits. Instead it says what governs the adapter, so a
-//! refusal in `meshharbor status` has a cause. Roomler's own services do not need
-//! it: roomler SSH is intercepted below the OS, and exec, remote control and
+//! refusal in `meshharbor status` has a cause. MeshHarbor's own services do not need
+//! it: meshharbor SSH is intercepted below the OS, and exec, remote control and
 //! tunnels ride the daemon's own connections.
 //!
 //! The parsers are pure and tested on every OS. Only [`probe`] runs commands,
@@ -182,7 +182,7 @@ pub(crate) fn parse_ufw_status(text: &str) -> Option<UfwInfo> {
 
 /// What ufw means for the adapter: its rules for every interface, plus those
 /// written for this one. An unrestricted `Anywhere` rule for the adapter
-/// (`ufw allow in on roomler0`) admits everything, as an `allow` default
+/// (`ufw allow in on meshharbor0`) admits everything, as an `allow` default
 /// does. Pure.
 pub(crate) fn ufw_status(interface: &str, info: &UfwInfo) -> HostFirewallStatus {
     let mut admits_all = info.incoming.eq_ignore_ascii_case("allow");
@@ -303,7 +303,7 @@ mod tests {
 
     /// firewalld 1.1.1's own output (a throwaway container, 2026-10-17).
     const PUBLIC: &str = "public\n  target: default\n  icmp-block-inversion: no\n  interfaces: \n  sources: \n  services: dhcpv6-client ssh\n  ports: \n  protocols: \n  forward: yes\n  masquerade: no\n  forward-ports: \n  source-ports: \n  icmp-blocks: \n  rich rules: \n";
-    const TRUSTED: &str = "trusted (active)\n  target: ACCEPT\n  icmp-block-inversion: no\n  interfaces: roomler0\n  sources: \n  services: \n  ports: \n  protocols: \n  forward: yes\n  masquerade: no\n";
+    const TRUSTED: &str = "trusted (active)\n  target: ACCEPT\n  icmp-block-inversion: no\n  interfaces: meshharbor0\n  sources: \n  services: \n  ports: \n  protocols: \n  forward: yes\n  masquerade: no\n";
 
     #[test]
     fn a_default_zone_admits_only_its_services() {
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(info.target, "default");
         assert_eq!(info.services, ["dhcpv6-client", "ssh"]);
         assert!(info.ports.is_empty());
-        let s = firewalld_status("roomler0", "public", true, &info);
+        let s = firewalld_status("meshharbor0", "public", true, &info);
         assert_eq!(s.kind, "firewalld");
         assert_eq!(s.zone.as_deref(), Some("public"));
         assert!(s.zone_is_default);
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn a_trusted_zone_admits_everything() {
         let info = parse_info_zone(TRUSTED).unwrap();
-        let s = firewalld_status("roomler0", "trusted", false, &info);
+        let s = firewalld_status("meshharbor0", "trusted", false, &info);
         assert!(s.admits_all);
         assert!(!s.zone_is_default);
         assert!(s.admits.is_empty());
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn a_zone_with_ports_and_protocols_lists_them() {
         let text = "work\n  target: %%REJECT%%\n  services: ssh\n  ports: 8080/tcp 5353/udp\n  protocols: icmp\n";
-        let s = firewalld_status("roomler0", "work", false, &parse_info_zone(text).unwrap());
+        let s = firewalld_status("meshharbor0", "work", false, &parse_info_zone(text).unwrap());
         assert!(!s.admits_all);
         assert_eq!(s.admits, ["ssh", "8080/tcp", "5353/udp", "icmp"]);
     }
@@ -343,19 +343,19 @@ mod tests {
     }
 
     /// ufw 0.36.1's own output (a throwaway container, 2026-10-17).
-    const UFW_ACTIVE: &str = "Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), deny (routed)\nNew profiles: skip\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW IN    Anywhere                  \n8080/tcp on roomler0       ALLOW IN    Anywhere                  \n9000/tcp on eth0           ALLOW IN    Anywhere                  \n53                         DENY IN     Anywhere                  \n22/tcp (v6)                ALLOW IN    Anywhere (v6)             \n8080/tcp (v6) on roomler0  ALLOW IN    Anywhere (v6)             \n";
+    const UFW_ACTIVE: &str = "Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), deny (routed)\nNew profiles: skip\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW IN    Anywhere                  \n8080/tcp on meshharbor0       ALLOW IN    Anywhere                  \n9000/tcp on eth0           ALLOW IN    Anywhere                  \n53                         DENY IN     Anywhere                  \n22/tcp (v6)                ALLOW IN    Anywhere (v6)             \n8080/tcp (v6) on meshharbor0  ALLOW IN    Anywhere (v6)             \n";
 
     #[test]
     fn ufw_admits_its_rules_for_every_interface_and_for_ours() {
         let info = parse_ufw_status(UFW_ACTIVE).unwrap();
         assert_eq!(info.incoming, "deny");
-        let s = ufw_status("roomler0", &info);
+        let s = ufw_status("meshharbor0", &info);
         assert_eq!(s.kind, "ufw");
         assert!(!s.admits_all);
         // Not eth0's rule, not the DENY, and each v6 twin once.
         assert_eq!(s.admits, ["22/tcp", "8080/tcp"]);
-        // Another adapter does not get roomler0's rule.
-        assert_eq!(ufw_status("roomler1", &info).admits, ["22/tcp"]);
+        // Another adapter does not get meshharbor0's rule.
+        assert_eq!(ufw_status("meshharbor1", &info).admits, ["22/tcp"]);
     }
 
     #[test]
@@ -363,19 +363,19 @@ mod tests {
         assert_eq!(parse_ufw_status("Status: inactive\n"), None);
         let allow =
             "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n";
-        assert!(ufw_status("roomler0", &parse_ufw_status(allow).unwrap()).admits_all);
+        assert!(ufw_status("meshharbor0", &parse_ufw_status(allow).unwrap()).admits_all);
     }
 
-    /// `ufw allow in on roomler0` is how a ufw host opens the mesh, and it
+    /// `ufw allow in on meshharbor0` is how a ufw host opens the mesh, and it
     /// must read as open; a rule limited to a source keeps its source.
     #[test]
     fn ufw_open_on_the_adapter_admits_all_and_a_source_stays_attached() {
-        let text = "Status: active\nDefault: deny (incoming), allow (outgoing), deny (routed)\n\nTo                         Action      From\n--                         ------      ----\nAnywhere on roomler0       ALLOW IN    Anywhere                  \n5432/tcp                   ALLOW IN    10.0.0.0/8                \n";
+        let text = "Status: active\nDefault: deny (incoming), allow (outgoing), deny (routed)\n\nTo                         Action      From\n--                         ------      ----\nAnywhere on meshharbor0       ALLOW IN    Anywhere                  \n5432/tcp                   ALLOW IN    10.0.0.0/8                \n";
         let info = parse_ufw_status(text).unwrap();
-        let ours = ufw_status("roomler0", &info);
+        let ours = ufw_status("meshharbor0", &info);
         assert!(ours.admits_all);
         assert_eq!(ours.admits, ["Anywhere", "5432/tcp from 10.0.0.0/8"]);
-        let other = ufw_status("roomler1", &info);
+        let other = ufw_status("meshharbor1", &info);
         assert!(!other.admits_all);
         assert_eq!(other.admits, ["5432/tcp from 10.0.0.0/8"]);
     }
@@ -386,7 +386,7 @@ mod tests {
         let info = parse_info_zone(text).unwrap();
         assert_eq!(info.rich_rules, 2);
         assert_eq!(info.services, ["ssh"]);
-        let s = firewalld_status("roomler0", "public", true, &info);
+        let s = firewalld_status("meshharbor0", "public", true, &info);
         assert_eq!(s.admits, ["ssh", "2 rich rules"]);
     }
 }

@@ -12,7 +12,7 @@ use meshharbor_services::dao::{
 };
 
 async fn test_db(name: &str) -> mongodb::Database {
-    let uri = std::env::var("ROOMLER_TEST_MONGO_URL")
+    let uri = std::env::var("MESHHARBOR_TEST_MONGO_URL")
         .or_else(|_| std::env::var("MESHHARBOR_KEY_FENCE_MONGO"))
         .unwrap_or_else(|_| "mongodb://127.0.0.1:27017".to_string());
     let client = Client::with_uri_str(&uri).await.unwrap();

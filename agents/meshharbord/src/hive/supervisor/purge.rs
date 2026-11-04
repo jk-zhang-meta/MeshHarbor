@@ -285,7 +285,7 @@ mod tests {
             .root
             .path()
             .join("home")
-            .join(".roomler")
+            .join(".meshharbor")
             .join("hive")
             .join(run.to_hex());
         assert!(state_dir.is_dir() && r.sup.holds_live(run));

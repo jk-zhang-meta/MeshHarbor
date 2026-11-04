@@ -125,7 +125,7 @@ pub async fn record_key_rotation_report(
     }
 }
 
-/// The device-originated SSH leg (`roomler ssh <device>`).
+/// The device-originated SSH leg (`meshharbor ssh <device>`).
 ///
 /// Mirrors the fleet module's exec request and goes through the SAME
 /// [`agent_ssh::dispatch`] the HTTP route uses, so there is exactly one place

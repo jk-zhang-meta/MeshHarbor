@@ -284,14 +284,14 @@ mod tests {
     #[test]
     fn init_records_the_harness_session() {
         let p = parse(
-            r#"{"type":"system","subtype":"init","session_id":"0b3c","model":"claude-opus-5-5","cwd":"/home/alice/roomler-ai","tools":["Bash","Read"],"mcp_servers":[]}"#,
+            r#"{"type":"system","subtype":"init","session_id":"0b3c","model":"claude-opus-5-5","cwd":"/home/alice/meshharbor","tools":["Bash","Read"],"mcp_servers":[]}"#,
         );
         assert_eq!(
             p.record,
             vec![TranscriptEvent::SessionInit {
                 harness_session_id: "0b3c".into(),
                 model: Some("claude-opus-5-5".into()),
-                cwd: Some("/home/alice/roomler-ai".into()),
+                cwd: Some("/home/alice/meshharbor".into()),
                 tools: vec!["Bash".into(), "Read".into()],
             }]
         );

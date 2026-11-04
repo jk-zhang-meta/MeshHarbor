@@ -360,7 +360,7 @@ mod tests {
     fn list(segments: Vec<Segment>) -> EditList {
         EditList {
             version: VERSION,
-            source: "Roomler Recording.mp4".into(),
+            source: "MeshHarbor Recording.mp4".into(),
             segments,
             original_volume: None,
             music: None,

@@ -128,7 +128,7 @@ flowchart LR
     DBIP[("download.db-ip.com<br/>dbip-country-lite-YYYY-MM.mmdb.gz<br/>CC BY 4.0, monthly")]
     F["scripts/fetch-geoip.sh<br/>this month, else last month<br/>gzip · size · MaxMind metadata<br/>type DBIP-Country-Lite · chmod 0644"]
     CTX["files/geoip/<br/>dbip-country-lite.mmdb<br/>+ .provenance.txt (release, sha256)"]
-    IMG["image<br/>/usr/share/roomler/geoip/<br/>ENV ROOMLER__STATS__GEOIP_MMDB"]
+    IMG["image<br/>/usr/share/roomler/geoip/<br/>ENV MESHHARBOR__STATS__GEOIP_MMDB"]
     BOOT["GeoIp::open at boot<br/><i>geoip database loaded</i><br/>database=DBIP-Country-Lite built=…"]
     WS["/ws upgrade: country resolved,<br/>address dropped → ws_sessions.country"]
     API["GET /api/admin/stats/users<br/>geoip: true · geoip_database"]
@@ -165,7 +165,7 @@ public image tag can never honour. Full text and the operator recipes:
 
 > ⚠️ **An env var beats the image, and beats the config files.** k8s `envFrom` and compose
 > `environment:` override the image's `ENV`, so a deployment that still sets
-> `ROOMLER__STATS__GEOIP_MMDB` to the old `/usr/share/roomler/geoip/GeoLite2-Country.mmdb` points
+> `MESHHARBOR__STATS__GEOIP_MMDB` to the old `/usr/share/roomler/geoip/GeoLite2-Country.mmdb` points
 > the server at a file no image carries: one boot warning, then `unknown` everywhere. **Delete the
 > override** (or point it at `dbip-country-lite.mmdb`). And because `envFrom` is read only when a
 > container starts, a configmap change reaches a pod with its next roll, so land it with a promote.
@@ -202,20 +202,20 @@ Then `cargo run --bin meshharbor-api` (API :3000) and `cd ui && bun run dev`
 
 ## Configuration
 
-Everything is env-configurable with the `ROOMLER__` prefix (double underscore =
+Everything is env-configurable with the `MESHHARBOR__` prefix (double underscore =
 nesting), loaded via the `config` crate. The ones that matter first:
 
 | Variable | Purpose |
 |---|---|
-| `ROOMLER__DATABASE__URL` | MongoDB connection string |
-| `ROOMLER__JWT__SECRET` | **Must be set in production** — with `ROOMLER__APP__ENVIRONMENT=production` the server refuses to boot on the default |
-| `ROOMLER__JWT__PREVIOUS_SECRETS` | Comma-separated retired secrets that still **verify** but no longer sign. See [Rotating the JWT secret](#rotating-the-jwt-secret) |
-| `ROOMLER__APP__FRONTEND_URL` | Public origin (also the CORS default — unset `cors_origins` allows only this origin) |
-| `ROOMLER__APP__CORS_ORIGINS` | Explicit allow-list; `"*"` = deliberate permissive mode (warns) |
-| `ROOMLER__TURN__SHARED_SECRET` | coturn REST-auth secret (never committed) |
-| `ROOMLER__MEDIASOUP__ANNOUNCED_IP_MAP` | `<node_ip>=<public_ip>,…` — per-pod announced IP resolution for multi-node clusters |
-| `ROOMLER__STRIPE__*` / `ROOMLER__CLAUDE__*` / `ROOMLER__S3__*` / SMTP / OAuth | Integrations |
-| `ROOMLER__STATS__GEOIP_MMDB` | The country database for the user analytics. **The image already sets it** to the DB-IP database it carries; set it only to use your own `.mmdb`, or to empty to turn lookups off. See [the country database](#the-country-database-the-image-carries-1896) |
+| `MESHHARBOR__DATABASE__URL` | MongoDB connection string |
+| `MESHHARBOR__JWT__SECRET` | **Must be set in production** — with `MESHHARBOR__APP__ENVIRONMENT=production` the server refuses to boot on the default |
+| `MESHHARBOR__JWT__PREVIOUS_SECRETS` | Comma-separated retired secrets that still **verify** but no longer sign. See [Rotating the JWT secret](#rotating-the-jwt-secret) |
+| `MESHHARBOR__APP__FRONTEND_URL` | Public origin (also the CORS default — unset `cors_origins` allows only this origin) |
+| `MESHHARBOR__APP__CORS_ORIGINS` | Explicit allow-list; `"*"` = deliberate permissive mode (warns) |
+| `MESHHARBOR__TURN__SHARED_SECRET` | coturn REST-auth secret (never committed) |
+| `MESHHARBOR__MEDIASOUP__ANNOUNCED_IP_MAP` | `<node_ip>=<public_ip>,…` — per-pod announced IP resolution for multi-node clusters |
+| `MESHHARBOR__STRIPE__*` / `MESHHARBOR__CLAUDE__*` / `MESHHARBOR__S3__*` / SMTP / OAuth | Integrations |
+| `MESHHARBOR__STATS__GEOIP_MMDB` | The country database for the user analytics. **The image already sets it** to the DB-IP database it carries; set it only to use your own `.mmdb`, or to empty to turn lookups off. See [the country database](#the-country-database-the-image-carries-1896) |
 
 Rate limiting (per-IP governor + per-account brute-force gate) and JWT TTLs are
 also settings — see `crates/config/src/settings.rs` for the full surface.
@@ -229,8 +229,8 @@ fleet-wide re-enrollment by hand. `previous_secrets` makes it a rolling change:
 
 ```bash
 # 1. Both verify; only the new one signs. Restart/roll the pods.
-ROOMLER__JWT__SECRET=<new>
-ROOMLER__JWT__PREVIOUS_SECRETS=<old>
+MESHHARBOR__JWT__SECRET=<new>
+MESHHARBOR__JWT__PREVIOUS_SECRETS=<old>
 
 # 2. Wait out the longest TTL still in flight, or re-issue ahead of it:
 #    access 7 d · refresh 30 d · agent + tunnel-client 1 YEAR.
@@ -238,7 +238,7 @@ ROOMLER__JWT__PREVIOUS_SECRETS=<old>
 #    so in practice step 3 waits a year unless you re-enroll.
 
 # 3. Drop the old key. Only now is the old secret actually powerless.
-ROOMLER__JWT__PREVIOUS_SECRETS=
+MESHHARBOR__JWT__PREVIOUS_SECRETS=
 ```
 
 Startup logs `jwt: signing key signing_kid=… verify_keys=N`. A correct rotation
@@ -252,7 +252,7 @@ staged (re-issue on the new key, then drop the old) instead of being one
 outage-shaped event.
 
 ⚠️ Listing the default `change-me-in-production` in `previous_secrets` is
-refused under `ROOMLER__APP__ENVIRONMENT=production` — a retired secret forges
+refused under `MESHHARBOR__APP__ENVIRONMENT=production` — a retired secret forges
 exactly as well as a current one.
 
 ⚠️ Tokens minted before `kid` shipped carry no key hint, so they are tried
@@ -358,9 +358,9 @@ the runtime. A dump that fell back to the temp dir dies with the container and i
 
 | Setting (env) | Default | |
 |---|---|---|
-| `ROOMLER__DIAG__STALL_WATCHDOG` | unset: **on** when `app.environment=production`, off elsewhere | a debugger pause over the threshold would otherwise signal every thread of a dev server (and gdb stops on `SIG39` once per thread) |
-| `ROOMLER__DIAG__STALL_THRESHOLD_SECS` | `10` | floor 2; well inside the ~105 s kill budget |
-| `ROOMLER__DIAG__STALL_DUMP_DIR` | `/var/lib/roomler/diag` | the `diag` emptyDir in `roomler-ai-deploy`'s base deployment. Falls back to the temp dir |
+| `MESHHARBOR__DIAG__STALL_WATCHDOG` | unset: **on** when `app.environment=production`, off elsewhere | a debugger pause over the threshold would otherwise signal every thread of a dev server (and gdb stops on `SIG39` once per thread) |
+| `MESHHARBOR__DIAG__STALL_THRESHOLD_SECS` | `10` | floor 2; well inside the ~105 s kill budget |
+| `MESHHARBOR__DIAG__STALL_DUMP_DIR` | `/var/lib/roomler/diag` | the `diag` emptyDir in `roomler-ai-deploy`'s base deployment. Falls back to the temp dir |
 
 ## Scaling beyond one pod
 
@@ -381,7 +381,7 @@ The multi-pod design is settled and documented in
   mints ephemeral HMAC credentials (`/api/turn/credentials`); multi-region
   topology is served from `/api/relay/regions`.
   - ⚠️ **TURN is IPv4-only, by design** (FR-101 AC8, the operator's decision of
-    2026-10-18). Every TURN host the server hands out (`ROOMLER__TURN__URL` =
+    2026-10-18). Every TURN host the server hands out (`MESHHARBOR__TURN__URL` =
     `coturn.roomler.ai`, and the `…__WORKER_URLS` `coturn-1..3.roomler.ai`) has A records
     and no AAAA, and the coturn pods sit behind the hosts' IPv4 DNAT. A client on an
     IPv6-only network reaches TURN through its network's NAT64/DNS64, as it reaches

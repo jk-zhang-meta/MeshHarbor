@@ -80,7 +80,7 @@ impl Chunk for ChunkForwardTsn {
         let new_cumulative_tsn = reader.get_u32();
 
         let mut streams = vec![];
-        // roomler fork — bound the stream-entry loop by the chunk's own
+        // meshharbor fork — bound the stream-entry loop by the chunk's own
         // declared length. Upstream counted `buf.len() - offset`, i.e. every
         // byte to the end of the PACKET: a FORWARD-TSN with a chunk bundled
         // after it (dcSCTP sends FORWARD-TSN + SACK together whenever it

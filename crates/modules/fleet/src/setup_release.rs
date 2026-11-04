@@ -532,11 +532,11 @@ mod tests {
     #[test]
     fn pick_setup_asset_requires_setup_prefix_and_matches_triples() {
         let assets = vec![
-            // RETIRED-NAME-ANCHOR(26): roomler-tunnel-installer is a PUBLISHED
+            // RETIRED-NAME-ANCHOR(26): meshharbor-tunnel-installer is a PUBLISHED
             // release asset (FR-21 D6). It appears twice in this test on
             // purpose: once in the candidate list and once alone, to prove the
             // legacy wizard asset can NEVER satisfy the setup pick.
-            asset("roomler-tunnel-installer-0.3.0-x86_64-pc-windows-msvc.zip"),
+            asset("meshharbor-tunnel-installer-0.3.0-x86_64-pc-windows-msvc.zip"),
             asset("meshharbor-setup-0.3.0-x86_64-pc-windows-msvc.zip"),
             asset("meshharbor-setup-0.3.0-x86_64-pc-windows-msvc.zip.sha256"),
             asset("meshharbor-setup-0.3.0-x86_64-unknown-linux-gnu.tar.gz"),
@@ -556,7 +556,7 @@ mod tests {
         );
         // The legacy wizard asset must never satisfy the setup pick.
         let legacy_only = vec![asset(
-            "roomler-tunnel-installer-0.3.0-x86_64-pc-windows-msvc.zip",
+            "meshharbor-tunnel-installer-0.3.0-x86_64-pc-windows-msvc.zip",
         )];
         assert!(pick_setup_asset(&legacy_only, "windows-x86_64").is_none());
     }
@@ -607,8 +607,8 @@ mod tests {
             ("http://localhost:8080", "http://localhost:8080"),
             ("http://localhost:8080/", "http://localhost:8080"),
             (
-                "https://my-roomler.example.com:8443",
-                "https://my-roomler.example.com:8443",
+                "https://my-meshharbor.example.com:8443",
+                "https://my-meshharbor.example.com:8443",
             ),
             ("  https://roomler.ai  ", "https://roomler.ai"),
             (

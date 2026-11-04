@@ -110,7 +110,7 @@ The `.deb`'s ladder for a non-root daemon is `pkexec`, then `sudo -n`
 4. Same for `/usr/bin/roomler` and each `/usr/lib/roomler-agent/*.so.*`.
 5. **Systemd units: write only if absent.** An update must never clobber a unit
    the operator edited — the field-test host carries a hand-written unit with
-   `ROOMLERD_VIRTUAL_DESKTOP=1`, and silently reverting that on upgrade
+   `MESHHARBORD_VIRTUAL_DESKTOP=1`, and silently reverting that on upgrade
    would be a data-loss-class bug. First install places them; upgrades leave
    them alone.
 6. Exit and let the service manager restart, exactly as the `.deb` path does.
@@ -311,7 +311,7 @@ replaces the daemon's own periodic check. The daemon decides once, at its start
 flowchart TD
     S([roomlerd run starts its updater]) --> R{running as root?}
     R -->|yes| IP1[installs its own updates<br/>WARN if the helper is ALSO enabled:<br/>two updaters would race]
-    R -->|no| K{ROOMLERD_UPDATE_HELPER=0?}
+    R -->|no| K{MESHHARBORD_UPDATE_HELPER=0?}
     K -->|yes| IP2[installs its own updates<br/>the kill switch: as before FR-96]
     K -->|no| E{an enable link for<br/>meshharbor-update.path or .timer<br/>that leads to the unit?}
     E -->|no| IP3[installs its own updates]
@@ -382,7 +382,7 @@ stateDiagram-v2
   relaunches the process, rate-limited by the persisted record, and checked
   against systemd's own policy first. An orphan `roomlerd run` never exits for it.
 - **What does not stop it:** `auto_update = false`, because running what is
-  already installed is not an update. **What does:** `ROOMLERD_UPDATE_HELPER=0`,
+  already installed is not an update. **What does:** `MESHHARBORD_UPDATE_HELPER=0`,
   FR-96's kill switch. A root daemon is not watched at all, since a system
   install is unchanged.
 
@@ -517,7 +517,7 @@ FR-117 P1 gives it the daemon's version through the same owner, trust path and c
   needrestart runs after every apt transaction and, non-interactive, restarts the services it
   finds on stale libraries. This daemon is one of them, so the companion's install would end in a
   restart of the very process that ran it, cutting every session.
-- **Never a downgrade, never a new install**, and the kill switch `ROOMLERD_COMPANION_SYNC=0`.
+- **Never a downgrade, never a new install**, and the kill switch `MESHHARBORD_COMPANION_SYNC=0`.
   Details and the restart of a running companion:
   [desktop-companion.md §13](desktop-companion.md#13-one-version-the-companion-follows-the-daemon-fr-117).
 

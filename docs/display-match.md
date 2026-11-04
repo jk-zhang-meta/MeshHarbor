@@ -176,7 +176,7 @@ timer for their own screen ([`display_match.rs:1044`](../agents/meshharbord/src/
 
 ## A Linux virtual desktop (P2)
 
-A daemon started with `ROOMLERD_VIRTUAL_DESKTOP=1` runs a desktop of its own: an X server, a window manager
+A daemon started with `MESHHARBORD_VIRTUAL_DESKTOP=1` runs a desktop of its own: an X server, a window manager
 and the startup apps. Nobody sits at that screen, since it is the daemon's own, so display match switches it
 without asking who is there ([`display_match.rs:962`](../agents/meshharbord/src/display_match.rs#L962)). The
 owner's `never` still holds.
@@ -226,7 +226,7 @@ sequenceDiagram
   rebuilds when the frame size changes.
 - **A failing Xorg costs the switch, never the desktop:** if it does not come up, the desktop runs on Xvfb
   ([`virtual_desktop.rs:747`](../agents/meshharbord/src/virtual_desktop.rs#L747) `spawn_x_server`).
-- Kill switches: `ROOMLERD_VIRTUAL_DESKTOP_SERVER=xvfb` keeps the desktop on Xvfb; `display_match = never`
+- Kill switches: `MESHHARBORD_VIRTUAL_DESKTOP_SERVER=xvfb` keeps the desktop on Xvfb; `display_match = never`
   stops the switching.
 
 ## A person's own X11 display (FR-97 P3e-2)
@@ -265,7 +265,7 @@ sequenceDiagram
 | After a crash | `CDS_FULLSCREEN`: Windows reverts the mode itself | a restore guard in `$XDG_RUNTIME_DIR`, written before the switch; the next start puts the start mode back, only while the screen still shows the mode display match set ([`display_match.rs:340`](../agents/meshharbord/src/display_match.rs#L340) `guard_undoes`, [`display_match.rs:520`](../agents/meshharbord/src/display_match.rs#L520) `recover`) |
 | A locked screen | answers `locked`, decided again at the unlock | the same, the unlock read from logind's hint ([`peer.rs:1457`](../agents/meshharbord/src/peer.rs#L1457)) |
 | The person comes back | the session's watcher, every quarter second | the same watcher ([`peer.rs:1497`](../agents/meshharbord/src/peer.rs#L1497)) |
-| Kill switch | `display_match = never` | `ROOMLERD_X11_DISPLAY_MATCH=0`, and `display_match = never` |
+| Kill switch | `display_match = never` | `MESHHARBORD_X11_DISPLAY_MATCH=0`, and `display_match = never` |
 
 - ⚠️ **The X server says how long ago, not when.** "Now minus the idle time" moves by each read's latency,
   and the tracker would take every such move for a new input, a person's, so nobody would ever read as away.

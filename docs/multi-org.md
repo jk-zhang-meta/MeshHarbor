@@ -113,7 +113,7 @@ then cost a two-org host its mesh path, measured on 2026-10-19.
 | Before | After the swap | Why |
 |---|---|---|
 | the promoted secondary was `tun` | the new primary is **on** (its own OS TUN) | it already ran an OS TUN on this host |
-| the promoted secondary was `netstack` | the new primary is **off** | a primary's netstack is the env key `ROOMLERD_OVERLAY_NETSTACK_SOCKS`, which `overlay_multi_org` overrides; config cannot express it |
+| the promoted secondary was `netstack` | the new primary is **off** | a primary's netstack is the env key `MESHHARBORD_OVERLAY_NETSTACK_SOCKS`, which `overlay_multi_org` overrides; config cannot express it |
 | the old primary was on, with `overlay_multi_org`, on the same control plane | the demoted entry is **`tun`** | it ran its own OS TUN; a `tun` org needs the primary's control plane |
 | the old primary was on, without either | the demoted entry is **off** | `roomlerd org overlay <label> netstack` keeps it on |
 
@@ -226,9 +226,9 @@ message names the consequence and why a fresh carve WARNs
 
 | Key | Env | Default |
 |---|---|---|
-| `overlay.blocks_enabled` | `ROOMLER__OVERLAY__BLOCKS_ENABLED` | `true` (FR-47; `false` = kill switch) |
-| `overlay.block_prefix` | `ROOMLER__OVERLAY__BLOCK_PREFIX` | `22` (1022 devices; 4032 tenants fit) |
-| `overlay.block_version_floor` | `ROOMLER__OVERLAY__BLOCK_VERSION_FLOOR` | `0.3.0-rc.301` |
+| `overlay.blocks_enabled` | `MESHHARBOR__OVERLAY__BLOCKS_ENABLED` | `true` (FR-47; `false` = kill switch) |
+| `overlay.block_prefix` | `MESHHARBOR__OVERLAY__BLOCK_PREFIX` | `22` (1022 devices; 4032 tenants fit) |
+| `overlay.block_version_floor` | `MESHHARBOR__OVERLAY__BLOCK_VERSION_FLOOR` | `0.3.0-rc.301` |
 
 ### 4.3 The renumber runbook
 
@@ -329,7 +329,7 @@ stack and SOCKS5 front (#2493), on the loopback port its `[[orgs]]` entry
 names. It needs neither `overlay_multi_org` nor the primary's control plane,
 because it opens no adapter and installs no route. Only the PRIMARY's env-key
 netstack still yields to `overlay_multi_org`: with the flag on, the primary
-uses its OS TUN regardless of `ROOMLERD_OVERLAY_NETSTACK_SOCKS`.
+uses its OS TUN regardless of `MESHHARBORD_OVERLAY_NETSTACK_SOCKS`.
 
 ---
 
@@ -340,7 +340,7 @@ stable port base, deconflicted only by the blind band walk — so which org
 held 43648 was a spawn-order race that re-ran on every restart and swapped
 ports between orgs (NAT-mapping churn on the org that lost).
 
-With `overlay_shared_carrier` on (`ROOMLERD_OVERLAY_SHARED_CARRIER`,
+With `overlay_shared_carrier` on (`MESHHARBORD_OVERLAY_SHARED_CARRIER`,
 config key `overlay_shared_carrier`), the daemon binds **ONE process-wide
 socket set** (`crates/tunnel-core/src/overlay/carrier_plane.rs`) that every
 org's engine attaches to:
@@ -388,7 +388,7 @@ The second half of multi-org v2: with `overlay_multi_org` on, each org gets its
 **own adapter** (`per_org_systun_factory`, `agents/meshharbord/src/overlay.rs:318`).
 It shipped behind `overlay_tun_per_org`, default ON since rc.339; W7c deleted
 the switch along with the shared adapter it chose between, so neither the key
-nor `ROOMLERD_OVERLAY_TUN_PER_ORG` is read any more:
+nor `MESHHARBORD_OVERLAY_TUN_PER_ORG` is read any more:
 
 - the primary KEEPS the legacy `IF_NAME` (`roomler` on Windows, `roomler0`
   on Linux) + GUID (no adapter churn on the mode flip); a secondary is
@@ -451,7 +451,7 @@ Two-layer fix:
   destination on matching replies so the OS delivers them to the socket
   still anchored to the original address (`overlay/mux_nat.rs` +
   `tun_mux.rs` hooks). Kill switch: `overlay_mux_nat`
-  (`ROOMLERD_OVERLAY_MUX_NAT`), default **on**.
+  (`MESHHARBORD_OVERLAY_MUX_NAT`), default **on**.
 
 Accepted limitations (all narrow): no port translation — sockets on BOTH org
 addresses colliding on an identical (proto, local port, remote, remote port)
@@ -473,7 +473,7 @@ could kill it or inject SDP/ICE. The cross-pod terminate is authz'd and no
 longer a silent pod-local no-op that returned `{"terminated": true}`.
 
 Then capacity (#323): `rc_max_sessions` (1–8, default 2;
-`ROOMLERD_RC_MAX_SESSIONS`) plus the five latent single-session
+`MESHHARBORD_RC_MAX_SESSIONS`) plus the five latent single-session
 assumptions that made >1 unsafe — clipboard's single watcher slot, display-match
 restore firing on any session close, per-tx controller unregistration, the
 viewer's one-handler-per-type registry, and ungated INPUT/FILES data channels.
@@ -614,7 +614,7 @@ no blank row can render).
   always unit-tested against a fake device; the half that touches the OS —
   a REFUSED registration leaving no address behind, a disjoint block really
   getting one, a released org really losing it — now runs on every CI push
-  (`tun_kernel_tests`, root + `ROOMLER_TUN_KERNEL_TEST=1`, skipped
+  (`tun_kernel_tests`, root + `MESHHARBOR_TUN_KERNEL_TEST=1`, skipped
   everywhere else). It earned its keep on its first run by catching
   `deregister` handing back the block BASE instead of the org's address.
   What is still untested is the same path driven by two real control
@@ -657,7 +657,7 @@ no blank row can render).
   front, so two orgs in netstack mode both get a mesh. What genuinely
   cannot be shared is the PORT (one TCP listener): it keeps an owner, and a
   second org configured onto the same one withholds with an actionable
-  message. The primary reads `ROOMLERD_OVERLAY_NETSTACK_SOCKS`; a
+  message. The primary reads `MESHHARBORD_OVERLAY_NETSTACK_SOCKS`; a
   secondary sets `netstack_socks_port` on its `[[orgs]]` entry and
   deliberately does not inherit the env key.
   ⚠️ **Until #2493 the secondary half of this was dead code.**

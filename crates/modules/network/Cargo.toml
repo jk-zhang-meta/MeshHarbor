@@ -4,7 +4,7 @@ license = "AGPL-3.0-only"
 publish = false
 version.workspace = true
 edition.workspace = true
-description = "FR-69 module: network — the overlay mesh (IPAM, netmaps, ACL, relays, DERP ACL), tunnels, peer relays, Roomler SSH and key rotation: the server side of pillar 2."
+description = "FR-69 module: network — the overlay mesh (IPAM, netmaps, ACL, relays, DERP ACL), tunnels, peer relays, MeshHarbor SSH and key rotation: the server side of pillar 2."
 
 [lib]
 name = "meshharbor_mod_network"

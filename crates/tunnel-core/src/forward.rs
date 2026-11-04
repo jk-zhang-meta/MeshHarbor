@@ -92,7 +92,7 @@ const FLOW_INBOX_CAP: usize = 4096;
 /// 2 s cadence and we can see EXACTLY which of the four pump stages
 /// is rate-limiting under bulk-stream load.
 ///
-/// Field-test 2026-05-27 with TDS bulk read showed `roomler-tunnel.
+/// Field-test 2026-05-27 with TDS bulk read showed `meshharbor-tunnel.
 /// exe` at 0% CPU while throughput effectively topped out at
 /// ~50 KB/s. These counters are the diagnostic we needed: by
 /// comparing `tcp_read_bytes` (producer side) against
@@ -149,7 +149,7 @@ pub struct FlowStats {
     /// agent target side + the CLI + every `FlowStats::default()`, so
     /// those carry no aggregate. When present, the pumps mirror each
     /// TCP-side byte add into the session cumulative (`bytes_out` =
-    /// local→peer, `bytes_in` = peer→local) so `roomler flows` can
+    /// local→peer, `bytes_in` = peer→local) so `meshharbor flows` can
     /// report per-forward throughput. TCP-side (not `dc_send`) so the
     /// count is the true application payload — comparable across
     /// WebRTC (which adds a 4-byte frame prefix) and QUIC.

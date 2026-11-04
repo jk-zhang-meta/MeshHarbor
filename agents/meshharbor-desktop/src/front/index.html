@@ -5,7 +5,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Roomler</title>
+    <title>MeshHarbor</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -14,7 +14,7 @@
       <div class="brand">
         <div class="brand-mark">R</div>
         <div>
-          <div class="brand-name">Roomler</div>
+          <div class="brand-name">MeshHarbor</div>
           <div class="brand-version" id="brand-version"></div>
         </div>
       </div>
@@ -81,13 +81,13 @@
       <!-- Overview -->
       <section id="view-overview" class="view" hidden>
         <div class="view-head"><h2>Overview</h2></div>
-        <p class="view-sub">This device and its place in your Roomler network.</p>
+        <p class="view-sub">This device and its place in your MeshHarbor network.</p>
 
         <div id="ov-not-enrolled" class="banner banner-warn" hidden>
           <div>
             <strong>Not enrolled</strong>
             <p class="muted small" style="margin: 4px 0 8px">
-              This device isn't part of a Roomler network yet. Enroll it with a
+              This device isn't part of a MeshHarbor network yet. Enroll it with a
               token from a tenant admin.
             </p>
             <button type="button" class="primary" id="ov-btn-onboard">Set up this device</button>
@@ -162,7 +162,7 @@
           <!-- S7: the embedded web-app window (WebView2 on Windows;
                default browser elsewhere). -->
           <div class="actions" style="margin-top: 8px">
-            <button type="button" class="primary" id="ov-btn-open-web">Open Roomler</button>
+            <button type="button" class="primary" id="ov-btn-open-web">Open MeshHarbor</button>
           </div>
         </div>
 
@@ -180,7 +180,7 @@
         </div>
 
         <!-- FR-84 D4: what the capability probe found — the same cells the
-             service advertises to viewers (`roomler caps` prints them too).
+             service advertises to viewers (`meshharbor caps` prints them too).
              The service probes at its first server connection; this card
              never starts a probe. -->
         <div class="card" id="ov-enc-card">
@@ -279,7 +279,7 @@
           <div>
             <strong>Device service not running</strong>
             <p class="muted small" style="margin: 4px 0 0">
-              The Roomler service isn't running on this machine, so live device
+              The MeshHarbor service isn't running on this machine, so live device
               state is unavailable.
             </p>
           </div>
@@ -532,7 +532,7 @@
         <div class="card" id="rec-remote" hidden>
           <h3>Recording by a remote controller</h3>
           <p class="muted small" style="margin: 0 0 8px">
-            Off unless you turn it on. When on, someone controlling this device through Roomler
+            Off unless you turn it on. When on, someone controlling this device through MeshHarbor
             may ask to record the screen. The recording is saved on this device, a banner shows
             while it runs, and you can stop it at any time. Your microphone is never recorded
             remotely.
@@ -741,14 +741,14 @@
           </div>
         </div>
 
-        <!-- FR-84 D6: this person's own "Start Roomler at login" (per-user;
+        <!-- FR-84 D6: this person's own "Start MeshHarbor at login" (per-user;
              the device-wide switch is `companion_autostart` below), and the
              way back into the Welcome tour. Wired by welcome.js. -->
         <div class="card" id="st-autostart-card">
           <h3>Start at login</h3>
           <label class="wl-check" id="st-autostart-label">
             <input type="checkbox" id="st-autostart-toggle" />
-            Start Roomler when I sign in
+            Start MeshHarbor when I sign in
           </label>
           <p id="st-autostart-note" class="muted small"></p>
           <p id="st-autostart-result" class="small" hidden></p>
@@ -769,7 +769,7 @@
           </div>
           <p class="muted small">
             Auto-start runs the device service at login (per-user install).
-            Machine-wide service installs are managed by the Roomler Setup
+            Machine-wide service installs are managed by the MeshHarbor Setup
             installer.
           </p>
         </div>
@@ -851,7 +851,7 @@
       <section id="view-onboarding" class="view" hidden>
         <div class="view-head"><h2>Onboarding</h2></div>
         <p class="view-sub">
-          Enroll this device into a Roomler network. Ask a tenant admin for an
+          Enroll this device into a MeshHarbor network. Ask a tenant admin for an
           enrollment token (Admin → Devices → Generate enrollment token) — it is
           single-use and expires after 10 minutes.
         </p>
@@ -909,7 +909,7 @@
            menu), and again from the tray's "Welcome tour" or Settings. All
            dynamic text is set by welcome.js via textContent. -->
       <section id="view-welcome" class="view" hidden>
-        <div class="view-head"><h2>Welcome to Roomler</h2></div>
+        <div class="view-head"><h2>Welcome to MeshHarbor</h2></div>
         <p class="view-sub">
           A few choices, one at a time. You can change every one of them later
           in Settings.
@@ -946,12 +946,12 @@
               </div>
             </div>
             <p>
-              Roomler runs in the background as a service. This app is how that
+              MeshHarbor runs in the background as a service. This app is how that
               service talks to you: it shows what the device is doing, and it is
               where a request to view your screen appears.
             </p>
             <p id="wl-dev-offline" class="banner banner-warn small" hidden>
-              The Roomler service is not running on this computer right now, so
+              The MeshHarbor service is not running on this computer right now, so
               the choices below are saved but cannot take effect until it starts.
             </p>
           </div>
@@ -960,10 +960,10 @@
           <div class="wl-step" data-step="network" hidden>
             <h3>Your private network</h3>
             <p>
-              Roomler can join this computer to a private network with your
+              MeshHarbor can join this computer to a private network with your
               other devices. It is a WireGuard mesh: your devices connect to
               each other with end-to-end encryption, directly when the network
-              allows it and through a relay when it doesn't. The Roomler server
+              allows it and through a relay when it doesn't. The MeshHarbor server
               introduces them to each other but never sees what they send, and
               a relay only ever carries encrypted data.
             </p>
@@ -973,7 +973,7 @@
                 desktop, SSH and tunnels use this network.
               </li>
               <li>
-                <strong>What changes on this computer.</strong> Roomler adds a
+                <strong>What changes on this computer.</strong> MeshHarbor adds a
                 virtual network adapter, with routes for the network's own
                 addresses (in the 100.64.0.0/10 range). If your admins have
                 approved a subnet router (an office network reachable through
@@ -1012,7 +1012,7 @@
             <h3>Who may view this screen</h3>
             <p>
               When someone in your organisation asks to view or control this
-              computer, Roomler can let them in straight away, or ask you first.
+              computer, MeshHarbor can let them in straight away, or ask you first.
             </p>
             <label class="wl-check">
               <input type="checkbox" id="wl-consent-ask" />
@@ -1048,13 +1048,13 @@
           <div class="wl-step" data-step="login" hidden>
             <h3>Start at login</h3>
             <p>
-              Roomler lives in the notification area (the menu bar on a Mac).
+              MeshHarbor lives in the notification area (the menu bar on a Mac).
               That is where a request to view this screen appears, so keeping it
               running is recommended.
             </p>
             <label class="wl-check" id="wl-login-label">
               <input type="checkbox" id="wl-login-toggle" />
-              Start Roomler when I sign in
+              Start MeshHarbor when I sign in
             </label>
             <p id="wl-login-note" class="muted small"></p>
             <p id="wl-login-result" class="small" hidden></p>

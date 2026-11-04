@@ -18,7 +18,7 @@ Commands:
   list                  all issues
 
 Auth: a platform-admin bearer token, from (in order) --token, the
-ROOMLER_TOKEN env var, or an interactive login prompt (email + password,
+MESHHARBOR_TOKEN env var, or an interactive login prompt (email + password,
 never echoed, nothing persisted).
 
 Server: --server (default https://roomler.ai).
@@ -101,7 +101,7 @@ class Api:
             # the gate hides the surface on purpose. Say so.
             hint = (
                 "\n(hint: 404 here also means the token's user is not in "
-                "ROOMLER__STATS__PLATFORM_ADMINS — the gate hides the surface)"
+                "MESHHARBOR__STATS__PLATFORM_ADMINS — the gate hides the surface)"
                 if e.status == 404
                 else ""
             )
@@ -126,7 +126,7 @@ def login(server):
     if not token:
         sys.exit(
             "login answered without an access token in the body — mint one "
-            "manually and pass it via ROOMLER_TOKEN"
+            "manually and pass it via MESHHARBOR_TOKEN"
         )
     return token
 
@@ -135,8 +135,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("command", choices=["push", "preview", "test-send", "send", "status", "list"])
     p.add_argument("target", nargs="?", help="issue .md file (push) or slug")
-    p.add_argument("--server", default=os.environ.get("ROOMLER_SERVER", "https://roomler.ai"))
-    p.add_argument("--token", default=os.environ.get("ROOMLER_TOKEN"))
+    p.add_argument("--server", default=os.environ.get("MESHHARBOR_SERVER", "https://roomler.ai"))
+    p.add_argument("--token", default=os.environ.get("MESHHARBOR_TOKEN"))
     p.add_argument("--to", help="test-send recipient")
     p.add_argument("--retry-stale", action="store_true", help="send: re-attempt stale claimed rows")
     args = p.parse_args()

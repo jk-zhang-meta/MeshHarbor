@@ -8,14 +8,14 @@
 //! token, the server origin, `exec_enabled`) sits in that user's writable
 //! `%APPDATA%`. So the SYSTEM service in session 0 trusts none of it:
 //!
-//! - **The anchor** (`%ProgramData%\roomler\roomler\exec-service\anchor.json`)
+//! - **The anchor** (`%ProgramData%\meshharbor\meshharbor\exec-service\anchor.json`)
 //!   is the service's ONLY source of the server origin, the device, and its
 //!   own credential. An elevated administrator writes it
-//!   (`roomlerd anchor create`), and the service reads it only from a file
+//!   (`meshharbord anchor create`), and the service reads it only from a file
 //!   and a directory owned by SYSTEM or Administrators that grant nobody
 //!   else write: a folder a standard user made there first is never
 //!   trusted ([`load_anchor`]).
-//! - **The doorbell** (`\\.\pipe\roomler-exec-service`) carries a request id
+//! - **The doorbell** (`\\.\pipe\meshharbor-exec-service`) carries a request id
 //!   and nothing else. The service claims the command from the server with
 //!   its own credential, runs it, and posts the result to the server itself,
 //!   so SYSTEM's output never passes through a process the user owns.
@@ -36,12 +36,12 @@
 use serde::{Deserialize, Serialize};
 
 /// The doorbell's pipe. One per machine, like the daemon.
-pub const PIPE_NAME: &str = r"\\.\pipe\roomler-exec-service";
+pub const PIPE_NAME: &str = r"\\.\pipe\meshharbor-exec-service";
 
-/// `ROOMLERD_EXEC_VIA_SERVICE=0` (or `false`/`off`/`no`) withdraws
+/// `MESHHARBORD_EXEC_VIA_SERVICE=0` (or `false`/`off`/`no`) withdraws
 /// `exec-system` from every connection, so the server routes nothing to the
 /// service. The FR's P3 kill switch.
-pub const KILL_SWITCH_ENV: &str = "ROOMLERD_EXEC_VIA_SERVICE";
+pub const KILL_SWITCH_ENV: &str = "MESHHARBORD_EXEC_VIA_SERVICE";
 
 /// The anchor file's schema version.
 const ANCHOR_VERSION: u32 = 1;
@@ -114,7 +114,7 @@ pub struct Anchor {
     pub tenant_id: String,
     pub agent_id: String,
     /// The device's name as the server knew it at anchoring, for
-    /// `roomlerd anchor status`.
+    /// `meshharbord anchor status`.
     #[serde(default)]
     pub device_name: String,
     /// The service's credential (`TokenType::AgentService`).
@@ -125,8 +125,8 @@ pub struct Anchor {
     /// RFC 3339.
     #[serde(default)]
     pub anchored_at: String,
-    /// FR-105 — how far roomler SSH through this service may go, the
-    /// machine administrator's (`roomlerd anchor ssh <…>`). Default off: an
+    /// FR-105 — how far meshharbor SSH through this service may go, the
+    /// machine administrator's (`meshharbord anchor ssh <…>`). Default off: an
     /// anchor made for exec never silently serves SYSTEM SSH, and an anchor
     /// file older than FR-105 reads as off.
     #[serde(default)]
@@ -592,7 +592,7 @@ pub async fn cancel(request_id: &str) -> bool {
 // The anchor file
 // ────────────────────────────────────────────────────────────────────────────
 
-/// `%ProgramData%\roomler\roomler\exec-service`. Windows only: no other
+/// `%ProgramData%\meshharbor\meshharbor\exec-service`. Windows only: no other
 /// platform anchors a device.
 #[cfg(windows)]
 pub fn anchor_dir() -> std::path::PathBuf {
@@ -716,11 +716,11 @@ pub fn spawn_service_runner() {
     #[cfg(windows)]
     {
         let spawned = std::thread::Builder::new()
-            .name("roomler-svc-exec".into())
+            .name("meshharbor-svc-exec".into())
             .spawn(|| {
                 match tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(2)
-                    .thread_name("roomler-svc-exec")
+                    .thread_name("meshharbor-svc-exec")
                     .enable_all()
                     .build()
                 {
@@ -838,7 +838,7 @@ mod svc {
         let anchor = match load_anchor() {
             Ok(Some(a)) => a,
             Ok(None) => {
-                return refused("this device is not anchored (`roomlerd anchor create`, elevated)");
+                return refused("this device is not anchored (`meshharbord anchor create`, elevated)");
             }
             Err(e) => {
                 error!(%e, "ssh-service: the anchor cannot be trusted");
@@ -861,7 +861,7 @@ mod svc {
         #[cfg(not(feature = "ssh-server"))]
         {
             let _ = anchor;
-            refused("this build of roomlerd serves no SSH")
+            refused("this build of meshharbord serves no SSH")
         }
     }
 
@@ -886,7 +886,7 @@ mod svc {
             Ok(Some(a)) => a,
             Ok(None) => {
                 return refused(
-                    "this device is not anchored for SYSTEM exec (`roomlerd anchor create`, \
+                    "this device is not anchored for SYSTEM exec (`meshharbord anchor create`, \
                      elevated)",
                 );
             }
@@ -898,7 +898,7 @@ mod svc {
         if !anchor.exec_enabled {
             return refused(
                 "remote execution through the SYSTEM service is off on this device \
-                 (`roomlerd anchor exec on`, elevated)",
+                 (`meshharbord anchor exec on`, elevated)",
             );
         }
         let claimed = match claim(&anchor, &request_id).await {
@@ -942,7 +942,7 @@ mod svc {
     /// the worker rather than abandoned by it.
     fn client(total: Duration) -> Result<reqwest::Client, String> {
         reqwest::Client::builder()
-            .user_agent(concat!("roomlerd-exec-service/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("meshharbord-exec-service/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10))
             .timeout(total)
             .build()
@@ -1128,10 +1128,10 @@ mod svc {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// `roomlerd anchor`
+// `meshharbord anchor`
 // ────────────────────────────────────────────────────────────────────────────
 
-/// What `roomlerd anchor` was asked to do.
+/// What `meshharbord anchor` was asked to do.
 #[derive(Debug, Clone)]
 pub enum AnchorAction {
     /// Anchor this machine's device for SYSTEM exec.
@@ -1149,7 +1149,7 @@ pub enum AnchorAction {
     Status,
     /// Turn the anchor's gate 4 on or off.
     Exec { on: bool },
-    /// FR-105 — how far roomler SSH through the SYSTEM service may go.
+    /// FR-105 — how far meshharbor SSH through the SYSTEM service may go.
     Ssh {
         ceiling: meshharbor_remote_control::models::SshServiceCeiling,
     },
@@ -1173,7 +1173,7 @@ pub fn parse_ssh_ceiling(
     }
 }
 
-/// `roomlerd anchor …`. Every action but `status` needs an elevated prompt;
+/// `meshharbord anchor …`. Every action but `status` needs an elevated prompt;
 /// `status` does too, in practice, because the file is Administrators-only.
 pub async fn anchor_cli(action: AnchorAction) -> anyhow::Result<()> {
     #[cfg(windows)]
@@ -1830,7 +1830,7 @@ mod win {
                     ssh_words(ceiling)
                 );
                 #[cfg(not(feature = "ssh-server"))]
-                println!("Note: this build of roomlerd serves no SSH, so nothing uses it yet.");
+                println!("Note: this build of meshharbord serves no SSH, so nothing uses it yet.");
                 Ok(())
             }
             AnchorAction::Exec { on } => {
@@ -1892,7 +1892,7 @@ mod win {
             service_token: String,
         }
         let resp = reqwest::Client::builder()
-            .user_agent(concat!("roomlerd-anchor/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("meshharbord-anchor/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(30))
             .build()?
             .post(format!("{server}/api/agent/anchor"))
@@ -1958,7 +1958,7 @@ mod win {
             if exec_enabled {
                 "ON"
             } else {
-                "OFF (`roomlerd anchor exec on`)"
+                "OFF (`meshharbord anchor exec on`)"
             },
         );
         Ok(())

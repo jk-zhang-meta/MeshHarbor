@@ -282,7 +282,7 @@ come back either.
 **Routing needs both halves:** the server's record of the anchor, and the
 device's `exec-system` word. Either alone sends the command to the worker, as
 before. `rc.exec_via_service = false` on the server turns the SYSTEM path off
-everywhere; `ROOMLERD_EXEC_VIA_SERVICE=0` on a device withdraws its word.
+everywhere; `MESHHARBORD_EXEC_VIA_SERVICE=0` on a device withdraws its word.
 
 The whole decision, in the order the code takes it (`agent_exec.rs`
 `authorize`, then the dispatch; `exec_service.rs` `routes_via_service`). Every

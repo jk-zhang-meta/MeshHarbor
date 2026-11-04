@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-16 L4 — `roomlerd probe-target`: input to photon on a release build.
+//! FR-16 L4 — `meshharbord probe-target`: input to photon on a release build.
 //!
 //! The bench probe (`synthetic_backend::probe`) exists only where the
 //! synthetic source does, and no release profile builds that. This window
 //! brings L4 to a real host. It sits flush in the primary monitor's
 //! bottom-right corner, and its marker changes when **real OS input**
-//! reaches it. A bench viewer (`roomler-rc-bench=target`) moves the remote
+//! reaches it. A bench viewer (`meshharbor-rc-bench=target`) moves the remote
 //! pointer onto one of the 16 cells across the window's pad. The agent
 //! injects that move like any other, and the window reads the cell from its
 //! own `WM_MOUSEMOVE` and paints the cell's number into the marker. The
@@ -186,8 +186,8 @@ mod win {
             let (x, y, w, h) = window_rect(r.left, r.top, mon_w, mon_h);
 
             let instance = GetModuleHandleW(std::ptr::null());
-            let class = wide("RoomlerProbeTarget");
-            let title = wide("Roomler L4 probe target");
+            let class = wide("MeshHarborProbeTarget");
+            let title = wide("MeshHarbor L4 probe target");
             let wc = WNDCLASSEXW {
                 cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
                 style: 0,

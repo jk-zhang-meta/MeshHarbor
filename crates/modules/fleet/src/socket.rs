@@ -265,7 +265,7 @@ pub async fn handle_agent_socket(
     // with 412 instead of pushing a frame it drops in its unknown-tag branch,
     // which would leave the caller waiting out its whole deadline.
     let supports_exec = caps.has_rpc(RpcCap::Exec);
-    // Roomler SSH — same distillation, same reason: a grant pushed to a build
+    // MeshHarbor SSH — same distillation, same reason: a grant pushed to a build
     // without the `ssh-server` feature is recorded by nobody, and the caller
     // then dials a port that authenticates them against an empty table.
     let supports_ssh = caps.has_rpc(RpcCap::Ssh);
@@ -774,7 +774,7 @@ pub async fn handle_agent_socket(
                                         continue;
                                     }
                                     // A device asking to run something on ANOTHER
-                                    // device (`roomler exec`). Spawned: the
+                                    // device (`meshharbor exec`). Spawned: the
                                     // target's command can take minutes and this
                                     // is the REQUESTING agent's read loop.
                                     ClientMsg::RpcExecRequest {
@@ -1192,7 +1192,7 @@ pub async fn handle_agent_socket(
 }
 
 /// Fleet RPC — a device asked to run a command on another device
-/// (`roomler exec`, whose CLI has no user credentials of its own and so goes
+/// (`meshharbor exec`, whose CLI has no user credentials of its own and so goes
 /// through the daemon's already-authenticated agent WS).
 ///
 /// Two things make this leg safe beyond the four normal gates:

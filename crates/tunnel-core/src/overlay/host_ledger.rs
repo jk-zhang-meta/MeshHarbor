@@ -258,11 +258,11 @@ static LEDGER: Mutex<HostLedger> = Mutex::new(HostLedger {
 });
 
 /// FR-97 P0b-2c — a WinNAT instance name a router of ours creates:
-/// `roomler-overlay`, or `roomler-overlay-<n>` for a later block. Strict,
+/// `meshharbor-overlay`, or `meshharbor-overlay-<n>` for a later block. Strict,
 /// because the name goes back into a PowerShell command, and only an
 /// instance named like ours is ever removed.
 pub fn is_nat_name(s: &str) -> bool {
-    match s.strip_prefix("roomler-overlay") {
+    match s.strip_prefix("meshharbor-overlay") {
         Some("") => true,
         Some(rest) => rest.strip_prefix('-').is_some_and(|n| {
             !n.is_empty() && n.len() <= 3 && n.chars().all(|c| c.is_ascii_digit())
@@ -393,7 +393,7 @@ impl HostLedger {
 /// before any config is read. The daemon acts on what it says as SYSTEM or
 /// root, so only that identity may be able to write it.
 ///
-/// On Windows that is the registry, `HKLM\SOFTWARE\Roomler\Overlay`, never a
+/// On Windows that is the registry, `HKLM\SOFTWARE\MeshHarbor\Overlay`, never a
 /// file under `%ProgramData%`: any account may create a file there, and the
 /// SYSTEM daemon acts on what the ledger says at boot. A standard user who
 /// planted one would choose which adapter SYSTEM switches forwarding off on.
@@ -406,7 +406,7 @@ mod store {
         RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegGetValueW, RegSetValueExW,
     };
 
-    const SUBKEY: &str = r"SOFTWARE\Roomler\Overlay";
+    const SUBKEY: &str = r"SOFTWARE\MeshHarbor\Overlay";
     const VALUE: &str = "HostLedger";
     /// A ledger is a few GUIDs and pins; anything near this is not one.
     const MAX_BYTES: u32 = 256 * 1024;
@@ -509,7 +509,7 @@ mod store {
 }
 
 /// On Linux and macOS, a file in a directory only root may create:
-/// `/var/lib/meshharbor` or `/var/db/roomler`. It is believed only while both
+/// `/var/lib/meshharbor` or `/var/db/meshharbor`. It is believed only while both
 /// the directory and the file are root's and nobody else may write them (a
 /// directory someone loosened, or a symlink, is not this daemon's record).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -520,7 +520,7 @@ mod store {
     #[cfg(target_os = "linux")]
     const DIR: &str = "/var/lib/meshharbor";
     #[cfg(target_os = "macos")]
-    const DIR: &str = "/var/db/roomler";
+    const DIR: &str = "/var/db/meshharbor";
     const FILE: &str = "overlay-host-ledger.json";
     /// A ledger is a few pins; anything near this is not one.
     const MAX_BYTES: u64 = 256 * 1024;
@@ -696,9 +696,9 @@ mod tests {
                 pin("94.130.141.98", "192.168.64.1"),
                 pin("2a01:4f8::1", "fe80::1%en0"),
             ],
-            nat: vec!["roomler-overlay".into()],
+            nat: vec!["meshharbor-overlay".into()],
             pf: vec![PfRecord {
-                anchor: "com.apple/roomler-utun4".into(),
+                anchor: "com.apple/meshharbor-utun4".into(),
                 tokens: vec![13889181449326457865],
                 refs: vec![PfToken {
                     token: 13889181449326457865,
@@ -720,7 +720,7 @@ mod tests {
         assert!(old.pins.is_empty() && old.nat.is_empty() && old.pf.is_empty());
         // A NAT name alone keeps the ledger (and its purge) alive.
         let nat_only = HostLedger {
-            nat: vec!["roomler-overlay".into()],
+            nat: vec!["meshharbor-overlay".into()],
             ..HostLedger::default()
         };
         assert!(!nat_only.is_empty());
@@ -732,12 +732,12 @@ mod tests {
         };
         assert!(!pf_only.is_empty());
         let bare: HostLedger =
-            serde_json::from_str("{\"pf\":[{\"anchor\":\"com.apple/roomler-utun4\"}]}").unwrap();
+            serde_json::from_str("{\"pf\":[{\"anchor\":\"com.apple/meshharbor-utun4\"}]}").unwrap();
         assert_eq!(bare.pf[0].tokens, Vec::<u64>::new());
         assert!(!bare.pf[0].v4_was_off && !bare.pf[0].v6_was_off);
         // One a 0.4.141 daemon wrote: token values, no pids.
         let v141: HostLedger = serde_json::from_str(
-            "{\"pf\":[{\"anchor\":\"com.apple/roomler-utun4\",\"tokens\":[7],\"v4_was_off\":true,\"v6_was_off\":false}]}",
+            "{\"pf\":[{\"anchor\":\"com.apple/meshharbor-utun4\",\"tokens\":[7],\"v4_was_off\":true,\"v6_was_off\":false}]}",
         )
         .unwrap();
         assert_eq!(v141.pf[0].tokens, vec![7]);
@@ -755,19 +755,19 @@ mod tests {
     /// the name goes back into PowerShell, so the check is strict.
     #[test]
     fn only_our_nat_names_are_nat_names() {
-        for good in ["roomler-overlay", "roomler-overlay-1", "roomler-overlay-12"] {
+        for good in ["meshharbor-overlay", "meshharbor-overlay-1", "meshharbor-overlay-12"] {
             assert!(is_nat_name(good), "{good}");
         }
         for bad in [
             "",
-            "roomler",
-            "roomler-overlay-",
-            "roomler-overlay-a",
-            "roomler-overlay-1;Remove-Item",
-            "roomler-overlay-1234",
+            "meshharbor",
+            "meshharbor-overlay-",
+            "meshharbor-overlay-a",
+            "meshharbor-overlay-1;Remove-Item",
+            "meshharbor-overlay-1234",
             "DockerNAT",
-            "roomler-overlay2",
-            "x-roomler-overlay",
+            "meshharbor-overlay2",
+            "x-meshharbor-overlay",
         ] {
             assert!(!is_nat_name(bad), "{bad:?}");
         }

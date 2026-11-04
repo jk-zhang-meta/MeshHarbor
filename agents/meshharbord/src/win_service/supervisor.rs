@@ -106,10 +106,10 @@ pub enum SupervisorEnd {
     /// A [`SupervisorEvent::Shutdown`] arrived, or the control channel closed.
     Shutdown,
     /// The worker found another daemon holding this config's single-instance
-    /// lock, and the orphan check read every roomlerd process without finding
+    /// lock, and the orphan check read every meshharbord process without finding
     /// an earlier host's worker: a second installed flavour serves the device.
     Redundant,
-    /// The same refusal, but the orphan check could not read every roomlerd
+    /// The same refusal, but the orphan check could not read every meshharbord
     /// process, so an earlier host's worker cannot be ruled out.
     RedundantUnconfirmed,
 }
@@ -215,7 +215,7 @@ pub fn query_user_token(session_id: u32) -> Result<Option<OwnedHandle>> {
 /// `DestroyEnvironmentBlock` when no longer needed; we package it
 /// in a tiny RAII guard.
 ///
-/// `pub(crate)` because roomler SSH's ConPTY path builds its own
+/// `pub(crate)` because meshharbor SSH's ConPTY path builds its own
 /// `CreateProcessAsUserW` call (it must attach a pseudoconsole through an
 /// attribute list, which no helper here takes) but still needs the SAME user
 /// environment every other console-user spawn gets — a shell started without
@@ -349,7 +349,7 @@ pub unsafe fn spawn_in_session(token: HANDLE, exe: &Path, args: &[&str]) -> Resu
     })
 }
 
-/// Parse the `ROOMLERD_ELEVATE_WORKER` value. **Default ON**
+/// Parse the `MESHHARBORD_ELEVATE_WORKER` value. **Default ON**
 /// (field-proven on an interactive-admin box, 2026-07-23): the
 /// user-context worker is spawned with the interactive admin's ELEVATED
 /// linked token so the overlay's Wintun adapter (a privileged device
@@ -402,7 +402,7 @@ fn parse_elevate_flag(val: Option<&str>) -> bool {
 /// lets input injection reach elevated foreground apps (the UIPI gap).
 ///
 /// **Default ON** (field-proven 2026-07-23); disable per-host with
-/// `ROOMLERD_ELEVATE_WORKER=0`. The elevation is inert unless the
+/// `MESHHARBORD_ELEVATE_WORKER=0`. The elevation is inert unless the
 /// interactive user is a UAC-split administrator, so the default only
 /// engages on the hosts that need it — see [`parse_elevate_flag`].
 fn worker_elevation_requested() -> bool {
@@ -558,7 +558,7 @@ impl OwnedProcess {
     /// ownership to the tuple).
     ///
     /// Was `system-context`-gated when the M3 A1 spawn arm was its only
-    /// caller. Roomler SSH's console-user path is a second caller in a
+    /// caller. MeshHarbor SSH's console-user path is a second caller in a
     /// different feature, so the gate would have to become an `any(...)`
     /// growing with each new one — and the `dead_code` warning it avoided
     /// cannot fire now: `spawn_in_session_captured` in this module calls it
@@ -742,7 +742,7 @@ pub enum SpawnDecision {
 /// * `keep_stream_alive` — named for its M3 meaning, "a controller is
 ///   connected to *some* worker on this host". ⚠️ Since 0.3.0-rc.7 the
 ///   supervisor loop passes `peer_presence_is_signaled()`, which is
-///   `ROOMLERD_ENABLE_SYSTEM_SWAP` and nothing else. So in production a
+///   `MESHHARBORD_ENABLE_SYSTEM_SWAP` and nothing else. So in production a
 ///   SystemContext-mode host is SYSTEM from cold start, an attended host
 ///   stays user-context, and the "swap" rows below never fire because a
 ///   controller connected.
@@ -852,7 +852,7 @@ pub enum ExitReaction {
 /// but this helper keeps the supervisor's call site free of
 /// `#[cfg]` arms.
 ///
-/// Also gated on the `ROOMLERD_ENABLE_SYSTEM_SWAP` env var. The
+/// Also gated on the `MESHHARBORD_ENABLE_SYSTEM_SWAP` env var. The
 /// auto-swap from user-context → SystemContext on every controller
 /// connection is more aggressive than the original M3 A1 plan
 /// intended (the plan called for swap on lock screen, not on every
@@ -862,7 +862,7 @@ pub enum ExitReaction {
 /// user-context worker always, Z-path overlay covers the lock screen,
 /// no SystemContext spawn ever fires.
 ///
-/// Set `ROOMLERD_ENABLE_SYSTEM_SWAP=1` (or `true`/`yes`/`on`) in
+/// Set `MESHHARBORD_ENABLE_SYSTEM_SWAP=1` (or `true`/`yes`/`on`) in
 /// the SCM service environment to re-enable.
 ///
 /// **0.3.0-rc.7 semantic change**: when the env var is on, this
@@ -900,7 +900,7 @@ fn peer_presence_is_signaled() -> bool {
     }
 }
 
-/// Read the `ROOMLERD_ENABLE_SYSTEM_SWAP` env var.
+/// Read the `MESHHARBORD_ENABLE_SYSTEM_SWAP` env var.
 /// Truthy values: `1` / `true` / `yes` / `on` (case-insensitive).
 /// Anything else (including unset) → false.
 #[cfg(all(feature = "system-context", target_os = "windows"))]
@@ -1069,10 +1069,10 @@ struct ActiveWorker {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Track A stage 1 — the SECOND supervisor child: `roomlerd netd`.
+// Track A stage 1 — the SECOND supervisor child: `meshharbord netd`.
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Truthiness for the `ROOMLERD_OVERLAY_NETD` env lever (pure; tested).
+/// Truthiness for the `MESHHARBORD_OVERLAY_NETD` env lever (pure; tested).
 fn netd_flag_truthy(v: &str) -> bool {
     let t = v.trim();
     t.eq_ignore_ascii_case("1")
@@ -1082,7 +1082,7 @@ fn netd_flag_truthy(v: &str) -> bool {
 }
 
 /// Track A stage 1 — is the netd scaffold enabled? Env lever first
-/// (`ROOMLERD_OVERLAY_NETD`), else the MACHINE-GLOBAL config's
+/// (`MESHHARBORD_OVERLAY_NETD`), else the MACHINE-GLOBAL config's
 /// `overlay_netd` (the supervisor is LocalSystem; per-user enrollments
 /// keep today's single-child topology until a later stage). Read ONCE at
 /// service start — changing it needs a service restart, by design: the
@@ -1240,7 +1240,7 @@ pub fn run(
         let enabled = system_swap_enabled();
         tracing::info!(
             enabled,
-            env_var = "ROOMLERD_ENABLE_SYSTEM_SWAP",
+            env_var = "MESHHARBORD_ENABLE_SYSTEM_SWAP",
             "supervisor: M3 A1 auto-swap (user-context -> SystemContext) is {}",
             if enabled {
                 "ENABLED"
@@ -1252,7 +1252,7 @@ pub fn run(
     // rc.51: the worker handle + its session/context/spawn-time, one
     // Option so they can never desync (see `ActiveWorker`).
     let mut current: Option<ActiveWorker> = None;
-    // Track A stage 1 — the OPTIONAL second child (`roomlerd netd`),
+    // Track A stage 1 — the OPTIONAL second child (`meshharbord netd`),
     // gated on `overlay_netd` at service start. `None` = today's
     // single-child topology, bit-for-bit.
     let mut netd: Option<NetdChild> = netd_enabled().then(NetdChild::new);
@@ -1457,7 +1457,7 @@ pub fn run(
                                 // Cleanly as the SCM sees it too (#2465): the
                                 // host ends `Redundant` with exit code 0, so
                                 // the recovery actions leave it stopped. Only
-                                // when the orphan check read every roomlerd
+                                // when the orphan check read every meshharbord
                                 // process: otherwise the host ends as a
                                 // failure, and the SCM's retry is what recovers
                                 // a lock held by a worker it could not read.
@@ -1465,7 +1465,7 @@ pub fn run(
                                     pid = w.process.pid,
                                     code,
                                     orphan_check_complete = reap.complete(),
-                                    "supervisor: another roomler daemon already holds this \
+                                    "supervisor: another meshharbor daemon already holds this \
                                      config's single-instance lock — this one is redundant. \
                                      Stopping instead of respawning. Uninstall the duplicate \
                                      daemon flavour (perMachine service vs perUser task) to clear \
@@ -1578,7 +1578,7 @@ pub fn run(
 
         // Decide whether to spawn. ⚠️ `keep_stream_alive` is NOT
         // controller presence: since 0.3.0-rc.7 it is
-        // `ROOMLERD_ENABLE_SYSTEM_SWAP`, and the `peer_presence` marker
+        // `MESHHARBORD_ENABLE_SYSTEM_SWAP`, and the `peer_presence` marker
         // is observability only (see `peer_presence_is_signaled`). So
         // a SystemContext-mode host runs a SYSTEM worker from cold
         // start and an attended host a user-context one; a controller
@@ -1637,7 +1637,7 @@ pub fn run(
                         // ELEVATED linked token so the overlay's Wintun
                         // adapter (a privileged device install) succeeds
                         // without the heavier SystemContext SYSTEM-swap.
-                        // Default-on; kill-switch ROOMLERD_ELEVATE_
+                        // Default-on; kill-switch MESHHARBORD_ELEVATE_
                         // WORKER=0. Falls back to the filtered `token` for
                         // standard users / already-elevated / any failure
                         // (no regression). `elevated` (when Some) owns the
@@ -1799,7 +1799,7 @@ pub fn run(
             // RETIRED-NAME-ANCHOR(3): names the PRE-RENAME appdirs segment a host
             // installed before P4b still has; appdirs::app_segment resolves it, so it
             // is an input.
-            // `%PROGRAMDATA%\roomler-agent\peer-connected.lock`
+            // `%PROGRAMDATA%\meshharbor-agent\peer-connected.lock`
             // marker file. The user-context worker writes to that
             // file every 5 s while its WebRTC peer is in `Connected`
             // state and removes it on disconnect. So this arm fires
@@ -1915,7 +1915,7 @@ pub fn run(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Output-capturing spawn (roomler SSH P5b)
+// Output-capturing spawn (meshharbor SSH P5b)
 // ───────────────────────────────────────────────────────────────────────────
 
 /// A child spawned into a user session with its output piped back.
@@ -1928,7 +1928,7 @@ pub struct CapturedChild {
     pub process: OwnedProcess,
     pub stdout: OwnedHandle,
     pub stderr: OwnedHandle,
-    /// The WRITE end of the child's stdin, when one was asked for (roomler
+    /// The WRITE end of the child's stdin, when one was asked for (meshharbor
     /// SSH feeding a client's stdin); write with [`write_all_to_pipe`], and
     /// drop it for end-of-input. `None` = the child reads NUL.
     pub stdin: Option<OwnedHandle>,
@@ -1937,7 +1937,7 @@ pub struct CapturedChild {
 /// Output-capturing twin of [`spawn_in_session`], for running a SHELL COMMAND
 /// LINE as the signed-in console user and reading back what it printed.
 ///
-/// [`spawn_in_session`] launches our own EXE and ignores its output; roomler
+/// [`spawn_in_session`] launches our own EXE and ignores its output; meshharbor
 /// SSH needs the opposite, so this takes a full command line (no
 /// `lpApplicationName`) and wires three pipes.
 ///
@@ -1987,7 +1987,7 @@ pub unsafe fn spawn_in_session_captured(
     let (out_r, out_w) = unsafe { make_pipe(&mut sa) }.context("CreatePipe (stdout)")?;
     let (err_r, err_w) = unsafe { make_pipe(&mut sa) }.context("CreatePipe (stderr)")?;
 
-    // stdin: the caller's pipe when asked for (roomler SSH feeding a client's
+    // stdin: the caller's pipe when asked for (meshharbor SSH feeding a client's
     // stdin), else NUL rather than a null handle: with STARTF_USESTDHANDLES
     // the child gets exactly these three, and a shell handed an invalid stdin
     // can fail in ways that look like the command misbehaving.
@@ -2218,7 +2218,7 @@ pub fn read_pipe_to_end(
 }
 
 /// Drain a pipe to EOF, handing each read to `deliver` as it arrives — the
-/// streamed twin of [`read_pipe_to_end`] (FR-89, Roomler SSH's `console_user`
+/// streamed twin of [`read_pipe_to_end`] (FR-89, MeshHarbor SSH's `console_user`
 /// commands). Blocking, like its twin, and with no ceiling: what bounds the
 /// output is the consumer, since `deliver` is expected to block on a full
 /// channel, which parks this thread, fills the pipe and blocks the child on
@@ -3393,7 +3393,7 @@ mod tests {
     fn a_process_started_into_a_job_runs_inside_it_with_the_sessions_variables() {
         let job = JobObject::kill_on_close().unwrap();
         let env = [(
-            OsString::from("ROOMLER_HIVE_PROBE"),
+            OsString::from("MESHHARBOR_HIVE_PROBE"),
             OsString::from("from-the-launcher"),
         )];
         // `set /p` waits on stdin, so the process is alive to be asked about.
@@ -3401,7 +3401,7 @@ mod tests {
         let child = unsafe {
             spawn_into_job(
                 SpawnAs::Daemon,
-                &cmd("set /p L=& echo %ROOMLER_HIVE_PROBE%"),
+                &cmd("set /p L=& echo %MESHHARBOR_HIVE_PROBE%"),
                 None,
                 &env,
                 true,

@@ -11,12 +11,12 @@
 //! the `growth_daily` counter `{asset, client, os}` for the UTC day — a
 //! number, never the User-Agent and never the address.
 //!
-//! ⚠️ **The updater is never counted.** `roomlerd/<ver>` is the daemon's own
+//! ⚠️ **The updater is never counted.** `meshharbord/<ver>` is the daemon's own
 //! update check, and by default it asks `roomler.ai` from self-hosted
 //! devices as well (`agents/meshharbord/src/updater.rs`, `DEFAULT_PROXY_URL`).
 //! Counting it would be exactly the self-host telemetry the product promises
 //! not to collect (`LICENSING.md`, `docs/business-model.md` §6). So is every
-//! other identity of our own — `roomlerd-*`, `meshharbor-cli/`, the pre-rename
+//! other identity of our own — `meshharbord-*`, `meshharbor-cli/`, the pre-rename
 //! updater's spelling, any product token of ours that is not the wizard:
 //! [`UaClass::Updater`], whose [`UaClass::counted`] is `None`, and a fetch
 //! with it writes nothing.
@@ -34,7 +34,7 @@
 //! comes from [`meshharbor_core::client_ip`] — the per-IP limiter's rule, the
 //! only one the server has — is compared in memory, and is dropped: the
 //! row stays three enum-like dimensions and a count. The updater rule comes
-//! first: a `roomlerd/` fetch from the lab is still never counted at all.
+//! first: a `meshharbord/` fetch from the lab is still never counted at all.
 
 use std::{collections::BTreeMap, net::SocketAddr};
 
@@ -111,15 +111,15 @@ impl UaClass {
 }
 
 /// The one product token that is counted. Every OTHER product token of ours
-/// — `roomlerd/`, `roomlerd-exec-service/`, `roomlerd-anchor/`,
-/// `roomlerd-localapi/`, `roomlerd-ssh-service/`, `roomlerd-crash-reporter/`,
-/// `meshharbor-cli/`, `roomler-token-renewal/`, the updater's pre-rename
+/// — `meshharbord/`, `meshharbord-exec-service/`, `meshharbord-anchor/`,
+/// `meshharbord-localapi/`, `meshharbord-ssh-service/`, `meshharbord-crash-reporter/`,
+/// `meshharbor-cli/`, `meshharbor-token-renewal/`, the updater's pre-rename
 /// spelling, and whatever a later release adds — is the product's own
 /// machinery and is never counted. Decided by the common prefix, not by a
 /// list, so a new identity of ours is excluded before anyone remembers to
 /// name it here.
 const WIZARD_PREFIX: &str = "meshharbor-setup/";
-const OWN_PREFIX: &str = "roomler";
+const OWN_PREFIX: &str = "meshharbor";
 
 /// Pure: the class of a User-Agent value (`None` = no header).
 pub fn classify_user_agent(ua: Option<&str>) -> UaClass {
@@ -285,16 +285,16 @@ mod tests {
     #[test]
     fn the_updater_and_every_daemon_identity_are_never_counted() {
         for ua in [
-            "roomlerd/0.4.135",
-            "roomlerd/0.3.0-rc.480",
-            "roomlerd-exec-service/0.4.135",
-            "roomlerd-anchor/0.4.135",
-            "roomlerd-localapi/0.4.135",
-            "roomlerd-ssh-service/0.4.135",
-            "roomlerd-crash-reporter/0.4.135",
+            "meshharbord/0.4.135",
+            "meshharbord/0.3.0-rc.480",
+            "meshharbord-exec-service/0.4.135",
+            "meshharbord-anchor/0.4.135",
+            "meshharbord-localapi/0.4.135",
+            "meshharbord-ssh-service/0.4.135",
+            "meshharbord-crash-reporter/0.4.135",
             "meshharbor-cli/0.4.135",
-            "roomler-token-renewal/0.4.135",
-            "roomler-something-from-a-later-release/0.5.0",
+            "meshharbor-token-renewal/0.4.135",
+            "meshharbor-something-from-a-later-release/0.5.0",
         ] {
             assert_eq!(classify_user_agent(Some(ua)), UaClass::Updater, "{ua}");
             assert_eq!(UaClass::Updater.counted(), None);
@@ -314,7 +314,7 @@ mod tests {
         // Only the daemon's names: a browser whose UA merely mentions the
         // word is not the updater, and the wizard is its own class.
         assert_eq!(
-            classify_user_agent(Some("Mozilla/5.0 (X11; Linux) roomlerd-docs-reader")),
+            classify_user_agent(Some("Mozilla/5.0 (X11; Linux) meshharbord-docs-reader")),
             UaClass::Browser
         );
         assert_eq!(

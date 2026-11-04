@@ -69,7 +69,7 @@ impl Display {
         self.0.rect().h as usize
     }
 
-    /// ROOMLER PATCH: where this monitor sits on the X screen, in root-window
+    /// MESHHARBOR PATCH: where this monitor sits on the X screen, in root-window
     /// pixels. The capturer reads exactly this rectangle of the root, so a
     /// point in root coordinates (the mouse pointer) is in the frame at
     /// `point - origin`. Upstream keeps the rectangle to the capturer.

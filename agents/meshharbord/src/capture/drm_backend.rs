@@ -140,7 +140,7 @@ enum GpuState {
     /// where its EGL context must live.
     Untried,
     Ready(Box<super::drm_gpu::Converter>),
-    /// `ROOMLERD_DRM_GPU=0`, no usable GPU, or a GPU pass that failed: the CPU
+    /// `MESHHARBORD_DRM_GPU=0`, no usable GPU, or a GPU pass that failed: the CPU
     /// reads every frame of this capture.
     Off,
 }
@@ -159,7 +159,7 @@ fn via_gpu(
             Ok(c) => {
                 info!(
                     renderer = c.renderer.as_str(),
-                    "drm capture: the GPU reads the scanout (FR-107 P3; ROOMLERD_DRM_GPU=0 hands it back to the CPU)"
+                    "drm capture: the GPU reads the scanout (FR-107 P3; MESHHARBORD_DRM_GPU=0 hands it back to the CPU)"
                 );
                 GpuState::Ready(Box::new(c))
             }
@@ -292,7 +292,7 @@ fn distinct_handles(buffers: [Option<drm::buffer::Handle>; 4]) -> Vec<drm::buffe
 /// would silently undo FR-29: the X11 path tracks damage and idles at ~2.8 %
 /// of a core, whereas DRM has no damage information at all and, on X11, would
 /// grab every frame forever (FR-93 P3d's idle skip is Wayland-only). So a host
-/// opts IN (`ROOMLERD_DRM_CAPTURE=1`) — which is what a Wayland or headless
+/// opts IN (`MESHHARBORD_DRM_CAPTURE=1`) — which is what a Wayland or headless
 /// host wants — and everything else keeps the existing cascade byte-for-byte.
 pub fn env_enabled() -> bool {
     tunnel_core::env::flag("DRM_CAPTURE", false)
@@ -408,21 +408,21 @@ fn primary_plane(
     drm_cursor::pick_primary(&bound)
 }
 
-/// FR-93 P3c — kill switch `ROOMLERD_DRM_CURSOR=0`: no cursor-plane read, and
+/// FR-93 P3c — kill switch `MESHHARBORD_DRM_CURSOR=0`: no cursor-plane read, and
 /// none of the client caps it needs. The viewer then shows its own badge for
 /// the pointer, as before.
 fn cursor_enabled() -> bool {
     tunnel_core::env::flag("DRM_CURSOR", true)
 }
 
-/// FR-93 P3d — kill switch `ROOMLERD_DRM_IDLE_SKIP=0`: every frame is read,
+/// FR-93 P3d — kill switch `MESHHARBORD_DRM_IDLE_SKIP=0`: every frame is read,
 /// converted and encoded again, unchanged or not, as before P3d. The caller
 /// also needs the seat to show a Wayland session (see `drm_idle.rs`).
 pub fn idle_skip_enabled() -> bool {
     tunnel_core::env::flag("DRM_IDLE_SKIP", true)
 }
 
-/// FR-93 P3e — kill switch `ROOMLERD_DRM_WAKE_WAIT=0`: a display the
+/// FR-93 P3e — kill switch `MESHHARBORD_DRM_WAKE_WAIT=0`: a display the
 /// compositor switched off reads as it did before P3e. A running session
 /// keeps its last frame alive with no reason given, and an open during the
 /// blank falls through the cascade.
@@ -430,7 +430,7 @@ pub fn wake_wait_enabled() -> bool {
     tunnel_core::env::flag("DRM_WAKE_WAIT", true)
 }
 
-/// FR-107 P1 — kill switch `ROOMLERD_DRM_FOLLOW_CAP=0`: the pump's encode box
+/// FR-107 P1 — kill switch `MESHHARBORD_DRM_FOLLOW_CAP=0`: the pump's encode box
 /// no longer picks the half-size read, and a 4K scanout is read at full size
 /// whenever the policy says `Never`, as before.
 fn follow_cap_enabled() -> bool {
@@ -734,14 +734,14 @@ where
     });
 }
 
-/// FR-107 P2 — how many threads repack one frame: `ROOMLERD_DRM_THREADS`
+/// FR-107 P2 — how many threads repack one frame: `MESHHARBORD_DRM_THREADS`
 /// (`1` is the single pass every release before it made), else 4. Never more
 /// than the cores there are, nor more than one per 64 rows.
 fn band_threads(rows: usize) -> usize {
     static THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     let want = *THREADS.get_or_init(|| {
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-        std::env::var("ROOMLERD_DRM_THREADS")
+        std::env::var("MESHHARBORD_DRM_THREADS")
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
             .unwrap_or(4)
@@ -1005,7 +1005,7 @@ fn worker(
         if cursor.is_some() {
             "read for the viewer"
         } else {
-            "not read (ROOMLERD_DRM_CURSOR=0, or the driver refused DRM_CLIENT_CAP_ATOMIC)"
+            "not read (MESHHARBORD_DRM_CURSOR=0, or the driver refused DRM_CLIENT_CAP_ATOMIC)"
         }
     );
 
@@ -1071,15 +1071,15 @@ fn worker(
         "drm capture: {}",
         match idle_skip {
             drm_idle::IdleSkip::Flips => {
-                "a frame nothing changed in is skipped (FR-93 P3d; ROOMLERD_DRM_IDLE_SKIP=0 reads every frame)"
+                "a frame nothing changed in is skipped (FR-93 P3d; MESHHARBORD_DRM_IDLE_SKIP=0 reads every frame)"
             }
             drm_idle::IdleSkip::InPlace => {
                 "a frame nothing changed in is skipped by dense rows, an X server draws in place \
-                 (FR-113 P1; ROOMLERD_DRM_IDLE_SKIP=0 or x11_auto_system = false reads every frame)"
+                 (FR-113 P1; MESHHARBORD_DRM_IDLE_SKIP=0 or x11_auto_system = false reads every frame)"
             }
             drm_idle::IdleSkip::Off => {
                 "every frame is read (no Wayland seat and no X11 one with x11_auto_system on, or \
-                 ROOMLERD_DRM_IDLE_SKIP=0)"
+                 MESHHARBORD_DRM_IDLE_SKIP=0)"
             }
         }
     );

@@ -269,7 +269,7 @@ stateDiagram-v2
   - ⚠️ **Not a wall against `roomler exec`** (§9 row 43, 0.4.129). On Windows exec runs in the worker
     that holds the agent socket (`RunAs::Daemon` is the worker's identity), and that worker lives in
     the console session: the signed-in user's elevated token on an attended install, SYSTEM in that
-    session in SystemContext mode (`ROOMLERD_ENABLE_SYSTEM_SWAP`). A controller connecting changes
+    session in SystemContext mode (`MESHHARBORD_ENABLE_SYSTEM_SWAP`). A controller connecting changes
     neither. So
     `roomler exec <win> -- roomler keep-busy on` passes the session test and is named "the person at
     this computer". On Unix exec arrives as root and is refused, but root can `sudo -u` the person

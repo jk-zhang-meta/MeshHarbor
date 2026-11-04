@@ -67,7 +67,7 @@ mid-2026 — re-quote at signup.
    TURN_SECRET_FILE=~/coturn.auth python3 scripts/relay-pop/healthcheck.py \
      us-east=coturn-us-east.roomler.ai:3478,derp-us-east.roomler.ai
    ```
-6. **Register the region** — append to `ROOMLER__RELAY__REGIONS` in the prod
+6. **Register the region** — append to `MESHHARBOR__RELAY__REGIONS` in the prod
    configmap (deploy repo) and redeploy the web:
    ```json
    {"id":"us-east",
@@ -81,8 +81,8 @@ mid-2026 — re-quote at signup.
    other :443 caps stay on — `udp_443` rides the DNAT and `tls_443_tcp` rides
    the nginx SNI passthrough to coturn's TLS listener; both field-verified
    allocate-level on all four phase-1 PoPs (2026-08-17).
-   Requires `ROOMLER__RELAY__REGIONS_ENABLED=true` and (for DERP)
-   `ROOMLER__RELAY__DERP_TICKET_PRIVATE_KEY`
+   Requires `MESHHARBOR__RELAY__REGIONS_ENABLED=true` and (for DERP)
+   `MESHHARBOR__RELAY__DERP_TICKET_PRIVATE_KEY`
    (`openssl genpkey -algorithm ed25519 -outform DER | base64 -w0`).
 7. **Watch**: `relay_region_pick_total` in `/api/cluster/status`,
    `GET /api/relay/regions`, `agents.relay_home` in Mongo / the Devices UI.
@@ -108,5 +108,5 @@ coturn's own :443 DNAT under the same watch:
 A misbehaving region: set its spec `"enabled": false` (or drop it) and
 redeploy — grants fall back to the default region within the 10-min sticky
 window; agents keep their probe tables and simply re-home on the next push.
-Global off-switch: `ROOMLER__RELAY__REGIONS_ENABLED=false` restores the
+Global off-switch: `MESHHARBOR__RELAY__REGIONS_ENABLED=false` restores the
 single-region behaviour byte-for-byte.

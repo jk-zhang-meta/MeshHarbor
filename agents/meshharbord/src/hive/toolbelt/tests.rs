@@ -193,7 +193,7 @@ async fn the_server_answers_the_handshake_claude_code_sends() {
         .await;
     let init = c.recv().await;
     assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
-    assert_eq!(init["result"]["serverInfo"]["name"], "roomler");
+    assert_eq!(init["result"]["serverInfo"]["name"], "meshharbor");
     assert!(init["result"]["capabilities"]["tools"].is_object());
 
     c.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
@@ -792,7 +792,7 @@ fn tool_call(id: u64, name: &str, arguments: Value) -> Value {
 
 /// P3-4b — the vault tools are offered where the device takes leases, and
 /// nowhere else: elsewhere they are unknown tools. Their settings names are
-/// the names offered, under the `roomler` server.
+/// the names offered, under the `meshharbor` server.
 #[tokio::test]
 async fn the_vault_tools_are_offered_only_where_the_device_takes_leases() {
     let without = belt(quick());
@@ -856,7 +856,7 @@ async fn the_vault_tools_are_offered_only_where_the_device_takes_leases() {
     );
     let named: Vec<String> = VAULT_TOOL_NAMES
         .iter()
-        .map(|n| format!("mcp__roomler__{n}"))
+        .map(|n| format!("mcp__meshharbor__{n}"))
         .collect();
     assert_eq!(
         named, VAULT_TOOLS,
@@ -1126,9 +1126,9 @@ async fn vault_exec_is_offered_and_never_allowed_unasked() {
         json!(["handle", "engine", "upstream"])
     );
     for tool in [
-        "mcp__roomler__vault_exec",
-        "mcp__roomler__vault_render",
-        "mcp__roomler__vault_connect",
+        "mcp__meshharbor__vault_exec",
+        "mcp__meshharbor__vault_render",
+        "mcp__meshharbor__vault_connect",
     ] {
         assert!(
             !VAULT_TOOLS.contains(&tool),
@@ -1139,7 +1139,7 @@ async fn vault_exec_is_offered_and_never_allowed_unasked() {
     // can allow one past the person.
     let uses: Vec<String> = VAULT_USE_NAMES
         .iter()
-        .map(|n| format!("mcp__roomler__{n}"))
+        .map(|n| format!("mcp__meshharbor__{n}"))
         .collect();
     assert_eq!(
         uses, VAULT_USE_TOOLS,
@@ -1460,7 +1460,7 @@ async fn vault_request_asks_a_lease_ahead_and_answers_no_value() {
     );
     let allowed: Vec<String> = VAULT_AHEAD_NAMES
         .iter()
-        .map(|n| format!("mcp__roomler__{n}"))
+        .map(|n| format!("mcp__meshharbor__{n}"))
         .collect();
     assert_eq!(allowed, VAULT_AHEAD_TOOLS, "allowed is what is offered");
     assert!(!VAULT_USE_TOOLS.contains(&VAULT_AHEAD_TOOLS[0]));
@@ -3082,7 +3082,7 @@ async fn a_persons_endpoint_is_held_by_its_id_until_its_connection_lets_go() {
     let vault = person_vault(&token, &ca);
     let leases = FakePersonLeases::over(&vault);
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("roomler-hive");
+    let root = dir.path().join("meshharbor-hive");
     #[cfg(unix)]
     let asker = {
         // SAFETY: geteuid and getegid read our own credentials.
@@ -3197,7 +3197,7 @@ async fn vault_connect_serves_a_kubernetes_api_server() {
         "{kubeconfig}"
     );
     assert!(
-        kubeconfig.contains("current-context: roomler-vault\n")
+        kubeconfig.contains("current-context: meshharbor-vault\n")
             && kubeconfig.contains("  user: {}\n"),
         "one context, a user with no credential: {kubeconfig}"
     );
@@ -3455,7 +3455,7 @@ async fn vault_connect_serves_an_ssh_agent() {
     );
 }
 
-/// P3-5f-3 — on Windows the agent is a named pipe, `\\.\pipe\roomler-vault-*`,
+/// P3-5f-3 — on Windows the agent is a named pipe, `\\.\pipe\meshharbor-vault-*`,
 /// as Win32-OpenSSH dials `SSH_AUTH_SOCK`: the same answer, the same agent,
 /// and the pipe gone, with every connection it held, when a lease goes.
 #[cfg(all(feature = "vault", windows))]
@@ -3477,7 +3477,7 @@ async fn vault_connect_serves_an_ssh_agent_on_a_named_pipe() {
     );
     let answer = ssh_answer(&b, &vault, sid, &pem, &host).await;
     let name = answer["host"].as_str().unwrap().to_string();
-    assert!(name.starts_with(r"\\.\pipe\roomler-vault-"), "{answer}");
+    assert!(name.starts_with(r"\\.\pipe\meshharbor-vault-"), "{answer}");
     let mut s = ClientOptions::new().open(&name).unwrap();
     the_agent_signs_in_as_git_alone(&mut s, &public, &host_pair, &host_key).await;
     // A second connection, while the first holds its instance, finds the
@@ -3924,7 +3924,7 @@ async fn nothing_listens_on(port: u16) -> bool {
 /// P3-7-3c — `net_socks` and `net_forward` are offered where the device's
 /// owner offers its sessions egress and the vault is offered, and nowhere
 /// else: elsewhere they are unknown tools, and the vault is asked nothing.
-/// Their settings names are the names offered, under the `roomler` server.
+/// Their settings names are the names offered, under the `meshharbor` server.
 #[cfg(feature = "vault")]
 #[tokio::test]
 async fn the_net_tools_are_offered_only_where_the_owner_offers_egress() {
@@ -3991,7 +3991,7 @@ async fn the_net_tools_are_offered_only_where_the_owner_offers_egress() {
         json!(["exit", "host", "port"]),
         "{list}"
     );
-    let named: Vec<String> = net.iter().map(|n| format!("mcp__roomler__{n}")).collect();
+    let named: Vec<String> = net.iter().map(|n| format!("mcp__meshharbor__{n}")).collect();
     assert_eq!(
         named, NET_TOOLS,
         "what the settings ask a person about is what is offered"
@@ -4372,7 +4372,7 @@ async fn ssh_run_is_offered_only_where_the_owner_offers_it() {
     assert_eq!(tool["annotations"]["readOnlyHint"], false, "{tool}");
     assert_eq!(tool["annotations"]["destructiveHint"], true, "{tool}");
     assert_eq!(
-        [format!("mcp__roomler__{}", listed.last().unwrap())],
+        [format!("mcp__meshharbor__{}", listed.last().unwrap())],
         SSH_TOOLS,
         "what the settings ask a person about is what is offered"
     );
@@ -4394,7 +4394,7 @@ async fn ssh_run_runs_the_one_command_under_the_vaults_ticket() {
     let (mut b, vault, ssh, session) = ssh_belt(FakeVault::default(), FakeSsh::default());
     let mut c = Client::connect(&b).await;
     let target = ObjectId::new();
-    let command = "Get-Service roomler* | Format-Table -Auto";
+    let command = "Get-Service meshharbor* | Format-Table -Auto";
     let args = json!({"device": target.to_hex(), "command": command, "timeout_s": 90});
     let answer = net_answer(&mut c, 2, "ssh_run", args).await.unwrap();
     assert_eq!(
@@ -4549,7 +4549,7 @@ async fn the_relay_pipes_both_ways_and_ends_with_the_harness() {
     #[cfg(unix)]
     let nowhere = Path::new("/nonexistent/toolbelt.sock");
     #[cfg(windows)]
-    let nowhere = Path::new(r"\\.\pipe\roomler-hive-nowhere");
+    let nowhere = Path::new(r"\\.\pipe\meshharbor-hive-nowhere");
     let gone = relay_io(nowhere, tokio::io::empty(), tokio::io::sink()).await;
     assert!(gone.is_err());
 }

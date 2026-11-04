@@ -475,8 +475,8 @@ fn version_len(s: &[u8], i: usize) -> Option<usize> {
 }
 
 /// An asset's FLAVOUR: its name without the version, so the same artifact
-/// of every release groups together — `roomlerd-0.4.140-x86_64-pc-windows-msvc.msi`
-/// is `meshharbord-x86_64-pc-windows-msvc.msi`, `roomlerd_0.4.140_amd64.deb` is
+/// of every release groups together — `meshharbord-0.4.140-x86_64-pc-windows-msvc.msi`
+/// is `meshharbord-x86_64-pc-windows-msvc.msi`, `meshharbord_0.4.140_amd64.deb` is
 /// `meshharbord_amd64.deb`. The FIRST version token preceded by `-`, `_` or a
 /// `v` after one of them is removed together with that separator; a name
 /// without one is its own flavour.
@@ -520,8 +520,8 @@ pub fn is_product_release(tag: &str) -> bool {
 }
 
 /// The endings of a SIDECAR: a signature or checksum fetched beside the
-/// asset it describes (`roomlerd-0.4.140-x86_64-unknown-linux-gnu.deb.asc`,
-/// `….deb.sha256`), or the release key itself (`roomler-release-pubkey.asc`).
+/// asset it describes (`meshharbord-0.4.140-x86_64-unknown-linux-gnu.deb.asc`,
+/// `….deb.sha256`), or the release key itself (`meshharbor-release-pubkey.asc`).
 pub const SIDECAR_SUFFIXES: [&str; 4] = [".asc", ".sig", ".sha256", ".sha512"];
 
 /// Whether an asset is a sidecar (see [`SIDECAR_SUFFIXES`]). The updater
@@ -830,7 +830,7 @@ pub fn spawn_puller(core: Core) {
     }
     let Some(client) = GithubClient::from_settings(growth) else {
         info!(
-            "growth github puller: no repository configured (ROOMLER__GROWTH__GITHUB_REPO) — nothing is pulled"
+            "growth github puller: no repository configured (MESHHARBOR__GROWTH__GITHUB_REPO) — nothing is pulled"
         );
         return;
     };
@@ -892,23 +892,23 @@ mod tests {
     fn a_flavour_is_the_asset_name_without_its_version() {
         for (name, want) in [
             (
-                "roomlerd-0.4.140-x86_64-pc-windows-msvc.msi",
+                "meshharbord-0.4.140-x86_64-pc-windows-msvc.msi",
                 "meshharbord-x86_64-pc-windows-msvc.msi",
             ),
             (
-                "roomlerd-0.4.140-x86_64-pc-windows-msvc.msi.asc",
+                "meshharbord-0.4.140-x86_64-pc-windows-msvc.msi.asc",
                 "meshharbord-x86_64-pc-windows-msvc.msi.asc",
             ),
-            ("roomlerd_0.4.140_amd64.deb", "meshharbord_amd64.deb"),
+            ("meshharbord_0.4.140_amd64.deb", "meshharbord_amd64.deb"),
             (
                 "meshharbor-setup-0.4.139-universal-apple-darwin.tar.gz",
                 "meshharbor-setup-universal-apple-darwin.tar.gz",
             ),
             (
-                "roomlerd-0.3.0-rc.480-x86_64-unknown-linux-gnu.deb",
+                "meshharbord-0.3.0-rc.480-x86_64-unknown-linux-gnu.deb",
                 "meshharbord-x86_64-unknown-linux-gnu.deb",
             ),
-            ("roomler-v0.4.7.zip", "roomler.zip"),
+            ("meshharbor-v0.4.7.zip", "meshharbor.zip"),
             ("SHA256SUMS", "SHA256SUMS"),
             ("ffmpeg-n7.1-win64.zip", "ffmpeg-n7.1-win64.zip"),
         ] {
@@ -935,23 +935,23 @@ mod tests {
                 tag_name: "agent-v0.4.140".into(),
                 draft: false,
                 assets: vec![
-                    asset("roomlerd-0.4.140-x86_64-pc-windows-msvc.msi", 30),
+                    asset("meshharbord-0.4.140-x86_64-pc-windows-msvc.msi", 30),
                     // Sidecars: fetched beside the package, never a download.
-                    asset("roomlerd-0.4.140-x86_64-pc-windows-msvc.msi.asc", 25),
-                    asset("roomlerd-0.4.140-x86_64-pc-windows-msvc.msi.sha256", 4),
-                    asset("roomler-release-pubkey.asc", 3),
-                    asset("roomlerd_0.4.140_amd64.deb", 0),
+                    asset("meshharbord-0.4.140-x86_64-pc-windows-msvc.msi.asc", 25),
+                    asset("meshharbord-0.4.140-x86_64-pc-windows-msvc.msi.sha256", 4),
+                    asset("meshharbor-release-pubkey.asc", 3),
+                    asset("meshharbord_0.4.140_amd64.deb", 0),
                 ],
             },
             Release {
                 tag_name: "agent-v0.4.139".into(),
                 draft: false,
-                assets: vec![asset("roomlerd-0.4.139-x86_64-pc-windows-msvc.msi", 70)],
+                assets: vec![asset("meshharbord-0.4.139-x86_64-pc-windows-msvc.msi", 70)],
             },
             Release {
                 tag_name: "agent-v0.4.141".into(),
                 draft: true,
-                assets: vec![asset("roomlerd-0.4.141-x86_64-pc-windows-msvc.msi", 999)],
+                assets: vec![asset("meshharbord-0.4.141-x86_64-pc-windows-msvc.msi", 999)],
             },
             // A helper: a vendored build our CI downloads.
             Release {
@@ -1016,9 +1016,9 @@ mod tests {
             "no sidecar flavour"
         );
         assert!(is_sidecar(
-            "roomlerd-0.4.140-x86_64-unknown-linux-gnu.deb.ASC"
+            "meshharbord-0.4.140-x86_64-unknown-linux-gnu.deb.ASC"
         ));
-        assert!(!is_sidecar("roomlerd-0.4.140-x86_64-unknown-linux-gnu.deb"));
+        assert!(!is_sidecar("meshharbord-0.4.140-x86_64-unknown-linux-gnu.deb"));
         assert_eq!(
             value(
                 &rows,

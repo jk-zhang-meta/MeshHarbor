@@ -11,7 +11,7 @@
 //!   across upgrades (P9, field-hit 2026-07-28: a fresh install had no rule,
 //!   so unsolicited WG dials — LAN direct, srflx punch — died at the Public
 //!   profile's default-deny).
-//! * `roomlerd`'s SCM service host (`win_service`), LocalSystem, which
+//! * `meshharbord`'s SCM service host (`win_service`), LocalSystem, which
 //!   installs the same rule BEFORE it spawns the worker the first time.
 //!
 //! Why the host must do it (#1698, measured on a 0.4.104 attended guest): on
@@ -37,12 +37,12 @@ use std::path::Path;
 pub mod install;
 
 /// Display-name prefix of every binary's rule; the exe stem follows in
-/// parentheses so `roomlerd` and the `roomler` tunnel client never fight over
+/// parentheses so `meshharbord` and the `meshharbor` tunnel client never fight over
 /// one rule. The measured guest and the field notes both name this spelling.
-pub const RULE_NAME_PREFIX: &str = "Roomler UDP-In";
+pub const RULE_NAME_PREFIX: &str = "MeshHarbor UDP-In";
 
 /// P9 — is the Windows net-hygiene pass disabled? Only an explicit
-/// `0`/`false`/`no`/`off` disables (`ROOMLERD_TUN_HYGIENE`); unset / anything
+/// `0`/`false`/`no`/`off` disables (`MESHHARBORD_TUN_HYGIENE`); unset / anything
 /// else keeps the default ON. Pure so the parse is testable. Honoured by the
 /// overlay's per-bring-up pass AND by the service host's pre-spawn prep — one
 /// kill switch for both halves of the same rule.
@@ -58,7 +58,7 @@ pub fn hygiene_disabled(v: Option<&str>) -> bool {
 /// invocations from here, so the rule cannot drift between them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpInAllowRule {
-    /// `Roomler UDP-In (<exe stem>)`.
+    /// `MeshHarbor UDP-In (<exe stem>)`.
     pub name: String,
     /// The full path of the binary, as `netsh … program=` records it.
     pub program: String,
@@ -66,10 +66,10 @@ pub struct UdpInAllowRule {
 
 impl UdpInAllowRule {
     /// The rule for `exe`. A path with no stem (never the case for a real
-    /// binary) falls back to the `roomler` stem rather than an empty one.
+    /// binary) falls back to the `meshharbor` stem rather than an empty one.
     pub fn for_exe(exe: &Path) -> Self {
         let text = exe.to_string_lossy();
-        let stem = windows_file_stem(&text).unwrap_or("roomler");
+        let stem = windows_file_stem(&text).unwrap_or("meshharbor");
         Self {
             name: format!("{RULE_NAME_PREFIX} ({stem})"),
             program: text.into_owned(),
@@ -310,13 +310,13 @@ pub fn is_prompt_written_id(id: &str) -> bool {
 ///
 /// * The id condition is what keeps this from being tampering. A Block an
 ///   administrator placed deliberately — `netsh … add rule name="Block
-///   roomler" dir=in action=block program=<our exe>`, `wf.msc`,
+///   meshharbor" dir=in action=block program=<our exe>`, `wf.msc`,
 ///   `New-NetFirewallRule` — has a `{GUID}` or the caller's own id and is
 ///   left exactly where it is, at every start. The device owner's local
 ///   setting is a floor (compare `consent::strictest_of`); only the prompt's
 ///   own leftovers are ours to clear.
 /// * Display name is deliberately NOT part of it. A prompt-written rule is
-///   named after the exe's FileDescription ("Roomler Daemon"), and any other
+///   named after the exe's FileDescription ("MeshHarbor Daemon"), and any other
 ///   program can carry that name.
 /// * Allow rules are never selected, whatever their id, name or program —
 ///   including the prompt's own Allow pair when someone clicked Allow.
@@ -520,7 +520,7 @@ mod win {
             .creation_flags(CREATE_NO_WINDOW);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::Builder::new()
-            .name("roomler-winfw".into())
+            .name("meshharbor-winfw".into())
             .spawn(move || {
                 let _ = tx.send(cmd.output());
             })
@@ -761,7 +761,7 @@ mod tests {
         };
         let id = format!("{tag} Query User{{{guid}}}C:\\program files\\meshharbor\\meshharbord.exe");
         let value = format!(
-            "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol={proto}|Profile=Public|App=C:\\program files\\meshharbor\\meshharbord.exe|Name=Roomler Daemon|Desc=Roomler Daemon|Defer=User|"
+            "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol={proto}|Profile=Public|App=C:\\program files\\meshharbor\\meshharbord.exe|Name=MeshHarbor Daemon|Desc=MeshHarbor Daemon|Defer=User|"
         );
         parse_stored_rule(&id, &value).expect("fixture parses")
     }
@@ -772,7 +772,7 @@ mod tests {
         parse_stored_rule(
             "{F5EF881B-E1FF-4064-8704-30B2B9E8FDC4}",
             &format!(
-                "v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|App={OUR_EXE}|Name=Roomler UDP-In (roomlerd)|Desc=|EmbedCtxt=|"
+                "v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|App={OUR_EXE}|Name=MeshHarbor UDP-In (meshharbord)|Desc=|EmbedCtxt=|"
             ),
         )
         .expect("fixture parses")
@@ -787,25 +787,25 @@ mod tests {
     #[test]
     fn rule_name_carries_the_exe_stem_and_the_program_is_the_full_path() {
         let r = UdpInAllowRule::for_exe(Path::new(OUR_EXE));
-        assert_eq!(r.name, "Roomler UDP-In (roomlerd)");
+        assert_eq!(r.name, "MeshHarbor UDP-In (meshharbord)");
         assert_eq!(r.program, OUR_EXE);
         // The tunnel client gets its own rule — the two never fight.
         let c = UdpInAllowRule::for_exe(Path::new(r"C:\Tools\meshharbor.exe"));
-        assert_eq!(c.name, "Roomler UDP-In (roomler)");
+        assert_eq!(c.name, "MeshHarbor UDP-In (meshharbor)");
     }
 
     /// The rule's stem comes from the text of the path, so the Ubuntu CI lane
-    /// — where `Path::file_stem` would read `C:\…\roomlerd` as one component
+    /// — where `Path::file_stem` would read `C:\…\meshharbord` as one component
     /// — names the rule exactly as a Windows host does. (The first CI run of
     /// #1712 caught precisely that.)
     #[test]
     fn rule_stem_is_derived_from_the_text_so_a_windows_path_reads_the_same_everywhere() {
         assert_eq!(
             windows_file_stem(r"C:\Program Files\MeshHarbor\meshharbord.exe"),
-            Some("roomlerd")
+            Some("meshharbord")
         );
-        assert_eq!(windows_file_stem("C:/Tools/meshharbor.exe"), Some("roomler"));
-        assert_eq!(windows_file_stem("meshharbord.exe"), Some("roomlerd"));
+        assert_eq!(windows_file_stem("C:/Tools/meshharbor.exe"), Some("meshharbor"));
+        assert_eq!(windows_file_stem("meshharbord.exe"), Some("meshharbord"));
         assert_eq!(windows_file_stem(r"C:\x\noext"), Some("noext"));
         assert_eq!(windows_file_stem(r"C:\x\.hidden"), Some(".hidden"));
         assert_eq!(windows_file_stem(r"C:\x\a.b.exe"), Some("a.b"));
@@ -813,7 +813,7 @@ mod tests {
         assert_eq!(windows_file_stem(""), None);
         assert_eq!(
             UdpInAllowRule::for_exe(Path::new(r"C:\x\")).name,
-            "Roomler UDP-In (roomler)"
+            "MeshHarbor UDP-In (meshharbor)"
         );
     }
 
@@ -830,7 +830,7 @@ mod tests {
                 "firewall",
                 "delete",
                 "rule",
-                "name=Roomler UDP-In (roomlerd)"
+                "name=MeshHarbor UDP-In (meshharbord)"
             ]
         );
         assert_eq!(
@@ -840,7 +840,7 @@ mod tests {
                 "firewall",
                 "add",
                 "rule",
-                "name=Roomler UDP-In (roomlerd)",
+                "name=MeshHarbor UDP-In (meshharbord)",
                 "dir=in",
                 "action=allow",
                 "protocol=udp",
@@ -855,7 +855,7 @@ mod tests {
     fn store_parser_reads_a_prompt_written_block_rule() {
         let r = prompt_block(17);
         assert!(r.id.starts_with("UDP Query User{"));
-        assert_eq!(r.display_name.as_deref(), Some("Roomler Daemon"));
+        assert_eq!(r.display_name.as_deref(), Some("MeshHarbor Daemon"));
         assert_eq!(r.direction, Some(Direction::In));
         assert_eq!(r.action, Some(Action::Block));
         assert_eq!(r.protocol, Some(17));
@@ -912,14 +912,14 @@ mod tests {
             r"  C:\Program Files\MeshHarbor\meshharbord.exe  ",
             r"C:/Program Files/MeshHarbor/meshharbord.exe",
             r"\\?\C:\Program Files\MeshHarbor\meshharbord.exe",
-            r"%ProgramFiles%\Roomler\meshharbord.exe",
-            r"%PROGRAMFILES%\Roomler\meshharbord.exe",
+            r"%ProgramFiles%\MeshHarbor\meshharbord.exe",
+            r"%PROGRAMFILES%\MeshHarbor\meshharbord.exe",
         ] {
             assert_eq!(normalize_program_path_with(raw, lookup), want, "{raw:?}");
         }
         // An unknown %VAR% is left alone (and therefore never equal to ours).
         assert_ne!(
-            normalize_program_path_with(r"%NoSuchVar%\Roomler\meshharbord.exe", lookup),
+            normalize_program_path_with(r"%NoSuchVar%\MeshHarbor\meshharbord.exe", lookup),
             want
         );
         // A different directory is a different program, whatever the file name.
@@ -944,7 +944,7 @@ mod tests {
         }
         for id in [
             "{8C1F3A5B-2D4E-4F60-9A7B-1C2D3E4F5A6B}", // netsh / wf.msc
-            "Block roomler",                          // New-NetFirewallRule -Name
+            "Block meshharbor",                          // New-NetFirewallRule -Name
             "tcp query user{1}x",                     // wrong case
             "TCP Query User 1",                       // no brace
             " TCP Query User{1}",                     // not a prefix
@@ -963,12 +963,12 @@ mod tests {
     fn cleanup_selects_only_prompt_written_inbound_blocks_for_our_exact_path() {
         let other_exe_same_name = parse_stored_rule(
             "TCP Query User{1}C:\\users\\x\\downloads\\meshharbord.exe",
-            "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=6|App=C:\\users\\x\\downloads\\meshharbord.exe|Name=Roomler Daemon|",
+            "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=6|App=C:\\users\\x\\downloads\\meshharbord.exe|Name=MeshHarbor Daemon|",
         )
         .unwrap();
         let other_program_our_display_name = parse_stored_rule(
             "{2}",
-            "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=17|App=C:\\other\\thing.exe|Name=Roomler Daemon|",
+            "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=17|App=C:\\other\\thing.exe|Name=MeshHarbor Daemon|",
         )
         .unwrap();
         let outbound_block_ours = parse_stored_rule(
@@ -978,7 +978,7 @@ mod tests {
         .unwrap();
         let block_without_program = parse_stored_rule(
             "UDP Query User{4}",
-            "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=17|LPort=5000|Name=Roomler Daemon|",
+            "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=17|LPort=5000|Name=MeshHarbor Daemon|",
         )
         .unwrap();
         let block_missing_action = parse_stored_rule(
@@ -989,44 +989,44 @@ mod tests {
         // The prompt's own Allow pair — someone clicked Allow. Never touched.
         let prompt_allow_ours_udp = parse_stored_rule(
             "UDP Query User{6}C:\\program files\\meshharbor\\meshharbord.exe",
-            "v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|Profile=Private|App=C:\\program files\\meshharbor\\meshharbord.exe|Name=Roomler Daemon|",
+            "v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|Profile=Private|App=C:\\program files\\meshharbor\\meshharbord.exe|Name=MeshHarbor Daemon|",
         )
         .unwrap();
         let prompt_allow_ours_tcp = parse_stored_rule(
             "TCP Query User{6}C:\\program files\\meshharbor\\meshharbord.exe",
-            "v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=6|Profile=Private|App=C:\\program files\\meshharbor\\meshharbord.exe|Name=Roomler Daemon|",
+            "v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=6|Profile=Private|App=C:\\program files\\meshharbor\\meshharbord.exe|Name=MeshHarbor Daemon|",
         )
         .unwrap();
         // A prompt-written Block an admin later disabled: still the prompt's.
         let disabled_prompt_block_ours = parse_stored_rule(
             "UDP Query User{7}C:\\program files\\meshharbor\\meshharbord.exe",
-            "v2.33|Action=Block|Active=FALSE|Dir=In|Protocol=17|Profile=Public|App=C:\\program files\\meshharbor\\meshharbord.exe|Name=Roomler Daemon|",
+            "v2.33|Action=Block|Active=FALSE|Dir=In|Protocol=17|Profile=Public|App=C:\\program files\\meshharbor\\meshharbord.exe|Name=MeshHarbor Daemon|",
         )
         .unwrap();
         // Synthetic: a prompt-shaped id whose path uses the %VAR% spelling,
         // to lock normalisation under the full predicate.
         let env_form_prompt_block_ours = parse_stored_rule(
             "TCP Query User{8}C:\\program files\\meshharbor\\meshharbord.exe",
-            "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=6|App=%ProgramFiles%\\Roomler\\meshharbord.exe|Name=Roomler Daemon|",
+            "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=6|App=%ProgramFiles%\\MeshHarbor\\meshharbord.exe|Name=MeshHarbor Daemon|",
         )
         .unwrap();
         // DELIBERATE Blocks for our exact program — an administrator's
         // decision, in every id shape the tools produce. Never selected.
         let deliberate_block_netsh = parse_stored_rule(
             "{8C1F3A5B-2D4E-4F60-9A7B-1C2D3E4F5A6B}",
-            &format!("v2.33|Action=Block|Active=TRUE|Dir=In|App={OUR_EXE}|Name=Block roomler|"),
+            &format!("v2.33|Action=Block|Active=TRUE|Dir=In|App={OUR_EXE}|Name=Block meshharbor|"),
         )
         .unwrap();
         let deliberate_block_powershell = parse_stored_rule(
-            "Block roomler",
+            "Block meshharbor",
             &format!(
-                "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=17|App={OUR_EXE}|Name=Block roomler|Desc=security team|"
+                "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=17|App={OUR_EXE}|Name=Block meshharbor|Desc=security team|"
             ),
         )
         .unwrap();
         let deliberate_block_lowercase_lookalike = parse_stored_rule(
             "udp query user{9}c:\\program files\\meshharbor\\meshharbord.exe",
-            &format!("v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=17|App={OUR_EXE}|Name=Roomler Daemon|"),
+            &format!("v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=17|App={OUR_EXE}|Name=MeshHarbor Daemon|"),
         )
         .unwrap();
 
@@ -1080,18 +1080,18 @@ mod tests {
         let store = [
             parse_stored_rule(
                 "TCP Query User{C7351DFF-C214-482C-83AB-2C48537B62E8}C:\\program files\\meshharbor\\meshharbord.exe",
-                "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=6|Profile=Public|App=C:\\program files\\meshharbor\\meshharbord.exe|Name=Roomler Daemon|Desc=Roomler Daemon|Defer=User|",
+                "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=6|Profile=Public|App=C:\\program files\\meshharbor\\meshharbord.exe|Name=MeshHarbor Daemon|Desc=MeshHarbor Daemon|Defer=User|",
             )
             .unwrap(),
             parse_stored_rule(
                 "UDP Query User{9A4DA9F2-F9BF-4137-913A-0165EF107A8F}C:\\program files\\meshharbor\\meshharbord.exe",
-                "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=17|Profile=Public|App=C:\\program files\\meshharbor\\meshharbord.exe|Name=Roomler Daemon|Desc=Roomler Daemon|Defer=User|",
+                "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol=17|Profile=Public|App=C:\\program files\\meshharbor\\meshharbord.exe|Name=MeshHarbor Daemon|Desc=MeshHarbor Daemon|Defer=User|",
             )
             .unwrap(),
             parse_stored_rule(
                 "{F5EF881B-E1FF-4064-8704-30B2B9E8FDC4}",
                 &format!(
-                    "v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|App={OUR_EXE}|Name=Roomler UDP-In (roomlerd)|"
+                    "v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|App={OUR_EXE}|Name=MeshHarbor UDP-In (meshharbord)|"
                 ),
             )
             .unwrap(),
@@ -1162,7 +1162,7 @@ mod tests {
         let all_profiles = parse_stored_rule(
             "{a}",
             &format!(
-                "v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|Profile=Domain|Profile=Private|Profile=Public|App={OUR_EXE}|Name=Roomler UDP-In (roomlerd)|"
+                "v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|Profile=Domain|Profile=Private|Profile=Public|App={OUR_EXE}|Name=MeshHarbor UDP-In (meshharbord)|"
             ),
         )
         .unwrap();
@@ -1173,28 +1173,28 @@ mod tests {
         // Stale program path (a moved install) → heal.
         let stale = parse_stored_rule(
             "{b}",
-            "v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|App=D:\\old\\meshharbord.exe|Name=Roomler UDP-In (roomlerd)|",
+            "v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|App=D:\\old\\meshharbord.exe|Name=MeshHarbor UDP-In (meshharbord)|",
         )
         .unwrap();
         assert!(!ok(&[stale]));
         // Disabled → heal.
         let disabled = parse_stored_rule(
             "{c}",
-            &format!("v2.33|Action=Allow|Active=FALSE|Dir=In|Protocol=17|App={OUR_EXE}|Name=Roomler UDP-In (roomlerd)|"),
+            &format!("v2.33|Action=Allow|Active=FALSE|Dir=In|Protocol=17|App={OUR_EXE}|Name=MeshHarbor UDP-In (meshharbord)|"),
         )
         .unwrap();
         assert!(!ok(&[disabled]));
         // Restricted to one profile → heal.
         let one_profile = parse_stored_rule(
             "{d}",
-            &format!("v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|Profile=Private|App={OUR_EXE}|Name=Roomler UDP-In (roomlerd)|"),
+            &format!("v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|Profile=Private|App={OUR_EXE}|Name=MeshHarbor UDP-In (meshharbord)|"),
         )
         .unwrap();
         assert!(!ok(&[one_profile]));
         // An extra clause someone edited in (a port, an address) → heal.
         let narrowed = parse_stored_rule(
             "{e}",
-            &format!("v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|LPort=41641|App={OUR_EXE}|Name=Roomler UDP-In (roomlerd)|"),
+            &format!("v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=17|LPort=41641|App={OUR_EXE}|Name=MeshHarbor UDP-In (meshharbord)|"),
         )
         .unwrap();
         assert!(!ok(&[narrowed]));
@@ -1203,7 +1203,7 @@ mod tests {
         // Same display name, wrong action/protocol → heal.
         let tcp = parse_stored_rule(
             "{f}",
-            &format!("v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=6|App={OUR_EXE}|Name=Roomler UDP-In (roomlerd)|"),
+            &format!("v2.33|Action=Allow|Active=TRUE|Dir=In|Protocol=6|App={OUR_EXE}|Name=MeshHarbor UDP-In (meshharbord)|"),
         )
         .unwrap();
         assert!(!ok(&[tcp]));

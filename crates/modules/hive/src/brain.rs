@@ -322,7 +322,7 @@ pub fn render_claude_md(
     if !org.is_empty() {
         out.push_str("# Organization memory\n\n");
         out.push_str(&format!(
-            "Kept by this organization's administrators in Roomler for every agent session \
+            "Kept by this organization's administrators in MeshHarbor for every agent session \
              (brain revision {rev}).\n\n"
         ));
         out.push_str(&bullets(org));
@@ -334,7 +334,7 @@ pub fn render_claude_md(
         let name = plain_name(starter_name);
         out.push_str(&format!("# Memory kept by {name}\n\n"));
         out.push_str(&format!(
-            "Kept in Roomler by {name}, who started this session, for the sessions they start.\n\n"
+            "Kept in MeshHarbor by {name}, who started this session, for the sessions they start.\n\n"
         ));
         out.push_str(&bullets(starter));
     }
@@ -349,7 +349,7 @@ pub fn render_memory_md(device: &[BrainFact], device_name: &str) -> Option<Strin
     }
     let name = plain_name(device_name);
     Some(format!(
-        "# Device memory: {name}\n\nKept in Roomler about this device, for the sessions that \
+        "# Device memory: {name}\n\nKept in MeshHarbor about this device, for the sessions that \
          run on it.\n\n{}",
         bullets(device)
     ))

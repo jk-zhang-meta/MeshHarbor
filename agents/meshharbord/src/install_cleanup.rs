@@ -3,10 +3,10 @@
 // RETIRED-NAME-ANCHOR-BEGIN
 // This whole module EXISTS to clean up pre-rename installs. Every retired
 // name in it is something it must still recognise on a host that has one: the
-// legacy SCM service `RoomlerAgentService`, the legacy Scheduled Task
-// `RoomlerAgent`, the pre-P4b `roomler-agent` install folders, the
-// `roomler-agent` app segment, the inert `meshharbor-agent.exe` alias and the
-// `roomler_agent_exe` MSI FileKey.
+// legacy SCM service `MeshHarborAgentService`, the legacy Scheduled Task
+// `MeshHarborAgent`, the pre-P4b `meshharbor-agent` install folders, the
+// `meshharbor-agent` app segment, the inert `meshharbor-agent.exe` alias and the
+// `meshharbor_agent_exe` MSI FileKey.
 // INVARIANT: a retired name here must be one this cleanup has to FIND. If you add
 // one that is not, that is a bug, not a new exemption. docs/fr/FR-21
 //! Cross-flavour install cleanup (Plan rc.18 P2).
@@ -20,19 +20,19 @@
 //!
 //! When installing **perUser**, the helper cleans **perMachine**
 //! leftovers:
-//! - SCM service `RoomlerAgentService` (sc stop + sc delete) — needs
+//! - SCM service `MeshHarborAgentService` (sc stop + sc delete) — needs
 //!   admin; perUser MSI's CA runs Impersonated and inherits the user
 //!   token, so this is best-effort. A non-admin user can't have a
 //!   live perMachine install anyway, so failure here is benign.
-//! - Service log dir `%PROGRAMDATA%\roomler\roomler-agent\service-logs\`
+//! - Service log dir `%PROGRAMDATA%\meshharbor\meshharbor-agent\service-logs\`
 //!   (best-effort; may be ACL-locked).
 //!
 //! When installing **perMachine**, the helper cleans **perUser**
 //! leftovers:
-//! - Scheduled Task `RoomlerAgent` (`schtasks /Delete /TN RoomlerAgent
+//! - Scheduled Task `MeshHarborAgent` (`schtasks /Delete /TN MeshHarborAgent
 //!   /F`). Runs as SYSTEM, can see + delete the user-scope task.
-//! - Active-session user's data dirs at `%LOCALAPPDATA%\roomler\
-//!   roomler-agent\` and `%APPDATA%\roomler\roomler-agent\` (resolved
+//! - Active-session user's data dirs at `%LOCALAPPDATA%\meshharbor\
+//!   meshharbor-agent\` and `%APPDATA%\meshharbor\meshharbor-agent\` (resolved
 //!   via `system_context::user_profile::active_user_profile_root()`
 //!   because SYSTEM context can't see `%LOCALAPPDATA%` of the
 //!   interactive user directly).
@@ -40,8 +40,8 @@
 //!
 //! ## Vacated-dir sweep (P4b)
 //!
-//! P4b renamed the wxs `APPLICATIONFOLDER` from `roomler-agent` to
-//! `Roomler`, so every MajorUpgrade from ≤rc.194 vacates the old
+//! P4b renamed the wxs `APPLICATIONFOLDER` from `meshharbor-agent` to
+//! `MeshHarbor`, so every MajorUpgrade from ≤rc.194 vacates the old
 //! directory: the perMachine wxs has no `RemoveFolder` entries, and
 //! the perUser flavour leaves PendingFileRename residue whenever the
 //! running agent's EXE was locked during `RemoveFiles` (deleting the
@@ -61,7 +61,7 @@
 //! NB the flavour probe is `updater::current_install_flavour()`,
 //! which classifies **this process's own exe path**. The MSI custom
 //! actions shell the freshly-laid TARGET exe
-//! (`FileKey='roomler_agent_exe'`), so in CA context current ==
+//! (`FileKey='meshharbor_agent_exe'`), so in CA context current ==
 //! target ALWAYS and the fast path fires on every CA invocation —
 //! including genuine cross-flavour switches. The cross-flavour arms
 //! below are therefore reachable ONLY via an operator manually
@@ -225,7 +225,7 @@ const INSTALL_DIR_PRODUCT_FILES: &[&str] = &[
 /// P4b: sweep the VACATED pre-rename install directory for the
 /// TARGET flavour's scope (perUser →
 /// `%LOCALAPPDATA%\Programs\meshharbor-agent`, perMachine →
-/// `%ProgramFiles%\roomler-agent`).
+/// `%ProgramFiles%\meshharbor-agent`).
 ///
 /// Policy: conservative. Skip outright when the candidate IS the
 /// directory this process runs from (paranoia guard — impossible
@@ -317,14 +317,14 @@ fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
 #[cfg(target_os = "windows")]
 fn cleanup_per_user_artifacts(report: &mut CleanupReport, dry_run: bool) {
     // 1. Scheduled Task — registered by the perUser MSI's
-    //    `RegisterAutostart` custom action: `RoomlerAgent` pre-P3d,
-    //    `Roomler` since the P3d rename (P4b hygiene: both scrubbed).
+    //    `RegisterAutostart` custom action: `MeshHarborAgent` pre-P3d,
+    //    `MeshHarbor` since the P3d rename (P4b hygiene: both scrubbed).
     //    perMachine MSI's CA runs as SYSTEM so it can see + delete
     //    the task without impersonation. NB reachable via operator
     //    CLI only — the MSI CA always exits through the same-flavour
     //    fast path (module docs) — so this can never race the SAME
     //    install's freshly-registered task.
-    for task_name in ["RoomlerAgent", "Roomler"] {
+    for task_name in ["MeshHarborAgent", "MeshHarbor"] {
         if scheduled_task_exists(task_name) {
             if dry_run {
                 report
@@ -353,8 +353,8 @@ fn cleanup_per_user_artifacts(report: &mut CleanupReport, dry_run: bool) {
     {
         if let Some(profile_root) = crate::system_context::user_profile::active_user_profile_root()
         {
-            // Clean BOTH the legacy `roomler-agent` app segment AND the new
-            // `roomler` segment (the binary rename, `appdirs.rs`). A
+            // Clean BOTH the legacy `meshharbor-agent` app segment AND the new
+            // `meshharbor` segment (the binary rename, `appdirs.rs`). A
             // cross-flavour switch must scrub whichever segment the OTHER
             // flavour landed on, so we enumerate both new-named and
             // legacy-named trees rather than routing through `appdirs`
@@ -363,23 +363,23 @@ fn cleanup_per_user_artifacts(report: &mut CleanupReport, dry_run: bool) {
                 profile_root
                     .join("AppData")
                     .join("Local")
-                    .join("roomler")
-                    .join("roomler-agent"),
+                    .join("meshharbor")
+                    .join("meshharbor-agent"),
                 profile_root
                     .join("AppData")
                     .join("Roaming")
-                    .join("roomler")
-                    .join("roomler-agent"),
+                    .join("meshharbor")
+                    .join("meshharbor-agent"),
                 profile_root
                     .join("AppData")
                     .join("Local")
-                    .join("roomler")
-                    .join("roomler"),
+                    .join("meshharbor")
+                    .join("meshharbor"),
                 profile_root
                     .join("AppData")
                     .join("Roaming")
-                    .join("roomler")
-                    .join("roomler"),
+                    .join("meshharbor")
+                    .join("meshharbor"),
             ];
             for path in candidates {
                 if path.exists() {
@@ -435,7 +435,7 @@ fn cleanup_per_user_artifacts(report: &mut CleanupReport, dry_run: bool) {
 // ──────────────────────────────────────────────────────────────────
 #[cfg(target_os = "windows")]
 fn cleanup_per_machine_artifacts(report: &mut CleanupReport, dry_run: bool) {
-    // 1. SCM service: `RoomlerAgentService` pre-P3d, `Roomler` since
+    // 1. SCM service: `MeshHarborAgentService` pre-P3d, `MeshHarbor` since
     //    the P3d rename (P4b hygiene: both scrubbed). The perUser
     //    MSI's CA runs Impersonated (user token). Service control
     //    requires admin — so this is BEST-EFFORT. If the user isn't
@@ -443,7 +443,7 @@ fn cleanup_per_machine_artifacts(report: &mut CleanupReport, dry_run: bool) {
     //    must manually `sc delete <name>` from elevated PS). NB
     //    reachable via operator CLI only — the MSI CA always exits
     //    through the same-flavour fast path (module docs).
-    for service_name in ["RoomlerAgentService", "Roomler"] {
+    for service_name in ["MeshHarborAgentService", "MeshHarbor"] {
         if service_exists(service_name) {
             if dry_run {
                 report
@@ -464,17 +464,17 @@ fn cleanup_per_machine_artifacts(report: &mut CleanupReport, dry_run: bool) {
         }
     }
 
-    // 2. Service log dir at %PROGRAMDATA%\roomler\<segment>\service-logs\.
+    // 2. Service log dir at %PROGRAMDATA%\meshharbor\<segment>\service-logs\.
     //    ACL'd to SYSTEM at create time; the perUser MSI's user-token CA
     //    may not be able to delete it. Scrub BOTH the legacy
-    //    `roomler-agent` segment AND the new `roomler` segment (binary
+    //    `meshharbor-agent` segment AND the new `meshharbor` segment (binary
     //    rename, `appdirs.rs`) so a cross-flavour switch doesn't leave the
     //    other segment's tree behind. Not routed through `appdirs` (which
     //    resolves to only ONE segment per host).
     if let Ok(program_data) = std::env::var("PROGRAMDATA") {
-        for segment in ["roomler-agent", "roomler"] {
+        for segment in ["meshharbor-agent", "meshharbor"] {
             let path = PathBuf::from(&program_data)
-                .join("roomler")
+                .join("meshharbor")
                 .join(segment)
                 .join("service-logs");
             if path.exists() {
@@ -589,13 +589,13 @@ mod tests {
     #[test]
     fn cleanup_report_summary_includes_counts_and_items() {
         let mut r = CleanupReport::default();
-        r.removed.push("task RoomlerAgent".to_string());
+        r.removed.push("task MeshHarborAgent".to_string());
         r.skipped.push("nothing else".to_string());
         let s = r.summary();
         assert!(s.contains("removed 1"));
         assert!(s.contains("skipped 1"));
         assert!(s.contains("errors 0"));
-        assert!(s.contains("task RoomlerAgent"));
+        assert!(s.contains("task MeshHarborAgent"));
         assert!(s.contains("nothing else"));
     }
 
@@ -623,7 +623,7 @@ mod tests {
         let pu = install_dir_with_name(WindowsInstallFlavour::PerUser, LEGACY_INSTALL_FOLDER_NAME)
             .expect("LOCALAPPDATA set");
         assert!(
-            pu.ends_with(std::path::Path::new("Programs").join("roomler-agent")),
+            pu.ends_with(std::path::Path::new("Programs").join("meshharbor-agent")),
             "unexpected perUser dir {}",
             pu.display()
         );
@@ -633,7 +633,7 @@ mod tests {
         )
         .expect("ProgramFiles set");
         assert!(
-            pm.ends_with("roomler-agent"),
+            pm.ends_with("meshharbor-agent"),
             "unexpected perMachine dir {}",
             pm.display()
         );

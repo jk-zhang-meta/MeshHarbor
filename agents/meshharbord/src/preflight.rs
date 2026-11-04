@@ -336,13 +336,13 @@ mod tests {
         // A fake-IP DNS proxy (Clash/Mihomo-style, 198.18.0.0/15) or a hijacking
         // resolver answers even RFC 6761 `.invalid` names, so the failure this
         // test needs cannot happen there (measured on a dev host: every run).
-        // Probe with a second reserved name first; ROOMLERD_TEST_REQUIRE_DNS
+        // Probe with a second reserved name first; MESHHARBORD_TEST_REQUIRE_DNS
         // turns the skip into a failure where a clean resolver is expected.
         let probe = format!("preflight-probe-{}.invalid:443", std::process::id());
         if tokio::net::lookup_host(probe).await.is_ok() {
-            if std::env::var_os("ROOMLERD_TEST_REQUIRE_DNS").is_some() {
+            if std::env::var_os("MESHHARBORD_TEST_REQUIRE_DNS").is_some() {
                 panic!(
-                    "ROOMLERD_TEST_REQUIRE_DNS is set and this host's resolver answers .invalid names"
+                    "MESHHARBORD_TEST_REQUIRE_DNS is set and this host's resolver answers .invalid names"
                 );
             }
             eprintln!(
@@ -351,7 +351,7 @@ mod tests {
             return;
         }
         // RFC 2606 reserved test TLD — guaranteed not to resolve.
-        let f = check_dns("roomler.invalid".into(), 443).await;
+        let f = check_dns("meshharbor.invalid".into(), 443).await;
         assert!(
             matches!(f, Some(Finding::DnsFailed { .. })),
             "expected DnsFailed, got {f:?}"

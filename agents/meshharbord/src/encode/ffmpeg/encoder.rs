@@ -4,7 +4,7 @@
 //!
 //! rc.72 scope: BGRA→NV12 CPU path + encoder dispatch
 //! (`hevc_nvenc` → `hevc_qsv` → `hevc_amf`). Behind
-//! `ROOMLERD_USE_FFMPEG=1` env var. MF cascade still default.
+//! `MESHHARBORD_USE_FFMPEG=1` env var. MF cascade still default.
 //!
 //! rc.73+: D3D11VA zero-copy (capture's D3D11 texture fed directly to
 //! NVENC / QSV / AMF without CPU readback). Defers Phase 8's critique
@@ -212,7 +212,7 @@ fn ffmpeg_cq() -> u32 {
 /// 1920×1200; 0.07 bpp/s puts our 1920×1200 cap at ~4.8 Mbps, leaving
 /// headroom for genuine motion without the 6-7 Mbps idle-ish bursts
 /// the field saw on the old uncapped 13.8 Mbps target.
-/// Env override `ROOMLERD_FFMPEG_MAXRATE_KBPS` for field tuning.
+/// Env override `MESHHARBORD_FFMPEG_MAXRATE_KBPS` for field tuning.
 ///
 /// `constrained` is THIS session's detected transport (Phase B). Pre-Phase-B
 /// this read the process-wide `transport_is_constrained()` env flag, which
@@ -326,7 +326,7 @@ fn encoder_options(
         // Same reason the libvpx screen path pins VP9E_SET_AQ_MODE=0
         // (libvpx.rs — "AQ mis-fires on desktop and softens text").
         // temporal-aq is not an alternative: it needs rc-lookahead>0 and
-        // we run 0 for latency. `ROOMLERD_NVENC_SPATIAL_AQ=1`
+        // we run 0 for latency. `MESHHARBORD_NVENC_SPATIAL_AQ=1`
         // restores the pre-P7 behaviour for camera-heavy hosts
         // (video-in-a-window content).
         //
@@ -699,7 +699,7 @@ struct RecordingOpen {
 }
 
 /// FR-85 P1b — the recording's quality target: sharper than the live
-/// default (22), because a file has no link to fit. `ROOMLERD_RECORD_CQ`
+/// default (22), because a file has no link to fit. `MESHHARBORD_RECORD_CQ`
 /// overrides; clamped to the same [10, 40] as the live knob.
 fn recording_cq() -> u32 {
     node_env("RECORD_CQ")
@@ -1171,7 +1171,7 @@ impl FfmpegEncoder {
     }
 
     /// P4 — resolve the (gop, low_power) a vp9_qsv open should use from the
-    /// cached probe verdict + the `ROOMLERD_QSV_LOW_POWER` override.
+    /// cached probe verdict + the `MESHHARBORD_QSV_LOW_POWER` override.
     /// Mapping lives in `encode::rate_profile::vp9_qsv_config` (pure,
     /// default-build tested); falls back to the rc.219 containment (GOP 60 +
     /// VDEnc) when unprobed.
@@ -2001,7 +2001,7 @@ impl FfmpegEncoder {
 
     /// P5 — band count for the threaded convert: single-call under 2 MPix
     /// (thread spawn overhead beats the win there) or when hatched off
-    /// (`ROOMLERD_PAR_CONVERT=0` / config `par_convert`); else
+    /// (`MESHHARBORD_PAR_CONVERT=0` / config `par_convert`); else
     /// min(4, cores).
     fn convert_bands(plane_pixels: usize) -> usize {
         if plane_pixels < 2_000_000 || !crate::encode::par_convert_enabled() {
@@ -2251,7 +2251,7 @@ impl FfmpegEncoder {
     /// resolved mode and the NVENC escape hatch. The pump's `held_increase` arm
     /// keys on this: NVENC (patched) applies a constrained increase LIVE, while
     /// QSV-CBR / rebuild-bound backends keep deferring until their reset cost is
-    /// measured away. `ROOMLERD_ENCODER_NVENC_ASSUME_IDR=1` reverts NVENC.
+    /// measured away. `MESHHARBORD_ENCODER_NVENC_ASSUME_IDR=1` reverts NVENC.
     pub fn reconfig_forces_idr(&self) -> bool {
         reconfig_forces_idr_for(self.rate_mode, crate::encode::nvenc_assume_reconfig_idr())
     }
@@ -3229,7 +3229,7 @@ mod tests {
         // SAFETY: same reasoning as encode/mod.rs::relay_max_bps_reads_env —
         // nothing else in the crate touches this var at test time, and any
         // future test that does must share AQ_ENV_LOCK.
-        let prior = std::env::var("ROOMLERD_NVENC_SPATIAL_AQ").ok();
+        let prior = std::env::var("MESHHARBORD_NVENC_SPATIAL_AQ").ok();
 
         unsafe { tunnel_core::env::test_env::clear("NVENC_SPATIAL_AQ") };
         let (_, _, summary) = encoder_options("hevc_nvenc", 3_000_000, 22, true, false, false);
@@ -3241,7 +3241,7 @@ mod tests {
         assert!(summary.contains("forced-idr=1"), "got: {summary}");
         assert!(summary.contains("rc=vbr"), "got: {summary}");
 
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "NVENC_SPATIAL_AQ", "1") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "NVENC_SPATIAL_AQ", "1") };
         let (_, _, summary) = encoder_options("hevc_nvenc", 3_000_000, 22, true, false, false);
         assert!(
             summary.contains("spatial-aq=1"),
@@ -3249,13 +3249,13 @@ mod tests {
         );
 
         // Any non-"1" value keeps it off (explicit-opt-in semantics).
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "NVENC_SPATIAL_AQ", "0") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "NVENC_SPATIAL_AQ", "0") };
         let (_, _, summary) = encoder_options("hevc_nvenc", 3_000_000, 22, true, false, false);
         assert!(!summary.contains("spatial-aq"), "got: {summary}");
 
         match prior {
             Some(v) => unsafe {
-                tunnel_core::env::test_env::set_as("ROOMLERD_", "NVENC_SPATIAL_AQ", v)
+                tunnel_core::env::test_env::set_as("MESHHARBORD_", "NVENC_SPATIAL_AQ", v)
             },
             None => unsafe { tunnel_core::env::test_env::clear("NVENC_SPATIAL_AQ") },
         }

@@ -16,9 +16,9 @@
 //! by an out-of-process operator running:
 //!
 //! ```text
-//! roomlerd consent --session <hex_id> --approve
-//! roomlerd consent --session <hex_id> --deny
-//! roomlerd consent --list          # FR-27: what is outstanding right now
+//! meshharbord consent --session <hex_id> --approve
+//! meshharbord consent --session <hex_id> --deny
+//! meshharbord consent --list          # FR-27: what is outstanding right now
 //! ```
 //!
 //! 30 s timeout → auto-deny. Outcome propagates back through the
@@ -201,7 +201,7 @@ impl PromptKind {
 ///
 /// The marker is written even when the daemon's own native panel is up,
 /// because it is also the machine-readable record that a decision is
-/// outstanding — `roomlerd consent --list` must show a natively-prompted
+/// outstanding — `meshharbord consent --list` must show a natively-prompted
 /// session, and the LocalAPI is the only honest place to read that from.
 ///
 /// Which makes this field load-bearing: without it the desktop companion would
@@ -291,7 +291,7 @@ pub struct ConsentBroker {
 }
 
 // A2 note: this module used to publish a process-wide broker
-// (`set_shared`/`shared()`) for Roomler SSH, whose server is constructed
+// (`set_shared`/`shared()`) for MeshHarbor SSH, whose server is constructed
 // inside the overlay's TUN factory. That global is GONE — the broker now
 // rides `ssh::SessionServices` through `overlay::maybe_start` into the
 // server's `Ctx`, so "no broker ⇒ deny" is unrepresentable instead of a doc
@@ -375,11 +375,11 @@ impl ArmedPrompt {
             sentinel_dir = %inner.sentinel_dir.display(),
             // RETIRED-NAME-ANCHOR: naming the retired binary is the POINT —
             // this comment records which spelling was wrong and why.
-            // FR-21 retired `roomler-agent`; this line is the ONLY guidance a
+            // FR-21 retired `meshharbor-agent`; this line is the ONLY guidance a
             // headless operator gets, and naming a binary that no longer
             // exists makes it worse than silence. Field-caught on mars
             // 2026-08-29, still printing the old name at 0.4.16.
-            "operator consent required — answer it with `roomlerd consent --session {} --approve|--deny` (`roomlerd consent --list` shows what is outstanding)",
+            "operator consent required — answer it with `meshharbord consent --session {} --approve|--deny` (`meshharbord consent --list` shows what is outstanding)",
             session_hex
         );
 
@@ -552,7 +552,7 @@ impl ConsentBroker {
     /// guard it carries clears the `.pending` marker and the in-memory entry
     /// on EVERY exit, including the future being DROPPED before a decision.
     /// Field 2026-08-29: an SSH dial from mars whose transport reset
-    /// mid-prompt left `<id>.pending` behind, so `roomlerd consent --list`
+    /// mid-prompt left `<id>.pending` behind, so `meshharbord consent --list`
     /// showed a phantom prompt that outlived its session (and a late
     /// `--approve` logged "no active prompt"). The old cleanup was
     /// straight-line code after the poll loop, so a cancelled
@@ -590,7 +590,7 @@ impl ConsentBroker {
     /// #1632 — withdraw the prompt standing for `session_hex`, if one is: its
     /// future resolves [`Decision::Cancelled`] promptly (inside the poll
     /// interval, not at the window's end) and its guard clears the `.pending`
-    /// marker the companion and `roomlerd consent --list` read. Returns
+    /// marker the companion and `meshharbord consent --list` read. Returns
     /// whether a prompt was running. A session that is not being prompted —
     /// never was, or already resolved — is a no-op that returns `false`, and
     /// nothing is remembered about it: a later prompt for the same id starts
@@ -743,7 +743,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("roomler-consent-{name}-{nanos}"))
+        std::env::temp_dir().join(format!("meshharbor-consent-{name}-{nanos}"))
     }
 
     /// P2b review L3: a symlinked sentinel dir would let whoever planted the
@@ -1043,7 +1043,7 @@ mod tests {
 
     /// FR-27 field 2026-08-29: an SSH dial whose transport reset mid-prompt
     /// dropped the awaiting future before any decision, and the `.pending`
-    /// marker survived — `roomlerd consent --list` then showed a phantom that
+    /// marker survived — `meshharbord consent --list` then showed a phantom that
     /// outlived its session. Cancelling the prompt future must clear the marker.
     #[tokio::test]
     async fn a_cancelled_prompt_does_not_leak_its_pending_marker() {
@@ -1288,7 +1288,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// #1632 — the marker the companion (and `roomlerd consent --list`) reads
+    /// #1632 — the marker the companion (and `meshharbord consent --list`) reads
     /// is removed on cancel, so the companion's 750 ms poll finds nothing
     /// pending and takes its own panel down (meshharbor-desktop
     /// `consent_watch_loop`). The native panel is the caller's to hide.
@@ -1442,12 +1442,12 @@ mod tests {
 mod cli_name_tests {
     /// The guidance in [`ConsentBroker::request`]'s log line is, on a headless
     /// host, the ONLY thing telling an operator how to answer — and it has now
-    /// been wrong twice: FR-21 retired `roomler-agent`, and the first repair
-    /// swapped it for `roomler consent`, which the `roomler` CLI does not have
+    /// been wrong twice: FR-21 retired `meshharbor-agent`, and the first repair
+    /// swapped it for `meshharbor consent`, which the `meshharbor` CLI does not have
     /// (these subcommands live on the DAEMON's clap surface, alongside
-    /// `meshharbord enroll` / `meshharbord run`; `roomler` is the tunnel + fleet CLI
+    /// `meshharbord enroll` / `meshharbord run`; `meshharbor` is the tunnel + fleet CLI
     /// and its `Commands` enum has no `consent` arm). Caught by actually
-    /// running it: `roomler consent --help` → `unrecognized subcommand`.
+    /// running it: `meshharbor consent --help` → `unrecognized subcommand`.
     ///
     /// Nothing else fails when this string rots, so assert it.
     #[test]
@@ -1458,15 +1458,15 @@ mod cli_name_tests {
         let full = include_str!("consent.rs");
         let src = full.split("mod cli_name_tests").next().unwrap();
         assert!(
-            !src.contains("`roomler consent"),
-            "the guidance must say `roomlerd consent` — `roomler` has no consent subcommand"
+            !src.contains("`meshharbor consent"),
+            "the guidance must say `meshharbord consent` — `meshharbor` has no consent subcommand"
         );
         assert!(
-            !src.contains("roomler-agent consent"),
-            "FR-21 retired the `roomler-agent` binary name"
+            !src.contains("meshharbor-agent consent"),
+            "FR-21 retired the `meshharbor-agent` binary name"
         );
         assert!(
-            src.contains("roomlerd consent --session"),
+            src.contains("meshharbord consent --session"),
             "the guidance must still tell the operator the actual command"
         );
     }

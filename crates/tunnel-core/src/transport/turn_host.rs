@@ -4,7 +4,7 @@
 //! server on loopback + its overlay IP, so the local browser (loopback, never
 //! firewall-blocked) and the remote agent (over the WFP-permitted overlay) can
 //! relay through it instead of the far coturn — the **loopback-TURN corp-relay
-//! fix, Phase 1**. Design: `~/.claude/plans/roomler-loopback-turn-corp-relay.md`.
+//! fix, Phase 1**. Design: `~/.claude/plans/meshharbor-loopback-turn-corp-relay.md`.
 //!
 //! Phase 0 (spike) proved two webrtc-rs peers converge relay-to-relay through
 //! an in-process `turn::server::Server` with webrtc-rs installing the TURN
@@ -88,7 +88,7 @@ pub struct LocalTurnHost {
 impl LocalTurnHost {
     /// Realm advertised to clients. Fixed so mint + validate line up; the
     /// realm-independent secret-derived password does the real work.
-    pub const REALM: &'static str = "roomler.local";
+    pub const REALM: &'static str = "meshharbor.local";
 
     /// Start a TURN server on `bind` (use `0.0.0.0:0` so it receives on BOTH
     /// loopback AND the overlay adapter). `relay_ip` is handed out as the

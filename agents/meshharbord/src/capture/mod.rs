@@ -54,7 +54,7 @@ pub mod wgc_backend;
 /// 320×240 BGRA frame source for scrap-capture so a headless Pod
 /// without an X server can still drive the encode + WebRTC pipeline.
 /// `open_default` short-circuits to this backend when the runtime
-/// env var `ROOMLERD_SYNTHETIC_FRAMES=1` is set AND the binary
+/// env var `MESHHARBORD_SYNTHETIC_FRAMES=1` is set AND the binary
 /// was compiled with `--features synthetic-frame-source`.
 #[cfg(feature = "synthetic-frame-source")]
 pub mod synthetic_backend;
@@ -67,7 +67,7 @@ pub mod gate;
 pub mod refresh;
 
 /// FR-16 L4 — the frame marker (a 12-bit number and a CRC-4 as luma blocks)
-/// the synthetic source and `roomlerd probe-target` paint and the viewer reads.
+/// the synthetic source and `meshharbord probe-target` paint and the viewer reads.
 pub mod bench_marker;
 
 pub mod cursor;
@@ -663,15 +663,15 @@ fn x11_hint_with(root: bool, no_surface: bool, no_lock_report: bool) -> &'static
         "This computer is showing an X11 desktop whose screen locker does not report a lock to \
          the system (GNOME and KDE do; this desktop does not), so a system install does not \
          capture it by itself: it could not tell the lock screen from the desktop. On the host \
-         an administrator can run sudo meshharbor config set drm_capture true and sudo roomler \
-         config set uinput true, then sudo roomler restart. That capture reads the screen below \
+         an administrator can run sudo meshharbor config set drm_capture true and sudo meshharbor \
+         config set uinput true, then sudo meshharbor restart. That capture reads the screen below \
          the desktop, the lock screen included. Remote shell and file transfer still work."
     } else if root && no_surface {
         "This computer is showing an X11 desktop, and it is not captured by itself because \
          nobody at the screen could be told they are being viewed: the session on screen has no \
          desktop companion and no notification service. Install the desktop companion (the \
          install script does), or on the host an administrator can run sudo meshharbor config set \
-         drm_capture true and sudo meshharbor config set uinput true, then sudo roomler restart. \
+         drm_capture true and sudo meshharbor config set uinput true, then sudo meshharbor restart. \
          That capture reads the screen below the desktop, the lock screen included. Remote \
          shell and file transfer still work."
     } else if root {
@@ -680,11 +680,11 @@ fn x11_hint_with(root: bool, no_surface: bool, no_lock_report: bool) -> &'static
          by default), or automatic capture is switched off (wayland_auto), or a capture key is \
          set. On the host an administrator can run sudo meshharbor config ls, clear wayland_auto \
          and any capture key it shows as set (drm_capture, portal_capture, mutter_capture, \
-         window_capture) with sudo meshharbor config clear, then sudo roomler restart. Remote shell \
+         window_capture) with sudo meshharbor config clear, then sudo meshharbor restart. Remote shell \
          and file transfer still work."
     } else {
         "This computer is showing an X11 desktop, and this agent was started without access to \
-         it (no DISPLAY). Restart it from inside the desktop session, with roomler restart in a \
+         it (no DISPLAY). Restart it from inside the desktop session, with meshharbor restart in a \
          terminal there, or install the system service. Remote shell and file transfer still \
          work."
     }
@@ -709,20 +709,20 @@ fn wayland_hint_with(root: bool, no_surface: bool) -> &'static str {
          nobody at the screen could be told they are being viewed: the session on screen has no \
          desktop companion and no notification service. Install the desktop companion (the \
          install script does), or on the host an administrator can run sudo meshharbor config set \
-         drm_capture true and sudo meshharbor config set uinput true, then sudo roomler restart. \
+         drm_capture true and sudo meshharbor config set uinput true, then sudo meshharbor restart. \
          That capture reads the screen below the desktop, the lock screen included. Remote \
          shell and file transfer still work."
     } else if root {
         "This computer is showing a Wayland desktop, and capturing it is switched off on this \
          device. On the host an administrator can run sudo meshharbor config set drm_capture true \
-         and sudo meshharbor config set uinput true, then sudo roomler restart. That capture reads \
+         and sudo meshharbor config set uinput true, then sudo meshharbor restart. That capture reads \
          the screen below the desktop, the lock screen included. Remote shell and file transfer \
          still work."
     } else {
         "This computer is showing a Wayland desktop, and capturing it is switched off on this \
          device. On the host, run meshharbor config clear wayland_auto, and meshharbor config clear for \
          each capture key that meshharbor config ls shows as set (portal_capture, mutter_capture, \
-         window_capture), then roomler restart. GNOME is then captured through its own \
+         window_capture), then meshharbor restart. GNOME is then captured through its own \
          screencast, which asks nobody, and other desktops ask the person at the screen once. \
          Remote shell and file transfer still work."
     }
@@ -742,7 +742,7 @@ fn running_as_root() -> bool {
     }
 }
 
-/// FR-93 P1 kill switch (`ROOMLERD_WAYLAND_AWARE` / `wayland_aware`), default
+/// FR-93 P1 kill switch (`MESHHARBORD_WAYLAND_AWARE` / `wayland_aware`), default
 /// ON. It enables no capture; it only stops a Wayland desktop with nothing
 /// switched on from reading as "headless" or streaming black. `false` gives
 /// back 0.4.125's behaviour byte for byte, input reach included (P1a).
@@ -751,7 +751,7 @@ pub(crate) fn wayland_aware() -> bool {
     tunnel_core::env::flag("WAYLAND_AWARE", true)
 }
 
-/// FR-93 P2 kill switch (`ROOMLERD_WAYLAND_AUTO` / `wayland_auto`), default
+/// FR-93 P2 kill switch (`MESHHARBORD_WAYLAND_AUTO` / `wayland_auto`), default
 /// ON. `false` gives back 0.4.128's cascade: a per-user daemon in a Wayland
 /// session captures only what a key switches on.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -759,7 +759,7 @@ fn wayland_auto() -> bool {
     tunnel_core::env::flag("WAYLAND_AUTO", true)
 }
 
-/// FR-95 P2 kill switch (`ROOMLERD_WAYLAND_AUTO_SYSTEM` /
+/// FR-95 P2 kill switch (`MESHHARBORD_WAYLAND_AUTO_SYSTEM` /
 /// `wayland_auto_system`), default ON. `false` gives back the system half
 /// before FR-95: a root daemon on a Wayland desktop captures only what a key
 /// switches on. `wayland_auto = false` turns this half off too.
@@ -775,7 +775,7 @@ fn wayland_auto_system() -> bool {
     tunnel_core::env::flag("WAYLAND_AUTO_SYSTEM", true)
 }
 
-/// FR-113 P1 kill switch (`ROOMLERD_X11_AUTO_SYSTEM` / `x11_auto_system`),
+/// FR-113 P1 kill switch (`MESHHARBORD_X11_AUTO_SYSTEM` / `x11_auto_system`),
 /// default ON: FR-95's system half for a person's **X11** session on screen.
 /// Independent of `wayland_auto_system`, so either half can be turned off
 /// without the other; `wayland_auto = false` and `wayland_aware = false` turn
@@ -1968,7 +1968,7 @@ fn open_auto_mutter(target_fps: u32) -> AutoMutter {
                 height = c.height(),
                 "capture: backend=portal via org.gnome.Mutter.ScreenCast, AUTOMATIC (FR-93 D1: a \
                  per-user Wayland session with no capture key set). It asks nobody. \
-                 ROOMLERD_WAYLAND_AUTO=0, or any capture key, switches it off"
+                 MESHHARBORD_WAYLAND_AUTO=0, or any capture key, switches it off"
             );
             AutoMutter::Opened(Box::new(c))
         }
@@ -2036,7 +2036,7 @@ fn open_auto_portal(target_fps: u32) -> AutoPortal {
                 height = c.height(),
                 "capture: backend=portal, AUTOMATIC (FR-93 P2d-3: a per-user Wayland session with \
                  no capture key set, and no mutter). ATTENDED: the person at the screen shared it, \
-                 now or earlier (the restore token). ROOMLERD_WAYLAND_AUTO=0, or any capture key, \
+                 now or earlier (the restore token). MESHHARBORD_WAYLAND_AUTO=0, or any capture key, \
                  switches it off"
             );
             AutoPortal::Opened(Box::new(c))
@@ -2823,7 +2823,7 @@ fn open_with(
             tracing::info!(
                 width = cap.width(),
                 height = cap.height(),
-                "capture: backend=synthetic (ROOMLERD_SYNTHETIC_FRAMES=1, CI / agent-e2e Pod)"
+                "capture: backend=synthetic (MESHHARBORD_SYNTHETIC_FRAMES=1, CI / agent-e2e Pod)"
             );
             return Box::new(cap);
         }
@@ -2874,7 +2874,7 @@ fn open_with(
     // Windows: prefer WGC (captures HW cursors + supports dirty rects
     // on Win 11 22000+). Fall back to scrap (DXGI) if WGC init fails
     // — e.g. on Windows versions without the Graphics.Capture runtime
-    // or broken WinRT. Escape hatch: `ROOMLERD_CAPTURE=scrap` forces
+    // or broken WinRT. Escape hatch: `MESHHARBORD_CAPTURE=scrap` forces
     // the DXGI path without a rebuild.
     #[cfg(all(target_os = "windows", feature = "wgc-capture"))]
     {
@@ -2896,7 +2896,7 @@ fn open_with(
                 }
             }
         } else {
-            tracing::info!("ROOMLERD_CAPTURE=scrap — skipping WGC, using DXGI via scrap");
+            tracing::info!("MESHHARBORD_CAPTURE=scrap — skipping WGC, using DXGI via scrap");
         }
     }
     // FR-36 — DRM/KMS: read the scanout plane below the compositor. This is
@@ -2907,7 +2907,7 @@ fn open_with(
     // kill-switch shape. DRM reports no damage at all, so defaulting it on
     // would silently undo FR-29 — which took a Linux host's idle capture from
     // 45.8 % of a core to 2.8 % precisely BY not grabbing an unchanged screen.
-    // A Wayland or headless host sets `ROOMLERD_DRM_CAPTURE=1`; everyone else
+    // A Wayland or headless host sets `MESHHARBORD_DRM_CAPTURE=1`; everyone else
     // keeps the existing cascade byte-for-byte.
     // FR-93 — the Wayland arms the operator switched ON and that failed, in
     // operator words. On a Wayland desktop the fallback below is then a real
@@ -3076,7 +3076,7 @@ fn open_with(
                         width = c.width(),
                         height = c.height(),
                         idle_skip = ?idle_skip,
-                        "capture: backend=drm (ROOMLERD_DRM_CAPTURE=1, scanout below the compositor)"
+                        "capture: backend=drm (MESHHARBORD_DRM_CAPTURE=1, scanout below the compositor)"
                     );
                     return Box::new(c);
                 }
@@ -3097,7 +3097,7 @@ fn open_with(
                     // simply not working.
                     tracing::warn!(
                         error = %e,
-                        "ROOMLERD_DRM_CAPTURE=1 but DRM capture could not open — falling through to the standard cascade"
+                        "MESHHARBORD_DRM_CAPTURE=1 but DRM capture could not open — falling through to the standard cascade"
                     );
                     wayland_arm_error = Some(format!(
                         "drm_capture is on, but DRM capture could not open: {e}"
@@ -3123,7 +3123,7 @@ fn open_with(
     // ONLY. It needs a logged-in user, and the first use shows that user a
     // consent dialog. Defaulting it on would mean an unattended host silently
     // waiting on a dialog nobody will ever answer — a hang dressed up as a
-    // feature. A host that wants it sets `ROOMLERD_PORTAL_CAPTURE=1`.
+    // feature. A host that wants it sets `MESHHARBORD_PORTAL_CAPTURE=1`.
     //
     // Ordering: DRM sees a locked screen and a greeter and needs no consent,
     // so it stays first wherever there is a CRTC. The portal is what serves
@@ -3136,7 +3136,7 @@ fn open_with(
                     tracing::info!(
                         width = c.width(),
                         height = c.height(),
-                        "capture: backend=portal (ROOMLERD_PORTAL_CAPTURE=1, xdg-desktop-portal \
+                        "capture: backend=portal (MESHHARBORD_PORTAL_CAPTURE=1, xdg-desktop-portal \
                          ScreenCast — ATTENDED)"
                     );
                     return Box::new(c);
@@ -3147,7 +3147,7 @@ fn open_with(
                     // simply not working.
                     tracing::warn!(
                         error = %format!("{e:#}"),
-                        "ROOMLERD_PORTAL_CAPTURE=1 but portal capture could not open — falling \
+                        "MESHHARBORD_PORTAL_CAPTURE=1 but portal capture could not open — falling \
                          through to the standard cascade"
                     );
                     let portal =
@@ -3250,7 +3250,7 @@ fn open_with(
     Box::new(NoopCapture::unavailable(reason))
 }
 
-/// Escape hatch: `ROOMLERD_CAPTURE=scrap` (case-insensitive) forces
+/// Escape hatch: `MESHHARBORD_CAPTURE=scrap` (case-insensitive) forces
 /// the DXGI path even on builds that include WGC. Useful for diagnosing
 /// WGC-specific regressions in the field without a rebuild.
 #[cfg(all(target_os = "windows", feature = "wgc-capture"))]
@@ -3278,7 +3278,7 @@ pub fn synthetic_frames_requested() -> bool {
 }
 
 /// Phase 1 — runtime gate for the synthetic-frame-source backend.
-/// True iff `ROOMLERD_SYNTHETIC_FRAMES` parses as truthy
+/// True iff `MESHHARBORD_SYNTHETIC_FRAMES` parses as truthy
 /// (`1` / `true` / `yes` / `on`, case-insensitive). Anything else
 /// (unset, `0`, garbage) falls back to the normal cascade.
 #[cfg(feature = "synthetic-frame-source")]
@@ -3324,7 +3324,7 @@ mod synthetic_env_tests {
 
     #[test]
     fn unset_returns_false() {
-        with_env("ROOMLERD_SYNTHETIC_FRAMES", None, || {
+        with_env("MESHHARBORD_SYNTHETIC_FRAMES", None, || {
             assert!(!synthetic_env_enabled());
         });
     }
@@ -3332,7 +3332,7 @@ mod synthetic_env_tests {
     #[test]
     fn truthy_values_accepted() {
         for v in &["1", "true", "TRUE", "yes", "On"] {
-            with_env("ROOMLERD_SYNTHETIC_FRAMES", Some(v), || {
+            with_env("MESHHARBORD_SYNTHETIC_FRAMES", Some(v), || {
                 assert!(synthetic_env_enabled(), "value {v:?} should be truthy");
             });
         }
@@ -3341,7 +3341,7 @@ mod synthetic_env_tests {
     #[test]
     fn explicit_zero_or_garbage_is_false() {
         for v in &["0", "false", "no", "off", "anything-else"] {
-            with_env("ROOMLERD_SYNTHETIC_FRAMES", Some(v), || {
+            with_env("MESHHARBORD_SYNTHETIC_FRAMES", Some(v), || {
                 assert!(!synthetic_env_enabled(), "value {v:?} should be falsy");
             });
         }
@@ -4571,7 +4571,7 @@ mod planned_arm_tests {
 /// FR-93 — the Xwayland guard against a REAL X server, the half CI can run:
 /// a server that is NOT Xwayland must never be refused, or every X11 host and
 /// the daemon's own virtual desktop would lose capture (AC11). The Xwayland
-/// half is proven on the FR-93 lab's GNOME guests. `ROOMLERD_TEST_X11=1` makes
+/// half is proven on the FR-93 lab's GNOME guests. `MESHHARBORD_TEST_X11=1` makes
 /// a missing server a failure, as in `capture::pointer`'s lane.
 #[cfg(all(test, target_os = "linux", feature = "scrap-capture"))]
 mod xwayland_probe_tests {
@@ -4581,11 +4581,11 @@ mod xwayland_probe_tests {
     /// Only the CI lane knows its server is Xvfb; a developer's own session
     /// may well BE Xwayland.
     fn xvfb_display() -> Option<String> {
-        if std::env::var("ROOMLERD_TEST_X11").as_deref() != Ok("1") {
-            eprintln!("ROOMLERD_TEST_X11 unset — skipping (the Xvfb lane sets it)");
+        if std::env::var("MESHHARBORD_TEST_X11").as_deref() != Ok("1") {
+            eprintln!("MESHHARBORD_TEST_X11 unset — skipping (the Xvfb lane sets it)");
             return None;
         }
-        Some(std::env::var("DISPLAY").expect("ROOMLERD_TEST_X11=1 but DISPLAY is unset"))
+        Some(std::env::var("DISPLAY").expect("MESHHARBORD_TEST_X11=1 but DISPLAY is unset"))
     }
 
     #[test]

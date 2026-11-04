@@ -41,7 +41,7 @@ flowchart TB
 
 | Control | Shape |
 |---|---|
-| Access token | 7 d (`ROOMLER__JWT__*`) |
+| Access token | 7 d (`MESHHARBOR__JWT__*`) |
 | Refresh token | 30 d |
 | Hashing | Argon2 |
 | Audiences | `Access` · `Refresh` · `Enrollment` (single-use, 10 min) · `Agent` (1 y) |
@@ -364,15 +364,15 @@ the directory is not the person's:
 The allowlist (`localapi::person_may`) is an exhaustive match with no `_` arm, so a
 new verb cannot reach it by default. Widening it is a security change and needs
 review like one. The root socket itself is unchanged. Kill switch:
-`ROOMLERD_PERSON_SOCKET=0`.
+`MESHHARBORD_PERSON_SOCKET=0`.
 
 **A remote-desktop session's media transport is hardened past webrtc-rs' defaults**
 (FR-101 P1, `agents/meshharbord/src/rc_transport.rs`, applied in `AgentPeer::new`):
 
 | Setting | Default now | Why | Switch back |
 |---|---|---|---|
-| DTLS cipher suites | the two ECDHE-AES-128-GCM-SHA256 suites | webrtc-dtls' default list still offers ECDHE-AES-256-CBC-SHA; every supported browser negotiates GCM | `ROOMLERD_DTLS_LEGACY_SUITES=1` |
-| SRTP + SRTCP replay window | 64, **pinned**, not switched on | webrtc-srtp's `Session::new` already gives the remote context a 64-packet window when its config has none, so sessions refused replays before FR-101 too. Setting it explicitly keeps it 64 should a release change that default | none: `ROOMLERD_SRTP_REPLAY_WINDOW=N` sizes it, and `0` leaves the library's 64 |
+| DTLS cipher suites | the two ECDHE-AES-128-GCM-SHA256 suites | webrtc-dtls' default list still offers ECDHE-AES-256-CBC-SHA; every supported browser negotiates GCM | `MESHHARBORD_DTLS_LEGACY_SUITES=1` |
+| SRTP + SRTCP replay window | 64, **pinned**, not switched on | webrtc-srtp's `Session::new` already gives the remote context a 64-packet window when its config has none, so sessions refused replays before FR-101 too. Setting it explicitly keeps it 64 should a release change that default | none: `MESHHARBORD_SRTP_REPLAY_WINDOW=N` sizes it, and `0` leaves the library's 64 |
 
 > [!NOTE]
 > **Corrected 2026-10-13: replay protection was never off.** FR-101's evidence said
@@ -409,7 +409,7 @@ enters: a remote `http://` is read as `https://`, and `ws://` as `wss://`.
 | The agent's enrollment: `roomlerd enroll` and `re-enroll`, the wizard's agent role, the desktop companion | promoted | promoted, but only when spelled `http://` in lower case |
 | Every load of the agent's config: `server_url`, `ws_url`, and each `[[orgs]]` entry's | promoted, with a warning naming the field | dialled as written |
 | `roomler enroll`, the wizard's tunnel role | promoted | **the tunnel enrollment token was posted in plaintext** |
-| The tunnel CLI's config, from the file or `ROOMLER_TUNNEL_SERVER` | promoted | dialled as written |
+| The tunnel CLI's config, from the file or `MESHHARBOR_TUNNEL_SERVER` | promoted | dialled as written |
 | `roomlerd anchor create` (FR-104) | refused, unchanged: the claim's answer is the command SYSTEM runs | refused |
 
 - **Loopback is exempt** (`localhost`, `127.0.0.0/8`, `::1`). It has no off-host path to
@@ -424,7 +424,7 @@ enters: a remote `http://` is read as `https://`, and `ws://` as `wss://`.
   `allow_plaintext_server = true` in the device's own `config.toml`. The LocalAPI accepts
   that key only from the console, and it is structurally absent from `DesiredConfig`, so
   a compromised server cannot talk a fleet down to plaintext. The tunnel CLI reads the
-  same key, or `ROOMLER_TUNNEL_ALLOW_PLAINTEXT=1` on its environment path. There is no
+  same key, or `MESHHARBOR_TUNNEL_ALLOW_PLAINTEXT=1` on its environment path. There is no
   escape at enrollment: a token always travels over TLS.
 - **Counted before the default changed.** The ingress logged no plaintext agent `/ws`
   attempt over about eight hours. Production's port 80 answers everything with a 301, and
@@ -684,7 +684,7 @@ The actual fix for the account is GitHub Settings → Emails.
 
 - TURN `static-auth-secret` was rotated out of the repo on 2026-05-23 — the
   committed `turnserver.conf` carries a `CHANGE-ME` placeholder; the live value
-  lives in the operator's `ROOMLER__TURN__SHARED_SECRET` env.
+  lives in the operator's `MESHHARBOR__TURN__SHARED_SECRET` env.
 - **No git hooks for secrets**: there is no gitleaks/trufflehog scanner in CI.
   *(Open, [LOW], 2026-03-10.)*
 

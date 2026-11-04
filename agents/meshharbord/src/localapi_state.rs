@@ -4,7 +4,7 @@
 //!
 //! Thin adapter (unification P1): turns the agent's enrolled identity + a
 //! "connected" flag + the overlay runtime's published [`OverlayView`] into the
-//! read-only `status` / `peers` / `flows` that the CLI (`roomler`) and the
+//! read-only `status` / `peers` / `flows` that the CLI (`meshharbor`) and the
 //! desktop app read over the local pipe/socket (`tunnel_core::localapi::serve`).
 //!
 //! Wired in `run_cmd`: the connected flag and the overlay `watch` channel are
@@ -497,7 +497,7 @@ impl DaemonState {
     }
 
     /// FR-92 — answer the keep-busy verbs from the attached GUI worker of a
-    /// supervised Mac. ⚠️ A root caller (`meshharbor exec <mac> roomler keep-busy
+    /// supervised Mac. ⚠️ A root caller (`meshharbor exec <mac> meshharbor keep-busy
     /// off`) reaches THIS daemon, never the worker's per-user socket, and the
     /// daemon's own engine never runs there: before this, a root `off` stopped
     /// nothing and answered "off" while the worker kept moving the pointer
@@ -1022,7 +1022,7 @@ impl LocalApiState for DaemonState {
                           instead (check `meshharbor status` / `meshharbor peers` for the IPs). If \
                           the overlay isn't up at all, set `overlay_enabled = true` in the \
                           node's config.toml and restart the daemon; for netstack mode, set \
-                          ROOMLERD_OVERLAY_NETSTACK_SOCKS=<port>."
+                          MESHHARBORD_OVERLAY_NETSTACK_SOCKS=<port>."
                     .into(),
             };
         };
@@ -1502,7 +1502,7 @@ impl LocalApiState for DaemonState {
         }
     }
 
-    /// FR-92 — keep busy's state, for the tray and `roomler keep-busy`.
+    /// FR-92 — keep busy's state, for the tray and `meshharbor keep-busy`.
     async fn keep_busy_status(&self) -> Response {
         Response::KeepBusy(self.keep_busy_answer(false).await)
     }
@@ -1527,8 +1527,8 @@ impl LocalApiState for DaemonState {
     async fn keep_busy_on(&self, opts: tunnel_core::localapi::KeepBusyStartOpts) -> Response {
         if self.keep_busy_worker.is_some() {
             return Response::Error {
-                message: "keep busy runs in this Mac's GUI session: turn it on from the Roomler \
-                          menu-bar app, or with `roomler keep-busy on` as yourself"
+                message: "keep busy runs in this Mac's GUI session: turn it on from the MeshHarbor \
+                          menu-bar app, or with `meshharbor keep-busy on` as yourself"
                     .into(),
             };
         }
@@ -1837,7 +1837,7 @@ impl LocalApiState for DaemonState {
         }
     }
 
-    /// Roomler SSH (P6b) — relay a grant request over this device's control
+    /// MeshHarbor SSH (P6b) — relay a grant request over this device's control
     /// WS and hand the answer back to the local caller.
     ///
     /// The public key is the CALLER's; the daemon never sees the private half,
@@ -2277,7 +2277,7 @@ mod tests {
     fn consent_broker(tag: &str) -> crate::consent::ConsentBroker {
         crate::consent::ConsentBroker::new(
             crate::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-las-consent-{tag}-{}", std::process::id())),
+            std::env::temp_dir().join(format!("meshharbor-las-consent-{tag}-{}", std::process::id())),
         )
         .unwrap()
     }
@@ -2558,9 +2558,9 @@ mod tests {
         // Refused by placement: a system root. The surface would refuse this
         // too; the daemon refuses it first and persists nothing.
         let system_dir = if cfg!(windows) {
-            r"C:\Windows\Temp\roomler-drops"
+            r"C:\Windows\Temp\meshharbor-drops"
         } else {
-            "/usr/roomler-drops"
+            "/usr/meshharbor-drops"
         };
         match st.config_set("files_dir", Some(system_dir)).await {
             Response::Error { message } => {
@@ -2637,7 +2637,7 @@ mod tests {
         let (_tx, rx) = watch::channel(view());
         let consent = crate::consent::ConsentBroker::new(
             crate::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-las-consent-{}", std::process::id())),
+            std::env::temp_dir().join(format!("meshharbor-las-consent-{}", std::process::id())),
         )
         .unwrap();
         let st = DaemonState::new(
@@ -2772,7 +2772,7 @@ mod tests {
     /// `local_restart_enabled` from the FILE), unique per test.
     fn restart_dir(tag: &str, enabled: bool) -> std::path::PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("roomler-las-restart-{tag}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("meshharbor-las-restart-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut cfg = crate::config::test_fixture();
@@ -3085,7 +3085,7 @@ mod tests {
     /// its GUI WORKER's state. The worker here says "running", which this
     /// process's own engine (never started in a test) cannot say: an answer
     /// from the daemon's own engine reads `on: false` and fails this. Field,
-    /// 0.4.126: a root `roomler keep-busy off` answered "off" from the
+    /// 0.4.126: a root `meshharbor keep-busy off` answered "off" from the
     /// daemon's idle engine while the worker kept moving the pointer.
     #[tokio::test]
     async fn a_supervised_macs_daemon_answers_keep_busy_from_its_worker() {

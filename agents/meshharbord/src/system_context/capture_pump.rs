@@ -106,12 +106,12 @@ const STUCK_CAPTURE_RECOVERY_AFTER: Duration = Duration::from_secs(2);
 /// per session via `first_frame_primed`.
 const FIRST_FRAME_GDI_AFTER: Duration = Duration::from_millis(300);
 
-/// FR-34 kill switch. `ROOMLERD_STUCK_CAPTURE_RECOVERY=0` restores the
+/// FR-34 kill switch. `MESHHARBORD_STUCK_CAPTURE_RECOVERY=0` restores the
 /// pre-FR-34 behaviour (a stuck duplication stays black until a reconnect).
 #[cfg_attr(not(feature = "scrap-capture"), allow(dead_code))]
 fn stuck_capture_recovery_enabled() -> bool {
     !matches!(
-        std::env::var("ROOMLERD_STUCK_CAPTURE_RECOVERY").as_deref(),
+        std::env::var("MESHHARBORD_STUCK_CAPTURE_RECOVERY").as_deref(),
         Ok("0") | Ok("false") | Ok("no")
     )
 }
@@ -199,7 +199,7 @@ impl SystemContextCapture {
         let (cmd_tx, cmd_rx) = std_mpsc::channel::<CaptureCmd>();
 
         thread::Builder::new()
-            .name("roomlerd-system-capture".into())
+            .name("meshharbord-system-capture".into())
             .spawn(move || {
                 worker_main(ready_tx, cmd_rx);
             })
@@ -866,7 +866,7 @@ fn capture_one_blocking(
             // ~25×/s forever with no recovery — video never rendered AND
             // the spam buried the throughput lines in the log upload
             // (field: WINHOST-E). `SetThreadDesktop` is per-thread and this
-            // always runs on `roomlerd-system-capture`, so the
+            // always runs on `meshharbord-system-capture`, so the
             // rebind sticks for the BitBlt that follows. `try_change_desktop`
             // dedupes (only SetThreadDesktop when the desktop actually
             // changed), so steady-state cost is one OpenInputDesktop

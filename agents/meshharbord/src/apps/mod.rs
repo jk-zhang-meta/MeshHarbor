@@ -3,7 +3,7 @@
 //! Remote **app selection & launch** for virtual-desktop hosts.
 //!
 //! When a browser controls a headless agent that runs in built-in
-//! virtual-desktop mode (`ROOMLERD_VIRTUAL_DESKTOP=1` →
+//! virtual-desktop mode (`MESHHARBORD_VIRTUAL_DESKTOP=1` →
 //! Xvfb + WM + startup apps, see [`crate::virtual_desktop`]), the
 //! operator has no way to see what's running on that desktop, focus a
 //! specific window, **attach to an existing shell session**, or **start
@@ -38,7 +38,7 @@
 //!   The flagship: a bash "session" is a tmux session, surfaced as an
 //!   xterm attached to it — survives agent restart/disconnect and is
 //!   ssh-attachable. Windows are matched back to their session/app via a
-//!   `roomler:tmux:<s>` / `roomler:app:<key>` xterm-title convention.
+//!   `meshharbor:tmux:<s>` / `meshharbor:app:<key>` xterm-title convention.
 //! * `windows` — Phase 2 (`EnumWindows` / `SetForegroundWindow` /
 //!   `CreateProcessAsUser` in the active session). Not built yet.
 //!
@@ -71,7 +71,7 @@ pub struct WindowInfo {
     /// Opaque window handle: X11 hex id (`0x03400007`) on Linux, HWND
     /// decimal on Windows. The browser round-trips it in `rc:apps.focus`.
     pub window_id: String,
-    /// Human-friendly title (our `roomler:*` prefix stripped).
+    /// Human-friendly title (our `meshharbor:*` prefix stripped).
     pub title: String,
     /// Matched allowlist key, when the window is a known launched app.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -637,7 +637,7 @@ pub fn parse_tmux_sessions(out: &str) -> Vec<String> {
         .collect()
 }
 
-/// A window title classified against the `roomler:*` convention.
+/// A window title classified against the `meshharbor:*` convention.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassifiedTitle {
     /// Friendly title (our prefix stripped/prettified).
@@ -649,11 +649,11 @@ pub struct ClassifiedTitle {
 /// Classify a raw window title. We launch our own windows with a known
 /// title so the list can map a window back to its tmux session or
 /// allowlist key without fragile pid/xprop correlation:
-/// * `roomler:tmux:<s>` → a bash/tmux session
-/// * `roomler:app:<key>` → an allowlisted app
+/// * `meshharbor:tmux:<s>` → a bash/tmux session
+/// * `meshharbor:app:<key>` → an allowlisted app
 /// * anything else → an unmanaged window (reported as-is).
 pub fn classify_title(raw: &str) -> ClassifiedTitle {
-    if let Some(s) = raw.strip_prefix("roomler:tmux:") {
+    if let Some(s) = raw.strip_prefix("meshharbor:tmux:") {
         let s = s.trim();
         return ClassifiedTitle {
             title: format!("Terminal ({s})"),
@@ -661,7 +661,7 @@ pub fn classify_title(raw: &str) -> ClassifiedTitle {
             app_key: None,
         };
     }
-    if let Some(k) = raw.strip_prefix("roomler:app:") {
+    if let Some(k) = raw.strip_prefix("meshharbor:app:") {
         let k = k.trim();
         return ClassifiedTitle {
             title: k.to_string(),
@@ -818,14 +818,14 @@ mod tests {
 
     #[test]
     fn parse_wmctrl_list_handles_spaces_and_blanks() {
-        let out = "0x03400007  0 host roomler:tmux:main\n\
+        let out = "0x03400007  0 host meshharbor:tmux:main\n\
                    0x03600004 0 host  a title with spaces\n\
                    \n\
                    0x03800009 -1 host \n"; // empty title
         let ws = parse_wmctrl_list(out);
         assert_eq!(ws.len(), 3);
         assert_eq!(ws[0].window_id, "0x03400007");
-        assert_eq!(ws[0].title, "roomler:tmux:main");
+        assert_eq!(ws[0].title, "meshharbor:tmux:main");
         assert_eq!(ws[1].title, "a title with spaces");
         assert_eq!(ws[2].title, "", "empty title tolerated");
     }
@@ -841,12 +841,12 @@ mod tests {
 
     #[test]
     fn classify_title_maps_convention() {
-        let t = classify_title("roomler:tmux:main");
+        let t = classify_title("meshharbor:tmux:main");
         assert_eq!(t.session.as_deref(), Some("main"));
         assert!(t.app_key.is_none());
         assert_eq!(t.title, "Terminal (main)");
 
-        let a = classify_title("roomler:app:htop");
+        let a = classify_title("meshharbor:app:htop");
         assert_eq!(a.app_key.as_deref(), Some("htop"));
         assert!(a.session.is_none());
         assert_eq!(a.title, "htop");

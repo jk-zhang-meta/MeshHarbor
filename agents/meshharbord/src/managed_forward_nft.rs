@@ -26,7 +26,7 @@
 //! it [`CONFIRM_WINDOW`] later unless the server confirms that it still
 //! hears this node:
 //! - a transient systemd timer where systemd runs, independent of this
-//!   process, so it also fires if roomlerd hangs or dies;
+//!   process, so it also fires if meshharbord hangs or dies;
 //! - always, an in-process deadline ([`NftBackend::expire`]).
 //!
 //! A change made while another is still unconfirmed keeps the older,
@@ -46,7 +46,7 @@ pub const TABLE: &str = "meshharbor_fwd";
 /// watchdog restores the last confirmed table.
 pub const CONFIRM_WINDOW: Duration = Duration::from_secs(30);
 /// Every rollback timer's unit name starts with this.
-pub const UNIT_PREFIX: &str = "roomlerd-mf-rollback-";
+pub const UNIT_PREFIX: &str = "meshharbord-mf-rollback-";
 const CMD_TIMEOUT: Duration = Duration::from_secs(10);
 /// Change generations are unique per process: each connection's backend
 /// names its rollback timer after one, and a reconnect must not reuse a

@@ -23,7 +23,7 @@ export const FRAME_RATES = [60, 120, 144] as const
 export type FrameRate = (typeof FRAME_RATES)[number]
 
 /** Where the viewer's pick is remembered, per browser. */
-export const FRAME_RATE_STORAGE_KEY = 'roomler-rc-fps'
+export const FRAME_RATE_STORAGE_KEY = 'meshharbor-rc-fps'
 
 export function agentOffersHighRefresh(video: readonly string[] | undefined | null): boolean {
   return (video ?? []).includes(FPS_CAP)

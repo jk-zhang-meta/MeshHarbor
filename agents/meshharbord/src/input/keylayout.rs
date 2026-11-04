@@ -13,7 +13,7 @@
 //!
 //! xkbcommon is the correct general answer and LINKING it was rejected on
 //! deployment grounds: it is a **dynamic system library**, and that would put
-//! `libxkbcommon.so` in `roomlerd`'s `DT_NEEDED` on every Linux build. Headless
+//! `libxkbcommon.so` in `meshharbord`'s `DT_NEEDED` on every Linux build. Headless
 //! fleet hosts (cluster nodes, containers) have no reason to carry it, and a
 //! missing `.so` does not degrade a feature — the loader refuses to start the
 //! daemon at all. That exact failure already cost this project once, when
@@ -219,7 +219,7 @@ impl TextKeys {
                 Err(e) => format!("no XKB keymap: {e}"),
             }
         } else {
-            "ROOMLERD_UINPUT_XKB=0".to_string()
+            "MESHHARBORD_UINPUT_XKB=0".to_string()
         };
         match table {
             Some(l) => (

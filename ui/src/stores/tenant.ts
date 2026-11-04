@@ -96,7 +96,7 @@ export const useTenantStore = defineStore('tenant', () => {
   // Persist the active org across reloads (`current` used to silently
   // reset to the alphabetically-first tenant on every refresh). The URL's
   // /tenant/:id still wins — AppLayout's route watcher re-syncs on top.
-  const CURRENT_TENANT_KEY = 'roomler-current-tenant'
+  const CURRENT_TENANT_KEY = 'meshharbor-current-tenant'
   function readStoredTenantId(): string | null {
     try {
       return globalThis.localStorage?.getItem(CURRENT_TENANT_KEY) ?? null

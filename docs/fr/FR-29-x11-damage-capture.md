@@ -64,7 +64,7 @@ window and drains events before each grab.
 
 | Phase | What | Kill switch |
 |---|---|---|
-| **P1** | Damage-gated grab: no damage since the last delivered frame ⇒ return `Ok(None)` and skip the XShm readback entirely, reusing the existing idle-screen path. | `ROOMLERD_X11_DAMAGE=0` ⇒ today's behaviour byte-for-byte |
+| **P1** | Damage-gated grab: no damage since the last delivered frame ⇒ return `Ok(None)` and skip the XShm readback entirely, reusing the existing idle-screen path. | `MESHHARBORD_X11_DAMAGE=0` ⇒ today's behaviour byte-for-byte |
 | **P2 — SHIPPED (groundwork)** | Emit `Damage::Tracked(rects)` instead of `Damage::Unknown`. ⚠️ Delivers **no user-visible change today**: both would-be consumers are inert (see below). Its value is as P3’s input and as parity with the Windows WGC backend. | same flag; `Unknown` is the fallback, never a wrong rect list |
 | **P3 — NOT VIABLE on this driver (measured)** | Partial readback — `GetImage` only the damaged bounding box into a persistent backbuffer, instead of the full screen. This is where the residual ~20 ms on *active* frames goes. | same flag; falls back to full-frame grab |
 
@@ -72,7 +72,7 @@ window and drains events before each grab.
 
 A missed or coalesced damage event under P1 means a **frozen stream**, which is
 far worse than a slow one. So P1 forces an unconditional full capture at least
-every `ROOMLERD_X11_DAMAGE_MAX_SKIP_MS` (default **1000 ms**). Worst case
+every `MESHHARBORD_X11_DAMAGE_MAX_SKIP_MS` (default **1000 ms**). Worst case
 for a damage bug is therefore a 1 s stale tile, self-healing, not a dead
 session. This bound is the reason P1 is safe to default on.
 
@@ -104,7 +104,7 @@ working diagnostic, so P1 adds a distinct counter and heartbeat field.
       *proven* no-change rather than a starved pump.
 - [x] Windows and macOS untouched — the module and its call site are
       `#[cfg(all(target_os = "linux", feature = "scrap-capture"))]`.
-- [x] `ROOMLERD_X11_DAMAGE=0` restores prior behaviour: idle went back to
+- [x] `MESHHARBORD_X11_DAMAGE=0` restores prior behaviour: idle went back to
       **50.6 %** CPU / 26.4 fps / 19.1 ms capture.
 - [x] Field-verified on `scw-m2-asahi` as a same-session A/B — damage OFF
       50.6 %, damage ON 3.4 %, on the same host minutes apart.

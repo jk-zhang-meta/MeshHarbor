@@ -23,13 +23,13 @@
 //!   group, and that is the one this types for; which group is active later is
 //!   unknowable from here.
 //!
-//! Kill switch `ROOMLERD_UINPUT_XKB=0`: the table only, as before P3f.
+//! Kill switch `MESHHARBORD_UINPUT_XKB=0`: the table only, as before P3f.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::sync::OnceLock;
 
-/// FR-97 P3f — kill switch `ROOMLERD_UINPUT_XKB=0`.
+/// FR-97 P3f — kill switch `MESHHARBORD_UINPUT_XKB=0`.
 pub fn enabled() -> bool {
     tunnel_core::env::flag("UINPUT_XKB", true)
 }
@@ -392,7 +392,7 @@ fn dlerror_string() -> Option<String> {
     }
 }
 
-/// Against the host's real libxkbcommon and its XKB data. `ROOMLERD_TEST_XKB=1`
+/// Against the host's real libxkbcommon and its XKB data. `MESHHARBORD_TEST_XKB=1`
 /// makes a missing library a failure rather than a skip, so the CI lane that
 /// sets it cannot pass by running nothing.
 #[cfg(test)]
@@ -409,8 +409,8 @@ mod tests {
             Ok(t) => Some(t),
             Err(e) => {
                 assert!(
-                    std::env::var("ROOMLERD_TEST_XKB").as_deref() != Ok("1"),
-                    "ROOMLERD_TEST_XKB=1 but `{layout}` did not compile: {e}"
+                    std::env::var("MESHHARBORD_TEST_XKB").as_deref() != Ok("1"),
+                    "MESHHARBORD_TEST_XKB=1 but `{layout}` did not compile: {e}"
                 );
                 eprintln!("skipping: {e}");
                 None

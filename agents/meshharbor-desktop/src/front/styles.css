@@ -1,5 +1,5 @@
 /*
- * Roomler desktop — design system.
+ * MeshHarbor desktop — design system.
  *
  * Tailscale-style shell: fixed left sidebar (brand + nav + connection
  * indicator) and a scrollable content pane, one view visible at a time
@@ -285,7 +285,7 @@ body {
 
 /* One colour per connection type — mirrors ConnectionType (snake_case).
  * Relay is the web's amber (FR-84 D5c), not the primary blue it used to be:
- * one carrier, one colour, in every Roomler surface. */
+ * one carrier, one colour, in every MeshHarbor surface. */
 .badge-direct  { color: var(--ok);      background: rgba(21, 128, 61, 0.12);   border-color: var(--ok); }
 .badge-relay   { color: var(--relay-text); background: rgba(255, 193, 7, 0.16); border-color: var(--mesh-relay); }
 .badge-tunnel  { color: var(--warn);    background: rgba(180, 83, 9, 0.12);     border-color: var(--warn); }

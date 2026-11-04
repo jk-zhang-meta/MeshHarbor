@@ -48,7 +48,7 @@ across a cycle; that is the contract, not a limitation.
 | switch | where | default | what it gates |
 |---|---|---|---|
 | `ephemeral_keys_enabled` | org settings (`PUT /api/tenant/{tid}/ephemeral-key-settings`, or Settings → "Ephemeral enrollment keys") | **off** | whether keys can be minted — and whether any existing key still works (the gate is re-checked on every use, so flipping it off is an org-wide revocation that burns nothing) |
-| `rc.ephemeral_reaper_enabled` | server config (`ROOMLER__RC__EPHEMERAL_REAPER_ENABLED`) | **false** | the reaper task — off means zero queries, zero deletes, deployment-wide |
+| `rc.ephemeral_reaper_enabled` | server config (`MESHHARBOR__RC__EPHEMERAL_REAPER_ENABLED`) | **false** | the reaper task — off means zero queries, zero deletes, deployment-wide |
 | `rc.ephemeral_default_ttl_secs` | server config | 900 | the inactivity deadline for devices whose key set no override |
 | `rc.ephemeral_reap_interval_secs` | server config | 60 | reap cycle cadence (cluster-singleton per cycle) |
 
@@ -95,7 +95,7 @@ after itself:
 # entrypoint.sh — each replica is its own device
 roomlerd enroll \
   --server https://roomler.ai \
-  --token  "$ROOMLER_EPHEMERAL_KEY" \
+  --token  "$MESHHARBOR_EPHEMERAL_KEY" \
   --name   "runner-${HOSTNAME}" \
   --ephemeral
 exec roomlerd run
@@ -198,7 +198,7 @@ flowchart LR
 - **A daemon started while the last one is leaving** never takes that one's
   event, which may already be signaled: it would stop the moment it started. It
   takes the name as soon as the old daemon is gone.
-- Kill switch: `ROOMLERD_SESSION_END=0` makes no window, and a sign-out ends the
+- Kill switch: `MESHHARBORD_SESSION_END=0` makes no window, and a sign-out ends the
   daemon unannounced again. `service stop` needs none: it acts only when asked.
 
 ## Quota

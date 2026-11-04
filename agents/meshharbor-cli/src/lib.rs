@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! `roomler` library surface.
+//! `meshharbor` library surface.
 //!
 //! Re-export of `tunnel_core` so consumers of the binary have one
 //! import path, plus the CLI-specific helpers used by [`cli`].
 //! End-to-end tests in `crates/tests/` drive this lib in-process
-//! against a `TestApp`, mirroring how `roomlerd` is driven from
+//! against a `TestApp`, mirroring how `meshharbord` is driven from
 //! `crates/tests/src/remote_control.rs`.
 
-/// The whole `roomler` command surface (clap definitions + dispatch).
+/// The whole `meshharbor` command surface (clap definitions + dispatch).
 ///
 /// Lives in the LIB, not in `main.rs`, so it has two callers: the
-/// standalone `roomler` binary (tunnel-only hosts) and `meshharbord cli`
-/// (daemon hosts, via the `roomler` shim). Before P3e lever D the MSI
+/// standalone `meshharbor` binary (tunnel-only hosts) and `meshharbord cli`
+/// (daemon hosts, via the `meshharbor` shim). Before P3e lever D the MSI
 /// shipped a second full binary for the latter — 22 MiB of which ~92 %
 /// duplicated crates the daemon already contains.
 pub mod cli;
@@ -21,7 +21,7 @@ pub mod config;
 /// local endpoint the daemon serves, held in the foreground.
 pub mod connectcmd;
 /// FR-103 — the tunnel client renews its own token, and the renewal rule
-/// `roomlerd` shares.
+/// `meshharbord` shares.
 pub mod credential;
 pub mod forward;
 /// FR-90 P1j-3 — `meshharbor hive adopt | unadopt | hook`.

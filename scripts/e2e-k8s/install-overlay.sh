@@ -109,12 +109,12 @@ if kubectl get namespace roomler-ai-e2e >/dev/null 2>&1; then
   fi
 
   # Cycle 4 Chunk 1: we ACTIVELY route outbound mail through Mailpit
-  # via the SMTP backend (configmap sets ROOMLER__EMAIL__SMTP_HOST +
+  # via the SMTP backend (configmap sets MESHHARBOR__EMAIL__SMTP_HOST +
   # SMTP_PORT). EmailService::from_settings prefers SendGrid when
   # api_key is non-empty, so we must NOT copy the prod SendGrid key
   # into the e2e secret — doing so would silently route every send
   # to the real SendGrid account instead of Mailpit. The patch that
-  # previously copied ROOMLER__EMAIL__API_KEY from prod is removed
+  # previously copied MESHHARBOR__EMAIL__API_KEY from prod is removed
   # here. If you want to test the SendGrid path explicitly, set it
   # back manually with `kubectl -n roomler-ai-e2e patch secret ...`.
   :

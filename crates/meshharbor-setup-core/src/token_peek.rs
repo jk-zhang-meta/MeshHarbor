@@ -3,7 +3,7 @@
 //! Unverified JWT payload peek.
 //!
 //! Decodes a JWT's middle segment WITHOUT signature verification to
-//! read routing-relevant claims client-side. The Roomler server's
+//! read routing-relevant claims client-side. The MeshHarbor server's
 //! tunnel-enrollment JWT carries a custom `token_type` claim
 //! (snake_case, e.g. `"tunnel_enrollment"`) and NO `aud` claim, so
 //! audience-style gating needs this peek. Lifted from the tunnel
@@ -83,13 +83,13 @@ mod tests {
 
     #[test]
     fn parses_token_type_claim() {
-        let jwt = fake_jwt(r#"{"token_type":"tunnel_enrollment","iss":"roomler-ai"}"#);
+        let jwt = fake_jwt(r#"{"token_type":"tunnel_enrollment","iss":"meshharbor"}"#);
         assert_eq!(parse_token_type(&jwt).as_deref(), Some("tunnel_enrollment"));
     }
 
     #[test]
     fn missing_claim_returns_none() {
-        let jwt = fake_jwt(r#"{"iss":"roomler-ai"}"#);
+        let jwt = fake_jwt(r#"{"iss":"meshharbor"}"#);
         assert_eq!(parse_token_type(&jwt), None);
     }
 

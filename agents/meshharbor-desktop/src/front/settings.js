@@ -9,7 +9,7 @@
  */
 (function () {
   'use strict';
-  const { $, invoke, show, hide, setText, on, navigate, refreshStatus } = window.Roomler;
+  const { $, invoke, show, hide, setText, on, navigate, refreshStatus } = window.MeshHarbor;
 
   function showResult(text, isError) {
     const el = $('settings-result');
@@ -37,7 +37,7 @@
     else hide($('st-split-banner'));
     // S1b: when the daemon is reachable it reports the config file it
     // actually LOADED — authoritative over the flavour-guess above.
-    const dv = window.Roomler.get && window.Roomler.get('deviceView');
+    const dv = window.MeshHarbor.get && window.MeshHarbor.get('deviceView');
     if (dv && dv.available && dv.status && dv.status.config_path) {
       setText('st-config-dir', dv.status.config_path);
     }
@@ -105,7 +105,7 @@
   /* Keys saved this session whose change waits for a service restart. The
    * sticky bar above the cards counts them. FR-84 D3 mounts its "Apply
    * now" control in `actionsSlot()` and calls `clear()` once the daemon is
-   * back — the hook is `window.Roomler.settingsPendingRestart`. */
+   * back — the hook is `window.MeshHarbor.settingsPendingRestart`. */
   const pendingRestart = new Set();
 
   function paintRestartBar() {
@@ -122,7 +122,7 @@
     show(bar);
   }
 
-  window.Roomler.settingsPendingRestart = {
+  window.MeshHarbor.settingsPendingRestart = {
     keys: () => [...pendingRestart],
     add(key) { pendingRestart.add(key); paintRestartBar(); },
     clear() { pendingRestart.clear(); paintRestartBar(); },
@@ -132,13 +132,13 @@
   /* ── FR-84 D3: Apply now — the daemon restarts itself under its supervisor
    *
    * `cmd_restart_daemon` asks; the DAEMON decides. It refuses when it cannot
-   * prove a supervisor (an orphan `roomlerd run` would go offline rather
+   * prove a supervisor (an orphan `meshharbord run` would go offline rather
    * than restart), when `local_restart_enabled` is off, while a recording
    * runs, or within 30 s of its last restart — and every refusal is shown
    * verbatim. Accepted, the old process keeps answering for a moment, so
    * `cmd_restart_wait` waits for a DIFFERENT process rather than for
    * "reachable", and when the answer says `restart_by: 'caller'` (the Windows Scheduled
-   * Task) it runs `roomlerd service start` itself whenever nothing answers.
+   * Task) it runs `meshharbord service start` itself whenever nothing answers.
    * Once the new daemon is up, the pending set clears and the entries reload
    * from the file the new process read. */
   let applying = false;
@@ -166,7 +166,7 @@
   }
 
   /* The ONE restart flow in the app — Settings' Apply now and the Welcome
-   * tour (FR-84 D6) both call it, as `window.Roomler.restartDaemon`. Ask,
+   * tour (FR-84 D6) both call it, as `window.MeshHarbor.restartDaemon`. Ask,
    * then wait for a DIFFERENT process. Resolves (never rejects):
    *   {ok: true}                               the new daemon answers;
    *   {ok: false, stage, message}              refused ('refused', verbatim),
@@ -208,16 +208,16 @@
         message: 'The service has not come back: ' + e + ' — check Background service.',
       };
     }
-    window.Roomler.settingsPendingRestart.clear();
+    window.MeshHarbor.settingsPendingRestart.clear();
     void refreshStatus();
     return { ok: true };
   }
-  window.Roomler.restartDaemon = restartDaemon;
+  window.MeshHarbor.restartDaemon = restartDaemon;
 
   async function applyNow(btn) {
     if (applying) return;
     applying = true;
-    const keys = window.Roomler.settingsPendingRestart.keys();
+    const keys = window.MeshHarbor.settingsPendingRestart.keys();
     btn.disabled = true;
     try {
       const res = await restartDaemon(
@@ -237,7 +237,7 @@
   }
 
   function mountApplyNow() {
-    const slot = window.Roomler.settingsPendingRestart.actionsSlot();
+    const slot = window.MeshHarbor.settingsPendingRestart.actionsSlot();
     if (!slot || $('btn-apply-now')) return;
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -295,7 +295,7 @@
       // assume they are still exposed.
       if (entry.restart_required) {
         status.textContent = 'Saved — takes effect after the service restarts.';
-        window.Roomler.settingsPendingRestart.add(key);
+        window.MeshHarbor.settingsPendingRestart.add(key);
       } else {
         status.textContent = 'Saved — in effect now, no restart needed.';
       }
@@ -622,7 +622,7 @@
     if (onOff) logTimer = setInterval(() => void refreshLog(), 3000);
   }
 
-  document.addEventListener('roomler:view', (ev) => {
+  document.addEventListener('meshharbor:view', (ev) => {
     if (ev.detail === 'settings') {
       void loadCfg(false);
     } else {
@@ -670,7 +670,7 @@
 
     $('btn-service-install').addEventListener('click', async () => {
       // false = per-user auto-start (Scheduled Task on Windows). Machine-wide
-      // SCM installs are the Roomler Setup installer's job, not the desktop's.
+      // SCM installs are the MeshHarbor Setup installer's job, not the desktop's.
       try {
         await invoke('cmd_service_install', { asService: false });
         showResult('Auto-start installed.', false);

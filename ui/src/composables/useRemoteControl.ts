@@ -875,7 +875,7 @@ export function friendlyEndReason(reason: unknown, limit?: unknown): string | nu
     case 'consent_timeout':
       return 'Nobody answered the prompt on that device in time. Nothing was declined - try again, or ask the person there to approve it.'
     case 'no_prompt_surface':
-      return 'That device could not show a prompt to anyone - nobody is signed in at its screen, or the Roomler desktop app is not running there. Start it on the device, or set this device to email/push consent.'
+      return 'That device could not show a prompt to anyone - nobody is signed in at its screen, or the MeshHarbor desktop app is not running there. Start it on the device, or set this device to email/push consent.'
     case 'error':
       return 'The session could not be established.'
     default:
@@ -1481,7 +1481,7 @@ export interface RcAppsActionReply {
  *  string and the arm that uses it can be tested. */
 export const APPS_UNAVAILABLE_NO_REASON =
   'Remote apps are not available on this host. This agent did not say why (agents ' +
-  'older than FR-56 AC10 carry no reason) — run `roomlerd apps-probe` on the host.'
+  'older than FR-56 AC10 carry no reason) — run `meshharbord apps-probe` on the host.'
 
 /** What the person at the viewer can do at the host's lock screen, from
  *  `rc:host_locked`'s `input`. `passes` (FR-97 P3b, Linux): it takes input
@@ -1852,7 +1852,7 @@ export function parseAppsListReply(obj: Record<string, unknown>): RcAppsListRepl
     // ⚠️ This parse was missing from P5's own PR (#1179): the agent sent the
     // field, the template rendered it, and this function dropped it in
     // between — so the warning was field-verified on the host with
-    // `roomlerd apps-probe` and never once reached a screen (found by the
+    // `meshharbord apps-probe` and never once reached a screen (found by the
     // FR-56 AC10 audit). An entry needs all three strings or it is dropped:
     // the template prints all three, and a blank `install` beside a broken
     // button is not actionable. Absent stays absent (an older agent).
@@ -2084,7 +2084,7 @@ function persistQuality(q: RcQuality) {
  *  specific codec (H.265 or AV1) for an A/B comparison, we save it so
  *  the choice survives a page reload. `null` means no override Ã¢ÂÂ the
  *  agent picks from the full browserÃÂagent intersection. */
-const PREFERRED_CODEC_STORAGE_KEY = 'roomler-rc-preferred-codec'
+const PREFERRED_CODEC_STORAGE_KEY = 'meshharbor-rc-preferred-codec'
 
 /** Codec names that round-trip between `RTCRtpReceiver.getCapabilities`,
  *  the agent's advertised caps, and SDP fmtp munging. Keep in sync
@@ -2148,10 +2148,10 @@ export interface RcResolutionSetting {
  *  the new default and kept a 4K panel streaming at native through a
  *  ~60 ms/frame encode. Old-key values are intentionally orphaned; any
  *  pick made from now on persists under the new key as usual. */
-const RESOLUTION_STORAGE_PREFIX = 'roomler-rc-resolution.v2:'
+const RESOLUTION_STORAGE_PREFIX = 'meshharbor-rc-resolution.v2:'
 
-const SCALE_MODE_STORAGE_KEY = 'roomler-rc-scale-mode'
-const SCALE_CUSTOM_PCT_STORAGE_KEY = 'roomler-rc-scale-pct'
+const SCALE_MODE_STORAGE_KEY = 'meshharbor-rc-scale-mode'
+const SCALE_CUSTOM_PCT_STORAGE_KEY = 'meshharbor-rc-scale-pct'
 
 function readStoredScaleMode(): RcScaleMode {
   try {
@@ -2257,7 +2257,7 @@ function persistResolution(agentId: string, s: RcResolutionSetting) {
  *  the persist-FREE apply path Ã¢ÂÂ restoring through the `codecChoice` setter
  *  would rewrite the four GLOBAL keys and silently turn one agent's override
  *  into every agent's default. */
-export const CODEC_STORAGE_PREFIX = 'roomler-rc-codec.v1:'
+export const CODEC_STORAGE_PREFIX = 'meshharbor-rc-codec.v1:'
 
 /** Every value the Codec picker can hold. The ONE list both the type and the
  *  storage allow-list derive from: `RcCodecChoice` is `typeof` this array, so a
@@ -2424,7 +2424,7 @@ export function decodeStatWireMessage(
  *    down the decoder. */
 export type RcRenderPath = 'video' | 'webcodecs'
 
-const RENDER_PATH_STORAGE_KEY = 'roomler-rc-render-path'
+const RENDER_PATH_STORAGE_KEY = 'meshharbor-rc-render-path'
 
 function readStoredRenderPath(): RcRenderPath {
   try {
@@ -2446,17 +2446,17 @@ function persistRenderPath(p: RcRenderPath) {
 
 // P1 (Parsec-class plan) Ã¢ÂÂ viewer-pipeline diagnosis knobs. All localStorage,
 // all per-viewer, all live-flippable without a redeploy:
-//  - roomler-rc-ctx-mode: 2D-context A/B ('legacy' | 'opaque' |
+//  - meshharbor-rc-ctx-mode: 2D-context A/B ('legacy' | 'opaque' |
 //    'opaque-desync'; default opaque-desync Ã¢ÂÂ alpha:false enables the opaque
 //    compositor fast path, desynchronized requests the low-latency swap
 //    chain).
-//  - roomler-rc-per-frame-msg=1: restore the legacy per-decoded-frame
+//  - meshharbor-rc-per-frame-msg=1: restore the legacy per-decoded-frame
 //    workerÃ¢ÂÂmain message + reactive increment (default OFF Ã¢ÂÂ it was ~60
 //    messages + 60 Vue triggers per second of pure overhead).
-//  - roomler-rc-diag-hud=1: render the per-hop diagnostics row in the HUD.
-const CTX_MODE_STORAGE_KEY = 'roomler-rc-ctx-mode'
-const PER_FRAME_MSG_STORAGE_KEY = 'roomler-rc-per-frame-msg'
-const DIAG_HUD_STORAGE_KEY = 'roomler-rc-diag-hud'
+//  - meshharbor-rc-diag-hud=1: render the per-hop diagnostics row in the HUD.
+const CTX_MODE_STORAGE_KEY = 'meshharbor-rc-ctx-mode'
+const PER_FRAME_MSG_STORAGE_KEY = 'meshharbor-rc-per-frame-msg'
+const DIAG_HUD_STORAGE_KEY = 'meshharbor-rc-diag-hud'
 
 export function storedCtxMode(): CtxMode {
   try {
@@ -2477,16 +2477,16 @@ export function storedPerFrameMsg(): boolean {
 // P6 (Parsec-class plan) Ã¢ÂÂ flow-control knobs for the field-tuning round.
 // All localStorage, all default to today's baked values; proven values get
 // baked as the new defaults in a follow-up (one constant per field round):
-//  - roomler-rc-max-queue: worker decode-queue depth above which deltas are
+//  - meshharbor-rc-max-queue: worker decode-queue depth above which deltas are
 //    dropped + an IDR resync is requested (default 4, clamp 1..60).
-//  - roomler-rc-struggle-queue: queue depth that makes a 1 s stats window
+//  - meshharbor-rc-struggle-queue: queue depth that makes a 1 s stats window
 //    "bad" for the struggling rule (default 2, clamp 0..59).
-//  - roomler-rc-struggle-windows: consecutive bad windows before the
+//  - meshharbor-rc-struggle-windows: consecutive bad windows before the
 //    struggling bit is sent to the agent (default 2; 1 = the legacy
 //    instantaneous rule, clamp 1..10).
-const MAX_QUEUE_STORAGE_KEY = 'roomler-rc-max-queue'
-const STRUGGLE_QUEUE_STORAGE_KEY = 'roomler-rc-struggle-queue'
-const STRUGGLE_WINDOWS_STORAGE_KEY = 'roomler-rc-struggle-windows'
+const MAX_QUEUE_STORAGE_KEY = 'meshharbor-rc-max-queue'
+const STRUGGLE_QUEUE_STORAGE_KEY = 'meshharbor-rc-struggle-queue'
+const STRUGGLE_WINDOWS_STORAGE_KEY = 'meshharbor-rc-struggle-windows'
 
 export interface RcFlowParams {
   maxQueue: number
@@ -2496,7 +2496,7 @@ export interface RcFlowParams {
 
 /** Read the P6 flow-control knobs (pure + exported so the defaults and
  *  clamps are locked by unit tests). Read once per composable Ã¢ÂÂ a knob
- *  change needs a page refresh, like every other `roomler-rc-*` knob. */
+ *  change needs a page refresh, like every other `meshharbor-rc-*` knob. */
 export function storedFlowParams(): RcFlowParams {
   let mq: string | null = null
   let sq: string | null = null
@@ -2515,13 +2515,13 @@ export function storedFlowParams(): RcFlowParams {
   }
 }
 
-/** FR-98 C3 — `roomler-rc-input-gap`: the pointer-move coalescing gap in ms.
+/** FR-98 C3 — `meshharbor-rc-input-gap`: the pointer-move coalescing gap in ms.
  *  Default 8 (≈125 Hz, FR-1 P6), clamped to 0..16; 0 sends every pointer
  *  event as it arrives. A knob for the field A/B: FR-98 keeps a cadence
  *  change only if L4 shows it moving input to photon. Read once per
- *  composable, like every other `roomler-rc-*` knob. Pure + exported for
+ *  composable, like every other `meshharbor-rc-*` knob. Pure + exported for
  *  tests. */
-export const INPUT_GAP_STORAGE_KEY = 'roomler-rc-input-gap'
+export const INPUT_GAP_STORAGE_KEY = 'meshharbor-rc-input-gap'
 export const DEFAULT_INPUT_GAP_MS = 8
 
 export function storedInputGapMs(): number {
@@ -2548,12 +2548,12 @@ export function diagHudEnabled(): boolean {
 // FR-26 — which quality pills the toolbar readout shows, per user.
 //
 // The readout grew one pill at a time until it was six wide, and the only
-// way to influence it was an undiscoverable `roomler-rc-diag-hud=1`
+// way to influence it was an undiscoverable `meshharbor-rc-diag-hud=1`
 // localStorage flag. Now every pill has a checkbox in Viewer settings.
 // Everything is ON by default except `paint`: the per-hop numbers answer a
 // question ("is the fps ceiling paint-, decode- or main-thread-bound?")
 // that only matters while you are chasing it.
-const METRICS_STORAGE_KEY = 'roomler-rc-metrics'
+const METRICS_STORAGE_KEY = 'meshharbor-rc-metrics'
 
 export interface RcMetricToggles {
   codec: boolean
@@ -2582,7 +2582,7 @@ export const DEFAULT_RC_METRICS: RcMetricToggles = {
  * (fewer pills) keeps working and newly added pills appear rather than
  * silently reading as `false`.
  *
- * ⚠️ `paint` additionally inherits the legacy `roomler-rc-diag-hud=1` flag
+ * ⚠️ `paint` additionally inherits the legacy `meshharbor-rc-diag-hud=1` flag
  * the first time, so anyone who set it by hand keeps their HUD.
  */
 export function storedMetricToggles(): RcMetricToggles {
@@ -2616,14 +2616,14 @@ export function persistMetricToggles(m: RcMetricToggles): void {
 }
 
 // P7 (Parsec-class plan) — FSR sharpening knobs (see rc-fsr-render.ts).
-//  - roomler-rc-sharpen: 'auto' | 'on' | 'off'. Default 'auto' — the EASU+
+//  - meshharbor-rc-sharpen: 'auto' | 'on' | 'off'. Default 'auto' — the EASU+
 //    RCAS upscale engages only when the decoded stream is SMALLER than the
 //    viewer's window needs (the Smoother/relay rungs). Doubles as the field
-//    escape hatch: localStorage.setItem('roomler-rc-sharpen','off') + refresh.
-//  - roomler-rc-fsr-sharpness: RCAS sharpness in AMD stops (default 0.25,
+//    escape hatch: localStorage.setItem('meshharbor-rc-sharpen','off') + refresh.
+//  - meshharbor-rc-fsr-sharpness: RCAS sharpness in AMD stops (default 0.25,
 //    clamp 0..2; LOWER = sharper). Tuning-only — no UI.
-const SHARPEN_STORAGE_KEY = 'roomler-rc-sharpen'
-const FSR_SHARPNESS_STORAGE_KEY = 'roomler-rc-fsr-sharpness'
+const SHARPEN_STORAGE_KEY = 'meshharbor-rc-sharpen'
+const FSR_SHARPNESS_STORAGE_KEY = 'meshharbor-rc-fsr-sharpness'
 
 export function storedSharpenMode(): SharpenMode {
   try {
@@ -2694,7 +2694,7 @@ export function startViewportReporter(el: HTMLCanvasElement, worker: Worker): ()
 /** P2 — restore the LEGACY H.264 mapping (RTP track + `<video>`) for the
  *  explicit H.264 codec choice. Escape hatch for the `data-channel-h264`
  *  rollout; see `codecChoiceToSettings`. */
-const H264_RTP_STORAGE_KEY = 'roomler-rc-h264-rtp'
+const H264_RTP_STORAGE_KEY = 'meshharbor-rc-h264-rtp'
 
 export function storedH264Rtp(): boolean {
   try {
@@ -2768,14 +2768,14 @@ export type RcVideoTransport =
  *  default (same rationale as the resolution-prefix bump: transports
  *  toggled during the earlier debugging rounds would silently block the
  *  HWÃÂHW auto-rank forever). Explicit picks made from now on persist. */
-const VIDEO_TRANSPORT_STORAGE_KEY = 'roomler-rc-video-transport.v2'
+const VIDEO_TRANSPORT_STORAGE_KEY = 'meshharbor-rc-video-transport.v2'
 
 /** rc.62 Ã¢ÂÂ localStorage key for the per-browser VP9 chroma preference.
  *  Recognised values: `'auto'` (let the agent decide via env var),
  *  `'yuv420'` (VP9 profile 0, ~30% lower bandwidth), `'yuv444'`
  *  (VP9 profile 1, sharpest text). Default `'auto'` keeps rc.61
  *  behaviour for browsers that don't see the dropdown yet. */
-const VP9_CHROMA_STORAGE_KEY = 'roomler-rc-vp9-chroma'
+const VP9_CHROMA_STORAGE_KEY = 'meshharbor-rc-vp9-chroma'
 
 export type Vp9ChromaPref = 'auto' | 'yuv420' | 'yuv444'
 
@@ -2834,7 +2834,7 @@ function persistVideoTransport(t: RcVideoTransport) {
  *  was built with the `audio` feature Ã¢ÂÂ otherwise it silently ignores
  *  the flag (graceful no-op). Default OFF so audio stays opt-in and no
  *  autoplay-with-sound prompt fires unless the user asked for it. */
-const AUDIO_ENABLED_STORAGE_KEY = 'roomler-rc-audio-enabled'
+const AUDIO_ENABLED_STORAGE_KEY = 'meshharbor-rc-audio-enabled'
 
 /** Read the persisted audio-enabled flag. Pure + exported so the wire
  *  contract (default OFF, exact truthy value) is locked by a unit
@@ -3528,7 +3528,7 @@ export function pickAutoTransport(inputs: AutoTransportInputs): {
  *  "Sharpness" lever, smoother = fewer pixels everywhere). */
 export type RcPriority = 'balanced' | 'sharper' | 'smoother'
 
-const PRIORITY_STORAGE_KEY = 'roomler-rc-priority'
+const PRIORITY_STORAGE_KEY = 'meshharbor-rc-priority'
 
 function readStoredPriority(): RcPriority {
   try {
@@ -3552,7 +3552,7 @@ function persistPriority(p: RcPriority) {
 /** loopback-TURN corp-relay (Phase 2; default ON since 2026-08-02 — bedded
  *  in). When on, `connect()` probes the local agent's loopback TURN and, if
  *  present, relays through it. */
-const LOCAL_RELAY_STORAGE_KEY = 'roomler-rc-local-relay'
+const LOCAL_RELAY_STORAGE_KEY = 'meshharbor-rc-local-relay'
 
 function readStoredLocalRelay(): boolean {
   // 2026-08-02 operator default: ON (bedded in since rc.220 agent-side).
@@ -3605,7 +3605,7 @@ export interface CodecChoiceSettings {
  *  reliable-DC + WebCodecs pipeline as the other three codecs; connect()
  *  falls back to the legacy RTP track when the agent doesn't advertise it or
  *  this browser rejects Annex-B avc1). `opts.h264Rtp` (localStorage
- *  `roomler-rc-h264-rtp=1`, threaded by the caller to keep this pure)
+ *  `meshharbor-rc-h264-rtp=1`, threaded by the caller to keep this pure)
  *  restores the legacy RTP + `<video>` mapping outright. */
 export function codecChoiceToSettings(
   choice: RcCodecChoice,
@@ -3716,7 +3716,7 @@ export function settingsToCodecChoice(
 }
 
 /** loopback-TURN corp-relay (Phase 2 Ã¢ÂÂ plan
- *  `~/.claude/plans/roomler-loopback-turn-corp-relay.md`). The corp host's
+ *  `~/.claude/plans/meshharbor-loopback-turn-corp-relay.md`). The corp host's
  *  local enrolled agent hosts a TURN server (`tunnel-core::transport::
  *  turn_host::LocalTurnHost`) + a loopback HTTP endpoint that returns this
  *  descriptor. The browser Ã¢ÂÂ loopback is never firewall-blocked, unlike its
@@ -3773,7 +3773,7 @@ export function parseLocalRelayDescriptor(raw: unknown): LocalRelayDescriptor | 
 
 /** 2026-07-24 decode-stall A/B Ã¢ÂÂ experimental override for the DC decode
  *  workers' `VideoDecoder.hardwareAcceleration`. localStorage
- *  `roomler-rc-decode-pref`: `'software'` | `'hardware'` | unset
+ *  `meshharbor-rc-decode-pref`: `'software'` | `'hardware'` | unset
  *  (`no-preference`, today's behaviour). Field context: DEVBOX viewing WINHOST-A
  *  hits 3-5 s mid-session decoder stalls (Mbps > 0, decoded fps Ã¢ÂÂ 0, then a
  *  catch-up burst) on BOTH HEVC and VP9 with the agent proven healthy Ã¢ÂÂ
@@ -3783,7 +3783,7 @@ export function parseLocalRelayDescriptor(raw: unknown): LocalRelayDescriptor | 
  *  fallback path takes over). Pure + exported for tests. */
 export function storedDecodePref(): 'prefer-software' | 'prefer-hardware' | 'no-preference' {
   try {
-    const raw = globalThis.localStorage?.getItem('roomler-rc-decode-pref')
+    const raw = globalThis.localStorage?.getItem('meshharbor-rc-decode-pref')
     if (raw === 'software') return 'prefer-software'
     if (raw === 'hardware') return 'prefer-hardware'
   } catch {
@@ -4293,7 +4293,7 @@ export function buildClipboardNativeFrames(
 /** Clipboard auto-sync opt-out. Default ON Ã¢ÂÂ only an explicit '0'
  *  disables (the feature is the whole point of clipboard v2; users
  *  who want the old button-driven flow flip the Settings toggle). */
-const CLIPBOARD_AUTO_SYNC_STORAGE_KEY = 'roomler-rc-clipboard-auto'
+const CLIPBOARD_AUTO_SYNC_STORAGE_KEY = 'meshharbor-rc-clipboard-auto'
 
 function readStoredClipboardAutoSync(): boolean {
   try {
@@ -4397,7 +4397,7 @@ export function videoDcOptions(
  *  not a plausible argument. Pure + exported for tests. */
 export function storedUnorderedVideo(): boolean {
   try {
-    return globalThis.localStorage?.getItem('roomler-rc-unordered-video') === '1'
+    return globalThis.localStorage?.getItem('meshharbor-rc-unordered-video') === '1'
   } catch {
     /* privacy mode - default off */
     return false
@@ -5173,7 +5173,7 @@ export function useRemoteControl(
   // e2e hook (FR-61): the live stats ref — a path-agnostic "frames are
   // flowing" oracle (fps/bitrate update on the RTP path AND every DC pump,
   // where inbound-rtp getStats is silent).
-  ;(window as unknown as Record<string, unknown>).__roomler_remote_stats = stats
+  ;(window as unknown as Record<string, unknown>).__meshharbor_remote_stats = stats
   /** Remote cursor state. `pos` = null Ã¢ÂÂ hide the overlay + fall back
    *  to the initials badge. Shape bitmaps are cached so the canvas
    *  paint is just a `drawImage`. */
@@ -5242,9 +5242,9 @@ export function useRemoteControl(
    *  degraded picture, so the two must move together. */
   let sessionChunkFraming = false
   /** FR-16 L4 — how THIS session times input to photon, if at all:
-   *  `probe` when the knob `roomler-rc-bench=1` is set AND the agent
+   *  `probe` when the knob `meshharbor-rc-bench=1` is set AND the agent
    *  advertised `bench` in `AgentCaps.video`; `target` when the knob says
-   *  `target` (a `roomlerd probe-target` window on the host paints the
+   *  `target` (a `meshharbord probe-target` window on the host paints the
    *  answers). Resolved beside `sessionChunkFraming`, before any worker gets
    *  its `init-canvas`, which carries `sessionBench`. */
   let sessionBenchMode: BenchMode | null = null
@@ -5295,7 +5295,7 @@ export function useRemoteControl(
   /** rc.62 Ã¢ÂÂ VP9 chroma preference (per-browser, persisted). When set
    *  to `'yuv420'` or `'yuv444'` the value is sent as `chroma_pref` in
    *  the `rc:session.request` payload; the agent's VP9-444 encoder
-   *  uses it instead of its `ROOMLERD_VP9_CHROMA` env var. When
+   *  uses it instead of its `MESHHARBORD_VP9_CHROMA` env var. When
    *  `'auto'` (default), the field is omitted and the agent uses its
    *  own configured default. */
   const vp9Chroma = ref<Vp9ChromaPref>(readStoredVp9Chroma())
@@ -5642,7 +5642,7 @@ export function useRemoteControl(
     }
     // Walk the candidate range: a host with several agents binds
     // distinct ports, and only the WINDOWS-native one carries the
-    // `x-roomler-clipboard-native` header (Access-Control-Expose-
+    // `x-meshharbor-clipboard-native` header (Access-Control-Expose-
     // Headers'd for cross-origin reads). Gating on it means a WSL /
     // Linux agent answering earlier in the range is skipped and the
     // Windows agent found on the next port. First match wins.
@@ -5652,7 +5652,7 @@ export function useRemoteControl(
       try {
         const res = await fetch(clipboardBridgeUrl(port), { method: 'GET', signal: ctrl.signal })
         const reachable = res.ok || res.status === 204
-        if (reachable && res.headers.get('x-roomler-clipboard-native') === '1') {
+        if (reachable && res.headers.get('x-meshharbor-clipboard-native') === '1') {
           localClipboardBridge.value = true
           localClipboardBridgePort.value = port
           return
@@ -6378,7 +6378,7 @@ export function useRemoteControl(
   // Now: send immediately when the min-gap has passed, else one timer for
   // the remainder; latest-wins. 8 ms ≈ 125 Hz ceiling, ~60 B/msg — noise
   // even on a constrained relay. FR-98 C3: the gap is a knob for the field
-  // A/B (`roomler-rc-input-gap`, `storedInputGapMs`); 8 unless set.
+  // A/B (`meshharbor-rc-input-gap`, `storedInputGapMs`); 8 unless set.
   const INPUT_MOVE_GAP_MS = storedInputGapMs()
   let moveTimer: ReturnType<typeof setTimeout> | null = null
   let lastMoveSentAt = 0
@@ -6428,7 +6428,7 @@ export function useRemoteControl(
   /** The person left an auto-entered lock while the cursor stayed hidden:
    *  no re-entry until it shows again. */
   let relativeAutoSuppressed = false
-  /** `roomler-rc-relative-auto=off`, read when the input surface attaches. */
+  /** `meshharbor-rc-relative-auto=off`, read when the input surface attaches. */
   let relativeAutoOff = false
   /** The click that entered relative mode is the gesture, not input: its
    *  button-up is swallowed too. */
@@ -6574,7 +6574,7 @@ export function useRemoteControl(
   }
 
   /** FR-16 L4, target mode — the probe is a real pointer move onto cell
-   *  `seq` of the host's `roomlerd probe-target` window. Aimed with the
+   *  `seq` of the host's `meshharbord probe-target` window. Aimed with the
    *  agent's reported native size, since the window lives in the host's own
    *  pixels however the stream is scaled. Same gates as `sendInput`. */
   function sendBenchTargetMove(probe: { t: 'probe'; seq: number }): boolean {
@@ -6944,7 +6944,7 @@ export function useRemoteControl(
     // A window is "bad" when we dropped frames to a backlog, OR the queue is
     // deep enough that we're about to (the worker drops at queue > maxQueue).
     // P6 Ã¢ÂÂ the struggling bit needs a SUSTAINED run of bad windows (default
-    // 2 consecutive; `roomler-rc-struggle-windows=1` restores the legacy
+    // 2 consecutive; `meshharbor-rc-struggle-windows=1` restores the legacy
     // instantaneous rule). P1's field read showed a healthy viewer parks at
     // queue 0, so a single-window blip (a big IDR landing, a GPU hiccup) was
     // a false positive that cost ~20 s of lazily-recovered reduced fps.
@@ -7148,7 +7148,7 @@ export function useRemoteControl(
    *  next `connect()` Ã¢ÂÂ the choice is baked into the
    *  `rc:session.request.chroma_pref` field. Older agents that don't
    *  understand the field ignore it and fall back to their own
-   *  `ROOMLERD_VP9_CHROMA` default (= no-op). */
+   *  `MESHHARBORD_VP9_CHROMA` default (= no-op). */
   function setVp9Chroma(c: Vp9ChromaPref) {
     vp9Chroma.value = c
     persistVp9Chroma(c)
@@ -7619,7 +7619,7 @@ export function useRemoteControl(
         console.info('[rc] vp9-444 first frame', msg.width, 'x', msg.height)
       } else if (msg.type === 'decoder-configured') {
         // `pref` (round 3) = the hardwareAcceleration ACTUALLY passed to
-        // configure() Ã¢ÂÂ proves whether the roomler-rc-decode-pref A/B took.
+        // configure() Ã¢ÂÂ proves whether the meshharbor-rc-decode-pref A/B took.
         // FR-80 — the worker's log prefix is a legacy name; `msg.codec` is
         // the truth (this worker decodes VP9, AV1 and H.264). The pill reads
         // it until the agent names its encoder.
@@ -9171,7 +9171,7 @@ export function useRemoteControl(
     // e2e hook (FR-61): the live PC, so specs can assert framesDecoded via
     // getStats() instead of settling for currentTime heuristics — the hook
     // remote-session-smoke.spec.ts documents wishing it had.
-    ;(window as unknown as Record<string, unknown>).__roomler_remote_pc = pc
+    ;(window as unknown as Record<string, unknown>).__meshharbor_remote_pc = pc
 
     pc.ontrack = (ev) => {
       // Opt-in host audio arrives on its own m=audio section. Route it
@@ -10523,7 +10523,7 @@ export function useRemoteControl(
     if (sessionBenchMode === 'probe') {
       console.info('[rc] bench mode: the agent advertised `bench`; probing once the input channel opens (FR-16 L4)')
     } else if (sessionBenchMode === 'target') {
-      console.info('[rc] bench mode: target — probing with pointer moves onto the host\'s `roomlerd probe-target` window (FR-16 L4)')
+      console.info('[rc] bench mode: target — probing with pointer moves onto the host\'s `meshharbord probe-target` window (FR-16 L4)')
     }
 
     // Everything above this point - the local-relay probe and the
@@ -11220,7 +11220,7 @@ export function useRemoteControl(
 
     // FR-111 P1 — a finger goes through the gesture recognizer (direct mode:
     // tap, drag, long press, two-finger tap / scroll, pinch); a mouse or a pen
-    // keeps the paths above. `roomler-rc-touch=legacy` sends a finger down the
+    // keeps the paths above. `meshharbor-rc-touch=legacy` sends a finger down the
     // mouse's path, as before FR-111.
     const touchGestures = createDirectGestures()
     // A two-finger scroll's pixels, let out as whole agent wheel steps: the
@@ -13346,7 +13346,7 @@ export function useRemoteControl(
     hevcStats,
     hevcCanvasEl,
     /** P1 Ã¢ÂÂ per-hop pipeline diagnostics for the diag HUD
-     *  (localStorage roomler-rc-diag-hud=1). */
+     *  (localStorage meshharbor-rc-diag-hud=1). */
     decodeDiag,
   }
 }

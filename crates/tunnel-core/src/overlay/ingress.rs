@@ -341,7 +341,7 @@ impl ReplyFlows {
 /// is judged by the rules.
 ///
 /// ⚠️ Unlike Tailscale, an echo REQUEST to the node itself passes too. The
-/// mesh measures itself with it (roomlerd's RTT prober pings every live peer's
+/// mesh measures itself with it (meshharbord's RTT prober pings every live peer's
 /// overlay address and feeds the path monitor), so a port-narrowed tenant ACL
 /// would otherwise blind path quality. It reaches no service, and the netmap
 /// already tells the peer this node is online. Only the node itself: an echo

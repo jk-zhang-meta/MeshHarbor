@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! One-shot enrollment exchange.
 //!
-//! Flow: admin issues an enrollment token in the Roomler UI and hands it to
+//! Flow: admin issues an enrollment token in the MeshHarbor UI and hands it to
 //! the machine operator. `meshharbord enroll --token <t>` posts it to
 //! `POST /api/agent/enroll` with machine metadata, gets back a long-lived
 //! agent token, and persists everything to the config file.
@@ -21,8 +21,8 @@ use crate::config::AgentConfig;
 /// still enrolls from a post-P3 script; it simply ignores the variables.
 /// For the same reason a value in them that this build does not know is
 /// clamped, never refused ([`resolve_install`]).
-pub const INSTALL_METHOD_ENV: &str = "ROOMLER_INSTALL_METHOD";
-pub const INSTALL_SCOPE_ENV: &str = "ROOMLER_INSTALL_SCOPE";
+pub const INSTALL_METHOD_ENV: &str = "MESHHARBOR_INSTALL_METHOD";
+pub const INSTALL_SCOPE_ENV: &str = "MESHHARBOR_INSTALL_SCOPE";
 
 #[derive(Debug, Serialize)]
 struct EnrollRequest<'a> {
@@ -654,7 +654,7 @@ fn unique_org_label(
             )
         })?;
         if cfg.find_org(&label).is_some() {
-            bail!("--label {label:?} is already in use (see `roomlerd org ls`)");
+            bail!("--label {label:?} is already in use (see `meshharbord org ls`)");
         }
         return Ok(label);
     }
@@ -1137,7 +1137,7 @@ mod tests {
         let EnrollOutcome::AppendedOrg { label } = outcome else {
             panic!("expected append, got {outcome:?}");
         };
-        assert_eq!(label, "roomler-ai", "label derives from the server host");
+        assert_eq!(label, "meshharbor", "label derives from the server host");
         assert_eq!(cfg.orgs.len(), 1);
         let entry = &cfg.orgs[0];
         assert_eq!(entry.tenant_id, "t-new");
@@ -1209,13 +1209,13 @@ mod tests {
     #[test]
     fn apply_enrollment_appended_label_uniquifies_on_collision() {
         let mut existing = crate::config::test_fixture();
-        existing.orgs = vec![org("roomler-ai", "https://other.invalid", "t-x")];
+        existing.orgs = vec![org("meshharbor", "https://other.invalid", "t-x")];
         let fresh = fresh_for("https://roomler.ai", "t-y", "tok-y");
         let (_cfg, outcome) = apply_enrollment(Some(existing), fresh, None, false).unwrap();
         assert_eq!(
             outcome,
             EnrollOutcome::AppendedOrg {
-                label: "roomler-ai-2".into()
+                label: "meshharbor-2".into()
             }
         );
     }

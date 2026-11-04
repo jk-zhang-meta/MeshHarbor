@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! `roomler` — TeamViewer-style native tunnel client.
+//! `meshharbor` — TeamViewer-style native tunnel client.
 //!
 //! Forwards a local TCP port over a WebRTC P2P data channel to an
-//! enrolled `roomlerd`, which dials the corresponding intranet
-//! destination. The Roomler API is signalling-only — payload never
+//! enrolled `meshharbord`, which dials the corresponding intranet
+//! destination. The MeshHarbor API is signalling-only — payload never
 //! touches the server.
 //!
 //! CLI surface:
@@ -12,11 +12,11 @@
 //!   meshharbor enroll --server <url> --token <enrollment-jwt> --name <label>
 //!   meshharbor forward --agent <agent_id> --local <port> --remote <host:port>
 //!   meshharbor run [--config <path>]
-//!   roomler diagnose [--agent <agent_id>]
+//!   meshharbor diagnose [--agent <agent_id>]
 //!   meshharbor status [--json]     # local daemon's node state (LocalAPI)
 //!   meshharbor peers  [--json] [--display-name] [NAME…]   # peers + connection types (LocalAPI)
-//!   roomler devices [--json]    # the devices this one may see, server-listed (LocalAPI)
-//!   roomler flows  [--json]     # active forwards / SOCKS5 (LocalAPI)
+//!   meshharbor devices [--json]    # the devices this one may see, server-listed (LocalAPI)
+//!   meshharbor flows  [--json]     # active forwards / SOCKS5 (LocalAPI)
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -66,8 +66,8 @@ struct Cli {
     // ENROLLED credential on tunnel-only hosts, and renaming it strands
     // every one of them. agents/meshharbor-cli/src/config.rs
     /// Override config file location. Defaults to the platform config dir
-    /// (`%APPDATA%\roomler\roomler-tunnel\config.toml` on Windows,
-    /// `~/.config/roomler-tunnel/config.toml` on Linux, the equivalent on
+    /// (`%APPDATA%\meshharbor\meshharbor-tunnel\config.toml` on Windows,
+    /// `~/.config/meshharbor-tunnel/config.toml` on Linux, the equivalent on
     /// macOS via the `directories` crate).
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -100,11 +100,11 @@ enum Command {
         #[arg(last = true)]
         args: Vec<String>,
     },
-    /// Enroll this laptop against a Roomler server using an admin-issued
+    /// Enroll this laptop against a MeshHarbor server using an admin-issued
     /// tunnel-enrollment token. Writes the long-lived `TunnelClient` JWT
     /// to the config file. Mirrors `meshharbord enroll`.
     Enroll {
-        /// Base URL of the Roomler API (e.g. https://roomler.ai).
+        /// Base URL of the MeshHarbor API (e.g. https://roomler.ai).
         #[arg(long)]
         server: String,
         /// Tunnel-enrollment token, as printed by the admin UI.
@@ -201,8 +201,8 @@ enum Command {
         #[arg(long)]
         agent: Option<String>,
     },
-    /// Check for a newer roomler CLI release and self-replace the running
-    /// binary (Windows). Mirrors `roomlerd self-update`.
+    /// Check for a newer meshharbor CLI release and self-replace the running
+    /// binary (Windows). Mirrors `meshharbord self-update`.
     SelfUpdate {
         /// Only check + report whether an update is available; don't install.
         #[arg(long)]
@@ -244,7 +244,7 @@ enum Command {
     /// NAME; `meshharbor peers laptop "Office PC"` shows only those two, in
     /// that order — each a mesh name or a display name.
     Peers {
-        /// FR-49 - show only this enrollment (`roomlerd org ls`; `primary` for
+        /// FR-49 - show only this enrollment (`meshharbord org ls`; `primary` for
         /// the scalar identity). Without it every org's peers are printed
         /// together, which on a device enrolled in a customer org and a
         /// personal one is unusable on a shared screen or in a bug report.
@@ -271,10 +271,10 @@ enum Command {
     /// CONN. Search, sort and paging run on the server; the local daemon asks
     /// it with this device's own credentials (FR-84).
     ///
-    ///   roomler devices
-    ///   roomler devices -q build --sort last_seen_at --desc
+    ///   meshharbor devices
+    ///   meshharbor devices -q build --sort last_seen_at --desc
     Devices {
-        /// Enrollment to list (`roomlerd org ls`; `primary` for the scalar
+        /// Enrollment to list (`meshharbord org ls`; `primary` for the scalar
         /// identity). Default: the primary.
         #[arg(long)]
         org: Option<String>,
@@ -361,7 +361,7 @@ enum Command {
         action: KeepBusyAction,
     },
     /// FR-90 — Claude Code sessions you run in a terminal, adopted into
-    /// Roomler: mirrored by this device and shown to you alone, read-only.
+    /// MeshHarbor: mirrored by this device and shown to you alone, read-only.
     Hive {
         #[command(subcommand)]
         action: HiveAction,
@@ -378,7 +378,7 @@ enum Command {
     /// (up to 60 s) until the NEW daemon answers, starting the scheduled task
     /// itself where that is how the daemon comes back.
     ///
-    ///   roomler restart --reason "applied overlay settings"
+    ///   meshharbor restart --reason "applied overlay settings"
     Restart {
         /// Why — written to the daemon's log and its restart record.
         #[arg(long, default_value = "")]
@@ -428,7 +428,7 @@ enum Command {
     ///
     /// Commands run privileged — root under systemd; on Windows SYSTEM, through
     /// the device's service, once an administrator anchored it
-    /// (`roomlerd anchor create`), and otherwise the console-session worker
+    /// (`meshharbord anchor create`), and otherwise the console-session worker
     /// (the signed-in user on an attended install, SYSTEM in SystemContext
     /// mode). Every attempt is audited, with the identity that ran it.
     ///
@@ -451,15 +451,15 @@ enum Command {
         #[command(flatten)]
         fmt: OutputFmt,
         /// The command. Put it after `--` so its own flags aren't parsed
-        /// by roomler: `meshharbor exec winhost-a -- Get-NetRoute -AddressFamily IPv4`
+        /// by meshharbor: `meshharbor exec winhost-a -- Get-NetRoute -AddressFamily IPv4`
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
     /// Open an SSH session to another device in this org, over the overlay.
     ///
-    /// No `sshd` and no open port on the target: the roomler daemon there
+    /// No `sshd` and no open port on the target: the meshharbor daemon there
     /// intercepts the connection below the OS. The session itself runs through
-    /// your system `ssh` — roomler supplies a single-use identity, the address,
+    /// your system `ssh` — meshharbor supplies a single-use identity, the address,
     /// and the target's host key, then gets out of the way.
     ///
     /// The host key is VERIFIED, never trusted on first use. If the server has
@@ -531,14 +531,14 @@ enum Command {
     /// `rsync` and `git` can reach mesh devices BY NAME.
     ///
     ///   # ~/.ssh/config
-    ///   Host *.roomler
-    ///     ProxyCommand roomler proxy %h %p
+    ///   Host *.meshharbor
+    ///     ProxyCommand meshharbor proxy %h %p
     ///     Port 2222
     ///
-    ///   scp report.pdf corplap-3.roomler:/tmp/
+    ///   scp report.pdf corplap-3.meshharbor:/tmp/
     ///
-    /// A device is matched by its bare name, as <name>.roomler, or by its
-    /// MagicDNS name. 2222 is roomler SSH's default port; drop the `Port`
+    /// A device is matched by its bare name, as <name>.meshharbor, or by its
+    /// MagicDNS name. 2222 is meshharbor SSH's default port; drop the `Port`
     /// line to reach a device's own sshd on 22 instead.
     ///
     /// ⚠️ OpenSSH applies a `HostName` line BEFORE substituting %h, so a host
@@ -550,7 +550,7 @@ enum Command {
     /// grant-issued session with the account resolved by policy and the host
     /// key verified for you, use `meshharbor ssh` instead.
     Proxy {
-        /// Device name (bare, <name>.roomler, or MagicDNS) or overlay address
+        /// Device name (bare, <name>.meshharbor, or MagicDNS) or overlay address
         /// (OpenSSH passes `%h`).
         host: String,
         /// Port (OpenSSH passes `%p`).
@@ -628,13 +628,13 @@ enum ConfigAction {
     },
 }
 
-/// `roomler record …` — FR-85 local screen recording. Every verb talks to the
+/// `meshharbor record …` — FR-85 local screen recording. Every verb talks to the
 /// LOCAL daemon; `start`, `stop` and `rm` are refused unless the caller is the
 /// console user (an RDP guest must not record the console user's desktop).
 #[derive(Debug, Subcommand)]
 enum HiveAction {
     /// Mirror the Claude Code sessions YOU run in a terminal on this machine
-    /// into Roomler, where only you see them (read-only). Adds three hooks to
+    /// into MeshHarbor, where only you see them (read-only). Adds three hooks to
     /// your own user-level Claude Code settings and touches nothing else. The
     /// device's owner must allow it (`hive_adopt`) and map your account in
     /// `hive_accounts`.
@@ -714,7 +714,7 @@ enum KeepBusyAction {
         fmt: OutputFmt,
     },
     /// Turn keep busy on, as the person at this computer. Root, SYSTEM and
-    /// services are refused, so `sudo roomler keep-busy on` is, and so is a
+    /// services are refused, so `sudo meshharbor keep-busy on` is, and so is a
     /// SYSTEM shell. It stays on until someone turns it off, and resumes at
     /// your next login.
     On {
@@ -741,7 +741,7 @@ enum KeepBusyAction {
     },
 }
 
-/// `roomler rc …` — this device's own remote-control settings.
+/// `meshharbor rc …` — this device's own remote-control settings.
 #[derive(Debug, Subcommand)]
 enum RcAction {
     /// The external-access password (FR-52 gate 4) — what lets someone
@@ -753,7 +753,7 @@ enum RcAction {
     },
 }
 
-/// `roomler rc password …` — set, clear or inspect the device-held password.
+/// `meshharbor rc password …` — set, clear or inspect the device-held password.
 ///
 /// The password is registered by the daemon as an OPAQUE record and is not
 /// readable back, by anyone, including this CLI and including the server. There
@@ -771,7 +771,7 @@ enum RcPasswordAction {
     /// password on stdin instead.
     Set {
         /// Read the password from stdin (one line) instead of prompting, for
-        /// unattended setup: `printf '%s' "$PW" | roomler rc password set --stdin`.
+        /// unattended setup: `printf '%s' "$PW" | meshharbor rc password set --stdin`.
         /// Only the line terminator is stripped.
         #[arg(long)]
         stdin: bool,
@@ -787,7 +787,7 @@ enum RcPasswordAction {
     },
 }
 
-/// `roomler route …` — declared-route management (P6). All verbs talk to
+/// `meshharbor route …` — declared-route management (P6). All verbs talk to
 /// the LOCAL daemon over the LocalAPI; the daemon persists changes into
 /// its own config and reconciles them into live flows.
 #[derive(Debug, Subcommand)]
@@ -869,17 +869,17 @@ enum RouteAction {
 /// rather than sniffing argv[0] or an env var.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
-    /// The standalone `roomler` binary on a tunnel-only host.
+    /// The standalone `meshharbor` binary on a tunnel-only host.
     Standalone,
     /// Dispatched from `meshharbord cli` on a daemon host.
     EmbeddedInDaemon,
 }
 
-/// FR-84 D3 — the `roomlerd` binary `roomler restart` runs `service start`
+/// FR-84 D3 — the `meshharbord` binary `meshharbor restart` runs `service start`
 /// with, when bringing the daemon back is the caller's job (the Windows
 /// Scheduled Task). Embedded in the daemon — `meshharbord cli`, which is what the
-/// installed `roomler` shim re-execs — that is this very executable;
-/// standalone, a sibling, else whatever `roomlerd` PATH finds.
+/// installed `meshharbor` shim re-execs — that is this very executable;
+/// standalone, a sibling, else whatever `meshharbord` PATH finds.
 fn daemon_exe(origin: Origin) -> Option<PathBuf> {
     let me = std::env::current_exe().ok();
     if origin == Origin::EmbeddedInDaemon {
@@ -888,7 +888,7 @@ fn daemon_exe(origin: Origin) -> Option<PathBuf> {
     let name = if cfg!(windows) {
         "meshharbord.exe"
     } else {
-        "roomlerd"
+        "meshharbord"
     };
     if let Some(sibling) = me
         .as_deref()
@@ -901,7 +901,7 @@ fn daemon_exe(origin: Origin) -> Option<PathBuf> {
     Some(PathBuf::from(name))
 }
 
-/// Entry point for the standalone `roomler` binary — parses the process's
+/// Entry point for the standalone `meshharbor` binary — parses the process's
 /// own argv.
 pub async fn run() -> Result<()> {
     run_from(std::env::args_os(), Origin::Standalone).await
@@ -913,7 +913,7 @@ pub async fn run() -> Result<()> {
 /// usual convention — element 0 is the program name.
 ///
 /// Logging init is `try_init` (not `init`) precisely because of that embedded
-/// caller: `roomlerd` has already installed a global subscriber by the time it
+/// caller: `meshharbord` has already installed a global subscriber by the time it
 /// reaches this dispatch, and `init()` PANICS on a second install. Ignoring an
 /// `Err` here means "someone else already set logging up", which is exactly
 /// right for both callers.
@@ -1055,17 +1055,17 @@ where
             // "One updater per role" (see CLAUDE.md, P4c-2): tunnel-ONLY hosts
             // self-update this binary; daemon hosts get the whole node stack
             // refreshed by the MSI. Before P3e lever D that distinction was
-            // only a convention — a daemon host running `roomler self-update`
+            // only a convention — a daemon host running `meshharbor self-update`
             // would happily overwrite the MSI-owned meshharbor.exe out from under
             // the installer. Now it would ALSO swap the 150 KB shim for a
             // 22 MiB standalone CLI, silently undoing the lever. Refuse, and
             // name the right updater instead.
             if origin == Origin::EmbeddedInDaemon {
                 bail!(
-                    "`self-update` is not available on a daemon host — this `roomler` is a shim \
+                    "`self-update` is not available on a daemon host — this `meshharbor` is a shim \
                      over the installed daemon, and the MSI updates the whole node stack \
                      (daemon + CLI + desktop companion) as a unit.\n\
-                     Update with:  roomlerd self-update"
+                     Update with:  meshharbord self-update"
                 );
             }
             let cfg = update::config_for_self_update(cli.config)?;
@@ -1386,7 +1386,7 @@ mod tests {
     #[test]
     fn parses_forward() {
         let cli = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "forward",
             "--agent",
             "507f1f77bcf86cd799439011",
@@ -1423,7 +1423,7 @@ mod tests {
     #[test]
     fn parses_forward_transport_quic() {
         let cli = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "forward",
             "--agent",
             "507f1f77bcf86cd799439011",
@@ -1446,7 +1446,7 @@ mod tests {
     #[test]
     fn parses_forward_transport_auto() {
         let cli = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "forward",
             "--agent",
             "507f1f77bcf86cd799439011",
@@ -1469,7 +1469,7 @@ mod tests {
     #[test]
     fn parses_socks5() {
         let cli = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "socks5",
             "--agent",
             "507f1f77bcf86cd799439011",
@@ -1495,7 +1495,7 @@ mod tests {
 
     #[test]
     fn parses_socks5_mesh_without_agent() {
-        let cli = Cli::try_parse_from(["roomler", "socks5", "--local", "1080"]).unwrap();
+        let cli = Cli::try_parse_from(["meshharbor", "socks5", "--local", "1080"]).unwrap();
         match cli.command {
             Command::Socks5 { agent, local, .. } => {
                 assert_eq!(agent, None); // mesh mode
@@ -1508,7 +1508,7 @@ mod tests {
     #[test]
     fn parses_forward_daemon_flag() {
         let cli = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "forward",
             "--agent",
             "507f1f77bcf86cd799439011",
@@ -1527,7 +1527,7 @@ mod tests {
 
     #[test]
     fn parses_kill_verb() {
-        let cli = Cli::try_parse_from(["roomler", "kill", "fl-7"]).unwrap();
+        let cli = Cli::try_parse_from(["meshharbor", "kill", "fl-7"]).unwrap();
         match cli.command {
             Command::Kill { id } => assert_eq!(id, "fl-7"),
             other => panic!("expected Kill, got {other:?}"),
@@ -1544,7 +1544,7 @@ mod tests {
     #[test]
     fn parses_enroll() {
         let cli = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "enroll",
             "--server",
             "https://roomler.ai",
@@ -1584,7 +1584,7 @@ mod tests {
     #[test]
     fn parses_status_peers_flows() {
         for verb in ["status", "peers", "flows"] {
-            let cli = Cli::try_parse_from(["roomler", verb]).unwrap();
+            let cli = Cli::try_parse_from(["meshharbor", verb]).unwrap();
             match (verb, cli.command) {
                 ("status", Command::Status { fmt }) => assert!(!fmt.json),
                 (
@@ -1615,7 +1615,7 @@ mod tests {
     #[test]
     fn parses_peers_display_names_and_filter() {
         let cli = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "peers",
             "--org",
             "acme",
@@ -1639,7 +1639,7 @@ mod tests {
             }
             other => panic!("expected Peers, got {other:?}"),
         }
-        match Cli::try_parse_from(["roomler", "peers", "home-server"])
+        match Cli::try_parse_from(["meshharbor", "peers", "home-server"])
             .unwrap()
             .command
         {
@@ -1660,7 +1660,7 @@ mod tests {
     #[test]
     fn parses_devices() {
         let cli = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "devices",
             "--org",
             "acme",
@@ -1695,7 +1695,7 @@ mod tests {
             }
             other => panic!("expected Devices, got {other:?}"),
         }
-        match Cli::try_parse_from(["roomler", "devices"]).unwrap().command {
+        match Cli::try_parse_from(["meshharbor", "devices"]).unwrap().command {
             Command::Devices {
                 org,
                 q,
@@ -1719,7 +1719,7 @@ mod tests {
     #[test]
     fn parses_connect() {
         let cli = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "connect",
             "ci/kube",
             "--engine",
@@ -1757,7 +1757,7 @@ mod tests {
             other => panic!("expected Connect, got {other:?}"),
         }
         let cli = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "connect",
             "db/orders",
             "--engine",
@@ -1777,15 +1777,15 @@ mod tests {
         ));
         for bad in [
             &[
-                "roomler",
+                "meshharbor",
                 "connect",
                 "db/orders",
                 "--upstream",
                 "db.internal:5432",
             ][..],
-            &["roomler", "connect", "db/orders", "--engine", "postgres"],
+            &["meshharbor", "connect", "db/orders", "--engine", "postgres"],
             &[
-                "roomler",
+                "meshharbor",
                 "connect",
                 "db/orders",
                 "--engine",
@@ -1794,7 +1794,7 @@ mod tests {
                 "db.internal:1521",
             ],
             &[
-                "roomler",
+                "meshharbor",
                 "connect",
                 "api/x",
                 "--engine",
@@ -1813,14 +1813,14 @@ mod tests {
     /// remote-desktop session with input turns keep busy on.
     #[test]
     fn parses_keep_busy_verbs_including_a_local_on() {
-        let cli = Cli::try_parse_from(["roomler", "keep-busy", "status", "--json"]).unwrap();
+        let cli = Cli::try_parse_from(["meshharbor", "keep-busy", "status", "--json"]).unwrap();
         assert!(matches!(
             cli.command,
             Command::KeepBusy {
                 action: KeepBusyAction::Status { .. }
             }
         ));
-        let cli = Cli::try_parse_from(["roomler", "keep-busy", "off"]).unwrap();
+        let cli = Cli::try_parse_from(["meshharbor", "keep-busy", "off"]).unwrap();
         assert!(matches!(
             cli.command,
             Command::KeepBusy {
@@ -1828,7 +1828,7 @@ mod tests {
             }
         ));
         // FR-92 P10 — a bare `on` is the product default…
-        let cli = Cli::try_parse_from(["roomler", "keep-busy", "on"]).unwrap();
+        let cli = Cli::try_parse_from(["meshharbor", "keep-busy", "on"]).unwrap();
         assert!(matches!(
             cli.command,
             Command::KeepBusy {
@@ -1841,7 +1841,7 @@ mod tests {
         ));
         // …and every setting is a flag. The values are the agent's to check.
         let cli = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "keep-busy",
             "on",
             "--pattern",
@@ -1881,7 +1881,7 @@ mod tests {
     #[test]
     fn parses_record_verbs() {
         let cli = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "record",
             "start",
             "--fps",
@@ -1915,7 +1915,7 @@ mod tests {
             other => panic!("expected record start, got {other:?}"),
         }
         let cli = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "record",
             "start",
             "--system-audio",
@@ -1932,7 +1932,7 @@ mod tests {
                 }
             }
         ));
-        let cli = Cli::try_parse_from(["roomler", "record", "rm", "a.mp4"]).unwrap();
+        let cli = Cli::try_parse_from(["meshharbor", "record", "rm", "a.mp4"]).unwrap();
         assert!(matches!(
             cli.command,
             Command::Record {
@@ -1940,16 +1940,16 @@ mod tests {
             } if name == "a.mp4"
         ));
         for verb in ["stop", "status", "ls"] {
-            let cli = Cli::try_parse_from(["roomler", "record", verb]).unwrap();
+            let cli = Cli::try_parse_from(["meshharbor", "record", verb]).unwrap();
             assert!(matches!(cli.command, Command::Record { .. }), "{verb}");
         }
         // Audio flags belong to `start` alone.
-        assert!(Cli::try_parse_from(["roomler", "record", "stop", "--microphone"]).is_err());
+        assert!(Cli::try_parse_from(["meshharbor", "record", "stop", "--microphone"]).is_err());
     }
 
     #[test]
     fn parses_status_json_flag() {
-        let cli = Cli::try_parse_from(["roomler", "status", "--json"]).unwrap();
+        let cli = Cli::try_parse_from(["meshharbor", "status", "--json"]).unwrap();
         match cli.command {
             Command::Status { fmt } => assert!(fmt.json),
             other => panic!("expected Status, got {other:?}"),
@@ -1961,7 +1961,7 @@ mod tests {
         // A fully-valid `forward` + `--json` must fail: `--json` belongs only to
         // the read verbs (flattened there), not globally.
         let r = Cli::try_parse_from([
-            "roomler",
+            "meshharbor",
             "forward",
             "--agent",
             "507f1f77bcf86cd799439011",
@@ -1976,7 +1976,7 @@ mod tests {
     #[test]
     fn native_shared_ssh_auth_modes_are_exclusive_and_password_is_not_an_argument() {
         let base = [
-            "roomler",
+            "meshharbor",
             "share-ssh",
             "--share",
             "111111111111111111111111",

@@ -113,7 +113,7 @@ L1–L3. Anchors are master `4fc8ea7bb`.
   line next to `.github/workflows/ci.yml` L686–689. A test file nobody names runs in no lane.
 - **Cells** run at the synthetic source's default 320×240 and the software pump's 30 fps.
   CI builds are unoptimised and openh264 pegs a core long before 1080p, so larger sizes
-  (`ROOMLERD_SYNTHETIC_SIZE`) are for local and field runs. 1080p, 4K and high refresh are
+  (`MESHHARBORD_SYNTHETIC_SIZE`) are for local and field runs. 1080p, 4K and high refresh are
   field cells.
 - **Assertions that can fail.** The bounds are deltas and generous ceilings, because the
   absolute numbers depend on the machine:
@@ -163,7 +163,7 @@ L1–L3. Anchors are master `4fc8ea7bb`.
   (`ui/src/composables/rcBench.ts`).
 - **Gated at every entry point:**
   - the agent's marker painter exists only in the synthetic source;
-  - `probe` is refused unless `ROOMLERD_BENCH=1` **and** the build has the feature;
+  - `probe` is refused unless `MESHHARBORD_BENCH=1` **and** the build has the feature;
   - the viewer reads `roomler-rc-bench` only when the hello advertises `bench`;
   - the worker samples only when its init says `bench: true`.
 - **Upload** goes through FR-22's path (`ui/src/composables/rcConnectTimingUpload.ts`,
@@ -200,7 +200,7 @@ competitors". Engineering may use the numbers; the public pages never print them
 | P | Scope | Kill switch | Status |
 |---|---|---|---|
 | L0 | The harness, the synthetic source, the CI line, the planted-regression control | test-only | **merged** #2097 (`0db6f451f`): `agents/meshharbord/tests/l4_latency.rs` + the marker and clock in `capture/synthetic_backend.rs` + the `peer::l0` seam; local and CI runs in the field log |
-| L4 | The probe, the worker sampler, the upload, `probe-target`, the nightly spec; baselines on a direct and a relay pair | `ROOMLERD_BENCH` unset; the build feature; the viewer knob `roomler-rc-bench` | **agent half built**: `synthetic_backend::probe` + the bottom-right marker, the input-handler hook in `peer.rs`, `bench` in `AgentCaps.video`, the `probe`/`probe50` cells. **Viewer half built**: the TS marker decoder, the worker sampler in all three decode workers, the `<video>` sampler, the jittered prober, the `rc.l4` upload, the server's parse lock. **`probe-target` built**: the window (`probe_target.rs`) and the viewer's `target` mode. **End to end on a release build: done** against `probe-target` on vmtest guests (the field log, 2026-10-13; FR-98 P5's cells used it on 2026-10-16, on the RTP track and the DataChannel). Owed: the nightly spec, which needs the agent-e2e pods in bench mode (`ROOMLERD_BENCH=1` in `scripts/e2e-k8s/overlay-template/statefulset-agent-e2e.yaml`, and an agent-e2e image from 0.4.133 or later, built by hand on the build host), and the baselines on real hosts |
+| L4 | The probe, the worker sampler, the upload, `probe-target`, the nightly spec; baselines on a direct and a relay pair | `MESHHARBORD_BENCH` unset; the build feature; the viewer knob `roomler-rc-bench` | **agent half built**: `synthetic_backend::probe` + the bottom-right marker, the input-handler hook in `peer.rs`, `bench` in `AgentCaps.video`, the `probe`/`probe50` cells. **Viewer half built**: the TS marker decoder, the worker sampler in all three decode workers, the `<video>` sampler, the jittered prober, the `rc.l4` upload, the server's parse lock. **`probe-target` built**: the window (`probe_target.rs`) and the viewer's `target` mode. **End to end on a release build: done** against `probe-target` on vmtest guests (the field log, 2026-10-13; FR-98 P5's cells used it on 2026-10-16, on the RTP track and the DataChannel). Owed: the nightly spec, which needs the agent-e2e pods in bench mode (`MESHHARBORD_BENCH=1` in `scripts/e2e-k8s/overlay-template/statefulset-agent-e2e.yaml`, and an agent-e2e image from 0.4.133 or later, built by hand on the build host), and the baselines on real hosts |
 | T | The StarDesk comparison cell on the spare box (private results) | — | — |
 | L1–L3 | As designed above | — | — |
 | D | Docs | — | — |

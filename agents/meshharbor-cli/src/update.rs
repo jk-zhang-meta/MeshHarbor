@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! `roomler self-update` — check the server's tunnel latest-release, download
+//! `meshharbor self-update` — check the server's tunnel latest-release, download
 //! the newer artifact through the configured center installer proxy (corp-AV
 //! friendly, same origin as the manifest), verify it, and replace the running
 //! executable.
 //!
-//! Mirrors `roomlerd self-update`, minus the MSI / Windows-service / UAC
+//! Mirrors `meshharbord self-update`, minus the MSI / Windows-service / UAC
 //! machinery: the tunnel ships as a plain binary in an archive.
 //!
 //! ## What is checked (FR-97 P6b)
@@ -31,7 +31,7 @@
 //! | Host | Artifact | Install |
 //! |---|---|---|
 //! | Windows | the `.zip` | its `meshharbor.exe` replaces the running exe |
-//! | macOS, and Linux where no package owns this binary | the `.tar.gz` | its `roomler` is written beside the running binary and renamed over it, so the swap is atomic |
+//! | macOS, and Linux where no package owns this binary | the `.tar.gz` | its `meshharbor` is written beside the running binary and renamed over it, so the swap is atomic |
 //! | Linux where dpkg owns this binary (`install.sh`'s Debian path) | the `.deb` | `dpkg -i`, so dpkg's database keeps naming the version on disk |
 //!
 //! A binary in a root-owned directory needs root to replace, and `dpkg -i`
@@ -204,7 +204,7 @@ pub async fn self_update(cfg: &TunnelConfig, check_only: bool) -> Result<()> {
         .tag_name
         .trim_start_matches("tunnel-v")
         .trim_start_matches('v');
-    println!("roomler: current {CURRENT}, latest {latest_ver}");
+    println!("meshharbor: current {CURRENT}, latest {latest_ver}");
 
     if !is_newer(latest_ver, CURRENT) {
         println!("Already up to date.");
@@ -299,7 +299,7 @@ pub async fn self_update(cfg: &TunnelConfig, check_only: bool) -> Result<()> {
         }
         Kind::Deb => install_deb(&bytes, latest_ver)?,
     }
-    println!("Updated to {latest_ver}. Restart roomler to run the new version.");
+    println!("Updated to {latest_ver}. Restart meshharbor to run the new version.");
     Ok(())
 }
 
@@ -361,7 +361,7 @@ const DEB_PACKAGE: &str = "meshharbor-cli";
 // A host that installed a tunnel .deb before then (rc.266 and older) has its
 // binary owned by this name. It is ours: the new .deb declares `replaces` and
 // `provides` for it, so `dpkg -i` takes the file over (the CLI's Cargo.toml).
-const DEB_PACKAGE_BEFORE_RENAME: &str = "roomler-tunnel";
+const DEB_PACKAGE_BEFORE_RENAME: &str = "meshharbor-tunnel";
 
 /// The package that owns `path`, from `dpkg-query -S <path>` output: lines
 /// of `<pkg>[, <pkg>…]: <path>`, plus `diversion by …` lines, which name no
@@ -437,25 +437,25 @@ fn verify_sha256(bytes: &[u8], expected: &str) -> Result<()> {
 
 // RETIRED-NAME-ANCHOR-BEGIN
 // Reads a PUBLISHED artifact's layout: `release-tunnel.yml` names every tunnel
-// asset, and the dir inside its tarball, `roomler-tunnel-<version>-<triple>`.
+// asset, and the dir inside its tarball, `meshharbor-tunnel-<version>-<triple>`.
 // Release asset names are frozen by FR-21 D6.
 /// The one top-level dir of a release tarball (`release-tunnel.yml` tars
-/// `roomler-tunnel-<version>-<triple>/`). It is inside the signed bytes, so
+/// `meshharbor-tunnel-<version>-<triple>/`). It is inside the signed bytes, so
 /// it names the version from the artifact itself.
 fn tarball_dir(version: &str, triple: &str) -> String {
-    format!("roomler-tunnel-{version}-{triple}")
+    format!("meshharbor-tunnel-{version}-{triple}")
 }
 // RETIRED-NAME-ANCHOR-END
 
-/// The `roomler` binary from a release tarball, read in memory: nothing is
+/// The `meshharbor` binary from a release tarball, read in memory: nothing is
 /// extracted to disk, so no directory is ever created or chowned, as root or
-/// otherwise. The binary must sit at `<dir>/roomler`, where `dir` names the
+/// otherwise. The binary must sit at `<dir>/meshharbor`, where `dir` names the
 /// version the artifact was offered as; an archive of another version, or one
 /// with no such entry, is refused.
 #[cfg(unix)]
 fn extract_tarball_binary(tgz: &[u8], dir: &str) -> Result<Vec<u8>> {
     use std::io::Read;
-    let want = format!("{dir}/roomler");
+    let want = format!("{dir}/meshharbor");
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(tgz));
     for entry in archive.entries().context("read the release tarball")? {
         let mut entry = entry.context("read a tarball entry")?;
@@ -466,7 +466,7 @@ fn extract_tarball_binary(tgz: &[u8], dir: &str) -> Result<Vec<u8>> {
             let mut buf = Vec::with_capacity(entry.size() as usize);
             entry
                 .read_to_end(&mut buf)
-                .context("read roomler from the tarball")?;
+                .context("read meshharbor from the tarball")?;
             return Ok(buf);
         }
     }
@@ -535,7 +535,7 @@ fn replace_self(cur: &std::path::Path, new_exe: &[u8]) -> Result<()> {
     let dir = cur
         .parent()
         .with_context(|| format!("{} has no parent dir", cur.display()))?;
-    let tmp = dir.join(format!(".roomler.update.{}", std::process::id()));
+    let tmp = dir.join(format!(".meshharbor.update.{}", std::process::id()));
     let mut f = match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -544,7 +544,7 @@ fn replace_self(cur: &std::path::Path, new_exe: &[u8]) -> Result<()> {
     {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => bail!(
-            "cannot write in {}: re-run as root (`sudo roomler self-update`)",
+            "cannot write in {}: re-run as root (`sudo meshharbor self-update`)",
             dir.display()
         ),
         Err(e) => return Err(e).with_context(|| format!("create {}", tmp.display())),
@@ -568,7 +568,7 @@ fn deb_needs_root() -> Result<()> {
     // SAFETY: `geteuid` takes no arguments and cannot fail.
     if unsafe { libc::geteuid() } != 0 {
         bail!(
-            "dpkg owns this binary, so the update installs its .deb, which needs root: re-run as root (`sudo roomler self-update`)"
+            "dpkg owns this binary, so the update installs its .deb, which needs root: re-run as root (`sudo meshharbor self-update`)"
         );
     }
     Ok(())
@@ -587,7 +587,7 @@ fn install_deb(deb: &[u8], offered: &str) -> Result<()> {
     // A private dir (0700, a fresh name): nothing else can swap the file
     // between the check and dpkg reading it.
     let dir = tempfile::Builder::new()
-        .prefix("roomler-update-")
+        .prefix("meshharbor-update-")
         .tempdir()
         .context("create a private dir for the .deb")?;
     let path = dir.path().join(format!("{DEB_PACKAGE}.deb"));
@@ -723,7 +723,7 @@ fn home_of(user: &str) -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
 
-    // FR-97 P6b — `sudo roomler self-update` reads the invoking user's config.
+    // FR-97 P6b — `sudo meshharbor self-update` reads the invoking user's config.
     #[test]
     fn a_config_path_moves_from_one_home_to_another() {
         use std::path::Path;
@@ -788,7 +788,7 @@ mod tests {
 
     // RETIRED-NAME-ANCHOR-BEGIN
     // Fixtures of PUBLISHED tunnel artifacts: their names, and the dir inside a
-    // tarball, are `roomler-tunnel-<version>-<triple>`, frozen by FR-21 D6.
+    // tarball, are `meshharbor-tunnel-<version>-<triple>`, frozen by FR-21 D6.
     fn asset(name: &str) -> ReleaseAsset {
         ReleaseAsset {
             name: name.into(),
@@ -819,7 +819,7 @@ mod tests {
             "x86_64-pc-windows-msvc.zip",
         ]
         .iter()
-        .map(|t| asset(&format!("roomler-tunnel-{v}-{t}")))
+        .map(|t| asset(&format!("meshharbor-tunnel-{v}-{t}")))
         .collect();
         let pick = |platform, kind| {
             let (token, triple, ext) = artifact_for(platform, kind).expect("an artifact");
@@ -828,7 +828,7 @@ mod tests {
                 manifest_asset(&assets, triple, ext).map(|a| a.name.clone()),
             )
         };
-        let named = |t: &str| Some(format!("roomler-tunnel-{v}-{t}"));
+        let named = |t: &str| Some(format!("meshharbor-tunnel-{v}-{t}"));
         assert_eq!(
             pick("linux-x86_64", Kind::Tarball),
             ("linux-x86_64", named("x86_64-unknown-linux-gnu.tar.gz"))
@@ -872,8 +872,8 @@ mod tests {
             Some("meshharbor-cli")
         );
         assert_eq!(
-            dpkg_owner("roomlerd, meshharbor-cli: /usr/bin/meshharbor\n", p).as_deref(),
-            Some("roomlerd")
+            dpkg_owner("meshharbord, meshharbor-cli: /usr/bin/meshharbor\n", p).as_deref(),
+            Some("meshharbord")
         );
         // A diversion line names no owner; another path is not this one.
         assert_eq!(
@@ -894,8 +894,8 @@ mod tests {
             Kind::Deb
         );
         assert_eq!(kind_for_owner(None, p).unwrap(), Kind::Tarball);
-        // The agent's package (its shim is `roomler` too) is not ours.
-        assert!(kind_for_owner(Some("roomlerd"), p).is_err());
+        // The agent's package (its shim is `meshharbor` too) is not ours.
+        assert!(kind_for_owner(Some("meshharbord"), p).is_err());
     }
 
     #[test]
@@ -936,24 +936,24 @@ mod tests {
     #[test]
     fn the_tarball_gives_up_its_binary_only_under_the_offered_version() {
         let dir = tarball_dir("0.4.149", "x86_64-unknown-linux-gnu");
-        assert_eq!(dir, "roomler-tunnel-0.4.149-x86_64-unknown-linux-gnu");
+        assert_eq!(dir, "meshharbor-tunnel-0.4.149-x86_64-unknown-linux-gnu");
         let good = tgz(&[
             (&format!("{dir}/README"), b"readme"),
-            (&format!("{dir}/roomler"), b"the new binary"),
+            (&format!("{dir}/meshharbor"), b"the new binary"),
         ]);
         assert_eq!(
             extract_tarball_binary(&good, &dir).expect("found"),
             b"the new binary"
         );
         // Tarred as `./<dir>`.
-        let dotted = tgz(&[(&format!("./{dir}/roomler"), b"dotted")]);
+        let dotted = tgz(&[(&format!("./{dir}/meshharbor"), b"dotted")]);
         assert_eq!(
             extract_tarball_binary(&dotted, &dir).expect("found"),
             b"dotted"
         );
         // An older release offered as this one: its dir names its own version.
         let old = tgz(&[(
-            "roomler-tunnel-0.4.148-x86_64-unknown-linux-gnu/roomler",
+            "meshharbor-tunnel-0.4.148-x86_64-unknown-linux-gnu/meshharbor",
             b"old binary",
         )]);
         assert!(extract_tarball_binary(&old, &dir).is_err());
@@ -968,7 +968,7 @@ mod tests {
     fn the_swap_replaces_the_file_and_leaves_no_temp() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("tempdir");
-        let bin = tmp.path().join("roomler");
+        let bin = tmp.path().join("meshharbor");
         std::fs::write(&bin, b"old").expect("write old");
         replace_self(&bin, b"new").expect("replace");
         assert_eq!(std::fs::read(&bin).expect("read"), b"new");
@@ -979,6 +979,6 @@ mod tests {
             .filter_map(|e| e.ok())
             .map(|e| e.file_name())
             .collect();
-        assert_eq!(left, vec![std::ffi::OsString::from("roomler")]);
+        assert_eq!(left, vec![std::ffi::OsString::from("meshharbor")]);
     }
 }

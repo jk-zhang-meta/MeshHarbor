@@ -92,7 +92,7 @@ fn scale(resources: &str) -> u16 {
     }
 }
 
-/// The scale this display asks for. `ROOMLERD_CONSENT_PANEL_SCALE` overrides
+/// The scale this display asks for. `MESHHARBORD_CONSENT_PANEL_SCALE` overrides
 /// it (1 to 4); `1` is the kill switch, the panel as before P6i.
 fn display_scale<C: Connection>(conn: &C, root: Window) -> u16 {
     if let Some(k) =
@@ -163,7 +163,7 @@ pub(super) struct Inner {
     alive: Arc<AtomicBool>,
 }
 
-// RETIRED-NAME-ANCHOR(24): `ROOMLER_AGENT_VIRTUAL_DESKTOP` is the RETIRED
+// RETIRED-NAME-ANCHOR(24): `MESHHARBOR_AGENT_VIRTUAL_DESKTOP` is the RETIRED
 // spelling. FR-21 P3 kept it working; FR-46 P2b stopped, after every host that
 // set one had been migrated. It is still named here because the guard below is
 // what a virtual-desktop host depends on, and the tests feed the retired name
@@ -195,7 +195,7 @@ fn display_is_our_own_virtual_desktop() -> bool {
     // function (`virtual_desktop::requested`), never a second copy.
     //
     // Two copies did disagree. A hand-rolled pair of env names here skipped
-    // `node_env`'s middle arm (`ROOMLER_NODE_`) and, more importantly, its
+    // `node_env`'s middle arm (`MESHHARBOR_NODE_`) and, more importantly, its
     // config fallback — so the knob set through the S2 config surface
     // (`meshharbor config`, the way an operator is told to set it) was visible to
     // main.rs and invisible here.
@@ -221,7 +221,7 @@ impl Inner {
         let shared_for_thread = shared.clone();
         let alive_for_thread = alive.clone();
         std::thread::Builder::new()
-            .name("roomler-consent-x11".into())
+            .name("meshharbor-consent-x11".into())
             .spawn(move || {
                 if let Err(e) = run(conn, screen_num, shared_for_thread, consent_tx) {
                     tracing::warn!(error = %format!("{e:#}"), "x11 consent panel exited");
@@ -651,7 +651,7 @@ mod tests {
     }
 
     /// FR-93 P6a — against a REAL X server (the Xvfb lane sets
-    /// `ROOMLERD_TEST_X11=1`, which makes a missing server a failure): a
+    /// `MESHHARBORD_TEST_X11=1`, which makes a missing server a failure): a
     /// prompt that is answered or dismissed leaves the screen. Its unmap was
     /// never flushed, so on the FR-93 lab's GNOME 50 the panel stayed up,
     /// frozen, after the person at the screen had approved.
@@ -662,8 +662,8 @@ mod tests {
         use x11rb::connection::Connection;
         use x11rb::protocol::xproto::{ConnectionExt as _, MapState};
 
-        if std::env::var("ROOMLERD_TEST_X11").as_deref() != Ok("1") {
-            eprintln!("ROOMLERD_TEST_X11 unset — skipping (the Xvfb lane sets it)");
+        if std::env::var("MESHHARBORD_TEST_X11").as_deref() != Ok("1") {
+            eprintln!("MESHHARBORD_TEST_X11 unset — skipping (the Xvfb lane sets it)");
             return;
         }
         let (tx, _rx) = tokio::sync::mpsc::channel(4);
@@ -712,7 +712,7 @@ mod tests {
     // RETIRED-NAME-ANCHOR(16): the legacy env spelling under test, on purpose
     // — see the anchor on `display_is_our_own_virtual_desktop`.
     /// The FR-27 field finding, locked. `mars` and `jupiter` both carry
-    /// `ROOMLER_AGENT_VIRTUAL_DESKTOP=1` in an operator-authored systemd
+    /// `MESHHARBOR_AGENT_VIRTUAL_DESKTOP=1` in an operator-authored systemd
     /// drop-in (FR-21 P3 kept the legacy spelling working), and both reported
     /// `native=true have_surface=true` for a prompt drawn where nobody could
     /// see it. Both spellings must decline.
@@ -724,11 +724,11 @@ mod tests {
         // retired one, so the accessor can neither silently drop a live arm nor
         // silently start honouring the dead one. The MIDDLE arm is the
         // regression this array exists to catch: the hand-rolled version this
-        // replaced read only the first and last, so `ROOMLER_NODE_*` — and the
+        // replaced read only the first and last, so `MESHHARBOR_NODE_*` — and the
         // config fallback behind it — were invisible here while `main.rs` saw
         // them. docs/fr/FR-46
-        const KEYS: [&str; 2] = ["ROOMLERD_VIRTUAL_DESKTOP", "ROOMLER_NODE_VIRTUAL_DESKTOP"];
-        const RETIRED: &str = "ROOMLER_AGENT_VIRTUAL_DESKTOP";
+        const KEYS: [&str; 2] = ["MESHHARBORD_VIRTUAL_DESKTOP", "MESHHARBOR_NODE_VIRTUAL_DESKTOP"];
+        const RETIRED: &str = "MESHHARBOR_AGENT_VIRTUAL_DESKTOP";
         let saved: Vec<_> = KEYS
             .iter()
             .chain([RETIRED].iter())

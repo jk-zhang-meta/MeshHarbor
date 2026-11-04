@@ -5,14 +5,14 @@
 //!
 //! P3b-1 landed the shared **flow vocabulary** here — the per-flow
 //! reply-correlation types + the open-timeout. P3b-1b folds in the session
-//! orchestration itself (moved from `roomler::forward`) behind the
+//! orchestration itself (moved from `meshharbor::forward`) behind the
 //! [`crate::signaling_link`] seam: [`run_tunnel_session`] speaks the
 //! `rc:tunnel.*` control protocol over a cloneable
 //! [`TunnelSignalingSink`](crate::signaling_link::TunnelSignalingSink) + a
 //! single-consumer
 //! [`TunnelSignalingSource`](crate::signaling_link::TunnelSignalingSource)
 //! instead of owning a WebSocket, so the SAME engine serves the CLI (WS-backed)
-//! and — at P3b-2 — the `roomlerd` daemon (agent-WS-multiplexer-backed).
+//! and — at P3b-2 — the `meshharbord` daemon (agent-WS-multiplexer-backed).
 //!
 //! FR-86 P1 split a session into **establishment** and **carrying**:
 //! [`establish_tunnel_session`] does the hello/open, the transport handshake
@@ -66,7 +66,7 @@ use crate::transport::{TRANSPORT_QUIC_DERP_V1, TRANSPORT_QUIC_V1, TRANSPORT_WEBR
 /// sockets, the WS and the TURN allocation — for the life of the process.
 ///
 /// Field 2026-08-22 (devbox): failing flows take exactly those early returns, so
-/// `roomlerd` accumulated **15,446 UDP sockets in 12 h**, exhausted the host's
+/// `meshharbord` accumulated **15,446 UDP sockets in 12 h**, exhausted the host's
 /// 16,384-port ephemeral range, and every process on the machine lost DNS with
 /// `WSAENOBUFS`. The bug was not the missing abort *call* — one was already
 /// there and correct — it was that the rule lived in a call site instead of in

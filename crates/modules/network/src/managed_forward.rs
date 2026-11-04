@@ -367,7 +367,7 @@ pub async fn plan(
     if let Some(id) = ingress.filter(|_| ingress_agent.is_some()) {
         let bind: Option<IpAddr> = spec.bind_addr.trim().parse().ok();
         // The ports this node's managed forwards hold: once applied, their
-        // own listeners show in the inventory as roomlerd's, and are not
+        // own listeners show in the inventory as meshharbord's, and are not
         // foreign (another forward on the same port fails `managed overlap`).
         let managed_ports: Vec<(L4, u16)> = list(state, tenant_id)
             .await
@@ -380,7 +380,7 @@ pub async fn plan(
             Ok(Some(row)) if row.fresh(DateTime::now()) => {
                 let l = &row.inventory.listeners;
                 let clash = l.items.iter().find(|x| {
-                    let ours = matches!(x.process.as_deref(), Some("meshharbord" | "roomlerd"))
+                    let ours = matches!(x.process.as_deref(), Some("meshharbord" | "meshharbord"))
                         && managed_ports.contains(&(x.proto, x.port));
                     !ours
                         && x.proto == spec.proto
@@ -900,7 +900,7 @@ async fn source_region(
     }
 }
 
-/// The table the agent's nft backend owns (roomlerd's
+/// The table the agent's nft backend owns (meshharbord's
 /// `managed_forward_nft::TABLE`; the inventory names it).
 pub const NFT_TABLE: &str = "meshharbor_fwd";
 

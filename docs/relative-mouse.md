@@ -93,7 +93,7 @@ A Linux agent advertises `mouse-rel` **only while the session a controller would
 decides when the caps are announced, which is before any session
 ([`mod.rs:292`](../agents/meshharbord/src/input/mod.rs#L292) `linux_injector_carries_rel`):
 - **uinput**, below the compositor, carries it for any session, Wayland or X11. That is uinput opted in
-  (`ROOMLERD_UINPUT=1`) with the device openable, the brief planning the DRM arm that a system install's
+  (`MESHHARBORD_UINPUT=1`) with the device openable, the brief planning the DRM arm that a system install's
   automatic capture (FR-95) pairs with uinput, or such a capture already alive
   ([`mod.rs:206`](../agents/meshharbord/src/input/mod.rs#L206) `uinput_would_inject`). A capture alive only
   during a session would come too late for the hello, which is why the plan counts.
@@ -212,7 +212,7 @@ person's.
 
 | Where | How |
 |---|---|
-| The device | `ROOMLERD_INPUT_MOUSE_REL=0` (or `false`, `no`, `off`): the agent stops advertising `mouse-rel` ([`mod.rs:167`](../agents/meshharbord/src/input/mod.rs#L167)). On macOS it goes in the per-user agent's `EnvironmentVariables` in `~/Library/LaunchAgents/fans.itachi.meshharbor.agent.plist`, and takes effect after a `launchctl bootout` and `bootstrap` of `gui/<uid>` (FR-109 §8 row 33) |
+| The device | `MESHHARBORD_INPUT_MOUSE_REL=0` (or `false`, `no`, `off`): the agent stops advertising `mouse-rel` ([`mod.rs:167`](../agents/meshharbord/src/input/mod.rs#L167)). On macOS it goes in the per-user agent's `EnvironmentVariables` in `~/Library/LaunchAgents/fans.itachi.meshharbor.agent.plist`, and takes effect after a `launchctl bootout` and `bootstrap` of `gui/<uid>` (FR-109 §8 row 33) |
 | One browser | `localStorage['roomler-rc-relative-mouse'] = 'off'` hides the control |
 | One browser, the auto-switch alone | `localStorage['roomler-rc-relative-auto'] = 'off'` ([`relativeMouse.ts:68`](../ui/src/composables/relativeMouse.ts#L68)): relative mode stays manual, and the toolbar control still works |
 

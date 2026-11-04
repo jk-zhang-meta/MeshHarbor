@@ -76,27 +76,27 @@ type InitCanvasMessage = {
    *  4:2:0) just to exercise the wire+DC+decoder mechanics. */
   codec?: string
   /** 2026-07-24 decode-stall A/B — optional `VideoDecoder.hardwareAcceleration`
-   *  override from the composable (localStorage `roomler-rc-decode-pref`).
+   *  override from the composable (localStorage `meshharbor-rc-decode-pref`).
    *  Unset → `'no-preference'`, today's behaviour. */
   decodePref?: 'prefer-software' | 'prefer-hardware' | 'no-preference'
-  /** P1 — 2D-context A/B mode (localStorage `roomler-rc-ctx-mode`).
+  /** P1 — 2D-context A/B mode (localStorage `meshharbor-rc-ctx-mode`).
    *  Remembered across the idempotent visible-canvas re-init (which omits
    *  it), so the swapped-in canvas keeps the same context options. */
   ctxMode?: string
   /** P1 — restore the legacy per-decoded-frame `frame-decoded` postMessage
-   *  (localStorage `roomler-rc-per-frame-msg`). Default OFF: it was ~60
+   *  (localStorage `meshharbor-rc-per-frame-msg`). Default OFF: it was ~60
    *  structured-clone messages + 60 Vue reactive increments per second of
    *  pure main-thread overhead; the 1 s `stats` message carries
    *  `framesDecodedTotal` instead. */
   perFrameMsg?: boolean
   /** P6 — backlog-drop threshold override (localStorage
-   *  `roomler-rc-max-queue`). Sticks across the idempotent visible-canvas
+   *  `meshharbor-rc-max-queue`). Sticks across the idempotent visible-canvas
    *  re-init (which omits it), like `ctxMode`. */
   maxQueue?: number
-  /** P7 — FSR sharpening mode (localStorage `roomler-rc-sharpen`).
+  /** P7 — FSR sharpening mode (localStorage `meshharbor-rc-sharpen`).
    *  Sticks across the idempotent visible-canvas re-init, like `ctxMode`. */
   sharpen?: string
-  /** P7 — RCAS sharpness stops (localStorage `roomler-rc-fsr-sharpness`). */
+  /** P7 — RCAS sharpness stops (localStorage `meshharbor-rc-fsr-sharpness`). */
   sharpness?: number
 }
 type ChunkMessage = {
@@ -170,7 +170,7 @@ let framesSkippedAwaitingKey = 0
 // WITHOUT the destructive drop+IDR-storm that used to freeze the screen. The
 // composable's `struggling` rule trips at a lower queue depth, so the cap
 // reacts before we ever reach this drop threshold.
-// P6 — init-canvas-configurable (localStorage `roomler-rc-max-queue`) for the
+// P6 — init-canvas-configurable (localStorage `meshharbor-rc-max-queue`) for the
 // flow-control field-tuning round; default unchanged.
 let maxDecodeQueue = DEFAULT_MAX_DECODE_QUEUE
 let framesDroppedBacklog = 0
@@ -508,7 +508,7 @@ function initDecoder() {
       if (perFrameMsg && framesDecoded > 1) {
         // P1 — legacy per-frame counter message, OFF by default (a pure
         // main-thread tax at 60 fps); the 1 s stats message carries
-        // framesDecodedTotal. localStorage roomler-rc-per-frame-msg
+        // framesDecodedTotal. localStorage meshharbor-rc-per-frame-msg
         // restores it for A/B.
         workerScope.postMessage({ type: 'frame-decoded', count: framesDecoded })
       }

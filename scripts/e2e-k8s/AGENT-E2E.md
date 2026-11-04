@@ -128,7 +128,7 @@ StatefulSet it says so in its log, and the six specs skip as before.
   `crates/agent-core/src/enrollment.rs`; FR-101 P1b, no plaintext escape), and
   `https://roomler2` times out on a server that serves plain HTTP. So each agent
   pod carries a `server-proxy` sidecar (socat, `127.0.0.1:18080 → roomler2:80`),
-  and `ROOMLER_E2E_SERVER` points at it. Loopback is exempt, so signalling and
+  and `MESHHARBOR_E2E_SERVER` points at it. Loopback is exempt, so signalling and
   the WebSocket ride the proxy; media is WebRTC, pod to pod.
 - **`roomlerd enroll` writes `record_remote_enabled = false` at the config's
   root.** The opt-in therefore REPLACES that line (`Dockerfile.agent-e2e`'s

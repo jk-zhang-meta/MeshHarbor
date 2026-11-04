@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-103 — a `roomler` tunnel client renews its own token before it expires,
-//! and the ONE rule for when a credential is due, which `roomlerd` uses too.
+//! FR-103 — a `meshharbor` tunnel client renews its own token before it expires,
+//! and the ONE rule for when a credential is due, which `meshharbord` uses too.
 //!
 //! A tunnel-client token lives a year from enrollment. Until FR-103 nothing
 //! renewed it, and a tunnel-only host found out on its anniversary, when every
@@ -26,7 +26,7 @@ use crate::config::{self, TunnelConfig};
 /// Renew once a token has less than this many days left.
 pub const DEFAULT_HORIZON_DAYS: u64 = 180;
 
-/// The renewal rule, shared with `roomlerd`: the unix second at which a token
+/// The renewal rule, shared with `meshharbord`: the unix second at which a token
 /// expiring at `expires_at` becomes due.
 ///
 /// - `horizon: None` (the default rule): [`DEFAULT_HORIZON_DAYS`] before
@@ -83,7 +83,7 @@ pub enum Renewal {
     /// Renewed, but the config could not be saved: `cfg` holds the new token
     /// for this run, and the file's (still valid) token is used next time.
     RenewedUnsaved,
-    /// The token comes from `ROOMLER_TUNNEL_SERVER`/`ROOMLER_TUNNEL_TOKEN`:
+    /// The token comes from `MESHHARBOR_TUNNEL_SERVER`/`MESHHARBOR_TUNNEL_TOKEN`:
     /// there is no file to save a renewal to, and the environment's owner
     /// renews it.
     FromEnvironment,
@@ -158,7 +158,7 @@ enum RequestError {
 async fn request(server_url: &str, token: &str) -> Result<Option<String>, RequestError> {
     let base = server_url.trim().trim_end_matches('/');
     let client = reqwest::Client::builder()
-        .user_agent(concat!("roomler-token-renewal/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("meshharbor-token-renewal/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| RequestError::Other(e.into()))?;

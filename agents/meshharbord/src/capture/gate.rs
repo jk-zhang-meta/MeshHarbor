@@ -20,7 +20,7 @@
 //! the bucket, and only then is a frame paced, which still caps the long-run
 //! rate at the target. The period is kept in microseconds.
 //!
-//! `ROOMLERD_CAPTURE_GATE=slot_first` selects it, read once per capture
+//! `MESHHARBORD_CAPTURE_GATE=slot_first` selects it, read once per capture
 //! open (FR-70: no per-frame reads in the pump). Anything else keeps the
 //! legacy rule, whose code path in each backend is unchanged.
 
@@ -44,7 +44,7 @@ impl GateMode {
         }
     }
 
-    /// `ROOMLERD_CAPTURE_GATE`, read when a capture backend opens.
+    /// `MESHHARBORD_CAPTURE_GATE`, read when a capture backend opens.
     pub fn from_env() -> Self {
         Self::parse(tunnel_core::env::node_env("CAPTURE_GATE").as_deref())
     }

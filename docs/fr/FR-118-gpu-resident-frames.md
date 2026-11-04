@@ -168,7 +168,7 @@ The GPU input path is a property of a **cell** (encoder × chroma × input path)
   means no GPU cell, never a crashed daemon.
 - **Only a session proves the cell.** The first sessions on a new cell are read for decode errors, keyframe
   requests and colour before the cell is trusted.
-- **One kill switch, honoured everywhere.** `ROOMLERD_ZERO_COPY` (config `zero_copy`), default OFF for one
+- **One kill switch, honoured everywhere.** `MESHHARBORD_ZERO_COPY` (config `zero_copy`), default OFF for one
   release. Plus `zero_copy_deny` in the `encoder_cells_deny` shape (`name:path`). Both are honoured by the probe
   **and** by session dispatch: "a kill switch a child process honours and the daemon ignores keeps nothing out of
   the daemon".
@@ -198,7 +198,7 @@ flowchart LR
 |---|---|---|---|
 | P0 | **The split.** `encode_sync`'s five steps timed apart: `avg_convert_ms`, `avg_upload_ms`, `avg_submit_ms`, `avg_drain_ms` on the FFmpeg DC heartbeat, plus `avg_readback_ms` from WGC's capture thread (the DXGI arm is split with P4). Then a fleet read, per encoder × geometry | none: telemetry, a handful of `Instant` pairs per frame, no knobs read in the frame path | **built** (§5.1), ships with the next agent release; the fleet read is AC1 |
 | P1 | **C0, the contract.** `FrameData` + `Frame::cpu()`. Only `Cpu` is produced | none: no behaviour change, byte-identical by test | — |
-| P2 | **Windows, WGC → QSV, the first cell.** The GPU scale + NV12 conversion, `HwKind::D3d11va` on the capture device, the adapter rule, the probe's GPU-input open, the session's `input_path` and reason | `ROOMLERD_ZERO_COPY` (default OFF) + `zero_copy_deny` | — |
+| P2 | **Windows, WGC → QSV, the first cell.** The GPU scale + NV12 conversion, `HwKind::D3d11va` on the capture device, the adapter rule, the probe's GPU-input open, the session's `input_path` and reason | `MESHHARBORD_ZERO_COPY` (default OFF) + `zero_copy_deny` | — |
 | P3 | NVENC and AMF on D3D11 frames; open decision 1 measured on a hybrid laptop | the same | — |
 | P4 | The SystemContext DXGI arm (the lock screen and UAC) | the same | — |
 | P5 | macOS: IOSurface → VideoToolbox | the same | — |

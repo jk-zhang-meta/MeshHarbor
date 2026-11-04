@@ -485,7 +485,7 @@ mod tests {
 
     /// The lookup against a REAL listener this test binds: it must name this
     /// very process — the one-process shape of #1035's first report. (CI
-    /// runs it on Windows and Linux; no lane runs roomlerd's tests on macOS.)
+    /// runs it on Windows and Linux; no lane runs meshharbord's tests on macOS.)
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     #[test]
     fn lookup_names_this_process_for_its_own_listener() {

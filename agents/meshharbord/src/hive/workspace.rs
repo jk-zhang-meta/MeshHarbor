@@ -62,8 +62,8 @@ pub(crate) const MAX_NEW_BYTES: u64 = MAX_PACK as u64;
 
 /// Who the checkpoint commits say made them: never the person, whose name
 /// would then sign a commit they did not write.
-const AUTHOR_NAME: &str = "Roomler Hive";
-const AUTHOR_EMAIL: &str = "hive@roomler.invalid";
+const AUTHOR_NAME: &str = "MeshHarbor Hive";
+const AUTHOR_EMAIL: &str = "hive@meshharbor.invalid";
 
 /// Environment a caller's `git` could be pointed elsewhere by.
 const GIT_ENV: [&str; 8] = [
@@ -1171,7 +1171,7 @@ fn cmd(git: &Git, folder: &Path, repo: Option<&Repo>, index: Option<&Path>) -> C
         c.env_remove(var);
     }
     let no_hooks = repo.map_or_else(
-        || folder.join(".roomler-hive-no-hooks"),
+        || folder.join(".meshharbor-hive-no-hooks"),
         |r| r.git_dir.join("hive-no-hooks"),
     );
     c.arg("-c")
@@ -1357,7 +1357,7 @@ mod tests {
         );
         assert_eq!(
             person(dir, &["log", "-1", "--format=%an <%ae>", &snap.commit]),
-            "Roomler Hive <hive@roomler.invalid>"
+            "MeshHarbor Hive <hive@meshharbor.invalid>"
         );
         assert_eq!(std::fs::read(git_dir.join("index")).unwrap(), index_before);
         assert_eq!(person(dir, &["status", "--porcelain"]), status_before);

@@ -44,7 +44,7 @@ A Mac needs both halves for both, and shows up as two devices.
 
 :::tip No admin rights? You can still join the network
 An install that runs as you cannot create a network adapter, but it can join
-the network in **netstack mode**: set `ROOMLERD_OVERLAY_NETSTACK_SOCKS` to a
+the network in **netstack mode**: set `MESHHARBORD_OVERLAY_NETSTACK_SOCKS` to a
 free port for the agent, and your apps reach the other devices through that
 local SOCKS5 port. Roomler SSH into this machine still works. A second
 organization chooses it with `roomler org overlay <org> netstack`

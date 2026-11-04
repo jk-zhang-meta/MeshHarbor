@@ -19,7 +19,7 @@ use super::bind::BindSecret;
 use super::client::OrgRelayConn;
 
 /// The member re-clamps every server-supplied lifetime against its own
-/// ceilings (the Roomler SSH rule: server values only ever shorten). These
+/// ceilings (the MeshHarbor SSH rule: server values only ever shorten). These
 /// mirror the server's `peer_relay_limits`, but a longer value from a
 /// misbehaving server is still cut here.
 pub const MAX_BIND_BUDGET: Duration = Duration::from_secs(30);

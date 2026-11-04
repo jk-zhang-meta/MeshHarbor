@@ -343,7 +343,7 @@ containers on the build host** (full evidence: the Result comment on
 [#1095](https://github.com/gjovanov/roomler-ai/issues/1095)). Fail-first captured on the
 prior image (self-unenroll 404, zero `ephemeral` fields in the device feed, an expired
 ephemeral row sitting unreaped with the flag off). Then, with ≥ `d08ec741` +
-`ROOMLER__RC__EPHEMERAL_REAPER_ENABLED=true`:
+`MESHHARBOR__RC__EPHEMERAL_REAPER_ENABLED=true`:
 
 - SIGKILL → reaped at `silent_secs=118, ttl=60` (~2 min); `docker stop` → row gone in
   ~2 s (`ephemeral device unenrolled itself on shutdown`); revoked key refused by name

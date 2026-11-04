@@ -47,7 +47,7 @@
 //!   ACL on `C:\ProgramData`. The `create_dir_all` call below
 //!   relies on that inheritance.
 //!
-//! On non-Windows the path falls back to `/tmp/roomler-agent/`.
+//! On non-Windows the path falls back to `/tmp/meshharbor-agent/`.
 //! The non-Windows path is for development / testing only — no
 //! cross-session semantics are needed there.
 //!
@@ -77,14 +77,14 @@ pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 pub const PRESENCE_MAX_AGE: Duration = Duration::from_secs(15);
 
 /// Path to the marker file. On Windows: under `%PROGRAMDATA%`. On
-/// other targets: `/tmp/roomler-agent/` (test / dev only — the
+/// other targets: `/tmp/meshharbor-agent/` (test / dev only — the
 /// cross-session semantics this module provides are Windows-specific).
 pub fn marker_path() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         if let Some(programdata) = std::env::var_os("PROGRAMDATA") {
             return PathBuf::from(programdata)
-                .join("roomler-agent")
+                .join("meshharbor-agent")
                 .join("peer-connected.lock");
         }
         // Fallback if PROGRAMDATA is somehow unset (extremely rare —
@@ -92,13 +92,13 @@ pub fn marker_path() -> PathBuf {
         if let Some(systemroot) = std::env::var_os("SystemRoot") {
             return PathBuf::from(systemroot)
                 .join("Temp")
-                .join("roomler-agent-peer-connected.lock");
+                .join("meshharbor-agent-peer-connected.lock");
         }
-        PathBuf::from("C:\\Windows\\Temp\\roomler-agent-peer-connected.lock")
+        PathBuf::from("C:\\Windows\\Temp\\meshharbor-agent-peer-connected.lock")
     }
     #[cfg(not(target_os = "windows"))]
     {
-        PathBuf::from("/tmp/roomler-agent/peer-connected.lock")
+        PathBuf::from("/tmp/meshharbor-agent/peer-connected.lock")
     }
 }
 

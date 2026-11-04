@@ -93,7 +93,7 @@ trickle that brings a conflict reshapes the node's peers at once and, under
 
 ## The setting
 
-`app.business_isolation` (`ROOMLER__APP__BUSINESS_ISOLATION`):
+`app.business_isolation` (`MESHHARBOR__APP__BUSINESS_ISOLATION`):
 
 | value | effect |
 |---|---|
@@ -207,7 +207,7 @@ sequenceDiagram
   zone and never applies across the line.
 - ⚠️ **Members are never told the private endpoint.** Each is pushed only its own
   relay's public endpoints; the private `ip:port` goes only to the ingress relay, and
-  its native backbone policy (`ROOMLERD_RELAY_BACKBONE_ENABLED`, an explicit interface
+  its native backbone policy (`MESHHARBORD_RELAY_BACKBONE_ENABLED`, an explicit interface
   and CIDR allowlist) must permit it too.
 - **The MTU cap.** The bridge carries at most `BACKBONE_MAX_CIPHERTEXT`; a network
   whose MTU exceeds `BACKBONE_MAX_OVERLAY_MTU` (1360) gets no line.

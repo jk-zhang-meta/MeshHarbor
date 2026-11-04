@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-85 — `<recording>.roomler.json`, the facts about a recording that the
+//! FR-85 — `<recording>.meshharbor.json`, the facts about a recording that the
 //! file itself cannot carry.
 //!
 //! Three readers: meshharbor-desktop's Recordings list (origin, duration, why it
@@ -173,10 +173,10 @@ pub struct Sidecar {
 }
 
 pub const SIDECAR_VERSION: u32 = 1;
-pub const SIDECAR_SUFFIX: &str = ".roomler.json";
+pub const SIDECAR_SUFFIX: &str = ".meshharbor.json";
 
 impl Sidecar {
-    /// The sidecar path for a recording path: `x.mp4` → `x.mp4.roomler.json`.
+    /// The sidecar path for a recording path: `x.mp4` → `x.mp4.meshharbor.json`.
     pub fn path_for(recording: &std::path::Path) -> std::path::PathBuf {
         let mut name = recording
             .file_name()
@@ -198,7 +198,7 @@ mod tests {
     fn sample() -> Sidecar {
         Sidecar {
             version: SIDECAR_VERSION,
-            file: "Roomler Recording 2026-09-25 14-30-12.mp4".into(),
+            file: "MeshHarbor Recording 2026-09-25 14-30-12.mp4".into(),
             initiator: Initiator::Remote {
                 controller_user_id: "66f0c0ffee0000000000abcd".into(),
                 controller_name: Some("GJ".into()),
@@ -297,7 +297,7 @@ mod tests {
         let p = std::path::Path::new("/tmp/x/r.mp4");
         assert_eq!(
             Sidecar::path_for(p),
-            std::path::PathBuf::from("/tmp/x/r.mp4.roomler.json")
+            std::path::PathBuf::from("/tmp/x/r.mp4.meshharbor.json")
         );
     }
 }

@@ -348,7 +348,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_fingerprint_reads_sysfs_and_changes_with_the_driver() {
-        let root = std::env::temp_dir().join(format!("roomler-hwid-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("meshharbor-hwid-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let dev = root.join("sys/class/drm/card0/device");
         std::fs::create_dir_all(&dev).unwrap();

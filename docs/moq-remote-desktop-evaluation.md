@@ -39,7 +39,7 @@ This doc is the answer ("research + evaluate MoQ + weigh pros/cons + decide if i
 
 ## Implementation plan (the narrow, gated path — for if/when this is revisited)
 
-Everything is **feature-flagged** (`--features moq-broadcast` + `ROOMLERD_MOQ=1`) so default builds advertise nothing and no field session can negotiate onto it — same discipline as `vp9-444` / `ffmpeg-encoder`. The 1:1 WebRTC control path is **never touched**.
+Everything is **feature-flagged** (`--features moq-broadcast` + `MESHHARBORD_MOQ=1`) so default builds advertise nothing and no field session can negotiate onto it — same discipline as `vp9-444` / `ffmpeg-encoder`. The 1:1 WebRTC control path is **never touched**.
 
 ### Phase 0 — hard-gate spike (the only thing worth doing first; cheap, reversible, throwaway)
 **Build (minimal):**
@@ -92,7 +92,7 @@ Everything is **feature-flagged** (`--features moq-broadcast` + `ROOMLERD_MOQ=1`
 - New deps (Phase 0): `moq-lite`, `web-transport` (Rust, kixelated/moq-dev); `moq-relay` container. New build feature `moq-broadcast`.
 
 ## Verification (Phase 0)
-Run `roomlerd moq-probe` on a field box, `moq-relay` on a coturn host, open the throwaway subscriber page in 1 + K browser tabs. Confirm frames paint via the unmodified worker (subscriber-reuse), then collect the five measurements above and check them against the GO/NO-GO bars. Everything is behind the `moq-broadcast` feature + `ROOMLERD_MOQ=1`; deleting the feature is a clean revert. No change to the WebRTC control path is shipped at any point in Phase 0.
+Run `roomlerd moq-probe` on a field box, `moq-relay` on a coturn host, open the throwaway subscriber page in 1 + K browser tabs. Confirm frames paint via the unmodified worker (subscriber-reuse), then collect the five measurements above and check them against the GO/NO-GO bars. Everything is behind the `moq-broadcast` feature + `MESHHARBORD_MOQ=1`; deleting the feature is a clean revert. No change to the WebRTC control path is shipped at any point in Phase 0.
 
 ## Out of scope
 - Replacing the 1:1 WebRTC control transport (rejected — see Evaluation).

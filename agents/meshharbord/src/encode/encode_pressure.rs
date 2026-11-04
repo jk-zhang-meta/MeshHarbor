@@ -158,7 +158,7 @@ pub const FPS_PACE_MIN: u32 = 15;
 /// boundary moves the pace every window it crosses: two different 5-fps
 /// steps always differ by a full quantum, so "moves only by ≥5" holds nothing.
 /// The software pace runs with [`SW_PACE_UP_MARGIN_FPS`] (FR-112 P2d). Kill
-/// switch `ROOMLERD_FPS_PACE=0` / config `fps_pace`.
+/// switch `MESHHARBORD_FPS_PACE=0` / config `fps_pace`.
 pub struct FpsPace {
     paced: Option<u32>,
     enabled: bool,
@@ -192,7 +192,7 @@ impl FpsPace {
         let pace_for = |fps: f32| {
             let quantized = (fps.max(0.0) as u32 / 5) * 5;
             if quantized + 5 <= target_fps {
-                // A target under the floor (a `ROOMLERD_FFMPEG_FPS` pin of
+                // A target under the floor (a `MESHHARBORD_FFMPEG_FPS` pin of
                 // 5–14) floors at the target: `clamp` panics when its min
                 // exceeds its max.
                 Some(quantized.clamp(FPS_PACE_MIN.min(target_fps), target_fps))
@@ -231,12 +231,12 @@ impl Default for FpsPace {
 /// floor, `FpsPace`'s 5-fps steps would pace a 27 fps host to 25.
 ///
 /// Its own EWMA (α 0.4, seeded by the first window), not [`EncodePressure`]'s:
-/// that one stops learning under `ROOMLERD_ENCODE_PRESSURE=0`, a kill switch
+/// that one stops learning under `MESHHARBORD_ENCODE_PRESSURE=0`, a kill switch
 /// for the hardware path's bitrate factor that must not also switch the
-/// software pace off. `ROOMLERD_FPS_PACE=0` still does, through `FpsPace`.
+/// software pace off. `MESHHARBORD_FPS_PACE=0` still does, through `FpsPace`.
 ///
 /// P2d: its steps up wait for [`SW_PACE_UP_MARGIN_FPS`] of headroom
-/// (`ROOMLERD_SW_PACE_UP_MARGIN`, `0` = 0.4.142's pace). Without it, 0.4.142
+/// (`MESHHARBORD_SW_PACE_UP_MARGIN`, `0` = 0.4.142's pace). Without it, 0.4.142
 /// undid a step three times, each one or two windows after taking it, on a
 /// host that could not sustain 60 (the field trace in the tests).
 pub struct SoftwarePace {
@@ -254,7 +254,7 @@ pub struct SoftwarePace {
 /// (55, not 60, at 60–62.5 fps).
 pub const SW_PACE_UP_MARGIN_FPS: f32 = 2.5;
 
-/// [`SW_PACE_UP_MARGIN_FPS`], or `ROOMLERD_SW_PACE_UP_MARGIN` (0–10; `0`,
+/// [`SW_PACE_UP_MARGIN_FPS`], or `MESHHARBORD_SW_PACE_UP_MARGIN` (0–10; `0`,
 /// `false`, `off` or `no` restores 0.4.142's pace, which steps up as soon as
 /// it steps down).
 fn sw_pace_up_margin() -> f32 {
@@ -339,7 +339,7 @@ pub const TIER_CHANGE_COOLDOWN: std::time::Duration = std::time::Duration::from_
 /// WINHOST-H-class hosts whose 4K panel saturates the encoder even at the
 /// bitrate floor). Pure: step once per heartbeat window with the current
 /// [`TierSignal`]; emits `Some(new_long_edge_cap)` exactly when the tier
-/// changes. Kill switch `ROOMLERD_AUTO_DOWNSCALE=0`.
+/// changes. Kill switch `MESHHARBORD_AUTO_DOWNSCALE=0`.
 pub struct DownscaleTier {
     tier: usize,
     down_run: u32,
@@ -790,7 +790,7 @@ mod tests {
     }
 
     /// FR-112 P2d — the field trace that found the flap: 0.4.142 on the Asahi
-    /// host with `ROOMLERD_ENCODER_CLOCK=0` (a host that cannot sustain 60),
+    /// host with `MESHHARBORD_ENCODER_CLOCK=0` (a host that cannot sustain 60),
     /// VP9-444, a spinning cube, every window's `avg_encode_ms` from its
     /// heartbeats (2026-10-17 23:07Z). The lab viewer stalled and the rate
     /// controller fell, so the encode got cheaper as the session went on.

@@ -424,7 +424,7 @@ jobs:
           } >> "$GITHUB_ENV"
           # ── FR-62 A2 drift gate: the vendored libs must have been built from
           #    the FFmpeg source patches committed in this checkout. The vendor
-          #    build wrote ROOMLER-PATCHES.txt (sha256 per patch) into the
+          #    build wrote MESHHARBOR-PATCHES.txt (sha256 per patch) into the
           #    tarball; assert it equals the committed set. A mismatch or an
           #    absent manifest while patches exist means the vendored asset is
           #    STALE — re-run vendor-ffmpeg-windows.yml (Linux + Windows jobs)
@@ -440,9 +440,9 @@ jobs:
             # since `.` matches the spaces before the path — the bug this
             # replaces.)
             want=$(for f in "${committed[@]}"; do printf '%s %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")"; done | sort)
-            got_file=/opt/roomler-ffmpeg/ROOMLER-PATCHES.txt
+            got_file=/opt/roomler-ffmpeg/MESHHARBOR-PATCHES.txt
             if [ ! -f "$got_file" ]; then
-              echo "::error::vendored FFmpeg carries no ROOMLER-PATCHES.txt but ${#committed[@]} patch(es) are committed — re-vendor before tagging (see .github/ffmpeg-patches/)"; exit 1
+              echo "::error::vendored FFmpeg carries no MESHHARBOR-PATCHES.txt but ${#committed[@]} patch(es) are committed — re-vendor before tagging (see .github/ffmpeg-patches/)"; exit 1
             fi
             got=$(awk 'NF{print tolower($1), $NF}' "$got_file" | sort)
             if [ "$want" != "$got" ]; then
@@ -515,7 +515,7 @@ jobs:
         # extra system dep on Linux (/dev/net/tun is in-kernel; smoltcp needs
         # nothing). Default-OFF: an agent only joins the mesh when its config
         # sets `overlay_enabled`, and netstack mode additionally needs
-        # `ROOMLERD_OVERLAY_NETSTACK_SOCKS=<port>` — so shipping both
+        # `MESHHARBORD_OVERLAY_NETSTACK_SOCKS=<port>` — so shipping both
         # everywhere is inert until an operator opts a host in.
         # `ffmpeg-encoder` adds the FFmpeg HEVC backend (hevc_nvenc / qsv / amf
         # / vaapi / vulkan) via the vendored FFmpeg 9.0.1 fetched above — the
@@ -1418,7 +1418,7 @@ jobs:
           Write-Host "FFmpeg pkg-config files present at $root\lib\pkgconfig\"
           # ── FR-62 A2 drift gate (Windows twin — see the Linux job): assert
           #    the vendored libs were built from the committed FFmpeg source
-          #    patches. The vcpkg overlay build wrote ROOMLER-PATCHES.txt
+          #    patches. The vcpkg overlay build wrote MESHHARBOR-PATCHES.txt
           #    (sha256 per patch) into the zip root. Fail closed on mismatch or
           #    an absent manifest while patches exist — a stale vendored asset
           #    must never ship. Fix = re-run vendor-ffmpeg-windows.yml.
@@ -1427,9 +1427,9 @@ jobs:
             $want = $committed | ForEach-Object {
               "{0} {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower(), $_.Name
             } | Sort-Object
-            $manifestPath = "$root\ROOMLER-PATCHES.txt"
+            $manifestPath = "$root\MESHHARBOR-PATCHES.txt"
             if (-not (Test-Path $manifestPath)) {
-              Write-Host "::error::vendored FFmpeg carries no ROOMLER-PATCHES.txt but $($committed.Count) patch(es) are committed — re-vendor before tagging"; exit 1
+              Write-Host "::error::vendored FFmpeg carries no MESHHARBOR-PATCHES.txt but $($committed.Count) patch(es) are committed — re-vendor before tagging"; exit 1
             }
             $got = Get-Content $manifestPath | Where-Object { $_.Trim() -ne '' } | ForEach-Object {
               $parts = $_ -split '\s+', 2
@@ -2469,7 +2469,7 @@ jobs:
           # encoders only, so libavcodec/nvenc.c (what 0001 patches) is never
           # compiled in — the nvenc patch does not apply to what ships on a
           # Mac. When 0002-videotoolbox-runtime-bitrate lands (FR-62 A3), wire
-          # vendor-ffmpeg-macos.yml to apply patches + emit ROOMLER-PATCHES.txt
+          # vendor-ffmpeg-macos.yml to apply patches + emit MESHHARBOR-PATCHES.txt
           # and add the Linux/Windows-twin gate below.
           # Built once by vendor-ffmpeg-macos.yml and reused here, same
           # prebuild-once model as the Linux lane. That workflow configures
@@ -3668,12 +3668,12 @@ jobs:
     steps:
       - name: POST /api/releases/refresh
         env:
-          TOKEN: ${{ secrets.ROOMLER_RELEASE_REFRESH_TOKEN }}
+          TOKEN: ${{ secrets.MESHHARBOR_RELEASE_REFRESH_TOKEN }}
           TAG: ${{ needs.validate-version.outputs.tag }}
         run: |
           set -uo pipefail
           if [ -z "${TOKEN}" ]; then
-            echo "::notice::ROOMLER_RELEASE_REFRESH_TOKEN unset (fork?); skipping cache refresh"
+            echo "::notice::MESHHARBOR_RELEASE_REFRESH_TOKEN unset (fork?); skipping cache refresh"
             exit 0
           fi
           for attempt in 1 2 3; do

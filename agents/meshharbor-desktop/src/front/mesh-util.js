@@ -4,7 +4,7 @@
 // Regenerate: cd ui && bun scripts/build-desktop-mesh-util.mjs
 // ui/src/__tests__/utils/desktopMeshUtil.spec.ts fails while this copy is stale.
 "use strict";
-var RoomlerMesh = (() => {
+var MeshHarborMesh = (() => {
   var __defProp = Object.defineProperty;
   var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;

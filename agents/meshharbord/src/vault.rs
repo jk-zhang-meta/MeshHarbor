@@ -419,7 +419,7 @@ mod client {
     }
 
     /// FR-90 P3-8-2b — what a session asks for to run one command on
-    /// another device of its organization over Roomler SSH (`rc:vault.ssh`).
+    /// another device of its organization over MeshHarbor SSH (`rc:vault.ssh`).
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct SshAsk {
         pub session_id: ObjectId,
@@ -1990,7 +1990,7 @@ mod tests {
             );
             let (a, b) = tokio::join!(c.mint(&lease_id), c.mint(&lease_id));
             assert_eq!((a, b), (Ok(()), Ok(())));
-            let role = format!("roomler_{lease_id}");
+            let role = format!("meshharbor_{lease_id}");
             let roles = f.roles.lock().unwrap().clone();
             assert_eq!(
                 roles.keys().collect::<Vec<_>>(),
@@ -2040,7 +2040,7 @@ mod tests {
             assert_eq!(c.with_value(&lease_id, |_| ()), None, "nothing lent");
             let (a, b) = tokio::join!(c.mint(&lease_id), c.mint(&lease_id));
             assert_eq!((a, b), (Ok(()), Ok(())));
-            let user = format!("roomler_{lease_id}");
+            let user = format!("meshharbor_{lease_id}");
             let users = f.users.lock().unwrap().clone();
             assert_eq!(
                 users.keys().collect::<Vec<_>>(),
@@ -2051,11 +2051,11 @@ mod tests {
             assert_eq!(
                 users[&user].attribute,
                 Some(format!(
-                    "{{\"roomler\": {{\"lease\": \"{lease_id}\", \"until\": {until}}}}}"
+                    "{{\"meshharbor\": {{\"lease\": \"{lease_id}\", \"until\": {until}}}}}"
                 )),
                 "its end, the lease's, in whole seconds"
             );
-            let event = format!("roomler_end_{lease_id}");
+            let event = format!("meshharbor_end_{lease_id}");
             assert!(f.events.lock().unwrap().contains(&event));
             let field = |name: &str| c.minted(&lease_id, name).map(|v| v.to_vec());
             assert_eq!(field("user"), Some(user.clone().into_bytes()));
@@ -2111,7 +2111,7 @@ mod tests {
             assert_eq!(c.with_value(&lease_id, |_| ()), None, "nothing lent");
             let (a, b) = tokio::join!(c.mint(&lease_id), c.mint(&lease_id));
             assert_eq!((a, b), (Ok(()), Ok(())));
-            let secret = format!("roomler-{lease_id}");
+            let secret = format!("meshharbor-{lease_id}");
             {
                 let st = k.state();
                 assert_eq!(
@@ -2173,7 +2173,7 @@ mod tests {
                 minting.await.unwrap(),
                 Err("the lease ended while its credential was minted: it is taken back".into())
             );
-            let role = format!("roomler_{lease_id}");
+            let role = format!("meshharbor_{lease_id}");
             eventually("the role taken back", || {
                 !f.roles.lock().unwrap().contains_key(&role)
             })

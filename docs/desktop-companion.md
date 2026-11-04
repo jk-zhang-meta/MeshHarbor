@@ -281,7 +281,7 @@ sequenceDiagram
 
 - **Only a `no_node` answer off root asks** (`person_socket::machine_view_wanted`), and only an
   `ok` answer replaces it (`machine_view_usable`). A root half that is missing, older, switched
-  off (`ROOMLERD_PERSON_SOCKET=0`) or itself off the network leaves the per-user half's own
+  off (`MESHHARBORD_PERSON_SOCKET=0`) or itself off the network leaves the per-user half's own
   answer on screen, as before. So does a socket served by anyone but root
   (`localapi::connect_unix_served_by_root`).
 - **"This device" is the root half's row.** The per-user half's own row has no node, so the
@@ -347,7 +347,7 @@ sequenceDiagram
   uses, so the clean shutdown is recorded and the crash / rollback accounting never sees it
   (`exit_for_requested_restart`, `agents/meshharbord/src/main.rs:1619`).
 - ⚠️ **A virtual-desktop host reaps its own desktop before it exits (#1684).** On Linux the
-  daemon may run a virtual desktop (Xvfb + WM + apps, `ROOMLERD_VIRTUAL_DESKTOP=1`), and under
+  daemon may run a virtual desktop (Xvfb + WM + apps, `MESHHARBORD_VIRTUAL_DESKTOP=1`), and under
   systemd `KillMode=control-group` whatever it spawned that outlives it — the desktop's
   setsid'd `at-spi-bus-launcher` grandchild, which **ignores SIGTERM** — keeps the unit's
   cgroup non-empty until systemd SIGKILLs it after `TimeoutStopSec` (90 s), then pays
@@ -449,7 +449,7 @@ and is **born theirs**:
 flowchart TD
     B["files:begin"] --> Q{"root on Linux,<br/>and a person at seat0?"}
     Q -- "yes" --> P["FsAs::Person<br/>(companion::seat0_user, uid 0 refused)"]
-    Q -- "no, or ROOMLERD_FILES_AS_SEAT_USER=0" --> D["FsAs::Daemon<br/>files_dir, or the ladder"]
+    Q -- "no, or MESHHARBORD_FILES_AS_SEAT_USER=0" --> D["FsAs::Daemon<br/>files_dir, or the ladder"]
     P --> F["their files_dir (inside THEIR home),<br/>else XDG_DOWNLOAD_DIR, else ~/Downloads, else ~"]
     F --> S["every path step on a blocking thread<br/>under their fsuid, fsgid and groups"]
     S --> R["staging, data file, final rename,<br/>resume, cancel, orphan sweep"]
@@ -604,7 +604,7 @@ tries first:
   or of a relay, the carrier snapshot, the path decision or the probes (`localapi::person_view`).
 
 Everything else on it is refused with a pointer to `sudo roomler …`, so the companion's other
-views show that refusal on a system install. The kill switch is `ROOMLERD_PERSON_SOCKET=0`.
+views show that refusal on a system install. The kill switch is `MESHHARBORD_PERSON_SOCKET=0`.
 
 A Mac's root half serves its console user one as well (FR-97 P2g), at
 `/var/run/roomler-person/<uid>.sock` in a directory only root writes: there the per-user half
@@ -621,7 +621,7 @@ companion can run, the daemon posts a notification instead: *"This screen is bei
 Alice is viewing this screen and can use its keyboard and mouse."*, with **Disconnect**, which
 ends the session as the banner's does. The notification stays on screen (critical urgency),
 comes down with the session, and stays down for that session once the person closes it.
-The kill switch is `ROOMLERD_VIEWING_NOTICE=0`.
+The kill switch is `MESHHARBORD_VIEWING_NOTICE=0`.
 A per-user install, and a supervised Mac through its worker (FR-43), never had this problem.
 
 ⚠️ **The banner waits while the desktop's own dialog asks** (FR-93 P6h). A per-user Wayland
@@ -635,7 +635,7 @@ dialog is the wait (`agents/meshharbord/src/peer.rs:5577`, `AskingMark`
 `crates/localapi/src/lib.rs:1140`), and the banner comes up only for a session that sees the
 screen (`wants_banner`, `agents/meshharbor-desktop/src/main.rs:322`). The mark goes
 when the open does, whether the dialog was approved, denied or timed out, so a dialog nobody
-answers still ends with the banner. The kill switch is `ROOMLERD_BANNER_WAITS_FOR_DIALOG=0`.
+answers still ends with the banner. The kill switch is `MESHHARBORD_BANNER_WAITS_FOR_DIALOG=0`.
 
 ⚠️ **On a system install this banner is what lets a Wayland desktop be captured by itself**
 (FR-95 P2, [`linux-capture.md`](linux-capture.md) §1.2.1). With no capture key set, a root
@@ -643,7 +643,7 @@ daemon switches DRM and `uinput` on for the person's session on screen only wher
 person can be told: the companion runs for them, or their session's notification server
 shows buttons. That is checked live, at every capture open (`indicator::notify::can_tell`).
 An installed companion that is not running does not count on its own. Without either,
-nothing switches on, and the viewer's hint says so. `ROOMLERD_VIEWING_NOTICE=0` therefore
+nothing switches on, and the viewer's hint says so. `MESHHARBORD_VIEWING_NOTICE=0` therefore
 also keeps a system install's Wayland capture opt-in.
 
 | | Behaviour | Where |
@@ -683,8 +683,8 @@ with no way back would be worse than one that stays.
 true the day capture moves to ScreenCaptureKit (FR-27's deviations). The controller sees a red
 frame round a Mac's screen during a session; that was the operator's call (2026-10-06).
 
-Kill switches, each on its own: `ROOMLER_DESKTOP_BANNER_AUTOHIDE=0` (the banner stays, as
-before P9) and `ROOMLER_DESKTOP_FRAME=0` (no frame).
+Kill switches, each on its own: `MESHHARBOR_DESKTOP_BANNER_AUTOHIDE=0` (the banner stays, as
+before P9) and `MESHHARBOR_DESKTOP_FRAME=0` (no frame).
 
 ### 12.1 The banner's Disconnect (FR-27 P10)
 
@@ -750,7 +750,7 @@ Measured on Fedora Asahi Remix 42 (an Apple M2 Pro Mac mini), 2026-10-16:
 | Plasma 6.6 (KWin 6.6.4) | 360×76 at the top centre, above the other windows | ended the session (`host_disconnect`) | — |
 | GNOME, at 2× | `720x152+1688+96` (360×76 logical, 48 down), still there after its first show | ended the session | centred, clear of the daemon's panel; **Approve** on each granted its own session |
 
-The kill switch is `ROOMLER_DESKTOP_BANNER_PIN=0`. It loads no KWin script, and on GNOME the
+The kill switch is `MESHHARBOR_DESKTOP_BANNER_PIN=0`. It loads no KWin script, and on GNOME the
 companion stays on native Wayland.
 
 ## 13. One version: the companion follows the daemon (FR-117)
@@ -776,7 +776,7 @@ Windows-only on the false premise that apt upgrades the companion.
 
 ```mermaid
 flowchart TD
-    S([the root update owner:<br/>at its start, every check,<br/>an operator's push]) --> K{ROOMLERD_COMPANION_SYNC=0?}
+    S([the root update owner:<br/>at its start, every check,<br/>an operator's push]) --> K{MESHHARBORD_COMPANION_SYNC=0?}
     K -->|yes| N0[nothing]
     K -->|no| Q{meshharbor-desktop<br/>installed? dpkg / rpm}
     Q -->|no| N1[nothing: headless stays headless]
@@ -810,5 +810,5 @@ flowchart TD
   swap does (#1686). A companion that was not running stays stopped.
 - **The grid catches up at once:** the sync drops `installed_version`'s 10-minute cache
   (`forget_installed_version`, `companion.rs:322`).
-- **Kill switch:** `ROOMLERD_COMPANION_SYNC=0` turns off FR-117's two additions, the Linux sync and
+- **Kill switch:** `MESHHARBORD_COMPANION_SYNC=0` turns off FR-117's two additions, the Linux sync and
   the Windows retry. Windows' refresh at start is older and stays.

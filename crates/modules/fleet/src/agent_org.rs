@@ -152,7 +152,7 @@ pub async fn join_org(
     if !agent.capabilities.multi_org.iter().any(|c| c == "join") {
         return Err(ApiError::BadRequest(format!(
             "{} runs agent {} which predates remote org-join. Update the device \
-             (or enroll it at the keyboard with `roomler enroll --label …`).",
+             (or enroll it at the keyboard with `meshharbor enroll --label …`).",
             agent.name,
             if agent.agent_version.is_empty() {
                 "(unknown version)"

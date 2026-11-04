@@ -22,7 +22,7 @@
 //!   (`left_ptr`, `xterm`, `hand2`), and for one of those the viewer shows its
 //!   own native cursor, as it does for the Windows tracker's stock cursors.
 //!
-//! Kill switch `ROOMLERD_X11_CURSOR=0`: nothing is read or published, and the
+//! Kill switch `MESHHARBORD_X11_CURSOR=0`: nothing is read or published, and the
 //! viewer draws its stand-in, as before P3a.
 
 use std::sync::Arc;
@@ -41,7 +41,7 @@ use super::drm_cursor::{self, CursorSnapshot};
 /// every change as a `CursorNotify`; this bounds what one it did not costs.
 pub const SHAPE_REREAD: Duration = Duration::from_secs(1);
 
-/// FR-97 P3a — kill switch `ROOMLERD_X11_CURSOR=0`.
+/// FR-97 P3a — kill switch `MESHHARBORD_X11_CURSOR=0`.
 pub fn enabled() -> bool {
     tunnel_core::env::flag("X11_CURSOR", true)
 }
@@ -83,7 +83,7 @@ impl X11Cursor {
     pub fn open(origin: (i32, i32)) -> Option<Self> {
         if !enabled() {
             tracing::info!(
-                "capture: the X11 pointer stays off the cursor channel (ROOMLERD_X11_CURSOR=0)"
+                "capture: the X11 pointer stays off the cursor channel (MESHHARBORD_X11_CURSOR=0)"
             );
             return None;
         }
@@ -364,7 +364,7 @@ mod tests {
     }
 }
 
-/// Against a REAL X server. `ROOMLERD_TEST_X11=1` makes a missing server a
+/// Against a REAL X server. `MESHHARBORD_TEST_X11=1` makes a missing server a
 /// failure rather than a skip, so the CI lane that runs this under Xvfb
 /// cannot pass by running nothing.
 #[cfg(test)]
@@ -373,7 +373,7 @@ mod x11_tests {
     use x11rb::wrapper::ConnectionExt as _;
 
     fn required() -> bool {
-        std::env::var("ROOMLERD_TEST_X11").as_deref() == Ok("1")
+        std::env::var("MESHHARBORD_TEST_X11").as_deref() == Ok("1")
     }
 
     fn warp(conn: &impl x11rb::connection::Connection, root: u32, x: i16, y: i16) {
@@ -419,8 +419,8 @@ mod x11_tests {
     #[test]
     fn the_pointer_reaches_the_slot_with_its_shape_place_and_name() {
         let Ok((conn, screen)) = x11rb::connect(None) else {
-            assert!(!required(), "ROOMLERD_TEST_X11=1 but there is no X server");
-            eprintln!("no X server — skipping (ROOMLERD_TEST_X11=1 makes this a failure)");
+            assert!(!required(), "MESHHARBORD_TEST_X11=1 but there is no X server");
+            eprintln!("no X server — skipping (MESHHARBORD_TEST_X11=1 makes this a failure)");
             return;
         };
         let root = conn.setup().roots[screen].root;

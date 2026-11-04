@@ -13,7 +13,7 @@
 // The legacy mutex and lock-file names are held ON PURPOSE: an OLD instance
 // only knows the old name, so dropping it would let two daemons run at once
 // across an upgrade — the exact thing this module exists to prevent.
-//!   `Local\Roomler-<sha>` (post-P3D-rename) AND `Local\RoomlerAgent-<sha>`
+//!   `Local\MeshHarbor-<sha>` (post-P3D-rename) AND `Local\MeshHarborAgent-<sha>`
 //!   (pre-rename). Acquiring both means an OLD `meshharbord run` and a
 //!   NEW one can't both run during the rename window — either one already
 //!   holding either name blocks the other. The `Local\` namespace scopes
@@ -50,7 +50,7 @@ pub enum AcquireOutcome {
 /// releases it. Implementations are platform-specific and gated
 /// below; the type is opaque to callers.
 pub struct InstanceLock {
-    // Both the new `Roomler-<id>` and legacy `RoomlerAgent-<id>` mutex
+    // Both the new `MeshHarbor-<id>` and legacy `MeshHarborAgent-<id>` mutex
     // handles are held for the process lifetime; each `WinMutex::drop`
     // calls CloseHandle, releasing that name so a fresh acquire succeeds.
     #[cfg(target_os = "windows")]
@@ -182,10 +182,10 @@ fn create_named_mutex(name: &str) -> Result<Option<WinHandle>> {
 
 #[cfg(target_os = "windows")]
 fn win_acquire(id: &str) -> Result<AcquireOutcome> {
-    // Acquire BOTH names so an OLD `RoomlerAgent-<id>` instance and a NEW
-    // `Roomler-<id>` instance can't both run during the rename window.
-    let new_name = format!("Local\\Roomler-{id}");
-    let legacy_name = format!("Local\\RoomlerAgent-{id}");
+    // Acquire BOTH names so an OLD `MeshHarborAgent-<id>` instance and a NEW
+    // `MeshHarbor-<id>` instance can't both run during the rename window.
+    let new_name = format!("Local\\MeshHarbor-{id}");
+    let legacy_name = format!("Local\\MeshHarborAgent-{id}");
 
     // New name first.
     let Some(new_h) = create_named_mutex(&new_name)? else {
@@ -193,7 +193,7 @@ fn win_acquire(id: &str) -> Result<AcquireOutcome> {
     };
     // Wrap immediately so that if the legacy acquire below reports
     // AlreadyRunning (or errors), this handle is dropped/closed via
-    // WinMutex::drop and we don't leak the `Roomler-<id>` mutex.
+    // WinMutex::drop and we don't leak the `MeshHarbor-<id>` mutex.
     let new_mutex = WinMutex(new_h);
 
     let Some(legacy_h) = create_named_mutex(&legacy_name)? else {
@@ -257,7 +257,7 @@ fn unix_lock_path(id: &str) -> Result<std::path::PathBuf> {
         .runtime_dir()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| dirs.cache_dir().to_path_buf());
-    Ok(parent.join(format!("roomler-agent-{id}.lock")))
+    Ok(parent.join(format!("meshharbor-agent-{id}.lock")))
 }
 
 #[cfg(test)]
@@ -269,7 +269,7 @@ mod tests {
         // Each test gets its own cfg path so tests in parallel don't
         // collide on the lock_id-derived OS primitive.
         std::env::temp_dir().join(format!(
-            "roomlerd-test-{}-{}-{}.toml",
+            "meshharbord-test-{}-{}-{}.toml",
             name,
             std::process::id(),
             std::time::SystemTime::now()

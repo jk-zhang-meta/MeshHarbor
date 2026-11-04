@@ -40,7 +40,7 @@ if a[0]=='inspect':
  if s['case']=='restart-noop' and s['restarts']==1: started='initial'
  if s['case']=='drift' and s['inspections']>=2: started='other-deploy'
  source=str(r/'data') if s['case']!='wrong-mount' else '/wrong'
- env=['ROOMLER__STATS__GEOIP_MMDB=/usr/share/roomler/geoip-managed/current/dbip-country-lite.mmdb']
+ env=['MESHHARBOR__STATS__GEOIP_MMDB=/usr/share/roomler/geoip-managed/current/dbip-country-lite.mmdb']
  if s['case']=='env-drift' and s['inspections']>=2: env=[]
  image='sha256:'+('3' if s['case']=='image-drift' and s['inspections']>=2 else '1')*64
  running=not(s['case']=='stopped-restart-failure' and s['restarts']==1)

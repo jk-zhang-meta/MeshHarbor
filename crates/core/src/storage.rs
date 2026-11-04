@@ -3,9 +3,9 @@
 //! File-storage backend — local disk (dev/test default) or S3/MinIO (prod).
 //!
 //! Until S0 every upload and export artifact was written straight to
-//! `ROOMLER_UPLOAD_DIR` (default `/tmp/roomler-ai-uploads`), which inside the
+//! `MESHHARBOR_UPLOAD_DIR` (default `/tmp/meshharbor-uploads`), which inside the
 //! k8s pod is ephemeral: every redeploy wiped all file bytes while the Mongo
-//! `files` records survived. MinIO + `ROOMLER__S3__*` creds were already
+//! `files` records survived. MinIO + `MESHHARBOR__S3__*` creds were already
 //! deployed but unused. This module is the missing backend: routes call
 //! [`FileStorage::put`]/[`FileStorage::get`] with a relative storage key
 //! (`<tenant>/room/<room>/<uuid>`, `exports/<name>`) and the backend is picked
@@ -26,8 +26,8 @@ use tracing::{info, warn};
 /// Directory used by the Local backend AND as the migration source when the
 /// S3 backend is enabled on a host that still has locally-written files.
 pub fn local_upload_dir() -> PathBuf {
-    let dir = std::env::var("ROOMLER_UPLOAD_DIR")
-        .unwrap_or_else(|_| "/tmp/roomler-ai-uploads".to_string());
+    let dir = std::env::var("MESHHARBOR_UPLOAD_DIR")
+        .unwrap_or_else(|_| "/tmp/meshharbor-uploads".to_string());
     PathBuf::from(dir)
 }
 

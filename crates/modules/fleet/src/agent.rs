@@ -56,7 +56,7 @@ pub struct EnrollmentTokenResponse {
 #[derive(Debug, Default, Deserialize)]
 pub struct EnrollmentTokenRequest {
     /// FR-104 — let this token also anchor the Windows device it enrolls for
-    /// SYSTEM exec: the wizard's elevated `roomlerd anchor create`, with the
+    /// SYSTEM exec: the wizard's elevated `meshharbord anchor create`, with the
     /// same pasted token. Default off.
     #[serde(default)]
     pub anchor: bool,
@@ -687,7 +687,7 @@ pub struct AgentResponse {
     pub last_seen_at: String,
     pub access_policy: AccessPolicy,
     /// Subnet-router CIDRs this agent advertises for the mesh (Phase 2). The
-    /// `roomler socks5` mesh longest-prefix-matches a LAN target IP
+    /// `meshharbor socks5` mesh longest-prefix-matches a LAN target IP
     /// against these to pick the covering agent, which then dials the real
     /// IP. Admin-managed here; still gated by the tenant's `tunnel_policies`.
     pub routes: Vec<String>,
@@ -738,7 +738,7 @@ pub struct AgentResponse {
     /// Absent on a row created before the install trace existed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install: Option<InstallInfo>,
-    /// Roomler-SSH gate 3 as stored, with the same replace-on-save warning as
+    /// MeshHarbor-SSH gate 3 as stored, with the same replace-on-save warning as
     /// [`Self::exec_policy`] — and this is the one that makes `Option`
     /// load-bearing rather than tidy.
     ///

@@ -342,7 +342,7 @@ impl AgentInternal {
         );
 
         if let Some(p) = p {
-            // Roomler patch (observability, 2026-07-28): selection changes at
+            // MeshHarbor patch (observability, 2026-07-28): selection changes at
             // WARN — the agent's default tracing filter uploads `warn`-level
             // events from this target fleet-wide, so which path media rides
             // (and every mid-session migration) becomes visible in the

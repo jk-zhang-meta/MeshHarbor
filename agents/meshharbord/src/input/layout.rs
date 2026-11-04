@@ -39,7 +39,7 @@
 //! per command (rare, user-clicked) with the same desktop-rebind
 //! preamble.
 //!
-//! Kill switch: `ROOMLERD_AUTO_LAYOUT=0` (the older `ROOMLER_NODE_` and
+//! Kill switch: `MESHHARBORD_AUTO_LAYOUT=0` (the older `MESHHARBOR_NODE_` and
 //! prefix is still honoured) disables the per-char
 //! auto-switch without a redeploy;
 //! status reporting + manual set stay active.
@@ -86,7 +86,7 @@ static LAST_PUBLISHED_HKL: AtomicUsize = AtomicUsize::new(0);
 static COARSE_SAMPLE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Whether the per-char auto-switch is enabled. Default ON;
-/// `ROOMLERD_AUTO_LAYOUT=0|false|no|off` disables.
+/// `MESHHARBORD_AUTO_LAYOUT=0|false|no|off` disables.
 pub fn auto_layout_enabled() -> bool {
     static ENABLED: LazyLock<bool> =
         LazyLock::new(|| parse_auto_layout_flag(node_env("AUTO_LAYOUT").as_deref()));
@@ -344,7 +344,7 @@ fn publish_snapshot(active: HKL) {
 /// unchanged state snaps the viewer's select back on failure).
 pub fn request_set_layout(hkl_hex: String) {
     let spawned = std::thread::Builder::new()
-        .name("roomlerd-layout-set".into())
+        .name("meshharbord-layout-set".into())
         .spawn(move || {
             // SYSTEM-context worker: bind this fresh thread to the
             // interactive desktop first (same preamble as the

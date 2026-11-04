@@ -36,7 +36,7 @@ stateDiagram-v2
 |---|---|
 | a year-long token | **180 days before expiry**, i.e. at 185 days old |
 | a short-lived token (a server minting with a short `rc.agent_token_ttl_secs`) | **half its lifetime**, whichever of the two comes first |
-| with `ROOMLERD_TOKEN_RENEW_BEFORE_DAYS=N` | exactly *N* days before expiry: the field-test override, which can make a fresh token due at once |
+| with `MESHHARBORD_TOKEN_RENEW_BEFORE_DAYS=N` | exactly *N* days before expiry: the field-test override, which can make a fresh token due at once |
 
 ## 3. Renewal
 
@@ -172,12 +172,12 @@ A first `roomlerd enroll` ends the same way, by naming the step that connects th
 
 | Where | Switch | Default | Off means |
 |---|---|---|---|
-| server | `rc.token_renewal` (`ROOMLER__RC__TOKEN_RENEWAL`) | on | both renew routes answer 404; devices keep the token they have |
+| server | `rc.token_renewal` (`MESHHARBOR__RC__TOKEN_RENEWAL`) | on | both renew routes answer 404; devices keep the token they have |
 | server | `rc.token_generation_check` | on | the generation is not compared; removal no longer ends earlier tokens |
 | server | `rc.agent_token_ttl_secs` | one year | test knob: the TTL tokens are minted with. Prod is never shortened |
-| server | `rc.removal_goodbye` (`ROOMLER__RC__REMOVAL_GOODBYE`) | on | a removal's kick only takes the device out of the hub, and a connected device keeps its socket until something else drops it, as before #2267 |
-| device | `ROOMLERD_TOKEN_RENEWAL=0` | on | no renewal and no adopting a token from the file: the token it started with, as before FR-103 |
-| device | `ROOMLERD_TOKEN_RENEW_BEFORE_DAYS=N` | unset | renew exactly *N* days before expiry (testing) |
+| server | `rc.removal_goodbye` (`MESHHARBOR__RC__REMOVAL_GOODBYE`) | on | a removal's kick only takes the device out of the hub, and a connected device keeps its socket until something else drops it, as before #2267 |
+| device | `MESHHARBORD_TOKEN_RENEWAL=0` | on | no renewal and no adopting a token from the file: the token it started with, as before FR-103 |
+| device | `MESHHARBORD_TOKEN_RENEW_BEFORE_DAYS=N` | unset | renew exactly *N* days before expiry (testing) |
 
 > ⚠️ On an attended Windows install the signalling loop runs in the per-user **worker**, which does not inherit a service's environment. To set a device knob there, set a machine-wide environment variable and restart the machine.
 

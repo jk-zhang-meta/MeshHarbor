@@ -7,25 +7,25 @@
 // that build a legacy tree in order to migrate it.
 // INVARIANT: if you add a retired name here that is NOT the old half of a
 // dual-read, that is a bug, not a new exemption. docs/fr/FR-21
-//! Roomler node application directories with a legacy-segment fallback.
+//! MeshHarbor node application directories with a legacy-segment fallback.
 //!
-//! The controlled-host daemon is being renamed `roomler-agent` -> `roomlerd`
+//! The controlled-host daemon is being renamed `meshharbor-agent` -> `meshharbord`
 //! (the unified device/node model — see the unification plan). Its per-user and
 //! machine-global data trees historically live under an app segment
-//! `roomler-agent` (`%APPDATA%\roomler\roomler-agent`,
-//! `%PROGRAMDATA%\roomler\roomler-agent`, `~/.config/roomler-agent`, ...).
+//! `meshharbor-agent` (`%APPDATA%\meshharbor\meshharbor-agent`,
+//! `%PROGRAMDATA%\meshharbor\meshharbor-agent`, `~/.config/meshharbor-agent`, ...).
 //!
-//! Renaming that segment to `roomler` must **never** orphan a host's enrolled
+//! Renaming that segment to `meshharbor` must **never** orphan a host's enrolled
 //! `config.toml` (its bearer token) — that's the same class of silent
 //! fleet-drop-off as the MajorUpgrade-drops-env-vars bug. So resolution reads
-//! BOTH: it uses the NEW `roomler` segment when its tree already exists, else
-//! keeps using the OLD `roomler-agent` tree if THAT exists, and only a genuinely
+//! BOTH: it uses the NEW `meshharbor` segment when its tree already exists, else
+//! keeps using the OLD `meshharbor-agent` tree if THAT exists, and only a genuinely
 //! fresh install lands on the new segment. The decision is made once per process
 //! (cached) and applied to every directory, so config / logs / crashes on a host
 //! never split across two trees.
 //!
 //! S1b adds the follow-up: [`migrate_legacy_trees`] performs a one-shot
-//! startup RENAME of the legacy trees onto the `roomler` segment (per-user
+//! startup RENAME of the legacy trees onto the `meshharbor` segment (per-user
 //! config/data roots + the Windows machine-global root). It runs before any
 //! consumer caches a segment decision, never deletes, and on any failure
 //! simply leaves the read-both resolution in charge (retry next start) — so
@@ -46,7 +46,7 @@ const NEW_APP: &str = "meshharbor";
 // RETIRED-NAME-ANCHOR: a pre-rename host resolves its ENROLLED config through this
 // segment. Renaming it orphans that config -- the device drops off the mesh and
 // re-enrolls as a stranger. See docs/fr/FR-21.
-const OLD_APP: &str = "roomler-agent";
+const OLD_APP: &str = "meshharbor-agent";
 
 /// True if a NEW-segment `ProjectDirs` tree is present on disk.
 fn tree_exists(app: &str) -> bool {
@@ -63,8 +63,8 @@ fn use_old_segment() -> bool {
     *DECISION.get_or_init(|| !tree_exists(NEW_APP) && tree_exists(OLD_APP))
 }
 
-/// The resolved per-user app segment ("roomler" for fresh/migrated hosts,
-/// "roomler-agent" for a pre-rename install whose tree still exists).
+/// The resolved per-user app segment ("meshharbor" for fresh/migrated hosts,
+/// "meshharbor-agent" for a pre-rename install whose tree still exists).
 fn app_segment() -> &'static str {
     if use_old_segment() { OLD_APP } else { NEW_APP }
 }
@@ -76,7 +76,7 @@ pub fn project_dirs() -> Option<ProjectDirs> {
     ProjectDirs::from(QUALIFIER, ORG, app_segment())
 }
 
-/// Machine-global data root `%PROGRAMDATA%\roomler\<segment>` (Windows only).
+/// Machine-global data root `%PROGRAMDATA%\meshharbor\<segment>` (Windows only).
 /// Same new-then-old resolution as [`project_dirs`], keyed independently on the
 /// machine-global tree (a perMachine/SystemContext host's enrolled config lives
 /// here and must not be orphaned). Consumers `.join(...)` their subdir
@@ -95,7 +95,7 @@ pub fn machine_global_dir() -> PathBuf {
         .clone()
 }
 
-/// The machine-global root under `base` (= `%PROGRAMDATA%\roomler`), resolved
+/// The machine-global root under `base` (= `%PROGRAMDATA%\meshharbor`), resolved
 /// new-then-old.
 ///
 /// Split out of [`machine_global_dir`] so the decision can be TESTED. The public
@@ -131,7 +131,7 @@ pub fn data_local_dir_in_profile(profile: &Path) -> PathBuf {
         .join("data")
 }
 
-/// The SCM-service log directory (`%PROGRAMDATA%\roomler\<segment>\service-logs`).
+/// The SCM-service log directory (`%PROGRAMDATA%\meshharbor\<segment>\service-logs`).
 ///
 /// P3e lever E: canonical home for the path both sides need — the daemon's
 /// `win_service::default_log_dir` delegates here, and the desktop companion
@@ -153,8 +153,8 @@ pub fn migration_notes() -> &'static [String] {
     MIGRATION_NOTES.get().map(|v| v.as_slice()).unwrap_or(&[])
 }
 
-/// One-shot startup migration of the legacy `roomler-agent` trees onto the
-/// `roomler` segment. MUST run before `logging::init` and before ANY other
+/// One-shot startup migration of the legacy `meshharbor-agent` trees onto the
+/// `meshharbor` segment. MUST run before `logging::init` and before ANY other
 /// appdirs consumer (the segment decision is `OnceLock`-cached per process,
 /// and log files open inside the tree).
 ///
@@ -203,7 +203,7 @@ pub fn migrate_legacy_trees(companion_running: bool) {
                 }
             }
             // Best-effort: drop the now-empty legacy shells (e.g. Windows
-            // `%APPDATA%\roomler\roomler-agent` after its `config`/`data`
+            // `%APPDATA%\meshharbor\meshharbor-agent` after its `config`/`data`
             // children moved out). `remove_dir` refuses non-empty dirs, so
             // anything left behind survives.
             for parent in pairs
@@ -259,7 +259,7 @@ fn migrate_dir(old: &Path, new: &Path) -> Option<String> {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             // Field finding (DEVBOX, 2026-07-27): renaming the TOP dir was
             // denied by an external ROOT-handle (an AV / indexer
-            // directory-watch — no roomler process held anything, ACLs
+            // directory-watch — no meshharbor process held anything, ACLs
             // were Full, and every CHILD renamed fine). Fall back to
             // moving the children individually; that dodges the
             // root-handle without needing the watcher gone.
@@ -277,7 +277,7 @@ fn migrate_dir(old: &Path, new: &Path) -> Option<String> {
 
 /// Canonical config for a Linux SYSTEM install (the `meshharbord.service` unit).
 ///
-/// The packaged unit has run `roomlerd --config /etc/meshharbor/config.toml`
+/// The packaged unit has run `meshharbord --config /etc/meshharbor/config.toml`
 /// since rc.426, but hosts enrolled before that convention keep their config
 /// in root's profile (`/root/.config/meshharbor/config.toml`) — so the FIRST
 /// systemd-mediated start after the packaging change died `no config found`
@@ -543,8 +543,8 @@ mod tests {
     #[test]
     fn migrate_dir_moves_legacy_into_place() {
         let tmp = tempfile::tempdir().unwrap();
-        let old = tmp.path().join("roomler-agent").join("config");
-        let new = tmp.path().join("roomler").join("config");
+        let old = tmp.path().join("meshharbor-agent").join("config");
+        let new = tmp.path().join("meshharbor").join("config");
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("config.toml"), b"agent_token = \"x\"").unwrap();
 
@@ -561,8 +561,8 @@ mod tests {
     #[test]
     fn migrate_dir_leaves_split_brain_alone() {
         let tmp = tempfile::tempdir().unwrap();
-        let old = tmp.path().join("roomler-agent");
-        let new = tmp.path().join("roomler");
+        let old = tmp.path().join("meshharbor-agent");
+        let new = tmp.path().join("meshharbor");
         std::fs::create_dir_all(&old).unwrap();
         std::fs::create_dir_all(&new).unwrap();
         std::fs::write(old.join("stale.txt"), b"old").unwrap();
@@ -575,8 +575,8 @@ mod tests {
     #[test]
     fn migrate_children_moves_everything_and_drops_old_root() {
         let tmp = tempfile::tempdir().unwrap();
-        let old = tmp.path().join("roomler-agent");
-        let new = tmp.path().join("roomler");
+        let old = tmp.path().join("meshharbor-agent");
+        let new = tmp.path().join("meshharbor");
         std::fs::create_dir_all(old.join("service-logs")).unwrap();
         std::fs::write(old.join("config.toml"), b"agent_token = \"x\"").unwrap();
         std::fs::write(old.join("service-logs").join("a.log"), b"l").unwrap();
@@ -595,8 +595,8 @@ mod tests {
     #[test]
     fn migrate_children_rolls_back_on_midway_failure() {
         let tmp = tempfile::tempdir().unwrap();
-        let old = tmp.path().join("roomler-agent");
-        let new = tmp.path().join("roomler");
+        let old = tmp.path().join("meshharbor-agent");
+        let new = tmp.path().join("meshharbor");
         std::fs::create_dir_all(old.join("crashes")).unwrap();
         std::fs::write(old.join("config.toml"), b"tok").unwrap();
         // Pre-create a CONFLICTING non-empty destination for `crashes` so
@@ -620,8 +620,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         assert!(
             migrate_dir(
-                &tmp.path().join("roomler-agent"),
-                &tmp.path().join("roomler")
+                &tmp.path().join("meshharbor-agent"),
+                &tmp.path().join("meshharbor")
             )
             .is_none()
         );

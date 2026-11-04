@@ -94,4 +94,4 @@ docker compose -f docker-compose.pop.yml ps
 
 echo "== done. Verify from anywhere:"
 echo "   python3 scripts/relay-pop/healthcheck.py $REGION=$COTURN_HOST:3478,$DERP_HOST"
-echo "   (then append the region to ROOMLER__RELAY__REGIONS and redeploy the web)"
+echo "   (then append the region to MESHHARBOR__RELAY__REGIONS and redeploy the web)"

@@ -164,7 +164,7 @@ pub fn spawn_reaper(state: NetworkState) {
         loop {
             tokio::time::sleep(interval).await;
             if let Some(redis) = &state.redis_pubsub {
-                let key = format!("roomler:ephemeral-reap:{}", state.db.name());
+                let key = format!("meshharbor:ephemeral-reap:{}", state.db.name());
                 let ttl = state
                     .settings
                     .rc

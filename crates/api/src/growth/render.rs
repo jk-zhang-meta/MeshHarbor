@@ -33,22 +33,22 @@ use super::{
     weekly::{WeekFigure, WeeklyHeadline, WeeklySections},
 };
 
-/// `Roomler daily digest — YYYY-MM-DD`.
+/// `MeshHarbor daily digest — YYYY-MM-DD`.
 pub fn subject(day: &str) -> String {
-    format!("Roomler daily digest — {day}")
+    format!("MeshHarbor daily digest — {day}")
 }
 
-/// P10 — `Roomler weekly roll-up — 2026-W41 (2026-10-05 → 2026-10-11)`.
+/// P10 — `MeshHarbor weekly roll-up — 2026-W41 (2026-10-05 → 2026-10-11)`.
 pub fn weekly_subject(h: &WeeklyHeadline) -> String {
     format!(
-        "Roomler weekly roll-up — {} ({} → {})",
+        "MeshHarbor weekly roll-up — {} ({} → {})",
         h.week, h.since, h.until
     )
 }
 
-/// P10 — `Roomler growth alert — spike: signups`.
+/// P10 — `MeshHarbor growth alert — spike: signups`.
 pub fn alert_subject(a: &GrowthAlert) -> String {
-    format!("Roomler growth alert — {}: {}", a.rule, a.key)
+    format!("MeshHarbor growth alert — {}: {}", a.rule, a.key)
 }
 
 /// `num / den` as a percentage, only once `den` reaches [`SMALL_N`].
@@ -1996,7 +1996,7 @@ pub fn alert_mail(a: &GrowthAlert, open_now: usize) -> (String, String, String) 
 /// The HTML body. Every string escaped; inline styles only (mail clients).
 pub fn render_html(doc: &DigestDoc, s: &Sections) -> String {
     html_document(
-        &format!("Roomler daily digest — {}", doc.day),
+        &format!("MeshHarbor daily digest — {}", doc.day),
         &format!(
             "Every count is the day, then the trailing 7 and 28 days. Rates appear only above n = {SMALL_N}."
         ),
@@ -2007,7 +2007,7 @@ pub fn render_html(doc: &DigestDoc, s: &Sections) -> String {
 /// The plain-text body: the same blocks, as text.
 pub fn render_text(doc: &DigestDoc, s: &Sections) -> String {
     text_document(
-        &format!("Roomler daily digest — {}", doc.day),
+        &format!("MeshHarbor daily digest — {}", doc.day),
         &format!(
             "Every count is the day, then the trailing 7 and 28 days. Rates appear only above n = {SMALL_N}."
         ),
@@ -2097,7 +2097,7 @@ fn html_document(title: &str, intro: &str, blocks: &[Block]) -> String {
         }
     }
     html.push_str(
-        "<p style=\"color: #999; font-size: 12px; margin-top: 24px;\">— Roomler growth</p></div>",
+        "<p style=\"color: #999; font-size: 12px; margin-top: 24px;\">— MeshHarbor growth</p></div>",
     );
     html
 }
@@ -2336,7 +2336,7 @@ mod tests {
                     )),
                 }),
                 traffic: Measured::NotMeasured(NotMeasured::now(
-                    "no GitHub token configured (ROOMLER__GROWTH__GITHUB_TOKEN)",
+                    "no GitHub token configured (MESHHARBOR__GROWTH__GITHUB_TOKEN)",
                 )),
             },
             search: Measured::Value(crate::growth::search::SearchSection {
@@ -2363,7 +2363,7 @@ mod tests {
                     top_pages_7d: vec![],
                 }),
                 bing: Measured::NotMeasured(NotMeasured::now(
-                    "no Bing Webmaster API key configured (ROOMLER__GROWTH__BING_API_KEY)",
+                    "no Bing Webmaster API key configured (MESHHARBOR__GROWTH__BING_API_KEY)",
                 )),
             }),
             alerts: Measured::Value(AlertsSection {
@@ -2654,7 +2654,7 @@ mod tests {
         );
         // P7 is built: no section of this day still waits for it.
         assert!(!text.contains("arrives with P7"), "{text}");
-        assert_eq!(subject("2026-10-13"), "Roomler daily digest — 2026-10-13");
+        assert_eq!(subject("2026-10-13"), "MeshHarbor daily digest — 2026-10-13");
         // P10 — the day's alerts: the open row listed once (it fired that
         // day too), with its detail as text.
         assert!(text.contains("== Alerts =="), "{text}");
@@ -2875,7 +2875,7 @@ mod tests {
         assert!(text.contains("== GitHub =="), "{text}");
         assert!(text.contains("Counters: not measured — arrives with P7"));
         assert!(
-            text.contains("Roomler weekly roll-up — 2026-W41 (2026-10-05 → 2026-10-11)"),
+            text.contains("MeshHarbor weekly roll-up — 2026-W41 (2026-10-05 → 2026-10-11)"),
             "{text}"
         );
         // P9a — a week with nothing frozen is a reason, never zeros.
@@ -2907,7 +2907,7 @@ mod tests {
         assert!(!text.contains('@'));
         let html = render_weekly_html(&doc, &s);
         assert!(
-            html.contains("<h2 style=\"margin-bottom: 4px;\">Roomler weekly roll-up — 2026-W41")
+            html.contains("<h2 style=\"margin-bottom: 4px;\">MeshHarbor weekly roll-up — 2026-W41")
         );
         assert!(html.contains("4w avg 5.0"));
         assert!(!html.contains('@'));
@@ -2927,7 +2927,7 @@ mod tests {
             mailed_on: None,
         };
         let (subject, html, text) = alert_mail(&a, 2);
-        assert_eq!(subject, "Roomler growth alert — spike: signups");
+        assert_eq!(subject, "MeshHarbor growth alert — spike: signups");
         assert!(
             text.contains("== spike: signups ==\nFired at: 2026-10-15T09:00:00Z\n"),
             "{text}"

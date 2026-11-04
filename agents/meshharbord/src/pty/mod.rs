@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! Pseudo-terminals for Roomler SSH interactive sessions (P4).
+//! Pseudo-terminals for MeshHarbor SSH interactive sessions (P4).
 //!
 //! Everything before this ran through [`crate::exec`], which buffers a
 //! command's whole output to enforce its ceiling and hands it back when the
@@ -61,7 +61,7 @@ impl WinSize {
     /// A client may send 0×0 (some do, when the window size is not yet known,
     /// and `ssh` with a piped stdin always does), and a zero-sized terminal
     /// makes full-screen applications misbehave in ways that look like a
-    /// roomler bug. 80×24 is the conventional fallback.
+    /// meshharbor bug. 80×24 is the conventional fallback.
     pub(crate) fn sane(self) -> Self {
         Self {
             cols: if self.cols == 0 { 80 } else { self.cols },

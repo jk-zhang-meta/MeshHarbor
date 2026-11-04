@@ -20,17 +20,17 @@
 //!   tucking itself away ([`under_xwayland`]): GNOME's top bar is not one,
 //!   and the top-edge gesture that brings it back would never be seen.
 //!
-//! `ROOMLER_DESKTOP_BANNER_PIN=0` turns both off.
+//! `MESHHARBOR_DESKTOP_BANNER_PIN=0` turns both off.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The KWin script's name in KWin, the handle a reload replaces.
-const SCRIPT_NAME: &str = "roomler-banner-pin";
+const SCRIPT_NAME: &str = "meshharbor-banner-pin";
 
-/// `ROOMLER_DESKTOP_BANNER_PIN=0` (or `false`/`off`) — neither pin.
+/// `MESHHARBOR_DESKTOP_BANNER_PIN=0` (or `false`/`off`) — neither pin.
 fn enabled() -> bool {
     !matches!(
-        std::env::var("ROOMLER_DESKTOP_BANNER_PIN").ok().as_deref(),
+        std::env::var("MESHHARBOR_DESKTOP_BANNER_PIN").ok().as_deref(),
         Some("0") | Some("false") | Some("off")
     )
 }
@@ -82,7 +82,7 @@ pub fn under_xwayland() -> bool {
 fn kwin_script(title: &str) -> String {
     let title = serde_json::to_string(title).unwrap_or_else(|_| "\"\"".into());
     format!(
-        r#"// Roomler: the "Being viewed" banner pinned to the top (#2286).
+        r#"// MeshHarbor: the "Being viewed" banner pinned to the top (#2286).
 const TITLE = {title};
 function place(w) {{
     if (!w || w.caption !== TITLE) return;
@@ -234,9 +234,9 @@ mod tests {
     /// string, and keeps it above.
     #[test]
     fn the_kwin_script_names_the_banner_by_its_title() {
-        let s = kwin_script("Roomler — session active");
+        let s = kwin_script("MeshHarbor — session active");
         assert!(
-            s.contains(r#"const TITLE = "Roomler — session active";"#),
+            s.contains(r#"const TITLE = "MeshHarbor — session active";"#),
             "{s}"
         );
         assert!(s.contains("w.keepAbove = true;"));

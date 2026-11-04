@@ -124,7 +124,7 @@ impl Group {
             Group::NetworkCarriers => "Network carriers & relays",
             Group::NetworkRouting => "Routing & adapter (Windows)",
             Group::Tunnels => "Tunnels & SOCKS",
-            Group::Ssh => "Roomler SSH",
+            Group::Ssh => "MeshHarbor SSH",
             Group::RemoteDesktop => "Remote desktop",
             Group::CaptureInput => "Capture & input",
             Group::VideoEncoding => "Video encoding",
@@ -292,7 +292,7 @@ const KEYS: &[KeyMeta] = &[
         // (agents/meshharbord/src/files.rs) — nothing is read at startup only.
         live: true,
         kind: "string",
-        description: "FR-84 - where files dropped onto a remote-control session land. An absolute folder, or `~/...` for the active user's profile (expanded per user, at the time of the drop). Must be outside system folders and, when the service runs as SYSTEM/root, inside the active user's profile; created if missing. Empty = the default: the active user's Downloads folder (Windows falls back to %PROGRAMDATA%\\roomler\\...\\uploads when that is unreachable). Only the person at the device's console can change it. Applies at once.",
+        description: "FR-84 - where files dropped onto a remote-control session land. An absolute folder, or `~/...` for the active user's profile (expanded per user, at the time of the drop). Must be outside system folders and, when the service runs as SYSTEM/root, inside the active user's profile; created if missing. Empty = the default: the active user's Downloads folder (Windows falls back to %PROGRAMDATA%\\meshharbor\\...\\uploads when that is unreachable). Only the person at the device's console can change it. Applies at once.",
     },
     KeyMeta {
         key: "exec_enabled",
@@ -328,7 +328,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Standard,
         live: false,
         kind: "bool",
-        description: "FR-84 - whether the service opens the desktop companion once after installation (the Welcome tour) and keeps it registered to start at login (Windows: the `Roomler Desktop` Run value). Off = neither; the companion still runs when someone opens it. A person's own 'Start at login' choice is separate and needs no admin. Takes effect at the next service start. Default: on.",
+        description: "FR-84 - whether the service opens the desktop companion once after installation (the Welcome tour) and keeps it registered to start at login (Windows: the `MeshHarbor Desktop` Run value). Off = neither; the companion still runs when someone opens it. A person's own 'Start at login' choice is separate and needs no admin. Takes effect at the next service start. Default: on.",
     },
     KeyMeta {
         key: "remote_config_enabled",
@@ -368,7 +368,7 @@ const KEYS: &[KeyMeta] = &[
         // LIVE: read with the consent mode, in the same single read.
         live: true,
         kind: "string",
-        description: "Permission names joined by `|`, e.g. `VIEW | INPUT`. This device's OWN ceiling on what an external session may do. Unset defers to the org's ceiling; where both are set a session gets the INTERSECTION, so a device can narrow what its org allows but never widen it. RECORD and PRIVACY are never granted to an external session, whatever this names. NOTE: the external-access PASSWORD is not settable here - use `roomler rc password set`, which never writes it anywhere readable.",
+        description: "Permission names joined by `|`, e.g. `VIEW | INPUT`. This device's OWN ceiling on what an external session may do. Unset defers to the org's ceiling; where both are set a session gets the INTERSECTION, so a device can narrow what its org allows but never widen it. RECORD and PRIVACY are never granted to an external session, whatever this names. NOTE: the external-access PASSWORD is not settable here - use `meshharbor rc password set`, which never writes it anywhere readable.",
     },
     KeyMeta {
         key: "local_restart_enabled",
@@ -379,7 +379,7 @@ const KEYS: &[KeyMeta] = &[
         // for the very next "Apply now".
         live: true,
         kind: "bool",
-        description: "FR-84 - let a person at this device restart the service from the companion (Apply now) or `roomler restart`. The daemon restarts itself only under a service manager it can prove (a Windows service or scheduled task, systemd, launchd), and at most once every 30 s; a hand-started `meshharbord run` always refuses. Off = every such request is refused. Never settable by the server, which cannot restart a daemon at all. Default: on.",
+        description: "FR-84 - let a person at this device restart the service from the companion (Apply now) or `meshharbor restart`. The daemon restarts itself only under a service manager it can prove (a Windows service or scheduled task, systemd, launchd), and at most once every 30 s; a hand-started `meshharbord run` always refuses. Off = every such request is refused. Never settable by the server, which cannot restart a daemon at all. Default: on.",
     },
     // FR-90 — Hive. Every key is the DEVICE's: none is settable by the server
     // (they are absent from `DesiredConfig`), because which account runs a
@@ -399,7 +399,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Standard,
         live: false,
         kind: "json",
-        description: "FR-90 - which local account a Roomler user's agent sessions run as: JSON {\"<user id or proven email>\": \"<account>\"}. Unmapped = refused (no_account), and a uid-0 account is refused too. Empty = nobody.",
+        description: "FR-90 - which local account a MeshHarbor user's agent sessions run as: JSON {\"<user id or proven email>\": \"<account>\"}. Unmapped = refused (no_account), and a uid-0 account is refused too. Empty = nobody.",
     },
     KeyMeta {
         key: "hive_roots",
@@ -455,7 +455,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "bool",
-        description: "FR-90 - show the organization's core memory (facts its people keep in Roomler) to the agent sessions on this device, as the session's CLAUDE.md and auto-memory. Claude Code reads CLAUDE.md as the user's own overriding instructions, so this is the one place text from the server reaches a session's model. Never settable by the server. Default: OFF.",
+        description: "FR-90 - show the organization's core memory (facts its people keep in MeshHarbor) to the agent sessions on this device, as the session's CLAUDE.md and auto-memory. Claude Code reads CLAUDE.md as the user's own overriding instructions, so this is the one place text from the server reaches a session's model. Never settable by the server. Default: OFF.",
     },
     KeyMeta {
         key: "hive_adopt",
@@ -527,7 +527,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "bool",
-        description: "FR-90 - offer the agent sessions on this device ssh_run: one command on another device of the organization over Roomler SSH, as the account that device's SSH policy maps (it may be SYSTEM or root there), each call decided by the organization's vault and approved by a person. Only with vault_enabled. Never settable by the server. Default: OFF.",
+        description: "FR-90 - offer the agent sessions on this device ssh_run: one command on another device of the organization over MeshHarbor SSH, as the account that device's SSH policy maps (it may be SYSTEM or root there), each call decided by the organization's vault and approved by a person. Only with vault_enabled. Never settable by the server. Default: OFF.",
     },
     KeyMeta {
         key: "ssh_enabled",
@@ -609,7 +609,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "number",
-        description: "FR-84 - LocalAPI named-pipe instances kept listening at once (Windows; 1-16). Every companion poll, `roomler` call and wizard step opens the pipe fresh, and a client that finds no listening instance is refused with ERROR_PIPE_BUSY on the spot - the Routes page blanking every few seconds was three opens racing one instance. 1 = one instance (the pre-FR-84 behaviour, the kill switch). Empty = built-in default (4). Restart required.",
+        description: "FR-84 - LocalAPI named-pipe instances kept listening at once (Windows; 1-16). Every companion poll, `meshharbor` call and wizard step opens the pipe fresh, and a client that finds no listening instance is refused with ERROR_PIPE_BUSY on the spot - the Routes page blanking every few seconds was three opens racing one instance. 1 = one instance (the pre-FR-84 behaviour, the kill switch). Empty = built-in default (4). Restart required.",
     },
     KeyMeta {
         key: "overlay_quic",
@@ -814,7 +814,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "netstack TCP congestion control: cubic (built-in default; RFC 9438) | reno (NewReno-lite) | none (kill switch: the send buffer alone bounds bytes in flight). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_CC.",
+        description: "netstack TCP congestion control: cubic (built-in default; RFC 9438) | reno (NewReno-lite) | none (kill switch: the send buffer alone bounds bytes in flight). Env: MESHHARBORD_OVERLAY_NETSTACK_TCP_CC.",
     },
     KeyMeta {
         key: "overlay_netstack_tcp_pacing",
@@ -822,7 +822,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "netstack TCP send pacing: data leaves at gain × cwnd / srtt instead of a window at a time, so compressed ACKs do not release whole bursts into a shallow queue or a policer. Built-in default: on (off is the kill switch). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_PACING.",
+        description: "netstack TCP send pacing: data leaves at gain × cwnd / srtt instead of a window at a time, so compressed ACKs do not release whole bursts into a shallow queue or a policer. Built-in default: on (off is the kill switch). Env: MESHHARBORD_OVERLAY_NETSTACK_TCP_PACING.",
     },
     KeyMeta {
         key: "overlay_netstack_tcp_sack",
@@ -830,7 +830,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "netstack TCP SACK loss recovery: a loss resends only the holes the peer's SACK blocks reveal instead of the whole window after it (go-back-N). Built-in default: on (off is the kill switch). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_SACK.",
+        description: "netstack TCP SACK loss recovery: a loss resends only the holes the peer's SACK blocks reveal instead of the whole window after it (go-back-N). Built-in default: on (off is the kill switch). Env: MESHHARBORD_OVERLAY_NETSTACK_TCP_SACK.",
     },
     KeyMeta {
         key: "overlay_netstack_tcp_min_rto_ms",
@@ -838,7 +838,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "number",
-        description: "netstack TCP retransmission-timeout floor in milliseconds (10-1000). Built-in default: 200, as Linux and gVisor; 1000 restores RFC 6298's floor. Env: ROOMLERD_OVERLAY_NETSTACK_TCP_MIN_RTO_MS.",
+        description: "netstack TCP retransmission-timeout floor in milliseconds (10-1000). Built-in default: 200, as Linux and gVisor; 1000 restores RFC 6298's floor. Env: MESHHARBORD_OVERLAY_NETSTACK_TCP_MIN_RTO_MS.",
     },
     KeyMeta {
         key: "net_inventory",
@@ -870,7 +870,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Track A stage 1 (SCAFFOLD): spawn the session-independent network daemon (roomlerd netd) as a second supervisor child. netd hosts nothing yet; flag read at service start. Built-in default: off.",
+        description: "Track A stage 1 (SCAFFOLD): spawn the session-independent network daemon (meshharbord netd) as a second supervisor child. netd hosts nothing yet; flag read at service start. Built-in default: off.",
     },
     KeyMeta {
         key: "overlay_pathmon",
@@ -878,7 +878,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "Overlay PathMonitor mode: on (authoritative — built-in default) | shadow (compare-only revert rail) | off. Env: ROOMLERD_OVERLAY_PATHMON.",
+        description: "Overlay PathMonitor mode: on (authoritative — built-in default) | shadow (compare-only revert rail) | off. Env: MESHHARBORD_OVERLAY_PATHMON.",
     },
     KeyMeta {
         key: "overlay_demote",
@@ -886,7 +886,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "B2 - score-driven demotion of degraded-but-live direct carriers: shadow (count only - built-in default) | on | off. Env: ROOMLERD_OVERLAY_DEMOTE.",
+        description: "B2 - score-driven demotion of degraded-but-live direct carriers: shadow (count only - built-in default) | on | off. Env: MESHHARBORD_OVERLAY_DEMOTE.",
     },
     KeyMeta {
         key: "overlay_rpf",
@@ -894,7 +894,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "P4 - ingress filtering of inbound overlay packets: drops a SOURCE address the sending peer does not own, and a DESTINATION outside the subnets this node advertises. warn (count + log, still deliver - built-in default) | enforce | off. Env: ROOMLERD_OVERLAY_RPF.",
+        description: "P4 - ingress filtering of inbound overlay packets: drops a SOURCE address the sending peer does not own, and a DESTINATION outside the subnets this node advertises. warn (count + log, still deliver - built-in default) | enforce | off. Env: MESHHARBORD_OVERLAY_RPF.",
     },
     KeyMeta {
         key: "overlay_route_events",
@@ -940,7 +940,7 @@ const KEYS: &[KeyMeta] = &[
         description: "Multi-org: the loopback SOCKS5 port serving THIS org's userspace netstack \
          (overlay_mode=\"netstack\"). One TCP listener per org — two orgs configured onto \
          one port means the second joins no mesh. The primary reads \
-         ROOMLERD_OVERLAY_NETSTACK_SOCKS instead; set this on an [[orgs]] entry. \
+         MESHHARBORD_OVERLAY_NETSTACK_SOCKS instead; set this on an [[orgs]] entry. \
          Built-in default: unset (OS-TUN mode).",
     },
     KeyMeta {
@@ -957,7 +957,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "number",
-        description: "Stable UDP base port for the overlay direct sockets (per-interface LAN; the public/srflx dialer takes base+256). Stateful corp firewalls grandfather pre-VPN UDP flows — a stable port lets a rebuilt carrier reuse the same 5-tuple instead of relay-locking. A swallowed base walks an 8-port band, then the same walk at base+512 (Hyper-V/WSL reserve invisible pools that move between boots). 0 = ephemeral ports. Built-in default: DERIVED per machine (43648 + machine-id-hash slot, 43648..43896) so siblings behind one NAT never collide; set 43648 explicitly to pin the old fleet-wide constant. Env: ROOMLERD_OVERLAY_DIRECT_PORT.",
+        description: "Stable UDP base port for the overlay direct sockets (per-interface LAN; the public/srflx dialer takes base+256). Stateful corp firewalls grandfather pre-VPN UDP flows — a stable port lets a rebuilt carrier reuse the same 5-tuple instead of relay-locking. A swallowed base walks an 8-port band, then the same walk at base+512 (Hyper-V/WSL reserve invisible pools that move between boots). 0 = ephemeral ports. Built-in default: DERIVED per machine (43648 + machine-id-hash slot, 43648..43896) so siblings behind one NAT never collide; set 43648 explicitly to pin the old fleet-wide constant. Env: MESHHARBORD_OVERLAY_DIRECT_PORT.",
     },
     KeyMeta {
         key: "overlay_iface_metric",
@@ -965,7 +965,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "number",
-        description: "The overlay NIC's IPv4 interface metric (Windows). Windows ranks a route by route metric + INTERFACE metric; corp endpoint managers (Check Point, AnyConnect) mirror overlay prefixes at route metric 1 on an interface also pinned to 1, producing an exact tie that Windows breaks by lower ifIndex — the VPN's — and the per-destination pick is sticky, so peers stay captured across restarts. Unlike metric-0 routes (which those products delete), an interface metric has no route-monitor hook, so 0 wins outright. Raise only to make the overlay deliberately lose against another interface. Built-in default: 0. Env: ROOMLERD_OVERLAY_IFACE_METRIC.",
+        description: "The overlay NIC's IPv4 interface metric (Windows). Windows ranks a route by route metric + INTERFACE metric; corp endpoint managers (Check Point, AnyConnect) mirror overlay prefixes at route metric 1 on an interface also pinned to 1, producing an exact tie that Windows breaks by lower ifIndex — the VPN's — and the per-destination pick is sticky, so peers stay captured across restarts. Unlike metric-0 routes (which those products delete), an interface metric has no route-monitor hook, so 0 wins outright. Raise only to make the overlay deliberately lose against another interface. Built-in default: 0. Env: MESHHARBORD_OVERLAY_IFACE_METRIC.",
     },
     KeyMeta {
         key: "shared_encoder",
@@ -1153,7 +1153,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "H.264 maxrate ceiling factor, % (50-400). Env: ROOMLERD_RATE_FACTOR_H264. Empty = built-in 150. Restart required.",
+        description: "H.264 maxrate ceiling factor, % (50-400). Env: MESHHARBORD_RATE_FACTOR_H264. Empty = built-in 150. Restart required.",
     },
     KeyMeta {
         key: "rate_factor_hevc",
@@ -1161,7 +1161,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "HEVC maxrate ceiling factor, % (50-400). Env: ROOMLERD_RATE_FACTOR_HEVC. Empty = built-in 125. Restart required.",
+        description: "HEVC maxrate ceiling factor, % (50-400). Env: MESHHARBORD_RATE_FACTOR_HEVC. Empty = built-in 125. Restart required.",
     },
     KeyMeta {
         key: "rate_factor_vp9",
@@ -1169,7 +1169,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "VP9 maxrate ceiling factor, % (50-400). Env: ROOMLERD_RATE_FACTOR_VP9. Empty = built-in 125. Restart required.",
+        description: "VP9 maxrate ceiling factor, % (50-400). Env: MESHHARBORD_RATE_FACTOR_VP9. Empty = built-in 125. Restart required.",
     },
     KeyMeta {
         key: "rate_factor_av1",
@@ -1177,7 +1177,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "AV1 maxrate ceiling factor, % (50-400). Env: ROOMLERD_RATE_FACTOR_AV1. Empty = built-in 100. Restart required.",
+        description: "AV1 maxrate ceiling factor, % (50-400). Env: MESHHARBORD_RATE_FACTOR_AV1. Empty = built-in 100. Restart required.",
     },
     KeyMeta {
         key: "rate_factor_h264_444",
@@ -1185,7 +1185,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "FR-77 P3 - the chroma column: H.264 4:4:4 cells' extra maxrate factor, % (50-400), applied on top of rate_factor_h264. Env: ROOMLERD_RATE_FACTOR_H264_444. Empty = built-in 150. Restart required.",
+        description: "FR-77 P3 - the chroma column: H.264 4:4:4 cells' extra maxrate factor, % (50-400), applied on top of rate_factor_h264. Env: MESHHARBORD_RATE_FACTOR_H264_444. Empty = built-in 150. Restart required.",
     },
     KeyMeta {
         key: "rate_factor_hevc_444",
@@ -1193,7 +1193,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "FR-77 P3 - the chroma column: HEVC 4:4:4 cells' extra maxrate factor, % (50-400), applied on top of rate_factor_hevc. Env: ROOMLERD_RATE_FACTOR_HEVC_444. Empty = built-in 150. Restart required.",
+        description: "FR-77 P3 - the chroma column: HEVC 4:4:4 cells' extra maxrate factor, % (50-400), applied on top of rate_factor_hevc. Env: MESHHARBORD_RATE_FACTOR_HEVC_444. Empty = built-in 150. Restart required.",
     },
     KeyMeta {
         key: "rate_factor_vp9_444",
@@ -1201,7 +1201,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "FR-77 P3 - the chroma column: VP9 4:4:4 cells' extra maxrate factor, % (50-400), applied on top of rate_factor_vp9. Env: ROOMLERD_RATE_FACTOR_VP9_444. Empty = built-in 150. Restart required.",
+        description: "FR-77 P3 - the chroma column: VP9 4:4:4 cells' extra maxrate factor, % (50-400), applied on top of rate_factor_vp9. Env: MESHHARBORD_RATE_FACTOR_VP9_444. Empty = built-in 150. Restart required.",
     },
     KeyMeta {
         key: "lanczos_min_pct",
@@ -1209,7 +1209,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "P7 - minimum linear downscale (percent, 0-100) at which the Lanczos-3 text-sharp filter engages; shallower shrinks use box. Empty = built-in 34 (covers the Smoother rungs; 56 restores the pre-P7 gate; 0 = always). Env: ROOMLERD_LANCZOS_MIN_PCT. Restart required.",
+        description: "P7 - minimum linear downscale (percent, 0-100) at which the Lanczos-3 text-sharp filter engages; shallower shrinks use box. Empty = built-in 34 (covers the Smoother rungs; 56 restores the pre-P7 gate; 0 = always). Env: MESHHARBORD_LANCZOS_MIN_PCT. Restart required.",
     },
     KeyMeta {
         key: "nvenc_spatial_aq",
@@ -1217,7 +1217,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "P7 - NVENC spatial AQ. Built-in default: OFF (AQ steals bits from desktop text); true restores it for camera-heavy hosts. Env: ROOMLERD_NVENC_SPATIAL_AQ. Restart required.",
+        description: "P7 - NVENC spatial AQ. Built-in default: OFF (AQ steals bits from desktop text); true restores it for camera-heavy hosts. Env: MESHHARBORD_NVENC_SPATIAL_AQ. Restart required.",
     },
     KeyMeta {
         key: "scale_cq_boost",
@@ -1225,7 +1225,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "P7 - CQ sharpening steps granted at deep resolution rungs (0-12; spends the maxrate-floor headroom on text). Empty = built-in 4; 0 disables. Env: ROOMLERD_SCALE_CQ_BOOST. Restart required.",
+        description: "P7 - CQ sharpening steps granted at deep resolution rungs (0-12; spends the maxrate-floor headroom on text). Empty = built-in 4; 0 disables. Env: MESHHARBORD_SCALE_CQ_BOOST. Restart required.",
     },
     KeyMeta {
         key: "idle_refine",
@@ -1233,7 +1233,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "P7 - idle native-rung refinement: lift the resolution cap when the scene settles so text is crisp at rest; motion restores it in ~300 ms. Built-in default: on (Smoother scope). Env: ROOMLERD_IDLE_REFINE. Restart required.",
+        description: "P7 - idle native-rung refinement: lift the resolution cap when the scene settles so text is crisp at rest; motion restores it in ~300 ms. Built-in default: on (Smoother scope). Env: MESHHARBORD_IDLE_REFINE. Restart required.",
     },
     KeyMeta {
         key: "idle_refine_balanced",
@@ -1241,7 +1241,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "P7 - idle refinement on Balanced+relay sessions (lifts the B1 physics cap at idle). Built-in default: on since P7c (field-proven on the winhost-b relay); off restores the un-refined Balanced rung. Env: ROOMLERD_IDLE_REFINE_BALANCED. Restart required.",
+        description: "P7 - idle refinement on Balanced+relay sessions (lifts the B1 physics cap at idle). Built-in default: on since P7c (field-proven on the winhost-b relay); off restores the un-refined Balanced rung. Env: MESHHARBORD_IDLE_REFINE_BALANCED. Restart required.",
     },
     KeyMeta {
         key: "gpu_scale",
@@ -1249,7 +1249,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "HW-downscale Phase B - GPU scale-before-readback (D3D11 VideoProcessor) on DXGI-direct capture: the Smoother rung is scaled on the GPU and the readback shrinks with it. Built-in default: on; off reverts to the Phase-A CPU resample. Env: ROOMLERD_GPU_SCALE. Restart required.",
+        description: "HW-downscale Phase B - GPU scale-before-readback (D3D11 VideoProcessor) on DXGI-direct capture: the Smoother rung is scaled on the GPU and the readback shrinks with it. Built-in default: on; off reverts to the Phase-A CPU resample. Env: MESHHARBORD_GPU_SCALE. Restart required.",
     },
     KeyMeta {
         key: "overlay_lan_capture_probe",
@@ -1257,7 +1257,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "FR-33 - probe each LAN prefix for a corp-VPN split-prefix capture (own address on interface A, traffic to the prefix leaves via interface B) and surface it in status / why / the RC pill. Built-in default: on (a read-only route lookup per LAN address per netstate snapshot). Env: ROOMLERD_OVERLAY_LAN_CAPTURE_PROBE. Restart required.",
+        description: "FR-33 - probe each LAN prefix for a corp-VPN split-prefix capture (own address on interface A, traffic to the prefix leaves via interface B) and surface it in status / why / the RC pill. Built-in default: on (a read-only route lookup per LAN address per netstate snapshot). Env: MESHHARBORD_OVERLAY_LAN_CAPTURE_PROBE. Restart required.",
     },
     KeyMeta {
         key: "relay_ceiling_learn",
@@ -1265,7 +1265,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "FR-35 - let the constrained (relay) ceiling grow above the nominal 3 Mbps on delivery evidence (AIMD pinned at the ceiling, the window carried >=70% of it, no decrease/stall for 10 s, viewer age within 1.5x floor) and remember the pair's stable rate so the next session opens there. Built-in default: on. Env: ROOMLERD_RELAY_CEILING_LEARN. Restart required.",
+        description: "FR-35 - let the constrained (relay) ceiling grow above the nominal 3 Mbps on delivery evidence (AIMD pinned at the ceiling, the window carried >=70% of it, no decrease/stall for 10 s, viewer age within 1.5x floor) and remember the pair's stable rate so the next session opens there. Built-in default: on. Env: MESHHARBORD_RELAY_CEILING_LEARN. Restart required.",
     },
     KeyMeta {
         key: "drm_capture",
@@ -1273,7 +1273,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Standard,
         live: false,
         kind: "tribool",
-        description: "FR-36 - capture the scanout framebuffer via DRM/KMS, BELOW the compositor. The only backend that can see a Wayland desktop, a locked screen or the login greeter (the xdg portal refuses all three). Built-in default: OFF - it carries no damage information, so enabling it where X11 works costs the FR-29 idle-CPU win. Env: ROOMLERD_DRM_CAPTURE. Restart required.",
+        description: "FR-36 - capture the scanout framebuffer via DRM/KMS, BELOW the compositor. The only backend that can see a Wayland desktop, a locked screen or the login greeter (the xdg portal refuses all three). Built-in default: OFF - it carries no damage information, so enabling it where X11 works costs the FR-29 idle-CPU win. Env: MESHHARBORD_DRM_CAPTURE. Restart required.",
     },
     KeyMeta {
         key: "uinput",
@@ -1281,7 +1281,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Standard,
         live: false,
         kind: "tribool",
-        description: "FR-36 - inject input through /dev/uinput, below the compositor. Pair with drm_capture on a Wayland host: XTest reaches Xwayland clients ONLY, so without this a captured Wayland session is read-only. Built-in default: OFF - a uinput device is host-global and injects into whatever has focus, including the greeter and lock screen. Env: ROOMLERD_UINPUT. Restart required.",
+        description: "FR-36 - inject input through /dev/uinput, below the compositor. Pair with drm_capture on a Wayland host: XTest reaches Xwayland clients ONLY, so without this a captured Wayland session is read-only. Built-in default: OFF - a uinput device is host-global and injects into whatever has focus, including the greeter and lock screen. Env: MESHHARBORD_UINPUT. Restart required.",
     },
     KeyMeta {
         key: "portal_capture",
@@ -1289,7 +1289,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Standard,
         live: false,
         kind: "tribool",
-        description: "FR-45 - capture a Wayland desktop through xdg-desktop-portal ScreenCast + PipeWire. The ATTENDED path: needs a logged-in user session, and the first use shows that user a consent dialog (later ones restore the grant without asking). Serves hosts DRM cannot reach - no scanout, nested compositors. Built-in default: OFF - an unattended host would wait on a dialog nobody answers. A per-user install in its own Wayland session uses the portal by itself where mutter is absent (wayland_auto, FR-93 P2d-3), so this key matters there only to force it (true) or to keep it off (false). Tried after DRM, before X11. Env: ROOMLERD_PORTAL_CAPTURE. Restart required.",
+        description: "FR-45 - capture a Wayland desktop through xdg-desktop-portal ScreenCast + PipeWire. The ATTENDED path: needs a logged-in user session, and the first use shows that user a consent dialog (later ones restore the grant without asking). Serves hosts DRM cannot reach - no scanout, nested compositors. Built-in default: OFF - an unattended host would wait on a dialog nobody answers. A per-user install in its own Wayland session uses the portal by itself where mutter is absent (wayland_auto, FR-93 P2d-3), so this key matters there only to force it (true) or to keep it off (false). Tried after DRM, before X11. Env: MESHHARBORD_PORTAL_CAPTURE. Restart required.",
     },
     KeyMeta {
         key: "portal_input",
@@ -1297,7 +1297,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Standard,
         live: false,
         kind: "tribool",
-        description: "FR-45 P4 - inject input through the portal RemoteDesktop interface, riding the SAME portal session (one consent dialog covers see+touch). Unset, it depends on who chose the portal arm (FR-93 P4b): the AUTOMATIC portal (wayland_auto, a per-user session where mutter is absent, such as KDE) asks for remote control in its one dialog, and false keeps it a screen share; a CONFIGURED portal_capture takes input only with this key true, because an input session needs its own grant and restore token, so switching it on makes an already-granted screen share ask again. A person who refuses remote control is then asked for the screen only: input never costs capture. On a configured mutter arm (mutter_capture) it means mutter's own RemoteDesktop. NOTE (measured on GNOME): the portal's consent dialog carries a SEPARATE 'Allow Remote Interaction' switch that defaults OFF, so a human who only clicks Share grants capture and the session runs view-only. Env: ROOMLERD_PORTAL_INPUT. Restart required.",
+        description: "FR-45 P4 - inject input through the portal RemoteDesktop interface, riding the SAME portal session (one consent dialog covers see+touch). Unset, it depends on who chose the portal arm (FR-93 P4b): the AUTOMATIC portal (wayland_auto, a per-user session where mutter is absent, such as KDE) asks for remote control in its one dialog, and false keeps it a screen share; a CONFIGURED portal_capture takes input only with this key true, because an input session needs its own grant and restore token, so switching it on makes an already-granted screen share ask again. A person who refuses remote control is then asked for the screen only: input never costs capture. On a configured mutter arm (mutter_capture) it means mutter's own RemoteDesktop. NOTE (measured on GNOME): the portal's consent dialog carries a SEPARATE 'Allow Remote Interaction' switch that defaults OFF, so a human who only clicks Share grants capture and the session runs view-only. Env: MESHHARBORD_PORTAL_INPUT. Restart required.",
     },
     KeyMeta {
         key: "mutter_capture",
@@ -1305,7 +1305,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "FR-45 P5 - take screencast frames from org.gnome.Mutter.ScreenCast DIRECTLY instead of the desktop portal. For hosts where no portal backend can run at all (measured on WSL2: xdg-desktop-portal-gnome exits without a GNOME session, while mutter itself works). GNOME-only. Built-in default: OFF. ** UNATTENDED - this shows NO consent dialog; its peer is drm_capture, not portal_capture.** Env: ROOMLERD_MUTTER_CAPTURE. Restart required.",
+        description: "FR-45 P5 - take screencast frames from org.gnome.Mutter.ScreenCast DIRECTLY instead of the desktop portal. For hosts where no portal backend can run at all (measured on WSL2: xdg-desktop-portal-gnome exits without a GNOME session, while mutter itself works). GNOME-only. Built-in default: OFF. ** UNATTENDED - this shows NO consent dialog; its peer is drm_capture, not portal_capture.** Env: MESHHARBORD_MUTTER_CAPTURE. Restart required.",
     },
     KeyMeta {
         key: "window_capture",
@@ -1313,7 +1313,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "FR-56 P4 - capture ONE application window instead of the whole monitor (the RAIL-shaped half of Remote Apps: the viewer sees one app, not the desktop). Built-in default: OFF. ** ATTENDED BY CONSTRUCTION - the portal answers this by showing the person at the screen a WINDOW PICKER, and nothing agent-side can name a window (GNOME refuses Introspect.GetWindows), so on an unattended host the capture never starts.** Env: ROOMLERD_WINDOW_CAPTURE. Restart required.",
+        description: "FR-56 P4 - capture ONE application window instead of the whole monitor (the RAIL-shaped half of Remote Apps: the viewer sees one app, not the desktop). Built-in default: OFF. ** ATTENDED BY CONSTRUCTION - the portal answers this by showing the person at the screen a WINDOW PICKER, and nothing agent-side can name a window (GNOME refuses Introspect.GetWindows), so on an unattended host the capture never starts.** Env: MESHHARBORD_WINDOW_CAPTURE. Restart required.",
     },
     KeyMeta {
         key: "wayland_aware",
@@ -1321,7 +1321,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "FR-93 - when this host shows a Wayland desktop and nothing on this device may capture it, say so (wayland_not_enabled, naming the keys that would) instead of calling the host headless or streaming Xwayland's empty root as a black picture. Switches no capture on. Built-in default: ON. Off = the behaviour before FR-93, unchanged (the kill switch). Env: ROOMLERD_WAYLAND_AWARE. Restart required.",
+        description: "FR-93 - when this host shows a Wayland desktop and nothing on this device may capture it, say so (wayland_not_enabled, naming the keys that would) instead of calling the host headless or streaming Xwayland's empty root as a black picture. Switches no capture on. Built-in default: ON. Off = the behaviour before FR-93, unchanged (the kill switch). Env: MESHHARBORD_WAYLAND_AWARE. Restart required.",
     },
     KeyMeta {
         key: "wayland_auto",
@@ -1329,7 +1329,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "FR-93 P2 - a PER-USER install in its own Wayland session, with no capture key set, switches capture on by itself: on GNOME mutter's own screencast (** it asks nobody **), elsewhere (KDE and other desktops) the desktop portal, which asks the person at the screen once and restores their answer afterwards (P2d-3); it asks for remote control, unless portal_input is false (P4b). A root (system) install has its own half, wayland_auto_system (FR-95). Any capture key set (drm_capture, portal_capture, mutter_capture, window_capture) takes the choice back. Built-in default: ON. Off = the behaviour before P2 (the kill switch), for both halves. Env: ROOMLERD_WAYLAND_AUTO. Restart required.",
+        description: "FR-93 P2 - a PER-USER install in its own Wayland session, with no capture key set, switches capture on by itself: on GNOME mutter's own screencast (** it asks nobody **), elsewhere (KDE and other desktops) the desktop portal, which asks the person at the screen once and restores their answer afterwards (P2d-3); it asks for remote control, unless portal_input is false (P4b). A root (system) install has its own half, wayland_auto_system (FR-95). Any capture key set (drm_capture, portal_capture, mutter_capture, window_capture) takes the choice back. Built-in default: ON. Off = the behaviour before P2 (the kill switch), for both halves. Env: MESHHARBORD_WAYLAND_AUTO. Restart required.",
     },
     KeyMeta {
         key: "wayland_auto_system",
@@ -1337,7 +1337,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "FR-95 - a SYSTEM (root) install on a Wayland desktop, with no capture key set, switches DRM capture and uinput input on by itself where the person at the screen can be told they are being viewed (the desktop companion, or the desktop's own notifications, with Disconnect), and for their session only: the screen is read while that session is on it, unlocked, and never the greeter or the lock screen (** it asks nobody **, like DRM always has). With no way to tell the person, nothing changes and the hint names what is missing. Any capture key set takes the choice back; drm_capture = true also reads the greeter and the lock screen, as before. Built-in default: ON. Off = the behaviour before FR-95 (the kill switch); wayland_auto = false turns it off too. Env: ROOMLERD_WAYLAND_AUTO_SYSTEM. Restart required.",
+        description: "FR-95 - a SYSTEM (root) install on a Wayland desktop, with no capture key set, switches DRM capture and uinput input on by itself where the person at the screen can be told they are being viewed (the desktop companion, or the desktop's own notifications, with Disconnect), and for their session only: the screen is read while that session is on it, unlocked, and never the greeter or the lock screen (** it asks nobody **, like DRM always has). With no way to tell the person, nothing changes and the hint names what is missing. Any capture key set takes the choice back; drm_capture = true also reads the greeter and the lock screen, as before. Built-in default: ON. Off = the behaviour before FR-95 (the kill switch); wayland_auto = false turns it off too. Env: MESHHARBORD_WAYLAND_AUTO_SYSTEM. Restart required.",
     },
     KeyMeta {
         key: "x11_auto_system",
@@ -1345,7 +1345,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "FR-113 - the same as wayland_auto_system, for an X11 desktop: a SYSTEM (root) install, with no capture key set, switches DRM capture and uinput input on by itself for the person's X11 session on screen, on the same terms (told first, read only while that session is on screen, unlocked, never the greeter or the lock screen; ** it asks nobody **), only where the desktop reports its lock to the system (GNOME, KDE; any other X11 desktop is refused, since its lock screen could not be told from the desktop), and skips an idle X11 desktop's unchanged frames. Where it cannot capture, the viewer is told x11_not_enabled with the reason, not headless. Any capture key set takes the choice back. Built-in default: ON. Off = the behaviour before FR-113 (the kill switch: no picture of an X11 desktop by default, no_display); wayland_auto = false turns it off too. Env: ROOMLERD_X11_AUTO_SYSTEM. Restart required.",
+        description: "FR-113 - the same as wayland_auto_system, for an X11 desktop: a SYSTEM (root) install, with no capture key set, switches DRM capture and uinput input on by itself for the person's X11 session on screen, on the same terms (told first, read only while that session is on screen, unlocked, never the greeter or the lock screen; ** it asks nobody **), only where the desktop reports its lock to the system (GNOME, KDE; any other X11 desktop is refused, since its lock screen could not be told from the desktop), and skips an idle X11 desktop's unchanged frames. Where it cannot capture, the viewer is told x11_not_enabled with the reason, not headless. Any capture key set takes the choice back. Built-in default: ON. Off = the behaviour before FR-113 (the kill switch: no picture of an X11 desktop by default, no_display); wayland_auto = false turns it off too. Env: MESHHARBORD_X11_AUTO_SYSTEM. Restart required.",
     },
     KeyMeta {
         key: "mutter_input",
@@ -1353,7 +1353,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "FR-93 P4 - a mutter screencast is driven by mutter's own RemoteDesktop, so the viewer's mouse and keyboard reach the whole desktop through it, native Wayland windows included (** it asks nobody **, like the screencast it drives). The automatic arm (wayland_auto, a per-user GNOME session) carries it; a configured one (mutter_capture) carries it only with portal_input too. Built-in default: ON. Off = mutter capture is view-only again, the behaviour before P4 (the kill switch). Env: ROOMLERD_MUTTER_INPUT. Restart required.",
+        description: "FR-93 P4 - a mutter screencast is driven by mutter's own RemoteDesktop, so the viewer's mouse and keyboard reach the whole desktop through it, native Wayland windows included (** it asks nobody **, like the screencast it drives). The automatic arm (wayland_auto, a per-user GNOME session) carries it; a configured one (mutter_capture) carries it only with portal_input too. Built-in default: ON. Off = mutter capture is view-only again, the behaviour before P4 (the kill switch). Env: MESHHARBORD_MUTTER_INPUT. Restart required.",
     },
     KeyMeta {
         key: "x11_damage",
@@ -1361,7 +1361,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "FR-29 - skip the XShm readback when XDAMAGE proves the screen is unchanged. Built-in default: on; took a Linux host's idle capture from 45.8% of a core to 2.8%. Env: ROOMLERD_X11_DAMAGE. Restart required.",
+        description: "FR-29 - skip the XShm readback when XDAMAGE proves the screen is unchanged. Built-in default: on; took a Linux host's idle capture from 45.8% of a core to 2.8%. Env: MESHHARBORD_X11_DAMAGE. Restart required.",
     },
     KeyMeta {
         key: "overlay_key_rotation",
@@ -1369,7 +1369,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "FR-40 - honour rc:agent.key_rotate: an admin retiring this device's overlay (WireGuard) key from the dashboard. The device mints the new key locally, persists it and re-joins the mesh under it; the server never sees a private key. Built-in default: on (a kill switch, not a gate - the order leaks nothing). Env: ROOMLERD_OVERLAY_KEY_ROTATION. Restart required.",
+        description: "FR-40 - honour rc:agent.key_rotate: an admin retiring this device's overlay (WireGuard) key from the dashboard. The device mints the new key locally, persists it and re-joins the mesh under it; the server never sees a private key. Built-in default: on (a kill switch, not a gate - the order leaks nothing). Env: MESHHARBORD_OVERLAY_KEY_ROTATION. Restart required.",
     },
     KeyMeta {
         key: "relay_max_hi_kbps",
@@ -1377,7 +1377,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "FR-35 - upper bound (kbps, 0-100000) for the learned relay ceiling. Empty = built-in 8000 (one pair measured: sustained 6-9 Mbps, choked at 12.8); 0 = learning off. Env: ROOMLERD_RELAY_MAX_HI_KBPS. Restart required.",
+        description: "FR-35 - upper bound (kbps, 0-100000) for the learned relay ceiling. Empty = built-in 8000 (one pair measured: sustained 6-9 Mbps, choked at 12.8); 0 = learning off. Env: MESHHARBORD_RELAY_MAX_HI_KBPS. Restart required.",
     },
     KeyMeta {
         key: "idle_refine_max_edge",
@@ -1385,7 +1385,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "P7 - long-edge cap for the refined rung (0-8192). Empty/0 = full native. Env: ROOMLERD_IDLE_REFINE_MAX_EDGE. Restart required.",
+        description: "P7 - long-edge cap for the refined rung (0-8192). Empty/0 = full native. Env: MESHHARBORD_IDLE_REFINE_MAX_EDGE. Restart required.",
     },
     KeyMeta {
         key: "idle_refine_min_frame_kb",
@@ -1393,7 +1393,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "P7c - encoded-size floor (KiB, 0-256) for a frame to count as motion in the idle-refine machine; caret/keystroke deltas stay invisible so terminals keep the crisp rung while typing. Defined at the 1024x640 reference rung and scaled by the live encode area (P7c-2 - a fixed floor oscillated across rungs). Empty = built-in 12; 0 = every real frame counts (pre-P7c). Env: ROOMLERD_IDLE_REFINE_MIN_FRAME_KB. Restart required.",
+        description: "P7c - encoded-size floor (KiB, 0-256) for a frame to count as motion in the idle-refine machine; caret/keystroke deltas stay invisible so terminals keep the crisp rung while typing. Defined at the 1024x640 reference rung and scaled by the live encode area (P7c-2 - a fixed floor oscillated across rungs). Empty = built-in 12; 0 = every real frame counts (pre-P7c). Env: MESHHARBORD_IDLE_REFINE_MIN_FRAME_KB. Restart required.",
     },
     KeyMeta {
         key: "idle_refine_major_area_permille",
@@ -1401,7 +1401,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "P8a-2 - MAJOR-motion area floor (permille of the frame, 0-1000) on capture-tracked backends (DXGI-direct/WGC): only damage at/above it restores the resolution cap; smaller damage (typing, popups, windowed terminal scrolls, PiP video) stays at native so text is sharp all the time. Empty = built-in 400 (40%); 0 = any non-empty tracked damage counts (pre-P8a-2 posture). Env: ROOMLERD_IDLE_REFINE_MAJOR_AREA_PERMILLE. Restart required.",
+        description: "P8a-2 - MAJOR-motion area floor (permille of the frame, 0-1000) on capture-tracked backends (DXGI-direct/WGC): only damage at/above it restores the resolution cap; smaller damage (typing, popups, windowed terminal scrolls, PiP video) stays at native so text is sharp all the time. Empty = built-in 400 (40%); 0 = any non-empty tracked damage counts (pre-P8a-2 posture). Env: MESHHARBORD_IDLE_REFINE_MAJOR_AREA_PERMILLE. Restart required.",
     },
     KeyMeta {
         key: "idle_refine_settle_ms",
@@ -1409,7 +1409,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "P8a-2 - up-flip settle (ms, 100-5000) on capture-tracked backends: the cap lifts this long after the last major-damage frame (damage truth needs no 1s window drain). Empty = built-in 500. Env: ROOMLERD_IDLE_REFINE_SETTLE_MS. Restart required.",
+        description: "P8a-2 - up-flip settle (ms, 100-5000) on capture-tracked backends: the cap lifts this long after the last major-damage frame (damage truth needs no 1s window drain). Empty = built-in 500. Env: MESHHARBORD_IDLE_REFINE_SETTLE_MS. Restart required.",
     },
     KeyMeta {
         key: "idle_refine_settle_constrained_ms",
@@ -1417,7 +1417,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "Phase B - tracked settle (ms, 100-10000) on CONSTRAINED transports: the cap lifts only after this long without major damage, because the refined IDR itself costs link time and a 500 ms settle fired on ordinary drag pauses (field: freezing/lag). Empty = built-in 1200 (2000 before the constrained HRD trim bounded the IDR). Env: ROOMLERD_IDLE_REFINE_SETTLE_CONSTRAINED_MS. Restart required.",
+        description: "Phase B - tracked settle (ms, 100-10000) on CONSTRAINED transports: the cap lifts only after this long without major damage, because the refined IDR itself costs link time and a 500 ms settle fired on ordinary drag pauses (field: freezing/lag). Empty = built-in 1200 (2000 before the constrained HRD trim bounded the IDR). Env: MESHHARBORD_IDLE_REFINE_SETTLE_CONSTRAINED_MS. Restart required.",
     },
     KeyMeta {
         key: "constrained_cq_relief",
@@ -1425,7 +1425,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "Constrained-motion CQ relief (softening steps, 0-12) applied at the resolution rung of a RELAY session; the rung exists for motion fluidity and softer frames arrive steadily instead of in lumps (field 2026-08-21: the sharpening bias at the rung was the 9 fps equilibrium). At-rest native quality is untouched; an explicit resolution pick is exempt. Empty = built-in 4; 0 = no relief. Env: ROOMLERD_CONSTRAINED_CQ_RELIEF. Restart required.",
+        description: "Constrained-motion CQ relief (softening steps, 0-12) applied at the resolution rung of a RELAY session; the rung exists for motion fluidity and softer frames arrive steadily instead of in lumps (field 2026-08-21: the sharpening bias at the rung was the 9 fps equilibrium). At-rest native quality is untouched; an explicit resolution pick is exempt. Empty = built-in 4; 0 = no relief. Env: MESHHARBORD_CONSTRAINED_CQ_RELIEF. Restart required.",
     },
     KeyMeta {
         key: "constrained_queue_ms",
@@ -1433,7 +1433,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "Constrained send-queue byte budget (ms of the relay ceiling, 0-2000): frame production skips while more than this much link time is queued, converting viewer lag into a small fps reduction (field 2026-08-21: the drag-start freeze was ~0.5-1 MB of native motion frames queued on a ~2 Mbps relay). Empty = built-in 450; 0 = unbounded (pre-rc.442). Env: ROOMLERD_CONSTRAINED_QUEUE_MS. Restart required.",
+        description: "Constrained send-queue byte budget (ms of the relay ceiling, 0-2000): frame production skips while more than this much link time is queued, converting viewer lag into a small fps reduction (field 2026-08-21: the drag-start freeze was ~0.5-1 MB of native motion frames queued on a ~2 Mbps relay). Empty = built-in 450; 0 = unbounded (pre-rc.442). Env: MESHHARBORD_CONSTRAINED_QUEUE_MS. Restart required.",
     },
     KeyMeta {
         key: "constrained_hrd_pct",
@@ -1441,7 +1441,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "HRD/VBV window for CONSTRAINED sessions (percent of maxrate, 25-200). Empty = built-in 200 (the rc.234 2x window; rc.442 defaulted 75 to bound IDR transit and rc.443 reverted it - av1_qsv errors and hangs on a forced IDR that exceeds a sub-1x reservoir). Sub-100 values are per-host experiments only. Env: ROOMLERD_CONSTRAINED_HRD_PCT. Restart required.",
+        description: "HRD/VBV window for CONSTRAINED sessions (percent of maxrate, 25-200). Empty = built-in 200 (the rc.234 2x window; rc.442 defaulted 75 to bound IDR transit and rc.443 reverted it - av1_qsv errors and hangs on a forced IDR that exceeds a sub-1x reservoir). Sub-100 values are per-host experiments only. Env: MESHHARBORD_CONSTRAINED_HRD_PCT. Restart required.",
     },
     KeyMeta {
         key: "direct_queue_ms",
@@ -1449,7 +1449,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "DIRECT-path send-queue byte budget (ms of the path's rate ceiling, 0-2000, and since FR-74 P1b also the lag bound: bytes over the budget gate only once the MEASURED send wait has crossed this many ms, while bytes alone gate at the encoder's HRD reservoir; it was ms of the AIMD's live target until FR-74 P1 measured that as a self-reinforcing trap): frame production skips while more than this much link time is queued, bounding the standing lag a drag burst can build on a direct session (field 2026-08-26: 100-345 KB queued = the sluggish, rubber-band drag). Empty = built-in 150; 0 = unbounded (pre-P1 posture). Env: ROOMLERD_DIRECT_QUEUE_MS. Restart required.",
+        description: "DIRECT-path send-queue byte budget (ms of the path's rate ceiling, 0-2000, and since FR-74 P1b also the lag bound: bytes over the budget gate only once the MEASURED send wait has crossed this many ms, while bytes alone gate at the encoder's HRD reservoir; it was ms of the AIMD's live target until FR-74 P1 measured that as a self-reinforcing trap): frame production skips while more than this much link time is queued, bounding the standing lag a drag burst can build on a direct session (field 2026-08-26: 100-345 KB queued = the sluggish, rubber-band drag). Empty = built-in 150; 0 = unbounded (pre-P1 posture). Env: MESHHARBORD_DIRECT_QUEUE_MS. Restart required.",
     },
     KeyMeta {
         key: "direct_hrd_pct",
@@ -1457,7 +1457,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "HRD/VBV window for DIRECT sessions (percent of maxrate, 25-200). Empty = built-in 100 - half the rc.234 2x window, which legalised drag-start bursts of seconds' worth of bits (the standing-queue lag). av1_* encoders are floored at 200 regardless (rc.443: Intel AV1 VDENC errors on an over-reservoir IDR instead of QP-clamping). Env: ROOMLERD_DIRECT_HRD_PCT. Restart required.",
+        description: "HRD/VBV window for DIRECT sessions (percent of maxrate, 25-200). Empty = built-in 100 - half the rc.234 2x window, which legalised drag-start bursts of seconds' worth of bits (the standing-queue lag). av1_* encoders are floored at 200 regardless (rc.443: Intel AV1 VDENC errors on an over-reservoir IDR instead of QP-clamping). Env: MESHHARBORD_DIRECT_HRD_PCT. Restart required.",
     },
     KeyMeta {
         key: "bg_rebuild",
@@ -1465,7 +1465,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Background encoder rebuild (2026-08-27, drag-latency P3). Default ON: on encoders with no in-place bitrate reconfigure (QSV/AMF), a bitrate change opens the replacement on a blocking thread while the current encoder keeps producing, then swaps between frames - no mid-drag stall, and rate drops land DURING motion as smaller frames instead of production skips. false = the rc.445 motion-defer (applies held until 1.2s of quiet, then a blocking re-open). Env: ROOMLERD_BG_REBUILD. Restart required.",
+        description: "Background encoder rebuild (2026-08-27, drag-latency P3). Default ON: on encoders with no in-place bitrate reconfigure (QSV/AMF), a bitrate change opens the replacement on a blocking thread while the current encoder keeps producing, then swaps between frames - no mid-drag stall, and rate drops land DURING motion as smaller frames instead of production skips. false = the rc.445 motion-defer (applies held until 1.2s of quiet, then a blocking re-open). Env: MESHHARBORD_BG_REBUILD. Restart required.",
     },
     KeyMeta {
         key: "par_convert",
@@ -1473,7 +1473,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Parallel colour conversion (2026-08-27, drag-latency P5). Default ON: big frames run the BGRA->NV12/I444 convert in row bands across threads - byte-identical output, roughly halves the convert share of encode time at 2880x1800+. false = single-threaded convert. Env: ROOMLERD_PAR_CONVERT. Restart required.",
+        description: "Parallel colour conversion (2026-08-27, drag-latency P5). Default ON: big frames run the BGRA->NV12/I444 convert in row bands across threads - byte-identical output, roughly halves the convert share of encode time at 2880x1800+. false = single-threaded convert. Env: MESHHARBORD_PAR_CONVERT. Restart required.",
     },
     KeyMeta {
         key: "fps_pace",
@@ -1481,7 +1481,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "fps-first cadence pacing on HW encoders (2026-08-27, drag-latency P5). Default ON: when the encoder cannot hold target fps, frames are consumed on an EVEN grid at the sustainable rate (5 fps steps, floor 15) instead of dropping ~33% at random phases - even cadence beats a jittery higher rate. While engaged the encode-pressure bitrate factor is masked at 1.0 (pixels-bound HW encode time does not respond to bitrate); the resolution tier stays the second lever. false = unpaced pre-P5 behaviour. Env: ROOMLERD_FPS_PACE. Restart required.",
+        description: "fps-first cadence pacing on HW encoders (2026-08-27, drag-latency P5). Default ON: when the encoder cannot hold target fps, frames are consumed on an EVEN grid at the sustainable rate (5 fps steps, floor 15) instead of dropping ~33% at random phases - even cadence beats a jittery higher rate. While engaged the encode-pressure bitrate factor is masked at 1.0 (pixels-bound HW encode time does not respond to bitrate); the resolution tier stays the second lever. false = unpaced pre-P5 behaviour. Env: MESHHARBORD_FPS_PACE. Restart required.",
     },
     KeyMeta {
         key: "relay_idr_thrift",
@@ -1489,7 +1489,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Relay IDR thrift (2026-08-27, FR-10). Default ON: constrained (relay) sessions suppress the idle-settle keyframe (a quality refresh, not a correctness need on a reliable DataChannel - the request-driven resync stays) and space deferred bitrate re-opens to >=15s unless the move is >=40%. Each such IDR was a single ~300 KB frame = 1.2-1.5s of a ~2 Mbps relay (the CORPLAP-3 bulky lumps). false = previous relay behaviour. Direct sessions unaffected. Env: ROOMLERD_RELAY_IDR_THRIFT. Restart required.",
+        description: "Relay IDR thrift (2026-08-27, FR-10). Default ON: constrained (relay) sessions suppress the idle-settle keyframe (a quality refresh, not a correctness need on a reliable DataChannel - the request-driven resync stays) and space deferred bitrate re-opens to >=15s unless the move is >=40%. Each such IDR was a single ~300 KB frame = 1.2-1.5s of a ~2 Mbps relay (the CORPLAP-3 bulky lumps). false = previous relay behaviour. Direct sessions unaffected. Env: MESHHARBORD_RELAY_IDR_THRIFT. Restart required.",
     },
     KeyMeta {
         key: "send_stall_ms",
@@ -1497,7 +1497,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "number",
-        description: "Blocked-send congestion threshold in ms (2026-08-28, FR-15 P2 follow-up). Default 250; 0 disables. A frame that sat longer than this inside the DataChannel send call is unambiguous congestion - the pipe refused to drain - and the pump feeds the AIMD a congestion sample. This is the one congestion signal that needs NO clock sync and NO viewer and works on both transports, which matters on a relay where the measured-rate clamp is direct-only and the age loop rides a probe the congestion itself biases. Acted on for CONSTRAINED sessions only; direct keeps the measured ceiling. Env: ROOMLER_NODE_SEND_STALL_MS. Restart required.",
+        description: "Blocked-send congestion threshold in ms (2026-08-28, FR-15 P2 follow-up). Default 250; 0 disables. A frame that sat longer than this inside the DataChannel send call is unambiguous congestion - the pipe refused to drain - and the pump feeds the AIMD a congestion sample. This is the one congestion signal that needs NO clock sync and NO viewer and works on both transports, which matters on a relay where the measured-rate clamp is direct-only and the age loop rides a probe the congestion itself biases. Acted on for CONSTRAINED sessions only; direct keeps the measured ceiling. Env: MESHHARBOR_NODE_SEND_STALL_MS. Restart required.",
     },
     KeyMeta {
         key: "relay_age_feedback",
@@ -1505,7 +1505,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Relay age feedback (2026-08-27, FR-15). Default ON: the viewer reports the true paint AGE of the frames it showed (the FR-1 P7 clock probe) on its rc:decodestat window; the agent learns the session's age FLOOR and treats sustained excess (>=70ms over floor for 2 consecutive windows) on a CONSTRAINED transport as over-rate - capping send-fps and feeding the AIMD a congestion sample, so the decrease lands through the normal (FR-10-deferred) apply path. It exists because a relay backlog sits BELOW every agent counter: the field measured 1000ms of viewer age against a 26KB agent queue. false = open-loop 0.4.7 relay posture. Direct sessions unaffected. Env: ROOMLERD_RELAY_AGE_FEEDBACK. Restart required.",
+        description: "Relay age feedback (2026-08-27, FR-15). Default ON: the viewer reports the true paint AGE of the frames it showed (the FR-1 P7 clock probe) on its rc:decodestat window; the agent learns the session's age FLOOR and treats sustained excess (>=70ms over floor for 2 consecutive windows) on a CONSTRAINED transport as over-rate - capping send-fps and feeding the AIMD a congestion sample, so the decrease lands through the normal (FR-10-deferred) apply path. It exists because a relay backlog sits BELOW every agent counter: the field measured 1000ms of viewer age against a 26KB agent queue. false = open-loop 0.4.7 relay posture. Direct sessions unaffected. Env: MESHHARBORD_RELAY_AGE_FEEDBACK. Restart required.",
     },
     KeyMeta {
         key: "measured_ceiling",
@@ -1513,7 +1513,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Measured-rate stage 1 (2026-08-27). Default ON: the bitrate ceiling is clamped to 85% of the session's MEASURED drain rate while an estimate holds, so the encoder converges just under the pipe instead of congesting the send queue on every drag burst (the chunky production skips). Only ever lowers the nominal ceiling; confidence decays after 60s without evidence. false = observe-and-report only. Env: ROOMLERD_MEASURED_CEILING. Restart required.",
+        description: "Measured-rate stage 1 (2026-08-27). Default ON: the bitrate ceiling is clamped to 85% of the session's MEASURED drain rate while an estimate holds, so the encoder converges just under the pipe instead of congesting the send queue on every drag burst (the chunky production skips). Only ever lowers the nominal ceiling; confidence decays after 60s without evidence. false = observe-and-report only. Env: MESHHARBORD_MEASURED_CEILING. Restart required.",
     },
     KeyMeta {
         key: "encoder_inplace_rate",
@@ -1521,7 +1521,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "In-place encoder rate changes (2026-09-02, FR-62 A1). Default OFF: a QSV rate move REBUILDS the encoder (a 0.65-0.87 s blocking open on Iris-Xe-class, the reason the defer/swap machinery exists), and the NVENC in-place move writes a 1x HRD buffer. ON: QSV writes bit_rate + rc_max_rate + rc_buffer_size on the AVCodecContext (qsvenc's per-frame update_bitrate resets the BRC, no rebuild) and NVENC sizes the buffer to the window the session opened with. Ships OFF and inert until A0 clears the QSV MFXVideoENCODE_Reset on real Iris-Xe silicon; OFF is byte-for-byte the pre-A1 behaviour. Env: ROOMLERD_ENCODER_INPLACE_RATE. Restart required.",
+        description: "In-place encoder rate changes (2026-09-02, FR-62 A1). Default OFF: a QSV rate move REBUILDS the encoder (a 0.65-0.87 s blocking open on Iris-Xe-class, the reason the defer/swap machinery exists), and the NVENC in-place move writes a 1x HRD buffer. ON: QSV writes bit_rate + rc_max_rate + rc_buffer_size on the AVCodecContext (qsvenc's per-frame update_bitrate resets the BRC, no rebuild) and NVENC sizes the buffer to the window the session opened with. Ships OFF and inert until A0 clears the QSV MFXVideoENCODE_Reset on real Iris-Xe silicon; OFF is byte-for-byte the pre-A1 behaviour. Env: MESHHARBORD_ENCODER_INPLACE_RATE. Restart required.",
     },
     KeyMeta {
         key: "ice_relay_tcp",
@@ -1529,7 +1529,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Pin remote-control's ICE to a TURN relay (diagnostic). Default OFF: the session takes whatever pair ICE nominates, and `constrained` is MEASURED from that pair (a public relay candidate = constrained; the loopback-TURN does not count). ON forces the relay path, which is bandwidth- and head-of-line-limited, so the encoder runs its constrained posture. ⚠️ This DEGRADES a session that would otherwise be direct - it is a test pin, not a tuning knob, and a device left with it set will be slow for no visible reason. It exists as a key because the constrained posture is otherwise only reproducible when a corporate VPN happens to be up, which makes every constrained-path acceptance test hostage to one laptop's network state; virtual-desktop mode sets the same flag for the same reason. Clear it (empty = default) when the measurement is done. WARNING: on a VIRTUAL-DESKTOP host with a hostile NAT the vd startup auto-pins this to 1, and its check for an explicit operator override reads the OS env var ONLY - so setting this key to false there does not defeat the auto-pin; use a real ROOMLERD_ICE_RELAY_TCP=0 for that one case. Env: ROOMLERD_ICE_RELAY_TCP. Restart required.",
+        description: "Pin remote-control's ICE to a TURN relay (diagnostic). Default OFF: the session takes whatever pair ICE nominates, and `constrained` is MEASURED from that pair (a public relay candidate = constrained; the loopback-TURN does not count). ON forces the relay path, which is bandwidth- and head-of-line-limited, so the encoder runs its constrained posture. ⚠️ This DEGRADES a session that would otherwise be direct - it is a test pin, not a tuning knob, and a device left with it set will be slow for no visible reason. It exists as a key because the constrained posture is otherwise only reproducible when a corporate VPN happens to be up, which makes every constrained-path acceptance test hostage to one laptop's network state; virtual-desktop mode sets the same flag for the same reason. Clear it (empty = default) when the measurement is done. WARNING: on a VIRTUAL-DESKTOP host with a hostile NAT the vd startup auto-pins this to 1, and its check for an explicit operator override reads the OS env var ONLY - so setting this key to false there does not defeat the auto-pin; use a real MESHHARBORD_ICE_RELAY_TCP=0 for that one case. Env: MESHHARBORD_ICE_RELAY_TCP. Restart required.",
     },
     KeyMeta {
         key: "relay_max_kbps",
@@ -1537,7 +1537,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "number",
-        description: "Bitrate ceiling for a CONSTRAINED (relay) remote-control transport, kbps. Built-in default: 3000; clamped 100-100000. A single TURN relay carries roughly 1-4 Mbps and head-of-line blocks on TCP, so a ceiling sized for a direct pair (a 1920x1200 pair resolves ~12 Mbps) collapses it. LOWER it on a relay population that is thinner than the default assumes. RAISE it only to build a deliberate over-drive for a rate-control measurement: field 2026-09-03, a forced-relay cell on CORPLAP-1 opened at the 2.55 Mbps plan rate into a coturn carrying ~3 Mbps, which is NOT an over-drive - the AIMD simply climbed to the cap and viewer age stayed at 30-49 ms, so the FR-63 A/B had nothing to measure. At 12000 the same real pipe and real encoder give a genuine 4x over-drive on demand, instead of waiting for a corporate VPN to produce one. Pairs with ice_relay_tcp. Env: ROOMLERD_RELAY_MAX_KBPS. Restart required.",
+        description: "Bitrate ceiling for a CONSTRAINED (relay) remote-control transport, kbps. Built-in default: 3000; clamped 100-100000. A single TURN relay carries roughly 1-4 Mbps and head-of-line blocks on TCP, so a ceiling sized for a direct pair (a 1920x1200 pair resolves ~12 Mbps) collapses it. LOWER it on a relay population that is thinner than the default assumes. RAISE it only to build a deliberate over-drive for a rate-control measurement: field 2026-09-03, a forced-relay cell on CORPLAP-1 opened at the 2.55 Mbps plan rate into a coturn carrying ~3 Mbps, which is NOT an over-drive - the AIMD simply climbed to the cap and viewer age stayed at 30-49 ms, so the FR-63 A/B had nothing to measure. At 12000 the same real pipe and real encoder give a genuine 4x over-drive on demand, instead of waiting for a corporate VPN to produce one. Pairs with ice_relay_tcp. Env: MESHHARBORD_RELAY_MAX_KBPS. Restart required.",
     },
     KeyMeta {
         key: "rate_slow_start",
@@ -1545,7 +1545,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Slow-start the session opener (2026-09-03, FR-63). Default OFF. A session commits to a bitrate before it has any evidence about the pipe, and the same host over-drove from BOTH directions on one day: opened at a REMEMBERED 6134627 -> 6287ms of viewer paint age; opened at the NOMINAL relay cap 2550000 into a path measured at ~213000 -> 444ms of queue, 1550ms paint, and six windows collapsing back down. No constant is safe, because a constant is an assumption about a band. ON: open at 300000 (lifted by any PROVEN floor, e.g. the FR-59 P8 remembered-slow-pair open) and DOUBLE per clean window until the ceiling; the first congestion evidence ends the ramp and hands control back to the normal controller. A fast pair reaches a 6.1 Mbps ceiling in 5 windows. Only ever LOWERS the opening commitment - it can never raise a rate above what the controller already allows. Env: ROOMLERD_RATE_SLOW_START. Restart required.",
+        description: "Slow-start the session opener (2026-09-03, FR-63). Default OFF. A session commits to a bitrate before it has any evidence about the pipe, and the same host over-drove from BOTH directions on one day: opened at a REMEMBERED 6134627 -> 6287ms of viewer paint age; opened at the NOMINAL relay cap 2550000 into a path measured at ~213000 -> 444ms of queue, 1550ms paint, and six windows collapsing back down. No constant is safe, because a constant is an assumption about a band. ON: open at 300000 (lifted by any PROVEN floor, e.g. the FR-59 P8 remembered-slow-pair open) and DOUBLE per clean window until the ceiling; the first congestion evidence ends the ramp and hands control back to the normal controller. A fast pair reaches a 6.1 Mbps ceiling in 5 windows. Only ever LOWERS the opening commitment - it can never raise a rate above what the controller already allows. Env: MESHHARBORD_RATE_SLOW_START. Restart required.",
     },
     KeyMeta {
         key: "media_thread",
@@ -1553,7 +1553,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "The encoder runs on its own OS thread per session (2026-09-05, FR-70 M1). Default ON since 0.4.70 - M1c met its gate on all three CORPLAP hosts on 0.4.69 (encode and capture averages unchanged, the loop's worst pass per window down on every host, the >50 ms windows fewer). ON: the FFmpeg encoder lives on a dedicated thread named rc-enc-<session> behind a command channel - the pump sends each frame and awaits the packets, and every rate move, keyframe request and background-rebuild adoption is a message applied in order - instead of encoding under block_in_place on whichever async worker happens to poll the pump. Nothing the pump decides changes: same frame, same decision, same packet, one thread hop later. What changes is that the async runtime is never held for the 5-30 ms of an encode (the send task, the control channel and the heartbeats stop sharing a worker with it) and hardware encoders that are thread-affine (Media Foundation per-thread COM, QSV sessions) are driven from one thread for the whole session. A thread that cannot be spawned falls back to the inline path with a warning; a thread that dies surfaces as the next encode's error, which the existing error ladder turns into a rebuild. Gate for flipping the default: FR-65's iter_ms_max / pump_stalls / apply_ms_max on the three CORPLAP hosts, unchanged or better. false = the inline encode, the pre-0.4.70 path. Env: ROOMLERD_MEDIA_THREAD. Restart required.",
+        description: "The encoder runs on its own OS thread per session (2026-09-05, FR-70 M1). Default ON since 0.4.70 - M1c met its gate on all three CORPLAP hosts on 0.4.69 (encode and capture averages unchanged, the loop's worst pass per window down on every host, the >50 ms windows fewer). ON: the FFmpeg encoder lives on a dedicated thread named rc-enc-<session> behind a command channel - the pump sends each frame and awaits the packets, and every rate move, keyframe request and background-rebuild adoption is a message applied in order - instead of encoding under block_in_place on whichever async worker happens to poll the pump. Nothing the pump decides changes: same frame, same decision, same packet, one thread hop later. What changes is that the async runtime is never held for the 5-30 ms of an encode (the send task, the control channel and the heartbeats stop sharing a worker with it) and hardware encoders that are thread-affine (Media Foundation per-thread COM, QSV sessions) are driven from one thread for the whole session. A thread that cannot be spawned falls back to the inline path with a warning; a thread that dies surfaces as the next encode's error, which the existing error ladder turns into a rebuild. Gate for flipping the default: FR-65's iter_ms_max / pump_stalls / apply_ms_max on the three CORPLAP hosts, unchanged or better. false = the inline encode, the pre-0.4.70 path. Env: MESHHARBORD_MEDIA_THREAD. Restart required.",
     },
     KeyMeta {
         key: "pump_stall_watch",
@@ -1561,7 +1561,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Pump stall watch (2026-09-03, FR-65 P0). Default ON: a send-pump iteration slower than pump_stall_warn_ms is logged once with its phase breakdown (capture/scale/encode/apply/send), and the per-heartbeat apply_us / apply_us_max / iter_us_max / pump_stalls counters are published. Costs two Instant::now() per iteration (~20-40ns against a 16.7ms budget at 60fps) and logs nothing until an iteration actually overruns. It exists because a 2s blocking encoder open hid for months: the pump measured capture/scale/encode/send and the stall appeared in NONE of them - the apply/rebuild phase was untimed, and a per-heartbeat AVERAGE cannot represent a single outlier even where it is counted. false = no timing, no counters. Env: ROOMLERD_PUMP_STALL_WATCH. Restart required.",
+        description: "Pump stall watch (2026-09-03, FR-65 P0). Default ON: a send-pump iteration slower than pump_stall_warn_ms is logged once with its phase breakdown (capture/scale/encode/apply/send), and the per-heartbeat apply_us / apply_us_max / iter_us_max / pump_stalls counters are published. Costs two Instant::now() per iteration (~20-40ns against a 16.7ms budget at 60fps) and logs nothing until an iteration actually overruns. It exists because a 2s blocking encoder open hid for months: the pump measured capture/scale/encode/send and the stall appeared in NONE of them - the apply/rebuild phase was untimed, and a per-heartbeat AVERAGE cannot represent a single outlier even where it is counted. false = no timing, no counters. Env: MESHHARBORD_PUMP_STALL_WATCH. Restart required.",
     },
     KeyMeta {
         key: "pump_stall_warn_ms",
@@ -1569,7 +1569,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "number",
-        description: "Pump stall threshold in ms (2026-09-03, FR-65 P0). Built-in default: 100; clamped 10-5000. Lowered from the 250 this shipped with, because the first field data said 250 was blind to the class that actually hurts: a corp-VPN host reported iter_ms_max=107.6 - real 100ms+ passes, matching the operator's own '>100ms' and '>148ms' age reports - while pump_stalls stayed 0. Deliberately a FLAT wall-clock threshold, NOT a multiple of the frame budget: the pump lowers target_fps BECAUSE it is already struggling, so a budget-relative bar RISES as the session degrades and stops reporting precisely when the trouble starts. Env: ROOMLERD_PUMP_STALL_WARN_MS. Restart required.",
+        description: "Pump stall threshold in ms (2026-09-03, FR-65 P0). Built-in default: 100; clamped 10-5000. Lowered from the 250 this shipped with, because the first field data said 250 was blind to the class that actually hurts: a corp-VPN host reported iter_ms_max=107.6 - real 100ms+ passes, matching the operator's own '>100ms' and '>148ms' age reports - while pump_stalls stayed 0. Deliberately a FLAT wall-clock threshold, NOT a multiple of the frame budget: the pump lowers target_fps BECAUSE it is already struggling, so a budget-relative bar RISES as the session degrades and stops reporting precisely when the trouble starts. Env: MESHHARBORD_PUMP_STALL_WARN_MS. Restart required.",
     },
     KeyMeta {
         key: "bg_rebuild_constrained",
@@ -1577,7 +1577,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Off-thread encoder rebuild on CONSTRAINED transports too (2026-09-03, FR-65). Default ON: a rebuild-mode encoder open is 0.65-0.87s of BLOCKING work on Iris-Xe-class silicon, and running it on the send pump stalls capture, encode and send together - measured as a ~2s hole. The open now runs on spawn_blocking for constrained paths as it already did for direct ones. Changes only WHERE the open runs, never WHEN the change lands: adoption stays gated on the same quiet window the defer policy uses, so the swap's IDR still arrives on a static scene - adopting mid-motion on a thin pipe is the 2026-08-27 relay regression that put the !constrained guard there originally. false = rebuild inline on constrained paths (pre-FR-65). Env: ROOMLERD_BG_REBUILD_CONSTRAINED. Restart required.",
+        description: "Off-thread encoder rebuild on CONSTRAINED transports too (2026-09-03, FR-65). Default ON: a rebuild-mode encoder open is 0.65-0.87s of BLOCKING work on Iris-Xe-class silicon, and running it on the send pump stalls capture, encode and send together - measured as a ~2s hole. The open now runs on spawn_blocking for constrained paths as it already did for direct ones. Changes only WHERE the open runs, never WHEN the change lands: adoption stays gated on the same quiet window the defer policy uses, so the swap's IDR still arrives on a static scene - adopting mid-motion on a thin pipe is the 2026-08-27 relay regression that put the !constrained guard there originally. false = rebuild inline on constrained paths (pre-FR-65). Env: MESHHARBORD_BG_REBUILD_CONSTRAINED. Restart required.",
     },
     KeyMeta {
         key: "slow_link_floor",
@@ -1585,7 +1585,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Slow-link floor relief (2026-09-01, FR-59 P1). Default ON: on a CONSTRAINED transport the AIMD legibility floor descends toward the session MEASURED drain rate instead of pinning at the flat 1.5 Mbps MIN_BITRATE_BPS. That flat floor is calibrated for the 2-9 Mbps band every measured relay sat in; on a slower link it is not a floor but a PIN, because it is also where the multiplicative decrease bottoms out - field 2026-09-01 measured a 395 kbps pipe met by a 1.5 Mbps floor, 3.8x over, with the excess landing as 2.3-7.1 s of viewer paint age. Evidence-gated: with no held goodput estimate the nominal floor stands, so a session that never measures is byte-for-byte unchanged. Never descends below slow_link_min_bitrate. false = flat floor (pre-FR-59). Env: ROOMLERD_SLOW_LINK_FLOOR. Restart required.",
+        description: "Slow-link floor relief (2026-09-01, FR-59 P1). Default ON: on a CONSTRAINED transport the AIMD legibility floor descends toward the session MEASURED drain rate instead of pinning at the flat 1.5 Mbps MIN_BITRATE_BPS. That flat floor is calibrated for the 2-9 Mbps band every measured relay sat in; on a slower link it is not a floor but a PIN, because it is also where the multiplicative decrease bottoms out - field 2026-09-01 measured a 395 kbps pipe met by a 1.5 Mbps floor, 3.8x over, with the excess landing as 2.3-7.1 s of viewer paint age. Evidence-gated: with no held goodput estimate the nominal floor stands, so a session that never measures is byte-for-byte unchanged. Never descends below slow_link_min_bitrate. false = flat floor (pre-FR-59). Env: MESHHARBORD_SLOW_LINK_FLOOR. Restart required.",
     },
     KeyMeta {
         key: "slow_link_min_bitrate",
@@ -1593,7 +1593,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "number",
-        description: "Absolute stop for the FR-59 P1 floor relief, bps (50000-1500000). Empty = built-in 200000. Below roughly this a full-resolution frame is illegible at any QP, so the honest lever is fewer PIXELS rather than fewer bits; the relief exists to let the AIMD converge onto a slow pipe, not to chase it to zero. A value at or above the nominal 1.5 Mbps floor is inert by construction. Env: ROOMLERD_SLOW_LINK_MIN_BITRATE. Restart required.",
+        description: "Absolute stop for the FR-59 P1 floor relief, bps (50000-1500000). Empty = built-in 200000. Below roughly this a full-resolution frame is illegible at any QP, so the honest lever is fewer PIXELS rather than fewer bits; the relief exists to let the AIMD converge onto a slow pipe, not to chase it to zero. A value at or above the nominal 1.5 Mbps floor is inert by construction. Env: MESHHARBORD_SLOW_LINK_MIN_BITRATE. Restart required.",
     },
     KeyMeta {
         key: "constrained_queue_measured",
@@ -1601,7 +1601,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Constrained queue budget denominated in the MEASURED rate (2026-09-01, FR-59 P2). Default ON: the constrained send-queue byte budget is re-derived each iteration from the session measured drain rate instead of being resolved once against the nominal relay ceiling. A budget expressed in MILLISECONDS is a lie unless the bits-per-second it divides by is the pipe: constrained_queue_ms 450 against a nominal 3 Mbps is 168750 bytes, which on a measured 395 kbps link is 3.4 SECONDS of standing queue - and the gate never fired while the viewer sat seconds behind. A held measurement may only ever LOWER the reference. Note this consumes the same lumpy TURN-TCP estimate measured_ceiling deliberately refuses for the CEILING; the asymmetry is the point, since an under-estimate here shrinks the budget (more shedding, LOWER latency) where an under-estimated ceiling collapses quality. false = pre-FR-59. Env: ROOMLERD_CONSTRAINED_QUEUE_MEASURED. Restart required.",
+        description: "Constrained queue budget denominated in the MEASURED rate (2026-09-01, FR-59 P2). Default ON: the constrained send-queue byte budget is re-derived each iteration from the session measured drain rate instead of being resolved once against the nominal relay ceiling. A budget expressed in MILLISECONDS is a lie unless the bits-per-second it divides by is the pipe: constrained_queue_ms 450 against a nominal 3 Mbps is 168750 bytes, which on a measured 395 kbps link is 3.4 SECONDS of standing queue - and the gate never fired while the viewer sat seconds behind. A held measurement may only ever LOWER the reference. Note this consumes the same lumpy TURN-TCP estimate measured_ceiling deliberately refuses for the CEILING; the asymmetry is the point, since an under-estimate here shrinks the budget (more shedding, LOWER latency) where an under-estimated ceiling collapses quality. false = pre-FR-59. Env: MESHHARBORD_CONSTRAINED_QUEUE_MEASURED. Restart required.",
     },
     KeyMeta {
         key: "seed_contradiction",
@@ -1609,7 +1609,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Abandon a contradicted rate-memory seed (2026-09-01, FR-59 P6). Default ON: a held goodput measurement more than 2x below the FR-35 learned or seeded ceiling abandons it back to the nominal band. The rate memory keys on the nominated ICE pair remote address, which on a RELAYED session is the relay address rather than the viewer - so one fast day writes a number every later session through that relay inherits for the memory 7-day TTL, whatever network the client is on today (field 2026-09-01: a 5069353 bps seed opened a session on a hotspot measured at 395122 bps, 12.8x under it). Applies to an in-session learned ceiling too, since a measurement is evidence either way and re-climbing is something the learner already does. false = keep the seed until the AIMD walks it down. Env: ROOMLERD_SEED_CONTRADICTION. Restart required.",
+        description: "Abandon a contradicted rate-memory seed (2026-09-01, FR-59 P6). Default ON: a held goodput measurement more than 2x below the FR-35 learned or seeded ceiling abandons it back to the nominal band. The rate memory keys on the nominated ICE pair remote address, which on a RELAYED session is the relay address rather than the viewer - so one fast day writes a number every later session through that relay inherits for the memory 7-day TTL, whatever network the client is on today (field 2026-09-01: a 5069353 bps seed opened a session on a hotspot measured at 395122 bps, 12.8x under it). Applies to an in-session learned ceiling too, since a measurement is evidence either way and re-climbing is something the learner already does. false = keep the seed until the AIMD walks it down. Env: MESHHARBORD_SEED_CONTRADICTION. Restart required.",
     },
     KeyMeta {
         key: "viewer_rate_clamp",
@@ -1617,7 +1617,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Viewer-reported link clamp (2026-09-01, FR-59 P3). Default ON: the VIEWER reports the bytes/s it actually received and how much its transit queue GREW this window, and on a constrained transport a sustained growing queue caps send-fps, feeds the AIMD a congestion sample, and bounds the ceiling at 90% of the measured arrival rate. It exists because the agent structurally cannot see this: on a relayed path its own send channel reads empty (field 2026-09-01: bytes_inflight 1-4 KB, send_wait_max_ms 0.1 ms) while seconds of video sit in the relay and the carrier. Unlike the FR-15 age report it needs NO clock probe - a byte count is local and the queue drift is a difference of two intervals, so the unknown offset cancels - which matters because on exactly these links the age is absent or rejected in most windows. The arrival rate may bound the ceiling ONLY while the queue is growing, since otherwise it is merely whatever the agent happened to send. false = observe-and-report only. Env: ROOMLERD_VIEWER_RATE_CLAMP. Restart required.",
+        description: "Viewer-reported link clamp (2026-09-01, FR-59 P3). Default ON: the VIEWER reports the bytes/s it actually received and how much its transit queue GREW this window, and on a constrained transport a sustained growing queue caps send-fps, feeds the AIMD a congestion sample, and bounds the ceiling at 90% of the measured arrival rate. It exists because the agent structurally cannot see this: on a relayed path its own send channel reads empty (field 2026-09-01: bytes_inflight 1-4 KB, send_wait_max_ms 0.1 ms) while seconds of video sit in the relay and the carrier. Unlike the FR-15 age report it needs NO clock probe - a byte count is local and the queue drift is a difference of two intervals, so the unknown offset cancels - which matters because on exactly these links the age is absent or rejected in most windows. The arrival rate may bound the ceiling ONLY while the queue is growing, since otherwise it is merely whatever the agent happened to send. false = observe-and-report only. Env: MESHHARBORD_VIEWER_RATE_CLAMP. Restart required.",
     },
     KeyMeta {
         key: "queue_drain",
@@ -1625,7 +1625,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Queue drain (2026-09-01, FR-59 P4). Default ON: when the viewer reports a transit queue deeper than a rate cut can clear in reasonable time, the pump STOPS producing for a bounded sub-second pause so the queue drains. A rate cut alone drains at capacity minus inflow, which is the slowest possible way - converging to 90% of a 400 kbps pipe clears a 2 s backlog at 40 kbps, i.e. over ~20 s, which is why a field session stayed seconds behind even after it stopped growing. Pausing sets inflow to zero so the same backlog clears in the ~2 s it represents. Deliberately no forced keyframe on resume: a pause loses no frames so the delta chain survives, and an IDR at these rates is itself seconds of transit. Skipping production rather than discarding the agent queue is the only lever that reaches a queue living in the relay and the carrier - those bytes are already sent and cannot be recalled. false = rate control only. Env: ROOMLERD_QUEUE_DRAIN. Restart required.",
+        description: "Queue drain (2026-09-01, FR-59 P4). Default ON: when the viewer reports a transit queue deeper than a rate cut can clear in reasonable time, the pump STOPS producing for a bounded sub-second pause so the queue drains. A rate cut alone drains at capacity minus inflow, which is the slowest possible way - converging to 90% of a 400 kbps pipe clears a 2 s backlog at 40 kbps, i.e. over ~20 s, which is why a field session stayed seconds behind even after it stopped growing. Pausing sets inflow to zero so the same backlog clears in the ~2 s it represents. Deliberately no forced keyframe on resume: a pause loses no frames so the delta chain survives, and an IDR at these rates is itself seconds of transit. Skipping production rather than discarding the agent queue is the only lever that reaches a queue living in the relay and the carrier - those bytes are already sent and cannot be recalled. false = rate control only. Env: MESHHARBORD_QUEUE_DRAIN. Restart required.",
     },
     KeyMeta {
         key: "slow_link_profile",
@@ -1633,7 +1633,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Slow-link opening profile (2026-09-01, FR-59 P5). Default ON: a CONSTRAINED session whose pair the rate memory remembers at or below slow_link_profile_bps opens with a 1280 long-edge cap and 15 fps instead of native. The bitrate levers (FR-59 P1-P4) can make the encoder TRACK a 400 kbps pipe but cannot make 1920x1200 at 30 fps legible through it - that is about 1.7 KB per frame; halving the long edge quarters the pixels and halving the rate doubles the per-frame budget, together about 8x the bits per pixel. Resolved ONCE at pump start and never as a mid-session rung, because every rung flip pays a BLOCKING encoder open (0.65-0.87 s measured on Iris Xe) plus a fresh IDR - which is why priority_res_cap is off by default. A pair with NO memory never engages it: an unknown link is not a slow one, and guessing soft would degrade the first session on every healthy relay. false = open at the normal size. Env: ROOMLERD_SLOW_LINK_PROFILE. Restart required.",
+        description: "Slow-link opening profile (2026-09-01, FR-59 P5). Default ON: a CONSTRAINED session whose pair the rate memory remembers at or below slow_link_profile_bps opens with a 1280 long-edge cap and 15 fps instead of native. The bitrate levers (FR-59 P1-P4) can make the encoder TRACK a 400 kbps pipe but cannot make 1920x1200 at 30 fps legible through it - that is about 1.7 KB per frame; halving the long edge quarters the pixels and halving the rate doubles the per-frame budget, together about 8x the bits per pixel. Resolved ONCE at pump start and never as a mid-session rung, because every rung flip pays a BLOCKING encoder open (0.65-0.87 s measured on Iris Xe) plus a fresh IDR - which is why priority_res_cap is off by default. A pair with NO memory never engages it: an unknown link is not a slow one, and guessing soft would degrade the first session on every healthy relay. false = open at the normal size. Env: MESHHARBORD_SLOW_LINK_PROFILE. Restart required.",
     },
     KeyMeta {
         key: "slow_link_profile_bps",
@@ -1641,7 +1641,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "number",
-        description: "Remembered rate at or below which the FR-59 P5 slow-link profile engages, bps. Empty = built-in 1000000; 0 = never engage. Env: ROOMLERD_SLOW_LINK_PROFILE_BPS. Restart required.",
+        description: "Remembered rate at or below which the FR-59 P5 slow-link profile engages, bps. Empty = built-in 1000000; 0 = never engage. Env: MESHHARBORD_SLOW_LINK_PROFILE_BPS. Restart required.",
     },
     KeyMeta {
         key: "area_min_bitrate",
@@ -1649,7 +1649,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Area-scaled AIMD bitrate floor (2026-08-26). Default ON: the flat 1.5 Mbps floor was a 1080p legibility tuning and is unreadable mush at 5+ MPix; the scaled floor is ~3.1 Mbps at 2880x1800, capped 4 Mbps, unconstrained sessions only (a relay's 3 Mbps clamp keeps the flat floor so the MD keeps room). false = flat 1.5 Mbps floor. Env: ROOMLERD_AREA_MIN_BITRATE. Restart required.",
+        description: "Area-scaled AIMD bitrate floor (2026-08-26). Default ON: the flat 1.5 Mbps floor was a 1080p legibility tuning and is unreadable mush at 5+ MPix; the scaled floor is ~3.1 Mbps at 2880x1800, capped 4 Mbps, unconstrained sessions only (a relay's 3 Mbps clamp keeps the flat floor so the MD keeps room). false = flat 1.5 Mbps floor. Env: MESHHARBORD_AREA_MIN_BITRATE. Restart required.",
     },
     KeyMeta {
         key: "priority_res_cap",
@@ -1657,7 +1657,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "rc.445 - restore the pre-rc.445 Priority-dial resolution caps (Smoother 1024 everywhere / Balanced 1280 on relay). Default OFF: every mid-motion rung flip costs a blocking encoder open (0.65-0.87s measured on Iris Xe) and the field verdict was that never flipping beats the rung; the dial's bit-shedding moved to the ceiling factors. Env: ROOMLERD_PRIORITY_RES_CAP. Restart required.",
+        description: "rc.445 - restore the pre-rc.445 Priority-dial resolution caps (Smoother 1024 everywhere / Balanced 1280 on relay). Default OFF: every mid-motion rung flip costs a blocking encoder open (0.65-0.87s measured on Iris Xe) and the field verdict was that never flipping beats the rung; the dial's bit-shedding moved to the ceiling factors. Env: MESHHARBORD_PRIORITY_RES_CAP. Restart required.",
     },
     KeyMeta {
         key: "smoother_rate_pct",
@@ -1665,7 +1665,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "rc.445 - Smoother's bitrate-ceiling factor (percent, 30-100): a lower ceiling makes the HRD raise QP during motion continuously (smaller frames, steadier fps) with ZERO encoder rebuilds; at-rest quality untouched. Empty = built-in 70. Env: ROOMLERD_SMOOTHER_RATE_PCT. Restart required.",
+        description: "rc.445 - Smoother's bitrate-ceiling factor (percent, 30-100): a lower ceiling makes the HRD raise QP during motion continuously (smaller frames, steadier fps) with ZERO encoder rebuilds; at-rest quality untouched. Empty = built-in 70. Env: MESHHARBORD_SMOOTHER_RATE_PCT. Restart required.",
     },
     KeyMeta {
         key: "balanced_rate_pct",
@@ -1673,7 +1673,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "rc.445 - Balanced's bitrate-ceiling factor (percent, 30-100). Empty = built-in 85. Env: ROOMLERD_BALANCED_RATE_PCT. Restart required.",
+        description: "rc.445 - Balanced's bitrate-ceiling factor (percent, 30-100). Empty = built-in 85. Env: MESHHARBORD_BALANCED_RATE_PCT. Restart required.",
     },
     KeyMeta {
         key: "scale_threads",
@@ -1681,7 +1681,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "HW-downscale Phase A - worker threads (1-8) for the CPU resampler's row-banded passes; a lever for weak hosts where the Smoother rung's downscale eats the frame budget. Empty = built-in 1 (inline, no threads). Env: ROOMLERD_SCALE_THREADS. Restart required.",
+        description: "HW-downscale Phase A - worker threads (1-8) for the CPU resampler's row-banded passes; a lever for weak hosts where the Smoother rung's downscale eats the frame budget. Empty = built-in 1 (inline, no threads). Env: MESHHARBORD_SCALE_THREADS. Restart required.",
     },
     KeyMeta {
         key: "ice_follow_renomination",
@@ -1689,7 +1689,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "enum:auto|always|never",
-        description: "Media-ICE nomination-follow policy. auto (empty) = upward-only + stale-failover (recommended); always = legacy follow-everything (thrash-prone, diagnostics only); never = pin to first nomination. Env: ROOMLER_ICE_FOLLOW_RENOMINATION.",
+        description: "Media-ICE nomination-follow policy. auto (empty) = upward-only + stale-failover (recommended); always = legacy follow-everything (thrash-prone, diagnostics only); never = pin to first nomination. Env: MESHHARBOR_ICE_FOLLOW_RENOMINATION.",
     },
     KeyMeta {
         key: "ice_warm_standby",
@@ -1697,7 +1697,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Keepalive pings on validated-but-unselected media ICE pairs (keeps the real-path fallback's NAT mapping alive). Built-in default: on. Env: ROOMLER_ICE_WARM_STANDBY.",
+        description: "Keepalive pings on validated-but-unselected media ICE pairs (keeps the real-path fallback's NAT mapping alive). Built-in default: on. Env: MESHHARBOR_ICE_WARM_STANDBY.",
     },
     KeyMeta {
         key: "ice_overlay_host_deprioritize",
@@ -1705,7 +1705,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Rank overlay-TUN host candidates below srflx in media ICE (media prefers the real path). Built-in default: on. Env: ROOMLER_ICE_OVERLAY_HOST_DEPRIORITIZE.",
+        description: "Rank overlay-TUN host candidates below srflx in media ICE (media prefers the real path). Built-in default: on. Env: MESHHARBOR_ICE_OVERLAY_HOST_DEPRIORITIZE.",
     },
     KeyMeta {
         key: "overlay_tier_detect",
@@ -1713,7 +1713,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Clamp media bitrate when the overlay carrier under a nominated pair is relay-tier. Built-in default: on. Env: ROOMLERD_OVERLAY_TIER_DETECT.",
+        description: "Clamp media bitrate when the overlay carrier under a nominated pair is relay-tier. Built-in default: on. Env: MESHHARBORD_OVERLAY_TIER_DETECT.",
     },
     KeyMeta {
         key: "overlay_rtt_q",
@@ -1721,7 +1721,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "B1 - feed the 15 s overlay RTT probes into the PathMonitor quality plane (Q-only, never eligibility). Built-in default: on. Env: ROOMLERD_OVERLAY_RTT_Q.",
+        description: "B1 - feed the 15 s overlay RTT probes into the PathMonitor quality plane (Q-only, never eligibility). Built-in default: on. Env: MESHHARBORD_OVERLAY_RTT_Q.",
     },
     KeyMeta {
         key: "overlay_upward_probe",
@@ -1729,7 +1729,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "B3 - probe an eligible higher tier from a healthy srflx/public incumbent every >=120 s (MBB; incumbent held until latch). Built-in default: on. Env: ROOMLERD_OVERLAY_UPWARD_PROBE.",
+        description: "B3 - probe an eligible higher tier from a healthy srflx/public incumbent every >=120 s (MBB; incumbent held until latch). Built-in default: on. Env: MESHHARBORD_OVERLAY_UPWARD_PROBE.",
     },
     KeyMeta {
         key: "relay_probe",
@@ -1737,7 +1737,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "Multi-region relay PoPs - probe the server-pushed region list (timed STUN per PoP) and report RTTs; the server derives this node's relay_home from them. Built-in default: on. Env: ROOMLERD_RELAY_PROBE.",
+        description: "Multi-region relay PoPs - probe the server-pushed region list (timed STUN per PoP) and report RTTs; the server derives this node's relay_home from them. Built-in default: on. Env: MESHHARBORD_RELAY_PROBE.",
     },
     KeyMeta {
         key: "text_mod_neutralize",
@@ -1745,7 +1745,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Standard,
         live: false,
         kind: "tribool",
-        description: "KeyText typing: temporarily release physically-held Shift/Ctrl/Alt the remote layout does not want around each character tap (fixes wrong/dead symbols on non-US layouts). Built-in default: on. Env: ROOMLERD_TEXT_MOD_NEUTRALIZE. Restart required.",
+        description: "KeyText typing: temporarily release physically-held Shift/Ctrl/Alt the remote layout does not want around each character tap (fixes wrong/dead symbols on non-US layouts). Built-in default: on. Env: MESHHARBORD_TEXT_MOD_NEUTRALIZE. Restart required.",
     },
     KeyMeta {
         key: "caps_cache",
@@ -1753,7 +1753,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "FR-77 P3 - cache the hardware encoder probe across daemon restarts, keyed by GPU + driver + OS build + roomlerd build; re-probed on any change or after 7 days. Built-in default: on. Env: ROOMLERD_CAPS_CACHE.",
+        description: "FR-77 P3 - cache the hardware encoder probe across daemon restarts, keyed by GPU + driver + OS build + meshharbord build; re-probed on any change or after 7 days. Built-in default: on. Env: MESHHARBORD_CAPS_CACHE.",
     },
     KeyMeta {
         key: "encoder_cells_deny",
@@ -1761,7 +1761,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "FR-77 - encoder cells this device must not open or advertise: comma-separated name:chroma entries (e.g. hevc_qsv:yuv444). Empty = the built-in list (hevc_qsv:yuv444, hevc_vaapi:yuv444, vp9_qsv:yuv444, vp9_vaapi:yuv444); `none` = deny nothing. Env: ROOMLERD_ENCODER_CELLS_DENY. Pushable through remote config. Restart required.",
+        description: "FR-77 - encoder cells this device must not open or advertise: comma-separated name:chroma entries (e.g. hevc_qsv:yuv444). Empty = the built-in list (hevc_qsv:yuv444, hevc_vaapi:yuv444, vp9_qsv:yuv444, vp9_vaapi:yuv444); `none` = deny nothing. Env: MESHHARBORD_ENCODER_CELLS_DENY. Pushable through remote config. Restart required.",
     },
     KeyMeta {
         key: "fps_high",
@@ -1769,7 +1769,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "FR-119 - offer a viewer that asks a frame rate above 60 (120 or 144): advertise fps-high, and grant a higher rate only on a direct path, on a rate class this host has proven or as a trial, and where the pipe covers it. Built-in default: off. Env: ROOMLERD_FPS_HIGH. Restart required.",
+        description: "FR-119 - offer a viewer that asks a frame rate above 60 (120 or 144): advertise fps-high, and grant a higher rate only on a direct path, on a rate class this host has proven or as a trial, and where the pipe covers it. Built-in default: off. Env: MESHHARBORD_FPS_HIGH. Restart required.",
     },
     KeyMeta {
         key: "fps_deny",
@@ -1777,7 +1777,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "FR-119 - frame rates above 60 this device must not grant: comma-separated name:fps entries (e.g. hevc_qsv:120), `*` for every encoder (e.g. *:144). Empty or `none` = deny nothing. Env: ROOMLERD_FPS_DENY. Pushable through remote config. Restart required.",
+        description: "FR-119 - frame rates above 60 this device must not grant: comma-separated name:fps entries (e.g. hevc_qsv:120), `*` for every encoder (e.g. *:144). Empty or `none` = deny nothing. Env: MESHHARBORD_FPS_DENY. Pushable through remote config. Restart required.",
     },
     KeyMeta {
         key: "vaapi_device",
@@ -1785,7 +1785,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "FR-77 P4 - pin the VAAPI render node the Linux daemon opens (e.g. /dev/dri/renderD129). Empty = the first node libva accepts, /dev/dri/renderD128..135 in order. Env: ROOMLERD_VAAPI_DEVICE. Restart required.",
+        description: "FR-77 P4 - pin the VAAPI render node the Linux daemon opens (e.g. /dev/dri/renderD129). Empty = the first node libva accepts, /dev/dri/renderD128..135 in order. Env: MESHHARBORD_VAAPI_DEVICE. Restart required.",
     },
     KeyMeta {
         key: "d3d12_adapter",
@@ -1793,7 +1793,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "FR-78 P1 - pin the DXGI adapter index the D3D12 video-encode device opens on (Windows; e.g. 1). Empty = adapters 0..3 in order, the first FFmpeg accepts. Env: ROOMLERD_D3D12_ADAPTER. Restart required.",
+        description: "FR-78 P1 - pin the DXGI adapter index the D3D12 video-encode device opens on (Windows; e.g. 1). Empty = adapters 0..3 in order, the first FFmpeg accepts. Env: MESHHARBORD_D3D12_ADAPTER. Restart required.",
     },
     KeyMeta {
         key: "vulkan_device",
@@ -1801,7 +1801,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "FR-78 P1 - pin the Vulkan physical device by index or name (e.g. 1, or NVIDIA GeForce RTX 5090). Empty = the loader's default device. Env: ROOMLERD_VULKAN_DEVICE. Restart required.",
+        description: "FR-78 P1 - pin the Vulkan physical device by index or name (e.g. 1, or NVIDIA GeForce RTX 5090). Empty = the loader's default device. Env: MESHHARBORD_VULKAN_DEVICE. Restart required.",
     },
     KeyMeta {
         key: "record_dir",
@@ -1811,7 +1811,7 @@ const KEYS: &[KeyMeta] = &[
         // (FR-85), and nothing caches it.
         live: true,
         kind: "string",
-        description: "FR-85 - the folder screen recordings are saved to: an absolute local path (no ~, no network share, no symlink or junction). Empty = Videos\\Roomler on Windows when it is local and writable (else %USERPROFILE%\\Roomler Recordings), ~/Movies/Roomler on macOS, the XDG videos folder + Roomler on Linux. Read when a recording starts. Device-only: never pushable through remote config.",
+        description: "FR-85 - the folder screen recordings are saved to: an absolute local path (no ~, no network share, no symlink or junction). Empty = Videos\\MeshHarbor on Windows when it is local and writable (else %USERPROFILE%\\MeshHarbor Recordings), ~/Movies/MeshHarbor on macOS, the XDG videos folder + MeshHarbor on Linux. Read when a recording starts. Device-only: never pushable through remote config.",
     },
     KeyMeta {
         key: "record_remote_enabled",
@@ -3594,7 +3594,7 @@ mod tests {
         let mut cfg = crate::config::test_fixture();
         assert_eq!(current_value(&cfg, "record_dir"), None);
         let dir = std::env::temp_dir()
-            .join("roomler-fr85-surface")
+            .join("meshharbor-fr85-surface")
             .join("Recordings");
         let raw = format!("  {}  ", dir.display());
         apply(&mut cfg, "record_dir", Some(&raw)).unwrap();
@@ -3652,7 +3652,7 @@ mod tests {
                 "Network carriers & relays",
                 "Routing & adapter (Windows)",
                 "Tunnels & SOCKS",
-                "Roomler SSH",
+                "MeshHarbor SSH",
                 "Remote desktop",
                 "Capture & input",
                 "Video encoding",
@@ -3773,7 +3773,7 @@ mod tests {
     }
 
     /// The bridge is what makes a config key reach the backend at all — the
-    /// gates read `ROOMLERD_*` via `env::flag`, and `main.rs` feeds those
+    /// gates read `MESHHARBORD_*` via `env::flag`, and `main.rs` feeds those
     /// fallbacks from this array. A key that is absent here is editable and
     /// inert, which looks exactly like a broken feature.
     #[test]
@@ -5345,7 +5345,7 @@ mod tests {
     }
 
     /// FR-119 — `fps_high` is a tribool that reaches the daemon as
-    /// `ROOMLERD_FPS_HIGH`, and unset publishes nothing (off).
+    /// `MESHHARBORD_FPS_HIGH`, and unset publishes nothing (off).
     #[test]
     fn fps_high_is_a_tribool_that_bridges() {
         let mut cfg = crate::config::test_fixture();
@@ -5633,7 +5633,7 @@ mod external_access_surface_tests {
                 "`{key}` is on the editable config surface. If it is a SETTING, add it to \
                  EDITABLE_EXTERNAL_KEYS. If it is any part of the password record, it must not be \
                  here at all — `config get` would print it and `config set` would let the \
-                 interactive user choose the password. Set it with `roomler rc password set`."
+                 interactive user choose the password. Set it with `meshharbor rc password set`."
             );
         }
 

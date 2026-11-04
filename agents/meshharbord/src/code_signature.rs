@@ -360,13 +360,13 @@ mod tests {
     /// Verifies a REAL signed release artifact when one is present.
     ///
     /// Ignored by default because it needs a downloaded MSI; run with
-    /// `ROOMLER_TEST_SIGNED_MSI=<path> cargo test -p meshharbord --lib
+    /// `MESHHARBOR_TEST_SIGNED_MSI=<path> cargo test -p meshharbord --lib
     /// signed_release_artifact -- --ignored --nocapture` on Windows.
     #[test]
     #[ignore]
     fn signed_release_artifact_verifies_as_the_expected_publisher() {
-        let Ok(p) = std::env::var("ROOMLER_TEST_SIGNED_MSI") else {
-            eprintln!("set ROOMLER_TEST_SIGNED_MSI to a downloaded release MSI");
+        let Ok(p) = std::env::var("MESHHARBOR_TEST_SIGNED_MSI") else {
+            eprintln!("set MESHHARBOR_TEST_SIGNED_MSI to a downloaded release MSI");
             return;
         };
         let signer = verify_publisher(Path::new(&p), EXPECTED_PUBLISHER)

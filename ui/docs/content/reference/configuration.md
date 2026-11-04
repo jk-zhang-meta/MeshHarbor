@@ -161,5 +161,5 @@ yourself, or on the next reboot.
 
 ## Server configuration
 
-Self-hosted server settings are environment variables prefixed `ROOMLER__`,
+Self-hosted server settings are environment variables prefixed `MESHHARBOR__`,
 covered in [self-hosting](/docs/start/self-hosting/).

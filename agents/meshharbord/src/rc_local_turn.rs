@@ -9,7 +9,7 @@
 //! edge fine over the overlay. So: the local agent hosts a tiny UDP TURN on its
 //! overlay IP, the co-located browser relays through it over **loopback** (never
 //! firewalled), and the remote agent reaches the allocated relays over the
-//! **overlay** (WFP-permitted). Design: `~/.claude/plans/roomler-loopback-turn-
+//! **overlay** (WFP-permitted). Design: `~/.claude/plans/meshharbor-loopback-turn-
 //! corp-relay.md`; the TURN server itself is [`LocalTurnHost`] (Phase 1).
 //!
 //! This module is the discovery + lifecycle half:
@@ -24,7 +24,7 @@
 //! `set-service-env-var` from inside a UDP-blocked corp VPN). Hosting the
 //! TURN + probe is inert infrastructure: nothing uses it until the BROWSER
 //! opts in (`localRelayEnabled`, still default-OFF pending the first real
-//! UDP-blocked field proof). `ROOMLERD_LOCAL_TURN=0` disables. Compiles
+//! UDP-blocked field proof). `MESHHARBORD_LOCAL_TURN=0` disables. Compiles
 //! in the default build; without an overlay IP the probe answers 503 and no
 //! TURN is hosted.
 
@@ -88,12 +88,12 @@ const ALLOWED_ORIGINS: &[&str] = &[
     "http://localhost:5173",
 ];
 
-/// Default-ON (rc.220); `ROOMLERD_LOCAL_TURN=0` (or `false`/`no`/`off`)
+/// Default-ON (rc.220); `MESHHARBORD_LOCAL_TURN=0` (or `false`/`no`/`off`)
 /// disables — the DERP-style escape-hatch convention.
 pub fn enabled() -> bool {
     !matches!(
         // S2: dual-prefix + config-fallback read (was a direct
-        // ROOMLERD_LOCAL_TURN-only env::var).
+        // MESHHARBORD_LOCAL_TURN-only env::var).
         tunnel_core::env::node_env("LOCAL_TURN").as_deref(),
         Some("0" | "false" | "no" | "off")
     )
@@ -102,7 +102,7 @@ pub fn enabled() -> bool {
 /// v2.2 — the loopback CLIPBOARD BRIDGE half (`/rc-clipboard`): lets the
 /// roomler.ai page on THIS machine read/write the machine's NATIVE clipboard
 /// formats (RTF with embedded images) that no browser API exposes. Default-ON;
-/// `ROOMLERD_CLIPBOARD_BRIDGE=0` disables. Only meaningful on builds with
+/// `MESHHARBORD_CLIPBOARD_BRIDGE=0` disables. Only meaningful on builds with
 /// the `clipboard` feature — the routes 404 otherwise.
 ///
 /// Trust model (same as the TURN probe): loopback-only bind + strict
@@ -229,7 +229,7 @@ async fn serve(
         .unwrap_or(PROBE_PORT);
     info!(
         port = bound_port,
-        "loopback-TURN: probe on 127.0.0.1 (ROOMLERD_LOCAL_TURN)"
+        "loopback-TURN: probe on 127.0.0.1 (MESHHARBORD_LOCAL_TURN)"
     );
 
     // Per-run TURN secret (32 random bytes). The host both mints AND validates
@@ -445,8 +445,8 @@ async fn read_body<S: AsyncRead + Unpin>(
 #[cfg(feature = "clipboard")]
 fn bridge_native_headers() -> &'static str {
     if cfg!(windows) {
-        "X-Roomler-Clipboard-Native: 1\r\n\
-         Access-Control-Expose-Headers: X-Roomler-Clipboard-Native\r\n"
+        "X-MeshHarbor-Clipboard-Native: 1\r\n\
+         Access-Control-Expose-Headers: X-MeshHarbor-Clipboard-Native\r\n"
     } else {
         ""
     }
@@ -691,8 +691,8 @@ mod tests {
         let h = bridge_native_headers();
         #[cfg(windows)]
         {
-            assert!(h.contains("X-Roomler-Clipboard-Native: 1"));
-            assert!(h.contains("Access-Control-Expose-Headers: X-Roomler-Clipboard-Native"));
+            assert!(h.contains("X-MeshHarbor-Clipboard-Native: 1"));
+            assert!(h.contains("Access-Control-Expose-Headers: X-MeshHarbor-Clipboard-Native"));
         }
         #[cfg(not(windows))]
         assert_eq!(h, "");

@@ -40,7 +40,7 @@ export const darkTheme: ThemeDefinition = {
 }
 
 export function getDefaultTheme(): string {
-  return localStorage.getItem('roomler-theme') || 'light'
+  return localStorage.getItem('meshharbor-theme') || 'light'
 }
 
 const vuetify = createVuetify({

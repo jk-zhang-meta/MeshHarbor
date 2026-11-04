@@ -9,7 +9,7 @@ pub struct Capturer {
 }
 
 impl Capturer {
-    /// ROOMLER PATCH: capture at an EXPLICIT size, letting CoreGraphics scale.
+    /// MESHHARBOR PATCH: capture at an EXPLICIT size, letting CoreGraphics scale.
     ///
     /// `CGDisplayStreamCreateWithDispatchQueue` takes an arbitrary output
     /// size and does the reduction itself — on the GPU, for free. Capturing
@@ -38,7 +38,7 @@ impl Capturer {
         let f = frame.clone();
         let inner = quartz::Capturer::new(
             display.0,
-            // ROOMLER PATCH: size the stream in PIXELS, not POINTS.
+            // MESHHARBOR PATCH: size the stream in PIXELS, not POINTS.
             //
             // Upstream passes `display.width()/height()`, which are
             // `CGDisplayPixelsWide/High` — misleadingly named, they return
@@ -55,7 +55,7 @@ impl Capturer {
             out_w,
             out_h,
             quartz::PixelFormat::Argb8888,
-            // ROOMLER PATCH: composite the cursor INTO the frame.
+            // MESHHARBOR PATCH: composite the cursor INTO the frame.
             //
             // Upstream passes `Default::default()`, whose `cursor` is FALSE.
             // On macOS that is not a cosmetic default — it is the only way a
@@ -126,7 +126,7 @@ pub struct Frame<'a>(
 );
 
 impl<'a> Frame<'a> {
-    /// ROOMLER PATCH: the surface's true row pitch, in bytes.
+    /// MESHHARBOR PATCH: the surface's true row pitch, in bytes.
     ///
     /// `Deref`'s slice is `IOSurfaceGetAllocSize` bytes long (page-rounded),
     /// so `len() / height` is NOT the stride. Callers that walk rows must use
@@ -168,7 +168,7 @@ impl Display {
         self.0.height()
     }
 
-    /// ROOMLER PATCH: the display's TRUE pixel size (see `quartz::Display::
+    /// MESHHARBOR PATCH: the display's TRUE pixel size (see `quartz::Display::
     /// pixel_size` — `CGDisplayModeGetPixelWidth/Height`, with the point-size
     /// fallback). `width()/height()` stay POINTS on purpose (pointer mapping);
     /// these exist for callers that must know the panel's real resolution

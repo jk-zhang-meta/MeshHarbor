@@ -9,7 +9,7 @@
 //! launches Claude Code headless as that account through the one privilege
 //! path exec and SSH already share, keeps the transcript in the replica store,
 //! and reports each session's lifecycle with `rc:hive.state`. Only metadata
-//! crosses the control WS (`docs/roomler-hive-design.md` §3.3).
+//! crosses the control WS (`docs/meshharbor-hive-design.md` §3.3).
 //!
 //! # What P0 covers
 //!
@@ -42,7 +42,7 @@
 //!
 //! # Approvals (P1a)
 //!
-//! [`toolbelt`]: the session's `roomler` MCP server, whose `approve` is
+//! [`toolbelt`]: the session's `meshharbor` MCP server, whose `approve` is
 //! Claude Code's permission tool — every tool call that needs one waits for a
 //! driver, who answers over the viewer peer. Claude Code reaches it through
 //! `meshharbord hive-mcp <socket>` ([`relay`]), started as the session's

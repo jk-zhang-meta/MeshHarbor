@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-// Roomler Setup — unified SPA controller.
+// MeshHarbor Setup — unified SPA controller.
 //
 // Vanilla JS state machine driving the 5-step wizard (Welcome →
 // Server → Token → Install → Done) via Tauri invoke calls into the
@@ -586,7 +586,7 @@ const STEP_LABELS = {
   ExtractDone: "Archive extracted",
   IntegrationStarted: "Wiring up PATH",
   IntegrationDone: "PATH integration finished",
-  EnrollStarted: "Enrolling with Roomler",
+  EnrollStarted: "Enrolling with MeshHarbor",
   EnrollOk: "Enrolled",
   AnchorStarted: "Anchoring for SYSTEM exec (administrator prompt)",
   AnchorOk: "Anchored for SYSTEM exec",
@@ -857,7 +857,7 @@ function renderDone() {
   const isTunnel = (done.principalKind ?? "") === "tunnel_client"
     || (!done.principalKind && state.role === "tunnel-client");
 
-  // P4b: daemon MSIs carry the roomler CLI (role→action composition —
+  // P4b: daemon MSIs carry the meshharbor CLI (role→action composition —
   // a daemon install subsumes the tunnel client). cliIncluded is the
   // orchestrator's post-install existence check; false/absent means an
   // old pre-P4b MSI was served, so we don't promise a CLI we didn't
@@ -871,8 +871,8 @@ function renderDone() {
   if (isTunnel) {
     lead = "The tunnel client is installed, enrolled, and on PATH.";
   } else {
-    lead = "The Roomler daemon is installed and enrolled.";
-    if (cliIncluded) lead += " The roomler CLI came with it (managed by the daemon's updater).";
+    lead = "The MeshHarbor daemon is installed and enrolled.";
+    if (cliIncluded) lead += " The meshharbor CLI came with it (managed by the daemon's updater).";
     if (desktopInstalled) lead += " The meshharbor-desktop app is installed alongside it.";
     if (done.anchored === true) lead += " It is anchored: commands can run as SYSTEM here.";
   }
@@ -887,7 +887,7 @@ function renderDone() {
     document.getElementById("done-anchor-reason").textContent = state.anchorSkipReason ?? "";
     const server = (state.server || "https://www.itachi.fans/meshharbor").replace(/\/+$/, "");
     document.getElementById("done-anchor-command").textContent =
-      `roomlerd anchor create --server ${server} --token <fresh token> ` +
+      `meshharbord anchor create --server ${server} --token <fresh token> ` +
       `--device ${done.principalId ?? "<device id>"}`;
   }
 

@@ -84,7 +84,7 @@ pub fn due_days(
 }
 
 /// The hourly loop of one puller: after `first_delay_secs`, every
-/// `interval_secs` one pod (the Redis claim `roomler:<claim>:<db>`) runs
+/// `interval_secs` one pod (the Redis claim `meshharbor:<claim>:<db>`) runs
 /// `tick`. A tick logs its own outcome.
 pub fn spawn_hourly<F, Fut>(
     core: Core,
@@ -101,7 +101,7 @@ pub fn spawn_hourly<F, Fut>(
         loop {
             let claimed = match &core.redis_pubsub {
                 Some(redis) => {
-                    let key = format!("roomler:{claim}:{}", core.db.name());
+                    let key = format!("meshharbor:{claim}:{}", core.db.name());
                     match redis
                         .try_claim(&key, interval_secs.saturating_sub(60).max(1))
                         .await

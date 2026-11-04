@@ -87,8 +87,8 @@ reproducing the FAIL on the current settings, then one change at a time:
 | cell | knob | from → to | what it isolates |
 |---|---|---|---|
 | A | `direct_queue_ms` (config) | 150 → 600 | the gate/AIMD reaction to a burst the wire drains |
-| B | `ROOMLERD_FFMPEG_MAXRATE_KBPS` (env) | 9677 → 24000 | the ceiling (the VP9 pump's bpp at this geometry) |
-| C | `ROOMLERD_FFMPEG_CQ` (env) | 22 → 16 | the still-text quality floor |
+| B | `MESHHARBORD_FFMPEG_MAXRATE_KBPS` (env) | 9677 → 24000 | the ceiling (the VP9 pump's bpp at this geometry) |
+| C | `MESHHARBORD_FFMPEG_CQ` (env) | 22 → 16 | the still-text quality floor |
 
 Read from the heartbeat: `target_bps` trajectory through a scroll, `frames_skipped`,
 `swaps`, keyframes; from the operator: readable while moving, settle time, still
@@ -128,7 +128,7 @@ sharpness. A cell that helps names the phase; a cell that does not retires a gue
   each real full-screen text delta got a 30-fps slot's bits — `avg_qp` 108 → 184
   of 255 in the scroll, 5 at rest. That is P3's item, with its own mechanism.
 - Left live on CORPLAP-3 until P1 ships: `direct_queue_ms = 600` (config) and
-  the machine environment `ROOMLERD_FFMPEG_MAXRATE_KBPS=40000`. Revert:
+  the machine environment `MESHHARBORD_FFMPEG_MAXRATE_KBPS=40000`. Revert:
   `roomler config clear direct_queue_ms`, remove the variable, restart.
 
 ### P1 — a content-following ceiling on direct paths
@@ -270,7 +270,7 @@ decision at all.
 
 **Built.** `Vp9Encoder::set_max_quantizer` (a runtime `vpx_codec_enc_config_set`,
 no IDR) and `vp9_direct_max_q_from_env` (default **16** = q-index 64, env
-`ROOMLERD_VP9_DIRECT_MAX_Q`, clamp 0–63, **63 = the pre-P3 behaviour** — the way
+`MESHHARBORD_VP9_DIRECT_MAX_Q`, clamp 0–63, **63 = the pre-P3 behaviour** — the way
 back). The pump applies the cap on a DIRECT transport at encoder open and
 re-applies it on every transport flip (uncapped again on a relay, where the rate
 cap is what matters). Nothing else changes: CBR, the target, the AIMD, the idle
@@ -337,7 +337,7 @@ now nothing on screen said whether the frame that came back actually matched the
 | P1 | direct ceiling 0.25 bpp / [3, 48] M; direct queue budget denominated in the ceiling | — (no switch: `FFMPEG_MAXRATE_KBPS` and `direct_queue_ms` are the way back) | **built 2026-09-06** (§"P1 — as built"); field gate on the release carrying it |
 | P1b | the direct gate is the measured send wait's call below the encoder's HRD reservoir (EMA of completed waits ∨ live head-of-queue age); bytes alone gate only at the reservoir | — (no switch; `direct_queue_ms` keeps its meaning as the lag bound, `0` disables) | **field-verified 2026-09-07 on 0.4.79** — operator: "not seeing the blurring anymore" on AV1, VP9 4:2:0 and H.264; heartbeats of those sessions: 0 cuts, 0 gate skips, 0 gate lines. VP9 4:4:4 (the libvpx pump) still blurs ⇒ P3 |
 | P2 | ladder hysteresis on QSV | — (pure policy, measured by `swaps`) | **retired by measurement 2026-09-07** — after P1 the rate ladder no longer fires on direct paths: 0 rate swaps in all 17 sessions on the three hosts today (QSV direct on CORPLAP-1/-3, nvenc relay on CORPLAP-2; the 2026-09-06 baseline had 37 in 11 min). Reopen only if a relay-path QSV session shows swaps |
-| P3 | the libvpx pump: `rc_max_quantizer` 16 on DIRECT transports (63 on relay) — libvpx's scene-change reset to the worst quality on every wheel notch was the 4:4:4 blur, measured offline in four rounds (§P3) | `ROOMLERD_VP9_DIRECT_MAX_Q` (63 = pre-P3) | **built 2026-09-07, released in 0.4.80** — offline: every notch frame at q 64 instead of 255, refine to lossless kept; field gate: **instrument PASS 13:25 UTC** (`max_qp` 64 in every scroll window, was 255; settles to q 0; 0 skips) and **operator PASS** ("scrolling large texts seems much better") ⇒ **field-verified 2026-09-07**; thin direct path measured 20:08 UTC — sharp but laggy below the cap's ~10 Mbps floor (§P3), an open decision |
+| P3 | the libvpx pump: `rc_max_quantizer` 16 on DIRECT transports (63 on relay) — libvpx's scene-change reset to the worst quality on every wheel notch was the 4:4:4 blur, measured offline in four rounds (§P3) | `MESHHARBORD_VP9_DIRECT_MAX_Q` (63 = pre-P3) | **built 2026-09-07, released in 0.4.80** — offline: every notch frame at q 64 instead of 255, refine to lossless kept; field gate: **instrument PASS 13:25 UTC** (`max_qp` 64 in every scroll window, was 255; settles to q 0; 0 skips) and **operator PASS** ("scrolling large texts seems much better") ⇒ **field-verified 2026-09-07**; thin direct path measured 20:08 UTC — sharp but laggy below the cap's ~10 Mbps floor (§P3), an open decision |
 | P4 | viewer display-scale pill + 1:1 guidance: screen pixels per remote pixel, `1:1 pixels` or `shown at 1.05×`, the way to 1:1 in the tooltip and the Display tab (§P4) | — (UI; the pill has its own metrics checkbox) | **built 2026-09-08 (#1497), field-verified the same morning** on `hosted-20260908-a6257b8`: `shown at 1.05×` in Adaptive = the FSR canvas exactly (2018 ÷ 1920), `1:1 pixels` at Custom zoom 100/dpr % with FSR disengaging on its own; docs `docs/remote-control.md` §18.6.1 |
 | P5 | **the direct ceiling FOLLOWS the measured path** — `clamp(believed × HEADROOM, legibility_floor, bpp_bound)`; the bpp product stops being the operating point and becomes a cap (§"P5 — the ceiling follows the path") | — (the belief itself is the way back: with no belief the bound still applies, which is today's behaviour byte for byte) | **decided 2026-09-10, not built.** Gated on FR-79 V3b's belief reading sane in the field first — the shadow ships before the law. **Gate read 2026-09-25** (§"The gate, read 2026-09-25"; 104,698 heartbeats, 37 sessions, four hosts, 0.4.99–0.4.102): the relay half holds; V3b-2 confirmed (19 of 19 push-back-free direct sessions kept their floor); the direct half is content-bound before the first burst by construction; and the refined law's floor guard **erodes** — V3b-2 halves the floor on every push-back regardless of spacing (28.84 → 7.76 M on three, 38.90 → 8.57 M on five) ⇒ **stays unbuilt** until the guard is decided (an undamped demonstrated max beside the damped floor, or time-aware damping — FR-79's `Pipe`), `HEADROOM` and the decay rate are fixed, and a sim replay of the Regal 09-25 arc is read |
 | P6 | **docs, in the house style** (the docs-before-close rule, #1401): a design section in `docs/rate-control.md` for P1's direct ceiling and P1b's measured-send-wait gate — today only three changelog rows there, and no mermaid diagram of how the ceiling and the gate compose — joined by P5's path-following ceiling when it is built; linked from `docs/README.md`. P3 (`docs/encoders.md`) and P4 (`docs/remote-control.md` §18.6.1) are documented already | — (docs) | **written 2026-09-25** in the PR carrying this row: `docs/rate-control.md` §"The direct path (FR-74)" — the ceiling chain (P1), the measured-wait gate (P1b), one mermaid of how they compose, the field reads, and P5's status with the gate read; two config rows; the `docs/README.md` row. AC5 ticks on merge |

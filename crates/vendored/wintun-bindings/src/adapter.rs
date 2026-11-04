@@ -453,12 +453,12 @@ impl Drop for Adapter {
         //This is why we need an Arc of wintun
         unsafe { self.wintun.WintunCloseAdapter(self.adapter.0) };
         self.adapter = UnsafeHandle(ptr::null_mut());
-        // ROOMLER PATCH (crates/vendored/wintun-bindings.patch): upstream's
+        // MESHHARBOR PATCH (crates/vendored/wintun-bindings.patch): upstream's
         // `winreg` feature deleted every `NetworkList\Profiles` /
         // `NetworkList\Signatures\Unmanaged` registry entry whose
         // ProfileName/Description matched the adapter NAME on every drop —
         // erasing the network's NLA identity (and the operator's
-        // Private-profile categorization) that roomler's constant requested
+        // Private-profile categorization) that meshharbor's constant requested
         // GUID exists to keep stable. The deletion (and its helper
         // `delete_adapter_info_from_reg`) is removed; the feature flag stays
         // declared so `tun`'s `features = ["winreg"]` request still resolves.

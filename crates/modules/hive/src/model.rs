@@ -3,7 +3,7 @@
 //! What the server stores about an agent session — and, by omission, what it
 //! does not. No field here holds a prompt, a tool call, an output or a line
 //! of transcript; the session's content lives on the devices that run and
-//! replicate it (`docs/roomler-hive-design.md` §3.3).
+//! replicate it (`docs/meshharbor-hive-design.md` §3.3).
 
 use bson::{DateTime, oid::ObjectId};
 use serde::{Deserialize, Serialize};
@@ -165,7 +165,7 @@ pub struct AgentSession {
     /// move and fork. Absent = no role: nothing in the vault is allowed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault_role: Option<String>,
-    /// FR-90 P1j — how the session came to be. Absent = started from Roomler
+    /// FR-90 P1j — how the session came to be. Absent = started from MeshHarbor
     /// (every record before P1j).
     #[serde(default, skip_serializing_if = "SessionOrigin::is_started")]
     pub origin: SessionOrigin,
@@ -565,10 +565,10 @@ pub struct MemberTip {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionOrigin {
-    /// Its owner started it from Roomler, through every start gate.
+    /// Its owner started it from MeshHarbor, through every start gate.
     #[default]
     Started,
-    /// A terminal session its owner adopted on a device (`roomler hive
+    /// A terminal session its owner adopted on a device (`meshharbor hive
     /// adopt`, decision 11). Read-only: the terminal holds the harness, so
     /// nobody drives it from here, the owner included, and it passed none of
     /// the start gates.

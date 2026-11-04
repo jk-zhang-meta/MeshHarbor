@@ -4,7 +4,7 @@
 //! account's access token, Search Analytics and URL Inspection.
 //!
 //! * **The credential** is a service account's JSON key
-//!   (`ROOMLER__GROWTH__SEARCH_CONSOLE_KEY`, from a Secret). The token is the
+//!   (`MESHHARBOR__GROWTH__SEARCH_CONSOLE_KEY`, from a Secret). The token is the
 //!   OAuth 2.0 JWT-bearer grant: an RS256 assertion `{iss: client_email,
 //!   scope: webmasters.readonly, aud: token_uri, iat, exp ≤ iat + 1 h}`
 //!   posted to the key's `token_uri`, and the access token cached until a
@@ -611,10 +611,10 @@ mod tests {
             .unwrap();
         let key_json = serde_json::json!({
             "type": "service_account",
-            "project_id": "roomler-test",
+            "project_id": "meshharbor-test",
             "private_key_id": "a1b2c3",
             "private_key": pem.as_str(),
-            "client_email": "growth-reader@roomler-test.iam.gserviceaccount.com",
+            "client_email": "growth-reader@meshharbor-test.iam.gserviceaccount.com",
             "token_uri": "https://oauth2.googleapis.com/token",
         })
         .to_string();
@@ -633,7 +633,7 @@ mod tests {
         assert_eq!(data.header.kid.as_deref(), Some("a1b2c3"));
         assert_eq!(
             data.claims["iss"],
-            "growth-reader@roomler-test.iam.gserviceaccount.com"
+            "growth-reader@meshharbor-test.iam.gserviceaccount.com"
         );
         assert_eq!(data.claims["scope"], SCOPE);
         assert_eq!(data.claims["exp"], now + 3600);

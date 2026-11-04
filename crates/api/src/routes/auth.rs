@@ -56,7 +56,7 @@ pub struct UserResponse {
     pub display_name: String,
     pub avatar: Option<String>,
     /// Stats PR-3 — member of the platform-operator allowlist
-    /// (`ROOMLER__STATS__PLATFORM_ADMINS`, user OBJECTIDS). Purely
+    /// (`MESHHARBOR__STATS__PLATFORM_ADMINS`, user OBJECTIDS). Purely
     /// informational for the client (nav gating); every /api/admin/stats
     /// route re-checks server-side.
     #[serde(default)]
@@ -125,7 +125,7 @@ pub struct MessageResponse {
 }
 
 /// Response shape for `POST /auth/register`. Always carries a
-/// `message`; when `ROOMLER__AUTH__AUTO_VERIFY=true` (e2e overlay)
+/// `message`; when `MESHHARBOR__AUTH__AUTO_VERIFY=true` (e2e overlay)
 /// also returns access/refresh tokens + the user record so test
 /// helpers can chain register → authenticated API calls without
 /// an explicit login step. Production (auto_verify=false) returns
@@ -188,8 +188,8 @@ pub async fn register(
 
     let user_id = user.id.unwrap();
 
-    // E2E auto-verify shortcut: when `ROOMLER__AUTH__AUTO_VERIFY=true`
-    // (only set in the roomler-ai-e2e overlay), flip is_verified
+    // E2E auto-verify shortcut: when `MESHHARBOR__AUTH__AUTO_VERIFY=true`
+    // (only set in the meshharbor-e2e overlay), flip is_verified
     // immediately so Playwright specs can `register → login` without
     // an SMTP capture in cluster. Default false — production still
     // requires email-link activation. Mirrors the same `$set` the

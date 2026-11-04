@@ -374,7 +374,7 @@ pub fn spawn_puller(core: Core) {
     }
     let Some(client) = PurestatClient::new(&growth.purestat_url, &growth.purestat_api_key) else {
         info!(
-            "growth purestat puller: no purestat key configured (ROOMLER__GROWTH__PURESTAT_API_KEY) — nothing is pulled"
+            "growth purestat puller: no purestat key configured (MESHHARBOR__GROWTH__PURESTAT_API_KEY) — nothing is pulled"
         );
         return;
     };
@@ -384,7 +384,7 @@ pub fn spawn_puller(core: Core) {
         loop {
             let claimed = match &core.redis_pubsub {
                 Some(redis) => {
-                    let key = format!("roomler:growth-purestat-pull:{}", core.db.name());
+                    let key = format!("meshharbor:growth-purestat-pull:{}", core.db.name());
                     match redis.try_claim(&key, LOOP_INTERVAL_SECS - 60).await {
                         Ok(c) => c,
                         Err(e) => {

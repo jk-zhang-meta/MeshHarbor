@@ -389,23 +389,23 @@ fn detect_existing_install_label() -> String {
 // that ALREADY EXISTS on installed hosts, and the segment holds the enrolled
 // credential on tunnel-only ones. Moving either is a migration, not a
 // rename — see meshharbor-setup-core::integration, tracked as an FR-21 followup.
-/// `%LOCALAPPDATA%\roomler\roomler-tunnel\Programs\meshharbor-tunnel`.
-/// Linux: `~/.local/opt/roomler-tunnel`. macOS:
-/// `~/Applications/RoomlerTunnel`.
+/// `%LOCALAPPDATA%\meshharbor\meshharbor-tunnel\Programs\meshharbor-tunnel`.
+/// Linux: `~/.local/opt/meshharbor-tunnel`. macOS:
+/// `~/Applications/MeshHarborTunnel`.
 ///
-/// The `ROOMLER_TUNNEL_WIZARD_INSTALL_ROOT` env override is kept
+/// The `MESHHARBOR_TUNNEL_WIZARD_INSTALL_ROOT` env override is kept
 /// verbatim from the legacy wizard so tests (and any staged fixture)
 /// can substitute a tempdir.
 pub fn default_install_root() -> anyhow::Result<PathBuf> {
-    if let Ok(override_path) = std::env::var("ROOMLER_TUNNEL_WIZARD_INSTALL_ROOT") {
+    if let Ok(override_path) = std::env::var("MESHHARBOR_TUNNEL_WIZARD_INSTALL_ROOT") {
         return Ok(PathBuf::from(override_path));
     }
     #[cfg(target_os = "windows")]
     {
-        let dirs = directories::ProjectDirs::from("ai", "roomler", "roomler-tunnel")
+        let dirs = directories::ProjectDirs::from("ai", "meshharbor", "meshharbor-tunnel")
             .ok_or_else(|| anyhow::anyhow!("no Windows local-app-data dir resolvable"))?;
         // ProjectDirs::data_local_dir on Windows returns
-        // %LOCALAPPDATA%\roomler\roomler-tunnel — close enough; we
+        // %LOCALAPPDATA%\meshharbor\meshharbor-tunnel — close enough; we
         // append `Programs` for clarity in the UI ("look under
         // Programs\meshharbor-tunnel"). Same dir is used for the .lnk
         // shortcut target in Phase B.
@@ -433,7 +433,7 @@ pub fn default_install_root() -> anyhow::Result<PathBuf> {
             // TWICE on this path — the ProjectDirs application segment and this
             // leaf — so finishing it is a layout decision, not a string swap.
             // docs/fr/FR-46
-            .join("roomler-tunnel"))
+            .join("meshharbor-tunnel"))
     }
     #[cfg(target_os = "linux")]
     {
@@ -443,13 +443,13 @@ pub fn default_install_root() -> anyhow::Result<PathBuf> {
             .home_dir()
             .join(".local")
             .join("opt")
-            .join("roomler-tunnel"))
+            .join("meshharbor-tunnel"))
     }
     #[cfg(target_os = "macos")]
     {
         let dirs = directories::UserDirs::new()
             .ok_or_else(|| anyhow::anyhow!("no macOS home dir resolvable"))?;
-        Ok(dirs.home_dir().join("Applications").join("RoomlerTunnel"))
+        Ok(dirs.home_dir().join("Applications").join("MeshHarborTunnel"))
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
@@ -493,24 +493,24 @@ mod tests {
     fn default_install_root_respects_env_override() {
         // SAFETY: this test mutates a process-wide env var; it is the
         // only test in this crate touching
-        // ROOMLER_TUNNEL_WIZARD_INSTALL_ROOT, and it restores the
+        // MESHHARBOR_TUNNEL_WIZARD_INSTALL_ROOT, and it restores the
         // previous value before asserting.
-        let saved = std::env::var("ROOMLER_TUNNEL_WIZARD_INSTALL_ROOT").ok();
+        let saved = std::env::var("MESHHARBOR_TUNNEL_WIZARD_INSTALL_ROOT").ok();
         // SAFETY: process-wide env mutation is OK here — the test is
         // self-contained and restores the previous value below.
-        unsafe { std::env::set_var("ROOMLER_TUNNEL_WIZARD_INSTALL_ROOT", "/tmp/wizard-tests") };
+        unsafe { std::env::set_var("MESHHARBOR_TUNNEL_WIZARD_INSTALL_ROOT", "/tmp/wizard-tests") };
         let resolved = default_install_root().unwrap();
         // Restore BEFORE assert so a panic doesn't leak the override.
         match saved {
-            Some(v) => unsafe { std::env::set_var("ROOMLER_TUNNEL_WIZARD_INSTALL_ROOT", v) },
-            None => unsafe { std::env::remove_var("ROOMLER_TUNNEL_WIZARD_INSTALL_ROOT") },
+            Some(v) => unsafe { std::env::set_var("MESHHARBOR_TUNNEL_WIZARD_INSTALL_ROOT", v) },
+            None => unsafe { std::env::remove_var("MESHHARBOR_TUNNEL_WIZARD_INSTALL_ROOT") },
         }
         assert_eq!(resolved, PathBuf::from("/tmp/wizard-tests"));
     }
 
     #[test]
     fn detect_existing_install_label_returns_clean_or_installed() {
-        // Test box may have a real %APPDATA%\roomler\roomler-tunnel\
+        // Test box may have a real %APPDATA%\meshharbor\meshharbor-tunnel\
         // config.toml from a prior run; we can't unconditionally
         // assert "clean" here. The contract is just "returns a non-
         // empty human label" — and the value falls into the small set

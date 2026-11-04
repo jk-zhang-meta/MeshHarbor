@@ -138,7 +138,7 @@ depend on how it was addressed rather than on how the deployment is configured
 
 ```
 $ kubectl -n roomler-ai get cm -o yaml | grep FRONTEND_URL
-    ROOMLER__APP__FRONTEND_URL: https://roomler.ai
+    MESHHARBOR__APP__FRONTEND_URL: https://roomler.ai
 ```
 
 The hosted service substitutes `https://roomler.ai` for `https://roomler.ai`.

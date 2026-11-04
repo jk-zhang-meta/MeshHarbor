@@ -13,7 +13,7 @@
 //! overlay address briefly reads as foreign. The cost is a block an org gave
 //! up, which nothing outside the mesh can be using anyway.
 //!
-//! **v6** needs no registry: every overlay v6 is derived into Roomler's fixed
+//! **v6** needs no registry: every overlay v6 is derived into MeshHarbor's fixed
 //! ULA `/96` (`fd72:6f6f:6d6c::/96`, `overlay::router::OVERLAY_ULA_V6_CIDR`).
 //!
 //! Deliberately not the whole `100.64.0.0/10`. That is real CGNAT space: an

@@ -14,7 +14,7 @@
 //! a difference.
 //!
 //! The shared secret is the value passed as `--static-auth-secret` to coturn,
-//! also set as `RC_TURN_SECRET` in roomler env.
+//! also set as `RC_TURN_SECRET` in meshharbor env.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -40,7 +40,7 @@ pub struct TurnConfig {
     /// workers — and cross-worker flows involving the dual-IP worker drop
     /// packets under its SNAT asymmetry (the rc.112 tunnel same-worker-pin
     /// lesson; field 2026-07-14: corp↔corp double-relay stall-bursts). When
-    /// ≥2 workers are configured (`ROOMLER__TURN__WORKER_URLS`),
+    /// ≥2 workers are configured (`MESHHARBOR__TURN__WORKER_URLS`),
     /// [`Self::issue_for_session`] deterministically picks ONE worker per
     /// session for BOTH sides — worker URLs first, generic-hostname fallback
     /// retained. Empty (default) = exactly the old behaviour.
@@ -116,7 +116,7 @@ impl TurnConfig {
     }
 }
 
-/// One relay region as configured in `ROOMLER__RELAY__REGIONS` (a JSON array
+/// One relay region as configured in `MESHHARBOR__RELAY__REGIONS` (a JSON array
 /// of these). Mirrors the legacy `turn.*` settings shape per region: a generic
 /// base URL, optional per-worker URLs for same-worker affinity, and the
 /// variant capability set the PoP actually serves.
@@ -127,7 +127,7 @@ pub struct RelayRegionSpec {
     /// Generic base URL, e.g. `"turn:coturn-us-east.roomler.ai:3478"`.
     pub turn_url: String,
     /// Optional per-worker base URLs (multi-worker regions), like
-    /// `ROOMLER__TURN__WORKER_URLS`.
+    /// `MESHHARBOR__TURN__WORKER_URLS`.
     #[serde(default)]
     pub worker_urls: Vec<String>,
     /// The region's DERP relay endpoint, e.g.
@@ -170,7 +170,7 @@ fn spec_enabled_default() -> bool {
 }
 
 /// Region-keyed TURN issuance. `default` is the legacy single-region
-/// `turn.*` config; `regions` are the PoPs from `ROOMLER__RELAY__REGIONS`.
+/// `turn.*` config; `regions` are the PoPs from `MESHHARBOR__RELAY__REGIONS`.
 /// With `enabled == false` (the default) `cfg_for` ALWAYS answers `default`,
 /// so every pre-region call path is provably unchanged.
 #[derive(Debug, Clone, Default)]

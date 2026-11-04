@@ -46,7 +46,7 @@ until today the fleet had none to show.
 
 ```mermaid
 flowchart TD
-    S([the update owner runs<br/>at its start, then every 4 h]) --> K{ROOMLERD_COMPANION_SYNC=0?}
+    S([the update owner runs<br/>at its start, then every 4 h]) --> K{MESHHARBORD_COMPANION_SYNC=0?}
     K -->|yes| N0[nothing: today's behaviour]
     K -->|no| Q{a meshharbor-desktop package<br/>installed? dpkg / rpm}
     Q -->|no| N1[nothing: a headless host stays headless]
@@ -90,15 +90,15 @@ flowchart TD
 - **Windows: the same retry.** `refresh_if_stale` runs once, at the start of whichever process owns the refresh (#1686:
   the SCM host, `win_service/mod.rs:471`, or the worker, `main.rs:3817`). It now runs on the same 4 h tick in that
   process. It costs one file read when the version marker matches.
-- **Kill switch:** `ROOMLERD_COMPANION_SYNC=0` on both platforms gives back today's behaviour.
+- **Kill switch:** `MESHHARBORD_COMPANION_SYNC=0` on both platforms gives back today's behaviour.
 
 ## 4. Phases
 
 | Phase | What | Kill switch | Proven on | Size |
 |---|---|---|---|---|
 | **P0** | spec, claim, the census in §2 | — | ✅ 2026-10-20 | S |
-| **P1** | Linux: the companion package tracks the daemon (root daemon + update helper; the per-user wake), the `.rpm` version binding | `ROOMLERD_COMPANION_SYNC=0` | ✅ merged #2631 (`a1a47b54d`), released **0.4.148**; the candidate: the plan and the safe failure on an unpublished tag; ✅ **the release**: a system install's update, the Asahi box's `.rpm` by its own timer, a per-user helper, the 4 h retry, the kill switch (§8) | M |
-| **P2** | Windows: `refresh_if_stale` on the 4 h tick in the process that owns it | `ROOMLERD_COMPANION_SYNC=0` | ✅ merged #2631, released **0.4.148**; ✅ the retry on the release: 4 h after a 404 at the service's start, the same SCM host refreshed and respawned the companion (§8) | S |
+| **P1** | Linux: the companion package tracks the daemon (root daemon + update helper; the per-user wake), the `.rpm` version binding | `MESHHARBORD_COMPANION_SYNC=0` | ✅ merged #2631 (`a1a47b54d`), released **0.4.148**; the candidate: the plan and the safe failure on an unpublished tag; ✅ **the release**: a system install's update, the Asahi box's `.rpm` by its own timer, a per-user helper, the 4 h retry, the kill switch (§8) | M |
+| **P2** | Windows: `refresh_if_stale` on the 4 h tick in the process that owns it | `MESHHARBORD_COMPANION_SYNC=0` | ✅ merged #2631, released **0.4.148**; ✅ the retry on the release: 4 h after a 404 at the service's start, the same SCM host refreshed and respawned the companion (§8) | S |
 | **P3** | the sync outcome on the heartbeat, and the grid's skew says why (D4) | — | | M |
 | **P4** | docs: `docs/linux-self-update.md`, `docs/desktop-companion.md` §13, the `docs/README.md` index rows | — | ✅ in #2631; the anchors it moved elsewhere followed in its own PR | S |
 
@@ -111,7 +111,7 @@ flowchart TD
 - [x] **AC3** — A per-user install with its root helper: the helper moves the companion. *(§8, 23:06Z.)*
 - [x] **AC4** — A failed sync is retried on the next tick, not at the next restart, on Linux and on Windows. *(§8,
   2026-10-21 01:28Z and 01:38Z.)*
-- [x] **AC5** — A host with no companion gets none. A newer companion is never downgraded. `ROOMLERD_COMPANION_SYNC=0`
+- [x] **AC5** — A host with no companion gets none. A newer companion is never downgraded. `MESHHARBORD_COMPANION_SYNC=0`
   gives back today's behaviour. *(§8, 23:09–23:14Z.)*
 - [x] **AC6** — Only a verified package is installed: a bad digest, a missing or foreign `.asc`, or a version other
   than the tag is refused, and the companion keeps its version. *(§8: the `.asc` and the version binding ran on both
@@ -150,6 +150,6 @@ flowchart TD
 | 2026-10-20 22:42Z | a vmtest Ubuntu system install (`r148b`), both packages put back to 0.4.147, a companion running, needrestart on its default config | the released 0.4.148 | **AC1** | ✅ `auto_update` on → the 0.4.147 daemon updated itself (`package installed bin="apt-get"`) → 22:42:59Z the 0.4.148 daemon → 22:43:02Z `companion: the desktop companion package now matches this daemon from=0.4.147 to=0.4.148 restarted=1`; the companion a new process; the daemon's pid unchanged (needrestart suspended); the `.asc` and the version binding logged for the companion's `.deb` (AC6) |
 | 2026-10-20 23:00Z | the Asahi box (Fedora Asahi Remix 42, aarch64; a tarball daemon, an `.rpm` companion) | the released 0.4.148, by its own 4 h timer | **AC2** | ✅ `tarball installed` → 23:00:11Z the 0.4.148 daemon → 23:00:13Z `companion: package installed tool="dnf"` → `… from=0.4.139 to=0.4.148 restarted=1`; `meshharbor-desktop-0.4.148-1.aarch64`; the `.rpm` reader logged `artifact_version=0.4.148` (AC6) |
 | 2026-10-20 23:06Z | a vmtest Ubuntu per-user install (`r148c`), its root helper enabled, the companion put back to 0.4.147 | the released 0.4.148 | **AC3** | ✅ the person touched the wake file → 3 s later the helper (root): `companion: package installed tool="apt-get"` → `… from=0.4.147 to=0.4.148 restarted=1` → `update-helper: up to date` |
-| 2026-10-20 23:09–23:14Z | `r148b`; mars (headless, no companion) | the released 0.4.148 | **AC5** | ✅ with `ROOMLERD_COMPANION_SYNC=0` (live in the daemon's environment) a lagging companion stayed 0.4.147 through a restart; without it the next start moved it. mars updated itself 23:00Z and has no `meshharbor-desktop`, nor a `companion:` line. A stand-in `meshharbor-desktop 0.4.200-1` → `the installed desktop companion is NEWER than this daemon; leaving it (never a downgrade)` |
+| 2026-10-20 23:09–23:14Z | `r148b`; mars (headless, no companion) | the released 0.4.148 | **AC5** | ✅ with `MESHHARBORD_COMPANION_SYNC=0` (live in the daemon's environment) a lagging companion stayed 0.4.147 through a restart; without it the next start moved it. mars updated itself 23:00Z and has no `meshharbor-desktop`, nor a `companion:` line. A stand-in `meshharbor-desktop 0.4.200-1` → `the installed desktop companion is NEWER than this daemon; leaving it (never a downgrade)` |
 | 2026-10-20 23:32Z | the fleet, the server's census across all four orgs (roomler-ai-c7) | the released 0.4.148 | **AC7** | ✅ online 18 of 32, all daemon 0.4.148; the 10 with a companion all on 0.4.148; daemon/companion skew **1 → 0** |
 | 2026-10-21 01:28Z / 01:38Z | `r148a` (Linux, left since the candidate) and a vmtest Windows perMachine install (`r148w`), both untouched since their 404 | the 0.4.148 candidate's bits, the tag now published | **AC4** | ✅ Linux: the same daemon process since 21:28:46Z, 01:28:54Z `… from=0.4.147 to=0.4.148 restarted=1`. Windows: the same SCM host since ≈21:38:53Z, 01:38:54Z `desktop companion refreshed version="0.4.148" respawned=true` |

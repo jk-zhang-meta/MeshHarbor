@@ -17,7 +17,7 @@ which the recorder's editor needs to decode a hardware encoder's High-profile
 recordings, and its native **AAC encoder**, for a recording's sound. We build it ourselves
 from upstream source with a reduced component set and the source patches
 recorded in `.github/ffmpeg-patches/` (each shipped tree carries its
-`ROOMLER-PATCHES.txt` manifest); we do **not** build with `--enable-gpl` or
+`MESHHARBOR-PATCHES.txt` manifest); we do **not** build with `--enable-gpl` or
 `--enable-nonfree`. No GPL-only component (x264, x265, …) is present — CI fails
 the build if one appears.
 

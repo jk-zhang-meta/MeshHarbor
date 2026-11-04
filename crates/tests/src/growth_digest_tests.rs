@@ -787,14 +787,14 @@ async fn every_section_counts_the_seeded_day_exactly() {
     assert_eq!(
         not_measured(&j["search"]["google"]),
         Some((
-            "no Search Console key configured (ROOMLER__GROWTH__SEARCH_CONSOLE_KEY)",
+            "no Search Console key configured (MESHHARBOR__GROWTH__SEARCH_CONSOLE_KEY)",
             None
         ))
     );
     assert_eq!(
         not_measured(&j["search"]["bing"]),
         Some((
-            "no Bing Webmaster API key configured (ROOMLER__GROWTH__BING_API_KEY)",
+            "no Bing Webmaster API key configured (MESHHARBOR__GROWTH__BING_API_KEY)",
             None
         ))
     );

@@ -781,7 +781,7 @@ mod tests {
                 Err(e) => {
                     assert!(
                         !crate::recording::audio_codec::aac_expected(),
-                        "ROOMLER_EXPECT_FFMPEG_AAC=1 but AAC did not open: {e:#}"
+                        "MESHHARBOR_EXPECT_FFMPEG_AAC=1 but AAC did not open: {e:#}"
                     );
                     eprintln!("skipped: this FFmpeg has no AAC encoder ({e:#})");
                     return;

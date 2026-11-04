@@ -21,7 +21,7 @@
 //!     CLI sends today); see crates/api/src/routes/tunnel.rs::
 //!     `TunnelEnrollRequest`. The wizard's body shape is the
 //!     canonical one going forward.
-//!   - Tests mock the endpoint via `ROOMLER_TUNNEL_ENROLL_BASE_URL`.
+//!   - Tests mock the endpoint via `MESHHARBOR_TUNNEL_ENROLL_BASE_URL`.
 
 use std::time::Duration;
 
@@ -45,7 +45,7 @@ pub struct EnrollResult {
     /// into `config.toml` by the caller's `write_config`. NEVER
     /// logged or echoed in error messages.
     pub tunnel_client_token: String,
-    /// Echoed back into config.toml so `roomler forward …`
+    /// Echoed back into config.toml so `meshharbor forward …`
     /// derives the same WS URL on first run.
     pub server_url: String,
     /// Echoed back into config.toml. Server-side `tunnel_clients`
@@ -83,7 +83,7 @@ fn os_discriminant() -> Option<&'static str> {
 /// `write_config` after surfacing `EnrollOk` to the SPA.
 ///
 /// `user_agent` is caller-supplied so each wizard keeps its
-/// historical wire-visible UA (`roomler-tunnel-installer/<v>` for the
+/// historical wire-visible UA (`meshharbor-tunnel-installer/<v>` for the
 /// legacy shim) and the unified app sends its own.
 pub async fn enroll(
     server_url: &str,
@@ -93,9 +93,9 @@ pub async fn enroll(
     user_agent: &str,
 ) -> Result<EnrollResult> {
     // Test mocks point the wizard at an in-process mock server via
-    // ROOMLER_TUNNEL_ENROLL_BASE_URL. Production: env unset, fall
+    // MESHHARBOR_TUNNEL_ENROLL_BASE_URL. Production: env unset, fall
     // back to the operator-provided server URL.
-    let base = std::env::var("ROOMLER_TUNNEL_ENROLL_BASE_URL")
+    let base = std::env::var("MESHHARBOR_TUNNEL_ENROLL_BASE_URL")
         .ok()
         .unwrap_or_else(|| server_url.to_string());
     let base = base.trim_end_matches('/');

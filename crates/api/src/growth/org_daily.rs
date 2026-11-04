@@ -12,7 +12,7 @@
 //! Mechanics:
 //!
 //! * singleton per UTC day through the DB-name-scoped Redis `NX` claim the
-//!   stats rollup uses (`roomler:growth-org-daily:<db>:<day>`); without
+//!   stats rollup uses (`meshharbor:growth-org-daily:<db>:<day>`); without
 //!   Redis a pod runs locally, once per day;
 //! * the last [`RECOMPUTE_DAYS`] closed days are recomputed on every run
 //!   (a session open at midnight, a late audit row); today is never written;
@@ -621,7 +621,7 @@ pub fn spawn_org_daily_loop(state: AppState) {
                 let claimed = match &state.redis_pubsub {
                     Some(redis) => {
                         let key = format!(
-                            "roomler:growth-org-daily:{}:{}",
+                            "meshharbor:growth-org-daily:{}:{}",
                             state.db.name(),
                             day_str(today)
                         );

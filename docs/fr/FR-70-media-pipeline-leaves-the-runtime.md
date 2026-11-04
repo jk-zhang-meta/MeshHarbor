@@ -146,7 +146,7 @@ merge). The worker thread is never blocked again, so every other task on the
 runtime (signalling, the send task, the heartbeats, the control DC) stops
 sharing a thread with a 5–30 ms encode.
 
-**Kill switch** `media_thread` (config tribool + `ROOMLERD_MEDIA_THREAD`),
+**Kill switch** `media_thread` (config tribool + `MESHHARBORD_MEDIA_THREAD`),
 **default OFF for one release**: off = today's `block_in_place` loop verbatim.
 Both paths share one `EncoderHandle` enum so the pump has exactly one call
 site per operation and the switch is a constructor choice, not a second loop.

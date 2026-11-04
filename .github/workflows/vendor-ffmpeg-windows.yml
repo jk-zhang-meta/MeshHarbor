@@ -139,8 +139,8 @@ jobs:
             $manifestLines = $patchFiles | Sort-Object Name | ForEach-Object {
               "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower())  $($_.Name)"
             }
-            $manifestLines -join "`n" | Set-Content -Path "$env:RUNNER_TEMP\ROOMLER-PATCHES.txt" -Encoding ascii -NoNewline
-            Write-Host "roomler patch manifest:"; Get-Content "$env:RUNNER_TEMP\ROOMLER-PATCHES.txt"
+            $manifestLines -join "`n" | Set-Content -Path "$env:RUNNER_TEMP\MESHHARBOR-PATCHES.txt" -Encoding ascii -NoNewline
+            Write-Host "roomler patch manifest:"; Get-Content "$env:RUNNER_TEMP\MESHHARBOR-PATCHES.txt"
           }
 
           Set-Content -Path $pf -Value $content -Encoding utf8
@@ -231,10 +231,10 @@ jobs:
           # release-agent can prove the vendored libs match the committed
           # patches (see the build step). Present iff the build applied patches.
           $paths = @("$root\lib", "$root\include")
-          $manifest = "$env:RUNNER_TEMP\ROOMLER-PATCHES.txt"
+          $manifest = "$env:RUNNER_TEMP\MESHHARBOR-PATCHES.txt"
           if (Test-Path $manifest) {
-            Copy-Item $manifest "$root\ROOMLER-PATCHES.txt" -Force
-            $paths += "$root\ROOMLER-PATCHES.txt"
+            Copy-Item $manifest "$root\MESHHARBOR-PATCHES.txt" -Force
+            $paths += "$root\MESHHARBOR-PATCHES.txt"
           }
           Compress-Archive -Path $paths -DestinationPath $zip -CompressionLevel Optimal
           $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
@@ -349,8 +349,8 @@ jobs:
             echo "ffmpeg patch: applying $(basename "$p")"
             patch -p1 --no-backup-if-mismatch < "$p" || { echo "::error::patch $(basename "$p") failed to apply to n9.0.1"; exit 1; }
           done
-          ( cd "$GITHUB_WORKSPACE" && sha256sum .github/ffmpeg-patches/*.patch 2>/dev/null | sed 's#\.github/ffmpeg-patches/##' ) > /tmp/ROOMLER-PATCHES.txt || true
-          echo "roomler patch manifest:"; cat /tmp/ROOMLER-PATCHES.txt
+          ( cd "$GITHUB_WORKSPACE" && sha256sum .github/ffmpeg-patches/*.patch 2>/dev/null | sed 's#\.github/ffmpeg-patches/##' ) > /tmp/MESHHARBOR-PATCHES.txt || true
+          echo "roomler patch manifest:"; cat /tmp/MESHHARBOR-PATCHES.txt
           # /opt/ffout first: configure must find the BUNDLED libva/libdrm
           # (FR-77 P4), never the runner's own copies.
           export PKG_CONFIG_PATH=/opt/ffout/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}
@@ -462,7 +462,7 @@ jobs:
           # FR-62 A2 — carry the patch manifest inside the asset so
           # release-agent can prove the vendored libs match the committed
           # patches before it ships them.
-          cp /tmp/ROOMLER-PATCHES.txt "$staging/ROOMLER-PATCHES.txt"
+          cp /tmp/MESHHARBOR-PATCHES.txt "$staging/MESHHARBOR-PATCHES.txt"
           # FR-78 P0: `-vulkan` suffix (three more encoders, no new DT_NEEDED);
           # rollback = drop it. FR-85 P4: `-h264dec-aac` (the software h264
           # decoder and the aac encoder, inside libavcodec, no new DT_NEEDED);

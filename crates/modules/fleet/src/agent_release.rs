@@ -131,10 +131,10 @@ pub(crate) fn filter_component_releases(
     out
 }
 
-// RETIRED-NAME-ANCHOR(60): `roomler-agent-*` is what releases cut BEFORE FR-46 (#1051)
+// RETIRED-NAME-ANCHOR(60): `meshharbor-agent-*` is what releases cut BEFORE FR-46 (#1051)
 // carry — those files are immutable, so the doc and fixtures below must quote them
 // exactly or they assert against names no release ever had. New releases publish
-// `roomlerd-…`; this ordering never keyed on the daemon prefix at all, only on the
+// `meshharbord-…`; this ordering never keyed on the daemon prefix at all, only on the
 // `meshharbor-desktop-` companion one, which is why the rename did not touch it.
 /// Push the desktop-companion artifacts to the END of every release's asset
 /// list, so a client scanning for "the first `.deb` for my arch" cannot pick
@@ -210,7 +210,7 @@ pub struct InstallerHealth {
     // already on GitHub Releases; the updater matches on extension + arch +
     // the -permachine- infix, never the prefix (FR-21 D6). The fixtures below
     // are copies of real asset lists and must stay byte-for-byte.
-    /// `roomler-agent-0.3.0-rc.27-perMachine-x86_64-pc-windows-msvc.msi`.
+    /// `meshharbor-agent-0.3.0-rc.27-perMachine-x86_64-pc-windows-msvc.msi`.
     pub filename: String,
     /// Asset size in bytes.
     pub size: u64,
@@ -393,8 +393,8 @@ mod tests {
                 false,
                 &[
                     "meshharbor-desktop-0.4.16-x86_64-unknown-linux-gnu.deb",
-                    "roomler-agent-0.4.16-aarch64-unknown-linux-gnu.deb",
-                    "roomler-agent-0.4.16-x86_64-unknown-linux-gnu.deb",
+                    "meshharbor-agent-0.4.16-aarch64-unknown-linux-gnu.deb",
+                    "meshharbor-agent-0.4.16-x86_64-unknown-linux-gnu.deb",
                     "meshharbor-desktop-0.4.16-x86_64-pc-windows-msvc.exe",
                 ],
             )],
@@ -411,7 +411,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             picked.name,
-            "roomler-agent-0.4.16-x86_64-unknown-linux-gnu.deb"
+            "meshharbor-agent-0.4.16-x86_64-unknown-linux-gnu.deb"
         );
         // Ordering, NOT filtering: install.sh --desktop and the Windows
         // companion refresher both resolve their artifact from this payload.
@@ -427,13 +427,13 @@ mod tests {
         let daemon: Vec<&str> = a
             .iter()
             .map(|x| x.name.as_str())
-            .filter(|n| n.starts_with("roomler-agent-"))
+            .filter(|n| n.starts_with("meshharbor-agent-"))
             .collect();
         assert_eq!(
             daemon,
             [
-                "roomler-agent-0.4.16-aarch64-unknown-linux-gnu.deb",
-                "roomler-agent-0.4.16-x86_64-unknown-linux-gnu.deb",
+                "meshharbor-agent-0.4.16-aarch64-unknown-linux-gnu.deb",
+                "meshharbor-agent-0.4.16-x86_64-unknown-linux-gnu.deb",
             ]
         );
     }
@@ -522,8 +522,8 @@ mod tests {
     #[test]
     fn pick_installer_asset_picks_permachine_by_infix() {
         let assets = [
-            asset("roomler-agent-0.3.0-x86_64-pc-windows-msvc.msi"),
-            asset("roomler-agent-0.3.0-perMachine-x86_64-pc-windows-msvc.msi"),
+            asset("meshharbor-agent-0.3.0-x86_64-pc-windows-msvc.msi"),
+            asset("meshharbor-agent-0.3.0-perMachine-x86_64-pc-windows-msvc.msi"),
         ];
         let picked = pick_installer_asset(&assets, "permachine").unwrap();
         assert!(picked.name.contains("perMachine"));
@@ -532,8 +532,8 @@ mod tests {
     #[test]
     fn pick_installer_asset_picks_peruser_when_no_permachine_infix() {
         let assets = [
-            asset("roomler-agent-0.3.0-perMachine-x86_64-pc-windows-msvc.msi"),
-            asset("roomler-agent-0.3.0-x86_64-pc-windows-msvc.msi"),
+            asset("meshharbor-agent-0.3.0-perMachine-x86_64-pc-windows-msvc.msi"),
+            asset("meshharbor-agent-0.3.0-x86_64-pc-windows-msvc.msi"),
         ];
         let picked = pick_installer_asset(&assets, "peruser").unwrap();
         assert!(!picked.name.contains("perMachine"));
@@ -542,8 +542,8 @@ mod tests {
     #[test]
     fn pick_installer_asset_ignores_non_msi() {
         let assets = [
-            asset("roomler-agent-0.3.0-x86_64-unknown-linux-gnu.deb"),
-            asset("roomler-agent-0.3.0-tray-x86_64.exe"),
+            asset("meshharbor-agent-0.3.0-x86_64-unknown-linux-gnu.deb"),
+            asset("meshharbor-agent-0.3.0-tray-x86_64.exe"),
         ];
         assert!(pick_installer_asset(&assets, "peruser").is_none());
     }
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn pick_installer_asset_returns_none_when_no_match() {
         let assets = [asset(
-            "roomler-agent-0.3.0-perMachine-x86_64-pc-windows-msvc.msi",
+            "meshharbor-agent-0.3.0-perMachine-x86_64-pc-windows-msvc.msi",
         )];
         assert!(pick_installer_asset(&assets, "peruser").is_none());
     }

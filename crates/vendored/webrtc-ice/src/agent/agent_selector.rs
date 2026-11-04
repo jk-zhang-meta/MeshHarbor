@@ -17,7 +17,7 @@ use crate::control::*;
 use crate::priority::*;
 use crate::use_candidate::*;
 
-/// Roomler patch (follow-renomination v2, 2026-07-28): how long the currently
+/// MeshHarbor patch (follow-renomination v2, 2026-07-28): how long the currently
 /// selected pair may go without ANY inbound before a renomination onto an
 /// overlay-remote pair is accepted as a failover. Live pairs see STUN consent
 /// checks and media continuously, so 3 s of silence means the pair is dying.
@@ -51,7 +51,7 @@ const FOLLOW_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(3
 ///   equal/lower priority included.
 ///
 /// Unparseable remotes (mDNS names) are conservatively treated as
-/// overlay-possible. Env overrides: `ROOMLER_ICE_FOLLOW_RENOMINATION=0`
+/// overlay-possible. Env overrides: `MESHHARBOR_ICE_FOLLOW_RENOMINATION=0`
 /// never follows (rc.262 semantics), `=1` always follows (rc.260 semantics).
 fn selected_pair_inbound_age(pair: &CandidatePair, use_pair_proof: bool) -> Duration {
     let authenticated = if use_pair_proof {
@@ -74,7 +74,7 @@ fn direct_real_path(pair: &CandidatePair) -> bool {
             && candidate
                 .address()
                 .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| !crate::agent::agent_gather::is_roomler_overlay_ip(&ip))
+                .is_ok_and(|ip| !crate::agent::agent_gather::is_meshharbor_overlay_ip(&ip))
     })
 }
 fn should_follow_renomination(
@@ -86,11 +86,11 @@ fn should_follow_renomination(
         .remote
         .address()
         .parse::<std::net::IpAddr>()
-        .map(|ip| !crate::agent::agent_gather::is_roomler_overlay_ip(&ip))
+        .map(|ip| !crate::agent::agent_gather::is_meshharbor_overlay_ip(&ip))
         .unwrap_or(false);
     let current_stale = selected_pair_inbound_age(current, use_pair_proof) > FOLLOW_STALE_AFTER;
     follow_renomination_policy(
-        std::env::var("ROOMLER_ICE_FOLLOW_RENOMINATION")
+        std::env::var("MESHHARBOR_ICE_FOLLOW_RENOMINATION")
             .ok()
             .as_deref(),
         new_remote_is_real_path,
@@ -113,7 +113,7 @@ fn follow_renomination_policy(
     }
 }
 
-/// Roomler patch (warm standby, 2026-07-28): cadence for pinging validated
+/// MeshHarbor patch (warm standby, 2026-07-28): cadence for pinging validated
 /// pairs that are NOT the selected one. Upstream keepalives only the selected
 /// pair, so every other validated pair's NAT mapping expires minutes after it
 /// goes idle (field, WINHOST-C: the agent's srflx mapping died within
@@ -156,7 +156,7 @@ impl AgentInternal {
         check_unvalidated: bool,
     ) {
         if self.migration_terminal()
-            || std::env::var("ROOMLER_ICE_WARM_STANDBY").as_deref() == Ok("0")
+            || std::env::var("MESHHARBOR_ICE_WARM_STANDBY").as_deref() == Ok("0")
         {
             return;
         }
@@ -433,7 +433,7 @@ impl AgentInternal {
                 };
 
                 if let Err(err) = result {
-                    // Roomler vendor patch (2026-05-18 a third field-test host log-flood
+                    // MeshHarbor vendor patch (2026-05-18 a third field-test host log-flood
                     // fix): downgrade per-attempt STUN build failures
                     // to DEBUG so they don't drown the rolling log,
                     // and prefix with a target so they're greppable.
@@ -602,7 +602,7 @@ impl ControllingSelector for AgentInternal {
         };
 
         if let Err(err) = result {
-            // Roomler vendor patch (2026-05-18 a third field-test host log-flood fix):
+            // MeshHarbor vendor patch (2026-05-18 a third field-test host log-flood fix):
             // see nominate_pair above; per-candidate STUN build
             // failures are not session-fatal.
             log::debug!(target: "webrtc_ice::ping_candidate", "STUN message build failed: {}", err);
@@ -653,7 +653,7 @@ impl ControllingSelector for AgentInternal {
                     pending_request.is_use_candidate,
                     selected_pair_is_none
                 );
-                // Roomler patch (follow renomination): mirror of the
+                // MeshHarbor patch (follow renomination): mirror of the
                 // handle_binding_request policy — when the USE-CANDIDATE
                 // arrived before this pair's own check completed, the
                 // triggered check's success must also honour the controlling
@@ -663,7 +663,7 @@ impl ControllingSelector for AgentInternal {
                 // agent-srflx validates one-way through the home-NAT masquerade;
                 // the reverse direction routes into the TUN with a physical
                 // source) — SCTP died ~4 s in, every session. Opt-in via
-                // ROOMLER_ICE_FOLLOW_RENOMINATION=1 until the follow policy
+                // MESHHARBOR_ICE_FOLLOW_RENOMINATION=1 until the follow policy
                 // validates pair liveness both ways.
                 // v2 (2026-07-28): policy in should_follow_renomination() —
                 // real-path remotes always, overlay remotes only off a stale
@@ -798,7 +798,7 @@ impl ControlledSelector for AgentInternal {
         };
 
         if let Err(err) = result {
-            // Roomler vendor patch (2026-05-18 a third field-test host log-flood fix):
+            // MeshHarbor vendor patch (2026-05-18 a third field-test host log-flood fix):
             // see nominate_pair above; per-candidate STUN build
             // failures are not session-fatal.
             log::debug!(target: "webrtc_ice::ping_candidate", "STUN message build failed: {}", err);
@@ -890,7 +890,7 @@ impl ControlledSelector for AgentInternal {
                     // generated a valid pair (Section 7.2.5.3.2).  The agent sets the
                     // nominated flag value of the valid pair to true.
                     //
-                    // Roomler patch (follow renomination): upstream only set the
+                    // MeshHarbor patch (follow renomination): upstream only set the
                     // selected pair when NONE was set, pinning the controlled
                     // agent to the FIRST nominated pair for the connection's
                     // lifetime. Browsers renominate deliberately when they
@@ -908,7 +908,7 @@ impl ControlledSelector for AgentInternal {
                     // (browser-TUN-host × agent-srflx validates one-way through
                     // the home-NAT masquerade; the reverse direction routes into
                     // the TUN with a physical source) — SCTP died ~4 s in, every
-                    // session. Opt-in via ROOMLER_ICE_FOLLOW_RENOMINATION=1 until
+                    // session. Opt-in via MESHHARBOR_ICE_FOLLOW_RENOMINATION=1 until
                     // the follow policy validates pair liveness both ways.
                     // v2 (2026-07-28): see should_follow_renomination().
                     let follow_renomination = {

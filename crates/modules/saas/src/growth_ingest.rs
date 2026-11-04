@@ -629,7 +629,7 @@ mod tests {
         json!({
             "platform": "LinkedIn",
             "platform_id": "urn:li:share:7123",
-            "account": "roomler-ai",
+            "account": "meshharbor",
             "format": "Post",
             "url": "https://www.linkedin.com/feed/update/urn:li:share:7123/",
             "published_at": "2026-10-19T09:00:00Z",
@@ -764,7 +764,7 @@ mod tests {
         );
         assert_eq!(
             code(validate_post(
-                &with(post(), "account", json!("Roomler AI")),
+                &with(post(), "account", json!("MeshHarbor")),
                 now()
             )),
             "invalid_account"

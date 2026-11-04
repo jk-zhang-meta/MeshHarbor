@@ -547,12 +547,12 @@ jobs:
     steps:
       - name: POST /api/releases/refresh
         env:
-          TOKEN: ${{ secrets.ROOMLER_RELEASE_REFRESH_TOKEN }}
+          TOKEN: ${{ secrets.MESHHARBOR_RELEASE_REFRESH_TOKEN }}
           TAG: ${{ needs.validate-version.outputs.tag }}
         run: |
           set -uo pipefail
           if [ -z "${TOKEN}" ]; then
-            echo "::notice::ROOMLER_RELEASE_REFRESH_TOKEN unset (fork?); skipping cache refresh"
+            echo "::notice::MESHHARBOR_RELEASE_REFRESH_TOKEN unset (fork?); skipping cache refresh"
             exit 0
           fi
           for attempt in 1 2 3; do

@@ -545,7 +545,7 @@ async fn a_hardware_recording_exports_frame_for_frame_where_ffmpeg_decodes_it() 
     let available = h264_decoder_available();
     assert!(
         available || !h264_decoder_expected(),
-        "ROOMLER_EXPECT_FFMPEG_H264_DECODER=1 but the linked FFmpeg has no H.264 decoder"
+        "MESHHARBOR_EXPECT_FFMPEG_H264_DECODER=1 but the linked FFmpeg has no H.264 decoder"
     );
     for f in &FIXTURES {
         let d = dir();
@@ -745,7 +745,7 @@ mod sound {
     }
 
     /// FR-85 P4 — whether this build writes AAC (its FFmpeg has the encoder).
-    /// A lane that declares AAC (`ROOMLER_EXPECT_FFMPEG_AAC=1`) fails here if
+    /// A lane that declares AAC (`MESHHARBOR_EXPECT_FFMPEG_AAC=1`) fails here if
     /// it fell back to Opus.
     fn aac_here() -> bool {
         #[cfg(feature = "ffmpeg-encoder")]
@@ -755,7 +755,7 @@ mod sound {
                 Ok(_) => return true,
                 Err(e) => assert!(
                     !aac_expected(),
-                    "ROOMLER_EXPECT_FFMPEG_AAC=1 but AAC did not open: {e:#}"
+                    "MESHHARBOR_EXPECT_FFMPEG_AAC=1 but AAC did not open: {e:#}"
                 ),
             }
         }

@@ -43,7 +43,7 @@ sets of source patches:
 | the vcpkg `ffmpeg` port's own (14: build-system fixes, plus one API addition) | the Windows build | `vcpkg-port-ffmpeg/`, at the baseline the recipe pins |
 
 So "the Library as used in that binary" is reproducible from what is published.
-Two checks keep it that way. Every shipped tree carries a `ROOMLER-PATCHES.txt`
+Two checks keep it that way. Every shipped tree carries a `MESHHARBOR-PATCHES.txt`
 manifest that the release lane compares with the committed patches. And the
 release lane refuses to tag while the published tarball was built from a
 different patch set, vcpkg baseline or build recipe than the release's own

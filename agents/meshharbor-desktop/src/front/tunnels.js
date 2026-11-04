@@ -5,7 +5,7 @@
  * table (per-forward transport, connection count and byte counters). Both
  * come from ONE `cmd_tunnels_view` call — one LocalAPI connection per
  * refresh (FR-84 D1) — polled only while this view is visible; the route
- * list is also broadcast (`roomler:routes`) so the Overview can show an
+ * list is also broadcast (`meshharbor:routes`) so the Overview can show an
  * active-count without polling again.
  *
  * FR-84 D1 — the page holds still:
@@ -39,7 +39,7 @@
  */
 (function () {
   'use strict';
-  const { $, invoke, show, hide, fmtBytes, on, get, currentView } = window.Roomler;
+  const { $, invoke, show, hide, fmtBytes, on, get, currentView } = window.MeshHarbor;
 
   let busy = false;            // one mutation in flight at a time
   let lastRoutes = [];         // last GOOD data — what the tables show
@@ -95,7 +95,7 @@
     lastFlows = Array.isArray(view.flows) ? view.flows : [];
     paintRoutes(lastRoutes);
     paintFlows(lastFlows);
-    document.dispatchEvent(new CustomEvent('roomler:routes', { detail: lastRoutes }));
+    document.dispatchEvent(new CustomEvent('meshharbor:routes', { detail: lastRoutes }));
   }
 
   function fmtClock(d) {
@@ -543,7 +543,7 @@
     setFormMode();
     on('deviceView', paintNodeOptions);
     // Refresh immediately when the view is entered; poll only while visible.
-    document.addEventListener('roomler:view', (ev) => {
+    document.addEventListener('meshharbor:view', (ev) => {
       if (ev.detail === 'tunnels') void refresh({ force: true });
     });
     void refresh({ force: true });

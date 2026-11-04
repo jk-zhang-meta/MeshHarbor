@@ -69,7 +69,7 @@ pub struct Settings {
     pub relay_allowance: RelayAllowanceSettings,
 }
 
-/// FR-90 P3-1 — `[vault]`, env `ROOMLER__VAULT__*`.
+/// FR-90 P3-1 — `[vault]`, env `MESHHARBOR__VAULT__*`.
 ///
 /// ⚠️ `kek` is the vault's root secret: whoever holds it and a copy of the
 /// database reads every secret. `Debug` is written by hand so it never
@@ -77,7 +77,7 @@ pub struct Settings {
 #[derive(Deserialize, Clone, Default)]
 pub struct VaultSettings {
     /// The organizations the vault serves, as comma-separated ids
-    /// (`ROOMLER__VAULT__TENANTS=<id>,<id>`), with `hive.tenants`'s rules:
+    /// (`MESHHARBOR__VAULT__TENANTS=<id>,<id>`), with `hive.tenants`'s rules:
     /// empty or `*` is every organization, a list is only those, and an
     /// entry that is no id matches nothing.
     ///
@@ -86,32 +86,32 @@ pub struct VaultSettings {
     /// reads it. Clearing the list is the kill switch.
     #[serde(default)]
     pub tenants: String,
-    /// The key-encryption key (`ROOMLER__VAULT__KEK`): an `age` X25519
+    /// The key-encryption key (`MESHHARBOR__VAULT__KEK`): an `age` X25519
     /// identity, `AGE-SECRET-KEY-1…` as `age-keygen` writes it — or the
     /// whole text of such a file. A hosted server mounts it from a sealed
     /// secret.
     #[serde(default)]
     pub kek: String,
     /// Or the path of an `age-keygen` identity file
-    /// (`ROOMLER__VAULT__KEK_FILE`). Both set is refused: the two may
+    /// (`MESHHARBOR__VAULT__KEK_FILE`). Both set is refused: the two may
     /// disagree, and the vault does not guess.
     #[serde(default)]
     pub kek_file: String,
     /// P3-3c — how often each pod checks the leases its connected devices
-    /// hold, in seconds (`ROOMLER__VAULT__REVOKE_SWEEP_SECS`): the longest a
+    /// hold, in seconds (`MESHHARBOR__VAULT__REVOKE_SWEEP_SECS`): the longest a
     /// session's end or move, or a change made on another pod, waits to be
     /// pushed to the device. 0 or absent: 10.
     #[serde(default)]
     pub revoke_sweep_secs: u64,
     /// P3-6b — the providers a dynamic secret is leased for, as
-    /// comma-separated names (`ROOMLER__VAULT__PROVIDERS=postgres`). Empty —
+    /// comma-separated names (`MESHHARBOR__VAULT__PROVIDERS=postgres`). Empty —
     /// the default — or `*` is every provider this build knows; a list is
     /// only those. A provider left out is refused `not_served`, and a word
     /// that names no provider serves nothing: `none` turns them all off.
     #[serde(default)]
     pub providers: String,
     /// P3-9-1 — the organizations whose PEOPLE the vault lends to through
-    /// `roomler connect` (`ROOMLER__VAULT__PEOPLE=<id>,<id>`): a person's
+    /// `meshharbor connect` (`MESHHARBOR__VAULT__PEOPLE=<id>,<id>`): a person's
     /// endpoint, decided by Cedar's `secret:connect` for the device's owner.
     /// ⚠️ Opt-in, the opposite sense to `tenants`: empty — the default — is
     /// NO organization, `*` every one the vault serves, a list only those.
@@ -143,17 +143,17 @@ impl std::fmt::Debug for VaultSettings {
     }
 }
 
-/// FR-90 P1g — `[hive]`, env `ROOMLER__HIVE__*`.
+/// FR-90 P1g — `[hive]`, env `MESHHARBOR__HIVE__*`.
 #[derive(Debug, Deserialize, Clone)]
 pub struct HiveSettings {
     /// The organizations agent sessions serve, as comma-separated ids
-    /// (`ROOMLER__HIVE__TENANTS=<id>,<id>`). Empty — the default — or `*` is
+    /// (`MESHHARBOR__HIVE__TENANTS=<id>,<id>`). Empty — the default — or `*` is
     /// every organization; a list is only those, and every other one is
     /// answered as if the module were not there for it. A hosted server opens
     /// the pillar to a test organization this way before anyone else.
     ///
     /// ⚠️ A list switches the module ON by itself ([`Settings::hive_on`]),
-    /// with no `ROOMLER__MODULES__HIVE`. That is the form a hosted server
+    /// with no `MESHHARBOR__MODULES__HIVE`. That is the form a hosted server
     /// uses, because it fails safe: no older image reads a list as the
     /// switch, so promoting one leaves the pillar off — where
     /// `modules.hive = true` on an image from before P1g, which never reads
@@ -164,7 +164,7 @@ pub struct HiveSettings {
     /// [`JwtSettings::previous_secrets`]: an env var cannot become a sequence.
     #[serde(default)]
     pub tenants: String,
-    /// FR-90 P2c — the replicaset (`ROOMLER__HIVE__REPLICASET`): an
+    /// FR-90 P2c — the replicaset (`MESHHARBOR__HIVE__REPLICASET`): an
     /// organization's replica policy, placement, and the frames that make a
     /// device a member. Default OFF, P2's server kill switch: off, the policy
     /// routes answer as if they were not there and no session gets a
@@ -172,7 +172,7 @@ pub struct HiveSettings {
     #[serde(default)]
     pub replicaset: bool,
     /// FR-90 P2e-3 — how long a promotion waits for the member it moves to
-    /// to answer its prepare (`ROOMLER__HIVE__PROMOTE_PREPARE_SECS`).
+    /// to answer its prepare (`MESHHARBOR__HIVE__PROMOTE_PREPARE_SECS`).
     #[serde(default = "hive_default_promote_prepare_secs")]
     pub promote_prepare_secs: u64,
     /// FR-90 P2e-3 — how long it waits for the primary's `rc:hive.drained`.
@@ -188,7 +188,7 @@ pub struct HiveSettings {
     pub promote_sync_secs: u64,
     /// FR-90 P2f-1 — how long a teleport waits for its target's copy to
     /// catch up with the primary's before it drains the session
-    /// (`ROOMLER__HIVE__PROMOTE_JOIN_SECS`): the whole copy moves in this
+    /// (`MESHHARBOR__HIVE__PROMOTE_JOIN_SECS`): the whole copy moves in this
     /// time, while the session still runs. ⚠️ Under the device's own
     /// admission of the target's join (`hive::promote_limits::
     /// TELEPORT_ADMISSION_SECS`, 30 min): a join re-sent after that is
@@ -197,14 +197,14 @@ pub struct HiveSettings {
     pub promote_join_secs: u64,
     /// FR-90 P2f-2b — a teleport's target may take the workspace's first
     /// pack as one thin against what its folder's repository holds already
-    /// (`ROOMLER__HIVE__TELEPORT_HAVE_WANT`; git's have and want). Default
+    /// (`MESHHARBOR__HIVE__TELEPORT_HAVE_WANT`; git's have and want). Default
     /// OFF until the operator confirms FR-90's decision 16: such a target
     /// holds the checkpoint without its whole pack's blobs.
     #[serde(default)]
     pub teleport_have_want: bool,
     /// FR-90 P2f-3 — how long a fork waits for its device's copy to reach
     /// the session's last checkpoint, as its primary last reported it
-    /// (`ROOMLER__HIVE__FORK_COPY_SECS`), before it is refused
+    /// (`MESHHARBOR__HIVE__FORK_COPY_SECS`), before it is refused
     /// `copy_behind`: a fork is made at the last checkpoint the device's
     /// copy holds. ⚠️ A member that follows the session reports where its
     /// copy ends at once, then at most every
@@ -215,7 +215,7 @@ pub struct HiveSettings {
     pub fork_copy_secs: u64,
     /// FR-90 P2g-3 — how often the server purges the sessions an
     /// organization's `retention_days` no longer keeps
-    /// (`ROOMLER__HIVE__RETENTION_SWEEP_SECS`): one pod a cycle, by a claim
+    /// (`MESHHARBOR__HIVE__RETENTION_SWEEP_SECS`): one pod a cycle, by a claim
     /// in the database. `0` is no sweep; with `replicaset` off there is none
     /// either. An organization's `retention_days = 0` keeps its sessions for
     /// ever whatever this says.
@@ -263,9 +263,9 @@ fn hive_default_retention_sweep_secs() -> u64 {
     3600
 }
 
-/// #1731 — `[diag]`, env `ROOMLER__DIAG__*`: the stall watchdog.
+/// #1731 — `[diag]`, env `MESHHARBOR__DIAG__*`: the stall watchdog.
 ///
-/// A `roomler2` pod went silent twice in 9 h — not one log line, `/health`
+/// A `meshharbor2` pod went silent twice in 9 h — not one log line, `/health`
 /// unanswered — until the liveness probe killed it ~105 s later, taking the
 /// only evidence with it. The watchdog notices the runtime has stopped
 /// making progress, writes every thread's stack and syscall to a file in
@@ -292,7 +292,7 @@ fn diag_default_threshold_secs() -> u64 {
 }
 
 fn diag_default_dump_dir() -> String {
-    "/var/lib/roomler/diag".to_string()
+    "/var/lib/meshharbor/diag".to_string()
 }
 
 impl Default for DiagSettings {
@@ -305,13 +305,13 @@ impl Default for DiagSettings {
     }
 }
 
-/// FR-115 P5 — `[meetings]`, env `ROOMLER__MEETINGS__*`.
+/// FR-115 P5 — `[meetings]`, env `MESHHARBOR__MEETINGS__*`.
 #[derive(Debug, Deserialize, Clone)]
 pub struct MeetingsSettings {
     /// A plan's meeting-length cap: a Free meeting is warned five minutes
     /// before its sixty and ended at them. `false` lets every meeting run
     /// as long as it likes — the P5 kill switch. Default **on**.
-    /// Env: `ROOMLER__MEETINGS__FREE_CAP`.
+    /// Env: `MESHHARBOR__MEETINGS__FREE_CAP`.
     #[serde(default = "meetings_default_on")]
     pub free_cap: bool,
 }
@@ -328,7 +328,7 @@ impl Default for MeetingsSettings {
     }
 }
 
-/// FR-115 P4a — `[relay_allowance]`, env `ROOMLER__RELAY_ALLOWANCE__*`: an
+/// FR-115 P4a — `[relay_allowance]`, env `MESHHARBOR__RELAY_ALLOWANCE__*`: an
 /// org past its plan's monthly relay allowance keeps its DERP floor, at a
 /// throttled rate for bulk frames only (a WireGuard handshake and disco are
 /// never held back). Default **off**: it ships dark, and is switched on
@@ -337,20 +337,20 @@ impl Default for MeetingsSettings {
 pub struct RelayAllowanceSettings {
     /// The kill switch. `false`: no over-allowance set is published, and
     /// every pod drops the one it holds within a refresh period.
-    /// Env: `ROOMLER__RELAY_ALLOWANCE__ENABLED`.
+    /// Env: `MESHHARBOR__RELAY_ALLOWANCE__ENABLED`.
     #[serde(default)]
     pub enabled: bool,
     /// The throttled rate for a Free org over its allowance, in kbit/s, per
-    /// network (the org's mesh). Env: `ROOMLER__RELAY_ALLOWANCE__FREE_RATE_KBPS`.
+    /// network (the org's mesh). Env: `MESHHARBOR__RELAY_ALLOWANCE__FREE_RATE_KBPS`.
     #[serde(default = "relay_allowance_free_rate_kbps")]
     pub free_rate_kbps: u32,
-    /// The same for a paid plan. Env: `ROOMLER__RELAY_ALLOWANCE__PAID_RATE_KBPS`.
+    /// The same for a paid plan. Env: `MESHHARBOR__RELAY_ALLOWANCE__PAID_RATE_KBPS`.
     #[serde(default = "relay_allowance_paid_rate_kbps")]
     pub paid_rate_kbps: u32,
     /// FR-115 P4b — read coturn's statistics DB (`--redis-statsdb`) into
     /// `turn_bytes` per org. Off until coturn publishes there; `false` is
     /// the kill switch (no subscription). Env:
-    /// `ROOMLER__RELAY_ALLOWANCE__TURN_ATTRIBUTION`.
+    /// `MESHHARBOR__RELAY_ALLOWANCE__TURN_ATTRIBUTION`.
     #[serde(default)]
     pub turn_attribution: bool,
 }
@@ -375,7 +375,7 @@ impl Default for RelayAllowanceSettings {
 }
 
 /// FR-69 — the per-module runtime switches (`[modules]`, env
-/// `ROOMLER__MODULES__<ID>=false`).
+/// `MESHHARBOR__MODULES__<ID>=false`).
 ///
 /// `false` unmounts a compiled module on a pod without a rebuild — the
 /// per-module kill switch during the roll that introduces it. Each switch
@@ -399,13 +399,13 @@ pub struct ModulesSettings {
     /// FR-90 — agent sessions. **Default OFF**, like `vault`: it is the P0
     /// kill switch while the pillar is built, so a roll that ships the code
     /// exposes nothing until an operator turns it on
-    /// (`ROOMLER__MODULES__HIVE=true`, or a `hive.tenants` list — read
+    /// (`MESHHARBOR__MODULES__HIVE=true`, or a `hive.tenants` list — read
     /// [`Settings::hive_on`], never this field alone). Listed in
     /// [`Self::DEFAULT_OFF`].
     #[serde(default)]
     pub hive: bool,
     /// FR-90 P3-1 — the vault. **Default OFF**, for the same reason:
-    /// `ROOMLER__MODULES__VAULT=true`, or a `vault.tenants` list — read
+    /// `MESHHARBOR__MODULES__VAULT=true`, or a `vault.tenants` list — read
     /// [`Settings::vault_on`], never this field alone. Listed in
     /// [`Self::DEFAULT_OFF`].
     #[serde(default)]
@@ -499,18 +499,18 @@ impl ModulesSettings {
 #[derive(Debug, Clone, Deserialize)]
 pub struct OverlaySettings {
     /// Carve a fresh block for every NEWLY created tenant overlay network.
-    /// Env: `ROOMLER__OVERLAY__BLOCKS_ENABLED`.
+    /// Env: `MESHHARBOR__OVERLAY__BLOCKS_ENABLED`.
     pub blocks_enabled: bool,
     /// Prefix of a carved block, `/16` … `/22`. `/22` = 1022 devices per
     /// tenant and 4 032 tenants inside the `/10`.
-    /// Env: `ROOMLER__OVERLAY__BLOCK_PREFIX`.
+    /// Env: `MESHHARBOR__OVERLAY__BLOCK_PREFIX`.
     pub block_prefix: u8,
     /// Minimum agent/tunnel-client version allowed on a renumbered tenant.
     /// Below this the boot reconciler purges the node's OWN on-link route at
     /// daemon start (it kept only the literal `100.64.0.0/…`), which
     /// blackholes the mesh for that host — so a migration refuses to run over
     /// a fleet that hasn't caught up. `--force` on the endpoint overrides.
-    /// Env: `ROOMLER__OVERLAY__BLOCK_VERSION_FLOOR`.
+    /// Env: `MESHHARBOR__OVERLAY__BLOCK_VERSION_FLOOR`.
     pub block_version_floor: String,
     /// FR-47 P5c — let a network hold MORE THAN ONE block, so an org that
     /// fills its first one is given another instead of being refused. The
@@ -527,7 +527,7 @@ pub struct OverlaySettings {
     /// the index back would fail. The drop happens at startup and only when
     /// this flag is on, so a deployment that never enables it keeps the guard.
     ///
-    /// Env: `ROOMLER__OVERLAY__MULTI_BLOCK_ENABLED`.
+    /// Env: `MESHHARBOR__OVERLAY__MULTI_BLOCK_ENABLED`.
     pub multi_block_enabled: bool,
 }
 
@@ -556,23 +556,23 @@ impl Default for OverlaySettings {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RelaySettings {
     /// Master gate for region-aware TURN/DERP issuance.
-    /// Env: `ROOMLER__RELAY__REGIONS_ENABLED`.
+    /// Env: `MESHHARBOR__RELAY__REGIONS_ENABLED`.
     pub regions_enabled: bool,
-    /// JSON array of relay region specs. Env: `ROOMLER__RELAY__REGIONS`.
+    /// JSON array of relay region specs. Env: `MESHHARBOR__RELAY__REGIONS`.
     pub regions: Option<String>,
     /// Ed25519 private key (base64 PKCS#8 DER) minting regional-DERP
     /// admission tickets; PoP relays hold only the derived PUBLIC key.
     /// Generate: `openssl genpkey -algorithm ed25519 -outform DER | base64 -w0`.
-    /// Env: `ROOMLER__RELAY__DERP_TICKET_PRIVATE_KEY`.
+    /// Env: `MESHHARBOR__RELAY__DERP_TICKET_PRIVATE_KEY`.
     pub derp_ticket_private_key: Option<String>,
     /// PoP `/stats` poll cadence in seconds; 0 disables the poller (regions
-    /// then never mark busy). Env: `ROOMLER__RELAY__STATS_POLL_SECS`.
+    /// then never mark busy). Env: `MESHHARBOR__RELAY__STATS_POLL_SECS`.
     pub stats_poll_secs: u64,
     /// Busy when a PoP's `load5 / cpus` exceeds this.
-    /// Env: `ROOMLER__RELAY__BUSY_LOAD`.
+    /// Env: `MESHHARBOR__RELAY__BUSY_LOAD`.
     pub busy_load: f64,
     /// Busy when a PoP's sustained egress exceeds this many Mbps (sized for
-    /// the 500 Mbps-capped OVH PoPs). Env: `ROOMLER__RELAY__BUSY_TX_MBPS`.
+    /// the 500 Mbps-capped OVH PoPs). Env: `MESHHARBOR__RELAY__BUSY_TX_MBPS`.
     pub busy_tx_mbps: f64,
 }
 
@@ -600,13 +600,13 @@ impl Default for RelaySettings {
 #[derive(Debug, Clone, Deserialize)]
 pub struct StatsSettings {
     /// Master gate for stats collection + rollups.
-    /// Env: `ROOMLER__STATS__ENABLED`.
+    /// Env: `MESHHARBOR__STATS__ENABLED`.
     pub enabled: bool,
     /// Comma-separated **user ObjectIds** (24-hex) granted the platform
     /// observability dashboards. Deliberately ids, not emails: OAuth
     /// linking matches accounts by bare email, so an email allowlist
     /// would turn a provider-asserted address into platform-root.
-    /// Env: `ROOMLER__STATS__PLATFORM_ADMINS`.
+    /// Env: `MESHHARBOR__STATS__PLATFORM_ADMINS`.
     pub platform_admins: Option<String>,
     /// Path to a MaxMind-format country database (DB-IP / GeoLite2) for
     /// the platform user analytics. Unset or empty ⇒ every session records
@@ -614,7 +614,7 @@ pub struct StatsSettings {
     /// vendored into the repo; the server IMAGE sets this to the DB-IP
     /// "IP to Country Lite" database it carries (CC BY 4.0, #1896,
     /// `files/geoip/README.md`), and an env value overrides it, or turns it
-    /// off when empty. Env: `ROOMLER__STATS__GEOIP_MMDB`.
+    /// off when empty. Env: `MESHHARBOR__STATS__GEOIP_MMDB`.
     pub geoip_mmdb: Option<String>,
 }
 
@@ -628,7 +628,7 @@ impl Default for StatsSettings {
     }
 }
 
-/// FR-102 — `[growth]`, env `ROOMLER__GROWTH__*`: the growth-observability
+/// FR-102 — `[growth]`, env `MESHHARBOR__GROWTH__*`: the growth-observability
 /// surface under `/api/admin/growth/*` (platform admins only, like
 /// `/admin/stats`), and the daily digest job (`docs/growth-observability.md`).
 #[derive(Debug, Deserialize, Clone)]
@@ -636,35 +636,35 @@ pub struct GrowthSettings {
     /// Gate for the `/api/admin/growth/*` routes. Default **on**: it gates
     /// only platform-admin views and a read is cheap. `false` answers 404
     /// on every one of them — the P2 kill switch.
-    /// Env: `ROOMLER__GROWTH__ENABLED`.
+    /// Env: `MESHHARBOR__GROWTH__ENABLED`.
     #[serde(default = "growth_default_on")]
     pub enabled: bool,
     /// The daily digest job (P1d). Default **off**, so a self-hosted server
     /// never starts mailing its admins a report they did not ask for; the
-    /// hosted configuration turns it on. Env: `ROOMLER__GROWTH__DIGEST_ENABLED`.
+    /// hosted configuration turns it on. Env: `MESHHARBOR__GROWTH__DIGEST_ENABLED`.
     #[serde(default)]
     pub digest_enabled: bool,
     /// The UTC hour (0–23) after which the PREVIOUS UTC day's digest is
     /// computed and sent. 6 by default: purestat closes a session 30 min
     /// after its last event, so by 06:00 the day is complete on both planes.
-    /// A value past 23 reads as 6. Env: `ROOMLER__GROWTH__DIGEST_HOUR_UTC`.
+    /// A value past 23 reads as 6. Env: `MESHHARBOR__GROWTH__DIGEST_HOUR_UTC`.
     #[serde(default = "growth_default_digest_hour")]
     pub digest_hour_utc: u8,
     /// Comma-separated recipient addresses. Empty — the default — mails the
     /// platform admins at their proven `users.email`.
-    /// Env: `ROOMLER__GROWTH__DIGEST_TO`.
+    /// Env: `MESHHARBOR__GROWTH__DIGEST_TO`.
     ///
     /// ⚠️ `String`, not `Vec<String>`, for the reason on
     /// [`JwtSettings::previous_secrets`]: an env var cannot become a sequence.
     #[serde(default)]
     pub digest_to: String,
     /// purestat's base URL, for the web sections of the digest (the v1 query
-    /// at `{purestat_url}/api/v1/query`). Env: `ROOMLER__GROWTH__PURESTAT_URL`.
+    /// at `{purestat_url}/api/v1/query`). Env: `MESHHARBOR__GROWTH__PURESTAT_URL`.
     #[serde(default = "growth_default_purestat_url")]
     pub purestat_url: String,
     /// A purestat API key scoped to the site (`X-API-Key`). Empty — the
     /// default — leaves the website, blog and campaign sections "not
-    /// measured", never 0. Never logged. Env: `ROOMLER__GROWTH__PURESTAT_API_KEY`.
+    /// measured", never 0. Never logged. Env: `MESHHARBOR__GROWTH__PURESTAT_API_KEY`.
     #[serde(default)]
     pub purestat_api_key: String,
     /// P3 — count installer, latest-release and install-script fetches by
@@ -672,7 +672,7 @@ pub struct GrowthSettings {
     /// install trace). Default **on**: the counters are this server's own
     /// (a self-hosted server keeps them and sends them nowhere), carry no
     /// User-Agent and no IP, and never count the updater. `false` is the
-    /// kill switch. Env: `ROOMLER__GROWTH__INSTALL_COUNTERS`.
+    /// kill switch. Env: `MESHHARBOR__GROWTH__INSTALL_COUNTERS`.
     #[serde(default = "growth_default_on")]
     pub install_counters: bool,
     /// P3c — the operator's internal source networks: comma-separated CIDRs
@@ -684,7 +684,7 @@ pub struct GrowthSettings {
     /// out. The address is compared in memory and dropped; nothing stores
     /// it. Empty — the default — changes nothing, and the digest's internal
     /// count reads "not measured". An entry that does not parse is warned
-    /// about once at boot and skipped. Env: `ROOMLER__GROWTH__INTERNAL_NETWORKS`.
+    /// about once at boot and skipped. Env: `MESHHARBOR__GROWTH__INTERNAL_NETWORKS`.
     ///
     /// ⚠️ `String`, not `Vec<String>`, for `digest_to`'s reason.
     #[serde(default)]
@@ -701,14 +701,14 @@ pub struct GrowthSettings {
     /// the wizard to send. `false` is the kill switch: the route answers
     /// the empty 404 of a path that does not exist, and the wizard treats
     /// that like any other failure — silently. Env:
-    /// `ROOMLER__GROWTH__SETUP_DIAGNOSTICS`.
+    /// `MESHHARBOR__GROWTH__SETUP_DIAGNOSTICS`.
     #[serde(default = "growth_default_on")]
     pub setup_diagnostics: bool,
     /// P10 — the weekly roll-up job: once the clock passes Monday
     /// `digest_hour_utc`, the past ISO week (Mon–Sun, UTC) is computed,
     /// stored in `growth_weekly` and mailed once to the digest's recipients.
     /// Default **off**, for the digest's reason. Env:
-    /// `ROOMLER__GROWTH__WEEKLY_ENABLED`.
+    /// `MESHHARBOR__GROWTH__WEEKLY_ENABLED`.
     #[serde(default)]
     pub weekly_enabled: bool,
     /// P9b — the post-session rating (spec §3f, D10): after a remote session
@@ -720,7 +720,7 @@ pub struct GrowthSettings {
     /// chooses to answer. `false` is the kill switch: the viewer never
     /// offers the prompt (`/api/capabilities` says so) and the route answers
     /// the empty 404 of a path that does not exist. Env:
-    /// `ROOMLER__GROWTH__FEEDBACK`.
+    /// `MESHHARBOR__GROWTH__FEEDBACK`.
     #[serde(default = "growth_default_on")]
     pub feedback: bool,
     /// P10 — the alert rules (`docs/growth-observability.md`, alerts): an
@@ -728,7 +728,7 @@ pub struct GrowthSettings {
     /// mails the digest's recipients at most once per rule per day, and
     /// clears the row when the condition goes away. Default **off**: the
     /// rules read this server's own numbers, but a self-hosted server never
-    /// starts mailing its admins unasked. Env: `ROOMLER__GROWTH__ALERTS`.
+    /// starts mailing its admins unasked. Env: `MESHHARBOR__GROWTH__ALERTS`.
     #[serde(default)]
     pub alerts: bool,
     /// P7 — the GitHub repository (`owner/name`) whose public counters the
@@ -737,11 +737,11 @@ pub struct GrowthSettings {
     /// differenced into daily deltas. They need no credential (a handful of
     /// the 60 unauthenticated requests an hour). Empty switches the puller
     /// off. `saas` is hosted-only, so no self-hosted server ever asks.
-    /// Env: `ROOMLER__GROWTH__GITHUB_REPO`.
+    /// Env: `MESHHARBOR__GROWTH__GITHUB_REPO`.
     #[serde(default = "growth_default_github_repo")]
     pub github_repo: String,
     /// P7 — GitHub's REST API base. Only a test changes it.
-    /// Env: `ROOMLER__GROWTH__GITHUB_API_URL`.
+    /// Env: `MESHHARBOR__GROWTH__GITHUB_API_URL`.
     #[serde(default = "growth_default_github_api_url")]
     pub github_api_url: String,
     /// P7 — an optional read-only token for the repository's traffic
@@ -749,41 +749,41 @@ pub struct GrowthSettings {
     /// pulled daily). A fine-grained token scoped to this one repository
     /// with the "Administration: read" permission is enough. Empty — the
     /// default — leaves traffic "not measured"; the public counters never
-    /// need it. Never logged. Env: `ROOMLER__GROWTH__GITHUB_TOKEN`.
+    /// need it. Never logged. Env: `MESHHARBOR__GROWTH__GITHUB_TOKEN`.
     #[serde(default)]
     pub github_token: String,
     /// P7 — the Search Console property the `saas` puller reads, as Search
     /// Console names it (`sc-domain:roomler.ai`, or a URL-prefix property's
-    /// `https://…/`). Env: `ROOMLER__GROWTH__SEARCH_CONSOLE_SITE`.
+    /// `https://…/`). Env: `MESHHARBOR__GROWTH__SEARCH_CONSOLE_SITE`.
     #[serde(default = "growth_default_search_console_site")]
     pub search_console_site: String,
     /// P7 — a service account's JSON key (the file Google Cloud hands out),
     /// whose `client_email` is a user of the property. Empty — the default
     /// — pulls nothing and leaves every search cell "not measured". Never
     /// logged, never echoed in an error. Env:
-    /// `ROOMLER__GROWTH__SEARCH_CONSOLE_KEY`.
+    /// `MESHHARBOR__GROWTH__SEARCH_CONSOLE_KEY`.
     #[serde(default)]
     pub search_console_key: String,
     /// P7 — the Search Console API base. Only a test changes it.
-    /// Env: `ROOMLER__GROWTH__SEARCH_CONSOLE_API_URL`.
+    /// Env: `MESHHARBOR__GROWTH__SEARCH_CONSOLE_API_URL`.
     #[serde(default = "growth_default_search_console_api_url")]
     pub search_console_api_url: String,
     /// P7 — the site as verified in Bing Webmaster Tools (`https://…/`).
-    /// Env: `ROOMLER__GROWTH__BING_SITE_URL`.
+    /// Env: `MESHHARBOR__GROWTH__BING_SITE_URL`.
     #[serde(default = "growth_default_bing_site_url")]
     pub bing_site_url: String,
     /// P7 — a Bing Webmaster API key. Empty — the default — pulls nothing
     /// and leaves the Bing cells "not measured". Never logged.
-    /// Env: `ROOMLER__GROWTH__BING_API_KEY`.
+    /// Env: `MESHHARBOR__GROWTH__BING_API_KEY`.
     #[serde(default)]
     pub bing_api_key: String,
     /// P7 — the Bing Webmaster JSON API base. Only a test changes it.
-    /// Env: `ROOMLER__GROWTH__BING_API_URL`.
+    /// Env: `MESHHARBOR__GROWTH__BING_API_URL`.
     #[serde(default = "growth_default_bing_api_url")]
     pub bing_api_url: String,
     /// P7 — the blog's Atom feed, the list of posts the Content table and
     /// URL Inspection read. Empty — the default — is
-    /// `{app.frontend_url}/blog/feed.xml`. Env: `ROOMLER__GROWTH__BLOG_FEED_URL`.
+    /// `{app.frontend_url}/blog/feed.xml`. Env: `MESHHARBOR__GROWTH__BLOG_FEED_URL`.
     #[serde(default)]
     pub blog_feed_url: String,
 }
@@ -927,12 +927,12 @@ pub struct ReleasesSettings {
     /// Bearer <token>`). **Unset ⇒ the endpoint is disabled (503)** — there
     /// is deliberately no permissive default, since an open refresh endpoint
     /// would let anyone burn GitHub's 60-req/h unauthenticated quota.
-    /// Env: `ROOMLER__RELEASES__REFRESH_TOKEN`.
+    /// Env: `MESHHARBOR__RELEASES__REFRESH_TOKEN`.
     pub refresh_token: Option<String>,
     /// TTL of the cached releases list. 15 min: one consolidated cache means
     /// N pods × 4 fetches/h, comfortably under GitHub's 60/h unauthenticated
     /// cap, while bounding worst-case staleness when the refresh call never
-    /// lands. Env: `ROOMLER__RELEASES__CACHE_TTL_SECS`.
+    /// lands. Env: `MESHHARBOR__RELEASES__CACHE_TTL_SECS`.
     pub cache_ttl_secs: u64,
 }
 
@@ -947,7 +947,7 @@ impl Default for ReleasesSettings {
 
 /// Remote-control WS liveness (Phase A-1). Settings (not consts) so the
 /// two-pod integration tests can run 2-3 s deadlines instead of 90 s
-/// waits. Env: `ROOMLER__RC__WS_RX_DEADLINE_SECS` etc.
+/// waits. Env: `MESHHARBOR__RC__WS_RX_DEADLINE_SECS` etc.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RcSettings {
     /// Reap an agent/tunnel WS after this many seconds without ANY
@@ -959,11 +959,11 @@ pub struct RcSettings {
     /// P4 — per-tenant coalescing window for `device:presence` fan-out.
     /// A pod roll reconnects a whole fleet within seconds; batching turns
     /// that into one WS event per tenant instead of one per agent.
-    /// Env: `ROOMLER__RC__PRESENCE_BATCH_MS`.
+    /// Env: `MESHHARBOR__RC__PRESENCE_BATCH_MS`.
     pub presence_batch_ms: u64,
     /// P4 — interval of the cluster-singleton presence staleness sweep
     /// (stale/offline transitions have no socket-teardown moment to hook).
-    /// Env: `ROOMLER__RC__PRESENCE_SWEEP_SECS`.
+    /// Env: `MESHHARBOR__RC__PRESENCE_SWEEP_SECS`.
     pub presence_sweep_secs: u64,
     /// PR-1 rehome — direction guard band. On a cross-pod rc/tunnel miss
     /// the agent is judged PARKED (and nudged) only when the requesting
@@ -972,24 +972,24 @@ pub struct RcSettings {
     /// and resolves to the free move: the controller re-dials. Ambiguity
     /// self-heals toward nudging — the record's since_ms is frozen while
     /// every controller retry re-establishes the conn, so the delta grows.
-    /// Env: `ROOMLER__RC__REHOME_DIRECTION_GUARD_MS`.
+    /// Env: `MESHHARBOR__RC__REHOME_DIRECTION_GUARD_MS`.
     pub rehome_direction_guard_ms: i64,
     /// PR-1 rehome — owner-side pacing: minimum seconds between agent-WS
     /// nudge cycles per agent. A cycle tears the agent's rc/tunnel/overlay
     /// planes for seconds, so it must never flap.
-    /// Env: `ROOMLER__RC__NUDGE_COOLDOWN_SECS`.
+    /// Env: `MESHHARBOR__RC__NUDGE_COOLDOWN_SECS`.
     pub nudge_cooldown_secs: u64,
     /// PR-1 rehome — nudge attempts inside the reset window before the
     /// agent is declared stuck (split evidence) and further nudges pause.
-    /// Env: `ROOMLER__RC__NUDGE_MAX_ATTEMPTS`.
+    /// Env: `MESHHARBOR__RC__NUDGE_MAX_ATTEMPTS`.
     pub nudge_max_attempts: u32,
     /// PR-1 rehome — quiet period after which the attempt counter resets.
-    /// Env: `ROOMLER__RC__NUDGE_ATTEMPTS_RESET_SECS`.
+    /// Env: `MESHHARBOR__RC__NUDGE_ATTEMPTS_RESET_SECS`.
     pub nudge_attempts_reset_secs: u64,
     /// PR-1 rehome — requester-side throttle: minimum ms between
     /// `rc.agent_nudge` RPCs per agent from this pod (a click storm sent
     /// 11 RPCs in 15 s at one refusing owner in the 2026-08-04 incident).
-    /// Env: `ROOMLER__RC__NUDGE_REQUESTER_THROTTLE_MS`.
+    /// Env: `MESHHARBOR__RC__NUDGE_REQUESTER_THROTTLE_MS`.
     pub nudge_requester_throttle_ms: u64,
     /// R3 — grace before a tunnel session is terminated when its TARGET
     /// agent's control WS drops. `0` (default) = terminate immediately
@@ -998,25 +998,25 @@ pub struct RcSettings {
     /// cross-pod Redis presence) — pairs with the agent's
     /// `tunnel_peers_survive_reattach` so an established QUIC/derp session
     /// rides out a corp-VPN control-WS blip instead of being re-opened.
-    /// Env: `ROOMLER__RC__TUNNEL_GRACE_SECS`.
+    /// Env: `MESHHARBOR__RC__TUNNEL_GRACE_SECS`.
     pub tunnel_grace_secs: u64,
     /// FR-51 — master switch for the ephemeral-node reaper. Default **false**:
     /// zero queries, zero deletes, byte-for-byte pre-FR-51 behaviour. Flipping
     /// it on only ever affects rows that were enrolled `ephemeral: true` —
     /// every pre-FR-51 row deserialises permanent and the reap predicate
-    /// cannot match it. Env: `ROOMLER__RC__EPHEMERAL_REAPER_ENABLED`.
+    /// cannot match it. Env: `MESHHARBOR__RC__EPHEMERAL_REAPER_ENABLED`.
     pub ephemeral_reaper_enabled: bool,
     /// FR-51 — reap cycle interval. Like the presence sweep, the cycle is a
     /// cluster singleton (DB-name-scoped Redis NX claim), so this is the
     /// deployment's cadence, not a per-pod one.
-    /// Env: `ROOMLER__RC__EPHEMERAL_REAP_INTERVAL_SECS`.
+    /// Env: `MESHHARBOR__RC__EPHEMERAL_REAP_INTERVAL_SECS`.
     pub ephemeral_reap_interval_secs: u64,
     /// FR-51 — inactivity deadline for an ephemeral device whose enrollment
     /// key set no per-device override. 900 s (15 min): long enough that a
     /// network blip or a pod roll is not a deleted device, short enough that
     /// a finished CI runner does not linger as quota. The reaper clamps every
     /// effective TTL (this one included) to a 60 s floor at read time.
-    /// Env: `ROOMLER__RC__EPHEMERAL_DEFAULT_TTL_SECS`.
+    /// Env: `MESHHARBOR__RC__EPHEMERAL_DEFAULT_TTL_SECS`.
     pub ephemeral_default_ttl_secs: u64,
     /// FR-94 — route Fleet RPC through a Windows device's SYSTEM service
     /// (the doorbell → claim → result path) when the device advertises
@@ -1025,36 +1025,36 @@ pub struct RcSettings {
     /// any other device. `false` is the server's kill switch. Every command
     /// then takes the worker path as before FR-94, and the org setting
     /// `exec_require_system` refuses Windows commands instead of running
-    /// them as the worker. Env: `ROOMLER__RC__EXEC_VIA_SERVICE`.
+    /// them as the worker. Env: `MESHHARBOR__RC__EXEC_VIA_SERVICE`.
     #[serde(default = "default_true")]
     pub exec_via_service: bool,
-    /// FR-105 — route roomler SSH grants through a Windows device's SYSTEM
+    /// FR-105 — route meshharbor SSH grants through a Windows device's SYSTEM
     /// service (port 2223, the service's host key, the claim) when the device
     /// advertises `ssh-system` and its service published an endpoint under its
     /// current anchor. Default **true**: nothing advertises that word unless
     /// an administrator raised the anchor's `ssh` ceiling on the device, so
     /// this changes nothing for any other device. `false` is the server's kill
     /// switch: every grant goes to the worker as before FR-105.
-    /// Env: `ROOMLER__RC__SSH_VIA_SERVICE`.
+    /// Env: `MESHHARBOR__RC__SSH_VIA_SERVICE`.
     #[serde(default = "default_true")]
     pub ssh_via_service: bool,
     /// FR-103 — serve `POST /api/agent/self/renew` and
     /// `POST /api/tunnel-client/renew`. Default **true**. `false` is the
     /// kill switch: both answer 404, and a device keeps the token it has,
-    /// exactly as before FR-103. Env: `ROOMLER__RC__TOKEN_RENEWAL`.
+    /// exactly as before FR-103. Env: `MESHHARBOR__RC__TOKEN_RENEWAL`.
     #[serde(default = "default_true")]
     pub token_renewal: bool,
     /// FR-103 — refuse an agent or tunnel-client token whose `gen` claim is
     /// not the row's `token_gen`, i.e. one minted before the device was
     /// removed. Default **true**. Every row never removed is at 0, as is every
     /// pre-FR-103 token, so this refuses nothing else. `false` is the kill
-    /// switch if it ever does. Env: `ROOMLER__RC__TOKEN_GENERATION_CHECK`.
+    /// switch if it ever does. Env: `MESHHARBOR__RC__TOKEN_GENERATION_CHECK`.
     #[serde(default = "default_true")]
     pub token_generation_check: bool,
     /// FR-103 — the lifetime of a freshly minted agent or tunnel-client
     /// token, in seconds. Default one year. A test knob: the integration lane
     /// and a throwaway stack shorten it to prove expiry and the renewal grace.
-    /// Never shortened on prod. Env: `ROOMLER__RC__AGENT_TOKEN_TTL_SECS`.
+    /// Never shortened on prod. Env: `MESHHARBOR__RC__AGENT_TOKEN_TTL_SECS`.
     #[serde(default = "default_agent_token_ttl_secs")]
     pub agent_token_ttl_secs: u64,
     /// #2267 — a removal tells a CONNECTED device at once: the kick queues
@@ -1062,14 +1062,14 @@ pub struct RcSettings {
     /// would at its next connection. Default **true**. `false` is the kill
     /// switch: the kick only takes the device out of the hub, and the device
     /// keeps its socket until something else drops it, as before #2267.
-    /// Env: `ROOMLER__RC__REMOVAL_GOODBYE`.
+    /// Env: `MESHHARBOR__RC__REMOVAL_GOODBYE`.
     #[serde(default = "default_true")]
     pub removal_goodbye: bool,
     /// FR-115 P3 — refuse a NEW remote session once the device's org runs as
     /// many at once as its plan allows (Free: one, Pro: one per seat).
     /// Default **true**. `false` is the kill switch: no cap, as before
     /// FR-115. A live session is never ended either way.
-    /// Env: `ROOMLER__RC__ORG_SESSION_CAP`.
+    /// Env: `MESHHARBOR__RC__ORG_SESSION_CAP`.
     #[serde(default = "default_true")]
     pub org_session_cap: bool,
     /// FR-115 P3b — count concurrent remote sessions cluster-wide, in Redis
@@ -1078,7 +1078,7 @@ pub struct RcSettings {
     /// and an account in no org gets Free's one. Default **false** (shipped
     /// dark): P3's count on the hub that owns the device, with external
     /// sessions uncapped, as before. Needs `org_session_cap` on too.
-    /// Env: `ROOMLER__RC__SESSION_SLOTS`.
+    /// Env: `MESHHARBOR__RC__SESSION_SLOTS`.
     #[serde(default)]
     pub session_slots: bool,
 }
@@ -1132,7 +1132,7 @@ pub struct AuthSettings {
     /// When true, `register` sets `is_verified: true` on the new user
     /// directly, bypassing the email activation flow. Default false —
     /// production keeps the email-link activation as the only path.
-    /// Used only by the e2e overlay (`ROOMLER__AUTH__AUTO_VERIFY=true`)
+    /// Used only by the e2e overlay (`MESHHARBOR__AUTH__AUTO_VERIFY=true`)
     /// so Playwright specs can `register → login` without an SMTP
     /// capture. Phase 4 of the e2e plan replaces this with Mailpit
     /// + a helper that pulls the activation token from the inbox.
@@ -1145,7 +1145,7 @@ pub struct AuthSettings {
     /// frozen at the mask it was seeded with, which is the defect this
     /// closes (63 of 72 hosted orgs were).
     ///
-    /// The kill switch (`ROOMLER__AUTH__RECONCILE_MANAGED_ROLES=false`) is
+    /// The kill switch (`MESHHARBOR__AUTH__RECONCILE_MANAGED_ROLES=false`) is
     /// for two cases and no others: a deployment that has deliberately
     /// hand-edited a managed role DOWN and wants it left alone (the
     /// reconcile is additive, so it would put the bit back on every boot),
@@ -1201,12 +1201,12 @@ pub struct AppSettings {
     /// Deployment environment label (`"development"` default). Setting it to
     /// `"production"` arms hard-fail guards — currently: refusing to boot
     /// while `jwt.secret` is still the built-in default. Prod sets
-    /// `ROOMLER__APP__ENVIRONMENT=production` in the configmap.
+    /// `MESHHARBOR__APP__ENVIRONMENT=production` in the configmap.
     #[serde(default = "default_environment")]
     pub environment: String,
     /// C-1 — explicit stable pod identity override
-    /// (`ROOMLER__APP__POD_ID`). Unset (the default) resolves through
-    /// `ROOMLER__POD_HOST_IP` (hostNetwork ⇒ ≤1 pod/node, so the node IP
+    /// (`MESHHARBOR__APP__POD_ID`). Unset (the default) resolves through
+    /// `MESHHARBOR__POD_HOST_IP` (hostNetwork ⇒ ≤1 pod/node, so the node IP
     /// IS the pod identity — the same key the LB upstream list and the
     /// mediasoup announced-ip map use) → hostname → a random dev id.
     /// Tests inject distinct values per in-process TestApp.
@@ -1358,8 +1358,8 @@ pub struct JwtSettings {
     /// `Environment` sources straight into serde, and a scalar env var
     /// deserialising into a sequence FAILS (`invalid type: string, expected a
     /// sequence` — the same trap documented on `app.cors_origins` in
-    /// `scripts/e2e-k8s/overlay-template/configmap-roomler2-config.yaml`). A
-    /// `Vec` here could not be set by `ROOMLER__JWT__PREVIOUS_SECRETS` at all.
+    /// `scripts/e2e-k8s/overlay-template/configmap-meshharbor2-config.yaml`). A
+    /// `Vec` here could not be set by `MESHHARBOR__JWT__PREVIOUS_SECRETS` at all.
     #[serde(default)]
     pub previous_secrets: String,
     pub access_token_ttl_secs: u64,
@@ -1378,7 +1378,7 @@ pub struct S3Settings {
     /// fields have always had localhost-MinIO defaults, so their mere
     /// presence can't signal intent — without this flag uploads stay on
     /// the local-disk backend (pod-ephemeral in k8s). Prod sets
-    /// `ROOMLER__S3__ENABLED=true`.
+    /// `MESHHARBOR__S3__ENABLED=true`.
     #[serde(default)]
     pub enabled: bool,
     pub endpoint: String,
@@ -1396,7 +1396,7 @@ pub struct MediasoupSettings {
     /// S6 — per-node announced-IP override for multi-pod hostNetwork
     /// deployments: `"<node_ip>=<public_ip>,<node_ip>=<public_ip>"`.
     /// One Deployment can't template a per-node env value, so the pod
-    /// gets its own node IP via the Downward API (`ROOMLER__POD_HOST_IP`,
+    /// gets its own node IP via the Downward API (`MESHHARBOR__POD_HOST_IP`,
     /// status.hostIP) and picks its public announced IP from this map.
     /// Absent / no match → `announced_ip` as before.
     #[serde(default)]
@@ -1442,7 +1442,7 @@ pub struct TurnSettings {
     pub shared_secret: Option<String>,
     pub force_relay: Option<bool>,
     /// Ephemeral-credential TTL in seconds; 600 (the historical hardcode)
-    /// when unset. Env: `ROOMLER__TURN__TTL_SECS`.
+    /// when unset. Env: `MESHHARBOR__TURN__TTL_SECS`.
     pub ttl_secs: Option<u32>,
 }
 
@@ -1456,7 +1456,7 @@ pub struct StripeSettings {
     pub price_business: String,
     /// FR-115 — the ANNUAL Prices (two months free). Empty = annual is not
     /// offered: `/api/stripe/plans` says so and checkout refuses `year`.
-    /// Env: `ROOMLER__STRIPE__PRICE_PRO_ANNUAL`, `…__PRICE_BUSINESS_ANNUAL`.
+    /// Env: `MESHHARBOR__STRIPE__PRICE_PRO_ANNUAL`, `…__PRICE_BUSINESS_ANNUAL`.
     #[serde(default)]
     pub price_pro_annual: String,
     #[serde(default)]
@@ -1466,17 +1466,17 @@ pub struct StripeSettings {
     /// configured Price carries an amount in it (an EUR `currency_options`
     /// entry), or a European browser, which the billing page starts on EUR,
     /// would be refused at checkout. An unknown code is ignored; nothing
-    /// readable means USD. Env: `ROOMLER__STRIPE__CURRENCIES`.
+    /// readable means USD. Env: `MESHHARBOR__STRIPE__CURRENCIES`.
     #[serde(default)]
     pub currencies: String,
     /// FR-115 — the Stripe API's base URL; empty = `https://api.stripe.com`.
-    /// Tests point it at a fake. Env: `ROOMLER__STRIPE__API_BASE`.
+    /// Tests point it at a fake. Env: `MESHHARBOR__STRIPE__API_BASE`.
     #[serde(default)]
     pub api_base: String,
     /// FR-115 P2's kill switch: keep each subscription's quantity equal to
     /// the org's seat count (a reconcile every 15 minutes, with proration).
     /// Off = the quantity is set at checkout and never moved.
-    /// Env: `ROOMLER__STRIPE__SEAT_SYNC`.
+    /// Env: `MESHHARBOR__STRIPE__SEAT_SYNC`.
     #[serde(default)]
     pub seat_sync: bool,
 }
@@ -1509,7 +1509,7 @@ pub struct EmailSettings {
 /// one so campaign reputation is isolated from the From that activation and
 /// invite mail depend on. Both optional: unset ⇒ fall back to `email.from_*`,
 /// so a self-hosted instance needs no extra configuration.
-/// Env: `ROOMLER__NEWSLETTER__FROM_EMAIL` / `ROOMLER__NEWSLETTER__FROM_NAME`.
+/// Env: `MESHHARBOR__NEWSLETTER__FROM_EMAIL` / `MESHHARBOR__NEWSLETTER__FROM_NAME`.
 ///
 /// FR-102 P5 adds the delivery side (`docs/growth-observability.md`, the
 /// newsletter): the key SendGrid's signed Event Webhook is verified with, and
@@ -1525,14 +1525,14 @@ pub struct NewsletterSettings {
     /// base64 DER key SendGrid shows, or the same key as PEM. Empty — the
     /// default — and `POST /api/sendgrid/webhook` answers 404 to
     /// everything: with nothing to verify against, nothing is accepted.
-    /// Env: `ROOMLER__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY`.
+    /// Env: `MESHHARBOR__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY`.
     #[serde(default)]
     pub event_webhook_public_key: String,
     /// FR-102 P5 (D5) — the issue's links to this site carry
     /// `utm_source=newsletter&utm_medium=email&utm_campaign=nl-<slug>`,
     /// identical for every recipient. Default **on**; `false` sends the
     /// links as written (and the issue's visits read "not measured").
-    /// Env: `ROOMLER__NEWSLETTER__LINK_TAGS`.
+    /// Env: `MESHHARBOR__NEWSLETTER__LINK_TAGS`.
     #[serde(default = "newsletter_default_link_tags")]
     pub link_tags: bool,
 }
@@ -1560,7 +1560,7 @@ pub struct PushSettings {
 }
 
 /// FR-20 P5 — what a metered unit costs us, read from `config/relay-costs.toml`
-/// (or `ROOMLER__RELAY_COSTS__*`).
+/// (or `MESHHARBOR__RELAY_COSTS__*`).
 ///
 /// # Every field is `Option` on purpose
 ///
@@ -1630,7 +1630,7 @@ impl Settings {
             // is one line in one place. Optional: absent leaves every cost
             // `None`, which renders as "not priced" rather than as zero.
             .add_source(File::with_name("config/relay-costs").required(false))
-            .add_source(Environment::default().separator("__").prefix("ROOMLER"))
+            .add_source(Environment::default().separator("__").prefix("MESHHARBOR"))
             .set_default("app.host", "0.0.0.0")?
             .set_default("app.port", 3000)?
             .set_default("app.cors_origins", Vec::<String>::new())?
@@ -1641,7 +1641,7 @@ impl Settings {
             // it is also the only origin allowed to authenticate a `/ws`
             // handshake with the session cookie — so a wrong default is a
             // local-dev outage, not a cosmetic mismatch. Production overrides
-            // it via `ROOMLER__APP__FRONTEND_URL` and is unaffected.
+            // it via `MESHHARBOR__APP__FRONTEND_URL` and is unaffected.
             .set_default("app.frontend_url", DEFAULT_FRONTEND_URL)?
             .set_default("app.rate_limit_per_sec", 1)?
             .set_default("app.rate_limit_burst", 60)?
@@ -1652,7 +1652,7 @@ impl Settings {
             .set_default("app.auth_rate_limit_per_min", 10)?
             .set_default("app.auth_rate_limit_burst", 20)?
             .set_default("database.url", "mongodb://localhost:27019")?
-            .set_default("database.name", "roomler-ai")?
+            .set_default("database.name", "meshharbor")?
             .set_default("jwt.secret", "change-me-in-production")?
             // Access token: 1 week (was 1 hour). The shorter TTL was
             // partnered with a much longer refresh, but operators
@@ -1665,7 +1665,7 @@ impl Settings {
             .set_default("jwt.previous_secrets", "")?
             .set_default("jwt.access_token_ttl_secs", 604800)?
             .set_default("jwt.refresh_token_ttl_secs", 2_592_000)?
-            .set_default("jwt.issuer", "roomler-ai")?
+            .set_default("jwt.issuer", "meshharbor")?
             .set_default("redis.url", "redis://127.0.0.1:6379")?
             .set_default("rc.ws_rx_deadline_secs", 90)?
             .set_default("rc.ws_liveness_tick_secs", 30)?
@@ -1692,7 +1692,7 @@ impl Settings {
             .set_default("s3.endpoint", "http://localhost:9000")?
             .set_default("s3.access_key", "minioadmin")?
             .set_default("s3.secret_key", "minioadmin")?
-            .set_default("s3.bucket", "roomler-ai")?
+            .set_default("s3.bucket", "meshharbor")?
             .set_default("s3.region", "us-east-1")?
             .set_default("mediasoup.num_workers", 2)?
             .set_default("mediasoup.listen_ip", "0.0.0.0")?
@@ -1743,7 +1743,7 @@ impl Settings {
             .set_default("giphy.api_key", "")?
             .set_default("email.api_key", "")?
             .set_default("email.from_email", "noreply@roomler.ai")?
-            .set_default("email.from_name", "Roomler")?
+            .set_default("email.from_name", "MeshHarbor")?
             .set_default("email.activation_token_ttl_minutes", 5u64)?
             .set_default("email.smtp_host", None::<String>)?
             .set_default("email.smtp_port", None::<u16>)?
@@ -2012,7 +2012,7 @@ mod growth_settings_tests {
         for bad in [
             "",
             "  ",
-            "roomler-ai",
+            "meshharbor",
             "/x",
             "x/",
             "a/b/c",

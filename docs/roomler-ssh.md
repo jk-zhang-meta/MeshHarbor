@@ -416,9 +416,9 @@ could not write to.
   person cannot enter leaves the child where it was, which is sshd's fallback too,
   and the daemon logs a missing home.
 - Fleet RPC is unchanged: a command starts in its `cwd`, or where it always has.
-- Kill switch: `ROOMLERD_SSH_START_IN_HOME=0` puts the old start back. On a
+- Kill switch: `MESHHARBORD_SSH_START_IN_HOME=0` puts the old start back. On a
   SystemContext Windows device, set it in the service's environment
-  (`roomlerd set-service-env-var`), as for `ROOMLERD_SFTP_AS_USER`.
+  (`roomlerd set-service-env-var`), as for `MESHHARBORD_SFTP_AS_USER`.
 
 Field-proven 2026-10-18 on candidates (FR-97 §8). On a Linux root daemon, `named`
 and `console_user` sessions started in `/home/wlab`, where the release had started
@@ -566,7 +566,7 @@ sequenceDiagram
   unanswered prompt read the same on both paths.
 - **Either half can refuse.** The worker refuses a via-service grant when its
   person's `ssh_enabled` is off, when `ssh_max_privilege = console_user` meets a
-  `daemon` grant (M5 above), or when `ROOMLERD_SSH_VIA_SERVICE=0` is set.
+  `daemon` grant (M5 above), or when `MESHHARBORD_SSH_VIA_SERVICE=0` is set.
 
 What the signed-in user controls, and why none of it widens port 2223:
 
@@ -585,7 +585,7 @@ endpoint names the old anchor). Each sends grants back to the worker, and the
 audit says `worker`.
 
 **Kill switches:** the server's `rc.ssh_via_service = false`; the device's
-`ROOMLERD_SSH_VIA_SERVICE=0` (the worker drops the word and stops intercepting
+`MESHHARBORD_SSH_VIA_SERVICE=0` (the worker drops the word and stops intercepting
 2223); the anchor's `ssh = off`, the default.
 
 **`roomler proxy` needs nothing new.** It carries bytes for stock `ssh` to the
@@ -945,13 +945,13 @@ Server feature: two of the three corporate laptops measured on 2026-10-18 have
 it, and the third has only the client. Without it the subsystem refuses as
 below.
 
-Kill switch: `ROOMLERD_SFTP_AS_USER=0` puts the pre-P4b refusal back. On a
+Kill switch: `MESHHARBORD_SFTP_AS_USER=0` puts the pre-P4b refusal back. On a
 Windows service install, set it with
-`roomlerd set-service-env-var --name ROOMLERD_SFTP_AS_USER --value 0`, then
+`roomlerd set-service-env-var --name MESHHARBORD_SFTP_AS_USER --value 0`, then
 restart the service. The SystemContext worker inherits the service's
 environment, so a machine-wide variable reaches it only after a reboot.
 ⚠️ Never replace the service's registry `Environment` value by hand. On a
-SystemContext install it already holds `ROOMLERD_ENABLE_SYSTEM_SWAP=1`.
+SystemContext install it already holds `MESHHARBORD_ENABLE_SYSTEM_SWAP=1`.
 Overwriting it turned a test device into a user-context one, whose worker,
 enrolled machine-wide, exited at once with `no config found`.
 `set-service-env-var` edits one entry and keeps the rest.
@@ -962,7 +962,7 @@ decision 3), so the `console_user` corporate laptops had no `scp`. There,
 the signed-in user, and still work.
 
 ⚠️ **No `sftp-server` binary ⇒ refuse**, naming what to install. The probe
-covers Debian/RHEL/Arch/macOS/Windows layouts; `ROOMLER_SFTP_SERVER` overrides
+covers Debian/RHEL/Arch/macOS/Windows layouts; `MESHHARBOR_SFTP_SERVER` overrides
 for an unusual host. `sftp-server`'s stderr goes to the daemon log, never the
 channel — SFTP is binary and injected text corrupts a transfer.
 
@@ -989,7 +989,7 @@ roomler. The first P4b run dialled 22 and met exactly that.
 
 ### Bulk throughput: the channel window
 
-Every channel offers a **16 MiB** receive window (`ROOMLERD_SSH_WINDOW_SIZE`,
+Every channel offers a **16 MiB** receive window (`MESHHARBORD_SSH_WINDOW_SIZE`,
 bytes, 256 KiB–64 MiB; `sshd::channel_window` in `agents/meshharbord/src/ssh.rs`).
 russh's own default is 2 MiB, re-opened at half. One upload can have no more than
 the window in flight, and the bytes still waiting in the client's own socket

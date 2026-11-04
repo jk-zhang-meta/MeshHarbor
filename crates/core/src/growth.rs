@@ -6,7 +6,7 @@
 //! admins' own sign-ups, the orgs they create to test with, the throwaway
 //! orgs a field test leaves behind. Two kinds of exclusion fold into ONE set:
 //!
-//! * **implicit** — every platform admin (`ROOMLER__STATS__PLATFORM_ADMINS`)
+//! * **implicit** — every platform admin (`MESHHARBOR__STATS__PLATFORM_ADMINS`)
 //!   and every org owned by an excluded user. No row needed: the allowlist
 //!   is the record, and an admin who creates a new test org tomorrow is
 //!   excluded with it.

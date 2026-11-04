@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! FR-90 P0e — the model sidecar: a loopback HTTP endpoint inside the daemon
 //! that every session's Claude Code talks to instead of the provider
-//! (`docs/roomler-hive-design.md` §11.2).
+//! (`docs/meshharbor-hive-design.md` §11.2).
 //!
 //! # What it is for
 //!
@@ -157,7 +157,7 @@ impl Supervisor {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "overloaded_error",
                 format!(
-                    "this device lost its connection to Roomler {} s ago; model calls stop after {} s",
+                    "this device lost its connection to MeshHarbor {} s ago; model calls stop after {} s",
                     offline.as_secs(),
                     self.offline_grace().as_secs()
                 ),
@@ -203,7 +203,7 @@ impl Supervisor {
                     StatusCode::SERVICE_UNAVAILABLE,
                     "overloaded_error",
                     format!(
-                        "this device has not yet heard from Roomler that it still holds this \
+                        "this device has not yet heard from MeshHarbor that it still holds this \
                          session (waited {} s); ask again in a moment",
                         self.lease_wait().as_secs()
                     ),

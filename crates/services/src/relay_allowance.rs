@@ -17,7 +17,7 @@ use meshharbor_db::models::Plan;
 /// each other's. The throttle's job writes it; every API pod's refresh and
 /// the push to the PoPs (FR-115 P4a-2, `meshharbor_core::relay_load`) read it.
 pub fn set_key(db_name: &str) -> String {
-    format!("roomler:relay_over_allowance:{db_name}")
+    format!("meshharbor:relay_over_allowance:{db_name}")
 }
 
 /// The month's relay allowance in bytes for `plan` with `seats`; `None` when

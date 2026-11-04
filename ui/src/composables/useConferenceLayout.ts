@@ -34,7 +34,7 @@ export interface ResolvedLayout {
   selfViewFloating: boolean
 }
 
-const STORAGE_KEY = 'roomler:layout-prefs'
+const STORAGE_KEY = 'meshharbor:layout-prefs'
 const MAX_PINS = 6
 
 function loadPrefs(): LayoutPreferences {

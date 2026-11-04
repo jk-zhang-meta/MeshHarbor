@@ -24,7 +24,7 @@ something else briefly holds the port.
 | P3 | Reporting: make `magicdns active` mean *answering* | open (#1363) | — |
 | P4 | Docs: [`docs/magicdns.md`](../magicdns.md) in house style with diagrams, linked from `docs/README.md` | **shipped** | — |
 | P5 | **Write the NRPT rule into the Group-Policy store where the local store is inert** (Tailscale's `writeAsGP`) | **PARKED** — necessary but not sufficient; the host that motivated it is blocked one layer higher | detect-and-fall-back; a host whose local rule works must keep using it |
-| P6 | **A resolution ladder, with the hosts file as its last rung** | **shipped 0.4.76** (#1437), **field-verified** — the goal is met on the enforced-DNS host | `ROOMLERD_MAGICDNS_HOSTS`, default OFF |
+| P6 | **A resolution ladder, with the hosts file as its last rung** | **shipped 0.4.76** (#1437), **field-verified** — the goal is met on the enforced-DNS host | `MESHHARBORD_MAGICDNS_HOSTS`, default OFF |
 
 ### P6 — the rung that is not on the DNS path
 

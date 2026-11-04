@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! Roomler-SSH session activity (`ssh_activity`, P8).
+//! MeshHarbor-SSH session activity (`ssh_activity`, P8).
 //!
 //! What a device REPORTS doing inside a session: the commands it ran, the
 //! shells and SFTP subsystems it opened, the forwards it allowed or refused.

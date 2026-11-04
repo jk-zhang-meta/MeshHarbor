@@ -41,8 +41,8 @@ and `GET /health` on any of them lists the modules it actually mounts.
 | `mesh` | `<tag>-mesh` | devices + overlay mesh, tunnels, `roomler ssh` | MongoDB, Redis, coturn (and DERP relays if you run them) | the SFU worker build, MinIO |
 | `access` | `<tag>-access` | devices + remote desktop + mesh — no chat, no calls | MongoDB, Redis, coturn | the SFU worker build, MinIO |
 
-Pick one by **tag** when you pull (`ROOMLER_IMAGE=ghcr.io/gjovanov/roomler-ai:<tag>-mesh`
-in `.env.selfhost`) or by **`ROOMLER_PROFILE`** when you build from source. No published
+Pick one by **tag** when you pull (`MESHHARBOR_IMAGE=ghcr.io/gjovanov/roomler-ai:<tag>-mesh`
+in `.env.selfhost`) or by **`MESHHARBOR_PROFILE`** when you build from source. No published
 `v*` image carries the hosted service's billing and newsletter module — that is what `roomler.ai`
 runs, not what you run.
 
@@ -77,8 +77,8 @@ Open `.env.selfhost` and fill in the four required values. Generate the two
 secrets:
 
 ```bash
-openssl rand -hex 32   # → ROOMLER_JWT_SECRET
-openssl rand -hex 32   # → ROOMLER_TURN_SECRET
+openssl rand -hex 32   # → MESHHARBOR_JWT_SECRET
+openssl rand -hex 32   # → MESHHARBOR_TURN_SECRET
 openssl rand -hex 24   # → MONGO_ROOT_PASSWORD
 openssl rand -hex 24   # → MINIO_ROOT_PASSWORD
 ```
@@ -126,7 +126,7 @@ docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d --b
 > source build carries it only if you run `scripts/fetch-geoip.sh` before
 > building. Without it every country reads `unknown`, which is a supported
 > state, and the boot log warns once. To turn country lookups off in either
-> case, set `ROOMLER__STATS__GEOIP_MMDB` to an empty value. Details:
+> case, set `MESHHARBOR__STATS__GEOIP_MMDB` to an empty value. Details:
 > [`files/geoip/README.md`](../files/geoip/README.md).
 
 Watch it come up:
@@ -176,11 +176,11 @@ curl -fsSL https://<your-host>/api/setup/install.sh | sh -s -- \
 ```
 
 The script you fetch **already points at your server**: the route that serves it
-substitutes your `ROOMLER_PUBLIC_URL` for the built-in default before the bytes
+substitutes your `MESHHARBOR_PUBLIC_URL` for the built-in default before the bytes
 leave the process, because a piped script has no way to see the URL it came from
 (FR-50). You can still pass `--server` / `-Server` to override it.
 
-⚠️ **This depends on `ROOMLER_PUBLIC_URL` being right.** If it is not a plain
+⚠️ **This depends on `MESHHARBOR_PUBLIC_URL` being right.** If it is not a plain
 `scheme://host[:port]`, the server logs a warning and serves the script with the
 hosted default untouched — at which point the agent downloads from you and then
 tries to enroll against `roomler.ai` with a token only your server can verify,
@@ -212,7 +212,7 @@ Optional while you are trying it out on one machine, **required the moment you
 add a second** — enrollment refuses plaintext to anything but loopback, as the
 warning above explains.
 
-Terminate TLS in front of the stack and point it at `ROOMLER_HTTP_PORT`. The app
+Terminate TLS in front of the stack and point it at `MESHHARBOR_HTTP_PORT`. The app
 needs WebSocket upgrades on `/ws` and `/derp`, and both are long-lived — set
 generous read timeouts or sessions will be cut every 60 seconds.
 
@@ -234,13 +234,13 @@ nginx, add the usual `Upgrade` / `Connection` headers and
 Then update `.env.selfhost` and restart:
 
 ```bash
-ROOMLER_PUBLIC_URL=https://roomler.example.com
-ROOMLER_ANNOUNCED_IP=<the host's public IP>
-ROOMLER_PUBLIC_IP=<the host's public IP>
-ROOMLER_TURN_URL=turn:roomler.example.com:3478
+MESHHARBOR_PUBLIC_URL=https://roomler.example.com
+MESHHARBOR_ANNOUNCED_IP=<the host's public IP>
+MESHHARBOR_PUBLIC_IP=<the host's public IP>
+MESHHARBOR_TURN_URL=turn:roomler.example.com:3478
 ```
 
-⚠️ `ROOMLER_PUBLIC_URL` is used for OAuth callbacks and for the links inside
+⚠️ `MESHHARBOR_PUBLIC_URL` is used for OAuth callbacks and for the links inside
 invitation and notification email. A stale value produces invitations that lead
 nowhere, and it is not obvious from the failure.
 
@@ -255,7 +255,7 @@ no reverse proxy is involved.
 
 Two settings decide whether it works:
 
-- `ROOMLER_ANNOUNCED_IP` — the address browsers send to. `127.0.0.1` works only
+- `MESHHARBOR_ANNOUNCED_IP` — the address browsers send to. `127.0.0.1` works only
   for calls made on the host itself.
 - the RTC port range — 32 ports are mapped by default, enough to try it out.
 
@@ -278,13 +278,13 @@ from [`.env.example`](../.env.example).
 
 | Feature | Variables |
 |---|---|
-| Outbound email (invites, notifications, activation) | `ROOMLER__EMAIL__*` |
-| OAuth sign-in (Google, GitHub, Microsoft, LinkedIn, Facebook) | `ROOMLER__OAUTH__*` |
-| Web push | `ROOMLER__PUSH__*` |
-| AI document recognition | `ROOMLER__CLAUDE__API_KEY` |
-| Stripe billing | `ROOMLER__STRIPE__*` |
+| Outbound email (invites, notifications, activation) | `MESHHARBOR__EMAIL__*` |
+| OAuth sign-in (Google, GitHub, Microsoft, LinkedIn, Facebook) | `MESHHARBOR__OAUTH__*` |
+| Web push | `MESHHARBOR__PUSH__*` |
+| AI document recognition | `MESHHARBOR__CLAUDE__API_KEY` |
+| Stripe billing | `MESHHARBOR__STRIPE__*` |
 
-⚠️ `ROOMLER_AUTO_VERIFY=true` is the default **because no SMTP is configured out
+⚠️ `MESHHARBOR_AUTO_VERIFY=true` is the default **because no SMTP is configured out
 of the box** — an account waiting on an activation email that can never arrive is
 an account nobody can use. Set it to `false` once email works.
 
@@ -320,7 +320,7 @@ docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost \
   > roomler-$(date +%F).archive.gz
 ```
 
-Keep `.env.selfhost` with the backup. Losing `ROOMLER_JWT_SECRET` invalidates
+Keep `.env.selfhost` with the backup. Losing `MESHHARBOR_JWT_SECRET` invalidates
 every session and every enrolled agent's token — the fleet would have to
 re-enroll.
 

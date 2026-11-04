@@ -304,7 +304,7 @@ mod tests {
 
     fn tmp(name: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("roomlerd-keep-busy-{}-{name}", std::process::id()));
+            std::env::temp_dir().join(format!("meshharbord-keep-busy-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir.join(FILE_NAME)
     }

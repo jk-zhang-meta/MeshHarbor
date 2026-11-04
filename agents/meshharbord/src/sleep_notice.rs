@@ -26,7 +26,7 @@
 //! channel); the watcher is Linux's, and needs D-Bus (`portal-capture`, which
 //! every shipped Linux agent carries through `full`).
 //!
-//! Kill switch `ROOMLERD_SLEEP_NOTICE=0`; P2d-2's `ROOMLERD_MEDIA_WAITING=0`
+//! Kill switch `MESHHARBORD_SLEEP_NOTICE=0`; P2d-2's `MESHHARBORD_MEDIA_WAITING=0`
 //! silences it as it does every waiting notice.
 
 use std::collections::HashMap;
@@ -74,7 +74,7 @@ pub fn live() -> usize {
     registry().lock().unwrap_or_else(|p| p.into_inner()).len()
 }
 
-/// FR-93 P5h kill switch `ROOMLERD_SLEEP_NOTICE=0`: no inhibitor, no notice,
+/// FR-93 P5h kill switch `MESHHARBORD_SLEEP_NOTICE=0`: no inhibitor, no notice,
 /// as before P5h.
 #[cfg_attr(
     not(all(target_os = "linux", feature = "portal-capture")),
@@ -164,7 +164,7 @@ pub fn start(runtime: tokio::runtime::Handle) {
         return;
     }
     if !enabled() {
-        tracing::info!("sleep notice off (ROOMLERD_SLEEP_NOTICE=0, FR-93 P5h)");
+        tracing::info!("sleep notice off (MESHHARBORD_SLEEP_NOTICE=0, FR-93 P5h)");
         return;
     }
     let spawned = std::thread::Builder::new()
@@ -283,7 +283,7 @@ mod linux {
                 "Inhibit",
                 &(
                     "sleep",
-                    "Roomler",
+                    "MeshHarbor",
                     "tell remote viewers that this computer is going to sleep",
                     "delay",
                 ),

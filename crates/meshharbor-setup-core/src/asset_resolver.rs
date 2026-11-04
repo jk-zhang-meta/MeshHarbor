@@ -133,7 +133,7 @@ pub struct ArtifactHealth {
     // RETIRED-NAME-ANCHOR(8): names a PUBLISHED release asset. Filenames are fixed by
     // what is already on GitHub Releases (FR-21 D6).
     /// Canonical asset filename, e.g.
-    /// `roomler-agent-0.3.0-rc.28-perMachine-x86_64-pc-windows-msvc.msi`.
+    /// `meshharbor-agent-0.3.0-rc.28-perMachine-x86_64-pc-windows-msvc.msi`.
     pub filename: String,
     /// Asset size in bytes.
     pub size: u64,
@@ -387,7 +387,7 @@ pub struct ReleaseAsset {
 }
 
 // Deser-only mirrors of the `/api/*/latest-release` JSON. Local to
-// core (NO roomlerd dep — D8 dep hygiene; core never links the
+// core (NO meshharbord dep — D8 dep hygiene; core never links the
 // agent/tunnel crates).
 #[derive(Deserialize)]
 struct RelListEntry {
@@ -636,7 +636,7 @@ mod tests {
         // is a copy of a real GitHub asset list.
         let h: ArtifactHealth = serde_json::from_str(
             r#"{"tag":"agent-v0.3.0-rc.28","flavour":"permachine",
-                "filename":"roomler-agent-0.3.0-rc.28-perMachine-x86_64-pc-windows-msvc.msi",
+                "filename":"meshharbor-agent-0.3.0-rc.28-perMachine-x86_64-pc-windows-msvc.msi",
                 "size":123,"digest":null,
                 "uri":"/api/agent/installer/permachine?version=latest"}"#,
         )
@@ -650,7 +650,7 @@ mod tests {
         // RETIRED-NAME-ANCHOR(3): the same — a real published asset's name.
         let h: ArtifactHealth = serde_json::from_str(
             r#"{"tag":"tunnel-v0.3.0-rc.46","platform":"windows-x86_64",
-                "filename":"roomler-tunnel-0.3.0-rc.46-x86_64-pc-windows-msvc.zip",
+                "filename":"meshharbor-tunnel-0.3.0-rc.46-x86_64-pc-windows-msvc.zip",
                 "size":456,"digest":"sha256:00","uri":"/api/tunnel/installer/windows-x86_64?version=latest"}"#,
         )
         .unwrap();

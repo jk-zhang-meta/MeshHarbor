@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! `roomlerd` — the native remote-control agent for the Roomler AI
-//! platform. Runs on the controlled host, connects out to the Roomler API
+//! `meshharbord` — the native remote-control agent for the MeshHarbor
+//! platform. Runs on the controlled host, connects out to the MeshHarbor API
 //! over WSS, and (eventually) serves a WebRTC peer to a browser controller.
 //!
 //! This v1 is signaling-only: it enrols against a token from an admin,
@@ -50,10 +50,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Enroll this machine against a Roomler server using an admin-issued
+    /// Enroll this machine against a MeshHarbor server using an admin-issued
     /// enrollment token. Writes the resulting agent token to the config file.
     Enroll {
-        /// Base URL of the Roomler API (e.g. https://roomler.live).
+        /// Base URL of the MeshHarbor API (e.g. https://roomler.live).
         #[arg(long)]
         server: String,
         /// Enrollment token, as printed by the admin UI. Use `-` to read it
@@ -80,7 +80,7 @@ enum Command {
         // `machine_global_dir()` still resolves
         // it on a host that has one, so it must stay named here. docs/fr/FR-21
         /// rc.52: write the enrolled config to the machine-global
-        /// path (`%PROGRAMDATA%\roomler\roomler-agent\config.toml`)
+        /// path (`%PROGRAMDATA%\meshharbor\meshharbor-agent\config.toml`)
         /// instead of the per-user `%APPDATA%` default. Required for
         /// perMachine + SystemContext hosts so the LocalSystem worker
         /// can load its config pre-logon. Windows-only; requires an
@@ -135,12 +135,12 @@ enum Command {
         /// FR-102 — how this daemon was installed, for the server's install
         /// trace: one of `wizard`, `script-sh`, `script-ps1`, `msi`, `deb`,
         /// `pkg`, `manual`, `container`, `other`. Falls back to the
-        /// `ROOMLER_INSTALL_METHOD` env var (what the served install scripts
+        /// `MESHHARBOR_INSTALL_METHOD` env var (what the served install scripts
         /// set), then to `manual` — a person typed this command.
         #[arg(long, value_name = "METHOD")]
         install_method: Option<String>,
         /// FR-102 — what the install runs as: `system`, `per-user`,
-        /// `attended` or `unknown`. Falls back to `ROOMLER_INSTALL_SCOPE`,
+        /// `attended` or `unknown`. Falls back to `MESHHARBOR_INSTALL_SCOPE`,
         /// then to `unknown`.
         #[arg(long, value_name = "SCOPE")]
         install_scope: Option<String>,
@@ -155,14 +155,14 @@ enum Command {
         #[arg(long)]
         token: String,
         /// Multi-org: which enrollment to refresh — `primary` (default) or
-        /// a `[[orgs]]` label (`roomlerd org ls`). The token is posted
+        /// a `[[orgs]]` label (`meshharbord org ls`). The token is posted
         /// to THAT org's server; the response must resolve to the same
         /// org (a different-tenant token belongs in `enroll`).
         #[arg(long)]
         org: Option<String>,
     },
     /// FR-94 (Windows) — anchor this machine's device, so Fleet RPC runs as
-    /// SYSTEM through the Roomler service instead of as the signed-in user.
+    /// SYSTEM through the MeshHarbor service instead of as the signed-in user.
     /// Every action needs an elevated prompt (Run as administrator).
     Anchor {
         #[command(subcommand)]
@@ -183,7 +183,7 @@ enum Command {
         /// `auto` (default — picks HW on Windows, SW elsewhere),
         /// `hardware` (force MF; falls back to SW only on init failure),
         /// `software` (force openh264). Also honours the
-        /// `ROOMLERD_ENCODER` env var.
+        /// `MESHHARBORD_ENCODER` env var.
         #[arg(long)]
         encoder: Option<String>,
         /// FR-43 P2a (macOS) — this process was started by the root daemon's
@@ -193,7 +193,7 @@ enum Command {
         /// A FLAG rather than an environment variable because the spawn chain
         /// runs through `sudo`, and `Defaults env_reset` discards the
         /// environment — measured on a real host, which is how P1's
-        /// `ROOMLER_MACOS_SUPERVISED` marker turned out never to have arrived
+        /// `MESHHARBOR_MACOS_SUPERVISED` marker turned out never to have arrived
         /// at all. The secret itself stays OFF the command line: argv is world
         /// readable via `ps`, while the pipe is only the parent's.
         #[arg(long, hide = true)]
@@ -227,7 +227,7 @@ enum Command {
         sas_event: Option<String>,
     },
     /// Run the codec capability probes and print the result as one
-    /// `ROOMLER_CAPS_JSON:{…}` line. Spawned by the daemon itself — never
+    /// `MESHHARBOR_CAPS_JSON:{…}` line. Spawned by the daemon itself — never
     /// invoked by operators — so that a vendor driver faulting inside a
     /// probe costs a child process instead of crash-looping the daemon.
     /// Hidden: running it by hand only tells you what `meshharbor status`
@@ -248,7 +248,7 @@ enum Command {
     },
     /// (internal, Linux) FR-45 P2a — run inside the console user's session and
     /// report the desktop portal's availability as one
-    /// `ROOMLER_PORTAL_JSON:{…}` line.
+    /// `MESHHARBOR_PORTAL_JSON:{…}` line.
     ///
     /// Spawned by the daemon, never by operators. It exists because the daemon
     /// is root and the portal is per-user-session: there is no way to ask the
@@ -317,7 +317,7 @@ enum Command {
     /// FR-16 L4 — open the bench probe target: a small topmost window in the
     /// primary monitor's bottom-right corner whose marker changes when a
     /// real pointer move reaches one of its 16 cells. A viewer with
-    /// `roomler-rc-bench=target` moves the remote pointer onto the cells and
+    /// `meshharbor-rc-bench=target` moves the remote pointer onto the cells and
     /// times each move to the first painted frame showing it: input to
     /// photon on a release build, injection and the host's compositor
     /// included. Run it in the signed-in desktop session. Windows only.
@@ -437,9 +437,9 @@ enum Command {
     #[cfg(feature = "recording")]
     #[command(hide = true, name = "record")]
     Record {
-        /// Destination folder. Default: the configured one, else Videos\Roomler
-        /// (Windows, when local and writable), ~/Movies/Roomler (macOS), the
-        /// XDG videos dir + Roomler (Linux).
+        /// Destination folder. Default: the configured one, else Videos\MeshHarbor
+        /// (Windows, when local and writable), ~/Movies/MeshHarbor (macOS), the
+        /// XDG videos dir + MeshHarbor (Linux).
         #[arg(long)]
         out: Option<PathBuf>,
         /// Frames per second (1–60).
@@ -624,7 +624,7 @@ enum Command {
     },
     // RETIRED-NAME-ANCHOR: names the OLD MSI product this sweep exists to remove.
     // docs/fr/FR-21
-    /// Uninstall older roomler-agent MSI versions left behind on this
+    /// Uninstall older meshharbor-agent MSI versions left behind on this
     /// host. The release pipeline puts the rc number in the MSI 4th
     /// version field (`0.3.0.N`), which Windows Installer ignores for
     /// upgrade comparison — so `MajorUpgrade` never removes the prior
@@ -686,7 +686,7 @@ enum Command {
         disconnect: Option<String>,
     },
     /// (internal) Entry point invoked by the Windows Service Control
-    /// Manager when `Roomler` starts. Hands the process
+    /// Manager when `MeshHarbor` starts. Hands the process
     /// over to `windows-service`'s dispatcher; the agent main loop
     /// runs inside the SCM thread until Stop is signalled. Hidden
     /// from `--help` because operators never invoke this directly —
@@ -701,7 +701,7 @@ enum Command {
     #[command(hide = true)]
     Netd,
     /// Enable SystemContext mode on a perMachine install. Writes
-    /// `ROOMLERD_ENABLE_SYSTEM_SWAP=1` into the `Roomler`
+    /// `MESHHARBORD_ENABLE_SYSTEM_SWAP=1` into the `MeshHarbor`
     /// SCM `Environment` REG_MULTI_SZ block and restarts the service so
     /// the supervisor picks up the new env on its next worker spawn.
     /// Requires admin (HKLM write + SCM Stop/Start). Idempotent: re-runs
@@ -717,7 +717,7 @@ enum Command {
         no_restart: bool,
     },
     /// Disable SystemContext mode on a perMachine install. Removes
-    /// `ROOMLERD_ENABLE_SYSTEM_SWAP` from the `Roomler`
+    /// `MESHHARBORD_ENABLE_SYSTEM_SWAP` from the `MeshHarbor`
     /// SCM `Environment` block and restarts the service. The supervisor
     /// reverts to the user-context worker on next spawn. Requires admin.
     DisableSystemContext {
@@ -732,7 +732,7 @@ enum Command {
     /// runs when its command line has no `ENABLE_SYSTEM_CONTEXT` — a
     /// person running `msiexec /i` by hand. Every install recreates the
     /// service and loses the switch with it; the record
-    /// (`%PROGRAMDATA%\roomler\last-system-context-attempt.json`) is what
+    /// (`%PROGRAMDATA%\meshharbor\last-system-context-attempt.json`) is what
     /// survives. Requires admin.
     #[command(hide = true)]
     KeepSystemContext {
@@ -741,7 +741,7 @@ enum Command {
         #[arg(long)]
         no_restart: bool,
     },
-    /// Write a single name=value entry into the `Roomler`
+    /// Write a single name=value entry into the `MeshHarbor`
     /// SCM `Environment` REG_MULTI_SZ block. Omit `--value` to REMOVE
     /// the entry. Operators may use this directly, or the higher-level
     /// `enable-system-context` / `disable-system-context` wrappers.
@@ -750,12 +750,12 @@ enum Command {
     /// any rc.28+ wizard EXE in the field. Requires admin (HKLM write).
     ///
     /// Typical use:
-    ///   meshharbord set-service-env-var --name ROOMLERD_VP9_FPS --value 60
+    ///   meshharbord set-service-env-var --name MESHHARBORD_VP9_FPS --value 60
     ///   meshharbord restart-service
     #[command(name = "set-service-env-var")]
     SetServiceEnvVar {
-        /// Env var name (e.g. `ROOMLERD_VP9_FPS`,
-        /// `ROOMLERD_ENABLE_SYSTEM_SWAP`).
+        /// Env var name (e.g. `MESHHARBORD_VP9_FPS`,
+        /// `MESHHARBORD_ENABLE_SYSTEM_SWAP`).
         #[arg(long)]
         name: String,
         /// Env var value. Empty string is allowed (stored as
@@ -763,7 +763,7 @@ enum Command {
         #[arg(long)]
         value: Option<String>,
     },
-    /// Restart the `Roomler` via the SCM. Used after
+    /// Restart the `MeshHarbor` via the SCM. Used after
     /// `set-service-env-var` (or the higher-level
     /// `enable-system-context` / `disable-system-context`) to apply
     /// the new env block. Windows-only; requires admin (SCM
@@ -815,7 +815,7 @@ enum Command {
     },
 }
 
-/// FR-94 — `roomlerd anchor …`.
+/// FR-94 — `meshharbord anchor …`.
 #[derive(Debug, Subcommand)]
 enum AnchorCmd {
     /// Anchor the device: mint the SYSTEM service's credential and write it
@@ -839,10 +839,10 @@ enum AnchorCmd {
         #[arg(long)]
         force: bool,
         /// Anchor without turning remote execution on yet
-        /// (`roomlerd anchor exec on` later).
+        /// (`meshharbord anchor exec on` later).
         #[arg(long)]
         no_exec: bool,
-        /// FR-105 — roomler SSH through the SYSTEM service: `off`,
+        /// FR-105 — meshharbor SSH through the SYSTEM service: `off`,
         /// `console_user` or `system`. Unset keeps what this device's
         /// previous anchor said, and is off for a first anchor.
         #[arg(long, value_parser = ["off", "console_user", "system"])]
@@ -855,7 +855,7 @@ enum AnchorCmd {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
-    /// FR-105 — how far roomler SSH through the SYSTEM service may go:
+    /// FR-105 — how far meshharbor SSH through the SYSTEM service may go:
     /// `off` (the default), `console_user` (sessions as the signed-in user
     /// only) or `system` (SYSTEM as well).
     Ssh {
@@ -916,7 +916,7 @@ enum OrgAction {
     },
 }
 
-/// FR-85 P5 — `roomlerd media …`.
+/// FR-85 P5 — `meshharbord media …`.
 #[cfg(all(feature = "recording", feature = "openh264-encoder"))]
 #[derive(Debug, Subcommand)]
 enum MediaAction {
@@ -957,7 +957,7 @@ enum ServiceAction {
     /// Register the agent for auto-start on the next login.
     Install {
         /// Register the ROOT daemon with the OS's own service manager instead
-        /// of the per-user auto-start: on Windows the `Roomler` SCM service
+        /// of the per-user auto-start: on Windows the `MeshHarbor` SCM service
         /// (LocalSystem, AutoStart), on Linux the system unit
         /// `meshharbord.service`, on macOS the LaunchDaemon `fans.itachi.meshharbor.daemon`
         /// (FR-97 P6c). For fleet / unattended hosts, or ones that must be
@@ -978,7 +978,7 @@ enum ServiceAction {
     /// Print the current auto-start status.
     Status {
         /// Report the system service's state instead of the per-user hook's:
-        /// `Roomler: Running | Stopped | NotInstalled` on Windows, the unit's
+        /// `MeshHarbor: Running | Stopped | NotInstalled` on Windows, the unit's
         /// or the job's on Linux and macOS.
         #[arg(long, visible_alias = "system")]
         as_service: bool,
@@ -988,9 +988,9 @@ enum ServiceAction {
     /// `launchctl kickstart` the LaunchAgent. The daemon is spawned by the
     /// OS, never as a child of this command. Harmless when it is already
     /// running. This is the caller half of a restart under the Scheduled
-    /// Task (FR-84 D3, `roomler restart`, the companion's "Apply now").
+    /// Task (FR-84 D3, `meshharbor restart`, the companion's "Apply now").
     Start {
-        /// Start the system service instead: the `Roomler` SCM service (and
+        /// Start the system service instead: the `MeshHarbor` SCM service (and
         /// wait for RUNNING), `meshharbord.service`, or `fans.itachi.meshharbor.daemon`.
         /// Requires elevation on a stock install.
         #[arg(long, visible_alias = "system")]
@@ -1170,7 +1170,7 @@ fn self_heal_machine_global_config(loaded_path: &std::path::Path, cfg: &config::
 #[cfg(not(all(feature = "system-context", target_os = "windows")))]
 fn self_heal_machine_global_config(_loaded_path: &std::path::Path, _cfg: &config::AgentConfig) {}
 
-/// `meshharbord cli <args...>` → the argv to hand to the embedded `roomler`
+/// `meshharbord cli <args...>` → the argv to hand to the embedded `meshharbor`
 /// CLI, or `None` for every other invocation.
 ///
 /// P3e lever D: daemon hosts install a ~150 KB `meshharbor.exe` shim that
@@ -1180,16 +1180,16 @@ fn self_heal_machine_global_config(_loaded_path: &std::path::Path, _cfg: &config
 /// Read straight from raw argv, on purpose. Routing it through the daemon's
 /// own clap enum would mean a CLI call first ran every daemon-startup side
 /// effect below — DPI awareness, the 1 ms multimedia timer, the legacy-tree
-/// migration, `logging::init` — none of which the standalone `roomler`
+/// migration, `logging::init` — none of which the standalone `meshharbor`
 /// binary does. Element 0 is re-labelled so usage text still reads
-/// `roomler ...` rather than `roomlerd ...`.
+/// `meshharbor ...` rather than `meshharbord ...`.
 fn embedded_cli_args() -> Option<Vec<std::ffi::OsString>> {
     let mut it = std::env::args_os();
     let _exe = it.next()?;
     if it.next()? != "cli" {
         return None;
     }
-    let mut argv = vec![std::ffi::OsString::from("roomler")];
+    let mut argv = vec![std::ffi::OsString::from("meshharbor")];
     argv.extend(it);
     Some(argv)
 }
@@ -1235,7 +1235,7 @@ fn main() -> Result<()> {
         .enable_all()
         .build()?;
     std::thread::Builder::new()
-        .name("roomlerd-main".into())
+        .name("meshharbord-main".into())
         .spawn(move || {
             let res = rt.block_on(daemon_main());
             // FR-97 P0e — drop the runtime (cancelling every task, as the
@@ -1312,7 +1312,7 @@ fn pin_mmap_threshold() {
 }
 
 async fn daemon_main() -> Result<()> {
-    // P3e lever D — embedded `roomler` CLI. MUST stay the first statement in
+    // P3e lever D — embedded `meshharbor` CLI. MUST stay the first statement in
     // main(): everything below is daemon-startup setup that a CLI invocation
     // has no business performing. See `embedded_cli_args`.
     //
@@ -1458,7 +1458,7 @@ async fn daemon_main() -> Result<()> {
 
     // RETIRED-NAME-ANCHOR: a migration note names BOTH halves by necessity.
     // docs/fr/FR-21
-    // S1b — one-shot legacy-tree migration (`roomler-agent` → `roomler`).
+    // S1b — one-shot legacy-tree migration (`meshharbor-agent` → `meshharbor`).
     // MUST run before `logging::init` (log files open inside the tree) and
     // before ANY appdirs consumer (segment decisions are OnceLock-cached per
     // process). Skipped while the desktop companion is running — it may hold
@@ -1553,7 +1553,7 @@ async fn daemon_main() -> Result<()> {
         // can confirm or reject before writing a fix.
         win32_monitors::log_monitor_diagnostic();
 
-        // rc.54 — surface the ROOMLERD_VIRTUAL_SCREEN gate at
+        // rc.54 — surface the MESHHARBORD_VIRTUAL_SCREEN gate at
         // startup so the operator sees which `to_pixels` path is live.
         // The env var is also captured at first call inside the input
         // worker via LazyLock; this line is the canonical "is the
@@ -1562,7 +1562,7 @@ async fn daemon_main() -> Result<()> {
             meshharbord::input::parse_virtual_screen_flag(node_env("VIRTUAL_SCREEN").as_deref());
         tracing::info!(
             virtual_screen_enabled = vscreen,
-            "input mapping — rc.54 ROOMLERD_VIRTUAL_SCREEN gate (false = legacy enigo.main_display path; true = win32_monitors::primary virtual-screen offset)"
+            "input mapping — rc.54 MESHHARBORD_VIRTUAL_SCREEN gate (false = legacy enigo.main_display path; true = win32_monitors::primary virtual-screen offset)"
         );
     }
 
@@ -1571,7 +1571,7 @@ async fn daemon_main() -> Result<()> {
 
     let cmd = cli.command.unwrap_or(Command::Run {
         encoder: None,
-        // A bare `roomlerd` is never a supervised worker: the supervisor always
+        // A bare `meshharbord` is never a supervised worker: the supervisor always
         // spawns `run --supervised` explicitly.
         supervised: false,
         // Likewise the Windows spawners always say which one they are.
@@ -1760,7 +1760,7 @@ async fn daemon_main() -> Result<()> {
                     // feature says so there rather than exit with silence.
                     #[cfg(not(feature = "audio"))]
                     println!(
-                        "ROOMLER_AUDIO_FAILED:{}",
+                        "MESHHARBOR_AUDIO_FAILED:{}",
                         serde_json::json!({
                             "code": "backend_error",
                             "detail": "this build has no audio capture"
@@ -2069,10 +2069,10 @@ fn exit_for_requested_restart() {
 /// Routed through `crash_recorder::record` so:
 ///
 ///   - Under SystemContext (LocalSystem worker), the sidecar lands in
-///     `%PROGRAMDATA%\roomler\roomler-agent\crashes\` where the
+///     `%PROGRAMDATA%\meshharbor\meshharbor-agent\crashes\` where the
 ///     user-context uploader will find it on a later successful start.
 ///   - Under user-context worker, the sidecar lands in the worker's
-///     own `%LOCALAPPDATA%\roomler\…\crashes\` for the same uploader
+///     own `%LOCALAPPDATA%\meshharbor\…\crashes\` for the same uploader
 ///     to scan.
 ///
 /// The log_tail attached comes from `read_log_tail()` inside the
@@ -2133,7 +2133,7 @@ fn cleanup_legacy_install_cmd(target_flavour: &str, dry_run: bool) -> Result<()>
 
 // RETIRED-NAME-ANCHOR: names the OLD MSI product this sweep exists to remove.
 // docs/fr/FR-21
-/// Uninstall roomler-agent MSI versions older than the running one
+/// Uninstall meshharbor-agent MSI versions older than the running one
 /// (see [`meshharbord::version_sweep`] for why they pile up). Prints
 /// a one-line summary; exits 0 even on partial failure (best-effort,
 /// like `cleanup-legacy-install`). Use `--dry-run` to preview.
@@ -2227,7 +2227,7 @@ async fn rc_cmd(disconnect: Option<&str>) -> Result<()> {
         if !s.permissions.is_empty() {
             println!("    granted:    {}", s.permissions);
         }
-        println!("    disconnect: roomler rc --disconnect {}", s.session_id);
+        println!("    disconnect: meshharbor rc --disconnect {}", s.session_id);
     }
     Ok(())
 }
@@ -2275,7 +2275,7 @@ async fn consent_list_cmd() -> Result<()> {
             println!("    request:     {}", p.detail);
         }
         println!(
-            "    approve:     roomlerd consent --session {} --approve",
+            "    approve:     meshharbord consent --session {} --approve",
             p.session_id
         );
     }
@@ -2373,7 +2373,7 @@ async fn post_install_watch_cmd(
 }
 
 /// Resolution order for `encoder_preference`: CLI flag → env var
-/// `ROOMLERD_ENCODER` → config file field → default (Auto).
+/// `MESHHARBORD_ENCODER` → config file field → default (Auto).
 /// Invalid values fall through to Auto with a warning, so a typo can't
 /// prevent the agent from starting.
 fn rollback_attention_msg(
@@ -2383,7 +2383,7 @@ fn rollback_attention_msg(
     failure_reason: Option<&str>,
 ) -> String {
     let mut msg = format!(
-        "Roomler agent: crash loop detected (auto-rollback failed).\n\n\
+        "MeshHarbor agent: crash loop detected (auto-rollback failed).\n\n\
          Version {current} has crashed {crash_count} times within \
          {win_min} min. Last known good version: {target}.\n",
         win_min = config::CRASH_WINDOW_SECS / 60,
@@ -2506,7 +2506,7 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
     // RETIRED-NAME-ANCHOR: the PRE-RENAME machine-global tree. `machine_global_dir()`
     // still resolves
     // it on a host that has one, so it must stay named here. docs/fr/FR-21
-    // %PROGRAMDATA%\roomler\roomler-agent\config.toml so a perMachine
+    // %PROGRAMDATA%\meshharbor\meshharbor-agent\config.toml so a perMachine
     // + SystemContext host's LocalSystem worker can load it pre-logon.
     // machine_id is derived from the SAME path the config is written
     // to, so it stays internally consistent for this fresh enrollment.
@@ -2711,7 +2711,7 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
             println!("Enrolled into an ADDITIONAL org as {label:?}. Agent id: {enrolled_agent_id}");
             println!(
                 "This machine now serves {} enrollment(s); manage them with \
-                 `roomlerd org ls`.",
+                 `meshharbord org ls`.",
                 1 + cfg.orgs.len()
             );
             // FR-49 — say what the mesh is doing. A secondary defaults to
@@ -2730,7 +2730,7 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
                      and SSH over the control plane still work."
                 );
                 println!(
-                    "    Join it with: roomlerd org overlay {label} netstack   \
+                    "    Join it with: meshharbord org overlay {label} netstack   \
                      (then restart the daemon)"
                 );
             } else {
@@ -2805,7 +2805,7 @@ fn warning_message_for_user_context_enroll() -> String {
      machine_id) and will look like a different host to the server.\n\
 \n\
 Either:\n\
- (a) start the service: `sc start Roomler`  — uses %PROGRAMDATA%;\n\
+ (a) start the service: `sc start MeshHarbor`  — uses %PROGRAMDATA%;\n\
  (b) re-run `enroll` without --machine-global if you want to test in\n\
      THIS user shell (will produce a different agent_id).\n"
         .to_string()
@@ -2847,7 +2847,7 @@ async fn re_enroll_cmd(
         )
     } else {
         let entry = existing.find_org(org_label).ok_or_else(|| {
-            anyhow::anyhow!("no org labelled {org_label:?} in this config — see `roomlerd org ls`")
+            anyhow::anyhow!("no org labelled {org_label:?} in this config — see `meshharbord org ls`")
         })?;
         (
             entry.server_url.clone(),
@@ -2882,7 +2882,7 @@ async fn re_enroll_cmd(
             "the enrollment token belongs to a different org (tenant {}) than \
              {org_label:?} (tenant {expect_tenant}). To enroll this machine into an \
              ADDITIONAL org run:\n\n\
-             \troomlerd enroll --server {server_url} --token <jwt>",
+             \tmeshharbord enroll --server {server_url} --token <jwt>",
             new_cfg.tenant_id
         );
     }
@@ -2915,7 +2915,7 @@ async fn re_enroll_cmd(
     Ok(())
 }
 
-/// Multi-org P1 — `roomlerd org <ls|rm|enable|disable|set-primary>`.
+/// Multi-org P1 — `meshharbord org <ls|rm|enable|disable|set-primary>`.
 /// Direct config-file edits (same model as `enroll`): the daemon applies
 /// changes on its next start. Runtime org verbs over the LocalAPI land with
 /// the desktop org-management UI in a later phase.
@@ -2979,7 +2979,7 @@ fn org_cmd(config_path: &PathBuf, action: OrgAction) -> Result<()> {
                     dark.join(", ")
                 );
                 println!(
-                    "      `roomlerd org overlay <label> netstack|tun` joins one; \
+                    "      `meshharbord org overlay <label> netstack|tun` joins one; \
                      restart the daemon to apply."
                 );
             }
@@ -2995,7 +2995,7 @@ fn org_cmd(config_path: &PathBuf, action: OrgAction) -> Result<()> {
             let before = cfg.orgs.len();
             cfg.orgs.retain(|o| o.label != label);
             if cfg.orgs.len() == before {
-                bail!("no org labelled {label:?} — see `roomlerd org ls`");
+                bail!("no org labelled {label:?} — see `meshharbord org ls`");
             }
             println!(
                 "Removed org {label:?} from this machine. NOTE: the device row in that \
@@ -3034,7 +3034,7 @@ fn org_cmd(config_path: &PathBuf, action: OrgAction) -> Result<()> {
                 println!(
                     "  {demoted:?} was on the mesh as the primary and cannot stay on it as \
                      `tun` (that needs `overlay_multi_org` and the primary's control plane): \
-                     `roomlerd org overlay {demoted} netstack` keeps it on through the \
+                     `meshharbord org overlay {demoted} netstack` keeps it on through the \
                      userspace stack."
                 );
             }
@@ -3069,7 +3069,7 @@ fn set_org_enabled(cfg: &mut config::AgentConfig, label: &str, enable: bool) -> 
         );
     }
     let Some(entry) = cfg.orgs.iter_mut().find(|o| o.label == label) else {
-        bail!("no org labelled {label:?} — see `roomlerd org ls`");
+        bail!("no org labelled {label:?} — see `meshharbord org ls`");
     };
     entry.enabled = enable;
     println!(
@@ -3079,7 +3079,7 @@ fn set_org_enabled(cfg: &mut config::AgentConfig, label: &str, enable: bool) -> 
     Ok(())
 }
 
-/// True if virtual-desktop mode was requested (`ROOMLERD_VIRTUAL_DESKTOP`).
+/// True if virtual-desktop mode was requested (`MESHHARBORD_VIRTUAL_DESKTOP`).
 /// The one copy is `virtual_desktop::requested` (the indicator and the
 /// recorder ask it too).
 fn virtual_desktop_requested() -> bool {
@@ -3090,7 +3090,7 @@ fn virtual_desktop_requested() -> bool {
 /// `DISPLAY`, and — only on a hostile-NAT host with no public IPv4 — auto-enable
 /// relay-over-TCP media (WSL / corp NAT flap the UDP TURN relay otherwise; a
 /// public-IP server uses normal ICE). Returns a handle to keep alive for the
-/// process lifetime. Config comes from env (`ROOMLERD_VIRTUAL_DESKTOP_*`).
+/// process lifetime. Config comes from env (`MESHHARBORD_VIRTUAL_DESKTOP_*`).
 #[cfg(target_os = "linux")]
 fn maybe_start_virtual_desktop() -> Result<Option<virtual_desktop::VirtualDesktop>> {
     if !virtual_desktop_requested() {
@@ -3123,7 +3123,7 @@ fn maybe_start_virtual_desktop() -> Result<Option<virtual_desktop::VirtualDeskto
     // forcing TURNS/TCP-only there wastes the direct path AND, against a
     // co-located / dual-public-IP coturn, can strand ICE with no usable
     // candidate ("pingAllCandidates: no candidate pairs"). Either way an operator
-    // overrides with an EXPLICIT `ROOMLERD_ICE_RELAY_TCP=0|1` (`=1` on a
+    // overrides with an EXPLICIT `MESHHARBORD_ICE_RELAY_TCP=0|1` (`=1` on a
     // cloud-NAT VM whose public IP isn't on a local iface; `=0` for WSL
     // mirrored-mode with native UDP).
     let relay_forced = node_env_os("ICE_RELAY_TCP").is_some();
@@ -3131,7 +3131,7 @@ fn maybe_start_virtual_desktop() -> Result<Option<virtual_desktop::VirtualDeskto
     unsafe {
         std::env::set_var("DISPLAY", vd.display());
         if !relay_forced && !host_public {
-            tunnel_core::env::test_env::set_as("ROOMLERD_", "ICE_RELAY_TCP", "1");
+            tunnel_core::env::test_env::set_as("MESHHARBORD_", "ICE_RELAY_TCP", "1");
         }
     }
     let relay_over_tcp = node_env("ICE_RELAY_TCP").as_deref() == Some("1");
@@ -3368,7 +3368,7 @@ async fn run_cmd(
                 // FR-97 P6e (#1538) — never `eprintln!`: on a failing stderr it
                 // panics, and this benign exit became a crash on a Mac.
                 logging::say_on_stderr(
-                    "Another roomlerd is already running for this config; exiting.\n\
+                    "Another meshharbord is already running for this config; exiting.\n\
                  (use `meshharbord service status` to check the auto-start hook,\n\
                  or stop the running instance before starting a new one.)",
                 );
@@ -3422,7 +3422,7 @@ async fn run_cmd(
 
     // FR-84 D3 — who will relaunch this process if it exits, decided once,
     // from evidence the supervisor left (argv, environment, cgroup) — never
-    // from the config file. `none` is the answer for a hand-run `roomlerd
+    // from the config file. `none` is the answer for a hand-run `meshharbord
     // run`, and it is the one that makes "Apply now" refuse instead of
     // taking the device offline.
     let supervision = meshharbord::supervision::detect_here(supervisor_flag, supervised);
@@ -3458,7 +3458,7 @@ async fn run_cmd(
     }
 
     // ICE env bridge: the media-ICE hatches live in the VENDORED webrtc-ice
-    // crate, which reads raw `ROOMLER_ICE_*` env vars (it cannot depend on
+    // crate, which reads raw `MESHHARBOR_ICE_*` env vars (it cannot depend on
     // tunnel-core's `node_env` — dependency cycle), so the config fallback
     // map above never reaches them. Bridge config → process env here, but
     // only when the operator hasn't set the var (machine/user env wins —
@@ -3470,17 +3470,17 @@ async fn run_cmd(
     {
         let ice_keys: [(&str, Option<String>); 3] = [
             (
-                "ROOMLER_ICE_FOLLOW_RENOMINATION",
+                "MESHHARBOR_ICE_FOLLOW_RENOMINATION",
                 cfg.ice_follow_renomination
                     .map(|b| if b { "1" } else { "0" }.to_string()),
             ),
             (
-                "ROOMLER_ICE_WARM_STANDBY",
+                "MESHHARBOR_ICE_WARM_STANDBY",
                 cfg.ice_warm_standby
                     .map(|b| if b { "1" } else { "0" }.to_string()),
             ),
             (
-                "ROOMLER_ICE_OVERLAY_HOST_DEPRIORITIZE",
+                "MESHHARBOR_ICE_OVERLAY_HOST_DEPRIORITIZE",
                 cfg.ice_overlay_host_deprioritize
                     .map(|b| if b { "1" } else { "0" }.to_string()),
             ),
@@ -3562,7 +3562,7 @@ async fn run_cmd(
         tracing::warn!(error = %e, "overlay: failed to persist the netstack orgs' SOCKS ports");
     }
 
-    // Roomler SSH (P2) — mint this node's SSH host identity on the first
+    // MeshHarbor SSH (P2) — mint this node's SSH host identity on the first
     // SSH-enabled start, same shape as the WG key above: generated locally,
     // persisted through `config::save` (atomic + fsync + `.prev` + 0600 / ACL),
     // never transmitted. A device that never enables SSH never generates one.
@@ -3635,7 +3635,7 @@ async fn run_cmd(
     // Wire the file-DC v2 `files:dir` browse capability. Default
     // tracks `cfg.enable_remote_browse` (true unless the operator
     // disabled it in config.toml); env var
-    // `ROOMLERD_DISABLE_BROWSE=1` is an escape hatch for
+    // `MESHHARBORD_DISABLE_BROWSE=1` is an escape hatch for
     // emergency in-field disable without a config reload.
     let browse_enabled = cfg.enable_remote_browse
         && !matches!(
@@ -3736,7 +3736,7 @@ async fn run_cmd(
     // the rollback install — that requires fetching a specific tag's
     // installer and ships in 0.1.52 alongside the SHA256 / HMAC
     // manifest work. The operator can downgrade manually via
-    // `roomlerd self-update --pin <version>` (also 0.1.52) or
+    // `meshharbord self-update --pin <version>` (also 0.1.52) or
     // by reinstalling the previous MSI by hand.
     if config::should_rollback(&cfg, current_pkg, now_unix)
         && let Some(target) = cfg.last_known_good_version.clone()
@@ -3985,7 +3985,7 @@ async fn run_cmd(
     // rc.19 B1 fix: rebuild the partial-upload registry from disk
     // BEFORE the signaling task spawns. The synchronous await
     // guarantees no DC can carry a `files:resume` message until the
-    // registry knows about every surviving `.roomler-partial/<id>/`
+    // registry knows about every surviving `.meshharbor-partial/<id>/`
     // under Downloads. Sweep also deletes >24h-old orphans. Sweep
     // failure (e.g. Downloads inaccessible under SYSTEM context)
     // logs a debug message and continues — same-process resume via
@@ -4040,12 +4040,12 @@ async fn run_cmd(
 
     // 2026-07-27 — heal GPU clocks a crashed predecessor left pinned: the
     // session-scoped pin resets on Drop, but a SIGKILL'd/crashed agent never
-    // runs Drop. No-op unless `ROOMLERD_GPU_CLOCK_PIN` is enabled.
+    // runs Drop. No-op unless `MESHHARBORD_GPU_CLOCK_PIN` is enabled.
     meshharbord::gpu_clock::reset_stale_pins();
 
     // rc.58 — start the centralized log uploader BEFORE signaling
     // moves cfg out of scope. Default ON; opt out with
-    // `ROOMLERD_LOGS_UPLOAD_DISABLED=1` per the rc.58 plan.
+    // `MESHHARBORD_LOGS_UPLOAD_DISABLED=1` per the rc.58 plan.
     let logs_upload_disabled =
         meshharbord::logs_upload::parse_disable_flag(node_env("LOGS_UPLOAD_DISABLED").as_deref());
     if !logs_upload_disabled && let Some(rx) = logging::take_log_upload_receiver() {
@@ -4065,10 +4065,10 @@ async fn run_cmd(
         tracing::info!(
             tenant_id = %cfg.tenant_id,
             agent_id = %cfg.agent_id,
-            "logs upload task spawned (default ON; set ROOMLERD_LOGS_UPLOAD_DISABLED=1 to opt out)"
+            "logs upload task spawned (default ON; set MESHHARBORD_LOGS_UPLOAD_DISABLED=1 to opt out)"
         );
     } else if logs_upload_disabled {
-        tracing::info!("logs upload disabled via ROOMLERD_LOGS_UPLOAD_DISABLED env var");
+        tracing::info!("logs upload disabled via MESHHARBORD_LOGS_UPLOAD_DISABLED env var");
     }
 
     // Unification P1 — LocalAPI: expose read-only node / peer / flow state on a
@@ -4088,7 +4088,7 @@ async fn run_cmd(
     let consent_dir =
         meshharbord::consent::ConsentBroker::default_sentinel_dir().unwrap_or_else(|e| {
             tracing::warn!(error = %e, "could not resolve consent sentinel dir; using temp dir");
-            std::env::temp_dir().join("roomlerd-consent")
+            std::env::temp_dir().join("meshharbord-consent")
         });
     let consent_broker = meshharbord::consent::ConsentBroker::new(consent_mode, consent_dir)
         .unwrap_or_else(|e| {
@@ -4376,7 +4376,7 @@ async fn run_cmd(
     .with_org_http(org_http.clone())
     // FR-51 P4 — surface the enrollment's nature in `meshharbor status`.
     .with_ephemeral(cfg.ephemeral);
-    // FR-85 — the local recording verbs: this daemon launches `roomlerd
+    // FR-85 — the local recording verbs: this daemon launches `meshharbord
     // record` (its own image, resolved now, before any package upgrade can
     // leave `/proc/self/exe` pointing at a deleted inode).
     #[cfg(feature = "recording")]
@@ -4396,7 +4396,7 @@ async fn run_cmd(
         }
     };
     // FR-92 — on a supervised Mac the GUI worker runs keep busy, so the root
-    // daemon's keep-busy verbs ask it: `meshharbor exec <mac> roomler keep-busy
+    // daemon's keep-busy verbs ask it: `meshharbor exec <mac> meshharbor keep-busy
     // off` arrives HERE, as root, and never sees the worker's socket.
     #[cfg(target_os = "macos")]
     let daemon_state = if supervised {
@@ -4516,7 +4516,7 @@ async fn run_cmd(
     // consent): the daemon's own socket is root-only. FR-97 P2g — a Mac's root
     // half serves the console user one too, which the per-user half asks for
     // the machine's Devices and Mesh. Inert for a per-user daemon and with
-    // ROOMLERD_PERSON_SOCKET=0; exits on the shutdown watch.
+    // MESHHARBORD_PERSON_SOCKET=0; exits on the shutdown watch.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let _person_socket_task = tokio::spawn(meshharbord::person_socket::run(
         localapi_state.clone(),
@@ -4539,7 +4539,7 @@ async fn run_cmd(
     });
 
     // Loopback-TURN corp-relay (Phase 2b): when opted in via
-    // ROOMLERD_LOCAL_TURN, serve the browser's loopback probe with a
+    // MESHHARBORD_LOCAL_TURN, serve the browser's loopback probe with a
     // descriptor for a locally-hosted TURN bound to this host's overlay IP — so
     // a co-located corp-Chrome controller (which can't punch direct) relays
     // through the overlay instead of the capped far coturn. Default-OFF; inert
@@ -4910,11 +4910,11 @@ async fn run_cmd(
 
     // Background auto-updater — checks GitHub Releases on startup and
     // every `update_check_interval_h` hours (default 24, configurable
-    // via the AgentConfig field or `ROOMLERD_UPDATE_INTERVAL_H`
+    // via the AgentConfig field or `MESHHARBORD_UPDATE_INTERVAL_H`
     // env var). Writes to `shutdown_tx` when a newer version is
     // downloaded and the installer is spawned, so the signalling task
     // tears down cleanly before the running binary gets overwritten.
-    // Disable entirely with `ROOMLERD_AUTO_UPDATE=0` for air-
+    // Disable entirely with `MESHHARBORD_AUTO_UPDATE=0` for air-
     // gapped / operator-managed deployments.
     let upd_task = if let Some(update_trigger_rx) = update_trigger_rx {
         tracing::info!(
@@ -4927,7 +4927,7 @@ async fn run_cmd(
             async move { updater::run_periodic(rx, tx, update_interval, update_trigger_rx).await }
         }))
     } else {
-        tracing::info!("auto-update disabled (auto_update = false / ROOMLERD_AUTO_UPDATE=0)");
+        tracing::info!("auto-update disabled (auto_update = false / MESHHARBORD_AUTO_UPDATE=0)");
         None
     };
 
@@ -5189,7 +5189,7 @@ async fn service_cmd(action: ServiceAction, config_path: &PathBuf) -> Result<()>
 #[cfg(target_os = "windows")]
 fn service_start_as_service() -> Result<()> {
     win_service::environment::start_service(std::time::Duration::from_secs(30))
-        .context("starting the Roomler service")?;
+        .context("starting the MeshHarbor service")?;
     println!("{}: running", win_service::NEW_SERVICE_NAME);
     Ok(())
 }
@@ -5207,7 +5207,7 @@ fn service_start_as_service() -> Result<()> {
 #[cfg(target_os = "windows")]
 fn service_stop_as_service() -> Result<()> {
     win_service::environment::stop_service(std::time::Duration::from_secs(30))
-        .context("stopping the Roomler service")?;
+        .context("stopping the MeshHarbor service")?;
     println!("{}: stopped", win_service::NEW_SERVICE_NAME);
     Ok(())
 }
@@ -5222,7 +5222,7 @@ fn service_stop_as_service() -> Result<()> {
 #[cfg(target_os = "windows")]
 fn service_install_as_service() -> Result<()> {
     let exe = std::env::current_exe().context("locating current_exe for service install")?;
-    win_service::install(&exe).context("registering Roomler with the SCM")?;
+    win_service::install(&exe).context("registering MeshHarbor with the SCM")?;
     println!(
         "Service registered: {} ({}). Launching `sc start {}` will run the service \
          under LocalSystem; AutoStart fires on next boot.",
@@ -5251,7 +5251,7 @@ fn service_install_as_service() -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn service_uninstall_as_service() -> Result<()> {
-    win_service::uninstall().context("deregistering Roomler")?;
+    win_service::uninstall().context("deregistering MeshHarbor")?;
     println!("Service deregistered ({}).", win_service::NEW_SERVICE_NAME);
     // FR-84 D6 — no service, no machine-wide companion login start.
     match meshharbord::companion::remove_login_autostart(true) {
@@ -5277,7 +5277,7 @@ fn service_status_as_service() -> Result<()> {
     Ok(())
 }
 
-/// FR-97 P6c — the root daemon's state. ⚠️ Never a `Roomler:` line: the
+/// FR-97 P6c — the root daemon's state. ⚠️ Never a `MeshHarbor:` line: the
 /// companion reads that as Windows' SCM service (`service::system::status_line`).
 #[cfg(not(target_os = "windows"))]
 fn service_status_as_service() -> Result<()> {
@@ -5297,7 +5297,7 @@ fn service_status_as_service() -> Result<()> {
 /// match (else CI's `cargo clippy --workspace -- -D warnings` on the
 /// Ubuntu runner errors with "constant is never used").
 #[cfg(target_os = "windows")]
-const SYSTEM_CONTEXT_ENV_VAR: &str = "ROOMLERD_ENABLE_SYSTEM_SWAP";
+const SYSTEM_CONTEXT_ENV_VAR: &str = "MESHHARBORD_ENABLE_SYSTEM_SWAP";
 
 /// Default per-transition timeout for the post-write service restart.
 /// 120 s covers Windows Defender real-time-scan delay on a fresh EXE
@@ -5314,7 +5314,7 @@ fn enable_system_context_cmd(no_restart: bool) -> Result<()> {
     const COMMAND: &str = attempt::ENABLE_COMMAND;
 
     // Stage 1: env-var write. On failure, record telemetry so the
-    // installer wizard (which reads %PROGRAMDATA%\roomler\
+    // installer wizard (which reads %PROGRAMDATA%\meshharbor\
     // last-system-context-attempt.json after an MSI failure) can
     // surface an actionable, stage-scoped error to the operator.
     if let Err(e) = environment::set_service_env_var(SYSTEM_CONTEXT_ENV_VAR, "1") {
@@ -5342,7 +5342,7 @@ fn enable_system_context_cmd(no_restart: bool) -> Result<()> {
     if let Err(e) = environment::restart_service(Duration::from_secs(DEFAULT_RESTART_TIMEOUT_SECS))
     {
         let hint = "Env-var write succeeded; service restart failed. Common cause: a \
-                    `services.msc` window holds a handle on Roomler. Close \
+                    `services.msc` window holds a handle on MeshHarbor. Close \
                     any open services consoles and run `meshharbord restart-service` \
                     again.";
         let _ = attempt::record(&attempt::Attempt::failure(
@@ -5351,10 +5351,10 @@ fn enable_system_context_cmd(no_restart: bool) -> Result<()> {
             &e.to_string(),
             hint,
         ));
-        return Err(e).context("restarting Roomler");
+        return Err(e).context("restarting MeshHarbor");
     }
     let _ = attempt::record(&attempt::Attempt::ok(COMMAND));
-    println!("Roomler restarted. SystemContext mode is active.");
+    println!("MeshHarbor restarted. SystemContext mode is active.");
     Ok(())
 }
 
@@ -5400,10 +5400,10 @@ fn disable_system_context_cmd(no_restart: bool) -> Result<()> {
             &e.to_string(),
             hint,
         ));
-        return Err(e).context("restarting Roomler");
+        return Err(e).context("restarting MeshHarbor");
     }
     let _ = attempt::record(&attempt::Attempt::ok(COMMAND));
-    println!("Roomler restarted. SystemContext mode is disabled.");
+    println!("MeshHarbor restarted. SystemContext mode is disabled.");
     Ok(())
 }
 
@@ -5487,8 +5487,8 @@ fn restart_service_cmd(timeout_secs: u64) -> Result<()> {
     use meshharbord::win_service::environment;
     use std::time::Duration;
     environment::restart_service(Duration::from_secs(timeout_secs))
-        .context("restarting Roomler")?;
-    println!("Roomler restarted.");
+        .context("restarting MeshHarbor")?;
+    println!("MeshHarbor restarted.");
     Ok(())
 }
 
@@ -5551,7 +5551,7 @@ async fn self_update_cmd(check_only: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
     if !check_only && unsafe { libc::geteuid() } != 0 {
         // RETIRED-NAME-ANCHOR(14): the printed guidance names
-        // /var/log/roomler-agent/update.log and /etc/roomler-agent/disable-auto-update —
+        // /var/log/meshharbor-agent/update.log and /etc/meshharbor-agent/disable-auto-update —
         // real macOS paths fixed by the launchd plists, which are pinned to the frozen
         // .app bundle name (D5). They sit inside a string literal, so the anchor is on
         // the statement. docs/fr/FR-21
@@ -5559,8 +5559,8 @@ async fn self_update_cmd(check_only: bool) -> Result<()> {
             Ok(()) => {
                 println!(
                     "Queued for the root update helper (fans.itachi.meshharbor.update).\n\
-                     Watch: /var/log/roomler-agent/update.log\n\
-                     (If this Mac set /etc/roomler-agent/disable-auto-update, updates are manual:\n\
+                     Watch: /var/log/meshharbor-agent/update.log\n\
+                     (If this Mac set /etc/meshharbor-agent/disable-auto-update, updates are manual:\n\
                       sudo installer -pkg <pkg> -target /)"
                 );
                 Ok(())
@@ -6011,7 +6011,7 @@ async fn encoder_reconfigure_sweep_cmd(
             })
             .collect();
         println!(
-            "ROOMLER_A0_JSON:{{\"backend\":\"{backend}\",\"codec\":\"{actual_codec}\",\"w\":{w},\"h\":{h},\"fpr\":{frames_per_rung},\"constrained\":{constrained},\"total_rate_idr\":{total_idr},\"total_periodic_idr\":{total_periodic},\"max_set_ms\":{max_set_ms:.3},\"worst_ratio_dev\":{worst_ratio_dev:.3},\"worst_burst\":{worst_burst:.3},\"pass\":{pass},\"rungs\":[{}]}}",
+            "MESHHARBOR_A0_JSON:{{\"backend\":\"{backend}\",\"codec\":\"{actual_codec}\",\"w\":{w},\"h\":{h},\"fpr\":{frames_per_rung},\"constrained\":{constrained},\"total_rate_idr\":{total_idr},\"total_periodic_idr\":{total_periodic},\"max_set_ms\":{max_set_ms:.3},\"worst_ratio_dev\":{worst_ratio_dev:.3},\"worst_burst\":{worst_burst:.3},\"pass\":{pass},\"rungs\":[{}]}}",
             rungs_json.join(",")
         );
     } else {
@@ -6794,10 +6794,10 @@ mod tests {
     #[test]
     fn the_retired_drop_in_spelling_is_inert_and_reported() {
         const KEYS: [&str; 4] = [
-            "ROOMLER_AGENT_VIRTUAL_DESKTOP",
-            "ROOMLER_AGENT_VIRTUAL_DESKTOP_RESOLUTION",
-            "ROOMLER_AGENT_VIRTUAL_DESKTOP_WM",
-            "ROOMLER_AGENT_VIRTUAL_DESKTOP_STARTUP",
+            "MESHHARBOR_AGENT_VIRTUAL_DESKTOP",
+            "MESHHARBOR_AGENT_VIRTUAL_DESKTOP_RESOLUTION",
+            "MESHHARBOR_AGENT_VIRTUAL_DESKTOP_WM",
+            "MESHHARBOR_AGENT_VIRTUAL_DESKTOP_STARTUP",
         ];
         // SAFETY (edition 2024): these four suffixes are touched by no other test.
         unsafe {
@@ -6827,7 +6827,7 @@ mod tests {
 
         // The current spelling works, so a migrated host behaves as before.
         unsafe { std::env::remove_var(KEYS[0]) };
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "VIRTUAL_DESKTOP", "1") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "VIRTUAL_DESKTOP", "1") };
         assert!(virtual_desktop_requested());
         unsafe { tunnel_core::env::test_env::clear("VIRTUAL_DESKTOP") };
     }
@@ -6836,7 +6836,7 @@ mod tests {
 
     #[test]
     fn parses_enable_system_context_default() {
-        let cli = Cli::try_parse_from(["roomlerd", "enable-system-context"]).unwrap();
+        let cli = Cli::try_parse_from(["meshharbord", "enable-system-context"]).unwrap();
         match cli.command {
             Some(Command::EnableSystemContext { no_restart }) => assert!(!no_restart),
             other => panic!("expected EnableSystemContext, got {other:?}"),
@@ -6846,7 +6846,7 @@ mod tests {
     #[test]
     fn parses_enable_system_context_no_restart() {
         let cli =
-            Cli::try_parse_from(["roomlerd", "enable-system-context", "--no-restart"]).unwrap();
+            Cli::try_parse_from(["meshharbord", "enable-system-context", "--no-restart"]).unwrap();
         match cli.command {
             Some(Command::EnableSystemContext { no_restart }) => assert!(no_restart),
             other => panic!("expected EnableSystemContext --no-restart, got {other:?}"),
@@ -6855,7 +6855,7 @@ mod tests {
 
     #[test]
     fn parses_disable_system_context_default() {
-        let cli = Cli::try_parse_from(["roomlerd", "disable-system-context"]).unwrap();
+        let cli = Cli::try_parse_from(["meshharbord", "disable-system-context"]).unwrap();
         match cli.command {
             Some(Command::DisableSystemContext { no_restart }) => assert!(!no_restart),
             other => panic!("expected DisableSystemContext, got {other:?}"),
@@ -6868,7 +6868,7 @@ mod tests {
     /// and every hand-run install would leave SystemContext off again.
     #[test]
     fn parses_keep_system_context_as_the_msi_spells_it() {
-        let cli = Cli::try_parse_from(["roomlerd", "keep-system-context"]).unwrap();
+        let cli = Cli::try_parse_from(["meshharbord", "keep-system-context"]).unwrap();
         match cli.command {
             Some(Command::KeepSystemContext { no_restart }) => assert!(!no_restart),
             other => panic!("expected KeepSystemContext, got {other:?}"),
@@ -6878,17 +6878,17 @@ mod tests {
     #[test]
     fn parses_set_service_env_var_long_form() {
         let cli = Cli::try_parse_from([
-            "roomlerd",
+            "meshharbord",
             "set-service-env-var",
             "--name",
-            "ROOMLERD_ENABLE_SYSTEM_SWAP",
+            "MESHHARBORD_ENABLE_SYSTEM_SWAP",
             "--value",
             "1",
         ])
         .unwrap();
         match cli.command {
             Some(Command::SetServiceEnvVar { name, value }) => {
-                assert_eq!(name, "ROOMLERD_ENABLE_SYSTEM_SWAP");
+                assert_eq!(name, "MESHHARBORD_ENABLE_SYSTEM_SWAP");
                 assert_eq!(value.as_deref(), Some("1"));
             }
             other => panic!("expected SetServiceEnvVar, got {other:?}"),
@@ -6898,15 +6898,15 @@ mod tests {
     #[test]
     fn parses_set_service_env_var_without_value_for_unset() {
         let cli = Cli::try_parse_from([
-            "roomlerd",
+            "meshharbord",
             "set-service-env-var",
             "--name",
-            "ROOMLERD_ENABLE_SYSTEM_SWAP",
+            "MESHHARBORD_ENABLE_SYSTEM_SWAP",
         ])
         .unwrap();
         match cli.command {
             Some(Command::SetServiceEnvVar { name, value }) => {
-                assert_eq!(name, "ROOMLERD_ENABLE_SYSTEM_SWAP");
+                assert_eq!(name, "MESHHARBORD_ENABLE_SYSTEM_SWAP");
                 assert!(value.is_none(), "expected None (unset), got {value:?}");
             }
             other => panic!("expected SetServiceEnvVar, got {other:?}"),
@@ -6915,7 +6915,7 @@ mod tests {
 
     #[test]
     fn parses_restart_service_default_timeout() {
-        let cli = Cli::try_parse_from(["roomlerd", "restart-service"]).unwrap();
+        let cli = Cli::try_parse_from(["meshharbord", "restart-service"]).unwrap();
         match cli.command {
             Some(Command::RestartService { timeout_secs }) => assert_eq!(timeout_secs, 120),
             other => panic!("expected RestartService, got {other:?}"),
@@ -6925,7 +6925,7 @@ mod tests {
     #[test]
     fn parses_restart_service_custom_timeout() {
         let cli =
-            Cli::try_parse_from(["roomlerd", "restart-service", "--timeout-secs", "60"]).unwrap();
+            Cli::try_parse_from(["meshharbord", "restart-service", "--timeout-secs", "60"]).unwrap();
         match cli.command {
             Some(Command::RestartService { timeout_secs }) => assert_eq!(timeout_secs, 60),
             other => panic!("expected RestartService --timeout-secs 60, got {other:?}"),
@@ -6935,15 +6935,15 @@ mod tests {
     /// rc.53 Phase 7: the stderr warning for the
     /// `%APPDATA% / %PROGRAMDATA%` same-session asymmetry that WINHOST-B
     /// burned hours on. Locks the marker phrases so a refactor that
-    /// drops "sc start Roomler" or "%APPDATA%" or "without
+    /// drops "sc start MeshHarbor" or "%APPDATA%" or "without
     /// --machine-global" trips the test before it ships.
     #[cfg(target_os = "windows")]
     #[test]
     fn enroll_warning_message_contains_expected_phrases() {
         let msg = warning_message_for_user_context_enroll();
         assert!(
-            msg.contains("sc start Roomler"),
-            "warning must reference `sc start Roomler` so the operator can run option (a): {msg}"
+            msg.contains("sc start MeshHarbor"),
+            "warning must reference `sc start MeshHarbor` so the operator can run option (a): {msg}"
         );
         assert!(
             msg.contains("%APPDATA%"),
@@ -6970,16 +6970,16 @@ mod tests {
     fn rc30_done_page_snippet_parses() {
         // Line 1: set-service-env-var
         let cli = Cli::try_parse_from([
-            "roomlerd",
+            "meshharbord",
             "set-service-env-var",
             "--name",
-            "ROOMLERD_ENABLE_SYSTEM_SWAP",
+            "MESHHARBORD_ENABLE_SYSTEM_SWAP",
             "--value",
             "1",
         ]);
         assert!(cli.is_ok(), "rc.30 snippet line 1 must parse: {cli:?}");
         // Line 2: restart-service
-        let cli = Cli::try_parse_from(["roomlerd", "restart-service"]);
+        let cli = Cli::try_parse_from(["meshharbord", "restart-service"]);
         assert!(cli.is_ok(), "rc.30 snippet line 2 must parse: {cli:?}");
     }
 
@@ -7000,7 +7000,7 @@ mod tests {
             Some(explicit.clone()),
             true,
             Some(Path::new(
-                r"C:\ProgramData\meshharbor\roomler-agent\config.toml",
+                r"C:\ProgramData\meshharbor\meshharbor-agent\config.toml",
             )),
             Path::new(r"C:\Users\u\AppData\config.toml"),
             None,
@@ -7011,7 +7011,7 @@ mod tests {
 
     #[test]
     fn pick_config_path_system_context_prefers_machine_global() {
-        let mg = Path::new(r"C:\ProgramData\meshharbor\roomler-agent\config.toml");
+        let mg = Path::new(r"C:\ProgramData\meshharbor\meshharbor-agent\config.toml");
         let default = Path::new(r"C:\Windows\System32\config\systemprofile\config.toml");
         let got = pick_config_path(None, true, Some(mg), default, None, |p| p == mg);
         assert_eq!(got, mg);
@@ -7021,7 +7021,7 @@ mod tests {
     fn pick_config_path_non_system_context_ignores_machine_global() {
         // A perUser / perMachine-non-SC worker never reads the
         // machine-global path even if it exists.
-        let mg = Path::new(r"C:\ProgramData\meshharbor\roomler-agent\config.toml");
+        let mg = Path::new(r"C:\ProgramData\meshharbor\meshharbor-agent\config.toml");
         let default = Path::new(r"C:\Users\u\AppData\config.toml");
         let got = pick_config_path(None, false, Some(mg), default, None, |p| {
             p == mg || p == default
@@ -7033,9 +7033,9 @@ mod tests {
     fn pick_config_path_system_context_falls_to_active_user() {
         // Machine-global absent, default (SYSTEM profile) absent —
         // post-logon SC worker uses the active-user fallback.
-        let mg = Path::new(r"C:\ProgramData\meshharbor\roomler-agent\config.toml");
+        let mg = Path::new(r"C:\ProgramData\meshharbor\meshharbor-agent\config.toml");
         let default = Path::new(r"C:\Windows\System32\config\systemprofile\config.toml");
-        let active = Path::new(r"C:\Users\u\AppData\Roaming\roomler\config.toml");
+        let active = Path::new(r"C:\Users\u\AppData\Roaming\meshharbor\config.toml");
         let got = pick_config_path(None, true, Some(mg), default, Some(active), |p| p == active);
         assert_eq!(got, active);
     }
@@ -7044,7 +7044,7 @@ mod tests {
     fn pick_config_path_returns_default_when_nothing_exists() {
         // Nothing on disk → default, so config::load fails with an
         // honest "not found" naming that path.
-        let mg = Path::new(r"C:\ProgramData\meshharbor\roomler-agent\config.toml");
+        let mg = Path::new(r"C:\ProgramData\meshharbor\meshharbor-agent\config.toml");
         let default = Path::new(r"C:\Windows\System32\config\systemprofile\config.toml");
         let got = pick_config_path(None, true, Some(mg), default, None, |_| false);
         assert_eq!(got, default);
@@ -7054,8 +7054,8 @@ mod tests {
 
     #[test]
     fn should_self_heal_only_for_system_context_peruser_load_without_machine_global() {
-        let mg = Path::new(r"C:\ProgramData\meshharbor\roomler-agent\config.toml");
-        let peruser = Path::new(r"C:\Users\u\AppData\Roaming\roomler\config.toml");
+        let mg = Path::new(r"C:\ProgramData\meshharbor\meshharbor-agent\config.toml");
+        let peruser = Path::new(r"C:\Users\u\AppData\Roaming\meshharbor\config.toml");
         // The one true case: SC worker, loaded from a perUser path,
         // machine-global absent.
         assert!(should_self_heal_config(true, peruser, mg, false));

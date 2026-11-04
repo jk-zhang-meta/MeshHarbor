@@ -38,7 +38,7 @@
 //!
 //! WebRTC-track sessions are excluded by design (mediasoup-style per-track
 //! REMB rate control stays per-session). Escape hatch:
-//! `ROOMLERD_SHARED_ENCODER=0` (config key `shared_encoder`) restores
+//! `MESHHARBORD_SHARED_ENCODER=0` (config key `shared_encoder`) restores
 //! the rc.302 pump-per-session behaviour without a rebuild.
 //!
 //! Everything stateful here is abort-safe: both the owner's [`Pipeline`]
@@ -88,7 +88,7 @@ pub enum PipelineKey {
 }
 
 /// Whether shared pipelines are enabled (default ON;
-/// `ROOMLERD_SHARED_ENCODER=0` / `false` reverts to pump-per-session).
+/// `MESHHARBORD_SHARED_ENCODER=0` / `false` reverts to pump-per-session).
 pub fn sharing_enabled() -> bool {
     !matches!(
         tunnel_core::env::node_env("SHARED_ENCODER").as_deref(),
@@ -1252,7 +1252,7 @@ mod tests {
     /// (Sharper anywhere; Balanced on direct) never block.
     ///
     /// Env hygiene: `idle_refine_applies` consults
-    /// ROOMLERD_IDLE_REFINE_BALANCED for the Balanced rows — cleared
+    /// MESHHARBORD_IDLE_REFINE_BALANCED for the Balanced rows — cleared
     /// up front so the table asserts the DEFAULT (ON since P7c) semantics,
     /// then set to "0" for the blocked-Balanced rows and removed again
     /// before the serial guard drops. (The env flip itself is locked by
@@ -1270,7 +1270,7 @@ mod tests {
         // SAFETY: same contract as the sibling env-clearing tests.
         unsafe {
             tunnel_core::env::test_env::clear("IDLE_REFINE_BALANCED");
-            tunnel_core::env::test_env::set_as("ROOMLERD_", "PRIORITY_RES_CAP", "1");
+            tunnel_core::env::test_env::set_as("MESHHARBORD_", "PRIORITY_RES_CAP", "1");
         }
         use crate::encode::priority::{BALANCED, SHARPER, SMOOTHER};
         let key = PipelineKey::FfmpegDc("TEST-REFINE");
@@ -1300,7 +1300,7 @@ mod tests {
         // is NOT liftable: single-viewer Balanced blocks, and a Smoother
         // owner + Balanced follower blocks on relay; on direct Balanced
         // contributes no cap ⇒ eligible either way.
-        unsafe { tunnel_core::env::test_env::set_as("ROOMLERD_", "IDLE_REFINE_BALANCED", "0") };
+        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "IDLE_REFINE_BALANCED", "0") };
         follower_prio.store(BALANCED, std::sync::atomic::Ordering::Relaxed);
         assert!(!owner.merged_refine_eligible(SMOOTHER, true));
         assert!(owner.merged_refine_eligible(SMOOTHER, false));

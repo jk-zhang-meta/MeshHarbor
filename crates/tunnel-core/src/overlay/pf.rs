@@ -53,7 +53,7 @@ use std::net::Ipv6Addr;
 
 /// Our anchors live under the stock wildcard `/etc/pf.conf` already evaluates.
 #[cfg(any(target_os = "macos", test))]
-pub(crate) const ANCHOR_PREFIX: &str = "com.apple/roomler-";
+pub(crate) const ANCHOR_PREFIX: &str = "com.apple/meshharbor-";
 
 /// Our anchor for the overlay adapter `if_name`: one per org's adapter.
 #[cfg(any(target_os = "macos", test))]
@@ -62,7 +62,7 @@ pub(crate) fn anchor_for(if_name: &str) -> String {
 }
 
 /// Strict, because a name read back from the ledger goes into `pfctl -a`:
-/// ours and nothing else, `com.apple/roomler-utun<1-3 digits>`.
+/// ours and nothing else, `com.apple/meshharbor-utun<1-3 digits>`.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn is_our_anchor(s: &str) -> bool {
     s.strip_prefix(ANCHOR_PREFIX)
@@ -522,7 +522,7 @@ mod host {
     pub(crate) fn probe() -> Result<(), String> {
         if !crate::env::flag("PF_NAT", true) {
             return Err(
-                "the macOS pf NAT is switched off (ROOMLERD_PF_NAT=0), so this Mac \
+                "the macOS pf NAT is switched off (MESHHARBORD_PF_NAT=0), so this Mac \
                         cannot be an exit node or a subnet router"
                     .into(),
             );
@@ -853,17 +853,17 @@ mod tests {
 
     #[test]
     fn our_anchor_is_one_level_under_the_stock_wildcard_and_nothing_else() {
-        assert_eq!(anchor_for("utun4"), "com.apple/roomler-utun4");
-        assert!(is_our_anchor("com.apple/roomler-utun4"));
-        assert!(is_our_anchor("com.apple/roomler-utun123"));
+        assert_eq!(anchor_for("utun4"), "com.apple/meshharbor-utun4");
+        assert!(is_our_anchor("com.apple/meshharbor-utun4"));
+        assert!(is_our_anchor("com.apple/meshharbor-utun123"));
         for bad in [
-            "com.apple/roomler-utun",
-            "com.apple/roomler-utun1234",
-            "com.apple/roomler-en0",
+            "com.apple/meshharbor-utun",
+            "com.apple/meshharbor-utun1234",
+            "com.apple/meshharbor-en0",
             "com.apple/internet-sharing",
-            "com.apple/roomler-utun4; pfctl -d",
+            "com.apple/meshharbor-utun4; pfctl -d",
             "com.apple/*",
-            "roomler-utun4",
+            "meshharbor-utun4",
         ] {
             assert!(!is_our_anchor(bad), "{bad}");
         }
@@ -1098,7 +1098,7 @@ mod tests {
 }
 
 /// FR-97 P1b — on a real Mac, as root: CI's `macos_kernel_tests` step runs
-/// these under `sudo` with `ROOMLER_TUN_KERNEL_TEST=1`.
+/// these under `sudo` with `MESHHARBOR_TUN_KERNEL_TEST=1`.
 #[cfg(all(test, target_os = "macos"))]
 mod macos_kernel_tests {
     /// `Enabled` or `Disabled`: the word alone. The line around it changes
@@ -1135,7 +1135,7 @@ mod macos_kernel_tests {
 
     #[tokio::test]
     async fn a_served_anchor_nats_and_pf_and_forwarding_are_left_as_found() {
-        if std::env::var("ROOMLER_TUN_KERNEL_TEST").is_err() {
+        if std::env::var("MESHHARBOR_TUN_KERNEL_TEST").is_err() {
             return;
         }
         super::probe().expect("this runner's pf evaluates com.apple/* (the stock pf.conf)");
@@ -1203,7 +1203,7 @@ mod macos_kernel_tests {
     /// VM, FR-97 §8). Our stop must leave THAT reference alone, and pf on.
     #[tokio::test]
     async fn another_programs_reference_with_our_old_value_is_never_released() {
-        if std::env::var("ROOMLER_TUN_KERNEL_TEST").is_err() || !pf_idle() {
+        if std::env::var("MESHHARBOR_TUN_KERNEL_TEST").is_err() || !pf_idle() {
             return;
         }
         let (status0, fwd0) = (pf_status(), fwd4());
@@ -1234,7 +1234,7 @@ mod macos_kernel_tests {
     /// off wanted it.
     #[tokio::test]
     async fn forwarding_and_pf_switched_off_under_a_serve_come_back() {
-        if std::env::var("ROOMLER_TUN_KERNEL_TEST").is_err() || !pf_idle() {
+        if std::env::var("MESHHARBOR_TUN_KERNEL_TEST").is_err() || !pf_idle() {
             return;
         }
         let (status0, fwd0) = (pf_status(), fwd4());

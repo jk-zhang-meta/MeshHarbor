@@ -276,7 +276,7 @@ async fn run_install_inner(
     // wix-perMachine/main.wxs (rc.44 P2) fires `EnableSystemContext`
     // when "1" and `DisableSystemContext` when "0". The agent's
     // composite subcommands (rc.44 P1.5) write a single-entry telemetry
-    // record to %PROGRAMDATA%\roomler\last-system-context-attempt.json
+    // record to %PROGRAMDATA%\meshharbor\last-system-context-attempt.json
     // that the wizard reads on MSI failure (rc.44 P3) to surface an
     // actionable error to the operator.
     //
@@ -484,7 +484,7 @@ async fn run_install_inner(
             // rc.44: on SystemContext flavour, the WiX CA may have
             // failed inside the env-var write or service-restart
             // stage. The composite subcommand writes a single-entry
-            // JSON to %PROGRAMDATA%\roomler\last-system-context-attempt.json
+            // JSON to %PROGRAMDATA%\meshharbor\last-system-context-attempt.json
             // on every invocation; read it back to surface an
             // actionable error scoped to the failing stage.
             if is_system_context && let Some(attempt) = read_last_system_context_attempt() {
@@ -595,7 +595,7 @@ async fn run_install_inner(
             .map_err(|e| failed(ErrorCode::ConfigWrite, format!("resolve config path: {e}")))?
     };
     // rc.52: for the SystemContext flavour, lock down
-    // %PROGRAMDATA%\roomler\ with an inheritable SYSTEM+Administrators
+    // %PROGRAMDATA%\meshharbor\ with an inheritable SYSTEM+Administrators
     // DACL BEFORE the config (carrying the Agent JWT) is written —
     // %PROGRAMDATA% is world-readable by default. The orchestrator
     // runs inside the wizard's already-elevated context so `icacls`
@@ -666,8 +666,8 @@ async fn run_install_inner(
 
     // --- Step 7b: place the meshharbor-desktop GUI companion (GAP-A / P6) ---
     // The desktop EXE is NOT in the MSI (it's a standalone release
-    // asset), so a daemon install would otherwise land only roomlerd +
-    // roomler. Fetch + place it beside the daemon so all three ship
+    // asset), so a daemon install would otherwise land only meshharbord +
+    // meshharbor. Fetch + place it beside the daemon so all three ship
     // together. Best-effort — a failure never sinks the enrolled
     // install; the operator can always grab it later.
     // (P3b: recorded as its own step — `ok`, or `failed: companion` — and
@@ -701,7 +701,7 @@ async fn run_install_inner(
     emit(on_event, ProgressEvent::Done);
     diag.done();
 
-    // P4b (role→action composition): the MSI carries the `roomler`
+    // P4b (role→action composition): the MSI carries the `meshharbor`
     // CLI, so a daemon install subsumes the tunnel client. Existence-
     // check rather than assume — an old pre-P4b MSI served by a stale
     // server degrades to cli_included=Some(false) and the SPA doesn't
@@ -748,7 +748,7 @@ pub fn role_anchors(role: Role) -> bool {
 const ANCHOR_BUDGET: Duration = Duration::from_secs(5 * 60);
 
 /// FR-104 — anchor the device this install just enrolled, when its token
-/// allows it, by running `roomlerd anchor create` ELEVATED: a second
+/// allows it, by running `meshharbord anchor create` ELEVATED: a second
 /// administrator prompt. The anchor's POST, and the SYSTEM service's
 /// credential it returns, stay inside that elevated process (FR-94 §4); the
 /// wizard runs at Medium integrity and never holds the credential.
@@ -818,7 +818,7 @@ async fn anchor_device(
             Some(true)
         }
         Ok(other) => skipped(format!(
-            "roomlerd anchor create did not succeed ({other:?})"
+            "meshharbord anchor create did not succeed ({other:?})"
         )),
         Err(e) => skipped(format!("waiting for the anchor step: {e}")),
     }
@@ -959,10 +959,10 @@ async fn place_desktop_companion(
 #[cfg(target_os = "windows")]
 fn start_user_task() {
     match meshharbord::service::start() {
-        Ok(()) => tracing::info!("started the per-user Roomler task"),
+        Ok(()) => tracing::info!("started the per-user MeshHarbor task"),
         Err(e) => tracing::warn!(
             error = %format!("{e:#}"),
-            "could not start the per-user Roomler task; it starts at the next logon"
+            "could not start the per-user MeshHarbor task; it starts at the next logon"
         ),
     }
 }
@@ -983,7 +983,7 @@ async fn place_desktop_companion(
 
 /// Post-install probe for the MSI-carried tunnel CLI: derive the
 /// flavour's install dir (perUser `%LOCALAPPDATA%\Programs\MeshHarbor`,
-/// perMachine `%ProgramFiles%\Roomler`) and check `meshharbor.exe`
+/// perMachine `%ProgramFiles%\MeshHarbor`) and check `meshharbor.exe`
 /// landed. `path_updated=Some(true)` piggybacks on the same check —
 /// the wxs `TunnelExe` component carries both the file AND the PATH
 /// append, so they land (or don't) together.
@@ -1079,11 +1079,11 @@ fn flavour_parts(role: Role) -> Result<(WindowsInstallFlavour, bool), String> {
 /// crash sidecars under `crashes\`) are readable only by SYSTEM +
 /// Administrators. `%PROGRAMDATA%` is world-readable by default — a
 /// non-admin local user could otherwise read the long-lived agent
-/// token and impersonate the host to the Roomler server.
+/// token and impersonate the host to the MeshHarbor server.
 ///
-/// `config_path` is `…\roomler\<segment>\config.toml` (the
+/// `config_path` is `…\meshharbor\<segment>\config.toml` (the
 /// segment is whatever `appdirs::app_segment` picked); we harden its
-/// grandparent `…\roomler\` so that segment, `crashes\`, and
+/// grandparent `…\meshharbor\` so that segment, `crashes\`, and
 /// every future child inherit the ACL — the directory-inheritance
 /// pattern (one `icacls` at install time) rather than a per-file ACL
 /// that has a create→ACL TOCTOU and gets re-widened by every later
@@ -1096,19 +1096,19 @@ fn flavour_parts(role: Role) -> Result<(WindowsInstallFlavour, bool), String> {
 /// fail there. `*S-1-5-18` = LocalSystem, `*S-1-5-32-544` =
 /// Administrators.
 fn harden_machine_global_dir(config_path: &std::path::Path) -> Result<(), String> {
-    let roomler_dir = config_path
-        .parent() // …\roomler\<segment>
-        .and_then(|p| p.parent()) // …\roomler
+    let meshharbor_dir = config_path
+        .parent() // …\meshharbor\<segment>
+        .and_then(|p| p.parent()) // …\meshharbor
         .ok_or_else(|| {
             format!(
                 "machine-global config path {} has no grandparent dir to harden",
                 config_path.display()
             )
         })?;
-    std::fs::create_dir_all(roomler_dir)
-        .map_err(|e| format!("create {}: {e}", roomler_dir.display()))?;
+    std::fs::create_dir_all(meshharbor_dir)
+        .map_err(|e| format!("create {}: {e}", meshharbor_dir.display()))?;
     let output = std::process::Command::new("icacls")
-        .arg(roomler_dir)
+        .arg(meshharbor_dir)
         .arg("/inheritance:r")
         .arg("/grant:r")
         .arg("*S-1-5-18:(OI)(CI)F")
@@ -1136,7 +1136,7 @@ struct SystemContextAttemptView {
     hint: String,
 }
 
-/// Read `%PROGRAMDATA%\roomler\last-system-context-attempt.json` and
+/// Read `%PROGRAMDATA%\meshharbor\last-system-context-attempt.json` and
 /// project it into the wire-shape the SPA receives. Returns `None`
 /// when:
 ///   - the file doesn't exist (CA never ran — happens on plain

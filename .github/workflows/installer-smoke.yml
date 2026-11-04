@@ -17,7 +17,7 @@
 #     Token → Install → Done). Tauri 2 + tauri-driver on a headless
 #     GitHub runner is a 1–2 day spike in itself; deferred to Chunk
 #     6B once this baseline is green.
-#   * SystemContext swap testing. `ROOMLER_AGENT_ENABLE_SYSTEM_SWAP=1`
+#   * SystemContext swap testing. `MESHHARBOR_AGENT_ENABLE_SYSTEM_SWAP=1`
 #     + WTSQueryUserToken + winlogon-token spawn needs an interactive
 #     desktop session that GitHub-hosted Windows runners don't expose;
 #     requires a self-hosted runner on a real Win11 VM. Phase 6 plan
@@ -626,7 +626,7 @@ jobs:
         # The per-Machine MSI's first INSTALL coverage. A person running
         # `msiexec /i` with no ENABLE_SYSTEM_CONTEXT used to switch
         # SystemContext OFF: the property defaulted to "0", and every install
-        # recreates the service, taking the ROOMLERD_ENABLE_SYSTEM_SWAP entry of
+        # recreates the service, taking the MESHHARBORD_ENABLE_SYSTEM_SWAP entry of
         # its Environment with it. A SystemContext laptop went offline that way
         # (2026-09-26). The fix keeps the mode the machine was last switched to
         # (`roomlerd keep-system-context`, from the product's own record).
@@ -675,7 +675,7 @@ jobs:
           }
           function Get-Swap {
             $block = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Roomler' -Name Environment -ErrorAction SilentlyContinue).Environment
-            [bool](@($block) -contains 'ROOMLERD_ENABLE_SYSTEM_SWAP=1')
+            [bool](@($block) -contains 'MESHHARBORD_ENABLE_SYSTEM_SWAP=1')
           }
           function Assert-Mode([string]$label, [bool]$want, [string]$version) {
             $svc = $null
@@ -1143,7 +1143,7 @@ jobs:
           # The postinstall removes the root daemon when the marker is absent,
           # which is correct for a real opt-out — but a SELF-UPDATE is not an
           # opt-out, and it runs the very same pkg. Until the enabling branch
-          # recorded the choice, a daemon enabled via ROOMLER_MACOS_DAEMON=1
+          # recorded the choice, a daemon enabled via MESHHARBOR_MACOS_DAEMON=1
           # left no marker, so the NEXT update silently deleted it: overlay
           # and SSH both gone. Field-hit on a MacBook 2026-08-25 across an
           # rc.458 -> rc.460 self-update.
@@ -1163,7 +1163,7 @@ jobs:
           # env-var form: macOS runs package scripts from package_script_service,
           # a separate PackageKit daemon, so they never see the environment of
           # whoever ran `installer`. This job proved that on 2026-08-25 — an
-          # install with ROOMLER_MACOS_DAEMON=1 logged the per-user lines and
+          # install with MESHHARBOR_MACOS_DAEMON=1 logged the per-user lines and
           # none of the daemon ones — and the dead condition was removed.
           echo "=== install 1: enabled via the marker ==="
           # FR-46 P5a — deliberately seeded at the LEGACY path, so this install

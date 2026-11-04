@@ -12,7 +12,7 @@ are cheap to break and expensive to have broken.
 ## 1 · The probe is a child process, and any failure means "no hardware"
 
 `encode::caps::detect()` spawns `roomlerd caps-probe` (hidden subcommand), reads
-one `ROOMLER_CAPS_JSON:{…}` line, and treats **any** failure — non-zero exit,
+one `MESHHARBOR_CAPS_JSON:{…}` line, and treats **any** failure — non-zero exit,
 killed by a signal, 60 s timeout, unspawnable, unparseable — as *every hardware
 codec is unavailable*, falling back to `compute_caps(false)`.
 
@@ -21,9 +21,9 @@ GPU firmware) and does not belong in the daemon's address space. Before this, a
 fault inside a probe took `roomlerd` down and the service manager restarted it
 straight back into the same probe — a **crash-loop**, not a degraded agent.
 
-⚠️ `ROOMLERD_HW_AUTO=0` / `ROOMLERD_ENCODER=software` do **not** skip the probe.
+⚠️ `MESHHARBORD_HW_AUTO=0` / `MESHHARBORD_ENCODER=software` do **not** skip the probe.
 Those pick an *encoder*; the probe enumerates what to **advertise**.
-⚠️ The child sets `ROOMLERD_CAPS_CHILD=1`; `detect()` seeing it computes
+⚠️ The child sets `MESHHARBORD_CAPS_CHILD=1`; `detect()` seeing it computes
 in-process — that is the recursion guard.
 ⚠️ stdout is **marker-parsed**, not last-line-parsed, so anything else logging
 there cannot be mistaken for the result. The child's stderr is **inherited on
@@ -33,7 +33,7 @@ purpose** so per-codec probe lines land in the daemon log next to the verdict.
 
 The child does **not** inherit the process-local S2 config-fallback registry
 (`tunnel_core::env::register_config_fallbacks`). `child::probe()` exports every
-registered knob as a real `ROOMLERD_*` env var
+registered knob as a real `MESHHARBORD_*` env var
 (`config_fallbacks_for_child`, precedence preserved) and `detect()` recomputes
 `caps.rpc = rpc_caps()` in the **parent**.
 
@@ -43,17 +43,17 @@ could only ever answer `no_relay`.
 
 ### Two children, not one (0.4.85)
 
-| Phase (`ROOMLERD_CAPS_PHASE`) | Opens |
+| Phase (`MESHHARBORD_CAPS_PHASE`) | Opens |
 |---|---|
 | `base` | every 4:2:0 open + the software cells + the vp9_qsv IDR verdict |
-| `444` | only the 4:4:4 forms of `candidates_444`, answered as `ROOMLER_CAPS_444:[…]`, folded in by `merge_444` |
+| `444` | only the 4:4:4 forms of `candidates_444`, answered as `MESHHARBOR_CAPS_444:[…]`, folded in by `merge_444` |
 
 The 0.4.84 roll found the cost of one child: a laptop's Intel media runtime died
 with `0xc0000005` on the first `vp9_qsv` 4:4:4 open and the daemon advertised
 **no hardware at all**. A dying 4:4:4 child now costs only the 4:4:4 forms.
 
 ⚠️ **The child's stderr reaches no log on a service host.** It announces every
-open on stdout (`ROOMLER_CAPS_PROGRESS:<name>:yuv444`, line-buffered so it
+open on stdout (`MESHHARBOR_CAPS_PROGRESS:<name>:yuv444`, line-buffered so it
 survives the crash) and the parent quotes the last one — *that* is the
 `encoder_cells_deny` entry to add.
 
@@ -61,9 +61,9 @@ survives the crash) and the parent quotes the last one — *that* is the
 
 `caps-cache.json` next to the daemon's logs (`encode/caps_cache.rs`), keyed on
 exactly what it depends on: the **build** (crate version + exe length/mtime), the
-**hardware fingerprint** (`encode/hwid.rs`), and a **SHA-256 of every `ROOMLERD_*`
+**hardware fingerprint** (`encode/hwid.rs`), and a **SHA-256 of every `MESHHARBORD_*`
 knob**. Any mismatch, a format bump, or **7 days** re-probes. `caps_cache = false`
-/ `ROOMLERD_CAPS_CACHE=0` switches read and write off. macOS has no key ⇒ no
+/ `MESHHARBORD_CAPS_CACHE=0` switches read and write off. macOS has no key ⇒ no
 cache (its probe is ~120 ms).
 
 ⚠️ **Only a result with a HARDWARE cell is cached.** A no-hardware answer is the
@@ -78,7 +78,7 @@ the cache file, not the supervisor's `service-logs`.
 
 ## 3 · The denylist is a kill switch — it must apply at EVERY entry point
 
-`ROOMLERD_ENCODER_CELLS_DENY` (`name:chroma`, comma-separated, empty = deny
+`MESHHARBORD_ENCODER_CELLS_DENY` (`name:chroma`, comma-separated, empty = deny
 nothing) **replaces** the built-in list. A denied cell is never opened — by the
 probe **and** by a session, both reading `cells::names_420` / `names_444`.
 
@@ -141,10 +141,10 @@ truth.
 
 ## 6 · Selection order
 
-**CLI `--encoder` > env `ROOMLERD_ENCODER` > `encoder_preference` in config TOML >
+**CLI `--encoder` > env `MESHHARBORD_ENCODER` > `encoder_preference` in config TOML >
 `Auto`.** Values: `auto` | `hardware` (`hw`/`mf`) | `software` (`sw`/`openh264`).
 `Auto` on Windows runs the MF H.264 probe-and-rollback cascade then falls back to
-openh264; everywhere else it is openh264 only. `ROOMLERD_HW_AUTO=0` reverts to
+openh264; everywhere else it is openh264 only. `MESHHARBORD_HW_AUTO=0` reverts to
 openh264-first without a rebuild.
 
 Legacy caps fields keep their exact pre-FR-77 meaning (first backend that opens),

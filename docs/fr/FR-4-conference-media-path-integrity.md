@@ -23,7 +23,7 @@ Zero RTP flowed.
 
 Root cause: **zeus never had the RTC-range forwarding.** Browsers send mediasoup RTP
 straight at each pod's announced public IP (S6 per-node map:
-`ROOMLER__MEDIASOUP__ANNOUNCED_IP_MAP`, worker-2 → `5.9.157.226`), and the worker VMs sit
+`MESHHARBOR__MEDIASOUP__ANNOUNCED_IP_MAP`, worker-2 → `5.9.157.226`), and the worker VMs sit
 behind libvirt NAT — the physical host must DNAT the range into the VM. In
 `k8s-cluster-multi` the range was modeled as a *jupiter-only extra* from the single-pod
 era (flag literally named `host_firewall_jupiter_extra`;

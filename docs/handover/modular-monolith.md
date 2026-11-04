@@ -79,7 +79,7 @@ A cell is **not** one VM. It is a **server VM** plus one or two **client VMs** o
 `vmtest-net`:
 
 ```
-server VM   docker + compose, .env.selfhost, ROOMLER_IMAGE=<tag>-<profile>
+server VM   docker + compose, .env.selfhost, MESHHARBOR_IMAGE=<tag>-<profile>
   ├─ collab      : 2 browser contexts   (no agent needed)
   ├─ remote      : 1 agent VM + browser
   ├─ mesh        : 2 agent VMs          (peer ↔ peer is the point; one agent proves nothing)
@@ -104,7 +104,7 @@ that VM's database, not on prod.
    browser must have a real route to the address the server announces.
 2. **A LAN URL is not a secure context** ⇒ `navigator.mediaDevices` is `undefined` ⇒ no
    `getUserMedia`, no call. Only `https://` or `http://127.0.0.1|localhost` qualify.
-3. **`ROOMLER__APP__FRONTEND_URL` must EQUAL the browser's origin** — *a port is part of an
+3. **`MESHHARBOR__APP__FRONTEND_URL` must EQUAL the browser's origin** — *a port is part of an
    Origin* — or the cookie-authenticated `/ws` upgrade is refused **403** and every realtime
    check fails for that one reason.
    ⇒ **Therefore: run the browser INSIDE the server VM against `http://127.0.0.1`.** That is

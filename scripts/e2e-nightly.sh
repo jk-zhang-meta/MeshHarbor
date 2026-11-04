@@ -13,7 +13,7 @@
 #      from the deploy repo's prod overlay) via `kubectl set image` — the
 #      e2e namespace is deliberately NOT ArgoCD-managed.
 #   3. Runs the browser as the `pwrunner` sidecar INSIDE the app pod.
-#      ⚠️ The stack's ROOMLER__APP__FRONTEND_URL must equal the origin the
+#      ⚠️ The stack's MESHHARBOR__APP__FRONTEND_URL must equal the origin the
 #      browser uses — here http://127.0.0.1, and a PORT is part of an Origin.
 #      Since the session-cookie migration the /ws upgrade authenticates by
 #      COOKIE and refuses an untrusted Origin with 403 (cookies are ambient

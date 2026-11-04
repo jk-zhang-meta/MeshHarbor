@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! Roomler SSH — the in-daemon SSH surface on this node's overlay address.
+//! MeshHarbor SSH — the in-daemon SSH surface on this node's overlay address.
 //!
 //! # Where this is
 //!
@@ -16,7 +16,7 @@
 //!   (P4, P7); anything else is refused with an explicit reason rather than
 //!   left to hang.
 //! * **P3a — the device half of authorization.** `rc:ssh.grant` carries a
-//!   server-minted, single-use, short-lived authorization naming a roomler
+//!   server-minted, single-use, short-lived authorization naming a meshharbor
 //!   principal and an ephemeral public key; [`record_grant`] holds it and
 //!   [`auth_publickey`] redeems it. The server half that decides *whether* to
 //!   mint one (`SshPolicy`, `SSH_DEVICE`, the org kill-switch) is P3b.
@@ -24,7 +24,7 @@
 //! Built without the `ssh-server` feature the module still compiles and serves
 //! the P1 banner+echo, which keeps the transport independently testable in a
 //! build carrying no SSH code — and costs those builds nothing (russh measures
-//! +1.86 MiB in `roomlerd`).
+//! +1.86 MiB in `meshharbord`).
 //!
 //! # Two facts about identity, and the gap between them
 //!
@@ -32,12 +32,12 @@
 //! peer key the coordination server put in our netmap, so the peer address is
 //! the overlay address of a specific enrolled node in a specific org — not a
 //! claim, a cryptographic fact. That is what the whole design rests on, and
-//! what eventually lets roomler SSH have no key distribution at all.
+//! what eventually lets meshharbor SSH have no key distribution at all.
 //!
 //! It is not *authorization*. An enrolled peer is authenticated, not entitled.
 //! Two things close that gap, in this order:
 //!
-//! 1. A **server grant** ([`record_grant`]) names a roomler principal and one
+//! 1. A **server grant** ([`record_grant`]) names a meshharbor principal and one
 //!    ephemeral key, is redeemed once, and dies in seconds. This is the path
 //!    that will make key distribution unnecessary.
 //! 2. [`ssh_authorized_keys`] — a device-owned list, empty by default, so
@@ -404,7 +404,7 @@ async fn serve_conn(mut stream: tunnel_core::overlay::netstack::NsTcpStream, _ct
     info!(%peer, "ssh: intercepted connection accepted (P1 transport seam)");
 
     let banner = format!(
-        "roomler-ssh P1: transport seam OK. You are {peer}, served in-process \
+        "meshharbor-ssh P1: transport seam OK. You are {peer}, served in-process \
          with no OS socket. Echoing until EOF.\r\n"
     );
     if let Err(e) = stream.write_all(banner.as_bytes()).await {
@@ -551,7 +551,7 @@ pub(crate) mod sshd {
     /// 16 MiB, and 64 MiB was no faster. Memory stays bounded whatever the
     /// window: russh hands each data packet to a 100-message channel and
     /// waits, so a slow consumer backs the reader into TCP flow control.
-    /// `ROOMLERD_SSH_WINDOW_SIZE` overrides, in bytes.
+    /// `MESHHARBORD_SSH_WINDOW_SIZE` overrides, in bytes.
     const WINDOW_DEFAULT: u32 = 16 * 1024 * 1024;
     const WINDOW_RANGE: std::ops::RangeInclusive<u32> = 256 * 1024..=64 * 1024 * 1024;
 
@@ -972,7 +972,7 @@ pub(crate) mod sshd {
                     };
                     self.run_as = Err(format!(
                         "this device's administrator allows SSH through its SYSTEM service \
-                         {allowed} (`roomlerd anchor ssh`), and this session asked to run as \
+                         {allowed} (`meshharbord anchor ssh`), and this session asked to run as \
                          {}",
                         run_as.label()
                     ));
@@ -1166,7 +1166,7 @@ pub(crate) mod sshd {
                 let _ = handle
                     .disconnect(
                         russh::Disconnect::ByApplication,
-                        "roomler-ssh: session time limit reached".to_string(),
+                        "meshharbor-ssh: session time limit reached".to_string(),
                         String::new(),
                     )
                     .await;
@@ -1187,7 +1187,7 @@ pub(crate) mod sshd {
         /// `apply_run_as`, same consent gate, same identity.
         ///
         /// The bytes are opaque to us: the channel is spliced to the child's
-        /// stdio and roomler never parses a single SFTP packet.
+        /// stdio and meshharbor never parses a single SFTP packet.
         async fn start_sftp_session(
             &mut self,
             channel: ChannelId,
@@ -1230,7 +1230,7 @@ pub(crate) mod sshd {
                     self.peer,
                     "sftp",
                     "SFTP as the signed-in user is switched off on this device \
-                     (ROOMLERD_SFTP_AS_USER=0).",
+                     (MESHHARBORD_SFTP_AS_USER=0).",
                 );
             }
 
@@ -1242,7 +1242,7 @@ pub(crate) mod sshd {
                         channel,
                         self.peer,
                         "sftp",
-                        "no `sftp-server` binary on this device. roomler serves SFTP by \
+                        "no `sftp-server` binary on this device. meshharbor serves SFTP by \
                          handing the channel to OpenSSH's own server so transfers run as \
                          the session's account; install the OpenSSH server package to \
                          enable scp/sftp.",
@@ -1268,7 +1268,7 @@ pub(crate) mod sshd {
                 .await
             {
                 let _ = handle
-                    .extended_data(channel, 1, format!("roomler: {why}\r\n").into_bytes())
+                    .extended_data(channel, 1, format!("meshharbor: {why}\r\n").into_bytes())
                     .await;
                 let _ = handle.close(channel).await;
                 return Ok(());
@@ -1290,7 +1290,7 @@ pub(crate) mod sshd {
             // a client resolves every relative path against it.
             if let Err(why) = crate::exec::apply_run_as_at_home(&mut cmd, &run_as) {
                 let _ = handle
-                    .extended_data(channel, 1, format!("roomler: {why}\r\n").into_bytes())
+                    .extended_data(channel, 1, format!("meshharbor: {why}\r\n").into_bytes())
                     .await;
                 let _ = handle.close(channel).await;
                 return Ok(());
@@ -1303,7 +1303,7 @@ pub(crate) mod sshd {
                         .extended_data(
                             channel,
                             1,
-                            format!("roomler: could not start sftp-server: {e}\r\n").into_bytes(),
+                            format!("meshharbor: could not start sftp-server: {e}\r\n").into_bytes(),
                         )
                         .await;
                     let _ = handle.close(channel).await;
@@ -1361,7 +1361,7 @@ pub(crate) mod sshd {
                 // ⚠️ That status is not a nicety: `scp` reads it as the verdict
                 // on the whole transfer. Without an `exit-status` message
                 // OpenSSH reports `Exit status -1` and exits 1 — so before this
-                // every scp against a roomler device FAILED on the caller's
+                // every scp against a meshharbor device FAILED on the caller's
                 // side while the file arrived complete and byte-correct on the
                 // device (measured 2026-09-09 from mars to a corp laptop: 2 MiB
                 // uploaded, SHA matched on the far end, `scp rc=1`). A script
@@ -1474,7 +1474,7 @@ pub(crate) mod sshd {
                     // The stderr stream, beside the binary one: the client
                     // prints it, and the transfer was over anyway.
                     let _ = handle
-                        .extended_data(channel, 1, format!("roomler: {e}\r\n").into_bytes())
+                        .extended_data(channel, 1, format!("meshharbor: {e}\r\n").into_bytes())
                         .await;
                 }
                 let status = outcome.exit_code.map(|c| c.max(0) as u32).unwrap_or(1);
@@ -1520,7 +1520,7 @@ pub(crate) mod sshd {
                     let _ = session.extended_data(
                         channel,
                         1,
-                        format!("roomler-ssh: {e}\r\n").into_bytes(),
+                        format!("meshharbor-ssh: {e}\r\n").into_bytes(),
                     );
                     session.channel_failure(channel)?;
                     return Ok(());
@@ -1548,7 +1548,7 @@ pub(crate) mod sshd {
                 .await
             {
                 let _ = handle
-                    .extended_data(channel, 1, format!("roomler-ssh: {why}\r\n").into_bytes())
+                    .extended_data(channel, 1, format!("meshharbor-ssh: {why}\r\n").into_bytes())
                     .await;
                 let _ = handle.exit_status_request(channel, 1).await;
                 let _ = handle.close(channel).await;
@@ -1568,7 +1568,7 @@ pub(crate) mod sshd {
                 Err(e) => {
                     warn!(peer = %self.peer, %e, "ssh: could not start the terminal session");
                     let _ = handle
-                        .extended_data(channel, 1, format!("roomler-ssh: {e}\r\n").into_bytes())
+                        .extended_data(channel, 1, format!("meshharbor-ssh: {e}\r\n").into_bytes())
                         .await;
                     let _ = handle.exit_status_request(channel, 1).await;
                     let _ = handle.close(channel).await;
@@ -1684,7 +1684,7 @@ pub(crate) mod sshd {
             let fingerprint = key.fingerprint(ssh_key::HashAlg::Sha256).to_string();
 
             // A server-minted grant is tried FIRST, and consumed when it
-            // matches. It is the path that carries a roomler identity, and it
+            // matches. It is the path that carries a meshharbor identity, and it
             // is single-use — so a captured public key cannot be replayed into
             // a second session even within the grant's lifetime.
             if self
@@ -1969,7 +1969,7 @@ pub(crate) mod sshd {
                 let _ = session.extended_data(
                     channel,
                     1,
-                    b"roomler-ssh: no session policy\r\n".to_vec(),
+                    b"meshharbor-ssh: no session policy\r\n".to_vec(),
                 );
                 session.exit_status_request(channel, 1)?;
                 session.close(channel)?;
@@ -1986,7 +1986,7 @@ pub(crate) mod sshd {
                     let _ = session.extended_data(
                         channel,
                         1,
-                        format!("roomler-ssh: {e}\r\n").into_bytes(),
+                        format!("meshharbor-ssh: {e}\r\n").into_bytes(),
                     );
                     session.exit_status_request(channel, 1)?;
                     session.close(channel)?;
@@ -2234,7 +2234,7 @@ pub(crate) mod sshd {
     /// difference is not an oversight. For a tunnel the SERVER has already
     /// authorized the destination, so an empty `forward_acl.allowlist` sensibly
     /// means "no extra local restriction — trust that decision". A
-    /// `direct-tcpip` channel has no server in the path at all: roomler hands
+    /// `direct-tcpip` channel has no server in the path at all: meshharbor hands
     /// the client a socket and never sees the bytes. The local allowlist is
     /// therefore the ONLY gate, and an empty one has to mean *nothing*, or
     /// every SSH session would silently be an open pivot into whatever the
@@ -2280,9 +2280,9 @@ pub(crate) mod sshd {
     /// `None` is a normal answer (no OpenSSH server installed) and the caller
     /// turns it into a refusal that says what to install.
     fn sftp_server_path() -> Option<std::path::PathBuf> {
-        // `ROOMLER_SFTP_SERVER` first, for a host that keeps it somewhere
+        // `MESHHARBOR_SFTP_SERVER` first, for a host that keeps it somewhere
         // unusual — an escape hatch beats a support ticket.
-        if let Ok(p) = std::env::var("ROOMLER_SFTP_SERVER") {
+        if let Ok(p) = std::env::var("MESHHARBOR_SFTP_SERVER") {
             let p = std::path::PathBuf::from(p);
             return p.is_file().then_some(p);
         }
@@ -2306,7 +2306,7 @@ pub(crate) mod sshd {
             .find(|p| p.is_file())
     }
 
-    /// FR-97 P4b's kill switch: `ROOMLERD_SFTP_AS_USER=0` puts back the
+    /// FR-97 P4b's kill switch: `MESHHARBORD_SFTP_AS_USER=0` puts back the
     /// refusal a Windows `console_user` session got before P4b.
     #[cfg(windows)]
     fn sftp_as_user_enabled() -> bool {
@@ -2326,7 +2326,7 @@ pub(crate) mod sshd {
         why: &str,
     ) -> Result<(), russh::Error> {
         warn!(%peer, request = %what, "ssh: refused an unsupported request");
-        let _ = session.extended_data(channel, 1, format!("roomler-ssh: {why}\r\n").into_bytes());
+        let _ = session.extended_data(channel, 1, format!("meshharbor-ssh: {why}\r\n").into_bytes());
         session.channel_failure(channel)?;
         Ok(())
     }
@@ -2361,7 +2361,7 @@ pub(crate) mod sshd {
                 channel,
                 1,
                 format!(
-                    "roomler-ssh: waiting up to {}s for approval at the device…\r\n",
+                    "meshharbor-ssh: waiting up to {}s for approval at the device…\r\n",
                     timeout.as_secs()
                 )
                 .into_bytes(),
@@ -2425,7 +2425,7 @@ pub(crate) mod sshd {
             detail: what.to_string(),
             org: String::new(),
             timeout,
-            // Written either way — `roomlerd consent --list` must show a
+            // Written either way — `meshharbord consent --list` must show a
             // natively-prompted session too; the field is what stops the
             // companion from asking the same question twice.
             surface: if native {
@@ -2487,7 +2487,7 @@ pub(crate) mod sshd {
         Err(match decision {
             crate::consent::Decision::Timeout if !have_surface => {
                 "nobody could be asked at this device — it has no prompt surface (no one at its \
-                 screen and the Roomler desktop app is not running); answer with `roomlerd \
+                 screen and the MeshHarbor desktop app is not running); answer with `meshharbord \
                  consent` there, start the desktop app, or set this device's SSH policy to auto"
                     .to_string()
             }
@@ -2606,7 +2606,7 @@ pub(crate) mod sshd {
             .await
         {
             let _ = handle
-                .extended_data(channel, 1, format!("roomler-ssh: {why}\r\n").into_bytes())
+                .extended_data(channel, 1, format!("meshharbor-ssh: {why}\r\n").into_bytes())
                 .await;
             let _ = handle.exit_status_request(channel, 1).await;
             let _ = handle.close(channel).await;
@@ -2656,7 +2656,7 @@ pub(crate) mod sshd {
         // printed nothing", which is the opposite of what happened.
         if let Some(err) = &finished.error {
             let _ = handle
-                .extended_data(channel, 1, format!("roomler-ssh: {err}\r\n").into_bytes())
+                .extended_data(channel, 1, format!("meshharbor-ssh: {err}\r\n").into_bytes())
                 .await;
         }
 
@@ -2708,7 +2708,7 @@ pub(crate) mod sshd {
     /// everything the command wrote has been handed to russh — the exit
     /// status the caller sends next cannot overtake the output.
     ///
-    /// Backpressure is the chain of bounded queues (`docs/roomler-ssh.md`
+    /// Backpressure is the chain of bounded queues (`docs/meshharbor-ssh.md`
     /// §3): `handle.data` blocks while the client's window is spent, the sink
     /// fills, the engine's readers stop, the pipe fills, the child blocks.
     async fn stream_to_channel(
@@ -2786,7 +2786,7 @@ pub(crate) mod sshd {
                 .extended_data(channel, 1, outcome.stderr_bytes.clone())
                 .await;
         }
-        // The ceiling is the exec engine's (`docs/roomler-ssh.md` §3). Hitting
+        // The ceiling is the exec engine's (`docs/meshharbor-ssh.md` §3). Hitting
         // it must say so: the output simply stopping, with exit 1 and no word,
         // read as a corrupt transfer rather than a limit.
         if outcome.truncated {
@@ -2795,7 +2795,7 @@ pub(crate) mod sshd {
                     channel,
                     1,
                     format!(
-                        "roomler-ssh: output stopped at {} bytes, the exec ceiling (ssh_exec_streaming is off on this device). Copy files with scp or sftp, which stream them whole.\r\n",
+                        "meshharbor-ssh: output stopped at {} bytes, the exec ceiling (ssh_exec_streaming is off on this device). Copy files with scp or sftp, which stream them whole.\r\n",
                         exec_limits::MAX_OUTPUT_BYTES
                     )
                     .into_bytes(),
@@ -3283,7 +3283,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("roomler-ssh-consent-{nanos}"));
+        let dir = std::env::temp_dir().join(format!("meshharbor-ssh-consent-{nanos}"));
         super::SessionServices {
             // FR-55 — tests hold nothing awake. `None` is the real production
             // value anywhere no power keeper exists, not a stub.
@@ -3349,7 +3349,7 @@ mod tests {
         let hash = session.best_supported_rsa_hash().await.unwrap().flatten();
         let res = session
             .authenticate_publickey(
-                "roomler",
+                "meshharbor",
                 russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), hash),
             )
             .await
@@ -3388,7 +3388,7 @@ mod tests {
         let hash = session.best_supported_rsa_hash().await.unwrap().flatten();
         let res = session
             .authenticate_publickey(
-                "roomler",
+                "meshharbor",
                 russh::keys::PrivateKeyWithHashAlg::new(Arc::new(stranger), hash),
             )
             .await
@@ -3413,7 +3413,7 @@ mod tests {
         let hash = session.best_supported_rsa_hash().await.unwrap().flatten();
         let res = session
             .authenticate_publickey(
-                "roomler",
+                "meshharbor",
                 russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), hash),
             )
             .await
@@ -3572,7 +3572,7 @@ mod tests {
         let session = connect(addr, key).await;
 
         let mut channel = session.channel_open_session().await.unwrap();
-        channel.exec(true, "echo roomler-ssh-p2-ok").await.unwrap();
+        channel.exec(true, "echo meshharbor-ssh-p2-ok").await.unwrap();
 
         let mut stdout = Vec::new();
         let mut exit = None;
@@ -3587,7 +3587,7 @@ mod tests {
 
         let stdout = String::from_utf8_lossy(&stdout);
         assert!(
-            stdout.contains("roomler-ssh-p2-ok"),
+            stdout.contains("meshharbor-ssh-p2-ok"),
             "expected the command's output, got {stdout:?}"
         );
         assert_eq!(exit, Some(0), "a successful command reports exit 0");
@@ -3613,7 +3613,7 @@ mod tests {
         };
         channel.exec(true, echo_stdin).await.unwrap();
         channel.data(&b"piped-into-"[..]).await.unwrap();
-        channel.data(&b"roomler-ssh"[..]).await.unwrap();
+        channel.data(&b"meshharbor-ssh"[..]).await.unwrap();
         channel.eof().await.unwrap();
 
         let mut stdout = Vec::new();
@@ -3628,7 +3628,7 @@ mod tests {
 
         let stdout = String::from_utf8_lossy(&stdout);
         assert!(
-            stdout.contains("piped-into-roomler-ssh"),
+            stdout.contains("piped-into-meshharbor-ssh"),
             "the client's stdin never reached the command: stdout {stdout:?}"
         );
         assert_eq!(exit, Some(0));
@@ -3955,7 +3955,7 @@ mod tests {
         let hash = replay.best_supported_rsa_hash().await.unwrap().flatten();
         let res = replay
             .authenticate_publickey(
-                "roomler",
+                "meshharbor",
                 russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), hash),
             )
             .await
@@ -4024,7 +4024,7 @@ mod tests {
         let hash = session.best_supported_rsa_hash().await.unwrap().flatten();
         let res = session
             .authenticate_publickey(
-                "roomler",
+                "meshharbor",
                 russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), hash),
             )
             .await
@@ -4175,7 +4175,7 @@ mod tests {
         )
         .expect("a usable host key");
         let key_list =
-            super::sshd::ResolvedSessionPolicy::from_key_list(&ctx, "roomler", test_peer());
+            super::sshd::ResolvedSessionPolicy::from_key_list(&ctx, "meshharbor", test_peer());
         assert!(key_list.deadline.is_none());
         assert!(key_list.consent_sentinel.is_none());
         assert!(key_list.caller.contains("(key-list)"));
@@ -4204,7 +4204,7 @@ mod tests {
         )
         .expect("a usable host key");
         let key_list =
-            super::sshd::ResolvedSessionPolicy::from_key_list(&ctx, "roomler", test_peer());
+            super::sshd::ResolvedSessionPolicy::from_key_list(&ctx, "meshharbor", test_peer());
         assert!(!key_list.one_command);
     }
 
@@ -4507,7 +4507,7 @@ mod tests {
             .unwrap();
         channel.request_shell(true).await.unwrap();
         channel
-            .data(&b"echo roomler-conpty-ssh-ok\r\nexit\r\n"[..])
+            .data(&b"echo meshharbor-conpty-ssh-ok\r\nexit\r\n"[..])
             .await
             .unwrap();
 
@@ -4523,7 +4523,7 @@ mod tests {
 
         let text = String::from_utf8_lossy(&out);
         assert!(
-            text.contains("roomler-conpty-ssh-ok"),
+            text.contains("meshharbor-conpty-ssh-ok"),
             "the shell's own output must reach the client — the console host's \
              VT alone is exactly the P4b defect; got {text:?}"
         );
@@ -5150,7 +5150,7 @@ mod tests {
         let hash = session.best_supported_rsa_hash().await.unwrap().flatten();
         let res = session
             .authenticate_publickey(
-                "roomler",
+                "meshharbor",
                 russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), hash),
             )
             .await

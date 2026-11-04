@@ -5,13 +5,13 @@
 //! Everything a THIN client needs to cohabit with the daemon — config
 //! load/save, enrollment, machine-id derivation, log files + tailing, the
 //! needs-attention sentinel — without any of the daemon's data plane
-//! (capture, encode, input, webrtc, overlay). `roomlerd` re-exports
+//! (capture, encode, input, webrtc, overlay). `meshharbord` re-exports
 //! each module under its old `crate::` path; the desktop companion depends
 //! on this crate directly.
 //!
 //! Module notes:
 //! * [`notify`] carries the sentinel primitives; the rc.53 worker-aware
-//!   wrappers stayed in `roomlerd` (they probe the SystemContext
+//!   wrappers stayed in `meshharbord` (they probe the SystemContext
 //!   worker role — daemon-only machinery).
 //! * [`apps_config`] carries ONLY the `[virtual_desktop_apps]` serde shapes
 //!   that [`config::AgentConfig`] embeds; the launch machinery stays in
@@ -41,10 +41,10 @@ pub mod logs_upload;
 pub mod machine;
 pub mod notify;
 pub mod recording_dir;
-/// macOS privacy-permission probes. Here rather than in `roomlerd`
+/// macOS privacy-permission probes. Here rather than in `meshharbord`
 /// because the desktop companion needs them too and deliberately does NOT
 /// depend on the agent (P3e lever E) — the whole point of that split is that
-/// the tray links no transport crates. Re-exported by `roomlerd` under
+/// the tray links no transport crates. Re-exported by `meshharbord` under
 /// `crate::tcc`, so existing call sites are unchanged.
 #[cfg(target_os = "macos")]
 pub mod tcc;

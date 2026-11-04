@@ -161,7 +161,7 @@ enrollment, whereas the supervisor's fires on every start forever.
       *(unit-locked: `a_probe_is_silent_but_load_still_demands_re_enrollment`)*
 - [x] `netd_enabled()` still returns `false` in that case (behaviour unchanged) —
       the change is `load(..).ok()` → `read_if_present(..)`, both `Option`.
-- [x] The env lever `ROOMLERD_OVERLAY_NETD` still wins over the file — untouched,
+- [x] The env lever `MESHHARBORD_OVERLAY_NETD` still wins over the file — untouched,
       it returns before the file is consulted.
 - [x] An actually-unreadable config still logs `the host must be re-enrolled` at
       ERROR. Both halves are in one test, and it is **mutation-checked**: with

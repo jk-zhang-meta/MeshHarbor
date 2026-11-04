@@ -91,7 +91,7 @@ const WHEEL_PIXELS_PER_DETENT: f32 = 53.0;
 const SETTLE: Duration = Duration::from_millis(300);
 
 /// FR-93 P4c — the settle, overridable for measuring it on a host
-/// (`ROOMLERD_UINPUT_SETTLE_MS`, at most 5 s). Under load the default is not
+/// (`MESHHARBORD_UINPUT_SETTLE_MS`, at most 5 s). Under load the default is not
 /// always enough (measured on KDE: 2 of 8 first moves reached nobody); the
 /// arbiter's warm-up (`input::arbiter`) is what makes the first event safe,
 /// by opening the device a second or more before anything is written.
@@ -194,8 +194,8 @@ struct InputEvent {
 
 /// Runtime gate. **Default OFF**, matching `drm_backend`: a virtual input
 /// device is host-global and visible to every application, so a host opts in
-/// (`ROOMLERD_UINPUT=1`) rather than having one appear because it upgraded.
-/// Pair it with `ROOMLERD_DRM_CAPTURE=1` on a Wayland host.
+/// (`MESHHARBORD_UINPUT=1`) rather than having one appear because it upgraded.
+/// Pair it with `MESHHARBORD_DRM_CAPTURE=1` on a Wayland host.
 pub fn env_enabled() -> bool {
     tunnel_core::env::flag("UINPUT", false)
 }
@@ -326,7 +326,7 @@ impl UinputInjector {
             }
 
             let mut name = [0u8; 80];
-            let label = b"Roomler Virtual Input";
+            let label = b"MeshHarbor Virtual Input";
             name[..label.len()].copy_from_slice(label);
             let setup = UinputSetup {
                 id: InputId {
@@ -496,7 +496,7 @@ fn open_rel_device() -> Result<File> {
             )?;
         }
         let mut name = [0u8; 80];
-        let label = b"Roomler Virtual Pointer";
+        let label = b"MeshHarbor Virtual Pointer";
         name[..label.len()].copy_from_slice(label);
         let setup = UinputSetup {
             id: InputId {
@@ -979,8 +979,8 @@ mod tests {
             Ok(t) => crate::input::keylayout::TextKeys::Xkb(t),
             Err(e) => {
                 assert!(
-                    std::env::var("ROOMLERD_TEST_XKB").as_deref() != Ok("1"),
-                    "ROOMLERD_TEST_XKB=1 but: {e}"
+                    std::env::var("MESHHARBORD_TEST_XKB").as_deref() != Ok("1"),
+                    "MESHHARBORD_TEST_XKB=1 but: {e}"
                 );
                 eprintln!("skipping: {e}");
                 return;

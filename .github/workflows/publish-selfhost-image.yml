@@ -207,11 +207,11 @@ jobs:
             -e MONGO_INITDB_ROOT_USERNAME=smoke -e MONGO_INITDB_ROOT_PASSWORD="$DBPW" mongo:7
           docker run -d --name redis --network roomler-smoke redis:7-alpine
           docker run -d --name roomler --network roomler-smoke -p 8080:80 \
-            -e ROOMLER__APP__ENVIRONMENT=development \
-            -e ROOMLER__JWT__SECRET="$JWT" \
-            -e ROOMLER__DATABASE__URL="mongodb://smoke:${DBPW}@mongo:27017/?authSource=admin" \
-            -e ROOMLER__REDIS__URL=redis://redis:6379 \
-            -e ROOMLER__MEDIASOUP__NUM_WORKERS=1 \
+            -e MESHHARBOR__APP__ENVIRONMENT=development \
+            -e MESHHARBOR__JWT__SECRET="$JWT" \
+            -e MESHHARBOR__DATABASE__URL="mongodb://smoke:${DBPW}@mongo:27017/?authSource=admin" \
+            -e MESHHARBOR__REDIS__URL=redis://redis:6379 \
+            -e MESHHARBOR__MEDIASOUP__NUM_WORKERS=1 \
             "$IMG"
           for i in $(seq 1 60); do
             if curl -fsS -m 3 http://localhost:8080/health >/dev/null 2>&1; then
@@ -269,7 +269,7 @@ jobs:
                 esac
                 # This smoke runs as root; a self-hoster may not (`user:` in
                 # compose, runAsNonRoot), so the file must be world-readable.
-                GEO_PATH="$(docker exec roomler printenv ROOMLER__STATS__GEOIP_MMDB)"
+                GEO_PATH="$(docker exec roomler printenv MESHHARBOR__STATS__GEOIP_MMDB)"
                 if ! docker exec --user 65534:65534 roomler test -r "$GEO_PATH"; then
                   echo "::error::$GEO_PATH is not readable by a non-root user: a container not run as root would read every country as 'unknown'"
                   exit 1

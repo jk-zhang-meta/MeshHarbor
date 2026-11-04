@@ -228,7 +228,7 @@ impl TenantDao {
         self.base.find_by_id(tenant_id).await
     }
 
-    /// Roomler SSH's org kill-switch (gate 1). A separate switch from
+    /// MeshHarbor SSH's org kill-switch (gate 1). A separate switch from
     /// [`Self::set_remote_exec_enabled`] because they are separate grants.
     pub async fn set_remote_ssh_enabled(
         &self,

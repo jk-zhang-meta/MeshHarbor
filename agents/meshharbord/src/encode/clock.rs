@@ -27,7 +27,7 @@
 //! request, and the encoder runs as before; the log says so once. macOS and
 //! Windows answer `NotLinux` until their own phase (FR-112 P3).
 //!
-//! Kill switch: `ROOMLERD_ENCODER_CLOCK=0`.
+//! Kill switch: `MESHHARBORD_ENCODER_CLOCK=0`.
 
 use std::sync::Mutex;
 
@@ -48,7 +48,7 @@ pub enum Outcome {
     NotLinux,
 }
 
-/// `ROOMLERD_ENCODER_CLOCK`, on unless set false.
+/// `MESHHARBORD_ENCODER_CLOCK`, on unless set false.
 pub fn enabled() -> bool {
     tunnel_core::env::flag("ENCODER_CLOCK", true)
 }
@@ -84,11 +84,11 @@ fn say_once(role: &'static str, outcome: Outcome) {
         Outcome::Clamped => tracing::info!(
             role,
             uclamp_min = CLAMP_MIN,
-            "encoder clock: asked for (FR-112; ROOMLERD_ENCODER_CLOCK=0 turns it off)"
+            "encoder clock: asked for (FR-112; MESHHARBORD_ENCODER_CLOCK=0 turns it off)"
         ),
         Outcome::Off => tracing::info!(
             role,
-            "encoder clock: not asked for (ROOMLERD_ENCODER_CLOCK=0, FR-112)"
+            "encoder clock: not asked for (MESHHARBORD_ENCODER_CLOCK=0, FR-112)"
         ),
         Outcome::Refused(errno) => tracing::info!(
             role,

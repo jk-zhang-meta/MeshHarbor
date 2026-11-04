@@ -4,7 +4,7 @@
 //! own growth numbers, evaluated by an hourly host job, each opening a
 //! `growth_alerts` row once, mailing the digest's recipients at most once
 //! per rule and key per day, and closing the row when the condition goes
-//! away. `ROOMLER__GROWTH__ALERTS` (default off) switches all of them.
+//! away. `MESHHARBOR__GROWTH__ALERTS` (default off) switches all of them.
 //!
 //! # The rules
 //!
@@ -781,7 +781,7 @@ pub fn spawn_alert_loop(state: AppState) {
         loop {
             let claimed = match &state.redis_pubsub {
                 Some(redis) => {
-                    let key = format!("roomler:growth-alerts:{}", state.db.name());
+                    let key = format!("meshharbor:growth-alerts:{}", state.db.name());
                     match redis.try_claim(&key, LOOP_INTERVAL_SECS - 60).await {
                         Ok(c) => c,
                         Err(e) => {
@@ -950,7 +950,7 @@ pub async fn evaluate_route(
     super::require_growth_admin(&state, &auth)?;
     if !q.dry_run && !state.settings.growth.alerts {
         return Err(ApiError::Conflict(
-            "alerts are off on this server (ROOMLER__GROWTH__ALERTS); use dry_run=true".into(),
+            "alerts are off on this server (MESHHARBOR__GROWTH__ALERTS); use dry_run=true".into(),
         ));
     }
     let mailer = digest::service_mailer(&state);

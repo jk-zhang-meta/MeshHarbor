@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! FR-85 — the rules for a recording folder (`record_dir`).
 //!
-//! Here, and not in `roomlerd`, because three parties must apply the SAME
+//! Here, and not in `meshharbord`, because three parties must apply the SAME
 //! rules: the config surface's validator (a `ConfigSet` of `record_dir`), the
 //! recorder at start time, and meshharbor-desktop before it offers a folder the
 //! daemon would then refuse. A validator each would drift.
@@ -80,7 +80,7 @@ mod tests {
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "roomler-fr85-recdir-{}-{}",
+            "meshharbor-fr85-recdir-{}-{}",
             std::process::id(),
             name
         ));
