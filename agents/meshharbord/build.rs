@@ -62,15 +62,8 @@ fn main() {
 /// grows. Threads created with an explicit size (std's, tokio's) are
 /// unaffected; any thread the OS creates at the image default gets the same
 /// reserve. Keyed on the TARGET, like [`hive_host`]: a build script runs on the
-/// host. `-bin=meshharbord` scopes it to this one binary, as the version
-/// resource below is.
-///
-/// ⚠️ The bin name is `meshharbord` (the `[[bin]]` in Cargo.toml), NOT the
-/// package/lib name `meshharbord`. `cargo:rustc-link-arg-bin=<NAME>` names a BIN
-/// TARGET; naming the package made cargo reject the whole build on Windows
-/// MSVC with "does not have a bin target with the name meshharbord" (the FR-21
-/// `meshharbord` output-binary rename reached Cargo.toml but this script still
-/// named the retired bin — the daemon did not build on Windows at all).
+/// host. `-bin=meshharbord` scopes it to this one binary, as the version resource
+/// below is.
 fn windows_main_stack() {
     const STACK_BYTES: u64 = 8 * 1024 * 1024;
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
@@ -194,10 +187,6 @@ END
         let rc_path = out_dir.join("meshharbord-version.rc");
         fs::write(&rc_path, rc).expect("failed to write the VERSIONINFO resource script");
 
-        // The bin TARGET is `meshharbord` (Cargo.toml `[[bin]]`), not the
-        // package name `meshharbord`: `compile_for` scopes the resource to one
-        // bin, and naming a bin that does not exist is the same hard cargo
-        // error as the stack link-arg above.
         let result = embed_resource::compile_for(&rc_path, ["meshharbord"], embed_resource::NONE);
 
         // A missing rc.exe/llvm-rc must not break a developer's local build,
