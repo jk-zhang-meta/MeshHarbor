@@ -90,9 +90,9 @@ The agent connects **outbound only** — nothing is opened on the machine you
 enrol, and no port is forwarded. Then, from anywhere:
 
 ```bash
-meshharbor ssh     gpu-1                                            # a shell — no sshd, no listening port
-meshharbor forward --agent office-1 --local 127.0.0.1:5432 --remote db.internal:5432
-meshharbor socks5  --agent berlin-1 --local 127.0.0.1:1080          # see the network as that machine sees it
+mh ssh     gpu-1                                            # a shell — no sshd, no listening port
+mh forward --agent office-1 --local 127.0.0.1:5432 --remote db.internal:5432
+mh socks5  --agent berlin-1 --local 127.0.0.1:1080          # see the network as that machine sees it
 ```
 
 …or open the machine's desktop from the web app and use it as if you were
@@ -107,8 +107,8 @@ see [`docs/installation.md`](docs/installation.md).
 |---|---|---|
 | **TeamViewer / AnyDesk / RustDesk** | reaching a desktop | browser-based, hardware-encoded, consent-gated, works through corporate firewalls |
 | **Tailscale / ZeroTier / NetBird** | a private network between machines | WireGuard mesh, stable IPs, MagicDNS, subnet routers, exit nodes |
-| **ngrok / Cloudflare Tunnel** | reaching one service behind a NAT | `meshharbor forward`, SOCKS5, daemon-supervised declared routes |
-| **`sshd` + a jump host** | a shell on a remote box | `meshharbor ssh` — no daemon to install, no port to open, no bastion |
+| **ngrok / Cloudflare Tunnel** | reaching one service behind a NAT | `mh forward`, SOCKS5, daemon-supervised declared routes |
+| **`sshd` + a jump host** | a shell on a remote box | `mh ssh` — no daemon to install, no port to open, no bastion |
 | **Slack + Zoom** | the team layer | rooms, threads, files, HD calls on the same server and accounts |
 
 Not a claim that it beats each of those at its own game — a claim that you stop
@@ -176,12 +176,12 @@ machine when you travel.
 | In detail | |
 |---|---|
 | **WireGuard mesh** | Every node gets a stable private IP (CGNAT `100.64.0.0/10`) + a MagicDNS name. Carriers auto-negotiate: LAN-direct → public-direct → NAT hole-punch → TURN relay (QUIC-upgraded) → DERP over :443 — it works even from strict corporate networks. See [`docs/overlay-communication.md`](docs/overlay-communication.md) |
-| **Tunnels** | `meshharbor forward` (any `host:port` an agent can reach becomes a local port), `meshharbor socks5` (per-agent or whole-fleet mesh proxy, TCP + UDP), declared routes supervised by the daemon |
-| **SSH without sshd** | `meshharbor ssh <name>` — interactive shells on any node with no listening port and no `sshd` install, consent-gated ([`docs/meshharbor-ssh.md`](docs/meshharbor-ssh.md)) |
+| **Tunnels** | `mh forward` (any `host:port` an agent can reach becomes a local port), `mh socks5` (per-agent or whole-fleet mesh proxy, TCP + UDP), declared routes supervised by the daemon |
+| **SSH without sshd** | `mh ssh <name>` — interactive shells on any node with no listening port and no `sshd` install, consent-gated ([`docs/meshharbor-ssh.md`](docs/meshharbor-ssh.md)) |
 | **Exit nodes** | Route a client's entire internet egress (v4+v6, DNS included) through a chosen mesh peer — with a never-self-wedge safety model |
 | **Multi-org** | One daemon can join several organizations at once, with per-org WireGuard keys and disjoint address blocks |
 | **Policy & audit** | Default-deny tunnel ACLs, overlay ACLs (`off`/`warn`/`enforce`), subnet-route + exit-node approval in the admin UI, audit trail per flow |
-| **Fleet operations** | `meshharbor exec` remote command execution (four independent default-deny gates), device console, live observability: mesh graph, per-carrier stats, relay usage |
+| **Fleet operations** | `mh exec` remote command execution (four independent default-deny gates), device console, live observability: mesh graph, per-carrier stats, relay usage |
 
 ## 💬 Bonus · Video conferencing & team collaboration
 
@@ -268,7 +268,7 @@ they cannot read. Full picture: [`docs/architecture.md`](docs/architecture.md).
 | **Remote desktop** | webrtc-rs (P2P, vendored forks for H.265 payloading + TURNS/TCP), OpenH264, Media Foundation, FFmpeg (NVENC/QSV/AMF), libvpx VP9 4:4:4, WebCodecs viewer |
 | **Overlay / tunnels** | boringtun (WireGuard), quinn (QUIC), smoltcp userspace netstack, Wintun / tun / utun, coturn + standalone DERP relays |
 | **Conference media** | mediasoup 0.20 SFU + mediasoup-client |
-| **Native apps** | `meshharbord` daemon (Rust), `meshharbor` CLI, `meshharbor-desktop` tray companion (Tauri 2), `meshharbor-setup` install wizard (Tauri 2) |
+| **Native apps** | `meshharbord` daemon (Rust), `mh` CLI, `meshharbor-desktop` tray companion (Tauri 2), `meshharbor-setup` install wizard (Tauri 2) |
 | **Frontend** | Vue 3, Vuetify 3, Pinia, TipTap v3, d3 (observability) |
 | **Auth** | JWT (6 audience-checked token types), Argon2, OAuth 2.0 |
 | **Infrastructure** | Docker multi-stage image (nginx + API), docker-compose dev stack (MongoDB, Redis, MinIO, coturn), Kubernetes-ready |
@@ -303,7 +303,7 @@ and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 | Component | Windows | Linux | macOS |
 |---|---|---|---|
 | **`meshharbord` daemon** (desktop + tunnel exit + overlay node) | x64 — MSI (per-user / per-machine), signed | x86_64 + arm64 — `.deb` / tarball, systemd | arm64 — `.pkg`, LaunchAgent |
-| **`meshharbor` CLI** (tunnel client) | x64 zip | x86_64 tarball + `.deb` | universal tarball |
+| **`mh` CLI** (tunnel client) | x64 zip | x86_64 tarball + `.deb` | universal tarball |
 | **`meshharbor-setup` wizard** | x64 (signed) | x86_64 | universal |
 | **`meshharbor-desktop` companion** (tray, consent, tunnels UI) | ✅ | — | — |
 | **Viewer / web app** | any modern browser; WebCodecs low-latency paths are Chrome-first | | |
@@ -338,7 +338,7 @@ MeshHarbor is open source under a **split licence**:
 | | |
 |---|---|
 | **The server you would host** — `crates/api`, `services`, `db`, `config`, `derp-relay`, `ui/` | [AGPL-3.0-only](LICENSE-AGPL-3.0) |
-| **Everything you install on a machine** — `meshharbord`, the `meshharbor` CLI, desktop + setup apps, and the transport crates they share with the server | [MPL-2.0](LICENSE-MPL-2.0) |
+| **Everything you install on a machine** — `meshharbord`, the `mh` CLI, desktop + setup apps, and the transport crates they share with the server | [MPL-2.0](LICENSE-MPL-2.0) |
 | Documentation (`docs/`) | CC-BY-4.0 |
 
 **Self-host all of it, free, on unlimited devices, forever.** The agent you

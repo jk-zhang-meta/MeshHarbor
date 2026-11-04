@@ -36,11 +36,11 @@ recording** is in the view and in the tray menu.
 The same from a terminal on that machine:
 
 ```bash
-meshharbor record start --fps 60 --system-audio
-meshharbor record status
-meshharbor record stop
-meshharbor record ls
-meshharbor record rm <file.mp4>
+mh record start --fps 60 --system-audio
+mh record status
+mh record stop
+mh record ls
+mh record rm <file.mp4>
 ```
 
 ## Record a remote screen

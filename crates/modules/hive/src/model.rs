@@ -568,7 +568,7 @@ pub enum SessionOrigin {
     /// Its owner started it from MeshHarbor, through every start gate.
     #[default]
     Started,
-    /// A terminal session its owner adopted on a device (`meshharbor hive
+    /// A terminal session its owner adopted on a device (`mh hive
     /// adopt`, decision 11). Read-only: the terminal holds the harness, so
     /// nobody drives it from here, the owner included, and it passed none of
     /// the start gates.

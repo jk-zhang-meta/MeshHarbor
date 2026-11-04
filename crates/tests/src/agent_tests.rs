@@ -412,7 +412,7 @@ async fn update_all_from_a_secondary_org_is_refused_not_counted_delivered() {
 /// refuses the org's WS with `rc:goodbye AgentDeleted`, and its loop must END
 /// (not retry) on the TYPED error `run_cmd`'s supervisors log at DEBUG — the
 /// loop's own WARN already said it, once — carrying text that names every way
-/// out with this org's label, since that text is what `meshharbor status` shows.
+/// out with this org's label, since that text is what `mh status` shows.
 /// Before, it was a plain `anyhow!` naming only re-enrollment, and every
 /// daemon start logged two ERRORs and a WARN per dead org.
 #[tokio::test]

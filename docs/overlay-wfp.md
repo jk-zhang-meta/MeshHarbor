@@ -118,7 +118,7 @@ writes itself an allow rule at every TUN bring-up:
 
 | | |
 |---|---|
-| Name | `MeshHarbor UDP-In (meshharbord)` — the exe stem, so the `meshharbor` tunnel client gets its own (`MeshHarbor UDP-In (meshharbor)`) |
+| Name | `MeshHarbor UDP-In (meshharbord)` — the exe stem, so the `mh` tunnel client gets its own (`MeshHarbor UDP-In (meshharbor)`) |
 | Shape | `dir=in action=allow protocol=udp program=<full path of meshharbord.exe>`, all profiles, every port |
 | Definition | `crates/tunnel-core/src/winfw.rs` — `UdpInAllowRule` is the ONE definition; both writers build their `netsh` calls from it |
 | Kill switch | `MESHHARBORD_TUN_HYGIENE=0` — skips both writers (and the adapter's Private-profile set) |
@@ -166,7 +166,7 @@ install's prompt left behind.
 | perMachine, SystemContext (worker = SYSTEM) | service host, before the spawn | never (SYSTEM was never prompted) |
 | perMachine, attended (worker = signed-in user) | service host, before the spawn | **no longer** — yes before #1698 |
 | perUser (Scheduled Task, cannot elevate) | the worker's own hygiene pass, only if the user is an admin | unchanged — may still prompt |
-| `meshharbor` tunnel client | its own hygiene pass (`MeshHarbor UDP-In (meshharbor)`), only if elevated | unchanged |
+| `mh` tunnel client | its own hygiene pass (`MeshHarbor UDP-In (meshharbor)`), only if elevated | unchanged |
 
 ### The cleanup's predicate — exact, and never by name
 

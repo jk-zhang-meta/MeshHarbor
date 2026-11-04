@@ -54,7 +54,7 @@ climbing back, **and at construction** — the boot reconciler for whatever a de
 process left. ⚠️ **FQDNs only** — a bare `mars` would shadow a real corporate
 host.
 
-⚠️ **Known gap before the default flip**: `meshharbor config set magicdns_hosts` is
+⚠️ **Known gap before the default flip**: `mh config set magicdns_hosts` is
 **refused** — the key is in the config file and the env bridge but not in the S2
 config surface, so a fleet operator cannot flip it remotely. A feature that
 cannot be switched on from the dashboard is not yet usable at fleet scale.
@@ -165,7 +165,7 @@ Three consequences, all observed:
 1. **MagicDNS dies at the first reconnect** and stays dead until the process
    restarts. On a host whose overlay churns — a corp VPN reaping routes, say —
    reconnects are frequent, so this is the normal state there, not a rare race.
-2. **`meshharbor status` reports whichever runtime's flag it reads**, so the same
+2. **`mh status` reports whichever runtime's flag it reads**, so the same
    host showed `resolver DOWN` and `active` hours apart. That intermittency was
    the most misleading symptom (see #1363).
 3. **The survivor answers from the DEAD session's name map**, so names NXDOMAIN
@@ -328,7 +328,7 @@ separate times.
 
 ## Open
 
-- **#1363** — `meshharbor status` said `active` over a resolver that had lost its
+- **#1363** — `mh status` said `active` over a resolver that had lost its
   own bind race. ⚠️ Verifying the NRPT effective table would **not** have caught
   this; the check has to be *does our resolver answer*. Still open, and P2 adds a
   state it must now express: *retrying* is neither `active` nor a permanent

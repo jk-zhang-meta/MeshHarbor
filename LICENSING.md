@@ -26,7 +26,7 @@ reported home would be indefensible.
 
 **Yes, and this is the case the split exists to protect.**
 
-The agent you deploy at a client site — `meshharbord`, the `meshharbor` CLI, the
+The agent you deploy at a client site — `meshharbord`, the `mh` CLI, the
 desktop and setup apps — is **MPL-2.0**. MPL is a *file-level* copyleft: if you
 modify one of our files, you publish that file. It imposes **nothing** on your
 service, your RMM stack, your scripts, your billing system, or any proprietary
@@ -92,7 +92,7 @@ The authoritative statement for any given file is its own
 | Integration tests | `crates/tests` | `AGPL-3.0-only` |
 | Web UI | `ui/` | `AGPL-3.0-only` |
 | Remote-control agent (`meshharbord`) | `agents/meshharbord` | `MPL-2.0` |
-| Tunnel/CLI client (`meshharbor`) | `agents/meshharbor-cli` | `MPL-2.0` |
+| Tunnel/CLI client (`mh`) | `agents/meshharbor-cli` | `MPL-2.0` |
 | CLI shim | `agents/meshharbor-cli-shim` | `MPL-2.0` |
 | Desktop companion | `agents/meshharbor-desktop` | `MPL-2.0` |
 | Install wizard | `agents/meshharbor-setup` | `MPL-2.0` |

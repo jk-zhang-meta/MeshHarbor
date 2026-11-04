@@ -63,7 +63,7 @@ pub mod permissions {
     pub const REMOTE_CONTROL: u64 = 1 << 25;
     /// View the remote-control audit log (`remote_audit`).
     pub const VIEW_REMOTE_AUDIT: u64 = 1 << 26;
-    /// Run a command on a device via Fleet RPC (`meshharbor exec`, the device
+    /// Run a command on a device via Fleet RPC (`mh exec`, the device
     /// console). Gate 2 of four — the org kill-switch, the device's own
     /// `ExecPolicy`, and the agent-local `exec_enabled` key each deny
     /// independently. Deliberately NOT implied by `MANAGE_AGENTS`: managing a
@@ -71,7 +71,7 @@ pub mod permissions {
     pub const EXEC_DEVICE: u64 = 1 << 27;
     /// View the Fleet-RPC audit log (`exec_audit`) — who ran what, where.
     pub const VIEW_EXEC_AUDIT: u64 = 1 << 28;
-    /// Open a meshharbor SSH session to a device (`meshharbor ssh`). Gate 2 of four,
+    /// Open a meshharbor SSH session to a device (`mh ssh`). Gate 2 of four,
     /// mirroring [`EXEC_DEVICE`].
     ///
     /// Deliberately a SEPARATE bit rather than a reuse of `EXEC_DEVICE`, for

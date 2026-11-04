@@ -51,10 +51,10 @@ subcommand into a bench: for each (codec × chroma × resolution × target bitra
 synthetic motion profile), report encode-ms p50/p95, produced-vs-target bitrate
 accuracy, IDR-size and delta-size distributions, and **which path actually ran**
 (the "advertises HW, silently falls back to SW" class is invisible today). Ships as a
-CLI subcommand so the whole fleet profiles itself through `meshharbor exec`. Output is a
+CLI subcommand so the whole fleet profiles itself through `mh exec`. Output is a
 per-host table: what this machine's encoders actually cost.
 
-**L2 — path profile (per pair).** Extend `meshharbor diag pair`: carrier and how it was
+**L2 — path profile (per pair).** Extend `mh diag pair`: carrier and how it was
 chosen, RTT and jitter distribution, achievable goodput over the same transport the
 video will use, loss/retransmit indication. Run N×N across the fleet → a pair matrix.
 No video, no session.
@@ -207,7 +207,7 @@ competitors". Engineering may use the numbers; the public pages never print them
 
 ## Acceptance criteria
 
-- [ ] L1 runs on every fleet host through `meshharbor exec` and produces a per-host
+- [ ] L1 runs on every fleet host through `mh exec` and produces a per-host
       encoder cost table, including a host where an advertised HW encoder actually
       falls back (proving the check can fail).
 - [ ] L2 produces an N×N pair matrix with carrier + RTT + goodput.

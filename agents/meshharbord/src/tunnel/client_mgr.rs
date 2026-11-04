@@ -2,8 +2,8 @@
 // Copyright (C) 2026 G ROX EOOD
 //! Daemon-originated tunnel-**client** flows (unification P3b-2 PR-C).
 //!
-//! Lets the meshharbor daemon act as a tunnel *client* — `meshharbor forward` /
-//! `meshharbor socks5` over the LocalAPI — by driving
+//! Lets the meshharbor daemon act as a tunnel *client* — `mh forward` /
+//! `mh socks5` over the LocalAPI — by driving
 //! [`tunnel_core::driver::run_tunnel_session`] over the daemon's **existing
 //! agent WebSocket** (agent JWT, `Principal::Agent` server-side) instead of a
 //! second `TunnelClient` identity + second WS. The server half (accepting an
@@ -311,7 +311,7 @@ impl TunnelClientHub {
     ///
     /// Flow supervisors `subscribe()` and wait; the Fleet-RPC LocalAPI verb
     /// instead needs a one-shot answer, because "the daemon isn't connected to
-    /// the server right now" is a real result for `meshharbor exec` and telling
+    /// the server right now" is a real result for `mh exec` and telling
     /// the operator that beats blocking until it reconnects.
     pub fn sink_now(&self) -> Option<mpsc::Sender<ClientMsg>> {
         self.inner.sink_tx.borrow().clone()

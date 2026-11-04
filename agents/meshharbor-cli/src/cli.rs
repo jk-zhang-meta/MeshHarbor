@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! `meshharbor` — TeamViewer-style native tunnel client.
+//! `mh` — TeamViewer-style native tunnel client.
 //!
 //! Forwards a local TCP port over a WebRTC P2P data channel to an
 //! enrolled `meshharbord`, which dials the corresponding intranet
@@ -9,14 +9,14 @@
 //!
 //! CLI surface:
 //!
-//!   meshharbor enroll --server <url> --token <enrollment-jwt> --name <label>
-//!   meshharbor forward --agent <agent_id> --local <port> --remote <host:port>
-//!   meshharbor run [--config <path>]
-//!   meshharbor diagnose [--agent <agent_id>]
-//!   meshharbor status [--json]     # local daemon's node state (LocalAPI)
-//!   meshharbor peers  [--json] [--display-name] [NAME…]   # peers + connection types (LocalAPI)
-//!   meshharbor devices [--json]    # the devices this one may see, server-listed (LocalAPI)
-//!   meshharbor flows  [--json]     # active forwards / SOCKS5 (LocalAPI)
+//!   mh enroll --server <url> --token <enrollment-jwt> --name <label>
+//!   mh forward --agent <agent_id> --local <port> --remote <host:port>
+//!   mh run [--config <path>]
+//!   mh diagnose [--agent <agent_id>]
+//!   mh status [--json]     # local daemon's node state (LocalAPI)
+//!   mh peers  [--json] [--display-name] [NAME…]   # peers + connection types (LocalAPI)
+//!   mh devices [--json]    # the devices this one may see, server-listed (LocalAPI)
+//!   mh flows  [--json]     # active forwards / SOCKS5 (LocalAPI)
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -60,7 +60,7 @@ impl CliTransport {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "meshharbor", version, about, long_about = None)]
+#[command(name = "mh", version, about, long_about = None)]
 struct Cli {
     // RETIRED-NAME-ANCHOR(4): the config segment is frozen — it holds the
     // ENROLLED credential on tunnel-only hosts, and renaming it strands
@@ -217,7 +217,7 @@ enum Command {
     },
     /// Tail a daemon log, resolved BY the daemon — the path differs per process
     /// and per platform, and two of the candidates on a Windows host are decoys.
-    /// Pairs with Fleet RPC: `meshharbor exec <host> -- meshharbor logs --grep ICE`.
+    /// Pairs with Fleet RPC: `mh exec <host> -- mh logs --grep ICE`.
     Logs {
         /// Which log: `daemon` (this process's rolling log — the one with the
         /// overlay/media events), `service` (the SCM host log), or `panic`
@@ -240,8 +240,8 @@ enum Command {
     /// List the peers the local daemon currently sees, with each peer's live
     /// connection type (direct / relay / tunnel / blocked / offline).
     ///
-    /// `meshharbor peers --display-name` puts the dashboard display names in
-    /// NAME; `meshharbor peers laptop "Office PC"` shows only those two, in
+    /// `mh peers --display-name` puts the dashboard display names in
+    /// NAME; `mh peers laptop "Office PC"` shows only those two, in
     /// that order — each a mesh name or a display name.
     Peers {
         /// FR-49 - show only this enrollment (`meshharbord org ls`; `primary` for
@@ -271,8 +271,8 @@ enum Command {
     /// CONN. Search, sort and paging run on the server; the local daemon asks
     /// it with this device's own credentials (FR-84).
     ///
-    ///   meshharbor devices
-    ///   meshharbor devices -q build --sort last_seen_at --desc
+    ///   mh devices
+    ///   mh devices -q build --sort last_seen_at --desc
     Devices {
         /// Enrollment to list (`meshharbord org ls`; `primary` for the scalar
         /// identity). Default: the primary.
@@ -304,7 +304,7 @@ enum Command {
     /// a probe in flight).
     ///
     /// Accepts a device name (or a unique part of one), an overlay IP, or a
-    /// node id — whatever you can read out of `meshharbor peers`.
+    /// node id — whatever you can read out of `mh peers`.
     Why {
         /// Peer to explain: name / name fragment / overlay IP / node id.
         peer: String,
@@ -344,7 +344,7 @@ enum Command {
         action: ConfigAction,
     },
     /// Record this device's screen to an HQ MP4 in the recordings folder
-    /// (FR-85). Change the folder with `meshharbor config set record_dir <path>`.
+    /// (FR-85). Change the folder with `mh config set record_dir <path>`.
     /// The daemon runs the recorder; only the person at the console may
     /// start, stop or delete a recording.
     Record {
@@ -378,7 +378,7 @@ enum Command {
     /// (up to 60 s) until the NEW daemon answers, starting the scheduled task
     /// itself where that is how the daemon comes back.
     ///
-    ///   meshharbor restart --reason "applied overlay settings"
+    ///   mh restart --reason "applied overlay settings"
     Restart {
         /// Why — written to the daemon's log and its restart record.
         #[arg(long, default_value = "")]
@@ -398,8 +398,8 @@ enum Command {
     /// the OS-free reachability probe. Only meaningful when the local daemon runs
     /// in netstack mode (a locked-down host with no OS route to the mesh).
     ///
-    /// `meshharbor ping build-box` — or, by dashboard display name,
-    /// `meshharbor ping "Office PC"`.
+    /// `mh ping build-box` — or, by dashboard display name,
+    /// `mh ping "Office PC"`.
     Ping {
         /// Overlay peer to ping — a mesh name (e.g. `build-box`), a dashboard
         /// display name, or an overlay IP (either family;
@@ -432,8 +432,8 @@ enum Command {
     /// (the signed-in user on an attended install, SYSTEM in SystemContext
     /// mode). Every attempt is audited, with the identity that ran it.
     ///
-    /// `meshharbor exec build-box -- uptime` — or, by dashboard display name,
-    /// `meshharbor exec "Office PC" -- hostname`.
+    /// `mh exec build-box -- uptime` — or, by dashboard display name,
+    /// `mh exec "Office PC" -- hostname`.
     Exec {
         /// Target device — a device name (e.g. `build-box`), a dashboard
         /// display name, or a hex agent id. A display name is resolved from
@@ -451,7 +451,7 @@ enum Command {
         #[command(flatten)]
         fmt: OutputFmt,
         /// The command. Put it after `--` so its own flags aren't parsed
-        /// by meshharbor: `meshharbor exec winhost-a -- Get-NetRoute -AddressFamily IPv4`
+        /// by meshharbor: `mh exec winhost-a -- Get-NetRoute -AddressFamily IPv4`
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
@@ -465,10 +465,10 @@ enum Command {
     /// The host key is VERIFIED, never trusted on first use. If the server has
     /// no key for the device, this refuses to connect.
     ///
-    ///   meshharbor ssh winhost-a
-    ///   meshharbor ssh winhost-a -- uptime
+    ///   mh ssh winhost-a
+    ///   mh ssh winhost-a -- uptime
     ///
-    /// A dashboard display name works too: `meshharbor ssh "Office PC"`.
+    /// A dashboard display name works too: `mh ssh "Office PC"`.
     Ssh {
         /// Target device — a device name (e.g. `build-box`), a dashboard
         /// display name, an overlay IP, or a hex agent id. A display
@@ -479,7 +479,7 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         session_secs: u64,
         /// Anything after `--` is passed to `ssh` verbatim — a remote command,
-        /// or extra client options: `meshharbor ssh box -- -v uptime`
+        /// or extra client options: `mh ssh box -- -v uptime`
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -495,8 +495,8 @@ enum Command {
     /// It stays in the foreground: the endpoint lives while this runs, its
     /// leases renewed before they end. Ctrl-C closes it.
     ///
-    ///   sudo meshharbor connect db/orders --engine postgres --upstream db.internal:5432
-    ///   meshharbor connect ci/kube --engine kubernetes --upstream https://api.k8s.internal:6443 --auth bearer
+    ///   sudo mh connect db/orders --engine postgres --upstream db.internal:5432
+    ///   mh connect ci/kube --engine kubernetes --upstream https://api.k8s.internal:6443 --auth bearer
     Connect {
         /// The secret: its path, or this organization's RRN, with no `#field`.
         handle: String,
@@ -532,7 +532,7 @@ enum Command {
     ///
     ///   # ~/.ssh/config
     ///   Host *.meshharbor
-    ///     ProxyCommand meshharbor proxy %h %p
+    ///     ProxyCommand mh proxy %h %p
     ///     Port 2222
     ///
     ///   scp report.pdf corplap-3.meshharbor:/tmp/
@@ -548,7 +548,7 @@ enum Command {
     /// Transport and name resolution only: `ProxyCommand` cannot supply an
     /// identity or a host key, so this uses keys YOU manage. For a
     /// grant-issued session with the account resolved by policy and the host
-    /// key verified for you, use `meshharbor ssh` instead.
+    /// key verified for you, use `mh ssh` instead.
     Proxy {
         /// Device name (bare, <name>.meshharbor, or MagicDNS) or overlay address
         /// (OpenSSH passes `%h`).
@@ -570,7 +570,7 @@ enum Command {
     },
 }
 
-/// `meshharbor diag …` — remote evidence bundles over Fleet RPC.
+/// `mh diag …` — remote evidence bundles over Fleet RPC.
 #[derive(Debug, Subcommand)]
 enum DiagAction {
     /// Bundle from one device.
@@ -600,7 +600,7 @@ struct OutputFmt {
     json: bool,
 }
 
-/// `meshharbor config …` — the S2 editable config surface. All verbs talk
+/// `mh config …` — the S2 editable config surface. All verbs talk
 /// to the LOCAL daemon over the LocalAPI; secrets are excluded by
 /// construction, and the daemon says per key whether a change applies at
 /// once or on the next restart.
@@ -628,7 +628,7 @@ enum ConfigAction {
     },
 }
 
-/// `meshharbor record …` — FR-85 local screen recording. Every verb talks to the
+/// `mh record …` — FR-85 local screen recording. Every verb talks to the
 /// LOCAL daemon; `start`, `stop` and `rm` are refused unless the caller is the
 /// console user (an RDP guest must not record the console user's desktop).
 #[derive(Debug, Subcommand)]
@@ -714,7 +714,7 @@ enum KeepBusyAction {
         fmt: OutputFmt,
     },
     /// Turn keep busy on, as the person at this computer. Root, SYSTEM and
-    /// services are refused, so `sudo meshharbor keep-busy on` is, and so is a
+    /// services are refused, so `sudo mh keep-busy on` is, and so is a
     /// SYSTEM shell. It stays on until someone turns it off, and resumes at
     /// your next login.
     On {
@@ -741,7 +741,7 @@ enum KeepBusyAction {
     },
 }
 
-/// `meshharbor rc …` — this device's own remote-control settings.
+/// `mh rc …` — this device's own remote-control settings.
 #[derive(Debug, Subcommand)]
 enum RcAction {
     /// The external-access password (FR-52 gate 4) — what lets someone
@@ -753,7 +753,7 @@ enum RcAction {
     },
 }
 
-/// `meshharbor rc password …` — set, clear or inspect the device-held password.
+/// `mh rc password …` — set, clear or inspect the device-held password.
 ///
 /// The password is registered by the daemon as an OPAQUE record and is not
 /// readable back, by anyone, including this CLI and including the server. There
@@ -771,7 +771,7 @@ enum RcPasswordAction {
     /// password on stdin instead.
     Set {
         /// Read the password from stdin (one line) instead of prompting, for
-        /// unattended setup: `printf '%s' "$PW" | meshharbor rc password set --stdin`.
+        /// unattended setup: `printf '%s' "$PW" | mh rc password set --stdin`.
         /// Only the line terminator is stripped.
         #[arg(long)]
         stdin: bool,
@@ -787,7 +787,7 @@ enum RcPasswordAction {
     },
 }
 
-/// `meshharbor route …` — declared-route management (P6). All verbs talk to
+/// `mh route …` — declared-route management (P6). All verbs talk to
 /// the LOCAL daemon over the LocalAPI; the daemon persists changes into
 /// its own config and reconciles them into live flows.
 #[derive(Debug, Subcommand)]
@@ -869,16 +869,16 @@ enum RouteAction {
 /// rather than sniffing argv[0] or an env var.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
-    /// The standalone `meshharbor` binary on a tunnel-only host.
+    /// The standalone `mh` binary on a tunnel-only host.
     Standalone,
     /// Dispatched from `meshharbord cli` on a daemon host.
     EmbeddedInDaemon,
 }
 
-/// FR-84 D3 — the `meshharbord` binary `meshharbor restart` runs `service start`
+/// FR-84 D3 — the `meshharbord` binary `mh restart` runs `service start`
 /// with, when bringing the daemon back is the caller's job (the Windows
 /// Scheduled Task). Embedded in the daemon — `meshharbord cli`, which is what the
-/// installed `meshharbor` shim re-execs — that is this very executable;
+/// installed `mh` shim re-execs — that is this very executable;
 /// standalone, a sibling, else whatever `meshharbord` PATH finds.
 fn daemon_exe(origin: Origin) -> Option<PathBuf> {
     let me = std::env::current_exe().ok();
@@ -901,7 +901,7 @@ fn daemon_exe(origin: Origin) -> Option<PathBuf> {
     Some(PathBuf::from(name))
 }
 
-/// Entry point for the standalone `meshharbor` binary — parses the process's
+/// Entry point for the standalone `mh` binary — parses the process's
 /// own argv.
 pub async fn run() -> Result<()> {
     run_from(std::env::args_os(), Origin::Standalone).await
@@ -922,7 +922,7 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
-    // Rust starts with SIGPIPE ignored, so `meshharbor peers | head` PANICS with
+    // Rust starts with SIGPIPE ignored, so `mh peers | head` PANICS with
     // "failed printing to stdout: Broken pipe" the moment `head` closes the
     // pipe (field-hit on buildhost, rc.368, via `meshharbord cli`). Restore the
     // normal Unix CLI contract — die quietly on EPIPE — for BOTH callers:
@@ -1055,14 +1055,14 @@ where
             // "One updater per role" (see CLAUDE.md, P4c-2): tunnel-ONLY hosts
             // self-update this binary; daemon hosts get the whole node stack
             // refreshed by the MSI. Before P3e lever D that distinction was
-            // only a convention — a daemon host running `meshharbor self-update`
-            // would happily overwrite the MSI-owned meshharbor.exe out from under
+            // only a convention — a daemon host running `mh self-update`
+            // would happily overwrite the MSI-owned mh.exe out from under
             // the installer. Now it would ALSO swap the 150 KB shim for a
             // 22 MiB standalone CLI, silently undoing the lever. Refuse, and
             // name the right updater instead.
             if origin == Origin::EmbeddedInDaemon {
                 bail!(
-                    "`self-update` is not available on a daemon host — this `meshharbor` is a shim \
+                    "`self-update` is not available on a daemon host — this `mh` is a shim \
                      over the installed daemon, and the MSI updates the whole node stack \
                      (daemon + CLI + desktop companion) as a unit.\n\
                      Update with:  meshharbord self-update"
@@ -1253,7 +1253,7 @@ where
             args,
         } => {
             // Mirror ssh's own exit status, the same way `exec` mirrors the
-            // remote command's — so `meshharbor ssh box -- false` composes in a
+            // remote command's — so `mh ssh box -- false` composes in a
             // script instead of always looking successful.
             match crate::sshcmd::run(&device, session_secs, &args).await? {
                 0 => Ok(()),
@@ -1291,7 +1291,7 @@ where
     }
 }
 
-/// `meshharbor enroll` — exchange a tunnel-enrollment JWT for a
+/// `mh enroll` — exchange a tunnel-enrollment JWT for a
 /// long-lived `TunnelClient` JWT via the server, then persist server
 /// URL + token to the local config file.
 async fn enroll_cmd(
@@ -1386,7 +1386,7 @@ mod tests {
     #[test]
     fn parses_forward() {
         let cli = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "forward",
             "--agent",
             "507f1f77bcf86cd799439011",
@@ -1423,7 +1423,7 @@ mod tests {
     #[test]
     fn parses_forward_transport_quic() {
         let cli = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "forward",
             "--agent",
             "507f1f77bcf86cd799439011",
@@ -1446,7 +1446,7 @@ mod tests {
     #[test]
     fn parses_forward_transport_auto() {
         let cli = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "forward",
             "--agent",
             "507f1f77bcf86cd799439011",
@@ -1469,7 +1469,7 @@ mod tests {
     #[test]
     fn parses_socks5() {
         let cli = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "socks5",
             "--agent",
             "507f1f77bcf86cd799439011",
@@ -1495,7 +1495,7 @@ mod tests {
 
     #[test]
     fn parses_socks5_mesh_without_agent() {
-        let cli = Cli::try_parse_from(["meshharbor", "socks5", "--local", "1080"]).unwrap();
+        let cli = Cli::try_parse_from(["mh", "socks5", "--local", "1080"]).unwrap();
         match cli.command {
             Command::Socks5 { agent, local, .. } => {
                 assert_eq!(agent, None); // mesh mode
@@ -1508,7 +1508,7 @@ mod tests {
     #[test]
     fn parses_forward_daemon_flag() {
         let cli = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "forward",
             "--agent",
             "507f1f77bcf86cd799439011",
@@ -1527,7 +1527,7 @@ mod tests {
 
     #[test]
     fn parses_kill_verb() {
-        let cli = Cli::try_parse_from(["meshharbor", "kill", "fl-7"]).unwrap();
+        let cli = Cli::try_parse_from(["mh", "kill", "fl-7"]).unwrap();
         match cli.command {
             Command::Kill { id } => assert_eq!(id, "fl-7"),
             other => panic!("expected Kill, got {other:?}"),
@@ -1544,7 +1544,7 @@ mod tests {
     #[test]
     fn parses_enroll() {
         let cli = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "enroll",
             "--server",
             "https://meshharbor.itachi.fans",
@@ -1584,7 +1584,7 @@ mod tests {
     #[test]
     fn parses_status_peers_flows() {
         for verb in ["status", "peers", "flows"] {
-            let cli = Cli::try_parse_from(["meshharbor", verb]).unwrap();
+            let cli = Cli::try_parse_from(["mh", verb]).unwrap();
             match (verb, cli.command) {
                 ("status", Command::Status { fmt }) => assert!(!fmt.json),
                 (
@@ -1615,7 +1615,7 @@ mod tests {
     #[test]
     fn parses_peers_display_names_and_filter() {
         let cli = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "peers",
             "--org",
             "acme",
@@ -1639,7 +1639,7 @@ mod tests {
             }
             other => panic!("expected Peers, got {other:?}"),
         }
-        match Cli::try_parse_from(["meshharbor", "peers", "home-server"])
+        match Cli::try_parse_from(["mh", "peers", "home-server"])
             .unwrap()
             .command
         {
@@ -1660,7 +1660,7 @@ mod tests {
     #[test]
     fn parses_devices() {
         let cli = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "devices",
             "--org",
             "acme",
@@ -1695,7 +1695,7 @@ mod tests {
             }
             other => panic!("expected Devices, got {other:?}"),
         }
-        match Cli::try_parse_from(["meshharbor", "devices"])
+        match Cli::try_parse_from(["mh", "devices"])
             .unwrap()
             .command
         {
@@ -1716,13 +1716,13 @@ mod tests {
         }
     }
 
-    /// FR-90 P3-9-2b — `meshharbor connect`: a handle, an engine and an
+    /// FR-90 P3-9-2b — `mh connect`: a handle, an engine and an
     /// upstream are required; the rest are the daemon's to check, but an
     /// engine or an auth outside the words it knows is refused here first.
     #[test]
     fn parses_connect() {
         let cli = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "connect",
             "ci/kube",
             "--engine",
@@ -1760,7 +1760,7 @@ mod tests {
             other => panic!("expected Connect, got {other:?}"),
         }
         let cli = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "connect",
             "db/orders",
             "--engine",
@@ -1780,15 +1780,15 @@ mod tests {
         ));
         for bad in [
             &[
-                "meshharbor",
+                "mh",
                 "connect",
                 "db/orders",
                 "--upstream",
                 "db.internal:5432",
             ][..],
-            &["meshharbor", "connect", "db/orders", "--engine", "postgres"],
+            &["mh", "connect", "db/orders", "--engine", "postgres"],
             &[
-                "meshharbor",
+                "mh",
                 "connect",
                 "db/orders",
                 "--engine",
@@ -1797,7 +1797,7 @@ mod tests {
                 "db.internal:1521",
             ],
             &[
-                "meshharbor",
+                "mh",
                 "connect",
                 "api/x",
                 "--engine",
@@ -1816,14 +1816,14 @@ mod tests {
     /// remote-desktop session with input turns keep busy on.
     #[test]
     fn parses_keep_busy_verbs_including_a_local_on() {
-        let cli = Cli::try_parse_from(["meshharbor", "keep-busy", "status", "--json"]).unwrap();
+        let cli = Cli::try_parse_from(["mh", "keep-busy", "status", "--json"]).unwrap();
         assert!(matches!(
             cli.command,
             Command::KeepBusy {
                 action: KeepBusyAction::Status { .. }
             }
         ));
-        let cli = Cli::try_parse_from(["meshharbor", "keep-busy", "off"]).unwrap();
+        let cli = Cli::try_parse_from(["mh", "keep-busy", "off"]).unwrap();
         assert!(matches!(
             cli.command,
             Command::KeepBusy {
@@ -1831,7 +1831,7 @@ mod tests {
             }
         ));
         // FR-92 P10 — a bare `on` is the product default…
-        let cli = Cli::try_parse_from(["meshharbor", "keep-busy", "on"]).unwrap();
+        let cli = Cli::try_parse_from(["mh", "keep-busy", "on"]).unwrap();
         assert!(matches!(
             cli.command,
             Command::KeepBusy {
@@ -1844,7 +1844,7 @@ mod tests {
         ));
         // …and every setting is a flag. The values are the agent's to check.
         let cli = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "keep-busy",
             "on",
             "--pattern",
@@ -1884,7 +1884,7 @@ mod tests {
     #[test]
     fn parses_record_verbs() {
         let cli = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "record",
             "start",
             "--fps",
@@ -1918,7 +1918,7 @@ mod tests {
             other => panic!("expected record start, got {other:?}"),
         }
         let cli = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "record",
             "start",
             "--system-audio",
@@ -1935,7 +1935,7 @@ mod tests {
                 }
             }
         ));
-        let cli = Cli::try_parse_from(["meshharbor", "record", "rm", "a.mp4"]).unwrap();
+        let cli = Cli::try_parse_from(["mh", "record", "rm", "a.mp4"]).unwrap();
         assert!(matches!(
             cli.command,
             Command::Record {
@@ -1943,16 +1943,16 @@ mod tests {
             } if name == "a.mp4"
         ));
         for verb in ["stop", "status", "ls"] {
-            let cli = Cli::try_parse_from(["meshharbor", "record", verb]).unwrap();
+            let cli = Cli::try_parse_from(["mh", "record", verb]).unwrap();
             assert!(matches!(cli.command, Command::Record { .. }), "{verb}");
         }
         // Audio flags belong to `start` alone.
-        assert!(Cli::try_parse_from(["meshharbor", "record", "stop", "--microphone"]).is_err());
+        assert!(Cli::try_parse_from(["mh", "record", "stop", "--microphone"]).is_err());
     }
 
     #[test]
     fn parses_status_json_flag() {
-        let cli = Cli::try_parse_from(["meshharbor", "status", "--json"]).unwrap();
+        let cli = Cli::try_parse_from(["mh", "status", "--json"]).unwrap();
         match cli.command {
             Command::Status { fmt } => assert!(fmt.json),
             other => panic!("expected Status, got {other:?}"),
@@ -1964,7 +1964,7 @@ mod tests {
         // A fully-valid `forward` + `--json` must fail: `--json` belongs only to
         // the read verbs (flattened there), not globally.
         let r = Cli::try_parse_from([
-            "meshharbor",
+            "mh",
             "forward",
             "--agent",
             "507f1f77bcf86cd799439011",
@@ -1979,7 +1979,7 @@ mod tests {
     #[test]
     fn native_shared_ssh_auth_modes_are_exclusive_and_password_is_not_an_argument() {
         let base = [
-            "meshharbor",
+            "mh",
             "share-ssh",
             "--share",
             "111111111111111111111111",

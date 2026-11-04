@@ -85,7 +85,7 @@ Removing a device ends every token it was ever given, so a revived row never acc
 
 - The socket upgrade has the claims, so `update_hello` stamps `token_exp` on the row.
 - `AgentResponse.token_expires_at` drives an "expires" chip in `ui/src/components/admin/AgentsSection.vue`, amber under 60 days.
-- `OrgStatus.token_expires_at` shows in `meshharbor status` and the companion.
+- `OrgStatus.token_expires_at` shows in `mh status` and the companion.
 - A test knob, `rc.agent_token_ttl_secs` (default one year), serves the integration lane and a throwaway stack. Prod is never shortened.
 
 ```mermaid
@@ -131,7 +131,7 @@ Rollout:
   - A secondary org renews against its own server. *(`a_secondary_org_renews_against_its_own_server`, #2263: two servers. The renewal goes to the secondary's server and lands in its own `[[orgs]]` entry; the primary's token is untouched. The control: the primary's server refuses to renew the secondary's token.)*
   - An old server answering 404 changes nothing. *(`an_old_server_answering_404_changes_nothing`, #2263: the token is kept, nothing is written, there is no failure backoff, and the token is still accepted. The server half: `the_kill_switches`.)*
 - [x] **AC5:** the tunnel CLI renews when due, and its config save is atomic and `0600`. *(`a_tunnel_client_renews_and_a_removal_ends_its_tokens`. Unit tests `credential::tests` for the due rule, and `config::tests::save_is_atomic_and_private` and `a_renewed_token_never_overwrites_a_re_enrollment`.)*
-- [x] **AC6:** the device list shows when each credential expires, and `meshharbor status` shows it too. *(`the_device_list_shows_when_a_credential_expires`; `a_renewal_shows_in_the_device_list_without_a_reconnect` (#2182). In the field, `meshharbor status` on a vmtest Ubuntu device printed `credential  expires in 364 days` (2026-10-14), and the throwaway stack's device list moved `token_expires_at` at the renewal (row 4).)*
+- [x] **AC6:** the device list shows when each credential expires, and `mh status` shows it too. *(`the_device_list_shows_when_a_credential_expires`; `a_renewal_shows_in_the_device_list_without_a_reconnect` (#2182). In the field, `mh status` on a vmtest Ubuntu device printed `credential  expires in 364 days` (2026-10-14), and the throwaway stack's device list moved `token_expires_at` at the renewal (row 4).)*
 - [x] **AC7:** docs: *(`docs/device-credentials.md` (#2168, two mermaid diagrams), `docs/security-baseline.md` § 4 The device plane, the stale `remote-control.md` row corrected (now "1 year; renewed by the device 180 days early, never rotated"), the `issue_agent_token` comment rewritten, and the `docs/README.md` row.)*
   - a credential-lifecycle section with mermaid (`docs/security-baseline.md` § device plane, and a new `docs/device-credentials.md`);
   - the stale "1 year, rotates on use … argon2-hashed … OS keychain" row in `docs/remote-control.md` L691 corrected;

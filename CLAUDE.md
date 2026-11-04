@@ -33,8 +33,8 @@ below is a shipped, field-verified configuration, not an aspiration:
 
 A change that works on the dev box and breaks a corporate laptop behind a
 full-tunnel VPN **has not worked**. **CI green ≠ done** — networking and
-remote-desktop changes are proven on the real fleet (`meshharbor exec`,
-`meshharbor ssh`) across those topologies after every roll.
+remote-desktop changes are proven on the real fleet (`mh exec`,
+`mh ssh`) across those topologies after every roll.
 
 ## 3. Model tier — this work runs on Fable, and stays on Fable
 
@@ -145,7 +145,7 @@ Six commitments follow. All are load-bearing in the code today; don't regress th
    ACLs, and an agent-local gate that survives a compromised server. Every
    decision audited.
 6. **Field-validated, not CI-validated.** Proven on the real fleet across the
-   topologies above via `meshharbor exec` after every roll. **CI green ≠ done.**
+   topologies above via `mh exec` after every roll. **CI green ≠ done.**
 
 ## Commands
 
@@ -275,9 +275,9 @@ crates/
 agents/
   meshharbord/         → Native agent binary (CLI + lib): webrtc-rs peer, capture, encode,
                       input injection, overlay, tunnels, SSH server
-  meshharbor-cli/      → Tunnel client. Bin `meshharbor`; the whole command surface lives in the
+  meshharbor-cli/      → Tunnel client. Bin `mh`; the whole command surface lives in the
                       LIB (`cli.rs`) so the daemon can host it too
-  meshharbor-cli-shim/ → Bin `meshharbor-shim`, installed BY THE MSI/.deb as `meshharbor`:
+  meshharbor-cli-shim/ → Bin `meshharbor-shim`, installed BY THE MSI/.deb as `mh`:
                       re-execs `meshharbord cli`
   meshharbor-setup/    → Tauri 2 unified install wizard (lib `wizard_app`)
 ui/src/             → api/ · components/ · composables/ · stores/ (Pinia setup pattern) ·
@@ -693,7 +693,7 @@ is the exact property this pillar exists to provide.
 `grant_id`. **An empty activity result is not evidence of inactivity** — the
 device-owned `ssh_activity_log` defaults to off.
 
-**Fleet RPC** (`docs/fleet-rpc.md`) — `meshharbor exec` over the agent's **existing
+**Fleet RPC** (`docs/fleet-rpc.md`) — `mh exec` over the agent's **existing
 control WS**, deliberately not the overlay: the diagnostics this exists for are most
 needed when the mesh is broken. Four independent default-deny gates, the last of
 which (`exec_enabled` on the device) is the only refusal that survives a compromised
@@ -710,7 +710,7 @@ decide what SYSTEM runs; `docs/fleet-rpc.md` § Privilege.
 ⚠️ A caller **awaits** this frame, so unlike `Goodbye`/`UpdateNow` it must gate on
 `AgentCaps.rpc` containing `exec` (412 otherwise) — pushing to a pre-feature agent
 would hang the caller until its deadline.
-⚠️ `meshharbor exec` **re-splits argv**: Windows targets need ONE quoted argument, and
+⚠️ `mh exec` **re-splits argv**: Windows targets need ONE quoted argument, and
 `;` never `&&`. On a host that restarts its own service it answers "no answer within
 45 s" — the command ran.
 
@@ -728,13 +728,13 @@ the owner's own edit waited for a restart inverts the very property gate 4 exist
 for.
 ⚠️ **Remote configuration never restarts a daemon** — exiting an orphan `meshharbord
 run` host takes it permanently offline. The one restart path is LOCAL (LocalAPI
-`RestartDaemon`: "Apply now", `meshharbor restart`, FR-84 D3), and it refuses unless it
+`RestartDaemon`: "Apply now", `mh restart`, FR-84 D3), and it refuses unless it
 can PROVE a supervisor (`agents/meshharbord/src/supervision.rs`).
 
 **Linux root daemons resolve `/etc/meshharbor/config.toml`** (rc.435,
 `docs/installation.md`). ⚠️ `systemctl is-active` reads **inactive while such a host
 is perfectly healthy** (the live daemon is an unmanaged orphan) — check
-`pgrep -x meshharbord` and `meshharbor peers`, and never "restart to fix" on that basis.
+`pgrep -x meshharbord` and `mh peers`, and never "restart to fix" on that basis.
 
 **Declared tunnel routes** — `meshharbord` supervises forwards/SOCKS5 listeners
 declared as `[[tunnel_routes]]` in its config, reconciled into hub flows on every
@@ -774,7 +774,7 @@ off the UAC prompt.
 ⚠️ The legacy wizards `agents/meshharbor-installer` (rc.28) and
 `agents/meshharbor-tunnel-installer` (rc.59) were retired in P4c-2. The tunnel CLI's
 `self-update` is **kept** — it is the sole updater for tunnel-only hosts ("one
-updater" is per-role; daemon hosts get `meshharbor.exe` refreshed by the MSI).
+updater" is per-role; daemon hosts get `mh.exe` refreshed by the MSI).
 
 ## Known Issues (OPEN only)
 
@@ -821,7 +821,7 @@ Fixed-and-shipped issues live in `git log` and the docs. Currently open:
   back to the coarse scope), `Some([])` = **deny** — never collapse them. Rules ship
   ONLY under `enforce`, so `warn` can never cause a node to drop. Flip a tenant to
   `warn` first and read `rx_denied` before cutting over.
-- **[LOW]** [2026-08-26] **`meshharbor self-update` verifies only the same-channel
+- **[LOW]** [2026-08-26] **`mh self-update` verifies only the same-channel
   SHA-256 and fails OPEN when the manifest carries no digest** — the same hole the
   agent updater closed, in the binary that is the sole updater on tunnel-only hosts.
   Rated LOW after measuring the exposure: it has exactly one caller, the manual

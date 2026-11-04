@@ -122,7 +122,7 @@ account** — so that interest which does not convert immediately is not lost pe
       description is true of the code that ships with it — **done** (§2.14 + retention),
       written from the implementation rather than from a template
 - [ ] `docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d --build` brings up a working instance on a clean machine, and `/health` answers 200 **(operator — needs a clean box and a 10–20 min build)**
-- [ ] a 60–90 s demo (enroll → browser desktop → `meshharbor ssh` → `meshharbor forward`) exists
+- [ ] a 60–90 s demo (enroll → browser desktop → `mh ssh` → `mh forward`) exists
       and is embedded in the README **(operator — needs a real capture session)**
 
 ## Open decisions

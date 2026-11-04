@@ -11,14 +11,14 @@ name = "meshharbor_cli"
 path = "src/lib.rs"
 
 [[bin]]
-# P3d Slice B: OUTPUT binary is `meshharbor` (the unified CLI). FR-21 P2b then
+# P3d Slice B: OUTPUT binary is `mh` (the unified CLI). FR-21 P2b then
 # brought the package (`meshharbor-cli`) and lib (`meshharbor_cli`) names into line
 # with it. CI stages a
 # RETIRED-NAME-ANCHOR(3): the alias name is what the DEPLOYED self-updater
 # extracts. It is an input to code already running in the field.
 # `meshharbor-tunnel.exe` alias into the release zip so the deployed fleet's
 # self-updater (which extracts `meshharbor-tunnel.exe`) is never orphaned.
-name = "meshharbor"
+name = "mh"
 path = "src/main.rs"
 
 [dependencies]
@@ -44,7 +44,7 @@ toml = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
-# `raw_value`: `meshharbor hive adopt` keeps every setting it does not own
+# `raw_value`: `mh hive adopt` keeps every setting it does not own
 # exactly as written (FR-90 P1j-3).
 serde_json = { workspace = true, features = ["raw_value"] }
 # ... and in the order written.
@@ -109,7 +109,7 @@ flate2 = "1"
 tar = "0.4"
 tempfile = { workspace = true }
 
-# build.rs embeds a Windows VERSIONINFO resource into meshharbor.exe. See
+# build.rs embeds a Windows VERSIONINFO resource into mh.exe. See
 # agents/meshharbord/Cargo.toml for why this is embed-resource rather than
 # winres/winresource (per-binary scoping vs. a link-lib that leaks into
 # meshharbor-setup.exe, which depends on this crate).
@@ -151,7 +151,7 @@ depends = "libc6 (>= 2.34), libssl3 (>= 3.0.0) | libssl3t64 (>= 3.0.0)"
 # FR-21 P2b: the crate renamed `meshharbor-tunnel` -> `meshharbor-cli`, and cargo-deb
 # derives the Debian `Package:` from the crate name, so without these dpkg would
 # see a brand-new package and collide with the installed `meshharbor-tunnel` over
-# `/usr/bin/meshharbor`. Same shape and same reasoning as meshharbord's block: `name`
+# `/usr/bin/mh`. Same shape and same reasoning as meshharbord's block: `name`
 # is stated EXPLICITLY so a future crate rename cannot move the Debian package
 # name by accident, and there is deliberately NO `conflicts` — that would demand
 # the old package be removed first, which the CLI's `dpkg -i` install path
@@ -161,8 +161,8 @@ provides = "meshharbor-tunnel"
 replaces = "meshharbor-tunnel"
 # RETIRED-NAME-ANCHOR-END
 assets = [
-    # P3d Slice B: installed CLI binary is `meshharbor` (the [[bin]] output name).
-    ["target/release/meshharbor", "usr/bin/", "755"],
+    # P3d Slice B: installed CLI binary is `mh` (the [[bin]] output name).
+    ["target/release/mh", "usr/bin/", "755"],
 ]
 
 # cargo-wix (Windows .msi)

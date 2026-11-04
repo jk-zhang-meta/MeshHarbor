@@ -5,7 +5,7 @@
 [`tunnel-install.md`](tunnel-install.md) (tunnel setup).*
 
 MeshHarbor's remote-access stack has two user-facing pieces: **`meshharbord`**, a small
-daemon installed on every machine you want to reach, and **`meshharbor`**, a CLI run
+daemon installed on every machine you want to reach, and **`mh`**, a CLI run
 on the machine you are sitting at. The **meshharbor.itachi.fans** service introduces the two sides to
 each other and enforces policy — but your screen, keystrokes, and tunneled data never pass
 through it in readable form.
@@ -75,7 +75,7 @@ encrypted relay used only when no direct path can be punched.
 - Enrolled once with a 10-minute single-use token from the admin UI; from then on it holds
   only a tenant-scoped credential.
 
-### `meshharbor` — the connectivity CLI
+### `mh` — the connectivity CLI
 
 - `forward` — a port on your laptop (`127.0.0.1:5432`) becomes any `host:port` the chosen
   agent can reach ("the DB behind the office firewall").
@@ -88,7 +88,7 @@ encrypted relay used only when no direct path can be punched.
 - QUIC data plane with WebRTC fallback, climbing direct → TURN/UDP → TLS over TCP 443,
   plus regional DERP relays as the everything-blocked fallback — it works even from
   strict corporate networks.
-- `meshharbor exec` runs commands on trusted fleet devices through four independent
+- `mh exec` runs commands on trusted fleet devices through four independent
   default-deny gates with a full audit trail ([fleet-rpc.md](fleet-rpc.md)).
 - Everything is gated by **default-deny ACL policies** managed in the admin UI, with an
   audit row per session.

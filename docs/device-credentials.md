@@ -1,6 +1,6 @@
 # Device credentials — enrollment, renewal, removal
 
-Every enrolled device and every `meshharbor` tunnel client holds a long-lived credential the server issued. This page is what each one is, how it stays alive without hands on the machine (FR-103), and how it ends.
+Every enrolled device and every `mh` tunnel client holds a long-lived credential the server issued. This page is what each one is, how it stays alive without hands on the machine (FR-103), and how it ends.
 
 > **The short version.** A device's agent token lives a year. The device renews it itself, 180 days early. A device that was off across its expiry renews within a 90-day grace when it comes back. Removing a device ends every token it was ever given, even if the same machine enrolls again and revives the row. A device connected at its removal is told at once and stops (#2267).
 
@@ -10,7 +10,7 @@ Every enrolled device and every `meshharbor` tunnel client holds a long-lived cr
 |---|---|---|---|---|---|
 | **Enrollment token** | an admin (`POST /api/tenant/{tid}/agent/enroll-token`) | 10 min, **single use** | — | used, or 10 min pass | pasted once; never stored |
 | **Agent token** (`aud = agent`) | `POST /api/agent/enroll` | 365 days (`rc.agent_token_ttl_secs`) | **the device** (`POST /api/agent/self/renew`) | the device is removed (generation), or it lapses past the grace | the daemon's `config.toml` (`agent_token`, or `[[orgs]].agent_token`) |
-| **Tunnel-client token** (`aud = tunnel-client`) | `POST /api/tunnel-client/enroll` | 365 days | **the `meshharbor` CLI** (`POST /api/tunnel-client/renew`) | the client is removed (generation), or it lapses past the grace | the CLI's `config.toml`, `0600` |
+| **Tunnel-client token** (`aud = tunnel-client`) | `POST /api/tunnel-client/enroll` | 365 days | **the `mh` CLI** (`POST /api/tunnel-client/renew`) | the client is removed (generation), or it lapses past the grace | the CLI's `config.toml`, `0600` |
 | **Service credential** (`AgentService`, FR-94) | `POST /api/agent/anchor`, elevated | 365 days | the SYSTEM service (`POST /api/agent/service/renew`) | the device is un-anchored, re-anchored or removed | `%ProgramData%\meshharbor\meshharbor\exec-service\anchor.json`, SYSTEM + Administrators only |
 | **Egress grant** (`net_grant`, FR-90 P3-7-1b) | the vault, answering `rc:vault.net` for one agent session | at most 900 s, with no leeway past its end | never: a session asks again for each tool call | its end; the network module believes it only on its origin device's own connection, toward the exit it names, in its organization, and holds every flow to it (P3-7-2a, [`tunnels.md`](tunnels.md#an-agent-sessions-grant-fr-90-p3-7-2a)) | the daemon that asked, once one does (P3-7-3) ([`vault.md`](vault.md) §21) |
 | **SSH ticket** (`ssh_ticket`, FR-90 P3-8-1a) | the vault, answering `rc:vault.ssh` for one agent session's command on another device | at most 900 s, with no leeway past its end | never: a session asks again for each command | its end; it never names the device the session runs on, and the network module will believe it only on that device's own connection, toward the target it names, while the target maps the account it names (P3-8-1b) | the daemon that asked, once one does (P3-8-2b) ([`vault.md`](vault.md) §22) |
@@ -72,7 +72,7 @@ sequenceDiagram
   - A file holding a *different* token was re-enrolled meanwhile, and that token wins.
   - A file naming another device for the enrollment is refused, with nothing written.
   - A save that fails still puts the renewed token in use: the file's token stays valid, so nothing is lost.
-- **The tunnel CLI** has no daemon, so it renews when it is used: before `meshharbor forward` and `meshharbor socks5` dial. Its save is the same compare-and-swap, through an owner-only temp file renamed over the target.
+- **The tunnel CLI** has no daemon, so it renews when it is used: before `mh forward` and `mh socks5` dial. Its save is the same compare-and-swap, through an owner-only temp file renamed over the target.
 
 ### On a 401: recover before backing off
 
@@ -147,7 +147,7 @@ What happens after exit 7 depends on how the daemon is installed. The device sta
 | Linux, the system unit `meshharbord` | stays stopped: `RestartPreventExitStatus=7 8`, because restarting only hammers a server that already said no (`agents/meshharbord/packaging/linux/meshharbord.service:72`) | `sudo systemctl start meshharbord` |
 | Linux, the per-user unit `meshharbor` | stays stopped, by the same rule | `meshharbord service start` |
 
-A secondary organization's goodbye ends only that organization's loop, and nothing starts the loop again: after re-enrolling it, restart the daemon (`meshharbor restart`, or `sudo systemctl restart meshharbord` for the Linux system unit).
+A secondary organization's goodbye ends only that organization's loop, and nothing starts the loop again: after re-enrolling it, restart the daemon (`mh restart`, or `sudo systemctl restart meshharbord` for the Linux system unit).
 
 > ⚠️ Never answer a removal with `meshharbord run` on a host whose daemon a service manager owns. By hand it starts an unmanaged orphan beside the unit, the task or launchd. `re-enroll` suggested exactly that until #2293.
 
@@ -156,10 +156,10 @@ A first `meshharbord enroll` ends the same way, by naming the step that connects
 | Install | After `meshharbord enroll` |
 |---|---|
 | Linux, the system unit | `sudo systemctl restart meshharbord` |
-| Linux, the user unit | `meshharbord service start` (`meshharbord service install` also starts it at every login), or `meshharbor restart` if it is running |
-| Windows, the `MeshHarbor` service | the supervisor picks the config up within a minute, or `meshharbor restart` |
-| Windows, the per-user task | `meshharbord service start` (`meshharbord service install` first if there is no task), or `meshharbor restart` |
-| macOS | launchd picks it up within seconds, or `meshharbor restart` |
+| Linux, the user unit | `meshharbord service start` (`meshharbord service install` also starts it at every login), or `mh restart` if it is running |
+| Windows, the `MeshHarbor` service | the supervisor picks the config up within a minute, or `mh restart` |
+| Windows, the per-user task | `meshharbord service start` (`meshharbord service install` first if there is no task), or `mh restart` |
+| macOS | launchd picks it up within seconds, or `mh restart` |
 | an added organization (`[[orgs]]`), any install | a daemon restart, since only a restart starts its loop |
 
 `meshharbord run` is named last, for a host without the package.
@@ -183,7 +183,7 @@ A first `meshharbord enroll` ends the same way, by naming the step that connects
 
 ## 6. Seeing it
 
-- **`meshharbor status`** prints `credential  expires in N days` for the primary enrollment, and one line per enrollment on a multi-org device. It is read from the token in use, so it moves the moment a renewal lands. An expired token says how much grace is left.
+- **`mh status`** prints `credential  expires in N days` for the primary enrollment, and one line per enrollment on a multi-org device. It is read from the token in use, so it moves the moment a renewal lands. An expired token says how much grace is left.
 - **The dashboard** stays quiet for a healthy device. A device within 60 days of expiry gets an amber "credential expires in N d" chip in its Status cell (it is not renewing: an agent too old, or a refused renewal). An expired one gets a red chip that says whether the grace still covers it.
 - **The device row** records the `exp` of the newest token the device holds (`token_exp`), and the API returns it as `token_expires_at`. A renewal records it at once: the device keeps its socket and presents the new token only when it reconnects, which can be weeks away. Every connect then records the token actually presented, so a device that lost a renewal's answer is corrected at its next connect (`agent.rs` `self_renew`, `socket.rs` at the upgrade).
 

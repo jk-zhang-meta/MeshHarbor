@@ -149,7 +149,7 @@ pub struct FlowStats {
     /// agent target side + the CLI + every `FlowStats::default()`, so
     /// those carry no aggregate. When present, the pumps mirror each
     /// TCP-side byte add into the session cumulative (`bytes_out` =
-    /// local→peer, `bytes_in` = peer→local) so `meshharbor flows` can
+    /// local→peer, `bytes_in` = peer→local) so `mh flows` can
     /// report per-forward throughput. TCP-side (not `dc_send`) so the
     /// count is the true application payload — comparable across
     /// WebRTC (which adds a 4-byte frame prefix) and QUIC.
@@ -189,7 +189,7 @@ impl FlowStats {
 }
 
 /// Session-level throughput aggregate for a daemon-originated tunnel
-/// (P3b-3). One per `meshharbor forward` / `socks5` flow, shared across
+/// (P3b-3). One per `mh forward` / `socks5` flow, shared across
 /// its per-connection [`FlowStats`] and across WS-reconnect attempts
 /// (so `bytes_in`/`bytes_out` are cumulative for the forward's life).
 /// Read by the daemon's `flows` LocalAPI verb.

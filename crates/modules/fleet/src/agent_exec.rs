@@ -827,7 +827,7 @@ pub async fn exec(
 /// `POST /api/tenant/{tenant_id}/agent/exec` — the fleet sweep.
 ///
 /// An empty `agent_ids` means "every device whose policy allows it", which is
-/// the whole point: `meshharbor exec --all -- <probe>` across a heterogeneous
+/// the whole point: `mh exec --all -- <probe>` across a heterogeneous
 /// fleet in one round-trip.
 pub async fn exec_bulk(
     State(state): State<FleetState>,

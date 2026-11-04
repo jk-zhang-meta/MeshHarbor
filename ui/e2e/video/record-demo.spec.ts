@@ -43,7 +43,7 @@ import { existsSync, mkdirSync, writeFile, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 /**
- * `E2E_DEMO_LOCKCHECK` (`record-demo.sh` passes `MESHHARBOR_DEMO_LOCKCHECK`): `meshharbor exec`
+ * `E2E_DEMO_LOCKCHECK` (`record-demo.sh` passes `MESHHARBOR_DEMO_LOCKCHECK`): `mh exec`
  * selectors with their OS, one per device in filming order — `"laptop-17:win,office-mac:mac"`.
  * Each device is checked right before it is FILMED, not just when the take starts: managed
  * laptops lock after a few idle minutes, and the second machine of a take sat idle while the
@@ -54,7 +54,7 @@ const LOCKCHECK = (process.env.E2E_DEMO_LOCKCHECK || '')
   .map((s) => s.trim())
   .filter(Boolean)
 
-/** Whether the device's screen is signed in now, by `meshharbor exec`. Anything unclear is "no". */
+/** Whether the device's screen is signed in now, by `mh exec`. Anything unclear is "no". */
 function signedIn(check: string): { ok: boolean; why: string } {
   const i = check.lastIndexOf(':')
   const [sel, os] = [check.slice(0, i), check.slice(i + 1)]

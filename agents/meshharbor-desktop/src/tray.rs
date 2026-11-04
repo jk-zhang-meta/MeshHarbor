@@ -179,7 +179,7 @@ const KEEP_BUSY_ITEM_ID: &str = "keep_busy_toggle";
 /// - Off where it can run: a Start (P10, the person's own "on").
 /// - Off where it cannot (the owner switched it off, the org denies it, no
 ///   permission, an unsupported desktop): disabled. The agent's reason is in
-///   `meshharbor keep-busy status`.
+///   `mh keep-busy status`.
 /// - `None` (no service answered yet, or one older than FR-92): disabled.
 fn keep_busy_labels(state: Option<&meshharbor_localapi::KeepBusyInfo>) -> (String, bool) {
     match state {
@@ -431,7 +431,7 @@ fn record_labels(state: Option<&meshharbor_localapi::RecordingState>) -> (String
 }
 
 /// Keep the menu item, the tooltip and the icon in step with the recorder,
-/// started by this item, the Recordings view, `meshharbor record` or a
+/// started by this item, the Recordings view, `mh record` or a
 /// controller alike. One LocalAPI request every 3 s — the listener keeps a
 /// pool of instances (FR-84 D1).
 fn spawn_recording_watch<R: Runtime>(app: AppHandle<R>, item: MenuItem<R>) {

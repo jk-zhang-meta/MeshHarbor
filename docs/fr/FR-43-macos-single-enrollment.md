@@ -38,7 +38,7 @@ That is the whole asymmetry.
 **What is NOT forced is two enrollments.** That comes from us: the hub keys a device's
 control WS on `agent_id` and a second connection displaces the first
 (`crates/modules/fleet/src/hub.rs:94`), so we gave each half its own identity and the
-Mac became two rows. Cost, paid daily: every `meshharbor exec` / `meshharbor ssh` must target
+Mac became two rows. Cost, paid daily: every `mh exec` / `mh ssh` must target
 the *right* row (the GUI row cannot reach root, the root row cannot see the screen), the
 install needs two tokens, and Devices shows one machine twice.
 
@@ -90,7 +90,7 @@ work, and the design below should be read as such rather than as a translation.
 ### Why not the Windows shape (worker enrolled, daemon only supervising)
 
 Because it deletes the reason the macOS daemon half exists. With nobody logged in there
-would be no agent at all: no overlay, no `meshharbor ssh`, no `meshharbor exec`, no presence —
+would be no agent at all: no overlay, no `mh ssh`, no `mh exec`, no presence —
 exactly the "reachable before anyone logs in" property `win_service/mod.rs`'s own module
 docs list as the point of service mode. So the **daemon must hold the enrollment**, and
 the session has to reach the worker some other way.
@@ -274,7 +274,7 @@ The obvious fix — delay the hello until a worker has attached, so the caps are
 right first time — is **wrong, and expensively so**. It couples the daemon's
 control WS to GUI-worker readiness, which destroys the one property the daemon
 half exists for: reachable *before anyone logs in*. A headless reboot would
-never connect at all, and `meshharbor ssh` / `exec` / the mesh would wait on a
+never connect at all, and `mh ssh` / `exec` / the mesh would wait on a
 login that may never come. The daemon must say hello immediately and correct
 itself later.
 
@@ -377,11 +377,11 @@ counterpart despite the identical failure mode under PackageKit. Pinned
 ## Acceptance criteria
 
 - [ ] A fresh install with **one** token produces **one** device row, and that row serves
-      both a remote-desktop session and `meshharbor ssh`.
-- [ ] `meshharbor exec <mac>` reaches root-owned paths **and** the GUI session's log from the
+      both a remote-desktop session and `mh ssh`.
+- [ ] `mh exec <mac>` reaches root-owned paths **and** the GUI session's log from the
       same row (today this needs two different rows).
-- [ ] After a reboot with **nobody logged in**, the Mac is present in `meshharbor peers` and
-      `meshharbor ssh` works — the capability the daemon half exists for.
+- [ ] After a reboot with **nobody logged in**, the Mac is present in `mh peers` and
+      `mh ssh` works — the capability the daemon half exists for.
 - [ ] A remote-desktop session started while logged in streams real pixels and accepts
       input, with `caps` reporting `has_input_permission: true` and **no TCC re-prompt**.
 - [ ] `codesign -d -r-` on the bundle is byte-identical before and after the migration.
@@ -475,7 +475,7 @@ companion.
 ## Field-verification log
 
 All of it on the operator's MacBook (Apple Silicon), driven
-remotely — `meshharbor exec` for P0, `meshharbor ssh` on the daemon row from P1 onwards.
+remotely — `mh exec` for P0, `mh ssh` on the daemon row from P1 onwards.
 
 ### 2026-08-30 — P0 spike: the mechanism works, and one half was never measured
 

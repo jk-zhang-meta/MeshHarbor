@@ -408,7 +408,7 @@ enters: a remote `http://` is read as `https://`, and `ws://` as `wss://`.
 |---|---|---|
 | The agent's enrollment: `meshharbord enroll` and `re-enroll`, the wizard's agent role, the desktop companion | promoted | promoted, but only when spelled `http://` in lower case |
 | Every load of the agent's config: `server_url`, `ws_url`, and each `[[orgs]]` entry's | promoted, with a warning naming the field | dialled as written |
-| `meshharbor enroll`, the wizard's tunnel role | promoted | **the tunnel enrollment token was posted in plaintext** |
+| `mh enroll`, the wizard's tunnel role | promoted | **the tunnel enrollment token was posted in plaintext** |
 | The tunnel CLI's config, from the file or `MESHHARBOR_TUNNEL_SERVER` | promoted | dialled as written |
 | `meshharbord anchor create` (FR-104) | refused, unchanged: the claim's answer is the command SYSTEM runs | refused |
 

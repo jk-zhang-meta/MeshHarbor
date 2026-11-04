@@ -105,7 +105,7 @@ enum Command {
         /// `overlay_enabled` off for the operator to flip afterwards.
         ///
         /// The alternative is a round trip through the running daemon
-        /// (`meshharbor config set overlay_enabled true`), which at INSTALL time
+        /// (`mh config set overlay_enabled true`), which at INSTALL time
         /// means racing the daemon's socket before it exists. This writes the
         /// key with the rest of the enrolled config, so the very first start
         /// is already correct.
@@ -230,7 +230,7 @@ enum Command {
     /// `MESHHARBOR_CAPS_JSON:{…}` line. Spawned by the daemon itself — never
     /// invoked by operators — so that a vendor driver faulting inside a
     /// probe costs a child process instead of crash-looping the daemon.
-    /// Hidden: running it by hand only tells you what `meshharbor status`
+    /// Hidden: running it by hand only tells you what `mh status`
     /// already reports.
     #[command(hide = true, name = "caps-probe")]
     CapsProbe,
@@ -988,7 +988,7 @@ enum ServiceAction {
     /// `launchctl kickstart` the LaunchAgent. The daemon is spawned by the
     /// OS, never as a child of this command. Harmless when it is already
     /// running. This is the caller half of a restart under the Scheduled
-    /// Task (FR-84 D3, `meshharbor restart`, the companion's "Apply now").
+    /// Task (FR-84 D3, `mh restart`, the companion's "Apply now").
     Start {
         /// Start the system service instead: the `MeshHarbor` SCM service (and
         /// wait for RUNNING), `meshharbord.service`, or `fans.itachi.meshharbor.daemon`.
@@ -1170,17 +1170,17 @@ fn self_heal_machine_global_config(loaded_path: &std::path::Path, cfg: &config::
 #[cfg(not(all(feature = "system-context", target_os = "windows")))]
 fn self_heal_machine_global_config(_loaded_path: &std::path::Path, _cfg: &config::AgentConfig) {}
 
-/// `meshharbord cli <args...>` → the argv to hand to the embedded `meshharbor`
+/// `meshharbord cli <args...>` → the argv to hand to the embedded `mh`
 /// CLI, or `None` for every other invocation.
 ///
-/// P3e lever D: daemon hosts install a ~150 KB `meshharbor.exe` shim that
+/// P3e lever D: daemon hosts install a ~150 KB `mh.exe` shim that
 /// re-execs us this way, instead of the MSI carrying a second full copy of
 /// the tunnel CLI (rc.361: 22.1 MiB, ~92 % of it crates we already link).
 ///
 /// Read straight from raw argv, on purpose. Routing it through the daemon's
 /// own clap enum would mean a CLI call first ran every daemon-startup side
 /// effect below — DPI awareness, the 1 ms multimedia timer, the legacy-tree
-/// migration, `logging::init` — none of which the standalone `meshharbor`
+/// migration, `logging::init` — none of which the standalone `mh`
 /// binary does. Element 0 is re-labelled so usage text still reads
 /// `meshharbor ...` rather than `meshharbord ...`.
 fn embedded_cli_args() -> Option<Vec<std::ffi::OsString>> {
@@ -1189,7 +1189,7 @@ fn embedded_cli_args() -> Option<Vec<std::ffi::OsString>> {
     if it.next()? != "cli" {
         return None;
     }
-    let mut argv = vec![std::ffi::OsString::from("meshharbor")];
+    let mut argv = vec![std::ffi::OsString::from("mh")];
     argv.extend(it);
     Some(argv)
 }
@@ -1312,7 +1312,7 @@ fn pin_mmap_threshold() {
 }
 
 async fn daemon_main() -> Result<()> {
-    // P3e lever D — embedded `meshharbor` CLI. MUST stay the first statement in
+    // P3e lever D — embedded `mh` CLI. MUST stay the first statement in
     // main(): everything below is daemon-startup setup that a CLI invocation
     // has no business performing. See `embedded_cli_args`.
     //
@@ -2229,7 +2229,7 @@ async fn rc_cmd(disconnect: Option<&str>) -> Result<()> {
             println!("    granted:    {}", s.permissions);
         }
         println!(
-            "    disconnect: meshharbor rc --disconnect {}",
+            "    disconnect: mh rc --disconnect {}",
             s.session_id
         );
     }
@@ -2730,7 +2730,7 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
             if mode == config::OrgOverlayMode::Off {
                 println!(
                     "⚠️  This org's OVERLAY IS OFF, so the machine is enrolled but NOT on \
-                     its mesh — it will not appear in `meshharbor peers` for {label:?} and \
+                     its mesh — it will not appear in `mh peers` for {label:?} and \
                      cannot be reached by overlay address there. Remote control, exec \
                      and SSH over the control plane still work."
                 );
@@ -3033,7 +3033,7 @@ fn org_cmd(config_path: &PathBuf, action: OrgAction) -> Result<()> {
             if done.primary_was_netstack {
                 println!(
                     "  {label:?} was on the mesh through the userspace netstack, which a \
-                     primary cannot take from config: `meshharbor config set overlay_enabled \
+                     primary cannot take from config: `mh config set overlay_enabled \
                      true` puts it on its own OS TUN instead."
                 );
             }
@@ -4081,7 +4081,7 @@ async fn run_cmd(
     }
 
     // Unification P1 — LocalAPI: expose read-only node / peer / flow state on a
-    // local-only pipe (Windows) / socket (unix) so `meshharbor status` and the
+    // local-only pipe (Windows) / socket (unix) so `mh status` and the
     // desktop app can read it without touching the daemon's internals. The
     // connected flag + the overlay-view channel are created HERE so they're
     // stable across WS reconnects (the signaling loop rebuilds the overlay
@@ -4117,7 +4117,7 @@ async fn run_cmd(
     let localapi_connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (overlay_view_tx, overlay_view_rx) =
         tokio::sync::watch::channel(tunnel_core::localapi::OverlayView::default());
-    // The netstack ICMP backend for `meshharbor ping` — Some only on a node running
+    // The netstack ICMP backend for `mh ping` — Some only on a node running
     // the userspace stack (netstack mode); None otherwise (OS-TUN / non-overlay).
     #[cfg(feature = "overlay-netstack")]
     let netstack_pinger = meshharbord::overlay::netstack_pinger(&cfg);
@@ -4374,7 +4374,7 @@ async fn run_cmd(
     // …and the live gate-4 flags, so a `config set` here is in force
     // as fast as a pushed one (docs/remote-config.md).
     .with_remote_config(remote_cfg.clone())
-    // Multi-org P1 — live per-enrollment rows for `meshharbor status`.
+    // Multi-org P1 — live per-enrollment rows for `mh status`.
     // FR-27 — live remote-control sessions, so the desktop app can
     // render "Being viewed by ..." and offer a Disconnect. Written by
     // every signalling loop through its ViewerIndicator.
@@ -4384,7 +4384,7 @@ async fn run_cmd(
     // FR-84 D5b — each enrollment's server + agent token, for the
     // companion's device list and mesh.
     .with_org_http(org_http.clone())
-    // FR-51 P4 — surface the enrollment's nature in `meshharbor status`.
+    // FR-51 P4 — surface the enrollment's nature in `mh status`.
     .with_ephemeral(cfg.ephemeral);
     // FR-85 — the local recording verbs: this daemon launches `meshharbord
     // record` (its own image, resolved now, before any package upgrade can
@@ -4406,7 +4406,7 @@ async fn run_cmd(
         }
     };
     // FR-92 — on a supervised Mac the GUI worker runs keep busy, so the root
-    // daemon's keep-busy verbs ask it: `meshharbor exec <mac> meshharbor keep-busy
+    // daemon's keep-busy verbs ask it: `mh exec <mac> mh keep-busy
     // off` arrives HERE, as root, and never sees the worker's socket.
     #[cfg(target_os = "macos")]
     let daemon_state = if supervised {
@@ -4698,7 +4698,7 @@ async fn run_cmd(
                 .with_renewal(token_renewal);
                 let connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let terminal = std::sync::Arc::new(std::sync::Mutex::new(None));
-                // Surface it in `meshharbor status` / the LocalAPI immediately,
+                // Surface it in `mh status` / the LocalAPI immediately,
                 // replacing any stale row for the same label.
                 if let Ok(mut rows) = registry.lock() {
                     rows.retain(|r| r.label != org.label);
@@ -6188,7 +6188,7 @@ const SMOKE_CONFIG_KEYS: [&str; 8] = [
 
 /// FR-93 P1 — a smoke test answers as the DAEMON would: it publishes the
 /// device's own config-backed knobs first (`config::env_fallbacks`, the map
-/// `run` publishes), so a key set with `meshharbor config set` is honoured by the
+/// `run` publishes), so a key set with `mh config set` is honoured by the
 /// smoke that is meant to prove it. Before this, `capture-smoke` read env and
 /// built-in defaults only, and on a host configured through the config file
 /// it tested a cascade the daemon was not running.
@@ -6249,7 +6249,7 @@ async fn capture_smoke_cmd(
     // and answering it should not require opening a session.
     //
     // P2a: asks THROUGH THE SESSION HELPER. Run as root — which is how the
-    // daemon runs, and how an operator reaches this over `meshharbor exec`/ssh —
+    // daemon runs, and how an operator reaches this over `mh exec`/ssh —
     // the direct call can only ever answer `no-session-bus`, so this line was
     // previously unable to report a working portal on any host where one
     // existed. That gap is exactly what P2a closes, and this is where it shows.

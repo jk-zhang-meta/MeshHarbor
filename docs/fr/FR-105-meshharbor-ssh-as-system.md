@@ -8,7 +8,7 @@ SSH endpoint, the worker's splice) · **Anchors:** master `94a2032c6` · **Build
 
 ## 1. Goal
 
-On an anchored Windows device, `meshharbor ssh <device>` runs as **SYSTEM** in session 0, or as **the signed-in
+On an anchored Windows device, `mh ssh <device>` runs as **SYSTEM** in session 0, or as **the signed-in
 user** when the policy says `console_user`. That makes it the same identity as Fleet RPC after FR-94, on
 every install type. `console_user` works on attended installs for the first time.
 
@@ -46,7 +46,7 @@ what a SYSTEM session shows.**
 - The service runs `russh::server::run_stream` over the pipe stream with **its own** host key.
   - The worker sees only ciphertext: it can drop or delay bytes, but not read or inject (SSH's MACs).
 - The pipe carries frames — `DATA`, `CONSENT_REQ`, `CONSENT_ANSWER`, `CLOSE` — so the service can ask the worker for consent (§3d).
-- **The server chooses the port and the key per grant**, because the worker cannot route by inspection: the SSH user name is encrypted. The grant response already says where to dial and what key will answer. **`meshharbor ssh` needs no change.** `meshharbor proxy` (`sshcmd.rs` L164) is checked to take the grant's port.
+- **The server chooses the port and the key per grant**, because the worker cannot route by inspection: the SSH user name is encrypted. The grant response already says where to dial and what key will answer. **`mh ssh` needs no change.** `mh proxy` (`sshcmd.rs` L164) is checked to take the grant's port.
 
 ### 3b. The grant is pulled, never relayed
 
@@ -88,7 +88,7 @@ what a SYSTEM session shows.**
 
 ```mermaid
 flowchart LR
-  C["meshharbor ssh (caller)"] -- "grant request" --> S[server]
+  C["mh ssh (caller)"] -- "grant request" --> S[server]
   S -- "rc:ssh.grant {grant_id, via_service}" --> W["worker (session 1, the user)"]
   W -- "ring: grant_id" --> V["service (session 0, SYSTEM)"]
   V -- "claim (anchor credential)" --> S
@@ -130,7 +130,7 @@ P2 and P3 as built (`agents/meshharbord/src/ssh_service.rs`, `exec_service.rs`, 
 
 ## 5. Acceptance criteria
 
-- [x] **AC1:** on an anchored attended device with `ssh = system`, `meshharbor ssh <dev> -- whoami` prints `NT AUTHORITY\SYSTEM`, session 0. Red first: the same device unanchored prints the signed-in user. *(§8: red rows 1 and 3, the user in session 1 unanchored and anchored on 0.4.135; green row 5, SYSTEM in session 0, `ran_as = system`. SystemContext too: rows 12–13, session 1 → session 0.)*
+- [x] **AC1:** on an anchored attended device with `ssh = system`, `mh ssh <dev> -- whoami` prints `NT AUTHORITY\SYSTEM`, session 0. Red first: the same device unanchored prints the signed-in user. *(§8: red rows 1 and 3, the user in session 1 unanchored and anchored on 0.4.135; green row 5, SYSTEM in session 0, `ran_as = system`. SystemContext too: rows 12–13, session 1 → session 0.)*
 - [x] **AC2:** `console_user` on an attended install runs as the signed-in user through the service (refused before this FR). With nobody signed in, it is refused, naming why. *(§8: red row 2, the worker's `err 1314`; green row 6, the user at Medium integrity, `ran_as = console_user`. Nobody signed in: row 14, on SystemContext, the only install whose worker, and so whose mesh, outlives the sign-out; an attended device is offline then, D3.)*
 - [x] **AC3 (the invariant, on a standard-user device):** *(§8 rows 7–9. Every probe ran with the signed-in user's limited token, Medium integrity, and none used elevation. The account is a local administrator, so this is the standard user's power exactly: their own config, the doorbell's user access, their own host key.)*
   - (i) the user adding their own key to `ssh_authorized_keys` gets no session on 2223; *(row 7: the same key opens 2222 as the user and gets `Permission denied` on 2223)*
@@ -158,7 +158,7 @@ P2 and P3 as built (`agents/meshharbord/src/ssh_service.rs`, `exec_service.rs`, 
 
 ## 8. Field-verification log
 
-2026-10-14, prod. The released agent is 0.4.135; the candidate is 0.4.136 from rehearsal run 38557954696, which is #2179's head (`005b79905`) plus the version bump. The caller was a vmtest Ubuntu root daemon in the same org, running `meshharbor ssh <device> -- <a PowerShell who-am-I>`. Every row is from that caller, with the audit row the server wrote.
+2026-10-14, prod. The released agent is 0.4.135; the candidate is 0.4.136 from rehearsal run 38557954696, which is #2179's head (`005b79905`) plus the version bump. The caller was a vmtest Ubuntu root daemon in the same org, running `mh ssh <device> -- <a PowerShell who-am-I>`. Every row is from that caller, with the audit row the server wrote.
 
 | # | Cell | Host | Result |
 |---|---|---|---|

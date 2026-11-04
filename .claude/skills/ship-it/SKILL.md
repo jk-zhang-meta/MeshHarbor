@@ -166,13 +166,13 @@ roll — the workflow only proves the public `/health` kept answering:
 ```bash
 # pods on the new image · online-agent count · an RC session ·
 # an overlay pair · a tunnel forward
-meshharbor exec <device> '<cmd>'      # ⚠️ argv is re-split: Windows targets need ONE quoted arg, ";" never "&&"
-meshharbor peers
+mh exec <device> '<cmd>'      # ⚠️ argv is re-split: Windows targets need ONE quoted arg, ";" never "&&"
+mh peers
 ```
 
 ⚠️ An exec sweep is a **biased sample** — it only reaches devices that are
 online. Query the server for the denominator.
-⚠️ `meshharbor exec` on a host that restarts its own service answers "no answer
+⚠️ `mh exec` on a host that restarts its own service answers "no answer
 within 45 s" — the command ran.
 
 ## 6 · The wizard ships in lockstep (FR-84 S1)

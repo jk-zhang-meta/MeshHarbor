@@ -24,7 +24,7 @@ pass on every release it was pointed at.
 ```mermaid
 flowchart TB
     G["COW overlay off the golden image<br/>(cloud-init / autounattend / tart clone)"] --> B["boot → DHCP (ARP source) → SSH up"]
-    B --> D["guest driver<br/>install (served script or release asset)<br/>→ meshharbord enroll --ephemeral --overlay<br/>→ meshharbor peers + ping ↔ anchor<br/>→ session type (Wayland lane)"]
+    B --> D["guest driver<br/>install (served script or release asset)<br/>→ meshharbord enroll --ephemeral --overlay<br/>→ mh peers + ping ↔ anchor<br/>→ session type (Wayland lane)"]
     D --> L["orchestrator lifts VMTEST-RESULT lines<br/>into results.tsv"]
     L --> O["device online in the org listing"]
     O --> RD["remote desktop: Playwright in a container<br/>decodes ADVANCING frames from the new agent"]
@@ -39,7 +39,7 @@ Every check is a result id `lane/method/type@host#check`, recorded `PASS`,
 |---|---|---|
 | `install` | the served script / release installer put `meshharbord` (and the companion where one exists) on disk | the guest driver's verdict line |
 | `enroll` | `meshharbord enroll --ephemeral --overlay` produced a device that comes **online** | verdict line **and** the org's `/agent` listing (`wait_device_online`) |
-| `overlay` | the VM's `meshharbor peers` sees the anchor and `meshharbor ping` **round-trips** to it | inside the guest, against a permanent anchor node |
+| `overlay` | the VM's `mh peers` sees the anchor and `mh ping` **round-trips** to it | inside the guest, against a permanent anchor node |
 | `overlay-reverse` | anchor → VM | best-effort `WARN`; the forward round-trip already proves both ways |
 | `wayland` | the Linux GUI session really is `seat0 … wayland` — the lane's premise | `loginctl` in the guest |
 | `rd` | a real browser decodes frames that **advance** | [`ui/e2e/vmtest-remote.spec.ts`](../ui/e2e/vmtest-remote.spec.ts) run in the pinned Playwright image, agent selected by **exact name** (`:36`) so parallel VMs cannot cross-match |
@@ -173,7 +173,7 @@ copied run directory in seconds.
 
 ## Traps (each cost a real debug cycle)
 
-- ⚠️ **`meshharbor status --json`'s overlay address is top-level `.overlay_ip`** —
+- ⚠️ **`mh status --json`'s overlay address is top-level `.overlay_ip`** —
   there is no `.orgs[].self_v4`.
 - ⚠️ **libvirt's default lease source misses leases** on the vmtest network (one
   run finds an IP, an identical next run times out); `domifaddr --source arp`
@@ -206,7 +206,7 @@ copied run directory in seconds.
   enrollment token look already expired — resync `w32time` first.
 - ⚠️ **macOS**: `tart stop` loses writes made in the running VM (shut down from
   inside); the vmnet resolver times out (DNS is pinned in the golden); `meshharbor
-  exec` splits space-containing argv (use `meshharbor ssh`, ship scripts as base64);
+  exec` splits space-containing argv (use `mh ssh`, ship scripts as base64);
   the per-user LaunchAgent cannot be online headlessly, so overlay/online checks
   target the daemon row.
 - ⚠️ **The anchor container** must be built on the `.deb`'s build distro

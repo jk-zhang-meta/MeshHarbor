@@ -50,13 +50,13 @@ curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- \
 
 :::note The graphical installer cannot install the agent on a Mac
 On macOS, [MeshHarbor Setup](https://meshharbor.itachi.fans/api/setup/macos) installs only
-`meshharbor`, the tunnel client. Install either half of the agent with one of the
+`mh`, the tunnel client. Install either half of the agent with one of the
 commands above.
 :::
 
 `--daemon-token` is what installs the root LaunchDaemon *and* turns the overlay
 on — installing that half is itself the opt-in. Without it the Mac never joins
-the mesh, and it is **absent from `meshharbor peers` entirely** rather than showing
+the mesh, and it is **absent from `mh peers` entirely** rather than showing
 as offline.
 
 Running the one-liner under `sudo` is fine: the script resolves the console user
@@ -102,7 +102,7 @@ installer tells you when this has happened rather than leaving you to find out.
 |---|---|
 | `/Applications/MeshHarbor.app` | The **menu-bar companion** — status, routes, and the permissions panel. No Dock tile. The only MeshHarbor icon you should see. |
 | `/Library/MeshHarbor/meshharbord.app` | The agent itself. A background service with nothing to launch, so deliberately not in `/Applications` — but still a bundle, because the two privacy grants attach to a bundle identity. |
-| `/usr/local/bin/meshharbor` | The CLI. |
+| `/usr/local/bin/mh` | The CLI. |
 | `/usr/local/bin/meshharbord` | The agent on `PATH`, for `meshharbord enroll` and `--version`. A symlink into the bundle, not a second copy. |
 
 Configuration lives at `/etc/meshharbor/config.toml` for the root half.
@@ -110,8 +110,8 @@ Configuration lives at `/etc/meshharbor/config.toml` for the root half.
 ## Talking to the right half
 
 :::tip "daemon not running" usually means you asked the wrong half
-The two halves listen on **different local sockets**. `meshharbor status` and
-`meshharbor peers` reach the **user** half; `sudo meshharbor …` reaches the **root**
+The two halves listen on **different local sockets**. `mh status` and
+`mh peers` reach the **user** half; `sudo meshharbor …` reaches the **root**
 half. If a command reports that the daemon is not running, try it with and
 without `sudo` before assuming anything is broken.
 :::
@@ -154,5 +154,5 @@ the mesh address.
 
 - **Screen is the wallpaper and nothing else** → the Screen Recording grant. See above.
 - **Clicks and keys do nothing** → the Accessibility grant.
-- **The Mac is missing from `meshharbor peers`** → you installed the user half only. Add the root half with `--daemon-token`, or enroll it (`sudo /Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord --config /etc/meshharbor/config.toml enroll … --overlay`) and run `sudo meshharbord service install --as-service`.
+- **The Mac is missing from `mh peers`** → you installed the user half only. Add the root half with `--daemon-token`, or enroll it (`sudo /Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord --config /etc/meshharbor/config.toml enroll … --overlay`) and run `sudo meshharbord service install --as-service`.
 - **More** → [Troubleshooting](/docs/troubleshooting/).

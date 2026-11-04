@@ -5,7 +5,7 @@ option **C** from the fork in §7b — `exec_enabled` is live, `ssh_*` are
 persisted and honestly reported as needing a restart. Option **A**
 (supervisor-detected exit-to-restart) now exists **for the LOCAL path only**
 (FR-84 D3: the LocalAPI's `RestartDaemon`, the companion's "Apply now",
-`meshharbor restart`); remote configuration still never restarts a daemon, and
+`mh restart`); remote configuration still never restarts a daemon, and
 §7b records why both halves of that are deliberate.
 
 This documents a design and the reasoning that constrains it. Claims about
@@ -14,7 +14,7 @@ says where a check would need repeating.
 
 ## 1. The problem
 
-Turning on `meshharbor exec` or meshharbor SSH for a device today means editing
+Turning on `mh exec` or meshharbor SSH for a device today means editing
 `config.toml` on that host by hand and restarting the daemon. For one machine
 that is fine. For a fleet it is the reason both features are still off nearly
 everywhere: the last gate is the one nobody can reach.
@@ -220,7 +220,7 @@ registered once per process; audited like the rest. Unset on the device denies
 nothing, so `none` is how a push says the same thing while a blank box hands the
 key back to the device. A pushed value is not validated by the server, as with
 `encoder_cells_deny`: an entry the device cannot parse is skipped, never widened
-into a match, and `meshharbor config set fps_deny` refuses it locally.
+into a match, and `mh config set fps_deny` refuses it locally.
 
 ## 7. What this does not do
 
@@ -306,14 +306,14 @@ silently.
 ### A, built — for the local path only (FR-84 D3, 2026-09-25)
 
 Option A now exists, as the LocalAPI verb `RestartDaemon`: the desktop
-companion's **Apply now** and `meshharbor restart` ask the daemon to exit so its
+companion's **Apply now** and `mh restart` ask the daemon to exit so its
 supervisor relaunches it. Every objection above got an answer rather than a
 waiver, and one did not — which is why remote configuration still does not use
 it.
 
 ```mermaid
 flowchart TD
-    Ask["RestartDaemon over the LocalAPI<br/>(companion Apply now · meshharbor restart)"] --> Sup{"supervisor PROVEN<br/>at startup?"}
+    Ask["RestartDaemon over the LocalAPI<br/>(companion Apply now · mh restart)"] --> Sup{"supervisor PROVEN<br/>at startup?"}
     Sup -- "none (orphan meshharbord run)" --> R1["refuse — exiting would take<br/>the device offline"]
     Sup -- "scm · task · systemd · launchd · FR-43" --> On{"local_restart_enabled<br/>(read from the file)"}
     On -- off --> R2[refuse]
@@ -354,7 +354,7 @@ old value), or need its own reporting for a state that has no local person to
 read it. And a server able to restart daemons holds every device's uptime on a
 button, which is the same compromise this document exists to refuse for
 `exec_enabled`. So a pushed key stays `applied-pending-restart` until someone at
-the device applies it — or an operator runs `meshharbor exec … -- meshharbor restart`,
+the device applies it — or an operator runs `mh exec … -- mh restart`,
 which needs every one of exec's four gates, the device's own `exec_enabled`
 included (exec already runs anything as root, so it grants nothing new), and
 which the daemon still refuses on the same terms as a local request.

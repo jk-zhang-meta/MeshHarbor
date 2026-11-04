@@ -34,8 +34,8 @@ left chapter rail + scrollable chapter body:
 | 0 | Get started | hero-mesh | create/rename org → enroll first device (opens the Enroll dialog on /devices) |
 | 1 | Devices | hero-mesh | enroll (device vs tunnel client), grid tour (search/columns/tags/display name), update/pin |
 | 2 | Remote desktop | remote-desktop | Connect from the grid, consent modes, clipboard + file transfer, codecs note |
-| 3 | Private network | private-network | overlay addresses + MagicDNS name (copy from the grid), `meshharbor ssh <name>` |
-| 4 | Tunnels | private-network | `meshharbor forward` / SOCKS5 one-liners (copyable, org-scoped), declared routes |
+| 3 | Private network | private-network | overlay addresses + MagicDNS name (copy from the grid), `mh ssh <name>` |
+| 4 | Tunnels | private-network | `mh forward` / SOCKS5 one-liners (copyable, org-scoped), declared routes |
 | 5 | ACL & policy | private-network | tunnel ACL default-deny, overlay ACL modes, subnet-route approval (/network/acl) |
 | 6 | Rooms & chat | collaboration | create a room, invite someone (deep link /invites), mentions/files |
 | 7 | Calls | collaboration | start a call from a room, screen share, the call badge |

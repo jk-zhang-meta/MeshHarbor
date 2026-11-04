@@ -195,7 +195,7 @@ one small frame per grant.
 
 | option | why not |
 |---|---|
-| **client retry** on a publickey refusal (`meshharbor ssh`) | Retries into refusals that are sometimes GENUINE, so it needs the refusal reason on the wire anyway; fixes only new CLIs; and a caller told "dial here" still cannot rely on it |
+| **client retry** on a publickey refusal (`mh ssh`) | Retries into refusals that are sometimes GENUINE, so it needs the refusal reason on the wire anyway; fixes only new CLIs; and a caller told "dial here" still cannot rely on it |
 | **device-side grace wait** — hold an unknown key a few seconds in case its grant is in flight | Every unauthorized key then waits: an OpenSSH client offering three agent keys to a key-list device pays it three times per login. No reason ever reaches the caller, and a half-open control WS stays invisible |
 | **answer with the address on timeout** (fail open to today) | At that moment the one thing the server KNOWS is that the device has not confirmed; "dial here" is the answer that produced #1597 |
 
@@ -222,7 +222,7 @@ one small frame per grant.
       `silence_is_unconfirmed_and_the_slot_is_released`.*
 - [x] **AC4** — An agent without `ssh-grant-ack` is answered as before, without waiting.
       *`an_agent_without_the_verb_is_answered_at_once` (passes on master too — the behaviour
-      kept); in the field, `meshharbor ssh zeus` through the new server while zeus was 0.4.100:
+      kept); in the field, `mh ssh zeus` through the new server while zeus was 0.4.100:
       rc 0 in 1.1 s.*
 - [x] **AC5** — An ack arriving on another agent's socket confirms nothing.
       *The same integration test (a second device acks the target's grant id) + unit
@@ -235,7 +235,7 @@ one small frame per grant.
       the baseline. *Run `20260924-155559`: SSH 30/30 (every target, both arms); the five
       targets' own logs: 40/40 grant-issued sessions recorded before they opened, 0
       `rejected` in the run window. Baseline: 2026-09-23, CORPLAP-2 direct 0/3.*
-- [x] **AC8** — Field: `meshharbor ssh` to a device with `ssh_enabled = false` names gate 4 —
+- [x] **AC8** — Field: `mh ssh` to a device with `ssh_enabled = false` names gate 4 —
       shown on the current deploy first to hand the caller an address that then refuses the
       connection (nothing intercepts the port when SSH is off), with the only reason in the
       device's own log. *Before: an address, then `Connection refused` (13:23 UTC). After:
@@ -267,6 +267,6 @@ one small frame per grant.
 | 2026-09-23 | agent 0.4.97, server as deployed that day | **Baseline, failing** (#1597): CORPLAP-2 direct arm 0/3 — device log shows `rejected — no live grant` 3.3–4.4 s before `grant recorded`; relay arm 3/3 |
 | 2026-09-24 | CI, master's server | **Negative control** — #1607's integration tests against the pre-FR-83 server, three runs (35998108123, 35998593627, 35999677732; the last on the exact merged file): "the caller was answered 1.500232382s BEFORE the device confirmed the grant"; a gate-4 device and a silent one were each still offered an address; the pre-ack test passed |
 | 2026-09-24 | agent 0.4.100, `hosted-20260910-4114dc7` | **AC8 baseline** (13:23 UTC): a stress VM with SSH off — server answered `100.65.4.23:2222` in 51 ms with no error; the dial got `Connection refused`; the only reason was the device's own `rc:ssh.grant refused — ssh_enabled is off`. (The same probe's first version replaced the VM's whole policy and revoked the lane's `can_originate` — that run's relay-arm SSH read 0/15 because of it; FR-81's skill now carries the trap.) |
-| 2026-09-24 | `agent-v0.4.101`, `hosted-20260924-531fde8` | Roll: `/health` 0.4.101 (6/6 samples); `meshharbor ssh zeus -- hostname` → `zeus`, rc 0, 1.1 s while zeus was still 0.4.100 — the pre-ack path unchanged (AC4). All five stress targets auto-updated to 0.4.101 within ~1.5 h |
+| 2026-09-24 | `agent-v0.4.101`, `hosted-20260924-531fde8` | Roll: `/health` 0.4.101 (6/6 samples); `mh ssh zeus -- hostname` → `zeus`, rc 0, 1.1 s while zeus was still 0.4.100 — the pre-ack path unchanged (AC4). All five stress targets auto-updated to 0.4.101 within ~1.5 h |
 | 2026-09-24 | `agent-v0.4.101`, `hosted-20260924-531fde8` | **AC8 after** (16:11 UTC): a 0.4.101 VM with SSH off — **no address**, *"meshharbor SSH is switched off on the device itself"* in 57 ms; device log `rc:ssh.grant refused — ssh_enabled is off`; prod audit `agent_disabled` |
 | 2026-09-24 | `agent-v0.4.101` on all five targets, `hosted-20260924-531fde8` | **AC7** — FR-81 stress run `20260924-155559` (PASS 26/0, launched automatically once every target reported 0.4.101): **SSH 3/3 on every target in both arms (30/30)**, incl. CORPLAP-2's direct arm, 0/3 in the baseline. From the targets' OWN logs (full-file grep, 16:00–18:59 UTC): **40/40 grant-issued sessions had `grant recorded` before `session opening`** — leads 92–173 ms on the three corp laptops, 7–28 ms on zeus and mars — and **0 `rejected`** on any target; 48 key-list (scp/sftp) sessions alongside. Carrier/latency/loss/stability unchanged: 0 % loss everywhere, 0 transitions/189 samples on every pair |

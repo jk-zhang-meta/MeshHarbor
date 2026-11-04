@@ -752,7 +752,7 @@ mod tests {
     #[test]
     fn settings_deny_proc_and_carry_the_helper_memory_dir_and_sandbox() {
         let doc = SettingsSpec {
-            api_key_helper: Some("meshharbor hive token --session 6f1c".into()),
+            api_key_helper: Some("mh hive token --session 6f1c".into()),
             auto_memory_directory: Some(root().join("memory")),
             sandbox_proxy: Some(SandboxProxy {
                 http_port: 47001,
@@ -789,7 +789,7 @@ mod tests {
             }]}),
             "the hook runs on a resume and a fork, never a first start"
         );
-        assert_eq!(doc["apiKeyHelper"], "meshharbor hive token --session 6f1c");
+        assert_eq!(doc["apiKeyHelper"], "mh hive token --session 6f1c");
         let deny = doc["permissions"]["deny"].as_array().unwrap();
         assert!(deny.iter().any(|d| d == "Read(//proc/**)"));
         assert_eq!(deny.len(), 2);

@@ -8,7 +8,7 @@ order: 5
 
 MeshHarbor is one product on three operating systems. When a feature works on one
 of them, it works on the other two, or the device tells you why it cannot:
-on the control itself, in `meshharbor status`, and in the dashboard. A control
+on the control itself, in `mh status`, and in the dashboard. A control
 that is greyed out always carries the device's own reason.
 
 :::badges
@@ -47,7 +47,7 @@ An install that runs as you cannot create a network adapter, but it can join
 the network in **netstack mode**: set `MESHHARBORD_OVERLAY_NETSTACK_SOCKS` to a
 free port for the agent, and your apps reach the other devices through that
 local SOCKS5 port. MeshHarbor SSH into this machine still works. A second
-organization chooses it with `meshharbor org overlay <org> netstack`
+organization chooses it with `mh org overlay <org> netstack`
 ([multi-org](/docs/network/multi-org/)).
 :::
 
@@ -89,8 +89,8 @@ are on [per-OS permissions](/docs/remote-desktop/per-os-permissions/).
 | Use an [exit node](/docs/network/exit-nodes/) | ✅ | ✅ | ✅ IPv6 when your connection has it, otherwise blocked rather than leaked |
 | Be an exit node or a [subnet router](/docs/network/subnet-routers/), IPv4 | 🟡 needs Windows' Hyper-V; never on Home | ✅ | ✅ the root half |
 | Be an exit node, IPv6 | ⛔ | ✅ | ✅ where the Mac has a global IPv6 route |
-| Device names resolve on the computer ([MagicDNS](/docs/network/addresses-and-magicdns/)) | ✅ | 🟡 with systemd-resolved; when nothing asks it, `meshharbor status` says so | ✅ |
-| Your firewall lets the network in | ✅ a Machine install adds its own rule | 🟡 yours to open; `meshharbor status` names the zone | ❌ yours to open |
+| Device names resolve on the computer ([MagicDNS](/docs/network/addresses-and-magicdns/)) | ✅ | 🟡 with systemd-resolved; when nothing asks it, `mh status` says so | ✅ |
+| Your firewall lets the network in | ✅ a Machine install adds its own rule | 🟡 yours to open; `mh status` names the zone | ❌ yours to open |
 
 The same on all three: direct and relayed connections, the relay floor over
 443, [tunnels](/docs/network/tunnels/), SOCKS5, access rules, key rotation and
@@ -125,7 +125,7 @@ More on [MeshHarbor SSH](/docs/network/ssh/).
 | Checks a download is the version it was offered as | ✅ | ✅ | ✅ |
 | One-command uninstall | ✅ | ✅ | ✅ |
 | An ephemeral device removes itself when it stops | ✅ | ✅ | ✅ |
-| The tunnel client (`meshharbor self-update`) updates itself | ✅ | ✅ from the next tunnel release | ✅ from the next tunnel release |
+| The tunnel client (`mh self-update`) updates itself | ✅ | ✅ from the next tunnel release | ✅ from the next tunnel release |
 | Processors the agent runs on | 🟡 x64; ❌ ARM | ✅ x86_64 and arm64 | 🟡 Apple silicon; ❌ Intel |
 | Hardware video encoding on Linux ARM | — | ❌ | — |
 | The tunnel client and the wizard on Linux ARM | — | ✅ from 0.4.149: the wizard with the agent release, the tunnel client with the first tunnel release from then on | — |

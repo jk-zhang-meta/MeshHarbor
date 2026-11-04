@@ -440,7 +440,7 @@ waited for the per-session live check.
   fell below 0.4.141's 27.0.
 - **The switch restores 0.4.142's pace.** The stalled arm's fps is void, but its pace log is the agent's own, and
   it flapped as 0.4.142 does.
-- ⚠️ **Wrong turn:** the run's fourth arm (the margin back on) never ran. The run was held over a `meshharbor ssh`
+- ⚠️ **Wrong turn:** the run's fourth arm (the margin back on) never ran. The run was held over a `mh ssh`
   session, the session dropped at 10:02Z, and the script died with it before its cleanup, which left the clock-off
   drop-in on the host. It was found and removed at 10:16Z, with no live session and the service restarted on the
   release's bytes. Long runs now go in a transient unit, which outlives the session.

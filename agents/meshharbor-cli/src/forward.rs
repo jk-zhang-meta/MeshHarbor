@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! `meshharbor forward` — open one TCP forward through an enrolled
+//! `mh forward` — open one TCP forward through an enrolled
 //! agent. The TeamViewer-shaped flow:
 //!
 //! 1. WS-connect to `wss://<server>/ws?role=tunnel-client&token=<jwt>`.
@@ -148,7 +148,7 @@ impl TunnelSignalingSource for WsSource {
     }
 }
 
-/// `meshharbor forward` — one static local→remote TCP forward.
+/// `mh forward` — one static local→remote TCP forward.
 pub async fn run(
     cfg: TunnelConfig,
     agent_hex: &str,
@@ -167,7 +167,7 @@ pub async fn run(
     .await
 }
 
-/// `meshharbor socks5` — the userspace-mode SOCKS5 proxy. Same transport +
+/// `mh socks5` — the userspace-mode SOCKS5 proxy. Same transport +
 /// server policy + agent allowlist as a static forward; the destination is taken
 /// from each connection's SOCKS5 CONNECT instead of a fixed `--remote`.
 pub async fn run_socks5(
@@ -200,7 +200,7 @@ async fn run_forward(
         local,
         ?target,
         ?transport,
-        "meshharbor forward starting"
+        "mh forward starting"
     );
 
     let mut backoff = RECONNECT_BACKOFF_MIN;

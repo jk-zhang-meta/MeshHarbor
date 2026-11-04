@@ -97,7 +97,7 @@ namespace MeshHarbor {
   };
 
   // P3-9-1 — a PERSON using a secret through an endpoint their device serves
-  // them (`meshharbor connect`): always as a proxy, toward `audience`, the
+  // them (`mh connect`): always as a proxy, toward `audience`, the
   // upstream the endpoint signs in to, for `ttl_s`, from `device`, whose
   // owner the person is — its row says so, never the request. A person's own
   // action: `secret:use` is a session's, so no policy written for sessions

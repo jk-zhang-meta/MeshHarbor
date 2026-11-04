@@ -14,7 +14,7 @@
 //! | the organization is no longer served, or (P3-9-1) a person's lease and the vault no longer lends to its people | the device's pod, at its sweep or hello | at that sweep |
 //! | P3-9-1 — a person's lease, and the device's row names another owner, or its owner is no longer a member | the device's pod, at its sweep or hello | at that sweep |
 //!
-//! A person's lease (`meshharbor connect`, [`crate::connect`]) names no
+//! A person's lease (`mh connect`, [`crate::connect`]) names no
 //! session: it stands on its owner instead, and on everything else a
 //! session's lease stands on.
 //!

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-103 — a `meshharbor` tunnel client renews its own token before it expires,
+//! FR-103 — a `mh` tunnel client renews its own token before it expires,
 //! and the ONE rule for when a credential is due, which `meshharbord` uses too.
 //!
 //! A tunnel-client token lives a year from enrollment. Until FR-103 nothing
 //! renewed it, and a tunnel-only host found out on its anniversary, when every
-//! `meshharbor forward` was refused. The server (FR-103 P1) answers
+//! `mh forward` was refused. The server (FR-103 P1) answers
 //! `POST /api/tunnel-client/renew` with a fresh token for the same client:
 //! idempotent, no rotation (the old token stays valid until its own `exp`), and
 //! accepted up to 90 days past expiry so a laptop left in a drawer still comes
@@ -122,7 +122,7 @@ pub async fn renew_if_due(cfg: &mut TunnelConfig, path: Option<&Path>) -> Renewa
         Err(RequestError::Refused(status)) => {
             tracing::warn!(
                 status,
-                "tunnel-client token renewal refused: re-enroll this client (`meshharbor enroll`)"
+                "tunnel-client token renewal refused: re-enroll this client (`mh enroll`)"
             );
             return Renewal::Refused;
         }

@@ -33,9 +33,9 @@ Prefer the CLI over editing by hand — it writes atomically and keeps a previou
 copy:
 
 ```bash
-meshharbor config ls
-meshharbor config set <key> <value>
-meshharbor config clear <key>
+mh config ls
+mh config set <key> <value>
+mh config clear <key>
 ```
 
 :::warning A local edit takes effect immediately where the setting allows it
@@ -83,7 +83,7 @@ property these gates exist for.
 | `hive_api_key_helper` | unset | A command **the daemon** runs (as SYSTEM/root; on Windows through `cmd.exe /c`) to print the model credential: an API key, or a Claude subscription's token from `claude setup-token`, which is sent as one (a bearer token; it spends the subscription owner's own usage limits, for every session on this machine). Sessions never see it: each gets a token for this machine's loopback model sidecar, good only for that session's model calls while it runs here — not for anything else the key opens, such as files or batches. Unset means sessions have no model access |
 | `hive_api_workspace_id` | unset | For a model key that is not scoped to a workspace: the workspace its calls are made in. The sidecar sends it as `anthropic-workspace-id` with every call, alongside the key; sessions never set it. Leave unset for a workspace-scoped key |
 | `hive_core_memory` | off | Show the organization's core memory — the facts its people keep in MeshHarbor — to the agent sessions on this machine, as the session's `CLAUDE.md` and auto-memory. Claude Code reads `CLAUDE.md` as the user's own instructions, so this is the one place text from the server reaches a session; it is yours to turn on. A session keeps the memory it started with, and a resume keeps the session's own copy |
-| `hive_adopt` | off | Let the people who use this machine adopt the Claude Code sessions they run in a terminal (`meshharbor hive adopt`; Linux, macOS and Windows): mirrored into this machine's store and shown to their owner alone, read-only — nobody drives them from MeshHarbor. Each person still opts in, and their account must map in `hive_accounts` to exactly one member; a shared account is refused. Restart required |
+| `hive_adopt` | off | Let the people who use this machine adopt the Claude Code sessions they run in a terminal (`mh hive adopt`; Linux, macOS and Windows): mirrored into this machine's store and shown to their owner alone, read-only — nobody drives them from MeshHarbor. Each person still opts in, and their account must map in `hive_accounts` to exactly one member; a shared account is refused. Restart required |
 | `hive_allow_passwordless_sudo` | off | macOS only: let agent sessions run as an account whose `sudo` needs no password. That gives the agent root, whatever groups the session drops, because macOS's `sudo` reads the account's groups from the directory. Off, such a start is refused (`passwordless_sudo`); a Mac whose `sudo` asks for a password, as macOS's does by default, is unaffected. No effect on Linux, where a session cannot `sudo` at all. Never settable by the server. Restart required |
 | `hive_replica` | off | Hold copies of the agent sessions you run on your other machines, so a session can move here when its machine is gone. A copy is everything the agent saw, kept in plain text on this machine. Replication is still being built: until it ships, this only makes the machine keep a session store. Never settable by the server. Restart required |
 | `hive_archive` | off | Offer this machine as your organization's archive replica: once an administrator designates it, it holds every agent session your organization's rules allow, for their retention. Needs `hive_replica` on. Never settable by the server. Restart required |
@@ -111,7 +111,7 @@ one.
 :::note The one remote-access feature that is on by default
 It only moves the pointer, never clicks or types, and the person at the
 machine always wins: touch the mouse or the keyboard and it stops until you have
-been idle again. Stop it from the tray, or with `meshharbor keep-busy off`.
+been idle again. Stop it from the tray, or with `mh keep-busy off`.
 :::
 
 ## Media

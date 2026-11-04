@@ -25,7 +25,7 @@ pub const DEFAULT_SERVER: &str = "https://www.itachi.fans/meshharbor";
 const AGENT_SUFFIX: &str = "/api/agent/installer";
 
 /// Default proxy base for the tunnel-CLI archive endpoint family.
-/// NB: `/api/tunnel/installer` serves the `meshharbor` CLI
+/// NB: `/api/tunnel/installer` serves the `mh` CLI
 /// tarball; the (P4c-2-retired) `/api/tunnel-wizard` family served
 /// the wizard EXE itself — pointing here at the latter made the
 /// wizard install ITSELF (rc.60 bug, fixed rc.61).

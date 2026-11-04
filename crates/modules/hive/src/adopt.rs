@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P1j — terminal sessions a person adopted on a device (`meshharbor hive
+//! FR-90 P1j — terminal sessions a person adopted on a device (`mh hive
 //! adopt`), offered by that device for a record (decision 11).
 //!
 //! A terminal session passed none of Hive's start gates: it is the person's

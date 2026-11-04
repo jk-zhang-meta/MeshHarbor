@@ -77,7 +77,7 @@ traffic.
 
 ## Why is my session slow?
 
-Almost always because the two ends fell back to a relay. Run `meshharbor peers` or
+Almost always because the two ends fell back to a relay. Run `mh peers` or
 check the session's connection indicator — if it says **Relay**, that is the
 answer, and the most common cause is a VPN client on one end capturing the local
 network range. See [cannot connect](/docs/troubleshooting/cannot-connect/).
@@ -154,6 +154,6 @@ need session recording, this is a genuine gap.
 ## Where do I report a problem?
 
 [github.com/jk-zhang-meta/MeshHarbor/issues](https://github.com/jk-zhang-meta/MeshHarbor/issues).
-Include `meshharbor status` output — and for a connectivity problem, from both ends.
+Include `mh status` output — and for a connectivity problem, from both ends.
 Security issues should be reported privately; see
 [`SECURITY.md`](https://github.com/jk-zhang-meta/MeshHarbor/blob/master/SECURITY.md).

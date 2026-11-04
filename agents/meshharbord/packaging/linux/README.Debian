@@ -130,8 +130,8 @@ it off. Anything else (the login screen, a desktop that cannot tell anyone)
 needs both of these keys, which read the screen and inject input into whatever
 has focus, the login screen included, so nothing sets them for you:
 
-  sudo meshharbor config set drm_capture true
-  sudo meshharbor config set uinput true
+  sudo mh config set drm_capture true
+  sudo mh config set uinput true
   sudo systemctl restart meshharbord.service
 
 Until then the viewer names what is missing and these two commands. It never

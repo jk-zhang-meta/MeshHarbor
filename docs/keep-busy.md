@@ -15,21 +15,21 @@
 > | P2 | the viewer's menu |
 > | P3a | **Linux X11**, proven against a real X server in CI |
 > | P3b | **macOS**, including a supervised Mac's GUI worker |
-> | P4 | the person at the device sees it and stops it: tray, `meshharbor keep-busy`, LocalAPI |
+> | P4 | the person at the device sees it and stops it: tray, `mh keep-busy`, LocalAPI |
 > | P5 | the org deny |
 > | P5b | the device list shows where it runs and who turned it on |
 > | P7 | a **permanent history**: every on and off on every device, every change to the org's settings (§11) |
 > | P8 | the org's **default pattern** (§12) |
 > | P9 | **GNOME on Wayland**, and GNOME on Xorg under a root daemon, through uinput ([§2](#a-blind-host-gnome-through-uinput)) |
-> | P10 | a **local On**: the tray's "Start keep busy" and `meshharbor keep-busy on`, for the person at the computer only (§9) |
+> | P10 | a **local On**: the tray's "Start keep busy" and `mh keep-busy on`, for the person at the computer only (§9) |
 > | P10b | **SYSTEM never** starts it: on Windows the pipe listener reads the client's account from its token (§9) |
 >
 > Any other Wayland desktop is detected and reported unavailable, with its reason.
 >
 > It is turned on from a remote-desktop session that holds input, or (P10) by
-> the person at the computer. There is no server "on". ⚠️ `meshharbor exec` is not
+> the person at the computer. There is no server "on". ⚠️ `mh exec` is not
 > kept out everywhere: on an attended Windows install it runs as the person, and
-> its `meshharbor keep-busy on` passes the local gate. Root and (P10b) SYSTEM are
+> its `mh keep-busy on` passes the local gate. Root and (P10b) SYSTEM are
 > refused (§9).
 
 Keep busy moves a device's pointer in a pattern so the computer stays
@@ -392,8 +392,8 @@ does not spawn `loginctl` forever.
 | Surface | What |
 |---|---|
 | **Tray** (`meshharbor-desktop`, `tray.rs` L47) | A toggle, polled every 3 s: "Stop keep busy (Heart · paused)" while it is on, whoever turned it on; **"Start keep busy"** while it is off and can run here (P10, the product default pattern); "Keep busy: unavailable", disabled, where it cannot. The click reads the state at that moment |
-| **CLI** (`meshharbor-cli/src/cli.rs` L336) | `meshharbor keep-busy status\|off [--json]`, and (P10) `meshharbor keep-busy on [--pattern P] [--size s\|m\|l] [--speed slow\|normal\|fast] [--resume-after SECONDS] [--auto-off MINUTES]` |
-| **LocalAPI** | All three verbs are on the person-socket allowlist, so a Linux system install's companion reaches them. Off is open to every peer the endpoint admits, because it is the safe direction (`meshharbor exec` included). **On** is the console person's alone (below). On a supervised Mac the root daemon asks the GUI worker for status and off (below) |
+| **CLI** (`meshharbor-cli/src/cli.rs` L336) | `mh keep-busy status\|off [--json]`, and (P10) `mh keep-busy on [--pattern P] [--size s\|m\|l] [--speed slow\|normal\|fast] [--resume-after SECONDS] [--auto-off MINUTES]` |
+| **LocalAPI** | All three verbs are on the person-socket allowlist, so a Linux system install's companion reaches them. Off is open to every peer the endpoint admits, because it is the safe direction (`mh exec` included). **On** is the console person's alone (below). On a supervised Mac the root daemon asks the GUI worker for status and off (below) |
 
 **Who may turn it ON here (P10).** Whoever stands where the person does: the
 console session on Windows, the person's own uid elsewhere. Never root, and
@@ -403,13 +403,13 @@ answers per endpoint:
 ```mermaid
 flowchart TD
   P[a LocalAPI keep_busy_on] --> R{peer is root?}
-  R -- yes --> X[refused: sudo, and meshharbor exec on Unix]
+  R -- yes --> X[refused: sudo, and mh exec on Unix]
   R -- no --> W{Windows peer?}
   W -- yes --> S{the active console session, and not session 0?}
   S -- no --> X2[refused: an RDP guest, a service in session 0]
   S -- yes --> A{"the token's account (P10b)"}
   A -- "a person" --> OK[the engine starts it: set_by = the person at this computer]
-  A -- "SYSTEM, LocalService, NetworkService" --> X4[refused: meshharbor exec in SystemContext mode]
+  A -- "SYSTEM, LocalService, NetworkService" --> X4[refused: mh exec in SystemContext mode]
   A -- "could not be read" --> X5[refused: fail closed]
   W -- no --> E{which endpoint?}
   E -- a per-user daemon's socket --> O{the socket's owner?}
@@ -427,13 +427,13 @@ flowchart TD
   the person, and the worker serving the pipe can always read its own user's
   token. In SystemContext mode the worker is SYSTEM, so it can read every
   client's token.
-- ⚠️ **Not a wall against `meshharbor exec`** (measured on 0.4.129, FR-92 §9
+- ⚠️ **Not a wall against `mh exec`** (measured on 0.4.129, FR-92 §9
   row 43). On Windows, exec runs in the worker that holds the agent socket,
   and that worker lives in the console session: as the signed-in user (their
   elevated token) on an attended install, and as SYSTEM in that session in
   SystemContext mode (`MESHHARBORD_ENABLE_SYSTEM_SWAP`). P10b refuses the
   SystemContext case. On an attended install,
-  `meshharbor exec <win> -- meshharbor keep-busy on` still passes, and the start is
+  `mh exec <win> -- mh keep-busy on` still passes, and the start is
   named "the person at this computer". On Unix exec arrives as root and is
   refused, but root can `sudo -u` the person. No local gate can tell them
   apart: an exec caller could as well write the person's `keep-busy.json`, or
@@ -443,8 +443,8 @@ flowchart TD
   #2021. Once exec runs as SYSTEM there, the same check refuses it everywhere
   (FR-92 §6).
 - **Not the recording verbs' gate**: on Unix that one lets root through, and
-  root is how `meshharbor exec` arrives there. With it, a plain
-  `meshharbor exec <host> -- meshharbor keep-busy on` would start keep busy under the
+  root is how `mh exec` arrives there. With it, a plain
+  `mh exec <host> -- mh keep-busy on` would start keep busy under the
   person's name (FR-92 §8).
 - **Never relayed**: a supervised Mac's root daemon refuses a local On rather
   than pass it to the worker. The person's own clients reach the worker
@@ -459,7 +459,7 @@ flowchart TD
 like every host does, but only the GUI worker in the person's session runs keep
 busy. The person's own clients reach the worker directly: the tray and a
 `meshharbor` run as the person dial the per-user socket first. A **root** client
-cannot: `meshharbor exec <mac> meshharbor keep-busy off` runs as root and lands on the
+cannot: `mh exec <mac> mh keep-busy off` runs as root and lands on the
 root daemon's socket. So the daemon does not answer for itself while a worker is
 attached. It asks the worker over the delegation channel and answers with what
 the worker says (`localapi_state.rs` `keep_busy_answer`, L408; `delegate.rs`
@@ -467,7 +467,7 @@ the worker says (`localapi_state.rs` `keep_busy_answer`, L408; `delegate.rs`
 
 ```mermaid
 sequenceDiagram
-  participant C as meshharbor keep-busy off (root)
+  participant C as mh keep-busy off (root)
   participant D as root daemon (LocalAPI)
   participant W as GUI worker (keep busy runs here)
   C->>D: KeepBusyOff
@@ -487,7 +487,7 @@ sequenceDiagram
 > [!WARNING]
 > Before this relay the root daemon answered for its own engine, which never
 > runs on a supervised Mac. Field, 0.4.126, on a MacBook: with keep busy running
-> in the worker, a root `meshharbor keep-busy off` answered `on: false` and logged
+> in the worker, a root `mh keep-busy off` answered `on: false` and logged
 > `keep-busy: turned off reason="stopped_locally"`. Six seconds later the worker
 > still reported `running`, and the session's idle clock still read 6–505 ms. The
 > remote off-switch the LocalAPI row promises stopped nothing.
@@ -764,7 +764,7 @@ build (cell 8); macOS on 0.4.126 (cells 1–3 and 6, spec rows 30–37).
 > `input-send-event {"events":[{"type":"abs","data":{"axis":"x","value":9000}}, …]}`.
 
 1. **Negative control.** A host with a 1-minute lock and Teams open, keep busy
-   OFF: it locks, and Teams goes Away. Measure idle with `meshharbor exec`:
+   OFF: it locks, and Teams goes Away. Measure idle with `mh exec`:
    - Windows: a `GetLastInputInfo` one-liner;
    - macOS: the session clock, `osascript -l JavaScript -e
      'ObjC.import("CoreGraphics"); $.CGEventSourceSecondsSinceLastEventType(0, 4294967295)'`.
@@ -784,7 +784,7 @@ build (cell 8); macOS on 0.4.126 (cells 1–3 and 6, spec rows 30–37).
    - with Accessibility denied, it reports `no_permission`. Switch off
      **meshharbord** (not "MeshHarbor", the companion), then restart the GUI worker:
      the grant is read at start (§10).
-   - On a **supervised** Mac, `meshharbor keep-busy status` and the tray reach
+   - On a **supervised** Mac, `mh keep-busy status` and the tray reach
      the **GUI worker**, which runs keep busy, and not the root daemon. The
      worker serves the per-user LocalAPI socket that clients try first. `sudo`
      drops `TMPDIR`, but `temp_dir()` falls back to the same per-user folder:

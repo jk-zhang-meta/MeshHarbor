@@ -20,7 +20,7 @@ timeout; the command lives exactly as long as the channel does. Everything that 
   recorded or shipped);
 - the client's stdin, fed in order and closed at the client's EOF (#1747).
 
-**Fleet RPC (`meshharbor exec`) does not change at all**: buffered, 1 MiB, JSON wire, the same tests.
+**Fleet RPC (`mh exec`) does not change at all**: buffered, 1 MiB, JSON wire, the same tests.
 
 ## The field evidence
 
@@ -143,7 +143,7 @@ A device-owned config key, default **on**, read once at `Ctx::build` (restart re
 `ssh_*` key). `false` restores today's buffered path exactly — `run_fed` with the maxima, the ceiling notice,
 the 300 s wall clock. **Not** in `DesiredConfig` (not server-settable): it changes nothing about who may do
 what, but a control plane that could flip a device's data path from under its owner is a precedent this
-surface has refused since `remote_config_enabled`. `meshharbor config set ssh_exec_streaming false` and the
+surface has refused since `remote_config_enabled`. `mh config set ssh_exec_streaming false` and the
 companion's Settings page carry it, tier Advanced.
 
 ### D6 — Exit status
@@ -156,7 +156,7 @@ cancelled, refused) is **1**. `exit-status` is sent only after the pump has deli
 
 - **Clients** need nothing: an SSH exec channel has always been a stream; only the server buffered.
 - **Older agents** keep buffering; the server is not involved in an exec channel at all.
-- **`meshharbor exec`** (Fleet RPC, `rc:rpc.exec`) is unchanged on the wire and in the engine.
+- **`mh exec`** (Fleet RPC, `rc:rpc.exec`) is unchanged on the wire and in the engine.
 
 ## Alternatives considered
 
@@ -195,8 +195,8 @@ cancelled, refused) is **1**. `exit-status` is sent only after the pump has deli
   `ssh <node> 'cat <config>' | grep agent_token` prints `[redacted]`.)*
 - [x] **AC7** — Windows `console_user` sessions (the managed corporate laptops) stream too, as the signed-in
   user. *(Field — the only lane that runs that spawn.)*
-- [x] **AC8** — Fleet RPC is untouched: `meshharbor exec` still caps at 1 MiB with `truncated`, times out at its
-  limit, and answers the same JSON. *(Unit: the existing engine tests, unmodified. Field: one `meshharbor exec`
+- [x] **AC8** — Fleet RPC is untouched: `mh exec` still caps at 1 MiB with `truncated`, times out at its
+  limit, and answers the same JSON. *(Unit: the existing engine tests, unmodified. Field: one `mh exec`
   over 1 MiB on the new release.)*
 - [x] **AC9** — `ssh_exec_streaming = false` restores the buffered behaviour exactly (the ceiling notice is
   back). *(Unit. Field: one device flipped, restarted, re-checked.)*
@@ -238,11 +238,11 @@ cancelled, refused) is **1**. `exit-status` is sent only after the pump has deli
 | 2026-10-07 13:07, 13:18 | 0.4.117 **AC4 (D4)** | a tree under one exec (shell → two wrapper shells → two long sleeps, a marker in the wrappers' command lines), the client SIGINT'd after 6 s, the node asked 8 s later | Linux and Windows: the tree was alive at the interrupt (rc 124, `started` seen) and **nothing of it survived** — the process-group kill and the `taskkill /T` path |
 | 2026-10-07 13:08–13:17 | 0.4.117 **AC9** | Linux host A: `config set ssh_exec_streaming false` + restart; then `true` + restart | off ⇒ **1,048,576 bytes, exit 141, the notice "output stopped at 1048576 bytes, the exec ceiling (ssh_exec_streaming is off on this device)"**, the start-up line `exec_streaming=false`; on ⇒ 2,000,000 bytes, one line per second, `exec_streaming=true` |
 | 2026-10-07 13:20 | 0.4.117 **AC6** | over the streamed path: `Authorization: Bearer <30-char run>`, a three-segment base64url shape, a route-table line | `Bearer [redacted]`, `[redacted]`, the route line untouched |
-| 2026-10-07 13:20 | 0.4.117 **AC8** | `meshharbor exec` of the same 2,000,000-byte command | **262,144 bytes**, "[output truncated at the device's limit]", exit 141 — Fleet RPC untouched |
+| 2026-10-07 13:20 | 0.4.117 **AC8** | `mh exec` of the same 2,000,000-byte command | **262,144 bytes**, "[output truncated at the device's limit]", exit 141 — Fleet RPC untouched |
 | 2026-10-07 13:21–13:27 | 0.4.117 **AC3** | `sleep 330; echo done-after-330s` on Linux host A | **completed in 332 s, exit 0, the line delivered** — past the old `MAX_TIMEOUT_MS` (300 s) |
 | 2026-10-07 13:21–13:22 | 0.4.117 **AC5** | a 20,000,000-byte stream into a consumer that read nothing for 30 s; the privileged daemon's RSS sampled on the device before, twice during, and after | **20,000,000 bytes** once the consumer read (40 s total, exit 0); RSS **flat at 60,164 KB** through the park, 60,580 KB after the drain |
 | 2026-10-07 13:17 | 0.4.117 **#1816 (FR-86 P2 nits) no-regression, client half** | this client's daemon restarted on 0.4.117 | all 7 declared routes `active`, **7/7 live flows on `quic-v1`**; the exit half follows the two exits' (the corporate laptops') own updates |
-| 2026-10-07 13:18 | 0.4.117 post-roll health | `meshharbor peers` / `meshharbor devices` | the three servers back on **direct** (18–20 ms) minutes after their restarts; **12 of 17** devices online, the pre-roll count |
+| 2026-10-07 13:18 | 0.4.117 post-roll health | `mh peers` / `mh devices` | the three servers back on **direct** (18–20 ms) minutes after their restarts; **12 of 17** devices online, the pre-roll count |
 | 2026-10-07 13:58–14:08 | 0.4.117 rollout | the two corporate laptops and the arm64 Linux node reached 0.4.117 on their own updaters (published 11:29Z; nothing forced) | the fleet moves itself inside the 4 h cadence; the Mac's root update-helper (~6 h) still pending at 15:30Z |
 | 2026-10-07 15:29–15:30 | **0.4.117 (GREEN) AC1 / AC2 / AC7** on the mandated topologies | the same two runs on the **relay-carried** corporate laptop as `console_user` (`derp/tcp`), the other corporate laptop as `console_user` (direct), and the **arm64 Linux** node (direct) | **2,000,000 bytes, byte-exact**, exit 0, no notice, on all three; **lines one per second** on all three |
 | 2026-10-07 15:30 | 0.4.117 **AC4 (D4)** over a relay | the tree-kill run on the relay-carried corporate laptop (`console_user`) | alive at the interrupt (rc 124, `started` seen), **no survivor** 8 s later — the `taskkill /T` path across a relay carrier |

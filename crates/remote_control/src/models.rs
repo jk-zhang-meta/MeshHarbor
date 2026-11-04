@@ -408,13 +408,13 @@ pub struct AgentCaps {
     /// * `exec` — the agent honours `rc:rpc.exec` / `rc:rpc.cancel`: it runs
     ///   one bounded shell command and replies `rc:rpc.result`.
     /// * `originate` — the agent honours `rc:rpc.response`, i.e. its LocalAPI
-    ///   can originate an exec against ANOTHER device (the `meshharbor exec`
+    ///   can originate an exec against ANOTHER device (the `mh exec`
     ///   CLI path).
     /// * `ssh` — the agent honours `rc:ssh.grant`: it serves meshharbor SSH on
     ///   its overlay address and will admit the granted key.
     /// * `ssh-originate` — the agent honours `rc:ssh.response`, i.e. its
     ///   LocalAPI can originate an SSH session against ANOTHER device (the
-    ///   `meshharbor ssh` CLI path).
+    ///   `mh ssh` CLI path).
     ///
     /// Empty / unset = a pre-fleet-RPC agent. Same rule as [`Self::multi_org`]:
     /// the server refuses the request with `412` rather than pushing a message
@@ -592,7 +592,7 @@ impl UpdateRefusal {
             Self::AutoUpdateOff => {
                 "auto-update is off on this device (`auto_update = false`, or \
                  `MESHHARBORD_AUTO_UPDATE=0` in its service environment), so it drops an \
-                 update ordered from here. Switch it on at the device (`meshharbor config \
+                 update ordered from here. Switch it on at the device (`mh config \
                  set auto_update true`, or its MeshHarbor settings), then restart its daemon"
             }
         }
@@ -850,7 +850,7 @@ pub enum RpcCap {
     /// `rc:rpc.exec` — run a bounded command (Fleet RPC).
     Exec,
     /// This device's LocalAPI may ORIGINATE a session against another device
-    /// (`meshharbor ssh` / `meshharbor exec` from the device itself).
+    /// (`mh ssh` / `mh exec` from the device itself).
     Originate,
     /// `rc:ssh.grant` — the agent runs an SSH server and can redeem a grant.
     /// Gated on the `ssh-server` build feature, not merely on the version.
@@ -960,7 +960,7 @@ pub enum RpcCap {
     /// drops the frame at `debug!`. Equality-matched, locked by test.
     HiveMemory,
     /// FR-90 P1j — `rc:hive.adopt`: the agent mirrors terminal sessions its
-    /// accounts adopted (`meshharbor hive adopt`), and its own `hive_adopt` (default
+    /// accounts adopted (`mh hive adopt`), and its own `hive_adopt` (default
     /// off, never pushable) is on. Advertised only then: a device whose owner
     /// has not allowed adopting offers nothing, and the server honours an
     /// offer only from a device that advertises it.
@@ -1829,7 +1829,7 @@ pub struct ExecPolicy {
     #[serde(default)]
     pub mode: ExecMode,
     /// May this device *originate* exec against other devices (the
-    /// `meshharbor exec` CLI path, where the daemon's own agent WS carries the
+    /// `mh exec` CLI path, where the daemon's own agent WS carries the
     /// request)? Default `false` — without this, compromising any enrolled
     /// laptop would inherit its owner's exec rights across the whole fleet.
     #[serde(default)]
@@ -1905,7 +1905,7 @@ impl ExecPolicy {
     /// allowlist is compared against the shell that will actually run. Without
     /// this, a device allowing `["powershell"]` refuses the default-shell
     /// request that would have become powershell — which is what
-    /// `meshharbor exec <device> -- …` and every `meshharbor diag` bundle sends.
+    /// `mh exec <device> -- …` and every `mh diag` bundle sends.
     /// Field-caught 2026-08-06: it made `diag` unusable on every device with a
     /// narrowed allowlist.
     ///
@@ -3044,7 +3044,7 @@ pub struct SshPolicy {
     #[serde(default)]
     pub mode: SshMode,
     /// May this device *originate* SSH against other devices (the
-    /// `meshharbor ssh` CLI path, where the daemon's own agent WS carries the
+    /// `mh ssh` CLI path, where the daemon's own agent WS carries the
     /// request)? Default `false` — without it, compromising any enrolled
     /// laptop would inherit its owner's SSH rights across the whole fleet.
     #[serde(default)]
@@ -3115,7 +3115,7 @@ impl SshPolicy {
 pub struct SshGates {
     /// Does this device accept SSH sessions? Gate 3.
     pub mode: SshMode,
-    /// May this device ORIGINATE sessions (`meshharbor ssh` over its own WS)?
+    /// May this device ORIGINATE sessions (`mh ssh` over its own WS)?
     /// Not a gate for inbound sessions — it is read off the ORIGIN device's
     /// policy on the device-originated leg.
     pub can_originate: bool,
@@ -4886,13 +4886,13 @@ impl SshDenyReason {
                  device's clock is probably ahead of the server's by a minute or more"
             }
             Self::GrantRefused => {
-                "the device refused the session grant — its own log (`meshharbor logs \
+                "the device refused the session grant — its own log (`mh logs \
                  --grep ssh:` on that device) says why"
             }
             Self::GrantUnconfirmed => {
                 "the device did not confirm the grant within 10 s — its connection to \
                  the server may be slow or stale; try again, or check it with \
-                 `meshharbor exec`"
+                 `mh exec`"
             }
             Self::ClaimRefused => {
                 "the device's SYSTEM service claimed a grant that was not pending for \
@@ -4965,7 +4965,7 @@ pub struct ExecAuditEvent {
     /// The acting principal. For a CLI-originated request this is the
     /// originating device's `owner_user_id`.
     pub user_id: ObjectId,
-    /// Set when the request came from a device's LocalAPI (`meshharbor exec`)
+    /// Set when the request came from a device's LocalAPI (`mh exec`)
     /// rather than an authenticated HTTP caller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_agent_id: Option<ObjectId>,
@@ -9166,7 +9166,7 @@ mod tests {
 
     #[test]
     fn empty_shell_resolves_before_the_allowlist_is_checked() {
-        // Field-caught: `meshharbor exec <dev> -- …` and every `meshharbor diag`
+        // Field-caught: `mh exec <dev> -- …` and every `mh diag`
         // bundle send an EMPTY shell meaning "the host default". Comparing
         // that literal "" against ["powershell","pwsh","cmd"] refused them
         // all, which made diag unusable on every device that had narrowed its

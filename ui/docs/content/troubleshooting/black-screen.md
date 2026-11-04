@@ -74,7 +74,7 @@ black screen that a reconnect fixes was almost certainly this.
 ## Confirming from the far side
 
 ```bash
-meshharbor status
+mh status
 ```
 
 The agent reports its capture state, so you can tell "no permission" from "no

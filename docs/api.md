@@ -23,7 +23,7 @@ audience-checked token types — a token of one audience is rejected everywhere 
 | `Enrollment` | `POST /api/agent/enroll` | 10 min, single-use (`jti`) | pasted into installer |
 | `Agent` | `/ws?role=agent`, agent ingest routes, `/derp` | long-lived | `meshharbord` config |
 | `TunnelEnrollment` | `POST /api/tunnel-client/enroll` | 10 min, single-use | pasted into CLI |
-| `TunnelClient` | `/ws?role=tunnel-client`, tunnel routes | long-lived | `meshharbor` CLI config |
+| `TunnelClient` | `/ws?role=tunnel-client`, tunnel routes | long-lived | `mh` CLI config |
 
 ```mermaid
 sequenceDiagram
@@ -400,7 +400,7 @@ browser ⇄ device over the peer and never through the server. Every open is in 
 organization can be searched, for the SPA's box.
 
 **Adopted sessions (P1j) are not started by a route either.** A person adopts the Claude Code
-sessions they run in a terminal (`meshharbor hive adopt`, on a device whose owner allows it:
+sessions they run in a terminal (`mh hive adopt`, on a device whose owner allows it:
 `hive_adopt`, advertised as `hive-adopt`). The device offers each one with `rc:hive.adopt
 {adopt_id, harness_session, keys, account, folder}`. The answer is `rc:hive.adopt_ack {adopt_id,
 session_id, fence}`, or `{adopt_id, refused}`: `hive_not_enabled` · `rate_limited` · `no_account`
@@ -418,7 +418,7 @@ The org gate reads like Hive's: `vault.tenants` (`MESHHARBOR__VAULT__TENANTS`) n
 served, a list mounts the module by itself, and a member of any other organization gets **404**
 (`the vault is not available to this organization`) after the membership check. Every route is
 for the organization's `ADMINISTRATOR`s (**403** otherwise), and **no route answers a value**.
-The vault lends to a served organization's PEOPLE (`meshharbor connect`, P3-9-1) only where
+The vault lends to a served organization's PEOPLE (`mh connect`, P3-9-1) only where
 `vault.people` (`MESHHARBOR__VAULT__PEOPLE`) lists it, opt-in and empty by default.
 Every `secret:*` and `vault:verify` decision is recorded in `vault_audit`, allow and deny; an allow
 is written before it is acted on. Full treatment: [vault.md](vault.md).

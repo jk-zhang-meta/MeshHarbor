@@ -245,7 +245,7 @@ at `:452` and `:461-469`):
 - **`meshharbord self-update`**, run by a non-root user on a host whose helper owns updates, wakes the helper instead
   of failing (`main.rs:5479-5495`). It asks the daemon's own decision, `helper_owns_updates`
   (`updater.rs:4094-4102`), so the CLI and the daemon never disagree. Root keeps the direct path; `--check-only`
-  touches nothing. On a daemon host `meshharbor self-update` already refuses and names `meshharbord self-update`.
+  touches nothing. On a daemon host `mh self-update` already refuses and names `meshharbord self-update`.
 - **`README.Debian`**'s manual desktop flow enables the helper before the daemon starts, and says to leave it off
   with the system unit.
 
@@ -395,7 +395,7 @@ next depends on it.
 ## 7. Out of scope
 
 - An `.rpm` lane (`docs/linux-self-update.md`'s own out-of-scope).
-- The tunnel CLI's separate `meshharbor self-update` on tunnel-only hosts (its own known issue in `CLAUDE.md`).
+- The tunnel CLI's separate `mh self-update` on tunnel-only hosts (its own known issue in `CLAUDE.md`).
 - Windows and macOS, which have their own update halves.
 
 ## 8. Field-verification log

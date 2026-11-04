@@ -1443,11 +1443,11 @@ mod cli_name_tests {
     /// The guidance in [`ConsentBroker::request`]'s log line is, on a headless
     /// host, the ONLY thing telling an operator how to answer — and it has now
     /// been wrong twice: FR-21 retired `meshharbor-agent`, and the first repair
-    /// swapped it for `meshharbor consent`, which the `meshharbor` CLI does not have
+    /// swapped it for `mh consent`, which the `mh` CLI does not have
     /// (these subcommands live on the DAEMON's clap surface, alongside
-    /// `meshharbord enroll` / `meshharbord run`; `meshharbor` is the tunnel + fleet CLI
+    /// `meshharbord enroll` / `meshharbord run`; `mh` is the tunnel + fleet CLI
     /// and its `Commands` enum has no `consent` arm). Caught by actually
-    /// running it: `meshharbor consent --help` → `unrecognized subcommand`.
+    /// running it: `mh consent --help` → `unrecognized subcommand`.
     ///
     /// Nothing else fails when this string rots, so assert it.
     #[test]
@@ -1458,8 +1458,8 @@ mod cli_name_tests {
         let full = include_str!("consent.rs");
         let src = full.split("mod cli_name_tests").next().unwrap();
         assert!(
-            !src.contains("`meshharbor consent"),
-            "the guidance must say `meshharbord consent` — `meshharbor` has no consent subcommand"
+            !src.contains("`mh consent"),
+            "the guidance must say `meshharbord consent` — `mh` has no consent subcommand"
         );
         assert!(
             !src.contains("meshharbor-agent consent"),

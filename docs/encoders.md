@@ -494,7 +494,7 @@ the denylist, and the raw dump of a healthy build decodes as-is.
 
 ## Configuration
 
-| Key (config.toml / `meshharbor config set`) | Env | Default | What |
+| Key (config.toml / `mh config set`) | Env | Default | What |
 |---|---|---|---|
 | `encoder_preference` | `MESHHARBORD_ENCODER` (CLI `--encoder` wins) | `auto` | `auto` · `hardware` · `software` |
 | `encoder_cells_deny` | `MESHHARBORD_ENCODER_CELLS_DENY` | the built-in list | `name:chroma` cells never opened nor advertised; `none` = deny nothing; pushable through remote config (`MANAGE_AGENTS`), `needs_restart` |

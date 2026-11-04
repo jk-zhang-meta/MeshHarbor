@@ -117,7 +117,7 @@ reported normally while a feature was dark.
 | P1 | An **active rc/ssh session** holds an assertion, on all three OSes. Narrow, always-correct, no policy needed. | per-OS: assertion failure is logged and non-fatal |
 | P2 | Standing policy `power_policy = never \| on-ac \| always`, default `never`, device-owned. macOS first. | the key itself; absent ⇒ today's behaviour |
 | P3 | Windows + Linux implementations of the same policy. | as P2 |
-| P4 | Report it: `meshharbor status` + the dashboard distinguish "asleep by policy" from "offline". | additive, read-only |
+| P4 | Report it: `mh status` + the dashboard distinguish "asleep by policy" from "offline". | additive, read-only |
 | P5 | **Wake on LAN from a mesh peer** — an awake peer on the same L2 sends the magic packet on request. | server-side switch; off by default |
 
 ## Acceptance criteria
@@ -155,7 +155,7 @@ reported normally while a feature was dark.
   `NetworkClientActive`, or `PreventSystemSleep` (honoured only on AC, which is
   exactly `on-ac`'s semantics). ⚠️ Do not pick one from documentation — this module
   already chose once on "well understood" and it was wrong in the most ordinary case.
-- Should an **exec** run hold an assertion? A 40-minute build kicked off by `meshharbor exec`
+- Should an **exec** run hold an assertion? A 40-minute build kicked off by `mh exec`
   has the same problem as a session, and the same answer is not obvious.
 
 ## Out of scope

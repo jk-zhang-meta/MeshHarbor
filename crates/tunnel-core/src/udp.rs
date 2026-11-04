@@ -71,7 +71,7 @@ pub async fn handle_associate(
     flow_counter: Arc<AtomicU32>,
     // P3b-4: the per-forward throughput aggregate. Each UDP flow's pump
     // mirrors datagram bytes into it (out = app→target, in = target→app) and
-    // holds a `FlowGauge` for `active_flows`, so `meshharbor flows` reports UDP
+    // holds a `FlowGauge` for `active_flows`, so `mh flows` reports UDP
     // the same way it reports TCP CONNECT flows (previously always 0 B).
     session: Arc<SessionThroughput>,
 ) -> Result<()> {

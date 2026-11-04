@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! MeshHarbor tunnel core.
 //!
-//! Shared building blocks for the `meshharbor` CLI (controller side)
+//! Shared building blocks for the `mh` CLI (controller side)
 //! and the `meshharbord` tunnel service (target side):
 //!
 //! * [`transport`] — pluggable data-plane (`webrtc-dc-v1` today;

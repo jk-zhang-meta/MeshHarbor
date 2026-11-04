@@ -43,7 +43,7 @@ The current stack already gives us 80% of what's needed:
 
 The only genuinely new component is the **native agent** (a separate Rust binary that ships per-OS) and a thin signaling extension on the server.
 
-> **See also — the `meshharbor` subsystem.** A sibling of remote-control that reuses the same agent binary, `rc:*` signaling, and coturn cluster, but for **TCP port-forwarding** (operator's `127.0.0.1:<port>` → agent → an internal service) rather than screen capture + input. Its data plane defaults to **QUIC** (`quic-v1`, quinn) with a WebRTC-data-channel fallback, and crosses corporate NAT / firewalls via the same direct → TURN(UDP) → TURNS/TCP tier walk. The server negotiates `quic-v1` only for agents new enough to speak it (≥ rc.104). Operator guide: [`docs/tunnel-install.md`](./tunnel-install.md).
+> **See also — the `mh` subsystem.** A sibling of remote-control that reuses the same agent binary, `rc:*` signaling, and coturn cluster, but for **TCP port-forwarding** (operator's `127.0.0.1:<port>` → agent → an internal service) rather than screen capture + input. Its data plane defaults to **QUIC** (`quic-v1`, quinn) with a WebRTC-data-channel fallback, and crosses corporate NAT / firewalls via the same direct → TURN(UDP) → TURNS/TCP tier walk. The server negotiates `quic-v1` only for agents new enough to speak it (≥ rc.104). Operator guide: [`docs/tunnel-install.md`](./tunnel-install.md).
 
 > **See also — the L3 overlay & its Windows firewall override.** The `overlay-l3` feature evolves the tunnel into a Tailscale-style per-tenant WireGuard+DERP mesh (Wintun NIC `meshharbor`, overlay IPs `100.64.0.0/10`). On a GPO-locked Windows host the corporate Defender Firewall drops unsolicited inbound on the overlay adapter; the agent overrides this by programming the Windows Filtering Platform directly (a LUID-scoped, high-weight hard-permit sublayer) from its LocalSystem service. Design, limits (callout/IPsec), and the `MESHHARBORD_WFP_PERMIT` disable: [`docs/overlay-wfp.md`](./overlay-wfp.md).
 
@@ -670,7 +670,7 @@ sequenceDiagram
   never load a copy planted beside the binary.
 - ⚠️ **The policy is read, never written.** It is a security setting, and on
   a managed laptop it is the organisation's. Measured before the build
-  (2026-10-18, read-only over `meshharbor exec`), the three corporate laptops in
+  (2026-10-18, read-only over `mh exec`), the three corporate laptops in
   the fleet all set it to `1`.
 
 ### 5.2 Encoder selection
@@ -1175,7 +1175,7 @@ floor it is **deliberately not remotely configurable** — a control plane that
 could flip it would not be a floor. It **defaults to `true`** (auto-grant), so a
 device that prompts has it explicitly set to `false`; that `false` overrides both
 the `auto` directive *and* the owner shortcut. To change it, do so **on the
-host** — `meshharbor config set auto_grant_session <true|false>` — then restart the
+host** — `mh config set auto_grant_session <true|false>` — then restart the
 daemon (the config surface notes changes apply on the next start). Making a
 device auto-grant is a device-owner decision the server cannot make for it.
 
@@ -1319,7 +1319,7 @@ its answer against its connection's own outbound channel
 (`await_prompt_or_socket_end`, `agents/meshharbord/src/signaling.rs`). That channel's
 receiver lives in the connection's loop, so it closes when the connection ends and never
 before. The prompt is then withdrawn exactly as a `Terminate` withdraws it. The same
-holds for an **exec** prompt (`meshharbor exec` with consent on), where it matters more: an
+holds for an **exec** prompt (`mh exec` with consent on), where it matters more: an
 Approve on a stale panel would otherwise run the command for a caller no longer waiting
 for it, and twice if that caller retried.
 
@@ -1535,7 +1535,7 @@ before FR-100 P3; the record is what the fleet's audit week is counted over.
 - **The keys it remembers** live in `<config dir>/peer-auth/<tenant>.controllers.json`, beside the device key and
   with its protections: public keys only, 16 per user (the oldest goes first), 256 users. They are why a later
   `enforce` can ask only about a browser the device has never met.
-- **The policy is the device owner's**: `meshharbor config set peer_auth off|audit` (default `audit`), live, and only
+- **The policy is the device owner's**: `mh config set peer_auth off|audit` (default `audit`), live, and only
   from the person at the console. It is never pushable by the server, and `enforce` is refused by name until P3.
   `off` stops the judging, the remembering and the record; the device still signs its answers.
 - **What the browser signs with (P2b)**: a key of its own, made on first use in IndexedDB per user, its private half
@@ -3127,7 +3127,7 @@ yet forward the field).
 
 **`updater::pin_version(tag)`**: fetches a specific release from
 `https://api.github.com/repos/.../releases/tags/<tag>` directly
-(bypasses the meshharbor proxy because pinning is rare per-agent
+(bypasses the mh proxy because pinning is rare per-agent
 crash-loop recovery, not a fleet-wide poll). Returns the same
 `CheckOutcome::UpdateReady` shape as the regular update path so
 the rest of the install flow composes.
@@ -3457,9 +3457,9 @@ sequenceDiagram
   was offline for 10 min 24 s. The same restart earlier that day took 1.74 s and
   came back 162 ms later. Because the failure depends on which side of 2 s a stop
   lands, it is intermittent.
-- `meshharbor restart` never had this problem. Under the SCM the worker exits 0 and
+- `mh restart` never had this problem. Under the SCM the worker exits 0 and
   the supervisor respawns it in-process, so the service itself never leaves
-  `RUNNING`. Prefer it remotely too: `meshharbor exec <host> -- meshharbor restart
+  `RUNNING`. Prefer it remotely too: `mh exec <host> -- mh restart
   --no-wait`.
 - ✅ Field-verified on 0.4.130 (CORPLAP-3). Ten milliseconds after Stop the state
   was `STOP_PENDING` with a 20 s wait hint. The stop took 2.29 s, and

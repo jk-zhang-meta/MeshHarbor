@@ -148,7 +148,7 @@ on the relay stand-in and then on the real pair `neo16 → CORPLAP-2`, N ≥ 5 e
 
 - The carrier. CORPLAP-2 is relayed because a corporate VPN captures its LAN prefix; routing
   around that is VPN policy evasion (operator's standing rule). Surfacing the capture in
-  `meshharbor status` / the RC pill is its own FR.
+  `mh status` / the RC pill is its own FR.
 - The relay ceiling (`relay_max_bps`, the measured-rate program) — a faster relay would
   shrink every number here but is a different lever.
 - The viewer's FSR pass, the idle-refine machine, and `dc_unopen_drops` — all measured, none

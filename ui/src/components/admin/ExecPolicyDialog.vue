@@ -180,7 +180,7 @@
         </v-alert>
         <v-alert type="info" variant="tonal" density="compact" class="mt-4">
           <i18n-t keypath="mh.exec.deviceSwitch" tag="span" scope="global">
-            <template #cmd><code>meshharbor config set exec_enabled true</code></template>
+            <template #cmd><code>mh config set exec_enabled true</code></template>
           </i18n-t>
           <template v-if="anchored">
             <i18n-t keypath="mh.exec.anchorSwitch" tag="span" scope="global">

@@ -373,7 +373,7 @@ describe('installPageErrors — the build gate that keeps the lists together', (
   const install = block('curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- --role daemon --token <t>')
   const pages = [
     { id: 'ui/docs/content/index.md', url: `${BASE}/`, html: install },
-    { id: 'ui/docs/content/faq/index.md', url: `${BASE}/faq/`, html: block('meshharbor status') },
+    { id: 'ui/docs/content/faq/index.md', url: `${BASE}/faq/`, html: block('mh status') },
   ]
 
   it('passes when every page with an install command is listed', () => {

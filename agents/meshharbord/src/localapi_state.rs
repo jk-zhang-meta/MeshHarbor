@@ -4,7 +4,7 @@
 //!
 //! Thin adapter (unification P1): turns the agent's enrolled identity + a
 //! "connected" flag + the overlay runtime's published [`OverlayView`] into the
-//! read-only `status` / `peers` / `flows` that the CLI (`meshharbor`) and the
+//! read-only `status` / `peers` / `flows` that the CLI (`mh`) and the
 //! desktop app read over the local pipe/socket (`tunnel_core::localapi::serve`).
 //!
 //! Wired in `run_cmd`: the connected flag and the overlay `watch` channel are
@@ -156,7 +156,7 @@ pub struct DaemonState {
     /// re-resolved path.
     consent: crate::consent::ConsentBroker,
     /// FR-51 P4 — the primary enrollment is ephemeral (from the loaded
-    /// config). Surfaces in `status()` so `meshharbor status` can say the device
+    /// config). Surfaces in `status()` so `mh status` can say the device
     /// removes itself.
     ephemeral: bool,
     /// FR-27 — live remote-control sessions, written by every signalling
@@ -395,7 +395,7 @@ fn unix_now_ms() -> u64 {
 }
 
 /// Does this process run as root (unix) or LocalSystem (Windows)? This is what
-/// `meshharbor status` names beside the mode. Without it, the CLI printed
+/// `mh status` names beside the mode. Without it, the CLI printed
 /// "service (SYSTEM)" for a per-user daemon too, because `mode` reads
 /// `Service` for every full node, whatever account it runs as.
 fn process_is_privileged() -> bool {
@@ -497,7 +497,7 @@ impl DaemonState {
     }
 
     /// FR-92 — answer the keep-busy verbs from the attached GUI worker of a
-    /// supervised Mac. ⚠️ A root caller (`meshharbor exec <mac> meshharbor keep-busy
+    /// supervised Mac. ⚠️ A root caller (`mh exec <mac> mh keep-busy
     /// off`) reaches THIS daemon, never the worker's per-user socket, and the
     /// daemon's own engine never runs there: before this, a root `off` stopped
     /// nothing and answered "off" while the worker kept moving the pointer
@@ -1017,9 +1017,9 @@ impl LocalApiState for DaemonState {
             // node pings peers with the system `ping` (the old message sent
             // operators chasing netstack when the overlay was simply off).
             return Response::Error {
-                message: "meshharbor ping uses the userspace netstack, which this node isn't \
+                message: "mh ping uses the userspace netstack, which this node isn't \
                           running. On an OS-TUN node, use the system `ping <overlay-ip>` \
-                          instead (check `meshharbor status` / `meshharbor peers` for the IPs). If \
+                          instead (check `mh status` / `mh peers` for the IPs). If \
                           the overlay isn't up at all, set `overlay_enabled = true` in the \
                           node's config.toml and restart the daemon; for netstack mode, set \
                           MESHHARBORD_OVERLAY_NETSTACK_SOCKS=<port>."
@@ -1299,7 +1299,7 @@ impl LocalApiState for DaemonState {
     /// outcome and nothing else. Not the password, not its length, not the
     /// record. The neighbouring `config_set` logs `value = ?entry.value` — which
     /// is right for it and would be a credential in the daemon's rolling log
-    /// here, a log `meshharbor logs` uploads to the server this gate exists to keep
+    /// here, a log `mh logs` uploads to the server this gate exists to keep
     /// out.
     ///
     /// ⚠️ Deliberately does **not** touch `external_access_enabled`. Setting a
@@ -1502,7 +1502,7 @@ impl LocalApiState for DaemonState {
         }
     }
 
-    /// FR-92 — keep busy's state, for the tray and `meshharbor keep-busy`.
+    /// FR-92 — keep busy's state, for the tray and `mh keep-busy`.
     async fn keep_busy_status(&self) -> Response {
         Response::KeepBusy(self.keep_busy_answer(false).await)
     }
@@ -1517,7 +1517,7 @@ impl LocalApiState for DaemonState {
 
     /// FR-92 P10 — the person at the console turns keep busy on. The
     /// dispatcher has already refused root, services and other sessions —
-    /// but not a `meshharbor exec` on Windows, which runs in the console session
+    /// but not a `mh exec` on Windows, which runs in the console session
     /// (FR-92 §3g).
     ///
     /// ⚠️ Never relayed to a supervised Mac's GUI worker: the person's own
@@ -1529,7 +1529,7 @@ impl LocalApiState for DaemonState {
             return Response::Error {
                 message:
                     "keep busy runs in this Mac's GUI session: turn it on from the MeshHarbor \
-                          menu-bar app, or with `meshharbor keep-busy on` as yourself"
+                          menu-bar app, or with `mh keep-busy on` as yourself"
                         .into(),
             };
         }
@@ -1725,7 +1725,7 @@ impl LocalApiState for DaemonState {
         crate::updater::release_install_hold();
     }
 
-    /// FR-90 P3-9-2b — `meshharbor connect`: a person's endpoint, served to the
+    /// FR-90 P3-9-2b — `mh connect`: a person's endpoint, served to the
     /// account the LocalAPI listener read, its leases asked for the device's
     /// owner and renewed while the asking connection stays open.
     #[cfg(all(hive_host, feature = "vault"))]
@@ -1779,7 +1779,7 @@ impl LocalApiState for DaemonState {
         let Some(sink) = self.tunnel_hub.sink_now() else {
             return Response::Error {
                 message: "not connected to the server — remote commands need the control \
-                          connection (check `meshharbor status`)"
+                          connection (check `mh status`)"
                     .into(),
             };
         };
@@ -1847,7 +1847,7 @@ impl LocalApiState for DaemonState {
         let Some(sink) = self.tunnel_hub.sink_now() else {
             return Response::Error {
                 message: "not connected to the server — SSH grants need the control \
-                          connection (check `meshharbor status`)"
+                          connection (check `mh status`)"
                     .into(),
             };
         };
@@ -2291,7 +2291,7 @@ mod tests {
     }
 
     /// `status` always names the account, and names the real one. Before
-    /// this, `meshharbor status` printed "service (SYSTEM)" for every daemon: a
+    /// this, `mh status` printed "service (SYSTEM)" for every daemon: a
     /// per-user Fedora install read as a system one (FR-93's lab, 0.4.128).
     /// The test process is the daemon's stand-in: unprivileged in CI's lib
     /// lane, root under its sudo step.
@@ -3091,7 +3091,7 @@ mod tests {
     /// its GUI WORKER's state. The worker here says "running", which this
     /// process's own engine (never started in a test) cannot say: an answer
     /// from the daemon's own engine reads `on: false` and fails this. Field,
-    /// 0.4.126: a root `meshharbor keep-busy off` answered "off" from the
+    /// 0.4.126: a root `mh keep-busy off` answered "off" from the
     /// daemon's idle engine while the worker kept moving the pointer.
     #[tokio::test]
     async fn a_supervised_macs_daemon_answers_keep_busy_from_its_worker() {

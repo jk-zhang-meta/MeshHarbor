@@ -44,7 +44,7 @@ change the service mode.
 **Already installed and just need to enroll?**
 
 ```powershell
-meshharbor enroll --server https://meshharbor.itachi.fans --token <token> --name "$env:COMPUTERNAME" --machine-global
+mh enroll --server https://meshharbor.itachi.fans --token <token> --name "$env:COMPUTERNAME" --machine-global
 ```
 
 :::warning Run elevated for a machine-wide install
@@ -58,7 +58,7 @@ through rather than at the beginning.
 | Item | What it is |
 |---|---|
 | `meshharbord.exe` | The agent — remote-desktop target, mesh node, tunnel endpoint, SSH server |
-| `meshharbor.exe` | The command-line tool. A small shim that re-execs the daemon's own command surface, so the CLI and the daemon can never disagree about their version |
+| `mh.exe` | The command-line tool. A small shim that re-execs the daemon's own command surface, so the CLI and the daemon can never disagree about their version |
 | `meshharbor-desktop.exe` | The tray companion: status, tunnels, and consent prompts |
 | `wintun.dll` + the VC runtime | The virtual network adapter and its C runtime dependency |
 
@@ -83,7 +83,7 @@ expected publisher — and refuses an update that fails either.
 Then confirm it is running and enrolled:
 
 ```powershell
-meshharbor status
+mh status
 ```
 
 ## Where things live

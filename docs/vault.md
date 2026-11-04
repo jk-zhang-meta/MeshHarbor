@@ -205,7 +205,7 @@ to sweep, never a secret brought back.
 |---|---|
 | `[modules] vault` (`MESHHARBOR__MODULES__VAULT`) | **default OFF**, like `hive`: no route is mounted |
 | `vault.tenants` (`MESHHARBOR__VAULT__TENANTS=<id>,<id>`) | the organizations the vault serves. A list alone mounts the module, the form a hosted server uses, because no older image reads it. Clearing it is the kill switch |
-| `vault.people` (`MESHHARBOR__VAULT__PEOPLE=<id>,<id>`, P3-9-1) | the served organizations whose PEOPLE it lends to through `meshharbor connect` (§23). **Opt-in**: empty, the default, is none, and `*` is every one the vault serves. Clearing it takes every person's lease back at the next sweep |
+| `vault.people` (`MESHHARBOR__VAULT__PEOPLE=<id>,<id>`, P3-9-1) | the served organizations whose PEOPLE it lends to through `mh connect` (§23). **Opt-in**: empty, the default, is none, and `*` is every one the vault serves. Clearing it takes every person's lease back at the next sweep |
 
 `vault.tenants` reads like `hive.tenants`: empty or `*` is every organization,
 and an entry that is not an organization id matches nothing
@@ -319,8 +319,8 @@ operator's decision 22. A session's device asks with `rc:vault.ssh`,
 answered with a ticket it decides (§22).
 
 `secret:connect` (P3-9-1) decides a PERSON's use, through an endpoint their
-device serves them (`meshharbor connect`, §23), as designed in the spec's §3e,
-"P3-9, `meshharbor connect`, as designed". Its principal is a `User`, in a
+device serves them (`mh connect`, §23), as designed in the spec's §3e,
+"P3-9, `mh connect`, as designed". Its principal is a `User`, in a
 `Group` per meshharbor role they hold: the device's owner as its row names
 them, never as a request says. It is an action of its own, never
 `secret:use` widened: `secret:use` takes a `Session`, so no policy written
@@ -2095,15 +2095,15 @@ bash elsewhere.
 
 ## 23. A person's endpoint: `rc:vault.connect` (P3-9-1)
 
-A **person** runs `meshharbor connect <handle>` on their device and gets a local
+A **person** runs `mh connect <handle>` on their device and gets a local
 endpoint that signs in to the secret's upstream as the secret's user (a
 database, an HTTP API, a Kubernetes API server, an SSH host). The value never
 reaches them: the daemon holds it, as it does for a session's `vault_connect`
-(§19). Designed in the spec's §3e, "P3-9, `meshharbor connect`, as designed".
+(§19). Designed in the spec's §3e, "P3-9, `mh connect`, as designed".
 P3-9-1 builds the vault's half: the ask, the decision, the lease and its
 revocation. P3-9-2a builds the daemon's ask and the endpoint it serves,
 renewed while it is held, and P3-9-2b the LocalAPI verb and the
-`meshharbor connect` that holds it in the foreground (decision 25), both below.
+`mh connect` that holds it in the foreground (decision 25), both below.
 
 ```mermaid
 sequenceDiagram
@@ -2205,7 +2205,7 @@ no session it stands on its owner instead: `owner_changed` when the device's
 row names another owner, `owner_not_member` when its owner left the
 organization, and `not_served` when `vault.people` stops listing it, each at
 the next sweep of the device's pod or its hello. And it lives as long as a
-lease does, at most 15 minutes: `meshharbor connect` stays in the foreground and
+lease does, at most 15 minutes: `mh connect` stays in the foreground and
 asks again before each end, every renewal a new request decided and recorded
 again (decision 25, P3-9-2).
 
@@ -2218,7 +2218,7 @@ again (decision 25, P3-9-2).
 | the switch | `vault.people` (`MESHHARBOR__VAULT__PEOPLE`, [`settings.rs:123`](../crates/config/src/settings.rs#L123)), read by `TenantScope::parse_opt_in` ([`scope.rs:54`](../crates/modules/vault/src/scope.rs#L54)) |
 | `simulate` | `secret:connect` ([`policy_routes.rs:899`](../crates/modules/vault/src/policy_routes.rs#L899)): the principal the device's owner, no mode, and `approver_id` for what a yes would change |
 | the device's half | P3-9-2a, below: the daemon's ask and the endpoint it serves, renewed |
-| the person's command | P3-9-2b, below: the LocalAPI's `Connect`, on the daemon's own endpoint only, held to decision 26, and `meshharbor connect` in the foreground |
+| the person's command | P3-9-2b, below: the LocalAPI's `Connect`, on the daemon's own endpoint only, held to decision 26, and `mh connect` in the foreground |
 | what comes next | P3k: the field run, for an organization listed in `vault.people`; and the operator's word on decision 26 |
 
 **The device's half (P3-9-2a).** The daemon asks a person's leases with its
@@ -2264,7 +2264,7 @@ stateDiagram-v2
 >   clock that stood still while the device slept is looked at again every
 >   30 s.
 > - **The CA is read once**, when the endpoint opens. A CA that changes later
->   takes the next `meshharbor connect`.
+>   takes the next `mh connect`.
 
 | Piece | Where |
 |---|---|
@@ -2272,12 +2272,12 @@ stateDiagram-v2
 | the endpoint | `open_person` ([`vault_connect.rs:452`](../agents/meshharbord/src/hive/vault_connect.rs#L452)); the lease source, `PersonLeases` ([`:1169`](../agents/meshharbord/src/hive/vault_connect.rs#L1169)), and the daemon's, `DaemonPersonLeases`, in words for the person (`person_why`, [`:495`](../agents/meshharbord/src/hive/vault_connect.rs#L495)); on Unix, `person_dir` ([`:2085`](../agents/meshharbord/src/hive/vault_connect.rs#L2085)) |
 | the renewal | `renew` ([`vault_connect.rs:1798`](../agents/meshharbord/src/hive/vault_connect.rs#L1798)), `generation` and `swap`; when, `Timing` ([`:1204`](../agents/meshharbord/src/hive/vault_connect.rs#L1204)); what cuts a connection, `Live` ([`:1684`](../agents/meshharbord/src/hive/vault_connect.rs#L1684)); what its holder reads and ends, `Control` ([`:1738`](../agents/meshharbord/src/hive/vault_connect.rs#L1738)) |
 
-**The person's command (P3-9-2b).** `meshharbor connect` asks the daemon's own
+**The person's command (P3-9-2b).** `mh connect` asks the daemon's own
 LocalAPI endpoint for a person's endpoint, and holds it in the foreground:
 
 ```sh
-sudo meshharbor connect db/orders --engine postgres --upstream db.internal:5432
-meshharbor connect ci/kube --engine kubernetes --upstream https://api.k8s.internal:6443 --auth bearer
+sudo mh connect db/orders --engine postgres --upstream db.internal:5432
+mh connect ci/kube --engine kubernetes --upstream https://api.k8s.internal:6443 --auth bearer
 ```
 
 It takes a session's `vault_connect` arguments under the same names (§19), and
@@ -2292,7 +2292,7 @@ line and each change another.
 
 ```mermaid
 sequenceDiagram
-    participant P as meshharbor connect
+    participant P as mh connect
     participant L as the daemon's LocalAPI listener
     participant D as meshharbord (person_connect)
     participant V as vault
@@ -2312,7 +2312,7 @@ sequenceDiagram
     L->>D: connect_release(id): the endpoint closes, its leases let go
 ```
 
-| Where the daemon runs | Who may run `meshharbor connect` | Whom its endpoint serves |
+| Where the daemon runs | Who may run `mh connect` | Whom its endpoint serves |
 |---|---|---|
 | a Linux or macOS system install | root (`sudo`): the daemon's socket is root's, and the person socket refuses the verb | root, so the client runs with `sudo` too |
 | a per-user daemon | its own account, or root | the account that ran it |
@@ -2438,5 +2438,5 @@ its lease (§15).
 
 | Step | Builds |
 |---|---|
-| P3-6c to P3-9 | GitHub App tokens, where decision 18 says; SQL Server and Redis users, as decision 19 says; AWS STS, a role's credential per lease, ended at the lease's end by a session policy AWS enforces and minted where decision 21 says (its design: the FR-90 spec, §3e "P3-6e, AWS STS, as designed"); a Kubernetes `TokenRequest`, a service account's token per lease bound to a Secret made for the lease, so deleting the Secret ends it, minted on the device (its design: §3e "P3-6f, a Kubernetes `TokenRequest`, as designed"); the rest of a session's own egress (the tunnel policies a session's flows match, P3-7-2b); the rest of `ssh_run`, one command on another device over MeshHarbor SSH under a ticket of the session's own, whose vault half is built (§22): the network module's half built (P3-8-1b-1, refusing every session at gate 3) and gate 3 as decision 22 says (P3-8-1b-2), the target serving a session one command and nothing else built (P3-8-2a), the device's client built (P3-8-2b-1), and its tool built (P3-8-2b-2) (its design: §3e "P3-8, `ssh_run`, as designed"); `fleet_exec` as decision 5 says; for `meshharbor connect`, built (§23: the vault's half, P3-9-1; the daemon's ask and its renewing endpoint, P3-9-2a; the LocalAPI verb and the foreground command, P3-9-2b), the operator's word on decision 26, who may run it on Windows (its design: §3e "P3-9, `meshharbor connect`, as designed") |
+| P3-6c to P3-9 | GitHub App tokens, where decision 18 says; SQL Server and Redis users, as decision 19 says; AWS STS, a role's credential per lease, ended at the lease's end by a session policy AWS enforces and minted where decision 21 says (its design: the FR-90 spec, §3e "P3-6e, AWS STS, as designed"); a Kubernetes `TokenRequest`, a service account's token per lease bound to a Secret made for the lease, so deleting the Secret ends it, minted on the device (its design: §3e "P3-6f, a Kubernetes `TokenRequest`, as designed"); the rest of a session's own egress (the tunnel policies a session's flows match, P3-7-2b); the rest of `ssh_run`, one command on another device over MeshHarbor SSH under a ticket of the session's own, whose vault half is built (§22): the network module's half built (P3-8-1b-1, refusing every session at gate 3) and gate 3 as decision 22 says (P3-8-1b-2), the target serving a session one command and nothing else built (P3-8-2a), the device's client built (P3-8-2b-1), and its tool built (P3-8-2b-2) (its design: §3e "P3-8, `ssh_run`, as designed"); `fleet_exec` as decision 5 says; for `mh connect`, built (§23: the vault's half, P3-9-1; the daemon's ask and its renewing endpoint, P3-9-2a; the LocalAPI verb and the foreground command, P3-9-2b), the operator's word on decision 26, who may run it on Windows (its design: §3e "P3-9, `mh connect`, as designed") |
 | P3k | the field run in the test organization |

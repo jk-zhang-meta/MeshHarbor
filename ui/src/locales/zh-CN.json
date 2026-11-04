@@ -1483,7 +1483,7 @@
       "unanchor": "取消锚定",
       "notAnchored": "未锚定：命令以{signedIn}身份（有人值守安装）或 SYSTEM 身份（SystemContext 模式）运行。要以 SYSTEM 运行，请在设备上以管理员身份执行：",
       "accept": "允许在此设备上执行远程命令",
-      "originate": "允许此设备在其他设备上执行命令（meshharbor exec）",
+      "originate": "允许此设备在其他设备上执行命令（mh exec）",
       "originateHint": "默认关闭。这样即使此设备被入侵，也无法借用其所有者的权限访问所有设备。",
       "runAs": "命令运行身份",
       "runAsWin": "默认为 {system}。{signedIn}以控制台当前登录的人运行命令，无人登录时拒绝。两者都通过设备的服务运行，因此设备必须已锚定。",
@@ -1610,8 +1610,8 @@
       "days": "{n} 天",
       "hours": "{n} 小时",
       "tooltip": "v{version} 落后 {behind}：{first} 已发布 {ago}，此设备在线但尚未安装。",
-      "remedyLinux": "0.4.138 之前按用户安装的 Linux 客户端无法自行更新。请在设备上手动安装一次当前版本（sudo apt install ./meshharbord.deb、软件中心，或重新运行安装脚本），之后它会自动更新。如果是系统安装且停止了更新，请在设备上检查 'meshharbor config ls' 中的 auto_update 和日志（'meshharbor logs --grep update'）。",
-      "remedyOther": "请在设备上检查 'meshharbor config ls' 中的 auto_update 和日志（'meshharbor logs --grep update'）。"
+      "remedyLinux": "0.4.138 之前按用户安装的 Linux 客户端无法自行更新。请在设备上手动安装一次当前版本（sudo apt install ./meshharbord.deb、软件中心，或重新运行安装脚本），之后它会自动更新。如果是系统安装且停止了更新，请在设备上检查 'mh config ls' 中的 auto_update 和日志（'mh logs --grep update'）。",
+      "remedyOther": "请在设备上检查 'mh config ls' 中的 auto_update 和日志（'mh logs --grep update'）。"
     },
     "cred": {
       "today": "凭据今天过期",

@@ -136,7 +136,7 @@ erDiagram
 | `exec_audit` | Fleet-RPC attempt log — every exec **including refusals**. 90 d TTL |
 | `key_rotation_audit` | FR-40 overlay-key rotation orders — every order **including refusals**: what the **server** decided (`dispatch: pushed`/`queued` or `denied: rate_limited`/`agent_unsupported`), who and when, never what the device did and never any key material. `(tenant_id, at)`, `(agent_id, at)`. 90 d TTL |
 | `keep_busy_events` | FR-92 P7 — the keep-busy history: `kind` (`on` · `off` · `org_denied` · `org_allowed` · `org_default_pattern`), `source` (**`server`** = the server's own decision from the settings route, naming the admin in `actor_user_id`/`actor_name`; **`device`** = a claim derived from two consecutive heartbeat briefs, `actor_name` the brief's `set_by`), `agent_id` (absent on an org row), `agent_name` (denormalised: the row outlives the device), `pattern`, `reason`, `at`. The `ssh_audit` / `ssh_activity` trust split inside one collection. `(tenant_id, at desc)`, `(tenant_id, agent_id, at desc)`. ⚠️ **No TTL — permanent** (operator decision, 2026-10-11); owned by the fleet module — see [keep-busy.md](keep-busy.md) §11 |
-| `tunnel_clients` | Enrolled `meshharbor` CLI identities (`owner_user_id`) |
+| `tunnel_clients` | Enrolled `mh` CLI identities (`owner_user_id`) |
 | `tunnel_policies` | Default-deny tunnel ACL: subject × target × destination (`dst_host`) |
 | `tunnel_audit` | One row per tunnel flow (`tunnel_session_id`). 90 d TTL |
 | `overlay_networks` | **One per tenant** — the mesh IPAM row: CIDR (default carved from `100.64.0.0/10`), monotonic `next_host` cursor + `free_hosts` recycle pool, MagicDNS domain, ACL mode (`off`/`warn`/`enforce`) |

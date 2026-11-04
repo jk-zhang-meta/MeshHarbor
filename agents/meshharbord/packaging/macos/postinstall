@@ -423,7 +423,7 @@ else
     rm -f "$DAEMON_PLIST_TARGET"
     echo "meshharbor system daemon REMOVED — no /etc/meshharbor/enable-daemon marker."
     echo "  The overlay AND the SSH server live in this daemon, so both are now"
-    echo "  gone. Nothing else reports this: 'meshharbor ssh' will say the device"
+    echo "  gone. Nothing else reports this: 'mh ssh' will say the device"
     echo "  'has not published an SSH host key', which describes the symptom and"
     echo "  not the cause."
     echo "  If you did not intend to opt out, restore the marker and re-install:"

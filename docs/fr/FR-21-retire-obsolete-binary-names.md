@@ -28,7 +28,7 @@ The current names are the ones the product actually ships:
 |---|---|---|
 | `meshharbor-agent` | **`meshharbord`** | the daemon on a controlled host |
 | `meshharbor-agent-tray` | **`meshharbor-desktop`** | the desktop/tray companion |
-| `meshharbor-tunnel` | **`meshharbor`** | the CLI |
+| `meshharbor-tunnel` | **`mh`** | the CLI |
 | `meshharbor-installer`, `meshharbor-tunnel-installer` | **`meshharbor-setup`** | the unified wizard (legacy wizards deleted in P4c-2) |
 
 ---
@@ -279,7 +279,7 @@ order and it is wrong, because in a rename the docs are only wrong *after* the c
 -#[command(name = "meshharbord", version, about, long_about = None)]   // agents/meshharbord/src/main.rs:39
 +#[command(name = "meshharbord",      version, about, long_about = None)]
 -#[command(name = "meshharbor-cli", ...)]                                // agents/meshharbor-cli/src/cli.rs:60
-+#[command(name = "meshharbor",        ...)]
++#[command(name = "mh",        ...)]
 ```
 
 Both binaries **misnamed themselves in every `--help`, usage line and argument error**. Nothing
@@ -315,7 +315,7 @@ not by reading the diff: `Usage: meshharbord.exe` where it previously said `mesh
       rather than a field host.
 - [x] CI **fails** a PR that adds a new unclassified occurrence — proven by a deliberate red run
       linked from the issue, not by assertion.
-- [x] `CLAUDE.md`'s Commands block names binaries that exist (`meshharbord`, `meshharbor`,
+- [x] `CLAUDE.md`'s Commands block names binaries that exist (`meshharbord`, `mh`,
       `meshharbor-desktop`); copy-pasting any line works on a real host.
 - [x] **P2 changed no artifact name** — checked against REAL published releases rather
       than a dispatch build, which is stronger: these are the files the fleet actually
@@ -354,7 +354,7 @@ not by reading the diff: `Usage: meshharbord.exe` where it previously said `mesh
       has no Windows branch for the machine-global root, which carries `staging\`, crashes and
       `service-logs\` instead. Both trees were legacy in this test and both migrated, so the
       criterion holds as written; the wording is narrower than the code.
-- [x] Field: post-roll `meshharbor exec` sweep across the fleet on all three OSes; every host reports
+- [x] Field: post-roll `mh exec` sweep across the fleet on all three OSes; every host reports
       the expected binary, service/unit/launchd label, config path and log path.
 
 ---
@@ -366,7 +366,7 @@ Evidence for the ticked boxes, and what the unticked ones are still waiting on
 |---|---|
 | audit 0 unclassified | CI on `2568ecd1`: `OK unclassified=0 (<= 0) anchors=756 (>= 756) paths=0 (<= 0)`, job **Retired-name audit (FR-21): success** |
 | CI fails a new occurrence | mutation-checked: appending one unanchored mention gives `FAIL 1 unclassified occurrence(s); strict mode requires 0` |
-| Commands block names real binaries | every `-p`/`--bin` in the block resolved against `cargo metadata`: `meshharbor-api`, `meshharbord`, `meshharbor`, `meshharbor-shim`, `meshharbor-desktop`, `meshharbor-tests` all exist |
+| Commands block names real binaries | every `-p`/`--bin` in the block resolved against `cargo metadata`: `meshharbor-api`, `meshharbord`, `mh`, `meshharbor-shim`, `meshharbor-desktop`, `meshharbor-tests` all exist |
 | integration tests | CI `integration-tests` on `2568ecd1`: **338 passed, 0 failed** (floor ~294) |
 | ui unit tests | CI **Frontend checks** green, running `bun run test:unit` + `vue-tsc` |
 | macOS TCC | P6 macOS row below — `Screen Recording + Accessibility both granted`, 30 s after the 0.4.15 release |
@@ -421,15 +421,15 @@ Both pre-rename shapes were exercised in that run, on the same host:
 
 | OS | install | what is verified |
 |---|---|---|
-| Windows | fresh perMachine MSI | service `MeshHarbor`; `meshharbord.exe` + `meshharbor.exe` + `meshharbor-desktop.exe` present; config under `%PROGRAMDATA%\meshharbor\meshharbor`; staging affordance opens the real dir |
+| Windows | fresh perMachine MSI | service `MeshHarbor`; `meshharbord.exe` + `mh.exe` + `meshharbor-desktop.exe` present; config under `%PROGRAMDATA%\meshharbor\meshharbor`; staging affordance opens the real dir |
 | Windows | fresh perUser MSI | scheduled task `MeshHarbor`; `%APPDATA%` tree on the new segment |
 | Windows | **upgrade from 0.4.x, pre-rename tree** | identity preserved; legacy service/task retired, not duplicated; legacy log files still fetchable |
-| Linux | fresh `.deb` | `meshharbord.service` active; `/etc/meshharbor/config.toml`; `meshharbor peers` OK |
+| Linux | fresh `.deb` | `meshharbord.service` active; `/etc/meshharbor/config.toml`; `mh peers` OK |
 | Linux | **upgrade from 0.4.x** | no duplicate unit (the `SubState=auto-restart` storm class); enrolled identity preserved |
 | macOS | fresh `.pkg` | LaunchAgent + opt-in LaunchDaemon load; capture and input work |
 | macOS | **upgrade from 0.4.x** | **TCC grants survive** — the single highest-risk assertion in this FR |
 
-Field verification runs through `meshharbor exec` after the roll, per the standing rule:
+Field verification runs through `mh exec` after the roll, per the standing rule:
 **CI green ≠ done.**
 
 ---
@@ -477,7 +477,7 @@ the bundle without a human. The lock already exists on both sides —
 sub-phase **P2b**, landing after P2a (the agent-side packages), so each rename stays separately
 revertible and `release-tunnel.yml` moves in a diff a reviewer can hold in their head.
 Package `meshharbor-tunnel` → **`meshharbor-cli`** (lib `meshharbor_cli`): the emitted bin is already
-`meshharbor`, and the command surface lives in the lib (`meshharbor_cli::cli`, P3e lever D), so
+`mh`, and the command surface lives in the lib (`meshharbor_cli::cli`, P3e lever D), so
 "cli" names what the crate now is — the tunnel client is one of the things it drives, not the
 whole of it.
 
@@ -503,11 +503,11 @@ whole of it.
 | date | what | result |
 |---|---|---|
 | 2026-08-31 | **Deployment status — is the rename actually IN THE FIELD?** Completeness on master is not the same question, so it was measured: prod API version, latest published agent release, and the per-device `agent_version` for every row in the fleet tenant. | **DEPLOYED.** Prod API **0.4.30**; latest release **0.4.33**; `agent-v0.4.15` (the rename release) is an ancestor of both. **14 of 14 ONLINE agents run 0.4.33** — nothing live is behind. The only FR-21-tagged commit on master not in `agent-v0.4.33` touches `CLAUDE.md` alone, so no functional rename work is awaiting a release or a deploy. ⚠️ **7 of 21 registered rows still carry pre-0.4.15 builds and every one of them is OFFLINE** (windows rc.99 ~89 d, windows rc.299 ~25 d, linux rc.286 ~9 d, linux rc.434 ~8 d, windows rc.458 ~5 d, windows rc.483 ~3 d, windows 0.4.13 ~1 d). Dormant device rows, not a stalled rollout — and the path they take on waking is the one field-verified the day before on the throwaway VM: the new binary migrates all four legacy trees and keeps the same `agent_id` and overlay address. The 0.4.13 row is the only one recent enough to expect back soon. ⚠️ Straggler detail is recorded by OS + version + staleness on purpose: the fleet API returns REAL machine names, which the repo may not carry. |
-| 2026-08-30 | **THE LAST CRITERION — a genuine pre-rename Windows host, upgraded.** No such host exists in the fleet (all post-rename) and this dev box has a live enrollment, so one was BUILT: a throwaway Hyper-V VM, Windows Server 2022 Evaluation applied straight from the Microsoft ISO to a VHDX (`Expand-WindowsImage` + the GUEST image's own `bcdboot` — the host's Win11 `bcdboot` fails `193`), unattended via `Panther\unattend.xml`, driven entirely over PowerShell Direct. Clean host: no `meshharbor` trees at all. Installed the genuinely pre-rename **`0.3.0-rc.83`** (May build; binary still named `meshharbor-agent.exe`) and enrolled it against **production**. | **PASS, and by the product's own upgrade path.** rc.83 logged `config_path=%APPDATA%\meshharbor\meshharbor-agent\config\config.toml` and `machine_global=C:\ProgramData\meshharbor\meshharbor-agent` — both LEGACY — loaded `agent_id 6a93ef77…6b90` and sent `rc:agent.hello`. Its **own auto-updater** then fired (`new release available … current=0.3.0-rc.83 latest=agent-v0.4.27`) and installed 0.4.27, which logged all four legacy-tree migrations (`meshharbor-agent` → `meshharbor`, per-user config + data, LocalAppData data, ProgramData) and came up on the **same `agent_id`**, taking overlay **`100.65.4.35`**. Stricter second pass against the CURRENT binary: legacy-only state re-created (all three roots renamed back, no new tree anywhere) → migrated again, **same `agent_id`, same `100.65.4.35`**. Fleet view: `fr21-prerename-vm 100.65.4.35` online. Torn down after: device deleted (`{"deleted":true,"overlay_released":true,"overlay_ip":"100.65.4.35"}` — the lease returned to the pool, nothing burned), VM + 16 GB of artifacts removed, temporary host firewall rule removed. |
-| 2026-08-28 | **Debian takeover, against real artifacts.** Built `.deb` from `release-agent.yml` run `33150602388`; published `agent-v0.4.11` `.deb` as the upgrade-from side. | **PASS.** `Package: meshharbord`, `Provides: meshharbor-agent`, `Replaces: meshharbor-tunnel, meshharbor-agent`. Upgrade via `dpkg -i` (the self-updater's *fallback*, the stricter path): **exit 0, zero overwrite conflicts**; `/usr/bin/meshharbord` + `/usr/bin/meshharbor` ownership transferred to `meshharbord`; unit present. Vestigial `ii meshharbor-agent` remains exactly as designed, and the one-time `--remove meshharbor-agent` sweep exits 0 with **all files surviving**. Asset filename unchanged (`meshharbor-agent-0.4.11-…deb`), so the "no artifact name moves" criterion holds. |
+| 2026-08-30 | **THE LAST CRITERION — a genuine pre-rename Windows host, upgraded.** No such host exists in the fleet (all post-rename) and this dev box has a live enrollment, so one was BUILT: a throwaway Hyper-V VM, Windows Server 2022 Evaluation applied straight from the Microsoft ISO to a VHDX (`Expand-WindowsImage` + the GUEST image's own `bcdboot` — the host's Win11 `bcdboot` fails `193`), unattended via `Panther\unattend.xml`, driven entirely over PowerShell Direct. Clean host: no `mh` trees at all. Installed the genuinely pre-rename **`0.3.0-rc.83`** (May build; binary still named `meshharbor-agent.exe`) and enrolled it against **production**. | **PASS, and by the product's own upgrade path.** rc.83 logged `config_path=%APPDATA%\meshharbor\meshharbor-agent\config\config.toml` and `machine_global=C:\ProgramData\meshharbor\meshharbor-agent` — both LEGACY — loaded `agent_id 6a93ef77…6b90` and sent `rc:agent.hello`. Its **own auto-updater** then fired (`new release available … current=0.3.0-rc.83 latest=agent-v0.4.27`) and installed 0.4.27, which logged all four legacy-tree migrations (`meshharbor-agent` → `mh`, per-user config + data, LocalAppData data, ProgramData) and came up on the **same `agent_id`**, taking overlay **`100.65.4.35`**. Stricter second pass against the CURRENT binary: legacy-only state re-created (all three roots renamed back, no new tree anywhere) → migrated again, **same `agent_id`, same `100.65.4.35`**. Fleet view: `fr21-prerename-vm 100.65.4.35` online. Torn down after: device deleted (`{"deleted":true,"overlay_released":true,"overlay_ip":"100.65.4.35"}` — the lease returned to the pool, nothing burned), VM + 16 GB of artifacts removed, temporary host firewall rule removed. |
+| 2026-08-28 | **Debian takeover, against real artifacts.** Built `.deb` from `release-agent.yml` run `33150602388`; published `agent-v0.4.11` `.deb` as the upgrade-from side. | **PASS.** `Package: meshharbord`, `Provides: meshharbor-agent`, `Replaces: meshharbor-tunnel, meshharbor-agent`. Upgrade via `dpkg -i` (the self-updater's *fallback*, the stricter path): **exit 0, zero overwrite conflicts**; `/usr/bin/meshharbord` + `/usr/bin/mh` ownership transferred to `meshharbord`; unit present. Vestigial `ii meshharbor-agent` remains exactly as designed, and the one-time `--remove meshharbor-agent` sweep exits 0 with **all files surviving**. Asset filename unchanged (`meshharbor-agent-0.4.11-…deb`), so the "no artifact name moves" criterion holds. |
 | 2026-08-29 | **P7 — `--strict` reached, and three real defects found on the way.** `unclassified` 1006 -> 0; 732 anchored sites, 0 stale markers. (1) `user_profile::active_user_config_path()` hardcoded the PRE-rename appdirs segment, so on every post-rename install the path could not exist and the caller's `exists()` filter silently dropped the user-config rung — indistinguishable from "no logged-in user", the documented `None` case. It survived because the test asserted `ends_with("\\meshharbor-agent\\config\\config.toml")`: the test pinned the bug. Now dual-segment, with a pure test on candidate ORDER; mutation-checked red/green. (2) An anchor block had been inserted ABOVE `#!/bin/bash` in the macOS `postinstall`, so `installer` could not execute it and EVERY `.pkg` install failed at `Validating packages`. Red on `installer-smoke` for nine commits, misread as the flakiness master shows on the same job — master fails LATER (`helper job still loaded after opt-out`, after a successful install). One job name, two failures. `--check` now fails any tracked file whose shebang is not line 1 — the anchor system's own failure mode, caught by nothing else. (3) Nine env keys were exercised in tests only through the RETIRED spelling, i.e. the third link of a three-link fallback; the spelling the code and docs use was covered by nothing, and `hw_auto_disabled_reads_env` cleared one name while reading a chain preferring the other. Plus a break this branch itself caused: the e2e image moved to `/etc/meshharbor` while its StatefulSet still mounted `/etc/meshharbor-agent`, and its data PVC mounted a directory the daemon never writes to. |
 | 2026-08-28 | Full release lane under the renamed packages (dispatch). | **PASS** — both `.deb`s, `.msi`, `.pkg`, companion EXE all build. |
-| 2026-08-28 | **P6 Linux, on three REAL hosts** — mars, jupiter, zeus, each with `meshharbor-agent 0.4.11-1` genuinely installed and the daemon running. `.deb` from run `33150602388`, moved to each host over the meshharbor mesh itself (`100.65.4.2` → node). Primary path `apt-get install ./…deb`, not the fallback. | **PASS.** `Replacing files in old package meshharbor-agent`, exit 0, no conflict, on all three. `/usr/bin/meshharbord`, `/usr/bin/meshharbor` and the bundled FFmpeg `.so`s transferred owner; `ldd` 0 not-found; node id + overlay ip UNCHANGED; service active on the new binary; `meshharbord --version` now `meshharbord 0.4.11` (production printed `meshharbor-agent 0.4.11`). |
+| 2026-08-28 | **P6 Linux, on three REAL hosts** — mars, jupiter, zeus, each with `meshharbor-agent 0.4.11-1` genuinely installed and the daemon running. `.deb` from run `33150602388`, moved to each host over the meshharbor mesh itself (`100.65.4.2` → node). Primary path `apt-get install ./…deb`, not the fallback. | **PASS.** `Replacing files in old package meshharbor-agent`, exit 0, no conflict, on all three. `/usr/bin/meshharbord`, `/usr/bin/mh` and the bundled FFmpeg `.so`s transferred owner; `ldd` 0 not-found; node id + overlay ip UNCHANGED; service active on the new binary; `meshharbord --version` now `meshharbord 0.4.11` (production printed `meshharbor-agent 0.4.11`). |
 | 2026-08-28 | **The RUST_LOG shim, forced onto the legacy spec** — a `.deb` upgrade replaces the packaged unit, so a plain upgrade tests the FILE, not the fallback. Drop-in pinned `RUST_LOG=meshharbor_agent=info,warn` on mars, then restart. | **PASS.** INFO 40 → 75: 35 new lines from the renamed lib under a spec naming ONLY the retired target. Without the shim it stays 40 and the daemon goes dark above `warn`. Drop-in removed; the operator's own `virtual-desktop.conf` untouched. |
 | 2026-08-29 | **P6 Windows** — `CORPLAP-1`, a real corp Windows 11 host, carried onto `agent-v0.4.15` (the first release containing the rename) by the FLEET UPDATER, not by hand. Driven over Fleet RPC. | **PASS.** Service `MeshHarbor` RUNNING from `"C:\Program Files\MeshHarbor\meshharbord.exe" service-run`; `meshharbord --version` -> `meshharbord 0.4.15`; the legacy `MeshHarborAgentService` is **not installed** (`OpenService` 1060) — retired, not duplicated. |
 | 2026-08-29 | **P6 macOS** — `MacBook-1`, Apple Silicon (Darwin 25.6 arm64), same updater-driven path. | **PASS, including the TCC assertion.** The bundle is still the frozen `/Library/MeshHarbor/meshharbor-agent.app` (D5). The 0.4.15 process started `21:36:32Z` — 30 s after the release was published at `21:36:02Z` — and logged `macOS permissions: Screen Recording + Accessibility both granted` at `21:36:34Z`. The highest-risk claim in this FR, checked against a real Mac rather than reasoned about. |
@@ -525,7 +525,7 @@ than the test I designed.** P2a landed before the next release, so `agent-v0.4.1
 `meshharbord` and the fleet updater carried all three converted hosts across on its own. They did
 not take the clean path either: each received a pre-rename `meshharbor-agent 0.4.13` in between, so
 the sequence actually exercised was *converted → pre-rename release → post-rename release*. End
-state on all three: `/usr/bin/meshharbord` and `/usr/bin/meshharbor` owned by `meshharbord`, running
+state on all three: `/usr/bin/meshharbord` and `/usr/bin/mh` owned by `meshharbord`, running
 process `/usr/bin/meshharbord`, version `meshharbord 0.4.15`, and `meshharbor-agent` surviving as a
 file-less entry owning exactly the 11 vestigial paths the design predicted. A one-time
 `apt-get remove meshharbor-agent` clears those and is safe because `replaces` transferred every

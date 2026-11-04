@@ -77,15 +77,15 @@ Useful flags:
 ## Check it came up
 
 ```bash
-meshharbor status     # per-user install
-sudo meshharbor status # system install
+mh status     # per-user install
+sudo mh status # system install
 ```
 
 :::warning `systemctl is-active` can lie on a system install
 A machine that was enrolled before the current config convention can end up
 running a perfectly healthy daemon that systemd does not own. `systemctl
 is-active` then reads **inactive** while the device is online and answering.
-Check `pgrep -x meshharbord` and `meshharbor peers` before concluding anything is
+Check `pgrep -x meshharbord` and `mh peers` before concluding anything is
 wrong — and in particular, do not "restart to fix" on that basis.
 :::
 
@@ -107,7 +107,7 @@ see [per-OS permissions](/docs/remote-desktop/per-os-permissions/).
 |---|---|
 | System config | `/etc/meshharbor/config.toml` |
 | Per-user config | `~/.config/meshharbor/config.toml` |
-| Binaries | `/usr/bin/meshharbord`, `/usr/bin/meshharbor` |
+| Binaries | `/usr/bin/meshharbord`, `/usr/bin/mh` |
 | Logs | `journalctl -u meshharbord` (system) or `journalctl --user -u meshharbor` (per user) |
 
 :::danger The config file holds a credential
@@ -136,7 +136,7 @@ The agent self-updates on a timer, verifying the signature before handing off to
 
 :::warning `dpkg -i` alone does not restart the daemon
 Installing a package by hand replaces the file on disk while the running process
-keeps executing the **deleted inode** — so `meshharbor --version` reports the new
+keeps executing the **deleted inode** — so `mh --version` reports the new
 version while the daemon is still the old one. Restart the unit explicitly after
 a manual install.
 :::

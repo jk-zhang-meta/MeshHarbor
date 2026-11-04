@@ -11,7 +11,7 @@
 //!   re-enrolls and revives the row, every token minted before the removal
 //!   is refused, at the HTTP routes, the agent socket, DERP and the renew
 //!   route alike;
-//! - the same for a `meshharbor` tunnel client;
+//! - the same for a `mh` tunnel client;
 //! - both kill switches; and the device list's "credential expires".
 //!
 //! And the device's half (P2), the real `meshharbord` code against this server:
@@ -494,7 +494,7 @@ async fn a_renewal_shows_in_the_device_list_without_a_reconnect() {
     );
 }
 
-/// A `meshharbor` tunnel client renews its own token, and removing it ends every
+/// A `mh` tunnel client renews its own token, and removing it ends every
 /// earlier token, as for an agent. The roster route now checks the row too.
 #[tokio::test]
 async fn a_tunnel_client_renews_and_a_removal_ends_its_tokens() {

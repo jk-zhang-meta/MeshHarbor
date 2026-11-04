@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! SOCKS5 **mesh** mode (`meshharbor socks5` with no `--agent`).
+//! SOCKS5 **mesh** mode (`mh socks5` with no `--agent`).
 //!
 //! One local SOCKS5 proxy that reaches the WHOLE tenant: each CONNECT names an
 //! agent, and the mesh routes the flow to that agent. It reuses the proven

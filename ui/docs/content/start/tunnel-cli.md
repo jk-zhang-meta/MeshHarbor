@@ -7,12 +7,12 @@ order: 14
 
 Not every machine needs the full agent. If you only want to **open tunnels
 from** a machine — your own laptop, a jump box, a CI runner — install the
-**tunnel client**: the `meshharbor` CLI on its own, with no service, no screen
+**tunnel client**: the `mh` CLI on its own, with no service, no screen
 capture and no mesh membership.
 
 ## Agent or tunnel client?
 
-| Capability | Agent (`meshharbord`) | Tunnel client (`meshharbor`) |
+| Capability | Agent (`meshharbord`) | Tunnel client (`mh`) |
 |---|---|---|
 | Reach **this** machine remotely | Yes | No |
 | Open tunnels **from** this machine | Yes | Yes |
@@ -37,10 +37,10 @@ from the device enrollment token, so mint it from the right place.
 ## Use it
 
 ```bash
-meshharbor status                                                    # who am I, and am I connected
-meshharbor forward --agent <agent-id> --local 5432 --remote localhost:5432
-meshharbor socks5 --local 1080                                       # a SOCKS5 proxy into the mesh
-meshharbor flows                                                     # what is open right now
+mh status                                                    # who am I, and am I connected
+mh forward --agent <agent-id> --local 5432 --remote localhost:5432
+mh socks5 --local 1080                                       # a SOCKS5 proxy into the mesh
+mh flows                                                     # what is open right now
 ```
 
 :::warning Targets are device **ids**, not display names
@@ -56,18 +56,18 @@ whole surface, including UDP and mesh mode.
 On a tunnel-only machine the CLI updates itself:
 
 ```bash
-meshharbor self-update
+mh self-update
 ```
 
 Before it replaces anything it checks the release's signature against the key
 built into the CLI, and on Linux and macOS that the archive is the version it was
 offered as. Where the CLI sits in a system folder, or came from the `.deb`, run it
-as `sudo meshharbor self-update`. On Linux and macOS this works from the first tunnel
+as `sudo mh self-update`. On Linux and macOS this works from the first tunnel
 release that carries it; an older CLI there points you at the download instead.
 
 :::warning On a machine that also runs the agent, `self-update` refuses
 That is deliberate. On an agent host the installer owns the whole node stack,
-and the `meshharbor` command is a thin shim that re-execs the agent's own command
+and the `mh` command is a thin shim that re-execs the agent's own command
 surface — so there is nothing separate for it to update, and letting it try
 would replace a 150 KB shim with a full standalone binary.
 :::

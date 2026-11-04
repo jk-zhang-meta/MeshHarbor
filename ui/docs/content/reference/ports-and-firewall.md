@@ -87,8 +87,8 @@ From a machine:
 
 ```bash
 curl -sI https://meshharbor.itachi.fans/health     # or your own server
-meshharbor netcheck                       # what this machine can actually reach
-meshharbor peers                          # which path each peer is on
+mh netcheck                       # what this machine can actually reach
+mh peers                          # which path each peer is on
 ```
 
 `netcheck` is the one to read on a restrictive network: it reports reachability,

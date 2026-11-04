@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P3-9-2b — `meshharbor connect <handle>`: a local endpoint that signs in
+//! FR-90 P3-9-2b — `mh connect <handle>`: a local endpoint that signs in
 //! to a secret's upstream (a database, an HTTP API, a Kubernetes API server,
 //! an SSH host) as the secret's user. The value stays in this device's daemon
 //! and never reaches you (`docs/vault.md` §23).
@@ -25,7 +25,7 @@ use crate::sshcmd::{PrivateDir, write_private};
 /// How often the command asks the daemon where its endpoint stands.
 const POLL: Duration = Duration::from_secs(5);
 
-/// `meshharbor connect`: open the endpoint, say how to use it, and hold it until
+/// `mh connect`: open the endpoint, say how to use it, and hold it until
 /// Ctrl-C (`Ok`) or until it closes (an error saying why).
 pub async fn run(args: ConnectArgs, json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
@@ -135,7 +135,7 @@ fn news(last: Option<&EndpointState>, now: &EndpointState) -> Option<String> {
 /// know it, which is not a refusal at all.
 fn refused(message: &str) -> String {
     if message.starts_with("bad request: unknown variant") {
-        return "this device's meshharbor daemon is older than `meshharbor connect`: update it"
+        return "this device's meshharbor daemon is older than `mh connect`: update it"
             .into();
     }
     message.to_string()
@@ -254,9 +254,9 @@ mod tests {
     fn an_older_daemon_is_told_apart_from_a_refusal() {
         assert_eq!(
             refused("bad request: unknown variant `connect`, expected one of `status`"),
-            "this device's meshharbor daemon is older than `meshharbor connect`: update it"
+            "this device's meshharbor daemon is older than `mh connect`: update it"
         );
-        let word = "meshharbor connect lends this device's owner's vault grants, so here only root";
+        let word = "mh connect lends this device's owner's vault grants, so here only root";
         assert_eq!(refused(word), word);
     }
 

@@ -359,7 +359,7 @@ two (somebody must answer the picker), and native enumeration on a wlroots host
 ## 8. Configuration and the probe
 
 ```toml
-# the device's config.toml — read at daemon start, or `meshharbor config`
+# the device's config.toml — read at daemon start, or `mh config`
 [virtual_desktop_apps]
 enabled = true                       # default true; false → `unavailable{disabled}`
 
@@ -380,7 +380,7 @@ label    = "Text editor"
 
 | Key | Where | Default | Notes |
 |---|---|---|---|
-| `virtual_desktop_apps.enabled` | config (`crates/agent-core/src/apps_config.rs:21`); `meshharbor config get virtual_desktop_apps` prints the JSON (`config_surface.rs:1502`) | `true` | the kill switch; the hello stops advertising `list` (on a caps-cache hit **and** a miss, since the review of #1667 — §4.3), and a request answers `disabled` |
+| `virtual_desktop_apps.enabled` | config (`crates/agent-core/src/apps_config.rs:21`); `mh config get virtual_desktop_apps` prints the JSON (`config_surface.rs:1502`) | `true` | the kill switch; the hello stops advertising `list` (on a caps-cache hit **and** a miss, since the review of #1667 — §4.3), and a request answers `disabled` |
 | `virtual_desktop_apps.allowlist.<key>` | config | `bash` on Linux, `cmd` on Windows | `command` is argv; an empty command is skipped from `launchable` and refused on launch |
 | `window_capture` | config / `MESHHARBORD_WINDOW_CAPTURE` (`config_surface.rs:1044`) | **off** | P4 — attended by construction; restart required |
 | `MESHHARBORD_VIRTUAL_DESKTOP` | env | off | the daemon's own Xvfb (§2 of [`linux-capture.md`](linux-capture.md)); when set, the Daemon arm wins and no session is discovered |
@@ -393,7 +393,7 @@ listing covers and cannot, which helpers are missing, and the windows — or,
 since P6, the refusal's `code` and `reason`. Over Fleet RPC:
 
 ```bash
-meshharbor exec <device> -- meshharbord apps-probe
+mh exec <device> -- meshharbord apps-probe
 ```
 
 The prose beside an empty list says explicitly that empty is not unsupported

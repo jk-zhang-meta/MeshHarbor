@@ -4,13 +4,13 @@
 # Runs locally (Git Bash), no fleet-exec dependency; writes into $OUT.
 #
 # Usage: vpn-lab-devbox.sh <out-dir> <duration-s> [target ...]
-# The fleet device name the sampler greps for in `meshharbor peers` output comes
+# The fleet device name the sampler greps for in `mh peers` output comes
 # from $LAB_TARGET (default "winhost-a") so no real hostname is baked in here.
 set -u
 OUT="${1:?out dir}"; DUR="${2:?duration seconds}"; shift 2
 TARGETS=("${@:-100.65.4.28 100.65.0.5}")
 [ $# -eq 0 ] && TARGETS=(100.65.4.28 100.65.0.5)
-MESHHARBOR="/c/Program Files/MeshHarbor/meshharbor.exe"
+MESHHARBOR="/c/Program Files/MeshHarbor/mh.exe"
 LAB_TARGET="${LAB_TARGET:-winhost-a}"
 mkdir -p "$OUT"
 

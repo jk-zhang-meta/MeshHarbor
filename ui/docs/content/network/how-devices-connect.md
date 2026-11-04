@@ -28,7 +28,7 @@ actually works — measured, not assumed.
 ## Seeing which path you are on
 
 ```bash
-meshharbor peers
+mh peers
 ```
 
 Every peer, with the path currently carrying it. The remote-desktop session

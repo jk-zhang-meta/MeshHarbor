@@ -27,7 +27,7 @@
 > the device's owner allows it, and `MESHHARBORD_RECORDING=0` in the service's
 > environment switches recording off, local and remote. It is driven by
 > `meshharbord record`, by the daemon for the LocalAPI recording verbs and
-> `meshharbor record` (§6), by meshharbor-desktop (§7), by a remote controller
+> `mh record` (§6), by meshharbor-desktop (§7), by a remote controller
 > from the viewer's toolbar, over the session's `record` channel (§10), and
 > by `meshharbord media` for an export (§11), which touches only the files the
 > person hands it. Still to come: the microphone and computer audio on macOS
@@ -333,14 +333,14 @@ the lock disabled.
 ## 6. Recording through the daemon — the local verbs (P2a)
 
 The person at the device records through the running daemon: from
-meshharbor-desktop (P2b) or from `meshharbor record`. The daemon never records in its
+meshharbor-desktop (P2b) or from `mh record`. The daemon never records in its
 own address space. It launches `meshharbord record` and follows its events
 (`recording/manager.rs`, `RecordingManager`).
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as meshharbor record / meshharbor-desktop
+    participant C as mh record / meshharbor-desktop
     participant L as LocalAPI listener
     participant M as RecordingManager (daemon)
     participant R as meshharbord record (child)
@@ -402,7 +402,7 @@ sequenceDiagram
   budget. An operator-forced update proceeds anyway and says so. The mark
   (`manager::is_recording`) is a count each recorder's reader task adds to once
   and removes once, so no code path can clear a recording it does not own.
-- **`meshharbor record start|stop|status|ls|rm`**
+- **`mh record start|stop|status|ls|rm`**
   (`agents/meshharbor-cli/src/cli.rs`) wraps these verbs one to one. `--json`
   prints the wire shape.
 
@@ -796,7 +796,7 @@ before `available` existed and advertising `remote` still reads as serving.
 
 The owner switches it on in meshharbor-desktop's Recordings view ("Allow remote
 recording", and separately "Include computer audio"), or with
-`meshharbor config set record_remote_enabled true`. Both keys are device-only: the
+`mh config set record_remote_enabled true`. Both keys are device-only: the
 console gate accepts them only from the person at the device, and
 `DesiredConfig` cannot carry them. Both are live. The agent re-announces its caps
 on the next heartbeat, so the hub follows within one beat, and an OFF also stops
@@ -853,7 +853,7 @@ sequenceDiagram
 | `start_failed` | the recorder refused or failed; `detail` says which |
 
 A recording ends `requested` (the controller's Stop), `host_stopped` (the host's
-Stop: the banner, the tray, the Recordings view, `meshharbor record stop`),
+Stop: the banner, the tray, the Recordings view, `mh record stop`),
 `gate_revoked`, `session_ended` (its session dropped and nobody came back
 within the re-attach grace, P3b-3 below), or with the recorder's own reasons
 (`disk_low`, `max_duration`, …). The device reports every outcome as
@@ -1058,7 +1058,7 @@ sequenceDiagram
   socket (in the user's temp folder, where the companion looks first). The
   root daemon's `/var/run/meshharbor/meshharbor.sock` is root-only, and its
   recording verbs refuse `RootDaemon`.
-  ⚠️ So `sudo meshharbor config set record_remote_enabled …` changes the ROOT
+  ⚠️ So `sudo mh config set record_remote_enabled …` changes the ROOT
   daemon's copy, which a supervised Mac does not read for remote recording
   (the key's own description says so). ANDing it in as a second gate would
   make remote recording a double opt-in, a change to the shipped model: an

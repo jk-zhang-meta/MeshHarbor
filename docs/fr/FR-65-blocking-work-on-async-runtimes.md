@@ -190,7 +190,7 @@ Observed on neo16: a `caps-probe` **child process every ~10 s for nearly three
 hours**. `detect()` is meant to cache in a `OnceLock`, so this is a bug — a
 process spawn plus a driver enumeration on a repeating timer. Measure the spawn
 rate per host, find the trigger (unshared cache vs. genuine re-detection), fix.
-⚠️ Fleet-wide counts via `meshharbor exec` are a **biased sample** (only exec-enabled,
+⚠️ Fleet-wide counts via `mh exec` are a **biased sample** (only exec-enabled,
 reachable hosts) — say so rather than generalising.
 
 ### P5 — the remaining synchronous calls, triaged by measurement

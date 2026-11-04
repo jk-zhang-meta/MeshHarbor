@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! Embeds a Windows VERSIONINFO resource into `meshharbor-shim.exe`.
 //!
-//! The shim INSTALLS as `meshharbor.exe` (the wxs File element renames it) on
+//! The shim INSTALLS as `mh.exe` (the wxs File element renames it) on
 //! every Windows daemon host, so this is one of the two first-party binaries
 //! AV consoles, Task Manager and AppLocker actually look at there. Same
 //! rationale and same embed-resource-vs-winresource reasoning as
@@ -83,7 +83,7 @@ BEGIN
             VALUE "FileVersion", "{file_version_str}"
             VALUE "InternalName", "meshharbor-shim"
             VALUE "LegalCopyright", "Copyright (C) 2026 G ROX LTD"
-            VALUE "OriginalFilename", "meshharbor.exe"
+            VALUE "OriginalFilename", "mh.exe"
             VALUE "ProductName", "MeshHarbor"
             VALUE "ProductVersion", "{pkg_version}"
         END

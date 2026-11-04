@@ -12,10 +12,10 @@ COUNT="${1:-2}"; HOLD="${2:-180}"; REST="${3:-120}"; BRANCH="${4:-vpn-lab}"
 # The installed CLI, not a build tree: `C:\rwexec` was a scratch worktree that
 # no longer exists, and the lab is normally driven from a checkout with no
 # built agent at all. Overridable for a host that installed elsewhere.
-EXEC="${EXEC:-/c/Program Files/MeshHarbor/meshharbor.exe}"
+EXEC="${EXEC:-/c/Program Files/MeshHarbor/mh.exe}"
 # Fleet device names the lab drives. Override to the real names at runtime so
-# no hostname is committed. LAB_TARGET = the laptop's `meshharbor exec` device
-# name; DEVBOX_NAME = how the dev box shows up in `meshharbor peers` output.
+# no hostname is committed. LAB_TARGET = the laptop's `mh exec` device
+# name; DEVBOX_NAME = how the dev box shows up in `mh peers` output.
 LAB_TARGET="${LAB_TARGET:-WINHOST-A}"; export LAB_TARGET
 DEVBOX_NAME="${DEVBOX_NAME:-devbox}"
 RUNID=$(date -u +%Y%m%d-%H%M%S)

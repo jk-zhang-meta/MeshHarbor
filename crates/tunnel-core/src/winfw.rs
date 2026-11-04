@@ -37,7 +37,7 @@ use std::path::Path;
 pub mod install;
 
 /// Display-name prefix of every binary's rule; the exe stem follows in
-/// parentheses so `meshharbord` and the `meshharbor` tunnel client never fight over
+/// parentheses so `meshharbord` and the `mh` tunnel client never fight over
 /// one rule. The measured guest and the field notes both name this spelling.
 pub const RULE_NAME_PREFIX: &str = "MeshHarbor UDP-In";
 
@@ -66,7 +66,7 @@ pub struct UdpInAllowRule {
 
 impl UdpInAllowRule {
     /// The rule for `exe`. A path with no stem (never the case for a real
-    /// binary) falls back to the `meshharbor` stem rather than an empty one.
+    /// binary) falls back to the `mh` stem rather than an empty one.
     pub fn for_exe(exe: &Path) -> Self {
         let text = exe.to_string_lossy();
         let stem = windows_file_stem(&text).unwrap_or("meshharbor");
@@ -791,7 +791,7 @@ mod tests {
         assert_eq!(r.name, "MeshHarbor UDP-In (meshharbord)");
         assert_eq!(r.program, OUR_EXE);
         // The tunnel client gets its own rule — the two never fight.
-        let c = UdpInAllowRule::for_exe(Path::new(r"C:\Tools\meshharbor.exe"));
+        let c = UdpInAllowRule::for_exe(Path::new(r"C:\Tools\mh.exe"));
         assert_eq!(c.name, "MeshHarbor UDP-In (meshharbor)");
     }
 
@@ -806,7 +806,7 @@ mod tests {
             Some("meshharbord")
         );
         assert_eq!(
-            windows_file_stem("C:/Tools/meshharbor.exe"),
+            windows_file_stem("C:/Tools/mh.exe"),
             Some("meshharbor")
         );
         assert_eq!(windows_file_stem("meshharbord.exe"), Some("meshharbord"));
@@ -1238,7 +1238,7 @@ mod tests {
         );
         for exe in [
             r"C:\Program Files\MeshHarbor\meshharbord.exe",
-            r"C:\Program Files\MeshHarbor\meshharbor.exe",
+            r"C:\Program Files\MeshHarbor\mh.exe",
         ] {
             let rule = UdpInAllowRule::for_exe(Path::new(exe));
             let named: Vec<_> = store

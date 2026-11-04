@@ -127,7 +127,7 @@ plan doc is retired):
   `MESHHARBORD_DNS_AAAA=0` reverts to A-only — the mixed-fleet escape hatch,
   since a pre-v6 peer's OS doesn't own its derived address and v6 toward it
   blackholes (happy-eyeballs apps fall back on their own).
-- `meshharbor ping <name> -6` resolves a peer's derived v6; the netstack SOCKS
+- `mh ping <name> -6` resolves a peer's derived v6; the netstack SOCKS
   front accepts genuine ATYP=IPv6 targets when they are derived-ULA (v4-mapped
   unwraps; any other v6 is host-unreachable by design).
 
@@ -576,7 +576,7 @@ does instead:
   ([`lib.rs:120`](../crates/localapi/src/lib.rs#L120)), parsed from
   `firewall-cmd --info-zone` ([`hostfw.rs:45`](../crates/tunnel-core/src/overlay/hostfw.rs#L45))
   or `ufw status verbose` ([`hostfw.rs:130`](../crates/tunnel-core/src/overlay/hostfw.rs#L130)).
-- `meshharbor status` prints it only when the firewall limits what a mesh peer
+- `mh status` prints it only when the firewall limits what a mesh peer
   reaches ([`localclient.rs:2751`](../agents/meshharbor-cli/src/localclient.rs#L2751)):
 
   ```text
@@ -795,7 +795,7 @@ server. Detail and the negative-control test:
 > subscription".** An event inside the quiet window does not run a wave. It
 > pulls the TICK arm forward, and the tick counts the wave. A guard that feeds
 > itself therefore reads as tick-driven: the MacBook showed tick 22512, event
-> 8, with its monitor demonstrably live (#1282). `meshharbor status` now prints
+> 8, with its monitor demonstrably live (#1282). `mh status` now prints
 > `pulled=N` inside the arms bracket (`ROUTE_WAVES_PULLED`): the tick waves an
 > event pulled forward. `pulled ≈ tick` is a guard re-arming itself, and
 > `tick − pulled` is the real heartbeat.

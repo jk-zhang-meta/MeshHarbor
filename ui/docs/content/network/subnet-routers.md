@@ -71,7 +71,7 @@ bridge into a production network.
 From another device:
 
 ```bash
-meshharbor status     # confirm you have the route
+mh status     # confirm you have the route
 ping <an-address-in-the-range>
 ```
 

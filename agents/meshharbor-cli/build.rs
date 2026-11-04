@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! Embeds a Windows VERSIONINFO resource into `meshharbor.exe`.
+//! Embeds a Windows VERSIONINFO resource into `mh.exe`.
 //!
 //! Same rationale as `agents/meshharbord/build.rs` -- see that file for the
 //! full explanation of why this uses `embed-resource`'s per-binary
@@ -9,7 +9,7 @@
 //! resource into `meshharbor-setup.exe`, which depends on this crate and already
 //! embeds its own via tauri-build).
 //!
-//! `meshharbor.exe` is doubly exposed: it ships standalone in the tunnel zip AND
+//! `mh.exe` is doubly exposed: it ships standalone in the tunnel zip AND
 //! is bundled inside both agent MSIs (P4b), so an anonymous binary here shows
 //! up on every node in the fleet.
 //!
@@ -86,9 +86,9 @@ BEGIN
             VALUE "CompanyName", "G ROX LTD"
             VALUE "FileDescription", "MeshHarbor CLI (tunnel + mesh client)"
             VALUE "FileVersion", "{file_version_str}"
-            VALUE "InternalName", "meshharbor"
+            VALUE "InternalName", "mh"
             VALUE "LegalCopyright", "Copyright (C) 2026 G ROX LTD"
-            VALUE "OriginalFilename", "meshharbor.exe"
+            VALUE "OriginalFilename", "mh.exe"
             VALUE "ProductName", "MeshHarbor"
             VALUE "ProductVersion", "{pkg_version}"
         END
@@ -105,7 +105,7 @@ END
         let rc_path = out_dir.join("meshharbor-version.rc");
         fs::write(&rc_path, rc).expect("failed to write the VERSIONINFO resource script");
 
-        let result = embed_resource::compile_for(&rc_path, ["meshharbor"], embed_resource::NONE);
+        let result = embed_resource::compile_for(&rc_path, ["mh"], embed_resource::NONE);
 
         if env::var("CI").is_ok() {
             result

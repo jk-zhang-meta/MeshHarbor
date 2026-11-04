@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //! P3-9-1 — a PERSON's use of a secret, through an endpoint their device
-//! serves them (`meshharbor connect`; `docs/fr/FR-90-hive-agent-sessions.md`
-//! §3e, "P3-9, `meshharbor connect`, as designed"): the vault's answer to
+//! serves them (`mh connect`; `docs/fr/FR-90-hive-agent-sessions.md`
+//! §3e, "P3-9, `mh connect`, as designed"): the vault's answer to
 //! `rc:vault.connect`.
 //!
 //! The device asks over its own control connection, in the queue its
@@ -71,7 +71,7 @@ use crate::rrn;
 
 /// The one mode a person's lease is in: the device holds the value, and
 /// serves an endpoint that signs in with it. Never a value handed to the
-/// person (`raw`, the design's `meshharbor vault get`, is not this verb).
+/// person (`raw`, the design's `mh vault get`, is not this verb).
 pub const CONNECT_MODE: &str = "proxy";
 
 /// One `rc:vault.connect`, as it arrived.

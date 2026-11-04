@@ -89,7 +89,7 @@ same device by pubkey. `machine_id` IS reused across orgs — the server dedupes
 per `{tenant_id, machine_id}`, so every org sees the same fingerprint and a
 re-enroll finds the existing row.
 
-CLI: `meshharbor org ls | rm | enable | disable | set-primary`, `enroll --label`,
+CLI: `mh org ls | rm | enable | disable | set-primary`, `enroll --label`,
 `re-enroll --org <label>` (with a same-tenant guard).
 
 **`org set-primary <label> [--demoted-label <name>]`** swaps a secondary into
@@ -131,7 +131,7 @@ it could not keep one.
   quarantined or refused there) costs **one WARN per start**, naming the ways
   out: `re-enroll --org <label>`, `org disable <label>` (kept and reversible)
   or `org rm <label>`. The same text is the org's terminal status in
-  `meshharbor status`. ⚠️ The daemon never drops the enrollment itself, because
+  `mh status`. ⚠️ The daemon never drops the enrollment itself, because
   `AgentDeleted` also covers a quarantine that an admin can lift (#1750);
 - invalid entries are skipped with a surfaced reason, never fatal.
 
@@ -302,7 +302,7 @@ non-ULA v6 (an exit client's egress) matches the installed v6 routes.
 Enable it (default **off**):
 
 ```toml
-overlay_multi_org = true          # or: meshharbor config set overlay_multi_org true
+overlay_multi_org = true          # or: mh config set overlay_multi_org true
 
 [[orgs]]
 label        = "acme"
@@ -398,7 +398,7 @@ nor `MESHHARBORD_OVERLAY_TUN_PER_ORG` is read any more:
   so the secondary adapter name never overflows and the org's TUN comes up;
 - ONE address per adapter ⇒ OS source selection is trivially correct — the
   mux NAT, SkipAsSource reconcile, and Linux src hints never engage (their
-  `meshharbor status` evidence counters stay zero, which is exactly the
+  `mh status` evidence counters stay zero, which is exactly the
   Phase-3 deletion gate);
 - each adapter's derived-ULA on-link is NARROWED to its block
   (`/(96 + v4_plen)`, a `/22` org → `/118`; the primary's is narrowed too —

@@ -138,7 +138,7 @@ exec meshharbord run
   `spawn_installer_with_watch` touches, rollbacks included) keeps the device
   enrolled and logs why. An operator stop inside that window leaves the row to
   the reaper — which is what every Windows-service stop did before #1683.
-- `meshharbor status` on an ephemeral device says so
+- `mh status` on an ephemeral device says so
   (`ephemeral   yes — removes itself after inactivity, or on clean stop`).
 
 ## A per-user Windows install (FR-97 P4d)

@@ -207,7 +207,7 @@ flowchart BT
   every replicaset (§4.4), revokes its leases and archives its machine entity, in that
   order.
 - `vault` and `knowhow` don't depend on `hive`, and they are useful without any agent:
-  `meshharbor connect db/prod-mongo` gives a person a credential-injected local endpoint
+  `mh connect db/prod-mongo` gives a person a credential-injected local endpoint
   (§8.7), and the map is an infrastructure inventory.
 
 All three join the `full` profile. A profile that leaves them out answers 503 on their
@@ -244,7 +244,7 @@ flowchart LR
     subgraph usr["mapped OS account"]
       HH["meshharbord hive-host<br/>stdin secret"]
       H["claude<br/>headless, tmux or ConPTY"]
-      SH["meshharbor mcp<br/>stdio shim"]
+      SH["mh mcp<br/>stdio shim"]
       T["git · cargo · psql · kubectl"]
     end
   end
@@ -289,7 +289,7 @@ matters — policy, approval, fence, audience — is made in the daemon or on th
 | session cards | a replica → `hive`, after the scanner | yes, if the org allows (`session_cards`, §10.4) |
 | the brain — memory, skills, playbooks | `hive` module | yes: curated knowledge, scanned and reviewed (§10) |
 | transcript — prompts, answers, tool calls, outputs | device ⇄ device inside the replicaset; device ⇄ browser over a WebRTC DataChannel | **no** |
-| live PTY bytes and keystrokes | browser ⇄ device WebRTC DataChannel, or `meshharbor ssh` | no |
+| live PTY bytes and keystrokes | browser ⇄ device WebRTC DataChannel, or `mh ssh` | no |
 | workspace checkpoints, replication, teleport | device ⇄ device on tunnel-core carriers | no; relays forward ciphertext |
 | tool traffic to org resources (DB, k8s, git) | device → forward, SOCKS or overlay → target | no |
 | secret values | vault → device, wrapped for the device key | only inside the vault module while decrypting (managed custody, §8.2) |
@@ -454,7 +454,7 @@ env:   ANTHROPIC_BASE_URL=http://127.0.0.1:<sidecar>/s/<sid>
 > is approved automatically in any mode, which would take Bash out of the approvals.
 
 `settings.json` is written by the daemon into a directory the user can read but not
-write. It carries `apiKeyHelper` → `meshharbor hive token` (the fence-bound session
+write. It carries `apiKeyHelper` → `mh hive token` (the fence-bound session
 token); `http` hooks to the daemon for `SessionStart`, `UserPromptSubmit`,
 `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`, `SessionEnd` and
 `PreCompact`; the sandbox with `network.httpProxyPort`/`socksProxyPort` pointing at the
@@ -471,7 +471,7 @@ Interactive mode — the TUI in a terminal — is for people who want it. On Lin
 macOS it runs in a `tmux -L meshharbor-hive` server owned by the mapped account, the FR-56
 pattern minus the X terminal (`agents/meshharbord/src/apps/linux.rs:389-433`,
 `docs/remote-apps.md:279-298`), attachable at the machine or with
-`meshharbor ssh <device> -t 'meshharbor hive attach <sid>'`. On Windows it is a ConPTY
+`mh ssh <device> -t 'mh hive attach <sid>'`. On Windows it is a ConPTY
 (`agents/meshharbord/src/pty/windows.rs:180-240`). Interactive turns are read by tailing
 the transcript through a version-pinned parser. A session switches modes only at a turn
 boundary.
@@ -700,7 +700,7 @@ replica.
   the device. Hive's own tools render as cards that say what happened: "forward to
   database/prod-mongo through mars → 127.0.0.1:6543, credentials injected".
 - The SPA has no xterm.js, Monaco, highlighter or msgpack today (`ui/package.json`), and
-  v1 needs none: terminal blocks are static and diffs render from hunks. `meshharbor exec`
+  v1 needs none: terminal blocks are static and diffs render from hunks. `mh exec`
   output in the device console is plain `<pre>` interpolation
   (`ui/src/components/admin/DeviceConsoleDialog.vue:128-131`); the terminal block
   component replaces it there too.
@@ -737,7 +737,7 @@ No browser↔daemon terminal channel exists (the remote-control peer carries `co
 `terminal` DataChannel on the viewer peer, fed by the same PTY code, with a new
 `PromptKind::Hive` consent for write access (`agents/meshharbord/src/consent.rs:174`;
 adding a kind is one variant plus companion rendering). People at a terminal already
-have attach: `meshharbor ssh <device> -t 'meshharbor hive attach <sid>'` goes through meshharbor
+have attach: `mh ssh <device> -t 'mh hive attach <sid>'` goes through meshharbor
 SSH's four gates, single-use grants and consent. Browser attach is P6.
 
 ## 6. Promotion and teleport
@@ -877,7 +877,7 @@ Credentials re-evaluated here: secret://grox/aws/prod-deployer is denied on this
 
 ### 7.1 The `meshharbor` MCP server
 
-One MCP server per session, reached through `meshharbor mcp` (a stdio shim the harness
+One MCP server per session, reached through `mh mcp` (a stdio shim the harness
 starts) over a **per-session endpoint**: a Unix socket owned by the mapped account
 (`0600` under a `0700` directory) or a named pipe whose DACL names only that account's
 SID. It can't be the main LocalAPI endpoint: on a root daemon that socket is root-only
@@ -896,7 +896,7 @@ interactive user and most verbs trust the pipe alone (`lib.rs:1081-1083`).
 | `vault_render(template, dest)` | write a template to the session's secrets directory for the lease | `secret:use`, `mode = "file"` |
 | `fleet_devices` | the devices this session may act on | — |
 | `ssh_run(device, argv)` | one command over meshharbor SSH, as the account the *target* maps | SSH's four gates + `device:ssh` |
-| `fleet_exec(device, command)` | `meshharbor exec` — **SYSTEM/root** on the target | fleet RPC's four gates + `device:exec` + a person's approval on every call |
+| `fleet_exec(device, command)` | `mh exec` — **SYSTEM/root** on the target | fleet RPC's four gates + `device:exec` + a person's approval on every call |
 | `net_forward(device, host:port)`, `net_socks(device)` | a session-scoped forward or SOCKS listener | tunnel policy + `net:*` |
 | `hive_spawn(device, folder, prompt, role)`, `hive_wait`, `hive_send` | child sessions (§7.4) | `session:start` on the child's device |
 | `approve` | the `--permission-prompt-tool` target: policy decides, or a card asks a driver | — |
@@ -1157,14 +1157,14 @@ The server's decision and the device's report of use stay in separate collection
 
 ### 8.7 People use it too
 
-`meshharbor connect db/prod-mongo` on a person's laptop takes the same path as
+`mh connect db/prod-mongo` on a person's laptop takes the same path as
 `meshharbor_connect` in a session: knowhow resolves the access path, the vault leases the
 credential in `proxy` mode, and the person gets `127.0.0.1:6543` with authentication
 already done — credential-injected access over the mesh, with no password on the laptop.
 
-For a vault handle it comes before knowhow: P3-9 (the FR-90 spec, §3e "P3-9, `meshharbor connect`,
+For a vault handle it comes before knowhow: P3-9 (the FR-90 spec, §3e "P3-9, `mh connect`,
 as designed"). The person acts as the device's owner, read from the device's row as
-`meshharbor ssh` does. A new Cedar action, `secret:connect`, decides it, so no policy written for
+`mh ssh` does. A new Cedar action, `secret:connect`, decides it, so no policy written for
 sessions admits a person, and the endpoint is the session's `proxy` machinery, served to the
 one account that asked.
 
@@ -1438,7 +1438,7 @@ reverts the change and quarantines it.
 
 ### 10.8 Adopting sessions that started outside Hive
 
-People already run Claude Code in a terminal. `meshharbor hive adopt` installs user-level
+People already run Claude Code in a terminal. `mh hive adopt` installs user-level
 hooks (`SessionStart`, `Stop`, `SessionEnd`) that mirror those transcripts into the
 device's Hive store — and from there into a replicaset — and list them in the org as
 read-only `adopted` sessions. It's the same shape as FR-8's `crestore` registry
@@ -1580,13 +1580,13 @@ Routes, all under `/api/tenant/{tenant_id}/` and all resolving ids within the te
 (`crates/tests/fixtures/composition.baseline.json`) is re-recorded once per phase with a
 commit message that says why.
 
-CLI, in the `meshharbor` library the daemon already hosts: `meshharbor hive ls | new | send |
-attach | replicas | promote | teleport | fork | stop | adopt | token`, `meshharbor mcp`,
-`meshharbor brain search | propose | review`, `meshharbor vault ls | put | policy edit |
+CLI, in the `mh` library the daemon already hosts: `mh hive ls | new | send |
+attach | replicas | promote | teleport | fork | stop | adopt | token`, `mh mcp`,
+`meshharbor brain search | propose | review`, `mh vault ls | put | policy edit |
 simulate | lease`, `meshharbor knowhow search | show | add | link | verify`,
-`meshharbor connect <entity>`.
+`mh connect <entity>`.
 
-Device config, on `meshharbor config`'s surface and default-deny: `hive_enabled`,
+Device config, on `mh config`'s surface and default-deny: `hive_enabled`,
 `hive_replica`, `hive_archive`, `hive_accounts`, `hive_roots`, `hive_max_sessions`,
 `hive_store_quota`, `hive_harnesses`, `knowhow_scan_roots`.
 
@@ -1602,7 +1602,7 @@ crates/localapi/           (MPL)  + per-session endpoint types
 crates/tunnel-core/        (MPL)  + authenticated SOCKS5, Principal::Session, the replication carrier
 agents/meshharbord/src/hive/  (MPL)  supervisor · hive-host · adapters · store (SQLite + FTS5) · replication · viewer peer
                                   · checkpoints · sidecar · toolbelt · egress proxy · vault agent · reviewer · scanners
-agents/meshharbor-cli/        (MPL)  meshharbor hive · mcp · brain · vault · knowhow · connect
+agents/meshharbor-cli/        (MPL)  mh hive · mcp · brain · vault · knowhow · connect
 ui/src/…/hive/             (AGPL) session chrome · viewer peer · renderers · sessions list · brain review · knowhow map · vault admin
 ```
 
@@ -1675,7 +1675,7 @@ ship behind their own kill switches.
 | **P0 spike** | `hive` module skeleton; one headless Claude Code session on one Linux device, driven from a chat room; events in the device store; stubs to the server; content to the browser over a viewer peer; sidecar pass-through with the fence; `RunAs::Named` with a working directory | `[modules] hive = false`; device `hive_enabled = false` | a prompt in a room returns a turn whose terminal step renders from the device; the canary test passes; `whoami` in the session prints the mapped account; cutting the device's network stops model calls within `offline_grace` |
 | **P1 sessions in chat** | drivers and composer modes, renderers (markdown, ANSI, diff, cards), approvals via `--permission-prompt-tool`, notifications without content, virtualized list; Windows (console user) and macOS; updater deferral; `adopt`; **core memory** from a hand-curated brain (frozen snapshot, budgets) | org flag `hive.enabled` | on all three operating systems the session runs as the mapped user, never SYSTEM/root; an approval answered on a phone unblocks the tool; a non-driver's message never reaches the harness (mock-llm capture); a daemon update during a turn waits for the turn; a fact added to the brain appears in the next session and not in the running one |
 | **P2 replicaset and moves** | replication over carriers, membership policy, archive replicas, promotion, teleport (join then promote), path map, resume note, fork, purge tombstones, full-text search on archive replicas | `hive.replicaset = false` (a session then lives on its primary only) | promoting a Windows primary's session onto a Linux replica resumes with the same id and tree hash in < 10 s; teleporting to a non-member over a LAN pair takes < 30 s, and < 120 s with the source on the DERP floor; a stale-fence primary makes zero model calls; a purge issued while a member is offline is applied when it returns |
-| **P3 vault + toolbelt** | secrets, envelope + KMS, roles, Cedar, `simulate`, leases, approvals; the MCP toolbelt; proxy modes (HTTP, k8s, SSH agent, Postgres, MongoDB); authenticated session SOCKS; `Principal::Session`; dynamic AWS, DB and GitHub credentials; `meshharbor connect` | `vault.enabled`; per-secret `disabled` | a prompt with `$db/staging` gets the agent a query result while the value appears in no transcript, no model request (mock-llm) and no session environment; the same session on a Windows device is denied a materializing mode and the denial is in `vault_audit` |
+| **P3 vault + toolbelt** | secrets, envelope + KMS, roles, Cedar, `simulate`, leases, approvals; the MCP toolbelt; proxy modes (HTTP, k8s, SSH agent, Postgres, MongoDB); authenticated session SOCKS; `Principal::Session`; dynamic AWS, DB and GitHub credentials; `mh connect` | `vault.enabled`; per-secret `disabled` | a prompt with `$db/staging` gets the agent a query result while the value appears in no transcript, no model request (mock-llm) and no session environment; the same session on a Windows device is denied a materializing mode and the denial is in `vault_audit` |
 | **P3b placeholder egress** | TLS-terminating egress proxy for audience hosts, per-session CA, placeholder swap | `vault.placeholder = false` | `gh` and `aws` work with placeholders only; a placeholder sent to a non-audience host leaves the device unchanged |
 | **P4 knowhow** | graph, fleet and network sync, scans, map UI, the `meshharbor_connect` access-path compiler, probes, chips | `knowhow.enabled` | from an empty org, sync plus one scan yield the machines, repos and checkouts; "how big is #db/prod-mongo" is answered through the mesh with no secret in context |
 | **P5 learning loop** | reviewer on replicas, proposals and review cards, auto-memory harvesting, scanner, contradiction cards, decay, session cards and central search, telemetry, eval sessions | `hive.learning = false`; `session_cards = metadata` | a correction in a session on one device becomes an accepted fact that a session on another device loads; a poisoned proposal is quarantined; two contradicting facts raise a card; a session is found by its card while every replica is offline |

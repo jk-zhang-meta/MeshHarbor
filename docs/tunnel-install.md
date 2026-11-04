@@ -4,7 +4,7 @@ A MeshHarbor tunnel connection has three sides:
 
 | Side | What it does | Where it runs |
 |---|---|---|
-| **Tunnel-client** (`meshharbor`) | Listens on a local TCP port on the operator's machine. Each incoming connection rides a **QUIC** stream to the agent by default (transparently falling back to a WebRTC data channel if QUIC setup fails). | Operator's laptop (Win11 / Linux / macOS) |
+| **Tunnel-client** (`mh`) | Listens on a local TCP port on the operator's machine. Each incoming connection rides a **QUIC** stream to the agent by default (transparently falling back to a WebRTC data channel if QUIC setup fails). | Operator's laptop (Win11 / Linux / macOS) |
 | **Agent** (`meshharbord`) | Receives the forward request, dials the destination from inside the corp network, and pumps bytes back. | A host inside the corp network with route to the destination |
 | **Server** (`meshharbor.itachi.fans`) | Issues JWTs, enforces the tenant ACL policy, relays SDP / ICE between the two peers (it never sees the payload). | MeshHarbor-managed |
 
@@ -13,7 +13,7 @@ This guide walks through the Win11-on-both-sides flavour. Linux and macOS comman
 > **Enrolling one machine into several organisations** (a contractor's laptop, a
 > shared jump host): a second `enroll` against a different tenant now APPENDS an
 > org instead of rebinding the daemon. See [`multi-org.md`](./multi-org.md) §3
-> for the `[[orgs]]` config and the `meshharbor org ls|rm|enable|disable|set-primary`
+> for the `[[orgs]]` config and the `mh org ls|rm|enable|disable|set-primary`
 > verbs — and §4.4 for the one thing that is still primary-only: the overlay
 > mesh.
 
@@ -21,7 +21,7 @@ This guide walks through the Win11-on-both-sides flavour. Linux and macOS comman
 
 ## Transport: QUIC by default, WebRTC fallback
 
-Since `meshharbor` / `meshharbord` **0.3.0-rc.118**, the data plane defaults to **QUIC** (`quic-v1`, via [quinn](https://github.com/quinn-rs/quinn)) and falls back to the original **WebRTC data channel** (`webrtc-dc-v1`) only if QUIC can't be set up. Tuned QUIC is faster than WebRTC on a relayed path and reaches the same hard networks. Choose explicitly with `--transport`:
+Since `mh` / `meshharbord` **0.3.0-rc.118**, the data plane defaults to **QUIC** (`quic-v1`, via [quinn](https://github.com/quinn-rs/quinn)) and falls back to the original **WebRTC data channel** (`webrtc-dc-v1`) only if QUIC can't be set up. Tuned QUIC is faster than WebRTC on a relayed path and reaches the same hard networks. Choose explicitly with `--transport`:
 
 | `--transport` | Behaviour |
 |---|---|
@@ -156,7 +156,7 @@ Expand-Archive "$env:USERPROFILE\Downloads\meshharbor-cli.zip" `
 curl -fsSL -o /tmp/meshharbor-cli.deb \
   "https://meshharbor.itachi.fans/api/tunnel/installer/linux-deb?version=latest"
 sudo dpkg -i /tmp/meshharbor-cli.deb
-# `meshharbor` is now on $PATH at /usr/bin/meshharbor
+# `mh` is now on $PATH at /usr/bin/mh
 ```
 
 > **On an arm64 host** (FR-97 P7b) the same two downloads are
@@ -199,7 +199,7 @@ ln -sf ~/.local/opt/meshharbor-tunnel-*-universal-apple-darwin/meshharbor ~/.loc
 Verify:
 
 ```powershell
-meshharbor --version   # → meshharbor 0.4.16
+mh --version   # → meshharbor 0.4.16
 ```
 
 ---
@@ -209,11 +209,11 @@ meshharbor --version   # → meshharbor 0.4.16
 In the admin UI:
 
 1. **Admin → Tenant → Tunnels**.
-2. Click **"Issue enrollment token"**. A 10-minute single-use JWT appears with a copy-pasteable `meshharbor enroll …` command.
+2. Click **"Issue enrollment token"**. A 10-minute single-use JWT appears with a copy-pasteable `mh enroll …` command.
 3. Paste-and-run on `OPERATOR-LAPTOP`:
 
 ```powershell
-meshharbor enroll `
+mh enroll `
   --server https://meshharbor.itachi.fans `
   --token <jwt-from-admin-ui> `
   --name "Operator laptop"
@@ -269,7 +269,7 @@ Do not ship that to production — it disables the policy gate.
 In a regular (non-elevated) PowerShell on `OPERATOR-LAPTOP`:
 
 ```powershell
-meshharbor forward `
+mh forward `
   --agent <AGENT-CORP-hex from Admin → Agents> `
   --local 5432 `
   --remote db.intranet.corp:5432
@@ -308,11 +308,11 @@ daemon start — the set-and-forget form of the same forward:
 
 ```powershell
 # Requires a local meshharbord (the device service) running on this host.
-meshharbor route add --agent <AGENT-CORP-hex> --local 5432 --remote db.intranet.corp:5432
-meshharbor route ls          # ID / KIND / NODE / LOCAL / REMOTE / TRANSPORT / STATE
-meshharbor route disable pg  # keep it declared, stop the listener
-meshharbor route enable pg   # also clears a terminal `failed` state
-meshharbor route rm pg       # remove entirely
+mh route add --agent <AGENT-CORP-hex> --local 5432 --remote db.intranet.corp:5432
+mh route ls          # ID / KIND / NODE / LOCAL / REMOTE / TRANSPORT / STATE
+mh route disable pg  # keep it declared, stop the listener
+mh route enable pg   # also clears a terminal `failed` state
+mh route rm pg       # remove entirely
 ```
 
 Omit `--remote` for a supervised SOCKS5 listener toward the node. The
@@ -348,7 +348,7 @@ Notes:
   host is its operator).
 - On Linux fleet hosts where `meshharbord` runs as a root systemd unit, the
   LocalAPI socket is root-owned — prefix the CLI with `sudo`
-  (`sudo meshharbor route ls`).
+  (`sudo mh route ls`).
 - Routes do not survive a crash-loop auto-rollback to a pre-P6 daemon
   build (the older binary rewrites the config without the field).
 
@@ -361,12 +361,12 @@ reach* (still policy-gated per destination, TCP **and** UDP):
 
 ```powershell
 # Exit through one agent:
-meshharbor socks5 --agent <AGENT-CORP-hex> --local 127.0.0.1:1080
+mh socks5 --agent <AGENT-CORP-hex> --local 127.0.0.1:1080
 
 # Mesh mode — omit --agent: one proxy for the whole tenant.
 # Address an agent by NAME (or 24-hex id) as the SOCKS hostname,
 # and LAN IPs route to whichever agent advertises that subnet:
-meshharbor socks5 --local 127.0.0.1:1080
+mh socks5 --local 127.0.0.1:1080
 curl --socks5-hostname 127.0.0.1:1080 http://agent-corp:8080/
 ```
 
@@ -376,8 +376,8 @@ longest-prefix LAN routing, transports): [tunnels.md](tunnels.md).
 
 <!-- RETIRED-NAME-ANCHOR(4): this note EXISTS to explain the retired name, so
      the name has to appear in it. FR-21 D6. -->
-> Naming note: the standalone binary is `meshharbor` (a `meshharbor-tunnel` alias is
-> still shipped); on daemon hosts `meshharbor` is a shim into `meshharbord cli` —
+> Naming note: the standalone binary is `mh` (a `meshharbor-tunnel` alias is
+> still shipped); on daemon hosts `mh` is a shim into `meshharbord cli` —
 > same commands either way.
 
 ---
@@ -392,7 +392,7 @@ longest-prefix LAN routing, transports): [tunnels.md](tunnels.md).
 # RETIRED-NAME-ANCHOR: names the tracing target of pre-FR-21 builds. Renaming
 # a lib renames its target, so an operator on an older CLI needs the old one.
 $env:RUST_LOG = "meshharbor_cli=debug,tunnel_core=info"   # pre-FR-21 builds: meshharbor_tunnel=debug
-meshharbor forward --agent … --local 5432 --remote db.intranet:5432
+mh forward --agent … --local 5432 --remote db.intranet:5432
 ```
 
 **Per-flow debug logs on the agent**: tail the existing log file:
@@ -420,7 +420,7 @@ python -m http.server 9999
 # Shell 2 — agent (already installed + enrolled per §2)
 meshharbord run
 # Shell 3 — tunnel-client (already installed + enrolled per §4)
-meshharbor forward --agent <same-machine agent hex> --local 8000 --remote 127.0.0.1:9999
+mh forward --agent <same-machine agent hex> --local 8000 --remote 127.0.0.1:9999
 # Shell 4 — test
 curl.exe http://127.0.0.1:8000/
 ```
@@ -431,7 +431,7 @@ The HTTP listing from python's server should appear via the tunnel. Bytes flow: 
 
 ## 9. Tear down / revoke
 
-**Stop the forward**: Ctrl-C on `meshharbor forward`. The agent's side closes automatically; audit row recorded.
+**Stop the forward**: Ctrl-C on `mh forward`. The agent's side closes automatically; audit row recorded.
 
 **Revoke a tunnel-client** (operator left the team, laptop lost, etc.): **Admin → Tenant → Tunnels → click client → Revoke**. The next WS read on that client gets a `rc:tunnel.revoked` message and the WS closes; further enrollment attempts with the same `machine_id` are rejected.
 
@@ -443,12 +443,12 @@ The HTTP listing from python's server should appear via the tunnel. Bytes flow: 
 
 ## 10. Keeping the CLI current
 
-**Tunnel-only hosts** (installed just the `meshharbor` CLI — the tunnel-client role,
+**Tunnel-only hosts** (installed just the `mh` CLI — the tunnel-client role,
 no daemon MSI) self-update in place:
 
 ```
-meshharbor self-update            # download + verify + swap the running exe
-meshharbor self-update --check    # report the latest version without installing
+mh self-update            # download + verify + swap the running exe
+mh self-update --check    # report the latest version without installing
 ```
 
 It polls `meshharbor.itachi.fans/api/tunnel/latest-release` and downloads the matching build
@@ -468,12 +468,12 @@ Then it installs by host:
 
 | Host | Installs |
 |---|---|
-| Windows | the zip's `meshharbor.exe` replaces the running exe |
-| macOS, and Linux where no package owns the binary | the tarball's `meshharbor`, written beside the running binary and renamed over it, so the swap is atomic |
+| Windows | the zip's `mh.exe` replaces the running exe |
+| macOS, and Linux where no package owns the binary | the tarball's `mh`, written beside the running binary and renamed over it, so the swap is atomic |
 | Linux where the binary came from the `.deb` (`install.sh --role tunnel` on Debian and Ubuntu) | `dpkg -i` of the verified `.deb`, so dpkg's record names the version on disk |
 
 A binary in a root-owned directory needs root to replace, and `dpkg -i` always
-does: run `sudo meshharbor self-update`. Under `sudo` it reads the server from your
+does: run `sudo mh self-update`. Under `sudo` it reads the server from your
 own config, not root's (which has no enrollment), unless `--config` names one. The
 Linux and macOS install works from tunnel-v0.4.149, the first tunnel release after
 P6b (field-verified on it: a tarball, a `.deb` and a Mac); an older CLI there, such as
@@ -481,8 +481,8 @@ rc.266, points at the manual download.
 This is the single updater for tunnel-only hosts.
 
 **Daemon hosts** (installed a "be-accessed" role — the agent MSI) do NOT need
-this: since the node-stack unification the daemon MSI *carries* `meshharbor.exe`, so
+this: since the node-stack unification the daemon MSI *carries* `mh.exe`, so
 the daemon's own auto-update refreshes the CLI alongside `meshharbord` on every MSI
-upgrade. `meshharbor self-update` there is refused, and names `meshharbord self-update`
-instead: that `meshharbor` is a shim over the daemon, and the MSI is the source of
+upgrade. `mh self-update` there is refused, and names `meshharbord self-update`
+instead: that `mh` is a shim over the daemon, and the MSI is the source of
 truth.

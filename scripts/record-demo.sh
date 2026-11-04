@@ -31,7 +31,7 @@
 #   MESHHARBOR_DEMO_RECORD / MESHHARBOR_DEMO_RECORD_PROBE   the viewer's Record button, filmed
 #   MESHHARBOR_DEMO_STEPS                                 scripted input on a remote app
 #   MESHHARBOR_DEMO_NETWORK=1                             the dashboard's Network card
-# MESHHARBOR_DEMO_LOCKCHECK (strongly advised): `meshharbor exec` selectors to check
+# MESHHARBOR_DEMO_LOCKCHECK (strongly advised): `mh exec` selectors to check
 # for a signed-in screen right before the take — see below.
 # `bun ui/e2e/video/list-demo-devices.ts` lists, from the saved session, the
 # orgs and device display names the account can film.
@@ -139,7 +139,7 @@ fi
 # ⚠️ Every screen signed in, checked right before THIS take. A locked screen takes typed text
 # as a sign-in attempt (2026-10-06: a take that started after a Mac had locked typed a folder
 # path into its password field), and a managed laptop's lock screen prints its name and
-# addresses on every frame. MESHHARBOR_DEMO_LOCKCHECK lists `meshharbor exec` selectors, each with
+# addresses on every frame. MESHHARBOR_DEMO_LOCKCHECK lists `mh exec` selectors, each with
 # the OS that decides how to ask: "laptop-17:win,office-mac:mac". A screen that is locked, or a
 # check that cannot answer, stops the take before anything is filmed. Selectors are machine
 # names: pass them at run time, never write them down here.
@@ -150,12 +150,12 @@ if [ -n "${MESHHARBOR_DEMO_LOCKCHECK:-}" ]; then
     os="${c##*:}"
     case "$os" in
       win)
-        out=$(timeout 60 meshharbor exec "$sel" 'tasklist /FI "IMAGENAME eq LogonUI.exe" /NH' 2>&1)
+        out=$(timeout 60 mh exec "$sel" 'tasklist /FI "IMAGENAME eq LogonUI.exe" /NH' 2>&1)
         RC=$?
         # Decide on the process name and the INFO prefix alone: the "nothing found" sentence is
         # localized ("Es werden keine Aufgaben …" on a German laptop).
         if [ $RC -ne 0 ]; then
-          echo "ERROR: could not check $sel (meshharbor exec exited $RC) — not filming."
+          echo "ERROR: could not check $sel (mh exec exited $RC) — not filming."
           exit 1
         elif printf '%s' "$out" | grep -q 'LogonUI.exe'; then
           echo "ERROR: $sel is at its lock screen — sign it in first."
@@ -167,12 +167,12 @@ if [ -n "${MESHHARBOR_DEMO_LOCKCHECK:-}" ]; then
         fi
         ;;
       mac)
-        out=$(timeout 60 meshharbor exec "$sel" 'ioreg -n Root -d1 -a' 2>&1)
+        out=$(timeout 60 mh exec "$sel" 'ioreg -n Root -d1 -a' 2>&1)
         RC=$?
         # Unlocked here = the lock key absent (or false) while the console session reports
         # LoginDone true.
         if [ $RC -ne 0 ]; then
-          echo "ERROR: could not check $sel (meshharbor exec exited $RC) — not filming."
+          echo "ERROR: could not check $sel (mh exec exited $RC) — not filming."
           exit 1
         elif printf '%s' "$out" | grep -A1 CGSSessionScreenIsLocked | grep -q '<true/>'; then
           echo "ERROR: $sel is locked — sign it in first."

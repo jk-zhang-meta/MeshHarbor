@@ -199,17 +199,17 @@ pub fn run_cleanup(target: TargetFlavour, dry_run: bool) -> Result<CleanupReport
 /// Filenames the MSIs have ever shipped into the install folder,
 /// plus the tunnel CLI pair. The vacated-dir sweep deletes ONLY
 /// these — never arbitrary files an operator parked there. The CLI
-/// pair (`meshharbor.exe` / `meshharbor-tunnel.exe`) is included even
+/// pair (`mh.exe` / `meshharbor-tunnel.exe`) is included even
 /// though pre-P4b MSIs never shipped it: in the OLD dir those can
 /// only be manually-copied tunnel CLIs (field-observed), they are
 /// OUR binaries in OUR dead directory, and a stale copy in a
 /// manually-PATH'd old dir is a version-skew hazard once the new
-/// dir's `meshharbor.exe` is authoritative.
+/// dir's `mh.exe` is authoritative.
 #[cfg(target_os = "windows")]
 const INSTALL_DIR_PRODUCT_FILES: &[&str] = &[
     "meshharbord.exe",
     "meshharbor-agent.exe",
-    "meshharbor.exe",
+    "mh.exe",
     "meshharbor-tunnel.exe",
     // S1a — the desktop companion + its refresh sidecars live beside the
     // daemon (placed by the wizard / companion-refresh, not the MSI);

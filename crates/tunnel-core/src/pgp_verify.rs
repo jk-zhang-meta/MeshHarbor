@@ -14,7 +14,7 @@
 //! `.asc` does not verify against it.
 //!
 //! It lives in `tunnel-core` since FR-97 P6b, so the tunnel CLI's
-//! `meshharbor self-update` refuses its own artifacts the same way, on every
+//! `mh self-update` refuses its own artifacts the same way, on every
 //! OS. The agent re-exports it as `meshharbord::pgp_verify`.
 //!
 //! Scope is deliberately narrow — this is NOT an OpenPGP implementation.

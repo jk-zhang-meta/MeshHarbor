@@ -16,7 +16,7 @@ That made every hypothesis in a remote investigation cost a human round trip:
 "please run this in an elevated pwsh and paste the output." Fleet RPC removes
 that loop.
 
-**Reading a remote log: always `meshharbor exec <host> -- meshharbor logs`** (with
+**Reading a remote log: always `mh exec <host> -- mh logs`** (with
 `--grep <pat>` / `-n <lines>` / `--source daemon|service|panic`), never a path
 guess. The daemon resolves its OWN log file — the path depends on the service
 role, the running user, and a UTC-dated suffix, and a Windows host carries
@@ -55,7 +55,7 @@ Wire variants live in `crates/remote_control/src/signaling.rs`:
 | `rc:rpc.exec` | server → agent | run one bounded command |
 | `rc:rpc.cancel` | server → agent | kill it and its process tree |
 | `rc:rpc.result` | agent → server | the answer (always sent) |
-| `rc:rpc.request` | agent → server | the `meshharbor exec` leg |
+| `rc:rpc.request` | agent → server | the `mh exec` leg |
 | `rc:rpc.response` | server → agent | its answer |
 
 **Capability gate.** An agent that predates the feature drops an unknown
@@ -92,7 +92,7 @@ Design notes worth keeping:
   visible to whoever is at the machine, and runs as the interactive user.
 - **Gate 4 is the one that survives a compromised server.** Everything else
   lives on the control plane. Clearing the key resets it to `false`, so
-  `meshharbor config set exec_enabled` with no value can never turn it on.
+  `mh config set exec_enabled` with no value can never turn it on.
 - **`can_originate`** must be set on a device before its CLI may drive commands
   at *other* devices. Without it, compromising any enrolled laptop would
   inherit its owner's exec rights fleet-wide.
@@ -126,7 +126,7 @@ had no admin rights at all.
 
 ```mermaid
 sequenceDiagram
-  participant A as admin (meshharbor exec / UI)
+  participant A as admin (mh exec / UI)
   participant S as server (any pod)
   participant W as worker (session 1, the user)
   participant V as service (session 0, SYSTEM)
@@ -401,17 +401,17 @@ truncated sample still ties to what ran.
 ### CLI
 
 ```bash
-meshharbor exec winhost-a -- Get-NetRoute -AddressFamily IPv4
-meshharbor exec devbox --shell pwsh --timeout 60 -- Get-NetAdapter
-meshharbor exec winhost-a --json -- ipconfig /all
-meshharbor exec "Office PC" -- hostname      # a dashboard display name works too
+mh exec winhost-a -- Get-NetRoute -AddressFamily IPv4
+mh exec devbox --shell pwsh --timeout 60 -- Get-NetAdapter
+mh exec winhost-a --json -- ipconfig /all
+mh exec "Office PC" -- hostname      # a dashboard display name works too
 
 # canned evidence bundles
-meshharbor diag host winhost-a
-meshharbor diag pair DEVBOX winhost-a
+mh diag host winhost-a
+mh diag pair DEVBOX winhost-a
 ```
 
-Exit status mirrors the remote command's, so `meshharbor exec` composes in a
+Exit status mirrors the remote command's, so `mh exec` composes in a
 script: a refusal or failure is non-zero here too, never a silent 0.
 
 The target is a device name or a hex agent id, resolved by the server within
@@ -437,7 +437,7 @@ argument for shipping free-form exec before a typed verb catalog.
 ```
 1. org owner:   Settings → allow remote command execution
 2. fleet admin: device → Execution policy → accept remote commands
-3. on the box:  meshharbor config set exec_enabled true
+3. on the box:  mh config set exec_enabled true
                 (then restart the MeshHarbor service)
 4. role admin:  grant EXEC_DEVICE to whoever should be able to run things
 ```

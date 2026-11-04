@@ -271,7 +271,7 @@ pub struct VaultLease {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle: Option<BTreeMap<String, i64>>,
     /// The session it was released to. P3-9-1 — absent for a PERSON's lease
-    /// (`meshharbor connect`, [`crate::connect`]), which no session holds, and
+    /// (`mh connect`, [`crate::connect`]), which no session holds, and
     /// only for one: a lease with no session is checked as its owner's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<ObjectId>,

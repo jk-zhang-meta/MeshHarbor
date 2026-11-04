@@ -3,7 +3,7 @@
 //! FR-90 P2f-4 — an ended terminal session made a managed one, end to end: a
 //! real server, and the device a process of its own (this test binary again,
 //! asked to be one by [`device_process`], which an ordinary run passes at
-//! once). The terminal is the real hook client (`meshharbor hive hook`'s
+//! once). The terminal is the real hook client (`mh hive hook`'s
 //! `mirror_at`) reading a real transcript file, as Claude Code runs it.
 //! Nothing is seeded on the record: the hooks adopt the session, end it, and
 //! the route makes it managed; the device puts the terminal's own history in

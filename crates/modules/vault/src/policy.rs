@@ -74,8 +74,8 @@ pub const ACTION_NET_FORWARD: &str = "net:forward";
 /// designed").
 pub const ACTION_SSH_RUN: &str = "ssh:run";
 /// P3-9-1 — a PERSON using a secret through an endpoint their device serves
-/// them (`meshharbor connect`; `docs/fr/FR-90-hive-agent-sessions.md` §3e, "P3-9,
-/// `meshharbor connect`, as designed"). Its principal is a `User`, the device's
+/// them (`mh connect`; `docs/fr/FR-90-hive-agent-sessions.md` §3e, "P3-9,
+/// `mh connect`, as designed"). Its principal is a `User`, the device's
 /// owner: `secret:use` is a session's alone, so no policy written for
 /// sessions admits a person.
 pub const ACTION_CONNECT: &str = "secret:connect";
@@ -182,7 +182,7 @@ when { context.mode == "short-lived" && resource.kind != "dynamic" };"#,
     // secret names, exactly.
     Guardrail {
         id: "guardrail:connect-only-named-audiences",
-        why: "a person's endpoint (`meshharbor connect`) signs in only to an upstream its secret \
+        why: "a person's endpoint (`mh connect`) signs in only to an upstream its secret \
               names in `audiences`, exactly: an endpoint pointed anywhere else is refused",
         text: r#"forbid (principal, action == MeshHarbor::Action::"secret:connect", resource)
 when { !(resource.audiences.contains(context.audience)) };"#,
@@ -202,7 +202,7 @@ when { resource.kind == "dynamic" };"#,
     // person's read of one, and P3-9 has no approver for a person.
     Guardrail {
         id: "guardrail:connect-never-prod",
-        why: "no person reaches a production secret through `meshharbor connect` (decision 24): a \
+        why: "no person reaches a production secret through `mh connect` (decision 24): a \
               secret tagged `prod`, or under the folder `prod/`",
         text: r#"forbid (principal, action == MeshHarbor::Action::"secret:connect", resource)
 when { resource.tags.contains("prod") || resource.path == "prod" || resource.path like "prod/*" };"#,

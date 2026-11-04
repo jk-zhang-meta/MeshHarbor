@@ -14,7 +14,7 @@ launch), [FR-96](FR-96-per-user-linux-installs-update-themselves.md) (the root u
 
 ## 1. Goal
 
-After an update, a device runs **one version**: the daemon (`meshharbord`), the CLI (`meshharbor`) and the desktop companion
+After an update, a device runs **one version**: the daemon (`meshharbord`), the CLI (`mh`) and the desktop companion
 (`meshharbor-desktop`), on every OS. A device where they still differ says why.
 
 ## 2. Evidence (2026-10-20, after **Update all** moved the fleet to 0.4.147)
@@ -24,13 +24,13 @@ reports a companion (`agents.companion_version`, read on mars, 18:20Z):
 
 | Platform | Skew | Why |
 |---|---|---|
-| **Linux**, `.rpm` | `asahi-m2pro` (Fedora Asahi Remix 42, aarch64, online): daemon 0.4.147, companion 0.4.139. `rpm -q` → `meshharbor-desktop-0.4.139-1.aarch64`; `/usr/bin/meshharbord` and `/usr/bin/meshharbor` (0.4.147) are owned by no package: a tarball install | nothing upgrades the companion package |
+| **Linux**, `.rpm` | `asahi-m2pro` (Fedora Asahi Remix 42, aarch64, online): daemon 0.4.147, companion 0.4.139. `rpm -q` → `meshharbor-desktop-0.4.139-1.aarch64`; `/usr/bin/meshharbord` and `/usr/bin/mh` (0.4.147) are owned by no package: a tarball install | nothing upgrades the companion package |
 | **Linux**, `.deb` | a3's Ubuntu cell (online): 0.4.147 / 0.4.146; offline lab hosts 0.4.142 / 0.4.129, 0.4.141 / 0.4.140 | the same |
 | **Windows** | none online (9 of 9 at 0.4.147 / 0.4.147, the companion refreshed by the service host, e.g. `17:58:53Z installer signature verified asset=meshharbor-desktop-0.4.147-…exe`); the corp laptop CORPLAP-1 (offline, 2 rows): 0.4.146 / 0.4.145, with no uploaded log line saying why | the refresh runs only at the service's start; a failure waits for the next restart and says nothing |
 | **macOS** | none: both Macs 0.4.147 / 0.4.147; the MacBook's `meshharbor`, `meshharbord` and `MeshHarbor.app` all 0.4.147 from one package (`fans.itachi.meshharbor.agent`) | the `.pkg` carries `MeshHarbor.app` |
 
-**The CLI is in sync by construction.** It ships inside every daemon package: the MSI's `meshharbor.exe` shim, the
-`.pkg`, the `.deb`'s asset map, and the tarball, where `usr/bin/meshharbor` is a required member (`TARBALL_REQUIRED`,
+**The CLI is in sync by construction.** It ships inside every daemon package: the MSI's `mh.exe` shim, the
+`.pkg`, the `.deb`'s asset map, and the tarball, where `usr/bin/mh` is a required member (`TARBALL_REQUIRED`,
 `agents/meshharbord/src/updater.rs:2320`). Measured 2026-10-20: `meshharbor 0.4.147` on Windows, on the MacBook and on the
 Asahi tarball install.
 
@@ -135,7 +135,7 @@ flowchart TD
 
 ## 7. Out of scope
 
-- A tunnel-only host's standalone `meshharbor`: a different role with its own `self-update` (the LOW known issue in
+- A tunnel-only host's standalone `mh`: a different role with its own `self-update` (the LOW known issue in
   `CLAUDE.md`).
 - An apt or dnf repository.
 - Installing a companion on a host that never had one: `install.sh` and the wizard decide that.

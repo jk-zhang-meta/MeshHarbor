@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! `meshharbor self-update` — check the server's tunnel latest-release, download
+//! `mh self-update` — check the server's tunnel latest-release, download
 //! the newer artifact through the configured center installer proxy (corp-AV
 //! friendly, same origin as the manifest), verify it, and replace the running
 //! executable.
@@ -30,8 +30,8 @@
 //!
 //! | Host | Artifact | Install |
 //! |---|---|---|
-//! | Windows | the `.zip` | its `meshharbor.exe` replaces the running exe |
-//! | macOS, and Linux where no package owns this binary | the `.tar.gz` | its `meshharbor` is written beside the running binary and renamed over it, so the swap is atomic |
+//! | Windows | the `.zip` | its `mh.exe` replaces the running exe |
+//! | macOS, and Linux where no package owns this binary | the `.tar.gz` | its `mh` is written beside the running binary and renamed over it, so the swap is atomic |
 //! | Linux where dpkg owns this binary (`install.sh`'s Debian path) | the `.deb` | `dpkg -i`, so dpkg's database keeps naming the version on disk |
 //!
 //! A binary in a root-owned directory needs root to replace, and `dpkg -i`
@@ -204,7 +204,7 @@ pub async fn self_update(cfg: &TunnelConfig, check_only: bool) -> Result<()> {
         .tag_name
         .trim_start_matches("tunnel-v")
         .trim_start_matches('v');
-    println!("meshharbor: current {CURRENT}, latest {latest_ver}");
+    println!("mh: current {CURRENT}, latest {latest_ver}");
 
     if !is_newer(latest_ver, CURRENT) {
         println!("Already up to date.");
@@ -447,7 +447,7 @@ fn tarball_dir(version: &str, triple: &str) -> String {
 }
 // RETIRED-NAME-ANCHOR-END
 
-/// The `meshharbor` binary from a release tarball, read in memory: nothing is
+/// The `mh` binary from a release tarball, read in memory: nothing is
 /// extracted to disk, so no directory is ever created or chowned, as root or
 /// otherwise. The binary must sit at `<dir>/meshharbor`, where `dir` names the
 /// version the artifact was offered as; an archive of another version, or one
@@ -455,7 +455,7 @@ fn tarball_dir(version: &str, triple: &str) -> String {
 #[cfg(unix)]
 fn extract_tarball_binary(tgz: &[u8], dir: &str) -> Result<Vec<u8>> {
     use std::io::Read;
-    let want = format!("{dir}/meshharbor");
+    let want = format!("{dir}/mh");
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(tgz));
     for entry in archive.entries().context("read the release tarball")? {
         let mut entry = entry.context("read a tarball entry")?;
@@ -485,7 +485,7 @@ fn extract_tarball_binary(_tgz: &[u8], _dir: &str) -> Result<Vec<u8>> {
 // Reads a PUBLISHED archive. The retired entry name is an input this must
 // keep accepting: a fleet host running the previous CLI looks for exactly
 // that name, and dropping the arm strands it on its current version.
-/// binary `meshharbor-tunnel.exe` -> `meshharbor.exe`, but the CI ships BOTH names
+/// binary `meshharbor-tunnel.exe` -> `mh.exe`, but the CI ships BOTH names
 /// in the zip and a deployed (pre-rename) fleet self-updater may still be
 /// extracting `meshharbor-tunnel.exe`, so accept EITHER source entry. The on-disk
 /// replace target ([`replace_self`]) is driven by `current_exe()`, so whatever
@@ -497,13 +497,13 @@ fn extract_windows_exe(zip_bytes: &[u8]) -> Result<Vec<u8>> {
     for i in 0..archive.len() {
         let mut f = archive.by_index(i).context("read zip entry")?;
         let name = f.name();
-        if name.ends_with("meshharbor.exe") || name.ends_with("meshharbor-tunnel.exe") {
+        if name.ends_with("mh.exe") || name.ends_with("meshharbor-tunnel.exe") {
             let mut buf = Vec::with_capacity(f.size() as usize);
             std::io::Read::read_to_end(&mut f, &mut buf).context("read exe from zip")?;
             return Ok(buf);
         }
     }
-    bail!("neither meshharbor.exe nor meshharbor-tunnel.exe found in the release archive");
+    bail!("neither mh.exe nor meshharbor-tunnel.exe found in the release archive");
     // RETIRED-NAME-ANCHOR-END
 }
 
@@ -544,7 +544,7 @@ fn replace_self(cur: &std::path::Path, new_exe: &[u8]) -> Result<()> {
     {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => bail!(
-            "cannot write in {}: re-run as root (`sudo meshharbor self-update`)",
+            "cannot write in {}: re-run as root (`sudo mh self-update`)",
             dir.display()
         ),
         Err(e) => return Err(e).with_context(|| format!("create {}", tmp.display())),
@@ -568,7 +568,7 @@ fn deb_needs_root() -> Result<()> {
     // SAFETY: `geteuid` takes no arguments and cannot fail.
     if unsafe { libc::geteuid() } != 0 {
         bail!(
-            "dpkg owns this binary, so the update installs its .deb, which needs root: re-run as root (`sudo meshharbor self-update`)"
+            "dpkg owns this binary, so the update installs its .deb, which needs root: re-run as root (`sudo mh self-update`)"
         );
     }
     Ok(())
@@ -723,7 +723,7 @@ fn home_of(user: &str) -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
 
-    // FR-97 P6b — `sudo meshharbor self-update` reads the invoking user's config.
+    // FR-97 P6b — `sudo mh self-update` reads the invoking user's config.
     #[test]
     fn a_config_path_moves_from_one_home_to_another() {
         use std::path::Path;
@@ -861,23 +861,23 @@ mod tests {
 
     #[test]
     fn dpkg_names_the_owner_or_nobody() {
-        let p = std::path::Path::new("/usr/bin/meshharbor");
+        let p = std::path::Path::new("/usr/bin/mh");
         assert_eq!(
-            dpkg_owner("meshharbor-cli: /usr/bin/meshharbor\n", p).as_deref(),
+            dpkg_owner("meshharbor-cli: /usr/bin/mh\n", p).as_deref(),
             Some("meshharbor-cli")
         );
         // Multiarch spelling, and a path shared by several packages.
         assert_eq!(
-            dpkg_owner("meshharbor-cli:arm64: /usr/bin/meshharbor\n", p).as_deref(),
+            dpkg_owner("meshharbor-cli:arm64: /usr/bin/mh\n", p).as_deref(),
             Some("meshharbor-cli")
         );
         assert_eq!(
-            dpkg_owner("meshharbord, meshharbor-cli: /usr/bin/meshharbor\n", p).as_deref(),
+            dpkg_owner("meshharbord, meshharbor-cli: /usr/bin/mh\n", p).as_deref(),
             Some("meshharbord")
         );
         // A diversion line names no owner; another path is not this one.
         assert_eq!(
-            dpkg_owner("diversion by foo from: /usr/bin/meshharbor\n", p),
+            dpkg_owner("diversion by foo from: /usr/bin/mh\n", p),
             None
         );
         assert_eq!(dpkg_owner("meshharbor-cli: /usr/bin/other\n", p), None);
@@ -886,7 +886,7 @@ mod tests {
 
     #[test]
     fn our_package_under_either_name_takes_the_deb() {
-        let p = std::path::Path::new("/usr/bin/meshharbor");
+        let p = std::path::Path::new("/usr/bin/mh");
         assert_eq!(kind_for_owner(Some(DEB_PACKAGE), p).unwrap(), Kind::Deb);
         // The pre-rename package: the new .deb `replaces` it.
         assert_eq!(
@@ -894,7 +894,7 @@ mod tests {
             Kind::Deb
         );
         assert_eq!(kind_for_owner(None, p).unwrap(), Kind::Tarball);
-        // The agent's package (its shim is `meshharbor` too) is not ours.
+        // The agent's package (its shim is `mh` too) is not ours.
         assert!(kind_for_owner(Some("meshharbord"), p).is_err());
     }
 

@@ -84,9 +84,9 @@ to A-only without a rebuild.
 | Platform | Mechanism | Notes |
 |---|---|---|
 | **Windows** | `Add-DnsClientNrptRule -Namespace '.<domain>' -NameServers '<ip>'` (`dns.rs:356`) | ⚠️ The NRPT is **registry-global**, not per-interface — which is why a steer at a dead resolver breaks the domain for the whole host. ⚠️ NRPT nameservers carry **no port**: `-NameServers 'ip:port'` silently stores an *empty* list, so "just use another port" is not available here. ⚠️⚠️ **On a GPO-managed host a locally-written rule may not take effect until a policy refresh** — see below. |
-| **Linux** | `resolvectl dns/domain <link>` (`dns.rs:382`) | ⚠️ `resolvectl` **replaces** a link's settings, so multi-org hosts must write all orgs' entries together rather than one at a time. ⚠️ The steer lives in systemd-resolved, so it reaches only lookups that ask resolved. When nsswitch has no `resolve` and `/etc/resolv.conf` does not name resolved's stub (`127.0.0.53`), nothing asks it. WSL is that case: its generated `resolv.conf` names the Windows host's DNS proxy. `meshharbor status` then says `steered but BYPASSED` and where lookups go instead (FR-97 P3h, `dns.rs`, `resolver_bypass`). |
+| **Linux** | `resolvectl dns/domain <link>` (`dns.rs:382`) | ⚠️ `resolvectl` **replaces** a link's settings, so multi-org hosts must write all orgs' entries together rather than one at a time. ⚠️ The steer lives in systemd-resolved, so it reaches only lookups that ask resolved. When nsswitch has no `resolve` and `/etc/resolv.conf` does not name resolved's stub (`127.0.0.53`), nothing asks it. WSL is that case: its generated `resolv.conf` names the Windows host's DNS proxy. `mh status` then says `steered but BYPASSED` and where lookups go instead (FR-97 P3h, `dns.rs`, `resolver_bypass`). |
 | **macOS** (FR-97 P1c) | a supplemental resolver in the SCDynamicStore: `State:/Network/Service/meshharbor-dns-<utun>/DNS` = `ServerAddresses [<ip>]`, `SupplementalMatchDomains [<domain>]`, `SupplementalMatchDomainsNoSearch 1` (`dns.rs`, `mod scdns`) | Per utun, so sibling orgs' zones coexist. Added as a **temporary** value of the daemon's one store session, so configd removes it when the daemon ends, crash included (measured: gone within 1–4 s of a SIGKILL). Honoured by the system resolver, not by `dig` (which reads `/etc/resolv.conf`); check with `scutil --dns`. `MESHHARBORD_MACOS_DNS_STEER=0` turns it off. |
-| **everything else** | none — `setup_os` returns `false` | Names still resolve through the SOCKS path (which does its own DOMAIN resolution); the OS itself is simply not steered, and `meshharbor status` reports `os_steer_active=false` honestly. |
+| **everything else** | none — `setup_os` returns `false` | Names still resolve through the SOCKS path (which does its own DOMAIN resolution); the OS itself is simply not steered, and `mh status` reports `os_steer_active=false` honestly. |
 
 The rule is owned by a `DnsOsGuard` (`dns.rs:315`) that reverts it on `Drop`, so
 a teardown leaves no stale steer behind.
@@ -215,7 +215,7 @@ something on the host is eating its own DNS.
 | bound and healthy-looking, answers nothing | the survivor served the **dead session's** name map (fixed 0.4.71) | port owned by `meshharbord`, every name NXDOMAIN |
 | dead for hours, port demonstrably free | a failed bind was **never retried** (fixed 0.4.73) | a `bind failed` with no later `resolver up` |
 | **Windows**: nothing on `<overlay ip>:53`, status still `active`, every lookup fails at once. Under an exit, *every* name on the host fails, not just the zone | the resolver **exited** on `WSAECONNRESET` (10054) while the steer stayed ([#2213](https://github.com/jk-zhang-meta/MeshHarbor/issues/2213), fixed after 0.4.135). Windows reports an ICMP port-unreachable for a reply sent to a closed client port on the NEXT receive. The Windows DNS client closes ports routinely: it gives up on a slow answer and retries from a new one. | `magicdns: recv failed; resolver exiting … (os error 10054)`. Since the fix, such errors are served through (`receive reported an earlier datagram`), and a truly failed socket is rebound (`recv failed; rebinding the resolver`) |
-| **Linux**: `steered but BYPASSED` in `meshharbor status`. Names resolve only if the host's own resolver happens to forward the domain; on WSL, the Windows host's NRPT does when that host runs the agent | the steer went into resolved, but nothing asks resolved: nsswitch has no `resolve`, and `/etc/resolv.conf` names another resolver (WSL's generated file, a static one, resolved's non-stub `resolv.conf`). Found by the FR-97 P3h census on a WSL instance | `magicdns: the OS steer is in place, but this host's resolver bypasses it (…)`; `resolvectl query <name>` answers from `meshharbor0` while `getent hosts <name>` does not use it |
+| **Linux**: `steered but BYPASSED` in `mh status`. Names resolve only if the host's own resolver happens to forward the domain; on WSL, the Windows host's NRPT does when that host runs the agent | the steer went into resolved, but nothing asks resolved: nsswitch has no `resolve`, and `/etc/resolv.conf` names another resolver (WSL's generated file, a static one, resolved's non-stub `resolv.conf`). Found by the FR-97 P3h census on a WSL instance | `magicdns: the OS steer is in place, but this host's resolver bypasses it (…)`; `resolvectl query <name>` answers from `meshharbor0` while `getent hosts <name>` does not use it |
 
 🔑 **The line that tells a reconnect from a process restart**: a healthy cycle
 logs `OS split-DNS reverted` ≈25 s *before* the next `resolver up`. A failure
@@ -236,7 +236,7 @@ time, one of them a whole session spent suspecting the firewall layer.
 Useful checks:
 
 ```powershell
-meshharbor status                              # magic domain, resolver_bound, os_steer_active, upstream
+mh status                              # magic domain, resolver_bound, os_steer_active, upstream
 Get-NetUDPEndpoint -LocalPort 53            # who holds the port, on which address
 Get-DnsClientNrptPolicy -Effective          # which rule actually wins
 Resolve-DnsName <peer>.<magic domain>       # the real path an application takes
@@ -246,7 +246,7 @@ Resolve-DnsName <peer>.<magic domain>       # the real path an application takes
 proxy) does **not** block our specific-address bind — measured both plain and
 with `SO_REUSEADDR`. Do not design around it.
 
-⚠️ **`meshharbor status` reporting `active` is not proof the resolver answers** —
+⚠️ **`mh status` reporting `active` is not proof the resolver answers** —
 that gap is [#1363](https://github.com/jk-zhang-meta/MeshHarbor/issues/1363), still
 open. The authoritative check is a query.
 

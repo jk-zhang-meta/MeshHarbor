@@ -166,6 +166,6 @@ easy to mistake for this and it is not.
 ## Related
 
 - **FR-33 / #905** — the LAN-capture surfacing that named this class in one line
-  per host; read `meshharbor status`'s `lan` line before any archaeology.
+  per host; read `mh status`'s `lan` line before any archaeology.
 - **FR-19 / #805** — org relays; the sibling this cannot reuse, and why.
 - **FR-28** — DERP drain on pod roll.

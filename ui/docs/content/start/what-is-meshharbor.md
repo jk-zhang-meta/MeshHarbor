@@ -60,7 +60,7 @@ the product's behaviour.
 | Piece | What it is | Where it runs |
 |---|---|---|
 | **The agent** (`meshharbord`) | A native binary — the remote-desktop target, the mesh node, the tunnel endpoint, the SSH server | Every machine you enroll |
-| **The CLI** (`meshharbor`) | Status, peers, tunnels, exec, ssh, diagnostics | Same machine, alongside the agent |
+| **The CLI** (`mh`) | Status, peers, tunnels, exec, ssh, diagnostics | Same machine, alongside the agent |
 | **The server** | Accounts, device registry, signalling, coordination, chat and the conferencing SFU | MeshHarbor's cloud, or your own |
 | **The controller** | A browser (Chromium browsers work best; Safari and Firefox work too) | Wherever you happen to be |
 

@@ -143,8 +143,8 @@ pub enum DelegateFrame {
     OverlayFootprint {
         v4_nets: Vec<(std::net::Ipv4Addr, u8)>,
     },
-    /// FR-92 — daemon → worker: a `meshharbor keep-busy status|off` that reached
-    /// the DAEMON's LocalAPI. A root caller — `meshharbor exec <mac> meshharbor
+    /// FR-92 — daemon → worker: a `mh keep-busy status|off` that reached
+    /// the DAEMON's LocalAPI. A root caller — `mh exec <mac> meshharbor
     /// keep-busy off` — never sees the worker's per-user socket, while on a
     /// supervised Mac it is the worker that runs keep busy. So the daemon
     /// asks; `off` stops it first. The answer is
@@ -1432,7 +1432,7 @@ mod tests {
         }
     }
 
-    /// FR-92 — `meshharbor exec <mac> meshharbor keep-busy off` reaches the ROOT
+    /// FR-92 — `mh exec <mac> mh keep-busy off` reaches the ROOT
     /// daemon, while on a supervised Mac keep busy runs in the WORKER. The
     /// daemon asks the worker and answers with what it says. Field, 0.4.126:
     /// it answered for its own engine — "off" — while the worker kept moving

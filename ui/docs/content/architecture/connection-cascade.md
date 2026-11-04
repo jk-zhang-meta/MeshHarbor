@@ -79,7 +79,7 @@ If you are testing it, restart one of the two machines to provoke the decision.
 ## Seeing it
 
 ```bash
-meshharbor peers
+mh peers
 ```
 
 Every peer, and the path currently carrying it. The remote-desktop session shows

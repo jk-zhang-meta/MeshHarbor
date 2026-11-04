@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! `meshharbor.exe` on daemon hosts — a launcher that re-execs `meshharbord cli`.
+//! `mh.exe` on daemon hosts — a launcher that re-execs `meshharbord cli`.
 //!
 //! # Why
 //!
@@ -14,22 +14,22 @@
 //!
 //! So the daemon now owns that command surface (`meshharbord cli <args>` →
 //! `meshharbor_cli::cli::run_from`), and this ~150 KB launcher keeps the
-//! user-facing `meshharbor` command, its PATH entry, and the installer-smoke
+//! user-facing `mh` command, its PATH entry, and the installer-smoke
 //! payload assertions exactly where they were. Tunnel-ONLY hosts are
 //! unaffected — they still install the real standalone binary from
 //! `release-tunnel.yml`.
 //!
 //! # Behaviour notes
 //!
-//! * stdio is INHERITED, so streaming verbs (`meshharbor exec`, `meshharbor run`)
+//! * stdio is INHERITED, so streaming verbs (`mh exec`, `mh run`)
 //!   behave identically to the standalone binary.
 //! * Ctrl-C is deliberately ignored HERE so the child owns it. Windows
 //!   delivers CTRL_C_EVENT to every process in the console group; if this
 //!   launcher took the default action it would exit first and leave the
-//!   long-running child (`meshharbor run`, `meshharbor forward`) orphaned. Unix is
+//!   long-running child (`mh run`, `mh forward`) orphaned. Unix is
 //!   the same story with SIGINT/SIGQUIT and the foreground process group —
 //!   parent ignores, child resets to default in pre_exec (P3e Phase 2: the
-//!   .deb ships this launcher as /usr/bin/meshharbor on daemon hosts).
+//!   .deb ships this launcher as /usr/bin/mh on daemon hosts).
 //! * The child is located next to this executable rather than via PATH, so a
 //!   different MeshHarbor install elsewhere on PATH can never be dispatched to.
 
@@ -51,10 +51,10 @@ fn ignore_ctrl_c() {
 
 #[cfg(unix)]
 fn ignore_ctrl_c() {
-    // P3e Phase 2 — the .deb ships this launcher as /usr/bin/meshharbor too.
+    // P3e Phase 2 — the .deb ships this launcher as /usr/bin/mh too.
     // The terminal delivers SIGINT/SIGQUIT to the whole foreground process
     // GROUP, i.e. to us AND the child. The child must handle them (Ctrl-C
-    // tears down `meshharbor run` / `meshharbor forward` cleanly); we must NOT die
+    // tears down `mh run` / `mh forward` cleanly); we must NOT die
     // first and orphan it — the standard wrapper convention (what `sh -c`
     // does while waiting on a foreground job). The child would inherit the
     // ignored disposition across fork+exec, so spawn() below resets both to
@@ -118,7 +118,7 @@ fn main() -> ! {
 
     ignore_ctrl_c();
 
-    // argv[0] is dropped: the daemon re-labels it as `meshharbor` before handing
+    // argv[0] is dropped: the daemon re-labels it as `mh` before handing
     // the vector to clap, so usage/help text still reads `meshharbor ...`.
     let mut cmd = Command::new(&daemon);
     cmd.arg("cli").args(std::env::args_os().skip(1));

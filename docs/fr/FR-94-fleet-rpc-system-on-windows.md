@@ -10,7 +10,7 @@ wording #2039, measurements #2086) and P1–P5 (§6: #2099, #2105, #2110) shippe
 
 ## 1. Goal
 
-`meshharbor exec` on Windows runs as **SYSTEM by default**, on every install type, with an explicit
+`mh exec` on Windows runs as **SYSTEM by default**, on every install type, with an explicit
 **`console_user`** mode chosen per device policy and audited, as SSH's `account_mode` already is.
 
 Today it runs as whatever the console-session worker happens to be (§2). On an attended install that is the
@@ -46,7 +46,7 @@ The design must keep one invariant (§4): **nothing the signed-in user can write
    - It is also not the grant device owners opted into: the admin UI says SYSTEM.
 2. **On a standard-user corporate desktop, exec has no admin rights at all.** That desktop is in the
    acceptance bar. Diagnosis is weakest exactly where it is needed most, and so is our own field
-   verification, which runs through `meshharbor exec`.
+   verification, which runs through `mh exec`.
 3. **The identity depends on a hidden install choice and on admin status.** The same command behaves
    differently across the fleet.
 
@@ -90,7 +90,7 @@ All three need the **machine trust anchor**. That is the real prerequisite, and 
 
 ```mermaid
 sequenceDiagram
-  participant A as admin (meshharbor exec / UI)
+  participant A as admin (mh exec / UI)
   participant S as server (any pod)
   participant W as worker (session 1, the user)
   participant V as service (session 0, SYSTEM)
@@ -223,7 +223,7 @@ stateDiagram-v2
 
 ## 7. Acceptance criteria
 
-- [x] **AC1:** on an anchored attended Windows device with an admin signed in, `meshharbor exec <dev> -- whoami`
+- [x] **AC1:** on an anchored attended Windows device with an admin signed in, `mh exec <dev> -- whoami`
   runs as `NT AUTHORITY\SYSTEM` in session 0, at System integrity. The negative control comes first: the
   same device unanchored runs as the signed-in user, session 1, High.
   *(§10 rows 7–8, 0.4.133 on prod: `VMTEST-WIN\vmtest session=1 High` unanchored, then
@@ -293,13 +293,13 @@ stateDiagram-v2
   - *the anchor's lifecycle as a state diagram, with what each event does to the credential;*
   - *the whole routing decision as a flowchart (#2135).*
 
-  *The row is in `docs/README.md`. CLAUDE.md's Fleet RPC line, the `meshharbor exec` help and the policy
+  *The row is in `docs/README.md`. CLAUDE.md's Fleet RPC line, the `mh exec` help and the policy
   dialog name the identity per mode (#2105, #2110; the dialog's text is in row 16).)*
 
 ## 8. Open decisions
 
 Decisions 1–4 were **taken as recommended** when the operator asked for the remaining items to be built
-(2026-10-13: "leaf meshharbor exec on win run as sys. do the remaining items"). The server half implements
+(2026-10-13: "leaf mh exec on win run as sys. do the remaining items"). The server half implements
 D1', the doorbell, and `exec_require_system` default off.
 
 1. **D1' over D2 and D3** (§5a). Recommended: D1', with D3 as the long-term direction in its own FR.
@@ -349,7 +349,7 @@ Field-verification log:
 |---|---|---|---|
 | 1 | **(b): SystemContext mode's exec identity** | vmtest `win11/installer/system`, 0.4.129 and 0.4.131, 2026-10-12 (FR-92 §9 rows 50–51) | Exec through `POST …/agent/{id}/exec` printed `NT AUTHORITY\SYSTEM`, **session 1**, on both versions. That is SYSTEM in the console session, as the code says: the worker is a winlogon-token SYSTEM process, and Fleet RPC runs as the worker |
 | 2 | **(c): a session-0 SYSTEM process reaches the server** | vmtest `win11/installer/attended`, 0.4.131, 2026-10-13, an admin signed in | A scheduled task running as SYSTEM in **session 0** fetched `https://meshharbor.itachi.fans/health`: **HTTP 200 in 69 ms**, then 9 ms and 8 ms. WinHTTP said "Direct access (no proxy server)", and SYSTEM's own default proxy for the URL is direct. The admin's SSH session (session 0) got 58, 8 and 7 ms, while the worker's WS was connected (`server connected`). ⚠️ The vmtest network has direct egress, so a corporate proxy, PAC or TLS-inspecting network is **not** covered |
-| 3 | **(d): attended, nobody signed in** | the same guest, measured on both an admin's ephemeral enrollment and a standard user's standard enrollment | After `logoff` of the console session, within 15 s only `service-run` (SYSTEM, session 0) remained. The worker and the companion were gone, and the console sat at the sign-in screen (session 2, no user), with no LocalAPI to answer `meshharbor status`. The device row **stayed**, `online=false`; logoff does not unenroll even an ephemeral device. Exec answered HTTP 200 with `error: device is offline`, at +15 s and again at +95 s |
+| 3 | **(d): attended, nobody signed in** | the same guest, measured on both an admin's ephemeral enrollment and a standard user's standard enrollment | After `logoff` of the console session, within 15 s only `service-run` (SYSTEM, session 0) remained. The worker and the companion were gone, and the console sat at the sign-in screen (session 2, no user), with no LocalAPI to answer `mh status`. The device row **stayed**, `online=false`; logoff does not unenroll even an ephemeral device. Exec answered HTTP 200 with `error: device is offline`, at +15 s and again at +95 s |
 | 4 | **(a): a signed-in user without their own enrollment** | the same guest; a local **standard** account (Users only) made the autologon user, then a reboot | The supervisor spawned the worker with `elevated=false` (no linked admin token). It exited with **code 1 within ~0.5 s, every time**, backing off from 2 s to 60 s (ten failures logged). Run by hand as that user, its error was: "no config found at `C:\Users\<user>\AppData\Roaming\meshharbor\meshharbor\config\config.toml`. Run `meshharbord enroll` first." On an attended install the device belongs to the user who enrolled. **Any** other user, admin or not, gets a crash-looping worker and an offline device until they enroll |
 | 5 | **(a): the standard user, enrolled** | the same guest, after a per-user enrollment with a standard token (`FreshPrimary`) | The next respawn ran (`elevated=false`), and the device came online (`server connected`). **Exec ran as the standard user, in session 1, at Medium integrity**: no admin rights. **The overlay is down**: `WintunCreateAdapter failed` (attempts 2–4), then `TUN bring-up failed; aborting runtime`, although a lease had arrived (`self_v4` assigned). `overlay_mode` stays `tun` (no netstack fallback), and no Wintun adapter exists. **Self-update:** `--check-only` works ("Up to date (current: 0.4.131, latest: agent-v0.4.131)"). The install step was **not exercised**, because no newer release existed. By the code (master `03eb54220`), a perMachine update goes `spawn_installer_inner` (`updater.rs` L1739, L1758) → `spawn_installer_as_flavour` (L1823) → `spawn_installer_for_flavour_with_properties` (L1950) → `spawn_msiexec_elevated` (L1978; defined L2346, `ShellExecuteExW` verb `runas`). For a Medium-integrity standard user that is a UAC **credentials** prompt that nobody can answer unattended, and the function returns an error when it is declined or there is no session to show it (L2341) |
 | 6 | **(a): one machine, two device rows** | the same guest | The admin's ephemeral enrollment (`machine_id` `6dc61705…`) and the standard user's (`4be009b4…`) are **two device rows with different `machine_id`s** for one physical machine. Whether the per-user derivation or the ephemeral flag makes the difference was not isolated. Both rows were deleted afterwards |

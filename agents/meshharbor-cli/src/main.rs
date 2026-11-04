@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! `meshharbor` — the standalone tunnel-client CLI binary.
+//! `mh` — the standalone tunnel-client CLI binary.
 //!
 //! The command surface itself lives in `meshharbor_cli::cli` (the LIB), not
 //! here, so that `meshharbord cli` can dispatch into the exact same code on
@@ -8,7 +8,7 @@
 //! `cli.rs` for the surface and P3e lever D for the why.
 //!
 //! This binary is what tunnel-ONLY hosts install (release-tunnel.yml); daemon
-//! hosts get a small `meshharbor` shim that re-execs `meshharbord cli` instead.
+//! hosts get a small `mh` shim that re-execs `meshharbord cli` instead.
 
 use anyhow::Result;
 

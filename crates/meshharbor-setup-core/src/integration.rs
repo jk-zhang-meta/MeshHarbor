@@ -5,7 +5,7 @@
 // the extract step, not by this module, and the release zip still carries a
 // meshharbor-tunnel.exe alias for hosts that already have it on PATH — so the
 // occurrences below describe a layout this module only appends to.
-// The LINUX half is done: FR-46 flipped the symlink to `~/.local/bin/meshharbor`
+// The LINUX half is done: FR-46 flipped the symlink to `~/.local/bin/mh`
 // and REMOVES a pre-rename one instead of stranding it, which is what the
 // objection recorded here actually asked for. docs/fr/FR-46
 //! Per-platform integration after the CLI archive is extracted.
@@ -17,7 +17,7 @@
 //!   creation in v1 — the .lnk write is deferred to Phase B; v1 just
 //!   ensures `meshharbor-tunnel` is on PATH so the operator can run it
 //!   from any shell.
-//! - **Linux**: symlink the binary into `~/.local/bin/meshharbor`, and
+//! - **Linux**: symlink the binary into `~/.local/bin/mh`, and
 //!   remove a pre-rename `meshharbor-tunnel` symlink if one is there.
 //!   `.desktop` file is deferred to Phase B (it's only useful with
 //!   the first-forward feature so the desktop entry has a meaningful
@@ -298,7 +298,7 @@ fn integrate_unix(tunnel_binary: &Path) -> Result<IntegrationReport> {
 /// FR-46: the anchor that used to sit on this module argued, correctly, that
 /// flipping the name is a BEHAVIOUR change because it "leaves the old entry
 /// stranded". That objection is answered by removing it rather than by not
-/// renaming — an operator ends up with exactly one `meshharbor` on PATH instead of
+/// renaming — an operator ends up with exactly one `mh` on PATH instead of
 /// one working name and one dangling one.
 ///
 /// ⚠️ Only a SYMLINK is removed. This wizard has only ever created symlinks
@@ -321,7 +321,7 @@ fn retire_legacy_symlink(current: &Path) {
     }
 }
 
-/// Resolve `~/.local/bin/meshharbor`. The XDG-style path works
+/// Resolve `~/.local/bin/mh`. The XDG-style path works
 /// on both Linux and macOS — modern shells include it in PATH by
 /// default; for the operators where it isn't, the Done step surfaces
 /// a one-line `export PATH=…` they can drop into their shell rc.
@@ -346,9 +346,9 @@ mod tests {
             path_updated: true,
             shortcut_created: false,
             binary_path: PathBuf::from(if cfg!(windows) {
-                r"C:\Users\foo\bin\meshharbor.exe"
+                r"C:\Users\foo\bin\mh.exe"
             } else {
-                "/home/foo/.local/bin/meshharbor"
+                "/home/foo/.local/bin/mh"
             }),
         };
         let json = serde_json::to_string(&report).unwrap();

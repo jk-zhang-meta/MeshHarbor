@@ -440,14 +440,14 @@ Ticked only where a run is recorded in the field log below.
 - **P11** — on a Linux **system** install with the daemon's socket untouched,
   the person at the screen reaches what is theirs and nothing else (#1911):
   - [x] the companion reads "Connected", not "Service offline", and as the
-        person `meshharbor status` answers — **the 0.4.124 candidate, 2026-10-10**
+        person `mh status` answers — **the 0.4.124 candidate, 2026-10-10**
         (the log): "● Connected" in the stream, where 0.4.123 read "Service
         offline", on the unchanged 0.4.123 companion
   - [x] the banner shows for a session, and its one-click Disconnect ends it as
         `host_disconnect` (the P10 checks) — `host_disconnect` 32 ms after the
         click, no break-glass beside the notice, 65.8 s held with no request,
         the audit, Reconnect in 566 ms
-  - [x] as the person, an administrative verb (`meshharbor peers`, a `config set`)
+  - [x] as the person, an administrative verb (`mh peers`, a `config set`)
         is refused with the pointer to `sudo`, and the daemon's own
         `/var/run/meshharbor` socket is still 0700 / 0600 root — both verbs
         refused with the pointer; the root socket unchanged
@@ -859,7 +859,7 @@ viewer's ladder brings it back.
 Chrome, driven by Claude in Chrome, on the live site, from a background tab.
 
 **Aiming the click.** The badge is excluded from capture, so the stream cannot show it,
-and `meshharbor exec` runs in session 0, so it cannot enumerate the user's windows. The
+and `mh exec` runs in session 0, so it cannot enumerate the user's windows. The
 click was aimed by the badge's fixed geometry instead (`agents/meshharbord/src/indicator/win.rs`):
 - the badge is 300×48, top-centre, at y = 4;
 - its Disconnect is at client (196–292, 9–39);
@@ -900,7 +900,7 @@ The viewer was a Playwright spec in the harness's own container on mars, signed 
 
 **The gap, measured first.** The companion read *"Service offline"*. A root daemon's
 LocalAPI is `/var/run/meshharbor/meshharbor.sock`, with the directory at 0700 and the socket at
-0600, both root-owned. As the desktop user, `meshharbor status` fails with *"Permission
+0600, both root-owned. As the desktop user, `mh status` fails with *"Permission
 denied (os error 13)"*. So on a Linux **system** install the companion cannot see sessions,
 and the person at the device gets no banner and no Disconnect. On Wayland, with no native
 overlay, there is no companion consent prompt either. This predates P10 and is filed as
@@ -940,8 +940,8 @@ The setup was one vmtest cell: Ubuntu 24.04, GNOME on Wayland, the installer `.d
 |---|---|---|
 | the person socket | none | `/run/user/1000/meshharbor.sock`, `srw-------`, the person's (`vmtest:vmtest`) |
 | the daemon's own socket | `/var/run/meshharbor` `drwx------ root:root`, socket `srw------- root:root` | unchanged |
-| `meshharbor status` as the person | `Permission denied (os error 13)` | answers: the device, `version 0.4.124`, `mode service (SYSTEM)` |
-| `meshharbor peers`, and `meshharbor config set auto_update false`, as the person | `Permission denied (os error 13)` | refused with the pointer "… Everything else goes to the daemon's own socket — run `sudo meshharbor …`"; the config line is unchanged |
+| `mh status` as the person | `Permission denied (os error 13)` | answers: the device, `version 0.4.124`, `mode service (SYSTEM)` |
+| `mh peers`, and `mh config set auto_update false`, as the person | `Permission denied (os error 13)` | refused with the pointer "… Everything else goes to the daemon's own socket — run `sudo meshharbor …`"; the config line is unchanged |
 | the companion, in the stream of a live session | "● Service offline", "Not enrolled yet" and "The MeshHarbor service is not running on this computer right now" | "● Connected", naming the enrolled device |
 | the banner during a session | none | *"Being viewed by vmtest admin · keyboard + mouse"*, with Disconnect (mutter centres it, as on 10-09) |
 | one click on its Disconnect | — | see below |
@@ -966,7 +966,7 @@ Not field-tested: root at the seat, since GDM on this image refuses a root login
 Found: the socket's own lifecycle lines never reach the log.
 - **The lines exist.** `localapi: person-at-the-device socket up` / `… down` are emitted at info by the `meshharbor_localapi` crate.
 - **The filter drops them.** That target is below every default filter: `meshharbord=info,tunnel_core=info,warn` in the generated units, and the binary's own default adds only the daemon's pre-FR-21 target. Only meshharbord's `person socket: …` lines (a move, a stop, a failure) are seen.
-- **The result.** `ls`, not `meshharbor logs`, answers "is the person socket up?".
+- **The result.** `ls`, not `mh logs`, answers "is the person socket up?".
 - **Why it is a follow-up.** Units already on disk set `RUST_LOG` wholesale, so a fix there needs the care FR-21's rename of the daemon's own target did (`logging.rs`, `mirror_legacy_log_target`).
 
 The guest was destroyed by name afterwards.

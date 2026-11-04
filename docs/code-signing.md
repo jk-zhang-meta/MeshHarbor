@@ -160,7 +160,7 @@ graph LR
     TAG["a release tag<br/>agent-v* · setup-v* · tunnel-v*"]
 
     subgraph WIN["Windows — sign-windows · Azure Artifact Signing over OIDC"]
-        W1["the payload first<br/>meshharbord.exe · meshharbor.exe"]
+        W1["the payload first<br/>meshharbord.exe · mh.exe"]
         W2["wintun.dll staged<br/>NEVER re-signed —<br/>WireGuard LLC's signature survives"]
         W3["then the MSIs<br/>harvested, then signed"]
         W1 -->|"no cargo build after this —<br/>a relink strips the signature"| W2 --> W3
@@ -190,14 +190,14 @@ installing it, and is also bound to the release it claims to be: the Windows
 
 | Artifact | Workflow | Mechanism |
 |---|---|---|
-| `meshharbord.exe`, `meshharbor.exe` **inside** both MSIs | release-agent | sign-windows, *before* `cargo wix` harvests |
+| `meshharbord.exe`, `mh.exe` **inside** both MSIs | release-agent | sign-windows, *before* `cargo wix` harvests |
 | perUser + perMachine `.msi` | release-agent | sign-windows, before the size-budget/sha256 steps |
 | `meshharbor-desktop-<v>….exe` | release-agent | sign-windows |
 | `meshharbor-agent-<v>-aarch64-apple-darwin.pkg` | release-agent | inline codesign → productbuild → notarytool → staple → **verify** |
 | `meshharbor-setup.exe` (in the zip) | release-setup | sign-windows, before zipping |
 | `MeshHarbor Setup.app` (in the macOS tarball) | release-setup | sign-macos: bundle → notarise → **staple** (ticket survives tar) |
-| `meshharbor.exe` (tunnel zip) | release-tunnel | sign-windows (was never signed before) |
-| `meshharbor` (macOS universal, tunnel tarball) | release-tunnel | sign-macos: bare binary → notarise, **no staple** (Apple can't staple a loose Mach-O; curl\|tar installs never set quarantine, so unaffected) |
+| `mh.exe` (tunnel zip) | release-tunnel | sign-windows (was never signed before) |
+| `mh` (macOS universal, tunnel tarball) | release-tunnel | sign-macos: bare binary → notarise, **no staple** (Apple can't staple a loose Mach-O; curl\|tar installs never set quarantine, so unaffected) |
 | every published asset | all three publish jobs | GPG `.asc` (when key configured) + SLSA provenance attestation (always) |
 | `wintun.dll` | — | **never re-signed** — WireGuard LLC's Authenticode signature must survive; CI asserts it still says WireGuard |
 | `.deb` contents | — | not signed (dpkg doesn't verify; apt-repo signing deferred until an apt channel exists) |
@@ -314,7 +314,7 @@ keeps the version it is already running.
 | Gate | Module | Answers | Enforced on |
 |---|---|---|---|
 | Authenticode + publisher name | `code_signature::verify_publisher` | *Whose* bytes are these? | Windows |
-| Detached `.asc` vs the signing subkey **pinned in the binary** | `pgp_verify::verify_release_artifact` | *Whose* bytes are these? | Linux, macOS (`.deb`, `.pkg`, tarball) — the `.asc` is **required**. Since FR-97 P6b it lives in tunnel-core, and the tunnel CLI's `meshharbor self-update` requires it too, on every OS |
+| Detached `.asc` vs the signing subkey **pinned in the binary** | `pgp_verify::verify_release_artifact` | *Whose* bytes are these? | Linux, macOS (`.deb`, `.pkg`, tarball) — the `.asc` is **required**. Since FR-97 P6b it lives in tunnel-core, and the tunnel CLI's `mh self-update` requires it too, on every OS |
 | Embedded version vs manifest claim | `artifact_version::verify_artifact_version` | *Which release* are they? | every installable: the `.msi`, and since FR-97 P6a the `.deb`, `.pkg` and tarball |
 
 **Neither is sufficient alone, and the second is the less obvious one.**
@@ -484,7 +484,7 @@ copyright grant to the company is a legal decision, not a packaging one.
 
 ## 10. Version info
 
-`meshharbord.exe` and `meshharbor.exe` embed a full `VS_VERSION_INFO` via
+`meshharbord.exe` and `mh.exe` embed a full `VS_VERSION_INFO` via
 `build.rs` + `embed-resource` (`compile_for` → per-binary
 `rustc-link-arg-bin`, chosen because `winres`/`winresource` link-lib
 directives would propagate a *second* version resource into the Tauri EXEs

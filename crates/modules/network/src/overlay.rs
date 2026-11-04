@@ -1577,7 +1577,7 @@ pub async fn handle_overlay_leave(state: &NetworkState, ident: NodeIdentity) {
     let epoch = next_epoch();
     // Grey the row out; do NOT delete it. A `removes` delta made every
     // connected peer drop the node from `current_peers` entirely, so a host
-    // that merely restarted VANISHED from `meshharbor peers` — while a host that
+    // that merely restarted VANISHED from `mh peers` — while a host that
     // was already down when you joined rendered a normal `offline` row (it
     // arrives in the full netmap with P9 presence). Same server state, two
     // renderings, decided purely by when you happened to join.

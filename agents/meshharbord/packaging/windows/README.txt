@@ -20,13 +20,13 @@ them.
 Installation
 ------------
 This installer placed the daemon `meshharbord.exe` (plus a
-`meshharbor-agent.exe` compatibility alias and the `meshharbor` tunnel CLI)
+`meshharbor-agent.exe` compatibility alias and the `mh` tunnel CLI)
 at:
 
     %LOCALAPPDATA%\Programs\MeshHarbor\meshharbord.exe
-    %LOCALAPPDATA%\Programs\MeshHarbor\meshharbor.exe
+    %LOCALAPPDATA%\Programs\MeshHarbor\mh.exe
 
-The install directory is appended to your user PATH, so `meshharbor`
+The install directory is appended to your user PATH, so `mh`
 and `meshharbord` work from any NEW terminal. No admin rights were
 required (per-user install, no UAC).
 

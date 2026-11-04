@@ -207,7 +207,7 @@ pub const PREFIXES: [&str; 2] = ["MESHHARBORD_", "MESHHARBOR_NODE_"];
 /// runbook).
 ///
 /// So the prefix is retired from the chain and kept in the SEARCH: every host
-/// that sets one is told, loudly, at startup and on `meshharbor status`, naming
+/// that sets one is told, loudly, at startup and on `mh status`, naming
 /// the current spelling to use. A dormant device that wakes up months from now
 /// announces itself instead of quietly losing a setting.
 ///
@@ -333,7 +333,7 @@ fn note_legacy_use(prefix: &str, suffix: &str) {
 ///
 /// Hoisted out of [`legacy_use_is_new`] by FR-46 (#1051) so the set can be
 /// READ, not only warned about. The warning alone was write-only: it fires once
-/// near startup, so a `meshharbor logs` tail on a long-running daemon cannot find
+/// near startup, so a `mh logs` tail on a long-running daemon cannot find
 /// it, and answering "does any host still depend on a retired name?" meant
 /// sweeping env vars and registries by hand — which under-reported twice.
 static LEGACY_SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -713,7 +713,7 @@ mod tests {
     /// still depend on a retired name?", so it must be readable, not only
     /// warnable. Before this the set was a local static inside
     /// `legacy_use_is_new` and the only trace of a legacy read was one WARN
-    /// line near startup — unreachable from a `meshharbor logs` tail on a
+    /// line near startup — unreachable from a `mh logs` tail on a
     /// long-running daemon, which is exactly when the question gets asked.
     #[test]
     fn legacy_uses_are_readable_and_exclude_the_current_spelling() {

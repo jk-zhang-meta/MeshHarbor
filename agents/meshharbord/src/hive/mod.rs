@@ -92,7 +92,7 @@ mod materializer;
 #[cfg(feature = "vault")]
 mod net_tools;
 mod packer;
-/// FR-90 P3-9-2b — `meshharbor connect`'s endpoints, held for the LocalAPI
+/// FR-90 P3-9-2b — `mh connect`'s endpoints, held for the LocalAPI
 /// connection that asked.
 #[cfg(feature = "vault")]
 pub(crate) mod person_connect;

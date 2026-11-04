@@ -24,7 +24,7 @@ where it always did.
 ## Open one
 
 ```bash
-meshharbor forward --agent <agent-id> --local 5432 --remote localhost:5432
+mh forward --agent <agent-id> --local 5432 --remote localhost:5432
 ```
 
 Then use `localhost:5432` with any client you already have — `psql`, a GUI, an
@@ -41,8 +41,8 @@ hand it to the local agent instead — so it survives the CLI exiting — add
 `--daemon`, then manage it with:
 
 ```bash
-meshharbor flows          # every flow the local daemon is running
-meshharbor kill <flow-id> # stop one
+mh flows          # every flow the local daemon is running
+mh kill <flow-id> # stop one
 ```
 
 :::tip `--remote` is the interesting flag
@@ -60,10 +60,10 @@ the tunnel comes back after a reboot, and it backs off rather than hammering the
 server if one cannot be established.
 
 ```bash
-meshharbor route add --agent <agent-id> --local 5432 --remote localhost:5432
-meshharbor route ls
-meshharbor route disable <id>
-meshharbor route rm <id>
+mh route add --agent <agent-id> --local 5432 --remote localhost:5432
+mh route ls
+mh route disable <id>
+mh route rm <id>
 ```
 
 The tray and menu-bar companion exposes the same list, if you would rather click.
@@ -98,8 +98,8 @@ policies](/docs/security/device-policies/).
 Tunnels re-establish themselves when a path recovers. If one stays down:
 
 ```bash
-meshharbor status
-meshharbor peers      # is the far end reachable at all?
+mh status
+mh peers      # is the far end reachable at all?
 ```
 
 If the peer is not reachable, the tunnel is a symptom rather than the problem —

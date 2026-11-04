@@ -90,7 +90,7 @@ meshharbord = { path = "../../agents/meshharbord", features = ["hive-test-launch
 # FR-90 P2d-6 — the canary reads the member device's store, which its own
 # process wrote, after that process is gone.
 meshharbor-hive-node = { path = "../hive-node" }
-# FR-90 P2f-4 — the real hook client (`meshharbor hive hook`) adopts the terminal
+# FR-90 P2f-4 — the real hook client (`mh hive hook`) adopts the terminal
 # session `tests/hive_manage.rs` makes managed, through the device's socket.
 meshharbor-cli = { path = "../../agents/meshharbor-cli" }
 

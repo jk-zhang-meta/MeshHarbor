@@ -35,7 +35,7 @@ Two parties have to agree, and the device's owner speaks first.
    `DesiredConfig`, so no server can switch it on. Over the LocalAPI only the person at the
    console may change it, because it is their screen:
    ```
-   meshharbor config set privacy_mode_allowed true
+   mh config set privacy_mode_allowed true
    ```
 2. **The controller covers the screen.** On a device that allows it, the viewer's toolbar has an
    eye-off toggle ("Cover the device screen"). The session's consent prompt has already told
@@ -48,7 +48,7 @@ sequenceDiagram
     participant A as meshharbord (+ its overlay)
     participant S as hub (server)
     participant V as viewer (browser)
-    P->>A: meshharbor config set privacy_mode_allowed true (console only)
+    P->>A: mh config set privacy_mode_allowed true (console only)
     A->>S: caps re-announced with privacy-mode
     V->>S: rc:session.request ... | PRIVACY (only from a device that serves it)
     Note over S: privacy_grant: device_cannot_curtain, break_glass,<br/>outside_the_org, device_not_opted_in strip it, each with its reason
@@ -179,7 +179,7 @@ A remote admin who unlocks a computer to work on it should not leave it unlocked
 console:
 
 ```
-meshharbor config set lock_on_end auto      # never | auto | always
+mh config set lock_on_end auto      # never | auto | always
 ```
 
 | `lock_on_end` | When the last remote session ends |

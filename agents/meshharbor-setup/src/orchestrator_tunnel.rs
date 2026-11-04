@@ -272,7 +272,7 @@ async fn run_install_inner(
     diag.begin(Step::Enroll);
     check_cancel()?;
     emit(on_event, ProgressEvent::EnrollStarted);
-    // FR-101 P1b — the token travels over TLS, as `meshharbor enroll` sends it:
+    // FR-101 P1b — the token travels over TLS, as `mh enroll` sends it:
     // a remote `http://` is posted to, and saved, as `https://`.
     let server = meshharbor_cli::config::enrollment_server_url(&server);
     // The wizard's own crate version is the closest stand-in for the
@@ -427,7 +427,7 @@ pub fn default_install_root() -> anyhow::Result<PathBuf> {
             //
             // What actually blocks it is smaller and different, and both halves
             // are real: (1) a pre-rename install strands a stale HKCU PATH entry,
-            // and PATH ORDER decides which `meshharbor.exe` wins — so the rename
+            // and PATH ORDER decides which `mh.exe` wins — so the rename
             // needs a `remove_user_path_segment` beside it, exactly as the Unix
             // arm needed `retire_legacy_symlink`; (2) the retired name appears
             // TWICE on this path — the ProjectDirs application segment and this

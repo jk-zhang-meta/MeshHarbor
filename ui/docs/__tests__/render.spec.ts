@@ -175,7 +175,7 @@ describe('slugify', () => {
   it.each([
     ['Exit nodes', 'exit-nodes'],
     ['What the server sees', 'what-the-server-sees'],
-    ['`meshharbor status`', 'meshharbor-status'],
+    ['`mh status`', 'meshharbor-status'],
     ['Consent — and audit', 'consent-and-audit'],
     ['Ports & firewall', 'ports-firewall'],
     ['  Trailing  ', 'trailing'],

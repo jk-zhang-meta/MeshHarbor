@@ -1483,7 +1483,7 @@
       "unanchor": "Un-anchor",
       "notAnchored": "Not anchored: commands run as the {signedIn} (an attended install) or as SYSTEM (SystemContext mode). To run them as SYSTEM, on the device, from an elevated prompt:",
       "accept": "Accept remote commands on this device",
-      "originate": "Allow this device to run commands on OTHER devices (meshharbor exec)",
+      "originate": "Allow this device to run commands on OTHER devices (mh exec)",
       "originateHint": "Off by default. Without it, a compromised copy of this device could use its owner's permissions across the whole fleet.",
       "runAs": "Run commands as",
       "runAsWin": "{system} is the default. {signedIn} runs each command as whoever is signed in at the console, and is refused when nobody is. Both go through the device's service, so the device must be anchored.",
@@ -1610,8 +1610,8 @@
       "days": "{n} d",
       "hours": "{n} h",
       "tooltip": "v{version} is {behind} behind: {first} came out {ago} ago and this device, online, has not installed it.",
-      "remedyLinux": "A per-user Linux install made before 0.4.138 cannot install updates by itself. Install the current release on it once (sudo apt install ./meshharbord.deb, the Software app, or a re-run of the install script), and it updates itself from then on. On a system install that stopped, check auto_update in 'meshharbor config ls' and the log ('meshharbor logs --grep update') on it.",
-      "remedyOther": "Check auto_update in 'meshharbor config ls' and the log ('meshharbor logs --grep update') on it."
+      "remedyLinux": "A per-user Linux install made before 0.4.138 cannot install updates by itself. Install the current release on it once (sudo apt install ./meshharbord.deb, the Software app, or a re-run of the install script), and it updates itself from then on. On a system install that stopped, check auto_update in 'mh config ls' and the log ('mh logs --grep update') on it.",
+      "remedyOther": "Check auto_update in 'mh config ls' and the log ('mh logs --grep update') on it."
     },
     "cred": {
       "today": "credential expires today",

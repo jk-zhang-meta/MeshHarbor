@@ -529,7 +529,7 @@ jobs:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: cargo build -p meshharbord --release --features "full,hive,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ffmpeg-encoder,ssh-server,viewer-indicator-x11"
 
-      # P3e Phase 2: the .deb's `meshharbor` is now the CLI SHIM (re-execs
+      # P3e Phase 2: the .deb's `mh` is now the CLI SHIM (re-execs
       # `meshharbord cli`) — the Linux twin of the rc.365 MSI change. It must
       # exist before `cargo deb --no-build` runs (the assets list references
       # target/release/meshharbor-shim). Replaces the 143 s full-CLI build that
@@ -1192,7 +1192,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # 2. Windows — MSI via cargo-wix. The MSI PAYLOAD (meshharbord.exe + the
-  #    meshharbor.exe shim) is signed before the harvest and the MSIs themselves
+  #    mh.exe shim) is signed before the harvest and the MSIs themselves
   #    afterwards; see ./.github/actions/sign-windows. On a release tag,
   #    unsigned fails the job.
   # ---------------------------------------------------------------------------
@@ -1557,7 +1557,7 @@ jobs:
           # the command surface (`meshharbord cli` → meshharbor_cli::cli) and the
           # MSI carries a ~150 KB shim instead of a second full binary.
           #
-          # rc.361 measurements that motivated it: meshharbor.exe was 22.1 MiB of
+          # rc.361 measurements that motivated it: mh.exe was 22.1 MiB of
           # which cargo-bloat attributes only 1.16 MiB to CLI-specific code —
           # the rest duplicated std/webrtc/tunnel_core/tokio/rustls/reqwest/
           # quinn/clap that meshharbord.exe already links. This step also used to
@@ -1567,14 +1567,14 @@ jobs:
           # Both wxs files reference target\release\meshharbor-shim.exe at harvest
           # time, so this MUST still run before the two cargo-wix builds below.
           # Tunnel-ONLY hosts are unaffected: release-tunnel.yml keeps building
-          # and shipping the real standalone `meshharbor` binary.
+          # and shipping the real standalone `mh` binary.
           cargo build -p meshharbor-cli-shim --release
           if (-not (Test-Path target\release\meshharbor-shim.exe)) {
             Write-Host "::error::meshharbor-shim.exe not produced — the TunnelExe wxs component would fail the MSI harvest (LGHT0103)"
             exit 1
           }
           $kb = [math]::Round((Get-Item target\release\meshharbor-shim.exe).Length/1KB, 0)
-          Write-Host "Staged meshharbor-shim.exe ($kb KB, installs as meshharbor.exe) for the TunnelExe component"
+          Write-Host "Staged meshharbor-shim.exe ($kb KB, installs as mh.exe) for the TunnelExe component"
 
       # The rc.65 "Verify FFmpeg link via unit test" step is GONE: even in
       # --release with the exact build feature set, `cargo test` cost 5m33s
@@ -1731,7 +1731,7 @@ jobs:
                     Sort-Object FullName | Select-Object -Last 1
           if (-not $crtDir) { Write-Host "::error::no Microsoft.VC14x.CRT redist folder under $vsRoot"; exit 1 }
           # Only what the import tables ask for: meshharbord.exe needs all three,
-          # meshharbor.exe needs vcruntime140, meshharbor-desktop.exe needs none, and
+          # mh.exe needs vcruntime140, meshharbor-desktop.exe needs none, and
           # msvcp140.dll itself imports only the two vcruntime DLLs. The other
           # six redist DLLs (concrt140, vccorlib140, msvcp140_1, msvcp140_2,
           # msvcp140_atomic_wait, msvcp140_codecvt_ids) are satellites a
@@ -1895,7 +1895,7 @@ jobs:
             param([string]$Dir, [switch]$Quiet)
             $found    = @()
             $appLocal = @()
-            foreach ($exe in @('meshharbord.exe', 'meshharbor.exe')) {
+            foreach ($exe in @('meshharbord.exe', 'mh.exe')) {
               $path = Join-Path $Dir $exe
               if (-not (Test-Path $path)) { $found += "$exe missing from the MSI payload"; continue }
               $imports = & $dumpbin /dependents $path |
@@ -1983,7 +1983,7 @@ jobs:
         # Budget history: rc.63 baseline 8 MB (pre-ffmpeg); rc.65's
         # Option B guard capped ffmpeg bloat at a 24 MB hard ceiling;
         # rc.194 measured 20.73 MB per flavour. P4b DELIBERATELY grows
-        # the MSI: both flavours now bundle the tunnel CLI meshharbor.exe
+        # the MSI: both flavours now bundle the tunnel CLI mh.exe
         # (~8 MB compressed; node-stack unification Option A) →
         # expected ≈ 29 MB. The guard's job is unchanged in spirit:
         # catch ACCIDENTAL bloat (unstripped FFmpeg, stray DLLs,
@@ -2581,11 +2581,11 @@ jobs:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: cargo build -p meshharbord --release --features "full,hive,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ssh-server,ffmpeg-encoder" --target aarch64-apple-darwin
 
-      # The `meshharbor` CLI. macOS shipped WITHOUT one until rc.454 — the pkg
-      # payload was the .app and nothing else — so `meshharbor peers` was
+      # The `mh` CLI. macOS shipped WITHOUT one until rc.454 — the pkg
+      # payload was the .app and nothing else — so `mh peers` was
       # impossible on a Mac despite the daemon carrying the entire command
       # surface behind `meshharbord cli`. Same ~150 KB shim as the .deb and the
-      # MSI (P3e lever D); it lands at /usr/local/bin/meshharbor below.
+      # MSI (P3e lever D); it lands at /usr/local/bin/mh below.
       - name: Build the meshharbor CLI shim
         run: cargo build -p meshharbor-cli-shim --release --target aarch64-apple-darwin
 
@@ -3134,13 +3134,13 @@ jobs:
           # platform has almost no installs.
           cp -R stage/meshharbord.app payload/Library/MeshHarbor/
           # The CLI. Until rc.454 the macOS payload was the .app and NOTHING
-          # else — no `meshharbor` on PATH, so `meshharbor peers` was impossible on a
+          # else — no `mh` on PATH, so `mh peers` was impossible on a
           # Mac even though the daemon carries the whole command surface. Same
           # ~150 KB shim the .deb and the MSI install; it re-execs
           # `<daemon> cli <args>`, resolving the bundle path on macOS because
           # the two binaries cannot be siblings here.
-          cp target/aarch64-apple-darwin/release/meshharbor-shim payload/usr/local/bin/meshharbor
-          chmod 755 payload/usr/local/bin/meshharbor
+          cp target/aarch64-apple-darwin/release/meshharbor-shim payload/usr/local/bin/mh
+          chmod 755 payload/usr/local/bin/mh
           # The menu-bar companion, and its LaunchAgent (installed by the
           # postinstall alongside the agent's).
           cp -R stage/MeshHarbor.app payload/Applications/

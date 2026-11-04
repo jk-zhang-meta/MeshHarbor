@@ -15,7 +15,7 @@ name: Release meshharbor-tunnel
 # (tar.gz / zip) per target, plus a `.deb` per Linux arch for Debian / Ubuntu
 # installs.
 #
-# The Windows `meshharbor.exe` is Authenticode-signed via
+# The Windows `mh.exe` is Authenticode-signed via
 # ./.github/actions/sign-windows (the signing job carries `environment:
 # release` — the federated credential is bound to that GitHub environment);
 # the macOS universal binary is Developer-ID-signed + notarised (NOT stapled
@@ -154,8 +154,8 @@ jobs:
       - name: Build meshharbor-tunnel (release)
         run: cargo build -p meshharbor-cli --release
       - name: Strip binary
-        # P3d Slice B: CLI OUTPUT binary is now `meshharbor` (was `meshharbor-tunnel`).
-        run: strip target/release/meshharbor
+        # P3d Slice B: CLI OUTPUT binary is now `mh` (was `meshharbor-tunnel`).
+        run: strip target/release/mh
       - name: Pack tarball
         id: tar
         shell: bash
@@ -166,9 +166,9 @@ jobs:
           mkdir -p "/tmp/${name}"
           # P3d Slice C: the legacy `meshharbor-tunnel` in-archive alias is retired —
           # every live consumer (rc.194+ self-update, meshharbor-setup's
-          # find_tunnel_binary, install.sh) resolves the new `meshharbor` name first.
+          # find_tunnel_binary, install.sh) resolves the new `mh` name first.
           # Archive NAME keeps the meshharbor-tunnel-… prefix (frozen contract).
-          cp target/release/meshharbor "/tmp/${name}/"
+          cp target/release/mh "/tmp/${name}/"
           cp LICENSE README.md "/tmp/${name}/" 2>/dev/null || true
           (cd /tmp && tar czf "${name}.tar.gz" "${name}")
           sha256sum "/tmp/${name}.tar.gz" | awk '{print $1"  "$2}' > "/tmp/${name}.tar.gz.sha256"
@@ -237,7 +237,7 @@ jobs:
       - name: Build meshharbor-tunnel (release)
         run: cargo build -p meshharbor-cli --release
       - name: Strip binary
-        run: strip target/release/meshharbor
+        run: strip target/release/mh
       - name: Pack tarball
         id: tar
         shell: bash
@@ -246,7 +246,7 @@ jobs:
           version="${{ needs.validate-version.outputs.version }}"
           name="meshharbor-tunnel-${version}-aarch64-unknown-linux-gnu"
           mkdir -p "/tmp/${name}"
-          cp target/release/meshharbor "/tmp/${name}/"
+          cp target/release/mh "/tmp/${name}/"
           cp LICENSE README.md "/tmp/${name}/" 2>/dev/null || true
           (cd /tmp && tar czf "${name}.tar.gz" "${name}")
           sha256sum "/tmp/${name}.tar.gz" | awk '{print $1"  "$2}' > "/tmp/${name}.tar.gz.sha256"
@@ -274,8 +274,8 @@ jobs:
           set -euo pipefail
           dpkg-deb --field "${{ steps.deb.outputs.artifact }}" Architecture | grep -qx arm64
           sudo dpkg -i "${{ steps.deb.outputs.artifact }}"
-          readelf -h /usr/bin/meshharbor | grep -q 'Machine:.*AArch64'
-          meshharbor --version
+          readelf -h /usr/bin/mh | grep -q 'Machine:.*AArch64'
+          mh --version
           sudo dpkg -r meshharbor-cli
       - name: Upload Linux aarch64 artifacts
         uses: actions/upload-artifact@v4
@@ -318,18 +318,18 @@ jobs:
         run: cargo build -p meshharbor-cli --release --target aarch64-apple-darwin
       - name: Lipo into universal
         run: |
-          # P3d Slice B: per-target CLI binary is now `meshharbor` (was
+          # P3d Slice B: per-target CLI binary is now `mh` (was
           # `meshharbor-tunnel`); lipo the two arch builds into the new name.
           mkdir -p target/release-universal
-          lipo -create -output target/release-universal/meshharbor \
-            target/x86_64-apple-darwin/release/meshharbor \
-            target/aarch64-apple-darwin/release/meshharbor
-          strip target/release-universal/meshharbor
-          file target/release-universal/meshharbor
+          lipo -create -output target/release-universal/mh \
+            target/x86_64-apple-darwin/release/mh \
+            target/aarch64-apple-darwin/release/mh
+          strip target/release-universal/mh
+          file target/release-universal/mh
       # Sign + notarise the bare CLI. NOT stapled -- Apple only staples
       # bundles/.dmg/.pkg, never a loose Mach-O. That is acceptable here
       # because the CLI's install paths (`curl … | tar`, scripts/install.sh,
-      # `meshharbor self-update`) never set the quarantine attribute, so
+      # `mh self-update`) never set the quarantine attribute, so
       # Gatekeeper does not evaluate those copies at all; signing +
       # notarisation covers the browser-download case on ONLINE Macs and
       # satisfies `spctl` policy on managed fleets. If offline validation is
@@ -338,7 +338,7 @@ jobs:
       - name: Sign + notarise meshharbor (universal)
         uses: ./.github/actions/sign-macos
         with:
-          binary-path:          target/release-universal/meshharbor
+          binary-path:          target/release-universal/mh
           require:              ${{ needs.validate-version.outputs.is_release == 'true' }}
           app-p12-base64:       ${{ secrets.APPLE_DEVELOPER_ID_APP_P12_BASE64 }}
           installer-p12-base64: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_P12_BASE64 }}
@@ -356,7 +356,7 @@ jobs:
           mkdir -p "/tmp/${name}"
           # P3d Slice C: legacy `meshharbor-tunnel` in-archive alias retired
           # (see the Linux tarball step for the rationale).
-          cp target/release-universal/meshharbor "/tmp/${name}/"
+          cp target/release-universal/mh "/tmp/${name}/"
           cp LICENSE README.md "/tmp/${name}/" 2>/dev/null || true
           (cd /tmp && tar czf "${name}.tar.gz" "${name}")
           shasum -a 256 "/tmp/${name}.tar.gz" | awk '{print $1"  "$2}' > "/tmp/${name}.tar.gz.sha256"
@@ -401,7 +401,7 @@ jobs:
           save-if: ${{ github.ref_type != 'tag' }}
       - name: Build meshharbor-tunnel (release)
         shell: pwsh
-        # Static CRT: the standalone zip's meshharbor.exe runs from any
+        # Static CRT: the standalone zip's mh.exe runs from any
         # dir on arbitrary fresh machines -- it must not assume the
         # MSVC runtime (vcruntime140.dll) exists there (field report
         # 2026-07-28). Pure-Rust graph, so +crt-static is safe. The
@@ -413,11 +413,11 @@ jobs:
       # Sign before zipping so the EXE the operator extracts is signed. A zip
       # cannot itself carry an Authenticode signature, so the binary inside is
       # the only thing that can vouch for the download.
-      - name: Sign meshharbor.exe
+      - name: Sign mh.exe
         id: sign
         uses: ./.github/actions/sign-windows
         with:
-          files:                    target\release\meshharbor.exe
+          files:                    target\release\mh.exe
           description:              'MeshHarbor CLI'
           mode:                     ${{ github.event.inputs.signing_mode || 'auto' }}
           require:                  ${{ needs.validate-version.outputs.is_release == 'true' || github.event.inputs.require_signing == 'true' }}
@@ -438,12 +438,12 @@ jobs:
           $name = "meshharbor-tunnel-$version-x86_64-pc-windows-msvc"
           New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\$name" -Force | Out-Null
           # P3d Slice C: legacy `meshharbor-tunnel.exe` in-zip alias retired — rc.194+
-          # self-updaters and the setup wizard both extract `meshharbor.exe` first.
+          # self-updaters and the setup wizard both extract `mh.exe` first.
           # (A pre-rc.194 CLI waking from dormancy can still RUN; only its
           # self-update would need a manual refresh — none live in the fleet,
           # verified against prod tunnel_clients 2026-07-22.) Zip asset name
           # keeps the `meshharbor-tunnel-…zip` prefix (updater/proxy prefix-agnostic).
-          Copy-Item target\release\meshharbor.exe "$env:RUNNER_TEMP\$name\"
+          Copy-Item target\release\mh.exe "$env:RUNNER_TEMP\$name\"
           if (Test-Path LICENSE) { Copy-Item LICENSE "$env:RUNNER_TEMP\$name\" }
           if (Test-Path README.md) { Copy-Item README.md "$env:RUNNER_TEMP\$name\" }
           Compress-Archive -Path "$env:RUNNER_TEMP\$name\*" -DestinationPath "$name.zip"
@@ -521,14 +521,14 @@ jobs:
             - Linux x86_64: `.tar.gz` or `.deb`
             - Linux aarch64: `.tar.gz` or `.deb`
             - macOS universal (x86_64 + aarch64): `.tar.gz`
-            - Windows x86_64: `.zip` containing `meshharbor.exe`
+            - Windows x86_64: `.zip` containing `mh.exe`
 
             **First-use:**
             1. Extract the archive.
             2. From the MeshHarbor admin UI → Tenant → Tunnels, click "Issue enrollment token".
-            3. Run the copied `meshharbor enroll …` command.
+            3. Run the copied `mh enroll …` command.
             4. From Admin → Tunnel ACL, create at least one policy authorising your subject + agent + destination.
-            5. Run `meshharbor forward --agent <hex> --local <port> --remote <host:port>`.
+            5. Run `mh forward --agent <hex> --local <port> --remote <host:port>`.
           files: release/*
 
   # ---------------------------------------------------------------------------

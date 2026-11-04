@@ -52,7 +52,7 @@ wait.
 ### The database behind the office firewall
 
 ```bash
-meshharbor forward --agent office-1 --local 127.0.0.1:5432 --remote db.internal:5432
+mh forward --agent office-1 --local 127.0.0.1:5432 --remote db.internal:5432
 psql -h 127.0.0.1   # you're inside
 ```
 
@@ -62,7 +62,7 @@ is gated by a default-deny ACL policy an admin manages centrally
 
 ### Seeing the network as another machine sees it
 
-`meshharbor socks5 --agent berlin-1 --local 127.0.0.1:1080` gives any app a SOCKS5
+`mh socks5 --agent berlin-1 --local 127.0.0.1:1080` gives any app a SOCKS5
 proxy that exits from that machine — corp-LAN dashboards, region-locked services,
 E2E tests from a real customer vantage. Mesh mode (`--agent` omitted) reaches the
 *whole fleet* through one proxy, addressing agents by name.
@@ -72,7 +72,7 @@ E2E tests from a real customer vantage. Mesh mode (`--agent` omitted) reaches th
 Every daemon is an overlay-mesh node: stable private IP (`100.64.0.0/10`),
 MagicDNS name (`gpu-1.<your-domain>`), direct LAN paths when possible, NAT
 hole-punching and relays when not ([overlay-communication.md](overlay-communication.md)).
-`meshharbor ssh gpu-1` opens a shell on any node with **no `sshd` and no open
+`mh ssh gpu-1` opens a shell on any node with **no `sshd` and no open
 port** ([meshharbor-ssh.md](meshharbor-ssh.md)). Optional
 [exit nodes](overlay-exit-nodes.md) route a laptop's entire internet egress
 through a trusted machine — hotel Wi-Fi looks like your home connection.
@@ -90,7 +90,7 @@ tunnel ACLs decide exactly which hosts and ports a sandbox may touch. More in
 
 The Devices, Network, and Observability views show every machine, the live mesh
 graph with carrier types, relay usage, and per-org activity.
-`meshharbor exec` / the device console run commands on trusted devices through four
+`mh exec` / the device console run commands on trusted devices through four
 independent default-deny gates with a full audit trail ([fleet-rpc.md](fleet-rpc.md)).
 
 ## 💬 Bonus · Video conferencing & team collaboration

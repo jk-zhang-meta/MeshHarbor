@@ -281,7 +281,7 @@ web-push = "0.10"
 
 # Misc
 rand = "0.9"
-# `meshharbor ssh` mints a per-session ephemeral keypair in the CLI process, so
+# `mh ssh` mints a per-session ephemeral keypair in the CLI process, so
 # the private half never crosses the LocalAPI socket. Version is PINNED to the
 # one russh 0.62 already resolves — a second `ssh-key` generation in the tree
 # would mean two incompatible `PublicKey` types across the server and client

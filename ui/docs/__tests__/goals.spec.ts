@@ -39,7 +39,7 @@ const body = renderMarkdown(
     ':::',
     '',
     '```bash',
-    'meshharbor ssh my-laptop',
+    'mh ssh my-laptop',
     '```',
     '',
     'Source: [the repository](https://github.com/jk-zhang-meta/MeshHarbor/blob/master/LICENSING.md),',
@@ -109,8 +109,8 @@ describe('isInstallCommand — what counts as an install/enroll command', () => 
 
   it('does not count commands that USE MeshHarbor, or anything else', () => {
     for (const cmd of [
-      'meshharbor ssh <device-name>',
-      'meshharbor forward --agent <device-name> --local 127.0.0.1:5432 --remote db:5432',
+      'mh ssh <device-name>',
+      'mh forward --agent <device-name> --local 127.0.0.1:5432 --remote db:5432',
       'git clone https://github.com/jk-zhang-meta/MeshHarbor.git',
       'docker compose up -d',
       'echo enroll --server',
@@ -126,7 +126,7 @@ describe('isInstallCommand — what counts as an install/enroll command', () => 
     const marked = blocks.filter((b) => b.hasAttribute('data-install'))
     expect(marked.length).toBeGreaterThanOrEqual(3)
     for (const b of marked) expect(isInstallCommand(b.querySelector('code')!.textContent!)).toBe(true)
-    const plain = blocks.find((b) => b.textContent!.includes('meshharbor ssh'))!
+    const plain = blocks.find((b) => b.textContent!.includes('mh ssh'))!
     expect(plain.hasAttribute('data-install')).toBe(false)
   })
 })

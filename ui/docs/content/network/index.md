@@ -35,11 +35,11 @@ single inbound port on anything.
 ## The two commands you will actually use
 
 ```bash
-meshharbor status    # this machine: address, name, and how it is connected
-meshharbor peers     # everything else on the mesh, and how each one is reached
+mh status    # this machine: address, name, and how it is connected
+mh peers     # everything else on the mesh, and how each one is reached
 ```
 
-`meshharbor peers` is the diagnostic. It names every peer, its address, and the
+`mh peers` is the diagnostic. It names every peer, its address, and the
 path currently carrying it — which answers "why is this slow?" faster than
 anything else.
 
@@ -52,7 +52,7 @@ macOS](/docs/start/install/macos/).
 
 :::warning An organization can have the mesh switched off
 A device can be perfectly connected to the control plane and still have no mesh
-— they are separate things. `meshharbor status` prints both on one line for exactly
+— they are separate things. `mh status` prints both on one line for exactly
 that reason, and an organization whose mesh is off is **named** in `meshharbor
 peers` rather than silently omitted.
 :::

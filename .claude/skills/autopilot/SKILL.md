@@ -19,7 +19,7 @@ would manufacture exactly the lie this codebase is built to prevent.
 The resolution is a split nobody had written down before: **every acceptance criterion is
 either agent-reachable or operator-only.**
 
-- **agent** — a measurement, a test, a fleet read via `meshharbor exec`, a `vmtest` /
+- **agent** — a measurement, a test, a fleet read via `mh exec`, a `vmtest` /
   `profiletest` / `tunnel-fleet-test` cell, a Chrome-driven RC session, a doc.
 - **operator** — a human's perception or a human's decision. FR-77 is open *only for the
   operator's Notepad++ scroll*. FR-74's remainder is *the operator's cap call*. FR-1 was
@@ -148,7 +148,7 @@ never edits a spec, never touches an issue.
 
 - **A new field-verification route**: map the pillar to its skill in phase 5. Remote
   desktop → a Chrome-driven session; install/enrollment → `vmtest`; profiles →
-  `profiletest`; tunnels/overlay → `tunnel-fleet-test`; server → `meshharbor exec` reads.
+  `profiletest`; tunnels/overlay → `tunnel-fleet-test`; server → `mh exec` reads.
 - **A new card kind** (a plain bug, not an FR): `kind: "bug"`, no spec, ACs authored on the
   card from the issue body. Everything downstream already treats `acs` as the spine.
 - **Re-classifying an AC**: edit `verify` on the card. `scan` preserves any value that is

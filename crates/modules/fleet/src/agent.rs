@@ -688,7 +688,7 @@ pub struct AgentResponse {
     pub last_seen_at: String,
     pub access_policy: AccessPolicy,
     /// Subnet-router CIDRs this agent advertises for the mesh (Phase 2). The
-    /// `meshharbor socks5` mesh longest-prefix-matches a LAN target IP
+    /// `mh socks5` mesh longest-prefix-matches a LAN target IP
     /// against these to pick the covering agent, which then dials the real
     /// IP. Admin-managed here; still gated by the tenant's `tunnel_policies`.
     pub routes: Vec<String>,

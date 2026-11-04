@@ -6,11 +6,11 @@
 //!
 //! Three facts shape this module, all about where a name lives:
 //!
-//! * The NAME `meshharbor peers` prints is [`PeerInfo::name`]: the MagicDNS label
+//! * The NAME `mh peers` prints is [`PeerInfo::name`]: the MagicDNS label
 //!   the netmap carries, derived from the fleet name. The dashboard's
 //!   `display_name` deliberately never enters the netmap
 //!   (`docs/device-naming.md`), so the only place a CLI can learn it is the
-//!   device list the daemon fetches for this device (`meshharbor devices`, FR-84
+//!   device list the daemon fetches for this device (`mh devices`, FR-84
 //!   D5b). Everything here is a JOIN of those two lists; nothing on the wire
 //!   changes.
 //! * `exec` / `ssh` targets are resolved by the SERVER (hex id, then the fleet
@@ -57,7 +57,7 @@ pub fn row_for_peer<'a>(p: &PeerInfo, rows: &'a [DeviceRowLite]) -> Option<&'a D
 }
 
 /// The local peer behind a listed device: by overlay node id, else by the
-/// backing agent id. `meshharbor devices` fills its CONN column with this.
+/// backing agent id. `mh devices` fills its CONN column with this.
 pub fn peer_for_device<'a>(r: &DeviceRowLite, peers: &'a [PeerInfo]) -> Option<&'a PeerInfo> {
     if let Some(node) = r.overlay_node_id.as_deref()
         && !node.is_empty()
@@ -115,7 +115,7 @@ pub fn name_peers<'a>(
         .collect()
 }
 
-/// `meshharbor peers NAME…` — keep the peers whose mesh name OR display name is
+/// `mh peers NAME…` — keep the peers whose mesh name OR display name is
 /// one of `wanted` (case-insensitive), **in the order of the arguments**:
 /// every peer the first argument names (in list order — the same host can
 /// appear once per shared org), then the next argument's. A peer two
@@ -259,7 +259,7 @@ pub fn resolve_selector<'a>(
     }
 }
 
-/// The address `meshharbor ping` sends for a display-name-resolved device: its
+/// The address `mh ping` sends for a display-name-resolved device: its
 /// overlay IPv4, or with `prefer_v6` the derived IPv6 the local peer view
 /// publishes for it — falling back to the v4 when no v6 is published, exactly
 /// as the daemon does for a name. `None` when the device has no address.
@@ -420,7 +420,7 @@ mod tests {
     // ── the join ───────────────────────────────────────────────────────────
 
     /// The NAME column reads the display name through the same two join keys
-    /// `meshharbor devices` uses the other way round — node id first, then the
+    /// `mh devices` uses the other way round — node id first, then the
     /// backing agent id — and a blank label is no label.
     #[test]
     fn peers_are_named_by_node_id_then_agent_id_and_blank_labels_are_none() {

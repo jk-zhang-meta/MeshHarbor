@@ -463,7 +463,7 @@ flowchart LR
         S["2 fleet servers"]
     end
     D -- "boot · enrol · drive · collect · delete the row" --> VM
-    VM -- "ping ×40 · ssh ×3 · scp 32 MiB ↑↓<br/>meshharbor peers every 10 s" --> L & S
+    VM -- "ping ×40 · ssh ×3 · scp 32 MiB ↑↓<br/>mh peers every 10 s" --> L & S
 ```
 
 ### The two arms
@@ -481,11 +481,11 @@ the relay arm measures.
 
 | column | what it measures | how |
 |---|---|---|
-| `carrier` | the carrier in use, with its `why` evidence | `meshharbor peers` / `meshharbor why` |
-| latency | p50 / p95 / max / loss over 40 samples | `meshharbor ping` |
-| SSH | grant-issued session success, 3 per target | `meshharbor ssh <t> -- <trivial>` |
-| throughput | 32 MiB up and down, sha256-verified, per-direction ms timing | `scp` over `meshharbor proxy` with a client key in the target's `ssh_authorized_keys` |
-| stability | carrier **transitions** over the arm | `meshharbor peers` sampled every 10 s from the VM |
+| `carrier` | the carrier in use, with its `why` evidence | `mh peers` / `mh why` |
+| latency | p50 / p95 / max / loss over 40 samples | `mh ping` |
+| SSH | grant-issued session success, 3 per target | `mh ssh <t> -- <trivial>` |
+| throughput | 32 MiB up and down, sha256-verified, per-direction ms timing | `scp` over `mh proxy` with a client key in the target's `ssh_authorized_keys` |
+| stability | carrier **transitions** over the arm | `mh peers` sampled every 10 s from the VM |
 
 ⚠️ **The carrier is reported, never asserted.** The recon behind FR-81 found two of the corp
 laptops with no UDP egress at all and the third behind a symmetric NAT with the relay band
@@ -494,7 +494,7 @@ three permanent reds for a mesh behaving correctly. The lane asserts only what m
 carrier: the target is reachable, the bytes arrive intact, and the carrier stays put.
 
 ⚠️ **Stability counts transitions from an allow-list of carrier shapes** (`direct`, `lan`,
-`relay:*`). The `CONN` column of `meshharbor peers` also carries *states* — `upgrading` (a
+`relay:*`). The `CONN` column of `mh peers` also carries *states* — `upgrading` (a
 make-before-break probe on a relayed peer, [`localclient.rs:1259`](../agents/meshharbor-cli/src/localclient.rs#L1259)),
 `stalled`, `offline` — and counting those as carriers once reported a healthy peer as flapping.
 They are tallied separately, and any value outside both lists is **reported, never counted**.
@@ -517,7 +517,7 @@ corporate laptop, a real relay path, or both:
 | round 2 | `scp` exited 1 after every *successful* transfer: the sftp subsystem never sent an exit status | #1559 — the pump waits for the child and reports it ([`ssh.rs:1093`](../agents/meshharbord/src/ssh.rs#L1093)) |
 | round 2 | a device whose stored SSH host key was unreadable published **no** key, permanently, so no caller could verify it | #1565 — an unreadable key counts as no key and is replaced ([`ssh.rs:404`](../agents/meshharbord/src/ssh.rs#L404)) |
 | round 3 | a caller with a faster control path than the target dialled before the target had its grant: `Permission denied (publickey)`, 0/3 on one laptop | FR-83 (#1597) — the server answers only after the device confirms the grant ([`agent_ssh.rs:587`](../crates/modules/network/src/routes/agent_ssh.rs#L587)) |
-| round 3 | `meshharbor proxy`'s own `--help` recipe could not work (`%h` arrives as `<name>.meshharbor`) | #1573 — the suffix and the MagicDNS domain are stripped ([`localclient.rs:598`](../agents/meshharbor-cli/src/localclient.rs#L598)) |
+| round 3 | `mh proxy`'s own `--help` recipe could not work (`%h` arrives as `<name>.meshharbor`) | #1573 — the suffix and the MagicDNS domain are stripped ([`localclient.rs:598`](../agents/meshharbor-cli/src/localclient.rs#L598)) |
 
 ### Reference run — `20260924-155559`, every target on agent 0.4.101
 

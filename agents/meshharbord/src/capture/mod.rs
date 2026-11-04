@@ -663,28 +663,28 @@ fn x11_hint_with(root: bool, no_surface: bool, no_lock_report: bool) -> &'static
         "This computer is showing an X11 desktop whose screen locker does not report a lock to \
          the system (GNOME and KDE do; this desktop does not), so a system install does not \
          capture it by itself: it could not tell the lock screen from the desktop. On the host \
-         an administrator can run sudo meshharbor config set drm_capture true and sudo meshharbor \
-         config set uinput true, then sudo meshharbor restart. That capture reads the screen below \
+         an administrator can run sudo mh config set drm_capture true and sudo meshharbor \
+         config set uinput true, then sudo mh restart. That capture reads the screen below \
          the desktop, the lock screen included. Remote shell and file transfer still work."
     } else if root && no_surface {
         "This computer is showing an X11 desktop, and it is not captured by itself because \
          nobody at the screen could be told they are being viewed: the session on screen has no \
          desktop companion and no notification service. Install the desktop companion (the \
-         install script does), or on the host an administrator can run sudo meshharbor config set \
-         drm_capture true and sudo meshharbor config set uinput true, then sudo meshharbor restart. \
+         install script does), or on the host an administrator can run sudo mh config set \
+         drm_capture true and sudo mh config set uinput true, then sudo mh restart. \
          That capture reads the screen below the desktop, the lock screen included. Remote \
          shell and file transfer still work."
     } else if root {
         "This computer is showing an X11 desktop that this system install does not capture by \
          itself right now: nobody is signed in at the screen (the login screen is never captured \
          by default), or automatic capture is switched off (wayland_auto), or a capture key is \
-         set. On the host an administrator can run sudo meshharbor config ls, clear wayland_auto \
+         set. On the host an administrator can run sudo mh config ls, clear wayland_auto \
          and any capture key it shows as set (drm_capture, portal_capture, mutter_capture, \
-         window_capture) with sudo meshharbor config clear, then sudo meshharbor restart. Remote shell \
+         window_capture) with sudo mh config clear, then sudo mh restart. Remote shell \
          and file transfer still work."
     } else {
         "This computer is showing an X11 desktop, and this agent was started without access to \
-         it (no DISPLAY). Restart it from inside the desktop session, with meshharbor restart in a \
+         it (no DISPLAY). Restart it from inside the desktop session, with mh restart in a \
          terminal there, or install the system service. Remote shell and file transfer still \
          work."
     }
@@ -708,21 +708,21 @@ fn wayland_hint_with(root: bool, no_surface: bool) -> &'static str {
         "This computer is showing a Wayland desktop, and it is not captured by itself because \
          nobody at the screen could be told they are being viewed: the session on screen has no \
          desktop companion and no notification service. Install the desktop companion (the \
-         install script does), or on the host an administrator can run sudo meshharbor config set \
-         drm_capture true and sudo meshharbor config set uinput true, then sudo meshharbor restart. \
+         install script does), or on the host an administrator can run sudo mh config set \
+         drm_capture true and sudo mh config set uinput true, then sudo mh restart. \
          That capture reads the screen below the desktop, the lock screen included. Remote \
          shell and file transfer still work."
     } else if root {
         "This computer is showing a Wayland desktop, and capturing it is switched off on this \
-         device. On the host an administrator can run sudo meshharbor config set drm_capture true \
-         and sudo meshharbor config set uinput true, then sudo meshharbor restart. That capture reads \
+         device. On the host an administrator can run sudo mh config set drm_capture true \
+         and sudo mh config set uinput true, then sudo mh restart. That capture reads \
          the screen below the desktop, the lock screen included. Remote shell and file transfer \
          still work."
     } else {
         "This computer is showing a Wayland desktop, and capturing it is switched off on this \
-         device. On the host, run meshharbor config clear wayland_auto, and meshharbor config clear for \
-         each capture key that meshharbor config ls shows as set (portal_capture, mutter_capture, \
-         window_capture), then meshharbor restart. GNOME is then captured through its own \
+         device. On the host, run mh config clear wayland_auto, and mh config clear for \
+         each capture key that mh config ls shows as set (portal_capture, mutter_capture, \
+         window_capture), then mh restart. GNOME is then captured through its own \
          screencast, which asks nobody, and other desktops ask the person at the screen once. \
          Remote shell and file transfer still work."
     }
@@ -3779,7 +3779,7 @@ mod wayland_reason_tests {
         assert!(no_surface.contains("being viewed"), "{no_surface}");
         assert!(no_surface.contains("desktop companion"), "{no_surface}");
         let off = x11_hint_with(true, false, false);
-        assert!(off.contains("sudo meshharbor config clear"), "{off}");
+        assert!(off.contains("sudo mh config clear"), "{off}");
         assert!(off.contains("login screen"), "{off}");
         assert!(!off.contains("x11_auto_system"), "{off}");
         let user = x11_hint_with(false, false, false);
@@ -3854,7 +3854,7 @@ mod wayland_reason_tests {
     fn the_hint_names_the_keys_this_install_can_use() {
         let root = wayland_hint(true);
         assert!(
-            root.contains("sudo meshharbor config set drm_capture true"),
+            root.contains("sudo mh config set drm_capture true"),
             "{root}"
         );
         assert!(root.contains("uinput"), "{root}");
@@ -3862,7 +3862,7 @@ mod wayland_reason_tests {
 
         let user = wayland_hint(false);
         assert!(
-            user.contains("meshharbor config clear wayland_auto"),
+            user.contains("mh config clear wayland_auto"),
             "{user}"
         );
         assert!(user.contains("portal_capture"), "{user}");
@@ -4158,7 +4158,7 @@ mod system_auto_tests {
         );
     }
 
-    /// The kill switch only works if `meshharbor config set` reaches the env the
+    /// The kill switch only works if `mh config set` reaches the env the
     /// plan reads.
     #[cfg(target_os = "linux")]
     #[test]
@@ -4270,7 +4270,7 @@ mod wayland_auto_tests {
 
     /// "Any capture key takes the choice back" holds only if every key in the
     /// list reaches `node_env` from the config. A name that is not bridged
-    /// would be a `meshharbor config set` that the cascade never sees, and auto
+    /// would be a `mh config set` that the cascade never sees, and auto
     /// would stay on under an operator who switched it off.
     #[cfg(target_os = "linux")]
     #[test]

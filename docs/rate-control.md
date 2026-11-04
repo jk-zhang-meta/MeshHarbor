@@ -525,7 +525,7 @@ software pump reads the same plan; the RTP pump has no governor).
 
 ## Config / env reference
 
-All keys live in the agent config (`meshharbor config set …`) with
+All keys live in the agent config (`mh config set …`) with
 `MESHHARBORD_*` env twins; restart required.
 
 | Key | Default | Meaning |

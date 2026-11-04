@@ -71,11 +71,11 @@ describe('updateStallChip (FR-106)', () => {
     const linux = updateStallChip('0.4.136', true, 'linux', FEED, NOW)!.tooltip
     expect(linux).toContain('per-user Linux install made before 0.4.138')
     expect(linux).toContain('sudo apt install ./meshharbord.deb')
-    expect(linux).toContain("'meshharbor config ls'")
+    expect(linux).toContain("'mh config ls'")
     for (const os of ['windows', 'macos']) {
       const other = updateStallChip('0.4.136', true, os, FEED, NOW)!.tooltip
       expect(other).not.toContain('per-user Linux')
-      expect(other).toContain("'meshharbor logs --grep update'")
+      expect(other).toContain("'mh logs --grep update'")
     }
   })
 

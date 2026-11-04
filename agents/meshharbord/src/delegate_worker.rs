@@ -345,7 +345,7 @@ async fn attach_once(
                                 "delegation: the daemon's overlay footprint received"
                             );
                         }
-                        // FR-92 — a `meshharbor keep-busy status|off` reached the
+                        // FR-92 — a `mh keep-busy status|off` reached the
                         // DAEMON's LocalAPI (a root caller never sees our
                         // per-user socket), and keep busy runs HERE. Answered
                         // inline: a status is immediate and an `off` waits at

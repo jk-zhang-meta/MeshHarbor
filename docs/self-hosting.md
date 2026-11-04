@@ -21,7 +21,7 @@ Redis, MinIO for file storage, and optionally coturn as a relay.
 |---|---|
 | Remote desktop in a browser tab | yes — peer-to-peer, the server only signals |
 | Overlay mesh, tunnels, SOCKS5, exit nodes, MagicDNS | yes |
-| `meshharbor ssh` (no `sshd`, no open port) | yes |
+| `mh ssh` (no `sshd`, no open port) | yes |
 | Chat, rooms, files, search | yes |
 | Video conferencing (mediasoup SFU) | yes, with the media-port caveat below |
 | Push notifications, email, OAuth, billing | needs your own keys — see *Optional integrations* |
@@ -38,7 +38,7 @@ and `GET /health` on any of them lists the modules it actually mounts.
 | `full` (default) | `<tag>` | everything | MongoDB, Redis, MinIO, coturn, the media port range | — |
 | `collab` | `<tag>-collab` | chat, rooms, files, video calls | MongoDB, Redis, MinIO, coturn, the media port range | the device fleet, the overlay mesh, tunnels, remote desktop |
 | `remote` | `<tag>-remote` | devices + remote desktop | MongoDB, Redis, coturn | the SFU worker build, MinIO, the overlay mesh |
-| `mesh` | `<tag>-mesh` | devices + overlay mesh, tunnels, `meshharbor ssh` | MongoDB, Redis, coturn (and DERP relays if you run them) | the SFU worker build, MinIO |
+| `mesh` | `<tag>-mesh` | devices + overlay mesh, tunnels, `mh ssh` | MongoDB, Redis, coturn (and DERP relays if you run them) | the SFU worker build, MinIO |
 | `access` | `<tag>-access` | devices + remote desktop + mesh — no chat, no calls | MongoDB, Redis, coturn | the SFU worker build, MinIO |
 
 Pick one by **tag** when you pull (`MESHHARBOR_IMAGE=ghcr.io/jk-zhang-meta/meshharbor:<tag>-mesh`
@@ -199,9 +199,9 @@ The token is single-use and expires in 10 minutes. The agent connects
 Then, from the web app, open its desktop; or from any enrolled machine:
 
 ```bash
-meshharbor ping   <name>          # every node has a stable IP and a MagicDNS name
-meshharbor ssh    <name>          # a shell, with no sshd and no listening port
-meshharbor forward --agent <name> --local 127.0.0.1:5432 --remote db.internal:5432
+mh ping   <name>          # every node has a stable IP and a MagicDNS name
+mh ssh    <name>          # a shell, with no sshd and no listening port
+mh forward --agent <name> --local 127.0.0.1:5432 --remote db.internal:5432
 ```
 
 ---

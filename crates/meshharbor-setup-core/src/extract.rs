@@ -259,7 +259,7 @@ fn check_within(dest_dir: &Path, candidate: &Path) -> Result<()> {
 /// `extracted_root`) for forward-compat with future layouts.
 pub fn find_tunnel_binary(extracted_root: &Path) -> Result<PathBuf> {
     let candidate_names: [&str; 2] = if cfg!(target_os = "windows") {
-        ["meshharbor.exe", "meshharbor-tunnel.exe"]
+        ["mh.exe", "meshharbor-tunnel.exe"]
     } else {
         // RETIRED-NAME-ANCHOR: member names inside ALREADY-PUBLISHED tarballs.
         // The extractor must keep accepting them. docs/fr/FR-21
@@ -464,7 +464,7 @@ mod tests {
     #[test]
     fn find_tunnel_binary_prefers_new_name_when_both_present() {
         let (new_name, old_name) = if cfg!(target_os = "windows") {
-            ("meshharbor.exe", "meshharbor-tunnel.exe")
+            ("mh.exe", "meshharbor-tunnel.exe")
         } else {
             ("meshharbor", "meshharbor-tunnel")
         };
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn find_tunnel_binary_finds_new_name_alone() {
         let new_name = if cfg!(target_os = "windows") {
-            "meshharbor.exe"
+            "mh.exe"
         } else {
             "meshharbor"
         };

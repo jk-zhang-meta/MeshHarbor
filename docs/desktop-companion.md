@@ -253,7 +253,7 @@ sequenceDiagram
   routes, gets the pre-FR-84 peers table with a one-line note to update. `overlay:
   "no_node"` shows this device and the "private network is off" hint; ACL `enforce` with no
   visible peers says so.
-- **From a terminal:** `meshharbor devices [--org L] [-q TEXT] [--sort KEY] [--desc]
+- **From a terminal:** `mh devices [--org L] [-q TEXT] [--sort KEY] [--desc]
   [--page N] [--per-page N] [--json]`.
 
 ### A two-half Mac asks its root half (FR-97 P2g)
@@ -309,7 +309,7 @@ sequenceDiagram
 
 Most settings are read once at startup, so saving one is not the same as applying it. The
 Settings page collects the saved restart-required keys in a bar with an **Apply now** button;
-`meshharbor restart` is the same thing from a terminal. Both send `Request::RestartDaemon`
+`mh restart` is the same thing from a terminal. Both send `Request::RestartDaemon`
 (`crates/localapi/src/lib.rs:1361`), and **the daemon decides**.
 
 It restarts only when it can prove that something will start it again — exiting an
@@ -329,7 +329,7 @@ systemd's `RestartPreventExitStatus=7 8`, and the SCM host maps it to *respawn* 
 
 ```mermaid
 sequenceDiagram
-    participant C as companion / meshharbor restart
+    participant C as companion / mh restart
     participant D as meshharbord (old process)
     participant S as supervisor
     participant N as meshharbord (new process)
@@ -351,7 +351,7 @@ sequenceDiagram
   systemd `KillMode=control-group` whatever it spawned that outlives it — the desktop's
   setsid'd `at-spi-bus-launcher` grandchild, which **ignores SIGTERM** — keeps the unit's
   cgroup non-empty until systemd SIGKILLs it after `TimeoutStopSec` (90 s), then pays
-  `RestartSec`: a `meshharbor restart` took **96 s**. So every graceful exit now tears the whole
+  `RestartSec`: a `mh restart` took **96 s**. So every graceful exit now tears the whole
   desktop tree down (`virtual_desktop::teardown`, `agents/meshharbord/src/virtual_desktop.rs`) —
   the tree is spawned into its own process group, and teardown unions the group members with
   the parent-link closure of the daemon's direct children (which reaches a setsid'd
@@ -369,7 +369,7 @@ sequenceDiagram
   `TimeoutStopSec + RestartSec`, read from `systemctl show` and carried as the additive
   `restart_within_s` in `DaemonRestarting` — plus a margin, never below the 60 s floor and
   never past 10 minutes (`localapi::restart_wait`, `RESTART_WAIT_CAP`: a unit with
-  `TimeoutStopSec=1h` must not make `meshharbor restart` hang for an hour). Before this, a fixed
+  `TimeoutStopSec=1h` must not make `mh restart` hang for an hour). Before this, a fixed
   60 s wait was shorter than the supervisor's
   worst case, so the CLI reported failure on a restart that had in fact worked. `restart_within_s`
   is absent for every non-systemd supervisor and from an older daemon, where the wait stays 60 s.
@@ -434,7 +434,7 @@ root and the LocalAPI admits any interactive user. The rules
   edited by hand).
 - Only the **console user** may change it through the LocalAPI: an RDP user on the same
   machine must not choose where the console user's incoming files land. A SYSTEM shell
-  (`meshharbor exec`, SSH) can still edit the config file; the use-time check applies.
+  (`mh exec`, SSH) can still edit the config file; the use-time check applies.
 - The Status the companion shows is refreshed off the request path, so a Downloads folder
   redirected to an offline share cannot stall the 2 s poll.
 
@@ -755,7 +755,7 @@ companion stays on native Wayland.
 
 ## 13. One version: the companion follows the daemon (FR-117)
 
-After an update a device runs one version: the daemon (`meshharbord`), the CLI (`meshharbor`) and the
+After an update a device runs one version: the daemon (`meshharbord`), the CLI (`mh`) and the
 companion (`meshharbor-desktop`). Each OS packages the companion differently, so each keeps it in
 step differently:
 
@@ -765,8 +765,8 @@ step differently:
 | macOS | inside the daemon's `.pkg` (`/Applications/MeshHarbor.app`) | the same `.pkg`: one install moves both |
 | Linux | its own `.deb`, or `.rpm` (§10.1) | FR-117 P1: the root update owner moves the package (`companion/package_sync.rs`) |
 
-The CLI needs nothing of its own: it ships inside every daemon package (the MSI's `meshharbor.exe`
-shim, the `.pkg`, the `.deb`, and the tarball, where `usr/bin/meshharbor` is a required member).
+The CLI needs nothing of its own: it ships inside every daemon package (the MSI's `mh.exe`
+shim, the `.pkg`, the `.deb`, and the tarball, where `usr/bin/mh` is a required member).
 
 **Why Linux needed it.** The companion's package is installed once, by `install.sh` or the wizard,
 from a release asset. There is no apt or dnf repository, so nothing ever upgraded it. **Update

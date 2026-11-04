@@ -40,7 +40,7 @@ If you are running short on budget, **park the card and say so**. Never finish c
    ended owing its doc, which is where that rule came from).
 5. **Verify in the field.** Pick the route the pillar dictates: `vmtest` for
    install/enrollment, `profiletest` for profiles, `tunnel-fleet-test` for tunnels and
-   overlay, a Chrome-driven session for remote desktop, `meshharbor exec` for fleet reads.
+   overlay, a Chrome-driven session for remote desktop, `mh exec` for fleet reads.
    ⚠️ A field test must be shown to **fail on the current deploy first**, or its pass
    proves nothing. Record both runs.
 6. **Tick honestly.** An AC gets ticked only with a link to evidence that supports it.

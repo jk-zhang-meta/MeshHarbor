@@ -83,8 +83,8 @@ machines can reach directly — no port forwarding, no public exposure.
 Once two machines are on the mesh:
 
 ```bash
-meshharbor status          # this machine: address, name, carrier
-meshharbor peers           # everything else on the mesh, and how it is reached
+mh status          # this machine: address, name, carrier
+mh peers           # everything else on the mesh, and how it is reached
 ```
 
 Then reach one from the other by name or address — a database, an internal web

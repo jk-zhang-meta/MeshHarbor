@@ -256,7 +256,7 @@ pub fn cmd_save_state(state: wizard_shared::wizard_state::WizardState) -> Result
 /// extras (flavour for daemon roles; binary/PATH details for
 /// whichever pipeline delivered a CLI; config path for both).
 ///
-/// P4b (role→action composition): daemon MSIs carry the `meshharbor`
+/// P4b (role→action composition): daemon MSIs carry the `mh`
 /// CLI, so daemon roles now also populate `binary_path` /
 /// `path_updated` and set `cli_included` from a post-install
 /// existence check (`Some(false)` = an old pre-P4b MSI was served —

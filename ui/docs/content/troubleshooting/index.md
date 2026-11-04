@@ -20,8 +20,8 @@ occur, most common first.
 ## The two commands worth trying first
 
 ```bash
-meshharbor status    # this machine: version, organization, connection, mesh address
-meshharbor peers     # every peer, and how each one is currently reached
+mh status    # this machine: version, organization, connection, mesh address
+mh peers     # every peer, and how each one is currently reached
 ```
 
 Between them they answer most questions before you have finished reading the
@@ -31,7 +31,7 @@ symptom page.
 
 :::warning A device can be "connected" with no mesh at all
 Being connected to the control plane and having a private network address are
-separate facts. `meshharbor status` prints both on one line for exactly that
+separate facts. `mh status` prints both on one line for exactly that
 reason.
 :::
 
@@ -44,7 +44,7 @@ empty SSH activity log means reporting is off, not that nothing happened.
 :::warning A service manager can report a healthy machine as inactive
 On Linux, a daemon that is running perfectly can be one systemd does not own —
 `systemctl is-active` then says **inactive** while the device is online and
-answering. Check `pgrep -x meshharbord` and `meshharbor peers` before believing it,
+answering. Check `pgrep -x meshharbord` and `mh peers` before believing it,
 and do not "restart to fix" on that basis.
 :::
 
@@ -53,4 +53,4 @@ and do not "restart to fix" on that basis.
 Gather [diagnostics](/docs/troubleshooting/collecting-diagnostics/) and open an
 issue at
 [github.com/jk-zhang-meta/MeshHarbor/issues](https://github.com/jk-zhang-meta/MeshHarbor/issues).
-Include what you expected, what happened, and the output of `meshharbor status`.
+Include what you expected, what happened, and the output of `mh status`.

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 // RETIRED-NAME-ANCHOR(2): this line EXISTS to explain the retired spelling, so it must
 // contain it.
-//! `meshharbor status | peers | flows` — the thin-client read verbs.
+//! `mh status | peers | flows` — the thin-client read verbs.
 //!
 //! These connect to the **local** daemon's LocalAPI (the ACL-gated named pipe /
 //! unix socket the daemon binds — see `tunnel_core::localapi`) and render its
@@ -36,7 +36,7 @@ const DASH: &str = "—";
 // Command handlers
 // ---------------------------------------------------------------------------
 
-/// `meshharbor status` — the local node's own state (id, version, mode, overlay
+/// `mh status` — the local node's own state (id, version, mode, overlay
 /// IP, server connection). Renders [`NodeStatus`] ONLY: `status --json` is
 /// exactly that struct, never a peers fan-out.
 pub async fn status(json: bool) -> Result<()> {
@@ -73,7 +73,7 @@ async fn print_other_daemon_hint() {
     }
 }
 
-/// `meshharbor logs` — surface the S2 `TailLog` verb on the CLI.
+/// `mh logs` — surface the S2 `TailLog` verb on the CLI.
 ///
 /// The verb and the daemon side already existed; without a command in front of
 /// them the only way to read a remote agent's log was to guess its path through
@@ -85,7 +85,7 @@ async fn print_other_daemon_hint() {
 /// wrong "the agent's logging is dead" conclusion.
 ///
 /// The daemon opened the file, so it is the only thing that reliably knows.
-/// Composes with Fleet RPC: `meshharbor exec <host> -- meshharbor logs --grep ICE`.
+/// Composes with Fleet RPC: `mh exec <host> -- mh logs --grep ICE`.
 /// The resolved path is always printed — remotely, that IS half the answer.
 pub async fn logs(
     source: String,
@@ -142,7 +142,7 @@ pub async fn logs(
     Ok(())
 }
 
-/// `meshharbor netcheck` — the measured capability vector (overlay v3 B4),
+/// `mh netcheck` — the measured capability vector (overlay v3 B4),
 /// read from the daemon's status payload. What selection actually keys on,
 /// plus how old the measurement is.
 pub async fn netcheck(json: bool) -> Result<()> {
@@ -179,7 +179,7 @@ pub async fn netcheck(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// The flags of `meshharbor peers`.
+/// The flags of `mh peers`.
 #[derive(Debug, Clone, Default)]
 pub struct PeersArgs {
     /// FR-49 — one enrollment label; `None` = every org.
@@ -192,7 +192,7 @@ pub struct PeersArgs {
     pub json: bool,
 }
 
-/// `meshharbor peers` — every peer this node sees, with its live connection type.
+/// `mh peers` — every peer this node sees, with its live connection type.
 ///
 /// FR-49 — `org` scopes the output to ONE enrollment. Not only ergonomics: on a
 /// device in a customer org and a personal one this prints every org's node
@@ -261,7 +261,7 @@ pub async fn peers(args: PeersArgs) -> Result<()> {
             eprintln!("warning: no peer named {miss:?}");
         }
         if kept.is_empty() {
-            bail!("none of the given names matches a peer — `meshharbor peers` lists them");
+            bail!("none of the given names matches a peer — `mh peers` lists them");
         }
         kept
     };
@@ -523,7 +523,7 @@ fn print_dark_orgs(orgs: &[tunnel_core::localapi::OrgStatus], peers: &[PeerInfo]
     }
 }
 
-/// FR-84 D5b — the flags of `meshharbor devices`.
+/// FR-84 D5b — the flags of `mh devices`.
 #[derive(Debug, Clone, Default)]
 pub struct DevicesArgs {
     /// An enrollment label (`primary` or an `[[orgs]]` label); `None` = the
@@ -537,12 +537,12 @@ pub struct DevicesArgs {
     pub json: bool,
 }
 
-/// `meshharbor devices` — FR-84 D5b: the devices this device's private network
+/// `mh devices` — FR-84 D5b: the devices this device's private network
 /// lets it see, itself included, as the SERVER lists them (display names,
 /// OS, version, presence, MagicDNS), with this node's live carrier merged in
 /// from `peers`.
 ///
-/// Different from `meshharbor peers` on purpose: `peers` is what the overlay
+/// Different from `mh peers` on purpose: `peers` is what the overlay
 /// engine currently holds (the netmap's names, carriers, RTTs); this is the
 /// org's own record of the same set, asked by the daemon with the org's agent
 /// token. Search, sort and paging run on the server. `--json` is the page
@@ -589,12 +589,12 @@ fn explain_directory_error(e: localapi::DirectoryError) -> anyhow::Error {
     match e.code() {
         "daemon_unreachable" => anyhow!("meshharbor daemon not running (is the service started?)"),
         "unsupported_daemon" => anyhow!(
-            "the meshharbor daemon on this machine predates `meshharbor devices` — update it \
-             (`meshharbor peers` lists what its mesh carries)"
+            "the meshharbor daemon on this machine predates `mh devices` — update it \
+             (`mh peers` lists what its mesh carries)"
         ),
         "unsupported_server" => anyhow!(
             "this device's server predates the device list (HTTP 404) — update the server; \
-             `meshharbor peers` lists what this device's mesh carries"
+             `mh peers` lists what this device's mesh carries"
         ),
         "unknown_org" | "org_disabled" | "unsupported" => anyhow!("{}", upstream_message(&e)),
         code => match e.status() {
@@ -617,7 +617,7 @@ fn upstream_message(e: &localapi::DirectoryError) -> String {
     }
 }
 
-/// `meshharbor why <peer>` — F: explain, for ONE pair, why it rides the carrier
+/// `mh why <peer>` — F: explain, for ONE pair, why it rides the carrier
 /// it rides.
 ///
 /// Everything printed here was already being computed by the selector on every
@@ -647,7 +647,7 @@ pub async fn why(peer: &str, json: bool) -> Result<()> {
         [one] => *one,
         [] => {
             anyhow::bail!(
-                "no peer matches {peer:?} — `meshharbor peers` lists them by name, overlay IP and node id"
+                "no peer matches {peer:?} — `mh peers` lists them by name, overlay IP and node id"
             )
         }
         many => {
@@ -792,7 +792,7 @@ fn print_why(p: &PeerInfo) {
         println!(
             "  CAPTURED  this host's own LAN prefix is routed through another adapter (a\n\
              \x20           VPN client's split-prefix capture), so a LAN dial cannot work and\n\
-             \x20           is not attempted — `meshharbor status` names the adapter. The fix is\n\
+             \x20           is not attempted — `mh status` names the adapter. The fix is\n\
              \x20           in the VPN profile (local-LAN access / split-exclude), not here."
         );
     }
@@ -831,7 +831,7 @@ fn why_tier_row(t: &TierWhy) -> String {
     )
 }
 
-/// `meshharbor flows` — active forwards / SOCKS5 listeners + throughput. Empty on
+/// `mh flows` — active forwards / SOCKS5 listeners + throughput. Empty on
 /// today's agent daemon until the tunnel data plane folds in (P3b).
 pub async fn flows(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
@@ -844,7 +844,7 @@ pub async fn flows(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `meshharbor rename <name>` — persist a new device name through the running
+/// `mh rename <name>` — persist a new device name through the running
 /// daemon (it writes its OWN config, so this works unelevated even when the
 /// daemon is a SYSTEM service). Announced on the next server reconnect. An old
 /// daemon that predates the verb reports a clean error.
@@ -855,7 +855,7 @@ pub async fn rename(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// `meshharbor ping <target> [-6] [--timeout-ms N]` — ICMP-ping an overlay peer (by
+/// `mh ping <target> [-6] [--timeout-ms N]` — ICMP-ping an overlay peer (by
 /// name or IP) over the userspace netstack: the OS-free reachability probe for a
 /// locked-down host with no OS route to the mesh. Meaningful on a netstack node;
 /// other daemons reply "not supported". The daemon's own error (unknown peer /
@@ -883,7 +883,7 @@ pub async fn ping(target: &str, timeout_ms: u64, prefer_v6: bool, json: bool) ->
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Fleet RPC — `meshharbor exec` / `meshharbor diag`
+// Fleet RPC — `mh exec` / `mh diag`
 // ────────────────────────────────────────────────────────────────────────────
 
 /// One remote command's result, in the shape the printers want.
@@ -939,7 +939,7 @@ async fn run_remote(node: &str, shell: &str, command: &str, timeout_ms: u64) -> 
 ///
 /// The name may also arrive QUALIFIED, in the two spellings a user is steered
 /// toward (#1573): `corplap-3.meshharbor`, which the `Host *.meshharbor` recipe in
-/// `meshharbor proxy --help` hands over as `%h` — until this, the documented
+/// `mh proxy --help` hands over as `%h` — until this, the documented
 /// setup failed for every host — and the MagicDNS name,
 /// `corplap-3.<magic domain>`. [`mesh_label`] says why no other suffix is
 /// stripped.
@@ -1046,7 +1046,7 @@ pub async fn ssh_session(node: &str, public_key: &str, session_secs: u64) -> Res
     }
 }
 
-/// `meshharbor exec <device> -- <command…>`
+/// `mh exec <device> -- <command…>`
 ///
 /// Exit status mirrors the remote command's, so this composes in a script:
 /// a refused or failed command is a non-zero exit here too, never a silent 0.
@@ -1142,11 +1142,11 @@ const WINDOWS_BUNDLE: &[BundleSection] = &[
     },
     BundleSection {
         title: "overlay peers",
-        command: "& \"$env:ProgramFiles\\MeshHarbor\\meshharbor.exe\" peers 2>&1 | Out-String -Width 200",
+        command: "& \"$env:ProgramFiles\\MeshHarbor\\mh.exe\" peers 2>&1 | Out-String -Width 200",
     },
     BundleSection {
         title: "node status",
-        command: "& \"$env:ProgramFiles\\MeshHarbor\\meshharbor.exe\" status 2>&1 | Out-String -Width 200",
+        command: "& \"$env:ProgramFiles\\MeshHarbor\\mh.exe\" status 2>&1 | Out-String -Width 200",
     },
 ];
 
@@ -1171,11 +1171,11 @@ const UNIX_BUNDLE: &[BundleSection] = &[
     },
     BundleSection {
         title: "overlay peers",
-        command: "meshharbor peers 2>&1 || /usr/bin/meshharbor peers 2>&1",
+        command: "mh peers 2>&1 || /usr/bin/mh peers 2>&1",
     },
     BundleSection {
         title: "node status",
-        command: "meshharbor status 2>&1 || /usr/bin/meshharbor status 2>&1",
+        command: "mh status 2>&1 || /usr/bin/mh status 2>&1",
     },
     BundleSection {
         title: "recent overlay log lines",
@@ -1202,7 +1202,7 @@ async fn detect_windows(node: &str, label: &str) -> Result<bool> {
     Ok(run.stdout.contains("Windows_NT"))
 }
 
-/// `meshharbor diag host|pair` — run the canned bundle on each device and print
+/// `mh diag host|pair` — run the canned bundle on each device and print
 /// the sections.
 ///
 /// The bundle lives HERE, in the CLI, not in the agent: a new probe is then a
@@ -1307,12 +1307,12 @@ fn split_sections(out: &str) -> Vec<(String, String)> {
     sections
 }
 
-/// `meshharbor forward --daemon --agent <node> --local L --remote R` — ask the
+/// `mh forward --daemon --agent <node> --local L --remote R` — ask the
 /// LOCAL daemon to open + supervise a static forward over its OWN agent WS
 /// (identity model b: no separate tunnel-client token — the pipe/socket ACL is
 /// the trust boundary). Returns as soon as the daemon registers the flow; the
-/// flow runs IN the daemon and survives this CLI's exit. `meshharbor flows` shows
-/// it; `meshharbor kill <id>` stops it. A daemon-side error (bad node/remote, port
+/// flow runs IN the daemon and survives this CLI's exit. `mh flows` shows
+/// it; `mh kill <id>` stops it. A daemon-side error (bad node/remote, port
 /// in use) surfaces verbatim; only a *connect* failure maps through [`daemon_err`].
 pub async fn create_forward(
     node: &str,
@@ -1331,12 +1331,12 @@ pub async fn create_forward(
         "  127.0.0.1:{local} → {remote}  via node {}",
         short_id(node)
     );
-    println!("  meshharbor flows          # show it");
-    println!("  meshharbor kill {id}      # stop it");
+    println!("  mh flows          # show it");
+    println!("  mh kill {id}      # stop it");
     Ok(())
 }
 
-/// `meshharbor socks5 --daemon --agent <node> --local L` — ask the LOCAL daemon to
+/// `mh socks5 --daemon --agent <node> --local L` — ask the LOCAL daemon to
 /// open + supervise a SOCKS5 listener (userspace mode; per-connection target)
 /// toward `node`. Same lifecycle as [`create_forward`].
 pub async fn create_socks5(node: &str, local: u16, transport: &str) -> Result<()> {
@@ -1350,12 +1350,12 @@ pub async fn create_socks5(node: &str, local: u16, transport: &str) -> Result<()
         "  127.0.0.1:{local} → node {} (per-connection target)",
         short_id(node)
     );
-    println!("  meshharbor flows          # show it");
-    println!("  meshharbor kill {id}      # stop it");
+    println!("  mh flows          # show it");
+    println!("  mh kill {id}      # stop it");
     Ok(())
 }
 
-/// `meshharbor kill <flow-id>` — stop + deregister a daemon flow. Reports whether
+/// `mh kill <flow-id>` — stop + deregister a daemon flow. Reports whether
 /// the id matched.
 pub async fn kill(id: &str) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
@@ -1371,7 +1371,7 @@ pub async fn kill(id: &str) -> Result<()> {
 // Declared routes (P6)
 // ---------------------------------------------------------------------------
 
-/// `meshharbor route add …` — declare a daemon-supervised route. `remote`
+/// `mh route add …` — declare a daemon-supervised route. `remote`
 /// present ⇒ static forward; absent ⇒ SOCKS5 listener. The daemon
 /// persists it (config `[[tunnel_routes]]`) and reconciles it into a live
 /// flow; it comes back on every daemon start until `route rm`.
@@ -1416,14 +1416,14 @@ pub async fn route_add(
         ),
     }
     if !eff.enabled {
-        println!("  declared DISABLED — `meshharbor route enable {}`", eff.id);
+        println!("  declared DISABLED — `mh route enable {}`", eff.id);
     }
-    println!("  meshharbor route ls            # live state");
-    println!("  meshharbor route rm {}   # remove", eff.id);
+    println!("  mh route ls            # live state");
+    println!("  mh route rm {}   # remove", eff.id);
     Ok(())
 }
 
-/// `meshharbor route rm <id>` — remove a declared route (kills its live flow,
+/// `mh route rm <id>` — remove a declared route (kills its live flow,
 /// deletes it from the daemon config).
 pub async fn route_rm(id: &str) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
@@ -1435,7 +1435,7 @@ pub async fn route_rm(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// `meshharbor route ls` — declared routes + live state.
+/// `mh route ls` — declared routes + live state.
 pub async fn route_ls(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let routes = client.route_list().await.map_err(daemon_err)?;
@@ -1447,7 +1447,7 @@ pub async fn route_ls(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// What `meshharbor route edit` may change. Every field is optional; the
+/// What `mh route edit` may change. Every field is optional; the
 /// route's other settings (enabled state, org) are carried over unchanged.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RouteEdit {
@@ -1494,7 +1494,7 @@ pub fn apply_route_edit(
     Ok(route)
 }
 
-/// `meshharbor route edit <id> …` — replace a declared route in ONE step (the
+/// `mh route edit <id> …` — replace a declared route in ONE step (the
 /// FR-84 `RouteUpdate` verb). The daemon validates the result exactly like
 /// an add and refuses it without touching the running route.
 pub async fn route_edit(edit: RouteEdit) -> Result<()> {
@@ -1526,13 +1526,13 @@ pub async fn route_edit(edit: RouteEdit) -> Result<()> {
         ),
     }
     if !eff.enabled {
-        println!("  declared DISABLED — `meshharbor route enable {}`", eff.id);
+        println!("  declared DISABLED — `mh route enable {}`", eff.id);
     }
-    println!("  meshharbor route ls            # live state");
+    println!("  mh route ls            # live state");
     Ok(())
 }
 
-/// `meshharbor route enable|disable <id>`.
+/// `mh route enable|disable <id>`.
 pub async fn route_set_enabled(id: &str, enabled: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     if client
@@ -1550,7 +1550,7 @@ pub async fn route_set_enabled(id: &str, enabled: bool) -> Result<()> {
     Ok(())
 }
 
-/// `meshharbor config ls` — the S2 editable config surface: key, current
+/// `mh config ls` — the S2 editable config surface: key, current
 /// value, type, and whether a change applies live or on restart. The
 /// daemon reads its own config file, so pending not-yet-restarted edits
 /// show. FR-84 D2: the daemon lists the surface grouped, in display order,
@@ -1590,12 +1590,12 @@ pub async fn config_ls(json: bool) -> Result<()> {
     }
     println!(
         "\n`restart` keys take effect on the next daemon restart, `live` keys at once — \
-         `meshharbor config set <key> <value>`"
+         `mh config set <key> <value>`"
     );
     Ok(())
 }
 
-/// `meshharbor config set <key> <value>` / `config clear <key>` — the
+/// `mh config set <key> <value>` / `config clear <key>` — the
 /// daemon validates per key + persists; the echoed entry confirms the
 /// stored value. Validation errors come back verbatim.
 pub async fn config_set(key: &str, value: Option<&str>) -> Result<()> {
@@ -1617,25 +1617,25 @@ pub async fn config_set(key: &str, value: Option<&str>) -> Result<()> {
     // either restart a healthy daemon for nothing or assume they are still
     // exposed.
     if entry.restart_required {
-        println!("takes effect on the next daemon restart (apply it now: `meshharbor restart`)");
+        println!("takes effect on the next daemon restart (apply it now: `mh restart`)");
     } else {
         println!("in effect now — no restart needed");
     }
     Ok(())
 }
 
-/// How long `meshharbor restart` waits for the relaunched daemon to answer.
+/// How long `mh restart` waits for the relaunched daemon to answer.
 const RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// `meshharbor restart` — FR-84 D3. Ask the daemon to restart itself through its
+/// `mh restart` — FR-84 D3. Ask the daemon to restart itself through its
 /// supervisor; the daemon decides, and a refusal exits non-zero with its
 /// reason. Then wait for the NEW daemon (a different pid) to answer, running
 /// `meshharbord service start` along the way when the answer says the relaunch
 /// is ours (`restart_by: caller` — the Windows Scheduled Task).
 ///
-/// ⚠️ Through Fleet RPC (`meshharbor exec <host> -- meshharbor restart`) the daemon
+/// ⚠️ Through Fleet RPC (`mh exec <host> -- mh restart`) the daemon
 /// relaying the command is the one restarting, so the caller sees "no answer"
-/// even though it ran; `meshharbor exec <host> -- meshharbor status` afterwards
+/// even though it ran; `mh exec <host> -- mh status` afterwards
 /// shows the new pid and version.
 pub async fn restart(
     reason: &str,
@@ -1643,7 +1643,7 @@ pub async fn restart(
     daemon_exe: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let reason = if reason.trim().is_empty() {
-        "meshharbor restart"
+        "mh restart"
     } else {
         reason
     };
@@ -1660,7 +1660,7 @@ pub async fn restart(
         } => (supervisor, restart_by, exit_code, leaving, restart_within_s),
         localapi::RestartAnswer::Refused(why) => bail!("the daemon refused to restart: {why}"),
         localapi::RestartAnswer::Unsupported(_) => bail!(
-            "this daemon predates `meshharbor restart` — restart it through its service manager \
+            "this daemon predates `mh restart` — restart it through its service manager \
              (Windows: the MeshHarbor service or scheduled task; Linux: systemctl; macOS: launchctl)"
         ),
     };
@@ -1783,7 +1783,7 @@ fn fmt_recording_end(last: &localapi::RecordingEnded) -> String {
     line
 }
 
-/// `meshharbor record start` — record this device's screen until `record stop`.
+/// `mh record start` — record this device's screen until `record stop`.
 /// Answers once the recorder is encoding, naming the file and the encoder.
 pub async fn record_start(
     fps: Option<u32>,
@@ -1820,11 +1820,11 @@ pub async fn record_start(
     if let Some(reason) = &st.folder_reason {
         println!("  folder: {reason}");
     }
-    println!("stop with `meshharbor record stop`");
+    println!("stop with `mh record stop`");
     Ok(())
 }
 
-/// `meshharbor record stop` — answers once the file is final.
+/// `mh record stop` — answers once the file is final.
 pub async fn record_stop(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let st = client.record_stop().await.map_err(daemon_err)?;
@@ -1833,14 +1833,14 @@ pub async fn record_stop(json: bool) -> Result<()> {
         return Ok(());
     }
     match (&st.last, st.active) {
-        (_, true) => println!("still finalizing — check `meshharbor record status`"),
+        (_, true) => println!("still finalizing — check `mh record status`"),
         (Some(last), false) => println!("{}", fmt_recording_end(last)),
         (None, false) => println!("nothing was recording"),
     }
     Ok(())
 }
 
-/// `meshharbor record status` — is a recording running, and how the last ended.
+/// `mh record status` — is a recording running, and how the last ended.
 pub async fn record_status(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let st = client.record_status().await.map_err(daemon_err)?;
@@ -1867,36 +1867,36 @@ pub async fn record_status(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `meshharbor keep-busy status` — FR-92.
+/// `mh keep-busy status` — FR-92.
 pub async fn keep_busy_status(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let s = client.keep_busy_status().await.map_err(daemon_err)?;
     print_keep_busy(&s, json)
 }
 
-/// FR-92 P10 — what `meshharbor keep-busy on` asks for (the LocalAPI's type).
+/// FR-92 P10 — what `mh keep-busy on` asks for (the LocalAPI's type).
 pub type KeepBusyStart = localapi::KeepBusyStartOpts;
 
-/// `meshharbor keep-busy on` — FR-92 P10. Only the person at this computer may:
-/// the daemon refuses root, services and `meshharbor exec`, and checks every
+/// `mh keep-busy on` — FR-92 P10. Only the person at this computer may:
+/// the daemon refuses root, services and `mh exec`, and checks every
 /// value with the viewer's own parser.
 pub async fn keep_busy_on(opts: KeepBusyStart, json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let s = client.keep_busy_on(opts).await.map_err(daemon_err)?;
     print_keep_busy(&s, json)?;
     if !s.on && !json && s.reason.is_none() {
-        println!("(the start is being applied — `meshharbor keep-busy status` will show it)");
+        println!("(the start is being applied — `mh keep-busy status` will show it)");
     }
     Ok(())
 }
 
-/// `meshharbor keep-busy off` — FR-92. Stopping is always allowed here.
+/// `mh keep-busy off` — FR-92. Stopping is always allowed here.
 pub async fn keep_busy_off(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let s = client.keep_busy_off().await.map_err(daemon_err)?;
     print_keep_busy(&s, json)?;
     if s.on && !json {
-        println!("(the stop is being applied — `meshharbor keep-busy status` will show it)");
+        println!("(the stop is being applied — `mh keep-busy status` will show it)");
     }
     Ok(())
 }
@@ -1915,7 +1915,7 @@ fn print_keep_busy(s: &localapi::KeepBusyInfo, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// One line for `meshharbor keep-busy status`. The agent's own sentence for
+/// One line for `mh keep-busy status`. The agent's own sentence for
 /// the reason, never a CLI paraphrase.
 pub(crate) fn keep_busy_line(s: &localapi::KeepBusyInfo) -> String {
     let sentence = s.sentence.as_deref();
@@ -1942,7 +1942,7 @@ pub(crate) fn keep_busy_line(s: &localapi::KeepBusyInfo) -> String {
     line
 }
 
-/// `meshharbor record ls` — the recordings folder, why it is that one, and what
+/// `mh record ls` — the recordings folder, why it is that one, and what
 /// is in it (newest first).
 pub async fn recordings_ls(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
@@ -1987,7 +1987,7 @@ pub async fn recordings_ls(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `meshharbor record rm <name>` — delete one recording and its sidecar.
+/// `mh record rm <name>` — delete one recording and its sidecar.
 pub async fn recording_rm(name: &str) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     client.recording_delete(name).await.map_err(daemon_err)?;
@@ -1995,7 +1995,7 @@ pub async fn recording_rm(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// FR-52 gate 4 — `meshharbor rc password set`.
+/// FR-52 gate 4 — `mh rc password set`.
 ///
 /// The password is read here, handed to the daemon over the local pipe, and
 /// registered THERE: this process never derives, stores or transmits anything
@@ -2037,7 +2037,7 @@ fn read_new_password(from_stdin: bool) -> Result<String> {
     Ok(first)
 }
 
-/// `meshharbor rc password set [--stdin]`.
+/// `mh rc password set [--stdin]`.
 pub async fn rc_password_set(from_stdin: bool) -> Result<()> {
     // Connect FIRST, before asking for a password: on a host with no daemon
     // this fails in one clean line instead of making someone type a password
@@ -2053,7 +2053,7 @@ pub async fn rc_password_set(from_stdin: bool) -> Result<()> {
     Ok(())
 }
 
-/// `meshharbor rc password clear`.
+/// `mh rc password clear`.
 pub async fn rc_password_clear() -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let state = client
@@ -2069,7 +2069,7 @@ pub async fn rc_password_clear() -> Result<()> {
     Ok(())
 }
 
-/// `meshharbor rc password status [--json]`.
+/// `mh rc password status [--json]`.
 pub async fn rc_password_status(json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let state = client
@@ -2115,7 +2115,7 @@ pub async fn rc_password_status(json: bool) -> Result<()> {
 /// all twenty-two verb names it does know. That is what the operator sees, and it
 /// says nothing about the one thing they can do. Version skew is normal here: on
 /// tunnel-only hosts the CLI self-updates independently of any daemon, and a
-/// locally built `meshharbor` against an installed service is exactly this case.
+/// locally built `mh` against an installed service is exactly this case.
 ///
 /// ⚠️ The hint is **additive and the raw error is kept**. Matching a foreign
 /// library's message text is brittle — the same reason a Windows error string is
@@ -2126,7 +2126,7 @@ fn external_verb_err(e: std::io::Error) -> anyhow::Error {
     if raw.contains("unknown variant") {
         return anyhow!(
             "this daemon does not know the external-access verbs, so it is older than this \
-             CLI — update the daemon (`meshharbor status` shows its version).\n  raw: {raw}"
+             CLI — update the daemon (`mh status` shows its version).\n  raw: {raw}"
         );
     }
     anyhow!("{raw}")
@@ -2145,10 +2145,10 @@ fn print_password_next_steps(state: &localapi::ExternalPasswordState) {
         return;
     }
     if !state.password_set {
-        println!("  → `meshharbor rc password set` to set one");
+        println!("  → `mh rc password set` to set one");
     }
     if !state.enabled {
-        println!("  → `meshharbor config set external_access_enabled true` to open gate 3");
+        println!("  → `mh config set external_access_enabled true` to open gate 3");
     }
     if state.password_set && state.enabled {
         println!("  → this device is ready; an admin must also approve it for external access");
@@ -2316,7 +2316,7 @@ fn fmt_peer_row(p: &PeerInfo, now_ms: u64) -> String {
 }
 
 /// The NAME column's width when nothing widens it — the table's shape since
-/// the first `meshharbor peers`, which the diag bundle and older readers parse.
+/// the first `mh peers`, which the diag bundle and older readers parse.
 const PEER_NAME_W: usize = 20;
 
 /// One `peers` table row with `name` in a NAME cell `name_w` wide.
@@ -2736,7 +2736,7 @@ fn print_status(s: &NodeStatus) {
     }
 }
 
-/// FR-103 — an agent token's expiry as `meshharbor status` says it: relative,
+/// FR-103 — an agent token's expiry as `mh status` says it: relative,
 /// because "in 172 days" is the fact an operator acts on and needs no
 /// calendar. A device renews its own token well before this, so an expiry
 /// that keeps approaching is the thing to notice.
@@ -2763,7 +2763,7 @@ fn credential_expiry(expires_at: i64, now_unix: i64) -> String {
     }
 }
 
-/// P5/S4 — the state half of `meshharbor status`'s exit-node line. While active
+/// P5/S4 — the state half of `mh status`'s exit-node line. While active
 /// it says whether global IPv6 rides the exit or is fail-closed (S3b), and
 /// whether DNS is steered through it, since NOT steered is a DNS leak the
 /// operator should see (S4b).
@@ -2828,7 +2828,7 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-/// FR-49 — the per-enrollment block in `meshharbor status`.
+/// FR-49 — the per-enrollment block in `mh status`.
 ///
 /// `NodeStatus.orgs` has been on the wire since multi-org P1 and was rendered
 /// by NOTHING but `--json`, so on a device in two orgs the human output said
@@ -3088,7 +3088,7 @@ fn devices_hint(page: &localapi::DevicesPage, searched: bool) -> Option<&'static
     match page.overlay.as_str() {
         "no_node" => Some(
             "this device is not on the private network (overlay off), so it lists only \
-             itself — `meshharbor config set overlay_enabled true` and restart the service",
+             itself — `mh config set overlay_enabled true` and restart the service",
         ),
         "no_network" => {
             Some("the organization has no private network yet — only this device is listed")
@@ -3107,7 +3107,7 @@ fn devices_hint(page: &localapi::DevicesPage, searched: bool) -> Option<&'static
 /// the primary's mesh first, then each secondary). `None` as the group key
 /// means "print no header": that is the single-org case, where every row has
 /// an empty `org` and the output must stay byte-identical to the flat table
-/// older CLIs — and the diag bundle, which shells out to `meshharbor peers` —
+/// older CLIs — and the diag bundle, which shells out to `mh peers` —
 /// already expect. Rows with no org alongside labelled ones (mixed daemon
 /// shapes) are kept in a trailing `(unlabelled)` group rather than dropped.
 #[cfg(test)]
@@ -3163,7 +3163,7 @@ fn print_flows(flows: &[FlowInfo]) {
 
 fn print_routes(routes: &[RouteInfo]) {
     if routes.is_empty() {
-        println!("No declared routes. Declare one with `meshharbor route add`.");
+        println!("No declared routes. Declare one with `mh route add`.");
         return;
     }
     println!(
@@ -3469,7 +3469,7 @@ mod tests {
 
     /// FR-49 — an org with no mesh and an org with no peers must not render
     /// identically. Before this, an overlay-off org produced no section at all
-    /// in `meshharbor peers`, which is exactly what an org whose peers happen to
+    /// in `mh peers`, which is exactly what an org whose peers happen to
     /// be offline produces.
     /// FR-97 P0c-3 — a netstack node's exit line says the exit carries only its
     /// SOCKS5 front, never "v6 on" or a DNS clause about a host it does not
@@ -4333,7 +4333,7 @@ mod devices_tests {
             message: "unknown variant".into(),
         })
         .to_string();
-        assert!(msg.contains("predates `meshharbor devices`"), "{msg}");
+        assert!(msg.contains("predates `mh devices`"), "{msg}");
         let msg = explain_directory_error(up("unsupported_server", Some(404))).to_string();
         assert!(msg.contains("update the server"), "{msg}");
         let msg = explain_directory_error(up("unauthorized", Some(401))).to_string();

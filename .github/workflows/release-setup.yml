@@ -637,7 +637,7 @@ jobs:
             **What the wizard does:** pick a role, detect existing installs, paste an enrollment token, and it
             resolves → downloads → verifies → installs → enrolls the node. On Windows the daemon roles
             (be-accessed: perMachine-SCM / perUser / perMachine + SystemContext) run the agent MSI (which
-            carries the `meshharbor` CLI); every OS offers the tunnel-client role (reach-others). A terminal
+            carries the `mh` CLI); every OS offers the tunnel-client role (reach-others). A terminal
             equivalent is served at `meshharbor.itachi.fans/api/setup/install.sh` (Linux/macOS) and
             `meshharbor.itachi.fans/api/setup/install.ps1` (Windows).
           files: release/*

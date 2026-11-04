@@ -31,13 +31,13 @@ before anything technical.
 @windows
 ```powershell
 Get-Service MeshHarbor
-meshharbor status
+mh status
 ```
 @macos
 ```bash
 launchctl print gui/$(id -u)/fans.itachi.meshharbor.agent | head -20
-meshharbor status
-sudo meshharbor status    # the root half, if installed
+mh status
+sudo mh status    # the root half, if installed
 ```
 :::warning "daemon not running" often means you asked the wrong half
 macOS runs two halves on two different local sockets. Try the command with and
@@ -46,11 +46,11 @@ without `sudo` before concluding anything is broken.
 @linux
 ```bash
 pgrep -x meshharbord && echo running
-meshharbor status
+mh status
 ```
 :::danger Do not trust `systemctl is-active` alone here
 A daemon that systemd does not own can be running perfectly while
-`systemctl is-active` reports **inactive**. Check `pgrep` and `meshharbor peers`
+`systemctl is-active` reports **inactive**. Check `pgrep` and `mh peers`
 first — restarting on the basis of that reading can take a working machine down.
 :::
 :::
@@ -82,7 +82,7 @@ The agent rolls back a version that crash-loops. If the machine reports a
 crash-loop warning:
 
 ```bash
-meshharbor status      # what version is actually running?
+mh status      # what version is actually running?
 ```
 
 :::tip Compare the reported version with the running one
@@ -95,7 +95,7 @@ installed now, the machine is healthy and the warning is stale.
 
 :::danger Installing a package by hand does not restart the daemon
 The file on disk is replaced while the running process keeps executing the
-deleted one — so `meshharbor --version` reports the **new** version while the
+deleted one — so `mh --version` reports the **new** version while the
 daemon is still the old one, and any fix you just installed is not running.
 Restart the service explicitly after a manual install.
 :::

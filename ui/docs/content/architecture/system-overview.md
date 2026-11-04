@@ -12,7 +12,7 @@ Four pieces, and the important part is which arrows are thick.
 | Piece | What it is | Where it runs |
 |---|---|---|
 | **The agent** (`meshharbord`) | A native binary: remote-desktop target, mesh node, tunnel endpoint, SSH server | Every machine you enroll |
-| **The CLI** (`meshharbor`) | Status, peers, tunnels, forwards, exec, ssh, diagnostics | The same machine |
+| **The CLI** (`mh`) | Status, peers, tunnels, forwards, exec, ssh, diagnostics | The same machine |
 | **The server** | Accounts, permissions, device registry, signalling, chat, conferencing | Our cloud, or yours |
 | **The controller** | A browser (Chromium browsers work best; Safari and Firefox work too) | Wherever you are |
 

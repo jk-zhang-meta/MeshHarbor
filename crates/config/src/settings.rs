@@ -111,7 +111,7 @@ pub struct VaultSettings {
     #[serde(default)]
     pub providers: String,
     /// P3-9-1 — the organizations whose PEOPLE the vault lends to through
-    /// `meshharbor connect` (`MESHHARBOR__VAULT__PEOPLE=<id>,<id>`): a person's
+    /// `mh connect` (`MESHHARBOR__VAULT__PEOPLE=<id>,<id>`): a person's
     /// endpoint, decided by Cedar's `secret:connect` for the device's owner.
     /// ⚠️ Opt-in, the opposite sense to `tenants`: empty — the default — is
     /// NO organization, `*` every one the vault serves, a list only those.

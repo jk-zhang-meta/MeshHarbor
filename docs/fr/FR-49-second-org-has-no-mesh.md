@@ -46,8 +46,8 @@ device is genuinely, silently absent from the second org's mesh, and:
 |---|---|---|
 | `meshharbord enroll` output (`main.rs:1766`) | "Enrolled into an ADDITIONAL org as …" + "manage them with `meshharbord org ls`" | any mention of the mesh |
 | `meshharbord org ls` (`main.rs:1945`) | LABEL · PRIMARY · ENABLED · ORG · SERVER | **no overlay column** |
-| `meshharbor status` (`localapi::OrgStatus`) | label · agent id · enabled · connected · stopped · update-ignored | **no overlay field** — the org's WS *is* connected, so it reads healthy |
-| `meshharbor peers` (`localclient.rs:1398`) | one `── org: <label> ──` section per org **that has peers** | an overlay-off org produces **no section at all** — identical to an org whose peers are simply offline |
+| `mh status` (`localapi::OrgStatus`) | label · agent id · enabled · connected · stopped · update-ignored | **no overlay field** — the org's WS *is* connected, so it reads healthy |
+| `mh peers` (`localclient.rs:1398`) | one `── org: <label> ──` section per org **that has peers** | an overlay-off org produces **no section at all** — identical to an org whose peers are simply offline |
 | the dashboard | the device row, online | it is the server's view; the server was never told |
 
 The device is online in both orgs, answers exec and SSH in both, and has no mesh
@@ -79,9 +79,9 @@ five-minute fix and the two days this cost in the field.
 
 - `OrgStatus` gains `overlay_mode: String` (wire-additive; empty from an older
   daemon, exactly as `PeerInfo.org` already handles this).
-- `meshharbor status` prints it per org.
+- `mh status` prints it per org.
 - `meshharbord org ls` gains an `OVERLAY` column.
-- `meshharbor peers` prints a section for an **enabled** org whose overlay is off,
+- `mh peers` prints a section for an **enabled** org whose overlay is off,
   saying so, instead of omitting it. An org with an overlay and no peers keeps
   its existing empty section — the two states must be distinguishable, which is
   the whole point.
@@ -103,7 +103,7 @@ five-minute fix and the two days this cost in the field.
 
 ### P3 — scope the output
 
-- `meshharbor peers --org <label>`, and the same on `status`.
+- `mh peers --org <label>`, and the same on `status`.
 - Motivation is not only ergonomics: on a device enrolled in a customer org and
   a personal one, `peers` prints **every** org's node names together, and there
   is no way to show one. During FR-41 that made the command unusable on camera,
@@ -120,8 +120,8 @@ five-minute fix and the two days this cost in the field.
 ## Acceptance criteria
 
 - [ ] on a device in two orgs, `meshharbord org ls` shows each org's overlay mode
-- [ ] `meshharbor status` shows it per org
-- [ ] `meshharbor peers` renders an overlay-off org **differently** from an org with
+- [ ] `mh status` shows it per org
+- [ ] `mh peers` renders an overlay-off org **differently** from an org with
       an overlay and no peers — verified by producing both states on one device
 - [x] `meshharbord org overlay <label> tun` puts the device on that org's mesh after
       a restart, verified by a ping across it *(FR-97 P1d, 2026-10-18 on
@@ -131,7 +131,7 @@ five-minute fix and the two days this cost in the field.
       primary's flag untouched
 - [ ] `enroll` without `--overlay` on an org that already had one does not turn
       it off (regression lock on the one-way invariant)
-- [ ] `meshharbor peers --org <label>` prints only that org
+- [ ] `mh peers --org <label>` prints only that org
 - [ ] an older daemon reporting no `overlay_mode` renders as it does today, not
       as "off" (absent ≠ off — the same trap as an absent age reading 0 ms)
 
@@ -178,7 +178,7 @@ note: 1 enrolled but NOT on the mesh (overlay off): acme
       `meshharbord org overlay <label> netstack|tun` joins one; restart the daemon to apply.
 ```
 
-`meshharbor status` grew the block it never had — `NodeStatus.orgs` had been on the
+`mh status` grew the block it never had — `NodeStatus.orgs` had been on the
 wire since multi-org P1 and was rendered by NOTHING but `--json`:
 
 ```

@@ -400,7 +400,7 @@ repair_tarball_owners() {
         fi
     done
     # RETIRED-NAME-ANCHOR(3): the same two payload dirs, for the files in them.
-    for f in /usr/bin/meshharbord /usr/bin/meshharbor /usr/lib/meshharbor/* \
+    for f in /usr/bin/meshharbord /usr/bin/mh /usr/lib/meshharbor/* \
              /usr/lib/systemd/system/meshharbord.service /usr/lib/systemd/user/meshharbor.service \
              /usr/share/doc/meshharbor/README.Debian; do
         { [ -f "$f" ] && [ ! -L "$f" ]; } || continue
@@ -905,7 +905,7 @@ require_tunnel_cli() {
         echo "error: the meshharbor CLI did not install: no working \`meshharbor\` on PATH" >&2
         exit 1
     fi
-    say "installed: $(meshharbor --version 2>/dev/null | head -n 1)"
+    say "installed: $(mh --version 2>/dev/null | head -n 1)"
 }
 
 install_tunnel_tarball() {
@@ -924,16 +924,16 @@ install_tunnel_tarball() {
         [ -n "$found" ] && { bin="$found"; break; }
     done
     [ -n "$bin" ] || { echo "error: no meshharbor/meshharbor-tunnel binary in the archive" >&2; exit 1; }
-    say "installing $(basename "$bin") to /usr/local/bin/meshharbor (sudo required)"
-    sudo install -m 755 "$bin" /usr/local/bin/meshharbor
+    say "installing $(basename "$bin") to /usr/local/bin/mh (sudo required)"
+    sudo install -m 755 "$bin" /usr/local/bin/mh
     # Legacy-name convenience symlink, matching the archives' compat alias.
-    sudo ln -sf /usr/local/bin/meshharbor /usr/local/bin/meshharbor-tunnel
+    sudo ln -sf /usr/local/bin/mh /usr/local/bin/meshharbor-tunnel
 }
 
 enroll_tunnel() {
     cli="$(command -v meshharbor || command -v meshharbor-tunnel || true)"
 # RETIRED-NAME-ANCHOR-END
-    [ -n "$cli" ] || cli=/usr/local/bin/meshharbor
+    [ -n "$cli" ] || cli=/usr/local/bin/mh
     if [ "$NO_ENROLL" = 1 ] || [ -z "$TOKEN" ]; then
         [ "$NO_ENROLL" = 1 ] || warn "no --token given — skipping enrollment"
         say "enroll later with: $cli enroll --server $SERVER --token <tunnel-enrollment-jwt> --name \"$NAME\""
@@ -1050,7 +1050,7 @@ install_desktop_linux() {
     else
         warn "the desktop companion did not install; the daemon is unaffected."
         warn "  Without it this device has no on-screen consent prompt — use"
-        warn "  'meshharbor consent --list' / '--approve', or set it to email/push consent."
+        warn "  'mh consent --list' / '--approve', or set it to email/push consent."
     fi
 }
 
@@ -1421,11 +1421,11 @@ remove_tarball_linux() {
     # RETIRED-NAME-ANCHOR(5): the tarball's lib dir is the binary's RPATH and
     # its doc dir the payload's (as in repair_tarball_owners); meshharbor-tunnel
     # is the CLI's legacy-name symlink, which install_tunnel_tarball creates.
-    for f in /usr/bin/meshharbord /usr/bin/meshharbor /usr/lib/meshharbor \
+    for f in /usr/bin/meshharbord /usr/bin/mh /usr/lib/meshharbor \
              /usr/lib/systemd/system/meshharbord.service /usr/lib/systemd/user/meshharbor.service \
              /usr/lib/systemd/system/meshharbor-update.service /usr/lib/systemd/system/meshharbor-update.timer \
              /usr/lib/systemd/system/meshharbor-update.path /usr/share/doc/meshharbor \
-             /usr/local/bin/meshharbor /usr/local/bin/meshharbor-tunnel; do
+             /usr/local/bin/mh /usr/local/bin/meshharbor-tunnel; do
         { [ -L "$f" ] || [ -e "$f" ]; } || continue
         owner=""
         if command -v dpkg >/dev/null 2>&1; then
@@ -1579,7 +1579,7 @@ EOF
         /Library/LaunchAgents/fans.itachi.meshharbor.agent.plist \
         /Library/LaunchAgents/fans.itachi.meshharbor.desktop.plist /Library/MeshHarbor \
         /Applications/MeshHarbor.app /Applications/meshharbor-agent.app \
-        /usr/local/bin/meshharbor /usr/local/bin/meshharbord /usr/local/bin/meshharbor-tunnel \
+        /usr/local/bin/mh /usr/local/bin/meshharbord /usr/local/bin/meshharbor-tunnel \
         /private/var/tmp/meshharbor-update-check /var/run/meshharbor
     remove_listed "$agents"
     for id in $(pkgutil --pkgs 2>/dev/null | grep '^com\.meshharbor\.' || true); do
@@ -1641,7 +1641,7 @@ local_fresh_install_only() {
             echo "error: existing daemon configuration scope is inaccessible; refusing local bootstrap" >&2; exit 1;
         }
     done
-    for existing in /usr/local/bin/meshharbor /usr/local/bin/meshharbor-tunnel /usr/local/bin/meshharbord /etc/meshharbor/config.toml /etc/meshharbor-agent/config.toml /etc/default/meshharbord; do
+    for existing in /usr/local/bin/mh /usr/local/bin/meshharbor-tunnel /usr/local/bin/meshharbord /etc/meshharbor/config.toml /etc/meshharbor-agent/config.toml /etc/default/meshharbord; do
         [ ! -e "$existing" ] && [ ! -L "$existing" ] || {
             echo "error: local bootstrap preserves existing MeshHarbor state; reviewed migration required" >&2; exit 1;
         }
@@ -1661,7 +1661,7 @@ local_fresh_install_only() {
                 [ ! -e "$base/$unit" ] && [ ! -L "$base/$unit" ] || { echo "error: existing MeshHarbor service state is preserved" >&2; exit 1; }
             done
         done
-        for existing in /usr/bin/meshharbord /usr/bin/meshharbor /usr/bin/meshharbor-tunnel /usr/bin/meshharbor-agent /usr/bin/meshharbor-desktop /usr/lib/meshharbor; do
+        for existing in /usr/bin/meshharbord /usr/bin/mh /usr/bin/meshharbor-tunnel /usr/bin/meshharbor-agent /usr/bin/meshharbor-desktop /usr/lib/meshharbor; do
             [ ! -e "$existing" ] && [ ! -L "$existing" ] || { echo "error: existing Linux daemon must be migrated explicitly" >&2; exit 1; }
         done
     else
@@ -1704,21 +1704,21 @@ prepare_local_artifacts() {
 
 check_local_cli_after_package() {
     LOCAL_PHASE=cli-post-package-check
-    verify_sha256 /usr/local/bin/meshharbor "$LOCAL_CLI_SHA"
-    /usr/local/bin/meshharbor --version >/dev/null
+    verify_sha256 /usr/local/bin/mh "$LOCAL_CLI_SHA"
+    /usr/local/bin/mh --version >/dev/null
 }
 
 install_local_cli() {
     if [ "$DOWNLOAD_ONLY" = 1 ]; then
-        say "download-only: would run: sudo install -m 755 $LOCAL_CLI /usr/local/bin/meshharbor"
+        say "download-only: would run: sudo install -m 755 $LOCAL_CLI /usr/local/bin/mh"
         return 0
     fi
     LOCAL_PHASE=cli-install; LOCAL_CLI_STATE=attempted
-    sudo install -m 755 "$LOCAL_CLI" /usr/local/bin/meshharbor
+    sudo install -m 755 "$LOCAL_CLI" /usr/local/bin/mh
     LOCAL_PHASE=cli-alias
-    sudo ln -sf /usr/local/bin/meshharbor /usr/local/bin/meshharbor-tunnel
+    sudo ln -sf /usr/local/bin/mh /usr/local/bin/meshharbor-tunnel
     LOCAL_PHASE=cli-installed-check
-    /usr/local/bin/meshharbor --version >/dev/null
+    /usr/local/bin/mh --version >/dev/null
     LOCAL_CLI_STATE=ready
 }
 

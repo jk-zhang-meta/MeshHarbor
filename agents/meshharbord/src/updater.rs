@@ -2348,7 +2348,7 @@ fn linux_install_candidates(euid: u32, path: &str) -> Vec<(&'static str, Vec<Str
 /// Asserted before anything installed is touched — a truncated download that
 /// cleared the size floor must not half-install a host.
 #[cfg(target_os = "linux")]
-const TARBALL_REQUIRED: &[&str] = &["usr/bin/meshharbord", "usr/bin/meshharbor"];
+const TARBALL_REQUIRED: &[&str] = &["usr/bin/meshharbord", "usr/bin/mh"];
 
 /// Units ship in the tarball but are only written when ABSENT. An upgrade
 /// must never revert a unit the operator edited — the field host carries a
@@ -2616,7 +2616,7 @@ fn spawn_installer_for_flavour_inner(installer_path: &std::path::Path) -> Result
         // RETIRED-NAME-ANCHOR(3): the PRE-P4b /Applications bundle, swept on upgrade.
         // Without the old name the vacated .app is orphaned forever. docs/fr/FR-21
         // The pkg's payload is absolute: /Applications/meshharbor-agent.app plus
-        // /usr/local/bin/meshharbor, and BOTH launchd plists name the bundle path
+        // /usr/local/bin/mh, and BOTH launchd plists name the bundle path
         // literally. A home-directory install relocates the payload under
         // ~/Applications, so the update "succeeds" and launchd keeps starting
         // the OLD binary at the path it still points to — an update that

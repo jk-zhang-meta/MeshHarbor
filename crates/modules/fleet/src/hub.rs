@@ -2520,7 +2520,7 @@ impl Hub {
     /// `SendFailed` if the channel is full (rare — the agent rx pump
     /// reads as fast as it can serialise + write to the socket).
     ///
-    /// Used by the `meshharbor` relay path in
+    /// Used by the `mh` relay path in
     /// `crates/api/src/ws/tunnel.rs` to forward
     /// `ServerMsg::TcpForwardForward` / `TcpHalfClose` /
     /// `TcpClosed` / `TunnelTerminate` to the agent on behalf of a

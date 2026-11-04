@@ -11,7 +11,7 @@ really ours?**
 ## Is it working?
 
 ```bash
-meshharbor status
+mh status
 ```
 
 A healthy machine reports its version, its organization, that its control
@@ -27,7 +27,7 @@ says nothing about whether the machine has a private address.
 Then, from any other enrolled machine:
 
 ```bash
-meshharbor peers
+mh peers
 ```
 
 Every peer, its address, and **how it is currently reached** — direct, or via a
@@ -95,9 +95,9 @@ build.
 ## Quick checklist
 
 :::steps
-1. `meshharbor status` reports **connected**.
+1. `mh status` reports **connected**.
 2. The device shows **Online** in the dashboard.
-3. `meshharbor peers` from another machine lists it — if you expect it on the mesh.
+3. `mh peers` from another machine lists it — if you expect it on the mesh.
 4. *View screen* shows the real desktop, not wallpaper. On macOS, wallpaper means [a missing privacy grant](/docs/start/install/macos/).
 5. The installed binary verifies against the expected publisher.
 :::

@@ -45,7 +45,7 @@ pub struct EnrollResult {
     /// into `config.toml` by the caller's `write_config`. NEVER
     /// logged or echoed in error messages.
     pub tunnel_client_token: String,
-    /// Echoed back into config.toml so `meshharbor forward …`
+    /// Echoed back into config.toml so `mh forward …`
     /// derives the same WS URL on first run.
     pub server_url: String,
     /// Echoed back into config.toml. Server-side `tunnel_clients`

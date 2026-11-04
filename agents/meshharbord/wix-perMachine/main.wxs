@@ -143,7 +143,7 @@
                          (node-stack unification Option A — the MSI is the
                          one updater for the whole stack; daemon installs
                          subsume the CLI). Same component appends the
-                         install dir to the SYSTEM PATH so `meshharbor` works
+                         install dir to the SYSTEM PATH so `mh` works
                          in any new shell for every user. PATH lives and
                          dies with the CLI file; Part='last' + implicit
                          Permanent='no' removes only our segment on
@@ -153,7 +153,7 @@
                          the daemon owns the command surface, so this MSI no
                          longer carries a second 22.1 MiB copy of crates
                          meshharbord already links. Installed NAME is unchanged
-                         (meshharbor.exe), so the PATH entry and the
+                         (mh.exe), so the PATH entry and the
                          installer-smoke payload asserts still hold. The
                          workflow builds target\release\meshharbor-shim.exe via
                          `cargo build -p meshharbor-cli-shim [dash][dash]release`
@@ -165,7 +165,7 @@
                              the crate is `meshharbor-cli` now. docs/fr/FR-21 -->
                         <File
                             Id='meshharbor_tunnel_cli_exe'
-                            Name='meshharbor.exe'
+                            Name='mh.exe'
                             DiskId='1'
                             KeyPath='yes'
                             Source='target\release\meshharbor-shim.exe' />
@@ -213,7 +213,7 @@
                          Microsoft.VC14x.CRT folder shipped through rc.363 and
                          carried 1.12 MiB of dead weight). Import tables:
                          meshharbord.exe needs msvcp140 + vcruntime140 +
-                         vcruntime140_1, meshharbor.exe needs vcruntime140,
+                         vcruntime140_1, mh.exe needs vcruntime140,
                          meshharbor-desktop.exe needs no CRT, and msvcp140.dll
                          itself pulls only the two vcruntime DLLs. The dropped
                          six (concrt140, vccorlib140, msvcp140_1, msvcp140_2,
@@ -232,7 +232,7 @@
                          2026-07-28, install.ps1 daemon-machine enroll). The
                          EXE dir is first in the DLL search path (service
                          mode included), so shipping the DLLs here makes the
-                         install self-contained for meshharbord.exe, meshharbor.exe
+                         install self-contained for meshharbord.exe, mh.exe
                          AND the meshharbor-desktop companion placed beside
                          them. Staged into target\release by the workflow's
                          VC++ runtime step. One component for the whole set,

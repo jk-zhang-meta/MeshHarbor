@@ -320,5 +320,5 @@ a routing hole; and the same missing notion of "own adapters" makes `non_overlay
   DERP) and CORPLAP-2 (real relay) from neo16; both arms recorded on each FR issue in the FR-59
   table; each field test shown to fail on the current deploy first.
 - Fleet: heartbeat counters (`idr_count`, `rate_moves`, `rebuilds`, `shadow_disagree_pct`) read
-  with `meshharbor exec` across Windows/Linux/macOS after every roll; the C2 eviction/revalidation
+  with `mh exec` across Windows/Linux/macOS after every roll; the C2 eviction/revalidation
   counts on the multi-org hosts.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P3-9-1 — a person's `meshharbor connect`, the vault's half:
+//! FR-90 P3-9-1 — a person's `mh connect`, the vault's half:
 //! `rc:vault.connect`, answered with one field sealed to the device's key.
 //!
 //! Driven through the RAW agent socket the lease tests use. What these lock

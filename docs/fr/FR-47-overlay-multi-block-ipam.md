@@ -185,7 +185,7 @@ leak is purely historical or still active.
 |---|---|---|---|
 | **P0** | Spec + ledger row + issue | ✅ shipped | — |
 | **P1** | Carving on by default; configmap key; carve-failure alert + `headroom` threshold | ✅ shipped + **field-verified** | `overlay.blocks_enabled` |
-| **P2** | `OverlayJoinRefused` frame + `meshharbor status` surface | ✅ shipped | additive; frame is ignorable |
+| **P2** | `OverlayJoinRefused` frame + `mh status` surface | ✅ shipped | additive; frame is ignorable |
 | **P3** | `reconcile-hosts` admin route | ✅ shipped + **run against prod** (17 ordinals reclaimed) | dry-run default |
 | **P4** | Migrate `demo`; clean up the orphaned network | ✅ done — the legacy `/10` holds no live node | existing renumber runbook |
 | **P5a** | `BlockList` — the ordinal↔address model | ✅ shipped | — |
@@ -214,7 +214,7 @@ phase of it is behind one flag that is off.
 - [ ] Two organizations can never be issued overlapping ranges — asserted by test, and by
       the absence of any `100.64.0.0/10` network in production.
 - [ ] A device that cannot be allocated an address receives a stated reason, and
-      `meshharbor status` shows it.
+      `mh status` shows it.
 - [ ] An org that fills its block is given a second one; no device changes address.
 - [ ] A pre-P5 agent meshes correctly against a multi-block org — verified with a real old
       binary, not a decoder test alone.

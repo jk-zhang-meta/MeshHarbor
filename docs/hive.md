@@ -704,7 +704,7 @@ flowchart LR
 
 ## 8. Adopting terminal sessions
 
-People already run Claude Code in a terminal. `meshharbor hive adopt` mirrors those
+People already run Claude Code in a terminal. `mh hive adopt` mirrors those
 sessions into the device's store and lists each for its owner alone, read only
 (decision 11). A terminal session passed none of Hive's start gates, so adopting has
 gates of its own, each default-deny and each owned by a different party. It runs on
@@ -723,7 +723,7 @@ Linux and macOS, and on Windows since FR-97 P4c, where the socket is a named pip
 ```mermaid
 sequenceDiagram
     participant T as Claude Code (a terminal, as the account)
-    participant K as meshharbor hive hook (as the account)
+    participant K as mh hive hook (as the account)
     participant D as meshharbord (root)
     participant S as server (hive)
     T->>K: SessionStart {session_id, transcript_path, cwd}
@@ -762,7 +762,7 @@ kernel before anything moves.
 
 ```mermaid
 sequenceDiagram
-    participant K as meshharbor hive hook (as the person)
+    participant K as mh hive hook (as the person)
     participant P as \\.\pipe\meshharbor-hive-adopt
     participant D as meshharbord (SYSTEM, or the person)
     K->>P: open: read and write data only, identification level
@@ -781,8 +781,8 @@ sequenceDiagram
 | The hook opens the pipe with exactly that mask, at identification level, and sends nothing unless the pipe is owned by SYSTEM, the Administrators group or the hook's own account: the owners the daemon's instances have. ⚠️ The pipe's **owner**, read through its own handle, not the server process's token, which a person may not open for a SYSTEM process: the first field run's check refused the real daemon | otherwise whoever took the name first would receive the person's transcript, and a person cannot make SYSTEM or Administrators the owner of a pipe they create | [`hive_adopt.rs:226`](../crates/localapi/src/hive_adopt.rs#L226) `server_is_trusted` |
 | A record keeps the account's SID where Unix keeps the uid; lines from another SID are `not_yours` | a local and a domain account may share a name, or a RID, never a SID | [`supervisor/adopt.rs:176`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L176) `is_peer` |
 | `hive_accounts` names the account as a start's gate does: `name`, `DOMAIN\name` or `.\name`, without regard to case | one rule for who a Windows account is | [`supervisor/adopt.rs:781`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L781) |
-| The hook entry is the bare `meshharbor.exe hive hook`, found on PATH | Claude Code runs a hook through Git Bash, or PowerShell where Git Bash is absent, and a quoted path runs differently in each. Both MSIs put the install folder on PATH | [`hive_hooks.rs:83`](../agents/meshharbor-cli/src/hive_hooks.rs#L83) `on_path` |
-| The terminal is found past the shells **and** the installed `meshharbor.exe` shim, and a "parent" created after its child is refused | the shim starts `meshharbord.exe cli` and waits; Windows keeps a dead parent's pid, which another process may hold by now | [`procs.rs:51`](../agents/meshharbord/src/hive/procs.rs#L51), [`:342`](../agents/meshharbord/src/hive/procs.rs#L342) |
+| The hook entry is the bare `mh.exe hive hook`, found on PATH | Claude Code runs a hook through Git Bash, or PowerShell where Git Bash is absent, and a quoted path runs differently in each. Both MSIs put the install folder on PATH | [`hive_hooks.rs:83`](../agents/meshharbor-cli/src/hive_hooks.rs#L83) `on_path` |
+| The terminal is found past the shells **and** the installed `mh.exe` shim, and a "parent" created after its child is refused | the shim starts `meshharbord.exe cli` and waits; Windows keeps a dead parent's pid, which another process may hold by now | [`procs.rs:51`](../agents/meshharbord/src/hive/procs.rs#L51), [`:342`](../agents/meshharbord/src/hive/procs.rs#L342) |
 
 ⚠️ Once its terminal has ended, its owner may make an adopted session a managed one, on the
 device that adopted it, from the terminal's own history (decision 11's other half: §12,

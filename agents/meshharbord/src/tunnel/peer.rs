@@ -461,7 +461,7 @@ mod tests {
     }
 
     /// #1754 — the fast path: a client that closes its peer cleanly (the
-    /// CLI's Ctrl-C, `meshharbor kill` on a daemon-run forward) is reported
+    /// CLI's Ctrl-C, `mh kill` on a daemon-run forward) is reported
     /// within milliseconds through a pool DC's `on_close`, whether or not
     /// its `rc:tunnel.terminate` ever reaches us. Also locks the latch:
     /// nine handlers fire, ONE report arrives.

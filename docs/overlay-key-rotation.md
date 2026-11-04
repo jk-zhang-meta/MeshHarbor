@@ -52,7 +52,7 @@ sequenceDiagram
 | the **agent token** (JWT, the control-plane credential) | no | a different identity with a different fix (`token_epoch`, Known Issues); a leaked token is a control-plane compromise |
 | the **SSH host key** (`ssh_host_key`) | no | clients pin it; rotating it is a client-side TOFU event with its own runbook |
 | `config.toml.prev` | not scrubbed | the retired secret stays in the `.prev` copy until the next save; an on-host reader of `.prev` can read `config.toml` too, so it is not a boundary — P2's retired-key list is what makes the copy worthless off-host |
-| the standalone `meshharbor` tunnel client's key | no (P3) | tunnel-only hosts have no agent WS to receive the order |
+| the standalone `mh` tunnel client's key | no (P3) | tunnel-only hosts have no agent WS to receive the order |
 
 The control plane is **not** reachable with a leaked overlay key: joins and DERP
 registration need the agent JWT, and DERP additionally refuses a registration whose
@@ -275,14 +275,14 @@ The server cannot see the device switch, so a switched-off device is still order
 3. Peers reinstall the carrier on the netmap upsert — 18 ms after the join when
    measured (`establish.rs`, *"peer's WG public key changed — reinstalling its
    carrier"*). Traffic resumes after WireGuard's next handshake; a relay-locked pair
-   re-climbs the ladder from the floor. ⚠️ `meshharbor peers --json` carries **no key
+   re-climbs the ladder from the floor. ⚠️ `mh peers --json` carries **no key
    field** — the peer's log line is the evidence that the old key is gone.
 4. Both ceilings are 60 s. A second click inside the minute is **409 `rate_limited`**
    from the server; if an order still reaches the device inside *its* minute (the
    duplicate-delivery race), the device refuses and the grid shows `refused
    (rate_limited)` only when no `rotated` report exists for that order.
 5. `reported_not_joined` means the device claims it rotated and has not come back
-   under the new key within a minute: `meshharbor exec <device> -- meshharbor logs --grep
+   under the new key within a minute: `mh exec <device> -- mh logs --grep
    key_rotate` (never a path guess, `fleet-rpc.md`). On a corp-VPN host, expect the
    re-join to land on relay first.
 6. **DERP transient, bounded**: `derp_acl::rebuild` is spawned at the join, so the

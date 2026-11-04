@@ -35,7 +35,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Trac = 'C:\Program Files (x86)\CheckPoint\Endpoint Connect\trac.exe'
-$MeshHarbor = 'C:\Program Files\MeshHarbor\meshharbor.exe'
+$MeshHarbor = 'C:\Program Files\MeshHarbor\mh.exe'
 $CredFile = 'C:\dev\OE_VPN.txt'
 $Base = 'C:\ProgramData\meshharbor\vpnlab'
 $RunDir = Join-Path $Base "run-$RunId"
@@ -180,7 +180,7 @@ switch ($Cmd) {
         $ok = $true
         foreach ($check in @(
                 @{ n = 'trac.exe present'; f = { Test-Path $Trac } },
-                @{ n = 'meshharbor.exe present'; f = { Test-Path $MeshHarbor } },
+                @{ n = 'mh.exe present'; f = { Test-Path $MeshHarbor } },
                 @{ n = 'cred file 2 lines'; f = { (Get-Content $CredFile).Count -ge 2 } },
                 @{ n = 'trac info parses'; f = { (Get-TracState) -ne 'unknown' } },
                 @{ n = 'run dir writable'; f = { Mark 'SELFTEST'; $true } },

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P1j-3 — `meshharbor hive adopt | unadopt | hook`: a person adopts the
+//! FR-90 P1j-3 — `mh hive adopt | unadopt | hook`: a person adopts the
 //! Claude Code sessions they run in a terminal (decision 11, spec §3h).
 //!
 //! `adopt` puts three hooks in the person's OWN user-level Claude Code
 //! settings, and nobody else's. `unadopt` takes out exactly those three.
-//! Claude Code then runs `meshharbor hive hook` as the person at each hook. The
+//! Claude Code then runs `mh hive hook` as the person at each hook. The
 //! hook reads the transcript's new lines, as the person, and hands them to
 //! the daemon's adopt socket (`tunnel_core::localapi::hive_adopt`).
 //!
@@ -43,7 +43,7 @@ pub const EVENTS: [(&str, bool); 3] = [
 const HOOK_TIMEOUT_SECS: u64 = 30;
 
 /// FR-97 P4c — what a hook entry runs on Windows ([`HookCommand::on_path`]).
-const WINDOWS_HOOK_COMMAND: &str = "meshharbor.exe hive hook";
+const WINDOWS_HOOK_COMMAND: &str = "mh.exe hive hook";
 
 /// What a hook entry runs: this very binary, with `hive hook`, as ONE shell
 /// command line.
@@ -59,7 +59,7 @@ pub struct HookCommand {
 
 impl HookCommand {
     /// The running binary. Embedded in the daemon (`meshharbord cli`, which the
-    /// installed `meshharbor` shim re-execs) the entry runs `meshharbord cli hive
+    /// installed `mh` shim re-execs) the entry runs `meshharbord cli hive
     /// hook` directly, without the shim's hop. On Windows, [`Self::on_path`].
     pub fn this_binary(embedded: bool) -> Result<Self> {
         if cfg!(windows) {
@@ -70,7 +70,7 @@ impl HookCommand {
         Ok(Self::for_binary(path, embedded))
     }
 
-    /// FR-97 P4c — the entry on Windows: the installed `meshharbor.exe`, found on
+    /// FR-97 P4c — the entry on Windows: the installed `mh.exe`, found on
     /// PATH, with no quotes at all.
     ///
     /// Claude Code runs a hook's command line through Git Bash there, or
@@ -156,7 +156,7 @@ pub fn ours(handler: &Value) -> bool {
     let rest: Vec<&str> = rest.split_whitespace().collect();
     matches!(
         stem,
-        "meshharbor" | "meshharbord" | "meshharbor-shim"
+        "mh" | "meshharbord" | "meshharbor-shim"
     ) && (rest == ["hive", "hook"] || rest == ["cli", "hive", "hook"])
 }
 
@@ -387,7 +387,7 @@ fn device_adopts() -> bool {
     false
 }
 
-/// `meshharbor hive adopt`.
+/// `mh hive adopt`.
 pub fn adopt(explicit: Option<PathBuf>, embedded: bool) -> Result<()> {
     let path = settings_path(explicit)?;
     let previous = match std::fs::read(&path) {
@@ -422,7 +422,7 @@ pub fn adopt(explicit: Option<PathBuf>, embedded: bool) -> Result<()> {
     Ok(())
 }
 
-/// `meshharbor hive unadopt`.
+/// `mh hive unadopt`.
 pub fn unadopt(explicit: Option<PathBuf>) -> Result<()> {
     let path = settings_path(explicit)?;
     let previous = match std::fs::read(&path) {
@@ -543,7 +543,7 @@ pub fn next_chunk(
     }
 }
 
-/// `meshharbor hive hook`: what Claude Code runs. Never fails and prints
+/// `mh hive hook`: what Claude Code runs. Never fails and prints
 /// nothing: an adopt that cannot happen now happens at the next hook, or not
 /// at all, and the person's session goes on either way.
 pub async fn hook() {
@@ -689,7 +689,7 @@ mod tests {
     use super::*;
 
     fn hook() -> HookCommand {
-        HookCommand::for_binary("/usr/bin/meshharbor", false)
+        HookCommand::for_binary("/usr/bin/mh", false)
     }
 
     /// A settings file as this dev box keeps it: someone else's hooks (FR-8's
@@ -746,7 +746,7 @@ mod tests {
                 .filter(|h| ours(h))
                 .collect();
             assert_eq!(mine.len(), 1, "{event}: {out}");
-            assert_eq!(mine[0]["command"], json!("'/usr/bin/meshharbor' hive hook"));
+            assert_eq!(mine[0]["command"], json!("'/usr/bin/mh' hive hook"));
             assert_eq!(mine[0].get("async").is_some(), background, "{event}");
         }
         // Top-level keys stay in their order.
@@ -776,17 +776,17 @@ mod tests {
     /// P1j-5 — a file laid out as Claude Code writes its settings comes back
     /// from `adopt` then `unadopt` byte for byte, with a final newline or
     /// without; so does one with its leaves written inline (`THEIRS`).
-    /// FR-97 P4c — the Windows entry: `meshharbor.exe` found on PATH, which Git
+    /// FR-97 P4c — the Windows entry: `mh.exe` found on PATH, which Git
     /// Bash and PowerShell both run as written. `adopt` writes it and
     /// `unadopt` knows it as its own.
     #[test]
     fn the_windows_entry_runs_from_path_and_is_known_as_ours() {
         let hook = HookCommand::on_path();
-        assert_eq!(hook.command, "meshharbor.exe hive hook");
+        assert_eq!(hook.command, "mh.exe hive hook");
         assert!(ours(&json!({"type": "command", "command": hook.command})));
         let (added, changed) = adopt_doc(Some(THEIRS), &hook).unwrap();
         assert!(changed);
-        assert!(added.contains("meshharbor.exe hive hook"), "{added}");
+        assert!(added.contains("mh.exe hive hook"), "{added}");
         let (back, changed) = unadopt_doc(&added).unwrap();
         assert!(changed);
         assert_eq!(
@@ -866,21 +866,21 @@ mod tests {
     #[test]
     fn only_a_meshharbor_hive_hook_is_ours() {
         let c = |s: &str| json!({ "type": "command", "command": s });
-        assert!(ours(&c("'/usr/bin/meshharbor' hive hook")));
+        assert!(ours(&c("'/usr/bin/mh' hive hook")));
         assert!(ours(&c("'/usr/bin/meshharbord' cli hive hook")));
-        assert!(ours(&c("/usr/local/bin/meshharbor hive hook")));
+        assert!(ours(&c("/usr/local/bin/mh hive hook")));
         assert!(
             ours(&c("'/opt/my apps/meshharbor' hive hook")),
             "a path with a space"
         );
-        assert!(!ours(&c("'/usr/bin/meshharbor' peers")));
+        assert!(!ours(&c("'/usr/bin/mh' peers")));
         assert!(!ours(&c("'/usr/bin/other' hive hook")));
         assert!(
-            !ours(&c("'/usr/bin/meshharbor' hive hook; rm -rf ~")),
+            !ours(&c("'/usr/bin/mh' hive hook; rm -rf ~")),
             "anything more is someone else's"
         );
         assert!(
-            !ours(&json!({"command": "/usr/bin/meshharbor", "args": ["hive", "hook"]})),
+            !ours(&json!({"command": "/usr/bin/mh", "args": ["hive", "hook"]})),
             "exec form was never written"
         );
     }

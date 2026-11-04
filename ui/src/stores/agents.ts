@@ -191,7 +191,7 @@ export interface AgentCapabilities {
    *  `crates/remote_control/src/models.rs`. */
   audio?: string[]
   /** Fleet RPC. Known values: `'exec'` (honours rc:rpc.exec) and
-   *  `'originate'` (its LocalAPI can drive `meshharbor exec` at other
+   *  `'originate'` (its LocalAPI can drive `mh exec` at other
    *  devices). Empty / unset on agents that predate the feature — the
    *  console tells the operator to update the agent rather than letting
    *  them send a frame it would silently drop. */
@@ -407,7 +407,7 @@ export type ExecMode = 'off' | 'on'
  *  granting root on that device, which the dialog says in those words. */
 export interface ExecPolicy {
   mode: ExecMode
-  /** May this device ORIGINATE commands against others (`meshharbor exec` from
+  /** May this device ORIGINATE commands against others (`mh exec` from
    *  its CLI)? Default false — without it, one compromised laptop would
    *  inherit its owner's exec rights across the whole fleet. */
   can_originate: boolean

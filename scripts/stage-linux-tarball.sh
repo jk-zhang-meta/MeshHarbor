@@ -30,7 +30,7 @@ rm -rf "$root"
 # Binaries. `meshharbor-shim` installs UNDER the user-facing name: it re-execs
 # `meshharbord cli`, so a stale shim can never version-skew from the daemon.
 install -D -m755 target/release/meshharbord    "$root/usr/bin/meshharbord"
-install -D -m755 target/release/meshharbor-shim "$root/usr/bin/meshharbor"
+install -D -m755 target/release/meshharbor-shim "$root/usr/bin/mh"
 
 # Bundled libs (FFmpeg on x86_64, libvpx everywhere) — the payload is
 # self-contained by design: stock distros ship ABI-incompatible versions, and

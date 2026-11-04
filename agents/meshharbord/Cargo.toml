@@ -45,8 +45,8 @@ meshharbor-node-core = { path = "../../crates/agent-core" }
 # Tunnel ACL types + helpers (DestinationRule / HostPattern / dst_matches).
 # Agent-side allowlist is belt-and-suspenders for the server-side gate.
 meshharbor-tunnel-core = { path = "../../crates/tunnel-core" }
-# P3e lever D — the `meshharbor` command surface, dispatched by `meshharbord cli`.
-# Daemon hosts install a ~150 KB shim as meshharbor.exe instead of a second full
+# P3e lever D — the `mh` command surface, dispatched by `meshharbord cli`.
+# Daemon hosts install a ~150 KB shim as mh.exe instead of a second full
 # CLI binary (rc.361: 22.1 MiB, ~92 % of it crates this daemon already links).
 # Cheap to add: this crate's lib is CLI glue over tunnel-core + remote-control,
 # both of which are already in the graph above.
@@ -917,9 +917,9 @@ maintainer-scripts = "packaging/linux/debian"
 conflicts = "meshharbord, meshharbor-agent"
 assets = [
     ["target/release/meshharbord", "usr/bin/", "755"],
-    # The `meshharbor` command: the meshharbor-cli-shim under the user-facing name;
+    # The `mh` command: the meshharbor-cli-shim under the user-facing name;
     # it re-execs `meshharbord cli`, so it can never version-skew from the daemon.
-    ["target/release/meshharbor-shim", "usr/bin/meshharbor", "755"],
+    ["target/release/meshharbor-shim", "usr/bin/mh", "755"],
     ["packaging/linux/meshharbor.service", "usr/lib/systemd/user/meshharbor.service", "644"],
     # Opt-in SYSTEM unit for headless nodes; nothing enables it (install.sh
     # --role daemon --system does).
@@ -938,9 +938,9 @@ assets = [
 depends = "libc6 (>= 2.34), libssl3 | libssl3t64, libgcc-s1, zlib1g, libzstd1"
 assets = [
     ["target/release/meshharbord", "usr/bin/", "755"],
-    # The `meshharbor` command: the meshharbor-cli-shim under the user-facing name;
+    # The `mh` command: the meshharbor-cli-shim under the user-facing name;
     # it re-execs `meshharbord cli`, so it can never version-skew from the daemon.
-    ["target/release/meshharbor-shim", "usr/bin/meshharbor", "755"],
+    ["target/release/meshharbor-shim", "usr/bin/mh", "755"],
     ["packaging/linux/meshharbor.service", "usr/lib/systemd/user/meshharbor.service", "644"],
     # Opt-in SYSTEM unit for headless nodes; nothing enables it (install.sh
     # --role daemon --system does).

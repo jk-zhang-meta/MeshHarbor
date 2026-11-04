@@ -184,7 +184,7 @@ pub struct Caller {
 /// request arrived ([`bind_ssh_ticket`]) and carried here so [`dispatch`]
 /// audits every outcome in its one place, a refused ticket's included.
 pub enum CallerSession {
-    /// A person's request (`meshharbor ssh`, the HTTP route): no ticket.
+    /// A person's request (`mh ssh`, the HTTP route): no ticket.
     None,
     /// An agent session's, its ticket held: the SESSION is the principal and
     /// `Caller::user_id` the person it acts for.

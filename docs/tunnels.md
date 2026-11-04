@@ -31,10 +31,10 @@ flowchart LR
 
 | Flow type | What it does |
 |---|---|
-| **TCP forward** | `meshharbor forward --agent <name> --local 127.0.0.1:5432 --remote db:5432` — a local listener whose connections come out of the chosen agent |
-| **SOCKS5 (single agent)** | `meshharbor socks5 --agent <name> --local 127.0.0.1:1080` — RFC 1928 proxy exiting through one agent. CONNECT **and UDP ASSOCIATE** are supported (one UDP flow per destination, idle-reaped); BIND is not |
-| **SOCKS5 mesh** | `meshharbor socks5 --local …` (no `--agent`) — one proxy for the whole tenant: address an agent *by name or id as the SOCKS hostname*, and LAN-IP targets route by longest-prefix match against the subnets agents advertise |
-| **Declared routes** | `[[tunnel_routes]]` in the daemon config — `meshharbord` supervises the listeners itself, restart-safe, managed via `meshharbor route add/rm/ls/enable/disable` or the desktop app |
+| **TCP forward** | `mh forward --agent <name> --local 127.0.0.1:5432 --remote db:5432` — a local listener whose connections come out of the chosen agent |
+| **SOCKS5 (single agent)** | `mh socks5 --agent <name> --local 127.0.0.1:1080` — RFC 1928 proxy exiting through one agent. CONNECT **and UDP ASSOCIATE** are supported (one UDP flow per destination, idle-reaped); BIND is not |
+| **SOCKS5 mesh** | `mh socks5 --local …` (no `--agent`) — one proxy for the whole tenant: address an agent *by name or id as the SOCKS hostname*, and LAN-IP targets route by longest-prefix match against the subnets agents advertise |
+| **Declared routes** | `[[tunnel_routes]]` in the daemon config — `meshharbord` supervises the listeners itself, restart-safe, managed via `mh route add/rm/ls/enable/disable` or the desktop app |
 | **Overlay netstack SOCKS** | a loopback SOCKS5 front into the WireGuard mesh itself (peer names / MagicDNS / overlay IPs, TCP + UDP) — no OS TUN device required |
 
 Declared routes live in a supervisor with explicit state — a revoked or
@@ -323,8 +323,8 @@ and a declared route whose target never comes up does it *once per retry* (every
 1–30 s), unbounded.
 
 ⚠️ **Field-measured on `0.4.110`.** A daemon-run WebRTC forward
-(`meshharbor forward --daemon --agent … --transport webrtc`), used once then stopped
-with `meshharbor kill fl-N`: the macOS root exit agent's UDP socket count climbed
+(`mh forward --daemon --agent … --transport webrtc`), used once then stopped
+with `mh kill fl-N`: the macOS root exit agent's UDP socket count climbed
 **5 → 11 → 16 across five kills** — its `AgentTunnelPeer` map only ever grew.
 
 The audit (against `origin/master` c443af83e) found the client ends a session
@@ -387,7 +387,7 @@ that never sent its terminate left its peer in the map, `close()`d by nobody, fo
 life of the connection.
 
 **Field, 0.4.110, a macOS exit agent**: a daemon-run WebRTC forward, used once, then
-`meshharbor kill fl-N` on the client. The agent never received a terminate. Its UDP
+`mh kill fl-N` on the client. The agent never received a terminate. Its UDP
 sockets went **5 → 11 → 16 over five kills** and were still held minutes later — each
 kill stranded the ICE sockets and the 8-channel DC pool of one `AgentTunnelPeer`. On
 the relayed QUIC flavours the stranded object is the TURN allocation too.
@@ -403,7 +403,7 @@ sequenceDiagram
     participant L as signaling loop (reap arm)
     participant S as meshharbor.itachi.fans
 
-    alt clean close (Ctrl-C, meshharbor kill)
+    alt clean close (Ctrl-C, mh kill)
         C->>A: pc.close(): SCTP stream reset, DTLS close_notify
         A->>L: TunnelReap { dc_closed } — every pool DC's read loop hit EOF (ms)
     else client vanished (crash, cable, sleep)
@@ -657,7 +657,7 @@ established beside the first, promoted, the first drained.
 | `FlowListener` | the flow's port: bound **once**, an accept task hands each connection to the current carrier — or **holds** it while there is none — under one lock, so "no carrier ⇒ hold" and "install ⇒ drain the hold" cannot interleave to strand one, and (#1816) the hand-off itself — `carry`, which counts the connection — runs under that lock too, so it cannot interleave with a promotion's swap | [`flow_listener.rs:90`](../crates/tunnel-core/src/flow_listener.rs) · `install` `:172` · `offer` `:219` |
 | `HoldPolicy` | the hold's bounds: at most **64** connections, each for at most **30 s**; past either bound the connection is **closed** (the client sees EOF), never refused | [`flow_listener.rs:67`](../crates/tunnel-core/src/flow_listener.rs) |
 | the daemon's flow | binds once when its supervisor starts (a failed bind retries on the same ladder a failed session did), runs the transport ladder to a carrier, installs it, waits for `dead()`, clears, backs off — the port bound throughout | [`client_mgr.rs:1294`](../agents/meshharbord/src/tunnel/client_mgr.rs) `run_flow_supervisor` · `:1459` `run_flow_cycle` |
-| the standalone CLI | `run_tunnel_session` composes establish + a private accept loop with a per-session bind, so `meshharbor forward` / `socks5` behave exactly as before | [`driver.rs:924`](../crates/tunnel-core/src/driver.rs) |
+| the standalone CLI | `run_tunnel_session` composes establish + a private accept loop with a per-session bind, so `mh forward` / `socks5` behave exactly as before | [`driver.rs:924`](../crates/tunnel-core/src/driver.rs) |
 
 ```mermaid
 sequenceDiagram
@@ -732,7 +732,7 @@ switch. This is the field bug it fixes: after a client-daemon restart during an 
 restart, two routes sat on `webrtc-dc-v1` for hours while `quic-v1` through the same
 exit worked ([#1769](https://github.com/jk-zhang-meta/MeshHarbor/issues/1769)).
 
-Only the daemon's supervised flows re-upgrade (the standalone `meshharbor forward` CLI is
+Only the daemon's supervised flows re-upgrade (the standalone `mh forward` CLI is
 unchanged). The transport order is **`quic-v1` > `quic-derp-v1` > `webrtc-dc-v1`**
 (`quic-derp-v1` counts only where `TUNNEL_DERP_FALLBACK` is on), and only an `auto`
 flow probes — a pinned `--transport` is a decision and never probes.
@@ -819,7 +819,7 @@ Read once per serving epoch, so the env var flips it on the next cycle; the conf
 applies on the next daemon restart.
 
 ⚠️ **The `--start-transport` flag is a TEST PIN, not an operational knob.**
-`meshharbor forward --daemon --start-transport webrtc` forces the daemon's FIRST session
+`mh forward --daemon --start-transport webrtc` forces the daemon's FIRST session
 onto `webrtc-dc-v1` so the probe has a below-best carrier to upgrade, without restarting
 daemons (later sessions and the probe behave as `auto`). It exists for the field
 verification of AC7/AC8; normal routes omit it and start on the ladder.
@@ -1109,7 +1109,7 @@ to a running `meshharbord` without any token:
 | `ConfigGet` · `ConfigSet` | The config surface, grouped (FR-84 D2) |
 | `RestartDaemon` | "Apply now" — restart only under a proven supervisor (FR-84 D3) |
 | `EncoderCaps` · `Devices` · `Mesh` | What the companion's Overview and Devices pages show (FR-84 D4, D5) |
-| `Connect` · `ConnectStatus` | `meshharbor connect`'s endpoint and where it stands, held for the connection that opened it. Only root or SYSTEM, an elevated administrator, or the daemon's own account may ask, and never on the person socket (FR-90 P3-9-2b, [vault.md](vault.md) §23) |
+| `Connect` · `ConnectStatus` | `mh connect`'s endpoint and where it stands, held for the connection that opened it. Only root or SYSTEM, an elevated administrator, or the daemon's own account may ask, and never on the person socket (FR-90 P3-9-2b, [vault.md](vault.md) §23) |
 
 ⚠️ **On Windows the pipe keeps a pool of listening instances** (`localapi_pipe_pool`,
 default 4; `1` is the pre-FR-84 single instance). With one instance, a client that
@@ -1120,11 +1120,11 @@ The companion's side of this is [desktop-companion.md](desktop-companion.md) §3
 
 ## CLI
 
-`meshharbor` is the tunnel CLI on every platform; on daemon hosts the installed
-`meshharbor` binary is a ~150 KB shim that re-execs `meshharbord cli` — one command
-surface, no version skew. On macOS the shim lands at `/usr/local/bin/meshharbor`
+`mh` is the tunnel CLI on every platform; on daemon hosts the installed
+`mh` binary is a ~150 KB shim that re-execs `meshharbord cli` — one command
+surface, no version skew. On macOS the shim lands at `/usr/local/bin/mh`
 and resolves the daemon inside the `.app` bundle, since there the two binaries
-cannot be siblings. (Before rc.454 the macOS `.pkg` shipped **no** CLI at all.) Highlights (run `meshharbor --help` for the full set):
+cannot be siblings. (Before rc.454 the macOS `.pkg` shipped **no** CLI at all.) Highlights (run `mh --help` for the full set):
 
 | Verb | Purpose |
 |---|---|

@@ -15,7 +15,7 @@ verifies three things per cell before destroying the VM:
 
 1. **Remote desktop works** — a real browser session decodes frames from the freshly installed
    agent.
-2. **The overlay works** — `meshharbor peers` sees an anchor node and `meshharbor ping` succeeds in
+2. **The overlay works** — `mh peers` sees an anchor node and `mh ping` succeeds in
    both directions.
 3. **`meshharbor-desktop` works across all its pages** — every view renders.
 
@@ -66,7 +66,7 @@ agent+daemon}); ARM has no companion and no Windows; macOS has no Intel asset.
 COW-clone golden image → boot → SSH in
 → install (method × type)            # script lanes use --no-enroll / -NoEnroll
 → meshharbord enroll --ephemeral        # reusable EphemeralEnrollment key, vmtest org
-→ meshharbor config set auto_update false
+→ mh config set auto_update false
 → service up
 → CHECKS: agent online (API) → peers/ping ↔ anchor → Playwright RD → desktop walk
 → TEARDOWN: graceful shutdown (ephemeral self-unenroll) → destroy
@@ -120,8 +120,8 @@ COW-clone golden image → boot → SSH in
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<p>` from the environment, so
   the page-walk is CDP-driven DOM assertion; Linux WebKitGTK has no CDP ⇒ `virsh screendump`
   per view + LocalAPI state instead.
-- **Verification CLI**: `meshharbor peers --json`, `meshharbor ping <target> --json` (failure ⇒
-  exit 1), `meshharbor status --json` (`agents/meshharbor-cli/src/cli.rs`).
+- **Verification CLI**: `mh peers --json`, `mh ping <target> --json` (failure ⇒
+  exit 1), `mh status --json` (`agents/meshharbor-cli/src/cli.rs`).
 - **Ephemeral (FR-51)**: reusable keys gated by org `ephemeral_keys_enabled` (re-checked per
   use ⇒ flipping it off is class-wide revocation); reaper
   `MESHHARBOR__RC__EPHEMERAL_REAPER_ENABLED` already on in prod; graceful shutdown self-unenrolls.
@@ -239,7 +239,7 @@ built and driven to green on the live fleet; the run-and-tweak phase found and f
 bugs**, each shown failing before its fix. Highlights (full detail in the memory + the issue's
 step-log comments):
 
-- **Ubuntu** (script + `.deb` × system + per-user): install / enroll / overlay (`meshharbor ping`
+- **Ubuntu** (script + `.deb` × system + per-user): install / enroll / overlay (`mh ping`
   anchor round-trip ~1–2 ms) / Wayland (`seat0 ... wayland`) / RD (VP9-444 direct 29 fps, real
   GNOME desktop — DRM capture in a virtio-gpu KVM guest) / meshharbor-desktop (5 views).
 - **Win11** (install.ps1 + MSI × system/attended/user): install / enroll / SystemContext overlay
@@ -249,7 +249,7 @@ step-log comments):
 Load-bearing bugs (each cost a real debug cycle): an ephemeral daemon **unenrolls itself on
 SIGTERM** so a post-enroll restart deleted the device; the configless crash-loop trips systemd's
 **start rate-limit**; libvirt's default IP source is unreliable (needs `--source arp`); a bash
-`${2:-{}}` default **corrupted every JSON API body**; `meshharbor status` overlay address is
+`${2:-{}}` default **corrupted every JSON API body**; `mh status` overlay address is
 top-level `.overlay_ip`; a multi-cell run **ran only the first cell** (ssh ate the loop pipe);
 sessions are **cookie-only** (RD spec landed on /login); a SW-encode agent streams **VP9-444 over
 a DataChannel → a canvas, not `<video>`** (transport-agnostic frame oracle); on Windows,
@@ -277,7 +277,7 @@ a DataChannel → a canvas, not `<video>`** (transport-agnostic frame oracle); o
   so a freshly minted 10-minute enrollment token was rejected as "already expired" — a clock bug
   wearing an auth error's clothes.
 - **macOS.** Runs on **throwaway `tart` VMs on the operator's Apple-silicon Mac**, driven from
-  mars over **meshharbor's own mesh** (`meshharbor ssh` — the Mac has Remote Login off and no public
+  mars over **meshharbor's own mesh** (`mh ssh` — the Mac has Remote Login off and no public
   IP, so the harness dogfoods the product). It cannot move to the fleet: all three hosts are AMD,
   macOS may only be virtualised on Apple silicon, and meshharbor ships **no x86_64 macOS artifact**,
   so an x86 VM would have nothing to install even if it booted. Four environment defects were

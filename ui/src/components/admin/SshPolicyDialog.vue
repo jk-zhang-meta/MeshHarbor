@@ -166,7 +166,7 @@
         </v-alert>
         <v-alert type="info" variant="tonal" density="compact" class="mt-4">
           <i18n-t keypath="mh.exec.deviceSwitch" tag="span" scope="global">
-            <template #cmd><code>meshharbor config set ssh_enabled true</code></template>
+            <template #cmd><code>mh config set ssh_enabled true</code></template>
           </i18n-t>
         </v-alert>
 

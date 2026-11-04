@@ -409,12 +409,12 @@ refreshes at, lets an admin push the frame-rate denylist, and has the viewer say
   viewer's picker disables the rates above it, with the reason.
 - **The viewer's words:** a trial reads "on trial until this host has shown it can keep up". `refresh`, `denied`
   and `pipe` get sentences, and an unknown word is still shown as it came.
-- **`fps_high` in config.** The switch is no longer environment-only: `meshharbor config set fps_high true`
+- **`fps_high` in config.** The switch is no longer environment-only: `mh config set fps_high true`
   (Video encoding, Advanced) bridges to `MESHHARBORD_FPS_HIGH`. It is read at start with the hello's capabilities,
   so a change needs a restart, and it stays device-local: it is not pushable, because it widens what a session
   may do. Default off.
 - **`fps_deny` in config.** The denylist is now a config key on `encoder_cells_deny`'s terms.
-  `meshharbor config set fps_deny` validates it: a plain FFmpeg name or `*`, and a rate above 60, because an entry
+  `mh config set fps_deny` validates it: a plain FFmpeg name or `*`, and a rate above 60, because an entry
   that could only deny nothing would read as in force. It rides `desired_config` with `MANAGE_AGENTS` alone,
   since it only ever removes rates. The device writes it, reports `needs_restart` (the fallbacks are registered
   once per process), and a blank push clears it. `none` denies nothing, where a blank box in the dialog hands the

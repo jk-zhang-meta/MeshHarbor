@@ -163,7 +163,7 @@ sequenceDiagram
 |---|-------|-------------|--------|
 | P1 | Stop waiting on a synchronously-completed install (Linux) | revert = today's unconditional wait | **shipped (#1400)** — field verification pending a release |
 | P2 | Recover a `(deleted)` exe path + refuse a non-existent watcher binary + log the anyhow chain | revert = today's ENOENT | **shipped (#1427)** — ⚠️ NOT the guard it was scoped as: this is the whole reason the `.deb` path had no watcher |
-| P3 | Read the verdict: startup log + `NodeStatus` + `meshharbor status` | pure addition; revert = today's silence | proposed |
+| P3 | Read the verdict: startup log + `NodeStatus` + `mh status` | pure addition; revert = today's silence | proposed |
 | P4 | macOS `AbandonProcessGroup` — **`fans.itachi.meshharbor.update.plist`** is the job that matters (`update-helper` is that LaunchDaemon's body and is where `installer -pkg` is spawned) | packaging-only revert | proposed — see the note below |
 | P5 | Fleet answer: report the outcome to the server and show it | render-only; absent field ⇒ today's blank | proposed |
 | P6 | Transient systemd unit — **only if P1 leaves a measurable race** | `update_watcher_escape_cgroup`, default OFF | deferred, evidence-gated |
@@ -177,7 +177,7 @@ sequenceDiagram
 - [ ] ⚠️ Verified on the **auto-update** path, not a manual foreground
       `meshharbord self-update` — that reaches a verdict today and hides the bug
 - [ ] A non-`SucceededVerified` outcome is visible without SSH: in the daemon's
-      startup log and in `meshharbor status`
+      startup log and in `mh status`
 - [ ] **absent** (no install yet) and **`InProgress`** (an install that never
       reported) stay distinguishable — collapsing them recreates this bug one
       layer up

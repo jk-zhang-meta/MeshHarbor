@@ -19,7 +19,7 @@ served by your own instance names your origin automatically — but a command
 copied from elsewhere may not.
 
 ```bash
-meshharbor status    # which server does it think it belongs to?
+mh status    # which server does it think it belongs to?
 ```
 
 ### It cannot reach the server
@@ -71,7 +71,7 @@ meshharbord service uninstall
 **The Mac shows as two devices.** Expected — the root half is its own
 enrollment. See [Install on macOS](/docs/start/install/macos/).
 
-**The Mac is missing from `meshharbor peers` entirely.** You installed the user half
+**The Mac is missing from `mh peers` entirely.** You installed the user half
 only. Add the root half by re-running with a second token as `--daemon-token`.
 
 **Everything installed, screen is wallpaper.** A privacy grant, not an install
@@ -91,7 +91,7 @@ journalctl -u meshharbor -n 50 --no-pager
 
 :::danger Do not judge by `systemctl is-active` alone
 A perfectly healthy daemon can be one systemd does not own, and `is-active` then
-reports **inactive**. Check `pgrep` and `meshharbor peers` before restarting
+reports **inactive**. Check `pgrep` and `mh peers` before restarting
 anything.
 :::
 

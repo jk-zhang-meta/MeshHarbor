@@ -319,7 +319,7 @@ pub fn purge_exit_routes() {
 }
 
 /// #1690 — [`purge_exit_routes`] for a process that may NOT own the overlay
-/// adapter: `meshharbord self-update` run by hand or through `meshharbor exec`.
+/// adapter: `meshharbord self-update` run by hand or through `mh exec`.
 /// While a daemon is running (it answers the LocalAPI), the routes, the
 /// exit split-default and the DNS steer are that daemon's: its route guard
 /// would re-add the routes within seconds, but nothing re-asserts the DNS

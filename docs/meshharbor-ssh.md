@@ -8,7 +8,7 @@ The meshharbor answer to [Tailscale SSH](https://tailscale.com/kb/1193/tailscale
 Status: **the whole programme, P1 through P8, is shipped and field-proven** —
 transport, server, the full four-gate authorization path, the privilege model
 and interactive shells on **both** Windows and Unix, operator consent, the
-audit log, host-key verification, the `meshharbor ssh` / `meshharbor proxy` clients,
+audit log, host-key verification, the `mh ssh` / `mh proxy` clients,
 SFTP/scp, port forwarding, the device-reported session-activity log, and the
 admin UI for all of it.
 
@@ -83,8 +83,8 @@ first fragment only, every field bounds-checked, malformed input answered with
 | `ssh_host_key` | *(minted on first use)* | This node's host identity — **not** exposed on the config surface |
 
 ```bash
-meshharbor config set ssh_enabled true
-meshharbor config set ssh_authorized_keys "ssh-ed25519 AAAAC3Nz... goran@devbox"
+mh config set ssh_enabled true
+mh config set ssh_authorized_keys "ssh-ed25519 AAAAC3Nz... goran@devbox"
 # restart to apply, then from any peer in the org:
 ssh -p 2222 meshharbor@100.65.4.30 -- whoami
 ```
@@ -156,7 +156,7 @@ Spec: [`docs/fr/FR-89-ssh-exec-streaming.md`](fr/FR-89-ssh-exec-streaming.md) ·
 Before FR-89, `ssh <node> 'cmd'` was handed to the Fleet-RPC engine's one
 bounded run (`ExecEngine::run_fed`): the whole output was collected against a
 1 MiB ceiling and sent when the process ended, under a 300 s wall clock.
-Correct for `meshharbor exec`, whose answer is one persisted audit row; wrong for
+Correct for `mh exec`, whose answer is one persisted audit row; wrong for
 a byte stream. The engine now has a second entry point beside it,
 `ExecEngine::run_streamed` (`agents/meshharbord/src/exec.rs`), and the SSH server
 uses that one (`ssh.rs` `stream_to_channel`):
@@ -480,7 +480,7 @@ help here; it governs only the key-list path.
 that still holds when the server is the compromised thing:
 
 ```bash
-meshharbor config set ssh_max_privilege console_user
+mh config set ssh_max_privilege console_user
 ```
 
 Set to `console_user`, a grant asking for the daemon identity is **refused, not
@@ -534,7 +534,7 @@ both halves agree (`routes_ssh_via_service`,
 
 ```mermaid
 sequenceDiagram
-  participant C as caller (meshharbor ssh)
+  participant C as caller (mh ssh)
   participant S as server
   participant W as worker (signed-in user)
   participant V as SYSTEM service
@@ -588,9 +588,9 @@ audit says `worker`.
 `MESHHARBORD_SSH_VIA_SERVICE=0` (the worker drops the word and stops intercepting
 2223); the anchor's `ssh = off`, the default.
 
-**`meshharbor proxy` needs nothing new.** It carries bytes for stock `ssh` to the
+**`mh proxy` needs nothing new.** It carries bytes for stock `ssh` to the
 port in your ssh config, for key-list sessions, and only the worker's port
-(2222) honours a key list. `meshharbor ssh` dials whatever port the grant names.
+(2222) honours a key list. `mh ssh` dials whatever port the grant names.
 
 **The audit and the UI.** `ssh_audit.ran_as` records the server's decision. The
 admin UI's *As* chip reads it together with the grant's `account_mode`, so an
@@ -629,7 +629,7 @@ compromise is sufficient.
 | `PUT …/agent/{id}/ssh-policy` | `MANAGE_AGENTS` | Gate 3. Deciding a device *may* be SSHed into is a management act, distinct from being allowed to do it |
 | `GET`/`PUT …/ssh-settings` | `MANAGE_AGENTS` / `MANAGE_TENANT` | Gate 1. Writing needs the higher bar — one switch governs the org |
 
-The device-originated leg (`rc:ssh.request`, for `meshharbor ssh` from a laptop's
+The device-originated leg (`rc:ssh.request`, for `mh ssh` from a laptop's
 LocalAPI) goes through the **same** `dispatch`, so there is exactly one place
 the gates are evaluated regardless of how a request arrived.
 
@@ -823,12 +823,12 @@ It is re-derived on every hello, so rotating the key on the device and
 restarting moves the fleet view with it; and it is rewritten even when empty,
 so a device that switches SSH off stops advertising a key it no longer holds.
 
-### `meshharbor ssh <device>` (P6b — shipped)
+### `mh ssh <device>` (P6b — shipped)
 
 ```
-meshharbor ssh winhost-a
-meshharbor ssh winhost-a -- uptime
-meshharbor ssh "Office PC"            # a dashboard display name works too
+mh ssh winhost-a
+mh ssh winhost-a -- uptime
+mh ssh "Office PC"            # a dashboard display name works too
 ```
 
 `<device>` is a device name or a hex agent id — the server resolves it, as for
@@ -837,7 +837,7 @@ before the grant request by the rule in `docs/device-naming.md` (never over a
 device name, and refused when two devices share it).
 
 An overlay IPv4 or published overlay IPv6 address also selects an SSH device:
-`meshharbor ssh 100.64.0.2 -- id`. The CLI resolves it to exactly one agent in
+`mh ssh 100.64.0.2 -- id`. The CLI resolves it to exactly one agent in
 the primary organization's authenticated mesh view before requesting the grant. Unknown,
 ambiguous and client-only addresses are refused.
 
@@ -872,7 +872,7 @@ ambient user and system client configuration, including system `Include`
 files an ordinary user cannot read. The grant supplies the destination, port,
 session identity and pinned host key explicitly. `Host`, `ProxyJump` and other
 defaults in `~/.ssh/config` do not apply to these managed sessions. The
-user-configured `meshharbor proxy` integration below retains its existing behavior.
+user-configured `mh proxy` integration below retains its existing behavior.
 This uses OpenSSH's documented
 [`-F` option](https://man.openbsd.org/ssh.1#F), without creating or editing an
 SSH configuration file.
@@ -1033,7 +1033,7 @@ which on a corp laptop is the corporate network. So the operator opts in per
 destination:
 
 ```bash
-meshharbor config set forward_acl '{"enabled":true,"allowlist":[
+mh config set forward_acl '{"enabled":true,"allowlist":[
   {"host_pattern":{"kind":"exact","value":"db.intranet"},"port_range":{"low":5432,"high":5432},"proto":"tcp"}]}'
 ```
 
@@ -1148,12 +1148,12 @@ both are properties of the design rather than caveats that go away later. A
 refused row is rendered in error red, since a forward the device turned down
 is the row an operator is usually hunting for.
 
-### `meshharbor proxy` for stock tools (P6c — shipped)
+### `mh proxy` for stock tools (P6c — shipped)
 
 ```
 # ~/.ssh/config
 Host *.meshharbor
-  ProxyCommand meshharbor proxy %h %p
+  ProxyCommand mh proxy %h %p
   Port 2222
 
 scp report.pdf corplap-3.meshharbor:/tmp/
@@ -1181,7 +1181,7 @@ into a lookup for a device named `github` (`localclient::mesh_label`).
 also has a `Host zeus / HostName <public ip>` block hands the ProxyCommand its
 *public* address, and the failure is a bare `actively refused` / `timed out`
 that names no device and reads exactly like a broken overlay. `scp -v` shows
-it (`Executing proxy command: exec meshharbor proxy <public ip> 2222`), and the
+it (`Executing proxy command: exec mh proxy <public ip> 2222`), and the
 proxy now says so itself when a connect to a non-overlay literal fails.
 
 ⚠️ **Transport and resolution only, and the two commands are not
@@ -1193,8 +1193,8 @@ a single-use key with a ~60 s life, so it could not live in a static
 
 | | what it gives you |
 |---|---|
-| `meshharbor ssh` | the grant, the policy-resolved account, host key verified **for** you |
-| `meshharbor proxy` | reach it **by name** with keys **you** manage — its own `sshd`, or your key in `ssh_authorized_keys` |
+| `mh ssh` | the grant, the policy-resolved account, host key verified **for** you |
+| `mh proxy` | reach it **by name** with keys **you** manage — its own `sshd`, or your key in `ssh_authorized_keys` |
 
 Don't "unify" them: doing so would quietly drop verification from one path.
 
@@ -1202,7 +1202,7 @@ Don't "unify" them: doing so would quietly drop verification from one path.
 resolver see a mesh name invites it to find something else — a LAN host, a
 search-domain match, a wildcard DNS answer.
 
-For rsync with the grant path, `rsync -e 'meshharbor ssh' src box:/dst` already
+For rsync with the grant path, `rsync -e 'mh ssh' src box:/dst` already
 works: the trailing args reach `ssh` verbatim.
 
 ### The audit trail (P3c-1 — shipped)
@@ -1488,8 +1488,8 @@ never recorded: what a session typed is its own.
 | P4a | PTY / interactive shell on **Unix** (`openpty`, login shell, resize, group teardown) | **shipped** |
 | P4b | The same on **Windows** — ConPTY + `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` on `CreateProcessAsUserW`. The platform that needs this most | **shipped** rc.429, field-proven on corplap |
 | P6a | Devices publish their SSH host key; the server stores it and returns it with the grant, so a caller has something to verify against | **shipped** rc.444 |
-| P6b | `meshharbor ssh <name>` — ephemeral keypair → grant → verify against the published key → hand off to the system `ssh` | **shipped** rc.446, field-proven buildhost→corplap |
-| P6c | `meshharbor proxy` — stdio `ProxyCommand`, so stock `ssh`/`scp`/`rsync`/`git` reach devices BY NAME | **shipped** |
+| P6b | `mh ssh <name>` — ephemeral keypair → grant → verify against the published key → hand off to the system `ssh` | **shipped** rc.446, field-proven buildhost→corplap |
+| P6c | `mh proxy` — stdio `ProxyCommand`, so stock `ssh`/`scp`/`rsync`/`git` reach devices BY NAME | **shipped** |
 | P7a | SFTP subsystem — `sftp` and `scp` | **shipped** rc.450, field-proven buildhost→fleet-host-1 |
 | FR-97 P4b | SFTP and `scp` as the Windows `console_user`, through `exec`'s console-user spawn: raw bytes, the person's profile | **merged** [#2438](https://github.com/jk-zhang-meta/MeshHarbor/pull/2438), field-verified on a candidate |
 | FR-97 P5a | `console_user` on Linux and macOS: the person at the screen (logind's seat0, `/dev/console`'s owner), by the `named` drop; refused while nobody is there | **in review** [#2082](https://github.com/jk-zhang-meta/MeshHarbor/issues/2082) |

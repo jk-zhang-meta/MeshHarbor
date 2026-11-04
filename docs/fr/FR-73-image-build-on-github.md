@@ -278,7 +278,7 @@ at **20:07:38Z**. No pull secret was added (`regcred` stays on the Deployment, u
 | pull, per node (pod events) | **3.3 s** and **2.7 s** for the whole 80.96 MB image — nothing of it was cached on the nodes, the registry had changed |
 | public `/health` | 200 throughout; `version 0.4.70`, all six modules mounted and compiled |
 | `/` | 200 (the SPA) |
-| fleet RPC | `meshharbor exec` to the cluster's build host through the new pods answered (`uptime`) |
+| fleet RPC | `mh exec` to the cluster's build host through the new pods answered (`uptime`) |
 | remote desktop | a session to a cluster node from this controller: `[WS] received: connected`, connect attempt 1, **ttff 633 ms**, `rc:video-info` vp9 4:4:4 on **transport direct**, clock echoes every second |
 | tunnels | this box's seven declared routes all `active` afterwards |
 | overlay | online peers unchanged (14 with a live carrier after vs 13–14 before; every device that was online stayed online); the direct pair to the build host survived (39 ms); the WAN peers behind NAT were on `relay:derp/tcp` before and after — from this box today the `srflx` tier is ineligible (`why.tiers`), unrelated to the roll — and re-registered on the restarted pods' DERP within seconds |
@@ -338,7 +338,7 @@ links but never executes) and the P1b/P1c Dockerfile — a low-risk roll for a f
 | pull, per node | 2.9 s and 2.2 s for the whole 81 MB image |
 | **merge → pods on the new image** | **8 min 51 s** (12:05:58Z → 12:14:49Z: 7 min 48 s of it the build and tag, 33 s the roll) — against the 10–15 min estimate this FR opened with |
 | public `/health` | 200 on every sample through and after the roll, `version 0.4.74`, all six modules; the promote job's own ten-minute watch: **0 of 60 probes were not 200** |
-| fleet RPC | `meshharbor exec` to the cluster's build host answered through the new pods |
+| fleet RPC | `mh exec` to the cluster's build host answered through the new pods |
 | remote desktop | a session to a cluster node from this controller: connect attempt 1, **ttff 713 ms**, VP9 4:4:4 over the data channel on transport direct, first frame 1600 × 900 |
 | tunnels | this box's seven declared routes all `active` afterwards |
 | overlay | online peers unchanged (13 before, 13 after: 5 direct + 7 DERP + 1 `upgrading` at +5 min — the DERP pairs re-registered on the restarted pods and one pair was climbing back to direct, the make-before-break the carrier ladder is built for); the 7 offline rows were offline before |

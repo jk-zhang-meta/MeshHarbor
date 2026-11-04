@@ -90,7 +90,7 @@ admin-approved** (its netmap carries `/0`).
 > name selector has resolved, the agent PINS that node for the daemon's
 > lifetime; if the label later resolves elsewhere it withholds default routing
 > and reports `exit-node name now resolves to a DIFFERENT machine` in
-> `meshharbor status`. A node-id hex selector is unambiguous and never drifts.
+> `mh status`. A node-id hex selector is unambiguous and never drifts.
 
 ## How it works end-to-end
 
@@ -142,7 +142,7 @@ Four layers, each defending against a different way to cut yourself off:
 - **The withhold gate.** The split-default is installed **only if every
   exemption pinned successfully.** If discovery failed or a pin errored, the
   client *withholds* — egress stays on the local uplink — and surfaces a
-  reason (`meshharbor status` → `exit node <sel> (withheld — <why>)`), logged once
+  reason (`mh status` → `exit node <sel> (withheld — <why>)`), logged once
   per reason-change. It never installs a half-configured reroute.
 - **Generic `/0` is inert (A1).** The normal `install_subnets` path strips
   default routes from **every** peer's allowed-ips + OS routes. Only the peer
@@ -224,7 +224,7 @@ flowchart LR
 
 Steering is gated on the local resolver having **actually bound** its socket —
 we never point `"."` at a dead `:53` (which would black-hole all DNS). Status
-shows in `meshharbor status` (`… DNS steered` / `DNS NOT steered`).
+shows in `mh status` (`… DNS steered` / `DNS NOT steered`).
 
 ## Crash-safety
 
@@ -287,7 +287,7 @@ flowchart LR
 > off by default (`Not found`). Field, a Windows 11 Enterprise eval VM: absent
 > with Hyper-V and Containers off, still absent with Containers on, present
 > once Hyper-V was enabled. A device without it withholds the exit and subnet
-> offer and says so (`meshharbor status`, and the admin row).
+> offer and says so (`mh status`, and the admin row).
 
 ### Exit-client pins (FR-97 P0e)
 
@@ -374,7 +374,7 @@ AC17 field cells (released 0.4.134, then a P0e candidate; FR-97 §8):
 | **Exit**: v6 egress + NAT | ip6tables MASQUERADE | ✗ → v6 **fail-closed** | pf NAT66 to a stable global address, where an unscoped v6 default exists; else v6 **fail-closed** |
 
 A device that cannot serve as an exit advertises nothing and says why, in
-`meshharbor status` and in the admin routes table (FR-97 P0b), rather than
+`mh status` and in the admin routes table (FR-97 P0b), rather than
 offering a `/0` that every client taking it would black-hole.
 
 ### macOS client (FR-97 P1a)
@@ -422,7 +422,7 @@ sequenceDiagram
 | Look first, then add; replace with delete + add | `add_host_exemption` `tun.rs:4740` | BSD `route` has no idempotent write, and a re-write is a route-monitor event (#1856). `route change` resolves its target the way the lookup does, so it cannot repoint a pin |
 | Re-check the pins | `stale_host_exemptions` `tun.rs:4838`, the gate `route_guard.rs:599` | Wi-Fi ↔ Ethernet, a new network: a `/32` left on the old next hop black-holes the endpoint it was pinned for, the coordination server included |
 | A pin that cannot follow is deleted before it is forgotten | `route_guard.rs:599` | An untracked host route outlives every teardown, and turns into a black hole at the next network change |
-| One WARN per cause, and the cause in `meshharbor status` | `note_exemption_failure` `route_guard.rs:393`, `exemption_withheld_reason` `route_guard.rs:405` | The gate retries every few seconds; 0.4.132 logged the same failure every ~5 s and reported a guess (`no original default route?`) |
+| One WARN per cause, and the cause in `mh status` | `note_exemption_failure` `route_guard.rs:393`, `exemption_withheld_reason` `route_guard.rs:405` | The gate retries every few seconds; 0.4.132 logged the same failure every ~5 s and reported a guess (`no original default route?`) |
 
 > ⚠️ **A lookup does not show a pin.** A destination a connection has used
 > keeps an interface-scoped clone of the default route (`WASCLONED,IFSCOPE`).
@@ -443,7 +443,7 @@ sequenceDiagram
 
 > ⚠️ **DNS is not steered on a Mac yet (P1c).** Egress goes through the exit,
 > but queries go to whatever resolver the Mac already uses. A LAN resolver is
-> on-link, so a `/1` never captures it. `meshharbor status` says `DNS NOT steered`.
+> on-link, so a `/1` never captures it. `mh status` says `DNS NOT steered`.
 
 > 🔑 **Kill switch:** `MESHHARBORD_EXIT_CLIENT_MACOS=0` refuses every exemption
 > again, as 0.4.132 did, so the exit is withheld with that reason. The Linux
@@ -521,7 +521,7 @@ sequenceDiagram
 >   from `pgrep`.
 
 > ⚠️ **Root only.** `pfctl` needs root, so a per-user daemon's probe refuses
-> and the Mac offers nothing, with the reason in `meshharbor status` and the admin
+> and the Mac offers nothing, with the reason in `mh status` and the admin
 > routes table (FR-97 P0b). `MESHHARBORD_PF_NAT=0` refuses the same way.
 
 > ⚠️ **Still unmeasured:** what the common corporate VPN clients do to pf
@@ -536,7 +536,7 @@ sequenceDiagram
 >   incoming".
 > - With stealth mode on, a ping to the Mac's own overlay address goes
 >   unanswered, even from a mesh peer. A failed ping says nothing about a Mac
->   exit's health; check `meshharbor peers` and the client's egress instead.
+>   exit's health; check `mh peers` and the client's egress instead.
 
 ### A netstack client (FR-97 P0c-3)
 
@@ -566,7 +566,7 @@ flowchart LR
 | Any app not using the front | ❌ direct | nothing in the OS routes through the overlay |
 | DNS | never steered | below |
 
-`meshharbor status` says so, from `ExitNodeStatus.socks5_port`
+`mh status` says so, from `ExitNodeStatus.socks5_port`
 ([`lib.rs:107`](../crates/localapi/src/lib.rs#L107)):
 
 ```text
@@ -587,7 +587,7 @@ it off from its internal names.
 terminates every packet addressed to it and forwards none, so it withholds
 every route offer, whatever the host's own NAT could do: the reason is
 `this node runs the userspace netstack, which forwards nothing for its peers`,
-in `meshharbor status` and in the admin routes table. Before P0c-3, a netstack
+in `mh status` and in the admin routes table. Before P0c-3, a netstack
 node on a host where iptables worked offered `/0` (field, 0.4.141), and every
 client of it would have black-holed.
 
@@ -608,7 +608,7 @@ client of it would have black-holed.
   rebuilt, a netmap update) runs the generic `install_subnets`, which
   *replaces* its allowed-IPs with its real subnets. The `/1`s were gone while
   `split_default_installed` still read true, so the OS `/1`s kept routing
-  into the TUN and every packet found no peer, with `meshharbor status` still
+  into the TUN and every packet found no peer, with `mh status` still
   saying `active`, until a restart. The signature in the log is
   `dropped advertised default route(s) … peer=<the exit>` right before egress
   dies. The reconcile now re-asserts the split-default every time it finds it
@@ -657,7 +657,7 @@ client of it would have black-holed.
 
 ## Verifying it works
 
-From the client, after `meshharbor status` shows `exit node <name> (active, v6 on,
+From the client, after `mh status` shows `exit node <name> (active, v6 on,
 DNS steered)`:
 
 ```bash

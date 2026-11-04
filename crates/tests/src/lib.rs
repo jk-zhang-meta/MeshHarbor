@@ -299,7 +299,7 @@ mod vault_activity_tests;
 /// session's room, a driver's answer, and the one lease a yes allows.
 #[cfg(test)]
 mod vault_approval_tests;
-/// FR-90 P3-9-1 — a person's `meshharbor connect`, the vault's half:
+/// FR-90 P3-9-1 — a person's `mh connect`, the vault's half:
 /// `rc:vault.connect` decided by Cedar's `secret:connect` for the device's
 /// OWNER as its row names them, lent only where `vault.people` lists the
 /// organization, never by a policy written for sessions, and taken back when

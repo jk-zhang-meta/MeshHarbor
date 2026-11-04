@@ -703,7 +703,7 @@ async fn run_install_inner(
     emit(on_event, ProgressEvent::Done);
     diag.done();
 
-    // P4b (role→action composition): the MSI carries the `meshharbor`
+    // P4b (role→action composition): the MSI carries the `mh`
     // CLI, so a daemon install subsumes the tunnel client. Existence-
     // check rather than assume — an old pre-P4b MSI served by a stale
     // server degrades to cli_included=Some(false) and the SPA doesn't
@@ -988,7 +988,7 @@ async fn place_desktop_companion(
 
 /// Post-install probe for the MSI-carried tunnel CLI: derive the
 /// flavour's install dir (perUser `%LOCALAPPDATA%\Programs\MeshHarbor`,
-/// perMachine `%ProgramFiles%\MeshHarbor`) and check `meshharbor.exe`
+/// perMachine `%ProgramFiles%\MeshHarbor`) and check `mh.exe`
 /// landed. `path_updated=Some(true)` piggybacks on the same check —
 /// the wxs `TunnelExe` component carries both the file AND the PATH
 /// append, so they land (or don't) together.
@@ -1002,7 +1002,7 @@ fn cli_done_surface(
     ) else {
         return (None, Some(false), None);
     };
-    let cli = dir.join("meshharbor.exe");
+    let cli = dir.join("mh.exe");
     if cli.is_file() {
         (Some(cli.display().to_string()), Some(true), Some(true))
     } else {

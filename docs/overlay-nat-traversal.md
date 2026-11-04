@@ -285,7 +285,7 @@ protocols. Mainland ISP gateways mostly speak only UPnP.
   (`NOT_AUTHORIZED`, for the rest of the old lifetime). With the same nonce, a
   restart or rebuild re-requesting the port is a refresh. In plane mode the
   first org runtime's key wins, like the gather.
-- **Visibility:** `meshharbor status` shows `gateway pcp <ip:port>` on the srflx
+- **Visibility:** `mh status` shows `gateway pcp <ip:port>` on the srflx
   line, in plane mode. Legacy mode logs the grant (`gateway port mapping
   granted`) but its status keeps the startup snapshot.
 - **Kill switch:** `MESHHARBORD_OVERLAY_PORTMAP=0`, config key `overlay_portmap`.
@@ -510,7 +510,7 @@ cascade's guarantees while replacing its reactive counters:
   the peer has a dialable candidate for it (`TierAvailability`, built from the
   netmap candidates in `runtime/establish.rs`): a NATed peer has no public
   tier at all. An untried tier carries no penalty, so it always reads
-  *eligible*. `meshharbor why` therefore shows availability as well: an
+  *eligible*. `mh why` therefore shows availability as well: an
   unavailable tier reads `—` in ELIGIBLE and `no candidate` in WHY NOT
   (#2089). Before that, a NATed peer's `public yes 330` out-scored the relay
   the pair was actually on, which read as the selector ignoring its best tier.
@@ -653,7 +653,7 @@ cascade's guarantees while replacing its reactive counters:
 - **The counters are readable (#32).** `drop_counts()` shipped with the signal
   and was surfaced nowhere for a day, so a real 2026-08-25 transition could only
   be argued about from an absence of log lines. `NodeStatus.derp_inbound_drops`
-  carries `(unrouted, backpressure)` and `meshharbor status` prints a `derp drops`
+  carries `(unrouted, backpressure)` and `mh status` prints a `derp drops`
   line when either is non-zero — silent at zero, because a permanent zero line
   is noise, but after a transition `unrouted` is the first thing to read.
   ⚠️ Cumulative since daemon start: **diff two readings**, never judge the

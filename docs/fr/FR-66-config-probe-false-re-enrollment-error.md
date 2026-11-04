@@ -103,7 +103,7 @@ that failure is the normal case.
    indistinguishable from routine start-up noise. The self-heal's own comment
    says *"Loud, because silently running on an older config must never look like
    a normal boot"* — that property is already lost.
-3. **It is invisible to every health check.** `meshharbor status`, `meshharbor peers`
+3. **It is invisible to every health check.** `mh status`, `mh peers`
    and the server's `is_online` all read healthy, so nothing contradicts the log.
    This is the inverse of the `systemctl is-active` trap in `CLAUDE.md`: there,
    a healthy host reads dead; here, a healthy host reads doomed.

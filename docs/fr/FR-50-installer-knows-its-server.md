@@ -171,7 +171,7 @@ that could regress is the population whose served bytes do not change.
 
 - **The GUI wizard** (`agents/meshharbor-setup`) has a server field the operator
   fills in, and is not piped. Unaffected.
-- **`meshharbor self-update`** resolving its own origin — a different fetch with a
+- **`mh self-update`** resolving its own origin — a different fetch with a
   different (signed) trust story, tracked separately.
 - **Publishing a container image** so the self-host path is a pull rather than a
   build. Real, and the single largest remaining friction on that path, but it is

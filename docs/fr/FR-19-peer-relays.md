@@ -94,7 +94,7 @@ written.
 
 ### 2a. Who is on the relay today
 
-`sudo meshharbor peers` on mars, primary org, online peers:
+`sudo mh peers` on mars, primary org, online peers:
 
 | peer | carrier | RTT |
 |---|---|---|
@@ -109,7 +109,7 @@ head-of-line-blocking layer *below* the SCTP one FR-17 is about, on top of the 5
 
 ### 2b. What the sweep does — and does not — establish
 
-`meshharbor netcheck` across the fleet, same session:
+`mh netcheck` across the fleet, same session:
 
 | host | `stun/udp` | `relay band/udp` | NAT | role here |
 |---|---|---|---|---|
@@ -488,7 +488,7 @@ cannot render is a permission nobody can grant from the product, which is worse 
 bit. So, until the mask moves to `BigInt` (#888):
 
 - **Relay approval requires `MANAGE_AGENTS` and `EXEC_DEVICE`.** Coherent rather than a
-  hack: an `EXEC_DEVICE` holder can already run `meshharbor config set relay_server_enabled
+  hack: an `EXEC_DEVICE` holder can already run `mh config set relay_server_enabled
   true` on any exec-enabled device as root, so the coupling grants nothing new. What it
   cannot express is an org that wants relay approvers who may *not* run root commands —
   that needs the dedicated bit, which needs #888.
@@ -551,7 +551,7 @@ sent to a responder on mars:
 
 Arrivals were confirmed at the responder, not merely inferred from a client timeout —
 CORPLAP-3's frame landed from `192.164.201.1:10400`, matching the `MEASURED PATH` its own
-`meshharbor why` reports.
+`mh why` reports.
 
 Three results, in order of consequence:
 
@@ -635,12 +635,12 @@ resolution, and constrain each node's probes to endpoints the server minted for 
 of the FR's implementation risk.** The first draft proposed a new `orgrelay` tier at BASE
 230 between `srflx` (260) and `relay` (200), with a "rejected alternative" of folding it
 into the relay tier. The rejection reason was: *"collapsing a 230-vs-200 preference into one
-row makes `meshharbor why` unable to answer 'why am I on DERP when there is a relay right
+row makes `mh why` unable to answer 'why am I on DERP when there is a relay right
 there'."*
 
 **That reason describes the status quo the codebase already accepts.** `explain`
 (`path.rs:917`) iterates `DIRECT_TIERS.chain(once(&DirectTier::Relay))`, and
-`base(Relay) = B_RELAY` for **both TURN and DERP** — so `meshharbor why` *already* cannot
+`base(Relay) = B_RELAY` for **both TURN and DERP** — so `mh why` *already* cannot
 distinguish a 52 ms coturn hop from a 175 ms DERP hop. That distinction has never lived in
 the tier ladder; it lives in `PeerInfo.relay_kind` + `relay_transport`, rendered by
 `relay_qualified_label` (`localclient.rs:1028`) as `relay:{kind}/{transport}`.
@@ -730,10 +730,10 @@ the counter was added without a reader"*. Still true: `stale_drops()`
 
 | surface | addition |
 |---|---|
-| `meshharbor peers` | `CONN` reads `relay:org/udp` — free via `relay_qualified_label` (`localclient.rs:1028`) |
-| `meshharbor peers --json` | `relay_kind: "org"`, `relay_via`, `relay_endpoint` (`PeerInfo`, `crates/localapi/src/lib.rs:393`) |
-| `meshharbor why <peer>` | the relay row names the kind; the tier ladder is unchanged (§6) |
-| `meshharbor netcheck` | relay node: `relay server: listening :3478, N sessions` |
+| `mh peers` | `CONN` reads `relay:org/udp` — free via `relay_qualified_label` (`localclient.rs:1028`) |
+| `mh peers --json` | `relay_kind: "org"`, `relay_via`, `relay_endpoint` (`PeerInfo`, `crates/localapi/src/lib.rs:393`) |
+| `mh why <peer>` | the relay row names the kind; the tier ladder is unchanged (§6) |
+| `mh netcheck` | relay node: `relay server: listening :3478, N sessions` |
 | relay node | per-session `packets_rx`/`bytes_rx`, **one labelled counter per refusal reason** — bad MAC, unknown VNI, wrong tenant, at-capacity, expired, unbound-source — each with a `NodeStatus` reader. ⚠️ One counter for six causes cannot tell an attack from a misconfiguration during a flood |
 | process-global | `ORG_RELAY_SESSIONS_OPENED_TOTAL` / `_CLOSED_TOTAL` only. ⚠️ **Not a gauge**: `evidence.rs:1-4` is *"cumulative since daemon start — consumers DIFF two readings, never judge absolutes"*. The live session count is a `NodeStatus` field |
 | server | `peer_relay_audit` (90 d TTL) — every **approval**, mint and refusal, reason enumerated, written in one place via `decide() -> Result<Granted, DenyReason>`, read behind `VIEW_EXEC_AUDIT` (`VIEW_RELAY_AUDIT` after #888). **P3b:** `GET …/peer-relay-audit` (`?agent_id=`), one row shape for both actions (`action: approve \| mint`) so "who made this device a relay, and what went through it?" is one query on `agent_id`; `PeerRelayDenyReason` is the enumerated vocabulary (12 arms, wire-locked) |
@@ -869,12 +869,12 @@ kill switch. That is what makes E2E-3 executable before P2.
 
 - [ ] With `peer_relay_mode=off` (the default): no `peer_relay_audit` rows, and on a fixed
       peer set the **selected carrier and every `TierWhy` row are unchanged** — diffed from
-      `meshharbor why --json` before and after. *(Now genuinely checkable because §6 adds no
+      `mh why --json` before and after. *(Now genuinely checkable because §6 adds no
       tier; the first draft asserted "byte-identical" while widening `[TierState; 3]`, so it
       would have failed its own first criterion.)* *(P3c: the zero-rows half is proven by
       `mode_off_writes_nothing_and_warn_audits_without_pushing` — under `off` the mint
       returns before any read past the cached mode; under `warn` it audits the would-be
-      mint with `warn_only: true` and pushes nothing. The `meshharbor why --json` diff is the
+      mint with `warn_only: true` and pushes nothing. The `mh why --json` diff is the
       P4 field check.)*
 - [x] A relay forwards only between the two bound `addr:port`s for a VNI; a packet from an
       unbound source is dropped and counted by `ORG_RELAY_FORWARD_UNBOUND_SRC`.
@@ -932,7 +932,7 @@ kill switch. That is what makes E2E-3 executable before P2.
 **Operations**
 
 - [x] `peer-relay-port-audit.sh check` fails on a host whose UDP port is closed, and the
-      weekly cron files an issue. *(BOTH scripts delivered: `scripts/peer-relay-port-audit.sh` (`check` field-proven — exit 1 on a closed Asahi:3479, exit 4 on DNAT-stolen mars:3478) AND `scripts/peer-relay-port-audit-cron.sh`, a **mesh-native** wrapper (Fleet RPC, not ssh/scp). **LIVE ON mars 2026-08-31 (#1056):** the "unattended host" residual was a **MISDIAGNOSIS** — `meshharbor exec` needs no user token (`meshharbor exec --help`: the local daemon relays it over its own server connection; the server authorizes on the ORIGINATING device's permission). mars runs it via `MESHHARBOR_EXEC="sudo -n meshharbor exec"` — its earlier `Permission denied` was only the CLI-as-gjovanov not reaching the root-owned LocalAPI socket. gjovanov crontab `45 4 * * 1` (30 min after the sibling mediasoup audit; gjovanov has passwordless sudo + gh + kubectl). Verified end-to-end from mars: Asahi:3478 → `AUDIT OK`/0; Asahi:3479 → `AUDIT FAILED` → `WOULD file GitHub issue`/1.)*
+      weekly cron files an issue. *(BOTH scripts delivered: `scripts/peer-relay-port-audit.sh` (`check` field-proven — exit 1 on a closed Asahi:3479, exit 4 on DNAT-stolen mars:3478) AND `scripts/peer-relay-port-audit-cron.sh`, a **mesh-native** wrapper (Fleet RPC, not ssh/scp). **LIVE ON mars 2026-08-31 (#1056):** the "unattended host" residual was a **MISDIAGNOSIS** — `mh exec` needs no user token (`mh exec --help`: the local daemon relays it over its own server connection; the server authorizes on the ORIGINATING device's permission). mars runs it via `MESHHARBOR_EXEC="sudo -n mh exec"` — its earlier `Permission denied` was only the CLI-as-gjovanov not reaching the root-owned LocalAPI socket. gjovanov crontab `45 4 * * 1` (30 min after the sibling mediasoup audit; gjovanov has passwordless sudo + gh + kubectl). Verified end-to-end from mars: Asahi:3478 → `AUDIT OK`/0; Asahi:3479 → `AUDIT FAILED` → `WOULD file GitHub issue`/1.)*
 - [x] The port rule is **scoped**, not merely present. *(`scripts/peer-relay-port-audit.sh`, field 0.4.20: Asahi’s explicit `3478/udp` → scoped/exit 0; a blanket allow-all → exit 2; mars’s DNAT-consumed `3478` → exit 4.)*
 - [x] A relay at `relay_max_sessions` refuses with a distinct reason; the pair falls back.
 - [x] Relay-node UDP socket census flat over 24 h (F6). *(2026-09-24, closed by [FR-48](FR-48-meshharbord-ice-socket-leak.md) — this criterion is the consumer of that fix. The leak was never FR-19's: `turn::Client` has no `Drop`, so a **cancelled** TURN allocate stranded its underlay socket on every overlay node, relay or not; fixed in `agent-v0.4.100` (#1556). Hourly census over 24 h including the relay node `scw-m2-asahi`: no host ever exceeded 7 sockets, and the longest single lifetime — 20.0 h on 0.4.100 — ran **0.000/h** on all four, where 0.4.99 ran ~9/h. Full series and method in FR-48's field log.)*
@@ -1033,13 +1033,13 @@ COTURN flush on a host serving live conference media.
 
 **E2E-1 — relay selection.** All three offered to `CORPLAP-3`; lowest measured RTT wins.
 Then take mars's relay down and assert re-selection to zeus without a DERP round trip.
-⚠️ **Not via `meshharbor config set`.** The first draft claimed that was *"a config change, not
+⚠️ **Not via `mh config set`.** The first draft claimed that was *"a config change, not
 a service restart"* — false: `config_surface.rs:19` states *"Every key is read at daemon
 startup, so the whole surface is `restart_required = true`"* (hardcoded `:596`, `:610`,
 asserted by `every_key_gets_and_applies` `:1237`), and the CLI's live-apply allowlist is
 exactly `exec_enabled | remote_config_enabled` (`localclient.rs:969`). A bound UDP socket
 does not close on a TOML write, and restarting `meshharbord` on **mars** would kill the host
-driving every `meshharbor exec` in this plan. **Revoke server-side** (`Agent.peer_relay_policy`
+driving every `mh exec` in this plan. **Revoke server-side** (`Agent.peer_relay_policy`
 → `rc:relay.revoke`) — which also exercises §7's revocation path.
 
 **E2E-2 — the floor holds.** `CORPLAP-2` still `relay:derp/tcp`, reconnects unchanged. The
@@ -1064,13 +1064,13 @@ forwards nothing looks healthy from the control plane. Non-zero exit on failure.
 Driving is over Fleet RPC from mars (`docs/fleet-rpc.md:19`):
 
 ```bash
-sudo meshharbor exec <host> --timeout 45000 -- "meshharbor netcheck"
-sudo meshharbor exec <host> --timeout 45000 -- "meshharbor peers --json"
-sudo meshharbor diag pair mars CORPLAP-3
+sudo mh exec <host> --timeout 45000 -- "mh netcheck"
+sudo mh exec <host> --timeout 45000 -- "mh peers --json"
+sudo mh diag pair mars CORPLAP-3
 ```
 
 ⚠️ Pass the whole chain as **one quoted arg** — the relay joins argv into a shell line.
-⚠️ `meshharbor exec` needs `exec_enabled` on the target; neo16 currently refuses.
+⚠️ `mh exec` needs `exec_enabled` on the target; neo16 currently refuses.
 ⚠️ Use **`sudo`** on hosts running both daemon halves, or the per-user daemon answers and the
 overlay looks empty.
 
@@ -1193,7 +1193,7 @@ property to test (E2E-2, E2E-4), not to assert.
   1280 + 32 (WG) + 8 (Geneve) + 8 (UDP) + 20 (IPv4) = **1348**, comfortably under 1500.
   Geneve's 8 bytes is +4 over TURN's ChannelData and costs nothing against DERP (WS over
   TCP). Re-check only if the overlay MTU is ever raised. ⚠️ And do **not** cite
-  `meshharbor diagnose` as the path-MTU instrument — it is
+  `mh diagnose` as the path-MTU instrument — it is
   `bail!("T3: diagnose not yet wired")` (`agents/meshharbor-cli/src/cli.rs:637`); only its
   doc comment describes the probe.
 
@@ -1241,13 +1241,13 @@ property to test (E2E-2, E2E-4), not to assert.
 | date | build | result |
 |---|---|---|
 | 2026-08-28 | 0.4.10 | **Pre-implementation evidence sweep.** Fleet-wide `netcheck` + `peers` + `why` from mars over Fleet RPC. 3/12 online peers on `relay:derp/tcp`, **all TCP**. `relay band/udp` **BLOCKED** on `CORPLAP-3` (symmetric NAT), jupiter and zeus; `stun/udp: NO MAPPING` on `CORPLAP-2` (whose relay-band cell is **derived, not probed**). Live tier ladder captured for `100.65.4.30`. ⇒ cluster-host firewall provisioning promoted to its own phase (P5); default port set to **3478 as a hypothesis**, with E2E-3 to settle it. ⚠️ Also found while specifying: `blocked_by: "peer-relays-instead"` (`path.rs:590`) already uses "peer relay" for nearly the opposite thing — the product keeps the industry term, the wire uses `relay_kind:"org"`. |
-| 2026-08-28 | — | **Independent review, three lenses, before publication.** Three material corrections, each retained inline as a warning rather than silently fixed: (1) **§6 inverted** — a fifth carrier tier was the wrong design; `RelayKind::Org` plus a fourth `RelayConn` impl needs zero changes to `send_ip_packet`/`SendPeer`/`Router`/`CarrierPlane`, and avoids four hazards in `path.rs`/`lifecycle.rs`, three of them silent. The first draft's own "30 points of headroom" blocker was a **misreading** of `weight() = 2×(base − B_RELAY)` and is retracted. (2) **§4 was insecure** — the bind proved return-routability only; it now carries a per-member `bind_secret` delivered over the authenticated control WS, plus nonce, domain separation, constant-time compare and anti-amplification padding. (3) **§2b overread its instrument** — `relay_band_udp` probes coturn's ~10–13k band and never touches 40000, so the port choice is a hypothesis for E2E-3, which must additionally use Geneve-shaped payloads because a STUN ALG on 3478 may pass STUN and drop us. Also corrected: gate 2 is inert (`OverlayAclMode` defaults `Off`), "fail closed" is unreachable through `load_acl`'s `AclCtx` return, VNI scoping was self-contradictory, P1 was not inert, `meshharbor config set` is not live outside a two-key allowlist, `three_node_relay_roundtrip` was not implementable (overlay isn't compiled into `crates/tests`), and several acceptance criteria named instruments that do not exist. |
+| 2026-08-28 | — | **Independent review, three lenses, before publication.** Three material corrections, each retained inline as a warning rather than silently fixed: (1) **§6 inverted** — a fifth carrier tier was the wrong design; `RelayKind::Org` plus a fourth `RelayConn` impl needs zero changes to `send_ip_packet`/`SendPeer`/`Router`/`CarrierPlane`, and avoids four hazards in `path.rs`/`lifecycle.rs`, three of them silent. The first draft's own "30 points of headroom" blocker was a **misreading** of `weight() = 2×(base − B_RELAY)` and is retracted. (2) **§4 was insecure** — the bind proved return-routability only; it now carries a per-member `bind_secret` delivered over the authenticated control WS, plus nonce, domain separation, constant-time compare and anti-amplification padding. (3) **§2b overread its instrument** — `relay_band_udp` probes coturn's ~10–13k band and never touches 40000, so the port choice is a hypothesis for E2E-3, which must additionally use Geneve-shaped payloads because a STUN ALG on 3478 may pass STUN and drop us. Also corrected: gate 2 is inert (`OverlayAclMode` defaults `Off`), "fail closed" is unreachable through `load_acl`'s `AclCtx` return, VNI scoping was self-contradictory, P1 was not inert, `mh config set` is not live outside a two-key allowlist, `three_node_relay_roundtrip` was not implementable (overlay isn't compiled into `crates/tests`), and several acceptance criteria named instruments that do not exist. |
 | 2026-08-28 | 0.4.11 | **E2E-3 RUN — open decision #3 CLOSED: the default port is 3478.** Geneve-shaped 64-byte frames (`Opt Len 0`, pinned proto `0x7788`, deliberately not STUN-shaped) from three clients to a non-amplifying responder on mars; arrivals verified server-side, not inferred from client timeouts. **CORPLAP-3 — symmetric NAT, corp-managed, the host this FR exists for — reached 3478 and NOTHING else** (11000 ✗, 41641 ✗); CORPLAP-1 reached all three; CORPLAP-2 reached none, confirming the DERP floor. ⇒ 3478 confirmed, 41641 dead as a fallback, 443 retained only as a documented alternative. Two corrections fell out: the codebase's *"drops the ~10-13k relay band"* is **narrower than measured** (CORPLAP-3 allows *only* 3478, not "all but the band"), and the STUN-ALG risk §5 flagged **did not materialise**. ⚠️ The run's first probe FAILED on 3478 and nearly produced the opposite conclusion — the cause was mars's own `COTURN_DNAT` redirecting udp/3478 on both public IPs in `PREROUTING`, invisible to `ss -ulnp` and downstream of an ACCEPTing `HOST_FW_INPUT`. Isolated by a STUN-shaped control (also blocked ⇒ not payload inspection), then by reading the nat table. **mars therefore cannot host an org relay on 3478 without displacing coturn** — a new open question for E2E-1. Test rig fully torn down and verified: DNAT restored, temp accepts removed, nothing bound, mesh carriers unchanged. |
 | 2026-08-28 | 0.4.11 | **Relay-host question ANSWERED: `scw-m2-asahi` (`62.210.194.66`).** mars was ruled out by its own `COTURN_DNAT`, so three further candidates were measured rather than argued about. **Asahi (Scaleway M2 / Fedora Asahi): public IP, 3478 free, no DNAT, firewalld the only gate — with 3478 opened, `CORPLAP-3` reached it** (arrival confirmed server-side from its srflx `192.164.201.1:10400`), as did `CORPLAP-1`; `CORPLAP-2` did not, consistent with having no UDP at all. **`MacBook-1` and `neo16` REJECTED**: they share one consumer NAT behind `37.63.112.129`, and a listener on the MacBook's `0.0.0.0:3478` reported `NO-INBOUND (timeout)` against four datagrams from mars ⇒ no port forward, so neither can serve anyone off that LAN. ⚠️ Two traps caught on the way, each of which would have produced a false answer: `timeout` does not exist on macOS, so the first listener never ran and its "33 bytes received" was the shell's own error text; and the first inbound probe was sent from `CORPLAP-2`, which has no UDP and would have failed against a *working* host. ⇒ E2E-1 is re-planned around Asahi, which also removes any need to touch a prod cluster host to run it. Rig fully torn down: responder stopped, firewalld port removed (`ports:` empty again), scratch files deleted, service list unchanged. |
 | 2026-08-29 | 0.4.15 | **P1 FIELD-VERIFIED — the real daemon serves probes on `scw-m2-asahi:3478`.** P1a–P1d shipped (#816, #826, #832, #852), deployed to Asahi, `relay_server_enabled=true`, firewalld `3478/udp` permanent. The daemon logs `org-relay probe responder listening … local=Some(0.0.0.0:3478)` and holds the socket. Against the **real responder** (not the Python stand-in): **`CORPLAP-3` PASS ×2** — the corp-managed symmetric-NAT host this FR exists for — and **`CORPLAP-1` PASS**; `CORPLAP-2` fails, as it must, having no UDP anywhere. ⚠️ **Deploying a non-release build is not possible on a host with an active updater**: a hand-installed 0.4.14 was silently overwritten **90 s later** by the published 0.4.15 (`post-install watcher … expected=agent-v0.4.15`). The first diagnosis — "my rollback timer fired" — was **wrong**; `journalctl -u fr19-rollback.service` said *No entries*, and the agent's own log named the updater. The fix was to stop fighting it rather than disable `auto_update` on a fleet host: master was already 0.4.15 **and** carried P1d while the *released* 0.4.15 tag predated the merge, so a master build reports a version the updater does not consider newer. ⚠️ **A mid-test FAIL on `CORPLAP-1` was the CLIENT, not the relay** — its own netcheck flipped to `stun/udp: NO MAPPING` / `nat: untyped` when its Check Point VPN came up, and flipped back to `ok`/`cone` when it dropped, with the probe passing again on the same relay. VPN-up ⇒ fail, VPN-down ⇒ pass, same host: the client's capability vector is what settles "the relay broke", not the server. ⚠️ Observability gap found in use: the Rust responder only aggregates counters every 300 s **and sleeps before its first report**, so there is a 5-minute blind window at startup and no per-datagram arrival evidence — the stand-in logged every packet, which is what made the earlier DNAT confound visible. Worth a `NodeStatus` field before P2. |
 | 2026-08-29 | — | **P2a–P2c implemented; the relay forwards on loopback.** P2a (#881, merged): the authenticated bind — two keys with two jobs, fixed-width domain-separated MACs, constant-time compare via `subtle` added as a real dependency; deleting the `tag₁` check (the first draft's design) fails four of eleven tests. P2b (#885): the session table — forward only between the two bound addresses (mutation-verified), `max_lifetime` because `idle_deadline` never fires under a 25 s keepalive (100 keepalive-spaced datagrams prove it), authenticated re-bind in both directions, revoke kills a live session at once, a 64-session cap that refuses rather than grows. P2c: `RelayServer` on one socket — probes, bind, forwarding — with `catch_unwind` **verified by a test-induced panic** (one datagram lost, counter incremented, relay still answers), a per-source limiter that runs *before* the MAC (mutation-verified: disabling it lets all 50 bad binds reach the MAC), and the spec's `three_node_relay_roundtrip` over **three loopback UDP sockets**: A↔B relay, an intruder on the known VNI dropped and counted by the open-proxy tripwire, revoke stops forwarding, and the relay still echoes a probe afterwards. ⚠️ **Design correction found by writing the loopback test**: P2a's `tag₁` covered the observed source address, which a NAT'd client cannot know on its first packet — the handshake was unimplementable for its own target population. Address is now bound at step 3 via the cookie, as in the reference design (§4). ⚠️ `#881`'s commit staged only `crates/tunnel-core` and left the one-line `Cargo.lock` update behind; CI did not notice because no Rust lane builds `--locked`. Committed in P2b. **Not field-verified**: no deploy yet — a P2c build on Asahi holds no sessions until P3 mints them, so it behaves exactly as P1. |
-| 2026-08-29 | 0.4.17/0.4.18 (server: #899 deploying) | **P4c BASELINE, taken before any relay exists.** From `CORPLAP-3` (`meshharbor peers` over Fleet RPC): EVERY online peer is `relay:derp/tcp` — mars 49 ms, jupiter 45, zeus 46, **scw-m2-asahi 67**, CORPLAP-1 88, CORPLAP-2 100, regal 129, rozalina 164, MacBook 202; neo16 `upgrading`. The whole of CORPLAP-3's mesh traffic crosses the API pod today — the population §2 describes, exactly. Server side: primary tenant `100.65.4.0/22`, `acl_mode` and `peer_relay_mode` unset (off), **0 overlay policies**, no relay approved, nobody advertising `relay-server` (P3a's verb is not in a release yet). Asahi: `/etc/meshharbor/config.toml` has `relay_server_enabled = true` (from P1), `auto_update = true`, public NIC `62.210.194.66` — so the 0.4.19 release makes it a serving relay on arrival, and the mint will pair that address with 3478. ⚠️ Two exec traps on the way: on a Windows target the Fleet-RPC shell runs as SYSTEM with no `meshharbor` on PATH — locate `C:\Program Files\MeshHarbor\meshharbord.exe` and run `cli peers`; and `meshharbor config` has `ls`/`set`/`clear`, no `get` — read `/etc/meshharbor/config.toml` on Linux. |
-| 2026-08-29 | 0.4.19 (Asahi, CORPLAP-3, mars all on it) | **P4c step 1 found a real defect on the first host: `relay-server` was never advertised.** Asahi on 0.4.19 with `relay_server_enabled = true`: `meshharbor status` reads `org relay 0.0.0.0:3478 — bound`, yet `agents.capabilities.rpc` lacks `relay-server`, so the mint's relay-candidate step could only ever answer `no_relay`. Cause: the hello's capability list is computed in the caps-probe CHILD (rc.433), which inherits the environment but NOT the process-local S2 config-fallback registry, so `relay_server_enabled()` read its built-in default there. Proven on the host: `sudo env MESHHARBORD_RELAY_SERVER_ENABLED=1 MESHHARBORD_CAPS_CHILD=1 meshharbord caps-probe` prints the verb, the bare probe prints nothing. Fix in 0.4.20: the parent exports every registered knob to the child as a real `MESHHARBORD_*` env var (`config_fallbacks_for_child`, precedence preserved) AND recomputes `caps.rpc` itself, so a config-derived verb never depends on what the child saw. The relay had been serving the whole time; the fleet could not be told. Baseline for the fix: the `mint` audit has zero rows and CORPLAP-3's `peers` still reads `relay:derp/tcp` for every peer. |
+| 2026-08-29 | 0.4.17/0.4.18 (server: #899 deploying) | **P4c BASELINE, taken before any relay exists.** From `CORPLAP-3` (`mh peers` over Fleet RPC): EVERY online peer is `relay:derp/tcp` — mars 49 ms, jupiter 45, zeus 46, **scw-m2-asahi 67**, CORPLAP-1 88, CORPLAP-2 100, regal 129, rozalina 164, MacBook 202; neo16 `upgrading`. The whole of CORPLAP-3's mesh traffic crosses the API pod today — the population §2 describes, exactly. Server side: primary tenant `100.65.4.0/22`, `acl_mode` and `peer_relay_mode` unset (off), **0 overlay policies**, no relay approved, nobody advertising `relay-server` (P3a's verb is not in a release yet). Asahi: `/etc/meshharbor/config.toml` has `relay_server_enabled = true` (from P1), `auto_update = true`, public NIC `62.210.194.66` — so the 0.4.19 release makes it a serving relay on arrival, and the mint will pair that address with 3478. ⚠️ Two exec traps on the way: on a Windows target the Fleet-RPC shell runs as SYSTEM with no `mh` on PATH — locate `C:\Program Files\MeshHarbor\meshharbord.exe` and run `cli peers`; and `mh config` has `ls`/`set`/`clear`, no `get` — read `/etc/meshharbor/config.toml` on Linux. |
+| 2026-08-29 | 0.4.19 (Asahi, CORPLAP-3, mars all on it) | **P4c step 1 found a real defect on the first host: `relay-server` was never advertised.** Asahi on 0.4.19 with `relay_server_enabled = true`: `mh status` reads `org relay 0.0.0.0:3478 — bound`, yet `agents.capabilities.rpc` lacks `relay-server`, so the mint's relay-candidate step could only ever answer `no_relay`. Cause: the hello's capability list is computed in the caps-probe CHILD (rc.433), which inherits the environment but NOT the process-local S2 config-fallback registry, so `relay_server_enabled()` read its built-in default there. Proven on the host: `sudo env MESHHARBORD_RELAY_SERVER_ENABLED=1 MESHHARBORD_CAPS_CHILD=1 meshharbord caps-probe` prints the verb, the bare probe prints nothing. Fix in 0.4.20: the parent exports every registered knob to the child as a real `MESHHARBORD_*` env var (`config_fallbacks_for_child`, precedence preserved) AND recomputes `caps.rpc` itself, so a config-derived verb never depends on what the child saw. The relay had been serving the whole time; the fleet could not be told. Baseline for the fix: the `mint` audit has zero rows and CORPLAP-3's `peers` still reads `relay:derp/tcp` for every peer. |
 | 2026-08-29 | **0.4.20** (fleet) | **P4c COMPLETE — org relay carried real traffic and was revoked.** After #915 shipped, all three hosts advertised `relay-server`. `peer_relay_mode` off→warn→on, Asahi approved (`serve:true`) + one ACL rule granting the relay node. On `warn`, mint rows for CORPLAP-3↔mars carried `warn_only:true`; every non-opted pair `requester_unsupported`/`peer_unsupported`; a secondary-org node `secondary_org`. On `on`, the fourth ladder-climb window (vni=6/gen=6) caught a clean dual-bind and the carrier **flipped both directions to `relay:org/udp` ~84 ms** (`CORPLAP-3 why mars` = `carrier relay:org via 127.0.0.6`), Asahi `forwarded=128 bound=4 drop_bad_cookie=0`, sockets 36→18 (no leak). A dual-ended tcpdump caught the shaped-probe→challenge→bind on Asahi:3478 from both members. `PUT …/peer-relay-policy {serve:false}` tore the live session down → both ends back to `relay:derp/tcp` in ~20 s + `revoke` audit row; `mode:off` returned `relays:[]`. Floor control **CORPLAP-2** and every non-opted peer stayed `relay:derp/tcp` throughout — only the approved pair moved; never self-wedged. ⚠️ Org relay engages on a **ladder climb, not on the mode flip**: vni 4–5 minted but idle-reaped before both members bound (the reap is the make-before-break floor working), and a pair parked on a healthy DERP floor won't re-request until it churns — restart a member to provoke it. Tenant left at `mode:off`. |
 | 2026-08-29 | **0.4.20** (live route) | **P4d — non-routable static endpoint REJECTED on the live route (SSRF/port-scan guard).** `PUT …/agent/{asahi}/peer-relay-policy` with `static_endpoints=[…]` returned `400 bad_request "… is not a public ip:port"` for `169.254.169.254:3478` (cloud metadata), `10.0.0.5`/`192.168.1.1` (RFC1918), `127.0.0.1` + `[::1]` (loopback), `100.64.0.1` (CGNAT/overlay), and `1.2.3.4:0` (port 0); a globally-routable `8.8.8.8:3478` was ACCEPTED (200). Matches the unit test `a_non_routable_static_endpoint_is_an_error_not_a_skip`. Reverted to `serve:false`; tenant stayed `mode:off`. |
 | 2026-08-29 | **0.4.20** | **P4d — approval authz confirmed.** The live route runs `decide_approval` (my Owner session approves via the `ADMINISTRATOR` bypass; a `serve:false` clear and a `serve:true` approve each wrote a `peer_relay_audit` row, observed in the field). The permission split is locked by five unit tests: `an_admin_without_exec_device_cannot_approve`, `an_admin_with_exec_device_can_approve`, `a_member_is_not_a_device_admin_even_to_clear`, `exec_device_alone_is_not_a_device_admin`, `administrator_bypasses_as_everywhere_else`. |

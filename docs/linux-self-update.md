@@ -65,7 +65,7 @@ Tarball layout — a prefix dir so extraction is never a surprise, mirroring the
 ```
 meshharbor-agent-<version>-<arch>-unknown-linux-gnu/
   usr/bin/meshharbord                       # the daemon
-  usr/bin/meshharbor                        # the CLI shim (re-execs `meshharbord cli`)
+  usr/bin/mh                        # the CLI shim (re-execs `meshharbord cli`)
   usr/lib/meshharbor-agent/*.so.*           # bundled FFmpeg + libvpx ($ORIGIN RPATH)
   usr/lib/systemd/system/meshharbord.service
   usr/lib/systemd/user/meshharbor.service
@@ -107,7 +107,7 @@ The `.deb`'s ladder for a non-root daemon is `pkexec`, then `sudo -n`
    live path. Replacing a running executable this way is safe on Linux (the
    running process keeps its inode) and is already how the `.deb` path behaves.
    Keep the previous binary as `/usr/bin/meshharbord.prev` for the rollback path.
-4. Same for `/usr/bin/meshharbor` and each `/usr/lib/meshharbor-agent/*.so.*`.
+4. Same for `/usr/bin/mh` and each `/usr/lib/meshharbor-agent/*.so.*`.
 5. **Systemd units: write only if absent.** An update must never clobber a unit
    the operator edited — the field-test host carries a hand-written unit with
    `MESHHARBORD_VIRTUAL_DESKTOP=1`, and silently reverting that on upgrade

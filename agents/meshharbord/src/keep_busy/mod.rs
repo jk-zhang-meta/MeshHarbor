@@ -255,7 +255,7 @@ pub fn submit_from_session(session: ObjectId, name: String, req: SetRequest) -> 
 /// LocalAPI has already checked the peer stands where that person does (never
 /// root, never a service, never another session); their account name is not
 /// ours to report to every viewer and the org's history. ⚠️ On Windows a
-/// `meshharbor exec` runs in the console session, passes that check and is named
+/// `mh exec` runs in the console session, passes that check and is named
 /// this too (FR-92 §3g).
 pub const LOCAL_SET_BY: &str = "the person at this computer";
 
@@ -329,7 +329,7 @@ pub async fn answer_local(off: bool) -> tunnel_core::localapi::KeepBusyInfo {
     local_info(&s)
 }
 
-/// The LocalAPI's view of a snapshot (`meshharbor keep-busy status`, the tray).
+/// The LocalAPI's view of a snapshot (`mh keep-busy status`, the tray).
 pub fn local_info(s: &Snapshot) -> tunnel_core::localapi::KeepBusyInfo {
     tunnel_core::localapi::KeepBusyInfo {
         available: s.available,

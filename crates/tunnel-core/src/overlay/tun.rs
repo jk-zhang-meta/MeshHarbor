@@ -2726,7 +2726,7 @@ mod system {
     ///   WG dials (LAN direct, srflx punch) die at the Public profile's
     ///   default-deny. A home laptop could not accept LAN-direct until exactly
     ///   this rule was added by hand. Rule name carries the exe stem so
-    ///   `meshharbord` and the `meshharbor` tunnel client don't fight; delete+add
+    ///   `meshharbord` and the `mh` tunnel client don't fight; delete+add
     ///   keeps the recorded program path current across upgrades. The ONE
     ///   definition is [`crate::winfw::UdpInAllowRule`], shared with the SCM
     ///   service host — #1698: P9's premise that "a Windows *service* never
@@ -5245,7 +5245,7 @@ mod system {
         /// exemption was pinned when none was, and it would then route the WS,
         /// coturn and the exit's own endpoint into the device that carries
         /// them: the self-wedge the exemption gate exists to stop. An `Err`
-        /// makes the gate WITHHOLD, and `meshharbor status` says why.
+        /// makes the gate WITHHOLD, and `mh status` says why.
         #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         async fn add_host_exemption(&self, ip: std::net::IpAddr) -> std::io::Result<()> {
             Err(std::io::Error::new(
@@ -6100,7 +6100,7 @@ mod system {
 
     /// FR-97 P1a — one `route` write for a host exemption: `Err` carries the
     /// tool's own words (its first stderr line), which end up in the gate's
-    /// WARN and in `meshharbor status`.
+    /// WARN and in `mh status`.
     #[cfg(target_os = "macos")]
     async fn bsd_route_write(args: Vec<String>) -> Result<(), String> {
         tokio::task::spawn_blocking(move || {
@@ -6153,7 +6153,7 @@ mod system {
 
     /// FR-97 P1a — `MESHHARBORD_EXIT_CLIENT_MACOS=0` puts the macOS exit client
     /// back where P0a left it: every exemption is refused, so the exit is
-    /// withheld and `meshharbor status` says why. Default ON.
+    /// withheld and `mh status` says why. Default ON.
     #[cfg(target_os = "macos")]
     fn exit_client_macos_enabled() -> bool {
         crate::env::flag("EXIT_CLIENT_MACOS", true)

@@ -15,8 +15,8 @@ Addresses are allocated per organization from a private range, and they are
 long as it is enrolled.
 
 ```bash
-meshharbor status    # your own address
-meshharbor peers     # everyone else's
+mh status    # your own address
+mh peers     # everyone else's
 ```
 
 :::badges
@@ -76,7 +76,7 @@ administrative event rather than a migration.
 
 ## Seeing the whole picture
 
-`meshharbor peers` is the authoritative view from a machine's own perspective: who
+`mh peers` is the authoritative view from a machine's own perspective: who
 it can see, at what address, over which path.
 
 :::warning An empty list is not always "no peers"

@@ -422,7 +422,7 @@ the RTC range.** A new serving host needs the pin, or it holds a direct path onl
 it happened to open the flow itself. That was
 [#1665](https://github.com/jk-zhang-meta/MeshHarbor/issues/1665): after a roll, both hosts sat
 on DERP. The tells:
-- `meshharbor why <host>` shows the direct candidate at 100 % loss;
+- `mh why <host>` shows the direct candidate at 100 % loss;
 - on the host, `conntrack -L -p udp --orig-port-dst <port>` shows `[UNREPLIED]` entries
   whose reply comes from the VM (`src=10.10.x.11`).
 
@@ -439,7 +439,7 @@ the server proxies the downloads and gets a cache-bust ping
 | Workflow | Tag | Artifacts |
 |---|---|---|
 | `release-agent.yml` | `agent-v*` | Windows MSIs (perUser + perMachine) + `meshharbor-desktop` companion; Linux `.deb`/tarball (x86_64 **and** aarch64); macOS `.pkg` (arm64) |
-| `release-tunnel.yml` | `tunnel-v*` | `meshharbor` CLI: Windows zip, Linux tarball + `.deb`, macOS universal tarball |
+| `release-tunnel.yml` | `tunnel-v*` | `mh` CLI: Windows zip, Linux tarball + `.deb`, macOS universal tarball |
 | `release-setup.yml` | `setup-v*` — cut **automatically at every `agent-v*` commit** by `release-agent.yml`'s `dispatch-setup-release` job (FR-84 S1; repo variable `SETUP_LOCKSTEP=false` disables it) | The install wizard: Linux/macOS tarballs, signed Windows EXE zip — all three or none |
 
 ⚠️ **The server reads one page of the newest 100 releases, and recovers by tag
@@ -448,7 +448,7 @@ Before that recovery, a family that ships less often than ~100 of the others
 fell off the page, and every route serving it 404'd. `tunnel-v0.3.0-rc.266`
 (2026-07-28) is still the newest tunnel release. From about 09-07 every
 tunnel-client install (the wizard's tunnel role, `install.ps1 -Role
-tunnel-client`, `install.sh --role tunnel`) and `meshharbor self-update` failed
+tunnel-client`, `install.sh --role tunnel`) and `mh self-update` failed
 with `404 no release matching version=latest`, for six weeks, unnoticed. The
 tell is `GET /api/tunnel/latest-release` answering `[]`. The refresh report's
 `newest` read those two families by list position, not version, until the

@@ -2,7 +2,7 @@
 
 Every way to put the MeshHarbor node stack on a machine, on every supported platform.
 "Daemon" means `meshharbord` — the full node: remote-desktop target, tunnel exit, and
-overlay-mesh member. "Tunnel client" means just the `meshharbor` CLI for opening
+overlay-mesh member. "Tunnel client" means just the `mh` CLI for opening
 forwards/SOCKS5 from the machine you sit at. *Re-checked against master on
 2026-09-02 (0.4.47).*
 
@@ -178,7 +178,7 @@ Details worth knowing:
   carries the command to anchor later. Details: [`fleet-rpc.md`](./fleet-rpc.md)
   § Anchoring a device.
 - Daemon installs also place **`meshharbor-desktop`** (tray companion: status,
-  tunnels pane, consent prompts) and **`meshharbor.exe`** — a small shim that
+  tunnels pane, consent prompts) and **`mh.exe`** — a small shim that
   re-execs `meshharbord cli`, so CLI and daemon can never version-skew.
 - Terminal alternative: `irm https://meshharbor.itachi.fans/api/setup/install.ps1 | iex`
   (prompts for role/token; flags mirror the sh script).
@@ -354,7 +354,7 @@ buildhost, fleet-host-2 and the WSL sibling, the last from nothing but a
 
 ⚠️ **`systemctl is-active` reads `inactive` while such a host is perfectly
 healthy** — the live daemon is an unmanaged orphan. Check `pgrep -x meshharbord` and
-`meshharbor peers`, and never "restart to fix" on that basis.
+`mh peers`, and never "restart to fix" on that basis.
 
 ⚠️ The per-host `meshharbord.service.d/config-path.conf` drop-ins used as the stopgap
 are unnecessary from rc.435 and should be removed.
@@ -369,14 +369,14 @@ From P11 the daemon also gives the person at the seat a **person socket** in the
 runtime dir: `/run/user/<uid>/meshharbor.sock`, 0600 and theirs. Their companion uses
 it, which is how a system install gets its "Being viewed by …" banner, its
 Disconnect and its consent prompt. As that user:
-- `meshharbor status` answers. Its `mode` line names the account the daemon runs as:
+- `mh status` answers. Its `mode` line names the account the daemon runs as:
   `service (root)` here, `service (per-user)` for a per-user install
   (`service (SYSTEM)` on Windows). `status --json` carries the same fact as
   `"privileged"`. An older daemon reports no account: a new CLI then prints a
   bare `service`, an older one `service (SYSTEM)` for every install;
-- `meshharbor devices` answers too (FR-97 P2g): the devices this machine's private
+- `mh devices` answers too (FR-97 P2g): the devices this machine's private
   network reaches, as the companion's Devices page shows them. So does `meshharbor
-  peers` (P2h), the links to them, without any endpoint (`sudo meshharbor peers` has those);
+  peers` (P2h), the links to them, without any endpoint (`sudo mh peers` has those);
 - anything administrative (`flows`, routes, `config`, …) is refused with a pointer
   to `sudo meshharbor …`.
 
@@ -442,7 +442,7 @@ curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- \
 `--daemon-token` also turns the overlay on (`enroll --overlay`) — installing a
 root daemon is itself the opt-in, and the overlay is the only reason that half
 exists. Without it the Mac never sends `rc:overlay.join`, so it is **absent
-from `meshharbor peers` entirely** rather than showing as offline.
+from `mh peers` entirely** rather than showing as offline.
 
 Running the one-liner under `sudo` is fine: the script resolves the console
 user itself and enrolls the per-user half as them.
@@ -497,12 +497,12 @@ both toggles need re-enabling.
 |---|---|
 | `/Applications/MeshHarbor.app` | the **menu-bar companion** — status, routes, and the permissions panel. `LSUIElement`, so no Dock tile. The only MeshHarbor icon you should see |
 | `/Library/MeshHarbor/meshharbord.app` | the daemon. A background service with nothing to launch, so it is deliberately NOT in `/Applications`; still a bundle, because TCC attributes the two permissions to a bundle identity |
-| `/usr/local/bin/meshharbor` | the CLI (a small shim onto the daemon's own command surface) |
+| `/usr/local/bin/mh` | the CLI (a small shim onto the daemon's own command surface) |
 | `/usr/local/bin/meshharbord` | the daemon on PATH, for `meshharbord enroll` / `--version` — a symlink into the bundle, not a second copy |
 
 Same three commands as Windows and Linux.
 
-`meshharbor peers` / `status` reach the **per-user** half; `sudo meshharbor …` reaches
+`mh peers` / `status` reach the **per-user** half; `sudo meshharbor …` reaches
 the **root** half, because the two listen on different LocalAPI sockets
 (`$TMPDIR/meshharbor/meshharbor.sock` vs `/var/run/meshharbor/meshharbor.sock`). If a
 command reports "daemon not running", you are probably asking the wrong half.
@@ -617,7 +617,7 @@ when one is needed (FR-27).
 | Component | Mechanism |
 |---|---|
 | `meshharbord` (daemon hosts) | Self-updater polls `/api/agent/latest-release` (4 h timer + startup cooldown; a check that fails on the NETWORK — DNS, connect, timeout — rechecks after 5, 15, then 60 min instead of the full interval, #1755, while a verdict such as a 403 rate limit keeps the interval), verifies SHA-256, hands off to MSI / `dpkg` / `installer` and restarts. A per-user Linux daemon cannot write `/usr`: there a root update helper (`meshharbor-update.service`) installs, and the daemon restarts onto the new binary once nothing it serves would be cut (FR-96). Admins can force it fleet-wide or per device (`POST …/agent/update`); ⚠️ `delivered: true` means only that the push reached the device's live socket — a device with `auto_update = false` ignores it and logs `update trigger dropped — auto-update is off on this device` (#1689). Crash-looping updates roll back to the last known-good version |
-| `meshharbor` CLI (tunnel-only hosts) | `meshharbor self-update` (same proxy origin): since FR-97 P6b the release's `.asc` is checked against the pinned key on every OS, and Linux and macOS install too, the tarball or (where dpkg owns the binary) the `.deb` ([`tunnel-install.md` §10](tunnel-install.md)). On daemon hosts the MSI/.deb owns the binaries — the shim's `self-update` refuses by design |
+| `mh` CLI (tunnel-only hosts) | `mh self-update` (same proxy origin): since FR-97 P6b the release's `.asc` is checked against the pinned key on every OS, and Linux and macOS install too, the tarball or (where dpkg owns the binary) the `.deb` ([`tunnel-install.md` §10](tunnel-install.md)). On daemon hosts the MSI/.deb owns the binaries — the shim's `self-update` refuses by design |
 | `meshharbor-desktop` | Not in either MSI: the daemon refreshes it itself at start when the companion's recorded version differs from its own — downloads the signed asset, stages it beside the old EXE, stops the running companion **by PID** (found by the path it was started from, never by image name), promotes the new file and starts it again in the same session (`agents/meshharbord/src/companion.rs`, `swap`). ⚠️ **One refresher per install**: on a Windows service install that is the service host — the worker it spawns skips, because two refreshers raced and left the old companion running, holding the single-instance lock (#1686) |
 | wizard | Fetch-latest by nature; `setup-v<V>` is cut with every `agent-v<V>` (the lockstep job in `release-agent.yml`) |
 
@@ -681,7 +681,7 @@ flowchart TD
 |---|---|---|
 | 1 · stop | `meshharbor-update.timer` + `.path`, a `meshharbor-update.service` run still in `SubState=start` waited out, then `meshharbord.service`, then each account's `meshharbor.service` on its user bus (`stop_unit`, `:1149`) | `fans.itachi.meshharbor.update` once it is no longer `state = running`, every account's `gui/<uid>/fans.itachi.meshharbor.{desktop,agent}`, then `fans.itachi.meshharbor.daemon` (`:1340`) |
 | 1b · sweep | `meshharbord` and `meshharbor-desktop` by exact name — `pgrep -x`, or `/proc/*/comm` where procps is absent (`stop_leftovers`, `:1078`) | the same; it also reaches a companion opened from Finder, which runs under LaunchServices, out of any bootout's reach |
-| 2 · programs | `dpkg --purge` of the companion, the daemon, the tunnel CLI and the two names the daemon's `.deb` replaced (dependent first, one call); `rpm -e meshharbor-desktop`; the tarball payload of `scripts/stage-linux-tarball.sh` and the tunnel CLI's `/usr/local/bin` (`:1248`); every account's `meshharbor.service` enable links and the companion's own autostart entry (`X-MeshHarbor-Managed`) | the two privacy grants, the two LaunchDaemons, every account's LaunchAgents, `/Library/MeshHarbor`, `/Applications/MeshHarbor.app`, `/usr/local/bin/meshharbor{,d}`, the `fans.itachi.meshharbor.*` package receipts |
+| 2 · programs | `dpkg --purge` of the companion, the daemon, the tunnel CLI and the two names the daemon's `.deb` replaced (dependent first, one call); `rpm -e meshharbor-desktop`; the tarball payload of `scripts/stage-linux-tarball.sh` and the tunnel CLI's `/usr/local/bin` (`:1248`); every account's `meshharbor.service` enable links and the companion's own autostart entry (`X-MeshHarbor-Managed`) | the two privacy grants, the two LaunchDaemons, every account's LaunchAgents, `/Library/MeshHarbor`, `/Applications/MeshHarbor.app`, `/usr/local/bin/mh{,d}`, the `fans.itachi.meshharbor.*` package receipts |
 | 3 · config | `/etc/meshharbor`, `/etc/default/meshharbord`, `meshharbord.service.d/`; for the caller (the account behind `sudo`) and root: `~/.config/meshharbor`, `~/.local/share/meshharbor`, `~/.local/state/meshharbor`, the tunnel CLI's tree, the pre-rename trees | `/etc/meshharbor`, `/var/log/meshharbor`, the `/tmp` logs; for the caller, the console user and root: `~/Library/Application Support/live.meshharbor.meshharbor`, the tunnel CLI's tree, the pre-rename trees |
 
 ⚠️ **Stop through the manager before any file goes.** The stop is a SIGTERM,

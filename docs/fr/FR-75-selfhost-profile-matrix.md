@@ -44,7 +44,7 @@ pillar works** → **what it drops is absent**.
 | 1 | `full` | `<tag>` | chat · 2-party call · remote desktop · overlay peers+ping | — (positive control for every absence probe) | server + 2 agents |
 | 2 | `collab` | `<tag>-collab` | chat between two browser contexts · a real video call, media both ways | fleet · remote · network | server only |
 | 3 | `remote` | `<tag>-remote` | agent enrols · remote-desktop frames decode and advance | chat · conference · network | server + 1 agent |
-| 4 | `mesh` | `<tag>-mesh` | **two** agents see each other in `meshharbor peers`; `meshharbor ping` round-trips | chat · conference · remote | server + 2 agents |
+| 4 | `mesh` | `<tag>-mesh` | **two** agents see each other in `mh peers`; `mh ping` round-trips | chat · conference · remote | server + 2 agents |
 | 5 | `access` | `<tag>-access` | remote desktop **and** mesh on one server | chat · conference | server + 2 agents |
 
 ⚠️ **Absence is asserted positively.** A probe answering 404 is the claim; the **same probe on
@@ -228,8 +228,8 @@ screenshot or a log before reporting it as one.
 1. **Which image tag?** v1 pins `latest` + `latest-<profile>` (the published self-host family).
    Pinning a `v*` tag makes a run reproducible but stops it from catching a regression the day it
    publishes. Recorded either way in the run's report.
-2. **Does `mesh` prove a tunnel or `meshharbor ssh` too?** `peers`+`ping` is the hard gate for v1; a
-   `meshharbor ssh` probe is a cheap add once two agents are up, and is listed as a stretch check
+2. **Does `mesh` prove a tunnel or `mh ssh` too?** `peers`+`ping` is the hard gate for v1; a
+   `mh ssh` probe is a cheap add once two agents are up, and is listed as a stretch check
    rather than an AC.
 3. **A LAN-`ANNOUNCED_IP` cell** (browser off-box, host networking) is deliberately deferred — it
    tests the *operator's* network, not the profile.

@@ -374,7 +374,7 @@ const status = computed<{ type: 'success' | 'info' | 'warning' | 'error'; icon: 
         detail:
           report.value?.outcome === 'not_primary'
             ? tr('mh.rcfg.st.secondaryDetail')
-            : tr('mh.rcfg.st.notOptedInDetail', { cmd: '`meshharbor config set remote_config_enabled true`' }),
+            : tr('mh.rcfg.st.notOptedInDetail', { cmd: '`mh config set remote_config_enabled true`' }),
       }
     case 'failed':
       return {

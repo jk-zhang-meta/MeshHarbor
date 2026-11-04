@@ -2002,7 +2002,7 @@ The carrier split needs an agent carrying P9c (**0.4.140**): on today's fleet ev
 is `unknown`, which is the P9c fail-first. With it released, prove each carrier from the topology
 that produces it — a LAN pair records `direct`, a Check Point / symmetric-NAT host records `turn`
 (or `turn_local`), an overlay pair records `overlay_direct` or, when the mesh fell, `derp` /
-`org_relay` / `overlay_turn` (cross-checked against `meshharbor peers --json` `relay_kind`) — and read
+`org_relay` / `overlay_turn` (cross-checked against `mh peers --json` `relay_kind`) — and read
 the agent's `session carrier recorded (FR-102 P9c)` log line to check the value against the pair's
 addresses.
 

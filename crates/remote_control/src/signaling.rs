@@ -34,7 +34,7 @@ pub enum Role {
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Role advertised in `rc:tunnel.hello`. Distinguishes the
-/// `meshharbor` CLI (which initiates forwards) from the agent
+/// `mh` CLI (which initiates forwards) from the agent
 /// (which serves them). Wire form: `"client"` | `"agent"`.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -856,7 +856,7 @@ pub enum ClientMsg {
         error: Option<String>,
     },
 
-    /// Device-originated exec against ANOTHER device — the `meshharbor exec`
+    /// Device-originated exec against ANOTHER device — the `mh exec`
     /// CLI leg, where the local daemon's own agent WS carries the request so
     /// the CLI needs no user credentials of its own.
     ///
@@ -878,7 +878,7 @@ pub enum ClientMsg {
     },
 
     /// Device-originated meshharbor-SSH against ANOTHER device — the
-    /// `meshharbor ssh` CLI leg, the twin of [`Self::RpcExecRequest`].
+    /// `mh ssh` CLI leg, the twin of [`Self::RpcExecRequest`].
     ///
     /// The caller mints an **ephemeral** keypair per session and sends only
     /// the public half. If the server authorizes, it pushes the key to the
@@ -903,7 +903,7 @@ pub enum ClientMsg {
         /// ticket (`rc:vault.ssh.granted`), under which the SESSION is the
         /// principal, never the device's owner. A request whose ticket does
         /// not hold is refused, never served as the owner's. Absent from
-        /// every request a person makes (`meshharbor ssh`), so that frame is
+        /// every request a person makes (`mh ssh`), so that frame is
         /// byte for byte what it was.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ssh_ticket: Option<String>,
@@ -1227,7 +1227,7 @@ pub enum ClientMsg {
         sessions: Vec<crate::hive::HiveManifestEntry>,
     },
 
-    /// FR-90 P1j — a terminal session this device mirrors (`meshharbor hive
+    /// FR-90 P1j — a terminal session this device mirrors (`mh hive
     /// adopt`), offered for a record. Sent once per Claude Code session, when
     /// its first hook reaches the device, and answered by
     /// [`ServerMsg::HiveAdoptAck`]. What follows is the usual `rc:hive.state`
@@ -1707,7 +1707,7 @@ pub enum ClientMsg {
     },
 
     /// FR-90 P3-9-1 — a PERSON on this device asks for one field of a secret,
-    /// for an endpoint the device serves them (`meshharbor connect`): always in
+    /// for an endpoint the device serves them (`mh connect`): always in
     /// `proxy` mode, toward `audience`, the upstream the endpoint signs in to.
     /// One frame per field, as a session's `vault_connect` asks its leases.
     /// Decided by Cedar's `secret:connect` for the device's OWNER, and
@@ -1942,7 +1942,7 @@ pub enum ClientMsg {
     // Plan v2 §"What changed from v1" #1 + #2:
     //   * Wire types fold into the existing `rc:*` namespace, NOT a
     //     separate `rc-tunnel:*` namespace or WS endpoint.
-    //   * Each `meshharbor forward` invocation owns ONE peer; many
+    //   * Each `mh forward` invocation owns ONE peer; many
     //     TCP flows multiplex onto a fixed DC pool via `flow_id`
     //     framing (see `tunnel-core::mux`). No per-flow DC creation.
     //   * Server is the auth boundary — `TcpForwardRequest` rides the
@@ -1982,7 +1982,7 @@ pub enum ClientMsg {
         /// carry N concurrent opens: the `meshharbord` daemon (P3b-2)
         /// multiplexes many client sessions over its single agent WS and
         /// demuxes the reply by this nonce (post-open it switches to the
-        /// server-minted `session_id`). The standalone `meshharbor`
+        /// server-minted `session_id`). The standalone `mh`
         /// CLI has a single in-flight open and sends `None`, matching the
         /// reply positionally. `None` is omitted on the wire, so a
         /// pre-P3b-2 server/client stays byte-identical.
@@ -3805,7 +3805,7 @@ pub enum ServerMsg {
 
     /// Multi-org — join an ADDITIONAL org from the admin UI ("Add to another
     /// organization"), so a device that can't be reached for a hands-on
-    /// `meshharbor enroll` still gets a second enrollment.
+    /// `mh enroll` still gets a second enrollment.
     ///
     /// The agent exchanges the token for its own agent JWT in the target
     /// tenant, APPENDS an `[[orgs]]` entry (with a freshly minted per-org WG
@@ -3968,7 +3968,7 @@ pub enum ServerMsg {
     },
 
     /// Answer to a device-originated [`ClientMsg::SshRequest`] — the
-    /// `meshharbor ssh` CLI leg. Carries where to connect, or why not.
+    /// `mh ssh` CLI leg. Carries where to connect, or why not.
     #[serde(rename = "rc:ssh.response")]
     SshResponse {
         request_id: String,
@@ -3984,7 +3984,7 @@ pub enum ServerMsg {
         /// P6a — the target's SSH host public key, so the dialling device can
         /// verify what it reached instead of trusting it on first use.
         ///
-        /// This leg needs it MORE than the HTTP one, not less: `meshharbor ssh`
+        /// This leg needs it MORE than the HTTP one, not less: `mh ssh`
         /// originates here, and it is the caller that has no other channel to
         /// learn the key. Absent ⇒ the device reported none, which means it
         /// cannot prove itself — never "any key is fine".
@@ -4009,7 +4009,7 @@ pub enum ServerMsg {
     },
 
     /// Answer to a device-originated [`ClientMsg::RpcExecRequest`] — the
-    /// `meshharbor exec` CLI leg. Carries the same payload the HTTP caller would
+    /// `mh exec` CLI leg. Carries the same payload the HTTP caller would
     /// have received, plus `error` for a gate refusal the server itself made.
     #[serde(rename = "rc:rpc.response")]
     RpcExecResponse {
@@ -8374,7 +8374,7 @@ mod tests {
 
     #[test]
     fn ssh_response_carries_the_host_key_on_the_device_leg() {
-        // `meshharbor ssh` originates on THIS leg, and the dialling device has no
+        // `mh ssh` originates on THIS leg, and the dialling device has no
         // other channel to learn the key — so if it goes missing here, the
         // client is back to TOFU with no way to notice. It went missing once
         // already: the HTTP body gained the field and the hand-written wire
@@ -8421,7 +8421,7 @@ mod tests {
     }
 
     /// FR-90 P3-8-1b — an agent session's three fields cross only when set:
-    /// a person's `meshharbor ssh` request, every grant to a device, and every
+    /// a person's `mh ssh` request, every grant to a device, and every
     /// answer stay byte for byte what older builds parse, and each field reads
     /// back as sent.
     #[test]

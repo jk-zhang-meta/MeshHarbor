@@ -90,9 +90,9 @@ if (-not $File) {
     # reports "CN=Microsoft Windows" instead of the actual signer (verified
     # the hard way, 2026-08-22). A meshharbor build has no catalog entry.
     $candidates = @(
-        (Join-Path $PSScriptRoot '..\..\target\release\meshharbor.exe'),
+        (Join-Path $PSScriptRoot '..\..\target\release\mh.exe'),
         (Join-Path $PSScriptRoot '..\..\target\release\meshharbord.exe'),
-        (Join-Path $PSScriptRoot '..\..\target\debug\meshharbor.exe')
+        (Join-Path $PSScriptRoot '..\..\target\debug\mh.exe')
     )
     $src = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
     $File = Join-Path $stage 'smoke-target.exe'

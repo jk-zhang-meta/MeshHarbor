@@ -66,7 +66,7 @@ One **cell per profile**. Each cell asserts, in order: the documented install wo
 | `full` | `<tag>` | chat + 2-party call, remote desktop, overlay peers+ping | — |
 | `collab` | `<tag>-collab` | chat + a real 2-party **video call** (media both ways) | fleet / remote-desktop / overlay endpoints |
 | `remote` | `<tag>-remote` | agent enrolls + **remote desktop frames** | conference; overlay mesh |
-| `mesh` | `<tag>-mesh` | **two agents** see each other in `meshharbor peers`, `meshharbor ping` round-trips; a tunnel or `meshharbor ssh` succeeds | conference; remote desktop |
+| `mesh` | `<tag>-mesh` | **two agents** see each other in `mh peers`, `mh ping` round-trips; a tunnel or `mh ssh` succeeds | conference; remote desktop |
 | `access` | `<tag>-access` | remote desktop **and** mesh, on one server | chat / conference |
 
 ⚠️ **Absence must be asserted positively** and with a **positive control** on `full` — a grep
@@ -159,8 +159,8 @@ that VM's database, not on prod.
 - **P4 — `collab`**: chat between two browser contexts **and** a real call with media asserted on
   both sides.
 - **P5 — `remote`**: enrol an agent against the VM's server, then the existing RD spec.
-- **P6 — `mesh`**: two agents, `meshharbor peers` + `meshharbor ping` round-trip, plus a tunnel or
-  `meshharbor ssh` probe.
+- **P6 — `mesh`**: two agents, `mh peers` + `mh ping` round-trip, plus a tunnel or
+  `mh ssh` probe.
 - **P7 — `access`**: P5 + P6 on one server, and chat/conference proven **absent**.
 - **P8 — `full`**: P4 + P5 + P6.
 - **P9 — RUN AND TWEAK.** The largest phase. Expect the *harness* to be wrong more often than the
@@ -183,7 +183,7 @@ that VM's database, not on prod.
       frames on **both** sides.
 - [ ] **AC4** `remote`: a freshly enrolled agent streams decoded, advancing frames to a browser.
 - [ ] **AC5** `mesh`: two agents see each other in `peers` and `ping` round-trips; a tunnel or
-      `meshharbor ssh` session succeeds.
+      `mh ssh` session succeeds.
 - [ ] **AC6** `access`: AC4 **and** AC5 pass on one server, and chat/conference are absent.
 - [ ] **AC7** `full`: AC3 + AC4 + AC5.
 - [ ] **AC8** every absence is asserted positively, with a positive control on `full`.

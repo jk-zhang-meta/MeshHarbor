@@ -122,7 +122,7 @@ flowchart BT
 
     meshharbord["agents/meshharbord → meshharbord<br/>the daemon"]
     tunnel["agents/meshharbor-cli → meshharbor<br/>tunnel CLI (surface lives in its lib)"]
-    shim["agents/meshharbor-cli-shim<br/>meshharbor.exe on daemon hosts → re-execs meshharbord cli"]
+    shim["agents/meshharbor-cli-shim<br/>mh.exe on daemon hosts → re-execs meshharbord cli"]
     tray["agents/meshharbor-desktop → meshharbor-desktop"]
     setup["agents/meshharbor-setup<br/>install wizard (Tauri)"]
 
@@ -220,7 +220,7 @@ FR-21 until FR-69. Its pre-FR-21 name is retired (FR-21); do not bring it back.
 | Binary | Role |
 |---|---|
 | **`meshharbord`** | The daemon: WS signalling, per-session WebRTC peers, capture → encode → RTP/DC, input injection, clipboard/file/apps/audio channels, tunnel *target* and tunnel *client* sides, overlay node runtime, LocalAPI server, loopback TURN host, watchdog, self-updater, Windows SCM/SystemContext machinery |
-| **`meshharbor`** | The CLI. On tunnel-only hosts it is the full standalone binary; on daemon hosts the MSI/.deb installs a ~150 KB shim that re-execs `meshharbord cli` — one command surface (`meshharbor_cli::cli`), never version-skewed against the daemon |
+| **`mh`** | The CLI. On tunnel-only hosts it is the full standalone binary; on daemon hosts the MSI/.deb installs a ~150 KB shim that re-execs `meshharbord cli` — one command surface (`meshharbor_cli::cli`), never version-skewed against the daemon |
 | **`meshharbor-desktop`** | Tauri tray companion: node status, peers, tunnels, consent prompts — a thin LocalAPI client with zero transport crates |
 | **`meshharbor-setup`** | The unified install wizard ([installation.md](installation.md)) |
 
@@ -233,7 +233,7 @@ per-user path, for CLIs that predate the split. On macOS a per-user half answers
 of its own. So two existing paths are not two daemons. When both exist, the CLI asks each
 for its peer's PID, and adds "a second meshharbor daemon is running" only when two processes
 answer (#2511). One process behind both is the system daemon's legacy bind, which every
-root `meshharbor status` used to report as a second daemon.
+root `mh status` used to report as a second daemon.
 
 ## Request flow & auth
 

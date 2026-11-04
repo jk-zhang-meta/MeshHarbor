@@ -59,7 +59,7 @@ Fix: `ACCEPTED_PROBE_DEADLINE` (8 s) in `probe_tick` (`overlay/lifecycle.rs`), a
 
 ### Observability that made all three findable
 
-`meshharbor why <peer>` (#741) publishes the path decision — per-tier eligibility **with the
+`mh why <peer>` (#741) publishes the path decision — per-tier eligibility **with the
 gate that actually refused**, base/q/penalty/score, and the hold-downs — and the disco prober
 (#741/#744) measures candidate paths for relay-parked peers. Before these, answering "why is
 this pair on relay" needed a `tcpdump` on one host and log archaeology on the other.
@@ -76,7 +76,7 @@ this pair on relay" needed a `tcpdump` on one host and log archaeology on the ot
 ## Acceptance criteria
 
 - [x] Two nodes sharing a LAN reach `tier=lan` and hold it
-- [x] `meshharbor why <peer>` names the gate that refused, and cannot contradict `eligible`
+- [x] `mh why <peer>` names the gate that refused, and cannot contradict `eligible`
 - [x] A peer with a dead LAN path stays on the relay rather than flapping
 - [x] A promotion is not torn down by the peer's own cutover
 - [x] An accepted probe never waits longer than an initiated one
@@ -85,7 +85,7 @@ this pair on relay" needed a `tcpdump` on one host and log archaeology on the ot
 ## Field test
 
 Reproduce the operator's own test — `ping <overlay-ip>` from one end — and read
-`meshharbor why <peer>` on both ends. Measured on the six-laptop table, before → after:
+`mh why <peer>` on both ends. Measured on the six-laptop table, before → after:
 
 | pair | before | after |
 |---|---|---|

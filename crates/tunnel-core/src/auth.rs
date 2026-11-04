@@ -5,7 +5,7 @@
 //! Canonical claim shapes + issue/verify functions live in
 //! `crates/services/src/auth/mod.rs` alongside the existing
 //! `Access` / `Refresh` / `Enrollment` / `Agent` pattern. This module
-//! is intentionally thin — the `meshharbor` CLI stores tokens as
+//! is intentionally thin — the `mh` CLI stores tokens as
 //! opaque strings and never decodes them, so it doesn't need the
 //! claim structs.
 //!

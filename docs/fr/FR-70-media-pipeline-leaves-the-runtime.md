@@ -183,7 +183,7 @@ behaviour verbatim (`EncoderOps::INLINE_BLOCK_IN_PLACE`), plus
 **M1c — first point (2026-09-05 18:11–18:18 UTC, CORPLAP-1 on 0.4.69).** Two
 back-to-back sessions, hevc_qsv 1920×1200 on the same relay path (the host's
 corp VPN was up), the host at its lock screen with mouse motion only, the
-switch flipped between them by `meshharbor config set media_thread …` + a detached
+switch flipped between them by `mh config set media_thread …` + a detached
 restart; session B logged `FR-70 M1: encoder handed to its own thread …
 threaded=true`.
 
@@ -262,7 +262,7 @@ off-arm was written last on each; CORPLAP-1 also kept `transit_hold = false`
 from FR-71's field session). An explicit key beats the built-in default, so
 the flip would have changed nothing on exactly the hosts being read and
 "no regression" would have been measured on the inline encoder. The keys
-were cleared with `meshharbor config clear` on all three before any reading;
+were cleared with `mh config clear` on all three before any reading;
 CORPLAP-3 was restarted on the default, CORPLAP-1 and -2 took it at the
 restart of the operator's own dashboard-triggered update. `threaded=true` in
 every session's log is the proof the default is what ran. The rule this

@@ -38,7 +38,7 @@
 //! the security boundary.
 //!
 //! Borrowing `EXEC_DEVICE` for this would be defensible — an `EXEC_DEVICE`
-//! holder can already `meshharbor exec` its way to setting the device password as
+//! holder can already `mh exec` its way to setting the device password as
 //! root — but it would exclude the natural approver, a fleet admin who holds
 //! no root-command grant, in exchange for a hurdle the design does not lean
 //! on. A dedicated bit waits on the BigInt migration; FR-52 open decision 5.

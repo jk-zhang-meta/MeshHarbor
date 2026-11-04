@@ -266,7 +266,7 @@ function Install-Daemon {
     if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) { throw "msiexec exited $($proc.ExitCode)" }
     if ($proc.ExitCode -eq 3010) { Warn "MSI installation succeeded; restart Windows to complete it." }
     if (-not (Test-Path $daemon)) { throw "install finished but $daemon is missing" }
-    Say "installed: $installDir (meshharbord.exe + meshharbor.exe on PATH for new shells)"
+    Say "installed: $installDir (meshharbord.exe + mh.exe on PATH for new shells)"
 
     if ($PrepareFirewall) {
         Initialize-DaemonFirewall -Daemon $daemon
@@ -389,7 +389,7 @@ function Install-TunnelClient {
 
     if ($DownloadOnly) {
         Say "download-only: would extract to $installDir, append it to the user PATH,"
-        Say "download-only: then enroll via: meshharbor.exe enroll --server $Server --token <token> --name '$Name'"
+        Say "download-only: then enroll via: mh.exe enroll --server $Server --token <token> --name '$Name'"
         return
     }
 
@@ -397,11 +397,11 @@ function Install-TunnelClient {
     Expand-Archive -Path $zip -DestinationPath $installDir -Force
     # Archives ship BOTH names since the P3d rename; prefer 'meshharbor'.
     $cli = $null
-    foreach ($n in @('meshharbor.exe', 'meshharbor-tunnel.exe')) {
+    foreach ($n in @('mh.exe', 'meshharbor-tunnel.exe')) {
         $found = Get-ChildItem -Path $installDir -Filter $n -Recurse | Select-Object -First 1
         if ($found) { $cli = $found.FullName; break }
     }
-    if (-not $cli) { throw "no meshharbor.exe / meshharbor-tunnel.exe in the extracted archive" }
+    if (-not $cli) { throw "no mh.exe / meshharbor-tunnel.exe in the extracted archive" }
     $cliDir = Split-Path -Parent $cli
     Say "installed: $cli"
 

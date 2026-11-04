@@ -483,7 +483,7 @@ mod tests {
         assert!(cmd.contains(note.to_str().unwrap()), "{cmd}");
         #[cfg(not(windows))]
         assert_eq!(
-            hook_command("/usr/bin/meshharbor'd", &note),
+            hook_command("/usr/bin/mh'd", &note),
             None,
             "unquotable"
         );

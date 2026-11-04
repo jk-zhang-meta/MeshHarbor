@@ -58,7 +58,7 @@ pub(crate) const TARBALL_DIRS: &[&str] = &[
 // RETIRED-NAME-ANCHOR(6): the same payload dirs, for the files in them.
 pub(crate) const TARBALL_FILES: &[&str] = &[
     "usr/bin/meshharbord",
-    "usr/bin/meshharbor",
+    "usr/bin/mh",
     "usr/lib/systemd/system/meshharbord.service",
     "usr/lib/systemd/user/meshharbor.service",
     "usr/share/doc/meshharbor/README.Debian",
@@ -390,14 +390,14 @@ mod tests {
         let t = tree();
         std::fs::remove_dir_all(t.path().join("usr/share/doc")).expect("rm");
         std::fs::write(t.path().join("usr/share/doc"), b"not a dir").expect("write");
-        std::fs::remove_file(t.path().join("usr/bin/meshharbor")).expect("rm");
+        std::fs::remove_file(t.path().join("usr/bin/mh")).expect("rm");
         let report = repair_under(t.path());
         assert!(matches!(
             outcome(&report, t.path(), "usr/share/doc"),
             Outcome::Refused(_)
         ));
         assert!(matches!(
-            outcome(&report, t.path(), "usr/bin/meshharbor"),
+            outcome(&report, t.path(), "usr/bin/mh"),
             Outcome::Absent
         ));
     }

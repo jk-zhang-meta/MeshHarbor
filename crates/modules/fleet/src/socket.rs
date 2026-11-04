@@ -776,7 +776,7 @@ pub async fn handle_agent_socket(
                                         continue;
                                     }
                                     // A device asking to run something on ANOTHER
-                                    // device (`meshharbor exec`). Spawned: the
+                                    // device (`mh exec`). Spawned: the
                                     // target's command can take minutes and this
                                     // is the REQUESTING agent's read loop.
                                     ClientMsg::RpcExecRequest {
@@ -1194,7 +1194,7 @@ pub async fn handle_agent_socket(
 }
 
 /// Fleet RPC — a device asked to run a command on another device
-/// (`meshharbor exec`, whose CLI has no user credentials of its own and so goes
+/// (`mh exec`, whose CLI has no user credentials of its own and so goes
 /// through the daemon's already-authenticated agent WS).
 ///
 /// Two things make this leg safe beyond the four normal gates:

@@ -55,7 +55,7 @@ jobs:
       - name: Build the daemon and the CLI
         # overlay-l3 only: this test is about the mesh, not media, and the
         # full release feature set drags in FFmpeg/VP9 for no benefit here.
-        # The `meshharbor` CLI comes too — it is how a user session reaches the
+        # The `mh` CLI comes too — it is how a user session reaches the
         # ROOT daemon, which is the thing the system socket exists for.
         run: |
           cargo build -p meshharbord --release --features overlay-l3
@@ -114,7 +114,7 @@ jobs:
       - name: The root daemon's LocalAPI must be findable
         # A root daemon cannot use the per-user socket path: `temp_dir()` is
         # per-user on macOS, so it would land in ROOT's /var/folders/… and a
-        # user-session `meshharbor peers` would search its own, find nothing,
+        # user-session `mh peers` would search its own, find nothing,
         # and report "not running" for a daemon that is running. This job is
         # the only place a root daemon actually runs, so it is the only place
         # that assertion can be made.
@@ -169,7 +169,7 @@ jobs:
         run: |
           set -euo pipefail
           for i in $(seq 1 30); do
-            if OUT=$(sudo ./target/release/meshharbor peers --json 2>/tmp/peers.err); then
+            if OUT=$(sudo ./target/release/mh peers --json 2>/tmp/peers.err); then
               echo "$OUT" > /tmp/peers.json
               break
             fi

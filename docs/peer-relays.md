@@ -97,7 +97,7 @@ own deny reason, so a blip is never mistaken for a policy decision.
 ⚠️ **Approval needs `EXEC_DEVICE` because there is no permission bit left.** The UI
 checks masks with JavaScript's signed 32-bit operators, and bit 30 is the ceiling
 (#888). The coupling grants nothing new: an `EXEC_DEVICE` holder can already run
-`meshharbor config set relay_server_enabled true` as root on any exec-enabled device. Clearing an
+`mh config set relay_server_enabled true` as root on any exec-enabled device. Clearing an
 approval needs `MANAGE_AGENTS` alone: revoking is not a grant, and the admin who can
 approve must not be the only one who can revoke.
 
@@ -381,7 +381,7 @@ socket or a clock:
   ([`orgrelay/server.rs`](../crates/tunnel-core/src/overlay/orgrelay/server.rs)), so
   one bad datagram cannot take remote desktop, tunnels and SSH down with it.
 
-⚠️ **`meshharbor status` shows the relay's address and its PROBE counters only.** The
+⚠️ **`mh status` shows the relay's address and its PROBE counters only.** The
 forwarding and drop counters (`forwarded`, `bound`, and one per refusal reason, such as
 `drop_unbound_source` or `drop_bad_cookie`) are summarised into the daemon log every
 300 s ([`relay_server.rs:143`](../agents/meshharbord/src/relay_server.rs#L143)). A relay
@@ -642,7 +642,7 @@ the capacity gained: the relay was in France and the members in Austria and Germ
    `{"serve": true, "static_endpoints": [...]}`.
 4. **An ACL grant** for each member, naming the relay node in `via` with a destination
    covering the relay's overlay address.
-5. **Locally on the relay**: `meshharbor config set relay_server_enabled true`, then
+5. **Locally on the relay**: `mh config set relay_server_enabled true`, then
    restart the daemon. Config keys are read at startup.
 6. **On each member**: `overlay_org_relay = true`, then a restart.
 7. **The org switch**: `warn` first, read the audit, then `on`.
@@ -679,8 +679,8 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 - **The audit names the gate.** Every refusal carries its reason, and a pair that never
   appears there never asked. That means the pair was settled on the DERP floor, so
   restart a member to make it climb.
-- `meshharbor peers` CONN reads `relay:org/udp` once a pair is on it, and
-  `meshharbor why <peer>` names the carrier and the relay.
+- `mh peers` CONN reads `relay:org/udp` once a pair is on it, and
+  `mh why <peer>` names the carrier and the relay.
 - ⚠️ After heavy enable/disable churn, a member can back off from re-requesting for a
   while. Nothing on the client forces it; wait, or restart it.
 

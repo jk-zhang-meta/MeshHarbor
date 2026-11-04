@@ -87,7 +87,7 @@ does not, because the worker cannot touch the secure desktop (below).
 ## The owner's key
 
 ```sh
-meshharbor config set display_match auto     # auto (default) | always | never
+mh config set display_match auto     # auto (default) | always | never
 ```
 
 | Value | Display match switches |

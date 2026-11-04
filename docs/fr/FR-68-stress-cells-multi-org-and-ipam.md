@@ -64,7 +64,7 @@ Turn two overlay properties from **promises into properties**:
 
 **L2 — two VM cells** (FR-61 matrix, dedicated vmtest orgs, destructive).
 
-**L3 — fleet, read-only.** Two `meshharbor peers --json` + `meshharbor status` snapshots ≥30 s
+**L3 — fleet, read-only.** Two `mh peers --json` + `mh status` snapshots ≥30 s
 apart on the real multi-org Windows hosts (neo16, CORPLAP-3). No mutation, no VPN cycling,
 nothing on prod cluster nodes.
 
@@ -317,7 +317,7 @@ inverted cell in it would rot the ledger. `multiorg-control` re-runs with
 eviction counter climbs**. A cell whose control does not reproduce the war is
 not measuring anything.
 
-⚠️ `meshharbor status --json` has **no per-org address field** — the overlay
+⚠️ `mh status --json` has **no per-org address field** — the overlay
 address is top-level `.overlay_ip`. A multi-org cell needs a per-org assertion
 surface that does not exist yet; the `route guard` counters (C1) are the
 substitute.
@@ -344,7 +344,7 @@ is a multi-org host again. CORPLAP-3 is the other.
 - Integration tests need BOTH `MESHHARBOR__DATABASE__URL` and
   `MESHHARBOR__REDIS__URL` on this box; without mongo auth every test dies in
   ~0.03 s with `Command createIndexes requires authentication`.
-- `meshharbor ssh mars` is refused (policy off); `meshharbor exec` works but
+- `mh ssh mars` is refused (policy off); `mh exec` works but
   re-splits argv, so multi-word commands need care.
 - The deploy repo stores **LF** (`git ls-files --eol` → `i/lf w/crlf`); the
   Windows worktree is CRLF via `autocrlf`. `git cat-file -p` applies the smudge

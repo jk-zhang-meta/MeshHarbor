@@ -129,7 +129,7 @@ sharpness. A cell that helps names the phase; a cell that does not retires a gue
   of 255 in the scroll, 5 at rest. That is P3's item, with its own mechanism.
 - Left live on CORPLAP-3 until P1 ships: `direct_queue_ms = 600` (config) and
   the machine environment `MESHHARBORD_FFMPEG_MAXRATE_KBPS=40000`. Revert:
-  `meshharbor config clear direct_queue_ms`, remove the variable, restart.
+  `mh config clear direct_queue_ms`, remove the variable, restart.
 
 ### P1 — a content-following ceiling on direct paths
 
@@ -555,7 +555,7 @@ silent on the hosts that needed it, and the fleet had to tell us.
 ### The gate, read 2026-09-25 — P5 stays unbuilt
 
 **Method.** The hosts' own daemon log files (`service-logs\meshharbord.log.<date>`,
-`KEEP_DAYS = 14`) read over Fleet RPC — not `meshharbor logs`, whose 64 KiB tail
+`KEEP_DAYS = 14`) read over Fleet RPC — not `mh logs`, whose 64 KiB tail
 a finished session ages out of. Every heartbeat carrying `pipe_belief=` was
 parsed on the host (one regex per pump) and aggregated per session there, so
 the wire carried summaries and the windows with a live capacity, never the

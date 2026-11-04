@@ -498,7 +498,7 @@ pub fn host_public_key(_cfg: &crate::config::AgentConfig) -> String {
 /// daemon correctly refused to serve SSH and correctly published no host
 /// pubkey — and then never recovered, because the mint in `main.rs` was gated
 /// on `is_none()`. Every restart re-logged the same warning. Nothing surfaced
-/// it: not `meshharbor status`, not `meshharbor config ls`, not the dashboard; and
+/// it: not `mh status`, not `mh config ls`, not the dashboard; and
 /// what a caller saw was *"has not published an SSH host key … needs an agent
 /// that has had SSH enabled at least once (rc.444+)"*, i.e. advice to upgrade an
 /// agent that was already current.
@@ -2644,7 +2644,7 @@ pub(crate) mod sshd {
         let privileged = run_as.is_privileged();
         let req = crate::exec::ExecRequest {
             request_id,
-            // Empty = the host's own default shell, matching `meshharbor exec`.
+            // Empty = the host's own default shell, matching `mh exec`.
             shell: String::new(),
             command: command.clone(),
             // Read by the buffered path only; the streamed path has no wall

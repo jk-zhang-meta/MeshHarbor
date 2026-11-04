@@ -72,7 +72,7 @@ pub struct AgentConfig {
     /// FR-84 D1 — how many LocalAPI named-pipe instances the daemon keeps
     /// LISTENING at once (Windows; the unix socket has a kernel backlog and
     /// ignores this). Every thin client — the companion's pollers, the
-    /// `meshharbor` CLI, the wizard — opens the pipe fresh per request, and a
+    /// `mh` CLI, the wizard — opens the pipe fresh per request, and a
     /// client that finds no listening instance is refused with
     /// `ERROR_PIPE_BUSY` on the spot: the Routes page blanking every few
     /// seconds was three such opens racing ONE instance. `None` = the
@@ -212,7 +212,7 @@ pub struct AgentConfig {
     pub remote_config_enabled: bool,
 
     /// FR-84 D3 — whether a LOCAL client (the companion's "Apply now",
-    /// `meshharbor restart`) may ask the daemon to restart itself through its
+    /// `mh restart`) may ask the daemon to restart itself through its
     /// supervisor (`Request::RestartDaemon`).
     ///
     /// Default **`true`**, unlike the gate-4 keys above: this grants nothing —
@@ -272,7 +272,7 @@ pub struct AgentConfig {
     /// alone.
     ///
     /// ⚠️ **A secret.** Deliberately absent from the config SURFACE, so
-    /// `meshharbor config get` cannot print it and `meshharbor config set` cannot
+    /// `mh config get` cannot print it and `mh config set` cannot
     /// paste one in: a settable verifier would let anyone who can write the
     /// config choose the password, which is the property gate 4 exists to
     /// deny. It is written by `rc password set` and nothing else.
@@ -532,7 +532,7 @@ pub struct AgentConfig {
     #[serde(default)]
     pub hive_core_memory: bool,
     /// FR-90 P1j — let the people who use this device adopt the Claude Code
-    /// sessions they run in a terminal (`meshharbor hive adopt`): mirrored into
+    /// sessions they run in a terminal (`mh hive adopt`): mirrored into
     /// this device's store and listed for their owner alone, read-only.
     /// Default OFF, and never pushable: a terminal session passed none of
     /// Hive's start gates, so whether this machine reports on its terminals
@@ -620,7 +620,7 @@ pub struct AgentConfig {
     /// Device-owned and never settable by the server: it grants nothing, but
     /// a control plane that could switch a device's data path from under its
     /// owner would be a precedent this surface has refused since
-    /// `remote_config_enabled`. Fleet RPC (`meshharbor exec`) is unaffected
+    /// `remote_config_enabled`. Fleet RPC (`mh exec`) is unaffected
     /// either way.
     #[serde(default = "default_true")]
     pub ssh_exec_streaming: bool,
@@ -1864,7 +1864,7 @@ pub struct AgentConfig {
     ///
     /// Netstack mode used to be a process-wide singleton keyed off
     /// `MESHHARBORD_OVERLAY_NETSTACK_SOCKS`: one stack, one port, one
-    /// `meshharbor ping` backend, none of it org-scoped. A second org did not
+    /// `mh ping` backend, none of it org-scoped. A second org did not
     /// join twice — it replaced the first org's stack under a SOCKS front
     /// still answering on the same port, so a caller dialing for org A was
     /// silently routed by org B.
@@ -1965,7 +1965,7 @@ pub struct AgentConfig {
     /// startup (and on change) by `tunnel::route_reconciler` — the
     /// persistent counterpart of the ephemeral LocalAPI `CreateForward`
     /// flows. The struct is `meshharbor_localapi::RouteDescriptor`, one
-    /// type for wire + disk. Managed via `meshharbor route add/rm/...` or the
+    /// type for wire + disk. Managed via `mh route add/rm/...` or the
     /// desktop Tunnels pane (the DAEMON writes this field — LocalAPI verbs
     /// persist through the daemon's config-write lock); hand-editing the
     /// TOML also works (picked up at the next daemon start).
@@ -2081,7 +2081,7 @@ pub enum OrgOverlayMode {
 
 impl OrgOverlayMode {
     /// FR-49 — the ONE spelling, shared by the TOML (`#[serde(rename_all =
-    /// "lowercase")]`), `meshharbord org ls`, `meshharbor status` and the LocalAPI
+    /// "lowercase")]`), `meshharbord org ls`, `mh status` and the LocalAPI
     /// `OrgStatus.overlay_mode`. The match is exhaustive, so a new variant
     /// cannot reach an operator surface without someone naming it.
     pub fn wire(self) -> &'static str {
@@ -3021,7 +3021,7 @@ pub fn test_fixture() -> AgentConfig {
 /// config-surface parity test (`env_bridge_pairs_have_surface_parity`) walks
 /// it against the editable key list. Before this the list was a literal in
 /// `main.rs` — a key added to the surface but missed there silently didn't
-/// bridge (`meshharbor config set` wrote TOML the daemon then ignored).
+/// bridge (`mh config set` wrote TOML the daemon then ignored).
 /// Suffixes are the `MESHHARBORD_…` env suffixes (uppercase surface key).
 /// Sibling-safe derived default for `overlay_direct_port` — constants
 /// mirror tunnel-core's `direct.rs` layout (locked by an agent-crate test;
@@ -3266,7 +3266,7 @@ pub fn env_bridge_numerics(cfg: &AgentConfig) -> [(&'static str, Option<u32>); 3
 /// S2 — the whole config→env fallback map (`tunnel_core::env`'s
 /// `register_config_fallbacks`), built in ONE place. The daemon publishes it
 /// at start, before anything reads a knob; FR-93 P1 has `capture-smoke` and
-/// `input-smoke` publish the same map, so a key set with `meshharbor config set`
+/// `input-smoke` publish the same map, so a key set with `mh config set`
 /// is honoured by the smoke test that is meant to prove it. Before that they
 /// read env and built-in defaults only, and answered about a cascade the
 /// daemon was not running.

@@ -397,7 +397,7 @@ export const TUTORIAL_CHAPTERS: TutorialChapter[] = [
       {
         icon: 'mdi-console',
         text: 'Shell into any machine by name — **no sshd, no open port, no firewall rule**.',
-        code: 'meshharbor ssh <device-name>',
+        code: 'mh ssh <device-name>',
       },
       {
         icon: 'mdi-router-wireless',
@@ -454,14 +454,14 @@ export const TUTORIAL_CHAPTERS: TutorialChapter[] = [
       {
         icon: 'mdi-arrow-right-bold-box-outline',
         text: 'Forward a remote service to a **local port** on your machine.',
-        code: 'meshharbor forward --agent <device-name> --local 127.0.0.1:5432 --remote db:5432',
+        code: 'mh forward --agent <device-name> --local 127.0.0.1:5432 --remote db:5432',
         graphic: stepForward,
         graphicAlt: 'A local port tunnelled through an enrolled machine to a database on its private LAN',
       },
       {
         icon: 'mdi-web-box',
         text: 'Or route a whole browser through a device’s **vantage point** with a local SOCKS5 proxy.',
-        code: 'meshharbor socks5 --agent <device-name> --listen 127.0.0.1:1080',
+        code: 'mh socks5 --agent <device-name> --listen 127.0.0.1:1080',
       },
       {
         icon: 'mdi-pin-outline',

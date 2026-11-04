@@ -108,7 +108,7 @@ impl Install {
                 Self::Other => "This organization connects again when the daemon restarts.",
                 _ => {
                     "This organization connects again when the daemon restarts: \
-                     `meshharbor restart`."
+                     `mh restart`."
                 }
             };
         }
@@ -121,22 +121,22 @@ impl Install {
             Self::LinuxUser => {
                 "Start the daemon: `meshharbord service start`. systemd does not restart \
                  a daemon the server removed (exit 7). If it is still running, \
-                 `meshharbor restart` makes it use the new token now."
+                 `mh restart` makes it use the new token now."
             }
             Self::WindowsService => {
                 "The MeshHarbor service starts the agent again within a minute, with the \
-                 new token. If it is still running, `meshharbor restart` makes it use the \
+                 new token. If it is still running, `mh restart` makes it use the \
                  new token now."
             }
             Self::WindowsTask => {
                 "The agent's task starts it again within a minute, with the new token, \
                  but only ten times after a removal: if it is not back, start it with \
-                 `meshharbord service start`. If it is still running, `meshharbor restart` \
+                 `meshharbord service start`. If it is still running, `mh restart` \
                  makes it use the new token now."
             }
             Self::MacOs => {
                 "launchd starts the agent again within seconds, with the new token. If \
-                 it is still running, `meshharbor restart` makes it use the new token now."
+                 it is still running, `mh restart` makes it use the new token now."
             }
             Self::Other => "Start the daemon again: `meshharbord run`, or your service manager.",
         }
@@ -156,7 +156,7 @@ impl Install {
                      `sudo systemctl restart meshharbord`."
                 }
                 Self::Other => "This organization connects when the daemon restarts.",
-                _ => "This organization connects when the daemon restarts: `meshharbor restart`.",
+                _ => "This organization connects when the daemon restarts: `mh restart`.",
             };
         }
         match self {
@@ -168,21 +168,21 @@ impl Install {
             Self::LinuxUser => {
                 "Start the daemon: `meshharbord service start` (`meshharbord service install` \
                  also starts it at every login). If it is running already, \
-                 `meshharbor restart` connects it now. On a host without the package: \
+                 `mh restart` connects it now. On a host without the package: \
                  `meshharbord run`."
             }
             Self::WindowsService => {
                 "The MeshHarbor service starts the agent within a minute. If it is running \
-                 already, `meshharbor restart` connects it now."
+                 already, `mh restart` connects it now."
             }
             Self::WindowsTask => {
                 "Start the agent: `meshharbord service start` (`meshharbord service install` \
                  first, if this account has no task). If it is running already, \
-                 `meshharbor restart` connects it now."
+                 `mh restart` connects it now."
             }
             Self::MacOs => {
                 "launchd starts the agent within seconds. If it is running already, \
-                 `meshharbor restart` connects it now."
+                 `mh restart` connects it now."
             }
             Self::Other => "Start the daemon: `meshharbord run`, or your service manager.",
         }
@@ -287,7 +287,7 @@ pub fn uninstall() -> Result<()> {
 ///
 /// The caller half of `Request::RestartDaemon` (`restart_by: "caller"`): the
 /// Scheduled Task's own `<RestartOnFailure>` is a minute away at best, so the
-/// companion / `meshharbor restart` runs this once the old daemon is gone. In
+/// companion / `mh restart` runs this once the old daemon is gone. In
 /// every flavour the daemon is then spawned by the OS's scheduler / service
 /// manager — never as a child of the process calling this — so nothing of
 /// the caller's is inherited by the daemon (#1035 is the reverse direction:
@@ -2304,7 +2304,7 @@ mod tests {
         assert!(
             Install::WindowsService
                 .after_re_enroll(false)
-                .contains("meshharbor restart")
+                .contains("mh restart")
         );
     }
 
@@ -2348,7 +2348,7 @@ mod tests {
         assert!(
             Install::LinuxUser
                 .after_enroll(false)
-                .contains("`meshharbor restart`")
+                .contains("`mh restart`")
         );
     }
 
@@ -2366,7 +2366,7 @@ mod tests {
         );
         assert_eq!(
             first_command(Install::MacOs.after_enroll(true)),
-            Some("meshharbor restart")
+            Some("mh restart")
         );
     }
 

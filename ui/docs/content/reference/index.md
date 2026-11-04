@@ -10,7 +10,7 @@ something, [Architecture](/docs/architecture/) is the better start; these pages
 are for when you already know what you want and need the exact spelling.
 
 :::cards
-- **[CLI](/docs/reference/cli/)** icon:terminal — Every `meshharbor` command and the flags that actually exist.
+- **[CLI](/docs/reference/cli/)** icon:terminal — Every `mh` command and the flags that actually exist.
 - **[Configuration](/docs/reference/configuration/)** icon:blueprint — Agent `config.toml` keys, where the file lives per platform, and which settings the server can and cannot change.
 - **[Ports and firewall](/docs/reference/ports-and-firewall/)** icon:network — What must be reachable, and what never needs opening inbound.
 - **[HTTP API](/docs/reference/api/)** icon:book — Authentication, organization scoping, rate limits and route groups.

@@ -23,7 +23,7 @@
 //! on another device over MeshHarbor SSH (P3-8-1a, [`ssh`]): a ticket, likewise
 //! under its own audience, never naming the device the session runs on.
 //! And from P3-9-1 a PERSON's use, through an endpoint their device serves
-//! them (`meshharbor connect`, [`connect`]): decided by Cedar's own
+//! them (`mh connect`, [`connect`]): decided by Cedar's own
 //! `secret:connect` for the device's owner as its row names them, and lent
 //! only to the organizations `vault.people` lists.
 //!

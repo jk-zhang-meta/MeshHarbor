@@ -271,7 +271,7 @@ install, no capture key, no restore token), 2026-10-13:
 | the next session | — | the restore token: the capture 85 ms after the offer, no dialog |
 | the screen locked | — | the token still restores: KDE's lock screen at +4 s, no dialog |
 | after the unlock | — | the token still opens the session, no dialog |
-| `wayland_auto = false` | — | `wayland_not_enabled` again, now with the hint that names `meshharbor config clear wayland_auto`; no request, no dialog |
+| `wayland_auto = false` | — | `wayland_not_enabled` again, now with the hint that names `mh config clear wayland_auto`; no request, no dialog |
 | GNOME 50 per-user, the same build | — | mutter still first: "GNOME screencast · asks nobody", `lit=90.0 %`, no portal request |
 
 ⚠️ **Input follows on both automatic arms.** From P4 the automatic mutter arm
@@ -315,7 +315,7 @@ named carry the same diffs.
 The wheel notch went down only after the helper corrected KDE's negated smooth
 scroll (§4.3).
 
-⚠️ **The recorder asks too.** `meshharbor record` opens the same cascade in its own
+⚠️ **The recorder asks too.** `mh record` opens the same cascade in its own
 process (FR-85), so on KDE the person at the console is asked once for their
 own recording. The broker is per process, so a viewer's pending request and a
 recording started at the same moment are two dialogs.
@@ -575,7 +575,7 @@ every descendant including a setsid'd grandchild (`at-spi-bus-launcher`, a D-Bus
 service that **ignores SIGTERM**) via the parent-link closure of the daemon's
 direct children. Without it, under systemd `KillMode=control-group` that
 grandchild held the unit's cgroup non-empty until systemd's `TimeoutStopSec`
-(90 s) SIGKILLed it, so `meshharbor restart` took 96 s (#1684). See
+(90 s) SIGKILLed it, so `mh restart` took 96 s (#1684). See
 [`desktop-companion.md` §7](desktop-companion.md#7-apply-now--restarting-the-service-from-the-companion).
 
 ⚠️ **A virtual-desktop host is not a consent surface**, even though its X
@@ -702,7 +702,7 @@ ever said *"No video from this device after 3 attempts"*. The open now checks
 the handle (`unreadable`, `drm_backend.rs:1128`) and refuses with the fix in
 words, which reach the viewer as the arm's own error (§1.1): *"drm_capture is
 on, but DRM capture could not open: reading the scanout needs CAP_SYS_ADMIN
-(root), which this daemon lacks: on a per-user install run meshharbor config
+(root), which this daemon lacks: on a per-user install run mh config
 clear drm_capture"*. Clearing the key gives the choice back to the automatic
 arm (§1.2), the desktop's own screencast.
 
@@ -720,7 +720,7 @@ so every order has a test pinned to hand-computed bytes.
 ⚠️ **A reason must fit FR-80's cap whole.** `CaptureUnavailable` keeps 200
 characters of a detail (`capture/mod.rs:2059`), the cascade's prefix included,
 and cuts the rest. The first draft of this reason was longer, and on the lab the
-viewer showed it ending *"…run meshharbor config clear"*: the fix, at the end, was
+viewer showed it ending *"…run mh config clear"*: the fix, at the end, was
 the part cut off. Each new reason's test now builds the detail as the viewer
 receives it and checks that it fits.
 
@@ -1264,7 +1264,7 @@ deadline. Both fall through to the rest of the cascade with the reason in the
 log. Unattended access on Linux is FR-36's DRM arm (or §5's mutter arm where
 there is no scanout) — never this one. ⚠️ Where the product says so: the spec,
 this page, the `portal_capture` description in the config surface
-(`crates/agent-core/src/config_surface.rs:1052`, which every `meshharbor config`
+(`crates/agent-core/src/config_surface.rs:1052`, which every `mh config`
 reader sees) and the helper's own log line. Since FR-93 P2c the web viewer says
 it too: `rc:video-info` carries `capture_arm` and `attended`, and the viewer
 names the arm ("desktop portal · allowed at the screen"), FR-45 AC8's option (b).
@@ -2081,11 +2081,11 @@ host at load 5 with no compositor rig — slower, but nowhere near the bound).
 
 The sequence that works, and that the AC2 field run followed:
 
-1. Change the knobs (a drop-in, or `meshharbor config set …`) while **nothing else
+1. Change the knobs (a drop-in, or `mh config set …`) while **nothing else
    is loading the host** — no compositor rig, no build in flight.
 2. `systemctl daemon-reload && systemctl restart meshharbord`, then wait for
    `caps probe: child reported …` and `rc:agent.hello sent` in the journal,
-   and for `meshharbor peers` to show the node online.
+   and for `mh peers` to show the node online.
 3. **Only then** start whatever loads the box.
 4. Tear the load down **before** restoring the knobs, for the same reason.
 
@@ -2116,5 +2116,5 @@ defect — the capture arms only expose it by being knobs.
 | `agents/meshharbord/src/capture/portal/wire.rs` · `backend.rs` | the `RPWF` frame wire; `PortalCapture` (`open` `:114`, `HANDSHAKE_DEADLINE` `:669`); FR-93 P5f: a per-user capture's watch on its user's session (`watch_session` `:302`, `SESSION_POLL` `:290`), what reads as away (`session_away` `:396`) from logind's answer (`seat_sessions` `:412`), the answer kept with its time (`SessionWatch` `:338`) and outweighed by a newer frame (`away_now` `:384`, the frame's time `:568`), reported by `waits_for` (`:612`), and its kill switch (`session_watch_enabled` `:294`); FR-93 P6c: the helper's exit status read once its frames stop (`reap` `:630`, `HELPER_EXIT_WAIT` `:625`), status 5 typed as a stop at the screen (`helper_ended` `:649`), and its kill switch (`screen_stop_enabled` `:620`) |
 | `agents/meshharbord/src/peer.rs` | the notice (`media_waiting_payload` `:5037`, `media_waiting_hook` `:5313`); FR-93 P3e/P5f: a running capture's wait in the pumps (`CaptureWait` `:5162`), told after a quiet spell (`QUIET_BEFORE_TELL` `:5183`), and the hold that yields so the pump stays abortable (`:2527`, `:3980`, `:7194`); FR-93 P6c: a stop at the screen ends the session, a shared pipeline's followers first, and never reopens (`end_stopped_at_screen` `:5456`) |
 | `agents/meshharbord/src/capture/portal/input.rs` · `input_route.rs` | FR-45 P4 and FR-93 P4: the helper's `Notify*` mapping (`plan` `:123`, mutter's `mutter_call` `:274`); FR-93 P4b's KDE correction (`for_backend` `:224`) and the awaited portal calls (`Target::delivery` `:348`); the arbiter-side per-event route (`try_route` `:113`) and whose session it feeds (`active` `:97`) |
-| `crates/agent-core/src/config_surface.rs` | the keys in §7 and the descriptions `meshharbor config` prints (`:1131-1202`) |
+| `crates/agent-core/src/config_surface.rs` | the keys in §7 and the descriptions `mh config` prints (`:1131-1202`) |
 | `agents/meshharbord/src/main.rs` | `capture-smoke` (`capture_smoke_cmd` `:5694`, the portal line `:5721`); the virtual desktop (`maybe_start_virtual_desktop` `:2759`) |

@@ -66,7 +66,7 @@ The WSL sibling is a genuinely separate machine identity (it already runs its ow
    | 62–82 s | a shell and a forwarded port | reach the machine's *services*, not just its screen |
    | 82–90 s | end card | where to get it |
 
-3. **The command scenes stay in the browser.** `meshharbor ssh` and `meshharbor forward` are
+3. **The command scenes stay in the browser.** `mh ssh` and `mh forward` are
    terminal commands, and compositing a separate terminal capture into a browser recording
    is where this kind of project stalls. The device console in `DevicesView.vue` runs
    commands *in the page*, so the recording stays one continuous browser take.

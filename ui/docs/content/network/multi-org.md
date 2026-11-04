@@ -65,26 +65,26 @@ that, restart the agent.
 ## Checking which organizations are live
 
 ```bash
-meshharbor org ls    # every organization this machine belongs to
-meshharbor status    # connection AND mesh state, per organization
+mh org ls    # every organization this machine belongs to
+mh status    # connection AND mesh state, per organization
 ```
 
 :::warning "Connected" and "mesh on" are different claims
 An organization can be connected to the control plane with its mesh switched
-off, and every surface will otherwise look healthy. `meshharbor status` prints both
+off, and every surface will otherwise look healthy. `mh status` prints both
 on one line for that reason, and an organization with the mesh off is named in
-`meshharbor peers` rather than silently omitted.
+`mh peers` rather than silently omitted.
 
 If a second organization has no mesh, turn it on explicitly and restart:
 
 ```bash
-meshharbor org overlay <org> netstack   # no adapter: programs reach it through a SOCKS5 port
-meshharbor org overlay <org> tun        # a network adapter of its own (a system install)
+mh org overlay <org> netstack   # no adapter: programs reach it through a SOCKS5 port
+mh org overlay <org> tun        # a network adapter of its own (a system install)
 ```
 
 `netstack` needs no privileges and works with any organization's server. The
 command prints the SOCKS5 address programs should use (`127.0.0.1:10800`, or the
-next free port). It is also what `meshharbor enroll --overlay` picks for a second
+next free port). It is also what `mh enroll --overlay` picks for a second
 organization.
 :::
 
@@ -98,7 +98,7 @@ organization.
 Remove the device in that organization's dashboard, or from the machine:
 
 ```bash
-meshharbor org rm <org>
+mh org rm <org>
 ```
 
 Removing a secondary leaves the primary untouched. Removing the primary is the

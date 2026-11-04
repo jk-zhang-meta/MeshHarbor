@@ -119,8 +119,8 @@ describe('enrollCommands', () => {
     const [windows, linux] = enrollCommands('tunnel', ORIGIN, TOKEN)
     expect(windows!.blocks[0]!.command).toContain('-Role tunnel-client')
     expect(linux!.blocks[0]!.command).toContain('--role tunnel')
-    expect(windows!.blocks[2]!.command).toMatch(/^meshharbor enroll /)
-    expect(linux!.blocks[2]!.command).toMatch(/^meshharbor enroll /)
+    expect(windows!.blocks[2]!.command).toMatch(/^mh enroll /)
+    expect(linux!.blocks[2]!.command).toMatch(/^mh enroll /)
   })
 
   it('wizard downloads hit the setup proxy with valid platform slugs', () => {
