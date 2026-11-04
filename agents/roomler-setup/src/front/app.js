@@ -421,6 +421,11 @@ function wireServer() {
     state.overlayChoice = e.target.checked;
     renderServer();
   });
+  document.getElementById("adv-firewall").addEventListener("change", () => {
+    const prepared = document.getElementById("adv-firewall").checked;
+    document.getElementById("adv-firewall-public").disabled = !prepared;
+    if (!prepared) document.getElementById("adv-firewall-public").checked = false;
+  });
 }
 
 function renderServer() {
@@ -431,6 +436,7 @@ function renderServer() {
   // S2: the advanced section holds daemon config keys — meaningless for
   // the tunnel-client role.
   document.getElementById("advanced-wrap").hidden = state.role === "tunnel-client";
+  document.getElementById("adv-firewall-wrap").hidden = state.role !== "daemon-user";
   // FR-84 S2: the overlay box follows the role until touched — on for the
   // perMachine roles (the service can create the TUN adapter), off for a
   // per-user install (its worker runs with a filtered token and cannot;
@@ -448,6 +454,8 @@ function renderServer() {
 function gatherAdvanced() {
   if (state.role === "tunnel-client") return null;
   return {
+    prepareFirewall: state.role === "daemon-user" && document.getElementById("adv-firewall").checked,
+    firewallPublic: state.role === "daemon-user" && document.getElementById("adv-firewall").checked && document.getElementById("adv-firewall-public").checked,
     overlayEnabled: document.getElementById("adv-overlay").checked,
     advertiseLocalSubnets: document.getElementById("adv-local-subnets").checked,
     autoGrantSession: document.getElementById("adv-auto-grant").checked,

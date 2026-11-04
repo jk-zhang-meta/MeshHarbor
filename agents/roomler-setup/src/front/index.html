@@ -132,6 +132,19 @@
            value stays editable later in the desktop app's Settings. -->
       <details id="advanced-wrap" class="card">
         <summary>Advanced options (optional)</summary>
+        <div id="adv-firewall-wrap" hidden>
+          <label class="field checkline">
+            <input id="adv-firewall" type="checkbox">
+            <span>Allow direct connections on trusted networks (one administrator approval)</span>
+          </label>
+          <p class="muted">Optional for a per-user install. Prepares this MeshHarbor
+            app for Private and Domain networks before it starts. Your account
+            and the app keep their normal permissions.</p>
+          <label class="field checkline">
+            <input id="adv-firewall-public" type="checkbox" disabled>
+            <span>Also allow direct connections on Public networks</span>
+          </label>
+        </div>
         <!-- FR-84 S2: the box follows the role until the operator touches it —
              on for the service roles, off for a per-user install (app.js
              renderServer). The Rust orchestrator applies the same default when

@@ -86,6 +86,9 @@
 
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' />
         <Property Id='DiskPrompt' Value='Roomler Agent Installation' />
+        <!-- Script opt-in: register autostart only after firewall preparation
+             succeeds. Unset by default, so direct MSI installs are unchanged. -->
+        <Property Id='MESH_SKIP_AUTOSTART' Secure='yes' />
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <!-- Per-user install under %LOCALAPPDATA%\Programs\Roomler
@@ -363,6 +366,16 @@
             Impersonate='yes'
             Return='ignore' />
 
+        <!-- Only installations that opted into rules require administrator
+             approval here. MSI logs the action result; cancellation/failure
+             must not prevent uninstall. Same-path rules can be cleaned later. -->
+        <CustomAction
+            Id='RemoveInstallFirewall'
+            FileKey='roomler_agent_exe'
+            ExeCommand='service remove-firewall --elevate'
+            Execute='immediate'
+            Return='ignore' />
+
         <!--
           rc.18: cross-flavour cleanup. When the operator installs the
           perUser MSI over a prior perMachine install, this CA shells
@@ -394,7 +407,7 @@
               old + install of the new, scheduled separately).
             -->
             <Custom Action='RegisterAutostart' After='InstallFiles'>
-                NOT (REMOVE="ALL")
+                NOT (REMOVE="ALL") AND NOT MESH_SKIP_AUTOSTART
             </Custom>
             <!--
               rc.18: scrub stale artefacts AFTER the new EXE lands
@@ -419,6 +432,9 @@
             -->
             <Custom Action='UnregisterAutostart' Before='RemoveFiles'>
                 REMOVE="ALL"
+            </Custom>
+            <Custom Action='RemoveInstallFirewall' Before='UnregisterAutostart'>
+                REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE
             </Custom>
         </InstallExecuteSequence>
     </Product>

@@ -190,8 +190,44 @@ Details worth knowing:
   `Roomler Daemon` Block rules an earlier install's prompt left behind (only
   rules whose id carries the prompt's own signature; a Block an administrator
   placed deliberately is left alone — #1698,
-  [`overlay-wfp.md`](./overlay-wfp.md)). The perUser flavour cannot elevate
-  and is unchanged.
+  [`overlay-wfp.md`](./overlay-wfp.md)).
+- **Per-user firewall preparation is optional.** In the wizard's Advanced
+  options, select **Allow direct connections on trusted networks (one administrator approval)** to allow
+  inbound UDP and TCP for the installed daemon before enrollment and first
+  startup. The default profiles are **Private and Domain**; **Public** requires
+  its own explicit checkbox. The installer itself stays in the original user's
+  session; only the firewall helper requests administrator approval. A fresh
+  install stops before enrollment/autostart if that selected preparation is
+  declined or fails. Without this option, installation remains available without
+  administrator rights, but Windows may ask for network access on first use.
+  Deliberate administrator block rules remain in force.
+  For a downloaded script, use
+  `./install.ps1 -Role daemon-user -PrepareFirewall`; add
+  `-AllowPublicFirewall` only when public-network access is intended.
+  The per-user MSI and updater both replace the daemon in the fixed
+  `%LOCALAPPDATA%\Programs\Roomler\roomlerd.exe` path, so updates keep the same
+  path-based rules. Moving the executable requires preparing the new path.
+  A final MSI uninstall removes these two install-owned rules, requesting
+  administrator approval only when they exist. Cancellation or removal failure
+  is recorded as a custom-action result in the MSI log and **does not block
+  uninstall**; the rules remain at that fixed path. Reinstalling at the same
+  path reuses them. To clean them separately, restore/run the daemon at that
+  same path and use `roomlerd.exe service remove-firewall --elevate` with
+  administrator approval. For an explicit uninstall log, pass
+  `/L*v "%TEMP%\meshharbor-uninstall.log"` to `msiexec /x`.
+  An upgrade keeps the rules for that fixed path.
+
+  **Blocking the Windows network prompt does not necessarily prevent ICE
+  connections.** A 2026-11-04 data-channel-only check between Surface and Mac on
+  the same LAN retained `host ↔ host UDP` with explicit inbound UDP/TCP block
+  rules on the probe executable, with either machine offering the connection.
+  Public-profile firewall and both block rules were enabled; a known payload
+  completed a round trip. No relay fallback was needed in that test. This is
+  consistent with outbound ICE checks receiving stateful replies, and does not
+  guarantee connectivity on other firewall/NAT policies. If ICE has no usable
+  direct pair, configured TURN candidates may provide a relay path; that outcome
+  was not exercised by the host-only probe. The optional preparation above is
+  for avoiding the first-use prompt on the selected profiles.
 
 ## Linux
 

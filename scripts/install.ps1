@@ -37,6 +37,13 @@
 #                   touch nothing else (safe on any box).
 #   -NoEnroll       install without enrolling (no token needed).
 #   -SkipDesktop    daemon roles: don't fetch roomler-desktop.exe.
+#   -PrepareFirewall  daemon-user only: request administrator approval once
+#                   during installation to prepare the daemon's UDP rule
+#                   BEFORE enrollment/autostart. The daemon still runs as
+#                   the original user. Without this opt-in, a first inbound
+#                   listen may show the Windows Firewall prompt.
+#   -AllowPublicFirewall  with -PrepareFirewall: also allow Public networks.
+#                   By default the new TCP/UDP rules cover Private + Domain.
 # RETIRED-NAME-ANCHOR-BEGIN
 # 'Roomler Agent' IS the MSI ARP DisplayName, so the uninstall lookups below
 # must match it exactly or they find nothing and silently do nothing. The
@@ -73,6 +80,8 @@ param(
     [switch]$DownloadOnly,
     [switch]$NoEnroll,
     [switch]$SkipDesktop,
+    [switch]$PrepareFirewall,
+    [switch]$AllowPublicFirewall,
     [switch]$Uninstall,
     [switch]$AllowElevated
 )
@@ -86,6 +95,21 @@ function Warn([string]$msg) { Write-Host "WARNING: $msg" -ForegroundColor Yellow
 function Test-Elevated {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Initialize-DaemonFirewall([string]$Daemon) {
+    # Elevate only the bounded firewall command, never this installer: a
+    # per-user MSI must stay in the installing user's profile/HKCU.
+    $firewallArgs = @('service', 'prepare-firewall')
+    if ($AllowPublicFirewall) { $firewallArgs += '--allow-public' }
+    if (Test-Elevated) {
+        & $Daemon @firewallArgs
+        if ($LASTEXITCODE -ne 0) { throw "firewall preparation failed (exit $LASTEXITCODE)" }
+    } else {
+        Say "requesting administrator approval to prepare MeshHarbor TCP/UDP on the selected network profiles"
+        $p = Start-Process -FilePath $Daemon -Verb RunAs -WindowStyle Hidden -ArgumentList $firewallArgs -Wait -PassThru
+        if ($p.ExitCode -ne 0) { throw "firewall preparation failed (exit $($p.ExitCode)); daemon not started" }
+    }
 }
 
 # Raw .NET SHA256 rather than Get-FileHash: the cmdlet depends on
@@ -156,6 +180,13 @@ function Ensure-VcRuntime {
     }
 }
 
+if ($PrepareFirewall -and ($Role -ne 'daemon-user' -or $Uninstall)) {
+    throw "-PrepareFirewall applies only to a daemon-user installation."
+}
+if ($AllowPublicFirewall -and -not $PrepareFirewall) {
+    throw "-AllowPublicFirewall requires -PrepareFirewall."
+}
+
 $stage = Join-Path $env:TEMP ("roomler-install-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 
@@ -214,6 +245,9 @@ function Install-Daemon {
     if ($Role -eq 'daemon-system') { $sysCtx = '1' }
     $msiArgs = "/i `"$msi`" /qn /norestart"
     if ($machineRole) { $msiArgs = $msiArgs + " ENABLE_SYSTEM_CONTEXT=$sysCtx" }
+    # The per-user MSI must not leave a logon task behind when the owner
+    # cancels the optional firewall preparation on a fresh installation.
+    if ($PrepareFirewall) { $msiArgs = $msiArgs + " MESH_SKIP_AUTOSTART=1" }
 
     $installDir = Join-Path $env:ProgramFiles 'Roomler'
     if ($Role -eq 'daemon-user') { $installDir = Join-Path $env:LOCALAPPDATA 'Programs\Roomler' }
@@ -221,6 +255,7 @@ function Install-Daemon {
 
     if ($DownloadOnly) {
         Say "download-only: would run: msiexec $msiArgs"
+        if ($PrepareFirewall) { Say "download-only: would request administrator approval for '$daemon' service prepare-firewall before enrollment/autostart" }
         Say "download-only: would enroll via: '$daemon' enroll --server $Server --token <token> --name '$Name'$mgFlag"
         if (-not $SkipDesktop) { Say "download-only: would place roomler-desktop.exe into $installDir" }
         return
@@ -232,6 +267,12 @@ function Install-Daemon {
     if ($proc.ExitCode -eq 3010) { Warn "MSI installation succeeded; restart Windows to complete it." }
     if (-not (Test-Path $daemon)) { throw "install finished but $daemon is missing" }
     Say "installed: $installDir (roomlerd.exe + roomler.exe on PATH for new shells)"
+
+    if ($PrepareFirewall) {
+        Initialize-DaemonFirewall -Daemon $daemon
+        & $daemon service install
+        if ($LASTEXITCODE -ne 0) { throw "autostart registration failed (exit $LASTEXITCODE)" }
+    }
 
     # Surface WHERE this install registered + the uninstall escape hatch. A
     # perUser MSI's Add/Remove record lives ONLY in the installing account's
