@@ -3,7 +3,7 @@
 <template>
   <v-container fluid class="pa-2 pa-md-4 pa-xl-6">
     <div class="d-flex align-center flex-wrap ga-2 mb-2 mb-md-4">
-      <h2 class="text-h5">Invite Links</h2>
+      <h2 class="text-h5">{{ t('mh.invite.title') }}</h2>
       <v-spacer />
       <!-- FR-11: server-side search over code / target email + status filter.
            FR-116: on a phone the two share a row of their own, under the
@@ -14,17 +14,17 @@
         hide-details
         clearable
         prepend-inner-icon="mdi-magnify"
-        placeholder="Search code or email"
+        :placeholder="t('mh.invite.search')"
         :style="xs ? 'flex: 1 1 60%' : 'max-width: 220px'"
         :class="xs ? 'order-1' : 'flex-grow-0'"
       />
       <v-select
         v-model="gridStatus"
-        :items="statusOptions"
+        :items="statusOptions.map((s) => ({ title: t(`mh.invite.st.${s}`), value: s }))"
         density="compact"
         hide-details
         clearable
-        placeholder="Status"
+        :placeholder="t('mh.invite.status')"
         :style="xs ? 'flex: 0 0 128px' : 'max-width: 150px'"
         :class="xs ? 'order-1' : 'flex-grow-0'"
       />
@@ -33,8 +33,8 @@
         size="small"
         variant="text"
         :color="colsCustomized ? 'primary' : undefined"
-        title="Configure columns"
-        aria-label="Configure columns"
+        :title="t('mh.files.columns')"
+        :aria-label="t('mh.files.columns')"
         @click="colDialogOpen = true"
       />
       <v-btn
@@ -44,11 +44,11 @@
         @click="showBatchDialog = true"
       >
         <v-icon start>mdi-email-multiple</v-icon>
-        Batch Invite
+        {{ t('mh.invite.batch') }}
       </v-btn>
       <v-btn color="primary" :class="{ 'order-2 flex-grow-1': xs }" @click="showCreateDialog = true">
         <v-icon start>mdi-plus</v-icon>
-        Create Invite
+        {{ t('mh.invite.create') }}
       </v-btn>
     </div>
 
@@ -91,14 +91,14 @@
                 size="small"
                 variant="tonal"
               >
-                {{ item.status }}
+                {{ statusOptions.includes(item.status) ? t(`mh.invite.st.${item.status}`) : item.status }}
               </v-chip>
             </template>
             <template #item.usage="{ item }">
-              {{ item.use_count }} / {{ item.max_uses ?? 'unlimited' }}
+              {{ item.use_count }} / {{ item.max_uses ?? t('mh.invite.unlimited') }}
             </template>
             <template #item.target_email="{ item }">
-              {{ item.target_email || 'Anyone' }}
+              {{ item.target_email || t('mh.invite.anyone') }}
             </template>
             <template #item.created_at="{ item }">
               {{ new Date(item.created_at).toLocaleDateString() }}
@@ -129,17 +129,17 @@
     <!-- Create invite dialog -->
     <v-dialog v-model="showCreateDialog" max-width="500">
           <v-card>
-            <v-card-title>Create Invite</v-card-title>
+            <v-card-title>{{ t('mh.invite.create') }}</v-card-title>
             <v-card-text>
               <v-radio-group v-model="inviteType" inline class="mb-4">
-                <v-radio label="Shareable Link" value="link" />
-                <v-radio label="Email Invite" value="email" />
+                <v-radio :label="t('mh.invite.shareable')" value="link" />
+                <v-radio :label="t('mh.invite.emailInvite')" value="email" />
               </v-radio-group>
 
               <v-text-field
                 v-if="inviteType === 'email'"
                 v-model="targetEmail"
-                label="Email address"
+                :label="t('mh.invite.email')"
                 type="email"
                 :rules="[rules.email]"
               />
@@ -147,24 +147,24 @@
               <v-text-field
                 v-if="inviteType === 'link'"
                 v-model.number="maxUses"
-                label="Max uses (leave empty for unlimited)"
+                :label="t('mh.invite.maxUses')"
                 type="number"
                 min="1"
               />
 
               <v-text-field
                 v-model.number="expiresInHours"
-                label="Expires in (hours)"
+                :label="t('mh.invite.expires')"
                 type="number"
                 min="1"
-                :placeholder="'168 (7 days)'"
+                :placeholder="t('mh.invite.expiresDefault')"
               />
             </v-card-text>
             <v-card-actions>
               <v-spacer />
-              <v-btn @click="showCreateDialog = false">Cancel</v-btn>
+              <v-btn @click="showCreateDialog = false">{{ t('common.cancel') }}</v-btn>
               <v-btn color="primary" :loading="creating" @click="handleCreate">
-                Create
+                {{ t('mh.invite.createBtn') }}
               </v-btn>
             </v-card-actions>
           </v-card>
@@ -192,6 +192,9 @@ import { useValidation } from '@/composables/useValidation'
 import { useGridColumns } from '@/composables/useGridColumns'
 import GridColumnPickerDialog from '@/components/common/GridColumnPickerDialog.vue'
 import BatchInviteDialog from '@/components/invite/BatchInviteDialog.vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const inviteStore = useInviteStore()
@@ -226,13 +229,13 @@ const gridDir = ref<'asc' | 'desc' | undefined>(undefined)
 const statusOptions = ['active', 'expired', 'revoked', 'exhausted']
 
 const inviteHeaders = computed(() => [
-  { title: 'Code', key: 'code', sortable: false },
+  { title: t('mh.invite.col.code'), key: 'code', sortable: false },
   // Sortable keys double as the server whitelist (status | target_email | created_at).
-  { title: 'Status', key: 'status', sortable: true },
-  { title: 'Target', key: 'target_email', sortable: true },
-  { title: 'Usage', key: 'usage', sortable: false },
-  { title: 'Created', key: 'created_at', sortable: true },
-  { title: 'Actions', key: 'actions', sortable: false, width: 60 },
+  { title: t('mh.invite.col.status'), key: 'status', sortable: true },
+  { title: t('mh.invite.col.target'), key: 'target_email', sortable: true },
+  { title: t('mh.invite.col.usage'), key: 'usage', sortable: false },
+  { title: t('mh.invite.col.created'), key: 'created_at', sortable: true },
+  { title: t('mh.invite.col.actions'), key: 'actions', sortable: false, width: 60 },
 ])
 const colDialogOpen = ref(false)
 const {
@@ -314,7 +317,7 @@ function statusColor(status: string) {
 function copyLink(code: string) {
   const url = `${appOrigin(window.location.origin)}/invite/${code}`
   navigator.clipboard.writeText(url)
-  showSuccess('Invite link copied to clipboard')
+  showSuccess(t('mh.invite.copied'))
 }
 
 async function handleCreate() {
@@ -329,10 +332,10 @@ async function handleCreate() {
     targetEmail.value = ''
     maxUses.value = undefined
     expiresInHours.value = undefined
-    showSuccess('Invite created')
+    showSuccess(t('mh.invite.created'))
     fetchGrid()
   } catch (e) {
-    showError(e instanceof Error ? e.message : 'Failed to create invite')
+    showError(e instanceof Error ? e.message : t('mh.invite.createFailed'))
   } finally {
     creating.value = false
   }
@@ -341,9 +344,9 @@ async function handleCreate() {
 async function handleRevoke(inviteId: string) {
   try {
     await inviteStore.revokeInvite(tenantId.value, inviteId)
-    showSuccess('Invite revoked')
+    showSuccess(t('mh.invite.revoked'))
   } catch (e) {
-    showError(e instanceof Error ? e.message : 'Failed to revoke invite')
+    showError(e instanceof Error ? e.message : t('mh.invite.revokeFailed'))
   }
 }
 

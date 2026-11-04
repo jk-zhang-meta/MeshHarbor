@@ -3,17 +3,15 @@
 <template>
   <v-container class="d-flex align-center justify-center" style="min-height: 80vh">
     <v-card max-width="460" width="100%" class="pa-2">
-      <v-card-title>Connect to a device</v-card-title>
+      <v-card-title>{{ t('mh.connect.title') }}</v-card-title>
       <v-card-text>
         <p class="mb-4">
-          Enter the connect code and the password the device's owner gave you. The device
-          checks the password itself — this server never sees it — and whoever is at the
-          device may still be asked to approve.
+          {{ t('mh.connect.intro') }}
         </p>
         <v-form @submit.prevent="submit">
           <v-text-field
             v-model="code"
-            label="Connect code"
+            :label="t('mh.connect.code')"
             placeholder="XXXX-XXXX-XXXX"
             autocomplete="off"
             spellcheck="false"
@@ -22,7 +20,7 @@
           />
           <v-text-field
             v-model="password"
-            label="Device password"
+            :label="t('mh.connect.password')"
             type="password"
             name="device-password"
             autocomplete="off"
@@ -34,8 +32,8 @@
             :items="orgs"
             item-title="name"
             item-value="id"
-            label="Run this session for"
-            hint="It uses this organization's remote-session quota."
+            :label="t('mh.connect.chargeOrg')"
+            :hint="t('mh.connect.chargeHint')"
             persistent-hint
             :disabled="busy"
             class="mb-4"
@@ -50,7 +48,7 @@
               :loading="busy"
               :disabled="busy || !code.trim() || !password"
             >
-              Connect
+              {{ t('mh.connect.connect') }}
             </v-btn>
           </div>
         </v-form>
@@ -81,6 +79,9 @@ import {
   friendlyExtauthRefusal,
   handOffExternalSession,
 } from '@/composables/useExternalLogin'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const router = useRouter()
@@ -146,11 +147,11 @@ async function submit() {
   try {
     const principal = await principalReady()
     if (!principal) {
-      error.value = 'Sign in again, then connect.'
+      error.value = t('mh.connect.signIn')
       return
     }
     if (!(await socketReady())) {
-      error.value = 'Not connected to the server. Check your connection and try again.'
+      error.value = t('mh.connect.noServer')
       return
     }
     const result = await externalLogin(connectCode, password.value, principal)
@@ -166,7 +167,7 @@ async function submit() {
     })
     await router.push({ name: 'connect-session', query: { code: connectCode } })
   } catch {
-    error.value = 'The login could not be completed. Try again.'
+    error.value = t('mh.connect.loginFailed')
   } finally {
     password.value = ''
     busy.value = false

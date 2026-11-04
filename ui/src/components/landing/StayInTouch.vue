@@ -19,7 +19,7 @@
 <template>
   <div class="stay-in-touch" :class="variant === 'light' ? 'stay-light' : 'stay-dark'">
     <p v-if="!hideLede" class="text-body-2 mb-3 stay-sub">
-      Not ready to sign up? Get an email when something notable ships.
+      {{ t('mh.nl.lede') }}
     </p>
 
     <v-form v-if="!done" class="d-flex flex-wrap ga-2 justify-center" @submit.prevent="submit">
@@ -35,7 +35,7 @@
         single-line
         :disabled="busy"
         class="stay-field"
-        aria-label="Your email address"
+        :aria-label="t('mh.nl.yourEmail')"
       />
       <v-btn
         type="submit"
@@ -45,18 +45,17 @@
         :loading="busy"
         :disabled="!email.trim()"
       >
-        Keep me posted
+        {{ t('mh.nl.keepPosted') }}
       </v-btn>
     </v-form>
 
     <p v-else class="text-body-2 stay-done" role="status">
-      Thanks — check your inbox for a confirmation link.
+      {{ t('mh.nl.thanks') }}
     </p>
 
     <p class="text-caption mt-3 stay-fine">
-      Product updates only, and never more than monthly. One-click unsubscribe in
-      every email. We do not share your address.
-      <router-link to="/privacy" class="stay-link">Privacy&nbsp;Policy</router-link>
+      {{ t('mh.nl.fine') }}
+      <router-link to="/privacy" class="stay-link">{{ t('mh.nl.privacy') }}</router-link>
     </p>
   </div>
 </template>
@@ -67,6 +66,9 @@ import { api } from '@/api/client'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { newsletterSource, queryOf } from '@/utils/attribution'
 import { trackGoal } from '@/utils/goals'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = withDefaults(
   defineProps<{ source?: string; variant?: 'dark' | 'light'; hideLede?: boolean }>(),
@@ -103,7 +105,7 @@ async function submit() {
   } catch {
     // Only a transport or server failure lands here; a rejected address does
     // not, because the endpoint accepts everything that parses.
-    showError('Could not reach the server. Please try again.')
+    showError(t('mh.nl.serverFailed'))
   } finally {
     busy.value = false
   }

@@ -10,6 +10,13 @@
  * {@link GRACE_DAYS} days once its agent can; after that only a re-enrollment
  * brings it back.
  */
+import i18n from '@/plugins/i18n'
+
+/** Read at call time, so a caller re-renders in the current language. */
+function t(key: string, named?: Record<string, unknown>): string {
+  return named ? i18n.global.t(key, named) : i18n.global.t(key)
+}
+
 export const WARN_DAYS = 60
 /** The server's renewal grace past `exp` (`RENEWAL_GRACE_SECS`). */
 export const GRACE_DAYS = 90
@@ -37,24 +44,18 @@ export function credentialChip(
   if (left > 0) {
     const days = Math.floor(left / DAY_MS)
     return {
-      text: days === 0 ? 'credential expires today' : `credential expires in ${days} d`,
+      text: days === 0 ? t('mh.cred.today') : t('mh.cred.inDays', { days }),
       color: 'warning',
-      tooltip:
-        `Its agent token expires on ${on}. A device on agent 0.4.135 or later renews it ` +
-        `itself 180 days early, so one this close is not renewing: update its agent, ` +
-        `or check whether it was removed and re-enrolled elsewhere.`,
+      tooltip: t('mh.cred.soonTip', { on }),
     }
   }
   const late = Math.floor(-left / DAY_MS)
   const renewable = late < GRACE_DAYS
   return {
-    text: 'credential expired',
+    text: t('mh.cred.expired'),
     color: 'error',
     tooltip: renewable
-      ? `Its agent token expired on ${on}. The server still renews it for ` +
-        `${GRACE_DAYS - late} more day(s) once the device runs agent 0.4.135 or later; ` +
-        `after that, re-enroll it.`
-      : `Its agent token expired on ${on}, more than ${GRACE_DAYS} days ago: ` +
-        `re-enroll the device.`,
+      ? t('mh.cred.renewableTip', { on, days: GRACE_DAYS - late })
+      : t('mh.cred.lostTip', { on, grace: GRACE_DAYS }),
   }
 }

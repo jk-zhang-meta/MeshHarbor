@@ -3,7 +3,7 @@
 <template>
   <v-card>
     <v-card-title class="d-flex align-center">
-      <span>Server topology</span>
+      <span>{{ $t('mh.topo.title') }}</span>
       <v-spacer />
       <v-btn
         prepend-icon="mdi-refresh"
@@ -12,7 +12,7 @@
         :loading="store.loading"
         @click="refresh"
       >
-        Refresh
+        {{ $t('common.refresh') }}
       </v-btn>
     </v-card-title>
 
@@ -29,13 +29,8 @@
       </v-alert>
 
       <p class="text-medium-emphasis mb-4">
-        Two servers connect directly exactly when an enabled edge joins them,
-        whatever their business zones; without one they do not see each other,
-        even in one zone. Click a server, then another, to add an edge; click
-        an edge to switch it off or remove it. Clients are not drawn: they keep
-        the zone rule. Edges are enforced under
-        <code>business_isolation = enforce</code>; under <code>warn</code> they
-        are only logged.
+        {{ $t('mh.topo.intro') }}
+        <code>business_isolation = enforce</code>{{ $t('mh.topo.introWarn1') }}<code>warn</code>{{ $t('mh.topo.introWarn2') }}
       </p>
 
       <div v-if="store.loading && store.servers.length === 0" class="d-flex justify-center pa-8">
@@ -43,21 +38,20 @@
       </div>
 
       <p v-else-if="store.servers.length === 0" class="text-medium-emphasis">
-        No device has the central role Server yet. Approve one under Business
-        authority first.
+        {{ $t('mh.topo.noServers') }}
       </p>
 
       <template v-else>
         <div class="d-flex align-center flex-wrap ga-2 mb-2 text-caption">
-          <span class="topo-key"><span class="topo-dot zone-mainland" /> Mainland</span>
-          <span class="topo-key"><span class="topo-dot zone-non_mainland" /> Non-mainland</span>
-          <span class="topo-key"><span class="topo-dot zone-none" /> Zone unknown</span>
-          <span class="topo-key"><span class="topo-line" /> Edge on</span>
-          <span class="topo-key"><span class="topo-line off" /> Edge off</span>
+          <span class="topo-key"><span class="topo-dot zone-mainland" /> {{ $t('mh.topo.mainland') }}</span>
+          <span class="topo-key"><span class="topo-dot zone-non_mainland" /> {{ $t('mh.topo.nonMainland') }}</span>
+          <span class="topo-key"><span class="topo-dot zone-none" /> {{ $t('mh.topo.zoneUnknown') }}</span>
+          <span class="topo-key"><span class="topo-line" /> {{ $t('mh.topo.edgeOn') }}</span>
+          <span class="topo-key"><span class="topo-line off" /> {{ $t('mh.topo.edgeOff') }}</span>
           <v-spacer />
           <span v-if="pending" class="text-primary">
-            {{ nameOf(pending) }} selected: click a second server
-            <v-btn size="x-small" variant="text" @click="pending = null">Cancel</v-btn>
+            {{ $t('mh.topo.selected', { name: nameOf(pending) }) }}
+            <v-btn size="x-small" variant="text" @click="pending = null">{{ $t('common.cancel') }}</v-btn>
           </span>
         </div>
 
@@ -67,7 +61,7 @@
           role="img"
           @click.self="clearSelection"
         >
-          <title>Server topology: servers by country and the edges between them</title>
+          <title>{{ $t('mh.topo.svgTitle') }}</title>
           <path :d="spherePath" class="topo-sphere" @click="clearSelection" />
           <path :d="landPath" class="topo-land" @click="clearSelection" />
           <g v-for="e in drawnEdges" :key="e.key">
@@ -81,7 +75,7 @@
               class="topo-edge-hit"
               @click.stop="selectEdge(e.key)"
             >
-              <title>{{ nameOf(e.link.a) }} — {{ nameOf(e.link.b) }} ({{ e.link.enabled ? 'on' : 'off' }})</title>
+              <title>{{ nameOf(e.link.a) }} — {{ nameOf(e.link.b) }} ({{ e.link.enabled ? $t('mh.topo.on') : $t('mh.topo.off') }})</title>
             </path>
           </g>
           <g
@@ -96,12 +90,12 @@
               :class="[`zone-${s.zone ?? 'none'}`, { offline: !s.online, pending: pending === s.agent_id }]"
             />
             <text y="-10" class="topo-label">{{ s.name }}</text>
-            <title>{{ s.name }} · {{ s.country ?? 'no country' }} · {{ s.online ? 'online' : 'offline' }}</title>
+            <title>{{ s.name }} · {{ s.country ?? $t('mh.topo.noCountry') }} · {{ s.online ? $t('mh.topo.online') : $t('mh.topo.offline') }}</title>
           </g>
         </svg>
 
         <div v-if="unplaced.length" class="mt-2 text-caption">
-          <span class="text-medium-emphasis">No known location:</span>
+          <span class="text-medium-emphasis">{{ $t('mh.topo.noLocation') }}</span>
           <v-chip
             v-for="s in unplaced"
             :key="s.agent_id"
@@ -126,7 +120,7 @@
             color="primary"
             density="compact"
             hide-details
-            :label="selectedLink.enabled ? 'On' : 'Off'"
+            :label="selectedLink.enabled ? $t('mh.topo.on') : $t('mh.topo.off')"
             @update:model-value="(v) => setEnabled(selectedLink!, v === true)"
           />
           <v-spacer />
@@ -138,7 +132,7 @@
             :disabled="busy"
             @click="remove(selectedLink)"
           >
-            Remove edge
+            {{ $t('mh.topo.removeEdge') }}
           </v-btn>
         </v-sheet>
 
@@ -147,29 +141,29 @@
         <v-table density="compact" class="table-stack-xs mt-4">
           <thead>
             <tr>
-              <th>Edge</th>
-              <th>State</th>
-              <th class="text-right">Actions</th>
+              <th>{{ $t('mh.topo.col.edge') }}</th>
+              <th>{{ $t('mh.topo.col.state') }}</th>
+              <th class="text-right">{{ $t('mh.topo.col.actions') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="store.links.length === 0">
-              <td colspan="3" class="text-medium-emphasis">No edges: every server is on its own.</td>
+              <td colspan="3" class="text-medium-emphasis">{{ $t('mh.topo.noEdges') }}</td>
             </tr>
             <tr
               v-for="l in store.links"
               :key="edgeKey(l.a, l.b)"
               :class="{ 'bg-surface-variant': selected === edgeKey(l.a, l.b) }"
             >
-              <td data-label="Edge">{{ nameOf(l.a) }} — {{ nameOf(l.b) }}</td>
-              <td data-label="State">
+              <td :data-label="$t('mh.topo.col.edge')">{{ nameOf(l.a) }} — {{ nameOf(l.b) }}</td>
+              <td :data-label="$t('mh.topo.col.state')">
                 <v-switch
                   :model-value="l.enabled"
                   :disabled="busy"
                   color="primary"
                   density="compact"
                   hide-details
-                  :label="l.enabled ? 'On' : 'Off'"
+                  :label="l.enabled ? $t('mh.topo.on') : $t('mh.topo.off')"
                   @update:model-value="(v) => setEnabled(l, v === true)"
                 />
               </td>
@@ -179,7 +173,7 @@
                   variant="text"
                   size="small"
                   :disabled="busy"
-                  :aria-label="`Remove edge ${nameOf(l.a)} — ${nameOf(l.b)}`"
+                  :aria-label="$t('mh.topo.removeEdgeAria', { a: nameOf(l.a), b: nameOf(l.b) })"
                   @click="remove(l)"
                 />
               </td>

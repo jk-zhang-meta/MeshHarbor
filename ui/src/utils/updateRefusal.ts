@@ -15,6 +15,13 @@
  * word, or no word at all (an older agent), means "unknown": shown as before.
  */
 
+import i18n from '@/plugins/i18n'
+
+/** Read at call time, so a caller re-renders in the current language. */
+function t(key: string, named?: Record<string, unknown>): string {
+  return named ? i18n.global.t(key, named) : i18n.global.t(key)
+}
+
 export type UpdateRefusalCode = 'primary_org' | 'auto_update_off'
 
 export function updateRefusal(caps?: { update_mode?: string } | null): UpdateRefusalCode | null {
@@ -33,12 +40,12 @@ export function updateRefusal(caps?: { update_mode?: string } | null): UpdateRef
 export function refusalShort(code?: string | null): string {
   switch (code) {
     case 'primary_org':
-      return 'another organization manages its updates'
+      return t('mh.refusal.primary_org')
     case 'auto_update_off':
-      return 'auto-update is off on the device'
+      return t('mh.refusal.auto_update_off')
     case 'pin_downgrade':
-      return 'the pin would downgrade it'
+      return t('mh.refusal.pin_downgrade')
     default:
-      return 'refused'
+      return t('mh.refusal.other')
   }
 }

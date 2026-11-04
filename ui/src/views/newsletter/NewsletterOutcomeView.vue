@@ -17,7 +17,7 @@
         <v-icon :icon="view.icon" :color="view.color" size="72" class="mb-6" />
         <h1 class="text-h5 text-md-h4 font-weight-bold mb-4">{{ view.title }}</h1>
         <p class="text-body-1 text-medium-emphasis mb-8">{{ view.body }}</p>
-        <v-btn color="primary" size="large" to="/">Go to roomler.ai</v-btn>
+        <v-btn color="primary" size="large" to="/">{{ t('mh.nl.home') }}</v-btn>
       </v-col>
     </v-row>
   </v-container>
@@ -26,6 +26,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{ kind: 'confirmed' | 'unsubscribed' }>()
 const route = useRoute()
@@ -38,28 +41,22 @@ const view = computed(() => {
     return {
       icon: 'mdi-link-off',
       color: 'warning',
-      title: "That link didn't work",
-      body:
-        'It is no longer valid — it may already have been used. ' +
-        'If you meant to subscribe, you can sign up again from the home page.',
+      title: t('mh.nl.badLink'),
+      body: t('mh.nl.invalidBody'),
     }
   }
   return props.kind === 'confirmed'
     ? {
         icon: 'mdi-email-check-outline',
         color: 'success',
-        title: "You're on the list",
-        body:
-          'Thanks for confirming. Product updates only, never more than monthly — ' +
-          'and a one-click unsubscribe in every email.',
+        title: t('mh.nl.onList'),
+        body: t('mh.nl.onListBody'),
       }
     : {
         icon: 'mdi-email-off-outline',
         color: 'success',
-        title: "You're unsubscribed",
-        body:
-          'No more product updates will be sent to your address. Changed your mind? ' +
-          'Subscribe again any time from the home page — it will ask you to confirm again.',
+        title: t('mh.nl.unsubscribed'),
+        body: t('mh.nl.unsubscribedBody'),
       }
 })
 </script>

@@ -8,7 +8,7 @@
         <!-- The span shrinks with an ellipsis (min-width: 0), so the title's own
              buttons stay on screen: a title never wraps, and a long device name
              used to push Close or Refresh past the edge on a phone. -->
-        <span class="text-truncate" style="min-width: 0">SSH policy — {{ deviceLabel(agent) }}</span>
+        <span class="text-truncate" style="min-width: 0">{{ t('mh.sshp.title', { name: deviceLabel(agent) }) }}</span>
       </v-card-title>
 
       <v-card-text>
@@ -22,10 +22,9 @@
           class="mb-4"
           icon="mdi-shield-alert-outline"
         >
-          Allowing SSH lets permitted users open an <strong>interactive
-          shell</strong> on this device. It is a separate power from remote
-          execution — a session lasts, and it is not one bounded command you
-          can read back afterwards.
+          <i18n-t keypath="mh.sshp.warn" tag="span" scope="global">
+            <template #shell><strong>{{ t('mh.sshp.shell') }}</strong></template>
+          </i18n-t>
         </v-alert>
 
         <v-switch
@@ -33,7 +32,7 @@
           color="primary"
           hide-details
           density="compact"
-          label="Accept SSH sessions on this device"
+          :label="t('mh.sshp.accept')"
         />
 
         <v-switch
@@ -42,17 +41,16 @@
           hide-details
           density="compact"
           class="mt-2"
-          label="Allow this device to open sessions on OTHER devices"
+          :label="t('mh.sshp.originate')"
         />
         <div class="text-caption text-medium-emphasis mb-4 ml-10">
-          Off by default. Without it, a compromised copy of this device could
-          use its owner's permissions across the whole fleet.
+          {{ t('mh.exec.originateHint') }}
         </div>
 
         <v-select
           v-model="draft.account_mode"
           :items="accountOptions"
-          label="Sessions run as"
+          :label="t('mh.sshp.runAs')"
           density="compact"
           variant="outlined"
           class="mt-4"
@@ -65,81 +63,87 @@
           density="compact"
           class="mt-2"
         >
-          This device had been set to <strong>the signed-in user</strong>, which its agent
-          cannot do — it refuses it, so every session was failing at connect time. Update
-          the agent, or pick an account and save to fix it.
+          <i18n-t keypath="mh.sshp.coerced" tag="span" scope="global">
+            <template #signedIn><strong>{{ t('mh.sshp.signedInLower') }}</strong></template>
+          </i18n-t>
         </v-alert>
         <div
           v-if="isWindows && servedBySystem"
           class="text-caption text-medium-emphasis mb-4"
           data-test="ssh-identity-service"
         >
-          This device serves SSH through its <strong>SYSTEM service</strong>.
-          <strong>The signed-in user</strong> is whoever is at its console, and a
-          session is refused while nobody is; it is the least surprising choice on
-          a workstation. <strong>The daemon account</strong> is
-          <strong>SYSTEM</strong>: choosing it grants full control of this device.
+          <i18n-t keypath="mh.sshp.idService" tag="span" scope="global">
+            <template #service><strong>{{ t('mh.sshp.systemService') }}</strong></template>
+            <template #signedIn><strong>{{ t('mh.sshp.signedIn') }}</strong></template>
+            <template #daemon><strong>{{ t('mh.sshp.daemon') }}</strong></template>
+            <template #system><strong>SYSTEM</strong></template>
+          </i18n-t>
         </div>
         <div
           v-else-if="isWindows"
           class="text-caption text-medium-emphasis mb-4"
           data-test="ssh-identity-agent"
         >
-          <strong>The daemon account</strong> is the agent's own: <strong>SYSTEM</strong>
-          on a service install, but <strong>the signed-in user</strong> on an attended
-          one. <strong>The signed-in user</strong> works on a service install; an
-          attended install serves it only through the device's SYSTEM service, which
-          an administrator turns on there with <code>roomlerd anchor ssh system</code>.
+          <i18n-t keypath="mh.sshp.idAgent" tag="span" scope="global">
+            <template #daemon><strong>{{ t('mh.sshp.daemon') }}</strong></template>
+            <template #system><strong>SYSTEM</strong></template>
+            <template #signedInLower><strong>{{ t('mh.sshp.signedInLower') }}</strong></template>
+            <template #signedIn><strong>{{ t('mh.sshp.signedIn') }}</strong></template>
+            <template #cmd><code>roomlerd anchor ssh system</code></template>
+          </i18n-t>
         </div>
         <div v-else class="text-caption text-medium-emphasis mb-4" data-test="ssh-identity-unix">
-          <strong>A named account</strong> is the least surprising choice on a server.
+          <i18n-t keypath="mh.sshp.idUnixNamed" tag="span" scope="global">
+            <template #named><strong>{{ t('mh.sshp.namedAccount') }}</strong></template>
+          </i18n-t>
           <template v-if="offersConsoleUser">
-            <strong>The person at the device's screen</strong> is whoever is signed in
-            at its own screen, and a session is refused while nobody is.
+            <i18n-t keypath="mh.sshp.idUnixPerson" tag="span" scope="global">
+              <template #person><strong>{{ t('mh.exec.runAsPerson') }}</strong></template>
+            </i18n-t>
           </template>
-          <strong>The daemon account</strong> means <strong>root</strong> — choosing it
-          grants root on this device.
+          <i18n-t keypath="mh.sshp.idUnixDaemon" tag="span" scope="global">
+            <template #daemon><strong>{{ t('mh.sshp.daemon') }}</strong></template>
+            <template #root><strong>root</strong></template>
+          </i18n-t>
           <template v-if="!offersConsoleUser">
-            "The person at the device's screen" needs a newer agent on this device.
+            {{ t('mh.sshp.personNeedsNewer') }}
           </template>
         </div>
 
         <v-text-field
           v-if="draft.account_mode === 'named'"
           v-model="namedAccount"
-          label="Account name"
+          :label="t('mh.sshp.accountName')"
           density="compact"
           variant="outlined"
           class="mb-1"
           hide-details
-          placeholder="e.g. deploy"
+          :placeholder="t('mh.sshp.accountPlaceholder')"
         />
         <div v-if="draft.account_mode === 'named'" class="text-caption text-medium-emphasis mb-4">
-          Unix only — a Windows device refuses this mode rather than quietly
-          falling back to another account.
+          {{ t('mh.sshp.unixOnly') }}
         </div>
 
         <v-select
           v-model="draft.consent_mode"
           :items="consentOptions"
-          label="Consent"
+          :label="t('mh.policy.label.consent')"
           density="compact"
           variant="outlined"
           class="mt-4"
           hide-details
         />
         <div class="text-caption text-medium-emphasis mb-4">
-          <strong>Prompt</strong> asks whoever is at the device and denies
-          after 30 s of silence — right for workstations.
-          <strong>Unattended</strong> opens immediately — right for servers
-          with nobody sitting at them. A denied prompt burns the grant, so the
-          caller must request a new one rather than re-dialling.
+          <i18n-t keypath="mh.sshp.consentHint" tag="span" scope="global">
+            <template #prompt><strong>{{ t('mh.exec.prompt') }}</strong></template>
+            <template #unattended><strong>{{ t('mh.exec.unattended') }}</strong></template>
+          </i18n-t>
         </div>
 
         <v-select
           v-model="draft.allowed_user_ids"
           :items="memberOptions"
-          label="Restrict to these users (empty = anyone with the permission)"
+          :label="t('mh.exec.users')"
           density="compact"
           variant="outlined"
           multiple
@@ -158,15 +162,12 @@
           density="compact"
           class="mt-4"
         >
-          SSH is switched off for the whole organization, so this device will
-          still refuse. An org owner enables it in Settings. It is a separate
-          switch from remote execution.
+          {{ t('mh.sshp.orgOff') }}
         </v-alert>
         <v-alert type="info" variant="tonal" density="compact" class="mt-4">
-          The device itself must also allow it:
-          <code>roomler config set ssh_enabled true</code> on the host, then
-          restart the service. That switch belongs to whoever holds the machine
-          and cannot be set from here.
+          <i18n-t keypath="mh.exec.deviceSwitch" tag="span" scope="global">
+            <template #cmd><code>roomler config set ssh_enabled true</code></template>
+          </i18n-t>
         </v-alert>
 
         <v-alert
@@ -182,8 +183,8 @@
 
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="close">Cancel</v-btn>
-        <v-btn color="primary" :loading="saving" @click="save">Save</v-btn>
+        <v-btn variant="text" @click="close">{{ t('common.cancel') }}</v-btn>
+        <v-btn color="primary" :loading="saving" @click="save">{{ t('common.save') }}</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -191,6 +192,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import { deviceLabel } from '@/composables/useHideDeviceName'
 import { useAgentStore, type Agent, type SshPolicy } from '@/stores/agents'
@@ -207,6 +209,7 @@ const emit = defineEmits<{
   (e: 'saved'): void
 }>()
 
+const { t } = useI18n()
 const { fullscreen } = useResponsiveDialog()
 const open = computed({
   get: () => props.modelValue,
@@ -284,28 +287,26 @@ const accountOptions = computed(() => [
   ...(offersConsoleUser.value
     ? [
         {
-          title: isWindows.value
-            ? 'The signed-in user at the device'
-            : "The person at the device's screen",
+          title: isWindows.value ? t('mh.sshp.opt.signedIn') : t('mh.exec.opt.person'),
           value: 'console_user',
         },
       ]
     : []),
   {
     title: !isWindows.value
-      ? 'The daemon account (root)'
+      ? t('mh.sshp.opt.daemonRoot')
       : servedBySystem.value
-        ? 'The daemon account (SYSTEM)'
-        : "The daemon account (the agent's own)",
+        ? t('mh.sshp.opt.daemonSystem')
+        : t('mh.sshp.opt.daemonAgent'),
     value: 'daemon',
   },
-  { title: 'A named Unix account…', value: 'named' },
+  { title: t('mh.sshp.opt.named'), value: 'named' },
 ])
 
-const consentOptions = [
-  { title: 'Prompt at the device (recommended)', value: null },
-  { title: 'Unattended — open immediately', value: 'auto' },
-]
+const consentOptions = computed(() => [
+  { title: t('mh.exec.consent.prompt'), value: null },
+  { title: t('mh.sshp.consentAuto'), value: 'auto' },
+])
 
 const memberOptions = computed(() =>
   agentStore.tenantMembers.map((m) => ({
@@ -349,7 +350,7 @@ async function save() {
     // The server refuses a prompt policy for an agent that would ignore it
     // (pre-P5d). Surfacing that here rather than closing is the point: the
     // admin must not walk away believing a prompt is enforced.
-    error.value = e instanceof Error ? e.message : 'Could not save the policy.'
+    error.value = e instanceof Error ? e.message : t('mh.ext.saveFailed')
   } finally {
     saving.value = false
   }

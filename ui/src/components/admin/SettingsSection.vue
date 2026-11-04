@@ -8,15 +8,15 @@
     :class="{ 'd-flex flex-column ga-4': !xs }"
     :multiple="xs || undefined"
   >
-    <SettingsGate title="Workspace Settings" :summary="tenantStore.current?.name ?? ''">
+    <SettingsGate :title="t('mh.settings.workspace')" :summary="tenantStore.current?.name ?? ''">
       <v-text-field
         :model-value="tenantStore.current?.name"
-        label="Workspace Name"
+        :label="t('mh.settings.workspaceName')"
         disabled
       />
       <v-text-field
         :model-value="tenantStore.current?.slug"
-        label="Slug"
+        :label="t('mh.settings.slug')"
         disabled
       />
     </SettingsGate>
@@ -25,7 +25,7 @@
          this one switch governs every device in the org, so it belongs with
          org settings and needs MANAGE_TENANT, not fleet-admin rights. -->
     <SettingsGate
-      title="Remote command execution"
+      :title="t('mh.settings.exec.title')"
       icon="mdi-console-network-outline"
       :summary="onOff(agentStore.orgExecEnabled)"
     >
@@ -36,14 +36,12 @@
         class="mb-4"
         icon="mdi-shield-alert-outline"
       >
-        When enabled, users holding the <strong>EXEC_DEVICE</strong>
-        permission can run commands on devices that individually opt in.
-        Commands run as <strong>root</strong> (Linux) or, on Windows, as
-        <strong>SYSTEM</strong> through the device's service once an
-        administrator has anchored it. A Windows device that is not anchored
-        runs them as the <strong>signed-in user</strong> on an attended
-        install, and as SYSTEM in SystemContext mode. They are all recorded in
-        the audit log.
+        <i18n-t keypath="mh.settings.exec.warn" tag="span" scope="global">
+          <template #perm><strong>EXEC_DEVICE</strong></template>
+          <template #root><strong>root</strong></template>
+          <template #system><strong>SYSTEM</strong></template>
+          <template #user><strong>{{ t('mh.settings.exec.signedInUser') }}</strong></template>
+        </i18n-t>
       </v-alert>
 
       <v-switch
@@ -53,13 +51,13 @@
         color="primary"
         density="compact"
         hide-details
-        label="Allow remote command execution in this organization"
+        :label="t('mh.settings.exec.allow')"
         @update:model-value="onToggle"
       />
       <div class="text-caption text-medium-emphasis mt-1">
-        Off by default. Turning it on does not enable any device on its own —
-        each device must also be allowed individually, and the device's own
-        <code>exec_enabled</code> setting must permit it.
+        <i18n-t keypath="mh.settings.offDeviceGate" tag="span" scope="global">
+          <template #setting><code>exec_enabled</code></template>
+        </i18n-t>
       </div>
 
       <v-alert v-if="error" type="error" variant="tonal" density="compact" class="mt-3">
@@ -77,15 +75,14 @@
           density="compact"
           hide-details
           class="mt-4"
-          label="Windows: require SYSTEM"
+          :label="t('mh.settings.exec.requireSystem')"
           data-testid="exec-require-system"
           @update:model-value="onToggleRequireSystem"
         />
         <div class="text-caption text-medium-emphasis mt-1">
-          A Windows device runs commands as SYSTEM once an administrator has
-          anchored it (<code>roomlerd anchor create</code>, elevated). With
-          this on, a device that is not anchored refuses commands instead of
-          running them as whoever is signed in.
+          <i18n-t keypath="mh.settings.exec.requireSystemHint" tag="span" scope="global">
+            <template #cmd><code>roomlerd anchor create</code></template>
+          </i18n-t>
         </div>
         <v-alert
           v-if="requireError"
@@ -104,7 +101,7 @@
          is not the same decision as allowing interactive sessions, and one
          control must never read as the other. -->
     <SettingsGate
-      title="Roomler SSH"
+      :title="t('mh.settings.ssh.title')"
       icon="mdi-console-network-outline"
       :summary="onOff(agentStore.orgSshEnabled)"
     >
@@ -115,10 +112,9 @@
         class="mb-4"
         icon="mdi-shield-alert-outline"
       >
-        When enabled, users holding the <strong>SSH_DEVICE</strong>
-        permission can open an interactive shell on devices that
-        individually opt in. A session lasts, unlike a single command — and
-        which account it runs as is set per device.
+        <i18n-t keypath="mh.settings.ssh.warn" tag="span" scope="global">
+          <template #perm><strong>SSH_DEVICE</strong></template>
+        </i18n-t>
       </v-alert>
 
       <v-switch
@@ -128,13 +124,13 @@
         color="primary"
         density="compact"
         hide-details
-        label="Allow SSH sessions in this organization"
+        :label="t('mh.settings.ssh.allow')"
         @update:model-value="onToggleSsh"
       />
       <div class="text-caption text-medium-emphasis mt-1">
-        Off by default. Turning it on does not enable any device on its own —
-        each device must also be allowed individually, and the device's own
-        <code>ssh_enabled</code> setting must permit it.
+        <i18n-t keypath="mh.settings.offDeviceGate" tag="span" scope="global">
+          <template #setting><code>ssh_enabled</code></template>
+        </i18n-t>
       </div>
 
       <v-alert v-if="sshError" type="error" variant="tonal" density="compact" class="mt-3">
@@ -147,7 +143,7 @@
          what a MEMBER of this organization may do, and this one decides
          whether someone who is not a member may do anything at all. -->
     <SettingsGate
-      title="External access"
+      :title="t('mh.settings.ext.title')"
       icon="mdi-account-arrow-right-outline"
       :summary="onOff(agentStore.orgExternalAccessEnabled)"
     >
@@ -158,11 +154,10 @@
         class="mb-4"
         icon="mdi-shield-account-outline"
       >
-        When enabled, people <strong>outside this organization</strong> can
-        control devices that individually opt in — the way a support
-        technician reaches a machine they do not administer. They need the
-        device's connect code and a password held
-        <strong>on the device itself</strong>, which this server never sees.
+        <i18n-t keypath="mh.settings.ext.warn" tag="span" scope="global">
+          <template #outside><strong>{{ t('mh.settings.ext.outside') }}</strong></template>
+          <template #onDevice><strong>{{ t('mh.settings.ext.onDevice') }}</strong></template>
+        </i18n-t>
       </v-alert>
 
       <v-switch
@@ -172,14 +167,11 @@
         color="primary"
         density="compact"
         hide-details
-        label="Allow people outside this organization to control devices"
+        :label="t('mh.settings.ext.allow')"
         @update:model-value="onToggleExternal"
       />
       <div class="text-caption text-medium-emphasis mt-1">
-        Off by default, and turning it on opens nothing by itself. Each
-        device must be approved individually, its owner must enable it on
-        the machine and set a password there, and whoever is at the device
-        is still asked before a session starts.
+        {{ t('mh.settings.ext.hint') }}
       </div>
 
       <v-alert v-if="externalError" type="error" variant="tonal" density="compact" class="mt-3">
@@ -192,15 +184,13 @@
          "allow" so on reads as on. The device enforces it; a deny also stops
          a keep busy already running. -->
     <SettingsGate
-      title="Keep busy"
+      :title="t('mh.settings.kb.title')"
       icon="mdi-cursor-default-gesture-outline"
       :summary="keepBusySummary"
       data-testid="org-keep-busy-card"
     >
       <p class="text-body-2 mb-3">
-        A controller with input can leave a device's pointer moving in a pattern so it stays
-        active: no screensaver, idle lock or "Away". It pauses whenever someone uses the
-        device. Some organizations do not allow this because it defeats a screen-lock policy.
+        {{ t('mh.settings.kb.body') }}
       </p>
       <v-switch
         :model-value="agentStore.orgKeepBusyDenied === false"
@@ -209,14 +199,14 @@
         color="primary"
         density="compact"
         hide-details
-        label="Allow keep busy in this organization"
+        :label="t('mh.settings.kb.allow')"
         data-testid="org-keep-busy-switch"
         @update:model-value="onToggleKeepBusy"
       />
       <div class="text-caption text-medium-emphasis mt-1">
-        On by default. Turning it off stops keep busy on every device in the organization,
-        immediately for devices that are online and at the next connect for the rest. A
-        device's owner can also turn it off on that device (<code>keep_busy_enabled</code>).
+        <i18n-t keypath="mh.settings.kb.hint" tag="span" scope="global">
+          <template #setting><code>keep_busy_enabled</code></template>
+        </i18n-t>
       </div>
 
       <!-- FR-92 P8 — the org's default pattern. A preference, never a
@@ -254,22 +244,21 @@
          setting wins, and the device enforces it whatever the server sends.
          A change applies to sessions that start after it. -->
     <SettingsGate
-      title="Remote session features"
+      :title="t('mh.settings.rc.title')"
       icon="mdi-shield-lock-outline"
       :summary="rcFeaturesSummary"
       data-testid="org-rc-session-card"
     >
       <p class="text-body-2 mb-3">
-        Choose what a remote-desktop session in this organization may use. <strong>Ask</strong>
-        allows a feature only when the person at the device approves the session on a prompt
-        that names it; a session nobody there is asked about (an unattended device, your own
-        device, an administrator's forced session) goes without it.
+        <i18n-t keypath="mh.settings.rc.body" tag="span" scope="global">
+          <template #ask><strong>{{ t('mh.settings.rc.askWord') }}</strong></template>
+        </i18n-t>
       </p>
       <v-select
-        v-for="f in rcFeatureRows"
+        v-for="f in rcFeatureRows()"
         :key="f.key"
         :model-value="agentStore.orgRcSessionPolicy?.[f.key] ?? null"
-        :items="rcPolicyItems"
+        :items="rcPolicyItems()"
         :label="f.label"
         :loading="savingRcFeature === f.key"
         :disabled="savingRcFeature !== null || agentStore.orgRcSessionPolicy === null"
@@ -281,9 +270,11 @@
         @update:model-value="(v: RcFeaturePolicy | null) => onRcFeature(f.key, v)"
       />
       <div class="text-caption text-medium-emphasis mt-1">
-        On by default. A device's owner can also turn each one off on that device
-        (<code>rc_clipboard</code>, <code>rc_files</code>, <code>rc_audio</code>). A change applies
-        to sessions that start after it.
+        <i18n-t keypath="mh.settings.rc.hint" tag="span" scope="global">
+          <template #a><code>rc_clipboard</code></template>
+          <template #b><code>rc_files</code></template>
+          <template #c><code>rc_audio</code></template>
+        </i18n-t>
       </div>
       <v-alert v-if="rcSessionError" type="error" variant="tonal" density="compact" class="mt-3">
         {{ rcSessionError }}
@@ -294,7 +285,7 @@
          two above: a standing credential that mints device identities is its
          own grant, not an implication of exec or SSH. -->
     <SettingsGate
-      title="Ephemeral enrollment keys"
+      :title="t('mh.settings.keys.title')"
       icon="mdi-clock-fast"
       :summary="onOff(agentStore.orgEphemeralKeysEnabled)"
     >
@@ -305,11 +296,10 @@
         class="mb-4"
         icon="mdi-shield-alert-outline"
       >
-        When enabled, fleet admins can mint <strong>reusable</strong>
-        enrollment keys that create <strong>self-removing</strong> devices
-        (CI runners, containers). A key is a standing credential: anyone
-        holding it can enroll devices into this organization until it is
-        revoked, exhausted, or expired.
+        <i18n-t keypath="mh.settings.keys.warn" tag="span" scope="global">
+          <template #reusable><strong>{{ t('mh.settings.keys.reusable') }}</strong></template>
+          <template #selfRemoving><strong>{{ t('mh.settings.keys.selfRemoving') }}</strong></template>
+        </i18n-t>
       </v-alert>
 
       <v-switch
@@ -319,13 +309,11 @@
         color="primary"
         density="compact"
         hide-details
-        label="Allow ephemeral enrollment keys in this organization"
+        :label="t('mh.settings.keys.allow')"
         @update:model-value="onToggleKeys"
       />
       <div class="text-caption text-medium-emphasis mt-1">
-        Off by default. Turning it OFF is an org-wide revocation: every
-        outstanding key stops working on its next use. Devices already
-        minted are untouched — they remove themselves by their own deadline.
+        {{ t('mh.settings.keys.hint') }}
       </div>
 
       <v-alert v-if="keysError" type="error" variant="tonal" density="compact" class="mt-3">
@@ -337,7 +325,7 @@
          The hub ends a session that reaches it (the viewer is told which limit
          it was). Off for existing organizations (operator decision). -->
     <SettingsGate
-      title="Remote session limits"
+      :title="t('mh.settings.lim.title')"
       icon="mdi-timer-sand"
       :summary="limitsSummary"
       data-testid="org-rc-limits-card"
@@ -345,7 +333,7 @@
       <v-select
         :model-value="agentStore.orgRcMaxSessionSecs === undefined ? null : agentStore.orgRcMaxSessionSecs ?? 0"
         :items="maxSessionOptions()"
-        label="Maximum session length"
+        :label="t('mh.settings.lim.max')"
         :loading="savingMaxSession"
         :disabled="savingMaxSession || agentStore.orgRcMaxSessionSecs === undefined"
         density="compact"
@@ -355,8 +343,7 @@
         @update:model-value="onMaxSession"
       />
       <div class="text-caption text-medium-emphasis mt-1">
-        A session ends this long after it started, and the person controlling it is told why.
-        No limit by default. A change applies to sessions that start after it.
+        {{ t('mh.settings.lim.maxHint') }}
       </div>
       <v-alert v-if="maxSessionError" type="error" variant="tonal" density="compact" class="mt-3">
         {{ maxSessionError }}
@@ -367,7 +354,7 @@
       <v-select
         :model-value="agentStore.orgRcIdleSecs === undefined ? null : agentStore.orgRcIdleSecs ?? 0"
         :items="idleOptions()"
-        label="End a session after no activity for"
+        :label="t('mh.settings.lim.idle')"
         :loading="savingIdle"
         :disabled="savingIdle || agentStore.orgRcIdleSecs === undefined"
         density="compact"
@@ -378,9 +365,7 @@
         @update:model-value="onIdle"
       />
       <div class="text-caption text-medium-emphasis mt-1">
-        No input from the person controlling it and no change on the screen for this long. They
-        are warned shortly before the end. The device keeps this limit, so a device whose agent
-        predates it does not. No limit by default.
+        {{ t('mh.settings.lim.idleHint') }}
       </div>
       <v-alert v-if="idleError" type="error" variant="tonal" density="compact" class="mt-3">
         {{ idleError }}
@@ -511,15 +496,15 @@ async function onDefaultPattern(pattern: string | null) {
 
 // FR-101 P2 — the org's session policy, one select per feature. Its own error,
 // and the feature being saved, so a failure never renders under another card.
-const rcFeatureRows: { key: keyof RcSessionPolicy; label: string; short: string }[] = [
-  { key: 'clipboard', label: 'Clipboard', short: 'Clipboard' },
-  { key: 'files', label: 'File transfer', short: 'Files' },
-  { key: 'audio', label: "The device's audio", short: 'Audio' },
+const rcFeatureRows = (): { key: keyof RcSessionPolicy; label: string; short: string }[] => [
+  { key: 'clipboard', label: t('mh.settings.rc.clipboard'), short: t('mh.settings.rc.clipboard') },
+  { key: 'files', label: t('mh.settings.rc.fileTransfer'), short: t('mh.settings.rc.files') },
+  { key: 'audio', label: t('mh.settings.rc.audio'), short: t('mh.settings.rc.audioShort') },
 ]
-const rcPolicyItems: { title: string; value: RcFeaturePolicy }[] = [
-  { title: 'On', value: 'on' },
-  { title: 'Ask the person at the device', value: 'ask' },
-  { title: 'Off', value: 'off' },
+const rcPolicyItems = (): { title: string; value: RcFeaturePolicy }[] => [
+  { title: t('mh.settings.rc.on'), value: 'on' },
+  { title: t('mh.settings.rc.ask'), value: 'ask' },
+  { title: t('mh.settings.rc.off'), value: 'off' },
 ]
 const savingRcFeature = ref<keyof RcSessionPolicy | null>(null)
 const rcSessionError = ref<string | null>(null)
@@ -555,23 +540,26 @@ async function onToggleKeys(v: boolean | null) {
 
 // FR-101 P4b — the maximum session length. `0` in the select is "no limit"
 // (sent as `null`); the stored value is seconds.
-const maxSessionItems: { title: string; value: number }[] = [
-  { title: 'No limit', value: 0 },
-  { title: '30 minutes', value: 30 * 60 },
-  { title: '1 hour', value: 60 * 60 },
-  { title: '2 hours', value: 2 * 60 * 60 },
-  { title: '4 hours', value: 4 * 60 * 60 },
-  { title: '8 hours', value: 8 * 60 * 60 },
-  { title: '24 hours', value: 24 * 60 * 60 },
-]
+/** A preset duration's label, in the interface language. */
+function durationLabel(secs: number): string {
+  if (secs === 0) return t('mh.settings.lim.none')
+  if (secs === 60 * 60) return t('mh.settings.lim.hour')
+  if (secs % 3600 === 0) return t('mh.settings.lim.hours', { n: secs / 3600 })
+  return t('mh.settings.lim.minutes', { n: Math.round(secs / 60) })
+}
+const presets = (values: number[]): { title: string; value: number }[] =>
+  values.map((value) => ({ title: durationLabel(value), value }))
+const maxSessionItems = (): { title: string; value: number }[] =>
+  presets([0, 30 * 60, 60 * 60, 2 * 60 * 60, 4 * 60 * 60, 8 * 60 * 60, 24 * 60 * 60])
 /** The presets, plus the stored value when it is none of them (set through
  *  the API), so the select never shows blank for a limit that is in force. */
 function maxSessionOptions(): { title: string; value: number }[] {
   const cur = agentStore.orgRcMaxSessionSecs
-  if (typeof cur === 'number' && cur > 0 && !maxSessionItems.some((i) => i.value === cur)) {
-    return [...maxSessionItems, { title: `${Math.round(cur / 60)} minutes`, value: cur }]
+  const items = maxSessionItems()
+  if (typeof cur === 'number' && cur > 0 && !items.some((i) => i.value === cur)) {
+    return [...items, { title: t('mh.settings.lim.minutes', { n: Math.round(cur / 60) }), value: cur }]
   }
-  return maxSessionItems
+  return items
 }
 const savingMaxSession = ref(false)
 const maxSessionError = ref<string | null>(null)
@@ -590,20 +578,15 @@ async function onMaxSession(secs: number | null) {
 }
 
 // FR-101 P4b-2 — the idle limit, the same way: `0` is "no limit".
-const idleItems: { title: string; value: number }[] = [
-  { title: 'No limit', value: 0 },
-  { title: '5 minutes', value: 5 * 60 },
-  { title: '15 minutes', value: 15 * 60 },
-  { title: '30 minutes', value: 30 * 60 },
-  { title: '1 hour', value: 60 * 60 },
-  { title: '2 hours', value: 2 * 60 * 60 },
-]
+const idleItems = (): { title: string; value: number }[] =>
+  presets([0, 5 * 60, 15 * 60, 30 * 60, 60 * 60, 2 * 60 * 60])
 function idleOptions(): { title: string; value: number }[] {
   const cur = agentStore.orgRcIdleSecs
-  if (typeof cur === 'number' && cur > 0 && !idleItems.some((i) => i.value === cur)) {
-    return [...idleItems, { title: `${Math.round(cur / 60)} minutes`, value: cur }]
+  const items = idleItems()
+  if (typeof cur === 'number' && cur > 0 && !items.some((i) => i.value === cur)) {
+    return [...items, { title: t('mh.settings.lim.minutes', { n: Math.round(cur / 60) }), value: cur }]
   }
-  return idleItems
+  return items
 }
 const savingIdle = ref(false)
 const idleError = ref<string | null>(null)
@@ -624,7 +607,7 @@ async function onIdle(secs: number | null) {
 // FR-116 — each gate's state, for its collapsed panel on a phone. Empty while
 // it is unknown: not loaded yet, or not readable with the caller's rights.
 function onOff(v: boolean | null): string {
-  return v === null ? '' : v ? 'On' : 'Off'
+  return v === null ? '' : v ? t('mh.settings.rc.on') : t('mh.settings.rc.off')
 }
 /** A multi-part summary wraps only between parts ("Files: ask · Audio: off"),
  *  never inside one. */
@@ -632,15 +615,15 @@ function joinParts(parts: string[]): string {
   return parts.map((p) => p.replace(/ /g, ' ')).join(' · ')
 }
 const keepBusySummary = computed(() =>
-  agentStore.orgKeepBusyDenied === null ? '' : agentStore.orgKeepBusyDenied ? 'Not allowed' : 'Allowed',
+  agentStore.orgKeepBusyDenied === null ? '' : agentStore.orgKeepBusyDenied ? t('mh.settings.kb.notAllowed') : t('mh.settings.kb.allowed'),
 )
 const rcFeaturesSummary = computed(() => {
   const p = agentStore.orgRcSessionPolicy
   if (!p) return ''
-  const limited = rcFeatureRows
+  const limited = rcFeatureRows()
     .filter((f) => p[f.key] === 'ask' || p[f.key] === 'off')
-    .map((f) => `${f.short}: ${p[f.key]}`)
-  return limited.length ? joinParts(limited) : 'All on'
+    .map((f) => `${f.short}: ${t(`mh.settings.rc.pol.${p[f.key]}`)}`)
+  return limited.length ? joinParts(limited) : t('mh.settings.rc.allOn')
 })
 const limitsSummary = computed(() => {
   const max = agentStore.orgRcMaxSessionSecs
@@ -648,12 +631,12 @@ const limitsSummary = computed(() => {
   if (max === undefined && idle === undefined) return ''
   const parts: string[] = []
   if (typeof max === 'number' && max > 0) {
-    parts.push(`${maxSessionOptions().find((i) => i.value === max)?.title} max`)
+    parts.push(t('mh.settings.lim.maxPart', { d: maxSessionOptions().find((i) => i.value === max)?.title }))
   }
   if (typeof idle === 'number' && idle > 0) {
-    parts.push(`${idleOptions().find((i) => i.value === idle)?.title} idle`)
+    parts.push(t('mh.settings.lim.idlePart', { d: idleOptions().find((i) => i.value === idle)?.title }))
   }
-  return parts.length ? joinParts(parts) : 'No limits'
+  return parts.length ? joinParts(parts) : t('mh.settings.lim.noLimits')
 })
 
 onMounted(() => {

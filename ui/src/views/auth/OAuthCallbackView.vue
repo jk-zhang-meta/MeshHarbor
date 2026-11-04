@@ -8,7 +8,7 @@
         <v-alert v-else type="error" class="mt-4">
           {{ error }}
           <template #append>
-            <v-btn variant="text" to="/login">Back to login</v-btn>
+            <v-btn variant="text" to="/login">{{ t('mh.oauth.back') }}</v-btn>
           </template>
         </v-alert>
       </v-col>
@@ -23,6 +23,9 @@ import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useWsStore } from '@/stores/ws'
 import { isOAuthSignup, trackGoal } from '@/utils/goals'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const router = useRouter()
 const route = useRoute()
@@ -60,7 +63,7 @@ onMounted(async () => {
     .then((r) => r.ok)
     .catch(() => false)
   if (!sessionOk) {
-    error.value = 'Failed to complete OAuth login'
+    error.value = t('mh.oauth.failed')
     auth.forgetLocalSession()
     return
   }
@@ -92,7 +95,7 @@ onMounted(async () => {
       router.push({ name: 'dashboard' })
     }
   } catch {
-    error.value = 'Failed to complete OAuth login'
+    error.value = t('mh.oauth.failed')
     auth.forgetLocalSession()
   }
 })

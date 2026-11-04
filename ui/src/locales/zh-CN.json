@@ -1,0 +1,2419 @@
+{
+  "app": {
+    "name": "MeshHarbor · 织港"
+  },
+  "remote": {
+    "codec": {
+      "label": "编码器",
+      "chromaLabel": "色彩细节",
+      "appliesNext": "下次连接时生效",
+      "codecs": {
+        "auto": "自动（推荐）",
+        "av1": "AV1",
+        "hevc": "HEVC (H.265)",
+        "vp9": "VP9",
+        "h264": "H.264"
+      },
+      "chromas": {
+        "auto": "自动（随优先级）",
+        "yuv420": "标准 (4:2:0)",
+        "yuv444": "清晰文字 (4:4:4)"
+      },
+      "reason": {
+        "auto": "连接时为此设备和浏览器挑选最佳编码器",
+        "autoChroma": "两端都支持时，“更清晰”会使用完整色彩细节",
+        "chroma420": "色彩为四分之一分辨率，是视频默认格式，处处可解码",
+        "av1": "同码率下画质最佳，需要两端都有硬件支持",
+        "browserNoAv1": "此浏览器无法解码 AV1",
+        "agentNoAv1": "此设备没有 AV1 硬件编码器",
+        "av1NoHw444": "没有硬件编码器能输出 4:4:4 的 AV1",
+        "hevc": "设备上的硬件 H.265（NVENC / QSV / AMF / VideoToolbox / VAAPI / D3D12 / Vulkan）",
+        "hevc444": "硬件管线上文字最清晰，码率约为 1.5 倍",
+        "browserNoHevc": "此浏览器没有硬件 HEVC 解码器",
+        "browserNoHevcRext": "此浏览器无法解码 HEVC 4:4:4（需要 Chrome ≥137 加 NVIDIA 驱动 ≥572.16，或 Intel Gen11+）",
+        "agentNoHevc": "此设备没有 HEVC 编码器",
+        "agentNoHevc444": "此设备没有 HEVC 4:4:4 编码器（目前仅 NVENC 支持）",
+        "vp9420": "码率更低，处处可解码",
+        "vp9444": "文字最清晰，码率约为 1.5 倍，软件解码",
+        "browserNoVp9": "此浏览器无法解码 VP9 profile 1",
+        "agentNoVp9": "此设备没有 VP9 编码器",
+        "h264": "处处可用，文字较模糊",
+        "h264444": "通过 H.264 High 4:4:4 获得最清晰的文字，硬件编码、软件解码",
+        "browserNoH264High444": "此浏览器无法解码 H.264 High 4:4:4",
+        "agentNoH264_444": "此设备没有 H.264 4:4:4 编码器（目前仅 NVENC 支持）",
+        "vp9444hw": "文字最清晰，码率约为 1.5 倍，硬件编码（Intel）、软件解码",
+        "failedBefore": "此前在这个浏览器上解码失败；浏览器或驱动更新后会重试",
+        "no444Anywhere": "此设备和浏览器没有可用的 4:4:4 组合",
+        "no420Anywhere": "这里没有可解码的格式"
+      }
+    },
+    "session": {
+      "endedByHost": {
+        "title": "设备前的用户结束了会话。",
+        "body": "对方在自己的屏幕上结束了会话（断开连接，或桌面自带的“停止共享屏幕”），因此此查看器保持断开。重新连接会像任何新会话一样再次征求对方同意。",
+        "reconnect": "重新连接"
+      },
+      "rating": {
+        "question": "这次会话体验如何？",
+        "thumbsUp": "好",
+        "thumbsDown": "不好",
+        "dismiss": "以后再说",
+        "hint": "可选：哪里不对？",
+        "send": "发送",
+        "thanks": "谢谢，已记录。",
+        "reasons": {
+          "lag": "卡顿",
+          "picture": "画面",
+          "input": "鼠标或键盘",
+          "could_not_connect": "无法连接",
+          "other": "其他"
+        }
+      }
+    }
+  },
+  "auth": {
+    "login": "登录",
+    "orLoginWith": "或使用以下方式登录",
+    "register": "注册",
+    "logout": "退出登录",
+    "email": "邮箱",
+    "password": "密码",
+    "username": "用户名",
+    "displayName": "显示名称",
+    "forgotPassword": "忘记密码？",
+    "noAccount": "还没有账号？",
+    "hasAccount": "已有账号？",
+    "orRegisterWith": "或使用以下方式注册",
+    "heardAbout": "你是从哪里了解到 MeshHarbor 的？",
+    "heardAboutHint": "可选。这能帮我们了解哪些渠道有效。",
+    "heardAboutOptions": {
+      "search": "搜索引擎",
+      "youtube": "YouTube",
+      "tiktok": "TikTok",
+      "instagram": "Instagram",
+      "facebook": "Facebook",
+      "reddit": "Reddit",
+      "hacker_news": "Hacker News",
+      "friend": "朋友或同事",
+      "other": "其他"
+    }
+  },
+  "nav": {
+    "dashboard": "概览",
+    "devices": "设备",
+    "agentSessions": "智能体会话",
+    "agentMemory": "智能体记忆",
+    "agentCopies": "智能体副本",
+    "network": "网络",
+    "tunnelAcl": "访问控制（ACL）",
+    "subnetRoutes": "叠加网络路由",
+    "magicDns": "MagicDNS",
+    "netInventory": "网络清单",
+    "managedForwards": "托管转发",
+    "serverTopology": "服务器拓扑",
+    "analytics": "统计分析",
+    "observability": "可观测性",
+    "growth": "增长",
+    "collaboration": "协作",
+    "rooms": "房间",
+    "explore": "发现",
+    "files": "文件",
+    "invites": "邀请",
+    "tutorial": "使用教程",
+    "admin": "管理",
+    "settings": "设置",
+    "members": "成员",
+    "roles": "角色",
+    "billing": "账单",
+    "audit": "审计",
+    "execAudit": "命令审计",
+    "sshAudit": "SSH 审计",
+    "sshActivity": "SSH 活动"
+  },
+  "room": {
+    "create": "创建房间",
+    "name": "房间名称",
+    "private": "私有",
+    "open": "开放（公开）",
+    "hasMedia": "启用通话",
+    "join": "加入",
+    "leave": "离开",
+    "members": "成员",
+    "noMessages": "还没有消息。开始聊天吧！",
+    "parent": "上级房间（可选）",
+    "none": "无（根房间）",
+    "createChild": "创建子房间",
+    "startCall": "发起通话",
+    "callStarted": "{room} 中已发起通话",
+    "joinCall": "加入"
+  },
+  "message": {
+    "placeholder": "输入消息…",
+    "edit": "编辑",
+    "delete": "删除",
+    "pin": "置顶",
+    "unpin": "取消置顶",
+    "reply": "回复",
+    "thread": "话题"
+  },
+  "call": {
+    "start": "开始会议",
+    "join": "加入会议",
+    "leave": "离开",
+    "end": "结束会议",
+    "mute": "静音",
+    "unmute": "取消静音",
+    "videoOn": "打开摄像头",
+    "videoOff": "关闭摄像头",
+    "shareScreen": "共享屏幕",
+    "participants": "参会者",
+    "chat": "聊天",
+    "chatPlaceholder": "输入消息…",
+    "noChatMessages": "还没有消息",
+    "layout": "布局",
+    "layoutAuto": "自动",
+    "layoutTiled": "平铺",
+    "layoutSpotlight": "焦点",
+    "layoutSidebar": "侧边栏",
+    "tileCount": "画面数量",
+    "hideNonVideo": "隐藏未开视频的参会者",
+    "selfView": "自己的画面",
+    "selfViewCropped": "在网格中（裁剪）",
+    "selfViewUncropped": "在网格中（不裁剪）",
+    "selfViewFloating": "浮动",
+    "pin": "固定",
+    "unpin": "取消固定",
+    "pinLimit": "最多只能固定 6 个",
+    "pip": "画中画",
+    "files": "文件",
+    "noFiles": "还没有上传文件",
+    "uploadFile": "上传文件"
+  },
+  "files": {
+    "upload": "上传",
+    "download": "下载",
+    "delete": "删除",
+    "noFiles": "还没有上传文件。"
+  },
+  "common": {
+    "save": "保存",
+    "cancel": "取消",
+    "confirm": "确认",
+    "search": "搜索",
+    "loading": "加载中…",
+    "close": "关闭",
+    "loadMore": "加载更多",
+    "refresh": "刷新",
+    "yes": "是",
+    "no": "否"
+  },
+  "grid": {
+    "columns": "列",
+    "reset": "重置"
+  },
+  "vault": {
+    "approval": {
+      "status": {
+        "pending": "等待驱动者处理",
+        "approved": "已批准",
+        "denied": "已拒绝",
+        "used": "已批准并已使用",
+        "expired": "已过期",
+        "withdrawn": "已撤回",
+        "unknown": "审批"
+      },
+      "answerBy": "请在 {time} 前答复",
+      "approve": "批准",
+      "deny": "拒绝",
+      "notAccepted": "保险库策略不接受你对此次使用的批准"
+    }
+  },
+  "hive": {
+    "title": "智能体会话",
+    "stop": "停止",
+    "stopMirroring": "停止镜像",
+    "adopted": "已接管",
+    "adoptedExplain": "这是你在终端中运行的会话，只为你镜像到这里。它是只读的：没有人能从 MeshHarbor 向它发送提示。",
+    "empty": {
+      "title": "还没有智能体会话",
+      "body": "请在所有者已开启智能体会话（hive_enabled）的设备上启动一个。会话在那台设备上、以设备为你映射的账户运行，记录保存在设备上。"
+    },
+    "start": {
+      "button": "启动会话",
+      "title": "启动智能体会话",
+      "device": "设备",
+      "noDevices": "没有在线设备",
+      "folder": "设备上的文件夹",
+      "folderHint": "必须位于设备的某个 hive_roots 之内。",
+      "sessionTitle": "标题（可选）",
+      "submit": "启动",
+      "refused": "会话被拒绝：{reason}"
+    },
+    "state": {
+      "starting": "正在启动",
+      "idle": "空闲",
+      "running": "运行中",
+      "awaiting_approval": "需要审批",
+      "stopping": "正在停止",
+      "ended": "已结束",
+      "refused": "已拒绝",
+      "lost": "已丢失"
+    },
+    "viewer": {
+      "toggle": "显示会话记录",
+      "status": {
+        "idle": "未连接",
+        "opening": "正在请求设备…",
+        "connecting": "正在连接…",
+        "open": "来自设备的实时内容",
+        "openCopy": "正在读取副本",
+        "closed": "已断开",
+        "refused": "不可用"
+      },
+      "reconnect": "重新连接",
+      "loadEarlier": "加载更早内容",
+      "empty": "此会话还没有内容。",
+      "someone": "某人",
+      "inTerminal": "在终端中",
+      "thinking": "思考中",
+      "truncated": "输出已按设备上限截断，保留了开头和结尾。",
+      "turnDone": "本轮完成",
+      "turnError": "本轮因错误结束",
+      "started": "会话已启动：模型 {model}，目录 {cwd}",
+      "compacted": "智能体压缩了上下文。",
+      "checkpoint": "检查点 {n}：智能体的 {files} 中有 {changed} 发生变化",
+      "checkpointFolderCommitted": "文件夹已提交",
+      "checkpointFolderSame": "文件夹未变",
+      "checkpointFolderSkipped": "文件夹未保存（{why}）",
+      "unknownKind": "此版本无法显示的事件（{kind}）。",
+      "tool": {
+        "background": "在后台运行",
+        "replaceAll": "全部匹配处",
+        "unchanged": "未改动的行：{count}",
+        "tooLong": "内容太长，无法逐行比较。",
+        "before": "修改前",
+        "after": "修改后",
+        "writes": "写入行数：{count}",
+        "moreLines": "未显示的行：{count}",
+        "lines": "第 {from}–{to} 行",
+        "fromLine": "从第 {from} 行起",
+        "output": "输出 · 行数：{count}",
+        "subagent": "子智能体：{agent}",
+        "prompt": "它的指令",
+        "todo": {
+          "pending": "待办",
+          "in_progress": "进行中",
+          "completed": "已完成"
+        }
+      },
+      "askPlaceholder": "向智能体提问…",
+      "askFailed": "提示没有送达智能体。",
+      "readOnly": "你可以阅读此会话并在其房间中交流。只有驱动者可以向智能体发送提示。",
+      "adoptedReadOnly": "此会话在其设备的终端中运行，因此这里只读：没有人能从 MeshHarbor 向它发送提示。",
+      "copyReadOnly": "运行此会话的设备暂时无法提供内容，你正在阅读另一台设备保存的副本。副本只读：只有那台设备接受提示。",
+      "drivingRefused": "你是此会话的驱动者，但其设备不允许你在那里操作：{why}",
+      "approval": {
+        "asks": "{tool} 需要审批才能运行",
+        "allow": "允许",
+        "deny": "拒绝",
+        "denyPlaceholder": "为什么不允许？（可选，智能体会读到）",
+        "waiting": "正在等待会话的某位驱动者答复。",
+        "unanswered": "未答复。",
+        "allowed": "已由 {by} 允许",
+        "denied": "已由 {by} 拒绝",
+        "deniedWith": "已由 {by} 拒绝：{message}",
+        "expired": "无人及时答复，因此没有运行。",
+        "withdrawn": "在有人答复前已撤回。",
+        "other": "已结束：{outcome}",
+        "failed": "答复没有送达设备。"
+      }
+    },
+    "people": {
+      "button": "参与者",
+      "title": "谁参与此会话",
+      "explain": "驱动者向智能体发送提示并答复其审批请求。阅读者可以阅读会话并在其房间中交流，但他们写的内容不会送达智能体。只有会话所有者可以更改参与者。",
+      "role": {
+        "owner": "所有者",
+        "driver": "驱动者",
+        "reader": "阅读者"
+      },
+      "add": "从组织中添加成员",
+      "noMatch": "没有其他匹配的人",
+      "addReader": "添加为阅读者",
+      "addDriver": "添加为驱动者",
+      "remove": "将其移出会话",
+      "adoptedReadersOnly": "它在终端中运行，因此只能添加阅读者。"
+    },
+    "roomCopies": {
+      "button": "副本",
+      "title": "此会话的副本",
+      "explain": "下列每台设备都保存了此会话的副本（记录和检查点），因此在运行它的设备离线时，会话仍可阅读，也可以迁移。",
+      "someDevice": "你组织中的一台设备",
+      "runsIt": "运行中 · {n} 个事件",
+      "upToDate": "已同步 · {n} 个事件",
+      "behind": "落后 {k} 个事件 · 共 {n} 个事件",
+      "holds": "{n} 个事件",
+      "noTip": "尚未上报副本",
+      "role": {
+        "primary": "运行中",
+        "owner": "所有者的设备",
+        "archive": "归档副本",
+        "teleport": "正迁移到此"
+      },
+      "state": {
+        "pending": "正在加入",
+        "joined": "持有副本",
+        "refused": "已拒绝",
+        "leaving": "正在释放"
+      },
+      "short": {
+        "adopted": "从终端接管的会话只保存在运行它的设备上，不会复制到别处。",
+        "restricted": "副本少于策略要求：本应保存副本的设备缺少此会话限定的标签。",
+        "no_device": "副本少于策略要求：没有其他设备愿意保存副本。"
+      },
+      "moving": "正在迁移到 {device}：{step}。",
+      "step": {
+        "preparing": "设备正在准备",
+        "joining": "设备正在获取副本",
+        "draining": "当前运行它的设备正在完成本轮",
+        "syncing": "副本正在追赶",
+        "moving": "正在那里启动"
+      },
+      "moveTitle": "迁移到另一台设备",
+      "moveExplain": "会话在当前位置停止，并从目标设备保存的副本继续运行。会选择保存内容最多的副本：迁移到内容更少的副本会被拒绝。",
+      "folder": "目标文件夹",
+      "folderHint": "它在那台设备上运行的位置：除非另行指定，否则使用相同的文件夹。",
+      "move": "迁移",
+      "ahead": "{device} 保存的内容比任何可迁移的目标设备都多：在某台设备追上之前，迁移会被拒绝。",
+      "noTarget": "还没有其他可运行会话的设备保存副本。",
+      "notRunning": "只有运行中的会话可以迁移。",
+      "alreadyMoving": "它已经在迁移中。",
+      "adoptedStays": "从终端接管的会话会留在运行它的地方。",
+      "outcome": {
+        "promoting": "迁移中：目标设备已就绪，当前运行它的设备正在完成本轮。",
+        "teleporting": "迁移中：会话仍在运行，目标设备正在获取副本。",
+        "pending": "已请求：设备尚未答复。后续进展见其房间。"
+      },
+      "refused": "迁移被拒绝：{reason}",
+      "actions": {
+        "move": "迁移",
+        "teleport": "迁移到别处",
+        "fork": "分叉"
+      },
+      "teleportExplain": "迁移到一台没有副本的设备：会话继续运行时，那台设备先获取副本，然后像迁移到已有副本一样完成迁移。当前运行它的设备必须在线。",
+      "noTeleport": "没有其他可运行会话的在线设备能接手。",
+      "forkExplain": "用此会话的对话在单独的文件夹中创建新会话。此会话照常继续。",
+      "forkFromCopy": "{device} · 从其副本",
+      "forkTakesCopy": "{device} · 先获取副本",
+      "forkFolder": "分叉使用的文件夹",
+      "forkFolderHint": "那台设备上它自己的文件夹：分叉不能与会话共用运行目录。",
+      "forkName": "名称（可选）",
+      "forkNameDefault": "{title} 的分叉",
+      "fork": "分叉",
+      "noFork": "没有可运行会话的在线设备能创建分叉。",
+      "adoptedNoFork": "从终端接管的会话不能分叉。",
+      "forkWhileMoving": "它正在迁移：请等它稳定后再分叉。",
+      "forkOutcome": {
+        "accepted": "已分叉：新会话将在那台设备上启动。",
+        "pending": "已请求：设备尚未答复。后续进展见分叉的房间。",
+        "joining": "分叉中：设备正在先获取副本。"
+      },
+      "openFork": "打开分叉的房间"
+    },
+    "purge": {
+      "open": "永久删除",
+      "title": "永久删除此会话",
+      "explain": "“{title}”将从所有保存过它的设备上删除：运行它的设备、每个副本，以及它之前运行过的地方。每台设备上，账户相关的部分（历史和检查点）也会删除，但它工作的文件夹不会删除。",
+      "atOnce": "它的房间、核心记忆快照和审批记录会立即删除。此操作无法撤销。",
+      "forksKeep": "从它分叉出的会话会保留分叉之前的对话。",
+      "confirm": "输入 {title} 以确认",
+      "submit": "永久删除",
+      "refused": "清除被拒绝：{reason}",
+      "sent": "正在清除。",
+      "going": "正在清除：{total} 台设备中已有 {done} 台答复。离线设备会在下次连接时清除。",
+      "done": "已从所有保存它的设备上清除。",
+      "forks": "从它分叉出的会话保留分叉之前的对话：{n} 个。",
+      "someDevice": "你组织中的一台设备",
+      "state": {
+        "pending": "等待中",
+        "done": "已清除",
+        "closed": "已关闭"
+      },
+      "part": {
+        "done": "已清除",
+        "not_there": "无内容",
+        "failed": "失败",
+        "unknown": "未说明"
+      },
+      "parts": "其副本：{store} · 账户部分：{account}",
+      "pendingDetail": "它会在下次连接时被清除。",
+      "closed": {
+        "device_removed": "设备已被移除，并清除了它保存的全部内容",
+        "holds_nothing": "没有需要清除的内容",
+        "other": "已关闭"
+      }
+    },
+    "manage": {
+      "button": "转为托管",
+      "title": "转为托管会话",
+      "explain": "它的终端会话已结束。MeshHarbor 可以在 {device} 上将它作为托管会话继续：对话不变，从终端自己的历史恢复，之后像在这里启动的任何会话一样运行、复制和驱动。",
+      "folder": "{device} 上的文件夹",
+      "folderHint": "默认为它的终端运行的位置，也可以另行指定",
+      "submit": "转为托管",
+      "lastRefused": "其设备拒绝了上次请求：{why}",
+      "accepted": "它现在是 {device} 上的托管会话。",
+      "pending": "已请求。设备尚未答复：进展见此房间。",
+      "refused": "未能转为托管：{why}",
+      "inProgress": "正在转为托管会话"
+    },
+    "memory": {
+      "title": "智能体记忆",
+      "revision": "版本 {rev}",
+      "about": "这里保存的事实会作为常驻指令提供给智能体会话。会话在启动时获得一份副本并一直使用它：之后添加的事实会提供给下一个会话，而不是正在运行的会话。只有所有者开启了 hive_core_memory 的设备才会把它们传给智能体。",
+      "scope": {
+        "org": "组织",
+        "user": "你的",
+        "device": "某台设备"
+      },
+      "scopeHint": {
+        "org": "组织中的所有会话。由组织管理员维护。",
+        "user": "仅限你启动的会话。",
+        "device": "仅限那台设备上的会话。由设备管理员维护。"
+      },
+      "device": "设备",
+      "budget": "已用 {used} / {budget} 个字符",
+      "empty": "这里还没有事实。",
+      "newFact": "智能体应当知道的事实",
+      "kindLabel": "类型",
+      "kind": {
+        "preference": "偏好",
+        "convention": "约定",
+        "path": "路径",
+        "gotcha": "易错点",
+        "decision": "决定",
+        "warning": "警告"
+      },
+      "add": "保存",
+      "edit": "编辑",
+      "editTitle": "编辑事实",
+      "archive": "归档：从今后所有会话的记忆中移除"
+    },
+    "copies": {
+      "title": "智能体副本",
+      "about": "每个智能体会话在一台设备上运行，并按组织策略复制到指定的设备上，因此在那台设备离线时仍可阅读，也可以迁移。副本以明文形式保存在持有它的设备上。",
+      "off": "此服务器不复制会话：需要运维人员开启 hive.replicaset。",
+      "policy": {
+        "title": "策略",
+        "defaults": "默认值",
+        "copies": "每个会话 {min} 到 {max} 个副本，包括其自身设备上的那份",
+        "archive": "归档副本加入规则允许的每个会话",
+        "archiveOff": "归档副本不加入任何会话",
+        "prefer": "其次是会话所有者自己的设备",
+        "restricted": "标记为 {tags} 的设备上的会话只复制到带有该标签的设备",
+        "retention": "会话结束后保留 {days} 天",
+        "retentionForever": "会话结束后永久保留"
+      },
+      "rules": {
+        "edit": "编辑策略",
+        "min": "至少",
+        "max": "至多",
+        "copiesHint": "每个会话的副本数，包括其自身设备上的那份：1 到 {max}",
+        "maxBelowMin": "“至多”小于“至少”",
+        "archive": "归档副本加入规则允许的每个会话",
+        "prefer": "其次是会话所有者自己的设备",
+        "restricted": "限定标签",
+        "restrictedHint": "带有其中某个标签的设备上的会话，只复制到同样带有该标签的设备。按回车添加。",
+        "retention": "会话结束后保留天数",
+        "retentionHint": "0 表示永久保留，最多 {max}",
+        "retentionInvalid": "请输入 0 到 {max} 之间的整数天数",
+        "saved": "已保存。组织中正在运行的会话会按新策略重新分配。",
+        "stale": "策略在你读取后已被更改。现在显示的是最新版本：请重新修改。"
+      },
+      "archive": {
+        "title": "归档副本",
+        "hint": "组织中一台常开的设备，在保留期内为规则允许的每个会话保存副本，并在没有其他成员在线时提供会话内容。它不运行会话。由你的组织在自己的机器上运行。",
+        "none": "还没有设备提供归档副本。",
+        "unreadable": "在有归档副本上线之前，只有会话的某位成员在线时才能阅读会话。",
+        "offers": "可作为归档副本",
+        "notOffering": "不提供：其所有者关闭了 hive_archive，或此后尚未连接",
+        "gone": "已不再是此组织的设备",
+        "designated": "已指定",
+        "add": "添加归档副本",
+        "stale": "策略在读取后已被更改。已重新显示：请再试一次。"
+      },
+      "add": {
+        "title": "添加归档副本",
+        "intro": "在组织中一台常开的机器上运行归档副本镜像。首次启动时使用这里的令牌注册；之后每次启动都从其卷运行，不再需要令牌。",
+        "volume": "卷就是设备本身：它保存设备凭据以及复制到它的每个会话（明文）。请像保护会话本身一样保护它。",
+        "hostname": "请给容器设置固定的主机名：设备身份依赖于它，两个归档副本不能共用同一个主机名。",
+        "mint": "获取注册令牌",
+        "token": "令牌只能使用一次，有效期 {minutes} 分钟，只有首次启动需要。",
+        "docker": "docker run",
+        "compose": "docker compose",
+        "copy": "复制",
+        "copied": "已复制",
+        "next": "运行后它会出现在“归档副本”下：开启“已指定”即可启用。",
+        "close": "关闭"
+      }
+    },
+    "search": {
+      "label": "搜索你可以阅读的智能体会话",
+      "hint": "在组织的归档副本上搜索：你输入的内容和搜索结果都不会到达服务器。",
+      "none": "没有找到结果。",
+      "scope": "已搜索的会话：{n}",
+      "otherSession": "一个你可以阅读的会话",
+      "noRoom": "该会话没有可打开的房间。",
+      "openFailed": "无法打开该会话：{message}",
+      "failed": "搜索失败：{error}",
+      "refusedOther": "搜索被拒绝：{reason}",
+      "refused": {
+        "not_found": "此组织无法搜索智能体会话。",
+        "no_archive_replica": "当前没有可搜索的归档副本在线。",
+        "no_session": "归档副本还没有保存任何你可以阅读的会话。",
+        "rate_limited": "过去一分钟内发起的搜索太多。请稍等片刻再输入。",
+        "too_many_views": "此标签页已达到智能体会话连接上限。请稍后再输入。",
+        "device_offline": "归档副本已离线。",
+        "device_unsupported": "归档副本运行的版本不支持搜索。",
+        "no_answer": "归档副本没有答复。",
+        "unavailable": "服务器无法准备搜索。请稍后再输入。",
+        "at_capacity": "归档副本当前的搜索已满负荷。",
+        "hive_disabled": "归档副本不提供搜索。"
+      }
+    }
+  },
+  "keepBusy": {
+    "defaultPattern": {
+      "label": "默认模式",
+      "hint": "查看者在尚未设置过的设备上打开“保持活跃”菜单时预选的模式。不修改时为圆形；某人在某台设备上上次的选择优先于它。"
+    },
+    "history": {
+      "title": "历史",
+      "subtitle": "设备上每一次开启或关闭“保持活跃”（以设备上报为准），以及这些设置的每一次更改。永久保留。",
+      "allDevices": "全部设备",
+      "organization": "组织",
+      "when": "时间",
+      "device": "设备",
+      "what": "事件",
+      "who": "操作人",
+      "empty": "暂无记录。",
+      "loadMore": "加载更多",
+      "refresh": "刷新",
+      "kind": {
+        "on": "已开启",
+        "off": "已关闭",
+        "org_denied": "已对组织禁止",
+        "org_allowed": "已对组织允许",
+        "org_default_pattern": "默认模式已更改"
+      },
+      "productDefault": "圆形（默认）",
+      "source": {
+        "device": "设备上报",
+        "server": "管理员"
+      },
+      "sourceHint": {
+        "device": "设备自己在心跳中上报的内容：只是一个声明，每 30 秒随心跳出现，绝不是服务器的决定。",
+        "server": "服务器对管理员更改的记录。"
+      }
+    }
+  },
+  "mh": {
+    "lang": {
+      "label": "语言"
+    },
+    "nav": {
+      "myDevices": "我的设备与分享",
+      "deviceShares": "设备分享",
+      "accountApprovals": "账号审批"
+    },
+    "approval": {
+      "title": "账号审批",
+      "intro": "中心账号准入。组织角色、设备注册和操作系统权限分别管理。",
+      "checking": "正在检查审批权限",
+      "notEnabled": "此服务器未启用账号审批。",
+      "ownerOnly": "只有中心审批负责人可以使用此控制台。",
+      "tab": {
+        "pending": "待审核",
+        "approved": "已批准",
+        "rejected": "已拒绝",
+        "suspended": "已停用"
+      },
+      "summary": "共 {total} 个账号 · 每页 {perPage} 个",
+      "includesLegacy": " · 包含尚未审核的已有账号",
+      "loading": "正在加载账号",
+      "col": {
+        "account": "账号",
+        "email": "邮箱",
+        "status": "状态",
+        "emailVerified": "邮箱已验证",
+        "revision": "版本",
+        "review": "审核"
+      },
+      "state": {
+        "legacy_unreviewed": "已有账号（未审核）",
+        "pending": "待审核",
+        "approved": "已批准",
+        "rejected": "已拒绝",
+        "suspended": "已停用"
+      },
+      "approve": "批准",
+      "reject": "拒绝",
+      "suspend": "停用",
+      "empty": "此视图中没有账号。",
+      "confirmTitle": "确定{action}该账号？",
+      "revisionNote": "服务器接受版本 {revision} 后，状态才会改变。",
+      "revokeWarning": "这会撤销账号准入。已有的网络和设备会话按各自的撤销规则处理。",
+      "confirmAction": "确认{action}"
+    },
+    "mine": {
+      "title": "我的设备与分享",
+      "intro": "这里只列出本账号拥有的设备（涵盖你所在的全部有效组织）。能在组织里看到某台设备，不代表你拥有它。",
+      "refresh": "刷新账号记录",
+      "myDevices": "我的设备",
+      "ownedHint": "在已加入的有效组织中你拥有的设备。",
+      "distinctHint": "有未撤销、未过期分享的设备数（去重）。",
+      "grants": "当前授权 {current} 条 · 保留记录 {retained} 条",
+      "expiredRevoked": "已过期 {expired} 条 · 已撤销 {revoked} 条",
+      "countNote": "同一台设备被多次分享时，每个方向只计一次。保留记录包括已过期和已撤销的分享。这些只是分享记录的状态，不代表设备在线，也不代表其服务策略允许连接。",
+      "ownedTable": "我拥有的设备",
+      "col": {
+        "device": "设备 / ID",
+        "registered": "注册名称",
+        "os": "系统",
+        "status": "状态",
+        "org": "组织",
+        "access": "访问"
+      },
+      "openDesktop": "打开桌面",
+      "share": "分享",
+      "noneOwned": "在已加入的有效组织中，本账号没有任何设备。",
+      "nonePage": "本页没有设备。请刷新或换一页。",
+      "footer": "设备 ID 和分享记录与连接状态相互独立。访问桌面仍需符合设备当前的服务策略，并经过设备端同意。",
+      "refreshFailed": "无法刷新个人设备和分享记录。若仍显示旧记录，可能已过时；服务器可能需要更新。"
+    },
+    "shares": {
+      "title": "设备分享",
+      "intro": "一条分享只允许一位已批准的人访问一台设备，不会让对方加入组织，也不开放局域网访问、出口路由或再次分享。",
+      "tabReceived": "分享给我的",
+      "tabSent": "我分享的",
+      "col": {
+        "device": "设备",
+        "parties": "所有者 → 接收者",
+        "services": "服务",
+        "created": "创建时间",
+        "expires": "到期时间",
+        "state": "记录状态",
+        "revoked": "撤销时间",
+        "actions": "操作"
+      },
+      "notReported": "此服务器未提供",
+      "grantRevision": "授权 {id} · 版本 {revision}",
+      "openRemote": "打开桌面 / 文件",
+      "openSsh": "SSH（原生客户端）",
+      "revoke": "撤销",
+      "revoked": "已撤销",
+      "empty": "此视图中没有分享。",
+      "listNote": "此方向共保留 {total} 条分享记录（不是去重后的设备数）。已过期和已撤销的记录仍会显示。每条记录都写明设备、分享者/接收者、权限、创建、到期、撤销时间和版本。记录状态不能替代设备策略或设备端同意。",
+      "formTitle": "分享我拥有的设备",
+      "device": "设备（须为你拥有的）",
+      "noOwned": "本账号没有任何设备",
+      "recipient": "接收者的用户名或邮箱",
+      "recipientHint": "对方须有已批准且已验证的账号。",
+      "permSsh": "SSH 终端 / 命令（原生客户端）",
+      "permView": "查看桌面",
+      "permControl": "控制桌面",
+      "permFiles": "双向文件传输（可读可写）",
+      "hours": "有效期（小时，最多 720）",
+      "formNote": "设备端同意和服务设置依然有效。当前的原生文件协议不支持只读文件传输。分享 SSH 不会替设备开启 SSH 服务，也不会改变组织策略。接收者通过原生客户端登录，密码在隐藏的提示中输入；也可以手动准备令牌文件（可选）。SSH 分享不开放桌面访问或 TCP 转发。",
+      "create": "创建分享",
+      "invalid": "请选择设备，填写接收者的用户名或邮箱，勾选至少一项支持的权限，并把有效期设为 1–720 小时。",
+      "svc": {
+        "desktop": "桌面",
+        "control": "控制",
+        "filesRw": "文件读写",
+        "filesRo": "文件只读（不支持）",
+        "sshAs": "SSH（账号 {account}）"
+      },
+      "record": {
+        "revoked": "已撤销",
+        "expired": "已过期",
+        "live": "未撤销 / 未过期"
+      },
+      "ssh": {
+        "title": "通过原生客户端 SSH",
+        "intro": "这里只做访问检查并给出操作说明，不是 SSH 会话，也不是浏览器终端。设备端同意和 SSH 策略依然有效。设备使用内置的 SSH 服务，不需要系统 sshd。",
+        "device": "分享的设备：{name}（{id}）",
+        "base": "服务器地址：",
+        "hostKey": "主机公钥（原生客户端会校验这个身份）：",
+        "run": "在本机运行原生命令行，把其中的服务器地址和账号名占位符替换成实际值：",
+        "warning": "命令行仍需要本机的 SSH 客户端。使用 --login 时，在隐藏的终端提示中输入你的 MeshHarbor 账号密码，令牌只保存在进程内存中。本页面不会导出你的网页会话，也不会替你执行命令。切勿把密码或访问令牌写进命令、网址或共享剪贴板。需要多因素认证的原生访问会被拒绝，直到支持相应的多因素认证交接为止。",
+        "scope": "SSH 以设备上配置的操作系统账号运行终端和命令，不是沙箱。此分享不包括 SFTP、SSH 转发、局域网访问或组织成员身份。命令行每次连接都会重新检查授权；分享被撤销或过期后，新的访问会被拒绝，已有的分享会话也会被终止。"
+      },
+      "revokeTitle": "撤销这条设备分享？",
+      "revokeBody": "新的访问会被拒绝。服务器的实时检查会终止依赖此分享的远程会话。",
+      "sshAccount": "SSH 使用的设备账号",
+      "sshAccountHint": "该设备上已有的 Linux/macOS 用户。对方的 SSH 会话只能以这个账号运行。",
+      "sshAccountInvalid": "请填写 SSH 使用的设备账号：Linux/macOS 用户名（小写字母、数字、_ 和 -）。",
+      "sshRootRefused": "不能直接分享 root。请为对方新建一个管理员账号。",
+      "acct": {
+        "existing": "设备上的账号：",
+        "admin": "管理员",
+        "none": "设备没有可登录的账号，可以在下面新建一个。",
+        "unavailable": "无法列出设备上的账号（{reason}）。仍可手动填写已有的账号名。",
+        "created": "已在设备上创建账号 {name} 并选中。",
+        "newName": "新账号名",
+        "newAdmin": "管理员（可免密码 sudo 成为 root）",
+        "create": "在设备上创建",
+        "note": "新账号没有密码，只能通过 MeshHarbor 登录。设备本机没开启 SSH 时不会创建任何账号；设备禁止 root 会话时不会创建管理员账号。"
+      }
+    },
+    "topo": {
+      "title": "服务器拓扑",
+      "intro": "两台服务器之间有一条已启用的连线时才直接互连，与所在业务区域无关；没有连线就互相不可见，即使在同一区域。先点一台服务器、再点另一台即可添加连线；点击连线可关闭或删除它。地图上不显示客户端，客户端仍按区域规则。连线在",
+      "introWarn1": " 时强制执行；在 ",
+      "introWarn2": " 下只记录日志。",
+      "noServers": "还没有设备获得中心角色“服务器”。请先在业务授权中批准一台。",
+      "mainland": "中国大陆",
+      "nonMainland": "非中国大陆",
+      "zoneUnknown": "区域未知",
+      "edgeOn": "连线已开启",
+      "edgeOff": "连线已关闭",
+      "selected": "已选中 {name}：请再点击另一台服务器",
+      "svgTitle": "服务器拓扑：按国家分布的服务器及其之间的连线",
+      "on": "开",
+      "off": "关",
+      "noCountry": "国家未知",
+      "online": "在线",
+      "offline": "离线",
+      "noLocation": "位置未知：",
+      "removeEdge": "删除连线",
+      "removeEdgeAria": "删除连线 {a} — {b}",
+      "col": {
+        "edge": "连线",
+        "state": "状态",
+        "actions": "操作"
+      },
+      "noEdges": "没有连线：每台服务器都各自独立。"
+    },
+    "inv": {
+      "intro": "上报的配置：各节点从自身内核读取的信息（仅限主机网络命名空间）。它不能证明某条路径可用，也不授予任何访问；访问由叠加网络 ACL 决定。新鲜度以服务器时钟为准。",
+      "empty": "还没有节点上报网络清单。",
+      "fresh": "最新",
+      "stale": "过时",
+      "reported": "上报于 {when}",
+      "sectionTitle": "{state}：{total} 项中已上报 {reported} 项",
+      "forwarding": "转发：IPv4 {v4}，IPv6 {v6}",
+      "namespaces": "命名空间：{n}",
+      "unknown": "未知",
+      "sec": {
+        "interfaces": "网卡",
+        "routes": "路由",
+        "rules": "策略规则",
+        "listeners": "监听端口",
+        "fwChains": "防火墙链",
+        "fwRules": "防火墙规则"
+      },
+      "state": {
+        "complete": "完整",
+        "partial": "部分",
+        "unsupported": "不支持",
+        "denied": "无权限",
+        "error": "出错"
+      },
+      "col": {
+        "name": "名称",
+        "kind": "类型",
+        "up": "状态",
+        "mtu": "MTU",
+        "addresses": "地址",
+        "family": "协议族",
+        "table": "表",
+        "destination": "目的地址",
+        "type": "类型",
+        "gateway": "网关",
+        "device": "设备",
+        "protocol": "协议",
+        "metric": "跃点数",
+        "priority": "优先级",
+        "selector": "匹配条件",
+        "action": "动作",
+        "proto": "协议",
+        "address": "地址",
+        "port": "端口",
+        "process": "进程",
+        "owner": "所属",
+        "chain": "链",
+        "hook": "钩子",
+        "policy": "默认策略",
+        "matches": "匹配",
+        "verdict": "判定",
+        "target": "目标",
+        "packets": "包数"
+      }
+    },
+    "dns": {
+      "saved": "已保存。叠加网络节点下次加入时会应用这项更改。",
+      "intro1": "为网络设置一个 DNS 后缀，节点即可按名称访问",
+      "intro2": "，不必记叠加网络 IP。每个节点运行本地分流 DNS：叠加网络内的名称解析为叠加网络 IP，其余查询转发给下面的上游服务器。域名留空即关闭 MagicDNS。",
+      "domain": "MagicDNS 域名",
+      "domainHint": "留空即为本组织关闭 MagicDNS。",
+      "upstream": "上游 DNS 服务器",
+      "upstreamHint": "用逗号分隔。留空则使用各节点系统原有的解析器。"
+    },
+    "fwd": {
+      "intro": "托管转发在入口节点的一个地址上监听，只放行指定的来源网段，并把流量转发到目的地址。每次更改都会先检查：端口冲突、重叠、环路、区域限制；使用 nft 后端时还会检查入口节点的转发设置（MeshHarbor 只读取、从不修改这些设置）。",
+      "new": "新建转发",
+      "empty": "还没有托管转发。",
+      "col": {
+        "name": "名称",
+        "ingress": "入口节点",
+        "listen": "监听",
+        "sources": "来源",
+        "destination": "目的地址",
+        "backend": "后端",
+        "applied": "已下发",
+        "verified": "已验证",
+        "enabled": "启用"
+      },
+      "masq": "地址伪装",
+      "sourceKept": "保留源地址",
+      "applied": {
+        "applied": "已下发",
+        "failed": "失败",
+        "pending": "等待中",
+        "not_applied": "未下发"
+      },
+      "verified": {
+        "verified": "已验证",
+        "drift": "有偏差",
+        "unverified": "未验证"
+      },
+      "edit": "编辑 {name}",
+      "f": {
+        "name": "名称",
+        "ingress": "入口节点",
+        "listenAddr": "监听地址",
+        "listenPort": "监听端口",
+        "proto": "协议",
+        "sources": "允许的来源（网段，用空格或逗号分隔）",
+        "destAddr": "目的地址",
+        "destPort": "目的端口",
+        "backend": "后端",
+        "nat": "源地址",
+        "public": "公开监听（监听通配地址时需要；来源仍须比 /0 更窄）"
+      },
+      "planOk": "检查通过（{backend} 后端）。",
+      "planRefused": "检查未通过；没有保存，也没有下发到任何节点。",
+      "check": "检查方案",
+      "create": "创建",
+      "backendUserspace": "用户态转发（任意系统）",
+      "backendNft": "nft DNAT（Linux、需 root、提交后确认）",
+      "natMasq": "地址伪装（目的端看到的是入口节点）",
+      "natKeep": "保留客户端地址（仅 nft）",
+      "planFailed": "无法生成检查方案。",
+      "refused": "已拒绝：",
+      "changed": "此转发在加载后已被修改，列表已重新加载。请重新检查。",
+      "confirmRemove": "删除转发“{name}”？入口节点会立即停止它。"
+    },
+    "routes": {
+      "deviceFilter": "设备筛选",
+      "intro1": "节点会通告它能路由的子网网段（在其代理配置中设置",
+      "intro2": "）。批准某条路由后，它会下发给网络中的所有其他节点，它们将经由此节点访问该局域网。未经批准，不会路由任何流量。",
+      "empty": "还没有节点通告子网路由，也没有节点提供出口节点功能。",
+      "col": {
+        "node": "节点",
+        "ip": "叠加网络 IP",
+        "routes": "通告的路由",
+        "exit": "出口节点"
+      },
+      "unnamed": "（未命名）",
+      "na": "不适用",
+      "withheld": "此设备无法提供路由：{why}",
+      "noLongerOffered": "已批准，但设备已不再提供，因此没有客户端在使用",
+      "enableHint": "需在其配置中设置 overlay_exit_node_enabled"
+    },
+    "acl": {
+      "title": "叠加网络 ACL",
+      "tunnelTitle": "隧道 ACL",
+      "newRule": "新建规则",
+      "subtitle": "对端可见性与路由——在直连、TURN 中继和 DERP 中继路径上同样执行",
+      "enforcement": "执行模式",
+      "narrowed1": "有 {n} 条规则限定了端口或协议。只有在 ",
+      "narrowed2": " 模式下，各节点才会对收到的流量执行这些限制；在 ",
+      "narrowed3": " 模式下它们",
+      "notChecked": "不会被检查",
+      "narrowed4": "。无论哪种模式，限定了端口的规则都会让整个对端可见。",
+      "empty1": "还没有叠加网络规则。执行模式为 ",
+      "empty2": " 时，每个节点都能看到所有对端及其全部已批准路由（即启用 ACL 之前的行为）。先添加规则，切换到 ",
+      "empty3": " 模式，在真实流量下查看哪些会被拒绝，然后再切换到 ",
+      "empty4": "。",
+      "col": {
+        "name": "名称",
+        "sources": "来源",
+        "via": "经由",
+        "destinations": "目的地"
+      },
+      "disabled": "已停用",
+      "editTitle": "编辑叠加网络规则",
+      "newTitle": "新建叠加网络规则",
+      "namePlaceholder": "例如 devs-reach-k8s-dev",
+      "enabled": "启用",
+      "sourcesHint": "此规则允许哪些节点发起访问。",
+      "addSource": "添加来源",
+      "everyNode": "（本组织的所有节点）",
+      "viaHint": "可以访问的对端，同时也是其子网路由的网关。",
+      "addNode": "添加节点",
+      "destHint": "只能填网段——叠加网络工作在三层，主机名永远无法匹配。",
+      "addCidr": "添加网段",
+      "cidr": "网段（例如 10.84.6.0/24）",
+      "portLow": "起始端口",
+      "portHigh": "结束端口",
+      "proto": "协议",
+      "saveChanges": "保存更改",
+      "createRule": "创建规则",
+      "deleteTitle": "删除这条叠加网络规则？",
+      "deleteBody": " 将被删除。如果这是唯一授予某个对端访问的规则，依赖它的节点会在下一次网络映射推送时失去该对端。",
+      "delete": "删除",
+      "mode": {
+        "off": "关闭——不执行（默认）",
+        "warn": "告警——只记录会被拒绝的访问",
+        "enforce": "强制——执行规则"
+      },
+      "kind": {
+        "all": "所有节点",
+        "node": "节点",
+        "user": "用户",
+        "role": "角色"
+      },
+      "anyProto": "任意",
+      "any": "任意",
+      "hint": {
+        "off": "规则会被保存但不生效——每个节点仍能看到所有对端，与之前相同。",
+        "warn": "规则会被评估并记录拒绝情况，但仍下发宽松的网络映射。可用来在真实流量下验证规则。",
+        "enforce": "规则会生效。没有任何规则授权的节点将失去该对端，已建立的对端连接会被明确拆除。"
+      },
+      "v": {
+        "name": "请填写名称。",
+        "sources": "至少需要一个来源。",
+        "via": "至少需要一个经由节点。",
+        "destinations": "至少需要一个目的地。",
+        "sourceSel": "每个非“所有节点”的来源都需要选择具体对象。",
+        "viaSel": "每个节点目标都需要选择具体节点。",
+        "cidr": "每个目的地都需要填写网段。",
+        "notCidr": "“{cidr}”不是网段——单个地址也需要前缀，例如 10.0.0.5/32。"
+      }
+    },
+    "tp": {
+      "title": "隧道访问控制（ACL）",
+      "newPolicy": "新建策略",
+      "empty": "尚未定义隧道策略。服务器端 ACL 默认拒绝：在添加至少一条策略之前，所有 {cmd} 请求都会被拒绝，返回 {code}。",
+      "col": {
+        "name": "名称",
+        "subjects": "主体",
+        "targets": "目标",
+        "allowlist": "允许列表",
+        "ceilings": "上限",
+        "actions": "操作"
+      },
+      "flows": "连接数：",
+      "bytes": "字节数：",
+      "editTitle": "编辑隧道策略",
+      "newTitle": "新建隧道策略",
+      "namePlaceholder": "例如 ops-team-prod-postgres",
+      "subjectsHint": "此策略适用于谁。所有策略中第一条匹配的生效。",
+      "addSubject": "添加主体",
+      "catchAllUsers": "（全部匹配：组织内所有用户）",
+      "targetsHint": "此策略允许主体访问哪些设备。",
+      "addTarget": "添加目标",
+      "catchAllAgents": "（全部匹配：组织内所有设备）",
+      "allowlistTitle": "目的地允许列表",
+      "allowlistHint": "主体经由目标可访问的主机与端口范围。",
+      "addRule": "添加规则",
+      "match": "匹配方式",
+      "portLow": "起始端口",
+      "portHigh": "结束端口",
+      "proto": "协议",
+      "protoAny": "任意",
+      "ceilingsTitle": "每会话上限",
+      "ceilingsHint": "留空表示不限制。",
+      "maxFlows": "最大并发连接数",
+      "flowsPlaceholder": "例如 64",
+      "maxBytes": "每会话最大字节数",
+      "bytesPlaceholder": "例如 10737418240（10 GiB）",
+      "saveChanges": "保存更改",
+      "createPolicy": "创建策略",
+      "deleteTitle": "删除隧道策略？",
+      "deleteBody": "将软删除 {name}。现有隧道会话不受影响；之后仅依赖此策略的新 {req} 请求会被拒绝，返回 {code}。",
+      "delete": "删除",
+      "required": "必填。",
+      "kind": {
+        "all_users": "所有用户",
+        "user_id": "用户",
+        "role_id": "角色",
+        "tunnel_client_id": "隧道客户端",
+        "agent_id": "设备",
+        "all_agents": "所有设备"
+      },
+      "host": {
+        "exact": "精确",
+        "wildcard": "通配符"
+      },
+      "hostValue": {
+        "exact": "主机名（例如 db.intranet）",
+        "wildcard": "通配符（例如 *.intranet）",
+        "cidr": "CIDR（例如 10.0.0.0/24）",
+        "other": "值"
+      },
+      "err": {
+        "name": "名称为必填项。",
+        "subjects": "至少需要一个主体。",
+        "targets": "至少需要一个目标。",
+        "allowlist": "至少需要一条允许规则。",
+        "subjectId": "除“所有用户”外，每个主体都需要选择具体对象。",
+        "targetId": "“设备”类型的目标需要选择具体设备。",
+        "host": "每条允许规则都需要填写主机。",
+        "portSet": "必须设置端口范围。",
+        "portLow": "起始端口必须在 1-65535 之间。",
+        "portOrder": "结束端口必须 ≥ 起始端口。",
+        "portHigh": "结束端口必须 ≤ 65535。"
+      },
+      "label": {
+        "user": "用户 {name}",
+        "role": "角色 {name}",
+        "client": "客户端 {name}",
+        "agent": "设备 {name}"
+      }
+    },
+    "ek": {
+      "title": "临时注册密钥",
+      "mintKey": "生成密钥",
+      "intro": "一种可重复使用的凭据，用来注册{selfRemoving}的设备，例如 CI 构建机、容器、自动扩缩的工作节点。这些设备闲置后会被清理（正常停止时立即清理），重启后算作一台{new}设备。吊销密钥后，下次使用即无法再注册；已注册的设备按各自的期限失效。",
+      "selfRemoving": "会自动移除",
+      "new": "新",
+      "col": {
+        "label": "标签",
+        "uses": "已用次数",
+        "expires": "过期时间",
+        "ttl": "设备存活期",
+        "state": "状态"
+      },
+      "unnamed": "（未命名）",
+      "minted": "生成于 {when}",
+      "default": "默认",
+      "state": {
+        "revoked": "已吊销",
+        "expired": "已过期",
+        "exhausted": "已用完",
+        "active": "有效"
+      },
+      "revoke": "吊销",
+      "revokeAria": "吊销密钥 {key}",
+      "empty": "尚未生成密钥。",
+      "shownOnce": "临时密钥（仅显示一次）",
+      "mintTitle": "生成临时注册密钥",
+      "labelHint": "仅用于显示：写明此密钥服务的设备群",
+      "maxUses": "最大使用次数",
+      "maxUsesHint": "1–10000；每次注册消耗一次",
+      "expiresDays": "有效期（天）",
+      "expiresHint": "最长 90 天；到期后无论剩余次数都失效",
+      "ttlLabel": "设备闲置期限（秒，可选）",
+      "ttlHint": "60 秒到 7 天；留空为服务器默认（15 分钟）。设备无响应多久后被清理",
+      "copyNow": "请立即复制：密钥{notStored}，无法再次显示。丢失后只能重新生成。",
+      "notStored": "不会被保存",
+      "copied": "已复制",
+      "copyKey": "复制密钥",
+      "enrollWith": "注册命令：",
+      "mint": "生成",
+      "done": "完成"
+    },
+    "dev": {
+      "updateAll": "全部更新",
+      "enroll": "注册设备",
+      "enrollDevice": "设备（远程桌面 + 组网）",
+      "enrollTunnel": "隧道客户端（仅命令行）",
+      "searchPlaceholder": "搜索名称、标签、IP、MagicDNS…",
+      "searchAria": "搜索设备",
+      "kindAria": "按设备类型筛选",
+      "kindDevices": "设备",
+      "kindTunnels": "隧道",
+      "kindBoth": "全部",
+      "kindDevice": "设备",
+      "kindTunnel": "隧道",
+      "countDevices": "{n} 台设备",
+      "countTunnels": "{n} 个隧道",
+      "configureColumns": "设置列",
+      "connectTo": "连接到 {name}",
+      "connect": "连接",
+      "ephemeral": "临时",
+      "ephemeralTitle": "临时设备：闲置后或正常关机时会自动移除，移除后不可恢复",
+      "copyIdFor": "复制 {name} 的设备 ID",
+      "copied": "已复制！",
+      "copyId": "复制设备 ID",
+      "deviceIdTitle": "设备 ID：{id}",
+      "skewTitleLong": "桌面助手版本为 v{desktop}，守护进程为 v{daemon}。两者分开更新（Linux 用各自的 .deb，macOS 用 .pkg，Windows 由守护进程替换）",
+      "skewTitle": "桌面助手版本为 v{desktop}，守护进程为 v{daemon}，两者分开更新",
+      "desktopVersion": "桌面助手 v{v}",
+      "keyFingerprintTitle": "设备密钥指纹：{fp}",
+      "keyShort": "密钥",
+      "overlayKeyTitle": "叠加网络公钥（第 {epoch} 代）：{key}",
+      "copyDnsFor": "复制 {name} 的 MagicDNS 名称",
+      "noDnsDomain": "组织未配置 MagicDNS 域名，这里只是叠加网络标签",
+      "noMatch": "没有匹配“{q}”的设备。",
+      "noneYet": "还没有注册任何设备。",
+      "noneHint": "点击“注册设备”获取各平台的一行安装命令，机器注册后会立即出现在这里。",
+      "walkThrough": "带我一步步操作",
+      "keepBusy": "保持活跃",
+      "access": "访问",
+      "details": "详情",
+      "noOverlay": "无叠加网络地址",
+      "overlayKey": "叠加网络密钥",
+      "epoch": "第 {n} 代",
+      "deviceId": "设备 ID",
+      "machineId": "机器 ID",
+      "deviceKey": "设备密钥",
+      "hideName": "设置了显示名称时隐藏设备名",
+      "different": "其他",
+      "pageRange": "第 {first}–{last} 台，共 {total} 台",
+      "col": {
+        "actions": "操作",
+        "name": "名称",
+        "kind": "类型",
+        "status": "状态",
+        "overlay": "叠加网络",
+        "tags": "标签",
+        "consent": "授权方式",
+        "codecs": "编码器",
+        "lastSeen": "最后在线"
+      },
+      "presence": {
+        "online": "在线",
+        "stale": "连接异常",
+        "offline": "离线",
+        "onlineStored": "在线（记录的状态）",
+        "offlineStored": "离线（记录的状态）",
+        "onlineTitle": "在线：控制连接已建立",
+        "staleTitle": "连接异常：心跳正常但没有控制连接（网络半断开，或服务器刚更新）。通常几分钟内会自动恢复，否则请在那台机器上重启 MeshHarbor 服务。"
+      },
+      "evict": {
+        "titleRejoin": "为“{name}”强制分配新的叠加网络地址？",
+        "titleRemove": "将“{name}”移出组网？",
+        "leaves": "它会立即离开组网：所有节点删除到它的路由，发往 {ip} 的流量中断。",
+        "released": "该地址会归还到组织的地址池，之后可能分配给{different}机器。",
+        "rejoins": "{name} 仍处于注册状态，下次连接时会自动重新加入，但会获得{different}叠加网络地址。这不会撤销访问权限；要彻底移除，请删除该设备或隧道客户端。",
+        "gone": "对应的设备已不再注册，不会再回来。",
+        "pinned": "所有绑定旧地址的配置都会失效：防火墙规则、脚本，以及配置了 {cfg} 的客户端。",
+        "doRejoin": "移出并重新分配",
+        "doRemove": "移出组网"
+      },
+      "tunnelDelete": {
+        "title": "删除隧道客户端？",
+        "body": "它的访问令牌会被吊销；如果加入了叠加网络，节点会被移出、地址会被释放。命令行工具仍保留在机器上，可以用新令牌重新注册。",
+        "do": "删除"
+      },
+      "rotate": {
+        "title": "轮换 {name} 的叠加网络密钥？",
+        "body": "设备会{onDevice}生成新的 WireGuard 密钥、保存并用它重新加入组网。所有节点几秒内会更新到新密钥，旧密钥随即在所有地方失效。服务器永远看不到私钥。",
+        "onDevice": "在本机上",
+        "disruptive": "这是立即生效、会打断连接的操作：这台设备在本组织内的所有会话（远程控制、叠加网络上的 SSH、隧道）都会断开并重连。",
+        "offline": "设备离线：指令已排队，下次连接时执行。",
+        "do": "轮换密钥",
+        "ordered": "已向 {name} 下达密钥轮换：它会生成新密钥、重新加入组网，并在几秒内回报。",
+        "queuedOffline": "{name} 离线：密钥轮换已排队，下次连接时执行。"
+      },
+      "kr": {
+        "queued": "密钥轮换已排队",
+        "queuedTip": "下达时设备离线，下次连接时轮换。",
+        "rotating": "正在轮换密钥…",
+        "deliveredTip": "指令已送达设备，等待回复。",
+        "rotatingTip": "设备已生成新密钥，正在重新加入组网。",
+        "rotated": "密钥已轮换 · 第 {epoch} 代",
+        "rotatedTip": "已于 {at} 轮换并用新密钥加入组网。",
+        "notJoined": "新密钥未加入组网",
+        "notJoinedTip": "设备报告已轮换，但还没有用新密钥加入组网，请查看它的日志。",
+        "refused": "密钥轮换被拒绝（{outcome}）",
+        "refusedTip": "设备拒绝了轮换指令。",
+        "failed": "密钥轮换失败",
+        "failedTip": "设备无法生成或保存新密钥，身份保持不变。",
+        "old": "设备版本太旧，不支持密钥轮换",
+        "oldTip": "该设备的版本早于密钥轮换功能（需 0.4.25+）。请先更新，指令会保持排队。"
+      },
+      "upd": {
+        "title": "更新全部设备？",
+        "body": "立即向本组织的所有设备推送自我更新（共 {total} 台，{online} 台在线）。每台设备会下载最新版本、安装并重启，正在更新的设备上的远程控制会话会中断几秒。离线设备会在下次定期检查时更新。",
+        "wont": "以下 {n} 台不会接受从这里发起的更新：",
+        "pushed": "已向 {name} 推送更新，它很快会下载、安装并重启。",
+        "offline": "{name} 离线，会在下次定期检查时更新。",
+        "pushedAll": "已向 {requested} 台中的 {delivered} 台推送更新；离线设备会在下次定期检查时更新。",
+        "skipped": "{n} 台未从这里更新：{list}。"
+      },
+      "del": {
+        "title": "将这台设备从组织中移除？",
+        "evicted": "它会立即被移出组网：其他节点删除到它的路由，正在进行的远程控制或隧道会话都会结束。",
+        "stays": "设备上的程序会保留，可以用新的注册令牌重新注册，但回来时会是{fresh}。",
+        "fresh": "新的叠加网络地址和新名称",
+        "pinned": "所有绑定旧身份的配置都会失效：使用该设备 ID 的脚本、指向它的隧道转发、针对旧地址的防火墙规则，以及配置了 {cfg} 的客户端。",
+        "do": "移除设备"
+      },
+      "join": {
+        "title": "加入另一个组织",
+        "body": "{name} 保留当前注册，并新增一个注册。设备会同时连接两个组织；每个组织只能看到自己的会话，新组织有独立的加密密钥。",
+        "old": "该设备的版本早于远程加入组织功能。请先更新，或在设备上直接注册。",
+        "offline": "设备离线，需要在线才能收到邀请。",
+        "none": "你在其他组织中没有设备管理权限。请让对方管理员授予后再试。",
+        "org": "组织",
+        "mesh": "私有组网",
+        "meshOff": "不接入组网（默认）",
+        "meshTun": "接入组网（需启用多组织 TUN）",
+        "restart": "该设备启动时只有一个组织，所以独占了网卡。加入会立即生效，但组网访问要等程序重启后才开始，下次自动更新时会重启。",
+        "do": "加入"
+      },
+      "owner": {
+        "title": "更换设备所有者",
+        "body": "{name} 的所有者。所有者无需加入允许名单即可控制设备，授权请求（邮件/推送）也会发给所有者。",
+        "new": "新所有者",
+        "do": "更换"
+      },
+      "routes": {
+        "title": "隧道组网路由",
+        "body": "{name} 向组网发布的网段（{cmd}）。目标局域网 IP 匹配其中某个网段时，由这台设备代为连接，这样组网就能访问它后面未装客户端的设备（NAS、打印机、数据库主机）。访问仍受 {acl} 控制：路由只决定由谁连接，不代表授权。",
+        "none": "还没有路由，这台设备只能访问它自己。",
+        "advertised": "设备发布的网段，点击即可批准加入上面的路由：",
+        "approve": "批准发布的路由 {cidr}",
+        "add": "添加路由（CIDR）",
+        "hint": "例如 10.66.24.0/24（网段）或 10.66.24.53/32（单台主机）",
+        "invalid": "请输入有效的 CIDR，例如 10.66.24.0/24 或 10.66.24.53/32"
+      },
+      "rc": {
+        "restart": "需要重启",
+        "restartTip": "配置已保存到设备，但尚未生效。",
+        "refused": "配置被拒绝",
+        "notPrimary": "本组织在该设备上是次要注册，只有主注册才能修改整机配置。",
+        "notOptedIn": "该设备未开启远程配置。",
+        "failed": "配置失败",
+        "failedTip": "设备无法写入配置。",
+        "pending": "配置待下发",
+        "pendingTip": "等待设备重新连接并同步。",
+        "old": "设备版本太旧",
+        "oldPush": "该设备的版本早于远程配置功能，不会下发任何内容。",
+        "oldReport": "该设备能应用下发的配置，但无法回报执行结果。"
+      }
+    },
+    "common": {
+      "close": "关闭",
+      "delete": "删除",
+      "edit": "编辑"
+    },
+    "ago": {
+      "now": "刚刚",
+      "m": "{n} 分钟前",
+      "h": "{n} 小时前",
+      "d": "{n} 天前",
+      "mo": "{n} 个月前",
+      "y": "{n} 年前"
+    },
+    "devEdit": {
+      "title": "编辑设备",
+      "name": "设备名称",
+      "displayName": "显示名称（可选）",
+      "displayNameHint": "仅在列表中显示的友好名称，不会同步到任何地方。留空则显示设备名称。",
+      "tags": "标签",
+      "tagsHint": "用于筛选和搜索的自由标签（最多 16 个，每个 40 字符）。按回车添加。",
+      "nameHintAgent": "会同步到覆盖网络和 MagicDNS 名称。按名称把此设备选为出口节点的对端需要更新配置；用节点 ID（十六进制）固定可不受改名影响。",
+      "nameHintClient": "会同步到覆盖网络和 MagicDNS 名称（仅服务器端改名，命令行客户端保留本机名称）。",
+      "nameEmpty": "设备名称不能为空。",
+      "dnsRenamed": "MagicDNS 名称已改为“{name}”。对端立即可以解析；设备本身在下次重连时使用新名称。",
+      "dnsKept": "设备名称已修改，但覆盖网络 DNS 名称未能更新（仍为旧值）。"
+    },
+    "policy": {
+      "consent": {
+        "prompt": "在设备上询问（有人值守）",
+        "auto": "自动允许（无人值守）",
+        "email": "邮件通知所有者",
+        "push": "推送给所有者",
+        "prompt_then_email": "设备询问 + 邮件通知所有者"
+      },
+      "input": {
+        "free": "多人同时操作（有隔离）",
+        "exclusive": "独占（同时一人控制）"
+      },
+      "idle": {
+        "orgOnly": "闲置：仅按组织限制",
+        "minutes": "闲置：{m} 分钟",
+        "hint": "远程桌面会话在这段时间内既没有输入、屏幕也没有变化时自动结束。此值与组织限制取较短者，所以只能比组织更严格。设置保存在设备上；早于此功能的客户端不支持。从下一个会话开始生效。"
+      },
+      "lock": {
+        "never": "锁屏：由设备决定",
+        "auto": "锁屏：开始时已锁定或无人时",
+        "always": "锁屏：总是",
+        "hint": "最后一个远程桌面会话结束时锁定此设备的屏幕。“开始时已锁定或无人时”只在会话开始时屏幕已锁定或无人使用的情况下重新锁定。设备会在此设置与所有者自己的设置中取更严格者，所以这里只能收紧。Windows 和 Linux 的服务安装方式支持（会话可以重新解锁屏幕）；按用户安装或较旧的客户端不支持。从下一个会话开始生效。"
+      },
+      "rcOverlay": {
+        "hint": "关闭（默认）：远程桌面不走 WireGuard 网状网络，而是通过局域网、直连或 TURN 中继连接。开启：当网状网络是最佳路径时可以使用它，但也会受其故障影响。从下一个会话开始生效。"
+      },
+      "owner": {
+        "applies": "也询问我（你是此设备的所有者；“{mode}”对你同样适用）",
+        "skipped": "也询问我（你是此设备的所有者，因此对你跳过确认）"
+      },
+      "short": {
+        "prompt": "设备询问",
+        "auto": "自动允许",
+        "email": "邮件通知所有者",
+        "push": "推送所有者",
+        "prompt_then_email": "询问 + 邮件",
+        "skippedForYou": "对你跳过",
+        "oneController": "单人控制",
+        "idle": "闲置 {m} 分钟",
+        "lockIfLocked": "开始时锁定则锁屏",
+        "lockAtEnd": "结束时锁屏",
+        "overMesh": "经网状网络"
+      },
+      "label": {
+        "consent": "确认方式",
+        "input": "输入",
+        "idle": "闲置限制",
+        "lock": "会话结束时锁屏",
+        "rcOverlay": "远程桌面走网状网络"
+      },
+      "aria": {
+        "consent": "{name} 的确认方式",
+        "owner": "对我（{name} 的所有者）也应用确认方式",
+        "input": "{name} 的输入模式",
+        "idle": "{name} 的闲置限制",
+        "lock": "{name} 的远程会话结束时锁屏",
+        "rcOverlay": "允许到 {name} 的远程桌面使用网状网络（覆盖网络）"
+      },
+      "hideHints": "隐藏说明",
+      "showHints": "这些设置有什么作用？"
+    },
+    "devMenu": {
+      "sec": {
+        "maintenance": "维护",
+        "diagnostics": "诊断",
+        "access": "访问",
+        "network": "网络"
+      },
+      "update": "立即更新",
+      "rotateKey": "轮换覆盖网络密钥…",
+      "crashes": "崩溃报告",
+      "logs": "客户端日志",
+      "console": "设备控制台",
+      "edit": "编辑名称和标签",
+      "joinOrg": "加入另一个组织",
+      "reassign": "更换所有者",
+      "execPolicy": "命令执行策略",
+      "sshPolicy": "SSH 策略",
+      "externalAccess": "外部访问",
+      "remoteConfig": "设备配置",
+      "routes": "隧道网状路由",
+      "overlayRoutes": "覆盖网络路由",
+      "overlayAcl": "覆盖网络 ACL",
+      "delete": "删除设备",
+      "deleteTunnel": "删除隧道客户端",
+      "evict": "驱逐 / 重新分配覆盖网络地址",
+      "removeMesh": "移出网状网络",
+      "aria": "{name} 的操作"
+    },
+    "ext": {
+      "title": "外部访问 — {name}",
+      "warn": "这允许{notMember}的人控制此设备。对方需要连接码和{onMachine}设置的密码；会话开始前仍会询问设备前的人。",
+      "notMember": "不属于你的组织",
+      "onMachine": "在设备本机上",
+      "allow": "允许组织外的人控制此设备",
+      "allowHint": "默认关闭。批准只是五道关卡中的第二道，单独开启不会放行任何人。",
+      "ceiling": "外部会话最多可以",
+      "ceilingHint": "这是上限而不是授权：设备可以更严格，但不会更宽松。对只需观看、不需操作的人，{viewOnly}是稳妥的选择。",
+      "viewOnly": "仅查看",
+      "expires": "批准到期时间（可选）",
+      "expiresHint": "留空则批准一直有效，直到有人清除。大多数授权理由（外包人员、技术支持）都有结束日期；设置到期时间可以避免批准在不再需要后仍然有效。",
+      "code": "连接码",
+      "codeNone": "尚未创建",
+      "rotate": "轮换",
+      "create": "创建",
+      "codeHint": "外部人员输入此码来连接此设备。轮换可以让泄露的码失效，旧码会立即停止工作。",
+      "orgOff": "整个组织已关闭外部访问，所以此设备仍会拒绝。组织所有者可在设置中开启。它与远程执行和 SSH 是不同的开关。",
+      "tooOld": "此设备的客户端版本太旧，不支持外部访问：它无法告诉设备前的人控制者来自组织外。请先更新客户端。",
+      "devicePassword": "设备本身也必须允许，并且设置密码：在设备上运行 {cmd}。这由设备持有人决定，无法在这里设置，这正是设计目的：密码永远不会到达服务器。",
+      "ceil": {
+        "viewInput": "查看和控制（默认）",
+        "view": "仅查看（无键盘鼠标）",
+        "clipboard": "查看、控制和剪贴板",
+        "files": "查看、控制、剪贴板和文件传输"
+      },
+      "rotateFailed": "无法创建连接码。",
+      "saveFailed": "无法保存策略。"
+    },
+    "crash": {
+      "title": "崩溃报告 — {name}",
+      "refresh": "刷新崩溃列表",
+      "none": "没有崩溃报告。",
+      "col": {
+        "when": "时间",
+        "reason": "原因",
+        "summary": "摘要"
+      },
+      "host": "主机：",
+      "agent": "客户端：",
+      "os": "系统：",
+      "pid": "PID：",
+      "reported": "上报：",
+      "noTail": "（未附带日志）",
+      "reason": {
+        "panic": "崩溃（panic）",
+        "watchdog": "看门狗超时",
+        "supervisor": "守护进程检测"
+      }
+    },
+    "logs": {
+      "title": "客户端日志 — {name}",
+      "refresh": "刷新日志",
+      "minLevel": "最低级别",
+      "filter": "目标 / 消息包含",
+      "throughput": "仅隧道吞吐",
+      "count": "{shown} / {total} 行",
+      "none": "尚未上传日志。",
+      "noneHint": "客户端分批上传日志；如果刚启动或一直空闲，请稍等一分钟再刷新。",
+      "noMatch": "没有符合当前筛选的行。",
+      "batches": "{n} 批 · 最新 {age}",
+      "copy": "复制可见内容"
+    },
+    "exec": {
+      "title": "命令执行策略 — {name}",
+      "warn": "允许远程执行后，获准的用户可以以 {root}（Linux）身份运行命令；在 Windows 上，设备锚定后以 {system} 身份运行（否则在有人值守安装中以{signedIn}身份运行，在 SystemContext 模式下以 SYSTEM 运行）。这与远程控制是不同的权限，远程控制需要确认且在屏幕上可见。",
+      "signedIn": "当前登录用户",
+      "anchored": "已于 {when} 锚定：命令通过此设备的服务以 {system} 身份运行。",
+      "unanchor": "取消锚定",
+      "notAnchored": "未锚定：命令以{signedIn}身份（有人值守安装）或 SYSTEM 身份（SystemContext 模式）运行。要以 SYSTEM 运行，请在设备上以管理员身份执行：",
+      "accept": "允许在此设备上执行远程命令",
+      "originate": "允许此设备在其他设备上执行命令（roomler exec）",
+      "originateHint": "默认关闭。这样即使此设备被入侵，也无法借用其所有者的权限访问所有设备。",
+      "runAs": "命令运行身份",
+      "runAsWin": "默认为 {system}。{signedIn}以控制台当前登录的人运行命令，无人登录时拒绝。两者都通过设备的服务运行，因此设备必须已锚定。",
+      "runAsSignedIn": "当前登录用户",
+      "runAsUnix": "默认为 {root}。{person}以设备屏幕前当前登录的人运行命令，无人登录时拒绝。",
+      "runAsPerson": "设备屏幕前的用户",
+      "runAsTooOld": "此设备的客户端尚不支持：请更新，或选择 root。",
+      "consentHint": "{prompt}会询问设备前的人，30 秒无应答则拒绝，适合工作站。{unattended}立即运行，适合无人值守的服务器。",
+      "prompt": "询问",
+      "unattended": "无人值守",
+      "users": "仅限这些用户（留空 = 所有有权限的人）",
+      "shells": "允许的 shell（留空 = 设备支持的任意 shell）",
+      "orgOff": "整个组织已关闭远程执行，所以此设备仍会拒绝。组织所有者可在设置中开启。",
+      "deviceSwitch": "设备本身也必须允许：在设备上运行 {cmd}，然后重启服务。这个开关属于设备持有人，无法在这里设置。",
+      "anchorSwitch": "已锚定设备的服务还会检查自己的开关（以管理员身份运行 {cmd}）。",
+      "consent": {
+        "prompt": "在设备上询问（推荐）",
+        "auto": "无人值守：立即运行"
+      },
+      "opt": {
+        "system": "SYSTEM（默认）",
+        "signedIn": "当前登录用户",
+        "root": "root（默认）",
+        "person": "设备屏幕前的用户"
+      }
+    },
+    "sshp": {
+      "title": "SSH 策略 — {name}",
+      "warn": "允许 SSH 后，获准的用户可以在此设备上打开{shell}。这与远程执行是不同的权限：会话会持续存在，而不是一条事后可查看的单独命令。",
+      "shell": "交互式 shell",
+      "accept": "允许此设备接受 SSH 会话",
+      "originate": "允许此设备在其他设备上打开会话",
+      "runAs": "会话运行身份",
+      "coerced": "此设备曾被设置为{signedIn}，但其客户端不支持，会拒绝，所以每个会话都在连接时失败。请更新客户端，或选择一个账号并保存。",
+      "signedInLower": "当前登录用户",
+      "signedIn": "当前登录用户",
+      "systemService": "SYSTEM 服务",
+      "daemon": "守护进程账号",
+      "idService": "此设备通过其 {service}提供 SSH。{signedIn}是控制台前的人，无人时拒绝会话；这是工作站上最稳妥的选择。{daemon}即 {system}：选择它等于授予此设备的完全控制权。",
+      "idAgent": "{daemon}是客户端自身的账号：服务安装时为 {system}，有人值守安装时为{signedInLower}。{signedIn}在服务安装中可用；有人值守安装只能通过设备的 SYSTEM 服务提供，管理员需在设备上运行 {cmd} 开启。",
+      "idUnixNamed": "在服务器上，{named}是最稳妥的选择。",
+      "namedAccount": "指定账号",
+      "idUnixPerson": "{person}指当前登录在该设备屏幕上的人，无人登录时拒绝会话。",
+      "idUnixDaemon": "{daemon}即 {root}：选择它等于授予此设备的 root 权限。",
+      "personNeedsNewer": "“设备屏幕前的用户”需要此设备安装更新的客户端。",
+      "accountName": "账号名",
+      "accountPlaceholder": "例如 deploy",
+      "unixOnly": "仅限 Unix：Windows 设备会拒绝此模式，而不会悄悄改用其他账号。",
+      "consentHint": "{prompt}会询问设备前的人，30 秒无应答则拒绝，适合工作站。{unattended}立即打开，适合无人值守的服务器。被拒绝后授权即作废，调用方必须重新申请，而不能直接重连。",
+      "orgOff": "整个组织已关闭 SSH，所以此设备仍会拒绝。组织所有者可在设置中开启。它与远程执行是不同的开关。",
+      "opt": {
+        "signedIn": "设备上的当前登录用户",
+        "daemonRoot": "守护进程账号（root）",
+        "daemonSystem": "守护进程账号（SYSTEM）",
+        "daemonAgent": "守护进程账号（客户端自身）",
+        "named": "指定 Unix 账号…"
+      },
+      "consentAuto": "无人值守：立即打开"
+    },
+    "rcfg": {
+      "title": "设备配置 — {name}",
+      "intro": "这里记录你希望设备运行的配置。设备会在下次连接时应用，也可能拒绝：这些开关属于设备持有人，只有在设备本机上开启 {key} 之后，设备才会接受。",
+      "inForce": "当前生效：",
+      "waitingRestart": "已保存在设备上，等待重启：",
+      "exec": "远程执行",
+      "execSwitch": "接受远程命令（exec_enabled）",
+      "execHint": "命令以守护进程身份运行：systemd 下为 {root}；Windows 上为{signedIn}（有人值守安装）或 {system}（SystemContext 模式）。在设备上立即生效，无需重启。",
+      "needExec": "需要 {perm} 权限才能修改。为自己无权进入的门开锁，与给自己发钥匙是同样的越权。",
+      "sshSwitch": "运行 SSH 服务（ssh_enabled）",
+      "keys": "授权公钥：每行一个 OpenSSH 公钥",
+      "keysHint": "不修改此框则保留设备现有的公钥。空列表表示{nobody}。",
+      "nobody": "任何人都不能连接",
+      "accountMode": "公钥会话运行身份",
+      "accountHint": "清空 = 不管理。{onDevice}未设置时，公钥会话认证后{nothing}，这是有意的设计，避免一个没人看过的设置悄悄交出 SYSTEM/root。",
+      "onDevice": "设备上",
+      "nothing": "不运行任何程序",
+      "port": "SSH 端口（留空 = 不管理；设备默认 2222）",
+      "portHint": "使用 2222 而不是 22，以便现有的 {sshd} 继续服务覆盖网络地址。",
+      "needSsh": "需要 {perm} 权限才能修改这些设置。分发授权公钥或账号模式和打开开关一样，都是在授予 SSH 权限。",
+      "encoders": "视频编码器",
+      "cellsDeny": "禁用的编码器组合（encoder_cells_deny）",
+      "cellsHint": "逗号分隔的 {form} 组合，设备不得打开或公布，这是编码器组合矩阵的紧急开关。留空 = 不管理（设备保留自己的列表，内置 {builtin}）；{none} = 不禁用任何组合。它只会移除组合，因此不需要额外权限；在守护进程下次重启时生效。",
+      "fpsDeny": "禁用的帧率（fps_deny）",
+      "fpsHint": "逗号分隔的 {form}，设备不得提供的 60 以上帧率，{star} 表示所有编码器。留空 = 不管理（设备保留自己的设置，默认不禁用）；{none} = 不禁用任何帧率。它只会移除帧率，因此不需要额外权限；在守护进程下次重启时生效。",
+      "sshOrgOff": "整个组织已关闭 SSH（与远程执行是不同的开关）。组织所有者可在设置中开启。",
+      "stop": "停止管理",
+      "request": "发送请求",
+      "st": {
+        "applied": "已应用",
+        "appliedDetail": "设备已确认此配置，并且已生效。",
+        "restart": "已保存在设备上：需要重启",
+        "restartDetail": "这些设置已写入磁盘但尚未生效。SSH 服务在守护进程启动时接入数据包路径，所以重启前不会提供会话。",
+        "secondary": "已拒绝：此组织在该设备上是次要组织",
+        "notOptedIn": "已拒绝：设备尚未开启远程配置",
+        "secondaryDetail": "这些设置作用于整台设备，只有设备的主组织可以修改。请联系该组织的管理员，或直接在设备上配置。",
+        "notOptedInDetail": "需要能接触设备的人在设备上运行 {cmd}。这个开关无法在这里设置，这正是设计目的：即使服务器被入侵，也无法借此打开你的设备。",
+        "failed": "设备尝试应用但失败",
+        "failedDetail": "设备无法写入配置，通常是设备上的权限或磁盘问题。",
+        "pending": "等待设备",
+        "pendingDetail": "已发送请求。设备会在下次连接时同步；离线设备上线后会自动获取，无需重新发送。",
+        "noReport": "此设备无法回报结果",
+        "noReportDetail": "客户端 {v} 能接收推送的配置，但不能回报处理结果。它可能已经应用，但这里无法确认。请更新设备客户端。",
+        "tooOld": "此设备版本太旧",
+        "tooOldDetail": "客户端 {v} 早于远程配置功能，因此不会向它发送任何内容。请更新，或直接在设备上设置。"
+      },
+      "warn": {
+        "emptyKeys": "SSH 已开启但公钥列表为空，意味着任何人都无法连接。请添加公钥，或不管理公钥列表以保留设备自己的设置。",
+        "sshAlone": "仅开启 SSH 不会授予任何访问：设备还需要授权公钥和账号模式。如果设备已有，可忽略此提示。",
+        "noAccount": "你发送了公钥但没有账号模式。账号模式未设置的设备上，公钥会话认证后不会运行任何程序。"
+      },
+      "daemonAccount": "守护进程账号（SYSTEM / root）",
+      "saveFailed": "无法记录请求。"
+    },
+    "managed": {
+      "leave": "不管理",
+      "off": "关闭",
+      "on": "开启"
+    },
+    "stall": {
+      "chip": "未更新",
+      "behindPlus": "{n}+ 个版本",
+      "behindOne": "1 个版本",
+      "behindN": "{n} 个版本",
+      "days": "{n} 天",
+      "hours": "{n} 小时",
+      "tooltip": "v{version} 落后 {behind}：{first} 已发布 {ago}，此设备在线但尚未安装。",
+      "remedyLinux": "0.4.138 之前按用户安装的 Linux 客户端无法自行更新。请在设备上手动安装一次当前版本（sudo apt install ./roomlerd.deb、软件中心，或重新运行安装脚本），之后它会自动更新。如果是系统安装且停止了更新，请在设备上检查 'roomler config ls' 中的 auto_update 和日志（'roomler logs --grep update'）。",
+      "remedyOther": "请在设备上检查 'roomler config ls' 中的 auto_update 和日志（'roomler logs --grep update'）。"
+    },
+    "cred": {
+      "today": "凭据今天过期",
+      "inDays": "凭据 {days} 天后过期",
+      "soonTip": "设备令牌将于 {on} 过期。0.4.135 及以上版本的客户端会提前 180 天自动续期，这么接近过期说明它没有续期：请更新客户端，或检查它是否已被移除并在别处重新注册。",
+      "expired": "凭据已过期",
+      "renewableTip": "设备令牌已于 {on} 过期。设备升级到 0.4.135 或以上版本后，服务器在接下来 {days} 天内仍会为其续期；之后需要重新注册。",
+      "lostTip": "设备令牌已于 {on} 过期，超过 {grace} 天：请重新注册设备。"
+    },
+    "refusal": {
+      "primary_org": "其更新由另一个组织管理",
+      "auto_update_off": "设备上已关闭自动更新",
+      "pin_downgrade": "固定版本会导致降级",
+      "other": "已拒绝"
+    },
+    "codec": {
+      "hw": "硬件加速 {codec} 编码器",
+      "sw": "软件 {codec} 编码器",
+      "yuv444": "，支持 4:4:4（全色度分辨率）",
+      "hwAvailable": "可用硬件加速 {codec} 编码器",
+      "swAvailable": "可用软件 {codec} 编码器"
+    },
+    "perm": {
+      "noScreen": "无屏幕权限",
+      "noScreenTip": "系统未授予此设备屏幕录制权限，远程画面将是空白。macOS：系统设置 → 隐私与安全性 → 屏幕录制。",
+      "noInput": "无输入权限",
+      "noInputTip": "系统未授予此设备输入注入权限，远程键盘和鼠标将不起作用。macOS：系统设置 → 隐私与安全性 → 辅助功能。"
+    },
+    "chat": {
+      "react": "添加表情回应",
+      "reactShort": "回应",
+      "replyInThread": "在话题中回复",
+      "editMessage": "编辑消息",
+      "deleteMessage": "删除消息",
+      "actions": "消息操作",
+      "editPlaceholder": "编辑消息…",
+      "replyOne": "{n} 条回复",
+      "replyMany": "{n} 条回复",
+      "viewThread": "查看话题",
+      "deleteTitle": "删除这条消息？",
+      "cannotUndo": "此操作无法撤销。",
+      "writePlaceholder": "输入消息…",
+      "uploadFailed": "文件上传失败，请重试。",
+      "send": "发送",
+      "searchMembers": "搜索成员…",
+      "noMembers": "没有找到成员",
+      "searchFiles": "搜索文件…",
+      "noFiles": "此房间没有文件",
+      "gifs": "GIF 动图",
+      "trending": "热门",
+      "searchGifs": "搜索 GIF…",
+      "poweredByGiphy": "由 GIPHY 提供"
+    },
+    "notif": {
+      "title": "通知",
+      "markAllRead": "全部标为已读",
+      "empty": "没有通知"
+    },
+    "search": {
+      "close": "关闭搜索",
+      "placeholder": "搜索消息、房间和用户…",
+      "intro": "输入内容以搜索消息、房间和用户",
+      "noResults": "没有找到与“{query}”相关的结果",
+      "messages": "消息",
+      "rooms": "房间",
+      "people": "用户",
+      "inRoom": "{author} 在 #{room}"
+    },
+    "layout": {
+      "collapseSidebar": "收起侧边栏",
+      "selectOrg": "选择组织",
+      "newOrg": "新建组织",
+      "allOrgs": "全部组织",
+      "openDevices": "打开设备页面",
+      "searchDevices": "搜索设备",
+      "openRooms": "打开房间页面",
+      "searchRooms": "搜索房间",
+      "menu": "菜单",
+      "inCallMuted": "通话中（已静音）· 通话控制",
+      "inCall": "通话中 · 通话控制",
+      "call": "通话",
+      "returnToCall": "返回通话",
+      "cameraOff": "关闭摄像头",
+      "cameraOn": "打开摄像头",
+      "hangUp": "挂断",
+      "activeCallOne": "{n} 个进行中的通话",
+      "activeCallMany": "{n} 个进行中的通话",
+      "activeCalls": "进行中的通话",
+      "unreadOne": "{n} 条未读消息",
+      "unreadMany": "{n} 条未读消息",
+      "lightMode": "浅色模式",
+      "darkMode": "深色模式",
+      "profile": "个人资料",
+      "docs": "文档",
+      "reconnecting": "连接已断开，正在重新连接…",
+      "orgName": "名称",
+      "orgSlug": "标识",
+      "orgSlugHint": "用于网址的标识，全局唯一",
+      "create": "创建",
+      "createOrgFailed": "创建组织失败",
+      "slugTaken": "该标识已被占用，请换一个"
+    },
+    "chatView": {
+      "files": "文件",
+      "members": "成员",
+      "panels": "房间面板",
+      "agentSession": "智能体会话",
+      "closeTranscript": "关闭会话记录",
+      "thread": "话题",
+      "replyPlaceholder": "在话题中回复…"
+    },
+    "notFound": {
+      "title": "页面不存在",
+      "body": "你要找的页面不存在或已被移动。",
+      "home": "前往仪表盘"
+    },
+    "oauth": {
+      "back": "返回登录",
+      "failed": "OAuth 登录未能完成"
+    },
+    "rooms": {
+      "discover": "发现并加入开放房间",
+      "noTopic": "未设置主题",
+      "noMatch": "没有找到与“{query}”匹配的房间",
+      "noOpen": "暂无开放房间。试着创建一个吧！",
+      "empty": "还没有房间",
+      "emptyBody": "创建第一个房间，与团队聊天、分享文件或发起通话。",
+      "walkThrough": "带我了解",
+      "created": "房间已创建",
+      "deleteTitle": "删除“{name}”？",
+      "deleteBody": "这将永久删除该房间及其全部消息、文件和成员。此操作无法撤销。",
+      "assignRole": "分配角色",
+      "role": "角色",
+      "roleAssigned": "角色已分配",
+      "assignFailed": "分配角色失败"
+    },
+    "files": {
+      "search": "搜索文件",
+      "columns": "配置列",
+      "all": "全部文件",
+      "room": "房间文件",
+      "uploading": "正在上传文件…",
+      "col": {
+        "name": "名称",
+        "room": "房间",
+        "type": "类型",
+        "size": "大小",
+        "uploaded": "上传时间",
+        "actions": "操作"
+      }
+    },
+    "settings": {
+      "workspace": "工作区设置",
+      "workspaceName": "工作区名称",
+      "slug": "标识",
+      "exec": {
+        "title": "远程命令执行",
+        "warn": "开启后，拥有 {perm} 权限的用户可以在单独选择加入的设备上运行命令。命令在 Linux 上以 {root} 身份运行；在 Windows 上，管理员锚定设备后，通过设备服务以 {system} 身份运行。未锚定的 Windows 设备在有人值守的安装中以{user}身份运行，在 SystemContext 模式下以 SYSTEM 身份运行。所有命令都会记入审计日志。",
+        "signedInUser": "当前登录用户",
+        "allow": "允许在此组织中远程执行命令",
+        "requireSystem": "Windows：要求 SYSTEM",
+        "requireSystemHint": "管理员锚定 Windows 设备后（以管理员权限运行 {cmd}），设备以 SYSTEM 身份运行命令。开启此项后，未锚定的设备会拒绝命令，而不是以当前登录的用户身份运行。"
+      },
+      "offDeviceGate": "默认关闭。开启后不会自动启用任何设备：每台设备还需单独允许，且设备自身的 {setting} 设置也必须允许。",
+      "ssh": {
+        "title": "MeshHarbor SSH",
+        "warn": "开启后，拥有 {perm} 权限的用户可以在单独选择加入的设备上打开交互式 Shell。与单条命令不同，会话会持续存在；以哪个账户运行由每台设备单独设置。",
+        "allow": "允许在此组织中使用 SSH 会话"
+      },
+      "ext": {
+        "title": "外部访问",
+        "warn": "开启后，{outside}的人可以控制单独选择加入的设备，就像技术支持人员访问一台不归自己管理的机器。他们需要设备的连接码，以及保存在{onDevice}的密码，此服务器永远看不到该密码。",
+        "outside": "此组织以外",
+        "onDevice": "设备本机上",
+        "allow": "允许此组织以外的人控制设备",
+        "hint": "默认关闭，开启后本身不会开放任何设备。每台设备都需单独批准，其所有者必须在本机上启用并设置密码，并且每次会话开始前仍会征求设备前用户的同意。"
+      },
+      "kb": {
+        "title": "保持活跃",
+        "body": "拥有输入权限的控制者可以让设备指针按某种轨迹移动，使设备保持活跃：不会出现屏幕保护、空闲锁屏或“离开”状态。有人使用设备时会自动暂停。由于这会绕过锁屏策略，一些组织不允许使用。",
+        "allow": "允许在此组织中使用“保持活跃”",
+        "hint": "默认开启。关闭后会停止组织内所有设备上的“保持活跃”：在线设备立即停止，其余设备在下次连接时停止。设备所有者也可以在该设备上关闭它（{setting}）。",
+        "notAllowed": "不允许",
+        "allowed": "允许"
+      },
+      "rc": {
+        "title": "远程会话功能",
+        "body": "选择此组织中的远程桌面会话可以使用哪些功能。{ask} 表示只有当设备前的用户在列出该功能的提示中批准会话时才允许使用；无人被询问的会话（无人值守的设备、你自己的设备、管理员强制发起的会话）则不使用该功能。",
+        "askWord": "询问",
+        "hint": "默认开启。设备所有者也可以在该设备上分别关闭它们（{a}、{b}、{c}）。更改对之后开始的会话生效。",
+        "clipboard": "剪贴板",
+        "fileTransfer": "文件传输",
+        "files": "文件",
+        "audio": "设备音频",
+        "audioShort": "音频",
+        "on": "开启",
+        "ask": "询问设备前的用户",
+        "off": "关闭",
+        "pol": {
+          "ask": "询问",
+          "off": "关闭",
+          "on": "开启"
+        },
+        "allOn": "全部开启"
+      },
+      "keys": {
+        "title": "临时注册密钥",
+        "warn": "开启后，设备管理员可以签发{reusable}的注册密钥，用于创建会{selfRemoving}的设备（CI 运行器、容器）。密钥是长期有效的凭据：在被撤销、用尽或过期之前，任何持有者都能把设备注册到此组织。",
+        "reusable": "可重复使用",
+        "selfRemoving": "自行移除",
+        "allow": "允许在此组织中使用临时注册密钥",
+        "hint": "默认关闭。关闭即在整个组织范围内撤销：所有未用完的密钥在下次使用时失效。已创建的设备不受影响，它们会在各自的期限到达时自行移除。"
+      },
+      "lim": {
+        "title": "远程会话限制",
+        "max": "最长会话时长",
+        "maxHint": "会话开始后达到此时长即结束，并告知控制者原因。默认不限制。更改对之后开始的会话生效。",
+        "idle": "无活动多久后结束会话",
+        "idleHint": "控制者在此时长内没有输入且屏幕没有变化。结束前不久会提醒他们。此限制由设备执行，因此代理版本早于此功能的设备不会执行。默认不限制。",
+        "none": "不限制",
+        "minutes": "{n} 分钟",
+        "hour": "1 小时",
+        "hours": "{n} 小时",
+        "maxPart": "最长 {d}",
+        "idlePart": "空闲 {d}",
+        "noLimits": "不限制"
+      }
+    },
+    "valid": {
+      "required": "此项为必填项",
+      "email": "邮箱地址无效",
+      "minLength": "至少需要 {n} 个字符",
+      "maxLength": "最多 {n} 个字符",
+      "positive": "必须是正数",
+      "slug": "只能包含小写字母、数字和连字符"
+    },
+    "roles": {
+      "title": "角色与权限",
+      "new": "新建角色",
+      "edit": "编辑角色",
+      "intro": "角色是一组权限的集合，一个成员可以拥有多个角色。修改需要 {perm} 权限，否则服务器会拒绝。请在“成员”部分为人员分配角色。",
+      "empty": "还没有角色。创建一个角色即可开始委派权限。",
+      "col": {
+        "role": "角色",
+        "permissions": "权限",
+        "actions": "操作"
+      },
+      "default": "默认",
+      "managed": "托管",
+      "adminAll": "管理员（全部）",
+      "noPermissions": "无权限",
+      "permOne": "{n} 项权限",
+      "permMany": "{n} 项权限",
+      "name": "名称",
+      "position": "位置（数值小的排在前面）",
+      "description": "描述（可选）",
+      "color": "颜色",
+      "memberDefaults": "成员默认",
+      "adminDefaults": "管理员默认",
+      "none": "无",
+      "adminWarn": "管理员会绕过其他所有权限检查：持有者可以做任何事，包括管理角色和远程控制设备。",
+      "save": "保存",
+      "create": "创建",
+      "deleteTitle": "删除角色",
+      "deleteBody": "删除 {name}？拥有该角色的成员会立即失去其权限。",
+      "nameRequired": "名称为必填项。",
+      "positionInvalid": "位置必须 ≥ 0。"
+    },
+    "members": {
+      "title": "成员",
+      "search": "搜索姓名或邮箱",
+      "add": "添加成员",
+      "total": "共 {n} 人",
+      "rolesFailed": "加载角色失败：{error}",
+      "intro": "通过分配角色来授予权限：设备访问（远程控制、设备管理、审计）都由角色决定。更改角色需要 {perm} 权限。新成员可以通过邀请加入，也可以通过邮箱添加已有账号。",
+      "leave": "退出",
+      "remove": "移除",
+      "ownerFixed": "不能移除组织所有者",
+      "addTitle": "通过邮箱添加成员",
+      "addBody": "添加此服务器上已有的账号。对于没有账号的人，请改用邀请。",
+      "email": "邮箱地址",
+      "addBtn": "添加",
+      "leaveTitle": "退出组织",
+      "removeTitle": "移除成员",
+      "rolesTitle": "角色 · {name}",
+      "rolesUnloaded": "无法加载角色：{error}",
+      "noRoles": "还没有角色，请先在“角色”部分创建。",
+      "done": "完成",
+      "col": {
+        "member": "成员",
+        "email": "邮箱",
+        "roles": "角色",
+        "joined": "加入时间",
+        "actions": "操作"
+      },
+      "leaveMsg": "退出此组织？在有人重新添加或邀请你之前，你将无法访问。",
+      "removeMsg": "将 {who} 从组织中移除？其账号不受影响，只是失去这里的访问权限。",
+      "thisMember": "该成员"
+    },
+    "permFlag": {
+      "VIEW_CHANNELS": {
+        "label": "查看频道"
+      },
+      "MANAGE_CHANNELS": {
+        "label": "管理频道"
+      },
+      "MANAGE_ROLES": {
+        "label": "管理角色"
+      },
+      "MANAGE_TENANT": {
+        "label": "管理组织"
+      },
+      "INVITE_MEMBERS": {
+        "label": "邀请成员"
+      },
+      "ADMINISTRATOR": {
+        "label": "管理员",
+        "description": "绕过所有权限检查，隐式授予下列全部权限。"
+      },
+      "SEND_MESSAGES": {
+        "label": "发送消息"
+      },
+      "SEND_THREADS": {
+        "label": "创建话题"
+      },
+      "EMBED_LINKS": {
+        "label": "嵌入链接"
+      },
+      "ATTACH_FILES": {
+        "label": "附加文件"
+      },
+      "READ_HISTORY": {
+        "label": "读取历史消息"
+      },
+      "MENTION_EVERYONE": {
+        "label": "提及 {everyone}"
+      },
+      "MANAGE_MESSAGES": {
+        "label": "管理消息"
+      },
+      "ADD_REACTIONS": {
+        "label": "添加表情回应"
+      },
+      "CONNECT_VOICE": {
+        "label": "加入语音"
+      },
+      "SPEAK": {
+        "label": "发言"
+      },
+      "STREAM_VIDEO": {
+        "label": "发送视频"
+      },
+      "MANAGE_MEETINGS": {
+        "label": "管理会议"
+      },
+      "KICK_MEMBERS": {
+        "label": "踢出成员"
+      },
+      "BAN_MEMBERS": {
+        "label": "封禁成员"
+      },
+      "MUTE_MEMBERS": {
+        "label": "将成员静音"
+      },
+      "DEAFEN_MEMBERS": {
+        "label": "禁止成员收听"
+      },
+      "MOVE_MEMBERS": {
+        "label": "移动成员"
+      },
+      "MANAGE_DOCUMENTS": {
+        "label": "管理文档"
+      },
+      "MANAGE_AGENTS": {
+        "label": "管理设备",
+        "description": "注册、重命名、删除、重新分配远程控制设备，并为其设置策略。"
+      },
+      "REMOTE_CONTROL": {
+        "label": "远程控制",
+        "description": "对用户不拥有的设备发起远程控制会话（控制自己的设备永远不需要此权限）。"
+      },
+      "VIEW_REMOTE_AUDIT": {
+        "label": "查看远程审计日志",
+        "description": "读取远程控制会话的审计记录。"
+      },
+      "EXEC_DEVICE": {
+        "label": "在设备上运行命令",
+        "description": "通过 Fleet RPC 在设备上运行命令。命令在 Linux 上以 root 身份执行；在 Windows 上以守护进程的工作进程身份执行：有人值守安装时为当前登录用户，SystemContext 模式下为 SYSTEM。还需要组织开关、设备策略和设备本地密钥同时允许。"
+      },
+      "VIEW_EXEC_AUDIT": {
+        "label": "查看命令审计日志",
+        "description": "读取 Fleet-RPC 审计记录：谁在哪里运行了什么。"
+      },
+      "SSH_DEVICE": {
+        "label": "SSH 连接设备",
+        "description": "打开到设备的交互式 MeshHarbor SSH 会话。权限严格大于单条命令：会话会持续存在，并支持文件传输。"
+      },
+      "VIEW_SSH_AUDIT": {
+        "label": "查看 SSH 审计日志",
+        "description": "读取 MeshHarbor SSH 审计记录：谁获准或被拒绝建立会话。"
+      },
+      "RECORD_REMOTE_SCREEN": {
+        "label": "录制远程屏幕",
+        "description": "在远程控制会话期间录制设备屏幕。设备必须允许，且设备前的用户能看到正在录制。录像在会话结束后仍会保留，因此默认不授予任何角色。"
+      },
+      "HIVE_RUN": {
+        "label": "运行智能体会话",
+        "description": "在设备上启动并驱动 AI 智能体会话。会话以设备为你映射的账户运行（绝不是 SYSTEM 或 root），且仅在设备允许的地方运行。它会在那台设备上运行命令，因此默认不授予任何角色。"
+      }
+    },
+    "permGroup": {
+      "general": "常规",
+      "messaging": "消息",
+      "voice": "语音和视频",
+      "moderation": "管理",
+      "remote": "远程控制",
+      "fleet": "设备群访问"
+    },
+    "audit": {
+      "refresh": "刷新",
+      "retained": "保留 90 天。",
+      "col": {
+        "when": "时间",
+        "device": "设备",
+        "what": "事件",
+        "detail": "详情",
+        "result": "结果",
+        "who": "操作人",
+        "via": "途径",
+        "as": "身份",
+        "command": "命令"
+      },
+      "showMore": "再显示 {n} 条",
+      "showLess": "收起",
+      "showAll": "显示全部",
+      "exit": "退出码 {code}",
+      "ok": "成功",
+      "refused": "已拒绝",
+      "granted": "已准许",
+      "denied": "已拒绝",
+      "deviceService": "设备服务",
+      "deny": {
+        "org_disabled": "组织已关闭",
+        "no_permission": "无权限",
+        "device_disabled": "设备已关闭",
+        "caller_not_allowed": "调用者不被允许",
+        "shell_not_allowed": "Shell 不被允许",
+        "origin_not_allowed": "来源不被允许",
+        "unsupported": "代理版本过旧",
+        "offline": "设备离线",
+        "consent_denied": "未获同意",
+        "rate_limited": "频率受限",
+        "agent_disabled": "设备上已禁用",
+        "system_required": "需要 SYSTEM",
+        "claim_refused": "认领被拒绝",
+        "run_as_unavailable": "需要 SYSTEM 服务",
+        "no_overlay_address": "不在网格中",
+        "bad_public_key": "公钥无效",
+        "grant_expired_on_arrival": "授权到达时已过期（时钟偏差？）",
+        "grant_refused": "设备拒绝了授权",
+        "grant_unconfirmed": "设备未确认"
+      },
+      "sshDeny": {
+        "agent_disabled": "设备上已关闭 SSH",
+        "claim_refused": "服务认领被拒绝"
+      },
+      "ranAs": {
+        "system": "SYSTEM",
+        "console_user": "以用户身份"
+      },
+      "ranAsSystemTitle": "通过设备服务以 SYSTEM 身份运行",
+      "ranAsUserTitle": "通过设备服务以当前登录用户身份运行",
+      "exec": {
+        "title": "命令审计",
+        "subtitle": "此组织设备上尝试过的每一条远程命令，包括被拒绝的。保留 90 天。",
+        "empty": "还没有人尝试运行命令。"
+      },
+      "ssh": {
+        "title": "SSH 审计",
+        "subtitle": "此组织设备上请求过的每一个 SSH 会话，包括被拒绝的。保留 90 天。",
+        "info": "这些是访问{decisions}，而不是会话录像。MeshHarbor SSH 通过网格点对点运行，因此服务器只知道谁被允许进入、以哪个账户进入，永远看不到输入的内容。",
+        "decisions": "决定",
+        "empty": "还没有人请求 SSH 会话。"
+      },
+      "act": {
+        "title": "SSH 活动",
+        "subtitle": "设备上报的 SSH 会话内操作。保留 90 天。",
+        "warn": "{emptyNote}上报是按设备设置的（{setting}），默认关闭，因此从未开启的设备看起来与空闲设备完全一样。这些记录也只是设备对自身的陈述：被入侵的主机完全可以停止上报。{auditLog}日志记录了服务器做出的每一个访问决定，与设备事后的说法无关。",
+        "emptyNote": "列表为空并不代表什么都没发生。",
+        "info": "会记录命令，但{notContent}。这里没有终端录像，也没有命令输出：录制会话意味着把输入的一切（包括密码）发送出设备。命令在离开主机前会经过脱敏和截断。",
+        "notContent": "不记录会话内容",
+        "empty": "还没有设备上报 SSH 活动。"
+      },
+      "kind": {
+        "session_open": "已连接",
+        "session_close": "已断开",
+        "exec": "运行了命令",
+        "shell": "打开了 Shell",
+        "sftp": "文件传输",
+        "forward": "端口转发"
+      }
+    },
+    "sshAs": {
+      "systemTitle": "由设备的 SYSTEM 服务提供，以 SYSTEM 身份",
+      "signedIn": "当前登录用户",
+      "consoleTitle": "由设备的 SYSTEM 服务提供，以控制台上登录的用户身份",
+      "agentAccount": "代理账户",
+      "agentTitle": "代理运行所用的账户：Linux 和 macOS 上为 root，Windows 服务安装为 SYSTEM，有人值守的 Windows 安装为当前登录用户。",
+      "userTitle": "在设备控制台上登录的用户",
+      "named": "指定账户",
+      "namedTitle": "策略指定的本地账户"
+    },
+    "console": {
+      "title": "设备控制台 · {name}",
+      "close": "关闭",
+      "warn": "命令以 MeshHarbor 守护进程的权限运行：Linux 上为 {root}。Windows 上，有人值守安装时以{user}身份运行，SystemContext 模式下以 {system} 身份运行。每次尝试都会记入组织的执行审计日志。",
+      "shell": "Shell",
+      "timeout": "超时（秒）",
+      "command": "命令",
+      "hint": "按 Ctrl+Enter 运行",
+      "run": "运行",
+      "default": "默认",
+      "truncated": "输出已截断",
+      "copy": "复制输出",
+      "empty": "本次会话还没有运行命令。",
+      "hostDefaultPs": "主机默认（PowerShell）",
+      "hostDefaultBash": "主机默认（bash）",
+      "orgOff": "此组织已关闭远程执行。组织所有者可以在“设置”中开启。",
+      "deviceOff": "此设备不接受远程命令。请在设备的执行策略中开启。",
+      "offline": "此设备离线，在重新连接前命令都会失败。",
+      "tooOld": "此设备运行的代理版本为 {version}，早于远程执行功能。请先更新。"
+    },
+    "enroll": {
+      "titleAgent": "注册新设备",
+      "titleTunnel": "注册隧道客户端",
+      "tokenNote": "下面的令牌{single}，{n} 分钟后过期。请选择你的平台：推荐的命令会一步完成安装和注册。",
+      "singleUse": "只能使用一次",
+      "copyToken": "复制令牌",
+      "copied": "已复制",
+      "copy": "复制",
+      "scope": "安装范围",
+      "scopeSystem": "后台服务",
+      "scopeMachine": "有人值守服务",
+      "scopeUser": "仅当前用户",
+      "hintSystem": "在登录前启动，注销后继续运行，推荐用于服务器和无人值守的机器。",
+      "hintMachine": "面向整台机器的服务，在有用户登录时运行。",
+      "hintUser": "仅为你的账户安装并自动启动，不需要管理员权限。",
+      "anchorLabel": "同时允许管理员在此设备上以 SYSTEM 身份运行命令",
+      "anchorHint": "这样令牌还可以锚定它注册的设备（仅一次）。MeshHarbor Setup 会在第二次管理员提示后自动完成；通过脚本或手动安装后，请运行下面的锚定命令。只把此令牌交给以管理员身份安装的人。",
+      "download": "下载 MeshHarbor Setup",
+      "thenPaste": "然后把令牌粘贴到向导中",
+      "close": "关闭"
+    },
+    "enrollCmd": {
+      "oneLine": "推荐：一行命令安装",
+      "oneLinePs": "推荐：一行命令安装（PowerShell）",
+      "manual": "已经安装？手动注册",
+      "wizard": "图形安装程序（MeshHarbor Setup）",
+      "anchor": "然后在同一个管理员 PowerShell 中锚定它（将 {placeholder} 替换为设备页面上的 ID）",
+      "noteWindows": "整机安装：请在管理员 PowerShell（终端（管理员））中运行下面的命令。",
+      "noteLinux": "安装一个以 root 运行的 systemd 系统服务（sudo 会提示输入密码）。屏幕捕获需要已登录的会话，桌面电脑请选择“仅当前用户”。",
+      "noteMac": "安装按用户运行的部分（屏幕共享和输入）。如果还要加入覆盖网格，请再签发一个注册令牌并追加 --daemon-token {token}，这会为这台 Mac 添加一个 root LaunchDaemon 和第二条设备记录。"
+    },
+    "invite": {
+      "title": "邀请链接",
+      "search": "搜索邀请码或邮箱",
+      "status": "状态",
+      "batch": "批量邀请",
+      "create": "创建邀请",
+      "unlimited": "不限",
+      "anyone": "任何人",
+      "shareable": "可分享链接",
+      "emailInvite": "邮件邀请",
+      "email": "邮箱地址",
+      "maxUses": "最多使用次数（留空表示不限）",
+      "expires": "有效期（小时）",
+      "expiresDefault": "168（7 天）",
+      "createBtn": "创建",
+      "col": {
+        "code": "邀请码",
+        "status": "状态",
+        "target": "对象",
+        "usage": "使用次数",
+        "created": "创建时间",
+        "actions": "操作"
+      },
+      "copied": "邀请链接已复制到剪贴板",
+      "created": "邀请已创建",
+      "createFailed": "创建邀请失败",
+      "revoked": "邀请已撤销",
+      "revokeFailed": "撤销邀请失败",
+      "st": {
+        "active": "有效",
+        "expired": "已过期",
+        "revoked": "已撤销",
+        "exhausted": "已用完"
+      },
+      "loading": "正在加载邀请…",
+      "notFound": "找不到邀请",
+      "invalidLink": "此邀请链接可能无效或已过期。",
+      "goLogin": "前往登录",
+      "invited": "你收到了邀请！",
+      "join": "加入 {org}",
+      "invitedBy": "邀请人：{name}",
+      "noLongerValid": "此邀请已失效（{status}）。",
+      "alreadyMember": "你已经是此组织的成员。",
+      "goTo": "前往 {org}",
+      "accept": "接受并加入",
+      "registerJoin": "注册后加入",
+      "loginJoin": "登录后加入",
+      "batchIntro": "一次添加多个邮件邀请，每个邀请可以分配不同的角色。",
+      "emailShort": "邮箱",
+      "role": "角色",
+      "addAnother": "再添加一个",
+      "defaultHint": "默认：168（7 天）",
+      "nth": "邀请 #{n}",
+      "done": "完成",
+      "sendAll": "全部发送（{n}）",
+      "invalidEmail": "邮箱无效",
+      "emailOne": "已发送 {n} 封邮件。",
+      "emailMany": "已发送 {n} 封邮件。",
+      "noEmails": "未发送邮件：尚未配置邮件投递，请从列表中分享邀请链接。",
+      "allCreated": "已全部创建 {n} 个邀请。",
+      "nSent": "已发送 {n} 个邀请",
+      "nCreated": "已创建 {n} 个邀请",
+      "allFailed": "{n} 个邀请全部失败。",
+      "allFailedShort": "邀请全部失败",
+      "mixed": "{created} 个已创建，{failed} 个失败。",
+      "batchFailed": "批量邀请发送失败。",
+      "batchFailedShort": "批量邀请发送失败"
+    },
+    "news": {
+      "getUpdates": "获取产品动态",
+      "blurbTo": "MeshHarbor Field Notes：每月最多一封，一键退订，直接发送到 {email}。",
+      "blurb": "MeshHarbor Field Notes：每月最多一封，一键退订。",
+      "keepPosted": "订阅",
+      "noThanks": "不用了",
+      "subscribedToast": "已订阅：只发送产品动态，每月最多一封",
+      "subscribeFailed": "订阅失败，请重试",
+      "productUpdates": "产品动态",
+      "subscribeAria": "订阅产品动态",
+      "subscribed": "已订阅产品动态",
+      "unsubscribed": "已退订产品动态",
+      "prefFailed": "无法更新你的订阅设置"
+    },
+    "dash": {
+      "firstWorkspace": "创建你的第一个工作区",
+      "workspaceName": "工作区名称",
+      "slug": "标识",
+      "slugHint": "用于网址的标识",
+      "create": "创建",
+      "newOrg": "新建组织",
+      "name": "名称",
+      "workspaceCreated": "工作区已创建",
+      "createFailed": "创建工作区失败",
+      "overview": "工作区概览",
+      "devicesOnline": "在线设备",
+      "tunnels": "隧道",
+      "rooms": "房间",
+      "activeCalls": "进行中的通话",
+      "messages": "消息",
+      "insights": "洞察",
+      "machinesOnline": "在线机器 · 24 小时",
+      "online": "在线",
+      "noSamples": "暂无采样数据，一小时内会出现",
+      "callMinutes": "通话分钟数 · 7 天",
+      "today": "今天 {n}",
+      "minutes": "分钟",
+      "noCalls": "最近 7 天没有通话",
+      "network": "网络",
+      "quick": "快捷操作",
+      "newRoom": "新建房间",
+      "startCall": "发起通话",
+      "uploadFile": "上传文件",
+      "manage": "管理",
+      "devices": "设备",
+      "devicesHint": "远程控制、注册、更新",
+      "networkHint": "覆盖网格、隧道、ACL、路由、DNS",
+      "membersRoles": "成员与角色",
+      "membersHint": "人员、权限、组织设置",
+      "invites": "邀请",
+      "invitesHint": "邀请队友加入此组织",
+      "analytics": "分析",
+      "analyticsHint": "机器、通话和隧道流量的趋势",
+      "callName": "通话 - {when}"
+    },
+    "profile": {
+      "edit": "编辑个人资料",
+      "displayName": "显示名称",
+      "bio": "简介",
+      "avatar": "头像网址",
+      "avatarHint": "图片的直接链接",
+      "language": "语言",
+      "timezone": "时区",
+      "save": "保存",
+      "saved": "个人资料已保存",
+      "saveFailed": "保存个人资料失败",
+      "memberSince": "注册时间",
+      "presence": {
+        "online": "在线",
+        "idle": "空闲",
+        "dnd": "勿扰",
+        "offline": "离线"
+      }
+    },
+    "conf": {
+      "call": "通话",
+      "ready": "准备好加入了吗？",
+      "microphone": "麦克风",
+      "camera": "摄像头",
+      "closeChat": "关闭聊天",
+      "alreadyTitle": "已在通话中",
+      "alreadyBody": "你已经在“{room}”的通话中。要离开那个通话并加入这个吗？",
+      "switch": "切换通话",
+      "device": "设备 {n}",
+      "notOnScreen": "该视频当前不在屏幕上",
+      "denied": "摄像头/麦克风访问被拒绝。请在浏览器设置中允许权限。",
+      "noDevice": "没有找到摄像头或麦克风。请连接设备后重试。",
+      "joinFailed": "加入通话失败：{error}",
+      "shareFailed": "屏幕共享失败：{error}",
+      "status": {
+        "in_progress": "进行中",
+        "scheduled": "已安排",
+        "ended": "已结束"
+      },
+      "you": "你",
+      "youSuffix": "（你）",
+      "leavePip": "退出画中画",
+      "pip": "画中画",
+      "exitFullscreen": "退出全屏",
+      "fullscreen": "全屏",
+      "returnToCall": "返回通话",
+      "upload": "上传文件",
+      "closeFiles": "关闭文件"
+    },
+    "connect": {
+      "title": "连接到设备",
+      "intro": "输入设备所有者给你的连接码和密码。密码由设备自己校验，此服务器永远看不到；设备前的用户可能仍需批准。",
+      "code": "连接码",
+      "password": "设备密码",
+      "chargeOrg": "此会话计入",
+      "chargeHint": "将占用该组织的远程会话配额。",
+      "connect": "连接",
+      "signIn": "请重新登录后再连接。",
+      "noServer": "未连接到服务器。请检查网络连接后重试。",
+      "loginFailed": "登录未能完成，请重试。"
+    },
+    "consent": {
+      "title": "远程控制请求",
+      "body": "有人请求远程控制你的设备。只有在你预期如此时才批准：未经你批准，会话无法开始。",
+      "deny": "拒绝",
+      "approve": "批准",
+      "approved": "已批准，会话现在可以开始。",
+      "denied": "已拒绝，会话不会开始。",
+      "failed": "无法处理此请求：它可能已过期或已被处理。"
+    },
+    "tut": {
+      "done": "已完成 {done}/{total}",
+      "reset": "重置进度",
+      "tryIt": "动手试试",
+      "open": "打开",
+      "copy": "复制：{code}",
+      "holdsUp": "为什么可靠",
+      "inDetail": "详细说明",
+      "doneBtn": "已完成",
+      "markDone": "标记为已完成",
+      "copied": "已复制到剪贴板"
+    },
+    "tour": {
+      "skip": "跳过",
+      "done": "完成",
+      "next": "下一步"
+    },
+    "nl": {
+      "confirmTitle": "一键确认",
+      "confirmBody": "确认你希望在此邮箱接收 MeshHarbor 产品动态。每月最多一封，每封邮件都可一键退订。",
+      "confirmBtn": "确认订阅",
+      "onList": "订阅成功",
+      "onListBody": "感谢确认。只发送产品动态，每月最多一封，每封邮件都可一键退订。",
+      "home": "返回首页",
+      "badLink": "该链接无效",
+      "badLinkBody": "它可能已被使用过：如果你之前已经确认，就无需再操作。否则可以在首页重新订阅。",
+      "noServer": "无法连接服务器",
+      "noServerBody": "没有做任何更改。请检查网络连接后重试。",
+      "retry": "重试",
+      "invalidBody": "它已失效，可能已被使用过。如果你想订阅，可以在首页重新订阅。",
+      "unsubscribed": "已退订",
+      "unsubscribedBody": "不会再向你的邮箱发送产品动态。改变主意了？随时可以在首页重新订阅，届时需要再次确认。",
+      "lede": "还不想注册？有重要更新时我们会发邮件通知你。",
+      "yourEmail": "你的邮箱地址",
+      "keepPosted": "订阅",
+      "thanks": "谢谢！请到收件箱查收确认链接。",
+      "fine": "只发送产品动态，每月最多一封。每封邮件都可一键退订。我们不会分享你的邮箱地址。",
+      "privacy": "隐私政策",
+      "serverFailed": "无法连接服务器，请重试。",
+      "promptTitle": "有重要更新时收到邮件",
+      "signup": "订阅邮件",
+      "dismiss": "关闭"
+    },
+    "video": {
+      "fromYoutube": "按下播放后从 YouTube 播放。",
+      "play": "播放视频“{title}”（{n} 分钟，从 YouTube 播放）"
+    }
+  }
+}

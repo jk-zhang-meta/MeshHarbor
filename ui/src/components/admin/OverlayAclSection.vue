@@ -6,7 +6,7 @@
          never wraps) its one long line pushed Refresh and New rule past the
          card's edge below ~800 px — no rule could be created on a phone. -->
     <v-card-title class="d-flex align-center flex-wrap ga-2">
-      <span>Overlay ACL</span>
+      <span>{{ $t('mh.acl.title') }}</span>
       <v-spacer />
       <v-btn
         prepend-icon="mdi-refresh"
@@ -16,14 +16,14 @@
         :loading="store.loading"
         @click="refresh"
       >
-        Refresh
+        {{ $t('common.refresh') }}
       </v-btn>
       <v-btn
         icon="mdi-refresh"
         variant="text"
         size="small"
         class="d-sm-none"
-        aria-label="Refresh"
+:aria-label="$t('common.refresh')"
         :loading="store.loading"
         @click="refresh"
       />
@@ -34,12 +34,11 @@
         size="small"
         @click="openCreate"
       >
-        New rule
+        {{ $t('mh.acl.newRule') }}
       </v-btn>
     </v-card-title>
     <v-card-subtitle class="text-wrap pb-2">
-      Peer visibility + routes — enforced on direct, TURN-relayed and
-      DERP-relayed paths alike
+      {{ $t('mh.acl.subtitle') }}
     </v-card-subtitle>
 
     <v-card-text>
@@ -60,7 +59,7 @@
         <v-select
           :model-value="store.mode"
           :items="modeItems"
-          label="Enforcement"
+          :label="$t('mh.acl.enforcement')"
           variant="outlined"
           density="compact"
           hide-details
@@ -80,17 +79,11 @@
         density="compact"
         class="mb-4"
       >
-        {{ narrowedRules }} rule(s) narrow ports or protocol. Each node enforces
-        those on the traffic it receives only under <code>enforce</code>; in
-        <code>warn</code> they are <strong>not checked</strong>. Either way a
-        port-narrowed rule makes the whole peer visible.
+        {{ $t('mh.acl.narrowed1', { n: narrowedRules }) }}<code>enforce</code>{{ $t('mh.acl.narrowed2') }}<code>warn</code>{{ $t('mh.acl.narrowed3') }}<strong>{{ $t('mh.acl.notChecked') }}</strong>{{ $t('mh.acl.narrowed4') }}
       </v-alert>
 
       <p v-if="!store.loading && store.policies.length === 0" class="text-medium-emphasis">
-        No overlay rules yet. While enforcement is <code>off</code> every node
-        sees every peer and all of its approved routes — the pre-ACL behaviour.
-        Add rules, switch to <code>warn</code> to see what they would deny
-        against real traffic, then <code>enforce</code>.
+        {{ $t('mh.acl.empty1') }}<code>off</code>{{ $t('mh.acl.empty2') }}<code>warn</code>{{ $t('mh.acl.empty3') }}<code>enforce</code>{{ $t('mh.acl.empty4') }}
       </p>
 
       <div v-if="store.loading && store.policies.length === 0" class="d-flex justify-center pa-8">
@@ -102,24 +95,24 @@
       <v-table v-else-if="store.policies.length > 0" density="compact" class="table-stack-xs">
         <thead>
           <tr>
-            <th>Name</th>
-            <th>Sources</th>
-            <th>Via</th>
-            <th>Destinations</th>
-            <th class="text-right">Actions</th>
+            <th>{{ $t('mh.acl.col.name') }}</th>
+            <th>{{ $t('mh.acl.col.sources') }}</th>
+            <th>{{ $t('mh.acl.col.via') }}</th>
+            <th>{{ $t('mh.acl.col.destinations') }}</th>
+            <th class="text-right">{{ $t('mh.topo.col.actions') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="p in store.policies" :key="p.id">
-            <td data-label="Name">
+            <td :data-label="$t('mh.acl.col.name')">
               <div class="font-weight-medium">
                 {{ p.name }}
                 <v-chip v-if="!p.enabled" size="x-small" variant="tonal" class="ml-1">
-                  disabled
+                  {{ $t('mh.acl.disabled') }}
                 </v-chip>
               </div>
             </td>
-            <td data-label="Sources">
+            <td :data-label="$t('mh.acl.col.sources')">
               <v-chip
                 v-for="(s, i) in p.sources"
                 :key="`s-${i}`"
@@ -130,7 +123,7 @@
                 {{ selectorLabel(s) }}
               </v-chip>
             </td>
-            <td data-label="Via">
+            <td :data-label="$t('mh.acl.col.via')">
               <v-chip
                 v-for="(t, i) in p.via"
                 :key="`t-${i}`"
@@ -141,7 +134,7 @@
                 {{ targetLabel(t) }}
               </v-chip>
             </td>
-            <td data-label="Destinations">
+            <td :data-label="$t('mh.acl.col.destinations')">
               <div v-for="(d, i) in p.destinations" :key="`d-${i}`" class="text-caption">
                 <code class="text-break">{{ d.cidr }}:{{ portLabel(d.port_range) }}</code>
                 <span class="text-medium-emphasis">/{{ d.proto }}</span>
@@ -165,7 +158,7 @@
     <!-- Create / edit ─────────────────────────────────────────────── -->
     <v-dialog v-model="editDialog" max-width="900" persistent scrollable :fullscreen="fullscreen">
       <v-card>
-        <v-card-title>{{ editingId ? 'Edit overlay rule' : 'New overlay rule' }}</v-card-title>
+        <v-card-title>{{ editingId ? $t('mh.acl.editTitle') : $t('mh.acl.newTitle') }}</v-card-title>
         <v-card-text>
           <v-alert
             v-if="formError"
@@ -181,8 +174,8 @@
           <div class="d-flex align-center ga-3 mb-4">
             <v-text-field
               v-model="form.name"
-              label="Name"
-              placeholder="e.g. devs-reach-k8s-dev"
+              :label="$t('mh.acl.col.name')"
+              :placeholder="$t('mh.acl.namePlaceholder')"
               variant="outlined"
               density="compact"
               hide-details
@@ -190,7 +183,7 @@
             />
             <v-switch
               v-model="form.enabled"
-              label="Enabled"
+              :label="$t('mh.acl.enabled')"
               color="primary"
               density="compact"
               hide-details
@@ -199,13 +192,13 @@
 
           <!-- Sources -->
           <div class="d-flex align-center flex-wrap ga-1 mb-2">
-            <strong>Sources</strong>
+            <strong>{{ $t('mh.acl.col.sources') }}</strong>
             <span class="text-medium-emphasis text-caption ml-2">
-              Which nodes this rule grants access FROM.
+              {{ $t('mh.acl.sourcesHint') }}
             </span>
             <v-spacer />
             <v-btn size="x-small" variant="tonal" prepend-icon="mdi-plus" @click="addSource">
-              Add source
+              {{ $t('mh.acl.addSource') }}
             </v-btn>
           </div>
           <div
@@ -226,7 +219,7 @@
               v-if="s.kind === 'node_id'"
               v-model="s.id"
               :items="nodeItems"
-              label="Node"
+              :label="$t('mh.acl.kind.node')"
               variant="outlined"
               density="compact"
               hide-details
@@ -236,7 +229,7 @@
               v-else-if="s.kind === 'role_id'"
               v-model="s.id"
               :items="roleItems"
-              label="Role"
+              :label="$t('mh.acl.kind.role')"
               variant="outlined"
               density="compact"
               hide-details
@@ -246,14 +239,14 @@
               v-else-if="s.kind === 'user_id'"
               v-model="s.id"
               :items="memberItems"
-              label="User"
+              :label="$t('mh.acl.kind.user')"
               variant="outlined"
               density="compact"
               hide-details
               style="flex: 1 1 240px"
             />
             <span v-else class="text-medium-emphasis text-caption">
-              (every node in the tenant)
+              {{ $t('mh.acl.everyNode') }}
             </span>
             <v-btn icon="mdi-close" size="x-small" variant="text" @click="form.sources.splice(i, 1)" />
           </div>
@@ -262,13 +255,13 @@
 
           <!-- Via -->
           <div class="d-flex align-center flex-wrap ga-1 mb-2">
-            <strong>Via</strong>
+            <strong>{{ $t('mh.acl.col.via') }}</strong>
             <span class="text-medium-emphasis text-caption ml-2">
-              The peer they may reach — and the gateway for its subnet routes.
+              {{ $t('mh.acl.viaHint') }}
             </span>
             <v-spacer />
             <v-btn size="x-small" variant="tonal" prepend-icon="mdi-plus" @click="addVia">
-              Add node
+              {{ $t('mh.acl.addNode') }}
             </v-btn>
           </div>
           <div
@@ -289,14 +282,14 @@
               v-if="t.kind === 'node_id'"
               v-model="t.id"
               :items="nodeItems"
-              label="Node"
+              :label="$t('mh.acl.kind.node')"
               variant="outlined"
               density="compact"
               hide-details
               style="flex: 1 1 240px"
             />
             <span v-else class="text-medium-emphasis text-caption">
-              (every node in the tenant)
+              {{ $t('mh.acl.everyNode') }}
             </span>
             <v-btn icon="mdi-close" size="x-small" variant="text" @click="form.via.splice(i, 1)" />
           </div>
@@ -305,13 +298,13 @@
 
           <!-- Destinations -->
           <div class="d-flex align-center flex-wrap ga-1 mb-2">
-            <strong>Destinations</strong>
+            <strong>{{ $t('mh.acl.col.destinations') }}</strong>
             <span class="text-medium-emphasis text-caption ml-2">
-              CIDRs only — the overlay is L3, so hostnames can never match.
+              {{ $t('mh.acl.destHint') }}
             </span>
             <v-spacer />
             <v-btn size="x-small" variant="tonal" prepend-icon="mdi-plus" @click="addDest">
-              Add CIDR
+              {{ $t('mh.acl.addCidr') }}
             </v-btn>
           </div>
           <div
@@ -321,7 +314,7 @@
           >
             <v-text-field
               v-model="d.cidr"
-              label="CIDR (e.g. 10.84.6.0/24)"
+              :label="$t('mh.acl.cidr')"
               variant="outlined"
               density="compact"
               hide-details
@@ -329,7 +322,7 @@
             />
             <v-text-field
               v-model.number="d.port_range.low"
-              label="Port (low)"
+              :label="$t('mh.acl.portLow')"
               type="number"
               variant="outlined"
               density="compact"
@@ -338,7 +331,7 @@
             />
             <v-text-field
               v-model.number="d.port_range.high"
-              label="Port (high)"
+              :label="$t('mh.acl.portHigh')"
               type="number"
               variant="outlined"
               density="compact"
@@ -348,7 +341,7 @@
             <v-select
               v-model="d.proto"
               :items="protoKinds"
-              label="Proto"
+              :label="$t('mh.acl.proto')"
               variant="outlined"
               density="compact"
               hide-details
@@ -364,9 +357,9 @@
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn @click="editDialog = false">Cancel</v-btn>
+          <v-btn @click="editDialog = false">{{ $t('common.cancel') }}</v-btn>
           <v-btn color="primary" :loading="saving" @click="save">
-            {{ editingId ? 'Save changes' : 'Create rule' }}
+            {{ editingId ? $t('mh.acl.saveChanges') : $t('mh.acl.createRule') }}
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -375,16 +368,14 @@
     <!-- Delete confirm ────────────────────────────────────────────── -->
     <v-dialog v-model="deleteDialog" max-width="500">
       <v-card>
-        <v-card-title>Delete overlay rule?</v-card-title>
+        <v-card-title>{{ $t('mh.acl.deleteTitle') }}</v-card-title>
         <v-card-text>
-          <strong>{{ deleteTarget?.name }}</strong> will be removed. If this was
-          the only rule granting a peer, nodes relying on it lose that peer on
-          the next netmap push.
+          <strong>{{ deleteTarget?.name }}</strong>{{ $t('mh.acl.deleteBody') }}
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn @click="deleteDialog = false">Cancel</v-btn>
-          <v-btn color="error" :loading="deleting" @click="doDelete">Delete</v-btn>
+          <v-btn @click="deleteDialog = false">{{ $t('common.cancel') }}</v-btn>
+          <v-btn color="error" :loading="deleting" @click="doDelete">{{ $t('mh.acl.delete') }}</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -393,6 +384,7 @@
 
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   useOverlayAclStore,
   type OverlayAclMode,
@@ -413,26 +405,28 @@ const nodesStore = useOverlayRoutesStore()
 const roleStore = useRoleStore()
 const membersStore = useMembersStore()
 
-const modeItems = [
-  { title: 'Off — no enforcement (default)', value: 'off' },
-  { title: 'Warn — log what would be denied', value: 'warn' },
-  { title: 'Enforce — apply the rules', value: 'enforce' },
-]
-const sourceKinds = [
-  { title: 'All nodes', value: 'all_nodes' },
-  { title: 'Node', value: 'node_id' },
-  { title: 'User', value: 'user_id' },
-  { title: 'Role', value: 'role_id' },
-]
-const viaKinds = [
-  { title: 'All nodes', value: 'all_nodes' },
-  { title: 'Node', value: 'node_id' },
-]
-const protoKinds = [
-  { title: 'Any', value: 'any' },
+// `tr`, not `t`: this file already uses `t` for overlay targets.
+const { t: tr } = useI18n()
+const modeItems = computed(() => [
+  { title: tr('mh.acl.mode.off'), value: 'off' },
+  { title: tr('mh.acl.mode.warn'), value: 'warn' },
+  { title: tr('mh.acl.mode.enforce'), value: 'enforce' },
+])
+const sourceKinds = computed(() => [
+  { title: tr('mh.acl.kind.all'), value: 'all_nodes' },
+  { title: tr('mh.acl.kind.node'), value: 'node_id' },
+  { title: tr('mh.acl.kind.user'), value: 'user_id' },
+  { title: tr('mh.acl.kind.role'), value: 'role_id' },
+])
+const viaKinds = computed(() => [
+  { title: tr('mh.acl.kind.all'), value: 'all_nodes' },
+  { title: tr('mh.acl.kind.node'), value: 'node_id' },
+])
+const protoKinds = computed(() => [
+  { title: tr('mh.acl.anyProto'), value: 'any' },
   { title: 'TCP', value: 'tcp' },
   { title: 'UDP', value: 'udp' },
-]
+])
 
 // Pickers over what the existing stores already expose — never hand-typed
 // ObjectIds (the tunnel-policy form's worst trait).
@@ -462,11 +456,11 @@ const memberItems = computed(() =>
 const modeHint = computed(() => {
   switch (store.mode) {
     case 'off':
-      return 'Rules are stored but ignored — every node sees every peer, as before.'
+      return tr('mh.acl.hint.off')
     case 'warn':
-      return 'Rules are evaluated and denials are logged, but the permissive netmap still ships. Use this to validate rules against real traffic.'
+      return tr('mh.acl.hint.warn')
     default:
-      return 'Rules are applied. A node that no rule grants loses the peer, and an installed peer is explicitly torn down.'
+      return tr('mh.acl.hint.enforce')
   }
 })
 
@@ -556,22 +550,22 @@ function addDest() {
 }
 
 function validate(): string | null {
-  if (!form.name.trim()) return 'Name is required.'
-  if (!form.sources.length) return 'At least one source is required.'
-  if (!form.via.length) return 'At least one via node is required.'
-  if (!form.destinations.length) return 'At least one destination is required.'
+  if (!form.name.trim()) return tr('mh.acl.v.name')
+  if (!form.sources.length) return tr('mh.acl.v.sources')
+  if (!form.via.length) return tr('mh.acl.v.via')
+  if (!form.destinations.length) return tr('mh.acl.v.destinations')
   for (const s of form.sources) {
-    if (s.kind !== 'all_nodes' && !s.id) return 'Every non-catch-all source needs a selection.'
+    if (s.kind !== 'all_nodes' && !s.id) return tr('mh.acl.v.sourceSel')
   }
   for (const t of form.via) {
-    if (t.kind === 'node_id' && !t.id) return 'Every node target needs a selection.'
+    if (t.kind === 'node_id' && !t.id) return tr('mh.acl.v.viaSel')
   }
   for (const d of form.destinations) {
-    if (!d.cidr.trim()) return 'Every destination needs a CIDR.'
+    if (!d.cidr.trim()) return tr('mh.acl.v.cidr')
     // Mirrors the server check: a bare address never matches, which is the
     // single most common way to author a silently-dead rule.
     if (!/^[0-9a-fA-F:.]+\/\d{1,3}$/.test(d.cidr.trim())) {
-      return `"${d.cidr}" is not a CIDR — a single address needs a prefix, e.g. 10.0.0.5/32.`
+      return tr('mh.acl.v.notCidr', { cidr: d.cidr })
     }
     if (!d.port_range.low || d.port_range.high < d.port_range.low) {
       return `"${d.cidr}" has an invalid port range.`
@@ -629,17 +623,17 @@ async function doDelete() {
 }
 
 function selectorLabel(s: OverlaySelector): string {
-  if (s.kind === 'all_nodes') return 'All nodes'
-  if (s.kind === 'node_id') return nodeItems.value.find((n) => n.value === s.id)?.title ?? 'Node'
-  if (s.kind === 'role_id') return roleItems.value.find((r) => r.value === s.id)?.title ?? 'Role'
-  return memberItems.value.find((m) => m.value === s.id)?.title ?? 'User'
+  if (s.kind === 'all_nodes') return tr('mh.acl.kind.all')
+  if (s.kind === 'node_id') return nodeItems.value.find((n) => n.value === s.id)?.title ?? tr('mh.acl.kind.node')
+  if (s.kind === 'role_id') return roleItems.value.find((r) => r.value === s.id)?.title ?? tr('mh.acl.kind.role')
+  return memberItems.value.find((m) => m.value === s.id)?.title ?? tr('mh.acl.kind.user')
 }
 function targetLabel(t: OverlayTarget): string {
-  if (t.kind === 'all_nodes') return 'All nodes'
-  return nodeItems.value.find((n) => n.value === t.id)?.title ?? 'Node'
+  if (t.kind === 'all_nodes') return tr('mh.acl.kind.all')
+  return nodeItems.value.find((n) => n.value === t.id)?.title ?? tr('mh.acl.kind.node')
 }
 function portLabel(r: { low: number; high: number }): string {
-  if (r.low === 1 && r.high === 65535) return 'any'
+  if (r.low === 1 && r.high === 65535) return tr('mh.acl.any')
   return r.low === r.high ? `${r.low}` : `${r.low}-${r.high}`
 }
 

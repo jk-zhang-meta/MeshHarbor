@@ -19,6 +19,13 @@
  * empty or failed release list, shows nothing: the absence of a signal must
  * never invent a problem on a healthy device.
  */
+import i18n from '@/plugins/i18n'
+
+/** Read at call time, so a caller re-renders in the current language. */
+function t(key: string, named?: Record<string, unknown>): string {
+  return named ? i18n.global.t(key, named) : i18n.global.t(key)
+}
+
 export const STALL_HOURS = 24
 
 const HOUR_MS = 3_600_000
@@ -50,13 +57,6 @@ export function versionOrdinal(version: string | null | undefined): number | nul
   return null
 }
 
-const LINUX_REMEDY =
-  'A per-user Linux install made before 0.4.138 cannot install updates by itself. Install the current ' +
-  'release on it once (sudo apt install ./roomlerd.deb, the Software app, or a re-run of the install ' +
-  'script), and it updates itself from then on. On a system install that stopped, check auto_update ' +
-  "in 'roomler config ls' and the log ('roomler logs --grep update') on it."
-const OTHER_REMEDY =
-  "Check auto_update in 'roomler config ls' and the log ('roomler logs --grep update') on it."
 
 /** The chip for a device, or `null` when there is nothing to act on. */
 export function updateStallChip(
@@ -89,17 +89,20 @@ export function updateStallChip(
   // device is at least that many behind.
   const capped = listed.every((r) => r.n > mine)
   const behind = capped
-    ? `${missed.length}+ releases`
+    ? t('mh.stall.behindPlus', { n: missed.length })
     : missed.length === 1
-      ? '1 release'
-      : `${missed.length} releases`
-  const ago = age >= DAY_MS ? `${Math.floor(age / DAY_MS)} d` : `${Math.floor(age / HOUR_MS)} h`
+      ? t('mh.stall.behindOne')
+      : t('mh.stall.behindN', { n: missed.length })
+  const ago =
+    age >= DAY_MS
+      ? t('mh.stall.days', { n: Math.floor(age / DAY_MS) })
+      : t('mh.stall.hours', { n: Math.floor(age / HOUR_MS) })
   return {
-    text: 'not updating',
+    text: t('mh.stall.chip'),
     color: 'warning',
     tooltip:
-      `v${version} is ${behind} behind: ${first.version} came out ${ago} ago and this ` +
-      `device, online, has not installed it. ` +
-      (os === 'linux' ? LINUX_REMEDY : OTHER_REMEDY),
+      t('mh.stall.tooltip', { version, behind, first: first.version, ago }) +
+      ' ' +
+      (os === 'linux' ? t('mh.stall.remedyLinux') : t('mh.stall.remedyOther')),
   }
 }

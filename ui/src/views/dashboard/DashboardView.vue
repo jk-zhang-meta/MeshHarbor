@@ -15,17 +15,16 @@
     >
       <div class="d-flex flex-wrap align-center justify-space-between ga-3">
         <div>
-          <div class="font-weight-bold">Get product updates</div>
+          <div class="font-weight-bold">{{ tr('mh.news.getUpdates') }}</div>
           <div class="text-body-2">
-            Roomler Field Notes — never more than monthly, one-click unsubscribe,
-            straight to {{ authStore.user?.email }}.
+            {{ tr('mh.news.blurbTo', { email: authStore.user?.email }) }}
           </div>
         </div>
         <div class="d-flex ga-2">
           <v-btn size="small" color="primary" :loading="nlBusy" @click="acceptNewsletter">
-            Keep me posted
+            {{ tr('mh.news.keepPosted') }}
           </v-btn>
-          <v-btn size="small" variant="text" @click="dismissNewsletter">No thanks</v-btn>
+          <v-btn size="small" variant="text" @click="dismissNewsletter">{{ tr('mh.news.noThanks') }}</v-btn>
         </div>
       </div>
     </v-alert>
@@ -33,12 +32,12 @@
     <v-row v-if="tenantStore.tenants.length === 0">
       <v-col cols="12" md="6">
         <v-card>
-          <v-card-title>Create Your First Workspace</v-card-title>
+          <v-card-title>{{ tr('mh.dash.firstWorkspace') }}</v-card-title>
           <v-card-text>
             <v-form ref="formRef" @submit.prevent="handleCreate">
-              <v-text-field v-model="name" label="Workspace Name" :rules="[rules.required]" />
-              <v-text-field v-model="slug" label="Slug" hint="URL-friendly identifier" :rules="[rules.required, rules.slug]" />
-              <v-btn type="submit" color="primary" class="mt-2">Create</v-btn>
+              <v-text-field v-model="name" :label="tr('mh.dash.workspaceName')" :rules="[rules.required]" />
+              <v-text-field v-model="slug" :label="tr('mh.dash.slug')" :hint="tr('mh.dash.slugHint')" :rules="[rules.required, rules.slug]" />
+              <v-btn type="submit" color="primary" class="mt-2">{{ tr('mh.dash.create') }}</v-btn>
             </v-form>
           </v-card-text>
         </v-card>
@@ -70,7 +69,7 @@
         >
           <div class="text-center text-medium-emphasis">
             <v-icon size="28">mdi-plus</v-icon>
-            <div>New organization</div>
+            <div>{{ tr('mh.dash.newOrg') }}</div>
           </div>
         </v-card>
       </v-col>
@@ -78,17 +77,17 @@
 
     <v-dialog v-model="showCreate" max-width="420">
       <v-card>
-        <v-card-title>New organization</v-card-title>
+        <v-card-title>{{ tr('mh.dash.newOrg') }}</v-card-title>
         <v-card-text>
           <v-form ref="formRef" @submit.prevent="handleCreate">
-            <v-text-field v-model="name" label="Name" :rules="[rules.required]" @update:model-value="autoSlug" />
-            <v-text-field v-model="slug" label="Slug" hint="URL-friendly identifier, globally unique" :rules="[rules.required, rules.slug]" @update:model-value="slugTouched = true" />
+            <v-text-field v-model="name" :label="tr('mh.dash.name')" :rules="[rules.required]" @update:model-value="autoSlug" />
+            <v-text-field v-model="slug" :label="tr('mh.dash.slug')" :hint="tr('mh.layout.orgSlugHint')" :rules="[rules.required, rules.slug]" @update:model-value="slugTouched = true" />
           </v-form>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="showCreate = false">Cancel</v-btn>
-          <v-btn color="primary" @click="handleCreate">Create</v-btn>
+          <v-btn variant="text" @click="showCreate = false">{{ tr('common.cancel') }}</v-btn>
+          <v-btn color="primary" @click="handleCreate">{{ tr('mh.dash.create') }}</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -103,6 +102,9 @@ import { useTenantStore } from '@/stores/tenant'
 import { useNewsletterPref } from '@/composables/useNewsletterPref'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { useValidation } from '@/composables/useValidation'
+import { useI18n } from 'vue-i18n'
+
+const { t: tr } = useI18n()
 
 const authStore = useAuthStore()
 const tenantStore = useTenantStore()
@@ -133,11 +135,11 @@ function latchAsk() {
 const showNewsletterAsk = computed(() => nlSubscribed.value === false && !nlDismissed.value)
 async function acceptNewsletter() {
   if (await nlSet(true)) {
-    showSuccess('Subscribed — product updates only, never more than monthly')
+    showSuccess(tr('mh.news.subscribedToast'))
     latchAsk()
     nlDismissed.value = true
   } else {
-    showError('Could not subscribe — please try again')
+    showError(tr('mh.news.subscribeFailed'))
   }
 }
 function dismissNewsletter() {
@@ -166,14 +168,14 @@ async function handleCreate() {
   if (!valid) return
   try {
     const tenant = await tenantStore.createTenant(name.value, slug.value)
-    showSuccess('Workspace created')
+    showSuccess(tr('mh.dash.workspaceCreated'))
     router.push(`/tenant/${tenant.id}`)
   } catch (e) {
-    const msg = e instanceof Error ? e.message : 'Failed to create workspace'
+    const msg = e instanceof Error ? e.message : tr('mh.dash.createFailed')
     // tenants.slug is globally unique — put the dup-key case in words.
     showError(
       msg.includes('duplicate') || msg.includes('E11000')
-        ? 'That slug is already taken — pick another'
+        ? tr('mh.layout.slugTaken')
         : msg,
     )
   }

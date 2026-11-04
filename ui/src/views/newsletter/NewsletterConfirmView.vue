@@ -17,43 +17,40 @@
       <v-col cols="12" sm="8" md="6" class="text-center">
         <template v-if="phase === 'ready' || phase === 'busy'">
           <v-icon icon="mdi-email-check-outline" color="primary" size="72" class="mb-6" />
-          <h1 class="text-h5 text-md-h4 font-weight-bold mb-4">One click to confirm</h1>
+          <h1 class="text-h5 text-md-h4 font-weight-bold mb-4">{{ t('mh.nl.confirmTitle') }}</h1>
           <p class="text-body-1 text-medium-emphasis mb-8">
-            Confirm you want Roomler product updates at this address.
-            Never more than monthly, one-click unsubscribe in every email.
+            {{ t('mh.nl.confirmBody') }}
           </p>
           <v-btn color="primary" size="large" :loading="phase === 'busy'" @click="confirm">
-            Confirm my subscription
+            {{ t('mh.nl.confirmBtn') }}
           </v-btn>
         </template>
 
         <template v-else-if="phase === 'done'">
           <v-icon icon="mdi-email-check-outline" color="success" size="72" class="mb-6" />
-          <h1 class="text-h5 text-md-h4 font-weight-bold mb-4">You're on the list</h1>
+          <h1 class="text-h5 text-md-h4 font-weight-bold mb-4">{{ t('mh.nl.onList') }}</h1>
           <p class="text-body-1 text-medium-emphasis mb-8">
-            Thanks for confirming. Product updates only, never more than monthly —
-            and a one-click unsubscribe in every email.
+            {{ t('mh.nl.onListBody') }}
           </p>
-          <v-btn color="primary" size="large" to="/">Go to roomler.ai</v-btn>
+          <v-btn color="primary" size="large" to="/">{{ t('mh.nl.home') }}</v-btn>
         </template>
 
         <template v-else-if="phase === 'invalid'">
           <v-icon icon="mdi-link-off" color="warning" size="72" class="mb-6" />
-          <h1 class="text-h5 text-md-h4 font-weight-bold mb-4">That link didn't work</h1>
+          <h1 class="text-h5 text-md-h4 font-weight-bold mb-4">{{ t('mh.nl.badLink') }}</h1>
           <p class="text-body-1 text-medium-emphasis mb-8">
-            It may already have been used — if you confirmed before, you're set.
-            Otherwise you can sign up again from the home page.
+            {{ t('mh.nl.badLinkBody') }}
           </p>
-          <v-btn color="primary" size="large" to="/">Go to roomler.ai</v-btn>
+          <v-btn color="primary" size="large" to="/">{{ t('mh.nl.home') }}</v-btn>
         </template>
 
         <template v-else>
           <v-icon icon="mdi-wifi-off" color="warning" size="72" class="mb-6" />
-          <h1 class="text-h5 text-md-h4 font-weight-bold mb-4">Could not reach the server</h1>
+          <h1 class="text-h5 text-md-h4 font-weight-bold mb-4">{{ t('mh.nl.noServer') }}</h1>
           <p class="text-body-1 text-medium-emphasis mb-8">
-            Nothing was changed. Check your connection and try again.
+            {{ t('mh.nl.noServerBody') }}
           </p>
-          <v-btn color="primary" size="large" @click="confirm">Try again</v-btn>
+          <v-btn color="primary" size="large" @click="confirm">{{ t('mh.nl.retry') }}</v-btn>
         </template>
       </v-col>
     </v-row>
@@ -64,6 +61,9 @@
 import { appPath } from '@/utils/deployment'
 import { ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 type Phase = 'ready' | 'busy' | 'done' | 'invalid' | 'error'
 

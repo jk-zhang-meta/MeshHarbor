@@ -5,7 +5,7 @@
     <div class="d-flex align-center flex-wrap ga-2 mb-2 mb-md-4">
       <h1 class="text-h5 text-md-h4">{{ $t('nav.tutorial') }}</h1>
       <v-chip size="small" variant="tonal" color="primary" class="ml-1 font-weight-medium">
-        {{ doneCount }}/{{ chapters.length }} done
+        {{ t('mh.tut.done', { done: doneCount, total: chapters.length }) }}
       </v-chip>
       <v-spacer />
       <v-btn
@@ -15,7 +15,7 @@
         prepend-icon="mdi-restore"
         @click="reset"
       >
-        Reset progress
+        {{ t('mh.tut.reset') }}
       </v-btn>
     </div>
 
@@ -119,7 +119,7 @@
 
           <div class="d-flex align-center ga-2 mb-3">
             <v-icon icon="mdi-play-circle-outline" color="primary" size="20" />
-            <h3 class="text-subtitle-1 font-weight-bold">Try it now</h3>
+            <h3 class="text-subtitle-1 font-weight-bold">{{ t('mh.tut.tryIt') }}</h3>
           </div>
           <div class="tutorial-steps mb-5">
             <div v-for="(s, i) in active.steps" :key="i" class="tutorial-step">
@@ -141,7 +141,7 @@
                       icon="mdi-content-copy"
                       size="x-small"
                       variant="text"
-                      :aria-label="`Copy: ${s.code}`"
+                      :aria-label="t('mh.tut.copy', { code: s.code })"
                       @click="copy(s.code)"
                     />
                   </div>
@@ -153,7 +153,7 @@
                       append-icon="mdi-arrow-right"
                       :to="linkFor(s)"
                     >
-                      {{ s.linkLabel || 'Open' }}
+                      {{ s.linkLabel || t('mh.tut.open') }}
                     </v-btn>
                   </div>
                   <div v-if="s.graphic" class="tutorial-step-graphic mt-3">
@@ -168,7 +168,7 @@
           <template v-if="active.highlights">
             <div class="d-flex align-center ga-2 mb-3">
               <v-icon icon="mdi-star-four-points-outline" color="primary" size="20" />
-              <h3 class="text-subtitle-1 font-weight-bold">Why it holds up</h3>
+              <h3 class="text-subtitle-1 font-weight-bold">{{ t('mh.tut.holdsUp') }}</h3>
             </div>
             <v-row class="mb-3">
               <v-col v-for="h in active.highlights" :key="h.title" cols="12" sm="6" md="4">
@@ -183,7 +183,7 @@
 
           <div class="d-flex align-center ga-2 mb-2">
             <v-icon icon="mdi-information-outline" color="primary" size="20" />
-            <h3 class="text-subtitle-1 font-weight-bold">In detail</h3>
+            <h3 class="text-subtitle-1 font-weight-bold">{{ t('mh.tut.inDetail') }}</h3>
           </div>
           <v-table density="compact" class="tutorial-detail mb-5">
             <tbody>
@@ -218,7 +218,7 @@
               size="small"
               @click="toggle(active.id)"
             >
-              {{ isDone(active.id) ? 'Done' : 'Mark as done' }}
+              {{ isDone(active.id) ? t('mh.tut.doneBtn') : t('mh.tut.markDone') }}
             </v-btn>
             <v-spacer />
             <v-btn
@@ -260,6 +260,9 @@ import {
   richSegments,
   type TutorialStep,
 } from './tutorialChapters'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const router = useRouter()
@@ -313,7 +316,7 @@ function linkFor(s: TutorialStep) {
 async function copy(text: string) {
   try {
     await navigator.clipboard.writeText(text)
-    showSuccess('Copied to clipboard')
+    showSuccess(t('mh.tut.copied'))
   } catch {
     /* clipboard blocked (permissions / insecure context) — the command is
        visible and selectable either way, so this is not worth an error. */

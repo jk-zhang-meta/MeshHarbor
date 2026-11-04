@@ -529,6 +529,17 @@ pub enum ClientMsg {
         session_id: ObjectId,
         accepted: bool,
     },
+    /// MeshHarbor — the device's answer to a [`ServerMsg::LocalAccountsRequest`]:
+    /// its login accounts after the operation, or why it refused. Always sent,
+    /// because the owner's request is parked on it.
+    #[serde(rename = "rc:accounts.result")]
+    LocalAccountsResult {
+        request_id: String,
+        #[serde(default)]
+        accounts: Vec<LocalAccount>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     #[serde(rename = "rc:share.ssh.lease.challenge")]
     SharedSshLeaseChallenge {
         #[serde(with = "oid_hex")]
@@ -2765,6 +2776,7 @@ impl ClientMsg {
             ClientMsg::SessionStats { .. } => "rc:session.stats",
             ClientMsg::SharedSshConnect { .. } => "rc:share.ssh.connect",
             ClientMsg::SharedSshPrepared { .. } => "rc:share.ssh.prepared",
+            ClientMsg::LocalAccountsResult { .. } => "rc:accounts.result",
             ClientMsg::SharedSshLeaseChallenge { .. } => "rc:share.ssh.lease.challenge",
             ClientMsg::SharedLeaseChallenge { .. } => "rc:share.lease.challenge",
             ClientMsg::DerpTicketRequest { .. } => "rc:relay.derp_ticket_request",
@@ -2875,7 +2887,9 @@ impl ClientMsg {
             | ClientMsg::ConfigStatus { .. }
             | ClientMsg::Consent { .. }
             | ClientMsg::ConsentPending { .. }
-            | ClientMsg::Ping { .. } => Owner::Fleet,
+            | ClientMsg::Ping { .. }
+            // MeshHarbor — device management: the owner's view of its accounts.
+            | ClientMsg::LocalAccountsResult { .. } => Owner::Fleet,
             ClientMsg::SharedLeaseChallenge { .. }
             | ClientMsg::SessionRequest { .. }
             | ClientMsg::SdpOffer { .. }
@@ -2981,6 +2995,7 @@ impl ClientMsg {
 pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:share.ssh.connect", Owner::Network),
     ("rc:share.ssh.prepared", Owner::Network),
+    ("rc:accounts.result", Owner::Fleet),
     ("rc:share.ssh.lease.challenge", Owner::Network),
     ("rc:share.lease.challenge", Owner::Remote),
     ("rc:agent.hello", Owner::Fleet),
@@ -3263,6 +3278,32 @@ pub struct SharedSessionLease {
     pub lease_epoch: String,
 }
 
+/// MeshHarbor — one local login account on a device, as the device reports it:
+/// what an SSH share may run as. `admin` = it may become root (sudo/wheel/admin
+/// group, or the passwordless sudo rule the device writes for one it created).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct LocalAccount {
+    pub name: String,
+    pub uid: u32,
+    #[serde(default)]
+    pub admin: bool,
+}
+
+/// MeshHarbor — what the owner asks of a device's accounts. Only ever sent to a
+/// device advertising `local-accounts-v1`, and refused by the device unless its
+/// own `ssh_enabled` is on; `admin` is refused under `ssh_max_privilege =
+/// console_user`, so the server never gets more than the device already allows.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum LocalAccountOp {
+    List,
+    Create {
+        name: String,
+        #[serde(default)]
+        admin: bool,
+    },
+}
+
 /// Target-bound stream specification received only on the authenticated agent WS.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SharedSshSetup {
@@ -3287,6 +3328,13 @@ pub struct SharedSshSetup {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "t")]
 pub enum ServerMsg {
+    /// MeshHarbor — list or create the device's login accounts for an SSH share.
+    /// The device answers with [`ClientMsg::LocalAccountsResult`].
+    #[serde(rename = "rc:accounts.request")]
+    LocalAccountsRequest {
+        request_id: String,
+        op: LocalAccountOp,
+    },
     #[serde(rename = "rc:share.ssh.setup")]
     SharedSshSetup {
         #[serde(with = "oid_hex")]

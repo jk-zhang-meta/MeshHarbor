@@ -14,7 +14,7 @@
         hide-details
         clearable
         prepend-inner-icon="mdi-magnify"
-        placeholder="Search files"
+        :placeholder="t('mh.files.search')"
         :style="xs ? 'flex: 1 1 100%' : 'max-width: 240px'"
         :class="xs ? 'order-1' : 'flex-grow-0'"
       />
@@ -23,13 +23,13 @@
         size="small"
         variant="text"
         :color="colsCustomized ? 'primary' : undefined"
-        title="Configure columns"
-        aria-label="Configure columns"
+        :title="t('mh.files.columns')"
+        :aria-label="t('mh.files.columns')"
         @click="colDialogOpen = true"
       />
       <v-btn-toggle v-model="viewMode" mandatory density="compact" :class="{ 'order-2': xs }">
-        <v-btn value="all" size="small">All Files</v-btn>
-        <v-btn value="room" size="small" :disabled="!currentRoomId">Room Files</v-btn>
+        <v-btn value="all" size="small">{{ t('mh.files.all') }}</v-btn>
+        <v-btn value="room" size="small" :disabled="!currentRoomId">{{ t('mh.files.room') }}</v-btn>
       </v-btn-toggle>
       <v-btn
         color="primary"
@@ -123,7 +123,7 @@
 
     <!-- Upload progress -->
     <v-snackbar v-model="uploading" timeout="-1">
-      Uploading files...
+      {{ t('mh.files.uploading') }}
       <v-progress-linear indeterminate color="primary" />
     </v-snackbar>
   </v-container>
@@ -138,6 +138,9 @@ import { useRoomStore } from '@/stores/rooms'
 import { useAuthStore } from '@/stores/auth'
 import { useGridColumns } from '@/composables/useGridColumns'
 import GridColumnPickerDialog from '@/components/common/GridColumnPickerDialog.vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const fileStore = useFileStore()
@@ -165,12 +168,12 @@ const gridDir = ref<'asc' | 'desc' | undefined>(undefined)
 const fileHeaders = computed(() => {
   const cols = [
     // Sortable keys double as the server whitelist (filename | size | created_at).
-    { title: 'Name', key: 'filename', sortable: true },
-    { title: 'Room', key: 'room', sortable: false },
-    { title: 'Type', key: 'content_type', sortable: false },
-    { title: 'Size', key: 'size', sortable: true },
-    { title: 'Uploaded', key: 'created_at', sortable: true },
-    { title: 'Actions', key: 'actions', sortable: false, align: 'end' as const },
+    { title: t('mh.files.col.name'), key: 'filename', sortable: true },
+    { title: t('mh.files.col.room'), key: 'room', sortable: false },
+    { title: t('mh.files.col.type'), key: 'content_type', sortable: false },
+    { title: t('mh.files.col.size'), key: 'size', sortable: true },
+    { title: t('mh.files.col.uploaded'), key: 'created_at', sortable: true },
+    { title: t('mh.files.col.actions'), key: 'actions', sortable: false, align: 'end' as const },
   ]
   return viewMode.value === 'all' ? cols : cols.filter((c) => c.key !== 'room')
 })

@@ -19,7 +19,7 @@
             :color="presenceColor"
             class="mt-1"
           >
-            {{ userStore.profile.presence }}
+            {{ ['online', 'idle', 'dnd', 'offline'].includes(userStore.profile.presence) ? t(`mh.profile.presence.${userStore.profile.presence}`) : userStore.profile.presence }}
           </v-chip>
         </div>
         <v-spacer />
@@ -37,12 +37,12 @@
 
       <v-card-text>
         <div v-if="userStore.profile.bio" class="mb-4">
-          <h3 class="text-subtitle-2 text-medium-emphasis mb-1">Bio</h3>
+          <h3 class="text-subtitle-2 text-medium-emphasis mb-1">{{ t('mh.profile.bio') }}</h3>
           <p>{{ userStore.profile.bio }}</p>
         </div>
 
         <div>
-          <h3 class="text-subtitle-2 text-medium-emphasis mb-1">Member since</h3>
+          <h3 class="text-subtitle-2 text-medium-emphasis mb-1">{{ t('mh.profile.memberSince') }}</h3>
           <p>{{ formatDate(userStore.profile.created_at) }}</p>
         </div>
       </v-card-text>
@@ -55,6 +55,9 @@ import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useUserStore } from '@/stores/user'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const authStore = useAuthStore()

@@ -137,6 +137,11 @@ pub mod person_socket;
 /// so the CLI's `self-update` shares it. Re-exported, so `crate::pgp_verify`
 /// still names it.
 pub use tunnel_core::pgp_verify;
+/// Roomler SSH — the in-daemon SSH surface served on this node's overlay
+/// address, intercepted before the OS (`ssh_enabled`, default off). Gated with
+/// [`overlay`]: without an overlay there is no address to serve on.
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+pub mod local_accounts;
 pub mod managed_forward;
 #[cfg(target_os = "linux")]
 pub mod managed_forward_nft;
@@ -197,10 +202,6 @@ pub mod shared_lease;
 pub mod signaling;
 /// FR-93 P5h — a computer going to sleep tells every viewer first.
 pub mod sleep_notice;
-/// Roomler SSH — the in-daemon SSH surface served on this node's overlay
-/// address, intercepted before the OS (`ssh_enabled`, default off). Gated with
-/// [`overlay`]: without an overlay there is no address to serve on.
-#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 pub mod ssh;
 /// FR-90 P3-8-2b — this daemon's own SSH client, for an agent session's one
 /// command on another device. With the SSH server, whose `russh` it shares.

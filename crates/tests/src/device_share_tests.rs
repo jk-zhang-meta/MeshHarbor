@@ -128,7 +128,7 @@ async fn fixture() -> Fixture {
     }
 }
 fn create_body(f: &Fixture) -> Value {
-    json!({"device_id":f.device.to_hex(),"recipient_user_id":f.recipient.id.to_hex(),"permissions":{"ssh":true},"tcp_ports":[22],"expires_in_secs":60})
+    json!({"device_id":f.device.to_hex(),"recipient_user_id":f.recipient.id.to_hex(),"permissions":{"ssh":true},"tcp_ports":[22],"expires_in_secs":60,"ssh_account":"alice"})
 }
 async fn create(f: &Fixture) -> Value {
     let r = f
@@ -257,6 +257,83 @@ async fn device_share_exact_recipient_device_service_and_port_not_membership() {
             .unwrap()
     );
 }
+/// A person shares a device by naming the recipient — username, or email in any case — and
+/// reads names, not ids, back. Every reason a NAMED recipient cannot be used answers the SAME
+/// refusal, so the form is no oracle for which accounts exist or what state they are in.
+#[tokio::test]
+async fn device_share_names_the_recipient_and_lists_names_without_an_account_oracle() {
+    let f = fixture().await;
+    let post = |body: Value| {
+        let f = &f;
+        async move {
+            let r = f
+                .app
+                .auth_post("/api/device-shares", &f.owner.token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = r.status().as_u16();
+            (status, r.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let named = |recipient: &str| {
+        json!({"device_id":f.device.to_hex(),"recipient":recipient,
+               "permissions":{"ssh":true},"tcp_ports":[22],"expires_in_secs":60,"ssh_account":"alice"})
+    };
+
+    let (status, v) = post(named("share_recipient")).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["recipient_user_id"], f.recipient.id.to_hex());
+    assert_eq!(v["recipient_username"], "share_recipient");
+    assert_eq!(v["owner_username"], "share_owner");
+    assert_eq!(v["device_name"], "One shared box");
+
+    // Addresses match whatever case the person types.
+    let (status, v) = post(named("  SHARE_RECIPIENT@share.example.test ")).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["recipient_user_id"], f.recipient.id.to_hex());
+
+    // No account, a pending account, and a deleted-looking typo all read the same.
+    let (s_unknown, unknown) = post(named("nobody_by_this_name")).await;
+    let (s_pending, pending) = post(named("share_pending")).await;
+    assert_eq!((s_unknown, s_pending), (400, 400));
+    assert_eq!(unknown, pending, "the refusal must not tell the two apart");
+
+    // Exactly one way of naming the recipient.
+    let mut both = named("share_recipient");
+    both["recipient_user_id"] = json!(f.recipient.id.to_hex());
+    assert_eq!(post(both).await.0, 400);
+    let mut neither = named("share_recipient");
+    neither.as_object_mut().unwrap().remove("recipient");
+    assert_eq!(post(neither).await.0, 400);
+
+    // The id form is unchanged.
+    let by_id = create(&f).await;
+    assert_eq!(by_id["recipient_username"], "share_recipient");
+
+    // Both sides read names back in their lists.
+    for (token, direction) in [(&f.owner.token, "sent"), (&f.recipient.token, "received")] {
+        let page: Value = f
+            .app
+            .auth_get(&format!("/api/device-shares?direction={direction}"), token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let items = page["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3, "{direction}: {page}");
+        assert!(
+            items.iter().all(|i| i["device_name"] == "One shared box"
+                && i["owner_username"] == "share_owner"
+                && i["recipient_username"] == "share_recipient"),
+            "{direction}: {page}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn device_share_creation_refuses_nonowner_pending_and_broad_scope() {
     let f = fixture().await;
@@ -463,6 +540,7 @@ async fn device_share_remote_real_ws_session_and_live_revoke() {
     let mut body = create_body(&f);
     body["permissions"] =
         json!({"desktop_view":true,"desktop_control":true,"files_read":true,"files_write":true});
+    body.as_object_mut().unwrap().remove("ssh_account");
     let grant: Value = f
         .app
         .auth_post("/api/device-shares", &f.owner.token)
@@ -628,6 +706,7 @@ async fn device_share_remote_escalation_and_unshared_org_request_are_denied() {
     let f = fixture().await;
     let mut body = create_body(&f);
     body["permissions"] = json!({"desktop_view":true,"files_read":true});
+    body.as_object_mut().unwrap().remove("ssh_account");
     let g: Value = f
         .app
         .auth_post("/api/device-shares", &f.owner.token)
@@ -691,6 +770,7 @@ async fn device_share_remote_distinct_grants_do_not_coalesce_and_live_allowlist_
     f.app.set_plan(&f.tenant.to_hex(), "business").await;
     let mut body = create_body(&f);
     body["permissions"] = json!({"desktop_view":true});
+    body.as_object_mut().unwrap().remove("ssh_account");
     let mut grants = Vec::new();
     for _ in 0..2 {
         let g: Value = f
@@ -794,6 +874,7 @@ async fn device_share_shared_lease_exact_agent_scope_and_live_policy_pdp() {
     let f = fixture().await;
     let mut body = create_body(&f);
     body["permissions"] = json!({"desktop_view":true});
+    body.as_object_mut().unwrap().remove("ssh_account");
     let grant: Value = f
         .app
         .auth_post("/api/device-shares", &f.owner.token)
@@ -1060,6 +1141,12 @@ async fn shared_ssh_start(
     assert_eq!(setup.device_id, f.device);
     assert_eq!(setup.owner_user_id, f.owner.id);
     assert_eq!(setup.recipient_user_id, f.recipient.id);
+    // The share's account crosses to the device, never the policy's (the fixture's is daemon).
+    assert_eq!(
+        setup.account_mode,
+        roomler_ai_remote_control::models::SshAccountMode::Named
+    );
+    assert_eq!(setup.account.as_deref(), Some("alice"));
     let ctx = roomler_core::AgentCtx {
         conn_id: format!("shared-ssh-test-{sid}"),
         agent_id: f.device,
@@ -2146,7 +2233,7 @@ async fn native_shared_ssh_composed_hidden_prompt_nonce_live_revoke_and_reopen()
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let response=f.app.auth_post("/api/device-shares",&f.owner.token).json(&json!({"device_id":device.to_hex(),"recipient_user_id":f.recipient.id.to_hex(),"permissions":{"ssh":true},"tcp_ports":[],"expires_in_secs":120})).send().await.unwrap();
+    let response=f.app.auth_post("/api/device-shares",&f.owner.token).json(&json!({"device_id":device.to_hex(),"recipient_user_id":f.recipient.id.to_hex(),"permissions":{"ssh":true},"tcp_ports":[],"expires_in_secs":120,"ssh_account":std::env::var("MESHHARBOR_SHARED_SSH_TEST_ACCOUNT").unwrap_or_else(|_| "nobody".into())})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 200);
     let share: Value = response.json().await.unwrap();
     let grant = share["id"].as_str().unwrap();
@@ -2311,5 +2398,266 @@ async fn native_shared_ssh_composed_hidden_prompt_nonce_live_revoke_and_reopen()
             .is_member(f.tenant, f.recipient.id)
             .await
             .unwrap()
+    );
+}
+
+/// An SSH share names the device account it runs as. Without one, with a malformed one, on a
+/// Windows device, or on a share that is not SSH, creation is refused; and a row from before the
+/// choice existed is refused at use rather than inheriting the device policy's account (root).
+#[tokio::test]
+async fn device_share_ssh_requires_its_own_account_and_never_inherits_the_policy_account() {
+    let f = shared_ssh_fixture().await;
+    let post = |body: Value| {
+        let f = &f;
+        async move {
+            f.app
+                .auth_post("/api/device-shares", &f.owner.token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
+    };
+    let body = |permissions: Value, account: Option<&str>| {
+        let mut b = json!({"device_id":f.device.to_hex(),"recipient_user_id":f.recipient.id.to_hex(),
+                           "permissions":permissions,"expires_in_secs":60});
+        if let Some(a) = account {
+            b["ssh_account"] = json!(a);
+        }
+        b
+    };
+    let ssh = json!({"ssh":true});
+    assert_eq!(post(body(ssh.clone(), None)).await, 400, "no account");
+    for bad in ["", "  ", "root", "Root", "../etc", "a b", "a:b", "x\ny"] {
+        assert_eq!(post(body(ssh.clone(), Some(bad))).await, 400, "{bad:?}");
+    }
+    assert_eq!(
+        post(body(json!({"desktop_view":true}), Some("alice"))).await,
+        400,
+        "an account on a share that is not SSH"
+    );
+    let agents = f.app.db.collection::<bson::Document>("agents");
+    let os = |k: OsKind| bson::to_bson(&k).unwrap();
+    agents
+        .update_one(
+            doc! {"_id":f.device},
+            doc! {"$set":{"os":os(OsKind::Windows)}},
+        )
+        .await
+        .unwrap();
+    assert_eq!(post(body(ssh.clone(), Some("alice"))).await, 400, "Windows");
+    agents
+        .update_one(
+            doc! {"_id":f.device},
+            doc! {"$set":{"os":os(OsKind::Linux)}},
+        )
+        .await
+        .unwrap();
+    let r = f
+        .app
+        .auth_post("/api/device-shares", &f.owner.token)
+        .json(&body(ssh.clone(), Some(" alice ")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["ssh_account"], "alice", "trimmed and returned");
+
+    // A legacy row: SSH permission, no account. The policy says daemon (root); it must not apply.
+    let now = bson::DateTime::now();
+    let legacy = roomler_ai_db::models::DeviceShareGrant {
+        id: None,
+        device_id: f.device,
+        tenant_id: f.tenant,
+        owner_user_id: f.owner.id,
+        recipient_user_id: f.recipient.id,
+        permissions: roomler_ai_db::models::DeviceSharePermissions {
+            ssh: true,
+            ..Default::default()
+        },
+        tcp_ports: vec![],
+        created_at: now,
+        expires_at: bson::DateTime::from_millis(now.timestamp_millis() + 60_000),
+        revoked_at: None,
+        revision: 0,
+        ssh_account: None,
+    };
+    let id = f
+        .app
+        .db
+        .collection::<roomler_ai_db::models::DeviceShareGrant>(
+            roomler_ai_db::models::DeviceShareGrant::COLLECTION,
+        )
+        .insert_one(&legacy)
+        .await
+        .unwrap()
+        .inserted_id
+        .as_object_id()
+        .unwrap();
+    let _registered = f
+        .app
+        .state
+        .modules
+        .fleet
+        .as_ref()
+        .unwrap()
+        .rc_hub
+        .register_agent(
+            f.device,
+            f.tenant,
+            f.owner.id,
+            OsKind::Linux,
+            4,
+            false,
+            false,
+        );
+    let ok = v["id"].as_str().unwrap();
+    let meta = |id: String| {
+        let f = &f;
+        async move {
+            f.app
+                .auth_get(&format!("/api/device-shares/{id}/ssh"), &f.recipient.token)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
+    };
+    assert_eq!(
+        meta(ok.to_string()).await,
+        200,
+        "a share with its own account"
+    );
+    assert_eq!(meta(id.to_hex()).await, 403, "a legacy share without one");
+}
+
+/// MeshHarbor — the owner lists, and creates, the device's accounts through the device itself:
+/// the route pushes `rc:accounts.request` to the connected device and answers with what the
+/// device said, its refusal included. Only the owner; only a device that advertises it; a
+/// name the server refuses never reaches the device.
+#[tokio::test]
+async fn local_accounts_reach_the_device_for_its_owner_only() {
+    use roomler_ai_remote_control::signaling::{LocalAccount, LocalAccountOp, ServerMsg};
+    let f = fixture().await;
+    let path = format!("/api/account/devices/{}/local-accounts", f.device.to_hex());
+    let get = |token: String| {
+        let (f, path) = (&f, path.clone());
+        async move {
+            let r = f.app.auth_get(&path, &token).send().await.unwrap();
+            let status = r.status().as_u16();
+            (status, r.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let post = |body: Value| {
+        let (f, path) = (&f, path.clone());
+        async move {
+            let r = f
+                .app
+                .auth_post(&path, &f.owner.token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = r.status().as_u16();
+            (status, r.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    assert_eq!(
+        get(f.owner.token.clone()).await.0,
+        400,
+        "no capability advertised"
+    );
+    f.app
+        .db
+        .collection::<bson::Document>("agents")
+        .update_one(
+            doc! {"_id":f.device},
+            doc! {"$set":{"capabilities.rpc":["local-accounts-v1"]}},
+        )
+        .await
+        .unwrap();
+    assert_eq!(get(f.recipient.token.clone()).await.0, 403, "not the owner");
+    assert_eq!(get(f.owner.token.clone()).await.0, 409, "not connected");
+
+    let hub = f.app.state.modules.fleet.as_ref().unwrap().rc_hub.clone();
+    let (_tx, _, mut target) = hub.register_agent(
+        f.device,
+        f.tenant,
+        f.owner.id,
+        OsKind::Linux,
+        4,
+        false,
+        false,
+    );
+    let device = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        while seen.len() < 3 {
+            let Some(msg) = target.recv().await else {
+                break;
+            };
+            let ServerMsg::LocalAccountsRequest { request_id, op } = msg else {
+                continue;
+            };
+            let answer = match &op {
+                LocalAccountOp::List => Ok(vec![LocalAccount {
+                    name: "alice".into(),
+                    uid: 1000,
+                    admin: false,
+                }]),
+                LocalAccountOp::Create { name, .. } if name == "taken" => {
+                    Err("an account named taken already exists; choose it instead".to_string())
+                }
+                LocalAccountOp::Create { name, admin } => Ok(vec![LocalAccount {
+                    name: name.clone(),
+                    uid: 1001,
+                    admin: *admin,
+                }]),
+            };
+            hub.deliver_local_accounts(&request_id, answer);
+            seen.push(op);
+        }
+        seen
+    });
+    let (status, v) = get(f.owner.token.clone()).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["accounts"][0]["name"], "alice");
+    for bad in ["root", "Bad", "../x", ""] {
+        assert_eq!(
+            post(json!({"name":bad,"admin":true})).await.0,
+            400,
+            "{bad:?}"
+        );
+    }
+    let (status, v) = post(json!({"name":"share1","admin":true})).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(
+        v["accounts"][0],
+        json!({"name":"share1","uid":1001,"admin":true})
+    );
+    let (status, v) = post(json!({"name":"taken"})).await;
+    assert_eq!(status, 400);
+    assert!(v.to_string().contains("The device refused"), "{v}");
+    let seen = tokio::time::timeout(std::time::Duration::from_secs(5), device)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        seen,
+        vec![
+            LocalAccountOp::List,
+            LocalAccountOp::Create {
+                name: "share1".into(),
+                admin: true
+            },
+            LocalAccountOp::Create {
+                name: "taken".into(),
+                admin: false
+            },
+        ],
+        "only valid names reached the device"
     );
 }

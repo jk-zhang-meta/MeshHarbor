@@ -4,21 +4,20 @@
   <v-card variant="outlined">
     <v-card-title class="d-flex align-center">
       <v-icon icon="mdi-clipboard-text-clock-outline" color="primary" class="mr-2" />
-      <span>Command audit</span>
+      <span>{{ t('mh.audit.exec.title') }}</span>
       <v-spacer />
       <v-btn
         icon="mdi-refresh"
         size="small"
         variant="text"
         :loading="loading"
-        aria-label="Refresh"
+        :aria-label="t('mh.audit.refresh')"
         @click="load"
       />
     </v-card-title>
 
     <v-card-subtitle class="pb-2 text-wrap">
-      Every remote command attempted on this organization's devices — including
-      the ones that were refused. Retained for 90 days.
+      {{ t('mh.audit.exec.subtitle') }}
     </v-card-subtitle>
 
     <v-card-text>
@@ -27,7 +26,7 @@
       </v-alert>
 
       <div v-if="!loading && !entries.length" class="text-medium-emphasis text-caption">
-        No commands have been attempted yet.
+        {{ t('mh.audit.exec.empty') }}
       </div>
 
       <!-- A card per entry below 600 px (table-stack-xs): the result and the
@@ -38,23 +37,23 @@
         <v-table density="compact" class="table-stack-xs table-stack-xs--compact">
           <thead>
             <tr>
-              <th>When</th>
-              <th>Device</th>
-              <th>Who</th>
-              <th>Via</th>
-              <th>Command</th>
-              <th>Result</th>
+              <th>{{ t('mh.audit.col.when') }}</th>
+              <th>{{ t('mh.audit.col.device') }}</th>
+              <th>{{ t('mh.audit.col.who') }}</th>
+              <th>{{ t('mh.audit.col.via') }}</th>
+              <th>{{ t('mh.audit.col.command') }}</th>
+              <th>{{ t('mh.audit.col.result') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="e in visible" :key="e.request_id">
-              <td data-label="When" class="text-no-wrap">{{ fmtWhen(e.at) }}</td>
-              <td data-label="Device" class="text-no-wrap">{{ deviceName(e.agent_id) }}</td>
-              <td data-label="Who" class="text-no-wrap">{{ userName(e.user_id) }}</td>
-              <td data-label="Via">
+              <td :data-label="t('mh.audit.col.when')" class="text-no-wrap">{{ fmtWhen(e.at) }}</td>
+              <td :data-label="t('mh.audit.col.device')" class="text-no-wrap">{{ deviceName(e.agent_id) }}</td>
+              <td :data-label="t('mh.audit.col.who')" class="text-no-wrap">{{ userName(e.user_id) }}</td>
+              <td :data-label="t('mh.audit.col.via')">
                 <v-chip size="x-small" variant="tonal">{{ e.source }}</v-chip>
               </td>
-              <td data-label="Command" class="stack-block">
+              <td :data-label="t('mh.audit.col.command')" class="stack-block">
                 <code
                   class="audit-cmd"
                   :class="{ 'audit-cmd--open': openCommands.has(e.request_id) }"
@@ -67,10 +66,10 @@
                   :aria-expanded="openCommands.has(e.request_id)"
                   @click="toggleCommand(e.request_id)"
                 >
-                  {{ openCommands.has(e.request_id) ? 'Show less' : 'Show all' }}
+                  {{ openCommands.has(e.request_id) ? t('mh.audit.showLess') : t('mh.audit.showAll') }}
                 </button>
               </td>
-              <td data-label="Result" class="text-no-wrap">
+              <td :data-label="t('mh.audit.col.result')" class="text-no-wrap">
                 <v-chip size="x-small" :color="resultColor(e)" variant="flat">
                   {{ resultLabel(e) }}
                 </v-chip>
@@ -89,7 +88,7 @@
         </v-table>
         <div v-if="remaining" class="text-center mt-2">
           <v-btn variant="tonal" size="small" data-testid="audit-show-more" @click="showMore">
-            Show {{ nextCount }} more
+            {{ t('mh.audit.showMore', { n: nextCount }) }}
           </v-btn>
         </div>
       </template>
@@ -103,6 +102,9 @@ import { useDisplay } from 'vuetify'
 import { useAgentStore, type ExecAuditEntry } from '@/stores/agents'
 import { deviceLabel } from '@/composables/useHideDeviceName'
 import { usePhoneSlice } from '@/composables/usePhoneSlice'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   tenantId: string
@@ -133,38 +135,34 @@ function toggleCommand(id: string) {
 
 /** Human wording for each refusal, so a reader learns WHICH gate said no.
  *  "Denied" alone would throw away the only useful part of the record. */
-const DENY_LABEL: Record<string, string> = {
-  org_disabled: 'org switched off',
-  no_permission: 'no permission',
-  device_disabled: 'device switched off',
-  caller_not_allowed: 'caller not allowed',
-  shell_not_allowed: 'shell not allowed',
-  origin_not_allowed: 'origin not allowed',
-  unsupported: 'agent too old',
-  offline: 'device offline',
-  consent_denied: 'consent denied',
-  rate_limited: 'rate limited',
-  agent_disabled: 'disabled on device',
-  system_required: 'SYSTEM required',
-  claim_refused: 'claim refused',
-  run_as_unavailable: 'needs the SYSTEM service',
-}
+/** Refusal codes this UI names; any other is shown as sent. */
+const DENY_CODES = new Set([
+  'org_disabled',
+  'no_permission',
+  'device_disabled',
+  'caller_not_allowed',
+  'shell_not_allowed',
+  'origin_not_allowed',
+  'unsupported',
+  'offline',
+  'consent_denied',
+  'rate_limited',
+  'agent_disabled',
+  'system_required',
+  'claim_refused',
+  'run_as_unavailable',
+])
 
 /** FR-94 — the identity the server sent the command to. `worker` stays
  *  unlabelled on purpose: it is every device before FR-94 (root on Linux). */
-const RAN_AS_LABEL: Record<string, string> = {
-  system: 'SYSTEM',
-  console_user: 'as user',
-}
-
 function ranAsLabel(e: ExecAuditEntry): string | null {
-  return e.ran_as ? (RAN_AS_LABEL[e.ran_as] ?? null) : null
+  return e.ran_as === 'system' || e.ran_as === 'console_user' ? t(`mh.audit.ranAs.${e.ran_as}`) : null
 }
 
 function ranAsTitle(e: ExecAuditEntry): string {
   return e.ran_as === 'system'
-    ? "Ran as SYSTEM through the device's service"
-    : "Ran through the device's service as the signed-in user"
+    ? t('mh.audit.ranAsSystemTitle')
+    : t('mh.audit.ranAsUserTitle')
 }
 
 const deviceNames = computed(() => {
@@ -185,14 +183,14 @@ function deviceName(id: string): string {
 
 function userName(id: string): string {
   // FR-94 — a refused claim names no user: the device's service asked.
-  if (/^0{24}$/.test(id)) return "device's service"
+  if (/^0{24}$/.test(id)) return t('mh.audit.deviceService')
   return userNames.value[id] ?? id.slice(0, 8)
 }
 
 function resultLabel(e: ExecAuditEntry): string {
-  if (e.denied) return DENY_LABEL[e.denied] ?? e.denied
-  if (e.exit_code === 0) return 'ok'
-  return `exit ${e.exit_code ?? '?'}`
+  if (e.denied) return DENY_CODES.has(e.denied) ? t(`mh.audit.deny.${e.denied}`) : e.denied
+  if (e.exit_code === 0) return t('mh.audit.ok')
+  return t('mh.audit.exit', { code: e.exit_code ?? '?' })
 }
 
 function resultColor(e: ExecAuditEntry): string {

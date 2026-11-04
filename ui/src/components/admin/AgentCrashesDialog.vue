@@ -8,7 +8,7 @@
         <!-- The span shrinks with an ellipsis (min-width: 0), so the title's own
              buttons stay on screen: a title never wraps, and a long device name
              used to push Close or Refresh past the edge on a phone. -->
-        <span class="text-truncate" style="min-width: 0">Crash reports — {{ agentName }}</span>
+        <span class="text-truncate" style="min-width: 0">{{ t('mh.crash.title', { name: agentName }) }}</span>
         <v-spacer />
         <v-btn
           icon="mdi-refresh"
@@ -16,14 +16,14 @@
           variant="text"
           :loading="loading"
           @click="refresh"
-          aria-label="Refresh crash list"
+          :aria-label="t('mh.crash.refresh')"
         />
         <v-btn
           icon="mdi-close"
           size="small"
           variant="text"
           @click="close"
-          aria-label="Close"
+          :aria-label="t('mh.common.close')"
         />
       </v-card-title>
 
@@ -47,16 +47,16 @@
           class="text-center pa-6 text-medium-emphasis"
         >
           <v-icon size="48" color="grey-lighten-1" class="mb-2">mdi-check-circle-outline</v-icon>
-          <p>No crashes reported. Nice.</p>
+          <p>{{ t('mh.crash.none') }}</p>
         </div>
 
         <v-table v-else density="compact" class="crashes-table">
           <thead>
             <tr>
               <th style="width: 32px"></th>
-              <th>When</th>
-              <th>Reason</th>
-              <th>Summary</th>
+              <th>{{ t('mh.crash.col.when') }}</th>
+              <th>{{ t('mh.crash.col.reason') }}</th>
+              <th>{{ t('mh.crash.col.summary') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -89,14 +89,14 @@
                   <div class="text-body-2 mb-1 text-break">{{ c.summary }}</div>
                   <div class="text-caption mb-2">{{ fmtAbsolute(c.crashedAtUnix) }}</div>
                   <div class="text-caption text-medium-emphasis mb-2">
-                    <strong>Host:</strong> {{ c.hostname }} ·
-                    <strong>Agent:</strong> v{{ c.agentVersion }} ·
-                    <strong>OS:</strong> {{ c.os }} ·
-                    <strong>PID:</strong> {{ c.pid }} ·
-                    <strong>Reported:</strong> {{ fmtRelative(reportedAtUnix(c)) }}
+                    <strong>{{ t('mh.crash.host') }}</strong> {{ c.hostname }} ·
+                    <strong>{{ t('mh.crash.agent') }}</strong> v{{ c.agentVersion }} ·
+                    <strong>{{ t('mh.crash.os') }}</strong> {{ c.os }} ·
+                    <strong>{{ t('mh.crash.pid') }}</strong> {{ c.pid }} ·
+                    <strong>{{ t('mh.crash.reported') }}</strong> {{ fmtRelative(reportedAtUnix(c)) }}
                   </div>
                   <pre class="crash-log-tail bg-grey-lighten-4 pa-2 rounded">{{
-                    c.logTail || '(no log tail attached)'
+                    c.logTail || t('mh.crash.noTail')
                   }}</pre>
                 </td>
               </tr>
@@ -107,7 +107,7 @@
 
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="close">Close</v-btn>
+        <v-btn variant="text" @click="close">{{ t('mh.common.close') }}</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -115,6 +115,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import { useAgentStore, type AgentCrash } from '@/stores/agents'
 
@@ -129,6 +130,7 @@ const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void
 }>()
 
+const { t } = useI18n()
 const { fullscreen } = useResponsiveDialog()
 const open = computed({
   get: () => props.modelValue,
@@ -198,11 +200,11 @@ function reasonColor(r: AgentCrash['reason']): string {
 function reasonLabel(r: AgentCrash['reason']): string {
   switch (r) {
     case 'panic':
-      return 'Panic'
+      return t('mh.crash.reason.panic')
     case 'watchdog_stall':
-      return 'Watchdog stall'
+      return t('mh.crash.reason.watchdog')
     case 'supervisor_detected':
-      return 'Supervisor'
+      return t('mh.crash.reason.supervisor')
     default:
       return r
   }
@@ -221,17 +223,17 @@ function fmtRelative(unixSecs: number): string {
   if (!unixSecs) return '—'
   const ms = unixSecs * 1000
   const diff = Date.now() - ms
-  if (diff < 0) return 'just now'
+  if (diff < 0) return t('mh.ago.now')
   const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
+  if (mins < 1) return t('mh.ago.now')
+  if (mins < 60) return t('mh.ago.m', { n: mins })
   const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
+  if (hours < 24) return t('mh.ago.h', { n: hours })
   const days = Math.floor(hours / 24)
-  if (days < 30) return `${days}d ago`
+  if (days < 30) return t('mh.ago.d', { n: days })
   const months = Math.floor(days / 30)
-  if (months < 12) return `${months}mo ago`
-  return `${Math.floor(months / 12)}y ago`
+  if (months < 12) return t('mh.ago.mo', { n: months })
+  return t('mh.ago.y', { n: Math.floor(months / 12) })
 }
 
 function reportedAtUnix(c: AgentCrash): number {

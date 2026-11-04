@@ -19,19 +19,19 @@
       elevation="12"
       rounded="lg"
       role="dialog"
-      aria-label="Newsletter signup"
+      :aria-label="t('mh.nl.signup')"
     >
       <v-btn
         icon="mdi-close"
         variant="text"
         size="small"
         class="prompt-close"
-        aria-label="Dismiss"
+        :aria-label="t('mh.nl.dismiss')"
         @click="dismiss"
       />
       <v-card-text class="pt-5 pb-4 px-5">
         <div class="text-subtitle-1 font-weight-bold mb-1">
-          Get an email when something notable ships
+          {{ t('mh.nl.promptTitle') }}
         </div>
         <!-- hide-lede: the card title above already says it — the field pass
              caught the double text on the live page (FR-58 P6). -->
@@ -44,6 +44,9 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import StayInTouch from '@/components/landing/StayInTouch.vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const LATCH_KEY = 'roomler-newsletter-dismissed'
 const SHOW_AFTER_MS = 20_000

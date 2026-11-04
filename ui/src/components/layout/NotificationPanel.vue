@@ -3,7 +3,7 @@
 <template>
   <v-list density="compact" max-width="400" class="notification-panel">
     <v-list-subheader class="d-flex align-center">
-      <span>Notifications</span>
+      <span>{{ t('mh.notif.title') }}</span>
       <v-spacer />
       <v-btn
         v-if="store.unreadCount > 0"
@@ -11,7 +11,7 @@
         size="small"
         @click="store.markAllRead()"
       >
-        Mark all read
+        {{ t('mh.notif.markAllRead') }}
       </v-btn>
     </v-list-subheader>
 
@@ -21,7 +21,7 @@
 
     <template v-else-if="store.notifications.length === 0">
       <v-list-item class="text-medium-emphasis text-center">
-        No notifications
+        {{ t('mh.notif.empty') }}
       </v-list-item>
     </template>
 
@@ -56,6 +56,9 @@
 import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNotificationStore, type Notification } from '@/stores/notification'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const store = useNotificationStore()
 const router = useRouter()
@@ -82,12 +85,12 @@ function formatTime(iso: string): string {
   const now = new Date()
   const diff = now.getTime() - d.getTime()
   const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
+  if (mins < 1) return t('mh.ago.now')
+  if (mins < 60) return t('mh.ago.m', { n: mins })
   const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
+  if (hours < 24) return t('mh.ago.h', { n: hours })
   const days = Math.floor(hours / 24)
-  return `${days}d ago`
+  return t('mh.ago.d', { n: days })
 }
 
 function handleClick(notif: Notification) {

@@ -594,6 +594,10 @@ pub struct ConnectedController {
 /// [`Hub::exec_on_agent`] — an early `send_to_agent` error or an expired
 /// deadline must not leave a slot behind that a later request id could be
 /// delivered into.
+/// A device's answer about its accounts: the list after the operation, or its refusal.
+pub type LocalAccountsAnswer =
+    std::result::Result<Vec<roomler_ai_remote_control::signaling::LocalAccount>, String>;
+
 struct ExecWaiterGuard {
     hub: Hub,
     request_id: String,
@@ -717,6 +721,10 @@ pub struct HubInner {
     /// the owner pod BEFORE reaching the Hub (see `ws/rc_relay.rs`).
     exec_waiters: DashMap<String, oneshot::Sender<ExecOutcome>>,
 
+    /// MeshHarbor — owners parked on a `rc:accounts.result`, keyed by request
+    /// id. Same-pod only, like [`Self::exec_waiters`].
+    account_waiters: DashMap<String, oneshot::Sender<LocalAccountsAnswer>>,
+
     /// FR-115 P3b — the cluster-wide slot record, set once at startup when
     /// the deployment has Redis (`roomler_core::cluster::session_slots`).
     session_slots: std::sync::OnceLock<SessionSlots>,
@@ -754,6 +762,7 @@ impl Hub {
                 audit,
                 consent_tx,
                 exec_waiters: DashMap::new(),
+                account_waiters: DashMap::new(),
                 session_slots: std::sync::OnceLock::new(),
                 slotted: DashMap::new(),
             }),
@@ -3718,6 +3727,52 @@ impl Hub {
         // On a send error the guard drops here and takes the waiter with it.
         self.send_to_agent(agent_id, msg)?;
         Ok(StartedExec { rx, _guard: guard })
+    }
+
+    /// MeshHarbor — ask a device connected HERE for its login accounts, or to
+    /// create one. The outer error is the transport (offline, timeout); the
+    /// inner `Err` is the device's own refusal, in its words.
+    pub async fn local_accounts(
+        &self,
+        agent_id: ObjectId,
+        tenant_id: ObjectId,
+        op: roomler_ai_remote_control::signaling::LocalAccountOp,
+        deadline: std::time::Duration,
+    ) -> Result<LocalAccountsAnswer> {
+        {
+            let entry = self
+                .inner
+                .agents
+                .get(&agent_id)
+                .ok_or_else(|| Error::AgentOffline(agent_id.to_hex()))?;
+            if entry.tenant_id != tenant_id {
+                return Err(Error::AgentOffline(agent_id.to_hex()));
+            }
+        }
+        let request_id = ObjectId::new().to_hex();
+        let (tx, rx) = oneshot::channel();
+        self.inner.account_waiters.insert(request_id.clone(), tx);
+        struct Unpark<'a>(&'a Hub, String);
+        impl Drop for Unpark<'_> {
+            fn drop(&mut self) {
+                self.0.inner.account_waiters.remove(&self.1);
+            }
+        }
+        let _unpark = Unpark(self, request_id.clone());
+        self.send_to_agent(agent_id, ServerMsg::LocalAccountsRequest { request_id, op })?;
+        match tokio::time::timeout(deadline, rx).await {
+            Ok(Ok(answer)) => Ok(answer),
+            Ok(Err(_)) => Err(Error::AgentOffline(agent_id.to_hex())),
+            Err(_) => Err(Error::ExecTimeout(agent_id.to_hex())),
+        }
+    }
+
+    /// Hand a `rc:accounts.result` to the owner parked on it. `false` = nobody was.
+    pub fn deliver_local_accounts(&self, request_id: &str, answer: LocalAccountsAnswer) -> bool {
+        match self.inner.account_waiters.remove(request_id) {
+            Some((_, tx)) => tx.send(answer).is_ok(),
+            None => false,
+        }
     }
 
     /// Hand a `rc:rpc.result` to whoever is parked on it. `false` = nobody

@@ -24,37 +24,34 @@
         @click:close="saved = false"
         class="mb-4"
       >
-        Saved. Overlay nodes pick up the change on their next join.
+        {{ $t('mh.dns.saved') }}
       </v-alert>
 
       <p class="text-medium-emphasis mb-4">
-        Give the mesh a DNS suffix so nodes are reachable by name
-        (<code>&lt;node&gt;.&lt;domain&gt;</code>) instead of overlay IP. Each node
-        runs a local split-DNS resolver: overlay names resolve to overlay IPs,
-        everything else forwards to the upstream nameservers below. Leave the
-        domain blank to disable MagicDNS.
+        {{ $t('mh.dns.intro1') }}
+        (<code>&lt;node&gt;.&lt;domain&gt;</code>){{ $t('mh.dns.intro2') }}
       </p>
 
       <v-text-field
         v-model="domain"
-        label="MagicDNS domain"
+        :label="$t('mh.dns.domain')"
         placeholder="myorg.roomler.net"
-        hint="Blank disables MagicDNS for the tenant."
+        :hint="$t('mh.dns.domainHint')"
         persistent-hint
         class="mb-4"
       />
 
       <v-text-field
         v-model="nameserversText"
-        label="Upstream nameservers"
+        :label="$t('mh.dns.upstream')"
         placeholder="1.1.1.1, 8.8.8.8"
-        hint="Comma-separated. Blank uses each node's existing system resolvers."
+        :hint="$t('mh.dns.upstreamHint')"
         persistent-hint
         class="mb-4"
       />
 
       <v-btn color="primary" variant="flat" :loading="loading" @click="save">
-        Save
+        {{ $t('common.save') }}
       </v-btn>
     </v-card-text>
   </v-card>

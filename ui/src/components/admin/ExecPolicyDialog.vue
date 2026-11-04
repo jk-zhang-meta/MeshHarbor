@@ -8,7 +8,7 @@
         <!-- The span shrinks with an ellipsis (min-width: 0), so the title's own
              buttons stay on screen: a title never wraps, and a long device name
              used to push Close or Refresh past the edge on a phone. -->
-        <span class="text-truncate" style="min-width: 0">Execution policy — {{ deviceLabel(agent) }}</span>
+        <span class="text-truncate" style="min-width: 0">{{ t('mh.exec.title', { name: deviceLabel(agent) }) }}</span>
       </v-card-title>
 
       <v-card-text>
@@ -22,12 +22,11 @@
           class="mb-4"
           icon="mdi-shield-alert-outline"
         >
-          Allowing remote execution on this device lets permitted users run
-          commands as <strong>root</strong> (Linux) or, on Windows, as
-          <strong>SYSTEM</strong> once the device is anchored (otherwise as the
-          <strong>signed-in user</strong> on an attended install, and as SYSTEM
-          in SystemContext mode). It is a separate power from remote control,
-          which is consent-gated and visible on screen.
+          <i18n-t keypath="mh.exec.warn" tag="span" scope="global">
+            <template #root><strong>root</strong></template>
+            <template #system><strong>SYSTEM</strong></template>
+            <template #signedIn><strong>{{ t('mh.exec.signedIn') }}</strong></template>
+          </i18n-t>
         </v-alert>
 
         <!-- FR-94 — on Windows, WHO runs a command depends on whether an
@@ -42,8 +41,10 @@
           data-testid="exec-identity"
         >
           <template v-if="anchored">
-            Anchored {{ anchoredWhen }}: commands run as <strong>SYSTEM</strong>
-            through this device's service.
+            <i18n-t keypath="mh.exec.anchored" tag="span" scope="global">
+              <template #when>{{ anchoredWhen }}</template>
+              <template #system><strong>SYSTEM</strong></template>
+            </i18n-t>
             <v-btn
               size="small"
               variant="text"
@@ -53,13 +54,13 @@
               data-testid="exec-unanchor"
               @click="unanchor"
             >
-              Un-anchor
+              {{ t('mh.exec.unanchor') }}
             </v-btn>
           </template>
           <template v-else>
-            Not anchored: commands run as the <strong>signed-in user</strong>
-            (an attended install) or as SYSTEM (SystemContext mode). To run them
-            as SYSTEM, on the device, from an elevated prompt:
+            <i18n-t keypath="mh.exec.notAnchored" tag="span" scope="global">
+              <template #signedIn><strong>{{ t('mh.exec.signedIn') }}</strong></template>
+            </i18n-t>
             <code>roomlerd anchor create --server … --token … --device {{ agent.id }}</code>
           </template>
         </v-alert>
@@ -78,7 +79,7 @@
           color="primary"
           hide-details
           density="compact"
-          label="Accept remote commands on this device"
+          :label="t('mh.exec.accept')"
         />
 
         <v-switch
@@ -87,11 +88,10 @@
           hide-details
           density="compact"
           class="mt-2"
-          label="Allow this device to run commands on OTHER devices (roomler exec)"
+          :label="t('mh.exec.originate')"
         />
         <div class="text-caption text-medium-emphasis mb-4 ml-10">
-          Off by default. Without it, a compromised copy of this device could
-          use its owner's permissions across the whole fleet.
+          {{ t('mh.exec.originateHint') }}
         </div>
 
         <!-- FR-94 P4 — which account the device's SYSTEM service runs a
@@ -102,7 +102,7 @@
           <v-select
             v-model="runAs"
             :items="runAsOptions"
-            label="Run commands as"
+            :label="t('mh.exec.runAs')"
             density="compact"
             variant="outlined"
             class="mt-4"
@@ -110,18 +110,18 @@
             data-testid="exec-run-as"
           />
           <div v-if="isWindows" class="text-caption text-medium-emphasis mb-4">
-            <strong>SYSTEM</strong> is the default.
-            <strong>The signed-in user</strong> runs each command as whoever is
-            signed in at the console, and is refused when nobody is. Both go
-            through the device's service, so the device must be anchored.
+            <i18n-t keypath="mh.exec.runAsWin" tag="span" scope="global">
+              <template #system><strong>SYSTEM</strong></template>
+              <template #signedIn><strong>{{ t('mh.exec.runAsSignedIn') }}</strong></template>
+            </i18n-t>
           </div>
           <div v-else class="text-caption text-medium-emphasis mb-4" data-testid="exec-run-as-unix">
-            <strong>root</strong> is the default.
-            <strong>The person at the device's screen</strong> runs each command
-            as whoever is signed in at its own screen, and is refused when
-            nobody is.
+            <i18n-t keypath="mh.exec.runAsUnix" tag="span" scope="global">
+              <template #root><strong>root</strong></template>
+              <template #person><strong>{{ t('mh.exec.runAsPerson') }}</strong></template>
+            </i18n-t>
             <template v-if="!agentDropsToPerson">
-              This device's agent cannot do that yet: update it, or choose root.
+              {{ t('mh.exec.runAsTooOld') }}
             </template>
           </div>
         </template>
@@ -129,23 +129,23 @@
         <v-select
           v-model="draft.consent_mode"
           :items="consentOptions"
-          label="Consent"
+          :label="t('mh.policy.label.consent')"
           density="compact"
           variant="outlined"
           class="mt-4"
           hide-details
         />
         <div class="text-caption text-medium-emphasis mb-4">
-          <strong>Prompt</strong> asks whoever is at the device and denies after
-          30 s of silence — right for workstations.
-          <strong>Unattended</strong> runs immediately — right for servers with
-          nobody sitting at them.
+          <i18n-t keypath="mh.exec.consentHint" tag="span" scope="global">
+            <template #prompt><strong>{{ t('mh.exec.prompt') }}</strong></template>
+            <template #unattended><strong>{{ t('mh.exec.unattended') }}</strong></template>
+          </i18n-t>
         </div>
 
         <v-select
           v-model="draft.allowed_user_ids"
           :items="memberOptions"
-          label="Restrict to these users (empty = anyone with the permission)"
+          :label="t('mh.exec.users')"
           density="compact"
           variant="outlined"
           multiple
@@ -158,7 +158,7 @@
         <v-select
           v-model="draft.shells"
           :items="shellOptions"
-          label="Allowed shells (empty = any the host supports)"
+          :label="t('mh.exec.shells')"
           density="compact"
           variant="outlined"
           multiple
@@ -176,25 +176,24 @@
           density="compact"
           class="mt-4"
         >
-          Remote execution is switched off for the whole organization, so this
-          device will still refuse. An org owner enables it in Settings.
+          {{ t('mh.exec.orgOff') }}
         </v-alert>
         <v-alert type="info" variant="tonal" density="compact" class="mt-4">
-          The device itself must also allow it:
-          <code>roomler config set exec_enabled true</code> on the host, then
-          restart the service. That switch belongs to whoever holds the machine
-          and cannot be set from here.
+          <i18n-t keypath="mh.exec.deviceSwitch" tag="span" scope="global">
+            <template #cmd><code>roomler config set exec_enabled true</code></template>
+          </i18n-t>
           <template v-if="anchored">
-            An anchored device's service checks its own switch as well
-            (<code>roomlerd anchor exec on</code>, elevated).
+            <i18n-t keypath="mh.exec.anchorSwitch" tag="span" scope="global">
+              <template #cmd><code>roomlerd anchor exec on</code></template>
+            </i18n-t>
           </template>
         </v-alert>
       </v-card-text>
 
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="close">Cancel</v-btn>
-        <v-btn color="primary" :loading="saving" @click="save">Save</v-btn>
+        <v-btn variant="text" @click="close">{{ t('common.cancel') }}</v-btn>
+        <v-btn color="primary" :loading="saving" @click="save">{{ t('common.save') }}</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -202,6 +201,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import { deviceLabel } from '@/composables/useHideDeviceName'
 import { useAgentStore, type Agent, type ExecPolicy } from '@/stores/agents'
@@ -218,6 +218,7 @@ const emit = defineEmits<{
   (e: 'saved'): void
 }>()
 
+const { t } = useI18n()
 const { fullscreen } = useResponsiveDialog()
 const open = computed({
   get: () => props.modelValue,
@@ -276,10 +277,10 @@ const modeOn = computed({
   },
 })
 
-const consentOptions = [
-  { title: 'Prompt at the device (recommended)', value: null },
-  { title: 'Unattended — run immediately', value: 'auto' },
-]
+const consentOptions = computed(() => [
+  { title: t('mh.exec.consent.prompt'), value: null },
+  { title: t('mh.exec.consent.auto'), value: 'auto' },
+])
 
 // FR-94 P4 — unset reads as SYSTEM, the server's default.
 const runAs = computed({
@@ -301,12 +302,12 @@ const offersRunAs = computed(
 const runAsOptions = computed(() =>
   isWindows.value
     ? [
-        { title: 'SYSTEM (default)', value: 'system' },
-        { title: 'The signed-in user', value: 'console_user' },
+        { title: t('mh.exec.opt.system'), value: 'system' },
+        { title: t('mh.exec.opt.signedIn'), value: 'console_user' },
       ]
     : [
-        { title: 'root (default)', value: 'system' },
-        { title: "The person at the device's screen", value: 'console_user' },
+        { title: t('mh.exec.opt.root'), value: 'system' },
+        { title: t('mh.exec.opt.person'), value: 'console_user' },
       ],
 )
 

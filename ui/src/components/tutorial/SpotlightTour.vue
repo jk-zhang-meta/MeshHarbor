@@ -25,9 +25,9 @@
       <v-card-actions class="pt-0">
         <span class="text-caption text-medium-emphasis ml-2">{{ stepIndex + 1 }} / {{ total }}</span>
         <v-spacer />
-        <v-btn size="small" variant="text" @click="onDismiss">Skip</v-btn>
+        <v-btn size="small" variant="text" @click="onDismiss">{{ t('mh.tour.skip') }}</v-btn>
         <v-btn size="small" color="primary" variant="flat" @click="next">
-          {{ isLast ? 'Done' : 'Next' }}
+          {{ isLast ? t('mh.tour.done') : t('mh.tour.next') }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -37,6 +37,9 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
 import { useSpotlightTour } from '@/composables/useSpotlightTour'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const { active, step, stepIndex, total, isLast, next, end, skipMissingStep } = useSpotlightTour()
 
