@@ -895,14 +895,14 @@ install_tunnel_macos() {
 # Does the installed CLI run here? `command -v` alone is not enough: a binary
 # for another architecture, or one missing a library, is on PATH too.
 tunnel_cli_runs() {
-    cli="$(command -v meshharbor || true)"
+    cli="$(command -v mh || true)"
     [ -n "$cli" ] && "$cli" --version >/dev/null 2>&1
 }
 
 # #2472 — never say "done" with nothing installed.
 require_tunnel_cli() {
     if ! tunnel_cli_runs; then
-        echo "error: the meshharbor CLI did not install: no working \`meshharbor\` on PATH" >&2
+        echo "error: the MeshHarbor CLI did not install: no working \`mh\` on PATH" >&2
         exit 1
     fi
     say "installed: $(mh --version 2>/dev/null | head -n 1)"
@@ -913,26 +913,15 @@ install_tunnel_tarball() {
     xdir="$STAGE/tunnel"
     mkdir -p "$xdir"
     tar -xzf "$tarball" -C "$xdir"
-    # Archives ship BOTH names since the P3d rename; prefer `meshharbor`.
-    bin=""
-# RETIRED-NAME-ANCHOR-BEGIN
-# The tunnel CLI is installed on hosts that predate the rename, so the archive
-# may carry either name and an existing `meshharbor-tunnel` on PATH must keep
-# working. The symlink below is that compatibility promise, not a leftover.
-    for name in meshharbor meshharbor-tunnel; do
-        found="$(find "$xdir" -maxdepth 2 -type f -name "$name" | head -n 1)"
-        [ -n "$found" ] && { bin="$found"; break; }
-    done
-    [ -n "$bin" ] || { echo "error: no meshharbor/meshharbor-tunnel binary in the archive" >&2; exit 1; }
+    # The public CLI has one name in both the archive and the install layout.
+    bin="$(find "$xdir" -maxdepth 2 -type f -name mh | head -n 1)"
+    [ -n "$bin" ] || { echo "error: no mh binary in the archive" >&2; exit 1; }
     say "installing $(basename "$bin") to /usr/local/bin/mh (sudo required)"
     sudo install -m 755 "$bin" /usr/local/bin/mh
-    # Legacy-name convenience symlink, matching the archives' compat alias.
-    sudo ln -sf /usr/local/bin/mh /usr/local/bin/meshharbor-tunnel
 }
 
 enroll_tunnel() {
-    cli="$(command -v meshharbor || command -v meshharbor-tunnel || true)"
-# RETIRED-NAME-ANCHOR-END
+    cli="$(command -v mh || true)"
     [ -n "$cli" ] || cli=/usr/local/bin/mh
     if [ "$NO_ENROLL" = 1 ] || [ -z "$TOKEN" ]; then
         [ "$NO_ENROLL" = 1 ] || warn "no --token given — skipping enrollment"
@@ -1715,8 +1704,6 @@ install_local_cli() {
     fi
     LOCAL_PHASE=cli-install; LOCAL_CLI_STATE=attempted
     sudo install -m 755 "$LOCAL_CLI" /usr/local/bin/mh
-    LOCAL_PHASE=cli-alias
-    sudo ln -sf /usr/local/bin/mh /usr/local/bin/meshharbor-tunnel
     LOCAL_PHASE=cli-installed-check
     /usr/local/bin/mh --version >/dev/null
     LOCAL_CLI_STATE=ready

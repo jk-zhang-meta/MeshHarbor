@@ -395,13 +395,10 @@ function Install-TunnelClient {
 
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
     Expand-Archive -Path $zip -DestinationPath $installDir -Force
-    # Archives ship BOTH names since the P3d rename; prefer 'meshharbor'.
-    $cli = $null
-    foreach ($n in @('mh.exe', 'meshharbor-tunnel.exe')) {
-        $found = Get-ChildItem -Path $installDir -Filter $n -Recurse | Select-Object -First 1
-        if ($found) { $cli = $found.FullName; break }
-    }
-    if (-not $cli) { throw "no mh.exe / meshharbor-tunnel.exe in the extracted archive" }
+    # The public CLI has one name in both the archive and the install layout.
+    $found = Get-ChildItem -Path $installDir -Filter 'mh.exe' -Recurse | Select-Object -First 1
+    if (-not $found) { throw "no mh.exe in the extracted archive" }
+    $cli = $found.FullName
     $cliDir = Split-Path -Parent $cli
     Say "installed: $cli"
 

@@ -99,12 +99,12 @@ fn main() -> ! {
     let daemon = match candidates.iter().find(|p| p.is_file()) {
         Some(p) => p.clone(),
         None if candidates.is_empty() => {
-            eprintln!("meshharbor: could not resolve this executable's own path");
+            eprintln!("mh: could not resolve this executable's own path");
             std::process::exit(EXIT_NO_DAEMON);
         }
         None => {
             eprintln!(
-                "meshharbor: the daemon binary is missing (looked in: {}) — reinstall the \
+                "mh: the daemon binary is missing (looked in: {}) — reinstall the \
                  MeshHarbor package, or use the standalone tunnel CLI on hosts without a daemon.",
                 candidates
                     .iter()
@@ -119,7 +119,7 @@ fn main() -> ! {
     ignore_ctrl_c();
 
     // argv[0] is dropped: the daemon re-labels it as `mh` before handing
-    // the vector to clap, so usage/help text still reads `meshharbor ...`.
+    // the vector to clap, so usage/help text still reads `mh ...`.
     let mut cmd = Command::new(&daemon);
     cmd.arg("cli").args(std::env::args_os().skip(1));
 
@@ -150,7 +150,7 @@ fn main() -> ! {
             std::process::exit(s.code().unwrap_or(1))
         }
         Err(e) => {
-            eprintln!("meshharbor: failed to launch {}: {e}", daemon.display());
+            eprintln!("mh: failed to launch {}: {e}", daemon.display());
             std::process::exit(EXIT_NO_DAEMON);
         }
     }
