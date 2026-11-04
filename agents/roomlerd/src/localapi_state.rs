@@ -2096,6 +2096,29 @@ fn apply_tunnel_override(peers: &mut [PeerInfo], tunneled: &HashSet<String>) {
     }
 }
 
+pub(crate) fn on_demand_rtt_prober_suppressed() -> bool {
+    tunnel_core::env::flag("OVERLAY_ON_DEMAND", false)
+}
+
+pub(crate) fn rtt_prober_targets(
+    view: &OverlayView,
+    on_demand_enabled: bool,
+) -> Vec<(String, String, IpAddr)> {
+    if on_demand_enabled {
+        return Vec::new();
+    }
+    view.peers
+        .iter()
+        .filter(|p| matches!(p.connection, ConnectionType::Direct | ConnectionType::Relay))
+        .filter_map(|p| {
+            let ip = p.overlay_ip.as_deref()?;
+            ip.parse::<IpAddr>()
+                .ok()
+                .map(|addr| (p.node_id.clone(), ip.to_string(), addr))
+        })
+        .collect()
+}
+
 /// Spawn the RTT prober (P3b-3): every [`RTT_PROBE_INTERVAL`], ICMP-ping each
 /// carrier-reachable peer over the userspace netstack and cache the round-trip
 /// so `peers()` can surface `rtt_ms`. Only meaningful on a netstack node (the
@@ -2127,18 +2150,7 @@ pub fn spawn_rtt_prober(
             }
             // Snapshot the peers to probe, then release the watch borrow before
             // any await (the borrow is not held across the ping).
-            let targets: Vec<(String, String, IpAddr)> = overlay
-                .borrow()
-                .peers
-                .iter()
-                .filter(|p| matches!(p.connection, ConnectionType::Direct | ConnectionType::Relay))
-                .filter_map(|p| {
-                    let ip = p.overlay_ip.as_deref()?;
-                    ip.parse::<IpAddr>()
-                        .ok()
-                        .map(|addr| (p.node_id.clone(), ip.to_string(), addr))
-                })
-                .collect();
+            let targets = rtt_prober_targets(&overlay.borrow(), on_demand_rtt_prober_suppressed());
             for (node_id, key, ip) in targets {
                 if let Ok(rtt) = pinger.ping(ip, RTT_PROBE_TIMEOUT).await {
                     let ms = rtt.as_millis().min(u32::MAX as u128) as u32;
@@ -3309,6 +3321,58 @@ mod tests {
         assert!(
             !state.enabled,
             "gate 4 must not report gate 3 — a stored password opens nothing on its own"
+        );
+    }
+
+    #[test]
+    fn rtt_prober_skips_dormant_peers_and_suppresses_when_on_demand_enabled() {
+        use tunnel_core::localapi::PeerCarrierDebug;
+
+        let mut v = view();
+        let mut p2 = v.peers[0].clone();
+        p2.node_id = "p2".into();
+        p2.overlay_ip = Some("100.64.0.3".into());
+        v.peers.push(p2);
+        v.peers[0].debug = Some(PeerCarrierDebug {
+            tier: "srflx".into(),
+            initiated: true,
+            hs_done: true,
+            local: None,
+            dst: None,
+            tx: 2,
+            rx: 2,
+            last_rx_age_s: 0,
+            relay_kind: None,
+            rx_denied: 0,
+            rx_denied_noroute: 0,
+        });
+        v.peers[1].debug = Some(PeerCarrierDebug {
+            tier: "relay".into(),
+            initiated: false,
+            hs_done: false,
+            local: None,
+            dst: None,
+            tx: 0,
+            rx: 0,
+            last_rx_age_s: 0,
+            relay_kind: Some("derp".into()),
+            rx_denied: 0,
+            rx_denied_noroute: 0,
+        });
+
+        let normal_targets = rtt_prober_targets(&v, false);
+        assert_eq!(
+            normal_targets.len(),
+            2,
+            "when on-demand is disabled (default), all Direct/Relay peers (including hs_done=false) are probed"
+        );
+        assert_eq!(normal_targets[0].0, "n2");
+        assert_eq!(normal_targets[1].0, "p2");
+
+        let on_demand_targets = rtt_prober_targets(&v, true);
+        assert!(
+            on_demand_targets.is_empty(),
+            "when B6 on-demand is enabled, background 15s ICMP RTT prober must not wake dormant peers or reset idle timers"
         );
     }
 }

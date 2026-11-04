@@ -45,7 +45,7 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
-use super::wg::{Carrier, mono_ms_now};
+use super::wg::{Carrier, mono_ms_at, mono_ms_now};
 
 /// Maximum number of secondary multipath legs per peer (in addition to the
 /// primary carrier at `leg_id = 0`).
@@ -289,10 +289,14 @@ impl LegCounters {
     }
 
     pub fn record_tx(&self, bytes: usize) {
+        self.record_tx_at(bytes, mono_ms_now());
+    }
+
+    /// [`Self::record_tx`] stamped with a caller-read `mono_ms_now()`.
+    pub fn record_tx_at(&self, bytes: usize, now_ms: u64) {
         self.tx_packets.fetch_add(1, Ordering::Relaxed);
         self.tx_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
-        self.last_tx_ms
-            .store(mono_ms_now().max(1), Ordering::Relaxed);
+        self.last_tx_ms.store(now_ms.max(1), Ordering::Relaxed);
     }
 
     pub fn record_tx_error(&self) {
@@ -300,13 +304,17 @@ impl LegCounters {
     }
 
     pub fn record_rx(&self, bytes: usize, is_dedup_hit: bool) {
+        self.record_rx_at(bytes, is_dedup_hit, mono_ms_now());
+    }
+
+    /// [`Self::record_rx`] stamped with a caller-read `mono_ms_now()`.
+    pub fn record_rx_at(&self, bytes: usize, is_dedup_hit: bool, now_ms: u64) {
         self.rx_packets.fetch_add(1, Ordering::Relaxed);
         self.rx_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
         if is_dedup_hit {
             self.rx_dedup_hits.fetch_add(1, Ordering::Relaxed);
         }
-        self.last_rx_ms
-            .store(mono_ms_now().max(1), Ordering::Relaxed);
+        self.last_rx_ms.store(now_ms.max(1), Ordering::Relaxed);
     }
 
     pub fn record_rtt(&self, rtt: Duration) {
@@ -353,6 +361,9 @@ pub struct SecondaryLeg {
 }
 
 impl SecondaryLeg {
+    pub(crate) fn take_tasks(&mut self) -> Vec<JoinHandle<()>> {
+        std::mem::take(&mut self.tasks)
+    }
     pub fn is_effective_up(&self) -> bool {
         self.counters.healthy.load(Ordering::Relaxed) && !self.carrier.is_dead()
     }
@@ -407,15 +418,21 @@ pub enum PreDecapVerdict {
     /// Not a known duplicate — proceed with `Tunn::decapsulate`.
     Proceed,
     /// Cryptographically verified duplicate of an already-decapsulated packet
-    /// (constant-time 16-byte Poly1305 tag match). `first_on_leg` is true iff
+    /// (constant-time Poly1305 tag AND full ciphertext byte match against
+    /// a prior successful AEAD). `first_on_leg` is true iff
     /// this leg had not yet received a copy of this `(session, counter)`.
     AuthenticatedDuplicate { first_on_leg: bool },
 }
 
+/// Bytes one dedup slot holds: the largest WireGuard datagram this crate
+/// builds or reads into one buffer (`wg::WG_BUF`). A longer datagram is never
+/// recorded, so a copy of it is never treated as a duplicate (it then meets
+/// WireGuard's own replay window instead).
+const DEDUP_SLOT_BYTES: usize = super::wg::WG_BUF;
+
 #[derive(Clone, Copy)]
-struct DedupEntry {
-    session: u32,
-    counter: u64,
+struct DedupSlot {
+    key: (u32, u64),
     len: u16,
     tag: [u8; 16],
     seen_legs_mask: u64,
@@ -426,10 +443,56 @@ struct DedupEntry {
 /// different leg may credit that leg's receive counters (`first_on_leg`).
 const DEDUP_LIVENESS_MAX_AGE: Duration = Duration::from_secs(5);
 
-/// Bounded ring buffer of recently authenticated Type-4 packets for
+/// Multiply-rotate hasher for the dedup index. Keys enter the index only
+/// after AEAD authentication, so it cannot be flooded with chosen keys and
+/// SipHash's flood resistance bought nothing per packet.
+#[derive(Default, Clone, Copy)]
+struct DedupKeyHasher(u64);
+
+impl DedupKeyHasher {
+    #[inline]
+    fn add(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+impl std::hash::Hasher for DedupKeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.add(u64::from(*b));
+        }
+    }
+    fn write_u32(&mut self, v: u32) {
+        self.add(u64::from(v));
+    }
+    fn write_u64(&mut self, v: u64) {
+        self.add(v);
+    }
+}
+
+type DedupIndex =
+    std::collections::HashMap<(u32, u64), usize, std::hash::BuildHasherDefault<DedupKeyHasher>>;
+
+/// Bounded window of recently authenticated Type-4 packets for
 /// constant-time Poly1305-verified deduplication in [`MultipathMode::Redundant`].
+///
+/// A ring of `capacity` fixed slots over ONE slab holding each recorded
+/// datagram's complete ciphertext; `(session, counter)` indexes its slot. A
+/// re-record updates its slot in place; a new record overwrites the slot the
+/// cursor reaches, which is always the oldest — the FIFO eviction the window
+/// has always had. Every received Type-4 datagram is looked up and every
+/// authenticated one recorded, so both are O(1) and allocation-free: a
+/// per-entry buffer churned the allocator under line-rate receive (lab
+/// profile, handoff 230).
 struct MultipathDedupTable {
-    entries: VecDeque<DedupEntry>,
+    index: DedupIndex,
+    slots: Vec<Option<DedupSlot>>,
+    /// `capacity * DEDUP_SLOT_BYTES`, allocated on the first record.
+    wire: Vec<u8>,
+    next: usize,
     capacity: usize,
 }
 
@@ -437,47 +500,95 @@ impl MultipathDedupTable {
     fn new(capacity: usize) -> Self {
         let cap = capacity.clamp(32, 2048);
         Self {
-            entries: VecDeque::with_capacity(cap),
+            index: DedupIndex::with_capacity_and_hasher(cap, Default::default()),
+            slots: vec![None; cap],
+            wire: Vec::new(),
+            next: 0,
             capacity: cap,
         }
     }
 
+    fn slot_bytes(&self, slot: usize, len: usize) -> &[u8] {
+        let start = slot * DEDUP_SLOT_BYTES;
+        &self.wire[start..start + len]
+    }
+
+    /// Keep the newest `capacity` entries in their original order.
     fn set_capacity(&mut self, capacity: usize) {
-        self.capacity = capacity.clamp(32, 2048);
-        while self.entries.len() > self.capacity {
-            self.entries.pop_front();
+        let cap = capacity.clamp(32, 2048);
+        if cap == self.capacity {
+            return;
+        }
+        let mut live: Vec<(DedupSlot, Vec<u8>)> = Vec::new();
+        for i in 0..self.capacity {
+            let slot = (self.next + i) % self.capacity;
+            if let Some(entry) = self.slots[slot] {
+                live.push((
+                    entry,
+                    self.slot_bytes(slot, usize::from(entry.len)).to_vec(),
+                ));
+            }
+        }
+        *self = Self::new(cap);
+        let skip = live.len().saturating_sub(cap);
+        for (entry, bytes) in live.into_iter().skip(skip) {
+            self.insert_new(entry, &bytes);
         }
     }
 
-    /// Check whether `(session, counter, len, tag)` matches an already
-    /// authenticated Type-4 packet. Never inserts a new entry.
+    fn clear(&mut self) {
+        self.index.clear();
+        self.slots.iter_mut().for_each(|s| *s = None);
+        self.next = 0;
+    }
+
+    fn insert_new(&mut self, entry: DedupSlot, datagram: &[u8]) {
+        if self.wire.is_empty() {
+            self.wire = vec![0u8; self.capacity * DEDUP_SLOT_BYTES];
+        }
+        let slot = self.next;
+        if let Some(old) = self.slots[slot].take() {
+            self.index.remove(&old.key);
+        }
+        let start = slot * DEDUP_SLOT_BYTES;
+        self.wire[start..start + datagram.len()].copy_from_slice(datagram);
+        self.slots[slot] = Some(entry);
+        self.index.insert(entry.key, slot);
+        self.next = (slot + 1) % self.capacity;
+    }
+
+    /// Check whether `datagram` (with its parsed `session`, `counter` and
+    /// `tag`) is a byte-identical copy of an already authenticated Type-4
+    /// packet. Never inserts a new entry. Only a candidate — an entry with
+    /// this exact `(session, counter)` and length, all public header facts —
+    /// is compared, and only a candidate reads the clock.
     fn check_duplicate(
         &mut self,
         session: u32,
         counter: u64,
-        len: usize,
+        datagram: &[u8],
         tag: &[u8; 16],
         leg_bit: u64,
-        now: Instant,
+        now: impl FnOnce() -> Instant,
     ) -> Option<bool> {
-        let len_u16 = u16::try_from(len).ok()?;
-        // Search from newest to oldest since duplicate copies arrive closely in time.
-        for entry in self.entries.iter_mut().rev() {
-            if entry.session == session && entry.counter == counter {
-                if entry.len == len_u16 && bool::from(entry.tag.ct_eq(tag)) {
-                    let fresh =
-                        now.saturating_duration_since(entry.recorded_at) <= DEDUP_LIVENESS_MAX_AGE;
-                    let first_on_leg =
-                        fresh && leg_bit != 0 && (entry.seen_legs_mask & leg_bit) == 0;
-                    entry.seen_legs_mask |= leg_bit;
-                    return Some(first_on_leg);
-                }
-                // Same (session, counter) but mismatched length or Poly1305 tag:
-                // forged/corrupted packet — do not match!
-                return None;
-            }
+        let len_u16 = u16::try_from(datagram.len()).ok()?;
+        let slot = *self.index.get(&(session, counter))?;
+        let entry = self.slots[slot]?;
+        // Same (session, counter) but mismatched length, tag, or full
+        // ciphertext: forged/corrupted packet — do not match!
+        if entry.len != len_u16
+            || !bool::from(
+                entry.tag.ct_eq(tag) & self.slot_bytes(slot, datagram.len()).ct_eq(datagram),
+            )
+        {
+            return None;
         }
-        None
+        let fresh = now().saturating_duration_since(entry.recorded_at) <= DEDUP_LIVENESS_MAX_AGE;
+        let first_on_leg = fresh && leg_bit != 0 && (entry.seen_legs_mask & leg_bit) == 0;
+        if let Some(stored) = self.slots[slot].as_mut() {
+            stored.seen_legs_mask |= leg_bit;
+        }
+        Some(first_on_leg)
     }
 
     /// Record a freshly authenticated Type-4 packet after `Tunn::decapsulate`
@@ -486,34 +597,31 @@ impl MultipathDedupTable {
         &mut self,
         session: u32,
         counter: u64,
-        len: usize,
+        datagram: &[u8],
         tag: [u8; 16],
         leg_bit: u64,
         now: Instant,
     ) {
-        let Ok(len_u16) = u16::try_from(len) else {
+        if datagram.len() > DEDUP_SLOT_BYTES {
+            return;
+        }
+        let Ok(len_u16) = u16::try_from(datagram.len()) else {
             return;
         };
-        for entry in self.entries.iter_mut().rev() {
-            if entry.session == session && entry.counter == counter {
-                entry.len = len_u16;
-                entry.tag = tag;
-                entry.seen_legs_mask = leg_bit;
-                entry.recorded_at = now;
-                return;
-            }
-        }
-        if self.entries.len() >= self.capacity {
-            self.entries.pop_front();
-        }
-        self.entries.push_back(DedupEntry {
-            session,
-            counter,
+        let entry = DedupSlot {
+            key: (session, counter),
             len: len_u16,
             tag,
             seen_legs_mask: leg_bit,
             recorded_at: now,
-        });
+        };
+        if let Some(&slot) = self.index.get(&(session, counter)) {
+            let start = slot * DEDUP_SLOT_BYTES;
+            self.wire[start..start + datagram.len()].copy_from_slice(datagram);
+            self.slots[slot] = Some(entry);
+            return;
+        }
+        self.insert_new(entry, datagram);
     }
 }
 
@@ -1024,6 +1132,18 @@ impl PeerMultipathState {
         weight: u16,
         tasks: Vec<JoinHandle<()>>,
     ) -> bool {
+        self.upsert_secondary_leg_with_health(leg_id, carrier, priority, weight, tasks, true)
+    }
+
+    pub(crate) fn upsert_secondary_leg_with_health(
+        &self,
+        leg_id: u32,
+        carrier: Arc<Carrier>,
+        priority: u8,
+        weight: u16,
+        tasks: Vec<JoinHandle<()>>,
+        healthy: bool,
+    ) -> bool {
         if leg_id == 0 || leg_id >= 64 {
             for t in tasks {
                 t.abort();
@@ -1037,7 +1157,7 @@ impl PeerMultipathState {
                 leg_id,
                 slot_bit,
                 carrier,
-                counters: Arc::new(LegCounters::new(priority, weight, true)),
+                counters: Arc::new(LegCounters::new(priority, weight, healthy)),
                 tasks,
             };
         } else {
@@ -1055,7 +1175,7 @@ impl PeerMultipathState {
                 leg_id,
                 slot_bit,
                 carrier,
-                counters: Arc::new(LegCounters::new(priority, weight, true)),
+                counters: Arc::new(LegCounters::new(priority, weight, healthy)),
                 tasks,
             });
         }
@@ -1089,6 +1209,17 @@ impl PeerMultipathState {
         removed
     }
 
+    /// Transfer receiver ownership during an already-authorized primary role
+    /// commit. Taking does not abort the leg; its new Peer owner takes tasks.
+    pub(crate) fn take_secondary_leg(&self, leg_id: u32) -> Option<SecondaryLeg> {
+        let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let i = st.legs.iter().position(|leg| leg.leg_id == leg_id)?;
+        let leg = st.legs.remove(i);
+        st.wrr_cursor = 0;
+        self.refresh_active_flag(&st);
+        Some(leg)
+    }
+
     /// Remove all secondary legs (and abort any lazy reorder flush task once
     /// no parked/ready reorder packets remain).
     pub fn clear_secondary_legs(&self) {
@@ -1111,6 +1242,16 @@ impl PeerMultipathState {
             .unwrap_or_else(|e| e.into_inner())
             .legs
             .len()
+    }
+
+    /// A current-session/role transition cannot reuse old duplicate liveness
+    /// evidence. Reordering delivery remains separately counter/session bound.
+    pub(crate) fn clear_crypto_observations(&self) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .dedup
+            .clear();
     }
 
     /// Fast check whether any secondary legs are attached.
@@ -1293,13 +1434,26 @@ impl PeerMultipathState {
         ok: bool,
         is_extra_copy: bool,
     ) {
+        self.record_leg_tx_outcome_at(leg_id, bytes_len, ok, is_extra_copy, mono_ms_now());
+    }
+
+    /// [`Self::record_leg_tx_outcome`] stamped with a caller-read
+    /// `mono_ms_now()`, so a batch reads the clock once.
+    pub fn record_leg_tx_outcome_at(
+        &self,
+        leg_id: u32,
+        bytes_len: usize,
+        ok: bool,
+        is_extra_copy: bool,
+        now_ms: u64,
+    ) {
         if is_extra_copy && ok {
             self.redundant_extra_tx_packets
                 .fetch_add(1, Ordering::Relaxed);
         }
         if leg_id == 0 {
             if ok {
-                self.primary_counters.record_tx(bytes_len);
+                self.primary_counters.record_tx_at(bytes_len, now_ms);
             } else {
                 self.primary_counters.record_tx_error();
             }
@@ -1308,7 +1462,7 @@ impl PeerMultipathState {
         let st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(leg) = st.legs.iter().find(|l| l.leg_id == leg_id) {
             if ok {
-                leg.counters.record_tx(bytes_len);
+                leg.counters.record_tx_at(bytes_len, now_ms);
             } else {
                 leg.counters.record_tx_error();
             }
@@ -1331,11 +1485,13 @@ impl PeerMultipathState {
         leg_id: u32,
         bytes: usize,
         is_dedup_hit: bool,
+        now_ms: u64,
     ) {
         if leg_id == 0 {
-            self.primary_counters.record_rx(bytes, is_dedup_hit);
+            self.primary_counters
+                .record_rx_at(bytes, is_dedup_hit, now_ms);
         } else if let Some(leg) = st.legs.iter().find(|l| l.leg_id == leg_id) {
-            leg.counters.record_rx(bytes, is_dedup_hit);
+            leg.counters.record_rx_at(bytes, is_dedup_hit, now_ms);
         }
     }
 
@@ -1377,16 +1533,17 @@ impl PeerMultipathState {
         let Some((session, counter, tag)) = Self::parse_type4_header_and_tag(datagram) else {
             return PreDecapVerdict::Proceed;
         };
-        let now = Instant::now();
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let leg_bit = Self::leg_bit_locked(&st, leg_id);
+        // Only a candidate copy (see `check_duplicate`) is compared in full or
+        // reads the clock: outside Redundant this is one index probe.
         if let Some(first_on_leg) =
             st.dedup
-                .check_duplicate(session, counter, datagram.len(), &tag, leg_bit, now)
+                .check_duplicate(session, counter, datagram, &tag, leg_bit, Instant::now)
         {
             self.dedup_dropped.fetch_add(1, Ordering::Relaxed);
             if first_on_leg {
-                self.record_leg_rx_locked(&st, leg_id, datagram.len(), true);
+                self.record_leg_rx_locked(&st, leg_id, datagram.len(), true, mono_ms_now());
             }
             return PreDecapVerdict::AuthenticatedDuplicate { first_on_leg };
         }
@@ -1410,10 +1567,22 @@ impl PeerMultipathState {
         leg_id: u32,
         delivered: Option<Vec<u8>>,
     ) -> Option<Vec<u8>> {
+        self.post_decap_record_at(datagram, leg_id, delivered, Instant::now())
+    }
+
+    /// [`Self::post_decap_record`] at a caller-supplied instant, so the
+    /// receive path reads the clock once per datagram, not once per hook.
+    pub fn post_decap_record_at(
+        &self,
+        datagram: &[u8],
+        leg_id: u32,
+        delivered: Option<Vec<u8>>,
+        now: Instant,
+    ) -> Option<Vec<u8>> {
         if !self.is_active() {
             return delivered;
         }
-        self.post_decap_record_inner(datagram, Some(leg_id), delivered)
+        self.post_decap_record_inner(datagram, Some(leg_id), delivered, now)
     }
 
     /// Called inside `decap_standby` (F2 DERP standby copy) when multipath is
@@ -1429,7 +1598,7 @@ impl PeerMultipathState {
         if !self.is_active() {
             return delivered;
         }
-        self.post_decap_record_inner(datagram, None, delivered)
+        self.post_decap_record_inner(datagram, None, delivered, Instant::now())
     }
 
     fn post_decap_record_inner(
@@ -1437,13 +1606,13 @@ impl PeerMultipathState {
         datagram: &[u8],
         leg_id: Option<u32>,
         delivered: Option<Vec<u8>>,
+        now: Instant,
     ) -> Option<Vec<u8>> {
         let type4 = Self::parse_type4_header_and_tag(datagram);
-        let now = Instant::now();
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let leg_bit = match leg_id {
             Some(id) => {
-                self.record_leg_rx_locked(&st, id, datagram.len(), false);
+                self.record_leg_rx_locked(&st, id, datagram.len(), false, mono_ms_at(now));
                 Self::leg_bit_locked(&st, id)
             }
             None => 0,
@@ -1454,7 +1623,7 @@ impl PeerMultipathState {
         };
 
         st.dedup
-            .record_authenticated(session, counter, datagram.len(), tag, leg_bit, now);
+            .record_authenticated(session, counter, datagram, tag, leg_bit, now);
 
         let aggregate_with_secondary = st.config.mode == MultipathMode::Aggregate
             && st.legs.iter().any(|l| l.is_effective_up());
@@ -1728,6 +1897,20 @@ mod tests {
         assert_eq!(snap_after_forged.dedup_dropped, 0);
         assert_eq!(snap_after_forged.legs[1].rx_packets, 0);
 
+        // DEFECT-B8-DEDUP-TAG-ONLY-01: a copied valid tag/header with a changed
+        // ciphertext body is NOT an authenticated duplicate. It must fall
+        // through to normal AEAD and cannot earn any leg receive accounting.
+        let mut copied_tag_forgery = wire.clone();
+        copied_tag_forgery[16] ^= 0x80;
+        assert_eq!(
+            mp.pre_decap_check(&copied_tag_forgery, 1),
+            PreDecapVerdict::Proceed
+        );
+        let after_copied_tag = mp.snapshot(&primary);
+        assert_eq!(after_copied_tag.dedup_dropped, 0);
+        assert_eq!(after_copied_tag.legs[1].rx_packets, 0);
+        assert_eq!(after_copied_tag.legs[1].rx_dedup_hits, 0);
+
         // Now the genuine redundant copy arrives on leg 1: tag matches in constant time,
         // packet is deduplicated, and leg 1 is credited once.
         assert_eq!(
@@ -1751,6 +1934,78 @@ mod tests {
         assert_eq!(snap2.dedup_dropped, 2);
         assert_eq!(snap2.legs[1].rx_packets, 1);
         assert_eq!(snap2.legs[1].rx_dedup_hits, 1);
+    }
+
+    #[tokio::test]
+    async fn redundant_dedup_index_evicts_oldest_first_and_updates_in_place() {
+        let sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let dst = sock.local_addr().unwrap();
+        let sec = Carrier::direct(sock, dst);
+        let mp = PeerMultipathState::new(
+            MultipathConfig::new(MultipathMode::Redundant).with_dedup_window_size(32),
+        );
+        assert!(mp.upsert_secondary_leg(1, sec, 10, 1, Vec::new()));
+        let wires: Vec<_> = (0..33u64)
+            .map(|c| make_type4_packet(7, c, &[9; 8], 0x11))
+            .collect();
+        for w in &wires {
+            mp.post_decap_record(w, 0, Some(vec![0x45]));
+        }
+        // 33 records into a 32-entry window: only the oldest is gone.
+        assert_eq!(mp.pre_decap_check(&wires[0], 1), PreDecapVerdict::Proceed);
+        for w in &wires[1..] {
+            assert_eq!(
+                mp.pre_decap_check(w, 1),
+                PreDecapVerdict::AuthenticatedDuplicate { first_on_leg: true }
+            );
+        }
+        // Re-recording a present key updates it in place: nothing is evicted.
+        mp.post_decap_record(&wires[5], 0, Some(vec![0x45]));
+        assert_eq!(
+            mp.pre_decap_check(&wires[1], 1),
+            PreDecapVerdict::AuthenticatedDuplicate {
+                first_on_leg: false
+            }
+        );
+        // A different length under a recorded key is never a copy.
+        let longer = make_type4_packet(7, 9, &[9; 9], 0x11);
+        assert_eq!(mp.pre_decap_check(&longer, 1), PreDecapVerdict::Proceed);
+        mp.clear_crypto_observations();
+        assert_eq!(mp.pre_decap_check(&wires[9], 1), PreDecapVerdict::Proceed);
+    }
+
+    #[test]
+    fn dedup_slab_ring_shrinks_to_newest_evicts_oldest_and_skips_oversize() {
+        let now = Instant::now();
+        let parse = |w: &[u8]| PeerMultipathState::parse_type4_header_and_tag(w).unwrap();
+        let mut t = MultipathDedupTable::new(64);
+        let wires: Vec<_> = (0..64u64)
+            .map(|c| make_type4_packet(7, c, &[3; 40], 0x21))
+            .collect();
+        for w in &wires {
+            let (s, c, tag) = parse(w);
+            t.record_authenticated(s, c, w, tag, 1, now);
+        }
+        let check = |t: &mut MultipathDedupTable, w: &[u8]| {
+            let (s, c, tag) = parse(w);
+            t.check_duplicate(s, c, w, &tag, 2, || now)
+        };
+        t.set_capacity(32);
+        assert_eq!(check(&mut t, &wires[31]), None);
+        assert_eq!(check(&mut t, &wires[32]), Some(true));
+        assert_eq!(check(&mut t, &wires[63]), Some(true));
+        // The next record overwrites the oldest survivor's slot.
+        let w = make_type4_packet(7, 64, &[3; 40], 0x21);
+        let (s, c, tag) = parse(&w);
+        t.record_authenticated(s, c, &w, tag, 1, now);
+        assert_eq!(check(&mut t, &wires[32]), None);
+        assert_eq!(check(&mut t, &w), Some(true));
+        assert_eq!(check(&mut t, &wires[33]), Some(true));
+        // A datagram longer than a slot is never recorded.
+        let big = make_type4_packet(7, 65, &vec![1; DEDUP_SLOT_BYTES], 0x21);
+        let (s, c, tag) = parse(&big);
+        t.record_authenticated(s, c, &big, tag, 1, now);
+        assert_eq!(check(&mut t, &big), None);
     }
 
     #[tokio::test]

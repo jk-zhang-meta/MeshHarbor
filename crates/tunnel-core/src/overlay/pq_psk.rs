@@ -124,6 +124,11 @@ const DEFAULT_MAX_LIFETIME: Duration = Duration::from_secs(300);
 const DEFAULT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 const DEFAULT_MAX_RETRIES: u32 = 6;
 const NON_PRIMARY_INITIAL_STAGGER: Duration = Duration::from_millis(120);
+/// Periodic rekey stagger for the non-primary peer (`self_public > peer_public`):
+/// set to `1_000 ms` (`4 × 250 ms` carrier timer ticks) so the primary peer's
+/// `tick_timer` initiates periodic rotation at least 2 full timer ticks ahead
+/// of the non-primary peer despite independent peer installation timestamps.
+pub(crate) const NON_PRIMARY_REKEY_STAGGER: Duration = Duration::from_millis(1_000);
 
 /// Operating mode for optional post-quantum WireGuard pre-shared keys.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -444,6 +449,7 @@ struct PendingResp {
     resp_nonce: [u8; 16],
     candidate_psk: [u8; 32],
     resp_frame: Vec<u8>,
+    created_at: Instant,
 }
 
 impl fmt::Debug for PendingResp {
@@ -501,8 +507,8 @@ struct PqPeerInner {
     pending_confirm: Option<PendingConfirm>,
     pending_packets: VecDeque<Vec<u8>>,
     committed_init_nonces: VecDeque<[u8; NONCE_LEN]>,
+    committed_acks: VecDeque<CommittedAckCache>,
     frag_reassembly: VecDeque<FragReassemblySlot>,
-    last_ack: Option<CommittedAckCache>,
     rotations_completed: u64,
     mismatch_count: u64,
     downgraded_count: u64,
@@ -519,6 +525,18 @@ fn record_committed_nonce(ring: &mut VecDeque<[u8; NONCE_LEN]>, nonce: [u8; NONC
         }
         ring.push_back(nonce);
     }
+}
+
+fn record_committed_ack(ring: &mut VecDeque<CommittedAckCache>, entry: CommittedAckCache) {
+    ring.retain(|e| {
+        !(e.epoch == entry.epoch
+            && e.init_nonce == entry.init_nonce
+            && e.resp_nonce == entry.resp_nonce)
+    });
+    if ring.len() >= MAX_COMMITTED_INIT_NONCES {
+        ring.pop_front();
+    }
+    ring.push_back(entry);
 }
 
 impl fmt::Debug for PqPeerInner {
@@ -540,32 +558,67 @@ impl fmt::Debug for PqPeerInner {
     }
 }
 
+#[derive(Clone)]
+struct PqPeerBinding {
+    tunn_index: u32,
+    tunn: std::sync::Weak<Mutex<Tunn>>,
+    carrier: std::sync::Weak<Carrier>,
+    stats: std::sync::Weak<PeerStats>,
+    initiate_when_ready: bool,
+}
+
+struct PqPeerBindings {
+    primary: PqPeerBinding,
+    shadow: Option<PqPeerBinding>,
+    /// An org-relay upgrade candidate (`WgDevice::start_org_upgrade`) shares
+    /// the incumbent's handle so each end keeps ONE PSK lineage for the peer.
+    /// A candidate with its own handle negotiated a second, independent PSK;
+    /// the two ends promote their candidates at different instants, so a
+    /// direct probe attached to "the current primary handle" used a different
+    /// PSK at each end and could not complete its handshake.
+    candidate: Option<PqPeerBinding>,
+}
+
 /// Shared handle for one peer's PQ-PSK state machine and [`Tunn`] binding.
 ///
 /// Holds [`std::sync::Weak`] references to `Tunn`, `Carrier`, and `PeerStats`
 /// so storing `Arc<PqPeerHandle>` inside `PeerStats::pq` never forms an `Arc`
 /// reference cycle and dropping `Peer` immediately releases `Tunn`.
+/// When a make-before-break shadow direct probe (`probing == true`) is active,
+/// the probe shares this same `PqPeerHandle` via `bindings.shadow` so both
+/// primary and shadow `Tunn` instances use the negotiated ML-KEM-768 PSK and
+/// promoting the probe preserves the active `epoch` and rotation state.
 pub(crate) struct PqPeerHandle {
     mode: PqPskMode,
     self_public: [u8; 32],
     peer_public: [u8; 32],
     auth_key: [u8; 32],
-    tunn_index: u32,
-    tunn: std::sync::Weak<Mutex<Tunn>>,
-    carrier: std::sync::RwLock<std::sync::Weak<Carrier>>,
-    stats: std::sync::Weak<PeerStats>,
+    bindings: std::sync::RwLock<PqPeerBindings>,
     inner: Mutex<PqPeerInner>,
+    /// Lock-free mirror of the last PSK installed into `Tunn` so a synchronous
+    /// primary carrier rebuild (`rebind_primary`) can install the active PSK
+    /// without awaiting `inner`.
+    cached_tunn_psk: std::sync::Mutex<Option<[u8; 32]>>,
     /// Lock-free mirror of whether PQ-PSK is currently blocking classical
     /// handshakes (`Required` mode before PQ establishment).
     guard_active: std::sync::atomic::AtomicBool,
     epoch_atomic: AtomicU64,
+    /// Explicitly discarded B7 IPs whose B8 owner/binding or FIFO no longer
+    /// authorizes release. No packet contents or key material are recorded.
+    pending_multipath_drops: AtomicU64,
 }
 
 impl fmt::Debug for PqPeerHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let tunn_index = self
+            .bindings
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .primary
+            .tunn_index;
         f.debug_struct("PqPeerHandle")
             .field("peer_public", &short_hex(&self.peer_public))
-            .field("tunn_index", &self.tunn_index)
+            .field("tunn_index", &tunn_index)
             .field("epoch", &self.epoch_atomic.load(Ordering::Relaxed))
             .finish()
     }
@@ -612,16 +665,24 @@ impl PqPeerHandle {
         };
         let mode = config.mode;
         let guard_active = mode == PqPskMode::Required;
+        let initial_psk = Self::initial_tunn_psk(&config);
         stats.pq_guard_active.store(guard_active, Ordering::Release);
         Arc::new(Self {
             mode,
             self_public,
             peer_public,
             auth_key,
-            tunn_index,
-            tunn: Arc::downgrade(&tunn),
-            carrier: std::sync::RwLock::new(Arc::downgrade(&carrier)),
-            stats: Arc::downgrade(&stats),
+            bindings: std::sync::RwLock::new(PqPeerBindings {
+                primary: PqPeerBinding {
+                    tunn_index,
+                    tunn: Arc::downgrade(&tunn),
+                    carrier: Arc::downgrade(&carrier),
+                    stats: Arc::downgrade(&stats),
+                    initiate_when_ready: false,
+                },
+                shadow: None,
+                candidate: None,
+            }),
             inner: Mutex::new(PqPeerInner {
                 config,
                 status,
@@ -634,35 +695,252 @@ impl PqPeerHandle {
                 pending_confirm: None,
                 pending_packets: VecDeque::new(),
                 committed_init_nonces: VecDeque::new(),
+                committed_acks: VecDeque::new(),
                 frag_reassembly: VecDeque::new(),
-                last_ack: None,
                 rotations_completed: 0,
                 mismatch_count: 0,
                 downgraded_count: 0,
                 expired_count: 0,
                 failed_exchanges: 0,
             }),
+            cached_tunn_psk: std::sync::Mutex::new(initial_psk),
             guard_active: std::sync::atomic::AtomicBool::new(guard_active),
             epoch_atomic: AtomicU64::new(0),
+            pending_multipath_drops: AtomicU64::new(0),
         })
     }
 
     fn set_guard_active(&self, active: bool) {
         self.guard_active.store(active, Ordering::Release);
-        if let Some(stats) = self.stats.upgrade() {
+        let (primary_stats, shadow_stats, candidate_stats) = {
+            let b = self.bindings.read().unwrap_or_else(|e| e.into_inner());
+            (
+                b.primary.stats.upgrade(),
+                b.shadow.as_ref().and_then(|s| s.stats.upgrade()),
+                b.candidate.as_ref().and_then(|s| s.stats.upgrade()),
+            )
+        };
+        for stats in [primary_stats, shadow_stats, candidate_stats]
+            .into_iter()
+            .flatten()
+        {
             stats.pq_guard_active.store(active, Ordering::Release);
         }
     }
 
     pub(crate) fn set_carrier(&self, carrier: &Arc<Carrier>) {
-        *self.carrier.write().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(carrier);
+        self.bindings
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .primary
+            .carrier = Arc::downgrade(carrier);
+    }
+
+    #[cfg(test)]
+    pub(super) fn pending_multipath_drops(&self) -> u64 {
+        self.pending_multipath_drops.load(Ordering::Relaxed)
     }
 
     fn upgrade_carrier(&self) -> Option<Arc<Carrier>> {
-        self.carrier
+        self.bindings
             .read()
             .unwrap_or_else(|e| e.into_inner())
+            .primary
+            .carrier
             .upgrade()
+    }
+
+    /// Returns `true` if `stats` belongs to the primary peer binding (so a
+    /// shadow probe's carrier timer does not double-tick `tick_timer`).
+    pub(crate) fn is_primary_stats(&self, stats: &Arc<PeerStats>) -> bool {
+        let b = self.bindings.read().unwrap_or_else(|e| e.into_inner());
+        b.primary.stats.as_ptr() == Arc::as_ptr(stats)
+    }
+
+    /// Rebind the primary peer binding when the active carrier (`Peer`) in
+    /// `WgDevice::peers` is rebuilt in-place (`add_peer` / `add_direct_peer`),
+    /// preserving the shared `PqPeerHandle`, negotiated `active_psk`, and any
+    /// in-flight shadow probe binding (`bindings.shadow`).
+    pub(crate) fn rebind_primary(
+        &self,
+        tunn_index: u32,
+        tunn: &Arc<Mutex<Tunn>>,
+        carrier: &Arc<Carrier>,
+        stats: &Arc<PeerStats>,
+    ) {
+        {
+            let mut b = self.bindings.write().unwrap_or_else(|e| e.into_inner());
+            b.primary = PqPeerBinding {
+                tunn_index,
+                tunn: Arc::downgrade(tunn),
+                carrier: Arc::downgrade(carrier),
+                stats: Arc::downgrade(stats),
+                initiate_when_ready: false,
+            };
+        }
+        let guard_active = self.guard_active.load(Ordering::Acquire);
+        let psk = *self
+            .cached_tunn_psk
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        stats.pq_guard_active.store(guard_active, Ordering::Release);
+        if let Ok(mut t) = tunn.try_lock() {
+            t.set_preshared_key(psk);
+        }
+    }
+
+    /// Attach a shadow direct probe (`probing == true`) to this `PqPeerHandle`,
+    /// registering `bindings.shadow` first and then reading `active_psk` and
+    /// installing it into `tunn` under the `inner` lock so no concurrent
+    /// rotation can slip between reading `active_psk` and registering the probe.
+    pub(crate) async fn attach_shadow_probe(
+        &self,
+        tunn_index: u32,
+        tunn: &Arc<Mutex<Tunn>>,
+        carrier: &Arc<Carrier>,
+        stats: &Arc<PeerStats>,
+        initiate_when_ready: bool,
+    ) {
+        {
+            let mut b = self.bindings.write().unwrap_or_else(|e| e.into_inner());
+            b.shadow = Some(PqPeerBinding {
+                tunn_index,
+                tunn: Arc::downgrade(tunn),
+                carrier: Arc::downgrade(carrier),
+                stats: Arc::downgrade(stats),
+                initiate_when_ready,
+            });
+        }
+        let g = self.inner.lock().await;
+        let guard_active = self.guard_active.load(Ordering::Acquire);
+        let target_psk = if guard_active {
+            Some(random_bytes::<32>())
+        } else if let Some(active) = g.active_psk {
+            Some(active)
+        } else if matches!(g.status, PqPeerStatus::DowngradedToClassical) {
+            None
+        } else {
+            Self::initial_tunn_psk(&g.config)
+        };
+        stats.pq_guard_active.store(guard_active, Ordering::Release);
+        let mut t = tunn.lock().await;
+        t.set_preshared_key(target_psk);
+    }
+
+    /// Promote the shadow direct probe to the primary binding of this
+    /// `PqPeerHandle` when [`WgDevice::promote_direct_probe`] promotes the
+    /// probe into `self.peers`.
+    pub(crate) fn promote_shadow_to_primary(
+        &self,
+        tunn_index: u32,
+        tunn: &Arc<Mutex<Tunn>>,
+        carrier: &Arc<Carrier>,
+        stats: &Arc<PeerStats>,
+    ) {
+        let guard = self.guard_active.load(Ordering::Acquire);
+        stats.pq_guard_active.store(guard, Ordering::Release);
+        let mut b = self.bindings.write().unwrap_or_else(|e| e.into_inner());
+        b.primary = PqPeerBinding {
+            tunn_index,
+            tunn: Arc::downgrade(tunn),
+            carrier: Arc::downgrade(carrier),
+            stats: Arc::downgrade(stats),
+            initiate_when_ready: false,
+        };
+        b.shadow = None;
+    }
+
+    /// The PSK a freshly built candidate `Tunn` starts with before
+    /// [`Self::attach_candidate`] installs the authoritative one under `inner`.
+    pub(crate) fn provisional_tunn_psk(&self) -> Option<[u8; 32]> {
+        if self.guard_active.load(Ordering::Acquire) {
+            Some(random_bytes::<32>())
+        } else {
+            *self
+                .cached_tunn_psk
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+        }
+    }
+
+    /// Attach an org-relay upgrade candidate to this handle, exactly as
+    /// [`Self::attach_shadow_probe`] attaches a direct probe: register first,
+    /// then install the current PSK under `inner` so no rotation slips between.
+    pub(crate) async fn attach_candidate(
+        &self,
+        tunn_index: u32,
+        tunn: &Arc<Mutex<Tunn>>,
+        carrier: &Arc<Carrier>,
+        stats: &Arc<PeerStats>,
+    ) {
+        {
+            let mut b = self.bindings.write().unwrap_or_else(|e| e.into_inner());
+            b.candidate = Some(PqPeerBinding {
+                tunn_index,
+                tunn: Arc::downgrade(tunn),
+                carrier: Arc::downgrade(carrier),
+                stats: Arc::downgrade(stats),
+                initiate_when_ready: true,
+            });
+        }
+        let g = self.inner.lock().await;
+        let guard_active = self.guard_active.load(Ordering::Acquire);
+        let target_psk = if guard_active {
+            Some(random_bytes::<32>())
+        } else if let Some(active) = g.active_psk {
+            Some(active)
+        } else if matches!(g.status, PqPeerStatus::DowngradedToClassical) {
+            None
+        } else {
+            Self::initial_tunn_psk(&g.config)
+        };
+        stats.pq_guard_active.store(guard_active, Ordering::Release);
+        let mut t = tunn.lock().await;
+        t.set_preshared_key(target_psk);
+    }
+
+    /// The candidate became the peer's carrier (`promote_org_upgrade`).
+    pub(crate) fn promote_candidate_to_primary(&self, stats: &Arc<PeerStats>) -> bool {
+        let mut b = self.bindings.write().unwrap_or_else(|e| e.into_inner());
+        match b.candidate.take() {
+            Some(c) if c.stats.as_ptr() == Arc::as_ptr(stats) => {
+                stats
+                    .pq_guard_active
+                    .store(self.guard_active.load(Ordering::Acquire), Ordering::Release);
+                b.primary = PqPeerBinding {
+                    initiate_when_ready: false,
+                    ..c
+                };
+                true
+            }
+            other => {
+                b.candidate = other;
+                false
+            }
+        }
+    }
+
+    /// The candidate was cancelled or consumed without becoming the primary.
+    pub(crate) fn clear_candidate(&self, stats: &Arc<PeerStats>) {
+        let mut b = self.bindings.write().unwrap_or_else(|e| e.into_inner());
+        if b.candidate
+            .as_ref()
+            .is_some_and(|s| s.stats.as_ptr() == Arc::as_ptr(stats))
+        {
+            b.candidate = None;
+        }
+    }
+
+    /// Detach a discarded shadow direct probe when [`WgDevice::drop_direct_probe`]
+    /// removes it without promotion.
+    pub(crate) fn clear_shadow_probe(&self, stats: &Arc<PeerStats>) {
+        let mut b = self.bindings.write().unwrap_or_else(|e| e.into_inner());
+        if b.shadow
+            .as_ref()
+            .is_some_and(|s| s.stats.as_ptr() == Arc::as_ptr(stats))
+        {
+            b.shadow = None;
+        }
     }
 
     /// Buffer an outbound IP packet while initial `Required`-mode PQ negotiation
@@ -807,6 +1085,10 @@ impl PqPeerHandle {
                 // 2. Service in-flight retransmissions (both initial and rotation)
                 let retry_interval = g.config.retry_interval;
                 let max_retries = g.config.max_retries;
+                let resp_ttl = retry_interval.saturating_mul(max_retries.saturating_add(1));
+                g.pending_resps
+                    .retain(|r| r.created_at.elapsed() < resp_ttl);
+
                 if let Some(conf) = g.pending_confirm.as_mut() {
                     if conf.last_sent.elapsed() >= retry_interval {
                         if conf.retries < max_retries {
@@ -827,6 +1109,10 @@ impl PqPeerHandle {
                                 failed_exchanges = g.failed_exchanges,
                                 "overlay pq-psk: exchange confirmation timed out after max retries"
                             );
+                            if g.established_at.is_some() {
+                                let next_epoch = g.current_epoch.saturating_add(1);
+                                to_send = Some(self.build_init_locked(&mut g, next_epoch));
+                            }
                         }
                     }
                 } else if let Some(init) = g.pending_init.as_mut() {
@@ -849,18 +1135,26 @@ impl PqPeerHandle {
                                 failed_exchanges = g.failed_exchanges,
                                 "overlay pq-psk: exchange initiation timed out after max retries"
                             );
+                            if g.established_at.is_some() {
+                                let next_epoch = g.current_epoch.saturating_add(1);
+                                to_send = Some(self.build_init_locked(&mut g, next_epoch));
+                            }
                         }
                     }
                 } else if let Some(est_at) = g.established_at {
                     // 3. Check periodic rekey / rotation (rekey_interval)
-                    let stagger = if self.is_primary_initiator() {
-                        Duration::ZERO
-                    } else {
-                        NON_PRIMARY_INITIAL_STAGGER
-                    };
-                    if est_at.elapsed() >= g.config.rekey_interval.saturating_add(stagger) {
-                        let next_epoch = g.current_epoch.saturating_add(1);
-                        to_send = Some(self.build_init_locked(&mut g, next_epoch));
+                    // Do not start a competing periodic rotation while an inbound
+                    // responder exchange (`pending_resps`) is already in flight.
+                    if g.pending_resps.is_empty() {
+                        let stagger = if self.is_primary_initiator() {
+                            Duration::ZERO
+                        } else {
+                            NON_PRIMARY_REKEY_STAGGER
+                        };
+                        if est_at.elapsed() >= g.config.rekey_interval.saturating_add(stagger) {
+                            let next_epoch = g.current_epoch.saturating_add(1);
+                            to_send = Some(self.build_init_locked(&mut g, next_epoch));
+                        }
                     }
                 } else {
                     // 4. Initial negotiation
@@ -1048,8 +1342,8 @@ impl PqPeerHandle {
                 return;
             }
             if inner_kind == KIND_INIT {
-                if g.committed_init_nonces.contains(&msg_nonce)
-                    || (epoch <= g.current_epoch && epoch != 1)
+                if (epoch < g.current_epoch && epoch != 1)
+                    || g.committed_init_nonces.contains(&msg_nonce)
                 {
                     return;
                 }
@@ -1148,33 +1442,33 @@ impl PqPeerHandle {
                     &init_nonce,
                     REJECT_MODE_OFF,
                 ))
-            } else if g.committed_init_nonces.contains(&init_nonce) {
-                // Reject replayed KIND_INIT from an already-committed exchange.
+            } else if (req_epoch < g.current_epoch && req_epoch != 1)
+                || g.committed_init_nonces.contains(&init_nonce)
+            {
+                // Reject stale (`req_epoch < current_epoch` and `!= 1`) or
+                // replayed KIND_INIT from an already-committed exchange.
                 None
             } else if let Some(existing) =
                 g.pending_resps.iter().find(|r| r.init_nonce == init_nonce)
             {
                 // Deduplicate retransmitted KIND_INIT for an already-cached response
                 Some(existing.resp_frame.clone())
-            } else if req_epoch <= g.current_epoch && req_epoch != 1 {
-                // Reject stale non-restart KIND_INIT epochs (a live peer always
-                // requests current_epoch + 1; a restarted peer requests 1).
-                None
-            } else if (g.pending_init.is_some() || g.pending_confirm.is_some())
-                && self.is_primary_initiator()
-            {
-                // Simultaneous initiation glare (automatic or explicit): the
-                // lexicographically smaller static pubkey wins the initiator
-                // role so the two peers never cross-install distinct PSKs.
-                // Re-send our in-flight KIND_INIT over `reply_carrier` so a
-                // NATted non-primary peer receives it across the punched pinhole.
+            } else if let Some(conf) = g.pending_confirm.as_ref() {
+                // Never clear or abort an already-sent KIND_CONFIRM on either
+                // primary or non-primary: our peer already answered our KIND_INIT
+                // with KIND_RESP and holds the matching PendingResp (or has
+                // already committed it). Re-send our KIND_CONFIRM so the peer
+                // commits or re-sends its cached KIND_ACK.
+                Some(conf.confirm_frame.clone())
+            } else if g.pending_init.is_some() && self.is_primary_initiator() {
+                // Simultaneous initiation glare while both peers are still in
+                // `stage = "init"`: the lexicographically smaller static pubkey
+                // wins the initiator role so the two peers never cross-install
+                // distinct PSKs. Re-send our in-flight KIND_INIT over `reply_carrier`.
                 g.pending_init.as_ref().map(|i| i.frame.clone())
             } else {
-                if (g.pending_init.is_some() || g.pending_confirm.is_some())
-                    && !self.is_primary_initiator()
-                {
+                if g.pending_init.is_some() && !self.is_primary_initiator() {
                     g.pending_init = None;
-                    g.pending_confirm = None;
                 }
                 let ek_arr = ml_kem::array::Array::try_from(ek_slice).ok();
                 let Some(ek) = ek_arr.and_then(|a| EncapsulationKey768::new(&a).ok()) else {
@@ -1190,6 +1484,10 @@ impl PqPeerHandle {
                     self.send_control_frame(reply_carrier, &rej).await;
                     return;
                 };
+                // If an authenticated peer initiates with `req_epoch <= current_epoch`
+                // (e.g. after a restart at `req_epoch = 1`, or when epoch-behind
+                // after a lost KIND_ACK / confirm timeout), advance monotonically
+                // to `current_epoch + 1` so both peers converge to the same key.
                 let effective_epoch = g.current_epoch.saturating_add(1).max(req_epoch);
                 // NIST FIPS 203 §7.2 Algorithm 20 `ML-KEM.Encaps(ek)` samples 32
                 // CSPRNG bytes `m` and invokes `ML-KEM.Encaps_internal(ek, m)`.
@@ -1240,6 +1538,7 @@ impl PqPeerHandle {
                     resp_nonce,
                     candidate_psk,
                     resp_frame: resp_frame.clone(),
+                    created_at: Instant::now(),
                 });
                 Some(resp_frame)
             }
@@ -1325,6 +1624,7 @@ impl PqPeerHandle {
                 confirm_frame.extend_from_slice(&tag);
                 debug_assert_eq!(confirm_frame.len(), CONFIRM_FRAME_LEN);
 
+                g.pending_resps.retain(|r| r.epoch > resp_epoch);
                 g.pending_confirm = Some(PendingConfirm {
                     epoch: resp_epoch,
                     init_nonce,
@@ -1361,11 +1661,9 @@ impl PqPeerHandle {
                 return;
             }
             // Retransmitted KIND_CONFIRM for an already-committed exchange: re-send cached ACK.
-            if let Some(ack) = g.last_ack.as_ref()
-                && ack.epoch == epoch
-                && ack.init_nonce == init_nonce
-                && ack.resp_nonce == resp_nonce
-            {
+            if let Some(ack) = g.committed_acks.iter().find(|ack| {
+                ack.epoch == epoch && ack.init_nonce == init_nonce && ack.resp_nonce == resp_nonce
+            }) {
                 Some(ack.ack_frame.clone())
             } else if let Some(pos) = g.pending_resps.iter().position(|r| {
                 r.epoch == epoch && r.init_nonce == init_nonce && r.resp_nonce == resp_nonce
@@ -1420,12 +1718,15 @@ impl PqPeerHandle {
                     ack_frame.extend_from_slice(&ack_tag);
                     debug_assert_eq!(ack_frame.len(), CONFIRM_FRAME_LEN);
 
-                    g.last_ack = Some(CommittedAckCache {
-                        epoch,
-                        init_nonce,
-                        resp_nonce,
-                        ack_frame: ack_frame.clone(),
-                    });
+                    record_committed_ack(
+                        &mut g.committed_acks,
+                        CommittedAckCache {
+                            epoch,
+                            init_nonce,
+                            resp_nonce,
+                            ack_frame: ack_frame.clone(),
+                        },
+                    );
                     info!(
                         peer = %short_hex(&self.peer_public),
                         epoch,
@@ -1623,7 +1924,7 @@ impl PqPeerHandle {
         }
     }
 
-    async fn reinstall_tunn_psk(
+    pub(super) async fn reinstall_tunn_psk(
         &self,
         psk: Option<[u8; 32]>,
         guard_after: bool,
@@ -1631,64 +1932,142 @@ impl PqPeerHandle {
         queued_packets: Vec<Vec<u8>>,
         reply_carrier: Option<&Arc<Carrier>>,
     ) {
-        let Some(tunn) = self.tunn.upgrade() else {
-            return;
+        let (primary_binding, shadow_binding, candidate_binding) = {
+            let b = self.bindings.read().unwrap_or_else(|e| e.into_inner());
+            (b.primary.clone(), b.shadow.clone(), b.candidate.clone())
         };
-        let Some(stats) = self.stats.upgrade() else {
-            return;
-        };
-        let out_packets = {
-            let mut t = tunn.lock().await;
-            // B7 in-place PSK update: update `handshake.params.preshared_key`
-            // without reconstructing `Tunn`, preserving `last_handshake_timestamp`
-            // (TAI64N anti-replay watermark) across all PSK establishments and
-            // rotations.
-            t.set_preshared_key(psk);
-            self.set_guard_active(guard_after);
-            if guard_after {
-                // Fail-closed guard lock (`Required` mode expiry or mismatch):
-                // drop active transport sessions immediately while preserving
-                // the TAI64N replay watermark.
-                t.reset_sessions_preserving_replay_and_psk();
-                stats.handshake.store(false, Ordering::Release);
-                stats.handshake_at.store(0, Ordering::Release);
-                stats.hs_response_at.store(0, Ordering::Release);
-                Vec::new()
-            } else {
-                // If downgrading to classical WG (`psk.is_none()`), clear any
-                // stale PQ-keyed transport sessions while preserving the TAI64N
-                // replay watermark so outbound traffic uses the classical session.
-                if psk.is_none() {
+        *self
+            .cached_tunn_psk
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = psk;
+        self.set_guard_active(guard_after);
+
+        if let (Some(tunn), Some(stats)) = (
+            primary_binding.tunn.upgrade(),
+            primary_binding.stats.upgrade(),
+        ) {
+            let (out_packets, pending_binding) = {
+                let mut t = tunn.lock().await;
+                // B7 in-place PSK update: update `handshake.params.preshared_key`
+                // without reconstructing `Tunn`, preserving `last_handshake_timestamp`
+                // (TAI64N anti-replay watermark) across all PSK establishments and
+                // rotations.
+                t.set_preshared_key(psk);
+                if guard_after {
+                    // Fail-closed guard lock (`Required` mode expiry or mismatch):
+                    // drop active transport sessions immediately while preserving
+                    // the TAI64N replay watermark.
                     t.reset_sessions_preserving_replay_and_psk();
-                }
-                // Normal PQ-PSK establishment or rotation: keep any already-active
-                // transport `sessions` intact so in-flight data packets suffer
-                // zero packet loss while the new WG handshake is in flight.
-                let mut outs: Vec<Vec<u8>> = Vec::new();
-                let mut buf = vec![0u8; WG_BUF];
-                if initiate_wg
-                    && let TunnResult::WriteToNetwork(b) =
-                        t.format_handshake_initiation(&mut buf, true)
-                {
-                    outs.push(b.to_vec());
-                }
-                for pkt in &queued_packets {
-                    if t.has_current_session() {
-                        if let TunnResult::WriteToNetwork(b) = t.encapsulate(pkt, &mut buf) {
-                            outs.push(b.to_vec());
+                    stats.multipath_session_reset();
+                    stats.handshake.store(false, Ordering::Release);
+                    stats.handshake_at.store(0, Ordering::Release);
+                    stats.hs_response_at.store(0, Ordering::Release);
+                    (Vec::new(), stats.multipath_pending_binding())
+                } else {
+                    // If downgrading to classical WG (`psk.is_none()`), clear any
+                    // stale PQ-keyed transport sessions while preserving the TAI64N
+                    // replay watermark so outbound traffic uses the classical session.
+                    if psk.is_none() {
+                        t.reset_sessions_preserving_replay_and_psk();
+                        stats.multipath_session_reset();
+                    }
+                    // Normal PQ-PSK establishment or rotation: keep any already-active
+                    // transport `sessions` intact so in-flight data packets suffer
+                    // zero packet loss while the new WG handshake is in flight.
+                    let mut outs: Vec<Vec<u8>> = Vec::new();
+                    let mut buf = vec![0u8; WG_BUF];
+                    if initiate_wg
+                        && let TunnResult::WriteToNetwork(b) =
+                            t.format_handshake_initiation(&mut buf, true)
+                    {
+                        outs.push(b.to_vec());
+                    }
+                    let pending_binding = stats.multipath_pending_binding();
+                    if pending_binding.is_none() {
+                        // Default Off retains the original B7 buffering and
+                        // reply-carrier behavior byte for byte.
+                        for pkt in &queued_packets {
+                            if t.has_current_session() {
+                                if let TunnResult::WriteToNetwork(b) = t.encapsulate(pkt, &mut buf)
+                                {
+                                    outs.push(b.to_vec());
+                                }
+                            } else {
+                                t.queue_packet_only(pkt);
+                            }
                         }
-                    } else {
-                        t.queue_packet_only(pkt);
+                    }
+                    (outs, pending_binding)
+                }
+            };
+            if !out_packets.is_empty() {
+                let upgraded = primary_binding.carrier.upgrade();
+                if let Some(out_carrier) = reply_carrier.or(upgraded.as_ref()) {
+                    for pkt in &out_packets {
+                        let _ = super::wg::send_wg_recorded(out_carrier, &stats, pkt).await;
                     }
                 }
-                outs
             }
-        };
-        if !out_packets.is_empty() {
-            let upgraded = self.upgrade_carrier();
-            if let Some(out_carrier) = reply_carrier.or(upgraded.as_ref()) {
-                for pkt in &out_packets {
-                    let _ = super::wg::send_wg_recorded(out_carrier, &stats, pkt).await;
+            if let Some(binding) = pending_binding
+                && !queued_packets.is_empty()
+            {
+                let dropped = if guard_after {
+                    queued_packets.len()
+                } else {
+                    stats
+                        .release_multipath_pending(&tunn, binding, &queued_packets)
+                        .await
+                };
+                if dropped > 0 {
+                    let total = self
+                        .pending_multipath_drops
+                        .fetch_add(dropped as u64, Ordering::Relaxed)
+                        .saturating_add(dropped as u64);
+                    warn!(
+                        event = "pq_pending_multipath_drop",
+                        dropped_packets = dropped,
+                        total_dropped_packets = total,
+                        "overlay pq-psk: B8 owner, binding or recovery FIFO refused pending IPs"
+                    );
+                }
+            }
+        }
+
+        for shadow in [shadow_binding, candidate_binding].into_iter().flatten() {
+            if let (Some(s_tunn), Some(s_stats)) = (shadow.tunn.upgrade(), shadow.stats.upgrade()) {
+                let shadow_out = {
+                    let mut st = s_tunn.lock().await;
+                    st.set_preshared_key(psk);
+                    if guard_after {
+                        st.reset_sessions_preserving_replay_and_psk();
+                        s_stats.multipath_session_reset();
+                        s_stats.handshake.store(false, Ordering::Release);
+                        s_stats.handshake_at.store(0, Ordering::Release);
+                        s_stats.hs_response_at.store(0, Ordering::Release);
+                        None
+                    } else {
+                        if psk.is_none() {
+                            st.reset_sessions_preserving_replay_and_psk();
+                            s_stats.multipath_session_reset();
+                        }
+                        let mut buf = vec![0u8; WG_BUF];
+                        let should_initiate_shadow = initiate_wg
+                            || (shadow.initiate_when_ready
+                                && !s_stats.handshake.load(Ordering::Acquire));
+                        if should_initiate_shadow
+                            && let TunnResult::WriteToNetwork(b) =
+                                st.format_handshake_initiation(&mut buf, true)
+                        {
+                            Some(b.to_vec())
+                        } else {
+                            None
+                        }
+                    }
+                };
+                if let Some(pkt) = shadow_out
+                    && let Some(s_carrier) = shadow.carrier.upgrade()
+                {
+                    let _ = super::wg::send_wg_recorded(&s_carrier, &s_stats, &pkt).await;
                 }
             }
         }
@@ -1950,6 +2329,625 @@ mod tests {
                 TunnResult::Err(WireGuardError::WrongTai64nTimestamp)
             ),
             "TAI64N watermark must survive reset_sessions_preserving_replay_and_psk"
+        );
+    }
+
+    async fn drain_udp_into(
+        rx_sock: &tokio::net::UdpSocket,
+        dst_handle: &PqPeerHandle,
+        dst_carrier: &Arc<Carrier>,
+    ) -> usize {
+        let mut count = 0;
+        let mut buf = [0u8; 2048];
+        while let Ok(Ok((n, _))) =
+            tokio::time::timeout(Duration::from_millis(15), rx_sock.recv_from(&mut buf)).await
+        {
+            if is_pq_psk_shaped(&buf[..n]) {
+                count += 1;
+                dst_handle.handle_inbound(&buf[..n], dst_carrier).await;
+            }
+        }
+        count
+    }
+
+    async fn read_pq_datagrams(rx_sock: &tokio::net::UdpSocket) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 2048];
+        while let Ok(Ok((n, _))) =
+            tokio::time::timeout(Duration::from_millis(15), rx_sock.recv_from(&mut buf)).await
+        {
+            if is_pq_psk_shaped(&buf[..n]) {
+                out.push(buf[..n].to_vec());
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn pq_psk_simultaneous_rotation_glare_converges_in_both_orderings_and_respects_rekey_stagger()
+     {
+        use tokio::net::UdpSocket;
+
+        let k1 = WgKeypair::generate();
+        let k2 = WgKeypair::generate();
+        // Order keys so `primary` has lexicographically smaller public key (`is_primary_initiator() == true`).
+        let (primary, non_primary) = if k1.public.to_bytes() < k2.public.to_bytes() {
+            (k1, k2)
+        } else {
+            (k2, k1)
+        };
+
+        let sock_p = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_np = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_p = sock_p.local_addr().unwrap();
+        let addr_np = sock_np.local_addr().unwrap();
+
+        let cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            rekey_interval: Duration::from_millis(400),
+            max_lifetime: Duration::from_secs(30),
+            retry_interval: Duration::from_millis(100),
+            max_retries: 6,
+            configured_psk: None,
+        };
+
+        let tunn_p = Arc::new(Mutex::new(Tunn::new(
+            primary.secret.clone(),
+            non_primary.public,
+            PqPeerHandle::initial_tunn_psk(&cfg),
+            None,
+            1,
+            None,
+        )));
+        let tunn_np = Arc::new(Mutex::new(Tunn::new(
+            non_primary.secret.clone(),
+            primary.public,
+            PqPeerHandle::initial_tunn_psk(&cfg),
+            None,
+            2,
+            None,
+        )));
+        let carrier_p = Carrier::direct(sock_p.clone(), addr_np);
+        let carrier_np = Carrier::direct(sock_np.clone(), addr_p);
+        let stats_p = Arc::new(PeerStats::default());
+        let stats_np = Arc::new(PeerStats::default());
+
+        let _stats_p = stats_p.clone();
+        let _stats_np = stats_np.clone();
+        let handle_p = PqPeerHandle::new(
+            cfg.clone(),
+            primary.secret.clone(),
+            primary.public.to_bytes(),
+            non_primary.public.to_bytes(),
+            1,
+            None,
+            tunn_p.clone(),
+            carrier_p.clone(),
+            stats_p,
+        );
+        let handle_np = PqPeerHandle::new(
+            cfg,
+            non_primary.secret.clone(),
+            non_primary.public.to_bytes(),
+            primary.public.to_bytes(),
+            2,
+            None,
+            tunn_np.clone(),
+            carrier_np.clone(),
+            stats_np,
+        );
+        assert!(handle_p.is_primary_initiator());
+        assert!(!handle_np.is_primary_initiator());
+
+        // Establish epoch = 1 first.
+        assert!(handle_p.start_initial().await);
+        for _ in 0..4 {
+            drain_udp_into(&sock_np, &handle_np, &carrier_np).await;
+            drain_udp_into(&sock_p, &handle_p, &carrier_p).await;
+        }
+        let s_p1 = handle_p.snapshot().await;
+        let s_np1 = handle_np.snapshot().await;
+        assert_eq!(s_p1.current_epoch, 1);
+        assert_eq!(s_np1.current_epoch, 1);
+        assert_eq!(s_p1.psk_fingerprint, s_np1.psk_fingerprint);
+
+        // Ordering A: Both peers simultaneously initiate epoch = 2 (`pending_init` on both)
+        // and their KIND_INIT fragments cross in flight.
+        assert!(handle_p.start_or_rotate().await);
+        assert!(handle_np.start_or_rotate().await);
+        let init_from_p = read_pq_datagrams(&sock_np).await;
+        let init_from_np = read_pq_datagrams(&sock_p).await;
+        assert_eq!(init_from_p.len(), 3);
+        assert_eq!(init_from_np.len(), 3);
+
+        // Deliver non-primary's KIND_INIT to primary (primary must keep its pending_init and re-send it),
+        // and primary's KIND_INIT to non-primary (non-primary must drop pending_init and reply KIND_RESP).
+        for pkt in &init_from_np {
+            handle_p.handle_inbound(pkt, &carrier_p).await;
+        }
+        for pkt in &init_from_p {
+            handle_np.handle_inbound(pkt, &carrier_np).await;
+        }
+        for _ in 0..4 {
+            drain_udp_into(&sock_p, &handle_p, &carrier_p).await;
+            drain_udp_into(&sock_np, &handle_np, &carrier_np).await;
+        }
+        let s_p2 = handle_p.snapshot().await;
+        let s_np2 = handle_np.snapshot().await;
+        assert_eq!(s_p2.current_epoch, 2);
+        assert_eq!(s_np2.current_epoch, 2);
+        assert_eq!(s_p2.psk_fingerprint, s_np2.psk_fingerprint);
+        assert_eq!(
+            tunn_p.lock().await.preshared_key(),
+            tunn_np.lock().await.preshared_key()
+        );
+
+        // Ordering B (exact B7 R1 t=120s glare sequence):
+        // 1. Non-primary initiates epoch = 3 (`KIND_INIT`).
+        // 2. Primary receives non-primary's `KIND_INIT` and replies `KIND_RESP` (storing `PendingResp`).
+        // 3. Verify `tick_timer` on primary does NOT start a competing rotation while `pending_resps` is non-empty!
+        // 4. Even if primary explicitly sends a competing `KIND_INIT(epoch = 3)` that arrives at non-primary
+        //    AFTER non-primary has already processed `KIND_RESP` and entered `pending_confirm`,
+        //    non-primary must NOT clear `pending_confirm`; it re-sends `KIND_CONFIRM`, primary commits
+        //    epoch = 3 and replies `KIND_ACK`, and both converge to epoch = 3 with identical PSKs!
+        assert!(handle_np.start_or_rotate().await);
+        let np_init_e3 = read_pq_datagrams(&sock_p).await;
+        for pkt in &np_init_e3 {
+            handle_p.handle_inbound(pkt, &carrier_p).await;
+        }
+        let p_resp_e3 = read_pq_datagrams(&sock_np).await;
+        assert_eq!(
+            p_resp_e3.len(),
+            3,
+            "primary must reply with 3 KIND_RESP fragments"
+        );
+
+        // Advance primary's `established_at` past `rekey_interval` and verify `tick_timer`
+        // does NOT initiate a competing rotation because `pending_resps` is non-empty.
+        handle_p.inner.lock().await.established_at = Some(Instant::now() - Duration::from_secs(10));
+        handle_p.tick_timer().await;
+        assert!(
+            read_pq_datagrams(&sock_np).await.is_empty(),
+            "tick_timer must not start a rotation while pending_resps is non-empty"
+        );
+
+        // Now deliver primary's `KIND_RESP` to non-primary so non-primary transitions to `pending_confirm`
+        // and sends `KIND_CONFIRM`.
+        for pkt in &p_resp_e3 {
+            handle_np.handle_inbound(pkt, &carrier_np).await;
+        }
+        let np_confirm_e3 = read_pq_datagrams(&sock_p).await;
+        assert_eq!(np_confirm_e3.len(), 1);
+        assert!(handle_np.inner.lock().await.pending_confirm.is_some());
+
+        // Inject a competing `KIND_INIT(epoch = 3)` from primary into non-primary BEFORE non-primary
+        // receives `KIND_ACK` (simulating an in-flight glare packet).
+        let competing_p_init = {
+            let mut gp = handle_p.inner.lock().await;
+            handle_p.build_init_locked(&mut gp, 3)
+        };
+        for frag in handle_p.fragment_control_frame(&competing_p_init) {
+            handle_np.handle_inbound(&frag, &carrier_np).await;
+        }
+        assert!(
+            handle_np.inner.lock().await.pending_confirm.is_some(),
+            "non-primary must NEVER clear pending_confirm when an inbound KIND_INIT arrives"
+        );
+        // Non-primary re-sent its `KIND_CONFIRM`; deliver `KIND_CONFIRM` to primary and `KIND_ACK` back.
+        let resent_confirm = read_pq_datagrams(&sock_p).await;
+        assert_eq!(resent_confirm.len(), 1);
+        handle_p.handle_inbound(&np_confirm_e3[0], &carrier_p).await;
+        for _ in 0..3 {
+            drain_udp_into(&sock_np, &handle_np, &carrier_np).await;
+            drain_udp_into(&sock_p, &handle_p, &carrier_p).await;
+        }
+
+        let s_p3 = handle_p.snapshot().await;
+        let s_np3 = handle_np.snapshot().await;
+        assert_eq!(s_p3.current_epoch, 3);
+        assert_eq!(s_np3.current_epoch, 3);
+        assert_eq!(s_p3.psk_fingerprint, s_np3.psk_fingerprint);
+        assert_ne!(s_p3.psk_fingerprint, s_p2.psk_fingerprint);
+        assert_eq!(
+            tunn_p.lock().await.preshared_key(),
+            tunn_np.lock().await.preshared_key()
+        );
+
+        // Verify `NON_PRIMARY_REKEY_STAGGER` (1_000 ms): at `rekey_interval + 200 ms`,
+        // non-primary `tick_timer` must NOT initiate rotation yet.
+        handle_np.inner.lock().await.established_at =
+            Some(Instant::now() - Duration::from_millis(600));
+        handle_np.tick_timer().await;
+        assert!(
+            handle_np.inner.lock().await.pending_init.is_none(),
+            "non-primary must wait for rekey_interval + NON_PRIMARY_REKEY_STAGGER (400 + 1000 ms)"
+        );
+    }
+
+    #[tokio::test]
+    async fn pq_psk_recovers_from_lost_init_resp_confirm_and_ack_and_replays_cached_ack_on_duplicate_confirm()
+     {
+        use tokio::net::UdpSocket;
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+
+        let cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            rekey_interval: Duration::from_secs(60),
+            max_lifetime: Duration::from_secs(300),
+            retry_interval: Duration::from_millis(20),
+            max_retries: 6,
+            configured_psk: None,
+        };
+        let tunn_a = Arc::new(Mutex::new(Tunn::new(
+            a.secret.clone(),
+            b.public,
+            PqPeerHandle::initial_tunn_psk(&cfg),
+            None,
+            1,
+            None,
+        )));
+        let tunn_b = Arc::new(Mutex::new(Tunn::new(
+            b.secret.clone(),
+            a.public,
+            PqPeerHandle::initial_tunn_psk(&cfg),
+            None,
+            2,
+            None,
+        )));
+        let carrier_a = Carrier::direct(sock_a.clone(), addr_b);
+        let carrier_b = Carrier::direct(sock_b.clone(), addr_a);
+        let stats_a = Arc::new(PeerStats::default());
+        let stats_b = Arc::new(PeerStats::default());
+        let handle_a = PqPeerHandle::new(
+            cfg.clone(),
+            a.secret.clone(),
+            a.public.to_bytes(),
+            b.public.to_bytes(),
+            1,
+            None,
+            tunn_a.clone(),
+            carrier_a.clone(),
+            stats_a.clone(),
+        );
+        let handle_b = PqPeerHandle::new(
+            cfg,
+            b.secret.clone(),
+            b.public.to_bytes(),
+            a.public.to_bytes(),
+            2,
+            None,
+            tunn_b.clone(),
+            carrier_b.clone(),
+            stats_b.clone(),
+        );
+
+        // 1. Initiate epoch = 1, drop fragment 1 of KIND_INIT, and verify retry recovers.
+        assert!(handle_a.start_initial().await);
+        let init_frags = read_pq_datagrams(&sock_b).await;
+        assert_eq!(init_frags.len(), 3);
+        handle_b.handle_inbound(&init_frags[0], &carrier_b).await;
+        handle_b.handle_inbound(&init_frags[2], &carrier_b).await;
+        assert!(read_pq_datagrams(&sock_a).await.is_empty());
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        handle_a.tick_timer().await;
+        for f in read_pq_datagrams(&sock_b).await {
+            handle_b.handle_inbound(&f, &carrier_b).await;
+        }
+
+        // 2. Drop fragment 0 of KIND_RESP, and verify retry of KIND_INIT hits cached `pending_resps` and recovers.
+        let resp_frags = read_pq_datagrams(&sock_a).await;
+        assert_eq!(resp_frags.len(), 3);
+        handle_a.handle_inbound(&resp_frags[1], &carrier_a).await;
+        handle_a.handle_inbound(&resp_frags[2], &carrier_a).await;
+        assert!(handle_a.inner.lock().await.pending_confirm.is_none());
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        handle_a.tick_timer().await;
+        for f in read_pq_datagrams(&sock_b).await {
+            handle_b.handle_inbound(&f, &carrier_b).await;
+        }
+        for f in read_pq_datagrams(&sock_a).await {
+            handle_a.handle_inbound(&f, &carrier_a).await;
+        }
+
+        // 3. Drop the initial KIND_CONFIRM, and verify `pending_confirm` retry delivers it.
+        let first_confirm = read_pq_datagrams(&sock_b).await;
+        assert_eq!(first_confirm.len(), 1);
+        assert_eq!(handle_b.snapshot().await.current_epoch, 0);
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        handle_a.tick_timer().await;
+        let retry_confirm = read_pq_datagrams(&sock_b).await;
+        assert_eq!(retry_confirm.len(), 1);
+        handle_b.handle_inbound(&retry_confirm[0], &carrier_b).await;
+        // Peer B has now committed epoch = 1 and sent KIND_ACK!
+        assert_eq!(handle_b.snapshot().await.current_epoch, 1);
+
+        // 4. Drop Peer B's initial KIND_ACK! Peer A is still at epoch = 0 in `pending_confirm`.
+        let dropped_ack = read_pq_datagrams(&sock_a).await;
+        assert_eq!(dropped_ack.len(), 1);
+        assert_eq!(handle_a.snapshot().await.current_epoch, 0);
+
+        // Peer A's timer retransmits the same KIND_CONFIRM (duplicate nonce); Peer B must
+        // re-send its cached KIND_ACK from `committed_acks` so Peer A converges to epoch = 1!
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        handle_a.tick_timer().await;
+        for c in read_pq_datagrams(&sock_b).await {
+            handle_b.handle_inbound(&c, &carrier_b).await;
+        }
+        let replayed_ack = read_pq_datagrams(&sock_a).await;
+        assert_eq!(
+            replayed_ack.len(),
+            1,
+            "responder must re-send cached KIND_ACK on duplicate KIND_CONFIRM"
+        );
+        handle_a.handle_inbound(&replayed_ack[0], &carrier_a).await;
+
+        let sa = handle_a.snapshot().await;
+        let sb = handle_b.snapshot().await;
+        assert_eq!(sa.current_epoch, 1);
+        assert_eq!(sb.current_epoch, 1);
+        assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
+        assert_eq!(
+            tunn_a.lock().await.preshared_key(),
+            tunn_b.lock().await.preshared_key()
+        );
+    }
+
+    #[tokio::test]
+    async fn pq_psk_epoch_behind_peer_converges_via_monotonic_effective_epoch() {
+        use tokio::net::UdpSocket;
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+
+        let cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            rekey_interval: Duration::from_secs(60),
+            max_lifetime: Duration::from_secs(300),
+            retry_interval: Duration::from_millis(10),
+            max_retries: 2,
+            configured_psk: None,
+        };
+        let tunn_a = Arc::new(Mutex::new(Tunn::new(
+            a.secret.clone(),
+            b.public,
+            PqPeerHandle::initial_tunn_psk(&cfg),
+            None,
+            1,
+            None,
+        )));
+        let tunn_b = Arc::new(Mutex::new(Tunn::new(
+            b.secret.clone(),
+            a.public,
+            PqPeerHandle::initial_tunn_psk(&cfg),
+            None,
+            2,
+            None,
+        )));
+        let carrier_a = Carrier::direct(sock_a.clone(), addr_b);
+        let carrier_b = Carrier::direct(sock_b.clone(), addr_a);
+        let stats_a = Arc::new(PeerStats::default());
+        let stats_b = Arc::new(PeerStats::default());
+        let handle_a = PqPeerHandle::new(
+            cfg.clone(),
+            a.secret.clone(),
+            a.public.to_bytes(),
+            b.public.to_bytes(),
+            1,
+            None,
+            tunn_a.clone(),
+            carrier_a.clone(),
+            stats_a.clone(),
+        );
+        let handle_b = PqPeerHandle::new(
+            cfg,
+            b.secret.clone(),
+            b.public.to_bytes(),
+            a.public.to_bytes(),
+            2,
+            None,
+            tunn_b.clone(),
+            carrier_b.clone(),
+            stats_b.clone(),
+        );
+
+        // Establish epoch = 1 on both peers.
+        assert!(handle_a.start_initial().await);
+        for _ in 0..4 {
+            drain_udp_into(&sock_b, &handle_b, &carrier_b).await;
+            drain_udp_into(&sock_a, &handle_a, &carrier_a).await;
+        }
+        assert_eq!(handle_a.snapshot().await.current_epoch, 1);
+        assert_eq!(handle_b.snapshot().await.current_epoch, 1);
+
+        // Start rotation to epoch = 2 from Peer A, let Peer B commit epoch = 2,
+        // then drop KIND_ACK and all `max_retries` of Peer A's `pending_confirm`
+        // so Peer B is at `current_epoch = 2` while Peer A remains at `current_epoch = 1`!
+        assert!(handle_a.start_or_rotate().await);
+        drain_udp_into(&sock_b, &handle_b, &carrier_b).await; // B receives INIT(2), sends RESP(2)
+        drain_udp_into(&sock_a, &handle_a, &carrier_a).await; // A receives RESP(2), sends CONFIRM(2)
+        drain_udp_into(&sock_b, &handle_b, &carrier_b).await; // B receives CONFIRM(2), commits epoch = 2, sends ACK(2)
+        let _lost_ack = read_pq_datagrams(&sock_a).await; // Drop ACK(2)
+        assert_eq!(handle_b.snapshot().await.current_epoch, 2);
+        assert_eq!(handle_a.snapshot().await.current_epoch, 1);
+
+        // Exhaust Peer A's `pending_confirm` retries (simulating a transient blackhole)
+        // so Peer A times out `pending_confirm` and immediately initiates a fresh `KIND_INIT(req_epoch = 2)`.
+        for _ in 0..3 {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            handle_a.tick_timer().await;
+            let _dropped = read_pq_datagrams(&sock_b).await;
+        }
+        // On the timeout tick, Peer A immediately launched a fresh KIND_INIT(req_epoch = 2);
+        // trigger one retry and deliver it to Peer B (which is already at epoch = 2).
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        handle_a.tick_timer().await;
+        for _ in 0..4 {
+            drain_udp_into(&sock_b, &handle_b, &carrier_b).await;
+            drain_udp_into(&sock_a, &handle_a, &carrier_a).await;
+        }
+
+        // Peer B answered `req_epoch = 2 <= current_epoch (2)` with `effective_epoch = 3`,
+        // converging both peers to `epoch = 3` with identical PSK!
+        let sa = handle_a.snapshot().await;
+        let sb = handle_b.snapshot().await;
+        assert_eq!(sa.current_epoch, 3);
+        assert_eq!(sb.current_epoch, 3);
+        assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
+        assert_eq!(
+            tunn_a.lock().await.preshared_key(),
+            tunn_b.lock().await.preshared_key()
+        );
+    }
+
+    #[tokio::test]
+    async fn pq_psk_rejects_replayed_stale_epoch_init_without_allocating_pending_resp_or_aborting_pending_init()
+     {
+        use tokio::net::UdpSocket;
+
+        let k1 = WgKeypair::generate();
+        let k2 = WgKeypair::generate();
+        let (primary, non_primary) = if k1.public.to_bytes() < k2.public.to_bytes() {
+            (k1, k2)
+        } else {
+            (k2, k1)
+        };
+
+        let sock_p = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_np = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_p = sock_p.local_addr().unwrap();
+        let addr_np = sock_np.local_addr().unwrap();
+
+        let cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            rekey_interval: Duration::from_secs(60),
+            max_lifetime: Duration::from_secs(300),
+            retry_interval: Duration::from_millis(50),
+            max_retries: 6,
+            configured_psk: None,
+        };
+        let tunn_p = Arc::new(Mutex::new(Tunn::new(
+            primary.secret.clone(),
+            non_primary.public,
+            PqPeerHandle::initial_tunn_psk(&cfg),
+            None,
+            1,
+            None,
+        )));
+        let tunn_np = Arc::new(Mutex::new(Tunn::new(
+            non_primary.secret.clone(),
+            primary.public,
+            PqPeerHandle::initial_tunn_psk(&cfg),
+            None,
+            2,
+            None,
+        )));
+        let carrier_p = Carrier::direct(sock_p.clone(), addr_np);
+        let carrier_np = Carrier::direct(sock_np.clone(), addr_p);
+        let stats_p = Arc::new(PeerStats::default());
+        let stats_np = Arc::new(PeerStats::default());
+        let handle_p = PqPeerHandle::new(
+            cfg.clone(),
+            primary.secret.clone(),
+            primary.public.to_bytes(),
+            non_primary.public.to_bytes(),
+            1,
+            None,
+            tunn_p.clone(),
+            carrier_p.clone(),
+            stats_p,
+        );
+        let handle_np = PqPeerHandle::new(
+            cfg,
+            non_primary.secret.clone(),
+            non_primary.public.to_bytes(),
+            primary.public.to_bytes(),
+            2,
+            None,
+            tunn_np.clone(),
+            carrier_np.clone(),
+            stats_np,
+        );
+
+        // Capture a valid authenticated `KIND_INIT(req_epoch = 2)` from primary BEFORE it is ever committed
+        // (so its `init_nonce` is NOT in `committed_init_nonces`).
+        let captured_stale_init_e2 = {
+            let mut gp = handle_p.inner.lock().await;
+            let f = handle_p.build_init_locked(&mut gp, 2);
+            gp.pending_init = None;
+            f
+        };
+        let captured_stale_frags_e2 = handle_p.fragment_control_frame(&captured_stale_init_e2);
+        assert_eq!(captured_stale_frags_e2.len(), 3);
+
+        // Advance both peers normally through epoch 1 -> 2 -> 3 (`current_epoch == 3`).
+        assert!(handle_p.start_initial().await);
+        for _ in 0..4 {
+            drain_udp_into(&sock_np, &handle_np, &carrier_np).await;
+            drain_udp_into(&sock_p, &handle_p, &carrier_p).await;
+        }
+        for target_epoch in 2..=3u64 {
+            assert!(handle_p.start_or_rotate().await);
+            for _ in 0..4 {
+                drain_udp_into(&sock_np, &handle_np, &carrier_np).await;
+                drain_udp_into(&sock_p, &handle_p, &carrier_p).await;
+            }
+            assert_eq!(handle_p.snapshot().await.current_epoch, target_epoch);
+            assert_eq!(handle_np.snapshot().await.current_epoch, target_epoch);
+        }
+
+        // Start a legitimate rotation on `non_primary` (`pending_init` is `Some(epoch = 4)`).
+        assert!(handle_np.start_or_rotate().await);
+        let _ = read_pq_datagrams(&sock_p).await;
+        let orig_init_nonce = handle_np
+            .inner
+            .lock()
+            .await
+            .pending_init
+            .as_ref()
+            .expect("pending_init must exist on non-primary")
+            .init_nonce;
+
+        // Replay the captured `req_epoch = 2` (`< current_epoch (3)` and `!= 1`) both as fragments
+        // (`on_frag`) and as a full frame (`on_init`) against `non_primary`.
+        for frag in &captured_stale_frags_e2 {
+            handle_np.handle_inbound(frag, &carrier_np).await;
+        }
+        assert!(
+            handle_np.inner.lock().await.frag_reassembly.is_empty(),
+            "stale-epoch KIND_INIT fragments must be dropped in on_frag without allocating reassembly slots"
+        );
+        handle_np
+            .handle_inbound(&captured_stale_init_e2, &carrier_np)
+            .await;
+
+        {
+            let g_np = handle_np.inner.lock().await;
+            assert!(
+                g_np.pending_resps.is_empty(),
+                "replayed stale-epoch KIND_INIT must not allocate a PendingResp or block periodic rotation"
+            );
+            assert_eq!(
+                g_np.pending_init.as_ref().map(|p| (p.epoch, p.init_nonce)),
+                Some((4, orig_init_nonce)),
+                "replayed stale-epoch KIND_INIT must not abort non-primary's in-flight pending_init"
+            );
+        }
+        assert!(
+            read_pq_datagrams(&sock_p).await.is_empty(),
+            "replayed stale-epoch KIND_INIT must not elicit any response packet"
         );
     }
 }

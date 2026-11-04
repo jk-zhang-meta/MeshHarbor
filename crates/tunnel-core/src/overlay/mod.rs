@@ -50,6 +50,7 @@ pub mod lan_repair;
 pub(crate) mod lifecycle;
 /// B8 — Multi-path & link aggregation (`ActiveStandby`, `Redundant`, `Aggregate`).
 pub mod multipath;
+pub(crate) mod multipath_control;
 pub mod nat;
 pub mod netcheck;
 pub mod netmap;

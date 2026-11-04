@@ -382,6 +382,8 @@ struct Installed {
     /// Last `(tx, rx)` snapshot from the previous sweep (rc.137 lock-free
     /// health). Only meaningful for direct carriers.
     last_traffic: (u64, u64),
+    /// B8 health-only snapshot; public traffic remains the delivered totals.
+    primary_traffic: (u64, u64),
     /// Consecutive sweeps where we sent but received nothing (tx grew, rx
     /// flat). A few in a row ⇒ the direct carrier is one-way / dead.
     bad_sweeps: u32,
@@ -391,6 +393,10 @@ struct Installed {
     /// — `WgDevice::peer_initiator_hs_answered`); an unanswered poke past its
     /// window is a `DeathReason::RekeyUnanswered`.
     poke: Option<PokeArm>,
+    /// #280 — when an answered-but-unconfirmed handshake on this direct
+    /// carrier comes due (`RESPONDER_CONFIRM_DEADLINE` after we answered); the
+    /// 1 s scout sets it so [`business_poke_recheck`] pulls the sweep forward.
+    confirm_due: Option<Instant>,
     /// rc.275 honesty — the health sweep's verdict that this carrier is
     /// SILENTLY ONE-WAY: installed past the warm-up grace with either no
     /// completed WG handshake ever (the pre-handshake zombie whose tx/rx
@@ -514,8 +520,10 @@ impl Installed {
             is_direct: !matches!(tier, DirectTier::Relay),
             since: now,
             last_traffic: (0, 0),
+            primary_traffic: (0, 0),
             bad_sweeps: 0,
             poke: None,
+            confirm_due: None,
             stalled: false,
             initiated: false,
             hs_done: false,
@@ -701,6 +709,22 @@ fn business_poke_fast() -> bool {
     *FAST.get_or_init(|| crate::env::flag("OVERLAY_BUSINESS_POKE_FAST", true))
 }
 
+/// #279 — `OVERLAY_BUSINESS_DATA_PROOF` (default ON): a business proof is
+/// settled only once DATA comes back on the direct carrier, not by a handshake
+/// alone. `0` restores the handshake-only answer.
+/// #280 — `OVERLAY_RESPONDER_CONFIRM` (default ON): a handshake we answered
+/// on a direct carrier must be confirmed by the initiator's keepalive within
+/// `RESPONDER_CONFIRM_DEADLINE`, else the carrier is convicted one-way.
+fn responder_confirm() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env::flag("OVERLAY_RESPONDER_CONFIRM", true))
+}
+
+fn business_data_proof() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env::flag("OVERLAY_BUSINESS_DATA_PROOF", true))
+}
+
 fn business_poke_window() -> Duration {
     if business_poke_fast() {
         crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE
@@ -715,6 +739,13 @@ fn business_poke_recheck(by_node: &HashMap<ObjectId, Installed>, now: Instant) -
         .filter_map(|e| e.poke)
         .filter(|p| p.from_business && !p.from_major)
         .map(|p| p.at + business_poke_window() + Duration::from_millis(250))
+        // #280 — an answered handshake coming due for its confirmation.
+        .chain(
+            by_node
+                .values()
+                .filter_map(|e| e.confirm_due)
+                .map(|d| d + Duration::from_millis(250)),
+        )
         .min()?;
     let wait = deadline
         .saturating_duration_since(now)
@@ -824,9 +855,15 @@ fn warn_if_slow(stage: &'static str, t0: Instant) {
 /// P1 (S6) test hook — when non-zero, the Netmap arm sleeps this long at its
 /// top (async — the arm is genuinely busy on the loop for the duration).
 /// Lets `control_stall_does_not_delay_outbound` prove a fat control arm can
-/// no longer delay outbound packets. Zero (inert) outside tests.
+/// no longer delay outbound packets. `None` (inert) outside tests.
+///
+/// Keyed by the stalled runtime's OWN public key: the static is process-wide,
+/// and an unscoped stall froze every runtime in the test binary — a parallel
+/// test's netmap prune landed ~4 s late (two netmaps × 2 s) and
+/// `reattach_rejoins_reconciles_and_then_prunes` failed whenever the two
+/// overlapped.
 #[cfg(test)]
-static TEST_NETMAP_STALL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TEST_NETMAP_STALL: std::sync::Mutex<Option<([u8; 32], u64)>> = std::sync::Mutex::new(None);
 
 /// rc.211 — a finished OFF-LOOP QUIC-over-TURN carrier build (see
 /// [`RelayBuildQueue`]). `quic: None` = the QUIC handshake failed/timed out →
@@ -949,6 +986,10 @@ fn org_bind_needed(tracking: bool, installed: Option<&Installed>) -> bool {
 
 /// Accept a true replacement without losing the pre-replacement tracking
 /// reason. A duplicate mint must preserve the current bind epoch and carrier.
+///
+/// `standby`: the peer is direct and B8 wants this session's carrier as its
+/// standby leg ([`WgDevice::wants_multipath_standby`]); it never demotes direct.
+#[allow(clippy::too_many_arguments)]
 fn accept_org_bind_session(
     peer: ObjectId,
     session: super::orgrelay::member::OrgSession,
@@ -957,6 +998,7 @@ fn accept_org_bind_session(
     alloc_queue: &mut RelayAllocQueue,
     peers: &HashMap<ObjectId, NetmapPeer>,
     installed: &HashMap<ObjectId, Installed>,
+    standby: bool,
 ) -> bool {
     if relay.org_relay_pinned(&peer)
         || installed.get(&peer).is_some_and(|e| {
@@ -967,7 +1009,7 @@ fn accept_org_bind_session(
     {
         return false;
     }
-    let needed = org_bind_needed(relay.is_tracking(&peer), installed.get(&peer));
+    let needed = org_bind_needed(relay.is_tracking(&peer), installed.get(&peer)) || standby;
     if !relay.org_session_accept(peer, session) {
         return false;
     }
@@ -1016,16 +1058,32 @@ fn invalidate_org_bind_identity(
     }
 }
 
+/// B8: a late relay link may become (or replace) a direct peer's standby leg
+/// only while that direct carrier is not under suspicion. Swapping legs while
+/// a revalidation poke is outstanding or the sweep already counts it bad can
+/// discard the proven standby in the very tick the primary is convicted, and
+/// a new leg is unproven, so B8 has nothing to commit to (real network R8
+/// rn-fo-org: the late ORG link replaced the validated DERP leg 17 ms before
+/// the conviction, and the pair fell back to the legacy relay rebuild). The
+/// refused link is closed and requested again later; the healthy-primary
+/// preference for ORG over DERP is unchanged.
+fn direct_standby_window(e: &Installed) -> bool {
+    e.is_direct && e.poke.is_none() && e.bad_sweeps == 0 && !e.stalled
+}
+
 /// The actual org completion convergence point. Re-check live membership,
 /// captured identity and direct priority AFTER the async bind, not just when
 /// it starts. Rejected current work releases its session/tracking; stale work
 /// must not touch a newer session. A rejected relay carrier is marked closed before its completion is dropped.
+/// `standby` admits a direct peer whose B8 standby leg this bind supplies;
+/// the caller then adopts the link as that leg, never as the primary.
 fn commit_current_org_bind(
     done: OrgBindDone,
     queue: &mut OrgBindQueue,
     peers: &HashMap<ObjectId, NetmapPeer>,
     installed: &HashMap<ObjectId, Installed>,
     relay: &mut RelayCoordinator,
+    standby: bool,
 ) -> Option<ReadyLink> {
     if !queue.take_if_current(&done.node_id, done.epoch) {
         if let Some(conn) = done.conn {
@@ -1038,7 +1096,7 @@ fn commit_current_org_bind(
     if relay.org_relay_pinned(&done.node_id)
         || !identity_matches
         || installed.get(&done.node_id).is_some_and(|p| {
-            p.is_direct
+            p.is_direct && !standby
                 || p.org_recovery_until
                     .is_some_and(|until| Instant::now() < until)
                 || p.org_recovery_needs_query
@@ -1081,12 +1139,10 @@ fn spawn_org_bind(
         .await
         {
             Ok((sock, relay, outcomes)) => (
-                Some(Arc::new(OrgRelayConn::new(
-                    Arc::new(sock),
-                    relay,
-                    job.vni,
-                    relay_label,
-                ))),
+                Some(Arc::new(
+                    OrgRelayConn::new(Arc::new(sock), relay, job.vni, relay_label)
+                        .with_rebind(job.generation, job.secret.clone()),
+                )),
                 outcomes,
             ),
             Err((e, outcomes)) => {
@@ -3609,7 +3665,8 @@ impl OverlayRuntime {
                     }
                 }
                 _ = business_scout.tick() => {
-                    self.scout_business_traffic(&mut wg, &mut by_node, &mut business_samples);
+                    let multipath_promoted = self.sweep_multipath(&mut wg, &mut by_node, &mut relay).await;
+                    let hs_changed = self.scout_business_traffic(&mut wg, &mut by_node, &mut business_samples);
                     // F1 — a proof armed here is convicted at its own deadline, not
                     // at whichever fallback tick comes next: only the fallback arm
                     // re-armed the recheck, so the verdict landed up to 5 s late
@@ -3641,7 +3698,7 @@ impl OverlayRuntime {
                     {
                         self.sweep_standby(&mut wg, &by_node, &mux, &mut standby_peers).await;
                     }
-                    if followed || promoted || latched {
+                    if followed || promoted || latched || hs_changed || multipath_promoted {
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
                         self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                     }
@@ -3823,14 +3880,24 @@ impl OverlayRuntime {
                                 .await;
                         }
                         if let Some(r) = relay.as_mut() {
+                            let standby = by_node.get(&done.node_id).is_some_and(|e| {
+                                direct_standby_window(e) && wg.wants_multipath_standby(&e.pubkey)
+                            });
                             if let Some(link) = commit_current_org_bind(
-                                done, &mut org_q, &current_peers, &by_node, r,
+                                done, &mut org_q, &current_peers, &by_node, r, standby,
                             ) {
-                                let t0 = Instant::now();
-                                self.install_ready(&mut wg, &mut by_node, &tun, link, &mut relay_bq).await;
-                                warn_if_slow("install_ready(org-relay)", t0);
-                                self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
-                                self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                                if by_node.get(&link.node_id).is_some_and(|e| e.is_direct) {
+                                    // B8 standby for a healthy direct peer: never the primary.
+                                    if !wg.adopt_multipath_standby(&link.public_key, link.carrier.clone(), RelayKind::Org) {
+                                        r.org_bind_failed(&link.node_id);
+                                    }
+                                } else {
+                                    let t0 = Instant::now();
+                                    self.install_ready(&mut wg, &mut by_node, &tun, link, &mut relay_bq).await;
+                                    warn_if_slow("install_ready(org-relay)", t0);
+                                    self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
+                                    self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                                }
                             }
                         } else if let Some(conn) = done.conn {
                             conn.close();
@@ -4882,7 +4949,12 @@ impl OverlayRuntime {
                         }
                         #[cfg(test)]
                         {
-                            let stall = TEST_NETMAP_STALL_MS.load(std::sync::atomic::Ordering::Relaxed);
+                            let me = self.keypair.public.to_bytes();
+                            let stall = TEST_NETMAP_STALL
+                                .lock()
+                                .unwrap()
+                                .filter(|(k, _)| *k == me)
+                                .map_or(0, |(_, ms)| ms);
                             if stall > 0 {
                                 tokio::time::sleep(Duration::from_millis(stall)).await;
                             }
@@ -5245,9 +5317,12 @@ impl OverlayRuntime {
                         if let Some(r) = relay.as_mut() {
                             match crate::overlay::orgrelay::member::OrgSession::from_wire(vni, generation, relay_node_id, &relay_endpoints, &bind_secret, bind_secs, max_lifetime_secs) {
                                 Some(session) => {
+                                    let standby = by_node.get(&peer_node_id).is_some_and(|e| {
+                                        e.is_direct && wg.wants_multipath_standby(&e.pubkey)
+                                    });
                                     if accept_org_bind_session(
                                         peer_node_id, session, r, &mut org_q,
-                                        &mut alloc_q, &current_peers, &by_node,
+                                        &mut alloc_q, &current_peers, &by_node, standby,
                                     ) {
                                         cancel_org_upgrade_candidate(&peer_node_id, &mut wg, &mut by_node);
                                     }
@@ -5448,6 +5523,59 @@ mod tests {
 
     use super::*;
     use std::io;
+
+    #[test]
+    fn a_suspect_direct_carrier_takes_no_new_standby_leg() {
+        let now = Instant::now();
+        let healthy = Installed::base(
+            [1; 32],
+            Ipv4Addr::new(100, 64, 0, 9),
+            DirectTier::Srflx,
+            now,
+        );
+        assert!(direct_standby_window(&healthy));
+        let poked = Installed {
+            poke: Some(PokeArm {
+                at: now,
+                from_major: false,
+                from_business: true,
+            }),
+            ..Installed::base(
+                [1; 32],
+                Ipv4Addr::new(100, 64, 0, 9),
+                DirectTier::Srflx,
+                now,
+            )
+        };
+        assert!(!direct_standby_window(&poked));
+        let bad = Installed {
+            bad_sweeps: 1,
+            ..Installed::base(
+                [1; 32],
+                Ipv4Addr::new(100, 64, 0, 9),
+                DirectTier::Srflx,
+                now,
+            )
+        };
+        assert!(!direct_standby_window(&bad));
+        let stalled = Installed {
+            stalled: true,
+            ..Installed::base(
+                [1; 32],
+                Ipv4Addr::new(100, 64, 0, 9),
+                DirectTier::Srflx,
+                now,
+            )
+        };
+        assert!(!direct_standby_window(&stalled));
+        let relayed = Installed::base(
+            [1; 32],
+            Ipv4Addr::new(100, 64, 0, 9),
+            DirectTier::Relay,
+            now,
+        );
+        assert!(!direct_standby_window(&relayed));
+    }
 
     /// W2 — the resolver's name map must include the node ITSELF (the
     /// netmap's peer list excludes self, so before this fix
@@ -6794,6 +6922,198 @@ mod tests {
         }
     }
 
+    /// #279 — field 2026-11-03 (native Windows ↔ WSL node, ~40 s blackhole):
+    /// handshakes kept completing while every DATA packet was lost, so each
+    /// business proof read "answered", was cleared, and the scout re-armed a
+    /// new one, forever. A business proof whose handshake answered but whose
+    /// data path is silent must stay pending (so the standby tee stays wanted),
+    /// convict after BUSINESS_DATA_DEADLINE, and settle as soon as an
+    /// authenticated transport datagram arrives.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sweep_business_proof_needs_data_not_only_a_handshake() {
+        let kp = WgKeypair::generate();
+        let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+        let (tun_mock, _inj, _del) = MockTun::new();
+        let tf: TunFactory = {
+            let m = tun_mock.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx, tf, 1280);
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        wg.ensure_direct_demux(sock.clone());
+        let dead: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let window = crate::overlay::lifecycle::BUSINESS_DATA_DEADLINE;
+        // peer A: proof armed past the data window; peer B: proof armed just now.
+        let a = WgKeypair::generate().public.to_bytes();
+        let b = WgKeypair::generate().public.to_bytes();
+        let (ia, ib) = (Ipv4Addr::new(100, 64, 0, 5), Ipv4Addr::new(100, 64, 0, 6));
+        let (na, nb) = (
+            ObjectId::from_bytes([79, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+            ObjectId::from_bytes([79, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]),
+        );
+        let mut by_node = HashMap::new();
+        for (nid, pk, ip, poke_age) in [
+            (na, a, ia, window + Duration::from_secs(2)),
+            (nb, b, ib, Duration::from_secs(1)),
+        ] {
+            wg.add_direct_peer(sock.clone(), pk, ip, dead, true).await;
+            wg.test_latch_handshake_done(&pk);
+            by_node.insert(
+                nid,
+                Installed {
+                    since: Instant::now().checked_sub(Duration::from_secs(60)).unwrap(),
+                    last_rx_at: Instant::now(),
+                    poke: Some(PokeArm {
+                        at: Instant::now().checked_sub(poke_age).unwrap(),
+                        from_major: false,
+                        from_business: true,
+                    }),
+                    ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+                },
+            );
+            // The handshake answered (stamped after each arm instant); no data.
+            wg.test_stamp_initiator_hs(&pk);
+        }
+        let tun: Arc<dyn TunIo> = tun_mock;
+        let mut relay = None;
+        let mut refresh = HashMap::new();
+        let peers = HashMap::new();
+        assert_eq!(
+            establish::poke_settled(&wg, &b, true, by_node[&nb].poke.unwrap()),
+            (false, true),
+            "a handshake alone leaves a business proof pending on data (tee stays wanted)"
+        );
+        let lost = rt
+            .sweep_carrier_health(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut refresh,
+                &peers,
+                ForcedPoke::No,
+            )
+            .await;
+        assert!(
+            lost,
+            "handshake-only answers past the data window convict the carrier"
+        );
+        assert!(
+            !by_node.contains_key(&na),
+            "A's direct carrier is torn down for a relay rebuild"
+        );
+        assert!(
+            by_node[&nb].poke.is_some(),
+            "B is inside its window: still pending, not settled by the handshake"
+        );
+        wg.test_stamp_data_rx(&b);
+        rt.sweep_carrier_health(
+            &mut wg,
+            &mut by_node,
+            &mut relay,
+            &tun,
+            &mut refresh,
+            &peers,
+            ForcedPoke::No,
+        )
+        .await;
+        assert!(
+            by_node[&nb].poke.is_none(),
+            "data back on the direct carrier settles B's proof"
+        );
+        assert!(by_node.contains_key(&nb), "and B keeps its direct carrier");
+    }
+
+    /// #280 — the scout books an answered-but-unconfirmed handshake's due
+    /// instant (which pulls the next tick forward), and the sweep convicts a
+    /// direct carrier whose answered handshake stayed unconfirmed past
+    /// RESPONDER_CONFIRM_DEADLINE, while a confirmed one keeps its carrier.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unconfirmed_answered_handshake_convicts_the_direct_carrier() {
+        let kp = WgKeypair::generate();
+        let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+        let (tun_mock, _inj, _del) = MockTun::new();
+        let tf: TunFactory = {
+            let m = tun_mock.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx, tf, 1280);
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        wg.ensure_direct_demux(sock.clone());
+        let dead: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let deadline = crate::overlay::lifecycle::RESPONDER_CONFIRM_DEADLINE;
+        let a = WgKeypair::generate().public.to_bytes();
+        let b = WgKeypair::generate().public.to_bytes();
+        let na = ObjectId::from_bytes([80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let nb = ObjectId::from_bytes([80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        let mut by_node = HashMap::new();
+        for (nid, pk, ip) in [
+            (na, a, Ipv4Addr::new(100, 64, 0, 7)),
+            (nb, b, Ipv4Addr::new(100, 64, 0, 8)),
+        ] {
+            wg.add_direct_peer(sock.clone(), pk, ip, dead, true).await;
+            wg.test_latch_handshake_done(&pk);
+            by_node.insert(
+                nid,
+                Installed {
+                    since: Instant::now().checked_sub(Duration::from_secs(60)).unwrap(),
+                    last_rx_at: Instant::now(),
+                    ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+                },
+            );
+        }
+        // A and B both answered an initiation just now; neither confirmed yet.
+        // (Real waiting, not backdating: a test process's monotonic epoch is
+        // near zero, so a backdated stamp would saturate.)
+        wg.test_stamp_responder_hs(&a, Duration::ZERO);
+        wg.test_stamp_responder_hs(&b, Duration::ZERO);
+        let mut samples = HashMap::new();
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        let now = Instant::now();
+        let due = by_node[&na]
+            .confirm_due
+            .expect("an unconfirmed answer is booked");
+        assert!(
+            due > now && due <= now + deadline,
+            "due within the confirmation window"
+        );
+        let wait =
+            business_poke_recheck(&by_node, now).expect("the due instant pulls the tick forward");
+        assert!(
+            wait <= deadline + Duration::from_millis(300) && wait < FALLBACK_TICK,
+            "rechecked at the confirmation deadline, not on the 5 s grid: {wait:?}"
+        );
+        // B's initiator keepalive arrives; A's never does.
+        wg.test_stamp_data_rx(&b);
+        tokio::time::sleep(deadline + Duration::from_millis(300)).await;
+        let tun: Arc<dyn TunIo> = tun_mock;
+        let mut relay = None;
+        let mut refresh = HashMap::new();
+        let peers = HashMap::new();
+        let lost = rt
+            .sweep_carrier_health(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut refresh,
+                &peers,
+                ForcedPoke::No,
+            )
+            .await;
+        assert!(
+            lost,
+            "an answered handshake never confirmed convicts the direct carrier"
+        );
+        assert!(!by_node.contains_key(&na), "A rebuilds via relay");
+        assert!(
+            by_node.contains_key(&nb),
+            "a confirmed answer keeps B's direct carrier"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn sweep_business_poke_before_silence_and_through_tcp_backoff() {
         let kp = WgKeypair::generate();
@@ -7106,6 +7426,9 @@ mod tests {
             "only the normal sweep settles an answered proof"
         );
         wg.test_set_ip_traffic(&pk, 12, 11);
+        // #279 — the healthy path's reply arrived as an authenticated transport
+        // datagram; a business proof is settled by that, not by the handshake.
+        wg.test_stamp_data_rx(&pk);
         rt.sweep_carrier_health(
             &mut wg,
             &mut by_node,
@@ -9628,7 +9951,7 @@ mod tests {
     }
 
     /// P1 (S6) — the permanent RE-COUPLING TRIPWIRE. A fat control arm (a
-    /// 2 s Netmap handler, via [`TEST_NETMAP_STALL_MS`]) must not delay
+    /// 2 s Netmap handler, via [`TEST_NETMAP_STALL`]) must not delay
     /// outbound packets: the data plane runs on the dedicated pump, off the
     /// select! loop. Pre-P1 this fails by construction — the outbound arm
     /// shared the loop, so every packet injected during the stall queued for
@@ -9738,7 +10061,7 @@ mod tests {
 
         // Arm the 2 s stall and hand A a DUPLICATE netmap (same peer ⇒ the
         // already-installed carrier is kept — the arm just sits busy).
-        TEST_NETMAP_STALL_MS.store(2000, std::sync::atomic::Ordering::Relaxed);
+        *TEST_NETMAP_STALL.lock().unwrap() = Some((a.public.to_bytes(), 2000));
         evt_a
             .send(OverlayEvent::Netmap {
                 org_relay_discovery: false,
@@ -9769,7 +10092,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let arrivals = collector.await.unwrap();
-        TEST_NETMAP_STALL_MS.store(0, std::sync::atomic::Ordering::Relaxed);
+        *TEST_NETMAP_STALL.lock().unwrap() = None;
 
         assert!(
             arrivals.len() >= 35,
@@ -11181,7 +11504,9 @@ mod tests {
             !org_bind_needed(true, by_node.get(&nid)),
             "stale tracking cannot demote direct"
         );
-        assert!(commit_current_org_bind(done, &mut q, &peers, &by_node, &mut relay).is_none());
+        assert!(
+            commit_current_org_bind(done, &mut q, &peers, &by_node, &mut relay, false).is_none()
+        );
         assert!(by_node[&nid].is_direct);
         assert_eq!(by_node[&nid].pubkey, kp.public.to_bytes());
         assert_eq!(wg.peer_count(), 1);
@@ -11277,7 +11602,8 @@ mod tests {
                     &mut q,
                     &peers,
                     &HashMap::new(),
-                    relay.as_mut().unwrap()
+                    relay.as_mut().unwrap(),
+                    false
                 )
                 .is_none(),
                 "{case}"
@@ -11300,7 +11626,8 @@ mod tests {
         let _ = relay.force_derp(nid, Duration::from_secs(60), None);
         assert!(relay.org_relay_pinned(&nid));
         assert!(
-            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay).is_none()
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay, false)
+                .is_none()
         );
         assert!(
             !conn.is_alive(),
@@ -11331,6 +11658,7 @@ mod tests {
             &mut alloc,
             &peers,
             &HashMap::new(),
+            false,
         );
         assert!(
             relay.take_org_jobs().is_empty(),
@@ -11350,15 +11678,17 @@ mod tests {
             pending_org_test_bind(&mut relay, nid, &peers[&nid], 7, 2).await;
         done.generation = 1;
         assert!(
-            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay).is_none()
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay, false)
+                .is_none()
         );
         assert!(
             !conn.is_alive(),
             "same VNI with stale session generation is refused"
         );
         let (done, mut q, conn) = pending_org_test_bind(&mut relay, nid, &peers[&nid], 8, 3).await;
-        let link = commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay)
-            .expect("no direct: current relay remains valid fallback");
+        let link =
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay, false)
+                .expect("no direct: current relay remains valid fallback");
         assert_eq!(link.relay_kind, RelayKind::Org);
         assert_eq!(link.public_key, kp.public.to_bytes());
         assert!(conn.is_alive());
@@ -11402,6 +11732,7 @@ mod tests {
             &mut alloc,
             &peers,
             &HashMap::new(),
+            false,
         );
         assert_eq!(q.in_flight.get(&nid), Some(&epoch));
         assert!(
@@ -11413,7 +11744,8 @@ mod tests {
             "duplicate does not restart a bind"
         );
         assert!(
-            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay).is_some()
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay, false)
+                .is_some()
         );
         accept_org_bind_session(
             nid,
@@ -11423,6 +11755,7 @@ mod tests {
             &mut alloc,
             &peers,
             &HashMap::new(),
+            false,
         );
         assert!(
             conn.is_alive(),
@@ -11468,6 +11801,7 @@ mod tests {
             &mut alloc,
             &peers,
             &HashMap::new(),
+            false,
         );
         let job = relay
             .take_org_jobs()
@@ -11478,7 +11812,8 @@ mod tests {
         conn.close();
         done.conn = None; // the old asynchronous bind failed, after replacement
         assert!(
-            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay).is_none()
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay, false)
+                .is_none()
         );
         assert!(
             relay.is_tracking(&nid),
@@ -12574,7 +12909,8 @@ mod org_upgrade_tests {
             &mut q,
             &mut alloc,
             &a.peers,
-            &a.installed
+            &a.installed,
+            false
         ));
         // Isolate expiry-boundary testing from packet authentication: only the
         // monotonic hold clock is advanced, no WG/proof counter is fabricated.
@@ -12589,7 +12925,8 @@ mod org_upgrade_tests {
                 &mut q,
                 &mut alloc,
                 &a.peers,
-                &a.installed
+                &a.installed,
+                false
             ),
             "expiry alone cannot revive a lease"
         );
@@ -12632,7 +12969,8 @@ mod org_upgrade_tests {
                 &mut q,
                 &mut alloc,
                 &a.peers,
-                &a.installed
+                &a.installed,
+                false
             ),
             "fresh request permits a new bind, not an old pending completion"
         );
@@ -12642,7 +12980,8 @@ mod org_upgrade_tests {
                 &mut q,
                 &a.peers,
                 &a.installed,
-                a.relay.as_mut().unwrap()
+                a.relay.as_mut().unwrap(),
+                false
             )
             .is_none(),
             "pre-fence completion cannot overwrite fresh admission after expiry"

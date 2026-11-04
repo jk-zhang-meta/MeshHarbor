@@ -149,9 +149,7 @@ impl OnDemandConfig {
     /// * `ROOMLERD_OVERLAY_ON_DEMAND_DEFER_INITIAL` / `OVERLAY_ON_DEMAND_DEFER_INITIAL`: `"0" | "false" | "off" | "no"` to disable initial deferral
     /// * `ROOMLERD_OVERLAY_ON_DEMAND_WAKE_TIMEOUT_SECS` / `OVERLAY_ON_DEMAND_WAKE_TIMEOUT_SECS`: seconds (`u64`, min 1s)
     pub fn from_env() -> Self {
-        let enabled = crate::env::node_env("OVERLAY_ON_DEMAND")
-            .as_deref()
-            .is_some_and(parse_bool_true);
+        let enabled = crate::env::flag("OVERLAY_ON_DEMAND", false);
         if !enabled {
             return Self::disabled();
         }
@@ -160,10 +158,7 @@ impl OnDemandConfig {
             .and_then(|s| s.trim().parse::<u64>().ok())
             .map(|secs| Duration::from_secs(secs.max(1)))
             .unwrap_or(DEFAULT_ON_DEMAND_IDLE_TIMEOUT);
-        let defer_initial_handshake = crate::env::node_env("OVERLAY_ON_DEMAND_DEFER_INITIAL")
-            .as_deref()
-            .map(|s| !parse_bool_false(s))
-            .unwrap_or(true);
+        let defer_initial_handshake = crate::env::flag("OVERLAY_ON_DEMAND_DEFER_INITIAL", true);
         let waking_timeout = crate::env::node_env("OVERLAY_ON_DEMAND_WAKE_TIMEOUT_SECS")
             .as_deref()
             .and_then(|s| s.trim().parse::<u64>().ok())
@@ -176,20 +171,6 @@ impl OnDemandConfig {
             waking_timeout,
         }
     }
-}
-
-fn parse_bool_true(raw: &str) -> bool {
-    matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-fn parse_bool_false(raw: &str) -> bool {
-    matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
-        "0" | "false" | "no" | "off"
-    )
 }
 
 /// Lifecycle phase of a peer's on-demand tunnel state machine.

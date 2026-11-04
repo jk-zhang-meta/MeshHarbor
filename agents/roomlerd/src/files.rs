@@ -87,6 +87,44 @@ pub fn set_remote_browse_enabled(enabled: bool) {
     REMOTE_BROWSE_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
 }
 
+/// The refusal every path-addressed verb answers with while remote browse is off (the same
+/// words `files:dir` has always used, so a viewer shows one reason).
+pub const BROWSE_DISABLED: &str = "remote browse disabled by host config";
+
+/// `files:get`, `files:get-folder` and a `dest_path` on `files:begin` name a location the
+/// controller learned by BROWSING. With `enable_remote_browse = false` the browse drawer never
+/// ran, so a path that still arrives was typed by a client, not chosen on this host. The gate
+/// applies at every entry point, or it is a courtesy: until this check, only `files:dir` was
+/// refused — a crafted `files:get /etc/hostname` was served and a `files:begin` with
+/// `dest_path: "../"` was attempted at `/` on a device whose host config had disabled browsing
+/// (realnet FILES R1, run 73de1c427fe4596a, 2026-11-03).
+pub fn path_addressed_allowed() -> Result<(), &'static str> {
+    path_addressed_allowed_with(is_remote_browse_enabled())
+}
+
+/// [`path_addressed_allowed`] for an explicit browse flag (the unit-testable half).
+pub fn path_addressed_allowed_with(browse: bool) -> Result<(), &'static str> {
+    if browse { Ok(()) } else { Err(BROWSE_DISABLED) }
+}
+
+/// The `dest_path` an upload may honour: only while remote browse is on, and only an absolute
+/// path — the drawer hands out canonical absolute paths, and a relative one would be resolved
+/// against the daemon's working directory, which is nowhere the operator chose. Anything else
+/// is dropped and the upload lands in `files_dir`, so the operator's data is never lost and
+/// never written outside the designated folder.
+pub fn admissible_dest_path(dest_path: Option<&str>) -> Option<&str> {
+    admissible_dest_path_with(is_remote_browse_enabled(), dest_path)
+}
+
+/// [`admissible_dest_path`] for an explicit browse flag (the unit-testable half).
+pub fn admissible_dest_path_with(browse: bool, dest_path: Option<&str>) -> Option<&str> {
+    let dp = dest_path.filter(|p| !p.is_empty())?;
+    if !browse || !std::path::Path::new(dp).is_absolute() {
+        return None;
+    }
+    Some(dp)
+}
+
 pub fn is_remote_browse_enabled() -> bool {
     REMOTE_BROWSE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
 }
@@ -1271,7 +1309,18 @@ impl FilesHandler {
         // but invalid (denylist hit / not a directory), fall back to
         // Downloads with a warning so the upload doesn't silently
         // drop the operator's data.
-        let target_dir = match dest_path.filter(|p| !p.is_empty()) {
+        let dest_path = {
+            let admissible = admissible_dest_path(dest_path);
+            if admissible.is_none() && dest_path.is_some_and(|p| !p.is_empty()) {
+                tracing::warn!(
+                    dest_path = ?dest_path,
+                    browse = is_remote_browse_enabled(),
+                    "files: dest_path dropped (remote browse off or not absolute); landing in files_dir"
+                );
+            }
+            admissible
+        };
+        let target_dir = match dest_path {
             Some(dp) => match resolve_dest_path_as(&who, dp).await {
                 Ok(d) => d,
                 Err(e) => {
@@ -3178,6 +3227,29 @@ mod tests {
     }
 
     #[test]
+    fn path_addressed_verbs_follow_the_browse_flag() {
+        // the process-global flag is left alone: other tests read it concurrently
+        assert_eq!(path_addressed_allowed_with(false), Err(BROWSE_DISABLED));
+        assert_eq!(admissible_dest_path_with(false, Some("/tmp")), None);
+        assert_eq!(admissible_dest_path_with(false, Some("../")), None);
+        assert_eq!(path_addressed_allowed_with(true), Ok(()));
+        assert_eq!(
+            admissible_dest_path_with(true, Some("../")),
+            None,
+            "a relative dest_path is never honoured"
+        );
+        assert_eq!(admissible_dest_path_with(true, Some("")), None);
+        assert_eq!(admissible_dest_path_with(true, None), None);
+        #[cfg(windows)]
+        assert_eq!(
+            admissible_dest_path_with(true, Some(r"C:\Users\x")),
+            Some(r"C:\Users\x")
+        );
+        #[cfg(not(windows))]
+        assert_eq!(admissible_dest_path_with(true, Some("/tmp")), Some("/tmp"));
+    }
+
+    #[test]
     fn sanitize_strips_path_components() {
         assert_eq!(sanitize_filename("../../etc/passwd"), "passwd");
         assert_eq!(sanitize_filename("C:\\Windows\\System32\\a.txt"), "a.txt");
@@ -4079,6 +4151,11 @@ mod tests {
     /// the updater defers for.
     #[tokio::test]
     async fn a_session_end_stops_the_download() {
+        // An upload whose dest is refused falls back to the drop folder,
+        // which reads the process-global `files_dir` and creates it: hold
+        // the lock the tests that set it hold (a parallel run caught one
+        // creating `configured_files_dir_is_used…`'s folder mid-test).
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let base = std::env::temp_dir().join(format!(
             "roomler-session-end-{}",
             std::time::SystemTime::now()
@@ -4218,6 +4295,7 @@ mod tests {
 
     #[tokio::test]
     async fn begin_creates_staging_dir_with_meta_json() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let dest = stage_tmpdir().await;
         let h = FilesHandler::new();
         let id = format!(
@@ -4277,6 +4355,7 @@ mod tests {
 
     #[tokio::test]
     async fn end_renames_staging_to_final_and_cleans_dir() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let dest = stage_tmpdir().await;
         let h = FilesHandler::new();
         let id = format!(
@@ -4316,6 +4395,7 @@ mod tests {
 
     #[tokio::test]
     async fn begin_rejects_existing_partial_dir_for_same_id() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let dest = stage_tmpdir().await;
         let h = FilesHandler::new();
         let id = format!(
@@ -4360,6 +4440,7 @@ mod tests {
 
     #[tokio::test]
     async fn chunk_syncs_data_at_fsync_threshold_boundary() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         // rc.24 — was named "..._at_one_mib_boundary" when
         // FSYNC_THRESHOLD_BYTES was 1 MiB. After lowering to 256 KiB
         // (so sub-1-MiB uploads can survive a process kill), the
@@ -4422,6 +4503,7 @@ mod tests {
 
     #[tokio::test]
     async fn resume_round_trips_after_partial_upload() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let dest = stage_tmpdir().await;
         let h = FilesHandler::new();
         let id = format!(
@@ -4467,6 +4549,7 @@ mod tests {
 
     #[tokio::test]
     async fn resume_truncates_when_disk_size_below_requested() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let dest = stage_tmpdir().await;
         let h = FilesHandler::new();
         let id = format!(
@@ -4508,6 +4591,7 @@ mod tests {
 
     #[tokio::test]
     async fn resume_unknown_id_errors() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         // Use a per-test unique id so a sibling test couldn't have
         // inserted it. No need to reset the registry (which would
         // race with parallel tests).
@@ -4528,6 +4612,7 @@ mod tests {
 
     #[tokio::test]
     async fn end_recomputes_unique_path_when_collision_appears_mid_upload() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         // M4 fix: re-run unique_path at rename time. If the operator
         // creates a file at the begin-time reservation BETWEEN begin
         // and end, the rename target shifts to the next unique slot.
@@ -4570,6 +4655,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_incoming_removes_staging_dir_and_registry() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let dest = stage_tmpdir().await;
         let h = FilesHandler::new();
         let id = format!(
@@ -4886,6 +4972,10 @@ mod seat_user_tests {
             if !root() {
                 return;
             }
+            // The person's drop folder is resolved through the process-global
+            // `files_dir` (and its gate creates the folder): serialise with
+            // the tests that set it, or a parallel run lands here mid-test.
+            let _lock = crate::files::FILES_DIR_TEST_LOCK.lock().await;
             let (home, person) = nobodys_home();
             let h = FilesHandler::new();
             let id = format!("p3d-born-{}", std::process::id());
@@ -4929,6 +5019,7 @@ mod seat_user_tests {
             if !root() {
                 return;
             }
+            let _lock = crate::files::FILES_DIR_TEST_LOCK.lock().await;
             let (home, person) = nobodys_home();
             let roots_only = tempfile::tempdir().unwrap();
             std::fs::set_permissions(roots_only.path(), std::fs::Permissions::from_mode(0o700))
@@ -4970,6 +5061,7 @@ mod seat_user_tests {
             if !root() {
                 return;
             }
+            let _lock = crate::files::FILES_DIR_TEST_LOCK.lock().await;
             let (home, person) = nobodys_home();
             let theirs = |p: &std::path::Path| {
                 std::fs::create_dir_all(p).unwrap();

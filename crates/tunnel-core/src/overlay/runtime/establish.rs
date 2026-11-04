@@ -136,6 +136,25 @@ pub(super) const LAN_DEAD_STRIKES: u32 = 3;
 /// [`STANDBY_ARM_AFTER`], and only to a peer that takes copies. A healthy
 /// path answers within one RTT, so the recurring proofs of a healthy one-way
 /// stream never copy anything.
+/// #279 — settle a pending poke: `(answered, data_pending)`. A business proof
+/// on a direct carrier needs its handshake answered AND an authenticated
+/// transport datagram since the poke (`OVERLAY_BUSINESS_DATA_PROOF=0` restores
+/// the handshake-only answer). Every other proof is the handshake alone.
+pub(super) fn poke_settled(
+    wg: &WgDevice,
+    pubkey: &[u8; 32],
+    is_direct: bool,
+    p: PokeArm,
+) -> (bool, bool) {
+    let hs = wg.peer_initiator_hs_answered(pubkey, p.at);
+    let data_pending = hs
+        && p.from_business
+        && is_direct
+        && super::business_data_proof()
+        && !wg.peer_data_rx_since(pubkey, p.at);
+    (hs && !data_pending, data_pending)
+}
+
 pub(super) fn standby_tee_wanted(
     poke: Option<PokeArm>,
     answered: bool,
@@ -309,6 +328,54 @@ pub(super) struct UpgradeProbe {
 }
 
 impl OverlayRuntime {
+    fn apply_multipath_promotion(e: &mut Installed, wg: &WgDevice, kind: RelayKind) {
+        let (local, dst) = wg.peer_relay_addrs(&e.pubkey);
+        *e = Installed {
+            initiated: e.initiated,
+            hs_done: true,
+            relay_kind: Some(kind),
+            carrier_local: local,
+            carrier_dst: dst,
+            relay_local: local,
+            relay_dst: dst,
+            rx_denied: e.rx_denied,
+            rx_denied_noroute: e.rx_denied_noroute,
+            ..Installed::base(e.pubkey, e.overlay_ip, DirectTier::Relay, Instant::now())
+        };
+    }
+
+    /// B8 runs on the existing scout clock. Coordinator allocations stay
+    /// owned while their exact carrier is retained by the active peer.
+    pub(super) async fn sweep_multipath(
+        &self,
+        wg: &mut WgDevice,
+        by_node: &mut HashMap<ObjectId, Installed>,
+        relay: &mut Option<RelayCoordinator>,
+    ) -> bool {
+        if !wg.multipath_enabled() {
+            return false;
+        }
+        let allowed = by_node
+            .iter()
+            .filter(|(id, _)| relay.as_ref().is_some_and(|r| r.holds_org_session(id)))
+            .map(|(_, e)| e.pubkey)
+            .collect();
+        let changes = wg.poll_multipath(&allowed).await;
+        let mut promoted = false;
+        for (key, kind) in changes {
+            if let Some((nid, e)) = by_node.iter_mut().find(|(_, e)| e.pubkey == key) {
+                if let Some(kind) = kind {
+                    Self::apply_multipath_promotion(e, wg, kind);
+                    promoted = true;
+                } else if e.is_direct
+                    && let Some(r) = relay.as_mut()
+                {
+                    r.forget(nid);
+                }
+            }
+        }
+        promoted
+    }
     /// rc.137/139 — find carriers that are one-way / dead and repair them.
     /// Health is LOCK-FREE: each sweep snapshots `(tx, rx)` (atomic reads — no
     /// `Tunn` lock, so it can't stall the packet path like the rc.136
@@ -377,19 +444,44 @@ impl OverlayRuntime {
         wg: &mut WgDevice,
         by_node: &mut HashMap<ObjectId, Installed>,
         samples: &mut HashMap<ObjectId, BusinessTrafficSample>,
-    ) {
+    ) -> bool {
         wg.tick_on_demand();
+        let on_demand_on = wg.on_demand_config().enabled;
+        let mut view_changed = false;
         samples.retain(|nid, _| by_node.contains_key(nid));
         let now = Instant::now();
         for (nid, e) in by_node.iter_mut() {
+            let hs_done = wg.peer_handshake_done(&e.pubkey).unwrap_or(false);
+            if on_demand_on && e.hs_done != hs_done {
+                e.hs_done = hs_done;
+                if let Some((tx, rx)) = wg.peer_traffic(&e.pubkey) {
+                    e.last_traffic = (tx, rx);
+                    e.primary_traffic = wg.peer_primary_traffic(&e.pubkey).unwrap_or((tx, rx));
+                }
+                if wg.peer_is_dormant_or_waking(&e.pubkey) == Some(true) {
+                    e.stalled = false;
+                    e.bad_sweeps = 0;
+                    e.poke = None;
+                }
+                view_changed = true;
+            }
             if wg.peer_is_dormant_or_waking(&e.pubkey) == Some(true)
                 || !e.is_direct
-                || !wg.peer_handshake_done(&e.pubkey).unwrap_or(false)
+                || !hs_done
                 || now.saturating_duration_since(e.since) < crate::overlay::lifecycle::DIRECT_GRACE
             {
                 samples.remove(nid);
+                e.confirm_due = None;
                 continue;
             }
+            // #280 — an answered handshake still waiting for its keepalive:
+            // book when it comes due so the sweep is pulled forward to judge it.
+            e.confirm_due = super::responder_confirm()
+                .then(|| wg.peer_responder_unconfirmed_age(&e.pubkey))
+                .flatten()
+                .map(|age| {
+                    now + crate::overlay::lifecycle::RESPONDER_CONFIRM_DEADLINE.saturating_sub(age)
+                });
             let Some(traffic) = wg.peer_business_traffic(&e.pubkey) else {
                 samples.remove(nid);
                 continue;
@@ -426,7 +518,7 @@ impl OverlayRuntime {
                     && now.saturating_duration_since(p.at)
                         >= crate::overlay::lifecycle::BUSINESS_POKE_RETAP_AFTER
                     && !wg.peer_initiator_hs_answered(&e.pubkey, p.at)
-                    && wg.poke_handshake(&e.pubkey)
+                    && wg.retap_carrier_revalidation(&e.pubkey)
                 {
                     if let Some(s) = samples.get_mut(nid) {
                         s.retapped = Some(p.at);
@@ -436,7 +528,7 @@ impl OverlayRuntime {
                 }
                 continue;
             }
-            if wg.poke_handshake(&e.pubkey) {
+            if wg.request_carrier_revalidation(&e.pubkey) {
                 e.poke = Some(PokeArm {
                     at: now,
                     from_major: false,
@@ -446,6 +538,7 @@ impl OverlayRuntime {
                     "overlay: unanswered business traffic — fast validation of the direct carrier");
             }
         }
+        view_changed
     }
 
     /// F2 — standby upkeep, once per scout tick. Every peer on a direct
@@ -513,9 +606,11 @@ impl OverlayRuntime {
     ) {
         let now = Instant::now();
         for e in by_node.values().filter(|e| e.is_direct) {
+            // #279 — a proof still waiting for DATA keeps the tee on, so
+            // business rides DERP while the direct data path is judged.
             let answered = e
                 .poke
-                .is_some_and(|p| wg.peer_initiator_hs_answered(&e.pubkey, p.at));
+                .is_some_and(|p| poke_settled(wg, &e.pubkey, e.is_direct, p).0);
             let capable = crate::overlay::disco::standby_capable(&e.pubkey, now);
             let tee = standby_tee_wanted(e.poke, answered, capable, now);
             wg.set_standby_tee(&e.pubkey, tee.then(|| mux.clone()));
@@ -541,11 +636,16 @@ impl OverlayRuntime {
         let mbb = crate::overlay::direct::make_before_break_enabled();
         let mut dead: Vec<(ObjectId, DirectTier, DeathReason)> = Vec::new();
         for (nid, e) in by_node.iter_mut() {
-            let Some((tx, rx)) = wg.peer_traffic(&e.pubkey) else {
+            let Some((tx, rx)) = wg.peer_primary_traffic(&e.pubkey) else {
                 continue;
             };
-            let (last_tx, last_rx) = e.last_traffic;
-            e.last_traffic = (tx, rx);
+            let (last_tx, last_rx) = if wg.multipath_enabled() {
+                e.primary_traffic
+            } else {
+                e.last_traffic
+            };
+            e.primary_traffic = (tx, rx);
+            e.last_traffic = wg.peer_traffic(&e.pubkey).unwrap_or((tx, rx));
             // P3b-3 / rc.206 — "last heard from this peer" advances on ANY
             // authenticated inbound packet, INCLUDING content-free WG keepalives.
             // The IP-data `rx` counter alone froze on a mostly-idle-but-alive
@@ -604,6 +704,8 @@ impl OverlayRuntime {
                 e.stalled = false;
                 e.hs_done = handshake_done;
                 e.poke = None;
+                e.reinit_recent = 0;
+                e.reinit_window_from = now;
                 if dormant_or_waking {
                     continue;
                 }
@@ -614,12 +716,20 @@ impl OverlayRuntime {
             // `PeerStats::hs_response_at`). An answered poke clears, re-arming
             // the triggers; an unanswered one rides into the tick, which
             // kills it once the tier's handshake-deadline window closes.
-            let poke = e.poke.map(|p| PokeState {
-                since_poke: now.saturating_duration_since(p.at),
-                answered: wg.peer_initiator_hs_answered(&e.pubkey, p.at),
-                from_major: p.from_major,
-                from_business: p.from_business,
+            let poke = e.poke.map(|p| {
+                let (answered, data_pending) = poke_settled(wg, &e.pubkey, e.is_direct, p);
+                PokeState {
+                    since_poke: now.saturating_duration_since(p.at),
+                    answered,
+                    from_major: p.from_major,
+                    from_business: p.from_business,
+                    data_pending,
+                }
             });
+            let data_pending_age = poke
+                .as_ref()
+                .filter(|p| p.data_pending)
+                .map(|p| p.since_poke);
             // Diagnostic — capture poke state before `poke` moves into
             // `carrier_tick` (see `OVERLAY_SESSION_TRACE`).
             let trace_poke = poke
@@ -788,10 +898,53 @@ impl OverlayRuntime {
                 && should_poke_on_netchange(handshake_done);
             let business_rearm =
                 unanswered_traffic && e.poke.is_some_and(|p| !p.from_major && !p.from_business);
-            if let Some(reason) = v.death {
-                dead.push((*nid, e.tier, reason));
+            // #280 — beside the one transition: an answered handshake the
+            // initiator never confirmed on this direct carrier.
+            let unconfirmed = if v.death.is_none() && super::responder_confirm() && !hard_dead {
+                let age = wg.peer_responder_unconfirmed_age(&e.pubkey);
+                crate::overlay::lifecycle::responder_unconfirmed(
+                    e.is_direct,
+                    handshake_done,
+                    e.since.elapsed(),
+                    age,
+                )
+                .then_some(age)
+                .flatten()
+            } else {
+                None
+            };
+            if let Some(age) = unconfirmed {
+                warn!(
+                    peer = %nid, tier = ?e.tier, unconfirmed_ms = age.as_millis() as u64,
+                    "overlay: a handshake we answered was never confirmed on the direct carrier (the initiator's keepalive did not arrive — one-way path) — rebuilding via relay (#280)"
+                );
+            }
+            let death = v.death.or(unconfirmed.map(|_| DeathReason::OneWay));
+            if let Some(reason) = death {
+                if let Some(age) = data_pending_age.filter(|_| reason == DeathReason::OneWay) {
+                    warn!(
+                        peer = %nid, tier = ?e.tier, waited_ms = age.as_millis() as u64,
+                        "overlay: business proof — the handshake answered but no data came back on the direct carrier (one-way data path) — rebuilding via relay (#279)"
+                    );
+                }
+                match wg
+                    .multipath_primary_failed(
+                        &e.pubkey,
+                        relay.as_ref().is_some_and(|r| r.holds_org_session(nid)),
+                    )
+                    .await
+                {
+                    crate::overlay::wg::MultipathFailure::Promoted(kind) => {
+                        Self::apply_multipath_promotion(e, wg, kind);
+                        carrier_lost = true;
+                    }
+                    crate::overlay::wg::MultipathFailure::Pending => {}
+                    crate::overlay::wg::MultipathFailure::Unavailable => {
+                        dead.push((*nid, e.tier, reason))
+                    }
+                }
             } else if forced {
-                if wg.poke_handshake(&e.pubkey) {
+                if wg.request_carrier_revalidation(&e.pubkey) {
                     let rearmed = e.poke.is_some();
                     // Only a MAJOR earns the tight conviction window — see
                     // `ForcedPoke::AddrIface` for why the chatty cause must not.
@@ -814,7 +967,7 @@ impl OverlayRuntime {
                     );
                 }
             } else if business_rearm {
-                if wg.poke_handshake(&e.pubkey) {
+                if wg.request_carrier_revalidation(&e.pubkey) {
                     e.poke = Some(PokeArm {
                         at: now,
                         from_major: false,
@@ -847,7 +1000,7 @@ impl OverlayRuntime {
                 if (pressured
                     || unanswered_traffic
                     || should_poke(handshake_done, false, since_last_rx, since_proof))
-                    && wg.poke_handshake(&e.pubkey)
+                    && wg.request_carrier_revalidation(&e.pubkey)
                 {
                     // Business data on an established direct path gets a
                     // liveness-sized window. Periodic/pressure-only pokes keep
@@ -2437,7 +2590,11 @@ impl OverlayRuntime {
                 // Bidirectional direct proven → cut over. `promote_direct_probe`
                 // drops the old relay carrier; forget its coturn allocation and
                 // retag `by_node` as the direct tier.
-                if wg.promote_direct_probe(&p.pubkey) {
+                let retained_kind = by_node.get(nid).and_then(|e| e.relay_kind);
+                if wg
+                    .promote_direct_probe_multipath(&p.pubkey, retained_kind)
+                    .await
+                {
                     // P3 PR-A — the latch is the tier's proof: Q credit +
                     // strike clear in the monitor (≡ the `*_fails.remove`
                     // below), and any recent monitor refusal of this tier
@@ -2452,7 +2609,9 @@ impl OverlayRuntime {
                         );
                         s.establishment(nid, p.tier, now);
                     });
-                    if let Some(r) = relay.as_mut() {
+                    if !wg.retains_multipath_carrier(&p.pubkey)
+                        && let Some(r) = relay.as_mut()
+                    {
                         r.forget(nid);
                     }
                     // P9 — a fresh-install LAN probe can latch while the
@@ -3096,7 +3255,10 @@ impl OverlayRuntime {
                     && e.relay_kind == Some(RelayKind::Derp)
             })
         {
-            if wg.start_org_upgrade(link.public_key, link.overlay_ip, carrier) {
+            if wg
+                .start_org_upgrade(link.public_key, link.overlay_ip, carrier)
+                .await
+            {
                 let node_id = link.node_id;
                 by_node
                     .get_mut(&node_id)
@@ -4178,5 +4340,105 @@ mod tests {
             "waking peer past waking_timeout must be convicted immediately for relay fallback"
         );
         assert!(!by_node.contains_key(&nid));
+    }
+
+    /// MeshHarbor B6 R2 — an inbound `HandshakeInit` that wakes a `Dormant`
+    /// peer must not increment `reinit_seen` (`#22` rapid re-initiation
+    /// pressure against an established session), and `scout_business_traffic`
+    /// must immediately synchronize `Installed::hs_done` and return `true`
+    /// (`view_changed`) on both `Active -> Dormant` (`hs_done: true -> false`)
+    /// and `Dormant -> Active` (`hs_done: false -> true`) transitions.
+    #[tokio::test]
+    async fn b6_dormant_inbound_wake_does_not_trip_reinit_pressure_and_scout_syncs_hs_done() {
+        let kp_a = WgKeypair::generate();
+        let kp_b = WgKeypair::generate();
+        let pk_a = kp_a.public.to_bytes();
+        let pk_b = kp_b.public.to_bytes();
+        let nid_a = ObjectId::new();
+        let ip_a = Ipv4Addr::new(100, 64, 9, 21);
+        let ip_b = Ipv4Addr::new(100, 64, 9, 22);
+
+        let (tx, _rx) = mpsc::channel(16);
+        let tun: Arc<dyn TunIo> = Arc::new(NoopTun);
+        let tf: TunFactory = {
+            let t = tun.clone();
+            Box::new(move |_, _, _| Ok(t.clone()))
+        };
+        let rt_b = OverlayRuntime::new_relay(kp_b.clone(), tx, tf, 1280);
+
+        let (mut wg_a, _rx_a) = WgDevice::new(kp_a.secret.clone());
+        let (mut wg_b, _rx_b) = WgDevice::new(kp_b.secret.clone());
+        let cfg = crate::overlay::on_demand::OnDemandConfig::enabled(Duration::from_millis(120));
+        wg_a.set_on_demand_config(cfg);
+        wg_b.set_on_demand_config(cfg);
+
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+        wg_a.ensure_direct_demux(sock_a.clone());
+        wg_b.ensure_direct_demux(sock_b.clone());
+        wg_a.add_direct_peer(sock_a.clone(), pk_b, ip_b, addr_b, true)
+            .await;
+        wg_b.add_direct_peer(sock_b.clone(), pk_a, ip_a, addr_a, true)
+            .await;
+
+        let mut inst_a = Installed::base(pk_a, ip_a, DirectTier::Srflx, Instant::now());
+        inst_a.hs_done = false;
+        let mut by_node = HashMap::from([(nid_a, inst_a)]);
+        let mut samples = HashMap::new();
+
+        // Repeatedly wake `wg_b` from `Dormant` via outbound packet from `wg_a`
+        // (6 times > REINIT_PRESSURE_THRESHOLD = 5) and verify `wg_b` never
+        // accumulates `reinit_seen` from legitimate dormant wakeups.
+        for _ in 0..6 {
+            assert_eq!(wg_b.peer_is_dormant(&pk_a), Some(true));
+            let mut pkt = vec![0u8; 28];
+            pkt[0] = 0x45;
+            pkt[3] = 28;
+            pkt[8] = 64;
+            pkt[9] = 17;
+            pkt[12..16].copy_from_slice(&ip_a.octets());
+            pkt[16..20].copy_from_slice(&ip_b.octets());
+            assert!(wg_a.send_ip_packet(&pkt).await);
+
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if wg_b.peer_handshake_done(&pk_a) == Some(true) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert_eq!(wg_b.peer_handshake_done(&pk_a), Some(true));
+            assert_eq!(
+                wg_b.peer_take_reinits(&pk_a),
+                0,
+                "inbound HandshakeInit waking a Dormant peer must not bump reinit_seen"
+            );
+
+            // `scout_business_traffic` immediately observes `hs_done: false -> true`.
+            assert!(
+                rt_b.scout_business_traffic(&mut wg_b, &mut by_node, &mut samples),
+                "scout_business_traffic must report view_changed on Dormant -> Active"
+            );
+            assert!(by_node[&nid_a].hs_done);
+
+            // Wait for both peers to return to `Dormant`.
+            let d_deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < d_deadline {
+                if wg_a.peer_is_dormant(&pk_b) == Some(true)
+                    && wg_b.peer_is_dormant(&pk_a) == Some(true)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(wg_b.peer_is_dormant(&pk_a), Some(true));
+            assert!(
+                rt_b.scout_business_traffic(&mut wg_b, &mut by_node, &mut samples),
+                "scout_business_traffic must report view_changed on Active -> Dormant"
+            );
+            assert!(!by_node[&nid_a].hs_done);
+        }
     }
 }
