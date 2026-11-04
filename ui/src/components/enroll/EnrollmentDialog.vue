@@ -10,7 +10,7 @@
   >
     <v-card>
       <v-card-title>
-        {{ kind === 'agent' ? 'Enroll a new device' : 'Enroll a tunnel client' }}
+        {{ kind === 'agent' ? t('mh.enroll.titleAgent') : t('mh.enroll.titleTunnel') }}
       </v-card-title>
       <v-card-text>
         <div v-if="loading" class="d-flex justify-center pa-4">
@@ -19,9 +19,10 @@
         <v-alert v-else-if="error" type="error" variant="tonal">{{ error }}</v-alert>
         <template v-else-if="token">
           <p class="text-body-2 mb-2">
-            The token below is <strong>single-use</strong> and expires in
-            {{ Math.round((expiresIn || 600) / 60) }} minutes. Pick your platform —
-            the recommended command installs everything and enrolls in one step.
+            <i18n-t keypath="mh.enroll.tokenNote" tag="span" scope="global">
+              <template #single><strong>{{ t('mh.enroll.singleUse') }}</strong></template>
+              <template #n>{{ Math.round((expiresIn || 600) / 60) }}</template>
+            </i18n-t>
           </p>
 
           <!-- Token block: click-to-copy, monospace. -->
@@ -43,15 +44,15 @@
               variant="tonal"
               @click="copy('token', token)"
             >
-              Copy token
+              {{ t('mh.enroll.copyToken') }}
             </v-btn>
-            <span v-if="copiedId === 'token'" class="text-success text-caption ml-2">Copied</span>
+            <span v-if="copiedId === 'token'" class="text-success text-caption ml-2">{{ t('mh.enroll.copied') }}</span>
           </div>
 
           <!-- Install scope (agent only) — wizard role vocabulary; tunnel
                clients are a per-user CLI with no scope choice. -->
           <template v-if="kind === 'agent'">
-            <p class="text-body-2 font-weight-medium mb-1">Install scope</p>
+            <p class="text-body-2 font-weight-medium mb-1">{{ t('mh.enroll.scope') }}</p>
             <!-- Stacked below 600 px: side by side, the three need ~480 px, and
                  the group scrolled inside itself — "This user only", the
                  install that needs no admin rights, sat out of sight. -->
@@ -64,9 +65,9 @@
               :direction="fullscreen ? 'vertical' : 'horizontal'"
               class="mb-1"
             >
-              <v-btn value="system" size="small">Background service</v-btn>
-              <v-btn value="machine" size="small">Attended service</v-btn>
-              <v-btn value="user" size="small">This user only</v-btn>
+              <v-btn value="system" size="small">{{ t('mh.enroll.scopeSystem') }}</v-btn>
+              <v-btn value="machine" size="small">{{ t('mh.enroll.scopeMachine') }}</v-btn>
+              <v-btn value="user" size="small">{{ t('mh.enroll.scopeUser') }}</v-btn>
             </v-btn-toggle>
             <p class="text-caption text-medium-emphasis mb-3">{{ scopeHint }}</p>
           </template>
@@ -92,15 +93,12 @@
                   :model-value="anchor === true"
                   density="compact"
                   hide-details
-                  label="Also let administrators run commands as SYSTEM on this device"
+                  :label="t('mh.enroll.anchorLabel')"
                   data-test="enroll-anchor"
                   @update:model-value="$emit('update:anchor', $event === true)"
                 />
                 <p class="text-caption text-medium-emphasis mb-3">
-                  The token can then also anchor the device it enrolls, once. Roomler Setup
-                  does that itself after a second administrator prompt; after the script or a
-                  manual install, run the anchor command below. Give this token only to the
-                  person installing it as an administrator.
+                  {{ t('mh.enroll.anchorHint') }}
                 </p>
               </template>
               <div v-for="block in os.blocks" :key="block.id" class="mb-3">
@@ -113,10 +111,10 @@
                     variant="tonal"
                     target="_blank"
                   >
-                    Download Roomler Setup
+                    {{ t('mh.enroll.download') }}
                   </v-btn>
                   <span class="text-caption text-medium-emphasis ml-2">
-                    then paste the token into the wizard
+                    {{ t('mh.enroll.thenPaste') }}
                   </span>
                 </template>
                 <template v-else>
@@ -128,9 +126,9 @@
                       variant="text"
                       @click="copy(block.id, block.command)"
                     >
-                      Copy
+                      {{ t('mh.enroll.copy') }}
                     </v-btn>
-                    <span v-if="copiedId === block.id" class="text-success text-caption ml-1">Copied</span>
+                    <span v-if="copiedId === block.id" class="text-success text-caption ml-1">{{ t('mh.enroll.copied') }}</span>
                   </div>
                 </template>
               </div>
@@ -140,7 +138,7 @@
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="$emit('update:modelValue', false)">Close</v-btn>
+        <v-btn variant="text" @click="$emit('update:modelValue', false)">{{ t('mh.enroll.close') }}</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -157,6 +155,9 @@ import {
   type EnrollOs,
 } from '@/utils/enrollCommands'
 import { trackGoal } from '@/utils/goals'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const { fullscreen } = useResponsiveDialog()
 const props = defineProps<{
@@ -190,12 +191,11 @@ const osTab = ref<EnrollOs>(detectOs())
 // same-shaped machines in a row.
 const scope = ref<DaemonScope>('system')
 const SCOPE_HINTS: Record<DaemonScope, string> = {
-  system:
-    'Starts before logon and survives logouts — recommended for servers and unattended machines.',
-  machine: 'Machine-wide service that runs while a user is logged in.',
-  user: 'Installs and autostarts for your account only — no admin rights needed.',
+  system: 'mh.enroll.hintSystem',
+  machine: 'mh.enroll.hintMachine',
+  user: 'mh.enroll.hintUser',
 }
-const scopeHint = computed(() => SCOPE_HINTS[scope.value])
+const scopeHint = computed(() => t(SCOPE_HINTS[scope.value]))
 
 // FR-104 — only a machine-wide Windows install has a SYSTEM service to anchor.
 const anchorOffered = computed(() => props.kind === 'agent' && scope.value !== 'user')

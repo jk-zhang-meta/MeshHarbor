@@ -10,12 +10,12 @@
     <v-card>
       <v-card-title class="d-flex align-center">
         <v-icon class="mr-2">mdi-email-multiple</v-icon>
-        Batch Invite
+        {{ t('mh.invite.batch') }}
       </v-card-title>
 
       <v-card-text>
         <p class="text-body-2 text-medium-emphasis mb-4">
-          Add multiple email invites at once. Each invite can have a different role assigned.
+          {{ t('mh.invite.batchIntro') }}
         </p>
 
         <!-- Invite rows. FR-116: on a phone the email takes a line of its
@@ -28,7 +28,7 @@
         >
           <v-text-field
             v-model="row.email"
-            label="Email"
+            :label="t('mh.invite.emailShort')"
             type="email"
             density="compact"
             hide-details
@@ -41,7 +41,7 @@
             :items="assignableRoles"
             item-title="name"
             item-value="id"
-            label="Role"
+            :label="t('mh.invite.role')"
             density="compact"
             hide-details
             :style="fullscreen ? undefined : 'max-width: 180px'"
@@ -64,18 +64,18 @@
           prepend-icon="mdi-plus"
           @click="addRow"
         >
-          Add another
+          {{ t('mh.invite.addAnother') }}
         </v-btn>
 
         <!-- Shared settings -->
         <v-divider class="my-4" />
         <v-text-field
           v-model.number="expiresInHours"
-          label="Expires in (hours)"
+          :label="t('mh.invite.expires')"
           type="number"
           min="1"
           density="compact"
-          hint="Default: 168 (7 days)"
+          :hint="t('mh.invite.defaultHint')"
           persistent-hint
         />
 
@@ -93,7 +93,7 @@
             >
               {{ r.error ? 'mdi-close-circle' : 'mdi-check-circle' }}
             </v-icon>
-            <span>{{ r.target_email || `Invite #${i + 1}` }}</span>
+            <span>{{ r.target_email || t('mh.invite.nth', { n: i + 1 }) }}</span>
             <span v-if="r.error" class="text-error ml-2">— {{ r.error }}</span>
           </div>
         </div>
@@ -102,7 +102,7 @@
       <v-card-actions>
         <v-spacer />
         <v-btn @click="close">
-          {{ results.length > 0 ? 'Done' : 'Cancel' }}
+          {{ results.length > 0 ? t('mh.invite.done') : t('common.cancel') }}
         </v-btn>
         <v-btn
           v-if="results.length === 0"
@@ -111,7 +111,7 @@
           :disabled="!isValid"
           @click="send"
         >
-          Send All ({{ validRows.length }})
+          {{ t('mh.invite.sendAll', { n: validRows.length }) }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -124,6 +124,9 @@ import { useInviteStore } from '@/stores/invite'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import type { Role } from '@/stores/role'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 interface InviteRow {
   email: string
@@ -162,7 +165,7 @@ const assignableRoles = computed(() =>
 
 const emailRule = (v: string) => {
   if (!v) return true // empty rows are filtered out
-  return /.+@.+\..+/.test(v) || 'Invalid email'
+  return /.+@.+\..+/.test(v) || t('mh.invite.invalidEmail')
 }
 
 const validRows = computed(() =>
@@ -205,28 +208,28 @@ async function send() {
       emailsSent === response.created
         ? ''
         : emailsSent > 0
-          ? ` ${emailsSent} email${emailsSent === 1 ? '' : 's'} sent.`
-          : ' No emails sent — email delivery is not configured; share the invite links from the list.'
+          ? ` ${t(emailsSent === 1 ? 'mh.invite.emailOne' : 'mh.invite.emailMany', { n: emailsSent })}`
+          : ` ${t('mh.invite.noEmails')}`
     if (response.failed === 0) {
       resultType.value = emailsSent === response.created ? 'success' : 'warning'
-      resultMessage.value = `All ${response.created} invites created.${sentNote}`
+      resultMessage.value = `${t('mh.invite.allCreated', { n: response.created })}${sentNote}`
       showSuccess(
         emailsSent === response.created
-          ? `${response.created} invites sent`
-          : `${response.created} invites created`,
+          ? t('mh.invite.nSent', { n: response.created })
+          : t('mh.invite.nCreated', { n: response.created }),
       )
     } else if (response.created === 0) {
       resultType.value = 'error'
-      resultMessage.value = `All ${response.failed} invites failed.`
-      showError('All invites failed')
+      resultMessage.value = t('mh.invite.allFailed', { n: response.failed })
+      showError(t('mh.invite.allFailedShort'))
     } else {
       resultType.value = 'warning'
-      resultMessage.value = `${response.created} created, ${response.failed} failed.${sentNote}`
+      resultMessage.value = `${t('mh.invite.mixed', { created: response.created, failed: response.failed })}${sentNote}`
     }
   } catch {
     resultType.value = 'error'
-    resultMessage.value = 'Failed to send batch invites.'
-    showError('Failed to send batch invites')
+    resultMessage.value = t('mh.invite.batchFailed')
+    showError(t('mh.invite.batchFailedShort'))
   } finally {
     sending.value = false
   }

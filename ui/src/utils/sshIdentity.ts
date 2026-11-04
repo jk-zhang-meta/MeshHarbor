@@ -16,6 +16,10 @@
  * is the person at the keyboard.
  */
 
+import i18n from '@/plugins/i18n'
+
+const tr = (key: string) => i18n.global.t(key)
+
 /** The audit's "As" chip. */
 export interface SshAsChip {
   label: string
@@ -39,13 +43,13 @@ export function sshAsChip(
     return {
       label: 'SYSTEM',
       color: 'warning',
-      title: "Served by the device's SYSTEM service, as SYSTEM",
+      title: tr('mh.sshAs.systemTitle'),
     }
   }
   if (ranAs === 'console_user') {
     return {
-      label: 'signed-in user',
-      title: "Served by the device's SYSTEM service, as the user signed in at its console",
+      label: tr('mh.sshAs.signedIn'),
+      title: tr('mh.sshAs.consoleTitle'),
     }
   }
   // The agent's own process (`worker`), or a row from before FR-105.
@@ -55,11 +59,11 @@ export function sshAsChip(
     case '':
       return null
     case 'daemon':
-      return { label: "agent's account", color: 'warning', title: AGENT_ACCOUNT_TITLE }
+      return { label: tr('mh.sshAs.agentAccount'), color: 'warning', title: tr('mh.sshAs.agentTitle') }
     case 'console_user':
-      return { label: 'signed-in user', title: "The user signed in at the device's console" }
+      return { label: tr('mh.sshAs.signedIn'), title: tr('mh.sshAs.userTitle') }
     case 'named':
-      return { label: 'named account', title: 'A local account the policy names' }
+      return { label: tr('mh.sshAs.named'), title: tr('mh.sshAs.namedTitle') }
     default:
       // A mode newer than this UI: shown as sent, never blank.
       return { label: accountMode, title: accountMode }
