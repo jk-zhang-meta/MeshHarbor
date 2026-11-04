@@ -1762,6 +1762,273 @@
         "uploaded": "Uploaded",
         "actions": "Actions"
       }
+    },
+    "settings": {
+      "workspace": "Workspace Settings",
+      "workspaceName": "Workspace Name",
+      "slug": "Slug",
+      "exec": {
+        "title": "Remote command execution",
+        "warn": "When enabled, users holding the {perm} permission can run commands on devices that individually opt in. Commands run as {root} (Linux) or, on Windows, as {system} through the device's service once an administrator has anchored it. A Windows device that is not anchored runs them as the {user} on an attended install, and as SYSTEM in SystemContext mode. They are all recorded in the audit log.",
+        "signedInUser": "signed-in user",
+        "allow": "Allow remote command execution in this organization",
+        "requireSystem": "Windows: require SYSTEM",
+        "requireSystemHint": "A Windows device runs commands as SYSTEM once an administrator has anchored it ({cmd}, elevated). With this on, a device that is not anchored refuses commands instead of running them as whoever is signed in."
+      },
+      "offDeviceGate": "Off by default. Turning it on does not enable any device on its own — each device must also be allowed individually, and the device's own {setting} setting must permit it.",
+      "ssh": {
+        "title": "Roomler SSH",
+        "warn": "When enabled, users holding the {perm} permission can open an interactive shell on devices that individually opt in. A session lasts, unlike a single command — and which account it runs as is set per device.",
+        "allow": "Allow SSH sessions in this organization"
+      },
+      "ext": {
+        "title": "External access",
+        "warn": "When enabled, people {outside} can control devices that individually opt in — the way a support technician reaches a machine they do not administer. They need the device's connect code and a password held {onDevice}, which this server never sees.",
+        "outside": "outside this organization",
+        "onDevice": "on the device itself",
+        "allow": "Allow people outside this organization to control devices",
+        "hint": "Off by default, and turning it on opens nothing by itself. Each device must be approved individually, its owner must enable it on the machine and set a password there, and whoever is at the device is still asked before a session starts."
+      },
+      "kb": {
+        "title": "Keep busy",
+        "body": "A controller with input can leave a device's pointer moving in a pattern so it stays active: no screensaver, idle lock or \"Away\". It pauses whenever someone uses the device. Some organizations do not allow this because it defeats a screen-lock policy.",
+        "allow": "Allow keep busy in this organization",
+        "hint": "On by default. Turning it off stops keep busy on every device in the organization, immediately for devices that are online and at the next connect for the rest. A device's owner can also turn it off on that device ({setting}).",
+        "notAllowed": "Not allowed",
+        "allowed": "Allowed"
+      },
+      "rc": {
+        "title": "Remote session features",
+        "body": "Choose what a remote-desktop session in this organization may use. {ask} allows a feature only when the person at the device approves the session on a prompt that names it; a session nobody there is asked about (an unattended device, your own device, an administrator's forced session) goes without it.",
+        "askWord": "Ask",
+        "hint": "On by default. A device's owner can also turn each one off on that device ({a}, {b}, {c}). A change applies to sessions that start after it.",
+        "clipboard": "Clipboard",
+        "fileTransfer": "File transfer",
+        "files": "Files",
+        "audio": "The device's audio",
+        "audioShort": "Audio",
+        "on": "On",
+        "ask": "Ask the person at the device",
+        "off": "Off",
+        "pol": {
+          "ask": "ask",
+          "off": "off",
+          "on": "on"
+        },
+        "allOn": "All on"
+      },
+      "keys": {
+        "title": "Ephemeral enrollment keys",
+        "warn": "When enabled, fleet admins can mint {reusable} enrollment keys that create {selfRemoving} devices (CI runners, containers). A key is a standing credential: anyone holding it can enroll devices into this organization until it is revoked, exhausted, or expired.",
+        "reusable": "reusable",
+        "selfRemoving": "self-removing",
+        "allow": "Allow ephemeral enrollment keys in this organization",
+        "hint": "Off by default. Turning it OFF is an org-wide revocation: every outstanding key stops working on its next use. Devices already minted are untouched — they remove themselves by their own deadline."
+      },
+      "lim": {
+        "title": "Remote session limits",
+        "max": "Maximum session length",
+        "maxHint": "A session ends this long after it started, and the person controlling it is told why. No limit by default. A change applies to sessions that start after it.",
+        "idle": "End a session after no activity for",
+        "idleHint": "No input from the person controlling it and no change on the screen for this long. They are warned shortly before the end. The device keeps this limit, so a device whose agent predates it does not. No limit by default.",
+        "none": "No limit",
+        "minutes": "{n} minutes",
+        "hour": "1 hour",
+        "hours": "{n} hours",
+        "maxPart": "{d} max",
+        "idlePart": "{d} idle",
+        "noLimits": "No limits"
+      }
+    },
+    "valid": {
+      "required": "This field is required",
+      "email": "Invalid email address",
+      "minLength": "Must be at least {n} characters",
+      "maxLength": "Must be at most {n} characters",
+      "positive": "Must be a positive number",
+      "slug": "Only lowercase letters, numbers and hyphens"
+    },
+    "roles": {
+      "title": "Roles & Permissions",
+      "new": "New Role",
+      "edit": "Edit Role",
+      "intro": "Roles bundle permissions; members can hold several. Mutations need the {perm} permission — the server rejects anything else. Assign roles to people in the Members section.",
+      "empty": "No roles yet — create one to start delegating permissions.",
+      "col": {
+        "role": "Role",
+        "permissions": "Permissions",
+        "actions": "Actions"
+      },
+      "default": "default",
+      "managed": "managed",
+      "adminAll": "Administrator (all)",
+      "noPermissions": "No permissions",
+      "permOne": "{n} permission",
+      "permMany": "{n} permissions",
+      "name": "Name",
+      "position": "Position (lower sorts first)",
+      "description": "Description (optional)",
+      "color": "Color",
+      "memberDefaults": "Member defaults",
+      "adminDefaults": "Admin defaults",
+      "none": "None",
+      "adminWarn": "Administrator bypasses every other permission check — holders can do everything, including managing roles and remote-controlling devices.",
+      "save": "Save",
+      "create": "Create",
+      "deleteTitle": "Delete role",
+      "deleteBody": "Delete {name}? Members holding it lose its permissions immediately.",
+      "nameRequired": "Name is required.",
+      "positionInvalid": "Position must be ≥ 0."
+    },
+    "members": {
+      "title": "Members",
+      "search": "Search name or email",
+      "add": "Add member",
+      "total": "{n} total",
+      "rolesFailed": "Loading roles failed: {error}",
+      "intro": "Assign roles to grant permissions — device access (remote control, device management, audit) is role-driven. Changing roles needs the {perm} permission. New people join via Invites, or add an existing account by email.",
+      "leave": "Leave",
+      "remove": "Remove",
+      "ownerFixed": "The organization owner cannot be removed",
+      "addTitle": "Add member by email",
+      "addBody": "Adds an account that already exists on this server. For someone without an account, use Invites instead.",
+      "email": "Email address",
+      "addBtn": "Add",
+      "leaveTitle": "Leave organization",
+      "removeTitle": "Remove member",
+      "rolesTitle": "Roles — {name}",
+      "rolesUnloaded": "Roles couldn't be loaded: {error}",
+      "noRoles": "No roles exist yet — create one in the Roles section first.",
+      "done": "Done",
+      "col": {
+        "member": "Member",
+        "email": "Email",
+        "roles": "Roles",
+        "joined": "Joined",
+        "actions": "Actions"
+      },
+      "leaveMsg": "Leave this organization? You lose access until someone re-adds or re-invites you.",
+      "removeMsg": "Remove {who} from the organization? Their account is untouched — they just lose access here.",
+      "thisMember": "this member"
+    },
+    "permFlag": {
+      "VIEW_CHANNELS": {
+        "label": "View channels"
+      },
+      "MANAGE_CHANNELS": {
+        "label": "Manage channels"
+      },
+      "MANAGE_ROLES": {
+        "label": "Manage roles"
+      },
+      "MANAGE_TENANT": {
+        "label": "Manage tenant"
+      },
+      "INVITE_MEMBERS": {
+        "label": "Invite members"
+      },
+      "ADMINISTRATOR": {
+        "label": "Administrator",
+        "description": "Bypasses ALL permission checks — grants everything below implicitly."
+      },
+      "SEND_MESSAGES": {
+        "label": "Send messages"
+      },
+      "SEND_THREADS": {
+        "label": "Create threads"
+      },
+      "EMBED_LINKS": {
+        "label": "Embed links"
+      },
+      "ATTACH_FILES": {
+        "label": "Attach files"
+      },
+      "READ_HISTORY": {
+        "label": "Read history"
+      },
+      "MENTION_EVERYONE": {
+        "label": "Mention {everyone}"
+      },
+      "MANAGE_MESSAGES": {
+        "label": "Manage messages"
+      },
+      "ADD_REACTIONS": {
+        "label": "Add reactions"
+      },
+      "CONNECT_VOICE": {
+        "label": "Connect to voice"
+      },
+      "SPEAK": {
+        "label": "Speak"
+      },
+      "STREAM_VIDEO": {
+        "label": "Stream video"
+      },
+      "MANAGE_MEETINGS": {
+        "label": "Manage meetings"
+      },
+      "KICK_MEMBERS": {
+        "label": "Kick members"
+      },
+      "BAN_MEMBERS": {
+        "label": "Ban members"
+      },
+      "MUTE_MEMBERS": {
+        "label": "Mute members"
+      },
+      "DEAFEN_MEMBERS": {
+        "label": "Deafen members"
+      },
+      "MOVE_MEMBERS": {
+        "label": "Move members"
+      },
+      "MANAGE_DOCUMENTS": {
+        "label": "Manage documents"
+      },
+      "MANAGE_AGENTS": {
+        "label": "Manage devices",
+        "description": "Enroll, rename, delete, reassign and set policy for remote-control devices."
+      },
+      "REMOTE_CONTROL": {
+        "label": "Remote control",
+        "description": "Start remote-control sessions against devices the user does NOT own (controlling one's own device never needs this)."
+      },
+      "VIEW_REMOTE_AUDIT": {
+        "label": "View remote audit log",
+        "description": "Read the remote-control session audit trail."
+      },
+      "EXEC_DEVICE": {
+        "label": "Run commands on devices",
+        "description": "Run a command on a device via Fleet RPC. Commands execute as root (Linux) or, on Windows, as the daemon's worker: the signed-in user on an attended install, SYSTEM in SystemContext mode. Also requires the org switch, the device policy, and the device-local key."
+      },
+      "VIEW_EXEC_AUDIT": {
+        "label": "View command audit log",
+        "description": "Read the Fleet-RPC audit trail — who ran what, where."
+      },
+      "SSH_DEVICE": {
+        "label": "SSH to devices",
+        "description": "Open an interactive roomler SSH session to a device. Strictly more than a single command: it lasts, and it carries file transfer."
+      },
+      "VIEW_SSH_AUDIT": {
+        "label": "View SSH audit log",
+        "description": "Read the roomler-SSH audit trail — who was granted, or refused, a session."
+      },
+      "RECORD_REMOTE_SCREEN": {
+        "label": "Record remote screens",
+        "description": "Record a device’s screen during a remote-control session. The device must allow it, and the person there sees it. A recording outlives the session, so no role gets this by default."
+      },
+      "HIVE_RUN": {
+        "label": "Run agent sessions",
+        "description": "Start and drive AI agent sessions on a device. A session runs as the account the device maps you to — never SYSTEM or root — and only where the device allows it. It runs commands on that device, so no role gets this by default."
+      }
+    },
+    "permGroup": {
+      "general": "General",
+      "messaging": "Messaging",
+      "voice": "Voice & video",
+      "moderation": "Moderation",
+      "remote": "Remote control",
+      "fleet": "Fleet access"
     }
   }
 }

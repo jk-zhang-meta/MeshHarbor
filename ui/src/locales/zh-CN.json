@@ -1762,6 +1762,273 @@
         "uploaded": "上传时间",
         "actions": "操作"
       }
+    },
+    "settings": {
+      "workspace": "工作区设置",
+      "workspaceName": "工作区名称",
+      "slug": "标识",
+      "exec": {
+        "title": "远程命令执行",
+        "warn": "开启后，拥有 {perm} 权限的用户可以在单独选择加入的设备上运行命令。命令在 Linux 上以 {root} 身份运行；在 Windows 上，管理员锚定设备后，通过设备服务以 {system} 身份运行。未锚定的 Windows 设备在有人值守的安装中以{user}身份运行，在 SystemContext 模式下以 SYSTEM 身份运行。所有命令都会记入审计日志。",
+        "signedInUser": "当前登录用户",
+        "allow": "允许在此组织中远程执行命令",
+        "requireSystem": "Windows：要求 SYSTEM",
+        "requireSystemHint": "管理员锚定 Windows 设备后（以管理员权限运行 {cmd}），设备以 SYSTEM 身份运行命令。开启此项后，未锚定的设备会拒绝命令，而不是以当前登录的用户身份运行。"
+      },
+      "offDeviceGate": "默认关闭。开启后不会自动启用任何设备：每台设备还需单独允许，且设备自身的 {setting} 设置也必须允许。",
+      "ssh": {
+        "title": "MeshHarbor SSH",
+        "warn": "开启后，拥有 {perm} 权限的用户可以在单独选择加入的设备上打开交互式 Shell。与单条命令不同，会话会持续存在；以哪个账户运行由每台设备单独设置。",
+        "allow": "允许在此组织中使用 SSH 会话"
+      },
+      "ext": {
+        "title": "外部访问",
+        "warn": "开启后，{outside}的人可以控制单独选择加入的设备，就像技术支持人员访问一台不归自己管理的机器。他们需要设备的连接码，以及保存在{onDevice}的密码，此服务器永远看不到该密码。",
+        "outside": "此组织以外",
+        "onDevice": "设备本机上",
+        "allow": "允许此组织以外的人控制设备",
+        "hint": "默认关闭，开启后本身不会开放任何设备。每台设备都需单独批准，其所有者必须在本机上启用并设置密码，并且每次会话开始前仍会征求设备前用户的同意。"
+      },
+      "kb": {
+        "title": "保持活跃",
+        "body": "拥有输入权限的控制者可以让设备指针按某种轨迹移动，使设备保持活跃：不会出现屏幕保护、空闲锁屏或“离开”状态。有人使用设备时会自动暂停。由于这会绕过锁屏策略，一些组织不允许使用。",
+        "allow": "允许在此组织中使用“保持活跃”",
+        "hint": "默认开启。关闭后会停止组织内所有设备上的“保持活跃”：在线设备立即停止，其余设备在下次连接时停止。设备所有者也可以在该设备上关闭它（{setting}）。",
+        "notAllowed": "不允许",
+        "allowed": "允许"
+      },
+      "rc": {
+        "title": "远程会话功能",
+        "body": "选择此组织中的远程桌面会话可以使用哪些功能。{ask} 表示只有当设备前的用户在列出该功能的提示中批准会话时才允许使用；无人被询问的会话（无人值守的设备、你自己的设备、管理员强制发起的会话）则不使用该功能。",
+        "askWord": "询问",
+        "hint": "默认开启。设备所有者也可以在该设备上分别关闭它们（{a}、{b}、{c}）。更改对之后开始的会话生效。",
+        "clipboard": "剪贴板",
+        "fileTransfer": "文件传输",
+        "files": "文件",
+        "audio": "设备音频",
+        "audioShort": "音频",
+        "on": "开启",
+        "ask": "询问设备前的用户",
+        "off": "关闭",
+        "pol": {
+          "ask": "询问",
+          "off": "关闭",
+          "on": "开启"
+        },
+        "allOn": "全部开启"
+      },
+      "keys": {
+        "title": "临时注册密钥",
+        "warn": "开启后，设备管理员可以签发{reusable}的注册密钥，用于创建会{selfRemoving}的设备（CI 运行器、容器）。密钥是长期有效的凭据：在被撤销、用尽或过期之前，任何持有者都能把设备注册到此组织。",
+        "reusable": "可重复使用",
+        "selfRemoving": "自行移除",
+        "allow": "允许在此组织中使用临时注册密钥",
+        "hint": "默认关闭。关闭即在整个组织范围内撤销：所有未用完的密钥在下次使用时失效。已创建的设备不受影响，它们会在各自的期限到达时自行移除。"
+      },
+      "lim": {
+        "title": "远程会话限制",
+        "max": "最长会话时长",
+        "maxHint": "会话开始后达到此时长即结束，并告知控制者原因。默认不限制。更改对之后开始的会话生效。",
+        "idle": "无活动多久后结束会话",
+        "idleHint": "控制者在此时长内没有输入且屏幕没有变化。结束前不久会提醒他们。此限制由设备执行，因此代理版本早于此功能的设备不会执行。默认不限制。",
+        "none": "不限制",
+        "minutes": "{n} 分钟",
+        "hour": "1 小时",
+        "hours": "{n} 小时",
+        "maxPart": "最长 {d}",
+        "idlePart": "空闲 {d}",
+        "noLimits": "不限制"
+      }
+    },
+    "valid": {
+      "required": "此项为必填项",
+      "email": "邮箱地址无效",
+      "minLength": "至少需要 {n} 个字符",
+      "maxLength": "最多 {n} 个字符",
+      "positive": "必须是正数",
+      "slug": "只能包含小写字母、数字和连字符"
+    },
+    "roles": {
+      "title": "角色与权限",
+      "new": "新建角色",
+      "edit": "编辑角色",
+      "intro": "角色是一组权限的集合，一个成员可以拥有多个角色。修改需要 {perm} 权限，否则服务器会拒绝。请在“成员”部分为人员分配角色。",
+      "empty": "还没有角色。创建一个角色即可开始委派权限。",
+      "col": {
+        "role": "角色",
+        "permissions": "权限",
+        "actions": "操作"
+      },
+      "default": "默认",
+      "managed": "托管",
+      "adminAll": "管理员（全部）",
+      "noPermissions": "无权限",
+      "permOne": "{n} 项权限",
+      "permMany": "{n} 项权限",
+      "name": "名称",
+      "position": "位置（数值小的排在前面）",
+      "description": "描述（可选）",
+      "color": "颜色",
+      "memberDefaults": "成员默认",
+      "adminDefaults": "管理员默认",
+      "none": "无",
+      "adminWarn": "管理员会绕过其他所有权限检查：持有者可以做任何事，包括管理角色和远程控制设备。",
+      "save": "保存",
+      "create": "创建",
+      "deleteTitle": "删除角色",
+      "deleteBody": "删除 {name}？拥有该角色的成员会立即失去其权限。",
+      "nameRequired": "名称为必填项。",
+      "positionInvalid": "位置必须 ≥ 0。"
+    },
+    "members": {
+      "title": "成员",
+      "search": "搜索姓名或邮箱",
+      "add": "添加成员",
+      "total": "共 {n} 人",
+      "rolesFailed": "加载角色失败：{error}",
+      "intro": "通过分配角色来授予权限：设备访问（远程控制、设备管理、审计）都由角色决定。更改角色需要 {perm} 权限。新成员可以通过邀请加入，也可以通过邮箱添加已有账号。",
+      "leave": "退出",
+      "remove": "移除",
+      "ownerFixed": "不能移除组织所有者",
+      "addTitle": "通过邮箱添加成员",
+      "addBody": "添加此服务器上已有的账号。对于没有账号的人，请改用邀请。",
+      "email": "邮箱地址",
+      "addBtn": "添加",
+      "leaveTitle": "退出组织",
+      "removeTitle": "移除成员",
+      "rolesTitle": "角色 · {name}",
+      "rolesUnloaded": "无法加载角色：{error}",
+      "noRoles": "还没有角色，请先在“角色”部分创建。",
+      "done": "完成",
+      "col": {
+        "member": "成员",
+        "email": "邮箱",
+        "roles": "角色",
+        "joined": "加入时间",
+        "actions": "操作"
+      },
+      "leaveMsg": "退出此组织？在有人重新添加或邀请你之前，你将无法访问。",
+      "removeMsg": "将 {who} 从组织中移除？其账号不受影响，只是失去这里的访问权限。",
+      "thisMember": "该成员"
+    },
+    "permFlag": {
+      "VIEW_CHANNELS": {
+        "label": "查看频道"
+      },
+      "MANAGE_CHANNELS": {
+        "label": "管理频道"
+      },
+      "MANAGE_ROLES": {
+        "label": "管理角色"
+      },
+      "MANAGE_TENANT": {
+        "label": "管理组织"
+      },
+      "INVITE_MEMBERS": {
+        "label": "邀请成员"
+      },
+      "ADMINISTRATOR": {
+        "label": "管理员",
+        "description": "绕过所有权限检查，隐式授予下列全部权限。"
+      },
+      "SEND_MESSAGES": {
+        "label": "发送消息"
+      },
+      "SEND_THREADS": {
+        "label": "创建话题"
+      },
+      "EMBED_LINKS": {
+        "label": "嵌入链接"
+      },
+      "ATTACH_FILES": {
+        "label": "附加文件"
+      },
+      "READ_HISTORY": {
+        "label": "读取历史消息"
+      },
+      "MENTION_EVERYONE": {
+        "label": "提及 {everyone}"
+      },
+      "MANAGE_MESSAGES": {
+        "label": "管理消息"
+      },
+      "ADD_REACTIONS": {
+        "label": "添加表情回应"
+      },
+      "CONNECT_VOICE": {
+        "label": "加入语音"
+      },
+      "SPEAK": {
+        "label": "发言"
+      },
+      "STREAM_VIDEO": {
+        "label": "发送视频"
+      },
+      "MANAGE_MEETINGS": {
+        "label": "管理会议"
+      },
+      "KICK_MEMBERS": {
+        "label": "踢出成员"
+      },
+      "BAN_MEMBERS": {
+        "label": "封禁成员"
+      },
+      "MUTE_MEMBERS": {
+        "label": "将成员静音"
+      },
+      "DEAFEN_MEMBERS": {
+        "label": "禁止成员收听"
+      },
+      "MOVE_MEMBERS": {
+        "label": "移动成员"
+      },
+      "MANAGE_DOCUMENTS": {
+        "label": "管理文档"
+      },
+      "MANAGE_AGENTS": {
+        "label": "管理设备",
+        "description": "注册、重命名、删除、重新分配远程控制设备，并为其设置策略。"
+      },
+      "REMOTE_CONTROL": {
+        "label": "远程控制",
+        "description": "对用户不拥有的设备发起远程控制会话（控制自己的设备永远不需要此权限）。"
+      },
+      "VIEW_REMOTE_AUDIT": {
+        "label": "查看远程审计日志",
+        "description": "读取远程控制会话的审计记录。"
+      },
+      "EXEC_DEVICE": {
+        "label": "在设备上运行命令",
+        "description": "通过 Fleet RPC 在设备上运行命令。命令在 Linux 上以 root 身份执行；在 Windows 上以守护进程的工作进程身份执行：有人值守安装时为当前登录用户，SystemContext 模式下为 SYSTEM。还需要组织开关、设备策略和设备本地密钥同时允许。"
+      },
+      "VIEW_EXEC_AUDIT": {
+        "label": "查看命令审计日志",
+        "description": "读取 Fleet-RPC 审计记录：谁在哪里运行了什么。"
+      },
+      "SSH_DEVICE": {
+        "label": "SSH 连接设备",
+        "description": "打开到设备的交互式 MeshHarbor SSH 会话。权限严格大于单条命令：会话会持续存在，并支持文件传输。"
+      },
+      "VIEW_SSH_AUDIT": {
+        "label": "查看 SSH 审计日志",
+        "description": "读取 MeshHarbor SSH 审计记录：谁获准或被拒绝建立会话。"
+      },
+      "RECORD_REMOTE_SCREEN": {
+        "label": "录制远程屏幕",
+        "description": "在远程控制会话期间录制设备屏幕。设备必须允许，且设备前的用户能看到正在录制。录像在会话结束后仍会保留，因此默认不授予任何角色。"
+      },
+      "HIVE_RUN": {
+        "label": "运行智能体会话",
+        "description": "在设备上启动并驱动 AI 智能体会话。会话以设备为你映射的账户运行（绝不是 SYSTEM 或 root），且仅在设备允许的地方运行。它会在那台设备上运行命令，因此默认不授予任何角色。"
+      }
+    },
+    "permGroup": {
+      "general": "常规",
+      "messaging": "消息",
+      "voice": "语音和视频",
+      "moderation": "管理",
+      "remote": "远程控制",
+      "fleet": "设备群访问"
     }
   }
 }

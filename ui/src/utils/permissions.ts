@@ -21,6 +21,8 @@
  * above 52 needs BigInt or string masks end to end.
  */
 
+import i18n from '@/plugins/i18n'
+
 export interface PermissionFlag {
   /** SCREAMING_SNAKE key, identical to the Rust constant name. */
   key: string
@@ -147,8 +149,44 @@ export const PERMISSION_FLAGS: PermissionFlag[] = [
   },
 ]
 
+// A flag's label and description are read in the interface language when they
+// are accessed (`mh.permFlag.<KEY>.*`); the literals above are their English
+// source. `group` stays the English id, shown through `permissionGroupLabel`.
+const FLAG_PARAMS = { everyone: '@everyone' }
+for (const f of PERMISSION_FLAGS) {
+  Object.defineProperty(f, 'label', {
+    enumerable: true,
+    get: () => i18n.global.t(`mh.permFlag.${f.key}.label`, FLAG_PARAMS),
+  })
+  if (f.description !== undefined) {
+    Object.defineProperty(f, 'description', {
+      enumerable: true,
+      get: () => i18n.global.t(`mh.permFlag.${f.key}.description`),
+    })
+  }
+}
+
 /** Group names in display order (insertion order of the flags above). */
 export const PERMISSION_GROUPS: string[] = [...new Set(PERMISSION_FLAGS.map((f) => f.group))]
+
+const GROUP_SLUGS: Record<string, string> = {
+  General: 'general',
+  Messaging: 'messaging',
+  'Voice & video': 'voice',
+  Moderation: 'moderation',
+  'Remote control': 'remote',
+  'Fleet access': 'fleet',
+}
+/** A flag's label in the interface language, by its key. */
+export function permissionLabel(key: string): string {
+  return i18n.global.t(`mh.permFlag.${key}.label`, FLAG_PARAMS)
+}
+
+/** A permission group's name in the interface language. */
+export function permissionGroupLabel(group: string): string {
+  const slug = GROUP_SLUGS[group]
+  return slug ? i18n.global.t(`mh.permGroup.${slug}`) : group
+}
 
 function byKeys(keys: string[]): number {
   return keys.reduce((mask, key) => {
