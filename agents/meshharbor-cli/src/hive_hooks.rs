@@ -156,7 +156,7 @@ pub fn ours(handler: &Value) -> bool {
     let rest: Vec<&str> = rest.split_whitespace().collect();
     matches!(
         stem,
-        "meshharbor" | "meshharbord" | "meshharbor" | "meshharbord" | "meshharbor-shim"
+        "meshharbor" | "meshharbord" | "meshharbor-shim"
     ) && (rest == ["hive", "hook"] || rest == ["cli", "hive", "hook"])
 }
 
