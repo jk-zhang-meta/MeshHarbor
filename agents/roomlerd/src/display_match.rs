@@ -919,7 +919,11 @@ pub enum Answer {
 
 /// May a switch be tried? The owner's policy, and under `auto` who is at the
 /// screen. `presence` is only read under `auto`, so `never` and `always` cost
-/// no OS call.
+/// no OS call. Under `auto` only a POSITIVE "nobody is here" switches
+/// (`Unattended`: a held lock since the person's last input, or the daemon's
+/// own virtual desktop). `Idle` is refused as `attended` (the wire word is
+/// unchanged): five idle minutes switched a person's Surface panel to 800x600
+/// while they read it (rcfix 2026-11-04). `always` is the owner's opt-in.
 pub fn may_switch(
     policy: DisplayMatchPolicy,
     presence: impl FnOnce() -> Presence,
@@ -929,7 +933,7 @@ pub fn may_switch(
         DisplayMatchPolicy::Always => Ok(()),
         DisplayMatchPolicy::Auto => match presence() {
             Presence::Locked => Err(Refusal::Locked),
-            Presence::Attended => Err(Refusal::Attended),
+            Presence::Attended | Presence::Idle => Err(Refusal::Attended),
             Presence::Unattended => Ok(()),
         },
     }
@@ -1052,7 +1056,10 @@ pub fn hand_back(
     match policy {
         DisplayMatchPolicy::Never => Some(Refusal::DisabledOnDevice),
         DisplayMatchPolicy::Always => None,
-        DisplayMatchPolicy::Auto => (presence() == Presence::Attended).then_some(Refusal::Attended),
+        // Anything short of a positive "nobody is here" gives the screen back.
+        DisplayMatchPolicy::Auto => {
+            matches!(presence(), Presence::Attended | Presence::Idle).then_some(Refusal::Attended)
+        }
     }
 }
 
@@ -1133,6 +1140,43 @@ mod fr108_tests {
         assert_eq!(
             may_switch(DisplayMatchPolicy::Auto, || Presence::Locked),
             Err(Refusal::Locked)
+        );
+    }
+
+    /// rcfix 2026-11-04 — idle time is not an empty chair: `auto` never
+    /// switches a physical display on it, and a held mode goes back on it.
+    /// Only the owner's `always` opt-in switches regardless.
+    #[test]
+    fn auto_never_switches_on_idle_alone() {
+        assert_eq!(
+            may_switch(DisplayMatchPolicy::Auto, || Presence::Idle),
+            Err(Refusal::Attended)
+        );
+        assert_eq!(
+            hand_back(true, DisplayMatchPolicy::Auto, || Presence::Idle),
+            Some(Refusal::Attended)
+        );
+        assert_eq!(
+            may_switch(DisplayMatchPolicy::Always, || Presence::Idle),
+            Ok(())
+        );
+        // End to end through presence's decision: five idle minutes, unlocked,
+        // no lock since the last input, is refused.
+        let p = crate::presence::decide(
+            false,
+            Some(300_000),
+            false,
+            std::time::Duration::from_secs(300),
+        );
+        assert_eq!(
+            may_switch(DisplayMatchPolicy::Auto, || p),
+            Err(Refusal::Attended)
+        );
+        // Unknown (no idle clock) is refused too.
+        let p = crate::presence::decide(false, None, false, std::time::Duration::from_secs(300));
+        assert_eq!(
+            may_switch(DisplayMatchPolicy::Auto, || p),
+            Err(Refusal::Attended)
         );
     }
 

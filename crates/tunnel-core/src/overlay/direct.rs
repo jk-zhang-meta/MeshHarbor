@@ -321,7 +321,8 @@ pub fn gather_global_v6() -> Vec<Ipv6Addr> {
             if filter {
                 let info = a.index.and_then(iface_info);
                 let desc = info.as_ref().map(|(d, _)| d.as_str()).unwrap_or_default();
-                if lan_iface_denied(&a.name, desc) || info.as_ref().map(|(_, h)| *h) == Some(false) {
+                if lan_iface_denied(&a.name, desc) || info.as_ref().map(|(_, h)| *h) == Some(false)
+                {
                     continue;
                 }
             }
@@ -2087,19 +2088,49 @@ mod tests {
     fn ipv6_candidates_are_global_only_and_family_separated() {
         let v6 = |s: &str| s.parse::<Ipv6Addr>().unwrap();
         assert!(is_public_v6(v6("2001:db8::1")) && is_public_v6(v6("240e:3a1::5")));
-        for not in ["fe80::1", "fd7a:115c:a1e0::1", "::1", "::ffff:1.2.3.4", "ff02::1", "::"] {
+        for not in [
+            "fe80::1",
+            "fd7a:115c:a1e0::1",
+            "::1",
+            "::ffff:1.2.3.4",
+            "ff02::1",
+            "::",
+        ] {
             assert!(!is_public_v6(v6(not)), "{not}");
         }
-        assert_eq!(v6_candidates(&[v6("2001:db8::5")], 45200), vec!["[2001:db8::5]:45200".to_string()]);
-        let cands: Vec<String> = ["203.0.113.7:1", "[2001:db8::5]:45200", "[fe80::1]:1", "[2001:db8::9]:7"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        assert_eq!(
+            v6_candidates(&[v6("2001:db8::5")], 45200),
+            vec!["[2001:db8::5]:45200".to_string()]
+        );
+        let cands: Vec<String> = [
+            "203.0.113.7:1",
+            "[2001:db8::5]:45200",
+            "[fe80::1]:1",
+            "[2001:db8::9]:7",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let at = |s: &str| Some(s.parse::<SocketAddr>().unwrap());
-        assert_eq!(pick_v6_endpoint_rotated(&[], &cands, 0), at("[2001:db8::5]:45200"));
-        assert_eq!(pick_v6_endpoint_rotated(&[], &cands, 1), at("[2001:db8::9]:7"), "rotated");
-        assert_eq!(pick_v6_endpoint_rotated(&[v6("2001:db8::5")], &cands, 0), at("[2001:db8::9]:7"), "own skipped");
-        assert_eq!(pick_public_endpoint(&[], &cands), at("203.0.113.7:1"), "the v4 picker ignores v6");
+        assert_eq!(
+            pick_v6_endpoint_rotated(&[], &cands, 0),
+            at("[2001:db8::5]:45200")
+        );
+        assert_eq!(
+            pick_v6_endpoint_rotated(&[], &cands, 1),
+            at("[2001:db8::9]:7"),
+            "rotated"
+        );
+        assert_eq!(
+            pick_v6_endpoint_rotated(&[v6("2001:db8::5")], &cands, 0),
+            at("[2001:db8::9]:7"),
+            "own skipped"
+        );
+        assert_eq!(
+            pick_public_endpoint(&[], &cands),
+            at("203.0.113.7:1"),
+            "the v4 picker ignores v6"
+        );
         assert_eq!(pick_v6_endpoint_rotated(&[], &cands[..1], 0), None);
     }
 

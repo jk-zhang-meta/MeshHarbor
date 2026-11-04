@@ -219,22 +219,38 @@ pub async fn list_tenant_agents(
         per_page: 500,
         ..Default::default()
     };
+    let Some(client_id) = client.id else {
+        return Err(ApiError::Internal("tunnel client missing id".to_string()));
+    };
+    let client_ref = roomler_ai_remote_control::models::NodeRef::TunnelClient {
+        tunnel_client_id: client_id,
+    };
     let page = state.fleet.agents.list_for_tenant(tid, &params).await?;
-    let agents = page
-        .items
-        .into_iter()
-        .map(|a| {
-            let online =
-                a.id.map(|i| state.fleet.rc_hub.is_agent_online(i))
-                    .unwrap_or(false);
-            TunnelAgentInfo {
-                agent_id: a.id.map(|i| i.to_hex()).unwrap_or_default(),
-                name: a.name,
-                online,
-                routes: a.routes,
-            }
-        })
-        .collect();
+    let iso = crate::business_isolation::mode(&state);
+    let topo = crate::business_isolation::lines(&state, iso, tid).await;
+    let mut agents = Vec::with_capacity(page.items.len());
+    for a in page.items {
+        let Some(agent_id) = a.id else { continue };
+        let agent_ref = roomler_ai_remote_control::models::NodeRef::Agent { agent_id };
+        if crate::business_isolation::refuses_parties_with_lines(
+            &state,
+            &topo,
+            (tid, &client_ref),
+            (tid, &agent_ref),
+            "tunnel_roster",
+        )
+        .await
+        {
+            continue;
+        }
+        let online = state.fleet.rc_hub.is_agent_online(agent_id);
+        agents.push(TunnelAgentInfo {
+            agent_id: agent_id.to_hex(),
+            name: a.name,
+            online,
+            routes: a.routes,
+        });
+    }
     Ok(Json(agents))
 }
 

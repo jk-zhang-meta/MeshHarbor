@@ -52,14 +52,14 @@ use tokio::sync::mpsc;
 pub mod agent_arms;
 pub mod agent_socket;
 pub mod business_isolation;
-pub mod managed_forward;
-pub mod net_inventory;
 pub mod derp;
 pub mod derp_acl;
 pub mod derp_cluster;
 pub mod derp_types;
 pub mod ephemeral;
 pub mod hooks;
+pub mod managed_forward;
+pub mod net_inventory;
 pub mod org_relay;
 pub mod overlay;
 pub mod relay_allowance;
@@ -113,7 +113,8 @@ pub struct NetworkState {
     pub overlay_nodes_by_id: TunnelClientOutbound,
     /// Serializes lifecycle and overlay dispatch for one tunnel-client id.
     /// Weak entries do not keep a connection or its mutex alive.
-    pub(crate) tunnel_overlay_locks: Arc<DashMap<ObjectId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    pub(crate) tunnel_overlay_locks:
+        Arc<DashMap<ObjectId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
     /// Live join snapshots, for fail-closed security removal without Mongo IO.
     pub admission_nodes: Arc<DashMap<ObjectId, roomler_ai_remote_control::models::OverlayNode>>,
     /// DERP relay registry: `(network_id, wg_pubkey)` → the outbound frame
@@ -221,6 +222,17 @@ pub struct NetworkState {
     /// routes-only agent read as IDLE and got its WS cycled (tearing every
     /// declared route plus its overlay carriers).
     pub tunnel_sessions_by_origin_agent: Arc<DashMap<ObjectId, HashSet<ObjectId>>>,
+    pub(crate) tunnel_session_parties: Arc<
+        DashMap<
+            ObjectId,
+            (
+                ObjectId,
+                roomler_ai_remote_control::models::NodeRef,
+                ObjectId,
+                u64,
+            ),
+        >,
+    >,
     /// C-5 — directory owner-tokens for LOCAL derp registrations
     /// (`roomler:own:derp:<net>:<pubkey>`); refreshed by the directory
     /// heartbeat while the registry holds the key.
@@ -290,6 +302,7 @@ impl Module for NetworkState {
             tunnel_clients_by_session: Arc::new(DashMap::new()),
             tunnel_sessions_by_target_agent: Arc::new(DashMap::new()),
             tunnel_sessions_by_origin_agent: Arc::new(DashMap::new()),
+            tunnel_session_parties: Arc::new(DashMap::new()),
             derp_presence_tokens: Arc::new(DashMap::new()),
             derp_rehome_cooldowns: Arc::new(DashMap::new()),
             tunnel_clients: Arc::new(TunnelClientDao::new(db)),
@@ -336,6 +349,7 @@ impl Module for NetworkState {
         // fed by the host's redis ctrl subscriber; with no Redis the sender
         // side never fires and this task just parks).
         overlay::spawn_removes_applier(state.clone(), overlay_ctrl_rx);
+        overlay::spawn_key_expiry_reaper(state.clone());
 
         // P7b — the sockets' machinery, from the host's `AppState::new`.
         // The agent socket is fleet's; this module's half (the tunnel and
@@ -448,6 +462,14 @@ impl Module for NetworkState {
             .route(
                 "/{agent_id}/overlay-key/rotate",
                 post(routes::overlay_key::rotate_overlay_key),
+            )
+            .route(
+                "/{agent_id}/overlay-key/revoke",
+                post(routes::overlay_key::revoke_overlay_key),
+            )
+            .route(
+                "/{agent_id}/overlay-key/ttl",
+                put(routes::overlay_key::set_overlay_key_ttl),
             )
             // Roomler SSH — ask for a session on one device. Answers 200 with
             // either where to dial or which gate refused; a denial is a policy
@@ -727,7 +749,9 @@ impl Module for NetworkState {
             IndexSet {
                 collection: crate::managed_forward::AUDIT_COLLECTION,
                 pre_ops: Vec::new(),
-                indexes: vec![index(bson::doc! { "tenant_id": 1, "forward_id": 1, "at": -1 })],
+                indexes: vec![index(
+                    bson::doc! { "tenant_id": 1, "forward_id": 1, "at": -1 },
+                )],
             },
             IndexSet {
                 collection: crate::net_inventory::COLLECTION,

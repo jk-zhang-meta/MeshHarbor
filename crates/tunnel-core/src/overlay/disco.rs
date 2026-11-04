@@ -1128,7 +1128,6 @@ mod tests {
     }
 }
 
-
 /// Fresh carrier-intent proof. The existing disco prefix keeps regional and
 /// central DERP demux compatibility; the longer fixed frame and new kinds are
 /// ignored by old WG receivers. HELLO is sent on ORG first, never on DERP.
@@ -1142,7 +1141,12 @@ pub(crate) mod derp_follow {
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     #[repr(u8)]
-    pub(crate) enum Kind { Hello = 3, HelloAck = 4, Challenge = 5, Proof = 6 }
+    pub(crate) enum Kind {
+        Hello = 3,
+        HelloAck = 4,
+        Challenge = 5,
+        Proof = 6,
+    }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub(crate) struct Frame {
@@ -1156,14 +1160,19 @@ pub(crate) mod derp_follow {
     }
 
     fn key(shared: &[u8; 32]) -> Option<[u8; 32]> {
-        if shared == &[0; 32] { return None; }
+        if shared == &[0; 32] {
+            return None;
+        }
         let mut h = <Hmac<Sha256> as Mac>::new_from_slice(shared).ok()?;
         h.update(DOMAIN);
         Some(h.finalize().into_bytes().into())
     }
 
     pub(crate) fn encode(
-        frame: &Frame, sender: &[u8; 32], recipient: &[u8; 32], shared: &[u8; 32],
+        frame: &Frame,
+        sender: &[u8; 32],
+        recipient: &[u8; 32],
+        shared: &[u8; 32],
     ) -> Option<Vec<u8>> {
         let key = key(shared)?;
         let mut bytes = vec![0u8; LEN];
@@ -1180,13 +1189,23 @@ pub(crate) mod derp_follow {
     }
 
     pub(crate) fn decode(
-        bytes: &[u8], sender: &[u8; 32], recipient: &[u8; 32], shared: &[u8; 32],
+        bytes: &[u8],
+        sender: &[u8; 32],
+        recipient: &[u8; 32],
+        shared: &[u8; 32],
     ) -> Option<Frame> {
-        if !shaped(bytes) || bytes[9..16] != [0; 7]
-            || bytes[16..48] != *sender || bytes[48..80] != *recipient
-        { return None; }
+        if !shaped(bytes)
+            || bytes[9..16] != [0; 7]
+            || bytes[16..48] != *sender
+            || bytes[48..80] != *recipient
+        {
+            return None;
+        }
         let kind = match bytes[8] {
-            3 => Kind::Hello, 4 => Kind::HelloAck, 5 => Kind::Challenge, 6 => Kind::Proof,
+            3 => Kind::Hello,
+            4 => Kind::HelloAck,
+            5 => Kind::Challenge,
+            6 => Kind::Proof,
             _ => return None,
         };
         let key = key(shared)?;
@@ -1194,17 +1213,20 @@ pub(crate) mod derp_follow {
         h.update(&bytes[..MAC_OFFSET]);
         h.verify_slice(&bytes[MAC_OFFSET..]).ok()?;
         let frame = Frame {
-            kind, nonce: bytes[80..96].try_into().ok()?, init: bytes[96..128].try_into().ok()?,
+            kind,
+            nonce: bytes[80..96].try_into().ok()?,
+            init: bytes[96..128].try_into().ok()?,
         };
         if frame.nonce == [0; 16]
             || matches!(kind, Kind::Hello | Kind::HelloAck) && frame.init != [0; 32]
-        { return None; }
+        {
+            return None;
+        }
         Some(frame)
     }
 
     pub(crate) fn init_digest(bytes: &[u8]) -> Option<[u8; 32]> {
-        (bytes.len() == 148 && bytes[..4] == [1, 0, 0, 0])
-            .then(|| Sha256::digest(bytes).into())
+        (bytes.len() == 148 && bytes[..4] == [1, 0, 0, 0]).then(|| Sha256::digest(bytes).into())
     }
 
     pub(crate) fn nonce() -> [u8; 16] {
@@ -1212,24 +1234,36 @@ pub(crate) mod derp_follow {
         loop {
             let mut value = [0u8; 16];
             rand::rng().fill_bytes(&mut value);
-            if value != [0; 16] { return value; }
+            if value != [0; 16] {
+                return value;
+            }
         }
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
-        fn sample() -> Frame { Frame { kind: Kind::Challenge, nonce: [3; 16], init: [7; 32] } }
+        fn sample() -> Frame {
+            Frame {
+                kind: Kind::Challenge,
+                nonce: [3; 16],
+                init: [7; 32],
+            }
+        }
         #[test]
         fn follow_wire_binds_direction_kind_nonce_digest_and_domain() {
-            let f = sample(); let a = [1; 32]; let b = [2; 32]; let shared = [9; 32];
+            let f = sample();
+            let a = [1; 32];
+            let b = [2; 32];
+            let shared = [9; 32];
             let p = encode(&f, &a, &b, &shared).unwrap();
             assert_eq!(decode(&p, &a, &b, &shared), Some(f));
             assert!(decode(&p, &b, &a, &shared).is_none(), "reflection");
             assert!(decode(&p, &a, &[4; 32], &shared).is_none(), "cross peer");
             assert!(decode(&p, &a, &b, &[8; 32]).is_none(), "wrong DH");
             for offset in [8, 9, 16, 48, 80, 96, 128, 159] {
-                let mut bad = p.clone(); bad[offset] ^= 1;
+                let mut bad = p.clone();
+                bad[offset] ^= 1;
                 assert!(decode(&bad, &a, &b, &shared).is_none(), "tamper {offset}");
             }
             assert!(encode(&sample(), &a, &b, &[0; 32]).is_none());
@@ -1238,7 +1272,10 @@ pub(crate) mod derp_follow {
         fn follow_wire_keeps_legacy_classifier_and_shape_disjointness() {
             let p = encode(&sample(), &[1; 32], &[2; 32], &[9; 32]).unwrap();
             assert!(roomler_ai_remote_control::derp_frame::payload_is_wg_or_disco(&p));
-            assert!(!super::super::is_disco_shaped(&p), "old receiver ignores the longer kind");
+            assert!(
+                !super::super::is_disco_shaped(&p),
+                "old receiver ignores the longer kind"
+            );
             assert!(!crate::overlay::wg::is_wg_shaped(&p));
             assert!(!crate::transport::stun::has_stun_cookie(&p));
             assert!(decode(&p[..159], &[1; 32], &[2; 32], &[9; 32]).is_none());

@@ -290,8 +290,16 @@ mod tests {
     fn closed_org_windows_from_one_percent_are_queued_for_the_server() {
         let t0 = Instant::now();
         let mut l = RxLoss::default();
-        assert_eq!(feed(&mut l, Via::Org, 6, 500, 490, t0), None, "2% is no verdict");
-        assert_eq!(l.take_reports(), vec![(peer(), 3000, 60)], "but it is reported");
+        assert_eq!(
+            feed(&mut l, Via::Org, 6, 500, 490, t0),
+            None,
+            "2% is no verdict"
+        );
+        assert_eq!(
+            l.take_reports(),
+            vec![(peer(), 3000, 60)],
+            "but it is reported"
+        );
         assert!(l.take_reports().is_empty(), "drained");
         for (via, sweeps, sent, got, why) in [
             (Via::Org, 6, 500, 497, "0.6% is not reported"),

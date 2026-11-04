@@ -181,18 +181,25 @@ pub(super) fn resolve_direct_candidates(
             .then(|| direct::pick_v6_endpoint_rotated(&ctx.my_v6, &cfg.srflx_endpoints, rot.srflx))
             .flatten()
     });
-    let srflx = srflx_v6.or_else(|| direct_ctx.and_then(|ctx| {
-        (direct::srflx_enabled()
-            && ctx.punch.is_some()
-            && direct::srflx_punch_worth_trying(ctx.my_nat.as_deref(), cfg.srflx_nat.as_deref())
-            && !direct::srflx_hairpin_pointless(
-                ctx.punch.as_ref().map(|(s, _)| s.as_str()),
-                &cfg.srflx_endpoints,
-                lan_usable,
-            ))
-        .then(|| direct::pick_public_endpoint_rotated(&ctx.my_ips, &cfg.srflx_endpoints, rot.srflx))
-        .flatten()
-    }));
+    let srflx = srflx_v6.or_else(|| {
+        direct_ctx.and_then(|ctx| {
+            (direct::srflx_enabled()
+                && ctx.punch.is_some()
+                && direct::srflx_punch_worth_trying(
+                    ctx.my_nat.as_deref(),
+                    cfg.srflx_nat.as_deref(),
+                )
+                && !direct::srflx_hairpin_pointless(
+                    ctx.punch.as_ref().map(|(s, _)| s.as_str()),
+                    &cfg.srflx_endpoints,
+                    lan_usable,
+                ))
+            .then(|| {
+                direct::pick_public_endpoint_rotated(&ctx.my_ips, &cfg.srflx_endpoints, rot.srflx)
+            })
+            .flatten()
+        })
+    });
     DirectCandidates { lan, public, srflx }
 }
 
@@ -334,13 +341,31 @@ impl OverlayRuntime {
         upgrade_probes: &mut HashMap<ObjectId, UpgradeProbe>,
         relay_bq: &mut RelayBuildQueue,
     ) -> bool {
-        let carrier_lost = self.sweep_carrier_health(
-            wg, by_node, relay, tun, relay_refresh_cooldown, current_peers, force_poke,
-        ).await;
+        let carrier_lost = self
+            .sweep_carrier_health(
+                wg,
+                by_node,
+                relay,
+                tun,
+                relay_refresh_cooldown,
+                current_peers,
+                force_poke,
+            )
+            .await;
         if carrier_lost {
             let peers: Vec<NetmapPeer> = current_peers.values().cloned().collect();
-            self.install_peers(wg, by_node, relay, tun, &peers, direct_ctx,
-                upgrade_probes, relay_bq, "carrier-loss").await;
+            self.install_peers(
+                wg,
+                by_node,
+                relay,
+                tun,
+                &peers,
+                direct_ctx,
+                upgrade_probes,
+                relay_bq,
+                "carrier-loss",
+            )
+            .await;
         }
         carrier_lost
     }
@@ -353,10 +378,13 @@ impl OverlayRuntime {
         by_node: &mut HashMap<ObjectId, Installed>,
         samples: &mut HashMap<ObjectId, BusinessTrafficSample>,
     ) {
+        wg.tick_on_demand();
         samples.retain(|nid, _| by_node.contains_key(nid));
         let now = Instant::now();
         for (nid, e) in by_node.iter_mut() {
-            if !e.is_direct || !wg.peer_handshake_done(&e.pubkey).unwrap_or(false)
+            if wg.peer_is_dormant_or_waking(&e.pubkey) == Some(true)
+                || !e.is_direct
+                || !wg.peer_handshake_done(&e.pubkey).unwrap_or(false)
                 || now.saturating_duration_since(e.since) < crate::overlay::lifecycle::DIRECT_GRACE
             {
                 samples.remove(nid);
@@ -367,13 +395,19 @@ impl OverlayRuntime {
                 continue;
             };
             let retapped = samples.get(nid).and_then(|s| s.retapped);
-            let Some(previous) = samples.insert(*nid, BusinessTrafficSample {
-                installed_at: e.since, traffic, retapped,
-            }) else {
+            let Some(previous) = samples.insert(
+                *nid,
+                BusinessTrafficSample {
+                    installed_at: e.since,
+                    traffic,
+                    retapped,
+                },
+            ) else {
                 continue;
             };
             if previous.installed_at != e.since
-                || traffic.0 <= previous.traffic.0 || traffic.1 != previous.traffic.1
+                || traffic.0 <= previous.traffic.0
+                || traffic.1 != previous.traffic.1
             {
                 continue;
             }
@@ -385,7 +419,9 @@ impl OverlayRuntime {
                 // unanswered after BUSINESS_POKE_RETAP_AFTER gets ONE fresh
                 // initiation, so its 2 s window judges two attempts. Once per
                 // proof (keyed by its arm instant), never for a Major poke.
-                if p.from_business && !p.from_major && super::business_poke_fast()
+                if p.from_business
+                    && !p.from_major
+                    && super::business_poke_fast()
                     && retapped != Some(p.at)
                     && now.saturating_duration_since(p.at)
                         >= crate::overlay::lifecycle::BUSINESS_POKE_RETAP_AFTER
@@ -426,8 +462,11 @@ impl OverlayRuntime {
         standby: &mut HashMap<[u8; 32], Option<Instant>>,
     ) {
         let now = Instant::now();
-        let direct: std::collections::HashSet<[u8; 32]> =
-            by_node.values().filter(|e| e.is_direct).map(|e| e.pubkey).collect();
+        let direct: std::collections::HashSet<[u8; 32]> = by_node
+            .values()
+            .filter(|e| e.is_direct)
+            .map(|e| e.pubkey)
+            .collect();
         standby.retain(|pk, _| {
             let keep = direct.contains(pk);
             if !keep {
@@ -439,6 +478,9 @@ impl OverlayRuntime {
             if !wg.has_standby_sink(&e.pubkey) {
                 wg.attach_standby_sink(&e.pubkey, mux.standby_route(e.pubkey));
             }
+            if wg.peer_is_dormant(&e.pubkey) == Some(true) {
+                continue;
+            }
             let last = standby.entry(e.pubkey).or_insert(None);
             if last.is_none_or(|t| now.saturating_duration_since(t) >= STANDBY_HELLO_EVERY) {
                 let frame = crate::overlay::disco::standby_hello(
@@ -446,7 +488,12 @@ impl OverlayRuntime {
                     &self.keypair.secret,
                     &self.keypair.public,
                 );
-                if wg.sender().send_disco_raw(&e.pubkey, &frame).await.is_some() {
+                if wg
+                    .sender()
+                    .send_disco_raw(&e.pubkey, &frame)
+                    .await
+                    .is_some()
+                {
                     *last = Some(now);
                 }
             }
@@ -487,6 +534,7 @@ impl OverlayRuntime {
         force_poke: ForcedPoke,
     ) -> bool {
         let now = Instant::now();
+        wg.tick_on_demand();
         let mut carrier_lost = false;
         // P3 PR-A — the shadow monitor consumes the same env read the legacy
         // escalation table does, at the same moment.
@@ -537,6 +585,29 @@ impl OverlayRuntime {
             let Some(handshake_done) = wg.peer_handshake_done(&e.pubkey) else {
                 continue;
             };
+            let hard_dead = wg.peer_carrier_dead(&e.pubkey).unwrap_or(false)
+                || (e.relay_kind == Some(RelayKind::Org)
+                    && relay.as_ref().is_some_and(|r| !r.holds_org_session(nid)));
+            // MeshHarbor B6 — while a peer is intentionally `Dormant` or `Waking`
+            // (or was `Dormant` at any point since the previous health sweep, and
+            // its carrier is not `hard_dead`), periodic keepalives and handshake
+            // timers are suspended or re-establishing by design. Keep its liveness
+            // clocks fresh and skip `carrier_tick` / `should_poke` while `Dormant`
+            // or `Waking` so `sweep_carrier_health` never convicts or tears down a
+            // dormant or waking peer (`不反复拆建`).
+            let was_dormant = wg.take_peer_dormant_since_last_sweep(&e.pubkey);
+            let dormant_or_waking = wg.peer_is_dormant_or_waking(&e.pubkey) == Some(true);
+            if (dormant_or_waking || was_dormant) && !hard_dead {
+                e.last_rx_at = now;
+                e.since = now;
+                e.bad_sweeps = 0;
+                e.stalled = false;
+                e.hs_done = handshake_done;
+                e.poke = None;
+                if dormant_or_waking {
+                    continue;
+                }
+            }
             // Stage 2 — settle any pending active-revalidation poke: answered
             // iff an INITIATOR-role handshake completed at-or-after the poke
             // instant (the only signal that proves OUR outbound works — see
@@ -572,9 +643,7 @@ impl OverlayRuntime {
                 // An ORG carrier lives only as long as its session: once the
                 // server revoked it (or it expired), it is dead before any
                 // send trips the latch.
-                hard_dead: wg.peer_carrier_dead(&e.pubkey).unwrap_or(false)
-                    || (e.relay_kind == Some(RelayKind::Org)
-                        && relay.as_ref().is_some_and(|r| !r.holds_org_session(nid))),
+                hard_dead,
                 handshake_done,
                 since_install: e.since.elapsed(),
                 since_last_rx,
@@ -670,6 +739,10 @@ impl OverlayRuntime {
             );
             // rc.276 diagnostics — mirror the latch for the peers debug view.
             e.hs_done = handshake_done;
+            // B5 — sync the carrier's stalled/bad-sweep state into the WG
+            // router so Subnet-Router HA fails over to a healthy standby
+            // router immediately when this carrier degrades.
+            wg.set_peer_router_stalled(&e.pubkey, e.stalled || v.bad_sweeps > 0);
             // Unresponsive-peer backoff — a relay carrier that completed its
             // handshake proves the peer alive: forget its death streak so
             // future re-requests are immediate again.
@@ -713,8 +786,8 @@ impl OverlayRuntime {
             let forced = force_poke != ForcedPoke::No
                 && e.is_direct
                 && should_poke_on_netchange(handshake_done);
-            let business_rearm = unanswered_traffic
-                && e.poke.is_some_and(|p| !p.from_major && !p.from_business);
+            let business_rearm =
+                unanswered_traffic && e.poke.is_some_and(|p| !p.from_major && !p.from_business);
             if let Some(reason) = v.death {
                 dead.push((*nid, e.tier, reason));
             } else if forced {
@@ -771,7 +844,8 @@ impl OverlayRuntime {
                 // can never catch this: the re-inits themselves keep
                 // `last_rx_at` fresh.
                 let pressured = handshake_done && e.reinit_recent >= REINIT_PRESSURE_MIN;
-                if (pressured || unanswered_traffic
+                if (pressured
+                    || unanswered_traffic
                     || should_poke(handshake_done, false, since_last_rx, since_proof))
                     && wg.poke_handshake(&e.pubkey)
                 {
@@ -1185,9 +1259,22 @@ impl OverlayRuntime {
     ) -> Option<Installed> {
         let removed = by_node.remove(&node_id);
         if let Some(e) = &removed {
+            let old_subnets: Vec<crate::overlay::router::Cidr> = if os_route == PeerRoute::Drop {
+                wg.peer_subnets(&e.pubkey)
+                    .into_iter()
+                    .filter(|c| !c.is_default_route())
+                    .collect()
+            } else {
+                Vec::new()
+            };
             wg.remove_peer(&e.pubkey).await;
             if os_route == PeerRoute::Drop {
                 del_peer_route_if_unowned(tun, by_node, e.overlay_ip).await;
+                for old_c in old_subnets {
+                    if !wg.any_peer_claims_subnet(&old_c) {
+                        tun.del_cidr_route(&old_c.to_string()).await;
+                    }
+                }
             }
         }
         if let Some(r) = relay.as_mut() {
@@ -1316,6 +1403,9 @@ impl OverlayRuntime {
         // accumulated an entry per peer that ever churned (the monitor's
         // per-peer state is dropped by `on_peer_removed` above).
         relay_refresh_cooldown.remove(&node_id);
+        if let Some(ref e) = removed {
+            wg.clear_pending_wake_queue(&e.pubkey);
+        }
         if removed.is_some() {
             info!(peer = %node_id, "overlay: peer removed");
         }
@@ -1361,7 +1451,19 @@ impl OverlayRuntime {
             // clean leave). An already-installed carrier is left alone — the
             // data plane outlives a control-plane hiccup and the health sweep
             // owns its lifecycle; removal still arrives via the leave delta.
+            // B5 — if an admin updates or revokes `approved_routes` on a router
+            // while its control-plane presence is `reachable: false`, still
+            // reconcile its subnets on any already-installed carrier so
+            // withdrawn CIDRs are immediately removed from the WG router/TUN.
             if !np.reachable {
+                if let Some(e) = by_node.get(&np.node_id)
+                    && let Some(cfg) = peer_config_from_netmap(np)
+                    && e.pubkey == cfg.public_key
+                    && e.overlay_ip == cfg.overlay_ip
+                {
+                    self.reconcile_peer_subnets(wg, tun, np.node_id, e.pubkey, &cfg.subnets)
+                        .await;
+                }
                 continue;
             }
             let Some(cfg) = peer_config_from_netmap(np) else {
@@ -1410,9 +1512,15 @@ impl OverlayRuntime {
             // `Keep`) because the OLD address's route must go — install
             // re-adds the new one, and Drop's other-claimant guard protects a
             // recycled address already owned by a different live peer.
-            if let Some(old_ip) = by_node.get(&np.node_id).map(|e| e.overlay_ip)
+            if let Some((old_ip, old_pk)) =
+                by_node.get(&np.node_id).map(|e| (e.overlay_ip, e.pubkey))
                 && old_ip != cfg.overlay_ip
             {
+                let old_subnets: Vec<crate::overlay::router::Cidr> = wg
+                    .peer_subnets(&old_pk)
+                    .into_iter()
+                    .filter(|c| !c.is_default_route())
+                    .collect();
                 warn!(peer = %np.node_id, old_ip = %old_ip, new_ip = %cfg.overlay_ip,
                     "overlay: peer's overlay IP changed (renumber) — reinstalling its carrier");
                 self.remove_peer_state(
@@ -1427,6 +1535,11 @@ impl OverlayRuntime {
                     PeerRoute::Drop,
                 )
                 .await;
+                for old_c in old_subnets {
+                    if !cfg.subnets.contains(&old_c) && !wg.any_peer_claims_subnet(&old_c) {
+                        tun.del_cidr_route(&old_c.to_string()).await;
+                    }
+                }
             }
             // Copy-out the installed carrier's shape (all Copy), so the by_node
             // borrow ends before any mutation below.
@@ -1443,6 +1556,11 @@ impl OverlayRuntime {
             // key accepted inbound forever.
             let installed = match installed {
                 Some((_, pk, _, _)) if pk != cfg.public_key => {
+                    let old_subnets: Vec<crate::overlay::router::Cidr> = wg
+                        .peer_subnets(&pk)
+                        .into_iter()
+                        .filter(|c| !c.is_default_route())
+                        .collect();
                     warn!(peer = %np.node_id, overlay_ip = %cfg.overlay_ip,
                         "overlay: peer's WG public key changed — reinstalling its carrier");
                     // No alloc_q here (install_peers doesn't take one) and none
@@ -1460,10 +1578,22 @@ impl OverlayRuntime {
                         PeerRoute::Keep,
                     )
                     .await;
+                    for old_c in old_subnets {
+                        if !cfg.subnets.contains(&old_c) && !wg.any_peer_claims_subnet(&old_c) {
+                            tun.del_cidr_route(&old_c.to_string()).await;
+                        }
+                    }
                     None
                 }
                 other => other,
             };
+            // B5 — reconcile an already-installed peer's approved subnet routes
+            // in-place (and withdraw OS CIDR routes only when no remaining HA
+            // router claims them) before any short-circuit `continue` below.
+            if let Some((_, pk, _, _)) = installed {
+                self.reconcile_peer_subnets(wg, tun, np.node_id, pk, &cfg.subnets)
+                    .await;
+            }
             // The negotiated bilateral trial owns carrier selection, but only
             // AFTER authoritative key/IP reconciliation above. Never allow the
             // legacy relay-to-direct upgrader to split the two-member decision.
@@ -1473,6 +1603,11 @@ impl OverlayRuntime {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .contains(&np.node_id)
+            {
+                continue;
+            }
+            if let Some((_, pk, _, _)) = installed
+                && wg.peer_is_dormant(&pk) == Some(true)
             {
                 continue;
             }
@@ -1559,6 +1694,10 @@ impl OverlayRuntime {
             };
             match installed {
                 Some((true, pk, tier, inst_dst)) => {
+                    if wg.peer_is_dormant(&pk) == Some(true) {
+                        record("install_peers:keep_direct", path::PathAction::Keep);
+                        continue;
+                    }
                     // D10 — a zombie srflx punch (installed but never handshook)
                     // whose advertised srflx has since CHANGED: re-dial the fresh
                     // mapping NOW, without booking a strike (the old dst is
@@ -1737,6 +1876,10 @@ impl OverlayRuntime {
                     continue; // already direct (LAN / public / srflx)
                 }
                 Some((false, pk, _, _)) => {
+                    if wg.peer_is_dormant(&pk) == Some(true) {
+                        record("install_peers:upgrade", path::PathAction::Keep);
+                        continue;
+                    }
                     // Installed on RELAY — upgrade to the best available direct
                     // tier now that an endpoint has appeared: LAN > public-NIC >
                     // srflx punch.
@@ -2029,6 +2172,7 @@ impl OverlayRuntime {
                         // server DERP pin still wins, as it does on the walk.
                         if make_before_break
                             && crate::overlay::direct::birth_lan_probe_enabled()
+                            && wg.peer_is_dormant(&cfg.public_key) != Some(true)
                             && !wg.has_direct_probe(&cfg.public_key)
                             && !self
                                 .shadow(|s| s.mon.forced_derp_active(&np.node_id, now))
@@ -2036,7 +2180,10 @@ impl OverlayRuntime {
                             && let (Some(ctx), Some((local_ip, dst))) = (direct_ctx, direct_dst)
                             && let Some(sock) = lan_egress_socket(ctx, local_ip, dst).await
                         {
-                            record("install_peers:birth", path::PathAction::Probe(DirectTier::Lan));
+                            record(
+                                "install_peers:birth",
+                                path::PathAction::Probe(DirectTier::Lan),
+                            );
                             self.start_upgrade_probe(
                                 wg,
                                 upgrade_probes,
@@ -2072,7 +2219,10 @@ impl OverlayRuntime {
                     // nothing else is dialable (airgapped pure-LAN mesh — a
                     // wrong guess costs nothing there) and when MBB is
                     // env-disabled.
+                    let defer_on_demand = wg.on_demand_config().enabled
+                        && wg.on_demand_config().defer_initial_handshake;
                     let lan_probe_first = make_before_break
+                        && !defer_on_demand
                         && direct_dst.is_some()
                         && (phase_a_dst.is_some() || srflx_dst.is_some() || relay.is_some());
                     let mut lan_probing = false;
@@ -2833,7 +2983,12 @@ impl OverlayRuntime {
         };
         // ORG has an explicit fresh active-floor protocol. A pk-only mux
         // notice cannot distinguish old ciphertext from current peer intent.
-        if by_node.get(&nid).is_some_and(|e| e.relay_kind == Some(RelayKind::Org)) { return false; }
+        if by_node
+            .get(&nid)
+            .is_some_and(|e| e.relay_kind == Some(RelayKind::Org))
+        {
+            return false;
+        }
         // #34 — a carrier we JUST promoted is not evidence of disagreement.
         //
         // The peer has to complete its own probe → latch → cutover, which was
@@ -2926,7 +3081,9 @@ impl OverlayRuntime {
         link: ReadyLink,
         quic: Option<Arc<Carrier>>,
     ) {
-        if link.relay_kind == RelayKind::Org && wg.org_recovery_held(&link.public_key) { return; }
+        if link.relay_kind == RelayKind::Org && wg.org_recovery_held(&link.public_key) {
+            return;
+        }
         let (relay_local, relay_dst) = match &link.relay_parts {
             Some((conn, dst)) => (conn.local_addr().ok(), Some(*dst)),
             None => (None, None),
@@ -2934,21 +3091,28 @@ impl OverlayRuntime {
         let carrier = quic.unwrap_or_else(|| link.carrier.clone());
         if link.relay_kind == RelayKind::Org
             && by_node.get(&link.node_id).is_some_and(|e| {
-                e.pubkey == link.public_key && e.overlay_ip == link.overlay_ip
+                e.pubkey == link.public_key
+                    && e.overlay_ip == link.overlay_ip
                     && e.relay_kind == Some(RelayKind::Derp)
             })
         {
             if wg.start_org_upgrade(link.public_key, link.overlay_ip, carrier) {
                 let node_id = link.node_id;
-                by_node.get_mut(&node_id).expect("incumbent checked").org_upgrade =
-                    Some((link, Instant::now()));
+                by_node
+                    .get_mut(&node_id)
+                    .expect("incumbent checked")
+                    .org_upgrade = Some((link, Instant::now()));
             }
             return;
         }
         let initiate = carrier.is_direct() || self.keypair.public.to_bytes() < link.public_key;
         let is_direct = carrier.is_direct();
         wg.add_peer(link.public_key, link.overlay_ip, carrier, initiate);
-        wg.set_peer_relay_role(&link.public_key, link.relay_kind == RelayKind::Derp, link.relay_kind == RelayKind::Org);
+        wg.set_peer_relay_role(
+            &link.public_key,
+            link.relay_kind == RelayKind::Derp,
+            link.relay_kind == RelayKind::Org,
+        );
         by_node.insert(
             link.node_id,
             Installed {
@@ -2981,38 +3145,55 @@ impl OverlayRuntime {
         if let Err(e) = tun.add_peer_route(link.overlay_ip).await {
             debug!(peer = %link.node_id, %e, "overlay: /32 peer route not installed (ok on clean hosts)");
         }
-        // Phase 1 — subnet-router peer: route its approved CIDRs to it.
-        self.install_subnets(wg, tun, link.node_id, link.public_key, &link.subnets)
+        // Phase 1 / B5 — subnet-router peer: reconcile its approved CIDRs so
+        // mid-build route withdrawals/additions and active split-default `/1`
+        // routes are preserved cleanly.
+        self.reconcile_peer_subnets(wg, tun, link.node_id, link.public_key, &link.subnets)
             .await;
         info!(peer = %link.node_id, overlay_ip = %link.overlay_ip, initiate, "overlay: peer installed");
     }
 
     pub(super) fn sweep_authenticated_derp_follow(
-        &self, wg: &mut WgDevice, by_node: &mut HashMap<ObjectId, Installed>,
-        relay: &mut Option<RelayCoordinator>, current_peers: &HashMap<ObjectId, NetmapPeer>,
+        &self,
+        wg: &mut WgDevice,
+        by_node: &mut HashMap<ObjectId, Installed>,
+        relay: &mut Option<RelayCoordinator>,
+        current_peers: &HashMap<ObjectId, NetmapPeer>,
     ) -> bool {
         let mut changed = false;
         for (nid, e) in by_node.iter_mut() {
-            if e.relay_kind != Some(RelayKind::Org) { continue; }
-            if !current_peers.get(nid).and_then(peer_config_from_netmap)
+            if e.relay_kind != Some(RelayKind::Org) {
+                continue;
+            }
+            if !current_peers
+                .get(nid)
+                .and_then(peer_config_from_netmap)
                 .is_some_and(|p| p.public_key == e.pubkey && p.overlay_ip == e.overlay_ip)
             {
                 wg.cancel_derp_follow(&e.pubkey);
                 continue;
             }
-            if !wg.poll_derp_follow(&e.pubkey) { continue; }
+            if !wg.poll_derp_follow(&e.pubkey) {
+                continue;
+            }
             let (local, dst) = wg.peer_relay_addrs(&e.pubkey);
-            let traffic = wg.peer_traffic(&e.pubkey).unwrap_or((0,0));
+            let traffic = wg.peer_traffic(&e.pubkey).unwrap_or((0, 0));
             *e = Installed {
                 hs_done: wg.peer_handshake_done(&e.pubkey) == Some(true),
-                initiated: true, relay_kind: Some(RelayKind::Derp),
-                last_traffic: traffic, relay_local: local, relay_dst: dst,
-                carrier_local: local, carrier_dst: dst,
+                initiated: true,
+                relay_kind: Some(RelayKind::Derp),
+                last_traffic: traffic,
+                relay_local: local,
+                relay_dst: dst,
+                carrier_local: local,
+                carrier_dst: dst,
                 org_recovery_until: wg.org_recovery_until(&e.pubkey),
                 org_recovery_needs_query: true,
                 ..Installed::base(e.pubkey, e.overlay_ip, DirectTier::Relay, Instant::now())
             };
-            if let Some(r) = relay.as_mut() { r.org_bind_failed(nid); }
+            if let Some(r) = relay.as_mut() {
+                r.org_bind_failed(nid);
+            }
             info!(peer = %nid, "overlay relay: authenticated fresh active-DERP proof — restored retained floor");
             changed = true;
         }
@@ -3022,33 +3203,59 @@ impl OverlayRuntime {
     /// Settle only an authorized candidate tied to the current key/IP and
     /// incumbent. A failed or revoked candidate never withdraws the floor.
     pub(super) fn sweep_org_upgrades(
-        &self, wg: &mut WgDevice, by_node: &mut HashMap<ObjectId, Installed>,
-        relay: &mut Option<RelayCoordinator>, current_peers: &HashMap<ObjectId, NetmapPeer>,
+        &self,
+        wg: &mut WgDevice,
+        by_node: &mut HashMap<ObjectId, Installed>,
+        relay: &mut Option<RelayCoordinator>,
+        current_peers: &HashMap<ObjectId, NetmapPeer>,
     ) -> bool {
         let mut changed = false;
         for (nid, e) in by_node.iter_mut() {
-            let Some((link, since)) = e.org_upgrade.as_ref() else { continue; };
-            let current = current_peers.get(nid).and_then(peer_config_from_netmap)
-                .is_some_and(|p| p.public_key == link.public_key && p.overlay_ip == link.overlay_ip);
-            if !current || wg.org_recovery_held(&e.pubkey) || e.org_recovery_needs_query
-                || since.elapsed() >= DirectTier::Relay.handshake_deadline() {
+            let Some((link, since)) = e.org_upgrade.as_ref() else {
+                continue;
+            };
+            let current = current_peers
+                .get(nid)
+                .and_then(peer_config_from_netmap)
+                .is_some_and(|p| {
+                    p.public_key == link.public_key && p.overlay_ip == link.overlay_ip
+                });
+            if !current
+                || wg.org_recovery_held(&e.pubkey)
+                || e.org_recovery_needs_query
+                || since.elapsed() >= DirectTier::Relay.handshake_deadline()
+            {
                 wg.cancel_org_upgrade(&e.pubkey);
                 e.org_upgrade = None;
-                if let Some(r) = relay.as_mut() { r.org_bind_failed(nid); }
+                if let Some(r) = relay.as_mut() {
+                    r.org_bind_failed(nid);
+                }
                 info!(peer = %nid, "overlay relay: ORG candidate did not settle; DERP retained");
                 continue;
             }
-            if !wg.promote_org_upgrade(&e.pubkey) { continue; }
+            if !wg.promote_org_upgrade(&e.pubkey) {
+                continue;
+            }
             let (link, _) = e.org_upgrade.take().expect("candidate checked");
-            let (local, dst) = link.relay_parts.as_ref()
-                .map(|(c, d)| (c.local_addr().ok(), Some(*d))).unwrap_or((None, None));
+            let (local, dst) = link
+                .relay_parts
+                .as_ref()
+                .map(|(c, d)| (c.local_addr().ok(), Some(*d)))
+                .unwrap_or((None, None));
             *e = Installed {
                 hs_done: true,
                 initiated: true,
                 relay_kind: Some(RelayKind::Org),
-                relay_local: local, relay_dst: dst,
-                carrier_local: local, carrier_dst: dst,
-                ..Installed::base(link.public_key, link.overlay_ip, DirectTier::Relay, Instant::now())
+                relay_local: local,
+                relay_dst: dst,
+                carrier_local: local,
+                carrier_dst: dst,
+                ..Installed::base(
+                    link.public_key,
+                    link.overlay_ip,
+                    DirectTier::Relay,
+                    Instant::now(),
+                )
             };
             info!(peer = %nid, "overlay relay: ORG carrier promoted after authenticated WG response (DERP receive retained)");
             changed = true;
@@ -3503,10 +3710,28 @@ mod tests {
     #[test]
     fn a_v6_address_change_rewrites_only_the_v6_tail() {
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
-        let mut c = s(&["203.0.113.7:1111", "198.51.100.2:9", "[2001:db8:1::5]:45200"]);
-        assert!(!replace_v6_tail(&mut c, s(&["[2001:db8:1::5]:45200"])), "unchanged");
-        assert!(replace_v6_tail(&mut c, s(&["[2001:db8:2::5]:45200", "[2001:db8:2::6]:45200"])));
-        assert_eq!(c, s(&["203.0.113.7:1111", "198.51.100.2:9", "[2001:db8:2::5]:45200", "[2001:db8:2::6]:45200"]));
+        let mut c = s(&[
+            "203.0.113.7:1111",
+            "198.51.100.2:9",
+            "[2001:db8:1::5]:45200",
+        ]);
+        assert!(
+            !replace_v6_tail(&mut c, s(&["[2001:db8:1::5]:45200"])),
+            "unchanged"
+        );
+        assert!(replace_v6_tail(
+            &mut c,
+            s(&["[2001:db8:2::5]:45200", "[2001:db8:2::6]:45200"])
+        ));
+        assert_eq!(
+            c,
+            s(&[
+                "203.0.113.7:1111",
+                "198.51.100.2:9",
+                "[2001:db8:2::5]:45200",
+                "[2001:db8:2::6]:45200"
+            ])
+        );
         assert!(replace_v6_tail(&mut c, Vec::new()), "IPv6 gone");
         assert_eq!(c, s(&["203.0.113.7:1111", "198.51.100.2:9"]));
     }
@@ -3519,20 +3744,50 @@ mod tests {
         };
         c.v6 = Some(Arc::new(s6));
         c.my_v6 = vec!["2001:db8::1".parse().unwrap()];
-        let p = peer(&[], &["37.63.112.129:43649", "[2001:db8::2]:45200"], Some("symmetric"));
+        let p = peer(
+            &[],
+            &["37.63.112.129:43649", "[2001:db8::2]:45200"],
+            Some("symmetric"),
+        );
         let first = resolve_direct_candidates(Some(&c), &p, CandidateRotation::default());
         assert_eq!(first.srflx, Some("[2001:db8::2]:45200".parse().unwrap()));
-        let rot = CandidateRotation { srflx: direct::V6_FIRST_STRIKES, ..Default::default() };
+        let rot = CandidateRotation {
+            srflx: direct::V6_FIRST_STRIKES,
+            ..Default::default()
+        };
         let after = resolve_direct_candidates(Some(&c), &p, rot);
-        assert_eq!(after.srflx, None, "then the IPv4 rules: both symmetric, no punch");
-        let cone = peer(&[], &["37.63.112.129:43649", "[2001:db8::2]:45200"], Some("cone"));
+        assert_eq!(
+            after.srflx, None,
+            "then the IPv4 rules: both symmetric, no punch"
+        );
+        let cone = peer(
+            &[],
+            &["37.63.112.129:43649", "[2001:db8::2]:45200"],
+            Some("cone"),
+        );
         let after = resolve_direct_candidates(Some(&c), &cone, rot);
         assert_eq!(after.srflx, Some("37.63.112.129:43649".parse().unwrap()));
         let v4_only = peer(&[], &["37.63.112.129:43649"], Some("cone"));
         let plain = resolve_direct_candidates(Some(&c), &v4_only, CandidateRotation::default());
-        assert_eq!(plain.srflx, Some("37.63.112.129:43649".parse().unwrap()), "an IPv4-only peer is unchanged");
-        assert!(c.srflx_sock("[2001:db8::2]:1".parse().unwrap()).unwrap().local_addr().unwrap().is_ipv6());
-        assert!(c.srflx_sock("37.63.112.129:1".parse().unwrap()).unwrap().local_addr().unwrap().is_ipv4());
+        assert_eq!(
+            plain.srflx,
+            Some("37.63.112.129:43649".parse().unwrap()),
+            "an IPv4-only peer is unchanged"
+        );
+        assert!(
+            c.srflx_sock("[2001:db8::2]:1".parse().unwrap())
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .is_ipv6()
+        );
+        assert!(
+            c.srflx_sock("37.63.112.129:1".parse().unwrap())
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .is_ipv4()
+        );
     }
 
     #[tokio::test]
@@ -3669,15 +3924,29 @@ mod tests {
         // a proof that is neither business nor Major.
         let now = Instant::now();
         let old = now - STANDBY_ARM_AFTER - Duration::from_millis(1);
-        let business = |at| Some(PokeArm { at, from_major: false, from_business: true });
+        let business = |at| {
+            Some(PokeArm {
+                at,
+                from_major: false,
+                from_business: true,
+            })
+        };
         assert!(!standby_tee_wanted(None, false, true, now));
         assert!(!standby_tee_wanted(business(now), false, true, now));
         assert!(standby_tee_wanted(business(old), false, true, now));
         assert!(!standby_tee_wanted(business(old), true, true, now));
         assert!(!standby_tee_wanted(business(old), false, false, now));
-        let major = Some(PokeArm { at: old, from_major: true, from_business: false });
+        let major = Some(PokeArm {
+            at: old,
+            from_major: true,
+            from_business: false,
+        });
         assert!(standby_tee_wanted(major, false, true, now));
-        let other = Some(PokeArm { at: old, from_major: false, from_business: false });
+        let other = Some(PokeArm {
+            at: old,
+            from_major: false,
+            from_business: false,
+        });
         assert!(!standby_tee_wanted(other, false, true, now));
     }
 
@@ -3709,11 +3978,205 @@ mod tests {
     #[tokio::test]
     async fn a_backbone_only_peer_has_no_direct_candidate() {
         let c = ctx(Some("5.5.5.5:1"), Some("cone")).await;
-        let mut p = peer(&["192.168.68.4:43648"], &["37.63.112.129:43649"], Some("cone"));
+        let mut p = peer(
+            &["192.168.68.4:43648"],
+            &["37.63.112.129:43649"],
+            Some("cone"),
+        );
         let open = resolve_direct_candidates(Some(&c), &p, CandidateRotation::default());
-        assert!(open.lan.is_some() && open.srflx.is_some(), "control: both tiers dial");
+        assert!(
+            open.lan.is_some() && open.srflx.is_some(),
+            "control: both tiers dial"
+        );
         p.backbone_only = true;
         let line = resolve_direct_candidates(Some(&c), &p, CandidateRotation::default());
         assert!(line.lan.is_none() && line.public.is_none() && line.srflx.is_none());
+    }
+
+    struct NoopTun;
+    #[async_trait::async_trait]
+    impl TunIo for NoopTun {
+        async fn read_packet(&self) -> std::io::Result<Vec<u8>> {
+            std::future::pending().await
+        }
+        async fn write_packet(&self, _: &[u8]) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// MeshHarbor B6 — a `Dormant` peer must never be convicted or poked by
+    /// `sweep_carrier_health` or `scout_business_traffic` (`不反复拆建`), even
+    /// when `since` and `last_rx_at` are artificially aged past every
+    /// `HandshakeDeadline` and `RxStale` threshold; yet a `hard_dead` carrier
+    /// is still reaped immediately.
+    #[tokio::test]
+    async fn b6_dormant_peer_survives_carrier_health_sweep_without_teardown_or_poke() {
+        let kp = WgKeypair::generate();
+        let peer_kp = WgKeypair::generate();
+        let pk = peer_kp.public.to_bytes();
+        let nid = ObjectId::new();
+        let ip = Ipv4Addr::new(100, 64, 9, 9);
+
+        let (tx, _rx) = mpsc::channel(16);
+        let tun: Arc<dyn TunIo> = Arc::new(NoopTun);
+        let tf: TunFactory = {
+            let t = tun.clone();
+            Box::new(move |_, _, _| Ok(t.clone()))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), tx, tf, 1280);
+
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        wg.set_on_demand_config(crate::overlay::on_demand::OnDemandConfig::enabled(
+            Duration::from_millis(200),
+        ));
+
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let dst_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dst = dst_sock.local_addr().unwrap();
+        wg.ensure_direct_demux(sock.clone());
+        wg.add_direct_peer(sock, pk, ip, dst, true).await;
+        assert_eq!(wg.peer_is_dormant(&pk), Some(true));
+
+        let ancient = Instant::now() - Duration::from_secs(600);
+        let mut inst = Installed::base(pk, ip, DirectTier::Lan, ancient);
+        inst.last_rx_at = ancient;
+        inst.bad_sweeps = 2;
+        inst.poke = Some(PokeArm {
+            at: ancient,
+            from_major: true,
+            from_business: true,
+        });
+        let mut by_node = HashMap::from([(nid, inst)]);
+        let mut relay = None;
+        let mut cooldown = HashMap::new();
+        let current_peers = HashMap::new();
+        let mut samples = HashMap::new();
+
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert!(
+            samples.is_empty(),
+            "dormant peer is skipped by business scout"
+        );
+
+        let lost = rt
+            .sweep_carrier_health(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut cooldown,
+                &current_peers,
+                ForcedPoke::Major,
+            )
+            .await;
+        assert!(
+            !lost,
+            "dormant peer must not be convicted by sweep_carrier_health"
+        );
+        assert!(by_node.contains_key(&nid), "dormant peer stays installed");
+        let e = &by_node[&nid];
+        assert_eq!(e.bad_sweeps, 0);
+        assert!(!e.stalled);
+        assert!(e.poke.is_none(), "stale poke cleared while dormant");
+        assert_eq!(
+            wg.peer_on_demand_snapshot(&pk).unwrap().wire_tx_packets,
+            0,
+            "sweep_carrier_health must not emit any poke packet on a dormant peer"
+        );
+    }
+
+    /// MeshHarbor B6 R2 — when a peer wakes on a direct NAT carrier whose
+    /// UDP pinhole has expired during `Dormant`, `check_and_note_waking_timeout`
+    /// marks the carrier `hard_dead` once `waking_timeout` (default 6 s)
+    /// elapses, and `sweep_carrier_health` immediately convicts and removes
+    /// the dead direct carrier instead of waiting 90 s (`WAKING_CONNECTION_EXPIRED_GRACE_NS`).
+    #[tokio::test]
+    async fn b6_waking_timeout_marks_carrier_dead_and_triggers_immediate_health_sweep_conviction() {
+        let kp = WgKeypair::generate();
+        let peer_kp = WgKeypair::generate();
+        let pk = peer_kp.public.to_bytes();
+        let nid = ObjectId::new();
+        let ip = Ipv4Addr::new(100, 64, 9, 10);
+
+        let (tx, _rx) = mpsc::channel(16);
+        let tun: Arc<dyn TunIo> = Arc::new(NoopTun);
+        let tf: TunFactory = {
+            let t = tun.clone();
+            Box::new(move |_, _, _| Ok(t.clone()))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), tx, tf, 1280);
+
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        wg.set_on_demand_config(
+            crate::overlay::on_demand::OnDemandConfig::enabled(Duration::from_millis(200))
+                .with_waking_timeout(Duration::from_millis(120)),
+        );
+
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let blackhole_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dst = blackhole_sock.local_addr().unwrap();
+        wg.ensure_direct_demux(sock.clone());
+        wg.add_direct_peer(sock, pk, ip, dst, true).await;
+        assert_eq!(wg.peer_is_dormant(&pk), Some(true));
+
+        let inst = Installed::base(pk, ip, DirectTier::Srflx, Instant::now());
+        let mut by_node = HashMap::from([(nid, inst)]);
+        let mut relay = None;
+        let mut cooldown = HashMap::new();
+        let current_peers = HashMap::new();
+
+        // Trigger outbound wakeup (`Dormant -> Waking`) with a business IPv4 packet.
+        let mut pkt = vec![0u8; 28];
+        pkt[0] = 0x45;
+        pkt[3] = 28;
+        pkt[8] = 64;
+        pkt[9] = 17;
+        pkt[12..16].copy_from_slice(&[100, 64, 9, 1]);
+        pkt[16..20].copy_from_slice(&ip.octets());
+        assert!(wg.send_ip_packet(&pkt).await);
+        assert_eq!(
+            wg.peer_on_demand_phase(&pk),
+            Some(crate::overlay::on_demand::OnDemandPhase::Waking)
+        );
+
+        // Before `waking_timeout` (120 ms) elapses, `sweep_carrier_health` keeps the waking carrier.
+        let lost_early = rt
+            .sweep_carrier_health(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut cooldown,
+                &current_peers,
+                ForcedPoke::No,
+            )
+            .await;
+        assert!(
+            !lost_early,
+            "waking peer before waking_timeout must not be convicted"
+        );
+        assert!(by_node.contains_key(&nid));
+
+        // Wait past `waking_timeout` (120 ms): `tick_on_demand` inside
+        // `sweep_carrier_health` marks the carrier `hard_dead` and convicts it
+        // immediately, while preserving the buffered wakeup packet in
+        // `pending_wake_queues` for the fallback carrier install.
+        tokio::time::sleep(Duration::from_millis(160)).await;
+        let lost_after = rt
+            .sweep_carrier_health(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut cooldown,
+                &current_peers,
+                ForcedPoke::No,
+            )
+            .await;
+        assert!(
+            lost_after,
+            "waking peer past waking_timeout must be convicted immediately for relay fallback"
+        );
+        assert!(!by_node.contains_key(&nid));
     }
 }

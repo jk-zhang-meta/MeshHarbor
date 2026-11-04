@@ -474,6 +474,9 @@ pub enum OverlayJoinRefusal {
     NetworkUnavailable,
     /// A transient persistence failure. Retryable.
     StoreUnavailable,
+    /// B4 — The node's WireGuard public key is expired, revoked, retired, or
+    /// already held by another machine in the network; requires key rotation.
+    KeyUnauthorized,
     /// A reason this build does not know.
     Unknown,
 }
@@ -488,6 +491,7 @@ impl<'de> Deserialize<'de> for OverlayJoinRefusal {
             "address_space_exhausted" => OverlayJoinRefusal::AddressSpaceExhausted,
             "network_unavailable" => OverlayJoinRefusal::NetworkUnavailable,
             "store_unavailable" => OverlayJoinRefusal::StoreUnavailable,
+            "key_unauthorized" => OverlayJoinRefusal::KeyUnauthorized,
             _ => OverlayJoinRefusal::Unknown,
         })
     }
@@ -2569,6 +2573,18 @@ pub enum ClientMsg {
     #[serde(rename = "rc:overlay.warm_relay_request")]
     OverlayWarmRelayRequest {},
 
+    /// B3 — node acknowledges the netmap / delta `epoch` and tenant
+    /// `auth_revision` it has applied in its local `OverlayRuntime`. The
+    /// control plane records the watermark monotonically on `OverlayNode` so
+    /// operators and multi-pod control instances can verify authority
+    /// convergence across reconnects and pod handoffs.
+    #[serde(rename = "rc:overlay.netmap_ack")]
+    OverlayNetmapAck {
+        epoch: u64,
+        #[serde(default)]
+        auth_revision: u64,
+    },
+
     // ── FR-52 P3 — external access (`rc:extauth.*`) ──────────────────────
     //
     // An OPAQUE login between someone OUTSIDE the device's organization and
@@ -2838,6 +2854,7 @@ impl ClientMsg {
             ClientMsg::OverlayPathTrialReturnAbort { .. } => "rc:overlay.path_trial_return_abort",
 
             ClientMsg::OverlayWarmRelayRequest { .. } => "rc:overlay.warm_relay_request",
+            ClientMsg::OverlayNetmapAck { .. } => "rc:overlay.netmap_ack",
             ClientMsg::ExtauthStart { .. } => "rc:extauth.start",
             ClientMsg::ExtauthFinish { .. } => "rc:extauth.finish",
             ClientMsg::ExtauthKe2 { .. } => "rc:extauth.ke2",
@@ -2922,7 +2939,8 @@ impl ClientMsg {
             | ClientMsg::OverlayPathTrialReturned { .. }
             | ClientMsg::OverlayPathTrialReturnAbort { .. }
 
-            | ClientMsg::OverlayWarmRelayRequest { .. } => Owner::Network,
+            | ClientMsg::OverlayWarmRelayRequest { .. }
+            | ClientMsg::OverlayNetmapAck { .. } => Owner::Network,
             ClientMsg::HiveStartAck { .. }
             | ClientMsg::HiveState { .. }
             | ClientMsg::HiveTurn { .. }
@@ -3053,6 +3071,7 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:overlay.path_trial_returned", Owner::Network),
     ("rc:overlay.path_trial_return_abort", Owner::Network),
     ("rc:overlay.warm_relay_request", Owner::Network),
+    ("rc:overlay.netmap_ack", Owner::Network),
     ("rc:extauth.start", Owner::Remote),
     ("rc:extauth.finish", Owner::Remote),
     ("rc:extauth.ke2", Owner::Remote),
@@ -4246,6 +4265,11 @@ pub enum ServerMsg {
         /// recycled to someone else.
         #[serde(default)]
         epoch: u64,
+        /// B3 — tenant-wide authority revision stamped at the time this delta
+        /// was compiled. `0` on legacy servers; when `> 0`, a client rejects
+        /// any delta whose `auth_revision < applied_auth_revision`.
+        #[serde(default)]
+        auth_revision: u64,
         #[serde(default)]
         upserts: Vec<NetmapPeer>,
         #[serde(default, with = "vec_oid_hex")]
@@ -5346,23 +5370,47 @@ mod relay_path_identity_tests {
         use super::{ClientMsg, OrgRelayCandidateWire, ServerMsg};
         let ids = (0..4).map(|_| ObjectId::new()).collect::<Vec<_>>();
         let path = RelayPathWire::new(ids.clone()).unwrap();
-        let candidate = OrgRelayCandidateWire { path: path.clone(), requester_at_exit: true,
-            endpoints: vec!["1.1.1.1:3478".into()] };
+        let candidate = OrgRelayCandidateWire {
+            path: path.clone(),
+            requester_at_exit: true,
+            endpoints: vec!["1.1.1.1:3478".into()],
+        };
         assert_eq!(candidate.requester_relay_node_id(), ids[3]);
         assert_eq!(candidate.cursor().path, path);
         let peer = ObjectId::new();
-        let request = ClientMsg::OverlayPathTrialRequest { peer_node_id: peer, request_id: 7,
-            path: path.clone(), requester_at_exit: true };
+        let request = ClientMsg::OverlayPathTrialRequest {
+            peer_node_id: peer,
+            request_id: 7,
+            path: path.clone(),
+            requester_at_exit: true,
+        };
         let json = serde_json::to_value(request).unwrap();
-        assert_eq!(json["path"]["relay_node_ids"], serde_json::json!(ids.iter().map(|id| id.to_hex()).collect::<Vec<_>>()));
+        assert_eq!(
+            json["path"]["relay_node_ids"],
+            serde_json::json!(ids.iter().map(|id| id.to_hex()).collect::<Vec<_>>())
+        );
         assert!(matches!(serde_json::from_value::<ClientMsg>(json).unwrap(),
             ClientMsg::OverlayPathTrialRequest { path: decoded, requester_at_exit:true, .. } if decoded == path));
-        let start = ServerMsg::OverlayPathTrialStart { trial_id: ObjectId::new(), request_id: 7,
-            peer_node_id: peer, peer_wg_public_key: "key".into(), path: path.clone(), requester_at_exit: true,
-            vni: 4, generation: 5, relay_node_id: ids[3], relay_endpoints: vec!["1.1.1.1:3478".into()],
-            bind_secret: "secret".into(), bind_secs: 30, max_lifetime_secs: 60 };
-        let decoded: ServerMsg = serde_json::from_value(serde_json::to_value(start).unwrap()).unwrap();
-        assert!(matches!(decoded, ServerMsg::OverlayPathTrialStart {path: decoded, requester_at_exit:true, ..} if decoded == path));
+        let start = ServerMsg::OverlayPathTrialStart {
+            trial_id: ObjectId::new(),
+            request_id: 7,
+            peer_node_id: peer,
+            peer_wg_public_key: "key".into(),
+            path: path.clone(),
+            requester_at_exit: true,
+            vni: 4,
+            generation: 5,
+            relay_node_id: ids[3],
+            relay_endpoints: vec!["1.1.1.1:3478".into()],
+            bind_secret: "secret".into(),
+            bind_secs: 30,
+            max_lifetime_secs: 60,
+        };
+        let decoded: ServerMsg =
+            serde_json::from_value(serde_json::to_value(start).unwrap()).unwrap();
+        assert!(
+            matches!(decoded, ServerMsg::OverlayPathTrialStart {path: decoded, requester_at_exit:true, ..} if decoded == path)
+        );
     }
 
     #[test]
@@ -5411,12 +5459,17 @@ pub struct OrgRelayCandidateWire {
 impl OrgRelayCandidateWire {
     pub fn requester_relay_node_id(&self) -> ObjectId {
         let nodes = self.path.relay_node_ids();
-        if self.requester_at_exit { nodes[nodes.len() - 1] } else { nodes[0] }
+        if self.requester_at_exit {
+            nodes[nodes.len() - 1]
+        } else {
+            nodes[0]
+        }
     }
 
     pub fn cursor(&self) -> OrgRelayDiscoveryCursorWire {
         OrgRelayDiscoveryCursorWire {
-            path: self.path.clone(), requester_at_exit: self.requester_at_exit,
+            path: self.path.clone(),
+            requester_at_exit: self.requester_at_exit,
         }
     }
 }
@@ -5456,10 +5509,21 @@ mod discovery_scan_wire_tests {
         };
         let value = serde_json::to_value(&progress).unwrap();
         assert_eq!(value["state"], "progress");
-        assert_eq!(value["checkpoint"]["relay_node_ids"].as_array().unwrap().len(),257);
-        assert_eq!(serde_json::from_value::<OrgRelayDiscoveryScanWire>(value).unwrap(),progress);
-        assert_ne!(serde_json::to_value(OrgRelayDiscoveryScanWire::Unavailable).unwrap(),
-            serde_json::to_value(OrgRelayDiscoveryScanWire::Stale).unwrap());
+        assert_eq!(
+            value["checkpoint"]["relay_node_ids"]
+                .as_array()
+                .unwrap()
+                .len(),
+            257
+        );
+        assert_eq!(
+            serde_json::from_value::<OrgRelayDiscoveryScanWire>(value).unwrap(),
+            progress
+        );
+        assert_ne!(
+            serde_json::to_value(OrgRelayDiscoveryScanWire::Unavailable).unwrap(),
+            serde_json::to_value(OrgRelayDiscoveryScanWire::Stale).unwrap()
+        );
     }
 }
 
@@ -6139,6 +6203,9 @@ pub struct OverlayNetworkInfo {
     /// measures a private endpoint over its public path.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub backbone_probe_targets: Vec<RelayProbeTargetWire>,
+    /// B3 — tenant-wide authority revision carried in the full netmap.
+    #[serde(default)]
+    pub auth_revision: u64,
 }
 
 /// One relay [`OverlayNetworkInfo::relay_probe_targets`] names: what to probe,
@@ -10685,6 +10752,7 @@ mod tests {
             stun_urls: vec![],
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
+            auth_revision: 1,
         };
         let s = serde_json::to_string(&net).unwrap();
         let back: OverlayNetworkInfo = serde_json::from_str(&s).unwrap();
@@ -10748,6 +10816,7 @@ mod tests {
                 stun_urls: vec![],
                 relay_probe_targets: vec![],
                 backbone_probe_targets: vec![],
+                auth_revision: 1,
             },
             peers: vec![],
             epoch: 7,
@@ -11582,6 +11651,7 @@ mod tests {
                 stun_urls: vec!["stun:5.9.157.221:3478".into()],
                 relay_probe_targets: vec![],
                 backbone_probe_targets: vec![],
+                auth_revision: 1,
             },
             peers: vec![NetmapPeer {
                 node_id,
@@ -12131,6 +12201,7 @@ mod tests {
         let rm = ObjectId::parse_str("507f1f77bcf86cd799439012").unwrap();
         let m = ServerMsg::OverlayNetmapDelta {
             epoch: 8,
+            auth_revision: 3,
             upserts: vec![],
             removes: vec![rm],
         };
@@ -12139,11 +12210,34 @@ mod tests {
         assert!(!s.contains("$oid"));
         assert!(s.contains("\"507f1f77bcf86cd799439012\""));
         match serde_json::from_str::<ServerMsg>(&s).unwrap() {
-            ServerMsg::OverlayNetmapDelta { removes, epoch, .. } => {
+            ServerMsg::OverlayNetmapDelta {
+                removes,
+                epoch,
+                auth_revision,
+                ..
+            } => {
                 assert_eq!(epoch, 8);
+                assert_eq!(auth_revision, 3);
                 assert_eq!(removes, vec![rm]);
             }
             other => panic!("expected OverlayNetmapDelta, got {other:?}"),
+        }
+
+        let ack = ClientMsg::OverlayNetmapAck {
+            epoch: 8,
+            auth_revision: 3,
+        };
+        let ack_wire = serde_json::to_string(&ack).unwrap();
+        assert!(ack_wire.contains(r#""t":"rc:overlay.netmap_ack""#));
+        match serde_json::from_str::<ClientMsg>(&ack_wire).unwrap() {
+            ClientMsg::OverlayNetmapAck {
+                epoch,
+                auth_revision,
+            } => {
+                assert_eq!(epoch, 8);
+                assert_eq!(auth_revision, 3);
+            }
+            other => panic!("expected OverlayNetmapAck, got {other:?}"),
         }
     }
 
@@ -12572,7 +12666,8 @@ mod discovery_cursor_wire_tests {
                 .unwrap(),
             reply
         );
-        new["cursor"] = serde_json::json!({"path":{"relay_node_ids":["not-an-id"]}, "requester_at_exit":false});
+        new["cursor"] =
+            serde_json::json!({"path":{"relay_node_ids":["not-an-id"]}, "requester_at_exit":false});
         assert!(serde_json::from_value::<ClientMsg>(new).is_err());
     }
 }

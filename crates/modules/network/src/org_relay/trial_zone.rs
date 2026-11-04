@@ -58,7 +58,8 @@ impl TrialZoneSnapshot {
         }
         if let Some(member_zones) = self.member_zones
             && (member_zones[0] != self.relay_zones[0]
-                || member_zones[1] != self.relay_zones[self.relay_zones.len() - 1]) {
+                || member_zones[1] != self.relay_zones[self.relay_zones.len() - 1])
+        {
             return false;
         }
         let mut node_ids = HashSet::new();
@@ -82,9 +83,9 @@ impl TrialZoneSnapshot {
     fn involves(&self, identity: ObjectId) -> bool {
         self.relays.iter().any(|r| r.agent_id == identity)
             || self.members.iter().any(|m| match &m.node_ref {
-                    NodeRef::Agent { agent_id } => *agent_id == identity,
-                    NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id == identity,
-                })
+                NodeRef::Agent { agent_id } => *agent_id == identity,
+                NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id == identity,
+            })
     }
 }
 
@@ -199,38 +200,78 @@ pub(in crate::org_relay) async fn current_party_zone(
         NodeRef::Agent { agent_id } => *agent_id,
         NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id,
     };
-    let Some(node) = trial_lookup(state
-        .overlay_nodes
-        .base
-        .find_by_id(node_id)
-        .await)? else { return Ok(PartyZone::Invalid) };
+    let Some(node) = trial_lookup(state.overlay_nodes.base.find_by_id(node_id).await)? else {
+        return Ok(PartyZone::Invalid);
+    };
     if node.tenant_id != tenant || node.deleted_at.is_some() || &node.node_ref != node_ref {
         return Ok(PartyZone::Invalid);
     }
     let device = match node_ref {
         NodeRef::Agent { agent_id } => {
-            let Some(agent) = trial_lookup(state
-                .fleet
-                .agents
-                .find_live_in_tenant(tenant, *agent_id)
-                .await)? else { return Ok(PartyZone::Invalid) };
+            let Some(agent) = trial_lookup(
+                state
+                    .fleet
+                    .agents
+                    .find_live_in_tenant(tenant, *agent_id)
+                    .await,
+            )?
+            else {
+                return Ok(PartyZone::Invalid);
+            };
             let Ok(device) = AuthenticatedDevice::from_agent(&agent) else {
                 return Ok(PartyZone::Invalid);
             };
             device
         }
         NodeRef::TunnelClient { tunnel_client_id } => {
-            let Some(client) = trial_lookup(state
-                .tunnel_clients
-                .find_live_in_tenant(tenant, *tunnel_client_id)
-                .await)? else { return Ok(PartyZone::Invalid) };
+            let Some(client) = trial_lookup(
+                state
+                    .tunnel_clients
+                    .find_live_in_tenant(tenant, *tunnel_client_id)
+                    .await,
+            )?
+            else {
+                return Ok(PartyZone::Invalid);
+            };
             let Ok(device) = AuthenticatedDevice::from_tunnel_client(&client) else {
                 return Ok(PartyZone::Invalid);
             };
             device
         }
     };
-    if !require_zone { return Ok(PartyZone::ValidUnconstrained); }
+    let unknown_role_mode = crate::business_isolation::unknown_role_mode(state);
+    if crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce
+        && (!require_zone || unknown_role_mode != crate::business_isolation::Mode::Off)
+    {
+        let (kind, dev_id) = crate::business_isolation::Lines::ref_identity(node_ref);
+        match roomler_core::business_authority::trial_device_role_evidence(
+            &state.core,
+            tenant,
+            kind,
+            dev_id,
+        )
+        .await
+        {
+            roomler_core::business_authority::TrialServerEvidence::ObservedServer => {}
+            roomler_core::business_authority::TrialServerEvidence::ObservedClient
+                if require_zone => {}
+            roomler_core::business_authority::TrialServerEvidence::Unknown => return Err(()),
+            _ if !require_zone || unknown_role_mode == crate::business_isolation::Mode::Enforce => {
+                return Ok(PartyZone::Invalid);
+            }
+            _ => {
+                let unknown_devices = vec![crate::business_isolation::Lines::node_label(&node)];
+                crate::business_isolation::log_unknown_role_with_peers(
+                    tenant,
+                    "current_party_zone",
+                    &unknown_devices,
+                );
+            }
+        }
+    }
+    if !require_zone {
+        return Ok(PartyZone::ValidUnconstrained);
+    }
     let (connection, bound_at) = {
         let Some(live) = state.org_relay.live_conns.get(&identity) else {
             return Ok(PartyZone::Unknown);
@@ -254,9 +295,22 @@ pub(in crate::org_relay) async fn current_party_zone(
 
 /// Return exact trials needing retry. No I/O is awaited while the trial table
 /// is locked; removal compares the entire path again.
-pub(in crate::org_relay) fn trial_ids_for_identity(state: &NetworkState, identity: ObjectId) -> HashSet<ObjectId> {
-    let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
-    entries.values().filter_map(capture).filter(|s| s.involves(identity)).map(|s| s.id).collect()
+pub(in crate::org_relay) fn trial_ids_for_identity(
+    state: &NetworkState,
+    identity: ObjectId,
+) -> HashSet<ObjectId> {
+    let entries = state
+        .org_relay
+        .trials
+        .entries
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    entries
+        .values()
+        .filter_map(capture)
+        .filter(|s| s.involves(identity))
+        .map(|s| s.id)
+        .collect()
 }
 
 pub(in crate::org_relay) async fn recheck_relay_zones(
@@ -270,8 +324,11 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
         loop {
             match recheck_trial_zone_slice(state, id, reason).await {
                 TrialZoneSlice::Complete => break,
-                TrialZoneSlice::Continue => {},
-                TrialZoneSlice::Retry => { retry.insert(id); break; }
+                TrialZoneSlice::Continue => {}
+                TrialZoneSlice::Retry => {
+                    retry.insert(id);
+                    break;
+                }
             }
         }
     }
@@ -287,7 +344,11 @@ pub(in crate::org_relay) struct TrialZoneCursor {
     unavailable: bool,
 }
 
-pub(in crate::org_relay) enum TrialZoneSlice { Complete, Continue, Retry }
+pub(in crate::org_relay) enum TrialZoneSlice {
+    Complete,
+    Continue,
+    Retry,
+}
 
 struct TrialZoneSliceGuard {
     owner: std::sync::Arc<OrgRelayState>,
@@ -296,7 +357,11 @@ struct TrialZoneSliceGuard {
 
 impl Drop for TrialZoneSliceGuard {
     fn drop(&mut self) {
-        self.owner.trial_zone_inflight.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.id);
+        self.owner
+            .trial_zone_inflight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.id);
     }
 }
 
@@ -304,15 +369,38 @@ async fn limited_party_read<F>(state: &NetworkState, read: F) -> Result<PartyZon
 where
     F: std::future::Future<Output = Result<PartyZone, ()>>,
 {
-    let permits = state.org_relay.trial_zone_io_permits.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4))).clone();
-    let Ok(_permit) = permits.try_acquire_owned() else { return Err(()) };
-    if !state.org_relay.trial_zone_io_budget.lock().unwrap_or_else(|e| e.into_inner()).admit(Instant::now()) { return Err(()); }
+    let permits = state
+        .org_relay
+        .trial_zone_io_permits
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)))
+        .clone();
+    let Ok(_permit) = permits.try_acquire_owned() else {
+        return Err(());
+    };
+    if !state
+        .org_relay
+        .trial_zone_io_budget
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .admit(Instant::now())
+    {
+        return Err(());
+    }
     bounded_party_read(read, Duration::from_secs(3)).await
 }
 
 pub(in crate::org_relay) fn prune_trial_zone_cursors(state: &NetworkState) {
-    let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
-    let mut cursors = state.org_relay.trial_zone_cursors.lock().unwrap_or_else(|e| e.into_inner());
+    let entries = state
+        .org_relay
+        .trials
+        .entries
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut cursors = state
+        .org_relay
+        .trial_zone_cursors
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     cursors.retain(|id, _| entries.contains_key(id));
 }
 
@@ -325,28 +413,59 @@ pub(in crate::org_relay) async fn recheck_trial_zone_slice(
     reason: &str,
 ) -> TrialZoneSlice {
     {
-        let mut inflight = state.org_relay.trial_zone_inflight.lock().unwrap_or_else(|e| e.into_inner());
-        if !inflight.insert(id) { return TrialZoneSlice::Retry; }
+        let mut inflight = state
+            .org_relay
+            .trial_zone_inflight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !inflight.insert(id) {
+            return TrialZoneSlice::Retry;
+        }
     }
-    let _guard = TrialZoneSliceGuard { owner: state.org_relay.clone(), id };
+    let _guard = TrialZoneSliceGuard {
+        owner: state.org_relay.clone(),
+        id,
+    };
     let epoch = state.org_relay.eligibility_generation();
     let current = {
-        let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let entries = state
+            .org_relay
+            .trials
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         entries.get(&id).and_then(capture)
     };
     let Some(current) = current else {
-        state.org_relay.trial_zone_cursors.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        state
+            .org_relay
+            .trial_zone_cursors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
         return TrialZoneSlice::Complete;
     };
     let previous = {
-        let mut cursors = state.org_relay.trial_zone_cursors.lock().unwrap_or_else(|e| e.into_inner());
-        if epoch != state.org_relay.eligibility_generation() { cursors.remove(&id); return TrialZoneSlice::Retry; }
+        let mut cursors = state
+            .org_relay
+            .trial_zone_cursors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if epoch != state.org_relay.eligibility_generation() {
+            cursors.remove(&id);
+            return TrialZoneSlice::Retry;
+        }
         cursors.remove(&id)
     };
     let mut cursor = match previous {
         Some(cursor) if cursor.epoch == epoch && cursor.snapshot == current => cursor,
         Some(_) => return TrialZoneSlice::Retry,
-        None => TrialZoneCursor { snapshot: current, epoch, next: 0, unavailable: false },
+        None => TrialZoneCursor {
+            snapshot: current,
+            epoch,
+            next: 0,
+            unavailable: false,
+        },
     };
     let snap = &cursor.snapshot;
     let mut invalid = !snap.shape_valid();
@@ -354,11 +473,19 @@ pub(in crate::org_relay) async fn recheck_trial_zone_slice(
     if !invalid && cursor.next < count {
         let (node_id, node_ref, expected) = if cursor.next < snap.relays.len() {
             let relay = &snap.relays[cursor.next];
-            (relay.node_id, &relay.node_ref, Some(snap.relay_zones[cursor.next]))
+            (
+                relay.node_id,
+                &relay.node_ref,
+                Some(snap.relay_zones[cursor.next]),
+            )
         } else {
             let index = cursor.next - snap.relays.len();
             let member = &snap.members[index];
-            (member.node_id, &member.node_ref, snap.member_zones.map(|zones| zones[index]))
+            (
+                member.node_id,
+                &member.node_ref,
+                snap.member_zones.map(|zones| zones[index]),
+            )
         };
         let read = {
             #[cfg(feature = "path-planner-test-support")]
@@ -366,18 +493,34 @@ pub(in crate::org_relay) async fn recheck_trial_zone_slice(
                 super::super::candidate_test_support::take_trial_zone_read_failure(id)
             } else if cursor.next == snap.relays.len() {
                 super::super::candidate_test_support::take_trial_member_zone_read_failure(id)
-            } else { false };
+            } else {
+                false
+            };
             #[cfg(not(feature = "path-planner-test-support"))]
             let injected = false;
             #[cfg(feature = "path-planner-test-support")]
-            let stalled = cursor.next == 0 && super::super::candidate_test_support::take_trial_zone_read_stall(id);
+            let stalled = cursor.next == 0
+                && super::super::candidate_test_support::take_trial_zone_read_stall(id);
             #[cfg(not(feature = "path-planner-test-support"))]
             let stalled = false;
-            if injected { Err(()) } else {
+            if injected {
+                Err(())
+            } else {
                 limited_party_read(state, async {
-                    if stalled { std::future::pending::<Result<PartyZone, ()>>().await }
-                    else { current_party_zone(state, snap.tenant_id, node_id, node_ref, expected.is_some()).await }
-                }).await
+                    if stalled {
+                        std::future::pending::<Result<PartyZone, ()>>().await
+                    } else {
+                        current_party_zone(
+                            state,
+                            snap.tenant_id,
+                            node_id,
+                            node_ref,
+                            expected.is_some(),
+                        )
+                        .await
+                    }
+                })
+                .await
             }
         };
         match read {
@@ -394,34 +537,58 @@ pub(in crate::org_relay) async fn recheck_trial_zone_slice(
         }
         cursor.next += 1;
     }
-    if epoch != state.org_relay.eligibility_generation() { return TrialZoneSlice::Retry; }
+    if epoch != state.org_relay.eligibility_generation() {
+        return TrialZoneSlice::Retry;
+    }
     if invalid {
         #[cfg(feature = "path-planner-test-support")]
         super::super::candidate_test_support::pause_trial_zone_revoke_if_armed(id).await;
         let event = {
-            let mut entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let mut entries = state
+                .org_relay
+                .trials
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if epoch != state.org_relay.eligibility_generation() {
                 return TrialZoneSlice::Retry;
             }
             match entries.get(&id).and_then(capture) {
                 Some(now) if now == cursor.snapshot => {
                     state.org_relay.invalidate_eligibility();
-                    entries.remove(&id).map(|trial| { notify_abort(state, &trial); revoke_event(&trial, reason) })
+                    entries.remove(&id).map(|trial| {
+                        notify_abort(state, &trial);
+                        revoke_event(&trial, reason)
+                    })
                 }
                 Some(_) => return TrialZoneSlice::Retry,
                 None => None,
             }
         };
         if let Some(event) = event
-            && !matches!(tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event)).await, Ok(Ok(_))) {
+            && !matches!(
+                tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event))
+                    .await,
+                Ok(Ok(_))
+            )
+        {
             warn!("org-relay: trial zone retry revoke audit failed or timed out");
         }
         return TrialZoneSlice::Complete;
     }
     if cursor.next >= count {
-        return if cursor.unavailable { TrialZoneSlice::Retry } else { TrialZoneSlice::Complete };
+        return if cursor.unavailable {
+            TrialZoneSlice::Retry
+        } else {
+            TrialZoneSlice::Complete
+        };
     }
-    state.org_relay.trial_zone_cursors.lock().unwrap_or_else(|e| e.into_inner()).insert(id, cursor);
+    state
+        .org_relay
+        .trial_zone_cursors
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id, cursor);
     TrialZoneSlice::Continue
 }
 
@@ -471,14 +638,23 @@ mod tests {
         assert_eq!(trial_lookup::<u32>(Ok(7)), Ok(Some(7)));
         assert_eq!(trial_lookup::<u32>(Err(DaoError::NotFound)), Ok(None));
         let bad_decode = bson::from_bson::<u32>(bson::Bson::String("invalid".into())).unwrap_err();
-        assert_eq!(trial_lookup::<u32>(Err(DaoError::BsonDe(bad_decode))), Err(()));
+        assert_eq!(
+            trial_lookup::<u32>(Err(DaoError::BsonDe(bad_decode))),
+            Err(())
+        );
     }
 
     #[tokio::test]
     async fn hung_party_read_is_uncertain_not_invalid() {
         let never = std::future::pending::<Result<PartyZone, ()>>();
-        assert_eq!(bounded_party_read(never, Duration::from_millis(10)).await, Err(()));
-        assert_eq!(bounded_party_read(async { Ok(PartyZone::Invalid) }, Duration::from_secs(1)).await, Ok(PartyZone::Invalid));
+        assert_eq!(
+            bounded_party_read(never, Duration::from_millis(10)).await,
+            Err(())
+        );
+        assert_eq!(
+            bounded_party_read(async { Ok(PartyZone::Invalid) }, Duration::from_secs(1)).await,
+            Ok(PartyZone::Invalid)
+        );
     }
 
     #[test]
@@ -489,14 +665,27 @@ mod tests {
         assert!(!zone_fits(PartyZone::Invalid, Mainland));
         assert!(zone_fits(PartyZone::ValidUnconstrained, Mainland));
         let observations = [PartyZone::Unknown, PartyZone::Known(NonMainland)];
-        assert!(!observations.into_iter().fold(true, |fits, actual| {
-            fits & zone_fits(actual, Mainland)
-        }));
+        assert!(
+            !observations
+                .into_iter()
+                .fold(true, |fits, actual| { fits & zone_fits(actual, Mainland) })
+        );
         let (mut fits, mut unavailable) = (true, false);
         observe_zone(PartyZone::Unknown, Mainland, &mut fits, &mut unavailable);
-        assert!(fits && unavailable, "unknown retains the trial and requests a retry");
-        observe_zone(PartyZone::Known(NonMainland), Mainland, &mut fits, &mut unavailable);
-        assert!(!fits && unavailable, "an unknown must not hide a later known violation");
+        assert!(
+            fits && unavailable,
+            "unknown retains the trial and requests a retry"
+        );
+        observe_zone(
+            PartyZone::Known(NonMainland),
+            Mainland,
+            &mut fits,
+            &mut unavailable,
+        );
+        assert!(
+            !fits && unavailable,
+            "an unknown must not hide a later known violation"
+        );
     }
 
     fn fixture(length: usize) -> TrialZoneSnapshot {

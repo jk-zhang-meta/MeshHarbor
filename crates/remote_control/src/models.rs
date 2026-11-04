@@ -5257,6 +5257,10 @@ pub struct KeyRotationAuditEvent {
     /// The refusal's wire string; `None` when the order went out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub denied: Option<String>,
+    /// B4 — Why the rotation order was issued (e.g. `"manual"`, `"auto_ttl"`,
+    /// `"admin_revoke"`). `None` on legacy rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl KeyRotationAuditEvent {
@@ -6412,6 +6416,17 @@ pub enum NodeRef {
     },
 }
 
+/// One retired WireGuard public key recorded on [`OverlayNode::retired_wg_keys`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RetiredWgKey {
+    pub public_key: String,
+    #[serde(default)]
+    pub key_epoch: u32,
+    pub retired_at: DateTime,
+    #[serde(default)]
+    pub reason: String,
+}
+
 /// One member of a tenant's overlay network. Keyed for rehydrate-on-
 /// re-enroll by `(tenant_id, machine_id)` exactly like [`Agent`] /
 /// [`TunnelClient`], so a re-joining host keeps its overlay IP (and may
@@ -6447,6 +6462,25 @@ pub struct OverlayNode {
     /// Bumped on key rotation (Phase 5). `0` at first join.
     #[serde(default)]
     pub key_epoch: u32,
+    /// B4 — retired WireGuard keys previously held by this node (bounded to the
+    /// most recent 64 entries via `$push` + `$slice: -64`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired_wg_keys: Vec<RetiredWgKey>,
+    /// B4 — timestamp when the current `wg_public_key` was minted/admitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_issued_at: Option<DateTime>,
+    /// B4 — configurable per-node key authorization TTL in seconds (`None` = no automatic expiry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_ttl_secs: Option<u64>,
+    /// B4 — timestamp when the current `wg_public_key` expires (`None` = does not expire).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_expires_at: Option<DateTime>,
+    /// B4 — timestamp when the current `wg_public_key` was explicitly revoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_revoked_at: Option<DateTime>,
+    /// B4 — whether the node's current key has been revoked or expired and requires rotation (`key_epoch + 1` with a fresh key) before admission.
+    #[serde(default)]
+    pub reauth_required: bool,
     /// Current connectivity candidates (srflx / relay), as `host:port`
     /// strings the peer can dial. REPLACED on each `rc:overlay.endpoints`
     /// trickle from the relay coordinator.
@@ -6599,6 +6633,19 @@ pub struct OverlayNode {
     /// the table with no word of why. `None` on an older device or row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route_offer_withheld: Option<String>,
+    /// B3 — highest tenant `auth_revision` the node has acknowledged applying
+    /// (`rc:overlay.netmap_ack`), updated monotonically via CAS. `0` on legacy
+    /// rows or before the first ack.
+    #[serde(default)]
+    pub applied_auth_revision: u64,
+    /// B3 — highest `epoch` the node has acknowledged applying via
+    /// `rc:overlay.netmap_ack`.
+    #[serde(default)]
+    pub applied_netmap_epoch: u64,
+    /// B3 — server timestamp when `applied_auth_revision` / `applied_netmap_epoch`
+    /// was last advanced by a monotonic ack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_auth_at: Option<DateTime>,
     pub status: AgentStatus,
     pub last_seen_at: DateTime,
     pub created_at: DateTime,
@@ -6608,6 +6655,49 @@ pub struct OverlayNode {
 
 impl OverlayNode {
     pub const COLLECTION: &'static str = "overlay_nodes";
+
+    /// B4 — whether this node's current key has passed its `key_expires_at` deadline at `now`.
+    pub fn is_key_expired_at(&self, now: DateTime) -> bool {
+        self.key_expires_at
+            .is_some_and(|exp| exp.timestamp_millis() <= now.timestamp_millis())
+    }
+
+    /// B4 — whether this node's current key is live, not revoked, not marked `reauth_required`,
+    /// not expired at `now`, and not present in its own `retired_wg_keys` history.
+    pub fn is_key_authorized_at(&self, now: DateTime) -> bool {
+        self.deleted_at.is_none()
+            && !self.reauth_required
+            && self.key_revoked_at.is_none()
+            && !self.is_key_expired_at(now)
+            && !self
+                .retired_wg_keys
+                .iter()
+                .any(|k| k.public_key == self.wg_public_key)
+    }
+
+    /// B4 — pre-expiry lead window (in seconds) before `key_expires_at` during
+    /// which the control plane proactively orders `ServerMsg::KeyRotate`
+    /// (make-before-break) so an online agent rotates its key before expiry.
+    pub fn key_pre_expiry_lead_secs(&self) -> u64 {
+        match self.key_ttl_secs {
+            Some(ttl) => (ttl / 4).clamp(15, 300),
+            None => 60,
+        }
+    }
+
+    /// B4 — whether this live, currently-authorized node has entered its
+    /// pre-expiry rotation window `(0, key_pre_expiry_lead_secs]` at `now`.
+    pub fn should_pre_rotate_key_at(&self, now: DateTime) -> bool {
+        if !self.is_key_authorized_at(now) {
+            return false;
+        }
+        let Some(exp) = self.key_expires_at else {
+            return false;
+        };
+        let remaining_ms = exp.timestamp_millis() - now.timestamp_millis();
+        let lead_ms = (self.key_pre_expiry_lead_secs() as i64).saturating_mul(1_000);
+        remaining_ms > 0 && remaining_ms <= lead_ms
+    }
 
     /// FR-97 P0b — the routes this node may carry for its peers: those an admin
     /// APPROVED **and** the device still ADVERTISES.
@@ -6691,6 +6781,14 @@ pub struct OverlayNetwork {
     /// applies). Edited from the topology view.
     #[serde(default)]
     pub server_links: Vec<ServerLink>,
+    /// B3 — monotonically increasing per-tenant authority revision. Bumped
+    /// atomically in Mongo on every ACL policy create/update/delete, ACL mode
+    /// change, peer-relay mode/policy change, server-link change, route/exit-node
+    /// approval change, or business-authority role change so multi-pod control
+    /// instances and reconnecting clients can order authority state and reject
+    /// stale deltas.
+    #[serde(default)]
+    pub auth_revision: u64,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }

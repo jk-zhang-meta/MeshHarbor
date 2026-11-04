@@ -3455,8 +3455,10 @@ mod tests {
     #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
     #[test]
     fn relay_readiness_refresh_only_changes_the_relay_capability() {
-        let mut caps = AgentCaps::default();
-        caps.rpc = vec!["ssh".into(), "files".into()];
+        let caps = AgentCaps {
+            rpc: vec!["ssh".into(), "files".into()],
+            ..Default::default()
+        };
         let ready = with_relay_server_readiness(caps.clone(), true);
         assert_eq!(ready.rpc, vec!["ssh", "files", "relay-server"]);
         assert_eq!(with_relay_server_readiness(ready, false).rpc, caps.rpc);

@@ -90,8 +90,10 @@ const EVENT_QUEUE: usize = 32;
 // demoted. This stays wire-shape-only because the mux does not own WG keys;
 // the live WG owner performs the actual HMAC/nonce/epoch checks.
 fn is_follow_control(payload: &[u8]) -> bool {
-    payload.len() == 160 && payload.starts_with(b"RMDISCO1")
-        && matches!(payload[8], 3..=6) && payload[9..16] == [0; 7]
+    payload.len() == 160
+        && payload.starts_with(b"RMDISCO1")
+        && matches!(payload[8], 3..=6)
+        && payload[9..16] == [0; 7]
 }
 
 /// #27/#28 — something happened on this mux that the RUNTIME must react to.
@@ -702,13 +704,17 @@ impl DerpMux {
                     // condition as a missing one, so it reports too.
                     self.dropped_backpressure.fetch_add(1, Ordering::Relaxed);
                     crate::evidence::DERP_INBOUND_BACKPRESSURE.fetch_add(1, Ordering::Relaxed);
-                    if !is_follow_control(payload) { self.emit(MuxEvent::Unrouted(src)); }
+                    if !is_follow_control(payload) {
+                        self.emit(MuxEvent::Unrouted(src));
+                    }
                 }
             }
             None => {
                 self.dropped_unrouted.fetch_add(1, Ordering::Relaxed);
                 crate::evidence::DERP_INBOUND_UNROUTED.fetch_add(1, Ordering::Relaxed);
-                if !is_follow_control(payload) { self.emit(MuxEvent::Unrouted(src)); }
+                if !is_follow_control(payload) {
+                    self.emit(MuxEvent::Unrouted(src));
+                }
             }
         }
     }
@@ -822,20 +828,37 @@ mod tests {
     #[tokio::test]
     async fn follow_control_miss_never_demotes_but_real_wg_still_reports_and_live_routes_work() {
         let (mux, _out) = DerpMux::new(pk(1));
-        let (tx, mut events) = mpsc::channel(16); mux.set_event_sink(tx);
-        let mut payload=vec![0u8;160];payload[..8].copy_from_slice(b"RMDISCO1");payload[8]=6;
-        let frame=|body:&[u8]| {let mut f=pk(2).to_vec();f.extend_from_slice(body);f};
+        let (tx, mut events) = mpsc::channel(16);
+        mux.set_event_sink(tx);
+        let mut payload = vec![0u8; 160];
+        payload[..8].copy_from_slice(b"RMDISCO1");
+        payload[8] = 6;
+        let frame = |body: &[u8]| {
+            let mut f = pk(2).to_vec();
+            f.extend_from_slice(body);
+            f
+        };
         mux.deliver(&frame(&payload));
-        assert!(events.try_recv().is_err(), "late proof with no route carries no intent");
-        mux.deliver(&frame(&[1,0,0,0]));
+        assert!(
+            events.try_recv().is_err(),
+            "late proof with no route carries no intent"
+        );
+        mux.deliver(&frame(&[1, 0, 0, 0]));
         assert_eq!(events.try_recv().unwrap(), MuxEvent::Unrouted(pk(2)));
-        let conn=mux.conn_for(pk(2));
+        let conn = mux.conn_for(pk(2));
         mux.deliver(&frame(&payload));
-        let mut buf=[0u8;256];let (n,_)=conn.recv_from(&mut buf).await.unwrap();
-        assert_eq!(&buf[..n],payload.as_slice(), "live owner must receive the proof for cryptographic checks");
+        let mut buf = [0u8; 256];
+        let (n, _) = conn.recv_from(&mut buf).await.unwrap();
+        assert_eq!(
+            &buf[..n],
+            payload.as_slice(),
+            "live owner must receive the proof for cryptographic checks"
+        );
         assert!(events.try_recv().is_err());
         // Backpressure is a drop, never a carrier decision for control bytes.
-        for _ in 0..300 { mux.deliver(&frame(&payload)); }
+        for _ in 0..300 {
+            mux.deliver(&frame(&payload));
+        }
         assert!(events.try_recv().is_err());
     }
 
@@ -1024,11 +1047,18 @@ mod tests {
         );
         drop(wg_conn);
         mux.deliver(&frame(peer, &copy));
-        assert_eq!(sink.recv().await.unwrap(), [4, 0, 0, 0, 9, 9], "the sink outlives the WG route");
+        assert_eq!(
+            sink.recv().await.unwrap(),
+            [4, 0, 0, 0, 9, 9],
+            "the sink outlives the WG route"
+        );
         mux.clear_standby(&peer);
         mux.deliver(&frame(peer, &copy));
         assert_eq!(mux.standby_drops(), 2);
-        assert!(ev_rx.try_recv().is_err(), "a standby copy never reports Unrouted");
+        assert!(
+            ev_rx.try_recv().is_err(),
+            "a standby copy never reports Unrouted"
+        );
 
         assert!(mux.send_standby(&peer, &[4, 1, 2]));
         let (_, f) = out_rx.recv().await.unwrap();
@@ -1037,7 +1067,10 @@ mod tests {
         want.extend_from_slice(&[4, 1, 2]);
         assert_eq!(f, want);
         mux.mark_down();
-        assert!(!mux.send_standby(&peer, &[4, 1, 2]), "a down mux drops the copy");
+        assert!(
+            !mux.send_standby(&peer, &[4, 1, 2]),
+            "a down mux drops the copy"
+        );
     }
 
     #[tokio::test]
@@ -1370,4 +1403,3 @@ mod tests {
         assert_ne!(a, b, "distinct pubkeys → distinct synthetic addrs");
     }
 }
-

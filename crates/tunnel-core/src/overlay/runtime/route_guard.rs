@@ -486,13 +486,11 @@ pub(super) struct ExitRoutingState {
     pub(super) socks5_port: Option<u16>,
 }
 
-/// Surface a duplicate subnet claim — NEVER silently. Two live routers approved
-/// for the same CIDR is an admin error the data plane can only expose: the
-/// crypto-router keeps both claims and tie-breaks deterministically (higher
-/// pubkey wins), so the losing claimant's replies are RPF-denied — the field
-/// 2026-08-25 signature (`rx_denied` climbing on the honest router while corp
-/// egress looped through a claimant with no working uplink). The server refuses
-/// NEW duplicate approvals; this catches rows that pre-date the guard.
+/// Surface a duplicate/HA subnet claim — NEVER silently. When two or more live
+/// routers claim the same CIDR (Subnet-Router HA active/standby, or a stale
+/// approval), the crypto-router keeps all claims, elects one sticky active
+/// carrier by health tier (with deterministic pubkey tie-breaking), and allows
+/// all equal-prefix claimants through RPF.
 pub(super) fn warn_subnet_conflicts(
     node_id: ObjectId,
     conflicts: &[(crate::overlay::router::Cidr, [u8; 32])],
@@ -502,9 +500,9 @@ pub(super) fn warn_subnet_conflicts(
             peer = %node_id,
             %cidr,
             other_claimant = %crate::overlay::wg::short_key(other),
-            "overlay: TWO subnet routers claim this CIDR — the deterministic \
-             tie-break picks one carrier and the loser's replies RPF-deny; \
-             revoke the stale approval (one live router per CIDR)"
+            "overlay: TWO subnet routers claim this CIDR (HA active/standby) — \
+             health-aware sticky election picks one active carrier and RPF allows \
+             both claimants"
         );
     }
 }
@@ -576,6 +574,62 @@ impl OverlayRuntime {
                 debug!(peer = %node_id, %cidr, %e, "overlay: subnet route not installed");
             } else {
                 info!(peer = %node_id, %cidr, "overlay: subnet route installed (router peer)");
+            }
+        }
+    }
+
+    /// B5 — reconcile an already-installed peer's approved subnet routes when a
+    /// netmap or delta update arrives without tearing down the peer's carrier.
+    ///
+    /// Preserves any split-default (`/1`) routes currently held by this peer if
+    /// it is the active exit node, adds newly approved OS CIDR routes via
+    /// [`TunIo::add_cidr_route`], and removes withdrawn OS CIDR routes via
+    /// [`TunIo::del_cidr_route`] ONLY when no other HA router peer still claims
+    /// that CIDR.
+    pub(super) async fn reconcile_peer_subnets(
+        &self,
+        wg: &mut WgDevice,
+        tun: &Arc<dyn TunIo>,
+        node_id: ObjectId,
+        pubkey: [u8; 32],
+        subnets: &[crate::overlay::router::Cidr],
+    ) {
+        let existing = wg.peer_subnets(&pubkey);
+        let current_non_default: Vec<crate::overlay::router::Cidr> = existing
+            .iter()
+            .copied()
+            .filter(|c| !c.is_default_route())
+            .collect();
+        let (filtered, dropped) = screen_subnets(subnets, &super::super::direct::local_lan_cidrs());
+        if current_non_default == filtered {
+            return;
+        }
+        for (cidr, why) in dropped {
+            warn!(peer = %node_id, %cidr, why, "overlay: a peer's subnet route was not installed");
+        }
+        let mut next_routes = filtered.clone();
+        for c in existing.into_iter().filter(|c| c.is_default_route()) {
+            if !next_routes.contains(&c) {
+                next_routes.push(c);
+            }
+        }
+        let conflicts = wg.set_peer_subnets(pubkey, &next_routes);
+        warn_subnet_conflicts(node_id, &conflicts);
+        for c in &filtered {
+            if !current_non_default.contains(c) {
+                let cidr = c.to_string();
+                if let Err(e) = tun.add_cidr_route(&cidr).await {
+                    debug!(peer = %node_id, %cidr, %e, "overlay: subnet route not installed");
+                } else {
+                    info!(peer = %node_id, %cidr, "overlay: subnet route installed (router peer)");
+                }
+            }
+        }
+        for old_c in &current_non_default {
+            if !filtered.contains(old_c) && !wg.any_peer_claims_subnet(old_c) {
+                let cidr = old_c.to_string();
+                tun.del_cidr_route(&cidr).await;
+                info!(peer = %node_id, %cidr, "overlay: subnet route removed (no remaining claimant)");
             }
         }
     }

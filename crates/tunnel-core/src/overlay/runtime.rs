@@ -56,6 +56,7 @@ use roomler_ai_remote_control::signaling::{ClientMsg, IceServer, NetmapPeer, Ove
 // `runtime` (not siblings), so the moved code keeps private-field access to
 // [`OverlayRuntime`]/[`Installed`] and its `use super::*` inherits this import
 // block unchanged — a pure move, no behavior change.
+mod birthday;
 mod establish;
 mod inbound;
 mod path_trial;
@@ -64,10 +65,10 @@ mod path_trial;
 pub use path_trial::test_support::{
     Harness as PathTrialTestHarness, Snapshot as PathTrialTestSnapshot,
 };
-mod route_guard;
-mod rx_loss;
 #[cfg(test)]
 mod failover_bench;
+mod route_guard;
+mod rx_loss;
 
 use establish::*;
 // §6 item 5 — the carrier plane binds and advertises the IPv6 socket the same way.
@@ -592,8 +593,10 @@ async fn request_org_fallbacks(
     };
     let mut candidates = Vec::new();
     for (id, current) in installed {
-        if current.is_direct || current.relay_kind != Some(RelayKind::Derp)
-            || current.org_recovery_until.is_some_and(|until| now < until) {
+        if current.is_direct
+            || current.relay_kind != Some(RelayKind::Derp)
+            || current.org_recovery_until.is_some_and(|until| now < until)
+        {
             continue;
         }
         let Some(metadata) = peers.get(id).filter(|p| p.supports_org_relay) else {
@@ -602,9 +605,7 @@ async fn request_org_fallbacks(
         let Some(peer) = peer_config_from_netmap(metadata) else {
             continue;
         };
-        if peer.public_key != current.pubkey
-            || peer.overlay_ip != current.overlay_ip
-        {
+        if peer.public_key != current.pubkey || peer.overlay_ip != current.overlay_ip {
             continue;
         }
         candidates.push(*id);
@@ -632,38 +633,57 @@ async fn request_org_fallbacks(
 }
 
 fn reconcile_org_recovery(
-    wg: &mut WgDevice, by_node: &mut HashMap<ObjectId, Installed>,
-    relay: &mut Option<RelayCoordinator>, org_q: &mut OrgBindQueue,
-    alloc_q: &mut RelayAllocQueue, relay_bq: &mut RelayBuildQueue,
+    wg: &mut WgDevice,
+    by_node: &mut HashMap<ObjectId, Installed>,
+    relay: &mut Option<RelayCoordinator>,
+    org_q: &mut OrgBindQueue,
+    alloc_q: &mut RelayAllocQueue,
+    relay_bq: &mut RelayBuildQueue,
 ) {
     for (nid, e) in by_node.iter_mut() {
         if let Some(until) = wg.org_recovery_until(&e.pubkey)
             && e.org_recovery_notified_until.is_none_or(|old| until > old)
         {
-            e.org_recovery_until = Some(until); e.org_recovery_notified_until = Some(until);
+            e.org_recovery_until = Some(until);
+            e.org_recovery_notified_until = Some(until);
             e.org_recovery_needs_query = true;
-            e.org_upgrade = None; wg.cancel_org_upgrade(&e.pubkey);
-            org_q.invalidate(nid); alloc_q.invalidate(nid); relay_bq.invalidate(nid);
-            if let Some(r) = relay.as_mut() { r.org_bind_failed(nid); }
+            e.org_upgrade = None;
+            wg.cancel_org_upgrade(&e.pubkey);
+            org_q.invalidate(nid);
+            alloc_q.invalidate(nid);
+            relay_bq.invalidate(nid);
+            if let Some(r) = relay.as_mut() {
+                r.org_bind_failed(nid);
+            }
         }
     }
 }
 fn finish_org_recovery_queries(
-    sent: Vec<ObjectId>, wg: &WgDevice, by_node: &mut HashMap<ObjectId, Installed>,
+    sent: Vec<ObjectId>,
+    wg: &WgDevice,
+    by_node: &mut HashMap<ObjectId, Installed>,
 ) {
     for nid in sent {
-        if let Some(e) = by_node.get_mut(&nid) && wg.finish_org_recovery_query(&e.pubkey) {
+        if let Some(e) = by_node.get_mut(&nid)
+            && wg.finish_org_recovery_query(&e.pubkey)
+        {
             e.org_recovery_needs_query = false;
-            e.org_recovery_until = None; e.org_recovery_notified_until = None;
+            e.org_recovery_until = None;
+            e.org_recovery_notified_until = None;
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn request_reconciled_org_fallbacks(
-    enabled: bool, wg: &mut WgDevice, installed: &mut HashMap<ObjectId, Installed>,
-    peers: &HashMap<ObjectId, NetmapPeer>, relay: &mut Option<RelayCoordinator>,
-    org_q: &mut OrgBindQueue, alloc_q: &mut RelayAllocQueue, relay_bq: &mut RelayBuildQueue,
+    enabled: bool,
+    wg: &mut WgDevice,
+    installed: &mut HashMap<ObjectId, Installed>,
+    peers: &HashMap<ObjectId, NetmapPeer>,
+    relay: &mut Option<RelayCoordinator>,
+    org_q: &mut OrgBindQueue,
+    alloc_q: &mut RelayAllocQueue,
+    relay_bq: &mut RelayBuildQueue,
     now: Instant,
 ) -> Vec<ObjectId> {
     // A delayed main loop can resume on this tick before its scout. Discharge
@@ -690,11 +710,15 @@ fn business_poke_window() -> Duration {
 }
 
 fn business_poke_recheck(by_node: &HashMap<ObjectId, Installed>, now: Instant) -> Option<Duration> {
-    let deadline = by_node.values().filter_map(|e| e.poke)
+    let deadline = by_node
+        .values()
+        .filter_map(|e| e.poke)
         .filter(|p| p.from_business && !p.from_major)
-        .map(|p| p.at + business_poke_window()
-            + Duration::from_millis(250)).min()?;
-    let wait = deadline.saturating_duration_since(now).max(Duration::from_millis(100));
+        .map(|p| p.at + business_poke_window() + Duration::from_millis(250))
+        .min()?;
+    let wait = deadline
+        .saturating_duration_since(now)
+        .max(Duration::from_millis(100));
     (wait < FALLBACK_TICK).then_some(wait)
 }
 
@@ -934,9 +958,15 @@ fn accept_org_bind_session(
     peers: &HashMap<ObjectId, NetmapPeer>,
     installed: &HashMap<ObjectId, Installed>,
 ) -> bool {
-    if relay.org_relay_pinned(&peer) || installed.get(&peer).is_some_and(|e| {
-        e.org_recovery_until.is_some_and(|until| Instant::now() < until) || e.org_recovery_needs_query
-    }) { return false; }
+    if relay.org_relay_pinned(&peer)
+        || installed.get(&peer).is_some_and(|e| {
+            e.org_recovery_until
+                .is_some_and(|until| Instant::now() < until)
+                || e.org_recovery_needs_query
+        })
+    {
+        return false;
+    }
     let needed = org_bind_needed(relay.is_tracking(&peer), installed.get(&peer));
     if !relay.org_session_accept(peer, session) {
         return false;
@@ -951,7 +981,9 @@ fn accept_org_bind_session(
 }
 
 fn cancel_org_upgrade_candidate(
-    peer: &ObjectId, wg: &mut WgDevice, installed: &mut HashMap<ObjectId, Installed>,
+    peer: &ObjectId,
+    wg: &mut WgDevice,
+    installed: &mut HashMap<ObjectId, Installed>,
 ) {
     if let Some(e) = installed.get_mut(peer) {
         wg.cancel_org_upgrade(&e.pubkey);
@@ -1003,8 +1035,15 @@ fn commit_current_org_bind(
     }
     let identity_matches = peers.get(&done.node_id).and_then(org_peer_identity)
         == Some((done.peer_public_key, done.peer_overlay_ip));
-    if relay.org_relay_pinned(&done.node_id) || !identity_matches || installed.get(&done.node_id).is_some_and(|p| p.is_direct
-        || p.org_recovery_until.is_some_and(|until| Instant::now() < until) || p.org_recovery_needs_query) {
+    if relay.org_relay_pinned(&done.node_id)
+        || !identity_matches
+        || installed.get(&done.node_id).is_some_and(|p| {
+            p.is_direct
+                || p.org_recovery_until
+                    .is_some_and(|until| Instant::now() < until)
+                || p.org_recovery_needs_query
+        })
+    {
         if let Some(conn) = done.conn {
             conn.close();
         }
@@ -1097,9 +1136,14 @@ pub enum OverlayEvent {
     PathTrial(roomler_ai_remote_control::signaling::ServerMsg),
     /// Incremental update.
     NetmapDelta {
+        epoch: u64,
+        auth_revision: u64,
         upserts: Vec<NetmapPeer>,
         removes: Vec<ObjectId>,
     },
+    /// B3 — control-WS session detached while the persistent runtime remains
+    /// up. Starts the bounded offline-continuity lease clock when configured.
+    ControlDetached,
     /// rc.307 (B) — a fresh control-WS session re-binding a PERSISTENT
     /// runtime: swap the outbound sender, re-send the join (the server
     /// replies with a full netmap the authoritative reconcile arm applies),
@@ -1601,12 +1645,144 @@ impl ControlTx {
     fn current(&self) -> mpsc::Sender<ClientMsg> {
         self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
+    pub fn is_closed(&self) -> bool {
+        self.current().is_closed()
+    }
     pub async fn send(
         &self,
         msg: ClientMsg,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<ClientMsg>> {
         self.current().send(msg).await
     }
+}
+
+/// B3 — lexicographic `(auth_revision, epoch)` monotonicity guard for
+/// control-plane multi-instance consistency.
+///
+/// - `auth_revision` is the MongoDB-persisted monotonic authority counter
+///   (`OverlayNetwork.auth_revision`). Any frame carrying a non-zero
+///   `auth_revision < applied_auth_revision` is from a lagging pod or
+///   in-flight race and is rejected, even if its wall-clock `epoch` is higher.
+/// - A strictly higher `auth_revision > applied_auth_revision` is always
+///   accepted (newer authority supersedes wall-clock skew between pods) and
+///   resets the epoch baseline to `incoming_epoch`.
+/// - Within the same `auth_revision` (or when `incoming_auth_revision == 0`),
+///   a frame with a non-zero `incoming_epoch < applied_epoch` is rejected as
+///   out-of-order.
+pub fn accept_netmap_version(
+    applied_epoch: &mut u64,
+    applied_auth_revision: &mut u64,
+    incoming_epoch: u64,
+    incoming_auth_revision: u64,
+) -> bool {
+    if incoming_auth_revision > 0 && incoming_auth_revision < *applied_auth_revision {
+        return false;
+    }
+    if incoming_auth_revision > *applied_auth_revision {
+        *applied_auth_revision = incoming_auth_revision;
+        *applied_epoch = incoming_epoch;
+        return true;
+    }
+    if incoming_epoch > 0 && incoming_epoch < *applied_epoch {
+        return false;
+    }
+    if incoming_epoch > *applied_epoch {
+        *applied_epoch = incoming_epoch;
+    }
+    true
+}
+
+/// B3 — Per-peer `(auth_revision, epoch)` watermark filter for incremental
+/// `OverlayNetmapDelta` frames.
+///
+/// - `auth_revision` is a tenant-wide monotonic authority counter: any delta
+///   with a non-zero `incoming_auth_revision < *applied_auth_revision` is from
+///   a lagging pod and is rejected outright (`return false`).
+/// - Within the same `auth_revision`, concurrent deltas for DIFFERENT peers
+///   (`node_id` X at `epoch = 100` vs `node_id` Y at `epoch = 105`) must never
+///   drop each other when arriving out of wall-clock order or across pods with
+///   slight clock skew.
+/// - `epoch` ordering is therefore enforced per `node_id` in `peer_versions`:
+///   an out-of-order delta for the SAME `node_id` (`epoch < peer_epoch` at the
+///   same `auth_revision`) is filtered out for that `node_id` without dropping
+///   updates for other peers.
+pub fn filter_netmap_delta_by_peer(
+    applied_epoch: &mut u64,
+    applied_auth_revision: &mut u64,
+    peer_versions: &mut HashMap<ObjectId, (u64, u64)>,
+    incoming_epoch: u64,
+    incoming_auth_revision: u64,
+    upserts: &mut Vec<NetmapPeer>,
+    removes: &mut Vec<ObjectId>,
+) -> bool {
+    if incoming_auth_revision > 0 && incoming_auth_revision < *applied_auth_revision {
+        return false;
+    }
+    let rev_advanced = incoming_auth_revision > *applied_auth_revision;
+    if rev_advanced {
+        *applied_auth_revision = incoming_auth_revision;
+        *applied_epoch = incoming_epoch;
+    }
+
+    let mut accepted_in_packet: std::collections::HashSet<ObjectId> =
+        std::collections::HashSet::new();
+    let mut check_peer = |node_id: ObjectId| -> bool {
+        if accepted_in_packet.contains(&node_id) {
+            return true;
+        }
+        let existing = peer_versions.get(&node_id).copied();
+        let eff_rev = if incoming_auth_revision > 0 {
+            incoming_auth_revision
+        } else {
+            existing.map_or(*applied_auth_revision, |(r, _)| r)
+        };
+        let next_peer_epoch = if let Some((peer_rev, peer_epoch)) = existing {
+            if eff_rev < peer_rev {
+                return false;
+            }
+            if eff_rev == peer_rev && incoming_epoch > 0 && incoming_epoch < peer_epoch {
+                return false;
+            }
+            if eff_rev == peer_rev {
+                peer_epoch.max(incoming_epoch)
+            } else {
+                incoming_epoch
+            }
+        } else {
+            incoming_epoch
+        };
+        peer_versions.insert(node_id, (eff_rev, next_peer_epoch));
+        accepted_in_packet.insert(node_id);
+        true
+    };
+
+    removes.retain(|&node_id| check_peer(node_id));
+    upserts.retain(|peer| check_peer(peer.node_id));
+
+    let any_accepted = rev_advanced || !removes.is_empty() || !upserts.is_empty();
+    if !rev_advanced && any_accepted && incoming_epoch > *applied_epoch {
+        *applied_epoch = incoming_epoch;
+    }
+    any_accepted
+}
+
+/// B3 — optional maximum duration a persistent `OverlayRuntime` may continue
+/// forwarding over cached netmap authority while its control-WS is detached.
+///
+/// Configured via `ROOMLERD_OFFLINE_CONTINUITY_MAX_MS` (millisecond precision
+/// for deterministic tests) or `ROOMLERD_OFFLINE_CONTINUITY_MAX_SECS` (seconds).
+/// Unset or `0` = unlimited offline continuity (the rc.307 default).
+pub fn offline_continuity_max_age() -> Option<Duration> {
+    if let Some(ms) = crate::env::node_env("OFFLINE_CONTINUITY_MAX_MS")
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&v| v > 0)
+    {
+        return Some(Duration::from_millis(ms));
+    }
+    crate::env::node_env("OFFLINE_CONTINUITY_MAX_SECS")
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .map(Duration::from_secs)
 }
 
 /// One node's overlay runtime. Construct with [`OverlayRuntime::new`] (or
@@ -1624,7 +1800,14 @@ pub struct OverlayRuntime {
     key_epoch: u32,
     /// FR-19 P4b — see [`Self::with_org_primary`].
     org_primary: bool,
+    /// Per-node override for multi-hop backbone path trials (see
+    /// [`Self::with_backbone_enabled`]). Allows per-node/per-harness opt-in
+    /// without mutating process-wide environment variables.
+    backbone_enabled: bool,
     path_trial_managed: std::sync::Mutex<HashSet<ObjectId>>,
+    /// The birthday spray's open sockets, by local address — the inbound
+    /// accept path needs to know an init arrived on one (`birthday`).
+    spray_locals: std::sync::Mutex<HashSet<std::net::SocketAddr>>,
     /// Actual daemon listener lifetime; never inferred from environment.
     relay_listener_readiness: Option<watch::Receiver<Option<u16>>>,
     /// Phase 1 — subnet CIDRs this node advertises as a router (from config).
@@ -1909,7 +2092,9 @@ impl OverlayRuntime {
             route_offer_withheld: None,
             peer_view: None,
             org_primary: false,
+            backbone_enabled: false,
             path_trial_managed: std::sync::Mutex::new(HashSet::new()),
+            spray_locals: std::sync::Mutex::new(HashSet::new()),
             relay_listener_readiness: None,
             exit_node: None,
             exit_server_ips: Vec::new(),
@@ -1946,7 +2131,9 @@ impl OverlayRuntime {
             route_offer_withheld: None,
             peer_view: None,
             org_primary: false,
+            backbone_enabled: false,
             path_trial_managed: std::sync::Mutex::new(HashSet::new()),
+            spray_locals: std::sync::Mutex::new(HashSet::new()),
             relay_listener_readiness: None,
             exit_node: None,
             exit_server_ips: Vec::new(),
@@ -2055,6 +2242,13 @@ impl OverlayRuntime {
         self
     }
 
+    /// Enable or disable multi-hop backbone path trials for this specific
+    /// runtime instance without relying on process-wide environment mutation.
+    pub fn with_backbone_enabled(mut self, enabled: bool) -> Self {
+        self.backbone_enabled = enabled;
+        self
+    }
+
     /// Inject the daemon's actually bound relay listener. Unset means this
     /// runtime is a client, even if a configuration flag requests serving.
     pub fn with_relay_listener_readiness(
@@ -2089,6 +2283,7 @@ impl OverlayRuntime {
         &self,
         prober: &mut super::disco::Prober,
         path_trials: &mut path_trial::Engine,
+        birthday: &mut birthday::Engine,
         rx: &mut Option<mpsc::Receiver<super::disco::DiscoInbound>>,
         wg: &WgDevice,
         by_node: &HashMap<ObjectId, Installed>,
@@ -2103,6 +2298,7 @@ impl OverlayRuntime {
         if let Some(rx) = rx.as_mut() {
             while let Ok(p) = rx.try_recv() {
                 path_trials.active_pong(&p);
+                birthday.on_pong(&p);
                 prober.on_pong(&p);
             }
         }
@@ -2470,7 +2666,7 @@ impl OverlayRuntime {
             supports_path_backbone_v1: path_trial::enabled()
                 && self.org_primary
                 && self.mtu <= roomler_ai_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
-                && super::orgrelay::backbone::path_enabled(),
+                && (super::orgrelay::backbone::path_enabled() || self.backbone_enabled),
             relay_backbone_ready: self.org_primary
                 && self.ready_relay_port().is_some()
                 && super::orgrelay::backbone::configured_local_policy().is_some(),
@@ -2574,6 +2770,7 @@ impl OverlayRuntime {
                     continue;
                 }
                 Some(OverlayEvent::NetmapDelta { .. }) => continue, // pre-netmap; ignore
+                Some(OverlayEvent::ControlDetached) => continue,    // pre-netmap; ignore
                 Some(OverlayEvent::RelayGrant { .. }) => continue,  // pre-netmap; ignore
                 Some(OverlayEvent::WarmRelayGrant { .. }) => continue, // pre-netmap; ignore
                 Some(OverlayEvent::ForceDerp { .. }) => continue,   // pre-netmap; ignore
@@ -2589,6 +2786,14 @@ impl OverlayRuntime {
 
         let mut server_org_fallback = network.org_relay_fallback_v1;
         let mut server_org_loss = network.org_relay_loss_v1;
+        let mut applied_netmap_epoch: u64 = 0;
+        let mut applied_auth_revision: u64 = network.auth_revision;
+        let mut peer_netmap_versions: HashMap<ObjectId, (u64, u64)> = first_peers
+            .iter()
+            .map(|p| (p.node_id, (applied_auth_revision, 0)))
+            .collect();
+        let mut control_detached_at: Option<Instant> = None;
+        let mut offline_continuity_expired = false;
 
         let Ok(self_v4) = self_ip.parse::<Ipv4Addr>() else {
             warn!(%self_ip, "overlay: server sent a non-IPv4 self_ip; aborting runtime");
@@ -2979,6 +3184,8 @@ impl OverlayRuntime {
 
         // Independent of TURN coordination and the installed P2P/DERP carrier.
         let mut path_trials = path_trial::Engine::new();
+        // Hard-NAT punching (default OFF); driven on the path-trial tick.
+        let mut birthday = birthday::Engine::default();
         let _path_trial_view_guard = path_trial::ObservationViewGuard::new(
             self.peer_view.clone(),
             path_trials.observation_runtime_id(),
@@ -3170,13 +3377,12 @@ impl OverlayRuntime {
         // #5 step B — the device's own backbone opt-in decides which offered
         // lines it may measure, and on which interface.
         let backbone_policy = super::orgrelay::backbone::configured_local_policy();
-        let (probe_targets_tx, probe_targets_rx) = watch::channel(
-            super::orgrelay::prober::targets_from_wire(
+        let (probe_targets_tx, probe_targets_rx) =
+            watch::channel(super::orgrelay::prober::targets_from_wire(
                 &network.relay_probe_targets,
                 &network.backbone_probe_targets,
                 backbone_policy.as_ref(),
-            ),
-        );
+            ));
         let (probe_res_tx, mut probe_res_rx) =
             mpsc::channel::<Vec<super::orgrelay::prober::Outcome>>(4);
         let _relay_prober = super::orgrelay::prober::spawn(probe_targets_rx, probe_res_tx);
@@ -3203,6 +3409,15 @@ impl OverlayRuntime {
             "initial",
         )
         .await;
+        if applied_auth_revision > 0 {
+            let _ = self
+                .outbound
+                .send(ClientMsg::OverlayNetmapAck {
+                    epoch: applied_netmap_epoch,
+                    auth_revision: applied_auth_revision,
+                })
+                .await;
+        }
         // P5 exit-node — default-route capture state, reconciled after every
         // carrier change. Inert unless this node has `exit_node` configured.
         // P5 S4b — DNS-steering context for this run (immutable): whether MagicDNS
@@ -3384,6 +3599,7 @@ impl OverlayRuntime {
                         .values()
                         .any(|p| wg.probe_handshake_done(&p.pubkey) == Some(true));
                     if latched {
+                        birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                         self.sweep_upgrade_probes(
                             &mut wg, &mut by_node, &mut relay, &tun,
                             &mut upgrade_probes, &mut relay_bq,
@@ -3414,6 +3630,7 @@ impl OverlayRuntime {
                             .values()
                             .any(|p| wg.probe_handshake_done(&p.pubkey) == Some(true));
                     if latched {
+                        birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                         self.sweep_upgrade_probes(
                             &mut wg, &mut by_node, &mut relay, &tun,
                             &mut upgrade_probes, &mut relay_bq,
@@ -3438,7 +3655,10 @@ impl OverlayRuntime {
                     if let Some(built) = built {
                         let t_arm = Instant::now();
                         if relay_bq.take_if_current(&built.link.node_id, built.epoch) && current_peers.contains_key(&built.link.node_id) && !self.path_trial_managed.lock().unwrap_or_else(|e|e.into_inner()).contains(&built.link.node_id) {
-                            let BuiltRelay { link, quic, .. } = built;
+                            let BuiltRelay { mut link, quic, .. } = built;
+                            if let Some(cfg) = current_peers.get(&link.node_id).and_then(peer_config_from_netmap) {
+                                link.subnets = cfg.subnets;
+                            }
                             self.install_built(&mut wg, &mut by_node, &tun, link, quic).await;
                             // Same tail as a synchronous relay install: a new
                             // coturn worker may need an exit exemption, and the
@@ -3521,12 +3741,22 @@ impl OverlayRuntime {
                 done = alloc_rx.recv() => {
                     if let Some(done) = done {
                         let t_arm = Instant::now();
+                        if offline_continuity_expired || !current_peers.contains_key(&done.node_id) {
+                            alloc_q.invalidate(&done.node_id);
+                            if let Some(r) = relay.as_mut() {
+                                r.forget(&done.node_id);
+                            }
+                            continue;
+                        }
                         if alloc_q.take_if_current(&done.node_id, done.epoch) {
                             if let Some(r) = relay.as_mut() {
                                 match done.conn {
                                     Some(conn) => {
                                         let link = r.commit_alloc(done.node_id, conn).await;
-                                        if let Some(link) = link {
+                                        if let Some(mut link) = link {
+                                            if let Some(cfg) = current_peers.get(&link.node_id).and_then(peer_config_from_netmap) {
+                                                link.subnets = cfg.subnets;
+                                            }
                                             let t0 = Instant::now();
                                             self.install_ready(&mut wg, &mut by_node, &tun, link, &mut relay_bq).await;
                                             warn_if_slow("install_ready(spawn-or-sync)", t0);
@@ -3617,6 +3847,50 @@ impl OverlayRuntime {
                 // doesn't immediately re-upgrade it to direct).
                 _ = fallback.tick() => {
                     let t_arm = Instant::now();
+                    if self.outbound.is_closed() && control_detached_at.is_none() {
+                        control_detached_at = Some(Instant::now());
+                        info!("overlay: control-WS channel closed — entering offline continuity window");
+                        if let Some(max_age) = offline_continuity_max_age()
+                            && !offline_continuity_expired
+                        {
+                            fallback.reset_after(max_age.min(FALLBACK_TICK));
+                        }
+                    }
+                    if let (Some(detached_at), Some(max_age)) =
+                        (control_detached_at, offline_continuity_max_age())
+                        && !offline_continuity_expired
+                        && detached_at.elapsed() >= max_age
+                    {
+                        offline_continuity_expired = true;
+                        warn!(
+                            detached_ms = detached_at.elapsed().as_millis(),
+                            max_ms = max_age.as_millis(),
+                            "overlay: offline continuity lease expired while control-WS detached — failing closed and evicting installed peers until authoritative Netmap"
+                        );
+                        let mut all_ids: Vec<ObjectId> = by_node
+                            .keys()
+                            .chain(upgrade_probes.keys())
+                            .chain(current_peers.keys())
+                            .copied()
+                            .collect();
+                        all_ids.sort_unstable();
+                        all_ids.dedup();
+                        for nid in all_ids {
+                            invalidate_org_bind_identity(&nid, &mut org_q, &mut relay);
+                            self.evict_peer(
+                                nid, &mut wg, &mut by_node, &tun, &mut relay, &mut relay_bq,
+                                &mut alloc_q, &mut upgrade_probes, &mut current_peers,
+                                &mut relay_refresh_cooldown,
+                            ).await;
+                        }
+                        org_discovery.invalidate();
+                        wg.sync_peer_ingress(&current_peers);
+                        if let Some(names) = &dns_names {
+                            sync_name_map(names, &current_peers, network.self_name.as_deref(), self_v4).await;
+                        }
+                        self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
+                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                    }
                     // FR-72 P2 — the resolver retries its bind, so it may come up
                     // after the bring-up wait already concluded "not bound" and
                     // WITHHELD the OS steer. Without this the retry is pointless:
@@ -3744,6 +4018,7 @@ impl OverlayRuntime {
                             if let Some(h) = srflx_keepalive.take() {
                                 h.abort();
                             }
+                            birthday.reset(&self, &mut wg).await;
                             let stun_rx = self
                                 .rebuild_direct_plane_sockets(
                                     &mut wg, &mut by_node, &mut upgrade_probes, &mut relay,
@@ -3836,7 +4111,7 @@ impl OverlayRuntime {
                     // replies. MEASUREMENT ONLY — nothing below reads the
                     // table to make a routing decision (that is C3/C6, behind
                     // their own flags). Default OFF.
-                    let revived = self.disco_round(&mut disco, &mut path_trials, &mut disco_rx, &wg, &by_node, &current_peers, direct_ctx.as_ref()).await;
+                    let revived = self.disco_round(&mut disco, &mut path_trials, &mut birthday, &mut disco_rx, &wg, &by_node, &current_peers, direct_ctx.as_ref()).await;
                     // A relayed peer's direct candidate answers disco again:
                     // lift its suppression and walk this very tick, so the
                     // make-before-break probe starts now instead of up to a
@@ -3853,6 +4128,7 @@ impl OverlayRuntime {
                     // expire any that missed its deadline (keep the relay). Inert
                     // when the feature is off / no probes are in flight.
                     let t0 = Instant::now();
+                    birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                     self.sweep_upgrade_probes(
                         &mut wg, &mut by_node, &mut relay, &tun,
                         &mut upgrade_probes, &mut relay_bq,
@@ -4258,9 +4534,10 @@ impl OverlayRuntime {
                 // is NONE is THE measurement: the flow is grandfathered.
                 _ = path_trial_tick.tick() => {
                     if let Some(rx) = disco_rx.as_mut() { while let Ok(p) = rx.try_recv() {
-                        path_trials.active_pong(&p); disco.on_pong(&p);
+                        path_trials.active_pong(&p); birthday.on_pong(&p); disco.on_pong(&p);
                     }}
                     path_trials.tick(&self, &mut wg, &current_peers, &mut by_node, &mut org_discovery, server_path_trial_v1).await;
+                    birthday.tick(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                     path_trial::publish_observation_view(&self.peer_view,&path_trials,&current_peers,&by_node,
                         self.org_primary && path_trial::enabled() && server_path_trial_v1);
                 },
@@ -4429,6 +4706,7 @@ impl OverlayRuntime {
                             ).await;
                             // Our view of the old sockets goes too — holding
                             // it would keep the ports alive past the ack.
+                            birthday.reset(&self, &mut wg).await;
                             direct_ctx = None;
                             self.shadow(|s| s.mon.on_local_rebuild());
                             let _ = ack.send(()).await;
@@ -4457,6 +4735,7 @@ impl OverlayRuntime {
                 } => {
                     if let Some(inb) = maybe_init {
                         let t_arm = Instant::now();
+                        birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                         self.handle_direct_inbound(
                             &mut wg, &mut by_node, &mut relay, &tun,
                             &current_peers, &mut upgrade_probes,
@@ -4475,6 +4754,17 @@ impl OverlayRuntime {
                     // survive the re-join, and the keepalive only re-trickles
                     // on a CHANGE). Carriers/TUN/WG stay untouched — that is
                     // the point.
+                    Some(OverlayEvent::ControlDetached) => {
+                        if control_detached_at.is_none() {
+                            control_detached_at = Some(Instant::now());
+                            info!("overlay: control-WS detached — entering offline continuity window");
+                        }
+                        if let Some(max_age) = offline_continuity_max_age()
+                            && !offline_continuity_expired
+                        {
+                            fallback.reset_after(max_age.min(FALLBACK_TICK));
+                        }
+                    }
                     Some(OverlayEvent::Reattach { outbound }) => {
                         let t_arm = Instant::now();
                         path_trials.reset_observation(crate::localapi::PathTrialResetReason::Reattach);
@@ -4548,6 +4838,32 @@ impl OverlayRuntime {
                     // below applies it AUTHORITATIVELY against live state.
                     Some(OverlayEvent::Netmap { self_ip: new_self_ip, network: new_network, peers, org_relay_discovery, path_trial_v1 }) => {
                         let t_arm = Instant::now();
+                        if !accept_netmap_version(
+                            &mut applied_netmap_epoch,
+                            &mut applied_auth_revision,
+                            0,
+                            new_network.auth_revision,
+                        ) {
+                            debug!(
+                                incoming_auth_revision = new_network.auth_revision,
+                                applied_auth_revision,
+                                "overlay: ignoring stale full netmap with older auth_revision"
+                            );
+                            continue;
+                        }
+                        // A full netmap is an authoritative full-table replacement
+                        // for the newly attached control-WS session (possibly on a
+                        // pod whose wall clock is slightly behind the previous pod
+                        // at the same `auth_revision`). Re-anchor the session's
+                        // delta epoch baseline so subsequent deltas on this
+                        // session are never rejected against the old pod's clock.
+                        applied_netmap_epoch = 0;
+                        peer_netmap_versions = peers
+                            .iter()
+                            .map(|p| (p.node_id, (applied_auth_revision, 0)))
+                            .collect();
+                        control_detached_at = None;
+                        offline_continuity_expired = false;
                         // A re-join can only reconcile onto the SAME identity.
                         // A different self_ip (re-enroll / tenant renumber) or
                         // network shape (cidr → netmask/NAT guard, magic
@@ -4594,6 +4910,7 @@ impl OverlayRuntime {
                         }
                         // P4 — refresh per-source ingress rules from the netmap
                         // the server just shaped for us.
+                        birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                         wg.sync_peer_ingress(&current_peers);
                         // rc.225 — a peer whose direct endpoints changed gets a
                         // clean slate: its old strike counts were measured
@@ -4660,9 +4977,41 @@ impl OverlayRuntime {
                         warn_if_slow("install_peers(netmap)", t0);
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
                         self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                        if applied_auth_revision > 0 || applied_netmap_epoch > 0 {
+                            let _ = self
+                                .outbound
+                                .send(ClientMsg::OverlayNetmapAck {
+                                    epoch: applied_netmap_epoch,
+                                    auth_revision: applied_auth_revision,
+                                })
+                                .await;
+                        }
                         warn_if_slow("arm:netmap", t_arm);
                     }
-                    Some(OverlayEvent::NetmapDelta { upserts, removes }) => {
+                    Some(OverlayEvent::NetmapDelta { epoch, auth_revision, mut upserts, mut removes }) => {
+                        if offline_continuity_expired {
+                            debug!("overlay: ignoring netmap_delta after offline continuity expiry; awaiting full netmap");
+                            continue;
+                        }
+                        let prev_auth_revision = applied_auth_revision;
+                        if !filter_netmap_delta_by_peer(
+                            &mut applied_netmap_epoch,
+                            &mut applied_auth_revision,
+                            &mut peer_netmap_versions,
+                            epoch,
+                            auth_revision,
+                            &mut upserts,
+                            &mut removes,
+                        ) {
+                            debug!(
+                                incoming_epoch = epoch,
+                                incoming_auth_revision = auth_revision,
+                                applied_netmap_epoch,
+                                applied_auth_revision,
+                                "overlay: ignoring stale or out-of-order netmap_delta"
+                            );
+                            continue;
+                        }
                         path_trials.reset_observation(crate::localapi::PathTrialResetReason::NetmapDelta);
                         path_trial::clear_observation_view(&self.peer_view,path_trials.observation_runtime_id());
                         let t_arm = Instant::now();
@@ -4700,6 +5049,7 @@ impl OverlayRuntime {
                             }
                         }
                         org_discovery.reconcile_delta(&current_peers, &removes);
+                        birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                         // P4 — a delta can change a peer's grant without any
                         // install/removal, so the table is resynced here too.
                         wg.sync_peer_ingress(&current_peers);
@@ -4709,6 +5059,19 @@ impl OverlayRuntime {
                         if let Some(names) = &dns_names { sync_name_map(names, &current_peers, network.self_name.as_deref(), self_v4).await; }
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
                         self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                        // B3 — Emit `OverlayNetmapAck` on `NetmapDelta` only when
+                        // `auth_revision` advances (`applied_auth_revision > prev_auth_revision`)
+                        // so routine `endpoints` / `srflx` trickle deltas do not cause
+                        // O(N) MongoDB write amplification across the mesh.
+                        if applied_auth_revision > prev_auth_revision {
+                            let _ = self
+                                .outbound
+                                .send(ClientMsg::OverlayNetmapAck {
+                                    epoch: applied_netmap_epoch,
+                                    auth_revision: applied_auth_revision,
+                                })
+                                .await;
+                        }
                         warn_if_slow("arm:netmap_delta", t_arm);
                     }
                     Some(OverlayEvent::RelayGrant { peer_node_id, ice_servers, pair_key }) => {
@@ -4936,6 +5299,7 @@ impl OverlayRuntime {
                         // (relay-Q resets; direct decisions unaffected — the
                         // pin stays a server-side OVERRIDE, never scored).
                         self.shadow(|s| s.mon.on_forced_derp(&peer_node_id, Duration::from_millis(ttl_ms), Instant::now()));
+                        birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                         if let Some(r) = relay.as_mut() {
                             // P7 — a UDP-capable node skipped the startup
                             // `/derp` open; lazily invoke the retained factory
@@ -6451,67 +6815,138 @@ mod tests {
         wg.test_latch_handshake_done(&pk);
         let nid = ObjectId::from_bytes([74, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let mut by_node = HashMap::new();
-        by_node.insert(nid, Installed {
-            since: Instant::now().checked_sub(Duration::from_secs(20)).unwrap(),
-            last_rx_at: Instant::now(),
-            ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
-        });
+        by_node.insert(
+            nid,
+            Installed {
+                since: Instant::now().checked_sub(Duration::from_secs(20)).unwrap(),
+                last_rx_at: Instant::now(),
+                ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+            },
+        );
         let tun: Arc<dyn TunIo> = tun_mock;
         let mut relay = None;
         let mut refresh = HashMap::new();
         let peers = HashMap::new();
         // A healthy idle carrier must not gain a new revalidation trigger.
-        assert!(!rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
-            &mut refresh, &peers, ForcedPoke::No).await,
-            "healthy idle peers do not request an immediate repair walk");
+        assert!(
+            !rt.sweep_carrier_health(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut refresh,
+                &peers,
+                ForcedPoke::No
+            )
+            .await,
+            "healthy idle peers do not request an immediate repair walk"
+        );
         assert!(by_node[&nid].poke.is_none());
         // A periodic/pressure proof may already be in flight when business
         // becomes one-way. Upgrade it against a fresh initiation, rather than
         // leaving the business flow behind its old establishment-sized wait.
         let earlier = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
-            at: earlier, from_major: false, from_business: false,
+            at: earlier,
+            from_major: false,
+            from_business: false,
         });
         wg.test_set_ip_traffic(&pk, 1, 0);
-        rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
-            &mut refresh, &peers, ForcedPoke::No).await;
-        assert!(by_node[&nid].poke.is_some(),
-            "unanswered business traffic must start round-trip validation immediately");
+        rt.sweep_carrier_health(
+            &mut wg,
+            &mut by_node,
+            &mut relay,
+            &tun,
+            &mut refresh,
+            &peers,
+            ForcedPoke::No,
+        )
+        .await;
+        assert!(
+            by_node[&nid].poke.is_some(),
+            "unanswered business traffic must start round-trip validation immediately"
+        );
         assert_eq!(by_node[&nid].bad_sweeps, 1);
-        assert!(by_node[&nid].poke.unwrap().from_business,
-            "business suspicion must select the established-path proof window");
+        assert!(
+            by_node[&nid].poke.unwrap().from_business,
+            "business suspicion must select the established-path proof window"
+        );
         let armed = by_node[&nid].poke.unwrap().at;
         assert!(armed > earlier, "a shorter window needs a fresh initiation");
         wg.test_set_ip_traffic(&pk, 2, 0);
-        rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
-            &mut refresh, &peers, ForcedPoke::No).await;
-        assert_eq!(by_node[&nid].poke.unwrap().at, armed,
-            "repeated suspicion must not keep moving the proof deadline");
+        rt.sweep_carrier_health(
+            &mut wg,
+            &mut by_node,
+            &mut relay,
+            &tun,
+            &mut refresh,
+            &peers,
+            ForcedPoke::No,
+        )
+        .await;
+        assert_eq!(
+            by_node[&nid].poke.unwrap().at,
+            armed,
+            "repeated suspicion must not keep moving the proof deadline"
+        );
         let major_at = Instant::now();
         by_node.get_mut(&nid).unwrap().bad_sweeps = 0;
         by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
-            at: major_at, from_major: true, from_business: false,
+            at: major_at,
+            from_major: true,
+            from_business: false,
         });
         wg.test_set_ip_traffic(&pk, 3, 0);
-        rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
-            &mut refresh, &peers, ForcedPoke::No).await;
-        assert!(by_node[&nid].poke.unwrap().from_major,
-            "business suspicion must not replace the more urgent Major proof");
+        rt.sweep_carrier_health(
+            &mut wg,
+            &mut by_node,
+            &mut relay,
+            &tun,
+            &mut refresh,
+            &peers,
+            ForcedPoke::No,
+        )
+        .await;
+        assert!(
+            by_node[&nid].poke.unwrap().from_major,
+            "business suspicion must not replace the more urgent Major proof"
+        );
         assert_eq!(by_node[&nid].poke.unwrap().at, major_at);
 
         // TCP backs off and submits no further packet. Its idle interval must
         // not cancel the independent handshake proof or restart its deadline.
-        let at = Instant::now().checked_sub(crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE
-            + Duration::from_secs(1)).unwrap();
-        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm { at, from_major: false, from_business: true });
-        assert!(rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
-            &mut refresh, &peers, ForcedPoke::No).await,
-            "a real removal requests repair immediately");
+        let at = Instant::now()
+            .checked_sub(crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE + Duration::from_secs(1))
+            .unwrap();
+        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
+            at,
+            from_major: false,
+            from_business: true,
+        });
+        assert!(
+            rt.sweep_carrier_health(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut refresh,
+                &peers,
+                ForcedPoke::No
+            )
+            .await,
+            "a real removal requests repair immediately"
+        );
         assert!(!by_node.contains_key(&nid));
-        assert_eq!(rt.path_shadow.lock().unwrap().mon.strikes(&nid, DirectTier::Srflx), 0,
-            "an active proof failure must retain the existing no-strike policy");
+        assert_eq!(
+            rt.path_shadow
+                .lock()
+                .unwrap()
+                .mon
+                .strikes(&nid, DirectTier::Srflx),
+            0,
+            "an active proof failure must retain the existing no-strike policy"
+        );
     }
-
 
     #[tokio::test]
     async fn business_scout_resends_one_initiation_for_an_unanswered_business_proof() {
@@ -6534,26 +6969,45 @@ mod tests {
         wg.test_latch_handshake_done(&pk);
         let nid = ObjectId::from_bytes([77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let mut by_node = HashMap::new();
-        by_node.insert(nid, Installed {
-            since: Instant::now() - Duration::from_secs(20),
-            last_rx_at: Instant::now(),
-            ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
-        });
+        by_node.insert(
+            nid,
+            Installed {
+                since: Instant::now() - Duration::from_secs(20),
+                last_rx_at: Instant::now(),
+                ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+            },
+        );
         let mut samples = HashMap::new();
         wg.test_set_ip_traffic(&pk, 10, 10);
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
 
         // A business proof armed before the re-send point, still unanswered.
         let at = Instant::now() - crate::overlay::lifecycle::BUSINESS_POKE_RETAP_AFTER;
-        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm { at, from_major: false, from_business: true });
+        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
+            at,
+            from_major: false,
+            from_business: true,
+        });
         wg.test_set_ip_traffic(&pk, 20, 10);
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
-        assert_eq!(samples[&nid].retapped, Some(at), "one fresh initiation for the unanswered proof");
-        assert_eq!(by_node[&nid].poke.unwrap().at, at, "the re-send keeps the proof's window");
+        assert_eq!(
+            samples[&nid].retapped,
+            Some(at),
+            "one fresh initiation for the unanswered proof"
+        );
+        assert_eq!(
+            by_node[&nid].poke.unwrap().at,
+            at,
+            "the re-send keeps the proof's window"
+        );
 
         // A Major proof is never re-sent by the scout.
         let major = Instant::now() - Duration::from_secs(1);
-        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm { at: major, from_major: true, from_business: false });
+        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
+            at: major,
+            from_major: true,
+            from_business: false,
+        });
         wg.test_set_ip_traffic(&pk, 30, 10);
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
         assert_eq!(samples[&nid].retapped, Some(at));
@@ -6580,11 +7034,14 @@ mod tests {
         wg.test_latch_handshake_done(&pk);
         let nid = ObjectId::from_bytes([76, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let mut by_node = HashMap::new();
-        by_node.insert(nid, Installed {
-            since: Instant::now() - Duration::from_secs(20),
-            last_rx_at: Instant::now(),
-            ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
-        });
+        by_node.insert(
+            nid,
+            Installed {
+                since: Instant::now() - Duration::from_secs(20),
+                last_rx_at: Instant::now(),
+                ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+            },
+        );
         let mut samples = HashMap::new();
         let tun: Arc<dyn TunIo> = tun_mock;
         let mut relay = None;
@@ -6597,18 +7054,42 @@ mod tests {
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
         assert!(by_node[&nid].poke.is_none());
         wg.test_set_ip_traffic(&pk, 11, 10);
-        rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
-            &mut refresh, &peers, ForcedPoke::No).await;
+        rt.sweep_carrier_health(
+            &mut wg,
+            &mut by_node,
+            &mut relay,
+            &tun,
+            &mut refresh,
+            &peers,
+            ForcedPoke::No,
+        )
+        .await;
         assert_eq!(by_node[&nid].bad_sweeps, 0);
-        assert!(by_node[&nid].poke.is_none(), "the mixed health bucket masks this loss");
+        assert!(
+            by_node[&nid].poke.is_none(),
+            "the mixed health bucket masks this loss"
+        );
         wg.test_bump_rx_any(&pk);
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
-        let armed = by_node[&nid].poke.expect("the one-second scout must start proof before the next health sweep");
+        let armed = by_node[&nid]
+            .poke
+            .expect("the one-second scout must start proof before the next health sweep");
         assert!(armed.from_business && !armed.from_major);
         assert_eq!(by_node[&nid].bad_sweeps, 0);
         assert_eq!(by_node[&nid].last_traffic, (11, 10));
-        assert_eq!(wg.peer_take_rx_any(&pk), 1, "the scout must not drain sweep liveness");
-        assert_eq!(rt.path_shadow.lock().unwrap().mon.strikes(&nid, DirectTier::Srflx), 0);
+        assert_eq!(
+            wg.peer_take_rx_any(&pk),
+            1,
+            "the scout must not drain sweep liveness"
+        );
+        assert_eq!(
+            rt.path_shadow
+                .lock()
+                .unwrap()
+                .mon
+                .strikes(&nid, DirectTier::Srflx),
+            0
+        );
 
         // Repeated sends or TCP idle backoff must not move an existing deadline.
         wg.test_set_ip_traffic(&pk, 12, 10);
@@ -6619,18 +7100,34 @@ mod tests {
         wg.test_stamp_initiator_hs(&pk);
         assert!(wg.peer_initiator_hs_answered(&pk, armed.at));
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
-        assert_eq!(by_node[&nid].poke.unwrap().at, armed.at,
-            "only the normal sweep settles an answered proof");
+        assert_eq!(
+            by_node[&nid].poke.unwrap().at,
+            armed.at,
+            "only the normal sweep settles an answered proof"
+        );
         wg.test_set_ip_traffic(&pk, 12, 11);
-        rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
-            &mut refresh, &peers, ForcedPoke::No).await;
-        assert!(by_node[&nid].poke.is_none(), "an answered healthy path survives and settles");
+        rt.sweep_carrier_health(
+            &mut wg,
+            &mut by_node,
+            &mut relay,
+            &tun,
+            &mut refresh,
+            &peers,
+            ForcedPoke::No,
+        )
+        .await;
+        assert!(
+            by_node[&nid].poke.is_none(),
+            "an answered healthy path survives and settles"
+        );
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
         assert!(by_node[&nid].poke.is_none());
 
         let major = Instant::now();
         by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
-            at: major, from_major: true, from_business: false,
+            at: major,
+            from_major: true,
+            from_business: false,
         });
         wg.test_set_ip_traffic(&pk, 13, 11);
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
@@ -6638,7 +7135,9 @@ mod tests {
         assert!(by_node[&nid].poke.unwrap().from_major);
         let normal = major - Duration::from_secs(1);
         by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
-            at: normal, from_major: false, from_business: false,
+            at: normal,
+            from_major: false,
+            from_business: false,
         });
         wg.test_set_ip_traffic(&pk, 14, 11);
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
@@ -6665,7 +7164,6 @@ mod tests {
         assert!(!samples.contains_key(&nid));
     }
 
-
     #[tokio::test(flavor = "multi_thread")]
     async fn business_scout_observes_a_failed_carrier_send_without_inflating_tx() {
         let kp = WgKeypair::generate();
@@ -6689,34 +7187,50 @@ mod tests {
         wg.test_latch_handshake_done(&pk);
         let nid = ObjectId::from_bytes([77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let mut by_node = HashMap::new();
-        by_node.insert(nid, Installed {
-            since: Instant::now() - Duration::from_secs(20),
-            last_rx_at: Instant::now(),
-            ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
-        });
+        by_node.insert(
+            nid,
+            Installed {
+                since: Instant::now() - Duration::from_secs(20),
+                last_rx_at: Instant::now(),
+                ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+            },
+        );
         let mut samples = HashMap::new();
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
-        let packet = [0x45, 0, 0, 20, 0, 0, 0, 0, 64, 6, 0, 0,
-            100, 64, 0, 1, 100, 64, 0, 7];
-        assert!(!wg.sender().send_to_peer(&pk, &packet).await,
-            "the carrier send must actually fail");
-        assert_eq!(wg.peer_traffic(&pk), Some((0, 0)),
-            "a failed send must not become successful API traffic");
-        assert_eq!(wg.peer_business_traffic(&pk), Some((1, 0)),
-            "failed business sends still require path validation");
+        let packet = [
+            0x45, 0, 0, 20, 0, 0, 0, 0, 64, 6, 0, 0, 100, 64, 0, 1, 100, 64, 0, 7,
+        ];
+        assert!(
+            !wg.sender().send_to_peer(&pk, &packet).await,
+            "the carrier send must actually fail"
+        );
+        assert_eq!(
+            wg.peer_traffic(&pk),
+            Some((0, 0)),
+            "a failed send must not become successful API traffic"
+        );
+        assert_eq!(
+            wg.peer_business_traffic(&pk),
+            Some((1, 0)),
+            "failed business sends still require path validation"
+        );
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
-        let proof = by_node[&nid].poke.expect("failed local business send arms proof");
+        let proof = by_node[&nid]
+            .poke
+            .expect("failed local business send arms proof");
         assert!(proof.from_business && !proof.from_major);
         assert_eq!(by_node[&nid].bad_sweeps, 0);
         assert_eq!(by_node[&nid].last_traffic, (0, 0));
         assert!(wg.poke_handshake(&pk));
         tokio::time::sleep(Duration::from_millis(2)).await;
-        assert_eq!(wg.peer_business_traffic(&pk), Some((1, 0)),
-            "a standalone handshake must not count as business traffic");
+        assert_eq!(
+            wg.peer_business_traffic(&pk),
+            Some((1, 0)),
+            "a standalone handshake must not count as business traffic"
+        );
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
         assert_eq!(by_node[&nid].poke.unwrap().at, proof.at);
     }
-
 
     #[tokio::test(flavor = "multi_thread")]
     async fn sweep_repair_builds_floor_immediately_only_after_a_real_removal() {
@@ -6731,24 +7245,33 @@ mod tests {
         };
         let rt = OverlayRuntime::new_relay(kp.clone(), out_tx.clone(), tf, 1280);
         let mux = DerpMux::new(kp.public.to_bytes()).0;
-        let mut relay = Some(RelayCoordinator::new(out_tx, kp.public.to_bytes(),
-            true, vec![], Some(mux)));
+        let mut relay = Some(RelayCoordinator::new(
+            out_tx,
+            kp.public.to_bytes(),
+            true,
+            vec![],
+            Some(mux),
+        ));
         let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
         let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
         wg.ensure_direct_demux(sock.clone());
         let ip = Ipv4Addr::new(100, 64, 0, 8);
         let new_ip = Ipv4Addr::new(100, 64, 0, 9);
         let pk = peer_kp.public.to_bytes();
-        wg.add_direct_peer(sock, pk, ip, "127.0.0.1:9".parse().unwrap(), true).await;
+        wg.add_direct_peer(sock, pk, ip, "127.0.0.1:9".parse().unwrap(), true)
+            .await;
         wg.test_latch_handshake_done(&pk);
         let nid = ObjectId::from_bytes([78, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let new_nid = ObjectId::from_bytes([79, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let mut by_node = HashMap::new();
-        by_node.insert(nid, Installed {
-            since: Instant::now() - Duration::from_secs(20),
-            last_rx_at: Instant::now(),
-            ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
-        });
+        by_node.insert(
+            nid,
+            Installed {
+                since: Instant::now() - Duration::from_secs(20),
+                last_rx_at: Instant::now(),
+                ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+            },
+        );
         let mut current_peers = HashMap::new();
         current_peers.insert(nid, test_netmap_peer(nid, ip, &peer_kp));
         // This eligible but uninstalled sentinel exposes any extra walk on
@@ -6758,25 +7281,59 @@ mod tests {
         let mut refresh = HashMap::new();
         let mut probes = HashMap::new();
         let mut bq = test_relay_bq();
-        assert!(!rt.sweep_and_repair_carriers(&mut wg, &mut by_node, &mut relay,
-            &tun, &mut refresh, &current_peers, ForcedPoke::No, None,
-            &mut probes, &mut bq).await);
+        assert!(
+            !rt.sweep_and_repair_carriers(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut refresh,
+                &current_peers,
+                ForcedPoke::No,
+                None,
+                &mut probes,
+                &mut bq
+            )
+            .await
+        );
         assert!(by_node[&nid].is_direct);
-        assert!(!by_node.contains_key(&new_nid), "healthy sweep must not walk or retry peers");
+        assert!(
+            !by_node.contains_key(&new_nid),
+            "healthy sweep must not walk or retry peers"
+        );
 
         by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
-            at: Instant::now() - crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE
+            at: Instant::now()
+                - crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE
                 - Duration::from_secs(1),
-            from_major: false, from_business: true,
+            from_major: false,
+            from_business: true,
         });
-        assert!(rt.sweep_and_repair_carriers(&mut wg, &mut by_node, &mut relay,
-            &tun, &mut refresh, &current_peers, ForcedPoke::No, None,
-            &mut probes, &mut bq).await);
-        let repaired = by_node.get(&nid).expect("a dead carrier must be re-floored in this pass");
+        assert!(
+            rt.sweep_and_repair_carriers(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut refresh,
+                &current_peers,
+                ForcedPoke::No,
+                None,
+                &mut probes,
+                &mut bq
+            )
+            .await
+        );
+        let repaired = by_node
+            .get(&nid)
+            .expect("a dead carrier must be re-floored in this pass");
         assert!(!repaired.is_direct);
         assert_eq!(repaired.relay_kind, Some(RelayKind::Derp));
         assert_eq!(wg.test_route(&ip), Some(pk));
-        assert!(by_node.contains_key(&new_nid), "the existing establish walk repairs all peers");
+        assert!(
+            by_node.contains_key(&new_nid),
+            "the existing establish walk repairs all peers"
+        );
     }
 
     #[test]
@@ -6784,21 +7341,43 @@ mod tests {
         let now = Instant::now();
         let nid = ObjectId::from_bytes([75, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let mut peers = HashMap::new();
-        peers.insert(nid, Installed {
-            poke: Some(PokeArm { at: now, from_major: false, from_business: true }),
-            ..Installed::base([0; 32], Ipv4Addr::new(100, 64, 0, 5), DirectTier::Srflx, now)
-        });
+        peers.insert(
+            nid,
+            Installed {
+                poke: Some(PokeArm {
+                    at: now,
+                    from_major: false,
+                    from_business: true,
+                }),
+                ..Installed::base(
+                    [0; 32],
+                    Ipv4Addr::new(100, 64, 0, 5),
+                    DirectTier::Srflx,
+                    now,
+                )
+            },
+        );
         // §6.3 F1 — the 2 s business window closes before the next 5 s sweep,
         // so the recheck is scheduled from the moment the proof is armed.
         let due = crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE + Duration::from_millis(250);
         assert_eq!(business_poke_recheck(&peers, now), Some(due));
-        assert_eq!(business_poke_recheck(&peers, now + Duration::from_secs(1)),
-            Some(due - Duration::from_secs(1)));
-        assert_eq!(business_poke_recheck(&peers, now + Duration::from_secs(7)),
-            Some(Duration::from_millis(100)));
+        assert_eq!(
+            business_poke_recheck(&peers, now + Duration::from_secs(1)),
+            Some(due - Duration::from_secs(1))
+        );
+        assert_eq!(
+            business_poke_recheck(&peers, now + Duration::from_secs(7)),
+            Some(Duration::from_millis(100))
+        );
         // Further away than the regular sweep: no extra wake-up.
         assert!(business_poke_recheck(&peers, now - Duration::from_secs(4)).is_none());
-        peers.get_mut(&nid).unwrap().poke.as_mut().unwrap().from_business = false;
+        peers
+            .get_mut(&nid)
+            .unwrap()
+            .poke
+            .as_mut()
+            .unwrap()
+            .from_business = false;
         assert!(business_poke_recheck(&peers, now + Duration::from_secs(5)).is_none());
         peers.get_mut(&nid).unwrap().poke = None;
         assert!(business_poke_recheck(&peers, now + Duration::from_secs(5)).is_none());
@@ -8289,7 +8868,9 @@ mod tests {
             .expect("expected an advert with the mapping")
             .expect("channel closed");
         match msg {
-            ClientMsg::OverlaySrflx { candidates, nat, .. } => {
+            ClientMsg::OverlaySrflx {
+                candidates, nat, ..
+            } => {
                 assert_eq!(
                     candidates,
                     vec![external.to_string(), "203.0.113.7:1111".to_string()]
@@ -8675,6 +9256,7 @@ mod tests {
             stun_urls: vec![],
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
+            auth_revision: 0,
         }
     }
     pub(super) fn peer(kp: &WgKeypair, ip: &str) -> NetmapPeer {
@@ -9254,6 +9836,434 @@ mod tests {
             .await
             .expect("runtime must exit once the outbound pump dies")
             .unwrap();
+    }
+
+    #[test]
+    fn b3_accept_netmap_version_enforces_lexicographic_auth_revision_and_epoch_monotonicity() {
+        let mut epoch = 100u64;
+        let mut rev = 2u64;
+
+        // Stale auth_revision from a lagging pod must be rejected even if its
+        // wall-clock epoch is higher.
+        assert!(!accept_netmap_version(&mut epoch, &mut rev, 500, 1));
+        assert_eq!((epoch, rev), (100, 2));
+
+        // Out-of-order epoch within the same auth_revision is rejected.
+        assert!(!accept_netmap_version(&mut epoch, &mut rev, 99, 2));
+        assert_eq!((epoch, rev), (100, 2));
+
+        // Monotonic epoch within the same auth_revision is accepted.
+        assert!(accept_netmap_version(&mut epoch, &mut rev, 150, 2));
+        assert_eq!((epoch, rev), (150, 2));
+
+        // Strictly newer auth_revision is accepted even if wall-clock epoch across
+        // pods was slightly lower, and resets the epoch baseline to the new epoch.
+        assert!(accept_netmap_version(&mut epoch, &mut rev, 140, 3));
+        assert_eq!((epoch, rev), (140, 3));
+
+        // Full OverlayNetmap (incoming_epoch = 0) with strictly newer auth_revision
+        // resets applied_epoch to 0 so subsequent deltas at rev=4 with any epoch > 0
+        // (even < 140) are accepted.
+        assert!(accept_netmap_version(&mut epoch, &mut rev, 0, 4));
+        assert_eq!((epoch, rev), (0, 4));
+        assert!(accept_netmap_version(&mut epoch, &mut rev, 50, 4));
+        assert_eq!((epoch, rev), (50, 4));
+    }
+
+    #[test]
+    fn b3_filter_netmap_delta_by_peer_accepts_out_of_order_distinct_peers_and_rejects_same_peer_rollback()
+     {
+        let mut epoch = 0u64;
+        let mut rev = 5u64;
+        let peer_x_id = ObjectId::new();
+        let peer_y_id = ObjectId::new();
+        let peer_z_id = ObjectId::new();
+        let mut peer_versions: HashMap<ObjectId, (u64, u64)> = HashMap::from([
+            (peer_x_id, (5, 0)),
+            (peer_y_id, (5, 0)),
+            (peer_z_id, (5, 0)),
+        ]);
+
+        let make_peer = |id: ObjectId, ip: &str| NetmapPeer {
+            node_id: id,
+            overlay_ip: ip.to_string(),
+            name: format!("peer-{id}"),
+            wg_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_string(),
+            endpoints: vec![],
+            lan_endpoints: vec![],
+            srflx_endpoints: vec![],
+            srflx_nat: None,
+            caps: None,
+            udp_dialer_ok: None,
+            relay_home: None,
+            warm_relay_endpoint: None,
+            reachable: true,
+            supports_quic: false,
+            supports_relay_single: false,
+            supports_derp: true,
+            supports_forced_derp: false,
+            supports_derp_floor: false,
+            relay_strategy: None,
+            backbone_only: false,
+            supports_overlay_echo: false,
+            supports_org_relay: false,
+            routes: vec![],
+            agent_id: None,
+            ingress_rules: None,
+        };
+
+        // 1. Peer Y delta (epoch = 105) arrives FIRST at auth_revision = 5.
+        let mut upserts_y = vec![make_peer(peer_y_id, "100.64.0.2")];
+        let mut removes_y = vec![];
+        assert!(filter_netmap_delta_by_peer(
+            &mut epoch,
+            &mut rev,
+            &mut peer_versions,
+            105,
+            5,
+            &mut upserts_y,
+            &mut removes_y,
+        ));
+        assert_eq!(upserts_y.len(), 1);
+        assert_eq!((epoch, rev), (105, 5));
+
+        // 2. Peer X delta (epoch = 100 < 105) arrives SECOND at the same auth_revision = 5:
+        // must NOT be dropped despite global epoch = 105!
+        let mut upserts_x = vec![make_peer(peer_x_id, "100.64.0.3")];
+        let mut removes_x = vec![];
+        assert!(filter_netmap_delta_by_peer(
+            &mut epoch,
+            &mut rev,
+            &mut peer_versions,
+            100,
+            5,
+            &mut upserts_x,
+            &mut removes_x,
+        ));
+        assert_eq!(upserts_x.len(), 1);
+        assert_eq!(peer_versions.get(&peer_x_id), Some(&(5, 100)));
+
+        // 3. Cross-pod remove delta for Peer Z (epoch = 102 < 105) at auth_revision = 5:
+        // must ALSO be accepted and remove Peer Z!
+        let mut upserts_z = vec![];
+        let mut removes_z = vec![peer_z_id];
+        assert!(filter_netmap_delta_by_peer(
+            &mut epoch,
+            &mut rev,
+            &mut peer_versions,
+            102,
+            5,
+            &mut upserts_z,
+            &mut removes_z,
+        ));
+        assert_eq!(removes_z, vec![peer_z_id]);
+
+        // 4. Stale out-of-order delta for the SAME Peer X (epoch = 90 < 100) at auth_revision = 5:
+        // must be filtered out and rejected!
+        let mut upserts_x_stale = vec![make_peer(peer_x_id, "100.64.0.99")];
+        let mut removes_x_stale = vec![];
+        assert!(!filter_netmap_delta_by_peer(
+            &mut epoch,
+            &mut rev,
+            &mut peer_versions,
+            90,
+            5,
+            &mut upserts_x_stale,
+            &mut removes_x_stale,
+        ));
+        assert!(upserts_x_stale.is_empty());
+        assert_eq!(peer_versions.get(&peer_x_id), Some(&(5, 100)));
+
+        // 5. Stale auth_revision = 4 from a lagging pod (even with epoch = 999) is rejected outright.
+        let mut upserts_old_rev = vec![make_peer(peer_x_id, "100.64.0.88")];
+        let mut removes_old_rev = vec![];
+        assert!(!filter_netmap_delta_by_peer(
+            &mut epoch,
+            &mut rev,
+            &mut peer_versions,
+            999,
+            4,
+            &mut upserts_old_rev,
+            &mut removes_old_rev,
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn b3_runtime_acks_netmap_rejects_stale_pod_delta_and_enforces_offline_continuity_lease()
+    {
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+
+        let (out_a, mut out_a_rx) = mpsc::channel::<ClientMsg>(32);
+        let (out_b, mut out_b_rx) = mpsc::channel::<ClientMsg>(32);
+        let (evt_a, evt_a_rx) = mpsc::channel::<OverlayEvent>(32);
+        let (evt_b, evt_b_rx) = mpsc::channel::<OverlayEvent>(32);
+
+        let (mock_a, inject_a, _del_a) = MockTun::new();
+        let (mock_b, _inj_b, mut del_b) = MockTun::new();
+        let tf_a: TunFactory = {
+            let m = mock_a.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let tf_b: TunFactory = {
+            let m = mock_b.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+
+        let rt_a = OverlayRuntime::new(
+            a.clone(),
+            out_a,
+            Arc::new(LoopbackLinks {
+                sock: sock_a,
+                dst: addr_b,
+            }),
+            tf_a,
+            1280,
+        );
+        let rt_b = OverlayRuntime::new(
+            b.clone(),
+            out_b,
+            Arc::new(LoopbackLinks {
+                sock: sock_b,
+                dst: addr_a,
+            }),
+            tf_b,
+            1280,
+        );
+        tokio::spawn(rt_a.run(evt_a_rx, vec![]));
+        tokio::spawn(rt_b.run(evt_b_rx, vec![]));
+        assert!(matches!(
+            out_a_rx.recv().await,
+            Some(ClientMsg::OverlayJoin { .. })
+        ));
+        assert!(matches!(
+            out_b_rx.recv().await,
+            Some(ClientMsg::OverlayJoin { .. })
+        ));
+
+        let peer_b = peer(&b, "100.64.0.2");
+        let peer_a = peer(&a, "100.64.0.1");
+        let mut net_a = net();
+        net_a.auth_revision = 2;
+        evt_a
+            .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
+                self_ip: "100.64.0.1".into(),
+                network: net_a,
+                peers: vec![peer_b.clone()],
+            })
+            .await
+            .unwrap();
+        evt_b
+            .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
+                self_ip: "100.64.0.2".into(),
+                network: net(),
+                peers: vec![peer_a.clone()],
+            })
+            .await
+            .unwrap();
+
+        // A must emit OverlayNetmapAck for auth_revision = 2.
+        let ack = tokio::time::timeout(Duration::from_secs(3), out_a_rx.recv())
+            .await
+            .expect("expected initial netmap_ack")
+            .unwrap();
+        assert!(matches!(
+            ack,
+            ClientMsg::OverlayNetmapAck {
+                epoch: 0,
+                auth_revision: 2,
+            }
+        ));
+
+        // Verify data plane comes up.
+        let pkt = synthetic_ipv4(IP_A, IP_B, b"b3-initial");
+        let mut up = false;
+        for _ in 0..100 {
+            let _ = inject_a.send(pkt.clone());
+            if tokio::time::timeout(Duration::from_millis(150), del_b.recv())
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                up = true;
+                break;
+            }
+        }
+        assert!(up, "pair did not come up");
+
+        // Send a stale NetmapDelta from a lagging pod (auth_revision=1, removes=[peer_b]).
+        // A must reject it and keep peer_b installed!
+        evt_a
+            .send(OverlayEvent::NetmapDelta {
+                epoch: 999,
+                auth_revision: 1,
+                upserts: vec![],
+                removes: vec![peer_b.node_id],
+            })
+            .await
+            .unwrap();
+        // Now send a valid NetmapDelta (epoch=500, auth_revision=3, upserts=[peer_b]).
+        evt_a
+            .send(OverlayEvent::NetmapDelta {
+                epoch: 500,
+                auth_revision: 3,
+                upserts: vec![peer_b.clone()],
+                removes: vec![],
+            })
+            .await
+            .unwrap();
+
+        // Only the valid delta (epoch=500, auth_revision=3) is acknowledged.
+        let ack2 = tokio::time::timeout(Duration::from_secs(3), out_a_rx.recv())
+            .await
+            .expect("expected delta netmap_ack")
+            .unwrap();
+        assert!(matches!(
+            ack2,
+            ClientMsg::OverlayNetmapAck {
+                epoch: 500,
+                auth_revision: 3,
+            }
+        ));
+
+        // Out-of-order epoch within auth_revision=3 (epoch=400, removes=[peer_b]) is also rejected.
+        evt_a
+            .send(OverlayEvent::NetmapDelta {
+                epoch: 400,
+                auth_revision: 3,
+                upserts: vec![],
+                removes: vec![peer_b.node_id],
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            out_a_rx.try_recv().is_err(),
+            "stale epoch must not emit ack"
+        );
+
+        // Traffic still flows after both stale/out-of-order remove deltas were rejected!
+        let pkt2 = synthetic_ipv4(IP_A, IP_B, b"b3-after-stale-deltas");
+        let mut still_up = false;
+        for _ in 0..50 {
+            let _ = inject_a.send(pkt2.clone());
+            if let Ok(Some(got)) =
+                tokio::time::timeout(Duration::from_millis(150), del_b.recv()).await
+                && got == pkt2
+            {
+                still_up = true;
+                break;
+            }
+        }
+        assert!(still_up, "stale pod delta must not tear down active peer");
+
+        // Bounded offline continuity: configure a 120ms lease, detach control WS
+        // (even while `out_a_rx` is still open, e.g. on OverlayJoinRefused),
+        // verify traffic survives immediately after detach and then fails closed
+        // once the 120ms lease expires.
+        // SAFETY: test-scoped env var read by `offline_continuity_max_age`.
+        unsafe {
+            std::env::set_var("ROOMLERD_OFFLINE_CONTINUITY_MAX_MS", "120");
+        }
+        evt_a.send(OverlayEvent::ControlDetached).await.unwrap();
+
+        // Immediately after detach (within lease window), traffic still flows.
+        let pkt3 = synthetic_ipv4(IP_A, IP_B, b"b3-in-lease");
+        let _ = inject_a.send(pkt3.clone());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), del_b.recv())
+                .await
+                .ok()
+                .flatten()
+                .is_some(),
+            "traffic must continue during bounded offline continuity lease"
+        );
+
+        // Wait for the 120ms offline continuity lease to expire and drain in-flight packets.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        while tokio::time::timeout(Duration::from_millis(50), del_b.recv())
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+        {}
+        for _ in 0..5 {
+            let _ = inject_a.send(pkt3.clone());
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), del_b.recv())
+                .await
+                .ok()
+                .flatten()
+                .is_none(),
+            "expired offline continuity lease must fail closed and evict peers"
+        );
+
+        // While offline_continuity_expired is true, a stray NetmapDelta must be
+        // ignored and must NOT resurrect peers without a full Netmap.
+        evt_a
+            .send(OverlayEvent::NetmapDelta {
+                epoch: 600,
+                auth_revision: 3,
+                upserts: vec![peer_b.clone()],
+                removes: vec![],
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(
+            out_a_rx.try_recv().is_err(),
+            "NetmapDelta while offline_continuity_expired must be ignored"
+        );
+
+        // Reattach + authoritative full Netmap (auth_revision=4) restores the mesh,
+        // resets applied_netmap_epoch to 0, and emits OverlayNetmapAck { epoch: 0, auth_revision: 4 }.
+        let (out_a2, mut out_a2_rx) = mpsc::channel::<ClientMsg>(32);
+        evt_a
+            .send(OverlayEvent::Reattach { outbound: out_a2 })
+            .await
+            .unwrap();
+        assert!(matches!(
+            out_a2_rx.recv().await,
+            Some(ClientMsg::OverlayJoin { .. })
+        ));
+        let mut net_a4 = net();
+        net_a4.auth_revision = 4;
+        evt_a
+            .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
+                self_ip: "100.64.0.1".into(),
+                network: net_a4,
+                peers: vec![peer_b.clone()],
+            })
+            .await
+            .unwrap();
+        let ack_reattach = tokio::time::timeout(Duration::from_secs(3), out_a2_rx.recv())
+            .await
+            .expect("expected reattach netmap_ack")
+            .unwrap();
+        assert!(matches!(
+            ack_reattach,
+            ClientMsg::OverlayNetmapAck {
+                epoch: 0,
+                auth_revision: 4,
+            }
+        ));
+
+        unsafe {
+            std::env::remove_var("ROOMLERD_OFFLINE_CONTINUITY_MAX_MS");
+        }
     }
 
     // ---- P5 exit-node pure helpers ----
@@ -9845,6 +10855,175 @@ mod tests {
             wg.peer_subnets(&pk)
         );
         assert!(st.split_default_installed);
+    }
+
+    /// B5 — Subnet-Router HA OS CIDR route lifecycle and active/standby failover:
+    /// 1. Two HA routers claiming `10.20.0.0/24` both register in the WG router;
+    ///    when one withdraws the route via `reconcile_peer_subnets`, the OS CIDR
+    ///    route is NOT removed while the surviving HA peer still claims it, and
+    ///    traffic fails over to the surviving router.
+    /// 2. When a peer is evicted via `remove_peer_state(..., PeerRoute::Drop)`,
+    ///    `del 10.20.0.0/24` is suppressed while another HA claimant remains and
+    ///    fires once the last claimant is evicted.
+    /// 3. `reconcile_peer_subnets` on an active exit peer preserves its `/1`
+    ///    split-default entries in the crypto-router while adding/removing LAN
+    ///    subnets in-place.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subnet_ha_reconcile_and_evict_keep_os_cidr_route_until_last_claimant_leaves() {
+        use crate::overlay::router::Cidr;
+        let kp = WgKeypair::generate();
+        let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+        let tun = ExemptionTun::new();
+        let tf: TunFactory = {
+            let m = tun.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let id_a = exit_oid(0x41);
+        let id_b = exit_oid(0x42);
+        let server: IpAddr = "203.0.113.7".parse().unwrap();
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx, tf, 1280)
+            .with_exit_node(Some(id_a.to_hex()), vec![server]);
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let dev: Arc<dyn TunIo> = tun.clone();
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let pk_a = [0x11u8; 32];
+        let pk_b = [0x22u8; 32];
+        wg.add_peer(
+            pk_a,
+            Ipv4Addr::new(100, 64, 0, 11),
+            Carrier::direct(sock.clone(), "127.0.0.1:9".parse().unwrap()),
+            false,
+        );
+        wg.add_peer(
+            pk_b,
+            Ipv4Addr::new(100, 64, 0, 12),
+            Carrier::direct(sock, "127.0.0.1:9".parse().unwrap()),
+            false,
+        );
+
+        let cidr = Cidr::parse("10.20.0.0/24").unwrap();
+        let dst = Ipv4Addr::new(10, 20, 0, 42);
+        let mut by_node = HashMap::new();
+        by_node.insert(
+            id_a,
+            Installed::base(
+                pk_a,
+                Ipv4Addr::new(100, 64, 0, 11),
+                DirectTier::Lan,
+                Instant::now(),
+            ),
+        );
+        by_node.insert(
+            id_b,
+            Installed::base(
+                pk_b,
+                Ipv4Addr::new(100, 64, 0, 12),
+                DirectTier::Lan,
+                Instant::now(),
+            ),
+        );
+
+        rt.install_subnets(&mut wg, &dev, id_a, pk_a, &[cidr]).await;
+        rt.install_subnets(&mut wg, &dev, id_b, pk_b, &[cidr]).await;
+        wg.test_latch_handshake_done(&pk_b);
+        wg.test_latch_handshake_done(&pk_a);
+        let _ = tun.take_calls();
+
+        // Both healthy direct: pk_b > pk_a wins initial election and is pinned.
+        assert_eq!(wg.test_route(&dst), Some(pk_b));
+
+        // Stalling pk_b fails over to pk_a; recovering pk_b keeps sticky pk_a.
+        wg.set_peer_router_stalled(&pk_b, true);
+        assert_eq!(wg.test_route(&dst), Some(pk_a));
+        wg.set_peer_router_stalled(&pk_b, false);
+        assert_eq!(
+            wg.test_route(&dst),
+            Some(pk_a),
+            "recovering standby must not preempt sticky active pk_a"
+        );
+
+        // Also make id_a the active exit node and verify reconcile_peer_subnets
+        // preserves its split-default /1 routes in-place.
+        let mut peers = HashMap::new();
+        peers.insert(
+            id_a,
+            exit_np(
+                id_a,
+                "exit-ha-a",
+                vec!["10.20.0.0/24".into(), "0.0.0.0/0".into()],
+            ),
+        );
+        let mut st = ExitRoutingState::default();
+        rt.reconcile_exit_routing(&mut wg, &dev, &by_node, &peers, &mut st)
+            .await;
+        assert!(!split_default_missing(&wg.peer_subnets(&pk_a)));
+        let _ = tun.take_calls();
+
+        // Router A withdraws 10.20.0.0/24 while remaining exit node; Router B still
+        // claims 10.20.0.0/24 -> no `del 10.20.0.0/24` on OS TUN, split-default kept!
+        rt.reconcile_peer_subnets(
+            &mut wg,
+            &dev,
+            id_a,
+            pk_a,
+            &[Cidr::parse("0.0.0.0/0").unwrap()],
+        )
+        .await;
+        let calls = tun.take_calls();
+        assert!(
+            !calls.iter().any(|c| c == "del 10.20.0.0/24"),
+            "OS route must stay while standby router B still claims 10.20.0.0/24: {calls:?}"
+        );
+        assert!(
+            !split_default_missing(&wg.peer_subnets(&pk_a)),
+            "in-place subnet reconcile on active exit must preserve split-default /1s"
+        );
+        assert_eq!(wg.test_route(&dst), Some(pk_b));
+
+        // Re-add 10.20.0.0/24 on Router A, then evict Router B -> OS route still kept!
+        rt.reconcile_peer_subnets(&mut wg, &dev, id_a, pk_a, &[cidr])
+            .await;
+        let _ = tun.take_calls();
+        let mut relay = None;
+        let mut bq = test_relay_bq();
+        let mut probes = HashMap::new();
+        rt.remove_peer_state(
+            id_b,
+            &mut wg,
+            &mut by_node,
+            &dev,
+            &mut relay,
+            &mut bq,
+            None,
+            &mut probes,
+            PeerRoute::Drop,
+        )
+        .await;
+        let calls = tun.take_calls();
+        assert!(
+            !calls.iter().any(|c| c == "del 10.20.0.0/24"),
+            "evicting one HA router must not delete OS CIDR route while survivor claims it: {calls:?}"
+        );
+        assert_eq!(wg.test_route(&dst), Some(pk_a));
+
+        // Evict the last claimant (Router A) -> now `del 10.20.0.0/24` MUST fire.
+        rt.remove_peer_state(
+            id_a,
+            &mut wg,
+            &mut by_node,
+            &dev,
+            &mut relay,
+            &mut bq,
+            None,
+            &mut probes,
+            PeerRoute::Drop,
+        )
+        .await;
+        let calls = tun.take_calls();
+        assert!(
+            calls.iter().any(|c| c == "del 10.20.0.0/24"),
+            "evicting the last HA claimant must delete OS CIDR route: {calls:?}"
+        );
     }
 
     /// FR-97 P1a — the uplink moves under an active exit (Wi-Fi ↔ Ethernet).
@@ -10451,7 +11630,10 @@ mod org_fallback_tests {
                 id,
                 request_id,
                 vec![OrgRelayCandidateWire {
-                    path: roomler_ai_remote_control::signaling::RelayPathWire::new(vec![ObjectId::new()]).unwrap(),
+                    path: roomler_ai_remote_control::signaling::RelayPathWire::new(vec![
+                        ObjectId::new()
+                    ])
+                    .unwrap(),
                     requester_at_exit: false,
                     endpoints: vec!["8.8.8.8:47865".into()]
                 }],
@@ -10503,7 +11685,9 @@ mod org_fallback_tests {
                 }
                 5 => installed.get_mut(&id).unwrap().relay_kind = Some(RelayKind::Turn),
                 6 => peers.get_mut(&id).unwrap().overlay_ip = "100.64.0.99".into(),
-                7 => { peers.remove(&id); },
+                7 => {
+                    peers.remove(&id);
+                }
                 _ => unreachable!(),
             }
             request_org_fallbacks(enabled, &installed, &peers, &mut relay, at).await;
@@ -10543,13 +11727,20 @@ mod org_fallback_tests {
     async fn org_fallback_runtime_quality_cooldown_does_not_block_real_carrier_loss() {
         let (id, installed, peers, mut discovery, mut relay, mut rx, now) = fixture().await;
         let candidate = discovery.candidate_for(&peers, id, now).unwrap();
-        let identity = (peers[&id].wg_public_key.clone(), peers[&id].overlay_ip.clone());
+        let identity = (
+            peers[&id].wg_public_key.clone(),
+            peers[&id].overlay_ip.clone(),
+        );
         discovery.note_failure(&peers, id, &identity, &candidate, now);
-        assert!(discovery.candidate_for(&peers, id, now).is_none(),
-            "normal quality trials must retain their existing failure cooldown");
+        assert!(
+            discovery.candidate_for(&peers, id, now).is_none(),
+            "normal quality trials must retain their existing failure cooldown"
+        );
         request_org_fallbacks(true, &installed, &peers, &mut relay, now).await;
-        assert!(matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. }) if peer_node_id == id),
-            "fresh current metadata must allow the server-authorized fallback query during DERP, independently of quality trial cooldown");
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. }) if peer_node_id == id),
+            "fresh current metadata must allow the server-authorized fallback query during DERP, independently of quality trial cooldown"
+        );
         assert!(relay.as_ref().unwrap().is_floored(&id));
     }
 
@@ -10557,11 +11748,15 @@ mod org_fallback_tests {
     async fn org_fallback_runtime_unrelated_delta_cannot_delay_authoritative_query() {
         let (id, installed, peers, mut discovery, mut relay, mut rx, now) = fixture().await;
         discovery.reconcile_delta(&peers, &[]);
-        assert!(discovery.candidate_for(&peers, id, now).is_none(),
-            "discovery authorization hints must remain invalidated on every delta");
+        assert!(
+            discovery.candidate_for(&peers, id, now).is_none(),
+            "discovery authorization hints must remain invalidated on every delta"
+        );
         request_org_fallbacks(true, &installed, &peers, &mut relay, now).await;
-        assert!(matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. }) if peer_node_id == id),
-            "current peer and DERP carrier must reach authoritative server authorization after an unrelated D0 delta");
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. }) if peer_node_id == id),
+            "current peer and DERP carrier must reach authoritative server authorization after an unrelated D0 delta"
+        );
     }
 
     #[tokio::test]
@@ -10570,10 +11765,11 @@ mod org_fallback_tests {
         let at = now + Duration::from_secs(31);
         assert!(discovery.candidate_for(&peers, id, at).is_none());
         request_org_fallbacks(true, &installed, &peers, &mut relay, at).await;
-        assert!(matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. }) if peer_node_id == id));
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. }) if peer_node_id == id)
+        );
         assert!(relay.as_ref().unwrap().is_floored(&id));
     }
-
 }
 
 #[cfg(test)]
@@ -10618,463 +11814,941 @@ mod org_upgrade_tests {
         }
     }
 
-
-    use base64::Engine;
     use crate::overlay::disco::derp_follow as proofwire;
+    use base64::Engine;
     use std::sync::atomic::{AtomicBool, Ordering};
     #[derive(Default)]
     struct FollowTap {
-        frames: std::sync::Mutex<Vec<Vec<u8>>>, held: std::sync::Mutex<Vec<Vec<u8>>>,
-        hold_init: AtomicBool, hold_proof: AtomicBool,
+        frames: std::sync::Mutex<Vec<Vec<u8>>>,
+        held: std::sync::Mutex<Vec<Vec<u8>>>,
+        hold_init: AtomicBool,
+        hold_proof: AtomicBool,
     }
     impl FollowTap {
         fn forward(&self, bytes: &[u8]) -> bool {
-            let mut seen=self.frames.lock().unwrap();
-            if seen.len()==1024 {seen.remove(0);}
-            seen.push(bytes.to_vec());drop(seen);
-            let body=&bytes[32..];
-            let hold = body.len()==148 && body[0]==1 && self.hold_init.swap(false,Ordering::Relaxed)
-                || proofwire::shaped(body) && body[8]==proofwire::Kind::Proof as u8 && self.hold_proof.swap(false,Ordering::Relaxed);
-            if hold {self.held.lock().unwrap().push(bytes.to_vec());}
+            let mut seen = self.frames.lock().unwrap();
+            if seen.len() == 1024 {
+                seen.remove(0);
+            }
+            seen.push(bytes.to_vec());
+            drop(seen);
+            let body = &bytes[32..];
+            let hold =
+                body.len() == 148 && body[0] == 1 && self.hold_init.swap(false, Ordering::Relaxed)
+                    || proofwire::shaped(body)
+                        && body[8] == proofwire::Kind::Proof as u8
+                        && self.hold_proof.swap(false, Ordering::Relaxed);
+            if hold {
+                self.held.lock().unwrap().push(bytes.to_vec());
+            }
             !hold
         }
-        fn count(&self, kind:proofwire::Kind)->usize {
-            self.frames.lock().unwrap().iter().filter(|f|proofwire::shaped(&f[32..])&&f[40]==kind as u8).count()
+        fn count(&self, kind: proofwire::Kind) -> usize {
+            self.frames
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|f| proofwire::shaped(&f[32..]) && f[40] == kind as u8)
+                .count()
         }
     }
-    struct FollowUdp { socket:UdpSocket, drop_ack:Arc<AtomicBool> }
+    struct FollowUdp {
+        socket: UdpSocket,
+        drop_ack: Arc<AtomicBool>,
+    }
     #[async_trait]
     impl crate::transport::relay::RelayConn for FollowUdp {
-        async fn send_to(&self, bytes:&[u8], target:SocketAddr)->std::io::Result<usize> {
-            if proofwire::shaped(bytes) && bytes[8]==proofwire::Kind::HelloAck as u8 && self.drop_ack.load(Ordering::Relaxed) {
+        async fn send_to(&self, bytes: &[u8], target: SocketAddr) -> std::io::Result<usize> {
+            if proofwire::shaped(bytes)
+                && bytes[8] == proofwire::Kind::HelloAck as u8
+                && self.drop_ack.load(Ordering::Relaxed)
+            {
                 return Ok(bytes.len()); // fixture drops only capability ACK on the actual carrier
             }
-            self.socket.send_to(bytes,target).await
+            self.socket.send_to(bytes, target).await
         }
-        async fn recv_from(&self,bytes:&mut[u8])->std::io::Result<(usize,SocketAddr)> {self.socket.recv_from(bytes).await}
-        fn local_addr(&self)->std::io::Result<SocketAddr> {self.socket.local_addr()}
+        async fn recv_from(&self, bytes: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+            self.socket.recv_from(bytes).await
+        }
+        fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            self.socket.local_addr()
+        }
     }
 
     struct CandidateTun;
     #[async_trait]
     impl TunIo for CandidateTun {
-        async fn read_packet(&self)->std::io::Result<Vec<u8>> { std::future::pending().await }
-        async fn write_packet(&self,_:&[u8])->std::io::Result<()> { Ok(()) }
+        async fn read_packet(&self) -> std::io::Result<Vec<u8>> {
+            std::future::pending().await
+        }
+        async fn write_packet(&self, _: &[u8]) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     struct End {
-        rt: OverlayRuntime, wg: WgDevice,
-        received: mpsc::Receiver<Vec<u8>>, installed: HashMap<ObjectId, Installed>,
-        peers: HashMap<ObjectId, NetmapPeer>, relay: Option<RelayCoordinator>,
-        tun: Arc<dyn TunIo>, bq: RelayBuildQueue,
-        mux: Arc<DerpMux>, events: mpsc::Receiver<crate::transport::derp::MuxEvent>,
-        id: ObjectId, pk: [u8;32], ip: Ipv4Addr,
-        control: mpsc::Receiver<ClientMsg>, tap: Arc<FollowTap>, drop_org_ack: Arc<AtomicBool>,
+        rt: OverlayRuntime,
+        wg: WgDevice,
+        received: mpsc::Receiver<Vec<u8>>,
+        installed: HashMap<ObjectId, Installed>,
+        peers: HashMap<ObjectId, NetmapPeer>,
+        relay: Option<RelayCoordinator>,
+        tun: Arc<dyn TunIo>,
+        bq: RelayBuildQueue,
+        mux: Arc<DerpMux>,
+        events: mpsc::Receiver<crate::transport::derp::MuxEvent>,
+        id: ObjectId,
+        pk: [u8; 32],
+        ip: Ipv4Addr,
+        control: mpsc::Receiver<ClientMsg>,
+        tap: Arc<FollowTap>,
+        drop_org_ack: Arc<AtomicBool>,
     }
     async fn pair() -> (End, End, Vec<tokio::task::JoinHandle<()>>) {
-        let a = WgKeypair::generate(); let b = WgKeypair::generate();
-        let aip = Ipv4Addr::new(100,65,4,2); let bip = Ipv4Addr::new(100,65,4,3);
-        let aid = ObjectId::new(); let bid = ObjectId::new();
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let aip = Ipv4Addr::new(100, 65, 4, 2);
+        let bip = Ipv4Addr::new(100, 65, 4, 3);
+        let aid = ObjectId::new();
+        let bid = ObjectId::new();
         let (am, mut ar) = DerpMux::new(a.public.to_bytes());
         let (bm, mut br) = DerpMux::new(b.public.to_bytes());
-        async fn end(key: WgKeypair, peer: &WgKeypair, id: ObjectId,
-            ip: Ipv4Addr, mux: Arc<DerpMux>) -> End {
+        async fn end(
+            key: WgKeypair,
+            peer: &WgKeypair,
+            id: ObjectId,
+            ip: Ipv4Addr,
+            mux: Arc<DerpMux>,
+        ) -> End {
             let (tx, control) = mpsc::channel(16);
             let mock = Arc::new(CandidateTun);
-            let tf: TunFactory = { let m=mock.clone(); Box::new(move |_,_,_| Ok(m.clone() as Arc<dyn TunIo>)) };
+            let tf: TunFactory = {
+                let m = mock.clone();
+                Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+            };
             let rt = OverlayRuntime::new_relay(key.clone(), tx.clone(), tf, 1280);
             let (mut wg, received) = WgDevice::new(key.secret.clone());
-            let peers=HashMap::from([(id,test_netmap_peer(id,ip,peer))]);
-            let cfg=peer_config_from_netmap(&peers[&id]).unwrap();
-            let mut r=RelayCoordinator::new(tx,key.public.to_bytes(),false,vec![],Some(mux.clone()));
-            let floor=r.build_floor(id,&cfg).unwrap();
-            let tun:Arc<dyn TunIo>=mock;
-            let mut installed=HashMap::new(); let mut bq=test_relay_bq();
-            let (et,events)=mpsc::channel(32); mux.set_event_sink(et);
-            rt.install_ready(&mut wg,&mut installed,&tun,floor,&mut bq).await;
-            End {rt,wg,received,installed,peers,relay:Some(r),tun,bq,mux,events,id,pk:peer.public.to_bytes(),ip,
-                control,tap:Arc::new(FollowTap::default()),drop_org_ack:Arc::new(AtomicBool::new(false))}
+            let peers = HashMap::from([(id, test_netmap_peer(id, ip, peer))]);
+            let cfg = peer_config_from_netmap(&peers[&id]).unwrap();
+            let mut r =
+                RelayCoordinator::new(tx, key.public.to_bytes(), false, vec![], Some(mux.clone()));
+            let floor = r.build_floor(id, &cfg).unwrap();
+            let tun: Arc<dyn TunIo> = mock;
+            let mut installed = HashMap::new();
+            let mut bq = test_relay_bq();
+            let (et, events) = mpsc::channel(32);
+            mux.set_event_sink(et);
+            rt.install_ready(&mut wg, &mut installed, &tun, floor, &mut bq)
+                .await;
+            End {
+                rt,
+                wg,
+                received,
+                installed,
+                peers,
+                relay: Some(r),
+                tun,
+                bq,
+                mux,
+                events,
+                id,
+                pk: peer.public.to_bytes(),
+                ip,
+                control,
+                tap: Arc::new(FollowTap::default()),
+                drop_org_ack: Arc::new(AtomicBool::new(false)),
+            }
         }
-        let ea=end(a.clone(),&b,bid,bip,am.clone()).await;
-        let eb=end(b.clone(),&a,aid,aip,bm.clone()).await;
-        let ap=a.public.to_bytes();let bp=b.public.to_bytes();
-        let tap_ab=ea.tap.clone();let tap_ba=eb.tap.clone();
-        let bridge_ab=tokio::spawn(async move {while let Some((_,mut f))=ar.recv().await {
-            f[..32].copy_from_slice(&ap);if tap_ab.forward(&f){bm.deliver(&f);}
-        }});
-        let bridge_ba=tokio::spawn(async move {while let Some((_,mut f))=br.recv().await {
-            f[..32].copy_from_slice(&bp);if tap_ba.forward(&f){am.deliver(&f);}
-        }});
-        let deadline=Instant::now()+Duration::from_secs(5);
-        while !(ea.wg.peer_handshake_done(&ea.pk)==Some(true) && eb.wg.peer_handshake_done(&eb.pk)==Some(true)) {
-            assert!(Instant::now()<deadline,"real DERP WG handshake");
+        let ea = end(a.clone(), &b, bid, bip, am.clone()).await;
+        let eb = end(b.clone(), &a, aid, aip, bm.clone()).await;
+        let ap = a.public.to_bytes();
+        let bp = b.public.to_bytes();
+        let tap_ab = ea.tap.clone();
+        let tap_ba = eb.tap.clone();
+        let bridge_ab = tokio::spawn(async move {
+            while let Some((_, mut f)) = ar.recv().await {
+                f[..32].copy_from_slice(&ap);
+                if tap_ab.forward(&f) {
+                    bm.deliver(&f);
+                }
+            }
+        });
+        let bridge_ba = tokio::spawn(async move {
+            while let Some((_, mut f)) = br.recv().await {
+                f[..32].copy_from_slice(&bp);
+                if tap_ba.forward(&f) {
+                    am.deliver(&f);
+                }
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !(ea.wg.peer_handshake_done(&ea.pk) == Some(true)
+            && eb.wg.peer_handshake_done(&eb.pk) == Some(true))
+        {
+            assert!(Instant::now() < deadline, "real DERP WG handshake");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        (ea,eb,vec![bridge_ab,bridge_ba])
+        (ea, eb, vec![bridge_ab, bridge_ba])
     }
-    async fn links(a:&End,b:&End)->(ReadyLink,ReadyLink) {
-        let sa=UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let sb=UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let aa=sa.local_addr().unwrap();let ba=sb.local_addr().unwrap();
-        let ca:Arc<dyn crate::transport::relay::RelayConn>=Arc::new(FollowUdp{socket:sa,drop_ack:a.drop_org_ack.clone()});
-        let cb:Arc<dyn crate::transport::relay::RelayConn>=Arc::new(FollowUdp{socket:sb,drop_ack:b.drop_org_ack.clone()});
-        let make=|e:&End,c:Arc<dyn crate::transport::relay::RelayConn>,dst| ReadyLink {
-            node_id:e.id,public_key:e.pk,overlay_ip:e.ip,carrier:Carrier::relay(c.clone(),dst),
-            relay_parts:Some((c,dst)),extra_permission_targets:vec![],supports_quic:false,
-            single_relay:None,relay_kind:RelayKind::Org,subnets:vec![],
+    async fn links(a: &End, b: &End) -> (ReadyLink, ReadyLink) {
+        let sa = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sb = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let aa = sa.local_addr().unwrap();
+        let ba = sb.local_addr().unwrap();
+        let ca: Arc<dyn crate::transport::relay::RelayConn> = Arc::new(FollowUdp {
+            socket: sa,
+            drop_ack: a.drop_org_ack.clone(),
+        });
+        let cb: Arc<dyn crate::transport::relay::RelayConn> = Arc::new(FollowUdp {
+            socket: sb,
+            drop_ack: b.drop_org_ack.clone(),
+        });
+        let make = |e: &End, c: Arc<dyn crate::transport::relay::RelayConn>, dst| ReadyLink {
+            node_id: e.id,
+            public_key: e.pk,
+            overlay_ip: e.ip,
+            carrier: Carrier::relay(c.clone(), dst),
+            relay_parts: Some((c, dst)),
+            extra_permission_targets: vec![],
+            supports_quic: false,
+            single_relay: None,
+            relay_kind: RelayKind::Org,
+            subnets: vec![],
         };
-        (make(a,ca,ba),make(b,cb,aa))
+        (make(a, ca, ba), make(b, cb, aa))
     }
-    async fn stage(e:&mut End,l:ReadyLink) {
-        e.rt.install_ready(&mut e.wg,&mut e.installed,&e.tun,l,&mut e.bq).await;
+    async fn stage(e: &mut End, l: ReadyLink) {
+        e.rt.install_ready(&mut e.wg, &mut e.installed, &e.tun, l, &mut e.bq)
+            .await;
     }
-    fn settle(e:&mut End)->bool {
-        e.rt.sweep_org_upgrades(&mut e.wg,&mut e.installed,&mut e.relay,&e.peers)
+    fn settle(e: &mut End) -> bool {
+        e.rt.sweep_org_upgrades(&mut e.wg, &mut e.installed, &mut e.relay, &e.peers)
     }
-    fn packet(src:Ipv4Addr,dst:Ipv4Addr,label:u8)->Vec<u8> {
-        let mut p=vec![0u8;21];p[0]=0x45;p[2..4].copy_from_slice(&21u16.to_be_bytes());
-        p[8]=64;p[9]=17;p[12..16].copy_from_slice(&src.octets());p[16..20].copy_from_slice(&dst.octets());p[20]=label;p
+    fn packet(src: Ipv4Addr, dst: Ipv4Addr, label: u8) -> Vec<u8> {
+        let mut p = vec![0u8; 21];
+        p[0] = 0x45;
+        p[2..4].copy_from_slice(&21u16.to_be_bytes());
+        p[8] = 64;
+        p[9] = 17;
+        p[12..16].copy_from_slice(&src.octets());
+        p[16..20].copy_from_slice(&dst.octets());
+        p[20] = label;
+        p
     }
-    async fn payload(a:&End,b:&mut End,label:u8) {
-        let p=packet(b.ip,a.ip,label);
+    async fn payload(a: &End, b: &mut End, label: u8) {
+        let p = packet(b.ip, a.ip, label);
         assert!(a.wg.send_ip_packet(&p).await);
-        let got=tokio::time::timeout(Duration::from_secs(2),b.received.recv()).await.unwrap().unwrap();
-        assert_eq!(got,p,"real WG payload must survive on current sender");
+        let got = tokio::time::timeout(Duration::from_secs(2), b.received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, p, "real WG payload must survive on current sender");
     }
-    async fn promoted(a:&mut End,b:&mut End) {
-        let deadline=Instant::now()+Duration::from_secs(8);
+    async fn promoted(a: &mut End, b: &mut End) {
+        let deadline = Instant::now() + Duration::from_secs(8);
         loop {
-            settle(a);settle(b);
-            if a.installed[&a.id].relay_kind==Some(RelayKind::Org)
-                && b.installed[&b.id].relay_kind==Some(RelayKind::Org) {break;}
-            assert!(Instant::now()<deadline,"both own INIT responses must promote");
+            settle(a);
+            settle(b);
+            if a.installed[&a.id].relay_kind == Some(RelayKind::Org)
+                && b.installed[&b.id].relay_kind == Some(RelayKind::Org)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "both own INIT responses must promote"
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
     #[tokio::test]
     async fn org_upgrade_failed_candidate_keeps_real_derp_payload_and_cannot_borrow_floor_proof() {
-        let (mut a,mut b,tasks)=pair().await;let (la,_lb)=links(&a,&b).await;
-        stage(&mut a,la).await;
-        assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Derp),"unproven candidate cannot replace DERP");
-        payload(&a,&mut b,1).await;payload(&b,&mut a,2).await;
-        assert!(!settle(&mut a),"floor handshake/data are not candidate proof");
-        assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Derp));
-        for t in tasks {t.abort();}
+        let (mut a, mut b, tasks) = pair().await;
+        let (la, _lb) = links(&a, &b).await;
+        stage(&mut a, la).await;
+        assert_eq!(
+            a.installed[&a.id].relay_kind,
+            Some(RelayKind::Derp),
+            "unproven candidate cannot replace DERP"
+        );
+        payload(&a, &mut b, 1).await;
+        payload(&b, &mut a, 2).await;
+        assert!(
+            !settle(&mut a),
+            "floor handshake/data are not candidate proof"
+        );
+        assert_eq!(a.installed[&a.id].relay_kind, Some(RelayKind::Derp));
+        for t in tasks {
+            t.abort();
+        }
     }
     #[tokio::test]
     async fn org_upgrade_simultaneous_real_handshakes_and_delayed_floor_frames() {
-        let (mut a,mut b,tasks)=pair().await;let (la,lb)=links(&a,&b).await;
-        stage(&mut a,la).await;stage(&mut b,lb).await;
-        let deadline=Instant::now()+Duration::from_secs(8);
+        let (mut a, mut b, tasks) = pair().await;
+        let (la, lb) = links(&a, &b).await;
+        stage(&mut a, la).await;
+        stage(&mut b, lb).await;
+        let deadline = Instant::now() + Duration::from_secs(8);
         while !(a.wg.org_upgrade_ready(&a.pk) && b.wg.org_upgrade_ready(&b.pk)) {
-            assert!(Instant::now()<deadline,"real initiator-role proof on both candidates");
+            assert!(
+                Instant::now() < deadline,
+                "real initiator-role proof on both candidates"
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(settle(&mut a));
-        assert_eq!(b.installed[&b.id].relay_kind,Some(RelayKind::Derp));
-        let before=a.wg.peer_traffic(&a.pk).unwrap();
+        assert_eq!(b.installed[&b.id].relay_kind, Some(RelayKind::Derp));
+        let before = a.wg.peer_traffic(&a.pk).unwrap();
         // B is genuinely still sending old-session encrypted business over
         // DERP while A's sender has already cut over to ORG.
-        payload(&b,&mut a,3).await;
-        assert!(a.events.try_recv().is_err(),"valid delayed floor data must not emit demote-follow");
-        assert_eq!(a.wg.peer_traffic(&a.pk).unwrap(),before,"valid floor data cannot credit ORG counters");
-        payload(&a,&mut b,4).await;
+        payload(&b, &mut a, 3).await;
+        assert!(
+            a.events.try_recv().is_err(),
+            "valid delayed floor data must not emit demote-follow"
+        );
+        assert_eq!(
+            a.wg.peer_traffic(&a.pk).unwrap(),
+            before,
+            "valid floor data cannot credit ORG counters"
+        );
+        payload(&a, &mut b, 4).await;
         assert!(settle(&mut b));
-        payload(&a,&mut b,5).await;payload(&b,&mut a,6).await;
-        for t in tasks {t.abort();}
+        payload(&a, &mut b, 5).await;
+        payload(&b, &mut a, 6).await;
+        for t in tasks {
+            t.abort();
+        }
     }
     #[tokio::test]
     async fn org_upgrade_one_end_early_recovers_its_own_initiator_proof() {
-        let (mut a,mut b,tasks)=pair().await;let (la,lb)=links(&a,&b).await;
-        stage(&mut a,la).await;
+        let (mut a, mut b, tasks) = pair().await;
+        let (la, lb) = links(&a, &b).await;
+        stage(&mut a, la).await;
         let mut discarded = [0u8; 2048];
         loop {
-            let n=tokio::time::timeout(Duration::from_secs(1),lb.relay_parts.as_ref().unwrap().0.recv_from(&mut discarded)).await.unwrap().unwrap().0;
-            if n>=148 && discarded[0]==1 { break; }
-            assert_eq!(&discarded[..n],b"\x00","only the real permission bootstrap precedes INIT");
+            let n = tokio::time::timeout(
+                Duration::from_secs(1),
+                lb.relay_parts.as_ref().unwrap().0.recv_from(&mut discarded),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .0;
+            if n >= 148 && discarded[0] == 1 {
+                break;
+            }
+            assert_eq!(
+                &discarded[..n],
+                b"\x00",
+                "only the real permission bootstrap precedes INIT"
+            );
         }
-        stage(&mut b,lb).await;promoted(&mut a,&mut b).await;
-        payload(&a,&mut b,5).await;payload(&b,&mut a,6).await;
-        for t in tasks {t.abort();}
+        stage(&mut b, lb).await;
+        promoted(&mut a, &mut b).await;
+        payload(&a, &mut b, 5).await;
+        payload(&b, &mut a, 6).await;
+        for t in tasks {
+            t.abort();
+        }
     }
     #[tokio::test]
     async fn org_upgrade_remove_fences_late_real_candidate_completion() {
-        let (mut a,mut b,tasks)=pair().await;let (la,lb)=links(&a,&b).await;
-        stage(&mut a,la).await;a.wg.remove_peer(&a.pk).await;
-        stage(&mut b,lb).await;
+        let (mut a, mut b, tasks) = pair().await;
+        let (la, lb) = links(&a, &b).await;
+        stage(&mut a, la).await;
+        a.wg.remove_peer(&a.pk).await;
+        stage(&mut b, lb).await;
         tokio::time::sleep(Duration::from_millis(80)).await;
-        assert!(!settle(&mut a),"removed incumbent cannot be resurrected");
-        assert_eq!(a.wg.peer_handshake_done(&a.pk),None);
-        for t in tasks {t.abort();}
+        assert!(!settle(&mut a), "removed incumbent cannot be resurrected");
+        assert_eq!(a.wg.peer_handshake_done(&a.pk), None);
+        for t in tasks {
+            t.abort();
+        }
     }
 
     #[tokio::test]
     async fn org_upgrade_identical_completion_does_not_rearm_and_expiry_keeps_floor() {
-        let (mut a,mut b,tasks)=pair().await;let (la,_lb)=links(&a,&b).await;
-        stage(&mut a,la.clone()).await;
-        let since=a.installed[&a.id].org_upgrade.as_ref().unwrap().1;
-        stage(&mut a,la).await;
-        assert_eq!(a.installed[&a.id].org_upgrade.as_ref().unwrap().1,since);
-        a.installed.get_mut(&a.id).unwrap().org_upgrade.as_mut().unwrap().1=
-            Instant::now()-DirectTier::Relay.handshake_deadline()-Duration::from_secs(1);
+        let (mut a, mut b, tasks) = pair().await;
+        let (la, _lb) = links(&a, &b).await;
+        stage(&mut a, la.clone()).await;
+        let since = a.installed[&a.id].org_upgrade.as_ref().unwrap().1;
+        stage(&mut a, la).await;
+        assert_eq!(a.installed[&a.id].org_upgrade.as_ref().unwrap().1, since);
+        a.installed
+            .get_mut(&a.id)
+            .unwrap()
+            .org_upgrade
+            .as_mut()
+            .unwrap()
+            .1 = Instant::now() - DirectTier::Relay.handshake_deadline() - Duration::from_secs(1);
         assert!(!settle(&mut a));
         assert!(a.installed[&a.id].org_upgrade.is_none());
-        payload(&a,&mut b,7).await;payload(&b,&mut a,8).await;
-        for t in tasks {t.abort();}
+        payload(&a, &mut b, 7).await;
+        payload(&b, &mut a, 8).await;
+        for t in tasks {
+            t.abort();
+        }
     }
     #[tokio::test]
     async fn org_upgrade_force_pin_replacement_cancels_late_real_handshake() {
-        let (mut a,mut b,tasks)=pair().await;let (la,lb)=links(&a,&b).await;
-        stage(&mut a,la).await;
-        let id=a.id;
-        let mut r=a.relay.take().unwrap();
-        let mut floor=r.force_derp(id,Duration::from_secs(60),None);
+        let (mut a, mut b, tasks) = pair().await;
+        let (la, lb) = links(&a, &b).await;
+        stage(&mut a, la).await;
+        let id = a.id;
+        let mut r = a.relay.take().unwrap();
+        let mut floor = r.force_derp(id, Duration::from_secs(60), None);
         if floor.is_none() {
             // Same stamp-only fallback used by the real ForceDerp arm.
-            floor=r.follow_peer_to_derp(id,peer_config_from_netmap(&a.peers[&id]).unwrap());
+            floor = r.follow_peer_to_derp(id, peer_config_from_netmap(&a.peers[&id]).unwrap());
         }
-        a.relay=Some(r);
-        stage(&mut a,floor.unwrap()).await;
-        stage(&mut b,lb).await;
+        a.relay = Some(r);
+        stage(&mut a, floor.unwrap()).await;
+        stage(&mut b, lb).await;
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert!(!settle(&mut a));
         assert!(a.installed[&id].org_upgrade.is_none());
-        assert_eq!(a.installed[&id].relay_kind,Some(RelayKind::Derp));
-        for t in tasks {t.abort();}
+        assert_eq!(a.installed[&id].relay_kind, Some(RelayKind::Derp));
+        for t in tasks {
+            t.abort();
+        }
     }
     #[tokio::test]
     async fn org_upgrade_revoke_cancels_pending_candidate_without_weakening_floor() {
-        let (mut a,mut b,tasks)=pair().await;let (la,lb)=links(&a,&b).await;
-        let session=super::super::orgrelay::member::OrgSession::from_wire(
-            77,1,ObjectId::new(),&["8.8.8.8:47865".into()],&base64::engine::general_purpose::STANDARD.encode([11u8;32]),10,60).unwrap();
-        assert!(a.relay.as_mut().unwrap().org_session_accept(a.id,session));
-        stage(&mut a,la).await;
-        let id=a.relay.as_mut().unwrap().org_session_revoke(77).unwrap();
-        cancel_org_upgrade_candidate(&id,&mut a.wg,&mut a.installed);
-        stage(&mut b,lb).await;
+        let (mut a, mut b, tasks) = pair().await;
+        let (la, lb) = links(&a, &b).await;
+        let session = super::super::orgrelay::member::OrgSession::from_wire(
+            77,
+            1,
+            ObjectId::new(),
+            &["8.8.8.8:47865".into()],
+            &base64::engine::general_purpose::STANDARD.encode([11u8; 32]),
+            10,
+            60,
+        )
+        .unwrap();
+        assert!(a.relay.as_mut().unwrap().org_session_accept(a.id, session));
+        stage(&mut a, la).await;
+        let id = a.relay.as_mut().unwrap().org_session_revoke(77).unwrap();
+        cancel_org_upgrade_candidate(&id, &mut a.wg, &mut a.installed);
+        stage(&mut b, lb).await;
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert!(!settle(&mut a));
         assert!(a.installed[&id].org_upgrade.is_none());
-        payload(&a,&mut b,9).await;payload(&b,&mut a,10).await;
-        for t in tasks {t.abort();}
+        payload(&a, &mut b, 9).await;
+        payload(&b, &mut a, 10).await;
+        for t in tasks {
+            t.abort();
+        }
     }
-    fn fresh_poll(e:&mut End)->bool {
-        e.rt.sweep_authenticated_derp_follow(&mut e.wg,&mut e.installed,&mut e.relay,&e.peers)
+    fn fresh_poll(e: &mut End) -> bool {
+        e.rt.sweep_authenticated_derp_follow(&mut e.wg, &mut e.installed, &mut e.relay, &e.peers)
     }
-    async fn cap_ready(a:&mut End,b:&mut End) {
-        let until=Instant::now()+Duration::from_secs(9);
-        while !a.wg.test_follow_capable(&a.pk)||!b.wg.test_follow_capable(&b.pk) {
-            fresh_poll(a);fresh_poll(b);
-            assert!(Instant::now()<until,"fresh ORG-owner capability exchange");
+    async fn cap_ready(a: &mut End, b: &mut End) {
+        let until = Instant::now() + Duration::from_secs(9);
+        while !a.wg.test_follow_capable(&a.pk) || !b.wg.test_follow_capable(&b.pk) {
+            fresh_poll(a);
+            fresh_poll(b);
+            assert!(
+                Instant::now() < until,
+                "fresh ORG-owner capability exchange"
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
-    async fn as_org(a:&mut End,b:&mut End) {
-        let (la,lb)=links(a,b).await;stage(a,la).await;stage(b,lb).await;
-        promoted(a,b).await;cap_ready(a,b).await;
+    async fn as_org(a: &mut End, b: &mut End) {
+        let (la, lb) = links(a, b).await;
+        stage(a, la).await;
+        stage(b, lb).await;
+        promoted(a, b).await;
+        cap_ready(a, b).await;
     }
-    async fn fallback(e:&mut End) {
-        let link=e.relay.as_mut().unwrap().follow_peer_to_derp(e.id,peer_config_from_netmap(&e.peers[&e.id]).unwrap()).unwrap();
-        stage(e,link).await;
-        assert!(e.wg.poke_handshake(&e.pk),"new actual DERP owner emits a real INIT");
+    async fn fallback(e: &mut End) {
+        let link = e
+            .relay
+            .as_mut()
+            .unwrap()
+            .follow_peer_to_derp(e.id, peer_config_from_netmap(&e.peers[&e.id]).unwrap())
+            .unwrap();
+        stage(e, link).await;
+        assert!(
+            e.wg.poke_handshake(&e.pk),
+            "new actual DERP owner emits a real INIT"
+        );
     }
-    async fn held(tap:&FollowTap)->Vec<u8> {
-        let until=Instant::now()+Duration::from_secs(2);
+    async fn held(tap: &FollowTap) -> Vec<u8> {
+        let until = Instant::now() + Duration::from_secs(2);
         loop {
-            if let Some(p)=tap.held.lock().unwrap().pop(){return p;}
-            assert!(Instant::now()<until,"expected real withheld wire packet");
+            if let Some(p) = tap.held.lock().unwrap().pop() {
+                return p;
+            }
+            assert!(Instant::now() < until, "expected real withheld wire packet");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
     #[tokio::test]
     async fn fresh_follow_real_new_derp_init_restores_same_floor_and_recovers_after_org_loss() {
-        let (mut a,mut b,tasks)=pair().await;as_org(&mut a,&mut b).await;
-        payload(&a,&mut b,20).await;payload(&b,&mut a,21).await;
+        let (mut a, mut b, tasks) = pair().await;
+        as_org(&mut a, &mut b).await;
+        payload(&a, &mut b, 20).await;
+        payload(&b, &mut a, 21).await;
         fallback(&mut b).await; // destroys B's real ORG UDP socket/owner
-        let until=Instant::now()+Duration::from_secs(3);
-        while a.installed[&a.id].relay_kind!=Some(RelayKind::Derp) {
+        let until = Instant::now() + Duration::from_secs(3);
+        while a.installed[&a.id].relay_kind != Some(RelayKind::Derp) {
             fresh_poll(&mut a);
-            assert!(Instant::now()<until,"authenticated owner proof must follow without health timeout");
+            assert!(
+                Instant::now() < until,
+                "authenticated owner proof must follow without health timeout"
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(a.wg.org_recovery_held(&a.pk));assert!(b.wg.org_recovery_held(&b.pk));
+        assert!(a.wg.org_recovery_held(&a.pk));
+        assert!(b.wg.org_recovery_held(&b.pk));
         assert!(a.installed[&a.id].org_recovery_needs_query);
-        payload(&a,&mut b,22).await;payload(&b,&mut a,23).await;
+        payload(&a, &mut b, 22).await;
+        payload(&b, &mut a, 23).await;
         // A second copy of a consumed actual proof cannot change the sender.
-        let proof=b.tap.frames.lock().unwrap().iter().find(|f|proofwire::shaped(&f[32..])&&f[40]==proofwire::Kind::Proof as u8).unwrap().clone();
-        a.mux.deliver(&proof);assert!(!fresh_poll(&mut a));
-        for t in tasks {t.abort();}
+        let proof = b
+            .tap
+            .frames
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|f| proofwire::shaped(&f[32..]) && f[40] == proofwire::Kind::Proof as u8)
+            .unwrap()
+            .clone();
+        a.mux.deliver(&proof);
+        assert!(!fresh_poll(&mut a));
+        for t in tasks {
+            t.abort();
+        }
     }
     #[tokio::test]
     async fn fresh_follow_unseen_old_init_while_peer_org_and_old_data_do_not_demote() {
-        let (mut a,mut b,tasks)=pair().await;
-        b.tap.hold_init.store(true,Ordering::Relaxed);
+        let (mut a, mut b, tasks) = pair().await;
+        b.tap.hold_init.store(true, Ordering::Relaxed);
         assert!(b.wg.poke_handshake(&b.pk));
-        let old=held(&b.tap).await; // a valid, previously unseen floor INIT
-        as_org(&mut a,&mut b).await;
-        let old_org=a.wg.peer_traffic(&a.pk).unwrap();
+        let old = held(&b.tap).await; // a valid, previously unseen floor INIT
+        as_org(&mut a, &mut b).await;
+        let old_org = a.wg.peer_traffic(&a.pk).unwrap();
         a.mux.deliver(&old);
-        let until=Instant::now()+Duration::from_millis(400);
-        while Instant::now()<until {fresh_poll(&mut a);fresh_poll(&mut b);tokio::time::sleep(Duration::from_millis(10)).await;}
-        assert!(a.tap.count(proofwire::Kind::Challenge)>0,"old unseen INIT really passed Tunn and initiated a fresh challenge");
-        assert_eq!(b.tap.count(proofwire::Kind::Proof),0,"retained floor cannot attest while ORG owner is active");
-        assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Org));
-        assert_eq!(a.wg.peer_traffic(&a.pk).unwrap(),old_org,"old floor does not credit ORG");
+        let until = Instant::now() + Duration::from_millis(400);
+        while Instant::now() < until {
+            fresh_poll(&mut a);
+            fresh_poll(&mut b);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            a.tap.count(proofwire::Kind::Challenge) > 0,
+            "old unseen INIT really passed Tunn and initiated a fresh challenge"
+        );
+        assert_eq!(
+            b.tap.count(proofwire::Kind::Proof),
+            0,
+            "retained floor cannot attest while ORG owner is active"
+        );
+        assert_eq!(a.installed[&a.id].relay_kind, Some(RelayKind::Org));
+        assert_eq!(
+            a.wg.peer_traffic(&a.pk).unwrap(),
+            old_org,
+            "old floor does not credit ORG"
+        );
         // Replay the same authentic INIT, and delayed genuine old ciphertext.
         a.mux.deliver(&old);
-        if let Some(data)=b.tap.frames.lock().unwrap().iter().find(|f|f.len()>36&&f[32..36]==[4,0,0,0]).cloned(){a.mux.deliver(&data);}
+        if let Some(data) = b
+            .tap
+            .frames
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|f| f.len() > 36 && f[32..36] == [4, 0, 0, 0])
+            .cloned()
+        {
+            a.mux.deliver(&data);
+        }
         fresh_poll(&mut a);
-        assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Org));
-        payload(&a,&mut b,24).await;payload(&b,&mut a,25).await;
-        for t in tasks {t.abort();}
+        assert_eq!(a.installed[&a.id].relay_kind, Some(RelayKind::Org));
+        payload(&a, &mut b, 24).await;
+        payload(&b, &mut a, 25).await;
+        for t in tasks {
+            t.abort();
+        }
     }
     #[tokio::test]
-    async fn fresh_follow_missing_hello_ack_never_sends_derp_challenge_and_later_recovers_capability() {
-        let (mut a,mut b,tasks)=pair().await;
-        b.drop_org_ack.store(true,Ordering::Relaxed);
-        let (la,lb)=links(&a,&b).await;stage(&mut a,la).await;stage(&mut b,lb).await;promoted(&mut a,&mut b).await;
-        let until=Instant::now()+Duration::from_millis(3_300);
-        while Instant::now()<until {fresh_poll(&mut a);fresh_poll(&mut b);tokio::time::sleep(Duration::from_millis(10)).await;}
+    async fn fresh_follow_missing_hello_ack_never_sends_derp_challenge_and_later_recovers_capability()
+     {
+        let (mut a, mut b, tasks) = pair().await;
+        b.drop_org_ack.store(true, Ordering::Relaxed);
+        let (la, lb) = links(&a, &b).await;
+        stage(&mut a, la).await;
+        stage(&mut b, lb).await;
+        promoted(&mut a, &mut b).await;
+        let until = Instant::now() + Duration::from_millis(3_300);
+        while Instant::now() < until {
+            fresh_poll(&mut a);
+            fresh_poll(&mut b);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert!(!a.wg.test_follow_capable(&a.pk));
-        assert_eq!(a.tap.count(proofwire::Kind::Challenge),0,"no new frame goes to DERP before explicit capability ACK");
-        payload(&a,&mut b,26).await;payload(&b,&mut a,27).await;
-        b.drop_org_ack.store(false,Ordering::Relaxed);cap_ready(&mut a,&mut b).await;
-        for t in tasks {t.abort();}
+        assert_eq!(
+            a.tap.count(proofwire::Kind::Challenge),
+            0,
+            "no new frame goes to DERP before explicit capability ACK"
+        );
+        payload(&a, &mut b, 26).await;
+        payload(&b, &mut a, 27).await;
+        b.drop_org_ack.store(false, Ordering::Relaxed);
+        cap_ready(&mut a, &mut b).await;
+        for t in tasks {
+            t.abort();
+        }
     }
     #[tokio::test]
     async fn fresh_follow_late_valid_proof_cannot_revive_after_revoke_pin_remove_rekey_or_reip() {
         for case in 0..5 {
-            let (mut a,mut b,tasks)=pair().await;as_org(&mut a,&mut b).await;
-            b.tap.hold_proof.store(true,Ordering::Relaxed);fallback(&mut b).await;
-            let until=Instant::now()+Duration::from_secs(2);
-            while b.tap.held.lock().unwrap().is_empty(){fresh_poll(&mut a);assert!(Instant::now()<until);tokio::time::sleep(Duration::from_millis(10)).await;}
-            let proof=held(&b.tap).await;
-            let previous_key=a.pk;
+            let (mut a, mut b, tasks) = pair().await;
+            as_org(&mut a, &mut b).await;
+            b.tap.hold_proof.store(true, Ordering::Relaxed);
+            fallback(&mut b).await;
+            let until = Instant::now() + Duration::from_secs(2);
+            while b.tap.held.lock().unwrap().is_empty() {
+                fresh_poll(&mut a);
+                assert!(Instant::now() < until);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let proof = held(&b.tap).await;
+            let previous_key = a.pk;
             match case {
                 0 => {
-                    let session=super::super::orgrelay::member::OrgSession::from_wire(77,1,ObjectId::new(),&["8.8.8.8:47865".into()],&base64::engine::general_purpose::STANDARD.encode([17u8;32]),10,60).unwrap();
-                    a.relay.as_mut().unwrap().org_session_accept(a.id,session);
-                    let peer=a.relay.as_mut().unwrap().org_session_revoke(77).unwrap();
-                    cancel_org_upgrade_candidate(&peer,&mut a.wg,&mut a.installed);
-                },
+                    let session = super::super::orgrelay::member::OrgSession::from_wire(
+                        77,
+                        1,
+                        ObjectId::new(),
+                        &["8.8.8.8:47865".into()],
+                        &base64::engine::general_purpose::STANDARD.encode([17u8; 32]),
+                        10,
+                        60,
+                    )
+                    .unwrap();
+                    a.relay.as_mut().unwrap().org_session_accept(a.id, session);
+                    let peer = a.relay.as_mut().unwrap().org_session_revoke(77).unwrap();
+                    cancel_org_upgrade_candidate(&peer, &mut a.wg, &mut a.installed);
+                }
                 1 => {
-                    let r=a.relay.as_mut().unwrap();
-                    let floor=r.force_derp(a.id,Duration::from_secs(60),None)
-                        .or_else(||r.follow_peer_to_derp(a.id,peer_config_from_netmap(&a.peers[&a.id]).unwrap())).unwrap();
-                    assert!(r.org_relay_pinned(&a.id));stage(&mut a,floor).await;
-                },
-                2 => {a.wg.remove_peer(&a.pk).await;a.installed.remove(&a.id);a.peers.remove(&a.id);},
+                    let r = a.relay.as_mut().unwrap();
+                    let floor = r
+                        .force_derp(a.id, Duration::from_secs(60), None)
+                        .or_else(|| {
+                            r.follow_peer_to_derp(
+                                a.id,
+                                peer_config_from_netmap(&a.peers[&a.id]).unwrap(),
+                            )
+                        })
+                        .unwrap();
+                    assert!(r.org_relay_pinned(&a.id));
+                    stage(&mut a, floor).await;
+                }
+                2 => {
+                    a.wg.remove_peer(&a.pk).await;
+                    a.installed.remove(&a.id);
+                    a.peers.remove(&a.id);
+                }
                 _ => {
-                    a.wg.remove_peer(&a.pk).await;a.installed.remove(&a.id);
-                    let mut peer=a.peers[&a.id].clone();
-                    if case==3 {
-                        let replacement=WgKeypair::generate();
-                        peer.wg_public_key=replacement.public_base64();a.pk=replacement.public.to_bytes();
+                    a.wg.remove_peer(&a.pk).await;
+                    a.installed.remove(&a.id);
+                    let mut peer = a.peers[&a.id].clone();
+                    if case == 3 {
+                        let replacement = WgKeypair::generate();
+                        peer.wg_public_key = replacement.public_base64();
+                        a.pk = replacement.public.to_bytes();
                     } else {
-                        a.ip=Ipv4Addr::new(100,65,4,99);peer.overlay_ip=a.ip.to_string();
+                        a.ip = Ipv4Addr::new(100, 65, 4, 99);
+                        peer.overlay_ip = a.ip.to_string();
                     }
-                    a.peers.insert(a.id,peer);
-                    let floor=a.relay.as_mut().unwrap().follow_peer_to_derp(a.id,peer_config_from_netmap(&a.peers[&a.id]).unwrap()).unwrap();
-                    stage(&mut a,floor).await;
-                },
+                    a.peers.insert(a.id, peer);
+                    let floor = a
+                        .relay
+                        .as_mut()
+                        .unwrap()
+                        .follow_peer_to_derp(
+                            a.id,
+                            peer_config_from_netmap(&a.peers[&a.id]).unwrap(),
+                        )
+                        .unwrap();
+                    stage(&mut a, floor).await;
+                }
             }
-            a.mux.deliver(&proof);tokio::time::sleep(Duration::from_millis(20)).await;
-            assert!(!fresh_poll(&mut a),"old nonce/owner must not mutate replacement state");
-            if case==0 {assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Org));}
-            if case==1 {assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Derp));}
-            if case==2 {assert_eq!(a.wg.peer_count(),0);}
-            if case>=3 {
-                assert_eq!(a.wg.peer_count(),1);
-                assert_eq!(a.installed[&a.id].pubkey,a.pk);
-                assert_eq!(a.installed[&a.id].overlay_ip,a.ip);
-                assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Derp));
-                if case==3 {assert_eq!(a.wg.peer_handshake_done(&previous_key),None);}
-                if case==4 {assert!(!a.wg.org_recovery_held(&a.pk),"different IP never inherits another identity's hold");}
+            a.mux.deliver(&proof);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(
+                !fresh_poll(&mut a),
+                "old nonce/owner must not mutate replacement state"
+            );
+            if case == 0 {
+                assert_eq!(a.installed[&a.id].relay_kind, Some(RelayKind::Org));
             }
-            for t in tasks {t.abort();}
+            if case == 1 {
+                assert_eq!(a.installed[&a.id].relay_kind, Some(RelayKind::Derp));
+            }
+            if case == 2 {
+                assert_eq!(a.wg.peer_count(), 0);
+            }
+            if case >= 3 {
+                assert_eq!(a.wg.peer_count(), 1);
+                assert_eq!(a.installed[&a.id].pubkey, a.pk);
+                assert_eq!(a.installed[&a.id].overlay_ip, a.ip);
+                assert_eq!(a.installed[&a.id].relay_kind, Some(RelayKind::Derp));
+                if case == 3 {
+                    assert_eq!(a.wg.peer_handshake_done(&previous_key), None);
+                }
+                if case == 4 {
+                    assert!(
+                        !a.wg.org_recovery_held(&a.pk),
+                        "different IP never inherits another identity's hold"
+                    );
+                }
+            }
+            for t in tasks {
+                t.abort();
+            }
         }
     }
     #[tokio::test]
     async fn fresh_follow_hold_rejects_late_session_and_expiry_requires_successful_fresh_request() {
-        let (mut a,mut b,tasks)=pair().await;as_org(&mut a,&mut b).await;
-        let (old_done,mut q,old_conn)=super::tests::pending_org_test_bind(a.relay.as_mut().unwrap(),a.id,&a.peers[&a.id],88,1).await;
-        let (at,_ar)=mpsc::channel(4);let mut alloc=RelayAllocQueue {in_flight:HashMap::new(),epoch:0,tx:at};
-        let alloc_epoch=alloc.stamp(a.id);let mut old_bq=test_relay_bq();let build_epoch=old_bq.stamp(a.id);
+        let (mut a, mut b, tasks) = pair().await;
+        as_org(&mut a, &mut b).await;
+        let (old_done, mut q, old_conn) = super::tests::pending_org_test_bind(
+            a.relay.as_mut().unwrap(),
+            a.id,
+            &a.peers[&a.id],
+            88,
+            1,
+        )
+        .await;
+        let (at, _ar) = mpsc::channel(4);
+        let mut alloc = RelayAllocQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx: at,
+        };
+        let alloc_epoch = alloc.stamp(a.id);
+        let mut old_bq = test_relay_bq();
+        let build_epoch = old_bq.stamp(a.id);
         assert!(old_conn.is_alive());
         fallback(&mut b).await;
-        let until=Instant::now()+Duration::from_secs(3);
-        while !fresh_poll(&mut a) {assert!(Instant::now()<until);tokio::time::sleep(Duration::from_millis(10)).await;}
-        assert!(q.in_flight.contains_key(&a.id),"simulate fallback tick running before its first recovery scout");
-        let now=Instant::now();
+        let until = Instant::now() + Duration::from_secs(3);
+        while !fresh_poll(&mut a) {
+            assert!(Instant::now() < until);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            q.in_flight.contains_key(&a.id),
+            "simulate fallback tick running before its first recovery scout"
+        );
+        let now = Instant::now();
         a.relay.as_mut().unwrap().set_org_relay(true);
-        for p in a.peers.values_mut(){p.supports_org_relay=true;}
-        assert!(request_org_fallbacks(true,&a.installed,&a.peers,&mut a.relay,now).await.is_empty());
-        let secret=base64::engine::general_purpose::STANDARD.encode([13u8;32]);
-        let session=||super::super::orgrelay::member::OrgSession::from_wire(99,1,ObjectId::new(),&["8.8.8.8:47865".into()],&secret,10,60).unwrap();
-        assert!(!accept_org_bind_session(a.id,session(),a.relay.as_mut().unwrap(),&mut q,&mut alloc,&a.peers,&a.installed));
+        for p in a.peers.values_mut() {
+            p.supports_org_relay = true;
+        }
+        assert!(
+            request_org_fallbacks(true, &a.installed, &a.peers, &mut a.relay, now)
+                .await
+                .is_empty()
+        );
+        let secret = base64::engine::general_purpose::STANDARD.encode([13u8; 32]);
+        let session = || {
+            super::super::orgrelay::member::OrgSession::from_wire(
+                99,
+                1,
+                ObjectId::new(),
+                &["8.8.8.8:47865".into()],
+                &secret,
+                10,
+                60,
+            )
+            .unwrap()
+        };
+        assert!(!accept_org_bind_session(
+            a.id,
+            session(),
+            a.relay.as_mut().unwrap(),
+            &mut q,
+            &mut alloc,
+            &a.peers,
+            &a.installed
+        ));
         // Isolate expiry-boundary testing from packet authentication: only the
         // monotonic hold clock is advanced, no WG/proof counter is fabricated.
         a.wg.test_expire_recovery_hold(&a.pk);
-        a.installed.get_mut(&a.id).unwrap().org_recovery_until=Some(Instant::now()-Duration::from_millis(1));
-        assert!(!accept_org_bind_session(a.id,session(),a.relay.as_mut().unwrap(),&mut q,&mut alloc,&a.peers,&a.installed),"expiry alone cannot revive a lease");
-        for p in a.peers.values_mut(){p.supports_org_relay=true;}
-        let sent=request_reconciled_org_fallbacks(true,&mut a.wg,&mut a.installed,&a.peers,&mut a.relay,&mut q,&mut alloc,&mut old_bq,Instant::now()).await;
+        a.installed.get_mut(&a.id).unwrap().org_recovery_until =
+            Some(Instant::now() - Duration::from_millis(1));
+        assert!(
+            !accept_org_bind_session(
+                a.id,
+                session(),
+                a.relay.as_mut().unwrap(),
+                &mut q,
+                &mut alloc,
+                &a.peers,
+                &a.installed
+            ),
+            "expiry alone cannot revive a lease"
+        );
+        for p in a.peers.values_mut() {
+            p.supports_org_relay = true;
+        }
+        let sent = request_reconciled_org_fallbacks(
+            true,
+            &mut a.wg,
+            &mut a.installed,
+            &a.peers,
+            &mut a.relay,
+            &mut q,
+            &mut alloc,
+            &mut old_bq,
+            Instant::now(),
+        )
+        .await;
         assert!(!q.in_flight.contains_key(&a.id));
-        assert!(!alloc.take_if_current(&a.id,alloc_epoch));assert!(!old_bq.take_if_current(&a.id,build_epoch));
-        assert!(old_conn.is_alive(),"off-loop completion closes at its rejected commit, not queue invalidation");
-        assert_eq!(sent,vec![a.id]);
-        assert!(matches!(a.control.try_recv().unwrap(),ClientMsg::OverlayOrgRelayFallbackRequest {..}));
-        assert!(a.wg.org_recovery_until(&a.pk).is_none(),"successful fresh query consumes the expired marker");
-        assert!(accept_org_bind_session(a.id,session(),a.relay.as_mut().unwrap(),&mut q,&mut alloc,&a.peers,&a.installed),"fresh request permits a new bind, not an old pending completion");
-        assert!(commit_current_org_bind(old_done,&mut q,&a.peers,&a.installed,a.relay.as_mut().unwrap()).is_none(),"pre-fence completion cannot overwrite fresh admission after expiry");
-        assert!(!old_conn.is_alive(),"rejected late completion releases its actual UDP conn");
-        reconcile_org_recovery(&mut a.wg,&mut a.installed,&mut a.relay,&mut q,&mut alloc,&mut old_bq);
-        assert!(!a.installed[&a.id].org_recovery_needs_query,"expired marker cannot reappear after successful fresh request");
-        for t in tasks {t.abort();}
+        assert!(!alloc.take_if_current(&a.id, alloc_epoch));
+        assert!(!old_bq.take_if_current(&a.id, build_epoch));
+        assert!(
+            old_conn.is_alive(),
+            "off-loop completion closes at its rejected commit, not queue invalidation"
+        );
+        assert_eq!(sent, vec![a.id]);
+        assert!(matches!(
+            a.control.try_recv().unwrap(),
+            ClientMsg::OverlayOrgRelayFallbackRequest { .. }
+        ));
+        assert!(
+            a.wg.org_recovery_until(&a.pk).is_none(),
+            "successful fresh query consumes the expired marker"
+        );
+        assert!(
+            accept_org_bind_session(
+                a.id,
+                session(),
+                a.relay.as_mut().unwrap(),
+                &mut q,
+                &mut alloc,
+                &a.peers,
+                &a.installed
+            ),
+            "fresh request permits a new bind, not an old pending completion"
+        );
+        assert!(
+            commit_current_org_bind(
+                old_done,
+                &mut q,
+                &a.peers,
+                &a.installed,
+                a.relay.as_mut().unwrap()
+            )
+            .is_none(),
+            "pre-fence completion cannot overwrite fresh admission after expiry"
+        );
+        assert!(
+            !old_conn.is_alive(),
+            "rejected late completion releases its actual UDP conn"
+        );
+        reconcile_org_recovery(
+            &mut a.wg,
+            &mut a.installed,
+            &mut a.relay,
+            &mut q,
+            &mut alloc,
+            &mut old_bq,
+        );
+        assert!(
+            !a.installed[&a.id].org_recovery_needs_query,
+            "expired marker cannot reappear after successful fresh request"
+        );
+        for t in tasks {
+            t.abort();
+        }
     }
     #[tokio::test]
     async fn fresh_follow_proof_attestation_blocks_an_already_wg_ready_org_candidate() {
-        let (mut a,mut b,tasks)=pair().await;
-        let (la,lb)=links(&a,&b).await;let retained_org=lb.clone();
-        stage(&mut a,la).await;stage(&mut b,lb).await;promoted(&mut a,&mut b).await;cap_ready(&mut a,&mut b).await;
+        let (mut a, mut b, tasks) = pair().await;
+        let (la, lb) = links(&a, &b).await;
+        let retained_org = lb.clone();
+        stage(&mut a, la).await;
+        stage(&mut b, lb).await;
+        promoted(&mut a, &mut b).await;
+        cap_ready(&mut a, &mut b).await;
         fallback(&mut b).await;
-        stage(&mut b,retained_org).await;
-        let until=Instant::now()+Duration::from_secs(3);
+        stage(&mut b, retained_org).await;
+        let until = Instant::now() + Duration::from_secs(3);
         while !b.wg.org_upgrade_ready(&b.pk) {
-            assert!(Instant::now()<until,"candidate must possess genuine WG proof before fence");
+            assert!(
+                Instant::now() < until,
+                "candidate must possess genuine WG proof before fence"
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert_eq!(b.installed[&b.id].relay_kind,Some(RelayKind::Derp));
+        assert_eq!(b.installed[&b.id].relay_kind, Some(RelayKind::Derp));
         while !b.wg.org_recovery_held(&b.pk) {
-            fresh_poll(&mut a);assert!(Instant::now()<until);tokio::time::sleep(Duration::from_millis(10)).await;
+            fresh_poll(&mut a);
+            assert!(Instant::now() < until);
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(!settle(&mut b),"proof attestation and promotion serialize through the same sender owner");
-        assert_eq!(b.installed[&b.id].relay_kind,Some(RelayKind::Derp));
+        assert!(
+            !settle(&mut b),
+            "proof attestation and promotion serialize through the same sender owner"
+        );
+        assert_eq!(b.installed[&b.id].relay_kind, Some(RelayKind::Derp));
         assert!(b.installed[&b.id].org_upgrade.is_none());
-        while a.installed[&a.id].relay_kind!=Some(RelayKind::Derp) {
-            fresh_poll(&mut a);assert!(Instant::now()<until);tokio::time::sleep(Duration::from_millis(10)).await;
+        while a.installed[&a.id].relay_kind != Some(RelayKind::Derp) {
+            fresh_poll(&mut a);
+            assert!(Instant::now() < until);
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        payload(&a,&mut b,28).await;payload(&b,&mut a,29).await;
-        for t in tasks {t.abort();}
+        payload(&a, &mut b, 28).await;
+        payload(&b, &mut a, 29).await;
+        for t in tasks {
+            t.abort();
+        }
     }
     #[tokio::test]
     async fn fresh_follow_closed_or_full_control_queue_cannot_clear_admission_fence() {
-        for full in [false,true] {
-            let (mut a,mut b,tasks)=pair().await;as_org(&mut a,&mut b).await;fallback(&mut b).await;
-            let until=Instant::now()+Duration::from_secs(3);
-            while !fresh_poll(&mut a) {assert!(Instant::now()<until);tokio::time::sleep(Duration::from_millis(10)).await;}
+        for full in [false, true] {
+            let (mut a, mut b, tasks) = pair().await;
+            as_org(&mut a, &mut b).await;
+            fallback(&mut b).await;
+            let until = Instant::now() + Duration::from_secs(3);
+            while !fresh_poll(&mut a) {
+                assert!(Instant::now() < until);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
             a.wg.test_expire_recovery_hold(&a.pk);
-            a.installed.get_mut(&a.id).unwrap().org_recovery_until=Some(Instant::now()-Duration::from_millis(1));
+            a.installed.get_mut(&a.id).unwrap().org_recovery_until =
+                Some(Instant::now() - Duration::from_millis(1));
             a.relay.as_mut().unwrap().set_org_relay(true);
-            for p in a.peers.values_mut(){p.supports_org_relay=true;}
+            for p in a.peers.values_mut() {
+                p.supports_org_relay = true;
+            }
             if full {
-                for i in 0..16 {a.rt.outbound.send(ClientMsg::OverlayOrgRelayFallbackRequest{peer_node_id:ObjectId::new(),request_id:i}).await.unwrap();}
-            } else {a.control.close();}
-            let sent=request_org_fallbacks(true,&a.installed,&a.peers,&mut a.relay,Instant::now()).await;
-            assert!(sent.is_empty(),"only a true successful enqueue qualifies");
-            finish_org_recovery_queries(sent,&a.wg,&mut a.installed);
+                for i in 0..16 {
+                    a.rt.outbound
+                        .send(ClientMsg::OverlayOrgRelayFallbackRequest {
+                            peer_node_id: ObjectId::new(),
+                            request_id: i,
+                        })
+                        .await
+                        .unwrap();
+                }
+            } else {
+                a.control.close();
+            }
+            let sent =
+                request_org_fallbacks(true, &a.installed, &a.peers, &mut a.relay, Instant::now())
+                    .await;
+            assert!(sent.is_empty(), "only a true successful enqueue qualifies");
+            finish_org_recovery_queries(sent, &a.wg, &mut a.installed);
             assert!(a.installed[&a.id].org_recovery_needs_query);
-            for t in tasks {t.abort();}
+            for t in tasks {
+                t.abort();
+            }
         }
     }
 }

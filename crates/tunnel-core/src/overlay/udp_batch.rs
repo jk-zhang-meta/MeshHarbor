@@ -66,7 +66,9 @@ mod linux {
             saved.restore(sock);
             Ok(Self {
                 state,
-                bufs: (0..RECV_BATCH).map(|_| vec![0u8; RECV_BUF].into_boxed_slice()).collect(),
+                bufs: (0..RECV_BATCH)
+                    .map(|_| vec![0u8; RECV_BUF].into_boxed_slice())
+                    .collect(),
                 metas: vec![quinn_udp::RecvMeta::default(); RECV_BATCH],
             })
         }
@@ -79,7 +81,9 @@ mod linux {
                 let Self { state, bufs, metas } = self;
                 let mut iov: Vec<IoSliceMut<'_>> =
                     bufs.iter_mut().map(|b| IoSliceMut::new(b)).collect();
-                match sock.try_io(Interest::READABLE, || state.recv(sock.into(), &mut iov, metas)) {
+                match sock.try_io(Interest::READABLE, || {
+                    state.recv(sock.into(), &mut iov, metas)
+                }) {
                     Ok(n) => return Ok(n),
                     Err(e) if super::super::udp_recv::recv_error_is_transient(&e) => continue,
                     Err(e) => return Err(e),
@@ -89,7 +93,10 @@ mod linux {
 
         /// Message `i`'s source and datagrams. GRO joins equal-size datagrams
         /// from one source; `stride` is that size (the whole length without GRO).
-        pub(crate) fn datagrams(&mut self, i: usize) -> (SocketAddr, std::slice::ChunksMut<'_, u8>) {
+        pub(crate) fn datagrams(
+            &mut self,
+            i: usize,
+        ) -> (SocketAddr, std::slice::ChunksMut<'_, u8>) {
             let m = &self.metas[i];
             (m.addr, self.bufs[i][..m.len].chunks_mut(m.stride.max(1)))
         }
@@ -199,15 +206,23 @@ mod linux {
             let tx = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let before = get_int(rx.as_raw_fd(), libc::IPPROTO_IP, libc::IP_MTU_DISCOVER);
             let mut batch = BatchRecv::new(&rx).unwrap();
-            assert_eq!(get_int(rx.as_raw_fd(), libc::IPPROTO_IP, libc::IP_MTU_DISCOVER), before);
+            assert_eq!(
+                get_int(rx.as_raw_fd(), libc::IPPROTO_IP, libc::IP_MTU_DISCOVER),
+                before
+            );
 
             let seg = 1312;
             let count = max_send_segments().min(20);
             let mut run = Vec::new();
             for i in 0..count {
-                run.extend(std::iter::repeat_n(i as u8, if i + 1 == count { 700 } else { seg }));
+                run.extend(std::iter::repeat_n(
+                    i as u8,
+                    if i + 1 == count { 700 } else { seg },
+                ));
             }
-            send_segments(&tx, rx.local_addr().unwrap(), &run, seg).await.unwrap();
+            send_segments(&tx, rx.local_addr().unwrap(), &run, seg)
+                .await
+                .unwrap();
 
             let mut got: Vec<Vec<u8>> = Vec::new();
             while got.len() < count {
@@ -223,8 +238,15 @@ mod linux {
             }
             assert_eq!(got.len(), count);
             for (i, d) in got.iter().enumerate() {
-                assert_eq!(d.len(), if i + 1 == count { 700 } else { seg }, "datagram {i}");
-                assert!(d.iter().all(|&b| b == i as u8), "datagram {i} content/order");
+                assert_eq!(
+                    d.len(),
+                    if i + 1 == count { 700 } else { seg },
+                    "datagram {i}"
+                );
+                assert!(
+                    d.iter().all(|&b| b == i as u8),
+                    "datagram {i} content/order"
+                );
             }
         }
     }

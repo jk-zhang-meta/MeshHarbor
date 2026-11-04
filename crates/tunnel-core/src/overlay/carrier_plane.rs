@@ -115,6 +115,12 @@ struct PlaneRoute {
     /// on a roam (the send pump's `SendPeer` mirror shares the same `Arc`).
     /// Weak so a dropped peer's carrier isn't pinned by the route table.
     carrier: std::sync::Weak<Carrier>,
+    /// Whether this route currently belongs to an unpromoted shadow probe
+    /// (`WgDevice::probes`). A spray-socket HandshakeInit from the route's
+    /// `expected_src` is forwarded to the runtime as `ForwardInit` ONLY while
+    /// `probing` is true; once promoted (`probing == false`), a spray-socket
+    /// INIT from `expected_src` is handled on the installed `Tunn` directly.
+    probing: bool,
     /// A3 — last adoption instant for this session (roam rate limit).
     last_roam: Option<Instant>,
     /// Diagnostic — last session-trace emission (throttle; see
@@ -352,7 +358,10 @@ impl CarrierPlane {
         let ifaces = direct::gather_lan_interfaces();
         #[cfg(test)]
         let ifaces: Vec<_> = match self.lan_only.lock().unwrap().as_ref() {
-            Some(keep) => ifaces.into_iter().filter(|(ip, _)| keep.contains(ip)).collect(),
+            Some(keep) => ifaces
+                .into_iter()
+                .filter(|(ip, _)| keep.contains(ip))
+                .collect(),
             None => ifaces,
         };
         let my_ips: Vec<Ipv4Addr> = ifaces.iter().map(|(ip, _)| *ip).collect();
@@ -417,7 +426,7 @@ impl CarrierPlane {
         let mut stats: Vec<Arc<direct::SockStat>> = Vec::new();
         for ((_, s), ep) in socks.iter().zip(&endpoints) {
             let stat = direct::SockStat::new(ep.clone());
-            tasks.push(self.adopt_socket_with(s.clone(), Some(stat.clone())));
+            tasks.push(self.adopt_socket_with(s.clone(), Some(stat.clone()), false));
             stats.push(stat);
         }
         if let Some(p) = &public_sock {
@@ -426,7 +435,7 @@ impl CarrierPlane {
                 .map(|a| format!("{a} (public-dial)"))
                 .unwrap_or_else(|_| "public-dial".into());
             let stat = direct::SockStat::new(local);
-            tasks.push(self.adopt_socket_with(p.clone(), Some(stat.clone())));
+            tasks.push(self.adopt_socket_with(p.clone(), Some(stat.clone()), false));
             stats.push(stat);
         }
         if let Some(s6) = &v6 {
@@ -435,7 +444,7 @@ impl CarrierPlane {
                 .map(|a| format!("{a} (ipv6)"))
                 .unwrap_or_else(|_| "ipv6".into());
             let stat = direct::SockStat::new(local);
-            tasks.push(self.adopt_socket_with(s6.clone(), Some(stat.clone())));
+            tasks.push(self.adopt_socket_with(s6.clone(), Some(stat.clone()), false));
             stats.push(stat);
         }
         let mut st = self.lock();
@@ -498,7 +507,7 @@ impl CarrierPlane {
     /// which wires a [`direct::SockStat`] per socket.
     #[cfg(test)]
     pub(crate) fn adopt_socket(self: &Arc<Self>, sock: Arc<UdpSocket>) -> JoinHandle<()> {
-        self.adopt_socket_with(sock, None)
+        self.adopt_socket_with(sock, None, false)
     }
 
     /// The plane recv loop, with a PR-B1 liveness stat the loop bumps per
@@ -507,6 +516,7 @@ impl CarrierPlane {
         self: &Arc<Self>,
         sock: Arc<UdpSocket>,
         stat: Option<Arc<direct::SockStat>>,
+        spray_socket: bool,
     ) -> JoinHandle<()> {
         let plane = self.clone();
         tokio::spawn(async move {
@@ -552,6 +562,7 @@ impl CarrierPlane {
                                     datagrams,
                                     &mut recent_unknown,
                                     &mut last_stun_drop_log,
+                                    spray_socket,
                                 )
                                 .await;
                         }
@@ -583,6 +594,7 @@ impl CarrierPlane {
                         n,
                         &mut recent_unknown,
                         &mut last_stun_drop_log,
+                        spray_socket,
                     )
                     .await;
             }
@@ -607,6 +619,7 @@ impl CarrierPlane {
         datagrams: std::slice::ChunksMut<'_, u8>,
         recent_unknown: &mut HashMap<SocketAddr, (Instant, u32)>,
         last_stun_drop_log: &mut Option<Instant>,
+        spray_socket: bool,
     ) {
         #[cfg(test)]
         if self.blackhole.load(Ordering::Relaxed) {
@@ -623,8 +636,18 @@ impl CarrierPlane {
                 if let Some(r) = run.take() {
                     r.deliver().await;
                 }
-                self.on_datagram(sock, local, stat, src, dg, n, recent_unknown, last_stun_drop_log)
-                    .await;
+                self.on_datagram(
+                    sock,
+                    local,
+                    stat,
+                    src,
+                    dg,
+                    n,
+                    recent_unknown,
+                    last_stun_drop_log,
+                    spray_socket,
+                )
+                .await;
                 continue;
             };
             if let Some(s) = stat {
@@ -634,8 +657,21 @@ impl CarrierPlane {
                 if let Some(r) = run.take() {
                     r.deliver().await;
                 }
-                let Routed::Session { tunn, ingress, tun_tx } = self.route_by_index(idx, src) else {
-                    self.handle_datagram(sock, src, dg, n, Some(&mut *recent_unknown)).await;
+                let Routed::Session {
+                    tunn,
+                    ingress,
+                    tun_tx,
+                } = self.route_by_index(idx, src)
+                else {
+                    self.handle_datagram(
+                        sock,
+                        src,
+                        dg,
+                        n,
+                        Some(&mut *recent_unknown),
+                        spray_socket,
+                    )
+                    .await;
                     continue;
                 };
                 run = Some(InboundRun {
@@ -651,6 +687,7 @@ impl CarrierPlane {
             if let (_, Some(p)) = decap_inbound(&mut r.tunn, n, dg, &r.reply, &r.ingress) {
                 r.packets.push(p);
             }
+            r.ingress.multipath.drain_ready_into(&mut r.packets);
         }
         if let Some(r) = run.take() {
             r.deliver().await;
@@ -669,6 +706,7 @@ impl CarrierPlane {
         n: usize,
         recent_unknown: &mut HashMap<SocketAddr, (Instant, u32)>,
         last_stun_drop_log: &mut Option<Instant>,
+        spray_socket: bool,
     ) {
         #[cfg(test)]
         if self.blackhole.load(Ordering::Relaxed) {
@@ -697,6 +735,19 @@ impl CarrierPlane {
             }
             return;
         }
+        if super::pq_psk::is_pq_psk_shaped(&buf[..n]) {
+            let handles = self.pq_psk_handles(&buf[..n], src);
+            if !handles.is_empty() {
+                let pkt = buf[..n].to_vec();
+                let reply = Carrier::direct(sock.clone(), src);
+                tokio::spawn(async move {
+                    for pq in handles {
+                        pq.handle_inbound(&pkt, &reply).await;
+                    }
+                });
+            }
+            return;
+        }
         if crate::transport::stun::has_stun_cookie(&buf[..n]) && !is_wg_shaped(&buf[..n]) {
             // Only a STUN datagram needs the channel: taking the plane lock
             // for it on every WG data packet was pure per-packet overhead.
@@ -719,7 +770,8 @@ impl CarrierPlane {
             }
             return;
         }
-        self.handle_datagram(sock, src, buf, n, Some(recent_unknown)).await;
+        self.handle_datagram(sock, src, buf, n, Some(recent_unknown), spray_socket)
+            .await;
     }
 
     /// Take the receiver for plane-routed STUN Binding responses. `None`
@@ -738,6 +790,7 @@ impl CarrierPlane {
         buf: &mut [u8],
         n: usize,
         mut recent_unknown: Option<&mut HashMap<SocketAddr, (Instant, u32)>>,
+        spray_socket: bool,
     ) {
         let routed = match Tunn::parse_incoming_packet(&buf[..n]) {
             // Sessionful message types carry OUR receiver index — the exact
@@ -766,7 +819,11 @@ impl CarrierPlane {
                         .collect();
                     (c, st.engines.len())
                 };
-                let auth_first = engines_len > 1 && self.init_auth_first.load(Ordering::Relaxed);
+                // A spray INIT may need to replace the probe's LOCAL socket,
+                // even when its remote src is already known. Authenticate
+                // before asking the runtime to adopt that socket.
+                let auth_first = spray_socket
+                    || (engines_len > 1 && self.init_auth_first.load(Ordering::Relaxed));
                 match candidates.as_slice() {
                     // Single-org plane (or the kill switch is off): an init
                     // from a source the engine has a session with is that
@@ -788,7 +845,13 @@ impl CarrierPlane {
                         } else {
                             match self.authenticate_against_engines(&buf[..n], &candidates) {
                                 Some(engine) => match self.route_session_of(engine, src) {
-                                    Routed::Drop => {
+                                    route
+                                        if matches!(route, Routed::Drop)
+                                            || (spray_socket
+                                                && self.probe_uses_other_socket(
+                                                    engine, src, sock,
+                                                )) =>
+                                    {
                                         let ev = {
                                             let st = self.lock();
                                             st.engines
@@ -953,13 +1016,25 @@ impl CarrierPlane {
                 ingress: r.ingress.clone(),
                 tun_tx: r.tun_tx.clone(),
             },
+            Some(r) if let Some(leg_id) = r.ingress.multipath.leg_id_for_direct_src(src) => {
+                Routed::Session {
+                    tunn: r.tunn.clone(),
+                    ingress: r.ingress.clone().with_leg_id(leg_id),
+                    tun_tx: r.tun_tx.clone(),
+                }
+            }
             // A3 — a known session (by receiver index) from a NEW source:
             // route it to the session's Tunn as a ROAM CANDIDATE. Adoption
             // commits only if the payload authenticates (handle_datagram
             // calls `commit_roam` on success), so a forged index can spend
             // one decap but never move an endpoint. Rate-limited per session.
+            // When secondary multipath legs are attached and expected_src is
+            // already populated, do not clobber the primary endpoint with an
+            // unconfigured secondary source.
             Some(r)
                 if direct::roam_enabled()
+                    && (!r.ingress.multipath.has_secondary_legs()
+                        || r.expected_src.ip().is_unspecified())
                     && r.last_roam
                         .is_none_or(|t| t.elapsed() >= direct::ROAM_MIN_INTERVAL) =>
             {
@@ -1065,6 +1140,17 @@ impl CarrierPlane {
         }
     }
 
+    fn probe_uses_other_socket(&self, engine: u64, src: SocketAddr, sock: &Arc<UdpSocket>) -> bool {
+        let st = self.lock();
+        st.by_src
+            .get(&(engine, src))
+            .and_then(|idx| st.routes.get(idx))
+            .filter(|r| r.probing)
+            .and_then(|r| r.carrier.upgrade())
+            .and_then(|carrier| carrier.direct_parts())
+            .is_some_and(|(current, _)| !Arc::ptr_eq(&current, sock))
+    }
+
     /// C1 — answer a disco ping on behalf of whichever attached engine knows
     /// the sender. Engines are snapshotted out of the lock so the X25519 runs
     /// unlocked, exactly like [`authenticate_against_engines`].
@@ -1118,6 +1204,54 @@ impl CarrierPlane {
             }
         }
         None
+    }
+
+    fn pq_psk_handles(&self, pkt: &[u8], src: SocketAddr) -> Vec<Arc<super::pq_psk::PqPeerHandle>> {
+        let Some(sender) = super::pq_psk::claimed_sender(pkt) else {
+            return Vec::new();
+        };
+        let mut out: Vec<Arc<super::pq_psk::PqPeerHandle>> = Vec::new();
+        let st = self.lock();
+        for r in st.routes.values() {
+            if r.ingress.peer == sender
+                && r.expected_src == src
+                && let Some(pq) = r.ingress.stats.pq.get()
+                && !out.iter().any(|x| Arc::ptr_eq(x, pq))
+            {
+                out.push(pq.clone());
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+        for r in st.routes.values() {
+            if r.ingress.peer == sender
+                && !r.expected_src.ip().is_unspecified()
+                && let Some(pq) = r.ingress.stats.pq.get()
+                && !out.iter().any(|x| Arc::ptr_eq(x, pq))
+            {
+                out.push(pq.clone());
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+        for r in st.routes.values() {
+            if r.ingress.peer == sender
+                && let Some(pq) = r.ingress.stats.pq.get()
+                && !out.iter().any(|x| Arc::ptr_eq(x, pq))
+            {
+                out.push(pq.clone());
+            }
+        }
+        for e in &st.engines {
+            if let Some(pq) = e.send.pq_peer(&sender)
+                && !out.iter().any(|x| Arc::ptr_eq(x, &pq))
+            {
+                out.push(pq);
+            }
+        }
+        out
     }
 
     /// Try each attached engine's static against a handshake initiation.
@@ -1186,7 +1320,12 @@ impl InboundRun {
     /// Release the session, then hand its packets to the TUN channel back to
     /// back, in order.
     async fn deliver(self) {
-        let Self { tunn, tun_tx, packets, .. } = self;
+        let Self {
+            tunn,
+            tun_tx,
+            packets,
+            ..
+        } = self;
         drop(tunn);
         for p in packets {
             if tun_tx.send(p).await.is_err() {
@@ -1212,6 +1351,24 @@ impl PlaneHandle {
         1 + self.plane.index_alloc.fetch_add(1, Ordering::Relaxed) % (INDEX_SPACE - 1)
     }
 
+    /// Birthday spray — run the plane's receive loop on a short-lived socket
+    /// that is not one of the plane's own (no liveness stat, no rebuild
+    /// ownership). The caller aborts the returned task to close it.
+    pub(crate) fn adopt_ephemeral(&self, sock: Arc<UdpSocket>) -> JoinHandle<()> {
+        self.plane.adopt_socket_with(sock, None, true)
+    }
+
+    /// Check whether `sock` is one of the plane's bound demux sockets.
+    pub(crate) fn owns_socket(&self, sock: &Arc<UdpSocket>) -> bool {
+        let st = self.plane.lock();
+        let Some(b) = &st.binds else {
+            return false;
+        };
+        b.socks.iter().any(|(_, s)| Arc::ptr_eq(s, sock))
+            || b.public_sock.as_ref().is_some_and(|s| Arc::ptr_eq(s, sock))
+            || b.v6.as_ref().is_some_and(|s| Arc::ptr_eq(s, sock))
+    }
+
     /// Register the session route for an index handed out by
     /// [`alloc_index`](Self::alloc_index). Replaces nothing by construction —
     /// an occupied slot is a bug and is logged loudly instead of silently
@@ -1224,6 +1381,7 @@ impl PlaneHandle {
         ingress: Ingress,
         expected_src: SocketAddr,
         carrier: std::sync::Weak<Carrier>,
+        probing: bool,
     ) {
         let mut st = self.plane.lock();
         let Some(tun_tx) = st
@@ -1263,6 +1421,7 @@ impl PlaneHandle {
                     tun_tx,
                     expected_src,
                     carrier,
+                    probing,
                     last_roam: None,
                     last_trace: None,
                 },
@@ -1281,6 +1440,15 @@ impl PlaneHandle {
     /// only if it still points at THIS index — a replacement session for the
     /// same source (re-install to the same peer) registered after us must
     /// keep its own reverse entry.
+    pub(crate) fn mark_route_promoted(&self, idx: u32) {
+        let mut st = self.plane.lock();
+        if let Some(r) = st.routes.get_mut(&idx)
+            && r.engine == self.id
+        {
+            r.probing = false;
+        }
+    }
+
     pub(crate) fn unregister_route(&self, idx: u32) {
         let mut st = self.plane.lock();
         if let Some(r) = st.routes.remove(&idx) {
@@ -1302,6 +1470,24 @@ impl PlaneHandle {
         self.plane.commit_roam(idx, src);
     }
 
+    pub(crate) fn reassert_route_carrier_and_src(
+        &self,
+        idx: u32,
+        carrier: std::sync::Weak<Carrier>,
+        src: SocketAddr,
+    ) {
+        {
+            let mut st = self.plane.lock();
+            if let Some(r) = st.routes.get_mut(&idx)
+                && r.engine == self.id
+            {
+                r.carrier = carrier;
+                r.probing = false;
+            }
+        }
+        self.plane.commit_roam(idx, src);
+    }
+
     /// Process ONE datagram as if it had arrived on a plane socket — the
     /// plane twin of `WgDevice::feed_direct` (the accept path answers the
     /// very initiation that triggered its [`DirectInbound`] immediately
@@ -1310,7 +1496,7 @@ impl PlaneHandle {
         let mut buf = packet.to_vec();
         let n = buf.len();
         self.plane
-            .handle_datagram(&sock, src, &mut buf, n, None)
+            .handle_datagram(&sock, src, &mut buf, n, None, false)
             .await;
     }
 }
@@ -1807,7 +1993,10 @@ impl CarrierPlane {
                 super::portmap::PortMapper::start(&punch, &state.candidates, &portmap_key).await;
             if pm.is_some() {
                 state.generation += 1;
-                plane.lock().srflx_watch.send_replace(state.published(pm.as_ref()));
+                plane
+                    .lock()
+                    .srflx_watch
+                    .send_replace(state.published(pm.as_ref()));
             }
             // W6 — poke-storm floor (see SEEKING): a poked query here is only
             // an ACCELERATION of the ≤`secs` tick, so under an interface-event
@@ -1924,7 +2113,10 @@ impl CarrierPlane {
                 }
                 if publish {
                     state.generation += 1;
-                    plane.lock().srflx_watch.send_replace(state.published(pm.as_ref()));
+                    plane
+                        .lock()
+                        .srflx_watch
+                        .send_replace(state.published(pm.as_ref()));
                 }
             }
         });
@@ -2757,7 +2949,11 @@ mod tests {
         );
         assert_eq!(p.my_nat.as_deref(), Some("cone"));
         assert_eq!(p.portmap.as_deref(), Some("pcp 203.0.113.7:41641"));
-        assert_eq!(state.candidates, vec!["203.0.113.7:1111".to_string()], "state untouched");
+        assert_eq!(
+            state.candidates,
+            vec!["203.0.113.7:1111".to_string()],
+            "state untouched"
+        );
         let none = state.published(None);
         assert_eq!(none.candidates, state.candidates);
         assert_eq!((none.my_nat, none.portmap), (state.my_nat.clone(), None));
@@ -2899,8 +3095,10 @@ mod tests {
         let (mut a, _ra) = engine(&plane_a, &kp_a).await;
         let (mut b, mut rb) = engine(&plane_b, &kp_b).await;
         let (ip_a, ip_b) = (Ipv4Addr::new(100, 65, 9, 1), Ipv4Addr::new(100, 65, 9, 2));
-        b.add_direct_peer(sock_b.clone(), kp_a.public.to_bytes(), ip_a, addr_a, false).await;
-        a.add_direct_peer(sock_a.clone(), kp_b.public.to_bytes(), ip_b, addr_b, true).await;
+        b.add_direct_peer(sock_b.clone(), kp_a.public.to_bytes(), ip_a, addr_a, false)
+            .await;
+        a.add_direct_peer(sock_a.clone(), kp_b.public.to_bytes(), ip_b, addr_b, true)
+            .await;
         pump_until_delivered(&a, &mut rb, &synthetic_ipv4(ip_a, ip_b, b"warm")).await;
         while timeout(Duration::from_millis(200), rb.recv()).await.is_ok() {}
 
@@ -2909,7 +3107,10 @@ mod tests {
             .collect();
         a.send_ip_batch(&burst).await;
         for (i, want) in burst.iter().enumerate() {
-            let got = timeout(Duration::from_secs(2), rb.recv()).await.expect("delivered").unwrap();
+            let got = timeout(Duration::from_secs(2), rb.recv())
+                .await
+                .expect("delivered")
+                .unwrap();
             assert_eq!(&got, want, "packet {i} lost, reordered or altered");
         }
     }
@@ -2935,11 +3136,22 @@ mod tests {
         let n: usize = env("MH_BENCH_PACKETS", "200000").parse().unwrap();
         let size: usize = env("MH_BENCH_SIZE", "1280").parse().unwrap();
         let batch: usize = env("MH_BENCH_BATCH", "1").parse().unwrap();
-        let (bind_a, bind_b) = (env("MH_BENCH_A", "127.0.0.1"), env("MH_BENCH_B", "127.0.0.1"));
+        let (bind_a, bind_b) = (
+            env("MH_BENCH_A", "127.0.0.1"),
+            env("MH_BENCH_B", "127.0.0.1"),
+        );
         let (kp_a, kp_b) = (WgKeypair::generate(), WgKeypair::generate());
         let (plane_a, plane_b) = (CarrierPlane::new(), CarrierPlane::new());
-        let sock_a = Arc::new(tokio::net::UdpSocket::bind(format!("{bind_a}:0")).await.unwrap());
-        let sock_b = Arc::new(tokio::net::UdpSocket::bind(format!("{bind_b}:0")).await.unwrap());
+        let sock_a = Arc::new(
+            tokio::net::UdpSocket::bind(format!("{bind_a}:0"))
+                .await
+                .unwrap(),
+        );
+        let sock_b = Arc::new(
+            tokio::net::UdpSocket::bind(format!("{bind_b}:0"))
+                .await
+                .unwrap(),
+        );
         for s in [&sock_a, &sock_b] {
             super::super::sockbuf::tune_carrier(s, "bench");
         }
@@ -2949,8 +3161,10 @@ mod tests {
         let (mut a, _ra) = engine(&plane_a, &kp_a).await;
         let (mut b, mut rb) = engine(&plane_b, &kp_b).await;
         let (ip_a, ip_b) = (Ipv4Addr::new(100, 65, 9, 1), Ipv4Addr::new(100, 65, 9, 2));
-        b.add_direct_peer(sock_b.clone(), kp_a.public.to_bytes(), ip_a, addr_a, false).await;
-        a.add_direct_peer(sock_a.clone(), kp_b.public.to_bytes(), ip_b, addr_b, true).await;
+        b.add_direct_peer(sock_b.clone(), kp_a.public.to_bytes(), ip_a, addr_a, false)
+            .await;
+        a.add_direct_peer(sock_a.clone(), kp_b.public.to_bytes(), ip_b, addr_b, true)
+            .await;
         let pkt = synthetic_ipv4(ip_a, ip_b, &vec![0x5a; size.saturating_sub(20)]);
         pump_until_delivered(&a, &mut rb, &pkt).await;
         while timeout(Duration::from_millis(200), rb.recv()).await.is_ok() {}
@@ -2990,5 +3204,48 @@ mod tests {
             cpu / (bytes as f64 * 8.0 / 1e9).max(1e-9),
         );
         drop((a, b));
+    }
+
+    #[tokio::test]
+    async fn plane_routes_pq_psk_negotiation_and_delivers_encrypted_traffic() {
+        use super::super::pq_psk::{PqPeerStatus, PqPskConfig, PqPskMode};
+
+        let (kp_a, kp_b) = (WgKeypair::generate(), WgKeypair::generate());
+        let (plane_a, plane_b) = (CarrierPlane::new(), CarrierPlane::new());
+        let sock_a = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+        plane_a.adopt_socket(sock_a.clone());
+        plane_b.adopt_socket(sock_b.clone());
+        let (mut a, mut ra) = engine(&plane_a, &kp_a).await;
+        let (mut b, mut rb) = engine(&plane_b, &kp_b).await;
+
+        let cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            configured_psk: Some([0x77; 32]),
+            ..PqPskConfig::default()
+        };
+        a.set_pq_psk_config(cfg.clone());
+        b.set_pq_psk_config(cfg);
+
+        let (ip_a, ip_b) = (Ipv4Addr::new(100, 65, 9, 10), Ipv4Addr::new(100, 65, 9, 11));
+        let pk_a = kp_a.public.to_bytes();
+        let pk_b = kp_b.public.to_bytes();
+        b.add_direct_peer(sock_b.clone(), pk_a, ip_a, addr_a, false)
+            .await;
+        a.add_direct_peer(sock_a.clone(), pk_b, ip_b, addr_b, true)
+            .await;
+
+        let pkt_ab = synthetic_ipv4(ip_a, ip_b, b"plane pq-psk payload A->B");
+        pump_until_delivered(&a, &mut rb, &pkt_ab).await;
+        let pkt_ba = synthetic_ipv4(ip_b, ip_a, b"plane pq-psk payload B->A");
+        pump_until_delivered(&b, &mut ra, &pkt_ba).await;
+
+        let sa = a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+        let sb = b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+        assert_eq!(sa.status, PqPeerStatus::Established { epoch: 1 });
+        assert_eq!(sb.status, PqPeerStatus::Established { epoch: 1 });
+        assert!(sa.psk_fingerprint.is_some());
+        assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
     }
 }

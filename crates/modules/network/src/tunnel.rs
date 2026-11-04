@@ -200,15 +200,23 @@ pub async fn handle_tunnel_client_socket(
         #[cfg(feature = "path-planner-test-support")]
         crate::org_relay::candidate_test_support::tunnel_bind_attempt(tunnel_client_id);
         let _lifecycle = overlay_lock.lock().await;
-        state.org_relay.bind_live_conn(tunnel_client_id, &connection_id);
+        state
+            .org_relay
+            .bind_live_conn(tunnel_client_id, &connection_id);
         #[cfg(feature = "path-planner-test-support")]
         crate::org_relay::candidate_test_support::tunnel_bound(tunnel_client_id);
-        state.overlay_nodes_by_id.insert(tunnel_client_id, outbound_tx.clone());
+        state
+            .overlay_nodes_by_id
+            .insert(tunnel_client_id, outbound_tx.clone());
     }
 
     // The opening observation belongs to the connection just bound above.
     let business_observation = roomler_core::business_authority::ObservationTask::spawn({
-        let (state, origin, connection_id) = (state.clone(), connection_origin.clone(), connection_id.clone());
+        let (state, origin, connection_id) = (
+            state.clone(),
+            connection_origin.clone(),
+            connection_id.clone(),
+        );
         async move {
             observe_business_connection(
                 &state,
@@ -321,15 +329,21 @@ pub async fn handle_tunnel_client_socket(
                 continue;
             }
             crate::overlay::relay_overlay_msg_from_node(
-                &state, crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
-                &connection_id, parsed,
-            ).await
+                &state,
+                crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
+                &connection_id,
+                parsed,
+            )
+            .await
         } else {
             // Probes already fence ownership at their synchronous record step.
             crate::overlay::relay_overlay_msg_from_node(
-                &state, crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
-                &connection_id, parsed,
-            ).await
+                &state,
+                crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
+                &connection_id,
+                parsed,
+            )
+            .await
         };
         let Some(parsed) = parsed else { continue };
 
@@ -427,6 +441,7 @@ pub async fn handle_tunnel_client_socket(
                 }
                 if let Some(s) = session.take() {
                     state.tunnel_clients_by_session.remove(&s.tunnel_session_id);
+                    state.tunnel_session_parties.remove(&s.tunnel_session_id);
                     unindex_session_target(
                         &state.tunnel_sessions_by_target_agent,
                         s.agent_id,
@@ -548,14 +563,19 @@ pub async fn handle_tunnel_client_socket(
     // client never joined the overlay.
     {
         let _lifecycle = overlay_lock.lock().await;
-        if state.org_relay.unbind_live_conn(tunnel_client_id, &connection_id) {
+        if state
+            .org_relay
+            .unbind_live_conn(tunnel_client_id, &connection_id)
+        {
             #[cfg(feature = "path-planner-test-support")]
-            crate::org_relay::candidate_test_support::pause_tunnel_leave_if_armed(&connection_id).await;
+            crate::org_relay::candidate_test_support::pause_tunnel_leave_if_armed(&connection_id)
+                .await;
             state.overlay_nodes_by_id.remove(&tunnel_client_id);
             crate::overlay::handle_overlay_leave(
                 &state,
                 crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
-            ).await;
+            )
+            .await;
         }
     }
     release_tunnel_overlay_lock(&state, tunnel_client_id, &overlay_lock);
@@ -564,6 +584,7 @@ pub async fn handle_tunnel_client_socket(
 
     if let Some(s) = session {
         state.tunnel_clients_by_session.remove(&s.tunnel_session_id);
+        state.tunnel_session_parties.remove(&s.tunnel_session_id);
         unindex_session_target(
             &state.tunnel_sessions_by_target_agent,
             s.agent_id,
@@ -587,7 +608,9 @@ pub async fn handle_tunnel_client_socket(
     // some other clone is still alive.
     drop(outbound_tx);
     pump.abort();
-    business_observation.finish(&state.core, &connection_id).await;
+    business_observation
+        .finish(&state.core, &connection_id)
+        .await;
     info!(%tunnel_client_id, "tunnel-client WS disconnected");
 }
 
@@ -786,6 +809,17 @@ impl Originator {
             | Principal::Session { agent_id: id, .. } => id,
         }
     }
+}
+
+/// Combined eligibility generation across role/grant mutations, live-zone
+/// transitions, and GeoIP dataset refreshes so cached `evaluate_pair` lines
+/// invalidate on any input change.
+fn tunnel_eligibility_generation(state: &NetworkState) -> u64 {
+    state
+        .org_relay
+        .eligibility_generation()
+        .wrapping_add(state.core.business_zones.generation().rotate_left(21))
+        .wrapping_add(state.core.geoip.dataset_generation().rotate_left(42))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1008,6 +1042,7 @@ async fn handle_tunnel_open(
             NodeRef::Agent { agent_id: id }
         }
     };
+    let verified_eligibility_gen = tunnel_eligibility_generation(state);
     if crate::business_isolation::refuses_parties(
         state,
         (orig.tenant_id, &origin_ref),
@@ -1140,6 +1175,59 @@ async fn handle_tunnel_open(
         .entry(agent_id)
         .or_default()
         .insert(tunnel_session_id);
+    let session_origin_ref = match orig.principal {
+        Principal::TunnelClient(id) => NodeRef::TunnelClient {
+            tunnel_client_id: id,
+        },
+        Principal::Agent(id) | Principal::Session { agent_id: id, .. } => {
+            NodeRef::Agent { agent_id: id }
+        }
+    };
+    state.tunnel_session_parties.insert(
+        tunnel_session_id,
+        (
+            orig.tenant_id,
+            session_origin_ref,
+            agent_id,
+            verified_eligibility_gen,
+        ),
+    );
+    let post_insert_gen = tunnel_eligibility_generation(state);
+    if post_insert_gen != verified_eligibility_gen {
+        if crate::business_isolation::refuses_parties(
+            state,
+            (orig.tenant_id, &origin_ref),
+            (agent.tenant_id, &NodeRef::Agent { agent_id }),
+            "tunnel",
+        )
+        .await
+        {
+            state.tunnel_clients_by_session.remove(&tunnel_session_id);
+            state.tunnel_session_parties.remove(&tunnel_session_id);
+            state.tunnel_presence_tokens.remove(&tunnel_session_id);
+            unindex_session_target(
+                &state.tunnel_sessions_by_target_agent,
+                agent_id,
+                tunnel_session_id,
+            );
+            send_msg(
+                &orig.outbound_tx,
+                ServerMsg::Error {
+                    session_id: None,
+                    code: "business_isolation".into(),
+                    message: "the two devices are not in one business zone".into(),
+                    open_nonce: open_nonce.clone(),
+                },
+            )
+            .await;
+            return None;
+        }
+        if tunnel_eligibility_generation(state) == post_insert_gen
+            && let Some(mut entry) = state.tunnel_session_parties.get_mut(&tunnel_session_id)
+        {
+            entry.value_mut().3 = post_insert_gen;
+        }
+    }
 
     // 5. Audit the open. RelayMode is "Direct" until ICE finishes —
     // T2.7 updates this after candidate selection. Under a grant the row
@@ -1421,6 +1509,64 @@ async fn handle_forward_request(
             return;
         }
     };
+
+    let cur_gen = tunnel_eligibility_generation(state);
+    let verified_gen = state
+        .tunnel_session_parties
+        .get(&s.tunnel_session_id)
+        .map(|e| e.value().3);
+    if verified_gen != Some(cur_gen) {
+        let origin_ref = match orig.principal {
+            Principal::TunnelClient(id) => NodeRef::TunnelClient {
+                tunnel_client_id: id,
+            },
+            Principal::Agent(id) | Principal::Session { agent_id: id, .. } => {
+                NodeRef::Agent { agent_id: id }
+            }
+        };
+        if crate::business_isolation::refuses_parties(
+            state,
+            (orig.tenant_id, &origin_ref),
+            (
+                agent.tenant_id,
+                &NodeRef::Agent {
+                    agent_id: s.agent_id,
+                },
+            ),
+            "tunnel forward",
+        )
+        .await
+        {
+            audit_tcp_reject(
+                state,
+                s,
+                orig,
+                flow_id,
+                dst_host,
+                dst_port,
+                RejectKind::AclDenied,
+                "business_isolation",
+            )
+            .await;
+            send_msg(
+                &orig.outbound_tx,
+                forward_reject_msg(
+                    proto,
+                    request_session_id,
+                    flow_id,
+                    RejectKind::AclDenied,
+                    "business_isolation".into(),
+                ),
+            )
+            .await;
+            return;
+        }
+        if tunnel_eligibility_generation(state) == cur_gen
+            && let Some(mut entry) = state.tunnel_session_parties.get_mut(&s.tunnel_session_id)
+        {
+            entry.value_mut().3 = cur_gen;
+        }
+    }
 
     // Active policies for the agent's tenant. Server-side ACL is
     // the auth boundary; the agent runs its own minimal allowlist
@@ -1804,6 +1950,12 @@ async fn relay_sdp_offer_to_agent(
         debug!(%request_session_id, "SDP offer on dead session — ignoring");
         return;
     };
+    if !state
+        .tunnel_clients_by_session
+        .contains_key(&request_session_id)
+    {
+        return;
+    }
     if s.tunnel_session_id != request_session_id {
         debug!(%request_session_id, "SDP offer session_id mismatch — ignoring");
         return;
@@ -2215,6 +2367,7 @@ pub async fn relay_tunnel_client_msg_from_agent(
                     },
                 );
                 state.tunnel_clients_by_session.remove(&s.tunnel_session_id);
+                state.tunnel_session_parties.remove(&s.tunnel_session_id);
                 unindex_session_target(
                     &state.tunnel_sessions_by_target_agent,
                     s.agent_id,
@@ -2246,6 +2399,7 @@ pub(crate) fn fence_originated_sessions(
 ) {
     for s in sessions.values() {
         state.tunnel_clients_by_session.remove(&s.tunnel_session_id);
+        state.tunnel_session_parties.remove(&s.tunnel_session_id);
         let _ = state.fleet.rc_hub.send_to_agent(
             s.agent_id,
             ServerMsg::TunnelTerminate {
@@ -2267,6 +2421,7 @@ pub async fn teardown_agent_originated_sessions(
 ) {
     for (_session_id, s) in sessions {
         state.tunnel_clients_by_session.remove(&s.tunnel_session_id);
+        state.tunnel_session_parties.remove(&s.tunnel_session_id);
         unindex_session_target(
             &state.tunnel_sessions_by_target_agent,
             s.agent_id,
@@ -2358,6 +2513,72 @@ pub async fn terminate_sessions_targeting_agent(state: &NetworkState, agent_id: 
     });
 }
 
+/// Immediately terminate every center-brokered tunnel session in `tenant_id`
+/// whose originator or target is no longer permitted by business isolation
+/// (e.g. when its role is revoked to `Unknown` under `enforce` or a server link
+/// is removed), pushing `TunnelTerminate` to both ends.
+///
+/// Returns `false` if role approvals could not be read from storage, leaving
+/// active sessions untouched so the caller can retry.
+pub async fn reconcile_tunnel_sessions(state: &NetworkState, tenant_id: ObjectId) -> bool {
+    let iso = crate::business_isolation::mode(state);
+    if iso == crate::business_isolation::Mode::Off {
+        return true;
+    }
+    let topo = crate::business_isolation::lines(state, iso, tenant_id).await;
+    if topo.roles_read_failed {
+        warn!(
+            %tenant_id,
+            "tunnel reconcile: role approval read failed; keeping active tunnel sessions"
+        );
+        return false;
+    }
+    let active: Vec<(ObjectId, ObjectId, NodeRef, ObjectId)> = state
+        .tunnel_session_parties
+        .iter()
+        .filter(|e| e.value().0 == tenant_id)
+        .map(|e| (*e.key(), e.value().0, e.value().1.clone(), e.value().2))
+        .collect();
+    for (sid, orig_tid, orig_ref, target_agent_id) in active {
+        let target_ref = NodeRef::Agent {
+            agent_id: target_agent_id,
+        };
+        if !crate::business_isolation::refuses_parties_with_lines(
+            state,
+            &topo,
+            (orig_tid, &orig_ref),
+            (orig_tid, &target_ref),
+            "tunnel_reconcile",
+        )
+        .await
+        {
+            continue;
+        }
+        state.tunnel_session_parties.remove(&sid);
+        unindex_session_target(&state.tunnel_sessions_by_target_agent, target_agent_id, sid);
+        if let NodeRef::Agent {
+            agent_id: orig_agent_id,
+        } = orig_ref
+        {
+            unindex_session_target(&state.tunnel_sessions_by_origin_agent, orig_agent_id, sid);
+        }
+        if let Some((_, tx)) = state.tunnel_clients_by_session.remove(&sid) {
+            let _ = tx.try_send(ServerMsg::TunnelTerminate {
+                session_id: sid,
+                reason: CloseReason::ServerTerminated,
+            });
+        }
+        let _ = state.fleet.rc_hub.send_to_agent(
+            target_agent_id,
+            ServerMsg::TunnelTerminate {
+                session_id: sid,
+                reason: CloseReason::ServerTerminated,
+            },
+        );
+    }
+    true
+}
+
 /// Immediately terminate every tunnel session targeting `agent_id`: drop the
 /// by-target index and push `TunnelTerminate` to each client. The pre-R3
 /// behaviour, now also the grace-expiry path.
@@ -2366,6 +2587,7 @@ pub(crate) fn terminate_agent_sessions_now(state: &NetworkState, agent_id: Objec
         return;
     };
     for sid in session_ids {
+        state.tunnel_session_parties.remove(&sid);
         // Clone the tx out of the map guard before awaiting — holding a
         // DashMap ref across an await point can deadlock the shard.
         let tx = state

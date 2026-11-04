@@ -282,10 +282,10 @@ impl Engine {
         if matches!(t.phase, Phase::Binding | Phase::Measuring | Phase::Ready)
             && let Some(requested) = t.requested.clone()
         {
-                if self.failed_requests.len() >= MAX_TRIALS {
-                    self.failed_requests.remove(0);
-                }
-                self.failed_requests.push(requested);
+            if self.failed_requests.len() >= MAX_TRIALS {
+                self.failed_requests.remove(0);
+            }
+            self.failed_requests.push(requested);
         }
         let current = Self::current(&t, peers, installed);
         // A revoked/removed/rekeyed trial may never restore the captured peer.
@@ -416,7 +416,8 @@ impl Engine {
                 let path_nodes = path.relay_node_ids();
                 if !allowed
                     || (path_nodes.len() == 1 && requester_at_exit)
-                    || (relay_node_id != path_nodes[0] && relay_node_id != path_nodes[path_nodes.len() - 1])
+                    || (relay_node_id != path_nodes[0]
+                        && relay_node_id != path_nodes[path_nodes.len() - 1])
                     || super::super::decode_public(&peer_wg_public_key) != Some(peer.public_key)
                     || original.pubkey != peer.public_key
                     || original.overlay_ip != peer.overlay_ip
@@ -425,9 +426,10 @@ impl Engine {
                     return;
                 }
                 let now = Instant::now();
-                let pending = self.pending_request.as_ref().filter(|r| {
-                    r.request_id == request_id && r.peer_id == peer_node_id
-                });
+                let pending = self
+                    .pending_request
+                    .as_ref()
+                    .filter(|r| r.request_id == request_id && r.peer_id == peer_node_id);
                 if pending.is_some_and(|r| {
                     r.candidate.path != path
                         || r.candidate.requester_at_exit != requester_at_exit
@@ -436,12 +438,14 @@ impl Engine {
                     Self::send(&ctx.outbound, ClientMsg::OverlayPathTrialAbort { trial_id }).await;
                     return;
                 }
-                let requested = pending.filter(|r| {
-                    now.saturating_duration_since(r.at) < PREPARE_TIMEOUT
-                        && peers.get(&peer_node_id).is_some_and(|p| {
-                            (p.wg_public_key.clone(), p.overlay_ip.clone()) == r.identity
-                        })
-                }).cloned();
+                let requested = pending
+                    .filter(|r| {
+                        now.saturating_duration_since(r.at) < PREPARE_TIMEOUT
+                            && peers.get(&peer_node_id).is_some_and(|p| {
+                                (p.wg_public_key.clone(), p.overlay_ip.clone()) == r.identity
+                            })
+                    })
+                    .cloned();
                 if requested.is_some() {
                     self.pending_request = None;
                 }
@@ -511,7 +515,7 @@ impl Engine {
                     if let Err(e) = tx.send(Bound { id: trial_id, conn }).await
                         && let Some(c) = e.0.conn
                     {
-                            c.close();
+                        c.close();
                     }
                 });
             }
@@ -583,11 +587,11 @@ impl Engine {
             }
             ServerMsg::OverlayPathTrialFinalize { trial_id } => {
                 if let Some(t) = self.trials.get_mut(&trial_id)
-                        && t.phase == Phase::Committed
-                        && Self::current(t, peers, installed)
-                        && wg.finalize_path_trial(trial_id)
-                    {
-                        t.phase = Phase::Finalized;
+                    && t.phase == Phase::Committed
+                    && Self::current(t, peers, installed)
+                    && wg.finalize_path_trial(trial_id)
+                {
+                    t.phase = Phase::Finalized;
                 }
             }
             ServerMsg::OverlayPathTrialReturnPrepare {
@@ -1008,9 +1012,9 @@ impl Engine {
                             },
                         )
                         .await
-                        {
-                            t.phase = Phase::ReturnReady;
-                            t.last_control = now;
+                    {
+                        t.phase = Phase::ReturnReady;
+                        t.last_control = now;
                     }
                 } else if t.phase == Phase::ReturnReady
                     || t.return_started
@@ -1031,15 +1035,15 @@ impl Engine {
             } else if t.phase == Phase::Returned
                 && now.duration_since(t.last_control) >= Duration::from_secs(5)
             {
-                    t.last_control = now;
-                    Self::send(
-                        &ctx.outbound,
-                        ClientMsg::OverlayPathTrialReturned {
-                            trial_id: id,
-                            return_id: t.return_id.unwrap(),
-                        },
-                    )
-                    .await;
+                t.last_control = now;
+                Self::send(
+                    &ctx.outbound,
+                    ClientMsg::OverlayPathTrialReturned {
+                        trial_id: id,
+                        return_id: t.return_id.unwrap(),
+                    },
+                )
+                .await;
             }
             let t = self.trials.get_mut(&id).unwrap();
             if t.measurements.round.is_none()
@@ -1090,7 +1094,7 @@ impl Engine {
             .min_by_key(|(id, _, _)| *id);
         if let Some((peer, _, candidate)) = choice {
             if candidate.path.relay_node_ids().len() > 1
-                && !crate::overlay::orgrelay::backbone::path_enabled()
+                && !(crate::overlay::orgrelay::backbone::path_enabled() || ctx.backbone_enabled)
             {
                 return;
             }
@@ -1518,12 +1522,17 @@ mod failure_feedback_regression {
             panic!("actual discovery")
         };
         let first = OrgRelayCandidateWire {
-            path: roomler_ai_remote_control::signaling::RelayPathWire::new(vec![ObjectId::new(), ObjectId::new()]).unwrap(),
+            path: roomler_ai_remote_control::signaling::RelayPathWire::new(vec![
+                ObjectId::new(),
+                ObjectId::new(),
+            ])
+            .unwrap(),
             requester_at_exit: false,
             endpoints: vec!["8.8.8.8:3478".into()],
         };
         let second = OrgRelayCandidateWire {
-            path: roomler_ai_remote_control::signaling::RelayPathWire::new(vec![ObjectId::new()]).unwrap(),
+            path: roomler_ai_remote_control::signaling::RelayPathWire::new(vec![ObjectId::new()])
+                .unwrap(),
             requester_at_exit: false,
             endpoints: vec!["1.1.1.1:3478".into()],
         };
@@ -1689,7 +1698,9 @@ pub mod test_support {
         }
         /// Drive the production limiter with an explicit monotonic test clock.
         pub async fn request_discovery_at(&mut self, now: Instant) {
-            self.discovery.request(true, true, &self.peers, &self.ctx.outbound, now).await;
+            self.discovery
+                .request(true, true, &self.peers, &self.ctx.outbound, now)
+                .await;
         }
         pub fn receive_discovery(&mut self, msg: ServerMsg) -> usize {
             let ServerMsg::OverlayOrgRelayCandidates {
@@ -1887,6 +1898,10 @@ pub mod test_support {
                 },
                 rx,
             )
+        }
+        pub fn with_backbone_enabled(mut self, enabled: bool) -> Self {
+            self.ctx = self.ctx.with_backbone_enabled(enabled);
+            self
         }
         pub fn handshake_done(&self) -> bool {
             self.wg.peer_handshake_done(&self.peer_key) == Some(true)

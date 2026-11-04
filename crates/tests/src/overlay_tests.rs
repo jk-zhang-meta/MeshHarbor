@@ -95,7 +95,7 @@ impl Ipam {
                 machine_id: machine_id.to_string(),
                 name: name.to_string(),
                 overlay_ip: overlay_ip.to_string(),
-                wg_public_key: "pk-base64".to_string(),
+                wg_public_key: format!("pk-base64-{machine_id}"),
                 key_epoch: 0,
                 endpoints: vec![],
                 supports_quic: false,
@@ -2307,4 +2307,638 @@ async fn turning_multi_block_off_after_a_grow_fails_the_boot_loudly() {
     apply_index_sets(&app.db, &app.state.modules.index_sets_for(true))
         .await
         .expect("multi-block schema still applies to a grown network");
+}
+
+/// B5 — Subnet-Router HA: approving the exact same canonical CIDR on a second
+/// live router succeeds when `allow_ha: true` is passed, remains preserved on
+/// subsequent route edits of an already-approved HA member, and still rejects
+/// partial prefix overlaps (`10.66.0.0/16` vs `10.66.51.0/24`) even with
+/// `allow_ha: true`. Withdrawing the CIDR on one HA router leaves the surviving
+/// HA router's approval intact.
+#[tokio::test]
+async fn subnet_router_ha_allows_equal_cidr_with_opt_in_and_rejects_partial_overlap() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("ovsubnetha").await;
+    let ipam = Ipam::new(&app, tid(&seeded.tenant_id)).await;
+    const SUB_24: &str = "10.66.51.0/24";
+    const SUB_16: &str = "10.66.0.0/16";
+    const EXTRA: &str = "10.77.0.0/24";
+
+    ipam.alloc().await.unwrap();
+    ipam.alloc().await.unwrap();
+    ipam.alloc().await.unwrap();
+    let r1 = ipam
+        .create_router_node("mach-ha-1", "ha-router-1", "100.64.0.1", &[SUB_24, EXTRA])
+        .await;
+    let r2 = ipam
+        .create_router_node(
+            "mach-ha-2",
+            "ha-router-2",
+            "100.64.0.2",
+            &[SUB_24, SUB_16, EXTRA],
+        )
+        .await;
+    let r3 = ipam
+        .create_router_node("mach-ha-3", "ha-router-3", "100.64.0.3", &[SUB_16])
+        .await;
+
+    let r1_id = r1.id.unwrap().to_hex();
+    let r2_id = r2.id.unwrap().to_hex();
+    let r3_id = r3.id.unwrap().to_hex();
+
+    let put = |node_id: String, body: serde_json::Value| {
+        let path = format!(
+            "/api/tenant/{}/overlay-node/{node_id}/approved-routes",
+            seeded.tenant_id
+        );
+        let token = seeded.admin.access_token.clone();
+        let app = &app;
+        async move {
+            app.auth_put(&path, &token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // 1. Primary router approves SUB_24.
+    let resp = put(
+        r1_id.clone(),
+        serde_json::json!({ "approved_routes": [SUB_24] }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // 2. Without `allow_ha`, secondary router is still rejected with 409 naming `ha-router-1`.
+    let resp = put(
+        r2_id.clone(),
+        serde_json::json!({ "approved_routes": [SUB_24] }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 409);
+    assert!(resp.text().await.unwrap().contains("ha-router-1"));
+
+    // 3. With `allow_ha: true`, secondary router joins the HA group for SUB_24.
+    let resp = put(
+        r2_id.clone(),
+        serde_json::json!({ "approved_routes": [SUB_24], "allow_ha": true }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let r2_body: Value = resp.json().await.unwrap();
+    assert_eq!(r2_body["approved_routes"], serde_json::json!([SUB_24]));
+
+    // 4. Subsequent route edits on an existing HA member preserve its HA route
+    //    even without passing `allow_ha: true` again.
+    let resp = put(
+        r2_id.clone(),
+        serde_json::json!({ "approved_routes": [SUB_24, EXTRA] }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // 5. Partial overlap (`10.66.0.0/16` vs `10.66.51.0/24`) is ALWAYS rejected
+    //    with 409 even when `allow_ha: true` is passed.
+    let resp = put(
+        r3_id.clone(),
+        serde_json::json!({ "approved_routes": [SUB_16], "allow_ha": true }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 409);
+
+    // 6. Even when a request includes BOTH an exact-match HA route (SUB_24) and
+    //    a partially overlapping route (SUB_16), it is rejected with 409.
+    let resp = put(
+        r2_id.clone(),
+        serde_json::json!({ "approved_routes": [SUB_24, SUB_16], "allow_ha": true }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 409);
+
+    // 7. Withdrawing SUB_24 from primary `ha-router-1` leaves `ha-router-2`'s
+    //    approved SUB_24 intact in the tenant's overlay node list.
+    let resp = put(r1_id.clone(), serde_json::json!({ "approved_routes": [] })).await;
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let list: Value = app
+        .auth_get(
+            &format!("/api/tenant/{}/overlay-node", seeded.tenant_id),
+            &seeded.admin.access_token,
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let items = list["items"].as_array().unwrap();
+    let r1_row = items.iter().find(|i| i["id"] == r1_id).unwrap();
+    let r2_row = items.iter().find(|i| i["id"] == r2_id).unwrap();
+    assert_eq!(r1_row["approved_routes"], serde_json::json!([]));
+    assert_eq!(
+        r2_row["approved_routes"],
+        serde_json::json!([SUB_24, EXTRA])
+    );
+}
+
+/// B4 — Evicting a node (`DELETE /api/tenant/{tid}/overlay-node/{id}` -> `release`)
+/// forces a new lease rather than permanently banning the machine: the SAME
+/// `machine_id` can re-join with its existing `wg_public_key` and obtain a new
+/// overlay lease, while a DIFFERENT `machine_id` attempting to claim that
+/// tombstoned `wg_public_key` is rejected. Also verifies pre-expiry proactive
+/// key rotation (`list_keys_expiring_soon` + `order_auto_key_rotate_if_needed`).
+#[tokio::test]
+async fn b4_evicted_node_allows_same_machine_rejoin_with_same_key_and_rejects_other_machine() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("ovb4evict").await;
+    let ipam = Ipam::new(&app, tid(&seeded.tenant_id)).await;
+
+    ipam.alloc().await.unwrap();
+    let first = ipam
+        .create_node("mach-evict-a", "evict-box", "100.64.0.1")
+        .await
+        .unwrap();
+    let first_id = first.id.unwrap();
+    let first_key = first.wg_public_key.clone();
+
+    // Admin evicts the node via REST API.
+    let resp = app
+        .auth_delete(
+            &format!("/api/tenant/{}/overlay-node/{first_id}", seeded.tenant_id),
+            &seeded.admin.access_token,
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // Another machine ("mach-hijack") attempting to claim the evicted node's
+    // tombstoned `wg_public_key` must be rejected.
+    let hijack = ipam
+        .nodes
+        .create(NewOverlayNode {
+            tenant_id: ipam.tenant_id,
+            node_ref: NodeRef::Agent {
+                agent_id: ObjectId::new(),
+            },
+            network_id: ipam.network_id,
+            machine_id: "mach-hijack".to_string(),
+            name: "hijack-box".to_string(),
+            overlay_ip: "100.64.0.2".to_string(),
+            wg_public_key: first_key.clone(),
+            key_epoch: 0,
+            endpoints: vec![],
+            supports_quic: false,
+            supports_relay_single: false,
+            supports_derp: false,
+            supports_forced_derp: false,
+            supports_server_relay_strategy: false,
+            supports_derp_floor: false,
+            supports_overlay_echo: false,
+            supports_org_relay: false,
+            advertised_routes: vec![],
+            route_offer_withheld: None,
+        })
+        .await;
+    assert!(
+        matches!(hijack, Err(DaoError::Forbidden(_))),
+        "different machine_id must not claim a tombstoned node's wg_public_key: {hijack:?}"
+    );
+
+    // The SAME machine ("mach-evict-a") reconnecting with its persisted `wg_public_key`
+    // must succeed and obtain a fresh overlay lease.
+    let rejoined = ipam
+        .create_node("mach-evict-a", "evict-box", "100.64.0.1")
+        .await
+        .expect("evicted machine must be able to re-join with its same wg_public_key");
+    assert_ne!(rejoined.id, first.id);
+    assert_eq!(rejoined.wg_public_key, first_key);
+    assert!(
+        ipam.nodes
+            .accepts_current_key(rejoined.id.unwrap(), &first_key, 0)
+            .await
+            .unwrap()
+    );
+}
+
+/// B4 R3 — When a node is evicted by an admin while offline (creating a
+/// tombstone with `deleted_at != null` and `key_expires_at > now`), and its
+/// key TTL subsequently expires while the machine is still offline
+/// (`key_expires_at <= now`), reconnecting and sending `rc:overlay.join` with
+/// the expired key must:
+/// 1. Refuse the join with `rc:overlay.join_refused` (`reason: "key_unauthorized"`);
+/// 2. Identify that the rejected key belongs to the SAME `machine_id`'s own
+///    tombstone and automatically issue `rc:agent.key_rotate` (`reason: "auto_ttl"`
+///    in `key_rotation_audit`);
+/// 3. Allow the machine to immediately re-join the mesh with its freshly
+///    rotated key (`key_epoch = 1`) and receive a new `rc:overlay.netmap`.
+#[tokio::test]
+async fn b4_offline_evicted_node_with_expired_ttl_receives_key_rotate_and_rejoins_with_new_key() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    use futures::{SinkExt, StreamExt};
+    use serde_json::json;
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("ovb4offevict").await;
+    let tenant_id = tid(&seeded.tenant_id);
+    let nodes_dao = OverlayNodeDao::new(&app.db);
+
+    let (agent_id, token) =
+        crate::agent_presence_tests::enroll(&app, &seeded, "mach-b4-off-evict").await;
+    let agent_oid = ObjectId::parse_str(&agent_id).unwrap();
+
+    // 1. Agent connects with `key-rotate` capability and joins overlay with key_0 (epoch 0).
+    let mut ws1 =
+        crate::peer_relay_mint_tests::connect_from(&app, &token, &["key-rotate"], None).await;
+    let key_0 = BASE64.encode([0x41u8; 32]);
+    let join_0 = json!({
+        "t": "rc:overlay.join",
+        "wg_public_key": key_0,
+        "key_epoch": 0,
+        "mtu": 1280,
+        "endpoints": ["198.51.100.10:51820"],
+        "supports_join_refusal": true,
+    });
+    ws1.send(Message::Text(join_0.to_string().into()))
+        .await
+        .expect("send initial join");
+    let netmap_0 =
+        crate::peer_relay_mint_tests::recv_t(&mut ws1, "rc:overlay.netmap", Duration::from_secs(5))
+            .await
+            .expect("initial join must succeed with netmap");
+    assert!(netmap_0["self_ip"].as_str().is_some(), "{netmap_0}");
+    let initial_node = nodes_dao
+        .find_live_by_agent(tenant_id, agent_oid)
+        .await
+        .unwrap()
+        .expect("live node after initial join");
+    let node_oid = initial_node.id.expect("initial node _id");
+    let node_id_str = node_oid.to_hex();
+
+    // 2. Admin configures a 60s TTL on the node while it is still valid.
+    let ttl_resp = app
+        .auth_put(
+            &format!(
+                "/api/tenant/{}/agent/{agent_id}/overlay-key/ttl",
+                seeded.tenant_id
+            ),
+            &seeded.admin.access_token,
+        )
+        .json(&json!({ "key_ttl_secs": 60 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ttl_resp.status().as_u16(), 200);
+
+    // 3. Machine goes offline (closes WebSocket).
+    let _ = ws1.close(None).await;
+    drop(ws1);
+
+    // 4. While machine is offline and key_expires_at is still in the future,
+    //    admin evicts the overlay node row (`DELETE /api/tenant/{tid}/overlay-node/{id}`).
+    let evict_resp = app
+        .auth_delete(
+            &format!(
+                "/api/tenant/{}/overlay-node/{node_id_str}",
+                seeded.tenant_id
+            ),
+            &seeded.admin.access_token,
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(evict_resp.status().as_u16(), 200);
+
+    let tombstone = nodes_dao.base.find_by_id(node_oid).await.unwrap();
+    assert!(
+        tombstone.deleted_at.is_some(),
+        "evicted node row must be tombstoned"
+    );
+    assert!(
+        !tombstone.is_key_expired_at(bson::DateTime::now()),
+        "precondition: key has not yet expired at the moment of eviction"
+    );
+
+    // 5. Time passes while the machine remains offline: the tombstone's key_expires_at expires.
+    let expired_at = bson::DateTime::from_millis(bson::DateTime::now().timestamp_millis() - 10_000);
+    nodes_dao
+        .base
+        .update_one(
+            doc! { "_id": node_oid },
+            doc! { "$set": { "key_expires_at": expired_at } },
+        )
+        .await
+        .unwrap();
+
+    // 6. Machine comes back online and attempts to rejoin with its expired key_0 (epoch 0).
+    let mut ws2 =
+        crate::peer_relay_mint_tests::connect_from(&app, &token, &["key-rotate"], None).await;
+    ws2.send(Message::Text(join_0.to_string().into()))
+        .await
+        .expect("send rejoin with expired key_0");
+
+    let mut got_refused: Option<Value> = None;
+    let mut got_rotate: Option<Value> = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while got_refused.is_none() || got_rotate.is_none() {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !left.is_zero(),
+            "timed out waiting for join_refused and key_rotate; got_refused={got_refused:?}, got_rotate={got_rotate:?}"
+        );
+        if let Ok(Some(Ok(Message::Text(txt)))) = tokio::time::timeout(left, ws2.next()).await
+            && let Ok(v) = serde_json::from_str::<Value>(&txt)
+        {
+            match v["t"].as_str() {
+                Some("rc:overlay.join_refused") => got_refused = Some(v),
+                Some("rc:agent.key_rotate") => got_rotate = Some(v),
+                _ => {}
+            }
+        }
+    }
+    let refused = got_refused.unwrap();
+    assert_eq!(refused["reason"].as_str(), Some("key_unauthorized"));
+    let rotate = got_rotate.unwrap();
+    let req_id = rotate["request_id"]
+        .as_str()
+        .expect("key_rotate request_id")
+        .to_string();
+
+    // Verify the audit log recorded `reason: "auto_rejoin"` and `dispatch: "pushed"`.
+    let audit_doc = app
+        .db
+        .collection::<bson::Document>("key_rotation_audit")
+        .find_one(doc! { "tenant_id": tenant_id, "agent_id": agent_oid, "request_id": &req_id })
+        .await
+        .unwrap()
+        .expect("audit row for auto_rejoin rotation");
+    assert_eq!(audit_doc.get_str("dispatch").ok(), Some("pushed"));
+    assert_eq!(audit_doc.get_str("reason").ok(), Some("auto_rejoin"));
+
+    // 7. Agent rotates to a fresh key_1 (epoch 1) and rejoins the mesh.
+    let key_1 = BASE64.encode([0x42u8; 32]);
+    let join_1 = json!({
+        "t": "rc:overlay.join",
+        "wg_public_key": key_1,
+        "key_epoch": 1,
+        "mtu": 1280,
+        "endpoints": ["198.51.100.10:51820"],
+        "supports_join_refusal": true,
+    });
+    ws2.send(Message::Text(join_1.to_string().into()))
+        .await
+        .expect("send join with rotated key_1");
+
+    let netmap_1 =
+        crate::peer_relay_mint_tests::recv_t(&mut ws2, "rc:overlay.netmap", Duration::from_secs(5))
+            .await
+            .expect("rejoin with rotated key_1 must succeed with netmap");
+    assert!(netmap_1["self_ip"].as_str().is_some(), "{netmap_1}");
+    let new_node = nodes_dao
+        .find_live_by_agent(tenant_id, agent_oid)
+        .await
+        .unwrap()
+        .expect("live node after rotated rejoin");
+    let new_node_id = new_node.id.expect("new node _id");
+    assert_ne!(
+        new_node_id, node_oid,
+        "must allocate a fresh OverlayNode row"
+    );
+    assert!(new_node.deleted_at.is_none());
+    assert_eq!(new_node.wg_public_key, key_1);
+    assert_eq!(new_node.key_epoch, 1);
+    assert_eq!(
+        new_node.key_ttl_secs,
+        Some(60),
+        "new node row preserves the machine's configured key_ttl_secs"
+    );
+    assert!(new_node.is_key_authorized_at(bson::DateTime::now()));
+}
+
+/// B3 R4 — `apply_policy_sync_ctrl` and `apply_removes_ctrl` must ignore
+/// control messages originating from a different MongoDB database (`"db"`
+/// mismatch), apply messages with a matching `"db"` (or no `"db"` for rolling
+/// upgrade compatibility), record `note_probe_policy_change(agent_id)` only
+/// for the `agent_id` carried in `overlay_policy_sync`, and invalidate
+/// pod-local caches (`invalidate_mode`) even when the tenant has no
+/// `OverlayNetwork` row yet.
+#[tokio::test]
+async fn b3_ctrl_db_isolation_and_targeted_agent_probe_policy_invalidation() {
+    use roomler_ai_mod_network::overlay::{apply_policy_sync_ctrl, apply_removes_ctrl};
+    use serde_json::json;
+
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("ovb3dbiso").await;
+    let tenant_id = tid(&seeded.tenant_id);
+    let net_state = app.state.network();
+    let db_name = app.db.name().to_string();
+
+    let agent_target = ObjectId::new();
+    let agent_other = ObjectId::new();
+
+    // Prime `mode_cache` on a tenant that has NO `OverlayNetwork` row yet.
+    net_state.org_relay.prime_cached_mode_for_test(tenant_id);
+    assert!(
+        net_state.org_relay.has_cached_mode(tenant_id),
+        "precondition: tenant mode must be cached before policy sync"
+    );
+    assert!(
+        net_state
+            .overlay_networks
+            .find_for_tenant(tenant_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "precondition: no OverlayNetwork row exists yet"
+    );
+
+    // 1. Mismatched `db` on `overlay_policy_sync` must be ignored completely:
+    //    `mode_cache` stays intact and `note_probe_policy_change` is not called.
+    apply_policy_sync_ctrl(
+        net_state,
+        &json!({
+            "evt": "overlay_policy_sync",
+            "db": "foreign_test_db_999",
+            "tenant_id": tenant_id.to_hex(),
+            "agent_id": agent_target.to_hex(),
+            "auth_revision": 2,
+            "reason": "peer_relay_policy",
+        }),
+    )
+    .await;
+    assert!(
+        net_state.org_relay.has_cached_mode(tenant_id),
+        "mismatched db must not invalidate local mode_cache"
+    );
+    assert!(
+        !net_state.org_relay.has_probe_policy_change(agent_target),
+        "mismatched db must not mark probe_policy_at"
+    );
+
+    // 2. Matching `db` on `overlay_policy_sync`:
+    //    - marks `note_probe_policy_change` ONLY for `agent_target` (not `agent_other`);
+    //    - invalidates `mode_cache` even though no `OverlayNetwork` row exists;
+    //    - does NOT create an `OverlayNetwork` row as a side effect.
+    apply_policy_sync_ctrl(
+        net_state,
+        &json!({
+            "evt": "overlay_policy_sync",
+            "db": db_name,
+            "tenant_id": tenant_id.to_hex(),
+            "agent_id": agent_target.to_hex(),
+            "auth_revision": 1,
+            "reason": "peer_relay_policy",
+        }),
+    )
+    .await;
+    assert!(
+        !net_state.org_relay.has_cached_mode(tenant_id),
+        "matching db must invalidate mode_cache even before OverlayNetwork exists"
+    );
+    assert!(
+        net_state.org_relay.has_probe_policy_change(agent_target),
+        "matching db with agent_id must mark probe_policy_at for agent_target"
+    );
+    assert!(
+        !net_state.org_relay.has_probe_policy_change(agent_other),
+        "other agents must not have probe_policy_at marked"
+    );
+    assert!(
+        net_state
+            .overlay_networks
+            .find_for_tenant(tenant_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "apply_policy_sync_ctrl must not create an OverlayNetwork row"
+    );
+
+    // 3. Mismatched `db` on `overlay_removes` must also be a no-op.
+    apply_removes_ctrl(
+        net_state,
+        &json!({
+            "evt": "overlay_removes",
+            "db": "foreign_test_db_999",
+            "tenant_id": tenant_id.to_hex(),
+            "network_id": ObjectId::new().to_hex(),
+            "node_id": ObjectId::new().to_hex(),
+            "epoch": 5,
+            "auth_revision": 2,
+        }),
+    )
+    .await;
+}
+
+/// B3 R4 — `publish_and_refan_tenant_authority_for_agent` with `"peer_relay_policy"`
+/// or `"peer_relay_mode"` must:
+/// 1. Not create an `OverlayNetwork` row when none exists (`"peer_relay_policy"`);
+/// 2. Not bump `auth_revision` when called with `bump_revision = false`
+///    (as `PUT /peer-relay-policy` and `PUT /peer-relay-mode` do);
+/// 3. Skip local netmap refan on the initiating pod (connected overlay peers do
+///    not receive a redundant `rc:overlay.netmap_delta` on `peer_relay_policy`
+///    or `peer_relay_mode`).
+#[tokio::test]
+async fn b3_peer_relay_policy_and_mode_skip_local_refan_and_preserve_auth_revision() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    use futures::{SinkExt, StreamExt};
+    use roomler_ai_mod_network::overlay::publish_and_refan_tenant_authority_for_agent;
+    use serde_json::json;
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("ovb3skiprefan").await;
+    let tenant_id = tid(&seeded.tenant_id);
+    let net_state = app.state.network();
+
+    // 1. Before any overlay network exists, `peer_relay_policy` returns 1 and
+    //    does NOT create an `OverlayNetwork` row.
+    let rev_before = publish_and_refan_tenant_authority_for_agent(
+        net_state,
+        tenant_id,
+        false,
+        "peer_relay_policy",
+        Some(ObjectId::new()),
+    )
+    .await;
+    assert_eq!(rev_before, 1);
+    assert!(
+        net_state
+            .overlay_networks
+            .find_for_tenant(tenant_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "peer_relay_policy must not create an OverlayNetwork when none exists"
+    );
+
+    // 2. Join a live node so an `OverlayNetwork` exists and holds a live WS.
+    let (agent_id, token) =
+        crate::agent_presence_tests::enroll(&app, &seeded, "mach-b3-skip-refan").await;
+    let agent_oid = ObjectId::parse_str(&agent_id).unwrap();
+    let mut ws = crate::peer_relay_mint_tests::connect_from(&app, &token, &[], None).await;
+    let join = json!({
+        "t": "rc:overlay.join",
+        "wg_public_key": BASE64.encode([0x51u8; 32]),
+        "key_epoch": 0,
+        "mtu": 1280,
+        "endpoints": ["198.51.100.20:51820"],
+    });
+    ws.send(Message::Text(join.to_string().into()))
+        .await
+        .unwrap();
+    let netmap =
+        crate::peer_relay_mint_tests::recv_t(&mut ws, "rc:overlay.netmap", Duration::from_secs(5))
+            .await
+            .expect("initial netmap");
+    let initial_rev = netmap["network"]["auth_revision"].as_u64().unwrap();
+    assert_eq!(initial_rev, 1);
+
+    // 3. Call `publish_and_refan_tenant_authority_for_agent` for both
+    //    `peer_relay_policy` and `peer_relay_mode` with `bump_revision = false`.
+    let rev_policy = publish_and_refan_tenant_authority_for_agent(
+        net_state,
+        tenant_id,
+        false,
+        "peer_relay_policy",
+        Some(agent_oid),
+    )
+    .await;
+    assert_eq!(
+        rev_policy, initial_rev,
+        "peer_relay_policy must not bump auth_revision"
+    );
+
+    let rev_mode = publish_and_refan_tenant_authority_for_agent(
+        net_state,
+        tenant_id,
+        false,
+        "peer_relay_mode",
+        None,
+    )
+    .await;
+    assert_eq!(
+        rev_mode, initial_rev,
+        "peer_relay_mode must not bump auth_revision"
+    );
+
+    // Verify no `rc:overlay.netmap_delta` was pushed to the local socket.
+    let unexpected = tokio::time::timeout(Duration::from_millis(200), async {
+        while let Some(Ok(Message::Text(txt))) = ws.next().await {
+            if let Ok(v) = serde_json::from_str::<Value>(&txt)
+                && v["t"].as_str() == Some("rc:overlay.netmap_delta")
+            {
+                return Some(v);
+            }
+        }
+        None
+    })
+    .await;
+    assert!(
+        matches!(unexpected, Err(_) | Ok(None)),
+        "peer_relay_policy / peer_relay_mode must not refan local netmap_delta: {unexpected:?}"
+    );
 }

@@ -159,7 +159,12 @@ fn relay(
     });
 }
 
-fn stream(src: Ipv4Addr, dst: Ipv4Addr, inject: mpsc::UnboundedSender<Vec<u8>>, stop: Arc<AtomicBool>) {
+fn stream(
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    inject: mpsc::UnboundedSender<Vec<u8>>,
+    stop: Arc<AtomicBool>,
+) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(TICK);
         for seq in 0u32.. {
@@ -198,7 +203,11 @@ fn carrier_timeline(view: watch::Receiver<OverlayView>, log: Timeline, stop: Arc
                 || "none".to_string(),
                 |p| {
                     let probing = if p.upgrading { "+probe" } else { "" };
-                    format!("{:?}/{}{probing}", p.connection, p.relay_kind.as_deref().unwrap_or("-"))
+                    format!(
+                        "{:?}/{}{probing}",
+                        p.connection,
+                        p.relay_kind.as_deref().unwrap_or("-")
+                    )
                 },
             );
             if now != last {
@@ -246,10 +255,19 @@ async fn failover_stall_and_return() {
     let block = env_secs("MH_FO_BLOCK_S", 25);
     let observe = env_secs("MH_FO_OBSERVE_S", 75);
     let lan = |k: &str, d: &str| -> Ipv4Addr {
-        std::env::var(k).unwrap_or_else(|_| d.into()).parse().expect(k)
+        std::env::var(k)
+            .unwrap_or_else(|_| d.into())
+            .parse()
+            .expect(k)
     };
-    let mut a = Node::start(Ipv4Addr::new(100, 64, 0, 1), lan("MH_FO_LAN_A", "10.254.41.1"));
-    let mut b = Node::start(Ipv4Addr::new(100, 64, 0, 2), lan("MH_FO_LAN_B", "10.254.41.2"));
+    let mut a = Node::start(
+        Ipv4Addr::new(100, 64, 0, 1),
+        lan("MH_FO_LAN_A", "10.254.41.1"),
+    );
+    let mut b = Node::start(
+        Ipv4Addr::new(100, 64, 0, 2),
+        lan("MH_FO_LAN_B", "10.254.41.2"),
+    );
     let (ea, eb) = (a.joined().await, b.joined().await);
     assert!(
         !ea.is_empty() && !eb.is_empty(),
@@ -259,8 +277,20 @@ async fn failover_stall_and_return() {
     println!("FAILOVER-ENDPOINTS a={ea:?} b={eb:?}");
 
     let (on_derp, copies): (Stamps, Stamps) = Default::default();
-    relay(a.kp.public.to_bytes(), a.mux_out.take().unwrap(), b.mux.clone(), on_derp.clone(), copies.clone());
-    relay(b.kp.public.to_bytes(), b.mux_out.take().unwrap(), a.mux.clone(), on_derp.clone(), copies.clone());
+    relay(
+        a.kp.public.to_bytes(),
+        a.mux_out.take().unwrap(),
+        b.mux.clone(),
+        on_derp.clone(),
+        copies.clone(),
+    );
+    relay(
+        b.kp.public.to_bytes(),
+        b.mux_out.take().unwrap(),
+        a.mux.clone(),
+        on_derp.clone(),
+        copies.clone(),
+    );
     let (pa, pb) = (a.as_peer(&ea), b.as_peer(&eb));
     for (n, other) in [(&a, pb), (&b, pa)] {
         n.events
@@ -300,7 +330,11 @@ async fn failover_stall_and_return() {
                 .last()
                 .is_some_and(|t| now - *t < Duration::from_millis(500))
         });
-        let quiet = on_derp.lock().unwrap().last().is_none_or(|t| now - *t >= QUIET);
+        let quiet = on_derp
+            .lock()
+            .unwrap()
+            .last()
+            .is_none_or(|t| now - *t >= QUIET);
         if flowing && quiet && now - t0 >= QUIET {
             break now - t0;
         }
@@ -370,7 +404,10 @@ async fn failover_stall_and_return() {
         render(&tl_a.lock().unwrap(), cut),
         render(&tl_b.lock().unwrap(), cut)
     );
-    assert!(floored > 0, "the stream never reached the /derp floor during the outage");
+    assert!(
+        floored > 0,
+        "the stream never reached the /derp floor during the outage"
+    );
     assert!(
         stall_ab < block && stall_ba < block,
         "a direction stayed dark for the whole outage"
@@ -421,7 +458,11 @@ fn flowing(seen: &Stamps, now: Instant) -> bool {
 }
 
 fn derp_quiet(on_derp: &Stamps, now: Instant) -> bool {
-    on_derp.lock().unwrap().last().is_none_or(|t| now - *t >= QUIET)
+    on_derp
+        .lock()
+        .unwrap()
+        .last()
+        .is_none_or(|t| now - *t >= QUIET)
 }
 
 /// F0-WAN — one end of [`failover_stall_and_return`] per machine, so the
@@ -487,7 +528,8 @@ async fn failover_wan_node() {
         "wg": n.kp.public_base64(),
         "eps": eps,
     });
-    tx.send((WAN_HELLO, hello.to_string().into_bytes())).unwrap();
+    tx.send((WAN_HELLO, hello.to_string().into_bytes()))
+        .unwrap();
     let theirs = match tokio::time::timeout(Duration::from_secs(120), wan_read(&mut rd)).await {
         Ok(Some((WAN_HELLO, body))) => serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
         other => panic!("no peer hello within 120 s: {other:?}"),
@@ -541,7 +583,10 @@ async fn failover_wan_node() {
         let tx = tx.clone();
         tokio::spawn(async move {
             while let Some(m) = out.recv().await {
-                if let ClientMsg::OverlaySrflx { candidates, nat, .. } = m {
+                if let ClientMsg::OverlaySrflx {
+                    candidates, nat, ..
+                } = m
+                {
                     let j = serde_json::json!({ "c": candidates, "nat": nat });
                     let _ = tx.send((WAN_CTL, format!("srflx {j}").into_bytes()));
                 }
@@ -568,7 +613,10 @@ async fn failover_wan_node() {
                             let j: serde_json::Value = serde_json::from_str(j).unwrap();
                             far.srflx_endpoints = serde_json::from_value(j["c"].clone()).unwrap();
                             far.srflx_nat = j["nat"].as_str().map(str::to_string);
-                            println!("FAILOVER-SRFLX peer={:?} nat={:?}", far.srflx_endpoints, far.srflx_nat);
+                            println!(
+                                "FAILOVER-SRFLX peer={:?} nat={:?}",
+                                far.srflx_endpoints, far.srflx_nat
+                            );
                             if events.send(wan_netmap(me, &network, &far)).await.is_err() {
                                 break;
                             }
@@ -674,13 +722,17 @@ async fn failover_wan_node() {
         "timeline": render(&tl.lock().unwrap(), cut),
     });
     if !role_a {
-        tx.send((WAN_CTL, format!("result {mine}").into_bytes())).unwrap();
+        tx.send((WAN_CTL, format!("result {mine}").into_bytes()))
+            .unwrap();
         tokio::time::sleep(Duration::from_secs(2)).await;
         println!("FAILOVER-WAN-B {mine}");
         return;
     }
     let b: serde_json::Value = serde_json::from_str(
-        wan_wait(&mut ctl, "result ", 30).await.strip_prefix("result ").unwrap(),
+        wan_wait(&mut ctl, "result ", 30)
+            .await
+            .strip_prefix("result ")
+            .unwrap(),
     )
     .unwrap();
     let ret = |v: &serde_json::Value| v["return_out_ms"].as_u64();
@@ -701,7 +753,11 @@ async fn failover_wan_node() {
         "standby_copies": mine["copies_out"].as_u64().unwrap_or(0) + b["copies_out"].as_u64().unwrap_or(0),
     });
     println!("FAILOVER-WAN {line}");
-    println!("FAILOVER-TIMELINE a={} b={}", mine["timeline"].as_str().unwrap(), b["timeline"].as_str().unwrap());
+    println!(
+        "FAILOVER-TIMELINE a={} b={}",
+        mine["timeline"].as_str().unwrap(),
+        b["timeline"].as_str().unwrap()
+    );
     assert!(
         mine["floor_out"].as_u64().unwrap_or(0) + b["floor_out"].as_u64().unwrap_or(0) > 0,
         "the stream never reached the /derp floor during the outage"

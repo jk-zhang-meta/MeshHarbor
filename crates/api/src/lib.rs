@@ -142,7 +142,10 @@ pub fn build_router(state: AppState) -> Router {
     let credential_routes = Router::new()
         .route("/register", post(routes::auth::register))
         .route("/login", post(routes::auth::login))
-        .route("/native/share-ssh/login", post(routes::auth::native_share_ssh_login))
+        .route(
+            "/native/share-ssh/login",
+            post(routes::auth::native_share_ssh_login),
+        )
         .route("/approval/status", post(routes::account_approval::status))
         .layer(axum::middleware::from_fn_with_state(
             auth_rate_limit_state,
@@ -379,8 +382,13 @@ pub fn build_router(state: AppState) -> Router {
     #[cfg(feature = "fleet")]
     let api = if state.modules.fleet.is_some() {
         api.route("/account/devices", get(routes::account_devices::list))
-            .route("/account/devices/summary", get(routes::account_devices::summary))
-    } else { api };
+            .route(
+                "/account/devices/summary",
+                get(routes::account_devices::summary),
+            )
+    } else {
+        api
+    };
 
     // Explicit account-to-single-device shares never create tenant membership.
     #[cfg(feature = "fleet")]

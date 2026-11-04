@@ -1479,7 +1479,9 @@ impl RelayCoordinator {
         peers.dedup();
         let mut sent = Vec::new();
         for peer in peers {
-            if self.request_org_fallback(peer, now).await { sent.push(peer); }
+            if self.request_org_fallback(peer, now).await {
+                sent.push(peer);
+            }
         }
         sent
     }
@@ -4839,13 +4841,19 @@ mod tests {
         let mut c = RelayCoordinator::new(tx, [0; 32], false, vec![], None);
         c.set_org_relay(true);
         let node = ObjectId::new();
-        assert!(!c.report_org_loss(node, 3000, 240).await, "no session, no report");
+        assert!(
+            !c.report_org_loss(node, 3000, 240).await,
+            "no session, no report"
+        );
         assert!(rx.try_recv().is_err());
         c.org_session_accept(node, org_session(9, 60));
         assert!(c.report_org_loss(node, 3000, 240).await);
         assert!(matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayLoss {
             peer_node_id, vni: 9, packets: 3000, lost: 240 }) if peer_node_id == node));
-        assert!(c.org_sessions.contains_key(&node), "a report never drops the session");
+        assert!(
+            c.org_sessions.contains_key(&node),
+            "a report never drops the session"
+        );
     }
     #[tokio::test]
     async fn org_fallback_fixed_peer_order_rotates_without_breaking_cooldowns() {
@@ -4867,7 +4875,11 @@ mod tests {
             c.request_org_fallback_batch(peers.clone(), at).await;
             let mut count = 0;
             while let Ok(message) = rx.try_recv() {
-                let ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, request_id } = message else {
+                let ClientMsg::OverlayOrgRelayFallbackRequest {
+                    peer_node_id,
+                    request_id,
+                } = message
+                else {
                     panic!("unexpected legacy request");
                 };
                 assert_eq!(request_id, serial + 1);
@@ -4880,7 +4892,10 @@ mod tests {
             assert!(count <= ORG_FALLBACK_MAX_PEERS);
             assert!(c.org_fallback_last.len() <= ORG_FALLBACK_MAX_PEERS);
         }
-        assert_eq!(sent_at.len(), peers.len(), "fixed-order peers must all get a turn");
+        assert_eq!(
+            sent_at.len(),
+            peers.len(),
+            "fixed-order peers must all get a turn"
+        );
     }
-
 }

@@ -62,17 +62,24 @@ fn main() {
 /// grows. Threads created with an explicit size (std's, tokio's) are
 /// unaffected; any thread the OS creates at the image default gets the same
 /// reserve. Keyed on the TARGET, like [`hive_host`]: a build script runs on the
-/// host. `-bin=roomlerd` scopes it to this one binary, as the version resource
-/// below is.
+/// host. `-bin=meshharbord` scopes it to this one binary, as the version
+/// resource below is.
+///
+/// ⚠️ The bin name is `meshharbord` (the `[[bin]]` in Cargo.toml), NOT the
+/// package/lib name `roomlerd`. `cargo:rustc-link-arg-bin=<NAME>` names a BIN
+/// TARGET; naming the package made cargo reject the whole build on Windows
+/// MSVC with "does not have a bin target with the name roomlerd" (the FR-21
+/// `meshharbord` output-binary rename reached Cargo.toml but this script still
+/// named the retired bin — the daemon did not build on Windows at all).
 fn windows_main_stack() {
     const STACK_BYTES: u64 = 8 * 1024 * 1024;
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
     match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
-        Ok("msvc") => println!("cargo:rustc-link-arg-bin=roomlerd=/STACK:{STACK_BYTES}"),
+        Ok("msvc") => println!("cargo:rustc-link-arg-bin=meshharbord=/STACK:{STACK_BYTES}"),
         Ok("gnu") | Ok("gnullvm") => {
-            println!("cargo:rustc-link-arg-bin=roomlerd=-Wl,--stack,{STACK_BYTES}")
+            println!("cargo:rustc-link-arg-bin=meshharbord=-Wl,--stack,{STACK_BYTES}")
         }
         _ => {}
     }
@@ -168,9 +175,9 @@ BEGIN
             VALUE "CompanyName", "G ROX LTD"
             VALUE "FileDescription", "Roomler Daemon"
             VALUE "FileVersion", "{file_version_str}"
-            VALUE "InternalName", "roomlerd"
+            VALUE "InternalName", "meshharbord"
             VALUE "LegalCopyright", "Copyright (C) 2026 G ROX LTD"
-            VALUE "OriginalFilename", "roomlerd.exe"
+            VALUE "OriginalFilename", "meshharbord.exe"
             VALUE "ProductName", "Roomler"
             VALUE "ProductVersion", "{pkg_version}"
         END
@@ -184,10 +191,14 @@ END
         );
 
         let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is always set by cargo"));
-        let rc_path = out_dir.join("roomlerd-version.rc");
+        let rc_path = out_dir.join("meshharbord-version.rc");
         fs::write(&rc_path, rc).expect("failed to write the VERSIONINFO resource script");
 
-        let result = embed_resource::compile_for(&rc_path, ["roomlerd"], embed_resource::NONE);
+        // The bin TARGET is `meshharbord` (Cargo.toml `[[bin]]`), not the
+        // package name `roomlerd`: `compile_for` scopes the resource to one
+        // bin, and naming a bin that does not exist is the same hard cargo
+        // error as the stack link-arg above.
+        let result = embed_resource::compile_for(&rc_path, ["meshharbord"], embed_resource::NONE);
 
         // A missing rc.exe/llvm-rc must not break a developer's local build,
         // but it must never silently ship a release binary with no version

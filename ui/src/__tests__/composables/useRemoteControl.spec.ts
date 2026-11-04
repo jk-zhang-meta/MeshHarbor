@@ -65,6 +65,10 @@ import {
   RC_WATCHDOG_TICK_MS,
   RC_STALL_PROBE_TICKS,
   RC_STALL_FAIL_TICKS,
+  RC_STALL_REPROBE_TICKS,
+  RC_STALL_MEDIA_FAIL_TICKS,
+  nextDeadTicks,
+  transportBytesReceived,
   isRetryableTerminateReason,
   friendlyEndReason,
   endedByHost,
@@ -4476,6 +4480,67 @@ describe('S3 resilience: sessionGateAllows', () => {
 
   it('never matches non-string ids', () => {
     expect(sessionGateAllows(123 as unknown, '123')).toBe(true) // non-string → treated as absent
+  })
+})
+
+describe('rcfix 2026-11-04: the watchdog judges the transport, not frame novelty', () => {
+  it('a static screen with a live transport is never torn down at the old 10 s', () => {
+    // Media flat for the old fail bound, but bytes kept arriving on the pair
+    // (RTCP, control-channel answers, cursor): deadTicks stays 0.
+    for (let t = 0; t < RC_STALL_MEDIA_FAIL_TICKS; t++) {
+      expect(nextStallAction(t, 0)).not.toBe('reconnect')
+    }
+  })
+
+  it('re-probes with rc:keyframe while media is flat and the transport alive', () => {
+    expect(nextStallAction(RC_STALL_PROBE_TICKS, 0)).toBe('probe')
+    expect(nextStallAction(RC_STALL_PROBE_TICKS + 1, 0)).toBe('none')
+    expect(nextStallAction(RC_STALL_PROBE_TICKS + RC_STALL_REPROBE_TICKS, 0)).toBe('probe')
+  })
+
+  it('a dead pump behind a live peer is re-created after the long media bound', () => {
+    expect(nextStallAction(RC_STALL_MEDIA_FAIL_TICKS, 0)).toBe('reconnect')
+  })
+
+  it('a dead transport is re-created at the old bound', () => {
+    expect(nextStallAction(RC_STALL_FAIL_TICKS, RC_STALL_FAIL_TICKS)).toBe('reconnect')
+    expect(nextStallAction(RC_STALL_FAIL_TICKS - 1, RC_STALL_FAIL_TICKS - 1)).toBe('none')
+  })
+
+  it('without a deadTicks argument the pre-rcfix rule holds exactly', () => {
+    expect(nextStallAction(RC_STALL_FAIL_TICKS)).toBe('reconnect')
+    expect(nextStallAction(RC_STALL_FAIL_TICKS - 1)).toBe('none')
+  })
+
+  it('any inbound progress, or the agent saying no pixels, resets the dead count', () => {
+    expect(nextDeadTicks(5, false, false, false)).toBe(6)
+    expect(nextDeadTicks(5, true, false, false)).toBe(0)
+    expect(nextDeadTicks(5, false, true, false)).toBe(0)
+    expect(nextDeadTicks(5, false, false, true)).toBe(0)
+  })
+
+  const report = (entries: Record<string, unknown>[]) =>
+    new Map(entries.map((e) => [e.id as string, e])) as unknown as RTCStatsReport
+
+  it('reads the selected candidate pair, never another pair', () => {
+    const r = report([
+      { id: 'T1', type: 'transport', selectedCandidatePairId: 'P2' },
+      { id: 'P1', type: 'candidate-pair', bytesReceived: 999_999, state: 'succeeded', nominated: true },
+      { id: 'P2', type: 'candidate-pair', bytesReceived: 1234, state: 'succeeded', nominated: true },
+    ])
+    expect(transportBytesReceived(r)).toBe(1234)
+  })
+
+  it('falls back to the nominated succeeded pair (Firefox), else 0', () => {
+    expect(
+      transportBytesReceived(
+        report([
+          { id: 'P1', type: 'candidate-pair', bytesReceived: 50, state: 'in-progress', nominated: false },
+          { id: 'P2', type: 'candidate-pair', bytesReceived: 70, state: 'succeeded', nominated: true },
+        ]),
+      ),
+    ).toBe(70)
+    expect(transportBytesReceived(report([]))).toBe(0)
   })
 })
 

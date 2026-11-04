@@ -2554,8 +2554,12 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         "overlay_portmap" => cfg.overlay_portmap = parse_tribool(value)?,
         "overlay_ipv6" => cfg.overlay_ipv6 = parse_tribool(value)?,
         "net_inventory" => cfg.net_inventory = parse_tribool(value)?,
-        "overlay_netstack_tcp_rx_buf" => cfg.overlay_netstack_tcp_rx_buf = parse_tcp_buf(key, value)?,
-        "overlay_netstack_tcp_tx_buf" => cfg.overlay_netstack_tcp_tx_buf = parse_tcp_buf(key, value)?,
+        "overlay_netstack_tcp_rx_buf" => {
+            cfg.overlay_netstack_tcp_rx_buf = parse_tcp_buf(key, value)?
+        }
+        "overlay_netstack_tcp_tx_buf" => {
+            cfg.overlay_netstack_tcp_tx_buf = parse_tcp_buf(key, value)?
+        }
         "overlay_netstack_tcp_cc" => {
             cfg.overlay_netstack_tcp_cc = match value.map(str::trim).filter(|s| !s.is_empty()) {
                 None => None,
@@ -4175,12 +4179,25 @@ mod tests {
             ("overlay_netstack_tcp_rx_buf", "OVERLAY_NETSTACK_TCP_RX_BUF"),
             ("overlay_netstack_tcp_tx_buf", "OVERLAY_NETSTACK_TCP_TX_BUF"),
         ] {
-            assert_eq!(current_value(&cfg, key), None, "{key}: unset → built-in default");
+            assert_eq!(
+                current_value(&cfg, key),
+                None,
+                "{key}: unset → built-in default"
+            );
             apply(&mut cfg, key, Some("65536")).unwrap();
             assert_eq!(current_value(&cfg, key).as_deref(), Some("65536"));
-            assert!(apply(&mut cfg, key, Some("1000")).is_err(), "{key}: below 16 KiB");
-            assert!(apply(&mut cfg, key, Some("33554432")).is_err(), "{key}: above 16 MiB");
-            assert!(apply(&mut cfg, key, Some("lots")).is_err(), "{key}: not a number");
+            assert!(
+                apply(&mut cfg, key, Some("1000")).is_err(),
+                "{key}: below 16 KiB"
+            );
+            assert!(
+                apply(&mut cfg, key, Some("33554432")).is_err(),
+                "{key}: above 16 MiB"
+            );
+            assert!(
+                apply(&mut cfg, key, Some("lots")).is_err(),
+                "{key}: not a number"
+            );
             assert!(
                 crate::config::env_bridge_numerics(&cfg)
                     .iter()
@@ -4188,7 +4205,11 @@ mod tests {
                 "{key} must be bridged to the daemon's env"
             );
             apply(&mut cfg, key, None).unwrap();
-            assert_eq!(current_value(&cfg, key), None, "{key}: clear → built-in default");
+            assert_eq!(
+                current_value(&cfg, key),
+                None,
+                "{key}: clear → built-in default"
+            );
         }
     }
 
@@ -4240,7 +4261,10 @@ mod tests {
         let mut cfg = crate::config::test_fixture();
         assert_eq!(cfg.overlay_ipv6, None, "unset → daemon default (on)");
         apply(&mut cfg, "overlay_ipv6", Some("off")).unwrap();
-        assert_eq!(current_value(&cfg, "overlay_ipv6").as_deref(), Some("false"));
+        assert_eq!(
+            current_value(&cfg, "overlay_ipv6").as_deref(),
+            Some("false")
+        );
         assert!(
             crate::config::env_bridge_bools(&cfg)
                 .iter()
@@ -4259,7 +4283,10 @@ mod tests {
         assert_eq!(cfg.overlay_portmap, None, "unset → daemon default (on)");
         apply(&mut cfg, "overlay_portmap", Some("off")).unwrap();
         assert_eq!(cfg.overlay_portmap, Some(false));
-        assert_eq!(current_value(&cfg, "overlay_portmap").as_deref(), Some("false"));
+        assert_eq!(
+            current_value(&cfg, "overlay_portmap").as_deref(),
+            Some("false")
+        );
         apply(&mut cfg, "overlay_portmap", None).unwrap();
         assert_eq!(cfg.overlay_portmap, None, "clear → built-in default");
         assert!(
@@ -4286,7 +4313,10 @@ mod tests {
             Some("true")
         );
         apply(&mut cfg, "overlay_netstack_tcp_pacing", None).unwrap();
-        assert_eq!(cfg.overlay_netstack_tcp_pacing, None, "clear → built-in default");
+        assert_eq!(
+            cfg.overlay_netstack_tcp_pacing, None,
+            "clear → built-in default"
+        );
         assert!(
             crate::config::env_bridge_bools(&cfg)
                 .iter()

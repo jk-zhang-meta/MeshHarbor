@@ -100,6 +100,17 @@ impl FleetLifecycle for NetworkHooks {
             None
         }
     }
+
+    async fn agent_updated(&self, tenant_id: ObjectId, _agent_id: ObjectId) -> anyhow::Result<()> {
+        crate::overlay::publish_and_refan_tenant_authority(
+            &self.state,
+            tenant_id,
+            true,
+            "agent_updated",
+        )
+        .await;
+        Ok(())
+    }
 }
 
 /// Network's side of the tenant cascade (P7b, from the host's archive
@@ -113,6 +124,17 @@ pub struct NetworkTenantHooks {
 
 #[async_trait]
 impl TenantLifecycle for NetworkTenantHooks {
+    async fn member_removed(&self, tenant_id: ObjectId, _user_id: ObjectId) -> anyhow::Result<()> {
+        crate::overlay::publish_and_refan_tenant_authority(
+            &self.state,
+            tenant_id,
+            true,
+            "member_removed",
+        )
+        .await;
+        Ok(())
+    }
+
     async fn tenant_archived(
         &self,
         tenant_id: ObjectId,

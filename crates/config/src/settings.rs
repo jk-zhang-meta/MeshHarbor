@@ -1246,6 +1246,12 @@ pub struct AppSettings {
     /// `www.itachi.fans` is never subject to it.
     #[serde(default = "default_business_isolation")]
     pub business_isolation: String,
+    /// MeshHarbor Item #96 — staged gate for `Unknown`-role devices when
+    /// `business_isolation != off`: `"warn"` (default: log `"would refuse: unknown_role"`
+    /// and list `Unknown` devices with business peers) or `"enforce"` (deny all
+    /// business connectivity for `Unknown` `Agent` and `TunnelClient` devices).
+    #[serde(default = "default_business_unknown_role")]
+    pub business_unknown_role: String,
     /// Sustained auth-endpoint attempts per minute, per (client IP, account).
     /// Deliberately far stricter than the general `/api` limit: this is the
     /// brute-force gate, and it must not depend on starving the whole API.
@@ -1285,6 +1291,10 @@ fn default_rate_limit_burst() -> u32 {
 }
 
 fn default_business_isolation() -> String {
+    "warn".to_string()
+}
+
+fn default_business_unknown_role() -> String {
     "warn".to_string()
 }
 
@@ -1638,6 +1648,7 @@ impl Settings {
             .set_default("app.rate_limit_trusted_hops", 1)?
             .set_default("app.business_trusted_proxy_cidrs", Vec::<String>::new())?
             .set_default("app.business_isolation", "warn")?
+            .set_default("app.business_unknown_role", "warn")?
             .set_default("app.auth_rate_limit_per_min", 10)?
             .set_default("app.auth_rate_limit_burst", 20)?
             .set_default("database.url", "mongodb://localhost:27019")?
@@ -1770,6 +1781,7 @@ mod rate_limit_tests {
             rate_limit_trusted_hops: 1,
             business_trusted_proxy_cidrs: vec![],
             business_isolation: super::default_business_isolation(),
+            business_unknown_role: super::default_business_unknown_role(),
             auth_rate_limit_per_min: auth_per_min,
             auth_rate_limit_burst: 20,
         }

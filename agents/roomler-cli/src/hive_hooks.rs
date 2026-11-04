@@ -154,8 +154,10 @@ pub fn ours(handler: &Value) -> bool {
         .and_then(|s| s.to_str())
         .unwrap_or("");
     let rest: Vec<&str> = rest.split_whitespace().collect();
-    matches!(stem, "meshharbor" | "meshharbord" | "roomler" | "roomlerd" | "roomler-shim")
-        && (rest == ["hive", "hook"] || rest == ["cli", "hive", "hook"])
+    matches!(
+        stem,
+        "meshharbor" | "meshharbord" | "roomler" | "roomlerd" | "roomler-shim"
+    ) && (rest == ["hive", "hook"] || rest == ["cli", "hive", "hook"])
 }
 
 fn group_has_ours(group: &RawValue) -> bool {

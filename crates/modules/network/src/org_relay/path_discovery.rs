@@ -211,7 +211,8 @@ pub(super) fn scan(
             break;
         }
         if let Some(prefix) = &resumed
-            && graph.relays[root].node_id < graph.relays[prefix[0]].node_id {
+            && graph.relays[root].node_id < graph.relays[prefix[0]].node_id
+        {
             continue;
         }
         if after.is_some_and(|cursor| graph.relays[root].node_id < cursor.path.relay_node_ids()[0])
