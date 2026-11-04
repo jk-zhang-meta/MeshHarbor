@@ -18,7 +18,14 @@
 //! - **Locked:** the secure desktop is up. The worker cannot switch it anyway
 //!   (P0: `ChangeDisplaySettingsExW` returned `-1` there).
 //! - **Attended:** unlocked, and a person touched the input within the window.
-//! - **Unattended:** unlocked, and nobody has, for at least that long.
+//! - **Idle:** unlocked, and nobody has, for at least that long. Idle time is
+//!   NOT proof of an empty chair (rcfix 2026-11-04: a person reading at their
+//!   Surface for five minutes had the panel switched to 800x600 under them), so
+//!   display match never switches a physical display on it.
+//! - **Unattended:** a POSITIVE "nobody is here": the screen was locked (held
+//!   for [`LOCK_HELD_MS`], so a one-reading blip such as a UAC prompt on the
+//!   secure desktop is no lock) after the person's last input, and no person
+//!   has touched it since.
 //!
 //! Before the first reading nothing is known, and an unknown is never read as
 //! "nobody": the first reading counts its last input as a person's.
@@ -56,14 +63,24 @@ pub const SAMPLE_EVERY: Duration = Duration::from_millis(500);
 /// such move for a new input, a person's.
 pub const STEADY_MS: u32 = 50;
 
+/// rcfix 2026-11-04 — a lock grounds "away" only once the sampler has seen it
+/// held this long: several consecutive readings, never one. A lock that comes
+/// and goes inside it (the probe reads any secure desktop, a UAC prompt too, as
+/// locked) is flapping, and flapping is not an empty chair.
+pub const LOCK_HELD_MS: u32 = 1_500;
+
 /// Who is at the screen, as display match needs to know it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Presence {
     /// The secure desktop is up: locked, or the logon screen.
     Locked,
-    /// A person touched the input within the window.
+    /// A person touched the input within the window, or nothing is known.
     Attended,
-    /// Nobody has, for at least the window.
+    /// Nobody has touched the input for at least the window. Idle time alone:
+    /// someone may be reading at the screen, so this never allows a switch.
+    Idle,
+    /// A positive signal that nobody is at the screen: a held lock after the
+    /// person's last input, with no person's input since.
     Unattended,
 }
 
@@ -87,7 +104,7 @@ pub fn decide(
         return Presence::Unattended;
     }
     match person_ms_ago {
-        Some(ago) if ago >= window.as_millis() as u64 => Presence::Unattended,
+        Some(ago) if ago >= window.as_millis() as u64 => Presence::Idle,
         _ => Presence::Attended,
     }
 }
@@ -104,9 +121,12 @@ pub struct Tracker {
     last_input: Option<u32>,
     last_person: Option<u32>,
     /// P1b — the tick of the reading that first saw the screen locked (after
-    /// an unlocked one, or as the very first reading).
+    /// an unlocked one, or as the very first reading), recorded once that lock
+    /// has been seen held for [`LOCK_HELD_MS`].
     last_lock: Option<u32>,
-    was_locked: bool,
+    /// The first reading of the lock run in progress, if the screen reads
+    /// locked now.
+    lock_run: Option<u32>,
 }
 
 impl Tracker {
@@ -135,10 +155,14 @@ impl Tracker {
 
     /// P1b — one reading of the lock state, at `now`.
     pub fn observe_lock(&mut self, locked: bool, now: u32) {
-        if locked && !self.was_locked {
-            self.last_lock = Some(now);
+        if !locked {
+            self.lock_run = None;
+            return;
         }
-        self.was_locked = locked;
+        let start = *self.lock_run.get_or_insert(now);
+        if tick_delta(now, start) >= i64::from(LOCK_HELD_MS) {
+            self.last_lock = Some(start);
+        }
     }
 
     /// P1b — the screen locked after the person's last input: they left, and
@@ -158,7 +182,7 @@ static TRACKER: Mutex<Tracker> = Mutex::new(Tracker {
     last_input: None,
     last_person: None,
     last_lock: None,
-    was_locked: false,
+    lock_run: None,
 });
 
 /// The OS input clock: Windows' `GetTickCount`, the clock `GetLastInputInfo`
@@ -283,7 +307,14 @@ fn sample() -> bool {
     if let Some(input) = last_input_tick() {
         t.observe(input, &machine);
     }
-    t.observe_lock(locked, os_tick());
+    // rcfix 2026-11-04 — "away" needs a positive lock: the input desktop being
+    // a secure one (which a UAC prompt is too) AND the console session itself
+    // reporting locked to WTS. An unknown WTS answer is no lock, so it can never
+    // read as an empty chair. `locked` (the switch refusal) stays the desktop's.
+    let session_locked = locked
+        && crate::lock_state::probe_lock_state_service()
+            == Some(crate::lock_state::LockState::Locked);
+    t.observe_lock(session_locked, os_tick());
     locked
 }
 
@@ -444,7 +475,7 @@ mod tests {
         assert_eq!(t.person_ms_ago(50_000 + 400_000), Some(400_000));
         assert_eq!(
             decide(false, t.person_ms_ago(450_000), false, WINDOW),
-            Presence::Unattended
+            Presence::Idle
         );
     }
 
@@ -477,13 +508,10 @@ mod tests {
             decide(false, Some(299_999), false, WINDOW),
             Presence::Attended
         );
-        assert_eq!(
-            decide(false, Some(300_000), false, WINDOW),
-            Presence::Unattended
-        );
+        assert_eq!(decide(false, Some(300_000), false, WINDOW), Presence::Idle);
         assert_eq!(
             decide(false, Some(3_600_000), false, WINDOW),
-            Presence::Unattended
+            Presence::Idle
         );
     }
 
@@ -530,7 +558,7 @@ mod tests {
         );
         assert_eq!(
             decide(false, t.person_ms_ago(700_000), false, WINDOW),
-            Presence::Unattended
+            Presence::Idle
         );
     }
 
@@ -583,6 +611,7 @@ mod tests {
         t.observe(10_000, &[None, None]); // the press that locked (Win+L)
         t.observe_lock(true, 10_400); // the sampler sees the lock
         t.observe_lock(true, 10_900);
+        t.observe_lock(true, 11_900); // held for LOCK_HELD_MS
         // The controller types the password: machine input, not a person's.
         t.observe(60_000, &[Some(60_010), None]);
         t.observe_lock(false, 60_500);
@@ -617,6 +646,8 @@ mod tests {
         let mut t = Tracker::default();
         t.observe_lock(true, 5_000);
         t.observe(4_000, &[None, None]);
+        assert!(!t.away_since_lock(), "one reading is not yet a held lock");
+        t.observe_lock(true, 6_500);
         assert!(t.away_since_lock());
     }
 
@@ -630,6 +661,42 @@ mod tests {
         let mut u = Tracker::default();
         u.observe_lock(true, 2_000);
         assert!(!u.away_since_lock());
+    }
+
+    /// rcfix 2026-11-04 — the field incident: a person reading at the
+    /// screen for longer than the window is Idle, never Unattended, so display
+    /// match cannot take their panel on the idle clock alone.
+    #[test]
+    fn idle_time_is_never_an_empty_chair() {
+        for ago in [300_000u64, 301_000, 86_400_000] {
+            let p = decide(false, Some(ago), false, WINDOW);
+            assert_eq!(p, Presence::Idle);
+            assert_ne!(p, Presence::Unattended);
+        }
+    }
+
+    /// rcfix 2026-11-04 — a lock that comes and goes faster than
+    /// LOCK_HELD_MS (one probe reading of a secure desktop: a UAC prompt, a
+    /// glitch) is flapping and grounds no "away"; nor does a run of such blips.
+    #[test]
+    fn a_flapping_lock_is_not_away() {
+        let mut t = Tracker::default();
+        t.observe(10_000, &[None, None]);
+        for start in [10_500u32, 12_000, 13_500, 15_000] {
+            t.observe_lock(true, start);
+            t.observe_lock(true, start + 500);
+            t.observe_lock(true, start + 1_000);
+            t.observe_lock(false, start + 1_400);
+        }
+        assert!(!t.away_since_lock());
+        assert_eq!(
+            decide(false, t.person_ms_ago(20_000), t.away_since_lock(), WINDOW),
+            Presence::Attended
+        );
+        // The same lock, held: away.
+        t.observe_lock(true, 30_000);
+        t.observe_lock(true, 31_500);
+        assert!(t.away_since_lock());
     }
 
     #[test]
