@@ -107,6 +107,18 @@ impl Openh264Encoder {
                     // decoder for ~10 s. 60 gives <2 s recovery floor
                     // even if the RTCP-PLI round-trip drops.
                     .intra_frame_period(IntraFramePeriod::from_num_frames(TARGET_FPS * IDR_EVERY_S))
+                    // rcfix 2026-11-04 — never let rate control drop a frame.
+                    // OpenH264's frame skip (the crate's default) answers an
+                    // over-budget frame by encoding NOTHING for the next ones:
+                    // measured with this config, eight empty encodes in a row
+                    // after the keyframe, then every other one, the idle
+                    // keepalive's repeat included. A skipped frame is invisible
+                    // to the pump (it counts it encoded) and to the viewer (no
+                    // loss, no NACK, no PLI): the session just goes byte-silent
+                    // and the stall watchdog hangs it up. Without skip, rate
+                    // control holds the budget with QP instead, and the pump's
+                    // own pacing (FR-112) owns the frame rate.
+                    .skip_frames(false)
             },
         )
     }
@@ -803,5 +815,51 @@ mod tests {
                 .expect("encode");
             assert!(!out.is_empty());
         }
+    }
+}
+
+#[cfg(test)]
+mod rcfix_tests {
+    use super::*;
+    use crate::capture::{Frame, PixelFormat};
+
+    /// rcfix 2026-11-04 — every encode of the live encoder reaches the wire,
+    /// a repeated (keepalive) frame after a large keyframe included. With the
+    /// crate's default frame skip, OpenH264 returned NOTHING for the next eight
+    /// encodes of this exact input (and for ~1.6 s of 400 ms-spaced repeats).
+    #[tokio::test]
+    async fn the_live_encoder_never_skips_a_frame() {
+        let (w, h) = (640u32, 400u32);
+        let mut data = vec![0u8; (w * h * 4) as usize];
+        let mut x: u32 = 12345;
+        for p in data.chunks_mut(4) {
+            x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            p[0] = (x >> 16) as u8;
+            p[1] = (x >> 8) as u8;
+            p[2] = x as u8;
+            p[3] = 255;
+        }
+        let f = std::sync::Arc::new(Frame {
+            width: w,
+            height: h,
+            stride: w * 4,
+            pixel_format: PixelFormat::Bgra,
+            data,
+            monotonic_us: 0,
+            monitor: 0,
+            damage: crate::capture::Damage::Unknown,
+            source: None,
+        });
+        let mut enc = Openh264Encoder::new(w, h).expect("encoder");
+        let idr = enc.encode(f.clone()).await.expect("encode");
+        assert!(!idr.is_empty(), "the keyframe");
+        let mut empty = 0;
+        for _ in 0..8 {
+            let out = enc.encode(f.clone()).await.expect("encode");
+            if out.iter().map(|p| p.data.len()).sum::<usize>() == 0 {
+                empty += 1;
+            }
+        }
+        assert_eq!(empty, 0, "a keepalive repeat was skipped by rate control");
     }
 }
