@@ -3,7 +3,7 @@
 <template>
   <v-container fluid class="pa-2 pa-md-4 pa-xl-6">
     <h1 class="text-h5 text-md-h4 mb-1 mb-md-2">{{ tenantStore.current?.name }}</h1>
-    <p class="text-subtitle-2 text-md-subtitle-1 text-medium-emphasis mb-2 mb-md-4">Workspace Overview</p>
+    <p class="text-subtitle-2 text-md-subtitle-1 text-medium-emphasis mb-2 mb-md-4">{{ t('mh.dash.overview') }}</p>
 
     <!-- Devices-first (2026-08-26): the tile order leads with the fleet —
          Devices online | Tunnels | Rooms | Active calls | Messages. Five
@@ -16,7 +16,7 @@
           <v-card-text class="text-center">
             <v-icon size="48" color="warning">mdi-monitor-multiple</v-icon>
             <div class="text-h4 mt-2">{{ devicesOnlineLabel }}</div>
-            <div class="text-subtitle-2">Devices Online</div>
+            <div class="text-subtitle-2">{{ t('mh.dash.devicesOnline') }}</div>
           </v-card-text>
         </v-card>
       </v-col>
@@ -31,7 +31,7 @@
           <v-card-text class="text-center">
             <v-icon size="48" color="info">mdi-lan-pending</v-icon>
             <div class="text-h4 mt-2">{{ tunnelsLabel }}</div>
-            <div class="text-subtitle-2">Tunnels</div>
+            <div class="text-subtitle-2">{{ t('mh.dash.tunnels') }}</div>
           </v-card-text>
         </v-card>
       </v-col>
@@ -40,7 +40,7 @@
           <v-card-text class="text-center">
             <v-icon size="48" color="primary">mdi-pound</v-icon>
             <div class="text-h4 mt-2">{{ roomStore.rooms.length }}</div>
-            <div class="text-subtitle-2">Rooms</div>
+            <div class="text-subtitle-2">{{ t('mh.dash.rooms') }}</div>
           </v-card-text>
         </v-card>
       </v-col>
@@ -49,7 +49,7 @@
           <v-card-text class="text-center">
             <v-icon size="48" color="secondary">mdi-video</v-icon>
             <div class="text-h4 mt-2">{{ activeCallCount }}</div>
-            <div class="text-subtitle-2">Active Calls</div>
+            <div class="text-subtitle-2">{{ t('mh.dash.activeCalls') }}</div>
           </v-card-text>
         </v-card>
       </v-col>
@@ -58,7 +58,7 @@
           <v-card-text class="text-center">
             <v-icon size="48" color="accent">mdi-message-text</v-icon>
             <div class="text-h4 mt-2">{{ totalMessageCount }}</div>
-            <div class="text-subtitle-2">Messages</div>
+            <div class="text-subtitle-2">{{ t('mh.dash.messages') }}</div>
           </v-card-text>
         </v-card>
       </v-col>
@@ -69,12 +69,12 @@
          behind Analytics (org admins). Hidden entirely while stats are
          disabled server-side. -->
     <template v-if="statsStore.overview?.enabled">
-      <h2 class="text-h6 mt-4 mb-2">Insights</h2>
+      <h2 class="text-h6 mt-4 mb-2">{{ t('mh.dash.insights') }}</h2>
       <v-row>
         <v-col cols="12" md="6">
           <v-card>
             <v-card-title class="text-subtitle-1 d-flex align-center">
-              Machines online — 24h
+              {{ t('mh.dash.machinesOnline') }}
               <v-spacer />
               <span class="text-h6">
                 {{ statsStore.overview?.machines?.online ?? 0 }}/{{
@@ -85,10 +85,10 @@
             <v-card-text>
               <time-series-chart
                 :points="statsStore.overview?.spark_machines ?? []"
-                :series="[{ key: 'online', label: 'Online' }]"
+                :series="[{ key: 'online', label: t('mh.dash.online') }]"
                 :height="140"
                 area
-                empty-text="No samples yet — data appears within the hour"
+                :empty-text="t('mh.dash.noSamples')"
               />
             </v-card-text>
           </v-card>
@@ -96,19 +96,19 @@
         <v-col v-if="showConference" cols="12" md="6">
           <v-card>
             <v-card-title class="text-subtitle-1 d-flex align-center">
-              Call minutes — 7d
+              {{ t('mh.dash.callMinutes') }}
               <v-spacer />
               <span class="text-h6">
-                {{ Math.round(statsStore.overview?.calls?.minutes_today ?? 0) }} today
+                {{ t('mh.dash.today', { n: Math.round(statsStore.overview?.calls?.minutes_today ?? 0) }) }}
               </span>
             </v-card-title>
             <v-card-text>
               <time-series-chart
                 :points="statsStore.overview?.spark_minutes ?? []"
-                :series="[{ key: 'minutes', label: 'Minutes' }]"
+                :series="[{ key: 'minutes', label: t('mh.dash.minutes') }]"
                 :height="140"
                 area
-                empty-text="No calls in the last 7 days"
+                :empty-text="t('mh.dash.noCalls')"
               />
             </v-card-text>
           </v-card>
@@ -120,7 +120,7 @@
          control plane and each other. Member-visible — carrier kind and
          latency only, no addresses. -->
     <template v-if="meshNodes.length">
-      <h2 class="text-h6 mt-4 mb-2">Network</h2>
+      <h2 class="text-h6 mt-4 mb-2">{{ t('mh.dash.network') }}</h2>
       <v-card>
         <v-card-text>
           <mesh-graph
@@ -134,21 +134,21 @@
     </template>
 
     <!-- Quick actions -->
-    <h2 v-if="showChat" class="text-h6 mt-4 mb-2">Quick Actions</h2>
+    <h2 v-if="showChat" class="text-h6 mt-4 mb-2">{{ t('mh.dash.quick') }}</h2>
     <v-row v-if="showChat">
       <v-col cols="12" sm="6" md="3">
         <v-btn block color="primary" prepend-icon="mdi-plus" :to="`/tenant/${tenantId}/rooms`">
-          New Room
+          {{ t('mh.dash.newRoom') }}
         </v-btn>
       </v-col>
       <v-col v-if="showConference" cols="12" sm="6" md="3">
         <v-btn block color="secondary" prepend-icon="mdi-video-plus" @click="startCall">
-          Start Call
+          {{ t('mh.dash.startCall') }}
         </v-btn>
       </v-col>
       <v-col cols="12" sm="6" md="3">
         <v-btn block color="accent" prepend-icon="mdi-upload" :to="`/tenant/${tenantId}/files`">
-          Upload File
+          {{ t('mh.dash.uploadFile') }}
         </v-btn>
       </v-col>
       <v-col cols="12" sm="6" md="3">
@@ -160,15 +160,15 @@
 
     <!-- Manage: every subsystem reachable from the org hub — the page used
          to dead-end at chat stats with no path to devices/network/admin. -->
-    <h2 class="text-h6 mt-4 mb-2">Manage</h2>
+    <h2 class="text-h6 mt-4 mb-2">{{ t('mh.dash.manage') }}</h2>
     <v-row>
       <v-col v-if="showFleet" cols="12" sm="6" md="3">
         <v-card :to="`/tenant/${tenantId}/devices`" hover>
           <v-card-text>
             <v-icon color="primary" class="mr-2">mdi-monitor-multiple</v-icon>
-            <span class="text-subtitle-1 font-weight-medium">Devices</span>
+            <span class="text-subtitle-1 font-weight-medium">{{ t('mh.dash.devices') }}</span>
             <div class="text-body-2 text-medium-emphasis mt-1">
-              Remote control, enrollment, updates
+              {{ t('mh.dash.devicesHint') }}
             </div>
           </v-card-text>
         </v-card>
@@ -179,9 +179,9 @@
         <v-card :to="`/tenant/${tenantId}/network`" hover>
           <v-card-text>
             <v-icon color="primary" class="mr-2">mdi-lan</v-icon>
-            <span class="text-subtitle-1 font-weight-medium">Network</span>
+            <span class="text-subtitle-1 font-weight-medium">{{ t('mh.dash.network') }}</span>
             <div class="text-body-2 text-medium-emphasis mt-1">
-              Overlay mesh, tunnels, ACL, routes, DNS
+              {{ t('mh.dash.networkHint') }}
             </div>
           </v-card-text>
         </v-card>
@@ -190,9 +190,9 @@
         <v-card :to="`/tenant/${tenantId}/admin/members`" hover>
           <v-card-text>
             <v-icon color="primary" class="mr-2">mdi-account-group</v-icon>
-            <span class="text-subtitle-1 font-weight-medium">Members &amp; Roles</span>
+            <span class="text-subtitle-1 font-weight-medium">{{ t('mh.dash.membersRoles') }}</span>
             <div class="text-body-2 text-medium-emphasis mt-1">
-              People, permissions, org settings
+              {{ t('mh.dash.membersHint') }}
             </div>
           </v-card-text>
         </v-card>
@@ -205,9 +205,9 @@
         <v-card :to="`/tenant/${tenantId}/invites`" hover>
           <v-card-text>
             <v-icon color="primary" class="mr-2">mdi-email-plus</v-icon>
-            <span class="text-subtitle-1 font-weight-medium">Invites</span>
+            <span class="text-subtitle-1 font-weight-medium">{{ t('mh.dash.invites') }}</span>
             <div class="text-body-2 text-medium-emphasis mt-1">
-              Bring teammates into this org
+              {{ t('mh.dash.invitesHint') }}
             </div>
           </v-card-text>
         </v-card>
@@ -216,9 +216,9 @@
         <v-card :to="`/tenant/${tenantId}/analytics`" hover>
           <v-card-text>
             <v-icon color="primary" class="mr-2">mdi-chart-areaspline</v-icon>
-            <span class="text-subtitle-1 font-weight-medium">Analytics</span>
+            <span class="text-subtitle-1 font-weight-medium">{{ t('mh.dash.analytics') }}</span>
             <div class="text-body-2 text-medium-emphasis mt-1">
-              Machines, calls, tunnel traffic over time
+              {{ t('mh.dash.analyticsHint') }}
             </div>
           </v-card-text>
         </v-card>
@@ -240,6 +240,9 @@ import { usePolling } from '@/composables/usePolling'
 import { canManageInvites, canQueryAnalytics, canSeeFleetNav } from '@/utils/permissions'
 import TimeSeriesChart from '@/components/stats/TimeSeriesChart.vue'
 import MeshGraph, { type MeshNode } from '@/components/stats/MeshGraph.vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const router = useRouter()
@@ -333,7 +336,7 @@ watch(tenantId, (tid) => {
 
 async function startCall() {
   const now = new Date()
-  const name = `Call - ${now.toLocaleDateString()} ${now.toLocaleTimeString()}`
+  const name = t('mh.dash.callName', { when: `${now.toLocaleDateString()} ${now.toLocaleTimeString()}` })
   const room = await roomStore.createRoom(tenantId.value, {
     name,
     has_media: true,

@@ -3,19 +3,19 @@
 <template>
   <v-container max-width="600" class="pa-2 pa-md-4 pa-xl-6">
     <v-card flat>
-      <v-card-title>Edit Profile</v-card-title>
+      <v-card-title>{{ t('mh.profile.edit') }}</v-card-title>
       <v-card-text>
         <v-form @submit.prevent="save">
           <v-text-field
             v-model="form.display_name"
-            label="Display Name"
+            :label="t('mh.profile.displayName')"
             :rules="[v => !!v || 'Required']"
             class="mb-3"
           />
 
           <v-textarea
             v-model="form.bio"
-            label="Bio"
+            :label="t('mh.profile.bio')"
             rows="3"
             counter="500"
             :rules="[v => !v || v.length <= 500 || 'Max 500 characters']"
@@ -24,33 +24,33 @@
 
           <v-text-field
             v-model="form.avatar"
-            label="Avatar URL"
-            hint="Direct link to an image"
+            :label="t('mh.profile.avatar')"
+            :hint="t('mh.profile.avatarHint')"
             class="mb-3"
           />
 
           <v-select
             v-model="form.locale"
             :items="locales"
-            label="Language"
+            :label="t('mh.profile.language')"
             class="mb-3"
           />
 
           <v-select
             v-model="form.timezone"
             :items="timezones"
-            label="Timezone"
+            :label="t('mh.profile.timezone')"
             class="mb-3"
           />
 
           <div class="d-flex ga-3">
-            <v-btn variant="text" @click="router.back()">Cancel</v-btn>
+            <v-btn variant="text" @click="router.back()">{{ t('common.cancel') }}</v-btn>
             <v-btn
               type="submit"
               color="primary"
               :loading="saving"
             >
-              Save
+              {{ t('mh.profile.save') }}
             </v-btn>
           </div>
         </v-form>
@@ -64,9 +64,9 @@
              a switch rendered from a guess would invert someone's consent. -->
         <div class="d-flex align-center justify-space-between ga-4">
           <div>
-            <div class="text-subtitle-2">Product updates</div>
+            <div class="text-subtitle-2">{{ t('mh.news.productUpdates') }}</div>
             <div class="text-caption text-medium-emphasis">
-              Roomler Field Notes — never more than monthly, one-click unsubscribe.
+              {{ t('mh.news.blurb') }}
             </div>
           </div>
           <v-switch
@@ -76,7 +76,7 @@
             color="primary"
             hide-details
             density="compact"
-            aria-label="Subscribe to product updates"
+            :aria-label="t('mh.news.subscribeAria')"
             @update:model-value="toggleNewsletter"
           />
         </div>
@@ -92,6 +92,9 @@ import { useAuthStore } from '@/stores/auth'
 import { useUserStore } from '@/stores/user'
 import { useNewsletterPref } from '@/composables/useNewsletterPref'
 import { useSnackbar } from '@/composables/useSnackbar'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -102,9 +105,9 @@ const { showSuccess, showError } = useSnackbar()
 async function toggleNewsletter(value: unknown) {
   const want = value === true
   if (await nlSet(want)) {
-    showSuccess(want ? 'Subscribed to product updates' : 'Unsubscribed from product updates')
+    showSuccess(want ? t('mh.news.subscribed') : t('mh.news.unsubscribed'))
   } else {
-    showError('Could not update your newsletter preference')
+    showError(t('mh.news.prefFailed'))
   }
 }
 
@@ -134,10 +137,10 @@ async function save() {
       locale: form.locale || undefined,
       timezone: form.timezone || undefined,
     })
-    showSuccess('Profile saved')
+    showSuccess(t('mh.profile.saved'))
     router.back()
   } catch (e) {
-    showError(e instanceof Error ? e.message : 'Failed to save profile')
+    showError(e instanceof Error ? e.message : t('mh.profile.saveFailed'))
   } finally {
     saving.value = false
   }

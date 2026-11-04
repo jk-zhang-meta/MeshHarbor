@@ -3,12 +3,11 @@
 <template>
   <v-container class="d-flex align-center justify-center" style="min-height: 100vh">
     <v-card max-width="440" width="100%" class="pa-2">
-      <v-card-title>Remote control request</v-card-title>
+      <v-card-title>{{ t('mh.consent.title') }}</v-card-title>
       <v-card-text>
         <template v-if="state === 'idle'">
           <p class="mb-4">
-            Someone is requesting to remotely control your device. Approve only if you
-            expected this — the session cannot start without your approval.
+            {{ t('mh.consent.body') }}
           </p>
           <div class="d-flex justify-end ga-2">
             <v-btn
@@ -18,7 +17,7 @@
               :disabled="busy"
               @click="decide(false)"
             >
-              Deny
+              {{ t('mh.consent.deny') }}
             </v-btn>
             <v-btn
               variant="flat"
@@ -27,7 +26,7 @@
               :disabled="busy"
               @click="decide(true)"
             >
-              Approve
+              {{ t('mh.consent.approve') }}
             </v-btn>
           </div>
         </template>
@@ -35,8 +34,8 @@
         <v-alert v-else-if="state === 'done'" :type="granted ? 'success' : 'info'" variant="tonal">
           {{
             granted
-              ? 'Approved — the session can now start.'
-              : 'Denied — the session will not start.'
+              ? t('mh.consent.approved')
+              : t('mh.consent.denied')
           }}
         </v-alert>
 
@@ -50,6 +49,9 @@
 import { ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '@/api/client'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const token = String(route.params.token || '')
@@ -73,7 +75,7 @@ async function decide(approve: boolean) {
   } catch (e) {
     error.value =
       (e as Error).message ||
-      'This request could not be processed — it may have expired or already been handled.'
+      t('mh.consent.failed')
     state.value = 'error'
   } finally {
     busy.value = false

@@ -98,7 +98,7 @@
           size="small"
           variant="flat"
           color="rgba(0,0,0,0.6)"
-          :title="isPiP ? 'Leave picture-in-picture' : 'Picture-in-picture'"
+          :title="isPiP ? t('mh.conf.leavePip') : t('mh.conf.pip')"
           @click.stop="$emit('request-pip', streamKey)"
         >
           <v-icon size="18">mdi-picture-in-picture-bottom-right</v-icon>
@@ -112,7 +112,7 @@
           size="small"
           variant="flat"
           color="rgba(0,0,0,0.6)"
-          :title="isFullscreen ? 'Exit fullscreen' : 'Fullscreen'"
+          :title="isFullscreen ? t('mh.conf.exitFullscreen') : t('mh.conf.fullscreen')"
           @click.stop="toggleFullscreen"
         >
           <v-icon size="18">{{ isFullscreen ? 'mdi-fullscreen-exit' : 'mdi-fullscreen' }}</v-icon>
@@ -125,13 +125,16 @@
       class="pa-2 text-caption text-center text-truncate"
       :class="{ 'py-1': compact }"
     >
-      {{ displayName }}{{ isLocal ? ' (You)' : '' }}
+      {{ displayName }}{{ isLocal ? t('mh.conf.youSuffix') : '' }}
     </v-card-text>
   </v-card>
 </template>
 
 <script setup lang="ts">
 import { ref, watch, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = withDefaults(defineProps<{
   stream: MediaStream | null
