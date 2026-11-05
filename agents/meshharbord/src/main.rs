@@ -6682,6 +6682,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cli_raw_dispatch_help_and_version_are_not_outer_informational_exits() {
+        for args in [
+            vec!["meshharbord", "cli", "--help"],
+            vec!["meshharbord", "cli", "ssh", "-h"],
+            vec!["meshharbord", "cli", "--version"],
+            vec!["meshharbord", "hive-prep", "--help"],
+        ] {
+            let error = Cli::try_parse_from(&args).unwrap_err();
+            assert!(
+                !matches!(
+                    error.kind(),
+                    clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+                ),
+                "{args:?} must remain available to its raw-argv handler"
+            );
+        }
+    }
+
+    #[test]
     fn cli_help_and_version_never_enter_host_startup() {
         use clap::error::ErrorKind::{DisplayHelp, DisplayVersion};
         for (args, expected) in [
