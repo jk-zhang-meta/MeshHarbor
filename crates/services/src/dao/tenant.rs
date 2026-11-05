@@ -4,7 +4,7 @@ use bson::{DateTime, Document, doc, oid::ObjectId};
 use meshharbor_db::models::{
     Plan, RcFeaturePolicy, Role, Tenant, TenantMember, TenantSettings, role,
 };
-use mongodb::Database;
+use mongodb::{Database, options::ReturnDocument};
 
 use super::base::{BaseDao, DaoError, DaoResult};
 
@@ -53,6 +53,25 @@ impl TenantDao {
         }
     }
 
+    /// Policy and revision commit together, including repeated values. A
+    /// real management write may initialize an absent legacy revision to one;
+    /// null, non-integer, non-positive and exhausted counters cannot write.
+    async fn update_security(&self, tenant_id: ObjectId, mut set: Document) -> DaoResult<Tenant> {
+        set.insert("updated_at", DateTime::now());
+        self.base
+            .collection()
+            .find_one_and_update(
+                doc! {"_id": tenant_id, "$or": [
+                    {"security_rev": {"$exists": false}},
+                    {"security_rev": {"$type": ["int", "long"], "$gt": 0_i64, "$lt": i64::MAX}},
+                ]},
+                doc! {"$set": set, "$inc": {"security_rev": 1_i64}},
+            )
+            .return_document(ReturnDocument::After)
+            .await?
+            .ok_or_else(|| DaoError::Validation("Tenant security revision unavailable".into()))
+    }
+
     /// Phase 2 MagicDNS — set the tenant's overlay DNS domain + upstream
     /// nameservers (`None` domain disables MagicDNS). Returns the updated tenant.
     pub async fn set_magic_dns(
@@ -89,16 +108,8 @@ impl TenantDao {
     /// erasure is ever needed it belongs in a separate, explicitly
     /// destructive job layered on top of this.
     pub async fn set_archived(&self, tenant_id: ObjectId, archived: bool) -> DaoResult<Tenant> {
-        self.base
-            .update_by_id(
-                tenant_id,
-                doc! { "$set": {
-                    "is_archived": archived,
-                    "updated_at": DateTime::now(),
-                } },
-            )
-            .await?;
-        self.base.find_by_id(tenant_id).await
+        self.update_security(tenant_id, doc! {"is_archived": archived})
+            .await
     }
 
     /// Fleet RPC gate 1 — the org-wide kill-switch. Off by default on every
@@ -235,16 +246,8 @@ impl TenantDao {
         tenant_id: ObjectId,
         enabled: bool,
     ) -> DaoResult<Tenant> {
-        self.base
-            .update_by_id(
-                tenant_id,
-                doc! { "$set": {
-                    "settings.remote_ssh_enabled": enabled,
-                    "updated_at": DateTime::now(),
-                } },
-            )
-            .await?;
-        self.base.find_by_id(tenant_id).await
+        self.update_security(tenant_id, doc! {"settings.remote_ssh_enabled": enabled})
+            .await
     }
 
     /// FR-51 — the ephemeral-key org switch (gate 1 of the key path). Checked
@@ -281,6 +284,7 @@ impl TenantDao {
             description: None,
             icon: None,
             owner_id,
+            security_rev: Some(1),
             plan: Plan::Free,
             features: Vec::new(),
             settings: TenantSettings::default(),

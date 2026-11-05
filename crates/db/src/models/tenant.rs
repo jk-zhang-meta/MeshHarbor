@@ -12,6 +12,10 @@ pub struct Tenant {
     pub description: Option<String>,
     pub icon: Option<String>,
     pub owner_id: ObjectId,
+    /// Monotonic native-SSH policy revision. Legacy missing values stay
+    /// unknown and cannot authorize native SSH; new tenants start at one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security_rev: Option<i64>,
     pub plan: Plan,
     pub features: Vec<String>,
     pub settings: TenantSettings,
@@ -674,6 +678,7 @@ mod plan_tests {
             description: None,
             icon: None,
             owner_id: bson::oid::ObjectId::new(),
+            security_rev: Some(1),
             plan,
             features: vec![],
             settings: TenantSettings::default(),
@@ -693,6 +698,20 @@ mod plan_tests {
             updated_at: DateTime::now(),
             deleted_at: None,
         }
+    }
+
+    #[test]
+    fn legacy_security_revision_is_unknown_without_a_read_default() {
+        let mut document = bson::to_document(&tenant(Plan::Free, None)).unwrap();
+        assert_eq!(document.get_i64("security_rev").unwrap(), 1);
+        document.remove("security_rev");
+        let legacy: Tenant = bson::from_document(document).unwrap();
+        assert_eq!(legacy.security_rev, None);
+        assert!(
+            !bson::to_document(&legacy)
+                .unwrap()
+                .contains_key("security_rev")
+        );
     }
 
     /// FR-115 — the Free plan gives the network away and fences what costs.

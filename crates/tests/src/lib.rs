@@ -357,5 +357,9 @@ mod device_share_tests;
 #[cfg(test)]
 mod native_ssh_gate_tests;
 
+/// X17 policy ABA must invalidate an older browser-approved native SSH request.
+#[cfg(test)]
+mod native_ssh_revision_tests;
+
 #[cfg(test)]
 mod account_devices_tests;

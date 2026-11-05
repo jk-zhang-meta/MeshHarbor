@@ -67,8 +67,8 @@ pub struct Preview {
 }
 
 /// Capture only server-owned display and authorization inputs. Comparing these
-/// values binds consent; these reads are NOT an atomic cross-document revocation
-/// fence, and policy changes that happen and revert between reads lack epochs.
+/// values binds consent. Tenant SSH/archive writes have a monotonic revision;
+/// other dependencies still use value snapshots without full ABA protection.
 async fn authorized_scope(
     state: &NetworkState,
     row: &NativeSshAuthorization,
@@ -105,6 +105,10 @@ async fn authorized_scope(
         .find_by_id(access.grant.tenant_id)
         .await
         .map_err(|_| refused())?;
+    let tenant_security_rev = tenant
+        .security_rev
+        .filter(|revision| (1..i64::MAX).contains(revision))
+        .ok_or_else(refused)?;
     let membership = storage(
         state
             .tenants
@@ -139,7 +143,8 @@ async fn authorized_scope(
         "owner_deleted_at": owner.deleted_at,
         "owner_membership_id": membership.id, "owner_joined_at": membership.joined_at,
         "owner_role_ids": membership.role_ids,
-        "tenant_owner_id": tenant.owner_id, "tenant_ssh_enabled": tenant.settings.remote_ssh_enabled,
+        "tenant_owner_id": tenant.owner_id, "tenant_security_rev": tenant_security_rev,
+        "tenant_ssh_enabled": tenant.settings.remote_ssh_enabled,
         "tenant_mfa_required": tenant.settings.mfa_required, "tenant_archived": tenant.is_archived,
         "tenant_deleted_at": tenant.deleted_at,
         "access_policy": bson::to_document(&access.agent.access_policy).map_err(|_| refused())?,
