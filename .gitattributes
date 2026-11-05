@@ -34,4 +34,6 @@ scripts/*.sh text eol=lf
 # source line is legitimately a single space, so the trailing-whitespace check
 # must not fire on them.
 .github/ffmpeg-patches/*.patch text eol=lf whitespace=-blank-at-eol
+# Canonical SCTP diffs contain the same required blank context lines.
+crates/vendored/*.patch text eol=lf whitespace=-blank-at-eol
 .githooks/pre-commit text eol=lf

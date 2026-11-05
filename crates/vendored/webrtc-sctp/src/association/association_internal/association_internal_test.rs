@@ -2,6 +2,7 @@ use std::io;
 use std::net::SocketAddr;
 
 use super::*;
+use crate::chunk::chunk_selective_ack::GapAckBlock;
 
 type Result<T> = std::result::Result<T, util::Error>;
 
@@ -64,6 +65,118 @@ fn create_association_internal(config: Config) -> AssociationInternal {
         handshake_completed_ch_tx,
         Arc::new(awake_write_loop_ch_tx),
     )
+}
+
+async fn association_in_fast_recovery() -> Result<AssociationInternal> {
+    let mut a = create_association_internal(Config {
+        net_conn: Arc::new(DumbConn {}),
+        max_receive_buffer_size: 0,
+        max_message_size: 0,
+        name: "client".to_owned(),
+    });
+    a.set_state(AssociationState::Established);
+    a.cumulative_tsn_ack_point = 99;
+    a.my_next_tsn = 110;
+    a.cwnd = 24_000;
+    a.ssthresh = 24_000;
+    for tsn in 100..110 {
+        a.inflight_queue.push_no_check(ChunkPayloadData {
+            tsn,
+            nsent: 1,
+            since: SystemTime::now(),
+            user_data: Bytes::from(vec![0; 1200]),
+            ..Default::default()
+        });
+    }
+    // TSN 100 is missing; three new gap acknowledgements enter recovery.
+    for end in 2..=4 {
+        a.handle_sack(&ChunkSelectiveAck {
+            cumulative_tsn_ack: 99,
+            advertised_receiver_window_credit: 1_000_000,
+            gap_ack_blocks: vec![GapAckBlock { start: 2, end }],
+            ..Default::default()
+        })
+        .await?;
+    }
+    assert!(a.in_fast_recovery);
+    Ok(a)
+}
+
+#[tokio::test]
+async fn test_assoc_fast_recovery_covers_multiple_losses_in_one_flight() -> Result<()> {
+    let mut a = association_in_fast_recovery().await?;
+    let reduced_cwnd = a.cwnd;
+    assert_eq!(
+        a.gather_outbound_fast_retransmission_packets(Vec::new())
+            .len(),
+        1
+    );
+
+    // Recover the first hole, then report a second hole (104) in that SAME
+    // original flight. It must not end recovery and halve cwnd again.
+    for end in 3..=5 {
+        a.handle_sack(&ChunkSelectiveAck {
+            cumulative_tsn_ack: 103,
+            advertised_receiver_window_credit: 1_000_000,
+            gap_ack_blocks: vec![GapAckBlock { start: 2, end }],
+            ..Default::default()
+        })
+        .await?;
+        assert!(
+            a.in_fast_recovery,
+            "original flight still has outstanding TSNs"
+        );
+        assert_eq!(a.cwnd, reduced_cwnd, "one reduction per recovery episode");
+        assert_eq!(
+            a.inflight_queue.get(109).unwrap().miss_indicator,
+            0,
+            "unreported tail TSNs are not loss reports"
+        );
+        a.gather_outbound_fast_retransmission_packets(Vec::new());
+    }
+    assert_eq!(
+        a.inflight_queue.get(104).unwrap().nsent,
+        2,
+        "three new gap reports must retransmit the second hole before T3"
+    );
+    a.handle_sack(&ChunkSelectiveAck {
+        cumulative_tsn_ack: 109,
+        advertised_receiver_window_credit: 1_000_000,
+        ..Default::default()
+    })
+    .await?;
+    assert!(
+        !a.in_fast_recovery,
+        "complete original flight ends recovery"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_assoc_t3_restarts_slow_start_during_fast_recovery() -> Result<()> {
+    let mut a = association_in_fast_recovery().await?;
+    a.pending_queue
+        .push(ChunkPayloadData {
+            user_data: Bytes::from_static(b"more data waiting"),
+            ..Default::default()
+        })
+        .await;
+    a.on_retransmission_timeout(RtxTimerId::T3RTX, 1).await;
+    assert_eq!(
+        a.cwnd, a.mtu,
+        "timeout still collapses the congestion window"
+    );
+    assert!(!a.in_fast_recovery, "T3 must resume slow start");
+    // The first retransmission repairs the first hole. Other original TSNs
+    // remain outstanding, but a backlogged sender must grow from one MTU.
+    a.handle_sack(&ChunkSelectiveAck {
+        cumulative_tsn_ack: 103,
+        advertised_receiver_window_credit: 1_000_000,
+        ..Default::default()
+    })
+    .await?;
+    assert!(a.cwnd > a.mtu, "advancing ACK must grow the timeout window");
+    Ok(())
 }
 
 #[test]
