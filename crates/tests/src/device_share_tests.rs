@@ -63,10 +63,16 @@ async fn actor(
     Actor { id, token }
 }
 async fn fixture() -> Fixture {
+    fixture_with_settings(|_| {}).await
+}
+async fn fixture_with_settings(
+    configure: impl FnOnce(&mut meshharbor_config::Settings),
+) -> Fixture {
     let owner_id = ObjectId::new();
     let app = TestApp::spawn_with_settings(move |s| {
         s.auth.account_approval.enabled = true;
         s.auth.account_approval.owner_user_id = Some(owner_id.to_hex());
+        configure(s);
     })
     .await;
     // Configured bootstrap owner remains pending; recipients NEVER get that exception.
@@ -1758,6 +1764,83 @@ async fn browser_shared_ssh_authorization_requires_approval_and_never_yields_acc
         401,
         "a browser-approved SSH grant must never authenticate the CLI as an account"
     );
+}
+
+#[tokio::test]
+async fn browser_shared_ssh_anonymous_start_limits_each_share_across_clients() {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+
+    let f = fixture_with_settings(|s| {
+        // Only this isolated HTTP app trusts its loopback test proxy. Each XFF
+        // address below represents a different client observed by that proxy.
+        s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
+        s.app.rate_limit_trusted_hops = 0;
+    })
+    .await;
+    let mut shares = Vec::new();
+    for recipient in [f.recipient.id, f.outsider.id] {
+        let mut body = create_body(&f);
+        body["recipient_user_id"] = json!(recipient.to_hex());
+        let created = f
+            .app
+            .auth_post("/api/device-shares", &f.owner.token)
+            .header("X-Forwarded-For", "192.0.2.250")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status().as_u16(), 200);
+        let created: Value = created.json().await.unwrap();
+        shares.push(created["id"].as_str().unwrap().to_owned());
+    }
+    assert_ne!(shares[0], shares[1]);
+    let verifier = "x17-synthetic-share-rate-verifier-012345678901234567890123456789";
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(verifier.as_bytes()));
+    let url = f.app.url("/api/native/share-ssh/authorizations");
+    let mut body = json!({
+        "share_grant_id": shares[0],
+        "public_key": shared_ssh_public_key(),
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "session_secs": 60,
+    });
+    for client in 1..=8 {
+        let started = f
+            .app
+            .client
+            .post(&url)
+            .header("X-Forwarded-For", format!("192.0.2.{client}"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(started.status().as_u16(), 201, "client {client}");
+    }
+    let limited = f
+        .app
+        .client
+        .post(&url)
+        .header("X-Forwarded-For", "192.0.2.9")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    body["share_grant_id"] = json!(shares[1]);
+    let other_share = f
+        .app
+        .client
+        .post(&url)
+        .header("X-Forwarded-For", "192.0.2.9")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    // Ten starts remain below the global 64 slots, and this ninth client has
+    // made only two: rejecting the first share must be a share-specific limit.
+    assert_eq!(other_share.status().as_u16(), 201);
+    assert_eq!(limited.status().as_u16(), 429);
 }
 
 /// Prepare one synthetic browser-approved request through the public HTTP API.

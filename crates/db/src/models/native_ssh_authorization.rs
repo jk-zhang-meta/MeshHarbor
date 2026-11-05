@@ -24,6 +24,11 @@ pub struct NativeSshAuthorization {
     pub authorization_id: ObjectId,
     pub client_hash: String,
     pub client_slot: u32,
+    // Missing only on legacy rows or before reserve assigns the shared quota.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_slot: Option<u32>,
     pub share_grant_id: ObjectId,
     pub public_key: String,
     pub code_challenge: String,
@@ -43,6 +48,7 @@ impl NativeSshAuthorization {
     pub const COLLECTION: &'static str = "native_ssh_authorizations";
     pub const GLOBAL_SLOTS: u32 = 64;
     pub const CLIENT_SLOTS: u32 = 8;
+    pub const SHARE_SLOTS: u32 = 8;
     pub const MAX_POLLS: u32 = 60;
     pub const REQUEST_TTL_SECS: i64 = 300;
     pub const GRANT_TTL_SECS: i64 = 60;

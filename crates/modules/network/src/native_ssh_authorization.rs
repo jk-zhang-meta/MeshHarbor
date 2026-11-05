@@ -168,6 +168,8 @@ pub async fn start(
             authorization_id: id,
             client_hash: hash_secret("client", &client.to_string()),
             client_slot: 0,
+            share_hash: None,
+            share_slot: None,
             share_grant_id: share,
             public_key: body.public_key,
             code_challenge: body.code_challenge,

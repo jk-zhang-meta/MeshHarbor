@@ -754,6 +754,10 @@ impl Module for NetworkState {
                     index_unique(bson::doc! {"device_code_hash":1}),
                     index_unique(bson::doc! {"client_hash":1,"client_slot":1}),
                     index_unique_partial(
+                        bson::doc! {"share_hash":1,"share_slot":1},
+                        bson::doc! {"share_hash":{"$type":"string"}},
+                    ),
+                    index_unique_partial(
                         bson::doc! {"grant_hash":1},
                         bson::doc! {"grant_hash":{"$type":"string"}},
                     ),

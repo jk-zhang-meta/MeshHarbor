@@ -3,6 +3,7 @@
 use super::base::{BaseDao, DaoResult};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use bson::{DateTime, doc, oid::ObjectId};
+use futures::TryStreamExt;
 use meshharbor_db::models::{NativeSshAuthorization, NativeSshScope};
 use mongodb::{Database, options::ReturnDocument};
 use sha2::{Digest, Sha256};
@@ -51,46 +52,77 @@ impl NativeSshAuthorizationDao {
     }
 
     /// Fixed global IDs cap storage even under concurrent anonymous starts.
-    /// A unique (client_hash, client_slot) index independently caps each client.
+    /// Unique client/share slot indexes enforce both quotas in the same write.
     /// Finished requests retain their slot until expiry, also bounding start rate.
     pub async fn reserve(&self, row: &NativeSshAuthorization) -> DaoResult<bool> {
         let coll = self.base.collection();
-        let now = DateTime::now();
         let mut data = bson::to_document(row)?;
         data.remove("_id");
-        for client_slot in 0..NativeSshAuthorization::CLIENT_SLOTS {
-            data.insert("client_slot", i64::from(client_slot));
-            if let Some(old) = coll
-                .find_one(doc! {
-                    "client_hash": &row.client_hash, "client_slot": i64::from(client_slot)
-                })
+        // ObjectId parsing has already canonicalized aliases such as hex case.
+        let share_hash = hash_secret("share", &row.share_grant_id.to_hex());
+        data.insert("share_hash", share_hash.as_str());
+        // Snapshots only choose candidates. Uniqueness and the expiry CAS, not
+        // these reads, arbitrate concurrent claims across all server processes.
+        for _ in 0..NativeSshAuthorization::GLOBAL_SLOTS {
+            let now = DateTime::now();
+            // Reclaim explicit expiry even if Mongo's TTL monitor has not run.
+            coll.delete_many(doc! {"expires_at": {"$lte": now}}).await?;
+            let rows: Vec<NativeSshAuthorization> = coll
+                .find(doc! {})
+                .limit(i64::from(NativeSshAuthorization::GLOBAL_SLOTS) + 1)
                 .await?
+                .try_collect()
+                .await?;
+            // The partial share index deliberately tolerates legacy rows. It
+            // does NOT meter them: until every live legacy row expires, deny
+            // all new starts identically, without rewriting old authorizations.
+            // Old-version writers must be stopped before enabling this code.
+            if rows.len() >= NativeSshAuthorization::GLOBAL_SLOTS as usize
+                || rows
+                    .iter()
+                    .any(|old| old.share_hash.is_none() || old.share_slot.is_none())
             {
-                if old.expires_at <= now && coll.find_one_and_update(
-                    doc! {"_id": old.id, "authorization_id": old.authorization_id, "expires_at": {"$lte": now}},
-                    doc! {"$set": data.clone()},
-                ).await?.is_some() {
-                    return Ok(true);
-                }
-                continue;
+                return Ok(false);
             }
-            for slot in 0..NativeSshAuthorization::GLOBAL_SLOTS {
-                let id = ObjectId::from_bytes([
-                    109, 104, 115, 115, 104, 97, 117, 116, 104, 0, 0, slot as u8,
-                ]);
-                let claimed = coll
-                    .find_one_and_update(
-                        doc! {"_id": id, "expires_at": {"$lte": now}},
-                        doc! {"$set": data.clone()},
-                    )
-                    .upsert(true)
-                    .await;
-                match claimed {
-                    // ReturnDocument defaults to Before: an upsert legitimately returns None.
-                    Ok(_) => return Ok(true),
-                    Err(e) if duplicate_key(&e) => {}
-                    Err(e) => return Err(e.into()),
-                }
+            let Some(client_slot) = (0..NativeSshAuthorization::CLIENT_SLOTS).find(|slot| {
+                !rows
+                    .iter()
+                    .any(|old| old.client_hash == row.client_hash && old.client_slot == *slot)
+            }) else {
+                return Ok(false);
+            };
+            let Some(share_slot) = (0..NativeSshAuthorization::SHARE_SLOTS).find(|slot| {
+                !rows.iter().any(|old| {
+                    old.share_hash.as_deref() == Some(share_hash.as_str())
+                        && old.share_slot == Some(*slot)
+                })
+            }) else {
+                return Ok(false);
+            };
+            let Some(id) = (0..NativeSshAuthorization::GLOBAL_SLOTS)
+                .map(|slot| {
+                    ObjectId::from_bytes([
+                        109, 104, 115, 115, 104, 97, 117, 116, 104, 0, 0, slot as u8,
+                    ])
+                })
+                .find(|id| !rows.iter().any(|old| old.id == Some(*id)))
+            else {
+                return Ok(false);
+            };
+            data.insert("client_slot", i64::from(client_slot));
+            data.insert("share_slot", i64::from(share_slot));
+            let claimed = coll
+                .find_one_and_update(
+                    doc! {"_id": id, "expires_at": {"$lte": now}},
+                    doc! {"$set": data.clone()},
+                )
+                .upsert(true)
+                .await;
+            match claimed {
+                // ReturnDocument defaults to Before: an upsert legitimately returns None.
+                Ok(_) => return Ok(true),
+                Err(e) if duplicate_key(&e) => {}
+                Err(e) => return Err(e.into()),
             }
         }
         Ok(false)
