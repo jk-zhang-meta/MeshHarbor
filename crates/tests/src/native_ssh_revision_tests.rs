@@ -775,3 +775,241 @@ async fn invalid_revision_restrictions() {
          missing_archive_status={missing_archive_status}"
     );
 }
+
+// This is runtime coverage of known writers, not an enumeration gate for
+// arbitrary future Mongo writes, aliases, operators or collection names.
+async fn stored_writer_revision(app: &TestApp, tenant: ObjectId) -> Option<i64> {
+    app.state
+        .tenants
+        .base
+        .find_by_id(tenant)
+        .await
+        .unwrap()
+        .security_revision()
+}
+
+async fn observe_known_writer(
+    app: &TestApp,
+    tenant: ObjectId,
+    label: &'static str,
+    before: Option<i64>,
+    succeeded: bool,
+    policy_matches: impl FnOnce(&meshharbor_db::models::Tenant) -> bool,
+) -> Value {
+    let stored = app.state.tenants.base.find_by_id(tenant).await.unwrap();
+    let after = stored.security_revision();
+    let advanced = before.and_then(|revision| revision.checked_add(1)) == after && after.is_some();
+    // Counter metadata and static labels only; no identities or credentials.
+    json!({"writer":label, "write_succeeded":succeeded,
+        "policy_matches":policy_matches(&stored), "before_revision":before,
+        "after_revision":after, "revision_advanced":advanced})
+}
+
+#[tokio::test]
+async fn native_ssh_known_tenant_security_writers_increment_revision() {
+    tokio::time::timeout(Duration::from_secs(90), known_tenant_security_writers())
+        .await
+        .expect("X17_WRITERS stage=scenario timeout");
+}
+
+async fn known_tenant_security_writers() {
+    use meshharbor_db::models::RcFeaturePolicy::{Ask, Off, On};
+
+    let owner_id = ObjectId::new();
+    eprintln!("X17_WRITERS stage=app begin");
+    let app = tokio::time::timeout(
+        Duration::from_secs(30),
+        TestApp::spawn_with_settings(move |settings| {
+            settings.auth.account_approval.enabled = true;
+            settings.auth.account_approval.owner_user_id = Some(owner_id.to_hex());
+            settings.auth.native_share_ssh_authorization_enabled = false;
+            settings.app.frontend_url = "https://native-writers.example.test".into();
+            settings.app.pod_id = Some(format!("native-writers-{}", ObjectId::new().to_hex()));
+        }),
+    )
+    .await
+    .expect("X17_WRITERS stage=app initialization timeout");
+    assert!(!app.settings.auth.native_share_ssh_authorization_enabled);
+    let owner = actor(&app, "native_writers_owner", Some(owner_id)).await;
+    let tenant = app
+        .state
+        .tenants
+        .create(
+            "Known security writers".into(),
+            "known-security-writers".into(),
+            owner.id,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    assert_eq!(stored_writer_revision(&app, tenant).await, Some(1));
+    eprintln!("X17_WRITERS stage=app complete");
+    eprintln!("X17_WRITERS stage=known_setters begin");
+    let mut observations = vec![];
+
+    for (label, enabled) in [
+        ("remote_exec_on", true),
+        ("remote_exec_repeat", true),
+        ("remote_exec_off", false),
+    ] {
+        let before = stored_writer_revision(&app, tenant).await;
+        let succeeded = app
+            .state
+            .tenants
+            .set_remote_exec_enabled(tenant, enabled)
+            .await
+            .is_ok();
+        observations.push(
+            observe_known_writer(&app, tenant, label, before, succeeded, |row| {
+                row.settings.remote_exec_enabled == enabled
+            })
+            .await,
+        );
+    }
+    for (label, required) in [
+        ("exec_system_on", true),
+        ("exec_system_repeat", true),
+        ("exec_system_off", false),
+    ] {
+        let before = stored_writer_revision(&app, tenant).await;
+        let succeeded = app
+            .state
+            .tenants
+            .set_exec_require_system(tenant, required)
+            .await
+            .is_ok();
+        observations.push(
+            observe_known_writer(&app, tenant, label, before, succeeded, |row| {
+                row.settings.exec_require_system == required
+            })
+            .await,
+        );
+    }
+    for (label, max, idle) in [
+        ("rc_limits_set", Some(60_u32), Some(30_u32)),
+        ("rc_limits_repeat", Some(60), Some(30)),
+        ("rc_limits_unset", None, None),
+        ("rc_limits_unset_repeat", None, None),
+    ] {
+        let before = stored_writer_revision(&app, tenant).await;
+        let succeeded = app
+            .state
+            .tenants
+            .set_rc_session_limits(tenant, Some(max), Some(idle))
+            .await
+            .is_ok();
+        observations.push(
+            observe_known_writer(&app, tenant, label, before, succeeded, |row| {
+                row.settings.rc_limits.max_secs == max && row.settings.rc_limits.idle_secs == idle
+            })
+            .await,
+        );
+    }
+    // The production DAO builds these paths dynamically and supports partial
+    // updates. Check all three fields, including fields a later call omits.
+    for (label, clipboard, files, audio, expected) in [
+        (
+            "rc_policy_mixed",
+            Some(Off),
+            Some(Ask),
+            Some(Off),
+            (Off, Ask, Off),
+        ),
+        (
+            "rc_policy_repeat",
+            Some(Off),
+            Some(Ask),
+            Some(Off),
+            (Off, Ask, Off),
+        ),
+        ("rc_policy_clipboard", Some(On), None, None, (On, Ask, Off)),
+        (
+            "rc_policy_files_audio",
+            None,
+            Some(On),
+            Some(On),
+            (On, On, On),
+        ),
+    ] {
+        let before = stored_writer_revision(&app, tenant).await;
+        let succeeded = app
+            .state
+            .tenants
+            .set_rc_session_policy(tenant, clipboard, files, audio)
+            .await
+            .is_ok();
+        observations.push(
+            observe_known_writer(&app, tenant, label, before, succeeded, |row| {
+                let policy = row.settings.rc_session;
+                (policy.clipboard, policy.files, policy.audio) == expected
+            })
+            .await,
+        );
+    }
+    for (label, enabled) in [
+        ("ephemeral_on", true),
+        ("ephemeral_repeat", true),
+        ("ephemeral_off", false),
+    ] {
+        let before = stored_writer_revision(&app, tenant).await;
+        let succeeded = app
+            .state
+            .tenants
+            .set_ephemeral_keys_enabled(tenant, enabled)
+            .await
+            .is_ok();
+        observations.push(
+            observe_known_writer(&app, tenant, label, before, succeeded, |row| {
+                row.settings.ephemeral_keys_enabled == enabled
+            })
+            .await,
+        );
+    }
+    eprintln!("X17_WRITERS stage=known_setters complete");
+
+    // Reach the existing fleet management route with its real owner role;
+    // no external device, controller, connection code or agent is created.
+    eprintln!("X17_WRITERS stage=external_access begin");
+    for (label, enabled) in [
+        ("external_on", true),
+        ("external_repeat", true),
+        ("external_off", false),
+    ] {
+        let before = stored_writer_revision(&app, tenant).await;
+        let response = app
+            .auth_put(
+                &format!("/api/tenant/{tenant}/external-access"),
+                &owner.token,
+            )
+            .json(&json!({"enabled":enabled}))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let body: Value = response.json().await.expect("external management JSON");
+        let succeeded = status == 200 && body["enabled"].as_bool() == Some(enabled);
+        let mut observed = observe_known_writer(&app, tenant, label, before, succeeded, |row| {
+            row.settings.external_rc_enabled == enabled
+        })
+        .await;
+        observed["http_status"] = json!(status);
+        observations.push(observed);
+    }
+    eprintln!("X17_WRITERS stage=external_access complete");
+    eprintln!("X17_WRITERS stage=functional_assertion begin");
+    assert!(
+        observations.len() == 20
+            && observations
+                .iter()
+                .all(|row| row["write_succeeded"] == true && row["policy_matches"] == true),
+        "known tenant writer setup/operations must succeed before revision assertions; observations={observations:?}"
+    );
+    assert!(
+        observations
+            .iter()
+            .all(|row| row["revision_advanced"] == true),
+        "every successful known tenant security write must advance revision exactly once, including repeated values; observations={observations:?}"
+    );
+}
