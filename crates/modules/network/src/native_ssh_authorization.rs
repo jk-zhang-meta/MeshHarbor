@@ -3,8 +3,8 @@
 use crate::{NetworkState, shared_ssh::authorization_policy};
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, State},
-    http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
+    extract::{ConnectInfo, FromRef, FromRequestParts, Path},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri, header, request::Parts},
     response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -19,6 +19,28 @@ use meshharbor_services::dao::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{future::Future, net::SocketAddr, time::Duration};
+
+/// Reject before later extractors can query account or authorization state.
+/// Explicit enablement is for isolated testing until revocation fencing exists.
+pub struct EnabledAuthorization(NetworkState);
+
+impl<S> FromRequestParts<S> for EnabledAuthorization
+where
+    NetworkState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(_parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let state = NetworkState::from_ref(state);
+        if !state.settings.auth.native_share_ssh_authorization_enabled {
+            return Err(ApiError::ServiceUnavailable(
+                "Native SSH authorization is disabled".into(),
+            ));
+        }
+        Ok(Self(state))
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -233,7 +255,7 @@ fn trusted_origin(state: &NetworkState, headers: &HeaderMap) -> bool {
 }
 
 pub async fn start(
-    State(state): State<NetworkState>,
+    EnabledAuthorization(state): EnabledAuthorization,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<Start>,
@@ -326,7 +348,7 @@ pub async fn start(
 }
 
 pub async fn preview(
-    State(state): State<NetworkState>,
+    EnabledAuthorization(state): EnabledAuthorization,
     auth: AuthUser,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -360,7 +382,7 @@ pub async fn preview(
 }
 
 pub async fn decide(
-    State(state): State<NetworkState>,
+    EnabledAuthorization(state): EnabledAuthorization,
     auth: AuthUser,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -414,7 +436,7 @@ pub async fn decide(
 }
 
 pub async fn exchange(
-    State(state): State<NetworkState>,
+    EnabledAuthorization(state): EnabledAuthorization,
     Json(body): Json<Exchange>,
 ) -> Result<Response, ApiError> {
     bounded(async {

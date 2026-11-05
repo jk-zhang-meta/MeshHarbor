@@ -353,5 +353,9 @@ mod ws_auth_tests;
 #[cfg(test)]
 mod device_share_tests;
 
+/// X17 default-off HTTP gate, independent of the shared-SSH transport tests.
+#[cfg(test)]
+mod native_ssh_gate_tests;
+
 #[cfg(test)]
 mod account_devices_tests;

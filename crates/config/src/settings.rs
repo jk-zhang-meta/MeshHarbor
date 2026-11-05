@@ -1129,6 +1129,12 @@ pub struct AccountApprovalSettings {
 pub struct AuthSettings {
     #[serde(default)]
     pub account_approval: AccountApprovalSettings,
+    /// X17 browser-approved native SSH authorization endpoints only. Default
+    /// off until cross-document revocation and policy-ABA protection exist.
+    /// Explicit enablement is for isolated testing, not a safety guarantee.
+    /// Existing shared SSH and its account-login path are independent.
+    #[serde(default)]
+    pub native_share_ssh_authorization_enabled: bool,
     /// When true, `register` sets `is_verified: true` on the new user
     /// directly, bypassing the email activation flow. Default false —
     /// production keeps the email-link activation as the only path.
@@ -1166,6 +1172,7 @@ impl Default for AuthSettings {
         Self {
             auto_verify: false,
             account_approval: AccountApprovalSettings::default(),
+            native_share_ssh_authorization_enabled: false,
             reconcile_managed_roles: default_true(),
         }
     }
@@ -1751,6 +1758,7 @@ impl Settings {
             .set_default("push.vapid_private_key", "")?
             .set_default("push.contact", "mailto:noreply@meshharbor.itachi.fans")?
             .set_default("auth.auto_verify", false)?
+            .set_default("auth.native_share_ssh_authorization_enabled", false)?
             .build()?;
 
         config.try_deserialize()
