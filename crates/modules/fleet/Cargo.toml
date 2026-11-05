@@ -42,6 +42,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+meshharbor-remote-control = { path = "../../remote_control", features = ["test-fixtures"] }
 # The Hub's unit tests build their audit sink on a `mongodb::Client` (the
 # wire crate carried the driver behind its `server` feature; only the tests
 # here name it directly) and drive the negotiating-timeout reaper on a paused

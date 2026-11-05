@@ -39,6 +39,8 @@ bitflags = { workspace = true, features = ["serde"] }
 # consent, TURN creds and worker_pick are always available.
 default = ["server"]
 server = ["dep:mongodb"]
+# In-memory audit fixtures for downstream tests; never enabled by default.
+test-fixtures = ["server"]
 
 [dev-dependencies]
 tokio-test.workspace = true
