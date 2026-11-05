@@ -2969,12 +2969,15 @@ struct FilePacingDispatch {
     completed: std::time::Instant,
     bytes: usize,
     tsns: Vec<u32>,
+    dropped_by_fixture: bool,
 }
 
 struct FilePacingWire {
     inner: Arc<dyn Conn + Send + Sync>,
     data: Arc<std::sync::Mutex<Vec<FilePacingDispatch>>>,
     dropped: Arc<tokio::sync::Notify>,
+    drop_next_data: AtomicBool,
+    data_ready: Arc<tokio::sync::Notify>,
 }
 
 impl Drop for FilePacingWire {
@@ -2996,29 +2999,40 @@ impl Conn for FilePacingWire {
     }
     async fn send(&self, b: &[u8]) -> UResult<usize> {
         let started = std::time::Instant::now();
-        let sent = self.inner.send(b).await?;
+        let packet = Packet::unmarshal(&Bytes::copy_from_slice(b))
+            .expect("invalid SCTP output in file pacing probe");
+        let tsns: Vec<_> = packet
+            .chunks
+            .iter()
+            .filter_map(|chunk| {
+                chunk
+                    .as_any()
+                    .downcast_ref::<ChunkPayloadData>()
+                    .map(|data| data.tsn)
+            })
+            .collect();
+        // Only an explicitly armed DATA attempt is discarded. Returning its
+        // full length models packet loss after submission, not a send error.
+        // Handshake, ACK and all other control packets always reach the pipe.
+        let data_only = !tsns.is_empty() && tsns.len() == packet.chunks.len();
+        let dropped_by_fixture = data_only && self.drop_next_data.swap(false, Ordering::SeqCst);
+        let sent = if dropped_by_fixture {
+            b.len()
+        } else {
+            self.inner.send(b).await?
+        };
         let completed = std::time::Instant::now();
-        if sent == b.len() {
-            let packet = Packet::unmarshal(&Bytes::copy_from_slice(b))
-                .expect("invalid SCTP output in file pacing probe");
-            let tsns: Vec<_> = packet
-                .chunks
-                .iter()
-                .filter_map(|chunk| {
-                    chunk
-                        .as_any()
-                        .downcast_ref::<ChunkPayloadData>()
-                        .map(|data| data.tsn)
-                })
-                .collect();
-            if !tsns.is_empty() {
-                self.data.lock().unwrap().push(FilePacingDispatch {
-                    started,
-                    completed,
-                    bytes: sent,
-                    tsns,
-                });
-            }
+        if sent == b.len() && !tsns.is_empty() {
+            // Include the discarded encoded datagram in the attempt budget:
+            // network loss does not refund bytes to the sender's token bucket.
+            self.data.lock().unwrap().push(FilePacingDispatch {
+                started,
+                completed,
+                bytes: sent,
+                tsns,
+                dropped_by_fixture,
+            });
+            self.data_ready.notify_waiters();
         }
         Ok(sent)
     }
@@ -3114,6 +3128,8 @@ async fn test_file_pacing_real_wire_budget_isolation_queue_and_close() -> Result
             inner: Arc::new(left),
             data: data.clone(),
             dropped: dropped.clone(),
+            drop_next_data: AtomicBool::new(false),
+            data_ready: Arc::new(tokio::sync::Notify::new()),
         });
         let connect_file = async {
             tokio::try_join!(
@@ -3357,4 +3373,154 @@ async fn test_file_pacing_real_wire_budget_isolation_queue_and_close() -> Result
         .map_err(|_| {
             Error::Other("real-clock pacing contract exceeded its 15-second safety bound".into())
         })?
+}
+
+/// One genuine DATA loss with pacing explicitly enabled. This exercises T3
+/// retransmission and the final ACK on a real pipe, not complete cwnd/rwnd,
+/// fairness or throughput behavior. The discarded encoded attempt is charged
+/// alongside its retransmission; control packets are never discarded.
+#[tokio::test]
+async fn test_file_pacing_real_pipe_lost_data_retransmits_within_budget() -> Result<()> {
+    let scenario = async {
+        const RATE: u64 = 256;
+        const BURST: usize = 1280;
+        let data = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (left, right) = pipe();
+        let wire = Arc::new(FilePacingWire {
+            inner: Arc::new(left),
+            data: data.clone(),
+            dropped: Arc::new(tokio::sync::Notify::new()),
+            drop_next_data: AtomicBool::new(false),
+            data_ready: Arc::new(tokio::sync::Notify::new()),
+        });
+        let (file, remote) = tokio::try_join!(
+            Association::client(Config {
+                net_conn: wire.clone(),
+                max_receive_buffer_size: 0,
+                max_message_size: 0,
+                name: "paced-loss-client".into(),
+            }),
+            Association::server(Config {
+                net_conn: Arc::new(right),
+                max_receive_buffer_size: 0,
+                max_message_size: 0,
+                name: "paced-loss-remote".into(),
+            }),
+        )?;
+        let tx = file
+            .open_stream(23, PayloadProtocolIdentifier::Binary)
+            .await?;
+        let rx = remote
+            .open_stream(23, PayloadProtocolIdentifier::Binary)
+            .await?;
+        let acks = file_pacing_ack_signal(&tx);
+        let warmup = Bytes::from(vec![0x73; 64]);
+        tx.write_sctp(&warmup, PayloadProtocolIdentifier::Binary)
+            .await?;
+        read_pacing_config_message(&rx, &warmup).await?;
+        wait_file_pacing_ack(&tx, &acks, 0).await?;
+        let (baseline_t3, baseline_fast, baseline_sacks) = {
+            let ai = file.association_internal.lock().await;
+            (
+                ai.stats.get_num_t3timeouts(),
+                ai.stats.get_num_fast_retrans(),
+                ai.stats.get_num_sacks(),
+            )
+        };
+        assert_eq!(
+            (baseline_t3, baseline_fast),
+            (0, 0),
+            "warmup unexpectedly retransmitted"
+        );
+        data.lock().unwrap().clear();
+        file.set_file_pacing(Some(FilePacingConfig {
+            rate_bytes_per_second: RATE,
+            burst_bytes: BURST,
+        }))
+        .await?;
+        wire.drop_next_data.store(true, Ordering::SeqCst);
+        let message = Bytes::from(
+            (0..1000)
+                .map(|i| (i % 251) as u8 ^ 0xa6)
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            tx.write_sctp(&message, PayloadProtocolIdentifier::Binary)
+                .await?,
+            message.len()
+        );
+        read_pacing_config_message(&rx, &message).await?;
+
+        // Publish the real send-completion records before checking their
+        // byte budget; receiver delivery can race Conn::send's return.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let recorded = wire.data_ready.notified();
+                tokio::pin!(recorded);
+                recorded.as_mut().enable();
+                if data.lock().unwrap().len() >= 2 {
+                    break;
+                }
+                recorded.await;
+            }
+        })
+        .await
+        .map_err(|_| Error::Other("DATA retry wire observation was not published".into()))?;
+        {
+            let events = data.lock().unwrap();
+            assert_eq!(
+                events.len(),
+                2,
+                "expected one lost DATA attempt and one retry"
+            );
+            assert!(events[0].dropped_by_fixture, "DATA loss was not injected");
+            assert!(
+                !events[1].dropped_by_fixture,
+                "retry must reach the real pipe"
+            );
+            assert_eq!(
+                events[0].tsns.len(),
+                1,
+                "the loss scenario must contain one DATA chunk"
+            );
+            assert_eq!(
+                events[0].tsns, events[1].tsns,
+                "retry must retransmit the lost TSN"
+            );
+            assert_eq!(events[0].bytes, events[1].bytes, "retry wire size changed");
+            assert_file_pacing_wire_budget(&events, RATE, BURST);
+        }
+        // Wire-byte accounting above and final protocol acknowledgement are
+        // separate oracles. Delivery alone cannot satisfy this ACK check.
+        wait_file_pacing_ack(&tx, &acks, 0).await?;
+        {
+            let ai = file.association_internal.lock().await;
+            assert!(
+                ai.stats.get_num_t3timeouts() > baseline_t3,
+                "T3 path was not exercised"
+            );
+            assert_eq!(
+                ai.stats.get_num_fast_retrans(),
+                baseline_fast,
+                "single-TSN loss should use T3"
+            );
+            assert!(
+                ai.stats.get_num_sacks() > baseline_sacks,
+                "final SACK was not processed"
+            );
+        }
+        assert_eq!(
+            tx.buffered_amount(),
+            0,
+            "delivered DATA must be acknowledged"
+        );
+        assert_eq!(file.get_state(), AssociationState::Established);
+        file.close().await?;
+        remote.close().await?;
+        eprintln!("X14_PACED_LOSS dropped_data=1 same_tsn_retry=true full_delivery=true final_ack=true wire_budget=true t3_exercised=true");
+        Ok::<(), Error>(())
+    };
+    tokio::time::timeout(Duration::from_secs(10), scenario)
+        .await
+        .map_err(|_| Error::Other("paced DATA loss regression exceeded safety bound".into()))?
 }
