@@ -11033,12 +11033,22 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn pq_psk_direct_probe_created_during_initial_guard_blocks_classical_and_unlocks_on_establish()
      {
+        for a_is_preferred in [true, false] {
+            pq_psk_direct_probe_initial_guard_scenario(a_is_preferred).await;
+        }
+    }
+
+    async fn pq_psk_direct_probe_initial_guard_scenario(a_is_preferred: bool) {
         use super::super::pq_psk::{PqPeerStatus, PqPskConfig, PqPskMode};
 
-        let a = WgKeypair::generate();
-        let b = WgKeypair::generate();
+        let mut a = WgKeypair::generate();
+        let mut b = WgKeypair::generate();
+        if (a.public.to_bytes() < b.public.to_bytes()) != a_is_preferred {
+            std::mem::swap(&mut a, &mut b);
+        }
         let pk_a = a.public.to_bytes();
         let pk_b = b.public.to_bytes();
+        assert_eq!(pk_a < pk_b, a_is_preferred);
 
         // Bind dead/unconnected relay sockets first so initial PQ negotiation stays in `Negotiating { epoch: 1 }`
         // with `guard_active == true`.
@@ -11097,21 +11107,23 @@ mod tests {
         );
         assert_eq!(dev_a.probe_handshake_done(&pk_b), Some(false));
 
-        // Now connect the incumbent carriers by pointing them at the direct sockets so the
-        // in-flight `epoch = 1` PQ-PSK retry completes, and verify the shadow probe automatically
-        // receives the negotiated `epoch = 1` PSK and completes its direct WG handshake!
+        // Connect the incumbents through their own dedicated-reader sockets.
+        // The shadow sockets already have demux readers: migrating a primary
+        // onto one adds competing readers and a shadow source route can then
+        // consume its WG records. This test exercises PQ guard unlock, not
+        // carrier socket migration.
         dev_a
             .peers
             .get(&pk_b)
             .unwrap()
             .carrier
-            .set_direct_endpoint(direct_sock_a.clone(), direct_addr_b);
+            .set_direct_dst(dead_sock_b.local_addr().unwrap());
         dev_b
             .peers
             .get(&pk_a)
             .unwrap()
             .carrier
-            .set_direct_endpoint(direct_sock_b.clone(), direct_addr_a);
+            .set_direct_dst(dead_sock_a.local_addr().unwrap());
 
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
