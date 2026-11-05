@@ -68,7 +68,7 @@ fn shared_account(grant: &meshharbor_db::models::DeviceShareGrant) -> Option<Str
 }
 /// Role membership is NOT inferred. An explicit approved-recipient SSH grant is
 /// this route's authority; all target/org/local SSH policies still restrict it.
-async fn pdp(
+pub(crate) async fn authorization_policy(
     state: &NetworkState,
     user: ObjectId,
     grant: ObjectId,
@@ -76,8 +76,6 @@ async fn pdp(
     tokio::time::timeout(Duration::from_secs(3),async {
         let access=authorize_grant(&state.core,user,grant,DeviceShareOperation::Ssh).await?;
         let a=&access.agent;
-        if !state.fleet.rc_hub.is_agent_online(access.grant.device_id)
-            || state.fleet.rc_hub.agent_org(access.grant.device_id)!=Some(a.tenant_id) {return Err(deny("Shared SSH requires this device on this server; no cross-pod fallback"));}
         let tenant=state.tenants.base.find_by_id(a.tenant_id).await?;
         if !tenant.settings.remote_ssh_enabled {return Err(deny("The organization has disabled embedded SSH"));}
         // The share's own account, never the device policy's (often the daemon's root). A row
@@ -90,13 +88,45 @@ async fn pdp(
         // A role-only allowlist does not turn an external recipient into a member.
         let p=&a.access_policy;
         if (!p.allowed_user_ids.is_empty()||!p.allowed_role_ids.is_empty())&&!p.allowed_user_ids.contains(&user) {return Err(deny("The device access allowlist does not permit this recipient"));}
-        for cap in [RpcCap::Ssh,RpcCap::SshConsent,RpcCap::SharedSessionLease,RpcCap::SharedSshStream] {
-            if !a.capabilities.has_rpc(cap) {return Err(deny("This agent cannot enforce scoped shared embedded SSH"));}
-        }
-        if a.ssh_host_pubkey.is_empty() {return Err(deny("Device has not published an SSH host key"));}
         Ok(access)
     }).await.map_err(|_|deny("Shared SSH policy lookup timed out"))?
 }
+
+/// Opening the bridge retains every live transport/agent enforcement gate.
+async fn pdp(
+    state: &NetworkState,
+    user: ObjectId,
+    grant: ObjectId,
+) -> Result<meshharbor_core::device_share::SharedDeviceAccess, ApiError> {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let access = authorization_policy(state, user, grant).await?;
+        let a = &access.agent;
+        if !state.fleet.rc_hub.is_agent_online(access.grant.device_id)
+            || state.fleet.rc_hub.agent_org(access.grant.device_id) != Some(a.tenant_id)
+        {
+            return Err(deny(
+                "Shared SSH requires this device on this server; no cross-pod fallback",
+            ));
+        }
+        for cap in [
+            RpcCap::Ssh,
+            RpcCap::SshConsent,
+            RpcCap::SharedSessionLease,
+            RpcCap::SharedSshStream,
+        ] {
+            if !a.capabilities.has_rpc(cap) {
+                return Err(deny("This agent cannot enforce scoped shared embedded SSH"));
+            }
+        }
+        if a.ssh_host_pubkey.is_empty() {
+            return Err(deny("Device has not published an SSH host key"));
+        }
+        Ok(access)
+    })
+    .await
+    .map_err(|_| deny("Shared SSH policy lookup timed out"))?
+}
+
 pub async fn metadata(
     State(state): State<NetworkState>,
     auth: AuthUser,

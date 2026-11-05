@@ -59,6 +59,7 @@ pub mod derp_types;
 pub mod ephemeral;
 pub mod hooks;
 pub mod managed_forward;
+pub mod native_ssh_authorization;
 pub mod net_inventory;
 pub mod org_relay;
 pub mod overlay;
@@ -643,6 +644,21 @@ impl Module for NetworkState {
             )
             .route("/device-shares/{id}/ssh", get(shared_ssh::metadata))
             .route("/device-shares/{id}/ssh/ws", get(shared_ssh::connect))
+            .route(
+                "/native/share-ssh/authorizations",
+                post(native_ssh_authorization::start)
+                    .layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            .route(
+                "/native/share-ssh/authorizations/exchange",
+                post(native_ssh_authorization::exchange)
+                    .layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            .route(
+                "/native/share-ssh/authorizations/{id}/decision",
+                post(native_ssh_authorization::decide)
+                    .layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
             .nest("/tenant/{tenant_id}/agent", agent)
             .nest("/tenant/{tenant_id}/tunnel-client", tunnel_client)
             .nest("/tenant/{tenant_id}/tunnel-policy", tunnel_policy)
@@ -730,6 +746,20 @@ impl Module for NetworkState {
         }
 
         vec![
+            IndexSet {
+                collection: meshharbor_db::models::NativeSshAuthorization::COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![
+                    index_unique(bson::doc! {"authorization_id":1}),
+                    index_unique(bson::doc! {"device_code_hash":1}),
+                    index_unique(bson::doc! {"client_hash":1,"client_slot":1}),
+                    index_unique_partial(
+                        bson::doc! {"grant_hash":1},
+                        bson::doc! {"grant_hash":{"$type":"string"}},
+                    ),
+                    index_ttl(bson::doc! {"expires_at":1}, 0),
+                ],
+            },
             // Central-use approvals and observed source addresses are private
             // security records, not ordinary Agent/TunnelClient JSON fields.
             // Role approvals need no set here: their deterministic `_id` is the

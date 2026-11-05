@@ -1542,6 +1542,224 @@ async fn native_ssh_login(
         .await
         .unwrap()
 }
+/// Browser approval authenticates only this SSH request, never the CLI as an
+/// account. This first slice uses real HTTP/isolated Mongo, without a live agent,
+/// WebSocket or SSH process. Every identity and proof belongs to this fixture.
+#[tokio::test]
+async fn browser_shared_ssh_authorization_requires_approval_and_never_yields_account_token() {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+
+    let f = fixture().await;
+    // Authorization cannot override default-off org/device SSH policy. Only
+    // this synthetic HTTP fixture permits SSH; it still has no live agent.
+    f.app
+        .db
+        .collection::<bson::Document>("tenants")
+        .update_one(
+            doc! {"_id": f.tenant},
+            doc! {"$set": {"settings.remote_ssh_enabled": true}},
+        )
+        .await
+        .unwrap();
+    f.app
+        .db
+        .collection::<Agent>("agents")
+        .update_one(
+            doc! {"_id": f.device},
+            doc! {"$set": {"ssh_policy.mode": "on"}},
+        )
+        .await
+        .unwrap();
+    let share = create(&f).await["id"].as_str().unwrap().to_owned();
+    let public_key = shared_ssh_public_key();
+    let verifier = "x17-synthetic-device-proof-verifier-012345678901234567890123456789";
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(verifier.as_bytes()));
+    let started = f
+        .app
+        .client
+        .post(f.app.url("/api/native/share-ssh/authorizations"))
+        .json(&json!({
+            "share_grant_id": share,
+            "public_key": public_key,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "session_secs": 60,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        started.status().as_u16(),
+        201,
+        "a native SSH request must provide an explicit browser-approval flow"
+    );
+    assert!(
+        started
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    let started: Value = started.json().await.unwrap();
+    assert!(started.get("access_token").is_none());
+    assert!(started.get("refresh_token").is_none());
+    let authorization = started["authorization_id"].as_str().unwrap();
+    let user_code = started["user_code"].as_str().unwrap();
+    let device_code = started["device_code"].as_str().unwrap();
+    let verification_uri = started["verification_uri"].as_str().unwrap();
+    assert!(!authorization.is_empty() && !user_code.is_empty() && !device_code.is_empty());
+    assert!(started["expires_in"].as_u64().is_some_and(|n| n > 0));
+    assert!(started["interval"].as_u64().is_some_and(|n| n > 0));
+    let approval_url = reqwest::Url::parse(verification_uri).unwrap();
+    let frontend = reqwest::Url::parse(&f.app.settings.app.frontend_url).unwrap();
+    assert_eq!(approval_url.origin(), frontend.origin());
+    assert!(approval_url.username().is_empty() && approval_url.password().is_none());
+    assert!(approval_url.query().is_none() && approval_url.fragment().is_none());
+    for secret in [user_code, device_code, verifier] {
+        assert!(
+            !verification_uri.contains(secret),
+            "approval URL must carry no proof or code"
+        );
+    }
+
+    let exchange_body = json!({"device_code": device_code, "code_verifier": verifier});
+    let exchange = || {
+        f.app
+            .client
+            .post(f.app.url("/api/native/share-ssh/authorizations/exchange"))
+            .json(&exchange_body)
+    };
+    let pending = exchange().send().await.unwrap();
+    assert_eq!(pending.status().as_u16(), 409);
+    assert!(
+        pending
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    let pending: Value = pending.json().await.unwrap();
+    assert_eq!(pending["error"], "authorization_pending");
+    for field in ["grant", "access_token", "refresh_token"] {
+        assert!(
+            pending.get(field).is_none(),
+            "unapproved exchange must return no credential"
+        );
+    }
+
+    let decision_url = f.app.url(&format!(
+        "/api/native/share-ssh/authorizations/{authorization}/decision"
+    ));
+    let decision = json!({"user_code": user_code, "approve": true});
+    let trusted_origin = frontend.origin().ascii_serialization();
+    // A real recipient cookie is necessary; it is not enough for an arbitrary
+    // signed-in account or a foreign origin to submit the approval form.
+    for (token, origin) in [
+        (f.outsider.token.as_str(), trusted_origin.as_str()),
+        (
+            f.recipient.token.as_str(),
+            "https://x17-untrusted-origin.example.invalid",
+        ),
+    ] {
+        let denied = f
+            .app
+            .client
+            .post(&decision_url)
+            .header("Cookie", format!("access_token={token}"))
+            .header("Origin", origin)
+            .json(&decision)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(denied.status().as_u16(), 403);
+    }
+    let still_pending = exchange().send().await.unwrap();
+    assert_eq!(still_pending.status().as_u16(), 409);
+    assert_eq!(
+        still_pending.json::<Value>().await.unwrap()["error"],
+        "authorization_pending"
+    );
+    let approved = f
+        .app
+        .client
+        .post(&decision_url)
+        .header("Cookie", format!("access_token={}", f.recipient.token))
+        .header("Origin", &trusted_origin)
+        .json(&decision)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(approved.status().as_u16(), 200);
+    assert!(
+        approved
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    assert_eq!(
+        approved.json::<Value>().await.unwrap()["status"],
+        "approved"
+    );
+
+    let exchanged = exchange().send().await.unwrap();
+    assert_eq!(exchanged.status().as_u16(), 200);
+    assert!(
+        exchanged
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    let exchanged: Value = exchanged.json().await.unwrap();
+    assert!(exchanged.get("access_token").is_none());
+    assert!(exchanged.get("refresh_token").is_none());
+    let grant = exchanged["grant"].as_str().unwrap();
+    assert!(!grant.is_empty());
+    assert!(!verification_uri.contains(grant));
+    assert!(exchanged["expires_in"].as_u64().is_some_and(|n| n > 0));
+    assert_eq!(
+        exchanged["scope"],
+        json!({
+            "operation": "ssh",
+            "share_grant_id": share,
+            "device_id": f.device.to_hex(),
+            "recipient_user_id": f.recipient.id.to_hex(),
+            "public_key": public_key,
+            "session_secs": 60,
+        }),
+        "only the approved recipient/share/device/key/SSH request may be delegated"
+    );
+    assert_eq!(
+        f.app
+            .auth_get("/api/auth/me", &f.recipient.token)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        200,
+        "positive control: the ordinary account endpoint exists and accepts the recipient"
+    );
+    assert_eq!(
+        f.app
+            .auth_get("/api/auth/me", grant)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        401,
+        "a browser-approved SSH grant must never authenticate the CLI as an account"
+    );
+}
+
 #[tokio::test]
 async fn native_shared_ssh_login_real_http_nonmember_general_access_no_refresh_cookie() {
     let f = fixture().await;
