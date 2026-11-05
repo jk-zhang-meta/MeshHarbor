@@ -57,11 +57,11 @@ use windows::Win32::Graphics::Direct3D::{
 };
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_FLAG, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device,
-    ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11_CREATE_DEVICE_FLAG, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_MAP_READ,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
-use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
 use windows::Win32::System::WinRT::Direct3D11::{
@@ -71,6 +71,7 @@ use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemIntero
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
 use windows::core::{IInspectable, Interface};
 
+use super::d3d11_scale::BgraScaler;
 use super::pointer::{PointerRequest, RecordedPointer};
 use super::{Damage, DirtyRect, DownscalePolicy, Frame, PixelFormat, ScreenCapture};
 
@@ -93,6 +94,7 @@ const NEXT_FRAME_TIMEOUT: Duration = Duration::from_millis(100);
 /// dropped, matching scrap's DXGI behaviour.
 struct SharedSlot {
     latest: Mutex<Option<FramePayload>>,
+    output_cap: Mutex<Option<(u32, u32)>>,
     notify: Notify,
     /// Total `FrameArrived` events the handler processed. Includes
     /// frames that were later dropped because the slot was occupied.
@@ -134,6 +136,81 @@ struct FramePayload {
 /// which stays motion-TRUE (over-reports area, never under).
 const MAX_DAMAGE_RECTS: usize = 256;
 
+const GPU_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// One instance per capture device. The callback holds its mutex through
+/// readback and publication, serializing the immediate context and caches.
+#[derive(Default)]
+struct ReadbackState {
+    staging: Arc<Mutex<Option<ID3D11Texture2D>>>,
+    scaler: Option<BgraScaler>,
+    failed_at: Option<Instant>,
+}
+
+impl ReadbackState {
+    fn try_scaled(
+        &mut self,
+        device: &ID3D11Device,
+        context: &ID3D11DeviceContext,
+        texture: &ID3D11Texture2D,
+        native: (u32, u32),
+        cap: Option<(u32, u32)>,
+    ) -> Option<(Vec<u8>, (u32, u32))> {
+        if matches!(
+            tunnel_core::env::node_env("GPU_SCALE").as_deref(),
+            Some("0") | Some("false")
+        ) {
+            return None;
+        }
+        let (width, height) = cap?;
+        let output = crate::encode::resample::target_dims(
+            native,
+            crate::peer::TargetResolution::Fixed { width, height },
+        );
+        if output == native {
+            return None;
+        }
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { texture.GetDesc(&mut desc) };
+        if desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM
+            || (desc.Width, desc.Height) != native
+            || desc.SampleDesc.Count != 1
+        {
+            return None;
+        }
+        if self
+            .failed_at
+            .is_some_and(|when| when.elapsed() < GPU_RETRY_AFTER)
+        {
+            return None;
+        }
+        self.failed_at = None;
+        let result = (|| -> std::result::Result<Vec<u8>, String> {
+            if self
+                .scaler
+                .as_ref()
+                .is_none_or(|s| !s.matches(native, output))
+            {
+                self.scaler = Some(BgraScaler::new(device, context, native, output)?);
+            }
+            self.scaler
+                .as_mut()
+                .ok_or("WGC scaler cache missing")?
+                .read(texture)
+        })();
+        match result {
+            Ok(bytes) => Some((bytes, output)),
+            Err(error) => {
+                self.scaler = None;
+                self.failed_at = Some(Instant::now());
+                tracing::warn!(%error, retry_s = GPU_RETRY_AFTER.as_secs(),
+                    "wgc: GPU scale unavailable — using native readback and CPU resample fallback");
+                None
+            }
+        }
+    }
+}
+
 pub struct WgcCapture {
     shared: Arc<SharedSlot>,
     width: u32,
@@ -141,6 +218,9 @@ pub struct WgcCapture {
     monitor: u8,
     target_frame_period: Duration,
     last_frame_at: Option<Instant>,
+    /// A relaxed cap needs a new initial WGC image even on a static desktop.
+    /// Consumed before either gate can deliver an old scaled slot.
+    reopen_for_cap_lift: bool,
     /// FR-98 C1 — `Some` when this open runs the slot-first gate
     /// (`MESHHARBORD_CAPTURE_GATE=slot_first`); `None` keeps the legacy gate
     /// above, whose code path is unchanged.
@@ -150,13 +230,8 @@ pub struct WgcCapture {
     gate_mode: super::gate::GateMode,
     /// FR-119 P2b-3 — the captured monitor's refresh rate, read at the open.
     refresh_hz: Option<u16>,
-    // DownscalePolicy is accepted in the constructor so the call site
-    // signature matches the scrap backend, but WGC runs at native
-    // resolution today — the MF HW encoder handles 4K natively so
-    // scrap's CPU 2× box filter isn't needed here. When 1C.3 lands
-    // (VideoProcessorMFT chain for GPU-side scaling) this field
-    // selects the policy. Kept here with `_` prefix to silence the
-    // dead-code lint without losing the slot.
+    // Retained for constructor compatibility. The pump's effective output
+    // cap controls GPU scaling; its CPU resampler remains the fallback.
     _downscale: DownscalePolicy,
     // Kept alive so the worker thread doesn't outlive the handle.
     _worker: thread::JoinHandle<()>,
@@ -223,6 +298,7 @@ impl WgcCapture {
         let pointer_in_frame = bake_cursor(pointer, tunnel_core::env::flag("WGC_CURSOR", false));
         let shared = Arc::new(SharedSlot {
             latest: Mutex::new(None),
+            output_cap: Mutex::new(None),
             notify: Notify::new(),
             arrived_total: std::sync::atomic::AtomicU64::new(0),
             dropped_stale: std::sync::atomic::AtomicU64::new(0),
@@ -284,6 +360,7 @@ impl WgcCapture {
             monitor: monitor_index,
             target_frame_period: super::gate::legacy_period(target_fps),
             last_frame_at: None,
+            reopen_for_cap_lift: false,
             slot_first: (gate_mode == super::gate::GateMode::SlotFirst)
                 .then(|| super::gate::SlotFirst::new(target_fps)),
             gate_mode,
@@ -319,18 +396,25 @@ impl WgcCapture {
             return Ok(None);
         };
         let Some(gate) = self.slot_first.as_mut() else {
-            return Ok(Some(payload_to_frame(payload, self.monitor, self.start)));
+            return Ok(Some(self.frame_from_payload(payload)));
         };
         let wait = gate.wait(Instant::now());
         if !wait.is_zero() {
             tokio::time::sleep(wait).await;
             // A fresher frame may have landed while the source was paced.
             if let Some(newer) = self.shared.latest.lock().unwrap().take() {
-                payload = newer;
+                payload = merge_stale_damage(payload, newer);
             }
         }
         gate.took(Instant::now());
-        Ok(Some(payload_to_frame(payload, self.monitor, self.start)))
+        Ok(Some(self.frame_from_payload(payload)))
+    }
+
+    fn frame_from_payload(&mut self, payload: FramePayload) -> Frame {
+        // Keep the last delivered native geometry even after the slot is empty.
+        // A cap relaxation after a resize must compare against this geometry.
+        (self.width, self.height) = payload.source.unwrap_or((payload.width, payload.height));
+        payload_to_frame(payload, self.monitor, self.start)
     }
 
     pub fn width(&self) -> u32 {
@@ -357,6 +441,13 @@ impl Drop for WgcCapture {
 #[async_trait::async_trait]
 impl ScreenCapture for WgcCapture {
     async fn next_frame(&mut self) -> Result<Option<Frame>> {
+        // WGC does not emit FrameArrived on an unchanged desktop. Reopening
+        // delivers its initial image, so idle refine can regain lost detail.
+        if std::mem::take(&mut self.reopen_for_cap_lift) {
+            return Err(anyhow!(
+                "wgc: output cap relaxed — reopen capture for a fresh frame"
+            ));
+        }
         if self.slot_first.is_some() {
             return self.next_frame_slot_first().await;
         }
@@ -370,15 +461,18 @@ impl ScreenCapture for WgcCapture {
         self.last_frame_at = Some(Instant::now());
 
         // Fast path: a frame is already waiting in the slot.
-        if let Some(payload) = self.shared.latest.lock().unwrap().take() {
-            return Ok(Some(payload_to_frame(payload, self.monitor, self.start)));
+        let payload = self.shared.latest.lock().unwrap().take();
+        if let Some(payload) = payload {
+            return Ok(Some(self.frame_from_payload(payload)));
         }
 
         // Wait for the handler to notify; bail with None on timeout
         // so the pump can loop + decide idle behaviour (keepalive).
-        let notified = self.shared.notify.notified();
-        tokio::pin!(notified);
-        let wait = tokio::time::timeout(NEXT_FRAME_TIMEOUT, &mut notified).await;
+        let wait = {
+            let notified = self.shared.notify.notified();
+            tokio::pin!(notified);
+            tokio::time::timeout(NEXT_FRAME_TIMEOUT, &mut notified).await
+        };
         if wait.is_err() {
             return Ok(None);
         }
@@ -388,7 +482,7 @@ impl ScreenCapture for WgcCapture {
             // (shouldn't happen with a single reader, but be robust).
             return Ok(None);
         };
-        Ok(Some(payload_to_frame(payload, self.monitor, self.start)))
+        Ok(Some(self.frame_from_payload(payload)))
     }
 
     fn readback_totals(&self) -> Option<(u64, u64)> {
@@ -401,6 +495,40 @@ impl ScreenCapture for WgcCapture {
             .readback_us_total
             .load(std::sync::atomic::Ordering::Relaxed);
         Some((frames, us))
+    }
+
+    fn set_output_cap(&mut self, target: Option<(u32, u32)>) {
+        let mut cap = self.shared.output_cap.lock().unwrap();
+        if *cap == target {
+            return;
+        }
+        // Prefer the newest payload's native geometry after a resize. The
+        // callback releases its cap snapshot lock before publishing a payload.
+        let native = self
+            .shared
+            .latest
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or((self.width, self.height), |payload| {
+                payload.source.unwrap_or((payload.width, payload.height))
+            });
+        let effective = |cap: Option<(u32, u32)>| {
+            cap.map_or(native, |(width, height)| {
+                crate::encode::resample::target_dims(
+                    native,
+                    crate::peer::TargetResolution::Fixed { width, height },
+                )
+            })
+        };
+        let old = effective(*cap);
+        let new = effective(target);
+        // None→Some at startup and tightening need no recovery. Compare the
+        // effective dimensions so zero/native/oversized boxes agree with scaling.
+        // Like DXGI, a full lift always requests a fresh initial image.
+        self.reopen_for_cap_lift |=
+            cap.is_some() && (target.is_none() || new.0 > old.0 || new.1 > old.1);
+        *cap = target;
     }
 
     /// FR-119 P2b — both gates move in place. Above 60 the slot-first gate
@@ -451,15 +579,8 @@ impl ScreenCapture for WgcCapture {
 }
 
 /// Translate an internal `FramePayload` into the public `Frame` type.
-/// Applies the downscale policy here rather than in the worker so the
-/// worker's hot path stays predictable.
-///
-/// NOTE: downscale is currently a no-op stub — WGC output is already
-/// at display resolution, and for the WGC path we keep native because
-/// the MF HW encoder can handle 4K. A future pass could chain a
-/// `VideoProcessorMFT` on the GPU for scale-on-GPU (1C.3) but today
-/// scrap's CPU 2× box filter is the only implementation and it's not
-/// warranted on the WGC path.
+/// Preserve the handler's output dimensions and native-source metadata;
+/// the encoder's existing CPU resampler remains the fallback.
 fn payload_to_frame(payload: FramePayload, monitor: u8, start: Instant) -> Frame {
     let monotonic_us = payload
         .captured_at
@@ -569,19 +690,23 @@ fn worker_main(
 
     // 5. Register the FrameArrived handler. State captured into the
     //    closure: the frame pool (for TryGetNextFrame), a reusable
-    //    staging-texture slot, the d3d context (for CopyResource +
+    //    readback/cache state, the d3d context (for CopyResource +
     //    Map), and the shared slot + notify.
-    let staging_slot: Arc<Mutex<Option<ID3D11Texture2D>>> = Arc::new(Mutex::new(None));
+    let readback = Arc::new(Mutex::new(ReadbackState::default()));
     let handler_d3d_device = d3d_device.clone();
     let handler_d3d_context = d3d_context.clone();
     let handler_shared = shared.clone();
-    let handler_staging = staging_slot.clone();
+    let handler_readback = readback.clone();
 
     let handler =
         TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |sender, _args| {
             let Some(pool) = sender.as_ref() else {
                 return Ok(());
             };
+            // Free-threaded callbacks can overlap. Keep context operations,
+            // reusable textures and publication in the same frame order.
+            let mut readback = handler_readback.lock().unwrap();
+            let output_cap = *handler_shared.output_cap.lock().unwrap();
             let frame = match pool.TryGetNextFrame() {
                 Ok(f) => f,
                 Err(e) => {
@@ -605,21 +730,32 @@ fn worker_main(
                 return Ok(());
             };
 
-            // Copy to staging (allocated on first use / size change).
+            // Scale while GPU-resident when possible. A contained failure
+            // immediately takes the unchanged native-copy path.
             let readback_started = Instant::now();
-            let bgra = match copy_to_cpu(
+            let scaled = readback.try_scaled(
                 &handler_d3d_device,
                 &handler_d3d_context,
-                &handler_staging,
                 &gpu_tex,
-                w,
-                h,
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::debug!(%e, "wgc: CPU readback failed");
-                    return Ok(());
-                }
+                (w, h),
+                output_cap,
+            );
+            let (bgra, (out_w, out_h), source) = match scaled {
+                Some((bytes, output)) => (bytes, output, Some((w, h))),
+                None => match copy_to_cpu(
+                    &handler_d3d_device,
+                    &handler_d3d_context,
+                    &readback.staging,
+                    &gpu_tex,
+                    w,
+                    h,
+                ) {
+                    Ok(bytes) => (bytes, (w, h), None),
+                    Err(e) => {
+                        tracing::debug!(%e, "wgc: CPU readback failed");
+                        return Ok(());
+                    }
+                },
             };
             // FR-118 P0 — counted only when it succeeded, like a frame.
             handler_shared.readback_us_total.fetch_add(
@@ -629,23 +765,28 @@ fn worker_main(
             handler_shared
                 .readback_total
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let stride = w * 4;
+            let stride = out_w * 4;
 
             // DirtyRegions() lands on the IDirect3D11CaptureFrame2
             // interface (newer Windows 11 SDK generations). Any failure
             // to read a COMPLETE, non-empty region list degrades to
             // Damage::Unknown — never a shorter "authoritative" list
             // (P8a: under-reported damage reads as a false settle).
-            let damage = collect_damage(&frame, w, h);
+            let native_damage = collect_damage(&frame, w, h);
+            let damage = if source.is_some() {
+                super::scale_damage(&native_damage, w, h, out_w, out_h)
+            } else {
+                native_damage
+            };
 
             let mut payload = FramePayload {
                 bgra,
-                width: w,
-                height: h,
+                width: out_w,
+                height: out_h,
                 stride,
                 captured_at: Instant::now(),
                 damage,
-                source: None,
+                source,
             };
             let arrived = handler_shared
                 .arrived_total
@@ -656,17 +797,12 @@ fn worker_main(
                 // P8a — "latest wins" must not LOSE the stale payload's
                 // damage: the consumer's last-seen frame predates it, so
                 // the replacement's damage is a delta against a frame
-                // nobody read. Union the stale rects in; a dims mismatch
-                // (mid-session resize — different coordinate spaces) or
-                // an Unknown on either side degrades to Unknown.
+                // nobody read. A dimensions or native-source mismatch
+                // changes coordinate spaces and degrades to Unknown.
                 let prev = slot.take();
                 let had_stale = prev.is_some();
                 if let Some(prev) = prev {
-                    payload.damage = union_damage(
-                        prev.damage,
-                        payload.damage,
-                        (prev.width, prev.height) == (payload.width, payload.height),
-                    );
+                    payload = merge_stale_damage(prev, payload);
                 }
                 *slot = Some(payload);
                 had_stale
@@ -732,26 +868,46 @@ fn create_d3d11_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
         D3D_FEATURE_LEVEL_11_0,
         D3D_FEATURE_LEVEL_10_0,
     ];
-    let mut device: Option<ID3D11Device> = None;
-    let mut context: Option<ID3D11DeviceContext> = None;
-    let mut actual_level = D3D_FEATURE_LEVEL_11_0;
-    unsafe {
-        D3D11CreateDevice(
-            None, // default adapter
-            D3D_DRIVER_TYPE_HARDWARE,
-            windows::Win32::Foundation::HMODULE::default(),
-            D3D11_CREATE_DEVICE_FLAG(D3D11_CREATE_DEVICE_BGRA_SUPPORT.0),
-            Some(&feature_levels),
-            D3D11_SDK_VERSION,
-            Some(&mut device),
-            Some(&mut actual_level),
-            Some(&mut context),
-        )
-        .map_err(|e| anyhow!("D3D11CreateDevice for WGC: {e:?}"))?;
-    }
+    let attempt = |flags: D3D11_CREATE_DEVICE_FLAG| {
+        let mut device: Option<ID3D11Device> = None;
+        let mut context: Option<ID3D11DeviceContext> = None;
+        let mut actual_level = D3D_FEATURE_LEVEL_11_0;
+        unsafe {
+            D3D11CreateDevice(
+                None, // default adapter
+                D3D_DRIVER_TYPE_HARDWARE,
+                windows::Win32::Foundation::HMODULE::default(),
+                flags,
+                Some(&feature_levels),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                Some(&mut actual_level),
+                Some(&mut context),
+            )
+        }
+        .map(|_| (device, context))
+    };
+    let (device, context) = match attempt(
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+    ) {
+        Ok(pair) => pair,
+        Err(error) => {
+            tracing::info!(%error, "wgc: VIDEO_SUPPORT device unavailable — retrying original BGRA device");
+            attempt(D3D11_CREATE_DEVICE_BGRA_SUPPORT)
+                .map_err(|e| anyhow!("D3D11CreateDevice for WGC: {e:?}"))?
+        }
+    };
     let device = device.ok_or_else(|| anyhow!("D3D11CreateDevice returned null device"))?;
     let context = context.ok_or_else(|| anyhow!("D3D11CreateDevice returned null context"))?;
     Ok((device, context))
+}
+
+/// Create only the production device/context, without a monitor, capture item,
+/// frame pool or session. Used by the offscreen readback benchmark.
+#[cfg(test)]
+pub(crate) fn test_d3d_device() -> std::result::Result<(ID3D11Device, ID3D11DeviceContext), String>
+{
+    create_d3d11_device().map_err(|error| error.to_string())
 }
 
 /// Cast the frame's `IDirect3DSurface` down to `ID3D11Texture2D` via
@@ -820,6 +976,33 @@ fn copy_to_cpu(
         context.Unmap(&staging, 0);
 
         Ok(bgra)
+    }
+}
+
+/// Offscreen benchmark baseline: reuse precisely the legacy staging cache and
+/// native copy. The caller serializes use of its immediate context.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct NativeReadbackForTest {
+    staging: Arc<Mutex<Option<ID3D11Texture2D>>>,
+}
+
+#[cfg(test)]
+impl NativeReadbackForTest {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn read(
+        &self,
+        device: &ID3D11Device,
+        context: &ID3D11DeviceContext,
+        texture: &ID3D11Texture2D,
+        width: u32,
+        height: u32,
+    ) -> std::result::Result<Vec<u8>, String> {
+        copy_to_cpu(device, context, &self.staging, texture, width, height)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -895,6 +1078,13 @@ fn collect_damage(
     Damage::Tracked(out)
 }
 
+fn merge_stale_damage(prev: FramePayload, mut next: FramePayload) -> FramePayload {
+    let same_space =
+        (prev.width, prev.height, prev.source) == (next.width, next.height, next.source);
+    next.damage = union_damage(prev.damage, next.damage, same_space);
+    next
+}
+
 /// Merge a dropped-stale payload's damage into its replacement (P8a).
 /// `same_dims` false (mid-session resize) ⇒ the rect coordinate spaces
 /// differ ⇒ `Unknown`; `Unknown` on either side is contagious.
@@ -936,6 +1126,133 @@ impl Drop for RoUninitializeGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // No monitor, WinRT session, callback, or GPU resource is created.
+    fn static_scaled_capture(gate_mode: super::super::gate::GateMode) -> WgcCapture {
+        WgcCapture {
+            shared: Arc::new(SharedSlot {
+                latest: Mutex::new(Some(FramePayload {
+                    bgra: vec![7; 4 * 2 * 4],
+                    width: 4,
+                    height: 2,
+                    stride: 4 * 4,
+                    captured_at: Instant::now(),
+                    damage: Damage::Unknown,
+                    source: Some((8, 4)),
+                })),
+                output_cap: Mutex::new(Some((4, 2))),
+                notify: Notify::new(),
+                arrived_total: std::sync::atomic::AtomicU64::new(0),
+                dropped_stale: std::sync::atomic::AtomicU64::new(0),
+                readback_total: std::sync::atomic::AtomicU64::new(0),
+                readback_us_total: std::sync::atomic::AtomicU64::new(0),
+            }),
+            width: 8,
+            height: 4,
+            monitor: 0,
+            target_frame_period: Duration::ZERO,
+            last_frame_at: None,
+            reopen_for_cap_lift: false,
+            slot_first: (gate_mode == super::super::gate::GateMode::SlotFirst)
+                .then(|| super::super::gate::SlotFirst::new(30)),
+            gate_mode,
+            refresh_hz: None,
+            _downscale: DownscalePolicy::Auto,
+            _worker: thread::spawn(|| {}),
+            _shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            start: Instant::now(),
+            pointer_in_frame: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn static_cap_relaxation_reopens_before_scaled_slot_for_both_gates() {
+        use super::super::gate::GateMode;
+        for gate in [GateMode::Legacy, GateMode::SlotFirst] {
+            for target in [None, Some((6, 3)), Some((0, 2)), Some((16, 8))] {
+                let mut capture = static_scaled_capture(gate);
+                capture.set_output_cap(target);
+                // A repeated setter must not cancel the pending recovery.
+                capture.set_output_cap(target);
+                assert_eq!(*capture.shared.output_cap.lock().unwrap(), target);
+                let error = capture.next_frame().await.err().expect("must reopen");
+                assert!(error.to_string().contains("output cap relaxed"));
+                assert!(!capture.reopen_for_cap_lift, "recovery is consumed once");
+                let slot = capture.shared.latest.lock().unwrap();
+                assert_eq!(slot.as_ref().unwrap().bgra, vec![7; 32]);
+                assert_eq!(slot.as_ref().unwrap().source, Some((8, 4)));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn consumed_resized_payload_keeps_native_geometry_for_cap_relaxation() {
+        use super::super::gate::GateMode;
+        for gate in [GateMode::Legacy, GateMode::SlotFirst] {
+            for target in [None, Some((6, 3))] {
+                let mut capture = static_scaled_capture(gate);
+                // The display grew after this capture opened. Its queued 4x2
+                // payload was scaled from 8x4; both caps exceed the old size.
+                capture.width = 2;
+                capture.height = 1;
+                let frame = capture.next_frame().await.unwrap().unwrap();
+                assert_eq!(frame.native_dims(), (8, 4));
+                assert_eq!((capture.width(), capture.height()), (8, 4));
+                assert!(capture.shared.latest.lock().unwrap().is_none());
+                capture.set_output_cap(target);
+                let error = capture.next_frame().await.err().expect("must reopen");
+                assert!(error.to_string().contains("output cap relaxed"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn initial_cap_and_tightening_do_not_reopen() {
+        use super::super::gate::GateMode;
+        for gate in [GateMode::Legacy, GateMode::SlotFirst] {
+            let mut capture = static_scaled_capture(gate);
+            for initial in [Some((4, 2)), Some((16, 2))] {
+                *capture.shared.output_cap.lock().unwrap() = None;
+                capture.set_output_cap(initial);
+                assert!(!capture.reopen_for_cap_lift);
+            }
+            *capture.shared.output_cap.lock().unwrap() = Some((4, 2));
+            capture.set_output_cap(Some((2, 2)));
+            let frame = capture.next_frame().await.unwrap().unwrap();
+            assert_eq!(frame.data, vec![7; 32]);
+            assert!(!capture.reopen_for_cap_lift);
+        }
+    }
+
+    #[test]
+    fn stale_damage_cannot_cross_native_or_scaled_coordinate_spaces() {
+        let payload = |source| FramePayload {
+            bgra: Vec::new(),
+            width: 640,
+            height: 360,
+            stride: 640 * 4,
+            captured_at: Instant::now(),
+            source,
+            damage: Damage::Tracked(vec![DirtyRect {
+                x: 2,
+                y: 2,
+                w: 4,
+                h: 4,
+            }]),
+        };
+        for (old, new) in [
+            (None, Some((1920, 1080))),
+            (Some((1920, 1080)), None),
+            (Some((1920, 1080)), Some((2560, 1440))),
+        ] {
+            assert!(matches!(
+                merge_stale_damage(payload(old), payload(new)).damage,
+                Damage::Unknown
+            ));
+        }
+        let merged = merge_stale_damage(payload(Some((1920, 1080))), payload(Some((1920, 1080))));
+        assert!(matches!(merged.damage, Damage::Tracked(ref rects) if rects.len() == 2));
+    }
 
     /// FR-85 P1d. The live session keeps the pointer out of its frames
     /// unless the escape hatch says otherwise (it streams the pointer on its
