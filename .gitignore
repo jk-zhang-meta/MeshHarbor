@@ -5,7 +5,7 @@ Cargo.lock
 .idea/
 .vscode/
 /target
-# FR-6 wave 16: written in CI by .github/actions/cargo-cache-salt.
+# Historical FR-6 cache-salt output; keep old runtime artifacts ignored.
 /ci-cache-salt/
 .env
 .cred

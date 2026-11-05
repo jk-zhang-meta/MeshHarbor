@@ -224,9 +224,9 @@ Write-Host ''
 if ($useEnvironment) {
     Warn "This tenant needed the Environment fallback. Before tagging a release:"
     Info "  1. Create the '$Environment' environment on $Repo"
-    Info "  2. Add 'environment: $Environment' to every job that calls ./.github/actions/sign-windows"
+    Info '  2. CI is retired. Do not create signing jobs; see docs/local-build.md.'
 }
 Ok 'OIDC wiring complete. No signing key material exists in GitHub.'
 Info ''
 Info 'Verify end to end without a tag:'
-Info "  gh workflow run release-agent.yml --repo $Repo -f publish_release=false -f signing_mode=azure -f require_signing=true"
+Info '  CI is retired; follow docs/local-build.md for explicit local preparation.'

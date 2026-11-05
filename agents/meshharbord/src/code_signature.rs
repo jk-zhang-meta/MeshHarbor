@@ -48,9 +48,9 @@ use std::path::Path;
 /// The publisher every official Windows artifact is signed by — matched
 /// against the certificate's simple display name.
 ///
-/// Kept in step with `expect-subject-contains` in
-/// `.github/actions/sign-windows`: the workflow refuses to publish an artifact
-/// whose signer does not contain this, and this refuses to install one. If the
+/// Kept in step with the publisher verification in `docs/local-build.md`.
+/// Signed-distribution verification rejects a different signer; this updater
+/// check is unchanged by the unsigned local-build policy. If the
 /// company name ever changes, BOTH move together, and old agents keep trusting
 /// only the old name until they are updated by a build that still carries it.
 pub const EXPECTED_PUBLISHER: &str = "G ROX LTD";

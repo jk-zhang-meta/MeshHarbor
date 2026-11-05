@@ -1,5 +1,10 @@
 # The public site: `/`, `/docs`, `/blog` and what a crawler reads
 
+> This project uses no CI. Run the applicable local build and public-site checks
+> explicitly; former runner timings/examples below are historical. See
+> [local builds](local-build.md). Deployment/crawling submissions need separate authority.
+
+
 **Audience:** whoever changes `ui/docs/`, `ui/blog/`, the landing copy, the pod's nginx config,
 or anything a search engine sees. Built by [FR-60](fr/FR-60-public-docs-site.md) (#1165, the
 docs generator) and [FR-87](fr/FR-87-blog-and-google-indexing.md) (#1776, the blog, honest
@@ -14,7 +19,7 @@ the same pod nginx. No dependency was added for any of it: the generator is `mar
 > ⚠️ **CI green is not "Google can read it".** Every defect FR-87 fixed was invisible from
 > inside the build: dates that changed on every deploy, a redirect that downgraded to
 > `http://`, soft 404s, a year of `immutable` cache on files that changed. They are caught now
-> by [`scripts/public-site-smoke.sh`](../scripts/public-site-smoke.sh) against the image in CI
+> by [`scripts/public-site-smoke.sh`](../scripts/public-site-smoke.sh) against an explicitly staged local image
 > **and** against production after a promote (§6).
 
 ## 1. One generator, two collections and a homepage
@@ -40,8 +45,8 @@ flowchart LR
 ```
 
 `bun run build` is `vue-tsc && vite build && bun docs/build.ts`. **The generator must run
-after `vite build`**, which empties `dist/`. CI runs the three separately so each failure gets
-its own annotation ([`ci.yml:2035`](../.github/workflows/ci.yml)).
+after `vite build`**, which empties `dist/`. Run the three locally and separately so each failure gets
+its own annotation ([`ci.yml:2035`](local-build.md)).
 
 | Collection | Source | URL | Dated from |
 |---|---|---|---|
@@ -86,7 +91,7 @@ flowchart TD
 
 - **Where the manifest comes from:** `hosted-image.yml` checks out full history and runs
   `bun docs/dates.ts --write` before the Docker build
-  ([`hosted-image.yml:113`](../.github/workflows/hosted-image.yml)); the build context is a
+  ([`hosted-image.yml:113`](local-build.md)); the build context is a
   path, so the untracked file reaches `COPY ui/ .`. The CLI **refuses** to write from a shallow
   clone ([`dates.ts:106`](../ui/docs/dates.ts)): a depth-1 clone's one commit "touches" every
   file, which would stamp HEAD's date everywhere, the same lie one step removed.
@@ -240,7 +245,7 @@ the server's security headers, and `internal` on `/home/` does not block it.
 
 [`scripts/public-site-smoke.sh`](../scripts/public-site-smoke.sh) `<base-url> [<repo> [<rev>]]`
 checks the **served** site. It runs against every image in `hosted-image.yml`
-([`:209`](../.github/workflows/hosted-image.yml)) and belongs against production after a promote:
+([`:209`](local-build.md)) and belongs against production after a promote:
 
 ```bash
 bash scripts/public-site-smoke.sh https://meshharbor.itachi.fans . <deployed-sha>
@@ -397,4 +402,4 @@ property from it. Review the coverage at +3, +14 and +28 days after a launch (FR
 | [`ui/docs/theme/assets.ts`](../ui/docs/theme/assets.ts) · [`images.ts`](../ui/docs/theme/images.ts) · [`links.ts`](../ui/docs/theme/links.ts) | hashing · image sizes · the link gate |
 | [`files/nginx-pod.conf`](../files/nginx-pod.conf) | how it is served |
 | [`scripts/public-site-smoke.sh`](../scripts/public-site-smoke.sh) | how it is proven |
-| [`scripts/indexnow.sh`](../scripts/indexnow.sh) · `ui/public/<key>.txt` · [`promote.yml`](../.github/workflows/promote.yml) | telling search engines what a roll changed |
+| [`scripts/indexnow.sh`](../scripts/indexnow.sh) · `ui/public/<key>.txt` · [`promote.yml`](local-build.md) | telling search engines what a roll changed |

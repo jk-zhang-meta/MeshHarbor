@@ -20,7 +20,7 @@ added. Replaying the same grant is refused.
 
 The feature is off at every level that is not the build
 until an operator turns it on: all four release lanes build the `ssh-server`
-cargo feature (`.github/workflows/release-agent.yml`), but `ssh_enabled`
+cargo feature ([platform release features](local-build.md#native-binaries-and-features)), but `ssh_enabled`
 defaults false, `ssh_authorized_keys` defaults empty, and every device's
 `SshPolicy` defaults to `Off`.
 
@@ -1505,7 +1505,7 @@ never recorded: what a session typed is its own.
 `ssh-server` is a cargo feature (it implies `overlay-netstack`). It is not a
 `default` feature, but all four release lanes build it — the Windows
 `full-hw` set and the three `full` sets (Linux x86_64 and arm64, macOS) in
-`.github/workflows/release-agent.yml` — so every released daemon carries the
+[platform release features](local-build.md#native-binaries-and-features) — so every released daemon carries the
 server, off until the configuration below turns it on.
 
 Measured by building `meshharbord` both ways on x86_64-pc-windows-msvc with

@@ -5,7 +5,7 @@ MeshHarbor's code carries three licences. The server a customer would host is
 the documentation is **CC-BY-4.0**. [`LICENSING.md`](../LICENSING.md) answers the
 practical questions: self-hosting, MSPs, reselling, and what happened to code
 contributed before the split. This page is the engineering view: how the split is
-classified, which CI checks stop it rotting, and what the FFmpeg LGPL obligations
+classified, which local checks protect it, and what the FFmpeg LGPL obligations
 require.
 
 > Design record and evidence: [`fr/FR-24-licensing-split.md`](fr/FR-24-licensing-split.md) (#838).
@@ -38,7 +38,7 @@ a procurement blocker at most enterprises, and it would falsify the MSP answer i
 
 The single source of truth is
 [`scripts/licence-classes.sh`](../scripts/licence-classes.sh). `LICENSING.md`'s
-table mirrors it for readers, and CI reads only the script.
+table mirrors it for readers, and the local checks read the script.
 
 | class | by path ([`:31`](../scripts/licence-classes.sh#L31), [`:45`](../scripts/licence-classes.sh#L45)) | by crate ([`:81`](../scripts/licence-classes.sh#L81), [`:99`](../scripts/licence-classes.sh#L99)) | SPDX |
 |---|---|---|---|
@@ -57,15 +57,17 @@ only works because the check now walks every member (see below).
 
 ## The checks that keep it true
 
-All four run in [`.github/workflows/licensing.yml`](../.github/workflows/licensing.yml)
-on every change to a manifest, a source file or the class script.
+Run these checks locally for changes to manifests, source files or the class
+script; there is no CI. Commands and complete original check bodies are retained
+in [local builds](local-build.md#toolchain-and-checks) and the
+[licensing recipe](local-build-recipes.md#licensing).
 
 | check | catches | shape, and why |
 |---|---|---|
-| Every workspace member declares the expected `license` ([`:44`](../.github/workflows/licensing.yml#L44)) | a crate that says MPL while classed server, or the reverse | Iterates the **workspace `members`** from `Cargo.toml`, not a glob. It fails loudly if it parses none. It reads only the `[package]` section, because `[package.metadata.wix]` has a `license` key that means something else |
-| Every first-party file carries the right SPDX header ([`:79`](../.github/workflows/licensing.yml#L79)) | a new file with no header, or the wrong one | `scripts/apply-spdx.sh --check`, classified by path |
-| **No AGPL crate reaches a shipped agent binary** ([`:88`](../.github/workflows/licensing.yml#L88)) | the one-line `Cargo.toml` edge that would relicense the agent | `cargo tree -p <agent> -e normal` against the server crate list. `-e normal` drops dev-dependencies, because a test-only edge cannot reach a shipped binary and flagging it would train people to disable the check |
-| Dependency licences are on the allowlist ([`:110`](../.github/workflows/licensing.yml#L110)) | a third-party crate under a licence nobody vetted | `cargo deny check licenses` |
+| Every workspace member declares the expected `license` ([local recipe](local-build-recipes.md#licensing)) | a crate that says MPL while classed server, or the reverse | Iterates the **workspace `members`** from `Cargo.toml`, not a glob. It fails loudly if it parses none. It reads only the `[package]` section, because `[package.metadata.wix]` has a `license` key that means something else |
+| Every first-party file carries the right SPDX header ([local recipe](local-build-recipes.md#licensing)) | a new file with no header, or the wrong one | `scripts/apply-spdx.sh --check`, classified by path |
+| **No AGPL crate reaches a shipped agent binary** ([local recipe](local-build-recipes.md#licensing)) | the one-line `Cargo.toml` edge that would relicense the agent | `cargo tree -p <agent> -e normal` against the server crate list. `-e normal` drops dev-dependencies, because a test-only edge cannot reach a shipped binary and flagging it would train people to disable the check |
+| Dependency licences are on the allowlist ([local recipe](local-build-recipes.md#licensing)) | a third-party crate under a licence nobody vetted | `cargo deny check licenses` |
 
 ⚠️ **Both lists had gone blind to FR-69's modules, and every run still printed OK.**
 Until 2026-09-25 the manifest check iterated `crates/*/Cargo.toml`, one level deep,
@@ -89,13 +91,16 @@ The agents link FFmpeg, which is LGPL-2.1, and how they link it decides what we 
 | macOS (`.pkg`) | shared | §6(b) | the corresponding source |
 
 The corresponding source is a bundle on the permanent `vendored-ffmpeg-<version>`
-release, built by [`lgpl-source-offer.yml`](../.github/workflows/lgpl-source-offer.yml).
+release, prepared through the [offline source-offer procedure](local-build.md#offline-lgpl-source-offer).
 It holds the upstream tarball and **every change our builds make to it**: our own
 patches from `.github/ffmpeg-patches/`, and the vcpkg `ffmpeg` port that the Windows
 build starts from, at the baseline the recipe pins
-([`:64`](../.github/workflows/lgpl-source-offer.yml#L64)). The relink procedure itself
+([source-offer recipe](local-build-recipes.md#lgpl-source-offer)). The relink procedure itself
 is in [`lgpl-relink.md`](lgpl-relink.md), and the written offer is in
 [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md).
+
+The diagram below records the **retired CI gate**, not a current dispatch route.
+Manual preparation must retain its input comparison before publication.
 
 ```mermaid
 sequenceDiagram
@@ -115,9 +120,9 @@ sequenceDiagram
     end
 ```
 
-⚠️ **After any change to `.github/ffmpeg-patches/` or the vcpkg baseline, dispatch
-`lgpl-source-offer.yml` before tagging.** `release-agent.yml` refuses otherwise
-([`:400`](../.github/workflows/release-agent.yml#L400)). Until 2026-09-24 the bundle
+⚠️ **After changes to patches, baseline or vendor recipes, prepare and verify
+a matching source offer before publishing a binary.** Follow the
+[offline procedure](local-build.md#offline-lgpl-source-offer); no CI enforces this now. Until 2026-09-24 the bundle
 held neither set of patches while three documents said we applied none. The workflow's
 own check was green throughout, because it asked whether an asset *existed*, never
 whether it was the source we built from (#1616).

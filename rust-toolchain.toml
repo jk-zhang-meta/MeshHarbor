@@ -1,12 +1,5 @@
-# Pinned Rust toolchain for all builds.
-#
-# Every push is gated by `.github/workflows/*.yml` which installs Rust from
-# channel/profile files defined here — so keep this in lockstep with what CI
-# expects. Bumping the channel sets a single source of truth that local dev
-# (rustup picks this up automatically in any subcommand inside the repo) and
-# CI (actions-rs / dtolnay/rust-toolchain both honour this file) share.
-#
-# Required components: rustfmt and clippy, since both workflows call them.
+# Pinned local build toolchain. This project uses no CI.
+# Rustfmt/clippy are required by the manual checks in docs/local-build.md.
 
 [toolchain]
 channel = "1.95.0"
