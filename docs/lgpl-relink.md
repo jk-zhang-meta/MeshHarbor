@@ -154,7 +154,8 @@ editor and sound (the `-h264dec-aac` assets; never an `hevc` decoder). The
 authoritative platform lists are in [local builds](local-build.md#native-binaries-and-features), and the `recording` feature is in `full`.
 
 ⚠️ Windows also needs libvpx for the VP9-4:4:4 path; the retained
-[libvpx recipe](local-build-recipes.md#vendor-libvpx-windows) records its pin and appends it to `PKG_CONFIG_PATH`. If
+[vendor input guide](local-build.md#vendor-inputs-and-assets) records its pin;
+the existing Windows staging helper configures `PKG_CONFIG_PATH`. If
 you do not need VP9-4:4:4, drop the `vp9-444` features.
 
 ### 4. Verify it works

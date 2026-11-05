@@ -8,8 +8,9 @@ description: Guide MeshHarbor's manual local release preparation, package signin
 Read [local builds](../../../docs/local-build.md),
 [code signing](../../../docs/code-signing.md),
 [installation](../../../docs/installation.md) and
-[deployment](../../../docs/deployment.md). The native recipe reference is
-historical source material, not an executable release pipeline.
+[deployment](../../../docs/deployment.md). The
+[historical source index](../../../docs/local-build.md#historical-workflow-sources)
+points to retired Git sources, not an executable release pipeline.
 
 ## Authority and evidence
 

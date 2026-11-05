@@ -58,16 +58,16 @@ only works because the check now walks every member (see below).
 ## The checks that keep it true
 
 Run these checks locally for changes to manifests, source files or the class
-script; there is no CI. Commands and complete original check bodies are retained
+script; there is no CI. Commands and historical original checks can be found
 in [local builds](local-build.md#toolchain-and-checks) and the
-[licensing recipe](local-build-recipes.md#licensing).
+[historical source index](local-build.md#historical-workflow-sources).
 
 | check | catches | shape, and why |
 |---|---|---|
-| Every workspace member declares the expected `license` ([local recipe](local-build-recipes.md#licensing)) | a crate that says MPL while classed server, or the reverse | Iterates the **workspace `members`** from `Cargo.toml`, not a glob. It fails loudly if it parses none. It reads only the `[package]` section, because `[package.metadata.wix]` has a `license` key that means something else |
-| Every first-party file carries the right SPDX header ([local recipe](local-build-recipes.md#licensing)) | a new file with no header, or the wrong one | `scripts/apply-spdx.sh --check`, classified by path |
-| **No AGPL crate reaches a shipped agent binary** ([local recipe](local-build-recipes.md#licensing)) | the one-line `Cargo.toml` edge that would relicense the agent | `cargo tree -p <agent> -e normal` against the server crate list. `-e normal` drops dev-dependencies, because a test-only edge cannot reach a shipped binary and flagging it would train people to disable the check |
-| Dependency licences are on the allowlist ([local recipe](local-build-recipes.md#licensing)) | a third-party crate under a licence nobody vetted | `cargo deny check licenses` |
+| Every workspace member declares the expected `license` ([local checks](local-build.md#toolchain-and-checks)) | a crate that says MPL while classed server, or the reverse | Iterates the **workspace `members`** from `Cargo.toml`, not a glob. It fails loudly if it parses none. It reads only the `[package]` section, because `[package.metadata.wix]` has a `license` key that means something else |
+| Every first-party file carries the right SPDX header ([local checks](local-build.md#toolchain-and-checks)) | a new file with no header, or the wrong one | `scripts/apply-spdx.sh --check`, classified by path |
+| **No AGPL crate reaches a shipped agent binary** ([local checks](local-build.md#toolchain-and-checks)) | the one-line `Cargo.toml` edge that would relicense the agent | `cargo tree -p <agent> -e normal` against the server crate list. `-e normal` drops dev-dependencies, because a test-only edge cannot reach a shipped binary and flagging it would train people to disable the check |
+| Dependency licences are on the allowlist ([local checks](local-build.md#toolchain-and-checks)) | a third-party crate under a licence nobody vetted | `cargo deny check licenses` |
 
 ⚠️ **Both lists had gone blind to FR-69's modules, and every run still printed OK.**
 Until 2026-09-25 the manifest check iterated `crates/*/Cargo.toml`, one level deep,
@@ -95,7 +95,7 @@ release, prepared through the [offline source-offer procedure](local-build.md#of
 It holds the upstream tarball and **every change our builds make to it**: our own
 patches from `.github/ffmpeg-patches/`, and the vcpkg `ffmpeg` port that the Windows
 build starts from, at the baseline the recipe pins
-([source-offer recipe](local-build-recipes.md#lgpl-source-offer)). The relink procedure itself
+([source-offer recipe](local-build.md#offline-lgpl-source-offer)). The relink procedure itself
 is in [`lgpl-relink.md`](lgpl-relink.md), and the written offer is in
 [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md).
 

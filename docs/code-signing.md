@@ -219,7 +219,7 @@ third-party DLL). **Invariant: no step after payload signing may run
 This project uses no CI. The following describes the former implementation;
 its trust, timestamp, publisher and notarization requirements still apply to
 manual releases. See [local packaging and signing](local-build.md#packaging-and-signing)
-and the retained [native signing command reference](local-build-recipes.md#sign-windows).
+and the [historical signing sources](local-build.md#historical-workflow-sources).
 
 
 ### Windows signing requirements

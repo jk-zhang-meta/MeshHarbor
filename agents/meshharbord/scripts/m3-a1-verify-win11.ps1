@@ -60,7 +60,7 @@ param(
     # names are frozen (FR-21 D6) — the updater matches on extension +
     # arch + the -permachine- infix, never the prefix.
     # Path to the perMachine meshharbor-agent MSI. Default: the per-tag
-    # release asset name pattern retained in docs/local-build-recipes.md (release-agent).
+    # release asset names: docs/local-build.md, historical release-agent source.
     [string]$MsiPath = 'C:\Users\Public\Downloads\meshharbor-agent-perMachine.msi',
 
     # Override the agent EXE path. Defaults to the perMachine install

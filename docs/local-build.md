@@ -26,8 +26,9 @@ Linux native prerequisites include pkg-config, cmake, clang/libclang, libdbus-1-
 libglib2.0-dev, libgtk-3-dev, libsoup-3.0-dev, libjavascriptcoregtk-4.1-dev,
 libwebkit2gtk-4.1-dev, libvpx-dev, libxcb1-dev, libxcb-shm0-dev,
 libxcb-randr0-dev and libasound2-dev, according to selected features.
-The exact old dependency verification is retained in the
-[command reference](local-build-recipes.md#ci-linux-system-deps).
+The former dependency checks can be inspected through the
+[historical sources](#historical-workflow-sources), including the retired
+`ci-linux-system-deps` action. They are not a local setup script.
 Windows needs MSVC, Windows SDK, pkg-config and native dependencies; macOS needs
 Xcode tools and the target-specific dependencies. Package/signing tools are separate.
 
@@ -47,9 +48,9 @@ cargo deny check licenses
 
 Run `cargo tree -p <shipped-agent> -e normal` and check against the server crate
 list in `scripts/licence-classes.sh`; dev dependencies are not shipped edges.
-The complete former manifest-license/graph checks and platform test feature sets
-are preserved under [licensing](local-build-recipes.md#licensing) and
-[ci](local-build-recipes.md#ci). Workspace checks alone do not cover feature unions,
+The former manifest-license/graph algorithms and platform feature matrices are
+in the historical `licensing.yml` and `ci.yml` sources; see
+[historical workflow sources](#historical-workflow-sources). Workspace checks alone do not cover feature unions,
 platform-specific code or `#[cfg(test)]` bodies. For a reduced API profile, use
 `--no-default-features --features <profile>` and assert both expected presences
 and absences with `cargo tree`, plus a full-profile positive control.
@@ -72,9 +73,10 @@ do not prove the real-network acceptance bar in CLAUDE.md.
 
 Run each line on the matching native host/target with its libraries already
 staged. These are the R3 release feature sets, not a promise every target was
-built here. The complete prerequisite, feature, linker, companion, shim, package
-and verification command bodies are retained in the
-[recipe reference](local-build-recipes.md#release-agent).
+built here. Historical prerequisite, linker, companion, shim, packaging and
+verification details remain in Git as `release-agent.yml`; use the
+[historical source index](#historical-workflow-sources). Those retired runner
+commands are not an executable local build plan.
 
 | Platform | Agent command |
 |---|---|
@@ -101,10 +103,10 @@ selected tree's `.pc` paths and `MESHHARBOR-PATCHES.txt` before linking. Linux
 arm64's retained R3 release feature set intentionally lacks `ffmpeg-encoder`.
 
 CLI: `cargo build -p meshharbor-cli --release`. Setup:
-`cargo build -p meshharbor-setup --release`. The
-[setup](local-build-recipes.md#release-setup) and
-[tunnel](local-build-recipes.md#release-tunnel) references retain their exact
-platform target flags, strip/compression and package asset names. macOS universal
+`cargo build -p meshharbor-setup --release`. Historical `release-setup.yml` and
+`release-tunnel.yml` sources retain the target flags, strip/compression and
+package asset names; retrieve them through the
+[historical source index](#historical-workflow-sources). macOS universal
 setup/CLI builds combine `x86_64-apple-darwin` and `aarch64-apple-darwin` using
 `lipo`; the daemon release is Apple silicon only. Companion and shim commands
 are distinct from the daemon; never let a companion `.deb` become the first
@@ -155,11 +157,11 @@ libvpx release tag: `vendored-libvpx-1.12.0`; asset:
 Preserve `.github/ffmpeg-patches/` byte for byte. In the retained R3 recipes,
 Windows applies our patches plus the pinned vcpkg port's patch list; Linux applies
 our patches in filename order; macOS applies none. This is a statement about
-those recipes, not verified provenance of the current upstream assets. Preserve the complete configure options, overlay port
-injection, pkg-config fixes, library packing and symbol/import checks in the
-[vendor Windows/Linux](local-build-recipes.md#vendor-ffmpeg-windows),
-[vendor macOS](local-build-recipes.md#vendor-ffmpeg-macos) and
-[libvpx](local-build-recipes.md#vendor-libvpx-windows) references.
+those recipes, not verified provenance of the current upstream assets. The
+complete configure options, overlay port injection, pkg-config fixes, library
+packing and symbol/import checks remain in Git as `vendor-ffmpeg-windows.yml`,
+`vendor-ffmpeg-macos.yml` and `vendor-libvpx-windows.yml`; see the
+[historical source index](#historical-workflow-sources).
 They enable only the intended LGPL components, including the H.264 decoder and
 AAC encoder; do not replace them with a generic system FFmpeg. macOS dylibs target
 14.0, use `@rpath` and VideoToolbox, and disable autodetection/Homebrew leakage.
@@ -187,8 +189,9 @@ verify its signature/notarization. The migration itself performed no signing.
 
 ### Historical signed distribution and unchanged updater checks
 
-[Code signing](code-signing.md), `scripts/signing/README.md` and the command
-reference retain the former official distribution recipes. They do **not**
+[Code signing](code-signing.md), `scripts/signing/README.md` and the
+[historical source index](#historical-workflow-sources) retain the former official
+distribution recipes. They do **not**
 require Windows/Linux signing for the owner's current local artifacts. In that
 historical signed path, Windows payload signing preceded MSI packaging, a relink
 invalidated signatures, and publisher/timestamp/chain verification used `G ROX
@@ -276,8 +279,55 @@ build that needs dates. Builds, registry pushes and GitOps/ArgoCD deployment
 are separate authorized operations. Do not automatically prune images, caches,
 registry tags or user toolchains on a developer host.
 
-[Native command reference](local-build-recipes.md) preserves original build,
-package, verification and signing command bodies with original paths, revision
-and SHA-256. Its runner expressions are historical placeholders, not a new local
-script. Existing source offers retain their original recipes. Historical FR
-documents and incident evidence remain unchanged; they do not authorize CI.
+Existing source offers retain their original recipes. Historical FR documents
+and incident evidence remain unchanged; they do not authorize CI.
+
+## Historical workflow sources
+
+Retired automation is kept in Git history, not copied into an executable local
+runbook. Inspect an original workflow with
+`git show 3c48d7e7:.github/workflows/<name>.yml` (replace `<name>` with its stem),
+for example:
+
+```sh
+git show 3c48d7e7:.github/workflows/release-agent.yml
+```
+
+The 23 original filenames are:
+
+- `cache-janitor.yml`
+- `ci.yml`
+- `cla.yml`
+- `daily-health-check.yml`
+- `fr-verification-debt.yml`
+- `ghcr-retention.yml`
+- `hive-archive-image.yml`
+- `hosted-image.yml`
+- `installer-smoke.yml`
+- `integration-tests.yml`
+- `lgpl-source-offer.yml`
+- `licensing.yml`
+- `macos-mesh-test.yml`
+- `promote.yml`
+- `publish-selfhost-image.yml`
+- `release-agent.yml`
+- `release-setup.yml`
+- `release-tunnel.yml`
+- `seed-release-caches.yml`
+- `ui-phone-smoke.yml`
+- `vendor-ffmpeg-macos.yml`
+- `vendor-ffmpeg-windows.yml`
+- `vendor-libvpx-windows.yml`
+
+Retired composite-action sources can likewise be inspected with
+`git show 3c48d7e7:.github/actions/<name>/action.yml`. The original names were
+`cargo-cache-salt`, `ci-linux-system-deps`, `ci-seed-restore`, `ci-seed-save`,
+`seed-cache-restore`, `seed-cache-save`, `sign-windows` and `sign-macos`.
+
+These sources contain runner placeholders, credential provisioning, signing,
+cache deletion, uploading and deployment operations. They are historical evidence,
+not current local commands or authority to perform those operations. Current
+Windows/Linux local artifacts remain unsigned, and only macOS is signed. A
+historical R3 recipe alone does not prove which source produced an upstream
+vendor binary; the offline source offer still requires its actual build repository
+and revision, original inputs and verified mapping.

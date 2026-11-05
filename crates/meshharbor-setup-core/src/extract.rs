@@ -6,7 +6,7 @@
 //! filename + does the right thing per platform.
 //!
 //! - **Windows**: tunnel CLI ships as `.zip` (see
-//!   `docs/local-build-recipes.md`, release-tunnel). Use the pure-Rust `zip`
+//!   `docs/local-build.md`, historical release-tunnel source). Use the pure-Rust `zip`
 //!   crate to extract into the per-user install dir.
 //! - **Linux/macOS**: tunnel CLI ships as `.tar.gz`. Use `flate2` to
 //!   stream-decompress, then `tar` to walk entries.

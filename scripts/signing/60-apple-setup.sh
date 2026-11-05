@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 60-apple-setup.sh -- produce the six Apple secrets that release-agent.yml's
-# macOS job already expects, without ever touching Keychain Access.
-#
-# The retained signing + notarisation flow in docs/local-build-recipes.md is
-# complete and correct; it has simply never had credentials. This script
+# 60-apple-setup.sh -- historical Apple credential-provisioning helper.
+# Original release-job inputs can be inspected through the Historical workflow
+# sources section in docs/local-build.md; current macOS signing requirements
+# are documented there under Packaging and signing. This reference does not
+# perform provisioning or signing. This script, when explicitly invoked,
 # generates the keys and CSRs with openssl, assembles the .p12 bundles from
 # the certificates Apple issues, and pushes everything to GitHub.
 #
