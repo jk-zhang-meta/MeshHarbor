@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="windows-1252"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <!-- RETIRED-NAME-ANCHOR-BEGIN
      Same as wix/main.wxs: MSI identity (meshharbor_agent_exe FileKey), the inert
      meshharbor-agent.exe alias, and pre-P4b install-folder cleanup.
