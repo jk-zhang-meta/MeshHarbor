@@ -44,6 +44,16 @@ fn duplicate_key(error: &mongodb::error::Error) -> bool {
     }
 }
 
+fn request_filter(row: &NativeSshAuthorization, state: &str) -> bson::Document {
+    doc! {
+        "authorization_id": row.authorization_id, "state": state,
+        "expires_at": {"$eq": row.expires_at, "$gt": DateTime::now()},
+        "share_grant_id": row.share_grant_id, "public_key": &row.public_key,
+        "code_challenge": &row.code_challenge, "session_secs": row.session_secs as i64,
+        "user_code_hash": &row.user_code_hash, "device_code_hash": &row.device_code_hash,
+    }
+}
+
 impl NativeSshAuthorizationDao {
     pub fn new(db: &Database) -> Self {
         Self {
@@ -143,20 +153,69 @@ impl NativeSshAuthorizationDao {
             .await?)
     }
 
-    pub async fn decide(
+    pub async fn preview(
         &self,
-        id: ObjectId,
+        row: &NativeSshAuthorization,
         user_code: &str,
-        scope: Option<&NativeSshScope>,
+        scope: &NativeSshScope,
+        revision: &str,
     ) -> DaoResult<bool> {
+        let Some(binding) = scope.binding.as_ref() else {
+            return Ok(false);
+        };
+        if binding.request_expires_at <= DateTime::now() {
+            return Ok(false);
+        }
+        let mut filter = request_filter(row, "pending");
+        filter.insert("user_code_hash", hash_secret("user", user_code));
+        filter.insert(
+            "preview_revision_hash",
+            bson::to_bson(&row.preview_revision_hash)?,
+        );
         Ok(self
             .base
             .collection()
             .find_one_and_update(
-                doc! {"authorization_id": id, "user_code_hash": hash_secret("user", user_code),
-                "state": "pending", "expires_at": {"$gt": DateTime::now()}},
-                doc! {"$set": {"state": if scope.is_some() {"approved"} else {"denied"},
-                "scope": bson::to_bson(&scope)?}},
+                filter,
+                doc! {"$set": {"preview_scope": bson::to_bson(scope)?,
+                "preview_revision_hash": hash_secret("preview", revision)}},
+            )
+            .await?
+            .is_some())
+    }
+
+    pub async fn decide(
+        &self,
+        row: &NativeSshAuthorization,
+        user_code: &str,
+        revision: &str,
+        approve: bool,
+    ) -> DaoResult<bool> {
+        let Some(scope) = row.preview_scope.as_ref() else {
+            return Ok(false);
+        };
+        let Some(binding) = scope.binding.as_ref() else {
+            return Ok(false);
+        };
+        let mut filter = request_filter(row, "pending");
+        filter.insert("user_code_hash", hash_secret("user", user_code));
+        filter.insert("preview_revision_hash", hash_secret("preview", revision));
+        filter.insert("preview_scope", bson::to_bson(scope)?);
+        filter.insert(
+            "preview_scope.binding.request_expires_at",
+            doc! {"$gt": DateTime::now()},
+        );
+        if binding.request_expires_at <= DateTime::now() {
+            return Ok(false);
+        }
+        Ok(self
+            .base
+            .collection()
+            .find_one_and_update(
+                filter,
+                doc! {"$set": {"state": if approve {"approved"} else {"denied"},
+                "scope": bson::to_bson(&approve.then_some(scope))?},
+                "$unset": {"preview_scope": "", "preview_revision_hash": ""}},
             )
             .await?
             .is_some())
@@ -197,12 +256,24 @@ impl NativeSshAuthorizationDao {
         grant: &str,
         grant_expires_at: DateTime,
     ) -> DaoResult<bool> {
+        let Some(binding) = row.scope.as_ref().and_then(|scope| scope.binding.as_ref()) else {
+            return Ok(false);
+        };
+        if binding.request_expires_at <= DateTime::now() {
+            return Ok(false);
+        }
+        let mut filter = request_filter(row, "approved");
+        filter.insert("grant_hash", bson::Bson::Null);
+        filter.insert("scope", bson::to_bson(&row.scope)?);
+        filter.insert(
+            "scope.binding.request_expires_at",
+            doc! {"$gt": DateTime::now()},
+        );
         Ok(self
             .base
             .collection()
             .find_one_and_update(
-                doc! {"authorization_id": row.authorization_id, "state": "approved",
-                "expires_at": {"$gt": DateTime::now()}, "grant_hash": null},
+                filter,
                 doc! {"$set": {"state": "exchanged", "grant_hash": hash_secret("grant", grant),
                 "grant_expires_at": grant_expires_at}},
             )

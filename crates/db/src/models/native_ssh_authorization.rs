@@ -3,7 +3,7 @@
 use bson::{DateTime, Document, oid::ObjectId};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct NativeSshScope {
     pub device_id: ObjectId,
     pub tenant_id: ObjectId,
@@ -13,6 +13,27 @@ pub struct NativeSshScope {
     pub share_revision: u32,
     pub ssh_account: String,
     pub ssh_policy: Document,
+    // Legacy approvals have no displayed-scope binding and cannot be exchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<NativeSshBinding>,
+}
+
+/// Server-owned display and authority snapshot. Contains no codes or credentials.
+/// Policy values supplement existing revisions; they are not cross-document epochs.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct NativeSshBinding {
+    pub authorization_id: ObjectId,
+    pub share_grant_id: ObjectId,
+    pub public_key: String,
+    pub code_challenge: String,
+    pub recipient_username: String,
+    pub recipient_display_name: String,
+    pub device_name: String,
+    pub device_os: String,
+    pub request_expires_at: DateTime,
+    pub share_expires_at: DateTime,
+    pub session_secs: u64,
+    pub security: Document,
 }
 
 /// The fixed `_id` is a capacity slot, not the public authorization ID.
@@ -38,6 +59,10 @@ pub struct NativeSshAuthorization {
     pub state: String,
     pub polls: u32,
     pub scope: Option<NativeSshScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_scope: Option<NativeSshScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_revision_hash: Option<String>,
     pub grant_hash: Option<String>,
     pub grant_expires_at: Option<DateTime>,
     pub created_at: DateTime,

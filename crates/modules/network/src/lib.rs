@@ -655,6 +655,11 @@ impl Module for NetworkState {
                     .layer(axum::extract::DefaultBodyLimit::max(4096)),
             )
             .route(
+                "/native/share-ssh/authorizations/{id}/preview",
+                post(native_ssh_authorization::preview)
+                    .layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            .route(
                 "/native/share-ssh/authorizations/{id}/decision",
                 post(native_ssh_authorization::decide)
                     .layer(axum::extract::DefaultBodyLimit::max(4096)),

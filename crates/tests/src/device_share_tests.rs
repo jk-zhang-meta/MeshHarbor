@@ -1660,7 +1660,9 @@ async fn browser_shared_ssh_authorization_requires_approval_and_never_yields_acc
     let decision_url = f.app.url(&format!(
         "/api/native/share-ssh/authorizations/{authorization}/decision"
     ));
-    let decision = json!({"user_code": user_code, "approve": true});
+    let preview = browser_ssh_preview(&f, authorization, user_code).await;
+    let decision = json!({"user_code": user_code, "approve": true,
+        "expected_scope_revision": preview["scope_revision"]});
     let trusted_origin = frontend.origin().ascii_serialization();
     // A real recipient cookie is necessary; it is not enough for an arbitrary
     // signed-in account or a foreign origin to submit the approval form.
@@ -1993,9 +1995,299 @@ async fn browser_shared_ssh_anonymous_start_does_not_enumerate_existing_or_unkno
     assert_eq!(limited_shapes[0], limited_shapes[1]);
 }
 
-/// Prepare one synthetic browser-approved request through the public HTTP API.
-/// The returned proof stays in this test; no transport, browser or real login.
-async fn approved_browser_ssh_request(f: &Fixture) -> (String, String) {
+async fn assert_browser_ssh_request_pending(f: &Fixture, device_code: &str, verifier: &str) {
+    let response = f
+        .app
+        .client
+        .post(f.app.url("/api/native/share-ssh/authorizations/exchange"))
+        .json(&json!({"device_code": device_code, "code_verifier": verifier}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 409);
+    assert!(
+        response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body, json!({"error": "authorization_pending"}));
+}
+
+#[tokio::test]
+async fn browser_shared_ssh_preview_requires_recipient_and_binds_explicit_decision_to_scope() {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+
+    let f = shared_ssh_fixture().await;
+    let mut share_body = create_body(&f);
+    // Keep the share lifetime longer than both the pending request and session,
+    // so the displayed request expiry and session maximum are distinct facts.
+    share_body["expires_in_secs"] = json!(3600);
+    let created = f
+        .app
+        .auth_post("/api/device-shares", &f.owner.token)
+        .json(&share_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status().as_u16(), 200);
+    let created: Value = created.json().await.unwrap();
+    let share = created["id"].as_str().unwrap();
+    let verifier = "x17-synthetic-scope-preview-verifier-012345678901234567890123456789";
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(verifier.as_bytes()));
+    let before_start = DateTime::now().timestamp_millis();
+    let started = f
+        .app
+        .client
+        .post(f.app.url("/api/native/share-ssh/authorizations"))
+        .json(&json!({
+            "share_grant_id": share,
+            "public_key": shared_ssh_public_key(),
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "session_secs": 90,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(started.status().as_u16(), 201);
+    let started: Value = started.json().await.unwrap();
+    let after_start = DateTime::now().timestamp_millis();
+    let authorization = started["authorization_id"].as_str().unwrap();
+    let user_code = started["user_code"].as_str().unwrap();
+    let device_code = started["device_code"].as_str().unwrap();
+    let base = format!("/api/native/share-ssh/authorizations/{authorization}");
+    let origin = reqwest::Url::parse(&f.app.settings.app.frontend_url)
+        .unwrap()
+        .origin()
+        .ascii_serialization();
+    let preview = f
+        .app
+        .client
+        .post(f.app.url(&format!("{base}/preview")))
+        .header("Cookie", format!("access_token={}", f.recipient.token))
+        .header("Origin", &origin)
+        .json(&json!({"user_code": user_code}))
+        .send()
+        .await
+        .unwrap();
+    // This is the first new behavior: the current backend returns HTTP 404.
+    assert_eq!(preview.status().as_u16(), 200);
+    assert_eq!(preview.headers().get("cache-control").unwrap(), "no-store");
+    assert!(
+        preview
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    let preview: Value = preview.json().await.unwrap();
+    // Values come from the fixture's actual user, device, share and request,
+    // never from a scope object supplied in the preview/decision JSON.
+    assert_eq!(preview["authorization_id"], authorization);
+    assert_eq!(preview["recipient"]["id"], f.recipient.id.to_hex());
+    assert_eq!(preview["recipient"]["username"], "share_recipient");
+    assert_eq!(preview["recipient"]["display_name"], "share_recipient");
+    assert_eq!(preview["device"]["id"], f.device.to_hex());
+    assert_eq!(preview["device"]["name"], "One shared box");
+    assert_eq!(preview["device"]["os"], "linux");
+    assert_eq!(preview["ssh_account"], "alice");
+    assert_eq!(preview["session_secs"], 90);
+    let expiry = preview["request_expires_at_ms"].as_i64().unwrap();
+    assert!((before_start + 300_000..=after_start + 300_000).contains(&expiry));
+    let revision = preview["scope_revision"].as_str().unwrap();
+    assert!(!revision.is_empty());
+    assert!(revision.is_ascii());
+    for field in [
+        "grant",
+        "device_code",
+        "user_code",
+        "access_token",
+        "refresh_token",
+    ] {
+        assert!(preview.get(field).is_none());
+    }
+    assert_browser_ssh_request_pending(&f, device_code, verifier).await;
+
+    let wrong_code = format!(
+        "{}{}",
+        &user_code[..user_code.len() - 1],
+        if user_code.ends_with('a') { 'b' } else { 'a' }
+    );
+    for (token, request_origin, code, expected) in [
+        (Some(&f.outsider.token), origin.as_str(), user_code, 403),
+        (
+            Some(&f.recipient.token),
+            origin.as_str(),
+            wrong_code.as_str(),
+            403,
+        ),
+        (
+            Some(&f.recipient.token),
+            "https://untrusted.example.test",
+            user_code,
+            403,
+        ),
+        (None, origin.as_str(), user_code, 401),
+    ] {
+        let mut request = f
+            .app
+            .client
+            .post(f.app.url(&format!("{base}/preview")))
+            .header("Origin", request_origin)
+            .json(&json!({"user_code": code}));
+        if let Some(token) = token {
+            request = request.header("Cookie", format!("access_token={token}"));
+        }
+        let refused = request.send().await.unwrap();
+        assert_eq!(refused.status().as_u16(), expected);
+        assert!(
+            refused
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .next()
+                .is_none()
+        );
+        let refused: Value = refused.json().await.unwrap();
+        for field in [
+            "recipient",
+            "device",
+            "ssh_account",
+            "scope_revision",
+            "grant",
+            "device_code",
+            "access_token",
+            "refresh_token",
+        ] {
+            assert!(refused.get(field).is_none());
+        }
+        assert_browser_ssh_request_pending(&f, device_code, verifier).await;
+    }
+
+    // Tamper with the server-issued revision while preserving length and
+    // characters valid for common opaque hash/base64url representations.
+    let wrong_revision = format!(
+        "{}{}",
+        &revision[..revision.len() - 1],
+        if revision.ends_with('a') { 'b' } else { 'a' }
+    );
+    for body in [
+        json!({"user_code": user_code, "approve": true}),
+        json!({"user_code": user_code, "approve": true, "expected_scope_revision": wrong_revision}),
+    ] {
+        let refused = f
+            .app
+            .client
+            .post(f.app.url(&format!("{base}/decision")))
+            .header("Cookie", format!("access_token={}", f.recipient.token))
+            .header("Origin", &origin)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status().as_u16(), 403);
+        assert!(
+            refused
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .next()
+                .is_none()
+        );
+        assert_browser_ssh_request_pending(&f, device_code, verifier).await;
+    }
+    let approved = f
+        .app
+        .client
+        .post(f.app.url(&format!("{base}/decision")))
+        .header("Cookie", format!("access_token={}", f.recipient.token))
+        .header("Origin", &origin)
+        .json(
+            &json!({"user_code": user_code, "approve": true, "expected_scope_revision": revision}),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(approved.status().as_u16(), 200);
+    assert!(
+        approved
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    let approved: Value = approved.json().await.unwrap();
+    assert_eq!(approved, json!({"status": "approved"}));
+    let exchanged = f
+        .app
+        .client
+        .post(f.app.url("/api/native/share-ssh/authorizations/exchange"))
+        .json(&json!({"device_code": device_code, "code_verifier": verifier}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(exchanged.status().as_u16(), 200);
+    assert!(
+        exchanged
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    let exchanged: Value = exchanged.json().await.unwrap();
+    assert!(exchanged["grant"].as_str().is_some_and(|g| !g.is_empty()));
+    assert_eq!(exchanged["scope"]["device_id"], preview["device"]["id"]);
+    assert_eq!(
+        exchanged["scope"]["recipient_user_id"],
+        preview["recipient"]["id"]
+    );
+    assert_eq!(exchanged["scope"]["session_secs"], preview["session_secs"]);
+    for field in ["access_token", "refresh_token", "device_code"] {
+        assert!(exchanged.get(field).is_none());
+    }
+}
+
+async fn browser_ssh_preview(f: &Fixture, authorization: &str, user_code: &str) -> Value {
+    let origin = reqwest::Url::parse(&f.app.settings.app.frontend_url)
+        .unwrap()
+        .origin()
+        .ascii_serialization();
+    let response = f
+        .app
+        .client
+        .post(f.app.url(&format!(
+            "/api/native/share-ssh/authorizations/{authorization}/preview"
+        )))
+        .header("Cookie", format!("access_token={}", f.recipient.token))
+        .header("Origin", origin)
+        .json(&json!({"user_code": user_code}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    assert!(
+        response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    response.json().await.unwrap()
+}
+
+/// Prepare a synthetic request using public HTTP; no transport or real login.
+async fn pending_browser_ssh_request(f: &Fixture) -> (Value, String) {
     use base64::Engine as _;
     use sha2::{Digest, Sha256};
 
@@ -2029,7 +2321,14 @@ async fn approved_browser_ssh_request(f: &Fixture) -> (String, String) {
     let started: Value = started.json().await.unwrap();
     assert!(started.get("access_token").is_none());
     assert!(started.get("refresh_token").is_none());
+    (started, verifier.to_owned())
+}
+
+async fn approved_browser_ssh_request(f: &Fixture) -> (String, String) {
+    let (started, verifier) = pending_browser_ssh_request(f).await;
     let authorization = started["authorization_id"].as_str().unwrap();
+    let preview =
+        browser_ssh_preview(f, authorization, started["user_code"].as_str().unwrap()).await;
     let origin = reqwest::Url::parse(&f.app.settings.app.frontend_url)
         .unwrap()
         .origin()
@@ -2042,7 +2341,8 @@ async fn approved_browser_ssh_request(f: &Fixture) -> (String, String) {
         )))
         .header("Cookie", format!("access_token={}", f.recipient.token))
         .header("Origin", origin)
-        .json(&json!({"user_code": started["user_code"], "approve": true}))
+        .json(&json!({"user_code": started["user_code"], "approve": true,
+            "expected_scope_revision": preview["scope_revision"]}))
         .send()
         .await
         .unwrap();
@@ -2061,8 +2361,144 @@ async fn approved_browser_ssh_request(f: &Fixture) -> (String, String) {
     );
     (
         started["device_code"].as_str().unwrap().to_owned(),
-        verifier.to_owned(),
+        verifier,
     )
+}
+
+#[tokio::test]
+async fn browser_shared_ssh_changed_snapshot_requires_preview_again_and_blocks_exchange() {
+    let f = shared_ssh_fixture().await;
+    let (started, verifier) = pending_browser_ssh_request(&f).await;
+    let authorization = started["authorization_id"].as_str().unwrap();
+    let user_code = started["user_code"].as_str().unwrap();
+    let device_code = started["device_code"].as_str().unwrap();
+    let mut preview = browser_ssh_preview(&f, authorization, user_code).await;
+    let origin = reqwest::Url::parse(&f.app.settings.app.frontend_url)
+        .unwrap()
+        .origin()
+        .ascii_serialization();
+    let decision = |revision: &Value| {
+        f.app
+            .client
+            .post(f.app.url(&format!(
+                "/api/native/share-ssh/authorizations/{authorization}/decision"
+            )))
+            .header("Cookie", format!("access_token={}", f.recipient.token))
+            .header("Origin", &origin)
+            .json(
+                &json!({"user_code":user_code, "approve":true, "expected_scope_revision":revision}),
+            )
+    };
+    // Both changes leave this recipient authorized. Rejection must compare the
+    // displayed/security snapshot, rather than just ask whether SSH is allowed.
+    for change in [
+        doc! {"access_policy.allowed_user_ids": [f.recipient.id]},
+        doc! {"name": "Renamed shared host"},
+    ] {
+        f.app
+            .db
+            .collection::<Agent>("agents")
+            .update_one(doc! {"_id": f.device}, doc! {"$set":change})
+            .await
+            .unwrap();
+        let refused = decision(&preview["scope_revision"]).send().await.unwrap();
+        assert_eq!(refused.status().as_u16(), 403);
+        assert_browser_ssh_request_pending(&f, device_code, &verifier).await;
+        let fresh = browser_ssh_preview(&f, authorization, user_code).await;
+        assert!(fresh["scope_revision"] != preview["scope_revision"]);
+        // Rotating a preview also invalidates the previous token even though
+        // the current server scope now matches the newly displayed scope.
+        assert_eq!(
+            decision(&preview["scope_revision"])
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            403
+        );
+        preview = fresh;
+    }
+    assert_eq!(preview["device"]["name"], "Renamed shared host");
+    assert_eq!(
+        decision(&preview["scope_revision"])
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        200
+    );
+    // A relaxation after approval cannot silently replace the approved policy.
+    f.app
+        .db
+        .collection::<Agent>("agents")
+        .update_one(
+            doc! {"_id":f.device},
+            doc! {"$set":{"access_policy.allowed_user_ids":[]}},
+        )
+        .await
+        .unwrap();
+    let refused = f
+        .app
+        .client
+        .post(f.app.url("/api/native/share-ssh/authorizations/exchange"))
+        .json(&json!({"device_code":device_code,"code_verifier":verifier}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status().as_u16(), 403);
+    assert!(
+        refused
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    let refused: Value = refused.json().await.unwrap();
+    for field in ["grant", "access_token", "refresh_token"] {
+        assert!(refused.get(field).is_none());
+    }
+}
+
+#[tokio::test]
+async fn browser_shared_ssh_legacy_approval_without_preview_binding_cannot_exchange() {
+    let f = shared_ssh_fixture().await;
+    let (device_code, verifier) = approved_browser_ssh_request(&f).await;
+    // Simulate an unexpired approval produced before displayed-scope binding.
+    let changed = f
+        .app
+        .db
+        .collection::<bson::Document>("native_ssh_authorizations")
+        .update_one(
+            doc! {"state":"approved"},
+            doc! {"$unset":{"scope.binding":""}},
+        )
+        .await
+        .unwrap();
+    assert_eq!(changed.modified_count, 1);
+    let refused = f
+        .app
+        .client
+        .post(f.app.url("/api/native/share-ssh/authorizations/exchange"))
+        .json(&json!({"device_code":device_code,"code_verifier":verifier}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status().as_u16(), 403);
+    assert!(
+        refused
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    let refused: Value = refused.json().await.unwrap();
+    for field in ["grant", "access_token", "refresh_token"] {
+        assert!(refused.get(field).is_none());
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

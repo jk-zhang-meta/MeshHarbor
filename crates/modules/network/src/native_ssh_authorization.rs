@@ -8,9 +8,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use bson::{DateTime, oid::ObjectId};
+use bson::{DateTime, doc, oid::ObjectId};
 use meshharbor_core::{ApiError, extractors::auth::AuthUser};
-use meshharbor_db::models::{NativeSshAuthorization, NativeSshScope};
+use meshharbor_db::models::{NativeSshAuthorization, NativeSshBinding, NativeSshScope};
 use meshharbor_remote_control::models::ssh_limits;
 use meshharbor_services::dao::{
     base::DaoResult,
@@ -35,6 +35,122 @@ pub struct Start {
 pub struct Decision {
     user_code: String,
     approve: bool,
+    expected_scope_revision: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Preview {
+    user_code: String,
+}
+
+/// Capture only server-owned display and authorization inputs. Comparing these
+/// values binds consent; these reads are NOT an atomic cross-document revocation
+/// fence, and policy changes that happen and revert between reads lack epochs.
+async fn authorized_scope(
+    state: &NetworkState,
+    row: &NativeSshAuthorization,
+    recipient_id: ObjectId,
+    approval_revision: u32,
+) -> Result<NativeSshScope, ApiError> {
+    if row.session_secs == 0 || row.session_secs > ssh_limits::MAX_SESSION_SECS {
+        return Err(refused());
+    }
+    let access = authorization_policy(state, recipient_id, row.share_grant_id)
+        .await
+        .map_err(|_| refused())?;
+    let recipient = state
+        .core
+        .users
+        .base
+        .find_by_id(recipient_id)
+        .await
+        .map_err(|_| refused())?;
+    meshharbor_core::device_share::require_recipient(&recipient).map_err(|_| refused())?;
+    meshharbor_core::admission::require_user(&state.core, &recipient, Some(approval_revision))
+        .map_err(|_| refused())?;
+    let owner = state
+        .core
+        .users
+        .base
+        .find_by_id(access.grant.owner_user_id)
+        .await
+        .map_err(|_| refused())?;
+    meshharbor_core::admission::require_user(&state.core, &owner, None).map_err(|_| refused())?;
+    let tenant = state
+        .tenants
+        .base
+        .find_by_id(access.grant.tenant_id)
+        .await
+        .map_err(|_| refused())?;
+    let membership = storage(
+        state
+            .tenants
+            .members
+            .find_one(doc! {
+                "tenant_id": access.grant.tenant_id, "user_id": access.grant.owner_user_id,
+            })
+            .await,
+    )?
+    .ok_or_else(refused)?;
+    if owner.deleted_at.is_some()
+        || !owner.is_verified
+        || recipient.is_mfa_enabled
+        || tenant.settings.mfa_required
+        || !tenant.settings.remote_ssh_enabled
+        || tenant.deleted_at.is_some()
+        || tenant.is_archived
+    {
+        return Err(refused());
+    }
+    let request_expires_at = row.expires_at.min(access.grant.expires_at);
+    if request_expires_at <= DateTime::now() {
+        return Err(refused());
+    }
+    let os = serde_json::to_value(&access.agent.os).map_err(|_| refused())?;
+    let security = doc! {
+        "recipient_approval": bson::to_document(&recipient.account_approval).map_err(|_| refused())?,
+        "recipient_verified": recipient.is_verified, "recipient_mfa": recipient.is_mfa_enabled,
+        "recipient_deleted_at": recipient.deleted_at,
+        "owner_approval": bson::to_document(&owner.account_approval).map_err(|_| refused())?,
+        "owner_verified": owner.is_verified, "owner_mfa": owner.is_mfa_enabled,
+        "owner_deleted_at": owner.deleted_at,
+        "owner_membership_id": membership.id, "owner_joined_at": membership.joined_at,
+        "owner_role_ids": membership.role_ids,
+        "tenant_owner_id": tenant.owner_id, "tenant_ssh_enabled": tenant.settings.remote_ssh_enabled,
+        "tenant_mfa_required": tenant.settings.mfa_required, "tenant_archived": tenant.is_archived,
+        "tenant_deleted_at": tenant.deleted_at,
+        "access_policy": bson::to_document(&access.agent.access_policy).map_err(|_| refused())?,
+        "share_permissions": bson::to_document(&access.grant.permissions).map_err(|_| refused())?,
+        "share_tcp_ports": bson::to_bson(&access.grant.tcp_ports).map_err(|_| refused())?,
+        "account_approval_enabled": state.settings.auth.account_approval.enabled,
+        "bootstrap_owner_id": state.settings.auth.account_approval.owner_user_id.clone(),
+        "max_session_secs": ssh_limits::MAX_SESSION_SECS as i64,
+    };
+    Ok(NativeSshScope {
+        device_id: access.grant.device_id,
+        tenant_id: access.grant.tenant_id,
+        owner_user_id: access.grant.owner_user_id,
+        recipient_user_id: recipient_id,
+        approval_revision: recipient.account_approval.revision,
+        share_revision: access.grant.revision,
+        ssh_account: access.grant.ssh_account.ok_or_else(refused)?,
+        ssh_policy: bson::to_document(&access.agent.ssh_policy).map_err(|_| refused())?,
+        binding: Some(NativeSshBinding {
+            authorization_id: row.authorization_id,
+            share_grant_id: row.share_grant_id,
+            public_key: row.public_key.clone(),
+            code_challenge: row.code_challenge.clone(),
+            recipient_username: recipient.username,
+            recipient_display_name: recipient.display_name,
+            device_name: access.agent.name,
+            device_os: os.as_str().ok_or_else(refused)?.to_owned(),
+            request_expires_at,
+            share_expires_at: access.grant.expires_at,
+            session_secs: row.session_secs,
+            security,
+        }),
+    })
 }
 
 #[derive(Deserialize)]
@@ -179,6 +295,8 @@ pub async fn start(
             state: "pending".into(),
             polls: 0,
             scope: None,
+            preview_scope: None,
+            preview_revision_hash: None,
             grant_hash: None,
             grant_expires_at: None,
             created_at: now,
@@ -207,6 +325,40 @@ pub async fn start(
     .await
 }
 
+pub async fn preview(
+    State(state): State<NetworkState>,
+    auth: AuthUser,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Preview>,
+) -> Result<Response, ApiError> {
+    bounded(async {
+        if !trusted_origin(&state, &headers) || id.len() != 24 || body.user_code.len() != 12 {
+            return Err(refused());
+        }
+        let id = ObjectId::parse_str(id).map_err(|_| refused())?;
+        let dao = NativeSshAuthorizationDao::new(&state.core.db);
+        let row = storage(dao.pending(id, &body.user_code).await)?.ok_or_else(refused)?;
+        let scope = authorized_scope(&state, &row, auth.user_id, auth.claims.approval_revision).await?;
+        if !state.ssh_rate_limiter.check_bounded(auth.user_id, scope.device_id, 20) {
+            return Ok(limited());
+        }
+        let revision = random_code();
+        if !storage(dao.preview(&row, &body.user_code, &scope, &revision).await)? {
+            return Err(refused());
+        }
+        let binding = scope.binding.as_ref().ok_or_else(refused)?;
+        Ok(response(StatusCode::OK, json!({
+            "authorization_id": row.authorization_id.to_hex(),
+            "recipient": {"id":scope.recipient_user_id.to_hex(),
+                "username":binding.recipient_username, "display_name":binding.recipient_display_name},
+            "device": {"id":scope.device_id.to_hex(), "name":binding.device_name, "os":binding.device_os},
+            "ssh_account":scope.ssh_account, "request_expires_at_ms":binding.request_expires_at.timestamp_millis(),
+            "session_secs":binding.session_secs, "scope_revision":revision,
+        })))
+    }).await
+}
+
 pub async fn decide(
     State(state): State<NetworkState>,
     auth: AuthUser,
@@ -218,32 +370,37 @@ pub async fn decide(
         if !trusted_origin(&state, &headers) || id.len() != 24 || body.user_code.len() != 12 {
             return Err(refused());
         }
+        let revision = body
+            .expected_scope_revision
+            .as_deref()
+            .ok_or_else(refused)?;
+        if revision.len() != 43
+            || !revision
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+        {
+            return Err(refused());
+        }
         let id = ObjectId::parse_str(id).map_err(|_| refused())?;
         let dao = NativeSshAuthorizationDao::new(&state.core.db);
         let row = storage(dao.pending(id, &body.user_code).await)?.ok_or_else(refused)?;
-        // This is the first share read: identity comes from the real browser
-        // session, never a recipient supplied by the anonymous request.
-        let access = authorization_policy(&state, auth.user_id, row.share_grant_id)
-            .await
-            .map_err(|_| refused())?;
+        let shown = row.preview_scope.as_ref().ok_or_else(refused)?;
+        if shown.binding.is_none()
+            || shown.recipient_user_id != auth.user_id
+            || shown
+                != &authorized_scope(&state, &row, auth.user_id, auth.claims.approval_revision)
+                    .await?
+        {
+            return Err(refused());
+        }
         if !state
             .ssh_rate_limiter
-            .check_bounded(auth.user_id, access.grant.device_id, 20)
+            .check_bounded(auth.user_id, shown.device_id, 20)
         {
             return Ok(limited());
         }
-        let scope = NativeSshScope {
-            device_id: access.grant.device_id,
-            tenant_id: access.grant.tenant_id,
-            owner_user_id: access.grant.owner_user_id,
-            recipient_user_id: auth.user_id,
-            approval_revision: auth.claims.approval_revision,
-            share_revision: access.grant.revision,
-            ssh_account: access.grant.ssh_account.ok_or_else(refused)?,
-            ssh_policy: bson::to_document(&access.agent.ssh_policy).map_err(|_| refused())?,
-        };
         if !storage(
-            dao.decide(id, &body.user_code, body.approve.then_some(&scope))
+            dao.decide(&row, &body.user_code, revision, body.approve)
                 .await,
         )? {
             return Err(refused());
@@ -278,18 +435,13 @@ pub async fn exchange(
             _ => return Err(refused()),
         }
         let scope = row.scope.as_ref().ok_or_else(refused)?;
-        meshharbor_core::admission::authorize_user_id(&state.core, scope.recipient_user_id, Some(scope.approval_revision)).await?;
-        let access = authorization_policy(&state, scope.recipient_user_id, row.share_grant_id).await.map_err(|_| refused())?;
-        if access.grant.revision != scope.share_revision || access.grant.device_id != scope.device_id
-            || access.grant.tenant_id != scope.tenant_id || access.grant.owner_user_id != scope.owner_user_id
-            || access.grant.ssh_account.as_deref() != Some(scope.ssh_account.as_str())
-            || bson::to_document(&access.agent.ssh_policy).map_err(|_| refused())? != scope.ssh_policy
-        {
+        let binding = scope.binding.as_ref().ok_or_else(refused)?;
+        if scope != &authorized_scope(&state, &row, scope.recipient_user_id, scope.approval_revision).await? {
             return Err(refused());
         }
         let now = DateTime::now().timestamp_millis();
         let expires_at = (now + NativeSshAuthorization::GRANT_TTL_SECS * 1000)
-            .min(row.expires_at.timestamp_millis()).min(access.grant.expires_at.timestamp_millis());
+            .min(binding.request_expires_at.timestamp_millis()).min(binding.share_expires_at.timestamp_millis());
         if expires_at <= now { return Err(refused()); }
         let grant = format!("mhssh_{}", random_code());
         if !storage(dao.exchange(&row, &grant, DateTime::from_millis(expires_at)).await)? {
@@ -297,9 +449,9 @@ pub async fn exchange(
         }
         Ok(response(StatusCode::OK, json!({
             "grant":grant, "expires_in":(expires_at-now)/1000,
-            "scope":{"operation":"ssh", "share_grant_id":row.share_grant_id.to_hex(),
+            "scope":{"operation":"ssh", "share_grant_id":binding.share_grant_id.to_hex(),
                 "device_id":scope.device_id.to_hex(), "recipient_user_id":scope.recipient_user_id.to_hex(),
-                "public_key":row.public_key, "session_secs":row.session_secs},
+                "public_key":binding.public_key, "session_secs":binding.session_secs},
         })))
     }).await
 }
