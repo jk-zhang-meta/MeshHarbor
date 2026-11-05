@@ -10129,6 +10129,7 @@ pub(crate) struct FileChildAuthorization {
     // (agent, controller), supplied by trusted parent setup, never child JSON.
     identity: Option<(bson::oid::ObjectId, bson::oid::ObjectId)>,
     registration: Option<FileChildRegistration>,
+    invalid_proofs: u8,
     control_closed: bool,
     parent_grant: Option<crate::signaling::PendingFileChildParent>,
 }
@@ -10149,6 +10150,7 @@ struct PreparedFileChild {
 // Retain consumed IDs until the parent ends so prepare cannot resurrect one.
 // There is no child completion/slot recycling path in this admission slice.
 const FILE_CHILD_PREPARATIONS_PER_PARENT: usize = 4;
+const FILE_CHILD_INVALID_PROOF_LIMIT: u8 = 8;
 
 // These origins cannot acquire child support by inheriting an ordinary FILES
 // bit. Their inherited identity/stop chains are not implemented here.
@@ -10189,6 +10191,7 @@ impl FileChildAuthorization {
             origin: FileChildParentOrigin::Unknown,
             identity: None,
             registration: None,
+            invalid_proofs: 0,
             control_closed: false,
             parent_grant: None,
         }
@@ -10296,6 +10299,24 @@ impl FileChildAuthorization {
         &mut self,
         offer: &meshharbor_remote_control::signaling::ServerMsg,
     ) -> std::result::Result<(), FileChildDenial> {
+        let result = self.check_prepared_offer(offer);
+        if matches!(&result, Err(FileChildDenial::InvalidProof)) {
+            // Only failures attributed to a live registered preparation reach
+            // InvalidProof. Success and control messages never reset this count.
+            self.invalid_proofs = self.invalid_proofs.saturating_add(1);
+            if self.invalid_proofs >= FILE_CHILD_INVALID_PROOF_LIMIT {
+                // Sticky for this parent; clear its child grants without
+                // cancelling the ordinary session or closing its control DC.
+                self.close_control();
+            }
+        }
+        result
+    }
+
+    fn check_prepared_offer(
+        &mut self,
+        offer: &meshharbor_remote_control::signaling::ServerMsg,
+    ) -> std::result::Result<(), FileChildDenial> {
         self.check_parent()?;
         use meshharbor_remote_control::signaling::{
             FileChildDirection, ServerMsg, file_child_offer_transcript, peer_auth_verify,
@@ -10324,15 +10345,17 @@ impl FileChildAuthorization {
         {
             return Err(FileChildDenial::ParentUnavailable);
         }
-        // The offer's key is an assertion to compare, never a trust source.
-        if proof.key != registration.key {
-            return Err(FileChildDenial::InvalidProof);
-        }
         let prepared = registration
             .children
             .get_mut(child_id)
             .filter(|p| !p.consumed && p.transfer_id == *transfer_id)
             .ok_or(FileChildDenial::UnpreparedOrConsumed)?;
+        // Check the preparation before charging a bad key: unknown, consumed,
+        // or mismatched children cannot spend this parent's failure budget.
+        // The offer's key is an assertion to compare, never a trust source.
+        if proof.key != registration.key {
+            return Err(FileChildDenial::InvalidProof);
+        }
         let transcript = file_child_offer_transcript(
             &self.parent_session_id.to_hex(),
             &child_id.to_hex(),
@@ -15254,8 +15277,12 @@ mod file_child_authorization_tests {
     }
 
     fn parent() -> Mutex<FileChildAuthorization> {
+        parent_for_session(PARENT)
+    }
+
+    fn parent_for_session(session: &str) -> Mutex<FileChildAuthorization> {
         let mut parent = FileChildAuthorization::unavailable(
-            ObjectId::parse_str(PARENT).unwrap(),
+            ObjectId::parse_str(session).unwrap(),
             Permissions::VIEW | Permissions::FILES,
             CancellationToken::new(),
         );
@@ -15270,9 +15297,18 @@ mod file_child_authorization_tests {
     }
 
     fn signed_offer(controller: &Controller) -> ServerMsg {
-        let nonce = URL_SAFE_NO_PAD.encode([53u8; 16]);
+        signed_child(controller, PARENT, CHILD, [53u8; 16])
+    }
+
+    fn signed_child(
+        controller: &Controller,
+        session: &str,
+        child: &str,
+        nonce: [u8; 16],
+    ) -> ServerMsg {
+        let nonce = URL_SAFE_NO_PAD.encode(nonce);
         let transcript =
-            file_child_offer_transcript(PARENT, CHILD, TRANSFER, AGENT, CONTROLLER, SDP, &nonce)
+            file_child_offer_transcript(session, child, TRANSFER, AGENT, CONTROLLER, SDP, &nonce)
                 .expect("the synthetic offer has a canonical identity and fingerprint");
         let sig = URL_SAFE_NO_PAD.encode(
             controller
@@ -15286,8 +15322,8 @@ mod file_child_authorization_tests {
             "fixture signature must verify before exercising agent admission"
         );
         ServerMsg::FileSdpOffer {
-            session_id: ObjectId::parse_str(PARENT).unwrap(),
-            child_id: ObjectId::parse_str(CHILD).unwrap(),
+            session_id: ObjectId::parse_str(session).unwrap(),
+            child_id: ObjectId::parse_str(child).unwrap(),
             transfer_id: TRANSFER.into(),
             direction: FileChildDirection::Download,
             sdp: SDP.into(),
@@ -15297,6 +15333,32 @@ mod file_child_authorization_tests {
                 sig,
             },
         }
+    }
+
+    fn register_child_key(
+        parent: &Mutex<FileChildAuthorization>,
+        controller: &Controller,
+    ) -> std::result::Result<serde_json::Value, ControlEnvelopeError> {
+        parse_control_envelope(
+            &serde_json::to_vec(&serde_json::json!({
+                "t": "rc:file.child.register", "key": controller.key,
+            }))
+            .unwrap(),
+            parent,
+        )
+    }
+
+    fn prepare_child(
+        parent: &Mutex<FileChildAuthorization>,
+        child: &str,
+    ) -> std::result::Result<serde_json::Value, ControlEnvelopeError> {
+        parse_control_envelope(
+            &serde_json::to_vec(&serde_json::json!({
+                "t": "rc:file.child.prepare", "child_id": child, "transfer_id": TRANSFER,
+            }))
+            .unwrap(),
+            parent,
+        )
     }
 
     #[test]
@@ -15326,11 +15388,11 @@ mod file_child_authorization_tests {
 
         for policy in [Off, Audit] {
             assert!(
-                check_file_child_offer(Some(&parent), &offer, policy).is_err(),
+                check_file_child_offer(Some(&parent), &offer).is_err(),
                 "a self-signed offer without control registration is insufficient: {policy:?}"
             );
             assert_eq!(
-                check_file_child_offer(None, &offer, policy),
+                check_file_child_offer(None, &offer),
                 Err(FileChildDenial::ParentUnavailable),
                 "no live parent must fail closed even under {policy:?}"
             );
@@ -15351,7 +15413,7 @@ mod file_child_authorization_tests {
 
         let unregistered_parent = self::parent();
         assert!(
-            check_file_child_offer(Some(&unregistered_parent), &offer, Off).is_err(),
+            check_file_child_offer(Some(&unregistered_parent), &offer).is_err(),
             "registration on one parent object cannot authorize another parent object"
         );
 
@@ -15401,16 +15463,22 @@ mod file_child_authorization_tests {
             *changed.pointer_mut(pointer).unwrap() = value;
             let changed: ServerMsg = serde_json::from_value(changed).unwrap();
             for policy in [Off, Audit] {
+                let isolated = self::parent();
+                register_child_key(&isolated, &controller).unwrap();
+                prepare_child(&isolated, CHILD).unwrap();
                 assert!(
-                    check_file_child_offer(Some(&parent), &changed, policy).is_err(),
+                    check_file_child_offer(Some(&isolated), &changed).is_err(),
                     "{label} tampering must reject under {policy:?}"
                 );
             }
         }
         let another_valid_signature = signed_offer(&other_controller);
         for policy in [Off, Audit] {
+            let isolated = self::parent();
+            register_child_key(&isolated, &controller).unwrap();
+            prepare_child(&isolated, CHILD).unwrap();
             assert!(
-                check_file_child_offer(Some(&parent), &another_valid_signature, policy).is_err(),
+                check_file_child_offer(Some(&isolated), &another_valid_signature).is_err(),
                 "a valid signature from a different, unregistered key must reject under {policy:?}"
             );
         }
@@ -15422,18 +15490,18 @@ mod file_child_authorization_tests {
             FileChildParentOrigin::Delegated,
         ] {
             parent.lock().unwrap().origin = origin;
-            for policy in [Off, Audit] {
+            for _policy in [Off, Audit] {
                 assert_eq!(
-                    check_file_child_offer(Some(&parent), &offer, policy),
+                    check_file_child_offer(Some(&parent), &offer),
                     Err(FileChildDenial::ParentUnavailable)
                 );
             }
         }
         parent.lock().unwrap().origin = FileChildParentOrigin::Ordinary;
 
-        let admitted = check_file_child_offer(Some(&parent), &offer, Off);
+        let admitted = check_file_child_offer(Some(&parent), &offer);
         assert!(
-            check_file_child_offer(Some(&parent), &offer, Audit).is_err(),
+            check_file_child_offer(Some(&parent), &offer).is_err(),
             "the prepared child must be consumed once, including across policy modes"
         );
 
@@ -15445,12 +15513,12 @@ mod file_child_authorization_tests {
             .permissions
             .remove(Permissions::FILES);
         assert_eq!(
-            check_file_child_offer(Some(&parent), &offer, Off),
+            check_file_child_offer(Some(&parent), &offer),
             Err(FileChildDenial::FilesDenied)
         );
         parent.lock().unwrap().session_end.cancel();
         assert_eq!(
-            check_file_child_offer(Some(&parent), &offer, Audit),
+            check_file_child_offer(Some(&parent), &offer),
             Err(FileChildDenial::ParentEnded)
         );
 
@@ -15460,8 +15528,222 @@ mod file_child_authorization_tests {
         );
     }
     #[test]
+    fn file_child_invalid_proof_budget_is_parent_lifetime_and_state_rejections_do_not_consume() {
+        use crate::peer_auth::{OfferCheck, PeerAuthPolicy, PendingOffers, Verdict};
+        use crate::signaling::check_file_child_offer;
+        use PeerAuthPolicy::{Audit, Off};
+
+        let controller = controller();
+        let other_controller = self::controller();
+        let parent = parent();
+        let offer_a = signed_offer(&controller);
+        let child_b = "333333333333333333333333";
+        let child_c = "666666666666666666666666";
+        let child_d = "777777777777777777777777";
+        let changed = |offer: &ServerMsg, pointer: &str, value: serde_json::Value| {
+            let mut wire = serde_json::to_value(offer).unwrap();
+            *wire.pointer_mut(pointer).unwrap() = value;
+            serde_json::from_value::<ServerMsg>(wire).unwrap()
+        };
+
+        // State-only refusals cannot exhaust a registered parent's proof budget.
+        // In particular, the wrong key must not be charged before confirming a
+        // matching prepared child and transfer. No request promotes its own key.
+        for _policy in [Off, Audit] {
+            for _ in 0..9 {
+                assert_eq!(
+                    check_file_child_offer(None, &offer_a),
+                    Err(FileChildDenial::ParentUnavailable)
+                );
+                assert_eq!(
+                    check_file_child_offer(Some(&parent), &offer_a),
+                    Err(FileChildDenial::Unregistered)
+                );
+            }
+        }
+        register_child_key(&parent, &controller).unwrap();
+        let wrong_key = changed(
+            &offer_a,
+            "/proof/key",
+            serde_json::json!(other_controller.key),
+        );
+        for _policy in [Off, Audit] {
+            for _ in 0..9 {
+                assert!(check_file_child_offer(Some(&parent), &wrong_key).is_err());
+                let wrong_parent = changed(
+                    &wrong_key,
+                    "/session_id",
+                    serde_json::json!("999999999999999999999999"),
+                );
+                assert!(check_file_child_offer(Some(&parent), &wrong_parent).is_err());
+            }
+        }
+        prepare_child(&parent, CHILD).unwrap();
+        let wrong_transfer = changed(
+            &wrong_key,
+            "/transfer_id",
+            serde_json::json!("not-the-prepared-transfer"),
+        );
+        for _policy in [Off, Audit] {
+            for _ in 0..9 {
+                assert!(check_file_child_offer(Some(&parent), &wrong_transfer).is_err());
+            }
+        }
+
+        // Failures 1..3 belong to a live, registered, unconsumed preparation.
+        for (index, bad) in [
+            wrong_key,
+            changed(
+                &offer_a,
+                "/sdp",
+                serde_json::json!("v=0\r\na=fingerprint:sha-256 DD:EE:FF\r\n"),
+            ),
+            changed(
+                &offer_a,
+                "/proof/sig",
+                serde_json::json!(URL_SAFE_NO_PAD.encode([0u8; 64])),
+            ),
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(
+                check_file_child_offer(Some(&parent), bad),
+                Err(FileChildDenial::InvalidProof),
+                "attributable cryptographic failure {} must reject",
+                index + 1
+            );
+        }
+        assert!(register_child_key(&parent, &controller).is_err());
+        prepare_child(&parent, child_b).unwrap();
+        assert_eq!(check_file_child_offer(Some(&parent), &offer_a), Ok(()));
+
+        // A successful child, repeated registration, and a later preparation
+        // cannot reset failures. Repeating a consumed child is state-only,
+        // including when its asserted key is wrong.
+        let consumed_wrong_key = changed(
+            &offer_a,
+            "/proof/key",
+            serde_json::json!(other_controller.key),
+        );
+        for _policy in [Off, Audit] {
+            for _ in 0..9 {
+                assert!(check_file_child_offer(Some(&parent), &offer_a).is_err());
+                assert!(check_file_child_offer(Some(&parent), &consumed_wrong_key).is_err());
+            }
+        }
+        let offer_b = signed_child(&controller, PARENT, child_b, [61u8; 16]);
+        // This signature self-verifies, but its nonce was consumed by child A.
+        let replay_b = signed_child(&controller, PARENT, child_b, [53u8; 16]);
+        for (index, bad) in [
+            replay_b.clone(),
+            changed(
+                &offer_b,
+                "/proof/nonce",
+                serde_json::json!(URL_SAFE_NO_PAD.encode([62u8; 15])),
+            ),
+            changed(
+                &offer_b,
+                "/proof/sig",
+                serde_json::json!(URL_SAFE_NO_PAD.encode([0u8; 64])),
+            ),
+            signed_child(&other_controller, PARENT, child_b, [63u8; 16]),
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(
+                check_file_child_offer(Some(&parent), bad),
+                Err(FileChildDenial::InvalidProof),
+                "attributable cryptographic failure {} must reject",
+                index + 4
+            );
+        }
+        prepare_child(&parent, child_c).unwrap();
+        let offer_c = signed_child(&controller, PARENT, child_c, [67u8; 16]);
+        assert_eq!(
+            check_file_child_offer(Some(&parent), &offer_c),
+            Ok(()),
+            "seven failures must still permit a correctly signed prepared child"
+        );
+        prepare_child(&parent, child_d).unwrap();
+        assert!(check_file_child_offer(Some(&parent), &replay_b).is_err()); // Failure 8.
+
+        let offer_d = signed_child(&controller, PARENT, child_d, [68u8; 16]);
+        // Exercise the real ordinary-policy evaluator as well: Off skips
+        // ordinary authentication and Audit reports an absent proof, yet neither
+        // result may authorize a child after its separate budget is exhausted.
+        for policy in [Off, Audit] {
+            let ordinary = PendingOffers::default();
+            ordinary.note_request(
+                ObjectId::parse_str(PARENT).unwrap(),
+                ObjectId::parse_str(CONTROLLER).unwrap(),
+            );
+            let verdict = ordinary.judge_offer(
+                ObjectId::parse_str(PARENT).unwrap(),
+                SDP,
+                None,
+                &OfferCheck {
+                    policy,
+                    config_path: std::path::Path::new("unused-with-absent-proof"),
+                    tenant_id: "synthetic-tenant",
+                    agent_id: AGENT,
+                },
+            );
+            assert_eq!(
+                verdict,
+                if policy == Off {
+                    None
+                } else {
+                    Some(Verdict::Absent)
+                }
+            );
+            assert!(
+                check_file_child_offer(Some(&parent), &offer_d).is_err(),
+                "X14 eighth attributable InvalidProof must permanently disable this parent's child capability under {policy:?}"
+            );
+        }
+        assert!(register_child_key(&parent, &controller).is_err());
+        assert!(prepare_child(&parent, "888888888888888888888888").is_err());
+        assert!(!parent.lock().unwrap().session_end.is_cancelled());
+        let quality = br#"{"t":"rc:quality","quality":"sharp"}"#;
+        assert_eq!(
+            parse_control_envelope(quality, &parent).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(quality).unwrap(),
+            "budget exhaustion must preserve ordinary control messages"
+        );
+        close_file_child_control(&parent);
+        assert!(parent.lock().unwrap().registration.is_none());
+
+        // A distinct trusted parent connection starts with a fresh lifetime
+        // budget. This is a local state fixture, not a network reconnect claim.
+        let next_session = "999999999999999999999999";
+        let reconnected = parent_for_session(next_session);
+        register_child_key(&reconnected, &controller).unwrap();
+        prepare_child(&reconnected, CHILD).unwrap();
+        // The old parent's consumed nonce is scoped to that closed parent.
+        let next_offer = signed_child(&controller, next_session, CHILD, [53u8; 16]);
+        let next_bad = changed(
+            &next_offer,
+            "/proof/sig",
+            serde_json::json!(URL_SAFE_NO_PAD.encode([0u8; 64])),
+        );
+        for _ in 0..7 {
+            assert_eq!(
+                check_file_child_offer(Some(&reconnected), &next_bad),
+                Err(FileChildDenial::InvalidProof)
+            );
+        }
+        assert_eq!(
+            check_file_child_offer(Some(&reconnected), &next_offer),
+            Ok(())
+        );
+        close_file_child_control(&reconnected);
+        assert!(reconnected.lock().unwrap().registration.is_none());
+    }
+
+    #[test]
     fn file_child_registration_is_bounded_immutable_and_closed_with_parent() {
-        use crate::peer_auth::PeerAuthPolicy::{Audit, Off};
         use crate::signaling::check_file_child_offer;
         let controller = controller();
         let parent = parent();
@@ -15521,13 +15803,13 @@ mod file_child_authorization_tests {
         let original_identity = parent.lock().unwrap().identity;
         parent.lock().unwrap().identity = Some((ObjectId::new(), ObjectId::new()));
         assert_eq!(
-            check_file_child_offer(Some(&parent), &offer, Off),
+            check_file_child_offer(Some(&parent), &offer),
             Err(FileChildDenial::ParentUnavailable),
             "changing parent identity cannot inherit the old control registration"
         );
         parent.lock().unwrap().identity = original_identity;
         assert!(
-            check_file_child_offer(Some(&parent), &offer, Audit).is_ok(),
+            check_file_child_offer(Some(&parent), &offer).is_ok(),
             "a valid Audit admission still executes mandatory proof validation"
         );
         assert!(
@@ -15587,7 +15869,7 @@ mod file_child_authorization_tests {
             );
         }
         assert_eq!(
-            check_file_child_offer(Some(&parent), &second, Audit),
+            check_file_child_offer(Some(&parent), &second),
             Err(FileChildDenial::InvalidProof),
             "a correctly signed second child cannot reuse an admitted nonce"
         );
@@ -15620,13 +15902,13 @@ mod file_child_authorization_tests {
             );
         }
         assert!(
-            check_file_child_offer(Some(&parent), &second, Off).is_ok(),
+            check_file_child_offer(Some(&parent), &second).is_ok(),
             "rejected nonce replay must not consume the prepared second child"
         );
 
         parent.lock().unwrap().close_control();
         assert_eq!(
-            check_file_child_offer(Some(&parent), &offer, Off),
+            check_file_child_offer(Some(&parent), &offer),
             Err(FileChildDenial::ParentEnded)
         );
         assert!(

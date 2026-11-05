@@ -3299,7 +3299,6 @@ async fn handle_server_msg(
                 .get(session_id)
                 .map(AgentPeer::file_child_authorization),
             &msg,
-            remote_cfg.peer_auth_policy(),
         );
         debug!(?admission, "file child transport remains unavailable");
         return Ok(());
@@ -6875,7 +6874,6 @@ async fn handle_server_msg(
 pub(crate) fn check_file_child_offer(
     parent: Option<&std::sync::Mutex<crate::peer::FileChildAuthorization>>,
     offer: &ServerMsg,
-    _ordinary_policy: crate::peer_auth::PeerAuthPolicy,
 ) -> std::result::Result<(), crate::peer::FileChildDenial> {
     use crate::peer::FileChildDenial;
     parent
@@ -7536,7 +7534,6 @@ mod tests {
             FileChildAuthorization, bind_file_child_parent, close_file_child_control,
             parse_control_envelope_with_reply,
         };
-        use crate::peer_auth::PeerAuthPolicy::{Audit, Off};
         use base64::Engine;
         use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
         use bson::oid::ObjectId;
@@ -7794,9 +7791,9 @@ mod tests {
                 sig: signature,
             },
         };
-        let admission = check_file_child_offer(Some(&parent), &offer, Off);
+        let admission = check_file_child_offer(Some(&parent), &offer);
         assert!(
-            check_file_child_offer(Some(&parent), &offer, Audit).is_err(),
+            check_file_child_offer(Some(&parent), &offer).is_err(),
             "accepted child is one-shot across policy modes"
         );
         close_file_child_control(&parent);
@@ -7805,7 +7802,7 @@ mod tests {
             "no registration ACK after actual close helper"
         );
         assert!(
-            check_file_child_offer(Some(&parent), &offer, Off).is_err(),
+            check_file_child_offer(Some(&parent), &offer).is_err(),
             "closed control rejects child proof"
         );
         assert!(
@@ -7941,11 +7938,7 @@ mod tests {
             );
             assert!(pending.approved_scope().is_none());
             assert_eq!(
-                check_file_child_offer(
-                    Some(&parent),
-                    &offer,
-                    crate::peer_auth::PeerAuthPolicy::Off
-                ),
+                check_file_child_offer(Some(&parent), &offer),
                 Err(crate::peer::FileChildDenial::ParentEnded),
                 "valid prepared proof must reject after pending closure or ACK failure"
             );
