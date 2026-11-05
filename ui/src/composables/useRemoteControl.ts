@@ -3771,6 +3771,30 @@ export function parseLocalRelayDescriptor(raw: unknown): LocalRelayDescriptor | 
   return { turn_port, overlay_ip, username, credential }
 }
 
+/** Discover any enrolled local agent's loopback TURN endpoint. */
+export async function probeLocalRelay(): Promise<LocalRelayDescriptor | null> {
+  // Silent ports share one startup wait instead of ten consecutive timeouts.
+  const controllers = LOCAL_RELAY_PROBE_PORTS.map(() => new AbortController())
+  try {
+    return await Promise.any(LOCAL_RELAY_PROBE_PORTS.map(async (port, index) => {
+      const ctl = controllers[index]
+      const timer = setTimeout(() => ctl.abort(), 800)
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/rc-local-turn`, { signal: ctl.signal })
+        const desc = res.ok ? parseLocalRelayDescriptor(await res.json()) : null
+        if (!desc) throw new Error('No valid local relay on this port')
+        return desc
+      } finally {
+        clearTimeout(timer)
+      }
+    }))
+  } catch {
+    return null
+  } finally {
+    for (const ctl of controllers) ctl.abort()
+  }
+}
+
 /** 2026-07-24 decode-stall A/B — experimental override for the DC decode
  *  workers' `VideoDecoder.hardwareAcceleration`. localStorage
  *  `meshharbor-rc-decode-pref`: `'software'` | `'hardware'` | unset
@@ -7181,34 +7205,6 @@ export function useRemoteControl(
   function setLocalRelayEnabled(on: boolean) {
     localRelayEnabled.value = on
     persistLocalRelay(on)
-  }
-
-  /** Probe the local enrolled agent's loopback TURN endpoint. Returns its
-   *  descriptor, or `null` on any failure (no local agent, feature off,
-   *  Private-Network-Access blocked, non-2xx, timeout) — all graceful, so a
-   *  host WITHOUT a local agent silently keeps the normal coturn path. Loopback
-   *  fetch is exempt from mixed-content blocking; the agent's endpoint must
-   *  answer the PNA CORS preflight for HTTPS→localhost on newer Chrome. */
-  async function probeLocalRelay(): Promise<LocalRelayDescriptor | null> {
-    // Walk the candidate range — with multiple agents on the host the
-    // descriptor may be served on a fallback port. First valid
-    // descriptor wins (any agent's local TURN works for the relay).
-    for (const port of LOCAL_RELAY_PROBE_PORTS) {
-      const ctl = new AbortController()
-      const timer = setTimeout(() => ctl.abort(), 800)
-      try {
-        const res = await fetch(`http://127.0.0.1:${port}/rc-local-turn`, { signal: ctl.signal })
-        if (res.ok) {
-          const desc = parseLocalRelayDescriptor(await res.json())
-          if (desc) return desc
-        }
-      } catch {
-        // Nothing on this port → next.
-      } finally {
-        clearTimeout(timer)
-      }
-    }
-    return null
   }
 
   /** The unified Codec picker as a computed over the four underlying refs.
