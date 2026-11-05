@@ -207,6 +207,83 @@ pub struct PeerAuthOffer {
     pub sig: Option<String>,
 }
 
+/// A file child transport is download-only. Unknown directions are refused,
+/// rather than acquiring the ordinary files channel's upload permissions.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileChildDirection {
+    Download,
+}
+
+/// Required proof for a NEW child DTLS transport, separate from the ordinary
+/// offer's optional, audit-only `peer_auth`. P-256/SHA-256 over
+/// [`file_child_offer_transcript`]: `key` is standard padded base64 of an
+/// uncompressed SEC1 point; `nonce` and the fixed-size `r || s` signature are
+/// base64url without padding. Deserialization is NOT identity verification:
+/// the device must bind this key to the authorized parent controller and
+/// verify the signature before creating a child. This type enables nothing.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct FileChildOfferProof {
+    pub nonce: String,
+    pub key: String,
+    pub sig: String,
+}
+
+/// Independent domain for child offers; an ordinary peer-auth signature is
+/// never a proof for a file transport.
+pub const FILE_CHILD_OFFER_LABEL: &[u8] = b"meshharbor-file-child-offer-v1";
+
+/// The child-offer signature's length-prefixed fields: parent session, child,
+/// transfer, literal `download`, device, controller, the normalized NEW offer
+/// DTLS fingerprint, and nonce. IDs must be canonical ObjectId hex; transfer
+/// IDs are nonempty, at most 128 bytes, and contain no control characters.
+/// Reuse of a transfer ID across distinct children is intentional for striping.
+/// This only constructs bytes: neither a trusted key nor authorization is
+/// established here. Unsupported child transports must remain disabled.
+pub fn file_child_offer_transcript(
+    session_id: &str,
+    child_id: &str,
+    transfer_id: &str,
+    agent_id: &str,
+    controller_user_id: &str,
+    offer_sdp: &str,
+    nonce: &str,
+) -> Option<Vec<u8>> {
+    for id in [session_id, child_id, agent_id, controller_user_id] {
+        if ObjectId::parse_str(id).ok()?.to_hex() != id {
+            return None;
+        }
+    }
+    if transfer_id.is_empty()
+        || transfer_id.len() > 128
+        || transfer_id.chars().any(char::is_control)
+        || !peer_auth_nonce_is_well_formed(nonce)
+    {
+        return None;
+    }
+    let fingerprint = sdp_dtls_fingerprint(offer_sdp).ok()?;
+    let fields = [
+        session_id,
+        child_id,
+        transfer_id,
+        "download",
+        agent_id,
+        controller_user_id,
+        &fingerprint,
+        nonce,
+    ];
+    let mut out = Vec::with_capacity(
+        FILE_CHILD_OFFER_LABEL.len() + fields.iter().map(|f| f.len() + 2).sum::<usize>(),
+    );
+    out.extend_from_slice(FILE_CHILD_OFFER_LABEL);
+    for field in fields {
+        let len = u16::try_from(field.len()).ok()?;
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(field.as_bytes());
+    }
+    Some(out)
+}
+
 /// FR-100 P1c — what the device concluded about the browser that offered a
 /// session, as its answer reports it and the session's audit records it:
 /// - `absent`: the offer carried no browser signature;
@@ -1906,6 +1983,22 @@ pub enum ClientMsg {
         peer_auth: Option<PeerAuthOffer>,
     },
 
+    /// An explicitly authorized child transport; this never replaces the
+    /// ordinary remote-control peer. Recognition is not admission: the Hub
+    /// and device must refuse it until their child capability is enabled and
+    /// the current parent's FILES grant and child-bound proof are validated.
+    #[serde(rename = "rc:file.sdp.offer")]
+    FileSdpOffer {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        direction: FileChildDirection,
+        sdp: String,
+        proof: FileChildOfferProof,
+    },
+
     // ─── either side → server ────────────────────────────────────────
     /// Trickle ICE candidate. Server forwards to the peer.
     #[serde(rename = "rc:ice")]
@@ -2822,6 +2915,7 @@ impl ClientMsg {
             ClientMsg::ConsentPending { .. } => "rc:consent.pending",
             ClientMsg::SessionRequest { .. } => "rc:session.request",
             ClientMsg::SdpOffer { .. } => "rc:sdp.offer",
+            ClientMsg::FileSdpOffer { .. } => "rc:file.sdp.offer",
             ClientMsg::Ice { .. } => "rc:ice",
             ClientMsg::Terminate { .. } => "rc:terminate",
             ClientMsg::Ping { .. } => "rc:ping",
@@ -2893,6 +2987,7 @@ impl ClientMsg {
             ClientMsg::SharedLeaseChallenge { .. }
             | ClientMsg::SessionRequest { .. }
             | ClientMsg::SdpOffer { .. }
+            | ClientMsg::FileSdpOffer { .. }
             | ClientMsg::SdpAnswer { .. }
             | ClientMsg::Ice { .. }
             | ClientMsg::Terminate { .. }
@@ -3047,6 +3142,7 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:consent.pending", Owner::Fleet),
     ("rc:session.request", Owner::Remote),
     ("rc:sdp.offer", Owner::Remote),
+    ("rc:file.sdp.offer", Owner::Remote),
     ("rc:ice", Owner::Remote),
     ("rc:terminate", Owner::Remote),
     ("rc:ping", Owner::Fleet),
@@ -3582,6 +3678,21 @@ pub enum ServerMsg {
         /// `extauth_mac`: the nonce the device signs its answer against.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         peer_auth: Option<PeerAuthOffer>,
+    },
+
+    /// Server forwards a download child offer only after explicit child
+    /// admission. The agent must independently verify the current parent
+    /// grant and the child proof before creating any transport.
+    #[serde(rename = "rc:file.sdp.offer")]
+    FileSdpOffer {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        direction: FileChildDirection,
+        sdp: String,
+        proof: FileChildOfferProof,
     },
 
     /// Server forwards SDP answer from agent → controller.
@@ -6297,6 +6408,78 @@ mod tests {
         assert!(s.contains(r#""t":"rc:ping""#));
         let back: ClientMsg = serde_json::from_str(&s).unwrap();
         assert!(matches!(back, ClientMsg::Ping { id: 42 }));
+    }
+
+    #[test]
+    fn file_child_download_offer_roundtrips_required_child_bound_proof() {
+        use base64::Engine;
+        use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+
+        // Serialization fixtures only: these bytes do not establish an identity
+        // or prove authorization to create a child transport.
+        let mut key = [0u8; 65];
+        key[0] = 4;
+        let wire = serde_json::json!({
+            "t": "rc:file.sdp.offer",
+            "session_id": "111111111111111111111111",
+            "child_id": "222222222222222222222222",
+            "transfer_id": "download-test",
+            "direction": "download",
+            "sdp": "v=0\r\n",
+            "proof": {
+                "nonce": URL_SAFE_NO_PAD.encode([0u8; 16]),
+                "key": STANDARD.encode(key),
+                "sig": URL_SAFE_NO_PAD.encode([0u8; 64]),
+            },
+        });
+        let parsed: ClientMsg = serde_json::from_value(wire.clone())
+            .expect("an explicit download child offer must be a recognized wire message");
+        assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+    }
+
+    #[test]
+    fn file_child_offer_transcript_binds_child_transfer_and_new_dtls_identity() {
+        let parent = "111111111111111111111111";
+        let child = "222222222222222222222222";
+        let other_child = "333333333333333333333333";
+        let agent = "444444444444444444444444";
+        let controller = "555555555555555555555555";
+        let nonce = "AAECAwQFBgcICQoLDA0ODw";
+        let sdp = format!("v=0\r\na=fingerprint:sha-256 {}\r\n", ["AA"; 32].join(":"));
+        let other_sdp = format!("v=0\r\na=fingerprint:sha-256 {}\r\n", ["BB"; 32].join(":"));
+        let transcript = |child, transfer, sdp, nonce| {
+            file_child_offer_transcript(parent, child, transfer, agent, controller, sdp, nonce)
+        };
+        let original = transcript(child, "download-test", &sdp, nonce)
+            .expect("a valid download child binding must produce signing bytes");
+        assert_eq!(
+            transcript(child, "download-test", &sdp, nonce),
+            Some(original.clone()),
+            "the same offer has deterministic signing bytes"
+        );
+        for changed in [
+            transcript(other_child, "download-test", &sdp, nonce),
+            transcript(child, "another-transfer", &sdp, nonce),
+            transcript(child, "download-test", &other_sdp, nonce),
+        ] {
+            assert_ne!(
+                changed.expect("a different valid binding remains signable"),
+                original,
+                "a child proof must not carry over to another child, file or DTLS identity"
+            );
+        }
+        for invalid in [
+            transcript("not-an-object-id", "download-test", &sdp, nonce),
+            transcript(child, "", &sdp, nonce),
+            transcript(child, "download\nforged", &sdp, nonce),
+            transcript(child, "download-test", "v=0\r\n", nonce),
+            transcript(child, "download-test", &sdp, "not-a-nonce"),
+            transcript(child, "download-test", &sdp, &format!("{nonce}=")),
+        ] {
+            assert!(invalid.is_none(), "an invalid binding must not be signed");
+        }
+        // This API constructs signing bytes; it does not accept or verify a
+        // signature/key, or authorize the parent controller's identity.
     }
 
     #[test]

@@ -5109,6 +5109,104 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn unavailable_child_capability_denies_offer_and_preserves_remote_session() {
+        let hub = test_hub().await;
+        let agent_id = ObjectId::new();
+        let (_agent_tx, _cancel, mut agent_rx) = hub.register_agent(
+            agent_id,
+            ObjectId::new(),
+            ObjectId::new(),
+            OsKind::Linux,
+            3,
+            false,
+            false,
+        );
+        let owner = ObjectId::new();
+        let (ctl_tx, mut ctl_rx) = mpsc::channel(8);
+        let sid = hub
+            .create_session(
+                agent_id,
+                owner,
+                "Owner".into(),
+                ctl_tx.clone(),
+                Permissions::VIEW | Permissions::FILES,
+                Vec::new(),
+                None,
+                None,
+                None,
+                false,
+                ConsentMode::Prompt,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let owner_ctx = DispatchCtx {
+            role: Role::Controller,
+            user_id: Some(owner),
+            agent_id: None,
+            controller_name: None,
+            controller_tx: Some(ctl_tx),
+            consent_mode: ConsentMode::Prompt,
+            override_reason: None,
+            input_mode: None,
+            tenant_name: None,
+            may_record: false,
+            rc_overlay: false,
+            session_policy: OrgPolicy::Read(SessionPolicy::default()),
+            max_duration: None,
+            idle_secs: None,
+            lock_on_end: None,
+            org_session_cap: None,
+            slot: None,
+        };
+        assert!(matches!(
+            ctl_rx.recv().await,
+            Some(ServerMsg::SessionCreated { .. })
+        ));
+        hub.deliver_consent(sid, true, None).unwrap();
+        assert!(matches!(ctl_rx.recv().await, Some(ServerMsg::Ready { .. })));
+        hub.dispatch(
+            &owner_ctx,
+            ClientMsg::SdpOffer {
+                session_id: sid,
+                sdp: "v=0".into(),
+                extauth_mac: None,
+                peer_auth: None,
+            },
+        )
+        .unwrap();
+        hub.forward_answer(sid, "v=0".into(), None, None, None)
+            .unwrap();
+        while agent_rx.try_recv().is_ok() {}
+
+        let child_id = ObjectId::new().to_hex();
+        let request = serde_json::json!({
+            "t": "rc:file.sdp.offer",
+            "session_id": sid.to_hex(),
+            "child_id": child_id,
+            "transfer_id": "download-test",
+            "direction": "download",
+            "sdp": "v=0",
+            // Synthetic wire data only. Agent-side identity verification is
+            // a separate mandatory gate, not established by this Hub test.
+            "proof": {"nonce": "synthetic", "key": "synthetic", "sig": "synthetic"},
+        });
+        let parsed: ClientMsg = serde_json::from_value(request)
+            .expect("a download child offer must be a recognized session message");
+        assert!(hub.dispatch(&owner_ctx, parsed).is_err());
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "no child offer may reach an agent without explicit capability"
+        );
+        assert!(
+            hub.session_snapshot(sid).is_some(),
+            "the original remote session remains active"
+        );
+    }
+
     /// P3 security — `dispatch` refuses session verbs from a connection
     /// that is not a party to the session (any authenticated user who
     /// learned a session id could previously Terminate it or inject

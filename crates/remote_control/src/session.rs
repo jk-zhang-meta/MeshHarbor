@@ -20,12 +20,28 @@ use crate::signaling::{LocalRelayDescriptor, ServerMsg};
 /// The WS layer owns the receiving half and forwards to the socket.
 pub type ClientTx = mpsc::Sender<ServerMsg>;
 
+#[derive(PartialEq, Eq)]
+enum FileChildState {
+    Reserved,
+    Active,
+}
+
+struct FileChild {
+    transfer_id: String,
+    state: FileChildState,
+}
+
 pub struct LiveSession {
     pub id: ObjectId,
     pub agent_id: ObjectId,
     pub tenant_id: ObjectId,
     pub controller_user_id: ObjectId,
     permissions: Permissions,
+    file_children_enabled: bool,
+    // Reservations and admissions share four slots. Completion removes only
+    // the exact active binding; transport close and authorization are not wired
+    // to this bookkeeping yet, so production callers must remain disabled.
+    file_children: HashMap<ObjectId, FileChild>,
     device_share_scope: Option<DeviceShareSessionScope>,
     share_watch_started: bool,
     shared_lease_epoch: Option<String>,
@@ -138,10 +154,17 @@ impl LiveSession {
         self.permissions
     }
     /// Every future permission update must cross this ceiling; the field is private.
+    /// Losing effective FILES invalidates child bookkeeping and negotiation.
+    /// Callers must separately stop owned transports: clearing records is not
+    /// evidence that a live connection has closed.
     pub fn set_permissions(&mut self, permissions: Permissions) {
         self.permissions = self
             .device_share_scope
             .map_or(permissions, |s| permissions & s.ceiling);
+        if !self.permissions.contains(Permissions::FILES) {
+            self.file_children_enabled = false;
+            self.file_children.clear();
+        }
     }
     pub fn device_share_scope(&self) -> Option<DeviceShareSessionScope> {
         self.device_share_scope
@@ -182,6 +205,8 @@ impl LiveSession {
             tenant_id,
             controller_user_id,
             permissions,
+            file_children_enabled: false,
+            file_children: HashMap::new(),
             device_share_scope: None,
             share_watch_started: false,
             shared_lease_epoch: None,
@@ -257,6 +282,120 @@ impl LiveSession {
         self.offer_seen = true;
         Ok(())
     }
+
+    /// Explicit child capability gate; ordinary session creation leaves it off.
+    /// This is not proof verification or permission to enable a production path.
+    /// Disabling invalidates all child bookkeeping; callers must separately
+    /// cancel the actual transports before considering them closed.
+    /// Enabling without an active FILES grant cannot pre-arm future access.
+    pub fn set_file_children_enabled(&mut self, enabled: bool) {
+        self.file_children_enabled = enabled
+            && self.phase == SessionPhase::Active
+            && self.permissions().contains(Permissions::FILES);
+        if !self.file_children_enabled {
+            self.file_children.clear();
+        }
+    }
+
+    /// Reserve a server-chosen child ID for this parent's transfer. The caller
+    /// cannot select an ID. Reserved and active children share four slots.
+    /// This is not identity/proof verification, and transport completion is not
+    /// wired yet: the production path must remain disabled.
+    pub fn reserve_file_child(&mut self, transfer_id: &str) -> Result<ObjectId> {
+        use ring::rand::{SecureRandom, SystemRandom};
+
+        if !self.file_children_enabled {
+            return Err(Error::PermissionDenied(
+                "file child transports are disabled",
+            ));
+        }
+        if self.phase != SessionPhase::Active {
+            return Err(Error::BadPhase(self.id.to_hex(), phase_name(self.phase)));
+        }
+        if !self.permissions().contains(Permissions::FILES) {
+            return Err(Error::PermissionDenied("FILES permission is not granted"));
+        }
+        if transfer_id.is_empty()
+            || transfer_id.len() > 128
+            || transfer_id.chars().any(char::is_control)
+        {
+            return Err(Error::BadMessage("invalid file transfer ID"));
+        }
+        if self.file_children.len() >= 4 {
+            return Err(Error::PermissionDenied(
+                "file child connection limit reached",
+            ));
+        }
+        let mut bytes = [0u8; 12];
+        SystemRandom::new().fill(&mut bytes).map_err(|_| {
+            Error::PermissionDenied("file child reservation randomness unavailable")
+        })?;
+        let child_id = ObjectId::from_bytes(bytes);
+        if self.file_children.contains_key(&child_id) {
+            return Err(Error::PermissionDenied("file child reservation collision"));
+        }
+        self.file_children.insert(
+            child_id,
+            FileChild {
+                transfer_id: transfer_id.to_string(),
+                state: FileChildState::Reserved,
+            },
+        );
+        Ok(child_id)
+    }
+
+    /// Download child transports have separate admission from the ordinary
+    /// remote-control offer. Only an explicitly enabled, active FILES parent
+    /// passes this gate. Only a matching server reservation may become Active,
+    /// once. Reserved and active children share four slots, including distinct
+    /// children of the same transfer. Actual transport close and proof
+    /// verification remain unwired; callers must not expose a production child
+    /// transport on the strength of this bookkeeping.
+    pub fn admit_file_child(&mut self, child_id: ObjectId, transfer_id: &str) -> Result<()> {
+        if !self.file_children_enabled {
+            return Err(Error::PermissionDenied(
+                "file child transports are disabled",
+            ));
+        }
+        if self.phase != SessionPhase::Active {
+            return Err(Error::BadPhase(self.id.to_hex(), phase_name(self.phase)));
+        }
+        if !self.permissions().contains(Permissions::FILES) {
+            return Err(Error::PermissionDenied("FILES permission is not granted"));
+        }
+        let child = self
+            .file_children
+            .get_mut(&child_id)
+            .ok_or(Error::PermissionDenied("file child has no reservation"))?;
+        if child.transfer_id != transfer_id {
+            return Err(Error::PermissionDenied("file child transfer mismatch"));
+        }
+        if child.state != FileChildState::Reserved {
+            return Err(Error::PermissionDenied("file child ID already admitted"));
+        }
+        child.state = FileChildState::Active;
+        Ok(())
+    }
+
+    /// Release only the exact active binding, after the caller has closed its
+    /// transport. This neither closes a connection nor authenticates a caller.
+    /// The old offer then has no reservation to consume; no tombstones grow
+    /// with the parent's lifetime. Fresh random IDs still have a theoretical
+    /// collision risk and must not be advertised as mathematically unique.
+    pub fn complete_file_child(&mut self, child_id: ObjectId, transfer_id: &str) -> Result<()> {
+        let child = self
+            .file_children
+            .get(&child_id)
+            .ok_or(Error::PermissionDenied("file child has no reservation"))?;
+        if child.transfer_id != transfer_id {
+            return Err(Error::PermissionDenied("file child transfer mismatch"));
+        }
+        if child.state != FileChildState::Active {
+            return Err(Error::PermissionDenied("file child is not active"));
+        }
+        self.file_children.remove(&child_id);
+        Ok(())
+    }
 }
 
 fn phase_name(p: SessionPhase) -> &'static str {
@@ -311,6 +450,328 @@ mod tests {
     fn cannot_skip_phases() {
         let mut s = fixture();
         assert!(s.transition(SessionPhase::Active).is_err());
+    }
+
+    #[test]
+    fn file_child_download_is_denied_by_default_even_for_active_files_session() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+
+        assert!(s.permissions().contains(Permissions::FILES));
+        assert!(matches!(
+            s.admit_file_child(ObjectId::new(), "download-test"),
+            Err(Error::PermissionDenied(_))
+        ));
+        assert_eq!(s.phase, SessionPhase::Active);
+        assert!(s.offer_seen, "the authorized ordinary offer remains intact");
+    }
+
+    #[test]
+    fn explicitly_enabled_active_files_session_admits_a_download_child() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled(true);
+
+        let child = s.reserve_file_child("download-test").unwrap();
+        assert!(
+            s.admit_file_child(child, "download-test").is_ok(),
+            "explicit child capability on an active FILES parent must admit its first child"
+        );
+        assert_eq!(s.phase, SessionPhase::Active);
+        assert!(
+            s.offer_seen,
+            "child admission must preserve the ordinary offer"
+        );
+    }
+
+    #[test]
+    fn file_child_id_cannot_be_readmitted_even_for_another_transfer() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled(true);
+        let child = s.reserve_file_child("download-test").unwrap();
+        s.admit_file_child(child, "download-test").unwrap();
+
+        for transfer in ["download-test", "another-transfer"] {
+            assert!(
+                s.admit_file_child(child, transfer).is_err(),
+                "an admitted child ID must not be replayed or rebound to another transfer"
+            );
+        }
+        assert_eq!(s.phase, SessionPhase::Active);
+    }
+
+    #[test]
+    fn one_download_transfer_admits_four_active_children_but_not_a_fifth() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled(true);
+
+        for _ in 0..4 {
+            let child = s.reserve_file_child("download-test").unwrap();
+            s.admit_file_child(child, "download-test")
+                .expect("four distinct child transports may stripe the same download");
+        }
+        // None has closed: the budget is for simultaneously active children,
+        // not a lifetime limit on files downloaded through the parent session.
+        assert!(
+            s.reserve_file_child("download-test").is_err(),
+            "a fifth simultaneous child must not exceed the active connection budget"
+        );
+        assert_eq!(s.phase, SessionPhase::Active);
+    }
+
+    #[test]
+    fn file_child_reservations_issue_distinct_server_ids_within_the_parent_budget() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled(true);
+
+        let mut children = Vec::new();
+        for _ in 0..4 {
+            let child = s
+                .reserve_file_child("download-test")
+                .expect("an authorized parent must issue a child reservation");
+            assert!(
+                !children.contains(&child),
+                "simultaneous reservations must have distinct server-issued IDs"
+            );
+            children.push(child);
+        }
+        assert!(
+            s.reserve_file_child("another-transfer").is_err(),
+            "reservations share the parent's four-child connection budget"
+        );
+        assert_eq!(s.phase, SessionPhase::Active);
+        // Distinct IDs here are an observable contract, not a statistical
+        // claim of randomness or proof that future collisions are impossible.
+    }
+
+    #[test]
+    fn file_child_admission_requires_and_consumes_a_matching_reservation() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled(true);
+
+        assert!(
+            s.admit_file_child(ObjectId::new(), "download-test")
+                .is_err(),
+            "a client-chosen child ID must not bypass reservation"
+        );
+        let child = s.reserve_file_child("download-test").unwrap();
+        assert!(
+            s.admit_file_child(child, "another-transfer").is_err(),
+            "a reservation must not be rebound to another file"
+        );
+        s.admit_file_child(child, "download-test")
+            .expect("a rejected mismatch must leave the matching reservation usable");
+        assert!(
+            s.admit_file_child(child, "download-test").is_err(),
+            "the matching reservation may be admitted only once"
+        );
+        assert_eq!(s.phase, SessionPhase::Active);
+    }
+
+    #[test]
+    fn completed_file_child_releases_a_slot_without_readmitting_the_old_id() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled(true);
+
+        let mut children = Vec::new();
+        for _ in 0..4 {
+            let child = s.reserve_file_child("download-test").unwrap();
+            s.admit_file_child(child, "download-test").unwrap();
+            children.push(child);
+        }
+        let completed = children[0];
+        s.complete_file_child(completed, "download-test")
+            .expect("a matching completion must release its active child slot");
+        let replacement = s
+            .reserve_file_child("another-transfer")
+            .expect("a completed child must leave room for another download");
+        assert_ne!(replacement, completed);
+        s.admit_file_child(replacement, "another-transfer").unwrap();
+        assert!(
+            s.admit_file_child(completed, "download-test").is_err(),
+            "a completed child's old offer must have no reservation to consume"
+        );
+        assert_eq!(s.phase, SessionPhase::Active);
+    }
+
+    #[test]
+    fn invalid_file_child_completion_cannot_release_active_or_reserved_budget() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled(true);
+
+        let mut children = Vec::new();
+        for _ in 0..4 {
+            let child = s.reserve_file_child("download-test").unwrap();
+            s.admit_file_child(child, "download-test").unwrap();
+            children.push(child);
+        }
+        assert!(
+            s.complete_file_child(children[0], "wrong-transfer")
+                .is_err()
+        );
+        assert!(
+            s.reserve_file_child("overflow-transfer").is_err(),
+            "a completion with the wrong transfer must not release an active slot"
+        );
+        let unknown = ObjectId::new();
+        assert!(!children.contains(&unknown));
+        assert!(s.complete_file_child(unknown, "download-test").is_err());
+        assert!(
+            s.reserve_file_child("overflow-transfer").is_err(),
+            "an unknown completion must not release another child's slot"
+        );
+
+        // Replace one legitimately completed child with a reservation, keeping
+        // the same full four-slot budget without admitting that reservation.
+        s.complete_file_child(children[0], "download-test").unwrap();
+        let reserved = s.reserve_file_child("pending-transfer").unwrap();
+        assert!(s.complete_file_child(reserved, "pending-transfer").is_err());
+        assert!(
+            s.reserve_file_child("overflow-transfer").is_err(),
+            "an unadmitted reservation must not be released as a completed connection"
+        );
+        s.admit_file_child(reserved, "pending-transfer")
+            .expect("a refused completion must leave the reservation intact");
+        assert_eq!(s.phase, SessionPhase::Active);
+    }
+
+    #[test]
+    fn revoking_files_invalidates_children_and_requires_fresh_capability_negotiation() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled(true);
+        let active = s.reserve_file_child("active-before-revoke").unwrap();
+        s.admit_file_child(active, "active-before-revoke").unwrap();
+        let reserved = s.reserve_file_child("reserved-before-revoke").unwrap();
+
+        s.set_permissions(Permissions::VIEW);
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        assert!(
+            s.reserve_file_child("after-restore").is_err(),
+            "restoring FILES must not silently restore the old child capability"
+        );
+
+        s.set_file_children_enabled(true);
+        for (child, transfer) in [
+            (active, "active-before-revoke"),
+            (reserved, "reserved-before-revoke"),
+        ] {
+            assert!(
+                s.admit_file_child(child, transfer).is_err(),
+                "renegotiation must not revive a pre-revocation reservation or offer"
+            );
+            assert!(
+                s.complete_file_child(child, transfer).is_err(),
+                "a pre-revocation transfer must have no remaining active record"
+            );
+        }
+        let fresh = s.reserve_file_child("after-renegotiation").unwrap();
+        s.admit_file_child(fresh, "after-renegotiation").unwrap();
+        assert_eq!(s.phase, SessionPhase::Active);
+        // This proves session bookkeeping only, not cancellation of a live
+        // transport, which requires a separate integration oracle.
+    }
+
+    #[test]
+    fn disabling_file_children_invalidates_slots_before_explicit_reenable() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled(true);
+        let active = s.reserve_file_child("active-before-disable").unwrap();
+        s.admit_file_child(active, "active-before-disable").unwrap();
+        let reserved = s.reserve_file_child("reserved-before-disable").unwrap();
+
+        s.set_file_children_enabled(false);
+        s.set_file_children_enabled(true);
+        for (child, transfer) in [
+            (active, "active-before-disable"),
+            (reserved, "reserved-before-disable"),
+        ] {
+            assert!(
+                s.admit_file_child(child, transfer).is_err(),
+                "reenabling must not resurrect a disabled child reservation"
+            );
+            assert!(
+                s.complete_file_child(child, transfer).is_err(),
+                "reenabling must not retain a disabled active child record"
+            );
+        }
+        for _ in 0..4 {
+            s.reserve_file_child("after-renegotiation")
+                .expect("explicit renegotiation must have the full fresh four-slot budget");
+        }
+        assert_eq!(s.phase, SessionPhase::Active);
+        assert!(s.permissions().contains(Permissions::FILES));
+        // Session bookkeeping only: no live transport is created or closed.
+    }
+
+    #[test]
+    fn file_child_capability_cannot_be_prearmed_without_effective_files_permission() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        assert!(!s.permissions().contains(Permissions::FILES));
+
+        s.set_file_children_enabled(true);
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        assert!(
+            s.reserve_file_child("after-files-grant").is_err(),
+            "a capability requested without FILES must not silently activate after authorization"
+        );
+
+        s.set_file_children_enabled(true);
+        s.reserve_file_child("after-explicit-negotiation")
+            .expect("an authorized parent may explicitly negotiate a fresh child capability");
+        assert_eq!(s.phase, SessionPhase::Active);
     }
 
     #[test]
