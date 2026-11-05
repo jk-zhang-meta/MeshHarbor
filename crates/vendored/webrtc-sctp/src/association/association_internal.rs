@@ -9,6 +9,68 @@ use crate::param::param_forward_tsn_supported::ParamForwardTsnSupported;
 use crate::param::param_type::ParamType;
 use crate::param::param_unrecognized::ParamUnrecognized;
 
+// Byte-nanosecond credit avoids floating point and preserves sub-byte refill.
+// One DATA packet is reserved per gather; control packets never consume credit.
+struct FilePacer {
+    rate: u64,
+    capacity: u128,
+    credit: u128,
+    at: tokio::time::Instant,
+    reserved: usize,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl FilePacer {
+    const SCALE: u128 = 1_000_000_000;
+
+    fn new(config: FilePacingConfig) -> Self {
+        let capacity = config.burst_bytes as u128 * Self::SCALE;
+        Self {
+            rate: config.rate_bytes_per_second,
+            capacity,
+            credit: capacity,
+            at: tokio::time::Instant::now(),
+            reserved: 0,
+            deadline: None,
+        }
+    }
+
+    fn reserve(&mut self, bytes: usize) -> bool {
+        let now = tokio::time::Instant::now();
+        if self.reserved == 0 {
+            let refill = now
+                .saturating_duration_since(self.at)
+                .as_nanos()
+                .saturating_mul(self.rate as u128);
+            self.credit = self.credit.saturating_add(refill).min(self.capacity);
+            self.at = now;
+        }
+        let needed = bytes as u128 * Self::SCALE;
+        if self.credit < needed {
+            let missing = needed - self.credit;
+            let rate = self.rate as u128;
+            let nanos = missing / rate + u128::from(missing % rate != 0);
+            // A single reservation is bounded by the u32 MTU, so even at
+            // one byte/second this nanosecond count fits u64.
+            let wait = std::time::Duration::from_nanos(nanos as u64);
+            self.deadline = now.checked_add(wait);
+            return false;
+        }
+        self.credit -= needed;
+        self.reserved += bytes;
+        self.deadline = None;
+        true
+    }
+
+    fn dispatched(&mut self) {
+        // Do not bank time spent marshalling or blocked inside Conn::send.
+        // This conservatively preserves the wire budget after a slow send.
+        self.at = tokio::time::Instant::now();
+        self.reserved = 0;
+        self.deadline = None;
+    }
+}
+
 pub struct AssociationInternal {
     pub(crate) name: String,
     pub(crate) state: Arc<AtomicU8>,
@@ -86,9 +148,77 @@ pub struct AssociationInternal {
     pub(crate) stats: Arc<AssociationStats>,
     ack_state: AckState,
     pub(crate) ack_mode: AckMode, // for testing
+    file_pacer: Option<FilePacer>,
 }
 
 impl AssociationInternal {
+    pub(crate) fn configure_file_pacing(&mut self, config: Option<FilePacingConfig>) -> Result<()> {
+        let Some(config) = config else {
+            self.file_pacer = None;
+            return Ok(());
+        };
+        if config.rate_bytes_per_second == 0 {
+            return Err(Error::Other(
+                "file pacing rate_bytes_per_second must be nonzero".into(),
+            ));
+        }
+        if config.burst_bytes < self.mtu as usize {
+            return Err(Error::Other(
+                "file pacing burst_bytes must fit an SCTP DATA frame at the current MTU".into(),
+            ));
+        }
+        if self.get_state() != AssociationState::Established
+            || self.pending_queue.len() != 0
+            || !self.inflight_queue.is_empty()
+            || self.file_pacer.as_ref().is_some_and(|p| p.reserved != 0)
+        {
+            return Err(Error::Other(
+                "file pacing can only be enabled on an idle established association".into(),
+            ));
+        }
+        self.file_pacer = Some(FilePacer::new(config));
+        Ok(())
+    }
+
+    pub(crate) fn file_pacing_deadline(&self) -> Option<tokio::time::Instant> {
+        self.file_pacer.as_ref().and_then(|p| p.deadline)
+    }
+
+    pub(crate) fn file_pacing_enabled(&self) -> bool {
+        self.file_pacer.is_some()
+    }
+
+    pub(crate) fn file_pacing_dispatched(&mut self) {
+        if let Some(pacer) = &mut self.file_pacer {
+            pacer.dispatched();
+        }
+    }
+
+    // Called only after the original cwnd/rwnd eligibility checks, before any
+    // TSN, inflight, sent-time, retransmit flag or timer mutation.
+    fn reserve_paced_chunk(&mut self, packet_bytes: &mut usize, payload: usize) -> bool {
+        let first = *packet_bytes == COMMON_HEADER_SIZE as usize;
+        let chunk_bytes = (DATA_CHUNK_HEADER_SIZE as usize + payload + 3) & !3;
+        if *packet_bytes + chunk_bytes > self.mtu as usize {
+            return false;
+        }
+        let pacer = self.file_pacer.as_mut().expect("paced sender");
+        if first && pacer.reserved != 0 {
+            return false; // another builder already owns this round's DATA packet
+        }
+        let cost = chunk_bytes
+            + if first {
+                COMMON_HEADER_SIZE as usize
+            } else {
+                0
+            };
+        if !pacer.reserve(cost) {
+            return false;
+        }
+        *packet_bytes += chunk_bytes;
+        true
+    }
+
     pub(crate) fn new(
         config: Config,
         close_loop_ch_tx: broadcast::Sender<()>,
@@ -191,6 +321,7 @@ impl AssociationInternal {
             stats: Arc::new(AssociationStats::default()),
             ack_state: AckState::default(),
             ack_mode: AckMode::default(),
+            file_pacer: None,
         };
 
         log::trace!(
@@ -444,6 +575,9 @@ impl AssociationInternal {
         &mut self,
         mut raw_packets: Vec<Packet>,
     ) -> Vec<Packet> {
+        if self.file_pacer.is_some() {
+            return self.gather_outbound_fast_retransmission_packets_paced(raw_packets);
+        }
         if self.will_retransmit_fast {
             self.will_retransmit_fast = false;
 
@@ -504,8 +638,60 @@ impl AssociationInternal {
         raw_packets
     }
 
+    fn gather_outbound_fast_retransmission_packets_paced(
+        &mut self,
+        mut packets: Vec<Packet>,
+    ) -> Vec<Packet> {
+        if !self.will_retransmit_fast {
+            return packets;
+        }
+        let mut chunks: Vec<Box<dyn Chunk + Send + Sync>> = vec![];
+        let mut packet_bytes = COMMON_HEADER_SIZE as usize;
+        let mut i = 0;
+        let mut waiting = false;
+        loop {
+            let tsn = self.cumulative_tsn_ack_point + i + 1;
+            let Some(c) = self.inflight_queue.get(tsn) else {
+                break;
+            };
+            if c.acked || c.abandoned() || c.nsent > 1 || c.miss_indicator < 3 {
+                i += 1;
+                continue;
+            }
+            let len = c.user_data.len();
+            if !self.reserve_paced_chunk(&mut packet_bytes, len) {
+                waiting = chunks.is_empty();
+                break;
+            }
+            if let Some(c) = self.inflight_queue.get_mut(tsn) {
+                self.stats.inc_fast_retrans();
+                c.nsent += 1;
+            }
+            if let Some(c) = self.inflight_queue.get(tsn) {
+                self.check_partial_reliability_status(c);
+                chunks.push(Box::new(c.clone()));
+            }
+            i += 1;
+        }
+        // Keep the original single-packet fast-retransmit exception to cwnd.
+        // If no packet has budget, retain the intent until the writer wakes.
+        self.will_retransmit_fast = waiting;
+        if !chunks.is_empty() {
+            packets.push(self.create_packet(chunks));
+        }
+        packets
+    }
+
     async fn gather_outbound_sack_packets(&mut self, mut raw_packets: Vec<Packet>) -> Vec<Packet> {
         if self.ack_state == AckState::Immediate {
+            // Consuming the ACK obligation also consumes its delayed timer.
+            // A timeout leaves AckTimer::close_tx set; without clearing it,
+            // the next isolated DATA cannot arm another delayed ACK. Do this
+            // under the association lock, before returning to Idle: the SACK
+            // covers all DATA observed so far, and later DATA can arm afresh.
+            if let Some(ack_timer) = &mut self.ack_timer {
+                ack_timer.stop();
+            }
             self.ack_state = AckState::Idle;
             let sack = self.create_selective_ack_chunk().await;
             log::debug!("[{}] sending SACK: {}", self.name, sack);
@@ -581,6 +767,9 @@ impl AssociationInternal {
     /// gather_outbound gathers outgoing packets. The returned bool value set to
     /// false means the association should be closed down after the final send.
     pub(crate) async fn gather_outbound(&mut self) -> (Vec<Packet>, bool) {
+        if let Some(pacer) = &mut self.file_pacer {
+            pacer.deadline = None;
+        }
         let mut raw_packets = Vec::with_capacity(16);
 
         if !self.control_queue.is_empty() {
@@ -593,10 +782,17 @@ impl AssociationInternal {
         match state {
             AssociationState::Established => {
                 raw_packets = self.gather_data_packets_to_retransmit(raw_packets);
-                raw_packets = self
-                    .gather_outbound_data_and_reconfig_packets(raw_packets)
-                    .await;
-                raw_packets = self.gather_outbound_fast_retransmission_packets(raw_packets);
+                if self.file_pacer.is_some() {
+                    raw_packets = self.gather_outbound_fast_retransmission_packets(raw_packets);
+                    raw_packets = self
+                        .gather_outbound_data_and_reconfig_packets(raw_packets)
+                        .await;
+                } else {
+                    raw_packets = self
+                        .gather_outbound_data_and_reconfig_packets(raw_packets)
+                        .await;
+                    raw_packets = self.gather_outbound_fast_retransmission_packets(raw_packets);
+                }
                 raw_packets = self.gather_outbound_sack_packets(raw_packets).await;
                 raw_packets = self.gather_outbound_forward_tsn_packets(raw_packets);
                 (raw_packets, true)
@@ -1910,6 +2106,9 @@ impl AssociationInternal {
     /// pop_pending_data_chunks_to_send pops chunks from the pending queues as many as
     /// the cwnd and rwnd allows to send.
     async fn pop_pending_data_chunks_to_send(&mut self) -> (Vec<ChunkPayloadData>, Vec<u16>) {
+        if self.file_pacer.is_some() {
+            return self.pop_pending_data_chunks_to_send_paced().await;
+        }
         let mut chunks = vec![];
         let mut sis_to_reset = vec![]; // stream identifiers to reset
 
@@ -1980,10 +2179,72 @@ impl AssociationInternal {
         (chunks, sis_to_reset)
     }
 
+    async fn pop_pending_data_chunks_to_send_paced(&mut self) -> (Vec<ChunkPayloadData>, Vec<u16>) {
+        let mut chunks = vec![];
+        let mut resets = vec![];
+        let mut packet_bytes = COMMON_HEADER_SIZE as usize;
+        while let Some(c) = self.pending_queue.peek() {
+            let (beginning, unordered, len, sid) = (
+                c.beginning_fragment,
+                c.unordered,
+                c.user_data.len(),
+                c.stream_identifier,
+            );
+            if len == 0 {
+                resets.push(sid);
+                self.pending_queue.pop(beginning, unordered);
+                continue;
+            }
+            if self.inflight_queue.get_num_bytes() + len > self.cwnd as usize
+                || len > self.rwnd as usize
+            {
+                break;
+            }
+            if !self.reserve_paced_chunk(&mut packet_bytes, len) {
+                break;
+            }
+            self.rwnd -= len as u32;
+            if let Some(c) = self
+                .move_pending_data_chunk_to_inflight_queue(beginning, unordered)
+                .await
+            {
+                chunks.push(c);
+            }
+        }
+        // Preserve the original one-chunk zero-window probe exception, with
+        // its DATA budget acquired before committing the pending chunk.
+        if chunks.is_empty() && self.inflight_queue.is_empty() {
+            if let Some(c) = self.pending_queue.peek() {
+                let (beginning, unordered, len) =
+                    (c.beginning_fragment, c.unordered, c.user_data.len());
+                if len != 0 && self.reserve_paced_chunk(&mut packet_bytes, len) {
+                    if let Some(c) = self
+                        .move_pending_data_chunk_to_inflight_queue(beginning, unordered)
+                        .await
+                    {
+                        chunks.push(c);
+                    }
+                }
+            }
+        }
+        (chunks, resets)
+    }
+
     /// bundle_data_chunks_into_packets packs DATA chunks into packets. It tries to bundle
     /// DATA chunks into a packet so long as the resulting packet size does not exceed
     /// the path MTU.
     fn bundle_data_chunks_into_packets(&self, chunks: Vec<ChunkPayloadData>) -> Vec<Packet> {
+        if self.file_pacer.is_some() {
+            if chunks.is_empty() {
+                return vec![];
+            }
+            return vec![self.create_packet(
+                chunks
+                    .into_iter()
+                    .map(|c| Box::new(c) as Box<dyn Chunk + Send + Sync>)
+                    .collect(),
+            )];
+        }
         let mut packets = vec![];
         let mut chunks_to_send = vec![];
         let mut bytes_in_packet = COMMON_HEADER_SIZE;
@@ -2064,6 +2325,9 @@ impl AssociationInternal {
     /// get_data_packets_to_retransmit is called when T3-rtx is timed out and retransmit outstanding data chunks
     /// that are not acked or abandoned yet.
     fn get_data_packets_to_retransmit(&mut self) -> Vec<Packet> {
+        if self.file_pacer.is_some() {
+            return self.get_data_packets_to_retransmit_paced();
+        }
         let awnd = std::cmp::min(self.cwnd, self.rwnd);
         let mut chunks = vec![];
         let mut bytes_to_send = 0;
@@ -2110,6 +2374,46 @@ impl AssociationInternal {
             i += 1;
         }
 
+        self.bundle_data_chunks_into_packets(chunks)
+    }
+
+    fn get_data_packets_to_retransmit_paced(&mut self) -> Vec<Packet> {
+        let awnd = std::cmp::min(self.cwnd, self.rwnd) as usize;
+        let mut chunks = vec![];
+        let mut bytes_to_send = 0;
+        let mut packet_bytes = COMMON_HEADER_SIZE as usize;
+        let mut i = 0;
+        loop {
+            let tsn = self.cumulative_tsn_ack_point + i + 1;
+            let Some(c) = self.inflight_queue.get(tsn) else {
+                break;
+            };
+            if !c.retransmit {
+                i += 1;
+                continue;
+            }
+            let len = c.user_data.len();
+            let probe = i == 0 && self.rwnd < len as u32;
+            if !probe && bytes_to_send + len > awnd {
+                break;
+            }
+            if !self.reserve_paced_chunk(&mut packet_bytes, len) {
+                break;
+            }
+            if let Some(c) = self.inflight_queue.get_mut(tsn) {
+                c.retransmit = false;
+                c.nsent += 1;
+            }
+            if let Some(c) = self.inflight_queue.get(tsn) {
+                self.check_partial_reliability_status(c);
+                chunks.push(c.clone());
+            }
+            bytes_to_send += len;
+            if probe {
+                break;
+            }
+            i += 1;
+        }
         self.bundle_data_chunks_into_packets(chunks)
     }
 

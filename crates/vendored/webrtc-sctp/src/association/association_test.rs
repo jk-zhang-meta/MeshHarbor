@@ -2760,3 +2760,601 @@ fn test_send_failure_run_logs_first_then_rate_limited_then_recovery() {
     assert!(run.failed(at(6_000)));
     assert_eq!(run.dropped, 1);
 }
+
+/// Verify a complete message through the real SCTP stream. The timeout is
+/// only a stalled-IO guard; no throughput or scheduling deadline is asserted.
+async fn read_pacing_config_message(stream: &Stream, expected: &[u8]) -> Result<()> {
+    let mut buffer = vec![0; expected.len()];
+    let (n, ppi) = tokio::time::timeout(Duration::from_secs(5), stream.read_sctp(&mut buffer))
+        .await
+        .map_err(|_| Error::Other("configuration probe real-pipe read timed out".into()))??;
+    assert_eq!(ppi, PayloadProtocolIdentifier::Binary);
+    assert_eq!(
+        &buffer[..n],
+        expected,
+        "default SCTP message was truncated or corrupted"
+    );
+    Ok(())
+}
+
+/// Configuration safety only. This deliberately does not claim to exercise
+/// pacing deadlines, queue/T3 timing, fairness or cancellation. The earlier
+/// Bridge/paused-clock harness failures are retained in their run evidence.
+#[tokio::test]
+async fn test_file_pacing_rejects_invalid_config_without_breaking_default_io() -> Result<()> {
+    let (left, right) = pipe();
+    let connect = async {
+        tokio::try_join!(
+            Association::client(Config {
+                net_conn: Arc::new(left),
+                max_receive_buffer_size: 0,
+                max_message_size: 0,
+                name: "config-safety-client".into(),
+            }),
+            Association::server(Config {
+                net_conn: Arc::new(right),
+                max_receive_buffer_size: 0,
+                max_message_size: 0,
+                name: "config-safety-server".into(),
+            }),
+        )
+    };
+    let (client, server) = tokio::time::timeout(Duration::from_secs(5), connect)
+        .await
+        .map_err(|_| Error::Other("configuration probe real-pipe handshake timed out".into()))??;
+    let tx = client
+        .open_stream(17, PayloadProtocolIdentifier::Binary)
+        .await?;
+    let payload = |seed: u8| -> Bytes {
+        Bytes::from(
+            (0..4096)
+                .map(|i| (i % 251) as u8 ^ seed)
+                .collect::<Vec<_>>(),
+        )
+    };
+    let initial = payload(0x51);
+    assert_eq!(
+        tx.write_sctp(&initial, PayloadProtocolIdentifier::Binary)
+            .await?,
+        initial.len()
+    );
+    let rx = tokio::time::timeout(Duration::from_secs(5), server.accept_stream())
+        .await
+        .map_err(|_| {
+            Error::Other("configuration probe real-pipe stream acceptance timed out".into())
+        })?
+        .ok_or_else(|| {
+            Error::Other("configuration probe stream closed before acceptance".into())
+        })?;
+    read_pacing_config_message(&rx, &initial).await?;
+    eprintln!(
+        "X14_CONFIG_SAFETY initial_default_io verified_bytes={}",
+        initial.len()
+    );
+
+    for (name, config, reason, seed) in [
+        (
+            "zero-rate",
+            FilePacingConfig {
+                rate_bytes_per_second: 0,
+                burst_bytes: 1280,
+            },
+            "rate_bytes_per_second must be nonzero",
+            0xa6,
+        ),
+        // SCTP common + DATA headers alone cannot carry one payload byte.
+        (
+            "header-only-burst",
+            FilePacingConfig {
+                rate_bytes_per_second: 128,
+                burst_bytes: (COMMON_HEADER_SIZE + DATA_CHUNK_HEADER_SIZE) as usize,
+            },
+            "burst_bytes must fit an SCTP DATA frame",
+            0x33,
+        ),
+    ] {
+        let result = client.set_file_pacing(Some(config)).await;
+        assert!(
+            result.is_err(),
+            "illegal file pacing configuration was accepted: {name}"
+        );
+        assert!(result.unwrap_err().to_string().contains(reason));
+        // Do not reset to None here: that could hide a rejected call that
+        // nevertheless mutated the association's default sending state.
+        let after_rejection = payload(seed);
+        assert_eq!(
+            tx.write_sctp(&after_rejection, PayloadProtocolIdentifier::Binary)
+                .await?,
+            after_rejection.len()
+        );
+        read_pacing_config_message(&rx, &after_rejection).await?;
+        assert_eq!(client.get_state(), AssociationState::Established);
+        eprintln!(
+            "X14_CONFIG_SAFETY rejected={name} default_io_verified_bytes={}",
+            after_rejection.len()
+        );
+    }
+    let acks = file_pacing_ack_signal(&tx);
+    wait_file_pacing_ack(&tx, &acks, 0).await?;
+    client
+        .set_file_pacing(Some(FilePacingConfig {
+            rate_bytes_per_second: 128,
+            burst_bytes: 1280,
+        }))
+        .await?;
+    client.set_file_pacing(None).await?;
+    let unchanged = payload(0x19);
+    assert_eq!(
+        tx.write_sctp(&unchanged, PayloadProtocolIdentifier::Binary)
+            .await?,
+        unchanged.len()
+    );
+    read_pacing_config_message(&rx, &unchanged).await?;
+    assert_eq!(client.get_state(), AssociationState::Established);
+    eprintln!(
+        "X14_CONFIG_SAFETY mode=explicit-default default_io_verified_bytes={}",
+        unchanged.len()
+    );
+    client.close().await?;
+    server.close().await?;
+    Ok(())
+}
+
+/// Independent of pacing: each isolated message must be acknowledged by a
+/// newly armed delayed-ACK timer, without an RTO/duplicate DATA rescuing it.
+#[tokio::test]
+async fn test_assoc_delayed_ack_rearms_after_each_timer_generated_sack() -> Result<()> {
+    let scenario = async {
+        let (left, right) = pipe();
+        let (client, server) = tokio::try_join!(
+            Association::client(Config {
+                net_conn: Arc::new(left),
+                max_receive_buffer_size: 0,
+                max_message_size: 0,
+                name: "delayed-ack-client".into(),
+            }),
+            Association::server(Config {
+                net_conn: Arc::new(right),
+                max_receive_buffer_size: 0,
+                max_message_size: 0,
+                name: "delayed-ack-server".into(),
+            }),
+        )?;
+        let tx = client
+            .open_stream(21, PayloadProtocolIdentifier::Binary)
+            .await?;
+        let rx = server
+            .open_stream(21, PayloadProtocolIdentifier::Binary)
+            .await?;
+        let acks = file_pacing_ack_signal(&tx);
+        for n in 1..=2 {
+            let message = Bytes::from(vec![n as u8; 64]);
+            tx.write_sctp(&message, PayloadProtocolIdentifier::Binary)
+                .await?;
+            read_pacing_config_message(&rx, &message).await?;
+            wait_file_pacing_ack(&tx, &acks, 0).await?;
+            assert_eq!(
+                server
+                    .association_internal
+                    .lock()
+                    .await
+                    .stats
+                    .get_num_ack_timeouts(),
+                n,
+                "each isolated message needs its own delayed-ACK timer"
+            );
+            assert_eq!(
+                client
+                    .association_internal
+                    .lock()
+                    .await
+                    .stats
+                    .get_num_t3timeouts(),
+                0,
+                "retransmission must not rescue a missing delayed ACK"
+            );
+        }
+        client.close().await?;
+        server.close().await?;
+        Ok::<(), Error>(())
+    };
+    tokio::time::timeout(Duration::from_secs(10), scenario)
+        .await
+        .map_err(|_| Error::Other("isolated delayed-ACK regression exceeded safety bound".into()))?
+}
+
+#[derive(Clone, Debug)]
+struct FilePacingDispatch {
+    started: std::time::Instant,
+    completed: std::time::Instant,
+    bytes: usize,
+    tsns: Vec<u32>,
+}
+
+struct FilePacingWire {
+    inner: Arc<dyn Conn + Send + Sync>,
+    data: Arc<std::sync::Mutex<Vec<FilePacingDispatch>>>,
+    dropped: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for FilePacingWire {
+    fn drop(&mut self) {
+        self.dropped.notify_waiters();
+    }
+}
+
+#[async_trait]
+impl Conn for FilePacingWire {
+    async fn connect(&self, addr: SocketAddr) -> UResult<()> {
+        self.inner.connect(addr).await
+    }
+    async fn recv(&self, b: &mut [u8]) -> UResult<usize> {
+        self.inner.recv(b).await
+    }
+    async fn recv_from(&self, b: &mut [u8]) -> UResult<(usize, SocketAddr)> {
+        self.inner.recv_from(b).await
+    }
+    async fn send(&self, b: &[u8]) -> UResult<usize> {
+        let started = std::time::Instant::now();
+        let sent = self.inner.send(b).await?;
+        let completed = std::time::Instant::now();
+        if sent == b.len() {
+            let packet = Packet::unmarshal(&Bytes::copy_from_slice(b))
+                .expect("invalid SCTP output in file pacing probe");
+            let tsns: Vec<_> = packet
+                .chunks
+                .iter()
+                .filter_map(|chunk| {
+                    chunk
+                        .as_any()
+                        .downcast_ref::<ChunkPayloadData>()
+                        .map(|data| data.tsn)
+                })
+                .collect();
+            if !tsns.is_empty() {
+                self.data.lock().unwrap().push(FilePacingDispatch {
+                    started,
+                    completed,
+                    bytes: sent,
+                    tsns,
+                });
+            }
+        }
+        Ok(sent)
+    }
+    async fn send_to(&self, b: &[u8], target: SocketAddr) -> UResult<usize> {
+        self.inner.send_to(b, target).await
+    }
+    fn local_addr(&self) -> UResult<SocketAddr> {
+        self.inner.local_addr()
+    }
+    fn remote_addr(&self) -> Option<SocketAddr> {
+        self.inner.remote_addr()
+    }
+    async fn close(&self) -> UResult<()> {
+        self.inner.close().await
+    }
+    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+        self
+    }
+}
+
+fn file_pacing_ack_signal(stream: &Stream) -> Arc<tokio::sync::Notify> {
+    let signal = Arc::new(tokio::sync::Notify::new());
+    let notify = signal.clone();
+    stream.on_buffered_amount_low(Box::new(move || {
+        let notify = notify.clone();
+        Box::pin(async move {
+            notify.notify_waiters();
+        })
+    }));
+    signal
+}
+
+async fn wait_file_pacing_ack(
+    stream: &Stream,
+    signal: &tokio::sync::Notify,
+    remaining: usize,
+) -> Result<()> {
+    stream.set_buffered_amount_low_threshold(remaining);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let notified = signal.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if stream.buffered_amount() <= remaining {
+                return;
+            }
+            notified.await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        Error::Other(format!(
+            "real file pacing ACK timeout: buffered={} target={remaining}",
+            stream.buffered_amount()
+        ))
+    })
+}
+
+fn assert_file_pacing_wire_budget(events: &[FilePacingDispatch], rate: u64, burst: usize) {
+    assert!(!events.is_empty(), "no successful DATA dispatch observed");
+    for (start, first) in events.iter().enumerate() {
+        let mut bytes = 0usize;
+        for last in &events[start..] {
+            // Bound the actual departure interval conservatively by both
+            // ends of Conn::send; a blocked pipe cannot masquerade as pacing.
+            assert!(
+                last.completed.duration_since(last.started) < Duration::from_secs(1),
+                "fixture pipe blocked, so dispatch timing is inconclusive"
+            );
+            bytes += last.bytes;
+            let elapsed = last.completed.duration_since(first.started).as_nanos();
+            let allowed = burst as u128 + rate as u128 * elapsed / 1_000_000_000 + 32;
+            assert!(
+                bytes as u128 <= allowed,
+                "DATA wire budget exceeded: bytes={bytes} allowed={allowed} events={events:?}"
+            );
+        }
+    }
+}
+
+/// Real-clock, real-pipe contract, not a throughput/fairness benchmark.
+/// The first recorded RED stopped at unsupported enable. Only a complete run
+/// reaches and proves the wire/T3/isolation/close assertions below.
+#[tokio::test]
+async fn test_file_pacing_real_wire_budget_isolation_queue_and_close() -> Result<()> {
+    let scenario = async {
+        const RATE: u64 = 128;
+        const BURST: usize = 1280;
+        let data = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let dropped = Arc::new(tokio::sync::Notify::new());
+        let (left, right) = pipe();
+        let wire = Arc::new(FilePacingWire {
+            inner: Arc::new(left),
+            data: data.clone(),
+            dropped: dropped.clone(),
+        });
+        let connect_file = async {
+            tokio::try_join!(
+                Association::client(Config {
+                    net_conn: wire.clone(),
+                    max_receive_buffer_size: 0,
+                    max_message_size: 0,
+                    name: "paced-file".into(),
+                }),
+                Association::server(Config {
+                    net_conn: Arc::new(right),
+                    max_receive_buffer_size: 0,
+                    max_message_size: 0,
+                    name: "paced-file-remote".into(),
+                }),
+            )
+        };
+        let (file, file_remote) = tokio::time::timeout(Duration::from_secs(5), connect_file)
+            .await
+            .map_err(|_| Error::Other("file pipe handshake stalled".into()))??;
+        let (left, right) = pipe();
+        let connect_default = async {
+            tokio::try_join!(
+                Association::client(Config {
+                    net_conn: Arc::new(left),
+                    max_receive_buffer_size: 0,
+                    max_message_size: 0,
+                    name: "unpaced-control".into(),
+                }),
+                Association::server(Config {
+                    net_conn: Arc::new(right),
+                    max_receive_buffer_size: 0,
+                    max_message_size: 0,
+                    name: "unpaced-control-remote".into(),
+                }),
+            )
+        };
+        let (control, control_remote) =
+            tokio::time::timeout(Duration::from_secs(5), connect_default)
+                .await
+                .map_err(|_| Error::Other("default pipe handshake stalled".into()))??;
+        let file_tx = file
+            .open_stream(17, PayloadProtocolIdentifier::Binary)
+            .await?;
+        let file_rx = file_remote
+            .open_stream(17, PayloadProtocolIdentifier::Binary)
+            .await?;
+        let control_tx = control
+            .open_stream(18, PayloadProtocolIdentifier::Binary)
+            .await?;
+        let control_rx = control_remote
+            .open_stream(18, PayloadProtocolIdentifier::Binary)
+            .await?;
+        let file_acks = file_pacing_ack_signal(&file_tx);
+        let control_acks = file_pacing_ack_signal(&control_tx);
+        let warmup = Bytes::from(vec![0x71; 4096]);
+        for (tx, rx, acks) in [
+            (&file_tx, &file_rx, &file_acks),
+            (&control_tx, &control_rx, &control_acks),
+        ] {
+            tx.write_sctp(&warmup, PayloadProtocolIdentifier::Binary)
+                .await?;
+            read_pacing_config_message(rx, &warmup).await?;
+            wait_file_pacing_ack(tx, acks, 0).await?;
+        }
+        data.lock().unwrap().clear();
+        let baseline_t3 = file
+            .association_internal
+            .lock()
+            .await
+            .stats
+            .get_num_t3timeouts();
+        let baseline_fast = file
+            .association_internal
+            .lock()
+            .await
+            .stats
+            .get_num_fast_retrans();
+        assert_eq!(
+            (baseline_t3, baseline_fast),
+            (0, 0),
+            "fixture warmup retransmitted on a loss-free pipe"
+        );
+        eprintln!("X14_REAL_PACING warmup_verified_bytes=8192 engine_not_yet_enabled=true");
+        if let Err(error) = file
+            .set_file_pacing(Some(FilePacingConfig {
+                rate_bytes_per_second: RATE,
+                burst_bytes: BURST,
+            }))
+            .await
+        {
+            panic!("file pacing is not enableable: {error}; wire budget/T3/isolation/close were NOT exercised");
+        }
+
+        file_tx.set_buffered_amount_low_threshold(1000);
+        let first = Bytes::from(vec![0x51; 1000]);
+        let second = Bytes::from(vec![0xa6; 1000]);
+        file_tx
+            .write_sctp(&first, PayloadProtocolIdentifier::Binary)
+            .await?;
+        file_tx
+            .write_sctp(&second, PayloadProtocolIdentifier::Binary)
+            .await?;
+        read_pacing_config_message(&file_rx, &first).await?;
+        wait_file_pacing_ack(&file_tx, &file_acks, 1000).await?;
+        assert_file_pacing_wire_budget(&data.lock().unwrap(), RATE, BURST);
+        assert_eq!(
+            file_tx.buffered_amount(),
+            1000,
+            "fixture failed to observe acknowledged first DATA with another message still queued"
+        );
+        file_tx.set_buffered_amount_low_threshold(0);
+        let read_second = {
+            let rx = file_rx.clone();
+            let second = second.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0; second.len()];
+                let (n, ppi) =
+                    tokio::time::timeout(Duration::from_secs(10), rx.read_sctp(&mut buf))
+                        .await
+                        .map_err(|_| Error::Other("paced second DATA never arrived".into()))??;
+                assert_eq!(ppi, PayloadProtocolIdentifier::Binary);
+                assert_eq!(&buf[..n], second.as_ref());
+                Ok::<(), Error>(())
+            })
+        };
+        let control_message = Bytes::from(vec![0x24; 4096]);
+        control_tx
+            .write_sctp(&control_message, PayloadProtocolIdentifier::Binary)
+            .await?;
+        let default_completed = async {
+            read_pacing_config_message(&control_rx, &control_message).await?;
+            wait_file_pacing_ack(&control_tx, &control_acks, 0)
+                .await
+                .map_err(|e| Error::Other(format!("independent default association ACK: {e}")))?;
+            Ok::<_, Error>(std::time::Instant::now())
+        };
+        // This is an intentional real elapsed window beyond initial T3=3s,
+        // not a guessed IO-completion delay. Other IO proceeds concurrently.
+        let (default_completed, _) = tokio::join!(
+            default_completed,
+            tokio::time::sleep(Duration::from_secs(4))
+        );
+        let default_completed = default_completed?;
+        assert_eq!(
+            file.association_internal
+                .lock()
+                .await
+                .stats
+                .get_num_t3timeouts(),
+            baseline_t3,
+            "queued, unsent DATA caused a false T3 timeout"
+        );
+        read_second.await.unwrap()?;
+        wait_file_pacing_ack(&file_tx, &file_acks, 0)
+            .await
+            .map_err(|e| Error::Other(format!("second delivered paced DATA ACK: {e}")))?;
+        {
+            let events = data.lock().unwrap();
+            assert_file_pacing_wire_budget(&events, RATE, BURST);
+            assert_eq!(events.len(), 2, "loss-free file DATA was retransmitted");
+            let unique: std::collections::HashSet<_> =
+                events.iter().flat_map(|e| e.tsns.iter().copied()).collect();
+            assert_eq!(unique.len(), 2);
+            assert!(
+                default_completed < events[1].started,
+                "default association did not finish while the file association waited for budget"
+            );
+        }
+        assert_eq!(
+            file.association_internal
+                .lock()
+                .await
+                .stats
+                .get_num_t3timeouts(),
+            baseline_t3
+        );
+        assert_eq!(
+            file.association_internal
+                .lock()
+                .await
+                .stats
+                .get_num_fast_retrans(),
+            baseline_fast
+        );
+        file_tx
+            .write_sctp(
+                &Bytes::from(vec![0x33; 1000]),
+                PayloadProtocolIdentifier::Binary,
+            )
+            .await?;
+        // A real control round trip is the scheduling checkpoint; no paused clock
+        // or yield-count assumption is used to settle the queued file write.
+        control_tx
+            .write_sctp(&control_message, PayloadProtocolIdentifier::Binary)
+            .await?;
+        read_pacing_config_message(&control_rx, &control_message).await?;
+        wait_file_pacing_ack(&control_tx, &control_acks, 0).await?;
+        assert_eq!(
+            data.lock().unwrap().len(),
+            2,
+            "third file DATA escaped its budget"
+        );
+        assert!(file_tx.buffered_amount() > 0);
+        let writer = Arc::downgrade(&wire);
+        let close = async move {
+            file.close().await?;
+            drop(file);
+            drop(file_tx);
+            drop(file_rx);
+            drop(wire);
+            loop {
+                let notified = dropped.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if writer.upgrade().is_none() {
+                    break;
+                }
+                notified.await;
+            }
+            Ok::<(), Error>(())
+        };
+        tokio::time::timeout(Duration::from_secs(2), close)
+            .await
+            .map_err(|_| {
+                Error::Other("close retained the writer until a pacing deadline".into())
+            })??;
+        assert_eq!(
+            data.lock().unwrap().len(),
+            2,
+            "closed writer sent queued DATA"
+        );
+        file_remote.close().await?;
+        control.close().await?;
+        control_remote.close().await?;
+        eprintln!("X14_REAL_PACING wire_budget_verified=true default_io=true t3_delta=0 retransmissions=0 close_released=true");
+        Ok::<(), Error>(())
+    };
+    tokio::time::timeout(Duration::from_secs(15), scenario)
+        .await
+        .map_err(|_| {
+            Error::Other("real-clock pacing contract exceeded its 15-second safety bound".into())
+        })?
+}
