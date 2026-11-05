@@ -1843,6 +1843,156 @@ async fn browser_shared_ssh_anonymous_start_limits_each_share_across_clients() {
     assert_eq!(limited.status().as_u16(), 429);
 }
 
+#[tokio::test]
+async fn browser_shared_ssh_anonymous_start_does_not_enumerate_existing_or_unknown_shares() {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+
+    let f = fixture_with_settings(|s| {
+        s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
+        s.app.rate_limit_trusted_hops = 0;
+    })
+    .await;
+    let created = f
+        .app
+        .auth_post("/api/device-shares", &f.owner.token)
+        .header("X-Forwarded-For", "192.0.2.250")
+        .json(&create_body(&f))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status().as_u16(), 200);
+    let created: Value = created.json().await.unwrap();
+    let existing = created["id"].as_str().unwrap().to_owned();
+    let unknown_id = ObjectId::new();
+    assert!(
+        f.app
+            .db
+            .collection::<DeviceShareGrant>(DeviceShareGrant::COLLECTION)
+            .find_one(doc! {"_id": unknown_id})
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let verifier = "x17-synthetic-share-enumeration-verifier-012345678901234567890123456789";
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(verifier.as_bytes()));
+    let url = f.app.url("/api/native/share-ssh/authorizations");
+    let verification_uri = format!(
+        "{}/native/share-ssh/approve",
+        f.app.settings.app.frontend_url.trim_end_matches('/')
+    );
+    let mut successful_shapes = Vec::new();
+    let mut limited_shapes = Vec::new();
+    // Each of the eighteen requests has a distinct client IP; only sixteen
+    // reserve slots. Neither the per-client 8 nor global 64 limit is reached.
+    for (network, share) in [("192.0.2", existing), ("198.51.100", unknown_id.to_hex())] {
+        for client in 1..=9 {
+            let response = f
+                .app
+                .client
+                .post(&url)
+                .header("X-Forwarded-For", format!("{network}.{client}"))
+                .json(&json!({
+                    "share_grant_id": share,
+                    "public_key": shared_ssh_public_key(),
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "session_secs": 60,
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status().as_u16(),
+                if client <= 8 { 201 } else { 429 }
+            );
+            let headers = response.headers();
+            assert_eq!(headers.get("content-type").unwrap(), "application/json");
+            assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+            assert_eq!(headers.get("pragma").unwrap(), "no-cache");
+            assert_eq!(
+                headers.get("retry-after").and_then(|v| v.to_str().ok()),
+                if client <= 8 { None } else { Some("300") }
+            );
+            for header in ["set-cookie", "location", "www-authenticate"] {
+                assert!(headers.get_all(header).iter().next().is_none());
+            }
+            let header_shape: Vec<_> = ["content-type", "cache-control", "pragma", "retry-after"]
+                .into_iter()
+                .map(|name| {
+                    (
+                        name,
+                        headers
+                            .get_all(name)
+                            .iter()
+                            .map(|value| value.to_str().unwrap().to_owned())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+            let mut body: Value = response.json().await.unwrap();
+            if client <= 8 {
+                // An exact field allowlist excludes recipient/owner, device,
+                // OS account, policy, grant and account-token metadata.
+                let mut keys: Vec<_> = body
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect();
+                keys.sort_unstable();
+                assert_eq!(
+                    keys,
+                    [
+                        "authorization_id",
+                        "device_code",
+                        "expires_in",
+                        "interval",
+                        "user_code",
+                        "verification_uri"
+                    ]
+                );
+                assert!(ObjectId::parse_str(body["authorization_id"].as_str().unwrap()).is_ok());
+                assert_ne!(body["authorization_id"].as_str().unwrap(), share);
+                assert_eq!(
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .decode(body["device_code"].as_str().unwrap())
+                        .unwrap()
+                        .len(),
+                    32
+                );
+                assert_eq!(
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .decode(body["user_code"].as_str().unwrap())
+                        .unwrap()
+                        .len(),
+                    9
+                );
+                assert_eq!(body["verification_uri"], verification_uri);
+                assert_eq!(body["expires_in"], 300);
+                assert_eq!(body["interval"], 1);
+                // Compare response shapes without printing synthetic codes.
+                for field in ["authorization_id", "device_code", "user_code"] {
+                    body[field] = json!("<opaque>");
+                }
+                successful_shapes.push((body, header_shape));
+            } else {
+                assert_eq!(body, json!({"error": "authorization_rate_limited"}));
+                limited_shapes.push((body, header_shape));
+            }
+        }
+    }
+    assert_eq!(successful_shapes.len(), 16);
+    assert!(
+        successful_shapes
+            .iter()
+            .all(|shape| shape == &successful_shapes[0])
+    );
+    assert_eq!(limited_shapes.len(), 2);
+    assert_eq!(limited_shapes[0], limited_shapes[1]);
+}
+
 /// Prepare one synthetic browser-approved request through the public HTTP API.
 /// The returned proof stays in this test; no transport, browser or real login.
 async fn approved_browser_ssh_request(f: &Fixture) -> (String, String) {
