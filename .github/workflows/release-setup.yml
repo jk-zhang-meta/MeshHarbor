@@ -376,9 +376,9 @@ jobs:
           chmod 755 "$APP/Contents/MacOS/meshharbor-setup"
           # FR-84 S2: the bundle's icon (Finder, Dock, the Gatekeeper dialog),
           # staged BEFORE signing so it is inside the sealed contents — the
-          # same PNG + CFBundleIconFile shape the companion .app uses in
+          # same multi-resolution ICNS + CFBundleIconFile shape the companion .app uses in
           # release-agent.yml.
-          cp agents/meshharbor-setup/icons/icon.png "$APP/Contents/Resources/icon.png"
+          cp design/x18/assets/macos/meshharbor.icns "$APP/Contents/Resources/icon.icns"
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -390,7 +390,7 @@ jobs:
               <key>CFBundleShortVersionString</key>  <string>${version}</string>
               <key>CFBundleVersion</key>             <string>${version}</string>
               <key>CFBundlePackageType</key>         <string>APPL</string>
-              <key>CFBundleIconFile</key>            <string>icon.png</string>
+              <key>CFBundleIconFile</key>            <string>icon.icns</string>
               <key>LSMinimumSystemVersion</key>      <string>12.0</string>
               <key>NSPrincipalClass</key>            <string>NSApplication</string>
           </dict>

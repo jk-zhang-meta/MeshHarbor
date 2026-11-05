@@ -1,9 +1,8 @@
 # RETIRED-NAME-ANCHOR-BEGIN
 # Every retired name in this workflow is either a PUBLISHED release-asset name
 # (already-released files cannot be renamed, and the updater's picker matches
-# those strings) or a FROZEN install path — the RPATH-bound
-# /usr/lib/meshharbor-agent, the macOS .app bundle whose name keys the TCC grants,
-# or the inert meshharbor-agent.exe alias the deployed fleet still resolves.
+# those strings) or a FROZEN install path — the macOS .app bundle whose name keys
+# the TCC grants, or the inert meshharbor-agent.exe alias deployed fleet resolves.
 # INVARIANT: a retired name here must be a published artifact name or a path a
 # real host has. If you add one that is neither, that is a bug, not a new
 # exemption. docs/fr/FR-21
@@ -549,7 +548,7 @@ jobs:
           # Ubuntu 24.04 ships FFmpeg 6.1 (libavcodec.so.60) but the agent links
           # 9.0.1 (libavcodec.so.63), so the .deb must CARRY its own FFmpeg or it
           # won't start on a stock box. Ship each lib under its SONAME as a real
-          # file (no symlinks) into /usr/lib/meshharbor-agent; RPATH wires it up.
+          # file (no symlinks) into /usr/lib/meshharbor; RPATH wires it up.
           # patchelf comes from the cached apt set at the top of this job.
           dst=agents/meshharbord/vendor-ffmpeg
           rm -rf "$dst" && mkdir -p "$dst"
@@ -614,8 +613,8 @@ jobs:
           # .deb `depends` are needed.
           for lib in "$dst"/*.so.*; do patchelf --set-rpath '$ORIGIN' "$lib"; done
           # P3d Slice B: the daemon binary is now `meshharbord` (the [[bin]] output
-          # name); the .deb assets map installs it to /usr/lib/meshharbor-agent RPATH.
-          patchelf --set-rpath '/usr/lib/meshharbor-agent' target/release/meshharbord
+          # name); the .deb assets map installs its libraries in /usr/lib/meshharbor.
+          patchelf --set-rpath '/usr/lib/meshharbor' target/release/meshharbord
           echo "bundled: $(ls "$dst" | tr '\n' ' ')"
           echo "binary RUNPATH -> $(patchelf --print-rpath target/release/meshharbord)"
 
@@ -656,7 +655,7 @@ jobs:
         # only the new step broke.
         run: |
           set -euo pipefail
-          deb=$(ls target/debian/meshharbord_*_amd64.deb | head -n1)
+          deb=$(ls target/debian/meshharbor_*_amd64.deb | head -n1)
           depends=$(dpkg-deb -f "$deb" Depends)
           echo "meshharbord Depends: $depends"
           if echo "$depends" | grep -qiE 'webkit|gtk|appindicator|libx11|wayland'; then
@@ -671,7 +670,7 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
           # FR-21 P2a: cargo-deb emits `<package>_<version>_<arch>.deb`, and the
-          # package is `meshharbord`. FR-46 (#1051) took the DESTINATION name over
+          # Debian package is `meshharbor`. FR-46 (#1051) took the DESTINATION name over
           # too, after measuring every consumer rather than assuming: Windows
           # keys on `.msi` + the `-permachine-` infix, macOS on `.pkg`, Linux
           # >=0.4.16 on `is_daemon_asset` (which ALREADY accepts `meshharbord`),
@@ -680,7 +679,7 @@ jobs:
           # `meshharbor-desktop-` denylist. Not one of them keys on this prefix, so
           # the rename freezes nothing. Already-published assets keep their old
           # names and stay reachable through the legacy arm.
-          src=$(ls target/debian/meshharbord_*_amd64.deb | head -n1)
+          src=$(ls target/debian/meshharbor_*_amd64.deb | head -n1)
           dst="meshharbord-${version}-x86_64-unknown-linux-gnu.deb"
           mv "$src" "$dst"
           sha256sum "$dst" | awk '{print $1"  "$2}' > "${dst}.sha256"
@@ -850,7 +849,7 @@ jobs:
               missing=$((missing + 1))
             fi
           done
-          if grep -qiE 'libicu|meshharbord' rpm-requires.txt; then
+          if grep -qiE 'libicu|^meshharbor(d)?([[:space:]]|$)' rpm-requires.txt; then
             echo "::error::the companion .rpm requires the daemon package or ICU by a name no RPM distro shares"
             missing=$((missing + 1))
           fi
@@ -973,7 +972,7 @@ jobs:
               missing=$((missing + 1))
             fi
           done
-          if grep -qiE 'libicu|meshharbord' rpm-requires.txt; then
+          if grep -qiE 'libicu|^meshharbor(d)?([[:space:]]|$)' rpm-requires.txt; then
             echo "::error::the companion .rpm requires the daemon package or ICU by a name no RPM distro shares"
             missing=$((missing + 1))
           fi
@@ -1113,7 +1112,7 @@ jobs:
           cp "$vpx7" "$dst/libvpx.so.7"
           [ -f "$dst/libvpx.so.7" ] || { echo "::error::libvpx.so.7 not bundled — agent aborts at load on 24.04"; exit 1; }
           for lib in "$dst"/*.so.*; do patchelf --set-rpath '$ORIGIN' "$lib"; done
-          patchelf --set-rpath '/usr/lib/meshharbor-agent' target/release/meshharbord
+          patchelf --set-rpath '/usr/lib/meshharbor' target/release/meshharbord
           echo "bundled: $(ls "$dst" | tr '\n' ' ')"
           echo "binary RUNPATH -> $(patchelf --print-rpath target/release/meshharbord)"
 
@@ -1136,7 +1135,7 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
           # FR-21 P2a: cargo-deb emits `<package>_<version>_<arch>.deb`, and the
-          # package is `meshharbord`. FR-46 (#1051) took the DESTINATION name over
+          # Debian package is `meshharbor`. FR-46 (#1051) took the DESTINATION name over
           # too, after measuring every consumer rather than assuming: Windows
           # keys on `.msi` + the `-permachine-` infix, macOS on `.pkg`, Linux
           # >=0.4.16 on `is_daemon_asset` (which ALREADY accepts `meshharbord`),
@@ -1145,7 +1144,7 @@ jobs:
           # `meshharbor-desktop-` denylist. Not one of them keys on this prefix, so
           # the rename freezes nothing. Already-published assets keep their old
           # names and stay reachable through the legacy arm.
-          src=$(ls target/debian/meshharbord_*_arm64.deb | head -n1)
+          src=$(ls target/debian/meshharbor_*_arm64.deb | head -n1)
           dst="meshharbord-${version}-aarch64-unknown-linux-gnu.deb"
           mv "$src" "$dst"
           sha256sum "$dst" | awk '{print $1"  "$2}' > "${dst}.sha256"
@@ -2938,7 +2937,7 @@ jobs:
           DESK=stage/MeshHarbor.app
           mkdir -p "$DESK/Contents/MacOS" "$DESK/Contents/Resources"
           cp target/aarch64-apple-darwin/release/meshharbor-desktop "$DESK/Contents/MacOS/meshharbor-desktop"
-          cp agents/meshharbor-desktop/icons/icon.png "$DESK/Contents/Resources/icon.png"
+          cp design/x18/assets/macos/meshharbor.icns "$DESK/Contents/Resources/icon.icns"
           cat > "$DESK/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -2950,7 +2949,7 @@ jobs:
               <key>CFBundleShortVersionString</key>  <string>${VERSION}</string>
               <key>CFBundleVersion</key>             <string>${VERSION}</string>
               <key>CFBundlePackageType</key>         <string>APPL</string>
-              <key>CFBundleIconFile</key>            <string>icon.png</string>
+              <key>CFBundleIconFile</key>            <string>icon.icns</string>
               <key>LSMinimumSystemVersion</key>      <string>${MACOS_FLOOR}</string>
               <!-- Menu-bar only: no Dock tile, no app-switcher entry. -->
               <key>LSUIElement</key>                 <true/>

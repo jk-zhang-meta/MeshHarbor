@@ -71,6 +71,9 @@
             InstallScope='perUser'
             SummaryCodepage='1252' />
 
+        <Icon Id='MeshHarborProductIcon' SourceFile='agents\meshharbord\wix\meshharbor.ico' />
+        <Property Id='ARPPRODUCTICON' Value='MeshHarborProductIcon' />
+
         <MajorUpgrade
             Schedule='afterInstallInitialize'
             DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.' />
