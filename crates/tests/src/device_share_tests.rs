@@ -1760,6 +1760,199 @@ async fn browser_shared_ssh_authorization_requires_approval_and_never_yields_acc
     );
 }
 
+/// Prepare one synthetic browser-approved request through the public HTTP API.
+/// The returned proof stays in this test; no transport, browser or real login.
+async fn approved_browser_ssh_request(f: &Fixture) -> (String, String) {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+
+    let share = create(f).await["id"].as_str().unwrap().to_owned();
+    let verifier = "x17-synthetic-concurrent-exchange-verifier-012345678901234567890123456789";
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(verifier.as_bytes()));
+    let started = f
+        .app
+        .client
+        .post(f.app.url("/api/native/share-ssh/authorizations"))
+        .json(&json!({
+            "share_grant_id": share,
+            "public_key": shared_ssh_public_key(),
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "session_secs": 60,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(started.status().as_u16(), 201);
+    assert!(
+        started
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    let started: Value = started.json().await.unwrap();
+    assert!(started.get("access_token").is_none());
+    assert!(started.get("refresh_token").is_none());
+    let authorization = started["authorization_id"].as_str().unwrap();
+    let origin = reqwest::Url::parse(&f.app.settings.app.frontend_url)
+        .unwrap()
+        .origin()
+        .ascii_serialization();
+    let approved = f
+        .app
+        .client
+        .post(f.app.url(&format!(
+            "/api/native/share-ssh/authorizations/{authorization}/decision"
+        )))
+        .header("Cookie", format!("access_token={}", f.recipient.token))
+        .header("Origin", origin)
+        .json(&json!({"user_code": started["user_code"], "approve": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(approved.status().as_u16(), 200);
+    assert!(
+        approved
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    assert_eq!(
+        approved.json::<Value>().await.unwrap()["status"],
+        "approved"
+    );
+    (
+        started["device_code"].as_str().unwrap().to_owned(),
+        verifier.to_owned(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn browser_shared_ssh_exchange_rejects_wrong_proof_and_is_single_use_under_concurrency() {
+    let f = shared_ssh_fixture().await;
+    let (device_code, verifier) = approved_browser_ssh_request(&f).await;
+    let url = f.app.url("/api/native/share-ssh/authorizations/exchange");
+    // Same length and valid PKCE characters: this must exercise proof matching,
+    // not just the request parser's malformed-input rejection.
+    let wrong_verifier = format!("{}X", &verifier[..verifier.len() - 1]);
+    assert_eq!(wrong_verifier.len(), verifier.len());
+    assert_ne!(wrong_verifier, verifier);
+    let wrong = f
+        .app
+        .client
+        .post(&url)
+        .json(&json!({"device_code": device_code, "code_verifier": wrong_verifier}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status().as_u16(), 401);
+    assert!(
+        wrong
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    let wrong: Value = wrong.json().await.unwrap();
+    for field in ["grant", "access_token", "refresh_token"] {
+        assert!(wrong.get(field).is_none());
+    }
+
+    let proof = json!({"device_code": device_code, "code_verifier": verifier});
+    let ready = std::sync::Arc::new(tokio::sync::Barrier::new(5));
+    let mut requests = Vec::new();
+    for _ in 0..4 {
+        let client = f.app.client.clone();
+        let url = url.clone();
+        let proof = proof.clone();
+        let ready = ready.clone();
+        requests.push(tokio::spawn(async move {
+            ready.wait().await;
+            client.post(url).json(&proof).send().await.unwrap()
+        }));
+    }
+    // Release all four real HTTP requests together, without a production hook
+    // or inspecting Mongo's authorization state to decide the outcome.
+    ready.wait().await;
+    let mut responses = Vec::new();
+    for request in requests {
+        responses.push(request.await.unwrap());
+    }
+    let mut statuses = Vec::new();
+    let mut winner = None;
+    for response in responses {
+        let status = response.status().as_u16();
+        statuses.push(status);
+        assert!(
+            response
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .next()
+                .is_none()
+        );
+        let body: Value = response.json().await.unwrap();
+        assert!(body.get("access_token").is_none());
+        assert!(body.get("refresh_token").is_none());
+        if status == 200 {
+            let grant = body["grant"].as_str().unwrap();
+            assert!(!grant.is_empty());
+            assert!(
+                winner.replace(grant.to_owned()).is_none(),
+                "only one exchange may win"
+            );
+        } else {
+            assert_eq!(status, 403);
+            assert!(body.get("grant").is_none());
+        }
+    }
+    statuses.sort_unstable();
+    assert_eq!(statuses, vec![200, 403, 403, 403]);
+    let winner = winner.expect("the wrong verifier must not consume the approved request");
+    let replay = f.app.client.post(&url).json(&proof).send().await.unwrap();
+    assert_eq!(replay.status().as_u16(), 403);
+    assert!(
+        replay
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .next()
+            .is_none()
+    );
+    let replay: Value = replay.json().await.unwrap();
+    for field in ["grant", "access_token", "refresh_token"] {
+        assert!(replay.get(field).is_none());
+    }
+    assert_eq!(
+        f.app
+            .auth_get("/api/auth/me", &f.recipient.token)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        200,
+        "positive control: the account endpoint accepts the fixture recipient"
+    );
+    assert_eq!(
+        f.app
+            .auth_get("/api/auth/me", &winner)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        401,
+        "even the successful exchange must not issue an account credential"
+    );
+}
+
 #[tokio::test]
 async fn native_shared_ssh_login_real_http_nonmember_general_access_no_refresh_cookie() {
     let f = fixture().await;
