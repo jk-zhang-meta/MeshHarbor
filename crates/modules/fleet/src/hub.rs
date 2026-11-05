@@ -4055,6 +4055,54 @@ impl Hub {
             }
             (
                 Role::Controller,
+                ClientMsg::FileChildReserve {
+                    session_id,
+                    transfer_id,
+                    direction,
+                },
+            ) => self.with_session(session_id, |s| {
+                if ctx.user_id != Some(s.controller_user_id) {
+                    return Err(Error::PermissionDenied("not the parent controller"));
+                }
+                let requester = ctx
+                    .controller_tx
+                    .as_ref()
+                    .ok_or(Error::PermissionDenied("missing controller connection"))?;
+                let controller = s
+                    .controller_tx
+                    .as_ref()
+                    .filter(|current| ptr_eq(current, requester))
+                    .cloned()
+                    .ok_or(Error::PermissionDenied(
+                        "not the parent controller connection",
+                    ))?;
+                if controller.is_closed() {
+                    return Err(Error::SendFailed);
+                }
+                if s.device_share_scope().is_some() {
+                    return Err(Error::PermissionDenied(
+                        "shared child inheritance unavailable",
+                    ));
+                }
+                // The existing state gate still requires explicit capability,
+                // Active and effective FILES. Production never enables it yet.
+                let child_id = s.reserve_file_child(&transfer_id)?;
+                let reply = ServerMsg::FileChildReserved {
+                    session_id,
+                    child_id,
+                    transfer_id: transfer_id.clone(),
+                    direction,
+                };
+                // No await or agent message: parent closure and permission
+                // updates cannot interleave with this exact Reserved rollback.
+                if controller.try_send(reply).is_err() {
+                    s.cancel_file_child_reservation(child_id, &transfer_id)?;
+                    return Err(Error::SendFailed);
+                }
+                Ok(())
+            }),
+            (
+                Role::Controller,
                 ClientMsg::SdpOffer {
                     session_id,
                     sdp,
@@ -5204,6 +5252,339 @@ mod tests {
         assert!(
             hub.session_snapshot(sid).is_some(),
             "the original remote session remains active"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_reservation_is_parent_bound_and_rejected_after_close_or_files_loss() {
+        use meshharbor_remote_control::signaling::{FileChildDirection, FileChildOfferProof};
+        use std::collections::HashSet;
+
+        async fn next(rx: &mut mpsc::Receiver<ServerMsg>) -> ServerMsg {
+            tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("bounded synthetic parent setup")
+                .expect("controller remains connected")
+        }
+        fn reserved(
+            rx: &mut mpsc::Receiver<ServerMsg>,
+            parent: ObjectId,
+            transfer: &str,
+        ) -> ObjectId {
+            match rx
+                .try_recv()
+                .expect("successful synchronous reserve must enqueue its reply")
+            {
+                ServerMsg::FileChildReserved {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                    direction: FileChildDirection::Download,
+                } => {
+                    assert_eq!(session_id, parent);
+                    assert_eq!(transfer_id, transfer);
+                    child_id
+                }
+                other => panic!("expected bound server reservation, got {other:?}"),
+            }
+        }
+        // No localhost Mongo Client, DB flusher, sockets, or child PCs. Keep
+        // the bounded receiver alive so ordinary audit records can be queued.
+        let (audit, _audit_events) = AuditSink::channel_for_tests();
+        let hub = Hub::new(audit, None);
+        let agent = ObjectId::new();
+        let (_agent_tx, _cancel, mut agent_rx) = hub.register_agent(
+            agent,
+            ObjectId::new(),
+            ObjectId::new(),
+            OsKind::Linux,
+            3,
+            false,
+            false,
+        );
+        let owner = ObjectId::new();
+        let (ctl_tx, mut ctl_rx) = mpsc::channel(8);
+        let context = |role, user_id, agent_id, controller_tx| DispatchCtx {
+            role,
+            user_id,
+            agent_id,
+            controller_tx,
+            controller_name: None,
+            consent_mode: ConsentMode::Prompt,
+            override_reason: None,
+            input_mode: None,
+            tenant_name: None,
+            may_record: false,
+            rc_overlay: false,
+            session_policy: OrgPolicy::Read(SessionPolicy::default()),
+            max_duration: None,
+            idle_secs: None,
+            lock_on_end: None,
+            org_session_cap: None,
+            slot: None,
+        };
+        let owner_ctx = context(Role::Controller, Some(owner), None, Some(ctl_tx.clone()));
+        let sid = hub
+            .create_session(
+                agent,
+                owner,
+                "Synthetic".into(),
+                ctl_tx.clone(),
+                Permissions::VIEW | Permissions::FILES,
+                Vec::new(),
+                None,
+                None,
+                None,
+                false,
+                ConsentMode::Prompt,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(
+            next(&mut ctl_rx).await,
+            ServerMsg::SessionCreated { .. }
+        ));
+        let reserve = |session_id, transfer: &str| ClientMsg::FileChildReserve {
+            session_id,
+            transfer_id: transfer.into(),
+            direction: FileChildDirection::Download,
+        };
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "before-consent"))
+                .is_err()
+        );
+        hub.deliver_consent(sid, true, None).unwrap();
+        assert!(matches!(next(&mut ctl_rx).await, ServerMsg::Ready { .. }));
+        hub.dispatch(
+            &owner_ctx,
+            ClientMsg::SdpOffer {
+                session_id: sid,
+                sdp: "v=0".into(),
+                extauth_mac: None,
+                peer_auth: None,
+            },
+        )
+        .unwrap();
+        hub.forward_answer(sid, "v=0".into(), None, None, None)
+            .unwrap();
+        assert!(matches!(
+            next(&mut ctl_rx).await,
+            ServerMsg::SdpAnswer { .. }
+        ));
+        while agent_rx.try_recv().is_ok() {}
+        assert!(
+            hub.session_grant(sid)
+                .unwrap()
+                .2
+                .contains(Permissions::FILES),
+            "fixture must really have an effective FILES grant"
+        );
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "default-off"))
+                .is_err()
+        );
+        assert!(ctl_rx.try_recv().is_err());
+        assert!(
+            hub.session_snapshot(sid).is_some(),
+            "default refusal preserves ordinary RC"
+        );
+
+        // Explicit test setup only; no production negotiation or caller field
+        // enables this gate. Probe and reset the existing state gate so a bad
+        // fixture cannot be mistaken for the missing dispatcher behavior.
+        hub.with_session(sid, |s| {
+            assert_eq!(s.phase, SessionPhase::Active);
+            s.set_file_children_enabled(true);
+            s.reserve_file_child("fixture-gate-probe")?;
+            s.set_file_children_enabled(false);
+            s.set_file_children_enabled(true);
+            Ok(())
+        })
+        .unwrap();
+        let stranger = context(
+            Role::Controller,
+            Some(ObjectId::new()),
+            None,
+            Some(ctl_tx.clone()),
+        );
+        let (other_tx, mut other_rx) = mpsc::channel(8);
+        let other_tab = context(Role::Controller, Some(owner), None, Some(other_tx));
+        let agent_ctx = context(Role::Agent, None, Some(agent), None);
+        for ctx in [&stranger, &other_tab, &agent_ctx] {
+            assert!(
+                hub.dispatch(ctx, reserve(sid, "not-this-parent-connection"))
+                    .is_err()
+            );
+        }
+        assert!(
+            other_rx.try_recv().is_err(),
+            "same user on another tab receives no reservation"
+        );
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(ObjectId::new(), "missing-parent"))
+                .is_err()
+        );
+        for transfer in [String::new(), "x".repeat(129), "bad\ntransfer".into()] {
+            assert!(hub.dispatch(&owner_ctx, reserve(sid, &transfer)).is_err());
+        }
+        assert!(ctl_rx.try_recv().is_err());
+        let mut children = HashSet::new();
+        for _ in 0..4 {
+            let result = hub.dispatch(&owner_ctx, reserve(sid, "download-test"));
+            assert!(
+                result.is_ok(),
+                "enabled active FILES parent must dispatch a server reservation for its current tab: {result:?}"
+            );
+            assert!(children.insert(reserved(&mut ctl_rx, sid, "download-test")));
+        }
+        assert!(hub.dispatch(&owner_ctx, reserve(sid, "fifth")).is_err());
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "reservations never reach the agent as child offers"
+        );
+        let offered = *children.iter().next().unwrap();
+        assert!(
+            hub.dispatch(
+                &owner_ctx,
+                ClientMsg::FileSdpOffer {
+                    session_id: sid,
+                    child_id: offered,
+                    transfer_id: "download-test".into(),
+                    direction: FileChildDirection::Download,
+                    sdp: "v=0".into(),
+                    proof: FileChildOfferProof {
+                        nonce: "synthetic".into(),
+                        key: "synthetic".into(),
+                        sig: "synthetic".into()
+                    },
+                }
+            )
+            .is_err(),
+            "this reservation slice must not enable child offer forwarding"
+        );
+        assert!(agent_rx.try_recv().is_err());
+
+        // This simulates the existing local effective-permission setter. It
+        // does not prove an admin route, remote notification, or transport stop.
+        hub.with_session(sid, |s| {
+            s.set_permissions(Permissions::VIEW);
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "files-withdrawn"))
+                .is_err()
+        );
+        hub.with_session(sid, |s| {
+            s.set_permissions(Permissions::VIEW | Permissions::FILES);
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            hub.dispatch(
+                &owner_ctx,
+                reserve(sid, "files-restored-without-renegotiation")
+            )
+            .is_err()
+        );
+        hub.with_session(sid, |s| {
+            s.set_file_children_enabled(true);
+            for child in &children {
+                assert!(s.admit_file_child(*child, "download-test").is_err());
+                assert!(s.complete_file_child(*child, "download-test").is_err());
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        // Existing Active and Reserved records make a wrong rollback visible:
+        // freeing one old record while leaking the new one must not pass.
+        let (active, kept) = hub
+            .with_session(sid, |s| {
+                let active = s.reserve_file_child("active-fixture")?;
+                s.admit_file_child(active, "active-fixture")?;
+                let kept = s.reserve_file_child("reserved-fixture")?;
+                assert!(
+                    s.cancel_file_child_reservation(active, "active-fixture")
+                        .is_err()
+                );
+                assert!(
+                    s.cancel_file_child_reservation(kept, "wrong-transfer")
+                        .is_err()
+                );
+                Ok((active, kept))
+            })
+            .unwrap();
+        let filler = ServerMsg::Error {
+            session_id: None,
+            code: "fixture".into(),
+            message: "bounded reply queue".into(),
+            open_nonce: None,
+        };
+        for _ in 0..8 {
+            ctl_tx.try_send(filler.clone()).unwrap();
+        }
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "failed-reply"))
+                .is_err(),
+            "a full reply queue must not be reported as a successful reservation"
+        );
+        while ctl_rx.try_recv().is_ok() {}
+        hub.with_session(sid, |s| {
+            s.complete_file_child(active, "active-fixture")?;
+            let replacement = s.reserve_file_child("active-replacement")?;
+            s.admit_file_child(replacement, "active-replacement")?;
+            s.admit_file_child(kept, "reserved-fixture")?;
+            Ok(())
+        })
+        .expect("reply rollback preserves each pre-existing Active/Reserved binding");
+        for transfer in ["remaining-one", "remaining-two"] {
+            hub.dispatch(&owner_ctx, reserve(sid, transfer)).unwrap();
+            reserved(&mut ctl_rx, sid, transfer);
+        }
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "overflow-after-rollback"))
+                .is_err(),
+            "exactly two slots remain after the failed reply; no leak or unrelated release"
+        );
+        assert!(hub.session_snapshot(sid).is_some());
+
+        hub.with_session(sid, |s| {
+            s.set_file_children_enabled(false);
+            s.set_file_children_enabled(true);
+            Ok(())
+        })
+        .unwrap();
+        drop(ctl_rx);
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "closed-reply-channel"))
+                .is_err()
+        );
+        if hub.session_snapshot(sid).is_some() {
+            hub.with_session(sid, |s| {
+                for _ in 0..4 {
+                    s.reserve_file_child("closed-channel-budget-check")?;
+                }
+                assert!(s.reserve_file_child("fifth").is_err());
+                Ok(())
+            })
+            .expect("closed reply either ends the parent or leaves no leaked reservation");
+        }
+        hub.terminate(sid, EndReason::ControllerHangup).unwrap();
+        assert!(hub.session_snapshot(sid).is_none());
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "after-parent-close"))
+                .is_err()
+        );
+        let frames: Vec<_> = std::iter::from_fn(|| agent_rx.try_recv().ok()).collect();
+        assert!(
+            frames
+                .iter()
+                .all(|frame| !matches!(frame, ServerMsg::FileSdpOffer { .. })),
+            "no branch in the reservation test starts a child transport"
         );
     }
 

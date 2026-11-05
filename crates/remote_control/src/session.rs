@@ -377,6 +377,25 @@ impl LiveSession {
         Ok(())
     }
 
+    /// Roll back only the exact Reserved binding when its reply cannot be
+    /// delivered. Never release an Active child or a different transfer. The
+    /// caller holds the parent state lock across allocation, send and rollback.
+    pub fn cancel_file_child_reservation(
+        &mut self,
+        child_id: ObjectId,
+        transfer_id: &str,
+    ) -> Result<()> {
+        let child = self
+            .file_children
+            .get(&child_id)
+            .ok_or(Error::PermissionDenied("file child has no reservation"))?;
+        if child.transfer_id != transfer_id || child.state != FileChildState::Reserved {
+            return Err(Error::PermissionDenied("file child reservation mismatch"));
+        }
+        self.file_children.remove(&child_id);
+        Ok(())
+    }
+
     /// Release only the exact active binding, after the caller has closed its
     /// transport. This neither closes a connection nor authenticates a caller.
     /// The old offer then has no reservation to consume; no tombstones grow
@@ -671,6 +690,55 @@ mod tests {
         s.admit_file_child(reserved, "pending-transfer")
             .expect("a refused completion must leave the reservation intact");
         assert_eq!(s.phase, SessionPhase::Active);
+    }
+
+    #[test]
+    fn cancelling_a_reservation_releases_only_the_matching_reserved_slot() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled(true);
+        let active = s.reserve_file_child("active").unwrap();
+        s.admit_file_child(active, "active").unwrap();
+        let reserved = s.reserve_file_child("reserved").unwrap();
+        let retained = s.reserve_file_child("retained").unwrap();
+        s.reserve_file_child("fourth").unwrap();
+
+        assert!(
+            s.cancel_file_child_reservation(active, "active").is_err(),
+            "reservation cancellation must never free an Active child"
+        );
+        assert!(
+            s.cancel_file_child_reservation(reserved, "wrong-transfer")
+                .is_err()
+        );
+        assert!(
+            s.cancel_file_child_reservation(ObjectId::new(), "reserved")
+                .is_err()
+        );
+        assert!(
+            s.reserve_file_child("overflow-after-refusals").is_err(),
+            "failed cancellation must not change the four-slot budget"
+        );
+
+        let cancelled = s.cancel_file_child_reservation(reserved, "reserved");
+        assert!(
+            cancelled.is_ok(),
+            "matching Reserved cancellation must release exactly its slot: {cancelled:?}"
+        );
+        assert!(s.admit_file_child(reserved, "reserved").is_err());
+        assert!(s.complete_file_child(reserved, "reserved").is_err());
+        s.reserve_file_child("replacement").unwrap();
+        assert!(s.reserve_file_child("fifth").is_err());
+        s.complete_file_child(active, "active").unwrap();
+        s.admit_file_child(retained, "retained").unwrap();
+        assert!(
+            s.cancel_file_child_reservation(retained, "retained")
+                .is_err()
+        );
     }
 
     #[test]

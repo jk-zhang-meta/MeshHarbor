@@ -1983,6 +1983,16 @@ pub enum ClientMsg {
         peer_auth: Option<PeerAuthOffer>,
     },
 
+    /// Request a server-chosen download child ID for this parent. Recognition
+    /// does not negotiate capability or authorize a child transport.
+    #[serde(rename = "rc:file.child.reserve")]
+    FileChildReserve {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        transfer_id: String,
+        direction: FileChildDirection,
+    },
+
     /// An explicitly authorized child transport; this never replaces the
     /// ordinary remote-control peer. Recognition is not admission: the Hub
     /// and device must refuse it until their child capability is enabled and
@@ -2916,6 +2926,7 @@ impl ClientMsg {
             ClientMsg::SessionRequest { .. } => "rc:session.request",
             ClientMsg::SdpOffer { .. } => "rc:sdp.offer",
             ClientMsg::FileSdpOffer { .. } => "rc:file.sdp.offer",
+            ClientMsg::FileChildReserve { .. } => "rc:file.child.reserve",
             ClientMsg::Ice { .. } => "rc:ice",
             ClientMsg::Terminate { .. } => "rc:terminate",
             ClientMsg::Ping { .. } => "rc:ping",
@@ -2988,6 +2999,7 @@ impl ClientMsg {
             | ClientMsg::SessionRequest { .. }
             | ClientMsg::SdpOffer { .. }
             | ClientMsg::FileSdpOffer { .. }
+            | ClientMsg::FileChildReserve { .. }
             | ClientMsg::SdpAnswer { .. }
             | ClientMsg::Ice { .. }
             | ClientMsg::Terminate { .. }
@@ -3143,6 +3155,7 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:session.request", Owner::Remote),
     ("rc:sdp.offer", Owner::Remote),
     ("rc:file.sdp.offer", Owner::Remote),
+    ("rc:file.child.reserve", Owner::Remote),
     ("rc:ice", Owner::Remote),
     ("rc:terminate", Owner::Remote),
     ("rc:ping", Owner::Fleet),
@@ -3678,6 +3691,18 @@ pub enum ServerMsg {
         /// `extauth_mac`: the nonce the device signs its answer against.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         peer_auth: Option<PeerAuthOffer>,
+    },
+
+    /// A server-owned reservation, not proof admission or a created transport.
+    /// Only the matching parent/transfer may later consume this random ID.
+    #[serde(rename = "rc:file.child.reserved")]
+    FileChildReserved {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        direction: FileChildDirection,
     },
 
     /// Server forwards a download child offer only after explicit child
@@ -6435,6 +6460,30 @@ mod tests {
         let parsed: ClientMsg = serde_json::from_value(wire.clone())
             .expect("an explicit download child offer must be a recognized wire message");
         assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+    }
+
+    #[test]
+    fn file_child_reservation_roundtrips_download_parent_and_server_id() {
+        let request = serde_json::json!({
+            "t":"rc:file.child.reserve", "session_id":"111111111111111111111111",
+            "transfer_id":"download-test", "direction":"download",
+        });
+        let parsed: ClientMsg = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(parsed.wire_tag(), "rc:file.child.reserve");
+        assert_eq!(parsed.namespace(), Owner::Remote);
+        assert_eq!(serde_json::to_value(parsed).unwrap(), request);
+        let mut upload = request.clone();
+        upload["direction"] = serde_json::json!("upload");
+        assert!(serde_json::from_value::<ClientMsg>(upload).is_err());
+
+        let reply = serde_json::json!({
+            "t":"rc:file.child.reserved", "session_id":"111111111111111111111111",
+            "child_id":"222222222222222222222222", "transfer_id":"download-test",
+            "direction":"download",
+        });
+        let parsed: ServerMsg = serde_json::from_value(reply.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), reply);
+        // These are wire fixtures, not evidence of a live server reservation.
     }
 
     #[test]

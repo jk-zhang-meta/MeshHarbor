@@ -30,6 +30,14 @@ pub struct AuditSink {
 }
 
 impl AuditSink {
+    /// In-memory test seam: no database client, flusher task, or network IO.
+    /// Available to downstream crate tests, where dependency cfg(test) is off.
+    #[doc(hidden)]
+    pub fn channel_for_tests() -> (Self, mpsc::Receiver<RemoteAuditEvent>) {
+        let (tx, rx) = mpsc::channel(AUDIT_BUFFER);
+        (Self { tx }, rx)
+    }
+
     /// Spawns the background flusher. Drop the returned JoinHandle on shutdown.
     pub fn spawn(db: Database) -> (Self, tokio::task::JoinHandle<()>) {
         let coll: Collection<RemoteAuditEvent> = db.collection(RemoteAuditEvent::COLLECTION);
