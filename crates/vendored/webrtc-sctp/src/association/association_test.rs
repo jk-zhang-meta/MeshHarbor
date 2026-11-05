@@ -1,6 +1,9 @@
 // Silence warning on `for i in 0..vec.len() { … }`:
 #![allow(clippy::needless_range_loop)]
 
+#[path = "file_pacing_flow_control_test.rs"]
+mod file_pacing_flow_control_test;
+
 use std::io;
 use std::net::{Shutdown, SocketAddr};
 use std::str::FromStr;
