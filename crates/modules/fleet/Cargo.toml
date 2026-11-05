@@ -46,6 +46,8 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# Source-only architecture guard; no production dependency or parser runtime.
+syn = { version = "=2.0.117", features = ["full", "visit"] }
 meshharbor-remote-control = { path = "../../remote_control", features = ["test-fixtures"] }
 # The Hub's unit tests build their audit sink on a `mongodb::Client` (the
 # wire crate carried the driver behind its `server` feature; only the tests

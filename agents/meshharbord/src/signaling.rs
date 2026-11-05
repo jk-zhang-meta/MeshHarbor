@@ -454,6 +454,37 @@ pub(crate) fn consent_reply(
     })
 }
 
+/// Finish the common on-host decision BEFORE the Consent can leave. Both
+/// prompted and AutoGrant sessions use this path. External consent is finalized
+/// first, then the parent records that final grant; cancellation closes it.
+fn complete_local_consent(
+    decision: crate::consent::Decision,
+    have_surface: bool,
+    external_cfg: Option<&crate::remote_config::RemoteConfigServices>,
+    session_id: bson::oid::ObjectId,
+    pending: Option<&PendingFileChildParent>,
+) -> Option<ConsentReply> {
+    let Some(mut reply) = consent_reply(decision, have_surface) else {
+        if let Some(pending) = pending {
+            pending.close();
+        }
+        return None;
+    };
+    // The external grant precedes both the parent record and the wire reply:
+    // the offer it unlocks must never overtake check_offer's binding.
+    if let Some(cfg) = external_cfg {
+        if reply.granted {
+            reply.granted = crate::extauth::grant_consent(cfg, session_id);
+        } else {
+            crate::extauth::end_session(cfg, session_id);
+        }
+    }
+    if let Some(pending) = pending {
+        pending.note_local_consent(reply.granted);
+    }
+    Some(reply)
+}
+
 /// Pong-RTT degradation bound for the control WS. Field winhost-a 2026-08-15
 /// ~20:00Z: a WS that SURVIVED a corp-VPN route capture kept "working"
 /// with application round-trips over 60 s — every send completed into the
@@ -4159,10 +4190,13 @@ async fn handle_server_msg(
                     // — a panel still on screen for a resolved session is its
                     // own bug, and a stale Approve button is a dangerous one.
                     ind.hide_prompt(&session_hex);
-                    let Some(mut reply) = consent_reply(decision, have_surface) else {
-                        if let Some(pending) = &pending_file_child_parent {
-                            pending.close();
-                        }
+                    let Some(reply) = complete_local_consent(
+                        decision,
+                        have_surface,
+                        external_cfg.as_ref(),
+                        session_id,
+                        pending_file_child_parent.as_ref(),
+                    ) else {
                         // #1632 — the session was terminated while the
                         // question stood. The server forgot it when it sent
                         // the Terminate; there is nobody to answer to. (An
@@ -4176,21 +4210,6 @@ async fn handle_server_msg(
                         );
                         return;
                     };
-                    // FR-52 P4 — an external grant is recorded BEFORE it leaves:
-                    // the offer it unlocks must never overtake it to
-                    // `check_offer`. A binding that ended while the question
-                    // stood cannot be granted any more; anything but a grant
-                    // ends the binding here.
-                    if let Some(cfg) = &external_cfg {
-                        if reply.granted {
-                            reply.granted = crate::extauth::grant_consent(cfg, session_id);
-                        } else {
-                            crate::extauth::end_session(cfg, session_id);
-                        }
-                    }
-                    if let Some(pending) = &pending_file_child_parent {
-                        pending.note_local_consent(reply.granted);
-                    }
                     tracing::info!(
                         session = %session_hex,
                         ?decision,
@@ -7526,6 +7545,102 @@ pub(crate) fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn auto_grant_consent_completion_records_parent_without_reviving_closed_or_denied() {
+        use crate::consent::{ConsentBroker, Decision, Mode};
+        use bson::oid::ObjectId;
+        use meshharbor_remote_control::permissions::Permissions;
+
+        let session_id = ObjectId::parse_str("111111111111111111111111").unwrap();
+        let agent_id = "444444444444444444444444";
+        let controller_id = ObjectId::parse_str("555555555555555555555555").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        // This is the actual auto_grant_session=true configuration mapping.
+        let broker = ConsentBroker::new(Mode::from_config(true), dir.path().to_path_buf()).unwrap();
+        for directive in [Some(Mode::AutoGrant), None] {
+            let request: ServerMsg = serde_json::from_value(serde_json::json!({
+                "t": "rc:request", "session_id": session_id.to_hex(),
+                "controller_user_id": controller_id.to_hex(), "controller_name": "Synthetic",
+                "permissions": "VIEW | FILES", "consent_timeout_secs": 30, "consent_mode": directive.map(|_| "auto"),
+            }))
+            .unwrap();
+            let mode =
+                crate::consent::strictest_of(directive, broker.mode(), Duration::from_secs(30));
+            let (outbound, _receiver) = mpsc::channel::<ClientMsg>(1);
+            let decision = tokio::time::timeout(
+                Duration::from_secs(1),
+                await_prompt_or_socket_end(
+                    broker.request_with_mode(&session_id.to_hex(), mode),
+                    &outbound,
+                    &session_id.to_hex(),
+                ),
+            )
+            .await
+            .expect("real AutoGrant resolves without any GUI or sentinel approval");
+            assert_eq!(decision, Decision::Granted);
+            let pending =
+                PendingFileChildParent::from_server_request(&request, agent_id, false).unwrap();
+            assert!(
+                pending.approved_scope().is_none(),
+                "Request alone is not local consent"
+            );
+            // The shared PRODUCTION completion function must do the recording;
+            // this test never calls note_local_consent itself.
+            let reply =
+                complete_local_consent(decision, false, None, session_id, Some(&pending)).unwrap();
+            assert!(reply.granted);
+            assert_eq!(reply.reason, None);
+            let scope = pending
+                .approved_scope()
+                .expect("Auto completion must record its actual local grant");
+            assert_eq!(scope.session_id, session_id);
+            assert_eq!(scope.agent_id.to_hex(), agent_id);
+            assert_eq!(scope.controller_user_id, controller_id);
+            assert!(scope.permissions.contains(Permissions::FILES));
+
+            for previous in ["closed", "denied", "cancelled"] {
+                let pending =
+                    PendingFileChildParent::from_server_request(&request, agent_id, false).unwrap();
+                match previous {
+                    "closed" => pending.close(),
+                    "denied" => assert!(
+                        !complete_local_consent(
+                            Decision::Denied,
+                            true,
+                            None,
+                            session_id,
+                            Some(&pending)
+                        )
+                        .unwrap()
+                        .granted
+                    ),
+                    "cancelled" => assert!(
+                        complete_local_consent(
+                            Decision::Cancelled,
+                            true,
+                            None,
+                            session_id,
+                            Some(&pending)
+                        )
+                        .is_none()
+                    ),
+                    _ => unreachable!(),
+                }
+                // Ordinary reply behavior is preserved; a late Granted cannot
+                // resurrect the independent child authorization state.
+                assert!(
+                    complete_local_consent(decision, false, None, session_id, Some(&pending))
+                        .unwrap()
+                        .granted
+                );
+                assert!(
+                    pending.approved_scope().is_none(),
+                    "late AutoGrant revived {previous} parent"
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn ordinary_parent_request_consent_and_control_ack_bind_the_current_peer() {
