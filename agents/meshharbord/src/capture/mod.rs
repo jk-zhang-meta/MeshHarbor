@@ -50,6 +50,15 @@ pub mod portal;
 #[cfg(all(target_os = "windows", feature = "wgc-capture"))]
 pub mod wgc_backend;
 
+#[cfg(all(
+    target_os = "windows",
+    any(feature = "wgc-capture", feature = "mf-encoder")
+))]
+pub(crate) mod d3d11_scale;
+
+#[cfg(all(test, target_os = "windows", feature = "wgc-capture"))]
+mod d3d11_scale_tests;
+
 /// Phase 1 — Linux CI / agent-e2e Pod path. Substitutes a deterministic
 /// 320×240 BGRA frame source for scrap-capture so a headless Pod
 /// without an X server can still drive the encode + WebRTC pipeline.
