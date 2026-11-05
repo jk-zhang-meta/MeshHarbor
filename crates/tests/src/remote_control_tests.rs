@@ -1231,3 +1231,168 @@ async fn session_audit_reads_back_rows_the_audit_sink_wrote() {
     let session: Value = resp.json().await.unwrap();
     assert_eq!(session["permissions"], "VIEW");
 }
+
+/// X14: the actual local HTTP upgrade + user socket + PDP creates the source.
+/// Agents below are bounded in-memory sinks, never sockets or peer connections.
+/// This does not enable the production child capability or attest delegation.
+#[tokio::test]
+async fn file_child_local_controller_source_requires_http_authentication_and_actual_pdp() {
+    use bson::oid::ObjectId;
+    use meshharbor_remote_control::{
+        models::{EndReason, OsKind},
+        permissions::Permissions,
+        signaling::{ClientMsg, ServerMsg},
+    };
+    use std::time::Duration;
+    use tokio::net::TcpStream;
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+    async fn frame_of_type(
+        socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+        expected: &str,
+    ) -> Value {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let message = socket
+                    .next()
+                    .await
+                    .expect("synthetic controller open")
+                    .expect("synthetic controller frame");
+                if let Message::Text(text) = message {
+                    let value: Value = serde_json::from_str(&text).expect("server JSON frame");
+                    if value["t"] == expected {
+                        return value;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("bounded X14 local controller response")
+    }
+    fn request(agent_id: ObjectId) -> String {
+        serde_json::to_string(&ClientMsg::SessionRequest {
+            agent_id,
+            share_grant_id: None,
+            permissions: Permissions::VIEW | Permissions::FILES,
+            browser_caps: Vec::new(),
+            preferred_transport: None,
+            chroma_pref: None,
+            chunk_framing: None,
+            audio_enabled: false,
+            override_reason: None,
+            local_relay: None,
+        })
+        .unwrap()
+    }
+
+    let app = TestApp::spawn().await;
+    let owner = app.seed_tenant("x14-local-pdp-owner").await;
+    let outsider = app.seed_tenant("x14-local-pdp-outsider").await;
+    let (agent_hex, _) = enroll_helper(&app, &owner, "x14-synthetic-parent", "X14 Synthetic").await;
+    let agent = ObjectId::parse_str(&agent_hex).unwrap();
+    let tenant = ObjectId::parse_str(&owner.tenant_id).unwrap();
+    let owner_id = ObjectId::parse_str(&owner.admin.id).unwrap();
+    let hub = &app.state.fleet().rc_hub;
+    let (_, _cancel, mut agent_rx) =
+        hub.register_agent(agent, tenant, owner_id, OsKind::Linux, 3, false, false);
+
+    let unauthenticated = connect_async(format!("ws://{}/ws", app.addr)).await;
+    match unauthenticated {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status().as_u16(), 401)
+        }
+        _ => panic!("X14 unauthenticated local controller must receive HTTP 401"),
+    }
+    assert!(agent_rx.try_recv().is_err());
+
+    // A valid account from another tenant reaches the actual PDP, which must
+    // refuse before creating a parent or enqueueing any agent Request.
+    let outsider_url = format!(
+        "ws://{}/ws?token={}",
+        app.addr,
+        urlencode(&outsider.admin.access_token)
+    );
+    let outsider_socket = connect_async(&outsider_url).await;
+    assert!(
+        outsider_socket.is_ok(),
+        "synthetic authenticated outsider upgrade"
+    );
+    let (mut outsider_socket, _) = outsider_socket.unwrap();
+    outsider_socket
+        .send(Message::Text(request(agent).into()))
+        .await
+        .unwrap();
+    let denied = frame_of_type(&mut outsider_socket, "rc:error").await;
+    assert_eq!(denied["code"], "permission_denied");
+    assert!(
+        agent_rx.try_recv().is_err(),
+        "denied PDP must not reach an agent"
+    );
+    outsider_socket.close(None).await.unwrap();
+
+    let owner_url = format!(
+        "ws://{}/ws?token={}",
+        app.addr,
+        urlencode(&owner.admin.access_token)
+    );
+    let owner_socket = connect_async(&owner_url).await;
+    assert!(
+        owner_socket.is_ok(),
+        "synthetic authenticated owner upgrade"
+    );
+    let (mut owner_socket, _) = owner_socket.unwrap();
+    owner_socket
+        .send(Message::Text(request(agent).into()))
+        .await
+        .unwrap();
+    let created = frame_of_type(&mut owner_socket, "rc:session.created").await;
+    let sid = ObjectId::parse_str(created["session_id"].as_str().unwrap()).unwrap();
+    assert_eq!(hub.file_child_local_pdp_for_tests(sid), Some(true));
+    assert!(
+        matches!(tokio::time::timeout(Duration::from_secs(2), agent_rx.recv()).await.expect("bounded synthetic agent Request"), Some(ServerMsg::Request { session_id, .. }) if session_id == sid)
+    );
+    // A real consent transition cannot stamp/upgrade the provenance later.
+    hub.deliver_consent(sid, true, None).unwrap();
+    frame_of_type(&mut owner_socket, "rc:ready").await;
+    assert_eq!(hub.file_child_local_pdp_for_tests(sid), Some(true));
+    owner_socket
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::FileChildReserve {
+                session_id: sid,
+                transfer_id: "synthetic-download".into(),
+                direction: meshharbor_remote_control::signaling::FileChildDirection::Download,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        frame_of_type(&mut owner_socket, "rc:error").await["code"],
+        "permission_denied"
+    );
+    assert!(
+        agent_rx.try_recv().is_err(),
+        "default-off capability must not forward any child"
+    );
+    hub.terminate(sid, EndReason::ControllerHangup).unwrap();
+
+    // A stale Hub connection with no matching Mongo agent hits the legacy
+    // PDP early-out (Ok(Prompt)); that is not an actual authorization proof.
+    let stale = ObjectId::new();
+    let (_, _stale_cancel, mut stale_rx) =
+        hub.register_agent(stale, tenant, owner_id, OsKind::Linux, 3, false, false);
+    owner_socket
+        .send(Message::Text(request(stale).into()))
+        .await
+        .unwrap();
+    let created = frame_of_type(&mut owner_socket, "rc:session.created").await;
+    let stale_sid = ObjectId::parse_str(created["session_id"].as_str().unwrap()).unwrap();
+    assert_eq!(hub.file_child_local_pdp_for_tests(stale_sid), Some(false));
+    assert!(
+        matches!(tokio::time::timeout(Duration::from_secs(2), stale_rx.recv()).await.expect("bounded synthetic stale agent Request"), Some(ServerMsg::Request { session_id, .. }) if session_id == stale_sid)
+    );
+    hub.terminate(stale_sid, EndReason::ControllerHangup)
+        .unwrap();
+    owner_socket.close(None).await.unwrap();
+}

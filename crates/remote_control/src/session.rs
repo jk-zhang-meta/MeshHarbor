@@ -31,6 +31,42 @@ struct FileChild {
     state: FileChildState,
 }
 
+/// Server-internal creation context, never a wire DTO. `local_pdp` is a
+/// privileged constructor for a caller that already verified a local user
+/// and completed the actual session PDP. Absence of a scope does not grant it.
+#[doc(hidden)]
+#[derive(Clone, PartialEq, Eq)]
+pub struct FileChildControllerScope {
+    local_pdp: bool,
+    consent_mode: ConsentMode,
+    external_attempt: Option<String>,
+    override_applied: bool,
+}
+
+impl FileChildControllerScope {
+    pub fn unknown(
+        consent_mode: ConsentMode,
+        external_attempt: Option<String>,
+        override_applied: bool,
+    ) -> Self {
+        Self {
+            local_pdp: false,
+            consent_mode,
+            external_attempt,
+            override_applied,
+        }
+    }
+
+    pub fn local_pdp(consent_mode: ConsentMode) -> Self {
+        Self {
+            local_pdp: matches!(consent_mode, ConsentMode::Auto | ConsentMode::Prompt),
+            consent_mode,
+            external_attempt: None,
+            override_applied: false,
+        }
+    }
+}
+
 pub struct LiveSession {
     pub id: ObjectId,
     pub agent_id: ObjectId,
@@ -38,6 +74,9 @@ pub struct LiveSession {
     pub controller_user_id: ObjectId,
     permissions: Permissions,
     file_children_enabled: bool,
+    // Frozen by construction, before Hub publication. No late consent or
+    // capability update can upgrade an Unknown creation to local-PDP.
+    file_child_controller_scope: FileChildControllerScope,
     // Reservations and admissions share four slots. Completion removes only
     // the exact active binding; transport close and authorization are not wired
     // to this bookkeeping yet, so production callers must remain disabled.
@@ -206,6 +245,11 @@ impl LiveSession {
             controller_user_id,
             permissions,
             file_children_enabled: false,
+            file_child_controller_scope: FileChildControllerScope::unknown(
+                ConsentMode::Prompt,
+                None,
+                false,
+            ),
             file_children: HashMap::new(),
             device_share_scope: None,
             share_watch_started: false,
@@ -232,6 +276,46 @@ impl LiveSession {
             idle_secs: None,
         };
         (s, waiter)
+    }
+
+    /// The compatibility constructor above always remains Unknown. This
+    /// server-only constructor consumes the trusted creator's frozen scope;
+    /// it cannot modify an already published/coalesced session.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_controller_scope(
+        id: ObjectId,
+        agent_id: ObjectId,
+        tenant_id: ObjectId,
+        controller_user_id: ObjectId,
+        permissions: Permissions,
+        controller_tx: ClientTx,
+        scope: FileChildControllerScope,
+    ) -> (Self, crate::consent::ConsentWaiter) {
+        let (mut session, waiter) = Self::new(
+            id,
+            agent_id,
+            tenant_id,
+            controller_user_id,
+            permissions,
+            controller_tx,
+        );
+        session.file_child_controller_scope = scope;
+        (session, waiter)
+    }
+
+    #[doc(hidden)]
+    pub fn matches_file_child_controller_scope(&self, scope: &FileChildControllerScope) -> bool {
+        &self.file_child_controller_scope == scope
+    }
+
+    fn require_file_child_controller_source(&self) -> Result<()> {
+        if !self.file_child_controller_scope.local_pdp || self.device_share_scope.is_some() {
+            return Err(Error::PermissionDenied(
+                "file child controller source unavailable",
+            ));
+        }
+        Ok(())
     }
 
     /// Transition guard: only certain transitions are legal.
@@ -304,6 +388,8 @@ impl LiveSession {
     pub fn reserve_file_child(&mut self, transfer_id: &str) -> Result<ObjectId> {
         use ring::rand::{SecureRandom, SystemRandom};
 
+        self.require_file_child_controller_source()?;
+
         if !self.file_children_enabled {
             return Err(Error::PermissionDenied(
                 "file child transports are disabled",
@@ -352,6 +438,16 @@ impl LiveSession {
     /// verification remain unwired; callers must not expose a production child
     /// transport on the strength of this bookkeeping.
     pub fn admit_file_child(&mut self, child_id: ObjectId, transfer_id: &str) -> Result<()> {
+        self.reserved_file_child_mut(child_id, transfer_id)?.state = FileChildState::Active;
+        Ok(())
+    }
+
+    fn reserved_file_child_mut(
+        &mut self,
+        child_id: ObjectId,
+        transfer_id: &str,
+    ) -> Result<&mut FileChild> {
+        self.require_file_child_controller_source()?;
         if !self.file_children_enabled {
             return Err(Error::PermissionDenied(
                 "file child transports are disabled",
@@ -373,8 +469,41 @@ impl LiveSession {
         if child.state != FileChildState::Reserved {
             return Err(Error::PermissionDenied("file child ID already admitted"));
         }
-        child.state = FileChildState::Active;
-        Ok(())
+        Ok(child)
+    }
+
+    /// The caller holds the parent lock. `enqueue` must return Err only if
+    /// nothing was queued (the Hub uses exactly one bounded try_send).
+    /// Validate before calling it, then commit using this same child borrow:
+    /// a successful enqueue has no second fallible admission/lookup afterward.
+    pub fn enqueue_file_child_offer<F>(
+        &mut self,
+        child_id: ObjectId,
+        transfer_id: &str,
+        enqueue: F,
+    ) -> Result<()>
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        let child = self.reserved_file_child_mut(child_id, transfer_id)?;
+        match enqueue() {
+            Ok(()) => {
+                child.state = FileChildState::Active;
+                Ok(())
+            }
+            Err(error) => {
+                // Still the exact Reserved entry validated above: no await or
+                // externally writable child state exists during this callback.
+                self.file_children.remove(&child_id);
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[doc(hidden)]
+    pub fn file_child_local_pdp_for_tests(&self) -> bool {
+        self.require_file_child_controller_source().is_ok()
     }
 
     /// Roll back only the exact Reserved binding when its reply cannot be
@@ -394,6 +523,22 @@ impl LiveSession {
         }
         self.file_children.remove(&child_id);
         Ok(())
+    }
+
+    /// Read-only admission inspection for this crate and downstream tests.
+    /// `Some(false)` is Reserved, `Some(true)` is Active; neither proves that
+    /// an agent received a message or that any transport exists.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[doc(hidden)]
+    pub fn file_child_active_for_tests(
+        &self,
+        child_id: ObjectId,
+        transfer_id: &str,
+    ) -> Option<bool> {
+        self.file_children
+            .get(&child_id)
+            .filter(|child| child.transfer_id == transfer_id)
+            .map(|child| child.state == FileChildState::Active)
     }
 
     /// Release only the exact active binding, after the caller has closed its
@@ -444,15 +589,59 @@ mod tests {
 
     fn fixture() -> LiveSession {
         let (tx, _rx) = mpsc::channel(8);
-        let (s, _) = LiveSession::new(
+        let (s, _) = LiveSession::new_with_controller_scope(
             ObjectId::new(),
             ObjectId::new(),
             ObjectId::new(),
             ObjectId::new(),
             Permissions::default(),
             tx,
+            FileChildControllerScope::local_pdp(ConsentMode::Prompt),
         );
         s
+    }
+
+    #[test]
+    fn file_child_unknown_and_remote_consent_sources_cannot_inherit_capability() {
+        for scope in [
+            FileChildControllerScope::unknown(ConsentMode::Prompt, None, false),
+            FileChildControllerScope::unknown(
+                ConsentMode::Prompt,
+                Some("synthetic-attempt".into()),
+                false,
+            ),
+            FileChildControllerScope::unknown(ConsentMode::Auto, None, true),
+            FileChildControllerScope::local_pdp(ConsentMode::Email),
+            FileChildControllerScope::local_pdp(ConsentMode::Push),
+            FileChildControllerScope::local_pdp(ConsentMode::PromptThenEmail),
+        ] {
+            let (tx, _rx) = mpsc::channel(8);
+            let (mut session, _waiter) = LiveSession::new_with_controller_scope(
+                ObjectId::new(),
+                ObjectId::new(),
+                ObjectId::new(),
+                ObjectId::new(),
+                Permissions::VIEW | Permissions::FILES,
+                tx,
+                scope,
+            );
+            session.phase = SessionPhase::Active;
+            session.set_file_children_enabled(true);
+            assert!(!session.file_child_local_pdp_for_tests());
+            assert!(session.reserve_file_child("download").is_err());
+        }
+        let (tx, _rx) = mpsc::channel(8);
+        let (mut legacy, _waiter) = LiveSession::new(
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+            Permissions::VIEW | Permissions::FILES,
+            tx,
+        );
+        legacy.phase = SessionPhase::Active;
+        legacy.set_file_children_enabled(true);
+        assert!(legacy.reserve_file_child("legacy").is_err());
     }
 
     #[test]

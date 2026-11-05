@@ -15,6 +15,10 @@ path = "src/lib.rs"
 # on `meshharbor-core` and the crates below it, never on the api crate. The Hub
 # came here from `meshharbor-remote-control`, which is wire-only for the
 # server now (its `server` feature keeps just the Mongo audit sink).
+[features]
+# Read-only synthetic-fixture observations; never enabled by production dependencies.
+test-fixtures = ["meshharbor-remote-control/test-fixtures"]
+
 [dependencies]
 meshharbor-core = { path = "../../core" }
 meshharbor-config = { path = "../../config" }

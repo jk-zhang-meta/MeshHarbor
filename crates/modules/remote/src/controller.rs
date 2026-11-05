@@ -39,6 +39,14 @@ pub struct ControllerFrame<'a> {
     pub connection_id: &'a str,
 }
 
+// Only this module can construct the post-authentication/PDP token. It owns
+// the exact parsed request and current sender; no wire or relay DTO carries it.
+struct LocalPdpRequest {
+    request: ClientMsg,
+    user_id: ObjectId,
+    controller_tx: meshharbor_remote_control::session::ClientTx,
+}
+
 /// FR-101 P4a — how many session requests one caller may send one device in a
 /// minute. No legitimate client comes near it. The viewer's reconnect ladder
 /// (250 ms doubling to a steady 8 s, `RC_RECONNECT_LADDER_MS`) asks about a
@@ -76,7 +84,15 @@ pub async fn handle_controller_frame(state: &RemoteState, frame: ControllerFrame
     // (self-control / admin / REMOTE_CONTROL + per-device allowlist +
     // quarantine). A non-request rc:* message resolves to `Ok(Prompt)` and
     // falls straight through to dispatch (the mode is unused for it).
-    let authz = match resolve_session_authz(state, frame.user_id, frame.text).await {
+    let mut local_pdp_verified = false;
+    let authz = match resolve_session_authz_with_origin(
+        state,
+        frame.user_id,
+        frame.text,
+        &mut local_pdp_verified,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reason) => {
             warn!(user_id = ?frame.user_id, %reason, "rc:session.request denied by authz gate");
@@ -120,8 +136,27 @@ pub async fn handle_controller_frame(state: &RemoteState, frame: ControllerFrame
         });
         return true;
     }
+    let local_pdp_request = match serde_json::from_str::<ClientMsg>(frame.text) {
+        Ok(
+            request @ ClientMsg::SessionRequest {
+                share_grant_id: None,
+                ..
+            },
+        ) if local_pdp_verified
+            && matches!(authz.mode, ConsentMode::Auto | ConsentMode::Prompt)
+            && authz.override_reason.is_none() =>
+        {
+            Some(LocalPdpRequest {
+                request,
+                user_id: frame.user_id,
+                controller_tx: frame.controller_tx.clone(),
+            })
+        }
+        _ => None,
+    };
     dispatch_controller_rc(
         state,
+        local_pdp_request,
         frame.user_id,
         frame.controller_name,
         frame.controller_tx,
@@ -147,8 +182,9 @@ pub async fn handle_controller_frame(state: &RemoteState, frame: ControllerFrame
 /// Route a parsed `rc:*` message coming from a controller browser tab.
 /// Returns `true` if the message was handled, `false` if it wasn't rc:*.
 #[allow(clippy::too_many_arguments)]
-pub async fn dispatch_controller_rc(
+async fn dispatch_controller_rc(
     state: &RemoteState,
+    local_pdp_request: Option<LocalPdpRequest>,
     user_id: ObjectId,
     controller_name: &str,
     controller_tx: &meshharbor_remote_control::session::ClientTx,
@@ -185,8 +221,17 @@ pub async fn dispatch_controller_rc(
     connection_id: &str,
 ) -> bool {
     let hub = &state.fleet.rc_hub;
-    let Ok(parsed) = serde_json::from_str::<ClientMsg>(text) else {
-        return false;
+    let (parsed, local_pdp) = match local_pdp_request {
+        Some(token) => {
+            if token.user_id != user_id || !token.controller_tx.same_channel(controller_tx) {
+                return true; // private-token identity mismatch: never downgrade into legacy dispatch
+            }
+            (token.request, true)
+        }
+        None => match serde_json::from_str::<ClientMsg>(text) {
+            Ok(parsed) => (parsed, false),
+            Err(_) => return false,
+        },
     };
     let is_session_request = matches!(&parsed, ClientMsg::SessionRequest { .. });
     // FR-115 P3b — on the pod that owns the device, the org's cap is a
@@ -272,6 +317,8 @@ pub async fn dispatch_controller_rc(
     let mut created_session = None;
     let dispatched = if shared_scope.is_some() {
         hub.dispatch_capturing_session(&ctx, parsed, &mut created_session)
+    } else if local_pdp {
+        hub.dispatch_local_pdp_session_request(&ctx, parsed)
     } else {
         hub.dispatch(&ctx, parsed)
     };
@@ -715,6 +762,17 @@ pub async fn resolve_session_authz(
     controller_user_id: ObjectId,
     text: &str,
 ) -> Result<SessionAuthz, String> {
+    resolve_session_authz_with_origin(state, controller_user_id, text, &mut false).await
+}
+
+// Compatibility PDP includes "let Hub explain missing agent" early-outs.
+// Only actual known-agent allow branches attest the local creation source.
+async fn resolve_session_authz_with_origin(
+    state: &RemoteState,
+    controller_user_id: ObjectId,
+    text: &str,
+    local_pdp_verified: &mut bool,
+) -> Result<SessionAuthz, String> {
     use meshharbor_db::models::role::permissions;
     use meshharbor_remote_control::models::AgentStatus;
 
@@ -816,6 +874,7 @@ pub async fn resolve_session_authz(
     // attended modes without a second account).
     if agent.owner_user_id == controller_user_id {
         // FR-85 P3 — the owner may record their own device.
+        *local_pdp_verified = true;
         return Ok(SessionAuthz::allow_with_input(
             agent.access_policy.owner_consent_mode(),
             input_mode,
@@ -868,6 +927,7 @@ pub async fn resolve_session_authz(
                 org_session_cap,
             });
         }
+        *local_pdp_verified = true;
         return Ok(SessionAuthz::allow_with_input(
             mode,
             input_mode,
@@ -890,6 +950,7 @@ pub async fn resolve_session_authz(
     // request; consent is the real gate). Non-empty ⇒ user or a role must match.
     let policy = &agent.access_policy;
     if policy.allowed_user_ids.is_empty() && policy.allowed_role_ids.is_empty() {
+        *local_pdp_verified = true;
         return Ok(SessionAuthz::allow_with_input(
             mode,
             input_mode,
@@ -903,6 +964,7 @@ pub async fn resolve_session_authz(
         .capped(org_session_cap));
     }
     if policy.allowed_user_ids.contains(&controller_user_id) {
+        *local_pdp_verified = true;
         return Ok(SessionAuthz::allow_with_input(
             mode,
             input_mode,
@@ -921,6 +983,7 @@ pub async fn resolve_session_authz(
         .await
         .unwrap_or_default();
     if policy.allowed_role_ids.iter().any(|r| role_ids.contains(r)) {
+        *local_pdp_verified = true;
         return Ok(SessionAuthz::allow_with_input(
             mode,
             input_mode,

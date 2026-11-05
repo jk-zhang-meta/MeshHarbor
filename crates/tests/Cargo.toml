@@ -58,6 +58,7 @@ sha2.workspace = true
 hex.workspace = true
 
 [dev-dependencies]
+meshharbor-mod-fleet = { path = "../modules/fleet", features = ["test-fixtures"] }
 tempfile = { workspace = true }
 tokio-test = "0.4"
 tokio-tungstenite = "0.26"
