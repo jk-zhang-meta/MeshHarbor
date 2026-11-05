@@ -229,6 +229,7 @@ fn downscale_for(pref: encode::EncoderPreference) -> capture::DownscalePolicy {
 }
 
 pub struct AgentPeer {
+    file_child_authorization: Arc<std::sync::Mutex<FileChildAuthorization>>,
     pc: Arc<RTCPeerConnection>,
     session_id: bson::oid::ObjectId,
     media_pump: Option<JoinHandle<()>>,
@@ -1194,7 +1195,12 @@ impl AgentPeer {
             Arc::new(std::sync::OnceLock::new());
         let privacy_ctx_for_callback = privacy_ctx.clone();
         let session_end_for_callback = session_end.clone();
+        let file_child_authorization = Arc::new(std::sync::Mutex::new(
+            FileChildAuthorization::unavailable(session_id, permissions, session_end.clone()),
+        ));
+        let file_child_for_callback = file_child_authorization.clone();
         pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+            let file_child_authorization = file_child_for_callback.clone();
             let label = dc.label().to_string();
             info!(session = %session_id, %label, "data channel opened");
             let quality_for_dc = quality_for_dc.clone();
@@ -1281,6 +1287,7 @@ impl AgentPeer {
                             keyframe_for_dc,
                             viewer_report_for_dc,
                             priority_for_dc,
+                            file_child_authorization,
                         )
                     }
                     "cursor" => {
@@ -1649,6 +1656,7 @@ impl AgentPeer {
         // FR-93 P5h — told when this computer goes to sleep.
         let sleep_notice = crate::sleep_notice::register(session_id, control_dc.clone());
         Ok(Self {
+            file_child_authorization,
             pc,
             session_id,
             media_pump: Some(pump),
@@ -1907,6 +1915,10 @@ impl AgentPeer {
             });
         })
     }
+    pub(crate) fn file_child_authorization(&self) -> &std::sync::Mutex<FileChildAuthorization> {
+        &self.file_child_authorization
+    }
+
     pub fn stop_serving(&self) {
         // First: the channel handlers let go whatever the channels do next.
         self.session_end.cancel();
@@ -10102,6 +10114,263 @@ fn layout_json(snap: &crate::input::layout::LayoutSnapshot) -> String {
     .to_string()
 }
 
+/// Parent-local proof admission only; this does not create a child transport.
+/// Production setup remains Unknown until trusted scope and stop inheritance
+/// are wired. This is not the ordinary Off/Audit peer-auth pin store.
+pub(crate) struct FileChildAuthorization {
+    parent_session_id: bson::oid::ObjectId,
+    permissions: meshharbor_remote_control::permissions::Permissions,
+    session_end: tokio_util::sync::CancellationToken,
+    origin: FileChildParentOrigin,
+    // (agent, controller), supplied by trusted parent setup, never child JSON.
+    identity: Option<(bson::oid::ObjectId, bson::oid::ObjectId)>,
+    registration: Option<FileChildRegistration>,
+    control_closed: bool,
+}
+
+struct FileChildRegistration {
+    parent_session_id: bson::oid::ObjectId,
+    identity: (bson::oid::ObjectId, bson::oid::ObjectId),
+    key: String,
+    children: std::collections::HashMap<bson::oid::ObjectId, PreparedFileChild>,
+    used_nonces: std::collections::HashSet<String>,
+}
+
+struct PreparedFileChild {
+    transfer_id: String,
+    consumed: bool,
+}
+
+// Retain consumed IDs until the parent ends so prepare cannot resurrect one.
+// There is no child completion/slot recycling path in this admission slice.
+const FILE_CHILD_PREPARATIONS_PER_PARENT: usize = 4;
+
+// These origins cannot acquire child support by inheriting an ordinary FILES
+// bit. No production path sets Ordinary until its identity/stop chain is bound.
+#[allow(dead_code)] // Only Unknown is constructed in production.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileChildParentOrigin {
+    Unknown,
+    Ordinary,
+    Shared,
+    External,
+    Delegated,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FileChildDenial {
+    ParentUnavailable,
+    ParentEnded,
+    FilesDenied,
+    InvalidRegistration,
+    AlreadyRegistered,
+    Unregistered,
+    InvalidPreparation,
+    PreparationLimit,
+    UnpreparedOrConsumed,
+    InvalidProof,
+}
+
+impl FileChildAuthorization {
+    fn unavailable(
+        parent_session_id: bson::oid::ObjectId,
+        permissions: meshharbor_remote_control::permissions::Permissions,
+        session_end: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        Self {
+            parent_session_id,
+            permissions,
+            session_end,
+            origin: FileChildParentOrigin::Unknown,
+            identity: None,
+            registration: None,
+            control_closed: false,
+        }
+    }
+
+    fn check_parent(&self) -> std::result::Result<(), FileChildDenial> {
+        if self.session_end.is_cancelled() || self.control_closed {
+            return Err(FileChildDenial::ParentEnded);
+        }
+        if !self
+            .permissions
+            .contains(meshharbor_remote_control::permissions::Permissions::FILES)
+        {
+            return Err(FileChildDenial::FilesDenied);
+        }
+        if self.origin != FileChildParentOrigin::Ordinary || self.identity.is_none() {
+            return Err(FileChildDenial::ParentUnavailable);
+        }
+        Ok(())
+    }
+
+    fn close_control(&mut self) {
+        self.control_closed = true;
+        self.registration = None;
+    }
+
+    fn handle_control(
+        &mut self,
+        val: &serde_json::Value,
+    ) -> std::result::Result<(), FileChildDenial> {
+        use meshharbor_remote_control::signaling::peer_auth_key_is_well_formed;
+        self.check_parent()?;
+        let identity = self.identity.ok_or(FileChildDenial::ParentUnavailable)?;
+        match val.get("t").and_then(serde_json::Value::as_str) {
+            Some("rc:file.child.register") => {
+                if self.registration.is_some() {
+                    return Err(FileChildDenial::AlreadyRegistered);
+                }
+                let key = val
+                    .get("key")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|key| peer_auth_key_is_well_formed(key))
+                    .ok_or(FileChildDenial::InvalidRegistration)?;
+                self.registration = Some(FileChildRegistration {
+                    parent_session_id: self.parent_session_id,
+                    identity,
+                    key: key.to_owned(),
+                    children: std::collections::HashMap::new(),
+                    used_nonces: std::collections::HashSet::new(),
+                });
+            }
+            Some("rc:file.child.prepare") => {
+                let child_text = val
+                    .get("child_id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(FileChildDenial::InvalidPreparation)?;
+                let child = bson::oid::ObjectId::parse_str(child_text)
+                    .map_err(|_| FileChildDenial::InvalidPreparation)?;
+                if child.to_hex() != child_text {
+                    return Err(FileChildDenial::InvalidPreparation);
+                }
+                let transfer = val
+                    .get("transfer_id")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|v| !v.is_empty() && v.len() <= 128 && !v.chars().any(char::is_control))
+                    .ok_or(FileChildDenial::InvalidPreparation)?;
+                let registration = self
+                    .registration
+                    .as_mut()
+                    .ok_or(FileChildDenial::Unregistered)?;
+                if registration.parent_session_id != self.parent_session_id
+                    || registration.identity != identity
+                {
+                    return Err(FileChildDenial::ParentUnavailable);
+                }
+                if registration.children.contains_key(&child) {
+                    return Err(FileChildDenial::UnpreparedOrConsumed);
+                }
+                if registration.children.len() >= FILE_CHILD_PREPARATIONS_PER_PARENT {
+                    return Err(FileChildDenial::PreparationLimit);
+                }
+                registration.children.insert(
+                    child,
+                    PreparedFileChild {
+                        transfer_id: transfer.to_owned(),
+                        consumed: false,
+                    },
+                );
+            }
+            _ => return Err(FileChildDenial::InvalidRegistration),
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_offer(
+        &mut self,
+        offer: &meshharbor_remote_control::signaling::ServerMsg,
+    ) -> std::result::Result<(), FileChildDenial> {
+        self.check_parent()?;
+        use meshharbor_remote_control::signaling::{
+            FileChildDirection, ServerMsg, file_child_offer_transcript, peer_auth_verify,
+        };
+        let ServerMsg::FileSdpOffer {
+            session_id,
+            child_id,
+            transfer_id,
+            direction: FileChildDirection::Download,
+            sdp,
+            proof,
+        } = offer
+        else {
+            return Err(FileChildDenial::ParentUnavailable);
+        };
+        if *session_id != self.parent_session_id {
+            return Err(FileChildDenial::ParentUnavailable);
+        }
+        let identity = self.identity.ok_or(FileChildDenial::ParentUnavailable)?;
+        let registration = self
+            .registration
+            .as_mut()
+            .ok_or(FileChildDenial::Unregistered)?;
+        if registration.parent_session_id != self.parent_session_id
+            || registration.identity != identity
+        {
+            return Err(FileChildDenial::ParentUnavailable);
+        }
+        // The offer's key is an assertion to compare, never a trust source.
+        if proof.key != registration.key {
+            return Err(FileChildDenial::InvalidProof);
+        }
+        let prepared = registration
+            .children
+            .get_mut(child_id)
+            .filter(|p| !p.consumed && p.transfer_id == *transfer_id)
+            .ok_or(FileChildDenial::UnpreparedOrConsumed)?;
+        let transcript = file_child_offer_transcript(
+            &self.parent_session_id.to_hex(),
+            &child_id.to_hex(),
+            transfer_id,
+            &identity.0.to_hex(),
+            &identity.1.to_hex(),
+            sdp,
+            &proof.nonce,
+        )
+        .ok_or(FileChildDenial::InvalidProof)?;
+        if registration.used_nonces.contains(&proof.nonce)
+            || !peer_auth_verify(&registration.key, &transcript, &proof.sig)
+        {
+            return Err(FileChildDenial::InvalidProof);
+        }
+        if self.session_end.is_cancelled() || self.control_closed {
+            return Err(FileChildDenial::ParentEnded);
+        }
+        prepared.consumed = true;
+        registration.used_nonces.insert(proof.nonce.clone());
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+enum ControlEnvelopeError {
+    NonUtf8,
+    Json(serde_json::Error),
+    FileChild(FileChildDenial),
+}
+
+/// The actual control DC byte parser. Only the current parent object can
+/// register its key or prepare a child; no signaling proof can do either.
+fn parse_control_envelope(
+    data: &[u8],
+    parent: &std::sync::Mutex<FileChildAuthorization>,
+) -> std::result::Result<serde_json::Value, ControlEnvelopeError> {
+    let text = std::str::from_utf8(data).map_err(|_| ControlEnvelopeError::NonUtf8)?;
+    let val: serde_json::Value = serde_json::from_str(text).map_err(ControlEnvelopeError::Json)?;
+    if matches!(
+        val.get("t").and_then(serde_json::Value::as_str),
+        Some("rc:file.child.register" | "rc:file.child.prepare")
+    ) {
+        let mut parent = parent
+            .lock()
+            .map_err(|_| ControlEnvelopeError::FileChild(FileChildDenial::ParentUnavailable))?;
+        parent
+            .handle_control(&val)
+            .map_err(ControlEnvelopeError::FileChild)?;
+    }
+    Ok(val)
+}
+
 /// `control` data-channel handler. Parses JSON `rc:*` envelopes and
 /// applies them. Today the only message is `rc:quality` (mutating the
 /// shared atomic that the media pump polls before each encode); future
@@ -10120,6 +10389,7 @@ fn attach_control_handler(
     viewer_report: Arc<crate::encode::viewer_rate::ViewerFeedback>,
     // rc.199 — per-session Priority dial; the `rc:priority` match arm writes it.
     priority: Arc<std::sync::atomic::AtomicU8>,
+    file_child_authorization: Arc<std::sync::Mutex<FileChildAuthorization>>,
 ) {
     // A handle the on_message closure sends replies through (e.g.
     // rc:logs-fetch.reply) over the same DC. #1740 — WEAK: the closure is
@@ -10143,8 +10413,13 @@ fn attach_control_handler(
     // Multi-user P3: ownership-gated — only the session that APPLIED the
     // current mode restores it (a closing watcher tab must not revert the
     // driving session's mode).
+    let file_child_for_close = file_child_authorization.clone();
     dc.on_close(Box::new(move || {
+        let file_child_authorization = file_child_for_close.clone();
         Box::pin(async move {
+            if let Ok(mut parent) = file_child_authorization.lock() {
+                parent.close_control();
+            }
             // P6 — the control DC's close is the canonical session-death
             // signal: deregister from the InputArbiter (release-all any
             // held keys, drop off the participants rail, hand the
@@ -10161,6 +10436,7 @@ fn attach_control_handler(
     }));
     dc.on_message(Box::new(move |msg| {
         let quality_state = quality_state.clone();
+        let file_child_authorization = file_child_authorization.clone();
         let target_resolution = target_resolution.clone();
         let keyframe_requested = keyframe_requested.clone();
         let viewer_report = viewer_report.clone();
@@ -10172,17 +10448,18 @@ fn attach_control_handler(
             // the data-channel callback (it'd kill the channel for
             // the rest of the session). Every parse path silently
             // logs and returns on failure.
-            let text = match std::str::from_utf8(&msg.data) {
-                Ok(t) => t,
-                Err(_) => {
+            let val = match parse_control_envelope(&msg.data, &file_child_authorization) {
+                Ok(val) => val,
+                Err(ControlEnvelopeError::NonUtf8) => {
                     debug!(%session_id, bytes = msg.data.len(), "control: non-UTF8 payload, dropped");
                     return;
                 }
-            };
-            let val: serde_json::Value = match serde_json::from_str(text) {
-                Ok(v) => v,
-                Err(e) => {
+                Err(ControlEnvelopeError::Json(e)) => {
                     debug!(%session_id, %e, "control: malformed JSON, dropped");
+                    return;
+                }
+                Err(ControlEnvelopeError::FileChild(why)) => {
+                    debug!(%session_id, ?why, "control: file child capability unavailable");
                     return;
                 }
             };
@@ -14810,6 +15087,456 @@ mod overlay_tier_tests {
         unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "OVERLAY_TIER_DETECT", "0") };
         assert!(!overlay_remote_is_relay_tier("100.64.0.29", sid).await);
         unsafe { tunnel_core::env::test_env::clear("OVERLAY_TIER_DETECT") };
+    }
+}
+
+#[cfg(test)]
+mod file_child_authorization_tests {
+    use super::*;
+    use base64::Engine;
+    use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+    use bson::oid::ObjectId;
+    use meshharbor_remote_control::permissions::Permissions;
+    use meshharbor_remote_control::signaling::{
+        FileChildDirection, FileChildOfferProof, ServerMsg, file_child_offer_transcript,
+        peer_auth_verify,
+    };
+    use ring::rand::SystemRandom;
+    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
+    use std::sync::Mutex;
+    use tokio_util::sync::CancellationToken;
+
+    const PARENT: &str = "111111111111111111111111";
+    const CHILD: &str = "222222222222222222222222";
+    const AGENT: &str = "444444444444444444444444";
+    const CONTROLLER: &str = "555555555555555555555555";
+    const TRANSFER: &str = "synthetic-download";
+    const SDP: &str = "v=0\r\na=fingerprint:sha-256 AA:BB:CC\r\n";
+
+    struct Controller {
+        pair: EcdsaKeyPair,
+        key: String,
+    }
+
+    fn controller() -> Controller {
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+            .expect("generate a fresh synthetic key in memory");
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let key = STANDARD.encode(pair.public_key().as_ref());
+        Controller { pair, key }
+    }
+
+    fn parent() -> Mutex<FileChildAuthorization> {
+        let mut parent = FileChildAuthorization::unavailable(
+            ObjectId::parse_str(PARENT).unwrap(),
+            Permissions::VIEW | Permissions::FILES,
+            CancellationToken::new(),
+        );
+        // Synthetic trusted Request context, not an identity claimed by the
+        // registration/child JSON. Production setup remains unavailable.
+        parent.origin = FileChildParentOrigin::Ordinary;
+        parent.identity = Some((
+            ObjectId::parse_str(AGENT).unwrap(),
+            ObjectId::parse_str(CONTROLLER).unwrap(),
+        ));
+        Mutex::new(parent)
+    }
+
+    fn signed_offer(controller: &Controller) -> ServerMsg {
+        let nonce = URL_SAFE_NO_PAD.encode([53u8; 16]);
+        let transcript =
+            file_child_offer_transcript(PARENT, CHILD, TRANSFER, AGENT, CONTROLLER, SDP, &nonce)
+                .expect("the synthetic offer has a canonical identity and fingerprint");
+        let sig = URL_SAFE_NO_PAD.encode(
+            controller
+                .pair
+                .sign(&SystemRandom::new(), &transcript)
+                .unwrap()
+                .as_ref(),
+        );
+        assert!(
+            peer_auth_verify(&controller.key, &transcript, &sig),
+            "fixture signature must verify before exercising agent admission"
+        );
+        ServerMsg::FileSdpOffer {
+            session_id: ObjectId::parse_str(PARENT).unwrap(),
+            child_id: ObjectId::parse_str(CHILD).unwrap(),
+            transfer_id: TRANSFER.into(),
+            direction: FileChildDirection::Download,
+            sdp: SDP.into(),
+            proof: FileChildOfferProof {
+                nonce,
+                key: controller.key.clone(),
+                sig,
+            },
+        }
+    }
+
+    #[test]
+    fn file_child_offer_requires_the_live_parent_control_registration() {
+        use crate::peer_auth::PeerAuthPolicy::{Audit, Off};
+        use crate::signaling::check_file_child_offer;
+
+        let controller = controller();
+        let other_controller = self::controller();
+        let offer = signed_offer(&controller);
+        let parent = parent();
+
+        let quality = br#"{"t":"rc:quality","quality":"sharp"}"#;
+        assert_eq!(
+            parse_control_envelope(quality, &parent).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(quality).unwrap(),
+            "the existing control envelope is preserved"
+        );
+        assert!(matches!(
+            parse_control_envelope(&[0xff], &parent),
+            Err(ControlEnvelopeError::NonUtf8)
+        ));
+        assert!(matches!(
+            parse_control_envelope(b"{", &parent),
+            Err(ControlEnvelopeError::Json(_))
+        ));
+
+        for policy in [Off, Audit] {
+            assert!(
+                check_file_child_offer(Some(&parent), &offer, policy).is_err(),
+                "a self-signed offer without control registration is insufficient: {policy:?}"
+            );
+            assert_eq!(
+                check_file_child_offer(None, &offer, policy),
+                Err(FileChildDenial::ParentUnavailable),
+                "no live parent must fail closed even under {policy:?}"
+            );
+        }
+
+        // These bytes enter the SAME parser called by the control DC's
+        // on_message, against the SAME per-parent state checked below.
+        let registration = serde_json::to_vec(&serde_json::json!({
+            "t": "rc:file.child.register", "key": controller.key,
+        }))
+        .unwrap();
+        let registered = parse_control_envelope(&registration, &parent);
+        let preparation = serde_json::to_vec(&serde_json::json!({
+            "t": "rc:file.child.prepare", "child_id": CHILD, "transfer_id": TRANSFER,
+        }))
+        .unwrap();
+        let prepared = parse_control_envelope(&preparation, &parent);
+
+        let unregistered_parent = self::parent();
+        assert!(
+            check_file_child_offer(Some(&unregistered_parent), &offer, Off).is_err(),
+            "registration on one parent object cannot authorize another parent object"
+        );
+
+        // Once registration is implemented, each mutation must still reject.
+        // In the initial RED all child admission remains Unsupported; these
+        // rejections alone do not prove the cryptographic/lifecycle feature.
+        let wire = serde_json::to_value(&offer).unwrap();
+        let mutations = [
+            (
+                "parent",
+                "/session_id",
+                serde_json::json!("333333333333333333333333"),
+            ),
+            (
+                "child",
+                "/child_id",
+                serde_json::json!("333333333333333333333333"),
+            ),
+            (
+                "transfer",
+                "/transfer_id",
+                serde_json::json!("another-download"),
+            ),
+            (
+                "fingerprint",
+                "/sdp",
+                serde_json::json!("v=0\r\na=fingerprint:sha-256 DD:EE:FF\r\n"),
+            ),
+            (
+                "nonce",
+                "/proof/nonce",
+                serde_json::json!(URL_SAFE_NO_PAD.encode([54u8; 16])),
+            ),
+            (
+                "signature",
+                "/proof/sig",
+                serde_json::json!(URL_SAFE_NO_PAD.encode([0u8; 64])),
+            ),
+            (
+                "unregistered key",
+                "/proof/key",
+                serde_json::json!(other_controller.key),
+            ),
+        ];
+        for (label, pointer, value) in mutations {
+            let mut changed = wire.clone();
+            *changed.pointer_mut(pointer).unwrap() = value;
+            let changed: ServerMsg = serde_json::from_value(changed).unwrap();
+            for policy in [Off, Audit] {
+                assert!(
+                    check_file_child_offer(Some(&parent), &changed, policy).is_err(),
+                    "{label} tampering must reject under {policy:?}"
+                );
+            }
+        }
+        let another_valid_signature = signed_offer(&other_controller);
+        for policy in [Off, Audit] {
+            assert!(
+                check_file_child_offer(Some(&parent), &another_valid_signature, policy).is_err(),
+                "a valid signature from a different, unregistered key must reject under {policy:?}"
+            );
+        }
+
+        for origin in [
+            FileChildParentOrigin::Unknown,
+            FileChildParentOrigin::Shared,
+            FileChildParentOrigin::External,
+            FileChildParentOrigin::Delegated,
+        ] {
+            parent.lock().unwrap().origin = origin;
+            for policy in [Off, Audit] {
+                assert_eq!(
+                    check_file_child_offer(Some(&parent), &offer, policy),
+                    Err(FileChildDenial::ParentUnavailable)
+                );
+            }
+        }
+        parent.lock().unwrap().origin = FileChildParentOrigin::Ordinary;
+
+        let admitted = check_file_child_offer(Some(&parent), &offer, Off);
+        assert!(
+            check_file_child_offer(Some(&parent), &offer, Audit).is_err(),
+            "the prepared child must be consumed once, including across policy modes"
+        );
+
+        // Local grant mutation checks the admission seam only. A production
+        // dynamic FILES-revocation notification/stop chain is still unproven.
+        parent
+            .lock()
+            .unwrap()
+            .permissions
+            .remove(Permissions::FILES);
+        assert_eq!(
+            check_file_child_offer(Some(&parent), &offer, Off),
+            Err(FileChildDenial::FilesDenied)
+        );
+        parent.lock().unwrap().session_end.cancel();
+        assert_eq!(
+            check_file_child_offer(Some(&parent), &offer, Audit),
+            Err(FileChildDenial::ParentEnded)
+        );
+
+        assert!(
+            registered.is_ok() && prepared.is_ok() && admitted.is_ok(),
+            "X14 matching live-parent registration and prepared signed child must admit; registration={registered:?}, preparation={prepared:?}, child={admitted:?}"
+        );
+    }
+    #[test]
+    fn file_child_registration_is_bounded_immutable_and_closed_with_parent() {
+        use crate::peer_auth::PeerAuthPolicy::{Audit, Off};
+        use crate::signaling::check_file_child_offer;
+        let controller = controller();
+        let parent = parent();
+        let offer = signed_offer(&controller);
+        let register = serde_json::to_vec(&serde_json::json!({
+            "t":"rc:file.child.register", "key":controller.key,
+        }))
+        .unwrap();
+        let prepare = |child: &str| {
+            serde_json::to_vec(&serde_json::json!({
+                "t":"rc:file.child.prepare", "child_id":child, "transfer_id":TRANSFER,
+            }))
+            .unwrap()
+        };
+        let preparation = prepare(CHILD);
+        assert!(matches!(
+            parse_control_envelope(&preparation, &parent),
+            Err(ControlEnvelopeError::FileChild(
+                FileChildDenial::Unregistered
+            ))
+        ));
+        assert!(matches!(
+            parse_control_envelope(
+                br#"{"t":"rc:file.child.register","key":"invalid"}"#,
+                &parent
+            ),
+            Err(ControlEnvelopeError::FileChild(
+                FileChildDenial::InvalidRegistration
+            ))
+        ));
+        parse_control_envelope(&register, &parent).unwrap();
+        assert!(matches!(
+            parse_control_envelope(&register, &parent),
+            Err(ControlEnvelopeError::FileChild(
+                FileChildDenial::AlreadyRegistered
+            ))
+        ));
+        let other_controller = super::file_child_authorization_tests::controller();
+        let replacement = serde_json::to_vec(&serde_json::json!({
+            "t":"rc:file.child.register", "key":other_controller.key,
+        }))
+        .unwrap();
+        assert!(matches!(
+            parse_control_envelope(&replacement, &parent),
+            Err(ControlEnvelopeError::FileChild(
+                FileChildDenial::AlreadyRegistered
+            ))
+        ));
+        parse_control_envelope(&preparation, &parent).unwrap();
+        assert!(matches!(
+            parse_control_envelope(&preparation, &parent),
+            Err(ControlEnvelopeError::FileChild(
+                FileChildDenial::UnpreparedOrConsumed
+            ))
+        ));
+
+        let original_identity = parent.lock().unwrap().identity;
+        parent.lock().unwrap().identity = Some((ObjectId::new(), ObjectId::new()));
+        assert_eq!(
+            check_file_child_offer(Some(&parent), &offer, Off),
+            Err(FileChildDenial::ParentUnavailable),
+            "changing parent identity cannot inherit the old control registration"
+        );
+        parent.lock().unwrap().identity = original_identity;
+        assert!(
+            check_file_child_offer(Some(&parent), &offer, Audit).is_ok(),
+            "a valid Audit admission still executes mandatory proof validation"
+        );
+        assert!(
+            matches!(
+                parse_control_envelope(&preparation, &parent),
+                Err(ControlEnvelopeError::FileChild(
+                    FileChildDenial::UnpreparedOrConsumed
+                ))
+            ),
+            "consumed child cannot be prepared again"
+        );
+
+        let second_child = "666666666666666666666666";
+        for child in [
+            second_child,
+            "777777777777777777777777",
+            "888888888888888888888888",
+        ] {
+            parse_control_envelope(&prepare(child), &parent).unwrap();
+        }
+        assert!(
+            matches!(
+                parse_control_envelope(&prepare("999999999999999999999999"), &parent),
+                Err(ControlEnvelopeError::FileChild(
+                    FileChildDenial::PreparationLimit
+                ))
+            ),
+            "untrusted control messages cannot grow the parent preparation state without bound"
+        );
+        let mut second = signed_offer(&controller);
+        if let ServerMsg::FileSdpOffer {
+            session_id,
+            child_id,
+            transfer_id,
+            sdp,
+            proof,
+            ..
+        } = &mut second
+        {
+            *child_id = ObjectId::parse_str(second_child).unwrap();
+            let transcript = file_child_offer_transcript(
+                &session_id.to_hex(),
+                &child_id.to_hex(),
+                transfer_id,
+                AGENT,
+                CONTROLLER,
+                sdp,
+                &proof.nonce,
+            )
+            .unwrap();
+            proof.sig = URL_SAFE_NO_PAD.encode(
+                controller
+                    .pair
+                    .sign(&SystemRandom::new(), &transcript)
+                    .unwrap()
+                    .as_ref(),
+            );
+        }
+        assert_eq!(
+            check_file_child_offer(Some(&parent), &second, Audit),
+            Err(FileChildDenial::InvalidProof),
+            "a correctly signed second child cannot reuse an admitted nonce"
+        );
+        if let ServerMsg::FileSdpOffer {
+            session_id,
+            child_id,
+            transfer_id,
+            sdp,
+            proof,
+            ..
+        } = &mut second
+        {
+            proof.nonce = URL_SAFE_NO_PAD.encode([55u8; 16]);
+            let transcript = file_child_offer_transcript(
+                &session_id.to_hex(),
+                &child_id.to_hex(),
+                transfer_id,
+                AGENT,
+                CONTROLLER,
+                sdp,
+                &proof.nonce,
+            )
+            .unwrap();
+            proof.sig = URL_SAFE_NO_PAD.encode(
+                controller
+                    .pair
+                    .sign(&SystemRandom::new(), &transcript)
+                    .unwrap()
+                    .as_ref(),
+            );
+        }
+        assert!(
+            check_file_child_offer(Some(&parent), &second, Off).is_ok(),
+            "rejected nonce replay must not consume the prepared second child"
+        );
+
+        parent.lock().unwrap().close_control();
+        assert_eq!(
+            check_file_child_offer(Some(&parent), &offer, Off),
+            Err(FileChildDenial::ParentEnded)
+        );
+        assert!(
+            matches!(
+                parse_control_envelope(&register, &parent),
+                Err(ControlEnvelopeError::FileChild(
+                    FileChildDenial::ParentEnded
+                ))
+            ),
+            "a closed control connection cannot reinstall its key"
+        );
+        assert!(
+            parse_control_envelope(br#"{"t":"rc:quality","quality":"sharp"}"#, &parent).is_ok(),
+            "the child gate does not gate existing control envelopes"
+        );
+
+        let unknown = std::sync::Mutex::new(FileChildAuthorization::unavailable(
+            ObjectId::new(),
+            meshharbor_remote_control::permissions::Permissions::FILES,
+            tokio_util::sync::CancellationToken::new(),
+        ));
+        let forged = serde_json::to_vec(&serde_json::json!({
+            "t":"rc:file.child.register", "key":controller.key,
+            "origin":"ordinary", "agent_id":AGENT, "controller_user_id":CONTROLLER,
+        }))
+        .unwrap();
+        assert!(
+            matches!(
+                parse_control_envelope(&forged, &unknown),
+                Err(ControlEnvelopeError::FileChild(
+                    FileChildDenial::ParentUnavailable
+                ))
+            ),
+            "control JSON cannot promote production Unknown to a trusted parent"
+        );
     }
 }
 

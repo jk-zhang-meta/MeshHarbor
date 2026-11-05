@@ -3169,6 +3169,19 @@ async fn handle_server_msg(
     // sessions under its own row as well.
     carrier_ready_tx: &mpsc::Sender<bson::oid::ObjectId>,
 ) -> Result<(), ConnectError> {
+    // X14 remains unavailable. In particular, do not send a child through the
+    // ordinary offer's Off/Audit policy, delegation, or peer construction.
+    if let ServerMsg::FileSdpOffer { session_id, .. } = &msg {
+        let admission = check_file_child_offer(
+            peers
+                .get(session_id)
+                .map(AgentPeer::file_child_authorization),
+            &msg,
+            remote_cfg.peer_auth_policy(),
+        );
+        debug!(?admission, "file child transport remains unavailable");
+        return Ok(());
+    }
     if let ServerMsg::TunnelTerminate { session_id, .. } = &msg {
         shared_leases.end(*session_id);
         shared_ssh.end(*session_id);
@@ -6700,6 +6713,21 @@ async fn handle_server_msg(
         }
     }
     Ok(())
+}
+
+/// Ordinary offer auditing cannot authorize an X14 child. The parent-scoped
+/// checker is mandatory even when ordinary authentication is Off or Audit.
+pub(crate) fn check_file_child_offer(
+    parent: Option<&std::sync::Mutex<crate::peer::FileChildAuthorization>>,
+    offer: &ServerMsg,
+    _ordinary_policy: crate::peer_auth::PeerAuthPolicy,
+) -> std::result::Result<(), crate::peer::FileChildDenial> {
+    use crate::peer::FileChildDenial;
+    parent
+        .ok_or(FileChildDenial::ParentUnavailable)?
+        .lock()
+        .map_err(|_| FileChildDenial::ParentUnavailable)?
+        .check_offer(offer)
 }
 
 async fn close_all_peers(
