@@ -1890,6 +1890,7 @@ impl AgentPeer {
     /// An independent shared-lease timer owns these handles, not this pump's poll.
     pub fn shared_lease_stop(&self) -> std::sync::Arc<dyn Fn() + Send + Sync> {
         let end = self.session_end.clone();
+        let file_child_authorization = self.file_child_authorization.clone();
         let media = self.media_pump.as_ref().map(|t| t.abort_handle());
         #[cfg(feature = "audio")]
         let audio = self.audio_pump.as_ref().map(|t| t.abort_handle());
@@ -1898,6 +1899,7 @@ impl AgentPeer {
         let sid = self.session_id;
         std::sync::Arc::new(move || {
             end.cancel();
+            close_file_child_control(&file_child_authorization);
             if let Some(t) = &media {
                 t.abort();
             }
@@ -1922,6 +1924,7 @@ impl AgentPeer {
     pub fn stop_serving(&self) {
         // First: the channel handlers let go whatever the channels do next.
         self.session_end.cancel();
+        close_file_child_control(&self.file_child_authorization);
         if let Some(pump) = &self.media_pump {
             pump.abort();
         }
@@ -1964,6 +1967,7 @@ impl Drop for AgentPeer {
         // The DataChannel handlers' own session end (idempotent; `close`
         // usually got here first).
         self.session_end.cancel();
+        close_file_child_control(&self.file_child_authorization);
         crate::input::arbiter::global().session_closed(session_id);
         // Wave 2 — release this session's telemetry counters; a
         // long-lived agent must not accumulate one entry per session.
@@ -10115,8 +10119,8 @@ fn layout_json(snap: &crate::input::layout::LayoutSnapshot) -> String {
 }
 
 /// Parent-local proof admission only; this does not create a child transport.
-/// Production setup remains Unknown until trusted scope and stop inheritance
-/// are wired. This is not the ordinary Off/Audit peer-auth pin store.
+/// Only a local ordinary Request and its local grant can bind this object.
+/// Unsupported sources stay Unknown; this is not the Off/Audit pin store.
 pub(crate) struct FileChildAuthorization {
     parent_session_id: bson::oid::ObjectId,
     permissions: meshharbor_remote_control::permissions::Permissions,
@@ -10126,6 +10130,7 @@ pub(crate) struct FileChildAuthorization {
     identity: Option<(bson::oid::ObjectId, bson::oid::ObjectId)>,
     registration: Option<FileChildRegistration>,
     control_closed: bool,
+    parent_grant: Option<crate::signaling::PendingFileChildParent>,
 }
 
 struct FileChildRegistration {
@@ -10146,8 +10151,8 @@ struct PreparedFileChild {
 const FILE_CHILD_PREPARATIONS_PER_PARENT: usize = 4;
 
 // These origins cannot acquire child support by inheriting an ordinary FILES
-// bit. No production path sets Ordinary until its identity/stop chain is bound.
-#[allow(dead_code)] // Only Unknown is constructed in production.
+// bit. Their inherited identity/stop chains are not implemented here.
+#[allow(dead_code)] // Scoped sources are refused before peer binding.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FileChildParentOrigin {
     Unknown,
@@ -10172,7 +10177,7 @@ pub(crate) enum FileChildDenial {
 }
 
 impl FileChildAuthorization {
-    fn unavailable(
+    pub(crate) fn unavailable(
         parent_session_id: bson::oid::ObjectId,
         permissions: meshharbor_remote_control::permissions::Permissions,
         session_end: tokio_util::sync::CancellationToken,
@@ -10185,11 +10190,18 @@ impl FileChildAuthorization {
             identity: None,
             registration: None,
             control_closed: false,
+            parent_grant: None,
         }
     }
 
     fn check_parent(&self) -> std::result::Result<(), FileChildDenial> {
-        if self.session_end.is_cancelled() || self.control_closed {
+        if self.session_end.is_cancelled()
+            || self.control_closed
+            || self
+                .parent_grant
+                .as_ref()
+                .is_some_and(|grant| !grant.binding_is_live())
+        {
             return Err(FileChildDenial::ParentEnded);
         }
         if !self
@@ -10206,6 +10218,9 @@ impl FileChildAuthorization {
 
     fn close_control(&mut self) {
         self.control_closed = true;
+        if let Some(grant) = self.parent_grant.take() {
+            grant.close();
+        }
         self.registration = None;
     }
 
@@ -10333,7 +10348,13 @@ impl FileChildAuthorization {
         {
             return Err(FileChildDenial::InvalidProof);
         }
-        if self.session_end.is_cancelled() || self.control_closed {
+        if self.session_end.is_cancelled()
+            || self.control_closed
+            || self
+                .parent_grant
+                .as_ref()
+                .is_some_and(|grant| !grant.binding_is_live())
+        {
             return Err(FileChildDenial::ParentEnded);
         }
         prepared.consumed = true;
@@ -10343,7 +10364,7 @@ impl FileChildAuthorization {
 }
 
 #[derive(Debug)]
-enum ControlEnvelopeError {
+pub(crate) enum ControlEnvelopeError {
     NonUtf8,
     Json(serde_json::Error),
     FileChild(FileChildDenial),
@@ -10369,6 +10390,100 @@ fn parse_control_envelope(
             .map_err(ControlEnvelopeError::FileChild)?;
     }
     Ok(val)
+}
+
+/// Bind the exact local Request/consent candidate once, without deriving any
+/// authority from controller JSON, the child proof, or ordinary audit policy.
+pub(crate) fn bind_file_child_parent(
+    parent: &std::sync::Mutex<FileChildAuthorization>,
+    pending: Option<&crate::signaling::PendingFileChildParent>,
+) -> std::result::Result<(), FileChildDenial> {
+    let pending = pending.ok_or(FileChildDenial::ParentUnavailable)?;
+    let scope = pending
+        .approved_scope()
+        .ok_or(FileChildDenial::ParentUnavailable)?;
+    let mut parent = parent
+        .lock()
+        .map_err(|_| FileChildDenial::ParentUnavailable)?;
+    if parent.control_closed || parent.session_end.is_cancelled() {
+        return Err(FileChildDenial::ParentEnded);
+    }
+    if parent.parent_session_id != scope.session_id {
+        return Err(FileChildDenial::ParentUnavailable);
+    }
+    if parent.origin != FileChildParentOrigin::Unknown
+        || parent.identity.is_some()
+        || parent.registration.is_some()
+        || parent.parent_grant.is_some()
+    {
+        return Err(FileChildDenial::ParentUnavailable);
+    }
+    if !parent
+        .permissions
+        .contains(meshharbor_remote_control::permissions::Permissions::FILES)
+    {
+        return Err(FileChildDenial::FilesDenied);
+    }
+    if !pending.claim_for_binding() {
+        return Err(FileChildDenial::ParentUnavailable);
+    }
+    parent.permissions &= scope.permissions;
+    parent.identity = Some((scope.agent_id, scope.controller_user_id));
+    parent.parent_grant = Some(pending.clone());
+    parent.origin = FileChildParentOrigin::Ordinary;
+    if let Err(why) = parent.check_parent() {
+        parent.close_control();
+        return Err(why);
+    }
+    Ok(())
+}
+
+/// The callback's response seam, using the same byte parser as proof tests.
+/// Positive child ACKs describe the parent-local bookkeeping, not Hub admission
+/// or a created transport. Ordinary control envelopes bypass the child gate.
+pub(crate) fn parse_control_envelope_with_reply(
+    data: &[u8],
+    parent: &std::sync::Mutex<FileChildAuthorization>,
+) -> std::result::Result<(serde_json::Value, Option<serde_json::Value>), ControlEnvelopeError> {
+    let val = parse_control_envelope(data, parent)?;
+    let reply = match val.get("t").and_then(serde_json::Value::as_str) {
+        Some(tag @ ("rc:file.child.register" | "rc:file.child.prepare")) => {
+            let mut parent = parent
+                .lock()
+                .map_err(|_| ControlEnvelopeError::FileChild(FileChildDenial::ParentUnavailable))?;
+            if let Err(why) = parent.check_parent() {
+                parent.close_control();
+                return Err(ControlEnvelopeError::FileChild(why));
+            }
+            let mut reply = serde_json::json!({
+                "t": format!("{tag}.ack"), "session_id": parent.parent_session_id.to_hex(), "ok": true,
+            });
+            if tag == "rc:file.child.prepare" {
+                reply["child_id"] = val["child_id"].clone();
+                reply["transfer_id"] = val["transfer_id"].clone();
+            }
+            Some(reply)
+        }
+        _ => None,
+    };
+    Ok((val, reply))
+}
+
+pub(crate) fn close_file_child_control(parent: &std::sync::Mutex<FileChildAuthorization>) {
+    if let Ok(mut parent) = parent.lock() {
+        parent.close_control();
+    }
+}
+
+/// The real callback supplies its send result. A late successful completion
+/// performs no mutation and cannot resurrect a parent that already closed.
+pub(crate) fn file_child_control_reply_finished(
+    parent: &std::sync::Mutex<FileChildAuthorization>,
+    delivered: bool,
+) {
+    if !delivered {
+        close_file_child_control(parent);
+    }
 }
 
 /// `control` data-channel handler. Parses JSON `rc:*` envelopes and
@@ -10417,9 +10532,7 @@ fn attach_control_handler(
     dc.on_close(Box::new(move || {
         let file_child_authorization = file_child_for_close.clone();
         Box::pin(async move {
-            if let Ok(mut parent) = file_child_authorization.lock() {
-                parent.close_control();
-            }
+            close_file_child_control(&file_child_authorization);
             // P6 — the control DC's close is the canonical session-death
             // signal: deregister from the InputArbiter (release-all any
             // held keys, drop off the participants rail, hand the
@@ -10448,8 +10561,8 @@ fn attach_control_handler(
             // the data-channel callback (it'd kill the channel for
             // the rest of the session). Every parse path silently
             // logs and returns on failure.
-            let val = match parse_control_envelope(&msg.data, &file_child_authorization) {
-                Ok(val) => val,
+            let (val, file_child_reply) = match parse_control_envelope_with_reply(&msg.data, &file_child_authorization) {
+                Ok(envelope) => envelope,
                 Err(ControlEnvelopeError::NonUtf8) => {
                     debug!(%session_id, bytes = msg.data.len(), "control: non-UTF8 payload, dropped");
                     return;
@@ -10463,6 +10576,18 @@ fn attach_control_handler(
                     return;
                 }
             };
+            if let Some(reply) = file_child_reply {
+                // No authorization lock is held while writing the real DC.
+                let delivered = match (serde_json::to_string(&reply), dc_for_reply.upgrade()) {
+                    (Ok(text), Some(dc)) => dc.send_text(text).await.is_ok(),
+                    _ => false,
+                };
+                file_child_control_reply_finished(&file_child_authorization, delivered);
+                if !delivered {
+                    debug!(%session_id, "control: file child ACK send failed; child authorization closed");
+                }
+                return;
+            }
             let Some(t) = val.get("t").and_then(|v| v.as_str()) else {
                 debug!(%session_id, "control: message missing 't' tag, dropped");
                 return;
