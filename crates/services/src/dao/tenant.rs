@@ -53,23 +53,59 @@ impl TenantDao {
         }
     }
 
-    /// Policy and revision commit together, including repeated values. A
-    /// real management write may initialize an absent legacy revision to one;
-    /// null, non-integer, non-positive and exhausted counters cannot write.
+    fn valid_security_revision_expr() -> Document {
+        doc! {"$and": [
+            {"$eq": [{"$type": "$security_rev"}, "long"]},
+            {"$gt": ["$security_rev", 0_i64]},
+            {"$lt": ["$security_rev", i64::MAX]},
+        ]}
+    }
+
+    /// Normal/missing revisions increment with the policy write. Invalid
+    /// revisions stay untouched and deny native authority, but must not stop
+    /// the existing administrative setters. Both paths predicate on CURRENT
+    /// stored state; a concurrent repair must retry the incrementing path.
     async fn update_security(&self, tenant_id: ObjectId, mut set: Document) -> DaoResult<Tenant> {
         set.insert("updated_at", DateTime::now());
-        self.base
-            .collection()
-            .find_one_and_update(
-                doc! {"_id": tenant_id, "$or": [
-                    {"security_rev": {"$exists": false}},
-                    {"security_rev": {"$type": ["int", "long"], "$gt": 0_i64, "$lt": i64::MAX}},
-                ]},
-                doc! {"$set": set, "$inc": {"security_rev": 1_i64}},
-            )
-            .return_document(ReturnDocument::After)
-            .await?
-            .ok_or_else(|| DaoError::Validation("Tenant security revision unavailable".into()))
+        let collection = self.base.collection();
+        let valid = Self::valid_security_revision_expr();
+        for _ in 0..3 {
+            if let Some(tenant) = collection
+                .find_one_and_update(
+                    doc! {"_id": tenant_id, "$or": [
+                        {"security_rev": {"$exists": false}},
+                        {"$expr": valid.clone()},
+                    ]},
+                    doc! {"$set": set.clone(), "$inc": {"security_rev": 1_i64}},
+                )
+                .return_document(ReturnDocument::After)
+                .await?
+            {
+                return Ok(tenant);
+            }
+            if let Some(tenant) = collection
+                .find_one_and_update(
+                    doc! {"_id": tenant_id, "security_rev": {"$exists": true},
+                    "$expr": {"$not": [valid.clone()]}},
+                    doc! {"$set": set.clone()},
+                )
+                .return_document(ReturnDocument::After)
+                .await?
+            {
+                return Ok(tenant);
+            }
+            // Distinguish deletion from a value changing between the two CASes.
+            if collection
+                .find_one(doc! {"_id": tenant_id})
+                .await?
+                .is_none()
+            {
+                return Err(DaoError::NotFound);
+            }
+        }
+        Err(DaoError::Validation(
+            "Tenant security revision changed; retry".into(),
+        ))
     }
 
     /// Phase 2 MagicDNS — set the tenant's overlay DNS domain + upstream
@@ -284,7 +320,7 @@ impl TenantDao {
             description: None,
             icon: None,
             owner_id,
-            security_rev: Some(1),
+            security_rev: Some(1_i64.into()),
             plan: Plan::Free,
             features: Vec::new(),
             settings: TenantSettings::default(),

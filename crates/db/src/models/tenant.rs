@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-use bson::{DateTime, oid::ObjectId};
+use bson::{Bson, DateTime, oid::ObjectId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,10 +12,15 @@ pub struct Tenant {
     pub description: Option<String>,
     pub icon: Option<String>,
     pub owner_id: ObjectId,
-    /// Monotonic native-SSH policy revision. Legacy missing values stay
-    /// unknown and cannot authorize native SSH; new tenants start at one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub security_rev: Option<i64>,
+    /// Preserve raw BSON so corrupt counters cannot block administration or
+    /// change during a full-document round trip. Authorization must use
+    /// `security_revision`, never coerce this raw value. New tenants start at one.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_security_rev",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub security_rev: Option<Bson>,
     pub plan: Plan,
     pub features: Vec<String>,
     pub settings: TenantSettings,
@@ -26,6 +31,13 @@ pub struct Tenant {
     pub created_at: DateTime,
     pub updated_at: DateTime,
     pub deleted_at: Option<DateTime>,
+}
+
+fn deserialize_security_rev<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Bson>, D::Error> {
+    // Missing fields take serde's default; explicit null must remain present.
+    Bson::deserialize(deserializer).map(Some)
 }
 
 /// FR-32 — how far plan-limit checks are allowed to go for a tenant.
@@ -463,6 +475,14 @@ pub struct OAuthCredential {
 impl Tenant {
     pub const COLLECTION: &'static str = "tenants";
 
+    /// Only a positive, non-exhausted BSON Int64 can bind native authority.
+    pub fn security_revision(&self) -> Option<i64> {
+        match self.security_rev.as_ref() {
+            Some(Bson::Int64(revision)) if (1..i64::MAX).contains(revision) => Some(*revision),
+            _ => None,
+        }
+    }
+
     /// FR-115 — the seats this org's limits are computed for: the
     /// subscription's quantity on a paid plan, at least one; one on Free,
     /// which has no seats. A paid org whose first subscription event has not
@@ -678,7 +698,7 @@ mod plan_tests {
             description: None,
             icon: None,
             owner_id: bson::oid::ObjectId::new(),
-            security_rev: Some(1),
+            security_rev: Some(1_i64.into()),
             plan,
             features: vec![],
             settings: TenantSettings::default(),
@@ -712,6 +732,35 @@ mod plan_tests {
                 .unwrap()
                 .contains_key("security_rev")
         );
+    }
+
+    #[test]
+    fn invalid_security_revisions_round_trip_losslessly_without_authority() {
+        for raw in [
+            Bson::Null,
+            Bson::Boolean(true),
+            Bson::String("invalid".into()),
+            Bson::Double(1.0),
+            Bson::Double(1.5),
+            Bson::Int32(1),
+            Bson::Int64(0),
+            Bson::Int64(-1),
+            Bson::Int64(i64::MAX),
+            Bson::Array(vec![Bson::Int64(1)]),
+            Bson::Document(bson::doc! {"value": 1_i64}),
+        ] {
+            let mut document = bson::to_document(&tenant(Plan::Free, None)).unwrap();
+            document.insert("security_rev", raw.clone());
+            let parsed: Tenant = bson::from_document(document.clone()).unwrap();
+            assert_eq!(parsed.security_rev.as_ref(), Some(&raw));
+            assert_eq!(parsed.security_revision(), None);
+            assert_eq!(bson::to_document(&parsed).unwrap(), document);
+        }
+        for valid in [1_i64, i64::MAX - 1] {
+            let mut tenant = tenant(Plan::Free, None);
+            tenant.security_rev = Some(Bson::Int64(valid));
+            assert_eq!(tenant.security_revision(), Some(valid));
+        }
     }
 
     /// FR-115 — the Free plan gives the network away and fences what costs.

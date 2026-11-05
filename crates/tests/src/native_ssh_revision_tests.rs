@@ -345,10 +345,47 @@ async fn tenant_policy_aba() {
             && legacy_row.grant_expires_at.is_none()
     );
     eprintln!("X17_REVISION stage=legacy_revision complete");
+
+    // Same numeric value, wrong BSON width: it must not match an Int64
+    // approval or become usable through the administrative fallback.
+    eprintln!("X17_REVISION stage=integer_width begin");
+    let narrow = approve_request(&app, &recipient, &share).await;
+    app.db
+        .collection::<bson::Document>("tenants")
+        .update_one(
+            doc! {"_id": tenant},
+            doc! {"$set": {"security_rev": bson::Bson::Int32(1)}},
+        )
+        .await
+        .unwrap();
+    let refused = json_response(
+        exchange(&app, &narrow).await,
+        403,
+        "Int32 is not a valid revision",
+    )
+    .await;
+    assert!(refused.get("grant").is_none());
+    set_tenant_ssh(&app, tenant, &owner, false).await;
+    let stored = app
+        .db
+        .collection::<bson::Document>("tenants")
+        .find_one(doc! {"_id": tenant})
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.get("security_rev"), Some(&bson::Bson::Int32(1)));
+    let row = authorizations
+        .find_one(doc! {"authorization_id":
+        ObjectId::parse_str(narrow["authorization_id"].as_str().unwrap()).unwrap()})
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(row.state == "approved" && row.grant_hash.is_none());
+    eprintln!("X17_REVISION stage=integer_width complete");
 }
 
-/// The real Mongo update must reject corrupt/exhausted counters without
-/// changing either policy field; no HTTP authentication shortcut can hide it.
+/// Claude's 18:02 correction: corrupt counters deny native authority, while
+/// existing administrative setters remain available and preserve the raw value.
 #[tokio::test]
 async fn native_ssh_tenant_revision_writes_are_atomic_and_fail_closed() {
     tokio::time::timeout(Duration::from_secs(90), tenant_revision_writes())
@@ -372,25 +409,25 @@ async fn tenant_revision_writes() {
         .await
         .unwrap();
     let id = tenant.id.unwrap();
-    assert_eq!(tenant.security_rev, Some(1));
+    assert_eq!(tenant.security_revision(), Some(1));
     let first = app
         .state
         .tenants
         .set_remote_ssh_enabled(id, true)
         .await
         .unwrap();
-    assert!(first.security_rev == Some(2) && first.settings.remote_ssh_enabled);
+    assert!(first.security_revision() == Some(2) && first.settings.remote_ssh_enabled);
     let repeated = app
         .state
         .tenants
         .set_remote_ssh_enabled(id, true)
         .await
         .unwrap();
-    assert!(repeated.security_rev == Some(3) && repeated.settings.remote_ssh_enabled);
+    assert!(repeated.security_revision() == Some(3) && repeated.settings.remote_ssh_enabled);
     let archived = app.state.tenants.set_archived(id, true).await.unwrap();
-    assert!(archived.security_rev == Some(4) && archived.is_archived);
+    assert!(archived.security_revision() == Some(4) && archived.is_archived);
     let restored = app.state.tenants.set_archived(id, false).await.unwrap();
-    assert!(restored.security_rev == Some(5) && !restored.is_archived);
+    assert!(restored.security_revision() == Some(5) && !restored.is_archived);
 
     let documents = app.db.collection::<bson::Document>("tenants");
     for (case, invalid) in [
@@ -398,31 +435,65 @@ async fn tenant_revision_writes() {
         bson::Bson::Boolean(true),
         bson::Bson::String("1".into()),
         bson::Bson::Double(1.0),
+        bson::Bson::Int32(1),
         bson::Bson::Int64(0),
         bson::Bson::Int64(-1),
         bson::Bson::Int64(i64::MAX),
+        bson::Bson::Array(vec![bson::Bson::Int64(1)]),
+        bson::Bson::Document(doc! {"value": 1_i64}),
     ]
     .into_iter()
     .enumerate()
     {
         documents
-            .update_one(doc! {"_id": id}, doc! {"$set": {"security_rev": invalid}})
+            .update_one(
+                doc! {"_id": id},
+                doc! {"$set": {"security_rev": invalid.clone()}},
+            )
             .await
             .unwrap();
-        let before = documents.find_one(doc! {"_id": id}).await.unwrap().unwrap();
-        let ssh_rejected = app
+        let closed = app
             .state
             .tenants
             .set_remote_ssh_enabled(id, false)
             .await
-            .is_err();
-        let archive_rejected = app.state.tenants.set_archived(id, true).await.is_err();
+            .unwrap();
+        let archived = app.state.tenants.set_archived(id, true).await.unwrap();
+        let reopened = app
+            .state
+            .tenants
+            .set_remote_ssh_enabled(id, true)
+            .await
+            .unwrap();
+        let restored = app.state.tenants.set_archived(id, false).await.unwrap();
         let after = documents.find_one(doc! {"_id": id}).await.unwrap().unwrap();
         assert!(
-            ssh_rejected && archive_rejected && before == after,
-            "invalid revision case {case} must reject both writers without mutation"
+            !closed.settings.remote_ssh_enabled
+                && archived.is_archived
+                && reopened.settings.remote_ssh_enabled
+                && !restored.is_archived
+                && closed.security_revision().is_none()
+                && [&closed, &archived, &reopened, &restored]
+                    .iter()
+                    .all(|row| row.security_rev.as_ref() == Some(&invalid))
+                && after.get("security_rev") == Some(&invalid),
+            "invalid revision case {case} must preserve management and deny native authority"
         );
     }
+
+    // A recovered valid Int64 uses the incrementing path, not the invalid
+    // fallback. This sequential check does not claim to exercise the CAS race.
+    documents
+        .update_one(doc! {"_id": id}, doc! {"$set": {"security_rev": 7_i64}})
+        .await
+        .unwrap();
+    let recovered = app
+        .state
+        .tenants
+        .set_remote_ssh_enabled(id, false)
+        .await
+        .unwrap();
+    assert!(recovered.security_revision() == Some(8) && !recovered.settings.remote_ssh_enabled);
 
     documents
         .update_one(doc! {"_id": id}, doc! {"$unset": {"security_rev": ""}})
@@ -434,17 +505,16 @@ async fn tenant_revision_writes() {
         .set_remote_ssh_enabled(id, false)
         .await
         .unwrap();
-    assert!(initialized.security_rev == Some(1) && !initialized.settings.remote_ssh_enabled);
+    assert!(initialized.security_revision() == Some(1) && !initialized.settings.remote_ssh_enabled);
     documents
         .update_one(doc! {"_id": id}, doc! {"$unset": {"security_rev": ""}})
         .await
         .unwrap();
     let initialized = app.state.tenants.set_archived(id, true).await.unwrap();
-    assert!(initialized.security_rev == Some(1) && initialized.is_archived);
+    assert!(initialized.security_revision() == Some(1) && initialized.is_archived);
 
-    // The last representable increment succeeds once. It then leaves no
-    // revision budget for another policy write; neither counter nor policy
-    // may wrap, turn into a floating point number or change again.
+    // The last representable increment exhausts native authority. Later
+    // management still works without wrapping or changing the raw counter.
     documents
         .update_one(
             doc! {"_id": id},
@@ -458,8 +528,250 @@ async fn tenant_revision_writes() {
         .set_remote_ssh_enabled(id, true)
         .await
         .unwrap();
-    assert!(last.security_rev == Some(i64::MAX) && last.settings.remote_ssh_enabled);
-    let before = documents.find_one(doc! {"_id": id}).await.unwrap().unwrap();
-    assert!(app.state.tenants.set_archived(id, false).await.is_err());
-    assert!(documents.find_one(doc! {"_id": id}).await.unwrap().unwrap() == before);
+    assert!(
+        last.security_rev == Some(bson::Bson::Int64(i64::MAX))
+            && last.security_revision().is_none()
+            && last.settings.remote_ssh_enabled
+    );
+    let restored = app.state.tenants.set_archived(id, false).await.unwrap();
+    assert!(!restored.is_archived && restored.security_rev == Some(bson::Bson::Int64(i64::MAX)));
+    let after = documents.find_one(doc! {"_id": id}).await.unwrap().unwrap();
+    assert_eq!(
+        after.get("security_rev"),
+        Some(&bson::Bson::Int64(i64::MAX))
+    );
+}
+
+/// Invalid counters must close native authorization without preventing the
+/// owner's existing administrative kill switches. All identities are synthetic.
+#[tokio::test]
+async fn native_ssh_invalid_tenant_revision_allows_restrictions_and_preserves_missing_404() {
+    tokio::time::timeout(Duration::from_secs(120), invalid_revision_restrictions())
+        .await
+        .expect("X17_RESTRICT stage=scenario timeout");
+}
+
+async fn restriction_fixture(
+    app: &TestApp,
+    owner: &Actor,
+    recipient: &Actor,
+    case: usize,
+) -> (ObjectId, Value) {
+    let tenant = app
+        .state
+        .tenants
+        .create(
+            format!("Restriction fixture {case}"),
+            format!("restriction-fixture-{case}"),
+            owner.id,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    set_tenant_ssh(app, tenant, owner, true).await;
+    let device = AgentDao::new(&app.db)
+        .create(
+            tenant,
+            owner.id,
+            format!("Restriction host {case}"),
+            format!("restriction-machine-{case}"),
+            OsKind::Linux,
+            "synthetic".into(),
+            "synthetic-agent-token-hash".into(),
+            None,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    app.db.collection::<Agent>("agents").update_one(doc! {"_id": device}, doc! {"$set": {
+        "ssh_host_pubkey": public_key(), "ssh_policy.mode": "on", "ssh_policy.consent_mode": "auto",
+        "capabilities.rpc": ["ssh", "ssh-consent", "shared-session-lease-v1", "shared-ssh-stream-v1"],
+    }}).await.unwrap();
+    let share = json_response(app.auth_post("/api/device-shares", &owner.token)
+        .json(&json!({"device_id":device.to_hex(), "recipient_user_id":recipient.id.to_hex(),
+            "permissions":{"ssh":true}, "tcp_ports":[22], "expires_in_secs":300, "ssh_account":"alice"}))
+        .timeout(Duration::from_secs(10)).send().await.unwrap(), 200, "restriction share fixture").await;
+    let started = approve_request(app, recipient, &share).await;
+    (tenant, started)
+}
+
+async fn invalid_revision_restrictions() {
+    let owner_id = ObjectId::new();
+    eprintln!("X17_RESTRICT stage=app begin");
+    let app = tokio::time::timeout(
+        Duration::from_secs(30),
+        TestApp::spawn_with_settings(move |settings| {
+            settings.auth.account_approval.enabled = true;
+            settings.auth.account_approval.owner_user_id = Some(owner_id.to_hex());
+            // This isolated synthetic fixture alone opts in to test refusal.
+            settings.auth.native_share_ssh_authorization_enabled = true;
+            settings.app.frontend_url = "https://native-restriction.example.test".into();
+            settings.app.pod_id = Some(format!("native-restriction-{}", ObjectId::new().to_hex()));
+        }),
+    )
+    .await
+    .expect("X17_RESTRICT stage=app initialization timeout");
+    let owner = actor(&app, "native_restriction_owner", Some(owner_id)).await;
+    let recipient = actor(&app, "native_restriction_recipient", None).await;
+    eprintln!("X17_RESTRICT stage=app complete");
+    let documents = app.db.collection::<bson::Document>("tenants");
+    let authorizations = app
+        .db
+        .collection::<NativeSshAuthorization>(NativeSshAuthorization::COLLECTION);
+    let mut observations = vec![];
+    let mut all_passed = true;
+    for (index, (case, invalid)) in [
+        ("null", bson::Bson::Null),
+        ("string", bson::Bson::String("invalid-revision".into())),
+        ("fractional", bson::Bson::Double(1.5)),
+        ("zero", bson::Bson::Int64(0)),
+        ("negative", bson::Bson::Int64(-1)),
+        ("max", bson::Bson::Int64(i64::MAX)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        eprintln!("X17_RESTRICT stage=case_{case} begin");
+        let (tenant, started) = restriction_fixture(&app, &owner, &recipient, index).await;
+        let authorization_id =
+            ObjectId::parse_str(started["authorization_id"].as_str().unwrap()).unwrap();
+        let changed = documents
+            .update_one(
+                doc! {"_id": tenant},
+                doc! {"$set": {"security_rev": invalid.clone()}},
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            changed.matched_count, 1,
+            "synthetic revision corruption fixture exists"
+        );
+
+        // Check the invalid revision itself while SSH and the tenant are still
+        // otherwise enabled, before either administrative restriction is sent.
+        let denied_before = exchange(&app, &started).await;
+        let denied_before_status = denied_before.status().as_u16();
+        let denied_before_body: Value = denied_before.json().await.expect("native refusal JSON");
+        let no_grant_before = denied_before_body.get("grant").is_none();
+        let close = app
+            .auth_put(&format!("/api/tenant/{tenant}/ssh-settings"), &owner.token)
+            .json(&json!({"remote_ssh_enabled":false}))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .unwrap();
+        let close_status = close.status().as_u16();
+        let close_body: Value = close.json().await.expect("SSH management JSON");
+        let after_close = documents.find_one(doc! {"_id": tenant}).await.unwrap();
+        let ssh_disabled = after_close
+            .as_ref()
+            .and_then(|row| row.get_document("settings").ok())
+            .and_then(|settings| settings.get_bool("remote_ssh_enabled").ok())
+            == Some(false);
+        let close_revision_kept =
+            after_close.as_ref().and_then(|row| row.get("security_rev")) == Some(&invalid);
+        let archive = app
+            .auth_post(&format!("/api/tenant/{tenant}/archive"), &owner.token)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .unwrap();
+        let archive_status = archive.status().as_u16();
+        let archive_body: Value = archive.json().await.expect("archive management JSON");
+        let after_archive = documents.find_one(doc! {"_id": tenant}).await.unwrap();
+        let archived = after_archive
+            .as_ref()
+            .and_then(|row| row.get_bool("is_archived").ok())
+            == Some(true);
+        let archive_revision_kept = after_archive
+            .as_ref()
+            .and_then(|row| row.get("security_rev"))
+            == Some(&invalid);
+        let denied_after = exchange(&app, &started).await;
+        let denied_after_status = denied_after.status().as_u16();
+        let denied_after_body: Value = denied_after
+            .json()
+            .await
+            .expect("post-restriction native refusal JSON");
+        let no_grant_after = denied_after_body.get("grant").is_none();
+        let stored = authorizations
+            .find_one(doc! {"authorization_id": authorization_id})
+            .await
+            .unwrap();
+        let no_stored_grant = stored.as_ref().is_none_or(|row| {
+            row.state != "exchanged" && row.grant_hash.is_none() && row.grant_expires_at.is_none()
+        });
+        let passed = denied_before_status == 403
+            && no_grant_before
+            && close_status == 200
+            && close_body["remote_ssh_enabled"] == false
+            && ssh_disabled
+            && close_revision_kept
+            && archive_status == 200
+            && archive_body["is_archived"] == true
+            && archived
+            && archive_revision_kept
+            && denied_after_status == 403
+            && no_grant_after
+            && no_stored_grant;
+        all_passed &= passed;
+        // Only static case labels, status codes and booleans enter failures.
+        observations.push(json!({"case":case,"passed":passed,
+            "native_before_status":denied_before_status,"no_grant_before":no_grant_before,
+            "close_status":close_status,"ssh_disabled":ssh_disabled,"close_revision_kept":close_revision_kept,
+            "archive_status":archive_status,"archived":archived,"archive_revision_kept":archive_revision_kept,
+            "native_after_status":denied_after_status,"no_grant_after":no_grant_after,"no_stored_grant":no_stored_grant}));
+        eprintln!("X17_RESTRICT stage=case_{case} complete");
+    }
+
+    eprintln!("X17_RESTRICT stage=missing_tenant begin");
+    let missing = app
+        .state
+        .tenants
+        .create(
+            "Missing restriction fixture".into(),
+            "missing-restriction-fixture".into(),
+            owner.id,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    // Retain this synthetic owner's membership/roles so the SSH management
+    // request reaches the missing-tenant lookup instead of an unrelated 403.
+    assert_eq!(
+        documents
+            .delete_one(doc! {"_id": missing})
+            .await
+            .unwrap()
+            .deleted_count,
+        1
+    );
+    let missing_close_status = app
+        .auth_put(&format!("/api/tenant/{missing}/ssh-settings"), &owner.token)
+        .json(&json!({"remote_ssh_enabled":false}))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16();
+    let missing_archive_status = app
+        .auth_post(&format!("/api/tenant/{missing}/archive"), &owner.token)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16();
+    eprintln!("X17_RESTRICT stage=missing_tenant complete");
+    eprintln!("X17_RESTRICT stage=functional_assertion begin");
+    assert!(
+        all_passed && missing_close_status == 404 && missing_archive_status == 404,
+        "invalid tenant revisions must not block administrative restrictions or change missing-tenant 404; \
+         observations={observations:?}, missing_close_status={missing_close_status}, \
+         missing_archive_status={missing_archive_status}"
+    );
 }

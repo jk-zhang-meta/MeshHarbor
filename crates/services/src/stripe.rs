@@ -1565,7 +1565,7 @@ mod tests {
             description: None,
             icon: None,
             owner_id: ObjectId::new(),
-            security_rev: Some(1),
+            security_rev: Some(1_i64.into()),
             plan: Plan::Pro,
             features: vec![],
             settings: Default::default(),

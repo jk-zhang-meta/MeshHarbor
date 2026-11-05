@@ -105,10 +105,7 @@ async fn authorized_scope(
         .find_by_id(access.grant.tenant_id)
         .await
         .map_err(|_| refused())?;
-    let tenant_security_rev = tenant
-        .security_rev
-        .filter(|revision| (1..i64::MAX).contains(revision))
-        .ok_or_else(refused)?;
+    let tenant_security_rev = tenant.security_revision().ok_or_else(refused)?;
     let membership = storage(
         state
             .tenants
