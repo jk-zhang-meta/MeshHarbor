@@ -11041,56 +11041,116 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
     use std::{
         io,
         net::{Ipv4Addr, SocketAddr},
-        sync::{Arc, Mutex as StdMutex, atomic::{AtomicBool, Ordering}},
+        sync::{
+            Arc, Mutex as StdMutex,
+            atomic::{AtomicBool, Ordering},
+        },
     };
-    use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{Mutex, mpsc, watch}, task::JoinHandle};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        sync::{Mutex, mpsc, watch},
+        task::JoinHandle,
+    };
 
     struct Tasks(Vec<JoinHandle<()>>);
     impl Drop for Tasks {
-        fn drop(&mut self) { for task in &self.0 { task.abort(); } }
+        fn drop(&mut self) {
+            for task in &self.0 {
+                task.abort();
+            }
+        }
     }
     struct TraceState {
         started: std::time::Instant,
-        inner: StdMutex<(Vec<Value>,std::collections::HashMap<&'static str,String>)>,
+        inner: StdMutex<(Vec<Value>, std::collections::HashMap<&'static str, String>)>,
     }
     impl TraceState {
-        fn record(&self,role:&'static str,event:&str,data:Value) {
-            let mut inner=self.inner.lock().unwrap();let seq=inner.0.len()+1;
-            inner.0.push(json!({"seq":seq,"relative_ms":self.started.elapsed().as_millis(),
-                "context_role":role,"event":event,"data":data}));
+        fn record(&self, role: &'static str, event: &str, data: Value) {
+            let mut inner = self.inner.lock().unwrap();
+            let seq = inner.0.len() + 1;
+            inner.0.push(
+                json!({"seq":seq,"relative_ms":self.started.elapsed().as_millis(),
+                "context_role":role,"event":event,"data":data}),
+            );
         }
-        fn bind(&self,role:&'static str,node:&str) {self.inner.lock().unwrap().1.insert(role,node.into());}
-        fn phase(&self,name:&str) {self.record("test","phase",json!({"phase":name}));}
-        fn wire(&self,role:&'static str,message:&ServerMsg) {
+        fn bind(&self, role: &'static str, node: &str) {
+            self.inner.lock().unwrap().1.insert(role, node.into());
+        }
+        fn phase(&self, name: &str) {
+            self.record("test", "phase", json!({"phase":name}));
+        }
+        fn wire(&self, role: &'static str, message: &ServerMsg) {
             // Full serialization is ephemeral. Only the explicit identity
             // whitelist below enters the retained trace or its printed log.
-            let raw=serde_json::to_value(message).unwrap();let tag=raw["t"].as_str().unwrap_or("");
-            if !(tag.starts_with("rc:overlay.path_trial_")||matches!(tag,
-                "rc:overlay.relay_grant"|"rc:overlay.relay_session"|"rc:overlay.relay_serve"
-                |"rc:overlay.relay_revoke"|"rc:overlay.relay_bridge_serve"|"rc:overlay.relay_bridge_revoke")) {return;}
-            let mut safe=serde_json::Map::new();
-            for key in ["t","vni","generation","peer_node_id","relay_node_id","trial_id"] {
-                if let Some(value)=raw.get(key) {safe.insert(key.into(),value.clone());}
+            let raw = serde_json::to_value(message).unwrap();
+            let tag = raw["t"].as_str().unwrap_or("");
+            if !(tag.starts_with("rc:overlay.path_trial_")
+                || matches!(
+                    tag,
+                    "rc:overlay.relay_grant"
+                        | "rc:overlay.relay_session"
+                        | "rc:overlay.relay_serve"
+                        | "rc:overlay.relay_revoke"
+                        | "rc:overlay.relay_bridge_serve"
+                        | "rc:overlay.relay_bridge_revoke"
+                ))
+            {
+                return;
             }
-            for (nested,keys) in [("scope",&["relay_node_id","generation","peer_node_id"][..]),
-                ("bridge",&["trial_id","generation","local_vni","local_generation","remote_vni","remote_generation","source_agent_id","target_agent_id"][..])] {
-                if let Some(object)=raw.get(nested).and_then(Value::as_object) {
-                    let mut fields=serde_json::Map::new();for key in keys {
-                        if let Some(value)=object.get(*key) {fields.insert((*key).into(),value.clone());}
-                    }
-                    safe.insert(nested.into(),Value::Object(fields));
+            let mut safe = serde_json::Map::new();
+            for key in [
+                "t",
+                "vni",
+                "generation",
+                "peer_node_id",
+                "relay_node_id",
+                "trial_id",
+            ] {
+                if let Some(value) = raw.get(key) {
+                    safe.insert(key.into(), value.clone());
                 }
             }
-            self.record(role,"received_wire",Value::Object(safe));
+            for (nested, keys) in [
+                (
+                    "scope",
+                    &["relay_node_id", "generation", "peer_node_id"][..],
+                ),
+                (
+                    "bridge",
+                    &[
+                        "trial_id",
+                        "generation",
+                        "local_vni",
+                        "local_generation",
+                        "remote_vni",
+                        "remote_generation",
+                        "source_agent_id",
+                        "target_agent_id",
+                    ][..],
+                ),
+            ] {
+                if let Some(object) = raw.get(nested).and_then(Value::as_object) {
+                    let mut fields = serde_json::Map::new();
+                    for key in keys {
+                        if let Some(value) = object.get(*key) {
+                            fields.insert((*key).into(), value.clone());
+                        }
+                    }
+                    safe.insert(nested.into(), Value::Object(fields));
+                }
+            }
+            self.record(role, "received_wire", Value::Object(safe));
         }
     }
     struct TraceGuard(Arc<TraceState>);
     impl Drop for TraceGuard {
         fn drop(&mut self) {
-            let inner=self.0.inner.lock().unwrap();
+            let inner = self.0.inner.lock().unwrap();
             for event in &inner.0 {
-                let mut safe=event.clone();let role=event["context_role"].as_str().unwrap();
-                safe["context_node_id"]=inner.1.get(role).map(|id|json!(id)).unwrap_or(Value::Null);
+                let mut safe = event.clone();
+                let role = event["context_role"].as_str().unwrap();
+                safe["context_node_id"] =
+                    inner.1.get(role).map(|id| json!(id)).unwrap_or(Value::Null);
                 println!("X4_LEGACY_TRACE {safe}");
             }
         }
@@ -11100,7 +11160,7 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
         view: watch::Receiver<OverlayView>,
         requests: Arc<StdMutex<Vec<ObjectId>>>,
         join_caps: Arc<StdMutex<Vec<Value>>>,
-        probes: Arc<StdMutex<Vec<(ObjectId,bool,Option<u32>)>>>,
+        probes: Arc<StdMutex<Vec<(ObjectId, bool, Option<u32>)>>>,
         metadata_seen: Arc<AtomicBool>,
         forbidden_carrier: Arc<AtomicBool>,
         runtime: usize,
@@ -11109,44 +11169,79 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
     }
     impl Member {
         fn healthy(&self, peer: &str) -> bool {
-            self.view.borrow().peers.iter().any(|p| p.node_id==peer
-                && p.connection==ConnectionType::Relay && p.relay_kind.as_deref()==Some("org")
-                && !p.stalled && p.debug.as_ref().is_some_and(|d|d.hs_done))
+            self.view.borrow().peers.iter().any(|p| {
+                p.node_id == peer
+                    && p.connection == ConnectionType::Relay
+                    && p.relay_kind.as_deref() == Some("org")
+                    && !p.stalled
+                    && p.debug.as_ref().is_some_and(|d| d.hs_done)
+            })
         }
         fn requests_for(&self, peer: ObjectId) -> usize {
-            self.requests.lock().unwrap().iter().filter(|p|**p==peer).count()
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|p| **p == peer)
+                .count()
         }
         fn assert_live(&self, tasks: &Tasks) {
-            assert!(!tasks.0[self.runtime].is_finished(),"member runtime stopped");
-            assert!(!tasks.0[self.pump].is_finished(),"member control pump stopped");
-            assert!(!self.forbidden_carrier.load(Ordering::SeqCst),"backbone-only peer used Direct/TURN/DERP");
+            assert!(
+                !tasks.0[self.runtime].is_finished(),
+                "member runtime stopped"
+            );
+            assert!(
+                !tasks.0[self.pump].is_finished(),
+                "member control pump stopped"
+            );
+            assert!(
+                !self.forbidden_carrier.load(Ordering::SeqCst),
+                "backbone-only peer used Direct/TURN/DERP"
+            );
         }
     }
-    async fn member(mut ws: Ws, agent: String, other_agent: ObjectId, endpoint: String,
-        key: WgKeypair, tasks: &mut Tasks, context:(&'static str,Arc<TraceState>)) -> Member {
-        let (role,trace)=context;
-        let mainland=endpoint.starts_with("223.");
-        let (out,mut outbound)=mpsc::channel::<ClientMsg>(256);
-        let (events,event_rx)=mpsc::channel(256);
-        let (handle_tx,mut handle_rx)=mpsc::unbounded_channel();
-        let factory:TunFactory=Box::new(move |ip,nm,mtu| {
-            let stack=Netstack::start(ip,u32::from(nm).count_ones() as u8,mtu);
-            handle_tx.send(stack.handle).map_err(|_|io::Error::other("member handle receiver gone"))?;
+    async fn member(
+        mut ws: Ws,
+        agent: String,
+        other_agent: ObjectId,
+        endpoint: String,
+        key: WgKeypair,
+        tasks: &mut Tasks,
+        context: (&'static str, Arc<TraceState>),
+    ) -> Member {
+        let (role, trace) = context;
+        let mainland = endpoint.starts_with("223.");
+        let (out, mut outbound) = mpsc::channel::<ClientMsg>(256);
+        let (events, event_rx) = mpsc::channel(256);
+        let (handle_tx, mut handle_rx) = mpsc::unbounded_channel();
+        let factory: TunFactory = Box::new(move |ip, nm, mtu| {
+            let stack = Netstack::start(ip, u32::from(nm).count_ones() as u8, mtu);
+            handle_tx
+                .send(stack.handle)
+                .map_err(|_| io::Error::other("member handle receiver gone"))?;
             Ok(stack.tun as Arc<dyn TunIo>)
         });
-        let (view_tx,view)=watch::channel(OverlayView::default());
-        let runtime=OverlayRuntime::new_relay(key,out,factory,1280)
-            .with_org_primary(true).with_backbone_enabled(true)
-            .with_netstack_socks(Some(0)).with_peer_view(view_tx);
-        let runtime_index=tasks.0.len();
-        tasks.0.push(tokio::spawn(runtime.run(event_rx,vec![endpoint])));
-        let requests=Arc::new(StdMutex::new(Vec::new()));
-        let join_caps=Arc::new(StdMutex::new(Vec::new()));let probes=Arc::new(StdMutex::new(Vec::new()));
-        let metadata_seen=Arc::new(AtomicBool::new(false));
-        let expected_peer=Arc::new(StdMutex::new(None::<ObjectId>));
-        let pump_index=tasks.0.len();
-        let pump_events=events.clone();let pump_requests=requests.clone();let seen=metadata_seen.clone();
-        let caps=join_caps.clone();let reported=probes.clone();
+        let (view_tx, view) = watch::channel(OverlayView::default());
+        let runtime = OverlayRuntime::new_relay(key, out, factory, 1280)
+            .with_org_primary(true)
+            .with_backbone_enabled(true)
+            .with_netstack_socks(Some(0))
+            .with_peer_view(view_tx);
+        let runtime_index = tasks.0.len();
+        tasks
+            .0
+            .push(tokio::spawn(runtime.run(event_rx, vec![endpoint])));
+        let requests = Arc::new(StdMutex::new(Vec::new()));
+        let join_caps = Arc::new(StdMutex::new(Vec::new()));
+        let probes = Arc::new(StdMutex::new(Vec::new()));
+        let metadata_seen = Arc::new(AtomicBool::new(false));
+        let expected_peer = Arc::new(StdMutex::new(None::<ObjectId>));
+        let pump_index = tasks.0.len();
+        let pump_events = events.clone();
+        let pump_requests = requests.clone();
+        let seen = metadata_seen.clone();
+        let caps = join_caps.clone();
+        let reported = probes.clone();
         tasks.0.push(tokio::spawn(async move {
             let mut heartbeat=tokio::time::interval(Duration::from_secs(25));heartbeat.tick().await;
             loop { tokio::select! {
@@ -11201,54 +11296,110 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
                 }
             }}
         }));
-        let forbidden_carrier=Arc::new(AtomicBool::new(false));
-        let violation=forbidden_carrier.clone();let mut observed=view.clone();let other=other_agent.to_hex();
+        let forbidden_carrier = Arc::new(AtomicBool::new(false));
+        let violation = forbidden_carrier.clone();
+        let mut observed = view.clone();
+        let other = other_agent.to_hex();
         tasks.0.push(tokio::spawn(async move {
             while observed.changed().await.is_ok() {
-                let snapshot=observed.borrow().clone();
-                for peer in snapshot.peers.iter().filter(|p|p.agent_id.as_deref()==Some(other.as_str())) {
-                    if matches!(peer.connection,ConnectionType::Direct|ConnectionType::Tunnel)
-                        || (peer.connection==ConnectionType::Relay&&peer.relay_kind.as_deref()!=Some("org")) {
-                        violation.store(true,Ordering::SeqCst);
+                let snapshot = observed.borrow().clone();
+                for peer in snapshot
+                    .peers
+                    .iter()
+                    .filter(|p| p.agent_id.as_deref() == Some(other.as_str()))
+                {
+                    if matches!(
+                        peer.connection,
+                        ConnectionType::Direct | ConnectionType::Tunnel
+                    ) || (peer.connection == ConnectionType::Relay
+                        && peer.relay_kind.as_deref() != Some("org"))
+                    {
+                        violation.store(true, Ordering::SeqCst);
                     }
                 }
             }
         }));
-        let handle=tokio::time::timeout(Duration::from_secs(20),handle_rx.recv()).await
-            .expect("runtime initial netmap/TunFactory").expect("netstack handle");
-        Member{handle,view,requests,join_caps,probes,metadata_seen,forbidden_carrier,runtime:runtime_index,pump:pump_index,_events:events}
+        let handle = tokio::time::timeout(Duration::from_secs(20), handle_rx.recv())
+            .await
+            .expect("runtime initial netmap/TunFactory")
+            .expect("netstack handle");
+        Member {
+            handle,
+            view,
+            requests,
+            join_caps,
+            probes,
+            metadata_seen,
+            forbidden_carrier,
+            runtime: runtime_index,
+            pump: pump_index,
+            _events: events,
+        }
     }
-    async fn relay_probe_targets(message:&ServerMsg,native:&Arc<Mutex<NativeRelay>>,
-        target:Option<&Arc<Mutex<NativeRelay>>>,context:(&'static str,&TraceState),
-        targets:&watch::Sender<Vec<prober::Target>>,updates:&mut RelayProbeUpdates) {
-        let ServerMsg::OverlayNetmap{network,peers,..}=message else {return;};
-        let policy=if let Some(target)=target {
-            let next=target.lock().await;Some(native.lock().await.policy_to(&next))
-        }else{None};
-        let accepted=prober::targets_from_wire(&network.relay_probe_targets,&network.backbone_probe_targets,policy.as_ref());
-        let safe=|offered:&[meshharbor_remote_control::signaling::RelayProbeTargetWire]|
-            offered.iter().map(|t|json!({"relay_node_id":t.relay_node_id.to_hex(),"endpoints":t.endpoints})).collect::<Vec<_>>();
+    async fn relay_probe_targets(
+        message: &ServerMsg,
+        native: &Arc<Mutex<NativeRelay>>,
+        target: Option<&Arc<Mutex<NativeRelay>>>,
+        context: (&'static str, &TraceState),
+        targets: &watch::Sender<Vec<prober::Target>>,
+        updates: &mut RelayProbeUpdates,
+    ) {
+        let ServerMsg::OverlayNetmap { network, peers, .. } = message else {
+            return;
+        };
+        let policy = if let Some(target) = target {
+            let next = target.lock().await;
+            Some(native.lock().await.policy_to(&next))
+        } else {
+            None
+        };
+        let accepted = prober::targets_from_wire(
+            &network.relay_probe_targets,
+            &network.backbone_probe_targets,
+            policy.as_ref(),
+        );
+        let safe = |offered: &[meshharbor_remote_control::signaling::RelayProbeTargetWire]| {
+            offered
+                .iter()
+                .map(|t| json!({"relay_node_id":t.relay_node_id.to_hex(),"endpoints":t.endpoints}))
+                .collect::<Vec<_>>()
+        };
         context.1.record(context.0,"received_probe_targets",json!({
             "public":safe(&network.relay_probe_targets),"backbone":safe(&network.backbone_probe_targets),
             "accepted":accepted.iter().map(|t|json!({"relay_node_id":t.relay_node_id.to_hex(),
                 "endpoints":t.endpoints.iter().map(ToString::to_string).collect::<Vec<_>>(),"via":t.via})).collect::<Vec<_>>()}));
         // Production runtime replaces this watch on every full netmap,
         // including identical values. The production prober owns round timing.
-        updates.reset_full(&accepted,peers,network.auth_revision);
+        updates.reset_full(&accepted, peers, network.auth_revision);
         targets.send_replace(accepted);
     }
-    async fn relay_pump(mut ws: Ws, native: Arc<Mutex<NativeRelay>>, target: Option<Arc<Mutex<NativeRelay>>>,
-        context:(&'static str,Arc<TraceState>),initial:ServerMsg,
-        probe_control:(watch::Sender<Vec<prober::Target>>,prober::ReactiveProbes),mut outcomes:mpsc::Receiver<Vec<prober::Outcome>>) {
-        let (role,trace)=context;
-        let (targets,reactive)=probe_control;
-        let mut updates=RelayProbeUpdates::default();
-        relay_probe_targets(&initial,&native,target.as_ref(),(role,&trace),&targets,&mut updates).await;
+    async fn relay_pump(
+        mut ws: Ws,
+        native: Arc<Mutex<NativeRelay>>,
+        target: Option<Arc<Mutex<NativeRelay>>>,
+        context: (&'static str, Arc<TraceState>),
+        initial: ServerMsg,
+        probe_control: (watch::Sender<Vec<prober::Target>>, prober::ReactiveProbes),
+        mut outcomes: mpsc::Receiver<Vec<prober::Outcome>>,
+    ) {
+        let (role, trace) = context;
+        let (targets, reactive) = probe_control;
+        let mut updates = RelayProbeUpdates::default();
+        relay_probe_targets(
+            &initial,
+            &native,
+            target.as_ref(),
+            (role, &trace),
+            &targets,
+            &mut updates,
+        )
+        .await;
         // The production agent initiates pings; the server deliberately never
         // does. A silent fixture otherwise loses its WS receive-liveness lease.
-        let mut heartbeat=tokio::time::interval(Duration::from_secs(25));heartbeat.tick().await;
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(25));
+        heartbeat.tick().await;
         loop {
-            let frame=tokio::select! {
+            let frame = tokio::select! {
                 _=heartbeat.tick()=>{ws.send(Message::Ping(Vec::new().into())).await.unwrap();continue;}
                 round=outcomes.recv()=>{
                     let Some(round)=round else {break;};
@@ -11267,87 +11418,191 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
                 }
                 frame=ws.next()=>frame,
             };
-            let Some(frame)=frame else {break;};
+            let Some(frame) = frame else {
+                break;
+            };
             match frame.expect("relay control frame") {
-                Message::Text(text)=>{
-                    let message:ServerMsg=serde_json::from_str(&text).expect("relay server message");
-                    trace.wire(role,&message);
-                    relay_probe_targets(&message,&native,target.as_ref(),(role,&trace),&targets,&mut updates).await;
+                Message::Text(text) => {
+                    let message: ServerMsg =
+                        serde_json::from_str(&text).expect("relay server message");
+                    trace.wire(role, &message);
+                    relay_probe_targets(
+                        &message,
+                        &native,
+                        target.as_ref(),
+                        (role, &trace),
+                        &targets,
+                        &mut updates,
+                    )
+                    .await;
                     match &message {
-                        ServerMsg::OverlayNetmapDelta{epoch,auth_revision,upserts,removes}=>{
-                            for (id,serial) in updates.delta(*epoch,*auth_revision,upserts,removes) {
-                                let queued=reactive.request(id,serial);
-                                trace.record(role,"accepted_probe_hint",json!({"relay_node_id":id.to_hex(),
-                                    "local_event_serial":serial,"queued":queued}));
+                        ServerMsg::OverlayNetmapDelta {
+                            epoch,
+                            auth_revision,
+                            upserts,
+                            removes,
+                        } => {
+                            for (id, serial) in
+                                updates.delta(*epoch, *auth_revision, upserts, removes)
+                            {
+                                let queued = reactive.request(id, serial);
+                                trace.record(
+                                    role,
+                                    "accepted_probe_hint",
+                                    json!({"relay_node_id":id.to_hex(),
+                                    "local_event_serial":serial,"queued":queued}),
+                                );
                             }
                         }
-                        ServerMsg::OverlayRelayServe{..}|ServerMsg::OverlayRelayRevoke{..}
-                        |ServerMsg::OverlayRelayBridgeServe{..}|ServerMsg::OverlayRelayBridgeRevoke{..}=>{
-                            let policy=if matches!(&message,ServerMsg::OverlayRelayBridgeServe{..}) {
-                                let next=target.as_ref().expect("bridge requires next relay").lock().await;
-                                Some(native.lock().await.policy_to(&next))
-                            }else{None};
-                            native.lock().await.serve(message,policy);
+                        ServerMsg::OverlayRelayServe { .. }
+                        | ServerMsg::OverlayRelayRevoke { .. }
+                        | ServerMsg::OverlayRelayBridgeServe { .. }
+                        | ServerMsg::OverlayRelayBridgeRevoke { .. } => {
+                            let policy =
+                                if matches!(&message, ServerMsg::OverlayRelayBridgeServe { .. }) {
+                                    let next = target
+                                        .as_ref()
+                                        .expect("bridge requires next relay")
+                                        .lock()
+                                        .await;
+                                    Some(native.lock().await.policy_to(&next))
+                                } else {
+                                    None
+                                };
+                            native.lock().await.serve(message, policy);
                         }
                         // These relay fixtures serve production listener/bridge
                         // control only; their member metadata is not installed.
-                        _=>{},
+                        _ => {}
                     }
                 }
-                Message::Ping(data)=>ws.send(Message::Pong(data)).await.unwrap(),
-                Message::Pong(_)=>{},
-                other=>panic!("relay control ended: {other:?}"),
+                Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                Message::Pong(_) => {}
+                other => panic!("relay control ended: {other:?}"),
             }
         }
     }
-    fn start_relay(ws:Ws,native:Arc<Mutex<NativeRelay>>,target:Option<Arc<Mutex<NativeRelay>>>,
-        context:(&'static str,Arc<TraceState>),initial:ServerMsg,tasks:&mut Tasks)->usize {
-        let (targets,target_rx)=watch::channel(Vec::<prober::Target>::new());
-        let (outcomes,outcome_rx)=mpsc::channel(8);
-        let (prober_task,reactive)=prober::spawn_reactive(target_rx,outcomes);
+    fn start_relay(
+        ws: Ws,
+        native: Arc<Mutex<NativeRelay>>,
+        target: Option<Arc<Mutex<NativeRelay>>>,
+        context: (&'static str, Arc<TraceState>),
+        initial: ServerMsg,
+        tasks: &mut Tasks,
+    ) -> usize {
+        let (targets, target_rx) = watch::channel(Vec::<prober::Target>::new());
+        let (outcomes, outcome_rx) = mpsc::channel(8);
+        let (prober_task, reactive) = prober::spawn_reactive(target_rx, outcomes);
         tasks.0.push(prober_task);
-        let index=tasks.0.len();
-        tasks.0.push(tokio::spawn(relay_pump(ws,native,target,context,initial,(targets,reactive),outcome_rx)));
+        let index = tasks.0.len();
+        tasks.0.push(tokio::spawn(relay_pump(
+            ws,
+            native,
+            target,
+            context,
+            initial,
+            (targets, reactive),
+            outcome_rx,
+        )));
         index
     }
-    async fn tcp64(from:&NetstackHandle,to:&NetstackHandle,target:Ipv4Addr,port:u16)->io::Result<()> {
-        fn stage(error:io::Error,side:&str,sequence:usize,operation:&str,port:u16)->io::Error {
-            io::Error::new(error.kind(),format!("TCP echo port={port} {side} completed={sequence}/64 {operation}: {error}"))
+    async fn tcp64(
+        from: &NetstackHandle,
+        to: &NetstackHandle,
+        target: Ipv4Addr,
+        port: u16,
+    ) -> io::Result<()> {
+        fn stage(
+            error: io::Error,
+            side: &str,
+            sequence: usize,
+            operation: &str,
+            port: u16,
+        ) -> io::Error {
+            io::Error::new(
+                error.kind(),
+                format!("TCP echo port={port} {side} completed={sequence}/64 {operation}: {error}"),
+            )
         }
-        let mut listener=to.listen(port).await.map_err(|e|stage(e,"server",0,"listen",port))?;
-        let echo=async {
-            let mut stream=listener.accept().await.ok_or_else(||io::Error::other("echo listener closed"))?;
+        let mut listener = to
+            .listen(port)
+            .await
+            .map_err(|e| stage(e, "server", 0, "listen", port))?;
+        let echo = async {
+            let mut stream = listener
+                .accept()
+                .await
+                .ok_or_else(|| io::Error::other("echo listener closed"))?;
             for sequence in 0..64 {
-                let mut bytes=[0;512];
-                stream.read_exact(&mut bytes).await.map_err(|e|stage(e,"server",sequence,"read request",port))?;
-                stream.write_all(&bytes).await.map_err(|e|stage(e,"server",sequence,"write echo",port))?;
+                let mut bytes = [0; 512];
+                stream
+                    .read_exact(&mut bytes)
+                    .await
+                    .map_err(|e| stage(e, "server", sequence, "read request", port))?;
+                stream
+                    .write_all(&bytes)
+                    .await
+                    .map_err(|e| stage(e, "server", sequence, "write echo", port))?;
             }
             // NsTcpStream writes enqueue; dropping the stream aborts its
             // smoltcp socket. Keep this owner alive until the client has read
             // the 64th echo and half-closes, rather than dropping queued data.
-            let mut extra=[0;1];
-            if stream.read(&mut extra).await.map_err(|e|stage(e,"server",64,"await client EOF",port))?!=0 {
-                return Err(io::Error::other("TCP echo server received more than 64*512 bytes"));
+            let mut extra = [0; 1];
+            if stream
+                .read(&mut extra)
+                .await
+                .map_err(|e| stage(e, "server", 64, "await client EOF", port))?
+                != 0
+            {
+                return Err(io::Error::other(
+                    "TCP echo server received more than 64*512 bytes",
+                ));
             }
-            stream.shutdown().await.map_err(|e|stage(e,"server",64,"shutdown",port))
+            stream
+                .shutdown()
+                .await
+                .map_err(|e| stage(e, "server", 64, "shutdown", port))
         };
-        let send=async {
-            let mut stream=from.connect(SocketAddr::from((target,port))).await.map_err(|e|stage(e,"client",0,"connect",port))?;
+        let send = async {
+            let mut stream = from
+                .connect(SocketAddr::from((target, port)))
+                .await
+                .map_err(|e| stage(e, "client", 0, "connect", port))?;
             for sequence in 0..64u8 {
-                let bytes=[sequence;512];
-                stream.write_all(&bytes).await.map_err(|e|stage(e,"client",usize::from(sequence),"write request",port))?;
-                let mut reply=[0;512];
-                stream.read_exact(&mut reply).await.map_err(|e|stage(e,"client",usize::from(sequence),"read echo",port))?;
-                if reply!=bytes{return Err(io::Error::other(format!("TCP echo port={port} sequence={sequence} payload mismatch")));}
+                let bytes = [sequence; 512];
+                stream.write_all(&bytes).await.map_err(|e| {
+                    stage(e, "client", usize::from(sequence), "write request", port)
+                })?;
+                let mut reply = [0; 512];
+                stream
+                    .read_exact(&mut reply)
+                    .await
+                    .map_err(|e| stage(e, "client", usize::from(sequence), "read echo", port))?;
+                if reply != bytes {
+                    return Err(io::Error::other(format!(
+                        "TCP echo port={port} sequence={sequence} payload mismatch"
+                    )));
+                }
             }
-            stream.shutdown().await.map_err(|e|stage(e,"client",64,"shutdown after all replies",port))?;
-            let mut extra=[0;1];
-            if stream.read(&mut extra).await.map_err(|e|stage(e,"client",64,"await server EOF",port))?!=0 {
-                return Err(io::Error::other("TCP echo client received more than 64*512 bytes"));
+            stream
+                .shutdown()
+                .await
+                .map_err(|e| stage(e, "client", 64, "shutdown after all replies", port))?;
+            let mut extra = [0; 1];
+            if stream
+                .read(&mut extra)
+                .await
+                .map_err(|e| stage(e, "client", 64, "await server EOF", port))?
+                != 0
+            {
+                return Err(io::Error::other(
+                    "TCP echo client received more than 64*512 bytes",
+                ));
             }
             Ok(())
         };
-        tokio::try_join!(echo,send)?;Ok(())
+        tokio::try_join!(echo, send)?;
+        Ok(())
     }
 
     // Cover the unchanged 240-second periodic fallback plus ordinary setup,
