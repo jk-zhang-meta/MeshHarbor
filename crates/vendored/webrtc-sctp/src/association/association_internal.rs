@@ -12,27 +12,189 @@ use crate::param::param_unrecognized::ParamUnrecognized;
 // Byte-nanosecond credit avoids floating point and preserves sub-byte refill.
 // One DATA packet is reserved per gather; control packets never consume credit.
 struct FilePacer {
+    max_rate: u64,
     rate: u64,
     capacity: u128,
     credit: u128,
     at: tokio::time::Instant,
     reserved: usize,
     deadline: Option<tokio::time::Instant>,
+    min_rtt_ms: u64,
+    last_rtt_ms: u64,
+    smoothed_rtt_ms: u64,
+    last_srtt_ms: u64,
+    rtt_sample_seq: u64,
+    last_cut_rtt_seq: u64,
+    last_congestion_cut_tsn: u32,
+    window_acked_chunks: u32,
+    window_lost_chunks: u32,
+    highest_lost_tsn_in_window: u32,
+    last_high_loss_exit_tsn: u32,
+    last_window_loss_pct: u32,
+    high_loss_windows: u32,
+    pending_acked_bytes: u32,
+    post_t3_recovery_tsn: u32,
+    t3_timeouts: u32,
+    fallback_rfc: bool,
 }
 
 impl FilePacer {
     const SCALE: u128 = 1_000_000_000;
+    const LOSS_WINDOW_CHUNKS: u32 = 20;
+    const HIGH_LOSS_FALLBACK_PCT: u32 = 20;
+    const CONGESTION_LOSS_PCT: u32 = 10;
 
     fn new(config: FilePacingConfig) -> Self {
         let capacity = config.burst_bytes as u128 * Self::SCALE;
         Self {
+            max_rate: config.rate_bytes_per_second,
             rate: config.rate_bytes_per_second,
             capacity,
             credit: capacity,
             at: tokio::time::Instant::now(),
             reserved: 0,
             deadline: None,
+            min_rtt_ms: 0,
+            last_rtt_ms: 0,
+            smoothed_rtt_ms: 0,
+            last_srtt_ms: 0,
+            rtt_sample_seq: 0,
+            last_cut_rtt_seq: 0,
+            last_congestion_cut_tsn: 0,
+            window_acked_chunks: 0,
+            window_lost_chunks: 0,
+            highest_lost_tsn_in_window: 0,
+            last_high_loss_exit_tsn: 0,
+            last_window_loss_pct: 0,
+            high_loss_windows: 0,
+            pending_acked_bytes: 0,
+            post_t3_recovery_tsn: 0,
+            t3_timeouts: 0,
+            fallback_rfc: false,
         }
+    }
+
+    fn min_rate(&self) -> u64 {
+        (self.max_rate / 4).max(1)
+    }
+
+    fn inflation_threshold_ms(&self) -> u64 {
+        if self.last_rtt_ms > 0 {
+            (self.min_rtt_ms.saturating_mul(11) / 8).max(self.min_rtt_ms.saturating_add(50))
+        } else {
+            (self.min_rtt_ms.saturating_mul(11) / 8).max(self.min_rtt_ms.saturating_add(35))
+        }
+    }
+
+    fn observe_srtt(&mut self, srtt_ms: u64) {
+        if srtt_ms > 0 {
+            if srtt_ms != self.last_srtt_ms && self.last_rtt_ms == 0 {
+                self.rtt_sample_seq = self.rtt_sample_seq.saturating_add(1);
+            }
+            self.last_srtt_ms = srtt_ms;
+            if self.min_rtt_ms == 0 {
+                self.min_rtt_ms = srtt_ms;
+            }
+            if self.smoothed_rtt_ms == 0 {
+                self.smoothed_rtt_ms = srtt_ms;
+            }
+        }
+    }
+
+    fn observe_rtt_sample(&mut self, rtt_ms: u64, srtt_ms: u64, allow_inflation_sample: bool) {
+        if rtt_ms > 0 {
+            if self.min_rtt_ms == 0 || (allow_inflation_sample && rtt_ms <= self.min_rtt_ms) {
+                self.last_rtt_ms = rtt_ms;
+                self.min_rtt_ms = rtt_ms;
+                self.smoothed_rtt_ms = rtt_ms;
+                self.rtt_sample_seq = self.rtt_sample_seq.saturating_add(1);
+            } else if allow_inflation_sample
+                || self.smoothed_rtt_ms == 0
+                || rtt_ms <= self.smoothed_rtt_ms
+            {
+                self.last_rtt_ms = rtt_ms;
+                if self.smoothed_rtt_ms == 0 {
+                    self.smoothed_rtt_ms = rtt_ms;
+                } else if rtt_ms <= self.inflation_threshold_ms() {
+                    self.smoothed_rtt_ms = (self.smoothed_rtt_ms + rtt_ms) / 2;
+                } else {
+                    self.smoothed_rtt_ms = (self.smoothed_rtt_ms.saturating_mul(3) + rtt_ms) / 4;
+                }
+                self.rtt_sample_seq = self.rtt_sample_seq.saturating_add(1);
+            }
+        }
+        self.observe_srtt(srtt_ms);
+    }
+
+    fn effective_rtt_ms(&self, srtt_ms: u64) -> u64 {
+        if self.last_rtt_ms > 0 && self.smoothed_rtt_ms > 0 {
+            self.smoothed_rtt_ms
+        } else if self.last_srtt_ms > 0 {
+            self.last_srtt_ms
+        } else {
+            srtt_ms
+        }
+    }
+
+    fn is_rtt_inflated(&self, srtt_ms: u64) -> bool {
+        let current_ms = self.effective_rtt_ms(srtt_ms);
+        if self.min_rtt_ms == 0 || current_ms == 0 {
+            return false;
+        }
+        current_ms > self.inflation_threshold_ms()
+    }
+
+    fn record_acked_chunk(&mut self) {
+        self.window_acked_chunks = self.window_acked_chunks.saturating_add(1);
+    }
+
+    fn record_lost_chunk(&mut self, lost_tsn: u32) {
+        self.window_lost_chunks = self.window_lost_chunks.saturating_add(1);
+        if self.highest_lost_tsn_in_window == 0
+            || sna32gt(lost_tsn, self.highest_lost_tsn_in_window)
+        {
+            self.highest_lost_tsn_in_window = lost_tsn;
+        }
+    }
+
+    fn maybe_roll_loss_window(
+        &mut self,
+        current_flight_max_tsn: u32,
+        in_fast_recovery: bool,
+        has_gap_ack_blocks: bool,
+    ) {
+        if in_fast_recovery
+            || has_gap_ack_blocks
+            || self.window_acked_chunks < Self::LOSS_WINDOW_CHUNKS
+        {
+            return;
+        }
+        let total = self
+            .window_acked_chunks
+            .saturating_add(self.window_lost_chunks);
+        let loss_pct = self.window_lost_chunks.saturating_mul(100) / total.max(1);
+        self.last_window_loss_pct = loss_pct;
+        if loss_pct >= Self::HIGH_LOSS_FALLBACK_PCT && self.window_lost_chunks >= 5 {
+            let is_new_flight = self.last_high_loss_exit_tsn == 0
+                || sna32gt(self.highest_lost_tsn_in_window, self.last_high_loss_exit_tsn);
+            if is_new_flight {
+                self.high_loss_windows = self.high_loss_windows.saturating_add(1);
+                self.last_high_loss_exit_tsn = current_flight_max_tsn;
+                if self.high_loss_windows >= 3 {
+                    self.fallback_rfc = true;
+                }
+            }
+        } else {
+            self.high_loss_windows = 0;
+            self.last_high_loss_exit_tsn = 0;
+        }
+        self.window_acked_chunks = 0;
+        self.window_lost_chunks = 0;
+        self.highest_lost_tsn_in_window = 0;
+    }
+
+    fn is_loss_elevated(&self) -> bool {
+        self.last_window_loss_pct > Self::CONGESTION_LOSS_PCT
     }
 
     fn reserve(&mut self, bytes: usize) -> bool {
@@ -176,6 +338,12 @@ impl AssociationInternal {
                 "file pacing can only be enabled on an idle established association".into(),
             ));
         }
+        if self.rwnd == 0 {
+            self.rwnd = self.max_receive_buffer_size;
+        }
+        if self.ssthresh == 0 {
+            self.ssthresh = self.rwnd.max(self.max_receive_buffer_size);
+        }
         self.file_pacer = Some(FilePacer::new(config));
         Ok(())
     }
@@ -194,23 +362,35 @@ impl AssociationInternal {
         }
     }
 
-    /// When file pacing is explicitly enabled on a download-only child association
-    /// and a valid smoothed RTT estimate (`srtt > 0`) is available, compute a
-    /// bounded BDP target congestion window (`1.5 * BDP`, clamped to `[4 * MTU, 1 MiB]`
-    /// and strictly capped by peer advertised `rwnd`). When file pacing is disabled
-    /// (`None`) or RTT/rate is unavailable (`srtt == 0`), returns `None` so the
-    /// association uses the original RFC 4960 congestion controller unmodified.
+    /// When file pacing is explicitly enabled on a download-only child association,
+    /// has not permanently fallen back to the RFC 4960 controller, and a valid
+    /// RTT estimate is available, compute a bounded BDP upper-bound congestion
+    /// window (`1.5 * rate * base_rtt`, clamped to `[4 * MTU, 1 MiB]` and strictly
+    /// capped by peer advertised `rwnd`). Returns `None` when file pacing is
+    /// disabled, RTT is unavailable, or after fallback triggered by repeated T3
+    /// timeouts or sustained high packet loss.
     fn paced_target_cwnd(&self) -> Option<u32> {
         let pacer = self.file_pacer.as_ref()?;
+        if pacer.fallback_rfc {
+            return None;
+        }
         let srtt_ms = self.rto_mgr.srtt;
         if srtt_ms == 0 || pacer.rate == 0 {
             return None;
         }
-        let bdp_bytes = pacer.rate.saturating_mul(srtt_ms) / 1000;
+        let base_rtt_ms = if pacer.min_rtt_ms > 0 {
+            pacer.min_rtt_ms.min(srtt_ms)
+        } else {
+            srtt_ms
+        };
+        let bdp_bytes = pacer.rate.saturating_mul(base_rtt_ms) / 1000;
         let max_bdp_window = (bdp_bytes.saturating_mul(3) / 2)
             .max((4 * self.mtu) as u64)
             .min(1024 * 1024) as u32;
-        Some(std::cmp::min(max_bdp_window, self.rwnd))
+        let peer_rwnd = self
+            .rwnd
+            .saturating_add(self.inflight_queue.get_num_bytes() as u32);
+        Some(std::cmp::min(max_bdp_window, peer_rwnd))
     }
 
     // Called only after the original cwnd/rwnd eligibility checks, before any
@@ -673,7 +853,7 @@ impl AssociationInternal {
             let Some(c) = self.inflight_queue.get(tsn) else {
                 break;
             };
-            if c.acked || c.abandoned() || c.nsent > 1 || c.miss_indicator < 3 {
+            if c.acked || c.abandoned() || (c.nsent > 1 && !c.retransmit) || c.miss_indicator < 3 {
                 i += 1;
                 continue;
             }
@@ -684,11 +864,14 @@ impl AssociationInternal {
             }
             if let Some(c) = self.inflight_queue.get_mut(tsn) {
                 self.stats.inc_fast_retrans();
+                c.retransmit = false;
                 c.nsent += 1;
             }
             if let Some(c) = self.inflight_queue.get(tsn) {
                 self.check_partial_reliability_status(c);
-                chunks.push(Box::new(c.clone()));
+                let mut c = c.clone();
+                c.immediate_sack = true;
+                chunks.push(Box::new(c));
             }
             i += 1;
         }
@@ -802,7 +985,14 @@ impl AssociationInternal {
             AssociationState::Established => {
                 raw_packets = self.gather_data_packets_to_retransmit(raw_packets);
                 if self.file_pacer.is_some() {
+                    let prev_fast = raw_packets.len();
                     raw_packets = self.gather_outbound_fast_retransmission_packets(raw_packets);
+                    if raw_packets.len() > prev_fast {
+                        if let Some(t3rtx) = &self.t3rtx {
+                            t3rtx.stop().await;
+                            t3rtx.start(self.rto_mgr.get_rto()).await;
+                        }
+                    }
                     raw_packets = self
                         .gather_outbound_data_and_reconfig_packets(raw_packets)
                         .await;
@@ -1326,10 +1516,13 @@ impl AssociationInternal {
         // We add 1 because the "currentAckPoint" has already been popped from the inflight queue
         // For the first SACK we take care of this by setting the ackpoint to cumAck - 1
         let mut i = self.cumulative_tsn_ack_point + 1;
+        let mut had_prior_gap_acked = false;
+        let mut newly_acked_chunks = 0u32;
         //log::debug!("[{}] i={} d={}", self.name, i, d.cumulative_tsn_ack);
         while sna32lte(i, d.cumulative_tsn_ack) {
             if let Some(c) = self.inflight_queue.pop(i) {
                 if !c.acked {
+                    newly_acked_chunks = newly_acked_chunks.saturating_add(1);
                     // RFC 4096 sec 6.3.2.  Retransmission Timer Rules
                     //   R3)  Whenever a SACK is received that acknowledges the DATA chunk
                     //        with the earliest outstanding TSN for that address, restart the
@@ -1343,6 +1536,9 @@ impl AssociationInternal {
                     }
 
                     let n_bytes_acked = c.user_data.len() as i64;
+                    if let Some(pacer) = &mut self.file_pacer {
+                        pacer.record_acked_chunk();
+                    }
 
                     // Sum the number of bytes acknowledged per stream
                     if let Some(amount) = bytes_acked_per_stream.get_mut(&c.stream_identifier) {
@@ -1360,13 +1556,30 @@ impl AssociationInternal {
                     //        packets that were retransmitted (and thus for which it is
                     //        ambiguous whether the reply was for the first instance of the
                     //        chunk or for a later instance)
-                    if c.nsent == 1 && sna32gte(c.tsn, self.min_tsn2measure_rtt) {
+                    let can_measure_rtt = if self.file_pacer.is_some() && self.rto_mgr.srtt > 0 {
+                        !had_prior_gap_acked
+                            && i == d.cumulative_tsn_ack
+                            && d.gap_ack_blocks.is_empty()
+                    } else {
+                        true
+                    };
+                    if c.nsent == 1 && can_measure_rtt && sna32gte(c.tsn, self.min_tsn2measure_rtt)
+                    {
+                        let allow_inflation_sample = !had_prior_gap_acked
+                            && newly_acked_chunks >= 2
+                            && self.cwnd >= 8 * self.mtu;
                         self.min_tsn2measure_rtt = self.my_next_tsn;
                         let rtt = match SystemTime::now().duration_since(c.since) {
                             Ok(rtt) => rtt,
                             Err(_) => return Err(Error::ErrInvalidSystemTime),
                         };
-                        let srtt = self.rto_mgr.set_new_rtt(rtt.as_millis() as u64);
+                        let rtt_ms = rtt.as_millis() as u64;
+                        let srtt = self.rto_mgr.set_new_rtt(rtt_ms);
+                        if rtt_ms > 0 {
+                            if let Some(pacer) = &mut self.file_pacer {
+                                pacer.observe_rtt_sample(rtt_ms, srtt, allow_inflation_sample);
+                            }
+                        }
                         log::trace!(
                             "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
                             self.name,
@@ -1375,6 +1588,8 @@ impl AssociationInternal {
                             self.rto_mgr.get_rto()
                         );
                     }
+                } else {
+                    had_prior_gap_acked = true;
                 }
 
                 if self.in_fast_recovery && c.tsn == self.fast_recover_exit_point {
@@ -1408,6 +1623,9 @@ impl AssociationInternal {
 
                 if let Some(c) = self.inflight_queue.get(tsn) {
                     if !is_acked {
+                        if let Some(pacer) = &mut self.file_pacer {
+                            pacer.record_acked_chunk();
+                        }
                         // Sum the number of bytes acknowledged per stream
                         if let Some(amount) = bytes_acked_per_stream.get_mut(&c.stream_identifier) {
                             *amount += n_bytes_acked;
@@ -1417,13 +1635,24 @@ impl AssociationInternal {
 
                         log::trace!("[{}] tsn={} has been sacked", self.name, c.tsn);
 
-                        if c.nsent == 1 {
+                        let can_measure_gap_rtt = if self.file_pacer.is_some() {
+                            self.rto_mgr.srtt == 0 && sna32gte(c.tsn, self.min_tsn2measure_rtt)
+                        } else {
+                            true
+                        };
+                        if c.nsent == 1 && can_measure_gap_rtt {
                             self.min_tsn2measure_rtt = self.my_next_tsn;
                             let rtt = match SystemTime::now().duration_since(c.since) {
                                 Ok(rtt) => rtt,
                                 Err(_) => return Err(Error::ErrInvalidSystemTime),
                             };
-                            let srtt = self.rto_mgr.set_new_rtt(rtt.as_millis() as u64);
+                            let rtt_ms = rtt.as_millis() as u64;
+                            let srtt = self.rto_mgr.set_new_rtt(rtt_ms);
+                            if rtt_ms > 0 {
+                                if let Some(pacer) = &mut self.file_pacer {
+                                    pacer.observe_rtt_sample(rtt_ms, srtt, false);
+                                }
+                            }
                             log::trace!(
                                 "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
                                 self.name,
@@ -1462,8 +1691,87 @@ impl AssociationInternal {
         } else {
             log::trace!("[{}] T3-rtx timer start (pt2)", self.name);
             if let Some(t3rtx) = &self.t3rtx {
+                if self.file_pacer.is_some() {
+                    t3rtx.stop().await;
+                }
                 t3rtx.start(self.rto_mgr.get_rto()).await;
             }
+        }
+
+        if let Some(pacer) = &mut self.file_pacer {
+            pacer.t3_timeouts = 0;
+        }
+
+        if let Some(initial_target) = self.paced_target_cwnd() {
+            let srtt_ms = self.rto_mgr.srtt;
+            let rtt_inflated = self
+                .file_pacer
+                .as_ref()
+                .is_some_and(|p| p.is_rtt_inflated(srtt_ms));
+
+            let mut did_cut = false;
+            if rtt_inflated && self.cwnd > 4 * self.mtu {
+                let should_cut = self.file_pacer.as_ref().is_some_and(|p| {
+                    p.rtt_sample_seq > p.last_cut_rtt_seq
+                        && (p.last_congestion_cut_tsn == 0
+                            || sna32gt(self.cumulative_tsn_ack_point, p.last_congestion_cut_tsn))
+                });
+                if should_cut {
+                    if let Some(pacer) = &mut self.file_pacer {
+                        let min_rate = pacer.min_rate();
+                        pacer.rate = (pacer.rate.saturating_mul(3) / 4).max(min_rate);
+                        pacer.last_congestion_cut_tsn = self.my_next_tsn.wrapping_sub(1);
+                        pacer.last_cut_rtt_seq = pacer.rtt_sample_seq;
+                    }
+                    let new_target = self.paced_target_cwnd().unwrap_or(initial_target);
+                    let floor = std::cmp::max(new_target / 4, 4 * self.mtu);
+                    self.ssthresh = std::cmp::min(
+                        new_target,
+                        std::cmp::max(self.cwnd.saturating_mul(3) / 4, floor),
+                    );
+                    self.cwnd = std::cmp::min(self.cwnd, self.ssthresh);
+                    self.partial_bytes_acked = 0;
+                    did_cut = true;
+                }
+            }
+
+            if !did_cut && !self.in_fast_recovery {
+                let banked = self
+                    .file_pacer
+                    .as_mut()
+                    .map(|p| std::mem::take(&mut p.pending_acked_bytes))
+                    .unwrap_or(0);
+                let acked = (total_bytes_acked.max(0) as u32).saturating_add(banked);
+                if let Some(pacer) = &mut self.file_pacer {
+                    if !rtt_inflated && pacer.rate < pacer.max_rate && acked > 0 {
+                        pacer.rate = pacer
+                            .rate
+                            .saturating_add((acked as u64).max(1))
+                            .min(pacer.max_rate);
+                    }
+                }
+                if self.cwnd <= self.ssthresh {
+                    self.cwnd = self.cwnd.saturating_add(std::cmp::min(acked, self.cwnd));
+                } else {
+                    self.partial_bytes_acked = self.partial_bytes_acked.saturating_add(acked);
+                    let step_bytes = if rtt_inflated {
+                        2 * self.mtu
+                    } else {
+                        self.mtu
+                    };
+                    while self.partial_bytes_acked >= step_bytes {
+                        self.partial_bytes_acked -= step_bytes;
+                        self.cwnd = self.cwnd.saturating_add(self.mtu);
+                    }
+                }
+            }
+
+            if let Some(target) = self.paced_target_cwnd() {
+                if self.cwnd > target {
+                    self.cwnd = target;
+                }
+            }
+            return;
         }
 
         // Update congestion control parameters
@@ -1526,15 +1834,6 @@ impl AssociationInternal {
                 );
             }
         }
-
-        if let Some(target) = self.paced_target_cwnd() {
-            if !self.in_fast_recovery && self.cwnd > 2 * self.mtu {
-                self.cwnd = target;
-                self.ssthresh = target;
-            } else if self.cwnd > target {
-                self.cwnd = target;
-            }
-        }
     }
 
     fn process_fast_retransmission(
@@ -1543,16 +1842,21 @@ impl AssociationInternal {
         htna: u32,
         highest_reported_tsn: u32,
         cum_tsn_ack_point_advanced: bool,
+        was_in_fast_recovery: bool,
     ) -> Result<()> {
         // RFC 9260 section 7.2.4: HTNA applies to every SACK, including
         // recovery. An advancing cumulative ACK in recovery additionally
         // reports all holes below the highest gap ACK, never the unseen tail.
-        let max_tsn = if self.in_fast_recovery && cum_tsn_ack_point_advanced {
+        let in_post_t3_recovery = self.file_pacer.as_ref().is_some_and(|p| {
+            p.post_t3_recovery_tsn != 0 && sna32lt(cum_tsn_ack_point, p.post_t3_recovery_tsn)
+        });
+        let max_tsn = if (self.in_fast_recovery || was_in_fast_recovery || in_post_t3_recovery)
+            && cum_tsn_ack_point_advanced
+        {
             highest_reported_tsn
         } else {
             htna
         };
-
         let mut tsn = cum_tsn_ack_point.wrapping_add(1);
         while sna32lt(tsn, max_tsn) {
             if let Some(c) = self.inflight_queue.get_mut(tsn) {
@@ -1560,31 +1864,75 @@ impl AssociationInternal {
                     c.miss_indicator += 1;
                     if c.miss_indicator == 3 {
                         self.will_retransmit_fast = true;
-                        if !self.in_fast_recovery {
-                            self.in_fast_recovery = true;
-                            // Cover the whole outstanding flight, so a second
-                            // hole cannot halve cwnd before this one recovers.
-                            self.fast_recover_exit_point = self.my_next_tsn.wrapping_sub(1);
-                            if let Some(target) = self.paced_target_cwnd() {
-                                let floor =
-                                    std::cmp::min(self.rwnd, std::cmp::max(target / 2, 4 * self.mtu));
-                                self.ssthresh =
-                                    std::cmp::min(target, std::cmp::max(self.cwnd * 3 / 4, floor));
-                                self.cwnd = self.ssthresh;
-                            } else {
-                                self.ssthresh = std::cmp::max(self.cwnd / 2, 4 * self.mtu);
-                                self.cwnd = self.ssthresh;
+                        let is_post_t3_loss = self.file_pacer.as_ref().map_or(true, |p| {
+                            p.post_t3_recovery_tsn == 0 || sna32gt(tsn, p.post_t3_recovery_tsn)
+                        });
+                        if is_post_t3_loss {
+                            if let Some(pacer) = &mut self.file_pacer {
+                                pacer.record_lost_chunk(tsn);
                             }
-                            self.partial_bytes_acked = 0;
+                            if !self.in_fast_recovery {
+                                self.in_fast_recovery = true;
+                                // Cover the whole outstanding flight, so a second
+                                // hole cannot halve cwnd before this one recovers.
+                                self.fast_recover_exit_point = self.my_next_tsn.wrapping_sub(1);
+                                if self.paced_target_cwnd().is_some() {
+                                    let srtt_ms = self.rto_mgr.srtt;
+                                    let congested = self.file_pacer.as_ref().is_some_and(|p| {
+                                        p.is_rtt_inflated(srtt_ms) || p.is_loss_elevated()
+                                    });
+                                    if congested {
+                                        if let Some(pacer) = &mut self.file_pacer {
+                                            let min_rate = pacer.min_rate();
+                                            pacer.rate =
+                                                (pacer.rate.saturating_mul(3) / 4).max(min_rate);
+                                            pacer.last_congestion_cut_tsn =
+                                                self.my_next_tsn.wrapping_sub(1);
+                                        }
+                                        if let Some(target) = self.paced_target_cwnd() {
+                                            let floor = std::cmp::max(target / 4, 4 * self.mtu);
+                                            self.ssthresh = std::cmp::min(
+                                                target,
+                                                std::cmp::max(self.cwnd / 2, floor),
+                                            );
+                                            self.cwnd = std::cmp::min(self.cwnd, self.ssthresh);
+                                        } else {
+                                            self.ssthresh =
+                                                std::cmp::max(self.cwnd / 2, 4 * self.mtu);
+                                            self.cwnd = self.ssthresh;
+                                        }
+                                    } else if let Some(target) = self.paced_target_cwnd() {
+                                        let reduced_cwnd = std::cmp::min(
+                                            target,
+                                            std::cmp::max(
+                                                self.cwnd.saturating_mul(15) / 16,
+                                                4 * self.mtu,
+                                            ),
+                                        );
+                                        self.ssthresh = std::cmp::min(
+                                            target,
+                                            std::cmp::max(
+                                                reduced_cwnd,
+                                                target.saturating_mul(7) / 8,
+                                            ),
+                                        );
+                                        self.cwnd = reduced_cwnd;
+                                    }
+                                } else {
+                                    self.ssthresh = std::cmp::max(self.cwnd / 2, 4 * self.mtu);
+                                    self.cwnd = self.ssthresh;
+                                }
+                                self.partial_bytes_acked = 0;
 
-                            log::trace!(
-                                "[{}] updated cwnd={} ssthresh={} inflight={} recovery_exit={} (FR)",
-                                self.name,
-                                self.cwnd,
-                                self.ssthresh,
-                                self.inflight_queue.get_num_bytes(),
-                                self.fast_recover_exit_point
-                            );
+                                log::trace!(
+                                    "[{}] updated cwnd={} ssthresh={} inflight={} recovery_exit={} (FR)",
+                                    self.name,
+                                    self.cwnd,
+                                    self.ssthresh,
+                                    self.inflight_queue.get_num_bytes(),
+                                    self.fast_recover_exit_point
+                                );
+                            }
                         }
                     }
                 }
@@ -1595,7 +1943,7 @@ impl AssociationInternal {
             tsn = tsn.wrapping_add(1);
         }
 
-        if self.in_fast_recovery && cum_tsn_ack_point_advanced {
+        if (self.in_fast_recovery || in_post_t3_recovery) && cum_tsn_ack_point_advanced {
             self.will_retransmit_fast = true;
         }
 
@@ -1619,6 +1967,9 @@ impl AssociationInternal {
         }
 
         self.stats.inc_sacks();
+        if let Some(pacer) = &mut self.file_pacer {
+            pacer.observe_srtt(self.rto_mgr.srtt);
+        }
 
         if sna32gt(self.cumulative_tsn_ack_point, d.cumulative_tsn_ack) {
             // RFC 4960 sec 6.2.1.  Processing a Received SACK
@@ -1640,32 +1991,12 @@ impl AssociationInternal {
         }
 
         // Process selective ack
+        let was_in_fast_recovery = self.in_fast_recovery;
         let (bytes_acked_per_stream, htna) = self.process_selective_ack(d).await?;
 
         let mut total_bytes_acked = 0;
         for n_bytes_acked in bytes_acked_per_stream.values() {
             total_bytes_acked += *n_bytes_acked;
-        }
-
-        let mut cum_tsn_ack_point_advanced = false;
-        if sna32lt(self.cumulative_tsn_ack_point, d.cumulative_tsn_ack) {
-            log::trace!(
-                "[{}] SACK: cumTSN advanced: {} -> {}",
-                self.name,
-                self.cumulative_tsn_ack_point,
-                d.cumulative_tsn_ack
-            );
-
-            self.cumulative_tsn_ack_point = d.cumulative_tsn_ack;
-            cum_tsn_ack_point_advanced = true;
-            self.on_cumulative_tsn_ack_point_advanced(total_bytes_acked)
-                .await;
-        }
-
-        for (si, n_bytes_acked) in &bytes_acked_per_stream {
-            if let Some(s) = self.streams.get_mut(si) {
-                s.on_buffer_released(*n_bytes_acked).await;
-            }
         }
 
         // New rwnd value
@@ -1683,6 +2014,34 @@ impl AssociationInternal {
             self.rwnd = d.advertised_receiver_window_credit - bytes_outstanding;
         }
 
+        let mut cum_tsn_ack_point_advanced = false;
+        if sna32lt(self.cumulative_tsn_ack_point, d.cumulative_tsn_ack) {
+            log::trace!(
+                "[{}] SACK: cumTSN advanced: {} -> {}",
+                self.name,
+                self.cumulative_tsn_ack_point,
+                d.cumulative_tsn_ack
+            );
+
+            self.cumulative_tsn_ack_point = d.cumulative_tsn_ack;
+            cum_tsn_ack_point_advanced = true;
+            self.on_cumulative_tsn_ack_point_advanced(total_bytes_acked)
+                .await;
+        } else if total_bytes_acked > 0 {
+            if let Some(pacer) = &mut self.file_pacer {
+                pacer.pending_acked_bytes = pacer
+                    .pending_acked_bytes
+                    .saturating_add(total_bytes_acked as u32)
+                    .min(self.cwnd);
+            }
+        }
+
+        for (si, n_bytes_acked) in &bytes_acked_per_stream {
+            if let Some(s) = self.streams.get_mut(si) {
+                s.on_buffer_released(*n_bytes_acked).await;
+            }
+        }
+
         let highest_reported_tsn = d.cumulative_tsn_ack.wrapping_add(
             d.gap_ack_blocks
                 .iter()
@@ -1695,7 +2054,18 @@ impl AssociationInternal {
             htna,
             highest_reported_tsn,
             cum_tsn_ack_point_advanced,
+            was_in_fast_recovery,
         )?;
+        let current_flight_max_tsn = self.my_next_tsn.wrapping_sub(1);
+        let in_fast_recovery = self.in_fast_recovery;
+        let has_gap_ack_blocks = !d.gap_ack_blocks.is_empty();
+        if let Some(pacer) = &mut self.file_pacer {
+            pacer.maybe_roll_loss_window(
+                current_flight_max_tsn,
+                in_fast_recovery,
+                has_gap_ack_blocks,
+            );
+        }
 
         if self.use_forward_tsn {
             // RFC 3758 Sec 3.5 C1
@@ -1735,7 +2105,7 @@ impl AssociationInternal {
 
         self.postprocess_sack(
             state,
-            cum_tsn_ack_point_advanced || self.will_retransmit_fast,
+            cum_tsn_ack_point_advanced || total_bytes_acked > 0 || self.will_retransmit_fast,
         )
         .await;
 
@@ -2240,10 +2610,13 @@ impl AssociationInternal {
                 break;
             }
             self.rwnd -= len as u32;
-            if let Some(c) = self
+            if let Some(mut c) = self
                 .move_pending_data_chunk_to_inflight_queue(beginning, unordered)
                 .await
             {
+                if self.cwnd <= 4 * self.mtu || self.rto_mgr.srtt == 0 {
+                    c.immediate_sack = true;
+                }
                 chunks.push(c);
             }
         }
@@ -2414,7 +2787,10 @@ impl AssociationInternal {
     }
 
     fn get_data_packets_to_retransmit_paced(&mut self) -> Vec<Packet> {
-        let awnd = std::cmp::min(self.cwnd, self.rwnd) as usize;
+        let peer_rwnd = self
+            .rwnd
+            .saturating_add(self.inflight_queue.get_num_bytes() as u32);
+        let awnd = std::cmp::min(self.cwnd, peer_rwnd) as usize;
         let mut chunks = vec![];
         let mut bytes_to_send = 0;
         let mut packet_bytes = COMMON_HEADER_SIZE as usize;
@@ -2425,11 +2801,17 @@ impl AssociationInternal {
                 break;
             };
             if !c.retransmit {
+                if !c.acked && c.nsent > 1 {
+                    bytes_to_send += c.user_data.len();
+                    if bytes_to_send >= awnd {
+                        break;
+                    }
+                }
                 i += 1;
                 continue;
             }
             let len = c.user_data.len();
-            let probe = i == 0 && self.rwnd < len as u32;
+            let probe = i == 0 && peer_rwnd < len as u32;
             if !probe && bytes_to_send + len > awnd {
                 break;
             }
@@ -2442,7 +2824,9 @@ impl AssociationInternal {
             }
             if let Some(c) = self.inflight_queue.get(tsn) {
                 self.check_partial_reliability_status(c);
-                chunks.push(c.clone());
+                let mut c = c.clone();
+                c.immediate_sack = true;
+                chunks.push(c);
             }
             bytes_to_send += len;
             if probe {
@@ -2682,6 +3066,18 @@ impl RtxTimerObserver for AssociationInternal {
 
             RtxTimerId::T3RTX => {
                 self.stats.inc_t3timeouts();
+                let pre_t3_max_tsn = self.my_next_tsn.wrapping_sub(1);
+                if let Some(pacer) = &mut self.file_pacer {
+                    pacer.pending_acked_bytes = 0;
+                    pacer.window_acked_chunks = 0;
+                    pacer.window_lost_chunks = 0;
+                    pacer.highest_lost_tsn_in_window = 0;
+                    pacer.post_t3_recovery_tsn = pre_t3_max_tsn;
+                    pacer.t3_timeouts = pacer.t3_timeouts.saturating_add(1);
+                    if (n_rtos >= 4 && pacer.t3_timeouts >= 4) || pacer.t3_timeouts >= 6 {
+                        pacer.fallback_rfc = true;
+                    }
+                }
 
                 // RFC 4960 sec 6.3.3
                 //  E1)  For the destination address for which the timer expires, adjust
@@ -2693,7 +3089,10 @@ impl RtxTimerObserver for AssociationInternal {
                 //      ssthresh = max(cwnd/2, 4*MTU)
                 //      cwnd = 1*MTU
 
-                self.ssthresh = std::cmp::max(self.cwnd / 2, 4 * self.mtu);
+                let min_ssthresh = self
+                    .paced_target_cwnd()
+                    .map_or(4 * self.mtu, |t| std::cmp::max(t / 4, 4 * self.mtu));
+                self.ssthresh = std::cmp::max(self.cwnd / 2, min_ssthresh);
                 self.cwnd = self.mtu;
                 // T3 resumes slow start (RFC 9260 section 7.2.3). Leave the
                 // previous recovery episode so advancing ACKs can grow cwnd.
@@ -2969,10 +3368,12 @@ mod paced_fast_retrans_tests {
         assert_eq!(a.paced_target_cwnd(), Some(120_000));
         a.rwnd = 500_000;
 
-        // 5. Advancing cumulative ACK in normal state sets cwnd to target (300_000 B).
+        // 5. Target is strictly an upper bound: advancing ACKs grow cwnd gradually
+        // via slow start without jumping straight to target (300_000 B).
+        let initial_cwnd = a.cwnd;
         a.cumulative_tsn_ack_point = 99;
-        a.my_next_tsn = 106;
-        for tsn in 100..106 {
+        a.my_next_tsn = 115;
+        for tsn in 100..115 {
             a.inflight_queue.push_no_check(ChunkPayloadData {
                 tsn,
                 nsent: 1,
@@ -2987,15 +3388,67 @@ mod paced_fast_retrans_tests {
             ..Default::default()
         })
         .await?;
-        let target_after_ack = a.paced_target_cwnd().unwrap();
-        assert_eq!(a.cwnd, target_after_ack);
+        assert_eq!(
+            a.cwnd,
+            initial_cwnd + 1200,
+            "first ACK must grow gradually by slow start, never jump to target"
+        );
+        a.rto_mgr.srtt = 200;
+        a.handle_sack(&ChunkSelectiveAck {
+            cumulative_tsn_ack: 101,
+            advertised_receiver_window_credit: 500_000,
+            ..Default::default()
+        })
+        .await?;
+        assert_eq!(
+            a.cwnd,
+            initial_cwnd + 2400,
+            "second ACK must continue gradual growth below target"
+        );
+
+        // When cwnd approaches target, target caps cwnd as an upper bound.
+        a.rto_mgr.srtt = 200;
+        let target_before_inflation = a.paced_target_cwnd().unwrap();
+        assert_eq!(target_before_inflation, 300_000);
+        a.cwnd = 299_500;
+        a.handle_sack(&ChunkSelectiveAck {
+            cumulative_tsn_ack: 102,
+            advertised_receiver_window_credit: 500_000,
+            ..Default::default()
+        })
+        .await?;
+        assert_eq!(
+            a.cwnd, target_before_inflation,
+            "cwnd must be capped at target upper bound"
+        );
         assert!(a.cwnd <= a.rwnd);
 
-        // 6. Fast recovery on 3 gap reports for TSN 101 reduces cwnd below target.
+        // 6. RTT inflation (srtt = 300 ms > 1.25 * min_rtt 200 ms) reduces rate, target, and cwnd.
+        a.rto_mgr.srtt = 300;
+        a.handle_sack(&ChunkSelectiveAck {
+            cumulative_tsn_ack: 103,
+            advertised_receiver_window_credit: 500_000,
+            ..Default::default()
+        })
+        .await?;
+        let target_after_inflation = a.paced_target_cwnd().unwrap();
+        assert!(
+            target_after_inflation < target_before_inflation,
+            "RTT inflation must reduce target BDP ceiling"
+        );
+        assert!(
+            a.cwnd < target_before_inflation,
+            "RTT inflation must reduce cwnd"
+        );
+        assert_eq!(a.cwnd, target_after_inflation);
+
+        // 7. Fast recovery on 3 gap reports for TSN 104 reduces cwnd below target,
+        // and exiting recovery grows linearly from ssthresh rather than jumping to target.
+        a.rto_mgr.srtt = 200;
         let pre_loss_cwnd = a.cwnd;
         for end in 2..=4 {
             a.handle_sack(&ChunkSelectiveAck {
-                cumulative_tsn_ack: 100,
+                cumulative_tsn_ack: 103,
                 advertised_receiver_window_credit: 500_000,
                 gap_ack_blocks: vec![GapAckBlock { start: 2, end }],
                 ..Default::default()
@@ -3007,21 +3460,20 @@ mod paced_fast_retrans_tests {
             a.cwnd < pre_loss_cwnd,
             "fast recovery must reduce cwnd on packet loss"
         );
+        let recovery_ssthresh = a.ssthresh;
 
-        // 7. T3 timeout resets cwnd to 1 * MTU and exits fast recovery; first ACK
-        // after T3 grows by slow start rather than jumping straight to BDP target.
-        a.pending_queue
-            .push(ChunkPayloadData {
-                user_data: Bytes::from(vec![0u8; 1200]),
-                ..Default::default()
-            })
-            .await;
+        // 8. T3 timeout resets cwnd to 1 * MTU and exits fast recovery; multiple
+        // consecutive ACKs after T3 remain in gradual slow-start growth and do not jump to target.
+        a.rto_mgr.srtt = 200;
         a.on_retransmission_timeout(RtxTimerId::T3RTX, 1).await;
         assert_eq!(a.cwnd, a.mtu, "T3 timeout must reset cwnd to 1 * MTU");
         assert!(!a.in_fast_recovery);
+        assert!(a.ssthresh >= 4 * a.mtu && a.ssthresh <= recovery_ssthresh);
 
+        // Consecutive ACK #1 after T3 (TSN 107 newly acked, 1200 B; 105..=106 were gap-acked):
+        a.rto_mgr.srtt = 200;
         a.handle_sack(&ChunkSelectiveAck {
-            cumulative_tsn_ack: 104,
+            cumulative_tsn_ack: 107,
             advertised_receiver_window_credit: 500_000,
             ..Default::default()
         })
@@ -3029,7 +3481,181 @@ mod paced_fast_retrans_tests {
         assert_eq!(
             a.cwnd,
             a.mtu + 1200,
-            "first ACK after T3 timeout must slow-start by the acknowledged chunk size"
+            "1st ACK after T3 timeout must grow by 1200 B"
+        );
+
+        // Consecutive ACK #2 after T3 (TSN 108, 1200 B -> cwnd = mtu + 2400 > 2 * mtu, must NOT jump to target):
+        a.rto_mgr.srtt = 200;
+        a.handle_sack(&ChunkSelectiveAck {
+            cumulative_tsn_ack: 108,
+            advertised_receiver_window_credit: 500_000,
+            ..Default::default()
+        })
+        .await?;
+        assert_eq!(
+            a.cwnd,
+            a.mtu + 2400,
+            "2nd ACK after T3 timeout (cwnd > 2*MTU) must stay in gradual growth and not jump to target"
+        );
+
+        // Consecutive ACK #3 after T3 (TSN 109, 1200 B):
+        a.rto_mgr.srtt = 200;
+        a.handle_sack(&ChunkSelectiveAck {
+            cumulative_tsn_ack: 109,
+            advertised_receiver_window_credit: 500_000,
+            ..Default::default()
+        })
+        .await?;
+        assert_eq!(
+            a.cwnd,
+            a.mtu + 3600,
+            "3rd consecutive ACK after T3 timeout must continue gradual slow-start growth"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_paced_cc_falls_back_to_rfc_controller_after_repeated_t3_or_sustained_high_loss(
+    ) -> Result<()> {
+        // Part A: Repeated T3 timeouts permanently fall back to the RFC 4960 controller.
+        let (close_loop_ch_tx, _close_loop_ch_rx) = broadcast::channel(1);
+        let (accept_ch_tx, _accept_ch_rx) = mpsc::channel(1);
+        let (handshake_completed_ch_tx, _handshake_completed_ch_rx) = mpsc::channel(1);
+        let (awake_write_loop_ch_tx, _awake_write_loop_ch_rx) = mpsc::channel(1);
+        let mut a = AssociationInternal::new(
+            Config {
+                net_conn: Arc::new(NoopConn),
+                max_receive_buffer_size: 0,
+                max_message_size: 0,
+                name: "paced-t3-fallback-client".to_owned(),
+            },
+            close_loop_ch_tx,
+            accept_ch_tx,
+            handshake_completed_ch_tx,
+            Arc::new(awake_write_loop_ch_tx),
+        );
+        a.set_state(AssociationState::Established);
+        a.rwnd = 500_000;
+        a.configure_file_pacing(Some(FilePacingConfig {
+            rate_bytes_per_second: 1_000_000,
+            burst_bytes: 16 * 1024,
+        }))?;
+        a.rto_mgr.srtt = 200;
+        assert_eq!(a.paced_target_cwnd(), Some(300_000));
+
+        for n_rtos in 1..=3 {
+            a.on_retransmission_timeout(RtxTimerId::T3RTX, n_rtos).await;
+            assert!(
+                a.paced_target_cwnd().is_some(),
+                "T3 timeout #{n_rtos} should remain in paced slow-start recovery"
+            );
+        }
+        a.on_retransmission_timeout(RtxTimerId::T3RTX, 4).await;
+        assert_eq!(
+            a.paced_target_cwnd(),
+            None,
+            "repeated T3 timeouts must permanently fall back to original RFC controller"
+        );
+
+        // Verify RFC congestion avoidance path is taken after fallback (cwnd > ssthresh
+        // requires partial_bytes_acked >= cwnd AND pending_queue > 0 to add 1 MTU).
+        a.cwnd = 10_000;
+        a.ssthresh = 4_912;
+        a.cumulative_tsn_ack_point = 199;
+        a.my_next_tsn = 202;
+        for tsn in 200..202 {
+            a.inflight_queue.push_no_check(ChunkPayloadData {
+                tsn,
+                nsent: 1,
+                since: SystemTime::now(),
+                user_data: Bytes::from(vec![0u8; 1200]),
+                ..Default::default()
+            });
+        }
+        a.rto_mgr.srtt = 200;
+        a.handle_sack(&ChunkSelectiveAck {
+            cumulative_tsn_ack: 201,
+            advertised_receiver_window_credit: 500_000,
+            ..Default::default()
+        })
+        .await?;
+        assert_eq!(a.paced_target_cwnd(), None);
+        assert_eq!(
+            a.cwnd, 10_000,
+            "RFC congestion avoidance must not grow cwnd when partial_bytes_acked < cwnd"
+        );
+
+        // Part B: Sustained high packet loss across 3 consecutive windows permanently
+        // falls back to the RFC 4960 controller.
+        let (close_loop_ch_tx, _close_loop_ch_rx) = broadcast::channel(1);
+        let (accept_ch_tx, _accept_ch_rx) = mpsc::channel(1);
+        let (handshake_completed_ch_tx, _handshake_completed_ch_rx) = mpsc::channel(1);
+        let (awake_write_loop_ch_tx, _awake_write_loop_ch_rx) = mpsc::channel(1);
+        let mut b = AssociationInternal::new(
+            Config {
+                net_conn: Arc::new(NoopConn),
+                max_receive_buffer_size: 0,
+                max_message_size: 0,
+                name: "paced-loss-fallback-client".to_owned(),
+            },
+            close_loop_ch_tx,
+            accept_ch_tx,
+            handshake_completed_ch_tx,
+            Arc::new(awake_write_loop_ch_tx),
+        );
+        b.set_state(AssociationState::Established);
+        b.rwnd = 500_000;
+        b.configure_file_pacing(Some(FilePacingConfig {
+            rate_bytes_per_second: 1_000_000,
+            burst_bytes: 16 * 1024,
+        }))?;
+        b.rto_mgr.srtt = 200;
+        assert!(b.paced_target_cwnd().is_some());
+
+        // Feed 3 consecutive flights each with 5 lost chunks + 20 acked chunks (5/25 = 20% loss).
+        b.cumulative_tsn_ack_point = 999;
+        for window in 0..3u32 {
+            assert!(
+                b.paced_target_cwnd().is_some(),
+                "must still be active before window {window} completes"
+            );
+            let base = 1000 + window * 25;
+            b.my_next_tsn = base + 25;
+            for tsn in base..base + 25 {
+                b.inflight_queue.push_no_check(ChunkPayloadData {
+                    tsn,
+                    nsent: 1,
+                    since: SystemTime::now(),
+                    user_data: Bytes::from(vec![0u8; 1200]),
+                    ..Default::default()
+                });
+            }
+            // 5 chunks in this window (base..base+5) reach miss_indicator == 3 via gap acks on base+5..base+8.
+            for end in 6..=8 {
+                b.handle_sack(&ChunkSelectiveAck {
+                    cumulative_tsn_ack: base - 1,
+                    advertised_receiver_window_credit: 500_000,
+                    gap_ack_blocks: vec![GapAckBlock { start: 6, end }],
+                    ..Default::default()
+                })
+                .await?;
+            }
+            // Mark base..base+5 as already acked so cumulative advance counts the 20 delivered chunks (3 gap-acked + 17 cum-acked = 20 acked).
+            for lost_tsn in base..base + 5 {
+                b.inflight_queue.mark_as_acked(lost_tsn);
+            }
+            b.rto_mgr.srtt = 200;
+            b.handle_sack(&ChunkSelectiveAck {
+                cumulative_tsn_ack: base + 24,
+                advertised_receiver_window_credit: 500_000,
+                ..Default::default()
+            })
+            .await?;
+        }
+        assert_eq!(
+            b.paced_target_cwnd(),
+            None,
+            "3 consecutive high-loss windows must permanently fall back to original RFC controller"
         );
         Ok(())
     }
