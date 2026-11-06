@@ -1850,7 +1850,9 @@ impl AssociationInternal {
         let in_post_t3_recovery = self.file_pacer.as_ref().is_some_and(|p| {
             p.post_t3_recovery_tsn != 0 && sna32lt(cum_tsn_ack_point, p.post_t3_recovery_tsn)
         });
-        let max_tsn = if (self.in_fast_recovery || was_in_fast_recovery || in_post_t3_recovery)
+        let max_tsn = if (self.in_fast_recovery
+            || (self.file_pacer.is_some() && was_in_fast_recovery)
+            || in_post_t3_recovery)
             && cum_tsn_ack_point_advanced
         {
             highest_reported_tsn
@@ -1999,19 +2001,13 @@ impl AssociationInternal {
             total_bytes_acked += *n_bytes_acked;
         }
 
-        // New rwnd value
-        // RFC 4960 sec 6.2.1.  Processing a Received SACK
-        // D)
-        //   ii) Set rwnd equal to the newly received a_rwnd minus the number
-        //       of bytes still outstanding after processing the Cumulative
-        //       TSN Ack and the Gap Ack Blocks.
-
-        // bytes acked were already subtracted by markAsAcked() method
-        let bytes_outstanding = self.inflight_queue.get_num_bytes() as u32;
-        if bytes_outstanding >= d.advertised_receiver_window_credit {
-            self.rwnd = 0;
-        } else {
-            self.rwnd = d.advertised_receiver_window_credit - bytes_outstanding;
+        if self.file_pacer.is_some() {
+            let bytes_outstanding = self.inflight_queue.get_num_bytes() as u32;
+            if bytes_outstanding >= d.advertised_receiver_window_credit {
+                self.rwnd = 0;
+            } else {
+                self.rwnd = d.advertised_receiver_window_credit - bytes_outstanding;
+            }
         }
 
         let mut cum_tsn_ack_point_advanced = false;
@@ -2039,6 +2035,23 @@ impl AssociationInternal {
         for (si, n_bytes_acked) in &bytes_acked_per_stream {
             if let Some(s) = self.streams.get_mut(si) {
                 s.on_buffer_released(*n_bytes_acked).await;
+            }
+        }
+
+        // New rwnd value
+        // RFC 4960 sec 6.2.1.  Processing a Received SACK
+        // D)
+        //   ii) Set rwnd equal to the newly received a_rwnd minus the number
+        //       of bytes still outstanding after processing the Cumulative
+        //       TSN Ack and the Gap Ack Blocks.
+
+        // bytes acked were already subtracted by markAsAcked() method
+        if self.file_pacer.is_none() {
+            let bytes_outstanding = self.inflight_queue.get_num_bytes() as u32;
+            if bytes_outstanding >= d.advertised_receiver_window_credit {
+                self.rwnd = 0;
+            } else {
+                self.rwnd = d.advertised_receiver_window_credit - bytes_outstanding;
             }
         }
 
@@ -2103,11 +2116,12 @@ impl AssociationInternal {
             self.awake_write_loop();
         }
 
-        self.postprocess_sack(
-            state,
-            cum_tsn_ack_point_advanced || total_bytes_acked > 0 || self.will_retransmit_fast,
-        )
-        .await;
+        let should_awake = if self.file_pacer.is_some() {
+            cum_tsn_ack_point_advanced || total_bytes_acked > 0 || self.will_retransmit_fast
+        } else {
+            cum_tsn_ack_point_advanced || self.will_retransmit_fast
+        };
+        self.postprocess_sack(state, should_awake).await;
 
         Ok(vec![])
     }
