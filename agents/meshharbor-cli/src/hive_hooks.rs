@@ -868,7 +868,7 @@ mod tests {
         assert!(ours(&c("'/usr/bin/meshharbord' cli hive hook")));
         assert!(ours(&c("/usr/local/bin/mh hive hook")));
         assert!(
-            ours(&c("'/opt/my apps/meshharbor' hive hook")),
+            ours(&c("'/opt/my apps/mh' hive hook")),
             "a path with a space"
         );
         assert!(!ours(&c("'/usr/bin/mh' peers")));
