@@ -75,6 +75,16 @@ async fn authorized_scope(
     recipient_id: ObjectId,
     approval_revision: u32,
 ) -> Result<NativeSshScope, ApiError> {
+    authorized_scope_with_expiry(state, row, recipient_id, approval_revision, true).await
+}
+
+async fn authorized_scope_with_expiry(
+    state: &NetworkState,
+    row: &NativeSshAuthorization,
+    recipient_id: ObjectId,
+    approval_revision: u32,
+    require_unexpired_request: bool,
+) -> Result<NativeSshScope, ApiError> {
     if row.session_secs == 0 || row.session_secs > ssh_limits::MAX_SESSION_SECS {
         return Err(refused());
     }
@@ -132,8 +142,9 @@ async fn authorized_scope(
     {
         return Err(refused());
     }
+    let now = DateTime::now();
     let request_expires_at = row.expires_at.min(access.grant.expires_at);
-    if request_expires_at <= DateTime::now() {
+    if access.grant.expires_at <= now || (require_unexpired_request && request_expires_at <= now) {
         return Err(refused());
     }
     let os = serde_json::to_value(access.agent.os).map_err(|_| refused())?;
@@ -490,4 +501,109 @@ pub async fn exchange(
                 "public_key":binding.public_key, "session_secs":binding.session_secs},
         })))
     }).await
+}
+
+pub(crate) fn is_native_grant_bearer(bearer: &str) -> bool {
+    bearer.starts_with("mhssh_")
+}
+
+fn valid_grant_token(grant: &str) -> bool {
+    grant.strip_prefix("mhssh_").is_some_and(|code| {
+        code.len() == 43
+            && URL_SAFE_NO_PAD
+                .decode(code)
+                .is_ok_and(|bytes| bytes.len() == 32)
+    })
+}
+
+pub(crate) async fn verify_exchanged_grant(
+    state: &NetworkState,
+    share_id: ObjectId,
+    grant: &str,
+) -> Result<(NativeSshAuthorization, NativeSshScope), ApiError> {
+    if !state.settings.auth.native_share_ssh_authorization_enabled {
+        return Err(ApiError::ServiceUnavailable(
+            "Native SSH authorization is disabled".into(),
+        ));
+    }
+    if !valid_grant_token(grant) {
+        return Err(ApiError::Unauthorized("Invalid native SSH grant".into()));
+    }
+    let dao = NativeSshAuthorizationDao::new(&state.core.db);
+    let row = storage(dao.exchanged(grant).await)?.ok_or_else(refused)?;
+    if row.state != "exchanged" || row.share_grant_id != share_id {
+        return Err(refused());
+    }
+    let scope = row.scope.as_ref().ok_or_else(refused)?.clone();
+    let binding = scope.binding.as_ref().ok_or_else(refused)?;
+    let now = DateTime::now();
+    if binding.authorization_id != row.authorization_id
+        || binding.share_grant_id != share_id
+        || binding.public_key != row.public_key
+        || binding.session_secs != row.session_secs
+        || binding.request_expires_at <= now
+        || binding.share_expires_at <= now
+        || row.grant_expires_at.is_none_or(|t| t <= now)
+    {
+        return Err(refused());
+    }
+    if scope
+        != authorized_scope(
+            state,
+            &row,
+            scope.recipient_user_id,
+            scope.approval_revision,
+        )
+        .await?
+    {
+        return Err(refused());
+    }
+    Ok((row, scope))
+}
+
+pub(crate) async fn consume_exchanged_grant(
+    state: &NetworkState,
+    row: &NativeSshAuthorization,
+    grant: &str,
+) -> Result<(), ApiError> {
+    if !state.settings.auth.native_share_ssh_authorization_enabled {
+        return Err(ApiError::ServiceUnavailable(
+            "Native SSH authorization is disabled".into(),
+        ));
+    }
+    if !storage(
+        NativeSshAuthorizationDao::new(&state.core.db)
+            .consume(row, grant)
+            .await,
+    )? {
+        return Err(refused());
+    }
+    Ok(())
+}
+
+pub(crate) async fn live_session_scope_valid(
+    state: &NetworkState,
+    row: &NativeSshAuthorization,
+) -> bool {
+    if !state.settings.auth.native_share_ssh_authorization_enabled {
+        return false;
+    }
+    let Some(scope) = row.scope.as_ref() else {
+        return false;
+    };
+    let Some(binding) = scope.binding.as_ref() else {
+        return false;
+    };
+    if binding.share_expires_at <= DateTime::now() {
+        return false;
+    }
+    authorized_scope_with_expiry(
+        state,
+        row,
+        scope.recipient_user_id,
+        scope.approval_revision,
+        false,
+    )
+    .await
+    .is_ok_and(|current| &current == scope)
 }

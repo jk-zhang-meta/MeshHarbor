@@ -280,4 +280,53 @@ impl NativeSshAuthorizationDao {
             .await?
             .is_some())
     }
+
+    pub async fn exchanged(&self, grant: &str) -> DaoResult<Option<NativeSshAuthorization>> {
+        let now = DateTime::now();
+        Ok(self
+            .base
+            .collection()
+            .find_one(doc! {
+                "grant_hash": hash_secret("grant", grant),
+                "state": "exchanged",
+                "expires_at": {"$gt": now},
+                "grant_expires_at": {"$gt": now},
+            })
+            .await?)
+    }
+
+    pub async fn consume(&self, row: &NativeSshAuthorization, grant: &str) -> DaoResult<bool> {
+        let Some(binding) = row.scope.as_ref().and_then(|scope| scope.binding.as_ref()) else {
+            return Ok(false);
+        };
+        let Some(grant_expires_at) = row.grant_expires_at else {
+            return Ok(false);
+        };
+        let now = DateTime::now();
+        if binding.request_expires_at <= now
+            || binding.share_expires_at <= now
+            || grant_expires_at <= now
+        {
+            return Ok(false);
+        }
+        let grant_hash = hash_secret("grant", grant);
+        if row.grant_hash.as_deref() != Some(grant_hash.as_str()) {
+            return Ok(false);
+        }
+        let mut filter = request_filter(row, "exchanged");
+        filter.insert("grant_hash", grant_hash);
+        filter.insert(
+            "grant_expires_at",
+            doc! {"$eq": grant_expires_at, "$gt": now},
+        );
+        filter.insert("scope", bson::to_bson(&row.scope)?);
+        filter.insert("scope.binding.request_expires_at", doc! {"$gt": now});
+        filter.insert("scope.binding.share_expires_at", doc! {"$gt": now});
+        Ok(self
+            .base
+            .collection()
+            .find_one_and_update(filter, doc! {"$set": {"state": "used"}})
+            .await?
+            .is_some())
+    }
 }

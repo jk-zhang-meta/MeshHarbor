@@ -1770,3 +1770,986 @@ async fn upstream_membership_device_and_account_aba() {
             .is_some_and(|grant| !grant.is_empty())
     );
 }
+
+fn alternate_public_key() -> String {
+    let mut bytes = vec![];
+    bytes.extend_from_slice(&11u32.to_be_bytes());
+    bytes.extend_from_slice(b"ssh-ed25519");
+    bytes.extend_from_slice(&32u32.to_be_bytes());
+    bytes.extend_from_slice(&[9u8; 32]);
+    format!("ssh-ed25519 {}", STANDARD.encode(bytes))
+}
+
+async fn create_share(
+    app: &TestApp,
+    owner: &Actor,
+    device: ObjectId,
+    recipient: ObjectId,
+) -> Value {
+    json_response(
+        app.auth_post("/api/device-shares", &owner.token)
+            .json(
+                &json!({"device_id":device.to_hex(), "recipient_user_id":recipient.to_hex(),
+                "permissions":{"ssh":true}, "tcp_ports":[22], "expires_in_secs":300,
+                "ssh_account":"alice"}),
+            )
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .unwrap(),
+        200,
+        "share creation",
+    )
+    .await
+}
+
+async fn approve_and_exchange(app: &TestApp, recipient: &Actor, share: &Value) -> (Value, String) {
+    let started = approve_request(app, recipient, share).await;
+    let exchanged = json_response(exchange(app, &started).await, 200, "grant exchange").await;
+    let grant = exchanged["grant"].as_str().unwrap().to_owned();
+    assert!(grant.starts_with("mhssh_"));
+    (started, grant)
+}
+
+async fn ws_dispatch(
+    app: &TestApp,
+    share_id: &str,
+    bearer: &str,
+    pub_key: &str,
+    session_secs: u64,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    u16,
+> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut url = reqwest::Url::parse(&format!(
+        "ws://{}/api/device-shares/{share_id}/ssh/ws",
+        app.addr
+    ))
+    .unwrap();
+    url.query_pairs_mut()
+        .append_pair("public_key", pub_key)
+        .append_pair("session_secs", &session_secs.to_string());
+    let mut request = url.as_str().into_client_request().unwrap();
+    let mut header = format!("Bearer {bearer}")
+        .parse::<tokio_tungstenite::tungstenite::http::HeaderValue>()
+        .unwrap();
+    header.set_sensitive(true);
+    request.headers_mut().insert("Authorization", header);
+    match tokio::time::timeout(
+        Duration::from_secs(8),
+        tokio_tungstenite::connect_async(request),
+    )
+    .await
+    .expect("WS dispatch timeout")
+    {
+        Ok((ws, response)) => {
+            assert_eq!(response.status().as_u16(), 101);
+            Ok(ws)
+        }
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            Err(response.status().as_u16())
+        }
+        Err(other) => panic!("unexpected WS dispatch transport error: {other}"),
+    }
+}
+
+#[tokio::test]
+async fn native_ssh_share_delete_and_recreate_refuses_previously_approved_exchange() {
+    tokio::time::timeout(Duration::from_secs(90), share_delete_and_recreate())
+        .await
+        .expect("X17_REVISION stage=share_delete_and_recreate timeout");
+}
+
+async fn share_delete_and_recreate() {
+    use meshharbor_db::models::DeviceShareGrant;
+
+    let owner_id = ObjectId::new();
+    let app = TestApp::spawn_with_settings(move |settings| {
+        settings.auth.account_approval.enabled = true;
+        settings.auth.account_approval.owner_user_id = Some(owner_id.to_hex());
+        settings.auth.native_share_ssh_authorization_enabled = true;
+        settings.app.frontend_url = "https://native-revision.example.test".into();
+        settings.app.pod_id = Some(format!("native-share-aba-{}", ObjectId::new().to_hex()));
+    })
+    .await;
+    let owner = actor(&app, "native_share_aba_owner", Some(owner_id)).await;
+    let recipient = actor(&app, "native_share_aba_recipient", None).await;
+    let tenant = app
+        .state
+        .tenants
+        .create(
+            "Native share ABA".into(),
+            "native-share-aba".into(),
+            owner.id,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    set_tenant_ssh(&app, tenant, &owner, true).await;
+    let device = AgentDao::new(&app.db)
+        .create(
+            tenant,
+            owner.id,
+            "Native share ABA host".into(),
+            "native-share-aba-machine".into(),
+            OsKind::Linux,
+            "synthetic".into(),
+            "synthetic-agent-token-hash".into(),
+            None,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    app.db
+        .collection::<Agent>("agents")
+        .update_one(
+            doc! {"_id": device},
+            doc! {"$set": {
+                "ssh_host_pubkey": public_key(),
+                "ssh_policy.mode": "on",
+                "ssh_policy.consent_mode": "auto",
+                "capabilities.rpc": [
+                    "ssh",
+                    "ssh-consent",
+                    "shared-session-lease-v1",
+                    "shared-ssh-stream-v1"
+                ],
+            }},
+        )
+        .await
+        .unwrap();
+
+    // 1. Revoke old share and create a new share for the same device/recipient/account.
+    let share_one = create_share(&app, &owner, device, recipient.id).await;
+    let share_one_id = share_one["id"].as_str().unwrap();
+    let started_one = approve_request(&app, &recipient, &share_one).await;
+    assert!(
+        app.auth_post(
+            &format!("/api/device-shares/{share_one_id}/revoke"),
+            &owner.token
+        )
+        .json(&json!({"expected_revision": 0}))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success()
+    );
+    let share_two = create_share(&app, &owner, device, recipient.id).await;
+    assert_ne!(share_two["id"].as_str().unwrap(), share_one_id);
+    let response_one = exchange(&app, &started_one).await;
+    assert_eq!(response_one.status().as_u16(), 403);
+    let body_one: Value = response_one.json().await.unwrap();
+    assert!(body_one.get("grant").is_none());
+
+    // 2. Delete the share document outright and recreate a fresh share; old approval is refused.
+    let started_two = approve_request(&app, &recipient, &share_two).await;
+    let share_two_oid = ObjectId::parse_str(share_two["id"].as_str().unwrap()).unwrap();
+    app.db
+        .collection::<DeviceShareGrant>(DeviceShareGrant::COLLECTION)
+        .delete_one(doc! {"_id": share_two_oid})
+        .await
+        .unwrap();
+    let share_three = create_share(&app, &owner, device, recipient.id).await;
+    let response_two = exchange(&app, &started_two).await;
+    assert_eq!(response_two.status().as_u16(), 403);
+    let body_two: Value = response_two.json().await.unwrap();
+    assert!(body_two.get("grant").is_none());
+
+    // Positive control: a new approval bound to the recreated share succeeds.
+    let (_, grant) = approve_and_exchange(&app, &recipient, &share_three).await;
+    assert!(!grant.is_empty());
+}
+
+#[tokio::test]
+async fn native_ssh_post_exchange_revocation_and_upstream_aba_refuse_dispatch() {
+    tokio::time::timeout(Duration::from_secs(120), post_exchange_revocation_and_aba())
+        .await
+        .expect("X17_REVISION stage=post_exchange_revocation_and_aba timeout");
+}
+
+async fn post_exchange_revocation_and_aba() {
+    use meshharbor_db::models::DeviceShareGrant;
+    use meshharbor_remote_control::models::{ConsentMode, SshMode, SshPolicy};
+
+    let owner_id = ObjectId::new();
+    let app = TestApp::spawn_with_settings(move |settings| {
+        settings.auth.account_approval.enabled = true;
+        settings.auth.account_approval.owner_user_id = Some(owner_id.to_hex());
+        settings.auth.native_share_ssh_authorization_enabled = true;
+        settings.app.frontend_url = "https://native-revision.example.test".into();
+        settings.app.pod_id = Some(format!("native-post-exchange-{}", ObjectId::new().to_hex()));
+    })
+    .await;
+    let owner = actor(&app, "native_post_exchange_owner", Some(owner_id)).await;
+    let recipient = actor(&app, "native_post_exchange_recipient", None).await;
+    let tenant = app
+        .state
+        .tenants
+        .create(
+            "Native post-exchange".into(),
+            "native-post-exchange".into(),
+            owner.id,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    set_tenant_ssh(&app, tenant, &owner, true).await;
+    let agents = AgentDao::new(&app.db);
+    let device = agents
+        .create(
+            tenant,
+            owner.id,
+            "Native post-exchange host".into(),
+            "native-post-exchange-machine".into(),
+            OsKind::Linux,
+            "synthetic".into(),
+            "synthetic-agent-token-hash".into(),
+            None,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    app.db
+        .collection::<Agent>("agents")
+        .update_one(
+            doc! {"_id": device},
+            doc! {"$set": {
+                "ssh_host_pubkey": public_key(),
+                "ssh_policy.mode": "on",
+                "ssh_policy.consent_mode": "auto",
+                "capabilities.rpc": [
+                    "ssh",
+                    "ssh-consent",
+                    "shared-session-lease-v1",
+                    "shared-ssh-stream-v1"
+                ],
+            }},
+        )
+        .await
+        .unwrap();
+    let (_tx, _, mut agent_rx) = app
+        .state
+        .modules
+        .fleet
+        .as_ref()
+        .unwrap()
+        .rc_hub
+        .register_agent(device, tenant, owner.id, OsKind::Linux, 4, false, false);
+    let authorizations = app
+        .db
+        .collection::<NativeSshAuthorization>(NativeSshAuthorization::COLLECTION);
+
+    // 1. Share revoked after exchange -> metadata and WS dispatch both refused (403).
+    let share_revoke = create_share(&app, &owner, device, recipient.id).await;
+    let share_revoke_id = share_revoke["id"].as_str().unwrap();
+    let (started_revoke, grant_revoke) =
+        approve_and_exchange(&app, &recipient, &share_revoke).await;
+    assert!(
+        app.auth_post(
+            &format!("/api/device-shares/{share_revoke_id}/revoke"),
+            &owner.token
+        )
+        .json(&json!({"expected_revision": 0}))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success()
+    );
+    assert_eq!(
+        app.auth_get(
+            &format!("/api/device-shares/{share_revoke_id}/ssh"),
+            &grant_revoke
+        )
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16(),
+        403
+    );
+    assert_eq!(
+        ws_dispatch(&app, share_revoke_id, &grant_revoke, &public_key(), 60)
+            .await
+            .unwrap_err(),
+        403
+    );
+    let row_revoke = authorizations
+        .find_one(doc! {
+            "authorization_id": ObjectId::parse_str(started_revoke["authorization_id"].as_str().unwrap()).unwrap()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row_revoke.state, "exchanged");
+
+    // 2. Share deleted + recreated after exchange -> dispatch refused (403).
+    let share_recreate = create_share(&app, &owner, device, recipient.id).await;
+    let share_recreate_id = share_recreate["id"].as_str().unwrap().to_owned();
+    let (_, grant_recreate) = approve_and_exchange(&app, &recipient, &share_recreate).await;
+    app.db
+        .collection::<DeviceShareGrant>(DeviceShareGrant::COLLECTION)
+        .delete_one(doc! {"_id": ObjectId::parse_str(&share_recreate_id).unwrap()})
+        .await
+        .unwrap();
+    let share = create_share(&app, &owner, device, recipient.id).await;
+    let share_id = share["id"].as_str().unwrap();
+    assert_eq!(
+        ws_dispatch(&app, &share_recreate_id, &grant_recreate, &public_key(), 60)
+            .await
+            .unwrap_err(),
+        403
+    );
+    assert_eq!(
+        ws_dispatch(&app, share_id, &grant_recreate, &public_key(), 60)
+            .await
+            .unwrap_err(),
+        403
+    );
+
+    // 3. Tenant SSH policy ABA (off -> on) after exchange -> dispatch refused (403).
+    let (_, grant_tenant_aba) = approve_and_exchange(&app, &recipient, &share).await;
+    set_tenant_ssh(&app, tenant, &owner, false).await;
+    set_tenant_ssh(&app, tenant, &owner, true).await;
+    assert_eq!(
+        ws_dispatch(&app, share_id, &grant_tenant_aba, &public_key(), 60)
+            .await
+            .unwrap_err(),
+        403
+    );
+
+    // 4. Device SSH policy ABA (off -> on) after exchange -> dispatch refused (403).
+    let (_, grant_device_aba) = approve_and_exchange(&app, &recipient, &share).await;
+    let ssh_off = SshPolicy {
+        mode: SshMode::Off,
+        consent_mode: Some(ConsentMode::Auto),
+        ..SshPolicy::default()
+    };
+    let ssh_on = SshPolicy {
+        mode: SshMode::On,
+        consent_mode: Some(ConsentMode::Auto),
+        ..SshPolicy::default()
+    };
+    assert!(
+        agents
+            .update_ssh_policy(tenant, device, &ssh_off)
+            .await
+            .unwrap()
+    );
+    assert!(
+        agents
+            .update_ssh_policy(tenant, device, &ssh_on)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        ws_dispatch(&app, share_id, &grant_device_aba, &public_key(), 60)
+            .await
+            .unwrap_err(),
+        403
+    );
+
+    // 5. Owner membership ABA (remove -> re-add) after exchange -> dispatch refused (403).
+    let (_, grant_member_aba) = approve_and_exchange(&app, &recipient, &share).await;
+    let orig_member = app
+        .state
+        .tenants
+        .members
+        .find_one(doc! {"tenant_id": tenant, "user_id": owner.id})
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        app.state
+            .tenants
+            .remove_member(tenant, owner.id)
+            .await
+            .unwrap()
+    );
+    app.state
+        .tenants
+        .add_member(
+            tenant,
+            owner.id,
+            orig_member.role_ids.clone(),
+            orig_member.invited_by,
+        )
+        .await
+        .unwrap();
+    app.state
+        .tenants
+        .members
+        .collection()
+        .update_one(
+            doc! {"tenant_id": tenant, "user_id": owner.id},
+            doc! {"$set": {"joined_at": orig_member.joined_at}},
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        ws_dispatch(&app, share_id, &grant_member_aba, &public_key(), 60)
+            .await
+            .unwrap_err(),
+        403
+    );
+
+    // 6. Recipient account security_rev ABA (MFA on -> off) after exchange -> dispatch refused (403).
+    let (_, grant_account_aba) = approve_and_exchange(&app, &recipient, &share).await;
+    assert!(
+        app.state
+            .users
+            .set_mfa_enabled(recipient.id, true)
+            .await
+            .unwrap()
+    );
+    assert!(
+        app.state
+            .users
+            .set_mfa_enabled(recipient.id, false)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        ws_dispatch(&app, share_id, &grant_account_aba, &public_key(), 60)
+            .await
+            .unwrap_err(),
+        403
+    );
+
+    // None of the rejected dispatches may emit SharedSshSetup to the target agent.
+    assert!(agent_rx.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_ssh_grant_dispatch_is_single_use_and_fails_closed() {
+    tokio::time::timeout(Duration::from_secs(120), single_use_and_fail_closed())
+        .await
+        .expect("X17_REVISION stage=single_use_and_fail_closed timeout");
+}
+
+async fn single_use_and_fail_closed() {
+    use meshharbor_core::{AgentMsgHandler, AgentSocketLifecycle};
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
+
+    let owner_id = ObjectId::new();
+    let app = TestApp::spawn_with_settings(move |settings| {
+        settings.auth.account_approval.enabled = true;
+        settings.auth.account_approval.owner_user_id = Some(owner_id.to_hex());
+        settings.auth.native_share_ssh_authorization_enabled = true;
+        settings.app.frontend_url = "https://native-revision.example.test".into();
+        settings.app.pod_id = Some(format!("native-single-use-{}", ObjectId::new().to_hex()));
+    })
+    .await;
+    let mut default_settings = app.settings.clone();
+    default_settings.auth.native_share_ssh_authorization_enabled = false;
+    default_settings.app.pod_id = Some(format!(
+        "native-single-use-off-{}",
+        ObjectId::new().to_hex()
+    ));
+    let default_app =
+        TestApp::spawn_with_settings(move |settings| *settings = default_settings).await;
+    assert!(
+        !default_app
+            .settings
+            .auth
+            .native_share_ssh_authorization_enabled
+    );
+
+    let owner = actor(&app, "native_single_use_owner", Some(owner_id)).await;
+    let recipient = actor(&app, "native_single_use_recipient", None).await;
+    let other_recipient = actor(&app, "native_single_use_other", None).await;
+    let tenant = app
+        .state
+        .tenants
+        .create(
+            "Native single-use".into(),
+            "native-single-use".into(),
+            owner.id,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    set_tenant_ssh(&app, tenant, &owner, true).await;
+    let device = AgentDao::new(&app.db)
+        .create(
+            tenant,
+            owner.id,
+            "Native single-use host".into(),
+            "native-single-use-machine".into(),
+            OsKind::Linux,
+            "synthetic".into(),
+            "synthetic-agent-token-hash".into(),
+            None,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    app.db
+        .collection::<Agent>("agents")
+        .update_one(
+            doc! {"_id": device},
+            doc! {"$set": {
+                "ssh_host_pubkey": public_key(),
+                "ssh_policy.mode": "on",
+                "ssh_policy.consent_mode": "auto",
+                "capabilities.rpc": [
+                    "ssh",
+                    "ssh-consent",
+                    "shared-session-lease-v1",
+                    "shared-ssh-stream-v1"
+                ],
+            }},
+        )
+        .await
+        .unwrap();
+    let (tx, _, mut agent_rx) = app
+        .state
+        .modules
+        .fleet
+        .as_ref()
+        .unwrap()
+        .rc_hub
+        .register_agent(device, tenant, owner.id, OsKind::Linux, 4, false, false);
+    let share = create_share(&app, &owner, device, recipient.id).await;
+    let other_share = create_share(&app, &owner, device, other_recipient.id).await;
+    let share_id = share["id"].as_str().unwrap().to_owned();
+    let other_share_id = other_share["id"].as_str().unwrap().to_owned();
+    let authorizations = app
+        .db
+        .collection::<NativeSshAuthorization>(NativeSshAuthorization::COLLECTION);
+
+    let (started, grant) = approve_and_exchange(&app, &recipient, &share).await;
+    let auth_id = ObjectId::parse_str(started["authorization_id"].as_str().unwrap()).unwrap();
+
+    // Repeating exchange after it succeeded is refused (403).
+    assert_eq!(exchange(&app, &started).await.status().as_u16(), 403);
+
+    // Default-off instance refuses both metadata and WS dispatch with 503 without consuming the grant.
+    assert_eq!(
+        default_app
+            .auth_get(&format!("/api/device-shares/{share_id}/ssh"), &grant)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        503
+    );
+    assert_eq!(
+        ws_dispatch(&default_app, &share_id, &grant, &public_key(), 60)
+            .await
+            .unwrap_err(),
+        503
+    );
+
+    // Wrong share ID, wrong public_key, and excessive session_secs are refused (403) without consuming.
+    assert_eq!(
+        ws_dispatch(&app, &other_share_id, &grant, &public_key(), 60)
+            .await
+            .unwrap_err(),
+        403
+    );
+    assert_eq!(
+        ws_dispatch(&app, &share_id, &grant, &alternate_public_key(), 60)
+            .await
+            .unwrap_err(),
+        403
+    );
+    assert_eq!(
+        ws_dispatch(&app, &share_id, &grant, &public_key(), 61)
+            .await
+            .unwrap_err(),
+        403
+    );
+    let still_exchanged = authorizations
+        .find_one(doc! {"authorization_id": auth_id})
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(still_exchanged.state, "exchanged");
+
+    // Pre-dispatch metadata lookup with the unconsumed grant succeeds and leaves it "exchanged".
+    let meta = json_response(
+        app.auth_get(&format!("/api/device-shares/{share_id}/ssh"), &grant)
+            .send()
+            .await
+            .unwrap(),
+        200,
+        "pre-dispatch metadata with exchanged grant",
+    )
+    .await;
+    assert_eq!(meta["id"].as_str(), Some(device.to_hex().as_str()));
+    assert_eq!(meta["host_pubkey"].as_str(), Some(public_key().as_str()));
+
+    // Four concurrent WS dispatches with the same grant: exactly 1 upgrades (101), 3 get 403.
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(5));
+    let mut tasks = Vec::new();
+    for _ in 0..4 {
+        let addr = app.addr;
+        let share_id = share_id.clone();
+        let grant = grant.clone();
+        let pub_key = public_key();
+        let barrier = barrier.clone();
+        tasks.push(tokio::spawn(async move {
+            use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+            let mut url =
+                reqwest::Url::parse(&format!("ws://{addr}/api/device-shares/{share_id}/ssh/ws"))
+                    .unwrap();
+            url.query_pairs_mut()
+                .append_pair("public_key", &pub_key)
+                .append_pair("session_secs", "60");
+            let mut request = url.as_str().into_client_request().unwrap();
+            let mut header = format!("Bearer {grant}")
+                .parse::<tokio_tungstenite::tungstenite::http::HeaderValue>()
+                .unwrap();
+            header.set_sensitive(true);
+            request.headers_mut().insert("Authorization", header);
+            barrier.wait().await;
+            match tokio_tungstenite::connect_async(request).await {
+                Ok((mut ws, response)) => {
+                    let code = response.status().as_u16();
+                    let _ = ws.close(None).await;
+                    code
+                }
+                Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                    response.status().as_u16()
+                }
+                Err(other) => panic!("unexpected concurrent WS error: {other}"),
+            }
+        }));
+    }
+    barrier.wait().await;
+    let mut codes = Vec::new();
+    for task in tasks {
+        codes.push(task.await.unwrap());
+    }
+    codes.sort_unstable();
+    assert_eq!(codes, vec![101, 403, 403, 403]);
+
+    // Exactly one SharedSshSetup was dispatched to the agent.
+    let first_setup = tokio::time::timeout(Duration::from_secs(5), agent_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let ServerMsg::SharedSshSetup { session_id, setup } = first_setup else {
+        panic!("expected SharedSshSetup from winning dispatch");
+    };
+    assert_eq!(setup.device_id, device);
+    assert_eq!(setup.recipient_user_id, recipient.id);
+    assert_eq!(setup.public_key, public_key());
+
+    // Stored state is now "used"; subsequent WS dispatch and metadata calls are refused (403).
+    let used_row = authorizations
+        .find_one(doc! {"authorization_id": auth_id})
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(used_row.state, "used");
+    assert_eq!(
+        ws_dispatch(&app, &share_id, &grant, &public_key(), 60)
+            .await
+            .unwrap_err(),
+        403
+    );
+    assert_eq!(
+        app.auth_get(&format!("/api/device-shares/{share_id}/ssh"), &grant)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        403
+    );
+
+    // Fail-closed after CAS: if the agent rejects preparation (`accepted: false`) after
+    // the grant CAS succeeds, the grant remains "used" and cannot be replayed.
+    let (started2, grant2) = approve_and_exchange(&app, &recipient, &share).await;
+    let auth_id2 = ObjectId::parse_str(started2["authorization_id"].as_str().unwrap()).unwrap();
+    let mut ws2 = ws_dispatch(&app, &share_id, &grant2, &public_key(), 60)
+        .await
+        .expect("fresh grant2 dispatch must upgrade");
+    let setup2 = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(ServerMsg::SharedSshSetup {
+                session_id: sid, ..
+            }) = agent_rx.recv().await
+                && sid != session_id
+            {
+                break sid;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let ctx = meshharbor_core::AgentCtx {
+        conn_id: format!("native-single-use-{setup2}"),
+        agent_id: device,
+        tenant_id: tenant,
+        owner_user_id: owner.id,
+        agent_version: "fixture".into(),
+        os: OsKind::Linux,
+        dialed_tid: None,
+        conn_established_ms: 0,
+        tx,
+    };
+    let handler = meshharbor_mod_network::agent_socket::NetworkAgentSocket::new(
+        app.state.modules.network.as_ref().unwrap().clone(),
+    );
+    handler.hello(&ctx).await;
+    handler
+        .handle(
+            &ctx,
+            ClientMsg::SharedSshPrepared {
+                session_id: setup2,
+                accepted: false,
+            },
+        )
+        .await;
+    let _ = ws2.close(None).await;
+    let used_row2 = authorizations
+        .find_one(doc! {"authorization_id": auth_id2})
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(used_row2.state, "used");
+    assert_eq!(
+        ws_dispatch(&app, &share_id, &grant2, &public_key(), 60)
+            .await
+            .unwrap_err(),
+        403
+    );
+}
+
+#[tokio::test]
+async fn native_ssh_established_grant_session_terminates_on_live_revocation() {
+    tokio::time::timeout(
+        Duration::from_secs(90),
+        established_grant_session_live_revoke(),
+    )
+    .await
+    .expect("X17_REVISION stage=established_grant_session_live_revoke timeout");
+}
+
+async fn established_grant_session_live_revoke() {
+    use futures::{SinkExt, StreamExt};
+    use meshharbor_core::{AgentMsgHandler, AgentSocketLifecycle};
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
+
+    let owner_id = ObjectId::new();
+    let app = TestApp::spawn_with_settings(move |settings| {
+        settings.auth.account_approval.enabled = true;
+        settings.auth.account_approval.owner_user_id = Some(owner_id.to_hex());
+        settings.auth.native_share_ssh_authorization_enabled = true;
+        settings.app.frontend_url = "https://native-revision.example.test".into();
+        settings.app.pod_id = Some(format!("native-live-revoke-{}", ObjectId::new().to_hex()));
+    })
+    .await;
+    let owner = actor(&app, "native_live_revoke_owner", Some(owner_id)).await;
+    let recipient = actor(&app, "native_live_revoke_recipient", None).await;
+    let tenant = app
+        .state
+        .tenants
+        .create(
+            "Native live revoke".into(),
+            "native-live-revoke".into(),
+            owner.id,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    set_tenant_ssh(&app, tenant, &owner, true).await;
+    let device = AgentDao::new(&app.db)
+        .create(
+            tenant,
+            owner.id,
+            "Native live revoke host".into(),
+            "native-live-revoke-machine".into(),
+            OsKind::Linux,
+            "synthetic".into(),
+            "synthetic-agent-token-hash".into(),
+            None,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    app.db
+        .collection::<Agent>("agents")
+        .update_one(
+            doc! {"_id": device},
+            doc! {"$set": {
+                "ssh_host_pubkey": public_key(),
+                "ssh_policy.mode": "on",
+                "ssh_policy.consent_mode": "auto",
+                "capabilities.rpc": [
+                    "ssh",
+                    "ssh-consent",
+                    "shared-session-lease-v1",
+                    "shared-ssh-stream-v1"
+                ],
+            }},
+        )
+        .await
+        .unwrap();
+    let (tx, _, mut target) = app
+        .state
+        .modules
+        .fleet
+        .as_ref()
+        .unwrap()
+        .rc_hub
+        .register_agent(device, tenant, owner.id, OsKind::Linux, 4, false, false);
+    let share = create_share(&app, &owner, device, recipient.id).await;
+    let share_id = share["id"].as_str().unwrap();
+    let (_, grant) = approve_and_exchange(&app, &recipient, &share).await;
+
+    let mut ws = ws_dispatch(&app, share_id, &grant, &public_key(), 60)
+        .await
+        .expect("valid native grant must upgrade WS");
+    let (sid, setup) = tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            if let Some(ServerMsg::SharedSshSetup { session_id, setup }) = target.recv().await {
+                break (session_id, setup);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(setup.device_id, device);
+    assert_eq!(setup.recipient_user_id, recipient.id);
+    assert_eq!(setup.account.as_deref(), Some("alice"));
+    assert_eq!(setup.public_key, public_key());
+
+    let ctx = meshharbor_core::AgentCtx {
+        conn_id: format!("native-live-revoke-{sid}"),
+        agent_id: device,
+        tenant_id: tenant,
+        owner_user_id: owner.id,
+        agent_version: "fixture".into(),
+        os: OsKind::Linux,
+        dialed_tid: None,
+        conn_established_ms: 0,
+        tx,
+    };
+    let handler = meshharbor_mod_network::agent_socket::NetworkAgentSocket::new(
+        app.state.modules.network.as_ref().unwrap().clone(),
+    );
+    handler.hello(&ctx).await;
+    handler
+        .handle(
+            &ctx,
+            ClientMsg::SharedSshPrepared {
+                session_id: sid,
+                accepted: true,
+            },
+        )
+        .await;
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(
+        serde_json::to_string(&ClientMsg::TunnelOpen {
+            agent_id: device,
+            transport: "webrtc-dc-v1".into(),
+            open_nonce: None,
+            derp_pubkey: None,
+            net_grant: None,
+        })
+        .unwrap()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let opened = tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            let msg = ws.next().await.unwrap().unwrap();
+            if let tokio_tungstenite::tungstenite::Message::Text(t) = msg {
+                break serde_json::from_str::<ServerMsg>(&t).unwrap();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        opened,
+        ServerMsg::TunnelOpened { session_id, .. } if session_id == sid
+    ));
+
+    // Positive control: lease renewal succeeds while share and policies remain valid.
+    handler
+        .handle(
+            &ctx,
+            ClientMsg::SharedSshLeaseChallenge {
+                session_id: sid,
+                grant_id: setup.shared_lease.grant_id,
+                lease_epoch: setup.shared_lease.lease_epoch.clone(),
+                challenge_id: 1,
+            },
+        )
+        .await;
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(5), target.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        ServerMsg::SharedSshLeaseRenewal {
+            session_id,
+            challenge_id: 1,
+            ..
+        } if session_id == sid
+    ));
+
+    // Live share revocation terminates the X17 session and stops lease renewal.
+    assert!(
+        app.auth_post(
+            &format!("/api/device-shares/{share_id}/revoke"),
+            &owner.token
+        )
+        .json(&json!({"expected_revision": 0}))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success()
+    );
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(6), target.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        ServerMsg::TunnelTerminate { session_id, .. } if session_id == sid
+    ));
+    handler
+        .handle(
+            &ctx,
+            ClientMsg::SharedSshLeaseChallenge {
+                session_id: sid,
+                grant_id: setup.shared_lease.grant_id,
+                lease_epoch: setup.shared_lease.lease_epoch,
+                challenge_id: 2,
+            },
+        )
+        .await;
+    assert!(
+        target.try_recv().is_err(),
+        "revoked X17 session must not renew lease"
+    );
+    tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            match ws.next().await {
+                None
+                | Some(Err(_))
+                | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => break,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .expect("revoked X17 WebSocket must close");
+}

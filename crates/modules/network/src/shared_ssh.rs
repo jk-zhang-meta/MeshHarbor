@@ -32,12 +32,29 @@ use std::{
 use tokio::sync::{Mutex, mpsc};
 
 #[derive(Clone)]
+pub(crate) enum SessionAuthority {
+    Account(meshharbor_services::auth::Claims),
+    NativeGrant {
+        row: Box<meshharbor_db::models::NativeSshAuthorization>,
+        expires_at_ms: i64,
+    },
+}
+
+enum SessionAuth {
+    Account(AuthUser),
+    NativeGrant {
+        user_id: ObjectId,
+        row: Box<meshharbor_db::models::NativeSshAuthorization>,
+    },
+}
+
+#[derive(Clone)]
 pub(crate) struct SharedSshSession {
     pub device: ObjectId,
     pub recipient: ObjectId,
     pub grant: ObjectId,
     pub revision: u32,
-    pub claims: meshharbor_services::auth::Claims,
+    pub authority: SessionAuthority,
     pub lease: SharedSessionLease,
     pub policy: SshPolicy,
     pub outbound: mpsc::Sender<ServerMsg>,
@@ -127,11 +144,61 @@ async fn pdp(
     .map_err(|_| deny("Shared SSH policy lookup timed out"))?
 }
 
+async fn verify_account_token(state: &NetworkState, token: &str) -> Result<AuthUser, ApiError> {
+    let claims = state.core.auth.verify_access_token(token)?;
+    meshharbor_core::admission::authorize_claims(&state.core, &claims).await?;
+    let user_id = ObjectId::parse_str(&claims.sub)
+        .map_err(|_| ApiError::Unauthorized("Invalid user ID in token".into()))?;
+    Ok(AuthUser {
+        user_id,
+        email: claims.email.clone(),
+        username: claims.username.clone(),
+        claims,
+    })
+}
+
+async fn verify_account_headers(
+    state: &NetworkState,
+    headers: &HeaderMap,
+) -> Result<AuthUser, ApiError> {
+    let token = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_owned)
+        .or_else(|| meshharbor_core::cookies::get(headers, "access_token"))
+        .ok_or_else(|| ApiError::Unauthorized("No token provided".into()))?;
+    verify_account_token(state, &token).await
+}
+
 pub async fn metadata(
     State(state): State<NetworkState>,
-    auth: AuthUser,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<SharedSshDevice>, ApiError> {
+    if let Some(bearer) = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        && crate::native_ssh_authorization::is_native_grant_bearer(bearer)
+    {
+        if !state.settings.auth.native_share_ssh_authorization_enabled {
+            return Err(ApiError::ServiceUnavailable(
+                "Native SSH authorization is disabled".into(),
+            ));
+        }
+        let id =
+            ObjectId::parse_str(id).map_err(|_| ApiError::BadRequest("Invalid share ID".into()))?;
+        let (_, scope) =
+            crate::native_ssh_authorization::verify_exchanged_grant(&state, id, bearer).await?;
+        let a = pdp(&state, scope.recipient_user_id, id).await?;
+        return Ok(Json(SharedSshDevice {
+            id: a.grant.device_id.to_hex(),
+            name: a.agent.name,
+            host_pubkey: a.agent.ssh_host_pubkey,
+        }));
+    }
+    let auth = verify_account_headers(&state, &headers).await?;
     let id =
         ObjectId::parse_str(id).map_err(|_| ApiError::BadRequest("Invalid share ID".into()))?;
     let a = pdp(&state, auth.user_id, id).await?;
@@ -143,7 +210,6 @@ pub async fn metadata(
 }
 pub async fn connect(
     State(state): State<NetworkState>,
-    auth: AuthUser,
     Path(id): Path<String>,
     Query(q): Query<ConnectQuery>,
     headers: HeaderMap,
@@ -151,15 +217,58 @@ pub async fn connect(
 ) -> Result<Response, ApiError> {
     // Native CLI endpoint: require an explicit Authorization header. A browser
     // cannot silently spend an ambient session cookie through a foreign origin.
-    if !headers
+    let Some(bearer) = headers
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.starts_with("Bearer "))
-    {
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
         return Err(ApiError::Unauthorized(
             "Shared SSH WebSocket requires an explicit access bearer".into(),
         ));
+    };
+    if crate::native_ssh_authorization::is_native_grant_bearer(bearer) {
+        if !state.settings.auth.native_share_ssh_authorization_enabled {
+            return Err(ApiError::ServiceUnavailable(
+                "Native SSH authorization is disabled".into(),
+            ));
+        }
+        let id =
+            ObjectId::parse_str(id).map_err(|_| ApiError::BadRequest("Invalid share ID".into()))?;
+        if q.public_key.len() > 1024
+            || !crate::routes::agent_ssh::is_supported_public_key(&q.public_key)
+        {
+            return Err(ApiError::BadRequest(
+                "A valid Ed25519 ephemeral public key is required".into(),
+            ));
+        }
+        let (row, scope) =
+            crate::native_ssh_authorization::verify_exchanged_grant(&state, id, bearer).await?;
+        if row.public_key != q.public_key || q.session_secs > row.session_secs {
+            return Err(deny("Native SSH authorization refused"));
+        }
+        let access = pdp(&state, scope.recipient_user_id, id).await?;
+        let slot = state
+            .shared_ssh_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| deny("Shared SSH session capacity reached"))?;
+        if !state.ssh_rate_limiter.check_bounded(
+            scope.recipient_user_id,
+            access.grant.device_id,
+            ssh_limits::RATE_LIMIT_PER_MINUTE,
+        ) {
+            return Err(deny("Shared SSH request rate exceeded"));
+        }
+        crate::native_ssh_authorization::consume_exchanged_grant(&state, &row, bearer).await?;
+        let auth = SessionAuth::NativeGrant {
+            user_id: scope.recipient_user_id,
+            row: Box::new(row),
+        };
+        return Ok(ws
+            .max_message_size(64 * 1024)
+            .on_upgrade(move |socket| run(state, socket, auth, id, q, slot)));
     }
+    let auth = verify_account_token(&state, bearer).await?;
     let id =
         ObjectId::parse_str(id).map_err(|_| ApiError::BadRequest("Invalid share ID".into()))?;
     let access = pdp(&state, auth.user_id, id).await?;
@@ -182,17 +291,29 @@ pub async fn connect(
     ) {
         return Err(deny("Shared SSH request rate exceeded"));
     }
+    let auth = SessionAuth::Account(auth);
     Ok(ws
         .max_message_size(64 * 1024)
         .on_upgrade(move |socket| run(state, socket, auth, id, q, slot)))
 }
 async fn valid(state: &NetworkState, s: &SharedSshSession) -> bool {
-    if (bson::DateTime::now().timestamp_millis() / 1000) >= s.claims.exp
-        || meshharbor_core::admission::authorize_claims(&state.core, &s.claims)
-            .await
-            .is_err()
-    {
-        return false;
+    match &s.authority {
+        SessionAuthority::Account(claims) => {
+            if (bson::DateTime::now().timestamp_millis() / 1000) >= claims.exp
+                || meshharbor_core::admission::authorize_claims(&state.core, claims)
+                    .await
+                    .is_err()
+            {
+                return false;
+            }
+        }
+        SessionAuthority::NativeGrant { row, expires_at_ms } => {
+            if bson::DateTime::now().timestamp_millis() >= *expires_at_ms
+                || !crate::native_ssh_authorization::live_session_scope_valid(state, row).await
+            {
+                return false;
+            }
+        }
     }
     pdp(state, s.recipient, s.grant).await.is_ok_and(|a| {
         a.grant.revision == s.revision
@@ -267,14 +388,52 @@ pub(crate) async fn renew(
 async fn run(
     state: NetworkState,
     mut socket: WebSocket,
-    auth: AuthUser,
+    auth: SessionAuth,
     grant: ObjectId,
     q: ConnectQuery,
     _slot: tokio::sync::OwnedSemaphorePermit,
 ) {
-    let user = auth.user_id;
+    let user = match &auth {
+        SessionAuth::Account(auth) => auth.user_id,
+        SessionAuth::NativeGrant { user_id, .. } => *user_id,
+    };
     let Ok(access) = pdp(&state, user, grant).await else {
         return;
+    };
+    let secs_left = ((access.grant.expires_at.timestamp_millis()
+        - bson::DateTime::now().timestamp_millis())
+        / 1000)
+        .max(0) as u64;
+    if secs_left == 0 {
+        return;
+    }
+    let session_secs = match &auth {
+        SessionAuth::Account(_) => ssh_limits::clamp_session_secs(q.session_secs).min(secs_left),
+        SessionAuth::NativeGrant { row, .. } => {
+            if !crate::native_ssh_authorization::live_session_scope_valid(&state, row).await {
+                return;
+            }
+            let requested = if q.session_secs == 0 {
+                row.session_secs
+            } else {
+                q.session_secs.min(row.session_secs)
+            };
+            ssh_limits::clamp_session_secs(requested)
+                .min(row.session_secs)
+                .min(secs_left)
+        }
+    };
+    if session_secs == 0 {
+        return;
+    }
+    let authority = match auth {
+        SessionAuth::Account(auth) => SessionAuthority::Account(auth.claims),
+        SessionAuth::NativeGrant { row, .. } => {
+            let expires_at_ms = (bson::DateTime::now().timestamp_millis()
+                + (session_secs as i64) * 1000)
+                .min(access.grant.expires_at.timestamp_millis());
+            SessionAuthority::NativeGrant { row, expires_at_ms }
+        }
     };
     let sid = ObjectId::new();
     let (out, mut rx) = mpsc::channel(64);
@@ -284,7 +443,7 @@ async fn run(
         lease_epoch: uuid::Uuid::new_v4().to_string(),
     };
     let s = SharedSshSession {
-        claims: auth.claims,
+        authority,
         device: access.grant.device_id,
         recipient: user,
         grant,
@@ -317,14 +476,6 @@ async fn run(
         .entry(s.device)
         .or_default()
         .insert(sid);
-    let secs_left = ((access.grant.expires_at.timestamp_millis()
-        - bson::DateTime::now().timestamp_millis())
-        / 1000)
-        .max(0) as u64;
-    if secs_left == 0 {
-        return;
-    }
-    let session_secs = ssh_limits::clamp_session_secs(q.session_secs).min(secs_left);
     let (_, spec) = access.agent.ssh_policy.split();
     let Some(account) = shared_account(&access.grant) else {
         return;
