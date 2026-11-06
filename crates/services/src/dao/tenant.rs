@@ -528,6 +528,7 @@ impl TenantDao {
             id: None,
             tenant_id,
             user_id,
+            security_rev: Some(1_i64.into()),
             nickname: None,
             role_ids,
             joined_at: now,
@@ -608,12 +609,12 @@ impl TenantDao {
         user_id: ObjectId,
         role_id: ObjectId,
     ) -> DaoResult<bool> {
-        self.members
-            .update_one(
-                doc! { "tenant_id": tenant_id, "user_id": user_id },
-                doc! { "$addToSet": { "role_ids": role_id }, "$set": { "updated_at": DateTime::now() } },
-            )
-            .await
+        self.update_member_security(
+            tenant_id,
+            user_id,
+            doc! { "$addToSet": { "role_ids": role_id } },
+        )
+        .await
     }
 
     pub async fn remove_role(
@@ -622,12 +623,68 @@ impl TenantDao {
         user_id: ObjectId,
         role_id: ObjectId,
     ) -> DaoResult<bool> {
-        self.members
-            .update_one(
-                doc! { "tenant_id": tenant_id, "user_id": user_id },
-                doc! { "$pull": { "role_ids": role_id }, "$set": { "updated_at": DateTime::now() } },
-            )
-            .await
+        self.update_member_security(
+            tenant_id,
+            user_id,
+            doc! { "$pull": { "role_ids": role_id } },
+        )
+        .await
+    }
+
+    /// Role mutations and the member's monotonic security counter share one
+    /// Mongo update. Invalid/exhausted counters remain invalid and refuse
+    /// native shared-SSH authority, without blocking role administration.
+    async fn update_member_security(
+        &self,
+        tenant_id: ObjectId,
+        user_id: ObjectId,
+        mut update: Document,
+    ) -> DaoResult<bool> {
+        update.insert("$set", doc! { "updated_at": DateTime::now() });
+        let valid = doc! { "$and": [
+            { "$eq": [{ "$type": "$security_rev" }, "long"] },
+            { "$gt": ["$security_rev", 0_i64] },
+            { "$lt": ["$security_rev", i64::MAX] },
+        ] };
+        let collection = self.members.collection();
+        let base_filter = doc! { "tenant_id": tenant_id, "user_id": user_id };
+        for _ in 0..3 {
+            let mut incrementing = base_filter.clone();
+            incrementing.insert(
+                "$or",
+                bson::bson!([
+                    { "security_rev": { "$exists": false } },
+                    { "$expr": valid.clone() },
+                ]),
+            );
+            let mut incrementing_update = update.clone();
+            incrementing_update.insert("$inc", doc! { "security_rev": 1_i64 });
+            if collection
+                .update_one(incrementing, incrementing_update)
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            let mut invalid = base_filter.clone();
+            invalid.insert("security_rev", doc! { "$exists": true });
+            invalid.insert("$expr", doc! { "$not": [valid.clone()] });
+            if collection
+                .update_one(invalid, update.clone())
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            if collection.find_one(base_filter.clone()).await?.is_none() {
+                return Ok(false);
+            }
+        }
+        Err(DaoError::Validation(
+            "Tenant member security revision changed; retry".into(),
+        ))
     }
 
     pub async fn get_member_permissions(

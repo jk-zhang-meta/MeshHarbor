@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-use bson::{DateTime, oid::ObjectId};
+use bson::{Bson, DateTime, oid::ObjectId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
     pub id: Option<ObjectId>,
+    /// Preserve raw BSON so corrupt counters cannot block account management or
+    /// change during a full-document round trip. Native authorization must use
+    /// `security_revision`, never coerce this raw value. New users start at one.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_security_rev",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub security_rev: Option<Bson>,
     /// The account's address, and a UNIQUE index — so whatever is here is
     /// *reserved*. Only an address the account has PROVEN belongs here (a
     /// password sign-up that completed activation, or an OAuth provider that
@@ -245,8 +254,24 @@ fn default_timezone() -> String {
     "UTC".to_string()
 }
 
+fn deserialize_security_rev<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Bson>, D::Error> {
+    // Missing fields take serde's default; explicit null must remain present.
+    Bson::deserialize(deserializer).map(Some)
+}
+
 impl User {
     pub const COLLECTION: &'static str = "users";
+
+    /// Missing, non-Int64, non-positive, and exhausted (`i64::MAX`) counters
+    /// return `None` and refuse native shared-SSH authority.
+    pub fn security_revision(&self) -> Option<i64> {
+        match self.security_rev.as_ref() {
+            Some(Bson::Int64(revision)) if *revision > 0 && *revision < i64::MAX => Some(*revision),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -264,5 +289,79 @@ mod account_approval_tests {
         let round: AccountApproval =
             bson::from_bson(bson::to_bson(&AccountApproval::pending()).unwrap()).unwrap();
         assert_eq!(round.state, AccountApprovalState::Pending);
+    }
+
+    fn user_row() -> User {
+        let now = DateTime::now();
+        User {
+            id: Some(ObjectId::new()),
+            security_rev: Some(1_i64.into()),
+            email: "u@example.test".into(),
+            unverified_email: None,
+            username: "u".into(),
+            display_name: "U".into(),
+            avatar: None,
+            bio: None,
+            password_hash: None,
+            status: UserStatusInfo::default(),
+            presence: Presence::Offline,
+            locale: default_locale(),
+            timezone: default_timezone(),
+            is_verified: true,
+            account_approval: AccountApproval::pending(),
+            is_mfa_enabled: false,
+            last_active_at: None,
+            oauth_providers: Vec::new(),
+            notification_preferences: NotificationPrefs::default(),
+            tutorial: TutorialState::default(),
+            signup_attribution: None,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        }
+    }
+
+    #[test]
+    fn legacy_security_revision_is_unknown_without_a_read_default() {
+        let mut document = bson::to_document(&user_row()).unwrap();
+        assert_eq!(document.get_i64("security_rev").unwrap(), 1);
+        document.remove("security_rev");
+        let legacy: User = bson::from_document(document).unwrap();
+        assert_eq!(legacy.security_rev, None);
+        assert_eq!(legacy.security_revision(), None);
+        assert!(
+            !bson::to_document(&legacy)
+                .unwrap()
+                .contains_key("security_rev")
+        );
+    }
+
+    #[test]
+    fn invalid_security_revisions_round_trip_losslessly_without_authority() {
+        for raw in [
+            Bson::Null,
+            Bson::Boolean(true),
+            Bson::String("invalid".into()),
+            Bson::Double(1.0),
+            Bson::Double(1.5),
+            Bson::Int32(1),
+            Bson::Int64(0),
+            Bson::Int64(-1),
+            Bson::Int64(i64::MAX),
+            Bson::Array(vec![Bson::Int64(1)]),
+            Bson::Document(bson::doc! {"value": 1_i64}),
+        ] {
+            let mut document = bson::to_document(&user_row()).unwrap();
+            document.insert("security_rev", raw.clone());
+            let parsed: User = bson::from_document(document.clone()).unwrap();
+            assert_eq!(parsed.security_rev.as_ref(), Some(&raw));
+            assert_eq!(parsed.security_revision(), None);
+            assert_eq!(bson::to_document(&parsed).unwrap(), document);
+        }
+        for valid in [1_i64, i64::MAX - 1] {
+            let mut u = user_row();
+            u.security_rev = Some(Bson::Int64(valid));
+            assert_eq!(u.security_revision(), Some(valid));
+        }
     }
 }

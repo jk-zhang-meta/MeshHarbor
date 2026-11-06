@@ -263,8 +263,7 @@ impl AgentDao {
                 bson::to_bson(install).unwrap_or(bson::Bson::Null),
             );
         }
-        self.base
-            .update_by_id(agent_id, doc! { "$set": set })
+        self.update_agent_security_filtered(doc! { "_id": agent_id }, doc! { "$set": set })
             .await?;
         // Second, FILTERED update for the name half — update_by_id can't
         // carry the extra predicate. Matching zero docs (admin-renamed row)
@@ -537,17 +536,16 @@ impl AgentDao {
     }
 
     pub async fn mark_status(&self, agent_id: ObjectId, status: AgentStatus) -> DaoResult<bool> {
-        self.base
-            .update_by_id(
-                agent_id,
-                doc! {
-                    "$set": {
-                        "status": bson::to_bson(&status).unwrap(),
-                        "last_seen_at": DateTime::now(),
-                    }
-                },
-            )
-            .await
+        let set = doc! {
+            "status": bson::to_bson(&status)?,
+            "last_seen_at": DateTime::now(),
+        };
+        if matches!(status, AgentStatus::Quarantined) {
+            return self
+                .update_agent_security_filtered(doc! { "_id": agent_id }, doc! { "$set": set })
+                .await;
+        }
+        self.base.update_by_id(agent_id, doc! { "$set": set }).await
     }
 
     /// Refresh `last_seen_at` from a periodic agent heartbeat. Hello +
@@ -858,13 +856,101 @@ impl AgentDao {
         agent_id: ObjectId,
         policy: &SshPolicy,
     ) -> DaoResult<bool> {
-        let policy_bson = bson::to_bson(policy).unwrap_or(bson::Bson::Null);
-        self.base
-            .update_one(
-                Self::live_row(tenant_id, agent_id),
-                doc! { "$set": { "ssh_policy": policy_bson } },
-            )
-            .await
+        self.update_child_access_policy(
+            tenant_id,
+            agent_id,
+            doc! { "ssh_policy": bson::to_bson(policy)? },
+        )
+        .await
+    }
+
+    /// Filtered device security/identity mutation (`$set` / `$unset` / `$inc`)
+    /// that atomically advances `access_policy_rev` when missing or valid, and
+    /// preserves raw invalid/exhausted counters without blocking removal,
+    /// revival, anchor revocation, or service publication.
+    async fn update_agent_security_filtered(
+        &self,
+        base_filter: Document,
+        mut base_update: Document,
+    ) -> DaoResult<bool> {
+        match base_update.get_document_mut("$set") {
+            Ok(set) => {
+                set.insert("updated_at", DateTime::now());
+            }
+            Err(_) => {
+                base_update.insert("$set", doc! { "updated_at": DateTime::now() });
+            }
+        }
+        let valid = doc! { "$and": [
+            { "$eq": [{ "$type": "$access_policy_rev" }, "long"] },
+            { "$gt": ["$access_policy_rev", 0_i64] },
+            { "$lt": ["$access_policy_rev", i64::MAX] },
+        ] };
+        let collection = self.base.collection();
+        for _ in 0..3 {
+            let mut incrementing = base_filter.clone();
+            incrementing.insert(
+                "$or",
+                bson::bson!([
+                    { "access_policy_rev": { "$exists": false } },
+                    { "$expr": valid.clone() },
+                ]),
+            );
+            let mut incrementing_update = base_update.clone();
+            match incrementing_update.get_document_mut("$inc") {
+                Ok(inc) => {
+                    inc.insert("access_policy_rev", 1_i64);
+                }
+                Err(_) => {
+                    incrementing_update.insert("$inc", doc! { "access_policy_rev": 1_i64 });
+                }
+            }
+            if collection
+                .update_one(incrementing, incrementing_update)
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            let mut invalid = base_filter.clone();
+            invalid.insert("access_policy_rev", doc! { "$exists": true });
+            invalid.insert("$expr", doc! { "$not": [valid.clone()] });
+            if collection
+                .update_one(invalid, base_update.clone())
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            if collection.find_one(base_filter.clone()).await?.is_none() {
+                return Ok(false);
+            }
+        }
+        Err(super::base::DaoError::Validation(
+            "Agent access policy revision changed; retry".into(),
+        ))
+    }
+
+    pub async fn set_exec_anchor(
+        &self,
+        agent_id: ObjectId,
+        anchor: &meshharbor_remote_control::models::ExecAnchor,
+    ) -> DaoResult<bool> {
+        self.update_agent_security_filtered(
+            doc! { "_id": agent_id },
+            doc! { "$set": { "exec_anchor": bson::to_bson(anchor)? } },
+        )
+        .await
+    }
+
+    pub async fn clear_exec_anchor(&self, agent_id: ObjectId) -> DaoResult<bool> {
+        self.update_agent_security_filtered(
+            doc! { "_id": agent_id },
+            doc! { "$unset": { "exec_anchor": "" } },
+        )
+        .await
     }
 
     /// FR-19 gate 3 — replace the device's org-relay approval. A
@@ -1172,11 +1258,11 @@ impl AgentDao {
         agent_id: ObjectId,
         name: &str,
     ) -> DaoResult<bool> {
+        // The flag is what stops the next re-enroll's `rehydrate`
+        // from clobbering this rename with the machine-reported name.
         self.base
             .update_one(
                 Self::live_row(tenant_id, agent_id),
-                // The flag is what stops the next re-enroll's `rehydrate`
-                // from clobbering this rename with the machine-reported name.
                 doc! { "$set": { "name": name, "name_admin_set": true } },
             )
             .await
@@ -1218,6 +1304,11 @@ impl AgentDao {
     /// SSH endpoint. Written only while the row is LIVE and still carries the
     /// anchor the publishing credential named, so a publish racing a
     /// re-anchor, an un-anchor or a removal writes nothing (`false`).
+    ///
+    /// Periodic same-content republishes (`REPUBLISH_EVERY = 6h` or daemon
+    /// restarts) refresh only `published_at` without advancing
+    /// `access_policy_rev`; only a change to `host_pubkey`, `ceiling`,
+    /// `anchor_id`, or `one_command` advances the revision.
     pub async fn publish_ssh_service(
         &self,
         tenant_id: ObjectId,
@@ -1226,10 +1317,63 @@ impl AgentDao {
     ) -> DaoResult<bool> {
         let mut filter = Self::live_row(tenant_id, agent_id);
         filter.insert("exec_anchor.anchor_id", endpoint.anchor_id.as_str());
-        let endpoint = bson::to_bson(endpoint)?;
-        self.base
-            .update_one(filter, doc! { "$set": { "ssh_service": endpoint } })
-            .await
+        let ceiling_bson = bson::to_bson(&endpoint.ceiling)?;
+        let endpoint_bson = bson::to_bson(endpoint)?;
+        let mut same_fields = doc! {
+            "ssh_service.host_pubkey": endpoint.host_pubkey.as_str(),
+            "ssh_service.ceiling": ceiling_bson,
+            "ssh_service.anchor_id": endpoint.anchor_id.as_str(),
+        };
+        if endpoint.one_command {
+            same_fields.insert("ssh_service.one_command", true);
+        } else {
+            same_fields.insert(
+                "$or",
+                bson::bson!([
+                    { "ssh_service.one_command": false },
+                    { "ssh_service.one_command": { "$exists": false } },
+                ]),
+            );
+        }
+        let mut unchanged = filter.clone();
+        unchanged.extend(same_fields.clone());
+        let mut changed = filter.clone();
+        changed.insert("$nor", vec![same_fields]);
+        let collection = self.base.collection();
+        for _ in 0..3 {
+            if collection
+                .update_one(
+                    unchanged.clone(),
+                    doc! {
+                        "$set": {
+                            "ssh_service.published_at": endpoint.published_at,
+                            "ssh_service.one_command": endpoint.one_command,
+                            "updated_at": DateTime::now(),
+                        }
+                    },
+                )
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            if self
+                .update_agent_security_filtered(
+                    changed.clone(),
+                    doc! { "$set": { "ssh_service": endpoint_bson.clone() } },
+                )
+                .await?
+            {
+                return Ok(true);
+            }
+            if collection.find_one(filter.clone()).await?.is_none() {
+                return Ok(false);
+            }
+        }
+        Err(super::base::DaoError::Validation(
+            "Agent SSH service endpoint changed concurrently; retry".into(),
+        ))
     }
 
     /// Tombstone a LIVE row. `deleted_at` is the removal time and is written
@@ -1250,16 +1394,15 @@ impl AgentDao {
     /// revival: re-enrollment mints at the new generation. `rehydrate`
     /// touches neither field, because re-enrolling a LIVE device keeps both.
     pub async fn soft_delete(&self, tenant_id: ObjectId, agent_id: ObjectId) -> DaoResult<bool> {
-        self.base
-            .update_one(
-                Self::live_row(tenant_id, agent_id),
-                doc! {
-                    "$set": { "deleted_at": DateTime::now() },
-                    "$unset": { "exec_anchor": "" },
-                    "$inc": { "token_gen": 1 },
-                },
-            )
-            .await
+        self.update_agent_security_filtered(
+            Self::live_row(tenant_id, agent_id),
+            doc! {
+                "$set": { "deleted_at": DateTime::now() },
+                "$unset": { "exec_anchor": "" },
+                "$inc": { "token_gen": 1 },
+            },
+        )
+        .await
     }
 
     /// FR-103: record the `exp` (unix seconds) of the token a device just

@@ -172,6 +172,15 @@ async fn x14_policy_revisions_advance_across_restore_and_concurrent_agent_writes
             Some(13)
         );
         assert!(agents.soft_delete(tid, aid).await.unwrap());
+        assert_eq!(
+            agents
+                .base
+                .find_by_id(aid)
+                .await
+                .unwrap()
+                .access_policy_revision(),
+            Some(14)
+        );
         assert!(
             !agents
                 .update_access_policy(tid, aid, &restricted)
@@ -180,7 +189,7 @@ async fn x14_policy_revisions_advance_across_restore_and_concurrent_agent_writes
         );
         assert!(!agents.update_owner(tid, aid, new_owner).await.unwrap());
         let row = agents.base.find_by_id(aid).await.unwrap();
-        assert_eq!(row.access_policy_revision(), Some(13));
+        assert_eq!(row.access_policy_revision(), Some(14));
         assert_eq!(row.owner_user_id, owner);
     })
     .await;

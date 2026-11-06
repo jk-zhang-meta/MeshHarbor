@@ -2,7 +2,9 @@
 //! One-shot native shared-SSH password proof. No browser session export, refresh,
 //! storage or new audience: the in-memory Access JWT has general account powers.
 use anyhow::{Result, bail};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, de::DeserializeOwned};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 const MAX_BODY: usize = 32 * 1024;
 
@@ -128,6 +130,146 @@ pub async fn interactive(
             .map_err(|_| anyhow::anyhow!("Password terminal input failed"))?;
     let token = login(&server, share, username, password).await?;
     crate::share_sshcmd::run_with_token(&server, share, token, session_secs, args).await
+}
+
+#[derive(Deserialize)]
+struct StartAuthorizationResponse {
+    authorization_id: String,
+    user_code: String,
+    device_code: String,
+    verification_uri: String,
+    expires_in: u64,
+    interval: u64,
+}
+
+#[derive(Deserialize)]
+struct ExchangeScopeResponse {
+    operation: String,
+    share_grant_id: String,
+    device_id: String,
+    recipient_user_id: String,
+    public_key: String,
+    session_secs: u64,
+}
+
+#[derive(Deserialize)]
+struct ExchangeAuthorizationResponse {
+    grant: String,
+    expires_in: u64,
+    scope: ExchangeScopeResponse,
+}
+
+pub async fn browser_approve(
+    server: &str,
+    share: &str,
+    session_secs: u64,
+    args: &[String],
+) -> Result<i32> {
+    let server = server_base(server)?;
+    let share = bson::oid::ObjectId::parse_str(share)
+        .map_err(|_| anyhow::anyhow!("Exact share ID required"))?;
+    let requested_secs = if session_secs == 0 {
+        meshharbor_remote_control::models::ssh_limits::MAX_SESSION_SECS
+    } else {
+        meshharbor_remote_control::models::ssh_limits::clamp_session_secs(session_secs)
+    };
+    let key = crate::sshcmd::mint_session_key()?;
+    let public_key = key.public_key().to_openssh()?;
+    let code_verifier = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>());
+    let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+    let client = http_client(&server)?;
+    let start_res = client
+        .post(format!("{server}/api/native/share-ssh/authorizations"))
+        .json(&serde_json::json!({
+            "share_grant_id": share.to_hex(),
+            "public_key": public_key,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "session_secs": requested_secs,
+        }))
+        .send()
+        .await
+        .map_err(|_| anyhow::anyhow!("Native SSH authorization start request failed"))?;
+    if !start_res.status().is_success() {
+        bail!(
+            "Native SSH authorization start refused (HTTP {})",
+            start_res.status()
+        );
+    }
+    let started: StartAuthorizationResponse = bounded_json(start_res).await?;
+    if bson::oid::ObjectId::parse_str(&started.authorization_id).is_err()
+        || started.user_code.len() != 12
+        || started.device_code.len() != 43
+        || started.expires_in == 0
+        || started.verification_uri.is_empty()
+    {
+        bail!("Invalid native SSH authorization start response");
+    }
+    eprintln!(
+        "MH_NATIVE_SSH_APPROVAL verification_uri={} authorization_id={} user_code={}",
+        started.verification_uri, started.authorization_id, started.user_code
+    );
+    let poll_sleep = if server.starts_with("http://127.0.0.1") || server.starts_with("http://[::1]")
+    {
+        Duration::from_millis(200)
+    } else {
+        Duration::from_secs(started.interval.clamp(1, 5))
+    };
+    let deadline =
+        std::time::Instant::now() + Duration::from_secs(started.expires_in.clamp(1, 300));
+    let mut exchanged = None;
+    for _ in 0..60 {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(poll_sleep).await;
+        let res = client
+            .post(format!(
+                "{server}/api/native/share-ssh/authorizations/exchange"
+            ))
+            .json(&serde_json::json!({
+                "device_code": started.device_code,
+                "code_verifier": code_verifier,
+            }))
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("Native SSH authorization exchange request failed"))?;
+        if res.status() == reqwest::StatusCode::CONFLICT {
+            continue;
+        }
+        if !res.status().is_success() {
+            bail!(
+                "Native SSH authorization exchange refused (HTTP {})",
+                res.status()
+            );
+        }
+        let body: ExchangeAuthorizationResponse = bounded_json(res).await?;
+        if !body.grant.starts_with("mhssh_")
+            || body.grant.len() > 256
+            || body.expires_in == 0
+            || body.scope.operation != "ssh"
+            || body.scope.share_grant_id != share.to_hex()
+            || body.scope.public_key != public_key
+            || bson::oid::ObjectId::parse_str(&body.scope.device_id).is_err()
+            || bson::oid::ObjectId::parse_str(&body.scope.recipient_user_id).is_err()
+        {
+            bail!("Invalid native SSH authorization exchange response");
+        }
+        exchanged = Some(body);
+        break;
+    }
+    let Some(exchanged) = exchanged else {
+        bail!("Native SSH authorization timed out waiting for browser approval");
+    };
+    crate::share_sshcmd::run_with_session_key(
+        &server,
+        &share.to_hex(),
+        exchanged.grant,
+        key,
+        exchanged.scope.session_secs,
+        args,
+    )
+    .await
 }
 
 #[cfg(test)]

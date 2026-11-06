@@ -56,3 +56,5 @@ pub use newsletter_send::*;
 
 pub mod device_share;
 pub use device_share::*;
+pub mod native_ssh_authorization;
+pub use native_ssh_authorization::*;

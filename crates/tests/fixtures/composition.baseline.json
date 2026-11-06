@@ -369,6 +369,22 @@
       "methods": "POST"
     },
     {
+      "path": "/api/native/share-ssh/authorizations",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/share-ssh/authorizations/exchange",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/share-ssh/authorizations/{id}/decision",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/share-ssh/authorizations/{id}/preview",
+      "methods": "POST"
+    },
+    {
       "path": "/api/notification",
       "methods": "GET,HEAD"
     },
@@ -2090,6 +2106,100 @@
             "key": {
               "content": "text"
             }
+          }
+        ]
+      },
+      {
+        "collection": "native_ssh_audit",
+        "indexes": [
+          {
+            "key": {
+              "authorization_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "share_grant_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "tenant_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "device_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "recipient_user_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "at": 1
+            },
+            "expireAfterSeconds": 7776000
+          }
+        ]
+      },
+      {
+        "collection": "native_ssh_authorizations",
+        "indexes": [
+          {
+            "key": {
+              "authorization_id": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "device_code_hash": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "client_hash": 1,
+              "client_slot": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "share_hash": 1,
+              "share_slot": 1
+            },
+            "unique": true,
+            "partialFilterExpression": {
+              "share_hash": {
+                "$type": "string"
+              }
+            }
+          },
+          {
+            "key": {
+              "grant_hash": 1
+            },
+            "unique": true,
+            "partialFilterExpression": {
+              "grant_hash": {
+                "$type": "string"
+              }
+            }
+          },
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
           }
         ]
       },
@@ -4380,6 +4490,100 @@
             "key": {
               "content": "text"
             }
+          }
+        ]
+      },
+      {
+        "collection": "native_ssh_audit",
+        "indexes": [
+          {
+            "key": {
+              "authorization_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "share_grant_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "tenant_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "device_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "recipient_user_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "at": 1
+            },
+            "expireAfterSeconds": 7776000
+          }
+        ]
+      },
+      {
+        "collection": "native_ssh_authorizations",
+        "indexes": [
+          {
+            "key": {
+              "authorization_id": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "device_code_hash": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "client_hash": 1,
+              "client_slot": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "share_hash": 1,
+              "share_slot": 1
+            },
+            "unique": true,
+            "partialFilterExpression": {
+              "share_hash": {
+                "$type": "string"
+              }
+            }
+          },
+          {
+            "key": {
+              "grant_hash": 1
+            },
+            "unique": true,
+            "partialFilterExpression": {
+              "grant_hash": {
+                "$type": "string"
+              }
+            }
+          },
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
           }
         ]
       },
