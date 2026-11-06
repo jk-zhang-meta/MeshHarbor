@@ -82,3 +82,53 @@ impl NativeSshAuthorization {
     pub const REQUEST_TTL_SECS: i64 = 300;
     pub const GRANT_TTL_SECS: i64 = 60;
 }
+
+/// Persistent server-side decision log for browser-approved native shared SSH
+/// (`native_ssh_audit`). Unlike `native_ssh_authorizations` (whose bounded slot
+/// rows expire after 300s), these rows are kept for 90 days like `ssh_audit`,
+/// recording the server's authoritative decisions at each lifecycle gate
+/// (`start`, `decision`, `exchange`, `dispatch`, `revocation_terminate`),
+/// correlated by `authorization_id` and `grant_id`, and never recording session
+/// content or raw secrets.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeSshAuditEvent {
+    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
+    pub id: Option<ObjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_id: Option<ObjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_grant_id: Option<ObjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<ObjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<ObjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<ObjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_user_id: Option<ObjectId>,
+    /// Hash of the issued/redeemed `mhssh_` grant (never the raw bearer token).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_id: Option<String>,
+    /// OpenSSH SHA-256 fingerprint (`SHA256:...`) of the bound ephemeral Ed25519
+    /// public key (never the full public key line).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<ObjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_secs: Option<u64>,
+    /// Decision gate: `"start"` | `"decision"` | `"exchange"` | `"dispatch"` | `"revocation_terminate"`.
+    pub stage: String,
+    /// Decision outcome: `"started"` | `"rate_limited"` | `"approved"` | `"denied"` | `"exchanged"` | `"consumed"` | `"refused"` | `"terminated"`.
+    pub outcome: String,
+    /// Refusal, denial, or live revocation termination reason (`None` on positive decisions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub at: DateTime,
+}
+
+impl NativeSshAuditEvent {
+    pub const COLLECTION: &'static str = "native_ssh_audit";
+}

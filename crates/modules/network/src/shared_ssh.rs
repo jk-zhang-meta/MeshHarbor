@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -50,6 +50,7 @@ enum SessionAuth {
 
 #[derive(Clone)]
 pub(crate) struct SharedSshSession {
+    pub id: ObjectId,
     pub device: ObjectId,
     pub recipient: ObjectId,
     pub grant: ObjectId,
@@ -60,6 +61,7 @@ pub(crate) struct SharedSshSession {
     pub outbound: mpsc::Sender<ServerMsg>,
     pub last_challenge: Arc<AtomicU64>,
     pub prepared: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
+    pub revocation_audited: Arc<AtomicBool>,
 }
 #[derive(Serialize)]
 pub struct SharedSshDevice {
@@ -232,41 +234,174 @@ pub async fn connect(
                 "Native SSH authorization is disabled".into(),
             ));
         }
-        let id =
-            ObjectId::parse_str(id).map_err(|_| ApiError::BadRequest("Invalid share ID".into()))?;
+        let Ok(id) = ObjectId::parse_str(id) else {
+            crate::native_ssh_authorization::record_audit(
+                &state,
+                meshharbor_db::models::NativeSshAuditEvent {
+                    id: None,
+                    authorization_id: None,
+                    share_grant_id: None,
+                    tenant_id: None,
+                    device_id: None,
+                    owner_user_id: None,
+                    recipient_user_id: None,
+                    grant_id: None,
+                    public_key_fingerprint: None,
+                    session_id: None,
+                    ssh_account: None,
+                    session_secs: Some(q.session_secs),
+                    stage: "dispatch".into(),
+                    outcome: "refused".into(),
+                    reason: Some("invalid_share_grant_id".into()),
+                    at: bson::DateTime::now(),
+                },
+            )
+            .await;
+            return Err(ApiError::BadRequest("Invalid share ID".into()));
+        };
         if q.public_key.len() > 1024
             || !crate::routes::agent_ssh::is_supported_public_key(&q.public_key)
         {
+            let existing =
+                meshharbor_services::dao::native_ssh_authorization::NativeSshAuthorizationDao::new(
+                    &state.core.db,
+                )
+                .by_grant_hash(bearer)
+                .await
+                .ok()
+                .flatten();
+            let event = if let Some(existing) = existing.as_ref() {
+                crate::native_ssh_authorization::audit_from_row(
+                    existing,
+                    existing.scope.as_ref(),
+                    "dispatch",
+                    "refused",
+                    Some("invalid_public_key"),
+                )
+            } else {
+                meshharbor_db::models::NativeSshAuditEvent {
+                    id: None,
+                    authorization_id: None,
+                    share_grant_id: Some(id),
+                    tenant_id: None,
+                    device_id: None,
+                    owner_user_id: None,
+                    recipient_user_id: None,
+                    grant_id: None,
+                    public_key_fingerprint: None,
+                    session_id: None,
+                    ssh_account: None,
+                    session_secs: Some(q.session_secs),
+                    stage: "dispatch".into(),
+                    outcome: "refused".into(),
+                    reason: Some("invalid_public_key".into()),
+                    at: bson::DateTime::now(),
+                }
+            };
+            crate::native_ssh_authorization::record_audit(&state, event).await;
             return Err(ApiError::BadRequest(
                 "A valid Ed25519 ephemeral public key is required".into(),
             ));
         }
-        let (row, scope) =
-            crate::native_ssh_authorization::verify_exchanged_grant(&state, id, bearer).await?;
-        if row.public_key != q.public_key || q.session_secs > row.session_secs {
+        let (row, scope) = crate::native_ssh_authorization::verify_exchanged_grant_for_dispatch(
+            &state, id, bearer,
+        )
+        .await?;
+        if row.public_key != q.public_key {
+            crate::native_ssh_authorization::record_audit(
+                &state,
+                crate::native_ssh_authorization::audit_from_row(
+                    &row,
+                    Some(&scope),
+                    "dispatch",
+                    "refused",
+                    Some("public_key_mismatch"),
+                ),
+            )
+            .await;
             return Err(deny("Native SSH authorization refused"));
         }
-        let access = pdp(&state, scope.recipient_user_id, id).await?;
-        let slot = state
-            .shared_ssh_slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| deny("Shared SSH session capacity reached"))?;
+        if q.session_secs > row.session_secs {
+            crate::native_ssh_authorization::record_audit(
+                &state,
+                crate::native_ssh_authorization::audit_from_row(
+                    &row,
+                    Some(&scope),
+                    "dispatch",
+                    "refused",
+                    Some("session_secs_exceeds_grant"),
+                ),
+            )
+            .await;
+            return Err(deny("Native SSH authorization refused"));
+        }
+        let access = match pdp(&state, scope.recipient_user_id, id).await {
+            Ok(access) => access,
+            Err(e) => {
+                crate::native_ssh_authorization::record_audit(
+                    &state,
+                    crate::native_ssh_authorization::audit_from_row(
+                        &row,
+                        Some(&scope),
+                        "dispatch",
+                        "refused",
+                        Some("pdp_or_agent_unavailable"),
+                    ),
+                )
+                .await;
+                return Err(e);
+            }
+        };
+        let Ok(slot) = state.shared_ssh_slots.clone().try_acquire_owned() else {
+            crate::native_ssh_authorization::record_audit(
+                &state,
+                crate::native_ssh_authorization::audit_from_row(
+                    &row,
+                    Some(&scope),
+                    "dispatch",
+                    "refused",
+                    Some("session_slot_limit_reached"),
+                ),
+            )
+            .await;
+            return Err(deny("Shared SSH session capacity reached"));
+        };
         if !state.ssh_rate_limiter.check_bounded(
             scope.recipient_user_id,
             access.grant.device_id,
             ssh_limits::RATE_LIMIT_PER_MINUTE,
         ) {
+            crate::native_ssh_authorization::record_audit(
+                &state,
+                crate::native_ssh_authorization::audit_from_row(
+                    &row,
+                    Some(&scope),
+                    "dispatch",
+                    "refused",
+                    Some("rate_limited"),
+                ),
+            )
+            .await;
             return Err(deny("Shared SSH request rate exceeded"));
         }
         crate::native_ssh_authorization::consume_exchanged_grant(&state, &row, bearer).await?;
+        let sid = ObjectId::new();
+        let mut consumed_audit = crate::native_ssh_authorization::audit_from_row(
+            &row,
+            Some(&scope),
+            "dispatch",
+            "consumed",
+            None,
+        );
+        consumed_audit.session_id = Some(sid);
+        crate::native_ssh_authorization::record_audit(&state, consumed_audit).await;
         let auth = SessionAuth::NativeGrant {
             user_id: scope.recipient_user_id,
             row: Box::new(row),
         };
         return Ok(ws
             .max_message_size(64 * 1024)
-            .on_upgrade(move |socket| run(state, socket, auth, id, q, slot)));
+            .on_upgrade(move |socket| run(state, socket, auth, id, q, slot, sid)));
     }
     let auth = verify_account_token(&state, bearer).await?;
     let id =
@@ -292,9 +427,34 @@ pub async fn connect(
         return Err(deny("Shared SSH request rate exceeded"));
     }
     let auth = SessionAuth::Account(auth);
+    let sid = ObjectId::new();
     Ok(ws
         .max_message_size(64 * 1024)
-        .on_upgrade(move |socket| run(state, socket, auth, id, q, slot)))
+        .on_upgrade(move |socket| run(state, socket, auth, id, q, slot, sid)))
+}
+async fn audit_live_revocation_once(
+    state: &NetworkState,
+    s: &SharedSshSession,
+    row: &meshharbor_db::models::NativeSshAuthorization,
+    expires_at_ms: i64,
+) {
+    if !s.revocation_audited.swap(true, Ordering::SeqCst) {
+        let reason = crate::native_ssh_authorization::classify_live_revocation_reason(
+            state,
+            row,
+            expires_at_ms,
+        )
+        .await;
+        let mut event = crate::native_ssh_authorization::audit_from_row(
+            row,
+            row.scope.as_ref(),
+            "revocation_terminate",
+            "terminated",
+            Some(reason),
+        );
+        event.session_id = Some(s.id);
+        crate::native_ssh_authorization::record_audit(state, event).await;
+    }
 }
 async fn valid(state: &NetworkState, s: &SharedSshSession) -> bool {
     match &s.authority {
@@ -311,15 +471,20 @@ async fn valid(state: &NetworkState, s: &SharedSshSession) -> bool {
             if bson::DateTime::now().timestamp_millis() >= *expires_at_ms
                 || !crate::native_ssh_authorization::live_session_scope_valid(state, row).await
             {
+                audit_live_revocation_once(state, s, row, *expires_at_ms).await;
                 return false;
             }
         }
     }
-    pdp(state, s.recipient, s.grant).await.is_ok_and(|a| {
+    let pdp_ok = pdp(state, s.recipient, s.grant).await.is_ok_and(|a| {
         a.grant.revision == s.revision
             && a.grant.device_id == s.device
             && a.agent.ssh_policy == s.policy
-    })
+    });
+    if !pdp_ok && let SessionAuthority::NativeGrant { row, expires_at_ms } = &s.authority {
+        audit_live_revocation_once(state, s, row, *expires_at_ms).await;
+    }
+    pdp_ok
 }
 fn terminate(state: &NetworkState, sid: ObjectId, s: &SharedSshSession) {
     state.shared_ssh_sessions.remove(&sid);
@@ -392,6 +557,7 @@ async fn run(
     grant: ObjectId,
     q: ConnectQuery,
     _slot: tokio::sync::OwnedSemaphorePermit,
+    sid: ObjectId,
 ) {
     let user = match &auth {
         SessionAuth::Account(auth) => auth.user_id,
@@ -435,7 +601,6 @@ async fn run(
             SessionAuthority::NativeGrant { row, expires_at_ms }
         }
     };
-    let sid = ObjectId::new();
     let (out, mut rx) = mpsc::channel(64);
     let (prepared_tx, prepared_rx) = tokio::sync::oneshot::channel();
     let lease = SharedSessionLease {
@@ -443,6 +608,7 @@ async fn run(
         lease_epoch: uuid::Uuid::new_v4().to_string(),
     };
     let s = SharedSshSession {
+        id: sid,
         authority,
         device: access.grant.device_id,
         recipient: user,
@@ -453,6 +619,7 @@ async fn run(
         outbound: out.clone(),
         last_challenge: Arc::new(AtomicU64::new(0)),
         prepared: Arc::new(Mutex::new(Some(prepared_tx))),
+        revocation_audited: Arc::new(AtomicBool::new(false)),
     };
     state.shared_ssh_sessions.insert(sid, s.clone());
     struct Cleanup {
@@ -480,6 +647,15 @@ async fn run(
     let Some(account) = shared_account(&access.grant) else {
         return;
     };
+    let caller = match &s.authority {
+        SessionAuthority::Account(_) => format!("approved recipient {user} / share {grant}"),
+        SessionAuthority::NativeGrant { row, .. } => {
+            format!(
+                "approved recipient {user} / share {grant} / auth {}",
+                row.authorization_id
+            )
+        }
+    };
     let setup = SharedSshSetup {
         device_id: s.device,
         owner_user_id: access.grant.owner_user_id,
@@ -487,7 +663,7 @@ async fn run(
         shared_lease: lease.clone(),
         ssh_grant_id: ObjectId::new().to_hex(),
         public_key: q.public_key,
-        caller: format!("approved recipient {user} / share {grant}"),
+        caller,
         account_mode: SshAccountMode::Named,
         account: Some(account),
         consent_mode: Some(if spec.consent_mode == Some(ConsentMode::Auto) {
@@ -528,12 +704,34 @@ async fn run(
         )
         .is_err()
     {
+        if let SessionAuthority::NativeGrant { row, .. } = &s.authority {
+            let mut event = crate::native_ssh_authorization::audit_from_row(
+                row,
+                row.scope.as_ref(),
+                "dispatch",
+                "refused",
+                Some("agent_offline_after_consume"),
+            );
+            event.session_id = Some(sid);
+            crate::native_ssh_authorization::record_audit(&state, event).await;
+        }
         return;
     }
     if !matches!(
         tokio::time::timeout(Duration::from_secs(5), prepared_rx).await,
         Ok(Ok(true))
     ) {
+        if let SessionAuthority::NativeGrant { row, .. } = &s.authority {
+            let mut event = crate::native_ssh_authorization::audit_from_row(
+                row,
+                row.scope.as_ref(),
+                "dispatch",
+                "refused",
+                Some("agent_rejected_setup_after_consume"),
+            );
+            event.session_id = Some(sid);
+            crate::native_ssh_authorization::record_audit(&state, event).await;
+        }
         return;
     }
     let _ = state.ssh_audit.record(audit).await;

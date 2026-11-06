@@ -4,7 +4,7 @@ use super::base::{BaseDao, DaoResult};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use bson::{DateTime, doc, oid::ObjectId};
 use futures::TryStreamExt;
-use meshharbor_db::models::{NativeSshAuthorization, NativeSshScope};
+use meshharbor_db::models::{NativeSshAuditEvent, NativeSshAuthorization, NativeSshScope};
 use mongodb::{Database, options::ReturnDocument};
 use sha2::{Digest, Sha256};
 
@@ -295,6 +295,16 @@ impl NativeSshAuthorizationDao {
             .await?)
     }
 
+    pub async fn by_grant_hash(&self, grant: &str) -> DaoResult<Option<NativeSshAuthorization>> {
+        Ok(self
+            .base
+            .collection()
+            .find_one(doc! {
+                "grant_hash": hash_secret("grant", grant),
+            })
+            .await?)
+    }
+
     pub async fn consume(&self, row: &NativeSshAuthorization, grant: &str) -> DaoResult<bool> {
         let Some(binding) = row.scope.as_ref().and_then(|scope| scope.binding.as_ref()) else {
             return Ok(false);
@@ -331,5 +341,21 @@ impl NativeSshAuthorizationDao {
             )
             .await?
             .is_some())
+    }
+}
+
+pub struct NativeSshAuditDao {
+    pub base: BaseDao<NativeSshAuditEvent>,
+}
+
+impl NativeSshAuditDao {
+    pub fn new(db: &Database) -> Self {
+        Self {
+            base: BaseDao::new(db, NativeSshAuditEvent::COLLECTION),
+        }
+    }
+
+    pub async fn record(&self, event: NativeSshAuditEvent) -> DaoResult<ObjectId> {
+        self.base.insert_one(&event).await
     }
 }

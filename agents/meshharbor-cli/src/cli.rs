@@ -87,14 +87,29 @@ enum Command {
         #[arg(long)]
         share: String,
         /// File containing a valid recipient access JWT; never passed in argv/URL.
-        #[arg(long, required_unless_present = "login", conflicts_with = "login")]
+        #[arg(
+            long,
+            required_unless_present_any = ["login", "browser_approve"],
+            conflicts_with_all = ["login", "browser_approve"]
+        )]
         access_token_file: Option<PathBuf>,
         /// Prompt for account password without echo; Access JWT stays in memory.
         /// No browser-cookie export, refresh, persistent login or MFA downgrade.
-        #[arg(long, requires = "username", conflicts_with = "access_token_file")]
+        #[arg(
+            long,
+            requires = "username",
+            conflicts_with_all = ["access_token_file", "browser_approve"]
+        )]
         login: bool,
         #[arg(long, requires = "login")]
         username: Option<String>,
+        /// Request short-lived PKCE + key-bound browser approval for this SSH session
+        /// without prompting for or sending an account password.
+        #[arg(
+            long,
+            conflicts_with_all = ["access_token_file", "login", "username"]
+        )]
+        browser_approve: bool,
         #[arg(long, default_value_t = 0)]
         session_secs: u64,
         #[arg(last = true)]
@@ -1220,10 +1235,13 @@ where
             access_token_file,
             login,
             username,
+            browser_approve,
             session_secs,
             args,
         } => {
-            let code = if login {
+            let code = if browser_approve {
+                crate::native_auth::browser_approve(&server, &share, session_secs, &args).await?
+            } else if login {
                 crate::native_auth::interactive(
                     &server,
                     &share,
@@ -1988,6 +2006,9 @@ mod tests {
                 "--password",
                 "not-accepted",
             ],
+            vec!["--browser-approve", "--access-token-file", "file"],
+            vec!["--browser-approve", "--login", "--username", "alice"],
+            vec!["--browser-approve", "--username", "alice"],
         ] {
             assert!(Cli::try_parse_from(base.into_iter().chain(tail)).is_err());
         }
@@ -1997,5 +2018,6 @@ mod tests {
         assert!(
             Cli::try_parse_from(base.into_iter().chain(["--access-token-file", "file"])).is_ok()
         );
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--browser-approve"])).is_ok());
     }
 }

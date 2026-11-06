@@ -769,6 +769,18 @@ impl Module for NetworkState {
                     index_ttl(bson::doc! {"expires_at":1}, 0),
                 ],
             },
+            IndexSet {
+                collection: meshharbor_db::models::NativeSshAuditEvent::COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![
+                    index(bson::doc! {"authorization_id":1,"at":-1}),
+                    index(bson::doc! {"share_grant_id":1,"at":-1}),
+                    index(bson::doc! {"tenant_id":1,"at":-1}),
+                    index(bson::doc! {"device_id":1,"at":-1}),
+                    index(bson::doc! {"recipient_user_id":1,"at":-1}),
+                    index_ttl(bson::doc! {"at":1}, 90 * 24 * 60 * 60),
+                ],
+            },
             // Central-use approvals and observed source addresses are private
             // security records, not ordinary Agent/TunnelClient JSON fields.
             // Role approvals need no set here: their deterministic `_id` is the

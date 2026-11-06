@@ -2760,3 +2760,1121 @@ async fn established_grant_session_live_revoke() {
     .await
     .expect("revoked X17 WebSocket must close");
 }
+
+fn audit_challenge(verifier: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+async fn audit_start(app: &TestApp, share_id: &str, verifier: &str) -> Value {
+    json_response(
+        app.client
+            .post(app.url(BASE))
+            .json(&json!({
+                "share_grant_id": share_id,
+                "public_key": public_key(),
+                "code_challenge": audit_challenge(verifier),
+                "code_challenge_method": "S256",
+                "session_secs": 60,
+            }))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .unwrap(),
+        201,
+        "audit authorization start",
+    )
+    .await
+}
+
+async fn audit_preview(
+    app: &TestApp,
+    recipient: &Actor,
+    authorization_id: &str,
+    user_code: &str,
+) -> (u16, Value) {
+    let res = app
+        .auth_post(
+            &format!("{BASE}/{authorization_id}/preview"),
+            &recipient.token,
+        )
+        .header("Origin", &app.settings.app.frontend_url)
+        .json(&json!({"user_code": user_code}))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    let body = res.json().await.unwrap_or_else(|_| json!(null));
+    (status, body)
+}
+
+async fn audit_decide(
+    app: &TestApp,
+    recipient: &Actor,
+    authorization_id: &str,
+    user_code: &str,
+    expected_scope_revision: Option<&str>,
+    approve: bool,
+) -> (u16, Value) {
+    let mut payload = json!({"user_code": user_code, "approve": approve});
+    if let Some(rev) = expected_scope_revision {
+        payload["expected_scope_revision"] = json!(rev);
+    }
+    let res = app
+        .auth_post(
+            &format!("{BASE}/{authorization_id}/decision"),
+            &recipient.token,
+        )
+        .header("Origin", &app.settings.app.frontend_url)
+        .json(&payload)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    let body = res.json().await.unwrap_or_else(|_| json!(null));
+    (status, body)
+}
+
+async fn audit_exchange(app: &TestApp, device_code: &str, verifier: &str) -> (u16, Value) {
+    let res = app
+        .client
+        .post(app.url(&format!("{BASE}/exchange")))
+        .json(&json!({"device_code": device_code, "code_verifier": verifier}))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    let body = res.json().await.unwrap_or_else(|_| json!(null));
+    (status, body)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_ssh_persistent_decision_audit_records_all_gates_and_reasons() {
+    tokio::time::timeout(Duration::from_secs(120), persistent_decision_audit())
+        .await
+        .expect("X17_REVISION stage=persistent_decision_audit timeout");
+}
+
+async fn persistent_decision_audit() {
+    use futures::{SinkExt, StreamExt};
+    use meshharbor_core::{AgentMsgHandler, AgentSocketLifecycle, Module};
+    use meshharbor_db::models::{NativeSshAuditEvent, NativeSshAuthorization};
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
+
+    let owner_id = ObjectId::new();
+    let app = TestApp::spawn_with_settings(move |settings| {
+        settings.auth.account_approval.enabled = true;
+        settings.auth.account_approval.owner_user_id = Some(owner_id.to_hex());
+        settings.auth.native_share_ssh_authorization_enabled = true;
+        settings.app.frontend_url = "https://native-revision.example.test".into();
+        settings.app.pod_id = Some(format!("native-audit-{}", ObjectId::new().to_hex()));
+    })
+    .await;
+
+    // 0. Verify index plan for `native_ssh_audit` has a 90-day TTL on `at` (and not the 300s slot TTL).
+    let indexes = app
+        .state
+        .modules
+        .network
+        .as_ref()
+        .unwrap()
+        .indexes_for(false);
+    let audit_index_set = indexes
+        .iter()
+        .find(|s| s.collection == NativeSshAuditEvent::COLLECTION)
+        .expect("native_ssh_audit collection must declare persistent indexes");
+    let ttl_secs = audit_index_set
+        .indexes
+        .iter()
+        .find(|idx| idx.keys == doc! {"at": 1})
+        .and_then(|idx| idx.options.as_ref())
+        .and_then(|opts| opts.expire_after)
+        .map(|d| d.as_secs());
+    assert_eq!(ttl_secs, Some(90 * 24 * 60 * 60));
+
+    // Also verify disabled default instance returns 503 without writing audit rows.
+    let mut disabled_settings = app.settings.clone();
+    disabled_settings
+        .auth
+        .native_share_ssh_authorization_enabled = false;
+    disabled_settings.app.pod_id = Some(format!("native-audit-off-{}", ObjectId::new().to_hex()));
+    let disabled_app =
+        TestApp::spawn_with_settings(move |settings| *settings = disabled_settings).await;
+    let disabled_share = ObjectId::new();
+    assert_eq!(
+        disabled_app
+            .client
+            .post(disabled_app.url("/api/native/share-ssh/authorizations"))
+            .json(&json!({
+                "share_grant_id": disabled_share.to_hex(),
+                "public_key": public_key(),
+                "code_challenge": audit_challenge("disabled-verifier"),
+                "code_challenge_method": "S256",
+                "session_secs": 60,
+            }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        503
+    );
+    assert_eq!(
+        disabled_app
+            .db
+            .collection::<NativeSshAuditEvent>(NativeSshAuditEvent::COLLECTION)
+            .count_documents(doc! {})
+            .await
+            .unwrap(),
+        0,
+        "disabled feature switch 503 must not write audit records"
+    );
+
+    let owner = actor(&app, "native_audit_owner", Some(owner_id)).await;
+    let recipient = actor(&app, "native_audit_recipient", None).await;
+    let tenant = app
+        .state
+        .tenants
+        .create("Native audit".into(), "native-audit".into(), owner.id)
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    set_tenant_ssh(&app, tenant, &owner, true).await;
+    let device = AgentDao::new(&app.db)
+        .create(
+            tenant,
+            owner.id,
+            "Native audit host".into(),
+            "native-audit-machine".into(),
+            OsKind::Linux,
+            "synthetic".into(),
+            "synthetic-agent-token-hash".into(),
+            None,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    app.db
+        .collection::<Agent>("agents")
+        .update_one(
+            doc! {"_id": device},
+            doc! {"$set": {
+                "ssh_host_pubkey": public_key(),
+                "ssh_policy.mode": "on",
+                "ssh_policy.consent_mode": "auto",
+                "capabilities.rpc": [
+                    "ssh",
+                    "ssh-consent",
+                    "shared-session-lease-v1",
+                    "shared-ssh-stream-v1"
+                ],
+            }},
+        )
+        .await
+        .unwrap();
+    let (tx, _, mut target) = app
+        .state
+        .modules
+        .fleet
+        .as_ref()
+        .unwrap()
+        .rc_hub
+        .register_agent(device, tenant, owner.id, OsKind::Linux, 4, false, false);
+    let share_doc = create_share(&app, &owner, device, recipient.id).await;
+    let share = share_doc["id"].as_str().unwrap().to_owned();
+    let share_id = ObjectId::parse_str(&share).unwrap();
+    let audit_coll = app
+        .db
+        .collection::<NativeSshAuditEvent>(NativeSshAuditEvent::COLLECTION);
+
+    // 1. start refused (invalid_start_parameters)
+    assert_eq!(
+        app.client
+            .post(app.url("/api/native/share-ssh/authorizations"))
+            .json(&json!({
+                "share_grant_id": share,
+                "public_key": public_key(),
+                "code_challenge": audit_challenge("bad-start-secs"),
+                "code_challenge_method": "S256",
+                "session_secs": 0,
+            }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        400
+    );
+    let bad_start_audit = audit_coll
+        .find_one(doc! {
+            "share_grant_id": share_id,
+            "stage": "start",
+            "outcome": "refused",
+            "reason": "invalid_start_parameters",
+        })
+        .await
+        .unwrap()
+        .expect("start refusal must be audited");
+    assert!(
+        bad_start_audit
+            .public_key_fingerprint
+            .as_deref()
+            .is_some_and(|fp| fp.starts_with("SHA256:"))
+    );
+
+    // 2. decision denied + exchange refused (authorization_denied)
+    let verifier_denied = "pkce_verifier_audit_denied_0123456789abcdef0123";
+    let started_denied = audit_start(&app, &share, verifier_denied).await;
+    let denied_auth_id =
+        ObjectId::parse_str(started_denied["authorization_id"].as_str().unwrap()).unwrap();
+    let denied_user_code = started_denied["user_code"].as_str().unwrap();
+    let denied_device_code = started_denied["device_code"].as_str().unwrap();
+    let (s, previewed_denied) = audit_preview(
+        &app,
+        &recipient,
+        started_denied["authorization_id"].as_str().unwrap(),
+        denied_user_code,
+    )
+    .await;
+    assert_eq!(s, 200);
+    let (s, _) = audit_decide(
+        &app,
+        &recipient,
+        started_denied["authorization_id"].as_str().unwrap(),
+        denied_user_code,
+        previewed_denied["scope_revision"].as_str(),
+        false,
+    )
+    .await;
+    assert_eq!(s, 200);
+    let (s, _) = audit_exchange(&app, denied_device_code, verifier_denied).await;
+    assert_eq!(s, 403);
+    assert!(
+        audit_coll
+            .find_one(doc! {
+                "authorization_id": denied_auth_id,
+                "stage": "decision",
+                "outcome": "denied",
+                "reason": "recipient_denied",
+            })
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        audit_coll
+            .find_one(doc! {
+                "authorization_id": denied_auth_id,
+                "stage": "exchange",
+                "outcome": "refused",
+                "reason": "authorization_denied",
+            })
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // 3. decision refused when upstream revision changes between preview and decide
+    let verifier_rev = "pkce_verifier_audit_rev_change_0123456789abcdef";
+    let started_rev = audit_start(&app, &share, verifier_rev).await;
+    let rev_auth_id =
+        ObjectId::parse_str(started_rev["authorization_id"].as_str().unwrap()).unwrap();
+    let rev_user_code = started_rev["user_code"].as_str().unwrap();
+    let (s, previewed_rev) = audit_preview(
+        &app,
+        &recipient,
+        started_rev["authorization_id"].as_str().unwrap(),
+        rev_user_code,
+    )
+    .await;
+    assert_eq!(s, 200);
+    set_tenant_ssh(&app, tenant, &owner, false).await;
+    let (s, _) = audit_decide(
+        &app,
+        &recipient,
+        started_rev["authorization_id"].as_str().unwrap(),
+        rev_user_code,
+        previewed_rev["scope_revision"].as_str(),
+        true,
+    )
+    .await;
+    assert_eq!(s, 403);
+    set_tenant_ssh(&app, tenant, &owner, true).await;
+    assert!(
+        audit_coll
+            .find_one(doc! {
+                "authorization_id": rev_auth_id,
+                "stage": "decision",
+                "outcome": "refused",
+                "reason": "tenant_revision_or_policy_changed",
+            })
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // 4. Full positive chain: start -> decision(approved) -> exchange(exchanged) ->
+    //    exchange replay refused(already_exchanged) -> dispatch wrong key refused(public_key_mismatch) ->
+    //    dispatch consumed -> dispatch replay refused(already_used) -> live revocation_terminate(terminated)
+    let verifier_ok = "pkce_verifier_audit_full_chain_0123456789abcdef";
+    let started_ok = audit_start(&app, &share, verifier_ok).await;
+    let ok_auth_id = ObjectId::parse_str(started_ok["authorization_id"].as_str().unwrap()).unwrap();
+    let ok_user_code = started_ok["user_code"].as_str().unwrap();
+    let ok_device_code = started_ok["device_code"].as_str().unwrap();
+    let (s, previewed_ok) = audit_preview(
+        &app,
+        &recipient,
+        started_ok["authorization_id"].as_str().unwrap(),
+        ok_user_code,
+    )
+    .await;
+    assert_eq!(s, 200);
+    let (s, _) = audit_decide(
+        &app,
+        &recipient,
+        started_ok["authorization_id"].as_str().unwrap(),
+        ok_user_code,
+        previewed_ok["scope_revision"].as_str(),
+        true,
+    )
+    .await;
+    assert_eq!(s, 200);
+    let (s, exchanged_ok) = audit_exchange(&app, ok_device_code, verifier_ok).await;
+    assert_eq!(s, 200, "{exchanged_ok}");
+    let grant_ok = exchanged_ok["grant"].as_str().unwrap().to_owned();
+
+    // Replay exchange with the same device_code + code_verifier -> refused (already_exchanged)
+    let (s, _) = audit_exchange(&app, ok_device_code, verifier_ok).await;
+    assert_eq!(s, 403);
+    assert!(
+        audit_coll
+            .find_one(doc! {
+                "authorization_id": ok_auth_id,
+                "stage": "exchange",
+                "outcome": "refused",
+                "reason": "already_exchanged",
+            })
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // Dispatch with mismatched public_key -> refused (public_key_mismatch) without consuming grant
+    assert_eq!(
+        ws_dispatch(&app, &share, &grant_ok, &alternate_public_key(), 60)
+            .await
+            .unwrap_err(),
+        403
+    );
+    let mismatch_audit = audit_coll
+        .find_one(doc! {
+            "authorization_id": ok_auth_id,
+            "stage": "dispatch",
+            "outcome": "refused",
+            "reason": "public_key_mismatch",
+        })
+        .await
+        .unwrap()
+        .expect("public_key_mismatch must be audited and correlated to authorization_id");
+    assert!(mismatch_audit.grant_id.is_some());
+
+    // Valid dispatch consumes the grant
+    let mut ws = ws_dispatch(&app, &share, &grant_ok, &public_key(), 60)
+        .await
+        .expect("valid single-use grant dispatch must upgrade");
+    let (sid, setup) = tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            match target.recv().await.expect("target agent channel closed") {
+                ServerMsg::SharedSshSetup { session_id, setup } => break (session_id, setup),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("SharedSshSetup must arrive");
+    let ctx = meshharbor_core::AgentCtx {
+        conn_id: format!("native-audit-{sid}"),
+        agent_id: device,
+        tenant_id: tenant,
+        owner_user_id: owner.id,
+        agent_version: "fixture".into(),
+        os: OsKind::Linux,
+        dialed_tid: None,
+        conn_established_ms: 0,
+        tx,
+    };
+    let handler = meshharbor_mod_network::agent_socket::NetworkAgentSocket::new(
+        app.state.modules.network.as_ref().unwrap().clone(),
+    );
+    handler.hello(&ctx).await;
+    handler
+        .handle(
+            &ctx,
+            ClientMsg::SharedSshPrepared {
+                session_id: sid,
+                accepted: true,
+            },
+        )
+        .await;
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(
+        serde_json::to_string(&ClientMsg::TunnelOpen {
+            agent_id: device,
+            transport: "webrtc-dc-v1".into(),
+            open_nonce: None,
+            derp_pubkey: None,
+            net_grant: None,
+        })
+        .unwrap()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(6), ws.next())
+        .await
+        .unwrap();
+
+    // Replay of the consumed grant is refused and audited as `already_used` correlated to `ok_auth_id`
+    assert_eq!(
+        ws_dispatch(&app, &share, &grant_ok, &public_key(), 60)
+            .await
+            .unwrap_err(),
+        403
+    );
+    let consumed_audit = audit_coll
+        .find_one(doc! {
+            "authorization_id": ok_auth_id,
+            "stage": "dispatch",
+            "outcome": "consumed",
+        })
+        .await
+        .unwrap()
+        .expect("consumed dispatch must be audited");
+    assert_eq!(consumed_audit.session_id, Some(sid));
+    let replay_audit = audit_coll
+        .find_one(doc! {
+            "authorization_id": ok_auth_id,
+            "stage": "dispatch",
+            "outcome": "refused",
+            "reason": "already_used",
+        })
+        .await
+        .unwrap()
+        .expect("replayed grant must be audited as already_used");
+    assert_eq!(replay_audit.grant_id, consumed_audit.grant_id);
+
+    // Check `ssh_audit` also recorded the session with `auth <authorization_id>` in caller
+    let ssh_audit_doc = app
+        .db
+        .collection::<bson::Document>("ssh_audit")
+        .find_one(doc! {"session_id": sid})
+        .await
+        .unwrap()
+        .expect("ssh_audit must record the established shared session");
+    assert!(
+        ssh_audit_doc
+            .get_str("caller")
+            .unwrap()
+            .contains(&ok_auth_id.to_hex())
+    );
+
+    // Trigger live revocation while session is established -> records `revocation_terminate`
+    assert!(
+        app.auth_post(
+            &format!("/api/device-shares/{share_id}/revoke"),
+            &owner.token
+        )
+        .json(&json!({"expected_revision": 0}))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success()
+    );
+    handler
+        .handle(
+            &ctx,
+            ClientMsg::SharedSshLeaseChallenge {
+                session_id: sid,
+                grant_id: setup.shared_lease.grant_id,
+                lease_epoch: setup.shared_lease.lease_epoch,
+                challenge_id: 1,
+            },
+        )
+        .await;
+    let rev_term_audit = tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            if let Some(ev) = audit_coll
+                .find_one(doc! {
+                    "authorization_id": ok_auth_id,
+                    "stage": "revocation_terminate",
+                    "outcome": "terminated",
+                })
+                .await
+                .unwrap()
+            {
+                break ev;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("live revocation must write revocation_terminate audit");
+    assert_eq!(rev_term_audit.session_id, Some(sid));
+    assert_eq!(
+        rev_term_audit.reason.as_deref(),
+        Some("share_missing_or_revoked")
+    );
+    assert_eq!(rev_term_audit.grant_id, consumed_audit.grant_id);
+
+    // 5. Simulate `native_ssh_authorizations` 300s TTL expiration by deleting all rows in
+    //    `native_ssh_authorizations` and verify `native_ssh_audit` rows remain intact and
+    //    contain zero plaintext secrets or full public keys.
+    app.db
+        .collection::<NativeSshAuthorization>(NativeSshAuthorization::COLLECTION)
+        .delete_many(doc! {})
+        .await
+        .unwrap();
+    let persisted_events: Vec<NativeSshAuditEvent> = futures::TryStreamExt::try_collect(
+        audit_coll
+            .find(doc! {"authorization_id": ok_auth_id})
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        persisted_events.len() >= 6,
+        "all lifecycle audit events for authorization must survive authorization slot TTL deletion"
+    );
+    for ev in &persisted_events {
+        let serialized = serde_json::to_string(ev).unwrap();
+        assert!(!serialized.contains(&grant_ok));
+        assert!(!serialized.contains(ok_device_code));
+        assert!(!serialized.contains(ok_user_code));
+        assert!(!serialized.contains(verifier_ok));
+        assert!(!serialized.contains(&public_key()));
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "native-shared-ssh-composed"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "private agent child invoked only by X17 real SSH test"]
+async fn native_ssh_real_agent_child() {
+    tracing_subscriber::fmt()
+        .with_env_filter("off,webrtc_ice::agent::agent_internal=warn")
+        .with_ansi(false)
+        .with_writer(std::io::stderr)
+        .try_init()
+        .expect("isolated agent tracing must install");
+    let path = std::path::PathBuf::from(std::env::var("MH_X17_REAL_AGENT_CONFIG").unwrap());
+    let cfg = meshharbord::config::load(&path).unwrap();
+    let (stop, rx) = tokio::sync::watch::channel(false);
+    let broker = meshharbord::consent::ConsentBroker::new(
+        meshharbord::consent::Mode::AutoGrant,
+        path.parent().unwrap().join("consent"),
+    )
+    .unwrap();
+    let (view, _) = tokio::sync::watch::channel(Default::default());
+    let device = tokio::spawn(meshharbord::signaling::run(
+        meshharbord::signaling::OrgCtx::primary(meshharbord::token_slot::TokenSlot::new(
+            cfg.agent_token.clone(),
+        )),
+        meshharbord::delegate::Delegation::Off,
+        cfg,
+        meshharbord::encode::EncoderPreference::Software,
+        rx,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        view,
+        Default::default(),
+        broker,
+        meshharbord::tunnel::client_mgr::TunnelClientHub::new("native-x17-real-fixture".into()),
+        meshharbord::remote_config::RemoteConfigServices::new(
+            path,
+            std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            false,
+            false,
+        ),
+        meshharbord::rc_sessions::RcSessionRegistry::new(),
+    ));
+    tokio::task::spawn_blocking(|| {
+        let mut b = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut b).unwrap();
+    })
+    .await
+    .unwrap();
+    let _ = stop.send(true);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(8), device).await;
+}
+
+#[cfg(all(target_os = "linux", feature = "native-shared-ssh-composed"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "private CLI child invoked only by X17 real SSH test"]
+async fn native_ssh_real_cli_child() {
+    let server = std::env::var("MH_X17_REAL_SERVER").unwrap();
+    let share = std::env::var("MH_X17_REAL_SHARE").unwrap();
+    let mode = std::env::var("MH_X17_REAL_MODE").unwrap();
+    let nonce = std::env::var("MH_X17_REAL_NONCE").unwrap();
+    assert_eq!(nonce.len(), 24);
+    assert!(nonce.bytes().all(|b| b.is_ascii_hexdigit()));
+    let command = match mode.as_str() {
+        "nonce" => format!("printf 'MH_X17_REAL_SSH_NONCE_{nonce}\\n'"),
+        "live" => format!("printf 'MH_X17_REAL_SSH_READY_{nonce}\\n'; sleep 20"),
+        other => panic!("unexpected mode {other}"),
+    };
+    meshharbor_cli::cli::run_from(
+        vec![
+            "mh".to_owned(),
+            "share-ssh".into(),
+            "--server".into(),
+            server,
+            "--share".into(),
+            share,
+            "--browser-approve".into(),
+            "--session-secs".into(),
+            "30".into(),
+            "--".into(),
+            command,
+        ],
+        meshharbor_cli::cli::Origin::Standalone,
+    )
+    .await
+    .expect("X17 browser-approved CLI child failed");
+}
+
+#[cfg(all(target_os = "linux", feature = "native-shared-ssh-composed"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_ssh_real_agent_and_cli_browser_approved_ssh_session_and_live_revocation() {
+    use futures::FutureExt;
+    use meshharbor_db::models::NativeSshAuditEvent;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+
+    let owner_id = ObjectId::new();
+    let app = TestApp::spawn_with_settings(move |settings| {
+        settings.auth.account_approval.enabled = true;
+        settings.auth.account_approval.owner_user_id = Some(owner_id.to_hex());
+        settings.auth.native_share_ssh_authorization_enabled = true;
+        settings.app.pod_id = Some(format!("native-x17-real-{}", ObjectId::new().to_hex()));
+    })
+    .await;
+    assert!(
+        app.settings.turn.url.is_none() && app.settings.turn.worker_urls.is_none(),
+        "real SSH fixture must not use a public TURN server"
+    );
+
+    let owner = actor(&app, "native_real_ssh_owner", Some(owner_id)).await;
+    let recipient = actor(&app, "native_real_ssh_recipient", None).await;
+    let tenant = app
+        .state
+        .tenants
+        .create("Native real SSH".into(), "native-real-ssh".into(), owner.id)
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    set_tenant_ssh(&app, tenant, &owner, true).await;
+    assert!(
+        !app.state
+            .tenants
+            .is_member(tenant, recipient.id)
+            .await
+            .unwrap()
+    );
+
+    let pac_parent = std::path::Path::new("/root/.agent-work/runtime/pac/roomler-ai-20261022");
+    let root = if pac_parent.is_dir() {
+        tempfile::Builder::new()
+            .prefix("mh-x17-real-ssh-")
+            .tempdir_in(pac_parent)
+            .unwrap()
+    } else {
+        tempfile::Builder::new()
+            .prefix("mh-x17-real-ssh-")
+            .tempdir()
+            .unwrap()
+    };
+    let root_path = root.path().to_path_buf();
+    std::fs::set_permissions(&root_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let isolated_home = root_path.join("home");
+    let isolated_xdg = root_path.join("xdg");
+    let isolated_tmp = root_path.join("tmp");
+    for d in [&isolated_home, &isolated_xdg, &isolated_tmp] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    let enroll: Value = app
+        .auth_post(
+            &format!("/api/tenant/{tenant}/agent/enroll-token"),
+            &owner.token,
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mut cfg = meshharbord::enrollment::enroll(meshharbord::enrollment::EnrollInputs {
+        server_url: &app.base_url,
+        enrollment_token: enroll["enrollment_token"].as_str().unwrap(),
+        machine_id: &format!("native-x17-real-{}", ObjectId::new()),
+        machine_name: "native-x17-real-fixture",
+        install: None,
+    })
+    .await
+    .unwrap();
+    cfg.ssh_enabled = true;
+    cfg.ssh_host_key = Some(meshharbord::ssh::generate_host_key().unwrap());
+    cfg.ssh_account_mode = Some("daemon".into());
+    cfg.enable_remote_browse = false;
+    cfg.auto_grant_session = false;
+    cfg.exec_enabled = false;
+    cfg.remote_config_enabled = false;
+    cfg.overlay_enabled = false;
+    let expected_host = meshharbord::ssh::host_public_key(&cfg);
+    let device = ObjectId::parse_str(&cfg.agent_id).unwrap();
+    app.db
+        .collection::<Agent>("agents")
+        .update_one(
+            doc! {"_id": device},
+            doc! {"$set": {
+                "ssh_policy.mode": "on",
+                "ssh_policy.account_mode": "daemon",
+                "ssh_policy.consent_mode": "auto",
+            }},
+        )
+        .await
+        .unwrap();
+
+    let config_path = root_path.join("agent.toml");
+    meshharbord::config::save(&config_path, &cfg).unwrap();
+    std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let agent_log = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(root_path.join("agent.stderr"))
+        .unwrap();
+    let mut agent = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "native_ssh_revision_tests::native_ssh_real_agent_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("MH_X17_REAL_AGENT_CONFIG", &config_path)
+        .env("HOME", &isolated_home)
+        .env("XDG_CONFIG_HOME", &isolated_xdg)
+        .env("TMPDIR", &isolated_tmp)
+        .env_remove("SSH_AUTH_SOCK")
+        .env("RUST_LOG", "off")
+        .env("NO_PROXY", "127.0.0.1,::1,localhost")
+        .env("no_proxy", "127.0.0.1,::1,localhost")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(agent_log)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut agent_stdin = agent.stdin.take();
+
+    let outcome = std::panic::AssertUnwindSafe(async {
+        let end = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            assert!(
+                agent.try_wait().unwrap().is_none(),
+                "real agent child exited before coming online"
+            );
+            let row = app
+                .db
+                .collection::<Agent>("agents")
+                .find_one(doc! {"_id": device})
+                .await
+                .unwrap()
+                .unwrap();
+            if app
+                .state
+                .modules
+                .fleet
+                .as_ref()
+                .unwrap()
+                .rc_hub
+                .is_agent_online(device)
+                && row.ssh_host_pubkey == expected_host
+            {
+                use meshharbor_remote_control::models::RpcCap;
+                assert!(
+                    [
+                        RpcCap::Ssh,
+                        RpcCap::SshConsent,
+                        RpcCap::SharedSessionLease,
+                        RpcCap::SharedSshStream,
+                    ]
+                    .iter()
+                    .all(|c| row.capabilities.has_rpc(*c)),
+                    "real agent must advertise shared SSH capabilities"
+                );
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < end,
+                "real agent/hostkey did not come online in time"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        let ssh_account =
+            std::env::var("MESHHARBOR_SHARED_SSH_TEST_ACCOUNT").unwrap_or_else(|_| "nobody".into());
+        let share_res = json_response(
+            app.auth_post("/api/device-shares", &owner.token)
+                .json(&json!({
+                    "device_id": device.to_hex(),
+                    "recipient_user_id": recipient.id.to_hex(),
+                    "permissions": {"ssh": true},
+                    "tcp_ports": [],
+                    "expires_in_secs": 180,
+                    "ssh_account": ssh_account,
+                }))
+                .send()
+                .await
+                .unwrap(),
+            200,
+            "real SSH share creation",
+        )
+        .await;
+        let share_id_hex = share_res["id"].as_str().unwrap().to_owned();
+        let nonce = ObjectId::new().to_hex();
+
+        let parse_approval_line = |line: &str| -> (String, String) {
+            let mut auth_id = None;
+            let mut user_code = None;
+            for part in line.split_whitespace() {
+                if let Some(v) = part.strip_prefix("authorization_id=") {
+                    auth_id = Some(v.to_owned());
+                } else if let Some(v) = part.strip_prefix("user_code=") {
+                    user_code = Some(v.to_owned());
+                }
+            }
+            (
+                auth_id.expect("authorization_id in MH_NATIVE_SSH_APPROVAL"),
+                user_code.expect("user_code in MH_NATIVE_SSH_APPROVAL"),
+            )
+        };
+
+        // Stage 1: "nonce" mode — real CLI + browser approval + real OpenSSH command execution
+        let mut cli_nonce = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "native_ssh_revision_tests::native_ssh_real_cli_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("MH_X17_REAL_SERVER", &app.base_url)
+            .env("MH_X17_REAL_SHARE", &share_id_hex)
+            .env("MH_X17_REAL_MODE", "nonce")
+            .env("MH_X17_REAL_NONCE", &nonce)
+            .env("HOME", &isolated_home)
+            .env("XDG_CONFIG_HOME", &isolated_xdg)
+            .env("TMPDIR", &isolated_tmp)
+            .env_remove("SSH_AUTH_SOCK")
+            .env("RUST_LOG", "off")
+            .env("NO_PROXY", "127.0.0.1,::1,localhost")
+            .env("no_proxy", "127.0.0.1,::1,localhost")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut stderr_lines = tokio::io::BufReader::new(cli_nonce.stderr.take().unwrap()).lines();
+        let (nonce_auth_id, nonce_user_code) =
+            tokio::time::timeout(Duration::from_secs(15), async {
+                while let Some(line) = stderr_lines.next_line().await.unwrap() {
+                    if line.contains("MH_NATIVE_SSH_APPROVAL ") {
+                        return parse_approval_line(&line);
+                    }
+                }
+                panic!("CLI child exited without emitting MH_NATIVE_SSH_APPROVAL");
+            })
+            .await
+            .expect("waiting for MH_NATIVE_SSH_APPROVAL in nonce mode");
+
+        let (s, previewed) =
+            audit_preview(&app, &recipient, &nonce_auth_id, &nonce_user_code).await;
+        assert_eq!(s, 200, "{previewed}");
+        let (s, decided) = audit_decide(
+            &app,
+            &recipient,
+            &nonce_auth_id,
+            &nonce_user_code,
+            previewed["scope_revision"].as_str(),
+            true,
+        )
+        .await;
+        assert_eq!(s, 200, "{decided}");
+
+        let mut stdout_buf = String::new();
+        let mut stdout_reader = cli_nonce.stdout.take().unwrap();
+        let status_nonce = tokio::time::timeout(Duration::from_secs(30), async {
+            stdout_reader.read_to_string(&mut stdout_buf).await.unwrap();
+            cli_nonce.wait().await.unwrap()
+        })
+        .await
+        .expect("real SSH nonce command timed out");
+        assert!(status_nonce.success(), "nonce stdout={stdout_buf}");
+        let expected_nonce_marker = format!("MH_X17_REAL_SSH_NONCE_{nonce}");
+        assert_eq!(
+            stdout_buf.matches(&expected_nonce_marker).count(),
+            1,
+            "stdout must contain exact remote SSH nonce once: {stdout_buf}"
+        );
+
+        // Stage 2: "live" mode — real SSH session established, then terminated by live share revocation
+        let mut cli_live = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "native_ssh_revision_tests::native_ssh_real_cli_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("MH_X17_REAL_SERVER", &app.base_url)
+            .env("MH_X17_REAL_SHARE", &share_id_hex)
+            .env("MH_X17_REAL_MODE", "live")
+            .env("MH_X17_REAL_NONCE", &nonce)
+            .env("HOME", &isolated_home)
+            .env("XDG_CONFIG_HOME", &isolated_xdg)
+            .env("TMPDIR", &isolated_tmp)
+            .env_remove("SSH_AUTH_SOCK")
+            .env("RUST_LOG", "off")
+            .env("NO_PROXY", "127.0.0.1,::1,localhost")
+            .env("no_proxy", "127.0.0.1,::1,localhost")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut live_stderr = tokio::io::BufReader::new(cli_live.stderr.take().unwrap()).lines();
+        let (live_auth_id, live_user_code) = tokio::time::timeout(Duration::from_secs(15), async {
+            while let Some(line) = live_stderr.next_line().await.unwrap() {
+                if line.contains("MH_NATIVE_SSH_APPROVAL ") {
+                    return parse_approval_line(&line);
+                }
+            }
+            panic!("live CLI child exited without emitting MH_NATIVE_SSH_APPROVAL");
+        })
+        .await
+        .expect("waiting for MH_NATIVE_SSH_APPROVAL in live mode");
+
+        let (s, previewed_live) =
+            audit_preview(&app, &recipient, &live_auth_id, &live_user_code).await;
+        assert_eq!(s, 200, "{previewed_live}");
+        let (s, decided_live) = audit_decide(
+            &app,
+            &recipient,
+            &live_auth_id,
+            &live_user_code,
+            previewed_live["scope_revision"].as_str(),
+            true,
+        )
+        .await;
+        assert_eq!(s, 200, "{decided_live}");
+
+        let mut live_stdout = tokio::io::BufReader::new(cli_live.stdout.take().unwrap()).lines();
+        let expected_ready_marker = format!("MH_X17_REAL_SSH_READY_{nonce}");
+        tokio::time::timeout(Duration::from_secs(25), async {
+            while let Some(line) = live_stdout.next_line().await.unwrap() {
+                if line.contains(&expected_ready_marker) {
+                    return;
+                }
+            }
+            panic!("live SSH session closed before emitting ready marker");
+        })
+        .await
+        .expect("waiting for live SSH ready marker");
+
+        let revoke_started = std::time::Instant::now();
+        let revoke_res = app
+            .auth_post(
+                &format!("/api/device-shares/{share_id_hex}/revoke"),
+                &owner.token,
+            )
+            .json(&json!({"expected_revision": 0}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(revoke_res.status().as_u16(), 200);
+
+        let status_live = tokio::time::timeout(Duration::from_secs(8), cli_live.wait())
+            .await
+            .expect("live SSH session must terminate promptly after share revocation")
+            .unwrap();
+        assert!(
+            !status_live.success(),
+            "revoked live SSH session must exit non-zero"
+        );
+        assert!(revoke_started.elapsed() < Duration::from_secs(8));
+
+        // Stage 3: Verify persistent decision audit rows for both real SSH sessions
+        let audit_coll = app
+            .db
+            .collection::<NativeSshAuditEvent>(NativeSshAuditEvent::COLLECTION);
+        let nonce_auth_oid = ObjectId::parse_str(&nonce_auth_id).unwrap();
+        let live_auth_oid = ObjectId::parse_str(&live_auth_id).unwrap();
+        for (oid, expect_revocation) in [(nonce_auth_oid, false), (live_auth_oid, true)] {
+            for (stage, outcome) in [
+                ("start", "started"),
+                ("decision", "approved"),
+                ("exchange", "exchanged"),
+                ("dispatch", "consumed"),
+            ] {
+                assert!(
+                    audit_coll
+                        .find_one(doc! {
+                            "authorization_id": oid,
+                            "stage": stage,
+                            "outcome": outcome,
+                        })
+                        .await
+                        .unwrap()
+                        .is_some(),
+                    "missing audit stage={stage} outcome={outcome} for {oid}"
+                );
+            }
+            if expect_revocation {
+                let term = audit_coll
+                    .find_one(doc! {
+                        "authorization_id": oid,
+                        "stage": "revocation_terminate",
+                        "outcome": "terminated",
+                    })
+                    .await
+                    .unwrap()
+                    .expect("live revoked session must record revocation_terminate");
+                assert_eq!(term.reason.as_deref(), Some("share_missing_or_revoked"));
+            }
+        }
+    })
+    .catch_unwind()
+    .await;
+
+    drop(agent_stdin.take());
+    let agent_status = tokio::time::timeout(Duration::from_secs(10), agent.wait())
+        .await
+        .expect("real agent child must exit after stdin EOF")
+        .unwrap();
+    assert!(agent_status.success());
+    drop(root);
+    assert!(
+        !root_path.exists(),
+        "temporary agent/SSH directory must be removed after test"
+    );
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}

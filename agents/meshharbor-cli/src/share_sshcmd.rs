@@ -51,6 +51,21 @@ pub(crate) async fn run_with_token(
     session_secs: u64,
     args: &[String],
 ) -> Result<i32> {
+    let key = crate::sshcmd::mint_session_key()?;
+    run_with_session_key(server, share, token, key, session_secs, args).await
+}
+
+/// Runs the shared-device SSH transport and system `ssh` client using a
+/// caller-minted ephemeral Ed25519 session key (so browser-approved native
+/// grants can bind the key before the WebSocket handshake).
+pub(crate) async fn run_with_session_key(
+    server: &str,
+    share: &str,
+    token: String,
+    key: ssh_key::PrivateKey,
+    session_secs: u64,
+    args: &[String],
+) -> Result<i32> {
     let share = bson::oid::ObjectId::parse_str(share).context("share must be an exact grant ID")?;
     let server = crate::native_auth::legacy_server_base(server)?;
     let http = crate::native_auth::http_client(&server)?;
@@ -77,7 +92,6 @@ pub(crate) async fn run_with_token(
     if host.algorithm() != ssh_key::Algorithm::Ed25519 {
         bail!("device SSH host key is not Ed25519");
     }
-    let key = crate::sshcmd::mint_session_key()?;
     let public = key.public_key().to_openssh()?;
     let dir = crate::sshcmd::PrivateDir::named("meshharbor-share-ssh")?;
     let private = dir.path().join("id");
@@ -110,19 +124,26 @@ pub(crate) async fn run_with_token(
         &kh,
         format!("[127.0.0.1]:{} {}\n", addr.port(), device.host_pubkey).as_bytes(),
     )?;
+    let ssh_config_null = if cfg!(windows) { "none" } else { "/dev/null" };
     let mut child = tokio::process::Command::new("ssh")
-        // Keep the grant-pinned session independent of ambient SSH Includes.
-        .args(["-F", "none"])
+        // Isolate completely from ambient ~/.ssh config, known_hosts, and agent.
+        .env("HOME", dir.path())
+        .env_remove("SSH_AUTH_SOCK")
+        .args(["-F", ssh_config_null])
         .arg("-i")
         .arg(private)
         .arg("-o")
         .arg(format!("UserKnownHostsFile={}", kh.display()))
+        .arg("-o")
+        .arg("GlobalKnownHostsFile=/dev/null")
         .arg("-o")
         .arg("StrictHostKeyChecking=yes")
         .arg("-o")
         .arg("IdentitiesOnly=yes")
         .arg("-o")
         .arg("IdentityAgent=none")
+        .arg("-o")
+        .arg("BatchMode=yes")
         .arg("-p")
         .arg(addr.port().to_string())
         .arg("meshharbor@127.0.0.1")
