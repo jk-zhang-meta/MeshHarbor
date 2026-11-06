@@ -1194,6 +1194,32 @@ fn embedded_cli_args() -> Option<Vec<std::ffi::OsString>> {
     Some(argv)
 }
 
+/// Clap's help/version output needs neither a runtime nor host startup. Leave
+/// every other result to the existing raw-argv dispatch (embedded CLI, helper
+/// protocols, service probes), then the normal daemon parser below.
+fn exit_for_cli_help_or_version() {
+    if let Err(error) = Cli::try_parse()
+        && matches!(
+            error.kind(),
+            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+        )
+    {
+        error.exit();
+    }
+}
+
+/// Keep the parser and startup boundary together: neither informational output
+/// nor invalid arguments may migrate an enrolled host's files.
+fn parse_cli_before_startup<I, T>(args: I, startup: impl FnOnce()) -> Result<Cli, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let cli = Cli::try_parse_from(args)?;
+    startup();
+    Ok(cli)
+}
+
 /// FR-27 — on macOS with the native consent panel, tokio may NOT own the main
 /// thread.
 ///
@@ -1215,6 +1241,7 @@ fn embedded_cli_args() -> Option<Vec<std::ffi::OsString>> {
 /// clean shutdown is a `process::exit` after its drain.
 #[cfg(all(target_os = "macos", feature = "viewer-indicator-macos"))]
 fn main() -> Result<()> {
+    exit_for_cli_help_or_version();
     if meshharbord::tcc_recovery::probe_if_requested()? {
         return Ok(());
     }
@@ -1274,6 +1301,7 @@ fn main() -> Result<()> {
 /// exit (an auto-update, a SIGTERM) already gets. Nothing else changes.
 #[cfg(not(all(target_os = "macos", feature = "viewer-indicator-macos")))]
 fn main() -> Result<()> {
+    exit_for_cli_help_or_version();
     #[cfg(target_os = "macos")]
     if meshharbord::tcc_recovery::probe_if_requested()? {
         return Ok(());
@@ -1430,6 +1458,25 @@ async fn daemon_main() -> Result<()> {
         };
     }
 
+    let cli = parse_cli_before_startup(std::env::args_os(), || {
+        // RETIRED-NAME-ANCHOR: a migration note names BOTH halves by necessity.
+        // docs/fr/FR-21
+        // S1b — one-shot legacy-tree migration (`meshharbor-agent` → `meshharbor`).
+        // Before logging or any appdirs consumer; the companion may hold the
+        // old tree open, so read-both resolution remains until the next start.
+        #[cfg(target_os = "windows")]
+        let companion_running = meshharbord::companion::desktop_running();
+        #[cfg(not(target_os = "windows"))]
+        let companion_running = false;
+        meshharbord::appdirs::migrate_legacy_trees(companion_running);
+
+        // The packaged Linux SYSTEM config belongs under /etc, before any
+        // config read or logging. Informational/parser exits never reach here.
+        #[cfg(target_os = "linux")]
+        meshharbord::appdirs::migrate_system_config();
+    })
+    .unwrap_or_else(|error| error.exit());
+
     // Set per-monitor-V2 DPI awareness as the very first thing on
     // Windows. Capture frames (WGC / DXGI / scrap) are always physical
     // pixels regardless of awareness, but enigo's mouse-position APIs
@@ -1456,30 +1503,6 @@ async fn daemon_main() -> Result<()> {
     // (after logging::init) alongside the DPI diagnostic. See win_timer.rs.
     #[cfg(target_os = "windows")]
     let _timer_guard = win_timer::TimerResolutionGuard::request_1ms();
-
-    // RETIRED-NAME-ANCHOR: a migration note names BOTH halves by necessity.
-    // docs/fr/FR-21
-    // S1b — one-shot legacy-tree migration (`meshharbor-agent` → `meshharbor`).
-    // MUST run before `logging::init` (log files open inside the tree) and
-    // before ANY appdirs consumer (segment decisions are OnceLock-cached per
-    // process). Skipped while the desktop companion is running — it may hold
-    // open handles in the tree; the read-both resolution keeps everything
-    // working until the next start retries.
-    #[cfg(target_os = "windows")]
-    let companion_running = meshharbord::companion::desktop_running();
-    #[cfg(not(target_os = "windows"))]
-    let companion_running = false;
-    meshharbord::appdirs::migrate_legacy_trees(companion_running);
-
-    // Same one-shot, same reason, different axis: a Linux SYSTEM install's
-    // config belongs at `/etc/meshharbor/config.toml` (what the packaged unit
-    // passes as `--config`), not in root's profile. Before `default_config_path`
-    // or any config read, and before logging::init, so it collects notes the
-    // same way.
-    #[cfg(target_os = "linux")]
-    meshharbord::appdirs::migrate_system_config();
-
-    let cli = Cli::parse();
 
     // S1b — the SCM service host and the SystemContext worker log into the
     // machine-global `service-logs` dir (the one the desktop app has always
@@ -6657,6 +6680,102 @@ mod tests {
     //! hands.
 
     use super::*;
+
+    #[test]
+    fn cli_raw_dispatch_help_and_version_are_not_outer_informational_exits() {
+        for args in [
+            vec!["meshharbord", "cli", "--help"],
+            vec!["meshharbord", "cli", "ssh", "-h"],
+            vec!["meshharbord", "cli", "--version"],
+            vec!["meshharbord", "hive-prep", "--help"],
+        ] {
+            let error = Cli::try_parse_from(&args).unwrap_err();
+            assert!(
+                !matches!(
+                    error.kind(),
+                    clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+                ),
+                "{args:?} must remain available to its raw-argv handler"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_help_and_version_never_enter_host_startup() {
+        use clap::error::ErrorKind::{DisplayHelp, DisplayVersion};
+        for (args, expected) in [
+            (vec!["meshharbord", "--version"], DisplayVersion),
+            (vec!["meshharbord", "-V"], DisplayVersion),
+            (vec!["meshharbord", "--help"], DisplayHelp),
+            (vec!["meshharbord", "-h"], DisplayHelp),
+            (vec!["meshharbord", "help", "service"], DisplayHelp),
+            (vec!["meshharbord", "run", "--help"], DisplayHelp),
+            (vec!["meshharbord", "enroll", "--help"], DisplayHelp),
+            (
+                vec![
+                    "meshharbord",
+                    "--config",
+                    "/not-read/config.toml",
+                    "--version",
+                ],
+                DisplayVersion,
+            ),
+        ] {
+            let startup_calls = std::cell::Cell::new(0);
+            let error = parse_cli_before_startup(args, || {
+                startup_calls.set(startup_calls.get() + 1);
+            })
+            .unwrap_err();
+            assert_eq!(error.kind(), expected);
+            assert_eq!(
+                startup_calls.get(),
+                0,
+                "informational output must not migrate files"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_run_still_enters_host_startup_once_and_preserves_arguments() {
+        let startup_calls = std::cell::Cell::new(0);
+        let cli = parse_cli_before_startup(
+            ["meshharbord", "--config=--version", "run", "--supervised"],
+            || startup_calls.set(startup_calls.get() + 1),
+        )
+        .unwrap();
+        assert_eq!(startup_calls.get(), 1);
+        assert_eq!(cli.config, Some(PathBuf::from("--version")));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Run {
+                supervised: true,
+                ..
+            })
+        ));
+
+        let startup_calls = std::cell::Cell::new(0);
+        let cli = parse_cli_before_startup(["meshharbord"], || {
+            startup_calls.set(startup_calls.get() + 1);
+        })
+        .unwrap();
+        assert!(
+            cli.command.is_none(),
+            "bare invocation keeps its default run path"
+        );
+        assert_eq!(startup_calls.get(), 1);
+    }
+
+    #[test]
+    fn cli_invalid_arguments_do_not_enter_host_startup() {
+        let startup_calls = std::cell::Cell::new(0);
+        let error = parse_cli_before_startup(["meshharbord", "--not-a-real-option"], || {
+            startup_calls.set(startup_calls.get() + 1);
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert_eq!(startup_calls.get(), 0);
+    }
+
     #[test]
     fn enroll_token_stdin_preserves_value_and_only_removes_terminal_crlf() {
         for (input, expected) in [
