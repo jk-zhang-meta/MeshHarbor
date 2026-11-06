@@ -660,7 +660,7 @@ impl AssociationInternal {
             }
             let len = c.user_data.len();
             if !self.reserve_paced_chunk(&mut packet_bytes, len) {
-                waiting = chunks.is_empty();
+                waiting = true;
                 break;
             }
             if let Some(c) = self.inflight_queue.get_mut(tsn) {
@@ -2753,5 +2753,137 @@ impl RtxTimerObserver for AssociationInternal {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod paced_fast_retrans_tests {
+    use std::io;
+    use std::net::SocketAddr;
+
+    use super::*;
+    use crate::chunk::chunk_selective_ack::GapAckBlock;
+
+    struct NoopConn;
+
+    #[async_trait]
+    impl Conn for NoopConn {
+        async fn connect(&self, _addr: SocketAddr) -> std::result::Result<(), util::Error> {
+            Err(io::Error::new(io::ErrorKind::Other, "Not applicable").into())
+        }
+        async fn recv(&self, _b: &mut [u8]) -> std::result::Result<usize, util::Error> {
+            Ok(0)
+        }
+        async fn recv_from(
+            &self,
+            _buf: &mut [u8],
+        ) -> std::result::Result<(usize, SocketAddr), util::Error> {
+            Err(io::Error::new(io::ErrorKind::Other, "Not applicable").into())
+        }
+        async fn send(&self, _b: &[u8]) -> std::result::Result<usize, util::Error> {
+            Ok(0)
+        }
+        async fn send_to(
+            &self,
+            _buf: &[u8],
+            _target: SocketAddr,
+        ) -> std::result::Result<usize, util::Error> {
+            Err(io::Error::new(io::ErrorKind::Other, "Not applicable").into())
+        }
+        fn local_addr(&self) -> std::result::Result<SocketAddr, util::Error> {
+            Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "Addr Not Available").into())
+        }
+        fn remote_addr(&self) -> Option<SocketAddr> {
+            None
+        }
+        async fn close(&self) -> std::result::Result<(), util::Error> {
+            Ok(())
+        }
+        fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+            self
+        }
+    }
+
+    #[tokio::test]
+    async fn test_paced_fast_retransmit_drains_multiple_full_mtu_holes_across_gathers() -> Result<()>
+    {
+        let (close_loop_ch_tx, _close_loop_ch_rx) = broadcast::channel(1);
+        let (accept_ch_tx, _accept_ch_rx) = mpsc::channel(1);
+        let (handshake_completed_ch_tx, _handshake_completed_ch_rx) = mpsc::channel(1);
+        let (awake_write_loop_ch_tx, _awake_write_loop_ch_rx) = mpsc::channel(1);
+        let mut a = AssociationInternal::new(
+            Config {
+                net_conn: Arc::new(NoopConn),
+                max_receive_buffer_size: 0,
+                max_message_size: 0,
+                name: "paced-multi-hole-client".to_owned(),
+            },
+            close_loop_ch_tx,
+            accept_ch_tx,
+            handshake_completed_ch_tx,
+            Arc::new(awake_write_loop_ch_tx),
+        );
+        a.set_state(AssociationState::Established);
+        a.configure_file_pacing(Some(FilePacingConfig {
+            rate_bytes_per_second: 16 * 1024 * 1024,
+            burst_bytes: 256 * 1024,
+        }))?;
+
+        a.cumulative_tsn_ack_point = 99;
+        a.my_next_tsn = 110;
+        a.cwnd = 24_000;
+        a.ssthresh = 24_000;
+        a.rwnd = 1_000_000;
+        for tsn in 100..110 {
+            a.inflight_queue.push_no_check(ChunkPayloadData {
+                tsn,
+                nsent: 1,
+                since: SystemTime::now(),
+                user_data: Bytes::from(vec![0u8; 1200]),
+                ..Default::default()
+            });
+        }
+
+        // Both TSN 100 and TSN 101 (each 1200 B payload = 1 full MTU packet)
+        // are missing; 3 SACKs acknowledging 102..=104 push both to miss_indicator == 3.
+        for end in 3..=5 {
+            a.handle_sack(&ChunkSelectiveAck {
+                cumulative_tsn_ack: 99,
+                advertised_receiver_window_credit: 1_000_000,
+                gap_ack_blocks: vec![GapAckBlock { start: 3, end }],
+                ..Default::default()
+            })
+            .await?;
+        }
+        assert_eq!(a.inflight_queue.get(100).unwrap().miss_indicator, 3);
+        assert_eq!(a.inflight_queue.get(101).unwrap().miss_indicator, 3);
+        assert!(a.will_retransmit_fast);
+
+        // First paced gather emits 1 MTU packet for TSN 100.
+        let first = a.gather_outbound_fast_retransmission_packets(Vec::new());
+        assert_eq!(first.len(), 1, "first gather must emit TSN 100");
+        assert_eq!(a.inflight_queue.get(100).unwrap().nsent, 2);
+        assert_eq!(a.inflight_queue.get(101).unwrap().nsent, 1);
+        a.file_pacing_dispatched();
+
+        // TSN 101 still awaits fast retransmission; will_retransmit_fast must stay set
+        // so the immediate next paced gather emits TSN 101 without waiting for T3 RTO.
+        assert!(
+            a.will_retransmit_fast,
+            "will_retransmit_fast must remain true while TSN 101 still awaits fast retransmission"
+        );
+        let second = a.gather_outbound_fast_retransmission_packets(Vec::new());
+        assert_eq!(
+            second.len(),
+            1,
+            "second paced gather must emit the second fast-retransmit packet for TSN 101"
+        );
+        assert_eq!(a.inflight_queue.get(101).unwrap().nsent, 2);
+        a.file_pacing_dispatched();
+        assert!(
+            !a.will_retransmit_fast,
+            "will_retransmit_fast must clear after all eligible holes are retransmitted"
+        );
+        Ok(())
     }
 }
