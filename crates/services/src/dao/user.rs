@@ -725,7 +725,10 @@ impl UserDao {
             return Ok(false);
         }
 
-        self.update_security(user_id, doc! {}, update, None).await
+        update.insert("updated_at", DateTime::now());
+        self.base
+            .update_by_id(user_id, doc! { "$set": update })
+            .await
     }
 
     /// FR-12 P3 — write the caller's tutorial state.

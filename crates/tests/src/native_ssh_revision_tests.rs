@@ -1250,15 +1250,9 @@ async fn membership_device_and_account_revisions() {
             .await
             .unwrap()
     );
-    assert_eq!(
-        agents
-            .base
-            .find_by_id(device)
-            .await
-            .unwrap()
-            .access_policy_revision(),
-        Some(4)
-    );
+    let renamed_agent = agents.base.find_by_id(device).await.unwrap();
+    assert_eq!(renamed_agent.name, "Upstream renamed");
+    assert_eq!(renamed_agent.access_policy_revision(), Some(3));
     assert!(agents.update_owner(tenant, device, owner.id).await.unwrap());
     assert_eq!(
         agents
@@ -1267,7 +1261,7 @@ async fn membership_device_and_account_revisions() {
             .await
             .unwrap()
             .access_policy_revision(),
-        Some(5)
+        Some(4)
     );
     let anchor = ExecAnchor {
         anchored_at: bson::DateTime::now(),
@@ -1282,13 +1276,14 @@ async fn membership_device_and_account_revisions() {
             .await
             .unwrap()
             .access_policy_revision(),
-        Some(6)
+        Some(5)
     );
-    let endpoint = SshServiceEndpoint {
+    let first_published_at = bson::DateTime::from_millis(1_700_000_000_000);
+    let mut endpoint = SshServiceEndpoint {
         host_pubkey: public_key(),
         ceiling: SshServiceCeiling::System,
         anchor_id: "anchor-rev-1".into(),
-        published_at: bson::DateTime::now(),
+        published_at: first_published_at,
         one_command: false,
     };
     assert!(
@@ -1304,7 +1299,73 @@ async fn membership_device_and_account_revisions() {
             .await
             .unwrap()
             .access_policy_revision(),
+        Some(6)
+    );
+    // Same-content republish (6h timer or service restart) updates published_at without advancing rev.
+    let republished_at = bson::DateTime::from_millis(1_700_021_600_000);
+    endpoint.published_at = republished_at;
+    assert!(
+        agents
+            .publish_ssh_service(tenant, device, &endpoint)
+            .await
+            .unwrap()
+    );
+    let republished_agent = agents.base.find_by_id(device).await.unwrap();
+    assert_eq!(republished_agent.access_policy_revision(), Some(6));
+    assert_eq!(
+        republished_agent.ssh_service.as_ref().unwrap().published_at,
+        republished_at
+    );
+    // Changing ceiling advances access_policy_rev.
+    endpoint.ceiling = SshServiceCeiling::ConsoleUser;
+    assert!(
+        agents
+            .publish_ssh_service(tenant, device, &endpoint)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        agents
+            .base
+            .find_by_id(device)
+            .await
+            .unwrap()
+            .access_policy_revision(),
         Some(7)
+    );
+    // Changing host_pubkey advances access_policy_rev.
+    endpoint.host_pubkey = format!("{} rotated", public_key());
+    assert!(
+        agents
+            .publish_ssh_service(tenant, device, &endpoint)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        agents
+            .base
+            .find_by_id(device)
+            .await
+            .unwrap()
+            .access_policy_revision(),
+        Some(8)
+    );
+    // Changing one_command advances access_policy_rev.
+    endpoint.one_command = true;
+    assert!(
+        agents
+            .publish_ssh_service(tenant, device, &endpoint)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        agents
+            .base
+            .find_by_id(device)
+            .await
+            .unwrap()
+            .access_policy_revision(),
+        Some(9)
     );
     assert!(agents.clear_exec_anchor(device).await.unwrap());
     assert_eq!(
@@ -1314,7 +1375,7 @@ async fn membership_device_and_account_revisions() {
             .await
             .unwrap()
             .access_policy_revision(),
-        Some(8)
+        Some(10)
     );
     assert!(
         agents
@@ -1329,7 +1390,7 @@ async fn membership_device_and_account_revisions() {
             .await
             .unwrap()
             .access_policy_revision(),
-        Some(9)
+        Some(11)
     );
     assert!(
         agents
@@ -1344,13 +1405,13 @@ async fn membership_device_and_account_revisions() {
             .await
             .unwrap()
             .access_policy_revision(),
-        Some(9)
+        Some(11)
     );
     assert!(agents.soft_delete(tenant, device).await.unwrap());
     let deleted_agent = agents.base.find_by_id(device).await.unwrap();
     assert!(deleted_agent.deleted_at.is_some());
     assert_eq!(deleted_agent.token_gen, 1);
-    assert_eq!(deleted_agent.access_policy_revision(), Some(10));
+    assert_eq!(deleted_agent.access_policy_revision(), Some(12));
     let revived_agent = agents
         .rehydrate(
             device,
@@ -1363,7 +1424,7 @@ async fn membership_device_and_account_revisions() {
         .unwrap();
     assert!(revived_agent.deleted_at.is_none());
     assert_eq!(revived_agent.token_gen, 1);
-    assert_eq!(revived_agent.access_policy_revision(), Some(11));
+    assert_eq!(revived_agent.access_policy_revision(), Some(13));
 
     for invalid in [
         bson::Bson::Null,
@@ -1470,16 +1531,9 @@ async fn membership_device_and_account_revisions() {
             .await
             .unwrap()
     );
-    assert_eq!(
-        app.state
-            .users
-            .base
-            .find_by_id(uid)
-            .await
-            .unwrap()
-            .security_revision(),
-        Some(6)
-    );
+    let profile_updated_user = app.state.users.base.find_by_id(uid).await.unwrap();
+    assert_eq!(profile_updated_user.display_name, "Updated Display");
+    assert_eq!(profile_updated_user.security_revision(), Some(5));
 
     let mut expected_approval_rev = 1_u32;
     for invalid in [
@@ -1544,7 +1598,10 @@ async fn native_ssh_upstream_membership_device_and_account_aba_refuse_exchange()
 }
 
 async fn upstream_membership_device_and_account_aba() {
-    use meshharbor_remote_control::models::{ConsentMode, SshAccountMode, SshMode, SshPolicy};
+    use meshharbor_remote_control::models::{
+        ConsentMode, ExecAnchor, SshAccountMode, SshMode, SshPolicy, SshServiceCeiling,
+        SshServiceEndpoint,
+    };
 
     let owner_id = ObjectId::new();
     let app = tokio::time::timeout(
@@ -1650,7 +1707,61 @@ async fn upstream_membership_device_and_account_aba() {
     let account_body: Value = account_exchange.json().await.unwrap();
     assert!(account_body.get("grant").is_none());
 
-    // 4. Fresh approval after all completed ABA transitions succeeds.
+    // 4. Same-content publish_ssh_service republish (6h timer / service restart) preserves
+    //    approved authorization, while a host_pubkey or ceiling change refuses exchange.
+    let anchor = ExecAnchor {
+        anchored_at: bson::DateTime::now(),
+        anchored_by: owner.id,
+        anchor_id: "anchor-aba-1".into(),
+    };
+    assert!(agents.set_exec_anchor(device, &anchor).await.unwrap());
+    let mut service_endpoint = SshServiceEndpoint {
+        host_pubkey: public_key(),
+        ceiling: SshServiceCeiling::System,
+        anchor_id: "anchor-aba-1".into(),
+        published_at: bson::DateTime::from_millis(1_700_000_000_000),
+        one_command: false,
+    };
+    assert!(
+        agents
+            .publish_ssh_service(tenant, device, &service_endpoint)
+            .await
+            .unwrap()
+    );
+    let started_republish_ok = approve_request(&app, &recipient, &share).await;
+    service_endpoint.published_at = bson::DateTime::from_millis(1_700_021_600_000);
+    assert!(
+        agents
+            .publish_ssh_service(tenant, device, &service_endpoint)
+            .await
+            .unwrap()
+    );
+    let republish_ok_body = json_response(
+        exchange(&app, &started_republish_ok).await,
+        200,
+        "same-content republish exchange",
+    )
+    .await;
+    assert!(
+        republish_ok_body["grant"]
+            .as_str()
+            .is_some_and(|grant| !grant.is_empty())
+    );
+
+    let started_republish_changed = approve_request(&app, &recipient, &share).await;
+    service_endpoint.ceiling = SshServiceCeiling::ConsoleUser;
+    assert!(
+        agents
+            .publish_ssh_service(tenant, device, &service_endpoint)
+            .await
+            .unwrap()
+    );
+    let republish_changed_exchange = exchange(&app, &started_republish_changed).await;
+    assert_eq!(republish_changed_exchange.status().as_u16(), 403);
+    let republish_changed_body: Value = republish_changed_exchange.json().await.unwrap();
+    assert!(republish_changed_body.get("grant").is_none());
+
+    // 5. Fresh approval after all completed ABA transitions succeeds.
     let fresh = approve_request(&app, &recipient, &share).await;
     let fresh_body = json_response(exchange(&app, &fresh).await, 200, "fresh exchange").await;
     assert!(

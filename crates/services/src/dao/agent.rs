@@ -1260,12 +1260,12 @@ impl AgentDao {
     ) -> DaoResult<bool> {
         // The flag is what stops the next re-enroll's `rehydrate`
         // from clobbering this rename with the machine-reported name.
-        self.update_child_access_policy(
-            tenant_id,
-            agent_id,
-            doc! { "name": name, "name_admin_set": true },
-        )
-        .await
+        self.base
+            .update_one(
+                Self::live_row(tenant_id, agent_id),
+                doc! { "$set": { "name": name, "name_admin_set": true } },
+            )
+            .await
     }
 
     /// Set/clear the friendly display label. Display-only — never propagates
@@ -1304,6 +1304,11 @@ impl AgentDao {
     /// SSH endpoint. Written only while the row is LIVE and still carries the
     /// anchor the publishing credential named, so a publish racing a
     /// re-anchor, an un-anchor or a removal writes nothing (`false`).
+    ///
+    /// Periodic same-content republishes (`REPUBLISH_EVERY = 6h` or daemon
+    /// restarts) refresh only `published_at` without advancing
+    /// `access_policy_rev`; only a change to `host_pubkey`, `ceiling`,
+    /// `anchor_id`, or `one_command` advances the revision.
     pub async fn publish_ssh_service(
         &self,
         tenant_id: ObjectId,
@@ -1312,9 +1317,63 @@ impl AgentDao {
     ) -> DaoResult<bool> {
         let mut filter = Self::live_row(tenant_id, agent_id);
         filter.insert("exec_anchor.anchor_id", endpoint.anchor_id.as_str());
-        let endpoint = bson::to_bson(endpoint)?;
-        self.update_agent_security_filtered(filter, doc! { "$set": { "ssh_service": endpoint } })
-            .await
+        let ceiling_bson = bson::to_bson(&endpoint.ceiling)?;
+        let endpoint_bson = bson::to_bson(endpoint)?;
+        let mut same_fields = doc! {
+            "ssh_service.host_pubkey": endpoint.host_pubkey.as_str(),
+            "ssh_service.ceiling": ceiling_bson,
+            "ssh_service.anchor_id": endpoint.anchor_id.as_str(),
+        };
+        if endpoint.one_command {
+            same_fields.insert("ssh_service.one_command", true);
+        } else {
+            same_fields.insert(
+                "$or",
+                bson::bson!([
+                    { "ssh_service.one_command": false },
+                    { "ssh_service.one_command": { "$exists": false } },
+                ]),
+            );
+        }
+        let mut unchanged = filter.clone();
+        unchanged.extend(same_fields.clone());
+        let mut changed = filter.clone();
+        changed.insert("$nor", vec![same_fields]);
+        let collection = self.base.collection();
+        for _ in 0..3 {
+            if collection
+                .update_one(
+                    unchanged.clone(),
+                    doc! {
+                        "$set": {
+                            "ssh_service.published_at": endpoint.published_at,
+                            "ssh_service.one_command": endpoint.one_command,
+                            "updated_at": DateTime::now(),
+                        }
+                    },
+                )
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            if self
+                .update_agent_security_filtered(
+                    changed.clone(),
+                    doc! { "$set": { "ssh_service": endpoint_bson.clone() } },
+                )
+                .await?
+            {
+                return Ok(true);
+            }
+            if collection.find_one(filter.clone()).await?.is_none() {
+                return Ok(false);
+            }
+        }
+        Err(super::base::DaoError::Validation(
+            "Agent SSH service endpoint changed concurrently; retry".into(),
+        ))
     }
 
     /// Tombstone a LIVE row. `deleted_at` is the removal time and is written
