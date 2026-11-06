@@ -936,21 +936,21 @@ mod tests {
         assert_eq!(dir, "meshharbor-tunnel-0.4.149-x86_64-unknown-linux-gnu");
         let good = tgz(&[
             (&format!("{dir}/README"), b"readme"),
-            (&format!("{dir}/meshharbor"), b"the new binary"),
+            (&format!("{dir}/mh"), b"the new binary"),
         ]);
         assert_eq!(
             extract_tarball_binary(&good, &dir).expect("found"),
             b"the new binary"
         );
         // Tarred as `./<dir>`.
-        let dotted = tgz(&[(&format!("./{dir}/meshharbor"), b"dotted")]);
+        let dotted = tgz(&[(&format!("./{dir}/mh"), b"dotted")]);
         assert_eq!(
             extract_tarball_binary(&dotted, &dir).expect("found"),
             b"dotted"
         );
         // An older release offered as this one: its dir names its own version.
         let old = tgz(&[(
-            "meshharbor-tunnel-0.4.148-x86_64-unknown-linux-gnu/meshharbor",
+            "meshharbor-tunnel-0.4.148-x86_64-unknown-linux-gnu/mh",
             b"old binary",
         )]);
         assert!(extract_tarball_binary(&old, &dir).is_err());
