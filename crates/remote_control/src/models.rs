@@ -2109,6 +2109,15 @@ pub struct Agent {
     /// self-controls (no external allowlist needed). Set to `enrolled_by` at
     /// enrollment; reassignable by a `MANAGE_AGENTS` admin.
     pub owner_user_id: ObjectId,
+    /// X14 child authority uses only `access_policy_revision()`. Preserve raw
+    /// BSON so legacy/corrupt counters cannot acquire authority by coercion or
+    /// block an administrative restriction. This is not a parent-session grant.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_access_policy_rev",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub access_policy_rev: Option<bson::Bson>,
     /// The user whose enrollment token created this agent (audit; the initial
     /// `owner_user_id`). `#[serde(default)]` → older rows deserialize to `None`.
     #[serde(default)]
@@ -2421,6 +2430,23 @@ pub struct Agent {
 
 impl Agent {
     pub const COLLECTION: &'static str = "agents";
+
+    /// Missing, corrupt, and exhausted counters refuse child authority.
+    pub fn access_policy_revision(&self) -> Option<i64> {
+        match self.access_policy_rev.as_ref() {
+            Some(bson::Bson::Int64(revision)) if *revision > 0 && *revision < i64::MAX => {
+                Some(*revision)
+            }
+            _ => None,
+        }
+    }
+}
+
+fn deserialize_access_policy_rev<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<bson::Bson>, D::Error> {
+    // Explicit null is present and invalid; only a missing field is legacy.
+    bson::Bson::deserialize(deserializer).map(Some)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
