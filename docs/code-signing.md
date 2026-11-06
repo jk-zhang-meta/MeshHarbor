@@ -4,8 +4,12 @@
      what is actually published. -->
 # Code signing
 
-How every published MeshHarbor artifact gets signed, why the pipeline is shaped
-the way it is, and the exact sequence to (re)establish the credentials.
+Historical signed-distribution requirements, updater trust checks and credential
+setup reference. **For the current owner-directed local artifacts, Windows and
+Linux are unsigned; only macOS is signed.** The Windows/GPG provisioning and
+signing steps below are not prerequisites for those local builds. Existing updater
+verification remains unchanged; unsigned local output is not claimed compatible
+with the signed auto-update path. See [current local policy](local-build.md#packaging-and-signing).
 
 Publisher of record: **G ROX LTD** (Plovdivska 110, 4400 Pazardzhik, Bulgaria
 — UIC/EIK `205174895`, VAT `BG205174895`). The Windows "Verified publisher"
@@ -58,7 +62,7 @@ SmartScreen reputation organically from download volume. What signing buys
   EU *individuals* are not (US/Canada only), which is why signing runs under
   the company identity.
 
-## 2b. Live status — all three platforms sign (Azure 2026-08-22, Apple 2026-09-08)
+## 2b. Historical signing status (Azure 2026-08-22, Apple 2026-09-08)
 
 - Identity validation **Completed** for G ROX LTD (id
   `2390bcea-a3d5-4919-a624-cb209c875bf7`, valid to 2028-11-21).
@@ -153,7 +157,7 @@ work). GPG (`70-gpg-release-key.sh create|export`): ed25519 signing subkey →
 `GPG_PRIVATE_KEY` / `GPG_PASSPHRASE` / `GPG_KEY_ID`; the primary key stays
 offline.
 
-## 4. What gets signed, where
+## 4. Historical signed distribution: what was signed, where
 
 ```mermaid
 graph LR
@@ -210,9 +214,15 @@ the wintun staging (so a folder sweep structurally *cannot* touch the
 third-party DLL). **Invariant: no step after payload signing may run
 `cargo build` in that job** — a relink silently strips the signatures.
 
-## 5. The composite actions
+## 5. Retired composite actions: retained signing requirements
 
-### `.github/actions/sign-windows`
+This project uses no CI. The following describes the former implementation;
+its trust, timestamp, publisher and notarization requirements still apply to
+manual releases. See [local packaging and signing](local-build.md#packaging-and-signing)
+and the [historical signing sources](local-build.md#historical-workflow-sources).
+
+
+### Windows signing requirements
 
 Modes: `auto` (azure if the six variables are set, else local PFX, else none)
 · `azure` · `local` · `off`. After signing it **verifies**: `signtool verify
@@ -231,7 +241,7 @@ the identical strict verification runs. `azure/login` and
 `azure/artifact-signing-action` are pinned to commit SHAs — they are the
 closest thing to a signing key in this pipeline.
 
-### `.github/actions/sign-macos`
+### macOS signing requirements
 
 All-or-nothing on the six Apple secrets (a partial set is a hard error —
 half-configured used to be able to publish a signed-but-unnotarised `.pkg`
@@ -243,22 +253,15 @@ with **no warning**, which Gatekeeper rejects just as hard as unsigned).
 release-setup additionally re-extracts its own tarball and re-validates, so
 "the ticket didn't survive tar" can never ship.
 
-## 6. Rehearsal — prove everything without spending a cent
+## 6. Local rehearsal
 
-```powershell
-# once: self-signed cert -> WIN_TEST_PFX_* secrets
-pwsh scripts/signing/50-selfsigned-dev-cert.ps1 -PushSecrets
-```
+Read `scripts/signing/README.md` and the native recipes before using a test
+certificate on an explicitly authorized host. `40-smoke-sign.ps1` and
+`90-verify-release.ps1`/`.sh` are existing entrypoints; inspect their parameters
+and effects first. Missing required signatures must fail verification. No workflow
+dispatch or tag creates an artifact. Local test certificates must not be published.
 
-```bash
-# artifacts-only runs (publish_release=false publishes nothing)
-gh workflow run release-agent.yml  -f version=<v> -f publish_release=false -f signing_mode=local -f require_signing=true
-gh workflow run release-setup.yml  -f version=<v> -f publish_release=false -f signing_mode=local
-gh workflow run release-tunnel.yml -f version=<v> -f publish_release=false -f signing_mode=local
-
-# negative test — the gate must FAIL, not warn
-gh workflow run release-agent.yml -f version=<v> -f publish_release=false -f signing_mode=off -f require_signing=true
-```
+The following incident is historical evidence from the retired release system.
 
 > ⚠️ **A green `publish_release=false` dispatch proves the BUILD, not the
 > PUBLISH path.** Several gates only arm on a release run and are deliberately
@@ -442,8 +445,9 @@ MESHHARBOR_TEST_MSI_TAG=agent-v<version> \
 
 The same freeze risk applies to the signing gate: a release that ships an
 unsigned or mis-signed Windows artifact does not error, it just stops updating
-the fleet. The `require` mode in `.github/actions/sign-windows` is what
-prevents that reaching a release tag — do not weaken it.
+the fleet. The historical signed-distribution contract rejected missing/invalid signatures.
+That is not a signing prerequisite for the current unsigned Windows/Linux local
+artifacts; their build policy does not alter updater verification.
 
 ## 8. Enterprise pilot path (before/without the public cert)
 

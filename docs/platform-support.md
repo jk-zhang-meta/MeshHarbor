@@ -98,7 +98,7 @@ flowchart LR
 | The computer's sound in a session | ✅ WASAPI loopback | ✅ the default output's monitor, through Pulse's client library, per-user and system installs (FR-97 P3c) | ❌ no capture backend, so no audio track, and the reason `no-backend` | `agents/meshharbord/src/audio/pulse.rs:3-9`; macOS: `agents/meshharbord/src/audio/mod.rs:99` |
 | Recording with sound | ✅ the computer and the microphone | ✅ | 🟡 picture only | cpal, the capture crate, is not built for macOS (`agents/meshharbord/Cargo.toml:389-393`) |
 | Ctrl+Alt+Del | ✅ the real sequence from a SystemContext install where the policy lets services; elsewhere three ordinary keys, and it says so | ⛔ keys only | ⛔ hidden | `agents/meshharbord/src/input/sas.rs:3-25`; the words at `agents/meshharbord/src/encode/caps.rs:881-893`; §8 |
-| The consent panel on the host | ✅ | ✅ X11 · ⛔ Wayland: the companion asks | ❌ built, not in the release build: the companion asks | `viewer-indicator-macos` is left out of the macOS build on purpose (`.github/workflows/release-agent.yml:2564-2579`), until it runs through the real-Mac procedure (FR-97 D3) |
+| The consent panel on the host | ✅ | ✅ X11 · ⛔ Wayland: the companion asks | ❌ built, not in the release build: the companion asks | `viewer-indicator-macos` is left out of the macOS build on purpose (`docs/local-build.md (native binaries)-2579`), until it runs through the real-Mac procedure (FR-97 D3) |
 | "Host is locked" hint, in a session and before consent | ✅ | 🟡 in a session: advisory, from logind's `LockedHint`; a Linux lock screen is captured and takes input like any other. Not yet while a request waits for consent | ✅ both since 0.4.150, advisory, from the session dictionary (FR-97 P2d-1); whether the lock screen takes typed input is not measured, so the viewer's chip claims neither way | `agents/meshharbord/src/lock_state.rs:335-349`; macOS: `agents/meshharbord/src/lock_state.rs:301-320`, `:352-366`; `docs/remote-control.md` §5.1d |
 | The host's cursor shape, drawn by the viewer | ✅ | ✅ X11, read from XFixes (FR-97 P3a, from 0.4.147), and the DRM arm's hardware cursor (FR-93 P3c) · a per-user Wayland compositor draws it into the picture instead | ❌ WindowServer draws the pointer into the picture | `agents/meshharbord/src/capture/cursor.rs:128-165`, `agents/meshharbord/src/capture/x11_cursor.rs`; `docs/linux-capture.md` §2.1, `docs/wayland.md` §2 |
 | Remote Apps | ✅ | ✅ X11 · 🟡 Wayland: the windows Xwayland owns | ❌ | `Unavailable::Platform` (`agents/meshharbord/src/apps/mod.rs:207`); `docs/remote-apps.md` |
@@ -153,7 +153,7 @@ and never outliving the daemon (FR-97 P0e).
 
 | Feature | Windows | Linux | macOS | Why, and where |
 |---|---|---|---|---|
-| The desktop companion | ✅ | 🟡 a `.deb` and an `.rpm` for x86_64 and, since 0.4.138, arm64 (FR-93 P6d, P6e); none for a host with neither dpkg nor rpm, such as Arch (FR-97 D17) | ✅ in the `.pkg` | `.github/workflows/release-agent.yml:733-744`, `:822-827`, `:914` |
+| The desktop companion | ✅ | 🟡 a `.deb` and an `.rpm` for x86_64 and, since 0.4.138, arm64 (FR-93 P6d, P6e); none for a host with neither dpkg nor rpm, such as Arch (FR-97 D17) | ✅ in the `.pkg` | `docs/local-build.md (native binaries)-744`, `:822-827`, `:914` |
 | Its pages on a system install | ✅ | 🟡 the safety pages; Devices, the mesh and the live links (no endpoints) since 0.4.150 (FR-97 P2g, P2h) | 🟡 a two-half Mac: Devices, the mesh, the Connection column and Overview's network fields from the root half since 0.4.150 (FR-97 P2g, P2h) | `docs/desktop-companion.md` §6, §12 |
 | The host stays awake during a session | ✅ `PowerCreateRequest` | ✅ a logind block inhibitor | ✅ `IOPMAssertion`; a closed lid with no external display sleeps anyway (§8) | `agents/meshharbord/src/power.rs:643-656` |
 | A received file lands as the signed-in person | ✅ | ✅ the person at seat0's Downloads | ✅ | `agents/meshharbord/src/files.rs:209-227` |
@@ -174,13 +174,13 @@ and never outliving the daemon (FR-97 P0e).
 | The daemon survives a log sink it cannot write | ✅ | ✅ | ✅ | #1538 |
 | An update's outcome is recorded | 🟡 written, never read | ❌ | ❌ | FR-67 |
 | The tunnel client updates itself (`mh self-update`) | ✅ | ✅ from tunnel-v0.4.149: the tarball, or the `.deb` where dpkg owns the binary (field-verified on its release) | ✅ from tunnel-v0.4.149 (field-verified on its release) | every OS checks the release's `.asc` against the pinned key (`agents/meshharbor-cli/src/update.rs:227`); FR-97 P6b |
-| Processors the daemon runs on | 🟡 x64; ❌ ARM64 | ✅ x86_64 and arm64 | 🟡 Apple silicon; ❌ Intel | `agents/meshharbord/wix-perMachine/main.wxs:81`; `.github/workflows/release-agent.yml:2582`; FR-97 D6 |
-| Hardware encoding on Linux arm64 | — | ❌ | — | the arm64 build has no `ffmpeg-encoder` (`.github/workflows/release-agent.yml:1093`); FR-97 P7a |
-| The standalone tunnel client and the wizard on Linux arm64 | — | ✅ from 0.4.149 (FR-97 P7b): the wizard with the agent release, the tunnel client from tunnel-v0.4.149 (its aarch64 `.deb` and tarball run on real arm64, 16 KiB pages included). Before it, x86_64 builds only, and `install.sh --role tunnel` handed an arm64 host the x86_64 CLI; the served script picks the aarch64 build since the 2026-10-21 promote (field-verified on real arm64, FR-97 §8) | — | `.github/workflows/release-tunnel.yml:215`, `.github/workflows/release-setup.yml:255`; the proxy's `linux-aarch64` (`crates/modules/fleet/src/tunnel_release.rs:197`) |
+| Processors the daemon runs on | 🟡 x64; ❌ ARM64 | ✅ x86_64 and arm64 | 🟡 Apple silicon; ❌ Intel | `agents/meshharbord/wix-perMachine/main.wxs:81`; [platform release features](local-build.md#native-binaries-and-features); FR-97 D6 |
+| Hardware encoding on Linux arm64 | — | ❌ | — | the arm64 build has no `ffmpeg-encoder` ([platform release features](local-build.md#native-binaries-and-features)); FR-97 P7a |
+| The standalone tunnel client and the wizard on Linux arm64 | — | ✅ from 0.4.149 (FR-97 P7b): the wizard with the agent release, the tunnel client from tunnel-v0.4.149 (its aarch64 `.deb` and tarball run on real arm64, 16 KiB pages included). Before it, x86_64 builds only, and `install.sh --role tunnel` handed an arm64 host the x86_64 CLI; the served script picks the aarch64 build since the 2026-10-21 promote (field-verified on real arm64, FR-97 §8) | — | [setup/CLI build reference](local-build.md#native-binaries-and-features); the proxy's `linux-aarch64` (`crates/modules/fleet/src/tunnel_release.rs:197`) |
 
-Release feature sets per OS, which decide what ships: Linux x86_64
-`.github/workflows/release-agent.yml:530`, Linux arm64 `:1093`, Windows x64 `:1549`, macOS arm64
-`:2582`. A feature that compiles but is not in an OS's set does not ship there.
+Release feature sets per OS, which decide what ships, are listed in
+[local builds](local-build.md#native-binaries-and-features). A feature that
+compiles but is not in an OS's set does not ship there.
 
 ## 8. Every ⛔, and why
 

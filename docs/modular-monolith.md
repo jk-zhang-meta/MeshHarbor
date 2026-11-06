@@ -9,7 +9,7 @@ works now, for whoever has to change it.
 
 Not services, not plugins: nothing is loaded dynamically, nothing talks over a network that used
 to be a function call, and no document or wire message changed shape. What changed is **who owns
-what**, and that the ownership is enforced by the compiler and by a composition baseline in CI.
+what**, and that the ownership is enforced by the compiler and by a locally run composition baseline.
 
 > Start with [architecture.md](architecture.md) for the whole system; this page is the server's
 > internal composition only. The daemon (`meshharbord`) is untouched by it.
@@ -54,7 +54,7 @@ Three rules keep it a monolith rather than a pile of crates:
 
 The licence split follows the crate boundary: `meshharbor-core` and every module are AGPL-3.0
 (server side); the daemon's shared crate is `meshharbor-node-core` (`crates/agent-core`, MPL-2.0)
-and a CI assertion inverts `cargo tree` from every agent binary to prove `meshharbor-core` is never
+and a local assertion must invert `cargo tree` from every agent binary to prove `meshharbor-core` is never
 inside one (FR-24, FR-69 AC10).
 
 ---
@@ -148,7 +148,7 @@ flowchart LR
     style H fill:#e8f0fe
 ```
 
-| Profile | Carries | Needs beside it | Leaves out (and CI asserts it) |
+| Profile | Carries | Needs beside it | Leaves out (assert locally) |
 |---|---|---|---|
 | `full` | everything | MongoDB, Redis, MinIO, coturn, the media port range | — |
 | `collab` | chat, conference | MongoDB, Redis, MinIO, coturn | the fleet, the overlay, remote desktop; **no `meshharbor-tunnel-core`** |
@@ -164,7 +164,7 @@ Three facts about profiles that are easy to get wrong:
 - `/health` and `/api/capabilities` report the **mounted** set, never the DAG — a `mesh` image
   must answer `["fleet","network"]`, not all six.
 - `cargo clippy --workspace` compiles the feature **union** and can never see a profile. The
-  `profiles` CI job checks each reduced profile with `--no-default-features` and asserts the
+  local profile checks must check each reduced profile with `--no-default-features` and asserts the
   absences against a `cargo tree` that must list ≥100 crates **and** a positive control on the
   full graph — an absence assertion that cannot fail proves nothing.
 
@@ -434,9 +434,9 @@ never as a side call, because a spec outside the plan is invisible to the gate.
 6. **A new workspace member needs `cargo update -w`** before the lane builds it.
 7. **Re-record the baseline only when the diff is the claim.**
 
-A stacked branch compiles on CI in ~4 min via
-`gh workflow run integration-tests.yml --ref <branch> -f filter=composition_matches_baseline` —
-cheaper than a local server build on a Windows box, which cannot build the server natively.
+Run `RUST_MIN_STACK=8388608 cargo test -p meshharbor-tests composition_matches_baseline -- --nocapture`
+on an isolated Linux environment with the test services. Require the expected
+nonzero test count; see [local builds](local-build.md). There is no CI dispatch.
 
 ---
 

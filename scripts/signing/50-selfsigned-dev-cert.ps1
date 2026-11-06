@@ -98,13 +98,11 @@ if ($PushSecrets) {
 }
 
 Write-Host ''
-Say 'Rehearse the pipeline with it (no tag, no publish, no Azure):'
-Info "  gh workflow run release-agent.yml  --repo $Repo -f publish_release=false -f signing_mode=local -f require_signing=true"
-Info "  gh workflow run release-setup.yml  --repo $Repo -f publish_release=false -f signing_mode=local"
-Info "  gh workflow run release-tunnel.yml --repo $Repo -f publish_release=false -f signing_mode=local"
+Say 'Local test-certificate rehearsal (no tag or publication):'
+Info '  CI is retired; follow docs/local-build.md for explicit local preparation.'
 Write-Host ''
 Info 'Negative test -- the gate must FAIL, not warn:'
-Info "  gh workflow run release-agent.yml  --repo $Repo -f publish_release=false -f signing_mode=off -f require_signing=true"
+Info '  CI is retired; follow docs/local-build.md for explicit local preparation.'
 Write-Host ''
 Info 'To trust it on pilot machines: pwsh scripts/signing/51-trust-dev-cert.ps1'
 Write-Host ''

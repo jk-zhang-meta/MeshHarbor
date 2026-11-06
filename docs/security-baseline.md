@@ -138,7 +138,7 @@ unactivated-signup paths open. Locked by 4 unit tests on the placeholders + 4
 integration tests in `oauth_tests`.
 ⚠️ #610 and #613 fixed the same defect with different designs, in parallel
 sessions, and git auto-merged them cleanly — verify the result on the buildhost
-lane, because CI does not run this crate.
+lane, because no automated CI runs this crate.
 ⚠️ **Microsoft is the only provider that is *always* unverified** (its Graph
 `mail`/UPN are tenant-settable); its `id` (the `oid`) stays trusted and is the
 provider-identity key.
@@ -413,7 +413,7 @@ enters: a remote `http://` is read as `https://`, and `ws://` as `wss://`.
 | `meshharbord anchor create` (FR-104) | refused, unchanged: the claim's answer is the command SYSTEM runs | refused |
 
 - **Loopback is exempt** (`localhost`, `127.0.0.0/8`, `::1`). It has no off-host path to
-  defend, and dev, test and CI servers run plaintext there.
+  defend, and isolated dev/test servers may run plaintext there.
 - ⚠️ **The guard reads a URL the way its dialler does.** reqwest parses by the WHATWG
   rules, which accept `HTTP:meshharbor.itachi.fans`, `http:\\meshharbor.itachi.fans`, surrounding whitespace and
   a tab inside the scheme. They also put the host after the authority's last `@`, so
@@ -638,7 +638,7 @@ failed, nothing warned.
 |---|---|---|
 | `.githooks/pre-commit` (`--pending`, pure bash+git so it runs where python does not) | the commit about to be made | pushes that skip hooks |
 | `.githooks/pre-push` | **survives `--no-verify`** and a clone that never set `core.hooksPath` | GitHub-side writes |
-| CI job **No foreign commit identity** | anything that reached a branch | account logins |
+| Manual commit-identity audit (former CI job retired) | the explicitly checked commit range | account logins |
 | `PreToolUse` hook `.claude/hooks/gh-account-guard.sh` | GitHub **writes** by the active `gh` account (reads always pass — auditing the wrong account is legitimate, and is what found this) | commits |
 
 ⚠️ **Allowlist, never a denylist.** A denylist would have to write the unwanted
@@ -651,7 +651,7 @@ a shared config, and `gh issue comment` prints a URL, not an identity, so the
 mistake is invisible from inside the session making it. The hook refuses it
 outright; `scripts/gh-scoped-config.sh` builds a config the other account is not
 *in*.
-⚠️ **`--require-commits` in CI is load-bearing**: an empty range otherwise answers
+⚠️ **`--require-commits` in a manual range audit is load-bearing**: an empty range otherwise answers
 "all known" over zero commits — the same shape as a `cargo test` filter matching
 no test.
 ⚠️ **Neither leak is recoverable downstream.** A commit identity can only be
@@ -669,12 +669,11 @@ only and is refused with HTTP 422 on this user-owned repo, in `active` enforceme
 as well (`evaluate` is separately Enterprise-only). Measured 2026-09-06 — do not
 plan around it.
 
-What covers it is the CI job's **push-to-master** run
-(`github.event.before..github.sha`), which turns master red within a minute —
-detection, not prevention. ⚠️ Its fallback is load-bearing and was exercised on
-day one: after a force-push `event.before` names a commit that no longer exists,
-so it falls back to `<sha>~1..<sha>` instead of erroring or silently scanning
-nothing.
+There is no CI detection after a GitHub-side merge. Run the commit-identity
+audit manually against the actual new range; require at least one commit and
+record its result. The former push-to-master job was detection, not prevention.
+For a missing old revision, choose and report a valid explicit comparison range;
+never silently scan no commits.
 
 The actual fix for the account is GitHub Settings → Emails.
 
@@ -685,7 +684,7 @@ The actual fix for the account is GitHub Settings → Emails.
 - TURN `static-auth-secret` was rotated out of the repo on 2026-05-23 — the
   committed `turnserver.conf` carries a `CHANGE-ME` placeholder; the live value
   lives in the operator's `MESHHARBOR__TURN__SHARED_SECRET` env.
-- **No git hooks for secrets**: there is no gitleaks/trufflehog scanner in CI.
+- **No git hooks for secrets**: no gitleaks/trufflehog scanner is configured; there is no CI.
   *(Open, [LOW], 2026-03-10.)*
 
 ### Dependency-uplift pass (2026-07-29)

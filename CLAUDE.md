@@ -32,7 +32,7 @@ below is a shipped, field-verified configuration, not an aspiration:
 | **Session** | attended desktop · locked screen · SYSTEM / root service · nobody logged in |
 
 A change that works on the dev box and breaks a corporate laptop behind a
-full-tunnel VPN **has not worked**. **CI green ≠ done** — networking and
+full-tunnel VPN **has not worked**. **Local checks passing ≠ done** — networking and
 remote-desktop changes are proven on the real fleet (`mh exec`,
 `mh ssh`) across those topologies after every roll.
 
@@ -145,7 +145,15 @@ Six commitments follow. All are load-bearing in the code today; don't regress th
    ACLs, and an agent-local gate that survives a compromised server. Every
    decision audited.
 6. **Field-validated, not CI-validated.** Proven on the real fleet across the
-   topologies above via `mh exec` after every roll. **CI green ≠ done.**
+   topologies above via `mh exec` after every roll. **Local checks passing ≠ done.**
+
+## Build policy: no CI
+
+This project permanently uses no CI. Do not add or dispatch workflows, including
+tag-triggered releases. Run relevant checks locally; builds, signing, publication
+and deployment remain separate authorized operations. Canonical commands, vendor
+pins and corresponding-source preparation: **[docs/local-build.md](docs/local-build.md)**.
+Historical CI incident records remain evidence, not current automation.
 
 ## Commands
 
@@ -169,7 +177,7 @@ cargo test -p meshharbor-tests         # Integration tests (requires MongoDB + R
 cd ui && bun run test:unit             # Vitest unit tests
 cd ui && bun run e2e                   # Playwright E2E tests
 
-# Static analysis — what CI runs
+# Static analysis — run locally
 cargo fmt --all -- --check
 cargo clippy --workspace -- -D warnings
 cargo clippy -p meshharbor-api -p meshharbor-services -p meshharbor-tests --all-targets -- -D warnings
@@ -183,8 +191,8 @@ docker compose up -d                   # MongoDB (27019), Redis (6379), MinIO (9
 ```
 
 ⚠️ **`cargo clippy --workspace` compiles the feature UNION and can never see a
-profile or a feature-gated backend.** `--features full` is a *separate* CI clippy
-step — the only one that compiles the capture backend. Run
+profile or a feature-gated backend.** `--features full` is a *separate* local clippy
+pass — the only one that compiles the capture backend. Run
 `cargo check -p meshharbor-tunnel-core --features overlay-l3,overlay-netstack --all-targets`
 in WSL before pushing; a `#[cfg(windows)]` helper needs the same gate on its test.
 
@@ -203,7 +211,7 @@ sudo apt install -y libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev   # Linux, for
 ```
 
 The default build (no features) compiles on any `rust:bookworm` image and produces
-a signalling-only agent useful for CI, but **not usable in production** (no
+a signalling-only agent useful for local checks, but **not usable in production** (no
 capture, no input).
 
 ### Encoders — load the `encoder-cells` skill
@@ -329,7 +337,7 @@ Full treatment: **`docs/modular-monolith.md`**. What constrains new work:
    `/health` and `/api/capabilities` report the **mounted** set plus `compiled` —
    never `graph::MODULES`, which every build knows and would make a `mesh` image
    answer all six. ⚠️ An absence assertion that cannot fail proves nothing: the
-   `profiles` CI job checks each reduced profile with `--no-default-features` **and**
+   local profile checks must check each reduced profile with `--no-default-features` **and**
    a positive control on the full graph.
 8. **The SPA gates on `/api/capabilities`, failing OPEN until the server answers**
    — the server enforces every action anyway, so the worst case of failing open is
@@ -421,35 +429,11 @@ Suites, harnesses and the nightly lane: **`docs/testing.md`**.
   otherwise, and a `SIGABRT` with `has overflowed its stack` is what a perfectly
   green suite looks like. Set `RUST_LOG` and `--nocapture`; without a subscriber
   every `info!`/`warn!` explaining a refusal is discarded.
-- **CI runs this lane** — `.github/workflows/integration-tests.yml`, on master
-  pushes touching `crates/**` or `agents/meshharbord/**`, on PRs touching
-  `crates/tests/**`, and on dispatch (optional `filter`). Deliberately **not** on
-  every PR: a ~20 min job on every push trains people to ignore it.
-  ⚠️ The lane asserts a **minimum test count** and a **leaked-database ceiling**,
-  because a job that silently runs nothing is indistinguishable from a passing one
-  — `cargo test` reports success for a filter matching no test. Treat the count as
-  approximate: `pull_request` checks out the branch *merged with master* while a
-  dispatch checks out the branch alone, so two green runs of one commit differ.
-  ⚠️ The two skips were **measured on the runner**, not inherited from the build
-  host: `conference_tests::call_leave_cleans_up_participant_media` (no mediasoup
-  worker there) and `rate_limit_tests::rate_limit_returns_429_after_burst`
-  (timing-sensitive). A third skip should feel expensive.
-- **E2E** (`ui/e2e/`, Playwright, 24 specs). Set `E2E_API_URL` (defaults to the dev
-  port `:5001`) or every API-driven spec fails ECONNREFUSED; Mailpit specs need
-  `E2E_MAILPIT_URL`. 🔑 **The browser runs as the `pwrunner` sidecar inside the app
-  pod** — this host has no route to the pod network (a port-forward carries one TCP
-  port and no RTP ever arrives), a Service URL is not a secure context so
-  `navigator.mediaDevices` is undefined, and in the pod the app is
-  `http://127.0.0.1`, which is both a secure context and the address mediasoup
-  announces. A Job cannot replace the sidecar — it cannot share the app's network
-  namespace, which is the whole mechanism. ⚠️ `MESHHARBOR__APP__FRONTEND_URL` must
-  equal the browser's origin (**a port is part of an Origin**) or the
-  cookie-authenticated `/ws` upgrade is refused 403 and every realtime spec fails
-  for that one reason. ⚠️ An entry in `e2e-expected-failures.txt` is a claim that
-  you understand the failure — re-test it or delete it.
-- **Unit**: Vitest (`ui/src/`), plus in-crate `#[cfg(test)]` tests in
-  `remote_control`, `meshharbord` and `services::auth`.
-  ⚠️ `meshharbord`'s `main.rs` tests **never run** — CI is `--lib`.
+- **Run this lane locally** with the isolated prerequisites and exact test filter
+  described in [local builds](docs/local-build.md). Require a nonzero expected
+  test count and verify database/process cleanup; a successful zero-test filter
+  is not evidence. Historical runner skips are not automatic local exclusions.
+  ⚠️ `--lib` does not run `meshharbord`'s `main.rs` tests; select targets explicitly.
 
 ## Environment
 
@@ -464,12 +448,11 @@ origin the browser controller loads. Topology, k8s layout, tenant-affinity LB an
 the media-path rules: **`docs/deployment.md`** + `docs/multi-pod-scale-out.md`.
 Release, signing and promotion mechanics: the **`ship-it` skill**.
 
-- **Pipeline (FR-73)**: Actions builds
-  `ghcr.io/jk-zhang-meta/meshharbor:hosted-<YYYYMMDD>-<sha7>` on every merge to master
-  that can change the image; **`gh workflow run promote.yml -f tag=…`** bumps the
-  deploy repo and ArgoCD (Automated + selfHeal + prune, webhook) rolls it within
-  ~5 s. ⚠️ **Build ≠ deploy — nothing rolls until someone promotes.** ⚠️ The lane
-  never writes `latest`; that is the self-host `full` image (no `saas`).
+- **Manual builds and deployment**: no merge/tag/dispatch builds or publishes
+  anything. Use [local builds](docs/local-build.md) for image/package preparation.
+  Registry publication and deploy-repository changes require separate authorization;
+  ArgoCD may roll immediately after a deploy-repo push. Keep hosted and selfhost
+  image identities distinct. Historical FR-73 measurements are not a current CI service.
 - **Pods**: namespace `meshharbor`, deployment **`meshharbor2`** (not `meshharbor`), 2
   replicas forced apart by `podAntiAffinity`, hostNetwork, RollingUpdate
   maxSurge 0 / maxUnavailable 1 (surge 0 because hostNetwork can't double-bind).
@@ -502,7 +485,7 @@ Release, signing and promotion mechanics: the **`ship-it` skill**.
   receive-liveness deadline.
 - **After every roll, field-verify from the fleet** — pods on the new image,
   online-agent count, an RC session, an overlay pair, a tunnel forward. The
-  workflow only proves the public `/health` kept answering. ⚠️ An exec sweep is a
+  health check only proves the public `/health` kept answering. ⚠️ An exec sweep is a
   **biased sample** (it reaches only what is online) — query the server for the
   denominator.
 
@@ -526,7 +509,7 @@ write-up filed afterwards. Registry and full protocol: **`docs/fr/README.md`**.
    they touched *different* files (measured three times in one day, twice while a
    scan-and-re-verify rule was already in force). Editing one shared table makes
    git the arbiter instead: the loser's push is rejected as non-fast-forward.
-   Enforced by `scripts/fr-registry-audit.sh` + CI.
+   Checked locally with `scripts/fr-registry-audit.sh`.
    ⚠️ If one still slips through: **the LOWER issue number keeps `FR-N`, the HIGHER
    renumbers** — title, spec filename, ledger row and in-body references together,
    to the next free N, never into a vacated one. Issue ids are server-assigned and
@@ -536,7 +519,7 @@ write-up filed afterwards. Registry and full protocol: **`docs/fr/README.md`**.
    Acceptance criteria / Open decisions / Out of scope / Related.
 3. **Comment as you ship** — a `## Step log` table appended as each PR merges, and
    a `## Result — field-verified on <version>` carrying the actual measurement.
-   ⚠️ **CI green is not a result.** A field test must be shown to FAIL on the
+   ⚠️ **Local checks passing is not a result.** A field test must be shown to FAIL on the
    current deploy first, or its pass proves nothing — record both runs. Record the
    wrong turns too; a dead end documented is often the most valuable line in the log.
 4. **Close** only when the acceptance criteria are field-verified; a regression
@@ -836,7 +819,7 @@ Fixed-and-shipped issues live in `git log` and the docs. Currently open:
   around it; AV1 has no alternative and is filtered from advertised caps by the
   probe. Worth re-testing on newer drivers.
 - **[LOW]** [2026-03-10] No git hooks for linting and no secret scanner
-  (gitleaks/trufflehog) in CI.
+  (gitleaks/trufflehog) is configured; there is no CI.
 
 ## Security Baseline
 

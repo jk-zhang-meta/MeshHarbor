@@ -305,7 +305,7 @@ symphonia = { version = "0.5", optional = true, default-features = false, featur
 # Build-time: needs FFmpeg headers + libs findable via pkg-config.
 # CI Windows job uses vcpkg's `ffmpeg[nvcodec,qsv,amf,...]` port and
 # exports `PKG_CONFIG_PATH` to point at the vcpkg install. See
-# `.github/workflows/release-agent.yml`.
+# `docs/local-build.md` and its retained native recipe reference.
 #
 # rc.71 hotfix: `default-features = false, features = ["codec"]` caused
 # ffmpeg-next 8.1 to fail to compile because util/interrupt.rs and

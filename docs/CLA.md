@@ -7,8 +7,8 @@
 > has been lawyer-drafted; the changes are limited to naming G ROX EOOD as the
 > recipient and §2's relicensing grant, which the Apache original does not need
 > and this project does. It has **not** been reviewed by a lawyer for Bulgarian
-> law. Do not enable the CLA bot against this version — see
-> `.github/workflows/cla.yml`, which is deliberately disabled.
+> law. Do not enable a CLA bot against this version. The former disabled
+> CLA workflow has been removed under the project’s permanent no-CI policy.
 
 Thank you for your interest in MeshHarbor, a project of **G ROX EOOD** ("we" or
 "us").
