@@ -237,6 +237,7 @@ async fn dispatch_controller_rc(
             Err(_) => return false,
         },
     };
+    let mut file_child_watch_ctx = None;
     if let ClientMsg::FileChildReserve { session_id, .. }
     | ClientMsg::FileSdpOffer { session_id, .. } = &parsed
     {
@@ -251,16 +252,8 @@ async fn dispatch_controller_rc(
                     current_snapshot,
                 ) {
                     Ok(start_watch) => {
-                        if start_watch {
-                            watch_file_child_session(
-                                state.clone(),
-                                *session_id,
-                                user_id,
-                                controller_tx.clone(),
-                                agent_id,
-                                tenant_id,
-                            );
-                        }
+                        file_child_watch_ctx =
+                            Some((*session_id, agent_id, tenant_id, start_watch));
                     }
                     Err(e) => {
                         let message = refusal_message(state, &e).await;
@@ -375,6 +368,22 @@ async fn dispatch_controller_rc(
     } else {
         hub.dispatch(&ctx, parsed)
     };
+    if let Some((session_id, agent_id, tenant_id, start_watch)) = file_child_watch_ctx {
+        if dispatched.is_ok() {
+            if start_watch || hub.ensure_file_child_watch_started(session_id) {
+                watch_file_child_session(
+                    state.clone(),
+                    session_id,
+                    user_id,
+                    controller_tx.clone(),
+                    agent_id,
+                    tenant_id,
+                );
+            }
+        } else {
+            hub.release_file_child_watch_if_idle(session_id);
+        }
+    }
     if dispatched.is_ok()
         && let (Some(scope), Some(session)) = (shared_scope, created_session)
     {
@@ -1142,9 +1151,11 @@ async fn resolve_file_child_policy_snapshot(
 }
 
 /// X14 — background watchdog for an active file-child-enabled parent session:
-/// polls MongoDB every 1 second and immediately triggers irreversible child
-/// revocation (`rc:file.child.revoke` + 5 s fail-closed ACK deadline) when any
-/// policy revision or permission gate changes.
+/// polls MongoDB every 1 second while at least one `Reserved` or `Active` file
+/// child slot exists, exiting when idle (`file_children.is_empty()`) and
+/// restarting on the next `rc:file.child.reserve`. Immediately triggers
+/// irreversible child revocation (`rc:file.child.revoke` + 5 s fail-closed ACK
+/// deadline) when any policy revision or permission gate changes.
 fn watch_file_child_session(
     state: RemoteState,
     session_id: ObjectId,
@@ -1156,13 +1167,13 @@ fn watch_file_child_session(
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            if state
-                .fleet
-                .rc_hub
-                .session_file_child_target(session_id, user_id, &controller_tx)
-                .is_err()
-            {
-                return;
+            match state.fleet.rc_hub.poll_file_child_watch_target(
+                session_id,
+                user_id,
+                &controller_tx,
+            ) {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return,
             }
             let current_snapshot =
                 resolve_file_child_policy_snapshot(&state, user_id, agent_id, tenant_id).await;
@@ -1176,6 +1187,13 @@ fn watch_file_child_session(
                     current_snapshot,
                 )
                 .is_err()
+            {
+                return;
+            }
+            if state
+                .fleet
+                .rc_hub
+                .release_file_child_watch_if_idle(session_id)
             {
                 return;
             }

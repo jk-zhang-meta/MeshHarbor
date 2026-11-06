@@ -5598,6 +5598,12 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
         os: 'linux' as const,
         capabilities: { codecs: ['h264'], files: ['resume'] },
       })
+      globalThis.localStorage?.removeItem('meshharbor-rc-download-children')
+      const rcDefault = useRemoteControl(agentRef, {
+        userId: () => USER_ID,
+      })
+      expect(rcDefault.concurrentDownloadChildren.value).toBe(0)
+
       const rc = useRemoteControl(agentRef, {
         userId: () => USER_ID,
         childDownloadConnections: 4,
@@ -5744,9 +5750,13 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
         expect(await verifyPeerAuth(proof.key, transcript!, proof.sig)).toBe(true)
       }
 
-      // Verify all 4 children sent rc:file.child.complete
+      // Verify all 4 children sent rc:file.child.complete with matching transfer_id
       const completes = sentWs.filter((m) => m.t === 'rc:file.child.complete')
       expect(completes).toHaveLength(4)
+      for (const c of completes) {
+        expect(typeof c.transfer_id).toBe('string')
+        expect((c.transfer_id as string).length).toBeGreaterThan(0)
+      }
 
       // Verify reassembled bytes match sourceBytes in order
       const reassembled = new Uint8Array(100)

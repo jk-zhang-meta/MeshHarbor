@@ -431,6 +431,7 @@ impl LiveSession {
             && self.permissions().contains(Permissions::FILES);
         if !self.file_children_enabled {
             self.file_children.clear();
+            self.file_child_watch_started = false;
         }
     }
 
@@ -455,6 +456,7 @@ impl LiveSession {
         self.file_children_revoked = true;
         self.file_children_opted_in = false;
         self.file_children_enabled = false;
+        self.file_child_watch_started = false;
         self.file_children.clear();
         if first_revocation {
             self.file_child_revoke_pending_ack = true;
@@ -511,6 +513,12 @@ impl LiveSession {
         }
     }
 
+    /// Whether this parent session currently holds any `Reserved` or `Active`
+    /// download-only file child slot.
+    pub fn has_file_children(&self) -> bool {
+        !self.file_children.is_empty()
+    }
+
     /// Claim the single background policy-revision watcher task for this parent
     /// session after a `FileChildPolicySnapshot` has been bound.
     pub fn claim_file_child_watch(&mut self) -> bool {
@@ -522,6 +530,17 @@ impl LiveSession {
         }
         self.file_child_watch_started = true;
         true
+    }
+
+    /// Release the background policy-revision watcher claim when no `Reserved`
+    /// or `Active` file-child slots remain on this parent session, so the
+    /// watcher exits when idle and restarts on the next `reserve`.
+    pub fn release_file_child_watch_if_idle(&mut self) -> bool {
+        if self.file_children.is_empty() {
+            self.file_child_watch_started = false;
+            return true;
+        }
+        false
     }
 
     /// Check whether `(child_id, transfer_id)` is currently an active child
@@ -1265,6 +1284,46 @@ mod tests {
         assert!(s.verify_or_bind_file_child_policy_snapshot(None).is_err());
         assert!(s.is_file_children_revoked());
         assert!(s.reserve_file_child("denied").is_err());
+    }
+
+    #[test]
+    fn file_child_watch_exits_when_idle_and_reclaims_on_next_reserve() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled(true);
+
+        let snap = FileChildPolicySnapshot::new(Some(2), Some(3)).unwrap();
+        s.verify_or_bind_file_child_policy_snapshot(Some(snap))
+            .unwrap();
+        assert!(s.claim_file_child_watch());
+        assert!(!s.claim_file_child_watch());
+
+        let child1 = s.reserve_file_child("batch-1").unwrap();
+        s.admit_file_child(child1, "batch-1").unwrap();
+        assert!(s.has_file_children());
+        assert!(
+            !s.release_file_child_watch_if_idle(),
+            "watcher must remain claimed while a child slot is Reserved or Active"
+        );
+
+        s.complete_file_child(child1, "batch-1").unwrap();
+        assert!(!s.has_file_children());
+        assert!(
+            s.release_file_child_watch_if_idle(),
+            "watcher must release once no Reserved/Active children remain"
+        );
+        // Bound snapshot remains pinned across idle periods; next reserve re-claims the watcher.
+        assert_eq!(s.file_child_policy_snapshot(), Some(snap));
+        s.verify_or_bind_file_child_policy_snapshot(Some(snap))
+            .unwrap();
+        assert!(
+            s.claim_file_child_watch(),
+            "next reserve after idle release must re-claim the watcher"
+        );
     }
 
     #[test]

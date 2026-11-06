@@ -3710,6 +3710,75 @@ impl Hub {
         })
     }
 
+    /// X14 — check whether the background file-child policy watcher should
+    /// continue polling MongoDB for `session_id`. When no `Reserved` or
+    /// `Active` child slots remain (`s.file_children.is_empty()`), this
+    /// atomically resets `file_child_watch_started = false` and returns
+    /// `Ok(false)` so the watcher exits without querying MongoDB while idle,
+    /// and a future `rc:file.child.reserve` will re-claim the watcher.
+    pub fn poll_file_child_watch_target(
+        &self,
+        session_id: ObjectId,
+        user_id: ObjectId,
+        controller_tx: &ClientTx,
+    ) -> Result<bool> {
+        self.with_session(session_id, |s| {
+            if s.controller_user_id != user_id {
+                return Err(Error::PermissionDenied("not the parent controller"));
+            }
+            if !s
+                .controller_tx
+                .as_ref()
+                .is_some_and(|current| ptr_eq(current, controller_tx) && !current.is_closed())
+            {
+                return Err(Error::PermissionDenied(
+                    "not the parent controller connection",
+                ));
+            }
+            if s.device_share_scope().is_some() {
+                return Err(Error::PermissionDenied(
+                    "shared child inheritance unavailable",
+                ));
+            }
+            if s.is_file_children_revoked() {
+                return Err(Error::PermissionDenied(
+                    "file child transports revoked for this session",
+                ));
+            }
+            if !s.is_file_children_opted_in() && !s.is_file_children_enabled() {
+                return Err(Error::PermissionDenied(
+                    "file child transport is not enabled for this session",
+                ));
+            }
+            if s.phase != SessionPhase::Active || !s.permissions().contains(Permissions::FILES) {
+                return Err(Error::PermissionDenied(
+                    "file child parent session is not active with FILES permission",
+                ));
+            }
+            if s.release_file_child_watch_if_idle() {
+                return Ok(false);
+            }
+            Ok(true)
+        })
+    }
+
+    /// X14 — release the background policy-watcher claim if `session_id` has no
+    /// `Reserved` or `Active` file-child slots. Returns `true` when the session
+    /// is now idle (or gone).
+    pub fn release_file_child_watch_if_idle(&self, session_id: ObjectId) -> bool {
+        self.with_session(session_id, |s| Ok(s.release_file_child_watch_if_idle()))
+            .unwrap_or(true)
+    }
+
+    /// X14 — ensure the background policy-watcher flag is claimed when at least
+    /// one `Reserved` or `Active` file-child slot is present on `session_id`.
+    pub fn ensure_file_child_watch_started(&self, session_id: ObjectId) -> bool {
+        self.with_session(session_id, |s| {
+            Ok(s.has_file_children() && s.claim_file_child_watch())
+        })
+        .unwrap_or(false)
+    }
+
     /// X14 — re-lock the parent session after the live DB PDP and bind or
     /// compare `(tenant.security_revision(), agent.access_policy_revision())`.
     /// On success, enables file-child capability on the parent session and
@@ -6661,6 +6730,77 @@ mod tests {
             f.hub
                 .dispatch(&f.ctx(), f.reserve_message("after-revoke"))
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn file_child_watcher_stops_when_idle_and_restarts_on_next_reserve() {
+        use meshharbor_remote_control::session::FileChildPolicySnapshot;
+
+        let mut f = FileChildDispatchFixture::new().await;
+        let snap = FileChildPolicySnapshot::new(Some(2), Some(4));
+
+        // 1. First admission claims the watcher.
+        assert!(
+            f.hub
+                .admit_file_child_policy_snapshot(f.sid, f.owner, &f.controller_tx, snap)
+                .unwrap()
+        );
+        // Before any child slot is reserved, an idle poll releases the watcher.
+        assert!(
+            !f.hub
+                .poll_file_child_watch_target(f.sid, f.owner, &f.controller_tx)
+                .unwrap()
+        );
+        // Next reserve admission re-claims the watcher.
+        assert!(
+            f.hub
+                .admit_file_child_policy_snapshot(f.sid, f.owner, &f.controller_tx, snap)
+                .unwrap()
+        );
+        let child = f.reserve("dl-batch-1");
+        // While Reserved, watcher stays active.
+        assert!(
+            f.hub
+                .poll_file_child_watch_target(f.sid, f.owner, &f.controller_tx)
+                .unwrap()
+        );
+        f.hub
+            .dispatch(&f.ctx(), f.offer(child, "dl-batch-1"))
+            .unwrap();
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileSdpOffer { .. })
+        ));
+        // While Active, watcher stays active.
+        assert!(
+            f.hub
+                .poll_file_child_watch_target(f.sid, f.owner, &f.controller_tx)
+                .unwrap()
+        );
+        // Completing the last active child allows the watcher to exit on the next poll.
+        f.hub
+            .dispatch(
+                &f.ctx(),
+                ClientMsg::FileChildComplete {
+                    session_id: f.sid,
+                    child_id: child,
+                    transfer_id: "dl-batch-1".into(),
+                },
+            )
+            .unwrap();
+        assert!(
+            !f.hub
+                .poll_file_child_watch_target(f.sid, f.owner, &f.controller_tx)
+                .unwrap(),
+            "watcher must exit when no Reserved/Active children remain"
+        );
+        // And the next reserve admission re-claims `start_watch = true` while still enforcing the bound snapshot.
+        assert!(
+            f.hub
+                .admit_file_child_policy_snapshot(f.sid, f.owner, &f.controller_tx, snap)
+                .unwrap(),
+            "next reserve after idle watcher exit must return start_watch = true"
         );
     }
 

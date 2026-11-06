@@ -4546,8 +4546,8 @@ export function useRemoteControl(
      */
     userId?: () => string | null
     /**
-     * X14 — opt-in initial child download connection count (1..4, default 1).
-     * When > 1 on an ordinary in-org session, `connect()` advertises
+     * X14 — opt-in initial child download connection count (0..4, default 0 = OFF).
+     * When >= 1 on an ordinary in-org session, `connect()` advertises
      * `'file-child-download'` in `browser_caps`.
      */
     childDownloadConnections?: number
@@ -4556,14 +4556,29 @@ export function useRemoteControl(
   const ws = useWsStore()
   const phase = ref<RcPhase>('idle')
 
-  // X14 — concurrent download child connections (1..4, default 1 = OFF).
+  // X14 — concurrent download child connections (0..4, default 0 = OFF).
   const clampChildConnections = (n: number): number =>
-    Number.isFinite(n) ? Math.max(1, Math.min(4, Math.floor(n))) : 1
+    Number.isFinite(n) ? Math.max(0, Math.min(4, Math.floor(n))) : 0
+  const readStoredChildConnections = (): number => {
+    try {
+      const raw = globalThis.localStorage?.getItem('meshharbor-rc-download-children')
+      if (raw === null || raw === undefined || raw === '') return 0
+      return clampChildConnections(Number(raw))
+    } catch {
+      return 0
+    }
+  }
   const concurrentDownloadChildren = ref<number>(
-    clampChildConnections(opts?.childDownloadConnections ?? 1),
+    clampChildConnections(opts?.childDownloadConnections ?? readStoredChildConnections()),
   )
   function setConcurrentDownloadChildren(n: number) {
-    concurrentDownloadChildren.value = clampChildConnections(n)
+    const clamped = clampChildConnections(n)
+    concurrentDownloadChildren.value = clamped
+    try {
+      globalThis.localStorage?.setItem('meshharbor-rc-download-children', String(clamped))
+    } catch {
+      /* ignore storage errors */
+    }
   }
   const fileChildRevoked = ref(false)
   let lastIceServers: IceServer[] = []
@@ -8803,6 +8818,20 @@ export function useRemoteControl(
         scheduleReconnect({ notifyServer: false })
         return
       }
+      if (
+        phase.value === 'connected' &&
+        (pendingChildReserve.size > 0 ||
+          pendingChildPrepare.size > 0 ||
+          activeChildPeers.size > 0 ||
+          fileChildRevoked.value ||
+          (typeof msg.message === 'string' && msg.message.toLowerCase().includes('file child')))
+      ) {
+        console.warn('[rc] file-child signalling error while connected — closing children only:', msg)
+        closeAllFileChildren(
+          typeof msg.message === 'string' && msg.message ? msg.message : 'file child error',
+        )
+        return
+      }
       failWith(friendlyRcError(msg.code, msg.message))
     })
   }
@@ -9261,7 +9290,13 @@ export function useRemoteControl(
     // empty list and the agent falls back to H.264-only.
     const allBrowserCaps = inspectBrowserVideoCodecs()
     const browserCaps = filterCapsByPreference(allBrowserCaps, preferredCodec.value)
-    if (!externalMode && !sharedMode && concurrentDownloadChildren.value > 1) {
+    if (opts?.childDownloadConnections === undefined) {
+      const storedChildren = readStoredChildConnections()
+      if (storedChildren > 0 && concurrentDownloadChildren.value === 0) {
+        concurrentDownloadChildren.value = storedChildren
+      }
+    }
+    if (!externalMode && !sharedMode && concurrentDownloadChildren.value >= 1) {
       if (!browserCaps.includes('file-child-download')) {
         browserCaps.push('file-child-download')
       }
@@ -12903,7 +12938,7 @@ export function useRemoteControl(
         const timer = setTimeout(() => {
           pendingChildRegister = null
           reject(new Error('rc:file.child.register.ack timed out'))
-        }, 5_000)
+        }, 15_000)
         pendingChildRegister = { resolve, reject, timer }
         try {
           ctrl.send(
@@ -12934,7 +12969,7 @@ export function useRemoteControl(
       const timer = setTimeout(() => {
         pendingProbePromises.delete(probeId)
         reject(new Error('file size probe timed out'))
-      }, 5_000)
+      }, 15_000)
       pendingProbePromises.set(probeId, { resolve, reject, timer })
       try {
         ch.send(JSON.stringify({ t: 'files:get', id: probeId, path, offset: 0, length: 0 }))
@@ -12956,7 +12991,7 @@ export function useRemoteControl(
           if (q.length === 0) pendingChildReserve.delete(transferId)
         }
         reject(new Error('rc:file.child.reserved timed out'))
-      }, 5_000)
+      }, 15_000)
       const q = pendingChildReserve.get(transferId) ?? []
       q.push({ resolve, reject, timer })
       pendingChildReserve.set(transferId, q)
@@ -12978,7 +13013,7 @@ export function useRemoteControl(
       const timer = setTimeout(() => {
         pendingChildPrepare.delete(childId)
         reject(new Error('rc:file.child.prepare.ack timed out'))
-      }, 5_000)
+      }, 15_000)
       pendingChildPrepare.set(childId, { resolve, reject, timer })
       try {
         ctrl.send(
@@ -13118,6 +13153,7 @@ export function useRemoteControl(
               t: 'rc:file.ice',
               session_id: sid,
               child_id: childId,
+              transfer_id: id,
               candidate: ev.candidate.toJSON(),
             })
           }
@@ -13196,6 +13232,7 @@ export function useRemoteControl(
                 t: 'rc:file.child.complete',
                 session_id: sid,
                 child_id: childId,
+                transfer_id: id,
               })
               resolveStripe(chunks)
             }
@@ -13210,7 +13247,6 @@ export function useRemoteControl(
           void (async () => {
             try {
               const offer = await childPc.createOffer()
-              await childPc.setLocalDescription(offer)
               const offerSdp = offer.sdp ?? ''
               const proof = await signFileChildOfferProof({
                 pair: keyMat.pair,
@@ -13234,6 +13270,7 @@ export function useRemoteControl(
                 sdp: offerSdp,
                 proof,
               })
+              await childPc.setLocalDescription(offer)
             } catch (e) {
               failStripe(e instanceof Error ? e : new Error(String(e)))
             }
@@ -13320,13 +13357,16 @@ export function useRemoteControl(
     }
 
     const requestedChildren = clampChildConnections(
-      options?.childConnections ?? concurrentDownloadChildren.value,
+      options?.childConnections ??
+        (concurrentDownloadChildren.value > 0
+          ? concurrentDownloadChildren.value
+          : readStoredChildConnections()),
     )
     const sid = sessionId.value
     const agentId = lastConnectArgs?.agentId ?? agent?.value?.id ?? null
     const userId = opts?.userId?.() ?? null
     if (
-      requestedChildren > 1 &&
+      requestedChildren >= 1 &&
       !externalMode &&
       !sharedMode &&
       !fileChildRevoked.value &&
