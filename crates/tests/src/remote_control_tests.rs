@@ -1369,7 +1369,7 @@ async fn file_child_local_controller_source_requires_http_authentication_and_act
         .unwrap();
     assert_eq!(
         frame_of_type(&mut owner_socket, "rc:error").await["code"],
-        "permission_denied"
+        "file_child_error"
     );
     assert!(
         agent_rx.try_recv().is_err(),

@@ -1074,7 +1074,10 @@ fn shared_ssh_public_key() -> String {
     )
 }
 async fn shared_ssh_fixture() -> Fixture {
-    let f = fixture().await;
+    let f = fixture_with_settings(|s| {
+        s.auth.native_share_ssh_authorization_enabled = true;
+    })
+    .await;
     let public = shared_ssh_public_key();
     f.app
         .db
@@ -1556,7 +1559,10 @@ async fn browser_shared_ssh_authorization_requires_approval_and_never_yields_acc
     use base64::Engine as _;
     use sha2::{Digest, Sha256};
 
-    let f = fixture().await;
+    let f = fixture_with_settings(|s| {
+        s.auth.native_share_ssh_authorization_enabled = true;
+    })
+    .await;
     // Authorization cannot override default-off org/device SSH policy. Only
     // this synthetic HTTP fixture permits SSH; it still has no live agent.
     f.app
@@ -1778,6 +1784,7 @@ async fn browser_shared_ssh_anonymous_start_limits_each_share_across_clients() {
         // address below represents a different client observed by that proxy.
         s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
         s.app.rate_limit_trusted_hops = 0;
+        s.auth.native_share_ssh_authorization_enabled = true;
     })
     .await;
     let mut shares = Vec::new();
@@ -1853,6 +1860,7 @@ async fn browser_shared_ssh_anonymous_start_does_not_enumerate_existing_or_unkno
     let f = fixture_with_settings(|s| {
         s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
         s.app.rate_limit_trusted_hops = 0;
+        s.auth.native_share_ssh_authorization_enabled = true;
     })
     .await;
     let created = f
