@@ -228,7 +228,18 @@ fn downscale_for(pref: encode::EncoderPreference) -> capture::DownscalePolicy {
     }
 }
 
+struct ChildPeerHandle {
+    transfer_id: String,
+    pc: Arc<RTCPeerConnection>,
+    files_dc: Arc<tokio::sync::Mutex<Option<Arc<RTCDataChannel>>>>,
+    stop: tokio_util::sync::CancellationToken,
+}
+
 pub struct AgentPeer {
+    file_child_authorization: Arc<std::sync::Mutex<FileChildAuthorization>>,
+    ice_servers: Vec<IceServer>,
+    child_peers:
+        Arc<tokio::sync::Mutex<std::collections::HashMap<bson::oid::ObjectId, ChildPeerHandle>>>,
     pc: Arc<RTCPeerConnection>,
     session_id: bson::oid::ObjectId,
     media_pump: Option<JoinHandle<()>>,
@@ -1194,7 +1205,12 @@ impl AgentPeer {
             Arc::new(std::sync::OnceLock::new());
         let privacy_ctx_for_callback = privacy_ctx.clone();
         let session_end_for_callback = session_end.clone();
+        let file_child_authorization = Arc::new(std::sync::Mutex::new(
+            FileChildAuthorization::unavailable(session_id, permissions, session_end.clone()),
+        ));
+        let file_child_for_callback = file_child_authorization.clone();
         pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+            let file_child_authorization = file_child_for_callback.clone();
             let label = dc.label().to_string();
             info!(session = %session_id, %label, "data channel opened");
             let quality_for_dc = quality_for_dc.clone();
@@ -1281,6 +1297,7 @@ impl AgentPeer {
                             keyframe_for_dc,
                             viewer_report_for_dc,
                             priority_for_dc,
+                            file_child_authorization,
                         )
                     }
                     "cursor" => {
@@ -1649,6 +1666,9 @@ impl AgentPeer {
         // FR-93 P5h — told when this computer goes to sleep.
         let sleep_notice = crate::sleep_notice::register(session_id, control_dc.clone());
         Ok(Self {
+            file_child_authorization,
+            ice_servers: ice_servers.clone(),
+            child_peers: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             pc,
             session_id,
             media_pump: Some(pump),
@@ -1882,6 +1902,8 @@ impl AgentPeer {
     /// An independent shared-lease timer owns these handles, not this pump's poll.
     pub fn shared_lease_stop(&self) -> std::sync::Arc<dyn Fn() + Send + Sync> {
         let end = self.session_end.clone();
+        let file_child_authorization = self.file_child_authorization.clone();
+        let child_peers = self.child_peers.clone();
         let media = self.media_pump.as_ref().map(|t| t.abort_handle());
         #[cfg(feature = "audio")]
         let audio = self.audio_pump.as_ref().map(|t| t.abort_handle());
@@ -1890,6 +1912,7 @@ impl AgentPeer {
         let sid = self.session_id;
         std::sync::Arc::new(move || {
             end.cancel();
+            close_file_child_control(&file_child_authorization);
             if let Some(t) = &media {
                 t.abort();
             }
@@ -1902,14 +1925,317 @@ impl AgentPeer {
             }
             crate::input::arbiter::global().session_closed(sid);
             let pc = pc.clone();
+            let child_peers = child_peers.clone();
             tokio::spawn(async move {
+                let drained: Vec<ChildPeerHandle> =
+                    child_peers.lock().await.drain().map(|(_, h)| h).collect();
+                for h in drained {
+                    h.stop.cancel();
+                    let _ =
+                        tokio::time::timeout(std::time::Duration::from_secs(2), h.pc.close()).await;
+                }
                 let _ = tokio::time::timeout(std::time::Duration::from_secs(3), pc.close()).await;
             });
         })
     }
+    pub(crate) fn file_child_authorization(&self) -> &std::sync::Mutex<FileChildAuthorization> {
+        &self.file_child_authorization
+    }
+
+    pub async fn accept_file_child_offer(
+        &self,
+        child_id: bson::oid::ObjectId,
+        transfer_id: String,
+        offer_sdp: String,
+    ) -> Result<String> {
+        if self.session_end.is_cancelled() {
+            return Err(anyhow!("parent session ended"));
+        }
+        {
+            let auth = self
+                .file_child_authorization
+                .lock()
+                .map_err(|_| anyhow!("file child authorization lock poisoned"))?;
+            auth.check_parent()
+                .map_err(|why| anyhow!("file child parent check failed: {why:?}"))?;
+        }
+        {
+            let children = self.child_peers.lock().await;
+            if children.contains_key(&child_id) {
+                return Err(anyhow!("file child peer already exists"));
+            }
+            if children.len() >= FILE_CHILD_PREPARATIONS_PER_PARENT {
+                return Err(anyhow!("file child peer limit reached"));
+            }
+        }
+
+        let engine = MediaEngine::default();
+        let registry = webrtc::interceptor::registry::Registry::new();
+        let mut setting = webrtc::api::setting_engine::SettingEngine::default();
+        setting.set_interface_filter(Box::new(|name: &str| !is_overlay_iface(name)));
+        if !self.rc_overlay.allow {
+            let keep = self.rc_overlay.clone();
+            setting.set_ip_filter(Box::new(move |ip| keep.keeps_local(ip)));
+        }
+        let transport = crate::rc_transport::Policy::from_env();
+        transport.apply(&mut setting);
+        let child_cc_enabled = node_env("X14_CHILD_CC")
+            .map(|v| v != "0" && !v.eq_ignore_ascii_case("false") && !v.eq_ignore_ascii_case("off"))
+            .unwrap_or(true);
+        if child_cc_enabled {
+            let rate_bytes_per_second = node_env("X14_CHILD_RATE_BPS")
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|&r| r > 0)
+                .unwrap_or(2 * 1024 * 1024);
+            let burst_bytes = node_env("X14_CHILD_BURST_BYTES")
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|&b| b >= 1280)
+                .unwrap_or(16 * 1024);
+            setting.set_sctp_file_pacing(Some(webrtc::sctp::association::FilePacingConfig {
+                rate_bytes_per_second,
+                burst_bytes,
+            }));
+        }
+        #[cfg(feature = "synthetic-frame-source")]
+        l0::apply(&mut setting);
+
+        let api = APIBuilder::new()
+            .with_media_engine(engine)
+            .with_interceptor_registry(registry)
+            .with_setting_engine(setting)
+            .build();
+
+        let relay_tcp = node_env("ICE_RELAY_TCP")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let ice_servers = &self.rc_overlay.ice_servers(&self.ice_servers);
+        let mut config = RTCConfiguration {
+            ice_servers: if relay_tcp {
+                map_ice_servers_relay_tcp(ice_servers)
+            } else {
+                map_ice_servers(ice_servers)
+            },
+            ..Default::default()
+        };
+        if relay_tcp {
+            config.ice_transport_policy = RTCIceTransportPolicy::Relay;
+        }
+
+        let pc = Arc::new(
+            api.new_peer_connection(config)
+                .await
+                .context("new_peer_connection(file_child)")?,
+        );
+        let child_stop = self.session_end.child_token();
+        let files_dc: Arc<tokio::sync::Mutex<Option<Arc<RTCDataChannel>>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+
+        {
+            let tx = self.outbound.clone();
+            let session_id = self.session_id;
+            let transfer_for_ice = transfer_id.clone();
+            pc.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
+                let tx = tx.clone();
+                let transfer_id = transfer_for_ice.clone();
+                Box::pin(async move {
+                    let Some(c) = c else { return };
+                    let Ok(json) = c.to_json() else { return };
+                    let Ok(candidate) = serde_json::to_value(&json) else {
+                        return;
+                    };
+                    let _ = tx
+                        .send(ClientMsg::FileIce {
+                            session_id,
+                            child_id,
+                            transfer_id,
+                            candidate,
+                        })
+                        .await;
+                })
+            }));
+        }
+
+        {
+            let stop_for_state = child_stop.clone();
+            pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
+                let stop = stop_for_state.clone();
+                Box::pin(async move {
+                    if matches!(
+                        s,
+                        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
+                    ) {
+                        stop.cancel();
+                    }
+                })
+            }));
+        }
+
+        {
+            let session_id = self.session_id;
+            let stop_for_dc = child_stop.clone();
+            let files_dc_for_cb = files_dc.clone();
+            pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+                let stop = stop_for_dc.clone();
+                let files_dc = files_dc_for_cb.clone();
+                let label = dc.label().to_string();
+                Box::pin(async move {
+                    if label == "files" {
+                        *files_dc.lock().await = Some(dc.clone());
+                        attach_child_files_handler(dc, session_id, &stop);
+                    } else {
+                        let _ = dc.close().await;
+                    }
+                })
+            }));
+        }
+
+        let munged_offer = self.rc_overlay.strip_sdp(&offer_sdp);
+        let offer = RTCSessionDescription::offer(munged_offer).context("parse child offer")?;
+        pc.set_remote_description(offer)
+            .await
+            .context("set_remote_description(file_child)")?;
+        let answer = pc
+            .create_answer(None)
+            .await
+            .context("create_answer(file_child)")?;
+        pc.set_local_description(answer.clone())
+            .await
+            .context("set_local_description(file_child)")?;
+
+        self.child_peers.lock().await.insert(
+            child_id,
+            ChildPeerHandle {
+                transfer_id,
+                pc,
+                files_dc,
+                stop: child_stop,
+            },
+        );
+        Ok(answer.sdp)
+    }
+
+    pub async fn add_file_child_ice(
+        &self,
+        child_id: bson::oid::ObjectId,
+        transfer_id: &str,
+        candidate: serde_json::Value,
+    ) -> Result<()> {
+        let pc = {
+            let children = self.child_peers.lock().await;
+            let Some(handle) = children
+                .get(&child_id)
+                .filter(|h| h.transfer_id == transfer_id && !h.stop.is_cancelled())
+            else {
+                return Err(anyhow!("unknown or closed file child"));
+            };
+            handle.pc.clone()
+        };
+        let init: RTCIceCandidateInit = match candidate {
+            serde_json::Value::String(s) => RTCIceCandidateInit {
+                candidate: s,
+                ..Default::default()
+            },
+            other => serde_json::from_value(other)
+                .map_err(|e| anyhow!("bad ICE candidate shape: {e}"))?,
+        };
+        if !self.rc_overlay.keeps_remote_candidate(&init.candidate) {
+            return Ok(());
+        }
+        if crate::mdns_resolve::candidate_mdns_name(&init.candidate).is_some() {
+            let rc_overlay = self.rc_overlay.clone();
+            let mut init = init;
+            tokio::spawn(async move {
+                if let Some(rewritten) =
+                    crate::mdns_resolve::resolve_mdns_candidate(&init.candidate).await
+                {
+                    init.candidate = rewritten;
+                }
+                if !rc_overlay.keeps_remote_candidate(&init.candidate) {
+                    return;
+                }
+                let _ = pc.add_ice_candidate(init).await;
+            });
+            return Ok(());
+        }
+        pc.add_ice_candidate(init)
+            .await
+            .context("add_ice_candidate(file_child)")
+    }
+
+    pub async fn complete_file_child(
+        &self,
+        child_id: bson::oid::ObjectId,
+        transfer_id: &str,
+    ) -> bool {
+        let removed = {
+            let mut children = self.child_peers.lock().await;
+            if children
+                .get(&child_id)
+                .is_some_and(|h| h.transfer_id == transfer_id)
+            {
+                children.remove(&child_id)
+            } else {
+                None
+            }
+        };
+        let released = self
+            .file_child_authorization
+            .lock()
+            .ok()
+            .is_some_and(|mut auth| auth.release_completed_child(child_id, transfer_id));
+        if let Some(handle) = removed {
+            handle.stop.cancel();
+            if let Some(dc) = handle.files_dc.lock().await.take() {
+                let _ = tokio::time::timeout(Duration::from_secs(1), dc.close()).await;
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(2), handle.pc.close()).await;
+            return true;
+        }
+        released
+    }
+
+    pub async fn revoke_file_children(&self) -> (u32, u64) {
+        close_file_child_control(&self.file_child_authorization);
+        let drained: Vec<ChildPeerHandle> = self
+            .child_peers
+            .lock()
+            .await
+            .drain()
+            .map(|(_, h)| h)
+            .collect();
+        let mut closed_children = 0u32;
+        let mut in_flight_buffered_bytes = 0u64;
+        for handle in drained {
+            handle.stop.cancel();
+            if let Some(dc) = handle.files_dc.lock().await.take() {
+                let buffered =
+                    tokio::time::timeout(Duration::from_millis(250), dc.buffered_amount())
+                        .await
+                        .unwrap_or(0) as u64;
+                in_flight_buffered_bytes = in_flight_buffered_bytes.saturating_add(buffered);
+                let _ = tokio::time::timeout(Duration::from_secs(1), dc.close()).await;
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(2), handle.pc.close()).await;
+            closed_children = closed_children.saturating_add(1);
+        }
+        (closed_children, in_flight_buffered_bytes)
+    }
+
     pub fn stop_serving(&self) {
         // First: the channel handlers let go whatever the channels do next.
         self.session_end.cancel();
+        close_file_child_control(&self.file_child_authorization);
+        let child_peers = self.child_peers.clone();
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                let drained: Vec<ChildPeerHandle> =
+                    child_peers.lock().await.drain().map(|(_, h)| h).collect();
+                for h in drained {
+                    h.stop.cancel();
+                    let _ = tokio::time::timeout(Duration::from_secs(2), h.pc.close()).await;
+                }
+            });
+        }
         if let Some(pump) = &self.media_pump {
             pump.abort();
         }
@@ -1925,6 +2251,7 @@ impl AgentPeer {
 
     pub async fn close(&self) {
         self.stop_serving();
+        let _ = self.revoke_file_children().await;
         if let Err(e) = self.pc.close().await {
             warn!(session = %self.session_id, %e, "PC close failed");
         }
@@ -1952,6 +2279,7 @@ impl Drop for AgentPeer {
         // The DataChannel handlers' own session end (idempotent; `close`
         // usually got here first).
         self.session_end.cancel();
+        close_file_child_control(&self.file_child_authorization);
         crate::input::arbiter::global().session_closed(session_id);
         // Wave 2 — release this session's telemetry counters; a
         // long-lived agent must not accumulate one entry per session.
@@ -10102,6 +10430,425 @@ fn layout_json(snap: &crate::input::layout::LayoutSnapshot) -> String {
     .to_string()
 }
 
+/// Parent-local proof admission only; this does not create a child transport.
+/// Only a local ordinary Request and its local grant can bind this object.
+/// Unsupported sources stay Unknown; this is not the Off/Audit pin store.
+pub(crate) struct FileChildAuthorization {
+    parent_session_id: bson::oid::ObjectId,
+    permissions: meshharbor_remote_control::permissions::Permissions,
+    session_end: tokio_util::sync::CancellationToken,
+    origin: FileChildParentOrigin,
+    // (agent, controller), supplied by trusted parent setup, never child JSON.
+    identity: Option<(bson::oid::ObjectId, bson::oid::ObjectId)>,
+    registration: Option<FileChildRegistration>,
+    invalid_proofs: u8,
+    control_closed: bool,
+    parent_grant: Option<crate::signaling::PendingFileChildParent>,
+}
+
+struct FileChildRegistration {
+    parent_session_id: bson::oid::ObjectId,
+    identity: (bson::oid::ObjectId, bson::oid::ObjectId),
+    key: String,
+    children: std::collections::HashMap<bson::oid::ObjectId, PreparedFileChild>,
+    used_nonces: std::collections::HashSet<String>,
+}
+
+struct PreparedFileChild {
+    transfer_id: String,
+    consumed: bool,
+    completed: bool,
+}
+
+// Retain consumed IDs until the parent ends so prepare cannot resurrect one.
+const FILE_CHILD_PREPARATIONS_PER_PARENT: usize = 4;
+const FILE_CHILD_HISTORY_PER_PARENT: usize = 256;
+const FILE_CHILD_INVALID_PROOF_LIMIT: u8 = 8;
+
+// These origins cannot acquire child support by inheriting an ordinary FILES
+// bit. Their inherited identity/stop chains are not implemented here.
+#[allow(dead_code)] // Scoped sources are refused before peer binding.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileChildParentOrigin {
+    Unknown,
+    Ordinary,
+    Shared,
+    External,
+    Delegated,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FileChildDenial {
+    ParentUnavailable,
+    ParentEnded,
+    FilesDenied,
+    InvalidRegistration,
+    AlreadyRegistered,
+    Unregistered,
+    InvalidPreparation,
+    PreparationLimit,
+    UnpreparedOrConsumed,
+    InvalidProof,
+}
+
+impl FileChildAuthorization {
+    pub(crate) fn unavailable(
+        parent_session_id: bson::oid::ObjectId,
+        permissions: meshharbor_remote_control::permissions::Permissions,
+        session_end: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        Self {
+            parent_session_id,
+            permissions,
+            session_end,
+            origin: FileChildParentOrigin::Unknown,
+            identity: None,
+            registration: None,
+            invalid_proofs: 0,
+            control_closed: false,
+            parent_grant: None,
+        }
+    }
+
+    fn check_parent(&self) -> std::result::Result<(), FileChildDenial> {
+        if self.session_end.is_cancelled()
+            || self.control_closed
+            || self
+                .parent_grant
+                .as_ref()
+                .is_some_and(|grant| !grant.binding_is_live())
+        {
+            return Err(FileChildDenial::ParentEnded);
+        }
+        if !self
+            .permissions
+            .contains(meshharbor_remote_control::permissions::Permissions::FILES)
+        {
+            return Err(FileChildDenial::FilesDenied);
+        }
+        if self.origin != FileChildParentOrigin::Ordinary || self.identity.is_none() {
+            return Err(FileChildDenial::ParentUnavailable);
+        }
+        Ok(())
+    }
+
+    fn close_control(&mut self) {
+        self.control_closed = true;
+        if let Some(grant) = self.parent_grant.take() {
+            grant.close();
+        }
+        self.registration = None;
+    }
+
+    fn handle_control(
+        &mut self,
+        val: &serde_json::Value,
+    ) -> std::result::Result<(), FileChildDenial> {
+        use meshharbor_remote_control::signaling::peer_auth_key_is_well_formed;
+        self.check_parent()?;
+        let identity = self.identity.ok_or(FileChildDenial::ParentUnavailable)?;
+        match val.get("t").and_then(serde_json::Value::as_str) {
+            Some("rc:file.child.register") => {
+                if self.registration.is_some() {
+                    return Err(FileChildDenial::AlreadyRegistered);
+                }
+                let key = val
+                    .get("key")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|key| peer_auth_key_is_well_formed(key))
+                    .ok_or(FileChildDenial::InvalidRegistration)?;
+                self.registration = Some(FileChildRegistration {
+                    parent_session_id: self.parent_session_id,
+                    identity,
+                    key: key.to_owned(),
+                    children: std::collections::HashMap::new(),
+                    used_nonces: std::collections::HashSet::new(),
+                });
+            }
+            Some("rc:file.child.prepare") => {
+                let child_text = val
+                    .get("child_id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(FileChildDenial::InvalidPreparation)?;
+                let child = bson::oid::ObjectId::parse_str(child_text)
+                    .map_err(|_| FileChildDenial::InvalidPreparation)?;
+                if child.to_hex() != child_text {
+                    return Err(FileChildDenial::InvalidPreparation);
+                }
+                let transfer = val
+                    .get("transfer_id")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|v| !v.is_empty() && v.len() <= 128 && !v.chars().any(char::is_control))
+                    .ok_or(FileChildDenial::InvalidPreparation)?;
+                let registration = self
+                    .registration
+                    .as_mut()
+                    .ok_or(FileChildDenial::Unregistered)?;
+                if registration.parent_session_id != self.parent_session_id
+                    || registration.identity != identity
+                {
+                    return Err(FileChildDenial::ParentUnavailable);
+                }
+                if registration.children.contains_key(&child) {
+                    return Err(FileChildDenial::UnpreparedOrConsumed);
+                }
+                let active_preparations = registration
+                    .children
+                    .values()
+                    .filter(|p| !p.completed)
+                    .count();
+                if active_preparations >= FILE_CHILD_PREPARATIONS_PER_PARENT
+                    || registration.children.len() >= FILE_CHILD_HISTORY_PER_PARENT
+                {
+                    return Err(FileChildDenial::PreparationLimit);
+                }
+                registration.children.insert(
+                    child,
+                    PreparedFileChild {
+                        transfer_id: transfer.to_owned(),
+                        consumed: false,
+                        completed: false,
+                    },
+                );
+            }
+            _ => return Err(FileChildDenial::InvalidRegistration),
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_offer(
+        &mut self,
+        offer: &meshharbor_remote_control::signaling::ServerMsg,
+    ) -> std::result::Result<(), FileChildDenial> {
+        let result = self.check_prepared_offer(offer);
+        if matches!(&result, Err(FileChildDenial::InvalidProof)) {
+            // Only failures attributed to a live registered preparation reach
+            // InvalidProof. Success and control messages never reset this count.
+            self.invalid_proofs = self.invalid_proofs.saturating_add(1);
+            if self.invalid_proofs >= FILE_CHILD_INVALID_PROOF_LIMIT {
+                // Sticky for this parent; clear its child grants without
+                // cancelling the ordinary session or closing its control DC.
+                self.close_control();
+            }
+        }
+        result
+    }
+
+    fn check_prepared_offer(
+        &mut self,
+        offer: &meshharbor_remote_control::signaling::ServerMsg,
+    ) -> std::result::Result<(), FileChildDenial> {
+        self.check_parent()?;
+        use meshharbor_remote_control::signaling::{
+            FileChildDirection, ServerMsg, file_child_offer_transcript, peer_auth_verify,
+        };
+        let ServerMsg::FileSdpOffer {
+            session_id,
+            child_id,
+            transfer_id,
+            direction: FileChildDirection::Download,
+            sdp,
+            proof,
+        } = offer
+        else {
+            return Err(FileChildDenial::ParentUnavailable);
+        };
+        if *session_id != self.parent_session_id {
+            return Err(FileChildDenial::ParentUnavailable);
+        }
+        let identity = self.identity.ok_or(FileChildDenial::ParentUnavailable)?;
+        let registration = self
+            .registration
+            .as_mut()
+            .ok_or(FileChildDenial::Unregistered)?;
+        if registration.parent_session_id != self.parent_session_id
+            || registration.identity != identity
+        {
+            return Err(FileChildDenial::ParentUnavailable);
+        }
+        let prepared = registration
+            .children
+            .get_mut(child_id)
+            .filter(|p| !p.consumed && p.transfer_id == *transfer_id)
+            .ok_or(FileChildDenial::UnpreparedOrConsumed)?;
+        // Check the preparation before charging a bad key: unknown, consumed,
+        // or mismatched children cannot spend this parent's failure budget.
+        // The offer's key is an assertion to compare, never a trust source.
+        if proof.key != registration.key {
+            return Err(FileChildDenial::InvalidProof);
+        }
+        let transcript = file_child_offer_transcript(
+            &self.parent_session_id.to_hex(),
+            &child_id.to_hex(),
+            transfer_id,
+            &identity.0.to_hex(),
+            &identity.1.to_hex(),
+            sdp,
+            &proof.nonce,
+        )
+        .ok_or(FileChildDenial::InvalidProof)?;
+        if registration.used_nonces.contains(&proof.nonce)
+            || !peer_auth_verify(&registration.key, &transcript, &proof.sig)
+        {
+            return Err(FileChildDenial::InvalidProof);
+        }
+        if self.session_end.is_cancelled()
+            || self.control_closed
+            || self
+                .parent_grant
+                .as_ref()
+                .is_some_and(|grant| !grant.binding_is_live())
+        {
+            return Err(FileChildDenial::ParentEnded);
+        }
+        prepared.consumed = true;
+        registration.used_nonces.insert(proof.nonce.clone());
+        Ok(())
+    }
+
+    pub(crate) fn release_completed_child(
+        &mut self,
+        child_id: bson::oid::ObjectId,
+        transfer_id: &str,
+    ) -> bool {
+        let Some(registration) = self.registration.as_mut() else {
+            return false;
+        };
+        let Some(prepared) = registration
+            .children
+            .get_mut(&child_id)
+            .filter(|p| p.consumed && !p.completed && p.transfer_id == transfer_id)
+        else {
+            return false;
+        };
+        prepared.completed = true;
+        true
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum ControlEnvelopeError {
+    NonUtf8,
+    Json(serde_json::Error),
+    FileChild(FileChildDenial),
+}
+
+/// The actual control DC byte parser. Only the current parent object can
+/// register its key or prepare a child; no signaling proof can do either.
+fn parse_control_envelope(
+    data: &[u8],
+    parent: &std::sync::Mutex<FileChildAuthorization>,
+) -> std::result::Result<serde_json::Value, ControlEnvelopeError> {
+    let text = std::str::from_utf8(data).map_err(|_| ControlEnvelopeError::NonUtf8)?;
+    let val: serde_json::Value = serde_json::from_str(text).map_err(ControlEnvelopeError::Json)?;
+    if matches!(
+        val.get("t").and_then(serde_json::Value::as_str),
+        Some("rc:file.child.register" | "rc:file.child.prepare")
+    ) {
+        let mut parent = parent
+            .lock()
+            .map_err(|_| ControlEnvelopeError::FileChild(FileChildDenial::ParentUnavailable))?;
+        parent
+            .handle_control(&val)
+            .map_err(ControlEnvelopeError::FileChild)?;
+    }
+    Ok(val)
+}
+
+/// Bind the exact local Request/consent candidate once, without deriving any
+/// authority from controller JSON, the child proof, or ordinary audit policy.
+pub(crate) fn bind_file_child_parent(
+    parent: &std::sync::Mutex<FileChildAuthorization>,
+    pending: Option<&crate::signaling::PendingFileChildParent>,
+) -> std::result::Result<(), FileChildDenial> {
+    let pending = pending.ok_or(FileChildDenial::ParentUnavailable)?;
+    let scope = pending
+        .approved_scope()
+        .ok_or(FileChildDenial::ParentUnavailable)?;
+    let mut parent = parent
+        .lock()
+        .map_err(|_| FileChildDenial::ParentUnavailable)?;
+    if parent.control_closed || parent.session_end.is_cancelled() {
+        return Err(FileChildDenial::ParentEnded);
+    }
+    if parent.parent_session_id != scope.session_id {
+        return Err(FileChildDenial::ParentUnavailable);
+    }
+    if parent.origin != FileChildParentOrigin::Unknown
+        || parent.identity.is_some()
+        || parent.registration.is_some()
+        || parent.parent_grant.is_some()
+    {
+        return Err(FileChildDenial::ParentUnavailable);
+    }
+    if !parent
+        .permissions
+        .contains(meshharbor_remote_control::permissions::Permissions::FILES)
+    {
+        return Err(FileChildDenial::FilesDenied);
+    }
+    if !pending.claim_for_binding() {
+        return Err(FileChildDenial::ParentUnavailable);
+    }
+    parent.permissions &= scope.permissions;
+    parent.identity = Some((scope.agent_id, scope.controller_user_id));
+    parent.parent_grant = Some(pending.clone());
+    parent.origin = FileChildParentOrigin::Ordinary;
+    if let Err(why) = parent.check_parent() {
+        parent.close_control();
+        return Err(why);
+    }
+    Ok(())
+}
+
+/// The callback's response seam, using the same byte parser as proof tests.
+/// Positive child ACKs describe the parent-local bookkeeping, not Hub admission
+/// or a created transport. Ordinary control envelopes bypass the child gate.
+pub(crate) fn parse_control_envelope_with_reply(
+    data: &[u8],
+    parent: &std::sync::Mutex<FileChildAuthorization>,
+) -> std::result::Result<(serde_json::Value, Option<serde_json::Value>), ControlEnvelopeError> {
+    let val = parse_control_envelope(data, parent)?;
+    let reply = match val.get("t").and_then(serde_json::Value::as_str) {
+        Some(tag @ ("rc:file.child.register" | "rc:file.child.prepare")) => {
+            let mut parent = parent
+                .lock()
+                .map_err(|_| ControlEnvelopeError::FileChild(FileChildDenial::ParentUnavailable))?;
+            if let Err(why) = parent.check_parent() {
+                parent.close_control();
+                return Err(ControlEnvelopeError::FileChild(why));
+            }
+            let mut reply = serde_json::json!({
+                "t": format!("{tag}.ack"), "session_id": parent.parent_session_id.to_hex(), "ok": true,
+            });
+            if tag == "rc:file.child.prepare" {
+                reply["child_id"] = val["child_id"].clone();
+                reply["transfer_id"] = val["transfer_id"].clone();
+            }
+            Some(reply)
+        }
+        _ => None,
+    };
+    Ok((val, reply))
+}
+
+pub(crate) fn close_file_child_control(parent: &std::sync::Mutex<FileChildAuthorization>) {
+    if let Ok(mut parent) = parent.lock() {
+        parent.close_control();
+    }
+}
+
+/// The real callback supplies its send result. A late successful completion
+/// performs no mutation and cannot resurrect a parent that already closed.
+pub(crate) fn file_child_control_reply_finished(
+    parent: &std::sync::Mutex<FileChildAuthorization>,
+    delivered: bool,
+) {
+    if !delivered {
+        close_file_child_control(parent);
+    }
+}
+
 /// `control` data-channel handler. Parses JSON `rc:*` envelopes and
 /// applies them. Today the only message is `rc:quality` (mutating the
 /// shared atomic that the media pump polls before each encode); future
@@ -10120,6 +10867,7 @@ fn attach_control_handler(
     viewer_report: Arc<crate::encode::viewer_rate::ViewerFeedback>,
     // rc.199 — per-session Priority dial; the `rc:priority` match arm writes it.
     priority: Arc<std::sync::atomic::AtomicU8>,
+    file_child_authorization: Arc<std::sync::Mutex<FileChildAuthorization>>,
 ) {
     // A handle the on_message closure sends replies through (e.g.
     // rc:logs-fetch.reply) over the same DC. #1740 — WEAK: the closure is
@@ -10143,8 +10891,11 @@ fn attach_control_handler(
     // Multi-user P3: ownership-gated — only the session that APPLIED the
     // current mode restores it (a closing watcher tab must not revert the
     // driving session's mode).
+    let file_child_for_close = file_child_authorization.clone();
     dc.on_close(Box::new(move || {
+        let file_child_authorization = file_child_for_close.clone();
         Box::pin(async move {
+            close_file_child_control(&file_child_authorization);
             // P6 — the control DC's close is the canonical session-death
             // signal: deregister from the InputArbiter (release-all any
             // held keys, drop off the participants rail, hand the
@@ -10161,6 +10912,7 @@ fn attach_control_handler(
     }));
     dc.on_message(Box::new(move |msg| {
         let quality_state = quality_state.clone();
+        let file_child_authorization = file_child_authorization.clone();
         let target_resolution = target_resolution.clone();
         let keyframe_requested = keyframe_requested.clone();
         let viewer_report = viewer_report.clone();
@@ -10172,20 +10924,33 @@ fn attach_control_handler(
             // the data-channel callback (it'd kill the channel for
             // the rest of the session). Every parse path silently
             // logs and returns on failure.
-            let text = match std::str::from_utf8(&msg.data) {
-                Ok(t) => t,
-                Err(_) => {
+            let (val, file_child_reply) = match parse_control_envelope_with_reply(&msg.data, &file_child_authorization) {
+                Ok(envelope) => envelope,
+                Err(ControlEnvelopeError::NonUtf8) => {
                     debug!(%session_id, bytes = msg.data.len(), "control: non-UTF8 payload, dropped");
                     return;
                 }
-            };
-            let val: serde_json::Value = match serde_json::from_str(text) {
-                Ok(v) => v,
-                Err(e) => {
+                Err(ControlEnvelopeError::Json(e)) => {
                     debug!(%session_id, %e, "control: malformed JSON, dropped");
                     return;
                 }
+                Err(ControlEnvelopeError::FileChild(why)) => {
+                    debug!(%session_id, ?why, "control: file child capability unavailable");
+                    return;
+                }
             };
+            if let Some(reply) = file_child_reply {
+                // No authorization lock is held while writing the real DC.
+                let delivered = match (serde_json::to_string(&reply), dc_for_reply.upgrade()) {
+                    (Ok(text), Some(dc)) => dc.send_text(text).await.is_ok(),
+                    _ => false,
+                };
+                file_child_control_reply_finished(&file_child_authorization, delivered);
+                if !delivered {
+                    debug!(%session_id, "control: file child ACK send failed; child authorization closed");
+                }
+                return;
+            }
             let Some(t) = val.get("t").and_then(|v| v.as_str()) else {
                 debug!(%session_id, "control: message missing 't' tag, dropped");
                 return;
@@ -12130,6 +12895,130 @@ pub fn attach_files_handler(
     });
 }
 
+pub fn attach_child_files_handler(
+    dc: Arc<RTCDataChannel>,
+    session_id: bson::oid::ObjectId,
+    child_end: &tokio_util::sync::CancellationToken,
+) {
+    let handler = crate::files::FilesHandler::new();
+    let dc_for_handler = dc.clone();
+    let handler_for_close = handler.clone();
+    dc.on_close(Box::new(move || {
+        let h = handler_for_close.clone();
+        Box::pin(async move {
+            h.abort().await;
+        })
+    }));
+    let handler_for_end = handler.clone();
+    dc.on_message(Box::new(move |msg| {
+        let dc = dc_for_handler.clone();
+        let handler = handler.clone();
+        Box::pin(async move {
+            crate::session_telemetry::counters(session_id).note_transfer();
+            if msg.is_string {
+                handle_child_files_control(dc, handler, session_id, &msg.data).await;
+            } else {
+                send_files_json(
+                    &dc,
+                    &crate::files::FilesOutgoing::Error {
+                        id: "",
+                        message: "file child channel is download-only",
+                    },
+                )
+                .await;
+            }
+        })
+    }));
+    on_session_end(&dc, child_end, move || async move {
+        handler_for_end.end_session().await;
+    });
+}
+
+async fn handle_child_files_control(
+    dc: Arc<RTCDataChannel>,
+    handler: crate::files::FilesHandler,
+    session_id: bson::oid::ObjectId,
+    data: &[u8],
+) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        debug!(%session_id, "child files: non-UTF8 control frame, dropped");
+        return;
+    };
+    let msg = match serde_json::from_str::<crate::files::FilesIncoming>(text) {
+        Ok(m) => m,
+        Err(e) => {
+            debug!(%session_id, %e, "child files: malformed control JSON, dropped");
+            return;
+        }
+    };
+    match msg {
+        crate::files::FilesIncoming::Get {
+            id,
+            path,
+            offset,
+            length,
+        } => {
+            if let Err(reason) = crate::files::path_addressed_allowed() {
+                warn!(%session_id, %id, path = %path, "child files: get refused — remote browse disabled");
+                send_files_json(
+                    &dc,
+                    &crate::files::FilesOutgoing::Error {
+                        id: &id,
+                        message: reason,
+                    },
+                )
+                .await;
+                return;
+            }
+            info!(
+                %session_id,
+                %id,
+                path = %path,
+                ?offset,
+                ?length,
+                "child files: get (range download requested)"
+            );
+            spawn_outgoing_pump_range(
+                dc.clone(),
+                handler,
+                session_id,
+                id,
+                path,
+                offset,
+                length,
+                crate::files::CHILD_OUTGOING_BUFFER_HIGH_BYTES,
+            );
+        }
+        crate::files::FilesIncoming::Cancel { id } => {
+            let out_cancelled = handler.cancel_outgoing(&id).await;
+            info!(%session_id, %id, out_cancelled, "child files: cancel requested");
+        }
+        crate::files::FilesIncoming::Dir { req_id, .. } => {
+            send_files_json(
+                &dc,
+                &crate::files::FilesOutgoing::DirError {
+                    req_id: &req_id,
+                    message: "file child channel is download-only",
+                },
+            )
+            .await;
+        }
+        crate::files::FilesIncoming::Begin { id, .. }
+        | crate::files::FilesIncoming::End { id }
+        | crate::files::FilesIncoming::GetFolder { id, .. }
+        | crate::files::FilesIncoming::Resume { id, .. } => {
+            send_files_json(
+                &dc,
+                &crate::files::FilesOutgoing::Error {
+                    id: &id,
+                    message: "file child channel is download-only",
+                },
+            )
+            .await;
+        }
+    }
+}
+
 /// Has this channel closed, or begun to? `Closing` counts: a channel closed
 /// from the device's own side often stops there for good, without ever
 /// reaching `Closed` or firing `on_close` (a race in webrtc-rs's read loop).
@@ -12270,7 +13159,12 @@ async fn handle_files_control(
                 .await;
             }
         },
-        crate::files::FilesIncoming::Get { id, path } => {
+        crate::files::FilesIncoming::Get {
+            id,
+            path,
+            offset,
+            length,
+        } => {
             if let Err(reason) = crate::files::path_addressed_allowed() {
                 warn!(%session_id, %id, path = %path, "files: get refused — remote browse disabled");
                 send_files_json(
@@ -12283,8 +13177,17 @@ async fn handle_files_control(
                 .await;
                 return;
             }
-            info!(%session_id, %id, path = %path, "files: get (download requested)");
-            spawn_outgoing_pump(dc.clone(), handler, session_id, id, path);
+            info!(%session_id, %id, path = %path, ?offset, ?length, "files: get (download requested)");
+            spawn_outgoing_pump_range(
+                dc.clone(),
+                handler,
+                session_id,
+                id,
+                path,
+                offset,
+                length,
+                4 * 1024 * 1024,
+            );
         }
         crate::files::FilesIncoming::GetFolder { id, path, format } => {
             if let Err(reason) = crate::files::path_addressed_allowed() {
@@ -12428,18 +13331,25 @@ async fn handle_files_control(
 /// returned. It stops through the stop token on `OutgoingTransfer`,
 /// which `cancel_outgoing` (the browser) and `end_session` (the session
 /// ending) fire; every await races it (#1730).
-fn spawn_outgoing_pump(
+#[allow(clippy::too_many_arguments)]
+fn spawn_outgoing_pump_range(
     dc: Arc<RTCDataChannel>,
     handler: crate::files::FilesHandler,
     session_id: bson::oid::ObjectId,
     id: String,
     requested_path: String,
+    offset: Option<u64>,
+    length: Option<u64>,
+    backpressure_high: usize,
 ) {
     tokio::spawn(async move {
-        // begin_outgoing validates the path + denylist, opens the
+        // begin_outgoing_range validates the path + denylist + range, opens the
         // file, and stashes outgoing state. Success → send `Offer`
         // and start streaming.
-        let offer = match handler.begin_outgoing(id.clone(), &requested_path).await {
+        let offer = match handler
+            .begin_outgoing_range(id.clone(), &requested_path, offset, length)
+            .await
+        {
             Ok(o) => o,
             Err(e) => {
                 warn!(%session_id, %id, path = %requested_path, %e, "files: begin_outgoing failed");
@@ -12478,7 +13388,15 @@ fn spawn_outgoing_pump(
             return;
         }
 
-        let bytes_sent = match pump_outgoing_file(&dc, &handler, &offer, session_id).await {
+        let bytes_sent = match pump_outgoing_file_with_limit(
+            &dc,
+            &handler,
+            &offer,
+            session_id,
+            backpressure_high,
+        )
+        .await
+        {
             Ok(n) => n,
             Err(e) => {
                 handler.finish_outgoing(&offer.id).await;
@@ -12736,36 +13654,62 @@ async fn zip_pump_loop<S: DownloadSink>(
 /// the total bytes sent on clean stream exit. `session_id` is whose transfer
 /// it is: each progress report is activity for the session's idle limit
 /// (FR-101 P4b-2), so a long download is never ended as idle.
+#[cfg(test)]
 async fn pump_outgoing_file<S: DownloadSink>(
     dc: &S,
     handler: &crate::files::FilesHandler,
     offer: &crate::files::OutgoingOffer,
     session_id: bson::oid::ObjectId,
 ) -> anyhow::Result<u64> {
+    pump_outgoing_file_with_limit(dc, handler, offer, session_id, 4 * 1024 * 1024).await
+}
+
+async fn pump_outgoing_file_with_limit<S: DownloadSink>(
+    dc: &S,
+    handler: &crate::files::FilesHandler,
+    offer: &crate::files::OutgoingOffer,
+    session_id: bson::oid::ObjectId,
+    backpressure_high: usize,
+) -> anyhow::Result<u64> {
     use tokio::io::AsyncReadExt;
     const CHUNK: usize = 64 * 1024;
-    const BACKPRESSURE_HIGH: usize = 4 * 1024 * 1024;
     let stop = &offer.cancel;
 
     let mut file = or_stopped(stop, handler.open_outgoing(&offer.id)).await??;
+    if offer.length == Some(0) {
+        return Ok(0);
+    }
+    let mut remaining = offer.length;
     let mut buf = vec![0u8; CHUNK];
     let mut total: u64 = 0;
     let mut last_progress: u64 = 0;
     loop {
+        if remaining == Some(0) {
+            break;
+        }
+        let max_read = remaining.map_or(CHUNK, |rem| (rem.min(CHUNK as u64)) as usize);
         // Backpressure: poll buffered_amount and yield until it
         // drops below the high-watermark.
         // ⚠️ After a drop the buffer never drains (only a SACK lowers it):
         // the channel's state ends the wait too, and the stop token ends
         // it even when the channel never says it closed.
-        while or_stopped(stop, dc.buffered()).await? > BACKPRESSURE_HIGH {
+        while or_stopped(stop, dc.buffered()).await? > backpressure_high.saturating_sub(max_read) {
             or_stopped(stop, tokio::time::sleep(Duration::from_millis(20))).await?;
             if dc.gone() {
                 return Err(anyhow::anyhow!("the channel closed"));
             }
         }
-        let n = or_stopped(stop, file.read(&mut buf)).await??;
+        let n = or_stopped(stop, file.read(&mut buf[..max_read])).await??;
         if n == 0 {
+            if remaining.is_some_and(|rem| rem > 0) {
+                return Err(anyhow::anyhow!(
+                    "unexpected EOF before requested byte range completed"
+                ));
+            }
             break;
+        }
+        if let Some(rem) = &mut remaining {
+            *rem = rem.saturating_sub(n as u64);
         }
         let chunk = bytes::Bytes::copy_from_slice(&buf[..n]);
         or_stopped(stop, dc.send_chunk(&chunk)).await??;
@@ -14813,6 +15757,715 @@ mod overlay_tier_tests {
     }
 }
 
+#[cfg(test)]
+mod file_child_authorization_tests {
+    use super::*;
+    use base64::Engine;
+    use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+    use bson::oid::ObjectId;
+    use meshharbor_remote_control::permissions::Permissions;
+    use meshharbor_remote_control::signaling::{
+        FileChildDirection, FileChildOfferProof, ServerMsg, file_child_offer_transcript,
+        peer_auth_verify,
+    };
+    use ring::rand::SystemRandom;
+    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
+    use std::sync::Mutex;
+    use tokio_util::sync::CancellationToken;
+
+    const PARENT: &str = "111111111111111111111111";
+    const CHILD: &str = "222222222222222222222222";
+    const AGENT: &str = "444444444444444444444444";
+    const CONTROLLER: &str = "555555555555555555555555";
+    const TRANSFER: &str = "synthetic-download";
+    const SDP: &str = "v=0\r\na=fingerprint:sha-256 AA:BB:CC\r\n";
+
+    struct Controller {
+        pair: EcdsaKeyPair,
+        key: String,
+    }
+
+    fn controller() -> Controller {
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+            .expect("generate a fresh synthetic key in memory");
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let key = STANDARD.encode(pair.public_key().as_ref());
+        Controller { pair, key }
+    }
+
+    fn parent() -> Mutex<FileChildAuthorization> {
+        parent_for_session(PARENT)
+    }
+
+    fn parent_for_session(session: &str) -> Mutex<FileChildAuthorization> {
+        let mut parent = FileChildAuthorization::unavailable(
+            ObjectId::parse_str(session).unwrap(),
+            Permissions::VIEW | Permissions::FILES,
+            CancellationToken::new(),
+        );
+        // Synthetic trusted Request context, not an identity claimed by the
+        // registration/child JSON. Production setup remains unavailable.
+        parent.origin = FileChildParentOrigin::Ordinary;
+        parent.identity = Some((
+            ObjectId::parse_str(AGENT).unwrap(),
+            ObjectId::parse_str(CONTROLLER).unwrap(),
+        ));
+        Mutex::new(parent)
+    }
+
+    fn signed_offer(controller: &Controller) -> ServerMsg {
+        signed_child(controller, PARENT, CHILD, [53u8; 16])
+    }
+
+    fn signed_child(
+        controller: &Controller,
+        session: &str,
+        child: &str,
+        nonce: [u8; 16],
+    ) -> ServerMsg {
+        let nonce = URL_SAFE_NO_PAD.encode(nonce);
+        let transcript =
+            file_child_offer_transcript(session, child, TRANSFER, AGENT, CONTROLLER, SDP, &nonce)
+                .expect("the synthetic offer has a canonical identity and fingerprint");
+        let sig = URL_SAFE_NO_PAD.encode(
+            controller
+                .pair
+                .sign(&SystemRandom::new(), &transcript)
+                .unwrap()
+                .as_ref(),
+        );
+        assert!(
+            peer_auth_verify(&controller.key, &transcript, &sig),
+            "fixture signature must verify before exercising agent admission"
+        );
+        ServerMsg::FileSdpOffer {
+            session_id: ObjectId::parse_str(session).unwrap(),
+            child_id: ObjectId::parse_str(child).unwrap(),
+            transfer_id: TRANSFER.into(),
+            direction: FileChildDirection::Download,
+            sdp: SDP.into(),
+            proof: FileChildOfferProof {
+                nonce,
+                key: controller.key.clone(),
+                sig,
+            },
+        }
+    }
+
+    fn register_child_key(
+        parent: &Mutex<FileChildAuthorization>,
+        controller: &Controller,
+    ) -> std::result::Result<serde_json::Value, ControlEnvelopeError> {
+        parse_control_envelope(
+            &serde_json::to_vec(&serde_json::json!({
+                "t": "rc:file.child.register", "key": controller.key,
+            }))
+            .unwrap(),
+            parent,
+        )
+    }
+
+    fn prepare_child(
+        parent: &Mutex<FileChildAuthorization>,
+        child: &str,
+    ) -> std::result::Result<serde_json::Value, ControlEnvelopeError> {
+        parse_control_envelope(
+            &serde_json::to_vec(&serde_json::json!({
+                "t": "rc:file.child.prepare", "child_id": child, "transfer_id": TRANSFER,
+            }))
+            .unwrap(),
+            parent,
+        )
+    }
+
+    #[test]
+    fn file_child_offer_requires_the_live_parent_control_registration() {
+        use crate::peer_auth::PeerAuthPolicy::{Audit, Off};
+        use crate::signaling::check_file_child_offer;
+
+        let controller = controller();
+        let other_controller = self::controller();
+        let offer = signed_offer(&controller);
+        let parent = parent();
+
+        let quality = br#"{"t":"rc:quality","quality":"sharp"}"#;
+        assert_eq!(
+            parse_control_envelope(quality, &parent).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(quality).unwrap(),
+            "the existing control envelope is preserved"
+        );
+        assert!(matches!(
+            parse_control_envelope(&[0xff], &parent),
+            Err(ControlEnvelopeError::NonUtf8)
+        ));
+        assert!(matches!(
+            parse_control_envelope(b"{", &parent),
+            Err(ControlEnvelopeError::Json(_))
+        ));
+
+        for policy in [Off, Audit] {
+            assert!(
+                check_file_child_offer(Some(&parent), &offer).is_err(),
+                "a self-signed offer without control registration is insufficient: {policy:?}"
+            );
+            assert_eq!(
+                check_file_child_offer(None, &offer),
+                Err(FileChildDenial::ParentUnavailable),
+                "no live parent must fail closed even under {policy:?}"
+            );
+        }
+
+        // These bytes enter the SAME parser called by the control DC's
+        // on_message, against the SAME per-parent state checked below.
+        let registration = serde_json::to_vec(&serde_json::json!({
+            "t": "rc:file.child.register", "key": controller.key,
+        }))
+        .unwrap();
+        let registered = parse_control_envelope(&registration, &parent);
+        let preparation = serde_json::to_vec(&serde_json::json!({
+            "t": "rc:file.child.prepare", "child_id": CHILD, "transfer_id": TRANSFER,
+        }))
+        .unwrap();
+        let prepared = parse_control_envelope(&preparation, &parent);
+
+        let unregistered_parent = self::parent();
+        assert!(
+            check_file_child_offer(Some(&unregistered_parent), &offer).is_err(),
+            "registration on one parent object cannot authorize another parent object"
+        );
+
+        // Once registration is implemented, each mutation must still reject.
+        // In the initial RED all child admission remains Unsupported; these
+        // rejections alone do not prove the cryptographic/lifecycle feature.
+        let wire = serde_json::to_value(&offer).unwrap();
+        let mutations = [
+            (
+                "parent",
+                "/session_id",
+                serde_json::json!("333333333333333333333333"),
+            ),
+            (
+                "child",
+                "/child_id",
+                serde_json::json!("333333333333333333333333"),
+            ),
+            (
+                "transfer",
+                "/transfer_id",
+                serde_json::json!("another-download"),
+            ),
+            (
+                "fingerprint",
+                "/sdp",
+                serde_json::json!("v=0\r\na=fingerprint:sha-256 DD:EE:FF\r\n"),
+            ),
+            (
+                "nonce",
+                "/proof/nonce",
+                serde_json::json!(URL_SAFE_NO_PAD.encode([54u8; 16])),
+            ),
+            (
+                "signature",
+                "/proof/sig",
+                serde_json::json!(URL_SAFE_NO_PAD.encode([0u8; 64])),
+            ),
+            (
+                "unregistered key",
+                "/proof/key",
+                serde_json::json!(other_controller.key),
+            ),
+        ];
+        for (label, pointer, value) in mutations {
+            let mut changed = wire.clone();
+            *changed.pointer_mut(pointer).unwrap() = value;
+            let changed: ServerMsg = serde_json::from_value(changed).unwrap();
+            for policy in [Off, Audit] {
+                let isolated = self::parent();
+                register_child_key(&isolated, &controller).unwrap();
+                prepare_child(&isolated, CHILD).unwrap();
+                assert!(
+                    check_file_child_offer(Some(&isolated), &changed).is_err(),
+                    "{label} tampering must reject under {policy:?}"
+                );
+            }
+        }
+        let another_valid_signature = signed_offer(&other_controller);
+        for policy in [Off, Audit] {
+            let isolated = self::parent();
+            register_child_key(&isolated, &controller).unwrap();
+            prepare_child(&isolated, CHILD).unwrap();
+            assert!(
+                check_file_child_offer(Some(&isolated), &another_valid_signature).is_err(),
+                "a valid signature from a different, unregistered key must reject under {policy:?}"
+            );
+        }
+
+        for origin in [
+            FileChildParentOrigin::Unknown,
+            FileChildParentOrigin::Shared,
+            FileChildParentOrigin::External,
+            FileChildParentOrigin::Delegated,
+        ] {
+            parent.lock().unwrap().origin = origin;
+            for _policy in [Off, Audit] {
+                assert_eq!(
+                    check_file_child_offer(Some(&parent), &offer),
+                    Err(FileChildDenial::ParentUnavailable)
+                );
+            }
+        }
+        parent.lock().unwrap().origin = FileChildParentOrigin::Ordinary;
+
+        let admitted = check_file_child_offer(Some(&parent), &offer);
+        assert!(
+            check_file_child_offer(Some(&parent), &offer).is_err(),
+            "the prepared child must be consumed once, including across policy modes"
+        );
+
+        // Local grant mutation checks the admission seam only. A production
+        // dynamic FILES-revocation notification/stop chain is still unproven.
+        parent
+            .lock()
+            .unwrap()
+            .permissions
+            .remove(Permissions::FILES);
+        assert_eq!(
+            check_file_child_offer(Some(&parent), &offer),
+            Err(FileChildDenial::FilesDenied)
+        );
+        parent.lock().unwrap().session_end.cancel();
+        assert_eq!(
+            check_file_child_offer(Some(&parent), &offer),
+            Err(FileChildDenial::ParentEnded)
+        );
+
+        assert!(
+            registered.is_ok() && prepared.is_ok() && admitted.is_ok(),
+            "X14 matching live-parent registration and prepared signed child must admit; registration={registered:?}, preparation={prepared:?}, child={admitted:?}"
+        );
+    }
+    #[test]
+    fn file_child_invalid_proof_budget_is_parent_lifetime_and_state_rejections_do_not_consume() {
+        use crate::peer_auth::{OfferCheck, PeerAuthPolicy, PendingOffers, Verdict};
+        use crate::signaling::check_file_child_offer;
+        use PeerAuthPolicy::{Audit, Off};
+
+        let controller = controller();
+        let other_controller = self::controller();
+        let parent = parent();
+        let offer_a = signed_offer(&controller);
+        let child_b = "333333333333333333333333";
+        let child_c = "666666666666666666666666";
+        let child_d = "777777777777777777777777";
+        let changed = |offer: &ServerMsg, pointer: &str, value: serde_json::Value| {
+            let mut wire = serde_json::to_value(offer).unwrap();
+            *wire.pointer_mut(pointer).unwrap() = value;
+            serde_json::from_value::<ServerMsg>(wire).unwrap()
+        };
+
+        // State-only refusals cannot exhaust a registered parent's proof budget.
+        // In particular, the wrong key must not be charged before confirming a
+        // matching prepared child and transfer. No request promotes its own key.
+        for _policy in [Off, Audit] {
+            for _ in 0..9 {
+                assert_eq!(
+                    check_file_child_offer(None, &offer_a),
+                    Err(FileChildDenial::ParentUnavailable)
+                );
+                assert_eq!(
+                    check_file_child_offer(Some(&parent), &offer_a),
+                    Err(FileChildDenial::Unregistered)
+                );
+            }
+        }
+        register_child_key(&parent, &controller).unwrap();
+        let wrong_key = changed(
+            &offer_a,
+            "/proof/key",
+            serde_json::json!(other_controller.key),
+        );
+        for _policy in [Off, Audit] {
+            for _ in 0..9 {
+                assert!(check_file_child_offer(Some(&parent), &wrong_key).is_err());
+                let wrong_parent = changed(
+                    &wrong_key,
+                    "/session_id",
+                    serde_json::json!("999999999999999999999999"),
+                );
+                assert!(check_file_child_offer(Some(&parent), &wrong_parent).is_err());
+            }
+        }
+        prepare_child(&parent, CHILD).unwrap();
+        let wrong_transfer = changed(
+            &wrong_key,
+            "/transfer_id",
+            serde_json::json!("not-the-prepared-transfer"),
+        );
+        for _policy in [Off, Audit] {
+            for _ in 0..9 {
+                assert!(check_file_child_offer(Some(&parent), &wrong_transfer).is_err());
+            }
+        }
+
+        // Failures 1..3 belong to a live, registered, unconsumed preparation.
+        for (index, bad) in [
+            wrong_key,
+            changed(
+                &offer_a,
+                "/sdp",
+                serde_json::json!("v=0\r\na=fingerprint:sha-256 DD:EE:FF\r\n"),
+            ),
+            changed(
+                &offer_a,
+                "/proof/sig",
+                serde_json::json!(URL_SAFE_NO_PAD.encode([0u8; 64])),
+            ),
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(
+                check_file_child_offer(Some(&parent), bad),
+                Err(FileChildDenial::InvalidProof),
+                "attributable cryptographic failure {} must reject",
+                index + 1
+            );
+        }
+        assert!(register_child_key(&parent, &controller).is_err());
+        prepare_child(&parent, child_b).unwrap();
+        assert_eq!(check_file_child_offer(Some(&parent), &offer_a), Ok(()));
+
+        // A successful child, repeated registration, and a later preparation
+        // cannot reset failures. Repeating a consumed child is state-only,
+        // including when its asserted key is wrong.
+        let consumed_wrong_key = changed(
+            &offer_a,
+            "/proof/key",
+            serde_json::json!(other_controller.key),
+        );
+        for _policy in [Off, Audit] {
+            for _ in 0..9 {
+                assert!(check_file_child_offer(Some(&parent), &offer_a).is_err());
+                assert!(check_file_child_offer(Some(&parent), &consumed_wrong_key).is_err());
+            }
+        }
+        let offer_b = signed_child(&controller, PARENT, child_b, [61u8; 16]);
+        // This signature self-verifies, but its nonce was consumed by child A.
+        let replay_b = signed_child(&controller, PARENT, child_b, [53u8; 16]);
+        for (index, bad) in [
+            replay_b.clone(),
+            changed(
+                &offer_b,
+                "/proof/nonce",
+                serde_json::json!(URL_SAFE_NO_PAD.encode([62u8; 15])),
+            ),
+            changed(
+                &offer_b,
+                "/proof/sig",
+                serde_json::json!(URL_SAFE_NO_PAD.encode([0u8; 64])),
+            ),
+            signed_child(&other_controller, PARENT, child_b, [63u8; 16]),
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(
+                check_file_child_offer(Some(&parent), bad),
+                Err(FileChildDenial::InvalidProof),
+                "attributable cryptographic failure {} must reject",
+                index + 4
+            );
+        }
+        prepare_child(&parent, child_c).unwrap();
+        let offer_c = signed_child(&controller, PARENT, child_c, [67u8; 16]);
+        assert_eq!(
+            check_file_child_offer(Some(&parent), &offer_c),
+            Ok(()),
+            "seven failures must still permit a correctly signed prepared child"
+        );
+        prepare_child(&parent, child_d).unwrap();
+        assert!(check_file_child_offer(Some(&parent), &replay_b).is_err()); // Failure 8.
+
+        let offer_d = signed_child(&controller, PARENT, child_d, [68u8; 16]);
+        // Exercise the real ordinary-policy evaluator as well: Off skips
+        // ordinary authentication and Audit reports an absent proof, yet neither
+        // result may authorize a child after its separate budget is exhausted.
+        for policy in [Off, Audit] {
+            let ordinary = PendingOffers::default();
+            ordinary.note_request(
+                ObjectId::parse_str(PARENT).unwrap(),
+                ObjectId::parse_str(CONTROLLER).unwrap(),
+            );
+            let verdict = ordinary.judge_offer(
+                ObjectId::parse_str(PARENT).unwrap(),
+                SDP,
+                None,
+                &OfferCheck {
+                    policy,
+                    config_path: std::path::Path::new("unused-with-absent-proof"),
+                    tenant_id: "synthetic-tenant",
+                    agent_id: AGENT,
+                },
+            );
+            assert_eq!(
+                verdict,
+                if policy == Off {
+                    None
+                } else {
+                    Some(Verdict::Absent)
+                }
+            );
+            assert!(
+                check_file_child_offer(Some(&parent), &offer_d).is_err(),
+                "X14 eighth attributable InvalidProof must permanently disable this parent's child capability under {policy:?}"
+            );
+        }
+        assert!(register_child_key(&parent, &controller).is_err());
+        assert!(prepare_child(&parent, "888888888888888888888888").is_err());
+        assert!(!parent.lock().unwrap().session_end.is_cancelled());
+        let quality = br#"{"t":"rc:quality","quality":"sharp"}"#;
+        assert_eq!(
+            parse_control_envelope(quality, &parent).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(quality).unwrap(),
+            "budget exhaustion must preserve ordinary control messages"
+        );
+        close_file_child_control(&parent);
+        assert!(parent.lock().unwrap().registration.is_none());
+
+        // A distinct trusted parent connection starts with a fresh lifetime
+        // budget. This is a local state fixture, not a network reconnect claim.
+        let next_session = "999999999999999999999999";
+        let reconnected = parent_for_session(next_session);
+        register_child_key(&reconnected, &controller).unwrap();
+        prepare_child(&reconnected, CHILD).unwrap();
+        // The old parent's consumed nonce is scoped to that closed parent.
+        let next_offer = signed_child(&controller, next_session, CHILD, [53u8; 16]);
+        let next_bad = changed(
+            &next_offer,
+            "/proof/sig",
+            serde_json::json!(URL_SAFE_NO_PAD.encode([0u8; 64])),
+        );
+        for _ in 0..7 {
+            assert_eq!(
+                check_file_child_offer(Some(&reconnected), &next_bad),
+                Err(FileChildDenial::InvalidProof)
+            );
+        }
+        assert_eq!(
+            check_file_child_offer(Some(&reconnected), &next_offer),
+            Ok(())
+        );
+        close_file_child_control(&reconnected);
+        assert!(reconnected.lock().unwrap().registration.is_none());
+    }
+
+    #[test]
+    fn file_child_registration_is_bounded_immutable_and_closed_with_parent() {
+        use crate::signaling::check_file_child_offer;
+        let controller = controller();
+        let parent = parent();
+        let offer = signed_offer(&controller);
+        let register = serde_json::to_vec(&serde_json::json!({
+            "t":"rc:file.child.register", "key":controller.key,
+        }))
+        .unwrap();
+        let prepare = |child: &str| {
+            serde_json::to_vec(&serde_json::json!({
+                "t":"rc:file.child.prepare", "child_id":child, "transfer_id":TRANSFER,
+            }))
+            .unwrap()
+        };
+        let preparation = prepare(CHILD);
+        assert!(matches!(
+            parse_control_envelope(&preparation, &parent),
+            Err(ControlEnvelopeError::FileChild(
+                FileChildDenial::Unregistered
+            ))
+        ));
+        assert!(matches!(
+            parse_control_envelope(
+                br#"{"t":"rc:file.child.register","key":"invalid"}"#,
+                &parent
+            ),
+            Err(ControlEnvelopeError::FileChild(
+                FileChildDenial::InvalidRegistration
+            ))
+        ));
+        parse_control_envelope(&register, &parent).unwrap();
+        assert!(matches!(
+            parse_control_envelope(&register, &parent),
+            Err(ControlEnvelopeError::FileChild(
+                FileChildDenial::AlreadyRegistered
+            ))
+        ));
+        let other_controller = super::file_child_authorization_tests::controller();
+        let replacement = serde_json::to_vec(&serde_json::json!({
+            "t":"rc:file.child.register", "key":other_controller.key,
+        }))
+        .unwrap();
+        assert!(matches!(
+            parse_control_envelope(&replacement, &parent),
+            Err(ControlEnvelopeError::FileChild(
+                FileChildDenial::AlreadyRegistered
+            ))
+        ));
+        parse_control_envelope(&preparation, &parent).unwrap();
+        assert!(matches!(
+            parse_control_envelope(&preparation, &parent),
+            Err(ControlEnvelopeError::FileChild(
+                FileChildDenial::UnpreparedOrConsumed
+            ))
+        ));
+
+        let original_identity = parent.lock().unwrap().identity;
+        parent.lock().unwrap().identity = Some((ObjectId::new(), ObjectId::new()));
+        assert_eq!(
+            check_file_child_offer(Some(&parent), &offer),
+            Err(FileChildDenial::ParentUnavailable),
+            "changing parent identity cannot inherit the old control registration"
+        );
+        parent.lock().unwrap().identity = original_identity;
+        assert!(
+            check_file_child_offer(Some(&parent), &offer).is_ok(),
+            "a valid Audit admission still executes mandatory proof validation"
+        );
+        assert!(
+            matches!(
+                parse_control_envelope(&preparation, &parent),
+                Err(ControlEnvelopeError::FileChild(
+                    FileChildDenial::UnpreparedOrConsumed
+                ))
+            ),
+            "consumed child cannot be prepared again"
+        );
+
+        let second_child = "666666666666666666666666";
+        for child in [
+            second_child,
+            "777777777777777777777777",
+            "888888888888888888888888",
+        ] {
+            parse_control_envelope(&prepare(child), &parent).unwrap();
+        }
+        assert!(
+            matches!(
+                parse_control_envelope(&prepare("999999999999999999999999"), &parent),
+                Err(ControlEnvelopeError::FileChild(
+                    FileChildDenial::PreparationLimit
+                ))
+            ),
+            "untrusted control messages cannot grow the parent preparation state without bound"
+        );
+        let mut second = signed_offer(&controller);
+        if let ServerMsg::FileSdpOffer {
+            session_id,
+            child_id,
+            transfer_id,
+            sdp,
+            proof,
+            ..
+        } = &mut second
+        {
+            *child_id = ObjectId::parse_str(second_child).unwrap();
+            let transcript = file_child_offer_transcript(
+                &session_id.to_hex(),
+                &child_id.to_hex(),
+                transfer_id,
+                AGENT,
+                CONTROLLER,
+                sdp,
+                &proof.nonce,
+            )
+            .unwrap();
+            proof.sig = URL_SAFE_NO_PAD.encode(
+                controller
+                    .pair
+                    .sign(&SystemRandom::new(), &transcript)
+                    .unwrap()
+                    .as_ref(),
+            );
+        }
+        assert_eq!(
+            check_file_child_offer(Some(&parent), &second),
+            Err(FileChildDenial::InvalidProof),
+            "a correctly signed second child cannot reuse an admitted nonce"
+        );
+        if let ServerMsg::FileSdpOffer {
+            session_id,
+            child_id,
+            transfer_id,
+            sdp,
+            proof,
+            ..
+        } = &mut second
+        {
+            proof.nonce = URL_SAFE_NO_PAD.encode([55u8; 16]);
+            let transcript = file_child_offer_transcript(
+                &session_id.to_hex(),
+                &child_id.to_hex(),
+                transfer_id,
+                AGENT,
+                CONTROLLER,
+                sdp,
+                &proof.nonce,
+            )
+            .unwrap();
+            proof.sig = URL_SAFE_NO_PAD.encode(
+                controller
+                    .pair
+                    .sign(&SystemRandom::new(), &transcript)
+                    .unwrap()
+                    .as_ref(),
+            );
+        }
+        assert!(
+            check_file_child_offer(Some(&parent), &second).is_ok(),
+            "rejected nonce replay must not consume the prepared second child"
+        );
+
+        parent.lock().unwrap().close_control();
+        assert_eq!(
+            check_file_child_offer(Some(&parent), &offer),
+            Err(FileChildDenial::ParentEnded)
+        );
+        assert!(
+            matches!(
+                parse_control_envelope(&register, &parent),
+                Err(ControlEnvelopeError::FileChild(
+                    FileChildDenial::ParentEnded
+                ))
+            ),
+            "a closed control connection cannot reinstall its key"
+        );
+        assert!(
+            parse_control_envelope(br#"{"t":"rc:quality","quality":"sharp"}"#, &parent).is_ok(),
+            "the child gate does not gate existing control envelopes"
+        );
+
+        let unknown = std::sync::Mutex::new(FileChildAuthorization::unavailable(
+            ObjectId::new(),
+            meshharbor_remote_control::permissions::Permissions::FILES,
+            tokio_util::sync::CancellationToken::new(),
+        ));
+        let forged = serde_json::to_vec(&serde_json::json!({
+            "t":"rc:file.child.register", "key":controller.key,
+            "origin":"ordinary", "agent_id":AGENT, "controller_user_id":CONTROLLER,
+        }))
+        .unwrap();
+        assert!(
+            matches!(
+                parse_control_envelope(&forged, &unknown),
+                Err(ControlEnvelopeError::FileChild(
+                    FileChildDenial::ParentUnavailable
+                ))
+            ),
+            "control JSON cannot promote production Unknown to a trusted parent"
+        );
+    }
+}
+
 /// What a DataChannel handler lets go of when its session ends
 /// ([`AgentPeer::session_end`]), whether or not its channel ever says it
 /// closed.
@@ -15169,6 +16822,403 @@ mod download_stop_tests {
         let want = std::fs::read(&path).expect("read the file back");
         assert_eq!(sent, want.len() as u64);
         assert!(*got.lock().unwrap() == want, "the bytes arrived intact");
+    }
+
+    #[tokio::test]
+    async fn a_ranged_download_sends_exact_stripes_and_reassembles_byte_for_byte() {
+        let (_dir, path) = a_file(1024 * 1024 + 19);
+        let want = std::fs::read(&path).expect("read the file back");
+        let total_size = want.len() as u64;
+        let path_str = path.to_string_lossy().to_string();
+
+        // 0-byte probe reports full file size without transferring payload bytes.
+        let probe_handler = crate::files::FilesHandler::new();
+        let probe_offer = probe_handler
+            .begin_outgoing_range("probe".into(), &path_str, Some(0), Some(0))
+            .await
+            .expect("probe begin_outgoing_range");
+        assert_eq!(probe_offer.size, Some(total_size));
+        let probe_got = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let probe_sink = Collect {
+            bytes: probe_got.clone(),
+        };
+        let probe_sent = pump_outgoing_file_with_limit(
+            &probe_sink,
+            &probe_handler,
+            &probe_offer,
+            bson::oid::ObjectId::new(),
+            crate::files::CHILD_OUTGOING_BUFFER_HIGH_BYTES,
+        )
+        .await
+        .expect("probe completes");
+        assert_eq!(probe_sent, 0);
+        assert!(probe_got.lock().unwrap().is_empty());
+
+        // 4 concurrent stripes reassemble to the exact file.
+        let stripe_count = 4u64;
+        let base_stripe = total_size / stripe_count;
+        let mut handles = Vec::new();
+        for idx in 0..stripe_count {
+            let offset = idx * base_stripe;
+            let length = if idx + 1 == stripe_count {
+                total_size - offset
+            } else {
+                base_stripe
+            };
+            let path_clone = path_str.clone();
+            handles.push(tokio::spawn(async move {
+                let handler = crate::files::FilesHandler::new();
+                let offer = handler
+                    .begin_outgoing_range(
+                        format!("stripe-{idx}"),
+                        &path_clone,
+                        Some(offset),
+                        Some(length),
+                    )
+                    .await
+                    .expect("stripe begin_outgoing_range");
+                let got = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let sink = Collect { bytes: got.clone() };
+                let sent = pump_outgoing_file_with_limit(
+                    &sink,
+                    &handler,
+                    &offer,
+                    bson::oid::ObjectId::new(),
+                    crate::files::CHILD_OUTGOING_BUFFER_HIGH_BYTES,
+                )
+                .await
+                .expect("stripe completes");
+                assert_eq!(sent, length);
+                let data = got.lock().unwrap().clone();
+                assert_eq!(data.len() as u64, length);
+                data
+            }));
+        }
+        let mut reassembled = Vec::with_capacity(want.len());
+        for h in handles {
+            reassembled.extend_from_slice(&h.await.expect("stripe task"));
+        }
+        assert_eq!(reassembled, want);
+    }
+
+    async fn connected_webrtc_files_pair(
+        stop: &tokio_util::sync::CancellationToken,
+    ) -> (
+        Arc<RTCPeerConnection>,
+        Arc<RTCDataChannel>,
+        Arc<webrtc::data::data_channel::DataChannel>,
+        Arc<RTCPeerConnection>,
+        Arc<RTCDataChannel>,
+        Arc<std::sync::Mutex<Vec<u8>>>,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) {
+        let mut browser_setting = webrtc::api::setting_engine::SettingEngine::default();
+        browser_setting.detach_data_channels();
+        let browser_api = APIBuilder::new()
+            .with_setting_engine(browser_setting)
+            .build();
+        let agent_api = APIBuilder::new().build();
+        let browser_pc = Arc::new(
+            browser_api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .expect("browser pc"),
+        );
+        let agent_pc = Arc::new(
+            agent_api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .expect("agent pc"),
+        );
+        let (agent_dc_tx, agent_dc_rx) = tokio::sync::oneshot::channel();
+        let agent_dc_tx = Arc::new(std::sync::Mutex::new(Some(agent_dc_tx)));
+        let (agent_open_tx, agent_open_rx) = tokio::sync::oneshot::channel();
+        let agent_open_tx = Arc::new(std::sync::Mutex::new(Some(agent_open_tx)));
+        let stop_for_cb = stop.clone();
+        let sid = bson::oid::ObjectId::new();
+        agent_pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+            attach_child_files_handler(dc.clone(), sid, &stop_for_cb);
+            let open_tx = agent_open_tx.clone();
+            dc.on_open(Box::new(move || {
+                if let Some(tx) = open_tx.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+                Box::pin(async {})
+            }));
+            let tx = agent_dc_tx.lock().unwrap().take();
+            Box::pin(async move {
+                if let Some(tx) = tx {
+                    let _ = tx.send(dc);
+                }
+            })
+        }));
+
+        let browser_dc = browser_pc
+            .create_data_channel("files", None)
+            .await
+            .expect("browser files dc");
+        let (open_tx, open_rx) = tokio::sync::oneshot::channel();
+        let open_tx = Arc::new(std::sync::Mutex::new(Some(open_tx)));
+        browser_dc.on_open(Box::new(move || {
+            if let Some(tx) = open_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            Box::pin(async {})
+        }));
+
+        let offer = browser_pc.create_offer(None).await.expect("offer");
+        let mut gather = browser_pc.gathering_complete_promise().await;
+        browser_pc
+            .set_local_description(offer)
+            .await
+            .expect("browser sld");
+        let _ = gather.recv().await;
+        let offer_sdp = browser_pc.local_description().await.expect("local offer");
+
+        agent_pc
+            .set_remote_description(offer_sdp)
+            .await
+            .expect("agent srd");
+        let answer = agent_pc.create_answer(None).await.expect("answer");
+        let mut gather_ans = agent_pc.gathering_complete_promise().await;
+        agent_pc
+            .set_local_description(answer)
+            .await
+            .expect("agent sld");
+        let _ = gather_ans.recv().await;
+        let answer_sdp = agent_pc.local_description().await.expect("local answer");
+
+        browser_pc
+            .set_remote_description(answer_sdp)
+            .await
+            .expect("browser srd");
+
+        let agent_dc = tokio::time::timeout(Duration::from_secs(5), agent_dc_rx)
+            .await
+            .expect("agent dc timeout")
+            .expect("agent dc");
+        tokio::time::timeout(Duration::from_secs(5), open_rx)
+            .await
+            .expect("browser dc open timeout")
+            .expect("browser dc open");
+        tokio::time::timeout(Duration::from_secs(5), agent_open_rx)
+            .await
+            .expect("agent dc open timeout")
+            .expect("agent dc open");
+
+        // Detach browser_dc so we can read 64 KiB (65536-byte) chunks without
+        // hitting webrtc-rs's default `DATA_CHANNEL_BUFFER_SIZE = u16::MAX` (65535).
+        let raw_browser_dc = browser_dc.detach().await.expect("detach browser dc");
+        let inbound_bytes = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let (strings_tx, strings_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let bytes_for_reader = inbound_bytes.clone();
+        let raw_for_reader = raw_browser_dc.clone();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 128 * 1024];
+            while let Ok((n, is_string)) = raw_for_reader.read_data_channel(&mut buf).await {
+                if n == 0 && !is_string {
+                    break;
+                }
+                if is_string {
+                    if let Ok(s) = std::str::from_utf8(&buf[..n]) {
+                        let _ = strings_tx.send(s.to_string());
+                    }
+                } else {
+                    bytes_for_reader
+                        .lock()
+                        .unwrap()
+                        .extend_from_slice(&buf[..n]);
+                }
+            }
+        });
+
+        (
+            browser_pc,
+            browser_dc,
+            raw_browser_dc,
+            agent_pc,
+            agent_dc,
+            inbound_bytes,
+            strings_rx,
+        )
+    }
+
+    async fn run_webrtc_child_download_stripes(
+        path_str: &str,
+        total_size: u64,
+        stripe_count: usize,
+    ) -> (Duration, Vec<u8>) {
+        let base = total_size / stripe_count as u64;
+        let mut pairs = Vec::with_capacity(stripe_count);
+        for _ in 0..stripe_count {
+            let stop = tokio_util::sync::CancellationToken::new();
+            let (b_pc, b_dc, raw_b_dc, a_pc, a_dc, inbound_bytes, strings_rx) =
+                connected_webrtc_files_pair(&stop).await;
+            pairs.push((
+                b_pc,
+                b_dc,
+                raw_b_dc,
+                a_pc,
+                a_dc,
+                stop,
+                inbound_bytes,
+                strings_rx,
+            ));
+        }
+
+        let started = std::time::Instant::now();
+        let mut tasks = Vec::with_capacity(stripe_count);
+        for (idx, (b_pc, b_dc, raw_b_dc, a_pc, _a_dc, _stop, inbound_bytes, mut strings_rx)) in
+            pairs.into_iter().enumerate()
+        {
+            let offset = idx as u64 * base;
+            let length = if idx + 1 == stripe_count {
+                total_size - offset
+            } else {
+                base
+            };
+            let req_path = path_str.to_string();
+            tasks.push(tokio::spawn(async move {
+                let get_cmd = serde_json::json!({
+                    "t": "files:get",
+                    "id": format!("stripe-{idx}"),
+                    "path": req_path,
+                    "offset": offset,
+                    "length": length,
+                })
+                .to_string();
+                raw_b_dc
+                    .write_data_channel(&bytes::Bytes::from(get_cmd), true)
+                    .await
+                    .expect("send files:get");
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+                loop {
+                    let msg = tokio::time::timeout_at(deadline, strings_rx.recv())
+                        .await
+                        .expect("stripe eof timeout")
+                        .expect("stripe strings channel closed");
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&msg) {
+                        match val.get("t").and_then(|v| v.as_str()) {
+                            Some("files:eof") => break,
+                            Some("files:error") => {
+                                panic!(
+                                    "stripe files:error: {}",
+                                    val.get("message")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("error")
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let _ = b_dc.close().await;
+                let _ = b_pc.close().await;
+                let _ = a_pc.close().await;
+                let out = inbound_bytes.lock().unwrap().clone();
+                assert_eq!(out.len() as u64, length);
+                out
+            }));
+        }
+
+        let mut reassembled = Vec::with_capacity(total_size as usize);
+        for t in tasks {
+            reassembled.extend_from_slice(&t.await.expect("stripe join"));
+        }
+        let elapsed = started.elapsed();
+        (elapsed, reassembled)
+    }
+
+    #[tokio::test]
+    async fn child_files_webrtc_1_vs_4_throughput_sha256_upload_rejection_and_revoke_under_5s() {
+        let (_dir, path) = a_file(4 * 1024 * 1024);
+        let want = std::fs::read(&path).expect("read source file");
+        let want_sha256 = ring::digest::digest(&ring::digest::SHA256, &want);
+        let path_str = path.to_string_lossy().to_string();
+        let total_size = want.len() as u64;
+
+        // 1. Compare 1-connection vs 4-connection WebRTC DataChannel download + SHA256 integrity.
+        let (elapsed_1, got_1) = run_webrtc_child_download_stripes(&path_str, total_size, 1).await;
+        let sha_1 = ring::digest::digest(&ring::digest::SHA256, &got_1);
+        assert_eq!(sha_1.as_ref(), want_sha256.as_ref(), "1-child SHA256 match");
+
+        let (elapsed_4, got_4) = run_webrtc_child_download_stripes(&path_str, total_size, 4).await;
+        let sha_4 = ring::digest::digest(&ring::digest::SHA256, &got_4);
+        assert_eq!(sha_4.as_ref(), want_sha256.as_ref(), "4-child SHA256 match");
+        let mbps_1 = (total_size as f64 / (1024.0 * 1024.0)) / elapsed_1.as_secs_f64();
+        let mbps_4 = (total_size as f64 / (1024.0 * 1024.0)) / elapsed_4.as_secs_f64();
+        eprintln!(
+            "[X14 bench] 4 MiB WebRTC download: 1 child = {:?} ({:.1} MiB/s), 4 children = {:?} ({:.1} MiB/s)",
+            elapsed_1, mbps_1, elapsed_4, mbps_4
+        );
+
+        // 2. Child channel rejects upload and browse commands with "file child channel is download-only".
+        let child_stop = tokio_util::sync::CancellationToken::new();
+        let (b_pc, b_dc, raw_b_dc, a_pc, a_dc, _inbound_bytes, mut strings_rx) =
+            connected_webrtc_files_pair(&child_stop).await;
+        raw_b_dc
+            .write_data_channel(
+                &bytes::Bytes::from(
+                    serde_json::json!({
+                        "t": "files:begin",
+                        "id": "up-1",
+                        "name": "evil.bin",
+                        "size": 16,
+                    })
+                    .to_string(),
+                ),
+                true,
+            )
+            .await
+            .expect("send files:begin");
+        let err1 = tokio::time::timeout(Duration::from_secs(3), strings_rx.recv())
+            .await
+            .expect("upload rejection timeout")
+            .expect("upload rejection msg");
+        raw_b_dc
+            .write(&bytes::Bytes::from_static(b"forbidden-upload-bytes"))
+            .await
+            .expect("send binary");
+        let err2 = tokio::time::timeout(Duration::from_secs(3), strings_rx.recv())
+            .await
+            .expect("binary rejection timeout")
+            .expect("binary rejection msg");
+        for raw in [&err1, &err2] {
+            let val: serde_json::Value = serde_json::from_str(raw).expect("error json");
+            assert_eq!(val.get("t").and_then(|v| v.as_str()), Some("files:error"));
+            let m = val
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            assert!(
+                m.contains("file child channel is download-only"),
+                "unexpected error message: {m}"
+            );
+        }
+
+        // 3. Revocation closes child connections in < 5s with <= 1 MiB buffered while parent stays open.
+        let parent_stop = tokio_util::sync::CancellationToken::new();
+        let revoke_started = std::time::Instant::now();
+        child_stop.cancel();
+        let buffered = a_dc.buffered_amount().await;
+        let _ = a_dc.close().await;
+        let _ = a_pc.close().await;
+        let revoke_elapsed = revoke_started.elapsed();
+        assert!(
+            revoke_elapsed < Duration::from_secs(5),
+            "revocation took {:?}",
+            revoke_elapsed
+        );
+        assert!(
+            buffered <= crate::files::CHILD_OUTGOING_BUFFER_HIGH_BYTES,
+            "buffered bytes {buffered} exceeded 1 MiB cap"
+        );
+        assert!(
+            !parent_stop.is_cancelled(),
+            "parent session must remain uninterrupted"
+        );
+        let _ = b_dc.close().await;
+        let _ = b_pc.close().await;
     }
 }
 

@@ -167,6 +167,10 @@ impl RTCSctpTransport {
                 };
             };
 
+            if let Some(pacing) = self.setting_engine.get_sctp_file_pacing() {
+                sctp_association.set_file_pacing(Some(pacing)).await?;
+            }
+
             {
                 let mut sa = self.sctp_association.lock().await;
                 *sa = Some(Arc::clone(&sctp_association));

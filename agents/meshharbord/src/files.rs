@@ -62,6 +62,9 @@ use crate::files_dir;
 /// would need chunk-resume which this MVP doesn't implement.
 const MAX_TRANSFER_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
+/// X14 — per-child `files` DataChannel outgoing buffer ceiling (1 MiB).
+pub const CHILD_OUTGOING_BUFFER_HIGH_BYTES: usize = 1024 * 1024;
+
 /// Process-global flag for the `files:dir` browse capability. Set
 /// once at startup from `AgentConfig::enable_remote_browse` (and the
 /// `MESHHARBORD_DISABLE_BROWSE` env-var escape hatch). Readers in
@@ -1008,9 +1011,17 @@ pub(crate) enum FilesIncoming {
     End { id: String },
     /// Browser → Agent: download a single file from the host.
     /// Path is the absolute host path. Subject to denylist + read
-    /// permission of the agent process.
+    /// permission of the agent process. Optional `offset` and `length`
+    /// allow X14 download-only child connections to stripe byte ranges.
     #[serde(rename = "files:get")]
-    Get { id: String, path: String },
+    Get {
+        id: String,
+        path: String,
+        #[serde(default)]
+        offset: Option<u64>,
+        #[serde(default)]
+        length: Option<u64>,
+    },
     /// Browser → Agent: download a folder as a streaming zip
     /// (Phase 4). `format` is currently always `"zip"`.
     #[serde(rename = "files:get-folder")]
@@ -1204,6 +1215,9 @@ pub(crate) struct OutgoingTransfer {
     /// today (which reads-until-EOF).
     #[allow(dead_code)]
     pub size: u64,
+    pub offset: u64,
+    #[allow(dead_code)]
+    pub length: Option<u64>,
     /// #1730 — a TOKEN, not a flag: the pumps race every await against it.
     /// A flag read between awaits was never read by a pump parked inside
     /// one (a send on a channel whose peer vanished never returns), so a
@@ -1898,6 +1912,16 @@ impl FilesHandler {
     /// between chunks; calling [`Self::cancel_outgoing`] flips the
     /// flag and the next loop iteration will exit.
     pub async fn begin_outgoing(&self, id: String, path: &str) -> Result<OutgoingOffer> {
+        self.begin_outgoing_range(id, path, None, None).await
+    }
+
+    pub async fn begin_outgoing_range(
+        &self,
+        id: String,
+        path: &str,
+        offset: Option<u64>,
+        length: Option<u64>,
+    ) -> Result<OutgoingOffer> {
         let resolved = validate_outgoing_path(path).context("validating outgoing path")?;
         if is_agent_secret(&resolved) {
             return Err(anyhow!(
@@ -1921,6 +1945,15 @@ impl FilesHandler {
                 MAX_TRANSFER_BYTES
             ));
         }
+        let start = offset.unwrap_or(0);
+        if start > size {
+            return Err(anyhow!("range offset {start} exceeds file size {size}"));
+        }
+        if let Some(len) = length
+            && start.checked_add(len).is_none_or(|end| end > size)
+        {
+            return Err(anyhow!("range {start}..+{len} exceeds file size {size}"));
+        }
 
         let name = resolved
             .file_name()
@@ -1942,6 +1975,8 @@ impl FilesHandler {
             id: id.clone(),
             path: resolved.clone(),
             size,
+            offset: start,
+            length,
             cancel: cancel.clone(),
             _active_guard: ActiveTransferGuard::new(),
         });
@@ -1951,6 +1986,8 @@ impl FilesHandler {
             path: resolved,
             name,
             size: Some(size),
+            offset: start,
+            length,
             mime,
             cancel,
         })
@@ -1959,19 +1996,29 @@ impl FilesHandler {
     /// Open the outgoing transfer's file for reading. Caller pumps
     /// chunks via the returned handle.
     pub async fn open_outgoing(&self, id: &str) -> Result<File> {
-        let guard = self.outgoing.lock().await;
-        let Some(state) = guard.as_ref() else {
-            return Err(anyhow!("no active outgoing transfer"));
+        let (path, offset) = {
+            let guard = self.outgoing.lock().await;
+            let Some(state) = guard.as_ref() else {
+                return Err(anyhow!("no active outgoing transfer"));
+            };
+            if state.id != id {
+                return Err(anyhow!(
+                    "outgoing id mismatch: requested {id}, active {}",
+                    state.id
+                ));
+            }
+            (state.path.clone(), state.offset)
         };
-        if state.id != id {
-            return Err(anyhow!(
-                "outgoing id mismatch: requested {id}, active {}",
-                state.id
-            ));
-        }
-        File::open(&state.path)
+        let mut file = File::open(&path)
             .await
-            .with_context(|| format!("opening {}", state.path.display()))
+            .with_context(|| format!("opening {}", path.display()))?;
+        if offset > 0 {
+            use tokio::io::AsyncSeekExt;
+            file.seek(std::io::SeekFrom::Start(offset))
+                .await
+                .with_context(|| format!("seeking {} to {offset}", path.display()))?;
+        }
+        Ok(file)
     }
 
     /// Stop the active outgoing transfer if its id matches: its pump
@@ -2009,6 +2056,8 @@ pub struct OutgoingOffer {
     pub path: PathBuf,
     pub name: String,
     pub size: Option<u64>,
+    pub offset: u64,
+    pub length: Option<u64>,
     pub mime: Option<&'static str>,
     pub cancel: tokio_util::sync::CancellationToken,
 }
@@ -2536,6 +2585,8 @@ impl FilesHandler {
             id: id.clone(),
             path: resolved.clone(),
             size: 0, // unknown for streaming zip
+            offset: 0,
+            length: None,
             cancel: cancel.clone(),
             _active_guard: ActiveTransferGuard::new(),
         });
@@ -2544,6 +2595,8 @@ impl FilesHandler {
             path: resolved,
             name: zip_name,
             size: None,
+            offset: 0,
+            length: None,
             mime: Some("application/zip"),
             cancel,
         })
@@ -3771,9 +3824,34 @@ mod tests {
         let m: FilesIncoming =
             serde_json::from_str(r#"{"t":"files:get","id":"d1","path":"C:\\report.pdf"}"#).unwrap();
         match m {
-            FilesIncoming::Get { id, path } => {
+            FilesIncoming::Get {
+                id,
+                path,
+                offset,
+                length,
+            } => {
                 assert_eq!(id, "d1");
                 assert_eq!(path, "C:\\report.pdf");
+                assert_eq!(offset, None);
+                assert_eq!(length, None);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        let ranged: FilesIncoming = serde_json::from_str(
+            r#"{"t":"files:get","id":"d2","path":"C:\\report.pdf","offset":4096,"length":8192}"#,
+        )
+        .unwrap();
+        match ranged {
+            FilesIncoming::Get {
+                id,
+                path,
+                offset,
+                length,
+            } => {
+                assert_eq!(id, "d2");
+                assert_eq!(path, "C:\\report.pdf");
+                assert_eq!(offset, Some(4096));
+                assert_eq!(length, Some(8192));
             }
             other => panic!("unexpected: {other:?}"),
         }

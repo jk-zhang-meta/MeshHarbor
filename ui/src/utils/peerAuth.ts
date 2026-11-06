@@ -537,3 +537,126 @@ export async function offerAsk(args: {
 export function withinMs<T>(p: Promise<T | null>, ms: number): Promise<T | null> {
   return Promise.race([p, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))])
 }
+
+// ─── X14 — download-only child WebRTC offer proof ──────────────────────────
+
+export const FILE_CHILD_OFFER_LABEL = 'meshharbor-file-child-offer-v1'
+
+export interface FileChildOfferProof {
+  nonce: string
+  key: string
+  sig: string
+}
+
+function isCanonicalOidHex(id: string): boolean {
+  return /^[0-9a-f]{24}$/.test(id)
+}
+
+function isValidTransferId(transferId: string): boolean {
+  if (!transferId) return false
+  const bytes = new TextEncoder().encode(transferId)
+  if (bytes.length === 0 || bytes.length > 128) return false
+  for (let i = 0; i < transferId.length; i++) {
+    const code = transferId.charCodeAt(i)
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return false
+  }
+  return true
+}
+
+function isWellFormedPeerAuthNonce(nonce: string): boolean {
+  const bytes = fromBase64Url(nonce)
+  if (!bytes || bytes.length < 16 || bytes.length > 32) return false
+  return toBase64Url(bytes) === nonce
+}
+
+/**
+ * Construct the domain-separated byte transcript for a child WebRTC SDP offer
+ * (`file_child_offer_transcript` in `crates/remote_control/src/signaling.rs`).
+ */
+export function fileChildOfferTranscript(args: {
+  sessionId: string
+  childId: string
+  transferId: string
+  agentId: string
+  controllerUserId: string
+  offerSdp: string
+  nonce: string
+}): Uint8Array<ArrayBuffer> | null {
+  if (
+    !isCanonicalOidHex(args.sessionId) ||
+    !isCanonicalOidHex(args.childId) ||
+    !isCanonicalOidHex(args.agentId) ||
+    !isCanonicalOidHex(args.controllerUserId) ||
+    !isValidTransferId(args.transferId) ||
+    !isWellFormedPeerAuthNonce(args.nonce)
+  ) {
+    return null
+  }
+  const fingerprint = singleFingerprint(args.offerSdp)
+  if (!fingerprint) return null
+  return framed(
+    FILE_CHILD_OFFER_LABEL,
+    args.sessionId,
+    args.childId,
+    args.transferId,
+    'download',
+    args.agentId,
+    args.controllerUserId,
+    fingerprint,
+    args.nonce,
+  )
+}
+
+/**
+ * Generate a fresh session-scoped ephemeral P-256 ECDSA key pair for child
+ * download WebRTC transports (`rc:file.child.register`).
+ */
+export async function generateEphemeralFileChildKeyPair(): Promise<{
+  pair: CryptoKeyPair
+  publicKeyB64: string
+}> {
+  const pair = (await subtle().generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, [
+    'sign',
+    'verify',
+  ])) as CryptoKeyPair
+  const publicKeyB64 = await controllerPublicKey(pair)
+  return { pair, publicKeyB64 }
+}
+
+/**
+ * Sign a `FileChildOfferProof` over `fileChildOfferTranscript` for a child
+ * download `RTCPeerConnection` SDP offer.
+ */
+export async function signFileChildOfferProof(args: {
+  pair: CryptoKeyPair
+  publicKeyB64?: string
+  sessionId: string
+  childId: string
+  transferId: string
+  agentId: string
+  controllerUserId: string
+  offerSdp: string
+  nonce?: string
+}): Promise<FileChildOfferProof | null> {
+  const nonce = args.nonce ?? newPeerAuthNonce()
+  const transcript = fileChildOfferTranscript({
+    sessionId: args.sessionId,
+    childId: args.childId,
+    transferId: args.transferId,
+    agentId: args.agentId,
+    controllerUserId: args.controllerUserId,
+    offerSdp: args.offerSdp,
+    nonce,
+  })
+  if (!transcript) return null
+  try {
+    const sig = new Uint8Array(
+      await subtle().sign({ name: 'ECDSA', hash: 'SHA-256' }, args.pair.privateKey, transcript),
+    )
+    const key = args.publicKeyB64 ?? (await controllerPublicKey(args.pair))
+    return { nonce, key, sig: toBase64Url(sig) }
+  } catch {
+    return null
+  }
+}
+

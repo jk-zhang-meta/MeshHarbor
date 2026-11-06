@@ -11,6 +11,7 @@ import {
   applyPeerAuthVerdict,
   browserStorage,
   controllerKeyFor,
+  generateEphemeralFileChildKeyPair,
   indexedDbKeyBackend,
   judgePeerAuth,
   offerAsk,
@@ -20,6 +21,7 @@ import {
   peerAuthCanVerify,
   peerAuthFingerprint,
   shouldAskPeerAuth,
+  signFileChildOfferProof,
   singleFingerprint,
   storagePins,
   trustChangedKey,
@@ -4543,10 +4545,123 @@ export function useRemoteControl(
      * its answer names. Without it this page never asks for one.
      */
     userId?: () => string | null
+    /**
+     * X14 — opt-in initial child download connection count (0..4, default 0 = OFF).
+     * When >= 1 on an ordinary in-org session, `connect()` advertises
+     * `'file-child-download'` in `browser_caps`.
+     */
+    childDownloadConnections?: number
   },
 ) {
   const ws = useWsStore()
   const phase = ref<RcPhase>('idle')
+
+  // X14 — concurrent download child connections (0..4, default 0 = OFF).
+  const clampChildConnections = (n: number): number =>
+    Number.isFinite(n) ? Math.max(0, Math.min(4, Math.floor(n))) : 0
+  const readStoredChildConnections = (): number => {
+    try {
+      const raw = globalThis.localStorage?.getItem('meshharbor-rc-download-children')
+      if (raw === null || raw === undefined || raw === '') return 0
+      return clampChildConnections(Number(raw))
+    } catch {
+      return 0
+    }
+  }
+  const concurrentDownloadChildren = ref<number>(
+    clampChildConnections(opts?.childDownloadConnections ?? readStoredChildConnections()),
+  )
+  function setConcurrentDownloadChildren(n: number) {
+    const clamped = clampChildConnections(n)
+    concurrentDownloadChildren.value = clamped
+    try {
+      globalThis.localStorage?.setItem('meshharbor-rc-download-children', String(clamped))
+    } catch {
+      /* ignore storage errors */
+    }
+  }
+  const fileChildRevoked = ref(false)
+  let lastIceServers: IceServer[] = []
+  let fileChildKeyPair: { pair: CryptoKeyPair; publicKeyB64: string } | null = null
+  let fileChildRegistered = false
+  type ActiveChildPeer = {
+    pc: RTCPeerConnection
+    dc: RTCDataChannel | null
+    remoteDescriptionSet: boolean
+    pendingIce: RTCIceCandidateInit[]
+    reject: (err: Error) => void
+  }
+  const activeChildPeers = new Map<string, ActiveChildPeer>()
+  let pendingChildRegister: {
+    resolve: () => void
+    reject: (err: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  } | null = null
+  const pendingChildPrepare = new Map<
+    string,
+    { resolve: () => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >()
+  const pendingChildReserve = new Map<
+    string,
+    Array<{
+      resolve: (childId: string) => void
+      reject: (err: Error) => void
+      timer: ReturnType<typeof setTimeout>
+    }>
+  >()
+  type ProbeWaiter = {
+    name?: string
+    size?: number | null
+    mime?: string
+    resolve: (meta: { name: string; size: number | null; mime?: string }) => void
+    reject: (err: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }
+  const pendingProbePromises = new Map<string, ProbeWaiter>()
+
+  function closeAllFileChildren(reason: string, resetKey = false) {
+    if (pendingChildRegister) {
+      clearTimeout(pendingChildRegister.timer)
+      const r = pendingChildRegister
+      pendingChildRegister = null
+      r.reject(new Error(reason))
+    }
+    for (const [k, w] of Array.from(pendingChildPrepare.entries())) {
+      clearTimeout(w.timer)
+      pendingChildPrepare.delete(k)
+      w.reject(new Error(reason))
+    }
+    for (const [k, list] of Array.from(pendingChildReserve.entries())) {
+      pendingChildReserve.delete(k)
+      for (const w of list) {
+        clearTimeout(w.timer)
+        w.reject(new Error(reason))
+      }
+    }
+    for (const [k, w] of Array.from(pendingProbePromises.entries())) {
+      clearTimeout(w.timer)
+      pendingProbePromises.delete(k)
+      w.reject(new Error(reason))
+    }
+    for (const [childId, child] of Array.from(activeChildPeers.entries())) {
+      activeChildPeers.delete(childId)
+      try {
+        child.dc?.close()
+      } catch {
+        /* ignore */
+      }
+      try {
+        child.pc.close()
+      } catch {
+        /* ignore */
+      }
+      child.reject(new Error(reason))
+    }
+    if (resetKey) {
+      fileChildKeyPair = null
+      fileChildRegistered = false
+    }
+  }
 
   // FR-52 P4e — this instance drives an EXTERNAL session (the /connect page).
   // FIXED for the instance's life, and deliberately separate from the login
@@ -8515,6 +8630,61 @@ export function useRemoteControl(
         /* ignore — happens on stale candidates during teardown */
       }
     })
+    on('rc:file.child.reserved', (msg) => {
+      if (!sessionGateAllows(msg.session_id, sessionId.value)) return
+      const transferId = typeof msg.transfer_id === 'string' ? msg.transfer_id : ''
+      const childId = typeof msg.child_id === 'string' ? msg.child_id : ''
+      if (!transferId || !childId) return
+      const queue = pendingChildReserve.get(transferId)
+      const waiter = queue?.shift()
+      if (waiter) {
+        clearTimeout(waiter.timer)
+        if (queue && queue.length === 0) pendingChildReserve.delete(transferId)
+        waiter.resolve(childId)
+      }
+    })
+    on('rc:file.sdp.answer', async (msg) => {
+      if (!sessionGateAllows(msg.session_id, sessionId.value)) return
+      const childId = typeof msg.child_id === 'string' ? msg.child_id : ''
+      const child = activeChildPeers.get(childId)
+      if (!child || typeof msg.sdp !== 'string') return
+      try {
+        await child.pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp })
+        child.remoteDescriptionSet = true
+        for (const c of child.pendingIce) {
+          try {
+            await child.pc.addIceCandidate(c)
+          } catch {
+            /* ignore stale candidate */
+          }
+        }
+        child.pendingIce.length = 0
+      } catch (e) {
+        child.reject(e instanceof Error ? e : new Error(String(e)))
+      }
+    })
+    on('rc:file.ice', async (msg) => {
+      if (!sessionGateAllows(msg.session_id, sessionId.value)) return
+      const childId = typeof msg.child_id === 'string' ? msg.child_id : ''
+      const child = activeChildPeers.get(childId)
+      if (!child || !msg.candidate) return
+      const init = msg.candidate as RTCIceCandidateInit
+      if (!child.remoteDescriptionSet) {
+        child.pendingIce.push(init)
+        return
+      }
+      try {
+        await child.pc.addIceCandidate(init)
+      } catch {
+        /* ignore stale candidate */
+      }
+    })
+    on('rc:file.child.revoke', (msg) => {
+      if (!sessionGateAllows(msg.session_id, sessionId.value)) return
+      fileChildRevoked.value = true
+      const reason = typeof msg.reason === 'string' && msg.reason ? msg.reason : 'policy_changed'
+      closeAllFileChildren(`file child capability revoked (${reason})`)
+    })
     on('rc:terminate', (msg) => {
       // While the ladder timer is pending every terminate refers to a
       // session we already abandoned — ignore.
@@ -8646,6 +8816,16 @@ export function useRemoteControl(
       if (isRetryableRcErrorCode(msg.code) && reconnectAttempt.value > 0 && lastConnectArgs) {
         console.info('[rc] transient signalling error (', msg.code, ') — retrying')
         scheduleReconnect({ notifyServer: false })
+        return
+      }
+      if (
+        msg.code === 'file_child_error' ||
+        typeof (msg as { child_id?: unknown }).child_id === 'string'
+      ) {
+        console.warn('[rc] file-child signalling error — closing children only:', msg)
+        closeAllFileChildren(
+          typeof msg.message === 'string' && msg.message ? msg.message : 'file child error',
+        )
         return
       }
       failWith(friendlyRcError(msg.code, msg.message))
@@ -8890,6 +9070,8 @@ export function useRemoteControl(
     stopWebCodecsPath()
     stopVp9_444Path()
     stopHevcPath()
+    closeAllFileChildren('session ended', true)
+    fileChildRevoked.value = false
     for (const ch of Object.values(channels)) {
       try { ch.close() } catch { /* ignore */ }
     }
@@ -9104,6 +9286,20 @@ export function useRemoteControl(
     // empty list and the agent falls back to H.264-only.
     const allBrowserCaps = inspectBrowserVideoCodecs()
     const browserCaps = filterCapsByPreference(allBrowserCaps, preferredCodec.value)
+    if (opts?.childDownloadConnections === undefined) {
+      const storedChildren = readStoredChildConnections()
+      if (storedChildren > 0 && concurrentDownloadChildren.value === 0) {
+        concurrentDownloadChildren.value = storedChildren
+      }
+    }
+    if (!externalMode && !sharedMode && concurrentDownloadChildren.value >= 1) {
+      if (!browserCaps.includes('file-child-download')) {
+        browserCaps.push('file-child-download')
+      }
+    }
+    fileChildRevoked.value = false
+    fileChildKeyPair = null
+    fileChildRegistered = false
     if (allBrowserCaps.length > 0) {
       // Surface both lists in the console — useful when debugging
       // "why didn't H.265 negotiate" on a session. Shown as the raw
@@ -9159,6 +9355,7 @@ export function useRemoteControl(
     // (its ICE sockets outlive the composable - see the socket-leak note in
     // docs/tunnels.md), nor send a request on behalf of a torn-down state.
     if (gen !== connectGen) return
+    lastIceServers = iceServers
 
     pc = new RTCPeerConnection({
       iceServers: iceServers as RTCIceServer[],
@@ -9485,6 +9682,13 @@ export function useRemoteControl(
           waiter.reject(new Error(errMsg))
           return
         }
+        const probeWaiter = pendingProbePromises.get(id)
+        if (probeWaiter) {
+          clearTimeout(probeWaiter.timer)
+          pendingProbePromises.delete(id)
+          probeWaiter.reject(new Error(errMsg))
+          return
+        }
         // Errors can land for either an upload OR a download.
         const entry = settleEntry(id)
         if (!entry) return
@@ -9526,6 +9730,13 @@ export function useRemoteControl(
       } else if (msg.t === 'files:accepted') {
         patchTransfer(id, { status: 'running' })
       } else if (msg.t === 'files:offer') {
+        const probeWaiter = pendingProbePromises.get(id)
+        if (probeWaiter) {
+          probeWaiter.name = String(msg.name ?? 'download.bin')
+          probeWaiter.size = typeof msg.size === 'number' ? msg.size : null
+          probeWaiter.mime = typeof msg.mime === 'string' ? msg.mime : undefined
+          return
+        }
         const entry = filesRegistry.get(id)
         if (!entry || entry.kind !== 'download' || entry.status === 'settled') return
         entry.name = String(msg.name ?? entry.suggestedName ?? 'download.bin')
@@ -9548,6 +9759,17 @@ export function useRemoteControl(
           entry.saveMode = 'blob'
         }
       } else if (msg.t === 'files:eof') {
+        const probeWaiter = pendingProbePromises.get(id)
+        if (probeWaiter) {
+          clearTimeout(probeWaiter.timer)
+          pendingProbePromises.delete(id)
+          probeWaiter.resolve({
+            name: probeWaiter.name ?? 'download.bin',
+            size: probeWaiter.size ?? null,
+            mime: probeWaiter.mime,
+          })
+          return
+        }
         const entry = filesRegistry.get(id)
         if (!entry || entry.kind !== 'download' || entry.status === 'settled') return
         const totalBytes = Number(msg.bytes ?? entry.bytesReceived)
@@ -10048,6 +10270,30 @@ export function useRemoteControl(
           '[rc:control] inbound:',
           ev.data.length > 200 ? ev.data.slice(0, 200) + '…' : ev.data
         )
+        try {
+          const raw = JSON.parse(ev.data) as { t?: string; child_id?: string }
+          if (raw?.t === 'rc:file.child.register.ack') {
+            if (pendingChildRegister) {
+              clearTimeout(pendingChildRegister.timer)
+              const r = pendingChildRegister
+              pendingChildRegister = null
+              fileChildRegistered = true
+              r.resolve()
+            }
+            return
+          }
+          if (raw?.t === 'rc:file.child.prepare.ack' && typeof raw.child_id === 'string') {
+            const w = pendingChildPrepare.get(raw.child_id)
+            if (w) {
+              clearTimeout(w.timer)
+              pendingChildPrepare.delete(raw.child_id)
+              w.resolve()
+            }
+            return
+          }
+        } catch {
+          /* fall through to parseControlInbound */
+        }
       }
       const parsed = parseControlInbound(ev.data)
       if (parsed?.kind === 'host_locked') {
@@ -12671,6 +12917,407 @@ export function useRemoteControl(
     throw new Error('download finalised in unexpected save mode')
   }
 
+  async function ensureFileChildRegistered(): Promise<{
+    pair: CryptoKeyPair
+    publicKeyB64: string
+  }> {
+    if (fileChildKeyPair && fileChildRegistered) return fileChildKeyPair
+    const ctrl = channels.control
+    if (!ctrl || ctrl.readyState !== 'open') {
+      throw new Error('control channel not open for file child registration')
+    }
+    if (!fileChildKeyPair) {
+      fileChildKeyPair = await generateEphemeralFileChildKeyPair()
+    }
+    if (!fileChildRegistered) {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendingChildRegister = null
+          reject(new Error('rc:file.child.register.ack timed out'))
+        }, 15_000)
+        pendingChildRegister = { resolve, reject, timer }
+        try {
+          ctrl.send(
+            JSON.stringify({
+              t: 'rc:file.child.register',
+              key: fileChildKeyPair!.publicKeyB64,
+            }),
+          )
+        } catch (e) {
+          clearTimeout(timer)
+          pendingChildRegister = null
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }
+    return fileChildKeyPair
+  }
+
+  function probeFileMetadata(
+    probeId: string,
+    path: string,
+  ): Promise<{ name: string; size: number | null; mime?: string }> {
+    const ch = channels.files
+    if (!ch || ch.readyState !== 'open') {
+      return Promise.reject(new Error('files channel not open'))
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingProbePromises.delete(probeId)
+        reject(new Error('file size probe timed out'))
+      }, 15_000)
+      pendingProbePromises.set(probeId, { resolve, reject, timer })
+      try {
+        ch.send(JSON.stringify({ t: 'files:get', id: probeId, path, offset: 0, length: 0 }))
+      } catch (e) {
+        clearTimeout(timer)
+        pendingProbePromises.delete(probeId)
+        reject(e instanceof Error ? e : new Error(String(e)))
+      }
+    })
+  }
+
+  function reserveFileChild(sid: string, transferId: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const q = pendingChildReserve.get(transferId)
+        if (q) {
+          const idx = q.findIndex((w) => w.timer === timer)
+          if (idx >= 0) q.splice(idx, 1)
+          if (q.length === 0) pendingChildReserve.delete(transferId)
+        }
+        reject(new Error('rc:file.child.reserved timed out'))
+      }, 15_000)
+      const q = pendingChildReserve.get(transferId) ?? []
+      q.push({ resolve, reject, timer })
+      pendingChildReserve.set(transferId, q)
+      ws.sendRaw({
+        t: 'rc:file.child.reserve',
+        session_id: sid,
+        transfer_id: transferId,
+        direction: 'download',
+      })
+    })
+  }
+
+  function prepareFileChild(childId: string, transferId: string): Promise<void> {
+    const ctrl = channels.control
+    if (!ctrl || ctrl.readyState !== 'open') {
+      return Promise.reject(new Error('control channel not open'))
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingChildPrepare.delete(childId)
+        reject(new Error('rc:file.child.prepare.ack timed out'))
+      }, 15_000)
+      pendingChildPrepare.set(childId, { resolve, reject, timer })
+      try {
+        ctrl.send(
+          JSON.stringify({
+            t: 'rc:file.child.prepare',
+            child_id: childId,
+            transfer_id: transferId,
+          }),
+        )
+      } catch (e) {
+        clearTimeout(timer)
+        pendingChildPrepare.delete(childId)
+        reject(e instanceof Error ? e : new Error(String(e)))
+      }
+    })
+  }
+
+  async function downloadFileWithChildren(args: {
+    id: string
+    path: string
+    fallbackName: string
+    writable: SaveWritable | null
+    saveMode: 'stream' | 'blob'
+    childCount: number
+    sizeHint?: number
+    sid: string
+    agentId: string
+    userId: string
+  }): Promise<{ name: string; bytes: number }> {
+    const { id, path, fallbackName, writable, saveMode, childCount, sizeHint, sid, agentId, userId } =
+      args
+    pushTransfer({
+      id,
+      kind: 'download',
+      name: fallbackName,
+      bytes: 0,
+      total: sizeHint ?? null,
+      status: 'queued',
+    })
+    let resolvedName = fallbackName
+    let resolvedMime: string | undefined
+    let totalSize: number | null = typeof sizeHint === 'number' ? sizeHint : null
+    try {
+      if (totalSize === null) {
+        const probed = await probeFileMetadata(`${id}-probe`, path)
+        resolvedName = probed.name || fallbackName
+        resolvedMime = probed.mime
+        totalSize = probed.size
+      }
+      if (totalSize === null || totalSize < 0) {
+        throw new Error('unable to determine file size for striped download')
+      }
+      if (saveMode === 'blob' && totalSize > DOWNLOAD_BLOB_HARD_CAP) {
+        throw new Error(
+          `download exceeds ${Math.round(DOWNLOAD_BLOB_HARD_CAP / (1024 * 1024 * 1024))} GiB browser-memory cap`,
+        )
+      }
+      const entry: DownloadEntry = {
+        kind: 'download',
+        status: 'pending',
+        resolve: () => {},
+        reject: () => {},
+        saveMode,
+        writable,
+        blobs: [],
+        name: resolvedName,
+        suggestedName: fallbackName,
+        bytesReceived: 0,
+        expectedSize: totalSize,
+        mime: resolvedMime,
+      }
+      patchTransfer(id, {
+        status: 'running',
+        name: resolvedName,
+        total: totalSize,
+      })
+      if (totalSize === 0) {
+        await finalizeDownload(entry, 0)
+        patchTransfer(id, { status: 'complete', bytes: 0 })
+        return { name: resolvedName, bytes: 0 }
+      }
+      const keyMat = await ensureFileChildRegistered()
+      const actualChildren = Math.min(childCount, totalSize)
+      const base = Math.floor(totalSize / actualChildren)
+      const rem = totalSize % actualChildren
+      let totalReceived = 0
+
+      const stripePromises = Array.from({ length: actualChildren }, async (_, idx) => {
+        const offset = idx * base + Math.min(idx, rem)
+        const length = base + (idx < rem ? 1 : 0)
+        const childId = await reserveFileChild(sid, id)
+        await prepareFileChild(childId, id)
+        if (fileChildRevoked.value) {
+          throw new Error('file child capability revoked')
+        }
+        const childPc = new RTCPeerConnection({
+          iceServers: lastIceServers as RTCIceServer[],
+          bundlePolicy: 'max-bundle',
+        })
+        const filesDc = childPc.createDataChannel('files', { ordered: true })
+        filesDc.binaryType = 'arraybuffer'
+
+        return await new Promise<ArrayBuffer[]>((resolveStripe, rejectStripe) => {
+          let settled = false
+          const chunks: ArrayBuffer[] = []
+          let stripeBytes = 0
+          const stripeTransferId = `${id}-s${idx}`
+
+          const failStripe = (err: Error) => {
+            if (settled) return
+            settled = true
+            activeChildPeers.delete(childId)
+            try {
+              filesDc.close()
+            } catch {
+              /* ignore */
+            }
+            try {
+              childPc.close()
+            } catch {
+              /* ignore */
+            }
+            rejectStripe(err)
+          }
+
+          activeChildPeers.set(childId, {
+            pc: childPc,
+            dc: filesDc,
+            remoteDescriptionSet: false,
+            pendingIce: [],
+            reject: failStripe,
+          })
+
+          let offerSent = false
+          const pendingLocalIce: RTCIceCandidateInit[] = []
+
+          childPc.onicecandidate = (ev) => {
+            if (!ev.candidate || settled) return
+            const candidate = ev.candidate.toJSON()
+            if (!offerSent) {
+              pendingLocalIce.push(candidate)
+              return
+            }
+            ws.sendRaw({
+              t: 'rc:file.ice',
+              session_id: sid,
+              child_id: childId,
+              transfer_id: id,
+              candidate,
+            })
+          }
+
+          filesDc.onopen = () => {
+            if (settled) return
+            try {
+              filesDc.send(
+                JSON.stringify({
+                  t: 'files:get',
+                  id: stripeTransferId,
+                  path,
+                  offset,
+                  length,
+                }),
+              )
+            } catch (e) {
+              failStripe(e instanceof Error ? e : new Error(String(e)))
+            }
+          }
+
+          filesDc.onmessage = (ev) => {
+            if (settled) return
+            if (typeof ev.data !== 'string') {
+              const data = ev.data as ArrayBuffer | Blob
+              const onBuf = (buf: ArrayBuffer) => {
+                if (settled) return
+                chunks.push(buf)
+                stripeBytes += buf.byteLength
+                totalReceived += buf.byteLength
+                patchTransfer(id, { status: 'running', bytes: totalReceived })
+              }
+              if (data instanceof ArrayBuffer) {
+                onBuf(data)
+              } else if (data instanceof Blob) {
+                void data.arrayBuffer().then(onBuf)
+              }
+              return
+            }
+            let msg: { t?: string; id?: string; bytes?: number; message?: string; name?: string; mime?: string }
+            try {
+              msg = JSON.parse(ev.data)
+            } catch {
+              return
+            }
+            if (msg.t === 'files:offer' && idx === 0) {
+              if (typeof msg.name === 'string' && msg.name) {
+                resolvedName = msg.name
+                entry.name = msg.name
+              }
+              if (typeof msg.mime === 'string' && msg.mime) {
+                entry.mime = msg.mime
+              }
+            } else if (msg.t === 'files:error') {
+              failStripe(new Error(String(msg.message ?? 'child download error')))
+            } else if (msg.t === 'files:eof') {
+              if (stripeBytes !== length) {
+                failStripe(
+                  new Error(`child stripe ${idx} truncated (${stripeBytes}/${length} bytes)`),
+                )
+                return
+              }
+              settled = true
+              activeChildPeers.delete(childId)
+              try {
+                filesDc.close()
+              } catch {
+                /* ignore */
+              }
+              try {
+                childPc.close()
+              } catch {
+                /* ignore */
+              }
+              ws.sendRaw({
+                t: 'rc:file.child.complete',
+                session_id: sid,
+                child_id: childId,
+                transfer_id: id,
+              })
+              resolveStripe(chunks)
+            }
+          }
+
+          filesDc.onclose = () => {
+            if (!settled) {
+              failStripe(new Error(`child files channel closed early (${stripeBytes}/${length})`))
+            }
+          }
+
+          void (async () => {
+            try {
+              const offer = await childPc.createOffer()
+              await childPc.setLocalDescription(offer)
+              const offerSdp = childPc.localDescription?.sdp ?? offer.sdp ?? ''
+              const proof = await signFileChildOfferProof({
+                pair: keyMat.pair,
+                publicKeyB64: keyMat.publicKeyB64,
+                sessionId: sid,
+                childId,
+                transferId: id,
+                agentId,
+                controllerUserId: userId,
+                offerSdp,
+              })
+              if (!proof) {
+                throw new Error('failed to sign child SDP offer proof')
+              }
+              ws.sendRaw({
+                t: 'rc:file.sdp.offer',
+                session_id: sid,
+                child_id: childId,
+                transfer_id: id,
+                direction: 'download',
+                sdp: offerSdp,
+                proof,
+              })
+              offerSent = true
+              for (const candidate of pendingLocalIce.splice(0)) {
+                if (settled) break
+                ws.sendRaw({
+                  t: 'rc:file.ice',
+                  session_id: sid,
+                  child_id: childId,
+                  transfer_id: id,
+                  candidate,
+                })
+              }
+            } catch (e) {
+              failStripe(e instanceof Error ? e : new Error(String(e)))
+            }
+          })()
+        })
+      })
+
+      const orderedStripes = await Promise.all(stripePromises)
+      for (const stripeChunks of orderedStripes) {
+        for (const chunk of stripeChunks) {
+          if (entry.saveMode === 'stream' && entry.writable) {
+            await entry.writable.write(chunk)
+          } else {
+            entry.blobs.push(chunk)
+          }
+        }
+      }
+      entry.bytesReceived = totalSize
+      await finalizeDownload(entry, totalSize)
+      patchTransfer(id, { status: 'complete', bytes: totalSize })
+      return { name: resolvedName, bytes: totalSize }
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e)
+      closeAllFileChildren(errMsg)
+      patchTransfer(id, { status: 'error', error: errMsg })
+      if (writable) {
+        void writable.abort(errMsg).catch(() => {})
+      }
+      throw e instanceof Error ? e : new Error(errMsg)
+    }
+  }
+
   /** Download a single file from the host to the browser's local
    *  filesystem. `path` is the absolute host path (subject to the
    *  agent's denylist). `suggestedName` overrides the filename in the
@@ -12687,7 +13334,8 @@ export function useRemoteControl(
    */
   async function downloadFile(
     path: string,
-    suggestedName?: string
+    suggestedName?: string,
+    options?: { childConnections?: number; sizeHint?: number },
   ): Promise<{ name: string; bytes: number }> {
     const ch = channels.files
     if (!ch || ch.readyState !== 'open') {
@@ -12721,6 +13369,39 @@ export function useRemoteControl(
       }
     } else {
       saveMode = 'blob'
+    }
+
+    const requestedChildren = clampChildConnections(
+      options?.childConnections ??
+        (concurrentDownloadChildren.value > 0
+          ? concurrentDownloadChildren.value
+          : readStoredChildConnections()),
+    )
+    const sid = sessionId.value
+    const agentId = lastConnectArgs?.agentId ?? agent?.value?.id ?? null
+    const userId = opts?.userId?.() ?? null
+    if (
+      requestedChildren >= 1 &&
+      !externalMode &&
+      !sharedMode &&
+      !fileChildRevoked.value &&
+      sid &&
+      agentId &&
+      userId &&
+      channels.control?.readyState === 'open'
+    ) {
+      return downloadFileWithChildren({
+        id,
+        path,
+        fallbackName,
+        writable,
+        saveMode: saveMode === 'stream' ? 'stream' : 'blob',
+        childCount: requestedChildren,
+        sizeHint: options?.sizeHint,
+        sid,
+        agentId,
+        userId,
+      })
     }
 
     return new Promise<{ name: string; bytes: number }>((resolve, reject) => {
@@ -13250,6 +13931,9 @@ export function useRemoteControl(
     walkFolderEntry,
     downloadFile,
     downloadFolder,
+    concurrentDownloadChildren,
+    setConcurrentDownloadChildren,
+    fileChildRevoked,
     cancelDownload,
     cancelUpload,
     cancelTransfer,

@@ -15,6 +15,10 @@ path = "src/lib.rs"
 # on `meshharbor-core` and the crates below it, never on the api crate. The Hub
 # came here from `meshharbor-remote-control`, which is wire-only for the
 # server now (its `server` feature keeps just the Mongo audit sink).
+[features]
+# Read-only synthetic-fixture observations; never enabled by production dependencies.
+test-fixtures = ["meshharbor-remote-control/test-fixtures"]
+
 [dependencies]
 meshharbor-core = { path = "../../core" }
 meshharbor-config = { path = "../../config" }
@@ -42,6 +46,9 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# Source-only architecture guard; no production dependency or parser runtime.
+syn = { version = "=2.0.117", features = ["full", "visit"] }
+meshharbor-remote-control = { path = "../../remote_control", features = ["test-fixtures"] }
 # The Hub's unit tests build their audit sink on a `mongodb::Client` (the
 # wire crate carried the driver behind its `server` feature; only the tests
 # here name it directly) and drive the negotiating-timeout reaper on a paused

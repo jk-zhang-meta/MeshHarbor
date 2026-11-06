@@ -246,7 +246,128 @@ type SessionMeta = (
     crate::rc_overlay::RcOverlay,
     Option<u32>,
     Option<meshharbor_remote_control::models::LockOnEnd>,
+    Option<PendingFileChildParent>,
 );
+
+/// A candidate from the server Request, never a claim from control/proof JSON.
+/// Its local consent result travels with this exact candidate into peer setup.
+#[derive(Clone)]
+pub(crate) struct PendingFileChildParent {
+    scope: Option<FileChildParentScope>,
+    decision: Arc<std::sync::atomic::AtomicU8>,
+}
+
+#[derive(Clone)]
+pub(crate) struct FileChildParentScope {
+    pub(crate) session_id: bson::oid::ObjectId,
+    pub(crate) agent_id: bson::oid::ObjectId,
+    pub(crate) controller_user_id: bson::oid::ObjectId,
+    pub(crate) permissions: meshharbor_remote_control::permissions::Permissions,
+}
+
+const FILE_PARENT_WAITING: u8 = 0;
+const FILE_PARENT_GRANTED: u8 = 1;
+const FILE_PARENT_DENIED: u8 = 2;
+const FILE_PARENT_CLOSED: u8 = 3;
+const FILE_PARENT_BOUND: u8 = 4;
+
+impl PendingFileChildParent {
+    fn from_server_request(msg: &ServerMsg, agent_id: &str, delegated_owner: bool) -> Option<Self> {
+        let ServerMsg::Request {
+            session_id,
+            controller_user_id,
+            permissions,
+            shared_lease,
+            external,
+            consent_mode,
+            ..
+        } = msg
+        else {
+            return None;
+        };
+        let local_ordinary = !delegated_owner
+            && shared_lease.is_none()
+            && external.is_none()
+            && !matches!(
+                consent_mode,
+                Some(
+                    meshharbor_remote_control::models::ConsentMode::Email
+                        | meshharbor_remote_control::models::ConsentMode::Push
+                )
+            );
+        let scope = if local_ordinary {
+            bson::oid::ObjectId::parse_str(agent_id)
+                .ok()
+                .filter(|id| id.to_hex() == agent_id)
+                .map(|agent_id| FileChildParentScope {
+                    session_id: *session_id,
+                    agent_id,
+                    controller_user_id: *controller_user_id,
+                    permissions: *permissions,
+                })
+        } else {
+            None
+        };
+        Some(Self {
+            scope,
+            decision: Arc::new(std::sync::atomic::AtomicU8::new(FILE_PARENT_WAITING)),
+        })
+    }
+
+    fn restrict_permissions(
+        &mut self,
+        permissions: meshharbor_remote_control::permissions::Permissions,
+    ) {
+        if let Some(scope) = &mut self.scope {
+            scope.permissions &= permissions;
+        }
+    }
+
+    fn note_local_consent(&self, granted: bool) {
+        // A late prompt cannot overwrite a closed/denied candidate.
+        let _ = self.decision.compare_exchange(
+            FILE_PARENT_WAITING,
+            if granted {
+                FILE_PARENT_GRANTED
+            } else {
+                FILE_PARENT_DENIED
+            },
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+
+    pub(crate) fn close(&self) {
+        self.decision
+            .store(FILE_PARENT_CLOSED, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn approved_scope(&self) -> Option<FileChildParentScope> {
+        let scope = self.scope.as_ref()?;
+        (self.decision.load(std::sync::atomic::Ordering::Acquire) == FILE_PARENT_GRANTED
+            && scope
+                .permissions
+                .contains(meshharbor_remote_control::permissions::Permissions::FILES))
+        .then(|| scope.clone())
+    }
+
+    /// The candidate can belong to only one peer. Failed peer preconditions
+    /// are checked before this CAS, and closed/denied candidates never reset.
+    pub(crate) fn claim_for_binding(&self) -> bool {
+        self.decision
+            .compare_exchange(
+                FILE_PARENT_GRANTED,
+                FILE_PARENT_BOUND,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    pub(crate) fn binding_is_live(&self) -> bool {
+        self.decision.load(std::sync::atomic::Ordering::Acquire) == FILE_PARENT_BOUND
+    }
+}
 
 /// FR-85 P3b — what a session's `record` channel needs, resolved when the
 /// session is requested and consumed when its peer is built.
@@ -331,6 +452,37 @@ pub(crate) fn consent_reply(
         granted: decision.granted(),
         reason,
     })
+}
+
+/// Finish the common on-host decision BEFORE the Consent can leave. Both
+/// prompted and AutoGrant sessions use this path. External consent is finalized
+/// first, then the parent records that final grant; cancellation closes it.
+fn complete_local_consent(
+    decision: crate::consent::Decision,
+    have_surface: bool,
+    external_cfg: Option<&crate::remote_config::RemoteConfigServices>,
+    session_id: bson::oid::ObjectId,
+    pending: Option<&PendingFileChildParent>,
+) -> Option<ConsentReply> {
+    let Some(mut reply) = consent_reply(decision, have_surface) else {
+        if let Some(pending) = pending {
+            pending.close();
+        }
+        return None;
+    };
+    // The external grant precedes both the parent record and the wire reply:
+    // the offer it unlocks must never overtake check_offer's binding.
+    if let Some(cfg) = external_cfg {
+        if reply.granted {
+            reply.granted = crate::extauth::grant_consent(cfg, session_id);
+        } else {
+            crate::extauth::end_session(cfg, session_id);
+        }
+    }
+    if let Some(pending) = pending {
+        pending.note_local_consent(reply.granted);
+    }
+    Some(reply)
 }
 
 /// Pong-RTT degradation bound for the control WS. Field winhost-a 2026-08-15
@@ -2664,6 +2816,7 @@ async fn connect_once(
                                         p.idle_secs,
                                         // FR-99 P3b — and so is the lock ask.
                                         p.lock_on_end,
+                                        None,
                                     ),
                                 );
                                 info!(session_id = %sid, "delegation: session params received");
@@ -3169,6 +3322,113 @@ async fn handle_server_msg(
     // sessions under its own row as well.
     carrier_ready_tx: &mpsc::Sender<bson::oid::ObjectId>,
 ) -> Result<(), ConnectError> {
+    // Do not send a child through the ordinary offer's Off/Audit policy,
+    // delegation, or ordinary peer construction.
+    if let ServerMsg::FileSdpOffer {
+        session_id,
+        child_id,
+        transfer_id,
+        sdp,
+        ..
+    } = &msg
+    {
+        let admission = check_file_child_offer(
+            peers
+                .get(session_id)
+                .map(AgentPeer::file_child_authorization),
+            &msg,
+        );
+        if let Err(why) = admission {
+            debug!(
+                %session_id,
+                %child_id,
+                ?why,
+                "file child offer rejected by parent authorization"
+            );
+            return Ok(());
+        }
+        if let Some(peer) = peers.get(session_id) {
+            match peer
+                .accept_file_child_offer(*child_id, transfer_id.clone(), sdp.clone())
+                .await
+            {
+                Ok(answer_sdp) => {
+                    reply_for_session(
+                        ws,
+                        delegated,
+                        &ClientMsg::FileSdpAnswer {
+                            session_id: *session_id,
+                            child_id: *child_id,
+                            transfer_id: transfer_id.clone(),
+                            sdp: answer_sdp,
+                        },
+                    )
+                    .await?;
+                }
+                Err(e) => {
+                    warn!(%session_id, %child_id, %e, "file child accept_file_child_offer failed");
+                }
+            }
+        }
+        return Ok(());
+    }
+    if let ServerMsg::FileIce {
+        session_id,
+        child_id,
+        transfer_id,
+        candidate,
+    } = &msg
+    {
+        if let Some(peer) = peers.get(session_id)
+            && let Err(e) = peer
+                .add_file_child_ice(*child_id, transfer_id, candidate.clone())
+                .await
+        {
+            debug!(%session_id, %child_id, %e, "file child ICE candidate rejected");
+        }
+        return Ok(());
+    }
+    if let ServerMsg::FileChildComplete {
+        session_id,
+        child_id,
+        transfer_id,
+    } = &msg
+    {
+        if let Some(peer) = peers.get(session_id) {
+            peer.complete_file_child(*child_id, transfer_id).await;
+        }
+        return Ok(());
+    }
+    if let ServerMsg::FileChildRevoke { session_id, reason } = &msg {
+        if let Some(pending) = pending_session_meta
+            .get(session_id)
+            .and_then(|meta| meta.7.as_ref())
+        {
+            pending.close();
+        }
+        let (closed_children, in_flight_buffered_bytes) = match peers.get(session_id) {
+            Some(peer) => peer.revoke_file_children().await,
+            None => (0, 0),
+        };
+        info!(
+            %session_id,
+            %reason,
+            closed_children,
+            in_flight_buffered_bytes,
+            "file child capability revoked by hub; child transports closed"
+        );
+        reply_for_session(
+            ws,
+            delegated,
+            &ClientMsg::FileChildRevokeAck {
+                session_id: *session_id,
+                closed_children,
+                in_flight_buffered_bytes,
+            },
+        )
+        .await?;
+        return Ok(());
+    }
     if let ServerMsg::TunnelTerminate { session_id, .. } = &msg {
         shared_leases.end(*session_id);
         shared_ssh.end(*session_id);
@@ -3203,6 +3463,12 @@ async fn handle_server_msg(
     // panel is hidden here directly rather than waiting for that task to be
     // scheduled; both calls are idempotent and the task hides again anyway.
     if let ServerMsg::Terminate { session_id, .. } = &msg {
+        if let Some(pending) = pending_session_meta
+            .get(session_id)
+            .and_then(|meta| meta.7.as_ref())
+        {
+            pending.close();
+        }
         let session_hex = session_id.to_hex();
         if consent_broker.cancel(&session_hex) {
             info!(%session_id, "consent prompt withdrawn — the session was terminated while awaiting consent");
@@ -3366,6 +3632,11 @@ async fn handle_server_msg(
     {
         return Ok(());
     }
+    let mut pending_file_child_parent = PendingFileChildParent::from_server_request(
+        &msg,
+        &agent_cfg.agent_id,
+        delegated.is_some() || (ctx.is_primary && delegate.is_some()),
+    );
     match msg {
         ServerMsg::SharedSshSetup { session_id, setup } => {
             let accepted = {
@@ -3596,6 +3867,7 @@ async fn handle_server_msg(
                     idle_secs,
                     // FR-99 P3b — `None` from an older server: no ask.
                     lock_on_end,
+                    None,
                 ),
             );
             info!(
@@ -3705,6 +3977,9 @@ async fn handle_server_msg(
                 );
             }
             let permissions = masked.permissions;
+            if let Some(pending) = &mut pending_file_child_parent {
+                pending.restrict_permissions(permissions);
+            }
             let audio_negotiated = masked.audio_enabled && audio_negotiated;
             pending_permissions.insert(session_id, permissions);
             pending_audio.insert(session_id, audio_negotiated);
@@ -3723,6 +3998,7 @@ async fn handle_server_msg(
                     controller_user_id,
                     prompt_window: record_prompt_window,
                 });
+                meta.7 = pending_file_child_parent.clone();
             }
             // FR-43 P2b-3 — hand the SAME resolved values to the GUI worker, if
             // one is attached. `Request` is not delegated (consent and the
@@ -4009,7 +4285,13 @@ async fn handle_server_msg(
                     // — a panel still on screen for a resolved session is its
                     // own bug, and a stale Approve button is a dangerous one.
                     ind.hide_prompt(&session_hex);
-                    let Some(mut reply) = consent_reply(decision, have_surface) else {
+                    let Some(reply) = complete_local_consent(
+                        decision,
+                        have_surface,
+                        external_cfg.as_ref(),
+                        session_id,
+                        pending_file_child_parent.as_ref(),
+                    ) else {
                         // #1632 — the session was terminated while the
                         // question stood. The server forgot it when it sent
                         // the Terminate; there is nobody to answer to. (An
@@ -4023,18 +4305,6 @@ async fn handle_server_msg(
                         );
                         return;
                     };
-                    // FR-52 P4 — an external grant is recorded BEFORE it leaves:
-                    // the offer it unlocks must never overtake it to
-                    // `check_offer`. A binding that ended while the question
-                    // stood cannot be granted any more; anything but a grant
-                    // ends the binding here.
-                    if let Some(cfg) = &external_cfg {
-                        if reply.granted {
-                            reply.granted = crate::extauth::grant_consent(cfg, session_id);
-                        } else {
-                            crate::extauth::end_session(cfg, session_id);
-                        }
-                    }
                     tracing::info!(
                         session = %session_hex,
                         ?decision,
@@ -4052,6 +4322,9 @@ async fn handle_server_msg(
                         .await
                     {
                         tracing::warn!(session = %session_hex, %e, "outbound consent send failed (channel closed)");
+                        if let Some(pending) = &pending_file_child_parent {
+                            pending.close();
+                        }
                     }
                 });
             }
@@ -4134,6 +4407,7 @@ async fn handle_server_msg(
                 rc_overlay,
                 idle_secs,
                 lock_ask,
+                pending_file_child_parent,
             ) = pending_session_meta.remove(&session_id).unwrap_or_else(|| {
                 (
                     "Controller".to_string(),
@@ -4141,6 +4415,7 @@ async fn handle_server_msg(
                     None,
                     None,
                     crate::rc_overlay::RcOverlay::resolve(false),
+                    None,
                     None,
                     None,
                 )
@@ -4239,6 +4514,12 @@ async fn handle_server_msg(
                 close_within_budget(peer.close(), session_id, "shared_lease_expired").await;
                 return Ok(());
             }
+            // Only the actual local Request/consent candidate may bind; worker
+            // params and unsupported sources have no candidate to inherit.
+            let _ = crate::peer::bind_file_child_parent(
+                peer.file_child_authorization(),
+                pending_file_child_parent.as_ref(),
+            );
             // FR-85 P3b — the `record` channel's context, BEFORE the answer:
             // a channel cannot open until the offer is answered, so it can
             // never see this unset. P1e-mac: on a supervised Mac's worker, a
@@ -6702,6 +6983,20 @@ async fn handle_server_msg(
     Ok(())
 }
 
+/// Ordinary offer auditing cannot authorize an X14 child. The parent-scoped
+/// checker is mandatory even when ordinary authentication is Off or Audit.
+pub(crate) fn check_file_child_offer(
+    parent: Option<&std::sync::Mutex<crate::peer::FileChildAuthorization>>,
+    offer: &ServerMsg,
+) -> std::result::Result<(), crate::peer::FileChildDenial> {
+    use crate::peer::FileChildDenial;
+    parent
+        .ok_or(FileChildDenial::ParentUnavailable)?
+        .lock()
+        .map_err(|_| FileChildDenial::ParentUnavailable)?
+        .check_offer(offer)
+}
+
 async fn close_all_peers(
     peers: &mut HashMap<bson::oid::ObjectId, AgentPeer>,
     indicator: &ViewerIndicator,
@@ -7345,6 +7640,537 @@ pub(crate) fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn auto_grant_consent_completion_records_parent_without_reviving_closed_or_denied() {
+        use crate::consent::{ConsentBroker, Decision, Mode};
+        use bson::oid::ObjectId;
+        use meshharbor_remote_control::permissions::Permissions;
+
+        let session_id = ObjectId::parse_str("111111111111111111111111").unwrap();
+        let agent_id = "444444444444444444444444";
+        let controller_id = ObjectId::parse_str("555555555555555555555555").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        // This is the actual auto_grant_session=true configuration mapping.
+        let broker = ConsentBroker::new(Mode::from_config(true), dir.path().to_path_buf()).unwrap();
+        for directive in [Some(Mode::AutoGrant), None] {
+            let request: ServerMsg = serde_json::from_value(serde_json::json!({
+                "t": "rc:request", "session_id": session_id.to_hex(),
+                "controller_user_id": controller_id.to_hex(), "controller_name": "Synthetic",
+                "permissions": "VIEW | FILES", "consent_timeout_secs": 30, "consent_mode": directive.map(|_| "auto"),
+            }))
+            .unwrap();
+            let mode =
+                crate::consent::strictest_of(directive, broker.mode(), Duration::from_secs(30));
+            let (outbound, _receiver) = mpsc::channel::<ClientMsg>(1);
+            let decision = tokio::time::timeout(
+                Duration::from_secs(1),
+                await_prompt_or_socket_end(
+                    broker.request_with_mode(&session_id.to_hex(), mode),
+                    &outbound,
+                    &session_id.to_hex(),
+                ),
+            )
+            .await
+            .expect("real AutoGrant resolves without any GUI or sentinel approval");
+            assert_eq!(decision, Decision::Granted);
+            let pending =
+                PendingFileChildParent::from_server_request(&request, agent_id, false).unwrap();
+            assert!(
+                pending.approved_scope().is_none(),
+                "Request alone is not local consent"
+            );
+            // The shared PRODUCTION completion function must do the recording;
+            // this test never calls note_local_consent itself.
+            let reply =
+                complete_local_consent(decision, false, None, session_id, Some(&pending)).unwrap();
+            assert!(reply.granted);
+            assert_eq!(reply.reason, None);
+            let scope = pending
+                .approved_scope()
+                .expect("Auto completion must record its actual local grant");
+            assert_eq!(scope.session_id, session_id);
+            assert_eq!(scope.agent_id.to_hex(), agent_id);
+            assert_eq!(scope.controller_user_id, controller_id);
+            assert!(scope.permissions.contains(Permissions::FILES));
+
+            for previous in ["closed", "denied", "cancelled"] {
+                let pending =
+                    PendingFileChildParent::from_server_request(&request, agent_id, false).unwrap();
+                match previous {
+                    "closed" => pending.close(),
+                    "denied" => assert!(
+                        !complete_local_consent(
+                            Decision::Denied,
+                            true,
+                            None,
+                            session_id,
+                            Some(&pending)
+                        )
+                        .unwrap()
+                        .granted
+                    ),
+                    "cancelled" => assert!(
+                        complete_local_consent(
+                            Decision::Cancelled,
+                            true,
+                            None,
+                            session_id,
+                            Some(&pending)
+                        )
+                        .is_none()
+                    ),
+                    _ => unreachable!(),
+                }
+                // Ordinary reply behavior is preserved; a late Granted cannot
+                // resurrect the independent child authorization state.
+                assert!(
+                    complete_local_consent(decision, false, None, session_id, Some(&pending))
+                        .unwrap()
+                        .granted
+                );
+                assert!(
+                    pending.approved_scope().is_none(),
+                    "late AutoGrant revived {previous} parent"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ordinary_parent_request_consent_and_control_ack_bind_the_current_peer() {
+        use crate::consent::{ConsentBroker, Mode};
+        use crate::peer::{
+            FileChildAuthorization, bind_file_child_parent, close_file_child_control,
+            parse_control_envelope_with_reply,
+        };
+        use base64::Engine;
+        use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+        use bson::oid::ObjectId;
+        use meshharbor_remote_control::permissions::Permissions;
+        use meshharbor_remote_control::signaling::{
+            FileChildDirection, FileChildOfferProof, file_child_offer_transcript, peer_auth_verify,
+        };
+        use ring::rand::SystemRandom;
+        use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
+        use std::sync::Mutex;
+        use tokio_util::sync::CancellationToken;
+
+        const PARENT: &str = "111111111111111111111111";
+        const AGENT: &str = "444444444444444444444444";
+        const USER: &str = "555555555555555555555555";
+        const CHILD: &str = "222222222222222222222222";
+        const TRANSFER: &str = "synthetic-request-download";
+        const SDP: &str = "v=0\r\na=fingerprint:sha-256 AA:BB:CC\r\n";
+        async fn local_consent(
+            broker: &ConsentBroker,
+            pending: &PendingFileChildParent,
+            sid: &str,
+        ) {
+            let (outbound, _receiver) = mpsc::channel::<ClientMsg>(1);
+            let mode = crate::consent::strictest_of(
+                Some(Mode::AutoGrant),
+                broker.mode(),
+                Duration::from_secs(30),
+            );
+            let decision = tokio::time::timeout(
+                Duration::from_secs(1),
+                await_prompt_or_socket_end(broker.request_with_mode(sid, mode), &outbound, sid),
+            )
+            .await
+            .expect("the real local AutoGrant broker must resolve without a prompt");
+            let reply =
+                consent_reply(decision, true).expect("the broker produced a local decision");
+            assert!(
+                reply.granted,
+                "fixture must reach a real local consent grant"
+            );
+            pending.note_local_consent(reply.granted);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let broker = ConsentBroker::new(Mode::AutoGrant, dir.path().to_path_buf()).unwrap();
+        let request_wire = serde_json::json!({
+            "t":"rc:request", "session_id":PARENT, "controller_user_id":USER,
+            "controller_name":"Synthetic", "permissions":"VIEW | FILES",
+            "consent_timeout_secs":30, "consent_mode":"auto",
+        });
+        let request: ServerMsg = serde_json::from_value(request_wire.clone())
+            .expect("fixture is a real typed Request envelope");
+        let new_parent = |permissions, end| {
+            Mutex::new(FileChildAuthorization::unavailable(
+                ObjectId::parse_str(PARENT).unwrap(),
+                permissions,
+                end,
+            ))
+        };
+        let pending = PendingFileChildParent::from_server_request(&request, AGENT, false).unwrap();
+        let parent = new_parent(
+            Permissions::VIEW | Permissions::FILES,
+            CancellationToken::new(),
+        );
+        assert!(
+            pending.approved_scope().is_none(),
+            "a Request is not local consent"
+        );
+        assert!(bind_file_child_parent(&parent, Some(&pending)).is_err());
+        assert!(
+            bind_file_child_parent(&parent, None).is_err(),
+            "missing Request metadata must deny"
+        );
+
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let key = STANDARD.encode(pair.public_key().as_ref());
+        let register =
+            serde_json::to_vec(&serde_json::json!({"t":"rc:file.child.register", "key":key}))
+                .unwrap();
+        let prepare = serde_json::to_vec(&serde_json::json!({
+            "t":"rc:file.child.prepare", "child_id":CHILD, "transfer_id":TRANSFER,
+        }))
+        .unwrap();
+        assert!(
+            parse_control_envelope_with_reply(&register, &parent).is_err(),
+            "unapproved parent cannot register"
+        );
+        let mut no_identity = request_wire.clone();
+        no_identity
+            .as_object_mut()
+            .unwrap()
+            .remove("controller_user_id");
+        assert!(
+            serde_json::from_value::<ServerMsg>(no_identity).is_err(),
+            "missing controller identity cannot enter the Request seam"
+        );
+
+        let mut cases = Vec::new();
+        cases.push(("delegated", request_wire.clone(), true, AGENT));
+        cases.push(("missing agent identity", request_wire.clone(), false, ""));
+        for (label, field, value) in [
+            (
+                "shared",
+                "shared_lease",
+                serde_json::json!({"grant_id":"666666666666666666666666", "lease_epoch":"synthetic-epoch"}),
+            ),
+            (
+                "external",
+                "external",
+                serde_json::json!({"attempt_id":"synthetic-login"}),
+            ),
+            ("no FILES", "permissions", serde_json::json!("VIEW")),
+            ("owner email", "consent_mode", serde_json::json!("email")),
+            ("owner push", "consent_mode", serde_json::json!("push")),
+        ] {
+            let mut changed = request_wire.clone();
+            changed[field] = value;
+            cases.push((label, changed, false, AGENT));
+        }
+        for (label, wire, delegated, agent) in cases {
+            let request: ServerMsg =
+                serde_json::from_value(wire).expect("negative fixture remains a typed Request");
+            let candidate =
+                PendingFileChildParent::from_server_request(&request, agent, delegated).unwrap();
+            local_consent(&broker, &candidate, PARENT).await;
+            assert!(
+                candidate.approved_scope().is_none(),
+                "{label} cannot inherit a child scope"
+            );
+            let rejected = new_parent(
+                Permissions::VIEW | Permissions::FILES,
+                CancellationToken::new(),
+            );
+            assert!(
+                bind_file_child_parent(&rejected, Some(&candidate)).is_err(),
+                "{label} must not bind"
+            );
+            assert!(
+                parse_control_envelope_with_reply(&register, &rejected).is_err(),
+                "{label} cannot get a positive control ACK"
+            );
+        }
+        let mut masked =
+            PendingFileChildParent::from_server_request(&request, AGENT, false).unwrap();
+        masked.restrict_permissions(Permissions::VIEW);
+        local_consent(&broker, &masked, PARENT).await;
+        assert!(
+            masked.approved_scope().is_none(),
+            "the local policy's FILES ceiling is authoritative"
+        );
+        let closed = PendingFileChildParent::from_server_request(&request, AGENT, false).unwrap();
+        closed.close();
+        local_consent(&broker, &closed, PARENT).await;
+        assert!(
+            closed.approved_scope().is_none(),
+            "a late consent grant cannot revive a closed Request"
+        );
+        assert!(bind_file_child_parent(&parent, Some(&closed)).is_err());
+        let denied = PendingFileChildParent::from_server_request(&request, AGENT, false).unwrap();
+        let denial = consent_reply(crate::consent::Decision::Denied, true).unwrap();
+        denied.note_local_consent(denial.granted);
+        local_consent(&broker, &denied, PARENT).await;
+        assert!(
+            denied.approved_scope().is_none(),
+            "a denied Request cannot acquire a late grant"
+        );
+        assert!(bind_file_child_parent(&parent, Some(&denied)).is_err());
+
+        local_consent(&broker, &pending, PARENT).await;
+        let scope = pending
+            .approved_scope()
+            .expect("ordinary Request and actual local grant reached the candidate seam");
+        assert_eq!(scope.session_id.to_hex(), PARENT);
+        assert_eq!(scope.agent_id.to_hex(), AGENT);
+        assert_eq!(scope.controller_user_id.to_hex(), USER);
+        let denied_files = new_parent(Permissions::VIEW, CancellationToken::new());
+        assert!(
+            bind_file_child_parent(&denied_files, Some(&pending)).is_err(),
+            "the real peer also needs FILES"
+        );
+        let wrong_parent = Mutex::new(FileChildAuthorization::unavailable(
+            ObjectId::new(),
+            Permissions::VIEW | Permissions::FILES,
+            CancellationToken::new(),
+        ));
+        assert!(
+            bind_file_child_parent(&wrong_parent, Some(&pending)).is_err(),
+            "a Request cannot bind a different parent session"
+        );
+        let ended = CancellationToken::new();
+        ended.cancel();
+        let ended_parent = new_parent(Permissions::VIEW | Permissions::FILES, ended);
+        assert!(
+            bind_file_child_parent(&ended_parent, Some(&pending)).is_err(),
+            "ended peer cannot bind"
+        );
+        let closed_control = new_parent(
+            Permissions::VIEW | Permissions::FILES,
+            CancellationToken::new(),
+        );
+        close_file_child_control(&closed_control);
+        assert!(
+            bind_file_child_parent(&closed_control, Some(&pending)).is_err(),
+            "closed control cannot bind"
+        );
+
+        let binding = bind_file_child_parent(&parent, Some(&pending));
+        let another_owner = new_parent(
+            Permissions::VIEW | Permissions::FILES,
+            CancellationToken::new(),
+        );
+        assert!(
+            bind_file_child_parent(&another_owner, Some(&pending)).is_err(),
+            "an accepted Request cannot be rebound to a second parent owner"
+        );
+        let registration = parse_control_envelope_with_reply(&register, &parent);
+        let preparation = parse_control_envelope_with_reply(&prepare, &parent);
+        let register_ack = registration
+            .as_ref()
+            .ok()
+            .and_then(|(_, reply)| reply.as_ref());
+        let prepare_ack = preparation
+            .as_ref()
+            .ok()
+            .and_then(|(_, reply)| reply.as_ref());
+        let register_matches = register_ack
+            == Some(&serde_json::json!({
+                "t":"rc:file.child.register.ack", "session_id":PARENT, "ok":true,
+            }));
+        let prepare_matches = prepare_ack
+            == Some(&serde_json::json!({
+                "t":"rc:file.child.prepare.ack", "session_id":PARENT, "child_id":CHILD,
+                "transfer_id":TRANSFER, "ok":true,
+            }));
+        let nonce = URL_SAFE_NO_PAD.encode([71u8; 16]);
+        let transcript =
+            file_child_offer_transcript(PARENT, CHILD, TRANSFER, AGENT, USER, SDP, &nonce).unwrap();
+        let signature = URL_SAFE_NO_PAD.encode(pair.sign(&rng, &transcript).unwrap().as_ref());
+        assert!(
+            peer_auth_verify(&key, &transcript, &signature),
+            "the child fixture signature self-verifies"
+        );
+        let offer = ServerMsg::FileSdpOffer {
+            session_id: ObjectId::parse_str(PARENT).unwrap(),
+            child_id: ObjectId::parse_str(CHILD).unwrap(),
+            transfer_id: TRANSFER.into(),
+            direction: FileChildDirection::Download,
+            sdp: SDP.into(),
+            proof: FileChildOfferProof {
+                nonce,
+                key,
+                sig: signature,
+            },
+        };
+        let admission = check_file_child_offer(Some(&parent), &offer);
+        assert!(
+            check_file_child_offer(Some(&parent), &offer).is_err(),
+            "accepted child is one-shot across policy modes"
+        );
+        close_file_child_control(&parent);
+        assert!(
+            parse_control_envelope_with_reply(&register, &parent).is_err(),
+            "no registration ACK after actual close helper"
+        );
+        assert!(
+            check_file_child_offer(Some(&parent), &offer).is_err(),
+            "closed control rejects child proof"
+        );
+        assert!(
+            binding.is_ok() && register_matches && prepare_matches && admission.is_ok(),
+            "X14 Request/local-consent parent must bind and acknowledge before child admission; binding={binding:?}, registration={registration:?}, preparation={preparation:?}, child={admission:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn control_ack_failure_or_pending_close_cannot_revive_parent_binding() {
+        use crate::consent::{ConsentBroker, Mode};
+        use crate::peer::{
+            FileChildAuthorization, bind_file_child_parent, file_child_control_reply_finished,
+            parse_control_envelope_with_reply,
+        };
+        use base64::Engine;
+        use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+        use bson::oid::ObjectId;
+        use meshharbor_remote_control::permissions::Permissions;
+        use meshharbor_remote_control::signaling::{
+            FileChildDirection, FileChildOfferProof, file_child_offer_transcript, peer_auth_verify,
+        };
+        use ring::rand::SystemRandom;
+        use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
+        use std::sync::Mutex;
+        use tokio_util::sync::CancellationToken;
+
+        let session = ObjectId::new();
+        let agent = ObjectId::new().to_hex();
+        let user = ObjectId::new().to_hex();
+        let child = ObjectId::new();
+        let transfer = "synthetic-ack-completion";
+        let sdp = "v=0\r\na=fingerprint:sha-256 AA:BB:CC\r\n";
+        let request: ServerMsg = serde_json::from_value(serde_json::json!({
+            "t":"rc:request", "session_id":session.to_hex(), "controller_user_id":user,
+            "controller_name":"Synthetic", "permissions":"VIEW | FILES",
+            "consent_timeout_secs":30, "consent_mode":"auto",
+        }))
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let broker = ConsentBroker::new(Mode::AutoGrant, dir.path().to_path_buf()).unwrap();
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let register = serde_json::to_vec(&serde_json::json!({
+            "t":"rc:file.child.register", "key":STANDARD.encode(pair.public_key().as_ref()),
+        }))
+        .unwrap();
+        for pending_closes_first in [false, true] {
+            let pending =
+                PendingFileChildParent::from_server_request(&request, &agent, false).unwrap();
+            let (outbound, _receiver) = mpsc::channel::<ClientMsg>(1);
+            let decision = await_prompt_or_socket_end(
+                broker.request_with_mode(&session.to_hex(), Mode::AutoGrant),
+                &outbound,
+                &session.to_hex(),
+            )
+            .await;
+            let reply = consent_reply(decision, true).unwrap();
+            assert!(reply.granted);
+            pending.note_local_consent(reply.granted);
+            let parent = Mutex::new(FileChildAuthorization::unavailable(
+                session,
+                Permissions::VIEW | Permissions::FILES,
+                CancellationToken::new(),
+            ));
+            bind_file_child_parent(&parent, Some(&pending)).unwrap();
+            let (_, ack) = parse_control_envelope_with_reply(&register, &parent).unwrap();
+            assert!(
+                ack.is_some(),
+                "the failure applies to a real positive registration ACK"
+            );
+            assert!(parse_control_envelope_with_reply(b"{", &parent).is_err());
+            assert!(
+                pending.binding_is_live(),
+                "malformed input alone must not close a valid parent"
+            );
+            let prepare = serde_json::to_vec(&serde_json::json!({
+                "t":"rc:file.child.prepare", "child_id":child.to_hex(), "transfer_id":transfer,
+            }))
+            .unwrap();
+            assert!(
+                parse_control_envelope_with_reply(&prepare, &parent)
+                    .unwrap()
+                    .1
+                    .is_some()
+            );
+            let nonce = URL_SAFE_NO_PAD.encode([37u8; 16]);
+            let transcript = file_child_offer_transcript(
+                &session.to_hex(),
+                &child.to_hex(),
+                transfer,
+                &agent,
+                &user,
+                sdp,
+                &nonce,
+            )
+            .unwrap();
+            let signature = URL_SAFE_NO_PAD.encode(pair.sign(&rng, &transcript).unwrap().as_ref());
+            assert!(
+                peer_auth_verify(
+                    &STANDARD.encode(pair.public_key().as_ref()),
+                    &transcript,
+                    &signature
+                ),
+                "the proof rejected after closure is otherwise cryptographically valid"
+            );
+            let offer = ServerMsg::FileSdpOffer {
+                session_id: session,
+                child_id: child,
+                transfer_id: transfer.into(),
+                direction: FileChildDirection::Download,
+                sdp: sdp.into(),
+                proof: FileChildOfferProof {
+                    nonce,
+                    key: STANDARD.encode(pair.public_key().as_ref()),
+                    sig: signature,
+                },
+            };
+            if pending_closes_first {
+                pending.close();
+            } else {
+                // Same completion function the real DC callback calls after
+                // serialization/weak-upgrade/send_text returns a failure.
+                file_child_control_reply_finished(&parent, false);
+            }
+            pending.note_local_consent(true);
+            file_child_control_reply_finished(&parent, true); // a late send completion
+            assert!(
+                !pending.binding_is_live(),
+                "late grant/ACK cannot resurrect a closed binding"
+            );
+            assert!(pending.approved_scope().is_none());
+            assert_eq!(
+                check_file_child_offer(Some(&parent), &offer),
+                Err(crate::peer::FileChildDenial::ParentEnded),
+                "valid prepared proof must reject after pending closure or ACK failure"
+            );
+            assert!(parse_control_envelope_with_reply(&register, &parent).is_err());
+            let other = Mutex::new(FileChildAuthorization::unavailable(
+                session,
+                Permissions::VIEW | Permissions::FILES,
+                CancellationToken::new(),
+            ));
+            assert!(bind_file_child_parent(&other, Some(&pending)).is_err());
+            let (ordinary, child_reply) = parse_control_envelope_with_reply(
+                br#"{"t":"rc:quality","quality":"sharp"}"#,
+                &parent,
+            )
+            .unwrap();
+            assert_eq!(ordinary["t"], "rc:quality");
+            assert!(
+                child_reply.is_none(),
+                "the failure gate does not change ordinary control replies"
+            );
+        }
+    }
 
     /// #2551 — a `ws.text` stage is refined to the message's wire tag, read
     /// straight from the JSON. Anything without a plain `t` gives `None`, and

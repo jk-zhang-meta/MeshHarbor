@@ -407,11 +407,7 @@ pub async fn set_enabled(
     .await?;
     state
         .tenants
-        .base
-        .update_by_id(
-            tid,
-            bson::doc! { "$set": { "settings.external_rc_enabled": body.enabled } },
-        )
+        .set_external_rc_enabled(tid, body.enabled)
         .await?;
     // WARN rather than INFO: this is the switch that decides whether strangers
     // can reach this org's machines, and it should be visible in a log an

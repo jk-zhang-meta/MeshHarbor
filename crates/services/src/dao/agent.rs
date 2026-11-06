@@ -125,6 +125,7 @@ impl AgentDao {
             id: None,
             tenant_id,
             owner_user_id,
+            access_policy_rev: Some(1_i64.into()),
             enrolled_by: Some(owner_user_id),
             name,
             display_name: None,
@@ -758,13 +759,74 @@ impl AgentDao {
         agent_id: ObjectId,
         policy: &AccessPolicy,
     ) -> DaoResult<bool> {
-        let policy_bson = bson::to_bson(policy).unwrap_or(bson::Bson::Null);
-        self.base
-            .update_one(
-                Self::live_row(tenant_id, agent_id),
-                doc! { "$set": { "access_policy": policy_bson } },
-            )
-            .await
+        self.update_child_access_policy(
+            tenant_id,
+            agent_id,
+            doc! { "access_policy": bson::to_bson(policy)? },
+        )
+        .await
+    }
+
+    /// The policy/owner change and its monotonic counter share one Mongo
+    /// update. Invalid/exhausted counters remain invalid, but must not block a
+    /// restriction or owner reassignment. No read path repairs them.
+    async fn update_child_access_policy(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+        mut set: bson::Document,
+    ) -> DaoResult<bool> {
+        set.insert("updated_at", DateTime::now());
+        let valid = doc! { "$and": [
+            { "$eq": [{ "$type": "$access_policy_rev" }, "long"] },
+            { "$gt": ["$access_policy_rev", 0_i64] },
+            { "$lt": ["$access_policy_rev", i64::MAX] },
+        ] };
+        let collection = self.base.collection();
+        for _ in 0..3 {
+            let mut incrementing = Self::live_row(tenant_id, agent_id);
+            incrementing.insert(
+                "$or",
+                bson::bson!([
+                    { "access_policy_rev": { "$exists": false } },
+                    { "$expr": valid.clone() },
+                ]),
+            );
+            if collection
+                .update_one(
+                    incrementing,
+                    doc! { "$set": set.clone(), "$inc": { "access_policy_rev": 1_i64 } },
+                )
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            let mut invalid = Self::live_row(tenant_id, agent_id);
+            invalid.insert("access_policy_rev", doc! { "$exists": true });
+            invalid.insert("$expr", doc! { "$not": [valid.clone()] });
+            if collection
+                .update_one(invalid, doc! { "$set": set.clone() })
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            // A repair may race the two predicates; retry without ever writing
+            // an unversioned policy onto a now-valid counter.
+            if collection
+                .find_one(Self::live_row(tenant_id, agent_id))
+                .await?
+                .is_none()
+            {
+                return Ok(false);
+            }
+        }
+        Err(super::base::DaoError::Validation(
+            "Agent access policy revision changed; retry".into(),
+        ))
     }
 
     /// Replace the device's Fleet-RPC policy (gate 3). A `MANAGE_AGENTS`
@@ -1293,11 +1355,11 @@ impl AgentDao {
         agent_id: ObjectId,
         owner_user_id: ObjectId,
     ) -> DaoResult<bool> {
-        self.base
-            .update_one(
-                Self::live_row(tenant_id, agent_id),
-                doc! { "$set": { "owner_user_id": owner_user_id } },
-            )
-            .await
+        self.update_child_access_policy(
+            tenant_id,
+            agent_id,
+            doc! { "owner_user_id": owner_user_id },
+        )
+        .await
     }
 }

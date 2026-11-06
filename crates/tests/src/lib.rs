@@ -2,6 +2,10 @@
 // Copyright (C) 2026 G ROX EOOD
 pub mod fixtures;
 
+/// X14's policy writers against an explicitly isolated synthetic MongoDB.
+#[cfg(test)]
+mod x14_file_child_policy_revision_tests;
+
 /// Real HTTP/Mongo central account approval console routes.
 #[cfg(test)]
 mod account_approval_management_tests;
