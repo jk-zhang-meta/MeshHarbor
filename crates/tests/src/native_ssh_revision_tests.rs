@@ -3486,18 +3486,10 @@ async fn native_ssh_real_agent_and_cli_browser_approved_ssh_session_and_live_rev
             .unwrap()
     );
 
-    let pac_parent = std::path::Path::new("/root/.agent-work/runtime/pac/roomler-ai-20261022");
-    let root = if pac_parent.is_dir() {
-        tempfile::Builder::new()
-            .prefix("mh-x17-real-ssh-")
-            .tempdir_in(pac_parent)
-            .unwrap()
-    } else {
-        tempfile::Builder::new()
-            .prefix("mh-x17-real-ssh-")
-            .tempdir()
-            .unwrap()
-    };
+    let root = tempfile::Builder::new()
+        .prefix("mh-x17-real-ssh-")
+        .tempdir()
+        .unwrap();
     let root_path = root.path().to_path_buf();
     std::fs::set_permissions(&root_path, std::fs::Permissions::from_mode(0o700)).unwrap();
     let isolated_home = root_path.join("home");
