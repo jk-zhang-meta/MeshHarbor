@@ -62,6 +62,12 @@ enum SessionCreationOrigin {
 /// `rc:ready`; only a controller that never received `Ready` waits longer.
 const NEGOTIATING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// X14 — fail-closed deadline for the agent to acknowledge `rc:file.child.revoke`.
+/// If `rc:file.child.revoke_ack` does not arrive within 5 seconds of a child
+/// revocation, the Hub terminates the parent session (`EndReason::AdminTerminated`)
+/// rather than leaving an unverified child transport alive.
+pub const FILE_CHILD_REVOKE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Loopback-TURN corp-relay (Phase 2) guard. The overlay assigns node IPs from
 /// the RFC 6598 CGNAT range 100.64.0.0/10 (v4) or a ULA `fc00::/7` (v6, derived
 /// from the v4). The Hub only appends a controller-supplied `local_relay` TURN
@@ -1914,6 +1920,7 @@ impl Hub {
         // older agent ignores would be a promise nothing keeps.
         let idle_told = idle_secs.filter(|_| agent_enforces_idle);
         live.idle_secs = idle_told;
+        live.set_file_children_opted_in(browser_caps.iter().any(|c| c == "file-child-download"));
         // Multi-region relay: freeze the session's region NOW — a load-aware
         // pick over the agent's home + its RTT-ordered prefs — so Ready/
         // Offer/Answer all issue from the same PoP regardless of mid-setup
@@ -3654,6 +3661,176 @@ impl Hub {
         })
     }
 
+    /// X14 — inspect a live parent session before querying MongoDB for fresh
+    /// tenant/agent policy revisions. Never holds the session lock across `.await`.
+    pub fn session_file_child_target(
+        &self,
+        session_id: ObjectId,
+        user_id: ObjectId,
+        controller_tx: &ClientTx,
+    ) -> Result<(
+        ObjectId,
+        ObjectId,
+        Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
+    )> {
+        self.with_session(session_id, |s| {
+            if s.controller_user_id != user_id {
+                return Err(Error::PermissionDenied("not the parent controller"));
+            }
+            if !s
+                .controller_tx
+                .as_ref()
+                .is_some_and(|current| ptr_eq(current, controller_tx) && !current.is_closed())
+            {
+                return Err(Error::PermissionDenied(
+                    "not the parent controller connection",
+                ));
+            }
+            if s.device_share_scope().is_some() {
+                return Err(Error::PermissionDenied(
+                    "shared child inheritance unavailable",
+                ));
+            }
+            if s.is_file_children_revoked() {
+                return Err(Error::PermissionDenied(
+                    "file child transports revoked for this session",
+                ));
+            }
+            if !s.is_file_children_opted_in() && !s.is_file_children_enabled() {
+                return Err(Error::PermissionDenied(
+                    "file child transport is not enabled for this session",
+                ));
+            }
+            if s.phase != SessionPhase::Active || !s.permissions().contains(Permissions::FILES) {
+                return Err(Error::PermissionDenied(
+                    "file child parent session is not active with FILES permission",
+                ));
+            }
+            Ok((s.agent_id, s.tenant_id, s.file_child_policy_snapshot()))
+        })
+    }
+
+    /// X14 — re-lock the parent session after the live DB PDP and bind or
+    /// compare `(tenant.security_revision(), agent.access_policy_revision())`.
+    /// On success, enables file-child capability on the parent session and
+    /// returns `Ok(true)` the first time so the caller can spawn the background
+    /// policy watcher once. On mismatch or `None`, irreversibly revokes child
+    /// capability, notifies both peers (`rc:file.child.revoke`), and arms the
+    /// 5-second fail-closed ACK deadline.
+    pub fn admit_file_child_policy_snapshot(
+        &self,
+        session_id: ObjectId,
+        user_id: ObjectId,
+        controller_tx: &ClientTx,
+        current: Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
+    ) -> Result<bool> {
+        let outcome = self.with_session(session_id, |s| {
+            if s.controller_user_id != user_id {
+                return Err(Error::PermissionDenied("not the parent controller"));
+            }
+            if !s.controller_tx.as_ref().is_some_and(|current_tx| {
+                ptr_eq(current_tx, controller_tx) && !current_tx.is_closed()
+            }) {
+                return Err(Error::PermissionDenied(
+                    "not the parent controller connection",
+                ));
+            }
+            if s.device_share_scope().is_some() {
+                return Err(Error::PermissionDenied(
+                    "shared child inheritance unavailable",
+                ));
+            }
+            let was_revoked = s.is_file_children_revoked();
+            match s.verify_or_bind_file_child_policy_snapshot(current) {
+                Ok(()) => {
+                    s.set_file_children_enabled(true);
+                    Ok(Ok(s.claim_file_child_watch()))
+                }
+                Err(err) => {
+                    let newly_revoked = !was_revoked && s.is_file_children_revoked();
+                    Ok(Err((
+                        err,
+                        newly_revoked,
+                        s.agent_id,
+                        s.controller_tx.clone(),
+                    )))
+                }
+            }
+        })?;
+
+        match outcome {
+            Ok(start_watch) => Ok(start_watch),
+            Err((err, newly_revoked, agent_id, ctl_tx)) => {
+                if newly_revoked {
+                    self.notify_and_arm_file_child_revoke(
+                        session_id,
+                        agent_id,
+                        ctl_tx,
+                        "policy_revision_changed",
+                    );
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// X14 — irreversibly revoke all download-only file child capability on
+    /// `session_id`, push `rc:file.child.revoke` to both peers, and arm the
+    /// 5-second fail-closed ACK timer that terminates the parent session if
+    /// the agent does not answer with `rc:file.child.revoke_ack`.
+    pub fn revoke_file_children(&self, session_id: ObjectId, reason: &str) -> Result<bool> {
+        let (first, agent_id, ctl_tx) = self.with_session(session_id, |s| {
+            let first = s.revoke_file_children_irreversibly();
+            Ok((first, s.agent_id, s.controller_tx.clone()))
+        })?;
+        if first {
+            self.notify_and_arm_file_child_revoke(session_id, agent_id, ctl_tx, reason);
+        }
+        Ok(first)
+    }
+
+    fn notify_and_arm_file_child_revoke(
+        &self,
+        session_id: ObjectId,
+        agent_id: ObjectId,
+        controller_tx: Option<ClientTx>,
+        reason: &str,
+    ) {
+        let msg = ServerMsg::FileChildRevoke {
+            session_id,
+            reason: reason.to_string(),
+        };
+        if let Some(tx) = controller_tx {
+            let _ = tx.try_send(msg.clone());
+        }
+        let _ = self.send_to_agent(agent_id, msg);
+        let hub = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(FILE_CHILD_REVOKE_ACK_TIMEOUT).await;
+            hub.enforce_file_child_revoke_deadline(session_id);
+        });
+    }
+
+    fn enforce_file_child_revoke_deadline(&self, session_id: ObjectId) {
+        let pending = self
+            .inner
+            .sessions
+            .get(&session_id)
+            .map(|arc| {
+                let s = arc.value().lock();
+                s.phase != SessionPhase::Closed && s.is_file_child_revoke_pending_ack()
+            })
+            .unwrap_or(false);
+        if pending {
+            warn!(
+                session = %session_id.to_hex(),
+                "file child revocation not acknowledged within {}s — terminating parent session fail-closed",
+                FILE_CHILD_REVOKE_ACK_TIMEOUT.as_secs()
+            );
+            let _ = self.terminate(session_id, EndReason::AdminTerminated);
+        }
+    }
+
     /// Push `rc:rpc.exec` and await the matching `rc:rpc.result`.
     ///
     /// `msg` must be a [`ServerMsg::RpcExec`] carrying `request_id`; the
@@ -4021,6 +4198,16 @@ impl Hub {
         ctx: &DispatchCtx,
         msg: ClientMsg,
     ) -> Result<()> {
+        self.dispatch_local_pdp_session_request_with_snapshot(ctx, msg, None)
+    }
+
+    #[doc(hidden)]
+    pub fn dispatch_local_pdp_session_request_with_snapshot(
+        &self,
+        ctx: &DispatchCtx,
+        msg: ClientMsg,
+        policy_snapshot: Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
+    ) -> Result<()> {
         if ctx.role != Role::Controller
             || ctx.user_id.is_none()
             || ctx.controller_tx.is_none()
@@ -4038,7 +4225,17 @@ impl Hub {
                 "local PDP session source unavailable",
             ));
         }
-        self.dispatch_with_origin(ctx, msg, &mut None, SessionCreationOrigin::LocalPdp)
+        let mut created = None;
+        self.dispatch_with_origin(ctx, msg, &mut created, SessionCreationOrigin::LocalPdp)?;
+        if let (Some(session_id), Some(snapshot)) = (created, policy_snapshot) {
+            let _ = self.with_session(session_id, |s| {
+                if s.file_child_policy_snapshot().is_none() {
+                    let _ = s.verify_or_bind_file_child_policy_snapshot(Some(snapshot));
+                }
+                Ok(())
+            });
+        }
+        Ok(())
     }
 
     /// Read-only test observation; never enables a capability or exposes scope data.
@@ -4218,6 +4415,141 @@ impl Hub {
                         .map_err(|_| Error::SendFailed)
                 })
             }),
+            (
+                Role::Agent,
+                ClientMsg::FileSdpAnswer {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                    sdp,
+                },
+            ) => {
+                self.check_session_party(ctx, session_id)?;
+                let (controller_tx, user_id, region, org) = self.with_session(session_id, |s| {
+                    if !s.has_active_file_child(child_id, &transfer_id) {
+                        return Err(Error::PermissionDenied("file child is not active"));
+                    }
+                    Ok((
+                        s.controller_tx.clone(),
+                        s.controller_user_id,
+                        s.relay_region.clone(),
+                        s.tenant_id,
+                    ))
+                })?;
+                let tx = controller_tx.ok_or(Error::SendFailed)?;
+                let ice_servers = ice_servers_for_session(
+                    &Self::turn_user(user_id, org),
+                    &session_id.to_hex(),
+                    self.inner.turn.cfg_for(region.as_deref()),
+                );
+                tx.try_send(ServerMsg::FileSdpAnswer {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                    sdp,
+                    ice_servers,
+                })
+                .map_err(|_| Error::SendFailed)
+            }
+            (
+                role,
+                ClientMsg::FileIce {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                    candidate,
+                },
+            ) => {
+                self.check_session_party(ctx, session_id)?;
+                let (agent_id, controller_tx) = self.with_session(session_id, |s| {
+                    if role == Role::Controller {
+                        let requester = ctx
+                            .controller_tx
+                            .as_ref()
+                            .ok_or(Error::PermissionDenied("missing controller connection"))?;
+                        if !s.controller_tx.as_ref().is_some_and(|current| {
+                            ptr_eq(current, requester) && !current.is_closed()
+                        }) {
+                            return Err(Error::PermissionDenied(
+                                "not the parent controller connection",
+                            ));
+                        }
+                    }
+                    if !s.has_active_file_child(child_id, &transfer_id) {
+                        return Err(Error::PermissionDenied("file child is not active"));
+                    }
+                    Ok((s.agent_id, s.controller_tx.clone()))
+                })?;
+                let dest_tx = match role {
+                    Role::Controller => self.agent_tx(agent_id)?,
+                    Role::Agent => controller_tx.ok_or(Error::SendFailed)?,
+                };
+                dest_tx
+                    .try_send(ServerMsg::FileIce {
+                        session_id,
+                        child_id,
+                        transfer_id,
+                        candidate,
+                    })
+                    .map_err(|_| Error::SendFailed)
+            }
+            (
+                role,
+                ClientMsg::FileChildComplete {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                },
+            ) => {
+                self.check_session_party(ctx, session_id)?;
+                let (agent_id, controller_tx) = self.with_session(session_id, |s| {
+                    if role == Role::Controller {
+                        let requester = ctx
+                            .controller_tx
+                            .as_ref()
+                            .ok_or(Error::PermissionDenied("missing controller connection"))?;
+                        if !s.controller_tx.as_ref().is_some_and(|current| {
+                            ptr_eq(current, requester) && !current.is_closed()
+                        }) {
+                            return Err(Error::PermissionDenied(
+                                "not the parent controller connection",
+                            ));
+                        }
+                    }
+                    s.complete_file_child(child_id, &transfer_id)?;
+                    Ok((s.agent_id, s.controller_tx.clone()))
+                })?;
+                let msg = ServerMsg::FileChildComplete {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                };
+                match role {
+                    Role::Controller => {
+                        let _ = self.send_to_agent(agent_id, msg);
+                    }
+                    Role::Agent => {
+                        if let Some(tx) = controller_tx {
+                            let _ = tx.try_send(msg);
+                        }
+                    }
+                }
+                Ok(())
+            }
+            (
+                Role::Agent,
+                ClientMsg::FileChildRevokeAck {
+                    session_id,
+                    closed_children: _,
+                    in_flight_buffered_bytes: _,
+                },
+            ) => {
+                self.check_session_party(ctx, session_id)?;
+                self.with_session(session_id, |s| {
+                    s.ack_file_child_revocation();
+                    Ok(())
+                })
+            }
             (
                 Role::Controller,
                 ClientMsg::SdpOffer {
@@ -6209,6 +6541,170 @@ mod tests {
                 .all(|frame| !matches!(frame, ServerMsg::FileSdpOffer { .. })),
             "no branch in the reservation test starts a child transport"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn file_child_revocation_notifies_peers_and_keeps_parent_when_acked_within_5s() {
+        use meshharbor_remote_control::session::FileChildPolicySnapshot;
+
+        let mut f = FileChildDispatchFixture::new().await;
+        let agent = f.hub.with_session(f.sid, |s| Ok(s.agent_id)).unwrap();
+        let snap1 = FileChildPolicySnapshot::new(Some(2), Some(4));
+        let started_watch = f
+            .hub
+            .admit_file_child_policy_snapshot(f.sid, f.owner, &f.controller_tx, snap1)
+            .expect("initial policy snapshot must bind and enable child capability");
+        assert!(started_watch, "first snapshot bind must claim the watcher");
+        assert!(
+            !f.hub
+                .admit_file_child_policy_snapshot(f.sid, f.owner, &f.controller_tx, snap1)
+                .unwrap(),
+            "subsequent matching snapshot must not spawn a duplicate watcher"
+        );
+
+        let child = f.reserve("striped-dl");
+        f.hub
+            .dispatch(&f.ctx(), f.offer(child, "striped-dl"))
+            .unwrap();
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileSdpOffer { child_id, .. }) if child_id == child
+        ));
+
+        let agent_ctx = DispatchCtx {
+            role: Role::Agent,
+            user_id: None,
+            agent_id: Some(agent),
+            controller_tx: None,
+            controller_name: None,
+            consent_mode: ConsentMode::Prompt,
+            override_reason: None,
+            input_mode: None,
+            tenant_name: None,
+            may_record: false,
+            rc_overlay: false,
+            session_policy: OrgPolicy::Read(SessionPolicy::default()),
+            max_duration: None,
+            idle_secs: None,
+            lock_on_end: None,
+            org_session_cap: None,
+            slot: None,
+        };
+        f.hub
+            .dispatch(
+                &agent_ctx,
+                ClientMsg::FileSdpAnswer {
+                    session_id: f.sid,
+                    child_id: child,
+                    transfer_id: "striped-dl".into(),
+                    sdp: "v=0\r\na=answer\r\n".into(),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            f.controller_rx.try_recv(),
+            Ok(ServerMsg::FileSdpAnswer { child_id, .. }) if child_id == child
+        ));
+
+        f.hub
+            .dispatch(
+                &f.ctx(),
+                ClientMsg::FileIce {
+                    session_id: f.sid,
+                    child_id: child,
+                    transfer_id: "striped-dl".into(),
+                    candidate: serde_json::json!({"candidate": "candidate:1"}),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileIce { child_id, .. }) if child_id == child
+        ));
+
+        // Simulate ABA or policy tightening advancing tenant security_rev from 2 -> 3.
+        let snap2 = FileChildPolicySnapshot::new(Some(3), Some(4));
+        assert!(
+            f.hub
+                .admit_file_child_policy_snapshot(f.sid, f.owner, &f.controller_tx, snap2)
+                .is_err(),
+            "revision mismatch must fail closed"
+        );
+        assert!(matches!(
+            f.controller_rx.try_recv(),
+            Ok(ServerMsg::FileChildRevoke { session_id, .. }) if session_id == f.sid
+        ));
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileChildRevoke { session_id, .. }) if session_id == f.sid
+        ));
+
+        // Agent acknowledges within the 5-second deadline.
+        f.hub
+            .dispatch(
+                &agent_ctx,
+                ClientMsg::FileChildRevokeAck {
+                    session_id: f.sid,
+                    closed_children: 1,
+                    in_flight_buffered_bytes: 0,
+                },
+            )
+            .unwrap();
+
+        tokio::time::sleep(FILE_CHILD_REVOKE_ACK_TIMEOUT + Duration::from_secs(1)).await;
+        assert!(
+            f.hub.session_snapshot(f.sid).is_some(),
+            "parent session must remain alive when agent acknowledges child revocation in time"
+        );
+        // And child capability stays irreversibly revoked for this parent session.
+        assert!(
+            f.hub
+                .dispatch(&f.ctx(), f.reserve_message("after-revoke"))
+                .is_err()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn file_child_revocation_without_ack_within_5s_terminates_parent_fail_closed() {
+        let mut f = FileChildDispatchFixture::new().await;
+        f.enable_for_test();
+        let child = f.reserve("unacked-revoke");
+        f.hub
+            .dispatch(&f.ctx(), f.offer(child, "unacked-revoke"))
+            .unwrap();
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileSdpOffer { .. })
+        ));
+
+        f.hub
+            .revoke_file_children(f.sid, "policy_tightened")
+            .unwrap();
+        assert!(matches!(
+            f.controller_rx.try_recv(),
+            Ok(ServerMsg::FileChildRevoke { session_id, .. }) if session_id == f.sid
+        ));
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileChildRevoke { session_id, .. }) if session_id == f.sid
+        ));
+
+        // No FileChildRevokeAck arrives within 5 seconds -> fail-closed parent termination.
+        tokio::time::sleep(FILE_CHILD_REVOKE_ACK_TIMEOUT + Duration::from_secs(1)).await;
+        assert!(
+            f.hub.session_snapshot(f.sid).is_none(),
+            "unacknowledged child revocation must terminate the parent session after 5s"
+        );
+        assert!(matches!(
+            f.controller_rx.try_recv(),
+            Ok(ServerMsg::Terminate { session_id, reason: EndReason::AdminTerminated, .. })
+                if session_id == f.sid
+        ));
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::Terminate { session_id, reason: EndReason::AdminTerminated, .. })
+                if session_id == f.sid
+        ));
     }
 
     /// P3 security — `dispatch` refuses session verbs from a connection

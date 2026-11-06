@@ -3322,16 +3322,111 @@ async fn handle_server_msg(
     // sessions under its own row as well.
     carrier_ready_tx: &mpsc::Sender<bson::oid::ObjectId>,
 ) -> Result<(), ConnectError> {
-    // X14 remains unavailable. In particular, do not send a child through the
-    // ordinary offer's Off/Audit policy, delegation, or peer construction.
-    if let ServerMsg::FileSdpOffer { session_id, .. } = &msg {
+    // Do not send a child through the ordinary offer's Off/Audit policy,
+    // delegation, or ordinary peer construction.
+    if let ServerMsg::FileSdpOffer {
+        session_id,
+        child_id,
+        transfer_id,
+        sdp,
+        ..
+    } = &msg
+    {
         let admission = check_file_child_offer(
             peers
                 .get(session_id)
                 .map(AgentPeer::file_child_authorization),
             &msg,
         );
-        debug!(?admission, "file child transport remains unavailable");
+        if let Err(why) = admission {
+            debug!(
+                %session_id,
+                %child_id,
+                ?why,
+                "file child offer rejected by parent authorization"
+            );
+            return Ok(());
+        }
+        if let Some(peer) = peers.get(session_id) {
+            match peer
+                .accept_file_child_offer(*child_id, transfer_id.clone(), sdp.clone())
+                .await
+            {
+                Ok(answer_sdp) => {
+                    reply_for_session(
+                        ws,
+                        delegated,
+                        &ClientMsg::FileSdpAnswer {
+                            session_id: *session_id,
+                            child_id: *child_id,
+                            transfer_id: transfer_id.clone(),
+                            sdp: answer_sdp,
+                        },
+                    )
+                    .await?;
+                }
+                Err(e) => {
+                    warn!(%session_id, %child_id, %e, "file child accept_file_child_offer failed");
+                }
+            }
+        }
+        return Ok(());
+    }
+    if let ServerMsg::FileIce {
+        session_id,
+        child_id,
+        transfer_id,
+        candidate,
+    } = &msg
+    {
+        if let Some(peer) = peers.get(session_id)
+            && let Err(e) = peer
+                .add_file_child_ice(*child_id, transfer_id, candidate.clone())
+                .await
+        {
+            debug!(%session_id, %child_id, %e, "file child ICE candidate rejected");
+        }
+        return Ok(());
+    }
+    if let ServerMsg::FileChildComplete {
+        session_id,
+        child_id,
+        transfer_id,
+    } = &msg
+    {
+        if let Some(peer) = peers.get(session_id) {
+            peer.complete_file_child(*child_id, transfer_id).await;
+        }
+        return Ok(());
+    }
+    if let ServerMsg::FileChildRevoke { session_id, reason } = &msg {
+        if let Some(pending) = pending_session_meta
+            .get(session_id)
+            .and_then(|meta| meta.7.as_ref())
+        {
+            pending.close();
+        }
+        let (closed_children, in_flight_buffered_bytes) = match peers.get(session_id) {
+            Some(peer) => peer.revoke_file_children().await,
+            None => (0, 0),
+        };
+        info!(
+            %session_id,
+            %reason,
+            closed_children,
+            in_flight_buffered_bytes,
+            "file child capability revoked by hub; child transports closed"
+        );
+        reply_for_session(
+            ws,
+            delegated,
+            &ClientMsg::FileChildRevokeAck {
+                session_id: *session_id,
+                closed_children,
+                in_flight_buffered_bytes,
+            },
+        )
+        .await?;
         return Ok(());
     }
     if let ServerMsg::TunnelTerminate { session_id, .. } = &msg {

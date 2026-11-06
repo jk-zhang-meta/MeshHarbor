@@ -228,8 +228,18 @@ fn downscale_for(pref: encode::EncoderPreference) -> capture::DownscalePolicy {
     }
 }
 
+struct ChildPeerHandle {
+    transfer_id: String,
+    pc: Arc<RTCPeerConnection>,
+    files_dc: Arc<tokio::sync::Mutex<Option<Arc<RTCDataChannel>>>>,
+    stop: tokio_util::sync::CancellationToken,
+}
+
 pub struct AgentPeer {
     file_child_authorization: Arc<std::sync::Mutex<FileChildAuthorization>>,
+    ice_servers: Vec<IceServer>,
+    child_peers:
+        Arc<tokio::sync::Mutex<std::collections::HashMap<bson::oid::ObjectId, ChildPeerHandle>>>,
     pc: Arc<RTCPeerConnection>,
     session_id: bson::oid::ObjectId,
     media_pump: Option<JoinHandle<()>>,
@@ -1657,6 +1667,8 @@ impl AgentPeer {
         let sleep_notice = crate::sleep_notice::register(session_id, control_dc.clone());
         Ok(Self {
             file_child_authorization,
+            ice_servers: ice_servers.clone(),
+            child_peers: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             pc,
             session_id,
             media_pump: Some(pump),
@@ -1891,6 +1903,7 @@ impl AgentPeer {
     pub fn shared_lease_stop(&self) -> std::sync::Arc<dyn Fn() + Send + Sync> {
         let end = self.session_end.clone();
         let file_child_authorization = self.file_child_authorization.clone();
+        let child_peers = self.child_peers.clone();
         let media = self.media_pump.as_ref().map(|t| t.abort_handle());
         #[cfg(feature = "audio")]
         let audio = self.audio_pump.as_ref().map(|t| t.abort_handle());
@@ -1912,7 +1925,15 @@ impl AgentPeer {
             }
             crate::input::arbiter::global().session_closed(sid);
             let pc = pc.clone();
+            let child_peers = child_peers.clone();
             tokio::spawn(async move {
+                let drained: Vec<ChildPeerHandle> =
+                    child_peers.lock().await.drain().map(|(_, h)| h).collect();
+                for h in drained {
+                    h.stop.cancel();
+                    let _ =
+                        tokio::time::timeout(std::time::Duration::from_secs(2), h.pc.close()).await;
+                }
                 let _ = tokio::time::timeout(std::time::Duration::from_secs(3), pc.close()).await;
             });
         })
@@ -1921,10 +1942,283 @@ impl AgentPeer {
         &self.file_child_authorization
     }
 
+    pub async fn accept_file_child_offer(
+        &self,
+        child_id: bson::oid::ObjectId,
+        transfer_id: String,
+        offer_sdp: String,
+    ) -> Result<String> {
+        if self.session_end.is_cancelled() {
+            return Err(anyhow!("parent session ended"));
+        }
+        {
+            let auth = self
+                .file_child_authorization
+                .lock()
+                .map_err(|_| anyhow!("file child authorization lock poisoned"))?;
+            auth.check_parent()
+                .map_err(|why| anyhow!("file child parent check failed: {why:?}"))?;
+        }
+        {
+            let children = self.child_peers.lock().await;
+            if children.contains_key(&child_id) {
+                return Err(anyhow!("file child peer already exists"));
+            }
+            if children.len() >= FILE_CHILD_PREPARATIONS_PER_PARENT {
+                return Err(anyhow!("file child peer limit reached"));
+            }
+        }
+
+        let engine = MediaEngine::default();
+        let registry = webrtc::interceptor::registry::Registry::new();
+        let mut setting = webrtc::api::setting_engine::SettingEngine::default();
+        setting.set_interface_filter(Box::new(|name: &str| !is_overlay_iface(name)));
+        if !self.rc_overlay.allow {
+            let keep = self.rc_overlay.clone();
+            setting.set_ip_filter(Box::new(move |ip| keep.keeps_local(ip)));
+        }
+        let transport = crate::rc_transport::Policy::from_env();
+        transport.apply(&mut setting);
+        #[cfg(feature = "synthetic-frame-source")]
+        l0::apply(&mut setting);
+
+        let api = APIBuilder::new()
+            .with_media_engine(engine)
+            .with_interceptor_registry(registry)
+            .with_setting_engine(setting)
+            .build();
+
+        let relay_tcp = node_env("ICE_RELAY_TCP")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let ice_servers = &self.rc_overlay.ice_servers(&self.ice_servers);
+        let mut config = RTCConfiguration {
+            ice_servers: if relay_tcp {
+                map_ice_servers_relay_tcp(ice_servers)
+            } else {
+                map_ice_servers(ice_servers)
+            },
+            ..Default::default()
+        };
+        if relay_tcp {
+            config.ice_transport_policy = RTCIceTransportPolicy::Relay;
+        }
+
+        let pc = Arc::new(
+            api.new_peer_connection(config)
+                .await
+                .context("new_peer_connection(file_child)")?,
+        );
+        let child_stop = self.session_end.child_token();
+        let files_dc: Arc<tokio::sync::Mutex<Option<Arc<RTCDataChannel>>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+
+        {
+            let tx = self.outbound.clone();
+            let session_id = self.session_id;
+            let transfer_for_ice = transfer_id.clone();
+            pc.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
+                let tx = tx.clone();
+                let transfer_id = transfer_for_ice.clone();
+                Box::pin(async move {
+                    let Some(c) = c else { return };
+                    let Ok(json) = c.to_json() else { return };
+                    let Ok(candidate) = serde_json::to_value(&json) else {
+                        return;
+                    };
+                    let _ = tx
+                        .send(ClientMsg::FileIce {
+                            session_id,
+                            child_id,
+                            transfer_id,
+                            candidate,
+                        })
+                        .await;
+                })
+            }));
+        }
+
+        {
+            let stop_for_state = child_stop.clone();
+            pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
+                let stop = stop_for_state.clone();
+                Box::pin(async move {
+                    if matches!(
+                        s,
+                        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
+                    ) {
+                        stop.cancel();
+                    }
+                })
+            }));
+        }
+
+        {
+            let session_id = self.session_id;
+            let stop_for_dc = child_stop.clone();
+            let files_dc_for_cb = files_dc.clone();
+            pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+                let stop = stop_for_dc.clone();
+                let files_dc = files_dc_for_cb.clone();
+                let label = dc.label().to_string();
+                Box::pin(async move {
+                    if label == "files" {
+                        *files_dc.lock().await = Some(dc.clone());
+                        attach_child_files_handler(dc, session_id, &stop);
+                    } else {
+                        let _ = dc.close().await;
+                    }
+                })
+            }));
+        }
+
+        let munged_offer = self.rc_overlay.strip_sdp(&offer_sdp);
+        let offer = RTCSessionDescription::offer(munged_offer).context("parse child offer")?;
+        pc.set_remote_description(offer)
+            .await
+            .context("set_remote_description(file_child)")?;
+        let answer = pc
+            .create_answer(None)
+            .await
+            .context("create_answer(file_child)")?;
+        pc.set_local_description(answer.clone())
+            .await
+            .context("set_local_description(file_child)")?;
+
+        self.child_peers.lock().await.insert(
+            child_id,
+            ChildPeerHandle {
+                transfer_id,
+                pc,
+                files_dc,
+                stop: child_stop,
+            },
+        );
+        Ok(answer.sdp)
+    }
+
+    pub async fn add_file_child_ice(
+        &self,
+        child_id: bson::oid::ObjectId,
+        transfer_id: &str,
+        candidate: serde_json::Value,
+    ) -> Result<()> {
+        let pc = {
+            let children = self.child_peers.lock().await;
+            let Some(handle) = children
+                .get(&child_id)
+                .filter(|h| h.transfer_id == transfer_id && !h.stop.is_cancelled())
+            else {
+                return Err(anyhow!("unknown or closed file child"));
+            };
+            handle.pc.clone()
+        };
+        let init: RTCIceCandidateInit = match candidate {
+            serde_json::Value::String(s) => RTCIceCandidateInit {
+                candidate: s,
+                ..Default::default()
+            },
+            other => serde_json::from_value(other)
+                .map_err(|e| anyhow!("bad ICE candidate shape: {e}"))?,
+        };
+        if !self.rc_overlay.keeps_remote_candidate(&init.candidate) {
+            return Ok(());
+        }
+        if crate::mdns_resolve::candidate_mdns_name(&init.candidate).is_some() {
+            let rc_overlay = self.rc_overlay.clone();
+            let mut init = init;
+            tokio::spawn(async move {
+                if let Some(rewritten) =
+                    crate::mdns_resolve::resolve_mdns_candidate(&init.candidate).await
+                {
+                    init.candidate = rewritten;
+                }
+                if !rc_overlay.keeps_remote_candidate(&init.candidate) {
+                    return;
+                }
+                let _ = pc.add_ice_candidate(init).await;
+            });
+            return Ok(());
+        }
+        pc.add_ice_candidate(init)
+            .await
+            .context("add_ice_candidate(file_child)")
+    }
+
+    pub async fn complete_file_child(
+        &self,
+        child_id: bson::oid::ObjectId,
+        transfer_id: &str,
+    ) -> bool {
+        let removed = {
+            let mut children = self.child_peers.lock().await;
+            if children
+                .get(&child_id)
+                .is_some_and(|h| h.transfer_id == transfer_id)
+            {
+                children.remove(&child_id)
+            } else {
+                None
+            }
+        };
+        let released = self
+            .file_child_authorization
+            .lock()
+            .ok()
+            .is_some_and(|mut auth| auth.release_completed_child(child_id, transfer_id));
+        if let Some(handle) = removed {
+            handle.stop.cancel();
+            if let Some(dc) = handle.files_dc.lock().await.take() {
+                let _ = tokio::time::timeout(Duration::from_secs(1), dc.close()).await;
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(2), handle.pc.close()).await;
+            return true;
+        }
+        released
+    }
+
+    pub async fn revoke_file_children(&self) -> (u32, u64) {
+        close_file_child_control(&self.file_child_authorization);
+        let drained: Vec<ChildPeerHandle> = self
+            .child_peers
+            .lock()
+            .await
+            .drain()
+            .map(|(_, h)| h)
+            .collect();
+        let mut closed_children = 0u32;
+        let mut in_flight_buffered_bytes = 0u64;
+        for handle in drained {
+            handle.stop.cancel();
+            if let Some(dc) = handle.files_dc.lock().await.take() {
+                let buffered =
+                    tokio::time::timeout(Duration::from_millis(250), dc.buffered_amount())
+                        .await
+                        .unwrap_or(0) as u64;
+                in_flight_buffered_bytes = in_flight_buffered_bytes.saturating_add(buffered);
+                let _ = tokio::time::timeout(Duration::from_secs(1), dc.close()).await;
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(2), handle.pc.close()).await;
+            closed_children = closed_children.saturating_add(1);
+        }
+        (closed_children, in_flight_buffered_bytes)
+    }
+
     pub fn stop_serving(&self) {
         // First: the channel handlers let go whatever the channels do next.
         self.session_end.cancel();
         close_file_child_control(&self.file_child_authorization);
+        let child_peers = self.child_peers.clone();
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                let drained: Vec<ChildPeerHandle> =
+                    child_peers.lock().await.drain().map(|(_, h)| h).collect();
+                for h in drained {
+                    h.stop.cancel();
+                    let _ = tokio::time::timeout(Duration::from_secs(2), h.pc.close()).await;
+                }
+            });
+        }
         if let Some(pump) = &self.media_pump {
             pump.abort();
         }
@@ -1940,6 +2234,7 @@ impl AgentPeer {
 
     pub async fn close(&self) {
         self.stop_serving();
+        let _ = self.revoke_file_children().await;
         if let Err(e) = self.pc.close().await {
             warn!(session = %self.session_id, %e, "PC close failed");
         }
@@ -10145,11 +10440,12 @@ struct FileChildRegistration {
 struct PreparedFileChild {
     transfer_id: String,
     consumed: bool,
+    completed: bool,
 }
 
 // Retain consumed IDs until the parent ends so prepare cannot resurrect one.
-// There is no child completion/slot recycling path in this admission slice.
 const FILE_CHILD_PREPARATIONS_PER_PARENT: usize = 4;
+const FILE_CHILD_HISTORY_PER_PARENT: usize = 256;
 const FILE_CHILD_INVALID_PROOF_LIMIT: u8 = 8;
 
 // These origins cannot acquire child support by inheriting an ordinary FILES
@@ -10279,7 +10575,14 @@ impl FileChildAuthorization {
                 if registration.children.contains_key(&child) {
                     return Err(FileChildDenial::UnpreparedOrConsumed);
                 }
-                if registration.children.len() >= FILE_CHILD_PREPARATIONS_PER_PARENT {
+                let active_preparations = registration
+                    .children
+                    .values()
+                    .filter(|p| !p.completed)
+                    .count();
+                if active_preparations >= FILE_CHILD_PREPARATIONS_PER_PARENT
+                    || registration.children.len() >= FILE_CHILD_HISTORY_PER_PARENT
+                {
                     return Err(FileChildDenial::PreparationLimit);
                 }
                 registration.children.insert(
@@ -10287,6 +10590,7 @@ impl FileChildAuthorization {
                     PreparedFileChild {
                         transfer_id: transfer.to_owned(),
                         consumed: false,
+                        completed: false,
                     },
                 );
             }
@@ -10383,6 +10687,25 @@ impl FileChildAuthorization {
         prepared.consumed = true;
         registration.used_nonces.insert(proof.nonce.clone());
         Ok(())
+    }
+
+    pub(crate) fn release_completed_child(
+        &mut self,
+        child_id: bson::oid::ObjectId,
+        transfer_id: &str,
+    ) -> bool {
+        let Some(registration) = self.registration.as_mut() else {
+            return false;
+        };
+        let Some(prepared) = registration
+            .children
+            .get_mut(&child_id)
+            .filter(|p| p.consumed && !p.completed && p.transfer_id == transfer_id)
+        else {
+            return false;
+        };
+        prepared.completed = true;
+        true
     }
 }
 
@@ -12555,6 +12878,130 @@ pub fn attach_files_handler(
     });
 }
 
+pub fn attach_child_files_handler(
+    dc: Arc<RTCDataChannel>,
+    session_id: bson::oid::ObjectId,
+    child_end: &tokio_util::sync::CancellationToken,
+) {
+    let handler = crate::files::FilesHandler::new();
+    let dc_for_handler = dc.clone();
+    let handler_for_close = handler.clone();
+    dc.on_close(Box::new(move || {
+        let h = handler_for_close.clone();
+        Box::pin(async move {
+            h.abort().await;
+        })
+    }));
+    let handler_for_end = handler.clone();
+    dc.on_message(Box::new(move |msg| {
+        let dc = dc_for_handler.clone();
+        let handler = handler.clone();
+        Box::pin(async move {
+            crate::session_telemetry::counters(session_id).note_transfer();
+            if msg.is_string {
+                handle_child_files_control(dc, handler, session_id, &msg.data).await;
+            } else {
+                send_files_json(
+                    &dc,
+                    &crate::files::FilesOutgoing::Error {
+                        id: "",
+                        message: "file child channel is download-only",
+                    },
+                )
+                .await;
+            }
+        })
+    }));
+    on_session_end(&dc, child_end, move || async move {
+        handler_for_end.end_session().await;
+    });
+}
+
+async fn handle_child_files_control(
+    dc: Arc<RTCDataChannel>,
+    handler: crate::files::FilesHandler,
+    session_id: bson::oid::ObjectId,
+    data: &[u8],
+) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        debug!(%session_id, "child files: non-UTF8 control frame, dropped");
+        return;
+    };
+    let msg = match serde_json::from_str::<crate::files::FilesIncoming>(text) {
+        Ok(m) => m,
+        Err(e) => {
+            debug!(%session_id, %e, "child files: malformed control JSON, dropped");
+            return;
+        }
+    };
+    match msg {
+        crate::files::FilesIncoming::Get {
+            id,
+            path,
+            offset,
+            length,
+        } => {
+            if let Err(reason) = crate::files::path_addressed_allowed() {
+                warn!(%session_id, %id, path = %path, "child files: get refused — remote browse disabled");
+                send_files_json(
+                    &dc,
+                    &crate::files::FilesOutgoing::Error {
+                        id: &id,
+                        message: reason,
+                    },
+                )
+                .await;
+                return;
+            }
+            info!(
+                %session_id,
+                %id,
+                path = %path,
+                ?offset,
+                ?length,
+                "child files: get (range download requested)"
+            );
+            spawn_outgoing_pump_range(
+                dc.clone(),
+                handler,
+                session_id,
+                id,
+                path,
+                offset,
+                length,
+                crate::files::CHILD_OUTGOING_BUFFER_HIGH_BYTES,
+            );
+        }
+        crate::files::FilesIncoming::Cancel { id } => {
+            let out_cancelled = handler.cancel_outgoing(&id).await;
+            info!(%session_id, %id, out_cancelled, "child files: cancel requested");
+        }
+        crate::files::FilesIncoming::Dir { req_id, .. } => {
+            send_files_json(
+                &dc,
+                &crate::files::FilesOutgoing::DirError {
+                    req_id: &req_id,
+                    message: "file child channel is download-only",
+                },
+            )
+            .await;
+        }
+        crate::files::FilesIncoming::Begin { id, .. }
+        | crate::files::FilesIncoming::End { id }
+        | crate::files::FilesIncoming::GetFolder { id, .. }
+        | crate::files::FilesIncoming::Resume { id, .. } => {
+            send_files_json(
+                &dc,
+                &crate::files::FilesOutgoing::Error {
+                    id: &id,
+                    message: "file child channel is download-only",
+                },
+            )
+            .await;
+        }
+    }
+}
+
 /// Has this channel closed, or begun to? `Closing` counts: a channel closed
 /// from the device's own side often stops there for good, without ever
 /// reaching `Closed` or firing `on_close` (a race in webrtc-rs's read loop).
@@ -12695,7 +13142,12 @@ async fn handle_files_control(
                 .await;
             }
         },
-        crate::files::FilesIncoming::Get { id, path } => {
+        crate::files::FilesIncoming::Get {
+            id,
+            path,
+            offset,
+            length,
+        } => {
             if let Err(reason) = crate::files::path_addressed_allowed() {
                 warn!(%session_id, %id, path = %path, "files: get refused — remote browse disabled");
                 send_files_json(
@@ -12708,8 +13160,17 @@ async fn handle_files_control(
                 .await;
                 return;
             }
-            info!(%session_id, %id, path = %path, "files: get (download requested)");
-            spawn_outgoing_pump(dc.clone(), handler, session_id, id, path);
+            info!(%session_id, %id, path = %path, ?offset, ?length, "files: get (download requested)");
+            spawn_outgoing_pump_range(
+                dc.clone(),
+                handler,
+                session_id,
+                id,
+                path,
+                offset,
+                length,
+                4 * 1024 * 1024,
+            );
         }
         crate::files::FilesIncoming::GetFolder { id, path, format } => {
             if let Err(reason) = crate::files::path_addressed_allowed() {
@@ -12853,18 +13314,25 @@ async fn handle_files_control(
 /// returned. It stops through the stop token on `OutgoingTransfer`,
 /// which `cancel_outgoing` (the browser) and `end_session` (the session
 /// ending) fire; every await races it (#1730).
-fn spawn_outgoing_pump(
+#[allow(clippy::too_many_arguments)]
+fn spawn_outgoing_pump_range(
     dc: Arc<RTCDataChannel>,
     handler: crate::files::FilesHandler,
     session_id: bson::oid::ObjectId,
     id: String,
     requested_path: String,
+    offset: Option<u64>,
+    length: Option<u64>,
+    backpressure_high: usize,
 ) {
     tokio::spawn(async move {
-        // begin_outgoing validates the path + denylist, opens the
+        // begin_outgoing_range validates the path + denylist + range, opens the
         // file, and stashes outgoing state. Success → send `Offer`
         // and start streaming.
-        let offer = match handler.begin_outgoing(id.clone(), &requested_path).await {
+        let offer = match handler
+            .begin_outgoing_range(id.clone(), &requested_path, offset, length)
+            .await
+        {
             Ok(o) => o,
             Err(e) => {
                 warn!(%session_id, %id, path = %requested_path, %e, "files: begin_outgoing failed");
@@ -12903,7 +13371,15 @@ fn spawn_outgoing_pump(
             return;
         }
 
-        let bytes_sent = match pump_outgoing_file(&dc, &handler, &offer, session_id).await {
+        let bytes_sent = match pump_outgoing_file_with_limit(
+            &dc,
+            &handler,
+            &offer,
+            session_id,
+            backpressure_high,
+        )
+        .await
+        {
             Ok(n) => n,
             Err(e) => {
                 handler.finish_outgoing(&offer.id).await;
@@ -13161,36 +13637,62 @@ async fn zip_pump_loop<S: DownloadSink>(
 /// the total bytes sent on clean stream exit. `session_id` is whose transfer
 /// it is: each progress report is activity for the session's idle limit
 /// (FR-101 P4b-2), so a long download is never ended as idle.
+#[cfg(test)]
 async fn pump_outgoing_file<S: DownloadSink>(
     dc: &S,
     handler: &crate::files::FilesHandler,
     offer: &crate::files::OutgoingOffer,
     session_id: bson::oid::ObjectId,
 ) -> anyhow::Result<u64> {
+    pump_outgoing_file_with_limit(dc, handler, offer, session_id, 4 * 1024 * 1024).await
+}
+
+async fn pump_outgoing_file_with_limit<S: DownloadSink>(
+    dc: &S,
+    handler: &crate::files::FilesHandler,
+    offer: &crate::files::OutgoingOffer,
+    session_id: bson::oid::ObjectId,
+    backpressure_high: usize,
+) -> anyhow::Result<u64> {
     use tokio::io::AsyncReadExt;
     const CHUNK: usize = 64 * 1024;
-    const BACKPRESSURE_HIGH: usize = 4 * 1024 * 1024;
     let stop = &offer.cancel;
 
     let mut file = or_stopped(stop, handler.open_outgoing(&offer.id)).await??;
+    if offer.length == Some(0) {
+        return Ok(0);
+    }
+    let mut remaining = offer.length;
     let mut buf = vec![0u8; CHUNK];
     let mut total: u64 = 0;
     let mut last_progress: u64 = 0;
     loop {
+        if remaining == Some(0) {
+            break;
+        }
+        let max_read = remaining.map_or(CHUNK, |rem| (rem.min(CHUNK as u64)) as usize);
         // Backpressure: poll buffered_amount and yield until it
         // drops below the high-watermark.
         // ⚠️ After a drop the buffer never drains (only a SACK lowers it):
         // the channel's state ends the wait too, and the stop token ends
         // it even when the channel never says it closed.
-        while or_stopped(stop, dc.buffered()).await? > BACKPRESSURE_HIGH {
+        while or_stopped(stop, dc.buffered()).await? > backpressure_high.saturating_sub(max_read) {
             or_stopped(stop, tokio::time::sleep(Duration::from_millis(20))).await?;
             if dc.gone() {
                 return Err(anyhow::anyhow!("the channel closed"));
             }
         }
-        let n = or_stopped(stop, file.read(&mut buf)).await??;
+        let n = or_stopped(stop, file.read(&mut buf[..max_read])).await??;
         if n == 0 {
+            if remaining.is_some_and(|rem| rem > 0) {
+                return Err(anyhow::anyhow!(
+                    "unexpected EOF before requested byte range completed"
+                ));
+            }
             break;
+        }
+        if let Some(rem) = &mut remaining {
+            *rem = rem.saturating_sub(n as u64);
         }
         let chunk = bytes::Bytes::copy_from_slice(&buf[..n]);
         or_stopped(stop, dc.send_chunk(&chunk)).await??;
@@ -16303,6 +16805,403 @@ mod download_stop_tests {
         let want = std::fs::read(&path).expect("read the file back");
         assert_eq!(sent, want.len() as u64);
         assert!(*got.lock().unwrap() == want, "the bytes arrived intact");
+    }
+
+    #[tokio::test]
+    async fn a_ranged_download_sends_exact_stripes_and_reassembles_byte_for_byte() {
+        let (_dir, path) = a_file(1024 * 1024 + 19);
+        let want = std::fs::read(&path).expect("read the file back");
+        let total_size = want.len() as u64;
+        let path_str = path.to_string_lossy().to_string();
+
+        // 0-byte probe reports full file size without transferring payload bytes.
+        let probe_handler = crate::files::FilesHandler::new();
+        let probe_offer = probe_handler
+            .begin_outgoing_range("probe".into(), &path_str, Some(0), Some(0))
+            .await
+            .expect("probe begin_outgoing_range");
+        assert_eq!(probe_offer.size, Some(total_size));
+        let probe_got = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let probe_sink = Collect {
+            bytes: probe_got.clone(),
+        };
+        let probe_sent = pump_outgoing_file_with_limit(
+            &probe_sink,
+            &probe_handler,
+            &probe_offer,
+            bson::oid::ObjectId::new(),
+            crate::files::CHILD_OUTGOING_BUFFER_HIGH_BYTES,
+        )
+        .await
+        .expect("probe completes");
+        assert_eq!(probe_sent, 0);
+        assert!(probe_got.lock().unwrap().is_empty());
+
+        // 4 concurrent stripes reassemble to the exact file.
+        let stripe_count = 4u64;
+        let base_stripe = total_size / stripe_count;
+        let mut handles = Vec::new();
+        for idx in 0..stripe_count {
+            let offset = idx * base_stripe;
+            let length = if idx + 1 == stripe_count {
+                total_size - offset
+            } else {
+                base_stripe
+            };
+            let path_clone = path_str.clone();
+            handles.push(tokio::spawn(async move {
+                let handler = crate::files::FilesHandler::new();
+                let offer = handler
+                    .begin_outgoing_range(
+                        format!("stripe-{idx}"),
+                        &path_clone,
+                        Some(offset),
+                        Some(length),
+                    )
+                    .await
+                    .expect("stripe begin_outgoing_range");
+                let got = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let sink = Collect { bytes: got.clone() };
+                let sent = pump_outgoing_file_with_limit(
+                    &sink,
+                    &handler,
+                    &offer,
+                    bson::oid::ObjectId::new(),
+                    crate::files::CHILD_OUTGOING_BUFFER_HIGH_BYTES,
+                )
+                .await
+                .expect("stripe completes");
+                assert_eq!(sent, length);
+                let data = got.lock().unwrap().clone();
+                assert_eq!(data.len() as u64, length);
+                data
+            }));
+        }
+        let mut reassembled = Vec::with_capacity(want.len());
+        for h in handles {
+            reassembled.extend_from_slice(&h.await.expect("stripe task"));
+        }
+        assert_eq!(reassembled, want);
+    }
+
+    async fn connected_webrtc_files_pair(
+        stop: &tokio_util::sync::CancellationToken,
+    ) -> (
+        Arc<RTCPeerConnection>,
+        Arc<RTCDataChannel>,
+        Arc<webrtc::data::data_channel::DataChannel>,
+        Arc<RTCPeerConnection>,
+        Arc<RTCDataChannel>,
+        Arc<std::sync::Mutex<Vec<u8>>>,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) {
+        let mut browser_setting = webrtc::api::setting_engine::SettingEngine::default();
+        browser_setting.detach_data_channels();
+        let browser_api = APIBuilder::new()
+            .with_setting_engine(browser_setting)
+            .build();
+        let agent_api = APIBuilder::new().build();
+        let browser_pc = Arc::new(
+            browser_api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .expect("browser pc"),
+        );
+        let agent_pc = Arc::new(
+            agent_api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .expect("agent pc"),
+        );
+        let (agent_dc_tx, agent_dc_rx) = tokio::sync::oneshot::channel();
+        let agent_dc_tx = Arc::new(std::sync::Mutex::new(Some(agent_dc_tx)));
+        let (agent_open_tx, agent_open_rx) = tokio::sync::oneshot::channel();
+        let agent_open_tx = Arc::new(std::sync::Mutex::new(Some(agent_open_tx)));
+        let stop_for_cb = stop.clone();
+        let sid = bson::oid::ObjectId::new();
+        agent_pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+            attach_child_files_handler(dc.clone(), sid, &stop_for_cb);
+            let open_tx = agent_open_tx.clone();
+            dc.on_open(Box::new(move || {
+                if let Some(tx) = open_tx.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+                Box::pin(async {})
+            }));
+            let tx = agent_dc_tx.lock().unwrap().take();
+            Box::pin(async move {
+                if let Some(tx) = tx {
+                    let _ = tx.send(dc);
+                }
+            })
+        }));
+
+        let browser_dc = browser_pc
+            .create_data_channel("files", None)
+            .await
+            .expect("browser files dc");
+        let (open_tx, open_rx) = tokio::sync::oneshot::channel();
+        let open_tx = Arc::new(std::sync::Mutex::new(Some(open_tx)));
+        browser_dc.on_open(Box::new(move || {
+            if let Some(tx) = open_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            Box::pin(async {})
+        }));
+
+        let offer = browser_pc.create_offer(None).await.expect("offer");
+        let mut gather = browser_pc.gathering_complete_promise().await;
+        browser_pc
+            .set_local_description(offer)
+            .await
+            .expect("browser sld");
+        let _ = gather.recv().await;
+        let offer_sdp = browser_pc.local_description().await.expect("local offer");
+
+        agent_pc
+            .set_remote_description(offer_sdp)
+            .await
+            .expect("agent srd");
+        let answer = agent_pc.create_answer(None).await.expect("answer");
+        let mut gather_ans = agent_pc.gathering_complete_promise().await;
+        agent_pc
+            .set_local_description(answer)
+            .await
+            .expect("agent sld");
+        let _ = gather_ans.recv().await;
+        let answer_sdp = agent_pc.local_description().await.expect("local answer");
+
+        browser_pc
+            .set_remote_description(answer_sdp)
+            .await
+            .expect("browser srd");
+
+        let agent_dc = tokio::time::timeout(Duration::from_secs(5), agent_dc_rx)
+            .await
+            .expect("agent dc timeout")
+            .expect("agent dc");
+        tokio::time::timeout(Duration::from_secs(5), open_rx)
+            .await
+            .expect("browser dc open timeout")
+            .expect("browser dc open");
+        tokio::time::timeout(Duration::from_secs(5), agent_open_rx)
+            .await
+            .expect("agent dc open timeout")
+            .expect("agent dc open");
+
+        // Detach browser_dc so we can read 64 KiB (65536-byte) chunks without
+        // hitting webrtc-rs's default `DATA_CHANNEL_BUFFER_SIZE = u16::MAX` (65535).
+        let raw_browser_dc = browser_dc.detach().await.expect("detach browser dc");
+        let inbound_bytes = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let (strings_tx, strings_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let bytes_for_reader = inbound_bytes.clone();
+        let raw_for_reader = raw_browser_dc.clone();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 128 * 1024];
+            while let Ok((n, is_string)) = raw_for_reader.read_data_channel(&mut buf).await {
+                if n == 0 && !is_string {
+                    break;
+                }
+                if is_string {
+                    if let Ok(s) = std::str::from_utf8(&buf[..n]) {
+                        let _ = strings_tx.send(s.to_string());
+                    }
+                } else {
+                    bytes_for_reader
+                        .lock()
+                        .unwrap()
+                        .extend_from_slice(&buf[..n]);
+                }
+            }
+        });
+
+        (
+            browser_pc,
+            browser_dc,
+            raw_browser_dc,
+            agent_pc,
+            agent_dc,
+            inbound_bytes,
+            strings_rx,
+        )
+    }
+
+    async fn run_webrtc_child_download_stripes(
+        path_str: &str,
+        total_size: u64,
+        stripe_count: usize,
+    ) -> (Duration, Vec<u8>) {
+        let base = total_size / stripe_count as u64;
+        let mut pairs = Vec::with_capacity(stripe_count);
+        for _ in 0..stripe_count {
+            let stop = tokio_util::sync::CancellationToken::new();
+            let (b_pc, b_dc, raw_b_dc, a_pc, a_dc, inbound_bytes, strings_rx) =
+                connected_webrtc_files_pair(&stop).await;
+            pairs.push((
+                b_pc,
+                b_dc,
+                raw_b_dc,
+                a_pc,
+                a_dc,
+                stop,
+                inbound_bytes,
+                strings_rx,
+            ));
+        }
+
+        let started = std::time::Instant::now();
+        let mut tasks = Vec::with_capacity(stripe_count);
+        for (idx, (b_pc, b_dc, raw_b_dc, a_pc, _a_dc, _stop, inbound_bytes, mut strings_rx)) in
+            pairs.into_iter().enumerate()
+        {
+            let offset = idx as u64 * base;
+            let length = if idx + 1 == stripe_count {
+                total_size - offset
+            } else {
+                base
+            };
+            let req_path = path_str.to_string();
+            tasks.push(tokio::spawn(async move {
+                let get_cmd = serde_json::json!({
+                    "t": "files:get",
+                    "id": format!("stripe-{idx}"),
+                    "path": req_path,
+                    "offset": offset,
+                    "length": length,
+                })
+                .to_string();
+                raw_b_dc
+                    .write_data_channel(&bytes::Bytes::from(get_cmd), true)
+                    .await
+                    .expect("send files:get");
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+                loop {
+                    let msg = tokio::time::timeout_at(deadline, strings_rx.recv())
+                        .await
+                        .expect("stripe eof timeout")
+                        .expect("stripe strings channel closed");
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&msg) {
+                        match val.get("t").and_then(|v| v.as_str()) {
+                            Some("files:eof") => break,
+                            Some("files:error") => {
+                                panic!(
+                                    "stripe files:error: {}",
+                                    val.get("message")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("error")
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let _ = b_dc.close().await;
+                let _ = b_pc.close().await;
+                let _ = a_pc.close().await;
+                let out = inbound_bytes.lock().unwrap().clone();
+                assert_eq!(out.len() as u64, length);
+                out
+            }));
+        }
+
+        let mut reassembled = Vec::with_capacity(total_size as usize);
+        for t in tasks {
+            reassembled.extend_from_slice(&t.await.expect("stripe join"));
+        }
+        let elapsed = started.elapsed();
+        (elapsed, reassembled)
+    }
+
+    #[tokio::test]
+    async fn child_files_webrtc_1_vs_4_throughput_sha256_upload_rejection_and_revoke_under_5s() {
+        let (_dir, path) = a_file(4 * 1024 * 1024);
+        let want = std::fs::read(&path).expect("read source file");
+        let want_sha256 = ring::digest::digest(&ring::digest::SHA256, &want);
+        let path_str = path.to_string_lossy().to_string();
+        let total_size = want.len() as u64;
+
+        // 1. Compare 1-connection vs 4-connection WebRTC DataChannel download + SHA256 integrity.
+        let (elapsed_1, got_1) = run_webrtc_child_download_stripes(&path_str, total_size, 1).await;
+        let sha_1 = ring::digest::digest(&ring::digest::SHA256, &got_1);
+        assert_eq!(sha_1.as_ref(), want_sha256.as_ref(), "1-child SHA256 match");
+
+        let (elapsed_4, got_4) = run_webrtc_child_download_stripes(&path_str, total_size, 4).await;
+        let sha_4 = ring::digest::digest(&ring::digest::SHA256, &got_4);
+        assert_eq!(sha_4.as_ref(), want_sha256.as_ref(), "4-child SHA256 match");
+        let mbps_1 = (total_size as f64 / (1024.0 * 1024.0)) / elapsed_1.as_secs_f64();
+        let mbps_4 = (total_size as f64 / (1024.0 * 1024.0)) / elapsed_4.as_secs_f64();
+        eprintln!(
+            "[X14 bench] 4 MiB WebRTC download: 1 child = {:?} ({:.1} MiB/s), 4 children = {:?} ({:.1} MiB/s)",
+            elapsed_1, mbps_1, elapsed_4, mbps_4
+        );
+
+        // 2. Child channel rejects upload and browse commands with "file child channel is download-only".
+        let child_stop = tokio_util::sync::CancellationToken::new();
+        let (b_pc, b_dc, raw_b_dc, a_pc, a_dc, _inbound_bytes, mut strings_rx) =
+            connected_webrtc_files_pair(&child_stop).await;
+        raw_b_dc
+            .write_data_channel(
+                &bytes::Bytes::from(
+                    serde_json::json!({
+                        "t": "files:begin",
+                        "id": "up-1",
+                        "name": "evil.bin",
+                        "size": 16,
+                    })
+                    .to_string(),
+                ),
+                true,
+            )
+            .await
+            .expect("send files:begin");
+        let err1 = tokio::time::timeout(Duration::from_secs(3), strings_rx.recv())
+            .await
+            .expect("upload rejection timeout")
+            .expect("upload rejection msg");
+        raw_b_dc
+            .write(&bytes::Bytes::from_static(b"forbidden-upload-bytes"))
+            .await
+            .expect("send binary");
+        let err2 = tokio::time::timeout(Duration::from_secs(3), strings_rx.recv())
+            .await
+            .expect("binary rejection timeout")
+            .expect("binary rejection msg");
+        for raw in [&err1, &err2] {
+            let val: serde_json::Value = serde_json::from_str(raw).expect("error json");
+            assert_eq!(val.get("t").and_then(|v| v.as_str()), Some("files:error"));
+            let m = val
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            assert!(
+                m.contains("file child channel is download-only"),
+                "unexpected error message: {m}"
+            );
+        }
+
+        // 3. Revocation closes child connections in < 5s with <= 1 MiB buffered while parent stays open.
+        let parent_stop = tokio_util::sync::CancellationToken::new();
+        let revoke_started = std::time::Instant::now();
+        child_stop.cancel();
+        let buffered = a_dc.buffered_amount().await;
+        let _ = a_dc.close().await;
+        let _ = a_pc.close().await;
+        let revoke_elapsed = revoke_started.elapsed();
+        assert!(
+            revoke_elapsed < Duration::from_secs(5),
+            "revocation took {:?}",
+            revoke_elapsed
+        );
+        assert!(
+            buffered <= crate::files::CHILD_OUTGOING_BUFFER_HIGH_BYTES,
+            "buffered bytes {buffered} exceeded 1 MiB cap"
+        );
+        assert!(
+            !parent_stop.is_cancelled(),
+            "parent session must remain uninterrupted"
+        );
+        let _ = b_dc.close().await;
+        let _ = b_pc.close().await;
     }
 }
 

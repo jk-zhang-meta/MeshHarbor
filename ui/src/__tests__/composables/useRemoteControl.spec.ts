@@ -5391,3 +5391,423 @@ describe('the record channel (FR-85 P3c)', () => {
     expect(openRecordChannel(null, {}, 'VIEW | RECORD')).toBeNull()
   })
 })
+
+describe('X14 — download-only child WebRTC offer proof & striped download', () => {
+  const SESSION_ID = '507f1f77bcf86cd799439011'
+  const AGENT_ID = '507f1f77bcf86cd799439012'
+  const USER_ID = '507f1f77bcf86cd799439013'
+  const CHILD_IDS = [
+    '607f1f77bcf86cd799439021',
+    '607f1f77bcf86cd799439022',
+    '607f1f77bcf86cd799439023',
+    '607f1f77bcf86cd799439024',
+  ]
+  const SAMPLE_SDP =
+    'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n' +
+    'a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n'
+
+  it('signs and verifies a domain-separated FileChildOfferProof over fileChildOfferTranscript', async () => {
+    const {
+      FILE_CHILD_OFFER_LABEL,
+      fileChildOfferTranscript,
+      generateEphemeralFileChildKeyPair,
+      signFileChildOfferProof,
+      verifyPeerAuth,
+      newPeerAuthNonce,
+    } = await import('@/utils/peerAuth')
+
+    const keyMat = await generateEphemeralFileChildKeyPair()
+    const nonce = newPeerAuthNonce()
+    const transcript = fileChildOfferTranscript({
+      sessionId: SESSION_ID,
+      childId: CHILD_IDS[0],
+      transferId: 'dl-stripe-test',
+      agentId: AGENT_ID,
+      controllerUserId: USER_ID,
+      offerSdp: SAMPLE_SDP,
+      nonce,
+    })
+    expect(transcript).not.toBeNull()
+    const labelBytes = new TextDecoder().decode(
+      transcript!.subarray(0, FILE_CHILD_OFFER_LABEL.length),
+    )
+    expect(labelBytes).toBe(FILE_CHILD_OFFER_LABEL)
+
+    const proof = await signFileChildOfferProof({
+      pair: keyMat.pair,
+      publicKeyB64: keyMat.publicKeyB64,
+      sessionId: SESSION_ID,
+      childId: CHILD_IDS[0],
+      transferId: 'dl-stripe-test',
+      agentId: AGENT_ID,
+      controllerUserId: USER_ID,
+      offerSdp: SAMPLE_SDP,
+      nonce,
+    })
+    expect(proof).not.toBeNull()
+    expect(await verifyPeerAuth(proof!.key, transcript!, proof!.sig)).toBe(true)
+
+    // Rejects non-canonical ObjectIds or control characters in transferId
+    expect(
+      fileChildOfferTranscript({
+        sessionId: 'not-an-oid',
+        childId: CHILD_IDS[0],
+        transferId: 'dl-stripe-test',
+        agentId: AGENT_ID,
+        controllerUserId: USER_ID,
+        offerSdp: SAMPLE_SDP,
+        nonce,
+      }),
+    ).toBeNull()
+    expect(
+      fileChildOfferTranscript({
+        sessionId: SESSION_ID,
+        childId: CHILD_IDS[0],
+        transferId: 'bad\nname',
+        agentId: AGENT_ID,
+        controllerUserId: USER_ID,
+        offerSdp: SAMPLE_SDP,
+        nonce,
+      }),
+    ).toBeNull()
+  })
+
+  it('reassembles 4 concurrent download stripes in order and aborts child PCs on rc:file.child.revoke without dropping parent session', async () => {
+    const { createPinia, setActivePinia } = await import('pinia')
+    const { ref } = await import('vue')
+    const { useWsStore } = await import('@/stores/ws')
+    const { api } = await import('@/api/client')
+    const { useRemoteControl } = await import('@/composables/useRemoteControl')
+    const { fileChildOfferTranscript, verifyPeerAuth } = await import('@/utils/peerAuth')
+
+    setActivePinia(createPinia())
+    const ws = useWsStore()
+    ws.status = 'connected'
+
+    const rcListeners = new Map<string, Set<(msg: Record<string, unknown>) => void>>()
+    const origOnRc = ws.onRcMessage
+    ws.onRcMessage = ((t: string, h: (msg: Record<string, unknown>) => void) => {
+      let s = rcListeners.get(t)
+      if (!s) {
+        s = new Set()
+        rcListeners.set(t, s)
+      }
+      s.add(h)
+      return () => s?.delete(h)
+    }) as typeof origOnRc
+
+    const deliverRc = (t: string, msg: Record<string, unknown>) => {
+      for (const h of Array.from(rcListeners.get(t) ?? [])) {
+        h({ t, ...msg })
+      }
+    }
+
+    const sentWs: Record<string, unknown>[] = []
+    ws.sendRaw = (msg: Record<string, unknown>) => {
+      sentWs.push(msg)
+    }
+
+    const origApiGet = api.get
+    api.get = (async () => ({ ice_servers: [] })) as typeof origApiGet
+
+    class FakeDc {
+      label: string
+      readyState = 'open'
+      binaryType = 'arraybuffer'
+      bufferedAmount = 0
+      onopen: (() => void) | null = null
+      onclose: (() => void) | null = null
+      onmessage: ((ev: { data: string | ArrayBuffer }) => void) | null = null
+      sent: Array<string | ArrayBuffer> = []
+      closed = false
+      constructor(label: string) {
+        this.label = label
+      }
+      send(data: string | ArrayBuffer) {
+        this.sent.push(data)
+        this.onSend?.(data)
+      }
+      onSend?: (data: string | ArrayBuffer) => void
+      close() {
+        this.closed = true
+        this.readyState = 'closed'
+      }
+    }
+
+    class FakePc {
+      static instances: FakePc[] = []
+      dcs = new Map<string, FakeDc>()
+      closed = false
+      connectionState = 'connected'
+      remoteDesc: RTCSessionDescriptionInit | null = null
+      onicecandidate: ((ev: { candidate: { toJSON: () => RTCIceCandidateInit } | null }) => void) | null = null
+      onconnectionstatechange: (() => void) | null = null
+      ontrack: ((ev: unknown) => void) | null = null
+      constructor() {
+        FakePc.instances.push(this)
+      }
+      addTransceiver() {}
+      createDataChannel(label: string) {
+        const dc = new FakeDc(label)
+        this.dcs.set(label, dc)
+        return dc as unknown as RTCDataChannel
+      }
+      async createOffer() {
+        return { type: 'offer' as const, sdp: SAMPLE_SDP }
+      }
+      async setLocalDescription() {}
+      async setRemoteDescription(desc: RTCSessionDescriptionInit) {
+        this.remoteDesc = desc
+      }
+      async addIceCandidate() {}
+      async getStats() {
+        return new Map() as unknown as RTCStatsReport
+      }
+      close() {
+        this.closed = true
+        this.connectionState = 'closed'
+      }
+    }
+
+    const origPc = globalThis.RTCPeerConnection
+    globalThis.RTCPeerConnection = FakePc as unknown as typeof RTCPeerConnection
+
+    const writtenChunks: Uint8Array[] = []
+    let writableClosed = false
+    let writableAborted: unknown = null
+    const win = window as unknown as Record<string, unknown>
+    const origPicker = win.showSaveFilePicker
+    win.showSaveFilePicker = async () => ({
+      createWritable: async () => ({
+        write: async (data: Uint8Array | ArrayBuffer) => {
+          const u8 = data instanceof Uint8Array ? data : new Uint8Array(data)
+          writtenChunks.push(u8.slice())
+        },
+        close: async () => {
+          writableClosed = true
+        },
+        abort: async (reason?: unknown) => {
+          writableAborted = reason ?? 'aborted'
+        },
+      }),
+    })
+
+    try {
+      const agentRef = ref({
+        id: AGENT_ID,
+        os: 'linux' as const,
+        capabilities: { codecs: ['h264'], files: ['resume'] },
+      })
+      const rc = useRemoteControl(agentRef, {
+        userId: () => USER_ID,
+        childDownloadConnections: 4,
+      })
+      expect(rc.concurrentDownloadChildren.value).toBe(4)
+
+      await rc.connect(AGENT_ID)
+      const sessionReq = sentWs.find((m) => m.t === 'rc:session.request')
+      expect(sessionReq).toBeDefined()
+      expect(sessionReq!.browser_caps).toContain('file-child-download')
+
+      const parentPc = FakePc.instances[0]!
+      deliverRc('rc:session.created', {
+        session_id: SESSION_ID,
+        agent_id: AGENT_ID,
+        permissions: 'VIEW | INPUT | CLIPBOARD | FILES',
+      })
+      deliverRc('rc:ready', { session_id: SESSION_ID })
+      await new Promise((r) => setTimeout(r, 10))
+      deliverRc('rc:sdp.answer', { session_id: SESSION_ID, sdp: SAMPLE_SDP })
+      await new Promise((r) => setTimeout(r, 10))
+      parentPc.connectionState = 'connected'
+      parentPc.onconnectionstatechange?.()
+      expect(rc.phase.value).toBe('connected')
+
+      const controlDc = parentPc.dcs.get('control')!
+      const parentFilesDc = parentPc.dcs.get('files')!
+
+      // Source payload: 100 bytes [0..99]
+      const sourceBytes = new Uint8Array(100)
+      for (let i = 0; i < 100; i++) sourceBytes[i] = i
+
+      let registeredKey: string | null = null
+      controlDc.onSend = (raw) => {
+        if (typeof raw !== 'string') return
+        const msg = JSON.parse(raw) as { t?: string; key?: string; child_id?: string }
+        if (msg.t === 'rc:file.child.register' && msg.key) {
+          registeredKey = msg.key
+          controlDc.onmessage?.({ data: JSON.stringify({ t: 'rc:file.child.register.ack' }) })
+        } else if (msg.t === 'rc:file.child.prepare' && msg.child_id) {
+          controlDc.onmessage?.({
+            data: JSON.stringify({ t: 'rc:file.child.prepare.ack', child_id: msg.child_id }),
+          })
+        }
+      }
+
+      parentFilesDc.onSend = (raw) => {
+        if (typeof raw !== 'string') return
+        const msg = JSON.parse(raw) as { t?: string; id?: string; offset?: number; length?: number }
+        if (msg.t === 'files:get' && msg.offset === 0 && msg.length === 0 && msg.id) {
+          parentFilesDc.onmessage?.({
+            data: JSON.stringify({
+              t: 'files:offer',
+              id: msg.id,
+              name: 'striped.bin',
+              size: sourceBytes.length,
+              mime: 'application/octet-stream',
+            }),
+          })
+          parentFilesDc.onmessage?.({
+            data: JSON.stringify({ t: 'files:eof', id: msg.id, bytes: 0 }),
+          })
+        }
+      }
+
+      let reserveIdx = 0
+      ws.sendRaw = (msg: Record<string, unknown>) => {
+        sentWs.push(msg)
+        if (msg.t === 'rc:file.child.reserve') {
+          const cid = CHILD_IDS[reserveIdx++ % CHILD_IDS.length]!
+          queueMicrotask(() => {
+            deliverRc('rc:file.child.reserved', {
+              session_id: SESSION_ID,
+              child_id: cid,
+              transfer_id: msg.transfer_id,
+            })
+          })
+        } else if (msg.t === 'rc:file.sdp.offer') {
+          const cid = String(msg.child_id)
+          const childPcIdx = CHILD_IDS.indexOf(cid) + 1
+          const childPc = FakePc.instances[childPcIdx]!
+          const childFilesDc = childPc.dcs.get('files')!
+          childFilesDc.onSend = (raw) => {
+            if (typeof raw !== 'string') return
+            const req = JSON.parse(raw) as {
+              t?: string
+              id?: string
+              offset?: number
+              length?: number
+            }
+            if (req.t === 'files:get' && typeof req.offset === 'number' && typeof req.length === 'number') {
+              const slice = sourceBytes.slice(req.offset, req.offset + req.length)
+              // Complete stripes in reverse order (stripe 3 first, stripe 0 last)
+              setTimeout(() => {
+                childFilesDc.onmessage?.({
+                  data: JSON.stringify({
+                    t: 'files:offer',
+                    id: req.id,
+                    name: 'striped.bin',
+                    size: req.length,
+                  }),
+                })
+                childFilesDc.onmessage?.({ data: slice.buffer })
+                childFilesDc.onmessage?.({
+                  data: JSON.stringify({ t: 'files:eof', id: req.id, bytes: req.length }),
+                })
+              }, (4 - childPcIdx) * 5)
+            }
+          }
+          queueMicrotask(() => {
+            deliverRc('rc:file.sdp.answer', {
+              session_id: SESSION_ID,
+              child_id: cid,
+              sdp: SAMPLE_SDP,
+            })
+            childFilesDc.onopen?.()
+          })
+        }
+      }
+
+      const result = await rc.downloadFile('/var/data/striped.bin', 'striped.bin', {
+        childConnections: 4,
+      })
+      expect(result).toEqual({ name: 'striped.bin', bytes: 100 })
+      expect(writableClosed).toBe(true)
+      expect(registeredKey).not.toBeNull()
+
+      // Verify all 4 child SDP offers carried valid P-256 proofs under registeredKey
+      const childOffers = sentWs.filter((m) => m.t === 'rc:file.sdp.offer')
+      expect(childOffers).toHaveLength(4)
+      for (const offer of childOffers) {
+        const proof = offer.proof as { nonce: string; key: string; sig: string }
+        expect(proof.key).toBe(registeredKey)
+        const transcript = fileChildOfferTranscript({
+          sessionId: SESSION_ID,
+          childId: String(offer.child_id),
+          transferId: String(offer.transfer_id),
+          agentId: AGENT_ID,
+          controllerUserId: USER_ID,
+          offerSdp: String(offer.sdp),
+          nonce: proof.nonce,
+        })
+        expect(transcript).not.toBeNull()
+        expect(await verifyPeerAuth(proof.key, transcript!, proof.sig)).toBe(true)
+      }
+
+      // Verify all 4 children sent rc:file.child.complete
+      const completes = sentWs.filter((m) => m.t === 'rc:file.child.complete')
+      expect(completes).toHaveLength(4)
+
+      // Verify reassembled bytes match sourceBytes in order
+      const reassembled = new Uint8Array(100)
+      let pos = 0
+      for (const c of writtenChunks) {
+        reassembled.set(c, pos)
+        pos += c.byteLength
+      }
+      expect(Array.from(reassembled)).toEqual(Array.from(sourceBytes))
+
+      // Now test mid-download revocation via rc:file.child.revoke:
+      writtenChunks.length = 0
+      writableClosed = false
+      writableAborted = null
+      reserveIdx = 0
+
+      // Hold child answers so download is in flight when revoke arrives
+      ws.sendRaw = (msg: Record<string, unknown>) => {
+        sentWs.push(msg)
+        if (msg.t === 'rc:file.child.reserve') {
+          const cid = CHILD_IDS[reserveIdx++ % CHILD_IDS.length]!
+          queueMicrotask(() => {
+            deliverRc('rc:file.child.reserved', {
+              session_id: SESSION_ID,
+              child_id: cid,
+              transfer_id: msg.transfer_id,
+            })
+          })
+        }
+      }
+
+      const inFlightPromise = rc.downloadFile('/var/data/revoked.bin', 'revoked.bin', {
+        childConnections: 4,
+        sizeHint: 100,
+      })
+      await new Promise((r) => setTimeout(r, 20))
+
+      // Trigger mid-session child capability revocation
+      deliverRc('rc:file.child.revoke', {
+        session_id: SESSION_ID,
+        reason: 'policy_changed',
+      })
+
+      await expect(inFlightPromise).rejects.toThrow(/file child capability revoked/)
+      expect(rc.fileChildRevoked.value).toBe(true)
+      expect(writableAborted).toBeTruthy()
+      // Parent session remains connected and unharmed
+      expect(rc.phase.value).toBe('connected')
+      expect(parentPc.closed).toBe(false)
+      // All child PCs created for the second download are closed
+      for (const childPc of FakePc.instances.slice(5)) {
+        expect(childPc.closed).toBe(true)
+      }
+
+      rc.disconnect()
+    } finally {
+      globalThis.RTCPeerConnection = origPc
+      win.showSaveFilePicker = origPicker
+      api.get = origApiGet
+      ws.onRcMessage = origOnRc
+    }
+  })
+})
+

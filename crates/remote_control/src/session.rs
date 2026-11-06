@@ -31,6 +31,31 @@ struct FileChild {
     state: FileChildState,
 }
 
+/// Monotonic policy revision snapshot bound to a parent session's file-child
+/// capability (`tenant.security_revision()` and `agent.access_policy_revision()`).
+/// Both revisions must be strictly positive (`> 0`). Any mismatch, `None`, or
+/// policy tightening irreversibly revokes file-child capability on the parent
+/// session until a fresh parent session is created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileChildPolicySnapshot {
+    pub tenant_security_rev: i64,
+    pub agent_access_policy_rev: i64,
+}
+
+impl FileChildPolicySnapshot {
+    pub fn new(
+        tenant_security_rev: Option<i64>,
+        agent_access_policy_rev: Option<i64>,
+    ) -> Option<Self> {
+        let tenant_security_rev = tenant_security_rev.filter(|&r| r > 0)?;
+        let agent_access_policy_rev = agent_access_policy_rev.filter(|&r| r > 0)?;
+        Some(Self {
+            tenant_security_rev,
+            agent_access_policy_rev,
+        })
+    }
+}
+
 /// Server-internal creation context, never a wire DTO. `local_pdp` is a
 /// privileged constructor for a caller that already verified a local user
 /// and completed the actual session PDP. Absence of a scope does not grant it.
@@ -73,7 +98,12 @@ pub struct LiveSession {
     pub tenant_id: ObjectId,
     pub controller_user_id: ObjectId,
     permissions: Permissions,
+    file_children_opted_in: bool,
     file_children_enabled: bool,
+    file_children_revoked: bool,
+    file_child_revoke_pending_ack: bool,
+    file_child_policy_snapshot: Option<FileChildPolicySnapshot>,
+    file_child_watch_started: bool,
     // Frozen by construction, before Hub publication. No late consent or
     // capability update can upgrade an Unknown creation to local-PDP.
     file_child_controller_scope: FileChildControllerScope,
@@ -244,7 +274,12 @@ impl LiveSession {
             tenant_id,
             controller_user_id,
             permissions,
+            file_children_opted_in: false,
             file_children_enabled: false,
+            file_children_revoked: false,
+            file_child_revoke_pending_ack: false,
+            file_child_policy_snapshot: None,
+            file_child_watch_started: false,
             file_child_controller_scope: FileChildControllerScope::unknown(
                 ConsentMode::Prompt,
                 None,
@@ -372,13 +407,134 @@ impl LiveSession {
     /// Disabling invalidates all child bookkeeping; callers must separately
     /// cancel the actual transports before considering them closed.
     /// Enabling without an active FILES grant cannot pre-arm future access.
+    /// Once irreversibly revoked by a policy tightening or revision mismatch,
+    /// child capability cannot be re-enabled on this parent session.
+    pub fn set_file_children_opted_in(&mut self, opted_in: bool) {
+        self.file_children_opted_in = opted_in && !self.file_children_revoked;
+    }
+
+    pub fn is_file_children_opted_in(&self) -> bool {
+        self.file_children_opted_in && !self.file_children_revoked
+    }
+
+    pub fn is_file_children_enabled(&self) -> bool {
+        self.file_children_enabled && !self.file_children_revoked
+    }
+
     pub fn set_file_children_enabled(&mut self, enabled: bool) {
+        if enabled && !self.file_children_revoked {
+            self.file_children_opted_in = true;
+        }
         self.file_children_enabled = enabled
+            && !self.file_children_revoked
             && self.phase == SessionPhase::Active
             && self.permissions().contains(Permissions::FILES);
         if !self.file_children_enabled {
             self.file_children.clear();
         }
+    }
+
+    pub fn is_file_children_revoked(&self) -> bool {
+        self.file_children_revoked
+    }
+
+    pub fn is_file_child_revoke_pending_ack(&self) -> bool {
+        self.file_child_revoke_pending_ack
+    }
+
+    pub fn file_child_policy_snapshot(&self) -> Option<FileChildPolicySnapshot> {
+        self.file_child_policy_snapshot
+    }
+
+    /// Irreversibly revoke all download-only file child capability on this
+    /// parent session. Returns `true` when this call transitions the session
+    /// into the revoked state (so the caller can push `rc:file.child.revoke`
+    /// and arm the 5s fail-closed ACK timer once).
+    pub fn revoke_file_children_irreversibly(&mut self) -> bool {
+        let first_revocation = !self.file_children_revoked;
+        self.file_children_revoked = true;
+        self.file_children_opted_in = false;
+        self.file_children_enabled = false;
+        self.file_children.clear();
+        if first_revocation {
+            self.file_child_revoke_pending_ack = true;
+        }
+        first_revocation
+    }
+
+    /// Mark the agent's `rc:file.child.revoke_ack` as received.
+    pub fn ack_file_child_revocation(&mut self) -> bool {
+        let was_pending = self.file_child_revoke_pending_ack;
+        self.file_child_revoke_pending_ack = false;
+        was_pending
+    }
+
+    /// Bind the initial policy revision snapshot on first child admission or
+    /// verify that a subsequent child reserve/offer still sees the exact same
+    /// monotonic snapshot (`tenant.security_revision()` and
+    /// `agent.access_policy_revision()`). Any `None` or revision change
+    /// irreversibly revokes child capability for the rest of this parent session.
+    pub fn verify_or_bind_file_child_policy_snapshot(
+        &mut self,
+        current: Option<FileChildPolicySnapshot>,
+    ) -> Result<()> {
+        self.require_file_child_controller_source()?;
+        if self.file_children_revoked {
+            return Err(Error::PermissionDenied(
+                "file child transports revoked for this session",
+            ));
+        }
+        if self.phase != SessionPhase::Active || !self.permissions().contains(Permissions::FILES) {
+            self.revoke_file_children_irreversibly();
+            return Err(Error::PermissionDenied(
+                "file child parent session is not active with FILES permission",
+            ));
+        }
+        let Some(snapshot) = current else {
+            self.revoke_file_children_irreversibly();
+            return Err(Error::PermissionDenied(
+                "file child policy revision unavailable",
+            ));
+        };
+        match self.file_child_policy_snapshot {
+            None => {
+                self.file_child_policy_snapshot = Some(snapshot);
+                Ok(())
+            }
+            Some(bound) if bound == snapshot => Ok(()),
+            Some(_) => {
+                self.revoke_file_children_irreversibly();
+                Err(Error::PermissionDenied(
+                    "file child policy revision changed",
+                ))
+            }
+        }
+    }
+
+    /// Claim the single background policy-revision watcher task for this parent
+    /// session after a `FileChildPolicySnapshot` has been bound.
+    pub fn claim_file_child_watch(&mut self) -> bool {
+        if self.file_child_watch_started
+            || self.file_children_revoked
+            || self.file_child_policy_snapshot.is_none()
+        {
+            return false;
+        }
+        self.file_child_watch_started = true;
+        true
+    }
+
+    /// Check whether `(child_id, transfer_id)` is currently an active child
+    /// slot on an unrevoked, active FILES parent session.
+    pub fn has_active_file_child(&self, child_id: ObjectId, transfer_id: &str) -> bool {
+        !self.file_children_revoked
+            && self.file_children_enabled
+            && self.phase == SessionPhase::Active
+            && self.permissions().contains(Permissions::FILES)
+            && self
+                .file_children
+                .get(&child_id)
+                .is_some_and(|c| c.transfer_id == transfer_id && c.state == FileChildState::Active)
     }
 
     /// Reserve a server-chosen child ID for this parent's transfer. The caller
@@ -390,6 +546,11 @@ impl LiveSession {
 
         self.require_file_child_controller_source()?;
 
+        if self.file_children_revoked {
+            return Err(Error::PermissionDenied(
+                "file child transports revoked for this session",
+            ));
+        }
         if !self.file_children_enabled {
             return Err(Error::PermissionDenied(
                 "file child transports are disabled",
@@ -448,6 +609,11 @@ impl LiveSession {
         transfer_id: &str,
     ) -> Result<&mut FileChild> {
         self.require_file_child_controller_source()?;
+        if self.file_children_revoked {
+            return Err(Error::PermissionDenied(
+                "file child transports revoked for this session",
+            ));
+        }
         if !self.file_children_enabled {
             return Err(Error::PermissionDenied(
                 "file child transports are disabled",
@@ -1029,6 +1195,76 @@ mod tests {
         s.reserve_file_child("after-explicit-negotiation")
             .expect("an authorized parent may explicitly negotiate a fresh child capability");
         assert_eq!(s.phase, SessionPhase::Active);
+    }
+
+    #[test]
+    fn policy_revision_mismatch_irreversibly_revokes_file_child_capability_for_session_lifetime() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled(true);
+
+        let initial_snapshot = FileChildPolicySnapshot::new(Some(3), Some(5)).unwrap();
+        s.verify_or_bind_file_child_policy_snapshot(Some(initial_snapshot))
+            .expect("initial positive policy revisions must bind cleanly");
+        assert_eq!(s.file_child_policy_snapshot(), Some(initial_snapshot));
+
+        let child = s.reserve_file_child("before-aba").unwrap();
+        s.admit_file_child(child, "before-aba").unwrap();
+        assert!(s.has_active_file_child(child, "before-aba"));
+
+        // Simulate On -> Ask -> On ABA where tenant security_rev advances from 3 to 5:
+        let aba_snapshot = FileChildPolicySnapshot::new(Some(5), Some(5));
+        assert!(
+            s.verify_or_bind_file_child_policy_snapshot(aba_snapshot)
+                .is_err(),
+            "revision advancement must invalidate the bound child snapshot"
+        );
+        assert!(s.is_file_children_revoked());
+        assert!(s.is_file_child_revoke_pending_ack());
+        assert!(!s.has_active_file_child(child, "before-aba"));
+
+        // Even if the caller tries to re-enable or revert to the old snapshot,
+        // the parent session's child capability stays irreversibly revoked.
+        s.set_file_children_enabled(true);
+        assert!(s.reserve_file_child("after-revoke").is_err());
+        assert!(
+            s.verify_or_bind_file_child_policy_snapshot(Some(initial_snapshot))
+                .is_err()
+        );
+        assert!(s.ack_file_child_revocation());
+        assert!(!s.is_file_child_revoke_pending_ack());
+        assert_eq!(
+            s.phase,
+            SessionPhase::Active,
+            "parent RC session remains active once revocation is acknowledged"
+        );
+    }
+
+    #[test]
+    fn missing_or_nonpositive_policy_revisions_fail_closed_and_revoke() {
+        for (t_rev, a_rev) in [
+            (None, Some(1)),
+            (Some(1), None),
+            (Some(0), Some(1)),
+            (Some(1), Some(-1)),
+        ] {
+            assert!(FileChildPolicySnapshot::new(t_rev, a_rev).is_none());
+        }
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled(true);
+
+        assert!(s.verify_or_bind_file_child_policy_snapshot(None).is_err());
+        assert!(s.is_file_children_revoked());
+        assert!(s.reserve_file_child("denied").is_err());
     }
 
     #[test]

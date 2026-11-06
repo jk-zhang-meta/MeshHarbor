@@ -45,6 +45,7 @@ struct LocalPdpRequest {
     request: ClientMsg,
     user_id: ObjectId,
     controller_tx: meshharbor_remote_control::session::ClientTx,
+    policy_snapshot: Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
 }
 
 /// FR-101 P4a — how many session requests one caller may send one device in a
@@ -85,11 +86,13 @@ pub async fn handle_controller_frame(state: &RemoteState, frame: ControllerFrame
     // quarantine). A non-request rc:* message resolves to `Ok(Prompt)` and
     // falls straight through to dispatch (the mode is unused for it).
     let mut local_pdp_verified = false;
+    let mut file_child_policy_snapshot = None;
     let authz = match resolve_session_authz_with_origin(
         state,
         frame.user_id,
         frame.text,
         &mut local_pdp_verified,
+        &mut file_child_policy_snapshot,
     )
     .await
     {
@@ -150,6 +153,7 @@ pub async fn handle_controller_frame(state: &RemoteState, frame: ControllerFrame
                 request,
                 user_id: frame.user_id,
                 controller_tx: frame.controller_tx.clone(),
+                policy_snapshot: file_child_policy_snapshot,
             })
         }
         _ => None,
@@ -221,18 +225,67 @@ async fn dispatch_controller_rc(
     connection_id: &str,
 ) -> bool {
     let hub = &state.fleet.rc_hub;
-    let (parsed, local_pdp) = match local_pdp_request {
+    let (parsed, local_pdp, local_pdp_snapshot) = match local_pdp_request {
         Some(token) => {
             if token.user_id != user_id || !token.controller_tx.same_channel(controller_tx) {
                 return true; // private-token identity mismatch: never downgrade into legacy dispatch
             }
-            (token.request, true)
+            (token.request, true, token.policy_snapshot)
         }
         None => match serde_json::from_str::<ClientMsg>(text) {
-            Ok(parsed) => (parsed, false),
+            Ok(parsed) => (parsed, false, None),
             Err(_) => return false,
         },
     };
+    if let ClientMsg::FileChildReserve { session_id, .. }
+    | ClientMsg::FileSdpOffer { session_id, .. } = &parsed
+    {
+        match hub.session_file_child_target(*session_id, user_id, controller_tx) {
+            Ok((agent_id, tenant_id, _)) => {
+                let current_snapshot =
+                    resolve_file_child_policy_snapshot(state, user_id, agent_id, tenant_id).await;
+                match hub.admit_file_child_policy_snapshot(
+                    *session_id,
+                    user_id,
+                    controller_tx,
+                    current_snapshot,
+                ) {
+                    Ok(start_watch) => {
+                        if start_watch {
+                            watch_file_child_session(
+                                state.clone(),
+                                *session_id,
+                                user_id,
+                                controller_tx.clone(),
+                                agent_id,
+                                tenant_id,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        let message = refusal_message(state, &e).await;
+                        let _ = controller_tx.try_send(ServerMsg::Error {
+                            session_id: Some(*session_id),
+                            code: error_code(&e).to_string(),
+                            message,
+                            open_nonce: None,
+                        });
+                        return true;
+                    }
+                }
+            }
+            Err(e) => {
+                let message = refusal_message(state, &e).await;
+                let _ = controller_tx.try_send(ServerMsg::Error {
+                    session_id: error_session_id(&e).or(Some(*session_id)),
+                    code: error_code(&e).to_string(),
+                    message,
+                    open_nonce: None,
+                });
+                return true;
+            }
+        }
+    }
     let is_session_request = matches!(&parsed, ClientMsg::SessionRequest { .. });
     // FR-115 P3b — on the pod that owns the device, the org's cap is a
     // cluster-wide slot, claimed here because the hub is synchronous: the
@@ -318,7 +371,7 @@ async fn dispatch_controller_rc(
     let dispatched = if shared_scope.is_some() {
         hub.dispatch_capturing_session(&ctx, parsed, &mut created_session)
     } else if local_pdp {
-        hub.dispatch_local_pdp_session_request(&ctx, parsed)
+        hub.dispatch_local_pdp_session_request_with_snapshot(&ctx, parsed, local_pdp_snapshot)
     } else {
         hub.dispatch(&ctx, parsed)
     };
@@ -762,7 +815,7 @@ pub async fn resolve_session_authz(
     controller_user_id: ObjectId,
     text: &str,
 ) -> Result<SessionAuthz, String> {
-    resolve_session_authz_with_origin(state, controller_user_id, text, &mut false).await
+    resolve_session_authz_with_origin(state, controller_user_id, text, &mut false, &mut None).await
 }
 
 // Compatibility PDP includes "let Hub explain missing agent" early-outs.
@@ -772,6 +825,9 @@ async fn resolve_session_authz_with_origin(
     controller_user_id: ObjectId,
     text: &str,
     local_pdp_verified: &mut bool,
+    file_child_policy_snapshot: &mut Option<
+        meshharbor_remote_control::session::FileChildPolicySnapshot,
+    >,
 ) -> Result<SessionAuthz, String> {
     use meshharbor_db::models::role::permissions;
     use meshharbor_remote_control::models::AgentStatus;
@@ -858,6 +914,12 @@ async fn resolve_session_authz_with_origin(
     } else {
         None
     };
+    let snapshot = tenant.as_ref().and_then(|t| {
+        meshharbor_remote_control::session::FileChildPolicySnapshot::new(
+            t.security_revision(),
+            agent.access_policy_revision(),
+        )
+    });
     let tenant_name = tenant.map(|t| t.name);
 
     // Controlling your OWN device is always allowed. Whether it also
@@ -875,6 +937,7 @@ async fn resolve_session_authz_with_origin(
     if agent.owner_user_id == controller_user_id {
         // FR-85 P3 — the owner may record their own device.
         *local_pdp_verified = true;
+        *file_child_policy_snapshot = snapshot;
         return Ok(SessionAuthz::allow_with_input(
             agent.access_policy.owner_consent_mode(),
             input_mode,
@@ -928,6 +991,7 @@ async fn resolve_session_authz_with_origin(
             });
         }
         *local_pdp_verified = true;
+        *file_child_policy_snapshot = snapshot;
         return Ok(SessionAuthz::allow_with_input(
             mode,
             input_mode,
@@ -951,6 +1015,7 @@ async fn resolve_session_authz_with_origin(
     let policy = &agent.access_policy;
     if policy.allowed_user_ids.is_empty() && policy.allowed_role_ids.is_empty() {
         *local_pdp_verified = true;
+        *file_child_policy_snapshot = snapshot;
         return Ok(SessionAuthz::allow_with_input(
             mode,
             input_mode,
@@ -965,6 +1030,7 @@ async fn resolve_session_authz_with_origin(
     }
     if policy.allowed_user_ids.contains(&controller_user_id) {
         *local_pdp_verified = true;
+        *file_child_policy_snapshot = snapshot;
         return Ok(SessionAuthz::allow_with_input(
             mode,
             input_mode,
@@ -984,6 +1050,7 @@ async fn resolve_session_authz_with_origin(
         .unwrap_or_default();
     if policy.allowed_role_ids.iter().any(|r| role_ids.contains(r)) {
         *local_pdp_verified = true;
+        *file_child_policy_snapshot = snapshot;
         return Ok(SessionAuthz::allow_with_input(
             mode,
             input_mode,
@@ -997,6 +1064,123 @@ async fn resolve_session_authz_with_origin(
         .capped(org_session_cap));
     }
     Err("you're not on this device's control allowlist".to_string())
+}
+
+/// X14 — re-verify live tenant and agent policies and extract the monotonic
+/// `(tenant.security_revision(), agent.access_policy_revision())` pair for
+/// download-only file child capability. Any lookup failure, missing/non-positive
+/// revision, quarantine, org archival, `files: off`, or allowlist tightening
+/// returns `None` (fail closed).
+async fn resolve_file_child_policy_snapshot(
+    state: &RemoteState,
+    controller_user_id: ObjectId,
+    agent_id: ObjectId,
+    tenant_id: ObjectId,
+) -> Option<meshharbor_remote_control::session::FileChildPolicySnapshot> {
+    use meshharbor_db::models::{RcFeaturePolicy, role::permissions};
+    use meshharbor_remote_control::models::AgentStatus;
+
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let agent = state.fleet.agents.base.find_by_id(agent_id).await.ok()?;
+        if agent.deleted_at.is_some()
+            || agent.status == AgentStatus::Quarantined
+            || agent.tenant_id != tenant_id
+        {
+            return None;
+        }
+        let tenant = state.tenants.base.find_by_id(tenant_id).await.ok()?;
+        if tenant.is_archived || tenant.settings.rc_session.files == RcFeaturePolicy::Off {
+            return None;
+        }
+        let effective_mode = if agent.owner_user_id == controller_user_id {
+            agent.access_policy.owner_consent_mode()
+        } else {
+            agent.access_policy.effective_consent_mode()
+        };
+        if tenant.settings.rc_session.files == RcFeaturePolicy::Ask
+            && effective_mode != ConsentMode::Prompt
+        {
+            return None;
+        }
+        if agent.owner_user_id != controller_user_id {
+            let perms = state
+                .tenants
+                .get_member_permissions(tenant_id, controller_user_id)
+                .await
+                .ok()?;
+            if !permissions::has(perms, permissions::ADMINISTRATOR) {
+                if !permissions::has(perms, permissions::REMOTE_CONTROL) {
+                    return None;
+                }
+                let policy = &agent.access_policy;
+                if !policy.allowed_user_ids.is_empty() || !policy.allowed_role_ids.is_empty() {
+                    let user_allowed = policy.allowed_user_ids.contains(&controller_user_id);
+                    let role_allowed = if user_allowed {
+                        true
+                    } else {
+                        let role_ids = state
+                            .tenants
+                            .member_role_ids(tenant_id, controller_user_id)
+                            .await
+                            .ok()?;
+                        policy.allowed_role_ids.iter().any(|r| role_ids.contains(r))
+                    };
+                    if !user_allowed && !role_allowed {
+                        return None;
+                    }
+                }
+            }
+        }
+        meshharbor_remote_control::session::FileChildPolicySnapshot::new(
+            tenant.security_revision(),
+            agent.access_policy_revision(),
+        )
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// X14 — background watchdog for an active file-child-enabled parent session:
+/// polls MongoDB every 1 second and immediately triggers irreversible child
+/// revocation (`rc:file.child.revoke` + 5 s fail-closed ACK deadline) when any
+/// policy revision or permission gate changes.
+fn watch_file_child_session(
+    state: RemoteState,
+    session_id: ObjectId,
+    user_id: ObjectId,
+    controller_tx: meshharbor_remote_control::session::ClientTx,
+    agent_id: ObjectId,
+    tenant_id: ObjectId,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if state
+                .fleet
+                .rc_hub
+                .session_file_child_target(session_id, user_id, &controller_tx)
+                .is_err()
+            {
+                return;
+            }
+            let current_snapshot =
+                resolve_file_child_policy_snapshot(&state, user_id, agent_id, tenant_id).await;
+            if state
+                .fleet
+                .rc_hub
+                .admit_file_child_policy_snapshot(
+                    session_id,
+                    user_id,
+                    &controller_tx,
+                    current_snapshot,
+                )
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
 }
 /// Stable short code for the wire. Exhaustive match so a new
 /// `remote_control::Error` variant triggers a compile error here rather

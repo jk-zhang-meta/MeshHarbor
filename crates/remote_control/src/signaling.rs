@@ -2009,6 +2009,51 @@ pub enum ClientMsg {
         proof: FileChildOfferProof,
     },
 
+    /// Agent answers a download-only file child SDP offer.
+    #[serde(rename = "rc:file.sdp.answer")]
+    FileSdpAnswer {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        sdp: String,
+    },
+
+    /// Trickle ICE candidate for an active download-only file child.
+    #[serde(rename = "rc:file.ice")]
+    FileIce {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        candidate: serde_json::Value,
+    },
+
+    /// Either side reports that an active file child transfer slot completed
+    /// or closed cleanly, releasing its active slot on the parent session.
+    #[serde(rename = "rc:file.child.complete")]
+    FileChildComplete {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+    },
+
+    /// Agent acknowledges [`ServerMsg::FileChildRevoke`] after closing all
+    /// download-only child PeerConnections and irreversible child admission
+    /// state for `session_id`.
+    #[serde(rename = "rc:file.child.revoke_ack")]
+    FileChildRevokeAck {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        closed_children: u32,
+        #[serde(default)]
+        in_flight_buffered_bytes: u64,
+    },
+
     // ─── either side → server ────────────────────────────────────────
     /// Trickle ICE candidate. Server forwards to the peer.
     #[serde(rename = "rc:ice")]
@@ -2926,6 +2971,10 @@ impl ClientMsg {
             ClientMsg::SessionRequest { .. } => "rc:session.request",
             ClientMsg::SdpOffer { .. } => "rc:sdp.offer",
             ClientMsg::FileSdpOffer { .. } => "rc:file.sdp.offer",
+            ClientMsg::FileSdpAnswer { .. } => "rc:file.sdp.answer",
+            ClientMsg::FileIce { .. } => "rc:file.ice",
+            ClientMsg::FileChildComplete { .. } => "rc:file.child.complete",
+            ClientMsg::FileChildRevokeAck { .. } => "rc:file.child.revoke_ack",
             ClientMsg::FileChildReserve { .. } => "rc:file.child.reserve",
             ClientMsg::Ice { .. } => "rc:ice",
             ClientMsg::Terminate { .. } => "rc:terminate",
@@ -2999,6 +3048,10 @@ impl ClientMsg {
             | ClientMsg::SessionRequest { .. }
             | ClientMsg::SdpOffer { .. }
             | ClientMsg::FileSdpOffer { .. }
+            | ClientMsg::FileSdpAnswer { .. }
+            | ClientMsg::FileIce { .. }
+            | ClientMsg::FileChildComplete { .. }
+            | ClientMsg::FileChildRevokeAck { .. }
             | ClientMsg::FileChildReserve { .. }
             | ClientMsg::SdpAnswer { .. }
             | ClientMsg::Ice { .. }
@@ -3155,6 +3208,10 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:session.request", Owner::Remote),
     ("rc:sdp.offer", Owner::Remote),
     ("rc:file.sdp.offer", Owner::Remote),
+    ("rc:file.sdp.answer", Owner::Remote),
+    ("rc:file.ice", Owner::Remote),
+    ("rc:file.child.complete", Owner::Remote),
+    ("rc:file.child.revoke_ack", Owner::Remote),
     ("rc:file.child.reserve", Owner::Remote),
     ("rc:ice", Owner::Remote),
     ("rc:terminate", Owner::Remote),
@@ -3718,6 +3775,53 @@ pub enum ServerMsg {
         direction: FileChildDirection,
         sdp: String,
         proof: FileChildOfferProof,
+    },
+
+    /// Server forwards the agent's SDP answer for an active download-only
+    /// file child transport back to the controller.
+    #[serde(rename = "rc:file.sdp.answer")]
+    FileSdpAnswer {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        sdp: String,
+        #[serde(default)]
+        ice_servers: Vec<IceServer>,
+    },
+
+    /// Server forwards a trickle ICE candidate for an active download-only
+    /// file child transport.
+    #[serde(rename = "rc:file.ice")]
+    FileIce {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        candidate: serde_json::Value,
+    },
+
+    /// Server forwards or notifies completion of a download-only file child
+    /// slot on `session_id`.
+    #[serde(rename = "rc:file.child.complete")]
+    FileChildComplete {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+    },
+
+    /// Server revokes all download-only file child scope on `session_id`
+    /// without terminating the parent remote-control session unless the agent
+    /// fails to acknowledge within the revocation deadline.
+    #[serde(rename = "rc:file.child.revoke")]
+    FileChildRevoke {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        reason: String,
     },
 
     /// Server forwards SDP answer from agent → controller.
