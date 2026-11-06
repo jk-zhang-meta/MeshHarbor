@@ -8819,14 +8819,10 @@ export function useRemoteControl(
         return
       }
       if (
-        phase.value === 'connected' &&
-        (pendingChildReserve.size > 0 ||
-          pendingChildPrepare.size > 0 ||
-          activeChildPeers.size > 0 ||
-          fileChildRevoked.value ||
-          (typeof msg.message === 'string' && msg.message.toLowerCase().includes('file child')))
+        msg.code === 'file_child_error' ||
+        typeof (msg as { child_id?: unknown }).child_id === 'string'
       ) {
-        console.warn('[rc] file-child signalling error while connected — closing children only:', msg)
+        console.warn('[rc] file-child signalling error — closing children only:', msg)
         closeAllFileChildren(
           typeof msg.message === 'string' && msg.message ? msg.message : 'file child error',
         )
@@ -13147,14 +13143,22 @@ export function useRemoteControl(
             reject: failStripe,
           })
 
+          let offerSent = false
+          const pendingLocalIce: RTCIceCandidateInit[] = []
+
           childPc.onicecandidate = (ev) => {
             if (!ev.candidate || settled) return
+            const candidate = ev.candidate.toJSON()
+            if (!offerSent) {
+              pendingLocalIce.push(candidate)
+              return
+            }
             ws.sendRaw({
               t: 'rc:file.ice',
               session_id: sid,
               child_id: childId,
               transfer_id: id,
-              candidate: ev.candidate.toJSON(),
+              candidate,
             })
           }
 
@@ -13247,7 +13251,8 @@ export function useRemoteControl(
           void (async () => {
             try {
               const offer = await childPc.createOffer()
-              const offerSdp = offer.sdp ?? ''
+              await childPc.setLocalDescription(offer)
+              const offerSdp = childPc.localDescription?.sdp ?? offer.sdp ?? ''
               const proof = await signFileChildOfferProof({
                 pair: keyMat.pair,
                 publicKeyB64: keyMat.publicKeyB64,
@@ -13270,7 +13275,17 @@ export function useRemoteControl(
                 sdp: offerSdp,
                 proof,
               })
-              await childPc.setLocalDescription(offer)
+              offerSent = true
+              for (const candidate of pendingLocalIce.splice(0)) {
+                if (settled) break
+                ws.sendRaw({
+                  t: 'rc:file.ice',
+                  session_id: sid,
+                  child_id: childId,
+                  transfer_id: id,
+                  candidate,
+                })
+              }
             } catch (e) {
               failStripe(e instanceof Error ? e : new Error(String(e)))
             }

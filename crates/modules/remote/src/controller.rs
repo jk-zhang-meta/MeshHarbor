@@ -237,6 +237,15 @@ async fn dispatch_controller_rc(
             Err(_) => return false,
         },
     };
+    let file_child_session_id = match &parsed {
+        ClientMsg::FileChildReserve { session_id, .. }
+        | ClientMsg::FileSdpOffer { session_id, .. }
+        | ClientMsg::FileIce { session_id, .. }
+        | ClientMsg::FileChildComplete { session_id, .. }
+        | ClientMsg::FileChildRevokeAck { session_id, .. }
+        | ClientMsg::FileSdpAnswer { session_id, .. } => Some(*session_id),
+        _ => None,
+    };
     let mut file_child_watch_ctx = None;
     if let ClientMsg::FileChildReserve { session_id, .. }
     | ClientMsg::FileSdpOffer { session_id, .. } = &parsed
@@ -259,7 +268,7 @@ async fn dispatch_controller_rc(
                         let message = refusal_message(state, &e).await;
                         let _ = controller_tx.try_send(ServerMsg::Error {
                             session_id: Some(*session_id),
-                            code: error_code(&e).to_string(),
+                            code: controller_error_code(&e, true).to_string(),
                             message,
                             open_nonce: None,
                         });
@@ -271,7 +280,7 @@ async fn dispatch_controller_rc(
                 let message = refusal_message(state, &e).await;
                 let _ = controller_tx.try_send(ServerMsg::Error {
                     session_id: error_session_id(&e).or(Some(*session_id)),
-                    code: error_code(&e).to_string(),
+                    code: controller_error_code(&e, true).to_string(),
                     message,
                     open_nonce: None,
                 });
@@ -364,7 +373,7 @@ async fn dispatch_controller_rc(
     let dispatched = if shared_scope.is_some() {
         hub.dispatch_capturing_session(&ctx, parsed, &mut created_session)
     } else if local_pdp {
-        hub.dispatch_local_pdp_session_request_with_snapshot(&ctx, parsed, local_pdp_snapshot)
+        hub.dispatch_local_pdp_session_request(&ctx, parsed, local_pdp_snapshot)
     } else {
         hub.dispatch(&ctx, parsed)
     };
@@ -600,8 +609,8 @@ async fn dispatch_controller_rc(
         // the controller may already be closing.
         let message = refusal_message(state, &e).await;
         let _ = controller_tx.try_send(ServerMsg::Error {
-            session_id: error_session_id(&e),
-            code: error_code(&e).to_string(),
+            session_id: error_session_id(&e).or(file_child_session_id),
+            code: controller_error_code(&e, file_child_session_id.is_some()).to_string(),
             message,
             open_nonce: None,
         });
@@ -1200,6 +1209,23 @@ fn watch_file_child_session(
         }
     });
 }
+/// X14 — child-specific error code emitted when a file-child signaling frame
+/// (`rc:file.child.*` / `rc:file.sdp.*` / `rc:file.ice`) fails on an existing
+/// parent session so the browser closes only its child transports without
+/// sniffing error messages or masking parent-session errors.
+pub const FILE_CHILD_ERROR_CODE: &str = "file_child_error";
+
+pub fn controller_error_code(
+    e: &meshharbor_remote_control::Error,
+    is_file_child_msg: bool,
+) -> &'static str {
+    if is_file_child_msg && !matches!(e, meshharbor_remote_control::Error::SessionNotFound(_)) {
+        FILE_CHILD_ERROR_CODE
+    } else {
+        error_code(e)
+    }
+}
+
 /// Stable short code for the wire. Exhaustive match so a new
 /// `remote_control::Error` variant triggers a compile error here rather
 /// than silently being reported as "internal".

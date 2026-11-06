@@ -4266,15 +4266,6 @@ impl Hub {
         &self,
         ctx: &DispatchCtx,
         msg: ClientMsg,
-    ) -> Result<()> {
-        self.dispatch_local_pdp_session_request_with_snapshot(ctx, msg, None)
-    }
-
-    #[doc(hidden)]
-    pub fn dispatch_local_pdp_session_request_with_snapshot(
-        &self,
-        ctx: &DispatchCtx,
-        msg: ClientMsg,
         policy_snapshot: Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
     ) -> Result<()> {
         if ctx.role != Role::Controller
@@ -4298,9 +4289,7 @@ impl Hub {
         self.dispatch_with_origin(ctx, msg, &mut created, SessionCreationOrigin::LocalPdp)?;
         if let (Some(session_id), Some(snapshot)) = (created, policy_snapshot) {
             let _ = self.with_session(session_id, |s| {
-                if s.file_child_policy_snapshot().is_none() {
-                    let _ = s.verify_or_bind_file_child_policy_snapshot(Some(snapshot));
-                }
+                s.seed_file_child_policy_snapshot(snapshot);
                 Ok(())
             });
         }
@@ -5829,6 +5818,7 @@ mod tests {
             hub.dispatch_local_pdp_session_request(
                 &Self::context(owner, controller_tx.clone()),
                 file_child_session_request(agent),
+                meshharbor_remote_control::session::FileChildPolicySnapshot::new(Some(2), Some(4)),
             )
             .unwrap();
             let sid = match controller_rx.try_recv().unwrap() {
@@ -5999,7 +5989,7 @@ mod tests {
         let mut receiver = f.controller_rx;
         // The same authorized local producer may retry, without a new source stamp.
         f.hub
-            .dispatch_local_pdp_session_request(&ctx, file_child_session_request(agent))
+            .dispatch_local_pdp_session_request(&ctx, file_child_session_request(agent), None)
             .unwrap();
         assert!(
             matches!(receiver.try_recv(), Ok(ServerMsg::SessionCreated { session_id, .. }) if session_id == f.sid)
@@ -6068,7 +6058,11 @@ mod tests {
             };
             assert!(
                 f.hub
-                    .dispatch_local_pdp_session_request(&invalid, file_child_session_request(agent))
+                    .dispatch_local_pdp_session_request(
+                        &invalid,
+                        file_child_session_request(agent),
+                        None,
+                    )
                     .is_err()
             );
         }
@@ -6078,7 +6072,11 @@ mod tests {
         };
         assert!(
             f.hub
-                .dispatch_local_pdp_session_request(&invalid, file_child_session_request(agent))
+                .dispatch_local_pdp_session_request(
+                    &invalid,
+                    file_child_session_request(agent),
+                    None,
+                )
                 .is_err()
         );
         let mut shared = file_child_session_request(agent);
@@ -6087,7 +6085,7 @@ mod tests {
         }
         assert!(
             f.hub
-                .dispatch_local_pdp_session_request(&ctx, shared)
+                .dispatch_local_pdp_session_request(&ctx, shared, None)
                 .is_err()
         );
         assert_eq!(f.hub.file_child_local_pdp_for_tests(f.sid), Some(true));
@@ -6365,7 +6363,7 @@ mod tests {
             slot: None,
         };
         let owner_ctx = context(Role::Controller, Some(owner), None, Some(ctl_tx.clone()));
-        hub.dispatch_local_pdp_session_request(&owner_ctx, file_child_session_request(agent))
+        hub.dispatch_local_pdp_session_request(&owner_ctx, file_child_session_request(agent), None)
             .unwrap();
         let sid = match next(&mut ctl_rx).await {
             ServerMsg::SessionCreated { session_id, .. } => session_id,

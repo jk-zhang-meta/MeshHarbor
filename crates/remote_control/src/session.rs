@@ -471,6 +471,23 @@ impl LiveSession {
         was_pending
     }
 
+    /// Seed the initial policy revision snapshot captured by the local-PDP
+    /// `rc:session.request` gate while the parent session is still in
+    /// `AwaitingConsent`. Does not enable child transports (which still
+    /// requires `SessionPhase::Active` + `admit_file_child_policy_snapshot` on
+    /// `rc:file.child.reserve`), and any policy revision change between
+    /// `rc:session.request` and the first `rc:file.child.reserve` will mismatch
+    /// this seeded snapshot and irreversibly revoke child capability.
+    pub fn seed_file_child_policy_snapshot(&mut self, snapshot: FileChildPolicySnapshot) {
+        if self.require_file_child_controller_source().is_ok()
+            && !self.file_children_revoked
+            && self.file_child_policy_snapshot.is_none()
+            && self.permissions().contains(Permissions::FILES)
+        {
+            self.file_child_policy_snapshot = Some(snapshot);
+        }
+    }
+
     /// Bind the initial policy revision snapshot on first child admission or
     /// verify that a subsequent child reserve/offer still sees the exact same
     /// monotonic snapshot (`tenant.security_revision()` and
@@ -1324,6 +1341,48 @@ mod tests {
             s.claim_file_child_watch(),
             "next reserve after idle release must re-claim the watcher"
         );
+    }
+
+    #[test]
+    fn seed_file_child_policy_snapshot_in_awaiting_consent_preserves_session_and_detects_drift() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+
+        let snap1 = FileChildPolicySnapshot::new(Some(1), Some(1)).unwrap();
+        s.seed_file_child_policy_snapshot(snap1);
+        assert!(
+            !s.is_file_children_revoked(),
+            "seeding the initial snapshot during AwaitingConsent must not revoke child capability"
+        );
+        assert_eq!(s.file_child_policy_snapshot(), Some(snap1));
+
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+
+        // Matching snapshot once Active succeeds and allows enabling child slots.
+        s.verify_or_bind_file_child_policy_snapshot(Some(snap1))
+            .unwrap();
+        s.set_file_children_enabled(true);
+        let child = s.reserve_file_child("after-consent").unwrap();
+        s.admit_file_child(child, "after-consent").unwrap();
+
+        // Policy drift while AwaitingConsent is caught on the first Active check.
+        let mut s2 = fixture();
+        s2.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s2.transition(SessionPhase::AwaitingConsent).unwrap();
+        s2.seed_file_child_policy_snapshot(snap1);
+        s2.transition(SessionPhase::Negotiating).unwrap();
+        s2.admit_offer().unwrap();
+        s2.transition(SessionPhase::Active).unwrap();
+
+        let snap2 = FileChildPolicySnapshot::new(Some(2), Some(1)).unwrap();
+        assert!(
+            s2.verify_or_bind_file_child_policy_snapshot(Some(snap2))
+                .is_err()
+        );
+        assert!(s2.is_file_children_revoked());
     }
 
     #[test]

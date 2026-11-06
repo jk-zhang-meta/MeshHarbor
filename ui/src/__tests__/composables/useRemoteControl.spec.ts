@@ -5503,8 +5503,8 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
     }
 
     const sentWs: Record<string, unknown>[] = []
-    ws.sendRaw = (msg: Record<string, unknown>) => {
-      sentWs.push(msg)
+    ws.sendRaw = (msg: unknown) => {
+      sentWs.push(msg as Record<string, unknown>)
     }
 
     const origApiGet = api.get
@@ -5539,6 +5539,8 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
       dcs = new Map<string, FakeDc>()
       closed = false
       connectionState = 'connected'
+      signalingState: RTCSignalingState = 'stable'
+      localDesc: RTCSessionDescriptionInit | null = null
       remoteDesc: RTCSessionDescriptionInit | null = null
       onicecandidate: ((ev: { candidate: { toJSON: () => RTCIceCandidateInit } | null }) => void) | null = null
       onconnectionstatechange: (() => void) | null = null
@@ -5555,9 +5557,27 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
       async createOffer() {
         return { type: 'offer' as const, sdp: SAMPLE_SDP }
       }
-      async setLocalDescription() {}
+      async setLocalDescription(desc: RTCSessionDescriptionInit) {
+        this.localDesc = desc
+        this.signalingState = 'have-local-offer'
+        // Emit an immediate ICE candidate during setLocalDescription to verify
+        // child candidates are buffered until after rc:file.sdp.offer is sent.
+        this.onicecandidate?.({
+          candidate: {
+            toJSON: () => ({
+              candidate: 'candidate:1 1 udp 2130706431 127.0.0.1 9999 typ host',
+              sdpMid: '0',
+              sdpMLineIndex: 0,
+            }),
+          },
+        })
+      }
       async setRemoteDescription(desc: RTCSessionDescriptionInit) {
+        if (this.signalingState !== 'have-local-offer') {
+          throw new Error(`InvalidStateError: setRemoteDescription in ${this.signalingState}`)
+        }
         this.remoteDesc = desc
+        this.signalingState = 'stable'
       }
       async addIceCandidate() {}
       async getStats() {
@@ -5596,7 +5616,15 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
       const agentRef = ref({
         id: AGENT_ID,
         os: 'linux' as const,
-        capabilities: { codecs: ['h264'], files: ['resume'] },
+        capabilities: {
+          codecs: ['h264'] as ('h264' | 'h265' | 'av1')[],
+          hw_encoders: [],
+          has_input_permission: true,
+          supports_clipboard: true,
+          supports_file_transfer: true,
+          max_simultaneous_sessions: 4,
+          files: ['resume'] as ('resume')[],
+        },
       })
       globalThis.localStorage?.removeItem('meshharbor-rc-download-children')
       const rcDefault = useRemoteControl(agentRef, {
@@ -5670,7 +5698,8 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
       }
 
       let reserveIdx = 0
-      ws.sendRaw = (msg: Record<string, unknown>) => {
+      ws.sendRaw = (rawMsg: unknown) => {
+        const msg = rawMsg as Record<string, unknown>
         sentWs.push(msg)
         if (msg.t === 'rc:file.child.reserve') {
           const cid = CHILD_IDS[reserveIdx++ % CHILD_IDS.length]!
@@ -5758,6 +5787,15 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
         expect((c.transfer_id as string).length).toBeGreaterThan(0)
       }
 
+      // Verify setLocalDescription's synchronous ICE candidates were buffered
+      // until AFTER each child's rc:file.sdp.offer was sent on the wire
+      for (const cid of CHILD_IDS) {
+        const offerIdx = sentWs.findIndex((m) => m.t === 'rc:file.sdp.offer' && m.child_id === cid)
+        const iceIdx = sentWs.findIndex((m) => m.t === 'rc:file.ice' && m.child_id === cid)
+        expect(offerIdx).toBeGreaterThanOrEqual(0)
+        expect(iceIdx).toBeGreaterThan(offerIdx)
+      }
+
       // Verify reassembled bytes match sourceBytes in order
       const reassembled = new Uint8Array(100)
       let pos = 0
@@ -5774,7 +5812,8 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
       reserveIdx = 0
 
       // Hold child answers so download is in flight when revoke arrives
-      ws.sendRaw = (msg: Record<string, unknown>) => {
+      ws.sendRaw = (rawMsg: unknown) => {
+        const msg = rawMsg as Record<string, unknown>
         sentWs.push(msg)
         if (msg.t === 'rc:file.child.reserve') {
           const cid = CHILD_IDS[reserveIdx++ % CHILD_IDS.length]!
@@ -5810,6 +5849,23 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
       for (const childPc of FakePc.instances.slice(5)) {
         expect(childPc.closed).toBe(true)
       }
+
+      // A child-attributed rc:error (code === 'file_child_error') does not fail the parent session
+      deliverRc('rc:error', {
+        session_id: SESSION_ID,
+        code: 'file_child_error',
+        message: 'file child transports revoked for this session',
+      })
+      expect(rc.phase.value).toBe('connected')
+
+      // After fileChildRevoked=true, a parent-session rc:error MUST still failWith
+      deliverRc('rc:error', {
+        session_id: SESSION_ID,
+        code: 'permission_denied',
+        message: 'session revoked by administrator',
+      })
+      expect(rc.phase.value).toBe('error')
+      expect(rc.error.value).toBeTruthy()
 
       rc.disconnect()
     } finally {
