@@ -7817,6 +7817,7 @@ mod tests {
             bool,
             Option<SessionPolicy>,
         );
+        let controller_id = ObjectId::new();
         let mut ask = |hub: &Hub,
                        tx: ClientTx,
                        rx: &mut mpsc::Receiver<ServerMsg>,
@@ -7825,7 +7826,7 @@ mod tests {
          -> Told {
             hub.create_session_full(
                 agent_id,
-                ObjectId::new(),
+                controller_id,
                 "ctl".into(),
                 tx,
                 wants,
@@ -7904,7 +7905,7 @@ mod tests {
         // that session (no second prompt), and repeats the same reasons.
         hub.create_session_full(
             agent_id,
-            ObjectId::new(),
+            controller_id,
             "ctl".into(),
             first_tx,
             all,
