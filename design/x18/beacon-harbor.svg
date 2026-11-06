@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">MeshHarbor — Beacon Harbor</title>
+  <desc id="desc">A sheltered harbor cradles three connected beacons.</desc>
+  <rect width="256" height="256" rx="57" fill="#173932"/>
+  <path d="M48 128c0 47 35 78 80 78s80-31 80-78" fill="none" stroke="#F7D08A" stroke-width="20" stroke-linecap="round"/>
+  <path d="M76 111 128 66l52 45" fill="none" stroke="#F6F1DE" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="76" cy="111" r="15" fill="#F6F1DE"/>
+  <circle cx="128" cy="66" r="17" fill="#F7D08A"/>
+  <circle cx="180" cy="111" r="15" fill="#F6F1DE"/>
+  <circle cx="128" cy="153" r="13" fill="#F7D08A"/>
+</svg>

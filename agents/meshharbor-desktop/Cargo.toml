@@ -118,7 +118,7 @@ tempfile = { workspace = true }
 # never hears about it. A CI guard asserts the daemon package's `depends`
 # gains no GTK/webkit entry.
 #
-# `meshharbord` is a hard dependency: this app is a thin client over the daemon's
+# `meshharbor` is a hard package dependency: this app is a thin client over the daemon's
 # LocalAPI and does nothing at all without one.
 #
 # ⚠️ The runtime deps are the SONAME packages, not the `-dev` ones CI installs
@@ -135,7 +135,7 @@ extended-description = """\
 MeshHarbor desktop — the menu-bar companion for the MeshHarbor daemon: device \
 status, network peers, tunnel routes, and the on-screen consent prompt and \
 "being viewed" banner for remote-control sessions."""
-depends = "libc6, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, meshharbord"
+depends = "libc6, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, meshharbor"
 section = "net"
 priority = "optional"
 assets = [
@@ -152,7 +152,14 @@ assets = [
         "etc/xdg/autostart/meshharbor-desktop.desktop",
         "644",
     ],
-    ["icons/icon.png", "usr/share/icons/hicolor/512x512/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/16x16/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/16x16/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/24x24/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/24x24/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/32x32/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/32x32/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/48x48/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/48x48/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/64x64/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/64x64/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/128x128/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/128x128/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/256x256/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/256x256/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/512x512/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/512x512/apps/meshharbor-desktop.png", "644"],
 ]
 
 # FR-93 P6d — the same companion as an RPM, for the hosts with no dpkg: Fedora,
@@ -169,7 +176,7 @@ assets = [
 # every RPM distro provides. Plus the tray's library, which `tray-icon`
 # dlopens (so no DT_NEEDED names it), as the .deb's `depends` does. No
 # `ld-linux-*` (glibc carries the loader, and its name is per-arch) and no
-# `meshharbord`: these hosts install the daemon from the tarball, not a package.
+# `meshharbor`: these hosts install the daemon from the tarball, not a package.
 [package.metadata.generate-rpm]
 name = "meshharbor-desktop"
 summary = "MeshHarbor desktop: the consent prompt, banner and tray for the MeshHarbor daemon"
@@ -181,7 +188,14 @@ assets = [
     { source = "packaging/linux/meshharbor-desktop.desktop", dest = "/usr/share/applications/meshharbor-desktop.desktop", mode = "644" },
     # The login start, as in the .deb (`--autostart`: stay in the tray).
     { source = "packaging/linux/meshharbor-desktop-autostart.desktop", dest = "/etc/xdg/autostart/meshharbor-desktop.desktop", mode = "644", config = "noreplace" },
-    { source = "icons/icon.png", dest = "/usr/share/icons/hicolor/512x512/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/16x16/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/16x16/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/24x24/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/24x24/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/32x32/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/32x32/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/48x48/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/48x48/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/64x64/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/64x64/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/128x128/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/128x128/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/256x256/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/256x256/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/512x512/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/512x512/apps/meshharbor-desktop.png", mode = "644" },
     { source = "../../LICENSE", dest = "/usr/share/licenses/meshharbor-desktop/LICENSE", mode = "644", doc = true },
 ]
 

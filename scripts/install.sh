@@ -1377,10 +1377,9 @@ remove_packages_linux() {
         pkgs=""
         # Dependents first: the companion depends on the daemon. Then the
         # tunnel CLI.
-        # RETIRED-NAME-ANCHOR: the last two are the packages the daemon's .deb
-        # took over (Cargo.toml `replaces`); a host that had them keeps their
-        # dpkg entries until they are removed by name.
-        for p in meshharbor-desktop meshharbord meshharbor-cli meshharbor-tunnel meshharbor-agent; do
+        # RETIRED-NAME-ANCHOR: keep prior daemon and CLI package names so
+        # existing installations are also removed by their dpkg identity.
+        for p in meshharbor-desktop meshharbor meshharbord meshharbor-cli meshharbor-tunnel meshharbor-agent; do
             # The status letter: i installed, c only its config left, n none.
             case "$(dpkg-query -W -f='${db:Status-Abbrev}' "$p" 2>/dev/null | cut -c2 || true)" in
                 ''|n) ;;
@@ -1714,7 +1713,7 @@ install_local_cli() {
 say "meshharbor install.sh — role=$ROLE os=$OS server=$SERVER"
 
 case "$ROLE/$OS" in
-    # FR-27 — the companion AFTER the daemon: it depends on `meshharbord` (the
+    # FR-27 — the companion AFTER the daemon: it depends on `meshharbor` (the
     # .deb literally Depends on it), and it reuses the release listing the
     # daemon step already fetched.
     daemon/Linux)
