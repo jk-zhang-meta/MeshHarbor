@@ -2375,6 +2375,8 @@ async fn single_use_and_fail_closed() {
         .unwrap()
         .unwrap();
     assert_eq!(still_exchanged.state, "exchanged");
+    assert!(still_exchanged.used_at.is_none());
+    assert!(still_exchanged.updated_at.is_none());
 
     // Pre-dispatch metadata lookup with the unconsumed grant succeeds and leaves it "exchanged".
     let meta = json_response(
@@ -2453,6 +2455,9 @@ async fn single_use_and_fail_closed() {
         .unwrap()
         .unwrap();
     assert_eq!(used_row.state, "used");
+    assert!(used_row.used_at.is_some());
+    assert!(used_row.updated_at.is_some());
+    assert_eq!(used_row.used_at, used_row.updated_at);
     assert_eq!(
         ws_dispatch(&app, &share_id, &grant, &public_key(), 60)
             .await
@@ -2520,6 +2525,8 @@ async fn single_use_and_fail_closed() {
         .unwrap()
         .unwrap();
     assert_eq!(used_row2.state, "used");
+    assert!(used_row2.used_at.is_some());
+    assert!(used_row2.updated_at.is_some());
     assert_eq!(
         ws_dispatch(&app, &share_id, &grant2, &public_key(), 60)
             .await

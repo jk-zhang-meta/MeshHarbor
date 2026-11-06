@@ -65,6 +65,10 @@ pub struct NativeSshAuthorization {
     pub preview_revision_hash: Option<String>,
     pub grant_hash: Option<String>,
     pub grant_expires_at: Option<DateTime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_at: Option<DateTime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<DateTime>,
     pub created_at: DateTime,
     pub expires_at: DateTime,
 }

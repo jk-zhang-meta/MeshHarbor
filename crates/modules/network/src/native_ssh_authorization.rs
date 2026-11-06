@@ -346,6 +346,8 @@ pub async fn start(
             preview_revision_hash: None,
             grant_hash: None,
             grant_expires_at: None,
+            used_at: None,
+            updated_at: None,
             created_at: now,
             expires_at: DateTime::from_millis(
                 now.timestamp_millis() + NativeSshAuthorization::REQUEST_TTL_SECS * 1000,

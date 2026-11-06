@@ -325,7 +325,10 @@ impl NativeSshAuthorizationDao {
         Ok(self
             .base
             .collection()
-            .find_one_and_update(filter, doc! {"$set": {"state": "used"}})
+            .find_one_and_update(
+                filter,
+                doc! {"$set": {"state": "used", "used_at": now, "updated_at": now}},
+            )
             .await?
             .is_some())
     }
