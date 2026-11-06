@@ -200,16 +200,14 @@ pub async fn anchor(
     let service_token = state
         .auth
         .issue_agent_service_token(agent_id, tid, &anchor_id)?;
-    let anchor = bson::to_bson(&ExecAnchor {
+    let anchor = ExecAnchor {
         anchored_at: DateTime::now(),
         anchored_by: admin_uid,
         anchor_id,
-    })
-    .map_err(|e| ApiError::Internal(format!("anchor record: {e}")))?;
+    };
     state
         .agents
-        .base
-        .update_by_id(agent_id, doc! { "$set": { "exec_anchor": anchor } })
+        .set_exec_anchor(agent_id, &anchor)
         .await
         .map_err(|e| ApiError::Internal(format!("anchor record: {e}")))?;
     info!(
@@ -280,8 +278,7 @@ pub async fn unanchor(
     let was_anchored = agent.exec_anchor.is_some();
     state
         .agents
-        .base
-        .update_by_id(aid, doc! { "$unset": { "exec_anchor": "" } })
+        .clear_exec_anchor(aid)
         .await
         .map_err(|e| ApiError::Internal(format!("anchor record: {e}")))?;
     warn!(

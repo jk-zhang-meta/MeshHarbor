@@ -649,6 +649,7 @@ mod tests {
         let now = DateTime::now();
         User {
             id: None,
+            security_rev: Some(1_i64.into()),
             email: "round@trip.test".into(),
             unverified_email: None,
             username: "roundtrip".into(),

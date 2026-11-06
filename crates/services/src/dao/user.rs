@@ -122,6 +122,7 @@ impl UserDao {
         let now = DateTime::now();
         let user = User {
             id: None,
+            security_rev: Some(1_i64.into()),
             email,
             unverified_email: None,
             username,
@@ -150,6 +151,99 @@ impl UserDao {
         self.base.find_by_id(id).await
     }
 
+    /// Account security/scope mutations and the monotonic `security_rev`
+    /// counter share one Mongo update. Invalid/exhausted counters remain
+    /// invalid and refuse native shared-SSH authority without blocking
+    /// account management or review.
+    async fn update_security(
+        &self,
+        user_id: ObjectId,
+        filter_extra: bson::Document,
+        mut set: bson::Document,
+        push: Option<bson::Document>,
+    ) -> DaoResult<bool> {
+        set.insert("updated_at", DateTime::now());
+        let valid = doc! { "$and": [
+            { "$eq": [{ "$type": "$security_rev" }, "long"] },
+            { "$gt": ["$security_rev", 0_i64] },
+            { "$lt": ["$security_rev", i64::MAX] },
+        ] };
+        let collection = self.base.collection();
+        let mut base_filter = doc! { "_id": user_id };
+        for (k, v) in filter_extra {
+            base_filter.insert(k, v);
+        }
+        let mut base_update = doc! { "$set": set };
+        if let Some(push_doc) = push {
+            base_update.insert("$push", push_doc);
+        }
+        for _ in 0..3 {
+            let incrementing_clauses = bson::bson!([
+                { "security_rev": { "$exists": false } },
+                { "$expr": valid.clone() },
+            ]);
+            let mut incrementing = base_filter.clone();
+            if let Some(existing_or) = incrementing.remove("$or") {
+                incrementing.insert(
+                    "$and",
+                    bson::bson!([
+                        { "$or": existing_or },
+                        { "$or": incrementing_clauses },
+                    ]),
+                );
+            } else {
+                incrementing.insert("$or", incrementing_clauses);
+            }
+            let mut incrementing_update = base_update.clone();
+            incrementing_update.insert("$inc", doc! { "security_rev": 1_i64 });
+            if collection
+                .update_one(incrementing, incrementing_update)
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            let mut invalid = base_filter.clone();
+            invalid.insert("security_rev", doc! { "$exists": true });
+            invalid.insert("$expr", doc! { "$not": [valid.clone()] });
+            if collection
+                .update_one(invalid, base_update.clone())
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            if collection.find_one(base_filter.clone()).await?.is_none() {
+                return Ok(false);
+            }
+        }
+        Err(DaoError::Validation(
+            "User security revision changed; retry".into(),
+        ))
+    }
+
+    pub async fn mark_verified(&self, user_id: ObjectId) -> DaoResult<bool> {
+        self.update_security(user_id, doc! {}, doc! { "is_verified": true }, None)
+            .await
+    }
+
+    pub async fn set_mfa_enabled(&self, user_id: ObjectId, enabled: bool) -> DaoResult<bool> {
+        self.update_security(user_id, doc! {}, doc! { "is_mfa_enabled": enabled }, None)
+            .await
+    }
+
+    pub async fn soft_delete(&self, user_id: ObjectId) -> DaoResult<bool> {
+        self.update_security(
+            user_id,
+            doc! { "deleted_at": null },
+            doc! { "deleted_at": DateTime::now() },
+            None,
+        )
+        .await
+    }
+
     /// Compare-and-set an explicit owner's review; legacy missing revisions are zero.
     pub async fn review_account_approval(
         &self,
@@ -161,7 +255,7 @@ impl UserDao {
         let next = expected_revision
             .checked_add(1)
             .ok_or_else(|| DaoError::Validation("Approval revision exhausted".into()))?;
-        let mut filter = doc! { "_id": user_id, "deleted_at": null };
+        let mut filter = doc! { "deleted_at": null };
         if expected_revision == 0 {
             filter.insert(
                 "$or",
@@ -173,17 +267,18 @@ impl UserDao {
         } else {
             filter.insert("account_approval.revision", i64::from(expected_revision));
         }
-        self.base
-            .update_one(
-                filter,
-                doc! { "$set": {
-                    "account_approval.state": bson::to_bson(&state)?,
-                    "account_approval.reviewed_by": reviewer,
-                    "account_approval.reviewed_at": DateTime::now(),
-                    "account_approval.revision": i64::from(next),
-                } },
-            )
-            .await
+        self.update_security(
+            user_id,
+            filter,
+            doc! {
+                "account_approval.state": bson::to_bson(&state)?,
+                "account_approval.reviewed_by": reviewer,
+                "account_approval.reviewed_at": DateTime::now(),
+                "account_approval.revision": i64::from(next),
+            },
+            None,
+        )
+        .await
     }
 
     pub async fn find_by_email(&self, email: &str) -> DaoResult<User> {
@@ -305,12 +400,13 @@ impl UserDao {
                             refresh_token: None,
                         };
                         let oauth_bson = bson::to_bson(&oauth)?;
-                        self.base
-                            .update_by_id(
-                                user.id.unwrap(),
-                                doc! { "$push": { "oauth_providers": oauth_bson } },
-                            )
-                            .await?;
+                        self.update_security(
+                            user.id.unwrap(),
+                            doc! {},
+                            doc! {},
+                            Some(doc! { "oauth_providers": oauth_bson }),
+                        )
+                        .await?;
                         user.oauth_providers.push(oauth);
                     }
                     return Ok(found(user));
@@ -324,17 +420,16 @@ impl UserDao {
                 //     verified), so there is no session or content to lose.
                 Ok(squatter) => {
                     let holder = squatter.id.unwrap();
-                    self.base
-                        .update_by_id(
-                            holder,
-                            doc! { "$set": {
-                                "email": evicted_placeholder_email(&holder),
-                                "unverified_email": &squatter.email,
-                                // update_by_id does not stamp this itself.
-                                "updated_at": DateTime::now(),
-                            }},
-                        )
-                        .await?;
+                    self.update_security(
+                        holder,
+                        doc! {},
+                        doc! {
+                            "email": evicted_placeholder_email(&holder),
+                            "unverified_email": &squatter.email,
+                        },
+                        None,
+                    )
+                    .await?;
                     tracing::warn!(
                         evicted_user = %holder,
                         provider,
@@ -410,6 +505,7 @@ impl UserDao {
 
         let user_template = |uname: String| User {
             id: None,
+            security_rev: Some(1_i64.into()),
             email: stored_email.clone(),
             unverified_email: unverified_email.clone(),
             username: uname,
@@ -629,11 +725,7 @@ impl UserDao {
             return Ok(false);
         }
 
-        update.insert("updated_at", DateTime::now());
-
-        self.base
-            .update_by_id(user_id, doc! { "$set": update })
-            .await
+        self.update_security(user_id, doc! {}, update, None).await
     }
 
     /// FR-12 P3 — write the caller's tutorial state.

@@ -1013,3 +1013,649 @@ async fn known_tenant_security_writers() {
         "every successful known tenant security write must advance revision exactly once, including repeated values; observations={observations:?}"
     );
 }
+
+#[tokio::test]
+async fn native_ssh_membership_device_and_account_revisions_are_atomic_and_fail_closed() {
+    tokio::time::timeout(
+        Duration::from_secs(90),
+        membership_device_and_account_revisions(),
+    )
+    .await
+    .expect("X17_UPSTREAM_WRITERS stage=scenario timeout");
+}
+
+async fn membership_device_and_account_revisions() {
+    use meshharbor_remote_control::models::{
+        AccessPolicy, AgentStatus, ConsentMode, ExecAnchor, SshAccountMode, SshMode, SshPolicy,
+        SshServiceCeiling, SshServiceEndpoint,
+    };
+
+    let owner_id = ObjectId::new();
+    let app = tokio::time::timeout(
+        Duration::from_secs(30),
+        TestApp::spawn_with_settings(move |settings| {
+            settings.auth.account_approval.enabled = true;
+            settings.auth.account_approval.owner_user_id = Some(owner_id.to_hex());
+            settings.auth.native_share_ssh_authorization_enabled = false;
+        }),
+    )
+    .await
+    .expect("X17_UPSTREAM_WRITERS stage=app initialization timeout");
+    assert!(!app.settings.auth.native_share_ssh_authorization_enabled);
+
+    let owner = actor(&app, "upstream_revision_owner", Some(owner_id)).await;
+    let recipient = actor(&app, "upstream_revision_recipient", None).await;
+    let tenant = app
+        .state
+        .tenants
+        .create(
+            "Upstream revision writers".into(),
+            "upstream-revision-writers".into(),
+            owner.id,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+
+    // 1. Membership (`TenantMember`) monotonic revision + invalid fallback.
+    let member_coll = app.db.collection::<bson::Document>("tenant_members");
+    let member = app
+        .state
+        .tenants
+        .members
+        .find_one(doc! { "tenant_id": tenant, "user_id": owner.id })
+        .await
+        .unwrap()
+        .unwrap();
+    let original_member_id = member.id.unwrap();
+    assert_eq!(member.security_revision(), Some(1));
+    let extra_role = ObjectId::new();
+    assert!(
+        app.state
+            .tenants
+            .assign_role(tenant, owner.id, extra_role)
+            .await
+            .unwrap()
+    );
+    let after_assign = app
+        .state
+        .tenants
+        .members
+        .find_by_id(original_member_id)
+        .await
+        .unwrap();
+    assert_eq!(after_assign.security_revision(), Some(2));
+    assert!(after_assign.role_ids.contains(&extra_role));
+    assert!(
+        app.state
+            .tenants
+            .assign_role(tenant, owner.id, extra_role)
+            .await
+            .unwrap()
+    );
+    let after_repeat_assign = app
+        .state
+        .tenants
+        .members
+        .find_by_id(original_member_id)
+        .await
+        .unwrap();
+    assert_eq!(after_repeat_assign.security_revision(), Some(3));
+    assert!(
+        app.state
+            .tenants
+            .remove_role(tenant, owner.id, extra_role)
+            .await
+            .unwrap()
+    );
+    let after_remove = app
+        .state
+        .tenants
+        .members
+        .find_by_id(original_member_id)
+        .await
+        .unwrap();
+    assert_eq!(after_remove.security_revision(), Some(4));
+    assert_eq!(after_remove.role_ids, member.role_ids);
+
+    for invalid in [
+        bson::Bson::Null,
+        bson::Bson::String("invalid".into()),
+        bson::Bson::Int32(1),
+        bson::Bson::Int64(0),
+        bson::Bson::Int64(-1),
+        bson::Bson::Int64(i64::MAX),
+    ] {
+        member_coll
+            .update_one(
+                doc! { "_id": original_member_id },
+                doc! { "$set": { "security_rev": invalid.clone() } },
+            )
+            .await
+            .unwrap();
+        assert!(
+            app.state
+                .tenants
+                .assign_role(tenant, owner.id, extra_role)
+                .await
+                .unwrap()
+        );
+        assert!(
+            app.state
+                .tenants
+                .remove_role(tenant, owner.id, extra_role)
+                .await
+                .unwrap()
+        );
+        let row = app
+            .state
+            .tenants
+            .members
+            .find_by_id(original_member_id)
+            .await
+            .unwrap();
+        assert_eq!(row.security_revision(), None);
+        assert_eq!(row.security_rev.as_ref(), Some(&invalid));
+    }
+    member_coll
+        .update_one(
+            doc! { "_id": original_member_id },
+            doc! { "$unset": { "security_rev": "" } },
+        )
+        .await
+        .unwrap();
+    assert!(
+        app.state
+            .tenants
+            .assign_role(tenant, owner.id, extra_role)
+            .await
+            .unwrap()
+    );
+    assert!(
+        app.state
+            .tenants
+            .remove_role(tenant, owner.id, extra_role)
+            .await
+            .unwrap()
+    );
+    let reinitialized_member = app
+        .state
+        .tenants
+        .members
+        .find_by_id(original_member_id)
+        .await
+        .unwrap();
+    assert_eq!(reinitialized_member.security_revision(), Some(2));
+
+    // 2. Device (`Agent`) monotonic revision + invalid fallback.
+    let agents = AgentDao::new(&app.db);
+    let agent_coll = app.db.collection::<bson::Document>("agents");
+    let created_agent = agents
+        .create(
+            tenant,
+            owner.id,
+            "Upstream host".into(),
+            "upstream-machine".into(),
+            OsKind::Windows,
+            "synthetic".into(),
+            "synthetic-agent-token-hash".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let device = created_agent.id.unwrap();
+    assert_eq!(created_agent.access_policy_revision(), Some(1));
+    assert_eq!(created_agent.token_gen, 0);
+
+    let ssh_on = SshPolicy {
+        mode: SshMode::On,
+        account_mode: SshAccountMode::Named,
+        consent_mode: Some(ConsentMode::Auto),
+        ..SshPolicy::default()
+    };
+    assert!(
+        agents
+            .update_ssh_policy(tenant, device, &ssh_on)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        agents
+            .base
+            .find_by_id(device)
+            .await
+            .unwrap()
+            .access_policy_revision(),
+        Some(2)
+    );
+    assert!(
+        agents
+            .update_access_policy(tenant, device, &AccessPolicy::default())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        agents
+            .base
+            .find_by_id(device)
+            .await
+            .unwrap()
+            .access_policy_revision(),
+        Some(3)
+    );
+    assert!(
+        agents
+            .rename(tenant, device, "Upstream renamed")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        agents
+            .base
+            .find_by_id(device)
+            .await
+            .unwrap()
+            .access_policy_revision(),
+        Some(4)
+    );
+    assert!(agents.update_owner(tenant, device, owner.id).await.unwrap());
+    assert_eq!(
+        agents
+            .base
+            .find_by_id(device)
+            .await
+            .unwrap()
+            .access_policy_revision(),
+        Some(5)
+    );
+    let anchor = ExecAnchor {
+        anchored_at: bson::DateTime::now(),
+        anchored_by: owner.id,
+        anchor_id: "anchor-rev-1".into(),
+    };
+    assert!(agents.set_exec_anchor(device, &anchor).await.unwrap());
+    assert_eq!(
+        agents
+            .base
+            .find_by_id(device)
+            .await
+            .unwrap()
+            .access_policy_revision(),
+        Some(6)
+    );
+    let endpoint = SshServiceEndpoint {
+        host_pubkey: public_key(),
+        ceiling: SshServiceCeiling::System,
+        anchor_id: "anchor-rev-1".into(),
+        published_at: bson::DateTime::now(),
+        one_command: false,
+    };
+    assert!(
+        agents
+            .publish_ssh_service(tenant, device, &endpoint)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        agents
+            .base
+            .find_by_id(device)
+            .await
+            .unwrap()
+            .access_policy_revision(),
+        Some(7)
+    );
+    assert!(agents.clear_exec_anchor(device).await.unwrap());
+    assert_eq!(
+        agents
+            .base
+            .find_by_id(device)
+            .await
+            .unwrap()
+            .access_policy_revision(),
+        Some(8)
+    );
+    assert!(
+        agents
+            .mark_status(device, AgentStatus::Quarantined)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        agents
+            .base
+            .find_by_id(device)
+            .await
+            .unwrap()
+            .access_policy_revision(),
+        Some(9)
+    );
+    assert!(
+        agents
+            .mark_status(device, AgentStatus::Online)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        agents
+            .base
+            .find_by_id(device)
+            .await
+            .unwrap()
+            .access_policy_revision(),
+        Some(9)
+    );
+    assert!(agents.soft_delete(tenant, device).await.unwrap());
+    let deleted_agent = agents.base.find_by_id(device).await.unwrap();
+    assert!(deleted_agent.deleted_at.is_some());
+    assert_eq!(deleted_agent.token_gen, 1);
+    assert_eq!(deleted_agent.access_policy_revision(), Some(10));
+    let revived_agent = agents
+        .rehydrate(
+            device,
+            "Upstream renamed",
+            OsKind::Windows,
+            "synthetic",
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(revived_agent.deleted_at.is_none());
+    assert_eq!(revived_agent.token_gen, 1);
+    assert_eq!(revived_agent.access_policy_revision(), Some(11));
+
+    for invalid in [
+        bson::Bson::Null,
+        bson::Bson::String("invalid".into()),
+        bson::Bson::Int32(1),
+        bson::Bson::Int64(0),
+        bson::Bson::Int64(-1),
+        bson::Bson::Int64(i64::MAX),
+    ] {
+        agent_coll
+            .update_one(
+                doc! { "_id": device },
+                doc! { "$set": { "access_policy_rev": invalid.clone() } },
+            )
+            .await
+            .unwrap();
+        assert!(
+            agents
+                .update_ssh_policy(tenant, device, &SshPolicy::default())
+                .await
+                .unwrap()
+        );
+        assert!(agents.soft_delete(tenant, device).await.unwrap());
+        let revived = agents
+            .rehydrate(
+                device,
+                "Upstream renamed",
+                OsKind::Windows,
+                "synthetic",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(revived.access_policy_revision(), None);
+        assert_eq!(revived.access_policy_rev.as_ref(), Some(&invalid));
+    }
+
+    // 3. Account (`User`) monotonic revision + invalid fallback.
+    let user_coll = app.db.collection::<bson::Document>("users");
+    let fresh_user = app
+        .state
+        .users
+        .create(
+            "fresh_account@native-revision.example.test".into(),
+            "fresh_account".into(),
+            "Fresh Account".into(),
+            app.state
+                .auth
+                .hash_password("synthetic-native-revision-password")
+                .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let uid = fresh_user.id.unwrap();
+    assert_eq!(fresh_user.security_revision(), Some(1));
+    assert!(app.state.users.mark_verified(uid).await.unwrap());
+    assert_eq!(
+        app.state
+            .users
+            .base
+            .find_by_id(uid)
+            .await
+            .unwrap()
+            .security_revision(),
+        Some(2)
+    );
+    assert!(
+        app.state
+            .users
+            .review_account_approval(uid, 0, AccountApprovalState::Approved, owner.id)
+            .await
+            .unwrap()
+    );
+    let reviewed_user = app.state.users.base.find_by_id(uid).await.unwrap();
+    assert_eq!(reviewed_user.account_approval.revision, 1);
+    assert_eq!(reviewed_user.security_revision(), Some(3));
+    assert!(app.state.users.set_mfa_enabled(uid, true).await.unwrap());
+    assert_eq!(
+        app.state
+            .users
+            .base
+            .find_by_id(uid)
+            .await
+            .unwrap()
+            .security_revision(),
+        Some(4)
+    );
+    assert!(app.state.users.set_mfa_enabled(uid, false).await.unwrap());
+    assert_eq!(
+        app.state
+            .users
+            .base
+            .find_by_id(uid)
+            .await
+            .unwrap()
+            .security_revision(),
+        Some(5)
+    );
+    assert!(
+        app.state
+            .users
+            .update_profile(uid, Some("Updated Display".into()), None, None, None, None)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        app.state
+            .users
+            .base
+            .find_by_id(uid)
+            .await
+            .unwrap()
+            .security_revision(),
+        Some(6)
+    );
+
+    let mut expected_approval_rev = 1_u32;
+    for invalid in [
+        bson::Bson::Null,
+        bson::Bson::String("invalid".into()),
+        bson::Bson::Int32(1),
+        bson::Bson::Int64(0),
+        bson::Bson::Int64(-1),
+        bson::Bson::Int64(i64::MAX),
+    ] {
+        user_coll
+            .update_one(
+                doc! { "_id": uid },
+                doc! { "$set": { "security_rev": invalid.clone() } },
+            )
+            .await
+            .unwrap();
+        assert!(
+            app.state
+                .users
+                .review_account_approval(
+                    uid,
+                    expected_approval_rev,
+                    AccountApprovalState::Suspended,
+                    owner.id
+                )
+                .await
+                .unwrap()
+        );
+        expected_approval_rev += 1;
+        assert!(
+            app.state
+                .users
+                .review_account_approval(
+                    uid,
+                    expected_approval_rev,
+                    AccountApprovalState::Approved,
+                    owner.id
+                )
+                .await
+                .unwrap()
+        );
+        expected_approval_rev += 1;
+        let row = app.state.users.base.find_by_id(uid).await.unwrap();
+        assert_eq!(row.security_revision(), None);
+        assert_eq!(row.security_rev.as_ref(), Some(&invalid));
+    }
+    let _ = recipient;
+}
+
+/// Completed upstream membership, device-policy, or account-revision ABA (or
+/// missing/invalid revisions on those documents) must refuse exchange of an
+/// earlier approval while allowing a freshly approved request afterwards.
+#[tokio::test]
+async fn native_ssh_upstream_membership_device_and_account_aba_refuse_exchange() {
+    tokio::time::timeout(
+        Duration::from_secs(120),
+        upstream_membership_device_and_account_aba(),
+    )
+    .await
+    .expect("X17_UPSTREAM_ABA stage=scenario timeout");
+}
+
+async fn upstream_membership_device_and_account_aba() {
+    use meshharbor_remote_control::models::{ConsentMode, SshAccountMode, SshMode, SshPolicy};
+
+    let owner_id = ObjectId::new();
+    let app = tokio::time::timeout(
+        Duration::from_secs(30),
+        TestApp::spawn_with_settings(move |settings| {
+            settings.auth.account_approval.enabled = true;
+            settings.auth.account_approval.owner_user_id = Some(owner_id.to_hex());
+            settings.auth.native_share_ssh_authorization_enabled = true;
+            settings.app.frontend_url = "https://native-upstream-aba.example.test".into();
+            settings.app.pod_id = Some(format!("native-upstream-aba-{}", ObjectId::new().to_hex()));
+        }),
+    )
+    .await
+    .expect("X17_UPSTREAM_ABA stage=app initialization timeout");
+
+    let owner = actor(&app, "native_upstream_owner", Some(owner_id)).await;
+    let recipient = actor(&app, "native_upstream_recipient", None).await;
+    let (tenant, started_member) = restriction_fixture(&app, &owner, &recipient, 100).await;
+    let authorizations = app
+        .db
+        .collection::<NativeSshAuthorization>(NativeSshAuthorization::COLLECTION);
+    let member_auth_id =
+        ObjectId::parse_str(started_member["authorization_id"].as_str().unwrap()).unwrap();
+    let member_row = authorizations
+        .find_one(doc! { "authorization_id": member_auth_id })
+        .await
+        .unwrap()
+        .unwrap();
+    let share = json!({ "id": member_row.share_grant_id.to_hex() });
+    let device = member_row.scope.as_ref().unwrap().device_id;
+
+    // 1. Membership role ABA (assign + remove temporary role -> same role_ids, higher security_rev).
+    let temp_role = ObjectId::new();
+    assert!(
+        app.state
+            .tenants
+            .assign_role(tenant, owner.id, temp_role)
+            .await
+            .unwrap()
+    );
+    assert!(
+        app.state
+            .tenants
+            .remove_role(tenant, owner.id, temp_role)
+            .await
+            .unwrap()
+    );
+    let member_exchange = exchange(&app, &started_member).await;
+    assert_eq!(member_exchange.status().as_u16(), 403);
+    let member_body: Value = member_exchange.json().await.unwrap();
+    assert!(member_body.get("grant").is_none());
+
+    // 2. Device SSH policy ABA (off -> on -> same ssh_policy, higher access_policy_rev).
+    let started_device = approve_request(&app, &recipient, &share).await;
+    let agents = AgentDao::new(&app.db);
+    let ssh_off = SshPolicy {
+        mode: SshMode::Off,
+        account_mode: SshAccountMode::Daemon,
+        consent_mode: Some(ConsentMode::Auto),
+        ..SshPolicy::default()
+    };
+    let ssh_on = SshPolicy {
+        mode: SshMode::On,
+        account_mode: SshAccountMode::Daemon,
+        consent_mode: Some(ConsentMode::Auto),
+        ..SshPolicy::default()
+    };
+    assert!(
+        agents
+            .update_ssh_policy(tenant, device, &ssh_off)
+            .await
+            .unwrap()
+    );
+    assert!(
+        agents
+            .update_ssh_policy(tenant, device, &ssh_on)
+            .await
+            .unwrap()
+    );
+    let device_exchange = exchange(&app, &started_device).await;
+    assert_eq!(device_exchange.status().as_u16(), 403);
+    let device_body: Value = device_exchange.json().await.unwrap();
+    assert!(device_body.get("grant").is_none());
+
+    // 3. Owner account security_rev ABA (MFA on -> off -> same booleans, higher security_rev).
+    let started_account = approve_request(&app, &recipient, &share).await;
+    assert!(
+        app.state
+            .users
+            .set_mfa_enabled(owner.id, true)
+            .await
+            .unwrap()
+    );
+    assert!(
+        app.state
+            .users
+            .set_mfa_enabled(owner.id, false)
+            .await
+            .unwrap()
+    );
+    let account_exchange = exchange(&app, &started_account).await;
+    assert_eq!(account_exchange.status().as_u16(), 403);
+    let account_body: Value = account_exchange.json().await.unwrap();
+    assert!(account_body.get("grant").is_none());
+
+    // 4. Fresh approval after all completed ABA transitions succeeds.
+    let fresh = approve_request(&app, &recipient, &share).await;
+    let fresh_body = json_response(exchange(&app, &fresh).await, 200, "fresh exchange").await;
+    assert!(
+        fresh_body["grant"]
+            .as_str()
+            .is_some_and(|grant| !grant.is_empty())
+    );
+}

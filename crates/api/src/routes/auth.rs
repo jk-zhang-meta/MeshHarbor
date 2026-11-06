@@ -195,11 +195,7 @@ pub async fn register(
     // requires email-link activation. Mirrors the same `$set` the
     // `activate` handler does later in the email-driven flow.
     if state.settings.auth.auto_verify
-        && let Err(e) = state
-            .users
-            .base
-            .update_by_id(user_id, bson::doc! { "$set": { "is_verified": true } })
-            .await
+        && let Err(e) = state.users.mark_verified(user_id).await
     {
         warn!(
             "auto_verify is set but failed to mark user verified: {:?}",
@@ -648,8 +644,7 @@ pub async fn activate(
     // Activate the user
     state
         .users
-        .base
-        .update_by_id(user_id, bson::doc! { "$set": { "is_verified": true } })
+        .mark_verified(user_id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to activate user: {}", e)))?;
 
@@ -756,6 +751,7 @@ mod tests {
         let now = DateTime::now();
         User {
             id: Some(ObjectId::new()),
+            security_rev: Some(1_i64.into()),
             email: "seam@test.io".into(),
             unverified_email: Some("PLANTED-unverified@test.io".into()),
             username: "seam".into(),

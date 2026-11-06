@@ -99,6 +99,8 @@ async fn authorized_scope(
         .await
         .map_err(|_| refused())?;
     meshharbor_core::admission::require_user(&state.core, &owner, None).map_err(|_| refused())?;
+    let recipient_security_rev = recipient.security_revision().ok_or_else(refused)?;
+    let owner_security_rev = owner.security_revision().ok_or_else(refused)?;
     let tenant = state
         .tenants
         .base
@@ -116,6 +118,10 @@ async fn authorized_scope(
             .await,
     )?
     .ok_or_else(refused)?;
+    let owner_membership_id = membership.id.ok_or_else(refused)?;
+    let owner_membership_security_rev = membership.security_revision().ok_or_else(refused)?;
+    let device_security_rev = access.agent.access_policy_revision().ok_or_else(refused)?;
+    let device_token_gen = i64::from(access.agent.token_gen);
     if owner.deleted_at.is_some()
         || !owner.is_verified
         || recipient.is_mfa_enabled
@@ -130,16 +136,22 @@ async fn authorized_scope(
     if request_expires_at <= DateTime::now() {
         return Err(refused());
     }
-    let os = serde_json::to_value(&access.agent.os).map_err(|_| refused())?;
+    let os = serde_json::to_value(access.agent.os).map_err(|_| refused())?;
     let security = doc! {
+        "recipient_security_rev": recipient_security_rev,
         "recipient_approval": bson::to_document(&recipient.account_approval).map_err(|_| refused())?,
         "recipient_verified": recipient.is_verified, "recipient_mfa": recipient.is_mfa_enabled,
         "recipient_deleted_at": recipient.deleted_at,
+        "owner_security_rev": owner_security_rev,
         "owner_approval": bson::to_document(&owner.account_approval).map_err(|_| refused())?,
         "owner_verified": owner.is_verified, "owner_mfa": owner.is_mfa_enabled,
         "owner_deleted_at": owner.deleted_at,
-        "owner_membership_id": membership.id, "owner_joined_at": membership.joined_at,
+        "owner_membership_id": owner_membership_id,
+        "owner_membership_security_rev": owner_membership_security_rev,
+        "owner_joined_at": membership.joined_at,
         "owner_role_ids": membership.role_ids,
+        "device_security_rev": device_security_rev,
+        "device_token_gen": device_token_gen,
         "tenant_owner_id": tenant.owner_id, "tenant_security_rev": tenant_security_rev,
         "tenant_ssh_enabled": tenant.settings.remote_ssh_enabled,
         "tenant_mfa_required": tenant.settings.mfa_required, "tenant_archived": tenant.is_archived,
