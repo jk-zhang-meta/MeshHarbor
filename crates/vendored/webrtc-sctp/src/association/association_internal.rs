@@ -194,6 +194,25 @@ impl AssociationInternal {
         }
     }
 
+    /// When file pacing is explicitly enabled on a download-only child association
+    /// and a valid smoothed RTT estimate (`srtt > 0`) is available, compute a
+    /// bounded BDP target congestion window (`1.5 * BDP`, clamped to `[4 * MTU, 1 MiB]`
+    /// and strictly capped by peer advertised `rwnd`). When file pacing is disabled
+    /// (`None`) or RTT/rate is unavailable (`srtt == 0`), returns `None` so the
+    /// association uses the original RFC 4960 congestion controller unmodified.
+    fn paced_target_cwnd(&self) -> Option<u32> {
+        let pacer = self.file_pacer.as_ref()?;
+        let srtt_ms = self.rto_mgr.srtt;
+        if srtt_ms == 0 || pacer.rate == 0 {
+            return None;
+        }
+        let bdp_bytes = pacer.rate.saturating_mul(srtt_ms) / 1000;
+        let max_bdp_window = (bdp_bytes.saturating_mul(3) / 2)
+            .max((4 * self.mtu) as u64)
+            .min(1024 * 1024) as u32;
+        Some(std::cmp::min(max_bdp_window, self.rwnd))
+    }
+
     // Called only after the original cwnd/rwnd eligibility checks, before any
     // TSN, inflight, sent-time, retransmit flag or timer mutation.
     fn reserve_paced_chunk(&mut self, packet_bytes: &mut usize, payload: usize) -> bool {
@@ -1507,6 +1526,15 @@ impl AssociationInternal {
                 );
             }
         }
+
+        if let Some(target) = self.paced_target_cwnd() {
+            if !self.in_fast_recovery && self.cwnd > 2 * self.mtu {
+                self.cwnd = target;
+                self.ssthresh = target;
+            } else if self.cwnd > target {
+                self.cwnd = target;
+            }
+        }
     }
 
     fn process_fast_retransmission(
@@ -1537,8 +1565,16 @@ impl AssociationInternal {
                             // Cover the whole outstanding flight, so a second
                             // hole cannot halve cwnd before this one recovers.
                             self.fast_recover_exit_point = self.my_next_tsn.wrapping_sub(1);
-                            self.ssthresh = std::cmp::max(self.cwnd / 2, 4 * self.mtu);
-                            self.cwnd = self.ssthresh;
+                            if let Some(target) = self.paced_target_cwnd() {
+                                let floor =
+                                    std::cmp::min(self.rwnd, std::cmp::max(target / 2, 4 * self.mtu));
+                                self.ssthresh =
+                                    std::cmp::min(target, std::cmp::max(self.cwnd * 3 / 4, floor));
+                                self.cwnd = self.ssthresh;
+                            } else {
+                                self.ssthresh = std::cmp::max(self.cwnd / 2, 4 * self.mtu);
+                                self.cwnd = self.ssthresh;
+                            }
                             self.partial_bytes_acked = 0;
 
                             log::trace!(
@@ -2883,6 +2919,117 @@ mod paced_fast_retrans_tests {
         assert!(
             !a.will_retransmit_fast,
             "will_retransmit_fast must clear after all eligible holes are retransmitted"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_paced_bdp_congestion_window_respects_rwnd_srtt_fast_recovery_and_t3_reset(
+    ) -> Result<()> {
+        let (close_loop_ch_tx, _close_loop_ch_rx) = broadcast::channel(1);
+        let (accept_ch_tx, _accept_ch_rx) = mpsc::channel(1);
+        let (handshake_completed_ch_tx, _handshake_completed_ch_rx) = mpsc::channel(1);
+        let (awake_write_loop_ch_tx, _awake_write_loop_ch_rx) = mpsc::channel(1);
+        let mut a = AssociationInternal::new(
+            Config {
+                net_conn: Arc::new(NoopConn),
+                max_receive_buffer_size: 0,
+                max_message_size: 0,
+                name: "paced-bdp-cc-client".to_owned(),
+            },
+            close_loop_ch_tx,
+            accept_ch_tx,
+            handshake_completed_ch_tx,
+            Arc::new(awake_write_loop_ch_tx),
+        );
+        a.set_state(AssociationState::Established);
+        a.rwnd = 500_000;
+
+        // 1. Default (file_pacer == None): paced_target_cwnd is None.
+        assert_eq!(a.paced_target_cwnd(), None);
+
+        // 2. Enabled file_pacer with srtt == 0: falls back to original controller (None).
+        a.configure_file_pacing(Some(FilePacingConfig {
+            rate_bytes_per_second: 1_000_000, // 1 MB/s
+            burst_bytes: 16 * 1024,
+        }))?;
+        assert_eq!(a.rto_mgr.srtt, 0);
+        assert_eq!(
+            a.paced_target_cwnd(),
+            None,
+            "must fall back to original controller when RTT estimate is unavailable"
+        );
+
+        // 3. With srtt = 200 ms, BDP = 200_000 B, 1.5 * BDP = 300_000 B (<= rwnd 500_000 B).
+        a.rto_mgr.srtt = 200;
+        assert_eq!(a.paced_target_cwnd(), Some(300_000));
+
+        // 4. Never exceeds peer rwnd: if rwnd drops to 120_000 B, target is capped at 120_000 B.
+        a.rwnd = 120_000;
+        assert_eq!(a.paced_target_cwnd(), Some(120_000));
+        a.rwnd = 500_000;
+
+        // 5. Advancing cumulative ACK in normal state sets cwnd to target (300_000 B).
+        a.cumulative_tsn_ack_point = 99;
+        a.my_next_tsn = 106;
+        for tsn in 100..106 {
+            a.inflight_queue.push_no_check(ChunkPayloadData {
+                tsn,
+                nsent: 1,
+                since: SystemTime::now(),
+                user_data: Bytes::from(vec![0u8; 1200]),
+                ..Default::default()
+            });
+        }
+        a.handle_sack(&ChunkSelectiveAck {
+            cumulative_tsn_ack: 100,
+            advertised_receiver_window_credit: 500_000,
+            ..Default::default()
+        })
+        .await?;
+        let target_after_ack = a.paced_target_cwnd().unwrap();
+        assert_eq!(a.cwnd, target_after_ack);
+        assert!(a.cwnd <= a.rwnd);
+
+        // 6. Fast recovery on 3 gap reports for TSN 101 reduces cwnd below target.
+        let pre_loss_cwnd = a.cwnd;
+        for end in 2..=4 {
+            a.handle_sack(&ChunkSelectiveAck {
+                cumulative_tsn_ack: 100,
+                advertised_receiver_window_credit: 500_000,
+                gap_ack_blocks: vec![GapAckBlock { start: 2, end }],
+                ..Default::default()
+            })
+            .await?;
+        }
+        assert!(a.in_fast_recovery);
+        assert!(
+            a.cwnd < pre_loss_cwnd,
+            "fast recovery must reduce cwnd on packet loss"
+        );
+
+        // 7. T3 timeout resets cwnd to 1 * MTU and exits fast recovery; first ACK
+        // after T3 grows by slow start rather than jumping straight to BDP target.
+        a.pending_queue
+            .push(ChunkPayloadData {
+                user_data: Bytes::from(vec![0u8; 1200]),
+                ..Default::default()
+            })
+            .await;
+        a.on_retransmission_timeout(RtxTimerId::T3RTX, 1).await;
+        assert_eq!(a.cwnd, a.mtu, "T3 timeout must reset cwnd to 1 * MTU");
+        assert!(!a.in_fast_recovery);
+
+        a.handle_sack(&ChunkSelectiveAck {
+            cumulative_tsn_ack: 104,
+            advertised_receiver_window_credit: 500_000,
+            ..Default::default()
+        })
+        .await?;
+        assert_eq!(
+            a.cwnd,
+            a.mtu + 1200,
+            "first ACK after T3 timeout must slow-start by the acknowledged chunk size"
         );
         Ok(())
     }

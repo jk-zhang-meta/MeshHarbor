@@ -1979,6 +1979,23 @@ impl AgentPeer {
         }
         let transport = crate::rc_transport::Policy::from_env();
         transport.apply(&mut setting);
+        let child_cc_enabled = node_env("X14_CHILD_CC")
+            .map(|v| v != "0" && !v.eq_ignore_ascii_case("false") && !v.eq_ignore_ascii_case("off"))
+            .unwrap_or(true);
+        if child_cc_enabled {
+            let rate_bytes_per_second = node_env("X14_CHILD_RATE_BPS")
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|&r| r > 0)
+                .unwrap_or(2 * 1024 * 1024);
+            let burst_bytes = node_env("X14_CHILD_BURST_BYTES")
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|&b| b >= 1280)
+                .unwrap_or(16 * 1024);
+            setting.set_sctp_file_pacing(Some(webrtc::sctp::association::FilePacingConfig {
+                rate_bytes_per_second,
+                burst_bytes,
+            }));
+        }
         #[cfg(feature = "synthetic-frame-source")]
         l0::apply(&mut setting);
 

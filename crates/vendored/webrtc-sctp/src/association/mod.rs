@@ -219,6 +219,7 @@ pub struct Config {
 
 /// Explicit per-association parameters for the file-only pacing experiment.
 /// This is fixed-rate DATA pacing, independent of SCTP congestion control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FilePacingConfig {
     /// Byte rate including SCTP packet headers.
     pub rate_bytes_per_second: u64,

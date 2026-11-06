@@ -89,6 +89,10 @@ pub struct SettingEngine {
     /// native peers to keep single-stream DC throughput link-bound at
     /// high BDP. MeshHarbor patch — not in upstream webrtc-rs 0.12.
     pub(crate) sctp_max_receive_buffer_size: u32,
+    /// Optional SCTP DATA pacing configuration for download-only file child
+    /// associations (X14). `None` (the default) leaves parent remote-control
+    /// associations on the unmodified SCTP sending path.
+    pub(crate) sctp_file_pacing: Option<sctp::association::FilePacingConfig>,
 }
 
 impl SettingEngine {
@@ -116,6 +120,16 @@ impl SettingEngine {
     /// MeshHarbor patch — consumed by `RTCSctpTransport::start`.
     pub(crate) fn get_sctp_max_receive_buffer_size(&self) -> u32 {
         self.sctp_max_receive_buffer_size
+    }
+
+    /// Configure optional SCTP DATA pacing for this PeerConnection's SCTP
+    /// association. `None` (the default) leaves the association unpaced.
+    pub fn set_sctp_file_pacing(&mut self, config: Option<sctp::association::FilePacingConfig>) {
+        self.sctp_file_pacing = config;
+    }
+
+    pub(crate) fn get_sctp_file_pacing(&self) -> Option<sctp::association::FilePacingConfig> {
+        self.sctp_file_pacing
     }
 
     /// detach_data_channels enables detaching data channels. When enabled
