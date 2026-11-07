@@ -59,6 +59,42 @@ impl CliTransport {
     }
 }
 
+/// Parse a `mh rdp …` command line into [`crate::rdpcmd::RdpCliOptions`] without
+/// executing it (used by behavioral/integration tests).
+pub fn parse_rdp_from<I, T>(args: I) -> Result<crate::rdpcmd::RdpCliOptions>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let cli = Cli::try_parse_from(args)?;
+    match cli.command {
+        Command::Rdp {
+            device,
+            user,
+            domain,
+            port,
+            cert_sha256,
+            save_credentials,
+            use_saved_credentials,
+            clear_credentials,
+            no_saved_credentials,
+            args,
+        } => Ok(crate::rdpcmd::RdpCliOptions {
+            target: device,
+            user,
+            domain,
+            port,
+            cert_sha256,
+            save_credentials,
+            use_saved_credentials,
+            clear_credentials,
+            no_saved_credentials,
+            extra_args: args,
+        }),
+        other => anyhow::bail!("expected `mh rdp`, got {other:?}"),
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "mh", version, about, long_about = None)]
 struct Cli {
@@ -495,6 +531,57 @@ enum Command {
         session_secs: u64,
         /// Anything after `--` is passed to `ssh` verbatim — a remote command,
         /// or extra client options: `mh ssh box -- -v uptime`
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Open an RDP session to another device in this org over an authorized
+    /// local loopback tunnel (`127.0.0.1:<ephemeral>`).
+    ///
+    /// Passwordless credential storage is OFF by default. When explicitly opted
+    /// in via `--save-credentials` (read secret once from stdin/TTY) and
+    /// `--use-saved-credentials`, the RDP credential is stored and retrieved
+    /// ONLY in THIS client machine's OS secure store (Windows Credential
+    /// Manager `CredWriteW`/`CredReadW`, Linux `secret-tool` via stdin, macOS
+    /// Keychain `security -i` via stdin). The MeshHarbor server never receives
+    /// or decrypts RDP credentials, and secrets never enter `argv`, `env`,
+    /// temp files, `.rdp` files, logs, or URLs.
+    Rdp {
+        /// Target device (`<device>` or `<user>@<device>`): a device name,
+        /// dashboard display name, overlay IP, or hex agent id.
+        device: String,
+        /// Remote RDP user (overrides `<user>@` prefix if both are given).
+        #[arg(short = 'u', long)]
+        user: Option<String>,
+        /// Remote RDP domain.
+        #[arg(short = 'd', long)]
+        domain: Option<String>,
+        /// Target RDP TCP port on the remote device.
+        #[arg(long, default_value_t = 3389)]
+        port: u16,
+        /// Pinned SHA-256 fingerprint of the target's RDP TLS certificate
+        /// (64 hex chars or colon-separated `AA:BB:...`). Certificate checks
+        /// are never disabled.
+        #[arg(long)]
+        cert_sha256: Option<String>,
+        /// Save the RDP password (read from stdin or interactive prompt, never
+        /// CLI flags) into this client machine's OS secure store (opt-in; default OFF).
+        #[arg(long)]
+        save_credentials: bool,
+        /// Read the saved RDP credential for this device from this client
+        /// machine's OS secure store and sign in without prompting (opt-in; default OFF).
+        #[arg(long)]
+        use_saved_credentials: bool,
+        /// Delete any saved RDP credential for this device from this client
+        /// machine's OS secure store and exit without connecting.
+        #[arg(long)]
+        clear_credentials: bool,
+        /// Kill switch: forbid reading or writing saved RDP credentials for
+        /// this invocation (also controlled by `MESHHARBOR_RDP_PASSWORDLESS_DISABLED=1`).
+        #[arg(long)]
+        no_saved_credentials: bool,
+        /// Extra arguments passed to the native RDP client (`mstsc.exe` /
+        /// `xfreerdp`). Any flag carrying plaintext passwords (`/p:`, `--password`,
+        /// `cmdkey /pass:`) or disabling certificate checks (`/cert:ignore`) is refused.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -1274,6 +1361,35 @@ where
             // remote command's — so `mh ssh box -- false` composes in a
             // script instead of always looking successful.
             match crate::sshcmd::run(&device, session_secs, &args).await? {
+                0 => Ok(()),
+                code => std::process::exit(code),
+            }
+        }
+        Command::Rdp {
+            device,
+            user,
+            domain,
+            port,
+            cert_sha256,
+            save_credentials,
+            use_saved_credentials,
+            clear_credentials,
+            no_saved_credentials,
+            args,
+        } => {
+            let opts = crate::rdpcmd::RdpCliOptions {
+                target: device,
+                user,
+                domain,
+                port,
+                cert_sha256,
+                save_credentials,
+                use_saved_credentials,
+                clear_credentials,
+                no_saved_credentials,
+                extra_args: args,
+            };
+            match crate::rdpcmd::run(opts).await? {
                 0 => Ok(()),
                 code => std::process::exit(code),
             }
