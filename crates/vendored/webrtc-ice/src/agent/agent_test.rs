@@ -2202,3 +2202,121 @@ async fn test_lite_lifecycle() -> Result<()> {
 
     Ok(())
 }
+
+// Regression test: closing a connected Agent (with an active selected_pair, nominated_pair,
+// and checklist) must release every internal Arc<dyn Candidate> reference so the underlying
+// UDP sockets are immediately dropped rather than retained by selected_pair/checklist.
+#[tokio::test]
+async fn test_close_releases_all_local_candidate_arcs_when_connected() -> Result<()> {
+    let a_agent = Arc::new(
+        Agent::new(AgentConfig {
+            network_types: supported_network_types(),
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            ..Default::default()
+        })
+        .await?,
+    );
+    let b_agent = Arc::new(
+        Agent::new(AgentConfig {
+            network_types: supported_network_types(),
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            ..Default::default()
+        })
+        .await?,
+    );
+
+    connect_with_vnet(&a_agent, &b_agent).await?;
+
+    assert!(
+        a_agent.get_selected_candidate_pair().is_some(),
+        "a_agent must have a selected candidate pair while connected"
+    );
+    assert!(
+        b_agent.get_selected_candidate_pair().is_some(),
+        "b_agent must have a selected candidate pair while connected"
+    );
+
+    let a_local_cands: Vec<Arc<dyn Candidate + Send + Sync>> = {
+        let guard = a_agent.internal.local_candidates.lock().await;
+        guard
+            .values()
+            .flat_map(|cands| cands.iter().cloned())
+            .collect()
+    };
+    let b_local_cands: Vec<Arc<dyn Candidate + Send + Sync>> = {
+        let guard = b_agent.internal.local_candidates.lock().await;
+        guard
+            .values()
+            .flat_map(|cands| cands.iter().cloned())
+            .collect()
+    };
+    assert!(
+        !a_local_cands.is_empty(),
+        "a_agent must have local candidates"
+    );
+    assert!(
+        !b_local_cands.is_empty(),
+        "b_agent must have local candidates"
+    );
+    assert!(
+        a_local_cands.iter().any(|c| Arc::strong_count(c) >= 3),
+        "connected selected local candidate must be referenced by local_candidates + checklist/selected_pair"
+    );
+    assert!(
+        b_local_cands.iter().any(|c| Arc::strong_count(c) >= 3),
+        "connected selected local candidate must be referenced by local_candidates + checklist/selected_pair"
+    );
+
+    a_agent.close().await?;
+    b_agent.close().await?;
+
+    assert!(a_agent.get_selected_candidate_pair().is_none());
+    assert!(b_agent.get_selected_candidate_pair().is_none());
+    assert!(a_agent.internal.nominated_pair.lock().await.is_none());
+    assert!(b_agent.internal.nominated_pair.lock().await.is_none());
+    assert!(a_agent
+        .internal
+        .agent_conn
+        .checklist
+        .lock()
+        .await
+        .is_empty());
+    assert!(b_agent
+        .internal
+        .agent_conn
+        .checklist
+        .lock()
+        .await
+        .is_empty());
+
+    // Allow spawned candidate recv_loop tasks woken by closed_ch to exit.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    while tokio::time::Instant::now() < deadline {
+        if a_local_cands.iter().all(|c| Arc::strong_count(c) == 1)
+            && b_local_cands.iter().all(|c| Arc::strong_count(c) == 1)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    for cand in &a_local_cands {
+        assert_eq!(
+            Arc::strong_count(cand),
+            1,
+            "a_agent local candidate {} retained extra Arc references after close()",
+            cand
+        );
+    }
+    for cand in &b_local_cands {
+        assert_eq!(
+            Arc::strong_count(cand),
+            1,
+            "b_agent local candidate {} retained extra Arc references after close()",
+            cand
+        );
+    }
+
+    Ok(())
+}
