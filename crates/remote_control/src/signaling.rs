@@ -207,12 +207,23 @@ pub struct PeerAuthOffer {
     pub sig: Option<String>,
 }
 
-/// A file child transport is download-only. Unknown directions are refused,
-/// rather than acquiring the ordinary files channel's upload permissions.
+/// Direction of a file child transport (`download` or `upload`). Each direction
+/// is opted into, enabled, and kill-switched independently under the parent
+/// session's `Permissions::FILES` grant.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FileChildDirection {
     Download,
+    Upload,
+}
+
+impl FileChildDirection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Download => "download",
+            Self::Upload => "upload",
+        }
+    }
 }
 
 /// Required proof for a NEW child DTLS transport, separate from the ordinary
@@ -233,17 +244,44 @@ pub struct FileChildOfferProof {
 /// never a proof for a file transport.
 pub const FILE_CHILD_OFFER_LABEL: &[u8] = b"meshharbor-file-child-offer-v1";
 
-/// The child-offer signature's length-prefixed fields: parent session, child,
-/// transfer, literal `download`, device, controller, the normalized NEW offer
-/// DTLS fingerprint, and nonce. IDs must be canonical ObjectId hex; transfer
-/// IDs are nonempty, at most 128 bytes, and contain no control characters.
-/// Reuse of a transfer ID across distinct children is intentional for striping.
-/// This only constructs bytes: neither a trusted key nor authorization is
-/// established here. Unsupported child transports must remain disabled.
+/// The child-offer signature's length-prefixed fields for the `download`
+/// direction: parent session, child, transfer, literal `download`, device,
+/// controller, the normalized NEW offer DTLS fingerprint, and nonce.
+/// For direction-parameterized transcripts (`download` or `upload`), see
+/// [`file_child_offer_transcript_with_direction`].
 pub fn file_child_offer_transcript(
     session_id: &str,
     child_id: &str,
     transfer_id: &str,
+    agent_id: &str,
+    controller_user_id: &str,
+    offer_sdp: &str,
+    nonce: &str,
+) -> Option<Vec<u8>> {
+    file_child_offer_transcript_with_direction(
+        session_id,
+        child_id,
+        transfer_id,
+        FileChildDirection::Download,
+        agent_id,
+        controller_user_id,
+        offer_sdp,
+        nonce,
+    )
+}
+
+/// The child-offer signature's length-prefixed fields: parent session, child,
+/// transfer, direction (`download` or `upload`), device, controller, the
+/// normalized NEW offer DTLS fingerprint, and nonce. IDs must be canonical
+/// ObjectId hex; transfer IDs are nonempty, at most 128 bytes, and contain no
+/// control characters. Reuse of a transfer ID across distinct children is
+/// intentional for striping.
+#[allow(clippy::too_many_arguments)]
+pub fn file_child_offer_transcript_with_direction(
+    session_id: &str,
+    child_id: &str,
+    transfer_id: &str,
+    direction: FileChildDirection,
     agent_id: &str,
     controller_user_id: &str,
     offer_sdp: &str,
@@ -266,7 +304,7 @@ pub fn file_child_offer_transcript(
         session_id,
         child_id,
         transfer_id,
-        "download",
+        direction.as_str(),
         agent_id,
         controller_user_id,
         &fingerprint,
@@ -13173,6 +13211,60 @@ mod org_fallback_wire_tests {
         assert!(matches!(parsed, ClientMsg::OverlayOrgRelayLoss {
             peer_node_id, vni: 42, packets: 31_000, lost: 2_294 } if peer_node_id == id));
         assert!(matches!(parsed.namespace(), Owner::Network));
+    }
+
+    #[test]
+    fn file_child_upload_direction_wire_and_transcript_domain_separation() {
+        let sid = ObjectId::new();
+        let cid = ObjectId::new();
+        let aid = ObjectId::new();
+        let uid = ObjectId::new();
+
+        let reserve_up: ClientMsg = serde_json::from_value(serde_json::json!({
+            "t": "rc:file.child.reserve",
+            "session_id": sid.to_hex(),
+            "transfer_id": "up-tx-1",
+            "direction": "upload",
+        }))
+        .unwrap();
+        assert!(matches!(
+            reserve_up,
+            ClientMsg::FileChildReserve {
+                direction: FileChildDirection::Upload,
+                ..
+            }
+        ));
+
+        let dl_transcript = file_child_offer_transcript_with_direction(
+            &sid.to_hex(),
+            &cid.to_hex(),
+            "tx-1",
+            FileChildDirection::Download,
+            &aid.to_hex(),
+            &uid.to_hex(),
+            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\na=fingerprint:sha-256 AA:BB:CC\r\n",
+            "nonce-1234567890abcd",
+        )
+        .unwrap();
+        let up_transcript = file_child_offer_transcript_with_direction(
+            &sid.to_hex(),
+            &cid.to_hex(),
+            "tx-1",
+            FileChildDirection::Upload,
+            &aid.to_hex(),
+            &uid.to_hex(),
+            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\na=fingerprint:sha-256 AA:BB:CC\r\n",
+            "nonce-1234567890abcd",
+        )
+        .unwrap();
+        assert_ne!(
+            dl_transcript, up_transcript,
+            "upload and download offer transcripts must be domain-separated by direction"
+        );
+        assert!(
+            String::from_utf8_lossy(&up_transcript).contains("\ndirection=upload\n"),
+            "upload transcript must bind direction=upload"
+        );
     }
 }
 

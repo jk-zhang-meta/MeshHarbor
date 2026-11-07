@@ -745,6 +745,11 @@ pub struct HubInner {
     /// this pod renews (`slot_leases`) and gives back when the session ends
     /// (`terminate_with_limit`, the one place every session ends).
     slotted: DashMap<ObjectId, Lease>,
+
+    /// X14 — independent direction kill switches so disabling upload never
+    /// affects download (and vice versa).
+    file_child_download_disabled: std::sync::atomic::AtomicBool,
+    file_child_upload_disabled: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone)]
@@ -765,6 +770,10 @@ impl Hub {
         consent_tx: Option<mpsc::Sender<ConsentEvent>>,
         relay_load: RelayLoadMap,
     ) -> Self {
+        let download_disabled = std::env::var("MESHHARBOR_DISABLE_FILE_CHILD_DOWNLOAD")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        let upload_disabled = std::env::var("MESHHARBOR_DISABLE_FILE_CHILD_UPLOAD")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
         Self {
             inner: Arc::new(HubInner {
                 agents: DashMap::new(),
@@ -778,7 +787,54 @@ impl Hub {
                 account_waiters: DashMap::new(),
                 session_slots: std::sync::OnceLock::new(),
                 slotted: DashMap::new(),
+                file_child_download_disabled: std::sync::atomic::AtomicBool::new(download_disabled),
+                file_child_upload_disabled: std::sync::atomic::AtomicBool::new(upload_disabled),
             }),
+        }
+    }
+
+    pub fn is_file_child_direction_disabled(
+        &self,
+        direction: meshharbor_remote_control::signaling::FileChildDirection,
+    ) -> bool {
+        use meshharbor_remote_control::signaling::FileChildDirection;
+        use std::sync::atomic::Ordering;
+        match direction {
+            FileChildDirection::Download => self
+                .inner
+                .file_child_download_disabled
+                .load(Ordering::Relaxed),
+            FileChildDirection::Upload => self
+                .inner
+                .file_child_upload_disabled
+                .load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn set_file_child_direction_disabled(
+        &self,
+        direction: meshharbor_remote_control::signaling::FileChildDirection,
+        disabled: bool,
+    ) {
+        use meshharbor_remote_control::signaling::FileChildDirection;
+        use std::sync::atomic::Ordering;
+        match direction {
+            FileChildDirection::Download => {
+                self.inner
+                    .file_child_download_disabled
+                    .store(disabled, Ordering::Relaxed);
+            }
+            FileChildDirection::Upload => {
+                self.inner
+                    .file_child_upload_disabled
+                    .store(disabled, Ordering::Relaxed);
+            }
+        }
+        if disabled {
+            for entry in self.inner.sessions.iter() {
+                let mut s = entry.value().lock();
+                s.set_file_children_enabled_for(direction, false);
+            }
         }
     }
 
@@ -1920,7 +1976,18 @@ impl Hub {
         // older agent ignores would be a promise nothing keeps.
         let idle_told = idle_secs.filter(|_| agent_enforces_idle);
         live.idle_secs = idle_told;
-        live.set_file_children_opted_in(browser_caps.iter().any(|c| c == "file-child-download"));
+        live.set_file_children_opted_in_for(
+            meshharbor_remote_control::signaling::FileChildDirection::Download,
+            !self.is_file_child_direction_disabled(
+                meshharbor_remote_control::signaling::FileChildDirection::Download,
+            ) && browser_caps.iter().any(|c| c == "file-child-download"),
+        );
+        live.set_file_children_opted_in_for(
+            meshharbor_remote_control::signaling::FileChildDirection::Upload,
+            !self.is_file_child_direction_disabled(
+                meshharbor_remote_control::signaling::FileChildDirection::Upload,
+            ) && browser_caps.iter().any(|c| c == "file-child-upload"),
+        );
         // Multi-region relay: freeze the session's region NOW — a load-aware
         // pick over the agent's home + its RTT-ordered prefs — so Ready/
         // Offer/Answer all issue from the same PoP regardless of mid-setup
@@ -3673,6 +3740,30 @@ impl Hub {
         ObjectId,
         Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
     )> {
+        self.session_file_child_target_for_direction(
+            session_id,
+            user_id,
+            controller_tx,
+            meshharbor_remote_control::signaling::FileChildDirection::Download,
+        )
+    }
+
+    pub fn session_file_child_target_for_direction(
+        &self,
+        session_id: ObjectId,
+        user_id: ObjectId,
+        controller_tx: &ClientTx,
+        direction: meshharbor_remote_control::signaling::FileChildDirection,
+    ) -> Result<(
+        ObjectId,
+        ObjectId,
+        Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
+    )> {
+        if self.is_file_child_direction_disabled(direction) {
+            return Err(Error::PermissionDenied(
+                "file child transport direction is disabled",
+            ));
+        }
         self.with_session(session_id, |s| {
             if s.controller_user_id != user_id {
                 return Err(Error::PermissionDenied("not the parent controller"));
@@ -3696,7 +3787,9 @@ impl Hub {
                     "file child transports revoked for this session",
                 ));
             }
-            if !s.is_file_children_opted_in() && !s.is_file_children_enabled() {
+            if !s.is_file_children_opted_in_for(direction)
+                && !s.is_file_children_enabled_for(direction)
+            {
                 return Err(Error::PermissionDenied(
                     "file child transport is not enabled for this session",
                 ));
@@ -3745,7 +3838,7 @@ impl Hub {
                     "file child transports revoked for this session",
                 ));
             }
-            if !s.is_file_children_opted_in() && !s.is_file_children_enabled() {
+            if !s.is_any_file_children_opted_in_or_enabled() {
                 return Err(Error::PermissionDenied(
                     "file child transport is not enabled for this session",
                 ));
@@ -3793,6 +3886,46 @@ impl Hub {
         controller_tx: &ClientTx,
         current: Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
     ) -> Result<bool> {
+        self.admit_file_child_policy_snapshot_inner(
+            session_id,
+            user_id,
+            controller_tx,
+            None,
+            current,
+        )
+    }
+
+    pub fn admit_file_child_policy_snapshot_for_direction(
+        &self,
+        session_id: ObjectId,
+        user_id: ObjectId,
+        controller_tx: &ClientTx,
+        direction: meshharbor_remote_control::signaling::FileChildDirection,
+        current: Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
+    ) -> Result<bool> {
+        if self.is_file_child_direction_disabled(direction) {
+            return Err(Error::PermissionDenied(
+                "file child transport direction is disabled",
+            ));
+        }
+        self.admit_file_child_policy_snapshot_inner(
+            session_id,
+            user_id,
+            controller_tx,
+            Some(direction),
+            current,
+        )
+    }
+
+    fn admit_file_child_policy_snapshot_inner(
+        &self,
+        session_id: ObjectId,
+        user_id: ObjectId,
+        controller_tx: &ClientTx,
+        direction: Option<meshharbor_remote_control::signaling::FileChildDirection>,
+        current: Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
+    ) -> Result<bool> {
+        use meshharbor_remote_control::signaling::FileChildDirection;
         let outcome = self.with_session(session_id, |s| {
             if s.controller_user_id != user_id {
                 return Err(Error::PermissionDenied("not the parent controller"));
@@ -3809,10 +3942,33 @@ impl Hub {
                     "shared child inheritance unavailable",
                 ));
             }
+            if let Some(dir) = direction
+                && !s.is_file_children_opted_in_for(dir)
+                && !s.is_file_children_enabled_for(dir)
+            {
+                return Err(Error::PermissionDenied(
+                    "file child transport is not enabled for this session",
+                ));
+            }
             let was_revoked = s.is_file_children_revoked();
             match s.verify_or_bind_file_child_policy_snapshot(current) {
                 Ok(()) => {
-                    s.set_file_children_enabled(true);
+                    match direction {
+                        Some(dir) => s.set_file_children_enabled_for(dir, true),
+                        None => {
+                            if s.is_file_children_opted_in_for(FileChildDirection::Upload)
+                                || s.is_file_children_enabled_for(FileChildDirection::Upload)
+                            {
+                                s.set_file_children_enabled_for(FileChildDirection::Upload, true);
+                            }
+                            if s.is_file_children_opted_in_for(FileChildDirection::Download)
+                                || s.is_file_children_enabled_for(FileChildDirection::Download)
+                                || !s.is_any_file_children_opted_in_or_enabled()
+                            {
+                                s.set_file_children_enabled_for(FileChildDirection::Download, true);
+                            }
+                        }
+                    }
                     Ok(Ok(s.claim_file_child_watch()))
                 }
                 Err(err) => {
@@ -4392,6 +4548,11 @@ impl Hub {
                     direction,
                 },
             ) => self.with_session(session_id, |s| {
+                if self.is_file_child_direction_disabled(direction) {
+                    return Err(Error::PermissionDenied(
+                        "file child transport direction is disabled",
+                    ));
+                }
                 if ctx.user_id != Some(s.controller_user_id) {
                     return Err(Error::PermissionDenied("not the parent controller"));
                 }
@@ -4415,9 +4576,7 @@ impl Hub {
                         "shared child inheritance unavailable",
                     ));
                 }
-                // The existing state gate still requires explicit capability,
-                // Active and effective FILES. Production never enables it yet.
-                let child_id = s.reserve_file_child(&transfer_id)?;
+                let child_id = s.reserve_file_child_for_direction(&transfer_id, direction)?;
                 let reply = ServerMsg::FileChildReserved {
                     session_id,
                     child_id,
@@ -4443,6 +4602,11 @@ impl Hub {
                     proof,
                 },
             ) => self.with_session(session_id, |s| {
+                if self.is_file_child_direction_disabled(direction) {
+                    return Err(Error::PermissionDenied(
+                        "file child transport direction is disabled",
+                    ));
+                }
                 if ctx.user_id != Some(s.controller_user_id) {
                     return Err(Error::PermissionDenied("not the parent controller"));
                 }
@@ -4460,7 +4624,7 @@ impl Hub {
                     ));
                 }
                 let agent_id = s.agent_id;
-                s.enqueue_file_child_offer(child_id, &transfer_id, || {
+                s.enqueue_file_child_offer_for_direction(child_id, &transfer_id, direction, || {
                     self.agent_tx(agent_id)?
                         .try_send(ServerMsg::FileSdpOffer {
                             session_id,
@@ -6842,6 +7006,142 @@ mod tests {
             f.agent_rx.try_recv(),
             Ok(ServerMsg::Terminate { session_id, reason: EndReason::AdminTerminated, .. })
                 if session_id == f.sid
+        ));
+    }
+
+    #[tokio::test]
+    async fn file_child_upload_opt_in_and_kill_switch_are_independent_of_download() {
+        use meshharbor_remote_control::session::FileChildPolicySnapshot;
+
+        let mut f = FileChildDispatchFixture::new().await;
+        let snap = FileChildPolicySnapshot::new(Some(2), Some(4));
+
+        // Opt in only to download first: upload admission must be denied.
+        f.hub
+            .with_session(f.sid, |s| {
+                s.set_file_children_opted_in_for(FileChildDirection::Download, true);
+                s.set_file_children_opted_in_for(FileChildDirection::Upload, false);
+                Ok(())
+            })
+            .unwrap();
+        f.hub
+            .admit_file_child_policy_snapshot_for_direction(
+                f.sid,
+                f.owner,
+                &f.controller_tx,
+                FileChildDirection::Download,
+                snap,
+            )
+            .expect("download opted in");
+        assert!(
+            f.hub
+                .admit_file_child_policy_snapshot_for_direction(
+                    f.sid,
+                    f.owner,
+                    &f.controller_tx,
+                    FileChildDirection::Upload,
+                    snap,
+                )
+                .is_err(),
+            "upload must be denied when only download is opted in"
+        );
+
+        // Opt in to upload as well.
+        f.hub
+            .with_session(f.sid, |s| {
+                s.set_file_children_opted_in_for(FileChildDirection::Upload, true);
+                Ok(())
+            })
+            .unwrap();
+        f.hub
+            .admit_file_child_policy_snapshot_for_direction(
+                f.sid,
+                f.owner,
+                &f.controller_tx,
+                FileChildDirection::Upload,
+                snap,
+            )
+            .expect("upload opted in");
+
+        // Reserve and offer an upload child.
+        f.hub
+            .dispatch(
+                &f.ctx(),
+                ClientMsg::FileChildReserve {
+                    session_id: f.sid,
+                    transfer_id: "up-1".into(),
+                    direction: FileChildDirection::Upload,
+                },
+            )
+            .unwrap();
+        let up_cid = match f.controller_rx.try_recv().unwrap() {
+            ServerMsg::FileChildReserved {
+                child_id,
+                direction: FileChildDirection::Upload,
+                ..
+            } => child_id,
+            other => panic!("expected upload reservation, got {other:?}"),
+        };
+
+        // Cross-direction offer (Download offer against Upload reservation) is rejected.
+        assert!(
+            f.hub.dispatch(&f.ctx(), f.offer(up_cid, "up-1")).is_err(),
+            "download offer must not consume an upload reservation"
+        );
+        // Matching Upload offer succeeds.
+        f.hub
+            .dispatch(
+                &f.ctx(),
+                ClientMsg::FileSdpOffer {
+                    session_id: f.sid,
+                    child_id: up_cid,
+                    transfer_id: "up-1".into(),
+                    direction: FileChildDirection::Upload,
+                    sdp: "v=0\r\na=fingerprint:sha-256 AA:BB:CC\r\n".into(),
+                    proof: FileChildOfferProof {
+                        nonce: "opaque-nonce".into(),
+                        key: "opaque-key".into(),
+                        sig: "opaque-signature".into(),
+                    },
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileSdpOffer {
+                child_id,
+                direction: FileChildDirection::Upload,
+                ..
+            }) if child_id == up_cid
+        ));
+
+        // Flip ONLY the upload kill switch: upload fails closed while download keeps working!
+        f.hub
+            .set_file_child_direction_disabled(FileChildDirection::Upload, true);
+        assert!(
+            f.hub
+                .dispatch(
+                    &f.ctx(),
+                    ClientMsg::FileChildReserve {
+                        session_id: f.sid,
+                        transfer_id: "up-blocked".into(),
+                        direction: FileChildDirection::Upload,
+                    },
+                )
+                .is_err(),
+            "upload kill switch must block upload reservations"
+        );
+        let dl_cid = f.reserve("dl-still-works");
+        f.hub
+            .dispatch(&f.ctx(), f.offer(dl_cid, "dl-still-works"))
+            .expect("download must continue working when only upload kill switch is set");
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileSdpOffer {
+                child_id,
+                direction: FileChildDirection::Download,
+                ..
+            }) if child_id == dl_cid
         ));
     }
 

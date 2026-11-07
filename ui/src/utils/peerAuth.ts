@@ -569,20 +569,25 @@ function isWellFormedPeerAuthNonce(nonce: string): boolean {
   return toBase64Url(bytes) === nonce
 }
 
+export type FileChildDirection = 'download' | 'upload'
+
 /**
  * Construct the domain-separated byte transcript for a child WebRTC SDP offer
- * (`file_child_offer_transcript` in `crates/remote_control/src/signaling.rs`).
+ * (`file_child_offer_transcript_with_direction` in `crates/remote_control/src/signaling.rs`).
  */
 export function fileChildOfferTranscript(args: {
   sessionId: string
   childId: string
   transferId: string
+  direction?: FileChildDirection
   agentId: string
   controllerUserId: string
   offerSdp: string
   nonce: string
 }): Uint8Array<ArrayBuffer> | null {
+  const direction = args.direction ?? 'download'
   if (
+    (direction !== 'download' && direction !== 'upload') ||
     !isCanonicalOidHex(args.sessionId) ||
     !isCanonicalOidHex(args.childId) ||
     !isCanonicalOidHex(args.agentId) ||
@@ -599,7 +604,7 @@ export function fileChildOfferTranscript(args: {
     args.sessionId,
     args.childId,
     args.transferId,
-    'download',
+    direction,
     args.agentId,
     args.controllerUserId,
     fingerprint,
@@ -625,7 +630,7 @@ export async function generateEphemeralFileChildKeyPair(): Promise<{
 
 /**
  * Sign a `FileChildOfferProof` over `fileChildOfferTranscript` for a child
- * download `RTCPeerConnection` SDP offer.
+ * download/upload `RTCPeerConnection` SDP offer.
  */
 export async function signFileChildOfferProof(args: {
   pair: CryptoKeyPair
@@ -633,6 +638,7 @@ export async function signFileChildOfferProof(args: {
   sessionId: string
   childId: string
   transferId: string
+  direction?: FileChildDirection
   agentId: string
   controllerUserId: string
   offerSdp: string
@@ -643,6 +649,7 @@ export async function signFileChildOfferProof(args: {
     sessionId: args.sessionId,
     childId: args.childId,
     transferId: args.transferId,
+    direction: args.direction,
     agentId: args.agentId,
     controllerUserId: args.controllerUserId,
     offerSdp: args.offerSdp,

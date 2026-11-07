@@ -4551,17 +4551,32 @@ export function useRemoteControl(
      * `'file-child-download'` in `browser_caps`.
      */
     childDownloadConnections?: number
+    /**
+     * X14 — opt-in initial child upload connection count (0..4, default 0 = OFF).
+     * When >= 1 on an ordinary in-org session, `connect()` advertises
+     * `'file-child-upload'` in `browser_caps`. Independent from download.
+     */
+    childUploadConnections?: number
   },
 ) {
   const ws = useWsStore()
   const phase = ref<RcPhase>('idle')
 
-  // X14 — concurrent download child connections (0..4, default 0 = OFF).
+  // X14 — concurrent download/upload child connections (0..4, default 0 = OFF).
   const clampChildConnections = (n: number): number =>
     Number.isFinite(n) ? Math.max(0, Math.min(4, Math.floor(n))) : 0
   const readStoredChildConnections = (): number => {
     try {
       const raw = globalThis.localStorage?.getItem('meshharbor-rc-download-children')
+      if (raw === null || raw === undefined || raw === '') return 0
+      return clampChildConnections(Number(raw))
+    } catch {
+      return 0
+    }
+  }
+  const readStoredUploadChildConnections = (): number => {
+    try {
+      const raw = globalThis.localStorage?.getItem('meshharbor-rc-upload-children')
       if (raw === null || raw === undefined || raw === '') return 0
       return clampChildConnections(Number(raw))
     } catch {
@@ -4576,6 +4591,18 @@ export function useRemoteControl(
     concurrentDownloadChildren.value = clamped
     try {
       globalThis.localStorage?.setItem('meshharbor-rc-download-children', String(clamped))
+    } catch {
+      /* ignore storage errors */
+    }
+  }
+  const concurrentUploadChildren = ref<number>(
+    clampChildConnections(opts?.childUploadConnections ?? readStoredUploadChildConnections()),
+  )
+  function setConcurrentUploadChildren(n: number) {
+    const clamped = clampChildConnections(n)
+    concurrentUploadChildren.value = clamped
+    try {
+      globalThis.localStorage?.setItem('meshharbor-rc-upload-children', String(clamped))
     } catch {
       /* ignore storage errors */
     }
@@ -9292,9 +9319,20 @@ export function useRemoteControl(
         concurrentDownloadChildren.value = storedChildren
       }
     }
+    if (opts?.childUploadConnections === undefined) {
+      const storedUploadChildren = readStoredUploadChildConnections()
+      if (storedUploadChildren > 0 && concurrentUploadChildren.value === 0) {
+        concurrentUploadChildren.value = storedUploadChildren
+      }
+    }
     if (!externalMode && !sharedMode && concurrentDownloadChildren.value >= 1) {
       if (!browserCaps.includes('file-child-download')) {
         browserCaps.push('file-child-download')
+      }
+    }
+    if (!externalMode && !sharedMode && concurrentUploadChildren.value >= 1) {
+      if (!browserCaps.includes('file-child-upload')) {
+        browserCaps.push('file-child-upload')
       }
     }
     fileChildRevoked.value = false
@@ -12577,13 +12615,44 @@ export function useRemoteControl(
   function uploadOne(
     file: File,
     relPath?: string,
-    destPath?: string
+    destPath?: string,
+    options?: { childConnections?: number },
   ): Promise<{ path: string; bytes: number }> {
     const initialCh = channels.files
     if (!initialCh || initialCh.readyState !== 'open') {
       return Promise.reject(new Error('files channel not open'))
     }
     const id = `up-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    const requestedUploadChildren = clampChildConnections(
+      options?.childConnections ??
+        (concurrentUploadChildren.value > 0
+          ? concurrentUploadChildren.value
+          : readStoredUploadChildConnections()),
+    )
+    const sid = sessionId.value
+    const agentId = lastConnectArgs?.agentId ?? agent?.value?.id ?? null
+    const userId = opts?.userId?.() ?? null
+    if (
+      requestedUploadChildren >= 1 &&
+      !externalMode &&
+      !sharedMode &&
+      !fileChildRevoked.value &&
+      sid &&
+      agentId &&
+      userId &&
+      channels.control?.readyState === 'open'
+    ) {
+      return uploadFileWithChildren({
+        id,
+        file,
+        relPath,
+        destPath,
+        childCount: requestedUploadChildren,
+        sid,
+        agentId,
+        userId,
+      })
+    }
 
     return new Promise((resolve, reject) => {
       const entry: UploadEntry = {
@@ -12825,8 +12894,13 @@ export function useRemoteControl(
   /** Public single-file upload — back-compat shim retained so existing
    *  E2E tests + 0.2.x call sites keep working. New code should call
    *  `uploadFiles([file])` directly. */
-  function uploadFile(file: File): Promise<{ path: string; bytes: number }> {
-    return uploadOne(file)
+  function uploadFile(
+    file: File,
+    options?: { childConnections?: number; destPath?: string; relPath?: string },
+  ): Promise<{ path: string; bytes: number }> {
+    return uploadOne(file, options?.relPath, options?.destPath, {
+      childConnections: options?.childConnections,
+    })
   }
 
   // --------------------------------------------------------------
@@ -12977,7 +13051,11 @@ export function useRemoteControl(
     })
   }
 
-  function reserveFileChild(sid: string, transferId: string): Promise<string> {
+  function reserveFileChild(
+    sid: string,
+    transferId: string,
+    direction: 'download' | 'upload' = 'download',
+  ): Promise<string> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const q = pendingChildReserve.get(transferId)
@@ -12995,12 +13073,16 @@ export function useRemoteControl(
         t: 'rc:file.child.reserve',
         session_id: sid,
         transfer_id: transferId,
-        direction: 'download',
+        direction,
       })
     })
   }
 
-  function prepareFileChild(childId: string, transferId: string): Promise<void> {
+  function prepareFileChild(
+    childId: string,
+    transferId: string,
+    direction: 'download' | 'upload' = 'download',
+  ): Promise<void> {
     const ctrl = channels.control
     if (!ctrl || ctrl.readyState !== 'open') {
       return Promise.reject(new Error('control channel not open'))
@@ -13017,6 +13099,7 @@ export function useRemoteControl(
             t: 'rc:file.child.prepare',
             child_id: childId,
             transfer_id: transferId,
+            direction,
           }),
         )
       } catch (e) {
@@ -13025,6 +13108,385 @@ export function useRemoteControl(
         reject(e instanceof Error ? e : new Error(String(e)))
       }
     })
+  }
+
+  async function computeBlobSha256Hex(blob: Blob): Promise<string> {
+    const buf = await blob.arrayBuffer()
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', buf)
+    const bytes = new Uint8Array(digest)
+    let hex = ''
+    for (let i = 0; i < bytes.length; i += 1) {
+      hex += bytes[i]!.toString(16).padStart(2, '0')
+    }
+    return hex
+  }
+
+  async function uploadFileWithChildren(args: {
+    id: string
+    file: File
+    relPath?: string
+    destPath?: string
+    childCount: number
+    sid: string
+    agentId: string
+    userId: string
+  }): Promise<{ path: string; bytes: number }> {
+    const { id, file, relPath, destPath, childCount, sid, agentId, userId } = args
+    pushTransfer({
+      id,
+      kind: 'upload',
+      name: relPath ?? file.name,
+      bytes: 0,
+      total: file.size,
+      status: 'queued',
+    })
+    let outerReject: ((err: Error) => void) | null = null
+    const cancelPromise = new Promise<never>((_, reject) => {
+      outerReject = reject
+    })
+    filesRegistry.set(id, {
+      kind: 'upload',
+      status: 'pending',
+      resolve: () => {},
+      reject: (err: Error) => {
+        outerReject?.(err)
+      },
+      bytesAcked: 0,
+      file,
+      relPath,
+      destPath,
+    })
+
+    try {
+      const totalSize = file.size
+      const sha256 = await computeBlobSha256Hex(file)
+      const keyMat = await ensureFileChildRegistered()
+      const actualChildren = Math.min(childCount, Math.max(1, totalSize))
+      const base = totalSize === 0 ? 0 : Math.floor(totalSize / actualChildren)
+      const rem = totalSize === 0 ? 0 : totalSize % actualChildren
+      let totalSent = 0
+      let completedResult: { path: string; bytes: number; sha256: string } | null = null
+
+      patchTransfer(id, {
+        status: 'running',
+        total: totalSize,
+        bytes: 0,
+      })
+
+      type ChildUploadHandle = {
+        childId: string
+        filesDc: RTCDataChannel
+        childPc: RTCPeerConnection
+      }
+
+      const stripePromises = Array.from({ length: actualChildren }, async (_, idx) => {
+        const offset = totalSize === 0 ? 0 : idx * base + Math.min(idx, rem)
+        const length = totalSize === 0 ? 0 : base + (idx < rem ? 1 : 0)
+        const stripeId = `${id}-s${idx}`
+        const childId = await reserveFileChild(sid, id, 'upload')
+        await prepareFileChild(childId, id, 'upload')
+        if (fileChildRevoked.value) {
+          throw new Error('file child capability revoked')
+        }
+        const childPc = new RTCPeerConnection({
+          iceServers: lastIceServers as RTCIceServer[],
+          bundlePolicy: 'max-bundle',
+        })
+        const filesDc = childPc.createDataChannel('files', { ordered: true })
+        filesDc.binaryType = 'arraybuffer'
+        try {
+          filesDc.bufferedAmountLowThreshold = 64 * 1024
+        } catch {
+          /* ignore if unsupported in mock */
+        }
+
+        return await new Promise<ChildUploadHandle>((resolveStripe, rejectStripe) => {
+          let settled = false
+          let stripeSent = 0
+          let allowedBytes = 0
+          let chunkBytes = 16 * 1024
+          let eofSent = false
+          let pumping = false
+
+          const failStripe = (err: Error) => {
+            if (settled) return
+            settled = true
+            activeChildPeers.delete(childId)
+            try {
+              filesDc.close()
+            } catch {
+              /* ignore */
+            }
+            try {
+              childPc.close()
+            } catch {
+              /* ignore */
+            }
+            rejectStripe(err)
+          }
+
+          activeChildPeers.set(childId, {
+            pc: childPc,
+            dc: filesDc,
+            remoteDescriptionSet: false,
+            pendingIce: [],
+            reject: failStripe,
+          })
+
+          let offerSent = false
+          const pendingLocalIce: RTCIceCandidateInit[] = []
+
+          childPc.onicecandidate = (ev) => {
+            if (!ev.candidate || settled) return
+            const candidate = ev.candidate.toJSON()
+            if (!offerSent) {
+              pendingLocalIce.push(candidate)
+              return
+            }
+            ws.sendRaw({
+              t: 'rc:file.ice',
+              session_id: sid,
+              child_id: childId,
+              transfer_id: id,
+              candidate,
+            })
+          }
+
+          const pumpStripe = async () => {
+            if (pumping || settled || eofSent) return
+            pumping = true
+            try {
+              while (!settled && !eofSent && stripeSent < length && stripeSent < allowedBytes) {
+                if (filesDc.readyState !== 'open') {
+                  throw new Error('child upload channel closed during send')
+                }
+                if ((filesDc.bufferedAmount ?? 0) > 256 * 1024) {
+                  await new Promise<void>((r) => {
+                    let done = false
+                    const finish = () => {
+                      if (done) return
+                      done = true
+                      clearTimeout(t)
+                      filesDc.removeEventListener?.('bufferedamountlow', finish)
+                      r()
+                    }
+                    const t = setTimeout(finish, 20)
+                    filesDc.addEventListener?.('bufferedamountlow', finish)
+                  })
+                  if (settled || eofSent) break
+                  if ((filesDc.bufferedAmount ?? 0) > 256 * 1024) continue
+                }
+                const remainingInCredit = allowedBytes - stripeSent
+                const remainingInStripe = length - stripeSent
+                const step = Math.min(chunkBytes, remainingInCredit, remainingInStripe)
+                if (step <= 0) break
+                const sliceStart = offset + stripeSent
+                const chunkBuf = await file.slice(sliceStart, sliceStart + step).arrayBuffer()
+                if (settled) return
+                filesDc.send(chunkBuf)
+                stripeSent += chunkBuf.byteLength
+                totalSent += chunkBuf.byteLength
+                const regEntry = filesRegistry.get(id)
+                if (regEntry && regEntry.kind === 'upload') {
+                  regEntry.bytesAcked = totalSent
+                }
+                patchTransfer(id, { status: 'running', bytes: totalSent })
+              }
+              if (!settled && !eofSent && stripeSent === length) {
+                eofSent = true
+                filesDc.send(
+                  JSON.stringify({
+                    t: 'files:upload.eof',
+                    id,
+                    stripe_id: stripeId,
+                    bytes: stripeSent,
+                  }),
+                )
+              }
+            } catch (e) {
+              failStripe(e instanceof Error ? e : new Error(String(e)))
+            } finally {
+              pumping = false
+              if (!settled && !eofSent && stripeSent < length && stripeSent < allowedBytes) {
+                void pumpStripe()
+              }
+            }
+          }
+
+          filesDc.onopen = () => {
+            if (settled) return
+            try {
+              const beginMsg: Record<string, unknown> = {
+                t: 'files:upload.begin',
+                id,
+                stripe_id: stripeId,
+                stripe_index: idx,
+                stripe_count: actualChildren,
+                offset,
+                length,
+                name: file.name,
+                size: totalSize,
+                sha256,
+              }
+              if (relPath) beginMsg.rel_path = relPath
+              if (destPath) beginMsg.dest_path = destPath
+              filesDc.send(JSON.stringify(beginMsg))
+            } catch (e) {
+              failStripe(e instanceof Error ? e : new Error(String(e)))
+            }
+          }
+
+          filesDc.onmessage = (ev) => {
+            if (settled || typeof ev.data !== 'string') return
+            let msg: {
+              t?: string
+              id?: string
+              stripe_id?: string
+              acked_bytes?: number
+              credit_bytes?: number
+              chunk_bytes?: number
+              bytes?: number
+              path?: string
+              sha256?: string
+              message?: string
+            }
+            try {
+              msg = JSON.parse(ev.data)
+            } catch {
+              return
+            }
+            if (msg.t === 'files:error') {
+              failStripe(new Error(String(msg.message ?? 'child upload error')))
+            } else if (msg.t === 'files:upload.credit') {
+              const acked = typeof msg.acked_bytes === 'number' ? msg.acked_bytes : 0
+              const credit = typeof msg.credit_bytes === 'number' ? msg.credit_bytes : 0
+              if (typeof msg.chunk_bytes === 'number' && msg.chunk_bytes > 0) {
+                chunkBytes = msg.chunk_bytes
+              }
+              const nextAllowed = Math.min(length, acked + credit)
+              if (nextAllowed > allowedBytes) {
+                allowedBytes = nextAllowed
+              }
+              void pumpStripe()
+            } else if (msg.t === 'files:upload.stripe_done') {
+              if (stripeSent !== length) {
+                failStripe(
+                  new Error(`child upload stripe ${idx} incomplete (${stripeSent}/${length})`),
+                )
+                return
+              }
+              settled = true
+              resolveStripe({ childId, filesDc, childPc })
+            } else if (msg.t === 'files:upload.complete') {
+              if (stripeSent !== length) {
+                failStripe(
+                  new Error(`child upload stripe ${idx} incomplete (${stripeSent}/${length})`),
+                )
+                return
+              }
+              if (
+                typeof msg.sha256 === 'string' &&
+                msg.sha256.toLowerCase() !== sha256.toLowerCase()
+              ) {
+                failStripe(new Error('upload sha256 mismatch in complete ack'))
+                return
+              }
+              completedResult = {
+                path: typeof msg.path === 'string' && msg.path ? msg.path : file.name,
+                bytes: typeof msg.bytes === 'number' ? msg.bytes : totalSize,
+                sha256: typeof msg.sha256 === 'string' ? msg.sha256 : sha256,
+              }
+              settled = true
+              resolveStripe({ childId, filesDc, childPc })
+            }
+          }
+
+          filesDc.onclose = () => {
+            if (!settled) {
+              failStripe(new Error(`child upload channel closed early (${stripeSent}/${length})`))
+            }
+          }
+
+          void (async () => {
+            try {
+              const offer = await childPc.createOffer()
+              await childPc.setLocalDescription(offer)
+              const offerSdp = childPc.localDescription?.sdp ?? offer.sdp ?? ''
+              const proof = await signFileChildOfferProof({
+                pair: keyMat.pair,
+                publicKeyB64: keyMat.publicKeyB64,
+                sessionId: sid,
+                childId,
+                transferId: id,
+                direction: 'upload',
+                agentId,
+                controllerUserId: userId,
+                offerSdp,
+              })
+              if (!proof) {
+                throw new Error('failed to sign child upload SDP offer proof')
+              }
+              ws.sendRaw({
+                t: 'rc:file.sdp.offer',
+                session_id: sid,
+                child_id: childId,
+                transfer_id: id,
+                direction: 'upload',
+                sdp: offerSdp,
+                proof,
+              })
+              offerSent = true
+              for (const candidate of pendingLocalIce.splice(0)) {
+                if (settled) break
+                ws.sendRaw({
+                  t: 'rc:file.ice',
+                  session_id: sid,
+                  child_id: childId,
+                  transfer_id: id,
+                  candidate,
+                })
+              }
+            } catch (e) {
+              failStripe(e instanceof Error ? e : new Error(String(e)))
+            }
+          })()
+        })
+      })
+
+      const childHandles = await Promise.race([Promise.all(stripePromises), cancelPromise])
+      for (const h of childHandles) {
+        activeChildPeers.delete(h.childId)
+        try {
+          h.filesDc.close()
+        } catch {
+          /* ignore */
+        }
+        try {
+          h.childPc.close()
+        } catch {
+          /* ignore */
+        }
+        ws.sendRaw({
+          t: 'rc:file.child.complete',
+          session_id: sid,
+          child_id: h.childId,
+          transfer_id: id,
+        })
+      }
+      if (!completedResult) {
+        throw new Error('upload completed stripes without files:upload.complete')
+      }
+      settleEntry(id)
+      const done: { path: string; bytes: number; sha256: string } = completedResult
+      patchTransfer(id, { status: 'complete', bytes: done.bytes })
+      return { path: done.path, bytes: done.bytes }
+    } catch (e) {
+      settleEntry(id)
+      const errMsg = e instanceof Error ? e.message : String(e)
+      closeAllFileChildren(errMsg)
+      patchTransfer(id, { status: 'error', error: errMsg })
+      throw e instanceof Error ? e : new Error(errMsg)
+    }
   }
 
   async function downloadFileWithChildren(args: {
@@ -13560,6 +14022,9 @@ export function useRemoteControl(
     const settled = settleEntry(id)
     if (settled?.kind === 'upload') {
       patchTransfer(id, { status: 'cancelled', error: 'cancelled by operator' })
+      if (activeChildPeers.size > 0 || pendingChildReserve.has(id)) {
+        closeAllFileChildren('cancelled by operator')
+      }
       settled.reject(new Error('cancelled by operator'))
     }
   }
@@ -13660,7 +14125,7 @@ export function useRemoteControl(
     | { file: File; relPath?: string; destPath?: string }
   async function uploadFiles(
     items: UploadInput[],
-    options?: { destPath?: string }
+    options?: { destPath?: string; childConnections?: number }
   ): Promise<UploadResult[]> {
     const results: UploadResult[] = []
     for (const it of items) {
@@ -13671,7 +14136,9 @@ export function useRemoteControl(
         (it instanceof File ? undefined : it.destPath) ?? options?.destPath
       const reportName = relPath ?? f.name
       try {
-        const r = await uploadOne(f, relPath, destPath)
+        const r = await uploadOne(f, relPath, destPath, {
+          childConnections: options?.childConnections,
+        })
         results.push({ ok: true, name: reportName, path: r.path, bytes: r.bytes })
       } catch (e) {
         results.push({
@@ -13933,6 +14400,8 @@ export function useRemoteControl(
     downloadFolder,
     concurrentDownloadChildren,
     setConcurrentDownloadChildren,
+    concurrentUploadChildren,
+    setConcurrentUploadChildren,
     fileChildRevoked,
     cancelDownload,
     cancelUpload,

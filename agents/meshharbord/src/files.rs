@@ -1063,6 +1063,30 @@ pub(crate) enum FilesIncoming {
         #[serde(default)]
         sha256_prefix: Option<String>,
     },
+    /// X14 — Browser → Agent striped upload begin on an upload-only child DC.
+    #[serde(rename = "files:upload.begin")]
+    UploadBegin {
+        id: String,
+        stripe_id: String,
+        stripe_index: u8,
+        stripe_count: u8,
+        offset: u64,
+        length: u64,
+        name: String,
+        size: u64,
+        sha256: String,
+        #[serde(default)]
+        rel_path: Option<String>,
+        #[serde(default)]
+        dest_path: Option<String>,
+    },
+    /// X14 — Browser → Agent stripe EOF on an upload-only child DC.
+    #[serde(rename = "files:upload.eof")]
+    UploadEof {
+        id: String,
+        stripe_id: String,
+        bytes: u64,
+    },
 }
 
 /// Outgoing control messages sent back to the browser. Flat `t`
@@ -1125,6 +1149,36 @@ pub(crate) enum FilesOutgoing<'a> {
     /// `files:end` once it has pumped the remaining bytes.
     #[serde(rename = "files:resumed")]
     Resumed { id: &'a str, accepted_offset: u64 },
+    /// X14 — Agent → Browser receiver-granted upload credit window.
+    /// The browser may only send up to `acked_bytes + credit_bytes` bytes for
+    /// `stripe_id`.
+    #[serde(rename = "files:upload.credit")]
+    UploadCredit {
+        id: &'a str,
+        stripe_id: &'a str,
+        acked_bytes: u64,
+        credit_bytes: u64,
+        chunk_bytes: u64,
+    },
+    /// X14 — Agent → Browser confirmation that one stripe's bytes are written,
+    /// while waiting for remaining stripes to finish before full-file SHA-256
+    /// verification and atomic rename.
+    #[serde(rename = "files:upload.stripe_done")]
+    UploadStripeDone {
+        id: &'a str,
+        stripe_id: &'a str,
+        bytes: u64,
+    },
+    /// X14 — Agent → Browser terminal confirmation that all stripes completed,
+    /// full-file SHA-256 matched, and the temporary file was atomically
+    /// renamed to `path`.
+    #[serde(rename = "files:upload.complete")]
+    UploadComplete {
+        id: &'a str,
+        path: &'a str,
+        bytes: u64,
+        sha256: &'a str,
+    },
 }
 
 /// Listing entry surfaced over `files:dir-list`. Sorted dirs-first
@@ -3008,6 +3062,1026 @@ fn default_download_dir(log: bool) -> Result<PathBuf> {
         let _ = log;
         Ok(std::env::temp_dir())
     }
+}
+
+// ---------------------------------------------------------------------------
+// X14 — Concurrent Child Upload (Browser → Device) with Receiver Credit Flow
+// Control and Fail-Closed Disk Write Safety
+// ---------------------------------------------------------------------------
+
+/// Default SCTP `a_rwnd` advertised on upload-only child PeerConnections.
+/// Coordinated with the application-layer credit window so the browser's SCTP
+/// sender cannot flood the link and crush parent remote-control FPS.
+pub const UPLOAD_CHILD_SCTP_RWND_BYTES: u32 = 512 * 1024;
+
+/// Maximum chunk size requested by the receiver credit controller.
+pub const UPLOAD_CREDIT_CHUNK_BYTES: u64 = 16 * 1024;
+
+/// Minimum per-stripe credit window (64 KiB) so a throttled stripe still makes
+/// forward progress.
+pub const UPLOAD_CREDIT_MIN_BYTES: u64 = 64 * 1024;
+
+/// Initial per-stripe credit window (256 KiB).
+pub const UPLOAD_CREDIT_INITIAL_BYTES: u64 = 256 * 1024;
+
+/// Maximum per-stripe credit window (512 KiB, matching `UPLOAD_CHILD_SCTP_RWND_BYTES`).
+pub const UPLOAD_CREDIT_MAX_BYTES: u64 = 512 * 1024;
+
+/// Additive step-up per clean window when disk writes are fast and the parent
+/// remote-control session is not under load.
+pub const UPLOAD_CREDIT_STEP_UP_BYTES: u64 = 64 * 1024;
+
+/// Compute the next per-stripe receiver credit window and optional pacing delay
+/// from the measured disk write duration and parent remote-control load state.
+pub fn compute_next_upload_credit_window(
+    current_window: u64,
+    write_elapsed: std::time::Duration,
+    parent_under_load: bool,
+) -> (u64, std::time::Duration) {
+    let clamped = current_window.clamp(UPLOAD_CREDIT_MIN_BYTES, UPLOAD_CREDIT_MAX_BYTES);
+    if parent_under_load || write_elapsed > std::time::Duration::from_millis(25) {
+        let next = (clamped / 2).max(UPLOAD_CREDIT_MIN_BYTES);
+        let delay = if parent_under_load || write_elapsed > std::time::Duration::from_millis(50) {
+            std::time::Duration::from_millis(8)
+        } else {
+            std::time::Duration::ZERO
+        };
+        (next, delay)
+    } else if write_elapsed <= std::time::Duration::from_millis(8) {
+        let next = (clamped + UPLOAD_CREDIT_STEP_UP_BYTES).min(UPLOAD_CREDIT_MAX_BYTES);
+        (next, std::time::Duration::ZERO)
+    } else {
+        (clamped, std::time::Duration::ZERO)
+    }
+}
+
+static TEST_AVAILABLE_DISK_BYTES_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// Test hook to override the reported available disk space on the target
+/// filesystem (`None` restores the real OS `statvfs` / `GetDiskFreeSpaceExW` query).
+pub fn set_test_available_disk_bytes_override(bytes: Option<u64>) {
+    TEST_AVAILABLE_DISK_BYTES_OVERRIDE.store(
+        bytes.unwrap_or(u64::MAX),
+        std::sync::atomic::Ordering::SeqCst,
+    );
+}
+
+/// Query available free bytes for unprivileged users on the filesystem hosting `dir`.
+pub fn available_disk_bytes(dir: &std::path::Path) -> Result<u64> {
+    let override_val = TEST_AVAILABLE_DISK_BYTES_OVERRIDE.load(std::sync::atomic::Ordering::SeqCst);
+    if override_val != u64::MAX {
+        return Ok(override_val);
+    }
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let c_path =
+            CString::new(dir.as_os_str().as_bytes()).context("path contains interior NUL byte")?;
+        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+        if rc != 0 {
+            return Err(anyhow::Error::from(std::io::Error::last_os_error())
+                .context(format!("statvfs({})", dir.display())));
+        }
+        let frsize = if stat.f_frsize > 0 {
+            stat.f_frsize as u64
+        } else {
+            stat.f_bsize as u64
+        };
+        #[allow(clippy::unnecessary_cast)]
+        let bavail = stat.f_bavail as u64;
+        Ok(bavail.saturating_mul(frsize))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = dir
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut free_available: u64 = 0;
+        let ok = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(
+                wide.as_ptr(),
+                &mut free_available,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(anyhow::Error::from(std::io::Error::last_os_error())
+                .context(format!("GetDiskFreeSpaceExW({})", dir.display())));
+        }
+        Ok(free_available)
+    }
+}
+
+/// Process-wide set of target file paths currently being uploaded to.
+/// A second concurrent upload targeting the same path is rejected immediately.
+static ACTIVE_UPLOAD_TARGET_PATHS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+fn unique_path_no_symlink(dir: &std::path::Path, name: &str) -> Result<PathBuf> {
+    let candidate = dir.join(name);
+    if std::fs::symlink_metadata(&candidate).is_err() {
+        return Ok(candidate);
+    }
+    let (stem, ext) = split_stem_ext(name);
+    for n in 2..1000u32 {
+        let suffixed = if ext.is_empty() {
+            format!("{stem} ({n})")
+        } else {
+            format!("{stem} ({n}).{ext}")
+        };
+        let p = dir.join(&suffixed);
+        if std::fs::symlink_metadata(&p).is_err() {
+            return Ok(p);
+        }
+    }
+    Err(anyhow!(
+        "refusing to overwrite existing file at {}",
+        candidate.display()
+    ))
+}
+
+fn ensure_no_symlink_chain(root: &std::path::Path, leaf: &std::path::Path) -> Result<()> {
+    let meta = std::fs::symlink_metadata(root)
+        .with_context(|| format!("symlink_metadata({})", root.display()))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(anyhow!(
+            "upload destination root is a symlink or not a directory: {}",
+            root.display()
+        ));
+    }
+    let mut cur = PathBuf::new();
+    for comp in root.components() {
+        cur.push(comp.as_os_str());
+        if let Ok(m) = std::fs::symlink_metadata(&cur)
+            && m.file_type().is_symlink()
+        {
+            return Err(anyhow!(
+                "symlink component in upload destination path: {}",
+                cur.display()
+            ));
+        }
+    }
+    if let Ok(rel) = leaf.strip_prefix(root) {
+        let mut walk = root.to_path_buf();
+        for comp in rel.components() {
+            walk.push(comp.as_os_str());
+            if let Ok(m) = std::fs::symlink_metadata(&walk)
+                && m.file_type().is_symlink()
+            {
+                return Err(anyhow!(
+                    "symlink component inside upload destination: {}",
+                    walk.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_and_resolve_child_upload_dir_here(
+    who: &FsAs,
+    name: &str,
+    rel_path: Option<&str>,
+    dest_path: Option<&str>,
+) -> Result<(PathBuf, String)> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+        || name.contains("..")
+    {
+        return Err(anyhow!("invalid upload filename"));
+    }
+    let filename = sanitize_filename(name);
+    if filename != name.trim() {
+        return Err(anyhow!("upload filename contains disallowed characters"));
+    }
+
+    let base_dir = match dest_path.filter(|p| !p.is_empty()) {
+        Some(dp) => {
+            if dp.contains('\0') {
+                return Err(anyhow!("dest_path contains NUL"));
+            }
+            let p = std::path::Path::new(dp);
+            if !p.is_absolute() {
+                return Err(anyhow!("dest_path must be an absolute path"));
+            }
+            for comp in p.components() {
+                if matches!(
+                    comp,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                ) {
+                    return Err(anyhow!("dest_path must not contain '..' or '.'"));
+                }
+            }
+            let Some(admissible) = admissible_dest_path(Some(dp)) else {
+                return Err(anyhow!(
+                    "dest_path is not permitted when remote browse is disabled"
+                ));
+            };
+            ensure_no_symlink_chain(
+                std::path::Path::new(admissible),
+                std::path::Path::new(admissible),
+            )?;
+            resolve_dest_path_here(admissible, &who.writer(), &files_dir::Rules::from_env())?
+        }
+        None => {
+            let dl = download_dir_as(who)?;
+            if let Ok(m) = std::fs::symlink_metadata(&dl)
+                && m.file_type().is_symlink()
+            {
+                return Err(anyhow!(
+                    "default upload directory is a symlink: {}",
+                    dl.display()
+                ));
+            }
+            std::fs::create_dir_all(&dl)
+                .with_context(|| format!("creating upload directory {}", dl.display()))?;
+            ensure_no_symlink_chain(&dl, &dl)?;
+            dl
+        }
+    };
+
+    let base_canon = std::fs::canonicalize(&base_dir)
+        .with_context(|| format!("canonicalizing {}", base_dir.display()))?;
+    if agent_state_run(&base_canon).is_some() {
+        return Err(anyhow!(
+            "upload destination inside agent state directory is forbidden"
+        ));
+    }
+
+    let Some(rel) = rel_path.filter(|r| !r.is_empty()) else {
+        return Ok((base_dir, filename));
+    };
+
+    if rel.starts_with('/')
+        || rel.starts_with('\\')
+        || rel.contains(':')
+        || rel.contains('\0')
+        || rel.contains('\\')
+    {
+        return Err(anyhow!("invalid upload rel_path"));
+    }
+    let segments: Vec<&str> = rel.split('/').collect();
+    if segments.len() < 2 || segments.len() > 32 {
+        return Err(anyhow!("invalid upload rel_path depth"));
+    }
+    for seg in &segments {
+        if seg.is_empty()
+            || *seg == "."
+            || *seg == ".."
+            || seg.contains("..")
+            || sanitize_filename(seg) != *seg
+        {
+            return Err(anyhow!("upload rel_path contains disallowed segment"));
+        }
+    }
+    let leaf_name = (*segments.last().unwrap()).to_string();
+    if leaf_name != filename {
+        return Err(anyhow!("upload rel_path leaf does not match filename"));
+    }
+    let mut sub_dir = base_dir.clone();
+    for dir_seg in &segments[..segments.len() - 1] {
+        sub_dir.push(dir_seg);
+        match std::fs::symlink_metadata(&sub_dir) {
+            Ok(m) => {
+                if m.file_type().is_symlink() || !m.is_dir() {
+                    return Err(anyhow!(
+                        "upload subdirectory is a symlink or not a directory: {}",
+                        sub_dir.display()
+                    ));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&sub_dir).with_context(|| {
+                    format!("creating upload subdirectory {}", sub_dir.display())
+                })?;
+                let m = std::fs::symlink_metadata(&sub_dir)?;
+                if m.file_type().is_symlink() || !m.is_dir() {
+                    return Err(anyhow!(
+                        "upload subdirectory became a symlink: {}",
+                        sub_dir.display()
+                    ));
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let sub_canon = std::fs::canonicalize(&sub_dir)
+        .with_context(|| format!("canonicalizing {}", sub_dir.display()))?;
+    if !sub_canon.starts_with(&base_canon) {
+        return Err(anyhow!("upload rel_path escaped target directory"));
+    }
+    Ok((sub_dir, leaf_name))
+}
+
+#[derive(Debug)]
+struct ChildUploadStripeState {
+    stripe_index: u8,
+    offset: u64,
+    length: u64,
+    received: u64,
+    last_credit_acked: u64,
+    credit_window: u64,
+    allowed_bytes: u64,
+    eof_seen: bool,
+}
+
+struct ChildUploadSession {
+    name: String,
+    expected_size: u64,
+    expected_sha256: String,
+    stripe_count: u8,
+    rel_path: Option<String>,
+    dest_path: Option<String>,
+    final_parent_dir: PathBuf,
+    filename: String,
+    reserved_final_path: PathBuf,
+    temp_path: PathBuf,
+    locked_paths: Vec<PathBuf>,
+    file: Option<std::fs::File>,
+    stripes: std::collections::HashMap<String, ChildUploadStripeState>,
+    total_received: u64,
+    committed: bool,
+    who: FsAs,
+    _active_guard: ActiveTransferGuard,
+}
+
+impl ChildUploadSession {
+    fn cleanup_now(&mut self) {
+        self.file.take();
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.temp_path);
+        }
+        if let Ok(mut active) = ACTIVE_UPLOAD_TARGET_PATHS.lock() {
+            for p in self.locked_paths.drain(..) {
+                active.remove(&p);
+            }
+        }
+    }
+}
+
+impl Drop for ChildUploadSession {
+    fn drop(&mut self) {
+        self.cleanup_now();
+    }
+}
+
+type ChildUploadKey = (bson::oid::ObjectId, String);
+
+static CHILD_UPLOAD_SESSIONS: std::sync::LazyLock<
+    tokio::sync::Mutex<
+        std::collections::HashMap<ChildUploadKey, Arc<tokio::sync::Mutex<ChildUploadSession>>>,
+    >,
+> = std::sync::LazyLock::new(|| tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[derive(Debug, Clone)]
+pub struct ChildUploadBeginGrant {
+    pub transfer_id: String,
+    pub stripe_id: String,
+    pub acked_bytes: u64,
+    pub credit_bytes: u64,
+    pub chunk_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChildUploadCreditReplenish {
+    pub transfer_id: String,
+    pub stripe_id: String,
+    pub acked_bytes: u64,
+    pub credit_bytes: u64,
+    pub chunk_bytes: u64,
+    pub pace_delay: std::time::Duration,
+}
+
+#[derive(Debug, Clone)]
+pub enum ChildUploadEofOutcome {
+    StripeWaiting {
+        transfer_id: String,
+        stripe_id: String,
+        bytes: u64,
+    },
+    Completed {
+        transfer_id: String,
+        final_path: PathBuf,
+        bytes: u64,
+        sha256: String,
+    },
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn begin_child_upload_stripe(
+    session_id: bson::oid::ObjectId,
+    transfer_id: String,
+    stripe_id: String,
+    stripe_index: u8,
+    stripe_count: u8,
+    offset: u64,
+    length: u64,
+    name: String,
+    size: u64,
+    sha256: String,
+    rel_path: Option<String>,
+    dest_path: Option<String>,
+    parent_under_load: bool,
+) -> Result<ChildUploadBeginGrant> {
+    if transfer_id.is_empty()
+        || transfer_id.len() > 128
+        || transfer_id.chars().any(char::is_control)
+        || stripe_id.is_empty()
+        || stripe_id.len() > 160
+        || stripe_id.chars().any(char::is_control)
+    {
+        return Err(anyhow!("invalid child upload transfer_id or stripe_id"));
+    }
+    if !(1..=4).contains(&stripe_count) || stripe_index >= stripe_count {
+        return Err(anyhow!(
+            "invalid child upload stripe configuration ({stripe_index}/{stripe_count})"
+        ));
+    }
+    if size > MAX_TRANSFER_BYTES {
+        return Err(anyhow!(
+            "upload size {size} exceeds the {MAX_TRANSFER_BYTES} B limit"
+        ));
+    }
+    let sha256_norm = sha256.trim().to_ascii_lowercase();
+    if sha256_norm.len() != 64 || !sha256_norm.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(anyhow!("upload requires a valid 64-character hex SHA-256"));
+    }
+    if offset.checked_add(length).is_none_or(|end| end > size) {
+        return Err(anyhow!(
+            "stripe range [{offset}, + {length}) exceeds declared file size {size}"
+        ));
+    }
+    if size > 0 && length == 0 {
+        return Err(anyhow!("non-empty upload cannot have a zero-length stripe"));
+    }
+
+    let key = (session_id, transfer_id.clone());
+    let session_arc = {
+        let mut sessions = CHILD_UPLOAD_SESSIONS.lock().await;
+        if let Some(existing) = sessions.get(&key) {
+            existing.clone()
+        } else {
+            let who = FsAs::now();
+            let who_for_init = who.clone();
+            let name_for_init = name.clone();
+            let rel_for_init = rel_path.clone();
+            let dest_for_init = dest_path.clone();
+            let tid_for_init = transfer_id.clone();
+            let (final_parent_dir, filename, reserved_final_path, temp_path, locked_paths, file) =
+                who.run(move || {
+                    let (final_parent_dir, filename) = validate_and_resolve_child_upload_dir_here(
+                        &who_for_init,
+                        &name_for_init,
+                        rel_for_init.as_deref(),
+                        dest_for_init.as_deref(),
+                    )?;
+                    let requested_target_path = final_parent_dir.join(&filename);
+                    if let Ok(meta) = std::fs::symlink_metadata(&requested_target_path)
+                        && meta.file_type().is_symlink()
+                    {
+                        return Err(anyhow!(
+                            "upload target path is a symlink: {}",
+                            requested_target_path.display()
+                        ));
+                    }
+                    let reserved_final_path = unique_path_no_symlink(&final_parent_dir, &filename)?;
+
+                    // Check available disk space BEFORE creating temporary file.
+                    let free_bytes = available_disk_bytes(&final_parent_dir)?;
+                    if free_bytes < size {
+                        return Err(anyhow!(
+                            "insufficient disk space in {}: need {} bytes, available {} bytes",
+                            final_parent_dir.display(),
+                            size,
+                            free_bytes
+                        ));
+                    }
+
+                    // Claim exclusive lock on target path(s).
+                    let mut locked_paths = vec![requested_target_path.clone()];
+                    if reserved_final_path != requested_target_path {
+                        locked_paths.push(reserved_final_path.clone());
+                    }
+                    {
+                        let mut active = ACTIVE_UPLOAD_TARGET_PATHS
+                            .lock()
+                            .map_err(|_| anyhow!("active upload target lock poisoned"))?;
+                        for p in &locked_paths {
+                            if active.contains(p) {
+                                return Err(anyhow!(
+                                    "another upload to target path {} is already active",
+                                    p.display()
+                                ));
+                            }
+                        }
+                        for p in &locked_paths {
+                            active.insert(p.clone());
+                        }
+                    }
+
+                    let temp_name = format!(
+                        ".meshharbor-x14-upload-{}-{}.part",
+                        session_id.to_hex(),
+                        sanitize_filename(&tid_for_init)
+                    );
+                    let temp_path = final_parent_dir.join(temp_name);
+                    if std::fs::symlink_metadata(&temp_path).is_ok() {
+                        if let Ok(mut active) = ACTIVE_UPLOAD_TARGET_PATHS.lock() {
+                            for p in &locked_paths {
+                                active.remove(p);
+                            }
+                        }
+                        return Err(anyhow!(
+                            "temporary upload file already exists: {}",
+                            temp_path.display()
+                        ));
+                    }
+
+                    let mut open_opts = std::fs::OpenOptions::new();
+                    open_opts.read(true).write(true).create_new(true);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::OpenOptionsExt;
+                        open_opts.custom_flags(libc::O_NOFOLLOW);
+                    }
+                    let file = match open_opts.open(&temp_path) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            if let Ok(mut active) = ACTIVE_UPLOAD_TARGET_PATHS.lock() {
+                                for p in &locked_paths {
+                                    active.remove(p);
+                                }
+                            }
+                            return Err(anyhow::Error::from(e)
+                                .context(format!("creating temp file {}", temp_path.display())));
+                        }
+                    };
+                    Ok((
+                        final_parent_dir,
+                        filename,
+                        reserved_final_path,
+                        temp_path,
+                        locked_paths,
+                        file,
+                    ))
+                })
+                .await?;
+
+            let created = Arc::new(tokio::sync::Mutex::new(ChildUploadSession {
+                name: name.clone(),
+                expected_size: size,
+                expected_sha256: sha256_norm.clone(),
+                stripe_count,
+                rel_path: rel_path.clone(),
+                dest_path: dest_path.clone(),
+                final_parent_dir,
+                filename,
+                reserved_final_path,
+                temp_path,
+                locked_paths,
+                file: Some(file),
+                stripes: std::collections::HashMap::new(),
+                total_received: 0,
+                committed: false,
+                who,
+                _active_guard: ActiveTransferGuard::new(),
+            }));
+            sessions.insert(key.clone(), created.clone());
+            created
+        }
+    };
+
+    let mut sess = session_arc.lock().await;
+    if sess.name != name
+        || sess.expected_size != size
+        || sess.expected_sha256 != sha256_norm
+        || sess.stripe_count != stripe_count
+        || sess.rel_path != rel_path
+        || sess.dest_path != dest_path
+    {
+        sess.cleanup_now();
+        drop(sess);
+        CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
+        return Err(anyhow!(
+            "child upload stripe metadata mismatch for transfer {}",
+            transfer_id
+        ));
+    }
+    if sess.stripes.contains_key(&stripe_id)
+        || sess
+            .stripes
+            .values()
+            .any(|s| s.stripe_index == stripe_index)
+    {
+        sess.cleanup_now();
+        drop(sess);
+        CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
+        return Err(anyhow!(
+            "duplicate child upload stripe {} (index {})",
+            stripe_id,
+            stripe_index
+        ));
+    }
+    let new_end = offset + length;
+    for existing in sess.stripes.values() {
+        let existing_end = existing.offset + existing.length;
+        if offset < existing_end && existing.offset < new_end {
+            sess.cleanup_now();
+            drop(sess);
+            CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
+            return Err(anyhow!(
+                "overlapping child upload stripe range [{offset}, {new_end})"
+            ));
+        }
+    }
+
+    let initial_window = if parent_under_load {
+        UPLOAD_CREDIT_MIN_BYTES
+    } else {
+        UPLOAD_CREDIT_INITIAL_BYTES
+    };
+    let credit_bytes = length.min(initial_window);
+    sess.stripes.insert(
+        stripe_id.clone(),
+        ChildUploadStripeState {
+            stripe_index,
+            offset,
+            length,
+            received: 0,
+            last_credit_acked: 0,
+            credit_window: initial_window,
+            allowed_bytes: credit_bytes,
+            eof_seen: false,
+        },
+    );
+
+    Ok(ChildUploadBeginGrant {
+        transfer_id,
+        stripe_id,
+        acked_bytes: 0,
+        credit_bytes,
+        chunk_bytes: UPLOAD_CREDIT_CHUNK_BYTES,
+    })
+}
+
+pub async fn write_child_upload_chunk(
+    session_id: bson::oid::ObjectId,
+    transfer_id: &str,
+    stripe_id: &str,
+    data: &[u8],
+    parent_under_load: bool,
+) -> Result<Option<ChildUploadCreditReplenish>> {
+    if data.is_empty() {
+        return Ok(None);
+    }
+    let key = (session_id, transfer_id.to_string());
+    let session_arc = {
+        let sessions = CHILD_UPLOAD_SESSIONS.lock().await;
+        sessions
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| anyhow!("no active child upload for transfer {}", transfer_id))?
+    };
+
+    let mut sess = session_arc.lock().await;
+    let chunk_len = data.len() as u64;
+    let (write_offset, new_received, stripe_len, should_abort) = {
+        let Some(stripe) = sess.stripes.get_mut(stripe_id) else {
+            return Err(anyhow!("unknown child upload stripe {}", stripe_id));
+        };
+        if stripe.eof_seen {
+            (0, 0, 0, Some(anyhow!("received chunk after stripe EOF")))
+        } else {
+            let next_received = stripe.received.saturating_add(chunk_len);
+            if next_received > stripe.length {
+                (
+                    0,
+                    0,
+                    0,
+                    Some(anyhow!(
+                        "stripe {} overflow: received {} > expected {}",
+                        stripe_id,
+                        next_received,
+                        stripe.length
+                    )),
+                )
+            } else if next_received > stripe.allowed_bytes {
+                (
+                    0,
+                    0,
+                    0,
+                    Some(anyhow!(
+                        "stripe {} exceeded receiver credit window ({} > {})",
+                        stripe_id,
+                        next_received,
+                        stripe.allowed_bytes
+                    )),
+                )
+            } else {
+                let write_offset = stripe.offset + stripe.received;
+                stripe.received = next_received;
+                (write_offset, next_received, stripe.length, None)
+            }
+        }
+    };
+
+    if let Some(err) = should_abort {
+        sess.cleanup_now();
+        drop(sess);
+        CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
+        return Err(err);
+    }
+
+    let t0 = std::time::Instant::now();
+    let write_res = {
+        use std::io::{Seek, SeekFrom, Write};
+        let Some(file) = sess.file.as_mut() else {
+            return Err(anyhow!("child upload temp file already closed"));
+        };
+        file.seek(SeekFrom::Start(write_offset))
+            .and_then(|_| file.write_all(data))
+    };
+    if let Err(e) = write_res {
+        sess.cleanup_now();
+        drop(sess);
+        CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
+        return Err(anyhow::Error::from(e).context("writing child upload stripe chunk"));
+    }
+    let write_elapsed = t0.elapsed();
+    sess.total_received = sess.total_received.saturating_add(chunk_len);
+
+    let stripe = sess.stripes.get_mut(stripe_id).expect("stripe exists");
+    let unacked = new_received.saturating_sub(stripe.last_credit_acked);
+    let threshold = (stripe.credit_window / 2).max(UPLOAD_CREDIT_CHUNK_BYTES);
+    if new_received < stripe_len && (unacked >= threshold || new_received == stripe.allowed_bytes) {
+        let (next_window, pace_delay) = compute_next_upload_credit_window(
+            stripe.credit_window,
+            write_elapsed,
+            parent_under_load,
+        );
+        stripe.credit_window = next_window;
+        stripe.last_credit_acked = new_received;
+        let credit_bytes = (stripe_len - new_received).min(stripe.credit_window);
+        stripe.allowed_bytes = new_received + credit_bytes;
+        return Ok(Some(ChildUploadCreditReplenish {
+            transfer_id: transfer_id.to_string(),
+            stripe_id: stripe_id.to_string(),
+            acked_bytes: new_received,
+            credit_bytes,
+            chunk_bytes: UPLOAD_CREDIT_CHUNK_BYTES,
+            pace_delay,
+        }));
+    }
+    Ok(None)
+}
+
+pub async fn finish_child_upload_stripe(
+    session_id: bson::oid::ObjectId,
+    transfer_id: &str,
+    stripe_id: &str,
+    reported_bytes: u64,
+) -> Result<ChildUploadEofOutcome> {
+    let key = (session_id, transfer_id.to_string());
+    let session_arc = {
+        let sessions = CHILD_UPLOAD_SESSIONS.lock().await;
+        sessions
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| anyhow!("no active child upload for transfer {}", transfer_id))?
+    };
+
+    let mut sess = session_arc.lock().await;
+    {
+        let Some(stripe) = sess.stripes.get_mut(stripe_id) else {
+            return Err(anyhow!("unknown child upload stripe {}", stripe_id));
+        };
+        if stripe.received != stripe.length || reported_bytes != stripe.length {
+            let err = anyhow!(
+                "child upload stripe {} incomplete at EOF ({}/{}/{})",
+                stripe_id,
+                stripe.received,
+                reported_bytes,
+                stripe.length
+            );
+            sess.cleanup_now();
+            drop(sess);
+            CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
+            return Err(err);
+        }
+        stripe.eof_seen = true;
+    }
+
+    let all_done = sess.stripes.len() == usize::from(sess.stripe_count)
+        && sess.stripes.values().all(|s| s.eof_seen);
+    if !all_done {
+        return Ok(ChildUploadEofOutcome::StripeWaiting {
+            transfer_id: transfer_id.to_string(),
+            stripe_id: stripe_id.to_string(),
+            bytes: reported_bytes,
+        });
+    }
+
+    // Verify stripes form a complete contiguous cover of [0, expected_size).
+    let mut ranges: Vec<(u64, u64)> = sess
+        .stripes
+        .values()
+        .map(|s| (s.offset, s.length))
+        .collect();
+    ranges.sort_by_key(|r| r.0);
+    let mut cursor = 0u64;
+    for (off, len) in ranges {
+        if off != cursor {
+            sess.cleanup_now();
+            drop(sess);
+            CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
+            return Err(anyhow!(
+                "child upload stripes have gap or overlap at offset {off} (expected {cursor})"
+            ));
+        }
+        cursor = cursor.saturating_add(len);
+    }
+    if cursor != sess.expected_size || sess.total_received != sess.expected_size {
+        let expected_size = sess.expected_size;
+        sess.cleanup_now();
+        drop(sess);
+        CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
+        return Err(anyhow!(
+            "child upload total bytes {} does not match declared size {}",
+            cursor,
+            expected_size
+        ));
+    }
+
+    // Remove from active sessions map before committing on disk.
+    CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
+
+    let mut file = sess
+        .file
+        .take()
+        .ok_or_else(|| anyhow!("child upload temp file missing"))?;
+    let expected_size = sess.expected_size;
+    let expected_sha256 = sess.expected_sha256.clone();
+    let temp_path = sess.temp_path.clone();
+    let final_parent_dir = sess.final_parent_dir.clone();
+    let filename = sess.filename.clone();
+    let reserved_final_path = sess.reserved_final_path.clone();
+    let who = sess.who.clone();
+
+    let commit_result = who
+        .run(move || {
+            use std::io::{Read, Seek, SeekFrom, Write};
+            file.flush().context("flushing upload temp file")?;
+            file.sync_all().context("syncing upload temp file")?;
+            file.seek(SeekFrom::Start(0))
+                .context("seeking upload temp file for SHA-256 verification")?;
+
+            let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+            let mut buf = vec![0u8; 64 * 1024];
+            let mut hashed = 0u64;
+            while hashed < expected_size {
+                let to_read = ((expected_size - hashed) as usize).min(buf.len());
+                let n = file
+                    .read(&mut buf[..to_read])
+                    .context("reading upload temp file for SHA-256")?;
+                if n == 0 {
+                    break;
+                }
+                ctx.update(&buf[..n]);
+                hashed += n as u64;
+            }
+            drop(file);
+
+            if hashed != expected_size {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(anyhow!(
+                    "upload temp file short read during SHA-256 verification ({hashed}/{expected_size})"
+                ));
+            }
+
+            let digest = ctx.finish();
+            let mut computed_sha256 = String::with_capacity(64);
+            for b in digest.as_ref() {
+                use std::fmt::Write as _;
+                let _ = write!(&mut computed_sha256, "{b:02x}");
+            }
+            if computed_sha256 != expected_sha256 {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(anyhow!(
+                    "upload SHA-256 verification failed: expected {expected_sha256}, got {computed_sha256}"
+                ));
+            }
+
+            ensure_no_symlink_chain(&final_parent_dir, &final_parent_dir)?;
+            let actual_final_path = if std::fs::symlink_metadata(&reserved_final_path).is_err() {
+                reserved_final_path
+            } else {
+                unique_path_no_symlink(&final_parent_dir, &filename)?
+            };
+
+            #[cfg(unix)]
+            {
+                if let Err(e) = std::fs::hard_link(&temp_path, &actual_final_path) {
+                    let _ = std::fs::remove_file(&temp_path);
+                    return Err(anyhow::Error::from(e).context(format!(
+                        "atomic hard_link {} -> {}",
+                        temp_path.display(),
+                        actual_final_path.display()
+                    )));
+                }
+                let _ = std::fs::remove_file(&temp_path);
+                if let Ok(dir_f) = std::fs::File::open(&final_parent_dir) {
+                    let _ = dir_f.sync_all();
+                }
+            }
+            #[cfg(windows)]
+            {
+                if std::fs::symlink_metadata(&actual_final_path).is_ok() {
+                    let _ = std::fs::remove_file(&temp_path);
+                    return Err(anyhow!(
+                        "refusing to overwrite existing file at {}",
+                        actual_final_path.display()
+                    ));
+                }
+                if let Err(e) = std::fs::rename(&temp_path, &actual_final_path) {
+                    let _ = std::fs::remove_file(&temp_path);
+                    return Err(anyhow::Error::from(e).context(format!(
+                        "atomic rename {} -> {}",
+                        temp_path.display(),
+                        actual_final_path.display()
+                    )));
+                }
+            }
+
+            Ok((actual_final_path, computed_sha256))
+        })
+        .await;
+
+    match commit_result {
+        Ok((final_path, computed_sha256)) => {
+            sess.committed = true;
+            sess.cleanup_now();
+            Ok(ChildUploadEofOutcome::Completed {
+                transfer_id: transfer_id.to_string(),
+                final_path,
+                bytes: expected_size,
+                sha256: computed_sha256,
+            })
+        }
+        Err(e) => {
+            sess.cleanup_now();
+            Err(e)
+        }
+    }
+}
+
+/// Immediately abort a single child upload transfer, deleting its temporary
+/// `.part` file from disk and releasing its target-path lock.
+pub async fn abort_child_upload(session_id: bson::oid::ObjectId, transfer_id: &str) -> bool {
+    let key = (session_id, transfer_id.to_string());
+    let removed = CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
+    if let Some(session_arc) = removed {
+        let mut sess = session_arc.lock().await;
+        sess.cleanup_now();
+        true
+    } else {
+        false
+    }
+}
+
+/// Immediately abort all in-flight child uploads for `session_id` (used on
+/// `rc:file.child.revoke` and parent session close), deleting all temporary
+/// `.part` files on disk before returning.
+pub async fn abort_session_child_uploads(session_id: bson::oid::ObjectId) -> u32 {
+    let drained: Vec<Arc<tokio::sync::Mutex<ChildUploadSession>>> = {
+        let mut sessions = CHILD_UPLOAD_SESSIONS.lock().await;
+        let keys: Vec<ChildUploadKey> = sessions
+            .keys()
+            .filter(|(sid, _)| *sid == session_id)
+            .cloned()
+            .collect();
+        keys.into_iter()
+            .filter_map(|k| sessions.remove(&k))
+            .collect()
+    };
+    let mut count = 0u32;
+    for session_arc in drained {
+        let mut sess = session_arc.lock().await;
+        sess.cleanup_now();
+        count = count.saturating_add(1);
+    }
+    count
 }
 
 #[cfg(test)]
@@ -5173,6 +6247,484 @@ mod seat_user_tests {
                 download_dir_for(&who).await.unwrap(),
                 home.path().join("Fichiers")
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod x14_child_upload_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let mut h = Sha256::new();
+        h.update(bytes);
+        let d = h.finalize();
+        let mut s = String::with_capacity(64);
+        for b in d {
+            use std::fmt::Write;
+            let _ = write!(&mut s, "{b:02x}");
+        }
+        s
+    }
+
+    fn no_part_files_remain(dir: &std::path::Path) -> bool {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .all(|e| !e.file_name().to_string_lossy().ends_with(".part"))
+    }
+
+    fn test_upload_tempdir() -> tempfile::TempDir {
+        let w = writer_context();
+        if w.privileged
+            && let Some(home) = w.active_home
+        {
+            return tempfile::Builder::new()
+                .prefix("meshharbor-x14-upload-test-")
+                .tempdir_in(home)
+                .unwrap();
+        }
+        tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn receiver_credit_window_adapts_to_disk_latency_and_parent_load() {
+        // Fast disk + no parent load grows window toward UPLOAD_CREDIT_MAX_BYTES.
+        let (grown, _) = compute_next_upload_credit_window(
+            UPLOAD_CREDIT_INITIAL_BYTES,
+            std::time::Duration::from_millis(5),
+            false,
+        );
+        assert!(grown > UPLOAD_CREDIT_INITIAL_BYTES);
+        assert!(grown <= UPLOAD_CREDIT_MAX_BYTES);
+
+        // Slow disk (> 100 ms) halves the window.
+        let (slowed, _) = compute_next_upload_credit_window(
+            UPLOAD_CREDIT_MAX_BYTES,
+            std::time::Duration::from_millis(180),
+            false,
+        );
+        assert_eq!(slowed, UPLOAD_CREDIT_MAX_BYTES / 2);
+
+        // Parent session under load shrinks window and clamps at UPLOAD_CREDIT_MIN_BYTES.
+        let (loaded, _) = compute_next_upload_credit_window(
+            UPLOAD_CREDIT_INITIAL_BYTES,
+            std::time::Duration::from_millis(2),
+            true,
+        );
+        assert_eq!(loaded, UPLOAD_CREDIT_INITIAL_BYTES / 2);
+        let (floor, _) = compute_next_upload_credit_window(
+            UPLOAD_CREDIT_MIN_BYTES,
+            std::time::Duration::from_millis(250),
+            true,
+        );
+        assert_eq!(floor, UPLOAD_CREDIT_MIN_BYTES);
+    }
+
+    #[tokio::test]
+    async fn striped_upload_verifies_sha256_commits_atomically_and_preserves_existing_file() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
+        set_test_available_disk_bytes_override(None);
+        let dir = test_upload_tempdir();
+        let dest_str = dir.path().to_str().unwrap().to_string();
+        let sid = bson::oid::ObjectId::new();
+
+        // Create 400 KiB payload across 4 stripes (100 KiB each), written in reverse stripe order.
+        let total_size = 400 * 1024usize;
+        let payload: Vec<u8> = (0..total_size)
+            .map(|i| ((i.wrapping_mul(31).wrapping_add(17)) & 0xff) as u8)
+            .collect();
+        let expected_sha = sha256_hex(&payload);
+        let stripe_len = 100 * 1024usize;
+
+        for idx in (0..4u8).rev() {
+            let stripe_id = format!("tx-4s-s{idx}");
+            let offset = (idx as usize * stripe_len) as u64;
+            let grant = begin_child_upload_stripe(
+                sid,
+                "tx-4s".into(),
+                stripe_id.clone(),
+                idx,
+                4,
+                offset,
+                stripe_len as u64,
+                "archive.bin".into(),
+                total_size as u64,
+                expected_sha.clone(),
+                None,
+                Some(dest_str.clone()),
+                false,
+            )
+            .await
+            .expect("begin stripe");
+            assert!(grant.credit_bytes >= stripe_len as u64);
+
+            // Final destination must NOT exist while upload is still in flight.
+            assert!(!dir.path().join("archive.bin").exists());
+
+            let slice = &payload[idx as usize * stripe_len..(idx as usize + 1) * stripe_len];
+            for chunk in slice.chunks(16 * 1024) {
+                write_child_upload_chunk(sid, "tx-4s", &stripe_id, chunk, false)
+                    .await
+                    .expect("write chunk");
+            }
+            let outcome = finish_child_upload_stripe(sid, "tx-4s", &stripe_id, stripe_len as u64)
+                .await
+                .expect("finish stripe");
+            if idx > 0 {
+                assert!(matches!(
+                    outcome,
+                    ChildUploadEofOutcome::StripeWaiting { .. }
+                ));
+                assert!(!dir.path().join("archive.bin").exists());
+            } else {
+                match outcome {
+                    ChildUploadEofOutcome::Completed {
+                        final_path,
+                        bytes,
+                        sha256,
+                        ..
+                    } => {
+                        assert_eq!(bytes, total_size as u64);
+                        assert_eq!(sha256, expected_sha);
+                        assert_eq!(final_path, dir.path().join("archive.bin"));
+                    }
+                    other => panic!("expected Completed on final stripe, got {other:?}"),
+                }
+            }
+        }
+
+        assert_eq!(
+            std::fs::read(dir.path().join("archive.bin")).unwrap(),
+            payload
+        );
+        assert!(no_part_files_remain(dir.path()));
+
+        // Uploading again with the same filename must NOT overwrite `archive.bin`:
+        // it must land at `archive (1).bin` and keep `archive.bin` intact.
+        let second_payload = b"second-distinct-upload-payload".to_vec();
+        let second_sha = sha256_hex(&second_payload);
+        begin_child_upload_stripe(
+            sid,
+            "tx-no-overwrite".into(),
+            "tx-no-overwrite-s0".into(),
+            0,
+            1,
+            0,
+            second_payload.len() as u64,
+            "archive.bin".into(),
+            second_payload.len() as u64,
+            second_sha.clone(),
+            None,
+            Some(dest_str),
+            false,
+        )
+        .await
+        .unwrap();
+        write_child_upload_chunk(
+            sid,
+            "tx-no-overwrite",
+            "tx-no-overwrite-s0",
+            &second_payload,
+            false,
+        )
+        .await
+        .unwrap();
+        let outcome2 = finish_child_upload_stripe(
+            sid,
+            "tx-no-overwrite",
+            "tx-no-overwrite-s0",
+            second_payload.len() as u64,
+        )
+        .await
+        .unwrap();
+        match outcome2 {
+            ChildUploadEofOutcome::Completed { final_path, .. } => {
+                assert_eq!(final_path, dir.path().join("archive (2).bin"));
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read(dir.path().join("archive.bin")).unwrap(),
+            payload
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("archive (2).bin")).unwrap(),
+            second_payload
+        );
+        assert!(no_part_files_remain(dir.path()));
+    }
+
+    #[tokio::test]
+    async fn sha256_mismatch_abort_revocation_and_credit_violation_delete_temp_file_fail_closed() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
+        set_test_available_disk_bytes_override(None);
+        let dir = test_upload_tempdir();
+        let dest_str = dir.path().to_str().unwrap().to_string();
+        let sid = bson::oid::ObjectId::new();
+
+        // 1. SHA-256 mismatch -> error + temp `.part` deleted + no final file.
+        let data = b"tampered-bytes-on-wire";
+        let wrong_sha =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        begin_child_upload_stripe(
+            sid,
+            "tx-bad-sha".into(),
+            "tx-bad-sha-s0".into(),
+            0,
+            1,
+            0,
+            data.len() as u64,
+            "bad-sha.bin".into(),
+            data.len() as u64,
+            wrong_sha,
+            None,
+            Some(dest_str.clone()),
+            false,
+        )
+        .await
+        .unwrap();
+        write_child_upload_chunk(sid, "tx-bad-sha", "tx-bad-sha-s0", data, false)
+            .await
+            .unwrap();
+        let err = finish_child_upload_stripe(sid, "tx-bad-sha", "tx-bad-sha-s0", data.len() as u64)
+            .await
+            .expect_err("wrong sha256 must fail closed");
+        assert!(
+            format!("{err:#}").contains("SHA-256 verification failed"),
+            "{err:#}"
+        );
+        assert!(!dir.path().join("bad-sha.bin").exists());
+        assert!(no_part_files_remain(dir.path()));
+
+        // 2. Concurrent upload to the same target path is rejected while first is active;
+        //    aborting the session's uploads deletes the `.part` file and frees the lock.
+        let valid_sha = sha256_hex(data);
+        begin_child_upload_stripe(
+            sid,
+            "tx-active-1".into(),
+            "tx-active-1-s0".into(),
+            0,
+            1,
+            0,
+            data.len() as u64,
+            "exclusive.bin".into(),
+            data.len() as u64,
+            valid_sha.clone(),
+            None,
+            Some(dest_str.clone()),
+            false,
+        )
+        .await
+        .unwrap();
+        write_child_upload_chunk(sid, "tx-active-1", "tx-active-1-s0", &data[..8], false)
+            .await
+            .unwrap();
+        assert!(
+            !no_part_files_remain(dir.path()),
+            "in-flight upload must have a .part file before abort"
+        );
+
+        let dup_err = begin_child_upload_stripe(
+            bson::oid::ObjectId::new(),
+            "tx-active-2".into(),
+            "tx-active-2-s0".into(),
+            0,
+            1,
+            0,
+            data.len() as u64,
+            "exclusive.bin".into(),
+            data.len() as u64,
+            valid_sha.clone(),
+            None,
+            Some(dest_str.clone()),
+            false,
+        )
+        .await
+        .expect_err("second concurrent upload to same target path must be rejected");
+        assert!(
+            format!("{dup_err:#}").contains("already active"),
+            "{dup_err:#}"
+        );
+
+        // Revoke / abort session uploads -> `.part` deleted and target path unlocked.
+        let aborted = abort_session_child_uploads(sid).await;
+        assert_eq!(aborted, 1);
+        assert!(no_part_files_remain(dir.path()));
+        assert!(!dir.path().join("exclusive.bin").exists());
+
+        // 3. Exceeding granted receiver credit window fails closed and deletes `.part`.
+        let big_len = (UPLOAD_CREDIT_MIN_BYTES + 4096) as usize;
+        let big_data = vec![0x5au8; big_len];
+        let big_sha = sha256_hex(&big_data);
+        let grant = begin_child_upload_stripe(
+            sid,
+            "tx-over-credit".into(),
+            "tx-over-credit-s0".into(),
+            0,
+            1,
+            0,
+            big_len as u64,
+            "over-credit.bin".into(),
+            big_len as u64,
+            big_sha,
+            None,
+            Some(dest_str),
+            true, // parent_under_load = true -> initial credit is UPLOAD_CREDIT_MIN_BYTES (64 KiB)
+        )
+        .await
+        .unwrap();
+        assert_eq!(grant.credit_bytes, UPLOAD_CREDIT_MIN_BYTES);
+        let credit_err =
+            write_child_upload_chunk(sid, "tx-over-credit", "tx-over-credit-s0", &big_data, true)
+                .await
+                .expect_err("sending more bytes than granted credit window must fail closed");
+        assert!(
+            format!("{credit_err:#}").contains("exceeded receiver credit window"),
+            "{credit_err:#}"
+        );
+        assert!(no_part_files_remain(dir.path()));
+        assert!(!dir.path().join("over-credit.bin").exists());
+    }
+
+    #[tokio::test]
+    async fn disk_space_preflight_and_path_traversal_or_symlink_escapes_are_rejected() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
+        let dir = test_upload_tempdir();
+        let dest_str = dir.path().to_str().unwrap().to_string();
+        let sid = bson::oid::ObjectId::new();
+        let valid_sha = sha256_hex(b"hello");
+
+        // 1. Disk space check: simulate only 1024 bytes free, attempt 4096-byte upload.
+        set_test_available_disk_bytes_override(Some(1024));
+        let space_err = begin_child_upload_stripe(
+            sid,
+            "tx-no-space".into(),
+            "tx-no-space-s0".into(),
+            0,
+            1,
+            0,
+            4096,
+            "too-large.bin".into(),
+            4096,
+            valid_sha.clone(),
+            None,
+            Some(dest_str.clone()),
+            false,
+        )
+        .await
+        .expect_err(
+            "upload exceeding available disk space must be rejected before creating temp file",
+        );
+        set_test_available_disk_bytes_override(None);
+        assert!(
+            format!("{space_err:#}").contains("insufficient disk space"),
+            "{space_err:#}"
+        );
+        assert!(no_part_files_remain(dir.path()));
+
+        // 2. Reject `..` traversal in rel_path.
+        for bad_rel in ["../escape.bin", "sub/../../escape.bin", "/abs/escape.bin"] {
+            let err = begin_child_upload_stripe(
+                sid,
+                format!("tx-rel-{bad_rel}"),
+                "s0".into(),
+                0,
+                1,
+                0,
+                5,
+                "escape.bin".into(),
+                5,
+                valid_sha.clone(),
+                Some(bad_rel.into()),
+                Some(dest_str.clone()),
+                false,
+            )
+            .await
+            .expect_err("path traversal in rel_path must be rejected");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("rel_path") || msg.contains("escape"),
+                "unexpected error for {bad_rel}: {msg}"
+            );
+        }
+
+        // 3. Reject forbidden dest_path (`/etc`) and symlink target.
+        let etc_err = begin_child_upload_stripe(
+            sid,
+            "tx-etc".into(),
+            "s0".into(),
+            0,
+            1,
+            0,
+            5,
+            "passwd".into(),
+            5,
+            valid_sha.clone(),
+            None,
+            Some("/etc".into()),
+            false,
+        )
+        .await
+        .expect_err("upload to /etc must be rejected");
+        assert!(
+            format!("{etc_err:#}").contains("dest_path refused")
+                || format!("{etc_err:#}").contains("/etc"),
+            "{etc_err:#}"
+        );
+
+        #[cfg(unix)]
+        {
+            let outside = test_upload_tempdir();
+            let sym_dir = dir.path().join("sym-dir");
+            std::os::unix::fs::symlink(outside.path(), &sym_dir).unwrap();
+            let sym_dir_err = begin_child_upload_stripe(
+                sid,
+                "tx-sym-dir".into(),
+                "s0".into(),
+                0,
+                1,
+                0,
+                5,
+                "escape.bin".into(),
+                5,
+                valid_sha.clone(),
+                None,
+                Some(sym_dir.to_str().unwrap().into()),
+                false,
+            )
+            .await
+            .expect_err("upload through symlink dest_path must be rejected");
+            assert!(
+                format!("{sym_dir_err:#}").contains("symlink"),
+                "{sym_dir_err:#}"
+            );
+
+            let sym_file = dir.path().join("planted.bin");
+            std::os::unix::fs::symlink(outside.path().join("target.bin"), &sym_file).unwrap();
+            let sym_file_err = begin_child_upload_stripe(
+                sid,
+                "tx-sym-file".into(),
+                "s0".into(),
+                0,
+                1,
+                0,
+                5,
+                "planted.bin".into(),
+                5,
+                valid_sha,
+                None,
+                Some(dest_str),
+                false,
+            )
+            .await
+            .expect_err("upload targeting a symlink filename must be rejected");
+            assert!(
+                format!("{sym_file_err:#}").contains("symlink"),
+                "{sym_file_err:#}"
+            );
+            assert!(!outside.path().join("target.bin").exists());
         }
     }
 }

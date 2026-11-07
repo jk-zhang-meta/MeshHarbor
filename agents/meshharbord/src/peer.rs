@@ -1927,6 +1927,7 @@ impl AgentPeer {
             let pc = pc.clone();
             let child_peers = child_peers.clone();
             tokio::spawn(async move {
+                let _ = crate::files::abort_session_child_uploads(sid).await;
                 let drained: Vec<ChildPeerHandle> =
                     child_peers.lock().await.drain().map(|(_, h)| h).collect();
                 for h in drained {
@@ -1948,8 +1949,27 @@ impl AgentPeer {
         transfer_id: String,
         offer_sdp: String,
     ) -> Result<String> {
+        self.accept_file_child_offer_for_direction(
+            child_id,
+            transfer_id,
+            meshharbor_remote_control::signaling::FileChildDirection::Download,
+            offer_sdp,
+        )
+        .await
+    }
+
+    pub async fn accept_file_child_offer_for_direction(
+        &self,
+        child_id: bson::oid::ObjectId,
+        transfer_id: String,
+        direction: meshharbor_remote_control::signaling::FileChildDirection,
+        offer_sdp: String,
+    ) -> Result<String> {
         if self.session_end.is_cancelled() {
             return Err(anyhow!("parent session ended"));
+        }
+        if is_file_child_direction_disabled(direction) {
+            return Err(anyhow!("file child direction disabled"));
         }
         {
             let auth = self
@@ -1979,22 +1999,39 @@ impl AgentPeer {
         }
         let transport = crate::rc_transport::Policy::from_env();
         transport.apply(&mut setting);
-        let child_cc_enabled = node_env("X14_CHILD_CC")
-            .map(|v| v != "0" && !v.eq_ignore_ascii_case("false") && !v.eq_ignore_ascii_case("off"))
-            .unwrap_or(true);
-        if child_cc_enabled {
-            let rate_bytes_per_second = node_env("X14_CHILD_RATE_BPS")
-                .and_then(|v| v.parse::<u64>().ok())
-                .filter(|&r| r > 0)
-                .unwrap_or(2 * 1024 * 1024);
-            let burst_bytes = node_env("X14_CHILD_BURST_BYTES")
-                .and_then(|v| v.parse::<usize>().ok())
-                .filter(|&b| b >= 1280)
-                .unwrap_or(16 * 1024);
-            setting.set_sctp_file_pacing(Some(webrtc::sctp::association::FilePacingConfig {
-                rate_bytes_per_second,
-                burst_bytes,
-            }));
+        match direction {
+            meshharbor_remote_control::signaling::FileChildDirection::Download => {
+                let child_cc_enabled = node_env("X14_CHILD_CC")
+                    .map(|v| {
+                        v != "0"
+                            && !v.eq_ignore_ascii_case("false")
+                            && !v.eq_ignore_ascii_case("off")
+                    })
+                    .unwrap_or(true);
+                if child_cc_enabled {
+                    let rate_bytes_per_second = node_env("X14_CHILD_RATE_BPS")
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .filter(|&r| r > 0)
+                        .unwrap_or(2 * 1024 * 1024);
+                    let burst_bytes = node_env("X14_CHILD_BURST_BYTES")
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .filter(|&b| b >= 1280)
+                        .unwrap_or(16 * 1024);
+                    setting.set_sctp_file_pacing(Some(
+                        webrtc::sctp::association::FilePacingConfig {
+                            rate_bytes_per_second,
+                            burst_bytes,
+                        },
+                    ));
+                }
+            }
+            meshharbor_remote_control::signaling::FileChildDirection::Upload => {
+                let upload_rwnd = node_env("X14_UPLOAD_RWND_BYTES")
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .filter(|&w| w >= 64 * 1024)
+                    .unwrap_or(crate::files::UPLOAD_CHILD_SCTP_RWND_BYTES);
+                setting.set_sctp_max_receive_buffer_size(upload_rwnd);
+            }
         }
         #[cfg(feature = "synthetic-frame-source")]
         l0::apply(&mut setting);
@@ -2074,14 +2111,31 @@ impl AgentPeer {
             let session_id = self.session_id;
             let stop_for_dc = child_stop.clone();
             let files_dc_for_cb = files_dc.clone();
+            let transfer_for_dc = transfer_id.clone();
+            let viewer_report_for_dc = self.viewer_report.clone();
             pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
                 let stop = stop_for_dc.clone();
                 let files_dc = files_dc_for_cb.clone();
+                let transfer_id = transfer_for_dc.clone();
+                let viewer_report = viewer_report_for_dc.clone();
                 let label = dc.label().to_string();
                 Box::pin(async move {
                     if label == "files" {
                         *files_dc.lock().await = Some(dc.clone());
-                        attach_child_files_handler(dc, session_id, &stop);
+                        match direction {
+                            meshharbor_remote_control::signaling::FileChildDirection::Download => {
+                                attach_child_files_handler(dc, session_id, &stop);
+                            }
+                            meshharbor_remote_control::signaling::FileChildDirection::Upload => {
+                                attach_child_upload_files_handler(
+                                    dc,
+                                    session_id,
+                                    transfer_id,
+                                    viewer_report,
+                                    &stop,
+                                );
+                            }
+                        }
                     } else {
                         let _ = dc.close().await;
                     }
@@ -2196,6 +2250,7 @@ impl AgentPeer {
 
     pub async fn revoke_file_children(&self) -> (u32, u64) {
         close_file_child_control(&self.file_child_authorization);
+        let _ = crate::files::abort_session_child_uploads(self.session_id).await;
         let drained: Vec<ChildPeerHandle> = self
             .child_peers
             .lock()
@@ -2226,8 +2281,10 @@ impl AgentPeer {
         self.session_end.cancel();
         close_file_child_control(&self.file_child_authorization);
         let child_peers = self.child_peers.clone();
+        let session_id = self.session_id;
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             rt.spawn(async move {
+                let _ = crate::files::abort_session_child_uploads(session_id).await;
                 let drained: Vec<ChildPeerHandle> =
                     child_peers.lock().await.drain().map(|(_, h)| h).collect();
                 for h in drained {
@@ -10456,8 +10513,57 @@ struct FileChildRegistration {
 
 struct PreparedFileChild {
     transfer_id: String,
+    direction: meshharbor_remote_control::signaling::FileChildDirection,
     consumed: bool,
     completed: bool,
+}
+
+static FILE_CHILD_DOWNLOAD_DISABLED_OVERRIDE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+static FILE_CHILD_UPLOAD_DISABLED_OVERRIDE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_file_child_direction_disabled(
+    direction: meshharbor_remote_control::signaling::FileChildDirection,
+    disabled: bool,
+) {
+    let encoded = if disabled { 2 } else { 1 };
+    match direction {
+        meshharbor_remote_control::signaling::FileChildDirection::Download => {
+            FILE_CHILD_DOWNLOAD_DISABLED_OVERRIDE
+                .store(encoded, std::sync::atomic::Ordering::Release);
+        }
+        meshharbor_remote_control::signaling::FileChildDirection::Upload => {
+            FILE_CHILD_UPLOAD_DISABLED_OVERRIDE
+                .store(encoded, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+pub fn is_file_child_direction_disabled(
+    direction: meshharbor_remote_control::signaling::FileChildDirection,
+) -> bool {
+    let (override_slot, env_suffix) = match direction {
+        meshharbor_remote_control::signaling::FileChildDirection::Download => (
+            &FILE_CHILD_DOWNLOAD_DISABLED_OVERRIDE,
+            "DISABLE_FILE_CHILD_DOWNLOAD",
+        ),
+        meshharbor_remote_control::signaling::FileChildDirection::Upload => (
+            &FILE_CHILD_UPLOAD_DISABLED_OVERRIDE,
+            "DISABLE_FILE_CHILD_UPLOAD",
+        ),
+    };
+    match override_slot.load(std::sync::atomic::Ordering::Acquire) {
+        1 => false,
+        2 => true,
+        _ => node_env(env_suffix).is_some_and(|v| {
+            let trimmed = v.trim();
+            trimmed == "1"
+                || trimmed.eq_ignore_ascii_case("true")
+                || trimmed.eq_ignore_ascii_case("yes")
+                || trimmed.eq_ignore_ascii_case("on")
+        }),
+    }
 }
 
 // Retain consumed IDs until the parent ends so prepare cannot resurrect one.
@@ -10580,6 +10686,18 @@ impl FileChildAuthorization {
                     .and_then(serde_json::Value::as_str)
                     .filter(|v| !v.is_empty() && v.len() <= 128 && !v.chars().any(char::is_control))
                     .ok_or(FileChildDenial::InvalidPreparation)?;
+                let direction = match val.get("direction").and_then(serde_json::Value::as_str) {
+                    None | Some("download") => {
+                        meshharbor_remote_control::signaling::FileChildDirection::Download
+                    }
+                    Some("upload") => {
+                        meshharbor_remote_control::signaling::FileChildDirection::Upload
+                    }
+                    Some(_) => return Err(FileChildDenial::InvalidPreparation),
+                };
+                if is_file_child_direction_disabled(direction) {
+                    return Err(FileChildDenial::ParentUnavailable);
+                }
                 let registration = self
                     .registration
                     .as_mut()
@@ -10606,6 +10724,7 @@ impl FileChildAuthorization {
                     child,
                     PreparedFileChild {
                         transfer_id: transfer.to_owned(),
+                        direction,
                         consumed: false,
                         completed: false,
                     },
@@ -10640,19 +10759,22 @@ impl FileChildAuthorization {
     ) -> std::result::Result<(), FileChildDenial> {
         self.check_parent()?;
         use meshharbor_remote_control::signaling::{
-            FileChildDirection, ServerMsg, file_child_offer_transcript, peer_auth_verify,
+            ServerMsg, file_child_offer_transcript_with_direction, peer_auth_verify,
         };
         let ServerMsg::FileSdpOffer {
             session_id,
             child_id,
             transfer_id,
-            direction: FileChildDirection::Download,
+            direction,
             sdp,
             proof,
         } = offer
         else {
             return Err(FileChildDenial::ParentUnavailable);
         };
+        if is_file_child_direction_disabled(*direction) {
+            return Err(FileChildDenial::ParentUnavailable);
+        }
         if *session_id != self.parent_session_id {
             return Err(FileChildDenial::ParentUnavailable);
         }
@@ -10669,7 +10791,7 @@ impl FileChildAuthorization {
         let prepared = registration
             .children
             .get_mut(child_id)
-            .filter(|p| !p.consumed && p.transfer_id == *transfer_id)
+            .filter(|p| !p.consumed && p.transfer_id == *transfer_id && p.direction == *direction)
             .ok_or(FileChildDenial::UnpreparedOrConsumed)?;
         // Check the preparation before charging a bad key: unknown, consumed,
         // or mismatched children cannot spend this parent's failure budget.
@@ -10677,10 +10799,11 @@ impl FileChildAuthorization {
         if proof.key != registration.key {
             return Err(FileChildDenial::InvalidProof);
         }
-        let transcript = file_child_offer_transcript(
+        let transcript = file_child_offer_transcript_with_direction(
             &self.parent_session_id.to_hex(),
             &child_id.to_hex(),
             transfer_id,
+            *direction,
             &identity.0.to_hex(),
             &identity.1.to_hex(),
             sdp,
@@ -13006,12 +13129,324 @@ async fn handle_child_files_control(
         crate::files::FilesIncoming::Begin { id, .. }
         | crate::files::FilesIncoming::End { id }
         | crate::files::FilesIncoming::GetFolder { id, .. }
-        | crate::files::FilesIncoming::Resume { id, .. } => {
+        | crate::files::FilesIncoming::Resume { id, .. }
+        | crate::files::FilesIncoming::UploadBegin { id, .. }
+        | crate::files::FilesIncoming::UploadEof { id, .. } => {
             send_files_json(
                 &dc,
                 &crate::files::FilesOutgoing::Error {
                     id: &id,
                     message: "file child channel is download-only",
+                },
+            )
+            .await;
+        }
+    }
+}
+
+pub fn attach_child_upload_files_handler(
+    dc: Arc<RTCDataChannel>,
+    session_id: bson::oid::ObjectId,
+    transfer_id: String,
+    viewer_report: Arc<crate::encode::viewer_rate::ViewerFeedback>,
+    child_end: &tokio_util::sync::CancellationToken,
+) {
+    let bound_stripe_id: Arc<tokio::sync::Mutex<Option<String>>> =
+        Arc::new(tokio::sync::Mutex::new(None));
+    let dc_for_handler = dc.clone();
+    let transfer_for_close = transfer_id.clone();
+    dc.on_close(Box::new(move || {
+        let tid = transfer_for_close.clone();
+        Box::pin(async move {
+            let _ = crate::files::abort_child_upload(session_id, &tid).await;
+        })
+    }));
+    let transfer_for_msg = transfer_id.clone();
+    let stripe_for_msg = bound_stripe_id.clone();
+    let viewer_for_msg = viewer_report.clone();
+    dc.on_message(Box::new(move |msg| {
+        let dc = dc_for_handler.clone();
+        let transfer_id = transfer_for_msg.clone();
+        let bound_stripe_id = stripe_for_msg.clone();
+        let viewer_report = viewer_for_msg.clone();
+        Box::pin(async move {
+            crate::session_telemetry::counters(session_id).note_transfer();
+            if msg.is_string {
+                handle_child_upload_files_control(
+                    dc,
+                    session_id,
+                    &transfer_id,
+                    &bound_stripe_id,
+                    &viewer_report,
+                    &msg.data,
+                )
+                .await;
+            } else {
+                let stripe_id = bound_stripe_id.lock().await.clone();
+                let Some(stripe_id) = stripe_id else {
+                    send_files_json(
+                        &dc,
+                        &crate::files::FilesOutgoing::Error {
+                            id: "",
+                            message: "upload chunk arrived before files:upload.begin",
+                        },
+                    )
+                    .await;
+                    return;
+                };
+                let parent_under_load = viewer_report.peek_is_under_load();
+                match crate::files::write_child_upload_chunk(
+                    session_id,
+                    &transfer_id,
+                    &stripe_id,
+                    &msg.data,
+                    parent_under_load,
+                )
+                .await
+                {
+                    Ok(Some(replenish)) => {
+                        if !replenish.pace_delay.is_zero() {
+                            tokio::time::sleep(replenish.pace_delay).await;
+                        }
+                        send_files_json(
+                            &dc,
+                            &crate::files::FilesOutgoing::UploadCredit {
+                                id: &replenish.transfer_id,
+                                stripe_id: &replenish.stripe_id,
+                                acked_bytes: replenish.acked_bytes,
+                                credit_bytes: replenish.credit_bytes,
+                                chunk_bytes: replenish.chunk_bytes,
+                            },
+                        )
+                        .await;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let _ = crate::files::abort_child_upload(session_id, &transfer_id).await;
+                        let msg = format!("{e}");
+                        send_files_json(
+                            &dc,
+                            &crate::files::FilesOutgoing::Error {
+                                id: &stripe_id,
+                                message: &msg,
+                            },
+                        )
+                        .await;
+                    }
+                }
+            }
+        })
+    }));
+    let transfer_for_end = transfer_id;
+    on_session_end(&dc, child_end, move || async move {
+        let _ = crate::files::abort_child_upload(session_id, &transfer_for_end).await;
+    });
+}
+
+async fn handle_child_upload_files_control(
+    dc: Arc<RTCDataChannel>,
+    session_id: bson::oid::ObjectId,
+    bound_transfer_id: &str,
+    bound_stripe_id: &Arc<tokio::sync::Mutex<Option<String>>>,
+    viewer_report: &Arc<crate::encode::viewer_rate::ViewerFeedback>,
+    data: &[u8],
+) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        debug!(%session_id, "child upload files: non-UTF8 control frame, dropped");
+        return;
+    };
+    let msg = match serde_json::from_str::<crate::files::FilesIncoming>(text) {
+        Ok(m) => m,
+        Err(e) => {
+            debug!(%session_id, %e, "child upload files: malformed control JSON, dropped");
+            return;
+        }
+    };
+    match msg {
+        crate::files::FilesIncoming::UploadBegin {
+            id,
+            stripe_id,
+            stripe_index,
+            stripe_count,
+            offset,
+            length,
+            name,
+            size,
+            sha256,
+            rel_path,
+            dest_path,
+        } => {
+            if id != bound_transfer_id {
+                let _ = crate::files::abort_child_upload(session_id, bound_transfer_id).await;
+                send_files_json(
+                    &dc,
+                    &crate::files::FilesOutgoing::Error {
+                        id: &id,
+                        message: "transfer_id does not match prepared upload child",
+                    },
+                )
+                .await;
+                return;
+            }
+            {
+                let mut slot = bound_stripe_id.lock().await;
+                if slot.is_some() {
+                    let _ = crate::files::abort_child_upload(session_id, bound_transfer_id).await;
+                    send_files_json(
+                        &dc,
+                        &crate::files::FilesOutgoing::Error {
+                            id: &id,
+                            message: "upload child channel already bound to a stripe",
+                        },
+                    )
+                    .await;
+                    return;
+                }
+                *slot = Some(stripe_id.clone());
+            }
+            let parent_under_load = viewer_report.peek_is_under_load();
+            match crate::files::begin_child_upload_stripe(
+                session_id,
+                id.clone(),
+                stripe_id.clone(),
+                stripe_index,
+                stripe_count,
+                offset,
+                length,
+                name,
+                size,
+                sha256,
+                rel_path,
+                dest_path,
+                parent_under_load,
+            )
+            .await
+            {
+                Ok(grant) => {
+                    send_files_json(
+                        &dc,
+                        &crate::files::FilesOutgoing::UploadCredit {
+                            id: &grant.transfer_id,
+                            stripe_id: &grant.stripe_id,
+                            acked_bytes: grant.acked_bytes,
+                            credit_bytes: grant.credit_bytes,
+                            chunk_bytes: grant.chunk_bytes,
+                        },
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    let _ = crate::files::abort_child_upload(session_id, bound_transfer_id).await;
+                    let msg = format!("{e}");
+                    send_files_json(
+                        &dc,
+                        &crate::files::FilesOutgoing::Error {
+                            id: &id,
+                            message: &msg,
+                        },
+                    )
+                    .await;
+                }
+            }
+        }
+        crate::files::FilesIncoming::UploadEof {
+            id,
+            stripe_id,
+            bytes,
+        } => {
+            if id != bound_transfer_id {
+                let _ = crate::files::abort_child_upload(session_id, bound_transfer_id).await;
+                send_files_json(
+                    &dc,
+                    &crate::files::FilesOutgoing::Error {
+                        id: &id,
+                        message: "transfer_id does not match prepared upload child",
+                    },
+                )
+                .await;
+                return;
+            }
+            match crate::files::finish_child_upload_stripe(session_id, &id, &stripe_id, bytes).await
+            {
+                Ok(crate::files::ChildUploadEofOutcome::StripeWaiting {
+                    transfer_id,
+                    stripe_id,
+                    bytes,
+                }) => {
+                    send_files_json(
+                        &dc,
+                        &crate::files::FilesOutgoing::UploadStripeDone {
+                            id: &transfer_id,
+                            stripe_id: &stripe_id,
+                            bytes,
+                        },
+                    )
+                    .await;
+                }
+                Ok(crate::files::ChildUploadEofOutcome::Completed {
+                    transfer_id,
+                    final_path,
+                    bytes,
+                    sha256,
+                }) => {
+                    crate::session_telemetry::counters(session_id).note_file(
+                        TransferDirection::ToHost,
+                        &final_path
+                            .file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_default(),
+                        bytes,
+                    );
+                    let path_str = final_path.to_string_lossy();
+                    send_files_json(
+                        &dc,
+                        &crate::files::FilesOutgoing::UploadComplete {
+                            id: &transfer_id,
+                            path: &path_str,
+                            bytes,
+                            sha256: &sha256,
+                        },
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    let _ = crate::files::abort_child_upload(session_id, bound_transfer_id).await;
+                    let msg = format!("{e}");
+                    send_files_json(
+                        &dc,
+                        &crate::files::FilesOutgoing::Error {
+                            id: &id,
+                            message: &msg,
+                        },
+                    )
+                    .await;
+                }
+            }
+        }
+        crate::files::FilesIncoming::Cancel { id } => {
+            let aborted = crate::files::abort_child_upload(session_id, bound_transfer_id).await;
+            info!(%session_id, %id, aborted, "child upload files: cancel requested");
+        }
+        crate::files::FilesIncoming::Dir { req_id, .. } => {
+            send_files_json(
+                &dc,
+                &crate::files::FilesOutgoing::DirError {
+                    req_id: &req_id,
+                    message: "file child channel is upload-only",
+                },
+            )
+            .await;
+        }
+        crate::files::FilesIncoming::Get { id, .. }
+        | crate::files::FilesIncoming::GetFolder { id, .. }
+        | crate::files::FilesIncoming::Begin { id, .. }
+        | crate::files::FilesIncoming::End { id }
+        | crate::files::FilesIncoming::Resume { id, .. } => {
+            send_files_json(
+                &dc,
+                &crate::files::FilesOutgoing::Error {
+                    id: &id,
+                    message: "file child channel is upload-only",
                 },
             )
             .await;
@@ -13321,6 +13756,17 @@ async fn handle_files_control(
                     .await;
                 }
             }
+        }
+        crate::files::FilesIncoming::UploadBegin { id, .. }
+        | crate::files::FilesIncoming::UploadEof { id, .. } => {
+            send_files_json(
+                &dc,
+                &crate::files::FilesOutgoing::Error {
+                    id: &id,
+                    message: "striped child upload requires a file child channel",
+                },
+            )
+            .await;
         }
     }
 }
@@ -17217,6 +17663,484 @@ mod download_stop_tests {
             !parent_stop.is_cancelled(),
             "parent session must remain uninterrupted"
         );
+        let _ = b_dc.close().await;
+        let _ = b_pc.close().await;
+    }
+
+    async fn connected_webrtc_upload_files_pair(
+        session_id: bson::oid::ObjectId,
+        transfer_id: &str,
+        viewer_report: Arc<crate::encode::viewer_rate::ViewerFeedback>,
+        stop: &tokio_util::sync::CancellationToken,
+    ) -> (
+        Arc<RTCPeerConnection>,
+        Arc<RTCDataChannel>,
+        Arc<webrtc::data::data_channel::DataChannel>,
+        Arc<RTCPeerConnection>,
+        Arc<RTCDataChannel>,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) {
+        let mut browser_setting = webrtc::api::setting_engine::SettingEngine::default();
+        browser_setting.detach_data_channels();
+        let browser_api = APIBuilder::new()
+            .with_setting_engine(browser_setting)
+            .build();
+        let mut agent_setting = webrtc::api::setting_engine::SettingEngine::default();
+        agent_setting.set_sctp_max_receive_buffer_size(crate::files::UPLOAD_CHILD_SCTP_RWND_BYTES);
+        let agent_api = APIBuilder::new().with_setting_engine(agent_setting).build();
+        let browser_pc = Arc::new(
+            browser_api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .expect("browser pc"),
+        );
+        let agent_pc = Arc::new(
+            agent_api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .expect("agent pc"),
+        );
+        let (agent_dc_tx, agent_dc_rx) = tokio::sync::oneshot::channel();
+        let agent_dc_tx = Arc::new(std::sync::Mutex::new(Some(agent_dc_tx)));
+        let (agent_open_tx, agent_open_rx) = tokio::sync::oneshot::channel();
+        let agent_open_tx = Arc::new(std::sync::Mutex::new(Some(agent_open_tx)));
+        let stop_for_cb = stop.clone();
+        let tid_for_cb = transfer_id.to_string();
+        let vr_for_cb = viewer_report.clone();
+        agent_pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+            attach_child_upload_files_handler(
+                dc.clone(),
+                session_id,
+                tid_for_cb.clone(),
+                vr_for_cb.clone(),
+                &stop_for_cb,
+            );
+            let open_tx = agent_open_tx.clone();
+            dc.on_open(Box::new(move || {
+                if let Some(tx) = open_tx.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+                Box::pin(async {})
+            }));
+            let tx = agent_dc_tx.lock().unwrap().take();
+            Box::pin(async move {
+                if let Some(tx) = tx {
+                    let _ = tx.send(dc);
+                }
+            })
+        }));
+
+        let browser_dc = browser_pc
+            .create_data_channel("files", None)
+            .await
+            .expect("browser files dc");
+        let (open_tx, open_rx) = tokio::sync::oneshot::channel();
+        let open_tx = Arc::new(std::sync::Mutex::new(Some(open_tx)));
+        browser_dc.on_open(Box::new(move || {
+            if let Some(tx) = open_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            Box::pin(async {})
+        }));
+
+        let offer = browser_pc.create_offer(None).await.expect("offer");
+        let mut gather = browser_pc.gathering_complete_promise().await;
+        browser_pc
+            .set_local_description(offer)
+            .await
+            .expect("browser sld");
+        let _ = gather.recv().await;
+        let offer_sdp = browser_pc.local_description().await.expect("local offer");
+
+        agent_pc
+            .set_remote_description(offer_sdp)
+            .await
+            .expect("agent srd");
+        let answer = agent_pc.create_answer(None).await.expect("answer");
+        let mut gather_ans = agent_pc.gathering_complete_promise().await;
+        agent_pc
+            .set_local_description(answer)
+            .await
+            .expect("agent sld");
+        let _ = gather_ans.recv().await;
+        let answer_sdp = agent_pc.local_description().await.expect("local answer");
+
+        browser_pc
+            .set_remote_description(answer_sdp)
+            .await
+            .expect("browser srd");
+
+        let agent_dc = tokio::time::timeout(Duration::from_secs(5), agent_dc_rx)
+            .await
+            .expect("agent dc timeout")
+            .expect("agent dc");
+        tokio::time::timeout(Duration::from_secs(5), open_rx)
+            .await
+            .expect("browser dc open timeout")
+            .expect("browser dc open");
+        tokio::time::timeout(Duration::from_secs(5), agent_open_rx)
+            .await
+            .expect("agent dc open timeout")
+            .expect("agent dc open");
+
+        let raw_browser_dc = browser_dc.detach().await.expect("detach browser dc");
+        let (strings_tx, strings_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let raw_for_reader = raw_browser_dc.clone();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 64 * 1024];
+            while let Ok((n, is_string)) = raw_for_reader.read_data_channel(&mut buf).await {
+                if n == 0 && !is_string {
+                    break;
+                }
+                if is_string && let Ok(s) = std::str::from_utf8(&buf[..n]) {
+                    let _ = strings_tx.send(s.to_string());
+                }
+            }
+        });
+
+        (
+            browser_pc,
+            browser_dc,
+            raw_browser_dc,
+            agent_pc,
+            agent_dc,
+            strings_rx,
+        )
+    }
+
+    async fn run_webrtc_child_upload_stripes(
+        source: &[u8],
+        expected_sha_hex: &str,
+        dest_dir: &std::path::Path,
+        filename: &str,
+        stripe_count: usize,
+    ) -> (Duration, std::path::PathBuf) {
+        let session_id = bson::oid::ObjectId::new();
+        let transfer_id = format!(
+            "up-bench-{stripe_count}-{}",
+            bson::oid::ObjectId::new().to_hex()
+        );
+        let viewer_report = Arc::new(crate::encode::viewer_rate::ViewerFeedback::new());
+        let total_size = source.len() as u64;
+        let base = total_size / stripe_count as u64;
+
+        let mut pairs = Vec::with_capacity(stripe_count);
+        for _ in 0..stripe_count {
+            let stop = tokio_util::sync::CancellationToken::new();
+            let (b_pc, b_dc, raw_b_dc, a_pc, a_dc, strings_rx) =
+                connected_webrtc_upload_files_pair(
+                    session_id,
+                    &transfer_id,
+                    viewer_report.clone(),
+                    &stop,
+                )
+                .await;
+            pairs.push((b_pc, b_dc, raw_b_dc, a_pc, a_dc, stop, strings_rx));
+        }
+
+        let started = std::time::Instant::now();
+        let completed_path: Arc<std::sync::Mutex<Option<std::path::PathBuf>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let mut tasks = Vec::with_capacity(stripe_count);
+        let mut cleanup_handles = Vec::with_capacity(stripe_count);
+
+        for (idx, (b_pc, b_dc, raw_b_dc, a_pc, a_dc, _stop, mut strings_rx)) in
+            pairs.into_iter().enumerate()
+        {
+            cleanup_handles.push((b_pc, b_dc, a_pc, a_dc));
+            let offset = idx as u64 * base;
+            let length = if idx + 1 == stripe_count {
+                total_size - offset
+            } else {
+                base
+            };
+            let slice = source[offset as usize..(offset + length) as usize].to_vec();
+            let tid = transfer_id.clone();
+            let stripe_id = format!("{tid}-s{idx}");
+            let sha = expected_sha_hex.to_string();
+            let fname = filename.to_string();
+            let dpath = dest_dir.to_string_lossy().to_string();
+            let completed_out = completed_path.clone();
+
+            tasks.push(tokio::spawn(async move {
+                let begin_cmd = serde_json::json!({
+                    "t": "files:upload.begin",
+                    "id": tid,
+                    "stripe_id": stripe_id,
+                    "stripe_index": idx,
+                    "stripe_count": stripe_count,
+                    "offset": offset,
+                    "length": length,
+                    "name": fname,
+                    "size": total_size,
+                    "sha256": sha,
+                    "dest_path": dpath,
+                })
+                .to_string();
+                raw_b_dc
+                    .write_data_channel(&bytes::Bytes::from(begin_cmd), true)
+                    .await
+                    .expect("send files:upload.begin");
+
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+                let mut sent: usize = 0;
+                let mut eof_sent = false;
+
+                loop {
+                    let msg = tokio::time::timeout_at(deadline, strings_rx.recv())
+                        .await
+                        .expect("upload stripe msg timeout")
+                        .expect("upload stripe strings channel closed");
+                    let val: serde_json::Value =
+                        serde_json::from_str(&msg).expect("valid json from agent");
+                    match val.get("t").and_then(|v| v.as_str()) {
+                        Some("files:upload.credit") => {
+                            let acked = val.get("acked_bytes").and_then(|v| v.as_u64()).unwrap_or(0)
+                                as usize;
+                            let credit = val
+                                .get("credit_bytes")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as usize;
+                            let chunk_bytes =
+                                val.get("chunk_bytes")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(16384) as usize;
+                            let allowed = (acked + credit).min(slice.len());
+                            while sent < allowed {
+                                let step = chunk_bytes.min(allowed - sent);
+                                raw_b_dc
+                                    .write(&bytes::Bytes::copy_from_slice(
+                                        &slice[sent..sent + step],
+                                    ))
+                                    .await
+                                    .expect("send upload chunk");
+                                sent += step;
+                            }
+                            if sent == slice.len() && !eof_sent {
+                                eof_sent = true;
+                                let eof_cmd = serde_json::json!({
+                                    "t": "files:upload.eof",
+                                    "id": tid,
+                                    "stripe_id": stripe_id,
+                                    "bytes": sent,
+                                })
+                                .to_string();
+                                raw_b_dc
+                                    .write_data_channel(&bytes::Bytes::from(eof_cmd), true)
+                                    .await
+                                    .expect("send files:upload.eof");
+                            }
+                        }
+                        Some("files:upload.stripe_done") => {
+                            assert_eq!(sent, slice.len());
+                            break;
+                        }
+                        Some("files:upload.complete") => {
+                            assert_eq!(sent, slice.len());
+                            let p = val
+                                .get("path")
+                                .and_then(|v| v.as_str())
+                                .expect("complete path");
+                            *completed_out.lock().unwrap() = Some(std::path::PathBuf::from(p));
+                            break;
+                        }
+                        Some("files:error") => {
+                            panic!(
+                                "upload stripe files:error: {}",
+                                val.get("message")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("error")
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }));
+        }
+
+        for t in tasks {
+            t.await.expect("upload stripe task join");
+        }
+        let elapsed = started.elapsed();
+
+        for (b_pc, b_dc, a_pc, a_dc) in cleanup_handles {
+            let _ = b_dc.close().await;
+            let _ = b_pc.close().await;
+            let _ = a_dc.close().await;
+            let _ = a_pc.close().await;
+        }
+
+        let final_path = completed_path
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("upload must emit files:upload.complete on final stripe");
+        (elapsed, final_path)
+    }
+
+    #[tokio::test]
+    async fn child_upload_webrtc_1_vs_4_throughput_credit_pacing_sha256_download_rejection_and_revoke_under_5s()
+     {
+        let (_src_dir, src_path) = a_file(4 * 1024 * 1024);
+        let source = std::fs::read(&src_path).expect("read source file");
+        let want_digest = ring::digest::digest(&ring::digest::SHA256, &source);
+        let mut want_sha_hex = String::with_capacity(64);
+        for b in want_digest.as_ref() {
+            use std::fmt::Write;
+            let _ = write!(&mut want_sha_hex, "{b:02x}");
+        }
+        let out_dir = {
+            let w = crate::files::writer_context();
+            if w.privileged
+                && let Some(home) = w.active_home
+            {
+                tempfile::Builder::new()
+                    .prefix("meshharbor-x14-peer-upload-")
+                    .tempdir_in(home)
+                    .expect("upload target dir")
+            } else {
+                tempfile::tempdir().expect("upload target dir")
+            }
+        };
+
+        // 1. Compare 1-connection vs 4-connection WebRTC DataChannel upload + full SHA-256 verification.
+        let (elapsed_1, path_1) = run_webrtc_child_upload_stripes(
+            &source,
+            &want_sha_hex,
+            out_dir.path(),
+            "upload-1c.bin",
+            1,
+        )
+        .await;
+        let written_1 = std::fs::read(&path_1).expect("read 1-child uploaded file");
+        let sha_1 = ring::digest::digest(&ring::digest::SHA256, &written_1);
+        assert_eq!(
+            sha_1.as_ref(),
+            want_digest.as_ref(),
+            "1-child upload SHA256 match"
+        );
+
+        let (elapsed_4, path_4) = run_webrtc_child_upload_stripes(
+            &source,
+            &want_sha_hex,
+            out_dir.path(),
+            "upload-4c.bin",
+            4,
+        )
+        .await;
+        let written_4 = std::fs::read(&path_4).expect("read 4-child uploaded file");
+        let sha_4 = ring::digest::digest(&ring::digest::SHA256, &written_4);
+        assert_eq!(
+            sha_4.as_ref(),
+            want_digest.as_ref(),
+            "4-child upload SHA256 match"
+        );
+
+        let mbps_1 = (source.len() as f64 / (1024.0 * 1024.0)) / elapsed_1.as_secs_f64();
+        let mbps_4 = (source.len() as f64 / (1024.0 * 1024.0)) / elapsed_4.as_secs_f64();
+        eprintln!(
+            "[X14 upload bench] 4 MiB WebRTC upload: 1 child = {:?} ({:.1} MiB/s), 4 children = {:?} ({:.1} MiB/s)",
+            elapsed_1, mbps_1, elapsed_4, mbps_4
+        );
+
+        // 2. Upload child channel rejects download and browse commands with "file child channel is upload-only".
+        let sid = bson::oid::ObjectId::new();
+        let vr = Arc::new(crate::encode::viewer_rate::ViewerFeedback::new());
+        let child_stop = tokio_util::sync::CancellationToken::new();
+        let (b_pc, b_dc, raw_b_dc, a_pc, a_dc, mut strings_rx) =
+            connected_webrtc_upload_files_pair(sid, "tx-reject-dl", vr.clone(), &child_stop).await;
+        raw_b_dc
+            .write_data_channel(
+                &bytes::Bytes::from(
+                    serde_json::json!({
+                        "t": "files:get",
+                        "id": "dl-1",
+                        "path": src_path.to_string_lossy(),
+                    })
+                    .to_string(),
+                ),
+                true,
+            )
+            .await
+            .expect("send files:get on upload child");
+        let err_msg = tokio::time::timeout(Duration::from_secs(3), strings_rx.recv())
+            .await
+            .expect("download rejection timeout")
+            .expect("download rejection msg");
+        let err_val: serde_json::Value = serde_json::from_str(&err_msg).expect("error json");
+        assert_eq!(
+            err_val.get("t").and_then(|v| v.as_str()),
+            Some("files:error")
+        );
+        assert!(
+            err_val
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .contains("file child channel is upload-only")
+        );
+
+        // 3. Mid-upload revocation closes child connections in < 5s and deletes the `.part` file immediately.
+        let begin_revoke = serde_json::json!({
+            "t": "files:upload.begin",
+            "id": "tx-reject-dl",
+            "stripe_id": "tx-reject-dl-s0",
+            "stripe_index": 0,
+            "stripe_count": 1,
+            "offset": 0,
+            "length": source.len(),
+            "name": "revoked-in-flight.bin",
+            "size": source.len(),
+            "sha256": want_sha_hex,
+            "dest_path": out_dir.path().to_string_lossy(),
+        })
+        .to_string();
+        raw_b_dc
+            .write_data_channel(&bytes::Bytes::from(begin_revoke), true)
+            .await
+            .expect("send begin");
+        let credit_msg = tokio::time::timeout(Duration::from_secs(3), strings_rx.recv())
+            .await
+            .expect("credit timeout")
+            .expect("credit msg");
+        let credit_val: serde_json::Value = serde_json::from_str(&credit_msg).unwrap();
+        assert_eq!(
+            credit_val.get("t").and_then(|v| v.as_str()),
+            Some("files:upload.credit")
+        );
+        raw_b_dc
+            .write(&bytes::Bytes::copy_from_slice(&source[..16384]))
+            .await
+            .expect("send partial chunk");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let revoke_started = std::time::Instant::now();
+        child_stop.cancel();
+        let aborted = crate::files::abort_session_child_uploads(sid).await;
+        assert_eq!(
+            aborted, 1,
+            "active upload session must be aborted on revocation"
+        );
+        let _ = a_dc.close().await;
+        let _ = a_pc.close().await;
+        let revoke_elapsed = revoke_started.elapsed();
+        assert!(
+            revoke_elapsed < Duration::from_secs(5),
+            "revocation took {:?}",
+            revoke_elapsed
+        );
+        // Confirm no `.part` file or partial target file remains in `out_dir`.
+        let remaining_parts: Vec<_> = std::fs::read_dir(out_dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+            .collect();
+        assert!(
+            remaining_parts.is_empty(),
+            "temporary .part file must be deleted on revocation, found {remaining_parts:?}"
+        );
+        assert!(!out_dir.path().join("revoked-in-flight.bin").exists());
+
         let _ = b_dc.close().await;
         let _ = b_pc.close().await;
     }

@@ -247,17 +247,31 @@ async fn dispatch_controller_rc(
         _ => None,
     };
     let mut file_child_watch_ctx = None;
-    if let ClientMsg::FileChildReserve { session_id, .. }
-    | ClientMsg::FileSdpOffer { session_id, .. } = &parsed
+    if let ClientMsg::FileChildReserve {
+        session_id,
+        direction,
+        ..
+    }
+    | ClientMsg::FileSdpOffer {
+        session_id,
+        direction,
+        ..
+    } = &parsed
     {
-        match hub.session_file_child_target(*session_id, user_id, controller_tx) {
+        match hub.session_file_child_target_for_direction(
+            *session_id,
+            user_id,
+            controller_tx,
+            *direction,
+        ) {
             Ok((agent_id, tenant_id, _)) => {
                 let current_snapshot =
                     resolve_file_child_policy_snapshot(state, user_id, agent_id, tenant_id).await;
-                match hub.admit_file_child_policy_snapshot(
+                match hub.admit_file_child_policy_snapshot_for_direction(
                     *session_id,
                     user_id,
                     controller_tx,
+                    *direction,
                     current_snapshot,
                 ) {
                     Ok(start_watch) => {

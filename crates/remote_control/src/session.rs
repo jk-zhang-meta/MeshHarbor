@@ -14,7 +14,7 @@ use crate::consent::ConsentSlot;
 use crate::error::{Error, Result};
 use crate::models::{ConsentMode, EndReason, SessionPhase, SessionStats};
 use crate::permissions::Permissions;
-use crate::signaling::{LocalRelayDescriptor, ServerMsg};
+use crate::signaling::{FileChildDirection, LocalRelayDescriptor, ServerMsg};
 
 /// Channel used to push messages to a connected client (agent or controller).
 /// The WS layer owns the receiving half and forwards to the socket.
@@ -28,6 +28,7 @@ enum FileChildState {
 
 struct FileChild {
     transfer_id: String,
+    direction: FileChildDirection,
     state: FileChildState,
 }
 
@@ -100,6 +101,8 @@ pub struct LiveSession {
     permissions: Permissions,
     file_children_opted_in: bool,
     file_children_enabled: bool,
+    file_child_upload_opted_in: bool,
+    file_child_upload_enabled: bool,
     file_children_revoked: bool,
     file_child_revoke_pending_ack: bool,
     file_child_policy_snapshot: Option<FileChildPolicySnapshot>,
@@ -232,6 +235,7 @@ impl LiveSession {
             .map_or(permissions, |s| permissions & s.ceiling);
         if !self.permissions.contains(Permissions::FILES) {
             self.file_children_enabled = false;
+            self.file_child_upload_enabled = false;
             self.file_children.clear();
         }
     }
@@ -276,6 +280,8 @@ impl LiveSession {
             permissions,
             file_children_opted_in: false,
             file_children_enabled: false,
+            file_child_upload_opted_in: false,
+            file_child_upload_enabled: false,
             file_children_revoked: false,
             file_child_revoke_pending_ack: false,
             file_child_policy_snapshot: None,
@@ -410,29 +416,75 @@ impl LiveSession {
     /// Once irreversibly revoked by a policy tightening or revision mismatch,
     /// child capability cannot be re-enabled on this parent session.
     pub fn set_file_children_opted_in(&mut self, opted_in: bool) {
-        self.file_children_opted_in = opted_in && !self.file_children_revoked;
+        self.set_file_children_opted_in_for(FileChildDirection::Download, opted_in);
+    }
+
+    pub fn set_file_children_opted_in_for(
+        &mut self,
+        direction: FileChildDirection,
+        opted_in: bool,
+    ) {
+        let allowed = opted_in && !self.file_children_revoked;
+        match direction {
+            FileChildDirection::Download => self.file_children_opted_in = allowed,
+            FileChildDirection::Upload => self.file_child_upload_opted_in = allowed,
+        }
     }
 
     pub fn is_file_children_opted_in(&self) -> bool {
-        self.file_children_opted_in && !self.file_children_revoked
+        self.is_file_children_opted_in_for(FileChildDirection::Download)
+    }
+
+    pub fn is_file_children_opted_in_for(&self, direction: FileChildDirection) -> bool {
+        !self.file_children_revoked
+            && match direction {
+                FileChildDirection::Download => self.file_children_opted_in,
+                FileChildDirection::Upload => self.file_child_upload_opted_in,
+            }
     }
 
     pub fn is_file_children_enabled(&self) -> bool {
-        self.file_children_enabled && !self.file_children_revoked
+        self.is_file_children_enabled_for(FileChildDirection::Download)
+    }
+
+    pub fn is_file_children_enabled_for(&self, direction: FileChildDirection) -> bool {
+        !self.file_children_revoked
+            && match direction {
+                FileChildDirection::Download => self.file_children_enabled,
+                FileChildDirection::Upload => self.file_child_upload_enabled,
+            }
     }
 
     pub fn set_file_children_enabled(&mut self, enabled: bool) {
+        self.set_file_children_enabled_for(FileChildDirection::Download, enabled);
+    }
+
+    pub fn set_file_children_enabled_for(&mut self, direction: FileChildDirection, enabled: bool) {
         if enabled && !self.file_children_revoked {
-            self.file_children_opted_in = true;
+            self.set_file_children_opted_in_for(direction, true);
         }
-        self.file_children_enabled = enabled
+        let next = enabled
             && !self.file_children_revoked
             && self.phase == SessionPhase::Active
             && self.permissions().contains(Permissions::FILES);
-        if !self.file_children_enabled {
-            self.file_children.clear();
-            self.file_child_watch_started = false;
+        match direction {
+            FileChildDirection::Download => self.file_children_enabled = next,
+            FileChildDirection::Upload => self.file_child_upload_enabled = next,
         }
+        if !next {
+            self.file_children.retain(|_, c| c.direction != direction);
+            if self.file_children.is_empty() {
+                self.file_child_watch_started = false;
+            }
+        }
+    }
+
+    pub fn is_any_file_children_opted_in_or_enabled(&self) -> bool {
+        !self.file_children_revoked
+            && (self.file_children_opted_in
+                || self.file_children_enabled
+                || self.file_child_upload_opted_in
+                || self.file_child_upload_enabled)
     }
 
     pub fn is_file_children_revoked(&self) -> bool {
@@ -447,15 +499,17 @@ impl LiveSession {
         self.file_child_policy_snapshot
     }
 
-    /// Irreversibly revoke all download-only file child capability on this
-    /// parent session. Returns `true` when this call transitions the session
-    /// into the revoked state (so the caller can push `rc:file.child.revoke`
-    /// and arm the 5s fail-closed ACK timer once).
+    /// Irreversibly revoke all file child capability (`download` and `upload`)
+    /// on this parent session. Returns `true` when this call transitions the
+    /// session into the revoked state (so the caller can push
+    /// `rc:file.child.revoke` and arm the 5s fail-closed ACK timer once).
     pub fn revoke_file_children_irreversibly(&mut self) -> bool {
         let first_revocation = !self.file_children_revoked;
         self.file_children_revoked = true;
         self.file_children_opted_in = false;
         self.file_children_enabled = false;
+        self.file_child_upload_opted_in = false;
+        self.file_child_upload_enabled = false;
         self.file_child_watch_started = false;
         self.file_children.clear();
         if first_revocation {
@@ -564,20 +618,30 @@ impl LiveSession {
     /// slot on an unrevoked, active FILES parent session.
     pub fn has_active_file_child(&self, child_id: ObjectId, transfer_id: &str) -> bool {
         !self.file_children_revoked
-            && self.file_children_enabled
             && self.phase == SessionPhase::Active
             && self.permissions().contains(Permissions::FILES)
-            && self
-                .file_children
-                .get(&child_id)
-                .is_some_and(|c| c.transfer_id == transfer_id && c.state == FileChildState::Active)
+            && self.file_children.get(&child_id).is_some_and(|c| {
+                c.transfer_id == transfer_id
+                    && c.state == FileChildState::Active
+                    && self.is_file_children_enabled_for(c.direction)
+            })
     }
 
-    /// Reserve a server-chosen child ID for this parent's transfer. The caller
-    /// cannot select an ID. Reserved and active children share four slots.
-    /// This is not identity/proof verification, and transport completion is not
-    /// wired yet: the production path must remain disabled.
+    /// Reserve a server-chosen child ID for this parent's download transfer.
+    /// For direction-parameterized reservations (`download` or `upload`), see
+    /// [`Self::reserve_file_child_for_direction`].
     pub fn reserve_file_child(&mut self, transfer_id: &str) -> Result<ObjectId> {
+        self.reserve_file_child_for_direction(transfer_id, FileChildDirection::Download)
+    }
+
+    /// Reserve a server-chosen child ID for this parent's transfer in
+    /// `direction`. Reserved and active children share four slots across the
+    /// parent session.
+    pub fn reserve_file_child_for_direction(
+        &mut self,
+        transfer_id: &str,
+        direction: FileChildDirection,
+    ) -> Result<ObjectId> {
         use ring::rand::{SecureRandom, SystemRandom};
 
         self.require_file_child_controller_source()?;
@@ -587,7 +651,7 @@ impl LiveSession {
                 "file child transports revoked for this session",
             ));
         }
-        if !self.file_children_enabled {
+        if !self.is_file_children_enabled_for(direction) {
             return Err(Error::PermissionDenied(
                 "file child transports are disabled",
             ));
@@ -621,6 +685,7 @@ impl LiveSession {
             child_id,
             FileChild {
                 transfer_id: transfer_id.to_string(),
+                direction,
                 state: FileChildState::Reserved,
             },
         );
@@ -631,18 +696,27 @@ impl LiveSession {
     /// remote-control offer. Only an explicitly enabled, active FILES parent
     /// passes this gate. Only a matching server reservation may become Active,
     /// once. Reserved and active children share four slots, including distinct
-    /// children of the same transfer. Actual transport close and proof
-    /// verification remain unwired; callers must not expose a production child
-    /// transport on the strength of this bookkeeping.
+    /// children of the same transfer.
     pub fn admit_file_child(&mut self, child_id: ObjectId, transfer_id: &str) -> Result<()> {
-        self.reserved_file_child_mut(child_id, transfer_id)?.state = FileChildState::Active;
-        Ok(())
+        self.admit_file_child_for_direction(child_id, transfer_id, FileChildDirection::Download)
     }
 
-    fn reserved_file_child_mut(
+    pub fn admit_file_child_for_direction(
         &mut self,
         child_id: ObjectId,
         transfer_id: &str,
+        direction: FileChildDirection,
+    ) -> Result<()> {
+        self.reserved_file_child_for_direction_mut(child_id, transfer_id, direction)?
+            .state = FileChildState::Active;
+        Ok(())
+    }
+
+    fn reserved_file_child_for_direction_mut(
+        &mut self,
+        child_id: ObjectId,
+        transfer_id: &str,
+        direction: FileChildDirection,
     ) -> Result<&mut FileChild> {
         self.require_file_child_controller_source()?;
         if self.file_children_revoked {
@@ -650,7 +724,7 @@ impl LiveSession {
                 "file child transports revoked for this session",
             ));
         }
-        if !self.file_children_enabled {
+        if !self.is_file_children_enabled_for(direction) {
             return Err(Error::PermissionDenied(
                 "file child transports are disabled",
             ));
@@ -667,6 +741,9 @@ impl LiveSession {
             .ok_or(Error::PermissionDenied("file child has no reservation"))?;
         if child.transfer_id != transfer_id {
             return Err(Error::PermissionDenied("file child transfer mismatch"));
+        }
+        if child.direction != direction {
+            return Err(Error::PermissionDenied("file child direction mismatch"));
         }
         if child.state != FileChildState::Reserved {
             return Err(Error::PermissionDenied("file child ID already admitted"));
@@ -687,7 +764,25 @@ impl LiveSession {
     where
         F: FnOnce() -> Result<()>,
     {
-        let child = self.reserved_file_child_mut(child_id, transfer_id)?;
+        self.enqueue_file_child_offer_for_direction(
+            child_id,
+            transfer_id,
+            FileChildDirection::Download,
+            enqueue,
+        )
+    }
+
+    pub fn enqueue_file_child_offer_for_direction<F>(
+        &mut self,
+        child_id: ObjectId,
+        transfer_id: &str,
+        direction: FileChildDirection,
+        enqueue: F,
+    ) -> Result<()>
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        let child = self.reserved_file_child_for_direction_mut(child_id, transfer_id, direction)?;
         match enqueue() {
             Ok(()) => {
                 child.state = FileChildState::Active;
@@ -1406,6 +1501,79 @@ mod tests {
         assert!(s.admit_offer().is_err(), "a second offer");
         s.transition(SessionPhase::Active).unwrap();
         assert!(s.admit_offer().is_err(), "a re-offer on a live session");
+    }
+
+    #[test]
+    fn file_child_upload_is_denied_by_default_and_isolated_from_download_capability() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+
+        // Both directions are OFF by default.
+        assert!(
+            s.reserve_file_child_for_direction("dl-0", FileChildDirection::Download)
+                .is_err()
+        );
+        assert!(
+            s.reserve_file_child_for_direction("up-0", FileChildDirection::Upload)
+                .is_err()
+        );
+
+        // Enabling download ONLY does not enable upload.
+        s.set_file_children_enabled_for(FileChildDirection::Download, true);
+        let dl_child = s
+            .reserve_file_child_for_direction("dl-1", FileChildDirection::Download)
+            .expect("download enabled");
+        assert!(
+            s.reserve_file_child_for_direction("up-1", FileChildDirection::Upload)
+                .is_err(),
+            "upload must remain disabled when only download is enabled"
+        );
+        assert!(
+            s.admit_file_child_for_direction(dl_child, "dl-1", FileChildDirection::Upload)
+                .is_err(),
+            "a download reservation must not be admitted as upload"
+        );
+        s.admit_file_child_for_direction(dl_child, "dl-1", FileChildDirection::Download)
+            .unwrap();
+
+        // Enable upload alongside download.
+        s.set_file_children_enabled_for(FileChildDirection::Upload, true);
+        let up_child = s
+            .reserve_file_child_for_direction("up-1", FileChildDirection::Upload)
+            .expect("upload enabled");
+        assert!(
+            s.admit_file_child_for_direction(up_child, "up-1", FileChildDirection::Download)
+                .is_err(),
+            "an upload reservation must not be admitted as download"
+        );
+        s.admit_file_child_for_direction(up_child, "up-1", FileChildDirection::Upload)
+            .unwrap();
+        assert!(s.has_active_file_child(dl_child, "dl-1"));
+        assert!(s.has_active_file_child(up_child, "up-1"));
+
+        // Disabling upload drops ONLY upload children; download child stays active.
+        s.set_file_children_enabled_for(FileChildDirection::Upload, false);
+        assert!(
+            s.has_active_file_child(dl_child, "dl-1"),
+            "disabling upload must not drop active download children"
+        );
+        assert!(
+            !s.has_active_file_child(up_child, "up-1"),
+            "disabling upload must drop active upload children"
+        );
+        assert!(
+            s.reserve_file_child_for_direction("up-2", FileChildDirection::Upload)
+                .is_err()
+        );
+        let dl_child_2 = s
+            .reserve_file_child_for_direction("dl-2", FileChildDirection::Download)
+            .expect("download still works after upload is disabled");
+        s.admit_file_child_for_direction(dl_child_2, "dl-2", FileChildDirection::Download)
+            .unwrap();
     }
 }
 

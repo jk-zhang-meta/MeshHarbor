@@ -354,8 +354,10 @@ pub fn unpack_link(raw: u64) -> Option<(u32, i16)> {
 #[derive(Debug, Default)]
 pub struct ViewerFeedback {
     report: std::sync::atomic::AtomicU32,
+    last_report: std::sync::atomic::AtomicU32,
     age: std::sync::atomic::AtomicU64,
     link: std::sync::atomic::AtomicU64,
+    last_link: std::sync::atomic::AtomicU64,
     /// FR-119 P1 — the frame rate this viewer asked for with `rc:fps`; `0` =
     /// it never asked. Unlike the three reports above this is not a per-window
     /// signal: it stands until the viewer asks again, so it is read, never taken.
@@ -370,6 +372,8 @@ impl ViewerFeedback {
     /// Overwrite the decode report (see [`pack_report`]).
     pub fn store_report(&self, packed: u32) {
         self.report
+            .store(packed, std::sync::atomic::Ordering::Relaxed);
+        self.last_report
             .store(packed, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -396,7 +400,45 @@ impl ViewerFeedback {
     /// reads what the user saw; the rate loop is the only consumer that
     /// may take it.
     pub fn peek_fps(&self) -> u32 {
-        self.report.load(std::sync::atomic::Ordering::Relaxed) & 0xFFFF
+        let cur = self.report.load(std::sync::atomic::Ordering::Relaxed) & 0xFFFF;
+        if cur > 0 {
+            cur
+        } else {
+            self.last_report.load(std::sync::atomic::Ordering::Relaxed) & 0xFFFF
+        }
+    }
+
+    /// X14 — non-consuming check of whether the parent remote-control viewer
+    /// is currently reporting decode struggle, low FPS (< 20 fps when active),
+    /// or transit queue buildup (> 40 ms). Used by the upload receiver credit
+    /// controller to throttle upload credit so parent video FPS is protected.
+    pub fn peek_is_under_load(&self) -> bool {
+        let raw_report = {
+            let cur = self.report.load(std::sync::atomic::Ordering::Relaxed);
+            if cur != 0 {
+                cur
+            } else {
+                self.last_report.load(std::sync::atomic::Ordering::Relaxed)
+            }
+        };
+        let (fps, struggling) = unpack_report(raw_report);
+        if struggling || (fps > 0 && fps < 20) {
+            return true;
+        }
+        let raw_link = {
+            let cur = self.link.load(std::sync::atomic::Ordering::Relaxed);
+            if cur != 0 {
+                cur
+            } else {
+                self.last_link.load(std::sync::atomic::Ordering::Relaxed)
+            }
+        };
+        if let Some((_, queue_ms)) = unpack_link(raw_link)
+            && queue_ms > 40
+        {
+            return true;
+        }
+        false
     }
 
     /// FR-15 — overwrite the paint-age report (see [`pack_age`]).
@@ -412,6 +454,8 @@ impl ViewerFeedback {
     /// FR-59 P3 — overwrite the link report (see [`pack_link`]).
     pub fn store_link(&self, packed: u64) {
         self.link
+            .store(packed, std::sync::atomic::Ordering::Relaxed);
+        self.last_link
             .store(packed, std::sync::atomic::Ordering::Relaxed);
     }
 

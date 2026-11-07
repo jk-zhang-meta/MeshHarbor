@@ -3328,6 +3328,7 @@ async fn handle_server_msg(
         session_id,
         child_id,
         transfer_id,
+        direction,
         sdp,
         ..
     } = &msg
@@ -3349,7 +3350,12 @@ async fn handle_server_msg(
         }
         if let Some(peer) = peers.get(session_id) {
             match peer
-                .accept_file_child_offer(*child_id, transfer_id.clone(), sdp.clone())
+                .accept_file_child_offer_for_direction(
+                    *child_id,
+                    transfer_id.clone(),
+                    *direction,
+                    sdp.clone(),
+                )
                 .await
             {
                 Ok(answer_sdp) => {
@@ -3406,6 +3412,7 @@ async fn handle_server_msg(
         {
             pending.close();
         }
+        let _ = crate::files::abort_session_child_uploads(*session_id).await;
         let (closed_children, in_flight_buffered_bytes) = match peers.get(session_id) {
             Some(peer) => peer.revoke_file_children().await,
             None => (0, 0),
