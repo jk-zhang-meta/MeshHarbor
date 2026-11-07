@@ -31,8 +31,6 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail};
 use tunnel_core::localapi;
 
-use crate::localclient;
-
 /// Environment variable that acts as an operator/user kill switch for saved RDP
 /// credentials (`1`, `true`, `yes`, `on` case-insensitively).
 pub const KILL_SWITCH_ENV: &str = "MESHHARBOR_RDP_PASSWORDLESS_DISABLED";
@@ -144,7 +142,74 @@ pub struct ResolvedRdpDevice {
     pub org_id: String,
     pub device_id: String,
     pub device_name: String,
-    pub rdp_cert_sha256: Option<String>,
+}
+
+static SESSION_LOOPBACK_BASE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+static SESSION_LOOPBACK_SEQ: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Allocate a unique per-session loopback IPv4 address in `127.77.x.y`
+/// (`127.0.0.0/8`, never `127.0.0.1`) so Windows `TERMSRV/<ip>` session
+/// credentials never collide with user-saved `TERMSRV/127.0.0.1` entries or
+/// concurrent `mh rdp` sessions.
+pub fn allocate_session_loopback_ip() -> std::net::Ipv4Addr {
+    let base = *SESSION_LOOPBACK_BASE.get_or_init(|| {
+        let pid = std::process::id() as usize;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as usize)
+            .unwrap_or(0);
+        pid.wrapping_mul(0x9E37_79B9).wrapping_add(nanos)
+    });
+    let seq = SESSION_LOOPBACK_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let slot = base.wrapping_add(seq) % (254 * 254);
+    let x = ((slot / 254) as u8) + 1;
+    let y = ((slot % 254) as u8) + 1;
+    std::net::Ipv4Addr::new(127, 77, x, y)
+}
+
+/// Resolve the FreeRDP client binary from a given `PATH` (`xfreerdp3`
+/// preferred, falling back to `xfreerdp` or `wlfreerdp`).
+pub fn resolve_freerdp_program_in_path(path_env: Option<&std::ffi::OsStr>) -> String {
+    if let Some(path_os) = path_env {
+        for candidate in ["xfreerdp3", "xfreerdp", "wlfreerdp"] {
+            for dir in std::env::split_paths(path_os) {
+                let full = dir.join(candidate);
+                if full.is_file() {
+                    return candidate.to_string();
+                }
+            }
+        }
+    }
+    "xfreerdp3".to_string()
+}
+
+/// Resolve the FreeRDP client binary on Linux/macOS (`MESHHARBOR_FREERDP_BIN`
+/// override, else `xfreerdp3` -> `xfreerdp` -> `wlfreerdp` in `PATH`).
+pub fn resolve_freerdp_program() -> String {
+    if let Ok(custom) = std::env::var("MESHHARBOR_FREERDP_BIN") {
+        let trimmed = custom.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    resolve_freerdp_program_in_path(std::env::var_os("PATH").as_deref())
+}
+
+/// Extract the `attribute.username` value from `secret-tool search` output,
+/// failing closed if missing or empty.
+pub fn parse_linux_secret_tool_username(search_output: &str) -> Result<String> {
+    for line in search_output.lines() {
+        if let Some(rest) = line.trim().strip_prefix("attribute.username = ") {
+            let user = rest.trim();
+            if !user.is_empty() {
+                return Ok(user.to_string());
+            }
+        }
+    }
+    bail!(
+        "stored RDP credential in secret-tool is missing a non-empty 'username' attribute; refusing fallback username"
+    )
 }
 
 /// Abstract client-local OS secure credential store seam.
@@ -399,14 +464,17 @@ pub fn plan_rdp_session(
         .filter(|d| !d.is_empty())
         .map(ToOwned::to_owned);
 
-    let pinned_cert_sha256 = match opts
-        .cert_sha256
-        .as_deref()
-        .or(device.rdp_cert_sha256.as_deref())
-    {
+    let pinned_cert_sha256 = match opts.cert_sha256.as_deref() {
         Some(raw) if !raw.trim().is_empty() => Some(normalize_cert_sha256(raw)?),
         _ => None,
     };
+
+    let platform_norm = platform.trim().to_ascii_lowercase();
+    if platform_norm == "windows" && pinned_cert_sha256.is_some() {
+        bail!(
+            "--cert-sha256 is not supported on Windows because mstsc.exe validates server certificates via the Windows trust store and does not accept a SHA-256 fingerprint pin; use FreeRDP on Linux/macOS for --cert-sha256 pinning"
+        );
+    }
 
     let mut active_cred: Option<StoredRdpCredential> = None;
 
@@ -445,12 +513,19 @@ pub fn plan_rdp_session(
         .or(explicit_domain);
 
     let dial_endpoint = format!("{}:{}", local_tunnel_addr.ip(), local_tunnel_addr.port());
-    let platform_norm = platform.trim().to_ascii_lowercase();
 
     if platform_norm == "windows" {
         let mut args = vec![format!("/v:{dial_endpoint}")];
         args.extend(opts.extra_args.iter().cloned());
         let windows_session_target = if active_cred.is_some() {
+            if local_tunnel_addr.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+                || local_tunnel_addr.ip() == std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+            {
+                bail!(
+                    "refusing shared loopback address {} for Windows TERMSRV credential target; allocate a unique per-session 127.77.x.y loopback IP",
+                    local_tunnel_addr.ip()
+                );
+            }
             Some(format!("TERMSRV/{}", local_tunnel_addr.ip()))
         } else {
             None
@@ -476,14 +551,14 @@ pub fn plan_rdp_session(
             args.push(format!("/cert:fingerprint:sha256:{fp}"));
         }
         let stdin_payload = if let Some(cred) = &active_cred {
-            args.push("/from-stdin".to_string());
+            args.push("/from-stdin:force".to_string());
             Some(cred.password().to_string())
         } else {
             None
         };
         args.extend(opts.extra_args.iter().cloned());
         Ok(Some(PlannedRdpInvocation {
-            program: "xfreerdp3".to_string(),
+            program: resolve_freerdp_program(),
             args,
             env: BTreeMap::new(),
             stdin_payload,
@@ -529,6 +604,10 @@ impl WindowsSessionTargetGuard {
 
     pub fn exists(target: &str) -> Result<bool> {
         os_store::windows_session_target_exists(target)
+    }
+
+    pub fn read(target: &str) -> Result<Option<StoredRdpCredential>> {
+        os_store::read_windows_session_target(target)
     }
 }
 
@@ -707,6 +786,16 @@ mod os_store {
     }
 
     pub fn install_windows_session_target(target: &str, cred: &StoredRdpCredential) -> Result<()> {
+        if target.eq_ignore_ascii_case("TERMSRV/127.0.0.1")
+            || target.eq_ignore_ascii_case("TERMSRV/localhost")
+        {
+            bail!(
+                "refusing to write shared Windows credential target '{target}'; use a unique per-session 127.77.x.y loopback address"
+            );
+        }
+        if windows_session_target_exists(target)? {
+            bail!("refusing to overwrite existing Windows credential target '{target}'");
+        }
         let domain_user = match cred.domain.as_deref() {
             Some(d) => format!(r"{d}\{}", cred.username),
             None if cred.username.contains('\\') || cred.username.contains('@') => {
@@ -738,6 +827,13 @@ mod os_store {
                 .is_some())
     }
 
+    pub fn read_windows_session_target(target: &str) -> Result<Option<StoredRdpCredential>> {
+        if let Some(c) = read_cred(target, CRED_TYPE_GENERIC)? {
+            return Ok(Some(c));
+        }
+        Ok(read_cred(target, CRED_TYPE_DOMAIN_PASSWORD).unwrap_or(None))
+    }
+
     pub fn remove_windows_session_target(target: &str) -> Result<bool> {
         let gen_removed = delete_cred(target, CRED_TYPE_GENERIC)?;
         let dom_removed = delete_cred(target, CRED_TYPE_DOMAIN_PASSWORD).unwrap_or(false);
@@ -747,7 +843,10 @@ mod os_store {
 
 #[cfg(target_os = "linux")]
 mod os_store {
-    use super::{RdpCredentialScope, StoredRdpCredential, build_linux_secret_tool_store_plan};
+    use super::{
+        RdpCredentialScope, StoredRdpCredential, build_linux_secret_tool_store_plan,
+        parse_linux_secret_tool_username,
+    };
     use anyhow::{Context, Result, bail};
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -778,32 +877,6 @@ mod os_store {
     }
 
     pub fn load(scope: &RdpCredentialScope) -> Result<Option<StoredRdpCredential>> {
-        // Look up the stored entry's username attribute + secret via secret-tool search
-        let out = Command::new("secret-tool")
-            .args([
-                "search",
-                "--all",
-                "service",
-                "meshharbor-rdp",
-                "org",
-                &scope.org_id,
-                "device",
-                &scope.device_id,
-            ])
-            .stdin(Stdio::null())
-            .output()
-            .context("failed to run `secret-tool search`")?;
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let mut qualified_user: Option<String> = None;
-        for line in stderr
-            .lines()
-            .chain(String::from_utf8_lossy(&out.stdout).lines())
-        {
-            if let Some(rest) = line.trim().strip_prefix("attribute.username = ") {
-                qualified_user = Some(rest.trim().to_string());
-                break;
-            }
-        }
         let pw_out = Command::new("secret-tool")
             .args([
                 "lookup",
@@ -826,7 +899,33 @@ mod os_store {
         if pw.is_empty() {
             return Ok(None);
         }
-        let user = qualified_user.unwrap_or_else(|| "Administrator".to_string());
+        // Look up the stored entry's username attribute via secret-tool search;
+        // fail closed if missing or empty (never fall back to a guessed username).
+        let out = Command::new("secret-tool")
+            .args([
+                "search",
+                "--all",
+                "service",
+                "meshharbor-rdp",
+                "org",
+                &scope.org_id,
+                "device",
+                &scope.device_id,
+            ])
+            .stdin(Stdio::null())
+            .output()
+            .context("failed to run `secret-tool search`")?;
+        let combined = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let user = parse_linux_secret_tool_username(&combined).with_context(|| {
+            format!(
+                "invalid stored credential for {}",
+                scope.store_target_name()
+            )
+        })?;
         Ok(Some(StoredRdpCredential::from_qualified_username(
             &user, pw,
         )))
@@ -857,6 +956,10 @@ mod os_store {
     }
 
     pub fn windows_session_target_exists(_target: &str) -> Result<bool> {
+        bail!("WindowsSessionTargetGuard is only supported on Windows")
+    }
+
+    pub fn read_windows_session_target(_target: &str) -> Result<Option<StoredRdpCredential>> {
         bail!("WindowsSessionTargetGuard is only supported on Windows")
     }
 
@@ -931,8 +1034,15 @@ mod os_store {
         if pw.is_empty() {
             return Ok(None);
         }
+        if acct.trim().is_empty() {
+            bail!(
+                "stored RDP credential in macOS Keychain for '{}' is missing account/username attribute; refusing fallback username",
+                service
+            );
+        }
         Ok(Some(StoredRdpCredential::from_qualified_username(
-            &acct, pw,
+            acct.trim(),
+            pw,
         )))
     }
 
@@ -954,6 +1064,10 @@ mod os_store {
     }
 
     pub fn windows_session_target_exists(_target: &str) -> Result<bool> {
+        bail!("WindowsSessionTargetGuard is only supported on Windows")
+    }
+
+    pub fn read_windows_session_target(_target: &str) -> Result<Option<StoredRdpCredential>> {
         bail!("WindowsSessionTargetGuard is only supported on Windows")
     }
 
@@ -984,51 +1098,199 @@ fn read_password_from_stdin_or_tty(user: &str, device_name: &str) -> Result<Stri
     }
 }
 
-async fn resolve_target_device(
+/// Strictly resolve a target device and its owning organization's real
+/// `tenant_id` and `node_id` from the local daemon's `NodeStatus` and
+/// `PeerInfo` table. Fails closed if the peer is unknown, ambiguous across
+/// organizations, or missing a real `tenant_id`, `node_id`, or `overlay_ip`.
+pub fn resolve_peer_scope(
+    status: &localapi::NodeStatus,
+    peers: &[localapi::PeerInfo],
     target_host: &str,
 ) -> Result<(ResolvedRdpDevice, String, Option<u16>)> {
-    let (node_id, socks_port) = localclient::ssh_target(target_host)
-        .await
-        .unwrap_or_else(|_| (target_host.to_string(), None));
-    let dial_ip = if target_host.parse::<std::net::IpAddr>().is_ok() {
-        target_host.to_string()
-    } else {
-        localclient::resolve_overlay_ip(target_host)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| target_host.to_string())
+    let trimmed = target_host.trim();
+    if trimmed.is_empty() {
+        bail!("target device must not be empty");
+    }
+
+    let (org_filter, peer_selector) = match trimmed.split_once('/') {
+        Some((org_part, host_part)) => {
+            let o = org_part.trim();
+            let h = host_part.trim();
+            if o.is_empty() || h.is_empty() {
+                bail!("invalid '<org>/<device>' target '{trimmed}'");
+            }
+            (Some(o), h)
+        }
+        None => (None, trimmed),
     };
 
-    let mut org_id = "primary".to_string();
-    let mut device_name = target_host.to_string();
-    if let Ok(mut client) = localapi::connect().await {
-        if let Ok(status) = client.status().await
-            && let Some(primary) = status.orgs.iter().find(|o| o.primary)
-        {
-            org_id = primary.label.clone();
-        }
-        if let Ok(peers) = client.peers().await
-            && let Some(p) = peers.iter().find(|p| {
-                p.node_id.eq_ignore_ascii_case(&node_id)
-                    || p.name.eq_ignore_ascii_case(target_host)
-                    || p.overlay_ip.as_deref() == Some(dial_ip.as_str())
-            })
-        {
-            device_name = p.name.clone();
-        }
+    let matches: Vec<&localapi::PeerInfo> = peers
+        .iter()
+        .filter(|p| {
+            if let Some(of) = org_filter {
+                let org_matches_label = p.org.eq_ignore_ascii_case(of)
+                    || (p.org.is_empty() && of.eq_ignore_ascii_case("primary"));
+                let org_matches_tenant = status
+                    .orgs
+                    .iter()
+                    .find(|o| {
+                        o.label.eq_ignore_ascii_case(&p.org)
+                            || (p.org.is_empty() && o.primary)
+                            || (p.org.eq_ignore_ascii_case("primary") && o.primary)
+                    })
+                    .and_then(|o| o.tenant_id.as_deref())
+                    .is_some_and(|tid| tid.eq_ignore_ascii_case(of));
+                if !org_matches_label && !org_matches_tenant {
+                    return false;
+                }
+            }
+            p.node_id.eq_ignore_ascii_case(peer_selector)
+                || p.agent_id
+                    .as_deref()
+                    .is_some_and(|aid| aid.eq_ignore_ascii_case(peer_selector))
+                || p.name.eq_ignore_ascii_case(peer_selector)
+                || p.overlay_ip.as_deref() == Some(peer_selector)
+        })
+        .collect();
+
+    if matches.is_empty() {
+        bail!(
+            "target device '{trimmed}' was not found in the local daemon peer list; refusing to fall back to an unverified device name"
+        );
     }
+    if matches.len() > 1 {
+        bail!(
+            "target device '{trimmed}' is ambiguous across {} peers/organizations; specify the exact node_id or '<org>/<device>'",
+            matches.len()
+        );
+    }
+
+    let peer = matches[0];
+    let device_id = {
+        let nid = peer.node_id.trim();
+        if !nid.is_empty() && !nid.eq_ignore_ascii_case(&peer.name) {
+            nid.to_string()
+        } else if let Some(aid) = peer
+            .agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            aid.to_string()
+        } else if !nid.is_empty() {
+            nid.to_string()
+        } else {
+            bail!(
+                "peer '{}' has no real node_id or agent_id; refusing to derive credential scope",
+                peer.name
+            );
+        }
+    };
+
+    let peer_org_label = peer.org.trim();
+    let resolved_tenant_id: Option<&str> = if !status.orgs.is_empty() {
+        if !peer_org_label.is_empty() {
+            status
+                .orgs
+                .iter()
+                .find(|o| {
+                    o.label.eq_ignore_ascii_case(peer_org_label)
+                        || (peer_org_label.eq_ignore_ascii_case("primary") && o.primary)
+                })
+                .and_then(|o| {
+                    o.tenant_id.as_deref().or(if o.primary {
+                        status.tenant_id.as_deref()
+                    } else {
+                        None
+                    })
+                })
+        } else if status.orgs.len() == 1 {
+            status.orgs[0]
+                .tenant_id
+                .as_deref()
+                .or(status.tenant_id.as_deref())
+        } else {
+            None
+        }
+    } else if peer_org_label.is_empty() || peer_org_label.eq_ignore_ascii_case("primary") {
+        status.tenant_id.as_deref()
+    } else {
+        None
+    };
+
+    let org_id = resolved_tenant_id
+        .map(str::trim)
+        .filter(|tid| !tid.is_empty() && !tid.eq_ignore_ascii_case("primary"))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "cannot resolve real tenant_id for device '{}' (org '{}'); refusing to fall back to label",
+                peer.name,
+                peer.org
+            )
+        })?
+        .to_string();
+
+    let dial_ip = peer
+        .overlay_ip
+        .as_deref()
+        .map(str::trim)
+        .filter(|ip| !ip.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "device '{}' ({}) has no overlay IP in the local daemon peer list",
+                peer.name,
+                device_id
+            )
+        })?
+        .to_string();
+
+    let device_name = if peer.name.trim().is_empty() {
+        device_id.clone()
+    } else {
+        peer.name.trim().to_string()
+    };
 
     Ok((
         ResolvedRdpDevice {
             org_id,
-            device_id: node_id,
+            device_id,
             device_name,
-            rdp_cert_sha256: None,
         },
         dial_ip,
-        socks_port,
+        status.overlay_socks5_port,
     ))
+}
+
+async fn resolve_target_device(
+    target_host: &str,
+) -> Result<(ResolvedRdpDevice, String, Option<u16>)> {
+    let mut client = localapi::connect().await.context(
+        "failed to connect to local MeshHarbor daemon (meshharbord) to resolve device identity",
+    )?;
+    let status = client
+        .status()
+        .await
+        .context("failed to query local daemon status for organization tenant_id")?;
+    let peers = client
+        .peers()
+        .await
+        .context("failed to query local daemon peer list for device identity")?;
+    resolve_peer_scope(&status, &peers, target_host)
+}
+
+async fn bind_unique_session_loopback_listener() -> Result<tokio::net::TcpListener> {
+    let mut last_err = None;
+    for _ in 0..8 {
+        let ip = allocate_session_loopback_ip();
+        match tokio::net::TcpListener::bind((ip, 0)).await {
+            Ok(listener) => return Ok(listener),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::other("failed to bind unique 127.77.x.y session loopback listener")
+    }))
+    .context("failed to bind local per-session loopback listener for RDP tunnel")
 }
 
 /// Top-level `mh rdp` execution entrypoint.
@@ -1040,7 +1302,8 @@ pub async fn run(opts: RdpCliOptions) -> Result<i32> {
     let kill_env = std::env::var(KILL_SWITCH_ENV).ok();
 
     if opts.clear_credentials {
-        let placeholder: SocketAddr = "127.0.0.1:3389".parse().unwrap();
+        let placeholder =
+            SocketAddr::new(std::net::IpAddr::V4(allocate_session_loopback_ip()), 3389);
         let _ = plan_rdp_session(
             &opts,
             &device,
@@ -1074,12 +1337,10 @@ pub async fn run(opts: RdpCliOptions) -> Result<i32> {
         None
     };
 
-    // Bind an ephemeral local loopback listener and bridge each accepted TCP
-    // stream to the target device's RDP port (via overlay SOCKS5 in netstack
-    // mode, or direct overlay TCP in OS-TUN mode).
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .context("failed to bind local loopback listener for RDP tunnel")?;
+    // Bind a per-session local loopback listener in 127.77.x.y:0 (never shared
+    // 127.0.0.1) and bridge each accepted TCP stream to the target device's RDP
+    // port (via overlay SOCKS5 in netstack mode, or direct overlay TCP in OS-TUN mode).
+    let listener = bind_unique_session_loopback_listener().await?;
     let local_addr = listener.local_addr()?;
 
     let plan = plan_rdp_session(
