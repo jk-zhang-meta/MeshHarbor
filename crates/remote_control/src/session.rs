@@ -20,6 +20,12 @@ use crate::signaling::{FileChildDirection, LocalRelayDescriptor, ServerMsg};
 /// The WS layer owns the receiving half and forwards to the socket.
 pub type ClientTx = mpsc::Sender<ServerMsg>;
 
+/// Maximum concurrent download file-child reservations/connections per parent session.
+pub const MAX_DOWNLOAD_FILE_CHILDREN: usize = 4;
+
+/// Maximum concurrent upload file-child reservations/connections per parent session.
+pub const MAX_UPLOAD_FILE_CHILDREN: usize = 8;
+
 #[derive(PartialEq, Eq)]
 enum FileChildState {
     Reserved,
@@ -635,8 +641,9 @@ impl LiveSession {
     }
 
     /// Reserve a server-chosen child ID for this parent's transfer in
-    /// `direction`. Reserved and active children share four slots across the
-    /// parent session.
+    /// `direction`. Reserved and active children are bounded per direction
+    /// (`MAX_DOWNLOAD_FILE_CHILDREN` = 4 for download, `MAX_UPLOAD_FILE_CHILDREN` = 8
+    /// for upload) across the parent session.
     pub fn reserve_file_child_for_direction(
         &mut self,
         transfer_id: &str,
@@ -668,7 +675,16 @@ impl LiveSession {
         {
             return Err(Error::BadMessage("invalid file transfer ID"));
         }
-        if self.file_children.len() >= 4 {
+        let max_children = match direction {
+            FileChildDirection::Download => MAX_DOWNLOAD_FILE_CHILDREN,
+            FileChildDirection::Upload => MAX_UPLOAD_FILE_CHILDREN,
+        };
+        let direction_count = self
+            .file_children
+            .values()
+            .filter(|c| c.direction == direction)
+            .count();
+        if direction_count >= max_children {
             return Err(Error::PermissionDenied(
                 "file child connection limit reached",
             ));
@@ -1574,6 +1590,109 @@ mod tests {
             .expect("download still works after upload is disabled");
         s.admit_file_child_for_direction(dl_child_2, "dl-2", FileChildDirection::Download)
             .unwrap();
+    }
+
+    #[test]
+    fn file_child_direction_limits_enforce_8_upload_and_4_download_independently() {
+        let mut s = fixture();
+        s.set_permissions(Permissions::VIEW | Permissions::FILES);
+        s.transition(SessionPhase::AwaitingConsent).unwrap();
+        s.transition(SessionPhase::Negotiating).unwrap();
+        s.admit_offer().unwrap();
+        s.transition(SessionPhase::Active).unwrap();
+        s.set_file_children_enabled_for(FileChildDirection::Download, true);
+        s.set_file_children_enabled_for(FileChildDirection::Upload, true);
+
+        // Reserve and admit 8 upload children (up to MAX_UPLOAD_FILE_CHILDREN = 8).
+        let mut up_children = Vec::new();
+        for i in 0..MAX_UPLOAD_FILE_CHILDREN {
+            let tid = format!("up-{i}");
+            let cid = s
+                .reserve_file_child_for_direction(&tid, FileChildDirection::Upload)
+                .unwrap_or_else(|e| panic!("upload child {i} should succeed: {e:?}"));
+            s.admit_file_child_for_direction(cid, &tid, FileChildDirection::Upload)
+                .unwrap();
+            up_children.push((cid, tid));
+        }
+        assert_eq!(up_children.len(), 8);
+
+        // 9th upload child must be rejected with "file child connection limit reached".
+        let ninth_up = s.reserve_file_child_for_direction("up-8", FileChildDirection::Upload);
+        assert!(
+            matches!(
+                ninth_up,
+                Err(Error::PermissionDenied(
+                    "file child connection limit reached"
+                ))
+            ),
+            "9th upload child must be rejected: {ninth_up:?}"
+        );
+
+        // Simultaneously reserve and admit 4 download children (MAX_DOWNLOAD_FILE_CHILDREN = 4)
+        // while all 8 upload children are active.
+        let mut dl_children = Vec::new();
+        for i in 0..MAX_DOWNLOAD_FILE_CHILDREN {
+            let tid = format!("dl-{i}");
+            let cid = s
+                .reserve_file_child_for_direction(&tid, FileChildDirection::Download)
+                .unwrap_or_else(|e| {
+                    panic!("download child {i} should succeed alongside 8 uploads: {e:?}")
+                });
+            s.admit_file_child_for_direction(cid, &tid, FileChildDirection::Download)
+                .unwrap();
+            dl_children.push((cid, tid));
+        }
+        assert_eq!(dl_children.len(), 4);
+
+        // 5th download child must be rejected with "file child connection limit reached".
+        let fifth_dl = s.reserve_file_child_for_direction("dl-4", FileChildDirection::Download);
+        assert!(
+            matches!(
+                fifth_dl,
+                Err(Error::PermissionDenied(
+                    "file child connection limit reached"
+                ))
+            ),
+            "5th download child must be rejected: {fifth_dl:?}"
+        );
+
+        // All 8 upload and 4 download children remain simultaneously active.
+        for (cid, tid) in &up_children {
+            assert!(s.has_active_file_child(*cid, tid));
+        }
+        for (cid, tid) in &dl_children {
+            assert!(s.has_active_file_child(*cid, tid));
+        }
+
+        // Completing 1 download child does NOT allow a 9th upload child, but DOES allow a 4th download replacement.
+        s.complete_file_child(dl_children[0].0, &dl_children[0].1)
+            .unwrap();
+        assert!(
+            s.reserve_file_child_for_direction("up-still-full", FileChildDirection::Upload)
+                .is_err()
+        );
+        let dl_replacement = s
+            .reserve_file_child_for_direction("dl-repl", FileChildDirection::Download)
+            .expect("completing 1 download slot frees 1 download slot");
+        s.admit_file_child_for_direction(dl_replacement, "dl-repl", FileChildDirection::Download)
+            .unwrap();
+        assert!(
+            s.reserve_file_child_for_direction("dl-overflow", FileChildDirection::Download)
+                .is_err()
+        );
+
+        // Completing 1 upload child frees 1 upload slot while download remains at 4/4.
+        s.complete_file_child(up_children[0].0, &up_children[0].1)
+            .unwrap();
+        let up_replacement = s
+            .reserve_file_child_for_direction("up-repl", FileChildDirection::Upload)
+            .expect("completing 1 upload slot frees 1 upload slot");
+        s.admit_file_child_for_direction(up_replacement, "up-repl", FileChildDirection::Upload)
+            .unwrap();
+        assert!(
+            s.reserve_file_child_for_direction("up-overflow", FileChildDirection::Upload)
+                .is_err()
+        );
     }
 }
 

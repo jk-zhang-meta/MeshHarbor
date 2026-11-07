@@ -4552,7 +4552,7 @@ export function useRemoteControl(
      */
     childDownloadConnections?: number
     /**
-     * X14 — opt-in initial child upload connection count (0..4, default 0 = OFF).
+     * X14 — opt-in initial child upload connection count (0..8, default 0 = OFF).
      * When >= 1 on an ordinary in-org session, `connect()` advertises
      * `'file-child-upload'` in `browser_caps`. Independent from download.
      */
@@ -4562,14 +4562,17 @@ export function useRemoteControl(
   const ws = useWsStore()
   const phase = ref<RcPhase>('idle')
 
-  // X14 — concurrent download/upload child connections (0..4, default 0 = OFF).
-  const clampChildConnections = (n: number): number =>
+  // X14 — concurrent download child connections (0..4, default 0 = OFF) and
+  // upload child connections (0..8, default 0 = OFF).
+  const clampDownloadChildConnections = (n: number): number =>
     Number.isFinite(n) ? Math.max(0, Math.min(4, Math.floor(n))) : 0
+  const clampUploadChildConnections = (n: number): number =>
+    Number.isFinite(n) ? Math.max(0, Math.min(8, Math.floor(n))) : 0
   const readStoredChildConnections = (): number => {
     try {
       const raw = globalThis.localStorage?.getItem('meshharbor-rc-download-children')
       if (raw === null || raw === undefined || raw === '') return 0
-      return clampChildConnections(Number(raw))
+      return clampDownloadChildConnections(Number(raw))
     } catch {
       return 0
     }
@@ -4578,16 +4581,16 @@ export function useRemoteControl(
     try {
       const raw = globalThis.localStorage?.getItem('meshharbor-rc-upload-children')
       if (raw === null || raw === undefined || raw === '') return 0
-      return clampChildConnections(Number(raw))
+      return clampUploadChildConnections(Number(raw))
     } catch {
       return 0
     }
   }
   const concurrentDownloadChildren = ref<number>(
-    clampChildConnections(opts?.childDownloadConnections ?? readStoredChildConnections()),
+    clampDownloadChildConnections(opts?.childDownloadConnections ?? readStoredChildConnections()),
   )
   function setConcurrentDownloadChildren(n: number) {
-    const clamped = clampChildConnections(n)
+    const clamped = clampDownloadChildConnections(n)
     concurrentDownloadChildren.value = clamped
     try {
       globalThis.localStorage?.setItem('meshharbor-rc-download-children', String(clamped))
@@ -4596,10 +4599,10 @@ export function useRemoteControl(
     }
   }
   const concurrentUploadChildren = ref<number>(
-    clampChildConnections(opts?.childUploadConnections ?? readStoredUploadChildConnections()),
+    clampUploadChildConnections(opts?.childUploadConnections ?? readStoredUploadChildConnections()),
   )
   function setConcurrentUploadChildren(n: number) {
-    const clamped = clampChildConnections(n)
+    const clamped = clampUploadChildConnections(n)
     concurrentUploadChildren.value = clamped
     try {
       globalThis.localStorage?.setItem('meshharbor-rc-upload-children', String(clamped))
@@ -4611,7 +4614,10 @@ export function useRemoteControl(
   let lastIceServers: IceServer[] = []
   let fileChildKeyPair: { pair: CryptoKeyPair; publicKeyB64: string } | null = null
   let fileChildRegistered = false
+  let fileChildRegistrationPromise: Promise<{ pair: CryptoKeyPair; publicKeyB64: string }> | null =
+    null
   type ActiveChildPeer = {
+    transferId: string
     pc: RTCPeerConnection
     dc: RTCDataChannel | null
     remoteDescriptionSet: boolean
@@ -4626,7 +4632,12 @@ export function useRemoteControl(
   } | null = null
   const pendingChildPrepare = new Map<
     string,
-    { resolve: () => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
+    {
+      transferId: string
+      resolve: () => void
+      reject: (err: Error) => void
+      timer: ReturnType<typeof setTimeout>
+    }
   >()
   const pendingChildReserve = new Map<
     string,
@@ -4646,6 +4657,46 @@ export function useRemoteControl(
   }
   const pendingProbePromises = new Map<string, ProbeWaiter>()
 
+  function closeTransferFileChildren(transferId: string, reason: string) {
+    for (const [k, w] of Array.from(pendingChildPrepare.entries())) {
+      if (w.transferId === transferId) {
+        clearTimeout(w.timer)
+        pendingChildPrepare.delete(k)
+        w.reject(new Error(reason))
+      }
+    }
+    const reserveList = pendingChildReserve.get(transferId)
+    if (reserveList) {
+      pendingChildReserve.delete(transferId)
+      for (const w of reserveList) {
+        clearTimeout(w.timer)
+        w.reject(new Error(reason))
+      }
+    }
+    const probeWaiter = pendingProbePromises.get(`${transferId}-probe`)
+    if (probeWaiter) {
+      clearTimeout(probeWaiter.timer)
+      pendingProbePromises.delete(`${transferId}-probe`)
+      probeWaiter.reject(new Error(reason))
+    }
+    for (const [childId, child] of Array.from(activeChildPeers.entries())) {
+      if (child.transferId === transferId) {
+        activeChildPeers.delete(childId)
+        try {
+          child.dc?.close()
+        } catch {
+          /* ignore */
+        }
+        try {
+          child.pc.close()
+        } catch {
+          /* ignore */
+        }
+        child.reject(new Error(reason))
+      }
+    }
+  }
+
   function closeAllFileChildren(reason: string, resetKey = false) {
     if (pendingChildRegister) {
       clearTimeout(pendingChildRegister.timer)
@@ -4653,6 +4704,7 @@ export function useRemoteControl(
       pendingChildRegister = null
       r.reject(new Error(reason))
     }
+    fileChildRegistrationPromise = null
     for (const [k, w] of Array.from(pendingChildPrepare.entries())) {
       clearTimeout(w.timer)
       pendingChildPrepare.delete(k)
@@ -12623,7 +12675,7 @@ export function useRemoteControl(
       return Promise.reject(new Error('files channel not open'))
     }
     const id = `up-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-    const requestedUploadChildren = clampChildConnections(
+    const requestedUploadChildren = clampUploadChildConnections(
       options?.childConnections ??
         (concurrentUploadChildren.value > 0
           ? concurrentUploadChildren.value
@@ -12996,35 +13048,43 @@ export function useRemoteControl(
     publicKeyB64: string
   }> {
     if (fileChildKeyPair && fileChildRegistered) return fileChildKeyPair
-    const ctrl = channels.control
-    if (!ctrl || ctrl.readyState !== 'open') {
-      throw new Error('control channel not open for file child registration')
-    }
-    if (!fileChildKeyPair) {
-      fileChildKeyPair = await generateEphemeralFileChildKeyPair()
-    }
-    if (!fileChildRegistered) {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          pendingChildRegister = null
-          reject(new Error('rc:file.child.register.ack timed out'))
-        }, 15_000)
-        pendingChildRegister = { resolve, reject, timer }
-        try {
-          ctrl.send(
-            JSON.stringify({
-              t: 'rc:file.child.register',
-              key: fileChildKeyPair!.publicKeyB64,
-            }),
-          )
-        } catch (e) {
-          clearTimeout(timer)
-          pendingChildRegister = null
-          reject(e instanceof Error ? e : new Error(String(e)))
+    if (fileChildRegistrationPromise) return fileChildRegistrationPromise
+    fileChildRegistrationPromise = (async () => {
+      try {
+        const ctrl = channels.control
+        if (!ctrl || ctrl.readyState !== 'open') {
+          throw new Error('control channel not open for file child registration')
         }
-      })
-    }
-    return fileChildKeyPair
+        if (!fileChildKeyPair) {
+          fileChildKeyPair = await generateEphemeralFileChildKeyPair()
+        }
+        if (!fileChildRegistered) {
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              pendingChildRegister = null
+              reject(new Error('rc:file.child.register.ack timed out'))
+            }, 15_000)
+            pendingChildRegister = { resolve, reject, timer }
+            try {
+              ctrl.send(
+                JSON.stringify({
+                  t: 'rc:file.child.register',
+                  key: fileChildKeyPair!.publicKeyB64,
+                }),
+              )
+            } catch (e) {
+              clearTimeout(timer)
+              pendingChildRegister = null
+              reject(e instanceof Error ? e : new Error(String(e)))
+            }
+          })
+        }
+        return fileChildKeyPair
+      } finally {
+        fileChildRegistrationPromise = null
+      }
+    })()
+    return fileChildRegistrationPromise
   }
 
   function probeFileMetadata(
@@ -13092,7 +13152,7 @@ export function useRemoteControl(
         pendingChildPrepare.delete(childId)
         reject(new Error('rc:file.child.prepare.ack timed out'))
       }, 15_000)
-      pendingChildPrepare.set(childId, { resolve, reject, timer })
+      pendingChildPrepare.set(childId, { transferId, resolve, reject, timer })
       try {
         ctrl.send(
           JSON.stringify({
@@ -13213,6 +13273,9 @@ export function useRemoteControl(
           let paceTokens = UPLOAD_STRIPE_BURST_BYTES
           let lastPaceRefillMs = performance.now()
 
+          let offerSent = false
+          const pendingLocalIce: RTCIceCandidateInit[] = []
+
           const failStripe = (err: Error) => {
             if (settled) return
             settled = true
@@ -13227,19 +13290,25 @@ export function useRemoteControl(
             } catch {
               /* ignore */
             }
+            if (offerSent && !fileChildRevoked.value) {
+              ws.sendRaw({
+                t: 'rc:file.child.complete',
+                session_id: sid,
+                child_id: childId,
+                transfer_id: id,
+              })
+            }
             rejectStripe(err)
           }
 
           activeChildPeers.set(childId, {
+            transferId: id,
             pc: childPc,
             dc: filesDc,
             remoteDescriptionSet: false,
             pendingIce: [],
             reject: failStripe,
           })
-
-          let offerSent = false
-          const pendingLocalIce: RTCIceCandidateInit[] = []
 
           childPc.onicecandidate = (ev) => {
             if (!ev.candidate || settled) return
@@ -13505,7 +13574,7 @@ export function useRemoteControl(
     } catch (e) {
       settleEntry(id)
       const errMsg = e instanceof Error ? e.message : String(e)
-      closeAllFileChildren(errMsg)
+      closeTransferFileChildren(id, errMsg)
       patchTransfer(id, { status: 'error', error: errMsg })
       throw e instanceof Error ? e : new Error(errMsg)
     }
@@ -13602,6 +13671,9 @@ export function useRemoteControl(
           let stripeBytes = 0
           const stripeTransferId = `${id}-s${idx}`
 
+          let offerSent = false
+          const pendingLocalIce: RTCIceCandidateInit[] = []
+
           const failStripe = (err: Error) => {
             if (settled) return
             settled = true
@@ -13616,19 +13688,25 @@ export function useRemoteControl(
             } catch {
               /* ignore */
             }
+            if (offerSent && !fileChildRevoked.value) {
+              ws.sendRaw({
+                t: 'rc:file.child.complete',
+                session_id: sid,
+                child_id: childId,
+                transfer_id: id,
+              })
+            }
             rejectStripe(err)
           }
 
           activeChildPeers.set(childId, {
+            transferId: id,
             pc: childPc,
             dc: filesDc,
             remoteDescriptionSet: false,
             pendingIce: [],
             reject: failStripe,
           })
-
-          let offerSent = false
-          const pendingLocalIce: RTCIceCandidateInit[] = []
 
           childPc.onicecandidate = (ev) => {
             if (!ev.candidate || settled) return
@@ -13793,7 +13871,7 @@ export function useRemoteControl(
       return { name: resolvedName, bytes: totalSize }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e)
-      closeAllFileChildren(errMsg)
+      closeTransferFileChildren(id, errMsg)
       patchTransfer(id, { status: 'error', error: errMsg })
       if (writable) {
         void writable.abort(errMsg).catch(() => {})
@@ -13855,7 +13933,7 @@ export function useRemoteControl(
       saveMode = 'blob'
     }
 
-    const requestedChildren = clampChildConnections(
+    const requestedChildren = clampDownloadChildConnections(
       options?.childConnections ??
         (concurrentDownloadChildren.value > 0
           ? concurrentDownloadChildren.value

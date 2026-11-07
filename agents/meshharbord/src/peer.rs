@@ -230,6 +230,7 @@ fn downscale_for(pref: encode::EncoderPreference) -> capture::DownscalePolicy {
 
 struct ChildPeerHandle {
     transfer_id: String,
+    direction: meshharbor_remote_control::signaling::FileChildDirection,
     pc: Arc<RTCPeerConnection>,
     files_dc: Arc<tokio::sync::Mutex<Option<Arc<RTCDataChannel>>>>,
     stop: tokio_util::sync::CancellationToken,
@@ -1930,11 +1931,14 @@ impl AgentPeer {
                 let _ = crate::files::abort_session_child_uploads(sid).await;
                 let drained: Vec<ChildPeerHandle> =
                     child_peers.lock().await.drain().map(|(_, h)| h).collect();
-                for h in drained {
+                for h in &drained {
                     h.stop.cancel();
+                }
+                futures::future::join_all(drained.into_iter().map(|h| async move {
                     let _ =
                         tokio::time::timeout(std::time::Duration::from_secs(2), h.pc.close()).await;
-                }
+                }))
+                .await;
                 let _ = tokio::time::timeout(std::time::Duration::from_secs(3), pc.close()).await;
             });
         })
@@ -1979,12 +1983,17 @@ impl AgentPeer {
             auth.check_parent()
                 .map_err(|why| anyhow!("file child parent check failed: {why:?}"))?;
         }
+        let max_children = max_file_child_preparations_for_direction(direction);
         {
             let children = self.child_peers.lock().await;
             if children.contains_key(&child_id) {
                 return Err(anyhow!("file child peer already exists"));
             }
-            if children.len() >= FILE_CHILD_PREPARATIONS_PER_PARENT {
+            let active_in_direction = children
+                .values()
+                .filter(|h| h.direction == direction)
+                .count();
+            if active_in_direction >= max_children {
                 return Err(anyhow!("file child peer limit reached"));
             }
         }
@@ -2094,14 +2103,21 @@ impl AgentPeer {
 
         {
             let stop_for_state = child_stop.clone();
+            let pc_for_state = Arc::downgrade(&pc);
             pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
                 let stop = stop_for_state.clone();
+                let pc_weak = pc_for_state.clone();
                 Box::pin(async move {
                     if matches!(
                         s,
                         RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
                     ) {
                         stop.cancel();
+                        if matches!(s, RTCPeerConnectionState::Failed)
+                            && let Some(pc) = pc_weak.upgrade()
+                        {
+                            let _ = tokio::time::timeout(Duration::from_secs(2), pc.close()).await;
+                        }
                     }
                 })
             }));
@@ -2143,29 +2159,58 @@ impl AgentPeer {
             }));
         }
 
-        let munged_offer = self.rc_overlay.strip_sdp(&offer_sdp);
-        let offer = RTCSessionDescription::offer(munged_offer).context("parse child offer")?;
-        pc.set_remote_description(offer)
-            .await
-            .context("set_remote_description(file_child)")?;
-        let answer = pc
-            .create_answer(None)
-            .await
-            .context("create_answer(file_child)")?;
-        pc.set_local_description(answer.clone())
-            .await
-            .context("set_local_description(file_child)")?;
+        let negotiate_res: Result<String> = async {
+            let munged_offer = self.rc_overlay.strip_sdp(&offer_sdp);
+            let offer = RTCSessionDescription::offer(munged_offer).context("parse child offer")?;
+            pc.set_remote_description(offer)
+                .await
+                .context("set_remote_description(file_child)")?;
+            let answer = pc
+                .create_answer(None)
+                .await
+                .context("create_answer(file_child)")?;
+            pc.set_local_description(answer.clone())
+                .await
+                .context("set_local_description(file_child)")?;
+            Ok(answer.sdp)
+        }
+        .await;
+        let answer_sdp = match negotiate_res {
+            Ok(sdp) => sdp,
+            Err(e) => {
+                child_stop.cancel();
+                let _ = tokio::time::timeout(Duration::from_secs(2), pc.close()).await;
+                return Err(e);
+            }
+        };
 
-        self.child_peers.lock().await.insert(
-            child_id,
-            ChildPeerHandle {
-                transfer_id,
-                pc,
-                files_dc,
-                stop: child_stop,
-            },
-        );
-        Ok(answer.sdp)
+        {
+            let mut children = self.child_peers.lock().await;
+            let active_in_direction = children
+                .values()
+                .filter(|h| h.direction == direction)
+                .count();
+            if self.session_end.is_cancelled()
+                || children.contains_key(&child_id)
+                || active_in_direction >= max_children
+            {
+                drop(children);
+                child_stop.cancel();
+                let _ = tokio::time::timeout(Duration::from_secs(2), pc.close()).await;
+                return Err(anyhow!("file child peer limit reached"));
+            }
+            children.insert(
+                child_id,
+                ChildPeerHandle {
+                    transfer_id,
+                    direction,
+                    pc,
+                    files_dc,
+                    stop: child_stop,
+                },
+            );
+        }
+        Ok(answer_sdp)
     }
 
     pub async fn add_file_child_ice(
@@ -2258,21 +2303,23 @@ impl AgentPeer {
             .drain()
             .map(|(_, h)| h)
             .collect();
-        let mut closed_children = 0u32;
-        let mut in_flight_buffered_bytes = 0u64;
-        for handle in drained {
+        let close_futs = drained.into_iter().map(|handle| async move {
             handle.stop.cancel();
+            let mut buffered = 0u64;
             if let Some(dc) = handle.files_dc.lock().await.take() {
-                let buffered =
-                    tokio::time::timeout(Duration::from_millis(250), dc.buffered_amount())
-                        .await
-                        .unwrap_or(0) as u64;
-                in_flight_buffered_bytes = in_flight_buffered_bytes.saturating_add(buffered);
+                buffered = tokio::time::timeout(Duration::from_millis(250), dc.buffered_amount())
+                    .await
+                    .unwrap_or(0) as u64;
                 let _ = tokio::time::timeout(Duration::from_secs(1), dc.close()).await;
             }
             let _ = tokio::time::timeout(Duration::from_secs(2), handle.pc.close()).await;
-            closed_children = closed_children.saturating_add(1);
-        }
+            buffered
+        });
+        let results = futures::future::join_all(close_futs).await;
+        let closed_children = results.len() as u32;
+        let in_flight_buffered_bytes = results
+            .into_iter()
+            .fold(0u64, |acc, b| acc.saturating_add(b));
         (closed_children, in_flight_buffered_bytes)
     }
 
@@ -2287,10 +2334,14 @@ impl AgentPeer {
                 let _ = crate::files::abort_session_child_uploads(session_id).await;
                 let drained: Vec<ChildPeerHandle> =
                     child_peers.lock().await.drain().map(|(_, h)| h).collect();
-                for h in drained {
+                let close_futs = drained.into_iter().map(|h| async move {
                     h.stop.cancel();
+                    if let Some(dc) = h.files_dc.lock().await.take() {
+                        let _ = tokio::time::timeout(Duration::from_secs(1), dc.close()).await;
+                    }
                     let _ = tokio::time::timeout(Duration::from_secs(2), h.pc.close()).await;
-                }
+                });
+                let _ = futures::future::join_all(close_futs).await;
             });
         }
         if let Some(pump) = &self.media_pump {
@@ -10563,9 +10614,24 @@ pub fn is_file_child_direction_disabled(
 }
 
 // Retain consumed IDs until the parent ends so prepare cannot resurrect one.
-const FILE_CHILD_PREPARATIONS_PER_PARENT: usize = 4;
+const FILE_CHILD_DOWNLOAD_PREPARATIONS_PER_PARENT: usize = 4;
+const FILE_CHILD_UPLOAD_PREPARATIONS_PER_PARENT: usize =
+    crate::files::MAX_UPLOAD_CHILD_STRIPES as usize;
 const FILE_CHILD_HISTORY_PER_PARENT: usize = 256;
 const FILE_CHILD_INVALID_PROOF_LIMIT: u8 = 8;
+
+fn max_file_child_preparations_for_direction(
+    direction: meshharbor_remote_control::signaling::FileChildDirection,
+) -> usize {
+    match direction {
+        meshharbor_remote_control::signaling::FileChildDirection::Download => {
+            FILE_CHILD_DOWNLOAD_PREPARATIONS_PER_PARENT
+        }
+        meshharbor_remote_control::signaling::FileChildDirection::Upload => {
+            FILE_CHILD_UPLOAD_PREPARATIONS_PER_PARENT
+        }
+    }
+}
 
 // These origins cannot acquire child support by inheriting an ordinary FILES
 // bit. Their inherited identity/stop chains are not implemented here.
@@ -10706,12 +10772,13 @@ impl FileChildAuthorization {
                 if registration.children.contains_key(&child) {
                     return Err(FileChildDenial::UnpreparedOrConsumed);
                 }
+                let max_preparations = max_file_child_preparations_for_direction(direction);
                 let active_preparations = registration
                     .children
                     .values()
-                    .filter(|p| !p.completed)
+                    .filter(|p| !p.completed && p.direction == direction)
                     .count();
-                if active_preparations >= FILE_CHILD_PREPARATIONS_PER_PARENT
+                if active_preparations >= max_preparations
                     || registration.children.len() >= FILE_CHILD_HISTORY_PER_PARENT
                 {
                     return Err(FileChildDenial::PreparationLimit);
@@ -16908,6 +16975,242 @@ mod file_child_authorization_tests {
             "control JSON cannot promote production Unknown to a trusted parent"
         );
     }
+
+    #[test]
+    fn file_child_preparation_limits_enforce_8_upload_and_4_download_independently() {
+        use meshharbor_remote_control::signaling::FileChildDirection;
+        set_file_child_direction_disabled(FileChildDirection::Download, false);
+        set_file_child_direction_disabled(FileChildDirection::Upload, false);
+        let controller = controller();
+        let parent = parent();
+        register_child_key(&parent, &controller).unwrap();
+
+        let prepare_dir = |child_hex: &str, tid: &str, direction: &str| {
+            serde_json::to_vec(&serde_json::json!({
+                "t": "rc:file.child.prepare",
+                "child_id": child_hex,
+                "transfer_id": tid,
+                "direction": direction,
+            }))
+            .unwrap()
+        };
+
+        // Prepare 8 upload children (1..=8 succeed)
+        let mut up_ids = Vec::new();
+        for i in 0..8usize {
+            let cid = format!("{:024x}", 0x1000 + i);
+            parse_control_envelope(&prepare_dir(&cid, "up-tx", "upload"), &parent)
+                .unwrap_or_else(|e| panic!("upload prepare {i} should succeed: {e:?}"));
+            up_ids.push(cid);
+        }
+
+        // 9th upload preparation must be rejected with PreparationLimit
+        let ninth_up = format!("{:024x}", 0x1008usize);
+        assert!(
+            matches!(
+                parse_control_envelope(&prepare_dir(&ninth_up, "up-tx", "upload"), &parent),
+                Err(ControlEnvelopeError::FileChild(
+                    FileChildDenial::PreparationLimit
+                ))
+            ),
+            "9th upload preparation must be rejected with PreparationLimit"
+        );
+
+        // Simultaneously prepare 4 download children while all 8 upload preparations are active
+        let mut dl_ids = Vec::new();
+        for i in 0..4usize {
+            let cid = format!("{:024x}", 0x2000 + i);
+            parse_control_envelope(&prepare_dir(&cid, "dl-tx", "download"), &parent)
+                .unwrap_or_else(|e| {
+                    panic!("download prepare {i} should succeed alongside 8 uploads: {e:?}")
+                });
+            dl_ids.push(cid);
+        }
+
+        // 5th download preparation must be rejected with PreparationLimit
+        let fifth_dl = format!("{:024x}", 0x2004usize);
+        assert!(
+            matches!(
+                parse_control_envelope(&prepare_dir(&fifth_dl, "dl-tx", "download"), &parent),
+                Err(ControlEnvelopeError::FileChild(
+                    FileChildDenial::PreparationLimit
+                ))
+            ),
+            "5th download preparation must be rejected with PreparationLimit"
+        );
+
+        // Completing 1 download child does NOT free an upload slot, only a download slot
+        let dl0_oid = ObjectId::parse_str(&dl_ids[0]).unwrap();
+        parent
+            .lock()
+            .unwrap()
+            .registration
+            .as_mut()
+            .unwrap()
+            .children
+            .get_mut(&dl0_oid)
+            .unwrap()
+            .consumed = true;
+        assert!(
+            parent
+                .lock()
+                .unwrap()
+                .release_completed_child(dl0_oid, "dl-tx")
+        );
+        assert!(matches!(
+            parse_control_envelope(&prepare_dir(&ninth_up, "up-tx", "upload"), &parent),
+            Err(ControlEnvelopeError::FileChild(
+                FileChildDenial::PreparationLimit
+            ))
+        ));
+        parse_control_envelope(&prepare_dir(&fifth_dl, "dl-tx", "download"), &parent)
+            .expect("completed download child frees 1 download preparation slot");
+
+        // Completing 1 upload child frees 1 upload slot while download remains at 4/4
+        let up0_oid = ObjectId::parse_str(&up_ids[0]).unwrap();
+        parent
+            .lock()
+            .unwrap()
+            .registration
+            .as_mut()
+            .unwrap()
+            .children
+            .get_mut(&up0_oid)
+            .unwrap()
+            .consumed = true;
+        assert!(
+            parent
+                .lock()
+                .unwrap()
+                .release_completed_child(up0_oid, "up-tx")
+        );
+        parse_control_envelope(&prepare_dir(&ninth_up, "up-tx", "upload"), &parent)
+            .expect("completed upload child frees 1 upload preparation slot");
+    }
+
+    #[tokio::test]
+    async fn agent_peer_active_child_limits_enforce_8_upload_and_4_download_and_revoke_under_5s() {
+        use meshharbor_remote_control::signaling::FileChildDirection;
+        set_file_child_direction_disabled(FileChildDirection::Download, false);
+        set_file_child_direction_disabled(FileChildDirection::Upload, false);
+
+        let sid = ObjectId::parse_str(PARENT).unwrap();
+        let (tx, _rx) = mpsc::channel::<ClientMsg>(64);
+        let peer = AgentPeer::new(
+            sid,
+            &[],
+            tx,
+            crate::encode::EncoderPreference::Software,
+            "h264".into(),
+            "h264".into(),
+            None,
+            None,
+            false,
+            false,
+            Permissions::VIEW | Permissions::FILES,
+            "x14-limit-test".into(),
+            None,
+            crate::rc_overlay::RcOverlay::default(),
+            crate::rc_sessions::RcSessionRegistry::new(),
+            mpsc::channel(1).0,
+        )
+        .await
+        .expect("AgentPeer::new");
+
+        {
+            let mut auth = peer.file_child_authorization().lock().unwrap();
+            auth.origin = FileChildParentOrigin::Ordinary;
+            auth.identity = Some((
+                ObjectId::parse_str(AGENT).unwrap(),
+                ObjectId::parse_str(CONTROLLER).unwrap(),
+            ));
+        }
+
+        let api = APIBuilder::new().build();
+        let offer_pc = api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("offer_pc");
+        let _dc = offer_pc
+            .create_data_channel("files", None)
+            .await
+            .expect("files dc");
+        let offer = offer_pc.create_offer(None).await.expect("create_offer");
+        let offer_sdp = offer.sdp;
+        let _ = offer_pc.close().await;
+
+        // Admit 8 upload children (1..=8 succeed)
+        for i in 0..8usize {
+            let cid = ObjectId::parse_str(&format!("{:024x}", 0x3000 + i)).unwrap();
+            peer.accept_file_child_offer_for_direction(
+                cid,
+                "up-tx".into(),
+                FileChildDirection::Upload,
+                offer_sdp.clone(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("upload child {i} should succeed: {e:#}"));
+        }
+
+        // 9th upload child must be rejected
+        let ninth_up = ObjectId::parse_str(&format!("{:024x}", 0x3008usize)).unwrap();
+        let err_up = peer
+            .accept_file_child_offer_for_direction(
+                ninth_up,
+                "up-tx".into(),
+                FileChildDirection::Upload,
+                offer_sdp.clone(),
+            )
+            .await
+            .expect_err("9th upload child peer must be rejected");
+        assert!(
+            err_up.to_string().contains("file child peer limit reached"),
+            "unexpected error: {err_up:#}"
+        );
+
+        // Simultaneously admit 4 download children while 8 upload children are active
+        for i in 0..4usize {
+            let cid = ObjectId::parse_str(&format!("{:024x}", 0x4000 + i)).unwrap();
+            peer.accept_file_child_offer_for_direction(
+                cid,
+                "dl-tx".into(),
+                FileChildDirection::Download,
+                offer_sdp.clone(),
+            )
+            .await
+            .unwrap_or_else(|e| {
+                panic!("download child {i} should succeed alongside 8 uploads: {e:#}")
+            });
+        }
+
+        // 5th download child must be rejected
+        let fifth_dl = ObjectId::parse_str(&format!("{:024x}", 0x4004usize)).unwrap();
+        let err_dl = peer
+            .accept_file_child_offer_for_direction(
+                fifth_dl,
+                "dl-tx".into(),
+                FileChildDirection::Download,
+                offer_sdp.clone(),
+            )
+            .await
+            .expect_err("5th download child peer must be rejected");
+        assert!(
+            err_dl.to_string().contains("file child peer limit reached"),
+            "unexpected error: {err_dl:#}"
+        );
+
+        // Revoking all 12 active children (8 upload + 4 download) completes in < 5s
+        let revoke_started = std::time::Instant::now();
+        let (closed_children, _) = peer.revoke_file_children().await;
+        let revoke_elapsed = revoke_started.elapsed();
+        assert_eq!(closed_children, 12);
+        assert!(
+            revoke_elapsed < Duration::from_secs(5),
+            "revoke_file_children took {revoke_elapsed:?} (>= 5s)"
+        );
+
+        peer.close().await;
+    }
 }
 
 /// What a DataChannel handler lets go of when its session ends
@@ -18047,11 +18350,28 @@ mod download_stop_tests {
             "4-child upload SHA256 match"
         );
 
+        let (elapsed_8, path_8) = run_webrtc_child_upload_stripes(
+            &source,
+            &want_sha_hex,
+            out_dir.path(),
+            "upload-8c.bin",
+            8,
+        )
+        .await;
+        let written_8 = std::fs::read(&path_8).expect("read 8-child uploaded file");
+        let sha_8 = ring::digest::digest(&ring::digest::SHA256, &written_8);
+        assert_eq!(
+            sha_8.as_ref(),
+            want_digest.as_ref(),
+            "8-child upload SHA256 match"
+        );
+
         let mbps_1 = (source.len() as f64 / (1024.0 * 1024.0)) / elapsed_1.as_secs_f64();
         let mbps_4 = (source.len() as f64 / (1024.0 * 1024.0)) / elapsed_4.as_secs_f64();
+        let mbps_8 = (source.len() as f64 / (1024.0 * 1024.0)) / elapsed_8.as_secs_f64();
         eprintln!(
-            "[X14 upload bench] 4 MiB WebRTC upload: 1 child = {:?} ({:.1} MiB/s), 4 children = {:?} ({:.1} MiB/s)",
-            elapsed_1, mbps_1, elapsed_4, mbps_4
+            "[X14 upload bench] 4 MiB WebRTC upload: 1 child = {:?} ({:.1} MiB/s), 4 children = {:?} ({:.1} MiB/s), 8 children = {:?} ({:.1} MiB/s)",
+            elapsed_1, mbps_1, elapsed_4, mbps_4, elapsed_8, mbps_8
         );
 
         // 2. Upload child channel rejects download and browse commands with "file child channel is upload-only".

@@ -741,6 +741,19 @@ impl AgentInternal {
             }
             remote_candidates.clear();
         }
+        {
+            let mut nominated_pair = self.nominated_pair.lock().await;
+            nominated_pair.take();
+        }
+        self.agent_conn.selected_pair.store(None);
+        {
+            let mut checklist = self.agent_conn.checklist.lock().await;
+            checklist.clear();
+        }
+        {
+            let mut pending = self.pending_binding_requests.lock().await;
+            pending.clear();
+        }
     }
 
     pub(crate) async fn find_remote_candidate(

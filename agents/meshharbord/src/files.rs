@@ -3070,6 +3070,9 @@ fn default_download_dir(log: bool) -> Result<PathBuf> {
 // Control and Fail-Closed Disk Write Safety
 // ---------------------------------------------------------------------------
 
+/// Maximum concurrent child upload stripes per transfer (`1..=MAX_UPLOAD_CHILD_STRIPES`).
+pub const MAX_UPLOAD_CHILD_STRIPES: u8 = 8;
+
 /// Default SCTP `a_rwnd` advertised on upload-only child PeerConnections.
 /// Coordinated with the application-layer credit window so the browser's SCTP
 /// sender can fill a high-BDP WAN path when healthy while remaining bounded by
@@ -3563,7 +3566,7 @@ pub async fn begin_child_upload_stripe(
     {
         return Err(anyhow!("invalid child upload transfer_id or stripe_id"));
     }
-    if !(1..=4).contains(&stripe_count) || stripe_index >= stripe_count {
+    if !(1..=MAX_UPLOAD_CHILD_STRIPES).contains(&stripe_count) || stripe_index >= stripe_count {
         return Err(anyhow!(
             "invalid child upload stripe configuration ({stripe_index}/{stripe_count})"
         ));
@@ -6814,5 +6817,136 @@ mod x14_child_upload_tests {
             );
             assert!(!outside.path().join("target.bin").exists());
         }
+    }
+
+    #[tokio::test]
+    async fn eight_stripe_child_upload_succeeds_and_ninth_stripe_is_rejected() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
+        set_test_available_disk_bytes_override(None);
+        let dir = test_upload_tempdir();
+        let dest_str = dir.path().to_str().unwrap().to_string();
+        let sid = bson::oid::ObjectId::new();
+
+        // Reject stripe_count = 9 (> MAX_UPLOAD_CHILD_STRIPES = 8) and stripe_index = 8 when stripe_count = 8.
+        let valid_sha = sha256_hex(b"hello-world");
+        let err_nine = begin_child_upload_stripe(
+            sid,
+            "tx-9stripes".into(),
+            "tx-9stripes-s0".into(),
+            0,
+            MAX_UPLOAD_CHILD_STRIPES + 1,
+            0,
+            11,
+            "nine.bin".into(),
+            11,
+            valid_sha.clone(),
+            None,
+            Some(dest_str.clone()),
+            false,
+        )
+        .await
+        .expect_err("9 upload stripes must be rejected");
+        assert!(
+            format!("{err_nine:#}").contains("invalid child upload stripe configuration (0/9)"),
+            "{err_nine:#}"
+        );
+
+        let err_idx8 = begin_child_upload_stripe(
+            sid,
+            "tx-idx8".into(),
+            "tx-idx8-s8".into(),
+            MAX_UPLOAD_CHILD_STRIPES,
+            MAX_UPLOAD_CHILD_STRIPES,
+            0,
+            11,
+            "idx8.bin".into(),
+            11,
+            valid_sha,
+            None,
+            Some(dest_str.clone()),
+            false,
+        )
+        .await
+        .expect_err("stripe_index = 8 (9th stripe) must be rejected");
+        assert!(
+            format!("{err_idx8:#}").contains("invalid child upload stripe configuration (8/8)"),
+            "{err_idx8:#}"
+        );
+        assert!(no_part_files_remain(dir.path()));
+
+        // Complete an 8-stripe upload out-of-order and verify parent_under_load window halving across all 8 stripes.
+        let stripe_len = 128 * 1024usize;
+        let total_size = stripe_len * (MAX_UPLOAD_CHILD_STRIPES as usize);
+        let payload: Vec<u8> = (0..total_size)
+            .map(|i| ((i * 53 + 19) & 0xff) as u8)
+            .collect();
+        let expected_sha = sha256_hex(&payload);
+
+        for idx in (0..MAX_UPLOAD_CHILD_STRIPES).rev() {
+            let stripe_id = format!("tx-8s-s{idx}");
+            let offset = (idx as u64) * (stripe_len as u64);
+            let grant = begin_child_upload_stripe(
+                sid,
+                "tx-8s".into(),
+                stripe_id.clone(),
+                idx,
+                MAX_UPLOAD_CHILD_STRIPES,
+                offset,
+                stripe_len as u64,
+                "eight-stripes.bin".into(),
+                total_size as u64,
+                expected_sha.clone(),
+                None,
+                Some(dest_str.clone()),
+                false,
+            )
+            .await
+            .expect("begin 8-stripe upload");
+            assert_eq!(
+                grant.credit_bytes,
+                UPLOAD_CREDIT_INITIAL_BYTES.min(stripe_len as u64)
+            );
+
+            let slice = &payload[idx as usize * stripe_len..(idx as usize + 1) * stripe_len];
+            for (c_idx, chunk) in slice.chunks(16 * 1024).enumerate() {
+                // Trigger parent_under_load = true at 64 KiB (c_idx == 3, unacked == UPLOAD_CREDIT_REPLENISH_BYTES)
+                let repl = write_child_upload_chunk(sid, "tx-8s", &stripe_id, chunk, c_idx == 3)
+                    .await
+                    .expect("write 8-stripe chunk");
+                if c_idx == 3 {
+                    let rep = repl
+                        .expect("parent_under_load at replenish threshold triggers credit halving");
+                    assert_eq!(rep.window_halvings, 1);
+                }
+            }
+            let outcome = finish_child_upload_stripe(sid, "tx-8s", &stripe_id, stripe_len as u64)
+                .await
+                .expect("finish 8-stripe");
+            if idx > 0 {
+                assert!(matches!(
+                    outcome,
+                    ChildUploadEofOutcome::StripeWaiting { .. }
+                ));
+            } else {
+                match outcome {
+                    ChildUploadEofOutcome::Completed {
+                        final_path,
+                        bytes,
+                        sha256,
+                        ..
+                    } => {
+                        assert_eq!(bytes, total_size as u64);
+                        assert_eq!(sha256, expected_sha);
+                        assert_eq!(final_path, dir.path().join("eight-stripes.bin"));
+                    }
+                    other => panic!("expected Completed on 8th stripe, got {other:?}"),
+                }
+            }
+        }
+        assert_eq!(
+            std::fs::read(dir.path().join("eight-stripes.bin")).unwrap(),
+            payload
+        );
+        assert!(no_part_files_remain(dir.path()));
     }
 }

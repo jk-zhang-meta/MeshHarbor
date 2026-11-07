@@ -6269,5 +6269,433 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
       ws.onRcMessage = origOnRc
     }
   })
+
+  it('clamps upload children to [0, 8] and download children to [0, 4], and runs 8 upload + 4 download children simultaneously without interference', async () => {
+    const { createPinia, setActivePinia } = await import('pinia')
+    const { ref } = await import('vue')
+    const { useWsStore } = await import('@/stores/ws')
+    const { api } = await import('@/api/client')
+    const { useRemoteControl } = await import('@/composables/useRemoteControl')
+
+    setActivePinia(createPinia())
+    const ws = useWsStore()
+    ws.status = 'connected'
+
+    const rcListeners = new Map<string, Set<(msg: Record<string, unknown>) => void>>()
+    const origOnRc = ws.onRcMessage
+    ws.onRcMessage = ((t: string, h: (msg: Record<string, unknown>) => void) => {
+      let s = rcListeners.get(t)
+      if (!s) {
+        s = new Set()
+        rcListeners.set(t, s)
+      }
+      s.add(h)
+      return () => s?.delete(h)
+    }) as typeof origOnRc
+
+    const deliverRc = (t: string, msg: Record<string, unknown>) => {
+      for (const h of Array.from(rcListeners.get(t) ?? [])) {
+        h({ t, ...msg })
+      }
+    }
+
+    const sentWs: Record<string, unknown>[] = []
+    ws.sendRaw = (msg: unknown) => {
+      sentWs.push(msg as Record<string, unknown>)
+    }
+
+    const origApiGet = api.get
+    api.get = (async () => ({ ice_servers: [] })) as typeof origApiGet
+
+    class FakeDc {
+      label: string
+      readyState = 'open'
+      binaryType = 'arraybuffer'
+      bufferedAmount = 0
+      bufferedAmountLowThreshold = 0
+      onopen: (() => void) | null = null
+      onclose: (() => void) | null = null
+      onmessage: ((ev: { data: string | ArrayBuffer }) => void) | null = null
+      sent: Array<string | ArrayBuffer> = []
+      closed = false
+      constructor(label: string) {
+        this.label = label
+      }
+      send(data: string | ArrayBuffer) {
+        this.sent.push(data)
+        this.onSend?.(data)
+      }
+      onSend?: (data: string | ArrayBuffer) => void
+      close() {
+        this.closed = true
+        this.readyState = 'closed'
+      }
+    }
+
+    class FakePc {
+      static instances: FakePc[] = []
+      dcs = new Map<string, FakeDc>()
+      closed = false
+      connectionState = 'connected'
+      signalingState: RTCSignalingState = 'stable'
+      localDesc: RTCSessionDescriptionInit | null = null
+      remoteDesc: RTCSessionDescriptionInit | null = null
+      onicecandidate:
+        | ((ev: { candidate: { toJSON: () => RTCIceCandidateInit } | null }) => void)
+        | null = null
+      onconnectionstatechange: (() => void) | null = null
+      ontrack: ((ev: unknown) => void) | null = null
+      constructor() {
+        FakePc.instances.push(this)
+      }
+      addTransceiver() {}
+      createDataChannel(label: string) {
+        const dc = new FakeDc(label)
+        this.dcs.set(label, dc)
+        return dc as unknown as RTCDataChannel
+      }
+      async createOffer() {
+        return { type: 'offer' as const, sdp: SAMPLE_SDP }
+      }
+      async setLocalDescription(desc: RTCSessionDescriptionInit) {
+        this.localDesc = desc
+        this.signalingState = 'have-local-offer'
+      }
+      async setRemoteDescription(desc: RTCSessionDescriptionInit) {
+        if (this.signalingState !== 'have-local-offer') {
+          throw new Error(`InvalidStateError: setRemoteDescription in ${this.signalingState}`)
+        }
+        this.remoteDesc = desc
+        this.signalingState = 'stable'
+      }
+      async addIceCandidate() {}
+      async getStats() {
+        return new Map() as unknown as RTCStatsReport
+      }
+      close() {
+        this.closed = true
+        this.connectionState = 'closed'
+      }
+    }
+
+    const origPc = globalThis.RTCPeerConnection
+    globalThis.RTCPeerConnection = FakePc as unknown as typeof RTCPeerConnection
+
+    const writtenDlChunks: Uint8Array[] = []
+    const win = window as unknown as {
+      showSaveFilePicker?: () => Promise<{
+        createWritable: () => Promise<{
+          write: (data: ArrayBuffer) => Promise<void>
+          close: () => Promise<void>
+          abort: (reason?: unknown) => Promise<void>
+        }>
+      }>
+    }
+    const origPicker = win.showSaveFilePicker
+    win.showSaveFilePicker = async () => ({
+      createWritable: async () => ({
+        write: async (data: ArrayBuffer) => {
+          writtenDlChunks.push(new Uint8Array(data))
+        },
+        close: async () => {},
+        abort: async () => {},
+      }),
+    })
+
+    try {
+      const agentRef = ref({
+        id: AGENT_ID,
+        os: 'linux' as const,
+        capabilities: {
+          codecs: ['h264'] as ('h264' | 'h265' | 'av1')[],
+          hw_encoders: [],
+          has_input_permission: true,
+          supports_clipboard: true,
+          supports_file_transfer: true,
+          max_simultaneous_sessions: 4,
+          files: ['resume'] as ('resume')[],
+        },
+      })
+
+      // 1. Verify localStorage clamping: upload clamps to [0, 8], download clamps to [0, 4]
+      globalThis.localStorage?.setItem('meshharbor-rc-upload-children', '12')
+      globalThis.localStorage?.setItem('meshharbor-rc-download-children', '8')
+      const rcFromStorage = useRemoteControl(agentRef, {
+        userId: () => USER_ID,
+      })
+      expect(rcFromStorage.concurrentUploadChildren.value).toBe(8)
+      expect(rcFromStorage.concurrentDownloadChildren.value).toBe(4)
+
+      rcFromStorage.setConcurrentUploadChildren(9)
+      expect(rcFromStorage.concurrentUploadChildren.value).toBe(8)
+      expect(globalThis.localStorage?.getItem('meshharbor-rc-upload-children')).toBe('8')
+      rcFromStorage.setConcurrentUploadChildren(-2)
+      expect(rcFromStorage.concurrentUploadChildren.value).toBe(0)
+
+      rcFromStorage.setConcurrentDownloadChildren(5)
+      expect(rcFromStorage.concurrentDownloadChildren.value).toBe(4)
+      expect(globalThis.localStorage?.getItem('meshharbor-rc-download-children')).toBe('4')
+      rcFromStorage.setConcurrentDownloadChildren(-1)
+      expect(rcFromStorage.concurrentDownloadChildren.value).toBe(0)
+
+      // 2. Connect with both upload=8 and download=4 enabled
+      const rc = useRemoteControl(agentRef, {
+        userId: () => USER_ID,
+        childUploadConnections: 9, // clamped to 8
+        childDownloadConnections: 5, // clamped to 4
+      })
+      expect(rc.concurrentUploadChildren.value).toBe(8)
+      expect(rc.concurrentDownloadChildren.value).toBe(4)
+
+      await rc.connect(AGENT_ID)
+      const sessionReq = sentWs.find((m) => m.t === 'rc:session.request')
+      expect(sessionReq).toBeDefined()
+      expect(sessionReq!.browser_caps).toContain('file-child-upload')
+      expect(sessionReq!.browser_caps).toContain('file-child-download')
+
+      const parentPc = FakePc.instances[0]!
+      deliverRc('rc:session.created', {
+        session_id: SESSION_ID,
+        agent_id: AGENT_ID,
+        permissions: 'VIEW | INPUT | CLIPBOARD | FILES',
+      })
+      deliverRc('rc:ready', { session_id: SESSION_ID })
+      await new Promise((r) => setTimeout(r, 10))
+      deliverRc('rc:sdp.answer', { session_id: SESSION_ID, sdp: SAMPLE_SDP })
+      await new Promise((r) => setTimeout(r, 10))
+      parentPc.connectionState = 'connected'
+      parentPc.onconnectionstatechange?.()
+      expect(rc.phase.value).toBe('connected')
+
+      const controlDc = parentPc.dcs.get('control')!
+      let registerCount = 0
+      const preparedUploadIds: string[] = []
+      const preparedDownloadIds: string[] = []
+      controlDc.onSend = (raw) => {
+        if (typeof raw !== 'string') return
+        const msg = JSON.parse(raw) as {
+          t?: string
+          key?: string
+          child_id?: string
+          direction?: string
+        }
+        if (msg.t === 'rc:file.child.register' && msg.key) {
+          registerCount += 1
+          controlDc.onmessage?.({ data: JSON.stringify({ t: 'rc:file.child.register.ack' }) })
+        } else if (msg.t === 'rc:file.child.prepare' && msg.child_id) {
+          if (msg.direction === 'upload') {
+            preparedUploadIds.push(msg.child_id)
+          } else {
+            preparedDownloadIds.push(msg.child_id)
+          }
+          controlDc.onmessage?.({
+            data: JSON.stringify({ t: 'rc:file.child.prepare.ack', child_id: msg.child_id }),
+          })
+        }
+      }
+
+      const upSource = new Uint8Array(160)
+      for (let i = 0; i < 160; i++) upSource[i] = (i * 11 + 5) & 0xff
+      const upTarget = new Uint8Array(160)
+      let upEofCount = 0
+      let upExpectedSha = ''
+
+      const dlSource = new Uint8Array(80)
+      for (let i = 0; i < 80; i++) dlSource[i] = (i * 19 + 7) & 0xff
+
+      const TWELVE_CHILD_IDS = Array.from({ length: 12 }, (_, i) =>
+        `65f0000000000000000002${(i + 1).toString(16).padStart(2, '0')}`,
+      )
+      const childPcByChildId = new Map<string, FakePc>()
+      let reserveCounter = 0
+
+      ws.sendRaw = (rawMsg: unknown) => {
+        const msg = rawMsg as Record<string, unknown>
+        sentWs.push(msg)
+        if (msg.t === 'rc:file.child.reserve') {
+          const cid = TWELVE_CHILD_IDS[reserveCounter++]!
+          const pcCountBefore = FakePc.instances.length
+          queueMicrotask(() => {
+            deliverRc('rc:file.child.reserved', {
+              session_id: SESSION_ID,
+              child_id: cid,
+              transfer_id: msg.transfer_id,
+              direction: msg.direction,
+            })
+            queueMicrotask(() => {
+              // Capture the newly created FakePc for this childId when offer arrives
+              void pcCountBefore
+            })
+          })
+        } else if (msg.t === 'rc:file.sdp.offer') {
+          const cid = String(msg.child_id)
+          const dir = String(msg.direction)
+          // Find the latest FakePc not yet bound to a childId (excluding parentPc at index 0)
+          const boundPcs = new Set(childPcByChildId.values())
+          const childPc = FakePc.instances.slice(1).find((p) => !boundPcs.has(p))!
+          childPcByChildId.set(cid, childPc)
+          const childFilesDc = childPc.dcs.get('files')!
+
+          if (dir === 'upload') {
+            let stripeOffset = 0
+            let stripeLength = 0
+            let stripeReceived = 0
+            let transferId = ''
+            let stripeId = ''
+
+            childFilesDc.onSend = (raw) => {
+              if (typeof raw === 'string') {
+                const req = JSON.parse(raw) as {
+                  t?: string
+                  id?: string
+                  stripe_id?: string
+                  stripe_count?: number
+                  offset?: number
+                  length?: number
+                  sha256?: string
+                }
+                if (req.t === 'files:upload.begin') {
+                  expect(req.stripe_count).toBe(8)
+                  transferId = String(req.id)
+                  stripeId = String(req.stripe_id)
+                  stripeOffset = Number(req.offset)
+                  stripeLength = Number(req.length)
+                  upExpectedSha = String(req.sha256)
+                  queueMicrotask(() => {
+                    childFilesDc.onmessage?.({
+                      data: JSON.stringify({
+                        t: 'files:upload.credit',
+                        id: transferId,
+                        stripe_id: stripeId,
+                        acked_bytes: 0,
+                        credit_bytes: stripeLength,
+                        chunk_bytes: 16,
+                      }),
+                    })
+                  })
+                } else if (req.t === 'files:upload.eof') {
+                  expect(stripeReceived).toBe(stripeLength)
+                  upEofCount += 1
+                  if (upEofCount < 8) {
+                    queueMicrotask(() => {
+                      childFilesDc.onmessage?.({
+                        data: JSON.stringify({
+                          t: 'files:upload.stripe_done',
+                          id: transferId,
+                          stripe_id: stripeId,
+                          bytes: stripeReceived,
+                        }),
+                      })
+                    })
+                  } else {
+                    queueMicrotask(() => {
+                      childFilesDc.onmessage?.({
+                        data: JSON.stringify({
+                          t: 'files:upload.complete',
+                          id: transferId,
+                          path: '/tmp/up-8.bin',
+                          bytes: 160,
+                          sha256: upExpectedSha,
+                        }),
+                      })
+                    })
+                  }
+                }
+              } else {
+                const chunk = new Uint8Array(raw)
+                upTarget.set(chunk, stripeOffset + stripeReceived)
+                stripeReceived += chunk.byteLength
+              }
+            }
+          } else {
+            childFilesDc.onSend = (raw) => {
+              if (typeof raw !== 'string') return
+              const req = JSON.parse(raw) as {
+                t?: string
+                id?: string
+                offset?: number
+                length?: number
+              }
+              if (req.t === 'files:get') {
+                const off = Number(req.offset ?? 0)
+                const len = Number(req.length ?? 0)
+                const slice = dlSource.slice(off, off + len)
+                queueMicrotask(() => {
+                  childFilesDc.onmessage?.({
+                    data: JSON.stringify({
+                      t: 'files:offer',
+                      id: req.id,
+                      name: 'dl-4.bin',
+                      size: len,
+                    }),
+                  })
+                  childFilesDc.onmessage?.({
+                    data: slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength),
+                  })
+                  childFilesDc.onmessage?.({
+                    data: JSON.stringify({
+                      t: 'files:eof',
+                      id: req.id,
+                      bytes: len,
+                    }),
+                  })
+                })
+              }
+            }
+          }
+
+          queueMicrotask(() => {
+            deliverRc('rc:file.sdp.answer', {
+              session_id: SESSION_ID,
+              child_id: cid,
+              sdp: SAMPLE_SDP,
+            })
+            childFilesDc.onopen?.()
+          })
+        }
+      }
+
+      // Launch 8-stripe upload (passing 9 -> clamped to 8) and 4-stripe download (passing 5 -> clamped to 4) concurrently!
+      const upFile = new File([upSource], 'up-8.bin', { type: 'application/octet-stream' })
+      const [upRes, dlRes] = await Promise.all([
+        rc.uploadFile(upFile, { childConnections: 9 }),
+        rc.downloadFile('/var/data/dl-4.bin', 'dl-4.bin', {
+          childConnections: 5,
+          sizeHint: 80,
+        }),
+      ])
+
+      expect(upRes).toEqual({ path: '/tmp/up-8.bin', bytes: 160 })
+      expect(dlRes).toEqual({ name: 'dl-4.bin', bytes: 80 })
+      expect(Array.from(upTarget)).toEqual(Array.from(upSource))
+
+      const dlReassembled = new Uint8Array(80)
+      let dlPos = 0
+      for (const c of writtenDlChunks) {
+        dlReassembled.set(c, dlPos)
+        dlPos += c.byteLength
+      }
+      expect(Array.from(dlReassembled)).toEqual(Array.from(dlSource))
+
+      // Verify exactly 1 ephemeral key registration shared across both concurrent transfers,
+      // 8 upload children (9th rejected by clamp), and 4 download children (5th rejected by clamp)
+      expect(registerCount).toBe(1)
+      expect(preparedUploadIds).toHaveLength(8)
+      expect(preparedDownloadIds).toHaveLength(4)
+
+      // Verify all 12 child PCs were closed cleanly upon completion
+      expect(childPcByChildId.size).toBe(12)
+      for (const pc of childPcByChildId.values()) {
+        expect(pc.closed).toBe(true)
+      }
+
+      rc.disconnect()
+    } finally {
+      globalThis.RTCPeerConnection = origPc
+      win.showSaveFilePicker = origPicker
+      api.get = origApiGet
+      ws.onRcMessage = origOnRc
+    }
+  })
 })
 

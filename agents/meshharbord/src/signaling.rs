@@ -3372,6 +3372,7 @@ async fn handle_server_msg(
                     .await?;
                 }
                 Err(e) => {
+                    peer.complete_file_child(*child_id, transfer_id).await;
                     warn!(%session_id, %child_id, %e, "file child accept_file_child_offer failed");
                 }
             }
