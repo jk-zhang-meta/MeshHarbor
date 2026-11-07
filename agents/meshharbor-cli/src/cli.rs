@@ -559,8 +559,10 @@ enum Command {
         #[arg(long, default_value_t = 3389)]
         port: u16,
         /// Pinned SHA-256 fingerprint of the target's RDP TLS certificate
-        /// (64 hex chars or colon-separated `AA:BB:...`). Certificate checks
-        /// are never disabled.
+        /// (64 hex chars or colon-separated `AA:BB:...`). Enforced via FreeRDP
+        /// `/cert:fingerprint:sha256` on Linux/macOS; rejected on Windows where
+        /// `mstsc.exe` performs its own certificate validation and does not
+        /// accept a fingerprint pin.
         #[arg(long)]
         cert_sha256: Option<String>,
         /// Save the RDP password (read from stdin or interactive prompt, never
