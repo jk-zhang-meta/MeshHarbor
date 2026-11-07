@@ -1159,6 +1159,7 @@ pub(crate) enum FilesOutgoing<'a> {
         acked_bytes: u64,
         credit_bytes: u64,
         chunk_bytes: u64,
+        window_halvings: u64,
     },
     /// X14 — Agent → Browser confirmation that one stripe's bytes are written,
     /// while waiting for remaining stripes to finish before full-file SHA-256
@@ -3071,8 +3072,9 @@ fn default_download_dir(log: bool) -> Result<PathBuf> {
 
 /// Default SCTP `a_rwnd` advertised on upload-only child PeerConnections.
 /// Coordinated with the application-layer credit window so the browser's SCTP
-/// sender cannot flood the link and crush parent remote-control FPS.
-pub const UPLOAD_CHILD_SCTP_RWND_BYTES: u32 = 512 * 1024;
+/// sender can fill a high-BDP WAN path when healthy while remaining bounded by
+/// receiver credit grants.
+pub const UPLOAD_CHILD_SCTP_RWND_BYTES: u32 = 1024 * 1024;
 
 /// Maximum chunk size requested by the receiver credit controller.
 pub const UPLOAD_CREDIT_CHUNK_BYTES: u64 = 16 * 1024;
@@ -3081,15 +3083,30 @@ pub const UPLOAD_CREDIT_CHUNK_BYTES: u64 = 16 * 1024;
 /// forward progress.
 pub const UPLOAD_CREDIT_MIN_BYTES: u64 = 64 * 1024;
 
-/// Initial per-stripe credit window (256 KiB).
-pub const UPLOAD_CREDIT_INITIAL_BYTES: u64 = 256 * 1024;
+/// Initial per-stripe credit window (512 KiB).
+pub const UPLOAD_CREDIT_INITIAL_BYTES: u64 = 512 * 1024;
 
-/// Maximum per-stripe credit window (512 KiB, matching `UPLOAD_CHILD_SCTP_RWND_BYTES`).
-pub const UPLOAD_CREDIT_MAX_BYTES: u64 = 512 * 1024;
+/// Maximum per-stripe credit window (1 MiB, matching `UPLOAD_CHILD_SCTP_RWND_BYTES`).
+pub const UPLOAD_CREDIT_MAX_BYTES: u64 = 1024 * 1024;
 
 /// Additive step-up per clean window when disk writes are fast and the parent
 /// remote-control session is not under load.
-pub const UPLOAD_CREDIT_STEP_UP_BYTES: u64 = 64 * 1024;
+pub const UPLOAD_CREDIT_STEP_UP_BYTES: u64 = 128 * 1024;
+
+/// Maximum unacknowledged byte interval between incremental `files:upload.credit`
+/// replenishments (64 KiB) so credit advances smoothly without causing large
+/// bursty jumps.
+pub const UPLOAD_CREDIT_REPLENISH_BYTES: u64 = 64 * 1024;
+
+/// Test-only diagnostic override (`MESHHARBORD_X14_TEST_FIXED_MAX_CREDIT`).
+/// Disabled by default in production; when set to a non-false value during
+/// controlled WAN diagnostics, fixes the per-stripe credit window at
+/// `UPLOAD_CREDIT_MAX_BYTES` with zero pacing delay to isolate flow-control
+/// overhead from transport-layer SCTP behavior.
+fn is_test_fixed_max_credit_enabled() -> bool {
+    tunnel_core::env::node_env("X14_TEST_FIXED_MAX_CREDIT")
+        .is_some_and(|v| meshharbor_remote_control::signaling::parse_file_child_disable_switch(&v))
+}
 
 /// Compute the next per-stripe receiver credit window and optional pacing delay
 /// from the measured disk write duration and parent remote-control load state.
@@ -3112,6 +3129,34 @@ pub fn compute_next_upload_credit_window(
         (next, std::time::Duration::ZERO)
     } else {
         (clamped, std::time::Duration::ZERO)
+    }
+}
+
+fn write_all_at_blocking(
+    file: &std::fs::File,
+    #[allow(unused_mut)] mut buf: &[u8],
+    #[allow(unused_mut)] mut offset: u64,
+) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.write_all_at(buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        while !buf.is_empty() {
+            let n = file.seek_write(buf, offset)?;
+            if n == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "failed to write whole buffer via seek_write",
+                ));
+            }
+            buf = &buf[n..];
+            offset = offset.saturating_add(n as u64);
+        }
+        Ok(())
     }
 }
 
@@ -3391,9 +3436,11 @@ struct ChildUploadStripeState {
     offset: u64,
     length: u64,
     received: u64,
+    written_bytes: u64,
     last_credit_acked: u64,
     credit_window: u64,
     allowed_bytes: u64,
+    window_halvings: u64,
     eof_seen: bool,
 }
 
@@ -3409,7 +3456,7 @@ struct ChildUploadSession {
     reserved_final_path: PathBuf,
     temp_path: PathBuf,
     locked_paths: Vec<PathBuf>,
-    file: Option<std::fs::File>,
+    file: Option<Arc<std::fs::File>>,
     stripes: std::collections::HashMap<String, ChildUploadStripeState>,
     total_received: u64,
     committed: bool,
@@ -3452,6 +3499,7 @@ pub struct ChildUploadBeginGrant {
     pub acked_bytes: u64,
     pub credit_bytes: u64,
     pub chunk_bytes: u64,
+    pub window_halvings: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -3462,6 +3510,7 @@ pub struct ChildUploadCreditReplenish {
     pub credit_bytes: u64,
     pub chunk_bytes: u64,
     pub pace_delay: std::time::Duration,
+    pub window_halvings: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -3651,7 +3700,7 @@ pub async fn begin_child_upload_stripe(
                 reserved_final_path,
                 temp_path,
                 locked_paths,
-                file: Some(file),
+                file: Some(Arc::new(file)),
                 stripes: std::collections::HashMap::new(),
                 total_received: 0,
                 committed: false,
@@ -3707,7 +3756,9 @@ pub async fn begin_child_upload_stripe(
         }
     }
 
-    let initial_window = if parent_under_load {
+    let initial_window = if is_test_fixed_max_credit_enabled() {
+        UPLOAD_CREDIT_MAX_BYTES
+    } else if parent_under_load {
         UPLOAD_CREDIT_MIN_BYTES
     } else {
         UPLOAD_CREDIT_INITIAL_BYTES
@@ -3720,9 +3771,11 @@ pub async fn begin_child_upload_stripe(
             offset,
             length,
             received: 0,
+            written_bytes: 0,
             last_credit_acked: 0,
             credit_window: initial_window,
             allowed_bytes: credit_bytes,
+            window_halvings: 0,
             eof_seen: false,
         },
     );
@@ -3733,6 +3786,7 @@ pub async fn begin_child_upload_stripe(
         acked_bytes: 0,
         credit_bytes,
         chunk_bytes: UPLOAD_CREDIT_CHUNK_BYTES,
+        window_halvings: 0,
     })
 }
 
@@ -3755,93 +3809,112 @@ pub async fn write_child_upload_chunk(
             .ok_or_else(|| anyhow!("no active child upload for transfer {}", transfer_id))?
     };
 
-    let mut sess = session_arc.lock().await;
     let chunk_len = data.len() as u64;
-    let (write_offset, new_received, stripe_len, should_abort) = {
-        let Some(stripe) = sess.stripes.get_mut(stripe_id) else {
-            return Err(anyhow!("unknown child upload stripe {}", stripe_id));
-        };
-        if stripe.eof_seen {
-            (0, 0, 0, Some(anyhow!("received chunk after stripe EOF")))
-        } else {
-            let next_received = stripe.received.saturating_add(chunk_len);
-            if next_received > stripe.length {
-                (
-                    0,
-                    0,
-                    0,
-                    Some(anyhow!(
+    let (write_offset, stripe_len, file_arc, who) = {
+        let mut sess = session_arc.lock().await;
+        let check_res = {
+            let Some(stripe) = sess.stripes.get_mut(stripe_id) else {
+                return Err(anyhow!("unknown child upload stripe {}", stripe_id));
+            };
+            if stripe.eof_seen {
+                Err(anyhow!("received chunk after stripe EOF"))
+            } else {
+                let next_received = stripe.received.saturating_add(chunk_len);
+                if next_received > stripe.length {
+                    Err(anyhow!(
                         "stripe {} overflow: received {} > expected {}",
                         stripe_id,
                         next_received,
                         stripe.length
-                    )),
-                )
-            } else if next_received > stripe.allowed_bytes {
-                (
-                    0,
-                    0,
-                    0,
-                    Some(anyhow!(
+                    ))
+                } else if next_received > stripe.allowed_bytes {
+                    Err(anyhow!(
                         "stripe {} exceeded receiver credit window ({} > {})",
                         stripe_id,
                         next_received,
                         stripe.allowed_bytes
-                    )),
-                )
-            } else {
-                let write_offset = stripe.offset + stripe.received;
-                stripe.received = next_received;
-                (write_offset, next_received, stripe.length, None)
+                    ))
+                } else {
+                    let write_offset = stripe.offset + stripe.received;
+                    stripe.received = next_received;
+                    Ok((write_offset, stripe.length))
+                }
             }
-        }
-    };
-
-    if let Some(err) = should_abort {
-        sess.cleanup_now();
-        drop(sess);
-        CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
-        return Err(err);
-    }
-
-    let t0 = std::time::Instant::now();
-    let write_res = {
-        use std::io::{Seek, SeekFrom, Write};
-        let Some(file) = sess.file.as_mut() else {
+        };
+        let (write_offset, stripe_len) = match check_res {
+            Ok(v) => v,
+            Err(err) => {
+                sess.cleanup_now();
+                drop(sess);
+                CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
+                return Err(err);
+            }
+        };
+        let Some(file_arc) = sess.file.clone() else {
             return Err(anyhow!("child upload temp file already closed"));
         };
-        file.seek(SeekFrom::Start(write_offset))
-            .and_then(|_| file.write_all(data))
+        let who = sess.who.clone();
+        (write_offset, stripe_len, file_arc, who)
     };
-    if let Err(e) = write_res {
-        sess.cleanup_now();
-        drop(sess);
-        CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
-        return Err(anyhow::Error::from(e).context("writing child upload stripe chunk"));
+
+    let chunk_vec = data.to_vec();
+    let write_res = who
+        .run(move || {
+            let t0 = std::time::Instant::now();
+            write_all_at_blocking(&file_arc, &chunk_vec, write_offset)
+                .context("writing child upload stripe chunk")?;
+            Ok(t0.elapsed())
+        })
+        .await;
+
+    let mut sess = session_arc.lock().await;
+    let write_elapsed = match write_res {
+        Ok(elapsed) => elapsed,
+        Err(e) => {
+            sess.cleanup_now();
+            drop(sess);
+            CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
+            return Err(e);
+        }
+    };
+    if sess.file.is_none() {
+        return Err(anyhow!("child upload aborted during chunk write"));
     }
-    let write_elapsed = t0.elapsed();
     sess.total_received = sess.total_received.saturating_add(chunk_len);
 
-    let stripe = sess.stripes.get_mut(stripe_id).expect("stripe exists");
-    let unacked = new_received.saturating_sub(stripe.last_credit_acked);
-    let threshold = (stripe.credit_window / 2).max(UPLOAD_CREDIT_CHUNK_BYTES);
-    if new_received < stripe_len && (unacked >= threshold || new_received == stripe.allowed_bytes) {
-        let (next_window, pace_delay) = compute_next_upload_credit_window(
-            stripe.credit_window,
-            write_elapsed,
-            parent_under_load,
-        );
+    let Some(stripe) = sess.stripes.get_mut(stripe_id) else {
+        return Err(anyhow!("unknown child upload stripe {}", stripe_id));
+    };
+    stripe.written_bytes = stripe.written_bytes.saturating_add(chunk_len);
+    let written = stripe.written_bytes;
+    let unacked = written.saturating_sub(stripe.last_credit_acked);
+    let threshold =
+        (stripe.credit_window / 4).clamp(UPLOAD_CREDIT_CHUNK_BYTES, UPLOAD_CREDIT_REPLENISH_BYTES);
+    if written < stripe_len && (unacked >= threshold || written == stripe.allowed_bytes) {
+        let (next_window, pace_delay) = if is_test_fixed_max_credit_enabled() {
+            (UPLOAD_CREDIT_MAX_BYTES, std::time::Duration::ZERO)
+        } else {
+            compute_next_upload_credit_window(
+                stripe.credit_window,
+                write_elapsed,
+                parent_under_load,
+            )
+        };
+        if next_window < stripe.credit_window {
+            stripe.window_halvings = stripe.window_halvings.saturating_add(1);
+        }
         stripe.credit_window = next_window;
-        stripe.last_credit_acked = new_received;
-        let credit_bytes = (stripe_len - new_received).min(stripe.credit_window);
-        stripe.allowed_bytes = new_received + credit_bytes;
+        stripe.last_credit_acked = written;
+        let credit_bytes = (stripe_len - written).min(stripe.credit_window);
+        stripe.allowed_bytes = stripe.allowed_bytes.max(written + credit_bytes);
         return Ok(Some(ChildUploadCreditReplenish {
             transfer_id: transfer_id.to_string(),
             stripe_id: stripe_id.to_string(),
-            acked_bytes: new_received,
+            acked_bytes: written,
             credit_bytes,
             chunk_bytes: UPLOAD_CREDIT_CHUNK_BYTES,
             pace_delay,
+            window_halvings: stripe.window_halvings,
         }));
     }
     Ok(None)
@@ -3867,11 +3940,15 @@ pub async fn finish_child_upload_stripe(
         let Some(stripe) = sess.stripes.get_mut(stripe_id) else {
             return Err(anyhow!("unknown child upload stripe {}", stripe_id));
         };
-        if stripe.received != stripe.length || reported_bytes != stripe.length {
+        if stripe.received != stripe.length
+            || stripe.written_bytes != stripe.length
+            || reported_bytes != stripe.length
+        {
             let err = anyhow!(
-                "child upload stripe {} incomplete at EOF ({}/{}/{})",
+                "child upload stripe {} incomplete at EOF ({}/{}/{}/{})",
                 stripe_id,
                 stripe.received,
+                stripe.written_bytes,
                 reported_bytes,
                 stripe.length
             );
@@ -3927,7 +4004,7 @@ pub async fn finish_child_upload_stripe(
     // Remove from active sessions map before committing on disk.
     CHILD_UPLOAD_SESSIONS.lock().await.remove(&key);
 
-    let mut file = sess
+    let file = sess
         .file
         .take()
         .ok_or_else(|| anyhow!("child upload temp file missing"))?;
@@ -3942,9 +4019,10 @@ pub async fn finish_child_upload_stripe(
     let commit_result = who
         .run(move || {
             use std::io::{Read, Seek, SeekFrom, Write};
-            file.flush().context("flushing upload temp file")?;
+            (&*file).flush().context("flushing upload temp file")?;
             file.sync_all().context("syncing upload temp file")?;
-            file.seek(SeekFrom::Start(0))
+            (&*file)
+                .seek(SeekFrom::Start(0))
                 .context("seeking upload temp file for SHA-256 verification")?;
 
             let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
@@ -3952,7 +4030,7 @@ pub async fn finish_child_upload_stripe(
             let mut hashed = 0u64;
             while hashed < expected_size {
                 let to_read = ((expected_size - hashed) as usize).min(buf.len());
-                let n = file
+                let n = (&*file)
                     .read(&mut buf[..to_read])
                     .context("reading upload temp file for SHA-256")?;
                 if n == 0 {

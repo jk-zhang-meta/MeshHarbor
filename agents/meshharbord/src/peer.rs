@@ -10557,11 +10557,7 @@ pub fn is_file_child_direction_disabled(
         1 => false,
         2 => true,
         _ => node_env(env_suffix).is_some_and(|v| {
-            let trimmed = v.trim();
-            trimmed == "1"
-                || trimmed.eq_ignore_ascii_case("true")
-                || trimmed.eq_ignore_ascii_case("yes")
-                || trimmed.eq_ignore_ascii_case("on")
+            meshharbor_remote_control::signaling::parse_file_child_disable_switch(&v)
         }),
     }
 }
@@ -13216,6 +13212,7 @@ pub fn attach_child_upload_files_handler(
                                 acked_bytes: replenish.acked_bytes,
                                 credit_bytes: replenish.credit_bytes,
                                 chunk_bytes: replenish.chunk_bytes,
+                                window_halvings: replenish.window_halvings,
                             },
                         )
                         .await;
@@ -13331,6 +13328,7 @@ async fn handle_child_upload_files_control(
                             acked_bytes: grant.acked_bytes,
                             credit_bytes: grant.credit_bytes,
                             chunk_bytes: grant.chunk_bytes,
+                            window_halvings: grant.window_halvings,
                         },
                     )
                     .await;

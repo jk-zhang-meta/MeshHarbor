@@ -770,10 +770,14 @@ impl Hub {
         consent_tx: Option<mpsc::Sender<ConsentEvent>>,
         relay_load: RelayLoadMap,
     ) -> Self {
-        let download_disabled = std::env::var("MESHHARBOR_DISABLE_FILE_CHILD_DOWNLOAD")
-            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-        let upload_disabled = std::env::var("MESHHARBOR_DISABLE_FILE_CHILD_UPLOAD")
-            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        let download_disabled =
+            std::env::var("MESHHARBOR_DISABLE_FILE_CHILD_DOWNLOAD").is_ok_and(|v| {
+                meshharbor_remote_control::signaling::parse_file_child_disable_switch(&v)
+            });
+        let upload_disabled =
+            std::env::var("MESHHARBOR_DISABLE_FILE_CHILD_UPLOAD").is_ok_and(|v| {
+                meshharbor_remote_control::signaling::parse_file_child_disable_switch(&v)
+            });
         Self {
             inner: Arc::new(HubInner {
                 agents: DashMap::new(),
@@ -10137,5 +10141,22 @@ mod tests {
             !hub.deliver_exec_result("req-4", ExecOutcome::default()),
             "waiter must have been deregistered"
         );
+    }
+
+    #[test]
+    fn file_child_disable_switch_treats_on_yes_and_non_false_values_as_disabled() {
+        use meshharbor_remote_control::signaling::parse_file_child_disable_switch;
+        for val in ["1", "true", "TRUE", "on", "ON", "yes", "YES", "disabled"] {
+            assert!(
+                parse_file_child_disable_switch(val),
+                "server/agent shared parser must treat {val:?} as disabled"
+            );
+        }
+        for val in ["", "  ", "0", "false", "FALSE", "no", "NO", "off", "OFF"] {
+            assert!(
+                !parse_file_child_disable_switch(val),
+                "server/agent shared parser must treat {val:?} as not disabled"
+            );
+        }
     }
 }

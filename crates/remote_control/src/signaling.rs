@@ -226,6 +226,21 @@ impl FileChildDirection {
     }
 }
 
+/// Fail-closed parser for `DISABLE_FILE_CHILD_DOWNLOAD` and
+/// `DISABLE_FILE_CHILD_UPLOAD` kill-switch environment variables shared by
+/// the signaling server (`Hub`) and the agent (`meshharbord`).
+///
+/// Any non-empty trimmed value that is not `"0"`, `"false"`, `"no"`, or `"off"`
+/// (case-insensitive) is treated as disabled (`true`).
+pub fn parse_file_child_disable_switch(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty()
+        && !matches!(
+            trimmed.to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+}
+
 /// Required proof for a NEW child DTLS transport, separate from the ordinary
 /// offer's optional, audit-only `peer_auth`. P-256/SHA-256 over
 /// [`file_child_offer_transcript`]: `key` is standard padded base64 of an
@@ -6616,7 +6631,10 @@ mod tests {
         assert_eq!(serde_json::to_value(parsed).unwrap(), request);
         let mut upload = request.clone();
         upload["direction"] = serde_json::json!("upload");
-        assert!(serde_json::from_value::<ClientMsg>(upload).is_err());
+        assert!(serde_json::from_value::<ClientMsg>(upload).is_ok());
+        let mut unknown_dir = request.clone();
+        unknown_dir["direction"] = serde_json::json!("bidirectional");
+        assert!(serde_json::from_value::<ClientMsg>(unknown_dir).is_err());
 
         let reply = serde_json::json!({
             "t":"rc:file.child.reserved", "session_id":"111111111111111111111111",
@@ -13235,6 +13253,11 @@ mod org_fallback_wire_tests {
             }
         ));
 
+        let sdp = format!(
+            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\na=fingerprint:sha-256 {}\r\n",
+            ["AA"; 32].join(":")
+        );
+        let nonce = "AAECAwQFBgcICQoLDA0ODw";
         let dl_transcript = file_child_offer_transcript_with_direction(
             &sid.to_hex(),
             &cid.to_hex(),
@@ -13242,8 +13265,8 @@ mod org_fallback_wire_tests {
             FileChildDirection::Download,
             &aid.to_hex(),
             &uid.to_hex(),
-            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\na=fingerprint:sha-256 AA:BB:CC\r\n",
-            "nonce-1234567890abcd",
+            &sdp,
+            nonce,
         )
         .unwrap();
         let up_transcript = file_child_offer_transcript_with_direction(
@@ -13253,8 +13276,8 @@ mod org_fallback_wire_tests {
             FileChildDirection::Upload,
             &aid.to_hex(),
             &uid.to_hex(),
-            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\na=fingerprint:sha-256 AA:BB:CC\r\n",
-            "nonce-1234567890abcd",
+            &sdp,
+            nonce,
         )
         .unwrap();
         assert_ne!(
@@ -13262,9 +13285,22 @@ mod org_fallback_wire_tests {
             "upload and download offer transcripts must be domain-separated by direction"
         );
         assert!(
-            String::from_utf8_lossy(&up_transcript).contains("\ndirection=upload\n"),
-            "upload transcript must bind direction=upload"
+            up_transcript.windows(8).any(|w| w == b"\x00\x06upload"),
+            "upload transcript must bind u16-length-prefixed direction=upload"
         );
+
+        for disabled_val in ["1", "true", "TRUE", "yes", "YES", "on", "ON", " custom "] {
+            assert!(
+                parse_file_child_disable_switch(disabled_val),
+                "expected {disabled_val:?} to disable file child direction"
+            );
+        }
+        for enabled_val in ["", "   ", "0", "false", "FALSE", "no", "NO", "off", "OFF"] {
+            assert!(
+                !parse_file_child_disable_switch(enabled_val),
+                "expected {enabled_val:?} to keep file child direction enabled"
+            );
+        }
     }
 }
 

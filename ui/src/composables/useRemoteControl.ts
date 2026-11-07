@@ -13201,12 +13201,17 @@ export function useRemoteControl(
         }
 
         return await new Promise<ChildUploadHandle>((resolveStripe, rejectStripe) => {
+          const UPLOAD_STRIPE_PACE_BYTES_PER_SEC = 2 * 1024 * 1024
+          const UPLOAD_STRIPE_BURST_BYTES = 32 * 1024
+          const UPLOAD_STRIPE_BUFFERED_HIGH_BYTES = 64 * 1024
           let settled = false
           let stripeSent = 0
           let allowedBytes = 0
           let chunkBytes = 16 * 1024
           let eofSent = false
           let pumping = false
+          let paceTokens = UPLOAD_STRIPE_BURST_BYTES
+          let lastPaceRefillMs = performance.now()
 
           const failStripe = (err: Error) => {
             if (settled) return
@@ -13260,7 +13265,7 @@ export function useRemoteControl(
                 if (filesDc.readyState !== 'open') {
                   throw new Error('child upload channel closed during send')
                 }
-                if ((filesDc.bufferedAmount ?? 0) > 256 * 1024) {
+                if ((filesDc.bufferedAmount ?? 0) > UPLOAD_STRIPE_BUFFERED_HIGH_BYTES) {
                   await new Promise<void>((r) => {
                     let done = false
                     const finish = () => {
@@ -13270,16 +13275,33 @@ export function useRemoteControl(
                       filesDc.removeEventListener?.('bufferedamountlow', finish)
                       r()
                     }
-                    const t = setTimeout(finish, 20)
+                    const t = setTimeout(finish, 10)
                     filesDc.addEventListener?.('bufferedamountlow', finish)
                   })
                   if (settled || eofSent) break
-                  if ((filesDc.bufferedAmount ?? 0) > 256 * 1024) continue
+                  if ((filesDc.bufferedAmount ?? 0) > UPLOAD_STRIPE_BUFFERED_HIGH_BYTES) continue
                 }
                 const remainingInCredit = allowedBytes - stripeSent
                 const remainingInStripe = length - stripeSent
                 const step = Math.min(chunkBytes, remainingInCredit, remainingInStripe)
                 if (step <= 0) break
+                const nowMs = performance.now()
+                const elapsedMs = Math.max(0, nowMs - lastPaceRefillMs)
+                lastPaceRefillMs = nowMs
+                paceTokens = Math.min(
+                  UPLOAD_STRIPE_BURST_BYTES,
+                  paceTokens + (elapsedMs * UPLOAD_STRIPE_PACE_BYTES_PER_SEC) / 1000,
+                )
+                if (paceTokens < step) {
+                  const waitMs = Math.max(
+                    2,
+                    Math.ceil(((step - paceTokens) * 1000) / UPLOAD_STRIPE_PACE_BYTES_PER_SEC),
+                  )
+                  await new Promise<void>((r) => setTimeout(r, waitMs))
+                  if (settled || eofSent) break
+                  continue
+                }
+                paceTokens -= step
                 const sliceStart = offset + stripeSent
                 const chunkBuf = await file.slice(sliceStart, sliceStart + step).arrayBuffer()
                 if (settled) return
