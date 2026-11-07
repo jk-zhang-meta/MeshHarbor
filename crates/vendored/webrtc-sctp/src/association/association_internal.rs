@@ -1569,24 +1569,28 @@ impl AssociationInternal {
                             && newly_acked_chunks >= 2
                             && self.cwnd >= 8 * self.mtu;
                         self.min_tsn2measure_rtt = self.my_next_tsn;
-                        let rtt = match SystemTime::now().duration_since(c.since) {
-                            Ok(rtt) => rtt,
-                            Err(_) => return Err(Error::ErrInvalidSystemTime),
-                        };
-                        let rtt_ms = rtt.as_millis() as u64;
-                        let srtt = self.rto_mgr.set_new_rtt(rtt_ms);
-                        if rtt_ms > 0 {
-                            if let Some(pacer) = &mut self.file_pacer {
-                                pacer.observe_rtt_sample(rtt_ms, srtt, allow_inflation_sample);
+                        if let Ok(rtt) = SystemTime::now().duration_since(c.since) {
+                            let rtt_ms = rtt.as_millis() as u64;
+                            let srtt = self.rto_mgr.set_new_rtt(rtt_ms);
+                            if rtt_ms > 0 {
+                                if let Some(pacer) = &mut self.file_pacer {
+                                    pacer.observe_rtt_sample(rtt_ms, srtt, allow_inflation_sample);
+                                }
                             }
+                            log::trace!(
+                                "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
+                                self.name,
+                                rtt.as_millis(),
+                                srtt,
+                                self.rto_mgr.get_rto()
+                            );
+                        } else {
+                            log::debug!(
+                                "[{}] SACK: skipping RTT sample for tsn={} due to backward SystemTime step",
+                                self.name,
+                                c.tsn
+                            );
                         }
-                        log::trace!(
-                            "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
-                            self.name,
-                            rtt.as_millis(),
-                            srtt,
-                            self.rto_mgr.get_rto()
-                        );
                     }
                 } else {
                     had_prior_gap_acked = true;
@@ -1642,24 +1646,28 @@ impl AssociationInternal {
                         };
                         if c.nsent == 1 && can_measure_gap_rtt {
                             self.min_tsn2measure_rtt = self.my_next_tsn;
-                            let rtt = match SystemTime::now().duration_since(c.since) {
-                                Ok(rtt) => rtt,
-                                Err(_) => return Err(Error::ErrInvalidSystemTime),
-                            };
-                            let rtt_ms = rtt.as_millis() as u64;
-                            let srtt = self.rto_mgr.set_new_rtt(rtt_ms);
-                            if rtt_ms > 0 {
-                                if let Some(pacer) = &mut self.file_pacer {
-                                    pacer.observe_rtt_sample(rtt_ms, srtt, false);
+                            if let Ok(rtt) = SystemTime::now().duration_since(c.since) {
+                                let rtt_ms = rtt.as_millis() as u64;
+                                let srtt = self.rto_mgr.set_new_rtt(rtt_ms);
+                                if rtt_ms > 0 {
+                                    if let Some(pacer) = &mut self.file_pacer {
+                                        pacer.observe_rtt_sample(rtt_ms, srtt, false);
+                                    }
                                 }
+                                log::trace!(
+                                    "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
+                                    self.name,
+                                    rtt.as_millis(),
+                                    srtt,
+                                    self.rto_mgr.get_rto()
+                                );
+                            } else {
+                                log::debug!(
+                                    "[{}] SACK: skipping gap-ack RTT sample for tsn={} due to backward SystemTime step",
+                                    self.name,
+                                    c.tsn
+                                );
                             }
-                            log::trace!(
-                                "[{}] SACK: measured-rtt={} srtt={} new-rto={}",
-                                self.name,
-                                rtt.as_millis(),
-                                srtt,
-                                self.rto_mgr.get_rto()
-                            );
                         }
 
                         if sna32lt(htna, tsn) {

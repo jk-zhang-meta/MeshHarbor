@@ -3104,8 +3104,18 @@ pub const UPLOAD_CREDIT_REPLENISH_BYTES: u64 = 64 * 1024;
 /// `UPLOAD_CREDIT_MAX_BYTES` with zero pacing delay to isolate flow-control
 /// overhead from transport-layer SCTP behavior.
 fn is_test_fixed_max_credit_enabled() -> bool {
-    tunnel_core::env::node_env("X14_TEST_FIXED_MAX_CREDIT")
-        .is_some_and(|v| meshharbor_remote_control::signaling::parse_file_child_disable_switch(&v))
+    let enabled = tunnel_core::env::node_env("X14_TEST_FIXED_MAX_CREDIT")
+        .is_some_and(|v| meshharbor_remote_control::signaling::parse_file_child_disable_switch(&v));
+    if enabled {
+        static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+        WARN_ONCE.call_once(|| {
+            tracing::warn!(
+                max_credit_bytes = UPLOAD_CREDIT_MAX_BYTES,
+                "MESHHARBORD_X14_TEST_FIXED_MAX_CREDIT is enabled: upload stripe credit window is pinned to max with zero pacing delay (diagnostic override)"
+            );
+        });
+    }
+    enabled
 }
 
 /// Compute the next per-stripe receiver credit window and optional pacing delay

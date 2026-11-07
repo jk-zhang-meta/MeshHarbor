@@ -17861,6 +17861,7 @@ mod download_stop_tests {
             let completed_out = completed_path.clone();
 
             tasks.push(tokio::spawn(async move {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
                 let begin_cmd = serde_json::json!({
                     "t": "files:upload.begin",
                     "id": tid,
@@ -17875,12 +17876,14 @@ mod download_stop_tests {
                     "dest_path": dpath,
                 })
                 .to_string();
-                raw_b_dc
-                    .write_data_channel(&bytes::Bytes::from(begin_cmd), true)
-                    .await
-                    .expect("send files:upload.begin");
+                tokio::time::timeout_at(
+                    deadline,
+                    raw_b_dc.write_data_channel(&bytes::Bytes::from(begin_cmd), true),
+                )
+                .await
+                .expect("send files:upload.begin timeout")
+                .expect("send files:upload.begin");
 
-                let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
                 let mut sent: usize = 0;
                 let mut eof_sent = false;
 
@@ -17906,12 +17909,15 @@ mod download_stop_tests {
                             let allowed = (acked + credit).min(slice.len());
                             while sent < allowed {
                                 let step = chunk_bytes.min(allowed - sent);
-                                raw_b_dc
-                                    .write(&bytes::Bytes::copy_from_slice(
+                                tokio::time::timeout_at(
+                                    deadline,
+                                    raw_b_dc.write(&bytes::Bytes::copy_from_slice(
                                         &slice[sent..sent + step],
-                                    ))
-                                    .await
-                                    .expect("send upload chunk");
+                                    )),
+                                )
+                                .await
+                                .expect("send upload chunk timeout")
+                                .expect("send upload chunk");
                                 sent += step;
                             }
                             if sent == slice.len() && !eof_sent {
@@ -17923,10 +17929,13 @@ mod download_stop_tests {
                                     "bytes": sent,
                                 })
                                 .to_string();
-                                raw_b_dc
-                                    .write_data_channel(&bytes::Bytes::from(eof_cmd), true)
-                                    .await
-                                    .expect("send files:upload.eof");
+                                tokio::time::timeout_at(
+                                    deadline,
+                                    raw_b_dc.write_data_channel(&bytes::Bytes::from(eof_cmd), true),
+                                )
+                                .await
+                                .expect("send files:upload.eof timeout")
+                                .expect("send files:upload.eof");
                             }
                         }
                         Some("files:upload.stripe_done") => {
@@ -17979,6 +17988,10 @@ mod download_stop_tests {
     #[tokio::test]
     async fn child_upload_webrtc_1_vs_4_throughput_credit_pacing_sha256_download_rejection_and_revoke_under_5s()
      {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_test_writer()
+            .try_init();
         let (_src_dir, src_path) = a_file(4 * 1024 * 1024);
         let source = std::fs::read(&src_path).expect("read source file");
         let want_digest = ring::digest::digest(&ring::digest::SHA256, &source);

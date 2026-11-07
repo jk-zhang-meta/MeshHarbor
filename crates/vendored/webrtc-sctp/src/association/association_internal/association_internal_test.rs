@@ -684,3 +684,68 @@ async fn test_assoc_max_message_size_explicit() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_handle_sack_skips_rtt_sample_when_system_time_steps_backwards_instead_of_failing()
+-> Result<()> {
+    let mut a = create_association_internal(Config {
+        net_conn: Arc::new(DumbConn {}),
+        max_receive_buffer_size: 0,
+        max_message_size: 0,
+        name: "client".to_owned(),
+    });
+    a.set_state(AssociationState::Established);
+    a.cumulative_tsn_ack_point = 99;
+    a.my_next_tsn = 103;
+    a.min_tsn2measure_rtt = 100;
+    a.cwnd = 24_000;
+    a.ssthresh = 24_000;
+
+    // Stamp outbound in-flight chunks 5 seconds in the future relative to
+    // current SystemTime::now() to deterministically simulate an OS wall-clock
+    // backward step (e.g. NTP/VM clock sync) between chunk send and SACK arrival.
+    let future_since = SystemTime::now() + std::time::Duration::from_secs(5);
+    for tsn in 100..103 {
+        a.inflight_queue.push_no_check(ChunkPayloadData {
+            tsn,
+            nsent: 1,
+            since: future_since,
+            user_data: Bytes::from(vec![0; 1200]),
+            ..Default::default()
+        });
+    }
+
+    // 1. Gap ACK block acknowledging TSN 101 must succeed without ErrInvalidSystemTime
+    // and skip the invalid RTT sample.
+    a.handle_sack(&ChunkSelectiveAck {
+        cumulative_tsn_ack: 99,
+        advertised_receiver_window_credit: 1_000_000,
+        gap_ack_blocks: vec![GapAckBlock { start: 2, end: 2 }],
+        ..Default::default()
+    })
+    .await?;
+    assert_eq!(a.get_state(), AssociationState::Established);
+    assert!(a.inflight_queue.get(101).unwrap().acked);
+    assert_eq!(a.rto_mgr.srtt, 0, "invalid gap-ack RTT sample must be skipped");
+
+    // 2. Cumulative TSN ACK advancing across TSNs 100..=102 must also succeed
+    // without ErrInvalidSystemTime, pop the acknowledged chunks, and keep the
+    // association Established.
+    a.min_tsn2measure_rtt = 100;
+    a.handle_sack(&ChunkSelectiveAck {
+        cumulative_tsn_ack: 102,
+        advertised_receiver_window_credit: 1_000_000,
+        ..Default::default()
+    })
+    .await?;
+    assert_eq!(a.get_state(), AssociationState::Established);
+    assert_eq!(a.cumulative_tsn_ack_point, 102);
+    assert!(a.inflight_queue.is_empty());
+    assert_eq!(
+        a.rto_mgr.srtt, 0,
+        "invalid cumulative-ack RTT sample must be skipped"
+    );
+
+    Ok(())
+}
+
