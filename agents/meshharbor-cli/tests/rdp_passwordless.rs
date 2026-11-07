@@ -687,8 +687,15 @@ fn linux_and_macos_os_store_builders_pass_secret_only_via_stdin_never_argv() {
     assert!(mac_stdin.contains(secret));
 }
 
+/// End-to-end test inside an isolated Linux network namespace (`ip netns`) with
+/// a real TLS `xrdp` server, `dbus-run-session` + `gnome-keyring-daemon`,
+/// `secret-tool`, and `xfreerdp3 +auth-only`.
+///
+/// Run explicitly as root with:
+/// `cargo test -p meshharbor-cli --test rdp_passwordless linux_isolated_netns_xrdp_tls_secret_tool_end_to_end -- --ignored --nocapture`
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "requires root (ip netns), xrdp, xfreerdp3, secret-tool, and gnome-keyring-daemon; run with -- --ignored"]
 fn linux_isolated_netns_xrdp_tls_secret_tool_end_to_end() {
     use std::process::Command;
 
