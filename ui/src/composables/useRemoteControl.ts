@@ -5556,6 +5556,12 @@ export function useRemoteControl(
    *  across both paths. */
   const mediaIntrinsicW = ref(0)
   const mediaIntrinsicH = ref(0)
+  watch(mediaIntrinsicW, (w) => {
+    if (w > 0 && connectTiming && !connectTiming.done()) {
+      markConnect('first_frame')
+      logConnectTiming('first-frame')
+    }
+  })
   // WebCodecs runtime handles. Created on track-attach, destroyed in
   // teardown(). Tracked here rather than scoped inside ontrack so
   // teardown() can reliably stop the worker on disconnect.
@@ -9309,6 +9315,41 @@ export function useRemoteControl(
         ws.forceRedial()
       }
     }
+    let iceServers: IceServer[] = []
+    let localRelay: LocalRelayDescriptor | null = null
+    let localRelayAppliedToPc = false
+    let attemptPc: RTCPeerConnection | null = null
+    if (localRelayEnabled.value && !externalMode && !sharedMode) {
+      void probeLocalRelay().then((desc) => {
+        if (!desc || gen !== connectGen) return
+        localRelay = desc
+        if (attemptPc && pc === attemptPc && !localRelayAppliedToPc) {
+          localRelayAppliedToPc = true
+          iceServers = [localRelayIceServer(desc), ...iceServers]
+          lastIceServers = iceServers
+          try {
+            attemptPc.setConfiguration?.({
+              iceServers: iceServers as RTCIceServer[],
+              bundlePolicy: 'max-bundle',
+            })
+          } catch {
+            /* Browser may reject dynamic setConfiguration; ignore */
+          }
+          console.info(
+            '[rc] local-relay TURN discovered on this host — relaying via local agent overlay',
+            desc.overlay_ip,
+          )
+        }
+      })
+    }
+    const turnCredsPromise: Promise<IceServer[]> = api
+      .get<TurnCredsResponse>(
+        externalMode || sharedMode
+          ? '/turn/credentials'
+          : turnCredsPath(agentId, expectedOrgTid(orgId, location.pathname)),
+      )
+      .then((creds) => creds.ice_servers)
+      .catch(() => defaultStunServers())
     if (ws.status !== 'connected') {
       const ready = await waitForWsConnected(RC_PREFLIGHT_WS_WAIT_MS)
       if (!ready) {
@@ -9406,39 +9447,22 @@ export function useRemoteControl(
     // Pull TURN creds before creating the PC so the first gather uses them.
     // FR-115 P4b — charged to the device's org; an external session names
     // neither id (its device is a connect code here), so it stays uncharged.
-    let iceServers: IceServer[] = []
-    try {
-      const creds = await api.get<TurnCredsResponse>(
-        externalMode || sharedMode
-          ? '/turn/credentials'
-          : turnCredsPath(agentId, expectedOrgTid(orgId, location.pathname)),
-      )
-      iceServers = creds.ice_servers
-    } catch {
-      // Fall back to a public STUN if the server has none configured.
-      iceServers = defaultStunServers()
-    }
+    iceServers = await turnCredsPromise
     if (gen !== connectGen) return // #1631 - torn down during the TURN fetch
     markConnect('turn_ready')
 
-    // loopback-TURN corp-relay (Phase 2): if opted-in AND this host runs a
-    // local enrolled agent serving a loopback TURN, prepend it as an ICE server
-    // (loopback is never firewall-blocked, unlike this corp browser's direct/
-    // coturn UDP) and forward its descriptor to the server (below) so the REMOTE
-    // agent relays through it too. Graceful no-op on any host without one.
-    let localRelay: LocalRelayDescriptor | null = null
-    // FR-52 P4e — never for an external session: its frame cannot carry a
-    // relay descriptor (F4), and a relay on THIS host's mesh could not reach a
-    // device in someone else's organization anyway.
-    if (localRelayEnabled.value && !externalMode && !sharedMode) {
-      localRelay = await probeLocalRelay()
-      if (localRelay) {
-        iceServers = [localRelayIceServer(localRelay), ...iceServers]
-        console.info(
-          '[rc] local-relay TURN discovered on this host — relaying via local agent overlay',
-          localRelay.overlay_ip,
-        )
-      }
+    // loopback-TURN corp-relay (Phase 2): started at the beginning of
+    // connect() in parallel with /ws and TURN credentials. If it already
+    // resolved by now, prepend it immediately; if it is still pending,
+    // do not block rc:session.request — the completion callback above
+    // updates the live PC via setConfiguration for trickle ICE.
+    if (localRelay && !localRelayAppliedToPc) {
+      localRelayAppliedToPc = true
+      iceServers = [localRelayIceServer(localRelay), ...iceServers]
+      console.info(
+        '[rc] local-relay TURN discovered on this host — relaying via local agent overlay',
+        localRelay.overlay_ip,
+      )
     }
     // #1631 - the last suspension before the peer exists. A disconnect()
     // during any wait above must never leave a peer that nothing will close
@@ -9451,6 +9475,7 @@ export function useRemoteControl(
       iceServers: iceServers as RTCIceServer[],
       bundlePolicy: 'max-bundle',
     })
+    attemptPc = pc
     // e2e hook (FR-61): the live PC, so specs can assert framesDecoded via
     // getStats() instead of settling for currentTime heuristics — the hook
     // remote-session-smoke.spec.ts documents wishing it had.

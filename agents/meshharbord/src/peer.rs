@@ -663,7 +663,10 @@ impl AgentPeer {
         // a few seconds). Each keyframe at 4K is ~350 KB. Back-to-back
         // IDRs spike bandwidth → more loss → more PLI → collapse. Cap
         // keyframe responses to at most one per MIN_KEYFRAME_GAP.
+        let peer_created_at = std::time::Instant::now();
         let keyframe_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let connected_keyframe_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let keyframe_wake = Arc::new(tokio::sync::Notify::new());
         // Controller's quality preference, mutated by the `control`
         // data channel handler and polled by the media pump. AUTO is
         // the safe default until the controller advertises otherwise.
@@ -756,6 +759,7 @@ impl AgentPeer {
         }
         let rtcp_reader = {
             let flag = keyframe_requested.clone();
+            let wake = keyframe_wake.clone();
             let remb = remb_bps.clone();
             let invalidate = invalidation_requested.clone();
             let sid = session_id;
@@ -845,8 +849,13 @@ impl AgentPeer {
                             if asks_keyframe {
                                 let now = std::time::Instant::now();
                                 if now.duration_since(last_keyframe) >= MIN_KEYFRAME_GAP {
-                                    info!(session = %sid, "PLI/FIR → forcing keyframe");
+                                    info!(
+                                        session = %sid,
+                                        elapsed_ms = peer_created_at.elapsed().as_millis() as u64,
+                                        "PLI/FIR → forcing keyframe"
+                                    );
                                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    wake.notify_waiters();
                                     last_keyframe = now;
                                 }
                                 // else: silently drop — we already sent
@@ -942,8 +951,21 @@ impl AgentPeer {
             let carrier_slot = carrier.clone();
             let pc_for_carrier = Arc::downgrade(&pc);
             let carrier_ready_tx = carrier_ready_tx.clone();
+            let kf_on_connect = keyframe_requested.clone();
+            let connected_kf = connected_keyframe_pending.clone();
+            let wake_on_connect = keyframe_wake.clone();
             pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-                info!(session = %session_id, state = ?s, "PC state change");
+                info!(
+                    session = %session_id,
+                    state = ?s,
+                    elapsed_ms = peer_created_at.elapsed().as_millis() as u64,
+                    "PC state change"
+                );
+                if matches!(s, RTCPeerConnectionState::Connected) {
+                    kf_on_connect.store(true, std::sync::atomic::Ordering::Relaxed);
+                    connected_kf.store(true, std::sync::atomic::Ordering::Relaxed);
+                    wake_on_connect.notify_waiters();
+                }
                 let tx = tx.clone();
                 // FR-102 P9c — record what the session rides, once. A weak
                 // handle: the observation must not keep a closed peer alive,
@@ -1662,6 +1684,8 @@ impl AgentPeer {
             viewer_report.clone(),
             priority,
             rc_sessions,
+            connected_keyframe_pending,
+            keyframe_wake,
         ));
 
         // FR-93 P5h — told when this computer goes to sleep.
@@ -2777,6 +2801,25 @@ pub(crate) fn addr_is_overlay_range(addr: &str) -> bool {
 /// format). The webrtc track stays bound but receives no samples in
 /// that mode — the browser side renders from the worker-decoded
 /// canvas instead of `<video>`.
+/// Decide whether an idle capture poll (`Ok(None)`) should immediately
+/// re-encode the cached `last_good_frame`.
+///
+/// Normally `media_pump` only emits a keepalive frame every `idle_keepalive`
+/// (1,000 ms) on a static screen. However, if `PC Connected` just fired
+/// (after the pre-warmed initial IDR frame was sent before DTLS/SRTP was
+/// ready) or an RTCP `PLI`/`FIR` requested a keyframe, waiting up to 1,000 ms
+/// for `idle_keepalive` directly adds ~1 s to `pc_connected → first_frame` on
+/// an idle desktop. Re-encoding `last_good_frame` immediately when a keyframe
+/// is pending eliminates that wait.
+fn should_reencode_cached_frame_on_idle(
+    woke_for_keyframe: bool,
+    keyframe_requested: bool,
+    elapsed_since_last_capture: Duration,
+    idle_keepalive: Duration,
+) -> bool {
+    woke_for_keyframe || keyframe_requested || elapsed_since_last_capture >= idle_keepalive
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn media_pump(
     session_id: bson::oid::ObjectId,
@@ -2817,6 +2860,8 @@ async fn media_pump(
     // FR-93 P6c — where a pump ends its session when the person at the screen
     // stops the share (`end_stopped_at_screen`).
     rc_sessions: crate::rc_sessions::RcSessionRegistry,
+    connected_keyframe_pending: Arc<std::sync::atomic::AtomicBool>,
+    keyframe_wake: Arc<tokio::sync::Notify>,
 ) {
     // `pc` is consumed only by the VP9-444 DC pump's per-session transport
     // detection (feature-gated); keep the signalling-only / non-vp9 build
@@ -3126,6 +3171,7 @@ async fn media_pump(
     // encoder targets 60 too, paced down to what it sustains, never below 30.
     let sw_tier = crate::encode::sw_fps_60_enabled();
     let mut target_fps = target_fps_with_tier(encoder_preference, sw_tier);
+    let pump_started = std::time::Instant::now();
     tracing::info!(
         %session_id,
         ?encoder_preference,
@@ -3133,12 +3179,20 @@ async fn media_pump(
         target_fps,
         "media pump starting"
     );
+    let open_capture_started = std::time::Instant::now();
     let mut capturer = capture::open_default_async(
         target_fps,
         downscale,
         media_waiting_hook(session_id, control_dc.clone()),
     )
     .await;
+    tracing::info!(
+        %session_id,
+        open_capture_ms = open_capture_started.elapsed().as_millis() as u64,
+        elapsed_ms = pump_started.elapsed().as_millis() as u64,
+        pc_state = ?pc.connection_state(),
+        "media pump: capturer opened (pre-warmed before pc_connected)"
+    );
     // FR-80 — a capturer that cannot capture says so, and the controller is
     // told once, here, instead of the operator reading a stall. Every real
     // backend answers `None`, so a healthy session sends nothing.
@@ -3196,6 +3250,7 @@ async fn media_pump(
     // cloned the entire frame — up to 33 MB at 4K, 8 MB at 1080p —
     // every keepalive tick.
     let mut last_good_frame: Option<std::sync::Arc<crate::capture::Frame>> = None;
+    let mut post_connect_frame_logged = false;
     // VFR (1F.1): idle floor at 1 fps. Was 500 ms (≈2 fps). The
     // browser's jitter buffer + the encoder's intra-refresh
     // (1B.1) tolerate the longer gap, and on a static desktop
@@ -3293,15 +3348,49 @@ async fn media_pump(
             }
         }
         let capture_started = std::time::Instant::now();
+        let mut woke_for_keyframe = false;
         // Bound to a local first so the mutable borrow of `capturer` ends
         // here — the idle arm below reads `capturer.frames_unchanged()`, and
         // a temporary living to the end of the `match` would keep the borrow.
-        let next_frame = capturer.next_frame().await;
+        // When we already have a cached frame (`last_good_frame.is_some()`),
+        // wake immediately on `PC Connected` or RTCP `PLI/FIR` instead of
+        // waiting for the capture backend's idle poll timeout (up to 100 ms)
+        // or the 1,000 ms `IDLE_KEEPALIVE` floor.
+        let next_frame = if last_good_frame.is_some() {
+            if connected_keyframe_pending.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                woke_for_keyframe = true;
+                Ok(None)
+            } else {
+                tokio::select! {
+                    biased;
+                    _ = keyframe_wake.notified() => {
+                        let _ = connected_keyframe_pending.swap(false, std::sync::atomic::Ordering::Relaxed);
+                        woke_for_keyframe = true;
+                        Ok(None)
+                    }
+                    res = capturer.next_frame() => res,
+                }
+            }
+        } else {
+            capturer.next_frame().await
+        };
         let frame: std::sync::Arc<crate::capture::Frame> = match next_frame {
             Ok(Some(f)) => {
+                let first_capture_ms = capture_started.elapsed().as_millis() as u64;
                 capture_time_us =
                     capture_time_us.saturating_add(capture_started.elapsed().as_micros() as u64);
                 frames_captured += 1;
+                if frames_captured == 1 {
+                    tracing::info!(
+                        %session_id,
+                        w = f.width,
+                        h = f.height,
+                        first_capture_ms,
+                        elapsed_ms = pump_started.elapsed().as_millis() as u64,
+                        pc_state = ?pc.connection_state(),
+                        "media pump: first frame captured"
+                    );
+                }
                 last_capture_at = std::time::Instant::now();
                 capture_wait.on_frame();
                 let arc = std::sync::Arc::new(f);
@@ -3348,14 +3437,34 @@ async fn media_pump(
                         "capture produced no frame (idle screen)"
                     );
                 }
-                // If the screen has been idle for IDLE_KEEPALIVE and we
-                // have a cached frame, re-encode it. openh264 will emit
-                // a tiny (~tens of bytes) P-frame since nothing changed,
-                // which keeps the browser's decoder unpaused.
-                if last_capture_at.elapsed() >= IDLE_KEEPALIVE {
+                // If the screen has been idle for IDLE_KEEPALIVE OR a keyframe
+                // was requested (`PC Connected` / RTCP `PLI`/`FIR`) and we
+                // have a cached frame, re-encode it immediately. On a static
+                // desktop where pre-warmed Frame #1 was sent before DTLS/SRTP
+                // reached `Connected`, this avoids waiting up to 1,000 ms for
+                // `IDLE_KEEPALIVE` before the browser receives its first IDR.
+                let pending_kf = woke_for_keyframe
+                    || connected_keyframe_pending.swap(false, std::sync::atomic::Ordering::Relaxed);
+                let kf_requested = keyframe_requested.load(std::sync::atomic::Ordering::Relaxed);
+                if should_reencode_cached_frame_on_idle(
+                    pending_kf,
+                    kf_requested,
+                    last_capture_at.elapsed(),
+                    IDLE_KEEPALIVE,
+                ) {
                     if let Some(ref f) = last_good_frame {
                         frames_keepalive += 1;
                         last_capture_at = std::time::Instant::now();
+                        if pending_kf || kf_requested {
+                            tracing::info!(
+                                %session_id,
+                                pending_kf,
+                                kf_requested,
+                                elapsed_ms = pump_started.elapsed().as_millis() as u64,
+                                pc_state = ?pc.connection_state(),
+                                "media pump: pulsing cached frame immediately for Connected/PLI keyframe"
+                            );
+                        }
                         f.clone()
                     } else {
                         continue;
@@ -3447,7 +3556,7 @@ async fn media_pump(
         // and the real lock-screen pixels are in `frame`. Still pulse
         // a keyframe on each transition so the new captured surface
         // snaps into view.
-        let frame = if *lock_state_rx.borrow() == lock_state::LockState::Locked {
+        let mut frame = if *lock_state_rx.borrow() == lock_state::LockState::Locked {
             if !was_locked_last_iter {
                 keyframe_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                 crate::session_telemetry::counters(session_id).note_keyframe();
@@ -3476,13 +3585,26 @@ async fn media_pump(
                 %session_id,
                 w = frame.width, h = frame.height,
                 codec = %chosen_codec,
+                elapsed_ms = pump_started.elapsed().as_millis() as u64,
                 "initialising encoder for frame dims"
             );
+            let encoder_init_started = std::time::Instant::now();
             let (enc, actual) = encode::open_for_codec(
                 &chosen_codec,
                 frame.width,
                 frame.height,
                 encoder_preference,
+            );
+            let encoder_init_ms = encoder_init_started.elapsed().as_millis() as u64;
+            info!(
+                %session_id,
+                w = frame.width, h = frame.height,
+                codec = %actual,
+                backend = enc.name(),
+                encoder_init_ms,
+                elapsed_ms = pump_started.elapsed().as_millis() as u64,
+                pc_state = ?pc.connection_state(),
+                "media pump: encoder initialised"
             );
             if actual != chosen_codec {
                 // Runtime demotion (e.g. HEVC cascade failed at actual
@@ -3660,32 +3782,47 @@ async fn media_pump(
                 }
 
                 // rc.38 — when auto-downscale changes target_resolution
-                // from Native → Fixed, the encoder we just built is at
-                // the NATIVE dims and would emit a first frame at those
-                // dims. The next loop iteration would then downscale +
-                // rebuild the encoder, causing the WebRTC track to see
-                // a frame-1 → frame-2 resolution flip. Chrome's
-                // `<video>.videoWidth` latches to frame-1 dims and the
-                // browser-side input normalisation (letterboxedNormalise)
-                // then uses a stale aspect ratio against the actual
-                // rendered surface — clicks land at wrong OS pixels
-                // (the field-test host field bug 2026-05-17).
-                //
-                // Fix: drop the native-dim encoder + skip writing this
-                // frame to the track. The next iteration will rebuild
-                // at the downscaled dims and emit frame-1 there. Costs
-                // one captured frame's latency at session start
-                // (~30 ms); track never sees a resize.
+                // from Native → Fixed, downscale the already-captured
+                // first frame in-place and rebuild the encoder at the
+                // target dims right here. This keeps the track's first
+                // frame at the downscaled dims (avoiding Chrome's
+                // `<video>.videoWidth` resize race) WITHOUT discarding
+                // Frame #1 and waiting an extra capture cycle (~50-100 ms).
                 if auto_downscale_just_fired {
-                    encoder = None;
-                    encoder_dims = None;
+                    frame = crate::encode::resample::apply_target_resolution(
+                        &mut resampler,
+                        frame,
+                        *target_resolution.lock().unwrap(),
+                    );
+                    encoded_dims.store(
+                        pack_dims(frame.width, frame.height),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    let downscaled_init_started = std::time::Instant::now();
+                    let (enc, _actual) = encode::open_for_codec(
+                        &chosen_codec,
+                        frame.width,
+                        frame.height,
+                        encoder_preference,
+                    );
+                    let downscaled_init_ms = downscaled_init_started.elapsed().as_millis() as u64;
+                    let downscaled_backend = enc.name();
+                    encoder = Some(enc);
+                    encoder_dims = Some((frame.width, frame.height));
+                    last_applied_quality = 0xFF;
+                    sw_rate_applied = None;
                     keyframe_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                     crate::session_telemetry::counters(session_id).note_keyframe();
                     tracing::info!(
                         %session_id,
-                        "auto-downscale fired on first encoder build — dropping native-dim encoder so the track's first frame is at the downscaled dims (avoids browser videoWidth resize race)"
+                        w = frame.width,
+                        h = frame.height,
+                        codec = %chosen_codec,
+                        backend = downscaled_backend,
+                        encoder_init_ms = downscaled_init_ms,
+                        elapsed_ms = pump_started.elapsed().as_millis() as u64,
+                        "auto-downscale fired on first encoder build — downscaled first frame in-place and rebuilt encoder at target dims without dropping frame 1"
                     );
-                    continue;
                 }
             }
         }
@@ -3815,6 +3952,7 @@ async fn media_pump(
                 return;
             }
         };
+        let frame_encode_ms = encode_started.elapsed().as_millis() as u64;
         encode_time_us = encode_time_us.saturating_add(encode_started.elapsed().as_micros() as u64);
 
         // Wallclock-based RTP timestamps, so they advance at real time, not
@@ -3878,7 +4016,25 @@ async fn media_pump(
                 %session_id,
                 backend,
                 first_frame_bytes = packet_bytes,
+                encode_ms = frame_encode_ms,
+                elapsed_ms = pump_started.elapsed().as_millis() as u64,
+                pc_state = ?pc.connection_state(),
                 "first encoded frame written to track"
+            );
+        }
+        if !post_connect_frame_logged
+            && matches!(pc.connection_state(), RTCPeerConnectionState::Connected)
+        {
+            post_connect_frame_logged = true;
+            let backend = encoder.as_ref().map(|e| e.name()).unwrap_or("none");
+            info!(
+                %session_id,
+                backend,
+                frames_encoded,
+                frame_bytes = packet_bytes,
+                encode_ms = frame_encode_ms,
+                elapsed_ms = pump_started.elapsed().as_millis() as u64,
+                "media pump: first encoded frame written after PC Connected"
             );
         }
         if frames_encoded.is_multiple_of(30) {
@@ -18579,5 +18735,32 @@ mod stopped_at_screen_tests {
                 assert_eq!(killed.recv().await, Some(owner), "then the owner");
             } => {}
         }
+    }
+
+    #[test]
+    fn reencode_cached_frame_on_idle_fires_immediately_on_connected_or_pli_keyframe() {
+        let keepalive = Duration::from_millis(1_000);
+        let short_idle = Duration::from_millis(20);
+        assert!(
+            !should_reencode_cached_frame_on_idle(false, false, short_idle, keepalive),
+            "ordinary idle poll before IDLE_KEEPALIVE does not re-encode cached frame"
+        );
+        assert!(
+            should_reencode_cached_frame_on_idle(true, false, short_idle, keepalive),
+            "PC Connected wakeup re-encodes cached frame immediately without waiting 1,000 ms"
+        );
+        assert!(
+            should_reencode_cached_frame_on_idle(false, true, short_idle, keepalive),
+            "RTCP PLI/FIR keyframe request re-encodes cached frame immediately without waiting 1,000 ms"
+        );
+        assert!(
+            should_reencode_cached_frame_on_idle(
+                false,
+                false,
+                Duration::from_millis(1_000),
+                keepalive
+            ),
+            "normal IDLE_KEEPALIVE still fires once 1,000 ms have elapsed"
+        );
     }
 }
