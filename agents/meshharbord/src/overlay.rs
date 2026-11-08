@@ -2175,12 +2175,14 @@ mod overlay_fallback_tests {
         )
         .expect("f1 built");
         assert_eq!(p1, None);
-        assert!(f1(
-            Ipv4Addr::new(100, 64, 0, 10),
-            Ipv4Addr::new(255, 192, 0, 0),
-            OVERLAY_MTU
-        )
-        .is_err());
+        assert!(
+            f1(
+                Ipv4Addr::new(100, 64, 0, 10),
+                Ipv4Addr::new(255, 192, 0, 0),
+                OVERLAY_MTU
+            )
+            .is_err()
+        );
         assert_eq!(os_tun_calls.load(Ordering::SeqCst), 1);
         assert!(
             !crate::overlay_supervision::has_latched_netstack_fallback(&cfg.tenant_id),
@@ -2214,12 +2216,14 @@ mod overlay_fallback_tests {
             p2, None,
             "2nd attempt after 1st generic failure must still try OS TUN"
         );
-        assert!(f2(
-            Ipv4Addr::new(100, 64, 0, 10),
-            Ipv4Addr::new(255, 192, 0, 0),
-            OVERLAY_MTU
-        )
-        .is_err());
+        assert!(
+            f2(
+                Ipv4Addr::new(100, 64, 0, 10),
+                Ipv4Addr::new(255, 192, 0, 0),
+                OVERLAY_MTU
+            )
+            .is_err()
+        );
         assert_eq!(os_tun_calls.load(Ordering::SeqCst), 2);
         assert!(
             !crate::overlay_supervision::has_latched_netstack_fallback(&cfg.tenant_id),
@@ -2245,12 +2249,14 @@ mod overlay_fallback_tests {
         )
         .expect("f3 built");
         assert_eq!(p3, None);
-        assert!(f3(
-            Ipv4Addr::new(100, 64, 0, 10),
-            Ipv4Addr::new(255, 192, 0, 0),
-            OVERLAY_MTU
-        )
-        .is_err());
+        assert!(
+            f3(
+                Ipv4Addr::new(100, 64, 0, 10),
+                Ipv4Addr::new(255, 192, 0, 0),
+                OVERLAY_MTU
+            )
+            .is_err()
+        );
         assert_eq!(os_tun_calls.load(Ordering::SeqCst), 3);
         assert!(
             crate::overlay_supervision::has_latched_netstack_fallback(&cfg.tenant_id),

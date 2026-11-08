@@ -14,9 +14,9 @@
 #     socket it owned forever), and a candidate gathered after close() is
 #     closed instead of kept.
 #   - src/util/mod.rs: exclude IPv6 unicast link-local (`fe80::/10`) from
-#     `local_interfaces()`, which returns unscoped `IpAddr` and otherwise
-#     causes `SocketAddr::new(ip, 0)` binds (`sin6_scope_id = 0`) to fail with
-#     `EINVAL` (and block the WSL2 kernel bind lock for ~246 ms per attempt).
+#     `local_interfaces()`, which returns unscoped `IpAddr`; on WSL2 Linux,
+#     binding `SocketAddr::new(ip, 0)` (`sin6_scope_id = 0`) fails with
+#     `EINVAL` after ~246 ms median per attempt.
 #   - this Cargo.toml: the `tcp-turn-conn` path dependency below.
 
 [package]
