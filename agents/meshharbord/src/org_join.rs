@@ -479,13 +479,41 @@ mod tests {
 /// daemon's bind.
 pub(crate) const NETSTACK_PORTS: std::ops::RangeInclusive<u16> = 10800..=10899;
 
+/// Serializes in-process loopback port probing so concurrent callers (and
+/// parallel unit tests in `fr49_tests`) do not race `connect_timeout` against
+/// another thread's temporary `TcpListener::bind` on the same port in
+/// [`NETSTACK_PORTS`].
+static NETSTACK_PORT_PICK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// #2493 — the first port in [`NETSTACK_PORTS`] that no other enrollment
 /// claims and that is free on the loopback right now. `None` when every one
 /// is taken.
 pub(crate) fn pick_netstack_port(claimed: &[u16]) -> Option<u16> {
+    let _guard = NETSTACK_PORT_PICK_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     NETSTACK_PORTS
         .filter(|p| !claimed.contains(p))
         .find(|p| loopback_port_free(*p))
+}
+
+/// Stops a temporary loopback probe listener before dropping its descriptor.
+/// On Unix, if another thread concurrently spawns a subprocess (`fork` before
+/// `execve`), the child briefly holds a duplicate `struct file` reference even
+/// on `O_CLOEXEC` sockets (`f_count > 1`), so `close(fd)` alone defers
+/// `inet_release` until `execve` completes. `shutdown(SHUT_RDWR)` operates on
+/// `sock->sk` directly (`tcp_disconnect` / `inet_csk_listen_stop`) regardless
+/// of `f_count`, synchronously unhashing the port from `TCP_LISTEN`.
+fn close_probe_listener(listener: std::net::TcpListener) {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: `listener` owns a valid open socket descriptor.
+        unsafe {
+            let _ = libc::shutdown(listener.as_raw_fd(), libc::SHUT_RDWR);
+        }
+    }
+    drop(listener);
 }
 
 /// Nothing answers on `127.0.0.1:port`, and it binds there. The bind alone is
@@ -497,8 +525,16 @@ pub(crate) fn pick_netstack_port(claimed: &[u16]) -> Option<u16> {
 /// before that.
 fn loopback_port_free(port: u16) -> bool {
     let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
-    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_err()
-        && std::net::TcpListener::bind(addr).is_ok()
+    if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_ok() {
+        return false;
+    }
+    match std::net::TcpListener::bind(addr) {
+        Ok(listener) => {
+            close_probe_listener(listener);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// The ports other enrollments' fronts claim: every other org's entry, and
@@ -989,20 +1025,27 @@ mod fr49_tests {
     #[test]
     fn the_netstack_port_pick_skips_claimed_and_busy_ports() {
         let bind = |p: u16| std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, p)).ok();
-        let (lo, hi) = NETSTACK_PORTS
+        let (lo, hi, held) = NETSTACK_PORTS
             .rev()
             .skip(1)
             .zip(NETSTACK_PORTS.rev())
-            .find(|(lo, hi)| bind(*lo).is_some() && bind(*hi).is_some())
+            .find_map(|(lo, hi)| {
+                let held = bind(lo)?;
+                let hi_probe = bind(hi)?;
+                close_probe_listener(hi_probe);
+                Some((lo, hi, held))
+            })
             .expect("two free ports at the top of the range");
         let claimed: Vec<u16> = NETSTACK_PORTS.filter(|p| *p != lo && *p != hi).collect();
-        let held = bind(lo).expect("hold the lower one");
         assert_eq!(
             pick_netstack_port(&claimed),
             Some(hi),
             "a bound port is skipped"
         );
-        drop(held);
+        if let Ok((probe, _)) = held.accept() {
+            drop(probe);
+        }
+        close_probe_listener(held);
         assert_eq!(
             pick_netstack_port(&claimed),
             Some(lo),
