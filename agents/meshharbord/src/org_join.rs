@@ -498,9 +498,10 @@ pub(crate) fn pick_netstack_port(claimed: &[u16]) -> Option<u16> {
 }
 
 /// Stops a temporary loopback probe listener before dropping its descriptor.
-/// On Unix, if another thread concurrently spawns a subprocess (`fork` before
-/// `execve`), the child briefly holds a duplicate `struct file` reference even
-/// on `O_CLOEXEC` sockets (`f_count > 1`), so `close(fd)` alone defers
+/// On Linux (measured; other Unix platforms such as macOS are unverified), if
+/// another thread concurrently spawns a subprocess (`fork` before `execve`),
+/// the child briefly holds a duplicate `struct file` reference even on
+/// `O_CLOEXEC` sockets (`f_count > 1`), so `close(fd)` alone defers
 /// `inet_release` until `execve` completes. `shutdown(SHUT_RDWR)` operates on
 /// `sock->sk` directly (`tcp_disconnect` / `inet_csk_listen_stop`) regardless
 /// of `f_count`, synchronously unhashing the port from `TCP_LISTEN`.

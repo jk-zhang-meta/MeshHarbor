@@ -9316,10 +9316,14 @@ export function useRemoteControl(
     )
     if (expectedOrg) {
       ws.setTenantAffinity(expectedOrg)
-      if (ws.getDialedTid() !== expectedOrg && ws.status !== 'disconnected') {
+      if (ws.status === 'disconnected') {
+        ws.connect()
+      } else if (ws.getDialedTid() !== expectedOrg) {
         console.info('[rc] pre-flight: re-keying the signalling socket to the device org')
         ws.forceRedial()
       }
+    } else if (ws.status === 'disconnected' && !externalMode && !sharedMode) {
+      ws.connect()
     }
     let iceServers: IceServer[] = []
     let localRelay: LocalRelayDescriptor | null = null

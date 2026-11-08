@@ -295,4 +295,81 @@ describe('local relay discovery startup budget', () => {
       globalThis.RTCPeerConnection = origPc
     }
   })
+
+  it('dials /ws immediately in connect() pre-flight when ws.status is disconnected instead of waiting for fetchMe()', async () => {
+    const { createPinia, setActivePinia } = await import('pinia')
+    const { ref } = await import('vue')
+    const { useWsStore } = await import('@/stores/ws')
+    const { api } = await import('@/api/client')
+    const { useRemoteControl } = await import('@/composables/useRemoteControl')
+
+    setActivePinia(createPinia())
+    const ws = useWsStore()
+    ws.status = 'disconnected'
+
+    const origOnRc = ws.onRcMessage
+    ws.onRcMessage = (() => () => {}) as typeof origOnRc
+    const origConnect = ws.connect
+    let connectCalledWithTid: string | null = null
+    ws.connect = () => {
+      connectCalledWithTid = '6af02e628b932ea2bcd0f280'
+      ws.status = 'connecting'
+      setTimeout(() => {
+        ws.status = 'connected'
+      }, 25)
+    }
+
+    const sentWs: Record<string, unknown>[] = []
+    ws.sendRaw = (msg: unknown) => {
+      sentWs.push(msg as Record<string, unknown>)
+    }
+
+    const origApiGet = api.get
+    api.get = (async () => ({ ice_servers: [{ urls: ['stun:stun.example.org:3478'] }] })) as typeof origApiGet
+    vi.stubGlobal('fetch', vi.fn((_url, init) => pendingUntilAbort(init.signal)))
+
+    class FakePc {
+      addTransceiver() {}
+      createDataChannel() {
+        return {
+          readyState: 'open',
+          binaryType: 'arraybuffer',
+          bufferedAmount: 0,
+          send() {},
+          close() {},
+        } as unknown as RTCDataChannel
+      }
+      close() {}
+    }
+    const origPc = globalThis.RTCPeerConnection
+    globalThis.RTCPeerConnection = FakePc as unknown as typeof RTCPeerConnection
+
+    let rc: ReturnType<typeof useRemoteControl> | null = null
+    try {
+      const agentRef = ref({
+        id: '69c92d8f011ff058c228e0d0',
+        os: 'macos' as const,
+        capabilities: {
+          codecs: ['h264'] as ('h264' | 'h265' | 'av1')[],
+          hw_encoders: [],
+          has_input_permission: true,
+          supports_clipboard: true,
+          supports_file_transfer: true,
+          max_simultaneous_sessions: 4,
+        },
+      })
+      rc = useRemoteControl(agentRef)
+      const connectPromise = rc.connect('69c92d8f011ff058c228e0d0', undefined, false, '6af02e628b932ea2bcd0f280')
+      expect(connectCalledWithTid).toBe('6af02e628b932ea2bcd0f280')
+      await vi.advanceTimersByTimeAsync(25)
+      await connectPromise
+      expect(sentWs.some((m) => m.t === 'rc:session.request')).toBe(true)
+    } finally {
+      rc?.disconnect()
+      ws.connect = origConnect
+      ws.onRcMessage = origOnRc
+      api.get = origApiGet
+      globalThis.RTCPeerConnection = origPc
+    }
+  })
 })

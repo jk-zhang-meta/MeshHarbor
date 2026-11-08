@@ -16,7 +16,9 @@
 #   - src/util/mod.rs: exclude IPv6 unicast link-local (`fe80::/10`) from
 #     `local_interfaces()`, which returns unscoped `IpAddr`; on WSL2 Linux,
 #     binding `SocketAddr::new(ip, 0)` (`sin6_scope_id = 0`) fails with
-#     `EINVAL` after ~246 ms median per attempt.
+#     `EINVAL` (~0.7 ms after idle) and causes the immediately following
+#     ephemeral `bind(..., port=0)` (same-process or cross-process, IPv4
+#     included) to take ~245–248 ms.
 #   - this Cargo.toml: the `tcp-turn-conn` path dependency below.
 
 [package]

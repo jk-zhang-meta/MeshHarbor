@@ -2306,6 +2306,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { takeExternalSession } from '@/composables/useExternalLogin'
 import { useAgentStore, type Agent } from '@/stores/agents'
 import { useAuthStore } from '@/stores/auth'
+import { useWsStore } from '@/stores/ws'
 import { peerAuthBadge } from '@/utils/peerAuth'
 import {
   useRemoteControl,
@@ -2405,6 +2406,7 @@ const externalCode = typeof route.query.code === 'string' ? route.query.code : '
 
 const agentStore = useAgentStore()
 const authStore = useAuthStore()
+const wsStore = useWsStore()
 const agent = ref<Agent | null>(null)
 // The header's machine-name subtitle — the Devices grid's preference, per
 // user + org, so hiding it there hides it here too.
@@ -5190,6 +5192,12 @@ watch(
 )
 
 onMounted(() => {
+  if (!isExternal && tenantId.value) {
+    wsStore.setTenantAffinity(tenantId.value)
+    if (wsStore.status === 'disconnected') {
+      wsStore.connect()
+    }
+  }
   void loadAgent()
   void agentStore.fetchKeepBusyDefaultPattern(tenantId.value).then((p) => {
     orgKeepBusyDefault.value = p
