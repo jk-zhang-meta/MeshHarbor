@@ -24,6 +24,12 @@ async fn test_local_interfaces() -> Result<()> {
     assert!(ips_with_loopback.is_superset(&ips));
     assert!(!ips.iter().any(|ip| ip.is_loopback()));
     assert!(ips_with_loopback.iter().any(|ip| ip.is_loopback()));
+    assert!(
+        !ips_with_loopback
+            .iter()
+            .any(|ip| matches!(ip, IpAddr::V6(v6) if v6.is_unicast_link_local())),
+        "local_interfaces returns unscoped IpAddr values and must never include fe80::/10 link-local addresses"
+    );
     log::info!(
         "interfaces: {:?}, ips: {:?}, ips_with_loopback: {:?}",
         interfaces,

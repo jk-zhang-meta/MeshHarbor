@@ -699,6 +699,31 @@ fn build_tun_factory_with_fallback(
             }
 
             let now = (now_fn)();
+            #[cfg(feature = "overlay-netstack")]
+            if crate::overlay_supervision::is_generic_wintun_create_error_on(&e, is_windows) {
+                if crate::overlay_supervision::record_wintun_create_failure(
+                    &org,
+                    &shape,
+                    e.to_string(),
+                    now,
+                ) {
+                    warn!(
+                        org = %org,
+                        error = %e,
+                        strikes = crate::overlay_supervision::WINTUN_FALLBACK_STRIKE_LIMIT,
+                        "overlay: WintunCreateAdapter failed 3 consecutive times on Windows; latching userspace netstack fallback for immediate runtime rebuild"
+                    );
+                } else {
+                    warn!(
+                        org = %org,
+                        error = %e,
+                        mode = %crate::overlay_supervision::effective_overlay_mode(&org, "tun"),
+                        "overlay: WintunCreateAdapter failed; recorded bounded failure backoff and will retry OS TUN"
+                    );
+                }
+                return Err(e);
+            }
+
             crate::overlay_supervision::record_overlay_failure(&org, &shape, e.to_string(), now);
             warn!(
                 org = %org,
@@ -1797,8 +1822,9 @@ mod overlay_fallback_tests {
             let c = calls_clone.clone();
             Box::new(move |_, _, _| {
                 c.fetch_add(1, Ordering::SeqCst);
-                Err(std::io::Error::other(
-                    "Failed to create adapter: WintunCreateAdapter failed: \"No inner logs\"",
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Access is denied. (os error 5)",
                 ))
             })
         };
@@ -2113,6 +2139,150 @@ mod overlay_fallback_tests {
             );
             cur += Duration::from_secs(delay_secs);
         }
+
+        release_org(&cfg.tenant_id);
+    }
+
+    #[tokio::test]
+    async fn generic_wintun_create_adapter_failure_retries_os_tun_before_latching_on_third_consecutive_failure()
+     {
+        let cfg = sample_cfg("tenant-win-generic-wintun-3strikes");
+        let (_view_tx, view_rx) = watch::channel(OverlayView::default());
+        let os_tun_calls = Arc::new(AtomicUsize::new(0));
+        let calls_clone = os_tun_calls.clone();
+        let make_wintun_failing = move || -> TunFactory {
+            let c = calls_clone.clone();
+            Box::new(move |_, _, _| {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err(std::io::Error::other(
+                    "Failed to create adapter: WintunCreateAdapter failed: \"No inner logs\"",
+                ))
+            })
+        };
+
+        let mut now = Instant::now();
+        let clock = Arc::new(std::sync::Mutex::new(now));
+
+        // Attempt 1: generic WintunCreateAdapter failure must NOT latch fallback; must enter 30s backoff.
+        let c1 = clock.clone();
+        let (f1, p1) = build_tun_factory_for_test(
+            &cfg,
+            view_rx.clone(),
+            true,
+            true,
+            make_wintun_failing(),
+            Arc::new(move || *c1.lock().unwrap()),
+        )
+        .expect("f1 built");
+        assert_eq!(p1, None);
+        assert!(f1(
+            Ipv4Addr::new(100, 64, 0, 10),
+            Ipv4Addr::new(255, 192, 0, 0),
+            OVERLAY_MTU
+        )
+        .is_err());
+        assert_eq!(os_tun_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            !crate::overlay_supervision::has_latched_netstack_fallback(&cfg.tenant_id),
+            "1st generic WintunCreateAdapter failure must NOT latch netstack fallback"
+        );
+        assert!(
+            effective_overlay_mode(&cfg.tenant_id, "tun").contains("attempt 1"),
+            "1st generic failure must report attempt 1 backoff"
+        );
+        assert!(!should_respawn_after_exit_at(
+            &cfg,
+            now + Duration::from_secs(29)
+        ));
+        now += Duration::from_secs(30);
+        *clock.lock().unwrap() = now;
+        assert!(should_respawn_after_exit_at(&cfg, now));
+
+        // Attempt 2: still builds OS TUN factory (initial_port == None) and tries Wintun again;
+        // 2nd consecutive generic WintunCreateAdapter failure still does NOT latch fallback (60s backoff).
+        let c2 = clock.clone();
+        let (f2, p2) = build_tun_factory_for_test(
+            &cfg,
+            view_rx.clone(),
+            true,
+            true,
+            make_wintun_failing(),
+            Arc::new(move || *c2.lock().unwrap()),
+        )
+        .expect("f2 built");
+        assert_eq!(
+            p2, None,
+            "2nd attempt after 1st generic failure must still try OS TUN"
+        );
+        assert!(f2(
+            Ipv4Addr::new(100, 64, 0, 10),
+            Ipv4Addr::new(255, 192, 0, 0),
+            OVERLAY_MTU
+        )
+        .is_err());
+        assert_eq!(os_tun_calls.load(Ordering::SeqCst), 2);
+        assert!(
+            !crate::overlay_supervision::has_latched_netstack_fallback(&cfg.tenant_id),
+            "2nd generic WintunCreateAdapter failure must NOT latch netstack fallback"
+        );
+        assert!(
+            effective_overlay_mode(&cfg.tenant_id, "tun").contains("attempt 2"),
+            "2nd generic failure must report attempt 2 backoff"
+        );
+        now += Duration::from_secs(60);
+        *clock.lock().unwrap() = now;
+        assert!(should_respawn_after_exit_at(&cfg, now));
+
+        // Attempt 3: 3rd consecutive generic WintunCreateAdapter failure latches netstack fallback!
+        let c3 = clock.clone();
+        let (f3, p3) = build_tun_factory_for_test(
+            &cfg,
+            view_rx.clone(),
+            true,
+            true,
+            make_wintun_failing(),
+            Arc::new(move || *c3.lock().unwrap()),
+        )
+        .expect("f3 built");
+        assert_eq!(p3, None);
+        assert!(f3(
+            Ipv4Addr::new(100, 64, 0, 10),
+            Ipv4Addr::new(255, 192, 0, 0),
+            OVERLAY_MTU
+        )
+        .is_err());
+        assert_eq!(os_tun_calls.load(Ordering::SeqCst), 3);
+        assert!(
+            crate::overlay_supervision::has_latched_netstack_fallback(&cfg.tenant_id),
+            "3rd consecutive generic WintunCreateAdapter failure on Windows must latch netstack fallback"
+        );
+        assert!(
+            crate::overlay_supervision::should_poll_start_at(&cfg, Some(true), now),
+            "latched fallback after 3 strikes must trigger immediate rebuild without waiting for backoff"
+        );
+
+        // Rebuild after 3rd failure now selects netstack up front (`Some(port)`) without calling os_tun a 4th time.
+        let c4 = clock.clone();
+        let (f4, p4) = build_tun_factory_for_test(
+            &cfg,
+            view_rx,
+            true,
+            true,
+            make_wintun_failing(),
+            Arc::new(move || *c4.lock().unwrap()),
+        )
+        .expect("f4 built");
+        let port = p4.expect("latched fallback after 3rd strike must allocate SOCKS5 port");
+        assert!(port > 0);
+        let tun = f4(
+            Ipv4Addr::new(100, 64, 0, 10),
+            Ipv4Addr::new(255, 192, 0, 0),
+            OVERLAY_MTU,
+        )
+        .expect("netstack starts");
+        assert_eq!(tun.os_name(), None);
+        assert_eq!(os_tun_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(effective_overlay_mode(&cfg.tenant_id, "tun"), "netstack");
 
         release_org(&cfg.tenant_id);
     }

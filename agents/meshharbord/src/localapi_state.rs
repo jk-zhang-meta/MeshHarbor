@@ -2876,6 +2876,7 @@ mod tests {
     /// no restart needed (which would be circular).
     #[tokio::test]
     async fn restart_refused_when_disabled_and_the_switch_is_live() {
+        let _files_lock = crate::files::FILES_DIR_TEST_LOCK.lock().await;
         let dir = restart_dir("disabled", false);
         let (st, _restart, shutdown) = restart_state(&dir, Supervision::WindowsScm);
         let why = refusal(st.restart_daemon("apply").await);

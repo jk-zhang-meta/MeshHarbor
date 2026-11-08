@@ -27,6 +27,12 @@ pub const OVERLAY_BACKOFF_STEPS: [Duration; 5] = [
     Duration::from_secs(600),
 ];
 
+/// Consecutive generic `WintunCreateAdapter` failures on Windows required
+/// before latching userspace `netstack` fallback. Prevents a single transient
+/// boot-time Wintun adapter failure on an elevated node from permanently
+/// degrading out of OS-TUN mode.
+pub const WINTUN_FALLBACK_STRIKE_LIMIT: u32 = 3;
+
 #[derive(Clone, Debug, Default)]
 struct OrgOverlayState {
     config_shape_key: Option<String>,
@@ -35,6 +41,7 @@ struct OrgOverlayState {
     pending_immediate_respawn: bool,
     socks_port: Option<u16>,
     failures: u32,
+    wintun_create_failures: u32,
     next_retry_at: Option<Instant>,
     last_error: Option<String>,
 }
@@ -92,9 +99,11 @@ pub fn process_can_create_os_tun() -> bool {
     }
 }
 
-/// True when `err` indicates that OS TUN creation failed due to insufficient
-/// privileges or Wintun driver/adapter creation refusal on Windows. Always
-/// returns `false` when `is_windows` is `false`.
+/// True when `err` indicates an explicit privilege denial while creating or
+/// configuring an OS TUN adapter on Windows (`PermissionDenied`, OS error 5
+/// `ERROR_ACCESS_DENIED` or 1314 `ERROR_PRIVILEGE_NOT_HELD`, or an explicit
+/// access/elevation denial message). Always returns `false` when `is_windows`
+/// is `false`.
 pub fn is_tun_privilege_error_on(err: &std::io::Error, is_windows: bool) -> bool {
     if !is_windows {
         return false;
@@ -107,12 +116,24 @@ pub fn is_tun_privilege_error_on(err: &std::io::Error, is_windows: bool) -> bool
         return true;
     }
     let msg = err.to_string().to_ascii_lowercase();
-    msg.contains("wintuncreateadapter failed")
-        || msg.contains("access is denied")
+    msg.contains("access is denied")
         || msg.contains("permission denied")
         || msg.contains("requires elevation")
         || msg.contains("requires administrator")
-        || msg.contains("privilege")
+        || msg.contains("privilege is not held")
+}
+
+/// True when `err` is a generic `WintunCreateAdapter failed` error on Windows
+/// that is not an explicit privilege denial. Handled via normal backoff for the
+/// first two failures and latches userspace `netstack` fallback only after
+/// [`WINTUN_FALLBACK_STRIKE_LIMIT`] consecutive failures.
+pub fn is_generic_wintun_create_error_on(err: &std::io::Error, is_windows: bool) -> bool {
+    if !is_windows || is_tun_privilege_error_on(err, is_windows) {
+        return false;
+    }
+    err.to_string()
+        .to_ascii_lowercase()
+        .contains("wintuncreateadapter failed")
 }
 
 /// True when `err` is a Windows TUN privilege error on the current platform.
@@ -131,6 +152,7 @@ pub fn latch_netstack_fallback(tenant_id: &str, shape_key: &str) {
     state.fallback_to_netstack = true;
     state.pending_immediate_respawn = true;
     state.failures = 0;
+    state.wintun_create_failures = 0;
     state.next_retry_at = None;
     state.last_error = None;
 }
@@ -225,6 +247,7 @@ pub fn record_overlay_running(
         state.socks_port = None;
     }
     state.failures = 0;
+    state.wintun_create_failures = 0;
     state.next_retry_at = None;
     state.last_error = None;
 }
@@ -237,7 +260,47 @@ pub fn record_overlay_failure(tenant_id: &str, shape_key: &str, error: String, n
     if state.config_shape_key.as_deref() != Some(shape_key) {
         state.config_shape_key = Some(shape_key.to_string());
         state.failures = 0;
+        state.wintun_create_failures = 0;
         state.next_retry_at = None;
+    }
+    state.pending_immediate_respawn = false;
+    state.wintun_create_failures = 0;
+    state.failures = state.failures.saturating_add(1);
+    state.effective_mode = Some("error".to_string());
+    state.last_error = Some(error);
+    let delay = backoff_delay_for_failure(state.failures);
+    state.next_retry_at = Some(now + delay);
+}
+
+/// Record a generic `WintunCreateAdapter failed` error on Windows. For strikes
+/// below [`WINTUN_FALLBACK_STRIKE_LIMIT`], records normal bounded backoff so
+/// the next attempt retries OS TUN (`false`). On the
+/// [`WINTUN_FALLBACK_STRIKE_LIMIT`]th consecutive failure, latches userspace
+/// `netstack` fallback for immediate runtime rebuild (`true`).
+pub fn record_wintun_create_failure(
+    tenant_id: &str,
+    shape_key: &str,
+    error: String,
+    now: Instant,
+) -> bool {
+    let mut guard = ORG_OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let state = guard.entry(tenant_id.to_string()).or_default();
+    if state.config_shape_key.as_deref() != Some(shape_key) {
+        state.config_shape_key = Some(shape_key.to_string());
+        state.failures = 0;
+        state.wintun_create_failures = 0;
+        state.next_retry_at = None;
+    }
+    state.wintun_create_failures = state.wintun_create_failures.saturating_add(1);
+    if state.wintun_create_failures >= WINTUN_FALLBACK_STRIKE_LIMIT {
+        state.effective_mode = Some("netstack".to_string());
+        state.fallback_to_netstack = true;
+        state.pending_immediate_respawn = true;
+        state.failures = 0;
+        state.wintun_create_failures = 0;
+        state.next_retry_at = None;
+        state.last_error = None;
+        return true;
     }
     state.pending_immediate_respawn = false;
     state.failures = state.failures.saturating_add(1);
@@ -245,6 +308,7 @@ pub fn record_overlay_failure(tenant_id: &str, shape_key: &str, error: String, n
     state.last_error = Some(error);
     let delay = backoff_delay_for_failure(state.failures);
     state.next_retry_at = Some(now + delay);
+    false
 }
 
 /// Check whether `tenant_id` is allowed to start/respawn the overlay runtime
@@ -258,6 +322,7 @@ pub fn can_attempt_start(tenant_id: &str, shape_key: &str, now: Instant) -> bool
     if state.config_shape_key.as_deref() != Some(shape_key) {
         state.config_shape_key = Some(shape_key.to_string());
         state.failures = 0;
+        state.wintun_create_failures = 0;
         state.pending_immediate_respawn = false;
         state.next_retry_at = None;
         state.last_error = None;
@@ -381,8 +446,25 @@ mod overlay_fallback_supervision_tests {
         let wintun = std::io::Error::other(
             "Failed to create adapter: WintunCreateAdapter failed: \"No inner logs\"",
         );
-        assert!(is_tun_privilege_error_on(&wintun, true));
+        assert!(
+            !is_tun_privilege_error_on(&wintun, true),
+            "generic WintunCreateAdapter failure must not be classified as immediate privilege denial"
+        );
         assert!(!is_tun_privilege_error_on(&wintun, false));
+
+        let vague_priv = std::io::Error::other("driver privilege telemetry unavailable");
+        assert!(
+            !is_tun_privilege_error_on(&vague_priv, true),
+            "broad 'privilege' substring must not trigger immediate lock"
+        );
+
+        let err5 = std::io::Error::from_raw_os_error(5);
+        let err1314 = std::io::Error::from_raw_os_error(1314);
+        let access_denied = std::io::Error::other("WintunCreateAdapter: Access is denied.");
+        assert!(is_tun_privilege_error_on(&perm, true));
+        assert!(is_tun_privilege_error_on(&err5, true));
+        assert!(is_tun_privilege_error_on(&err1314, true));
+        assert!(is_tun_privilege_error_on(&access_denied, true));
     }
 
     #[test]

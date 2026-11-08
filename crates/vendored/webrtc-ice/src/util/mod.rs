@@ -125,6 +125,7 @@ pub async fn local_interfaces(
             let ipaddr = ipnet.addr();
 
             if (!ipaddr.is_loopback() || include_loopback)
+                && !matches!(ipaddr, IpAddr::V6(v6) if v6.is_unicast_link_local())
                 && ((ipv4requested && ipaddr.is_ipv4()) || (ipv6requested && ipaddr.is_ipv6()))
                 && ip_filter
                     .as_ref()
