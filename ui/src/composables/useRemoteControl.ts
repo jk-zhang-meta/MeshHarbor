@@ -10331,6 +10331,9 @@ export function useRemoteControl(
     // channel opens — otherwise the agent would stay at its default
     // after a page reload that had set a non-default preference.
     channels.control.onopen = () => {
+      if (activeTiming && activeTiming.marks.dc_open === undefined) {
+        markConnect('dc_open')
+      }
       sendQualityPreference()
       sendResolutionPreference()
       // #2638 - the display-match request the session made before this
