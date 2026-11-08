@@ -1918,6 +1918,8 @@ async fn connect_once(
     // used so the LocalAPI wiring stays feature-agnostic in `run_cmd`.
     #[cfg(not(any(feature = "overlay-l3", feature = "overlay-netstack")))]
     let _ = (&overlay_view_tx, &rtt_sample_slot);
+    #[cfg(not(any(feature = "overlay-l3", feature = "overlay-netstack")))]
+    let overlay_evt_tx: Option<()> = None;
     let mut peers: HashMap<bson::oid::ObjectId, AgentPeer> = HashMap::new();
     let mut shared_leases = crate::shared_lease::SharedLeases::default();
     let mut shared_ssh = crate::ssh_shared_bridge::SharedSshTargets::default();
@@ -2066,6 +2068,31 @@ async fn connect_once(
                     heartbeat.reset_immediately();
                 }
             }
+            _ = wait_overlay_immediate_respawn(&cfg.tenant_id, &overlay_evt_tx) => {
+                #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+                {
+                    let _stage = watchdog::enter(ctx.pump, "overlay.fallback_respawn");
+                    warn!(
+                        "overlay runtime exited after latching Windows netstack fallback — rebuilding immediately"
+                    );
+                    overlay_evt_tx = crate::overlay::maybe_start(
+                        cfg,
+                        ctx.token.clone(),
+                        outbound_tx.clone(),
+                        overlay_view_tx.clone(),
+                        derp_ticket_slot.clone(),
+                        crate::ssh::SessionServices {
+                            power_activity: Some(crate::power::shared_activity().clone()),
+                            asker: crate::ssh::Asker::Here {
+                                broker: consent_broker.clone(),
+                                indicator: indicator.clone(),
+                            },
+                            activity: crate::ssh::ActivitySink::new(cfg, outbound_tx.clone()),
+                        },
+                    )
+                    .await;
+                }
+            }
             _ = shutdown.changed() => {
                 // #2551 — every arm names its stage, so a stall says where.
                 let _stage = watchdog::enter(ctx.pump, "shutdown");
@@ -2082,22 +2109,18 @@ async fn connect_once(
             }
             _ = keepalive.tick() => {
                 let _stage = watchdog::enter(ctx.pump, "keepalive");
-                // W4(a) — TUN-death self-heal. The overlay runtime EXITS when
-                // its TUN dies (a contract the runtime tests pin), and before
-                // this the only respawner was the NEXT control-WS reconnect
-                // discovering the closed slot — a healthy WS + a dead TUN
-                // meant silently no mesh, indefinitely. A closed event sender
-                // IS the death signal and `maybe_start` IS the respawner
-                // (fingerprint/slot logic included); the 25 s keepalive
-                // cadence is the natural retry backoff. (The B1 RTT hook
-                // stays bound to the old runtime until the next reconnect —
-                // harmless: its weak upgrade fails and samples drop.)
+                // W4(a) — TUN-death self-heal & F1 backoff retry. The overlay
+                // runtime EXITS when its TUN dies, and if a WS reconnect
+                // happened while in failure backoff `overlay_evt_tx` is `None`.
+                // `should_poll_start` handles both a closed channel (`Some(true)`)
+                // and a backoff-suppressed `None` once the retry window expires.
                 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
-                if overlay_evt_tx.as_ref().is_some_and(|t| t.is_closed())
-                    && crate::overlay_supervision::should_respawn_after_exit(cfg)
-                {
+                if crate::overlay_supervision::should_poll_start(
+                    cfg,
+                    overlay_evt_tx.as_ref().map(|t| t.is_closed()),
+                ) {
                     warn!(
-                        "overlay runtime exited mid-session (TUN death?) — respawning now \
+                        "overlay runtime exited or backoff expired — respawning now \
                          instead of waiting for the next reconnect"
                     );
                     overlay_evt_tx = crate::overlay::maybe_start(
@@ -7589,6 +7612,30 @@ async fn relay_listener_changed(rx: &mut Option<watch::Receiver<Option<u16>>>) -
         },
         None => std::future::pending().await,
     }
+}
+
+/// F1 — resolves immediately when the overlay runtime exits after latching
+/// reactive Windows `netstack` fallback (`pending_immediate_respawn == true`);
+/// otherwise stays pending so normal backoff-gated respawns happen on keepalive.
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+async fn wait_overlay_immediate_respawn(
+    tenant_id: &str,
+    evt_tx: &Option<mpsc::Sender<tunnel_core::overlay::runtime::OverlayEvent>>,
+) {
+    match evt_tx.as_ref() {
+        Some(tx) => {
+            tx.closed().await;
+            if !crate::overlay_supervision::has_pending_immediate_respawn(tenant_id) {
+                std::future::pending::<()>().await;
+            }
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
+
+#[cfg(not(any(feature = "overlay-l3", feature = "overlay-netstack")))]
+async fn wait_overlay_immediate_respawn(_tenant_id: &str, _evt_tx: &Option<()>) {
+    std::future::pending::<()>().await;
 }
 
 fn sas_advertised() -> bool {

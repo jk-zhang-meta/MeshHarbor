@@ -92,7 +92,7 @@ impl UdpSession for KernelUdp {
     }
 }
 
-async fn kernel_udp(dst: SocketAddr) -> std::io::Result<Box<dyn UdpSession>> {
+pub(crate) async fn kernel_udp(dst: SocketAddr) -> std::io::Result<Box<dyn UdpSession>> {
     let local: SocketAddr = if dst.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }
         .parse()
         .expect("a literal");

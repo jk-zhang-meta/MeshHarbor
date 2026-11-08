@@ -17297,7 +17297,7 @@ mod file_child_authorization_tests {
 
         // Admit 8 upload children (1..=8 succeed)
         for i in 0..8usize {
-            let cid = ObjectId::parse_str(&format!("{:024x}", 0x3000 + i)).unwrap();
+            let cid = ObjectId::parse_str(format!("{:024x}", 0x3000 + i)).unwrap();
             peer.accept_file_child_offer_for_direction(
                 cid,
                 "up-tx".into(),
@@ -17309,7 +17309,7 @@ mod file_child_authorization_tests {
         }
 
         // 9th upload child must be rejected
-        let ninth_up = ObjectId::parse_str(&format!("{:024x}", 0x3008usize)).unwrap();
+        let ninth_up = ObjectId::parse_str(format!("{:024x}", 0x3008usize)).unwrap();
         let err_up = peer
             .accept_file_child_offer_for_direction(
                 ninth_up,
@@ -17326,7 +17326,7 @@ mod file_child_authorization_tests {
 
         // Simultaneously admit 4 download children while 8 upload children are active
         for i in 0..4usize {
-            let cid = ObjectId::parse_str(&format!("{:024x}", 0x4000 + i)).unwrap();
+            let cid = ObjectId::parse_str(format!("{:024x}", 0x4000 + i)).unwrap();
             peer.accept_file_child_offer_for_direction(
                 cid,
                 "dl-tx".into(),
@@ -17340,7 +17340,7 @@ mod file_child_authorization_tests {
         }
 
         // 5th download child must be rejected
-        let fifth_dl = ObjectId::parse_str(&format!("{:024x}", 0x4004usize)).unwrap();
+        let fifth_dl = ObjectId::parse_str(format!("{:024x}", 0x4004usize)).unwrap();
         let err_dl = peer
             .accept_file_child_offer_for_direction(
                 fifth_dl,

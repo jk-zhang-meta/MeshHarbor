@@ -228,7 +228,8 @@ pub async fn maybe_start(
     // it changed. Take the sender clone OUTSIDE the lock before awaiting.
     let fingerprint = RuntimeFingerprint {
         wg_public_key: keypair.public_base64(),
-        netstack_port: netstack_socks_port(cfg),
+        netstack_port: netstack_socks_port(cfg)
+            .or_else(|| crate::overlay_supervision::effective_socks5_port(&cfg.tenant_id)),
         advertised_routes: cfg.effective_overlay_advertised_routes(),
         exit_node: cfg.overlay_exit_node.clone(),
         tenant_id: cfg.tenant_id.clone(),
@@ -286,8 +287,12 @@ pub async fn maybe_start(
                 return Some(evt_tx);
             }
             Err(_) => {
-                // The runtime exited (self_ip change, TUN failure). Fall
-                // through to a fresh spawn.
+                // The runtime exited (self_ip change, TUN failure). Remove the
+                // dead slot and fall through to a fresh spawn.
+                RUNTIME_SLOTS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&cfg.tenant_id);
                 info!("overlay: previous node runtime exited; starting fresh");
             }
         }
@@ -326,6 +331,7 @@ pub async fn maybe_start(
     let (tun_factory, effective_socks_port) = build_tun_factory_with_fallback(
         cfg,
         peer_view.subscribe(),
+        crate::overlay_supervision::is_windows_platform(),
         crate::overlay_supervision::process_can_create_os_tun(),
         base_os_tun,
         Arc::new(std::time::Instant::now),
@@ -592,11 +598,12 @@ pub fn release_org(org_key: &str) {
 
 /// F1 — build the overlay `TunFactory` for `cfg`, automatically falling back to
 /// userspace `netstack` (with an ephemeral loopback SOCKS5 port on `127.0.0.1`)
-/// when OS TUN creation lacks administrator privilege, and tracking bounded
-/// failure backoff for unrecoverable overlay errors.
+/// on Windows when OS TUN creation lacks administrator privilege, and tracking
+/// bounded-interval failure backoff for non-privilege overlay errors.
 fn build_tun_factory_with_fallback(
     cfg: &AgentConfig,
     view_rx: watch::Receiver<OverlayView>,
+    is_windows: bool,
     os_tun_permitted: bool,
     base_os_tun: Option<TunFactory>,
     now_fn: Arc<dyn Fn() -> std::time::Instant + Send + Sync>,
@@ -631,20 +638,19 @@ fn build_tun_factory_with_fallback(
         return Some((wrapped, Some(port)));
     }
 
-    // 2. F1 proactive fallback: when OS TUN is not permitted (e.g. non-elevated
-    // Windows process in Medium IL) or a prior attempt in this process already
-    // latched netstack fallback for this org, go straight to userspace netstack
-    // without calling WintunCreateAdapter.
-    if !os_tun_permitted
-        || crate::overlay_supervision::has_latched_netstack_fallback(&cfg.tenant_id)
+    // 2. F1 Windows fallback: when on Windows and OS TUN is not permitted
+    // (non-elevated Medium IL process) or a prior attempt in this process
+    // latched netstack fallback for this org, build the runtime in netstack
+    // mode up front (`effective_socks_port = Some(port)`) so `OverlayRuntime`
+    // withdraws route offers and disables host-wide DNS steering (FR-97 P0c-3).
+    if is_windows
+        && (!os_tun_permitted
+            || crate::overlay_supervision::has_latched_netstack_fallback(&cfg.tenant_id))
     {
         #[cfg(feature = "overlay-netstack")]
         {
-            let (f, port) = allocate_fallback_netstack_tun_factory(
-                view_rx,
-                &cfg.tenant_id,
-                &shape_key,
-            )?;
+            let (f, port) =
+                allocate_fallback_netstack_tun_factory(view_rx, &cfg.tenant_id, &shape_key)?;
             info!(
                 org = %cfg.tenant_id,
                 socks_port = port,
@@ -654,79 +660,53 @@ fn build_tun_factory_with_fallback(
         }
         #[cfg(not(feature = "overlay-netstack"))]
         {
+            let _ = &view_rx;
             crate::overlay_supervision::record_overlay_failure(
                 &cfg.tenant_id,
                 &shape_key,
-                "OS TUN requires administrator privileges and overlay-netstack is not compiled in",
+                "OS TUN requires administrator privileges and overlay-netstack is not compiled in"
+                    .to_string(),
                 (now_fn)(),
             );
             return None;
         }
     }
 
-    // 3. OS TUN mode is permitted: wrap `base_os_tun` so a reactive privilege
-    // failure (e.g. `WintunCreateAdapter failed`) falls back in-place to
-    // userspace netstack on first netmap without dropping the session, and any
-    // non-privilege failure records bounded backoff.
+    // 3. OS TUN mode is permitted: wrap `base_os_tun` so a reactive Windows
+    // privilege failure (e.g. `WintunCreateAdapter failed`) latches netstack
+    // fallback and returns `Err` so `OverlayRuntime` exits and immediately
+    // rebuilds via Branch 2 with `netstack_socks = Some(port)`. Non-Windows or
+    // non-privilege failures record bounded-interval backoff.
     let os_tun = base_os_tun?;
     let org = cfg.tenant_id.clone();
     let shape = shape_key.clone();
-    #[cfg(feature = "overlay-netstack")]
-    let fallback_slot: Arc<std::sync::Mutex<Option<TunFactory>>> =
-        Arc::new(std::sync::Mutex::new(None));
 
-    let wrapped: TunFactory = Box::new(move |ip, nm, mtu| {
-        #[cfg(feature = "overlay-netstack")]
-        {
-            let guard = fallback_slot.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(ref ns_f) = *guard {
-                return ns_f(ip, nm, mtu);
-            }
+    let wrapped: TunFactory = Box::new(move |ip, nm, mtu| match os_tun(ip, nm, mtu) {
+        Ok(dev) => {
+            crate::overlay_supervision::record_overlay_running(&org, &shape, "tun", None, false);
+            Ok(dev)
         }
-
-        match os_tun(ip, nm, mtu) {
-            Ok(dev) => {
-                crate::overlay_supervision::record_overlay_running(
-                    &org, &shape, "tun", None, false,
-                );
-                Ok(dev)
-            }
-            Err(e) => {
-                #[cfg(feature = "overlay-netstack")]
-                if crate::overlay_supervision::is_tun_privilege_error(&e)
-                    && let Some((ns_f, port)) = allocate_fallback_netstack_tun_factory(
-                        view_rx.clone(),
-                        &org,
-                        &shape,
-                    )
-                {
-                    warn!(
-                        org = %org,
-                        socks_port = port,
-                        error = %e,
-                        "overlay: OS TUN creation failed due to insufficient privilege; falling back in-place to userspace netstack (127.0.0.1 SOCKS5)"
-                    );
-                    let res = ns_f(ip, nm, mtu);
-                    let mut guard = fallback_slot.lock().unwrap_or_else(|e| e.into_inner());
-                    *guard = Some(ns_f);
-                    return res;
-                }
-
-                let now = (now_fn)();
-                crate::overlay_supervision::record_overlay_failure(
-                    &org,
-                    &shape,
-                    e.to_string(),
-                    now,
-                );
+        Err(e) => {
+            #[cfg(feature = "overlay-netstack")]
+            if crate::overlay_supervision::is_tun_privilege_error_on(&e, is_windows) {
+                crate::overlay_supervision::latch_netstack_fallback(&org, &shape);
                 warn!(
                     org = %org,
                     error = %e,
-                    mode = %crate::overlay_supervision::effective_overlay_mode(&org, "tun"),
-                    "overlay: TUN creation failed; recorded bounded failure backoff"
+                    "overlay: OS TUN creation failed due to insufficient privilege on Windows; latching userspace netstack fallback for immediate runtime rebuild"
                 );
-                Err(e)
+                return Err(e);
             }
+
+            let now = (now_fn)();
+            crate::overlay_supervision::record_overlay_failure(&org, &shape, e.to_string(), now);
+            warn!(
+                org = %org,
+                error = %e,
+                mode = %crate::overlay_supervision::effective_overlay_mode(&org, "tun"),
+                "overlay: TUN creation failed; recorded bounded failure backoff"
+            );
+            Err(e)
         }
     });
 
@@ -1097,15 +1077,6 @@ fn netstack_tun_factory(
 static SOCKS_BOUND: std::sync::Mutex<Option<std::collections::BTreeSet<u16>>> =
     std::sync::Mutex::new(None);
 
-/// Whether `cfg` is configured or currently running in userspace netstack mode
-/// (either via explicit `netstack_socks_port` or F1 privilege fallback).
-fn uses_netstack_mode(cfg: &AgentConfig) -> bool {
-    netstack_socks_port(cfg).is_some()
-        || (cfg.overlay_enabled
-            && (!crate::overlay_supervision::process_can_create_os_tun()
-                || crate::overlay_supervision::effective_socks5_port(&cfg.tenant_id).is_some()))
-}
-
 /// The netstack ICMP backend for the `mh ping` LocalAPI verb, watching the
 /// shared handle channel. Supports both explicit netstack mode and F1
 /// privilege fallback to netstack; delegates to `OsPinger` when running in
@@ -1153,20 +1124,32 @@ pub fn netstack_pinger(
 }
 
 /// MeshHarbor #20 FWD-02 — how a managed forward dials a destination behind
-/// the overlay on a netstack node: this org's own stack. `None` unless this
-/// node is in netstack mode: an OS-TUN node's routes carry overlay addresses.
+/// the overlay on a netstack node: this org's own stack, or the host's routes
+/// when the org is running in OS-TUN mode (checked dynamically per dial so a
+/// reactive Windows fallback switches existing forwarders to netstack).
 #[cfg(feature = "overlay-netstack")]
 pub fn managed_forward_dialer(
     cfg: &AgentConfig,
 ) -> Option<Arc<dyn crate::managed_forward::OverlayDial>> {
     use tunnel_core::overlay::netstack::NetstackHandle;
 
-    if !uses_netstack_mode(cfg) {
+    let explicit_netstack = netstack_socks_port(cfg).is_some();
+    if !explicit_netstack && !cfg.overlay_enabled {
         return None;
     }
 
     struct NsDial {
+        tenant_id: String,
+        explicit_netstack: bool,
         handle: watch::Receiver<Option<NetstackHandle>>,
+    }
+    impl NsDial {
+        fn should_use_netstack(&self) -> bool {
+            self.explicit_netstack
+                || !crate::overlay_supervision::process_can_create_os_tun()
+                || crate::overlay_supervision::is_org_in_netstack_mode(&self.tenant_id)
+                || self.handle.borrow().is_some()
+        }
     }
     #[async_trait::async_trait]
     impl crate::managed_forward::OverlayDial for NsDial {
@@ -1174,6 +1157,9 @@ pub fn managed_forward_dialer(
             &self,
             dst: std::net::SocketAddr,
         ) -> std::io::Result<Box<dyn crate::managed_forward::Io>> {
+            if !self.should_use_netstack() {
+                return Ok(Box::new(tokio::net::TcpStream::connect(dst).await?));
+            }
             let handle =
                 self.handle.borrow().clone().ok_or_else(|| {
                     std::io::Error::other("netstack not up yet (mesh not joined)")
@@ -1184,6 +1170,9 @@ pub fn managed_forward_dialer(
             &self,
             dst: std::net::SocketAddr,
         ) -> std::io::Result<Box<dyn crate::managed_forward::UdpSession>> {
+            if !self.should_use_netstack() {
+                return crate::managed_forward::kernel_udp(dst).await;
+            }
             let handle =
                 self.handle.borrow().clone().ok_or_else(|| {
                     std::io::Error::other("netstack not up yet (mesh not joined)")
@@ -1223,6 +1212,8 @@ pub fn managed_forward_dialer(
     }
 
     Some(Arc::new(NsDial {
+        tenant_id: cfg.tenant_id.clone(),
+        explicit_netstack,
         handle: ns_handle_tx(&cfg.tenant_id).subscribe(),
     }))
 }
@@ -1236,18 +1227,30 @@ pub fn managed_forward_dialer(
 
 /// FR-90 P3-8-2b — the netstack dialer for this daemon's own SSH client
 /// ([`crate::ssh_client`]), watching the primary's handle channel, where
-/// agent sessions run. `None` unless this node is in netstack mode: an
-/// OS-TUN node dials through its routes ([`crate::ssh_client::OsDialer`]).
-#[cfg(feature = "ssh-server")]
+/// agent sessions run. Dynamically delegates to [`crate::ssh_client::OsDialer`]
+/// when the org is in OS-TUN mode and switches to `netstack` when configured
+/// or after F1 privilege fallback.
+#[cfg(all(feature = "ssh-server", feature = "overlay-netstack"))]
 pub fn netstack_dialer(cfg: &AgentConfig) -> Option<Arc<dyn crate::ssh_client::OverlayDialer>> {
     use tunnel_core::overlay::netstack::NetstackHandle;
 
-    if !uses_netstack_mode(cfg) {
+    let explicit_netstack = netstack_socks_port(cfg).is_some();
+    if !explicit_netstack && !cfg.overlay_enabled {
         return None;
     }
 
     struct NsDialer {
+        tenant_id: String,
+        explicit_netstack: bool,
         handle: watch::Receiver<Option<NetstackHandle>>,
+    }
+    impl NsDialer {
+        fn should_use_netstack(&self) -> bool {
+            self.explicit_netstack
+                || !crate::overlay_supervision::process_can_create_os_tun()
+                || crate::overlay_supervision::is_org_in_netstack_mode(&self.tenant_id)
+                || self.handle.borrow().is_some()
+        }
     }
     #[async_trait::async_trait]
     impl crate::ssh_client::OverlayDialer for NsDialer {
@@ -1256,6 +1259,9 @@ pub fn netstack_dialer(cfg: &AgentConfig) -> Option<Arc<dyn crate::ssh_client::O
             address: &str,
             port: u16,
         ) -> Result<Box<dyn crate::ssh_client::Stream>, String> {
+            if !self.should_use_netstack() {
+                return crate::ssh_client::OsDialer.dial(address, port).await;
+            }
             let ip: std::net::IpAddr = address
                 .parse()
                 .map_err(|_| format!("{address} is not an overlay address"))?;
@@ -1273,8 +1279,15 @@ pub fn netstack_dialer(cfg: &AgentConfig) -> Option<Arc<dyn crate::ssh_client::O
     }
 
     Some(Arc::new(NsDialer {
+        tenant_id: cfg.tenant_id.clone(),
+        explicit_netstack,
         handle: ns_handle_tx(&cfg.tenant_id).subscribe(),
     }))
+}
+
+#[cfg(all(feature = "ssh-server", not(feature = "overlay-netstack")))]
+pub fn netstack_dialer(_cfg: &AgentConfig) -> Option<Arc<dyn crate::ssh_client::OverlayDialer>> {
+    None
 }
 #[cfg(not(feature = "overlay-netstack"))]
 fn netstack_tun_factory(
@@ -1729,21 +1742,29 @@ pub use crate::overlay_supervision::{
     should_respawn_after_exit_at,
 };
 
-#[cfg(test)]
+#[cfg(all(test, feature = "overlay-netstack"))]
 fn build_tun_factory_for_test(
     cfg: &AgentConfig,
     view_rx: watch::Receiver<OverlayView>,
+    is_windows: bool,
     os_tun_permitted: bool,
     os_tun_up: TunFactory,
     now_fn: Arc<dyn Fn() -> std::time::Instant + Send + Sync>,
 ) -> Option<(TunFactory, Option<u16>)> {
-    build_tun_factory_with_fallback(cfg, view_rx, os_tun_permitted, Some(os_tun_up), now_fn)
+    build_tun_factory_with_fallback(
+        cfg,
+        view_rx,
+        is_windows,
+        os_tun_permitted,
+        Some(os_tun_up),
+        now_fn,
+    )
 }
 
 #[cfg(all(test, feature = "overlay-netstack"))]
 mod overlay_fallback_tests {
     use super::*;
-    use std::net::Ipv4Addr;
+    use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
@@ -1757,63 +1778,192 @@ mod overlay_fallback_tests {
     }
 
     #[tokio::test]
-    async fn windows_tun_privilege_failure_falls_back_to_netstack_and_reports_mode_and_port() {
-        let cfg = sample_cfg("tenant-win-fallback-reactive");
-        let (_view_tx, view_rx) = watch::channel(OverlayView::default());
+    async fn reactive_privilege_fallback_exits_and_rebuilds_runtime_as_netstack_withdrawing_routes_and_switching_dialers()
+     {
+        let mut cfg = sample_cfg("tenant-win-fallback-rebuild");
+        cfg.overlay_advertised_routes = vec!["10.88.0.0/24".to_string()];
+        cfg.overlay_exit_node = Some("exit-node-1".to_string());
+
+        // Construct managed_forward_dialer and ssh_client::dialer_for BEFORE
+        // any reactive fallback happens (as connect_once / DaemonSsh do).
+        let fwd_dialer_before = managed_forward_dialer(&cfg);
+        #[cfg(feature = "ssh-server")]
+        let ssh_dialer = crate::ssh_client::dialer_for(&cfg);
+
+        let (view_tx, view_rx) = watch::channel(OverlayView::default());
         let os_tun_calls = Arc::new(AtomicUsize::new(0));
         let calls_clone = os_tun_calls.clone();
-        let os_tun: TunFactory = Box::new(move |_, _, _| {
-            calls_clone.fetch_add(1, Ordering::SeqCst);
-            Err(std::io::Error::other(
-                "Failed to create adapter: WintunCreateAdapter failed: \"No inner logs\"",
-            ))
-        });
+        let make_os_tun = move || -> TunFactory {
+            let c = calls_clone.clone();
+            Box::new(move |_, _, _| {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err(std::io::Error::other(
+                    "Failed to create adapter: WintunCreateAdapter failed: \"No inner logs\"",
+                ))
+            })
+        };
 
-        let (factory, _initial_port) = build_tun_factory_for_test(
+        let t0 = Instant::now();
+        // Attempt 1 (is_windows = true, os_tun_permitted = true): starts as OS TUN (initial_port == None).
+        let (factory1, initial_port1) = build_tun_factory_for_test(
             &cfg,
-            view_rx,
+            view_rx.clone(),
             true,
-            os_tun,
+            true,
+            make_os_tun(),
             Arc::new(Instant::now),
         )
-        .expect("factory built");
+        .expect("factory1 built");
+        assert_eq!(initial_port1, None);
 
-        // First netmap: Wintun fails due to lack of privilege; must fall back
-        // to userspace netstack in-place instead of returning Err and looping.
-        let tun = factory(
+        // First netmap arrives: Wintun fails due to privilege. Must latch fallback
+        // and return Err so the first runtime exits and is immediately rebuilt as
+        // a true netstack runtime (with netstack_socks = Some(port)).
+        let res1 = factory1(
             Ipv4Addr::new(100, 64, 0, 2),
             Ipv4Addr::new(255, 192, 0, 0),
             OVERLAY_MTU,
-        )
-        .expect("Wintun privilege failure must fall back to userspace netstack");
-        assert_eq!(
-            tun.os_name(),
-            None,
-            "netstack fallback must be OS-free (zero OS adapter/route mutation)"
+        );
+        assert!(
+            res1.is_err(),
+            "reactive privilege failure must return Err so runtime rebuilds with netstack_socks = Some(port)"
         );
         assert_eq!(os_tun_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            effective_overlay_mode(&cfg.tenant_id, "tun"),
-            "netstack",
-            "actual mode must be reported as netstack after fallback"
+        assert!(crate::overlay_supervision::has_latched_netstack_fallback(
+            &cfg.tenant_id
+        ));
+        assert!(
+            crate::overlay_supervision::should_poll_start_at(&cfg, Some(true), t0),
+            "reactive fallback restart must not incur failure backoff"
         );
-        let socks_port =
-            effective_socks5_port(&cfg.tenant_id).expect("loopback SOCKS5 port must be assigned");
-        assert!(socks_port > 0);
 
-        // Second netmap / reconnect: already latched into netstack fallback,
-        // so OS TUN must NOT be retried again.
-        let _tun2 = factory(
-            Ipv4Addr::new(100, 64, 0, 2),
-            Ipv4Addr::new(255, 192, 0, 0),
-            OVERLAY_MTU,
+        // Attempt 2 (immediate rebuild via Branch 2): must return Some(port) up front!
+        let (factory2, initial_port2) = build_tun_factory_for_test(
+            &cfg,
+            view_rx.clone(),
+            true,
+            true,
+            make_os_tun(),
+            Arc::new(Instant::now),
         )
-        .expect("second netmap uses netstack directly");
+        .expect("factory2 built");
+        let socks_port =
+            initial_port2.expect("rebuild after latched fallback must provide Some(port)");
+        assert!(socks_port > 0);
+        assert_eq!(effective_overlay_mode(&cfg.tenant_id, "tun"), "netstack");
+        assert_eq!(effective_socks5_port(&cfg.tenant_id), Some(socks_port));
+
+        // Spawn OverlayRuntime with the rebuilt factory2 + Some(socks_port) and verify:
+        // 1) advertised_routes in rc:overlay.join are withdrawn (empty),
+        // 2) OverlayView reports overlay_socks5_port = Some(socks_port), route_offer_withheld = Some,
+        //    and exit_node.socks5_port = Some(socks_port) (so dns_steer_allowed is false).
+        let (outbound_tx, mut outbound_rx) = mpsc::channel::<ClientMsg>(16);
+        let (evt_tx, evt_rx) = mpsc::channel::<OverlayEvent>(16);
+        let kp =
+            WgKeypair::from_secret_base64(cfg.overlay_wg_secret_key.as_deref().unwrap()).unwrap();
+        let rt = OverlayRuntime::new_relay(kp, outbound_tx, factory2, OVERLAY_MTU)
+            .with_advertised_routes(cfg.effective_overlay_advertised_routes())
+            .with_exit_node(cfg.overlay_exit_node.clone(), Vec::new())
+            .with_netstack_socks(Some(socks_port))
+            .with_peer_view(view_tx);
+        let rt_handle = tokio::spawn(rt.run(evt_rx, Vec::new()));
+
+        let join_msg = tokio::time::timeout(Duration::from_secs(5), outbound_rx.recv())
+            .await
+            .expect("join timeout")
+            .expect("join msg");
+        match join_msg {
+            ClientMsg::OverlayJoin {
+                advertised_routes, ..
+            } => {
+                assert!(
+                    advertised_routes.is_empty(),
+                    "rebuilt netstack runtime must withdraw advertised routes, got: {advertised_routes:?}"
+                );
+            }
+            other => panic!("expected OverlayJoin, got {other:?}"),
+        }
+
+        let net_info: meshharbor_remote_control::signaling::OverlayNetworkInfo =
+            serde_json::from_value(serde_json::json!({
+                "cidr": "100.64.0.0/10",
+                "mtu": OVERLAY_MTU,
+                "magic_domain": "mesh.local"
+            }))
+            .unwrap();
+        evt_tx
+            .send(OverlayEvent::Netmap {
+                self_ip: "100.64.0.2".to_string(),
+                network: net_info,
+                peers: Vec::new(),
+                org_relay_discovery: false,
+                path_trial_v1: false,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let v = view_rx.borrow().clone();
+                if v.self_ip.as_deref() == Some("100.64.0.2") {
+                    assert_eq!(v.overlay_socks5_port, Some(socks_port));
+                    assert!(
+                        v.route_offer_withheld.is_some(),
+                        "route_offer_withheld must be populated on netstack fallback"
+                    );
+                    let exit = v.exit_node.expect("exit_node status present");
+                    assert_eq!(
+                        exit.socks5_port,
+                        Some(socks_port),
+                        "exit_node status must carry socks5_port so dns_steer_allowed is false"
+                    );
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("OverlayView published");
+
         assert_eq!(
             os_tun_calls.load(Ordering::SeqCst),
             1,
-            "must not re-attempt WintunCreateAdapter after fallback latched"
+            "rebuilt runtime must not call os_tun again"
         );
+
+        // Verify both pre-created dialers (managed_forward_dialer and ssh_client::dialer_for)
+        // now route through the userspace netstack (100.64.0.2) rather than OS sockets:
+        let fwd_dialer = fwd_dialer_before
+            .expect("managed_forward_dialer must be available for overlay-enabled org");
+        // Drop the runtime so the netstack handle channel can be cleared, then verify
+        // both dialers hit the netstack path ("netstack not up yet (mesh not joined)")
+        // when the netstack handle is cleared while fallback remains latched.
+        drop(evt_tx);
+        let _ = rt_handle.await;
+        let _ = ns_handle_tx(&cfg.tenant_id).send(None);
+
+        let fwd_err = fwd_dialer
+            .tcp(SocketAddr::from(([100, 64, 0, 99], 22)))
+            .await
+            .err()
+            .expect("netstack dial with cleared handle must fail fast via netstack");
+        assert!(
+            fwd_err.to_string().contains("netstack"),
+            "managed_forward_dialer must use netstack after fallback, got: {fwd_err}"
+        );
+
+        #[cfg(feature = "ssh-server")]
+        {
+            let ssh_err = ssh_dialer
+                .dial("100.64.0.99", 22)
+                .await
+                .err()
+                .expect("ssh dialer with cleared handle must fail fast via netstack");
+            assert!(
+                ssh_err.contains("netstack"),
+                "ssh_client::dialer_for must use netstack after fallback, got: {ssh_err}"
+            );
+        }
 
         release_org(&cfg.tenant_id);
     }
@@ -1834,13 +1984,15 @@ mod overlay_fallback_tests {
         let (factory, initial_port) = build_tun_factory_for_test(
             &cfg,
             view_rx,
+            true,
             false, // non-elevated Windows process (Medium IL)
             os_tun,
             Arc::new(Instant::now),
         )
         .expect("factory built");
 
-        let port = initial_port.expect("proactive fallback must allocate loopback SOCKS5 port up front");
+        let port =
+            initial_port.expect("proactive fallback must allocate loopback SOCKS5 port up front");
         assert!(port > 0);
         let tun = factory(
             Ipv4Addr::new(100, 64, 0, 3),
@@ -1861,7 +2013,48 @@ mod overlay_fallback_tests {
     }
 
     #[tokio::test]
-    async fn unrecoverable_overlay_failure_uses_bounded_backoff_and_halts_repeated_joins() {
+    async fn non_windows_tun_permission_error_does_not_fall_back_to_netstack_in_factory() {
+        let cfg = sample_cfg("tenant-non-win-no-fallback");
+        let (_view_tx, view_rx) = watch::channel(OverlayView::default());
+        let os_tun: TunFactory = Box::new(|_, _, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Operation not permitted (utun/tun)",
+            ))
+        });
+
+        let (factory, initial_port) = build_tun_factory_for_test(
+            &cfg,
+            view_rx,
+            false, // non-Windows (Linux / macOS)
+            true,
+            os_tun,
+            Arc::new(Instant::now),
+        )
+        .expect("factory built");
+        assert_eq!(initial_port, None);
+
+        let res = factory(
+            Ipv4Addr::new(100, 64, 0, 5),
+            Ipv4Addr::new(255, 192, 0, 0),
+            OVERLAY_MTU,
+        );
+        assert!(
+            res.is_err(),
+            "non-Windows permission error must return Err and not fall back to netstack"
+        );
+        assert!(
+            !crate::overlay_supervision::has_latched_netstack_fallback(&cfg.tenant_id),
+            "non-Windows must not latch netstack fallback"
+        );
+        assert_eq!(effective_socks5_port(&cfg.tenant_id), None);
+        assert!(effective_overlay_mode(&cfg.tenant_id, "tun").starts_with("error ("));
+
+        release_org(&cfg.tenant_id);
+    }
+
+    #[tokio::test]
+    async fn non_privilege_overlay_failure_uses_capped_backoff_and_never_halts_permanently() {
         let cfg = sample_cfg("tenant-overlay-backoff");
         let t0 = Instant::now();
         let clock = Arc::new(std::sync::Mutex::new(t0));
@@ -1870,12 +2063,12 @@ mod overlay_fallback_tests {
         let make_failing_factory = || {
             let (_view_tx, view_rx) = watch::channel(OverlayView::default());
             let clock_clone = clock_for_factory.clone();
-            let os_tun: TunFactory = Box::new(|_, _, _| {
-                Err(std::io::Error::other("fatal driver hardware fault"))
-            });
+            let os_tun: TunFactory =
+                Box::new(|_, _, _| Err(std::io::Error::other("fatal driver hardware fault")));
             build_tun_factory_for_test(
                 &cfg,
                 view_rx,
+                true,
                 true,
                 os_tun,
                 Arc::new(move || *clock_clone.lock().unwrap()),
@@ -1884,64 +2077,42 @@ mod overlay_fallback_tests {
             .0
         };
 
-        // Attempt 1 fails at t0:
-        let f1 = make_failing_factory();
-        assert!(
-            f1(
-                Ipv4Addr::new(100, 64, 0, 4),
-                Ipv4Addr::new(255, 192, 0, 0),
-                OVERLAY_MTU
-            )
-            .is_err()
-        );
-        // At t0 + 25s (the first keepalive tick), backoff (30s) must suppress respawn!
-        assert!(
-            !should_respawn_after_exit_at(&cfg, t0 + Duration::from_secs(25)),
-            "25s keepalive tick must be suppressed during 30s backoff"
-        );
-        let mode1 = effective_overlay_mode(&cfg.tenant_id, "tun");
-        assert!(
-            mode1.starts_with("error") && mode1.contains("fatal driver hardware fault"),
-            "status mode must report error and reason, got: {mode1}"
-        );
-        // At t0 + 31s, retry #2 is permitted:
-        assert!(should_respawn_after_exit_at(&cfg, t0 + Duration::from_secs(31)));
-
-        // Attempt 2 fails at t0 + 31s:
-        *clock.lock().unwrap() = t0 + Duration::from_secs(31);
-        let f2 = make_failing_factory();
-        assert!(
-            f2(
-                Ipv4Addr::new(100, 64, 0, 4),
-                Ipv4Addr::new(255, 192, 0, 0),
-                OVERLAY_MTU
-            )
-            .is_err()
-        );
-        // Backoff #2 is 60s -> suppressed at t0 + 31s + 25s, permitted at t0 + 31s + 61s:
-        assert!(!should_respawn_after_exit_at(&cfg, t0 + Duration::from_secs(56)));
-        assert!(should_respawn_after_exit_at(&cfg, t0 + Duration::from_secs(92)));
-
-        // Attempt 3 fails at t0 + 92s -> reaches max attempts (3) and HALTS:
-        *clock.lock().unwrap() = t0 + Duration::from_secs(92);
-        let f3 = make_failing_factory();
-        assert!(
-            f3(
-                Ipv4Addr::new(100, 64, 0, 4),
-                Ipv4Addr::new(255, 192, 0, 0),
-                OVERLAY_MTU
-            )
-            .is_err()
-        );
-        assert!(
-            !should_respawn_after_exit_at(&cfg, t0 + Duration::from_secs(3600)),
-            "after 3 failed attempts, overlay respawn must halt permanently for this config"
-        );
-        let mode_halted = effective_overlay_mode(&cfg.tenant_id, "tun");
-        assert!(
-            mode_halted.contains("halted") && mode_halted.contains("fatal driver hardware fault"),
-            "halted status must state halted and reason, got: {mode_halted}"
-        );
+        let mut cur = t0;
+        for (idx, &delay_secs) in [30u64, 60, 120, 300, 600, 600].iter().enumerate() {
+            *clock.lock().unwrap() = cur;
+            let f = make_failing_factory();
+            assert!(
+                f(
+                    Ipv4Addr::new(100, 64, 0, 4),
+                    Ipv4Addr::new(255, 192, 0, 0),
+                    OVERLAY_MTU
+                )
+                .is_err()
+            );
+            assert!(
+                !should_respawn_after_exit_at(&cfg, cur + Duration::from_secs(25)),
+                "25s keepalive tick must be suppressed during {delay_secs}s backoff (attempt {})",
+                idx + 1
+            );
+            assert!(
+                !should_respawn_after_exit_at(&cfg, cur + Duration::from_secs(delay_secs - 1)),
+                "must stay in backoff just before {delay_secs}s"
+            );
+            assert!(
+                should_respawn_after_exit_at(&cfg, cur + Duration::from_secs(delay_secs)),
+                "must allow retry after {delay_secs}s backoff (attempt {})",
+                idx + 1
+            );
+            let mode = effective_overlay_mode(&cfg.tenant_id, "tun");
+            assert!(
+                mode.starts_with("error")
+                    && mode.contains(&format!("attempt {}", idx + 1))
+                    && mode.contains("fatal driver hardware fault")
+                    && !mode.contains("halted"),
+                "status mode must report attempt count and reason without halting, got: {mode}"
+            );
+            cur += Duration::from_secs(delay_secs);
+        }
 
         release_org(&cfg.tenant_id);
     }

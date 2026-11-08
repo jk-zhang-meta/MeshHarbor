@@ -778,10 +778,11 @@ impl LocalApiState for DaemonState {
                                         .ok()
                                         .and_then(|t| t.clone()),
                                     updates_ignored: o.updates_ignored.load(Ordering::Relaxed),
-                                    overlay_mode: crate::overlay_supervision::effective_overlay_mode(
-                                        &o.tenant_id,
-                                        o.overlay_mode,
-                                    ),
+                                    overlay_mode:
+                                        crate::overlay_supervision::effective_overlay_mode(
+                                            &o.tenant_id,
+                                            o.overlay_mode,
+                                        ),
                                     token_expires_at: crate::token_renewal::expires_at(
                                         &o.token.get(),
                                     ),
@@ -3403,8 +3404,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn status_surfaces_effective_overlay_mode_and_fallback_socks5_port() {
+    #[tokio::test]
+    async fn overlay_fallback_status_surfaces_effective_mode_and_socks5_port() {
         let tenant = "tenant-f1-status";
         let connected = Arc::new(AtomicBool::new(true));
         let (_tx, rx) = watch::channel(OverlayView::default());
@@ -3453,10 +3454,9 @@ mod tests {
             Instant::now(),
         );
         let st_err = state.status();
-        assert!(
-            st_err.orgs[0]
-                .overlay_mode
-                .starts_with("error (attempt 1/3, backoff: Wintun driver missing)")
+        assert_eq!(
+            st_err.orgs[0].overlay_mode,
+            "error (attempt 1, backoff 30s: Wintun driver missing)"
         );
 
         crate::overlay_supervision::clear_org_state(tenant);
