@@ -2093,7 +2093,9 @@ async fn connect_once(
                 // stays bound to the old runtime until the next reconnect —
                 // harmless: its weak upgrade fails and samples drop.)
                 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
-                if overlay_evt_tx.as_ref().is_some_and(|t| t.is_closed()) {
+                if overlay_evt_tx.as_ref().is_some_and(|t| t.is_closed())
+                    && crate::overlay_supervision::should_respawn_after_exit(cfg)
+                {
                     warn!(
                         "overlay runtime exited mid-session (TUN death?) — respawning now \
                          instead of waiting for the next reconnect"

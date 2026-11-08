@@ -667,7 +667,11 @@ impl LocalApiState for DaemonState {
             // so it's kept even across a brief disconnect.
             overlay_ip: self.overlay.borrow().self_ip.clone(),
             overlay_ip6: self.overlay.borrow().self_ip6.clone(),
-            overlay_socks5_port: self.overlay.borrow().overlay_socks5_port,
+            overlay_socks5_port: self.overlay.borrow().overlay_socks5_port.or_else(|| {
+                self.tenant_id
+                    .as_deref()
+                    .and_then(crate::overlay_supervision::effective_socks5_port)
+            }),
             connected,
             // FR-51 P4 — the primary enrollment's nature, stamped at startup.
             ephemeral: self.ephemeral,
@@ -774,7 +778,10 @@ impl LocalApiState for DaemonState {
                                         .ok()
                                         .and_then(|t| t.clone()),
                                     updates_ignored: o.updates_ignored.load(Ordering::Relaxed),
-                                    overlay_mode: o.overlay_mode.to_string(),
+                                    overlay_mode: crate::overlay_supervision::effective_overlay_mode(
+                                        &o.tenant_id,
+                                        o.overlay_mode,
+                                    ),
                                     token_expires_at: crate::token_renewal::expires_at(
                                         &o.token.get(),
                                     ),
@@ -3394,5 +3401,64 @@ mod tests {
             on_demand_targets.is_empty(),
             "when B6 on-demand is enabled, background 15s ICMP RTT prober must not wake dormant peers or reset idle timers"
         );
+    }
+
+    #[test]
+    fn status_surfaces_effective_overlay_mode_and_fallback_socks5_port() {
+        let tenant = "tenant-f1-status";
+        let connected = Arc::new(AtomicBool::new(true));
+        let (_tx, rx) = watch::channel(OverlayView::default());
+        let reg: OrgStatusRegistry = Arc::new(Mutex::new(vec![OrgRuntime {
+            label: "primary".into(),
+            server_url: "https://example.invalid".into(),
+            tenant_id: tenant.into(),
+            agent_id: "a1".into(),
+            primary: true,
+            enabled: true,
+            connected: connected.clone(),
+            terminal_error: Arc::new(Mutex::new(None)),
+            updates_ignored: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            overlay_mode: "tun",
+            token: crate::token_slot::TokenSlot::new("tok"),
+        }]));
+        let state = DaemonState::new(
+            "n1".into(),
+            "surface".into(),
+            DaemonMode::Service,
+            Some(tenant.into()),
+            connected,
+            rx,
+            consent_broker("f1-status"),
+            None,
+            crate::tunnel::client_mgr::TunnelClientHub::new("0.1.0".into()),
+            empty_rtt_cache(),
+        )
+        .with_orgs(reg);
+
+        crate::overlay_supervision::record_overlay_running(
+            tenant,
+            "shape-1",
+            "netstack",
+            Some(51080),
+            true,
+        );
+        let st = state.status();
+        assert_eq!(st.overlay_socks5_port, Some(51080));
+        assert_eq!(st.orgs[0].overlay_mode, "netstack");
+
+        crate::overlay_supervision::record_overlay_failure(
+            tenant,
+            "shape-1",
+            "Wintun driver missing".into(),
+            Instant::now(),
+        );
+        let st_err = state.status();
+        assert!(
+            st_err.orgs[0]
+                .overlay_mode
+                .starts_with("error (attempt 1/3, backoff: Wintun driver missing)")
+        );
+
+        crate::overlay_supervision::clear_org_state(tenant);
     }
 }

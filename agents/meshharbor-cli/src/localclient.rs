@@ -2407,6 +2407,13 @@ fn print_status(s: &NodeStatus) {
     println!("  tenant      {}", opt(s.tenant_id.as_deref()));
     println!("  overlay ip  {}", opt(s.overlay_ip.as_deref()));
     println!("  overlay ip6 {}", opt(s.overlay_ip6.as_deref()));
+    if let Some(port) = s.overlay_socks5_port {
+        println!("  overlay     netstack (127.0.0.1:{port} SOCKS5)");
+    } else if let Some(primary) = s.orgs.iter().find(|o| o.primary)
+        && primary.overlay_mode.starts_with("error")
+    {
+        println!("  overlay     {}", primary.overlay_mode);
+    }
     println!(
         "  server      {}",
         if s.connected {

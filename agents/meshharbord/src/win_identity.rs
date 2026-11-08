@@ -22,7 +22,9 @@
 #![cfg(target_os = "windows")]
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+use windows_sys::Win32::Security::{
+    GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
+};
 use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentProcessId, OpenProcessToken,
@@ -46,6 +48,46 @@ pub fn process_is_local_system() -> bool {
     // SAFETY: we own the handle `OpenProcessToken` gave us.
     unsafe { CloseHandle(token) };
     result
+}
+
+/// F1 — `true` when the calling process holds an elevated token
+/// (`TokenElevation.TokenIsElevated != 0` or `NT AUTHORITY\SYSTEM`), which is
+/// required to create or configure a Wintun adapter (`SystemTun::up`). An
+/// unelevated (Medium IL) process returns `false`, so the overlay selects the
+/// OS-free userspace `netstack` instead of looping on `WintunCreateAdapter`.
+pub fn process_is_elevated() -> bool {
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: as in `process_is_local_system`.
+    let ok = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+    if ok == 0 || token.is_null() {
+        return false;
+    }
+    let result = token_is_elevated(token) || token_user_is_local_system(token);
+    // SAFETY: we own the handle `OpenProcessToken` gave us.
+    unsafe { CloseHandle(token) };
+    result
+}
+
+fn token_is_elevated(token: HANDLE) -> bool {
+    let mut buf = [0u8; 4];
+    let mut needed: u32 = 0;
+    // SAFETY: `TOKEN_ELEVATION` is a single 4-byte `DWORD TokenIsElevated`;
+    // `buf` is 4 bytes and alive for the duration of the call.
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            buf.as_mut_ptr().cast(),
+            buf.len() as u32,
+            &mut needed,
+        )
+    };
+    ok != 0 && needed >= 4 && token_elevation_bytes_are_elevated(&buf)
+}
+
+/// `TOKEN_ELEVATION` byte layout: 4-byte little-endian `TokenIsElevated` (`!= 0` ⇒ elevated).
+pub(crate) fn token_elevation_bytes_are_elevated(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) != 0
 }
 
 fn token_user_is_local_system(token: HANDLE) -> bool {
@@ -322,5 +364,13 @@ mod tests {
         let mut ran = false;
         assert_eq!(as_session_user(|| ran = true), None);
         assert!(!ran);
+    }
+
+    #[test]
+    fn token_elevation_bytes_decoded_correctly() {
+        assert!(!token_elevation_bytes_are_elevated(&[]));
+        assert!(!token_elevation_bytes_are_elevated(&[1, 0, 0]));
+        assert!(!token_elevation_bytes_are_elevated(&[0, 0, 0, 0]));
+        assert!(token_elevation_bytes_are_elevated(&[1, 0, 0, 0]));
     }
 }
