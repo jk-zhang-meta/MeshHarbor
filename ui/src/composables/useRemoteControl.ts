@@ -8576,6 +8576,12 @@ export function useRemoteControl(
         // the device could not sign against it either.
         peerAuthAsked = null
         peerAuth.value = null
+        if (!peerAuthPlan && lastConnectArgs?.agentId) {
+          peerAuthPlan = planPeerAuth(lastConnectArgs.agentId)
+          if (peerAuthPlan && !peerAuthKey) {
+            peerAuthKey = controllerKeyFor(peerAuthPlan.userId, indexedDbKeyBackend())
+          }
+        }
         const askedSid = typeof msg.session_id === 'string' ? msg.session_id : sessionId.value
         const offerFingerprint = peerAuthPlan ? singleFingerprint(offer.sdp ?? '') : null
         if (peerAuthPlan && askedSid && offerFingerprint !== null) {

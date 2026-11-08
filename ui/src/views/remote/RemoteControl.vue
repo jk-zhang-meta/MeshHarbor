@@ -4663,7 +4663,13 @@ function onStagePointerMove(ev: PointerEvent) {
   cursorY.value = ev.clientY - rect.top + host.scrollTop
 }
 
-const canConnect = computed(() => !!agent.value)
+const agentNotFound = ref(false)
+watch(agentId, () => {
+  agentNotFound.value = false
+})
+const canConnect = computed(
+  () => !!agent.value || (!isExternal && !!agentId.value && !agentNotFound.value),
+)
 const statusColor = computed(() => (agent.value?.is_online ? 'success' : 'grey'))
 const phaseColor = computed(() => {
   switch (rc.phase.value) {
@@ -4867,8 +4873,12 @@ async function loadAgent() {
   }
   try {
     agent.value = await resolveAgent()
+    agentNotFound.value = false
   } catch (e) {
-    if (saysNoSuchDevice(e)) agent.value = null
+    if (saysNoSuchDevice(e)) {
+      agent.value = null
+      agentNotFound.value = true
+    }
     /* else transient — keep the previous snapshot (null on a first load) */
   }
 }
@@ -4890,8 +4900,12 @@ async function refreshAgentStatus() {
     // instead and only replace the snapshot with an answer.
     await agentStore.fetchAgents(tenantId.value)
     agent.value = await resolveAgent()
+    agentNotFound.value = false
   } catch (e) {
-    if (saysNoSuchDevice(e)) agent.value = null
+    if (saysNoSuchDevice(e)) {
+      agent.value = null
+      agentNotFound.value = true
+    }
     /* else transient — keep the previous snapshot */
   }
 }
@@ -4968,7 +4982,8 @@ function startSession() {
     void rc.connectExternal(auth)
     return
   }
-  if (!agent.value) return
+  const targetAgentId = agent.value?.id || (!isExternal ? agentId.value : '')
+  if (!targetAgentId) return
   // Surface Chrome's clipboard-read permission prompt UNDER the
   // Connect click gesture (auto-sync's later background reads can't
   // prompt as nicely). Fire-and-forget throwaway read — the result
@@ -4979,7 +4994,7 @@ function startSession() {
   }
   // PR-1: thread the agent's org so the pre-flight keys the signalling
   // socket to the right pod even when this view is hosted cross-org.
-  rc.connect(agent.value.id, undefined, false, tenantId.value)
+  rc.connect(targetAgentId, undefined, false, tenantId.value)
 }
 
 // FR-100 P2a — the toolbar's word on the device's identity key, and the one
