@@ -345,15 +345,15 @@ mod tests {
     /// nowhere else; these bytes are test vectors, not secrets.
     const FIXTURE_MSG: &[u8] = b"meshharbor pgp_verify fixture message v1\n";
     const FIXTURE_KEY: [u8; 32] = [
-        0xeb, 0x45, 0x29, 0xff, 0x24, 0xe9, 0xf6, 0xb7, 0x21, 0x20, 0x7a, 0x34, 0x08, 0x01, 0xa2,
-        0x6b, 0xf7, 0x0f, 0xe4, 0x2d, 0xc4, 0xdf, 0x3e, 0xd3, 0xc3, 0x19, 0x5d, 0xc1, 0xcc, 0xbe,
-        0xce, 0x4e,
+        0x33, 0x84, 0x7b, 0x0e, 0x3c, 0xe9, 0x79, 0xba, 0xb0, 0x87, 0xfa, 0xd6, 0xce, 0xd4, 0x99,
+        0x26, 0x7c, 0xea, 0xf2, 0x07, 0xe3, 0x24, 0x04, 0x97, 0xcb, 0xcb, 0x3f, 0x6a, 0x29, 0x23,
+        0x1c, 0x02,
     ];
     const FIXTURE_ASC: &str = "-----BEGIN PGP SIGNATURE-----\n\n\
-iHUEABYKAB0WIQR+gSR1LCoEVCK5rt+0sI1x14/rFgUCao7qAAAKCRC0sI1x14/r\n\
-Fib9AQC7rcJIbBRX9OLFsijHeAtLA78lEFbZECl0rBM3Ui3ECAEAzAZhKfTmb0nJ\n\
-hV/0cAHGFizJ3Gl+qz5YZ4IEbnnXtgs=\n\
-=wJg0\n\
+iHUEABYKAB0WIQT5HAAzcK+uvp6HPP9btTenQXlVcAUCavAr5AAKCRBbtTenQXlV\n\
+cOQUAP4+Pzaeo/BJuXb1y7QGSXA41nWXaAAA2u5R0xCtACRK0QEAtHrUeLxTe9Y4\n\
+LSPRvB0G9xGjssS7PG6iG4Tedn3r8g4=\n\
+=lGyI\n\
 -----END PGP SIGNATURE-----\n";
 
     #[test]
@@ -376,7 +376,7 @@ hV/0cAHGFizJ3Gl+qz5YZ4IEbnnXtgs=\n\
     fn tampered_signature_is_refused() {
         // Flip one bit inside the base64 body (the CRC then also disagrees —
         // corruption must be caught no matter which check sees it first).
-        let tampered = FIXTURE_ASC.replace("Fib9AQC7", "Fib9AQC8");
+        let tampered = FIXTURE_ASC.replace("cOQUAP4+", "cOQUAP4/");
         verify_detached(FIXTURE_MSG, &tampered, &FIXTURE_KEY)
             .expect_err("a tampered signature body must fail");
     }

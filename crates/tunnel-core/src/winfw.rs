@@ -792,7 +792,7 @@ mod tests {
         assert_eq!(r.program, OUR_EXE);
         // The tunnel client gets its own rule — the two never fight.
         let c = UdpInAllowRule::for_exe(Path::new(r"C:\Tools\mh.exe"));
-        assert_eq!(c.name, "MeshHarbor UDP-In (meshharbor)");
+        assert_eq!(c.name, "MeshHarbor UDP-In (mh)");
     }
 
     /// The rule's stem comes from the text of the path, so the Ubuntu CI lane
@@ -805,7 +805,7 @@ mod tests {
             windows_file_stem(r"C:\Program Files\MeshHarbor\meshharbord.exe"),
             Some("meshharbord")
         );
-        assert_eq!(windows_file_stem("C:/Tools/mh.exe"), Some("meshharbor"));
+        assert_eq!(windows_file_stem("C:/Tools/mh.exe"), Some("mh"));
         assert_eq!(windows_file_stem("meshharbord.exe"), Some("meshharbord"));
         assert_eq!(windows_file_stem(r"C:\x\noext"), Some("noext"));
         assert_eq!(windows_file_stem(r"C:\x\.hidden"), Some(".hidden"));

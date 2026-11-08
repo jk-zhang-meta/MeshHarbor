@@ -1015,6 +1015,7 @@ mod tests {
             id: Some(ObjectId::new()),
             tenant_id,
             owner_user_id: ObjectId::new(),
+            access_policy_rev: None,
             enrolled_by: None,
             name: "test-agent".into(),
             display_name: None,
