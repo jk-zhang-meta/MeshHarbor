@@ -3550,7 +3550,7 @@ async fn media_pump(
             pack_dims(native_dims.0, native_dims.1),
             std::sync::atomic::Ordering::Relaxed,
         );
-        let effective_target = clamp_target_to_native(
+        let effective_target = resolve_user_box(
             *target_resolution.lock().unwrap(),
             native_dims.0,
             native_dims.1,
@@ -3823,12 +3823,12 @@ async fn media_pump(
                     } else {
                         "rc:resolution"
                     };
-                    let clamped_target =
-                        clamp_target_to_native(current_target, frame.width, frame.height);
+                    let resolved_target =
+                        resolve_user_box(current_target, frame.width, frame.height);
                     frame = crate::encode::resample::apply_target_resolution(
                         &mut resampler,
                         frame,
-                        clamped_target,
+                        resolved_target,
                     );
                     debug_assert_eq!((frame.width, frame.height), (target_w, target_h));
                     encoded_dims.store(
@@ -11994,34 +11994,6 @@ pub(crate) fn aspect_preserved_target(src_w: u32, src_h: u32, cap_long_edge: u32
     (new_w & !1, new_h & !1)
 }
 
-/// Clamp a `TargetResolution::Fixed` target to the native capture dimensions
-/// on each axis (`min(target, native)`) so neither axis can ever upscale.
-pub(crate) fn clamp_target_to_native(
-    target: TargetResolution,
-    native_w: u32,
-    native_h: u32,
-) -> TargetResolution {
-    match target {
-        TargetResolution::Native => TargetResolution::Native,
-        TargetResolution::Fixed { width, height } => {
-            if width == 0 || height == 0 || native_w == 0 || native_h == 0 {
-                TargetResolution::Native
-            } else {
-                let w = width.min(native_w);
-                let h = height.min(native_h);
-                if (w, h) == (native_w, native_h) {
-                    TargetResolution::Native
-                } else {
-                    TargetResolution::Fixed {
-                        width: w,
-                        height: h,
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Returns `Some((target_w, target_h))` when the first captured frame's
 /// dimensions (`frame_dims`) do not match the effective dimensions of
 /// `current_target` after the initial encoder open — either because
@@ -12033,8 +12005,8 @@ pub(crate) fn first_frame_in_place_rebuild_dims(
     frame_dims: (u32, u32),
     current_target: TargetResolution,
 ) -> Option<(u32, u32)> {
-    let clamped = clamp_target_to_native(current_target, frame_dims.0, frame_dims.1);
-    let (tw, th) = crate::encode::resample::target_dims(frame_dims, clamped);
+    let resolved = resolve_user_box(current_target, frame_dims.0, frame_dims.1);
+    let (tw, th) = crate::encode::resample::target_dims(frame_dims, resolved);
     if (tw, th) != frame_dims {
         Some((tw, th))
     } else {
@@ -12063,10 +12035,6 @@ pub(crate) fn first_frame_in_place_rebuild_dims(
 /// Snapping to Native keeps the chain 1:1 (crisp) whenever the request
 /// is within ~15% of the source. Env `MESHHARBORD_SNAP_NATIVE_PCT`
 /// (percent, default 85; `0` disables snapping).
-#[cfg_attr(
-    not(any(feature = "vp9-444", feature = "ffmpeg-encoder")),
-    allow(dead_code)
-)]
 fn snap_native_scale() -> f32 {
     let pct = tunnel_core::env::node_env("SNAP_NATIVE_PCT")
         .and_then(|v| v.trim().parse::<u32>().ok())
@@ -12086,10 +12054,6 @@ fn snap_native_scale() -> f32 {
 /// * Near-native mush — when the uniform scale lands ≥ `snap_native_scale`,
 ///   return Native instead: a 0.87× box resample destroys ClearType text for
 ///   a ~13% pixel saving nobody asked for.
-#[cfg_attr(
-    not(any(feature = "vp9-444", feature = "ffmpeg-encoder")),
-    allow(dead_code)
-)]
 pub(crate) fn resolve_user_box(
     user: TargetResolution,
     native_w: u32,
@@ -15973,53 +15937,6 @@ mod tests {
     }
 
     #[test]
-    fn clamp_target_to_native_never_upscales_either_axis() {
-        assert_eq!(
-            super::clamp_target_to_native(TR::Native, 1920, 1200),
-            TR::Native
-        );
-        assert_eq!(
-            super::clamp_target_to_native(
-                TR::Fixed {
-                    width: 1256,
-                    height: 720,
-                },
-                1920,
-                1200,
-            ),
-            TR::Fixed {
-                width: 1256,
-                height: 720,
-            }
-        );
-        assert_eq!(
-            super::clamp_target_to_native(
-                TR::Fixed {
-                    width: 2536,
-                    height: 1520,
-                },
-                1920,
-                1200,
-            ),
-            TR::Native
-        );
-        assert_eq!(
-            super::clamp_target_to_native(
-                TR::Fixed {
-                    width: 2536,
-                    height: 1000,
-                },
-                1920,
-                1200,
-            ),
-            TR::Fixed {
-                width: 1920,
-                height: 1000,
-            }
-        );
-    }
-
-    #[test]
     fn first_frame_in_place_rebuild_dims_catches_auto_downscale_and_rc_resolution_race() {
         // Native stays at frame dims -> no in-place rebuild.
         assert_eq!(
@@ -16037,32 +15954,33 @@ mod tests {
             ),
             Some((1280, 800))
         );
-        // Controller `rc:resolution` (`fit` 1256x720) arrived while `open_for_codec` ran on
-        // the 1920x1200 Frame 1 -> rebuilds Frame 1 in-place at 1256x720 instead of shipping
-        // Frame 1 at 1920x1200.
+        // Controller `rc:resolution` (`fit` 946x678 stage on 1920x1200 source) arrived while
+        // `open_for_codec` ran on the 1920x1200 Frame 1 -> `resolve_user_box` preserves the
+        // 16:10 aspect ratio at 946x590 and rebuilds Frame 1 in-place.
         assert_eq!(
             super::first_frame_in_place_rebuild_dims(
                 (1920, 1200),
                 TR::Fixed {
-                    width: 1256,
-                    height: 720,
+                    width: 946,
+                    height: 678,
                 },
             ),
-            Some((1256, 720))
+            Some((946, 590))
         );
         // Controller `rc:resolution` arrived BEFORE Frame 1 was resampled, so Frame 1 is
-        // already 1256x720 -> no redundant second rebuild.
+        // already at the aspect-preserved 946x590 -> no redundant second rebuild.
         assert_eq!(
             super::first_frame_in_place_rebuild_dims(
-                (1256, 720),
+                (946, 590),
                 TR::Fixed {
-                    width: 1256,
-                    height: 720,
+                    width: 946,
+                    height: 678,
                 },
             ),
             None
         );
-        // Large-viewport `fit` (2536x1520 >= 1920x1200) -> clamps to native (1920x1200),
+        // Near-native `fit` (1720x1080 on 1920x1200, scale >= 0.85) or large-viewport `fit`
+        // (2536x1520 >= 1920x1200) -> `resolve_user_box` snaps/clamps to native (1920x1200),
         // no rebuild needed.
         assert_eq!(
             super::first_frame_in_place_rebuild_dims(
