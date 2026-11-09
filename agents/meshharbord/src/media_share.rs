@@ -841,29 +841,14 @@ fn spawn_follower_chunker(
 /// The smaller (more conservative) of two resolution dials by target area;
 /// `Native` imposes no constraint.
 fn smaller_target(a: TargetResolution, b: TargetResolution) -> TargetResolution {
-    match (a, b) {
-        (TargetResolution::Native, other) => other,
-        (me, TargetResolution::Native) => me,
-        (
-            TargetResolution::Fixed {
-                width: aw,
-                height: ah,
-            },
-            TargetResolution::Fixed {
-                width: bw,
-                height: bh,
-            },
-        ) => {
+    match (a.fixed_dims(), b.fixed_dims()) {
+        (None, _) => b,
+        (_, None) => a,
+        (Some((aw, ah)), Some((bw, bh))) => {
             if (bw as u64 * bh as u64) < (aw as u64 * ah as u64) {
-                TargetResolution::Fixed {
-                    width: bw,
-                    height: bh,
-                }
+                b
             } else {
-                TargetResolution::Fixed {
-                    width: aw,
-                    height: ah,
-                }
+                a
             }
         }
     }

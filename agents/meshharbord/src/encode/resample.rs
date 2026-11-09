@@ -408,9 +408,9 @@ fn downscale_bgra_box(
 /// below must agree; `target_dims_agrees_with_apply` locks them.
 #[cfg_attr(not(feature = "ffmpeg-encoder"), allow(dead_code))]
 pub(crate) fn target_dims(native: (u32, u32), target: TargetResolution) -> (u32, u32) {
-    match target {
-        TargetResolution::Native => native,
-        TargetResolution::Fixed { width, height } => {
+    match target.fixed_dims() {
+        None => native,
+        Some((width, height)) => {
             if (width >= native.0 && height >= native.1) || width == 0 || height == 0 {
                 native
             } else {
@@ -439,9 +439,8 @@ pub(crate) fn apply_target_resolution(
     frame: Arc<Frame>,
     target: TargetResolution,
 ) -> Arc<Frame> {
-    let (tw, th) = match target {
-        TargetResolution::Native => return frame,
-        TargetResolution::Fixed { width, height } => (width, height),
+    let Some((tw, th)) = target.fixed_dims() else {
+        return frame;
     };
     if tw >= frame.width && th >= frame.height {
         // Cap at native — don't upscale.

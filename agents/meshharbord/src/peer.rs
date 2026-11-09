@@ -191,11 +191,23 @@ mod quality {
 pub(crate) enum TargetResolution {
     /// Agent picks — whatever the capture backend produces natively.
     Native,
-    /// Controller-specified target. Downscale native → (w, h) before
-    /// encode. Upscaling is a no-op: we cap at native so an over-large
-    /// request (Fit mode on a viewport bigger than the source) doesn't
-    /// waste encoder budget on upsampled pixels.
+    /// Controller `fit` mode — aspect-preserving bounding box against the
+    /// native frame that also respects the software encoder long-edge cap
+    /// (`<= 1280` on H.264 SW above 720p, `<= 1920` on heavy SW above 1080p).
+    Fit { width: u32, height: u32 },
+    /// Explicit controller `custom` target (or agent auto-downscale preset).
+    /// Downscale native → aspect-preserved `(w, h)` before encode; not clamped
+    /// by the software encoder `fit` cap.
     Fixed { width: u32, height: u32 },
+}
+
+impl TargetResolution {
+    pub(crate) const fn fixed_dims(self) -> Option<(u32, u32)> {
+        match self {
+            Self::Native => None,
+            Self::Fit { width, height } | Self::Fixed { width, height } => Some((width, height)),
+        }
+    }
 }
 
 /// Pick the capture downscale policy consistent with an encoder
@@ -3550,10 +3562,14 @@ async fn media_pump(
             pack_dims(native_dims.0, native_dims.1),
             std::sync::atomic::Ordering::Relaxed,
         );
-        let effective_target = resolve_user_box(
+        let backend_is_sw = encoder.as_ref().is_some_and(|e| !e.is_hardware());
+        let sw_cap_long_edge =
+            rtp_sw_cap_long_edge(backend_is_sw, &chosen_codec, native_dims.0, native_dims.1);
+        let effective_target = resolve_rtp_target_resolution(
             *target_resolution.lock().unwrap(),
             native_dims.0,
             native_dims.1,
+            sw_cap_long_edge,
         );
         let frame = crate::encode::resample::apply_target_resolution(
             &mut resampler,
@@ -3710,14 +3726,15 @@ async fn media_pump(
                 // target (see module-scope `aspect_preserved_target`;
                 // hoisted in rc.190 so the DC pumps' resolution caps
                 // share the exact same math).
-                let heavy_codec = chosen_codec == "h265" || chosen_codec == "av1";
-                let h264 = chosen_codec == "h264";
-                let above_1080p =
-                    (frame.width as u64) * (frame.height as u64) > (1920u64 * 1080u64);
-                let above_720p = (frame.width as u64) * (frame.height as u64) > (1280u64 * 720u64);
+                let sw_cap_long_edge = rtp_sw_cap_long_edge(
+                    backend_is_sw,
+                    &chosen_codec,
+                    native_dims.0,
+                    native_dims.1,
+                );
                 let mut auto_downscale_just_fired = false;
-                if backend_is_sw && heavy_codec && above_1080p {
-                    let (tw, th) = aspect_preserved_target(frame.width, frame.height, 1920);
+                if let Some(cap) = sw_cap_long_edge {
+                    let (tw, th) = aspect_preserved_target(frame.width, frame.height, cap);
                     let mut guard = target_resolution.lock().unwrap();
                     if matches!(*guard, TargetResolution::Native) {
                         *guard = TargetResolution::Fixed {
@@ -3725,36 +3742,29 @@ async fn media_pump(
                             height: th,
                         };
                         auto_downscale_just_fired = true;
-                        tracing::warn!(
-                            %session_id,
-                            native_w = frame.width,
-                            native_h = frame.height,
-                            target_w = tw,
-                            target_h = th,
-                            codec = %chosen_codec,
-                            encoder = enc_ref.name(),
-                            "auto-downscale: SW heavy codec on high-res source — capping capture at aspect-preserved ≤1920 long-edge to preserve fps. Operator can override via rc:resolution."
-                        );
-                    }
-                } else if backend_is_sw && h264 && above_720p {
-                    let (tw, th) = aspect_preserved_target(frame.width, frame.height, 1280);
-                    let mut guard = target_resolution.lock().unwrap();
-                    if matches!(*guard, TargetResolution::Native) {
-                        *guard = TargetResolution::Fixed {
-                            width: tw,
-                            height: th,
-                        };
-                        auto_downscale_just_fired = true;
-                        tracing::warn!(
-                            %session_id,
-                            native_w = frame.width,
-                            native_h = frame.height,
-                            target_w = tw,
-                            target_h = th,
-                            codec = %chosen_codec,
-                            encoder = enc_ref.name(),
-                            "auto-downscale: SW H.264 on high-res source — capping capture at aspect-preserved ≤1280 long-edge so encode stays under the 33 ms 30-fps budget. Operator can override via rc:resolution."
-                        );
+                        if cap >= 1920 {
+                            tracing::warn!(
+                                %session_id,
+                                native_w = frame.width,
+                                native_h = frame.height,
+                                target_w = tw,
+                                target_h = th,
+                                codec = %chosen_codec,
+                                encoder = enc_ref.name(),
+                                "auto-downscale: SW heavy codec on high-res source — capping capture at aspect-preserved ≤1920 long-edge to preserve fps. Operator can override via rc:resolution."
+                            );
+                        } else {
+                            tracing::warn!(
+                                %session_id,
+                                native_w = frame.width,
+                                native_h = frame.height,
+                                target_w = tw,
+                                target_h = th,
+                                codec = %chosen_codec,
+                                encoder = enc_ref.name(),
+                                "auto-downscale: SW H.264 on high-res source — capping capture at aspect-preserved ≤1280 long-edge so encode stays under the 33 ms 30-fps budget. Operator can override via rc:resolution."
+                            );
+                        }
                     }
                 }
 
@@ -3815,16 +3825,22 @@ async fn media_pump(
                 // race and a Frame #2 encoder rebuild) WITHOUT discarding
                 // Frame #1 and waiting an extra capture cycle (~50-100 ms).
                 let current_target = *target_resolution.lock().unwrap();
-                if let Some((target_w, target_h)) =
-                    first_frame_in_place_rebuild_dims((frame.width, frame.height), current_target)
-                {
+                if let Some((target_w, target_h)) = first_frame_in_place_rebuild_dims(
+                    (frame.width, frame.height),
+                    current_target,
+                    sw_cap_long_edge,
+                ) {
                     let rebuild_reason = if auto_downscale_just_fired {
                         "auto-downscale"
                     } else {
                         "rc:resolution"
                     };
-                    let resolved_target =
-                        resolve_user_box(current_target, frame.width, frame.height);
+                    let resolved_target = resolve_rtp_target_resolution(
+                        current_target,
+                        frame.width,
+                        frame.height,
+                        sw_cap_long_edge,
+                    );
                     frame = crate::encode::resample::apply_target_resolution(
                         &mut resampler,
                         frame,
@@ -5178,10 +5194,7 @@ async fn media_pump_vp9_444_dc(
         // Phase B — hand the effective box to the capture backend so a
         // GPU-capable one can scale BEFORE the readback (applies from the
         // next frame; the CPU resample below stays the fallback + truth).
-        let backend_cap = match effective_target {
-            TargetResolution::Native => None,
-            TargetResolution::Fixed { width, height } => Some((width, height)),
-        };
+        let backend_cap = effective_target.fixed_dims();
         if backend_cap != last_output_cap {
             last_output_cap = backend_cap;
             capturer.set_output_cap(backend_cap);
@@ -9081,10 +9094,7 @@ async fn media_pump_ffmpeg_dc(
         // spawned on this pass, so the capturer never moves ahead of the
         // live encoder. A cap change leaves a frame or two in flight at the
         // old dims; the stale-frame skip below absorbs them.
-        let backend_cap = match effective_target {
-            TargetResolution::Native => None,
-            TargetResolution::Fixed { width, height } => Some((width, height)),
-        };
+        let backend_cap = effective_target.fixed_dims();
         if backend_cap != last_output_cap {
             last_output_cap = backend_cap;
             capturer.set_output_cap(backend_cap);
@@ -11474,9 +11484,16 @@ fn attach_control_handler(
                                     "control: rc:resolution rounded to even dims"
                                 );
                             }
-                            TargetResolution::Fixed {
-                                width: w,
-                                height: h,
+                            if mode == "fit" {
+                                TargetResolution::Fit {
+                                    width: w,
+                                    height: h,
+                                }
+                            } else {
+                                TargetResolution::Fixed {
+                                    width: w,
+                                    height: h,
+                                }
                             }
                         }
                         other => {
@@ -11994,18 +12011,79 @@ pub(crate) fn aspect_preserved_target(src_w: u32, src_h: u32, cap_long_edge: u32
     (new_w & !1, new_h & !1)
 }
 
+/// Software encoder long-edge cap for the RTP media pump (`Some(1920)` for SW
+/// HEVC/AV1 above 1080p, `Some(1280)` for SW H.264 above 720p, `None` for
+/// hardware encoders or small sources).
+pub(crate) fn rtp_sw_cap_long_edge(
+    backend_is_sw: bool,
+    chosen_codec: &str,
+    native_w: u32,
+    native_h: u32,
+) -> Option<u32> {
+    if !backend_is_sw {
+        return None;
+    }
+    let area = (native_w as u64) * (native_h as u64);
+    if (chosen_codec == "h265" || chosen_codec == "av1") && area > 1920 * 1080 {
+        Some(1920)
+    } else if chosen_codec == "h264" && area > 1280 * 720 {
+        Some(1280)
+    } else {
+        None
+    }
+}
+
+/// Resolve the controller's target resolution for the RTP media pump:
+/// 1. Resolve `Fit` / `Fixed` as an aspect-preserving bounding box against
+///    `(native_w, native_h)` via [`resolve_user_box`] (with near-native snap).
+/// 2. When `user` is `TargetResolution::Fit` and `sw_cap_long_edge` is active
+///    (software encoder on a source above the threshold), clamp the resolved
+///    dimensions so the long edge does not exceed `sw_cap_long_edge` while
+///    preserving aspect ratio. Explicit user choices (`Native` = `original`,
+///    `Fixed` = `custom`) and hardware encoders (`sw_cap_long_edge = None`)
+///    are unaffected.
+pub(crate) fn resolve_rtp_target_resolution(
+    user: TargetResolution,
+    native_w: u32,
+    native_h: u32,
+    sw_cap_long_edge: Option<u32>,
+) -> TargetResolution {
+    let boxed = resolve_user_box(user, native_w, native_h);
+    if !matches!(user, TargetResolution::Fit { .. }) {
+        return boxed;
+    }
+    let Some(cap) = sw_cap_long_edge else {
+        return boxed;
+    };
+    let (bw, bh) = crate::encode::resample::target_dims((native_w, native_h), boxed);
+    if bw.max(bh) <= cap {
+        return boxed;
+    }
+    let (cw, ch) = aspect_preserved_target(native_w, native_h, cap);
+    if (cw, ch) == (native_w, native_h) {
+        TargetResolution::Native
+    } else {
+        TargetResolution::Fixed {
+            width: cw,
+            height: ch,
+        }
+    }
+}
+
 /// Returns `Some((target_w, target_h))` when the first captured frame's
 /// dimensions (`frame_dims`) do not match the effective dimensions of
 /// `current_target` after the initial encoder open — either because
 /// `auto-downscale` just changed `target_resolution` from `Native` to
 /// `Fixed`, or because a controller `rc:resolution` (`fit`/`custom`) arrived
 /// on the control DataChannel while `encode::open_for_codec` was running and
-/// set a `Fixed` target smaller than `frame_dims`.
+/// resolved (including any SW `fit` cap) to dimensions smaller than `frame_dims`.
 pub(crate) fn first_frame_in_place_rebuild_dims(
     frame_dims: (u32, u32),
     current_target: TargetResolution,
+    sw_cap_long_edge: Option<u32>,
 ) -> Option<(u32, u32)> {
-    let resolved = resolve_user_box(current_target, frame_dims.0, frame_dims.1);
+    let resolved =
+        resolve_rtp_target_resolution(current_target, frame_dims.0, frame_dims.1, sw_cap_long_edge);
     let (tw, th) = crate::encode::resample::target_dims(frame_dims, resolved);
     if (tw, th) != frame_dims {
         Some((tw, th))
@@ -12042,10 +12120,10 @@ fn snap_native_scale() -> f32 {
     (pct.min(100) as f32) / 100.0
 }
 
-/// rc.191 — resolve a controller `Fixed{w,h}` request as an ASPECT-PRESERVING
-/// bounding box against the native frame: scale the source uniformly by
-/// `min(box_w/native_w, box_h/native_h, 1.0)` and even-align. Two field bugs
-/// this kills (2026-07-16):
+/// rc.191 — resolve a controller `Fit{w,h}` / `Fixed{w,h}` request as an
+/// ASPECT-PRESERVING bounding box against the native frame: scale the source
+/// uniformly by `min(box_w/native_w, box_h/native_h, 1.0)` and even-align.
+/// Two field bugs this kills (2026-07-16):
 ///
 /// * Distortion — `apply_target_resolution` scaled to the EXACT requested
 ///   dims, so a Fit request shaped like the viewer's stage (e.g. 1672×818)
@@ -12059,7 +12137,7 @@ pub(crate) fn resolve_user_box(
     native_w: u32,
     native_h: u32,
 ) -> TargetResolution {
-    let TargetResolution::Fixed { width, height } = user else {
+    let Some((width, height)) = user.fixed_dims() else {
         return TargetResolution::Native;
     };
     if width == 0 || height == 0 || native_w == 0 || native_h == 0 {
@@ -12097,12 +12175,28 @@ pub(crate) fn effective_target_resolution(
     hard_cap_long_edge: Option<u32>,
     soft_cap_long_edge: Option<u32>,
 ) -> TargetResolution {
+    let is_fit = matches!(user, TargetResolution::Fit { .. });
     // rc.191 — controller boxes become aspect-preserving targets (with the
     // near-native snap) BEFORE the cap tiers compose.
     let user = resolve_user_box(user, native_w, native_h);
-    // Soft tier: only fills in for an absent controller preference.
+    // Soft tier: fills in for an absent controller preference (Native) and
+    // clamps Fit mode to the SW encoder speed cap, while explicit Custom
+    // (Fixed) overrides win.
     let mut effective = match (user, soft_cap_long_edge) {
         (TargetResolution::Native, Some(cap)) => {
+            let (w, h) = aspect_preserved_target(native_w, native_h, cap);
+            if (w, h) == (native_w, native_h) {
+                TargetResolution::Native
+            } else {
+                TargetResolution::Fixed {
+                    width: w,
+                    height: h,
+                }
+            }
+        }
+        (TargetResolution::Fixed { width, height }, Some(cap))
+            if is_fit && width.max(height) > cap =>
+        {
             let (w, h) = aspect_preserved_target(native_w, native_h, cap);
             if (w, h) == (native_w, native_h) {
                 TargetResolution::Native
@@ -12120,9 +12214,9 @@ pub(crate) fn effective_target_resolution(
         let (cw, ch) = aspect_preserved_target(native_w, native_h, cap);
         if (cw, ch) != (native_w, native_h) {
             let cap_area = (cw as u64) * (ch as u64);
-            let keep = match effective {
-                TargetResolution::Native => false,
-                TargetResolution::Fixed { width, height } => {
+            let keep = match effective.fixed_dims() {
+                None => false,
+                Some((width, height)) => {
                     // apply_target_resolution caps Fixed at native, so
                     // compare the POST-clamP area, not the raw request —
                     // an oversized Fit request (bigger than native) is
@@ -15940,7 +16034,7 @@ mod tests {
     fn first_frame_in_place_rebuild_dims_catches_auto_downscale_and_rc_resolution_race() {
         // Native stays at frame dims -> no in-place rebuild.
         assert_eq!(
-            super::first_frame_in_place_rebuild_dims((1920, 1200), TR::Native),
+            super::first_frame_in_place_rebuild_dims((1920, 1200), TR::Native, Some(1280)),
             None
         );
         // Auto-downscale (1920x1200 -> 1280x800) -> rebuilds Frame 1 in-place at 1280x800.
@@ -15951,6 +16045,7 @@ mod tests {
                     width: 1280,
                     height: 800,
                 },
+                Some(1280),
             ),
             Some((1280, 800))
         );
@@ -15960,10 +16055,11 @@ mod tests {
         assert_eq!(
             super::first_frame_in_place_rebuild_dims(
                 (1920, 1200),
-                TR::Fixed {
+                TR::Fit {
                     width: 946,
                     height: 678,
                 },
+                Some(1280),
             ),
             Some((946, 590))
         );
@@ -15972,25 +16068,154 @@ mod tests {
         assert_eq!(
             super::first_frame_in_place_rebuild_dims(
                 (946, 590),
-                TR::Fixed {
+                TR::Fit {
                     width: 946,
                     height: 678,
                 },
+                Some(1280),
             ),
             None
         );
-        // Near-native `fit` (1720x1080 on 1920x1200, scale >= 0.85) or large-viewport `fit`
-        // (2536x1520 >= 1920x1200) -> `resolve_user_box` snaps/clamps to native (1920x1200),
-        // no rebuild needed.
+        // Large-viewport `fit` (2536x1520 >= 1920x1200):
+        // - on HW (`sw_cap_long_edge = None`), snaps/clamps to native (1920x1200) -> None;
+        // - on SW (`sw_cap_long_edge = Some(1280)`), capped to 1280x800 -> Some((1280, 800)).
         assert_eq!(
             super::first_frame_in_place_rebuild_dims(
                 (1920, 1200),
-                TR::Fixed {
+                TR::Fit {
                     width: 2536,
                     height: 1520,
                 },
+                None,
             ),
             None
+        );
+        assert_eq!(
+            super::first_frame_in_place_rebuild_dims(
+                (1920, 1200),
+                TR::Fit {
+                    width: 2536,
+                    height: 1520,
+                },
+                Some(1280),
+            ),
+            Some((1280, 800))
+        );
+    }
+
+    #[test]
+    fn rtp_sw_cap_enforces_1280_on_fit_only_and_leaves_original_custom_hw_unclamped() {
+        assert_eq!(
+            super::rtp_sw_cap_long_edge(true, "h264", 1920, 1200),
+            Some(1280)
+        );
+        assert_eq!(super::rtp_sw_cap_long_edge(true, "h264", 1280, 720), None);
+        assert_eq!(
+            super::rtp_sw_cap_long_edge(true, "h265", 3840, 2160),
+            Some(1920)
+        );
+        assert_eq!(super::rtp_sw_cap_long_edge(false, "h264", 1920, 1200), None);
+
+        let sw_cap = super::rtp_sw_cap_long_edge(true, "h264", 1920, 1200);
+        // 1. Small viewport fit (1280x800 viewport -> 946x678 stage on 1920x1200):
+        //    aspect-preserved 946x590 is already <= 1280.
+        assert_eq!(
+            super::resolve_rtp_target_resolution(
+                TR::Fit {
+                    width: 946,
+                    height: 678,
+                },
+                1920,
+                1200,
+                sw_cap,
+            ),
+            TR::Fixed {
+                width: 946,
+                height: 590,
+            }
+        );
+        // 2. Medium viewport fit (1920x1080 viewport -> 1586x958 stage on 1920x1200):
+        //    resolve_user_box gives 1532x958 (> 1280), so SW cap clamps to 1280x800;
+        //    on HW (`None`), stays 1532x958.
+        assert_eq!(
+            super::resolve_rtp_target_resolution(
+                TR::Fit {
+                    width: 1586,
+                    height: 958,
+                },
+                1920,
+                1200,
+                sw_cap,
+            ),
+            TR::Fixed {
+                width: 1280,
+                height: 800,
+            }
+        );
+        assert_eq!(
+            super::resolve_rtp_target_resolution(
+                TR::Fit {
+                    width: 1586,
+                    height: 958,
+                },
+                1920,
+                1200,
+                None,
+            ),
+            TR::Fixed {
+                width: 1532,
+                height: 958,
+            }
+        );
+        // 3. Large viewport fit (2560x1600 viewport -> 2226x1478 stage on 1920x1200):
+        //    resolve_user_box snaps to Native (1920x1200), SW cap clamps to 1280x800;
+        //    on HW (`None`), stays Native (1920x1200).
+        assert_eq!(
+            super::resolve_rtp_target_resolution(
+                TR::Fit {
+                    width: 2226,
+                    height: 1478,
+                },
+                1920,
+                1200,
+                sw_cap,
+            ),
+            TR::Fixed {
+                width: 1280,
+                height: 800,
+            }
+        );
+        assert_eq!(
+            super::resolve_rtp_target_resolution(
+                TR::Fit {
+                    width: 2226,
+                    height: 1478,
+                },
+                1920,
+                1200,
+                None,
+            ),
+            TR::Native
+        );
+        // 4. Explicit `original` (`Native`) and `custom` (`Fixed`) bypass the SW fit cap.
+        assert_eq!(
+            super::resolve_rtp_target_resolution(TR::Native, 1920, 1200, sw_cap),
+            TR::Native
+        );
+        assert_eq!(
+            super::resolve_rtp_target_resolution(
+                TR::Fixed {
+                    width: 1536,
+                    height: 960,
+                },
+                1920,
+                1200,
+                sw_cap,
+            ),
+            TR::Fixed {
+                width: 1536,
+                height: 960,
+            }
         );
     }
 
