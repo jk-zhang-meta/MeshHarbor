@@ -47,10 +47,11 @@ use windows::Win32::Media::MediaFoundation::{
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::core::Interface;
 
-use super::adapter::{create_d3d11_device_on, enumerate_adapters};
+use super::adapter::{AdapterInfo, create_d3d11_device_on, enumerate_adapters};
 use super::create_d3d11_device_and_manager;
 use super::probe::probe_pipeline;
 use super::sync_pipeline::{MfPipeline, OutputCodec};
+use crate::encode::caps::MfCascadeWinner;
 
 /// Cascade error classifier. Each variant maps to a specific caller
 /// action: `AsyncRequired` routes to the async pipeline (1A.2),
@@ -198,16 +199,141 @@ pub(super) fn activate_and_probe_pipeline_for_codec(
     width: u32,
     height: u32,
 ) -> Result<MfPipeline> {
+    let deny = crate::encode::cells::denied_cells();
+    if crate::encode::caps::mf_codec_denied(&deny, codec.backend_name()) {
+        return Err(anyhow!(
+            "mf-encoder: {} is on the device denylist (encoder_cells_deny)",
+            codec.backend_name()
+        ));
+    }
+
     let adapters = enumerate_adapters().unwrap_or_else(|e| {
         tracing::warn!(%e, codec = codec.backend_name(), "mf-encoder: enumerate_adapters failed — cascade skips HW path");
         Vec::new()
     });
-    let candidates = match codec {
+    let adapter_keys: Vec<String> = adapters
+        .iter()
+        .map(|a| {
+            format!(
+                "{}:{:#x}:{:#x}:{:#x}",
+                a.description, a.vendor_id, a.device_id, a.luid
+            )
+        })
+        .collect();
+    let session_id = crate::encode::caps::current_windows_session_id();
+    let now_unix = crate::encode::caps_cache::now_unix();
+    let cached = crate::encode::caps::cached_mf_winner(codec.backend_name());
+
+    let (pipeline, _reused) = crate::encode::caps::open_with_cached_mf_winner(
+        cached.as_ref(),
+        session_id,
+        &adapter_keys,
+        now_unix,
+        &deny,
+        |winner| try_open_cached_winner(winner, &adapters, codec, width, height),
+        || {
+            run_full_cascade(
+                &adapters,
+                &adapter_keys,
+                session_id,
+                &deny,
+                codec,
+                width,
+                height,
+            )
+        },
+    )?;
+    Ok(pipeline)
+}
+
+fn enumerate_mfts_for_codec(codec: OutputCodec) -> Result<Vec<HwMftCandidate>> {
+    match codec {
         OutputCodec::H264 => enumerate_hw_h264_mfts(),
         OutputCodec::Hevc => enumerate_hw_hevc_mfts(),
         OutputCodec::Av1 => enumerate_hw_av1_mfts(),
     }
-    .unwrap_or_else(|e| {
+}
+
+fn try_open_cached_winner(
+    winner: &MfCascadeWinner,
+    adapters: &[AdapterInfo],
+    codec: OutputCodec,
+    width: u32,
+    height: u32,
+) -> Result<MfPipeline> {
+    if winner.is_hardware() {
+        let adapter_info = adapters
+            .iter()
+            .find(|a| {
+                a.luid == winner.adapter_luid
+                    || (!winner.adapter_desc.is_empty() && a.description == winner.adapter_desc)
+            })
+            .ok_or_else(|| anyhow!("cached MFT adapter not present in current DXGI enumeration"))?;
+        let candidates = enumerate_mfts_for_codec(codec)?;
+        let candidate = candidates
+            .iter()
+            .find(|c| c.friendly_name == winner.mft_name)
+            .ok_or_else(|| anyhow!("cached MFT {} not found", winner.mft_name))?;
+        let (device, manager) = create_d3d11_device_on(&adapter_info.adapter)?;
+        let pipeline = try_activate_and_probe(
+            candidate,
+            &device,
+            &manager,
+            width,
+            height,
+            codec,
+            adapter_info.luid,
+        )
+        .map_err(|e| anyhow!("{e}"))?;
+        if pipeline.backend_kind() != "hw" {
+            return Err(anyhow!(
+                "cached HW MFT {} degraded to backend={}",
+                winner.mft_name,
+                pipeline.backend_kind()
+            ));
+        }
+        tracing::info!(
+            codec = codec.backend_name(),
+            adapter = %adapter_info.description,
+            mft = %candidate.friendly_name,
+            backend = pipeline.backend_kind(),
+            width,
+            height,
+            "mf-encoder: reused cached MFT cascade winner"
+        );
+        return Ok(pipeline);
+    }
+
+    if codec != OutputCodec::H264 {
+        return Err(anyhow!(
+            "cached SW MFT winner unsupported for {}",
+            codec.backend_name()
+        ));
+    }
+
+    let mut pipeline = build_sw_fallback(width, height)?;
+    probe_pipeline(&mut pipeline)?;
+    tracing::info!(
+        codec = codec.backend_name(),
+        mft = %winner.mft_name,
+        backend = pipeline.backend_kind(),
+        width,
+        height,
+        "mf-encoder: reused cached SW fallback MFT winner"
+    );
+    Ok(pipeline)
+}
+
+fn run_full_cascade(
+    adapters: &[AdapterInfo],
+    adapter_keys: &[String],
+    session_id: Option<u32>,
+    deny: &[String],
+    codec: OutputCodec,
+    width: u32,
+    height: u32,
+) -> Result<MfPipeline> {
+    let candidates = enumerate_mfts_for_codec(codec).unwrap_or_else(|e| {
         tracing::warn!(%e, codec = codec.backend_name(), "mf-encoder: enumerate_hw_*_mfts failed — cascade skips HW path");
         Vec::new()
     });
@@ -218,7 +344,7 @@ pub(super) fn activate_and_probe_pipeline_for_codec(
         "mf-encoder: starting probe-and-rollback cascade"
     );
 
-    for adapter_info in &adapters {
+    for adapter_info in adapters {
         let (device, manager) = match create_d3d11_device_on(&adapter_info.adapter) {
             Ok(t) => t,
             Err(e) => {
@@ -234,6 +360,18 @@ pub(super) fn activate_and_probe_pipeline_for_codec(
             }
         };
         for candidate in &candidates {
+            if crate::encode::caps::mf_candidate_denied(
+                deny,
+                codec.backend_name(),
+                &candidate.friendly_name,
+            ) {
+                tracing::info!(
+                    codec = codec.backend_name(),
+                    mft = %candidate.friendly_name,
+                    "mf-encoder: candidate on encoder_cells_deny — skipping"
+                );
+                continue;
+            }
             match try_activate_and_probe(
                 candidate,
                 &device,
@@ -244,12 +382,32 @@ pub(super) fn activate_and_probe_pipeline_for_codec(
                 adapter_info.luid,
             ) {
                 Ok(pipeline) => {
-                    tracing::info!(
-                        codec = codec.backend_name(),
-                        adapter = %adapter_info.description,
-                        mft = %candidate.friendly_name,
-                        "mf-encoder: cascade winner — HW pipeline active"
-                    );
+                    if pipeline.backend_kind() == "hw" {
+                        tracing::info!(
+                            codec = codec.backend_name(),
+                            adapter = %adapter_info.description,
+                            mft = %candidate.friendly_name,
+                            "mf-encoder: cascade winner — HW pipeline active"
+                        );
+                    } else {
+                        tracing::info!(
+                            codec = codec.backend_name(),
+                            adapter = %adapter_info.description,
+                            mft = %candidate.friendly_name,
+                            backend = pipeline.backend_kind(),
+                            "mf-encoder: cascade winner — SW MFT active (D3D manager not supported)"
+                        );
+                    }
+                    crate::encode::caps::record_mf_winner(MfCascadeWinner {
+                        codec: codec.backend_name().to_string(),
+                        adapter_luid: adapter_info.luid,
+                        adapter_desc: adapter_info.description.clone(),
+                        mft_name: candidate.friendly_name.clone(),
+                        backend_kind: pipeline.backend_kind().to_string(),
+                        session_id,
+                        adapters: adapter_keys.to_vec(),
+                        recorded_at_unix: crate::encode::caps_cache::now_unix(),
+                    });
                     return Ok(pipeline);
                 }
                 Err(MfInitError::AsyncRequired) => {
@@ -275,10 +433,30 @@ pub(super) fn activate_and_probe_pipeline_for_codec(
 
     match codec {
         OutputCodec::H264 => {
+            if crate::encode::caps::mf_candidate_denied(
+                deny,
+                codec.backend_name(),
+                "CLSID_MSH264EncoderMFT",
+            ) {
+                return Err(anyhow!(
+                    "mf-encoder: CLSID_MSH264EncoderMFT is on the device denylist"
+                ));
+            }
             tracing::info!(
                 "mf-encoder: no HW candidate succeeded — falling back to SW MFT on default adapter"
             );
-            build_sw_fallback(width, height)
+            let pipeline = build_sw_fallback(width, height)?;
+            crate::encode::caps::record_mf_winner(MfCascadeWinner {
+                codec: codec.backend_name().to_string(),
+                adapter_luid: 0,
+                adapter_desc: String::new(),
+                mft_name: "CLSID_MSH264EncoderMFT".to_string(),
+                backend_kind: pipeline.backend_kind().to_string(),
+                session_id,
+                adapters: adapter_keys.to_vec(),
+                recorded_at_unix: crate::encode::caps_cache::now_unix(),
+            });
+            Ok(pipeline)
         }
         OutputCodec::Hevc => {
             // No CLSID_MSH265EncoderMFT on stock Windows — fail here so

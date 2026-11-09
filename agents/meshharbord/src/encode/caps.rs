@@ -178,6 +178,8 @@ mod child {
         pub(super) caps: AgentCaps,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub(super) vp9_qsv_idr: Option<(bool, bool)>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        pub(super) mf_winners: std::collections::BTreeMap<String, super::MfCascadeWinner>,
     }
 
     /// FR-77 P3c — which phase THIS process was started for.
@@ -487,6 +489,7 @@ mod child {
                 Ok(caps) => ProbeReport {
                     caps,
                     vp9_qsv_idr: None,
+                    mf_winners: std::collections::BTreeMap::new(),
                 },
                 Err(_) => {
                     tracing::warn!(%e, "caps probe: child output was not parseable — no HW advertisement");
@@ -987,6 +990,11 @@ fn cached_or_probed() -> AgentCaps {
     match child::probe() {
         Some(report) => {
             install_vp9_qsv_idr(report.vp9_qsv_idr);
+            install_mf_winners_from_child(
+                &report.mf_winners,
+                current_windows_session_id(),
+                &denied_cells(),
+            );
             if let (Some(key), Some(path)) = (key, path) {
                 if cache::worth_caching(&report.caps) {
                     let file = cache::CacheFile::new(
@@ -1065,6 +1073,269 @@ fn vp9_qsv_idr_verdict() -> Option<(bool, bool)> {
     None
 }
 
+/// Short TTL (10 minutes) for cross-session reuse of a software MFT
+/// (`SwFallback`) cascade winner, so a long-running daemon re-probes the
+/// hardware cascade after a driver recovery or GPU wake.
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+pub(crate) const MF_SW_WINNER_TTL_SECS: u64 = 10 * 60;
+
+/// Cascade winner recorded by `encode::mf::activate` for a given codec
+/// (`"mf-h264"`, `"mf-h265"`, `"mf-av1"`).
+///
+/// - `backend_kind == "hw"`: hardware MFT winner; no TTL, but every reuse
+///   runs a real `probe_pipeline` and falls back to the full cascade on any
+///   failure.
+/// - `backend_kind != "hw"` (`"sw"` / `"sw-pure"`): software MFT fallback;
+///   reusable across sessions only within [`MF_SW_WINNER_TTL_SECS`] AND only
+///   when `session_id` and `adapters` match the current process. A child
+///   `caps-probe` `SwFallback` is installed in the parent only when its
+///   Windows `session_id` matches the parent's `session_id` (so a Session 0
+///   failure can never mask Session 1 hardware).
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct MfCascadeWinner {
+    pub codec: String,
+    pub adapter_luid: u64,
+    pub adapter_desc: String,
+    pub mft_name: String,
+    pub backend_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adapters: Vec<String>,
+    #[serde(default)]
+    pub recorded_at_unix: u64,
+}
+
+impl MfCascadeWinner {
+    #[cfg_attr(
+        not(all(target_os = "windows", feature = "mf-encoder")),
+        allow(dead_code)
+    )]
+    pub fn is_hardware(&self) -> bool {
+        self.backend_kind == "hw"
+    }
+}
+
+static MF_CASCADE_WINNERS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::BTreeMap<String, MfCascadeWinner>>,
+> = std::sync::OnceLock::new();
+
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+fn mf_winners_lock()
+-> &'static std::sync::Mutex<std::collections::BTreeMap<String, MfCascadeWinner>> {
+    MF_CASCADE_WINNERS.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
+}
+
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+pub(crate) fn current_windows_session_id() -> Option<u32> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+        let mut sid: u32 = 0;
+        let ok = unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut sid) };
+        (ok != 0).then_some(sid)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+pub(crate) fn mf_codec_aliases(backend_name: &str) -> &'static [&'static str] {
+    match backend_name {
+        "mf-h264" | "h264" => &["h264_mf", "mf_h264", "mf-h264"],
+        "mf-h265" | "hevc" | "h265" => &["hevc_mf", "h265_mf", "mf_hevc", "mf_h265", "mf-h265"],
+        "mf-av1" | "av1" => &["av1_mf", "mf_av1", "mf-av1"],
+        _ => &[],
+    }
+}
+
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+pub(crate) fn mf_codec_denied(deny: &[String], backend_name: &str) -> bool {
+    mf_codec_aliases(backend_name)
+        .iter()
+        .any(|alias| cell_denied(deny, alias, ChromaFormat::Yuv420))
+}
+
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+pub(crate) fn mf_candidate_denied(deny: &[String], backend_name: &str, mft_name: &str) -> bool {
+    mf_codec_denied(deny, backend_name)
+        || (!mft_name.is_empty() && cell_denied(deny, mft_name, ChromaFormat::Yuv420))
+}
+
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+pub(crate) fn should_install_child_mf_winner(
+    winner: &MfCascadeWinner,
+    parent_session_id: Option<u32>,
+    deny: &[String],
+) -> bool {
+    if mf_candidate_denied(deny, &winner.codec, &winner.mft_name) {
+        return false;
+    }
+    if !winner.is_hardware() {
+        return winner.session_id.is_some() && winner.session_id == parent_session_id;
+    }
+    true
+}
+
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+pub(crate) fn can_reuse_mf_winner(
+    winner: &MfCascadeWinner,
+    current_session_id: Option<u32>,
+    current_adapters: &[String],
+    now_unix: u64,
+    deny: &[String],
+) -> Result<(), &'static str> {
+    if mf_candidate_denied(deny, &winner.codec, &winner.mft_name) {
+        return Err("denylisted");
+    }
+    if !winner.is_hardware() {
+        if winner.session_id.is_none() || winner.session_id != current_session_id {
+            return Err("session_id_mismatch");
+        }
+        if winner.adapters != current_adapters {
+            return Err("adapter_list_changed");
+        }
+        let age_secs = now_unix.saturating_sub(winner.recorded_at_unix);
+        if age_secs > MF_SW_WINNER_TTL_SECS {
+            return Err("ttl_expired");
+        }
+    }
+    Ok(())
+}
+
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+pub(crate) fn open_with_cached_mf_winner<T, E, FOpenWinner, FCascade>(
+    cached: Option<&MfCascadeWinner>,
+    current_session_id: Option<u32>,
+    current_adapters: &[String],
+    now_unix: u64,
+    deny: &[String],
+    open_winner: FOpenWinner,
+    run_cascade: FCascade,
+) -> Result<(T, bool), E>
+where
+    E: std::fmt::Display,
+    FOpenWinner: FnOnce(&MfCascadeWinner) -> Result<T, E>,
+    FCascade: FnOnce() -> Result<T, E>,
+{
+    if let Some(winner) = cached {
+        match can_reuse_mf_winner(winner, current_session_id, current_adapters, now_unix, deny) {
+            Ok(()) => match open_winner(winner) {
+                Ok(pipeline) => return Ok((pipeline, true)),
+                Err(e) => {
+                    tracing::warn!(
+                        codec = %winner.codec,
+                        mft = %winner.mft_name,
+                        backend = %winner.backend_kind,
+                        %e,
+                        "mf-encoder: cached cascade winner failed to open/probe — falling back to full cascade"
+                    );
+                }
+            },
+            Err(reason) => {
+                tracing::info!(
+                    codec = %winner.codec,
+                    mft = %winner.mft_name,
+                    backend = %winner.backend_kind,
+                    reason,
+                    "mf-encoder: cached cascade winner not eligible — running full cascade"
+                );
+            }
+        }
+    }
+    run_cascade().map(|p| (p, false))
+}
+
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+pub(crate) fn cached_mf_winner(codec_backend: &str) -> Option<MfCascadeWinner> {
+    mf_winners_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(codec_backend)
+        .cloned()
+}
+
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+pub(crate) fn record_mf_winner(winner: MfCascadeWinner) {
+    mf_winners_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(winner.codec.clone(), winner);
+}
+
+fn cached_mf_winners_snapshot() -> std::collections::BTreeMap<String, MfCascadeWinner> {
+    mf_winners_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+fn install_mf_winners_from_child(
+    winners: &std::collections::BTreeMap<String, MfCascadeWinner>,
+    parent_session_id: Option<u32>,
+    deny: &[String],
+) {
+    let mut installed_any = false;
+    {
+        let mut map = mf_winners_lock().lock().unwrap_or_else(|e| e.into_inner());
+        for (codec, winner) in winners {
+            if should_install_child_mf_winner(winner, parent_session_id, deny) {
+                map.insert(codec.clone(), winner.clone());
+                installed_any = true;
+            } else {
+                tracing::info!(
+                    codec = %codec,
+                    mft = %winner.mft_name,
+                    backend = %winner.backend_kind,
+                    child_session_id = ?winner.session_id,
+                    parent_session_id = ?parent_session_id,
+                    "caps probe: skipping child MF winner installation (session mismatch or denylisted)"
+                );
+            }
+        }
+    }
+    if installed_any {
+        #[cfg(all(target_os = "windows", feature = "mf-encoder"))]
+        crate::encode::mf::prewarm_mft_enum();
+    }
+}
+
 /// The in-process probe as a report: what the `caps-probe` child computes
 /// and prints, and what a process that IS the child answers directly.
 /// `attempt_444` = false is the BASE phase (FR-77 P3c): every 4:2:0 open
@@ -1075,6 +1346,7 @@ fn in_process_report(attempt_444: bool) -> child::ProbeReport {
     child::ProbeReport {
         caps,
         vp9_qsv_idr: vp9_qsv_idr_verdict(),
+        mf_winners: cached_mf_winners_snapshot(),
     }
 }
 
@@ -1193,13 +1465,15 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
 
     #[cfg(all(target_os = "windows", feature = "mf-encoder"))]
     if run_hw_probes {
+        let mf_deny = denied_cells();
         // H.264: enumeration is sufficient. If any H.264 MFT
         // enumerates the cascade always succeeds (at worst it falls
         // through to the default-adapter SW MFT via
         // CLSID_MSH264EncoderMFT); runtime activation failure would
         // be caught by open_default's triple-fallback (MF → openh264
         // → Noop). No probe needed.
-        if let Ok(adapters) = super::mf::probe_adapter_count()
+        if !mf_codec_denied(&mf_deny, "mf-h264")
+            && let Ok(adapters) = super::mf::probe_adapter_count()
             && adapters > 0
         {
             hw_encoders.push("mf-h264-hw".into());
@@ -1231,7 +1505,8 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
         // fallback-decode. Gate advertising on a successful HW probe;
         // SW-only paths are dropped so H.264 wins negotiation
         // (mediasoup-screenshare-grade quality on iGPU hosts).
-        if let Ok(adapters) = super::mf::probe_hevc_adapter_count()
+        if !mf_codec_denied(&mf_deny, "mf-h265")
+            && let Ok(adapters) = super::mf::probe_hevc_adapter_count()
             && adapters > 0
         {
             let probe = activates(CodecProbe::Hevc);
@@ -1253,7 +1528,8 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
         // (see `Known Issues` in CLAUDE.md). Probe-at-startup
         // filters this out so the agent doesn't advertise a codec
         // it can't actually produce.
-        if let Ok(adapters) = super::mf::probe_av1_adapter_count()
+        if !mf_codec_denied(&mf_deny, "mf-av1")
+            && let Ok(adapters) = super::mf::probe_av1_adapter_count()
             && adapters > 0
         {
             let probe = activates(CodecProbe::Av1);
@@ -3165,6 +3441,7 @@ mod tests {
         let report = child::ProbeReport {
             caps: caps.clone(),
             vp9_qsv_idr: Some((true, false)),
+            mf_winners: std::collections::BTreeMap::new(),
         };
         let line = format!(
             "{}{}",
@@ -3361,6 +3638,7 @@ mod tests {
                 ..AgentCaps::default()
             },
             vp9_qsv_idr: None,
+            mf_winners: std::collections::BTreeMap::new(),
         };
         child::merge_444(
             &mut report,
@@ -3402,10 +3680,230 @@ mod tests {
                 ..AgentCaps::default()
             },
             vp9_qsv_idr: None,
+            mf_winners: std::collections::BTreeMap::new(),
         };
         child::merge_444(&mut qsv, &["hevc_qsv".to_string()]);
         assert_eq!(qsv.caps.hevc_chroma, vec!["yuv420"]);
         assert_eq!(qsv.caps.video_cells[0].chroma, vec!["yuv420", "yuv444"]);
+    }
+
+    #[test]
+    fn mf_cached_winner_open_failure_falls_back_to_full_cascade() {
+        let adapters = vec!["gpu0".to_string(), "gpu1".to_string()];
+        let sw_winner = MfCascadeWinner {
+            codec: "mf-h264".into(),
+            adapter_luid: 0x10,
+            adapter_desc: "Intel(R) Iris(R) Xe Graphics".into(),
+            mft_name: "H264 Encoder MFT".into(),
+            backend_kind: "sw".into(),
+            session_id: Some(1),
+            adapters: adapters.clone(),
+            recorded_at_unix: 1_000,
+        };
+        // Winner opens cleanly -> reused without running cascade.
+        let mut cascade_ran = false;
+        let (out, reused) = open_with_cached_mf_winner(
+            Some(&sw_winner),
+            Some(1),
+            &adapters,
+            1_050,
+            &[],
+            |_| Ok::<_, &'static str>("cached-sw"),
+            || {
+                cascade_ran = true;
+                Ok("full-cascade")
+            },
+        )
+        .unwrap();
+        assert_eq!(out, "cached-sw");
+        assert!(reused);
+        assert!(!cascade_ran);
+
+        // Winner open/probe fails -> falls back to full cascade.
+        let mut cascade_ran = false;
+        let (out, reused) = open_with_cached_mf_winner(
+            Some(&sw_winner),
+            Some(1),
+            &adapters,
+            1_050,
+            &[],
+            |_| Err::<&'static str, &'static str>("probe failed"),
+            || {
+                cascade_ran = true;
+                Ok("full-cascade")
+            },
+        )
+        .unwrap();
+        assert_eq!(out, "full-cascade");
+        assert!(!reused);
+        assert!(cascade_ran);
+
+        // Same for a HW winner whose probe_pipeline fails.
+        let hw_winner = MfCascadeWinner {
+            backend_kind: "hw".into(),
+            mft_name: "NVIDIA H.264 Encoder MFT".into(),
+            ..sw_winner
+        };
+        let mut cascade_ran = false;
+        let (out, reused) = open_with_cached_mf_winner(
+            Some(&hw_winner),
+            Some(1),
+            &adapters,
+            999_999,
+            &[],
+            |_| Err::<&'static str, &'static str>("hw probe failed"),
+            || {
+                cascade_ran = true;
+                Ok("full-cascade-after-hw-fail")
+            },
+        )
+        .unwrap();
+        assert_eq!(out, "full-cascade-after-hw-fail");
+        assert!(!reused);
+        assert!(cascade_ran);
+    }
+
+    #[test]
+    fn mf_sw_winner_ttl_expires_while_hw_winner_does_not() {
+        let adapters = vec!["gpu0".to_string()];
+        let sw_winner = MfCascadeWinner {
+            codec: "mf-h264".into(),
+            adapter_luid: 0,
+            adapter_desc: String::new(),
+            mft_name: "H264 Encoder MFT".into(),
+            backend_kind: "sw".into(),
+            session_id: Some(1),
+            adapters: adapters.clone(),
+            recorded_at_unix: 10_000,
+        };
+        assert_eq!(
+            can_reuse_mf_winner(
+                &sw_winner,
+                Some(1),
+                &adapters,
+                10_000 + MF_SW_WINNER_TTL_SECS,
+                &[]
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            can_reuse_mf_winner(
+                &sw_winner,
+                Some(1),
+                &adapters,
+                10_000 + MF_SW_WINNER_TTL_SECS + 1,
+                &[]
+            ),
+            Err("ttl_expired")
+        );
+        let mut open_called = false;
+        let (out, reused) = open_with_cached_mf_winner(
+            Some(&sw_winner),
+            Some(1),
+            &adapters,
+            10_000 + MF_SW_WINNER_TTL_SECS + 1,
+            &[],
+            |_| {
+                open_called = true;
+                Ok::<_, &'static str>("stale-sw")
+            },
+            || Ok("fresh-cascade"),
+        )
+        .unwrap();
+        assert_eq!(out, "fresh-cascade");
+        assert!(!reused);
+        assert!(!open_called, "expired SW winner must not even be opened");
+
+        // HW winner has no TTL expiry.
+        let hw_winner = MfCascadeWinner {
+            backend_kind: "hw".into(),
+            mft_name: "NVIDIA H.264 Encoder MFT".into(),
+            ..sw_winner
+        };
+        assert_eq!(
+            can_reuse_mf_winner(&hw_winner, Some(1), &adapters, 10_000 + 86_400, &[]),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn mf_sw_winner_requires_matching_session_id_and_adapter_list() {
+        let adapters = vec!["gpu0".to_string(), "gpu1".to_string()];
+        let sw_session0 = MfCascadeWinner {
+            codec: "mf-h264".into(),
+            adapter_luid: 0,
+            adapter_desc: String::new(),
+            mft_name: "H264 Encoder MFT".into(),
+            backend_kind: "sw".into(),
+            session_id: Some(0),
+            adapters: adapters.clone(),
+            recorded_at_unix: 1_000,
+        };
+        // Child `caps-probe` in Session 0 must NOT install SW fallback into Session 1 parent.
+        assert!(!should_install_child_mf_winner(&sw_session0, Some(1), &[]));
+        assert!(!should_install_child_mf_winner(&sw_session0, None, &[]));
+        assert!(should_install_child_mf_winner(&sw_session0, Some(0), &[]));
+
+        // Cross-session reuse with different Windows session ID is rejected.
+        assert_eq!(
+            can_reuse_mf_winner(&sw_session0, Some(1), &adapters, 1_010, &[]),
+            Err("session_id_mismatch")
+        );
+        // Changed adapter list is rejected.
+        let new_adapters = vec!["gpu0".to_string()];
+        assert_eq!(
+            can_reuse_mf_winner(&sw_session0, Some(0), &new_adapters, 1_010, &[]),
+            Err("adapter_list_changed")
+        );
+    }
+
+    #[test]
+    fn mf_cached_winner_honours_encoder_cells_deny() {
+        let adapters = vec!["gpu0".to_string()];
+        let winner = MfCascadeWinner {
+            codec: "mf-h264".into(),
+            adapter_luid: 0x1,
+            adapter_desc: "NVIDIA GeForce RTX 4060 Laptop GPU".into(),
+            mft_name: "NVIDIA H.264 Encoder MFT".into(),
+            backend_kind: "hw".into(),
+            session_id: Some(1),
+            adapters: adapters.clone(),
+            recorded_at_unix: 1_000,
+        };
+        for deny_entry in [
+            "h264_mf:yuv420".to_string(),
+            "mf_h264:yuv420".to_string(),
+            "mf-h264:yuv420".to_string(),
+            "NVIDIA H.264 Encoder MFT:yuv420".to_string(),
+        ] {
+            let deny = vec![deny_entry.clone()];
+            assert!(
+                !should_install_child_mf_winner(&winner, Some(1), &deny),
+                "denylist entry {deny_entry} must block child winner installation"
+            );
+            assert_eq!(
+                can_reuse_mf_winner(&winner, Some(1), &adapters, 1_010, &deny),
+                Err("denylisted"),
+                "denylist entry {deny_entry} must block cached winner reuse"
+            );
+            let mut open_called = false;
+            let (out, reused) = open_with_cached_mf_winner(
+                Some(&winner),
+                Some(1),
+                &adapters,
+                1_010,
+                &deny,
+                |_| {
+                    open_called = true;
+                    Ok::<_, &'static str>("denied-winner")
+                },
+                || Ok("cascade"),
+            )
+            .unwrap();
+            assert_eq!(out, "cascade");
+            assert!(!reused);
+            assert!(!open_called);
+        }
     }
 
     /// FR-77 P3c — the 4:4:4 phase's answer and the progress trail parse; a

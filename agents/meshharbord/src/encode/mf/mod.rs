@@ -105,6 +105,27 @@ pub(crate) fn probe_av1_adapter_count() -> Result<usize> {
     activate::enumerate_hw_av1_mfts().map(|v| v.len())
 }
 
+/// Pre-warm Media Foundation MFT enumeration on a background thread in the
+/// parent daemon process so the one-time Windows MFT DLL load (~1.8 s on
+/// hybrid GPU laptops) finishes during daemon startup rather than blocking
+/// the first remote-control session's first frame.
+pub(crate) fn prewarm_mft_enum() {
+    static PREWARMED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    PREWARMED.get_or_init(|| {
+        let _ = thread::Builder::new()
+            .name("meshharbord-mf-prewarm".to_string())
+            .spawn(|| unsafe {
+                if CoInitializeEx(None, COINIT_MULTITHREADED).is_ok() {
+                    if MFStartup(windows_mf_version(), MFSTARTUP_FULL).is_ok() {
+                        let _ = activate::enumerate_hw_h264_mfts();
+                        let _ = MFShutdown();
+                    }
+                    CoUninitialize();
+                }
+            });
+    });
+}
+
 use sync_pipeline::{MfPipeline, OutputCodec};
 
 /// Public-facing handle. Owns only the command channel; the IMFTransform
