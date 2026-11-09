@@ -405,6 +405,11 @@ enum Command {
         /// reports per-frame `encode_ms` p50/p95).
         #[arg(long)]
         frames: Option<u32>,
+        /// Synthetic pattern for `--frames` bench mode: `moving-block` (default)
+        /// or `high-detail-motion` (scrolling multi-pane text/glyph pattern where
+        /// >90% of pixels change every frame without touching any user screen).
+        #[arg(long, default_value = "moving-block")]
+        pattern: String,
         /// Open the encoder in constrained (relay) mode — the tighter HRD
         /// window a slow-link session runs with (A0).
         #[arg(long)]
@@ -1882,6 +1887,7 @@ async fn daemon_main() -> Result<()> {
             height,
             frames_per_rung,
             frames,
+            pattern,
             constrained,
             json,
         } => {
@@ -1906,6 +1912,7 @@ async fn daemon_main() -> Result<()> {
                     width,
                     height,
                     frames,
+                    &pattern,
                     json,
                 )
                 .await
@@ -5705,6 +5712,92 @@ async fn self_update_cmd(check_only: bool) -> Result<()> {
     }
 }
 
+/// Fill a BGRA frame with a synthetic high-detail continuous-motion multi-pane
+/// text/glyph desktop pattern. Four quadrants scroll at distinct sub-macroblock
+/// velocities while syntax-coloured 8x16 glyph cells and subtle background gradients
+/// advance every frame so >90% of pixels change between consecutive frames without
+/// ever touching or capturing any user screen.
+fn fill_high_detail_motion_frame(data: &mut [u8], w: u32, h: u32, frame_idx: u32) {
+    let half_w = (w / 2).max(1);
+    let half_h = (h / 2).max(1);
+    for y in 0..h {
+        let row_off = (y * w) as usize * 4;
+        let pane_y = if y >= half_h { 2u32 } else { 0u32 };
+        for x in 0..w {
+            let pane = pane_y | if x >= half_w { 1u32 } else { 0u32 };
+            let (sx, sy) = match pane {
+                0 => (
+                    x.wrapping_add(frame_idx.wrapping_mul(3)),
+                    y.wrapping_add(frame_idx.wrapping_mul(7)),
+                ),
+                1 => (
+                    x.wrapping_sub(frame_idx.wrapping_mul(5)),
+                    y.wrapping_add(frame_idx.wrapping_mul(11)),
+                ),
+                2 => (
+                    x.wrapping_add(frame_idx.wrapping_mul(2)),
+                    y.wrapping_sub(frame_idx.wrapping_mul(13)),
+                ),
+                _ => (
+                    x.wrapping_sub(frame_idx.wrapping_mul(7)),
+                    y.wrapping_add(frame_idx.wrapping_mul(5)),
+                ),
+            };
+            let cx = sx >> 3;
+            let cy = sy >> 4;
+            let gx = sx & 7;
+            let gy = sy & 15;
+
+            let line_hash = cy
+                .wrapping_mul(0x85EB_CA6B)
+                .wrapping_add(pane.wrapping_mul(0xC2B2_AE35));
+            let line_len = 16 + ((line_hash >> 8) & 0x3F);
+            let local_col = cx & 0x3F;
+
+            let mut cell_h = cx.wrapping_mul(0x9E37_79B9) ^ line_hash;
+            if ((cx ^ cy) & 7) == 0 {
+                // 1/8 of character cells act as live updating telemetry tokens.
+                cell_h ^= frame_idx.wrapping_mul(0x27D4_EB2F);
+            }
+            cell_h ^= cell_h >> 16;
+            cell_h = cell_h.wrapping_mul(0x7FEB_352D);
+            cell_h ^= cell_h >> 15;
+
+            let is_space = local_col >= line_len || ((cell_h & 7) == 0);
+            let in_glyph_box = !is_space && gx >= 1 && (2..14).contains(&gy);
+            let ink = if in_glyph_box {
+                let row_bits = (cell_h.rotate_left(gy * 3)) ^ gy.wrapping_mul(0x1656_67B1);
+                ((row_bits >> gx) & 1) != 0
+            } else {
+                false
+            };
+
+            let bg_wave = (((sx
+                .wrapping_mul(3)
+                .wrapping_add(sy.wrapping_mul(5))
+                .wrapping_add(frame_idx.wrapping_mul(19)))
+                >> 3)
+                & 0x0F) as u8;
+            let bg_b = 20u8.wrapping_add(bg_wave).wrapping_add((pane as u8) * 4);
+            let bg_g = 24u8.wrapping_add(bg_wave ^ ((frame_idx as u8) & 7));
+            let bg_r = 28u8.wrapping_add((bg_wave >> 1).wrapping_add((cy as u8) & 7));
+
+            let idx = row_off + (x as usize) * 4;
+            if ink {
+                data[idx] = 150u8.wrapping_add(((cell_h >> 8) & 0x67) as u8);
+                data[idx + 1] = 160u8.wrapping_add(((cell_h >> 16) & 0x5F) as u8);
+                data[idx + 2] = 170u8.wrapping_add(((cell_h >> 24) & 0x55) as u8);
+                data[idx + 3] = 255;
+            } else {
+                data[idx] = bg_b;
+                data[idx + 1] = bg_g;
+                data[idx + 2] = bg_r;
+                data[idx + 3] = 255;
+            }
+        }
+    }
+}
+
 /// Open the preferred encoder, feed it 10 synthetic BGRA frames, and
 /// assert at least one keyframe comes out. Used in CI to catch MF init
 /// regressions before shipping an MSI. Exits with a non-zero code on
@@ -5718,6 +5811,7 @@ async fn encoder_smoke_cmd(
     cli_width: u32,
     cli_height: u32,
     cli_frames: Option<u32>,
+    pattern_raw: &str,
     json: bool,
 ) -> Result<()> {
     use meshharbord::encode::{open_default, open_for_codec};
@@ -5759,8 +5853,14 @@ async fn encoder_smoke_cmd(
     let h = if bench_mode { cli_height } else { 480u32 };
     let n_frames = cli_frames.unwrap_or(10).max(1);
     let codec = codec_raw.to_ascii_lowercase();
-    tracing::info!(width = w, height = h, n_frames, ?pref, codec = %codec, "encoder smoke: opening encoder");
+    let pattern = pattern_raw.trim().to_ascii_lowercase();
+    let high_detail_motion = matches!(
+        pattern.as_str(),
+        "high-detail-motion" | "scrolling-text" | "motion"
+    );
+    tracing::info!(width = w, height = h, n_frames, ?pref, codec = %codec, pattern = %pattern, "encoder smoke: opening encoder");
 
+    let t_init = Instant::now();
     // For H.264 keep the historical `open_default` path (preserves
     // logging + behaviour that CI smoke output is pinned to). For any
     // other codec, go through `open_for_codec` which runs the codec-
@@ -5780,8 +5880,9 @@ async fn encoder_smoke_cmd(
         let (e, actual) = open_for_codec(&codec, w, h, pref);
         (e, actual.to_string())
     };
+    let init_ms = t_init.elapsed().as_secs_f64() * 1000.0;
     let backend = enc.name();
-    tracing::info!(backend, actual_codec = %actual_codec, "encoder smoke: backend selected");
+    tracing::info!(backend, actual_codec = %actual_codec, init_ms, "encoder smoke: backend selected");
     if codec != "h264" && actual_codec != codec {
         tracing::warn!(
             requested = %codec,
@@ -5791,6 +5892,7 @@ async fn encoder_smoke_cmd(
     }
 
     let mut keyframes = 0usize;
+    let mut keyframe_packets = 0usize;
     let mut total_bytes = 0usize;
     let mut frame_encode_ms: Vec<f64> = Vec::with_capacity(n_frames as usize);
     let mut frame_is_key: Vec<bool> = Vec::with_capacity(n_frames as usize);
@@ -5798,7 +5900,9 @@ async fn encoder_smoke_cmd(
 
     for i in 0..n_frames {
         let mut data = vec![0u8; (w * h * 4) as usize];
-        if bench_mode {
+        if bench_mode && high_detail_motion {
+            fill_high_detail_motion_frame(&mut data, w, h, i);
+        } else if bench_mode {
             // Deterministic moving-block-over-stripes frame (same content as A0 sweep).
             let bx = ((i * 11) % (w.saturating_sub(200)).max(1)) as usize;
             let by = ((i * 7) % (h.saturating_sub(200)).max(1)) as usize;
@@ -5851,13 +5955,16 @@ async fn encoder_smoke_cmd(
             total_bytes += p.data.len();
             this_bytes += p.data.len();
             if p.is_keyframe {
-                keyframes += 1;
+                keyframe_packets += 1;
                 this_key = true;
             }
             if let Some(f) = dump_file.as_mut() {
                 f.write_all(&p.data)
                     .context("encoder smoke: --dump write failed")?;
             }
+        }
+        if this_key {
+            keyframes += 1;
         }
         frame_encode_ms.push(elapsed_ms);
         frame_is_key.push(this_key);
@@ -5871,7 +5978,13 @@ async fn encoder_smoke_cmd(
             "encoder smoke: bitstream dumped"
         );
     }
-    tracing::info!(backend, keyframes, total_bytes, "encoder smoke: done");
+    tracing::info!(
+        backend,
+        keyframes,
+        keyframe_packets,
+        total_bytes,
+        "encoder smoke: done"
+    );
     if backend == "noop" {
         bail!("encoder smoke: fell through to NoopEncoder — HW and SW backends both failed");
     }
@@ -5908,21 +6021,25 @@ async fn encoder_smoke_cmd(
             .zip(frame_is_key.iter())
             .filter_map(|(&ms, &k)| if !k { Some(ms) } else { None })
             .collect();
+        let bpf_vals: Vec<f64> = frame_bytes_vec.iter().map(|&b| b as f64).collect();
         let (all_n, all_p50, all_p95, all_mean, all_min, all_max) = stats_for(&frame_encode_ms);
         let (idr_n, idr_p50, idr_p95, idr_mean, idr_min, idr_max) = stats_for(&idr_vals);
         let (p_n, p_p50, p_p95, p_mean, p_min, p_max) = stats_for(&p_vals);
+        let (_bpf_n, bpf_p50, bpf_p95, bpf_mean, bpf_min, bpf_max) = stats_for(&bpf_vals);
+        let target_bitrate_bps = meshharbord::encode::initial_bitrate_for(w, h);
+        let effective_bitrate_bps = (total_bytes as f64) * 8.0 * 30.0 / (all_n.max(1) as f64);
         let ms_list: Vec<String> = frame_encode_ms.iter().map(|v| format!("{v:.3}")).collect();
         let key_list: Vec<String> = frame_is_key.iter().map(|k| k.to_string()).collect();
         let bytes_list: Vec<String> = frame_bytes_vec.iter().map(|b| b.to_string()).collect();
         println!(
-            "MESHHARBOR_SMOKE_BENCH_JSON:{{\"backend\":\"{backend}\",\"codec\":\"{actual_codec}\",\"w\":{w},\"h\":{h},\"frames\":{all_n},\"keyframes\":{keyframes},\"total_bytes\":{total_bytes},\"all\":{{\"count\":{all_n},\"p50_ms\":{all_p50:.3},\"p95_ms\":{all_p95:.3},\"mean_ms\":{all_mean:.3},\"min_ms\":{all_min:.3},\"max_ms\":{all_max:.3}}},\"idr\":{{\"count\":{idr_n},\"p50_ms\":{idr_p50:.3},\"p95_ms\":{idr_p95:.3},\"mean_ms\":{idr_mean:.3},\"min_ms\":{idr_min:.3},\"max_ms\":{idr_max:.3}}},\"p\":{{\"count\":{p_n},\"p50_ms\":{p_p50:.3},\"p95_ms\":{p_p95:.3},\"mean_ms\":{p_mean:.3},\"min_ms\":{p_min:.3},\"max_ms\":{p_max:.3}}},\"frame_encode_ms\":[{}],\"frame_is_key\":[{}],\"frame_bytes\":[{}]}}",
+            "MESHHARBOR_SMOKE_BENCH_JSON:{{\"backend\":\"{backend}\",\"codec\":\"{actual_codec}\",\"pattern\":\"{pattern}\",\"w\":{w},\"h\":{h},\"init_ms\":{init_ms:.3},\"target_bitrate_bps\":{target_bitrate_bps},\"effective_bitrate_bps\":{effective_bitrate_bps:.0},\"frames\":{all_n},\"keyframes\":{keyframes},\"keyframe_packets\":{keyframe_packets},\"total_bytes\":{total_bytes},\"bytes_per_frame\":{{\"p50\":{bpf_p50:.1},\"p95\":{bpf_p95:.1},\"mean\":{bpf_mean:.1},\"min\":{bpf_min:.0},\"max\":{bpf_max:.0}}},\"all\":{{\"count\":{all_n},\"p50_ms\":{all_p50:.3},\"p95_ms\":{all_p95:.3},\"mean_ms\":{all_mean:.3},\"min_ms\":{all_min:.3},\"max_ms\":{all_max:.3}}},\"idr\":{{\"count\":{idr_n},\"p50_ms\":{idr_p50:.3},\"p95_ms\":{idr_p95:.3},\"mean_ms\":{idr_mean:.3},\"min_ms\":{idr_min:.3},\"max_ms\":{idr_max:.3}}},\"p\":{{\"count\":{p_n},\"p50_ms\":{p_p50:.3},\"p95_ms\":{p_p95:.3},\"mean_ms\":{p_mean:.3},\"min_ms\":{p_min:.3},\"max_ms\":{p_max:.3}}},\"frame_encode_ms\":[{}],\"frame_is_key\":[{}],\"frame_bytes\":[{}]}}",
             ms_list.join(","),
             key_list.join(","),
             bytes_list.join(",")
         );
     }
     println!(
-        "encoder smoke PASSED: backend={backend} keyframes={keyframes} total_bytes={total_bytes}"
+        "encoder smoke PASSED: backend={backend} keyframes={keyframes} keyframe_packets={keyframe_packets} total_bytes={total_bytes}"
     );
     Ok(())
 }
@@ -7210,6 +7327,25 @@ mod tests {
         // Line 2: restart-service
         let cli = Cli::try_parse_from(["meshharbord", "restart-service"]);
         assert!(cli.is_ok(), "rc.30 snippet line 2 must parse: {cli:?}");
+    }
+
+    #[test]
+    fn high_detail_motion_frame_changes_majority_of_pixels_every_step() {
+        let (w, h) = (320u32, 200u32);
+        let mut f0 = vec![0u8; (w * h * 4) as usize];
+        let mut f1 = vec![0u8; (w * h * 4) as usize];
+        super::fill_high_detail_motion_frame(&mut f0, w, h, 0);
+        super::fill_high_detail_motion_frame(&mut f1, w, h, 1);
+        let changed = f0
+            .chunks_exact(4)
+            .zip(f1.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        let total = (w * h) as usize;
+        assert!(
+            changed * 10 > total * 9,
+            "expected >90% pixels changed between consecutive frames, got {changed}/{total}"
+        );
     }
 
     // ─── rc.52: config-path resolution ladder ──────────────────────────────

@@ -229,7 +229,7 @@ pub(crate) static DENY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(()
     )),
     allow(dead_code)
 )]
-pub(crate) fn initial_bitrate_for(width: u32, height: u32) -> u32 {
+pub fn initial_bitrate_for(width: u32, height: u32) -> u32 {
     initial_bitrate_for_fps(width, height, 30)
 }
 
