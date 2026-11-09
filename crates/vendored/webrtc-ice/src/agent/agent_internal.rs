@@ -50,6 +50,7 @@ pub struct AgentInternal {
     pub(crate) is_controlling: AtomicBool,
     pub(crate) lite: AtomicBool,
     pub(crate) controlled_probe_late_direct: AtomicBool,
+    pub(crate) ip_filter: Arc<Option<IpFilterFn>>,
 
     pub(crate) start_time: SyncMutex<Instant>,
     pub(crate) nominated_pair: Mutex<Option<Arc<CandidatePair>>>,
@@ -123,6 +124,7 @@ impl AgentInternal {
             is_controlling: AtomicBool::new(config.is_controlling),
             lite: AtomicBool::new(config.lite),
             controlled_probe_late_direct: AtomicBool::new(false),
+            ip_filter: Arc::clone(&config.ip_filter),
 
             start_time: SyncMutex::new(Instant::now()),
             nominated_pair: Mutex::new(None),
@@ -553,8 +555,26 @@ impl AgentInternal {
         let _ = self.force_candidate_contact_tx.try_send(true);
     }
 
+    pub(crate) fn allows_remote_ip(&self, ip: std::net::IpAddr) -> bool {
+        match self.ip_filter.as_ref() {
+            Some(filter) => !ip.is_unspecified() && filter(ip),
+            None => true,
+        }
+    }
+
     /// Assumes you are holding the lock (must be execute using a.run).
     pub(crate) async fn add_remote_candidate(&self, c: &Arc<dyn Candidate + Send + Sync>) {
+        let resolved_ip = c.addr().ip();
+        if !self.allows_remote_ip(resolved_ip) {
+            log::info!(
+                "[{}]: remote candidate {} (resolved_ip={}) rejected by ip_filter",
+                self.get_name(),
+                c,
+                resolved_ip
+            );
+            return;
+        }
+
         let network_type = c.network_type();
 
         {
@@ -1007,6 +1027,14 @@ impl AgentInternal {
             }
 
             if remote_candidate.is_none() {
+                if !self.allows_remote_ip(remote.ip()) {
+                    log::info!(
+                        "[{}]: remote peer-reflexive candidate {} rejected by ip_filter",
+                        self.get_name(),
+                        remote
+                    );
+                    return;
+                }
                 let (ip, port, network_type) = (remote.ip(), remote.port(), NetworkType::Udp4);
 
                 let prflx_candidate_config = CandidatePeerReflexiveConfig {

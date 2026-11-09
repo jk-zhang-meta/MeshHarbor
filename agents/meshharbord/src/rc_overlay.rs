@@ -13,7 +13,7 @@
 //! | how the overlay gets in | filter |
 //! |---|---|
 //! | a HOST candidate on the overlay interface — on macOS a kernel-named `utunN` the name rule cannot see | [`RcOverlay::keeps_local`], the `SettingEngine` IP filter |
-//! | a REMOTE candidate on a mesh address, when the controller's browser runs on an overlay node; the agent's srflx and relay sockets are bound to `0.0.0.0`, so a check to it routes into the TUN no matter which candidates the agent offered | [`RcOverlay::keeps_remote_candidate`] on every trickled candidate, [`RcOverlay::strip_sdp`] on the offer |
+//! | a REMOTE candidate on a mesh address, when the controller's browser runs on an overlay node; the agent's srflx and relay sockets are bound to `0.0.0.0`, so a check to it routes into the TUN no matter which candidates the agent offered | [`RcOverlay::keeps_remote_candidate`] on every trickled candidate, [`RcOverlay::strip_sdp`] on the offer, plus the same `SettingEngine` IP filter ([`RcOverlay::keeps_local`]) inside `webrtc-ice` after `.local` mDNS resolution and on inbound `prflx` synthesis |
 //! | an ICE SERVER on a mesh address — the loopback-TURN relay the Hub appends for a corp controller | [`RcOverlay::ice_servers`] (the Hub also withholds it) |
 //!
 //! "Overlay address" is exact: the blocks this daemon's overlay routes
@@ -287,37 +287,114 @@ mod tests {
         assert!(!RcOverlay::default().allow);
     }
 
-    /// Proof test for 16:07 Section 3.1: when `resolve_mdns_candidate` returns
-    /// `None` (OS resolver timeout), `peer.rs:1885-1904` re-runs
-    /// `rc_overlay.keeps_remote_candidate` on the unrewritten `.local` string
-    /// (which returns `true` because `candidate_ip` is `None`) and hands the
-    /// `.local` candidate to `webrtc-ice`. See also
-    /// `mdns_candidate_resolved_to_overlay_ip_bypasses_caller_gate_into_checklist`
-    /// in `crates/vendored/webrtc-ice/src/agent/agent_selector.rs` for the
-    /// downstream `webrtc-ice` checklist proof.
-    #[test]
-    fn mdns_os_timeout_fallback_to_webrtc_ice_bypasses_rc_overlay_gate() {
-        let p = off();
+    /// Locks the post-fix behavior for 18:42 Section 4: when `resolve_mdns_candidate`
+    /// returns `None` (OS resolver timeout after 750 ms), `peer.rs:1885-1904` passes
+    /// the `.local` candidate to `webrtc-ice`, and `webrtc-ice` enforces the
+    /// `SettingEngine` `ip_filter` (`RcOverlay::keeps_local`, which shares the exact
+    /// `!self.blocks(ip)` predicate with `RcOverlay::keeps_remote_candidate`) after
+    /// resolving `.local` and before admitting the remote candidate (or synthesizing
+    /// a `prflx` candidate). When `rc_overlay=off`, overlay-resolved `.local`
+    /// candidates are dropped fail-closed; when `rc_overlay=on`, they are kept.
+    #[tokio::test]
+    async fn mdns_os_timeout_fallback_to_webrtc_ice_bypasses_rc_overlay_gate() {
+        use std::sync::Arc;
+        use webrtc::ice::agent::Agent;
+        use webrtc::ice::agent::agent_config::AgentConfig;
+        use webrtc::ice::candidate::Candidate;
+        use webrtc::ice::candidate::candidate_base::CandidateBaseConfig;
+        use webrtc::ice::candidate::candidate_host::CandidateHostConfig;
+        use webrtc::ice::mdns::MulticastDnsMode;
+        use webrtc::ice::network_type::NetworkType;
+
+        let p_off = off();
         let raw_mdns = "candidate:5 1 udp 2122260223 4a5b6c7d-0000-1111-2222-333344445555.local 54324 typ host";
 
-        // Step 1 (peer.rs:1858): pre-resolution check passes `.local` name
-        // because `candidate_ip` cannot parse `<uuid>.local` as an `IpAddr`.
+        // Step 1: pre-resolution check passes `.local` name so `webrtc-ice` can
+        // resolve it when OS `lookup_host` times out (750 ms).
         assert_eq!(candidate_ip(raw_mdns), None);
-        assert!(p.keeps_remote_candidate(raw_mdns));
+        assert!(p_off.keeps_remote_candidate(raw_mdns));
 
-        // Step 2a (peer.rs:1885-1897 when OS resolution succeeds onto an overlay IP):
-        // `resolve_mdns_candidate` rewrites the address to `100.65.4.33`, and the
-        // second `keeps_remote_candidate` check at peer.rs:1897 drops it (`false`).
-        let rewritten_overlay = "candidate:5 1 udp 2122260223 100.65.4.33 54324 typ host";
-        assert_eq!(candidate_ip(rewritten_overlay), Some(ip("100.65.4.33")));
-        assert!(!p.keeps_remote_candidate(rewritten_overlay));
+        // Step 2 (`rc_overlay=off`): `peer.rs:488` wires `keeps_local` into
+        // `setting.set_ip_filter(...)`, which `webrtc-ice` enforces on remote
+        // candidates after `.local` resolution.
+        let keep_off = p_off.clone();
+        let agent_off = Agent::new(AgentConfig {
+            is_controlling: false,
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            ip_filter: Arc::new(Some(Box::new(move |ip| keep_off.keeps_local(ip)))),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
 
-        // Step 2b (peer.rs:1885-1904 when OS resolution times out -> `None`):
-        // `init.candidate` stays `raw_mdns`, so the second `keeps_remote_candidate`
-        // check at peer.rs:1897 ALSO returns `true` and `pc.add_ice_candidate(init)`
-        // hands the `.local` candidate to `webrtc-ice`, which has no `rc_overlay` gate.
-        let os_resolve_result: Option<String> = None;
-        let candidate_passed_to_second_gate = os_resolve_result.as_deref().unwrap_or(raw_mdns);
-        assert!(p.keeps_remote_candidate(candidate_passed_to_second_gate));
+        let overlay_v4_mdns: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "4a5b6c7d-0000-1111-2222-333344445555.local".into(),
+                    port: 54324,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()
+            .unwrap(),
+        );
+        overlay_v4_mdns.set_ip(&ip("100.65.4.33")).unwrap();
+        assert_eq!(
+            p_off.keeps_local(ip("100.65.4.33")),
+            p_off.keeps_remote_candidate("candidate:5 1 udp 2122260223 100.65.4.33 54324 typ host")
+        );
+        agent_off.add_remote_candidate(&overlay_v4_mdns).unwrap();
+
+        let lan_mdns: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "9b8a7c6d-0000-1111-2222-333344445555.local".into(),
+                    port: 59501,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()
+            .unwrap(),
+        );
+        lan_mdns.set_ip(&ip("192.168.1.42")).unwrap();
+        agent_off.add_remote_candidate(&lan_mdns).unwrap();
+
+        // Give the spawned `add_remote_candidate` tasks a turn to run.
+        tokio::task::yield_now().await;
+        let stats_off = agent_off.get_remote_candidates_stats().await;
+        assert!(
+            !stats_off.iter().any(|s| s.ip == "100.65.4.33"),
+            "overlay .local candidate must be dropped when rc_overlay=off: {stats_off:?}"
+        );
+        assert_eq!(stats_off.len(), 1);
+        assert_eq!(stats_off[0].network_type, NetworkType::Udp4);
+        let _ = agent_off.close().await;
+
+        // Step 3 (`rc_overlay=on`): overlay `.local` candidate IS retained.
+        let p_on = on();
+        let keep_on = p_on.clone();
+        let agent_on = Agent::new(AgentConfig {
+            is_controlling: false,
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            ip_filter: Arc::new(Some(Box::new(move |ip| keep_on.keeps_local(ip)))),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        agent_on.add_remote_candidate(&overlay_v4_mdns).unwrap();
+        tokio::task::yield_now().await;
+        let stats_on = agent_on.get_remote_candidates_stats().await;
+        assert_eq!(
+            stats_on.len(),
+            1,
+            "overlay .local candidate must be kept when rc_overlay=on"
+        );
+        let _ = agent_on.close().await;
     }
 }

@@ -2316,19 +2316,25 @@ mod same_session_failover_tests {
     #[tokio::test]
     async fn mdns_candidate_resolved_to_overlay_ip_bypasses_caller_gate_into_checklist(
     ) -> Result<()> {
-        // Proof for 16:07 Section 3.1: when `resolve_and_add_multicast_candidate`
-        // (`mod.rs:307-313, 510-530`) resolves a `.local` candidate to an overlay IP
-        // (`100.65.4.33`) via `c.set_ip(&src.ip())` and calls
-        // `ai.add_remote_candidate(&c).await`, `webrtc-ice` inserts the overlay
-        // candidate directly into `remote_candidates` and `checklist` without any
-        // `rc_overlay` / `is_meshharbor_overlay_ip` filter, and `ping_all_candidates`
-        // (when `selected_pair.is_none()`) probes `100.65.4.33:54324`.
-        // Meanwhile, `direct_real_path_with_mdns` and `should_follow_renomination_with_mdns`
-        // still reject `100.65.4.33` because `is_meshharbor_overlay_ip` is true.
-        let agent = Agent::new(AgentConfig {
+        // Locks the post-fix behavior for 18:42 Section 4:
+        // 1. When `ip_filter` is set (`rc_overlay=off`), a `.local` candidate that
+        //    resolves to an overlay IP (`100.65.4.33` or `fd72:6f6f:6d6c::6441:421`)
+        //    or an unresolved `.local` candidate (`0.0.0.0`) is rejected fail-closed
+        //    by `AgentInternal::add_remote_candidate`, and an inbound STUN
+        //    `BindingRequest` from an unknown overlay IP (`prflx` path in
+        //    `AgentInternal::handle_inbound`) is also rejected fail-closed.
+        //    Meanwhile, a `.local` candidate that resolves to a non-overlay LAN IP
+        //    (`192.168.1.42`) is admitted into `remote_candidates` and `checklist`.
+        // 2. When `ip_filter` is `None` (`rc_overlay=on`), `.local` candidates
+        //    resolving to `100.65.4.33` continue to be admitted into `checklist`.
+        use crate::agent::agent_gather::is_meshharbor_overlay_ip;
+        use crate::network_type::NetworkType;
+
+        let agent_off = Agent::new(AgentConfig {
             is_controlling: false,
             keepalive_interval: Some(Duration::from_secs(2)),
             multicast_dns_mode: MulticastDnsMode::Disabled,
+            ip_filter: Arc::new(Some(Box::new(|ip| !is_meshharbor_overlay_ip(&ip)))),
             ..Default::default()
         })
         .await?;
@@ -2346,18 +2352,48 @@ mod same_session_failover_tests {
             }
             .new_candidate_host()?,
         );
-        agent
+        agent_off
             .internal
             .local_candidates
             .lock()
             .await
             .insert(local_host.network_type(), vec![local_host.clone()]);
         {
-            let mut credentials = agent.internal.ufrag_pwd.lock().await;
+            let mut credentials = agent_off.internal.ufrag_pwd.lock().await;
+            credentials.local_ufrag = "local-ufrag".into();
+            credentials.local_pwd = "local-password-with-sufficient-entropy".into();
             credentials.remote_ufrag = "remote-ufrag".into();
             credentials.remote_pwd = "remote-password-with-sufficient-entropy".into();
         }
 
+        // Case 1a (rc_overlay=off): unresolved `.local` candidate (`0.0.0.0`) -> fail-closed.
+        let unresolved_mdns_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "00000000-0000-1111-2222-333344445555.local".into(),
+                    port: 54320,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        agent_off
+            .internal
+            .add_remote_candidate(&unresolved_mdns_host)
+            .await;
+        assert!(
+            agent_off
+                .internal
+                .find_pair(&local_host, &unresolved_mdns_host)
+                .await
+                .is_none(),
+            "unresolved .local candidate must fail closed when ip_filter is set"
+        );
+
+        // Case 1b (rc_overlay=off): `.local` resolved to overlay IPv4 `100.65.4.33` -> dropped.
         let overlay_mdns_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
             CandidateHostConfig {
                 base_config: CandidateBaseConfig {
@@ -2371,38 +2407,133 @@ mod same_session_failover_tests {
             }
             .new_candidate_host()?,
         );
-        // Exact sequence of `resolve_and_add_multicast_candidate` + `mod.rs:312`:
         overlay_mdns_host.set_ip(&"100.65.4.33".parse().unwrap())?;
-        agent
+        agent_off
             .internal
             .add_remote_candidate(&overlay_mdns_host)
             .await;
-
-        let pair = agent
-            .internal
-            .find_pair(&local_host, &overlay_mdns_host)
-            .await
-            .expect("overlay .local candidate entered checklist");
-        assert_eq!(pair.remote.addr(), "100.65.4.33:54324".parse().unwrap());
         assert!(
-            !direct_real_path_with_mdns(&pair, true),
-            "late direct probe filter must reject overlay IP even when resolved via .local"
-        );
-
-        // Before any pair is selected, `ping_all_candidates` probes the overlay pair.
-        ControlledSelector::contact_candidates(&*agent.internal).await;
-        assert!(
-            agent
+            agent_off
                 .internal
-                .pending_binding_requests
-                .lock()
+                .find_pair(&local_host, &overlay_mdns_host)
                 .await
-                .iter()
-                .any(|r| r.destination == "100.65.4.33:54324".parse().unwrap()),
-            "unselected ping_all_candidates probes the overlay .local pair that bypassed peer.rs"
+                .is_none(),
+            "overlay .local candidate must be dropped before entering checklist when rc_overlay=off"
         );
 
-        agent.close().await?;
+        // Case 1c (rc_overlay=off): inbound STUN BindingRequest from unknown overlay IP (`prflx`) -> dropped.
+        let mut prflx_req = Message::new();
+        prflx_req.build(&[
+            Box::new(BINDING_REQUEST),
+            Box::new(TransactionId::new()),
+            Box::new(Username::new(
+                ATTR_USERNAME,
+                "local-ufrag:remote-ufrag".to_owned(),
+            )),
+            Box::new(UseCandidateAttr::default()),
+            Box::new(PriorityAttr(1_853_824_767)),
+            Box::new(AttrControlling(1)),
+            Box::new(MessageIntegrity::new_short_term_integrity(
+                "local-password-with-sufficient-entropy".to_owned(),
+            )),
+            Box::new(FINGERPRINT),
+        ])?;
+        agent_off
+            .internal
+            .handle_inbound(
+                &mut prflx_req,
+                &local_host,
+                "100.65.4.33:54399".parse().unwrap(),
+            )
+            .await;
+        assert!(
+            agent_off
+                .internal
+                .find_remote_candidate(
+                    NetworkType::Udp4,
+                    "100.65.4.33:54399".parse().unwrap()
+                )
+                .await
+                .is_none(),
+            "inbound STUN request from overlay IP must not synthesize a prflx candidate when rc_overlay=off"
+        );
+        assert!(
+            agent_off.get_selected_candidate_pair().is_none(),
+            "overlay prflx nomination must not select a pair when rc_overlay=off"
+        );
+
+        // Case 1d (rc_overlay=off): `.local` resolved to LAN IPv4 `192.168.1.42` -> kept!
+        let lan_mdns_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "9b8a7c6d-0000-1111-2222-333344445555.local".into(),
+                    port: 59501,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        lan_mdns_host.set_ip(&"192.168.1.42".parse().unwrap())?;
+        agent_off
+            .internal
+            .add_remote_candidate(&lan_mdns_host)
+            .await;
+        assert!(
+            agent_off
+                .internal
+                .find_pair(&local_host, &lan_mdns_host)
+                .await
+                .is_some(),
+            "non-overlay LAN .local candidate must be admitted into checklist"
+        );
+
+        agent_off.close().await?;
+
+        // Case 2 (rc_overlay=on): `ip_filter` is `None`, so `.local` resolved to
+        // `100.65.4.33` IS admitted into `remote_candidates` and `checklist`.
+        let agent_on = Agent::new(AgentConfig {
+            is_controlling: false,
+            keepalive_interval: Some(Duration::from_secs(2)),
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            ip_filter: Arc::new(None),
+            ..Default::default()
+        })
+        .await?;
+        let local_host_on: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.168.1.253".into(),
+                    port: 54321,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        agent_on
+            .internal
+            .local_candidates
+            .lock()
+            .await
+            .insert(local_host_on.network_type(), vec![local_host_on.clone()]);
+        agent_on
+            .internal
+            .add_remote_candidate(&overlay_mdns_host)
+            .await;
+        assert!(
+            agent_on
+                .internal
+                .find_pair(&local_host_on, &overlay_mdns_host)
+                .await
+                .is_some(),
+            "when rc_overlay=on (no ip_filter), .local candidate resolving to overlay IP must be kept"
+        );
+        agent_on.close().await?;
         Ok(())
     }
 }

@@ -276,8 +276,11 @@ impl Agent {
             return Ok(());
         }
 
-        // If we have a mDNS Candidate lets fully resolve it before adding it locally
-        if c.candidate_type() == CandidateType::Host && c.address().ends_with(".local") {
+        // If we have an unresolved mDNS Candidate lets fully resolve it before adding it locally
+        if c.candidate_type() == CandidateType::Host
+            && c.address().ends_with(".local")
+            && c.addr().ip().is_unspecified()
+        {
             if self.mdns_mode == MulticastDnsMode::Disabled {
                 log::warn!(
                     "remote mDNS candidate added, but mDNS is disabled: ({})",
