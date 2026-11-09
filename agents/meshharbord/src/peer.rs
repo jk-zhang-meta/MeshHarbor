@@ -3547,14 +3547,20 @@ async fn media_pump(
         // downscales it. On HW paths (DownscalePolicy::Never) this is the
         // true monitor resolution; that's every host that hits the DC
         // video pumps in the field.
+        let native_dims = (frame.width, frame.height);
         capture_native_dims.store(
-            pack_dims(frame.width, frame.height),
+            pack_dims(native_dims.0, native_dims.1),
             std::sync::atomic::Ordering::Relaxed,
+        );
+        let effective_target = clamp_target_to_native(
+            *target_resolution.lock().unwrap(),
+            native_dims.0,
+            native_dims.1,
         );
         let frame = crate::encode::resample::apply_target_resolution(
             &mut resampler,
             frame,
-            *target_resolution.lock().unwrap(),
+            effective_target,
         );
         // rc.190 — publish the dims we actually encode so the cursor pump
         // scales from truth (this pump's auto-downscale mutates the shared
@@ -3801,18 +3807,32 @@ async fn media_pump(
                 }
 
                 // rc.38 — when auto-downscale changes target_resolution
-                // from Native → Fixed, downscale the already-captured
-                // first frame in-place and rebuild the encoder at the
-                // target dims right here. This keeps the track's first
-                // frame at the downscaled dims (avoiding Chrome's
-                // `<video>.videoWidth` resize race) WITHOUT discarding
+                // from Native → Fixed, or when a controller `rc:resolution`
+                // (`fit` / `custom`) arrived on the control DataChannel while
+                // the initial `open_for_codec` was running and set a `Fixed`
+                // target smaller than `frame`, downscale the already-captured
+                // first frame in-place and rebuild the encoder at the target
+                // dims right here. This keeps the track's first frame at the
+                // target dims (avoiding Chrome's `<video>.videoWidth` resize
+                // race and a Frame #2 encoder rebuild) WITHOUT discarding
                 // Frame #1 and waiting an extra capture cycle (~50-100 ms).
-                if auto_downscale_just_fired {
+                let current_target = *target_resolution.lock().unwrap();
+                if let Some((target_w, target_h)) =
+                    first_frame_in_place_rebuild_dims((frame.width, frame.height), current_target)
+                {
+                    let rebuild_reason = if auto_downscale_just_fired {
+                        "auto-downscale"
+                    } else {
+                        "rc:resolution"
+                    };
+                    let clamped_target =
+                        clamp_target_to_native(current_target, frame.width, frame.height);
                     frame = crate::encode::resample::apply_target_resolution(
                         &mut resampler,
                         frame,
-                        *target_resolution.lock().unwrap(),
+                        clamped_target,
                     );
+                    debug_assert_eq!((frame.width, frame.height), (target_w, target_h));
                     encoded_dims.store(
                         pack_dims(frame.width, frame.height),
                         std::sync::atomic::Ordering::Relaxed,
@@ -3836,6 +3856,7 @@ async fn media_pump(
                         %session_id,
                         w = frame.width,
                         h = frame.height,
+                        reason = rebuild_reason,
                         codec = %chosen_codec,
                         backend = downscaled_backend,
                         encoder_init_ms = downscaled_init_ms,
@@ -11975,6 +11996,54 @@ pub(crate) fn aspect_preserved_target(src_w: u32, src_h: u32, cap_long_edge: u32
     (new_w & !1, new_h & !1)
 }
 
+/// Clamp a `TargetResolution::Fixed` target to the native capture dimensions
+/// on each axis (`min(target, native)`) so neither axis can ever upscale.
+pub(crate) fn clamp_target_to_native(
+    target: TargetResolution,
+    native_w: u32,
+    native_h: u32,
+) -> TargetResolution {
+    match target {
+        TargetResolution::Native => TargetResolution::Native,
+        TargetResolution::Fixed { width, height } => {
+            if width == 0 || height == 0 || native_w == 0 || native_h == 0 {
+                TargetResolution::Native
+            } else {
+                let w = width.min(native_w);
+                let h = height.min(native_h);
+                if (w, h) == (native_w, native_h) {
+                    TargetResolution::Native
+                } else {
+                    TargetResolution::Fixed {
+                        width: w,
+                        height: h,
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Returns `Some((target_w, target_h))` when the first captured frame's
+/// dimensions (`frame_dims`) do not match the effective dimensions of
+/// `current_target` after the initial encoder open — either because
+/// `auto-downscale` just changed `target_resolution` from `Native` to
+/// `Fixed`, or because a controller `rc:resolution` (`fit`/`custom`) arrived
+/// on the control DataChannel while `encode::open_for_codec` was running and
+/// set a `Fixed` target smaller than `frame_dims`.
+pub(crate) fn first_frame_in_place_rebuild_dims(
+    frame_dims: (u32, u32),
+    current_target: TargetResolution,
+) -> Option<(u32, u32)> {
+    let clamped = clamp_target_to_native(current_target, frame_dims.0, frame_dims.1);
+    let (tw, th) = crate::encode::resample::target_dims(frame_dims, clamped);
+    if (tw, th) != frame_dims {
+        Some((tw, th))
+    } else {
+        None
+    }
+}
+
 /// rc.190 — compose the controller-requested resolution with the agent-side
 /// caps, yielding the effective target for [`apply_target_resolution`].
 ///
@@ -15903,6 +15972,110 @@ mod tests {
         let (w, h) = super::aspect_preserved_target(1366, 768, 1000);
         assert_eq!(w % 2, 0);
         assert_eq!(h % 2, 0);
+    }
+
+    #[test]
+    fn clamp_target_to_native_never_upscales_either_axis() {
+        assert_eq!(
+            super::clamp_target_to_native(TR::Native, 1920, 1200),
+            TR::Native
+        );
+        assert_eq!(
+            super::clamp_target_to_native(
+                TR::Fixed {
+                    width: 1256,
+                    height: 720,
+                },
+                1920,
+                1200,
+            ),
+            TR::Fixed {
+                width: 1256,
+                height: 720,
+            }
+        );
+        assert_eq!(
+            super::clamp_target_to_native(
+                TR::Fixed {
+                    width: 2536,
+                    height: 1520,
+                },
+                1920,
+                1200,
+            ),
+            TR::Native
+        );
+        assert_eq!(
+            super::clamp_target_to_native(
+                TR::Fixed {
+                    width: 2536,
+                    height: 1000,
+                },
+                1920,
+                1200,
+            ),
+            TR::Fixed {
+                width: 1920,
+                height: 1000,
+            }
+        );
+    }
+
+    #[test]
+    fn first_frame_in_place_rebuild_dims_catches_auto_downscale_and_rc_resolution_race() {
+        // Native stays at frame dims -> no in-place rebuild.
+        assert_eq!(
+            super::first_frame_in_place_rebuild_dims((1920, 1200), TR::Native),
+            None
+        );
+        // Auto-downscale (1920x1200 -> 1280x800) -> rebuilds Frame 1 in-place at 1280x800.
+        assert_eq!(
+            super::first_frame_in_place_rebuild_dims(
+                (1920, 1200),
+                TR::Fixed {
+                    width: 1280,
+                    height: 800,
+                },
+            ),
+            Some((1280, 800))
+        );
+        // Controller `rc:resolution` (`fit` 1256x720) arrived while `open_for_codec` ran on
+        // the 1920x1200 Frame 1 -> rebuilds Frame 1 in-place at 1256x720 instead of shipping
+        // Frame 1 at 1920x1200.
+        assert_eq!(
+            super::first_frame_in_place_rebuild_dims(
+                (1920, 1200),
+                TR::Fixed {
+                    width: 1256,
+                    height: 720,
+                },
+            ),
+            Some((1256, 720))
+        );
+        // Controller `rc:resolution` arrived BEFORE Frame 1 was resampled, so Frame 1 is
+        // already 1256x720 -> no redundant second rebuild.
+        assert_eq!(
+            super::first_frame_in_place_rebuild_dims(
+                (1256, 720),
+                TR::Fixed {
+                    width: 1256,
+                    height: 720,
+                },
+            ),
+            None
+        );
+        // Large-viewport `fit` (2536x1520 >= 1920x1200) -> clamps to native (1920x1200),
+        // no rebuild needed.
+        assert_eq!(
+            super::first_frame_in_place_rebuild_dims(
+                (1920, 1200),
+                TR::Fixed {
+                    width: 2536,
+                    height: 1520,
+                },
+            ),
+            None
+        );
     }
 
     #[test]

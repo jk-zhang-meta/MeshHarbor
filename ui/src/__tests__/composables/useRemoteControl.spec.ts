@@ -22,6 +22,9 @@ import {
   isKeyboardLockSupported,
   filterCapsByPreference,
   resolutionWireMessage,
+  RESOLUTION_STORAGE_PREFIX,
+  readStoredResolution,
+  clampFitDimensions,
   isWebCodecsSupported,
   isVp9_444DecodeSupported,
   isVp9_420DecodeSupported,
@@ -1052,6 +1055,40 @@ describe('resolutionWireMessage', () => {
     expect(resolutionWireMessage({ mode: 'fit' })).toBeNull()
     expect(resolutionWireMessage({ mode: 'custom', width: 0, height: 100 })).toBeNull()
     expect(resolutionWireMessage({ mode: 'custom', width: 100, height: 0 })).toBeNull()
+  })
+
+  it('defaults readStoredResolution to fit when no manual preference is stored', () => {
+    const aid = '69c92d8f011ff058c228e0d0'
+    globalThis.localStorage?.removeItem(RESOLUTION_STORAGE_PREFIX + aid)
+    expect(readStoredResolution(aid)).toEqual({ mode: 'fit' })
+
+    globalThis.localStorage?.setItem(
+      RESOLUTION_STORAGE_PREFIX + aid,
+      JSON.stringify({ mode: 'original' }),
+    )
+    expect(readStoredResolution(aid)).toEqual({
+      mode: 'original',
+      width: undefined,
+      height: undefined,
+    })
+
+    globalThis.localStorage?.setItem(
+      RESOLUTION_STORAGE_PREFIX + aid,
+      JSON.stringify({ mode: 'custom', width: 1280, height: 800 }),
+    )
+    expect(readStoredResolution(aid)).toEqual({
+      mode: 'custom',
+      width: 1280,
+      height: 800,
+    })
+    globalThis.localStorage?.removeItem(RESOLUTION_STORAGE_PREFIX + aid)
+  })
+
+  it('clamps fit dimensions to even values and never upscales above native dims', () => {
+    expect(clampFitDimensions(1256.4, 720.8)).toEqual({ width: 1256, height: 720 })
+    expect(clampFitDimensions(1257, 721)).toEqual({ width: 1256, height: 720 })
+    expect(clampFitDimensions(2536, 1520, 1920, 1200)).toEqual({ width: 1920, height: 1200 })
+    expect(clampFitDimensions(2536, 1000, 1920, 1200)).toEqual({ width: 1920, height: 1000 })
   })
 })
 
@@ -7014,6 +7051,13 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
         },
       })
       const rc = useRemoteControl(agentRef, { userId: () => USER_ID })
+      globalThis.localStorage?.removeItem(RESOLUTION_STORAGE_PREFIX + AGENT_ID)
+      expect(rc.resolution.value).toEqual({ mode: 'fit' })
+      // Automatic stage sizing updates fit dims without writing localStorage
+      rc.setFitDimensions(1256, 720)
+      expect(rc.resolution.value).toEqual({ mode: 'fit', width: 1256, height: 720 })
+      expect(globalThis.localStorage?.getItem(RESOLUTION_STORAGE_PREFIX + AGENT_ID)).toBeNull()
+
       rc.setResolution({ mode: 'custom', width: 1280, height: 800 })
       rc.setQuality('high')
       rc.setPriority('sharper')

@@ -2150,7 +2150,7 @@ export interface RcResolutionSetting {
  *  the new default and kept a 4K panel streaming at native through a
  *  ~60 ms/frame encode. Old-key values are intentionally orphaned; any
  *  pick made from now on persists under the new key as usual. */
-const RESOLUTION_STORAGE_PREFIX = 'meshharbor-rc-resolution.v2:'
+export const RESOLUTION_STORAGE_PREFIX = 'meshharbor-rc-resolution.v2:'
 
 const SCALE_MODE_STORAGE_KEY = 'meshharbor-rc-scale-mode'
 const SCALE_CUSTOM_PCT_STORAGE_KEY = 'meshharbor-rc-scale-pct'
@@ -2214,7 +2214,27 @@ function persistFrameRate(fps: FrameRate) {
   }
 }
 
-function readStoredResolution(agentId: string): RcResolutionSetting {
+export function clampFitDimensions(
+  stageWidthPx: number,
+  stageHeightPx: number,
+  nativeWidthPx?: number | null,
+  nativeHeightPx?: number | null,
+): { width: number; height: number } {
+  let w = Math.max(160, Math.round(stageWidthPx) & ~1)
+  let h = Math.max(90, Math.round(stageHeightPx) & ~1)
+  if (
+    typeof nativeWidthPx === 'number' &&
+    nativeWidthPx > 0 &&
+    typeof nativeHeightPx === 'number' &&
+    nativeHeightPx > 0
+  ) {
+    w = Math.max(160, Math.min(w, Math.round(nativeWidthPx) & ~1))
+    h = Math.max(90, Math.min(h, Math.round(nativeHeightPx) & ~1))
+  }
+  return { width: w, height: h }
+}
+
+export function readStoredResolution(agentId: string): RcResolutionSetting {
   try {
     const raw = globalThis.localStorage?.getItem(RESOLUTION_STORAGE_PREFIX + agentId)
     if (raw) {
@@ -2233,13 +2253,13 @@ function readStoredResolution(agentId: string): RcResolutionSetting {
   } catch {
     /* fall through to default */
   }
-  // 2026-08-02 (operator default set) — default is ORIGINAL: stream the
-  // host's native resolution for a 1:1 pixel mapping (pairs with the new
-  // display-match-ON default; sharpest possible text). The rc.190 'fit'
-  // rationale (a small viewer paying 4x for pixels it throws away) still
-  // holds as advice for small screens — those users pick Fit once and
-  // their stored value wins forever.
-  return { mode: 'original' }
+  // 2026-11-09 — default is FIT: stream at min(controller viewport × DPR,
+  // host native resolution) so software encoders on high-resolution hosts
+  // stay within the 33 ms 30-fps budget out of the box without upscaling.
+  // Explicit user choices ('original', 'fit', 'custom') are persisted under
+  // `meshharbor-rc-resolution.v2:<agentId>`; default sessions never write to
+  // localStorage.
+  return { mode: 'fit' }
 }
 
 function persistResolution(agentId: string, s: RcResolutionSetting) {
@@ -5484,11 +5504,15 @@ export function useRemoteControl(
    *  read/write time. */
   const scaleCustomPercent = ref<number>(readStoredScalePct())
   /** Remote capture/encode resolution choice. Persisted per-agent
-   *  (keyed on `agentId` after `connect()`). Starts at `{mode:'original'}`
-   *  and narrows when `connect()` supplies the real agent id. */
-  const resolution = ref<RcResolutionSetting>({ mode: 'original' })
+   *  (keyed on `agentId` after `connect()`) only when explicitly chosen
+   *  by the user. Starts at `{mode:'fit'}` and narrows when `connect()`
+   *  supplies the real agent id. */
+  const resolution = ref<RcResolutionSetting>({ mode: 'fit' })
   // Tracks the last agentId we loaded + persist under. Set in connect().
   let resolutionAgentId: string | null = null
+  // Latest live stage dimensions × DPR reported by the view (used to seed
+  // `fit` mode without marking the setting as a manual localStorage pick).
+  let latestFitDims: { width: number; height: number } | null = null
   /** FR-119 P1 — the frame rate this viewer asks for (`rc:fps`), remembered per
    *  browser. Sent only to an agent advertising `fps-high`. */
   const frameRate = ref<FrameRate>(readStoredFrameRate())
@@ -7354,6 +7378,15 @@ export function useRemoteControl(
    *  choice survives reloads without bleeding across machines. */
   function setResolution(next: RcResolutionSetting) {
     resolution.value = next
+    if (
+      next.mode === 'fit' &&
+      typeof next.width === 'number' &&
+      next.width > 0 &&
+      typeof next.height === 'number' &&
+      next.height > 0
+    ) {
+      latestFitDims = clampFitDimensions(next.width, next.height)
+    }
     // rc.190 (A1) — remember that the user picked THIS session. Before
     // this flag, a dropdown pick made BEFORE Connect was (a) never
     // persisted (`resolutionAgentId` is null until connect()) and then
@@ -7362,6 +7395,37 @@ export function useRemoteControl(
     // connect at original THEN change it" bug.
     resolutionUserPickedThisSession = true
     if (resolutionAgentId) persistResolution(resolutionAgentId, next)
+    sendResolutionPreference()
+  }
+
+  /** Update the live viewport dimensions for `fit` mode without marking
+   *  the resolution as an explicit user pick in localStorage. If the user
+   *  explicitly picked `fit` this session, update the stored dimensions;
+   *  otherwise leave localStorage untouched so the default stays unpersisted. */
+  function setFitDimensions(
+    width: number,
+    height: number,
+    nativeWidth?: number | null,
+    nativeHeight?: number | null,
+  ) {
+    const clamped = clampFitDimensions(width, height, nativeWidth, nativeHeight)
+    latestFitDims = clamped
+    if (resolution.value.mode !== 'fit') return
+    if (
+      resolution.value.width === clamped.width &&
+      resolution.value.height === clamped.height
+    ) {
+      return
+    }
+    const next: RcResolutionSetting = {
+      mode: 'fit',
+      width: clamped.width,
+      height: clamped.height,
+    }
+    resolution.value = next
+    if (resolutionUserPickedThisSession && resolutionAgentId) {
+      persistResolution(resolutionAgentId, next)
+    }
     sendResolutionPreference()
   }
 
@@ -9461,11 +9525,20 @@ export function useRemoteControl(
       // dropdown next to Connect). Keep it, and persist it now that we
       // finally know which agent it belongs to. Pre-fix this line
       // unconditionally overwrote the pick with the stored value
-      // ('original' by old default) — the "initial resolution selection
-      // in the dropdown doesn't work" field bug.
+      // — the "initial resolution selection in the dropdown doesn't work"
+      // field bug.
       persistResolution(agentId, resolution.value)
     } else {
-      resolution.value = readStoredResolution(agentId)
+      const stored = readStoredResolution(agentId)
+      if (stored.mode === 'fit' && latestFitDims) {
+        resolution.value = {
+          mode: 'fit',
+          width: latestFitDims.width,
+          height: latestFitDims.height,
+        }
+      } else {
+        resolution.value = stored
+      }
     }
 
     // Per-agent codec override — same shape as the resolution block above,
@@ -14630,6 +14703,7 @@ export function useRemoteControl(
     setScaleCustomPercent,
     resolution,
     setResolution,
+    setFitDimensions,
     /** FR-119 P1 — the frame-rate pick, its options, and the agent's answer. */
     frameRate,
     frameRateChoices,

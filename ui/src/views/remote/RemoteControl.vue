@@ -894,7 +894,7 @@
       border
       class="ma-2 ma-md-3 remote-stage-card flex-grow-1 d-flex"
     >
-    <div class="remote-stage">
+    <div ref="stageHostEl" class="remote-stage">
       <!-- An overlay along the top of the stage. As flex siblings of the
            picture in a ROW flexbox these alerts were 32 px strips beside it at
            every width — text, icon and close invisible — and each one's
@@ -2317,6 +2317,7 @@ import {
   displayScale,
   persistMetricToggles,
   remoteCursorCssFor,
+  clampFitDimensions,
   type RcScaleMode,
   type RcResolutionSetting,
   type RcPriority,
@@ -2647,6 +2648,7 @@ const videoEl = ref<HTMLVideoElement | null>(null)
 // `videoEl` (which is muted + may carry no track under the DC video
 // paths).
 const audioEl = ref<HTMLAudioElement | null>(null)
+const stageHostEl = ref<HTMLElement | null>(null)
 const stageEl = ref<HTMLElement | null>(null)
 const cursorCanvas = ref<HTMLCanvasElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -3970,7 +3972,7 @@ const resolutionPresetValue = computed<string>({
     if (v === 'original') {
       rc.setResolution({ mode: 'original' })
     } else if (v === 'fit') {
-      applyFitResolution()
+      applyFitResolution(true)
     } else if (v === 'custom-edit') {
       // Seed the dialog from the current values (or the stage's
       // dimensions if we have none yet) so the user isn't starting
@@ -4092,21 +4094,30 @@ function confirmCustomResolution() {
 
 /** Apply Fit mode using the current stage dimensions × devicePixelRatio
  *  — captures "what fits in my browser right now at its native pixel
- *  density". Also re-emitted on stage resize via `ResizeObserver`
- *  below, debounced 250 ms so drag-resize doesn't churn the encoder. */
-function applyFitResolution() {
-  const el = stageEl.value
+ *  density", capped at the host's reported native resolution (`rc:video-info`
+ *  `native_w`/`native_h`) when known so Fit never asks to upscale.
+ *  When `persist` is false (automatic stage/resize measurement), updates
+ *  live Fit dimensions without writing a manual pick to localStorage. */
+function applyFitResolution(persist = false) {
+  const el = stageEl.value ?? stageHostEl.value
   if (!el) return
   const rect = el.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0) return
   const dpr = window.devicePixelRatio || 1
-  // Floor to even numbers — MF HEVC encoder requires even dims and
-  // fail-closes to NoopEncoder otherwise (permanent black screen
-  // until reconnect). The agent also rounds defensively, but
-  // emitting clean numbers here avoids the log churn. Clamp mins
-  // to 160×90 so weird <= 1 layouts don't flood with tiny requests.
-  const w = Math.max(160, Math.round(rect.width * dpr) & ~1)
-  const h = Math.max(90, Math.round(rect.height * dpr) & ~1)
-  rc.setResolution({ mode: 'fit', width: w, height: h })
+  const vi = rc.videoInfo.value
+  const nw = (vi?.native_w ?? 0) > 0 ? vi!.native_w : null
+  const nh = (vi?.native_h ?? 0) > 0 ? vi!.native_h : null
+  const { width: w, height: h } = clampFitDimensions(
+    rect.width * dpr,
+    rect.height * dpr,
+    nw,
+    nh,
+  )
+  if (persist) {
+    rc.setResolution({ mode: 'fit', width: w, height: h })
+  } else {
+    rc.setFitDimensions(rect.width * dpr, rect.height * dpr, nw, nh)
+  }
 }
 
 // rc.191 — "Match remote display" toggle. When ON, the agent switches the
@@ -4972,6 +4983,7 @@ function dismissRating() {
 }
 
 function startSession() {
+  applyFitResolution(false)
   // FR-52 P4e — an external session starts from the login `/connect` handed
   // over, once. With none (a reload, or Connect after the session ended) the
   // only way in is the password again.
@@ -5192,6 +5204,7 @@ watch(
 )
 
 onMounted(() => {
+  applyFitResolution(false)
   if (!isExternal && tenantId.value) {
     wsStore.setTenantAffinity(tenantId.value)
     if (wsStore.status === 'disconnected') {
