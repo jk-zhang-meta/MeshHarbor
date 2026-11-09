@@ -336,11 +336,24 @@ impl WgcCapture {
             .context("spawning wgc worker thread")?;
 
         // Wait up to 2 s for init (D3D11 device + WGC session setup is
-        // usually <200 ms but we allow slack for slow GPUs).
+        // usually <200 ms but we allow slack for slow GPUs). If the wait
+        // fails or times out, signal `shutdown` before returning so a
+        // late-finishing worker exits immediately without starting capture
+        // or leaking its D3D11/WinRT objects.
         let size = match ready_rx.recv_timeout(Duration::from_secs(2)) {
             Ok(Ok(size)) => size,
-            Ok(Err(e)) => return Err(e),
-            Err(_) => return Err(anyhow!("wgc worker didn't ack within 2s")),
+            Ok(Err(e)) => {
+                shutdown.store(true, std::sync::atomic::Ordering::Release);
+                return Err(e);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                shutdown.store(true, std::sync::atomic::Ordering::Release);
+                return Err(anyhow!("wgc worker didn't ack within 2s"));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                shutdown.store(true, std::sync::atomic::Ordering::Release);
+                return Err(anyhow!("wgc worker channel disconnected before ack"));
+            }
         };
 
         // FR-98 C1 — read once per open (FR-70: never per frame).
@@ -609,6 +622,32 @@ fn worker_main(
     bake_cursor: bool,
     ready_tx: std::sync::mpsc::Sender<Result<SizeInt32>>,
 ) -> Result<()> {
+    // Pin the process-wide COM MTA apartment open once so `windows-core` v0.58.0's
+    // process-global `FactoryCache` (`windows-core-0.58.0/src/imp/factory_cache.rs`:
+    // `FactoryCache::call` at lines 31-65 and `pub fn factory<C, I>()` at lines 73-99,
+    // used by `GraphicsCaptureItem` and `Direct3D11CaptureFramePool::CreateFreeThreaded`)
+    // never holds a dangling activation-factory pointer after a WGC worker thread's
+    // `RoUninitializeGuard` drops between sessions. Specifically:
+    // - `FactoryCache::call` (lines 35-40) loads `self.shared` (`AtomicPtr<c_void>`) and,
+    //   when non-null, immediately invokes the callback on the cached pointer; on first
+    //   use (lines 43-57) it calls `factory::<C, I>()?`, checks `IAgileObject`, CAS-stores
+    //   `factory.as_raw()` into `self.shared`, and calls `forget(factory)`.
+    // - `factory::<C, I>()` (lines 79-91) calls `RoGetActivationFactory` and ONLY calls
+    //   `CoIncrementMTAUsage(&mut cookie)` when `code == CO_E_NOTINITIALIZED` (line 89).
+    //   Because `worker_main` calls `RoInitialize(RO_INIT_MULTITHREADED)` on the worker
+    //   thread, `RoGetActivationFactory` returns `S_OK` on the first session without
+    //   `factory()` ever calling `CoIncrementMTAUsage`. When Session 1 closes and the
+    //   worker's `RoUninitializeGuard` runs `RoUninitialize()`, the process MTA refcount
+    //   drops to zero and unloads `Windows.Graphics.Capture.dll`, causing Session 2's
+    //   cached `FactoryCache::call` to fault with `0xc0000005` (`STATUS_ACCESS_VIOLATION`).
+    static MTA_PIN: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    MTA_PIN.get_or_init(|| {
+        let _ = unsafe { windows::Win32::System::Com::CoIncrementMTAUsage() };
+    });
+
+    let init_t0 = Instant::now();
+    tracing::debug!(hmon = hmon.0 as usize, "wgc worker_main: step 0 entry");
+
     // RoInitialize must be called on every thread that touches WinRT
     // objects; MTA because we run free-threaded (no UI loop needed).
     // SAFETY: the corresponding `RoUninitialize` runs at function exit.
@@ -618,11 +657,19 @@ fn worker_main(
             .context("RoInitialize(MTA)")?;
     }
     let _ro_guard = RoUninitializeGuard;
+    tracing::debug!(
+        elapsed_us = init_t0.elapsed().as_micros() as u64,
+        "wgc worker_main: step 1 RoInitialize(RO_INIT_MULTITHREADED) ok"
+    );
 
     // 1. Create an ID3D11Device (+ context) we'll use for: (a) wrapping
     //    as IDirect3DDevice for the frame pool, (b) CopyResource
     //    from the capture frame to a staging texture for CPU readback.
     let (d3d_device, d3d_context) = create_d3d11_device()?;
+    tracing::debug!(
+        elapsed_us = init_t0.elapsed().as_micros() as u64,
+        "wgc worker_main: step 2 create_d3d11_device ok"
+    );
 
     // 2. Wrap the D3D11 device as the WinRT `IDirect3DDevice` that
     //    Direct3D11CaptureFramePool::CreateFreeThreaded expects.
@@ -636,6 +683,10 @@ fn worker_main(
     let winrt_device: IDirect3DDevice = winrt_inspectable
         .cast()
         .map_err(|e| anyhow!("IInspectable -> IDirect3DDevice cast: {e:?}"))?;
+    tracing::debug!(
+        elapsed_us = init_t0.elapsed().as_micros() as u64,
+        "wgc worker_main: step 3 CreateDirect3D11DeviceFromDXGIDevice ok"
+    );
 
     // 3. Build the GraphicsCaptureItem for the target monitor via the
     //    Win32 interop interface (there's no pure-WinRT entry point
@@ -643,9 +694,19 @@ fn worker_main(
     let item: GraphicsCaptureItem = unsafe {
         let interop: IGraphicsCaptureItemInterop =
             windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+        tracing::debug!(
+            elapsed_us = init_t0.elapsed().as_micros() as u64,
+            "wgc worker_main: step 4a GraphicsCaptureItem factory ok"
+        );
         interop.CreateForMonitor(hmon)?
     };
     let size = item.Size()?;
+    tracing::debug!(
+        elapsed_us = init_t0.elapsed().as_micros() as u64,
+        width = size.Width,
+        height = size.Height,
+        "wgc worker_main: step 4b CreateForMonitor + Size ok"
+    );
     if size.Width <= 0 || size.Height <= 0 {
         return Err(anyhow!(
             "GraphicsCaptureItem reports zero-sized monitor ({} x {})",
@@ -665,7 +726,15 @@ fn worker_main(
         FRAME_POOL_BUFFERS,
         size,
     )?;
+    tracing::debug!(
+        elapsed_us = init_t0.elapsed().as_micros() as u64,
+        "wgc worker_main: step 5a CreateFreeThreaded ok"
+    );
     let session = pool.CreateCaptureSession(&item)?;
+    tracing::debug!(
+        elapsed_us = init_t0.elapsed().as_micros() as u64,
+        "wgc worker_main: step 5b CreateCaptureSession ok"
+    );
 
     // Hide the yellow border WGC draws around the captured surface on
     // Windows 11 by default (operators don't want a "screen is being
@@ -684,9 +753,26 @@ fn worker_main(
     // RECORDING's session always bakes it — the file has no other channel
     // (`bake_cursor`, decided by the constructor).
     let _ = session.SetIsCursorCaptureEnabled(bake_cursor);
+    tracing::debug!(
+        elapsed_us = init_t0.elapsed().as_micros() as u64,
+        "wgc worker_main: step 5c session properties configured, sending ready_tx ack"
+    );
 
-    // Size is known now — ack to the constructor so it can return.
-    ready_tx.send(Ok(size)).ok();
+    // Size is known now — ack to the constructor so it can return. If the
+    // constructor already timed out (`shutdown` set or `ready_rx` dropped),
+    // close the pool/session and exit immediately so we never leak the
+    // worker thread or D3D11/WinRT objects.
+    if shutdown.load(std::sync::atomic::Ordering::Acquire) || ready_tx.send(Ok(size)).is_err() {
+        tracing::warn!(
+            elapsed_us = init_t0.elapsed().as_micros() as u64,
+            width = size.Width,
+            height = size.Height,
+            "wgc: caller timed out before init ack — closing session/pool and exiting worker without StartCapture"
+        );
+        session.Close().ok();
+        pool.Close().ok();
+        return Ok(());
+    }
 
     // 5. Register the FrameArrived handler. State captured into the
     //    closure: the frame pool (for TryGetNextFrame), a reusable
