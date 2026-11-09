@@ -1880,16 +1880,31 @@ impl AgentPeer {
             let pc = self.pc.clone();
             let session_id = self.session_id;
             let rc_overlay = self.rc_overlay.clone();
+            let session_end = self.session_end.clone();
             let mut init = init;
             tokio::spawn(async move {
-                match crate::mdns_resolve::resolve_mdns_candidate(&init.candidate).await {
+                let filter_overlay = rc_overlay.clone();
+                match crate::mdns_resolve::resolve_mdns_candidate_with_policy(
+                    &init.candidate,
+                    &session_end,
+                    &rc_overlay.v4_nets,
+                    move |ip| filter_overlay.keeps_local(ip),
+                )
+                .await
+                {
                     Some(rewritten) => init.candidate = rewritten,
                     None => {
+                        if session_end.is_cancelled() {
+                            return;
+                        }
                         debug!(
                             session = %session_id,
                             "mDNS candidate resolution failed — adding unmodified (prflx fallback)"
                         );
                     }
+                }
+                if session_end.is_cancelled() {
+                    return;
                 }
                 // #1882 — the name hid the address; the OS resolver returns the
                 // candidate's own record, which for the browser's wintun
@@ -2243,7 +2258,7 @@ impl AgentPeer {
         transfer_id: &str,
         candidate: serde_json::Value,
     ) -> Result<()> {
-        let pc = {
+        let (pc, child_stop) = {
             let children = self.child_peers.lock().await;
             let Some(handle) = children
                 .get(&child_id)
@@ -2251,7 +2266,7 @@ impl AgentPeer {
             else {
                 return Err(anyhow!("unknown or closed file child"));
             };
-            handle.pc.clone()
+            (handle.pc.clone(), handle.stop.clone())
         };
         let init: RTCIceCandidateInit = match candidate {
             serde_json::Value::String(s) => RTCIceCandidateInit {
@@ -2268,10 +2283,19 @@ impl AgentPeer {
             let rc_overlay = self.rc_overlay.clone();
             let mut init = init;
             tokio::spawn(async move {
-                if let Some(rewritten) =
-                    crate::mdns_resolve::resolve_mdns_candidate(&init.candidate).await
+                let filter_overlay = rc_overlay.clone();
+                if let Some(rewritten) = crate::mdns_resolve::resolve_mdns_candidate_with_policy(
+                    &init.candidate,
+                    &child_stop,
+                    &rc_overlay.v4_nets,
+                    move |ip| filter_overlay.keeps_local(ip),
+                )
+                .await
                 {
                     init.candidate = rewritten;
+                }
+                if child_stop.is_cancelled() {
+                    return;
                 }
                 if !rc_overlay.keeps_remote_candidate(&init.candidate) {
                     return;
