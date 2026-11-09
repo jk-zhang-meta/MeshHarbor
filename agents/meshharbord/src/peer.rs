@@ -3947,8 +3947,9 @@ async fn media_pump(
                 return;
             }
         };
+        let frame_encode_us = encode_started.elapsed().as_micros() as u64;
         let frame_encode_ms = encode_started.elapsed().as_millis() as u64;
-        encode_time_us = encode_time_us.saturating_add(encode_started.elapsed().as_micros() as u64);
+        encode_time_us = encode_time_us.saturating_add(frame_encode_us);
 
         // Wallclock-based RTP timestamps, so they advance at real time, not
         // at an assumed 30 fps. #2284: the gap since the previous frame is
@@ -3977,8 +3978,10 @@ async fn media_pump(
         // own and the newest lands at `now`.
         let frames_out = packets.len().max(1) as u32;
         let mut packet_bytes: u64 = 0;
+        let mut frame_is_keyframe = false;
         for (i, p) in packets.into_iter().enumerate() {
             packet_bytes += p.data.len() as u64;
+            frame_is_keyframe |= p.is_keyframe;
             let sample = Sample {
                 data: Bytes::from(p.data),
                 timestamp: SystemTime::now(),
@@ -4004,6 +4007,16 @@ async fn media_pump(
 
         frames_encoded += 1;
         bytes_written += packet_bytes;
+        debug!(
+            %session_id,
+            backend = encoder.as_ref().map(|e| e.name()).unwrap_or("none"),
+            frames_encoded,
+            frame_bytes = packet_bytes,
+            is_keyframe = frame_is_keyframe,
+            encode_us = frame_encode_us,
+            encode_ms = frame_encode_ms,
+            "media pump: frame encoded"
+        );
 
         if frames_encoded == 1 {
             let backend = encoder.as_ref().map(|e| e.name()).unwrap_or("none");
@@ -11441,6 +11454,14 @@ fn attach_control_handler(
                             ?prev,
                             new_target = ?new_target,
                             "control: rc:resolution updated"
+                        );
+                    } else {
+                        debug!(
+                            %session_id,
+                            mode,
+                            ?prev,
+                            new_target = ?new_target,
+                            "control: rc:resolution received (unchanged)"
                         );
                     }
                 }

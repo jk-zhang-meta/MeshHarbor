@@ -399,6 +399,12 @@ enum Command {
         /// Frames encoded at each rung before moving to the next (A0).
         #[arg(long, default_value_t = 30)]
         frames_per_rung: u32,
+        /// Number of synthetic frames to encode in plain `encoder-smoke` mode
+        /// (when set, uses `--width` × `--height` and moving-block-over-stripes
+        /// content instead of the 10-frame 640×480 CI solid-colour check, and
+        /// reports per-frame `encode_ms` p50/p95).
+        #[arg(long)]
+        frames: Option<u32>,
         /// Open the encoder in constrained (relay) mode — the tighter HRD
         /// window a slow-link session runs with (A0).
         #[arg(long)]
@@ -1875,6 +1881,7 @@ async fn daemon_main() -> Result<()> {
             width,
             height,
             frames_per_rung,
+            frames,
             constrained,
             json,
         } => {
@@ -1891,7 +1898,17 @@ async fn daemon_main() -> Result<()> {
                 )
                 .await
             } else {
-                encoder_smoke_cmd(&encoder, &codec, name.as_deref(), dump.as_deref()).await
+                encoder_smoke_cmd(
+                    &encoder,
+                    &codec,
+                    name.as_deref(),
+                    dump.as_deref(),
+                    width,
+                    height,
+                    frames,
+                    json,
+                )
+                .await
             }
         }
         Command::AppsProbe => apps_probe_cmd(&config_path),
@@ -5692,14 +5709,20 @@ async fn self_update_cmd(check_only: bool) -> Result<()> {
 /// assert at least one keyframe comes out. Used in CI to catch MF init
 /// regressions before shipping an MSI. Exits with a non-zero code on
 /// any failure so a failed smoke check fails the release build.
+#[allow(clippy::too_many_arguments)]
 async fn encoder_smoke_cmd(
     pref_raw: &str,
     codec_raw: &str,
     name: Option<&str>,
     dump: Option<&str>,
+    cli_width: u32,
+    cli_height: u32,
+    cli_frames: Option<u32>,
+    json: bool,
 ) -> Result<()> {
     use meshharbord::encode::{open_default, open_for_codec};
     use std::io::Write as _;
+    use std::time::Instant;
 
     // FR-78 P3 — the raw bitstream, for an offline decode (see the flag's doc).
     let mut dump_file = match dump {
@@ -5731,10 +5754,12 @@ async fn encoder_smoke_cmd(
 
     let pref = encode::EncoderPreference::from_str(pref_raw)
         .map_err(|e| anyhow::anyhow!("bad encoder preference {pref_raw:?}: {e}"))?;
-    let w = 640u32;
-    let h = 480u32;
+    let bench_mode = cli_frames.is_some();
+    let w = if bench_mode { cli_width } else { 640u32 };
+    let h = if bench_mode { cli_height } else { 480u32 };
+    let n_frames = cli_frames.unwrap_or(10).max(1);
     let codec = codec_raw.to_ascii_lowercase();
-    tracing::info!(width = w, height = h, ?pref, codec = %codec, "encoder smoke: opening encoder");
+    tracing::info!(width = w, height = h, n_frames, ?pref, codec = %codec, "encoder smoke: opening encoder");
 
     // For H.264 keep the historical `open_default` path (preserves
     // logging + behaviour that CI smoke output is pinned to). For any
@@ -5767,19 +5792,41 @@ async fn encoder_smoke_cmd(
 
     let mut keyframes = 0usize;
     let mut total_bytes = 0usize;
-    for i in 0..10 {
+    let mut frame_encode_ms: Vec<f64> = Vec::with_capacity(n_frames as usize);
+    let mut frame_is_key: Vec<bool> = Vec::with_capacity(n_frames as usize);
+    let mut frame_bytes_vec: Vec<usize> = Vec::with_capacity(n_frames as usize);
+
+    for i in 0..n_frames {
         let mut data = vec![0u8; (w * h * 4) as usize];
-        // Alternate solid colours so the encoder has content to encode.
-        let (b, g, r) = match i % 3 {
-            0 => (255, 0, 0),
-            1 => (0, 255, 0),
-            _ => (0, 0, 255),
-        };
-        for px in data.chunks_exact_mut(4) {
-            px[0] = b;
-            px[1] = g;
-            px[2] = r;
-            px[3] = 255;
+        if bench_mode {
+            // Deterministic moving-block-over-stripes frame (same content as A0 sweep).
+            let bx = ((i * 11) % (w.saturating_sub(200)).max(1)) as usize;
+            let by = ((i * 7) % (h.saturating_sub(200)).max(1)) as usize;
+            for y in 0..h as usize {
+                for x in 0..w as usize {
+                    let idx = (y * w as usize + x) * 4;
+                    let in_block = x >= bx && x < bx + 200 && y >= by && y < by + 200;
+                    let stripe = ((x / 3) & 1) == 0;
+                    let lum: u8 = if in_block ^ stripe { 235 } else { 32 };
+                    data[idx] = lum;
+                    data[idx + 1] = lum;
+                    data[idx + 2] = lum;
+                    data[idx + 3] = 255;
+                }
+            }
+        } else {
+            // Alternate solid colours so the encoder has content to encode.
+            let (b, g, r) = match i % 3 {
+                0 => (255, 0, 0),
+                1 => (0, 255, 0),
+                _ => (0, 0, 255),
+            };
+            for px in data.chunks_exact_mut(4) {
+                px[0] = b;
+                px[1] = g;
+                px[2] = r;
+                px[3] = 255;
+            }
         }
         let frame = std::sync::Arc::new(meshharbord::capture::Frame {
             width: w,
@@ -5792,20 +5839,29 @@ async fn encoder_smoke_cmd(
             damage: meshharbord::capture::Damage::Unknown,
             source: None,
         });
-        if i == 5 {
+        if !bench_mode && i == 5 {
             enc.request_keyframe();
         }
+        let t0 = Instant::now();
         let packets = enc.encode(frame).await?;
+        let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let mut this_bytes = 0usize;
+        let mut this_key = false;
         for p in &packets {
             total_bytes += p.data.len();
+            this_bytes += p.data.len();
             if p.is_keyframe {
                 keyframes += 1;
+                this_key = true;
             }
             if let Some(f) = dump_file.as_mut() {
                 f.write_all(&p.data)
                     .context("encoder smoke: --dump write failed")?;
             }
         }
+        frame_encode_ms.push(elapsed_ms);
+        frame_is_key.push(this_key);
+        frame_bytes_vec.push(this_bytes);
     }
     if let Some(mut f) = dump_file.take() {
         f.flush().context("encoder smoke: --dump flush failed")?;
@@ -5821,6 +5877,49 @@ async fn encoder_smoke_cmd(
     }
     if keyframes == 0 {
         bail!("encoder smoke: no keyframes produced (backend={backend})");
+    }
+    if bench_mode || json {
+        let stats_for = |vals: &[f64]| -> (usize, f64, f64, f64, f64, f64) {
+            if vals.is_empty() {
+                return (0, 0.0, 0.0, 0.0, 0.0, 0.0);
+            }
+            let mut s = vals.to_vec();
+            s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let n = s.len();
+            let p50 = if n % 2 == 1 {
+                s[n / 2]
+            } else {
+                (s[n / 2 - 1] + s[n / 2]) / 2.0
+            };
+            let idx95 = ((n as f64 * 0.95).ceil() as usize)
+                .saturating_sub(1)
+                .min(n - 1);
+            let p95 = s[idx95];
+            let mean = s.iter().sum::<f64>() / n as f64;
+            (n, p50, p95, mean, s[0], s[n - 1])
+        };
+        let idr_vals: Vec<f64> = frame_encode_ms
+            .iter()
+            .zip(frame_is_key.iter())
+            .filter_map(|(&ms, &k)| if k { Some(ms) } else { None })
+            .collect();
+        let p_vals: Vec<f64> = frame_encode_ms
+            .iter()
+            .zip(frame_is_key.iter())
+            .filter_map(|(&ms, &k)| if !k { Some(ms) } else { None })
+            .collect();
+        let (all_n, all_p50, all_p95, all_mean, all_min, all_max) = stats_for(&frame_encode_ms);
+        let (idr_n, idr_p50, idr_p95, idr_mean, idr_min, idr_max) = stats_for(&idr_vals);
+        let (p_n, p_p50, p_p95, p_mean, p_min, p_max) = stats_for(&p_vals);
+        let ms_list: Vec<String> = frame_encode_ms.iter().map(|v| format!("{v:.3}")).collect();
+        let key_list: Vec<String> = frame_is_key.iter().map(|k| k.to_string()).collect();
+        let bytes_list: Vec<String> = frame_bytes_vec.iter().map(|b| b.to_string()).collect();
+        println!(
+            "MESHHARBOR_SMOKE_BENCH_JSON:{{\"backend\":\"{backend}\",\"codec\":\"{actual_codec}\",\"w\":{w},\"h\":{h},\"frames\":{all_n},\"keyframes\":{keyframes},\"total_bytes\":{total_bytes},\"all\":{{\"count\":{all_n},\"p50_ms\":{all_p50:.3},\"p95_ms\":{all_p95:.3},\"mean_ms\":{all_mean:.3},\"min_ms\":{all_min:.3},\"max_ms\":{all_max:.3}}},\"idr\":{{\"count\":{idr_n},\"p50_ms\":{idr_p50:.3},\"p95_ms\":{idr_p95:.3},\"mean_ms\":{idr_mean:.3},\"min_ms\":{idr_min:.3},\"max_ms\":{idr_max:.3}}},\"p\":{{\"count\":{p_n},\"p50_ms\":{p_p50:.3},\"p95_ms\":{p_p95:.3},\"mean_ms\":{p_mean:.3},\"min_ms\":{p_min:.3},\"max_ms\":{p_max:.3}}},\"frame_encode_ms\":[{}],\"frame_is_key\":[{}],\"frame_bytes\":[{}]}}",
+            ms_list.join(","),
+            key_list.join(","),
+            bytes_list.join(",")
+        );
     }
     println!(
         "encoder smoke PASSED: backend={backend} keyframes={keyframes} total_bytes={total_bytes}"
