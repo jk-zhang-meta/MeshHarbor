@@ -624,22 +624,29 @@ fn worker_main(
 ) -> Result<()> {
     // Pin the process-wide COM MTA apartment open once so `windows-core` v0.58.0's
     // process-global `FactoryCache` (`windows-core-0.58.0/src/imp/factory_cache.rs`:
-    // `FactoryCache::call` at lines 31-65 and `pub fn factory<C, I>()` at lines 73-99,
-    // used by `GraphicsCaptureItem` and `Direct3D11CaptureFramePool::CreateFreeThreaded`)
-    // never holds a dangling activation-factory pointer after a WGC worker thread's
-    // `RoUninitializeGuard` drops between sessions. Specifically:
+    // `FactoryCache::call` at lines 31-65 and `pub fn factory<C, I>()` at lines 73-99)
+    // never holds a dangling activation-factory pointer across sessions after a WGC
+    // worker thread's `RoUninitializeGuard` drops:
     // - `FactoryCache::call` (lines 35-40) loads `self.shared` (`AtomicPtr<c_void>`) and,
-    //   when non-null, immediately invokes the callback on the cached pointer; on first
-    //   use (lines 43-57) it calls `factory::<C, I>()?`, checks `IAgileObject`, CAS-stores
-    //   `factory.as_raw()` into `self.shared`, and calls `forget(factory)`.
+    //   when non-null, immediately invokes the callback on the cached pointer (`assume_vtable`
+    //   + vtable slot call); on first use (lines 43-57) it calls `factory::<C, I>()?`,
+    //   checks `IAgileObject`, CAS-stores `factory.as_raw()` into `self.shared`, and calls
+    //   `forget(factory)`.
     // - `factory::<C, I>()` (lines 79-91) calls `RoGetActivationFactory` and ONLY calls
     //   `CoIncrementMTAUsage(&mut cookie)` when `code == CO_E_NOTINITIALIZED` (line 89).
     //   Because `worker_main` calls `RoInitialize(RO_INIT_MULTITHREADED)` on the worker
-    //   thread, `RoGetActivationFactory` returns `S_OK` on the first session without
-    //   `factory()` ever calling `CoIncrementMTAUsage`. When Session 1 closes and the
-    //   worker's `RoUninitializeGuard` runs `RoUninitialize()`, the process MTA refcount
-    //   drops to zero and unloads `Windows.Graphics.Capture.dll`, causing Session 2's
-    //   cached `FactoryCache::call` to fault with `0xc0000005` (`STATUS_ACCESS_VIOLATION`).
+    //   thread, `RoGetActivationFactory` returns `S_OK` on Session 1 without `factory()`
+    //   ever calling `CoIncrementMTAUsage`.
+    // - Verified by A/B reproduction (`f91109a56af15d9e` on `696daf379 + 82220862b`
+    //   without `MTA_PIN`): Session 1 succeeds and closes (`RoUninitializeGuard::drop` ->
+    //   `RoUninitialize()`), and Session 2 crashes with `0xc0000005` (`Fault offset:
+    //   0x0109b764`, symbolized via `addr2line` / `objdump` at `0x14109b764: call *0x30(%rax)`
+    //   in `Direct3D11CaptureFramePool::CreateFreeThreaded::{{closure}}` at
+    //   `windows-0.58.0/src/Windows/Graphics/Capture/mod.rs:332` inlined into
+    //   `FactoryCache<Direct3D11CaptureFramePool, IDirect3D11CaptureFramePoolStatics2>::call`
+    //   at `windows-core-0.58.0/src/imp/factory_cache.rs:39` on the cached `self.shared`
+    //   fast path). With `MTA_PIN` present, 5/5 consecutive sessions in `f91109ab6af14fd2`
+    //   and 14/14 sessions in the full suite completed in the same process with 0 crashes.
     static MTA_PIN: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     MTA_PIN.get_or_init(|| {
         let _ = unsafe { windows::Win32::System::Com::CoIncrementMTAUsage() };
