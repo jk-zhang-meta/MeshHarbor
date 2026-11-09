@@ -1311,28 +1311,20 @@ fn install_mf_winners_from_child(
     parent_session_id: Option<u32>,
     deny: &[String],
 ) {
-    let mut installed_any = false;
-    {
-        let mut map = mf_winners_lock().lock().unwrap_or_else(|e| e.into_inner());
-        for (codec, winner) in winners {
-            if should_install_child_mf_winner(winner, parent_session_id, deny) {
-                map.insert(codec.clone(), winner.clone());
-                installed_any = true;
-            } else {
-                tracing::info!(
-                    codec = %codec,
-                    mft = %winner.mft_name,
-                    backend = %winner.backend_kind,
-                    child_session_id = ?winner.session_id,
-                    parent_session_id = ?parent_session_id,
-                    "caps probe: skipping child MF winner installation (session mismatch or denylisted)"
-                );
-            }
+    let mut map = mf_winners_lock().lock().unwrap_or_else(|e| e.into_inner());
+    for (codec, winner) in winners {
+        if should_install_child_mf_winner(winner, parent_session_id, deny) {
+            map.insert(codec.clone(), winner.clone());
+        } else {
+            tracing::info!(
+                codec = %codec,
+                mft = %winner.mft_name,
+                backend = %winner.backend_kind,
+                child_session_id = ?winner.session_id,
+                parent_session_id = ?parent_session_id,
+                "caps probe: skipping child MF winner installation (session mismatch or denylisted)"
+            );
         }
-    }
-    if installed_any {
-        #[cfg(all(target_os = "windows", feature = "mf-encoder"))]
-        crate::encode::mf::prewarm_mft_enum();
     }
 }
 
