@@ -3769,16 +3769,11 @@ async fn media_pump(
                         new_fps,
                         codec = %chosen_codec,
                         encoder = enc_ref.name(),
-                        "auto-fps-cap: SW backend at >30 fps target — rebuilding capturer at 30 fps to clear the capture-bottleneck drop rate"
+                        "auto-fps-cap: SW backend at >30 fps target — updating capturer to 30 fps in-place to clear the capture-bottleneck drop rate"
                     );
                     target_fps = new_fps;
                     frame_duration_floor = Duration::from_micros(1_000_000 / target_fps as u64);
-                    capturer = capture::open_default_async(
-                        target_fps,
-                        downscale,
-                        media_waiting_hook(session_id, control_dc.clone()),
-                    )
-                    .await;
+                    capturer.set_target_fps(target_fps);
                 }
 
                 // rc.38 — when auto-downscale changes target_resolution
