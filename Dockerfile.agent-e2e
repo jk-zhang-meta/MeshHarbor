@@ -31,7 +31,7 @@
 # and today's dependencies do not build on the 1.88 this stage used to pin.
 FROM rust:1.95-bookworm AS builder
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends cmake \
+    && apt-get install -y --no-install-recommends cmake nasm \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .

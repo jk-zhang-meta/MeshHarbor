@@ -38,9 +38,56 @@ fn main() {
 
     hive_host();
     windows_main_stack();
+    check_openh264_nasm();
 
     #[cfg(windows)]
     windows_version_info::embed();
+}
+
+/// Ensures `nasm` is available in `PATH` when building `meshharbord` with
+/// `openh264-encoder` on `x86` or `x86_64`.
+///
+/// `openh264-src` checks `nasm -v` at build time and silently falls back to pure
+/// C when `nasm` is missing, resulting in 0 x86 SIMD symbols and ~2.3x slower
+/// frame encoding. Release builds fail closed unless `nasm` is installed or
+/// `MESHHARBORD_ALLOW_OPENH264_NO_NASM=1` is explicitly set; non-release
+/// profiles (`debug`, `check`, `clippy`, `test`) emit `cargo:warning` so local
+/// development and unit tests on hosts without `nasm` still work.
+fn check_openh264_nasm() {
+    println!("cargo:rerun-if-env-changed=MESHHARBORD_ALLOW_OPENH264_NO_NASM");
+    println!("cargo:rerun-if-env-changed=PATH");
+    if std::env::var_os("CARGO_FEATURE_OPENH264_ENCODER").is_none() {
+        return;
+    }
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    if !matches!(arch.as_str(), "x86" | "x86_64") {
+        return;
+    }
+    let has_nasm = std::process::Command::new("nasm")
+        .arg("-v")
+        .output()
+        .is_ok_and(|out| out.status.success());
+    if has_nasm {
+        return;
+    }
+    if std::env::var("MESHHARBORD_ALLOW_OPENH264_NO_NASM").as_deref() == Ok("1") {
+        println!(
+            "cargo:warning=meshharbord: `nasm` not found in PATH on {arch}, \
+             proceeding without x86 SIMD because MESHHARBORD_ALLOW_OPENH264_NO_NASM=1"
+        );
+        return;
+    }
+    let msg = format!(
+        "meshharbord with `openh264-encoder` on {arch} requires `nasm` in PATH \
+         so `openh264-src` compiles x86/x86_64 SIMD assembly (without `nasm`, \
+         `openh264-src` silently falls back to pure C and encodes ~2.3x slower). \
+         Install `nasm` or set MESHHARBORD_ALLOW_OPENH264_NO_NASM=1 to bypass."
+    );
+    if std::env::var("PROFILE").as_deref() == Ok("release") {
+        panic!("{msg}");
+    } else {
+        println!("cargo:warning={msg}");
+    }
 }
 
 /// The main thread's stack on Windows: 8 MiB, what Linux gives it.

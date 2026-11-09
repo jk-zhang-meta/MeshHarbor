@@ -22,15 +22,20 @@ The commands below are local entrypoints, not a claim of cross-platform validati
 
 `rust-toolchain.toml` pins Rust **1.95.0**, rustfmt and clippy. Keep `Cargo.lock`
 and vendored dependency patches; do not uninstall user toolchains to mimic a runner.
-Linux native prerequisites include pkg-config, cmake, clang/libclang, libdbus-1-dev,
+Linux native prerequisites include pkg-config, cmake, nasm, clang/libclang, libdbus-1-dev,
 libglib2.0-dev, libgtk-3-dev, libsoup-3.0-dev, libjavascriptcoregtk-4.1-dev,
 libwebkit2gtk-4.1-dev, libvpx-dev, libxcb1-dev, libxcb-shm0-dev,
 libxcb-randr0-dev and libasound2-dev, according to selected features.
 The former dependency checks can be inspected through the
 [historical sources](#historical-workflow-sources), including the retired
 `ci-linux-system-deps` action. They are not a local setup script.
-Windows needs MSVC, Windows SDK, pkg-config and native dependencies; macOS needs
+Windows needs MSVC, Windows SDK, pkg-config, nasm and native dependencies; macOS needs
 Xcode tools and the target-specific dependencies. Package/signing tools are separate.
+Release builds of `meshharbord` with `openh264-encoder` on `x86`/`x86_64` require
+`nasm` in `PATH` so `openh264-src` compiles x86 SIMD assembly (`build.rs` fails
+closed in `release` profile when `nasm` is missing unless
+`MESHHARBORD_ALLOW_OPENH264_NO_NASM=1` is explicitly set; non-release profiles
+emit a `cargo:warning`).
 
 ```sh
 cargo fmt --all -- --check
