@@ -41,6 +41,7 @@ import {
   hashClipboardHtml,
   createClipboardEchoGate,
   createHeldInputTracker,
+  createLocalIceOutbox,
   buildClipboardImageFrames,
   grantAllowsClipboard,
   dropClipboardChannel,
@@ -6693,6 +6694,210 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
     } finally {
       globalThis.RTCPeerConnection = origPc
       win.showSaveFilePicker = origPicker
+      api.get = origApiGet
+      ws.onRcMessage = origOnRc
+    }
+  })
+
+  it('buffers livePc local ICE candidates until rc:sdp.offer is sent, flushes in order, discards on offer error, resets on reconnect, and preserves empty sessionId handling', async () => {
+    // 1. Direct unit verification of createLocalIceOutbox
+    const rawOut: Record<string, unknown>[] = []
+    const outbox = createLocalIceOutbox((m) => rawOut.push(m))
+    expect(outbox.isOfferSent()).toBe(false)
+    expect(outbox.pendingCount()).toBe(0)
+
+    // Empty sessionId or null candidate is ignored without buffering or sending
+    outbox.onCandidate('', { candidate: 'cand-empty-sid' })
+    outbox.onCandidate(null, { candidate: 'cand-null-sid' })
+    outbox.onCandidate('sid-1', null)
+    expect(outbox.pendingCount()).toBe(0)
+    expect(rawOut).toHaveLength(0)
+
+    // Candidates arriving while offerSent=false are queued in order
+    outbox.onCandidate('sid-1', { candidate: 'host-udp-192.168.1.42' })
+    outbox.onCandidate('sid-1', { candidate: 'host-udp-100.64.0.58' })
+    expect(outbox.pendingCount()).toBe(2)
+    expect(rawOut).toHaveLength(0)
+
+    // Flushing after ws.sendRaw(offerFrame) emits queued candidates in FIFO order
+    rawOut.push({ t: 'rc:sdp.offer', session_id: 'sid-1' })
+    outbox.markOfferSentAndFlush('sid-1')
+    expect(outbox.isOfferSent()).toBe(true)
+    expect(outbox.pendingCount()).toBe(0)
+    expect(rawOut.map((m) => [m.t, (m.candidate as RTCIceCandidateInit | undefined)?.candidate])).toEqual([
+      ['rc:sdp.offer', undefined],
+      ['rc:ice', 'host-udp-192.168.1.42'],
+      ['rc:ice', 'host-udp-100.64.0.58'],
+    ])
+
+    // Candidates arriving when offerSent=true are sent immediately
+    outbox.onCandidate('sid-1', { candidate: 'srflx-udp-198.51.100.8' })
+    expect(outbox.pendingCount()).toBe(0)
+    expect(rawOut).toHaveLength(4)
+    expect(rawOut[3]).toEqual({
+      t: 'rc:ice',
+      session_id: 'sid-1',
+      candidate: { candidate: 'srflx-udp-198.51.100.8' },
+    })
+
+    // Reset on error or new reconnect attempt discards buffered candidates and resets offerSent
+    outbox.reset()
+    expect(outbox.isOfferSent()).toBe(false)
+    outbox.onCandidate('sid-2', { candidate: 'stale-before-fail' })
+    expect(outbox.pendingCount()).toBe(1)
+    outbox.reset()
+    expect(outbox.pendingCount()).toBe(0)
+    expect(rawOut).toHaveLength(4)
+
+    // 2. End-to-end composable verification across offerAsk async window, offer error, and reconnect
+    const { createPinia, setActivePinia } = await import('pinia')
+    const { ref } = await import('vue')
+    const { useWsStore } = await import('@/stores/ws')
+    const { api } = await import('@/api/client')
+    const { useRemoteControl } = await import('@/composables/useRemoteControl')
+
+    setActivePinia(createPinia())
+    const ws = useWsStore()
+    ws.status = 'connected'
+
+    const rcListeners = new Map<string, Set<(msg: Record<string, unknown>) => void>>()
+    const origOnRc = ws.onRcMessage
+    ws.onRcMessage = ((t: string, h: (msg: Record<string, unknown>) => void) => {
+      let s = rcListeners.get(t)
+      if (!s) {
+        s = new Set()
+        rcListeners.set(t, s)
+      }
+      s.add(h)
+      return () => s?.delete(h)
+    }) as typeof origOnRc
+
+    const deliverRc = (t: string, msg: Record<string, unknown>) => {
+      for (const h of Array.from(rcListeners.get(t) ?? [])) {
+        h({ t, ...msg })
+      }
+    }
+
+    const sentWs: Record<string, unknown>[] = []
+    ws.sendRaw = (msg: unknown) => {
+      sentWs.push(msg as Record<string, unknown>)
+    }
+
+    const origApiGet = api.get
+    api.get = (async () => ({ ice_servers: [] })) as typeof origApiGet
+
+    let shouldThrowOnSetLocal = false
+    class FakeRacePc {
+      static instances: FakeRacePc[] = []
+      closed = false
+      connectionState = 'new'
+      signalingState: RTCSignalingState = 'stable'
+      onicecandidate:
+        | ((ev: { candidate: { toJSON: () => RTCIceCandidateInit } | null }) => void)
+        | null = null
+      onconnectionstatechange: (() => void) | null = null
+      ontrack: ((ev: unknown) => void) | null = null
+      constructor() {
+        FakeRacePc.instances.push(this)
+      }
+      addTransceiver() {}
+      createDataChannel() {
+        return {
+          readyState: 'open',
+          binaryType: 'arraybuffer',
+          close() {},
+          send() {},
+        } as unknown as RTCDataChannel
+      }
+      async createOffer() {
+        return { type: 'offer' as const, sdp: SAMPLE_SDP }
+      }
+      async setLocalDescription() {
+        // Browser gathers local host candidates immediately inside setLocalDescription,
+        // BEFORE offerAsk(...) finishes and BEFORE ws.sendRaw(offerFrame) runs!
+        this.onicecandidate?.({
+          candidate: { toJSON: () => ({ candidate: 'cand-host-1', sdpMid: '0', sdpMLineIndex: 0 }) },
+        })
+        this.onicecandidate?.({
+          candidate: { toJSON: () => ({ candidate: 'cand-host-2', sdpMid: '0', sdpMLineIndex: 0 }) },
+        })
+        if (shouldThrowOnSetLocal) {
+          throw new Error('simulated setLocalDescription failure')
+        }
+        this.signalingState = 'have-local-offer'
+      }
+      async setRemoteDescription() {
+        this.signalingState = 'stable'
+      }
+      async addIceCandidate() {}
+      async getStats() {
+        return new Map() as unknown as RTCStatsReport
+      }
+      close() {
+        this.closed = true
+      }
+    }
+
+    const origPc = globalThis.RTCPeerConnection
+    globalThis.RTCPeerConnection = FakeRacePc as unknown as typeof RTCPeerConnection
+
+    try {
+      const agentRef = ref({
+        id: AGENT_ID,
+        os: 'linux' as const,
+        capabilities: {
+          codecs: ['h264'] as ('h264' | 'h265' | 'av1')[],
+          hw_encoders: [],
+          has_input_permission: true,
+          supports_clipboard: true,
+          supports_file_transfer: true,
+          max_simultaneous_sessions: 4,
+        },
+      })
+      const rc = useRemoteControl(agentRef, { userId: () => USER_ID })
+
+      // Attempt 1: simulated failure in setLocalDescription after 2 candidates fired
+      shouldThrowOnSetLocal = true
+      await rc.connect(AGENT_ID)
+      // Before session_created, sessionId is null -> candidate ignored
+      FakeRacePc.instances[0]!.onicecandidate?.({
+        candidate: { toJSON: () => ({ candidate: 'cand-no-session-id' }) },
+      })
+      deliverRc('rc:session.created', { session_id: '65f000000000000000000901', agent_id: AGENT_ID })
+      sentWs.length = 0
+      deliverRc('rc:ready', { session_id: '65f000000000000000000901' })
+      await new Promise((r) => setTimeout(r, 25))
+      // Neither rc:sdp.offer nor the 2 buffered rc:ice candidates may be sent on failure
+      expect(sentWs.filter((m) => m.t === 'rc:sdp.offer' || m.t === 'rc:ice')).toEqual([])
+
+      // Attempt 2 (reconnect): succeeds; host candidates fire during setLocalDescription (before offerAsk finishes)
+      shouldThrowOnSetLocal = false
+      await rc.connect(AGENT_ID)
+      const sid2 = '65f000000000000000000902'
+      deliverRc('rc:session.created', { session_id: sid2, agent_id: AGENT_ID })
+      sentWs.length = 0
+      deliverRc('rc:ready', { session_id: sid2 })
+      await new Promise((r) => setTimeout(r, 30))
+
+      // Late trickle candidate after offerSent=true is sent immediately
+      const pc2 = FakeRacePc.instances[FakeRacePc.instances.length - 1]!
+      pc2.onicecandidate?.({
+        candidate: { toJSON: () => ({ candidate: 'cand-srflx-late', sdpMid: '0', sdpMLineIndex: 0 }) },
+      })
+
+      const sigMsgs = sentWs.filter((m) => m.t === 'rc:sdp.offer' || m.t === 'rc:ice')
+      expect(
+        sigMsgs.map((m) => [m.t, m.session_id, (m.candidate as RTCIceCandidateInit | undefined)?.candidate]),
+      ).toEqual([
+        ['rc:sdp.offer', sid2, undefined],
+        ['rc:ice', sid2, 'cand-host-1'],
+        ['rc:ice', sid2, 'cand-host-2'],
+        ['rc:ice', sid2, 'cand-srflx-late'],
+      ])
+
+      rc.disconnect()
+    } finally {
+      globalThis.RTCPeerConnection = origPc
       api.get = origApiGet
       ws.onRcMessage = origOnRc
     }

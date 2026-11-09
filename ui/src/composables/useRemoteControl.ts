@@ -4102,6 +4102,68 @@ export interface HeldInputTracker {
   size(): number
 }
 
+export interface LocalIceOutbox {
+  /** Called from `pc.onicecandidate`: drops when `sessionId` is empty or
+   *  `candidate` is null; buffers into `pendingLocalIce` while `offerSent`
+   *  is false (between `setLocalDescription(offer)` and `ws.sendRaw(offerFrame)`),
+   *  and sends `rc:ice` immediately once `offerSent` is true. */
+  onCandidate(
+    sessionId: string | null | undefined,
+    candidate: RTCIceCandidateInit | null | undefined,
+  ): void
+  /** Called immediately after `ws.sendRaw(offerFrame)`: sets `offerSent = true`
+   *  and flushes any buffered local ICE candidates in FIFO order. */
+  markOfferSentAndFlush(sessionId: string | null | undefined): void
+  /** Called on offer failure, `teardown()`, or a new connect attempt: resets
+   *  `offerSent = false` and discards any buffered candidates. */
+  reset(): void
+  isOfferSent(): boolean
+  pendingCount(): number
+}
+
+export function createLocalIceOutbox(
+  sendRaw: (msg: Record<string, unknown>) => void,
+): LocalIceOutbox {
+  const pendingLocalIce: RTCIceCandidateInit[] = []
+  let offerSent = false
+  return {
+    onCandidate(sessionId, candidate) {
+      if (!sessionId || !candidate) return
+      if (!offerSent) {
+        pendingLocalIce.push(candidate)
+        return
+      }
+      sendRaw({
+        t: 'rc:ice',
+        session_id: sessionId,
+        candidate,
+      })
+    },
+    markOfferSentAndFlush(sessionId) {
+      offerSent = true
+      const queued = pendingLocalIce.splice(0)
+      if (!sessionId) return
+      for (const candidate of queued) {
+        sendRaw({
+          t: 'rc:ice',
+          session_id: sessionId,
+          candidate,
+        })
+      }
+    },
+    reset() {
+      offerSent = false
+      pendingLocalIce.length = 0
+    },
+    isOfferSent() {
+      return offerSent
+    },
+    pendingCount() {
+      return pendingLocalIce.length
+    },
+  }
+}
+
 export function createHeldInputTracker(): HeldInputTracker {
   const keys = new Set<number>()
   const buttons = new Set<string>()
@@ -8397,6 +8459,11 @@ export function useRemoteControl(
    *  description, otherwise addIceCandidate throws. */
   const pendingRemoteIce: RTCIceCandidateInit[] = []
   let remoteDescriptionSet = false
+  /** Buffer local trickle ICE candidates emitted by `livePc.onicecandidate`
+   *  between `await livePc.setLocalDescription(offer)` and `ws.sendRaw(offerFrame)`
+   *  (while `await transportMac(...)` / `await offerAsk(...)` are in flight),
+   *  so `rc:ice` never arrives at the agent before `rc:sdp.offer`. */
+  const localIceOutbox = createLocalIceOutbox((msg) => ws.sendRaw(msg))
 
   // Multi-user P3: THIS composable's unsubscribers. Registration is
   // multi-subscriber now (ws.ts Set-based registry), so teardown must
@@ -8551,6 +8618,7 @@ export function useRemoteControl(
       markConnect('ready')
       phase.value = 'negotiating'
       armSignalingTimeout()
+      localIceOutbox.reset()
       try {
         const offer = await livePc.createOffer()
         await livePc.setLocalDescription(offer)
@@ -8599,9 +8667,15 @@ export function useRemoteControl(
             pair: peerAuthKey ? await withinMs(peerAuthKey, 1500) : null,
           })
         }
+        if (!pc || pc !== livePc) {
+          localIceOutbox.reset()
+          return
+        }
         ws.sendRaw(offerFrame)
+        localIceOutbox.markOfferSentAndFlush(askedSid || sessionId.value)
         markConnect('offer_sent')
       } catch (e) {
+        localIceOutbox.reset()
         failWith((e as Error).message || 'createOffer failed')
       }
     })
@@ -9185,6 +9259,7 @@ export function useRemoteControl(
     hasMedia.value = false
     remoteDescriptionSet = false
     pendingRemoteIce.length = 0
+    localIceOutbox.reset()
     // FR-100 P2a — what the next attempt asks is decided afresh. The verdict
     // (`peerAuth`) stays: the error view reads it after a refusal.
     peerAuthPlan = null
@@ -9480,6 +9555,7 @@ export function useRemoteControl(
     // docs/tunnels.md), nor send a request on behalf of a torn-down state.
     if (gen !== connectGen) return
     lastIceServers = iceServers
+    localIceOutbox.reset()
 
     pc = new RTCPeerConnection({
       iceServers: iceServers as RTCIceServer[],
@@ -9587,11 +9663,7 @@ export function useRemoteControl(
       if (!sessionId.value) return
       // Note: null candidate signals end-of-gather — skip it.
       if (!ev.candidate) return
-      ws.sendRaw({
-        t: 'rc:ice',
-        session_id: sessionId.value,
-        candidate: ev.candidate.toJSON(),
-      })
+      localIceOutbox.onCandidate(sessionId.value, ev.candidate.toJSON())
     }
 
     pc.onconnectionstatechange = () => {
