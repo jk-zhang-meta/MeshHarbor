@@ -1298,7 +1298,7 @@ where
                             now_unix,
                             age_secs = now_unix.saturating_sub(winner.recorded_at_unix),
                             ttl_secs = MF_SW_WINNER_TTL_SECS,
-                            "mf-encoder: cached SW winner TTL expired — reusing stale winner for current session and spawning background caps-probe refresh"
+                            "mf-encoder: cached SW winner TTL expired — reusing stale winner for current session and requesting background caps-probe refresh"
                         );
                         trigger_bg_refresh();
                     }
@@ -1399,8 +1399,8 @@ where
         )
         .is_err()
     {
-        tracing::debug!(
-            "mf-encoder: background caps-probe refresh already in flight — skipping duplicate trigger"
+        tracing::info!(
+            "mf-encoder: background caps-probe refresh already in flight — skipping duplicate request"
         );
         return None;
     }
@@ -1410,7 +1410,10 @@ where
             let _reset = AtomicFlagReset(in_flight);
             probe_and_apply();
         }) {
-        Ok(handle) => Some(handle),
+        Ok(handle) => {
+            tracing::info!("mf-encoder: spawned background caps-probe refresh");
+            Some(handle)
+        }
         Err(e) => {
             in_flight.store(false, std::sync::atomic::Ordering::Release);
             tracing::warn!(%e, "mf-encoder: failed to spawn background caps-probe refresh thread");
