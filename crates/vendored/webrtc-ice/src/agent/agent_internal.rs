@@ -794,10 +794,20 @@ impl AgentInternal {
 
         let remote_candidates = self.remote_candidates.lock().await;
         if let Some(cands) = remote_candidates.get(&network_type) {
+            if let Some(selected) = self.agent_conn.get_selected_pair() {
+                let sel_rem = &selected.remote;
+                if ((sel_rem.address() == ip.to_string() && sel_rem.port() == port)
+                    || (match_resolved_addr && sel_rem.addr() == addr))
+                    && cands.iter().any(|c| c.equal(&**sel_rem))
+                {
+                    return Some(sel_rem.clone());
+                }
+            }
             if match_resolved_addr {
                 if let Some(host) = cands.iter().find(|c| {
                     c.candidate_type() == CandidateType::Host
-                        && ((c.address() == ip.to_string() && c.port() == port) || c.addr() == addr)
+                        && c.address().parse::<std::net::IpAddr>().is_err()
+                        && c.addr() == addr
                 }) {
                     return Some(host.clone());
                 }

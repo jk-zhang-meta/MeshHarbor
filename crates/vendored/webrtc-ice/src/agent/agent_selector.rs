@@ -214,7 +214,14 @@ impl AgentInternal {
                             && (state == CandidatePairState::Waiting as u8
                                 || state == CandidatePairState::InProgress as u8))
                 })
-                .filter(|p| selected.as_ref().is_none_or(|s| !same_pair(p, s)))
+                .filter(|p| {
+                    selected.as_ref().is_none_or(|s| {
+                        !same_pair(p, s)
+                            && !(!s.remote.addr().ip().is_unspecified()
+                                && p.local.addr() == s.local.addr()
+                                && p.remote.addr() == s.remote.addr())
+                    })
+                })
                 .filter(|p| {
                     !direct_only
                         || (direct_real_path_with_mdns(p, resolve_mdns_addr)
@@ -2554,6 +2561,120 @@ mod same_session_failover_tests {
             "when rc_overlay=on (no ip_filter), .local candidate resolving to overlay IP must be kept"
         );
         agent_on.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn controlled_prflx_selected_pair_not_starved_by_late_same_addr_host_candidate(
+    ) -> Result<()> {
+        use crate::candidate::candidate_peer_reflexive::CandidatePeerReflexiveConfig;
+        use crate::network_type::NetworkType;
+
+        let agent = Agent::new(AgentConfig {
+            is_controlling: false,
+            keepalive_interval: Some(Duration::from_secs(2)),
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            ..Default::default()
+        })
+        .await?;
+
+        let local_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.168.1.253".into(),
+                    port: 54321,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        agent
+            .internal
+            .local_candidates
+            .lock()
+            .await
+            .insert(local_host.network_type(), vec![local_host.clone()]);
+
+        // 1. Inbound STUN before trickle creates a PeerReflexive candidate first
+        // and selects `(local_host, remote_prflx)`.
+        let remote_prflx: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidatePeerReflexiveConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.168.1.42".into(),
+                    port: 50000,
+                    component: 1,
+                    ..Default::default()
+                },
+                rel_addr: String::new(),
+                rel_port: 0,
+            }
+            .new_candidate_peer_reflexive()?,
+        );
+        agent.internal.add_remote_candidate(&remote_prflx).await;
+        let prflx_pair = agent
+            .internal
+            .find_pair(&local_host, &remote_prflx)
+            .await
+            .expect("prflx pair must exist");
+        prflx_pair
+            .state
+            .store(CandidatePairState::Succeeded as u8, Ordering::SeqCst);
+        prflx_pair.note_authenticated_success();
+        agent
+            .internal
+            .set_selected_pair(Some(Arc::clone(&prflx_pair)))
+            .await;
+
+        // 2. Late trickle adds the plain IP Host candidate for the exact same SocketAddr.
+        let remote_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.168.1.42".into(),
+                    port: 50000,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        agent.internal.add_remote_candidate(&remote_host).await;
+        let host_pair = agent
+            .internal
+            .find_pair(&local_host, &remote_host)
+            .await
+            .expect("host pair must exist");
+
+        // 3. `find_remote_candidate` for 192.168.1.42:50000 must resolve to
+        // `selected_pair.remote` (`remote_prflx`) so consent keepalive replies
+        // refresh `selected_pair.authenticated_age()`.
+        let matched = agent
+            .internal
+            .find_remote_candidate(NetworkType::Udp4, "192.168.1.42:50000".parse().unwrap())
+            .await
+            .expect("must match remote candidate");
+        assert!(
+            matched.equal(&*remote_prflx),
+            "find_remote_candidate must return selected_pair.remote (prflx), got {matched}"
+        );
+
+        // 4. `refresh_standby_pairs` must not probe `host_pair` on the identical 4-tuple.
+        agent
+            .internal
+            .refresh_standby_pairs(Duration::from_millis(1), true, true)
+            .await;
+        assert_eq!(
+            host_pair.binding_request_count.load(Ordering::SeqCst),
+            0,
+            "duplicate host pair on same 4-tuple as selected prflx pair must not be probed"
+        );
+
+        agent.close().await?;
         Ok(())
     }
 }
