@@ -456,6 +456,7 @@ pub fn spawn_agent(
             for s in forwarders.reconcile(want).await {
                 statuses.push(wire(s));
             }
+            #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
             let mut confirm = None;
             #[cfg(target_os = "linux")]
             if let Some(b) = nft.as_mut() {
