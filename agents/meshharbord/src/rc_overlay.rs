@@ -286,4 +286,38 @@ mod tests {
         assert_eq!(empty, RcOverlay::default());
         assert!(!RcOverlay::default().allow);
     }
+
+    /// Proof test for 16:07 Section 3.1: when `resolve_mdns_candidate` returns
+    /// `None` (OS resolver timeout), `peer.rs:1885-1904` re-runs
+    /// `rc_overlay.keeps_remote_candidate` on the unrewritten `.local` string
+    /// (which returns `true` because `candidate_ip` is `None`) and hands the
+    /// `.local` candidate to `webrtc-ice`. See also
+    /// `mdns_candidate_resolved_to_overlay_ip_bypasses_caller_gate_into_checklist`
+    /// in `crates/vendored/webrtc-ice/src/agent/agent_selector.rs` for the
+    /// downstream `webrtc-ice` checklist proof.
+    #[test]
+    fn mdns_os_timeout_fallback_to_webrtc_ice_bypasses_rc_overlay_gate() {
+        let p = off();
+        let raw_mdns = "candidate:5 1 udp 2122260223 4a5b6c7d-0000-1111-2222-333344445555.local 54324 typ host";
+
+        // Step 1 (peer.rs:1858): pre-resolution check passes `.local` name
+        // because `candidate_ip` cannot parse `<uuid>.local` as an `IpAddr`.
+        assert_eq!(candidate_ip(raw_mdns), None);
+        assert!(p.keeps_remote_candidate(raw_mdns));
+
+        // Step 2a (peer.rs:1885-1897 when OS resolution succeeds onto an overlay IP):
+        // `resolve_mdns_candidate` rewrites the address to `100.65.4.33`, and the
+        // second `keeps_remote_candidate` check at peer.rs:1897 drops it (`false`).
+        let rewritten_overlay = "candidate:5 1 udp 2122260223 100.65.4.33 54324 typ host";
+        assert_eq!(candidate_ip(rewritten_overlay), Some(ip("100.65.4.33")));
+        assert!(!p.keeps_remote_candidate(rewritten_overlay));
+
+        // Step 2b (peer.rs:1885-1904 when OS resolution times out -> `None`):
+        // `init.candidate` stays `raw_mdns`, so the second `keeps_remote_candidate`
+        // check at peer.rs:1897 ALSO returns `true` and `pc.add_ice_candidate(init)`
+        // hands the `.local` candidate to `webrtc-ice`, which has no `rc_overlay` gate.
+        let os_resolve_result: Option<String> = None;
+        let candidate_passed_to_second_gate = os_resolve_result.as_deref().unwrap_or(raw_mdns);
+        assert!(p.keeps_remote_candidate(candidate_passed_to_second_gate));
+    }
 }

@@ -49,6 +49,7 @@ pub struct AgentInternal {
     pub(crate) tie_breaker: AtomicU64,
     pub(crate) is_controlling: AtomicBool,
     pub(crate) lite: AtomicBool,
+    pub(crate) controlled_probe_late_direct: AtomicBool,
 
     pub(crate) start_time: SyncMutex<Instant>,
     pub(crate) nominated_pair: Mutex<Option<Arc<CandidatePair>>>,
@@ -121,6 +122,7 @@ impl AgentInternal {
             tie_breaker: AtomicU64::new(rand::random::<u64>()),
             is_controlling: AtomicBool::new(config.is_controlling),
             lite: AtomicBool::new(config.lite),
+            controlled_probe_late_direct: AtomicBool::new(false),
 
             start_time: SyncMutex::new(Instant::now()),
             nominated_pair: Mutex::new(None),
@@ -762,11 +764,22 @@ impl AgentInternal {
         addr: SocketAddr,
     ) -> Option<Arc<dyn Candidate + Send + Sync>> {
         let (ip, port) = (addr.ip(), addr.port());
+        let match_resolved_addr = self.controlled_probe_late_direct_enabled();
 
         let remote_candidates = self.remote_candidates.lock().await;
         if let Some(cands) = remote_candidates.get(&network_type) {
+            if match_resolved_addr {
+                if let Some(host) = cands.iter().find(|c| {
+                    c.candidate_type() == CandidateType::Host
+                        && ((c.address() == ip.to_string() && c.port() == port) || c.addr() == addr)
+                }) {
+                    return Some(host.clone());
+                }
+            }
             for c in cands {
-                if c.address() == ip.to_string() && c.port() == port {
+                if (c.address() == ip.to_string() && c.port() == port)
+                    || (match_resolved_addr && c.addr() == addr)
+                {
                     return Some(c.clone());
                 }
             }
