@@ -9401,15 +9401,20 @@ export function useRemoteControl(
       ws.connect()
     }
     let iceServers: IceServer[] = []
-    let localRelay: LocalRelayDescriptor | null = null
-    let localRelayAppliedToPc = false
+    const localRelayState: {
+      desc: LocalRelayDescriptor | null
+      appliedToPc: boolean
+    } = {
+      desc: null,
+      appliedToPc: false,
+    }
     let attemptPc: RTCPeerConnection | null = null
     if (localRelayEnabled.value && !externalMode && !sharedMode) {
       void probeLocalRelay().then((desc) => {
         if (!desc || gen !== connectGen) return
-        localRelay = desc
-        if (attemptPc && pc === attemptPc && !localRelayAppliedToPc) {
-          localRelayAppliedToPc = true
+        localRelayState.desc = desc
+        if (attemptPc && pc === attemptPc && !localRelayState.appliedToPc) {
+          localRelayState.appliedToPc = true
           iceServers = [localRelayIceServer(desc), ...iceServers]
           lastIceServers = iceServers
           try {
@@ -9541,12 +9546,13 @@ export function useRemoteControl(
     // resolved by now, prepend it immediately; if it is still pending,
     // do not block rc:session.request — the completion callback above
     // updates the live PC via setConfiguration for trickle ICE.
-    if (localRelay && !localRelayAppliedToPc) {
-      localRelayAppliedToPc = true
-      iceServers = [localRelayIceServer(localRelay), ...iceServers]
+    const earlyLocalRelay = localRelayState.desc
+    if (earlyLocalRelay && !localRelayState.appliedToPc) {
+      localRelayState.appliedToPc = true
+      iceServers = [localRelayIceServer(earlyLocalRelay), ...iceServers]
       console.info(
         '[rc] local-relay TURN discovered on this host — relaying via local agent overlay',
-        localRelay.overlay_ip,
+        earlyLocalRelay.overlay_ip,
       )
     }
     // #1631 - the last suspension before the peer exists. A disconnect()
@@ -10413,9 +10419,7 @@ export function useRemoteControl(
     // channel opens — otherwise the agent would stay at its default
     // after a page reload that had set a non-default preference.
     channels.control.onopen = () => {
-      if (activeTiming && activeTiming.marks.dc_open === undefined) {
-        markConnect('dc_open')
-      }
+      markConnect('dc_open')
       sendQualityPreference()
       sendResolutionPreference()
       // #2638 - the display-match request the session made before this
@@ -11043,8 +11047,8 @@ export function useRemoteControl(
     // Hub adds `turn:{overlay_ip}:{turn_port}` to the REMOTE agent's ICE servers
     // — it reaches that TURN over the overlay (WFP-permitted). Absent → the Hub
     // pushes nothing extra, so old servers/agents are unaffected.
-    if (localRelay) {
-      requestPayload.local_relay = localRelay
+    if (localRelayState.desc) {
+      requestPayload.local_relay = localRelayState.desc
     }
     sessionDcTransport = preferredTransport
     // FR-77 — which chroma cell this session runs in (mirrors the chroma_pref

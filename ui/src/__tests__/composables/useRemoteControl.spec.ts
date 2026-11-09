@@ -6902,5 +6902,157 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
       ws.onRcMessage = origOnRc
     }
   })
+
+  it('useRemoteControl() channels.control.onopen records dc_open without throwing and emits stored preferences', async () => {
+    const { vi } = await import('vitest')
+    const { createPinia, setActivePinia } = await import('pinia')
+    const { ref } = await import('vue')
+    const { useWsStore } = await import('@/stores/ws')
+    const { api } = await import('@/api/client')
+    const { useRemoteControl } = await import('@/composables/useRemoteControl')
+
+    setActivePinia(createPinia())
+    const ws = useWsStore()
+    ws.status = 'connected'
+
+    const rcListeners = new Map<string, Set<(msg: Record<string, unknown>) => void>>()
+    const origOnRc = ws.onRcMessage
+    ws.onRcMessage = ((t: string, h: (msg: Record<string, unknown>) => void) => {
+      let s = rcListeners.get(t)
+      if (!s) {
+        s = new Set()
+        rcListeners.set(t, s)
+      }
+      s.add(h)
+      return () => s?.delete(h)
+    }) as typeof origOnRc
+
+    const deliverRc = (t: string, msg: Record<string, unknown>) => {
+      for (const h of Array.from(rcListeners.get(t) ?? [])) {
+        h({ t, ...msg })
+      }
+    }
+    ws.sendRaw = () => {}
+
+    const origApiGet = api.get
+    api.get = (async () => ({ ice_servers: [] })) as typeof origApiGet
+
+    interface MockDc {
+      label: string
+      readyState: RTCDataChannelState
+      binaryType: BinaryType
+      sent: string[]
+      onopen: ((ev: Event) => void) | null
+      onclose: ((ev: Event) => void) | null
+      onmessage: ((ev: MessageEvent) => void) | null
+      close: () => void
+      send: (data: string) => void
+    }
+    const createdChannels = new Map<string, MockDc>()
+
+    class FakeControlDcPc {
+      closed = false
+      connectionState = 'new'
+      signalingState: RTCSignalingState = 'stable'
+      onicecandidate: ((ev: unknown) => void) | null = null
+      onconnectionstatechange: (() => void) | null = null
+      ontrack: ((ev: unknown) => void) | null = null
+      addTransceiver() {}
+      createDataChannel(label: string) {
+        const dc: MockDc = {
+          label,
+          readyState: 'open',
+          binaryType: 'arraybuffer',
+          sent: [],
+          onopen: null,
+          onclose: null,
+          onmessage: null,
+          close() {
+            this.readyState = 'closed'
+          },
+          send(data: string) {
+            this.sent.push(String(data))
+          },
+        }
+        createdChannels.set(label, dc)
+        return dc as unknown as RTCDataChannel
+      }
+      async createOffer() {
+        return { type: 'offer' as const, sdp: SAMPLE_SDP }
+      }
+      async setLocalDescription() {
+        this.signalingState = 'have-local-offer'
+      }
+      async setRemoteDescription() {
+        this.signalingState = 'stable'
+      }
+      async addIceCandidate() {}
+      async getStats() {
+        return new Map() as unknown as RTCStatsReport
+      }
+      close() {
+        this.closed = true
+      }
+    }
+
+    const origPc = globalThis.RTCPeerConnection
+    globalThis.RTCPeerConnection = FakeControlDcPc as unknown as typeof RTCPeerConnection
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      const agentRef = ref({
+        id: AGENT_ID,
+        os: 'linux' as const,
+        capabilities: {
+          codecs: ['h264'] as ('h264' | 'h265' | 'av1')[],
+          hw_encoders: [],
+          has_input_permission: true,
+          supports_clipboard: true,
+          supports_file_transfer: true,
+          max_simultaneous_sessions: 4,
+          fps_high: true,
+        },
+      })
+      const rc = useRemoteControl(agentRef, { userId: () => USER_ID })
+      rc.setResolution({ mode: 'custom', width: 1280, height: 800 })
+      rc.setQuality('high')
+      rc.setPriority('sharper')
+
+      await rc.connect(AGENT_ID)
+      const sid = '65f000000000000000000903'
+      deliverRc('rc:session.created', { session_id: sid, agent_id: AGENT_ID })
+      deliverRc('rc:ready', { session_id: sid })
+
+      const controlDc = createdChannels.get('control')
+      expect(controlDc).toBeDefined()
+      expect(typeof controlDc!.onopen).toBe('function')
+
+      // Must not throw ReferenceError on activeTiming
+      expect(() => controlDc!.onopen!(new Event('open'))).not.toThrow()
+
+      const parsedSent = controlDc!.sent.map((raw) => JSON.parse(raw) as Record<string, unknown>)
+      expect(parsedSent).toEqual(
+        expect.arrayContaining([
+          { t: 'rc:quality', quality: 'high' },
+          { t: 'rc:resolution', mode: 'custom', width: 1280, height: 800 },
+          { t: 'rc:priority', mode: 'sharper' },
+        ]),
+      )
+
+      // Disconnect emits the connect-timing line; dc_open must be recorded (not 'dc_open:—')
+      rc.disconnect()
+      const timingLines = warnSpy.mock.calls
+        .map((args: unknown[]) => args.map(String).join(' '))
+        .filter((line: string) => line.includes('[rc] connect closed'))
+      expect(timingLines.length).toBeGreaterThan(0)
+      expect(timingLines[timingLines.length - 1]).toMatch(/dc_open:\+\d+\b/)
+      expect(timingLines[timingLines.length - 1]).not.toContain('dc_open:—')
+    } finally {
+      warnSpy.mockRestore()
+      globalThis.RTCPeerConnection = origPc
+      api.get = origApiGet
+      ws.onRcMessage = origOnRc
+    }
+  })
 })
 
