@@ -123,7 +123,13 @@ impl AgentInternal {
             tie_breaker: AtomicU64::new(rand::random::<u64>()),
             is_controlling: AtomicBool::new(config.is_controlling),
             lite: AtomicBool::new(config.lite),
-            controlled_probe_late_direct: AtomicBool::new(false),
+            controlled_probe_late_direct: AtomicBool::new(
+                super::agent_selector::controlled_probe_late_direct_policy(
+                    std::env::var("MESHHARBOR_ICE_CONTROLLED_PROBE_LATE_DIRECT")
+                        .ok()
+                        .as_deref(),
+                ),
+            ),
             ip_filter: Arc::clone(&config.ip_filter),
 
             start_time: SyncMutex::new(Instant::now()),

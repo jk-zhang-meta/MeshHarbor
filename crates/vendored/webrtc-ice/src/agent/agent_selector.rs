@@ -135,10 +135,17 @@ fn follow_renomination_policy(
 }
 
 /// Whether the controlled agent probes higher-priority direct `Waiting`/`InProgress`
-/// pairs while a pair is already selected (default OFF; opt-in via
-/// `MESHHARBOR_ICE_CONTROLLED_PROBE_LATE_DIRECT=1`).
-fn controlled_probe_late_direct_policy(env: Option<&str>) -> bool {
-    matches!(env, Some("1"))
+/// pairs while a pair is already selected (default ON; opt-out via
+/// `MESHHARBOR_ICE_CONTROLLED_PROBE_LATE_DIRECT=0`).
+pub(crate) fn controlled_probe_late_direct_policy(env: Option<&str>) -> bool {
+    !matches!(
+        env.map(str::trim),
+        Some(v)
+            if v == "0"
+                || v.eq_ignore_ascii_case("false")
+                || v.eq_ignore_ascii_case("off")
+                || v.eq_ignore_ascii_case("no")
+    )
 }
 
 /// MeshHarbor patch (warm standby, 2026-07-28): cadence for pinging validated
@@ -178,12 +185,10 @@ impl AgentInternal {
             .await;
     }
     pub(crate) fn controlled_probe_late_direct_enabled(&self) -> bool {
-        self.controlled_probe_late_direct.load(Ordering::SeqCst)
-            || controlled_probe_late_direct_policy(
-                std::env::var("MESHHARBOR_ICE_CONTROLLED_PROBE_LATE_DIRECT")
-                    .ok()
-                    .as_deref(),
-            )
+        match std::env::var("MESHHARBOR_ICE_CONTROLLED_PROBE_LATE_DIRECT") {
+            Ok(v) => controlled_probe_late_direct_policy(Some(v.as_str())),
+            Err(_) => self.controlled_probe_late_direct.load(Ordering::SeqCst),
+        }
     }
     async fn refresh_standby_pairs(
         &self,
@@ -1902,11 +1907,12 @@ mod same_session_failover_tests {
     }
 
     #[test]
-    fn controlled_probe_late_direct_env_policy_is_default_off() {
-        assert!(!super::controlled_probe_late_direct_policy(None));
-        assert!(!super::controlled_probe_late_direct_policy(Some("0")));
-        assert!(!super::controlled_probe_late_direct_policy(Some("true")));
+    fn controlled_probe_late_direct_env_policy_is_default_on() {
+        assert!(super::controlled_probe_late_direct_policy(None));
         assert!(super::controlled_probe_late_direct_policy(Some("1")));
+        assert!(super::controlled_probe_late_direct_policy(Some("true")));
+        assert!(!super::controlled_probe_late_direct_policy(Some("0")));
+        assert!(!super::controlled_probe_late_direct_policy(Some("false")));
     }
 
     #[tokio::test]
@@ -1919,6 +1925,13 @@ mod same_session_failover_tests {
             ..Default::default()
         })
         .await?;
+        assert!(
+            agent
+                .internal
+                .controlled_probe_late_direct
+                .load(Ordering::SeqCst),
+            "controlled_probe_late_direct must default to true"
+        );
         let local_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
             CandidateHostConfig {
                 base_config: CandidateBaseConfig {
@@ -2016,19 +2029,23 @@ mod same_session_failover_tests {
             .set_selected_pair(Some(selected_low.clone()))
             .await;
 
-        // 1. Default OFF: late high-priority Waiting pair is NOT probed.
+        // 1. Flag OFF (=0): late high-priority Waiting pair is NOT probed.
+        agent
+            .internal
+            .controlled_probe_late_direct
+            .store(false, Ordering::SeqCst);
         ControlledSelector::contact_candidates(&*agent.internal).await;
         assert_eq!(
             late_direct.binding_request_count.load(Ordering::SeqCst),
             0,
-            "default-off must not probe late Waiting pairs on controlled side"
+            "disabled flag (=0) must not probe late Waiting pairs on controlled side"
         );
         assert_eq!(
             late_direct.state.load(Ordering::SeqCst),
             CandidatePairState::Waiting as u8
         );
 
-        // 2. Enable flag: late high-priority direct Waiting pair IS probed (without USE-CANDIDATE),
+        // 2. Default ON (=1): late high-priority direct Waiting pair IS probed (without USE-CANDIDATE),
         // while lower-priority Waiting pair is NOT probed, and selected_pair does not change.
         agent
             .internal
@@ -2218,8 +2235,12 @@ mod same_session_failover_tests {
             .set_selected_pair(Some(selected_srflx.clone()))
             .await;
 
-        // 1. Flag OFF: `.local` candidate is not treated as direct_real_path and not probed.
+        // 1. Flag OFF (=0): `.local` candidate is not treated as direct_real_path and not probed.
         assert!(!direct_real_path_with_mdns(&late_mdns_pair, false));
+        agent
+            .internal
+            .controlled_probe_late_direct
+            .store(false, Ordering::SeqCst);
         ControlledSelector::contact_candidates(&*agent.internal).await;
         assert_eq!(
             late_mdns_pair.binding_request_count.load(Ordering::SeqCst),
