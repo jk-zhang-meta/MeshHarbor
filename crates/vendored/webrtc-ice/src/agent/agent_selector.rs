@@ -2335,8 +2335,7 @@ mod same_session_failover_tests {
     }
 
     #[tokio::test]
-    async fn mdns_candidate_resolved_to_overlay_ip_bypasses_caller_gate_into_checklist(
-    ) -> Result<()> {
+    async fn mdns_candidate_resolved_to_overlay_ip_is_rejected_by_ip_filter() -> Result<()> {
         // Locks the post-fix behavior for 18:42 Section 4:
         // 1. When `ip_filter` is set (`rc_overlay=off`), a `.local` candidate that
         //    resolves to an overlay IP (`100.65.4.33` or `fd72:6f6f:6d6c::6441:421`)

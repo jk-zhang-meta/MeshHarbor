@@ -1034,7 +1034,7 @@ impl AgentInternal {
 
             if remote_candidate.is_none() {
                 if !self.allows_remote_ip(remote.ip()) {
-                    log::info!(
+                    log::debug!(
                         "[{}]: remote peer-reflexive candidate {} rejected by ip_filter",
                         self.get_name(),
                         remote

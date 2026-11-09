@@ -296,7 +296,7 @@ mod tests {
     /// a `prflx` candidate). When `rc_overlay=off`, overlay-resolved `.local`
     /// candidates are dropped fail-closed; when `rc_overlay=on`, they are kept.
     #[tokio::test]
-    async fn mdns_os_timeout_fallback_to_webrtc_ice_bypasses_rc_overlay_gate() {
+    async fn mdns_os_timeout_fallback_to_webrtc_ice_is_rejected_by_rc_overlay_ip_filter() {
         use std::sync::Arc;
         use webrtc::ice::agent::Agent;
         use webrtc::ice::agent::agent_config::AgentConfig;
