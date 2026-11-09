@@ -150,6 +150,24 @@ impl MfPipeline {
         codec: OutputCodec,
     ) -> Result<Self> {
         unsafe {
+            let codec_api: ICodecAPI = transform
+                .cast()
+                .map_err(|e| anyhow!("MFT does not expose ICodecAPI: {e:?}"))?;
+            let initial_bps = crate::encode::initial_bitrate_for(width, height);
+
+            // Pre-apply ICodecAPI properties (especially CODECAPI_AVLowLatencyMode
+            // and rate control) on a best-effort basis before SetOutputType/SetInputType.
+            // On CLSID_MSH264EncoderMFT (measured on Windows 11 26200), calling
+            // SetOutputType/SetInputType before setting CODECAPI_AVLowLatencyMode=true
+            // causes the MFT to buffer >2 input frames and fail the 2-frame probe_pipeline
+            // with 0 bytes after ~360 ms, whereas pre-applying CODECAPI_AVLowLatencyMode=true
+            // produces an IDR packet on the first probe frame in ~95 ms. Because hardware
+            // MFTs may reject pre-type ICodecAPI calls with HRESULTs outside the
+            // E_FAIL/E_INVALIDARG/E_NOTIMPL set (e.g. MF_E_TRANSFORM_TYPE_NOT_SET),
+            // log and ignore any error on this pre-type pass and keep the post-type
+            // pass below strict.
+            apply_codec_knobs_best_effort(&codec_api, backend_kind, codec, initial_bps);
+
             // Set output type first (required by the MFT contract).
             let out_type = build_output_media_type(width, height, codec)?;
             transform
@@ -161,63 +179,9 @@ impl MfPipeline {
                 .SetInputType(0, &in_type, 0)
                 .map_err(|e| anyhow!("SetInputType: {e:?}"))?;
 
-            // Latency + rate-control knobs.
-            let codec_api: ICodecAPI = transform
-                .cast()
-                .map_err(|e| anyhow!("MFT does not expose ICodecAPI: {e:?}"))?;
-            set_codec_bool(&codec_api, &CODECAPI_AVLowLatencyMode, true)?;
-            // H.264: CABAC is an off-by-default knob the encoder picks
-            // up at init; enable for better compression at our bitrate.
-            // HEVC: CABAC is mandatory in the spec (no CAVLC alternative),
-            // so the knob is irrelevant — skip to avoid logging every
-            // session about an "unsupported codec key" that's not
-            // actually a problem.
-            if matches!(codec, OutputCodec::H264) {
-                set_codec_bool(&codec_api, &CODECAPI_AVEncH264CABACEnable, true)?;
-            }
-            let rc_mode = if backend_kind == "hw" {
-                eAVEncCommonRateControlMode_CBR.0 as u32
-            } else {
-                eAVEncCommonRateControlMode_LowDelayVBR.0 as u32
-            };
-            set_codec_u32(&codec_api, &CODECAPI_AVEncCommonRateControlMode, rc_mode)?;
-            set_codec_u32(&codec_api, &CODECAPI_AVEncMPVGOPSize, 60)?;
-            let initial_bps = crate::encode::initial_bitrate_for(width, height);
-            set_codec_u32(&codec_api, &CODECAPI_AVEncCommonMeanBitRate, initial_bps)?;
-            // Max bitrate cap for VBR modes — prevents the encoder
-            // from bursting way over target on complex frames. 1.5×
-            // the mean as a reasonable ceiling.
-            set_codec_u32(
-                &codec_api,
-                &CODECAPI_AVEncCommonMaxBitRate,
-                initial_bps.saturating_mul(3) / 2,
-            )?;
-
-            // VBV buffer = one frame's worth of bits (≈ initial_bps /
-            // fps). Tight buffers cap per-frame burst at ~1× the
-            // average frame size, so a 6 Mbps stream emits roughly
-            // 25 KB max per frame at 30 fps instead of letting the
-            // encoder spend a 200 KB budget at the start of a GOP.
-            // This is the single biggest knob for cutting glass-to-
-            // glass latency under WAN — without it WebRTC's pacer
-            // queues bursty frames and adds 30-80 ms RTT.
-            set_codec_u32(
-                &codec_api,
-                &CODECAPI_AVEncCommonBufferSize,
-                initial_bps / TARGET_FPS.max(1),
-            )?;
-
-            // Gradual intra refresh: spread the I-coding across N
-            // frames instead of emitting a full IDR keyframe every
-            // GOP. An IDR at 1080p is typically 60-100 KB which
-            // overshoots the VBV buffer for a single frame and
-            // pushes 200-500 ms of pacer queue. With gradual
-            // refresh, the cost is ~3 KB extra per frame for the
-            // refresh window. Boolean enable here; the MFT picks
-            // its own refresh period (typically equal to the GOP).
-            // Some MFTs ignore this knob — set_codec_bool's blanket
-            // E_FAIL/E_INVALIDARG swallow keeps that benign.
-            set_codec_bool(&codec_api, &CODECAPI_AVEncVideoGradualIntraRefresh, true)?;
+            // Re-apply ICodecAPI knobs after SetOutputType/SetInputType for IHV
+            // hardware MFTs that reset rate-control state during media-type setup.
+            apply_codec_knobs(&codec_api, backend_kind, codec, initial_bps)?;
 
             // Start streaming.
             transform
@@ -686,6 +650,104 @@ fn decode_leb128(buf: &[u8]) -> Option<(u32, usize)> {
         }
     }
     None
+}
+
+fn apply_codec_knobs_best_effort(
+    codec_api: &ICodecAPI,
+    backend_kind: &'static str,
+    codec: OutputCodec,
+    initial_bps: u32,
+) {
+    let log_err = |knob: &'static str, res: Result<()>| {
+        if let Err(e) = res {
+            tracing::debug!(
+                backend = backend_kind,
+                codec = codec.backend_name(),
+                knob,
+                %e,
+                "pre-SetOutputType codec knob returned error (continuing)"
+            );
+        }
+    };
+    log_err(
+        "CODECAPI_AVLowLatencyMode",
+        set_codec_bool(codec_api, &CODECAPI_AVLowLatencyMode, true),
+    );
+    if matches!(codec, OutputCodec::H264) {
+        log_err(
+            "CODECAPI_AVEncH264CABACEnable",
+            set_codec_bool(codec_api, &CODECAPI_AVEncH264CABACEnable, true),
+        );
+    }
+    let rc_mode = if backend_kind == "hw" {
+        eAVEncCommonRateControlMode_CBR.0 as u32
+    } else {
+        eAVEncCommonRateControlMode_LowDelayVBR.0 as u32
+    };
+    log_err(
+        "CODECAPI_AVEncCommonRateControlMode",
+        set_codec_u32(codec_api, &CODECAPI_AVEncCommonRateControlMode, rc_mode),
+    );
+    log_err(
+        "CODECAPI_AVEncMPVGOPSize",
+        set_codec_u32(codec_api, &CODECAPI_AVEncMPVGOPSize, 60),
+    );
+    log_err(
+        "CODECAPI_AVEncCommonMeanBitRate",
+        set_codec_u32(codec_api, &CODECAPI_AVEncCommonMeanBitRate, initial_bps),
+    );
+    log_err(
+        "CODECAPI_AVEncCommonMaxBitRate",
+        set_codec_u32(
+            codec_api,
+            &CODECAPI_AVEncCommonMaxBitRate,
+            initial_bps.saturating_mul(3) / 2,
+        ),
+    );
+    log_err(
+        "CODECAPI_AVEncCommonBufferSize",
+        set_codec_u32(
+            codec_api,
+            &CODECAPI_AVEncCommonBufferSize,
+            initial_bps / TARGET_FPS.max(1),
+        ),
+    );
+    log_err(
+        "CODECAPI_AVEncVideoGradualIntraRefresh",
+        set_codec_bool(codec_api, &CODECAPI_AVEncVideoGradualIntraRefresh, true),
+    );
+}
+
+fn apply_codec_knobs(
+    codec_api: &ICodecAPI,
+    backend_kind: &'static str,
+    codec: OutputCodec,
+    initial_bps: u32,
+) -> Result<()> {
+    set_codec_bool(codec_api, &CODECAPI_AVLowLatencyMode, true)?;
+    if matches!(codec, OutputCodec::H264) {
+        set_codec_bool(codec_api, &CODECAPI_AVEncH264CABACEnable, true)?;
+    }
+    let rc_mode = if backend_kind == "hw" {
+        eAVEncCommonRateControlMode_CBR.0 as u32
+    } else {
+        eAVEncCommonRateControlMode_LowDelayVBR.0 as u32
+    };
+    set_codec_u32(codec_api, &CODECAPI_AVEncCommonRateControlMode, rc_mode)?;
+    set_codec_u32(codec_api, &CODECAPI_AVEncMPVGOPSize, 60)?;
+    set_codec_u32(codec_api, &CODECAPI_AVEncCommonMeanBitRate, initial_bps)?;
+    set_codec_u32(
+        codec_api,
+        &CODECAPI_AVEncCommonMaxBitRate,
+        initial_bps.saturating_mul(3) / 2,
+    )?;
+    set_codec_u32(
+        codec_api,
+        &CODECAPI_AVEncCommonBufferSize,
+        initial_bps / TARGET_FPS.max(1),
+    )?;
+    set_codec_bool(codec_api, &CODECAPI_AVEncVideoGradualIntraRefresh, true)?;
+    Ok(())
 }
 
 // Helper functions after the tests module are flagged by
