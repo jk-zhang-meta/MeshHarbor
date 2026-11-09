@@ -305,6 +305,24 @@ mod child {
         Some(report)
     }
 
+    /// Run only the BASE phase in a `caps-probe` child process to re-probe
+    /// Media Foundation hardware MFT candidates out-of-process without blocking
+    /// or risking the daemon process.
+    #[cfg_attr(
+        not(all(target_os = "windows", feature = "mf-encoder")),
+        allow(dead_code)
+    )]
+    pub(super) fn probe_base_only() -> Option<ProbeReport> {
+        if std::env::var_os(CHILD_ENV).is_some() {
+            return None;
+        }
+        let base = run_child(&[(PHASE_ENV, "base".to_string())])?;
+        if !base.ok {
+            return None;
+        }
+        parse_line(&base.stdout, base.elapsed)
+    }
+
     /// Spawn one `caps-probe` child with `extra` on top of the recursion
     /// guard and the S2 config fallbacks; read its stdout on a thread while
     /// waiting, bounded by [`TIMEOUT`]. `None` = could not spawn / hung.
@@ -1205,13 +1223,29 @@ pub(crate) fn should_install_child_mf_winner(
     not(all(target_os = "windows", feature = "mf-encoder")),
     allow(dead_code)
 )]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MfWinnerCacheDecision {
+    /// Within TTL (or HW winner) and all guards match: reuse immediately.
+    ReuseFresh,
+    /// Software winner TTL expired (`age_secs > MF_SW_WINNER_TTL_SECS`), but
+    /// `session_id`, `adapters` list, and `denylist` all match: reuse the
+    /// cached software winner immediately for the current session
+    /// (stale-while-revalidate) and trigger a background `caps-probe` child
+    /// process to re-probe hardware MFTs and refresh `MF_CASCADE_WINNERS`.
+    ReuseStaleAndRefresh,
+}
+
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
 pub(crate) fn can_reuse_mf_winner(
     winner: &MfCascadeWinner,
     current_session_id: Option<u32>,
     current_adapters: &[String],
     now_unix: u64,
     deny: &[String],
-) -> Result<(), &'static str> {
+) -> Result<MfWinnerCacheDecision, &'static str> {
     if mf_candidate_denied(deny, &winner.codec, &winner.mft_name) {
         return Err("denylisted");
     }
@@ -1224,17 +1258,18 @@ pub(crate) fn can_reuse_mf_winner(
         }
         let age_secs = now_unix.saturating_sub(winner.recorded_at_unix);
         if age_secs > MF_SW_WINNER_TTL_SECS {
-            return Err("ttl_expired");
+            return Ok(MfWinnerCacheDecision::ReuseStaleAndRefresh);
         }
     }
-    Ok(())
+    Ok(MfWinnerCacheDecision::ReuseFresh)
 }
 
 #[cfg_attr(
     not(all(target_os = "windows", feature = "mf-encoder")),
     allow(dead_code)
 )]
-pub(crate) fn open_with_cached_mf_winner<T, E, FOpenWinner, FCascade>(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn open_with_cached_mf_winner<T, E, FOpenWinner, FCascade, FRefresh>(
     cached: Option<&MfCascadeWinner>,
     current_session_id: Option<u32>,
     current_adapters: &[String],
@@ -1242,16 +1277,33 @@ pub(crate) fn open_with_cached_mf_winner<T, E, FOpenWinner, FCascade>(
     deny: &[String],
     open_winner: FOpenWinner,
     run_cascade: FCascade,
+    trigger_bg_refresh: FRefresh,
 ) -> Result<(T, bool), E>
 where
     E: std::fmt::Display,
     FOpenWinner: FnOnce(&MfCascadeWinner) -> Result<T, E>,
     FCascade: FnOnce() -> Result<T, E>,
+    FRefresh: FnOnce(),
 {
     if let Some(winner) = cached {
         match can_reuse_mf_winner(winner, current_session_id, current_adapters, now_unix, deny) {
-            Ok(()) => match open_winner(winner) {
-                Ok(pipeline) => return Ok((pipeline, true)),
+            Ok(decision) => match open_winner(winner) {
+                Ok(pipeline) => {
+                    if decision == MfWinnerCacheDecision::ReuseStaleAndRefresh {
+                        tracing::info!(
+                            codec = %winner.codec,
+                            mft = %winner.mft_name,
+                            backend = %winner.backend_kind,
+                            recorded_at_unix = winner.recorded_at_unix,
+                            now_unix,
+                            age_secs = now_unix.saturating_sub(winner.recorded_at_unix),
+                            ttl_secs = MF_SW_WINNER_TTL_SECS,
+                            "mf-encoder: cached SW winner TTL expired — reusing stale winner for current session and spawning background caps-probe refresh"
+                        );
+                        trigger_bg_refresh();
+                    }
+                    return Ok((pipeline, true));
+                }
                 Err(e) => {
                     tracing::warn!(
                         codec = %winner.codec,
@@ -1274,6 +1326,111 @@ where
         }
     }
     run_cascade().map(|p| (p, false))
+}
+
+static MF_BG_REFRESH_IN_FLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+struct AtomicFlagReset<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for AtomicFlagReset<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Apply the result of a background `caps-probe` refresh into `dest` for a
+/// parent daemon in `parent_session_id` with `deny` list. Returns `true` if at
+/// least one winner was updated/installed.
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+pub(crate) fn apply_mf_winners_refresh_into(
+    dest: &mut std::collections::BTreeMap<String, MfCascadeWinner>,
+    child_winners: Option<std::collections::BTreeMap<String, MfCascadeWinner>>,
+    parent_session_id: Option<u32>,
+    deny: &[String],
+) -> bool {
+    let Some(winners) = child_winners else {
+        tracing::warn!(
+            "mf-encoder: background caps-probe refresh failed or timed out — keeping existing cached winner"
+        );
+        return false;
+    };
+    let mut updated_any = false;
+    for (codec, winner) in winners {
+        if should_install_child_mf_winner(&winner, parent_session_id, deny) {
+            tracing::info!(
+                codec = %codec,
+                mft = %winner.mft_name,
+                backend = %winner.backend_kind,
+                recorded_at_unix = winner.recorded_at_unix,
+                session_id = ?winner.session_id,
+                "mf-encoder: background caps-probe refresh updated cached MF winner"
+            );
+            dest.insert(codec, winner);
+            updated_any = true;
+        }
+    }
+    updated_any
+}
+
+/// Try to claim `in_flight` and spawn one background refresh thread running
+/// `probe_and_apply`. Returns `Some(JoinHandle)` when a refresh was spawned, or
+/// `None` if a background refresh is already in flight.
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+pub(crate) fn try_spawn_mf_winner_bg_refresh<F>(
+    in_flight: &'static std::sync::atomic::AtomicBool,
+    probe_and_apply: F,
+) -> Option<std::thread::JoinHandle<()>>
+where
+    F: FnOnce() + Send + 'static,
+{
+    if in_flight
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_err()
+    {
+        tracing::debug!(
+            "mf-encoder: background caps-probe refresh already in flight — skipping duplicate trigger"
+        );
+        return None;
+    }
+    match std::thread::Builder::new()
+        .name("meshharbord-mf-winner-refresh".to_string())
+        .spawn(move || {
+            let _reset = AtomicFlagReset(in_flight);
+            probe_and_apply();
+        }) {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            in_flight.store(false, std::sync::atomic::Ordering::Release);
+            tracing::warn!(%e, "mf-encoder: failed to spawn background caps-probe refresh thread");
+            None
+        }
+    }
+}
+
+#[cfg_attr(
+    not(all(target_os = "windows", feature = "mf-encoder")),
+    allow(dead_code)
+)]
+pub(crate) fn spawn_mf_winner_bg_refresh() {
+    let _ = try_spawn_mf_winner_bg_refresh(&MF_BG_REFRESH_IN_FLIGHT, || {
+        let child_winners = child::probe_base_only().map(|r| r.mf_winners);
+        let parent_session_id = current_windows_session_id();
+        let deny = crate::encode::cells::denied_cells();
+        let mut map = mf_winners_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _ = apply_mf_winners_refresh_into(&mut map, child_winners, parent_session_id, &deny);
+    });
 }
 
 #[cfg_attr(
@@ -1314,6 +1471,14 @@ fn install_mf_winners_from_child(
     let mut map = mf_winners_lock().lock().unwrap_or_else(|e| e.into_inner());
     for (codec, winner) in winners {
         if should_install_child_mf_winner(winner, parent_session_id, deny) {
+            tracing::info!(
+                codec = %codec,
+                mft = %winner.mft_name,
+                backend = %winner.backend_kind,
+                recorded_at_unix = winner.recorded_at_unix,
+                session_id = ?winner.session_id,
+                "caps probe: installed child MF cascade winner"
+            );
             map.insert(codec.clone(), winner.clone());
         } else {
             tracing::info!(
@@ -3692,8 +3857,9 @@ mod tests {
             adapters: adapters.clone(),
             recorded_at_unix: 1_000,
         };
-        // Winner opens cleanly -> reused without running cascade.
+        // Winner opens cleanly -> reused without running cascade or bg refresh.
         let mut cascade_ran = false;
+        let mut bg_refresh_ran = false;
         let (out, reused) = open_with_cached_mf_winner(
             Some(&sw_winner),
             Some(1),
@@ -3705,14 +3871,19 @@ mod tests {
                 cascade_ran = true;
                 Ok("full-cascade")
             },
+            || {
+                bg_refresh_ran = true;
+            },
         )
         .unwrap();
         assert_eq!(out, "cached-sw");
         assert!(reused);
         assert!(!cascade_ran);
+        assert!(!bg_refresh_ran);
 
         // Winner open/probe fails -> falls back to full cascade.
         let mut cascade_ran = false;
+        let mut bg_refresh_ran = false;
         let (out, reused) = open_with_cached_mf_winner(
             Some(&sw_winner),
             Some(1),
@@ -3724,11 +3895,15 @@ mod tests {
                 cascade_ran = true;
                 Ok("full-cascade")
             },
+            || {
+                bg_refresh_ran = true;
+            },
         )
         .unwrap();
         assert_eq!(out, "full-cascade");
         assert!(!reused);
         assert!(cascade_ran);
+        assert!(!bg_refresh_ran);
 
         // Same for a HW winner whose probe_pipeline fails.
         let hw_winner = MfCascadeWinner {
@@ -3737,6 +3912,7 @@ mod tests {
             ..sw_winner
         };
         let mut cascade_ran = false;
+        let mut bg_refresh_ran = false;
         let (out, reused) = open_with_cached_mf_winner(
             Some(&hw_winner),
             Some(1),
@@ -3748,15 +3924,19 @@ mod tests {
                 cascade_ran = true;
                 Ok("full-cascade-after-hw-fail")
             },
+            || {
+                bg_refresh_ran = true;
+            },
         )
         .unwrap();
         assert_eq!(out, "full-cascade-after-hw-fail");
         assert!(!reused);
         assert!(cascade_ran);
+        assert!(!bg_refresh_ran);
     }
 
     #[test]
-    fn mf_sw_winner_ttl_expires_while_hw_winner_does_not() {
+    fn mf_sw_winner_ttl_expires_into_stale_while_revalidate_while_hw_winner_does_not() {
         let adapters = vec!["gpu0".to_string()];
         let sw_winner = MfCascadeWinner {
             codec: "mf-h264".into(),
@@ -3776,7 +3956,7 @@ mod tests {
                 10_000 + MF_SW_WINNER_TTL_SECS,
                 &[]
             ),
-            Ok(())
+            Ok(MfWinnerCacheDecision::ReuseFresh)
         );
         assert_eq!(
             can_reuse_mf_winner(
@@ -3786,9 +3966,11 @@ mod tests {
                 10_000 + MF_SW_WINNER_TTL_SECS + 1,
                 &[]
             ),
-            Err("ttl_expired")
+            Ok(MfWinnerCacheDecision::ReuseStaleAndRefresh)
         );
         let mut open_called = false;
+        let mut cascade_called = false;
+        let mut refresh_triggered = false;
         let (out, reused) = open_with_cached_mf_winner(
             Some(&sw_winner),
             Some(1),
@@ -3797,16 +3979,33 @@ mod tests {
             &[],
             |_| {
                 open_called = true;
-                Ok::<_, &'static str>("stale-sw")
+                Ok::<_, &'static str>("stale-sw-fast-path")
             },
-            || Ok("fresh-cascade"),
+            || {
+                cascade_called = true;
+                Ok("fresh-cascade")
+            },
+            || {
+                refresh_triggered = true;
+            },
         )
         .unwrap();
-        assert_eq!(out, "fresh-cascade");
-        assert!(!reused);
-        assert!(!open_called, "expired SW winner must not even be opened");
+        assert_eq!(out, "stale-sw-fast-path");
+        assert!(reused);
+        assert!(
+            open_called,
+            "expired SW winner with matching session/adapters must be reused immediately"
+        );
+        assert!(
+            !cascade_called,
+            "stale-while-revalidate must not block current session on full cascade"
+        );
+        assert!(
+            refresh_triggered,
+            "stale-while-revalidate must trigger background caps-probe refresh"
+        );
 
-        // HW winner has no TTL expiry.
+        // HW winner has no TTL expiry and never triggers stale refresh.
         let hw_winner = MfCascadeWinner {
             backend_kind: "hw".into(),
             mft_name: "NVIDIA H.264 Encoder MFT".into(),
@@ -3814,8 +4013,110 @@ mod tests {
         };
         assert_eq!(
             can_reuse_mf_winner(&hw_winner, Some(1), &adapters, 10_000 + 86_400, &[]),
-            Ok(())
+            Ok(MfWinnerCacheDecision::ReuseFresh)
         );
+    }
+
+    #[test]
+    fn mf_sw_winner_stale_while_revalidate_refresh_and_concurrency_guard() {
+        let adapters = vec!["gpu0".to_string(), "gpu1".to_string()];
+        let stale_sw = MfCascadeWinner {
+            codec: "mf-h264".into(),
+            adapter_luid: 0,
+            adapter_desc: String::new(),
+            mft_name: "H264 Encoder MFT".into(),
+            backend_kind: "sw".into(),
+            session_id: Some(1),
+            adapters: adapters.clone(),
+            recorded_at_unix: 10_000,
+        };
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("mf-h264".to_string(), stale_sw.clone());
+
+        // 1. Subprocess failure (None) does not affect current session or existing cached winner.
+        assert!(!apply_mf_winners_refresh_into(&mut map, None, Some(1), &[]));
+        assert_eq!(map.get("mf-h264"), Some(&stale_sw));
+
+        // 2. Background refresh returning updated SW winner refreshes `recorded_at_unix`.
+        let refreshed_sw = MfCascadeWinner {
+            recorded_at_unix: 10_750,
+            ..stale_sw.clone()
+        };
+        let mut child_out = std::collections::BTreeMap::new();
+        child_out.insert("mf-h264".to_string(), refreshed_sw.clone());
+        assert!(apply_mf_winners_refresh_into(
+            &mut map,
+            Some(child_out),
+            Some(1),
+            &[]
+        ));
+        assert_eq!(map.get("mf-h264").unwrap().recorded_at_unix, 10_750);
+        assert_eq!(map.get("mf-h264").unwrap().backend_kind, "sw");
+        assert_eq!(
+            can_reuse_mf_winner(map.get("mf-h264").unwrap(), Some(1), &adapters, 10_800, &[]),
+            Ok(MfWinnerCacheDecision::ReuseFresh)
+        );
+
+        // 3. Background refresh returning HW winner upgrades the cached winner to `hw`.
+        let recovered_hw = MfCascadeWinner {
+            codec: "mf-h264".into(),
+            adapter_luid: 0x42,
+            adapter_desc: "Intel(R) Iris(R) Xe Graphics".into(),
+            mft_name: "Intel® Quick Sync Video H.264 Encoder MFT".into(),
+            backend_kind: "hw".into(),
+            session_id: Some(1),
+            adapters: adapters.clone(),
+            recorded_at_unix: 11_500,
+        };
+        let mut child_hw_out = std::collections::BTreeMap::new();
+        child_hw_out.insert("mf-h264".to_string(), recovered_hw.clone());
+        assert!(apply_mf_winners_refresh_into(
+            &mut map,
+            Some(child_hw_out),
+            Some(1),
+            &[]
+        ));
+        assert_eq!(map.get("mf-h264"), Some(&recovered_hw));
+        assert!(map.get("mf-h264").unwrap().is_hardware());
+
+        // 4. Concurrency guard: at most 1 background probe runs at a time.
+        static TEST_IN_FLIGHT: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        let run_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        let run_count_1 = std::sync::Arc::clone(&run_count);
+        let first = try_spawn_mf_winner_bg_refresh(&TEST_IN_FLIGHT, move || {
+            run_count_1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = entered_tx.send(());
+            let _ = release_rx.recv();
+        });
+        assert!(first.is_some(), "first refresh must spawn");
+        entered_rx.recv().unwrap();
+
+        let run_count_2 = std::sync::Arc::clone(&run_count);
+        let second = try_spawn_mf_winner_bg_refresh(&TEST_IN_FLIGHT, move || {
+            run_count_2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert!(
+            second.is_none(),
+            "concurrent refresh while one is in flight must be suppressed"
+        );
+
+        let _ = release_tx.send(());
+        first.unwrap().join().unwrap();
+        assert!(!TEST_IN_FLIGHT.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(run_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // After completion, a subsequent refresh is allowed to run.
+        let run_count_3 = std::sync::Arc::clone(&run_count);
+        let third = try_spawn_mf_winner_bg_refresh(&TEST_IN_FLIGHT, move || {
+            run_count_3.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert!(third.is_some());
+        third.unwrap().join().unwrap();
+        assert_eq!(run_count.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -3836,15 +4137,35 @@ mod tests {
         assert!(!should_install_child_mf_winner(&sw_session0, None, &[]));
         assert!(should_install_child_mf_winner(&sw_session0, Some(0), &[]));
 
-        // Cross-session reuse with different Windows session ID is rejected.
+        // Cross-session reuse with different Windows session ID is rejected (both fresh and expired).
         assert_eq!(
             can_reuse_mf_winner(&sw_session0, Some(1), &adapters, 1_010, &[]),
             Err("session_id_mismatch")
         );
-        // Changed adapter list is rejected.
+        assert_eq!(
+            can_reuse_mf_winner(
+                &sw_session0,
+                Some(1),
+                &adapters,
+                1_000 + MF_SW_WINNER_TTL_SECS + 100,
+                &[]
+            ),
+            Err("session_id_mismatch")
+        );
+        // Changed adapter list is rejected (both fresh and expired).
         let new_adapters = vec!["gpu0".to_string()];
         assert_eq!(
             can_reuse_mf_winner(&sw_session0, Some(0), &new_adapters, 1_010, &[]),
+            Err("adapter_list_changed")
+        );
+        assert_eq!(
+            can_reuse_mf_winner(
+                &sw_session0,
+                Some(0),
+                &new_adapters,
+                1_000 + MF_SW_WINNER_TTL_SECS + 100,
+                &[]
+            ),
             Err("adapter_list_changed")
         );
     }
@@ -3879,6 +4200,7 @@ mod tests {
                 "denylist entry {deny_entry} must block cached winner reuse"
             );
             let mut open_called = false;
+            let mut refresh_called = false;
             let (out, reused) = open_with_cached_mf_winner(
                 Some(&winner),
                 Some(1),
@@ -3890,11 +4212,15 @@ mod tests {
                     Ok::<_, &'static str>("denied-winner")
                 },
                 || Ok("cascade"),
+                || {
+                    refresh_called = true;
+                },
             )
             .unwrap();
             assert_eq!(out, "cascade");
             assert!(!reused);
             assert!(!open_called);
+            assert!(!refresh_called);
         }
     }
 

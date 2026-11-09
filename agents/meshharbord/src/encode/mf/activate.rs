@@ -242,6 +242,7 @@ pub(super) fn activate_and_probe_pipeline_for_codec(
                 height,
             )
         },
+        crate::encode::caps::spawn_mf_winner_bg_refresh,
     )?;
     Ok(pipeline)
 }
@@ -297,6 +298,7 @@ fn try_open_cached_winner(
             adapter = %adapter_info.description,
             mft = %candidate.friendly_name,
             backend = pipeline.backend_kind(),
+            recorded_at_unix = winner.recorded_at_unix,
             width,
             height,
             "mf-encoder: reused cached MFT cascade winner"
@@ -317,6 +319,7 @@ fn try_open_cached_winner(
         codec = codec.backend_name(),
         mft = %winner.mft_name,
         backend = pipeline.backend_kind(),
+        recorded_at_unix = winner.recorded_at_unix,
         width,
         height,
         "mf-encoder: reused cached SW fallback MFT winner"
