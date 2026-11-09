@@ -821,6 +821,8 @@ async fn add_remote_ice(gid: ObjectId, pc: &Arc<RTCPeerConnection>, candidate: V
     if crate::mdns_resolve::candidate_mdns_name(&init.candidate).is_some() {
         let pc = Arc::clone(pc);
         let mut init = init;
+        // `hive::view::run` has no `CancellationToken` or `RcOverlay` filter;
+        // `resolve_mdns_candidate` bounds OS lookup retries to at most 6 s.
         tokio::spawn(async move {
             if let Some(rewritten) =
                 crate::mdns_resolve::resolve_mdns_candidate(&init.candidate).await

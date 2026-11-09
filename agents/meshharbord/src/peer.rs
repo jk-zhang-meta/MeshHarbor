@@ -1887,7 +1887,6 @@ impl AgentPeer {
                 match crate::mdns_resolve::resolve_mdns_candidate_with_policy(
                     &init.candidate,
                     &session_end,
-                    &rc_overlay.v4_nets,
                     move |ip| filter_overlay.keeps_local(ip),
                 )
                 .await
@@ -2287,7 +2286,6 @@ impl AgentPeer {
                 if let Some(rewritten) = crate::mdns_resolve::resolve_mdns_candidate_with_policy(
                     &init.candidate,
                     &child_stop,
-                    &rc_overlay.v4_nets,
                     move |ip| filter_overlay.keeps_local(ip),
                 )
                 .await
