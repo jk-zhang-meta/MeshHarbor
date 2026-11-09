@@ -35,7 +35,12 @@
 //! Every attempt is raced against the session's `CancellationToken` so session
 //! teardown aborts resolution immediately (preserving #1740), and every
 //! resolved IP must pass the session's `keeps_ip` filter
-//! (`RcOverlay::keeps_local`).
+//! (`RcOverlay::keeps_local`). When an attempt fails quickly (`Err` or all
+//! returned addresses rejected by `keeps_ip`), the loop waits out the
+//! remainder of the current attempt's `ATTEMPT_TIMEOUT` before starting the
+//! next attempt (while still aborting immediately on `cancel.cancelled()`), so
+//! fast-failing `getaddrinfo` implementations do not exhaust all 4 attempts in
+//! a few milliseconds.
 
 use std::future::Future;
 use std::io;
@@ -111,6 +116,7 @@ where
     let started = std::time::Instant::now();
 
     for attempt in 1..=MAX_RESOLVE_ATTEMPTS {
+        let attempt_started = tokio::time::Instant::now();
         let attempt_res = tokio::select! {
             biased;
             _ = cancel.cancelled() => return None,
@@ -145,6 +151,17 @@ where
                     "mDNS host candidate resolved via OS resolver (relay-escape)"
                 );
                 return Some(rewrite_candidate_address(cand, &ip.to_string()));
+            }
+        }
+
+        if attempt < MAX_RESOLVE_ATTEMPTS {
+            let remaining = ATTEMPT_TIMEOUT.saturating_sub(attempt_started.elapsed());
+            if !remaining.is_zero() {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return None,
+                    _ = tokio::time::sleep(remaining) => {}
+                }
             }
         }
     }
@@ -279,6 +296,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_lookup = Arc::clone(&calls);
         let cancel = CancellationToken::new();
+        let t0 = tokio::time::Instant::now();
 
         let res = resolve_mdns_candidate_with_lookup(
             MDNS_HOST,
@@ -301,6 +319,7 @@ mod tests {
         .await;
 
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(t0.elapsed(), ATTEMPT_TIMEOUT * 2);
         assert_eq!(
             res.as_deref(),
             Some(
@@ -309,11 +328,12 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn all_attempts_fail_returns_none_for_fallback() {
+    #[tokio::test(start_paused = true)]
+    async fn all_attempts_fail_waits_full_attempt_timeout_between_retries() {
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_lookup = Arc::clone(&calls);
         let cancel = CancellationToken::new();
+        let t0 = tokio::time::Instant::now();
 
         let res = resolve_mdns_candidate_with_lookup(
             MDNS_HOST,
@@ -328,18 +348,60 @@ mod tests {
 
         assert_eq!(res, None);
         assert_eq!(calls.load(Ordering::SeqCst), MAX_RESOLVE_ATTEMPTS);
+        assert_eq!(
+            t0.elapsed(),
+            ATTEMPT_TIMEOUT * (MAX_RESOLVE_ATTEMPTS as u32 - 1)
+        );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_during_inter_attempt_wait_returns_immediately() {
+        let cancel = CancellationToken::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_lookup = Arc::clone(&calls);
+        let first_failed = Arc::new(tokio::sync::Notify::new());
+        let first_failed_lookup = Arc::clone(&first_failed);
+
+        let cancel_trigger = cancel.clone();
+        tokio::spawn(async move {
+            first_failed.notified().await;
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            cancel_trigger.cancel();
+        });
+
+        let t0 = tokio::time::Instant::now();
+        let res = resolve_mdns_candidate_with_lookup(
+            MDNS_HOST,
+            &cancel,
+            |_| true,
+            move |_name, _port| {
+                calls_lookup.fetch_add(1, Ordering::SeqCst);
+                let first_failed_lookup = Arc::clone(&first_failed_lookup);
+                async move {
+                    first_failed_lookup.notify_one();
+                    Err(io::Error::new(io::ErrorKind::NotFound, "fast fail"))
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(res, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(t0.elapsed(), Duration::from_millis(120));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn keeps_ip_filters_rejected_addresses_and_retries_until_allowed_ip() {
         let overlay_ip = IpAddr::V4(Ipv4Addr::new(100, 64, 0, 9));
         let lan_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 42));
         let cancel = CancellationToken::new();
 
         // Case 1: Attempt 1 returns only an overlay IP (filtered out), Attempt 2
-        // returns both the overlay IP and the LAN IP -> selects the LAN IP.
+        // returns both the overlay IP and the LAN IP -> waits ATTEMPT_TIMEOUT
+        // after Attempt 1 and selects the LAN IP on Attempt 2.
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_lookup = Arc::clone(&calls);
+        let t0 = tokio::time::Instant::now();
         let res = resolve_mdns_candidate_with_lookup(
             MDNS_HOST,
             &cancel,
@@ -357,6 +419,7 @@ mod tests {
         )
         .await;
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(t0.elapsed(), ATTEMPT_TIMEOUT);
         assert_eq!(
             res.as_deref(),
             Some(
@@ -365,9 +428,10 @@ mod tests {
         );
 
         // Case 2: Every attempt returns only the filtered overlay IP -> returns None
-        // after MAX_RESOLVE_ATTEMPTS.
+        // after MAX_RESOLVE_ATTEMPTS and 3 * ATTEMPT_TIMEOUT total elapsed time.
         let calls_all_filtered = Arc::new(AtomicUsize::new(0));
         let calls_all_ref = Arc::clone(&calls_all_filtered);
+        let t1 = tokio::time::Instant::now();
         let res_filtered = resolve_mdns_candidate_with_lookup(
             MDNS_HOST,
             &cancel,
@@ -382,6 +446,10 @@ mod tests {
         assert_eq!(
             calls_all_filtered.load(Ordering::SeqCst),
             MAX_RESOLVE_ATTEMPTS
+        );
+        assert_eq!(
+            t1.elapsed(),
+            ATTEMPT_TIMEOUT * (MAX_RESOLVE_ATTEMPTS as u32 - 1)
         );
     }
 }
