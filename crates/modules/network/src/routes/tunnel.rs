@@ -199,6 +199,7 @@ pub struct TunnelAgentInfo {
 /// JWT (`Authorization: Bearer <token>`) and scoped to that token's tenant.
 pub async fn list_tenant_agents(
     State(state): State<NetworkState>,
+    meshharbor_core::client_ip::PeerAddr(peer): meshharbor_core::client_ip::PeerAddr,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<TunnelAgentInfo>>, ApiError> {
     let token = bearer_token(&headers)
@@ -228,14 +229,33 @@ pub async fn list_tenant_agents(
     let page = state.fleet.agents.list_for_tenant(tid, &params).await?;
     let iso = crate::business_isolation::mode(&state);
     let topo = crate::business_isolation::lines(&state, iso, tid).await;
+    // When no persistent `/ws?role=tunnel-client` connection is open (e.g.
+    // `mh socks5` in mesh mode fetching the roster before opening its WS),
+    // evaluate the caller's zone from this HTTP request's `ConnectionOrigin`
+    // using the same trusted-proxy rules as `/ws`, without writing into the
+    // persistent connection tables.
+    let client_fallback_zone = if iso != crate::business_isolation::Mode::Off
+        && state.org_relay.live_conn(client_id).is_none()
+    {
+        let origin = meshharbor_core::client_ip::ConnectionOrigin::capture(
+            &headers,
+            peer,
+            &state.core.settings.app.business_trusted_proxy_cidrs,
+            state.core.settings.app.rate_limit_trusted_hops,
+        );
+        crate::org_relay::tunnel_client_request_zone(&state, &client, &origin).await
+    } else {
+        None
+    };
     let mut agents = Vec::with_capacity(page.items.len());
     for a in page.items {
         let Some(agent_id) = a.id else { continue };
         let agent_ref = meshharbor_remote_control::models::NodeRef::Agent { agent_id };
-        if crate::business_isolation::refuses_parties_with_lines(
+        if crate::business_isolation::refuses_parties_with_lines_and_fallback_zone(
             &state,
             &topo,
             (tid, &client_ref),
+            client_fallback_zone,
             (tid, &agent_ref),
             "tunnel_roster",
         )

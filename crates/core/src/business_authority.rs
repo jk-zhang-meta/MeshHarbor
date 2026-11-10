@@ -409,6 +409,25 @@ pub fn address_zone(core: &Core, ip: std::net::IpAddr) -> Option<BusinessZone> {
     known_zone(geo.country_code.as_deref())
 }
 
+/// Classify a single request's [`ConnectionOrigin`] into a [`BusinessZone`]
+/// using the same source-currency and GeoIP dataset rules as a persistent
+/// connection observation, without persisting an observation or mutating
+/// [`LiveZones`].
+pub fn origin_zone(core: &Core, origin: &ConnectionOrigin) -> Option<BusinessZone> {
+    let now = DateTime::now();
+    let captured = origin.captured_at();
+    let expiry = captured
+        .timestamp_millis()
+        .checked_add(OBSERVATION_TTL_MILLIS)
+        .filter(|_| captured <= now)
+        .map(DateTime::from_millis)
+        .unwrap_or(now);
+    if !(captured <= now && now < expiry) {
+        return None;
+    }
+    address_zone(core, origin.client_ip()?)
+}
+
 fn known_zone(code: Option<&str>) -> Option<BusinessZone> {
     match code {
         Some("CN") => Some(BusinessZone::Mainland),

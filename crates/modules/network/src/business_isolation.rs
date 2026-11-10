@@ -574,6 +574,17 @@ pub async fn refuses_parties_with_lines(
     b: (ObjectId, &NodeRef),
     what: &str,
 ) -> bool {
+    refuses_parties_with_lines_and_fallback_zone(state, topo, a, None, b, what).await
+}
+
+pub async fn refuses_parties_with_lines_and_fallback_zone(
+    state: &NetworkState,
+    topo: &Lines,
+    a: (ObjectId, &NodeRef),
+    a_fallback_zone: Option<BusinessZone>,
+    b: (ObjectId, &NodeRef),
+    what: &str,
+) -> bool {
     let mode = mode(state);
     if mode == Mode::Off {
         return false;
@@ -617,7 +628,10 @@ pub async fn refuses_parties_with_lines(
                 );
             }
         }
-        let za = crate::org_relay::party_zone(state, a.0, a.1).await;
+        let za = match crate::org_relay::party_zone(state, a.0, a.1).await {
+            Some(z) => Some(z),
+            None => a_fallback_zone,
+        };
         let zb = crate::org_relay::party_zone(state, a.0, b.1).await;
         let permit = match topo.server_refs(a.1, b.1) {
             Some(true) => Permit::Linked(za, zb),
