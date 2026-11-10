@@ -169,6 +169,9 @@ pub mod rc_sessions;
 /// FR-101 P1 — a remote-desktop session's transport hardening: GCM-only
 /// DTLS, with its switch back, and the SRTP/SRTCP replay windows pinned.
 pub mod rc_transport;
+/// RC/RDP Phase B — read-only local TCP 3389 listener + RDP certificate SHA-256
+/// probe (`rdp_available`, `rdp_cert_sha256` on `AgentCaps`).
+pub mod rdp_caps;
 #[cfg(feature = "recording")]
 pub mod recording;
 pub mod relay_probe;

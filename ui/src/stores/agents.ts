@@ -252,6 +252,14 @@ export interface AgentCapabilities {
    *  "unavailable". Read it through `utils/hostUnavailable`, never directly.
    *  Mirrors `AgentCaps.unavailable`. */
   unavailable?: Record<string, { code: string; reason: string }>
+  /** RC/RDP Phase B — whether a local RDP server is listening on TCP port 3389
+   *  (`false` on Windows Home SKUs or when nothing listens on 3389). Absent on
+   *  older agents. Mirrors `AgentCaps.rdp_available`. */
+  rdp_available?: boolean
+  /** RC/RDP Phase B — lowercase colon-separated SHA-256 fingerprint of the
+   *  local RDP server's TLS certificate (`aa:bb:…`), when readable. Mirrors
+   *  `AgentCaps.rdp_cert_sha256`. */
+  rdp_cert_sha256?: string
 }
 
 /** FR-77 — one encoder and the chroma formats it opened in. Wire strings:

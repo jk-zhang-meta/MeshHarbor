@@ -556,6 +556,18 @@ pub struct AgentCaps {
     /// say, so an absent key never means "unavailable".
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub unavailable: std::collections::BTreeMap<String, Unavailable>,
+    /// RC/RDP Phase B — whether a local RDP server is listening on TCP port
+    /// 3389 (`Some(false)` on Windows Home SKUs, which ship no RDP server, or
+    /// when nothing is listening on 3389). Read-only probe; `None` on older
+    /// agents that predate the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdp_available: Option<bool>,
+    /// RC/RDP Phase B — lowercase colon-separated SHA-256 fingerprint of the
+    /// local RDP server's TLS certificate (`aa:bb:…`), when `rdp_available` is
+    /// `Some(true)` and the certificate is readable without elevation or system
+    /// modification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdp_cert_sha256: Option<String>,
 }
 
 /// FR-67 P7 — why an enrollment will not act on a pushed `rc:agent.update`;
@@ -10223,5 +10235,50 @@ mod backbone_policy_tests {
         };
         let encoded = bson::to_bson(&policy).unwrap();
         assert_eq!(bson::from_bson::<PeerRelayPolicy>(encoded).unwrap(), policy);
+    }
+
+    #[test]
+    fn agent_caps_rdp_fields_are_optional_and_forward_backward_compatible() {
+        // 1. Legacy JSON without rdp_available / rdp_cert_sha256 deserializes cleanly
+        //    to (None, None) and omits both keys when re-serialized.
+        let legacy_json = r#"{"hw_encoders":[],"codecs":["h264"],"has_input_permission":true,"supports_clipboard":true,"supports_file_transfer":true,"max_simultaneous_sessions":4}"#;
+        let parsed: AgentCaps = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(parsed.rdp_available, None);
+        assert_eq!(parsed.rdp_cert_sha256, None);
+        let reserialized = serde_json::to_value(&parsed).unwrap();
+        assert!(reserialized.get("rdp_available").is_none());
+        assert!(reserialized.get("rdp_cert_sha256").is_none());
+
+        // 2. New payload carrying rdp_available + rdp_cert_sha256 round-trips
+        //    through JSON and BSON, and is accepted without error by an older
+        //    reader struct that does not know either field.
+        let mut with_rdp = parsed.clone();
+        with_rdp.rdp_available = Some(true);
+        with_rdp.rdp_cert_sha256 = Some(
+            "00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff"
+                .to_string(),
+        );
+        let new_json = serde_json::to_string(&with_rdp).unwrap();
+        let round_trip: AgentCaps = serde_json::from_str(&new_json).unwrap();
+        assert_eq!(round_trip.rdp_available, Some(true));
+        assert_eq!(
+            round_trip.rdp_cert_sha256.as_deref(),
+            Some(
+                "00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff"
+            )
+        );
+        let encoded_bson = bson::to_bson(&with_rdp).unwrap();
+        let from_bson: AgentCaps = bson::from_bson(encoded_bson).unwrap();
+        assert_eq!(from_bson.rdp_available, Some(true));
+        assert_eq!(from_bson.rdp_cert_sha256, with_rdp.rdp_cert_sha256);
+
+        #[derive(Deserialize)]
+        struct LegacyAgentCapsReader {
+            codecs: Vec<String>,
+            has_input_permission: bool,
+        }
+        let legacy_reader: LegacyAgentCapsReader = serde_json::from_str(&new_json).unwrap();
+        assert_eq!(legacy_reader.codecs, vec!["h264".to_string()]);
+        assert!(legacy_reader.has_input_permission);
     }
 }
