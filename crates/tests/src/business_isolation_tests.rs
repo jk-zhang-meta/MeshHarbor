@@ -11858,3 +11858,241 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
             "owned_tasks_joined":true,"authenticated_connections_gone":identities.len(),"api_shutdown_complete":true}));
     }).await.expect("bounded full-runtime legacy recovery exceeded480 seconds");
 }
+
+/// Without a persistent `/ws?role=tunnel-client` connection (e.g. `mh socks5`
+/// mesh mode fetching `/api/tunnel-client/agents` before opening its WS),
+/// `list_tenant_agents` evaluates the caller's zone from the HTTP request's
+/// `ConnectionOrigin` using the same trusted-proxy rules as `/ws`, without
+/// mutating persistent connection tables:
+/// 1. Same-zone, no WS -> returns only same-zone devices;
+/// 2. Cross-zone, no WS -> filtered out;
+/// 3. Unknown zone, no WS -> returns empty under `enforce`, returns devices as usual under `warn`;
+/// 4. With a live WS -> existing behavior unchanged (live WS zone governs).
+#[test]
+fn tunnel_roster_without_ws_uses_request_origin_and_keeps_live_ws_precedence() {
+    std::thread::Builder::new()
+        .name("tunnel-roster-no-ws".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(tunnel_roster_without_ws_uses_request_origin_inner());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn tunnel_roster_without_ws_uses_request_origin_inner() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let fetch_roster = |app: &TestApp, tok: &str, xff: Option<&str>| {
+        let mut req = app.auth_get("/api/tunnel-client/agents", tok);
+        if let Some(ip) = xff {
+            req = req.header("x-forwarded-for", ip);
+        }
+        async move {
+            let v: Value = req.send().await.unwrap().json().await.unwrap();
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a["agent_id"].as_str().unwrap().to_owned())
+                .collect::<BTreeSet<String>>()
+        }
+    };
+
+    // ── Enforce mode ──
+    {
+        let rig = Box::pin(Rig::up_with_unknown_role(
+            "iso-roster-no-ws-enforce",
+            "enforce",
+            "enforce",
+        ))
+        .await;
+        let tid = rig.seeded.tenant_id.clone();
+        let admin = rig.seeded.admin.access_token.clone();
+
+        let (us_a_id, us_a_tok) = enroll(&rig.app, &rig.seeded, "roster-us-a").await;
+        let (cn_a_id, cn_a_tok) = enroll(&rig.app, &rig.seeded, "roster-cn-a").await;
+        let _us_a_ws = connect_from(&rig.app, &us_a_tok, &[], Some(US_A)).await;
+        let _cn_a_ws = connect_from(&rig.app, &cn_a_tok, &[], Some(CN_A)).await;
+        assert_observed(&rig.app, &us_a_id, Some(US_A)).await;
+        assert_observed(&rig.app, &cn_a_id, Some(CN_A)).await;
+
+        let et: Value = rig
+            .app
+            .auth_post(
+                &format!("/api/tenant/{tid}/tunnel-client/enroll-token"),
+                &admin,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let enrolled_tc: Value = rig
+            .app
+            .client
+            .post(rig.app.url("/api/tunnel-client/enroll"))
+            .json(&json!({
+                "enrollment_token": et["enrollment_token"],
+                "machine_id": "roster-tc-stateless",
+                "machine_name": "roster-tc-stateless",
+                "os": "linux",
+                "client_version": "0.4.151"
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let tc_id = enrolled_tc["tunnel_client_id"].as_str().unwrap().to_owned();
+        let tc_oid = ObjectId::parse_str(&tc_id).unwrap();
+        let tc_tok = enrolled_tc["tunnel_client_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        rig.set_device_role("agent", &us_a_id, "client").await;
+        rig.set_device_role("agent", &cn_a_id, "client").await;
+        rig.set_device_role("tunnel-client", &tc_id, "client").await;
+
+        let net = rig.app.state.network();
+        assert!(
+            meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
+                net, tc_oid
+            )
+            .is_none(),
+            "precondition: tunnel-client has no live WS connection"
+        );
+        let zones_gen_before = rig.app.state.business_zones.generation();
+
+        // 1 & 2. No WS: Mainland origin returns only Mainland agent; Non-Mainland returns only Non-Mainland agent.
+        assert_eq!(
+            fetch_roster(&rig.app, &tc_tok, Some(CN_A)).await,
+            BTreeSet::from([cn_a_id.clone()]),
+            "no-WS Mainland request must return only Mainland agent and filter cross-zone"
+        );
+        assert_eq!(
+            fetch_roster(&rig.app, &tc_tok, Some(US_A)).await,
+            BTreeSet::from([us_a_id.clone()]),
+            "no-WS Non-Mainland request must return only Non-Mainland agent and filter cross-zone"
+        );
+
+        // 3a. Unknown zone, no WS under enforce -> fail-closed empty roster.
+        assert!(
+            fetch_roster(&rig.app, &tc_tok, None).await.is_empty(),
+            "no-WS unknown zone must fail closed and return empty under enforce"
+        );
+
+        // Verify stateless HTTP requests did NOT mutate persistent connection tables or DB observations.
+        assert!(
+            meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
+                net, tc_oid
+            )
+            .is_none(),
+            "stateless roster check must not register a live connection"
+        );
+        assert_eq!(
+            rig.app.state.business_zones.generation(),
+            zones_gen_before,
+            "stateless roster check must not mutate LiveZones"
+        );
+        let tc_obs_count = rig
+            .app
+            .db
+            .collection::<bson::Document>(
+                meshharbor_core::business_authority::OBSERVATIONS_COLLECTION,
+            )
+            .count_documents(bson::doc! { "identity.device_id": tc_oid })
+            .await
+            .unwrap();
+        assert_eq!(
+            tc_obs_count, 0,
+            "stateless roster check must not persist a connection observation row"
+        );
+
+        // 4. With a live WS connection -> existing behavior unchanged (live WS zone governs
+        //    even if the HTTP request has no X-Forwarded-For or a different X-Forwarded-For).
+        let tc_url = format!(
+            "ws://{}/ws?token={}&role=tunnel-client",
+            rig.app.addr,
+            tc_tok
+                .replace('+', "%2B")
+                .replace('/', "%2F")
+                .replace('=', "%3D")
+        );
+        let mut tc_req = tc_url.as_str().into_client_request().unwrap();
+        tc_req
+            .headers_mut()
+            .insert("x-forwarded-for", US_A.parse().unwrap());
+        let (mut tc_ws, _) = tokio_tungstenite::connect_async(tc_req).await.unwrap();
+        let _ = line_join(&mut tc_ws, 5, "203.0.113.15:41641", json!({})).await;
+
+        assert_eq!(
+            fetch_roster(&rig.app, &tc_tok, None).await,
+            BTreeSet::from([us_a_id.clone()]),
+            "with live WS in NonMainland, HTTP request without XFF still uses live WS zone"
+        );
+        assert_eq!(
+            fetch_roster(&rig.app, &tc_tok, Some(CN_A)).await,
+            BTreeSet::from([us_a_id.clone()]),
+            "with live WS in NonMainland, HTTP request with conflicting XFF cannot override live WS zone"
+        );
+        let _ = tc_ws.close(None).await;
+    }
+
+    // 3b. Unknown zone, no WS under warn -> returns devices as usual.
+    {
+        let warn_rig = Box::pin(Rig::up("iso-roster-no-ws-warn", "warn")).await;
+        let warn_tid = warn_rig.seeded.tenant_id.clone();
+        let warn_admin = warn_rig.seeded.admin.access_token.clone();
+        let (w_us_id, w_us_tok) = enroll(&warn_rig.app, &warn_rig.seeded, "roster-w-us").await;
+        let (w_cn_id, w_cn_tok) = enroll(&warn_rig.app, &warn_rig.seeded, "roster-w-cn").await;
+        let _w_us_ws = connect_from(&warn_rig.app, &w_us_tok, &[], Some(US_A)).await;
+        let _w_cn_ws = connect_from(&warn_rig.app, &w_cn_tok, &[], Some(CN_A)).await;
+        assert_observed(&warn_rig.app, &w_us_id, Some(US_A)).await;
+        assert_observed(&warn_rig.app, &w_cn_id, Some(CN_A)).await;
+
+        let w_et: Value = warn_rig
+            .app
+            .auth_post(
+                &format!("/api/tenant/{warn_tid}/tunnel-client/enroll-token"),
+                &warn_admin,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let w_tc: Value = warn_rig
+            .app
+            .client
+            .post(warn_rig.app.url("/api/tunnel-client/enroll"))
+            .json(&json!({
+                "enrollment_token": w_et["enrollment_token"],
+                "machine_id": "roster-w-tc",
+                "machine_name": "roster-w-tc",
+                "os": "linux",
+                "client_version": "0.4.151"
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let w_tc_tok = w_tc["tunnel_client_token"].as_str().unwrap().to_owned();
+        assert_eq!(
+            fetch_roster(&warn_rig.app, &w_tc_tok, None).await,
+            BTreeSet::from([w_us_id, w_cn_id]),
+            "no-WS unknown zone under warn must return devices as usual"
+        );
+    }
+}

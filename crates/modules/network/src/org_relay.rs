@@ -1825,6 +1825,27 @@ pub(crate) async fn party_zone(
     }
 }
 
+/// Fallback zone for a [`meshharbor_remote_control::models::TunnelClient`] on a
+/// stateless HTTP request when no live `/ws?role=tunnel-client` connection is
+/// open on this pod. Uses the request's [`meshharbor_core::client_ip::ConnectionOrigin`]
+/// without writing to `live_conns` or `business_zones`, and still applies
+/// [`addresses_agree`] if a live overlay node row exists for the client's machine.
+pub(crate) async fn tunnel_client_request_zone(
+    state: &NetworkState,
+    client: &meshharbor_remote_control::models::TunnelClient,
+    origin: &meshharbor_core::client_ip::ConnectionOrigin,
+) -> Option<BusinessZone> {
+    let zone = meshharbor_core::business_authority::origin_zone(&state.core, origin)?;
+    match state
+        .overlay_nodes
+        .find_live_by_tenant_and_machine(client.tenant_id, &client.machine_id)
+        .await
+    {
+        Ok(Some(node)) => addresses_agree(state, &node, zone).then_some(zone),
+        _ => Some(zone),
+    }
+}
+
 /// The zone a device's live connection was observed in, and its machine id.
 async fn observed_zone(
     state: &NetworkState,

@@ -35,8 +35,8 @@
           <v-card-title>{{ tr('mh.dash.firstWorkspace') }}</v-card-title>
           <v-card-text>
             <v-form ref="formRef" @submit.prevent="handleCreate">
-              <v-text-field v-model="name" :label="tr('mh.dash.workspaceName')" :rules="[rules.required]" />
-              <v-text-field v-model="slug" :label="tr('mh.dash.slug')" :hint="tr('mh.dash.slugHint')" :rules="[rules.required, rules.slug]" />
+              <v-text-field v-model="name" :label="tr('mh.dash.workspaceName')" :rules="[rules.required]" @update:model-value="autoSlug" />
+              <v-text-field v-model="slug" :label="tr('mh.dash.slug')" :hint="tr('mh.dash.slugHint')" :rules="[rules.required, rules.slug]" @update:model-value="slugTouched = true" />
               <v-btn type="submit" color="primary" class="mt-2">{{ tr('mh.dash.create') }}</v-btn>
             </v-form>
           </v-card-text>
