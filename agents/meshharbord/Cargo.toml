@@ -758,6 +758,11 @@ full-hw = ["full", "mf-encoder", "wgc-capture", "viewer-indicator"]
 # the agent-e2e Dockerfile selects `--features synthetic-frame-source,
 # openh264-encoder,clipboard` (no scrap, no enigo, no WGC).
 synthetic-frame-source = []
+# Test-only remote-control latency and sender packet-drop measurement hooks.
+# Never enabled in default, `full`, or `full-hw` builds; even when compiled in,
+# all hooks remain inert unless `MESHHARBORD_LATENCY_BENCH=1` or
+# `MESHHARBORD_TEST_VIDEO_DROP_PCT` is set at runtime.
+rc-latency-bench = []
 
 # Option B HEVC plan (rc.64+). Enables the FFmpeg-based encoder
 # backend in `src/encode/ffmpeg/` that bypasses Windows Media Foundation

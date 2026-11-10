@@ -651,6 +651,30 @@ mod tests {
             v6_hex(Ipv6Addr::LOCALHOST)
         );
         assert!(!parse_proc_net_tcp_has_listener(&loopback_v6, 3389));
+
+        // 5. Literal Linux kernel /proc/net/tcp & /proc/net/tcp6 outputs (little-endian x86_64/aarch64):
+        //    127.0.0.1:3389 -> 0100007F:0D3D -> false
+        //    [::1]:3389     -> 00000000000000000000000001000000:0D3D -> false
+        #[cfg(target_endian = "little")]
+        {
+            let literal_kernel_v4_loopback = concat!(
+                "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
+                "   0: 0100007F:0D3D 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1001 1 0000000000000000 100 0 0 10 0\n",
+            );
+            assert!(!parse_proc_net_tcp_has_listener(
+                literal_kernel_v4_loopback,
+                3389
+            ));
+
+            let literal_kernel_v6_loopback = concat!(
+                "  sl  local_address                         rem_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
+                "   0: 00000000000000000000000001000000:0D3D 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1001 1 0000000000000000 100 0 0 10 0\n",
+            );
+            assert!(!parse_proc_net_tcp_has_listener(
+                literal_kernel_v6_loopback,
+                3389
+            ));
+        }
     }
 
     #[test]

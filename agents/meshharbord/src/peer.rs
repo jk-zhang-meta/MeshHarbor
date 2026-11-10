@@ -459,6 +459,11 @@ impl AgentPeer {
         registry =
             webrtc::api::interceptor_registry::register_default_interceptors(registry, &mut engine)
                 .context("register default interceptors")?;
+        #[cfg(feature = "rc-latency-bench")]
+        let registry = {
+            crate::latency_bench::note_stage(session_id, "peer_new", serde_json::json!({}));
+            crate::latency_bench::register_interceptor(registry, session_id)
+        };
 
         // Keep the OVERLAY interface out of ICE. The STUN query that rides
         // that interface comes back reflected as the node's own overlay
@@ -839,6 +844,7 @@ impl AgentPeer {
                                         .sum();
                                     nack_count_in_window =
                                         nack_count_in_window.saturating_add(lost);
+                                    let mut triggered_inv = false;
                                     if nack_count_in_window >= NACK_BURST_THRESHOLD
                                         && now.duration_since(last_invalidation)
                                             >= MIN_INVALIDATION_GAP
@@ -855,12 +861,20 @@ impl AgentPeer {
                                         // burst doesn't keep firing.
                                         nack_window_started = now;
                                         nack_count_in_window = 0;
+                                        triggered_inv = true;
                                     }
+                                    #[cfg(feature = "rc-latency-bench")]
+                                    crate::latency_bench::note_rtcp_nack(sid, lost, triggered_inv);
+                                    let _ = triggered_inv;
                                 }
                             }
                             if asks_keyframe {
                                 let now = std::time::Instant::now();
-                                if now.duration_since(last_keyframe) >= MIN_KEYFRAME_GAP {
+                                let honoured =
+                                    now.duration_since(last_keyframe) >= MIN_KEYFRAME_GAP;
+                                #[cfg(feature = "rc-latency-bench")]
+                                crate::latency_bench::note_rtcp_pli(sid, honoured);
+                                if honoured {
                                     info!(
                                         session = %sid,
                                         elapsed_ms = peer_created_at.elapsed().as_millis() as u64,
@@ -974,6 +988,14 @@ impl AgentPeer {
                     "PC state change"
                 );
                 if matches!(s, RTCPeerConnectionState::Connected) {
+                    #[cfg(feature = "rc-latency-bench")]
+                    crate::latency_bench::note_stage(
+                        session_id,
+                        "dtls_connected",
+                        serde_json::json!({
+                            "elapsed_ms": peer_created_at.elapsed().as_millis() as u64,
+                        }),
+                    );
                     kf_on_connect.store(true, std::sync::atomic::Ordering::Relaxed);
                     connected_kf.store(true, std::sync::atomic::Ordering::Relaxed);
                     wake_on_connect.notify_waiters();
@@ -1244,10 +1266,30 @@ impl AgentPeer {
             FileChildAuthorization::unavailable(session_id, permissions, session_end.clone()),
         ));
         let file_child_for_callback = file_child_authorization.clone();
+        #[cfg(feature = "rc-latency-bench")]
+        {
+            pc.on_ice_connection_state_change(Box::new(move |s| {
+                crate::latency_bench::note_stage(
+                    session_id,
+                    "ice_state_change",
+                    serde_json::json!({
+                        "state": format!("{s:?}"),
+                        "elapsed_ms": peer_created_at.elapsed().as_millis() as u64,
+                    }),
+                );
+                Box::pin(async {})
+            }));
+        }
         pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
             let file_child_authorization = file_child_for_callback.clone();
             let label = dc.label().to_string();
             info!(session = %session_id, %label, "data channel opened");
+            #[cfg(feature = "rc-latency-bench")]
+            crate::latency_bench::note_stage(
+                session_id,
+                "dc_open",
+                serde_json::json!({ "label": label }),
+            );
             let quality_for_dc = quality_for_dc.clone();
             let target_res_for_dc = target_res_for_dc.clone();
             let native_dims_for_dc = native_dims_for_dc.clone();
@@ -1815,6 +1857,8 @@ impl AgentPeer {
     }
 
     pub async fn handle_offer(&self, offer_sdp: String) -> Result<String> {
+        #[cfg(feature = "rc-latency-bench")]
+        crate::latency_bench::note_stage(self.session_id, "offer_received", serde_json::json!({}));
         // SDP codec-name normalisation for H.265:
         // RFC 7798 specifies the SDP rtpmap subtype as `H265` ("H265/90000"),
         // and every browser (Chrome, Edge, Safari) emits exactly that in its
@@ -1851,6 +1895,8 @@ impl AgentPeer {
         // Reverse the HEVC → H265 munge on the outgoing answer so the
         // browser's SDP parser recognises the rtpmap subtype.
         let munged_answer = answer.sdp.replace("HEVC/90000", "H265/90000");
+        #[cfg(feature = "rc-latency-bench")]
+        crate::latency_bench::note_stage(self.session_id, "answer_created", serde_json::json!({}));
         Ok(munged_answer)
     }
 
@@ -3395,26 +3441,65 @@ async fn media_pump(
                 woke_for_keyframe = true;
                 Ok(None)
             } else {
-                tokio::select! {
-                    biased;
-                    _ = keyframe_wake.notified() => {
-                        let _ = connected_keyframe_pending.swap(false, std::sync::atomic::Ordering::Relaxed);
-                        woke_for_keyframe = true;
-                        Ok(None)
+                #[cfg(feature = "rc-latency-bench")]
+                let bench_wait = crate::latency_bench::bench_enabled()
+                    .then(|| frame_duration_floor.saturating_sub(last_capture_at.elapsed()));
+                #[cfg(not(feature = "rc-latency-bench"))]
+                let bench_wait: Option<Duration> = None;
+                if let Some(wait_budget) = bench_wait {
+                    tokio::select! {
+                        biased;
+                        _ = keyframe_wake.notified() => {
+                            let _ = connected_keyframe_pending.swap(false, std::sync::atomic::Ordering::Relaxed);
+                            woke_for_keyframe = true;
+                            Ok(None)
+                        }
+                        res = tokio::time::timeout(wait_budget, capturer.next_frame()) => {
+                            res.unwrap_or(Ok(None))
+                        }
                     }
-                    res = capturer.next_frame() => res,
+                } else {
+                    tokio::select! {
+                        biased;
+                        _ = keyframe_wake.notified() => {
+                            let _ = connected_keyframe_pending.swap(false, std::sync::atomic::Ordering::Relaxed);
+                            woke_for_keyframe = true;
+                            Ok(None)
+                        }
+                        res = capturer.next_frame() => res,
+                    }
                 }
             }
         } else {
             capturer.next_frame().await
         };
+        #[cfg(feature = "rc-latency-bench")]
+        let frame_capture_agent_us: u64;
+        #[cfg(feature = "rc-latency-bench")]
+        let frame_capture_wall_us: u64;
         let frame: std::sync::Arc<crate::capture::Frame> = match next_frame {
             Ok(Some(f)) => {
+                #[cfg(feature = "rc-latency-bench")]
+                {
+                    frame_capture_agent_us = agent_epoch_us();
+                    frame_capture_wall_us = crate::latency_bench::unix_epoch_us();
+                }
                 let first_capture_ms = capture_started.elapsed().as_millis() as u64;
                 capture_time_us =
                     capture_time_us.saturating_add(capture_started.elapsed().as_micros() as u64);
                 frames_captured += 1;
                 if frames_captured == 1 {
+                    #[cfg(feature = "rc-latency-bench")]
+                    crate::latency_bench::note_stage(
+                        session_id,
+                        "first_capture_done",
+                        serde_json::json!({
+                            "w": f.width,
+                            "h": f.height,
+                            "first_capture_ms": first_capture_ms,
+                            "elapsed_ms": pump_started.elapsed().as_millis() as u64,
+                        }),
+                    );
                     tracing::info!(
                         %session_id,
                         w = f.width,
@@ -3480,15 +3565,28 @@ async fn media_pump(
                 let pending_kf = woke_for_keyframe
                     || connected_keyframe_pending.swap(false, std::sync::atomic::Ordering::Relaxed);
                 let kf_requested = keyframe_requested.load(std::sync::atomic::Ordering::Relaxed);
+                #[cfg(feature = "rc-latency-bench")]
+                let effective_idle_keepalive = if crate::latency_bench::bench_enabled() {
+                    frame_duration_floor
+                } else {
+                    IDLE_KEEPALIVE
+                };
+                #[cfg(not(feature = "rc-latency-bench"))]
+                let effective_idle_keepalive = IDLE_KEEPALIVE;
                 if should_reencode_cached_frame_on_idle(
                     pending_kf,
                     kf_requested,
                     last_capture_at.elapsed(),
-                    IDLE_KEEPALIVE,
+                    effective_idle_keepalive,
                 ) {
                     if let Some(ref f) = last_good_frame {
                         frames_keepalive += 1;
                         last_capture_at = std::time::Instant::now();
+                        #[cfg(feature = "rc-latency-bench")]
+                        {
+                            frame_capture_agent_us = agent_epoch_us();
+                            frame_capture_wall_us = crate::latency_bench::unix_epoch_us();
+                        }
                         if pending_kf || kf_requested {
                             tracing::info!(
                                 %session_id,
@@ -3633,6 +3731,8 @@ async fn media_pump(
                 "initialising encoder for frame dims"
             );
             let encoder_init_started = std::time::Instant::now();
+            #[cfg(feature = "rc-latency-bench")]
+            let encoder_init_start_agent_us = agent_epoch_us();
             let (enc, actual) = encode::open_for_codec(
                 &chosen_codec,
                 frame.width,
@@ -3640,6 +3740,20 @@ async fn media_pump(
                 encoder_preference,
             );
             let encoder_init_ms = encoder_init_started.elapsed().as_millis() as u64;
+            #[cfg(feature = "rc-latency-bench")]
+            crate::latency_bench::note_stage(
+                session_id,
+                "encoder_init_done",
+                serde_json::json!({
+                    "w": frame.width,
+                    "h": frame.height,
+                    "codec": actual.to_string(),
+                    "backend": enc.name(),
+                    "encoder_init_start_agent_us": encoder_init_start_agent_us,
+                    "encoder_init_us": encoder_init_started.elapsed().as_micros() as u64,
+                    "encoder_init_ms": encoder_init_ms,
+                }),
+            );
             info!(
                 %session_id,
                 w = frame.width, h = frame.height,
@@ -3998,6 +4112,20 @@ async fn media_pump(
                 last_applied_bitrate = target;
             }
         }
+        #[cfg(feature = "rc-latency-bench")]
+        let (bench_frame_seq, encode_start_agent_us, rtp_pkts_before, rtp_drop_before) =
+            if crate::latency_bench::bench_enabled()
+                || crate::latency_bench::video_drop_permille() > 0
+            {
+                let seq = (frames_encoded + 1) as u32;
+                if crate::latency_bench::bench_enabled() {
+                    crate::latency_bench::stamp_frame_markers(&mut frame, seq);
+                }
+                let (tot, drp) = crate::latency_bench::rtp_packet_counts();
+                (seq, agent_epoch_us(), tot, drp)
+            } else {
+                (0, 0, 0, 0)
+            };
         let encode_started = std::time::Instant::now();
         let packets = match enc.encode(frame).await {
             Ok(p) => p,
@@ -4009,6 +4137,8 @@ async fn media_pump(
         let frame_encode_us = encode_started.elapsed().as_micros() as u64;
         let frame_encode_ms = encode_started.elapsed().as_millis() as u64;
         encode_time_us = encode_time_us.saturating_add(frame_encode_us);
+        #[cfg(feature = "rc-latency-bench")]
+        let encode_done_agent_us = agent_epoch_us();
 
         // Wallclock-based RTP timestamps, so they advance at real time, not
         // at an assumed 30 fps. #2284: the gap since the previous frame is
@@ -4079,6 +4209,18 @@ async fn media_pump(
 
         if frames_encoded == 1 {
             let backend = encoder.as_ref().map(|e| e.name()).unwrap_or("none");
+            #[cfg(feature = "rc-latency-bench")]
+            crate::latency_bench::note_stage(
+                session_id,
+                "first_prewarm_keyframe_sent",
+                serde_json::json!({
+                    "backend": backend,
+                    "first_frame_bytes": packet_bytes,
+                    "encode_us": frame_encode_us,
+                    "rtp_timestamp": crate::latency_bench::last_rtp_timestamp(),
+                    "pc_state": format!("{:?}", pc.connection_state()),
+                }),
+            );
             info!(
                 %session_id,
                 backend,
@@ -4094,6 +4236,21 @@ async fn media_pump(
         {
             post_connect_frame_logged = true;
             let backend = encoder.as_ref().map(|e| e.name()).unwrap_or("none");
+            #[cfg(feature = "rc-latency-bench")]
+            {
+                crate::latency_bench::note_stage(
+                    session_id,
+                    "first_connected_keyframe_sent",
+                    serde_json::json!({
+                        "backend": backend,
+                        "frames_encoded": frames_encoded,
+                        "frame_bytes": packet_bytes,
+                        "encode_us": frame_encode_us,
+                        "rtp_timestamp": crate::latency_bench::last_rtp_timestamp(),
+                    }),
+                );
+                crate::latency_bench::set_drop_armed(true);
+            }
             info!(
                 %session_id,
                 backend,
@@ -4102,6 +4259,29 @@ async fn media_pump(
                 encode_ms = frame_encode_ms,
                 elapsed_ms = pump_started.elapsed().as_millis() as u64,
                 "media pump: first encoded frame written after PC Connected"
+            );
+        }
+        #[cfg(feature = "rc-latency-bench")]
+        if crate::latency_bench::bench_enabled() || crate::latency_bench::video_drop_permille() > 0
+        {
+            let write_done_agent_us = agent_epoch_us();
+            let (rtp_tot_after, rtp_drp_after) = crate::latency_bench::rtp_packet_counts();
+            let rtp_ts = crate::latency_bench::last_rtp_timestamp();
+            crate::latency_bench::note_frame_tx(
+                session_id,
+                bench_frame_seq,
+                frame_capture_agent_us,
+                frame_capture_wall_us,
+                encode_start_agent_us,
+                encode_done_agent_us,
+                write_done_agent_us,
+                packet_bytes,
+                frame_is_keyframe,
+                rtp_ts,
+                rtp_tot_after.saturating_sub(rtp_pkts_before),
+                rtp_drp_after.saturating_sub(rtp_drop_before),
+                rtp_tot_after,
+                rtp_drp_after,
             );
         }
         if frames_encoded.is_multiple_of(30) {
@@ -11748,7 +11928,10 @@ fn attach_control_handler(
                     // stamped with, which is what lets the browser turn a frame
                     // timestamp into a true end-to-end age in its HUD.
                     let t0 = val.get("t0").cloned().unwrap_or(serde_json::Value::Null);
-                    let reply = clock_echo_json(&t0, agent_epoch_us());
+                    let agent_us = agent_epoch_us();
+                    #[cfg(feature = "rc-latency-bench")]
+                    crate::latency_bench::note_clock_probe(session_id, &t0, agent_us);
+                    let reply = clock_echo_json(&t0, agent_us);
                     if let Some(dc) = dc_for_reply.upgrade()
                         && let Err(e) = dc.send_text(reply).await
                     {
@@ -11776,7 +11959,11 @@ fn attach_control_handler(
                         keyframe_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                         crate::session_telemetry::counters(session_id).note_keyframe();
                         debug!(%session_id, "control: rc:keyframe — forcing IDR (browser decode-backlog resync)");
+                    } else {
+                        drop(guard);
                     }
+                    #[cfg(feature = "rc-latency-bench")]
+                    crate::latency_bench::note_rc_keyframe(session_id, allow);
                 }
                 "rc:apps.list" | "rc:apps.focus" | "rc:apps.launch" => {
                     // Remote app selection & launch (virtual-desktop

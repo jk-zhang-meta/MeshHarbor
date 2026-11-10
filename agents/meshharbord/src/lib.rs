@@ -101,6 +101,8 @@ pub mod keep_busy;
 /// carries the overlay feature split inside so the handler compiles the same
 /// in every build (see the module doc for the rustc ICE that forced this).
 pub mod key_rotation;
+#[cfg(feature = "rc-latency-bench")]
+pub mod latency_bench;
 pub mod localapi_state;
 pub mod lock_on_end;
 pub mod lock_overlay;
