@@ -88,6 +88,20 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
         }
       },
     )
+
+    it('classifies agent_busy as ineligible (someone is already viewing the machine) and never shows the RDP card', () => {
+      const spec = RC_ERROR_CODE_TABLE.find((e) => e.code === 'agent_busy')
+      expect(spec).toBeDefined()
+      expect(spec?.showRdpCard).toBe(false)
+      expect(spec?.category).toBe('user-consent-or-host-stop')
+      expect(
+        shouldShowRdpFallbackCard({
+          phase: 'error',
+          errorCode: 'agent_busy',
+          rdpAvailable: true,
+        }),
+      ).toBe(false)
+    })
   })
 
   describe('2. Hidden when `rdp_available=false` (including Windows Home) or absent', () => {
@@ -248,7 +262,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
   })
 
   describe('5. Desktop device list split button (`agents/meshharbor-desktop/src/front/devices.js`)', () => {
-    it('renders primary "连接" (cmd_open_remote) and dropdown items "用 RDP 连接" & "独立会话（高级）" (cmd_open_rdp)', async () => {
+    it('renders primary "连接" (cmd_open_remote), removes duplicate "独立会话（高级）", and requires in-app screen-lock confirmation before invoking cmd_open_rdp', async () => {
       const parsed = new DOMParser().parseFromString(DESKTOP_HTML, 'text/html')
       const section = document.importNode(parsed.getElementById('view-devices')!, true)
       section.hidden = false
@@ -313,6 +327,14 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       const standaloneItem = document.querySelector(
         '.dv-split-item-standalone',
       ) as HTMLButtonElement | null
+      const confirmBox = document.querySelector('.dv-rdp-confirm') as HTMLElement | null
+      const confirmText = document.querySelector('.dv-rdp-confirm-text') as HTMLElement | null
+      const confirmAcceptBtn = document.querySelector(
+        '.dv-rdp-confirm-accept',
+      ) as HTMLButtonElement | null
+      const confirmCancelBtn = document.querySelector(
+        '.dv-rdp-confirm-cancel',
+      ) as HTMLButtonElement | null
 
       expect(mainBtn).not.toBeNull()
       expect(mainBtn!.textContent).toBe('连接')
@@ -320,7 +342,10 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       expect(menu).not.toBeNull()
       expect(menu!.hidden).toBe(true)
       expect(rdpItem?.textContent).toBe('用 RDP 连接')
-      expect(standaloneItem?.textContent).toBe('独立会话（高级）')
+      expect(standaloneItem).toBeNull()
+      expect(confirmBox).not.toBeNull()
+      expect(confirmBox!.hidden).toBe(true)
+      expect(confirmText?.textContent).toBe(RDP_SCREEN_LOCK_WARNING)
 
       // 1. Clicking primary "连接" invokes cmd_open_remote
       mainBtn!.click()
@@ -330,22 +355,36 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
         org: null,
       })
 
-      // 2. Clicking dropdown toggle opens menu; clicking "用 RDP 连接" invokes cmd_open_rdp
-      toggleBtn!.click()
-      expect(menu!.hidden).toBe(false)
-      rdpItem!.click()
-      await new Promise((r) => setTimeout(r, 10))
-      expect(menu!.hidden).toBe(true)
-      expect(invokeSpy).toHaveBeenCalledWith('cmd_open_rdp', {
-        target: 'node-surface-01',
-        org: null,
-      })
-
-      // 3. Clicking "独立会话（高级）" also invokes cmd_open_rdp
+      // 2. Clicking dropdown toggle opens menu; clicking "用 RDP 连接" shows in-app confirmation without calling cmd_open_rdp yet
       invokeSpy.mockClear()
       toggleBtn!.click()
-      standaloneItem!.click()
+      expect(menu!.hidden).toBe(false)
+      expect(rdpItem!.hidden).toBe(false)
+      expect(confirmBox!.hidden).toBe(true)
+
+      rdpItem!.click()
       await new Promise((r) => setTimeout(r, 10))
+      expect(menu!.hidden).toBe(false)
+      expect(rdpItem!.hidden).toBe(true)
+      expect(confirmBox!.hidden).toBe(false)
+      expect(invokeSpy).not.toHaveBeenCalledWith('cmd_open_rdp', expect.anything())
+
+      // 3. Clicking "取消" closes menu and resets state without calling cmd_open_rdp
+      confirmCancelBtn!.click()
+      await new Promise((r) => setTimeout(r, 10))
+      expect(menu!.hidden).toBe(true)
+      expect(rdpItem!.hidden).toBe(false)
+      expect(confirmBox!.hidden).toBe(true)
+      expect(invokeSpy).not.toHaveBeenCalledWith('cmd_open_rdp', expect.anything())
+
+      // 4. Re-opening menu, clicking "用 RDP 连接", then clicking "确认连接" invokes cmd_open_rdp
+      toggleBtn!.click()
+      rdpItem!.click()
+      expect(confirmBox!.hidden).toBe(false)
+      confirmAcceptBtn!.click()
+      await new Promise((r) => setTimeout(r, 10))
+      expect(menu!.hidden).toBe(true)
+      expect(invokeSpy).toHaveBeenCalledTimes(1)
       expect(invokeSpy).toHaveBeenCalledWith('cmd_open_rdp', {
         target: 'node-surface-01',
         org: null,

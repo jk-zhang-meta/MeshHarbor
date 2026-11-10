@@ -971,7 +971,9 @@ pub fn open_web_window<R: tauri::Runtime>(
         .inner_size(1280.0, 800.0)
         .initialization_script(WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT)
         .on_new_window(move |req_url, _| {
-            if let Some(req) = parse_desktop_bridge_open_rdp_url(&req_url, &allowed_origin) {
+            let (response, bridge_req) =
+                decide_web_window_new_window::<R>(&req_url, &allowed_origin);
+            if let Some(req) = bridge_req {
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) =
                         launch_desktop_rdp_session(req.target, req.org, req.port, req.cert_sha256)
@@ -981,7 +983,7 @@ pub fn open_web_window<R: tauri::Runtime>(
                     }
                 });
             }
-            tauri::webview::NewWindowResponse::Deny
+            response
         })
         .build()
         .map_err(|e| format!("opening the MeshHarbor window: {e}"))?;
@@ -1229,13 +1231,42 @@ pub fn parse_desktop_bridge_open_rdp_url(
     })
 }
 
+/// Pure decision helper for [`open_web_window`]'s `on_new_window` callback.
+///
+/// Only a same-origin `/__meshharbor_desktop__/open_rdp` bridge URL is
+/// intercepted (`NewWindowResponse::Deny` + `Some(DesktopBridgeOpenRdpRequest)`).
+/// All other same-origin paths and external URLs return
+/// `(NewWindowResponse::Allow, None)` so normal `target="_blank"` and
+/// `window.open` links inside the remote-control window keep their default
+/// Tauri behavior.
+pub fn decide_web_window_new_window<R: tauri::Runtime>(
+    req_url: &tauri::Url,
+    allowed_origin: &tauri::Url,
+) -> (
+    tauri::webview::NewWindowResponse<R>,
+    Option<DesktopBridgeOpenRdpRequest>,
+) {
+    if let Some(req) = parse_desktop_bridge_open_rdp_url(req_url, allowed_origin) {
+        (tauri::webview::NewWindowResponse::Deny, Some(req))
+    } else {
+        (tauri::webview::NewWindowResponse::Allow, None)
+    }
+}
+
 pub use meshharbor_node_core::rdp_client::{
-    build_open_rdp_options, plan_desktop_open_rdp_invocation,
+    DesktopRdpSessionRegistry, build_open_rdp_options, plan_desktop_open_rdp_invocation,
 };
+
+static ACTIVE_DESKTOP_RDP_SESSIONS: LazyLock<DesktopRdpSessionRegistry> =
+    LazyLock::new(DesktopRdpSessionRegistry::default);
 
 /// Resolve `target` over LocalAPI, bind a unique `127.77.x.y:0` loopback tunnel,
 /// and spawn the OS native RDP client (`mstsc.exe` / FreeRDP). The loopback
 /// tunnel is automatically torn down as soon as the native RDP client exits.
+///
+/// Deduplicates per target device (`(device.org_id, device.device_id)`): if an
+/// RDP session for that device is already running, logs and ignores the
+/// duplicate request until the running child process exits.
 pub async fn launch_desktop_rdp_session(
     target: String,
     org: Option<String>,
@@ -1253,6 +1284,15 @@ pub async fn launch_desktop_rdp_session(
         meshharbor_node_core::rdp_client::resolve_target_device(&opts.target)
             .await
             .map_err(|e| e.to_string())?;
+    let Some(session_guard) = ACTIVE_DESKTOP_RDP_SESSIONS.try_acquire(&device) else {
+        tracing::info!(
+            org_id = %device.org_id,
+            device_id = %device.device_id,
+            device_name = %device.device_name,
+            "desktop RDP session already active for target device; ignoring duplicate request"
+        );
+        return Ok(());
+    };
     let listener = meshharbor_node_core::rdp_client::bind_unique_session_loopback_listener()
         .await
         .map_err(|e| e.to_string())?;
@@ -1272,6 +1312,7 @@ pub async fn launch_desktop_rdp_session(
         listener, dial_ip, opts.port, socks_port,
     );
     tokio::task::spawn_blocking(move || {
+        let _guard = session_guard;
         let _ = child.wait();
         tunnel_task.abort();
     });
@@ -3589,5 +3630,115 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(parse_desktop_bridge_open_rdp_url(&req_evil, &allowed), None);
+    }
+
+    #[test]
+    fn decide_web_window_new_window_intercepts_only_bridge_url_and_allows_others() {
+        let allowed: tauri::Url =
+            "https://meshharbor.example.invalid/tenant/66366f7a7230306d6c657231/agent/66366f7a7230306d6c657232/remote"
+                .parse()
+                .unwrap();
+
+        // 1. Valid same-origin bridge URL -> intercepted (`NewWindowResponse::Deny`) + parsed request.
+        let bridge_url: tauri::Url =
+            "https://meshharbor.example.invalid/__meshharbor_desktop__/open_rdp?target=66366f7a7230306d6c657232&org=acme&port=3389"
+                .parse()
+                .unwrap();
+        let (resp_bridge, req_bridge) =
+            decide_web_window_new_window::<tauri::Wry>(&bridge_url, &allowed);
+        assert!(matches!(
+            resp_bridge,
+            tauri::webview::NewWindowResponse::Deny
+        ));
+        assert_eq!(
+            req_bridge,
+            Some(DesktopBridgeOpenRdpRequest {
+                target: "66366f7a7230306d6c657232".to_string(),
+                org: Some("acme".to_string()),
+                port: Some(3389),
+                cert_sha256: None,
+            })
+        );
+
+        // 2. Same-origin non-bridge paths -> allowed (`NewWindowResponse::Allow`).
+        for same_origin_other in [
+            "https://meshharbor.example.invalid/tenant/66366f7a7230306d6c657231/devices",
+            "https://meshharbor.example.invalid/docs/help",
+            "https://meshharbor.example.invalid/__meshharbor_desktop__/other",
+            "https://meshharbor.example.invalid/__meshharbor_desktop__/open_rdp", // missing target param
+        ] {
+            let url: tauri::Url = same_origin_other.parse().unwrap();
+            let (resp, req) = decide_web_window_new_window::<tauri::Wry>(&url, &allowed);
+            assert!(
+                matches!(resp, tauri::webview::NewWindowResponse::Allow),
+                "same-origin non-bridge URL must be allowed: {same_origin_other}"
+            );
+            assert_eq!(req, None);
+        }
+
+        // 3. External URLs (including foreign origin with bridge path) -> allowed (`NewWindowResponse::Allow`) with no bridge trigger.
+        for external in [
+            "https://docs.example.invalid/guide",
+            "https://evil.example.invalid/__meshharbor_desktop__/open_rdp?target=66366f7a7230306d6c657232",
+            "http://meshharbor.example.invalid/__meshharbor_desktop__/open_rdp?target=66366f7a7230306d6c657232",
+        ] {
+            let url: tauri::Url = external.parse().unwrap();
+            let (resp, req) = decide_web_window_new_window::<tauri::Wry>(&url, &allowed);
+            assert!(
+                matches!(resp, tauri::webview::NewWindowResponse::Allow),
+                "external URL must return Allow and not trigger bridge: {external}"
+            );
+            assert_eq!(req, None);
+        }
+    }
+
+    #[test]
+    fn desktop_rdp_session_registry_deduplicates_per_target_and_releases_on_exit() {
+        let registry = DesktopRdpSessionRegistry::default();
+        let dev_a = meshharbor_node_core::rdp_client::ResolvedRdpDevice {
+            org_id: "66366f7a7230306d6c657231".to_string(),
+            device_id: "66366f7a7230306d6c657232".to_string(),
+            device_name: "surface-pro".to_string(),
+        };
+        let dev_a_upper = meshharbor_node_core::rdp_client::ResolvedRdpDevice {
+            org_id: "66366F7A7230306D6C657231".to_string(),
+            device_id: "66366F7A7230306D6C657232".to_string(),
+            device_name: "surface-pro".to_string(),
+        };
+        let dev_b = meshharbor_node_core::rdp_client::ResolvedRdpDevice {
+            org_id: "66366f7a7230306d6c657231".to_string(),
+            device_id: "66366f7a7230306d6c657299".to_string(),
+            device_name: "workstation-b".to_string(),
+        };
+
+        assert!(!registry.is_active(&dev_a));
+        let guard_a = registry
+            .try_acquire(&dev_a)
+            .expect("first session for dev_a should acquire");
+        assert!(registry.is_active(&dev_a));
+
+        // Duplicate request for the same target (including case variation) is rejected while active.
+        assert!(registry.try_acquire(&dev_a).is_none());
+        assert!(registry.try_acquire(&dev_a_upper).is_none());
+
+        // A different target device can still start concurrently.
+        let guard_b = registry
+            .try_acquire(&dev_b)
+            .expect("concurrent session for dev_b should acquire");
+        assert!(registry.is_active(&dev_b));
+
+        // Dropping guard_a (when child RDP process exits) releases dev_a so a subsequent session can start.
+        drop(guard_a);
+        assert!(!registry.is_active(&dev_a));
+        assert!(registry.is_active(&dev_b));
+
+        let guard_a2 = registry
+            .try_acquire(&dev_a)
+            .expect("after exit, dev_a can acquire again");
+        assert!(registry.is_active(&dev_a));
+        drop(guard_a2);
+        drop(guard_b);
+        assert!(!registry.is_active(&dev_a));
+        assert!(!registry.is_active(&dev_b));
     }
 }

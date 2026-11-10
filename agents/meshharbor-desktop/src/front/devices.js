@@ -238,11 +238,20 @@
     };
   }
 
+  function resetSplitMenuState(menu) {
+    if (!menu) return;
+    const item = menu.querySelector('.dv-split-item-rdp');
+    const confirmBox = menu.querySelector('.dv-rdp-confirm');
+    if (item) item.hidden = false;
+    if (confirmBox) confirmBox.hidden = true;
+  }
+
   function closeAllSplitMenus(exceptMenu) {
     const openMenus = document.querySelectorAll('.dv-split-menu:not([hidden])');
     for (const m of openMenus) {
       if (m !== exceptMenu) {
         m.hidden = true;
+        resetSplitMenuState(m);
         const wrap = m.closest('.dv-split-wrap');
         const toggle = wrap && wrap.querySelector('.dv-split-toggle');
         if (toggle) toggle.setAttribute('aria-expanded', 'false');
@@ -288,7 +297,7 @@
 
         const toggleBtn = el('button', 'sm dv-split-toggle', '▾');
         toggleBtn.type = 'button';
-        toggleBtn.title = '更多连接方式（RDP / 独立会话）';
+        toggleBtn.title = '更多连接方式（用 RDP 连接）';
         toggleBtn.setAttribute('aria-haspopup', 'menu');
         toggleBtn.setAttribute('aria-expanded', 'false');
 
@@ -296,12 +305,15 @@
         menu.setAttribute('role', 'menu');
         menu.hidden = true;
 
-        async function runRdpFromMenu(itemBtn) {
-          closeAllSplitMenus(null);
+        async function runRdpConfirmed(acceptBtn) {
           const target = s.rdpTarget || s.agentId;
-          if (!target) return;
-          itemBtn.disabled = true;
+          if (!target) {
+            closeAllSplitMenus(null);
+            return;
+          }
+          acceptBtn.disabled = true;
           toggleBtn.disabled = true;
+          closeAllSplitMenus(null);
           try {
             await invoke('cmd_open_rdp', { target, org: orgArg() });
             toggleBtn.classList.remove('is-error');
@@ -309,7 +321,7 @@
             toggleBtn.title = String(err);
             toggleBtn.classList.add('is-error');
           } finally {
-            itemBtn.disabled = false;
+            acceptBtn.disabled = false;
             toggleBtn.disabled = false;
           }
         }
@@ -318,24 +330,56 @@
         rdpItem.type = 'button';
         rdpItem.setAttribute('role', 'menuitem');
         rdpItem.title = '通过系统 RDP 客户端连接（RDP 会话会锁定远端电脑的本地屏幕）';
-        rdpItem.addEventListener('click', () => runRdpFromMenu(rdpItem));
 
-        const standaloneItem = el(
-          'button',
-          'dv-split-item dv-split-item-standalone',
-          '独立会话（高级）'
+        const confirmBox = el('div', 'dv-rdp-confirm');
+        confirmBox.setAttribute('role', 'alertdialog');
+        confirmBox.setAttribute('aria-label', '确认使用 RDP 连接');
+        confirmBox.hidden = true;
+
+        const confirmText = el(
+          'div',
+          'dv-rdp-confirm-text',
+          'RDP 会话会锁定远端电脑的本地屏幕'
         );
-        standaloneItem.type = 'button';
-        standaloneItem.setAttribute('role', 'menuitem');
-        standaloneItem.title = '高级选项：启动系统 RDP 独立会话连接';
-        standaloneItem.addEventListener('click', () => runRdpFromMenu(standaloneItem));
+        const confirmActions = el('div', 'dv-rdp-confirm-actions');
+        const confirmAcceptBtn = el(
+          'button',
+          'sm primary dv-rdp-confirm-accept',
+          '确认连接'
+        );
+        confirmAcceptBtn.type = 'button';
+        const confirmCancelBtn = el(
+          'button',
+          'sm dv-rdp-confirm-cancel',
+          '取消'
+        );
+        confirmCancelBtn.type = 'button';
 
-        menu.append(rdpItem, standaloneItem);
+        rdpItem.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          rdpItem.hidden = true;
+          confirmBox.hidden = false;
+        });
+
+        confirmAcceptBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          void runRdpConfirmed(confirmAcceptBtn);
+        });
+
+        confirmCancelBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          closeAllSplitMenus(null);
+        });
+
+        confirmActions.append(confirmAcceptBtn, confirmCancelBtn);
+        confirmBox.append(confirmText, confirmActions);
+        menu.append(rdpItem, confirmBox);
 
         toggleBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
           const willOpen = menu.hidden;
           closeAllSplitMenus(menu);
+          resetSplitMenuState(menu);
           menu.hidden = !willOpen;
           toggleBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
         });

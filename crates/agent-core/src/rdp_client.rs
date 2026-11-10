@@ -1530,6 +1530,67 @@ pub fn plan_desktop_open_rdp_invocation(
     Ok(plan)
 }
 
+/// Canonical per-target key `(org_id, device_id)` used to deduplicate
+/// concurrent desktop RDP sessions for the same target device.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DesktopRdpTargetKey {
+    pub org_id: String,
+    pub device_id: String,
+}
+
+impl DesktopRdpTargetKey {
+    pub fn from_device(device: &ResolvedRdpDevice) -> Self {
+        Self {
+            org_id: device.org_id.trim().to_ascii_lowercase(),
+            device_id: device.device_id.trim().to_ascii_lowercase(),
+        }
+    }
+}
+
+/// Registry of currently running desktop RDP sessions keyed by target device.
+/// Ensures repeated `openRdp` / `cmd_open_rdp` calls for the same target while
+/// an RDP client is already running do not spawn duplicate `mstsc` processes or
+/// loopback tunnels, and releases the slot automatically when the session exits.
+#[derive(Default, Clone)]
+pub struct DesktopRdpSessionRegistry {
+    active: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<DesktopRdpTargetKey>>>,
+}
+
+/// RAII guard that releases a target device's active RDP session slot on drop.
+pub struct ActiveDesktopRdpSessionGuard {
+    active: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<DesktopRdpTargetKey>>>,
+    key: DesktopRdpTargetKey,
+}
+
+impl Drop for ActiveDesktopRdpSessionGuard {
+    fn drop(&mut self) {
+        let mut set = self.active.lock().unwrap_or_else(|p| p.into_inner());
+        set.remove(&self.key);
+    }
+}
+
+impl DesktopRdpSessionRegistry {
+    pub fn try_acquire(&self, device: &ResolvedRdpDevice) -> Option<ActiveDesktopRdpSessionGuard> {
+        let key = DesktopRdpTargetKey::from_device(device);
+        let mut set = self.active.lock().unwrap_or_else(|p| p.into_inner());
+        if !set.insert(key.clone()) {
+            return None;
+        }
+        Some(ActiveDesktopRdpSessionGuard {
+            active: std::sync::Arc::clone(&self.active),
+            key,
+        })
+    }
+
+    pub fn is_active(&self, device: &ResolvedRdpDevice) -> bool {
+        let key = DesktopRdpTargetKey::from_device(device);
+        self.active
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(&key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1645,5 +1706,55 @@ mod tests {
         let first_payload = client.read_u8().await.unwrap();
         assert_eq!(first_payload, 0x03);
         srv.await.unwrap();
+    }
+
+    #[test]
+    fn desktop_rdp_session_registry_deduplicates_per_target_and_releases_on_exit() {
+        let registry = DesktopRdpSessionRegistry::default();
+        let dev_a = ResolvedRdpDevice {
+            org_id: "66366f7a7230306d6c657231".to_string(),
+            device_id: "66366f7a7230306d6c657232".to_string(),
+            device_name: "surface-pro".to_string(),
+        };
+        let dev_a_upper = ResolvedRdpDevice {
+            org_id: "66366F7A7230306D6C657231".to_string(),
+            device_id: "66366F7A7230306D6C657232".to_string(),
+            device_name: "surface-pro".to_string(),
+        };
+        let dev_b = ResolvedRdpDevice {
+            org_id: "66366f7a7230306d6c657231".to_string(),
+            device_id: "66366f7a7230306d6c657299".to_string(),
+            device_name: "workstation-b".to_string(),
+        };
+
+        assert!(!registry.is_active(&dev_a));
+        let guard_a = registry
+            .try_acquire(&dev_a)
+            .expect("first session for dev_a should acquire");
+        assert!(registry.is_active(&dev_a));
+
+        // Duplicate request for the same target (including case variation) is rejected while active.
+        assert!(registry.try_acquire(&dev_a).is_none());
+        assert!(registry.try_acquire(&dev_a_upper).is_none());
+
+        // A different target device can still start concurrently.
+        let guard_b = registry
+            .try_acquire(&dev_b)
+            .expect("concurrent session for dev_b should acquire");
+        assert!(registry.is_active(&dev_b));
+
+        // Dropping guard_a (when child RDP process exits) releases dev_a so a subsequent session can start.
+        drop(guard_a);
+        assert!(!registry.is_active(&dev_a));
+        assert!(registry.is_active(&dev_b));
+
+        let guard_a2 = registry
+            .try_acquire(&dev_a)
+            .expect("after exit, dev_a can acquire again");
+        assert!(registry.is_active(&dev_a));
+        drop(guard_a2);
+        drop(guard_b);
+        assert!(!registry.is_active(&dev_a));
+        assert!(!registry.is_active(&dev_b));
     }
 }

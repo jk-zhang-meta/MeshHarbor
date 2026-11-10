@@ -48,13 +48,6 @@ export const RC_ERROR_CODE_TABLE: readonly RcErrorCodeSpec[] = [
     reason: 'WebRTC RC 信令通道不可达，但本机 overlay 隧道仍可直连目标 RDP 端口',
   },
   {
-    code: 'agent_busy',
-    source: 'rc:error',
-    showRdpCard: true,
-    category: 'technical-signaling-or-agent',
-    reason: '远控采集会话正忙或卡死，可改用系统 RDP 会话接入',
-  },
-  {
     code: 'agent_on_other_pod',
     source: 'rc:error',
     showRdpCard: true,
@@ -213,7 +206,14 @@ export const RC_ERROR_CODE_TABLE: readonly RcErrorCodeSpec[] = [
   },
 
   // ── 2. Ineligible codes (`showRdpCard = false`) ────────────────────────────
-  // Explicit user rejection / consent timeout / host manually ended session
+  // Someone is already using the machine / explicit user rejection / consent timeout / host manually ended session
+  {
+    code: 'agent_busy',
+    source: 'rc:error',
+    showRdpCard: false,
+    category: 'user-consent-or-host-stop',
+    reason: '目标设备当前已有活跃远控会话（active_sessions >= max_sessions），改用 RDP 会接管控制台会话并把正在远控的人和本地用户一起挤掉',
+  },
   {
     code: 'consent_denied',
     source: 'rc:terminate',

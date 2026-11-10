@@ -1106,3 +1106,22 @@ button.wl-skip:hover {
   color: var(--primary);
 }
 
+.dv-rdp-confirm {
+  min-width: 220px;
+  padding: 6px 8px;
+}
+
+.dv-rdp-confirm-text {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--warn);
+  margin-bottom: 8px;
+  white-space: normal;
+}
+
+.dv-rdp-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
