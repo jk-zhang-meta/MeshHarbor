@@ -1599,11 +1599,11 @@ mod tests {
                 ])
                 .output()
                 .expect("spawn isolated global hold limit test");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
             assert!(
-                out.status.success(),
-                "isolated global_limit_spans_peers_and_releases_reserved_bytes_on_retirement failed:\n{}\n{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
+                out.status.success() && stdout.contains("1 passed"),
+                "isolated global_limit_spans_peers_and_releases_reserved_bytes_on_retirement failed:\n{stdout}\n{stderr}"
             );
             return;
         }

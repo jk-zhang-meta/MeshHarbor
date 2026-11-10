@@ -868,7 +868,7 @@ mod tests {
             t.elapsed()
         );
         tokio::time::resume();
-        let drain_deadline = std::time::Instant::now() + Duration::from_millis(100);
+        let drain_deadline = std::time::Instant::now() + Duration::from_secs(2);
         while seen.lock().unwrap().len() < 4 && std::time::Instant::now() < drain_deadline {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }

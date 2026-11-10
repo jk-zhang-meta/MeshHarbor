@@ -1497,11 +1497,11 @@ mod turn_tests {
                 ])
                 .output()
                 .expect("spawn isolated TURN FD leak test");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
             assert!(
-                out.status.success(),
-                "isolated a_cancelled_turn_allocate_does_not_strand_its_underlay_socket failed:\n{}\n{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
+                out.status.success() && stdout.contains("1 passed"),
+                "isolated a_cancelled_turn_allocate_does_not_strand_its_underlay_socket failed:\n{stdout}\n{stderr}"
             );
             return;
         }
