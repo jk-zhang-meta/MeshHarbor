@@ -12255,7 +12255,7 @@ mod org_fallback_tests {
             via: None,
         };
         let mut updates = RelayProbeUpdates::default();
-        updates.reset_full(&[target], &[peer.clone()], 1);
+        updates.reset_full(&[target], std::slice::from_ref(&peer), 1);
         let mut outcome = Outcome {
             relay_node_id: peer.node_id,
             endpoint,
