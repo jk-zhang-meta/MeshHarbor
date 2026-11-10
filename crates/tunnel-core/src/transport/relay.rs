@@ -685,6 +685,76 @@ const DEFAULT_TURN_REALM: &str = "meshharbor.itachi.fans";
 /// ~tens of seconds before erroring, so we bound it and switch to Tier 3.
 const UDP_ALLOC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// F2 — total wall-clock budget shared across all physical non-VPN uplinks
+/// tried during corp-VPN / multi-NIC UDP TURN rescue (`<= 3` NICs).
+#[cfg(any(feature = "overlay-l3", test))]
+const UDP_RESCUE_TOTAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// F2 — try up to 3 ordered physical uplinks under a single shared
+/// `total_budget`, using an authenticated TURN Allocate response (`Ok(T)`) as
+/// the reachability proof. Each NIC gets an equal slice of the remaining
+/// budget so an early blackholed NIC (e.g. a cellular RNDIS uplink or isolated
+/// LAN) cannot starve subsequent reachable NICs, while a single-NIC host still
+/// receives the full budget.
+#[cfg(any(feature = "overlay-l3", test))]
+async fn try_rescue_uplinks_bounded<T, F, Fut>(
+    uplinks: &[(std::net::Ipv4Addr, Option<u32>)],
+    total_budget: std::time::Duration,
+    server: SocketAddr,
+    mut attempt: F,
+) -> Option<(std::net::Ipv4Addr, T)>
+where
+    F: FnMut(std::net::Ipv4Addr, Option<u32>) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let capped = &uplinks[..uplinks
+        .len()
+        .min(crate::overlay::direct::MAX_NON_VPN_UPLINKS)];
+    if capped.is_empty() || total_budget.is_zero() {
+        return None;
+    }
+    let deadline = tokio::time::Instant::now() + total_budget;
+    for (idx, &(ip, ifindex)) in capped.iter().enumerate() {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let remaining_nics = (capped.len() - idx) as u32;
+        let remaining_time = deadline - now;
+        let per_nic_timeout = (remaining_time / remaining_nics).min(remaining_time);
+        if per_nic_timeout.is_zero() {
+            break;
+        }
+        tracing::info!(
+            %server, %ip, ?ifindex, attempt = idx + 1, total = capped.len(),
+            timeout_ms = per_nic_timeout.as_millis() as u64,
+            "UDP TURN allocate: retrying pinned to physical uplink (corp-VPN rescue)"
+        );
+        match tokio::time::timeout(per_nic_timeout, attempt(ip, ifindex)).await {
+            Ok(Ok(relay)) => {
+                tracing::info!(
+                    %server, %ip, attempt = idx + 1,
+                    "TURN relay allocated (tier2-udp, pinned egress)"
+                );
+                return Some((ip, relay));
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    %server, %ip, %e, attempt = idx + 1,
+                    "pinned UDP TURN allocate failed; trying next uplink"
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    %server, %ip, attempt = idx + 1,
+                    "pinned UDP TURN allocate timed out; trying next uplink"
+                );
+            }
+        }
+    }
+    None
+}
+
 /// Cap on the TURNS/TCP TCP-connect to coturn. A firewalled port (e.g.
 /// `:5349` on a corp net) otherwise hangs in `connect()` for the OS SYN
 /// timeout (~20 s+), which blows the controller's `quic.ready` window
@@ -815,42 +885,31 @@ pub async fn allocate_relay_from_ice_tiered(
                 Ok(Err(e)) => tracing::warn!(%server, %e, "UDP TURN allocate failed; trying next"),
                 Err(_) => tracing::warn!(%server, "UDP TURN allocate timed out; trying next"),
             }
-            // Corp-VPN rescue: the unbound attempt source-selects a captured
-            // default route into the tunnel, where UDP dies — retry ONCE
-            // bound to the first non-VPN uplink (the deny-listed LAN gather
-            // the direct socks bind), which escapes the capture on a
-            // strong-host stack. Strictly additive: runs only after the
-            // unbound attempt already failed, costs ≤ one more
-            // UDP_ALLOC_TIMEOUT, and hosts without overlay-l3 (or with an
-            // empty gather, e.g. a WSL-mirrored guest) skip it entirely.
+            // Corp-VPN / multi-NIC rescue (F2): when the unbound attempt fails
+            // (VPN-captured default route, or preferred uplink unreachable to
+            // coturn), walk up to 3 physical non-VPN uplinks (default-gateway
+            // NICs first) under a single bounded `UDP_RESCUE_TOTAL_BUDGET`,
+            // accepting the first NIC that completes a real TURN Allocate.
             #[cfg(feature = "overlay-l3")]
-            if let Some((ip, ifindex)) = crate::overlay::direct::first_non_vpn_uplink() {
-                tracing::info!(
-                    %server, %ip, ?ifindex,
-                    "UDP TURN allocate: retrying pinned to the physical uplink (corp-VPN rescue)"
-                );
-                match tokio::time::timeout(
-                    UDP_ALLOC_TIMEOUT,
-                    allocate_turn_relay_from(
-                        resolved,
-                        username.to_string(),
-                        credential.to_string(),
-                        DEFAULT_TURN_REALM.to_string(),
-                        Some((ip, ifindex)),
-                    ),
+            {
+                let uplinks = crate::overlay::direct::non_vpn_uplinks();
+                if let Some((_ip, relay)) = try_rescue_uplinks_bounded(
+                    &uplinks,
+                    UDP_RESCUE_TOTAL_BUDGET,
+                    resolved,
+                    |ip, ifindex| {
+                        allocate_turn_relay_from(
+                            resolved,
+                            username.to_string(),
+                            credential.to_string(),
+                            DEFAULT_TURN_REALM.to_string(),
+                            Some((ip, ifindex)),
+                        )
+                    },
                 )
                 .await
                 {
-                    Ok(Ok(relay)) => {
-                        tracing::info!(%server, %ip, "TURN relay allocated (tier2-udp, pinned egress)");
-                        return Ok(relay);
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!(%server, %ip, %e, "pinned UDP TURN allocate failed; trying next")
-                    }
-                    Err(_) => {
-                        tracing::warn!(%server, %ip, "pinned UDP TURN allocate timed out; trying next")
-                    }
+                    return Ok(relay);
                 }
             }
         }
@@ -1486,6 +1545,85 @@ mod turn_tests {
         assert!(
             relayed.ip().is_loopback(),
             "allocation completed via the pinned source: {relayed}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rescue_uplinks_succeeds_on_second_nic_after_first_stalls_and_bounds_total_time() {
+        let (_server, turn_addr) = loopback_turn_server().await;
+        let dead_nic1: Ipv4Addr = "192.168.42.45".parse().unwrap();
+        let live_nic2: Ipv4Addr = Ipv4Addr::LOCALHOST;
+        let unused_nic3: Ipv4Addr = "192.168.100.2".parse().unwrap();
+        let extra_nic4: Ipv4Addr = "10.0.0.2".parse().unwrap();
+
+        let tried = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let tried_c = tried.clone();
+        let res = try_rescue_uplinks_bounded(
+            &[
+                (dead_nic1, Some(58)),
+                (live_nic2, None),
+                (unused_nic3, Some(41)),
+                (extra_nic4, Some(42)),
+            ],
+            std::time::Duration::from_millis(900),
+            turn_addr,
+            move |ip, ifindex| {
+                tried_c.lock().unwrap().push(ip);
+                async move {
+                    if ip == dead_nic1 {
+                        std::future::pending::<anyhow::Result<TurnRelayConn>>().await
+                    } else {
+                        allocate_turn_relay_from(
+                            turn_addr,
+                            USER.into(),
+                            PASS.into(),
+                            REALM.into(),
+                            Some((ip, ifindex)),
+                        )
+                        .await
+                    }
+                }
+            },
+        )
+        .await;
+
+        let (won_ip, relay) = res.expect("second NIC must rescue via real TURN Allocate");
+        assert_eq!(won_ip, live_nic2);
+        assert!(relay.local_addr().unwrap().ip().is_loopback());
+        assert_eq!(
+            *tried.lock().unwrap(),
+            vec![dead_nic1, live_nic2],
+            "must stop immediately once TURN Allocate succeeds on NIC #2"
+        );
+
+        // Verify 3-NIC cap and strict total wall-clock bound when all NICs stall
+        let tried_all = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let tried_all_c = tried_all.clone();
+        let t0 = std::time::Instant::now();
+        let none_res = try_rescue_uplinks_bounded(
+            &[
+                (dead_nic1, Some(58)),
+                (unused_nic3, Some(41)),
+                (extra_nic4, Some(42)),
+                ("10.9.9.9".parse().unwrap(), Some(99)),
+            ],
+            std::time::Duration::from_millis(240),
+            turn_addr,
+            move |ip, _ifindex| {
+                tried_all_c.lock().unwrap().push(ip);
+                std::future::pending::<anyhow::Result<TurnRelayConn>>()
+            },
+        )
+        .await;
+        assert!(none_res.is_none());
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(500),
+            "entire multi-NIC rescue must stay bounded by total_budget"
+        );
+        assert_eq!(
+            tried_all.lock().unwrap().len(),
+            3,
+            "rescue must cap tried NICs at MAX_NON_VPN_UPLINKS (3)"
         );
     }
 
