@@ -1830,19 +1830,45 @@ pub(crate) async fn party_zone(
 /// open on this pod. Uses the request's [`meshharbor_core::client_ip::ConnectionOrigin`]
 /// without writing to `live_conns` or `business_zones`, and still applies
 /// [`addresses_agree`] if a live overlay node row exists for the client's machine.
+/// Fails closed (`None`) if reading the overlay node row from storage fails.
 pub(crate) async fn tunnel_client_request_zone(
     state: &NetworkState,
     client: &meshharbor_remote_control::models::TunnelClient,
     origin: &meshharbor_core::client_ip::ConnectionOrigin,
 ) -> Option<BusinessZone> {
     let zone = meshharbor_core::business_authority::origin_zone(&state.core, origin)?;
-    match state
+    let lookup = state
         .overlay_nodes
         .find_live_by_tenant_and_machine(client.tenant_id, &client.machine_id)
-        .await
-    {
-        Ok(Some(node)) => addresses_agree(state, &node, zone).then_some(zone),
-        _ => Some(zone),
+        .await;
+    resolve_request_zone_with_overlay_lookup(
+        client.tenant_id,
+        &client.machine_id,
+        zone,
+        lookup,
+        |node, z| addresses_agree(state, node, z),
+    )
+}
+
+fn resolve_request_zone_with_overlay_lookup<T, E: std::fmt::Display>(
+    tenant_id: ObjectId,
+    machine_id: &str,
+    zone: BusinessZone,
+    lookup: Result<Option<T>, E>,
+    agree: impl FnOnce(&T, BusinessZone) -> bool,
+) -> Option<BusinessZone> {
+    match lookup {
+        Ok(Some(node)) => agree(&node, zone).then_some(zone),
+        Ok(None) => Some(zone),
+        Err(e) => {
+            warn!(
+                %tenant_id,
+                machine_id,
+                %e,
+                "business isolation: overlay node lookup failed during tunnel-client request zone check; refusing"
+            );
+            None
+        }
     }
 }
 
@@ -5958,5 +5984,54 @@ mod discovery_traversal_tests {
         assert!(page.is_empty() && next.is_none());
         let (page, _) = discovery_page(vec![hint(1)].into_iter(), discovery_cursor(&hint(99)));
         assert_eq!(page, vec![hint(1)]);
+    }
+
+    #[test]
+    fn tunnel_client_request_zone_fails_closed_on_overlay_lookup_error_and_checks_agreement() {
+        let tid = ObjectId::new();
+        // Ok(None): no overlay node row -> permits the request origin's zone.
+        assert_eq!(
+            resolve_request_zone_with_overlay_lookup::<(), &str>(
+                tid,
+                "tc-machine",
+                BusinessZone::Mainland,
+                Ok(None),
+                |_, _| unreachable!("agree not called when Ok(None)"),
+            ),
+            Some(BusinessZone::Mainland)
+        );
+        // Ok(Some(node)) with agreeing advertised addresses -> permits the zone.
+        assert_eq!(
+            resolve_request_zone_with_overlay_lookup::<&str, &str>(
+                tid,
+                "tc-machine",
+                BusinessZone::Mainland,
+                Ok(Some("node-row")),
+                |node, z| *node == "node-row" && z == BusinessZone::Mainland,
+            ),
+            Some(BusinessZone::Mainland)
+        );
+        // Ok(Some(node)) with conflicting advertised addresses -> withdraws zone (None).
+        assert_eq!(
+            resolve_request_zone_with_overlay_lookup::<&str, &str>(
+                tid,
+                "tc-machine",
+                BusinessZone::Mainland,
+                Ok(Some("node-row")),
+                |_, _| false,
+            ),
+            None
+        );
+        // Err(e): database lookup failure -> fails closed (None).
+        assert_eq!(
+            resolve_request_zone_with_overlay_lookup::<(), &str>(
+                tid,
+                "tc-machine",
+                BusinessZone::NonMainland,
+                Err("simulated overlay_nodes storage error"),
+                |_, _| true,
+            ),
+            None
+        );
     }
 }
