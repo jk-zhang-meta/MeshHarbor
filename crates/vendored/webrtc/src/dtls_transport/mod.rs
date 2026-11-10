@@ -363,6 +363,7 @@ impl RTCDtlsTransport {
                 client_auth: ClientAuthType::RequireAnyClientCert,
                 insecure_skip_verify: true,
                 insecure_verification: self.setting_engine.allow_insecure_verification_algorithm,
+                flight_interval: self.setting_engine.dtls_flight_interval,
                 ..Default::default()
             },
         ))
@@ -377,26 +378,27 @@ impl RTCDtlsTransport {
             if self.setting_engine.replay_protection.dtls != 0 {
                 dtls_config.replay_protection_window = self.setting_engine.replay_protection.dtls;
             }
+            let handshake_done = Arc::new(AtomicBool::new(false));
+            let dtls_conn_endpoint: Arc<dyn Conn + Send + Sync> =
+                if !dtls_config.flight_interval.is_zero() || dtls_bench_log_enabled() {
+                    Arc::new(DtlsFlightBackoffConn::new(
+                        dtls_endpoint as Arc<dyn Conn + Send + Sync>,
+                        dtls_config.flight_interval,
+                        Arc::clone(&handshake_done),
+                    ))
+                } else {
+                    dtls_endpoint as Arc<dyn Conn + Send + Sync>
+                };
 
             // Connect as DTLS Client/Server, function is blocking and we
             // must not hold the DTLSTransport lock
-            if role == DTLSRole::Client {
-                dtls::conn::DTLSConn::new(
-                    dtls_endpoint as Arc<dyn Conn + Send + Sync>,
-                    dtls_config,
-                    true,
-                    None,
-                )
-                .await
+            let res = if role == DTLSRole::Client {
+                dtls::conn::DTLSConn::new(dtls_conn_endpoint, dtls_config, true, None).await
             } else {
-                dtls::conn::DTLSConn::new(
-                    dtls_endpoint as Arc<dyn Conn + Send + Sync>,
-                    dtls_config,
-                    false,
-                    None,
-                )
-                .await
-            }
+                dtls::conn::DTLSConn::new(dtls_conn_endpoint, dtls_config, false, None).await
+            };
+            handshake_done.store(true, Ordering::SeqCst);
+            res
         } else {
             Err(dtls::Error::Other(
                 "ice_transport.new_endpoint failed".to_owned(),
@@ -623,5 +625,274 @@ impl RTCDtlsTransport {
             rtcp_read_stream,
             rtcp_interceptor,
         ))
+    }
+}
+
+fn dtls_bench_log_enabled() -> bool {
+    std::env::var("MESHHARBORD_LATENCY_BENCH")
+        .map(|v| {
+            let s = v.trim();
+            s == "1" || s.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
+#[derive(Debug)]
+struct DtlsBackoffState {
+    last_send_at: Option<std::time::Instant>,
+    burst_index: u32,
+    next_allowed_burst: u32,
+    backoff_step: u32,
+    burst_allowed: bool,
+    tx_packets: u32,
+    rx_packets: u32,
+}
+
+impl Default for DtlsBackoffState {
+    fn default() -> Self {
+        Self {
+            last_send_at: None,
+            burst_index: 0,
+            next_allowed_burst: 1,
+            backoff_step: 1,
+            burst_allowed: true,
+            tx_packets: 0,
+            rx_packets: 0,
+        }
+    }
+}
+
+impl DtlsBackoffState {
+    fn on_recv(&mut self) {
+        self.rx_packets = self.rx_packets.saturating_add(1);
+        self.last_send_at = None;
+        self.burst_index = 0;
+        self.next_allowed_burst = 1;
+        self.backoff_step = 1;
+        self.burst_allowed = true;
+    }
+
+    fn allow_send(&mut self, now: std::time::Instant, base_interval: std::time::Duration) -> bool {
+        if base_interval.is_zero() {
+            self.tx_packets = self.tx_packets.saturating_add(1);
+            return true;
+        }
+        let burst_gap = (base_interval / 2).max(std::time::Duration::from_millis(20));
+        match self.last_send_at {
+            None => {
+                self.last_send_at = Some(now);
+                self.burst_index = 0;
+                self.next_allowed_burst = 1;
+                self.backoff_step = 1;
+                self.burst_allowed = true;
+            }
+            Some(prev) if now.saturating_duration_since(prev) >= burst_gap => {
+                self.last_send_at = Some(now);
+                self.burst_index = self.burst_index.saturating_add(1);
+                if self.burst_index >= self.next_allowed_burst {
+                    self.burst_allowed = true;
+                    self.backoff_step = (self.backoff_step.saturating_mul(2)).min(16);
+                    self.next_allowed_burst =
+                        self.burst_index.saturating_add(self.backoff_step);
+                } else {
+                    self.burst_allowed = false;
+                }
+            }
+            Some(_) => {}
+        }
+        if self.burst_allowed {
+            self.tx_packets = self.tx_packets.saturating_add(1);
+        }
+        self.burst_allowed
+    }
+}
+
+struct DtlsFlightBackoffConn {
+    inner: Arc<dyn Conn + Send + Sync>,
+    base_interval: std::time::Duration,
+    handshake_done: Arc<AtomicBool>,
+    started_at: std::time::Instant,
+    bench_log: bool,
+    state: std::sync::Mutex<DtlsBackoffState>,
+}
+
+impl DtlsFlightBackoffConn {
+    fn new(
+        inner: Arc<dyn Conn + Send + Sync>,
+        base_interval: std::time::Duration,
+        handshake_done: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            inner,
+            base_interval,
+            handshake_done,
+            started_at: std::time::Instant::now(),
+            bench_log: dtls_bench_log_enabled(),
+            state: std::sync::Mutex::new(DtlsBackoffState::default()),
+        }
+    }
+}
+
+fn describe_dtls_record(buf: &[u8]) -> (u8, u16, u64, u8) {
+    if buf.len() >= 13 {
+        let content_type = buf[0];
+        let epoch = u16::from_be_bytes([buf[3], buf[4]]);
+        let seq = u64::from_be_bytes([0, 0, buf[5], buf[6], buf[7], buf[8], buf[9], buf[10]]);
+        let msg_type = if content_type == 22 && buf.len() >= 14 && epoch == 0 {
+            buf[13]
+        } else {
+            0
+        };
+        (content_type, epoch, seq, msg_type)
+    } else {
+        (0, 0, 0, 0)
+    }
+}
+
+fn dtls_wall_us() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64
+}
+
+#[async_trait::async_trait]
+impl Conn for DtlsFlightBackoffConn {
+    async fn connect(&self, addr: std::net::SocketAddr) -> std::result::Result<(), util::Error> {
+        self.inner.connect(addr).await
+    }
+
+    async fn recv(&self, buf: &mut [u8]) -> std::result::Result<usize, util::Error> {
+        let n = self.inner.recv(buf).await?;
+        if !self.handshake_done.load(Ordering::SeqCst) {
+            let rx_idx = {
+                let mut st = self.state.lock().unwrap();
+                st.on_recv();
+                st.rx_packets
+            };
+            if self.bench_log {
+                let (ct, epoch, seq, hs_type) = describe_dtls_record(&buf[..n]);
+                log::info!(
+                    target: "meshharbor_dtls_flight",
+                    "dtls_handshake_packet dir=rx idx={} elapsed_us={} wall_us={} bytes={} content_type={} epoch={} record_seq={} hs_msg_type={}",
+                    rx_idx,
+                    self.started_at.elapsed().as_micros() as u64,
+                    dtls_wall_us(),
+                    n,
+                    ct,
+                    epoch,
+                    seq,
+                    hs_type
+                );
+            }
+        }
+        Ok(n)
+    }
+
+    async fn recv_from(
+        &self,
+        buf: &mut [u8],
+    ) -> std::result::Result<(usize, std::net::SocketAddr), util::Error> {
+        self.inner.recv_from(buf).await
+    }
+
+    async fn send(&self, buf: &[u8]) -> std::result::Result<usize, util::Error> {
+        if !self.handshake_done.load(Ordering::SeqCst) {
+            let now = std::time::Instant::now();
+            let (allowed, burst_idx, tx_idx) = {
+                let mut st = self.state.lock().unwrap();
+                let ok = st.allow_send(now, self.base_interval);
+                (ok, st.burst_index, st.tx_packets)
+            };
+            if !allowed {
+                return Ok(buf.len());
+            }
+            if self.bench_log {
+                let (ct, epoch, seq, hs_type) = describe_dtls_record(buf);
+                log::info!(
+                    target: "meshharbor_dtls_flight",
+                    "dtls_handshake_packet dir=tx idx={} burst={} elapsed_us={} wall_us={} bytes={} content_type={} epoch={} record_seq={} hs_msg_type={}",
+                    tx_idx,
+                    burst_idx,
+                    self.started_at.elapsed().as_micros() as u64,
+                    dtls_wall_us(),
+                    buf.len(),
+                    ct,
+                    epoch,
+                    seq,
+                    hs_type
+                );
+            }
+        }
+        self.inner.send(buf).await
+    }
+
+    async fn send_to(
+        &self,
+        buf: &[u8],
+        target: std::net::SocketAddr,
+    ) -> std::result::Result<usize, util::Error> {
+        self.inner.send_to(buf, target).await
+    }
+
+    fn local_addr(&self) -> std::result::Result<std::net::SocketAddr, util::Error> {
+        self.inner.local_addr()
+    }
+
+    fn remote_addr(&self) -> Option<std::net::SocketAddr> {
+        self.inner.remote_addr()
+    }
+
+    async fn close(&self) -> std::result::Result<(), util::Error> {
+        self.inner.close().await
+    }
+
+    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+        self
+    }
+}
+
+#[cfg(test)]
+mod dtls_backoff_tests {
+    use super::*;
+
+    #[test]
+    fn dtls_backoff_state_doubles_interval_between_retransmissions_and_resets_on_recv() {
+        let base = std::time::Duration::from_millis(100);
+        let t0 = std::time::Instant::now();
+        let mut st = DtlsBackoffState::default();
+
+        // Initial flight at t = 0 ms (2 records in the same burst) -> both allowed.
+        assert!(st.allow_send(t0, base));
+        assert!(st.allow_send(t0 + std::time::Duration::from_millis(1), base));
+        assert_eq!(st.burst_index, 0);
+
+        // Retransmit #1 at +100 ms (burst 1) -> allowed (+100 ms).
+        assert!(st.allow_send(t0 + std::time::Duration::from_millis(100), base));
+        assert_eq!(st.burst_index, 1);
+
+        // Tick at +200 ms (burst 2) -> suppressed; next retransmit is at +300 ms (200 ms later).
+        assert!(!st.allow_send(t0 + std::time::Duration::from_millis(200), base));
+        assert_eq!(st.burst_index, 2);
+
+        // Retransmit #2 at +300 ms (burst 3) -> allowed (+200 ms after retransmit #1).
+        assert!(st.allow_send(t0 + std::time::Duration::from_millis(300), base));
+        assert_eq!(st.burst_index, 3);
+
+        // Ticks at +400, +500, +600 ms (bursts 4, 5, 6) -> suppressed.
+        for ms in [400_u64, 500, 600] {
+            assert!(!st.allow_send(t0 + std::time::Duration::from_millis(ms), base));
+        }
+
+        // Retransmit #3 at +700 ms (burst 7) -> allowed (+400 ms after retransmit #2).
+        assert!(st.allow_send(t0 + std::time::Duration::from_millis(700), base));
+        assert_eq!(st.burst_index, 7);
+
+        // Peer reply arrives -> state resets so the next flight sends immediately.
+        st.on_recv();
+        assert!(st.allow_send(t0 + std::time::Duration::from_millis(720), base));
+        assert_eq!(st.burst_index, 0);
+        assert!(st.allow_send(t0 + std::time::Duration::from_millis(820), base));
+        assert_eq!(st.burst_index, 1);
     }
 }

@@ -13,6 +13,13 @@
 #   - src/api/setting_engine/setting_engine_test.rs: round-trip test
 #     locking the getter/setter so an upstream Cargo bump can't
 #     silently un-do the patch.
+#   - src/api/setting_engine/mod.rs & src/dtls_transport/mod.rs:
+#     SettingEngine gains `dtls_flight_interval: Duration` (default
+#     Duration::ZERO = upstream 1 s INITIAL_TICKER_INTERVAL) +
+#     `set_dtls_flight_interval`/`get_dtls_flight_interval`, wired into
+#     `dtls::config::Config::flight_interval` with exponential backoff
+#     (`1x, 2x, 4x, 8x, 16x`) across consecutive retransmissions of the
+#     same handshake flight.
 #   - this Cargo.toml: header rewritten with patch notes (was the
 #     cargo-normalized header for the registry upload).
 #

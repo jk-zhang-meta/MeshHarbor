@@ -248,6 +248,37 @@ struct ChildPeerHandle {
     stop: tokio_util::sync::CancellationToken,
 }
 
+/// Default initial DTLS flight retransmission interval (`100 ms`).
+/// `RTCDtlsTransport` applies exponential backoff (`100 ms, 200 ms, 400 ms, 800 ms, ...`)
+/// on top of this base interval. Setting `MESHHARBORD_DTLS_FLIGHT_INTERVAL_MS`
+/// to `0`, `1000`, `legacy`, `off`, or `false` returns `Duration::ZERO`, which
+/// leaves `webrtc-dtls` at its upstream `1 s` fixed timer.
+pub const DEFAULT_DTLS_FLIGHT_INTERVAL_MS: u64 = 100;
+
+pub fn parse_dtls_flight_interval_ms(raw: Option<&str>) -> Duration {
+    let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Duration::from_millis(DEFAULT_DTLS_FLIGHT_INTERVAL_MS);
+    };
+    if s == "0"
+        || s == "1000"
+        || s.eq_ignore_ascii_case("legacy")
+        || s.eq_ignore_ascii_case("off")
+        || s.eq_ignore_ascii_case("false")
+    {
+        return Duration::ZERO;
+    }
+    match s.parse::<u64>() {
+        Ok(ms) => Duration::from_millis(ms.clamp(20, 5000)),
+        Err(_) => Duration::from_millis(DEFAULT_DTLS_FLIGHT_INTERVAL_MS),
+    }
+}
+
+pub fn dtls_flight_interval_from_env() -> Duration {
+    let val = node_env("DTLS_FLIGHT_INTERVAL_MS")
+        .or_else(|| std::env::var("MESHHARBOR_DTLS_FLIGHT_INTERVAL_MS").ok());
+    parse_dtls_flight_interval_ms(val.as_deref())
+}
+
 pub struct AgentPeer {
     file_child_authorization: Arc<std::sync::Mutex<FileChildAuthorization>>,
     ice_servers: Vec<IceServer>,
@@ -514,6 +545,13 @@ impl AgentPeer {
         // replay windows pinned at 64 (webrtc-srtp's session default too).
         let transport = crate::rc_transport::Policy::from_env();
         transport.apply(&mut setting);
+        let dtls_flight_interval = dtls_flight_interval_from_env();
+        setting.set_dtls_flight_interval(dtls_flight_interval);
+        let dtls_flight_interval_ms = if dtls_flight_interval.is_zero() {
+            1000
+        } else {
+            dtls_flight_interval.as_millis() as u64
+        };
         // FR-16 L0 — the loopback harness routes this session's ICE through a
         // webrtc-util vnet (a set delay, jitter and loss). Only the test-only
         // `synthetic-frame-source` build carries the hook. Applied last, so
@@ -525,6 +563,7 @@ impl AgentPeer {
             overlay_blocks = rc_overlay.v4_nets.len(),
             srtp_replay_window = transport.replay_window,
             dtls_gcm_only = transport.gcm_only,
+            dtls_flight_interval_ms,
             "rc ICE: overlay {}",
             rc_overlay.describe()
         );
@@ -922,9 +961,11 @@ impl AgentPeer {
         {
             let tx = outbound.clone();
             let tally = Arc::new(GatherTally::default());
+            let first_host_logged = Arc::new(std::sync::atomic::AtomicBool::new(false));
             pc.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
                 let tx = tx.clone();
                 let tally = tally.clone();
+                let first_host_logged = first_host_logged.clone();
                 Box::pin(async move {
                     let Some(c) = c else {
                         // webrtc-rs signals end-of-gather with `None`.
@@ -932,12 +973,41 @@ impl AgentPeer {
                         return;
                     };
                     tally.note(c.typ);
+                    let elapsed_us = peer_created_at.elapsed().as_micros() as u64;
+                    let elapsed_ms = peer_created_at.elapsed().as_millis() as u64;
+                    let ip_category = crate::session_carrier::classify_ip_category(&c.address);
+                    if c.typ == webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType::Host
+                        && !first_host_logged.swap(true, std::sync::atomic::Ordering::SeqCst)
+                    {
+                        info!(
+                            %session_id,
+                            elapsed_ms,
+                            elapsed_us,
+                            protocol = %c.protocol,
+                            ip_category,
+                            "ICE: first local host candidate gathered"
+                        );
+                        #[cfg(feature = "rc-latency-bench")]
+                        crate::latency_bench::note_stage(
+                            session_id,
+                            "first_local_host_candidate",
+                            serde_json::json!({
+                                "elapsed_ms": elapsed_ms,
+                                "elapsed_us": elapsed_us,
+                                "protocol": c.protocol.to_string(),
+                                "ip_category": ip_category,
+                            }),
+                        );
+                    }
                     info!(
                         %session_id,
                         typ = %c.typ,
                         protocol = %c.protocol,
                         address = %c.address,
                         port = c.port,
+                        ip_category,
+                        elapsed_ms,
+                        elapsed_us,
                         related = %format_args!("{}:{}", c.related_address, c.related_port),
                         "ICE: gathered local candidate"
                     );
@@ -1901,8 +1971,29 @@ impl AgentPeer {
         // Reverse the HEVC → H265 munge on the outgoing answer so the
         // browser's SDP parser recognises the rtpmap subtype.
         let munged_answer = answer.sdp.replace("HEVC/90000", "H265/90000");
+        let answer_candidate_count = munged_answer
+            .lines()
+            .filter(|l| l.starts_with("a=candidate:"))
+            .count();
+        let answer_host_candidate_count = munged_answer
+            .lines()
+            .filter(|l| l.starts_with("a=candidate:") && l.contains(" typ host"))
+            .count();
+        info!(
+            session = %self.session_id,
+            answer_candidate_count,
+            answer_host_candidate_count,
+            "rc:sdp.answer created"
+        );
         #[cfg(feature = "rc-latency-bench")]
-        crate::latency_bench::note_stage(self.session_id, "answer_created", serde_json::json!({}));
+        crate::latency_bench::note_stage(
+            self.session_id,
+            "answer_created",
+            serde_json::json!({
+                "answer_candidate_count": answer_candidate_count,
+                "answer_host_candidate_count": answer_host_candidate_count,
+            }),
+        );
         Ok(munged_answer)
     }
 
@@ -3972,7 +4063,9 @@ async fn media_pump(
                         std::sync::atomic::Ordering::Relaxed,
                     );
                     let downscaled_init_started = std::time::Instant::now();
-                    let (enc, _actual) = encode::open_for_codec(
+                    #[cfg(feature = "rc-latency-bench")]
+                    let downscaled_init_start_agent_us = agent_epoch_us();
+                    let (enc, actual_downscaled) = encode::open_for_codec(
                         &chosen_codec,
                         frame.width,
                         frame.height,
@@ -3980,6 +4073,21 @@ async fn media_pump(
                     );
                     let downscaled_init_ms = downscaled_init_started.elapsed().as_millis() as u64;
                     let downscaled_backend = enc.name();
+                    #[cfg(feature = "rc-latency-bench")]
+                    crate::latency_bench::note_stage(
+                        session_id,
+                        "encoder_init_done",
+                        serde_json::json!({
+                            "w": frame.width,
+                            "h": frame.height,
+                            "codec": actual_downscaled.to_string(),
+                            "backend": downscaled_backend,
+                            "rebuild_reason": rebuild_reason,
+                            "encoder_init_start_agent_us": downscaled_init_start_agent_us,
+                            "encoder_init_us": downscaled_init_started.elapsed().as_micros() as u64,
+                            "encoder_init_ms": downscaled_init_ms,
+                        }),
+                    );
                     encoder = Some(enc);
                     encoder_dims = Some((frame.width, frame.height));
                     last_applied_quality = 0xFF;
@@ -19309,5 +19417,32 @@ mod stopped_at_screen_tests {
             ),
             "normal IDLE_KEEPALIVE still fires once 1,000 ms have elapsed"
         );
+    }
+
+    #[test]
+    fn parse_dtls_flight_interval_ms_defaults_to_100ms_and_supports_legacy_1s_restore() {
+        assert_eq!(
+            parse_dtls_flight_interval_ms(None),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            parse_dtls_flight_interval_ms(Some("")),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            parse_dtls_flight_interval_ms(Some("100")),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            parse_dtls_flight_interval_ms(Some("150")),
+            Duration::from_millis(150)
+        );
+        for legacy in ["0", "1000", "legacy", "off", "false", "FALSE"] {
+            assert_eq!(
+                parse_dtls_flight_interval_ms(Some(legacy)),
+                Duration::ZERO,
+                "legacy value `{legacy}` must restore upstream 1 s fixed timer"
+            );
+        }
     }
 }

@@ -148,6 +148,22 @@ pub(crate) fn controlled_probe_late_direct_policy(env: Option<&str>) -> bool {
     )
 }
 
+/// Whether the controlled agent replies `Binding Success` on all valid
+/// `USE-CANDIDATE` checks, remembers the nomination across the triggered reverse
+/// check so `handle_success_response` selects the pair immediately, and sends
+/// `Binding Success` before `set_selected_pair` on `Succeeded` pairs (default ON;
+/// opt-out via `MESHHARBOR_ICE_FAST_NOMINATION=0` or `MESHHARBORD_ICE_FAST_NOMINATION=0`).
+pub(crate) fn controlled_fast_nomination_policy(env: Option<&str>) -> bool {
+    !matches!(
+        env.map(str::trim),
+        Some(v)
+            if v == "0"
+                || v.eq_ignore_ascii_case("false")
+                || v.eq_ignore_ascii_case("off")
+                || v.eq_ignore_ascii_case("no")
+    )
+}
+
 /// MeshHarbor patch (warm standby, 2026-07-28): cadence for pinging validated
 /// pairs that are NOT the selected one. Upstream keepalives only the selected
 /// pair, so every other validated pair's NAT mapping expires minutes after it
@@ -188,6 +204,38 @@ impl AgentInternal {
         match std::env::var("MESHHARBOR_ICE_CONTROLLED_PROBE_LATE_DIRECT") {
             Ok(v) => controlled_probe_late_direct_policy(Some(v.as_str())),
             Err(_) => self.controlled_probe_late_direct.load(Ordering::SeqCst),
+        }
+    }
+    pub(crate) fn controlled_fast_nomination_enabled(&self) -> bool {
+        match std::env::var("MESHHARBOR_ICE_FAST_NOMINATION")
+            .or_else(|_| std::env::var("MESHHARBORD_ICE_FAST_NOMINATION"))
+        {
+            Ok(v) => controlled_fast_nomination_policy(Some(v.as_str())),
+            Err(_) => self.controlled_fast_nomination.load(Ordering::SeqCst),
+        }
+    }
+    async fn select_controlled_nominated_pair(&self, p: &Arc<CandidatePair>) {
+        let follow_renomination = {
+            let selected = self.agent_conn.get_selected_pair();
+            selected.as_ref().is_some_and(|s| {
+                should_follow_renomination_with_mdns(
+                    p,
+                    s,
+                    !self.keepalive_interval.is_zero(),
+                    self.controlled_probe_late_direct_enabled(),
+                )
+            })
+        };
+        let already_selected = {
+            let selected = self.agent_conn.get_selected_pair();
+            selected
+                .as_ref()
+                .is_some_and(|s| s.local.equal(&*p.local) && s.remote.equal(&*p.remote))
+        };
+        if self.agent_conn.get_selected_pair().is_none()
+            || (follow_renomination && !already_selected)
+        {
+            self.set_selected_pair(Some(Arc::clone(p))).await;
         }
     }
     async fn refresh_standby_pairs(
@@ -901,6 +949,9 @@ impl ControlledSelector for AgentInternal {
                 p.state
                     .store(CandidatePairState::Succeeded as u8, Ordering::SeqCst);
                 log::trace!("Found valid candidate pair: {}", p);
+                if self.controlled_fast_nomination_enabled() && p.nominated.load(Ordering::SeqCst) {
+                    self.select_controlled_nominated_pair(&p).await;
+                }
             } else {
                 // This shouldn't happen
                 log::error!("Success response from invalid candidate pair");
@@ -926,6 +977,7 @@ impl ControlledSelector for AgentInternal {
 
         if let Some(p) = self.find_pair(local, remote).await {
             let use_candidate = m.contains(ATTR_USE_CANDIDATE);
+            let fast_nomination = self.controlled_fast_nomination_enabled();
             if use_candidate {
                 // https://tools.ietf.org/html/rfc8445#section-7.3.1.5
 
@@ -935,6 +987,9 @@ impl ControlledSelector for AgentInternal {
                         .get_selected_pair()
                         .is_some_and(|selected| !same_pair(&p, &selected));
                     if changing && !p.authenticated_fresh() {
+                        if fast_nomination {
+                            self.send_binding_success(m, local, remote).await;
+                        }
                         self.ping_candidate(local, remote).await;
                         return;
                     }
@@ -942,51 +997,14 @@ impl ControlledSelector for AgentInternal {
                     // previously sent by this pair produced a successful response and
                     // generated a valid pair (Section 7.2.5.3.2).  The agent sets the
                     // nominated flag value of the valid pair to true.
-                    //
-                    // MeshHarbor patch (follow renomination): upstream only set the
-                    // selected pair when NONE was set, pinning the controlled
-                    // agent to the FIRST nominated pair for the connection's
-                    // lifetime. Browsers renominate deliberately when they
-                    // switch transports (ICE renomination semantics) — e.g.
-                    // Chrome moving off a deprioritized overlay-TUN host pair
-                    // onto the real-path srflx pair. Follow the controlling
-                    // agent's most recent nomination so both directions ride
-                    // the pair it chose; without this the browser switches its
-                    // send path while the agent keeps streaming media over the
-                    // stale pair (field 2026-07-27, DEVBOX→WINHOST-C: video pinned
-                    // to the overlay pair through carrier churn while the
-                    // nominated srflx pair sat idle).
-                    // Default-OFF (2026-07-27 field): following renominations let
-                    // Chrome steer the agent onto a half-blackholed pair
-                    // (browser-TUN-host × agent-srflx validates one-way through
-                    // the home-NAT masquerade; the reverse direction routes into
-                    // the TUN with a physical source) — SCTP died ~4 s in, every
-                    // session. Opt-in via MESHHARBOR_ICE_FOLLOW_RENOMINATION=1 until
-                    // the follow policy validates pair liveness both ways.
-                    // v2 (2026-07-28): see should_follow_renomination().
-                    let follow_renomination = {
-                        let selected = self.agent_conn.get_selected_pair();
-                        selected.as_ref().is_some_and(|s| {
-                            should_follow_renomination_with_mdns(
-                                &p,
-                                s,
-                                !self.keepalive_interval.is_zero(),
-                                self.controlled_probe_late_direct_enabled(),
-                            )
-                        })
-                    };
-                    let already_selected = {
-                        let selected = self.agent_conn.get_selected_pair();
-                        selected
-                            .as_ref()
-                            .is_some_and(|s| s.local.equal(&*p.local) && s.remote.equal(&*p.remote))
-                    };
-                    if self.agent_conn.get_selected_pair().is_none()
-                        || (follow_renomination && !already_selected)
-                    {
-                        self.set_selected_pair(Some(Arc::clone(&p))).await;
+                    p.nominated.store(true, Ordering::SeqCst);
+                    if fast_nomination {
+                        self.send_binding_success(m, local, remote).await;
+                        self.select_controlled_nominated_pair(&p).await;
+                    } else {
+                        self.select_controlled_nominated_pair(&p).await;
+                        self.send_binding_success(m, local, remote).await;
                     }
-                    self.send_binding_success(m, local, remote).await;
                 } else {
                     // If the received Binding request triggered a new check to be
                     // enqueued in the triggered-check queue (Section 7.3.1.4), once the
@@ -996,6 +1014,10 @@ impl ControlledSelector for AgentInternal {
                     // MUST remove the candidate pair from the valid list, set the
                     // candidate pair state to Failed, and set the checklist state to
                     // Failed.
+                    if fast_nomination {
+                        p.nominated.store(true, Ordering::SeqCst);
+                        self.send_binding_success(m, local, remote).await;
+                    }
                     self.ping_candidate(local, remote).await;
                 }
             } else {
@@ -2675,6 +2697,328 @@ mod same_session_failover_tests {
         );
 
         agent.close().await?;
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_fast_nomination_env_policy_is_default_on() {
+        assert!(super::controlled_fast_nomination_policy(None));
+        assert!(super::controlled_fast_nomination_policy(Some("1")));
+        assert!(super::controlled_fast_nomination_policy(Some("true")));
+        assert!(!super::controlled_fast_nomination_policy(Some("0")));
+        assert!(!super::controlled_fast_nomination_policy(Some("false")));
+        assert!(!super::controlled_fast_nomination_policy(Some("off")));
+        assert!(!super::controlled_fast_nomination_policy(Some("no")));
+    }
+
+    struct RecordingStunConn {
+        local_addr: SocketAddr,
+        agent_conn: Arc<crate::agent::agent_transport::AgentConn>,
+        sent_messages: util::sync::Mutex<Vec<(MessageType, bool)>>,
+    }
+
+    #[async_trait]
+    impl util::Conn for RecordingStunConn {
+        async fn connect(&self, _addr: SocketAddr) -> std::result::Result<(), util::Error> {
+            Ok(())
+        }
+        async fn recv(&self, _buf: &mut [u8]) -> std::result::Result<usize, util::Error> {
+            Err(util::Error::Other("unused in unit test".into()))
+        }
+        async fn recv_from(
+            &self,
+            _buf: &mut [u8],
+        ) -> std::result::Result<(usize, SocketAddr), util::Error> {
+            Err(util::Error::Other("unused in unit test".into()))
+        }
+        async fn send(&self, buf: &[u8]) -> std::result::Result<usize, util::Error> {
+            Ok(buf.len())
+        }
+        async fn send_to(
+            &self,
+            buf: &[u8],
+            _target: SocketAddr,
+        ) -> std::result::Result<usize, util::Error> {
+            let mut msg = Message::new();
+            msg.raw = buf.to_vec();
+            msg.decode()
+                .map_err(|e| util::Error::Other(e.to_string()))?;
+            let selected_when_sent = self.agent_conn.get_selected_pair().is_some();
+            self.sent_messages
+                .lock()
+                .push((msg.typ, selected_when_sent));
+            Ok(buf.len())
+        }
+        fn local_addr(&self) -> std::result::Result<SocketAddr, util::Error> {
+            Ok(self.local_addr)
+        }
+        fn remote_addr(&self) -> Option<SocketAddr> {
+            None
+        }
+        async fn close(&self) -> std::result::Result<(), util::Error> {
+            Ok(())
+        }
+        fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+            self
+        }
+    }
+
+    #[tokio::test]
+    async fn controlled_fast_nomination_replies_binding_success_on_waiting_pair_and_selects_on_triggered_check_success(
+    ) -> Result<()> {
+        for fast_enabled in [true, false] {
+            let agent = Agent::new(AgentConfig {
+                is_controlling: false,
+                multicast_dns_mode: MulticastDnsMode::Disabled,
+                ..Default::default()
+            })
+            .await?;
+            agent
+                .internal
+                .controlled_fast_nomination
+                .store(fast_enabled, Ordering::SeqCst);
+            {
+                let mut creds = agent.internal.ufrag_pwd.lock().await;
+                creds.local_ufrag = "ctrl-local".into();
+                creds.local_pwd = "ctrl-local-password-with-entropy".into();
+                creds.remote_ufrag = "ctrl-remote".into();
+                creds.remote_pwd = "ctrl-remote-password-with-entropy".into();
+            }
+
+            let local_addr: SocketAddr = "192.0.2.10:50001".parse().unwrap();
+            let remote_addr: SocketAddr = "198.51.100.20:50002".parse().unwrap();
+            let rec_conn = Arc::new(RecordingStunConn {
+                local_addr,
+                agent_conn: Arc::clone(&agent.internal.agent_conn),
+                sent_messages: util::sync::Mutex::new(Vec::new()),
+            });
+            let local_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+                CandidateHostConfig {
+                    base_config: CandidateBaseConfig {
+                        network: "udp".into(),
+                        address: "192.0.2.10".into(),
+                        port: 50001,
+                        component: 1,
+                        conn: Some(rec_conn.clone()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+                .new_candidate_host()?,
+            );
+            agent
+                .internal
+                .local_candidates
+                .lock()
+                .await
+                .insert(local_host.network_type(), vec![local_host.clone()]);
+
+            // Inbound aggressive-nomination BindingRequest on an unseen/Waiting pair.
+            let mut inbound_req = Message::new();
+            inbound_req.build(&[
+                Box::new(BINDING_REQUEST),
+                Box::new(TransactionId::new()),
+                Box::new(Username::new(
+                    ATTR_USERNAME,
+                    "ctrl-local:ctrl-remote".into(),
+                )),
+                Box::<UseCandidateAttr>::default(),
+                Box::new(AttrControlling(12345)),
+                Box::new(PriorityAttr(2130706431)),
+                Box::new(MessageIntegrity::new_short_term_integrity(
+                    "ctrl-local-password-with-entropy".into(),
+                )),
+                Box::new(FINGERPRINT),
+            ])?;
+            agent
+                .internal
+                .handle_inbound(&mut inbound_req, &local_host, remote_addr)
+                .await;
+
+            let checklist = agent.internal.agent_conn.checklist.lock().await.clone();
+            assert_eq!(checklist.len(), 1);
+            let pair = &checklist[0];
+            let sent = rec_conn.sent_messages.lock().clone();
+
+            if fast_enabled {
+                assert!(
+                    pair.nominated.load(Ordering::SeqCst),
+                    "fast nomination must record nominated=true on Waiting pair"
+                );
+                assert_eq!(
+                    sent.len(),
+                    2,
+                    "fast nomination must send BINDING_SUCCESS followed by triggered BINDING_REQUEST"
+                );
+                assert_eq!(sent[0].0, BINDING_SUCCESS);
+                assert_eq!(sent[1].0, BINDING_REQUEST);
+            } else {
+                assert!(
+                    !pair.nominated.load(Ordering::SeqCst),
+                    "legacy mode does not set nominated on Waiting pair"
+                );
+                assert_eq!(
+                    sent.len(),
+                    1,
+                    "legacy mode only sends triggered BINDING_REQUEST without BINDING_SUCCESS"
+                );
+                assert_eq!(sent[0].0, BINDING_REQUEST);
+            }
+
+            // Now deliver the BINDING_SUCCESS response for the triggered reverse check.
+            let triggered_tx = agent
+                .internal
+                .pending_binding_requests
+                .lock()
+                .await
+                .first()
+                .expect("triggered check pending")
+                .transaction_id;
+            let mut reply = Message::new();
+            reply.build(&[
+                Box::new(BINDING_SUCCESS),
+                Box::new(triggered_tx),
+                Box::new(MessageIntegrity::new_short_term_integrity(
+                    "ctrl-remote-password-with-entropy".into(),
+                )),
+                Box::new(FINGERPRINT),
+            ])?;
+            agent
+                .internal
+                .handle_inbound(&mut reply, &local_host, remote_addr)
+                .await;
+
+            assert_eq!(
+                pair.state.load(Ordering::SeqCst),
+                CandidatePairState::Succeeded as u8
+            );
+            if fast_enabled {
+                assert!(
+                    agent.internal.agent_conn.get_selected_pair().is_some(),
+                    "fast nomination must immediately select the pair once the triggered check succeeds"
+                );
+            } else {
+                assert!(
+                    agent.internal.agent_conn.get_selected_pair().is_none(),
+                    "legacy mode leaves selected_pair None until a second USE-CANDIDATE request arrives"
+                );
+            }
+
+            agent.close().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn controlled_fast_nomination_sends_binding_success_before_set_selected_pair_on_succeeded_pair(
+    ) -> Result<()> {
+        for fast_enabled in [true, false] {
+            let agent = Agent::new(AgentConfig {
+                is_controlling: false,
+                multicast_dns_mode: MulticastDnsMode::Disabled,
+                ..Default::default()
+            })
+            .await?;
+            agent
+                .internal
+                .controlled_fast_nomination
+                .store(fast_enabled, Ordering::SeqCst);
+            {
+                let mut creds = agent.internal.ufrag_pwd.lock().await;
+                creds.local_ufrag = "ctrl-local".into();
+                creds.local_pwd = "ctrl-local-password-with-entropy".into();
+                creds.remote_ufrag = "ctrl-remote".into();
+                creds.remote_pwd = "ctrl-remote-password-with-entropy".into();
+            }
+
+            let local_addr: SocketAddr = "192.0.2.10:50003".parse().unwrap();
+            let remote_addr: SocketAddr = "198.51.100.20:50004".parse().unwrap();
+            let rec_conn = Arc::new(RecordingStunConn {
+                local_addr,
+                agent_conn: Arc::clone(&agent.internal.agent_conn),
+                sent_messages: util::sync::Mutex::new(Vec::new()),
+            });
+            let local_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+                CandidateHostConfig {
+                    base_config: CandidateBaseConfig {
+                        network: "udp".into(),
+                        address: "192.0.2.10".into(),
+                        port: 50003,
+                        component: 1,
+                        conn: Some(rec_conn.clone()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+                .new_candidate_host()?,
+            );
+            let remote_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+                CandidateHostConfig {
+                    base_config: CandidateBaseConfig {
+                        network: "udp".into(),
+                        address: "198.51.100.20".into(),
+                        port: 50004,
+                        component: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+                .new_candidate_host()?,
+            );
+            agent
+                .internal
+                .local_candidates
+                .lock()
+                .await
+                .insert(local_host.network_type(), vec![local_host.clone()]);
+            agent.internal.add_remote_candidate(&remote_host).await;
+            let pair = agent
+                .internal
+                .find_pair(&local_host, &remote_host)
+                .await
+                .expect("pair must exist");
+            pair.state
+                .store(CandidatePairState::Succeeded as u8, Ordering::SeqCst);
+
+            let mut inbound_req = Message::new();
+            inbound_req.build(&[
+                Box::new(BINDING_REQUEST),
+                Box::new(TransactionId::new()),
+                Box::new(Username::new(
+                    ATTR_USERNAME,
+                    "ctrl-local:ctrl-remote".into(),
+                )),
+                Box::<UseCandidateAttr>::default(),
+                Box::new(AttrControlling(12345)),
+                Box::new(PriorityAttr(2130706431)),
+                Box::new(MessageIntegrity::new_short_term_integrity(
+                    "ctrl-local-password-with-entropy".into(),
+                )),
+                Box::new(FINGERPRINT),
+            ])?;
+            agent
+                .internal
+                .handle_inbound(&mut inbound_req, &local_host, remote_addr)
+                .await;
+
+            assert!(agent.internal.agent_conn.get_selected_pair().is_some());
+            let sent = rec_conn.sent_messages.lock().clone();
+            assert_eq!(sent.len(), 1);
+            assert_eq!(sent[0].0, BINDING_SUCCESS);
+            if fast_enabled {
+                assert!(
+                    !sent[0].1,
+                    "when fast_nomination is enabled, BINDING_SUCCESS must be sent BEFORE set_selected_pair"
+                );
+            } else {
+                assert!(
+                    sent[0].1,
+                    "when fast_nomination is disabled (legacy), set_selected_pair ran before BINDING_SUCCESS"
+                );
+            }
+
+            agent.close().await?;
+        }
         Ok(())
     }
 }

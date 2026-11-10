@@ -63,6 +63,10 @@ import {
   decideKeyAction,
   RC_RECONNECT_LADDER_MS,
   nextReconnectDelayMs,
+  RC_PREFLIGHT_OPT_STORAGE_KEY,
+  isRcPreflightOptEnabled,
+  resolveTurnCredsHalfTtlMs,
+  clearPrewarmedTurnCredsCache,
   deadAirDelayMs,
   RC_PC_DISCONNECTED_GRACE_MS,
   RC_SIGNALING_TIMEOUT_MS,
@@ -7096,6 +7100,126 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
       globalThis.RTCPeerConnection = origPc
       api.get = origApiGet
       ws.onRcMessage = origOnRc
+    }
+  })
+
+  it('V0017 §4(c): prewarms TURN credentials, reuses within ttl/2, and respects mh_rc_opt_preflight fallback', async () => {
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { ref } = await import('vue')
+    const { useWsStore } = await import('@/stores/ws')
+    const { api } = await import('@/api/client')
+    const { useRemoteControl } = await import('@/composables/useRemoteControl')
+
+    expect(isRcPreflightOptEnabled()).toBe(true)
+    expect(isRcPreflightOptEnabled({ getItem: () => '0' })).toBe(false)
+    expect(isRcPreflightOptEnabled({ getItem: () => 'false' })).toBe(false)
+    expect(isRcPreflightOptEnabled({ getItem: () => '1' })).toBe(true)
+
+    const nowMs = 1_700_000_000_000
+    expect(resolveTurnCredsHalfTtlMs({ ttl: 600 }, nowMs)).toBe(300_000)
+    expect(
+      resolveTurnCredsHalfTtlMs(
+        {
+          ice_servers: [
+            {
+              urls: ['turn:turn.example.invalid:3478'],
+              username: `${Math.floor(nowMs / 1000) + 400}:user1`,
+            },
+          ],
+        },
+        nowMs,
+      ),
+    ).toBe(200_000)
+
+    setActivePinia(createPinia())
+    const ws = useWsStore()
+    ws.status = 'connected'
+    const AGENT_ID = '65f000000000000000000911'
+    const ORG_ID = '65f000000000000000000912'
+    const USER_ID = '65f000000000000000000913'
+
+    clearPrewarmedTurnCredsCache()
+    globalThis.localStorage?.removeItem(RC_PREFLIGHT_OPT_STORAGE_KEY)
+
+    let turnFetchCount = 0
+    const events: string[] = []
+    const origApiGet = api.get.bind(api)
+    api.get = (async (path: string) => {
+      if (path.startsWith('/turn/credentials')) {
+        turnFetchCount += 1
+        events.push(`turn_fetch:${turnFetchCount}`)
+        return {
+          ice_servers: [
+            {
+              urls: ['turn:turn.example.invalid:3478'],
+              username: `${Math.floor(Date.now() / 1000) + 600}:u`,
+              credential: 'secret',
+            },
+          ],
+          ttl: 600,
+        }
+      }
+      return origApiGet(path)
+    }) as typeof api.get
+
+    const origSendRaw = ws.sendRaw
+    ws.sendRaw = () => {}
+
+    class OrderCheckPc {
+      ontrack: ((ev: unknown) => void) | null = null
+      onicecandidate: ((ev: unknown) => void) | null = null
+      onconnectionstatechange: (() => void) | null = null
+      oniceconnectionstatechange: (() => void) | null = null
+      connectionState = 'new'
+      iceConnectionState = 'new'
+      constructor() {
+        events.push('pc_constructed')
+      }
+      createDataChannel(label: string) {
+        return { label, readyState: 'connecting', close() {} }
+      }
+      addTransceiver() {}
+      close() {}
+    }
+    const origPc = globalThis.RTCPeerConnection
+    globalThis.RTCPeerConnection = OrderCheckPc as unknown as typeof RTCPeerConnection
+
+    try {
+      const agentRef = ref({
+        id: AGENT_ID,
+        os: 'linux' as const,
+        capabilities: {
+          codecs: ['h264'] as ('h264' | 'h265' | 'av1')[],
+          hw_encoders: [],
+          has_input_permission: true,
+          supports_clipboard: true,
+          supports_file_transfer: true,
+          max_simultaneous_sessions: 4,
+          fps_high: true,
+        },
+      })
+      const rc = useRemoteControl(agentRef, { userId: () => USER_ID })
+      await rc.prewarmTurnCredentials(AGENT_ID, ORG_ID)
+      expect(turnFetchCount).toBe(1)
+
+      await rc.connect(AGENT_ID, undefined, false, ORG_ID)
+      expect(turnFetchCount).toBe(1)
+      expect(events).toEqual(['turn_fetch:1', 'pc_constructed'])
+      rc.disconnect()
+
+      // Fallback switch ('0') disables prewarm and forces a fresh TURN fetch on connect
+      globalThis.localStorage?.setItem(RC_PREFLIGHT_OPT_STORAGE_KEY, '0')
+      await rc.prewarmTurnCredentials(AGENT_ID, ORG_ID)
+      expect(turnFetchCount).toBe(1)
+      await rc.connect(AGENT_ID, undefined, false, ORG_ID)
+      expect(turnFetchCount).toBe(2)
+      rc.disconnect()
+    } finally {
+      globalThis.localStorage?.removeItem(RC_PREFLIGHT_OPT_STORAGE_KEY)
+      clearPrewarmedTurnCredsCache()
+      globalThis.RTCPeerConnection = origPc
+      api.get = origApiGet
+      ws.sendRaw = origSendRaw
     }
   })
 })

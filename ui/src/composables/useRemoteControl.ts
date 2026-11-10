@@ -2058,6 +2058,100 @@ interface IceServer {
 
 interface TurnCredsResponse {
   ice_servers: IceServer[]
+  ttl?: number
+}
+
+export const RC_PREFLIGHT_OPT_STORAGE_KEY = 'mh_rc_opt_preflight'
+export const DEFAULT_TURN_CREDS_TTL_MS = 10 * 60 * 1000 // 10 min (600 s)
+
+export function isRcPreflightOptEnabled(
+  storage: Pick<Storage, 'getItem'> | null | undefined = (() => {
+    try {
+      return globalThis.localStorage ?? null
+    } catch {
+      return null
+    }
+  })(),
+): boolean {
+  try {
+    const raw = storage?.getItem(RC_PREFLIGHT_OPT_STORAGE_KEY)?.trim().toLowerCase()
+    if (raw === '0' || raw === 'false' || raw === 'off') return false
+  } catch {
+    /* localStorage may be disabled or unavailable (SSR). */
+  }
+  return true
+}
+
+export function resolveTurnCredsHalfTtlMs(
+  resp: { ice_servers?: IceServer[]; ttl?: number },
+  fetchedAtMs: number,
+): number {
+  if (typeof resp.ttl === 'number' && Number.isFinite(resp.ttl) && resp.ttl > 0) {
+    return Math.floor((resp.ttl * 1000) / 2)
+  }
+  for (const srv of resp.ice_servers ?? []) {
+    if (typeof srv.username === 'string') {
+      const m = srv.username.match(/^(\d{9,12}):/)
+      if (m) {
+        const expMs = Number(m[1]) * 1000
+        const ttlMs = expMs - fetchedAtMs
+        if (ttlMs > 0) {
+          return Math.floor(ttlMs / 2)
+        }
+      }
+    }
+  }
+  return Math.floor(DEFAULT_TURN_CREDS_TTL_MS / 2)
+}
+
+interface TurnCredsCacheEntry {
+  path: string
+  fetchedAtMs: number
+  halfTtlMs: number
+  promise: Promise<IceServer[]>
+}
+
+let cachedTurnCreds: TurnCredsCacheEntry | null = null
+
+export function clearPrewarmedTurnCredsCache(): void {
+  cachedTurnCreds = null
+}
+
+function fetchOrReuseTurnCredentials(
+  path: string,
+  allowCache: boolean,
+  nowMs: number = Date.now(),
+): Promise<IceServer[]> {
+  if (
+    allowCache &&
+    cachedTurnCreds &&
+    cachedTurnCreds.path === path &&
+    nowMs - cachedTurnCreds.fetchedAtMs < cachedTurnCreds.halfTtlMs
+  ) {
+    return cachedTurnCreds.promise
+  }
+  const entry: TurnCredsCacheEntry = {
+    path,
+    fetchedAtMs: nowMs,
+    halfTtlMs: Math.floor(DEFAULT_TURN_CREDS_TTL_MS / 2),
+    promise: Promise.resolve([]),
+  }
+  entry.promise = api
+    .get<TurnCredsResponse>(path)
+    .then((creds) => {
+      entry.halfTtlMs = resolveTurnCredsHalfTtlMs(creds, nowMs)
+      return creds.ice_servers
+    })
+    .catch(() => {
+      if (cachedTurnCreds === entry) {
+        cachedTurnCreds = null
+      }
+      return defaultStunServers()
+    })
+  if (allowCache) {
+    cachedTurnCreds = entry
+  }
+  return entry.promise
 }
 
 const EMPTY_STATS: RcStats = { bitrate_bps: 0, fps: 0, codec: '' }
@@ -9511,14 +9605,14 @@ export function useRemoteControl(
         }
       })
     }
-    const turnCredsPromise: Promise<IceServer[]> = api
-      .get<TurnCredsResponse>(
-        externalMode || sharedMode
-          ? '/turn/credentials'
-          : turnCredsPath(agentId, expectedOrgTid(orgId, location.pathname)),
-      )
-      .then((creds) => creds.ice_servers)
-      .catch(() => defaultStunServers())
+    const credsPath =
+      externalMode || sharedMode
+        ? '/turn/credentials'
+        : turnCredsPath(agentId, expectedOrgTid(orgId, location.pathname))
+    const turnCredsPromise: Promise<IceServer[]> = fetchOrReuseTurnCredentials(
+      credsPath,
+      !externalMode && !sharedMode && isRcPreflightOptEnabled(),
+    )
     if (ws.status !== 'connected') {
       const ready = await waitForWsConnected(RC_PREFLIGHT_WS_WAIT_MS)
       if (!ready) {
@@ -14520,6 +14614,15 @@ export function useRemoteControl(
     }
   }
 
+  function prewarmTurnCredentials(
+    agentId: string,
+    orgId?: string | null,
+  ): Promise<IceServer[]> {
+    if (!isRcPreflightOptEnabled()) return Promise.resolve([])
+    const path = turnCredsPath(agentId, expectedOrgTid(orgId, location.pathname))
+    return fetchOrReuseTurnCredentials(path, true)
+  }
+
   return {
     phase,
     error,
@@ -14550,6 +14653,7 @@ export function useRemoteControl(
     cursor,
     connect,
     connectExternal,
+    prewarmTurnCredentials,
     disconnect,
     /**
      * Current auto-reconnect attempt counter. 0 = not reconnecting;

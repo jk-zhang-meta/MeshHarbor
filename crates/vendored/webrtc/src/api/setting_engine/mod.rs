@@ -93,6 +93,13 @@ pub struct SettingEngine {
     /// associations (X14). `None` (the default) leaves parent remote-control
     /// associations on the unmodified SCTP sending path.
     pub(crate) sctp_file_pacing: Option<sctp::association::FilePacingConfig>,
+    /// Initial DTLS handshake flight retransmission interval. `Duration::ZERO`
+    /// (the default) preserves upstream `webrtc-dtls`'s 1 s
+    /// `INITIAL_TICKER_INTERVAL`. When non-zero (e.g. 100 ms), `RTCDtlsTransport`
+    /// sets `dtls::config::Config::flight_interval` to this base tick and applies
+    /// exponential backoff (`1x, 2x, 4x, 8x, ...`) across consecutive
+    /// retransmissions of the same flight. MeshHarbor patch.
+    pub(crate) dtls_flight_interval: Duration,
 }
 
 impl SettingEngine {
@@ -130,6 +137,19 @@ impl SettingEngine {
 
     pub(crate) fn get_sctp_file_pacing(&self) -> Option<sctp::association::FilePacingConfig> {
         self.sctp_file_pacing
+    }
+
+    /// Configure the initial DTLS handshake flight retransmission interval.
+    /// `Duration::ZERO` (the default) preserves upstream `webrtc-dtls`'s 1 s
+    /// `INITIAL_TICKER_INTERVAL`. MeshHarbor patch.
+    pub fn set_dtls_flight_interval(&mut self, interval: Duration) {
+        self.dtls_flight_interval = interval;
+    }
+
+    /// Return the configured initial DTLS handshake flight retransmission
+    /// interval (`Duration::ZERO` = upstream 1 s default). MeshHarbor patch.
+    pub(crate) fn get_dtls_flight_interval(&self) -> Duration {
+        self.dtls_flight_interval
     }
 
     /// detach_data_channels enables detaching data channels. When enabled

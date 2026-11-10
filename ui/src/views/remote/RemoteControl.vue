@@ -2354,6 +2354,7 @@ import {
   mediaWaitingCopy,
   idleSecondsLeft,
   hostLockedChipTitle,
+  isRcPreflightOptEnabled,
 } from '@/composables/useRemoteControl'
 import {
   PICKER_CHROMAS,
@@ -5236,6 +5237,11 @@ onMounted(() => {
     wsStore.setTenantAffinity(tenantId.value)
     if (wsStore.status === 'disconnected') {
       wsStore.connect()
+    } else if (isRcPreflightOptEnabled() && wsStore.getDialedTid() !== tenantId.value) {
+      wsStore.forceRedial()
+    }
+    if (isRcPreflightOptEnabled() && agentId.value) {
+      void rc.prewarmTurnCredentials(agentId.value, tenantId.value)
     }
   }
   void loadAgent()
