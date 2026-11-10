@@ -6232,6 +6232,7 @@ dependencies = [
  "indexmap 2.14.0",
  "ipnet",
  "libc",
+ "meshharbor-node-core",
  "meshharbor-remote-control",
  "meshharbor-tunnel-core",
  "rand 0.9.4",

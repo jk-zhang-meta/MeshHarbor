@@ -42,6 +42,9 @@ pub mod machine;
 pub mod notify;
 #[cfg(any(target_os = "macos", test))]
 mod privacy_cache;
+/// Client-side RDP session planner, per-session `127.77.x.y:0` loopback tunnel,
+/// and OS secure credential store shared by `mh rdp` and `meshharbor-desktop`.
+pub mod rdp_client;
 pub mod recording_dir;
 /// macOS privacy-permission probes. Here rather than in `meshharbord`
 /// because the desktop companion needs them too and deliberately does NOT

@@ -22,6 +22,8 @@ name = "mh"
 path = "src/main.rs"
 
 [dependencies]
+# Daemon-free shared client building blocks (including `rdp_client` for `mh rdp`)
+meshharbor-node-core = { path = "../../crates/agent-core" }
 # Shared transport, signalling, ACL, forwarding pump
 meshharbor-tunnel-core = { path = "../../crates/tunnel-core" }
 # Shared wire types (rc:tunnel.* lands here in T2)
