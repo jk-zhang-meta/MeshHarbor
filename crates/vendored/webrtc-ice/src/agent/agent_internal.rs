@@ -1,6 +1,9 @@
+use std::collections::HashSet;
+
 use portable_atomic::{AtomicBool, AtomicU64};
 
 use arc_swap::ArcSwapOption;
+use tokio::sync::Notify;
 use util::sync::Mutex as SyncMutex;
 
 use super::agent_transport::*;
@@ -67,6 +70,11 @@ pub struct AgentInternal {
 
     // LRU of outbound Binding request Transaction IDs
     pub(crate) pending_binding_requests: Mutex<Vec<BindingRequest>>,
+    // VENDOR PATCH (F1): active detached STUN sends keyed by (local_id, dst_addr),
+    // capping each pair at <= 1 in-flight background send and letting close()
+    // wait boundedly until all spawned STUN sends drop their candidate Arcs.
+    pub(crate) inflight_stun_sends: Arc<SyncMutex<HashSet<(String, SocketAddr)>>>,
+    pub(crate) inflight_stun_done: Arc<Notify>,
 
     pub(crate) agent_conn: Arc<AgentConn>,
 
@@ -170,6 +178,8 @@ impl AgentInternal {
 
             // LRU of outbound Binding request Transaction IDs
             pending_binding_requests: Mutex::new(vec![]),
+            inflight_stun_sends: Arc::new(SyncMutex::new(HashSet::new())),
+            inflight_stun_done: Arc::new(Notify::new()),
 
             // AgentConn
             agent_conn: Arc::new(AgentConn::new()),
@@ -703,6 +713,18 @@ impl AgentInternal {
         // VENDOR PATCH (#1740): before the sweep, so a candidate gathered from
         // here on is turned away by add_candidate() instead of outliving us.
         self.closed.send_replace(true);
+        // VENDOR PATCH (F1): wait boundedly for any detached STUN sends woken by
+        // `self.closed` to drop their `Arc<dyn Candidate>` before closing sockets.
+        let _ = tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                let notified = self.inflight_stun_done.notified();
+                if self.inflight_stun_sends.lock().is_empty() {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await;
         self.delete_all_candidates().await;
         {
             let mut started_ch_tx = self.started_ch_tx.lock().await;
@@ -1137,18 +1159,97 @@ impl AgentInternal {
         Ok(())
     }
 
+    pub(crate) fn inflight_stun_send_count(&self) -> usize {
+        self.inflight_stun_sends.lock().len()
+    }
+
     pub(crate) async fn send_stun(
         &self,
         msg: &Message,
         local: &Arc<dyn Candidate + Send + Sync>,
         remote: &Arc<dyn Candidate + Send + Sync>,
     ) {
-        if let Err(err) = local.write_to(&msg.raw, &**remote).await {
-            log::trace!(
-                "[{}]: failed to send STUN message: {}",
-                self.get_name(),
-                err
-            );
+        // VENDOR PATCH (F1): isolate every STUN write so a single stalled
+        // `write_to().await` can never freeze `ping_all_candidates`,
+        // `connectivity_checks`, or inbound STUN handling.
+        // - Poll once inline so healthy sockets/vnet complete with zero spawn.
+        // - Cap concurrent detached sends per (local_id, dst_addr) to <= 1.
+        // - Bound detached sends by 200ms and cancel immediately on `close()`.
+        const STUN_SEND_TIMEOUT: Duration = Duration::from_millis(200);
+        struct InflightStunGuard {
+            set: Arc<SyncMutex<HashSet<(String, SocketAddr)>>>,
+            done: Arc<Notify>,
+            key: (String, SocketAddr),
+        }
+        impl Drop for InflightStunGuard {
+            fn drop(&mut self) {
+                self.set.lock().remove(&self.key);
+                self.done.notify_waiters();
+            }
+        }
+
+        if *self.closed.borrow() {
+            return;
+        }
+        let pair_key = (local.id(), remote.addr());
+        if self.inflight_stun_sends.lock().contains(&pair_key) {
+            return;
+        }
+
+        let raw = msg.raw.clone();
+        let local_c = Arc::clone(local);
+        let remote_c = Arc::clone(remote);
+        let mut write_fut = Box::pin(async move { local_c.write_to(&raw, &*remote_c).await });
+        match std::future::poll_fn(|cx| std::task::Poll::Ready(write_fut.as_mut().poll(cx))).await {
+            std::task::Poll::Ready(Ok(_)) => {}
+            std::task::Poll::Ready(Err(err)) => {
+                log::trace!(
+                    "[{}]: failed to send STUN message: {}",
+                    self.get_name(),
+                    err
+                );
+            }
+            std::task::Poll::Pending => {
+                let mut closed_rx = self.closed.subscribe();
+                {
+                    let mut inflight = self.inflight_stun_sends.lock();
+                    if *self.closed.borrow() || !inflight.insert(pair_key.clone()) {
+                        return;
+                    }
+                }
+                let guard = InflightStunGuard {
+                    set: Arc::clone(&self.inflight_stun_sends),
+                    done: Arc::clone(&self.inflight_stun_done),
+                    key: pair_key,
+                };
+                let name = self.get_name().to_owned();
+                let local_log = local.to_string();
+                let remote_log = remote.to_string();
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    tokio::select! {
+                        biased;
+                        _ = closed_rx.changed() => {}
+                        res = tokio::time::timeout(STUN_SEND_TIMEOUT, write_fut) => {
+                            match res {
+                                Ok(Ok(_)) => {}
+                                Ok(Err(err)) => {
+                                    log::trace!("[{}]: failed to send STUN message: {}", name, err);
+                                }
+                                Err(_) => {
+                                    log::debug!(
+                                        target: "webrtc_ice::send_stun",
+                                        "[{}]: timed out sending STUN message from {} to {}",
+                                        name,
+                                        local_log,
+                                        remote_log
+                                    );
+                                }
+                            }
+                        }
+                    }
+                });
+            }
         }
     }
 

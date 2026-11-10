@@ -271,6 +271,22 @@ impl Candidate for CandidateBase {
     async fn write_to(&self, raw: &[u8], dst: &(dyn Candidate + Send + Sync)) -> Result<usize> {
         let n = if let Some(conn) = &self.conn {
             let addr = dst.addr();
+            // VENDOR PATCH (F1): on macOS/Unix, a per-destination WouldBlock on
+            // `tokio::net::UdpSocket::send_to` clears ScheduledIo's cached
+            // WRITABLE readiness bit, poisoning the socket so subsequent sends
+            // to healthy peers also hang indefinitely (empirically verified on
+            // Mac arm64). Send directly via a non-owning Borrowed-fd wrapper on
+            // Unix UDP sockets; non-UdpSocket Conns fall through to `send_to`.
+            #[cfg(unix)]
+            if let Some(udp) = conn.as_any().downcast_ref::<tokio::net::UdpSocket>() {
+                use std::os::unix::io::{AsRawFd, FromRawFd};
+                let sock = std::mem::ManuallyDrop::new(unsafe {
+                    std::net::UdpSocket::from_raw_fd(udp.as_raw_fd())
+                });
+                let n = sock.send_to(raw, addr)?;
+                self.seen(true);
+                return Ok(n);
+            }
             conn.send_to(raw, addr).await?
         } else {
             0
