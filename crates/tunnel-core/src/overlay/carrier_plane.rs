@@ -2556,6 +2556,16 @@ mod tests {
         let got1 =
             pump_until_delivered(&a1, &mut b1_rx, &synthetic_ipv4(ip_a1, ip_b1, b"org-one")).await;
         assert_eq!(&got1[20..], b"org-one");
+        // Under heavy CPU load, `pump_until_delivered` may emit multiple org-1
+        // retries while the initial X25519 handshake completes; drain any
+        // trailing org-1 duplicates before testing cross-org isolation of org-2.
+        while let Ok(Some(dup)) = timeout(Duration::from_millis(50), b1_rx.recv()).await {
+            assert_eq!(
+                &dup[20..],
+                b"org-one",
+                "unexpected non-org-1 packet while draining org-1 handshake pump retries"
+            );
+        }
         let got2 =
             pump_until_delivered(&a2, &mut b2_rx, &synthetic_ipv4(ip_a2, ip_b2, b"org-two")).await;
         assert_eq!(&got2[20..], b"org-two");

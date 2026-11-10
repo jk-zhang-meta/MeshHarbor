@@ -1585,6 +1585,28 @@ mod tests {
 
     #[test]
     fn global_limit_spans_peers_and_releases_reserved_bytes_on_retirement() {
+        // `HELD_BYTES` (`GLOBAL_HOLD_LIMIT`) is process-global across all test
+        // modules; run in an isolated child process so saturating the 4 MiB
+        // global hold cap never starves concurrent `multipath_runtime` tests.
+        if std::env::var_os("MH_HOLD_GLOBAL_ISOLATED").is_none() {
+            let exe = std::env::current_exe().expect("current_exe");
+            let out = std::process::Command::new(exe)
+                .env("MH_HOLD_GLOBAL_ISOLATED", "1")
+                .args([
+                    "--exact",
+                    "overlay::multipath_control::tests::global_limit_spans_peers_and_releases_reserved_bytes_on_retirement",
+                    "--nocapture",
+                ])
+                .output()
+                .expect("spawn isolated global hold limit test");
+            assert!(
+                out.status.success(),
+                "isolated global_limit_spans_peers_and_releases_reserved_bytes_on_retirement failed:\n{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
         let _serial = HOLD_TEST_LOCK.lock().unwrap();
         let now = Instant::now();
         let controls: Vec<_> = (0..17)

@@ -605,13 +605,13 @@ pub(super) mod tests {
         assert!(adds(&seen).is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn no_igd_costs_one_wait() {
         let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let SocketAddr::V4(to) = sock.local_addr().unwrap() else {
             unreachable!()
         };
-        let t = std::time::Instant::now();
+        let t = tokio::time::Instant::now();
         assert!(
             map(
                 Ssdp {

@@ -1483,6 +1483,28 @@ mod turn_tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_cancelled_turn_allocate_does_not_strand_its_underlay_socket() {
+        // `/proc/self/fd` is process-global across all concurrent test threads;
+        // run in an isolated child process so sibling tests opening sockets do
+        // not pollute the FD count while keeping `after <= before + 1` exact.
+        if std::env::var_os("MH_TURN_FD_ISOLATED").is_none() {
+            let exe = std::env::current_exe().expect("current_exe");
+            let out = std::process::Command::new(exe)
+                .env("MH_TURN_FD_ISOLATED", "1")
+                .args([
+                    "--exact",
+                    "transport::relay::turn_tests::a_cancelled_turn_allocate_does_not_strand_its_underlay_socket",
+                    "--nocapture",
+                ])
+                .output()
+                .expect("spawn isolated TURN FD leak test");
+            assert!(
+                out.status.success(),
+                "isolated a_cancelled_turn_allocate_does_not_strand_its_underlay_socket failed:\n{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
         fn open_fds() -> usize {
             std::fs::read_dir("/proc/self/fd")
                 .map(|d| d.count())
