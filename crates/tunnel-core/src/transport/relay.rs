@@ -1548,16 +1548,20 @@ mod turn_tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(start_paused = true)]
     async fn rescue_uplinks_succeeds_on_second_nic_after_first_stalls_and_bounds_total_time() {
-        let (_server, turn_addr) = loopback_turn_server().await;
+        let turn_addr: SocketAddr = "127.0.0.1:3478".parse().unwrap();
         let dead_nic1: Ipv4Addr = "192.168.42.45".parse().unwrap();
         let live_nic2: Ipv4Addr = Ipv4Addr::LOCALHOST;
         let unused_nic3: Ipv4Addr = "192.168.100.2".parse().unwrap();
         let extra_nic4: Ipv4Addr = "10.0.0.2".parse().unwrap();
 
+        // 1. NIC #1 stalls past its 300ms slice (900ms / 3 capped NICs); NIC #2
+        // completes TURN Allocate in 20ms virtual time; NIC #3 and NIC #4 are
+        // never attempted.
         let tried = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let tried_c = tried.clone();
+        let t_ok = tokio::time::Instant::now();
         let res = try_rescue_uplinks_bounded(
             &[
                 (dead_nic1, Some(58)),
@@ -1568,38 +1572,38 @@ mod turn_tests {
             std::time::Duration::from_millis(900),
             turn_addr,
             move |ip, ifindex| {
-                tried_c.lock().unwrap().push(ip);
+                tried_c.lock().unwrap().push((ip, ifindex));
                 async move {
                     if ip == dead_nic1 {
-                        std::future::pending::<anyhow::Result<TurnRelayConn>>().await
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        unreachable!("stalled NIC #1 must be cancelled by per-NIC timeout");
                     } else {
-                        allocate_turn_relay_from(
-                            turn_addr,
-                            USER.into(),
-                            PASS.into(),
-                            REALM.into(),
-                            Some((ip, ifindex)),
-                        )
-                        .await
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        Ok::<&'static str, anyhow::Error>("turn-allocated-on-nic2")
                     }
                 }
             },
         )
         .await;
 
-        let (won_ip, relay) = res.expect("second NIC must rescue via real TURN Allocate");
+        let (won_ip, token) = res.expect("second NIC must rescue once TURN Allocate completes");
         assert_eq!(won_ip, live_nic2);
-        assert!(relay.local_addr().unwrap().ip().is_loopback());
+        assert_eq!(token, "turn-allocated-on-nic2");
         assert_eq!(
             *tried.lock().unwrap(),
-            vec![dead_nic1, live_nic2],
+            vec![(dead_nic1, Some(58)), (live_nic2, None)],
             "must stop immediately once TURN Allocate succeeds on NIC #2"
         );
+        assert_eq!(
+            t_ok.elapsed(),
+            std::time::Duration::from_millis(320),
+            "virtual elapsed time must be 300ms (NIC #1 timeout) + 20ms (NIC #2 allocate)"
+        );
 
-        // Verify 3-NIC cap and strict total wall-clock bound when all NICs stall
+        // 2. Verify 3-NIC cap and exact virtual total_budget bound when all NICs fail/stall.
         let tried_all = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let tried_all_c = tried_all.clone();
-        let t0 = std::time::Instant::now();
+        let t0 = tokio::time::Instant::now();
         let none_res = try_rescue_uplinks_bounded(
             &[
                 (dead_nic1, Some(58)),
@@ -1611,18 +1615,22 @@ mod turn_tests {
             turn_addr,
             move |ip, _ifindex| {
                 tried_all_c.lock().unwrap().push(ip);
-                std::future::pending::<anyhow::Result<TurnRelayConn>>()
+                async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    Ok::<&'static str, anyhow::Error>("unreachable")
+                }
             },
         )
         .await;
         assert!(none_res.is_none());
-        assert!(
-            t0.elapsed() < std::time::Duration::from_millis(500),
-            "entire multi-NIC rescue must stay bounded by total_budget"
+        assert_eq!(
+            t0.elapsed(),
+            std::time::Duration::from_millis(240),
+            "entire multi-NIC rescue must terminate at exact virtual total_budget (240ms)"
         );
         assert_eq!(
-            tried_all.lock().unwrap().len(),
-            3,
+            *tried_all.lock().unwrap(),
+            vec![dead_nic1, unused_nic3, extra_nic4],
             "rescue must cap tried NICs at MAX_NON_VPN_UPLINKS (3)"
         );
     }
