@@ -540,6 +540,17 @@ pub fn lan_iface_denied(name: &str, description: &str) -> bool {
         || NAME_PREFIX.iter().any(|p| n.starts_with(p))
 }
 
+/// Shared structural + deny-list VPN/virtual classification for both LAN
+/// candidate gathering and [`super::netstate`]'s `vpn_class`: combines
+/// [`lan_iface_denied`] (with Windows `GetIfEntry2` driver description),
+/// the Windows `HardwareInterface == false` check, and [`linux_tunnel_iface`].
+pub(super) fn is_vpn_or_virtual_iface(name: &str, index: Option<u32>) -> bool {
+    let info = index.and_then(iface_info);
+    let desc = info.as_ref().map(|(d, _)| d.as_str()).unwrap_or_default();
+    let hardware = info.as_ref().map(|(_, h)| *h);
+    lan_iface_denied(name, desc) || hardware == Some(false) || linux_tunnel_iface(name)
+}
+
 /// Windows — the interface DESCRIPTION + hardware bit for an OS ifindex via
 /// `GetIfEntry2`. The description ("Check Point Virtual Network Adapter For
 /// Endpoint VPN Client") feeds the deny-list — the friendly name alone can't
@@ -1716,15 +1727,26 @@ pub fn srflx_hairpin_pointless(
     if !peer_has_lan_candidate || peer_srflx.is_empty() {
         return false;
     }
-    let Some(my_ip) = my_srflx
-        .and_then(|s| s.parse::<SocketAddr>().ok())
-        .map(|s| s.ip())
+    let Some(SocketAddr::V4(my_sa)) = my_srflx.and_then(|s| s.trim().parse::<SocketAddr>().ok())
     else {
         return false;
     };
-    peer_srflx
-        .iter()
-        .all(|e| e.parse::<SocketAddr>().ok().map(|s| s.ip()) == Some(my_ip))
+    let my_v4 = *my_sa.ip();
+    // F3b: evaluate ONLY IPv4 srflx entries. Call site `establish.rs` resolves
+    // IPv6 srflx (`pick_v6_endpoint_rotated`) ahead of this IPv4 `.or_else(...)`
+    // branch, so a peer advertising `[v4, v6]` on the same IPv4 NAT still must
+    // skip futile IPv4 hairpinning, while a peer with ZERO IPv4 srflx entries
+    // (`[]` or v6-only) is NOT a same-IPv4-NAT hairpin and returns `false`.
+    let mut saw_v4 = false;
+    for e in peer_srflx {
+        if let Ok(SocketAddr::V4(sa)) = e.trim().parse::<SocketAddr>() {
+            saw_v4 = true;
+            if *sa.ip() != my_v4 {
+                return false;
+            }
+        }
+    }
+    saw_v4
 }
 
 /// Bind one direct socket on a STABLE port so a rebuilt carrier reproduces
@@ -3084,5 +3106,38 @@ mod tests {
         assert!(srflx_punch_worth_trying(Some("symmetric"), None));
         assert!(srflx_punch_worth_trying(None, Some("symmetric")));
         assert!(srflx_punch_worth_trying(None, None));
+    }
+
+    #[test]
+    fn srflx_hairpin_pointless_handles_empty_mixed_v6_same_and_distinct_v4() {
+        let mine = Some("198.51.100.8:51000");
+
+        // 1. Empty or IPv6-only peer srflx -> false (never vacuous true)
+        assert!(!srflx_hairpin_pointless(mine, &[], true));
+        let v6_only = vec!["[2001:db8:1234::9]:43620".to_string()];
+        assert!(!srflx_hairpin_pointless(mine, &v6_only, true));
+
+        // 2. Mixed IPv4 + IPv6 where all IPv4 entries share our public IPv4 -> true
+        let mixed_same = vec![
+            "198.51.100.8:43816".to_string(),
+            "[2001:db8:1234::9]:43620".to_string(),
+        ];
+        assert!(srflx_hairpin_pointless(mine, &mixed_same, true));
+        assert!(!srflx_hairpin_pointless(mine, &mixed_same, false));
+
+        // 3. Multiple IPv4 entries all matching our public IPv4 -> true
+        let all_same_v4 = vec![
+            "198.51.100.8:43816".to_string(),
+            "198.51.100.8:43817".to_string(),
+        ];
+        assert!(srflx_hairpin_pointless(mine, &all_same_v4, true));
+
+        // 4. Differing public IPv4 (pure v4 or mixed with v6) -> false
+        let diff_v4 = vec![
+            "198.51.100.8:43816".to_string(),
+            "203.0.113.238:51287".to_string(),
+            "[2001:db8:1234::9]:43620".to_string(),
+        ];
+        assert!(!srflx_hairpin_pointless(mine, &diff_v4, true));
     }
 }
