@@ -114,6 +114,32 @@ impl fmt::Display for CandidateBase {
     }
 }
 
+/// Bounded retry loop for transient `WouldBlock` on non-blocking raw UDP sends:
+/// retries up to `max_retries` times with `retry_sleep` between attempts (e.g.
+/// 5 * 1ms <= 5ms total), then returns the final `WouldBlock` error without
+/// ever falling back to Tokio's readiness-cached `UdpSocket::send_to`.
+#[cfg(any(target_vendor = "apple", test))]
+pub(crate) async fn send_with_wouldblock_retry<F>(
+    max_retries: usize,
+    retry_sleep: std::time::Duration,
+    mut try_send: F,
+) -> std::io::Result<usize>
+where
+    F: FnMut() -> std::io::Result<usize>,
+{
+    let mut retries = 0usize;
+    loop {
+        match try_send() {
+            Ok(n) => return Ok(n),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && retries < max_retries => {
+                retries += 1;
+                tokio::time::sleep(retry_sleep).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 #[async_trait]
 impl Candidate for CandidateBase {
     fn foundation(&self) -> String {
@@ -271,19 +297,27 @@ impl Candidate for CandidateBase {
     async fn write_to(&self, raw: &[u8], dst: &(dyn Candidate + Send + Sync)) -> Result<usize> {
         let n = if let Some(conn) = &self.conn {
             let addr = dst.addr();
-            // VENDOR PATCH (F1): on macOS/Unix, a per-destination WouldBlock on
-            // `tokio::net::UdpSocket::send_to` clears ScheduledIo's cached
-            // WRITABLE readiness bit, poisoning the socket so subsequent sends
-            // to healthy peers also hang indefinitely (empirically verified on
-            // Mac arm64). Send directly via a non-owning Borrowed-fd wrapper on
-            // Unix UDP sockets; non-UdpSocket Conns fall through to `send_to`.
-            #[cfg(unix)]
+            // VENDOR PATCH (F1): on Apple platforms (macOS/iOS), a stalled send on
+            // `tokio::net::UdpSocket::send_to` empirically poisons the socket so
+            // subsequent sends to healthy peers also hang indefinitely (inference:
+            // per-destination WouldBlock clears ScheduledIo's cached WRITABLE bit
+            // while kqueue EV_CLEAR emits no fresh writable edge when the socket
+            // buffer was never full). Scope this bypass strictly to Apple targets
+            // (Linux/Windows keep `conn.send_to(raw, addr).await`), retry transient
+            // WouldBlock boundedly (up to 5 x 1ms <= 5ms) so SRTP IDR/SCTP bursts
+            // absorb kernel sendbuf pressure without immediate packet drops, and
+            // NEVER fall back to Tokio's `send_to` on the same UdpSocket.
+            #[cfg(target_vendor = "apple")]
             if let Some(udp) = conn.as_any().downcast_ref::<tokio::net::UdpSocket>() {
                 use std::os::unix::io::{AsRawFd, FromRawFd};
-                let sock = std::mem::ManuallyDrop::new(unsafe {
-                    std::net::UdpSocket::from_raw_fd(udp.as_raw_fd())
-                });
-                let n = sock.send_to(raw, addr)?;
+                let fd = udp.as_raw_fd();
+                let n = send_with_wouldblock_retry(5, std::time::Duration::from_millis(1), || {
+                    let sock = std::mem::ManuallyDrop::new(unsafe {
+                        std::net::UdpSocket::from_raw_fd(fd)
+                    });
+                    sock.send_to(raw, addr)
+                })
+                .await?;
                 self.seen(true);
                 return Ok(n);
             }

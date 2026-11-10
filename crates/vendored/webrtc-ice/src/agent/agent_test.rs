@@ -2573,9 +2573,9 @@ async fn test_f1_hung_conn_isolated_inflight_capped_keepalive_runs_and_close_dra
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(target_vendor = "apple")]
 #[tokio::test]
-async fn test_f1_unix_udp_write_to_no_double_close() -> Result<()> {
+async fn test_f1_apple_udp_write_to_no_double_close() -> Result<()> {
     let recv_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
     let recv_addr = recv_sock.local_addr()?;
 
@@ -2719,5 +2719,51 @@ async fn test_f1_non_udp_conn_downcast_fallback() -> Result<()> {
     let (r, src) = recv_sock.recv_from(&mut buf).await?;
     assert_eq!(&buf[..r], b"fallback-ok");
     assert_eq!(src, send_addr);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_f1_wouldblock_bounded_retry_recovers_and_caps_attempts() -> Result<()> {
+    use crate::candidate::candidate_base::send_with_wouldblock_retry;
+
+    // 1. Transient WouldBlock (3 times, then succeeds on attempt #4)
+    let calls_transient = AtomicUsize::new(0);
+    let res_ok = send_with_wouldblock_retry(5, Duration::from_millis(1), || {
+        let c = calls_transient.fetch_add(1, Ordering::SeqCst);
+        if c < 3 {
+            Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+        } else {
+            Ok(1200)
+        }
+    })
+    .await?;
+    assert_eq!(res_ok, 1200);
+    assert_eq!(calls_transient.load(Ordering::SeqCst), 4);
+
+    // 2. Persistent WouldBlock: bounded at 1 + 5 = 6 attempts, returns WouldBlock
+    let calls_persist = AtomicUsize::new(0);
+    let t0 = tokio::time::Instant::now();
+    let res_wb = send_with_wouldblock_retry(5, Duration::from_millis(1), || {
+        calls_persist.fetch_add(1, Ordering::SeqCst);
+        Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+    })
+    .await;
+    assert_eq!(res_wb.unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+    assert_eq!(calls_persist.load(Ordering::SeqCst), 6);
+    assert!(t0.elapsed() < Duration::from_millis(200));
+
+    // 3. Non-WouldBlock error returns immediately without retry
+    let calls_other = AtomicUsize::new(0);
+    let res_other = send_with_wouldblock_retry(5, Duration::from_millis(1), || {
+        calls_other.fetch_add(1, Ordering::SeqCst);
+        Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable))
+    })
+    .await;
+    assert_eq!(
+        res_other.unwrap_err().kind(),
+        std::io::ErrorKind::AddrNotAvailable
+    );
+    assert_eq!(calls_other.load(Ordering::SeqCst), 1);
+
     Ok(())
 }
