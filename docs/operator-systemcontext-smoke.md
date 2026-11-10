@@ -5,7 +5,7 @@ How to confirm a perMachine + SystemContext host can be remote-controlled
 The fixes this verifies landed in rc.51/rc.52 — any current release includes
 them; the per-step "rc.52" anchors below identify *which* behaviour is being
 checked, not a version you should install. The easiest way to set up such a
-host today is the `roomler-setup` wizard's **Daemon — system** role
+host today is the `meshharbor-setup` wizard's **Daemon — system** role
 ([installation.md](installation.md)).
 
 This procedure assumes you have remote-shell access to the controlled
@@ -21,7 +21,7 @@ host (a field host). All PowerShell snippets must run from an
   being pinned at 2 s. A throttled `ERROR` alarm fires at ≥8 failures.
   Infinite respawn is retained (a logon / config-fix recovers the host).
 - **rc.52** — the SystemContext worker reads its config from a
-  **machine-global** location (`%PROGRAMDATA%\roomler\roomler\config.toml`),
+  **machine-global** location (`%PROGRAMDATA%\meshharbor\meshharbor\config.toml`),
   which is reachable by LocalSystem **before any user logs in**. The
   parent dir gets an inheritable SYSTEM + Administrators DACL so the
   Agent JWT inside is not world-readable.
@@ -34,7 +34,7 @@ host (a field host). All PowerShell snippets must run from an
 ## 1. Confirm the host is on rc.52+
 
 ```powershell
-& "C:\Program Files\Roomler\roomlerd.exe" --version
+& "C:\Program Files\MeshHarbor\meshharbord.exe" --version
 # expect: 0.3.0-rc.52 (or later)
 ```
 
@@ -42,7 +42,7 @@ If older, force the update (must be from an **elevated** prompt — the
 auto-updater needs admin to write `%ProgramFiles%`):
 
 ```powershell
-& "C:\Program Files\Roomler\roomlerd.exe" self-update
+& "C:\Program Files\MeshHarbor\meshharbord.exe" self-update
 ```
 
 (If the host crash-loops too fast for the worker's in-process updater
@@ -56,7 +56,7 @@ manually.)
 This is the **crux** of the fix.
 
 ```powershell
-Test-Path "C:\ProgramData\roomler\roomler\config.toml"
+Test-Path "C:\ProgramData\meshharbor\meshharbor\config.toml"
 # expect: True
 ```
 
@@ -67,7 +67,7 @@ If **False**, populate it via one of:
 1. Log in to the host as the normal user.
 2. Confirm the agent service is running and connecting:
    ```powershell
-   Get-Service Roomler     # Status: Running
+   Get-Service MeshHarbor     # Status: Running
    ```
 3. **Leave it idle for ≥5 minutes.** The agent's `clean_run_task` fires
    at the threshold; its log line is:
@@ -85,8 +85,8 @@ enrollment token from the admin UI first** — this counts as a new
 enrollment for that host:
 
 ```powershell
-& "C:\Program Files\Roomler\roomlerd.exe" enroll `
-    --server https://roomler.ai `
+& "C:\Program Files\MeshHarbor\meshharbord.exe" enroll `
+    --server https://meshharbor.itachi.fans `
     --token <FRESH-ENROLLMENT-TOKEN> `
     --name <HOST-NAME> `
     --machine-global
@@ -102,8 +102,8 @@ enrollment, copy it across as SYSTEM (LocalSystem can write `%PROGRAMDATA%`,
 your admin token can with elevation):
 
 ```powershell
-$Src = "C:\Users\<the-enrolling-user>\AppData\Roaming\roomler\roomler\config\config.toml"
-$Dst = "C:\ProgramData\roomler\roomler\config.toml"
+$Src = "C:\Users\<the-enrolling-user>\AppData\Roaming\meshharbor\meshharbor\config\config.toml"
+$Dst = "C:\ProgramData\meshharbor\meshharbor\config.toml"
 New-Item -ItemType Directory -Force -Path (Split-Path $Dst) | Out-Null
 Copy-Item $Src $Dst
 ```
@@ -118,7 +118,7 @@ preserves it; the server's `agents` row stays the same.
 The Agent JWT inside `config.toml` must not be world-readable.
 
 ```powershell
-icacls "C:\ProgramData\roomler"
+icacls "C:\ProgramData\meshharbor"
 # expect ONLY entries for:
 #   NT-AUTORITÄT\SYSTEM          (F)(OI)(CI)   — well-known SID S-1-5-18
 #   VORDEFINIERT\Administratoren (F)(OI)(CI)   — well-known SID S-1-5-32-544
@@ -131,7 +131,7 @@ ran (typical for an auto-update path rather than a fresh wizard
 install). Apply it manually — one command:
 
 ```powershell
-icacls "C:\ProgramData\roomler" /inheritance:r `
+icacls "C:\ProgramData\meshharbor" /inheritance:r `
        /grant:r "*S-1-5-18:(OI)(CI)F" `
        /grant:r "*S-1-5-32-544:(OI)(CI)F"
 ```
@@ -140,7 +140,7 @@ Verify a non-admin user truly cannot read it:
 
 ```powershell
 # From a NON-elevated PowerShell signed in as a normal user:
-Get-Content "C:\ProgramData\roomler\roomler\config.toml"
+Get-Content "C:\ProgramData\meshharbor\meshharbor\config.toml"
 # expect: "Access to the path … is denied"
 ```
 
@@ -152,7 +152,7 @@ This is what SystemContext exists for.
 
 1. **Reboot the host.**
 2. **Do NOT log in.** Leave it at the Windows lock / logon screen.
-3. From your browser controller (`https://roomler.ai`), open a remote
+3. From your browser controller (`https://meshharbor.itachi.fans`), open a remote
    session to the host.
 4. **You should see the Winlogon screen** and be able to type the
    password / drive the SAS sequence.
@@ -165,16 +165,16 @@ couldn't find a config before logon.
 ## 5. Confirm in the agent log
 
 The service-supervisor log lives at
-`C:\ProgramData\roomler\roomler\service-logs\roomlerd-service.log.<date>`
+`C:\ProgramData\meshharbor\meshharbor\service-logs\meshharbord-service.log.<date>`
 (or fetch via the browser's log viewer panel).
 
 ### Healthy rc.52 — these lines should be present:
 
 ```
 config: resolved load path
-    config_path=C:\ProgramData\roomler\roomler\config.toml
+    config_path=C:\ProgramData\meshharbor\meshharbor\config.toml
     is_system_context=true
-    machine_global=C:\ProgramData\roomler\roomler\config.toml
+    machine_global=C:\ProgramData\meshharbor\meshharbor\config.toml
 supervisor: M3 A1 auto-swap (user-context -> SystemContext) is ENABLED
 supervisor: spawned SYSTEM-context worker via winlogon-token
 ```
@@ -199,12 +199,12 @@ connects — no respawn churn.
 
 | Symptom in the log | Likely cause | Fix |
 |---|---|---|
-| `config_path = …\systemprofile\AppData\…` (NOT `%PROGRAMDATA%`) | `%PROGRAMDATA%\roomler\roomler\config.toml` is missing | redo step 2 (self-heal didn't fire, or no machine-global write yet) |
+| `config_path = …\systemprofile\AppData\…` (NOT `%PROGRAMDATA%`) | `%PROGRAMDATA%\meshharbor\meshharbor\config.toml` is missing | redo step 2 (self-heal didn't fire, or no machine-global write yet) |
 | `supervisor: worker has failed N times in a row` after a reboot, never recovering | machine-global config missing | step 2 |
 | `enroll --machine-global` → "requires elevated terminal" | not running as admin | re-open PowerShell as Administrator |
 | Worker starts post-logon but crash-loops pre-logon | self-heal hasn't run yet (needs one ≥5 min healthy logged-in run) OR use step 2b directly | step 2a wait, or step 2b explicit |
 | `Users` appears in `icacls` output | rc.52 dir-DACL wasn't applied (typical for auto-update path) | run the manual `icacls` from step 3 |
-| `crash_recorder: suppressed sidecar write … reason=HardCapReached` flooding the log | `%PROGRAMDATA%\roomler\roomler\crashes\` filled up (100 file cap) while crash-looping; uploader can't drain because worker never starts | step 2 first (fixes the loop), then `Remove-Item C:\ProgramData\roomler\roomler\crashes\*.json` to clear the backlog |
+| `crash_recorder: suppressed sidecar write … reason=HardCapReached` flooding the log | `%PROGRAMDATA%\meshharbor\meshharbor\crashes\` filled up (100 file cap) while crash-looping; uploader can't drain because worker never starts | step 2 first (fixes the loop), then `Remove-Item C:\ProgramData\meshharbor\meshharbor\crashes\*.json` to clear the backlog |
 
 ---
 
@@ -220,6 +220,6 @@ Any of these means rc.52 hasn't actually fixed this host:
 - A non-admin local user can read `config.toml` (token leak — step 3
   ACL is missing).
 - `machine_id` differs from the server's stored row for this agent
-  (run `roomlerd --config C:\ProgramData\roomler\roomler\config.toml`
+  (run `meshharbord --config C:\ProgramData\meshharbor\meshharbor\config.toml`
   through any inspect path, OR compare the server-side `agents`
   document `machine_id` field).

@@ -1,6 +1,6 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: roomler-ai-e2e
+  name: meshharbor-e2e
   labels:
     env: e2e

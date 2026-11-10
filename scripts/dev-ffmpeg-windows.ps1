@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Stage the vendored Windows FFmpeg (static-md, LGPL, minimal) and libvpx
-  trees on a dev box so `cargo build -p roomlerd --features ffmpeg-encoder,vp9-444`
+  trees on a dev box so `cargo build -p meshharbord --features ffmpeg-encoder,vp9-444`
   works NATIVELY, against exactly the bytes the release workflow links.
 
 .DESCRIPTION
@@ -32,8 +32,8 @@
   pwsh scripts/dev-ffmpeg-windows.ps1
   # then, in a "x64 Native Tools" shell (vcvars64 — bindgen wants MSVC's stdint.h):
   Invoke-Expression (pwsh scripts/dev-ffmpeg-windows.ps1 -Env | Out-String)
-  cargo build -p roomlerd --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
-  .\target\release\roomlerd.exe encoder-smoke --encoder hardware --codec hevc
+  cargo build -p meshharbord --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
+  .\target\release\meshharbord.exe encoder-smoke --encoder hardware --codec hevc
 
 .NOTES
   Rollback to the previous FFmpeg: -FfmpegRelease vendored-ffmpeg-8.1.2
@@ -46,7 +46,7 @@ param(
   [string]$LibvpxRelease = 'vendored-libvpx-1.12.0',
   [string]$LibvpxAsset   = 'libvpx-1.12.0-win64-msvc.zip',
   [string]$Root          = 'C:\ffmpeg-pin',
-  [string]$Repo          = 'gjovanov/roomler-ai',
+  [string]$Repo          = 'jk-zhang-meta/MeshHarbor',
   [string]$Vcpkg         = 'C:\dev\vcpkg',
   [switch]$Env,
   [switch]$Force
@@ -95,7 +95,7 @@ if (-not $ready) {
   if (Test-Path $ffRoot) { Remove-Item -Recurse -Force $ffRoot }
   New-Item -ItemType Directory -Path $ffRoot -Force | Out-Null
   Expand-Archive -Path $zip -DestinationPath $ffRoot -Force
-  # The zip carries lib/ + include/ (+ ROOMLER-PATCHES.txt) at its top level,
+  # The zip carries lib/ + include/ (+ MESHHARBOR-PATCHES.txt) at its top level,
   # or one wrapping directory — normalise to $ffRoot\lib.
   if (-not (Test-Path (Join-Path $ffRoot 'lib'))) {
     $inner = Get-ChildItem $ffRoot -Directory | Select-Object -First 1
@@ -130,8 +130,8 @@ if (-not $ready) {
 
   Set-Content -Path $stamp -Value (Get-Date -Format o) -Encoding ascii -NoNewline
   Write-Step "staged: $ffRoot (FFmpeg) + $vpxRoot (libvpx) + $binDir\pkg-config.exe"
-  if (Test-Path (Join-Path $ffRoot 'ROOMLER-PATCHES.txt')) {
-    Write-Step "vendored FFmpeg carries roomler patches:"; Get-Content (Join-Path $ffRoot 'ROOMLER-PATCHES.txt')
+  if (Test-Path (Join-Path $ffRoot 'MESHHARBOR-PATCHES.txt')) {
+    Write-Step "vendored FFmpeg carries meshharbor patches:"; Get-Content (Join-Path $ffRoot 'MESHHARBOR-PATCHES.txt')
   }
 }
 
@@ -187,6 +187,6 @@ Write-Host ""
 Write-Host "Or in one go:  Invoke-Expression (pwsh scripts/dev-ffmpeg-windows.ps1 -Env | Out-String)"
 Write-Host ""
 Write-Host "Then (the MSI's exact feature set; never vp9-444-bindgen on Windows):"
-Write-Host '  cargo build -p roomlerd --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"'
-Write-Host '  .\target\release\roomlerd.exe encoder-smoke --encoder hardware --codec hevc'
-Write-Host '  .\target\release\roomlerd.exe encoder-smoke --encoder hardware --codec av1'
+Write-Host '  cargo build -p meshharbord --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"'
+Write-Host '  .\target\release\meshharbord.exe encoder-smoke --encoder hardware --codec hevc'
+Write-Host '  .\target\release\meshharbord.exe encoder-smoke --encoder hardware --codec av1'

@@ -6,7 +6,7 @@
  *
  * The shell used to write purestat's tag into every page, so a self-hosted
  * copy of the docs, a fork and a `localhost` build all reported to
- * purestat.ai as `roomler.ai`. This script takes the tag's place. It is
+ * purestat.ai as `meshharbor.itachi.fans`. This script takes the tag's place. It is
  * first-party and same-origin, so the CSP (`script-src 'self'
  * https://purestat.ai`) needs no change, and it carries no inline code: its
  * configuration rides on its OWN `<script>` element as `data-*` attributes,
@@ -14,7 +14,7 @@
  *
  *   <script src="/docs/assets/analytics.<hash>.js" defer
  *           data-src="https://purestat.ai/js/purestat.js"
- *           data-domain="roomler.ai" data-hosts="roomler.ai,www.roomler.ai">
+ *           data-domain="meshharbor.itachi.fans" data-hosts="meshharbor.itachi.fans,www.meshharbor.itachi.fans">
  *
  * It injects `<script defer data-domain=… src=…>` only when ALL hold — the
  * page's hostname is one of `data-hosts` exactly, the page is `https:`, and

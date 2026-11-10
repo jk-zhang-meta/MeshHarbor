@@ -7,7 +7,7 @@
  * Runs INSIDE the server VM against `http://localhost:8080`, because a call is
  * only measurable there: RTP does not survive a port-forward, a LAN URL is not
  * a secure context (so `navigator.mediaDevices` is `undefined`), and
- * `ROOMLER__APP__FRONTEND_URL` must EQUAL the browser's Origin or the
+ * `MESHHARBOR__APP__FRONTEND_URL` must EQUAL the browser's Origin or the
  * cookie-authenticated `/ws` upgrade is refused 403. The prod e2e lane solved
  * the same three problems the same way, with an in-pod sidecar.
  *

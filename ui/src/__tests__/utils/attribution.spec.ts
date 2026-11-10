@@ -21,7 +21,7 @@ import {
   signupAttribution,
 } from '@/utils/attribution'
 
-const HOST = 'roomler.ai'
+const HOST = 'meshharbor.itachi.fans'
 const landing = { referrer: 'https://www.youtube.com/', host: HOST, path: '/register' }
 
 describe('the contract', () => {
@@ -32,7 +32,7 @@ describe('the contract', () => {
     expect(MAX_VALUE_CHARS).toBe(64)
   })
 
-  it('offers the spec’s answers to "How did you hear about Roomler?"', () => {
+  it('offers the spec’s answers to "How did you hear about MeshHarbor?"', () => {
     expect([...SELF_REPORTED_OPTIONS]).toEqual([
       'search',
       'youtube',
@@ -87,13 +87,13 @@ describe('signupAttribution', () => {
     // page, on this site, and must not overwrite them.
     const a = signupAttribution(
       { utm_source: 'youtube', referrer_host: 'www.youtube.com', landing_path: '/blog/x/' },
-      { referrer: 'https://roomler.ai/blog/x/?utm_source=youtube', host: HOST, path: '/register' },
+      { referrer: 'https://meshharbor.itachi.fans/blog/x/?utm_source=youtube', host: HOST, path: '/register' },
     )
     expect(a).toMatchObject({ referrer_host: 'www.youtube.com', landing_path: '/blog/x/' })
   })
 
   it('records no referrer for a visit from this site, or from nowhere', () => {
-    expect(signupAttribution({ utm_source: 'x' }, { referrer: 'https://roomler.ai/', host: HOST, path: '/register' })).toEqual({
+    expect(signupAttribution({ utm_source: 'x' }, { referrer: 'https://meshharbor.itachi.fans/', host: HOST, path: '/register' })).toEqual({
       source: 'x',
       landing_path: '/register',
     })
@@ -150,7 +150,7 @@ describe('carriedQuery — what a link onward from an SPA page carries', () => {
   it('passes on what an earlier page carried rather than re-deriving it', () => {
     const q = carriedQuery(
       { utm_source: 'youtube', referrer_host: 'www.youtube.com', landing_path: '/blog/x/' },
-      { referrer: 'https://roomler.ai/blog/x/', host: HOST, path: '/register' },
+      { referrer: 'https://meshharbor.itachi.fans/blog/x/', host: HOST, path: '/register' },
     )
     expect(q).toMatchObject({ referrer_host: 'www.youtube.com', landing_path: '/blog/x/' })
   })
@@ -158,7 +158,7 @@ describe('carriedQuery — what a link onward from an SPA page carries', () => {
   it('is what signupAttribution is built on, so a link and the request agree', () => {
     const query = { utm_source: 'youtube', utm_medium: 'video' }
     const onward = carriedQuery(query, landing)
-    expect(signupAttribution(onward, { referrer: 'https://roomler.ai/register', host: HOST, path: '/login' })).toEqual(
+    expect(signupAttribution(onward, { referrer: 'https://meshharbor.itachi.fans/register', host: HOST, path: '/login' })).toEqual(
       signupAttribution(query, landing),
     )
   })
@@ -171,7 +171,7 @@ describe('externalHost', () => {
   })
 
   it('is undefined for this site, for none, and for one that does not parse', () => {
-    expect(externalHost('https://roomler.ai/docs/', HOST)).toBeUndefined()
+    expect(externalHost('https://meshharbor.itachi.fans/docs/', HOST)).toBeUndefined()
     expect(externalHost('', HOST)).toBeUndefined()
     expect(externalHost(undefined, HOST)).toBeUndefined()
     expect(externalHost('not a url', HOST)).toBeUndefined()
@@ -195,7 +195,7 @@ describe('oauthStartUrl', () => {
       landing_path: '/blog/x/',
       self_reported: 'friend',
     })
-    const u = new URL(url, 'https://roomler.ai')
+    const u = new URL(url, 'https://meshharbor.itachi.fans')
     expect(u.pathname).toBe('/api/oauth/google')
     expect(Object.fromEntries(u.searchParams)).toEqual({
       utm_source: 'youtube',
@@ -210,7 +210,7 @@ describe('oauthStartUrl', () => {
   })
 
   it('encodes values, so a tag cannot inject a parameter', () => {
-    const u = new URL(oauthStartUrl('google', { campaign: 'a&state=evil' }), 'https://roomler.ai')
+    const u = new URL(oauthStartUrl('google', { campaign: 'a&state=evil' }), 'https://meshharbor.itachi.fans')
     expect(u.searchParams.get('utm_campaign')).toBe('a&state=evil')
     expect(u.searchParams.has('state')).toBe(false)
   })

@@ -34,7 +34,7 @@ pub enum Role {
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Role advertised in `rc:tunnel.hello`. Distinguishes the
-/// `roomler` CLI (which initiates forwards) from the agent
+/// `mh` CLI (which initiates forwards) from the agent
 /// (which serves them). Wire form: `"client"` | `"agent"`.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -207,6 +207,136 @@ pub struct PeerAuthOffer {
     pub sig: Option<String>,
 }
 
+/// Direction of a file child transport (`download` or `upload`). Each direction
+/// is opted into, enabled, and kill-switched independently under the parent
+/// session's `Permissions::FILES` grant.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileChildDirection {
+    Download,
+    Upload,
+}
+
+impl FileChildDirection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Download => "download",
+            Self::Upload => "upload",
+        }
+    }
+}
+
+/// Fail-closed parser for `DISABLE_FILE_CHILD_DOWNLOAD` and
+/// `DISABLE_FILE_CHILD_UPLOAD` kill-switch environment variables shared by
+/// the signaling server (`Hub`) and the agent (`meshharbord`).
+///
+/// Any non-empty trimmed value that is not `"0"`, `"false"`, `"no"`, or `"off"`
+/// (case-insensitive) is treated as disabled (`true`).
+pub fn parse_file_child_disable_switch(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty()
+        && !matches!(
+            trimmed.to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+}
+
+/// Required proof for a NEW child DTLS transport, separate from the ordinary
+/// offer's optional, audit-only `peer_auth`. P-256/SHA-256 over
+/// [`file_child_offer_transcript`]: `key` is standard padded base64 of an
+/// uncompressed SEC1 point; `nonce` and the fixed-size `r || s` signature are
+/// base64url without padding. Deserialization is NOT identity verification:
+/// the device must bind this key to the authorized parent controller and
+/// verify the signature before creating a child. This type enables nothing.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct FileChildOfferProof {
+    pub nonce: String,
+    pub key: String,
+    pub sig: String,
+}
+
+/// Independent domain for child offers; an ordinary peer-auth signature is
+/// never a proof for a file transport.
+pub const FILE_CHILD_OFFER_LABEL: &[u8] = b"meshharbor-file-child-offer-v1";
+
+/// The child-offer signature's length-prefixed fields for the `download`
+/// direction: parent session, child, transfer, literal `download`, device,
+/// controller, the normalized NEW offer DTLS fingerprint, and nonce.
+/// For direction-parameterized transcripts (`download` or `upload`), see
+/// [`file_child_offer_transcript_with_direction`].
+pub fn file_child_offer_transcript(
+    session_id: &str,
+    child_id: &str,
+    transfer_id: &str,
+    agent_id: &str,
+    controller_user_id: &str,
+    offer_sdp: &str,
+    nonce: &str,
+) -> Option<Vec<u8>> {
+    file_child_offer_transcript_with_direction(
+        session_id,
+        child_id,
+        transfer_id,
+        FileChildDirection::Download,
+        agent_id,
+        controller_user_id,
+        offer_sdp,
+        nonce,
+    )
+}
+
+/// The child-offer signature's length-prefixed fields: parent session, child,
+/// transfer, direction (`download` or `upload`), device, controller, the
+/// normalized NEW offer DTLS fingerprint, and nonce. IDs must be canonical
+/// ObjectId hex; transfer IDs are nonempty, at most 128 bytes, and contain no
+/// control characters. Reuse of a transfer ID across distinct children is
+/// intentional for striping.
+#[allow(clippy::too_many_arguments)]
+pub fn file_child_offer_transcript_with_direction(
+    session_id: &str,
+    child_id: &str,
+    transfer_id: &str,
+    direction: FileChildDirection,
+    agent_id: &str,
+    controller_user_id: &str,
+    offer_sdp: &str,
+    nonce: &str,
+) -> Option<Vec<u8>> {
+    for id in [session_id, child_id, agent_id, controller_user_id] {
+        if ObjectId::parse_str(id).ok()?.to_hex() != id {
+            return None;
+        }
+    }
+    if transfer_id.is_empty()
+        || transfer_id.len() > 128
+        || transfer_id.chars().any(char::is_control)
+        || !peer_auth_nonce_is_well_formed(nonce)
+    {
+        return None;
+    }
+    let fingerprint = sdp_dtls_fingerprint(offer_sdp).ok()?;
+    let fields = [
+        session_id,
+        child_id,
+        transfer_id,
+        direction.as_str(),
+        agent_id,
+        controller_user_id,
+        &fingerprint,
+        nonce,
+    ];
+    let mut out = Vec::with_capacity(
+        FILE_CHILD_OFFER_LABEL.len() + fields.iter().map(|f| f.len() + 2).sum::<usize>(),
+    );
+    out.extend_from_slice(FILE_CHILD_OFFER_LABEL);
+    for field in fields {
+        let len = u16::try_from(field.len()).ok()?;
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(field.as_bytes());
+    }
+    Some(out)
+}
+
 /// FR-100 P1c — what the device concluded about the browser that offered a
 /// session, as its answer reports it and the session's audit records it:
 /// - `absent`: the offer carried no browser signature;
@@ -241,7 +371,7 @@ pub struct PeerAuthAnswer {
 
 /// FR-100 P1b — the label every peer-auth signature is scoped by. Part of the
 /// wire: changing it invalidates every signature in both directions.
-pub const PEER_AUTH_LABEL: &[u8] = b"roomler-peer-auth-v1";
+pub const PEER_AUTH_LABEL: &[u8] = b"meshharbor-peer-auth-v1";
 
 /// FR-100 P1b — the bytes a peer-auth signature covers: the label, then each
 /// field as `u16be(len) ‖ bytes` (FR-52's transport MAC frames its fields the
@@ -529,6 +659,17 @@ pub enum ClientMsg {
         session_id: ObjectId,
         accepted: bool,
     },
+    /// MeshHarbor — the device's answer to a [`ServerMsg::LocalAccountsRequest`]:
+    /// its login accounts after the operation, or why it refused. Always sent,
+    /// because the owner's request is parked on it.
+    #[serde(rename = "rc:accounts.result")]
+    LocalAccountsResult {
+        request_id: String,
+        #[serde(default)]
+        accounts: Vec<LocalAccount>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     #[serde(rename = "rc:share.ssh.lease.challenge")]
     SharedSshLeaseChallenge {
         #[serde(with = "oid_hex")]
@@ -590,7 +731,7 @@ pub enum ClientMsg {
         #[serde(default)]
         supports_relay_regions: bool,
         /// P6 — the OpenSSH **public** half of this device's SSH host key
-        /// (`ssh-ed25519 AAAA… roomler-host`), so a caller can verify what it
+        /// (`ssh-ed25519 AAAA… meshharbor-host`), so a caller can verify what it
         /// dialled instead of trusting it on first use.
         ///
         /// Reported here rather than in [`AgentCaps`] because it is an
@@ -713,7 +854,7 @@ pub enum ClientMsg {
         /// as `localapi::Response::Status`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caps: Option<Box<AgentCaps>>,
-        /// FR-27 — the version of the `roomler-desktop` companion installed on
+        /// FR-27 — the version of the `meshharbor-desktop` companion installed on
         /// this host, or `None` when none is installed / the probe failed /
         /// the agent predates the field. Additive agent→server like
         /// `srflx_count`, so no capability flag.
@@ -804,7 +945,7 @@ pub enum ClientMsg {
         /// FR-102 P9c — the carrier the session rides, as the agent
         /// recorded it once the session reached Active: `direct` · `turn` ·
         /// `turn_local` · `overlay_direct` · `overlay_turn` · `derp` ·
-        /// `org_relay` · `unknown` (`roomlerd::session_carrier`). Absent
+        /// `org_relay` · `unknown` (`meshharbord::session_carrier`). Absent
         /// from an agent older than the field and from a sample before the
         /// observation landed; the server stores it beside
         /// `remote_sessions.stats` and reads absence as **unknown, never
@@ -845,7 +986,7 @@ pub enum ClientMsg {
         error: Option<String>,
     },
 
-    /// Device-originated exec against ANOTHER device — the `roomler exec`
+    /// Device-originated exec against ANOTHER device — the `mh exec`
     /// CLI leg, where the local daemon's own agent WS carries the request so
     /// the CLI needs no user credentials of its own.
     ///
@@ -866,8 +1007,8 @@ pub enum ClientMsg {
         timeout_ms: u64,
     },
 
-    /// Device-originated roomler-SSH against ANOTHER device — the
-    /// `roomler ssh` CLI leg, the twin of [`Self::RpcExecRequest`].
+    /// Device-originated meshharbor-SSH against ANOTHER device — the
+    /// `mh ssh` CLI leg, the twin of [`Self::RpcExecRequest`].
     ///
     /// The caller mints an **ephemeral** keypair per session and sends only
     /// the public half. If the server authorizes, it pushes the key to the
@@ -892,7 +1033,7 @@ pub enum ClientMsg {
         /// ticket (`rc:vault.ssh.granted`), under which the SESSION is the
         /// principal, never the device's owner. A request whose ticket does
         /// not hold is refused, never served as the owner's. Absent from
-        /// every request a person makes (`roomler ssh`), so that frame is
+        /// every request a person makes (`mh ssh`), so that frame is
         /// byte for byte what it was.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ssh_ticket: Option<String>,
@@ -1141,7 +1282,7 @@ pub enum ClientMsg {
     /// ⚠️ Never what was asked or answered, never a tool's name, argument or
     /// output — the field set is locked by test. The server turns this into a
     /// message in the session's room; the content streams to a viewer from a
-    /// replica, never through the server (`docs/roomler-hive-design.md` §5.1).
+    /// replica, never through the server (`docs/meshharbor-hive-design.md` §5.1).
     #[serde(rename = "rc:hive.turn")]
     HiveTurn {
         #[serde(with = "oid_hex")]
@@ -1216,7 +1357,7 @@ pub enum ClientMsg {
         sessions: Vec<crate::hive::HiveManifestEntry>,
     },
 
-    /// FR-90 P1j — a terminal session this device mirrors (`roomler hive
+    /// FR-90 P1j — a terminal session this device mirrors (`mh hive
     /// adopt`), offered for a record. Sent once per Claude Code session, when
     /// its first hook reaches the device, and answered by
     /// [`ServerMsg::HiveAdoptAck`]. What follows is the usual `rc:hive.state`
@@ -1673,7 +1814,7 @@ pub enum ClientMsg {
     },
 
     /// FR-90 P3-8-1a — a session on this device asks to run one command on
-    /// `target` over Roomler SSH (`ssh_run`). Believed as a lease request is
+    /// `target` over MeshHarbor SSH (`ssh_run`). Believed as a lease request is
     /// (the session's record, at its fence, on this device), decided by
     /// Cedar's `ssh:run`, and answered with [`ServerMsg::VaultSshGranted`] or
     /// [`ServerMsg::VaultRefused`], naming `req_id`.
@@ -1696,7 +1837,7 @@ pub enum ClientMsg {
     },
 
     /// FR-90 P3-9-1 — a PERSON on this device asks for one field of a secret,
-    /// for an endpoint the device serves them (`roomler connect`): always in
+    /// for an endpoint the device serves them (`mh connect`): always in
     /// `proxy` mode, toward `audience`, the upstream the endpoint signs in to.
     /// One frame per field, as a session's `vault_connect` asks its leases.
     /// Decided by Cedar's `secret:connect` for the device's OWNER, and
@@ -1834,7 +1975,7 @@ pub enum ClientMsg {
         /// `"yuv420"` (VP9 profile 0; ~30% lower bandwidth; slight
         /// ClearType softening) and `"yuv444"` (VP9 profile 1; sharpest
         /// text; current default). `None` / unset means "use the
-        /// agent's `ROOMLERD_VP9_CHROMA` env-var default". Only
+        /// agent's `MESHHARBORD_VP9_CHROMA` env-var default". Only
         /// applies when `preferred_transport` is `data-channel-vp9-444`;
         /// ignored otherwise. Forwarded verbatim to the agent in the
         /// matching server-side [`ServerMsg::SessionRequest`].
@@ -1895,6 +2036,77 @@ pub enum ClientMsg {
         peer_auth: Option<PeerAuthOffer>,
     },
 
+    /// Request a server-chosen download child ID for this parent. Recognition
+    /// does not negotiate capability or authorize a child transport.
+    #[serde(rename = "rc:file.child.reserve")]
+    FileChildReserve {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        transfer_id: String,
+        direction: FileChildDirection,
+    },
+
+    /// An explicitly authorized child transport; this never replaces the
+    /// ordinary remote-control peer. Recognition is not admission: the Hub
+    /// and device must refuse it until their child capability is enabled and
+    /// the current parent's FILES grant and child-bound proof are validated.
+    #[serde(rename = "rc:file.sdp.offer")]
+    FileSdpOffer {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        direction: FileChildDirection,
+        sdp: String,
+        proof: FileChildOfferProof,
+    },
+
+    /// Agent answers a download-only file child SDP offer.
+    #[serde(rename = "rc:file.sdp.answer")]
+    FileSdpAnswer {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        sdp: String,
+    },
+
+    /// Trickle ICE candidate for an active download-only file child.
+    #[serde(rename = "rc:file.ice")]
+    FileIce {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        candidate: serde_json::Value,
+    },
+
+    /// Either side reports that an active file child transfer slot completed
+    /// or closed cleanly, releasing its active slot on the parent session.
+    #[serde(rename = "rc:file.child.complete")]
+    FileChildComplete {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+    },
+
+    /// Agent acknowledges [`ServerMsg::FileChildRevoke`] after closing all
+    /// download-only child PeerConnections and irreversible child admission
+    /// state for `session_id`.
+    #[serde(rename = "rc:file.child.revoke_ack")]
+    FileChildRevokeAck {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        closed_children: u32,
+        #[serde(default)]
+        in_flight_buffered_bytes: u64,
+    },
+
     // ─── either side → server ────────────────────────────────────────
     /// Trickle ICE candidate. Server forwards to the peer.
     #[serde(rename = "rc:ice")]
@@ -1931,14 +2143,14 @@ pub enum ClientMsg {
     // Plan v2 §"What changed from v1" #1 + #2:
     //   * Wire types fold into the existing `rc:*` namespace, NOT a
     //     separate `rc-tunnel:*` namespace or WS endpoint.
-    //   * Each `roomler forward` invocation owns ONE peer; many
+    //   * Each `mh forward` invocation owns ONE peer; many
     //     TCP flows multiplex onto a fixed DC pool via `flow_id`
     //     framing (see `tunnel-core::mux`). No per-flow DC creation.
     //   * Server is the auth boundary — `TcpForwardRequest` rides the
     //     WS so the server can apply the cross-tenant gate + policy
     //     eval before forwarding to the agent.
     //
-    /// Sent right after WS upgrade by either a `roomler` client
+    /// Sent right after WS upgrade by either a `meshharbor` client
     /// or an agent that wants to advertise tunnel support. Locks in
     /// the wire transport for the rest of the session.
     ///
@@ -1968,10 +2180,10 @@ pub enum ClientMsg {
         transport: String,
         /// Client-chosen correlation id, echoed verbatim on the matching
         /// `TunnelOpened` (success) or open-failure `Error`. Lets ONE WS
-        /// carry N concurrent opens: the `roomlerd` daemon (P3b-2)
+        /// carry N concurrent opens: the `meshharbord` daemon (P3b-2)
         /// multiplexes many client sessions over its single agent WS and
         /// demuxes the reply by this nonce (post-open it switches to the
-        /// server-minted `session_id`). The standalone `roomler`
+        /// server-minted `session_id`). The standalone `mh`
         /// CLI has a single in-flight open and sends `None`, matching the
         /// reply positionally. `None` is omitted on the wire, so a
         /// pre-P3b-2 server/client stays byte-identical.
@@ -2247,20 +2459,20 @@ pub enum ClientMsg {
         #[serde(default)]
         endpoints: Vec<String>,
         /// rc.142 — the node can carry WG over a QUIC-over-TURN relay carrier
-        /// (`ROOMLERD_OVERLAY_QUIC=1`). The server persists it and echoes it
+        /// (`MESHHARBORD_OVERLAY_QUIC=1`). The server persists it and echoes it
         /// per-peer in the netmap so QUIC is only attempted when BOTH ends
         /// advertise it (a QUIC/raw split would silently break the pair).
         #[serde(default)]
         supports_quic: bool,
         /// Phase D — the node can carry WG over the v1 single-relay carrier (ONE
-        /// anchor allocation + a raw dialer, `ROOMLERD_OVERLAY_RELAY_SINGLE=1`).
+        /// anchor allocation + a raw dialer, `MESHHARBORD_OVERLAY_RELAY_SINGLE=1`).
         /// Persisted + echoed per-peer like `supports_quic`, so single-relay is
         /// only chosen when BOTH ends advertise it (a mixed pair stays on the
         /// both-allocate relay). Absent from a pre-Phase-D node ⇒ `false`.
         #[serde(default)]
         supports_relay_single: bool,
         /// Phase D (DERP) — the node can carry WG over the pubkey-addressed
-        /// `/derp` WS relay (`ROOMLERD_OVERLAY_DERP=1`), the last-resort
+        /// `/derp` WS relay (`MESHHARBORD_OVERLAY_DERP=1`), the last-resort
         /// carrier for two BOTH-UDP-blocked peers. Persisted + echoed per-peer
         /// like `supports_relay_single`, so DERP is only chosen when BOTH ends
         /// advertise it. Absent from a pre-DERP node ⇒ `false`.
@@ -2719,7 +2931,7 @@ pub struct ExternalGrant {
 /// locked by the tests below.
 ///
 /// The wire crate is MPL and agent-linked, so this names modules by id and
-/// never by type; `roomler-core` checks the ids against its module graph.
+/// never by type; `meshharbor-core` checks the ids against its module graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Owner {
@@ -2739,7 +2951,7 @@ pub enum Owner {
 }
 
 impl Owner {
-    /// The module id, as `roomler_core::graph::MODULES` spells it.
+    /// The module id, as `meshharbor_core::graph::MODULES` spells it.
     pub const fn id(self) -> &'static str {
         match self {
             Owner::Fleet => "fleet",
@@ -2765,6 +2977,7 @@ impl ClientMsg {
             ClientMsg::SessionStats { .. } => "rc:session.stats",
             ClientMsg::SharedSshConnect { .. } => "rc:share.ssh.connect",
             ClientMsg::SharedSshPrepared { .. } => "rc:share.ssh.prepared",
+            ClientMsg::LocalAccountsResult { .. } => "rc:accounts.result",
             ClientMsg::SharedSshLeaseChallenge { .. } => "rc:share.ssh.lease.challenge",
             ClientMsg::SharedLeaseChallenge { .. } => "rc:share.lease.challenge",
             ClientMsg::DerpTicketRequest { .. } => "rc:relay.derp_ticket_request",
@@ -2810,6 +3023,12 @@ impl ClientMsg {
             ClientMsg::ConsentPending { .. } => "rc:consent.pending",
             ClientMsg::SessionRequest { .. } => "rc:session.request",
             ClientMsg::SdpOffer { .. } => "rc:sdp.offer",
+            ClientMsg::FileSdpOffer { .. } => "rc:file.sdp.offer",
+            ClientMsg::FileSdpAnswer { .. } => "rc:file.sdp.answer",
+            ClientMsg::FileIce { .. } => "rc:file.ice",
+            ClientMsg::FileChildComplete { .. } => "rc:file.child.complete",
+            ClientMsg::FileChildRevokeAck { .. } => "rc:file.child.revoke_ack",
+            ClientMsg::FileChildReserve { .. } => "rc:file.child.reserve",
             ClientMsg::Ice { .. } => "rc:ice",
             ClientMsg::Terminate { .. } => "rc:terminate",
             ClientMsg::Ping { .. } => "rc:ping",
@@ -2875,10 +3094,18 @@ impl ClientMsg {
             | ClientMsg::ConfigStatus { .. }
             | ClientMsg::Consent { .. }
             | ClientMsg::ConsentPending { .. }
-            | ClientMsg::Ping { .. } => Owner::Fleet,
+            | ClientMsg::Ping { .. }
+            // MeshHarbor — device management: the owner's view of its accounts.
+            | ClientMsg::LocalAccountsResult { .. } => Owner::Fleet,
             ClientMsg::SharedLeaseChallenge { .. }
             | ClientMsg::SessionRequest { .. }
             | ClientMsg::SdpOffer { .. }
+            | ClientMsg::FileSdpOffer { .. }
+            | ClientMsg::FileSdpAnswer { .. }
+            | ClientMsg::FileIce { .. }
+            | ClientMsg::FileChildComplete { .. }
+            | ClientMsg::FileChildRevokeAck { .. }
+            | ClientMsg::FileChildReserve { .. }
             | ClientMsg::SdpAnswer { .. }
             | ClientMsg::Ice { .. }
             | ClientMsg::Terminate { .. }
@@ -2981,6 +3208,7 @@ impl ClientMsg {
 pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:share.ssh.connect", Owner::Network),
     ("rc:share.ssh.prepared", Owner::Network),
+    ("rc:accounts.result", Owner::Fleet),
     ("rc:share.ssh.lease.challenge", Owner::Network),
     ("rc:share.lease.challenge", Owner::Remote),
     ("rc:agent.hello", Owner::Fleet),
@@ -3032,6 +3260,12 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:consent.pending", Owner::Fleet),
     ("rc:session.request", Owner::Remote),
     ("rc:sdp.offer", Owner::Remote),
+    ("rc:file.sdp.offer", Owner::Remote),
+    ("rc:file.sdp.answer", Owner::Remote),
+    ("rc:file.ice", Owner::Remote),
+    ("rc:file.child.complete", Owner::Remote),
+    ("rc:file.child.revoke_ack", Owner::Remote),
+    ("rc:file.child.reserve", Owner::Remote),
     ("rc:ice", Owner::Remote),
     ("rc:terminate", Owner::Remote),
     ("rc:ping", Owner::Fleet),
@@ -3263,6 +3497,32 @@ pub struct SharedSessionLease {
     pub lease_epoch: String,
 }
 
+/// MeshHarbor — one local login account on a device, as the device reports it:
+/// what an SSH share may run as. `admin` = it may become root (sudo/wheel/admin
+/// group, or the passwordless sudo rule the device writes for one it created).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct LocalAccount {
+    pub name: String,
+    pub uid: u32,
+    #[serde(default)]
+    pub admin: bool,
+}
+
+/// MeshHarbor — what the owner asks of a device's accounts. Only ever sent to a
+/// device advertising `local-accounts-v1`, and refused by the device unless its
+/// own `ssh_enabled` is on; `admin` is refused under `ssh_max_privilege =
+/// console_user`, so the server never gets more than the device already allows.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum LocalAccountOp {
+    List,
+    Create {
+        name: String,
+        #[serde(default)]
+        admin: bool,
+    },
+}
+
 /// Target-bound stream specification received only on the authenticated agent WS.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SharedSshSetup {
@@ -3287,6 +3547,13 @@ pub struct SharedSshSetup {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "t")]
 pub enum ServerMsg {
+    /// MeshHarbor — list or create the device's login accounts for an SSH share.
+    /// The device answers with [`ClientMsg::LocalAccountsResult`].
+    #[serde(rename = "rc:accounts.request")]
+    LocalAccountsRequest {
+        request_id: String,
+        op: LocalAccountOp,
+    },
     #[serde(rename = "rc:share.ssh.setup")]
     SharedSshSetup {
         #[serde(with = "oid_hex")]
@@ -3409,7 +3676,7 @@ pub enum ServerMsg {
         /// rc.62 — per-session VP9 chroma override forwarded verbatim
         /// from the controller's [`ClientMsg::SessionRequest::chroma_pref`].
         /// `None` / unset means "use the agent's
-        /// `ROOMLERD_VP9_CHROMA` env-var default".
+        /// `MESHHARBORD_VP9_CHROMA` env-var default".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chroma_pref: Option<String>,
         /// FR-17 — forwarded verbatim from the controller's
@@ -3534,6 +3801,80 @@ pub enum ServerMsg {
         /// `extauth_mac`: the nonce the device signs its answer against.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         peer_auth: Option<PeerAuthOffer>,
+    },
+
+    /// A server-owned reservation, not proof admission or a created transport.
+    /// Only the matching parent/transfer may later consume this random ID.
+    #[serde(rename = "rc:file.child.reserved")]
+    FileChildReserved {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        direction: FileChildDirection,
+    },
+
+    /// Server forwards a download child offer only after explicit child
+    /// admission. The agent must independently verify the current parent
+    /// grant and the child proof before creating any transport.
+    #[serde(rename = "rc:file.sdp.offer")]
+    FileSdpOffer {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        direction: FileChildDirection,
+        sdp: String,
+        proof: FileChildOfferProof,
+    },
+
+    /// Server forwards the agent's SDP answer for an active download-only
+    /// file child transport back to the controller.
+    #[serde(rename = "rc:file.sdp.answer")]
+    FileSdpAnswer {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        sdp: String,
+        #[serde(default)]
+        ice_servers: Vec<IceServer>,
+    },
+
+    /// Server forwards a trickle ICE candidate for an active download-only
+    /// file child transport.
+    #[serde(rename = "rc:file.ice")]
+    FileIce {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+        candidate: serde_json::Value,
+    },
+
+    /// Server forwards or notifies completion of a download-only file child
+    /// slot on `session_id`.
+    #[serde(rename = "rc:file.child.complete")]
+    FileChildComplete {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        child_id: ObjectId,
+        transfer_id: String,
+    },
+
+    /// Server revokes all download-only file child scope on `session_id`
+    /// without terminating the parent remote-control session unless the agent
+    /// fails to acknowledge within the revocation deadline.
+    #[serde(rename = "rc:file.child.revoke")]
+    FileChildRevoke {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        reason: String,
     },
 
     /// Server forwards SDP answer from agent → controller.
@@ -3757,7 +4098,7 @@ pub enum ServerMsg {
 
     /// Multi-org — join an ADDITIONAL org from the admin UI ("Add to another
     /// organization"), so a device that can't be reached for a hands-on
-    /// `roomler enroll` still gets a second enrollment.
+    /// `mh enroll` still gets a second enrollment.
     ///
     /// The agent exchanges the token for its own agent JWT in the target
     /// tenant, APPENDS an `[[orgs]]` entry (with a freshly minted per-org WG
@@ -3864,14 +4205,14 @@ pub enum ServerMsg {
     #[serde(rename = "rc:rpc.cancel")]
     RpcCancel { request_id: String },
 
-    /// Authorize ONE inbound roomler-SSH session on this device.
+    /// Authorize ONE inbound meshharbor-SSH session on this device.
     ///
     /// Pushed to the **target** after the server has cleared gates 1-3 (org
     /// kill-switch, the caller's `SSH_DEVICE` permission, the device's
     /// `SshPolicy`). The agent holds it briefly and consumes it when a
     /// connection authenticates with the named key.
     ///
-    /// This is why roomler SSH needs no key distribution and no shared secret
+    /// This is why meshharbor SSH needs no key distribution and no shared secret
     /// with the server: the agent does not *verify* the grant cryptographically,
     /// it receives it over the control WS it is already authenticated on —
     /// the same trust path `rc:request` uses to open a remote-control session.
@@ -3920,7 +4261,7 @@ pub enum ServerMsg {
     },
 
     /// Answer to a device-originated [`ClientMsg::SshRequest`] — the
-    /// `roomler ssh` CLI leg. Carries where to connect, or why not.
+    /// `mh ssh` CLI leg. Carries where to connect, or why not.
     #[serde(rename = "rc:ssh.response")]
     SshResponse {
         request_id: String,
@@ -3936,7 +4277,7 @@ pub enum ServerMsg {
         /// P6a — the target's SSH host public key, so the dialling device can
         /// verify what it reached instead of trusting it on first use.
         ///
-        /// This leg needs it MORE than the HTTP one, not less: `roomler ssh`
+        /// This leg needs it MORE than the HTTP one, not less: `mh ssh`
         /// originates here, and it is the caller that has no other channel to
         /// learn the key. Absent ⇒ the device reported none, which means it
         /// cannot prove itself — never "any key is fine".
@@ -3961,7 +4302,7 @@ pub enum ServerMsg {
     },
 
     /// Answer to a device-originated [`ClientMsg::RpcExecRequest`] — the
-    /// `roomler exec` CLI leg. Carries the same payload the HTTP caller would
+    /// `mh exec` CLI leg. Carries the same payload the HTTP caller would
     /// have received, plus `error` for a gate refusal the server itself made.
     #[serde(rename = "rc:rpc.response")]
     RpcExecResponse {
@@ -4456,7 +4797,12 @@ pub enum ServerMsg {
     /// is a push rather than an expiry because a session's idle deadline is
     /// refreshed by traffic and never fires under a WireGuard keepalive.
     #[serde(rename = "rc:overlay.relay_revoke")]
-    OverlayRelayRevoke { vni: u32 },
+    OverlayRelayRevoke {
+        vni: u32,
+        /// Exact relay-local generation and recipient role. Bare VNI revokes
+        /// cannot distinguish sessions on different relays and are refused.
+        scope: RelayRevokeScopeWire,
+    },
 
     /// FR-47 — the join could not be completed, and this says why.
     ///
@@ -5559,6 +5905,21 @@ pub struct RelayMemberWire {
     pub bind_secret: String,
 }
 
+/// Exact immutable session being revoked. VNI alone is only relay-local.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RelayRevokeScopeWire {
+    #[serde(with = "oid_hex")]
+    pub relay_node_id: ObjectId,
+    pub generation: u64,
+    /// Present for a member recipient; absent for the serving relay recipient.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "option_oid_hex"
+    )]
+    pub peer_node_id: Option<ObjectId>,
+}
+
 /// One relay region as pushed in [`ServerMsg::RelayRegions`] — the probe
 /// target, not the credential set (creds keep flowing through the normal
 /// grant paths; this only lets the node measure which PoP is nearest).
@@ -5623,7 +5984,7 @@ pub struct AgentSysStats {
     /// peer-to-peer data channel, which is why `tunnel_audit.bytes_in`/
     /// `bytes_out` have held a literal 0 on every row ever written. These
     /// two are DEVICE-attributed — a daemon-supervised forward belongs to
-    /// the host, not to a person. A dedicated `roomler` client's
+    /// the host, not to a person. A dedicated `meshharbor` client's
     /// flows are user-owned and still report nothing; that needs the same
     /// counters wired into the CLI's own heartbeat.
     ///
@@ -5778,7 +6139,7 @@ pub struct LocalRelayDescriptor {
     /// UDP port the local agent's TURN server listens on (loopback + overlay).
     pub turn_port: u16,
     /// The local agent's assigned overlay IP (100.64.x.y) — the relay-candidate
-    /// address the remote agent routes to over the roomler adapter. The Hub
+    /// address the remote agent routes to over the meshharbor adapter. The Hub
     /// validates this is inside the overlay range before trusting it.
     pub overlay_ip: String,
     /// coturn-REST username (`{expiry}:{user_id}`) minted by the local agent.
@@ -6160,7 +6521,7 @@ pub struct OverlayNetworkInfo {
     pub cidrs: Vec<String>,
     pub mtu: u16,
     /// Phase 2 MagicDNS — the tenant's overlay DNS suffix (e.g.
-    /// `"myorg.roomler.net"`), or `None` when MagicDNS is off. A node with a
+    /// `"myorg.meshharbor.net"`), or `None` when MagicDNS is off. A node with a
     /// domain set brings up its local split-DNS resolver. `#[serde(default)]`
     /// for pre-Phase-2 servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -6229,6 +6590,105 @@ mod tests {
         assert!(s.contains(r#""t":"rc:ping""#));
         let back: ClientMsg = serde_json::from_str(&s).unwrap();
         assert!(matches!(back, ClientMsg::Ping { id: 42 }));
+    }
+
+    #[test]
+    fn file_child_download_offer_roundtrips_required_child_bound_proof() {
+        use base64::Engine;
+        use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+
+        // Serialization fixtures only: these bytes do not establish an identity
+        // or prove authorization to create a child transport.
+        let mut key = [0u8; 65];
+        key[0] = 4;
+        let wire = serde_json::json!({
+            "t": "rc:file.sdp.offer",
+            "session_id": "111111111111111111111111",
+            "child_id": "222222222222222222222222",
+            "transfer_id": "download-test",
+            "direction": "download",
+            "sdp": "v=0\r\n",
+            "proof": {
+                "nonce": URL_SAFE_NO_PAD.encode([0u8; 16]),
+                "key": STANDARD.encode(key),
+                "sig": URL_SAFE_NO_PAD.encode([0u8; 64]),
+            },
+        });
+        let parsed: ClientMsg = serde_json::from_value(wire.clone())
+            .expect("an explicit download child offer must be a recognized wire message");
+        assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+    }
+
+    #[test]
+    fn file_child_reservation_roundtrips_download_parent_and_server_id() {
+        let request = serde_json::json!({
+            "t":"rc:file.child.reserve", "session_id":"111111111111111111111111",
+            "transfer_id":"download-test", "direction":"download",
+        });
+        let parsed: ClientMsg = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(parsed.wire_tag(), "rc:file.child.reserve");
+        assert_eq!(parsed.namespace(), Owner::Remote);
+        assert_eq!(serde_json::to_value(parsed).unwrap(), request);
+        let mut upload = request.clone();
+        upload["direction"] = serde_json::json!("upload");
+        assert!(serde_json::from_value::<ClientMsg>(upload).is_ok());
+        let mut unknown_dir = request.clone();
+        unknown_dir["direction"] = serde_json::json!("bidirectional");
+        assert!(serde_json::from_value::<ClientMsg>(unknown_dir).is_err());
+
+        let reply = serde_json::json!({
+            "t":"rc:file.child.reserved", "session_id":"111111111111111111111111",
+            "child_id":"222222222222222222222222", "transfer_id":"download-test",
+            "direction":"download",
+        });
+        let parsed: ServerMsg = serde_json::from_value(reply.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), reply);
+        // These are wire fixtures, not evidence of a live server reservation.
+    }
+
+    #[test]
+    fn file_child_offer_transcript_binds_child_transfer_and_new_dtls_identity() {
+        let parent = "111111111111111111111111";
+        let child = "222222222222222222222222";
+        let other_child = "333333333333333333333333";
+        let agent = "444444444444444444444444";
+        let controller = "555555555555555555555555";
+        let nonce = "AAECAwQFBgcICQoLDA0ODw";
+        let sdp = format!("v=0\r\na=fingerprint:sha-256 {}\r\n", ["AA"; 32].join(":"));
+        let other_sdp = format!("v=0\r\na=fingerprint:sha-256 {}\r\n", ["BB"; 32].join(":"));
+        let transcript = |child, transfer, sdp, nonce| {
+            file_child_offer_transcript(parent, child, transfer, agent, controller, sdp, nonce)
+        };
+        let original = transcript(child, "download-test", &sdp, nonce)
+            .expect("a valid download child binding must produce signing bytes");
+        assert_eq!(
+            transcript(child, "download-test", &sdp, nonce),
+            Some(original.clone()),
+            "the same offer has deterministic signing bytes"
+        );
+        for changed in [
+            transcript(other_child, "download-test", &sdp, nonce),
+            transcript(child, "another-transfer", &sdp, nonce),
+            transcript(child, "download-test", &other_sdp, nonce),
+        ] {
+            assert_ne!(
+                changed.expect("a different valid binding remains signable"),
+                original,
+                "a child proof must not carry over to another child, file or DTLS identity"
+            );
+        }
+        for invalid in [
+            transcript("not-an-object-id", "download-test", &sdp, nonce),
+            transcript(child, "", &sdp, nonce),
+            transcript(child, "download\nforged", &sdp, nonce),
+            transcript(child, "download-test", "v=0\r\n", nonce),
+            transcript(child, "download-test", &sdp, "not-a-nonce"),
+            transcript(child, "download-test", &sdp, &format!("{nonce}=")),
+        ] {
+            assert!(invalid.is_none(), "an invalid binding must not be signed");
+        }
+        // This API constructs signing bytes; it does not accept or verify a
+        // signature/key, or authorize the parent controller's identity.
     }
 
     #[test]
@@ -6664,7 +7124,7 @@ mod tests {
     /// FR-90 — the start frame carries metadata and nothing else. Its field
     /// set is spelled out here so adding a `prompt`, a `context` or an
     /// `env` is a deliberate edit to this test — the server never carries
-    /// session content (`docs/roomler-hive-design.md` §3.3), and the first
+    /// session content (`docs/meshharbor-hive-design.md` §3.3), and the first
     /// prompt reaches the harness over the viewer peer. Also locks that it
     /// names no ACCOUNT: which local account runs a session is the device's
     /// decision (`hive_accounts`), never the server's.
@@ -8326,7 +8786,7 @@ mod tests {
 
     #[test]
     fn ssh_response_carries_the_host_key_on_the_device_leg() {
-        // `roomler ssh` originates on THIS leg, and the dialling device has no
+        // `mh ssh` originates on THIS leg, and the dialling device has no
         // other channel to learn the key — so if it goes missing here, the
         // client is back to TOFU with no way to notice. It went missing once
         // already: the HTTP body gained the field and the hand-written wire
@@ -8373,7 +8833,7 @@ mod tests {
     }
 
     /// FR-90 P3-8-1b — an agent session's three fields cross only when set:
-    /// a person's `roomler ssh` request, every grant to a device, and every
+    /// a person's `mh ssh` request, every grant to a device, and every
     /// answer stay byte for byte what older builds parse, and each field reads
     /// back as sent.
     #[test]
@@ -8659,7 +9119,7 @@ mod tests {
     #[test]
     fn a_peer_auth_transcript_frames_each_field_with_its_length() {
         let t = peer_auth_transcript("offer", "a", "b", "c", "d", "e", "f").unwrap();
-        let mut want = b"roomler-peer-auth-v1".to_vec();
+        let mut want = b"meshharbor-peer-auth-v1".to_vec();
         want.extend_from_slice(&[0, 5]);
         want.extend_from_slice(b"offer");
         for field in [b"a", b"b", b"c", b"d", b"e", b"f"] {
@@ -8695,12 +9155,12 @@ mod tests {
             &nonce_0_to_15(),
         )
         .unwrap();
-        assert_eq!(t.len(), 166);
+        assert_eq!(t.len(), 169);
         let digest = ring::digest::digest(&ring::digest::SHA256, &t);
         let hex: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "9e9736b2e6a5db65f5c536bf0cba1042fdca9517c63fd18d6bb8454206e7ac94"
+            "e36b86645c5bb192c375f7fc98e7a4d4dd715c4f20edb183cac138be307ad3f1"
         );
     }
 
@@ -8720,17 +9180,17 @@ mod tests {
             &nonce_0_to_15(),
         )
         .unwrap();
-        assert_eq!(t.len(), 149);
+        assert_eq!(t.len(), 152);
         let digest = ring::digest::digest(&ring::digest::SHA256, &t);
         let hex: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "3c3da0182f79f04f878356ddbb0983d748b8152a15912a92d095429756428840"
+            "4506a22e801ced05a9ba6383b8dd7dd056361c177d035398295e39491d8c94ce"
         );
     }
 
     /// FR-100 P2a — a signature made OUTSIDE both implementations: an OpenSSL
-    /// 3.5 P-256 key (its private half deleted after signing) over the
+    /// 3.6 P-256 key (its private half deleted after signing) over the
     /// known-answer transcript, converted from DER to `r ‖ s`. The viewer's
     /// tests verify the same vector with WebCrypto, so ring and the browser are
     /// held to one signer neither of them wrote. Bytes, not base64 literals: a
@@ -8740,18 +9200,18 @@ mod tests {
         use base64::Engine;
         use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
         const POINT: [u8; 65] = [
-            0x04, 0xdf, 0x87, 0x14, 0xf1, 0x2a, 0x41, 0xd2, 0x32, 0x32, 0x0a, 0x24, 0xea, 0xb5,
-            0x75, 0x78, 0xc7, 0x4e, 0x63, 0xa3, 0x4d, 0x57, 0xad, 0x90, 0x8a, 0x92, 0xb1, 0xde,
-            0xca, 0x53, 0x7a, 0xa5, 0xfb, 0xfd, 0x9a, 0x83, 0x24, 0x1b, 0x9c, 0xdd, 0xd1, 0x06,
-            0xbd, 0x0c, 0x7e, 0x0e, 0x0a, 0x87, 0x4e, 0xb1, 0x48, 0x14, 0x0d, 0x14, 0xe3, 0x4a,
-            0x9e, 0x7c, 0xe3, 0xba, 0x07, 0xf4, 0xa7, 0x8e, 0xc4,
+            0x04, 0xc3, 0xc8, 0x74, 0xeb, 0xc1, 0x90, 0x1c, 0x15, 0x2f, 0x6d, 0x8c, 0x4c, 0xe4,
+            0x3b, 0x17, 0x47, 0x89, 0xc2, 0x12, 0x69, 0x2c, 0x01, 0xb7, 0x07, 0xc4, 0x73, 0x3e,
+            0xde, 0xb9, 0xf5, 0x32, 0xae, 0x82, 0x71, 0x88, 0x02, 0x94, 0x22, 0x11, 0x20, 0x96,
+            0x60, 0x33, 0xc0, 0x81, 0x10, 0xc4, 0x95, 0x74, 0x93, 0x33, 0x13, 0xd8, 0x65, 0xe6,
+            0x71, 0x59, 0x4d, 0xc0, 0x36, 0x3d, 0xc8, 0x53, 0x13,
         ];
         const SIG: [u8; 64] = [
-            0x73, 0x2a, 0xa2, 0x53, 0xdc, 0x6e, 0x3a, 0x5b, 0x06, 0xaa, 0x6d, 0x32, 0x37, 0x5a,
-            0x5e, 0x08, 0x8e, 0xe1, 0x28, 0x8f, 0x5c, 0x7e, 0x00, 0xd7, 0xba, 0x16, 0x4f, 0x98,
-            0x9c, 0xc4, 0x29, 0x6c, 0x38, 0x9f, 0xaa, 0xf2, 0x9c, 0x7b, 0x64, 0xe7, 0x23, 0xb3,
-            0x97, 0xb2, 0xe3, 0xb3, 0x46, 0xab, 0x49, 0xb9, 0x74, 0x1b, 0x27, 0x6d, 0x99, 0x71,
-            0xee, 0x95, 0xb3, 0x71, 0x83, 0x2d, 0xe5, 0xb3,
+            0xd9, 0x7d, 0x86, 0x19, 0xcb, 0x3d, 0x07, 0xe6, 0x4e, 0x9c, 0xd5, 0xbe, 0xae, 0x82,
+            0xd2, 0xc0, 0x05, 0xf9, 0xdc, 0xd6, 0x8d, 0xbb, 0x06, 0x0f, 0xa4, 0x72, 0x5b, 0x68,
+            0xfe, 0x8c, 0x5d, 0x5e, 0xb5, 0x16, 0xbb, 0xf4, 0x0e, 0xb2, 0xcf, 0x53, 0xd2, 0x68,
+            0x70, 0x5e, 0x96, 0x41, 0xc2, 0xf0, 0xb2, 0xb7, 0xbf, 0x81, 0xdf, 0xbd, 0x99, 0x1d,
+            0x77, 0xc0, 0x34, 0x87, 0x16, 0x52, 0x48, 0xf4,
         ];
         let key = STANDARD.encode(POINT);
         let sig = URL_SAFE_NO_PAD.encode(SIG);
@@ -9026,13 +9486,13 @@ mod tests {
             regions: vec![
                 RelayRegionInfo {
                     id: "us-east".into(),
-                    stun: "coturn-us-east.roomler.ai:3478".into(),
-                    derp_url: Some("wss://derp-us-east.roomler.ai/derp".into()),
+                    stun: "coturn-us-east.meshharbor.itachi.fans:3478".into(),
+                    derp_url: Some("wss://derp-us-east.meshharbor.itachi.fans/derp".into()),
                     relay_band: Some((49152, 65535)),
                 },
                 RelayRegionInfo {
                     id: "eu-central".into(),
-                    stun: "coturn.roomler.ai:3478".into(),
+                    stun: "coturn.meshharbor.itachi.fans:3478".into(),
                     derp_url: None,
                     relay_band: None,
                 },
@@ -9041,7 +9501,7 @@ mod tests {
         };
         let s = serde_json::to_string(&m).unwrap();
         assert!(s.contains(r#""t":"rc:relay.regions""#));
-        assert!(s.contains(r#""stun":"coturn-us-east.roomler.ai:3478""#));
+        assert!(s.contains(r#""stun":"coturn-us-east.meshharbor.itachi.fans:3478""#));
         // Absent derp_url is OMITTED, not null.
         assert!(!s.contains(r#""derp_url":null"#));
         match serde_json::from_str::<ServerMsg>(&s).unwrap() {
@@ -9782,7 +10242,7 @@ mod tests {
         // `rc:goodbye` frame, the old agent's `serde_json::from_str`
         // returns `Err` and the existing `Err(e) => debug!(…,
         // "ignoring non-rc:* frame")` arm at
-        // `agents/roomlerd/src/signaling.rs:333` swallows it
+        // `agents/meshharbord/src/signaling.rs:333` swallows it
         // silently — no panic, no fatal exit.
         //
         // We simulate the rc.52 ServerMsg shape via a stripped local
@@ -10514,7 +10974,7 @@ mod tests {
             session_id: ObjectId::new(),
             quic_auth_token: "tok-xyz".into(),
             ice_servers: vec![IceServer {
-                urls: vec!["turn:coturn.roomler.live:3478?transport=udp".into()],
+                urls: vec!["turn:coturn.meshharbor.itachi.fans:3478?transport=udp".into()],
                 username: Some("1780000000:agent".into()),
                 credential: Some("base64hmac".into()),
             }],
@@ -11045,14 +11505,14 @@ mod tests {
         let m = ServerMsg::OverlayForceDerp {
             peer_node_id: id,
             ttl_ms: 1,
-            derp_url: Some("wss://derp-us-east.roomler.ai/derp".into()),
+            derp_url: Some("wss://derp-us-east.meshharbor.itachi.fans/derp".into()),
         };
         let s = serde_json::to_string(&m).unwrap();
         match serde_json::from_str::<ServerMsg>(&s).unwrap() {
             ServerMsg::OverlayForceDerp { derp_url, .. } => {
                 assert_eq!(
                     derp_url.as_deref(),
-                    Some("wss://derp-us-east.roomler.ai/derp")
+                    Some("wss://derp-us-east.meshharbor.itachi.fans/derp")
                 );
             }
             other => panic!("expected OverlayForceDerp, got {other:?}"),
@@ -11645,7 +12105,7 @@ mod tests {
                 cidr: "100.64.0.0/10".into(),
                 cidrs: vec![],
                 mtu: 1280,
-                magic_domain: Some("myorg.roomler.net".into()),
+                magic_domain: Some("myorg.meshharbor.net".into()),
                 nameservers: vec!["1.1.1.1".into()],
                 self_name: None,
                 stun_urls: vec!["stun:5.9.157.221:3478".into()],
@@ -11859,8 +12319,25 @@ mod tests {
         assert_eq!(members.len(), 2);
         assert_eq!(members[1].bind_secret, "d");
 
-        let s = serde_json::to_string(&ServerMsg::OverlayRelayRevoke { vni: 7 }).unwrap();
-        assert!(s.contains(r#""t":"rc:overlay.relay_revoke""#), "{s}");
+        assert!(
+            serde_json::from_str::<ServerMsg>(r#"{"t":"rc:overlay.relay_revoke","vni":7}"#)
+                .is_err(),
+            "a bare VNI is ambiguous and must be refused"
+        );
+        let scope = RelayRevokeScopeWire {
+            relay_node_id: oid,
+            generation: 19,
+            peer_node_id: Some(ObjectId::new()),
+        };
+        let scoped = serde_json::to_string(&ServerMsg::OverlayRelayRevoke {
+            vni: 7,
+            scope: scope.clone(),
+        })
+        .unwrap();
+        assert!(
+            matches!(serde_json::from_str::<ServerMsg>(&scoped).unwrap(),
+            ServerMsg::OverlayRelayRevoke { vni: 7, scope: got } if got == scope)
+        );
 
         let m = ClientMsg::OverlayRelayProbe {
             relay_node_id: oid,
@@ -12246,7 +12723,7 @@ mod tests {
         let peer = ObjectId::parse_str("507f1f77bcf86cd799439013").unwrap();
         let m = ServerMsg::OverlayRelayGrant {
             ice_servers: vec![IceServer {
-                urls: vec!["turns:coturn.roomler.ai:443?transport=tcp".into()],
+                urls: vec!["turns:coturn.meshharbor.itachi.fans:443?transport=tcp".into()],
                 username: Some("u".into()),
                 credential: Some("c".into()),
             }],
@@ -12752,6 +13229,78 @@ mod org_fallback_wire_tests {
         assert!(matches!(parsed, ClientMsg::OverlayOrgRelayLoss {
             peer_node_id, vni: 42, packets: 31_000, lost: 2_294 } if peer_node_id == id));
         assert!(matches!(parsed.namespace(), Owner::Network));
+    }
+
+    #[test]
+    fn file_child_upload_direction_wire_and_transcript_domain_separation() {
+        let sid = ObjectId::new();
+        let cid = ObjectId::new();
+        let aid = ObjectId::new();
+        let uid = ObjectId::new();
+
+        let reserve_up: ClientMsg = serde_json::from_value(serde_json::json!({
+            "t": "rc:file.child.reserve",
+            "session_id": sid.to_hex(),
+            "transfer_id": "up-tx-1",
+            "direction": "upload",
+        }))
+        .unwrap();
+        assert!(matches!(
+            reserve_up,
+            ClientMsg::FileChildReserve {
+                direction: FileChildDirection::Upload,
+                ..
+            }
+        ));
+
+        let sdp = format!(
+            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\na=fingerprint:sha-256 {}\r\n",
+            ["AA"; 32].join(":")
+        );
+        let nonce = "AAECAwQFBgcICQoLDA0ODw";
+        let dl_transcript = file_child_offer_transcript_with_direction(
+            &sid.to_hex(),
+            &cid.to_hex(),
+            "tx-1",
+            FileChildDirection::Download,
+            &aid.to_hex(),
+            &uid.to_hex(),
+            &sdp,
+            nonce,
+        )
+        .unwrap();
+        let up_transcript = file_child_offer_transcript_with_direction(
+            &sid.to_hex(),
+            &cid.to_hex(),
+            "tx-1",
+            FileChildDirection::Upload,
+            &aid.to_hex(),
+            &uid.to_hex(),
+            &sdp,
+            nonce,
+        )
+        .unwrap();
+        assert_ne!(
+            dl_transcript, up_transcript,
+            "upload and download offer transcripts must be domain-separated by direction"
+        );
+        assert!(
+            up_transcript.windows(8).any(|w| w == b"\x00\x06upload"),
+            "upload transcript must bind u16-length-prefixed direction=upload"
+        );
+
+        for disabled_val in ["1", "true", "TRUE", "yes", "YES", "on", "ON", " custom "] {
+            assert!(
+                parse_file_child_disable_switch(disabled_val),
+                "expected {disabled_val:?} to disable file child direction"
+            );
+        }
+        for enabled_val in ["", "   ", "0", "false", "FALSE", "no", "NO", "off", "OFF"] {
+            assert!(
+                !parse_file_child_disable_switch(enabled_val),
+                "expected {enabled_val:?} to keep file child direction enabled"
+            );
+        }
     }
 }
 

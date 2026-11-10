@@ -375,7 +375,7 @@ async fn a_heartbeat_opts_a_device_in_and_out_without_a_reconnect() {
         "an OFF announced in a heartbeat must reach the hub"
     );
 
-    // P3c-2 — and a recorder that goes away (`ROOMLERD_RECORDING=0` takes
+    // P3c-2 — and a recorder that goes away (`MESHHARBORD_RECORDING=0` takes
     // effect, say) announces nothing at all.
     heartbeat(&mut agent_ws, Some(&[])).await;
     assert_eq!(
@@ -412,7 +412,7 @@ async fn report(ws: &mut Ws, session_id: &str, kind: &str) {
         "t": "rc:recording.activity",
         "session_id": session_id,
         "kind": kind,
-        "name": "Roomler Recording 2026-09-25 14-30-12.mp4",
+        "name": "MeshHarbor Recording 2026-09-25 14-30-12.mp4",
         "bytes": 1234,
         "duration_ms": 5000,
         "reason": "requested",

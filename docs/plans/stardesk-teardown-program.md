@@ -1,4 +1,4 @@
-# StarDesk teardown: what a gaming-grade remote desktop does that Roomler should
+# StarDesk teardown: what a gaming-grade remote desktop does that MeshHarbor should
 
 ## Context
 
@@ -7,7 +7,7 @@ company, beta 2025-09-28, v1.0 2025-10-12. Its hosts are Windows and macOS. Its 
 apps only**: Windows, macOS, iOS, Android. It is free, built for gaming, and sold on numbers.
 
 On 2026-10-13 the operator asked for the performance and security features it has that would be useful in
-Roomler to be identified and broken down, and for a plan to reverse-engineer them with integration and
+MeshHarbor to be identified and broken down, and for a plan to reverse-engineer them with integration and
 field testing. Operator scope decisions in that session:
 - **include:** relative mouse and key lock, touch key-mapping presets, HDR end to end;
 - **exclude:** gamepad passthrough;
@@ -30,20 +30,20 @@ The FR specs are authoritative for each piece.
 
 ### The difference that shapes everything below
 
-StarDesk controls from a native app, which owns decode, render, pointer and keys. Roomler's thesis is
+StarDesk controls from a native app, which owns decode, render, pointer and keys. MeshHarbor's thesis is
 *nothing to install on the controlling side*, so the browser has to deliver the same experience. Several of
 the hard parts are already in place: a data-channel video path that skips Chrome's jitter buffer, an
 opaque desynchronized canvas, `pointerrawupdate` sampling, the Keyboard Lock API, and the FR-77 4:4:4 cells.
 
 ## 1. The teardown: StarDesk's claims against the code
 
-Sources: stardesk.net (home, /help, /blog, /games) and its Grokipedia entry, read 2026-10-13. Roomler anchors
+Sources: stardesk.net (home, /help, /blog, /games) and its Grokipedia entry, read 2026-10-13. MeshHarbor anchors
 are master `4fc8ea7bb`.
 
-| # | StarDesk claims | Roomler today | Verdict |
+| # | StarDesk claims | MeshHarbor today | Verdict |
 |---|---|---|---|
 | P1 | "under 50 ms" (vs "200–300 ms" for others) | **No input-to-photon metric anywhere.** Paint age via `rc:clock`; the §12 budget in `docs/remote-control.md` was never measured | no instrument: [FR-16](../fr/FR-16-rc-quality-benchmark.md) amended + [FR-98](../fr/FR-98-input-to-photon-budget.md) |
-| P2 | 4K at up to 144 fps; fps lock 60/120/144 | hard 60 (`agents/roomlerd/src/peer.rs` L98, L105, `ffmpeg_target_fps` L8240); MF and openh264 30; a whole-millisecond sleep runs before the WGC slot check (`capture/wgc_backend.rs` L259, L293–302); `TIME_BASE_DEN = 1000` (`encode/ffmpeg/encoder.rs` L86) | gap: high-refresh FR (wave 2) |
+| P2 | 4K at up to 144 fps; fps lock 60/120/144 | hard 60 (`agents/meshharbord/src/peer.rs` L98, L105, `ffmpeg_target_fps` L8240); MF and openh264 30; a whole-millisecond sleep runs before the WGC slot check (`capture/wgc_backend.rs` L259, L293–302); `TIME_BASE_DEN = 1000` (`encode/ffmpeg/encoder.rs` L86) | gap: high-refresh FR (wave 2) |
 | P3 | "Zero-Copy pipeline" | CPU readback on every capture arm; `Frame.data: Vec<u8>` (`capture/mod.rs` L59–64); `hwframes.rs` has no D3D11VA | gap: GPU frame path FR (wave 2) |
 | P4 | HDR | FP16 tone-clipped to 8-bit sRGB (`capture/fp16.rs`); BT.601 8-bit throughout | gap: HDR FR (wave 3) |
 | P5 | 4:4:4 "True Color" | FR-77's cells | **parity** |
@@ -53,17 +53,17 @@ are master `4fc8ea7bb`.
 | P9 | Host / Client (relative) / Auto mouse modes | absolute only; `cursor:hide` already emitted; no Pointer Lock | gap: relative-mouse FR (wave 3) |
 | P10 | system keys reach the host | Keyboard Lock API in fullscreen | **parity** |
 | P11 | 200+ touch key-mapping presets, macro keys | `MobileKeyboard.vue` only; the viewer sends no touch input; `InputMsg::Touch` is parsed and ignored | gap: touch FR (wave 3) |
-| P12 | "300+ relay nodes", P2P first | regional relay PoPs with a measured `relay_home` (behind `ROOMLER__RELAY__REGIONS_ENABLED`), DERP floor, FR-19 peer relays | parity in design; node count is an ops decision |
+| P12 | "300+ relay nodes", P2P first | regional relay PoPs with a measured `relay_home` (behind `MESHHARBOR__RELAY__REGIONS_ENABLED`), DERP floor, FR-19 peer relays | parity in design; node count is an ops decision |
 | P13 | remote audio, mute host | WASAPI / Pulse, opt-in; silent on macOS; no host mute | partial: [FR-99](../fr/FR-99-privacy-mode.md) |
 | S1 | E2E, mutual authentication, "zero-knowledge" | ephemeral per-session ECDSA and mutual DTLS, but on master the fingerprints are bound to nothing the device can check: the hub rebuilds the offer around the raw SDP (`crates/modules/fleet/src/hub.rs` L1391, L1450). FR-52's open PR #1628 binds them for outsiders only | gap: [FR-100](../fr/FR-100-controller-identity.md) |
 | S2 | DTLS 1.2/1.3, AES-128, ECDHE with PFS | DTLS 1.2, ECDHE, SRTP AEAD-GCM including AES-256; CBC suites still offered | parity, harden: [FR-101](../fr/FR-101-rc-session-hygiene.md) |
 | S3 | replay protection | **on**: webrtc-srtp's `Session::new` gives every session a 64-packet SRTP/SRTCP window when none is set. This row first said "off", from the no-protection fallback in `Context::new`, which a session never reaches. FR-16 L0's replay cells corrected it on 2026-10-13: a replayed SRTCP PLI is refused even with no window set | **parity**; FR-101 P1a pins the window |
-| S4 | certificate pinning | deliberately absent so corporate TLS inspection works (`agents/roomlerd/Cargo.toml` L285–293) | by design; FR-100 gives the integrity pinning would |
+| S4 | certificate pinning | deliberately absent so corporate TLS inspection works (`agents/meshharbord/Cargo.toml` L285–293) | by design; FR-100 gives the integrity pinning would |
 | S5 | Privacy Mode: black out the local display | nothing; `WDA_EXCLUDEFROMCAPTURE` already hides our own panels from capture | gap: FR-99 |
 | S6 | auto-lock after the session | none | gap: FR-99 |
 | S7 | clipboard, files and audio off by default | clipboard auto-sync on, files requested by default, audio off; no policy switch | gap: FR-101 |
 | S8 | Remote Support by device ID and code | FR-52's connect codes and device-held password, built on open PRs | built, unmerged |
-| S9 | — | Roomler exceeds StarDesk: five consent modes with a device floor, audited break-glass, on-device recording, Ed25519 DERP tickets, HMAC TURN credentials, quarantine | exceeds |
+| S9 | — | MeshHarbor exceeds StarDesk: five consent modes with a device floor, audited break-glass, on-device recording, Ed25519 DERP tickets, HMAC TURN credentials, quarantine | exceeds |
 
 Found on the way, claimed by neither product and outside this program: no 2FA/WebAuthn, and user sessions
 that cannot be revoked (open Known Issues).
@@ -161,7 +161,7 @@ teardown are not lost.
 - **Signing:** 64-bit Windows loads only attestation- or WHQL-signed drivers. The MIT,
   SignPath-signed VirtualDrivers driver can be bundled only unmodified, because any change voids its
   signature. The alternative is our own build, attested with an EV certificate. **Operator decision.**
-- **Install:** perMachine MSI only, `pnputil` next to the Wintun component. `roomlerd` creates and owns the
+- **Install:** perMachine MSI only, `pnputil` next to the Wintun component. `meshharbord` creates and owns the
   monitor: one daemon, no second service.
 - **Config:** the driver's `C:\VirtualDisplayDriver` config ACL is locked down. Nothing the signed-in user
   writes may steer what SYSTEM does (FR-94).

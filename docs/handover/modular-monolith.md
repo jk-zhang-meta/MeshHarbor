@@ -33,11 +33,11 @@ Verified against master on 2026-09-06 (`file:line` anchors — re-check before r
 | Thing | Where | What it already proves |
 |---|---|---|
 | The five profiles | `crates/api/Cargo.toml:30-36` — `profile-full = [chat, conference, fleet, remote, network]`, `collab = [chat, conference]`, `remote = [fleet, remote]`, `mesh = [fleet, network]`, `access = [fleet, remote, network]` | the composition exists as feature aggregates |
-| Profile CI | `.github/workflows/ci.yml:2090+` (`profiles` job) | every reduced profile **compiles**, and `cargo tree` asserts the **absences** (no `mediasoup` in remote/mesh/access, no `roomler-ai-tunnel-core` in collab) with a positive control on `full` |
-| Profile images | `.github/workflows/publish-selfhost-image.yml` | publishes `<tag>-<profile>` (bare `<tag>` for full), passes `PROFILE` as a build arg, and a **boot smoke** asserts the image *is* the profile it claims (`WANT_full='chat conference fleet network remote'`) |
+| Local profile checks | [local profile checks](../local-build.md#toolchain-and-checks) | every reduced profile **compiles**, and `cargo tree` asserts the **absences** (no `mediasoup` in remote/mesh/access, no `meshharbor-tunnel-core` in collab) with a positive control on `full` |
+| Profile images | [local image recipe](../local-build.md#images-and-historical-recipes) | local packaging preserves `<tag>-<profile>` (bare `<tag>` for full), passes `PROFILE` as a build arg, and a **boot smoke** asserts the image *is* the profile it claims (`WANT_full='chat conference fleet network remote'`) |
 | `GET /api/capabilities` | `crates/api/src/routes/capabilities.rs` | **unauthenticated**; returns `{version, modules, compiled, switched_off}`. `modules` = what this server mounts, `compiled` = what the build linked |
 | Clean-clone install smoke | `scripts/selfhost-smoke.sh` (FR-42) | the documented self-host steps work **verbatim** from a clean clone — on one host, one profile |
-| The VM harness | FR-61: `k8s-cluster-multi` playbook 15 (`vmtest-host`), goldens on zeus, `roomler-ai-deploy/vmtest/` orchestrator | boots throwaway VMs, installs, enrolls, checks RD/overlay/desktop, tears down, reports |
+| The VM harness | FR-61: `k8s-cluster-multi` playbook 15 (`vmtest-host`), goldens on zeus, `meshharbor-deploy/vmtest/` orchestrator | boots throwaway VMs, installs, enrolls, checks RD/overlay/desktop, tears down, reports |
 
 ## 3. The gap this FR closes
 
@@ -66,7 +66,7 @@ One **cell per profile**. Each cell asserts, in order: the documented install wo
 | `full` | `<tag>` | chat + 2-party call, remote desktop, overlay peers+ping | — |
 | `collab` | `<tag>-collab` | chat + a real 2-party **video call** (media both ways) | fleet / remote-desktop / overlay endpoints |
 | `remote` | `<tag>-remote` | agent enrolls + **remote desktop frames** | conference; overlay mesh |
-| `mesh` | `<tag>-mesh` | **two agents** see each other in `roomler peers`, `roomler ping` round-trips; a tunnel or `roomler ssh` succeeds | conference; remote desktop |
+| `mesh` | `<tag>-mesh` | **two agents** see each other in `mh peers`, `mh ping` round-trips; a tunnel or `mh ssh` succeeds | conference; remote desktop |
 | `access` | `<tag>-access` | remote desktop **and** mesh, on one server | chat / conference |
 
 ⚠️ **Absence must be asserted positively** and with a **positive control** on `full` — a grep
@@ -79,7 +79,7 @@ A cell is **not** one VM. It is a **server VM** plus one or two **client VMs** o
 `vmtest-net`:
 
 ```
-server VM   docker + compose, .env.selfhost, ROOMLER_IMAGE=<tag>-<profile>
+server VM   docker + compose, .env.selfhost, MESHHARBOR_IMAGE=<tag>-<profile>
   ├─ collab      : 2 browser contexts   (no agent needed)
   ├─ remote      : 1 agent VM + browser
   ├─ mesh        : 2 agent VMs          (peer ↔ peer is the point; one agent proves nothing)
@@ -104,7 +104,7 @@ that VM's database, not on prod.
    browser must have a real route to the address the server announces.
 2. **A LAN URL is not a secure context** ⇒ `navigator.mediaDevices` is `undefined` ⇒ no
    `getUserMedia`, no call. Only `https://` or `http://127.0.0.1|localhost` qualify.
-3. **`ROOMLER__APP__FRONTEND_URL` must EQUAL the browser's origin** — *a port is part of an
+3. **`MESHHARBOR__APP__FRONTEND_URL` must EQUAL the browser's origin** — *a port is part of an
    Origin* — or the cookie-authenticated `/ws` upgrade is refused **403** and every realtime
    check fails for that one reason.
    ⇒ **Therefore: run the browser INSIDE the server VM against `http://127.0.0.1`.** That is
@@ -132,7 +132,7 @@ that VM's database, not on prod.
 8. **Playwright version drift** kills every browser cell at once (`Executable doesn't exist at
    /ms-playwright/chromium_headless_shell-…`): `ui/package.json` pins a **caret** range, so
    `npm i` resolves past the image's baked browsers. Derive the version from the **image tag**.
-9. **The mars `roomler-ai` clone drifts** (history rewrites leave it thousands of commits
+9. **The mars `meshharbor` clone drifts** (history rewrites leave it thousands of commits
    diverged) — `git rev-list --left-right --count HEAD...origin/master`, reset before a run.
 10. **A parallel session may be running vmtest** on the same host — check `tmux ls` *and*
     `virsh list`; identify a run dir by set-difference, never `ls -t | head -1`.
@@ -149,18 +149,18 @@ that VM's database, not on prod.
   by scanning). The highest spec on 2026-09-06 was **FR-74**, so FR-75 is *likely* free — re-read
   the ledger at claim time and trust it, not this sentence. Then open the GitHub issue.
 - **P1 — host capability.** Reuse FR-61's `vmtest-host`; add a `selfhost`/`profile` lane
-  directory in `roomler-ai-deploy/vmtest/` (or a sibling `profiletest/` if the cell shape
+  directory in `meshharbor-deploy/vmtest/` (or a sibling `profiletest/` if the cell shape
   diverges too far — decide once, in the spec).
 - **P2 — server golden.** An Ubuntu golden with docker + compose preinstalled, so a cell measures
-  *roomler's* install, not apt's.
+  *meshharbor's* install, not apt's.
 - **P3 — the capabilities gate.** Cheapest, runs first: `GET /api/capabilities` must equal the
   profile's expected module set exactly (`modules` == expected, `switched_off` empty). A cell
   that fails here need not boot a browser.
 - **P4 — `collab`**: chat between two browser contexts **and** a real call with media asserted on
   both sides.
 - **P5 — `remote`**: enrol an agent against the VM's server, then the existing RD spec.
-- **P6 — `mesh`**: two agents, `roomler peers` + `roomler ping` round-trip, plus a tunnel or
-  `roomler ssh` probe.
+- **P6 — `mesh`**: two agents, `mh peers` + `mh ping` round-trip, plus a tunnel or
+  `mh ssh` probe.
 - **P7 — `access`**: P5 + P6 on one server, and chat/conference proven **absent**.
 - **P8 — `full`**: P4 + P5 + P6.
 - **P9 — RUN AND TWEAK.** The largest phase. Expect the *harness* to be wrong more often than the
@@ -183,7 +183,7 @@ that VM's database, not on prod.
       frames on **both** sides.
 - [ ] **AC4** `remote`: a freshly enrolled agent streams decoded, advancing frames to a browser.
 - [ ] **AC5** `mesh`: two agents see each other in `peers` and `ping` round-trips; a tunnel or
-      `roomler ssh` session succeeds.
+      `mh ssh` session succeeds.
 - [ ] **AC6** `access`: AC4 **and** AC5 pass on one server, and chat/conference are absent.
 - [ ] **AC7** `full`: AC3 + AC4 + AC5.
 - [ ] **AC8** every absence is asserted positively, with a positive control on `full`.

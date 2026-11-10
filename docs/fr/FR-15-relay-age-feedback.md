@@ -1,7 +1,7 @@
 # FR-15: Relay age feedback — close the rate loop with the viewer's own clock
 
 Status: **proposed** (evidence collected 2026-08-27, first field session of the FR-1 P7
-age pill). Tracking issue: `FR-15` in gjovanov/roomler-ai/issues. Child of FR-1; the
+age pill). Tracking issue: `FR-15` in jk-zhang-meta/MeshHarbor/issues. Child of FR-1; the
 successor to FR-10's open decision ("relay drainage needs a signal SCTP doesn't give us").
 
 ## Problem

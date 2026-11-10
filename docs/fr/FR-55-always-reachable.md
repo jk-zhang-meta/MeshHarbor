@@ -6,7 +6,7 @@ evidence and then built under FR-97 P3b (2026-10-17, the last section), P4 + P5 
 falls asleep on battery and is then plugged in stays asleep all night with our
 assertion held (2026-09-24, field log). This line read "proposed" until then, with the
 field log empty, while P0–P2 had shipped and been measured — the record below restores
-that history. Tracking issue: [#1154](https://github.com/gjovanov/roomler-ai/issues/1154). Anchors verified against
+that history. Tracking issue: [#1154](https://github.com/jk-zhang-meta/MeshHarbor/issues/1154). Anchors verified against
 master `40da643d`.
 
 ## Goal
@@ -21,7 +21,7 @@ in the product has an opinion about power at all.**
 
 ## Field evidence
 
-Reported by the operator on 2026-09-01 ("roomler going offline after a while"), then
+Reported by the operator on 2026-09-01 ("meshharbor going offline after a while"), then
 measured on the MacBook.
 
 **The machine really does sleep, on AC, with the lid open and closed:**
@@ -35,11 +35,11 @@ measured on the MacBook.
 `disksleep 10`. Also `tcpkeepalive 1` and `womp 1` — both relevant below.
 
 **Nothing we do holds it awake.** `pmset -g assertions` shows only `powerd` and
-`WindowServer`. The single `roomlerd` mention is
+`WindowServer`. The single `meshharbord` mention is
 
 ```
 pid 399(WindowServer): UserIsActive named:
-  "com.apple.iohideventsystem.queue.tickle.nxevent service:IOHIDSystem pid:36743 process:roomlerd"
+  "com.apple.iohideventsystem.queue.tickle.nxevent service:IOHIDSystem pid:36743 process:meshharbord"
 ```
 
 which is a **byproduct of injecting input during an active remote session**, not a
@@ -83,7 +83,7 @@ the lid, and (2) needs a peer on the same segment.
   the feature must SAY so rather than appear not to work.
 - **Windows** — `PowerCreateRequest` + `PowerSetRequest(PowerRequestSystemRequired)`, not
   `SetThreadExecutionState`: the latter is per-thread and unreliable from a service, which
-  is exactly how `roomlerd` runs on a fleet host.
+  is exactly how `meshharbord` runs on a fleet host.
 - **Linux** — logind `Inhibit()` over D-Bus (`what="sleep"`, `mode="block"`), holding the
   returned fd for as long as the inhibition should last. ⚠️ Headless servers rarely sleep,
   so this matters for desktops; and `mode=block` is a request a policy can override.
@@ -117,7 +117,7 @@ reported normally while a feature was dark.
 | P1 | An **active rc/ssh session** holds an assertion, on all three OSes. Narrow, always-correct, no policy needed. | per-OS: assertion failure is logged and non-fatal |
 | P2 | Standing policy `power_policy = never \| on-ac \| always`, default `never`, device-owned. macOS first. | the key itself; absent ⇒ today's behaviour |
 | P3 | Windows + Linux implementations of the same policy. | as P2 |
-| P4 | Report it: `roomler status` + the dashboard distinguish "asleep by policy" from "offline". | additive, read-only |
+| P4 | Report it: `mh status` + the dashboard distinguish "asleep by policy" from "offline". | additive, read-only |
 | P5 | **Wake on LAN from a mesh peer** — an awake peer on the same L2 sends the magic packet on request. | server-side switch; off by default |
 
 ## Acceptance criteria
@@ -155,7 +155,7 @@ reported normally while a feature was dark.
   `NetworkClientActive`, or `PreventSystemSleep` (honoured only on AC, which is
   exactly `on-ac`'s semantics). ⚠️ Do not pick one from documentation — this module
   already chose once on "well understood" and it was wrong in the most ordinary case.
-- Should an **exec** run hold an assertion? A 40-minute build kicked off by `roomler exec`
+- Should an **exec** run hold an assertion? A 40-minute build kicked off by `mh exec`
   has the same problem as a session, and the same answer is not obvious.
 
 ## Out of scope
@@ -210,7 +210,7 @@ macOS's power log (`pmset -g log`) is the surface that settles which is true.
 |---|---|
 | 09-23 00:33:36 (+0300) `Entering Sleep state due to 'Idle Sleep' … Using Batt (Charge:76%)`, keeper **not** holding | `pmset -g log` |
 | 09-24 18:28:30Z `power: released the device to sleep normally policy="on-ac"` | daemon log |
-| afterwards: `Now drawing from 'Battery Power'`, `PreventSystemSleep 0`, **no** roomlerd assertion listed | `pmset -g batt` + `-g assertions` |
+| afterwards: `Now drawing from 'Battery Power'`, `PreventSystemSleep 0`, **no** meshharbord assertion listed | `pmset -g batt` + `-g assertions` |
 
 **AC arm — fails.** One night, second by second (`pmset` times are the Mac's `+0300`):
 
@@ -218,7 +218,7 @@ macOS's power log (`pmset -g log`) is the surface that settles which is true.
 |---|---|
 | 00:33:36 | `Idle Sleep`, **on battery** — correct under `on-ac` |
 | 00:34:30 | `DarkWake to FullWake … due to Notification Using AC` — the charger goes in |
-| 00:34:34 | keeper: `holding the device awake policy="on-ac" on_ac=Some(true) session_active=false`; macOS: `PID 72979(roomlerd) … PreventUserIdleSystemSleep "roomler: keeping this device reachable"` |
+| 00:34:34 | keeper: `holding the device awake policy="on-ac" on_ac=Some(true) session_active=false`; macOS: `PID 72979(meshharbord) … PreventUserIdleSystemSleep "meshharbor: keeping this device reachable"` |
 | 00:34:41 | `Notification Wake Back to Sleep` — **seven seconds later, assertion held** |
 | 02:18:05 | the **same** assertion (`id 0x10000954c`) still present, age `01:43:30` |
 | to 11:35 | no FullWake ever again; the Mac surfaces only in DarkWakes |
@@ -266,7 +266,7 @@ The 2026-09-01 deferral rested on two facts, and neither holds any more.
   idle-suspends, which is the case P3 exists for.
 
 So P3 is built as designed above: logind `Inhibit()` with `mode="block"`, the fd held for as
-long as the keeper wants the machine awake (`agents/roomlerd/src/power.rs`, the Linux
+long as the keeper wants the machine awake (`agents/meshharbord/src/power.rs`, the Linux
 `imp`). It runs from a plain thread, because zbus's blocking API panics inside the tokio
 runtime the keeper runs on. `what` is `sleep:idle` for a root daemon. A per-user daemon
 runs outside every login session, where logind's polkit policy grants only `idle`

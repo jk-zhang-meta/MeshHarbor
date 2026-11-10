@@ -1,0 +1,85 @@
+[package]
+name = "meshharbor-setup-core"
+license = "MPL-2.0"
+publish = false
+version.workspace = true
+edition.workspace = true
+description = "Shared install-wizard machinery for the unified meshharbor-setup app (and, until P4c retires them, the two legacy wizard crates)."
+
+[lib]
+# Lib name DELIBERATELY avoids the "install"/"setup"/"update"/"patch"
+# substrings: Windows UAC's "installer detection" heuristic
+# auto-elevates 32/64-bit EXEs whose filename contains any of those.
+# Cargo's test binaries are named after the lib crate, so a lib named
+# `meshharbor_setup_core` would produce `meshharbor_setup_core-<hash>.exe`
+# which UAC refuses to launch from an unelevated `cargo test` with
+# "os error 740: The requested operation requires elevation". Same
+# lesson as the retired rc.28 agent wizard (lib `wizard_core`) and
+# rc.59 tunnel wizard (lib `tunnel_wizard_core`).
+name = "wizard_shared"
+path = "src/lib.rs"
+
+# DEP HYGIENE (review-enforced): this crate must stay free of
+# `meshharbord`, `meshharbor`, and `tauri`. It is the
+# event-shape-free mechanics layer shared by the wizard apps — the
+# apps own the Tauri surface, the ProgressEvent wire shapes, and the
+# agent/tunnel lib calls. Mechanics here communicate through plain
+# callbacks (`FnMut(u64)` byte ticks) and returned reports. Keeping
+# core light also keeps its windows-sys feature list derived from ITS
+# OWN imports (cargo feature-unification must never be relied upon —
+# that leak is exactly how integration.rs compiled in the tunnel
+# wizard without declaring Win32_UI_WindowsAndMessaging).
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+# HTTP: the asset-resolver download path + the tunnel-enroll POST.
+reqwest = { workspace = true }
+# `futures::StreamExt::next` for the reqwest bytes_stream loop.
+futures = { workspace = true }
+
+# SHA256 verification of downloaded artifacts + machine-id derivation.
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+# JWT payload peek (`token_peek`): base64url-decode of the middle
+# segment to read the `token_type` claim without verifying.
+base64 = { workspace = true }
+
+# Wizard-state persistence path resolution.
+directories = { workspace = true }
+
+# Archive extraction (moved with extract.rs from the tunnel wizard).
+# ZIP on Windows; tar.gz on Linux/macOS. All pure-Rust (no system
+# C-lib link) so the cross-platform CI matrix keeps working.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Features derived from the MOVED CODE'S OWN IMPORTS — not copied
+# from the legacy wizard manifests:
+#   msi_runner.rs    → Win32_Foundation, Win32_System_Threading
+#                      (OpenProcess / WaitForSingleObject /
+#                       GetExitCodeProcess / TerminateProcess)
+#   integration.rs   → Win32_System_Registry (HKCU\Environment Path
+#                      read-modify-write) + Win32_UI_WindowsAndMessaging
+#                      (SendMessageTimeoutW WM_SETTINGCHANGE broadcast)
+# NB Win32_UI_WindowsAndMessaging was declared by NEITHER legacy
+# crate — it compiled there only via cargo feature-unification with
+# meshharbord's windows-sys features. This crate declares what it
+# actually uses. Shell/Com/PropertiesSystem from the legacy manifests
+# are unused by the moved code and deliberately dropped.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Registry",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

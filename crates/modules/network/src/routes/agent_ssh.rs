@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! Roomler SSH — the server side.
+//! MeshHarbor SSH — the server side.
 //!
 //! This module is the POLICY DECISION POINT, the twin of [`agent_exec`]. The
 //! agent decides what happens on the box (its own `ssh_enabled` key, the grant
@@ -72,8 +72,8 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bson::oid::ObjectId;
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::{
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::{
     models::{
         Agent, ConsentMode, OsKind, RpcCap, SshAccountMode, SshActivityEvent, SshActivityKind,
         SshAuditEvent, SshDenyReason, SshGates, SshGrantSpec, SshMode, SshPending, SshPolicy,
@@ -81,13 +81,13 @@ use roomler_ai_remote_control::{
     },
     signaling::ServerMsg,
 };
-use roomler_ai_services::auth::AuthService;
-use roomler_ai_services::dao::base::PaginationParams;
+use meshharbor_services::auth::AuthService;
+use meshharbor_services::dao::base::PaginationParams;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use roomler_core::guards::require_permission;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::guards::require_permission;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::NetworkState;
 use crate::ssh_grant_acks::AckOutcome;
@@ -163,7 +163,7 @@ impl SshResponseBody {
 // FR-69 P5a — the policy REQUEST shape moved to the wire crate (the fleet
 // module accepts it inside its agent-update body); re-exported so every
 // `crate::routes::agent_ssh::SshPolicyBody` path reads as before.
-pub use roomler_ai_remote_control::models::SshPolicyBody;
+pub use meshharbor_remote_control::models::SshPolicyBody;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OrgSshSettings {
@@ -184,7 +184,7 @@ pub struct Caller {
 /// request arrived ([`bind_ssh_ticket`]) and carried here so [`dispatch`]
 /// audits every outcome in its one place, a refused ticket's included.
 pub enum CallerSession {
-    /// A person's request (`roomler ssh`, the HTTP route): no ticket.
+    /// A person's request (`mh ssh`, the HTTP route): no ticket.
     None,
     /// An agent session's, its ticket held: the SESSION is the principal and
     /// `Caller::user_id` the person it acts for.
@@ -633,7 +633,7 @@ async fn decide(
                 withdraw_service_grant(state, &grant_id, tenant_id).await;
             }
             return Err(match e {
-                roomler_ai_remote_control::error::Error::ExecUnsupported(_) => {
+                meshharbor_remote_control::error::Error::ExecUnsupported(_) => {
                     SshDenyReason::Unsupported
                 }
                 _ => SshDenyReason::Offline,
@@ -1240,7 +1240,7 @@ pub async fn set_org_settings(
 fn console_user_unsupported(
     mode: SshAccountMode,
     os: OsKind,
-    caps: &roomler_ai_remote_control::models::AgentCaps,
+    caps: &meshharbor_remote_control::models::AgentCaps,
 ) -> bool {
     mode == SshAccountMode::ConsoleUser
         && os != OsKind::Windows
@@ -1258,7 +1258,7 @@ fn console_user_unsupported(
 ///
 /// `auto` and an absent value are always storable: neither promises a prompt.
 fn consent_mode_would_be_ignored(
-    caps: &roomler_ai_remote_control::models::AgentCaps,
+    caps: &meshharbor_remote_control::models::AgentCaps,
     mode: Option<ConsentMode>,
 ) -> bool {
     !matches!(mode, None | Some(ConsentMode::Auto)) && !caps.has_rpc(RpcCap::SshConsent)
@@ -1292,7 +1292,7 @@ pub async fn publish_service_endpoint(
     Json(body): Json<ServiceSshEndpointBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let svc =
-        roomler_ai_mod_fleet::auth_agent::authenticate_service(&state.fleet, &headers).await?;
+        meshharbor_mod_fleet::auth_agent::authenticate_service(&state.fleet, &headers).await?;
     let host_pubkey = body.host_pubkey.trim();
     if !is_supported_public_key(host_pubkey) {
         return Err(ApiError::BadRequest(
@@ -1386,7 +1386,7 @@ pub async fn claim_service_grant(
     Query(claim): Query<ServiceClaimQuery>,
 ) -> Result<Json<ClaimedSshGrant>, ApiError> {
     let svc =
-        roomler_ai_mod_fleet::auth_agent::authenticate_service(&state.fleet, &headers).await?;
+        meshharbor_mod_fleet::auth_agent::authenticate_service(&state.fleet, &headers).await?;
     match state
         .ssh_pending
         .claim(&grant_id, svc.agent_id, svc.tenant_id, claim.one_command)
@@ -1899,7 +1899,7 @@ mod tests {
     /// failed every session at connect time, which an older agent still would.
     #[test]
     fn console_user_is_refused_where_the_agent_cannot_drop_to_the_person() {
-        use roomler_ai_remote_control::models::AgentCaps;
+        use meshharbor_remote_control::models::AgentCaps;
         let caps = |verbs: &[&str]| AgentCaps {
             rpc: verbs.iter().map(|v| v.to_string()).collect(),
             ..Default::default()
@@ -1938,7 +1938,7 @@ mod tests {
     /// defect P5d removed from the agent.
     #[test]
     fn a_consent_policy_is_refused_for_a_device_that_would_ignore_it() {
-        use roomler_ai_remote_control::models::AgentCaps;
+        use meshharbor_remote_control::models::AgentCaps;
 
         let caps = |verbs: &[&str]| AgentCaps {
             rpc: verbs.iter().map(|s| s.to_string()).collect(),
@@ -2094,16 +2094,16 @@ mod tests {
 #[cfg(test)]
 mod session_tests {
     use super::*;
-    use roomler_ai_services::auth::SshTicket;
+    use meshharbor_services::auth::SshTicket;
 
     /// An auth service under a secret made at run time.
     fn auth() -> AuthService {
-        AuthService::new(roomler_ai_config::JwtSettings {
+        AuthService::new(meshharbor_config::JwtSettings {
             secret: format!("p381b-{}-{}", ObjectId::new(), ObjectId::new()),
             previous_secrets: String::new(),
             access_token_ttl_secs: 3600,
             refresh_token_ttl_secs: 3600,
-            issuer: "roomler-ai-test".into(),
+            issuer: "meshharbor-test".into(),
         })
     }
 
@@ -2287,7 +2287,7 @@ mod session_tests {
 #[cfg(test)]
 mod service_route_tests {
     use super::*;
-    use roomler_ai_remote_control::models::ExecAnchor;
+    use meshharbor_remote_control::models::ExecAnchor;
 
     /// A Windows device anchored as `anchor-1`, whose service published under
     /// `published.0`, saying `published.1` of one command; or published

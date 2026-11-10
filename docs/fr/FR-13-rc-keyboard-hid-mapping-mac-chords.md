@@ -2,7 +2,7 @@
 
 > **CLOSED 2026-08-27** — issue #789 is closed and its acceptance criteria are met. Any status line below is the state while the work was in flight, kept as the record.
 
-**Issue:** [#789](https://github.com/gjovanov/roomler-ai/issues/789)
+**Issue:** [#789](https://github.com/jk-zhang-meta/MeshHarbor/issues/789)
 **Status:** implemented — agent half (hid_to_key arms + fallback removed) and viewer half (Ctrl→Cmd translate + toggle) both landed; agent half awaits the next agent release, viewer half the next web deploy; field verification pending
 
 ## Field report (2026-08-26)
@@ -18,7 +18,7 @@ The viewer maps `KeyboardEvent.code` → USB-HID usage
 (`kbdCodeToHid`, `ui/src/composables/useRemoteControl.ts:10347` —
 `CapsLock → 0x39` is **correct**, locked by
 `useRemoteControl.spec.ts:234`). The agent maps HID → enigo `Key` in
-`hid_to_key` (`agents/roomlerd/src/input/enigo_backend.rs:514-595`) —
+`hid_to_key` (`agents/meshharbord/src/input/enigo_backend.rs:514-595`) —
 which has **no arm for 0x39**, so the caller falls through
 (`enigo_backend.rs:210-218`) to:
 

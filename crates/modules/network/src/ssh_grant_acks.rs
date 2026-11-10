@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use bson::oid::ObjectId;
 use dashmap::DashMap;
-use roomler_ai_remote_control::models::SshGrantRefusal;
+use meshharbor_remote_control::models::SshGrantRefusal;
 use tokio::sync::oneshot;
 
 /// What became of one grant, as far as the server can know.

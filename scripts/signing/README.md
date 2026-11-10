@@ -1,10 +1,16 @@
 # scripts/signing
 
-Operator scripts for obtaining and wiring the code-signing credentials that
-`.github/workflows/release-*.yml` consume. Full background, rationale and the
-CI-side design live in [`docs/code-signing.md`](../../docs/code-signing.md).
+Operator scripts for obtaining and wiring code-signing credentials. The project
+uses no CI; these scripts are explicit operations, not build defaults. Historical
+GitHub OIDC provisioning remains for reference and is not required for local builds.
+Local preparation is documented in [`docs/local-build.md`](../../docs/local-build.md).
+Full background and rationale live in [`docs/code-signing.md`](../../docs/code-signing.md).
 
-Every script is idempotent and safe to re-run.
+The owner’s current local artifact policy is unsigned Windows/Linux and signed
+macOS. Windows/GPG credential provisioning and signing are not prerequisites for
+those unsigned local builds. This policy does not change existing updater trust
+checks. Review each script’s effects before running it; credential/account/trust
+provisioning is not a syntax-only or read-only check.
 
 ## Order
 
@@ -42,14 +48,14 @@ Gate:
 
 ## State
 
-`00-preflight.ps1` writes `.roomler-signing.json` here; every later script
+`00-preflight.ps1` writes `.meshharbor-signing.json` here; every later script
 reads it, so each value is typed once. It holds only public identifiers
 (subscription id, tenant id, account/profile names) and is gitignored anyway.
 
 ## What must never be committed
 
 `dev-cert/`, `apple/`, and everything under `gpg/` except
-`roomler-release-pubkey.asc` are gitignored. `*.pfx`, `*.p12`, `*.key` and
+`meshharbor-release-pubkey.asc` are gitignored. `*.pfx`, `*.p12`, `*.key` and
 `*.p8` are ignored repo-wide as a backstop.
 
 The Azure path is the exception worth noting: it produces **no key material

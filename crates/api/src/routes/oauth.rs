@@ -7,8 +7,8 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use roomler_ai_services::oauth::OAuthUserInfo;
-use roomler_core::attribution::{self, AttributionInput};
+use meshharbor_core::attribution::{self, AttributionInput};
+use meshharbor_services::oauth::OAuthUserInfo;
 use serde::Deserialize;
 use tracing::debug;
 use uuid::Uuid;
@@ -171,7 +171,7 @@ pub async fn complete_sign_in(
     let user = sign_in.user;
     let user_id = user.id.unwrap();
 
-    roomler_core::admission::require_user(state, &user, None)?;
+    meshharbor_core::admission::require_user(state, &user, None)?;
     // Generate JWT tokens only after the same admission rule as password login.
     let tokens = state.auth.generate_tokens_at_revision(
         user_id,
@@ -244,10 +244,13 @@ mod tests {
 
     #[test]
     fn the_callback_redirect_carries_a_signup_marker_and_never_a_token() {
-        let created = callback_redirect("https://roomler.ai", true);
-        assert_eq!(created, "https://roomler.ai/oauth/callback#signup=1");
-        let returning = callback_redirect("https://roomler.ai", false);
-        assert_eq!(returning, "https://roomler.ai/oauth/callback");
+        let created = callback_redirect("https://meshharbor.itachi.fans", true);
+        assert_eq!(
+            created,
+            "https://meshharbor.itachi.fans/oauth/callback#signup=1"
+        );
+        let returning = callback_redirect("https://meshharbor.itachi.fans", false);
+        assert_eq!(returning, "https://meshharbor.itachi.fans/oauth/callback");
         for url in [&created, &returning] {
             assert!(!url.contains("token"), "{url}");
             assert!(!url.contains('?'), "nothing in the query either: {url}");

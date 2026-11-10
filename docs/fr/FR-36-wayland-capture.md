@@ -1,6 +1,6 @@
 # FR-36 — Wayland capture, and unattended access
 
-**Issue:** [#929](https://github.com/gjovanov/roomler-ai/issues/929) · **Status:** **CLOSED 2026-08-30 — every functional criterion field-verified.** The browser renders a GNOME Wayland desktop, drives it, types into it, sees the greeter and a locked screen, and survives a reboot with nobody logged in. ⚠️ Two performance numbers did NOT meet their stated bar; see the acceptance list · **Owner:** agent / capture
+**Issue:** [#929](https://github.com/jk-zhang-meta/MeshHarbor/issues/929) · **Status:** **CLOSED 2026-08-30 — every functional criterion field-verified.** The browser renders a GNOME Wayland desktop, drives it, types into it, sees the greeter and a locked screen, and survives a reboot with nobody logged in. ⚠️ Two performance numbers did NOT meet their stated bar; see the acceptance list · **Owner:** agent / capture
 
 ## Goal
 
@@ -108,13 +108,13 @@ exists to serve, and is no longer on the critical path for this host.
 
 | Phase | What | Kill switch |
 |---|---|---|
-| **P1** ✅ | DRM/KMS capture as a fifth `ScreenCapture` backend (`capture/drm_backend.rs`): enumerate CRTCs, `drmModeGetFB2` the active scanout, PRIME-export, mmap, deliver `Frame`s. Handles **`XR24` + `XR30`** (both measured in the field). | **`ROOMLERD_DRM_CAPTURE=1` to opt IN** — see below |
+| **P1** ✅ | DRM/KMS capture as a fifth `ScreenCapture` backend (`capture/drm_backend.rs`): enumerate CRTCs, `drmModeGetFB2` the active scanout, PRIME-export, mmap, deliver `Frame`s. Handles **`XR24` + `XR30`** (both measured in the field). | **`MESHHARBORD_DRM_CAPTURE=1` to opt IN** — see below |
 | **P2** | **Detiling** — EGL import + convert to linear. **NOT needed on Apple Silicon** (plane is LINEAR-only, measured); required for Intel `*_RC_CCS`, Nvidia block-linear. Deferred off the critical path. | same flag ⇒ fall back to portal/X11 |
 | **P3** | **Privilege split.** A minimal helper holding `CAP_SYS_ADMIN`, passing **DMA-BUF fds over `SCM_RIGHTS`**; the daemon never needs the capability itself. | same flag |
-| **P4** ✅ | Input on Wayland via **`uinput`** (`input/uinput_backend.rs`) — a virtual kernel device, so events enter through evdev beneath the display server. XTest reaches Xwayland clients ONLY, so without this a captured Wayland session is read-only. | **`ROOMLERD_UINPUT=1` to opt IN** |
+| **P4** ✅ | Input on Wayland via **`uinput`** (`input/uinput_backend.rs`) — a virtual kernel device, so events enter through evdev beneath the display server. XTest reaches Xwayland clients ONLY, so without this a captured Wayland session is read-only. | **`MESHHARBORD_UINPUT=1` to opt IN** |
 
 **Backend priority: DRM/KMS → portal/PipeWire → X11**, but DRM is **opt-in**
-(`ROOMLERD_DRM_CAPTURE=1`) rather than the Linux default — the inverse of this
+(`MESHHARBORD_DRM_CAPTURE=1`) rather than the Linux default — the inverse of this
 repo's usual kill-switch shape, and deliberately so.
 
 Measured on one host, one session, back to back at 1080p: scrap delivered **1 of
@@ -127,13 +127,13 @@ path (a logged-in user who consents once).
 
 ### Privilege model — do not simply run capture as root
 
-`roomlerd` already runs as root, so P1 *can* open `/dev/dri/*` directly and P3
+`meshharbord` already runs as root, so P1 *can* open `/dev/dri/*` directly and P3
 is tempting to skip. Do not skip it permanently. RustDesk's shape is a separate
 `drmtap-helper` with `cap_sys_admin+ep`, `/dev/dri/`-only device access,
 `PR_SET_NO_NEW_PRIVS`, a seccomp allowlist, and an 8-byte protocol whose only
 attacker-controllable field is a CRTC-id equality filter. That is the right
 target for a binary shipping to every fleet host — and it maps onto this repo's
-existing self-spawn precedent (`roomlerd caps-probe`,
+existing self-spawn precedent (`meshharbord caps-probe`,
 `#[command(hide = true)]` at `main.rs:149`, spawned via `current_exe()` at
 `encode/caps.rs:79`), so it needs **no new packaged artifact**.
 
@@ -150,7 +150,7 @@ Every DRM prerequisite is already satisfied:
 | requirement | state |
 |---|---|
 | **Active CRTC** (DRM capture needs live scanout) | `card2-HDMI-A-1 status=connected enabled=enabled`, mode 4096x2160 |
-| Root / `CAP_SYS_ADMIN` | `roomlerd` runs as **root** |
+| Root / `CAP_SYS_ADMIN` | `meshharbord` runs as **root** |
 | `/dev/uinput` for input | present; `CONFIG_INPUT_UINPUT=m` |
 | `vkms` (virtual CRTC, if ever genuinely headless) | `CONFIG_DRM_VKMS=m` |
 | Kernel ≥ 4.20 for `GETFB2` | **6.19.14-asahi** |
@@ -165,7 +165,7 @@ count_connectors > 0`, which is the render-vs-display discriminator.
 
 ⚠️ **Screen blanking must stay off**, because DRM capture requires active
 scanout — a blanked screen is not merely dark, it stops the thing we read.
-[#921](https://github.com/gjovanov/roomler-ai/pull/921) already disables the X
+[#921](https://github.com/jk-zhang-meta/MeshHarbor/pull/921) already disables the X
 server's built-in screen saver in VD mode for an unrelated reason; that is now a
 *prerequisite*, and the DE-level screensaver/lock question it deliberately left
 out of scope becomes in-scope here.
@@ -178,9 +178,9 @@ out of scope becomes in-scope here.
       it — the current path logs `scrap capture unavailable → NoopCapture (no
       primary display: connection refused)` and delivers **zero frames**
 - [x] The P1 backend is **wired into the capture cascade** and delivers
-      `Frame`s through the `ScreenCapture` trait (`roomlerd capture-smoke`)
+      `Frame`s through the `ScreenCapture` trait (`meshharbord capture-smoke`)
 - [x] **A browser-visible remote-control session against that Wayland desktop —
-      PASSED 2026-08-30.** The viewer at `roomler.ai/.../remote` rendered the
+      PASSED 2026-08-30.** The viewer at `meshharbor.itachi.fans/.../remote` rendered the
       GNOME Wayland desktop of `scw-m2-asahi` (`connected`, H.264 SW, ~16 fps),
       and the daemon log names both backends for that session:
       `capture: backend=drm … node="/dev/dri/card2" 4096x2160` and
@@ -216,7 +216,7 @@ out of scope becomes in-scope here.
       `greeter` session for user `lightdm`, and the browser rendered **the login
       greeter** (`connected`, 26 fps, 1920×1080). The daemon was started at boot
       by its unit, and both config gates survived the reboot in
-      `/etc/roomler/config.toml` — which is the point of them being config keys
+      `/etc/meshharbor/config.toml` — which is the point of them being config keys
       rather than env.
 - [x] `avg_capture_ms` **< 10 ms** at **1080p** — measured **5.84 ms** for the
       whole backend (1.58 ms of that is the framebuffer read; the rest is the
@@ -332,7 +332,7 @@ Reopen this if a 4K Wayland session is measured behaving worse than that.
   *under this host's layout*" — on a German layout that is the key labelled `y`.
   `libxkbcommon` is the correct general answer and was **rejected on deployment
   grounds**: it is a dynamic system library, and linking it would put
-  `libxkbcommon.so` in `roomlerd`'s `DT_NEEDED` on every Linux build. Headless
+  `libxkbcommon.so` in `meshharbord`'s `DT_NEEDED` on every Linux build. Headless
   fleet hosts have no reason to carry it, and a missing `.so` does not degrade
   a feature — the loader refuses to start the daemon at all. That exact failure
   already cost this project once (vendored FFmpeg dylibs baking a Homebrew path
@@ -357,26 +357,26 @@ Reopen this if a 4K Wayland session is measured behaving worse than that.
 | 2026-08-29 | 0.4.20 (pre-FR baseline) | Wayland: **uncapturable**. X11 baseline same host: `avg_capture_ms` ~20 ms, ~27 fps at 1080p, idle 2.8 % of a core |
 | 2026-08-29 | portal probe | `xdg-desktop-portal` reachable (4 portal names on the session bus) but **exposes neither `ScreenCast` nor `RemoteDesktop`** in an XFCE/**X11** session — those come from a compositor-matching backend. `-gnome` + `-gtk` installed; **`-kde` is NOT**. The agent must therefore *detect* ScreenCast, never assume it |
 | 2026-08-29 | **P1 probe, X11 (XFCE)** | ✅ `card2`/`apple-drm`, `fb 49 1920×1080 XR24 modifier=0x0`. Correct image. Liveness confirmed (new window ⇒ 859,916 differing bytes). Read **1.58 ms** cached / 2.07 ms remap-per-frame |
-| 2026-08-29 | **P1 probe, GNOME Wayland** | ✅ session switched to `gnome-wayland` (mutter 48.8). `fb 51 4096×2160 **XR30** modifier=0x0`, `allocated by = gnome-shell`. First decode was psychedelic — probe assumed 8-bit; with `XR30` unpacking the image is correct. Read **15.2 ms** cached (35.4 MB). Host reverted to XFCE; `roomlerd` PID unchanged across this switch pair |
-| 2026-08-29 | **P1 backend, X11 (XFCE), 1080p** | ✅ `open_default` picks `backend=drm` under `ROOMLERD_DRM_CAPTURE=1`; correct desktop image. **5.84 ms/frame, 30/30 delivered.** Same host, same session, scrap: **5.11 ms** but **1/30 delivered, 29 proven unchanged** — FR-29 damage tracking working, and the reason DRM must not be the default |
+| 2026-08-29 | **P1 probe, GNOME Wayland** | ✅ session switched to `gnome-wayland` (mutter 48.8). `fb 51 4096×2160 **XR30** modifier=0x0`, `allocated by = gnome-shell`. First decode was psychedelic — probe assumed 8-bit; with `XR30` unpacking the image is correct. Read **15.2 ms** cached (35.4 MB). Host reverted to XFCE; `meshharbord` PID unchanged across this switch pair |
+| 2026-08-29 | **P1 backend, X11 (XFCE), 1080p** | ✅ `open_default` picks `backend=drm` under `MESHHARBORD_DRM_CAPTURE=1`; correct desktop image. **5.84 ms/frame, 30/30 delivered.** Same host, same session, scrap: **5.11 ms** but **1/30 delivered, 29 proven unchanged** — FR-29 damage tracking working, and the reason DRM must not be the default |
 | 2026-08-29 | **P1 backend, GNOME Wayland, 4K** | ✅ **before:** the shipping path logs `scrap capture unavailable — falling back to NoopCapture (no primary display: connection refused)` — **zero frames**. **after:** `backend=drm`, **30/30 at 4096×2160 XR30**, correct image. ⚠️ **42.9 ms/frame raw, 52.9 ms with `Auto` downscale** ⇒ ~19 fps. Memory-bandwidth bound (~70 MB/frame). A vectorisable-loop rewrite was tried and **REFUTED** (43.8 vs 42.4 ms — no change) |
-| 2026-08-29 | daemon impact | `roomlerd` restarted **once** during the whole session (`NRestarts=1`, 18:04), not coincident with either lightdm restart; ended `active/running`. The FR-19 relay it also hosts stayed reachable throughout (every measurement above arrived over its own control WS) |
+| 2026-08-29 | daemon impact | `meshharbord` restarted **once** during the whole session (`NRestarts=1`, 18:04), not coincident with either lightdm restart; ended `active/running`. The FR-19 relay it also hosts stayed reachable throughout (every measurement above arrived over its own control WS) |
 | 2026-08-29 | **P1 at the LOGIN GREETER** | ✅ autologin disabled, lightdm restarted, **nobody logged in** (`loginctl`: only a `greeter` session for user `lightdm`). Shipping path: `NoopCapture`, zero frames. DRM: **20/20 at 1920×1080, 6.85 ms**, image is the lightdm greeter — user dropdown, password field, Log In button. This is the case the portal structurally refuses (no session ⇒ no portal) |
 | 2026-08-29 | **P1 on a LOCKED session** | ✅ with a real locker running (`xfce4-screensaver`, `/lock/enabled=true`) DRM captured the **XFCE unlock dialog** — user `m1`, password field, Switch User / Cancel / Unlock. ⚠️ **The first attempt was a false negative twice over**, see below |
 | 2026-08-29 | ⚠️ two false results caught | (1) `loginctl lock-session` reported success but `LockedHint` stayed `no` and no locker process existed — the screen was never locked, and the capture was an ordinary desktop. Claiming it would have been a **vacuous pass**. (2) With the locker genuinely active but idle, the capture was **pure black with every counter green** (15/15 frames, 6.71 ms). Waking the dialog with harmless input (mouse move + shift; no password typed) produced the lock screen — so the black was a **genuinely black screen**, faithfully reported |
 | 2026-08-30 | **P4 uinput — pointer, objectively** | ✅ X11 session, `input-smoke --move-to`: `0.25,0.75` → pointer at **480,809**; `0.8,0.2` → **1535,215** (`xdotool getmouselocation`). Sub-pixel error is the 0..=32767 → 0..1919 scaling, not a mapping bug |
 | 2026-08-30 | **P4 uinput — keyboard on WAYLAND, end to end** | ✅ 8 characters injected through `/dev/uinput` on GNOME Wayland arrived in **GNOME Shell's own search box** — the capture read back `terminal` in the search field with Xfce Terminal / Terminal / Konsole / XTerm as results. 21.4 M bytes differed between the before and after frames. Closed loop: **injected below the compositor, observed below the compositor** |
-| 2026-08-30 | P4 hygiene | The virtual device is destroyed on drop — no `Roomler Virtual Input` left in `/sys/devices/virtual/input` after the run. Host returned to XFCE with `backend=scrap` and damage tracking active |
+| 2026-08-30 | P4 hygiene | The virtual device is destroyed on drop — no `MeshHarbor Virtual Input` left in `/sys/devices/virtual/input` after the run. Host returned to XFCE with `backend=scrap` and damage tracking active |
 | 2026-08-30 | **P1b — fuse the downscale into the repack** | ✅ 4K `Auto`: **52.9 ms → 24.0 ms**, i.e. *faster than not downscaling* (43.8 ms) — the write is 4× smaller while the read stays sequential. ~30 fps at 4K instead of ~19. ⚠️⚠️ **The first attempt made it 6× WORSE (329.8 ms)**: sampling two source rows a pitch apart per output pixel, because **the scanout mapping punishes strided reads brutally**. Row-buffering into cached scratch — sequential reads, identical arithmetic — is what won. A unit test pins the fused output byte-for-byte against the two-step route it replaced |
-| 2026-08-30 | **end-to-end browser session — ATTEMPTED, blocked** | ⚠️ Swapping the FR-36 build in as the daemon failed: the host's **auto-start hook respawned the packaged `roomlerd run` (no `--config`) within ~3 s**, retook the single-instance lock, and the FR-36 binary exited at once. ⚠️ `systemctl stop roomlerd` also **killed the swap script itself** — a `setsid`-detached child of a `roomler exec` is still in the unit's cgroup, and systemd kills the cgroup. Use a `systemd-run` transient unit. Host restored to XFCE + the packaged daemon (`NRestarts=0`, one process, no lock refusals) — cleaner than it was found, since the long-running orphan is gone |
-| 2026-08-30 | **🏆 END-TO-END BROWSER SESSION — PASSED** | The `roomler.ai` viewer rendered `scw-m2-asahi`'s **GNOME Wayland** desktop (`connected`, H.264 SW, ~16 fps, **2048×1080** for a 4096×2160 panel ⇒ the fused downscale fed the encoder). Daemon log for that session: `capture: backend=drm … node="/dev/dri/card2" 4096x2160` + `input: backend=uinput`. **Gates came from CONFIG, not env** (`config-backed env fallbacks registered keys=[…DRM_CAPTURE…UINPUT]`) — decisive, because the serving daemon was spawned by the host's auto-start hook *outside systemd*, where a unit env block could not have reached it. A browser click opened **GNOME Shell's own calendar panel**; `Escape` closed it. ⚠️ Typing did NOT arrive — the viewer sends `KeyText`, which the backend drops by design: **navigate yes, type no** |
-| 2026-08-30 | how the blocker was cleared | The auto-updater had already installed release **0.4.30**, which carries the merged FR-36 stack — so the test ran against the **shipped artifact**, not a dev build, and no binary swap was needed after all. Gates were set with `roomlerd cli config set`. ⚠️ A dead-man switch (`systemd-run --on-active=…` restoring the packaged service) was armed throughout; the host briefly went offline during a bad `systemd-run` invocation (`--config` was swallowed as a systemd-run option — it needs `--`) and the hook restored it within seconds |
-| 2026-08-30 | **🏆 P4b — typing works through the browser** | Typed `echo FR36-TYPED-OK-123` in the viewer → **exactly that appeared at the remote GNOME Wayland terminal prompt**, `Enter` ran it, the shell echoed the result. Uppercase, digits and punctuation all correct ⇒ shift handling right. Daemon: `uinput: typed text will be sent as physical keys for this layout layout="us" detected="us"`. Full round trip: browser → WebRTC → roomlerd → uinput → evdev → libinput → mutter → terminal → bash. ⚠️ The first two attempts showed nothing and the code was NOT at fault — typing on a bare GNOME desktop does nothing (no focus), and GNOME 48 has no Activities button to click. Putting a real terminal on the desktop was what made the test decisive |
-| 2026-08-30 | **🏆 survives a reboot, nobody logged in** | Cold boot, autologin disabled ⇒ `loginctl` shows only a `greeter` session for `lightdm`. The browser rendered **the lightdm greeter** at `connected`, 26 fps, 1920×1080. Gates survived in `/etc/roomler/config.toml` — the payoff for making them config keys rather than env |
-<!-- RETIRED-NAME-ANCHOR(6): `roomler-agent.service` is named deliberately —
+| 2026-08-30 | **end-to-end browser session — ATTEMPTED, blocked** | ⚠️ Swapping the FR-36 build in as the daemon failed: the host's **auto-start hook respawned the packaged `meshharbord run` (no `--config`) within ~3 s**, retook the single-instance lock, and the FR-36 binary exited at once. ⚠️ `systemctl stop meshharbord` also **killed the swap script itself** — a `setsid`-detached child of a `mh exec` is still in the unit's cgroup, and systemd kills the cgroup. Use a `systemd-run` transient unit. Host restored to XFCE + the packaged daemon (`NRestarts=0`, one process, no lock refusals) — cleaner than it was found, since the long-running orphan is gone |
+| 2026-08-30 | **🏆 END-TO-END BROWSER SESSION — PASSED** | The `meshharbor.itachi.fans` viewer rendered `scw-m2-asahi`'s **GNOME Wayland** desktop (`connected`, H.264 SW, ~16 fps, **2048×1080** for a 4096×2160 panel ⇒ the fused downscale fed the encoder). Daemon log for that session: `capture: backend=drm … node="/dev/dri/card2" 4096x2160` + `input: backend=uinput`. **Gates came from CONFIG, not env** (`config-backed env fallbacks registered keys=[…DRM_CAPTURE…UINPUT]`) — decisive, because the serving daemon was spawned by the host's auto-start hook *outside systemd*, where a unit env block could not have reached it. A browser click opened **GNOME Shell's own calendar panel**; `Escape` closed it. ⚠️ Typing did NOT arrive — the viewer sends `KeyText`, which the backend drops by design: **navigate yes, type no** |
+| 2026-08-30 | how the blocker was cleared | The auto-updater had already installed release **0.4.30**, which carries the merged FR-36 stack — so the test ran against the **shipped artifact**, not a dev build, and no binary swap was needed after all. Gates were set with `meshharbord cli config set`. ⚠️ A dead-man switch (`systemd-run --on-active=…` restoring the packaged service) was armed throughout; the host briefly went offline during a bad `systemd-run` invocation (`--config` was swallowed as a systemd-run option — it needs `--`) and the hook restored it within seconds |
+| 2026-08-30 | **🏆 P4b — typing works through the browser** | Typed `echo FR36-TYPED-OK-123` in the viewer → **exactly that appeared at the remote GNOME Wayland terminal prompt**, `Enter` ran it, the shell echoed the result. Uppercase, digits and punctuation all correct ⇒ shift handling right. Daemon: `uinput: typed text will be sent as physical keys for this layout layout="us" detected="us"`. Full round trip: browser → WebRTC → meshharbord → uinput → evdev → libinput → mutter → terminal → bash. ⚠️ The first two attempts showed nothing and the code was NOT at fault — typing on a bare GNOME desktop does nothing (no focus), and GNOME 48 has no Activities button to click. Putting a real terminal on the desktop was what made the test decisive |
+| 2026-08-30 | **🏆 survives a reboot, nobody logged in** | Cold boot, autologin disabled ⇒ `loginctl` shows only a `greeter` session for `lightdm`. The browser rendered **the lightdm greeter** at `connected`, 26 fps, 1920×1080. Gates survived in `/etc/meshharbor/config.toml` — the payoff for making them config keys rather than env |
+<!-- RETIRED-NAME-ANCHOR(6): `meshharbor-agent.service` is named deliberately —
      it is the retired-name systemd unit that was still ENABLED on this host
-     and racing `roomlerd.service` for the single-instance lock. The unit
+     and racing `meshharbord.service` for the single-instance lock. The unit
      literally exists under that name on pre-rename machines, so an operator
      hunting this restart storm must be able to grep for it. FR-21 / FR-36. -->
 
-| 2026-08-30 | **root cause of this host's restart storm — FOUND and FIXED** | Not an "auto-start hook": **two units**. `roomler-agent.service` (the RETIRED name, `ExecStart=/usr/bin/roomlerd run`, no `--config`) was still **enabled** and owned the live process, while `roomlerd.service` (current name, `--config`) was disabled. They race for the single-instance lock. ⚠️ **Every `systemctl start roomlerd` I ran during this FR started the second unit to fight the first** — I was generating the storms I was diagnosing. Fixed by `disable roomler-agent` + `enable roomlerd`; verified across a second reboot: one daemon, under `roomlerd.service`, **0 lock refusals since boot** |
+| 2026-08-30 | **root cause of this host's restart storm — FOUND and FIXED** | Not an "auto-start hook": **two units**. `meshharbor-agent.service` (the RETIRED name, `ExecStart=/usr/bin/meshharbord run`, no `--config`) was still **enabled** and owned the live process, while `meshharbord.service` (current name, `--config`) was disabled. They race for the single-instance lock. ⚠️ **Every `systemctl start meshharbord` I ran during this FR started the second unit to fight the first** — I was generating the storms I was diagnosing. Fixed by `disable meshharbor-agent` + `enable meshharbord`; verified across a second reboot: one daemon, under `meshharbord.service`, **0 lock refusals since boot** |

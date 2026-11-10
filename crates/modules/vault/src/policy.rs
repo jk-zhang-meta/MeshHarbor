@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! Cedar (FR-90 P3-2, `docs/roomler-hive-design.md` §8.4): the vault's
+//! Cedar (FR-90 P3-2, `docs/meshharbor-hive-design.md` §8.4): the vault's
 //! schema, the guardrails it seeds, how a policy is checked before it is
 //! stored, and the one function that decides.
 //!
@@ -15,7 +15,7 @@
 //!
 //! ⚠️ A policy can only name its own organization: a `Secret` or
 //! `SecretFolder` literal must carry the organization's RRN prefix, a `Role`
-//! one of the organization's roles, a `Group` one of its roomler roles, a
+//! one of the organization's roles, a `Group` one of its meshharbor roles, a
 //! `User` one of its members (that last checked by the route, which can ask
 //! the database). A `Session` is never named: sessions come and go, and a
 //! policy for one would outlive it.
@@ -47,7 +47,7 @@ pub fn schema() -> &'static Schema {
 }
 
 /// The Cedar namespace every vault entity lives in.
-pub const NS: &str = "Roomler";
+pub const NS: &str = "MeshHarbor";
 
 /// The actions a policy may name, as the wire and the audit spell them.
 pub const ACTIONS: &[&str] = &[
@@ -69,20 +69,20 @@ pub const ACTION_LIST: &str = "secret:list";
 pub const ACTION_NET_SOCKS: &str = "net:socks";
 /// P3-7 — a session opening a forward to one destination through a device.
 pub const ACTION_NET_FORWARD: &str = "net:forward";
-/// P3-8 — a session running one command on another device over Roomler SSH
+/// P3-8 — a session running one command on another device over MeshHarbor SSH
 /// (`docs/fr/FR-90-hive-agent-sessions.md` §3e, "P3-8, `ssh_run`, as
 /// designed").
 pub const ACTION_SSH_RUN: &str = "ssh:run";
 /// P3-9-1 — a PERSON using a secret through an endpoint their device serves
-/// them (`roomler connect`; `docs/fr/FR-90-hive-agent-sessions.md` §3e, "P3-9,
-/// `roomler connect`, as designed"). Its principal is a `User`, the device's
+/// them (`mh connect`; `docs/fr/FR-90-hive-agent-sessions.md` §3e, "P3-9,
+/// `mh connect`, as designed"). Its principal is a `User`, the device's
 /// owner: `secret:use` is a session's alone, so no policy written for
 /// sessions admits a person.
 pub const ACTION_CONNECT: &str = "secret:connect";
 
 /// P3-9-1 — the actions only a permit that NAMES them in its scope admits
 /// ([`decide`]). A policy whose scope names no action
-/// (`permit (principal in Roomler::Group::"admin", action, resource)`)
+/// (`permit (principal in MeshHarbor::Group::"admin", action, resource)`)
 /// admits every action Cedar knows, so one written before a person's action
 /// existed would admit a person the day it did, without a line of it
 /// changing. A `forbid` binds whatever its scope, as it always did.
@@ -123,14 +123,14 @@ pub const GUARDRAILS: &[Guardrail] = &[
         id: "guardrail:windows-proxy-only",
         why: "Windows has no Claude Code sandbox, so a session there gets a secret only through \
               a proxy that authenticates for it (AC13; decision 17)",
-        text: r#"forbid (principal, action == Roomler::Action::"secret:use", resource)
+        text: r#"forbid (principal, action == MeshHarbor::Action::"secret:use", resource)
 when { context.device.os == "windows" && context.mode != "proxy" };"#,
     },
     Guardrail {
         id: "guardrail:prod-never-materializes",
         why: "a production value never lands in a file, an environment or a command line: a \
               secret tagged `prod`, or under the folder `prod/`, is used in no materializing mode",
-        text: r#"forbid (principal, action == Roomler::Action::"secret:use", resource)
+        text: r#"forbid (principal, action == MeshHarbor::Action::"secret:use", resource)
 when {
   (resource.tags.contains("prod") || resource.path == "prod" || resource.path like "prod/*") &&
   ["file", "env", "exec"].contains(context.mode)
@@ -143,7 +143,7 @@ when {
         id: "guardrail:exec-only-allowed-programs",
         why: "in `exec` mode a value is handed only to a program its secret names in \
               `exec_allow`, by bare name: a handle smuggled into any other command is refused",
-        text: r#"forbid (principal, action == Roomler::Action::"secret:use", resource)
+        text: r#"forbid (principal, action == MeshHarbor::Action::"secret:use", resource)
 when { context.mode == "exec" && !(resource.exec_allow.contains(context.audience)) };"#,
     },
     // P3-5a — the proxy's confused deputy: the daemon authenticates with the
@@ -153,7 +153,7 @@ when { context.mode == "exec" && !(resource.exec_allow.contains(context.audience
         id: "guardrail:proxy-only-named-audiences",
         why: "in `proxy` mode a value is presented only to an upstream its secret names in \
               `audiences`, exactly: a session pointing a proxy anywhere else is refused",
-        text: r#"forbid (principal, action == Roomler::Action::"secret:use", resource)
+        text: r#"forbid (principal, action == MeshHarbor::Action::"secret:use", resource)
 when { context.mode == "proxy" && !(resource.audiences.contains(context.audience)) };"#,
     },
     // P3-6b — a dynamic secret's fields are its issuer's: the account that
@@ -164,7 +164,7 @@ when { context.mode == "proxy" && !(resource.audiences.contains(context.audience
         id: "guardrail:dynamic-only-short-lived",
         why: "a dynamic secret's fields are its issuer's, used only in `short-lived` to mint a \
               credential: no other mode hands one to a session",
-        text: r#"forbid (principal, action == Roomler::Action::"secret:use", resource)
+        text: r#"forbid (principal, action == MeshHarbor::Action::"secret:use", resource)
 when { resource.kind == "dynamic" && context.mode != "short-lived" };"#,
     },
     // P3-6b — and the other way about: `short-lived` releases a bundle to
@@ -173,7 +173,7 @@ when { resource.kind == "dynamic" && context.mode != "short-lived" };"#,
         id: "guardrail:short-lived-only-dynamic",
         why: "`short-lived` mints a credential with a dynamic secret's issuer: no other kind of \
               secret is leased in it",
-        text: r#"forbid (principal, action == Roomler::Action::"secret:use", resource)
+        text: r#"forbid (principal, action == MeshHarbor::Action::"secret:use", resource)
 when { context.mode == "short-lived" && resource.kind != "dynamic" };"#,
     },
     // P3-9-1 — each guardrail above names `secret:use`, so none binds a
@@ -182,9 +182,9 @@ when { context.mode == "short-lived" && resource.kind != "dynamic" };"#,
     // secret names, exactly.
     Guardrail {
         id: "guardrail:connect-only-named-audiences",
-        why: "a person's endpoint (`roomler connect`) signs in only to an upstream its secret \
+        why: "a person's endpoint (`mh connect`) signs in only to an upstream its secret \
               names in `audiences`, exactly: an endpoint pointed anywhere else is refused",
-        text: r#"forbid (principal, action == Roomler::Action::"secret:connect", resource)
+        text: r#"forbid (principal, action == MeshHarbor::Action::"secret:connect", resource)
 when { !(resource.audiences.contains(context.audience)) };"#,
     },
     // P3-9-1 — the twin of `dynamic-only-short-lived`: a dynamic secret's
@@ -194,7 +194,7 @@ when { !(resource.audiences.contains(context.audience)) };"#,
         id: "guardrail:connect-never-dynamic",
         why: "a dynamic secret's fields are its issuer's, the account that mints: no person's \
               endpoint signs in with one",
-        text: r#"forbid (principal, action == Roomler::Action::"secret:connect", resource)
+        text: r#"forbid (principal, action == MeshHarbor::Action::"secret:connect", resource)
 when { resource.kind == "dynamic" };"#,
     },
     // P3-9-1 — decision 24: no person reaches a production secret through
@@ -202,9 +202,9 @@ when { resource.kind == "dynamic" };"#,
     // person's read of one, and P3-9 has no approver for a person.
     Guardrail {
         id: "guardrail:connect-never-prod",
-        why: "no person reaches a production secret through `roomler connect` (decision 24): a \
+        why: "no person reaches a production secret through `mh connect` (decision 24): a \
               secret tagged `prod`, or under the folder `prod/`",
-        text: r#"forbid (principal, action == Roomler::Action::"secret:connect", resource)
+        text: r#"forbid (principal, action == MeshHarbor::Action::"secret:connect", resource)
 when { resource.tags.contains("prod") || resource.path == "prod" || resource.path like "prod/*" };"#,
     },
 ];
@@ -216,7 +216,7 @@ pub struct OrgNames {
     pub secret_prefix: String,
     /// The organization's vault roles.
     pub roles: BTreeSet<String>,
-    /// The organization's roomler role names (the `Group`s).
+    /// The organization's meshharbor role names (the `Group`s).
     pub groups: BTreeSet<String>,
 }
 
@@ -281,7 +281,7 @@ pub fn check_policy(text: &str, names: &OrgNames) -> Result<CheckedPolicy, Strin
     let mut users = BTreeSet::new();
     let mut nodes = BTreeSet::new();
     for (ty, id) in refs {
-        match ty.strip_prefix("Roomler::").unwrap_or(&ty) {
+        match ty.strip_prefix("MeshHarbor::").unwrap_or(&ty) {
             "Secret" | "SecretFolder" => {
                 let Some(path) = id.strip_prefix(&names.secret_prefix) else {
                     return Err(format!(
@@ -500,8 +500,8 @@ pub struct SessionFacts {
 }
 
 /// P3-4e — the person who said yes to an approval card, as a policy reads
-/// them: `context.approval.approver`, in a `Group` per roomler role they
-/// hold, so `approver in Roomler::Group::"admin"` holds for an admin.
+/// them: `context.approval.approver`, in a `Group` per meshharbor role they
+/// hold, so `approver in MeshHarbor::Group::"admin"` holds for an admin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Approver {
     pub id: ObjectId,
@@ -551,7 +551,7 @@ pub enum Ask {
         device: DeviceFacts,
     },
     /// P3-8 — `ssh:run`: may `session`, on `device`, run one command on
-    /// `node` over Roomler SSH, as `account` (the account `node`'s SSH policy
+    /// `node` over MeshHarbor SSH, as `account` (the account `node`'s SSH policy
     /// maps, as an `SshAccountMode` word)?
     SshRun {
         session: SessionFacts,
@@ -1236,9 +1236,9 @@ mod tests {
         }
     }
 
-    const DEV_LISTS_STAGING: &str = r#"permit (principal in Roomler::Role::"dev",
-        action == Roomler::Action::"secret:list",
-        resource in Roomler::SecretFolder::"rrn:grox:secret:staging");"#;
+    const DEV_LISTS_STAGING: &str = r#"permit (principal in MeshHarbor::Role::"dev",
+        action == MeshHarbor::Action::"secret:list",
+        resource in MeshHarbor::SecretFolder::"rrn:grox:secret:staging");"#;
 
     fn set_with(policies: &[&str]) -> PolicySet {
         policy_set(
@@ -1250,9 +1250,9 @@ mod tests {
         .unwrap()
     }
 
-    const DEV_STAGING: &str = r#"permit (principal in Roomler::Role::"dev",
-        action == Roomler::Action::"secret:use",
-        resource in Roomler::SecretFolder::"rrn:grox:secret:staging");"#;
+    const DEV_STAGING: &str = r#"permit (principal in MeshHarbor::Role::"dev",
+        action == MeshHarbor::Action::"secret:use",
+        resource in MeshHarbor::SecretFolder::"rrn:grox:secret:staging");"#;
 
     #[test]
     fn the_schema_and_every_guardrail_hold() {
@@ -1308,7 +1308,7 @@ mod tests {
 
     #[test]
     fn windows_gets_a_secret_through_a_proxy_only() {
-        let any = r#"permit (principal, action == Roomler::Action::"secret:use", resource);"#;
+        let any = r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource);"#;
         let set = set_with(&[any]);
         assert!(
             decide(
@@ -1355,7 +1355,7 @@ mod tests {
     /// and in no other mode: whatever a policy permits.
     #[test]
     fn a_dynamic_secret_is_used_short_lived_alone() {
-        let any = r#"permit (principal, action == Roomler::Action::"secret:use", resource);"#;
+        let any = r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource);"#;
         let set = set_with(&[any]);
         for os in ["linux", "macos"] {
             let ask = of_kind(
@@ -1382,7 +1382,7 @@ mod tests {
     /// P3-6b — and `short-lived` leases nothing a dynamic secret is not.
     #[test]
     fn short_lived_uses_a_dynamic_secret_alone() {
-        let any = r#"permit (principal, action == Roomler::Action::"secret:use", resource);"#;
+        let any = r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource);"#;
         let set = set_with(&[any]);
         for kind in ["static", "structured", "template", ""] {
             let ask = of_kind(
@@ -1403,7 +1403,7 @@ mod tests {
     /// credential minted for minutes is what it pushes toward.
     #[test]
     fn a_prod_credential_is_minted_short_lived() {
-        let any = r#"permit (principal, action == Roomler::Action::"secret:use", resource);"#;
+        let any = r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource);"#;
         let set = set_with(&[any]);
         for (path, tags) in [("prod/db", &[][..]), ("svc/db", &["prod"][..])] {
             let ask = of_kind(
@@ -1416,7 +1416,7 @@ mod tests {
 
     #[test]
     fn a_prod_value_never_materializes() {
-        let any = r#"permit (principal, action == Roomler::Action::"secret:use", resource);"#;
+        let any = r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource);"#;
         let set = set_with(&[any]);
         for (path, tags) in [
             ("prod", &[][..]),
@@ -1444,7 +1444,7 @@ mod tests {
     /// bare name; every other mode is not held to the list.
     #[test]
     fn exec_reaches_only_a_program_its_secret_names() {
-        let any = r#"permit (principal, action == Roomler::Action::"secret:use", resource);"#;
+        let any = r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource);"#;
         let set = set_with(&[any]);
         let with = |audience: &str, allow: &[&str], mode: &str| {
             let mut ask = use_secret(Some("dev"), "staging/db", &[], mode, "linux");
@@ -1487,7 +1487,7 @@ mod tests {
     /// upstream is held to the audiences.
     #[test]
     fn a_proxy_reaches_only_an_audience_its_secret_names() {
-        let any = r#"permit (principal, action == Roomler::Action::"secret:use", resource);"#;
+        let any = r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource);"#;
         let set = set_with(&[any]);
         let with = |audience: &str, audiences: &[&str], mode: &str| {
             let mut ask = use_secret(Some("dev"), "staging/db", &[], mode, "linux");
@@ -1550,7 +1550,7 @@ mod tests {
             panic!("{back:?}")
         };
         assert!(secret.audiences.is_empty());
-        let any = r#"permit (principal, action == Roomler::Action::"secret:use", resource);"#;
+        let any = r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource);"#;
         let v = decide(&set_with(&[any]), &back);
         assert_eq!(v.determining, ["guardrail:proxy-only-named-audiences"]);
     }
@@ -1570,15 +1570,15 @@ mod tests {
             panic!("{back:?}")
         };
         assert!(secret.exec_allow.is_empty());
-        let any = r#"permit (principal, action == Roomler::Action::"secret:use", resource);"#;
+        let any = r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource);"#;
         let v = decide(&set_with(&[any]), &back);
         assert_eq!(v.determining, ["guardrail:exec-only-allowed-programs"]);
     }
 
     #[test]
     fn a_forbid_beats_every_permit() {
-        let any = r#"permit (principal, action == Roomler::Action::"secret:use", resource);"#;
-        let no_dev = r#"forbid (principal in Roomler::Role::"dev", action, resource);"#;
+        let any = r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource);"#;
+        let no_dev = r#"forbid (principal in MeshHarbor::Role::"dev", action, resource);"#;
         let set = set_with(&[any, no_dev]);
         let v = decide(
             &set,
@@ -1590,8 +1590,8 @@ mod tests {
 
     #[test]
     fn role_assume_reads_the_device() {
-        let p = r#"permit (principal in Roomler::Group::"member",
-            action == Roomler::Action::"role:assume", resource == Roomler::Role::"dev")
+        let p = r#"permit (principal in MeshHarbor::Group::"member",
+            action == MeshHarbor::Action::"role:assume", resource == MeshHarbor::Role::"dev")
             when { context.device.owner == principal || context.device.tags.contains("build") };"#;
         let set = set_with(&[p]);
         let me = ObjectId::new();
@@ -1624,8 +1624,8 @@ mod tests {
 
     #[test]
     fn an_approval_can_be_required() {
-        let p = r#"permit (principal in Roomler::Role::"deployer",
-            action == Roomler::Action::"secret:use", resource)
+        let p = r#"permit (principal in MeshHarbor::Role::"deployer",
+            action == MeshHarbor::Action::"secret:use", resource)
             when { context.ttl_s <= 900 && context has approval };"#;
         let set = set_with(&[p]);
         let mut ask = use_secret(Some("deployer"), "deploy/key", &[], "proxy", "linux");
@@ -1648,9 +1648,9 @@ mod tests {
     /// is not another's, and a person in no named group allows nothing.
     #[test]
     fn a_policy_may_name_whose_approval_counts() {
-        let p = r#"permit (principal in Roomler::Role::"deployer",
-            action == Roomler::Action::"secret:use", resource)
-            when { context has approval && context.approval.approver in Roomler::Group::"admin" };"#;
+        let p = r#"permit (principal in MeshHarbor::Role::"deployer",
+            action == MeshHarbor::Action::"secret:use", resource)
+            when { context has approval && context.approval.approver in MeshHarbor::Group::"admin" };"#;
         let set = set_with(&[p]);
         let mut ask = use_secret(Some("deployer"), "deploy/key", &[], "proxy", "linux");
         let approved_by = |ask: &mut Ask, groups: &[&str]| {
@@ -1676,10 +1676,10 @@ mod tests {
     /// approver of their own session's use, and take anyone else's yes.
     #[test]
     fn a_policy_may_refuse_an_owners_yes_to_their_own_session() {
-        let p = r#"permit (principal in Roomler::Role::"deployer",
-            action == Roomler::Action::"secret:use", resource)
+        let p = r#"permit (principal in MeshHarbor::Role::"deployer",
+            action == MeshHarbor::Action::"secret:use", resource)
             when { context has approval };"#;
-        let f = r#"forbid (principal, action == Roomler::Action::"secret:use", resource)
+        let f = r#"forbid (principal, action == MeshHarbor::Action::"secret:use", resource)
             when { context has approval && context.approval.approver == principal.owner };"#;
         let set = set_with(&[p, f]);
         let mut ask = use_secret(Some("deployer"), "deploy/key", &[], "proxy", "linux");
@@ -1715,39 +1715,39 @@ mod tests {
                 "not a Cedar policy",
             ),
             (
-                r#"permit (principal, action == Roomler::Action::"secret:read", resource);"#,
+                r#"permit (principal, action == MeshHarbor::Action::"secret:read", resource);"#,
                 "schema",
             ),
             (
-                r#"permit (principal, action == Roomler::Action::"secret:use", resource) when { context.nope == 1 };"#,
+                r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource) when { context.nope == 1 };"#,
                 "schema",
             ),
             (
-                r#"permit (principal, action == Roomler::Action::"secret:use", resource in Roomler::SecretFolder::"rrn:other:secret:prod");"#,
+                r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource in MeshHarbor::SecretFolder::"rrn:other:secret:prod");"#,
                 "not this organization",
             ),
             (
-                r#"permit (principal, action == Roomler::Action::"secret:use", resource in Roomler::SecretFolder::"rrn:grox:secret:Prod");"#,
+                r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource in MeshHarbor::SecretFolder::"rrn:grox:secret:Prod");"#,
                 "segment",
             ),
             (
-                r#"permit (principal in Roomler::Role::"admin2", action, resource);"#,
+                r#"permit (principal in MeshHarbor::Role::"admin2", action, resource);"#,
                 "vault roles",
             ),
             (
-                r#"permit (principal in Roomler::Group::"ghosts", action, resource);"#,
+                r#"permit (principal in MeshHarbor::Group::"ghosts", action, resource);"#,
                 "roles",
             ),
             (
-                r#"permit (principal == Roomler::Session::"abc", action, resource);"#,
+                r#"permit (principal == MeshHarbor::Session::"abc", action, resource);"#,
                 "one session",
             ),
             (
-                r#"permit (principal == Roomler::User::"not-an-id", action, resource);"#,
+                r#"permit (principal == MeshHarbor::User::"not-an-id", action, resource);"#,
                 "user id",
             ),
             (
-                r#"permit (principal, action == Roomler::Action::"secret:use", resource) when { resource in Roomler::SecretFolder::"rrn:other:secret:x" };"#,
+                r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource) when { resource in MeshHarbor::SecretFolder::"rrn:other:secret:x" };"#,
                 "not this organization",
             ),
         ];
@@ -1757,7 +1757,7 @@ mod tests {
         }
         let u = ObjectId::new();
         let named = format!(
-            r#"forbid (principal == Roomler::User::"{}", action, resource);"#,
+            r#"forbid (principal == MeshHarbor::User::"{}", action, resource);"#,
             u.to_hex()
         );
         let c = check_policy(&named, &n).unwrap();
@@ -1820,7 +1820,7 @@ mod tests {
     /// listing, on Windows or of a production secret.
     #[test]
     fn no_guardrail_stops_a_listing() {
-        let any = r#"permit (principal, action == Roomler::Action::"secret:list", resource);"#;
+        let any = r#"permit (principal, action == MeshHarbor::Action::"secret:list", resource);"#;
         let set = set_with(&[any]);
         for ask in [
             list_secret(Some("dev"), "staging/db", "windows"),
@@ -1933,8 +1933,8 @@ mod tests {
         }
     }
 
-    const DEV_SOCKS_THROUGH_OFFICE: &str = r#"permit (principal in Roomler::Role::"dev",
-        action == Roomler::Action::"net:socks",
+    const DEV_SOCKS_THROUGH_OFFICE: &str = r#"permit (principal in MeshHarbor::Role::"dev",
+        action == MeshHarbor::Action::"net:socks",
         resource) when { resource.tags.contains("office") };"#;
 
     /// P3-7 — a session's role is permitted SOCKS through an exit by the
@@ -1964,8 +1964,8 @@ mod tests {
     /// reads from the context.
     #[test]
     fn a_forward_is_decided_toward_its_destination() {
-        let set = set_with(&[r#"permit (principal in Roomler::Role::"dev",
-            action == Roomler::Action::"net:forward",
+        let set = set_with(&[r#"permit (principal in MeshHarbor::Role::"dev",
+            action == MeshHarbor::Action::"net:forward",
             resource) when { context.port == 5432 && context.host like "*.internal" };"#]);
         assert!(decide(&set, &net_forward(Some("dev"), &[], "db.internal", 5432)).allow);
         for (host, port) in [("db.internal", 22), ("db.example.com", 5432)] {
@@ -2006,8 +2006,8 @@ mod tests {
         let id = ObjectId::new();
         let checked = check_policy(
             &format!(
-                r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"net:socks",
-                resource == Roomler::Node::"{}");"#,
+                r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"net:socks",
+                resource == MeshHarbor::Node::"{}");"#,
                 id.to_hex()
             ),
             &names(),
@@ -2015,7 +2015,7 @@ mod tests {
         .unwrap();
         assert_eq!(checked.nodes, [id].into_iter().collect());
         let not_an_id = check_policy(
-            r#"permit (principal, action == Roomler::Action::"net:socks", resource == Roomler::Node::"office");"#,
+            r#"permit (principal, action == MeshHarbor::Action::"net:socks", resource == MeshHarbor::Node::"office");"#,
             &names(),
         );
         assert!(not_an_id.unwrap_err().contains("is not a device id"));
@@ -2034,19 +2034,19 @@ mod tests {
         for (text, why, cedar) in [
             (
                 format!(
-                    r#"forbid (principal, action == Roomler::Action::"secret:use", resource == Roomler::Node::"{node}");"#
+                    r#"forbid (principal, action == MeshHarbor::Action::"secret:use", resource == MeshHarbor::Node::"{node}");"#
                 ),
                 "a Node where secret:use takes a Secret",
                 no_action,
             ),
             (
-                r#"forbid (principal, action == Roomler::Action::"net:socks", resource is Roomler::Secret);"#
+                r#"forbid (principal, action == MeshHarbor::Action::"net:socks", resource is MeshHarbor::Secret);"#
                     .to_string(),
                 "a Secret where net:socks takes a Node",
                 no_action,
             ),
             (
-                r#"forbid (principal, action == Roomler::Action::"net:socks", resource) when { false };"#
+                r#"forbid (principal, action == MeshHarbor::Action::"net:socks", resource) when { false };"#
                     .to_string(),
                 "a condition that is always false",
                 always_false,
@@ -2059,9 +2059,9 @@ mod tests {
         // What can apply is kept, a forbid as a permit.
         for text in [
             format!(
-                r#"forbid (principal, action == Roomler::Action::"net:socks", resource == Roomler::Node::"{node}");"#
+                r#"forbid (principal, action == MeshHarbor::Action::"net:socks", resource == MeshHarbor::Node::"{node}");"#
             ),
-            r#"forbid (principal, action == Roomler::Action::"net:forward", resource) when { context.port == 22 };"#
+            r#"forbid (principal, action == MeshHarbor::Action::"net:forward", resource) when { context.port == 22 };"#
                 .to_string(),
         ] {
             check_policy(&text, &names()).unwrap_or_else(|e| panic!("{text}: {e}"));
@@ -2077,8 +2077,8 @@ mod tests {
         }
     }
 
-    const DEV_RUNS_ON_BUILD: &str = r#"permit (principal in Roomler::Role::"dev",
-        action == Roomler::Action::"ssh:run",
+    const DEV_RUNS_ON_BUILD: &str = r#"permit (principal in MeshHarbor::Role::"dev",
+        action == MeshHarbor::Action::"ssh:run",
         resource) when { resource.tags.contains("build") };"#;
 
     /// P3-8 — a session's role is permitted a command on a node by the
@@ -2123,7 +2123,7 @@ mod tests {
     fn a_guardrail_may_forbid_a_session_the_daemons_account() {
         let set = set_with(&[
             DEV_RUNS_ON_BUILD,
-            r#"forbid (principal, action == Roomler::Action::"ssh:run", resource)
+            r#"forbid (principal, action == MeshHarbor::Action::"ssh:run", resource)
                 when { context.account == "daemon" };"#,
         ]);
         assert!(decide(&set, &ssh_run(Some("dev"), &["build"], "console_user")).allow);
@@ -2153,16 +2153,16 @@ mod tests {
     #[test]
     fn an_ssh_policy_is_checked_as_a_net_one_is() {
         let refused = check_policy(
-            r#"forbid (principal, action == Roomler::Action::"ssh:run", resource is Roomler::Secret);"#,
+            r#"forbid (principal, action == MeshHarbor::Action::"ssh:run", resource is MeshHarbor::Secret);"#,
             &names(),
         )
         .expect_err("a Secret where ssh:run takes a Node");
         assert!(refused.contains("can never apply"), "{refused}");
         for text in [
-            r#"forbid (principal, action == Roomler::Action::"ssh:run", resource) when { context.account == "daemon" };"#
+            r#"forbid (principal, action == MeshHarbor::Action::"ssh:run", resource) when { context.account == "daemon" };"#
                 .to_string(),
             format!(
-                r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"ssh:run", resource == Roomler::Node::"{}");"#,
+                r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"ssh:run", resource == MeshHarbor::Node::"{}");"#,
                 ObjectId::new().to_hex()
             ),
         ] {
@@ -2193,9 +2193,9 @@ mod tests {
         }
     }
 
-    const MEMBERS_CONNECT_TO_DB: &str = r#"permit (principal in Roomler::Group::"member",
-        action == Roomler::Action::"secret:connect",
-        resource in Roomler::SecretFolder::"rrn:grox:secret:db");"#;
+    const MEMBERS_CONNECT_TO_DB: &str = r#"permit (principal in MeshHarbor::Group::"member",
+        action == MeshHarbor::Action::"secret:connect",
+        resource in MeshHarbor::SecretFolder::"rrn:grox:secret:db");"#;
 
     /// P3-9-1 — only a permit that names `secret:connect` admits a person: one
     /// written for sessions does not, and neither does one whose scope names
@@ -2207,9 +2207,9 @@ mod tests {
         assert!(ok.allow && ok.errors.is_empty(), "{ok:?}");
         assert_eq!(ok.determining, ["policy:0"]);
         for wide in [
-            r#"permit (principal, action == Roomler::Action::"secret:use", resource);"#,
+            r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource);"#,
             r#"permit (principal, action, resource);"#,
-            r#"permit (principal in Roomler::Group::"member", action, resource);"#,
+            r#"permit (principal in MeshHarbor::Group::"member", action, resource);"#,
         ] {
             let v = decide(&set_with(&[wide]), &asked);
             assert!(!v.allow, "{wide}: {v:?}");
@@ -2219,8 +2219,8 @@ mod tests {
             );
         }
         // Named in a list, it counts.
-        let listed = r#"permit (principal in Roomler::Group::"member",
-            action in [Roomler::Action::"secret:use", Roomler::Action::"secret:connect"],
+        let listed = r#"permit (principal in MeshHarbor::Group::"member",
+            action in [MeshHarbor::Action::"secret:use", MeshHarbor::Action::"secret:connect"],
             resource);"#;
         assert!(decide(&set_with(&[listed]), &asked).allow);
         // A forbid whose scope names no action binds a person too.
@@ -2251,7 +2251,8 @@ mod tests {
     /// whatever someone's yes would say.
     #[test]
     fn a_persons_endpoint_is_held_by_its_own_guardrails() {
-        let any = r#"permit (principal, action == Roomler::Action::"secret:connect", resource);"#;
+        let any =
+            r#"permit (principal, action == MeshHarbor::Action::"secret:connect", resource);"#;
         let set = set_with(&[any]);
         assert!(decide(&set, &connect(&[], "db/orders", &[], "db.internal:5432")).allow);
         let with_yes = |mut ask: Ask| {
@@ -2321,9 +2322,9 @@ mod tests {
     #[test]
     fn a_persons_request_reads_as_a_policy_names_it() {
         let set = set_with(&[
-            r#"permit (principal, action == Roomler::Action::"secret:connect", resource)
+            r#"permit (principal, action == MeshHarbor::Action::"secret:connect", resource)
             when { principal == context.device.owner && context has approval
-                   && context.approval.approver in Roomler::Group::"admin"
+                   && context.approval.approver in MeshHarbor::Group::"admin"
                    && context.approval.approver != principal };"#,
         ]);
         let mut ask = connect(&["member", "admin"], "db/orders", &[], "db.internal:5432");
@@ -2382,7 +2383,7 @@ mod tests {
     #[test]
     fn a_connect_policy_names_people_never_sessions() {
         let refused = check_policy(
-            r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"secret:connect", resource);"#,
+            r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"secret:connect", resource);"#,
             &names(),
         )
         .expect_err("a role where secret:connect takes a person");
@@ -2390,10 +2391,10 @@ mod tests {
         for text in [
             MEMBERS_CONNECT_TO_DB.to_string(),
             format!(
-                r#"permit (principal == Roomler::User::"{}", action == Roomler::Action::"secret:connect", resource);"#,
+                r#"permit (principal == MeshHarbor::User::"{}", action == MeshHarbor::Action::"secret:connect", resource);"#,
                 ObjectId::new().to_hex()
             ),
-            r#"permit (principal, action == Roomler::Action::"secret:connect", resource) when { principal == context.device.owner && context.ttl_s <= 300 };"#.to_string(),
+            r#"permit (principal, action == MeshHarbor::Action::"secret:connect", resource) when { principal == context.device.owner && context.ttl_s <= 300 };"#.to_string(),
         ] {
             check_policy(&text, &names()).unwrap_or_else(|e| panic!("{text}: {e}"));
         }

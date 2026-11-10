@@ -1,13 +1,13 @@
 ---
 title: The agent
-description: What roomlerd actually is, why it is a single process rather than several, how it runs on each OS, and how it keeps itself updated safely.
+description: What meshharbord actually is, why it is a single process rather than several, how it runs on each OS, and how it keeps itself updated safely.
 tags: [architecture, agent, design, windows, macos, linux]
 hero: devices.svg
 heroAlt: One agent binary on each machine, serving remote desktop, the mesh, tunnels and SSH at once
 order: 2
 ---
 
-`roomlerd` is one native binary that is, simultaneously:
+`meshharbord` is one native binary that is, simultaneously:
 
 :::badges
 - **The remote-desktop target** icon:monitor — capture, encode, input injection, clipboard, file transfer.
@@ -46,9 +46,9 @@ A Windows service (`LocalSystem`) or a scheduled task, depending on the install
 mode you chose. The system service is the one that can reach the lock screen and
 the pre-logon desktop.
 
-Alongside it: `roomler.exe` — a small shim that re-execs the agent's own command
+Alongside it: `mh.exe` — a small shim that re-execs the agent's own command
 surface, so the CLI and the daemon can never disagree about their version — and
-`roomler-desktop.exe`, the tray companion.
+`meshharbor-desktop.exe`, the tray companion.
 
 @macos
 Two processes, because macOS forces it: a **LaunchAgent** in your GUI session

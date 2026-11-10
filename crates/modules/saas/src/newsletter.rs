@@ -24,14 +24,14 @@ use axum::{
 use bson::DateTime;
 use serde::{Deserialize, Serialize};
 
-use roomler_ai_db::models::{IssueCounts, IssueStatus, NewsletterIssue};
-use roomler_ai_services::email::SendOptions;
-use roomler_ai_services::newsletter::{
+use meshharbor_db::models::{IssueCounts, IssueStatus, NewsletterIssue};
+use meshharbor_services::email::SendOptions;
+use meshharbor_services::newsletter::{
     LinkTags, clean_header_text, render_issue_html, site_hosts, substitute_recipient,
 };
 
-use roomler_core::guards::require_platform_admin;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::guards::require_platform_admin;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::SaasState;
 
@@ -165,7 +165,7 @@ fn clean_audience(raw: Option<Vec<String>>) -> Result<Option<Vec<String>>, ApiEr
     };
     let mut out: Vec<String> = Vec::with_capacity(raw.len());
     for a in &raw {
-        let a = roomler_ai_db::models::Subscriber::normalize_email(a);
+        let a = meshharbor_db::models::Subscriber::normalize_email(a);
         if a.is_empty() || a.len() > 254 || !a.contains('@') || a.chars().any(char::is_whitespace) {
             return Err(ApiError::Validation(
                 "audience must list plausible addresses".into(),
@@ -515,7 +515,7 @@ pub async fn test_send(
 
     let Some(mailer) = state.email.clone() else {
         return Err(ApiError::BadRequest(
-            "no mailer configured — set ROOMLER__EMAIL__API_KEY or SMTP host/port".into(),
+            "no mailer configured — set MESHHARBOR__EMAIL__API_KEY or SMTP host/port".into(),
         ));
     };
     let to = body.email.trim().to_string();
@@ -575,7 +575,7 @@ pub async fn send(
     // misconfigured pod would be strictly worse than refusing loudly.
     if state.email.is_none() {
         return Err(ApiError::BadRequest(
-            "no mailer configured — set ROOMLER__EMAIL__API_KEY or SMTP host/port".into(),
+            "no mailer configured — set MESHHARBOR__EMAIL__API_KEY or SMTP host/port".into(),
         ));
     }
 
@@ -780,12 +780,12 @@ mod tests {
     #[test]
     fn the_unsubscribe_link_names_the_issue() {
         assert_eq!(
-            unsubscribe_link("https://roomler.ai/", "tok", Some("oct")),
-            "https://roomler.ai/api/subscribe/unsubscribe/tok?i=oct"
+            unsubscribe_link("https://meshharbor.itachi.fans/", "tok", Some("oct")),
+            "https://meshharbor.itachi.fans/api/subscribe/unsubscribe/tok?i=oct"
         );
         assert_eq!(
-            unsubscribe_link("https://roomler.ai", "tok", None),
-            "https://roomler.ai/api/subscribe/unsubscribe/tok"
+            unsubscribe_link("https://meshharbor.itachi.fans", "tok", None),
+            "https://meshharbor.itachi.fans/api/subscribe/unsubscribe/tok"
         );
     }
 }

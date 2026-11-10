@@ -18,7 +18,7 @@ const API_URL = process.env.E2E_API_URL || 'http://localhost:5001'
 test.describe('Email-related flows', () => {
   test.describe('Registration & Activation', () => {
     test('registration triggers SMTP delivery captured by Mailpit', async () => {
-      // The e2e overlay sets ROOMLER__EMAIL__SMTP_HOST=mailpit so the
+      // The e2e overlay sets MESHHARBOR__EMAIL__SMTP_HOST=mailpit so the
       // EmailService dispatches every send through plaintext SMTP to
       // the Mailpit pod. AUTO_VERIFY=true still flips is_verified at
       // register time (so the existing 100+ specs keep working), but
@@ -32,7 +32,7 @@ test.describe('Email-related flows', () => {
       expect(mail.subject.toLowerCase()).toContain('activate')
       expect(mail.html.length).toBeGreaterThan(0)
       expect(mail.activationUrl).toBeTruthy()
-      // Activation URL targets the configured FRONTEND_URL (http://roomler2
+      // Activation URL targets the configured FRONTEND_URL (http://meshharbor2
       // in cluster) plus the /auth/activate path. It carries a 24-char
       // hex userId and a 7-char nanoid token.
       expect(mail.activationUrl).toMatch(

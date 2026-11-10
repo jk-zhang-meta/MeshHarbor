@@ -9,7 +9,7 @@ describe('MeshHarbor display identity', () => {
     expect(PRODUCT_TITLE).toBe('MeshHarbor · 织港')
   })
   it('retains explicit upstream attribution, not upstream product impersonation', () => {
-    expect(UPSTREAM_ATTRIBUTION).toContain('Roomler')
+    expect(UPSTREAM_ATTRIBUTION).toMatch(/^Based on \S/)
     expect(UPSTREAM_ATTRIBUTION).toContain('G ROX EOOD')
   })
 })

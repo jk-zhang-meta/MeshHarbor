@@ -2,7 +2,7 @@
 //! Bilateral candidate orchestration, extending the existing org-relay owner.
 //! Metadata and active legacy sessions are never substituted for a candidate.
 use super::*;
-use roomler_core::rate_limit::RateLimiter;
+use meshharbor_core::rate_limit::RateLimiter;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tokio::sync::watch;
@@ -194,7 +194,7 @@ pub(super) fn revoke_removed_backbone_edges(
     state: &NetworkState,
     tenant: ObjectId,
     source: ObjectId,
-    approved: &[roomler_ai_remote_control::models::PeerRelayBackboneEdge],
+    approved: &[meshharbor_remote_control::models::PeerRelayBackboneEdge],
 ) -> Vec<PeerRelayAuditEvent> {
     let mut entries = state
         .org_relay
@@ -298,6 +298,11 @@ fn retire_relays(state: &NetworkState, trial: &Trial) {
         &trial.session.relay.node_ref,
         ServerMsg::OverlayRelayRevoke {
             vni: trial.session.vni,
+            scope: RelayRevokeScopeWire {
+                relay_node_id: trial.session.relay.node_id,
+                generation: trial.session.generation,
+                peer_node_id: None,
+            },
         },
     );
     for (target, message) in trial.session.hop_revocations() {
@@ -307,7 +312,14 @@ fn retire_relays(state: &NetworkState, trial: &Trial) {
         push_control(
             state,
             &path.exit.relay.node_ref,
-            ServerMsg::OverlayRelayRevoke { vni: path.exit.vni },
+            ServerMsg::OverlayRelayRevoke {
+                vni: path.exit.vni,
+                scope: RelayRevokeScopeWire {
+                    relay_node_id: path.exit.relay.node_id,
+                    generation: path.exit.generation,
+                    peer_node_id: None,
+                },
+            },
         );
         push_control(
             state,
@@ -340,12 +352,12 @@ fn revoke_event(trial: &Trial, reason: &str) -> PeerRelayAuditEvent {
     }
 }
 
-fn trial_path(trial: &Trial) -> roomler_ai_remote_control::signaling::RelayPathWire {
+fn trial_path(trial: &Trial) -> meshharbor_remote_control::signaling::RelayPathWire {
     let mut nodes: Vec<_> = trial.session.relay_nodes().collect();
     if let Some(backbone) = trial.backbone.as_ref() {
         nodes.push(backbone.exit.relay.node_id);
     }
-    roomler_ai_remote_control::signaling::RelayPathWire::new(nodes)
+    meshharbor_remote_control::signaling::RelayPathWire::new(nodes)
         .expect("admitted trial path is nonempty and unique")
 }
 
@@ -544,7 +556,7 @@ async fn trial_pair_evidence(
     peer: &OverlayNode,
 ) -> TrialPairEvidence {
     use crate::business_isolation::{self as iso, Mode};
-    use roomler_core::business_authority::{
+    use meshharbor_core::business_authority::{
         TrialServerEvidence as E, trial_device_role_evidence, trial_server_evidence,
     };
     if iso::mode(state) != Mode::Enforce {
@@ -605,7 +617,7 @@ async fn trial_pair_evidence(
             Ok(Some(network)) => network,
             _ => return TrialPairEvidence::Unknown,
         };
-        let pair = roomler_ai_remote_control::models::ServerLink::ordered(*a, *b);
+        let pair = meshharbor_remote_control::models::ServerLink::ordered(*a, *b);
         if network
             .server_links
             .iter()
@@ -625,7 +637,7 @@ pub async fn request(
     ident: NodeIdentity,
     peer_id: ObjectId,
     request_id: u64,
-    path: roomler_ai_remote_control::signaling::RelayPathWire,
+    path: meshharbor_remote_control::signaling::RelayPathWire,
     requester_at_exit: bool,
 ) {
     let Some(requester) = current_node(state, ident).await else {

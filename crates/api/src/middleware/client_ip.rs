@@ -5,7 +5,7 @@
 //! The rule itself — only the entries our own proxies appended to
 //! `X-Forwarded-For` are evidence, so the client is the entry just left of
 //! the trusted suffix, else the socket peer — lives in
-//! [`roomler_core::client_ip`] since FR-102 P3c, so that the `fleet`
+//! [`meshharbor_core::client_ip`] since FR-102 P3c, so that the `fleet`
 //! module's install trace reads a client address exactly as the limiter
 //! does. Re-exported here for the crate's existing callers (the credential
 //! gate, the `/ws` analytics session).
@@ -15,7 +15,7 @@ use std::net::IpAddr;
 use axum::http::Request;
 use tower_governor::{GovernorError, key_extractor::KeyExtractor};
 
-pub use roomler_core::client_ip::{client_ip, client_ip_from_headers};
+pub use meshharbor_core::client_ip::{client_ip, client_ip_from_headers};
 
 /// [`KeyExtractor`] keyed on the trusted client address.
 #[derive(Clone, Debug)]

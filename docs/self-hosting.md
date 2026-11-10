@@ -1,4 +1,4 @@
-# Self-hosting Roomler
+# Self-hosting MeshHarbor
 
 Everything, on your own machine, with no licence key, no activation, no device
 cap and no phone-home. The self-hosted edition is the same code that runs the
@@ -21,7 +21,7 @@ Redis, MinIO for file storage, and optionally coturn as a relay.
 |---|---|
 | Remote desktop in a browser tab | yes — peer-to-peer, the server only signals |
 | Overlay mesh, tunnels, SOCKS5, exit nodes, MagicDNS | yes |
-| `roomler ssh` (no `sshd`, no open port) | yes |
+| `mh ssh` (no `sshd`, no open port) | yes |
 | Chat, rooms, files, search | yes |
 | Video conferencing (mediasoup SFU) | yes, with the media-port caveat below |
 | Push notifications, email, OAuth, billing | needs your own keys — see *Optional integrations* |
@@ -38,16 +38,16 @@ and `GET /health` on any of them lists the modules it actually mounts.
 | `full` (default) | `<tag>` | everything | MongoDB, Redis, MinIO, coturn, the media port range | — |
 | `collab` | `<tag>-collab` | chat, rooms, files, video calls | MongoDB, Redis, MinIO, coturn, the media port range | the device fleet, the overlay mesh, tunnels, remote desktop |
 | `remote` | `<tag>-remote` | devices + remote desktop | MongoDB, Redis, coturn | the SFU worker build, MinIO, the overlay mesh |
-| `mesh` | `<tag>-mesh` | devices + overlay mesh, tunnels, `roomler ssh` | MongoDB, Redis, coturn (and DERP relays if you run them) | the SFU worker build, MinIO |
+| `mesh` | `<tag>-mesh` | devices + overlay mesh, tunnels, `mh ssh` | MongoDB, Redis, coturn (and DERP relays if you run them) | the SFU worker build, MinIO |
 | `access` | `<tag>-access` | devices + remote desktop + mesh — no chat, no calls | MongoDB, Redis, coturn | the SFU worker build, MinIO |
 
-Pick one by **tag** when you pull (`ROOMLER_IMAGE=ghcr.io/gjovanov/roomler-ai:<tag>-mesh`
-in `.env.selfhost`) or by **`ROOMLER_PROFILE`** when you build from source. No published
-`v*` image carries the hosted service's billing and newsletter module — that is what `roomler.ai`
+Pick one by **tag** when you pull (`MESHHARBOR_IMAGE=ghcr.io/jk-zhang-meta/meshharbor:<tag>-mesh`
+in `.env.selfhost`) or by **`MESHHARBOR_PROFILE`** when you build from source. No published
+`v*` image carries the hosted service's billing and newsletter module — that is what `meshharbor.itachi.fans`
 runs, not what you run.
 
 > The same package also holds the **`hosted-<date>-<sha7>`** tags and the moving `hosted`
-> pointer: the image `roomler.ai` itself deploys, built from every merge to `master` by the
+> pointer: the image `meshharbor.itachi.fans` itself deploys, built from every merge to `master` by the
 > `hosted image` workflow (FR-73). It is the `full` composition **plus** the billing module,
 > holds no secret (everything is configuration), and is public because the source is — but it
 > is not a release: it is whatever `master` was an hour ago, with the Stripe webhook and the
@@ -67,8 +67,8 @@ runs, not what you run.
 **You need** Docker with Compose v2, ~4 GB RAM, and ~10 GB disk.
 
 ```bash
-git clone https://github.com/gjovanov/roomler-ai.git
-cd roomler-ai
+git clone https://github.com/jk-zhang-meta/MeshHarbor.git
+cd meshharbor
 
 cp .env.selfhost.example .env.selfhost
 ```
@@ -77,8 +77,8 @@ Open `.env.selfhost` and fill in the four required values. Generate the two
 secrets:
 
 ```bash
-openssl rand -hex 32   # → ROOMLER_JWT_SECRET
-openssl rand -hex 32   # → ROOMLER_TURN_SECRET
+openssl rand -hex 32   # → MESHHARBOR_JWT_SECRET
+openssl rand -hex 32   # → MESHHARBOR_TURN_SECRET
 openssl rand -hex 24   # → MONGO_ROOT_PASSWORD
 openssl rand -hex 24   # → MINIO_ROOT_PASSWORD
 ```
@@ -101,7 +101,7 @@ you the twenty minutes the published image exists to save, and it does it
 silently.
 
 > Images are published at
-> [`ghcr.io/gjovanov/roomler-ai`](https://github.com/gjovanov/roomler-ai/pkgs/container/roomler-ai)
+> [`ghcr.io/jk-zhang-meta/meshharbor`](https://github.com/jk-zhang-meta/MeshHarbor/pkgs/container/meshharbor)
 > for **linux/amd64 and linux/arm64**. The tag is a manifest list, so a
 > Raspberry Pi, an Apple Silicon Mac and an x86 VPS all pull the same name and
 > get the right image. Each architecture is built on its own native runner and
@@ -126,13 +126,13 @@ docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d --b
 > source build carries it only if you run `scripts/fetch-geoip.sh` before
 > building. Without it every country reads `unknown`, which is a supported
 > state, and the boot log warns once. To turn country lookups off in either
-> case, set `ROOMLER__STATS__GEOIP_MMDB` to an empty value. Details:
+> case, set `MESHHARBOR__STATS__GEOIP_MMDB` to an empty value. Details:
 > [`files/geoip/README.md`](../files/geoip/README.md).
 
 Watch it come up:
 
 ```bash
-docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost logs -f roomler
+docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost logs -f meshharbor
 curl -fsS http://localhost:8080/health && echo OK
 ```
 
@@ -176,14 +176,14 @@ curl -fsSL https://<your-host>/api/setup/install.sh | sh -s -- \
 ```
 
 The script you fetch **already points at your server**: the route that serves it
-substitutes your `ROOMLER_PUBLIC_URL` for the built-in default before the bytes
+substitutes your `MESHHARBOR_PUBLIC_URL` for the built-in default before the bytes
 leave the process, because a piped script has no way to see the URL it came from
 (FR-50). You can still pass `--server` / `-Server` to override it.
 
-⚠️ **This depends on `ROOMLER_PUBLIC_URL` being right.** If it is not a plain
+⚠️ **This depends on `MESHHARBOR_PUBLIC_URL` being right.** If it is not a plain
 `scheme://host[:port]`, the server logs a warning and serves the script with the
 hosted default untouched — at which point the agent downloads from you and then
-tries to enroll against `roomler.ai` with a token only your server can verify,
+tries to enroll against `meshharbor.itachi.fans` with a token only your server can verify,
 failing with an authentication error that says nothing about the real cause.
 Pass `--server` explicitly if you see that warning. The same value drives your
 OAuth returns, invite links and CORS policy, so it is worth getting right
@@ -199,9 +199,9 @@ The token is single-use and expires in 10 minutes. The agent connects
 Then, from the web app, open its desktop; or from any enrolled machine:
 
 ```bash
-roomler ping   <name>          # every node has a stable IP and a MagicDNS name
-roomler ssh    <name>          # a shell, with no sshd and no listening port
-roomler forward --agent <name> --local 127.0.0.1:5432 --remote db.internal:5432
+mh ping   <name>          # every node has a stable IP and a MagicDNS name
+mh ssh    <name>          # a shell, with no sshd and no listening port
+mh forward --agent <name> --local 127.0.0.1:5432 --remote db.internal:5432
 ```
 
 ---
@@ -212,7 +212,7 @@ Optional while you are trying it out on one machine, **required the moment you
 add a second** — enrollment refuses plaintext to anything but loopback, as the
 warning above explains.
 
-Terminate TLS in front of the stack and point it at `ROOMLER_HTTP_PORT`. The app
+Terminate TLS in front of the stack and point it at `MESHHARBOR_HTTP_PORT`. The app
 needs WebSocket upgrades on `/ws` and `/derp`, and both are long-lived — set
 generous read timeouts or sessions will be cut every 60 seconds.
 
@@ -222,7 +222,7 @@ never seen online again, because the agent's control socket can never open —
 and nothing in the UI distinguishes that from a machine that is switched off.
 
 ```caddy
-roomler.example.com {
+meshharbor.example.com {
     reverse_proxy 127.0.0.1:8080
 }
 ```
@@ -234,13 +234,13 @@ nginx, add the usual `Upgrade` / `Connection` headers and
 Then update `.env.selfhost` and restart:
 
 ```bash
-ROOMLER_PUBLIC_URL=https://roomler.example.com
-ROOMLER_ANNOUNCED_IP=<the host's public IP>
-ROOMLER_PUBLIC_IP=<the host's public IP>
-ROOMLER_TURN_URL=turn:roomler.example.com:3478
+MESHHARBOR_PUBLIC_URL=https://meshharbor.example.com
+MESHHARBOR_ANNOUNCED_IP=<the host's public IP>
+MESHHARBOR_PUBLIC_IP=<the host's public IP>
+MESHHARBOR_TURN_URL=turn:meshharbor.example.com:3478
 ```
 
-⚠️ `ROOMLER_PUBLIC_URL` is used for OAuth callbacks and for the links inside
+⚠️ `MESHHARBOR_PUBLIC_URL` is used for OAuth callbacks and for the links inside
 invitation and notification email. A stale value produces invitations that lead
 nowhere, and it is not obvious from the failure.
 
@@ -255,11 +255,11 @@ no reverse proxy is involved.
 
 Two settings decide whether it works:
 
-- `ROOMLER_ANNOUNCED_IP` — the address browsers send to. `127.0.0.1` works only
+- `MESHHARBOR_ANNOUNCED_IP` — the address browsers send to. `127.0.0.1` works only
   for calls made on the host itself.
 - the RTC port range — 32 ports are mapped by default, enough to try it out.
 
-On **Linux**, the clean answer is host networking: give the `roomler` service
+On **Linux**, the clean answer is host networking: give the `meshharbor` service
 `network_mode: host`, delete its `ports:` block, and the full 40000–49999 range
 is reachable. That is how the hosted service runs. It is not available on Docker
 Desktop for macOS/Windows, which is why the port-mapped form is the default.
@@ -273,18 +273,18 @@ parameters — it says nothing about whether packets can flow.
 ## Optional integrations
 
 None of these are required to run the product; all are off until you supply
-keys. Add them to the `roomler` service's `environment:` block, using the names
+keys. Add them to the `meshharbor` service's `environment:` block, using the names
 from [`.env.example`](../.env.example).
 
 | Feature | Variables |
 |---|---|
-| Outbound email (invites, notifications, activation) | `ROOMLER__EMAIL__*` |
-| OAuth sign-in (Google, GitHub, Microsoft, LinkedIn, Facebook) | `ROOMLER__OAUTH__*` |
-| Web push | `ROOMLER__PUSH__*` |
-| AI document recognition | `ROOMLER__CLAUDE__API_KEY` |
-| Stripe billing | `ROOMLER__STRIPE__*` |
+| Outbound email (invites, notifications, activation) | `MESHHARBOR__EMAIL__*` |
+| OAuth sign-in (Google, GitHub, Microsoft, LinkedIn, Facebook) | `MESHHARBOR__OAUTH__*` |
+| Web push | `MESHHARBOR__PUSH__*` |
+| AI document recognition | `MESHHARBOR__CLAUDE__API_KEY` |
+| Stripe billing | `MESHHARBOR__STRIPE__*` |
 
-⚠️ `ROOMLER_AUTO_VERIFY=true` is the default **because no SMTP is configured out
+⚠️ `MESHHARBOR_AUTO_VERIFY=true` is the default **because no SMTP is configured out
 of the box** — an account waiting on an activation email that can never arrive is
 an account nobody can use. Set it to `false` once email works.
 
@@ -302,7 +302,7 @@ into a newer build.
 
 ⚠️ **Agent updates are a separate track from your server.** Enrolled agents ask
 *your* server for the current release, but that endpoint proxies the upstream
-[GitHub releases](https://github.com/gjovanov/roomler-ai/releases) — it does not
+[GitHub releases](https://github.com/jk-zhang-meta/MeshHarbor/releases) — it does not
 serve builds you produced. Your server is the download host (so corporate
 allow-lists only need to trust your hostname, and `github.com` need not be
 reachable from the endpoint), while the *version* your fleet converges on is the
@@ -317,10 +317,10 @@ files) and `minio_data` (uploaded files).
 docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost \
   exec -T mongo mongodump --archive --gzip \
   -u "$MONGO_ROOT_USERNAME" -p "$MONGO_ROOT_PASSWORD" --authenticationDatabase admin \
-  > roomler-$(date +%F).archive.gz
+  > meshharbor-$(date +%F).archive.gz
 ```
 
-Keep `.env.selfhost` with the backup. Losing `ROOMLER_JWT_SECRET` invalidates
+Keep `.env.selfhost` with the backup. Losing `MESHHARBOR_JWT_SECRET` invalidates
 every session and every enrolled agent's token — the fleet would have to
 re-enroll.
 
@@ -349,6 +349,6 @@ anything; on this server that name carries no limits (`Core::plans_sold`,
 
 ## Getting help
 
-[Open an issue](https://github.com/gjovanov/roomler-ai/issues). Include
-`docker compose ... logs roomler | tail -100`, your OS, and whether you are
+[Open an issue](https://github.com/jk-zhang-meta/MeshHarbor/issues). Include
+`docker compose ... logs meshharbor | tail -100`, your OS, and whether you are
 behind a reverse proxy — those three answer most of it.

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc};
+use meshharbor_db::models::Subscriber;
 use mongodb::Database;
 use rand::RngCore;
-use roomler_ai_db::models::Subscriber;
 
 use super::base::{BaseDao, DaoResult};
 

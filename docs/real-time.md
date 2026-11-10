@@ -12,9 +12,9 @@ flowchart TB
     end
 
     U["Browser (user)"] -->|"no role / role=user<br/>Access JWT"| WS
-    A["roomlerd (agent)"] -->|"role=agent<br/>Agent JWT"| WS
-    T["roomler CLI"] -->|"role=tunnel-client<br/>TunnelClient JWT"| WS
-    A2["roomlerd (UDP-blocked)"] -->|"Agent JWT"| DERP
+    A["meshharbord (agent)"] -->|"role=agent<br/>Agent JWT"| WS
+    T["meshharbor CLI"] -->|"role=tunnel-client<br/>TunnelClient JWT"| WS
+    A2["meshharbord (UDP-blocked)"] -->|"Agent JWT"| DERP
 
     WS --> H["ws/handler.rs<br/>role → claim validator"]
     H --> UP["user plane<br/>chat · presence · media"]
@@ -84,7 +84,7 @@ peer. A search (`hive:search.open`, P2i-2) is a grant of the same kind toward an
 archive replica, naming the sessions the asker may read whose copy it holds; its
 query and what it finds travel only over its peer. The server's half is
 [`crates/modules/hive/src/view.rs`](../crates/modules/hive/src/view.rs), the
-device's `agents/roomlerd/src/hive/view.rs`.
+device's `agents/meshharbord/src/hive/view.rs`.
 
 ## The `rc:*` plane (agents, tunnel clients, controllers)
 
@@ -141,7 +141,7 @@ agent's rate control), and — on the DC render paths — the video bitstream it
 
 ```mermaid
 sequenceDiagram
-    participant T as roomler CLI
+    participant T as meshharbor CLI
     participant S as Server (policy)
     participant A as Agent (exit)
 
@@ -168,7 +168,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant N as Node (roomlerd / CLI)
+    participant N as Node (meshharbord / CLI)
     participant S as Server (IPAM + netmap)
     participant P as Peers
 

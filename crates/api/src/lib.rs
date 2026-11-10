@@ -13,11 +13,13 @@ pub mod state;
 pub mod stats_rollup;
 pub mod ws;
 
-// FR-69 P1b/P1d — these moved into `roomler-core` unchanged (they hold or
+// FR-69 P1b/P1d — these moved into `meshharbor-core` unchanged (they hold or
 // serve `Core`'s fields, or are the request-side primitives a module's
 // handlers need: the error type, the session cookie helpers, the origin
 // policy); re-exported so every `crate::…` path in this crate reads as before.
-pub use roomler_core::{cookies, error, origin, rate_limit, relay_load, storage, user_analytics};
+pub use meshharbor_core::{
+    cookies, error, origin, rate_limit, relay_load, storage, user_analytics,
+};
 
 use axum::{
     Router,
@@ -385,6 +387,10 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/account/devices/summary",
                 get(routes::account_devices::summary),
+            )
+            .route(
+                "/account/devices/{id}/local-accounts",
+                get(routes::local_accounts::list).post(routes::local_accounts::create),
             )
     } else {
         api

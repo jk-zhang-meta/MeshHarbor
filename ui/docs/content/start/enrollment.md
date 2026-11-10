@@ -89,11 +89,11 @@ The agent writes its credential into `config.toml`:
 
 | Platform | Path |
 |---|---|
-| Windows (per user) | `%APPDATA%\roomler\config.toml` |
-| Windows (machine) | `%PROGRAMDATA%\roomler\config.toml` |
-| Linux (system) | `/etc/roomler/config.toml` |
-| Linux (per user) | `~/.config/roomler/config.toml` |
-| macOS (root half) | `/etc/roomler/config.toml` |
+| Windows (per user) | `%APPDATA%\meshharbor\config.toml` |
+| Windows (machine) | `%PROGRAMDATA%\meshharbor\config.toml` |
+| Linux (system) | `/etc/meshharbor/config.toml` |
+| Linux (per user) | `~/.config/meshharbor/config.toml` |
+| macOS (root half) | `/etc/meshharbor/config.toml` |
 
 :::danger This file is a credential store
 It holds the agent token and, if SSH is enabled, the SSH host private key. It is

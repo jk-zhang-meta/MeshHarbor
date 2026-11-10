@@ -34,7 +34,8 @@ use axum::{
 };
 use bson::{Bson, DateTime, doc};
 use chrono::Duration;
-use roomler_ai_services::{
+use meshharbor_core::{campaign, growth::ExclusionSet};
+use meshharbor_services::{
     dao::{
         growth::{GrowthDao, SEARCH_CONSOLE_SOURCE},
         growth_content::{ContentPost, GrowthContentDao},
@@ -42,7 +43,6 @@ use roomler_ai_services::{
     },
     purestat::{Filter, Query, Row},
 };
-use roomler_core::{campaign, growth::ExclusionSet};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -405,7 +405,7 @@ pub async fn compute(
                 NotMeasured::now("no final Search Console day pulled yet")
             } else {
                 NotMeasured::now(
-                    "no Search Console key configured (ROOMLER__GROWTH__SEARCH_CONSOLE_KEY)",
+                    "no Search Console key configured (MESHHARBOR__GROWTH__SEARCH_CONSOLE_KEY)",
                 )
             }),
             BTreeMap::new(),

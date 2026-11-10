@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::oid::ObjectId;
-use roomler_ai_db::models::{Message, User};
+use meshharbor_db::models::{Message, User};
 use rust_xlsxwriter::{Format, Workbook};
 use std::collections::HashMap;
 

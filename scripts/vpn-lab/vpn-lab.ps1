@@ -2,7 +2,7 @@
 #
 # Drives trac.exe connect/disconnect cycles while sampling overlay health, so the
 # whole corp-VPN transition matrix can be measured without a human clicking the
-# client. Deployed to C:\ProgramData\roomler\vpnlab\ and launched DETACHED via a
+# client. Deployed to C:\ProgramData\meshharbor\vpnlab\ and launched DETACHED via a
 # SYSTEM scheduled task (survives control-WS churn on the fleet-exec path that
 # started it).
 #
@@ -12,7 +12,7 @@
 # commands verbatim) — this script therefore takes NO credential parameters.
 #
 # Safety rails (non-negotiable):
-#   * kill-switch: refuses to run while C:\ProgramData\roomler\vpnlab\DISABLED exists
+#   * kill-switch: refuses to run while C:\ProgramData\meshharbor\vpnlab\DISABLED exists
 #   * failsafe: before every connect a one-shot SYSTEM task is registered that
 #     force-disconnects at now+hold+3min — the machine returns to a reachable
 #     state even if every remote path is lost mid-experiment
@@ -35,11 +35,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Trac = 'C:\Program Files (x86)\CheckPoint\Endpoint Connect\trac.exe'
-$Roomler = 'C:\Program Files\Roomler\roomler.exe'
+$MeshHarbor = 'C:\Program Files\MeshHarbor\mh.exe'
 $CredFile = 'C:\dev\OE_VPN.txt'
-$Base = 'C:\ProgramData\roomler\vpnlab'
+$Base = 'C:\ProgramData\meshharbor\vpnlab'
 $RunDir = Join-Path $Base "run-$RunId"
-$FailsafeTask = 'roomler-vpnlab-failsafe'
+$FailsafeTask = 'meshharbor-vpnlab-failsafe'
 
 function Now-Iso { [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
 
@@ -113,23 +113,23 @@ function Start-Samplers {
     # Overlay health: rendered `status` every 10 s (srflx + warm + carrier
     # lines), rendered `peers` every 30 s. Rendered text keeps the sampler
     # schema-independent and the collected run dir small.
-    $jobs += Start-Job -Name 'roomler-sampler' -ScriptBlock {
-        param($roomler, $dir)
+    $jobs += Start-Job -Name 'meshharbor-sampler' -ScriptBlock {
+        param($meshharbor, $dir)
         $i = 0
         while ($true) {
             $ts = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
             try {
-                "=== $ts status" | Add-Content -Path (Join-Path $dir 'roomler-samples.txt')
-                & $roomler status 2>&1 | Add-Content -Path (Join-Path $dir 'roomler-samples.txt')
+                "=== $ts status" | Add-Content -Path (Join-Path $dir 'meshharbor-samples.txt')
+                & $meshharbor status 2>&1 | Add-Content -Path (Join-Path $dir 'meshharbor-samples.txt')
                 if ($i % 3 -eq 0) {
-                    "=== $ts peers" | Add-Content -Path (Join-Path $dir 'roomler-samples.txt')
-                    & $roomler peers 2>&1 | Add-Content -Path (Join-Path $dir 'roomler-samples.txt')
+                    "=== $ts peers" | Add-Content -Path (Join-Path $dir 'meshharbor-samples.txt')
+                    & $meshharbor peers 2>&1 | Add-Content -Path (Join-Path $dir 'meshharbor-samples.txt')
                 }
             } catch {}
             $i++
             Start-Sleep -Seconds 10
         }
-    } -ArgumentList $Roomler, $RunDir
+    } -ArgumentList $MeshHarbor, $RunDir
     return $jobs
 }
 
@@ -180,7 +180,7 @@ switch ($Cmd) {
         $ok = $true
         foreach ($check in @(
                 @{ n = 'trac.exe present'; f = { Test-Path $Trac } },
-                @{ n = 'roomler.exe present'; f = { Test-Path $Roomler } },
+                @{ n = 'mh.exe present'; f = { Test-Path $MeshHarbor } },
                 @{ n = 'cred file 2 lines'; f = { (Get-Content $CredFile).Count -ge 2 } },
                 @{ n = 'trac info parses'; f = { (Get-TracState) -ne 'unknown' } },
                 @{ n = 'run dir writable'; f = { Mark 'SELFTEST'; $true } },
@@ -196,8 +196,8 @@ switch ($Cmd) {
             $rows = (Get-Content (Join-Path $RunDir "ping-$($t.Replace('.','_')).csv") -ErrorAction SilentlyContinue | Measure-Object).Count
             "$(if ($rows -ge 8) { 'PASS' } else { $ok = $false; 'FAIL' }) ping sampler $t ($rows rows)"
         }
-        $sam = (Get-Content (Join-Path $RunDir 'roomler-samples.txt') -ErrorAction SilentlyContinue | Measure-Object).Count
-        "$(if ($sam -ge 5) { 'PASS' } else { $ok = $false; 'FAIL' }) roomler sampler ($sam lines)"
+        $sam = (Get-Content (Join-Path $RunDir 'meshharbor-samples.txt') -ErrorAction SilentlyContinue | Measure-Object).Count
+        "$(if ($sam -ge 5) { 'PASS' } else { $ok = $false; 'FAIL' }) meshharbor sampler ($sam lines)"
         "SELFTEST $(if ($ok) { 'PASS' } else { 'FAIL' }) run=$RunId"
     }
     'connect' {

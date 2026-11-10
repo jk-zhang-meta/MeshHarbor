@@ -51,10 +51,10 @@ subcommand into a bench: for each (codec × chroma × resolution × target bitra
 synthetic motion profile), report encode-ms p50/p95, produced-vs-target bitrate
 accuracy, IDR-size and delta-size distributions, and **which path actually ran**
 (the "advertises HW, silently falls back to SW" class is invisible today). Ships as a
-CLI subcommand so the whole fleet profiles itself through `roomler exec`. Output is a
+CLI subcommand so the whole fleet profiles itself through `mh exec`. Output is a
 per-host table: what this machine's encoders actually cost.
 
-**L2 — path profile (per pair).** Extend `roomler diag pair`: carrier and how it was
+**L2 — path profile (per pair).** Extend `mh diag pair`: carrier and how it was
 chosen, RTT and jitter distribution, achievable goodput over the same transport the
 video will use, loss/retransmit indication. Run N×N across the fleet → a pair matrix.
 No video, no session.
@@ -64,7 +64,7 @@ on the cells L1/L2 say are interesting.
 - **Deterministic motion**: drive the agent's `synthetic-frame-source` with a known
   scene (a rectangle traversing at a fixed px/s), so drag speed becomes a controlled
   parameter with several fixed levels instead of a human variable.
-- **Headless transport bench**: `roomler rc-bench <peer> --codec … --duration …` opens
+- **Headless transport bench**: `meshharbor rc-bench <peer> --codec … --duration …` opens
   a real RC session and measures the transport half — wire timestamp → arrival — with
   **no decoder involved**. This is where the field data says nearly all the variance
   lives, and it removes the browser from most of the matrix.
@@ -84,7 +84,7 @@ ranked table and a regression gate rather than a wall of numbers.
 
 ## Amendment 2026-10-13 — L0 and L4 come first
 
-**Why.** StarDesk (GearUP, 2025) advertises "under 50 ms" remote-desktop latency. Roomler
+**Why.** StarDesk (GearUP, 2025) advertises "under 50 ms" remote-desktop latency. MeshHarbor
 cannot say whether it beats, matches or loses to that: no layer above measures **input to
 photon**. Age starts at capture, so input coalescing, injection, the host compositor and the
 capture gate are invisible to it. Every perf FR of the
@@ -94,7 +94,7 @@ L1–L3. Anchors are master `4fc8ea7bb`.
 
 ### L0 — an in-process harness that CI runs
 
-- **Agent side.** `AgentPeer::new` (`agents/roomlerd/src/peer.rs` L293) needs no API
+- **Agent side.** `AgentPeer::new` (`agents/meshharbord/src/peer.rs` L293) needs no API
   server. Its answer comes from `handle_offer` (L1398), trickle goes through
   `add_remote_candidate` (L1438), and teardown is `close()` (L1536); a dropped peer frees
   nothing. One seam is added: a hook on the `SettingEngine` the constructor builds
@@ -103,17 +103,17 @@ L1–L3. Anchors are master `4fc8ea7bb`.
 - **Impairment through webrtc-util vnet,** not a UDP proxy. vnet gives a min delay, jitter,
   per-chunk loss filters and a token bucket, inside one process, deterministically.
 - **Controller side.** A webrtc-rs peer, H.264 depacketized into `openh264::decoder` (already
-  wrapped in `agents/roomlerd/src/recording/decode.rs` L59–68). With no FFmpeg in CI, video
+  wrapped in `agents/meshharbord/src/recording/decode.rs` L59–68). With no FFmpeg in CI, video
   rides the RTP track (`write_sample`, `peer.rs` L2913). The data-channel cell waits for a
   decoder binding, and the spec says so.
 - **One clock.** The synthetic source records `counter → Instant`; the decoded marker gives
   the counter back. Latency is `now − t_capture` on the same clock.
 - **It runs in CI** the way `control_dc_record` already does: one more explicit
-  `cargo test -p roomlerd --features openh264-encoder,synthetic-frame-source --test l4_latency`
+  `cargo test -p meshharbord --features openh264-encoder,synthetic-frame-source --test l4_latency`
   line next to `.github/workflows/ci.yml` L686–689. A test file nobody names runs in no lane.
 - **Cells** run at the synthetic source's default 320×240 and the software pump's 30 fps.
   CI builds are unoptimised and openh264 pegs a core long before 1080p, so larger sizes
-  (`ROOMLERD_SYNTHETIC_SIZE`) are for local and field runs. 1080p, 4K and high refresh are
+  (`MESHHARBORD_SYNTHETIC_SIZE`) are for local and field runs. 1080p, 4K and high refresh are
   field cells.
 - **Assertions that can fail.** The bounds are deltas and generous ceilings, because the
   absolute numbers depend on the machine:
@@ -127,7 +127,7 @@ L1–L3. Anchors are master `4fc8ea7bb`.
 
 ### The synthetic source grows up
 
-`agents/roomlerd/src/capture/synthetic_backend.rs` today paints 320×240 and clamps fps to
+`agents/meshharbord/src/capture/synthetic_backend.rs` today paints 320×240 and clamps fps to
 1..60 (L57). In bench mode it gets:
 
 - **Size and rate:** parametric W×H up to 3840×2160, and 1–240 fps. The clamp lifts only in
@@ -163,20 +163,20 @@ L1–L3. Anchors are master `4fc8ea7bb`.
   (`ui/src/composables/rcBench.ts`).
 - **Gated at every entry point:**
   - the agent's marker painter exists only in the synthetic source;
-  - `probe` is refused unless `ROOMLERD_BENCH=1` **and** the build has the feature;
-  - the viewer reads `roomler-rc-bench` only when the hello advertises `bench`;
+  - `probe` is refused unless `MESHHARBORD_BENCH=1` **and** the build has the feature;
+  - the viewer reads `meshharbor-rc-bench` only when the hello advertises `bench`;
   - the worker samples only when its init says `bench: true`.
 - **Upload** goes through FR-22's path (`ui/src/composables/rcConnectTimingUpload.ts`,
   target `rc.l4`, timing metadata only), so fleet runs are queryable in `agent_logs`.
-- **The host path.** `roomlerd probe-target` is a small topmost window that flips the marker
+- **The host path.** `meshharbord probe-target` is a small topmost window that flips the marker
   on **real OS input**. It is the only cell that includes injection and the host's own
-  compositor. Field-only. **Built** (`agents/roomlerd/src/probe_target.rs`): it sits flush in
+  compositor. Field-only. **Built** (`agents/meshharbord/src/probe_target.rs`): it sits flush in
   the primary monitor's bottom-right corner, 144 × 80 physical px, with 16 cells above the
-  marker area. The viewer's `target` mode (`roomler-rc-bench=target`) probes with pointer
+  marker area. The viewer's `target` mode (`meshharbor-rc-bench=target`) probes with pointer
   moves onto the cells, aimed with `rc:video-info`'s native size. The window paints the cell's
   number where the bottom-right decoder reads. It runs on every Windows build, release
   profiles included, through `windows-sys`; Linux and macOS hosts bench with a
-  synthetic-source build ([testing.md](../testing.md#l4-on-a-release-build-roomlerd-probe-target)).
+  synthetic-source build ([testing.md](../testing.md#l4-on-a-release-build-meshharbord-probe-target)).
 - **Nightly.** `rc-bench.spec.ts` runs in the pwrunner sidecar against the synthetic e2e
   agent (`Dockerfile.agent-e2e`) and records the L4 trend.
 
@@ -199,15 +199,15 @@ competitors". Engineering may use the numbers; the public pages never print them
 
 | P | Scope | Kill switch | Status |
 |---|---|---|---|
-| L0 | The harness, the synthetic source, the CI line, the planted-regression control | test-only | **merged** #2097 (`0db6f451f`): `agents/roomlerd/tests/l4_latency.rs` + the marker and clock in `capture/synthetic_backend.rs` + the `peer::l0` seam; local and CI runs in the field log |
-| L4 | The probe, the worker sampler, the upload, `probe-target`, the nightly spec; baselines on a direct and a relay pair | `ROOMLERD_BENCH` unset; the build feature; the viewer knob `roomler-rc-bench` | **agent half built**: `synthetic_backend::probe` + the bottom-right marker, the input-handler hook in `peer.rs`, `bench` in `AgentCaps.video`, the `probe`/`probe50` cells. **Viewer half built**: the TS marker decoder, the worker sampler in all three decode workers, the `<video>` sampler, the jittered prober, the `rc.l4` upload, the server's parse lock. **`probe-target` built**: the window (`probe_target.rs`) and the viewer's `target` mode. **End to end on a release build: done** against `probe-target` on vmtest guests (the field log, 2026-10-13; FR-98 P5's cells used it on 2026-10-16, on the RTP track and the DataChannel). Owed: the nightly spec, which needs the agent-e2e pods in bench mode (`ROOMLERD_BENCH=1` in `scripts/e2e-k8s/overlay-template/statefulset-agent-e2e.yaml`, and an agent-e2e image from 0.4.133 or later, built by hand on the build host), and the baselines on real hosts |
+| L0 | The harness, the synthetic source, the CI line, the planted-regression control | test-only | **merged** #2097 (`0db6f451f`): `agents/meshharbord/tests/l4_latency.rs` + the marker and clock in `capture/synthetic_backend.rs` + the `peer::l0` seam; local and CI runs in the field log |
+| L4 | The probe, the worker sampler, the upload, `probe-target`, the nightly spec; baselines on a direct and a relay pair | `MESHHARBORD_BENCH` unset; the build feature; the viewer knob `meshharbor-rc-bench` | **agent half built**: `synthetic_backend::probe` + the bottom-right marker, the input-handler hook in `peer.rs`, `bench` in `AgentCaps.video`, the `probe`/`probe50` cells. **Viewer half built**: the TS marker decoder, the worker sampler in all three decode workers, the `<video>` sampler, the jittered prober, the `rc.l4` upload, the server's parse lock. **`probe-target` built**: the window (`probe_target.rs`) and the viewer's `target` mode. **End to end on a release build: done** against `probe-target` on vmtest guests (the field log, 2026-10-13; FR-98 P5's cells used it on 2026-10-16, on the RTP track and the DataChannel). Owed: the nightly spec, which needs the agent-e2e pods in bench mode (`MESHHARBORD_BENCH=1` in `scripts/e2e-k8s/overlay-template/statefulset-agent-e2e.yaml`, and an agent-e2e image from 0.4.133 or later, built by hand on the build host), and the baselines on real hosts |
 | T | The StarDesk comparison cell on the spare box (private results) | — | — |
 | L1–L3 | As designed above | — | — |
 | D | Docs | — | — |
 
 ## Acceptance criteria
 
-- [ ] L1 runs on every fleet host through `roomler exec` and produces a per-host
+- [ ] L1 runs on every fleet host through `mh exec` and produces a per-host
       encoder cost table, including a host where an advertised HW encoder actually
       falls back (proving the check can fail).
 - [ ] L2 produces an N×N pair matrix with carrier + RTT + goodput.
@@ -252,7 +252,7 @@ competitors". Engineering may use the numbers; the public pages never print them
 | 2026-10-13 | L4 in process, the same build | **Negative control, red:** with a probe dropped in the input handler before it reaches the source (one marked line), the test failed `probe: 0 round trips measured, want ≥ 20` (exit 101), with every L0 cell unaffected. Restored from the commit; the diff was that one line. |
 | 2026-10-13 | L4 viewer half, headless Chromium 151 (Playwright), the real TS modules bundled | **The browser's reader on frames Chromium decoded itself.** Two markers painted on a canvas: the frame's own number bottom-left, a probe bottom-right. Each case went through `readProbe`, the worker sampler's real `copyTo({rect})` path. A canvas-backed BGRA frame read correctly. Through Chromium's WebCodecs encode → decode: VP9 640×360 at 500 kbps 12/12 I420 frames, VP9 at 150 kbps 12/12, VP9 1280×720 scaled 2× to 640×360 12/12 (the k=2 path), H.264 at 500 kbps 12/12. A canvas played through `<video>` and read in `requestVideoFrameCallback` by `readVideoProbe`: 20/20. Every copy was the 144×48 corner, never the whole picture. |
 | 2026-10-13 | the same harness | **Negative control:** the same frames with no probe painted read `null` in every case (0 of 69 frames), although each still carried its own number bottom-left. So the reader can fail, and it does not invent a number. Not yet run: a session against a bench agent. |
-| 2026-10-13 | `probe-target`, a debug build, the Windows dev box | **The window, on a real desktop.** `roomlerd probe-target --seconds 4` placed itself at `144x80 at (2416,1520) on a 2560x1600 primary monitor`, flush in the corner in physical pixels on a 150 %-scaled display. A DPI-aware screenshot of the corner showed it above the taskbar: the 16 alternating pad cells, and the plain mid-grey marker area of the "no move yet" state. It closed on its own timer, leaving no process. Its unit tests pin the layout, the cell under each point, the cell centres (the viewer pins the same vectors and checks the agent's mapping lands on each exact pixel), and a painted cell reading back from a frame's bottom-right through the decoder, with nothing read before the first move. Not yet run: a pointer move into the pad. That would move the pointer of the person using this box, so it waits for a bench host. |
+| 2026-10-13 | `probe-target`, a debug build, the Windows dev box | **The window, on a real desktop.** `meshharbord probe-target --seconds 4` placed itself at `144x80 at (2416,1520) on a 2560x1600 primary monitor`, flush in the corner in physical pixels on a 150 %-scaled display. A DPI-aware screenshot of the corner showed it above the taskbar: the 16 alternating pad cells, and the plain mid-grey marker area of the "no move yet" state. It closed on its own timer, leaving no process. Its unit tests pin the layout, the cell under each point, the cell centres (the viewer pins the same vectors and checks the agent's mapping lands on each exact pixel), and a painted cell reading back from a frame's bottom-right through the decoder, with nothing read before the first move. Not yet run: a pointer move into the pad. That would move the pointer of the person using this box, so it waits for a bench host. |
 | 2026-10-13 | the same | **Negative control, red:** a window that reads its cells 10 px wide instead of 9 (one marked line in `cell_at`) failed `every_cell_centre_lands_in_its_own_cell` (cell 6's centre read back as 5) and `a_point_maps_to_its_cell_and_the_marker_area_to_none`. A drift between where the viewer aims and where the window reads is caught. Restored from the commit; the diff was that one line. |
-| 2026-10-13 | **Release build, field.** Agent **0.4.134** (MSI, SystemContext) on a throwaway vmtest Win11 guest (KVM on a fleet host, 1280×800), the **production viewer** (`hosted-20261013-b180d92`) in headless Chromium on a LAN neighbour | **L4 end to end on a release build, first field run, a smoke test rather than an AC cell.** `roomlerd probe-target --seconds 1500` ran in the signed-in session as a scheduled `/IT` task: `144x80 at (1136,720) on a 1280x800 primary monitor`. The viewer set `roomler-rc-bench=target` and was given `data-channel-vp9-444` (libvpx 4:4:4, software). ICE moved relay → direct 5 s in. **15 batches × 40 probes = 600, lost 0. p50 42–49 ms, p95 59–74 ms, max 62–230 ms**, with two batches above 200 ms. Every round trip is a real `mouse_move`: SendInput in the guest, its compositor, DXGI capture, VP9 software encode, the data channel, WebCodecs decode in the worker sampler. The viewer's display is not in it. The streamed corner showed the window's pad and marker in the viewer's screenshot. Not an AC cell: a VM, a software encoder, no real display. The direct and relay cells on real hosts are still owed. Same run: the harness's own `win11/installer/system` cell passed 17 of 18. The miss is `probe-error`, its FR-84 companion-UI probes (`page.click: Timeout 30000ms exceeded`), outside this FR |
-| 2026-10-16 | **Release build, field: L4 as FR-98 P5's instrument.** Agent **0.4.138** (MSI, service) on a throwaway vmtest Win11 guest, the production viewer in headless Chromium on a LAN neighbour, `roomlerd probe-target` in the signed-in session; the viewer forced onto the RTP track or left to its own DataChannel pick | **L4 told three paths apart on one guest.** The DataChannel (`data-channel-vp9-444`): batch p50s 44–52 ms, 0 of 480 lost, as on 10-13. The RTP track on OpenH264: 35–40 ms with FR-98's `playout-delay` on, 78–362 ms with it off. The RTP track on Auto: **~850 ms with a quarter of the probes unanswered in 2 s**, because Auto had picked Microsoft's software MFT, which no other instrument here could see (#2283). FR-98 §9 has the full rows |
+| 2026-10-13 | **Release build, field.** Agent **0.4.134** (MSI, SystemContext) on a throwaway vmtest Win11 guest (KVM on a fleet host, 1280×800), the **production viewer** (`hosted-20261013-b180d92`) in headless Chromium on a LAN neighbour | **L4 end to end on a release build, first field run, a smoke test rather than an AC cell.** `meshharbord probe-target --seconds 1500` ran in the signed-in session as a scheduled `/IT` task: `144x80 at (1136,720) on a 1280x800 primary monitor`. The viewer set `meshharbor-rc-bench=target` and was given `data-channel-vp9-444` (libvpx 4:4:4, software). ICE moved relay → direct 5 s in. **15 batches × 40 probes = 600, lost 0. p50 42–49 ms, p95 59–74 ms, max 62–230 ms**, with two batches above 200 ms. Every round trip is a real `mouse_move`: SendInput in the guest, its compositor, DXGI capture, VP9 software encode, the data channel, WebCodecs decode in the worker sampler. The viewer's display is not in it. The streamed corner showed the window's pad and marker in the viewer's screenshot. Not an AC cell: a VM, a software encoder, no real display. The direct and relay cells on real hosts are still owed. Same run: the harness's own `win11/installer/system` cell passed 17 of 18. The miss is `probe-error`, its FR-84 companion-UI probes (`page.click: Timeout 30000ms exceeded`), outside this FR |
+| 2026-10-16 | **Release build, field: L4 as FR-98 P5's instrument.** Agent **0.4.138** (MSI, service) on a throwaway vmtest Win11 guest, the production viewer in headless Chromium on a LAN neighbour, `meshharbord probe-target` in the signed-in session; the viewer forced onto the RTP track or left to its own DataChannel pick | **L4 told three paths apart on one guest.** The DataChannel (`data-channel-vp9-444`): batch p50s 44–52 ms, 0 of 480 lost, as on 10-13. The RTP track on OpenH264: 35–40 ms with FR-98's `playout-delay` on, 78–362 ms with it off. The RTP track on Auto: **~850 ms with a quarter of the probes unanswered in 2 s**, because Auto had picked Microsoft's software MFT, which no other instrument here could see (#2283). FR-98 §9 has the full rows |

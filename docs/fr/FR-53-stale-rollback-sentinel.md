@@ -2,7 +2,7 @@
 
 > **CLOSED 2026-09-01** — issue #1123 is closed and its acceptance criteria are met. Any status line below is the state while the work was in flight, kept as the record.
 
-**Issue:** [#1123](https://github.com/gjovanov/roomler-ai/issues/1123) ·
+**Issue:** [#1123](https://github.com/jk-zhang-meta/MeshHarbor/issues/1123) ·
 Status: **P1 implemented; P2 needs a release** (2026-09-01) · Found while shooting FR-41's demo: the
 device on camera was displaying this.
 
@@ -19,7 +19,7 @@ instructs them to reinstall by hand.
 accident while recording the product demo:
 
 > **Attention required**
-> Roomler agent: crash loop detected (auto-rollback failed).
+> MeshHarbor agent: crash loop detected (auto-rollback failed).
 > **Version 0.4.34 has crashed 3 times within 10 min. Last known good version: 0.4.33.**
 > Automatic rollback could not be applied: automatic install failed: refusing to
 > self-update: `installer -target /` requires root, but this agent runs as uid
@@ -72,7 +72,7 @@ longer installed.
 The sentinel cannot tell those apart, because it does not record which version
 failed. `AttentionInfo` (`notify.rs:45`) is `{ path, message, reason }`, and the
 version exists only inside the free-text `message` written by
-`rollback_attention_msg` (`agents/roomlerd/src/main.rs:2777`).
+`rollback_attention_msg` (`agents/meshharbord/src/main.rs:2777`).
 
 ## Key design
 

@@ -1,6 +1,6 @@
 # Playwright e2e runner image. Built and pushed to
-# `<internal-registry>/roomler-ai-e2e:<git-sha>` from the build host;
-# consumed by the Job in the `roomler-ai-e2e` namespace's e2e overlay.
+# `<internal-registry>/meshharbor-e2e:<git-sha>` from the build host;
+# consumed by the Job in the `meshharbor-e2e` namespace's e2e overlay.
 #
 # Base: Microsoft's Playwright image with Chromium + Firefox + WebKit
 # preinstalled. Same major version (1.58.x) as `ui/package.json` to
@@ -40,7 +40,7 @@ ENV PLAYWRIGHT_HTML_REPORT=/results/html
 ENV PLAYWRIGHT_HTML_OPEN=never
 
 # CI=true disables the `webServer.command` (`bun run dev`) in the
-# config — we want the suite to talk to the in-cluster roomler2
+# config — we want the suite to talk to the in-cluster meshharbor2
 # Service via E2E_BASE_URL / E2E_API_URL env vars instead.
 ENV CI=true
 

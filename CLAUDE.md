@@ -1,10 +1,10 @@
-# Roomler — the mission, and the model tier this work requires
+# MeshHarbor — the mission, and the model tier this work requires
 
 **Read this block first, on every task. It is prefixed to every prompt on purpose.**
 
-## 1. What Roomler is
+## 1. What MeshHarbor is
 
-Roomler is **one open-source product that replaces three** — Tailscale, TeamViewer
+MeshHarbor is **one open-source product that replaces three** — Tailscale, TeamViewer
 and Microsoft Teams — on one daemon and one web app:
 
 - **Remote desktop & control from any browser**, to any of your machines anywhere
@@ -32,9 +32,9 @@ below is a shipped, field-verified configuration, not an aspiration:
 | **Session** | attended desktop · locked screen · SYSTEM / root service · nobody logged in |
 
 A change that works on the dev box and breaks a corporate laptop behind a
-full-tunnel VPN **has not worked**. **CI green ≠ done** — networking and
-remote-desktop changes are proven on the real fleet (`roomler exec`,
-`roomler ssh`) across those topologies after every roll.
+full-tunnel VPN **has not worked**. **Local checks passing ≠ done** — networking and
+remote-desktop changes are proven on the real fleet (`mh exec`,
+`mh ssh`) across those topologies after every roll.
 
 ## 3. Model tier — this work runs on Fable, and stays on Fable
 
@@ -97,12 +97,12 @@ Guidance for Claude Code (claude.ai/code) working in this repository.
 | # | Pillar | What it is | Start here |
 |---|---|---|---|
 | 1 | **Remote desktop** | TeamViewer-class remote control, in Rust | `docs/remote-control.md` |
-| 2 | **Networking** | a WireGuard overlay mesh (Tailscale-class) **+** userspace tunnels (ngrok-class), DERP relays, roomler SSH | `docs/overlay-communication.md`, `docs/tunnels.md` |
+| 2 | **Networking** | a WireGuard overlay mesh (Tailscale-class) **+** userspace tunnels (ngrok-class), DERP relays, meshharbor SSH | `docs/overlay-communication.md`, `docs/tunnels.md` |
 | 3 | **Collaboration** | chat · video conferencing · file sharing · rooms | `docs/real-time.md`, `docs/ui.md` |
 
 Two invariants, load-bearing in both directions:
 
-- **One daemon per enrolled machine.** `roomlerd` *is* the remote-desktop target,
+- **One daemon per enrolled machine.** `meshharbord` *is* the remote-desktop target,
   the tunnel exit, the tunnel client, the overlay node and the SSH server — not
   four cooperating services. This is why "just add another install" is almost
   always wrong (fixed TUN name + GUID, a singleton LocalAPI pipe, host-global
@@ -114,7 +114,7 @@ Two invariants, load-bearing in both directions:
 
 Stack: Rust (Axum) + MongoDB + Vue 3/Vuetify 3 + Pinia + Mediasoup (WebRTC SFU) +
 webrtc-rs (P2P remote-control) + WireGuard/smoltcp (overlay). The agent ships as a
-separate native binary (`roomlerd`) that runs on controlled hosts.
+separate native binary (`meshharbord`) that runs on controlled hosts.
 
 ### Pillar 2 design goal — read before touching networking code
 
@@ -145,34 +145,42 @@ Six commitments follow. All are load-bearing in the code today; don't regress th
    ACLs, and an agent-local gate that survives a compromised server. Every
    decision audited.
 6. **Field-validated, not CI-validated.** Proven on the real fleet across the
-   topologies above via `roomler exec` after every roll. **CI green ≠ done.**
+   topologies above via `mh exec` after every roll. **Local checks passing ≠ done.**
+
+## Build policy: no CI
+
+This project permanently uses no CI. Do not add or dispatch workflows, including
+tag-triggered releases. Run relevant checks locally; builds, signing, publication
+and deployment remain separate authorized operations. Canonical commands, vendor
+pins and corresponding-source preparation: **[docs/local-build.md](docs/local-build.md)**.
+Historical CI incident records remain evidence, not current automation.
 
 ## Commands
 
 ```bash
 # Development
-cargo run --bin roomler-ai-api         # Start backend (port 3000)
+cargo run --bin meshharbor-api         # Start backend (port 3000)
 cd ui && bun run dev                   # Vite dev server (port 5000, proxies to 5001)
 cd ui && bun run build                 # Production UI build (includes vue-tsc --noEmit)
 
 # Remote-control agent (native binary — runs on the controlled host)
-cargo build -p roomlerd --release --features full      # capture + encode + input (SW encoder)
-cargo build -p roomlerd --release --features full-hw   # + Media Foundation HW encoder scaffolding
-cargo build -p roomlerd --release                      # signalling-only (no media, no input)
-./target/release/roomlerd enroll --server <url> --token <enrollment-jwt> --name <label>
-./target/release/roomlerd run [--encoder software|hardware]
-./target/release/roomlerd encoder-smoke --encoder hardware   # offline MFT/FFmpeg init diagnosis
+cargo build -p meshharbord --release --features full      # capture + encode + input (SW encoder)
+cargo build -p meshharbord --release --features full-hw   # + Media Foundation HW encoder scaffolding
+cargo build -p meshharbord --release                      # signalling-only (no media, no input)
+./target/release/meshharbord enroll --server <url> --token <enrollment-jwt> --name <label>
+./target/release/meshharbord run [--encoder software|hardware]
+./target/release/meshharbord encoder-smoke --encoder hardware   # offline MFT/FFmpeg init diagnosis
 ./scripts/dev-xvfb.sh                  # capture smoke test via a virtual framebuffer
 
 # Testing
-cargo test -p roomler-ai-tests         # Integration tests (requires MongoDB + Redis)
+cargo test -p meshharbor-tests         # Integration tests (requires MongoDB + Redis)
 cd ui && bun run test:unit             # Vitest unit tests
 cd ui && bun run e2e                   # Playwright E2E tests
 
-# Static analysis — what CI runs
+# Static analysis — run locally
 cargo fmt --all -- --check
 cargo clippy --workspace -- -D warnings
-cargo clippy -p roomler-ai-api -p roomler-ai-services -p roomler-ai-tests --all-targets -- -D warnings
+cargo clippy -p meshharbor-api -p meshharbor-services -p meshharbor-tests --all-targets -- -D warnings
 cd ui && vue-tsc --noEmit
 
 # Dependency audit
@@ -183,13 +191,13 @@ docker compose up -d                   # MongoDB (27019), Redis (6379), MinIO (9
 ```
 
 ⚠️ **`cargo clippy --workspace` compiles the feature UNION and can never see a
-profile or a feature-gated backend.** `--features full` is a *separate* CI clippy
-step — the only one that compiles the capture backend. Run
-`cargo check -p roomler-ai-tunnel-core --features overlay-l3,overlay-netstack --all-targets`
+profile or a feature-gated backend.** `--features full` is a *separate* local clippy
+pass — the only one that compiles the capture backend. Run
+`cargo check -p meshharbor-tunnel-core --features overlay-l3,overlay-netstack --all-targets`
 in WSL before pushing; a `#[cfg(windows)]` helper needs the same gate on its test.
 
 ⚠️ `--workspace` clippy compiles only `pub mod fixtures` from `crates/tests` (every
-test module is `#[cfg(test)]`-gated), so `Checking roomler-ai-tests` in a build log
+test module is `#[cfg(test)]`-gated), so `Checking meshharbor-tests` in a build log
 is **not** evidence the tests build.
 
 ### Agent build requirements
@@ -203,12 +211,12 @@ sudo apt install -y libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev   # Linux, for
 ```
 
 The default build (no features) compiles on any `rust:bookworm` image and produces
-a signalling-only agent useful for CI, but **not usable in production** (no
+a signalling-only agent useful for local checks, but **not usable in production** (no
 capture, no input).
 
 ### Encoders — load the `encoder-cells` skill
 
-Preference resolution: **CLI `--encoder` > env `ROOMLERD_ENCODER` >
+Preference resolution: **CLI `--encoder` > env `MESHHARBORD_ENCODER` >
 `encoder_preference` in config TOML > `Auto`**.
 
 Everything else about the encoder surface — the child-process capability probe and
@@ -220,7 +228,7 @@ VAAPI / D3D12 / Vulkan / VideoToolbox) — lives in the **`encoder-cells` skill*
 - ⚠️ The probe runs in a **child process**, and *any* failure means "no hardware".
   A capability probe is untrusted third-party code by definition (vendor drivers,
   GPU firmware) and does not belong in the daemon's address space — before this, a
-  fault inside one took `roomlerd` down and the service manager restarted it
+  fault inside one took `meshharbord` down and the service manager restarted it
   straight back into the same probe.
 - ⚠️ **A gate applies at every entry point, or it is a courtesy**: the cell
   denylist was probe-only until 0.4.90, and a session happily opened a denied cell
@@ -231,7 +239,7 @@ VAAPI / D3D12 / Vulkan / VideoToolbox) — lives in the **`encoder-cells` skill*
 
 ```
 crates/
-  config/           → Settings (env vars via ROOMLER__ prefix)
+  config/           → Settings (env vars via MESHHARBOR__ prefix)
   db/               → MongoDB models + indexes (18 collections) + native driver v3.2
   services/         → auth, DAOs, export, background tasks, OAuth, push, email, Giphy, Claude AI
   remote_control/   → wire-only for the server: signalling, consent, audit, TURN creds,
@@ -239,10 +247,10 @@ crates/
                       The `server` feature (default-ON) gates the Mongo audit DAO — the
                       five agent-side consumers set `default-features = false`
   localapi/         → LocalAPI protocol LEAF crate — re-exported as `tunnel_core::localapi`
-  agent-core/       → package `roomler-node-core`: daemon-free agent building blocks
+  agent-core/       → package `meshharbor-node-core`: daemon-free agent building blocks
                       (config, enrollment, machine-id, logging, sentinels, forward ACL).
                       The desktop companion deps THIS, never the full agent
-  core/             → package `roomler-core` (AGPL, SERVER side, never linked by an agent):
+  core/             → package `meshharbor-core` (AGPL, SERVER side, never linked by an agent):
                       the `Module` trait, hooks, jobs, the module DAG, the composition
                       snapshot, and `Core` itself (`state.rs`) with the /ws registry,
                       dispatcher, Redis fan-out, cluster identity, storage, rate limiting
@@ -273,13 +281,13 @@ crates/
                       the host composition
   tests/            → Integration tests (spawns real servers; drives the agent in-process)
 agents/
-  roomlerd/         → Native agent binary (CLI + lib): webrtc-rs peer, capture, encode,
+  meshharbord/         → Native agent binary (CLI + lib): webrtc-rs peer, capture, encode,
                       input injection, overlay, tunnels, SSH server
-  roomler-cli/      → Tunnel client. Bin `roomler`; the whole command surface lives in the
+  meshharbor-cli/      → Tunnel client. Bin `mh`; the whole command surface lives in the
                       LIB (`cli.rs`) so the daemon can host it too
-  roomler-cli-shim/ → Bin `roomler-shim`, installed BY THE MSI/.deb as `roomler`:
-                      re-execs `roomlerd cli`
-  roomler-setup/    → Tauri 2 unified install wizard (lib `wizard_app`)
+  meshharbor-cli-shim/ → Bin `meshharbor-shim`, installed BY THE MSI/.deb as `mh`:
+                      re-execs `meshharbord cli`
+  meshharbor-setup/    → Tauri 2 unified install wizard (lib `wizard_app`)
 ui/src/             → api/ · components/ · composables/ · stores/ (Pinia setup pattern) ·
                       views/ · plugins/  — map in `docs/ui.md`
 scripts/            → dev-xvfb.sh · e2e-*.sh · name-audit.sh · fr-registry-audit.sh ·
@@ -287,7 +295,7 @@ scripts/            → dev-xvfb.sh · e2e-*.sh · name-audit.sh · fr-registry-
 ```
 
 **Crate dependency flow**: `config` ← `db` ← `remote_control` ← `services` ← `api`.
-`tests` depends on `api` + `config` + `db` + `roomlerd`.
+`tests` depends on `api` + `config` + `db` + `meshharbord`.
 
 ### Modular monolith (FR-69, shipped 2026-09-04) — the rules that still bind
 
@@ -329,7 +337,7 @@ Full treatment: **`docs/modular-monolith.md`**. What constrains new work:
    `/health` and `/api/capabilities` report the **mounted** set plus `compiled` —
    never `graph::MODULES`, which every build knows and would make a `mesh` image
    answer all six. ⚠️ An absence assertion that cannot fail proves nothing: the
-   `profiles` CI job checks each reduced profile with `--no-default-features` **and**
+   local profile checks must check each reduced profile with `--no-default-features` **and**
    a positive control on the full graph.
 8. **The SPA gates on `/api/capabilities`, failing OPEN until the server answers**
    — the server enforces every action anyway, so the worst case of failing open is
@@ -337,14 +345,14 @@ Full treatment: **`docs/modular-monolith.md`**. What constrains new work:
    round-trip. ⚠️ Unknown module names from a newer server are IGNORED, never an
    error.
 
-⚠️ **`State<Core>` is the handler seam.** `AppState` derefs to `roomler_core::Core`,
+⚠️ **`State<Core>` is the handler seam.** `AppState` derefs to `meshharbor_core::Core`,
 so a handler or helper that needs only core fields takes `State<Core>` / `&Core`.
 `impl FromRef<AppState> for Core` lives in `crates/api/src/core_state.rs` — the ONE
-place the orphan rules allow it. `roomler-core` must never learn `AppState` exists.
+place the orphan rules allow it. `meshharbor-core` must never learn `AppState` exists.
 
-**Naming**: server crates `roomler-ai-*`; the core `roomler-core` (`crates/core`);
-modules `roomler-ai-mod-<name>` (`crates/modules/<name>`); the daemon's shared crate
-`roomler-node-core` (`crates/agent-core`, which held the name `roomler-core` from
+**Naming**: server crates `meshharbor-*`; the core `meshharbor-core` (`crates/core`);
+modules `meshharbor-mod-<name>` (`crates/modules/<name>`); the daemon's shared crate
+`meshharbor-node-core` (`crates/agent-core`, which held the name `meshharbor-core` from
 FR-21 until FR-69 — its pre-FR-21 name is retired, never bring it back).
 
 ## Multi-Tenancy
@@ -359,7 +367,7 @@ see Security Baseline below.
 ## Auth Pattern
 
 JWT (jsonwebtoken 9) + Argon2. Access token 7 d, refresh 30 d, both configurable
-via `ROOMLER__JWT__*` (secret `ROOMLER__JWT__SECRET`, issuer `ROOMLER__JWT__ISSUER`).
+via `MESHHARBOR__JWT__*` (secret `MESHHARBOR__JWT__SECRET`, issuer `MESHHARBOR__JWT__ISSUER`).
 Middleware extracts the user from `Authorization: Bearer`; OAuth via Google,
 Facebook, GitHub, LinkedIn, Microsoft.
 
@@ -421,56 +429,31 @@ Suites, harnesses and the nightly lane: **`docs/testing.md`**.
   otherwise, and a `SIGABRT` with `has overflowed its stack` is what a perfectly
   green suite looks like. Set `RUST_LOG` and `--nocapture`; without a subscriber
   every `info!`/`warn!` explaining a refusal is discarded.
-- **CI runs this lane** — `.github/workflows/integration-tests.yml`, on master
-  pushes touching `crates/**` or `agents/roomlerd/**`, on PRs touching
-  `crates/tests/**`, and on dispatch (optional `filter`). Deliberately **not** on
-  every PR: a ~20 min job on every push trains people to ignore it.
-  ⚠️ The lane asserts a **minimum test count** and a **leaked-database ceiling**,
-  because a job that silently runs nothing is indistinguishable from a passing one
-  — `cargo test` reports success for a filter matching no test. Treat the count as
-  approximate: `pull_request` checks out the branch *merged with master* while a
-  dispatch checks out the branch alone, so two green runs of one commit differ.
-  ⚠️ The two skips were **measured on the runner**, not inherited from the build
-  host: `conference_tests::call_leave_cleans_up_participant_media` (no mediasoup
-  worker there) and `rate_limit_tests::rate_limit_returns_429_after_burst`
-  (timing-sensitive). A third skip should feel expensive.
-- **E2E** (`ui/e2e/`, Playwright, 24 specs). Set `E2E_API_URL` (defaults to the dev
-  port `:5001`) or every API-driven spec fails ECONNREFUSED; Mailpit specs need
-  `E2E_MAILPIT_URL`. 🔑 **The browser runs as the `pwrunner` sidecar inside the app
-  pod** — this host has no route to the pod network (a port-forward carries one TCP
-  port and no RTP ever arrives), a Service URL is not a secure context so
-  `navigator.mediaDevices` is undefined, and in the pod the app is
-  `http://127.0.0.1`, which is both a secure context and the address mediasoup
-  announces. A Job cannot replace the sidecar — it cannot share the app's network
-  namespace, which is the whole mechanism. ⚠️ `ROOMLER__APP__FRONTEND_URL` must
-  equal the browser's origin (**a port is part of an Origin**) or the
-  cookie-authenticated `/ws` upgrade is refused 403 and every realtime spec fails
-  for that one reason. ⚠️ An entry in `e2e-expected-failures.txt` is a claim that
-  you understand the failure — re-test it or delete it.
-- **Unit**: Vitest (`ui/src/`), plus in-crate `#[cfg(test)]` tests in
-  `remote_control`, `roomlerd` and `services::auth`.
-  ⚠️ `roomlerd`'s `main.rs` tests **never run** — CI is `--lib`.
+- **Run this lane locally** with the isolated prerequisites and exact test filter
+  described in [local builds](docs/local-build.md). Require a nonzero expected
+  test count and verify database/process cleanup; a successful zero-test filter
+  is not evidence. Historical runner skips are not automatic local exclusions.
+  ⚠️ `--lib` does not run `meshharbord`'s `main.rs` tests; select targets explicitly.
 
 ## Environment
 
-`.env` for development (gitignored). Config via `ROOMLER__`-prefixed env vars
+`.env` for development (gitignored). Config via `MESHHARBOR__`-prefixed env vars
 (double-underscore separator). `docker-compose.yml` runs MongoDB 7, Redis 7, MinIO
 and coturn locally; default DB URL `mongodb://localhost:27019` (tests use no auth).
 
 ## Deployment
 
-**Production**: `https://roomler.ai/` — the `--server` for enrollments and the
+**Production**: `https://meshharbor.itachi.fans/` — the `--server` for enrollments and the
 origin the browser controller loads. Topology, k8s layout, tenant-affinity LB and
 the media-path rules: **`docs/deployment.md`** + `docs/multi-pod-scale-out.md`.
 Release, signing and promotion mechanics: the **`ship-it` skill**.
 
-- **Pipeline (FR-73)**: Actions builds
-  `ghcr.io/gjovanov/roomler-ai:hosted-<YYYYMMDD>-<sha7>` on every merge to master
-  that can change the image; **`gh workflow run promote.yml -f tag=…`** bumps the
-  deploy repo and ArgoCD (Automated + selfHeal + prune, webhook) rolls it within
-  ~5 s. ⚠️ **Build ≠ deploy — nothing rolls until someone promotes.** ⚠️ The lane
-  never writes `latest`; that is the self-host `full` image (no `saas`).
-- **Pods**: namespace `roomler-ai`, deployment **`roomler2`** (not `roomler-ai`), 2
+- **Manual builds and deployment**: no merge/tag/dispatch builds or publishes
+  anything. Use [local builds](docs/local-build.md) for image/package preparation.
+  Registry publication and deploy-repository changes require separate authorization;
+  ArgoCD may roll immediately after a deploy-repo push. Keep hosted and selfhost
+  image identities distinct. Historical FR-73 measurements are not a current CI service.
+- **Pods**: namespace `meshharbor`, deployment **`meshharbor2`** (not `meshharbor`), 2
   replicas forced apart by `podAntiAffinity`, hostNetwork, RollingUpdate
   maxSurge 0 / maxUnavailable 1 (surge 0 because hostNetwork can't double-bind).
   Scheduling is pinned to `tier=high-performance` nodes; the Mongo/MinIO
@@ -486,7 +469,7 @@ Release, signing and promotion mechanics: the **`ship-it` skill**.
   without also fixing the vars. App-side tell: `media transport has no DTLS 15s
   after connect_transport` in the pod log.
   ⚠️ The same DNAT swallows the **host's own mesh node**. The overlay's default
-  port band (43648–44415) sits inside the range. So a serving host's `roomlerd` pins
+  port band (43648–44415) sits inside the range. So a serving host's `meshharbord` pins
   `overlay_direct_port = 21640`, backed by a HOST_FW allow and
   `ip_local_reserved_ports=40000-49999`. Without the pin, a peer's first packet lands
   in the VM and the host rides DERP after every roll (#1665, `docs/deployment.md`).
@@ -494,7 +477,7 @@ Release, signing and promotion mechanics: the **`ship-it` skill**.
   tenant key so a tenant's users, agents, tunnel clients, DERP sockets and
   mediasoup rooms land on ONE pod (the rc-hub / tunnel-hub / DERP relay / room
   registry are pod-local). After any upstream flip, **also
-  `kubectl rollout restart deploy/roomler2`** so long-lived WSs re-hash.
+  `kubectl rollout restart deploy/meshharbor2`** so long-lived WSs re-hash.
   ⚠️ A listing's `is_online` is heartbeat-based (HTTP) while rc/tunnel need the
   pod-local hub — an agent whose control WS is half-open (a TLS-inspecting corp
   middlebox keeps ACKing keepalives after a pod roll killed the upstream leg) shows
@@ -502,7 +485,7 @@ Release, signing and promotion mechanics: the **`ship-it` skill**.
   receive-liveness deadline.
 - **After every roll, field-verify from the fleet** — pods on the new image,
   online-agent count, an RC session, an overlay pair, a tunnel forward. The
-  workflow only proves the public `/health` kept answering. ⚠️ An exec sweep is a
+  health check only proves the public `/health` kept answering. ⚠️ An exec sweep is a
   **biased sample** (it reaches only what is online) — query the server for the
   denominator.
 
@@ -526,7 +509,7 @@ write-up filed afterwards. Registry and full protocol: **`docs/fr/README.md`**.
    they touched *different* files (measured three times in one day, twice while a
    scan-and-re-verify rule was already in force). Editing one shared table makes
    git the arbiter instead: the loser's push is rejected as non-fast-forward.
-   Enforced by `scripts/fr-registry-audit.sh` + CI.
+   Checked locally with `scripts/fr-registry-audit.sh`.
    ⚠️ If one still slips through: **the LOWER issue number keeps `FR-N`, the HIGHER
    renumbers** — title, spec filename, ledger row and in-body references together,
    to the next free N, never into a vacated one. Issue ids are server-assigned and
@@ -536,7 +519,7 @@ write-up filed afterwards. Registry and full protocol: **`docs/fr/README.md`**.
    Acceptance criteria / Open decisions / Out of scope / Related.
 3. **Comment as you ship** — a `## Step log` table appended as each PR merges, and
    a `## Result — field-verified on <version>` carrying the actual measurement.
-   ⚠️ **CI green is not a result.** A field test must be shown to FAIL on the
+   ⚠️ **Local checks passing is not a result.** A field test must be shown to FAIL on the
    current deploy first, or its pass proves nothing — record both runs. Record the
    wrong turns too; a dead end documented is often the most valuable line in the log.
 4. **Close** only when the acceptance criteria are field-verified; a regression
@@ -568,17 +551,17 @@ frontend, run both.
 
 | Change type | Command |
 |---|---|
-| Backend (models, services, routes) | `cargo test -p roomler-ai-tests` |
-| Remote-control crate (signalling, wire format) | `cargo test -p roomler-ai-remote-control --lib` |
-| Agent library | `cargo test -p roomlerd --lib` |
-| Agent with media / input backends | `cargo test -p roomlerd --lib --features full` |
+| Backend (models, services, routes) | `cargo test -p meshharbor-tests` |
+| Remote-control crate (signalling, wire format) | `cargo test -p meshharbor-remote-control --lib` |
+| Agent library | `cargo test -p meshharbord --lib` |
+| Agent with media / input backends | `cargo test -p meshharbord --lib --features full` |
 | Agent capture, headless | `./scripts/dev-xvfb.sh` |
 | Frontend | `cd ui && bun run build` |
 | Frontend unit | `cd ui && bun run test:unit` |
 | Full flow | `cd ui && bun run e2e` |
 
 ⚠️ The agent builds and unit-tests **natively on Windows**
-(`cargo test -p roomlerd --lib`) — the WSL lane is not the only option.
+(`cargo test -p meshharbord --lib`) — the WSL lane is not the only option.
 
 ## The three pillars — invariants, and where the detail lives
 
@@ -617,7 +600,7 @@ loudly, it makes every deployed device look like it lacks the feature.
 
 Start at `docs/overlay-communication.md`. Sub-topics: `overlay-nat-traversal.md`,
 `overlay-exit-nodes.md`, `overlay-wfp.md`, `multi-org.md`, `magicdns.md`,
-`tunnels.md`, `tunnel-install.md`, `roomler-ssh.md`, `fleet-rpc.md`,
+`tunnels.md`, `tunnel-install.md`, `meshharbor-ssh.md`, `fleet-rpc.md`,
 `remote-config.md`, `ephemeral-nodes.md`, `device-naming.md`,
 `peer-relays.md`.
 
@@ -654,7 +637,7 @@ missed the migration still believes it holds an address there.
 ⚠️ Joining a **secondary** org does not start its WS loop — the daemon must be
 restarted. Signature: `last_seen_at == created_at` forever.
 
-**Peer relays** (FR-19) — a tenant-owned `roomlerd` forwards **ciphertext** between
+**Peer relays** (FR-19) — a tenant-owned `meshharbord` forwards **ciphertext** between
 two nodes of the same tenant over UDP **3478** (the one port the symmetric-NAT corp
 population was measured to reach; 41641 and the coturn band are dead for it). Four
 default-deny gates, each owned by a different party, every decision audited in
@@ -669,7 +652,7 @@ device in the tenant as SYSTEM/root.
 ⚠️ Org relay engages on a **ladder climb, not the mode flip**: a pair on a healthy
 DERP floor won't re-request until it churns.
 
-**Roomler SSH** (`docs/roomler-ssh.md`) — SSH into any node by overlay address with
+**MeshHarbor SSH** (`docs/meshharbor-ssh.md`) — SSH into any node by overlay address with
 **no `sshd`, no bound port, no firewall rule**; packets are intercepted below the OS
 by `SplitTun`. That is not an elegance choice: binding `overlay:22` fails
 EADDRINUSE wherever sshd covers `0.0.0.0:22`, and a corp-managed laptop cannot have
@@ -693,14 +676,14 @@ is the exact property this pillar exists to provide.
 `grant_id`. **An empty activity result is not evidence of inactivity** — the
 device-owned `ssh_activity_log` defaults to off.
 
-**Fleet RPC** (`docs/fleet-rpc.md`) — `roomler exec` over the agent's **existing
+**Fleet RPC** (`docs/fleet-rpc.md`) — `mh exec` over the agent's **existing
 control WS**, deliberately not the overlay: the diagnostics this exists for are most
 needed when the mesh is broken. Four independent default-deny gates, the last of
 which (`exec_enabled` on the device) is the only refusal that survives a compromised
 server.
 ⚠️ Who runs a command: **root under systemd**. On Windows, **SYSTEM in session 0
 through the device's service once an administrator anchored it** (FR-94:
-`roomlerd anchor create`, elevated); otherwise the process that holds the agent
+`meshharbord anchor create`, elevated); otherwise the process that holds the agent
 socket, the console-session **worker**, which is the signed-in user on an attended
 install and SYSTEM in SystemContext mode. ⚠️⚠️ On the SYSTEM path the service takes
 **nothing but a request id** from the worker (the user's process): the command is
@@ -710,7 +693,7 @@ decide what SYSTEM runs; `docs/fleet-rpc.md` § Privilege.
 ⚠️ A caller **awaits** this frame, so unlike `Goodbye`/`UpdateNow` it must gate on
 `AgentCaps.rpc` containing `exec` (412 otherwise) — pushing to a pre-feature agent
 would hang the caller until its deadline.
-⚠️ `roomler exec` **re-splits argv**: Windows targets need ONE quoted argument, and
+⚠️ `mh exec` **re-splits argv**: Windows targets need ONE quoted argument, and
 `;` never `&&`. On a host that restarts its own service it answers "no answer within
 45 s" — the command ran.
 
@@ -726,17 +709,17 @@ screen, and each has a different fix. **Compare revisions, not just outcomes.**
 ⚠️ **Local edits are live too** (`adopt_local`) — making a server push live while
 the owner's own edit waited for a restart inverts the very property gate 4 exists
 for.
-⚠️ **Remote configuration never restarts a daemon** — exiting an orphan `roomlerd
+⚠️ **Remote configuration never restarts a daemon** — exiting an orphan `meshharbord
 run` host takes it permanently offline. The one restart path is LOCAL (LocalAPI
-`RestartDaemon`: "Apply now", `roomler restart`, FR-84 D3), and it refuses unless it
-can PROVE a supervisor (`agents/roomlerd/src/supervision.rs`).
+`RestartDaemon`: "Apply now", `mh restart`, FR-84 D3), and it refuses unless it
+can PROVE a supervisor (`agents/meshharbord/src/supervision.rs`).
 
-**Linux root daemons resolve `/etc/roomler/config.toml`** (rc.435,
+**Linux root daemons resolve `/etc/meshharbor/config.toml`** (rc.435,
 `docs/installation.md`). ⚠️ `systemctl is-active` reads **inactive while such a host
 is perfectly healthy** (the live daemon is an unmanaged orphan) — check
-`pgrep -x roomlerd` and `roomler peers`, and never "restart to fix" on that basis.
+`pgrep -x meshharbord` and `mh peers`, and never "restart to fix" on that basis.
 
-**Declared tunnel routes** — `roomlerd` supervises forwards/SOCKS5 listeners
+**Declared tunnel routes** — `meshharbord` supervises forwards/SOCKS5 listeners
 declared as `[[tunnel_routes]]` in its config, reconciled into hub flows on every
 start (`docs/tunnel-install.md` §6).
 
@@ -756,25 +739,25 @@ signalling, DERP) · `docs/ui.md` (frontend map).
 
 `docs/installation.md` · `docs/code-signing.md` · the **`ship-it` skill**.
 
-ONE unified wizard (`agents/roomler-setup`, Tauri 2) covers every role; backend
+ONE unified wizard (`agents/meshharbor-setup`, Tauri 2) covers every role; backend
 proxies under `/api/setup/*` and `/api/agent/installer/*` stream installer bytes
-through `roomler.ai` (**not** `github.com`) so corporate ESET/Defender allow-lists
+through `meshharbor.itachi.fans` (**not** `github.com`) so corporate ESET/Defender allow-lists
 trust the download.
 
 ⚠️ **UAC lib-naming rule** — Windows UAC's "installer detection" heuristic
 auto-elevates any EXE whose filename contains "install"/"setup"/"update"/"patch",
 and cargo derives test-binary names from the **lib** crate, so wizard lib targets
 must dodge those substrings (`wizard_app`, `wizard_shared`). The user-facing bin
-keeps the marketing name; `[[bin]] test = false` keeps `cargo test -p roomler-setup`
+keeps the marketing name; `[[bin]] test = false` keeps `cargo test -p meshharbor-setup`
 off the UAC prompt.
 <!-- RETIRED-NAME-ANCHOR(2): these two directories were DELETED under their
      retired names. A history line has to name what actually existed; an
-     earlier path sweep rewrote one of them into agents/roomler-cli-installer,
+     earlier path sweep rewrote one of them into agents/meshharbor-cli-installer,
      a directory git has never heard of. FR-21 D6. -->
-⚠️ The legacy wizards `agents/roomler-installer` (rc.28) and
-`agents/roomler-tunnel-installer` (rc.59) were retired in P4c-2. The tunnel CLI's
+⚠️ The legacy wizards `agents/meshharbor-installer` (rc.28) and
+`agents/meshharbor-tunnel-installer` (rc.59) were retired in P4c-2. The tunnel CLI's
 `self-update` is **kept** — it is the sole updater for tunnel-only hosts ("one
-updater" is per-role; daemon hosts get `roomler.exe` refreshed by the MSI).
+updater" is per-role; daemon hosts get `mh.exe` refreshed by the MSI).
 
 ## Known Issues (OPEN only)
 
@@ -792,8 +775,8 @@ Fixed-and-shipped issues live in `git log` and the docs. Currently open:
   `pgp_verify`, every OS), from the first tunnel release that carries it.
 - **[MEDIUM]** [2026-04-17, rewritten 2026-08-29 by **FR-27**, #854] Host consent now
   has a **`PromptSurface` chain** — native (`win`·`mac`·`x11`) → companion
-  (`roomler-desktop` over LocalAPI) → notification (Linux, the desktop's own, with
-  Approve/Deny: FR-93 P6f) → cli (`roomlerd consent`) → none, which reports
+  (`meshharbor-desktop` over LocalAPI) → notification (Linux, the desktop's own, with
+  Approve/Deny: FR-93 P6f) → cli (`meshharbord consent`) → none, which reports
   `no_prompt_surface` instead of a silent deny, and the chosen surface is logged per
   prompt (before it, "the prompt didn't appear" was unattributable). ⚠️ On
   **Wayland** the native panel is the X11 one, through Xwayland: a per-user daemon
@@ -810,7 +793,7 @@ Fixed-and-shipped issues live in `git log` and the docs. Currently open:
 <!-- RETIRED-NAME-ANCHOR: the env-var spelling on the line below carries a
      retired product name deliberately — it is what the daemon actually reads,
      so renaming it would silently disable every virtual-desktop host. FR-27. -->
-  ⚠️ A `ROOMLER_AGENT_VIRTUAL_DESKTOP=1` host is **not** a consent surface even
+  ⚠️ A `MESHHARBOR_AGENT_VIRTUAL_DESKTOP=1` host is **not** a consent surface even
   though its X display connects: the only viewer of that Xvfb is a remote
   controller, so an unattended host reports `timeout` where the truth is
   `no_prompt_surface`, and an attended one lets viewer A approve viewer B.
@@ -821,14 +804,14 @@ Fixed-and-shipped issues live in `git log` and the docs. Currently open:
   back to the coarse scope), `Some([])` = **deny** — never collapse them. Rules ship
   ONLY under `enforce`, so `warn` can never cause a node to drop. Flip a tenant to
   `warn` first and read `rx_denied` before cutting over.
-- **[LOW]** [2026-08-26] **`roomler self-update` verifies only the same-channel
+- **[LOW]** [2026-08-26] **`mh self-update` verifies only the same-channel
   SHA-256 and fails OPEN when the manifest carries no digest** — the same hole the
   agent updater closed, in the binary that is the sole updater on tunnel-only hosts.
   Rated LOW after measuring the exposure: it has exactly one caller, the manual
   subcommand — no timer, no daemon-driven invocation. **Fixed on master by FR-97 P6b,
   open until a tunnel release ships it**: the CLI requires the artifact's `.asc`
   against the pinned key on every OS (`pgp_verify`, moved to `crates/tunnel-core`).
-  ⚠️ It shares the PGP check, NOT `code_signature.rs`: WinTrust stays in `roomlerd`
+  ⚠️ It shares the PGP check, NOT `code_signature.rs`: WinTrust stays in `meshharbord`
   (tunnel-core is on `windows-sys` **0.61**, the agent on **0.59**), and no OS needed
   it, because Windows takes the same `.asc` check.
 - **[LOW]** [2026-04-20] NVENC `ActivateObject` returns 0x8000FFFF on RTX 5090
@@ -836,7 +819,7 @@ Fixed-and-shipped issues live in `git log` and the docs. Currently open:
   around it; AV1 has no alternative and is filtered from advertised caps by the
   probe. Worth re-testing on newer drivers.
 - **[LOW]** [2026-03-10] No git hooks for linting and no secret scanner
-  (gitleaks/trufflehog) in CI.
+  (gitleaks/trufflehog) is configured; there is no CI.
 
 ## Security Baseline
 

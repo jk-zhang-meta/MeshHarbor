@@ -19,9 +19,9 @@ const NOW = new Date('2026-09-29T12:00:00Z')
 
 const VALID = [
   'title: My wife’s swearing at TeamViewer made me build my own remote desktop tool',
-  'seoTitle: Self-hosted TeamViewer alternative: why I built Roomler',
+  'seoTitle: Self-hosted TeamViewer alternative: why I built MeshHarbor',
   'subtitle: An open-source, self-hosted TeamViewer alternative',
-  'description: Why I built Roomler, an open-source TeamViewer alternative with remote desktop from any browser tab.',
+  'description: Why I built MeshHarbor, an open-source TeamViewer alternative with remote desktop from any browser tab.',
   'date: 2026-09-25T22:45:13Z',
   'author: goran',
   'tags: [teamviewer, remote-desktop]',
@@ -97,7 +97,7 @@ describe('readPostMeta', () => {
   it('wants related pages site-absolute, and copies and canonicals off-site over https', () => {
     expect(meta(replace('related', '[docs/compare/]')).errors.join('\n')).toMatch(/site-absolute/)
     expect(meta(replace('syndication', 'http://medium.com/x')).errors.join('\n')).toMatch(/https:\/\//)
-    expect(meta([...VALID, 'canonical: https://roomler.ai/blog/x/']).errors.join('\n')).toMatch(/its own canonical/)
+    expect(meta([...VALID, 'canonical: https://meshharbor.itachi.fans/blog/x/']).errors.join('\n')).toMatch(/its own canonical/)
     expect(meta([...VALID, 'canonical: https://example.com/original/']).errors).toEqual([])
   })
 

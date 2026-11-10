@@ -93,7 +93,7 @@ trickle that brings a conflict reshapes the node's peers at once and, under
 
 ## The setting
 
-`app.business_isolation` (`ROOMLER__APP__BUSINESS_ISOLATION`):
+`app.business_isolation` (`MESHHARBOR__APP__BUSINESS_ISOLATION`):
 
 | value | effect |
 |---|---|
@@ -207,7 +207,7 @@ sequenceDiagram
   zone and never applies across the line.
 - ⚠️ **Members are never told the private endpoint.** Each is pushed only its own
   relay's public endpoints; the private `ip:port` goes only to the ingress relay, and
-  its native backbone policy (`ROOMLERD_RELAY_BACKBONE_ENABLED`, an explicit interface
+  its native backbone policy (`MESHHARBORD_RELAY_BACKBONE_ENABLED`, an explicit interface
   and CIDR allowlist) must permit it too.
 - **The MTU cap.** The bridge carries at most `BACKBONE_MAX_CIPHERTEXT`; a network
   whose MTU exceeds `BACKBONE_MAX_OVERLAY_MTU` (1360) gets no line.
@@ -273,7 +273,7 @@ request, and the org session the server mints is bound like any other.
 ### Field-verified (2026-10-26)
 
 A TEST rig: center on Isvoro with `enforce` and peer relays `on`; every node a real
-`roomlerd` in netstack mode (`46ee8946`). The mainland member is a workstation in
+`meshharbord` in netstack mode (`46ee8946`). The mainland member is a workstation in
 Henan, the ingress relay po0 GZ, the line the po0 private interconnect to po0 HK
 (`10.42.2.114`), the exit relay po0 HK, and the non-mainland member Hyonix Tokyo.
 

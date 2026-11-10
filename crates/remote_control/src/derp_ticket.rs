@@ -11,7 +11,7 @@
 //! invariants the central `/derp` enforces from Mongo — register-your-own-key
 //! and same-network forwarding — without any database access.
 //!
-//! Key format: `ROOMLER__RELAY__DERP_TICKET_PRIVATE_KEY` = base64(PKCS#8 DER)
+//! Key format: `MESHHARBOR__RELAY__DERP_TICKET_PRIVATE_KEY` = base64(PKCS#8 DER)
 //! (`openssl genpkey -algorithm ed25519 -outform DER | base64 -w0`). The
 //! relay's `DERP_TICKET_PUBLIC_KEY` = base64(raw 32-byte public key) — logged
 //! by the API at startup for copy-paste.

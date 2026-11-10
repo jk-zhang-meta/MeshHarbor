@@ -7,7 +7,7 @@
 //! the publisher needs only the core (Redis), the applier only the Hub.
 
 use bson::oid::ObjectId;
-use roomler_core::Core;
+use meshharbor_core::Core;
 use tracing::{debug, info};
 
 use crate::Hub;
@@ -114,7 +114,7 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                 && hub
                     .terminate(
                         sid,
-                        roomler_ai_remote_control::models::EndReason::AdminTerminated,
+                        meshharbor_remote_control::models::EndReason::AdminTerminated,
                     )
                     .is_ok()
             {
@@ -157,7 +157,7 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
             ) else {
                 return;
             };
-            let msg = roomler_ai_remote_control::signaling::ServerMsg::JoinOrg {
+            let msg = meshharbor_remote_control::signaling::ServerMsg::JoinOrg {
                 enrollment_token: token,
                 label: ctrl
                     .get("label")
@@ -198,7 +198,7 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                 .filter_map(|v| v.as_str())
                 .filter_map(|s| ObjectId::parse_str(s).ok())
             {
-                let msg = roomler_ai_remote_control::signaling::ServerMsg::HivePurge {
+                let msg = meshharbor_remote_control::signaling::ServerMsg::HivePurge {
                     purge_id: pid,
                     session_id: sid,
                     // FR-90 P2k-3 — a leaving member's copy alone; absent

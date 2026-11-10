@@ -21,7 +21,7 @@ use crate::peer_relay_mint_tests::{
 };
 use bson::{doc, oid::ObjectId};
 use futures::SinkExt;
-use roomler_ai_db::models::{AccountApprovalState, User};
+use meshharbor_db::models::{AccountApprovalState, User};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
@@ -127,7 +127,7 @@ pub(crate) async fn assert_observed(app: &TestApp, agent_id: &str, from: Option<
     let id = ObjectId::parse_str(agent_id).unwrap();
     let rows = app
         .db
-        .collection::<bson::Document>(roomler_core::business_authority::OBSERVATIONS_COLLECTION);
+        .collection::<bson::Document>(meshharbor_core::business_authority::OBSERVATIONS_COLLECTION);
     let mut filter = doc! { "identity.device_id": id };
     if let Some(ip) = from {
         filter.insert("client_ip", ip);
@@ -425,7 +425,7 @@ async fn auto_zone_evidence_outlives_the_expiring_observation_row() {
     rig.arm().await;
     rig.app
         .db
-        .collection::<bson::Document>(roomler_core::business_authority::OBSERVATIONS_COLLECTION)
+        .collection::<bson::Document>(meshharbor_core::business_authority::OBSERVATIONS_COLLECTION)
         .delete_many(doc! {})
         .await
         .unwrap();

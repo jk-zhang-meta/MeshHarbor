@@ -12,7 +12,7 @@ run a command on.
 
 ## 1 · Create a workspace
 
-Sign up at [roomler.ai](/register) and give the organization a name your team
+Sign up at [meshharbor.itachi.fans](/register) and give the organization a name your team
 will recognise — it labels **every device and every invite** you issue from it.
 
 The free plan covers **10 users and 100 devices**, commercial use included, with
@@ -83,8 +83,8 @@ machines can reach directly — no port forwarding, no public exposure.
 Once two machines are on the mesh:
 
 ```bash
-roomler status          # this machine: address, name, carrier
-roomler peers           # everything else on the mesh, and how it is reached
+mh status          # this machine: address, name, carrier
+mh peers           # everything else on the mesh, and how it is reached
 ```
 
 Then reach one from the other by name or address — a database, an internal web

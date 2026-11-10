@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! FR-83 — an SSH grant is confirmed before the caller is told to dial.
 //!
-//! Driven through a RAW agent socket rather than the `roomlerd` library, for
+//! Driven through a RAW agent socket rather than the `meshharbord` library, for
 //! two reasons. The test crate builds the agent without `ssh-server`, so the
 //! real one could not take a grant at all; and what these lock is the
 //! SERVER's ordering, which only a peer that decides exactly when — and
@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 
 use bson::oid::ObjectId;
 use futures::{SinkExt, StreamExt};
-use roomler_ai_remote_control::models::NodeRef;
-use roomler_ai_services::dao::overlay_network::OverlayNetworkDao;
-use roomler_ai_services::dao::overlay_node::{NewOverlayNode, OverlayNodeDao};
+use meshharbor_remote_control::models::NodeRef;
+use meshharbor_services::dao::overlay_network::OverlayNetworkDao;
+use meshharbor_services::dao::overlay_node::{NewOverlayNode, OverlayNodeDao};
 use serde_json::{Value, json};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
@@ -187,7 +187,7 @@ async fn request_session(app: &TestApp, seeded: &SeededTenant, agent_id: &str) -
             .unwrap();
         let unsupported = body["error"]
             .as_str()
-            .is_some_and(|e| e.contains("does not support roomler SSH"));
+            .is_some_and(|e| e.contains("does not support meshharbor SSH"));
         if !unsupported {
             return body;
         }

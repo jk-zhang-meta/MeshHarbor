@@ -6,7 +6,7 @@
 # tenant nodes over UDP on its relay port (default 3478). If the relay host's
 # firewall does not admit that port — OR admits it but a DNAT/redirect steals
 # it upstream of the socket — the relay binds a socket and answers nothing:
-# `roomler status` reads "bound — NOT yet proven reachable" and every member's
+# `mh status` reads "bound — NOT yet proven reachable" and every member's
 # reachability probe silently fails. This script is the drift guard. It asserts,
 # on the relay host itself, that the port is admitted by a rule that NAMES the
 # port (SCOPED, not merely a permissive policy) AND that nothing DNATs it away.

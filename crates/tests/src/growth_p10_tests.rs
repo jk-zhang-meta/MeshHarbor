@@ -23,8 +23,8 @@ use std::{future::Future, pin::Pin, sync::Mutex};
 
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
 use chrono::{Duration, NaiveDate};
-use roomler_ai_api::growth::{alerts, cohorts::week_start, digest, digest::DigestMailer, weekly};
-use roomler_ai_services::dao::{
+use meshharbor_api::growth::{alerts, cohorts::week_start, digest, digest::DigestMailer, weekly};
+use meshharbor_services::dao::{
     growth::{BING_SOURCE, GROWTH_PULLS, PURESTAT_SOURCE, SEARCH_CONSOLE_SOURCE},
     growth_alert::GROWTH_ALERTS,
     growth_digest::{DigestStatus, DigestStore, GROWTH_DIGESTS, GROWTH_WEEKLY},
@@ -187,7 +187,7 @@ fn last_closed_monday() -> NaiveDate {
 }
 
 fn monday_label(monday: NaiveDate) -> String {
-    roomler_ai_api::growth::cohorts::week_label(monday)
+    meshharbor_api::growth::cohorts::week_label(monday)
 }
 
 async fn count(app: &TestApp, coll: &str, filter: Document) -> u64 {
@@ -510,7 +510,7 @@ async fn the_weekly_roll_up_is_stored_once_and_mailed_once() {
         assert_eq!(to, "padmin@test.io");
         assert!(
             subject.starts_with(&format!(
-                "Roomler weekly roll-up — {}",
+                "MeshHarbor weekly roll-up — {}",
                 monday_label(monday)
             )),
             "{subject}"
@@ -728,7 +728,7 @@ async fn alerts_fire_once_clear_and_mail_at_most_once_a_day() {
     // clock, so the scheduler can neither pre-empt `digest_missing` nor
     // own the day whose digest is read below.
     let now = DateTime::from_millis(DateTime::now().timestamp_millis() - 3 * 86_400_000);
-    let yesterday = roomler_ai_api::growth::org_daily::parse_day_of(now) - Duration::days(1);
+    let yesterday = meshharbor_api::growth::org_daily::parse_day_of(now) - Duration::days(1);
     // A spike: 40 sign-ups over the 28 days before yesterday (mean 1.43,
     // the band's edge 5.0), and 6 yesterday.
     for age in 1..=20 {
@@ -796,10 +796,10 @@ async fn alerts_fire_once_clear_and_mail_at_most_once_a_day() {
         let sends = mailer.sends.lock().unwrap();
         let subjects: Vec<&str> = sends.iter().map(|s| s.1.as_str()).collect();
         assert!(
-            subjects.contains(&"Roomler growth alert — spike: signups"),
+            subjects.contains(&"MeshHarbor growth alert — spike: signups"),
             "{subjects:?}"
         );
-        assert!(subjects.contains(&"Roomler growth alert — digest_missing: daily"));
+        assert!(subjects.contains(&"MeshHarbor growth alert — digest_missing: daily"));
         assert!(sends.iter().all(|s| s.0 == "padmin@test.io"));
         assert!(
             sends

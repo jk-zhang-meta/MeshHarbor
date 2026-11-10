@@ -1,4 +1,4 @@
-# Roomler — self-hosted, one command.
+# MeshHarbor — self-hosted, one command.
 #
 # This is NOT `docker-compose.yml`. That file brings up the *development*
 # dependencies (Mongo, Redis, MinIO, coturn) and expects you to run the API and
@@ -18,13 +18,13 @@
 # a UDP port range reachable at an address the browser can actually send to, so
 # two knobs matter and the defaults are deliberately conservative:
 #
-#   ROOMLER__MEDIASOUP__ANNOUNCED_IP  the address browsers send RTP to. `127.0.0.1`
+#   MESHHARBOR__MEDIASOUP__ANNOUNCED_IP  the address browsers send RTP to. `127.0.0.1`
 #                                     works only for calls made on this machine.
 #                                     Set it to the host's LAN or public IP.
 #   RTC_MIN_PORT / RTC_MAX_PORT       mapped below. 32 ports is enough to try
 #                                     the product; widen for real use.
 #
-# On Linux you can skip all of that by giving the `roomler` service
+# On Linux you can skip all of that by giving the `meshharbor` service
 # `network_mode: host` and deleting its `ports:` block — then the full
 # 40000-49999 range is reachable and ANNOUNCED_IP is just the host's IP. That is
 # how the hosted service runs. It is not available on Docker Desktop for
@@ -47,7 +47,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-    networks: [roomler]
+    networks: [meshharbor]
 
   redis:
     image: redis:7-alpine
@@ -60,7 +60,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-    networks: [roomler]
+    networks: [meshharbor]
 
   # MinIO's own images (minio/minio, minio/mc) are gone from Docker Hub, so a clean `pull` failed
   # here (#2034). Chainguard builds MinIO from source for amd64 and arm64; this is its
@@ -86,7 +86,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-    networks: [roomler]
+    networks: [meshharbor]
 
   # One-shot: create the bucket the API expects. Without it the first file
   # upload fails with a NoSuchBucket that reads like an auth problem.
@@ -104,8 +104,8 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      BUCKET: ${ROOMLER_S3_BUCKET:-roomler}
-    networks: [roomler]
+      BUCKET: ${MESHHARBOR_S3_BUCKET:-meshharbor}
+    networks: [meshharbor]
     restart: "no"
 
   # TURN relay. Only needed when two peers can punch no direct path AND you want
@@ -119,8 +119,8 @@ services:
       - --listening-port=3478
       - --fingerprint
       - --use-auth-secret
-      - --static-auth-secret=${ROOMLER_TURN_SECRET:?set ROOMLER_TURN_SECRET in .env.selfhost}
-      - --realm=${ROOMLER_TURN_REALM:-roomler.local}
+      - --static-auth-secret=${MESHHARBOR_TURN_SECRET:?set MESHHARBOR_TURN_SECRET in .env.selfhost}
+      - --realm=${MESHHARBOR_TURN_REALM:-meshharbor.local}
       - --no-tls
       - --no-dtls
       - --no-multicast-peers
@@ -129,16 +129,16 @@ services:
       - --denied-peer-ip=10.0.0.0-10.255.255.255
       - --denied-peer-ip=172.16.0.0-172.31.255.255
       - --denied-peer-ip=192.168.0.0-192.168.255.255
-      - --external-ip=${ROOMLER_PUBLIC_IP:-127.0.0.1}
+      - --external-ip=${MESHHARBOR_PUBLIC_IP:-127.0.0.1}
       - --min-port=49152
       - --max-port=49252
     ports:
       - "3478:3478/udp"
       - "3478:3478/tcp"
       - "49152-49252:49152-49252/udp"
-    networks: [roomler]
+    networks: [meshharbor]
 
-  roomler:
+  meshharbor:
     # Two ways to get this running, and the fast one is the default:
     #
     #   docker compose … pull && docker compose … up -d     ← pulls, ~1 minute
@@ -152,7 +152,7 @@ services:
     #
     # `build:` stays because it is the AGPL promise in practice: the published
     # image must never be the only way to run the server.
-    image: ${ROOMLER_IMAGE:-ghcr.io/gjovanov/roomler-ai:latest}
+    image: ${MESHHARBOR_IMAGE:-ghcr.io/jk-zhang-meta/meshharbor:latest}
     build:
       context: .
       args:
@@ -160,9 +160,9 @@ services:
         # FR-69 P8 — which pillars a source build carries (`full` | `collab` |
         # `remote` | `mesh` | `access`; docs/self-hosting.md "Choose a
         # profile"). A pulled image picks its profile by TAG instead
-        # (`ROOMLER_IMAGE=…:<tag>-mesh`). `SAAS=0`: a self-host build never
+        # (`MESHHARBOR_IMAGE=…:<tag>-mesh`). `SAAS=0`: a self-host build never
         # carries the hosted service's billing module.
-        PROFILE: ${ROOMLER_PROFILE:-full}
+        PROFILE: ${MESHHARBOR_PROFILE:-full}
         SAAS: "0"
     restart: unless-stopped
     depends_on:
@@ -170,7 +170,7 @@ services:
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
     ports:
-      - "${ROOMLER_HTTP_PORT:-8080}:80"
+      - "${MESHHARBOR_HTTP_PORT:-8080}:80"
       # Conference media. Must match RTC_MIN_PORT/RTC_MAX_PORT below.
       - "40000-40031:40000-40031/udp"
       - "40000-40031:40000-40031/tcp"
@@ -179,33 +179,33 @@ services:
       # `production` makes the server REFUSE to boot on the built-in default
       # JWT secret. That is the point: a self-hosted instance reachable from a
       # network must not run on a secret published in this repository.
-      ROOMLER__APP__ENVIRONMENT: ${ROOMLER_ENVIRONMENT:-production}
-      ROOMLER__JWT__SECRET: ${ROOMLER_JWT_SECRET:?set ROOMLER_JWT_SECRET in .env.selfhost — openssl rand -hex 32}
-      ROOMLER__APP__FRONTEND_URL: ${ROOMLER_PUBLIC_URL:-http://localhost:8080}
-      ROOMLER__OAUTH__BASE_URL: ${ROOMLER_PUBLIC_URL:-http://localhost:8080}
+      MESHHARBOR__APP__ENVIRONMENT: ${MESHHARBOR_ENVIRONMENT:-production}
+      MESHHARBOR__JWT__SECRET: ${MESHHARBOR_JWT_SECRET:?set MESHHARBOR_JWT_SECRET in .env.selfhost — openssl rand -hex 32}
+      MESHHARBOR__APP__FRONTEND_URL: ${MESHHARBOR_PUBLIC_URL:-http://localhost:8080}
+      MESHHARBOR__OAUTH__BASE_URL: ${MESHHARBOR_PUBLIC_URL:-http://localhost:8080}
       # ── datastores ─────────────────────────────────────────────────────────
-      ROOMLER__DATABASE__URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/?authSource=admin
-      ROOMLER__DATABASE__NAME: ${ROOMLER_DB_NAME:-roomler}
-      ROOMLER__REDIS__URL: redis://redis:6379
-      ROOMLER__S3__ENABLED: "true"
-      ROOMLER__S3__ENDPOINT: http://minio:9000
-      ROOMLER__S3__ACCESS_KEY: ${MINIO_ROOT_USER}
-      ROOMLER__S3__SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-      ROOMLER__S3__BUCKET: ${ROOMLER_S3_BUCKET:-roomler}
+      MESHHARBOR__DATABASE__URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/?authSource=admin
+      MESHHARBOR__DATABASE__NAME: ${MESHHARBOR_DB_NAME:-meshharbor}
+      MESHHARBOR__REDIS__URL: redis://redis:6379
+      MESHHARBOR__S3__ENABLED: "true"
+      MESHHARBOR__S3__ENDPOINT: http://minio:9000
+      MESHHARBOR__S3__ACCESS_KEY: ${MINIO_ROOT_USER}
+      MESHHARBOR__S3__SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MESHHARBOR__S3__BUCKET: ${MESHHARBOR_S3_BUCKET:-meshharbor}
       # ── conference media ───────────────────────────────────────────────────
-      ROOMLER__MEDIASOUP__ANNOUNCED_IP: ${ROOMLER_ANNOUNCED_IP:-127.0.0.1}
-      ROOMLER__MEDIASOUP__RTC_MIN_PORT: "40000"
-      ROOMLER__MEDIASOUP__RTC_MAX_PORT: "40031"
-      ROOMLER__MEDIASOUP__NUM_WORKERS: ${ROOMLER_MEDIASOUP_WORKERS:-2}
+      MESHHARBOR__MEDIASOUP__ANNOUNCED_IP: ${MESHHARBOR_ANNOUNCED_IP:-127.0.0.1}
+      MESHHARBOR__MEDIASOUP__RTC_MIN_PORT: "40000"
+      MESHHARBOR__MEDIASOUP__RTC_MAX_PORT: "40031"
+      MESHHARBOR__MEDIASOUP__NUM_WORKERS: ${MESHHARBOR_MEDIASOUP_WORKERS:-2}
       # ── TURN (see the coturn service above) ────────────────────────────────
-      ROOMLER__TURN__URL: ${ROOMLER_TURN_URL:-turn:127.0.0.1:3478}
-      ROOMLER__TURN__SHARED_SECRET: ${ROOMLER_TURN_SECRET}
+      MESHHARBOR__TURN__URL: ${MESHHARBOR_TURN_URL:-turn:127.0.0.1:3478}
+      MESHHARBOR__TURN__SHARED_SECRET: ${MESHHARBOR_TURN_SECRET}
       # ── first-run ergonomics ───────────────────────────────────────────────
       # No SMTP is configured out of the box, so activation mail cannot be sent
       # and an account that must be activated by email would be unreachable.
-      # Set this false once you have configured ROOMLER__EMAIL__*.
-      ROOMLER__AUTH__AUTO_VERIFY: ${ROOMLER_AUTO_VERIFY:-true}
-      RUST_LOG: ${ROOMLER_LOG:-info}
+      # Set this false once you have configured MESHHARBOR__EMAIL__*.
+      MESHHARBOR__AUTH__AUTO_VERIFY: ${MESHHARBOR_AUTO_VERIFY:-true}
+      RUST_LOG: ${MESHHARBOR_LOG:-info}
     # ⚠️ Zero-dependency on purpose. The runtime image has no curl, no wget and
     # no nc (checked), and adding one to a production image just to run a
     # liveness probe is a poor trade. bash's /dev/tcp is a shell builtin and
@@ -223,7 +223,7 @@ services:
       # The first start runs schema migrations behind a lease, so give it room
       # before a failing probe starts counting against `retries`.
       start_period: 45s
-    networks: [roomler]
+    networks: [meshharbor]
 
 volumes:
   mongo_data:
@@ -231,5 +231,5 @@ volumes:
   minio_data:
 
 networks:
-  roomler:
-    name: roomler-selfhost
+  meshharbor:
+    name: meshharbor-selfhost

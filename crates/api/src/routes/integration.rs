@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::{error::ApiError, extractors::auth::AuthUser, state::AppState};
-use roomler_ai_db::models::TaskCategory;
+use meshharbor_db::models::TaskCategory;
 
 /// POST /api/tenant/:tid/export/conversation-pdf
 /// Export conversation as PDF (background task).
@@ -48,7 +48,7 @@ pub async fn export_conversation_pdf(
     // FR-69 P3 — `messages` is the `chat` module's; a DAO is a stateless
     // handle on the collection, so this export builds its own. (The PDF
     // export itself belongs with the xlsx one in `chat`; a later move.)
-    let messages_dao = Arc::new(roomler_ai_services::dao::message::MessageDao::new(
+    let messages_dao = Arc::new(meshharbor_services::dao::message::MessageDao::new(
         &state.db,
     ));
     let users_dao = Arc::clone(&state.users);
@@ -56,7 +56,7 @@ pub async fn export_conversation_pdf(
     let storage = Arc::clone(&state.storage);
 
     state.tasks.spawn_task(task_id, async move {
-        let params = roomler_ai_services::dao::base::PaginationParams {
+        let params = meshharbor_services::dao::base::PaginationParams {
             page: 1,
             per_page: 10000,
             before: None,
@@ -92,7 +92,7 @@ pub async fn export_conversation_pdf(
             .map_err(|e| format!("{}", e))?;
 
         let bytes =
-            roomler_ai_services::export::pdf::export_conversation(&result.items, &user_map)?;
+            meshharbor_services::export::pdf::export_conversation(&result.items, &user_map)?;
 
         // Persist through the storage backend; `file_path` on the task record
         // is the storage KEY (see routes/export.rs for the same convention).

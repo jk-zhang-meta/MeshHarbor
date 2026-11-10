@@ -30,8 +30,8 @@ use std::time::Duration;
 
 use bson::{DateTime, oid::ObjectId};
 use futures::StreamExt;
-use roomler_ai_remote_control::turn_creds::org_of_username;
-use roomler_ai_services::dao::stats::Meter;
+use meshharbor_remote_control::turn_creds::org_of_username;
+use meshharbor_services::dao::stats::Meter;
 use tracing::{debug, info, warn};
 
 use crate::NetworkState;
@@ -119,7 +119,7 @@ async fn record(state: &NetworkState, r: Reported) {
     };
     let leg = if r.peer_leg { "peer" } else { "client" };
     let key = format!(
-        "roomler:turn_counted:{}:{}:{}:{}",
+        "meshharbor:turn_counted:{}:{}:{}:{}",
         state.db.name(),
         r.username,
         r.allocation,
@@ -208,7 +208,7 @@ mod tests {
 
     fn user() -> String {
         let principal =
-            roomler_ai_remote_control::turn_creds::charged("6a975e17971e2d55ddcdedb0", ORG);
+            meshharbor_remote_control::turn_creds::charged("6a975e17971e2d55ddcdedb0", ORG);
         format!("1792000000:{principal}")
     }
 
@@ -218,7 +218,7 @@ mod tests {
     fn both_legs_of_a_total_parse() {
         let u = user();
         let client = parse(
-            &format!("turn/realm/roomler.ai/user/{u}/allocation/001000000000000042/total_traffic"),
+            &format!("turn/realm/meshharbor.itachi.fans/user/{u}/allocation/001000000000000042/total_traffic"),
             "rcvp=10, rcvb=1200, sentp=12, sentb=34567",
         )
         .unwrap();
@@ -233,7 +233,7 @@ mod tests {
         );
         let peer = parse(
             &format!(
-                "turn/realm/roomler.ai/user/{u}/allocation/001000000000000042/total_traffic/peer"
+                "turn/realm/meshharbor.itachi.fans/user/{u}/allocation/001000000000000042/total_traffic/peer"
             ),
             "rcvp=12, rcvb=34567, sentp=10, sentb=1200",
         )
@@ -270,6 +270,6 @@ mod tests {
             ),
             None
         );
-        assert_eq!(parse("roomler:ws", "{}"), None);
+        assert_eq!(parse("meshharbor:ws", "{}"), None);
     }
 }

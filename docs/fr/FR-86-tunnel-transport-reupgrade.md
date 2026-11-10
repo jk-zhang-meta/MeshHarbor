@@ -1,8 +1,8 @@
 # FR-86: Tunnel routes return to the best transport — make-before-break re-upgrade, never cutting a connection
 
-Issue: [#1769](https://github.com/gjovanov/roomler-ai/issues/1769) · supersedes [#1768](https://github.com/gjovanov/roomler-ai/issues/1768) ·
-related [#1761](https://github.com/gjovanov/roomler-ai/issues/1761) (the churn cause, fixed in 0.4.113) and
-[#1754](https://github.com/gjovanov/roomler-ai/issues/1754) (the terminate guard and the exit-side reap).
+Issue: [#1769](https://github.com/jk-zhang-meta/MeshHarbor/issues/1769) · supersedes [#1768](https://github.com/jk-zhang-meta/MeshHarbor/issues/1768) ·
+related [#1761](https://github.com/jk-zhang-meta/MeshHarbor/issues/1761) (the churn cause, fixed in 0.4.113) and
+[#1754](https://github.com/jk-zhang-meta/MeshHarbor/issues/1754) (the terminate guard and the exit-side reap).
 
 ## Goal
 
@@ -21,11 +21,11 @@ The operator's decision (2026-09-28, on #1768): *"they should switch to the bett
 |---|---|
 | 2026-09-28 07:27–07:29 and 12:25–12:28 | After each client-daemon restart, the declared routes ran the ladder (`quic-v1` → `quic-derp-v1` → `webrtc-dc-v1`). Routes whose exit was busy or restarting at that moment settled on `webrtc-dc-v1`. |
 | 2026-09-28 12:26:55 | One exit (UDP-capable) restarted while the client's routes were retrying; two of its routes settled on `webrtc-dc-v1` and **stayed there for hours**. |
-| 2026-09-28 12:4x | A forced `roomler forward --transport quic` through that same exit worked (the SSH banner came back over `quic-v1`) — the better transport was available the whole time. |
+| 2026-09-28 12:4x | A forced `mh forward --transport quic` through that same exit worked (the SSH banner came back over `quic-v1`) — the better transport was available the whole time. |
 
 The ladder runs **only when a session opens**, and nothing ever re-opens a healthy session, so a route keeps the
 transport it happened to land on. The flow supervisor even remembers that QUIC-over-TURN failed
-(`quic_over_turn_failing`, `agents/roomlerd/src/tunnel/client_mgr.rs:839`) — but only uses it to choose the
+(`quic_over_turn_failing`, `agents/meshharbord/src/tunnel/client_mgr.rs:839`) — but only uses it to choose the
 NEXT session's first rung, and a healthy fallen-back session never ends on its own.
 
 ## The mechanism, in the code (master `9ef2f2956`)
@@ -54,7 +54,7 @@ Split each transport's session runner into **establishment** and **carrying**:
   current carrier. With no carrier (a reconnect in progress) the connection is **held** — up to a bound
   (default 30 s) — until a carrier is ready, instead of the kernel refusing it; past the bound it is closed.
 - `run_tunnel_session` keeps its public contract for the standalone CLI by composing establish + a private
-  accept loop, so `roomler forward` (the CLI) is unchanged.
+  accept loop, so `mh forward` (the CLI) is unchanged.
 
 P1 changes no transport behaviour, only who owns the port: sessions, pools, keepalives, the terminate guard and
 the exit side are untouched. Its visible effect is that a route no longer refuses connections during a reconnect.
@@ -92,7 +92,7 @@ sequenceDiagram
   `active()` reaches 0 it is closed (terminate → the exit frees its peer). **No maximum drain time** — an RDP
   connection that lives for hours keeps its old carrier for hours; cutting it would break the goal.
 - **Failure:** a candidate that fails is closed (terminate), the backoff grows, the active carrier is untouched.
-- **Kill switch:** `ROOMLERD_TUNNEL_REUPGRADE=0` (and the config key `tunnel_reupgrade = false`) — no probes; the
+- **Kill switch:** `MESHHARBORD_TUNNEL_REUPGRADE=0` (and the config key `tunnel_reupgrade = false`) — no probes; the
   flow behaves exactly as after P1.
 
 ### Compatibility
@@ -116,8 +116,8 @@ sequenceDiagram
 | Phase | What | Kill switch | Status |
 |---|---|---|---|
 | P0 | spec + ledger row + issue | — | **merged** #1770 `8408efccc` |
-| P1 | flow-owned listener, `Carrier` split, held connections during reconnect; tests; docs | revert (pure refactor, no wire change) | **merged** #1771 `ebab24eeb`: `establish_tunnel_session` + `Carrier` (`crates/tunnel-core/src/driver.rs`), `FlowListener` + `HoldPolicy` (`crates/tunnel-core/src/flow_listener.rs`, ≤ 64 held, ≤ 30 s), the daemon flow binds once (`agents/roomlerd/src/tunnel/client_mgr.rs` `run_flow_cycle`); 9 new tests, 5 negative controls shown red; `docs/tunnels.md` §"The flow owns the listener" |
-| P2 | re-upgrade probe, promotion, drain; tests; docs | `ROOMLERD_TUNNEL_REUPGRADE=0` / `tunnel_reupgrade = false` (the key applies on the next daemon restart) | **merged** #1773 `31c7e813a`: probe schedule (`ReupgradeBackoff`/`ProbeTimer`), ranking (`better_transports`/`below_best`), `spawn_candidate`/`establish_candidate` (background probe into a throwaway `FlowLive`), promotion + drain (`run_flow_cycle` serving loop, `drain_carrier`), `Carrier::drained` (`crates/tunnel-core/src/driver.rs`), the `ROOMLERD_TUNNEL_REUPGRADE` kill switch + `tunnel_reupgrade` config key, the `--start-transport` test lever (LocalAPI `CreateForward.start_transport`); 11 new tests, 6 negative controls shown red; `docs/tunnels.md` §"Re-upgrade: probe → promote → drain" |
+| P1 | flow-owned listener, `Carrier` split, held connections during reconnect; tests; docs | revert (pure refactor, no wire change) | **merged** #1771 `ebab24eeb`: `establish_tunnel_session` + `Carrier` (`crates/tunnel-core/src/driver.rs`), `FlowListener` + `HoldPolicy` (`crates/tunnel-core/src/flow_listener.rs`, ≤ 64 held, ≤ 30 s), the daemon flow binds once (`agents/meshharbord/src/tunnel/client_mgr.rs` `run_flow_cycle`); 9 new tests, 5 negative controls shown red; `docs/tunnels.md` §"The flow owns the listener" |
+| P2 | re-upgrade probe, promotion, drain; tests; docs | `MESHHARBORD_TUNNEL_REUPGRADE=0` / `tunnel_reupgrade = false` (the key applies on the next daemon restart) | **merged** #1773 `31c7e813a`: probe schedule (`ReupgradeBackoff`/`ProbeTimer`), ranking (`better_transports`/`below_best`), `spawn_candidate`/`establish_candidate` (background probe into a throwaway `FlowLive`), promotion + drain (`run_flow_cycle` serving loop, `drain_carrier`), `Carrier::drained` (`crates/tunnel-core/src/driver.rs`), the `MESHHARBORD_TUNNEL_REUPGRADE` kill switch + `tunnel_reupgrade` config key, the `--start-transport` test lever (LocalAPI `CreateForward.start_transport`); 11 new tests, 6 negative controls shown red; `docs/tunnels.md` §"Re-upgrade: probe → promote → drain" |
 | P3 | agent release; field verification (AC7, AC8); close | as P2 | **shipped** `agent-v0.4.114` → `a0c027b23` (#1774), published 2026-09-28 22:58:55Z; **field-verified** 2026-09-28/29, see the log |
 
 ## Acceptance criteria
@@ -152,7 +152,7 @@ sequenceDiagram
   log shows `agent flow ended`, then `tunnel peer's client is gone — reaping the session (#1754)` ~60 ms later,
   then `rc:tunnel.terminate — closing peer` for the same session. The three idle routes' old carriers closed the
   moment they were promoted, since they had 0 connections.)*
-- [x] **AC6** — Kill switch: with `ROOMLERD_TUNNEL_REUPGRADE=0` no probe is ever opened. *(P2: `reupgrade_active`
+- [x] **AC6** — Kill switch: with `MESHHARBORD_TUNNEL_REUPGRADE=0` no probe is ever opened. *(P2: `reupgrade_active`
   + `reupgrade_enabled` gate the whole probe path — `reupgrade_gate_respects_pinned_and_kill_switch`,
   `kill_switch_reads_the_env`; off ⇒ the serving phase is exactly P1's `active.dead().await`. ⚠️ **Verified by
   tests + NCs only:** the `tunnel_reupgrade` config key applies on the next daemon **restart** (not live; an
@@ -179,7 +179,7 @@ sequenceDiagram
 ## Open decisions
 
 - The probe cadence and backoff numbers (proposed above).
-- Whether the standalone `roomler forward` CLI gets the probe (proposed: later — P1 keeps its contract).
+- Whether the standalone `mh forward` CLI gets the probe (proposed: later — P1 keeps its contract).
 - Whether a pinned `--transport` should ever probe (proposed: never — a pin is a decision).
 
 ## Out of scope

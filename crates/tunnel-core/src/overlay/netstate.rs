@@ -31,7 +31,7 @@
 //!
 //! Config: `overlay_netmon` (default ON) + `overlay_netmon_debounce_ms`
 //! (default 750, clamped 100–5000) via the standard env bridge
-//! (`ROOMLERD_OVERLAY_NETMON*`).
+//! (`MESHHARBORD_OVERLAY_NETMON*`).
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -41,7 +41,7 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{debug, info, warn};
 
-/// Master switch (`ROOMLERD_OVERLAY_NETMON`, default ON).
+/// Master switch (`MESHHARBORD_OVERLAY_NETMON`, default ON).
 pub(crate) fn netmon_enabled() -> bool {
     crate::env::flag("OVERLAY_NETMON", true)
 }
@@ -50,7 +50,7 @@ pub(crate) fn netmon_enabled() -> bool {
 /// the runtime's net-change arm; formerly `route_events`').
 pub(crate) const ROUTE_WAVE_MIN_INTERVAL: Duration = Duration::from_secs(3);
 
-/// `ROOMLERD_OVERLAY_ROUTE_EVENTS` — the legacy per-runtime consumer
+/// `MESHHARBORD_OVERLAY_ROUTE_EVENTS` — the legacy per-runtime consumer
 /// kill-switch, still honored (default ON; `0`/`false`/`off` = the runtime
 /// ignores net deltas and keeps the 2 s tick-only route guard, the pre-P4
 /// behaviour). The subsystem-wide switch is [`netmon_enabled`].
@@ -64,7 +64,7 @@ pub(crate) fn route_events_enabled() -> bool {
 }
 
 /// Debounce window: further raw signals inside this quiet period are
-/// absorbed into one delta (`ROOMLERD_OVERLAY_NETMON_DEBOUNCE_MS`).
+/// absorbed into one delta (`MESHHARBORD_OVERLAY_NETMON_DEBOUNCE_MS`).
 fn debounce() -> Duration {
     let ms = crate::env::node_env("OVERLAY_NETMON_DEBOUNCE_MS")
         .and_then(|v| v.trim().parse::<u64>().ok())
@@ -106,11 +106,12 @@ pub(crate) enum RawSignal {
 }
 
 /// One interface's addresses, keyed by name in [`NetSnapshot::ifaces`].
-/// `vpn_class` is the NAME-based deny-list verdict
-/// ([`super::direct::lan_iface_denied`]) — a LABEL, not the Major-severity
-/// input: the Check Point adapter is named just "Ethernet" and evades
-/// name-only classification, which is exactly why severity keys on
-/// default-route movement instead.
+/// `vpn_class` is the structural + deny-list virtual/VPN verdict
+/// ([`super::direct::is_vpn_or_virtual_iface`]: name/driver-description deny-list,
+/// Windows `HardwareInterface == false`, and Linux sysfs tunnel link-types) —
+/// used to exclude VPN/virtual adapters from LAN repair and LAN-capture
+/// physical-fallback exemptions; Major severity still keys on default-route
+/// movement instead.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IfaceSnap {
     pub v4: Vec<std::net::Ipv4Addr>,
@@ -438,7 +439,7 @@ pub fn handle() -> Option<&'static NetstateHandle> {
 
 fn spawn() -> Option<NetstateHandle> {
     if !netmon_enabled() {
-        debug!("netstate: disabled (ROOMLERD_OVERLAY_NETMON=0)");
+        debug!("netstate: disabled (MESHHARBORD_OVERLAY_NETMON=0)");
         return None;
     }
     let (raw_tx, raw_rx) = mpsc::unbounded_channel();
@@ -568,7 +569,7 @@ pub fn sample_snapshot() -> NetSnapshot {
     if let Ok(addrs) = if_addrs::get_if_addrs() {
         for a in addrs {
             let slot = ifaces.entry(a.name.clone()).or_default();
-            slot.vpn_class = super::direct::lan_iface_denied(&a.name, "");
+            slot.vpn_class |= super::direct::is_vpn_or_virtual_iface(&a.name, a.index);
             match a.addr {
                 if_addrs::IfAddr::V4(v4) => {
                     if !v4.ip.is_loopback() {
@@ -621,7 +622,7 @@ pub fn sample_snapshot() -> NetSnapshot {
 /// lands on one ([`NetSnapshot::uplink_v4`]), else the default itself. Read
 /// by the code the exemption pins use (`tun::uplink_beneath`), so the
 /// network monitor and the pins agree on what the uplink is.
-/// `ROOMLERD_OVERLAY_NETMON_UPLINK=0` puts netstate back to the lookup alone.
+/// `MESHHARBORD_OVERLAY_NETMON_UPLINK=0` puts netstate back to the lookup alone.
 fn uplink_beneath_own(default: Option<&DefaultRoute>, v6: bool) -> Option<DefaultRoute> {
     #[cfg(feature = "overlay-l3")]
     if let Some(d) = default
@@ -636,6 +637,16 @@ fn uplink_beneath_own(default: Option<&DefaultRoute>, v6: bool) -> Option<Defaul
     default.cloned()
 }
 
+/// Internal route-lookup result carrying both [`DefaultRoute`] and the matched
+/// route's prefix length (`0` = default route `0.0.0.0/0` / `::/0`) when the
+/// OS lookup exposes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RouteLookupHit {
+    ifref: String,
+    gateway: Option<IpAddr>,
+    prefix_len: Option<u8>,
+}
+
 /// FR-33 — one route lookup per LAN v4 address: does a packet to a neighbour
 /// inside our own prefix leave through the interface that owns the address?
 /// Link-local, loopback, point-to-point (/31, /32) and name-classified VPN
@@ -644,6 +655,17 @@ fn detect_lan_captures(
     lan_v4: &[(String, Option<u32>, std::net::Ipv4Addr, u8)],
     ifaces: &BTreeMap<String, IfaceSnap>,
 ) -> Vec<LanCapture> {
+    detect_lan_captures_with(lan_v4, ifaces, route_lookup_from)
+}
+
+fn detect_lan_captures_with<F>(
+    lan_v4: &[(String, Option<u32>, std::net::Ipv4Addr, u8)],
+    ifaces: &BTreeMap<String, IfaceSnap>,
+    mut lookup: F,
+) -> Vec<LanCapture>
+where
+    F: FnMut(IpAddr, Option<IpAddr>) -> Option<RouteLookupHit>,
+{
     let mut out: Vec<LanCapture> = Vec::new();
     for (name, index, ip, plen) in lan_v4 {
         if *plen == 0 || *plen >= 31 || ip.is_link_local() || ip.is_loopback() {
@@ -652,7 +674,18 @@ fn detect_lan_captures(
         if ifaces.get(name).is_some_and(|i| i.vpn_class) {
             continue;
         }
-        let Some(hit) = route_lookup(IpAddr::V4(neighbour_in_prefix(*ip, *plen))) else {
+        // F3: pass our bound LAN source IP (`Some(IpAddr::V4(*ip))`) so
+        // `GetBestRoute2` / policy routing evaluates the route from the
+        // owning interface's address rather than `NULL` source selection.
+        let neighbour = IpAddr::V4(neighbour_in_prefix(*ip, *plen));
+        let Some(hit) = lookup(neighbour, Some(IpAddr::V4(*ip))) else {
+            debug!(
+                iface = %name,
+                %ip,
+                %neighbour,
+                prefix_len = *plen,
+                "netstate: LAN capture route lookup returned None; skipping interface"
+            );
             continue;
         };
         let owner_ref = owner_ifref(name, *index);
@@ -668,11 +701,40 @@ fn detect_lan_captures(
         if selected_holds_prefix(&hit.ifref, *ip, *plen, lan_v4) {
             continue;
         }
+        let via_name = name_for_ifref(&hit.ifref, lan_v4);
+        // F3 dual guard: when a multi-NIC host (e.g. Wi-Fi transiently soft-
+        // disconnected by Windows WCM Event 1017/1018 while a USB RNDIS or
+        // wired Ethernet uplink holds the `0.0.0.0/0` default route) routes a
+        // transiently route-less LAN prefix to that OTHER physical non-VPN
+        // NIC's `/0` default route, that is NOT a VPN split/default capture —
+        // skip `LanCapture` ONLY when BOTH:
+        //   (1) `via` resolves to a known non-VPN physical NIC (`!vpn_class`
+        //       and not our own overlay TUN), AND
+        //   (2) the matched route is a `/0` default route (`prefix_len == Some(0)`).
+        // Full-tunnel VPN `/0` captures and VPN `/1` or `/25` split-route
+        // captures fail condition (1) (and `/1`/`/25` also fail condition (2))
+        // and therefore continue to be flagged as `LanCapture`.
+        // Note: on Linux, `route_lookup_from` leaves `prefix_len = None` (since
+        // `ip route get` answers with the resolved route rather than matched
+        // prefix length), so this physical-`/0` exemption is intentionally
+        // inert on Linux (WCM soft-disconnect is Windows-only, and Linux policy
+        // routing captures are caught via `ip route get <dst> from <src>`).
+        #[cfg(feature = "overlay-l3")]
+        let via_is_own_tun = super::tun::is_own_ifref(&hit.ifref);
+        #[cfg(not(feature = "overlay-l3"))]
+        let via_is_own_tun = false;
+        let via_is_non_vpn_physical = !via_is_own_tun
+            && via_name
+                .as_deref()
+                .and_then(|vn| ifaces.get(vn))
+                .is_some_and(|vi| !vi.vpn_class);
+        if via_is_non_vpn_physical && hit.prefix_len == Some(0) {
+            continue;
+        }
         let prefix = format!("{}/{}", network_of(*ip, *plen), plen);
         if out.iter().any(|c| c.prefix == prefix && &c.owner == name) {
             continue;
         }
-        let via_name = name_for_ifref(&hit.ifref, lan_v4);
         out.push(LanCapture {
             prefix,
             owner: name.clone(),
@@ -786,8 +848,16 @@ pub(crate) fn default_gateway_v4() -> Option<std::net::Ipv4Addr> {
 
 /// Where a packet to `dest` would leave: a route LOOKUP (never a send), the
 /// instrument behind both the default-route sample and the FR-33 capture probe.
-#[cfg(windows)]
 fn route_lookup(dest_ip: IpAddr) -> Option<DefaultRoute> {
+    let hit = route_lookup_from(dest_ip, None)?;
+    Some(DefaultRoute {
+        ifref: hit.ifref,
+        gateway: hit.gateway,
+    })
+}
+
+#[cfg(windows)]
+fn route_lookup_from(dest_ip: IpAddr, src_ip: Option<IpAddr>) -> Option<RouteLookupHit> {
     use windows_sys::Win32::Foundation::NO_ERROR;
     use windows_sys::Win32::NetworkManagement::IpHelper::{GetBestRoute2, MIB_IPFORWARD_ROW2};
     use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, SOCKADDR_INET};
@@ -806,16 +876,30 @@ fn route_lookup(dest_ip: IpAddr) -> Option<DefaultRoute> {
                 dest.Ipv4.sin_addr.S_un.S_addr = u32::from(v4).to_be();
             }
         }
+        let mut src_in: SOCKADDR_INET = core::mem::zeroed();
+        let src_ptr = match src_ip {
+            Some(IpAddr::V6(v6)) => {
+                src_in.Ipv6.sin6_family = AF_INET6;
+                src_in.Ipv6.sin6_addr.u.Byte = v6.octets();
+                &src_in as *const SOCKADDR_INET
+            }
+            Some(IpAddr::V4(v4)) => {
+                src_in.Ipv4.sin_family = AF_INET;
+                src_in.Ipv4.sin_addr.S_un.S_addr = u32::from(v4).to_be();
+                &src_in as *const SOCKADDR_INET
+            }
+            None => core::ptr::null(),
+        };
         let mut row: MIB_IPFORWARD_ROW2 = core::mem::zeroed();
-        let mut src: SOCKADDR_INET = core::mem::zeroed();
+        let mut src_out: SOCKADDR_INET = core::mem::zeroed();
         if GetBestRoute2(
             core::ptr::null_mut(),
             0,
-            core::ptr::null(),
+            src_ptr,
             &dest,
             0,
             &mut row,
-            &mut src,
+            &mut src_out,
         ) != NO_ERROR
         {
             return None;
@@ -832,17 +916,21 @@ fn route_lookup(dest_ip: IpAddr) -> Option<DefaultRoute> {
             }
             _ => None,
         };
-        Some(DefaultRoute {
+        Some(RouteLookupHit {
             ifref: row.InterfaceIndex.to_string(),
             gateway: gw,
+            prefix_len: Some(row.DestinationPrefix.PrefixLength),
         })
     }
 }
 
 #[cfg(target_os = "linux")]
-fn route_lookup(dest_ip: IpAddr) -> Option<DefaultRoute> {
+fn route_lookup_from(dest_ip: IpAddr, src_ip: Option<IpAddr>) -> Option<RouteLookupHit> {
     // One-shot lookup, matching the existing shelled-`ip` style: cheap,
-    // dependency-free, and correct through policy routing.
+    // dependency-free, and correct through policy routing (`ip rule from <src>`).
+    // `prefix_len` is `None` on Linux because `ip -o route get` does not emit
+    // the matched table entry's prefix length; the physical-`/0` exemption in
+    // `detect_lan_captures_with` is therefore inert on Linux.
     let mut cmd = std::process::Command::new("ip");
     let dest = dest_ip.to_string();
     if dest_ip.is_ipv6() {
@@ -850,7 +938,25 @@ fn route_lookup(dest_ip: IpAddr) -> Option<DefaultRoute> {
     } else {
         cmd.args(["-o", "route", "get", dest.as_str()]);
     }
-    let out = cmd.output().ok()?;
+    if let Some(s) = src_ip {
+        cmd.args(["from", s.to_string().as_str()]);
+    }
+    let out = match cmd.output() {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            debug!(
+                %dest_ip,
+                ?src_ip,
+                code = ?o.status.code(),
+                "netstate: `ip route get` exited non-zero"
+            );
+            return None;
+        }
+        Err(e) => {
+            debug!(%dest_ip, ?src_ip, %e, "netstate: failed to spawn `ip route get`");
+            return None;
+        }
+    };
     let line = String::from_utf8_lossy(&out.stdout);
     let mut toks = line.split_whitespace().peekable();
     let (mut dev, mut via) = (None, None);
@@ -861,16 +967,75 @@ fn route_lookup(dest_ip: IpAddr) -> Option<DefaultRoute> {
             _ => {}
         }
     }
-    dev.map(|d| DefaultRoute {
+    dev.map(|d| RouteLookupHit {
         ifref: d,
         gateway: via,
+        prefix_len: None,
+    })
+}
+
+/// Parse macOS / BSD `route -n get` multi-line output into [`RouteLookupHit`].
+///
+/// Prefix-length rules (F3 refinement):
+/// - When a `mask:` line is present, compute `prefix_len` from the mask itself:
+///   e.g. `destination: 0.0.0.0` + `mask: 128.0.0.0` is a `/1` VPN split route
+///   (`prefix_len = Some(1)`), NOT `/0`; `mask: 255.255.255.0` -> `Some(24)`;
+///   `mask: default` alongside `destination: default` (modern macOS `/0` output)
+///   -> `Some(0)`.
+/// - When NO `mask:` line is present, ONLY `destination: default` counts as `/0`
+///   (`Some(0)`); cloned `/32` host routes (`destination: 8.8.8.8` with `HOST` /
+///   `WASCLONED` flags and no `mask:` line) yield `prefix_len = None`.
+#[cfg(any(target_os = "macos", test))]
+fn parse_bsd_route_get(text: &str) -> Option<RouteLookupHit> {
+    let (mut ifname, mut gw, mut dest, mut mask) = (None, None, None, None);
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("interface:") {
+            let s = v.trim();
+            if !s.is_empty() {
+                ifname = Some(s.to_string());
+            }
+        } else if let Some(v) = line.strip_prefix("gateway:") {
+            gw = v.trim().parse::<IpAddr>().ok();
+        } else if let Some(v) = line.strip_prefix("destination:") {
+            dest = Some(v.trim().to_string());
+        } else if let Some(v) = line.strip_prefix("mask:") {
+            mask = Some(v.trim().to_string());
+        }
+    }
+    let plen = match mask.as_deref() {
+        Some("default") if dest.as_deref() == Some("default") => Some(0),
+        Some(m) => {
+            if let Ok(v4) = m.parse::<std::net::Ipv4Addr>() {
+                Some(u32::from(v4).leading_ones() as u8)
+            } else if let Ok(v6) = m.parse::<std::net::Ipv6Addr>() {
+                Some(u128::from(v6).leading_ones() as u8)
+            } else if let Some(hex) = m.strip_prefix("0x").or_else(|| m.strip_prefix("0X")) {
+                u32::from_str_radix(hex, 16)
+                    .ok()
+                    .map(|bits| bits.leading_ones() as u8)
+            } else {
+                None
+            }
+        }
+        None => (dest.as_deref() == Some("default")).then_some(0),
+    };
+    ifname.map(|d| RouteLookupHit {
+        ifref: d,
+        gateway: gw,
+        prefix_len: plen,
     })
 }
 
 #[cfg(target_os = "macos")]
-fn route_lookup(dest_ip: IpAddr) -> Option<DefaultRoute> {
+fn route_lookup_from(dest_ip: IpAddr, _src_ip: Option<IpAddr>) -> Option<RouteLookupHit> {
     // `route -n get` — the BSD twin of `ip route get`; multi-line
     // `key: value` output ("interface: en0" / "gateway: 192.168.68.1").
+    // Deliberately omit `-ifa <src>` on macOS: BSD `RTA_IFA` is a route-entry
+    // tie-breaker rather than policy source routing (macOS has no `ip rule from`
+    // table, and Windows WCM soft-disconnect does not exist on macOS), so
+    // keeping the plain `route -n get <dst>` query avoids any risk of `-ifa`
+    // altering or failing a legitimate LAN-capture lookup.
     let mut cmd = std::process::Command::new("route");
     let dest = dest_ip.to_string();
     if dest_ip.is_ipv6() {
@@ -878,25 +1043,27 @@ fn route_lookup(dest_ip: IpAddr) -> Option<DefaultRoute> {
     } else {
         cmd.args(["-n", "get", dest.as_str()]);
     }
-    let out = cmd.output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let (mut ifname, mut gw) = (None, None);
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(v) = line.strip_prefix("interface:") {
-            ifname = Some(v.trim().to_string());
-        } else if let Some(v) = line.strip_prefix("gateway:") {
-            gw = v.trim().parse::<IpAddr>().ok();
+    let out = match cmd.output() {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            debug!(
+                %dest_ip,
+                code = ?o.status.code(),
+                "netstate: `route -n get` exited non-zero"
+            );
+            return None;
         }
-    }
-    ifname.map(|d| DefaultRoute {
-        ifref: d,
-        gateway: gw,
-    })
+        Err(e) => {
+            debug!(%dest_ip, %e, "netstate: failed to spawn `route -n get`");
+            return None;
+        }
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    parse_bsd_route_get(&text)
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-fn route_lookup(_dest_ip: IpAddr) -> Option<DefaultRoute> {
+fn route_lookup_from(_dest_ip: IpAddr, _src_ip: Option<IpAddr>) -> Option<RouteLookupHit> {
     None
 }
 
@@ -1271,7 +1438,7 @@ mod tests {
                         .map(|a| a.parse::<Ipv4Addr>().unwrap())
                         .collect(),
                     v6_count: 0,
-                    vpn_class: super::super::direct::lan_iface_denied(name, ""),
+                    vpn_class: super::super::direct::is_vpn_or_virtual_iface(name, None),
                 },
             );
         }
@@ -1292,7 +1459,7 @@ mod tests {
     /// `snap` with an exit active: the lookup lands on our TUN, and the
     /// uplink beneath it is `uplink_if` via `gateway`.
     fn under_exit(ifaces: &[(&str, &[&str])], uplink_if: &str, gateway: &str) -> NetSnapshot {
-        let mut s = snap(ifaces, Some("roomler0"));
+        let mut s = snap(ifaces, Some("meshharbor0"));
         s.uplink_v4 = Some(DefaultRoute {
             ifref: uplink_if.to_string(),
             gateway: Some(gateway.parse().unwrap()),
@@ -1317,7 +1484,7 @@ mod tests {
         assert_eq!(d.severity, Severity::Major);
         assert!(d.default_route_moved);
         assert!(
-            d.summary.contains("v4_default=roomler0 uplink=eth1"),
+            d.summary.contains("v4_default=meshharbor0 uplink=eth1"),
             "the log names the uplink beneath the TUN: {}",
             d.summary
         );
@@ -1680,5 +1847,275 @@ sockaddrs: <DST,GATEWAY>
         let s = sample_snapshot();
         // At least a loopback-stripped view exists; both calls agree.
         assert_eq!(s.ifaces, sample_snapshot().ifaces);
+    }
+
+    #[test]
+    fn detect_lan_captures_dual_guard_preserves_vpn_captures_and_skips_physical_default_fallback() {
+        let ip = |s: &str| s.parse::<Ipv4Addr>().unwrap();
+        let wifi_ip = ip("192.168.1.253");
+        let rndis_ip = ip("192.168.42.45");
+        let vpn_ip = ip("100.64.0.30");
+
+        let lan_v4 = vec![
+            ("Wi-Fi".to_string(), Some(12), wifi_ip, 24),
+            ("Ethernet".to_string(), Some(58), rndis_ip, 24),
+            ("Tailscale".to_string(), Some(30), vpn_ip, 32),
+        ];
+        let mut ifaces = BTreeMap::new();
+        ifaces.insert(
+            "Wi-Fi".to_string(),
+            IfaceSnap {
+                v4: vec![wifi_ip],
+                v6_count: 0,
+                vpn_class: false,
+            },
+        );
+        ifaces.insert(
+            "Ethernet".to_string(),
+            IfaceSnap {
+                v4: vec![rndis_ip],
+                v6_count: 0,
+                vpn_class: false,
+            },
+        );
+        ifaces.insert(
+            "Tailscale".to_string(),
+            IfaceSnap {
+                v4: vec![vpn_ip],
+                v6_count: 0,
+                vpn_class: true,
+            },
+        );
+
+        let wifi_ref = owner_ifref("Wi-Fi", Some(12));
+        let rndis_ref = owner_ifref("Ethernet", Some(58));
+        let vpn_ref = owner_ifref("Tailscale", Some(30));
+
+        // (a) Default-route capture (prefix_len == 0) onto a VPN NIC -> MUST still be LanCapture
+        let mut seen_srcs = Vec::new();
+        let caps_vpn_default = detect_lan_captures_with(&lan_v4, &ifaces, |dest, src| {
+            seen_srcs.push((dest, src));
+            if src == Some(IpAddr::V4(wifi_ip)) {
+                Some(RouteLookupHit {
+                    ifref: vpn_ref.clone(),
+                    gateway: None,
+                    prefix_len: Some(0),
+                })
+            } else {
+                Some(RouteLookupHit {
+                    ifref: rndis_ref.clone(),
+                    gateway: None,
+                    prefix_len: Some(24),
+                })
+            }
+        });
+        assert_eq!(caps_vpn_default.len(), 1);
+        assert_eq!(caps_vpn_default[0].prefix, "192.168.1.0/24");
+        assert_eq!(caps_vpn_default[0].owner, "Wi-Fi");
+        assert_eq!(caps_vpn_default[0].via_name.as_deref(), Some("Tailscale"));
+        assert!(
+            seen_srcs.contains(&(IpAddr::V4(ip("192.168.1.252")), Some(IpAddr::V4(wifi_ip)))),
+            "detect_lan_captures must pass the owning LAN source IP to route lookup"
+        );
+
+        // (b) /1 split-route capture (prefix_len == 1) onto a VPN NIC -> MUST still be LanCapture
+        let caps_vpn_split = detect_lan_captures_with(&lan_v4, &ifaces, |_dest, src| {
+            if src == Some(IpAddr::V4(wifi_ip)) {
+                Some(RouteLookupHit {
+                    ifref: vpn_ref.clone(),
+                    gateway: None,
+                    prefix_len: Some(1),
+                })
+            } else {
+                Some(RouteLookupHit {
+                    ifref: rndis_ref.clone(),
+                    gateway: None,
+                    prefix_len: Some(24),
+                })
+            }
+        });
+        assert_eq!(caps_vpn_split.len(), 1);
+        assert_eq!(caps_vpn_split[0].prefix, "192.168.1.0/24");
+        assert_eq!(caps_vpn_split[0].via_name.as_deref(), Some("Tailscale"));
+
+        // (c) Default route (prefix_len == 0) via another non-VPN physical NIC (e.g. RNDIS /0) -> NOT LanCapture
+        let caps_phys_default = detect_lan_captures_with(&lan_v4, &ifaces, |_dest, src| {
+            if src == Some(IpAddr::V4(wifi_ip)) {
+                Some(RouteLookupHit {
+                    ifref: rndis_ref.clone(),
+                    gateway: Some(IpAddr::V4(ip("192.168.42.236"))),
+                    prefix_len: Some(0),
+                })
+            } else {
+                Some(RouteLookupHit {
+                    ifref: rndis_ref.clone(),
+                    gateway: None,
+                    prefix_len: Some(24),
+                })
+            }
+        });
+        assert!(
+            caps_phys_default.is_empty(),
+            "fallback to another non-VPN physical NIC's /0 default route must not be flagged as LanCapture: {caps_phys_default:?}"
+        );
+
+        let _ = wifi_ref;
+        // (d) Specific/split route (prefix_len == 25 != 0) via another non-VPN NIC without that prefix -> STILL LanCapture
+        let caps_phys_specific = detect_lan_captures_with(&lan_v4, &ifaces, |_dest, src| {
+            if src == Some(IpAddr::V4(wifi_ip)) {
+                Some(RouteLookupHit {
+                    ifref: rndis_ref.clone(),
+                    gateway: Some(IpAddr::V4(ip("192.168.42.236"))),
+                    prefix_len: Some(25),
+                })
+            } else {
+                Some(RouteLookupHit {
+                    ifref: rndis_ref.clone(),
+                    gateway: None,
+                    prefix_len: Some(24),
+                })
+            }
+        });
+        assert_eq!(caps_phys_specific.len(), 1);
+        assert_eq!(caps_phys_specific[0].prefix, "192.168.1.0/24");
+    }
+
+    #[test]
+    fn parse_bsd_route_get_distinguishes_default_split_slash1_and_lan_slash24() {
+        // 1a. Classic BSD /0 default route with `destination: default` and NO `mask:` line.
+        let default_no_mask = "\
+   route to: 198.51.100.1
+destination: default
+    gateway: 192.0.2.1
+  interface: en0
+      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING>";
+        let hit_def_nomask = parse_bsd_route_get(default_no_mask).expect("default_no_mask");
+        assert_eq!(hit_def_nomask.ifref, "en0");
+        assert_eq!(
+            hit_def_nomask.gateway,
+            Some("192.0.2.1".parse::<IpAddr>().unwrap())
+        );
+        assert_eq!(hit_def_nomask.prefix_len, Some(0));
+
+        // 1b. Modern macOS /0 default route (`route -n get 198.51.100.1` on macOS):
+        // emits both `destination: default` and `mask: default`.
+        let default_with_mask = "\
+   route to: 198.51.100.1
+destination: default
+       mask: default
+    gateway: 192.0.2.1
+  interface: en0
+      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>";
+        let hit_def_mask = parse_bsd_route_get(default_with_mask).expect("default_with_mask");
+        assert_eq!(hit_def_mask.ifref, "en0");
+        assert_eq!(hit_def_mask.prefix_len, Some(0));
+
+        // 2. VPN /1 split route (`0.0.0.0/1`): `destination: 0.0.0.0` + `mask: 128.0.0.0`
+        // MUST parse as `Some(1)`, NEVER `Some(0)`!
+        let split_slash1 = "\
+   route to: 10.20.30.40
+destination: 0.0.0.0
+       mask: 128.0.0.0
+    gateway: 10.8.0.1
+  interface: utun4
+      flags: <UP,GATEWAY,DONE,STATIC>";
+        let hit_s1 = parse_bsd_route_get(split_slash1).expect("split_slash1");
+        assert_eq!(hit_s1.ifref, "utun4");
+        assert_eq!(hit_s1.prefix_len, Some(1));
+
+        // Also ensure `destination: 0.0.0.0` WITHOUT a `mask:` line does not spoof `/0`.
+        let zero_no_mask = "\
+   route to: 0.0.0.0
+destination: 0.0.0.0
+  interface: utun4";
+        let hit_zero = parse_bsd_route_get(zero_no_mask).expect("zero_no_mask");
+        assert_eq!(hit_zero.prefix_len, None);
+
+        // 3. On-link /24 LAN subnet route (`route -n get 192.168.1.252` on macOS).
+        let lan_slash24 = "\
+   route to: 192.168.1.252
+destination: 192.168.1.0
+       mask: 255.255.255.0
+  interface: en0
+      flags: <UP,DONE,CLONING,STATIC>";
+        let hit_24 = parse_bsd_route_get(lan_slash24).expect("lan_slash24");
+        assert_eq!(hit_24.ifref, "en0");
+        assert_eq!(hit_24.gateway, None);
+        assert_eq!(hit_24.prefix_len, Some(24));
+
+        // 4. Cloned `/32` host route (`WASCLONED`, no `mask:` line): not `default`, so `None`.
+        let cloned_host = "\
+   route to: 8.8.8.8
+destination: 8.8.8.8
+    gateway: 192.0.2.1
+  interface: en0
+      flags: <UP,GATEWAY,HOST,DONE,WASCLONED,IFSCOPE,IFREF,GLOBAL>";
+        let hit_host = parse_bsd_route_get(cloned_host).expect("cloned_host");
+        assert_eq!(hit_host.ifref, "en0");
+        assert_eq!(hit_host.prefix_len, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_policy_routing_from_src_detects_vpn_lan_capture() {
+        if std::env::var_os("MH_NETNS_POLICY_INNER").is_some() {
+            // Running inside the isolated network namespace configured below.
+            let lan_src: IpAddr = "192.168.1.10".parse().unwrap();
+            let lan_nbr: IpAddr = "192.168.1.11".parse().unwrap();
+
+            // Unbound lookup hits the `main` table's on-link `ethlan0` route:
+            let unbound = route_lookup_from(lan_nbr, None).expect("unbound lookup");
+            assert_eq!(unbound.ifref, "ethlan0");
+
+            // Source-bound lookup (`ip -o route get 192.168.1.11 from 192.168.1.10`)
+            // hits policy `table 200` and reveals the `tunvpn0` capture!
+            let bound = route_lookup_from(lan_nbr, Some(lan_src)).expect("bound lookup");
+            assert_eq!(bound.ifref, "tunvpn0");
+            assert_eq!(bound.prefix_len, None);
+
+            let snap = sample_snapshot();
+            assert!(
+                snap.lan_captures.iter().any(|c| {
+                    c.prefix == "192.168.1.0/24" && c.owner == "ethlan0" && c.via_ifref == "tunvpn0"
+                }),
+                "expected policy-routed VPN capture on 192.168.1.0/24 in netns, got: {:?}",
+                snap.lan_captures
+            );
+            return;
+        }
+
+        let exe = std::env::current_exe().expect("current_exe");
+        let setup_and_run = format!(
+            "ip link set lo up && \
+             ip link add ethlan0 type veth peer name ethlan0p && \
+             ip addr add 192.168.1.10/24 dev ethlan0 && \
+             ip link set ethlan0 up && ip link set ethlan0p up && \
+             ip link add tunvpn0 type veth peer name tunvpn0p && \
+             ip addr add 10.99.0.2/30 dev tunvpn0 && \
+             ip link set tunvpn0 up && ip link set tunvpn0p up && \
+             ip route add 192.168.1.0/24 dev tunvpn0 table 200 && \
+             ip rule add priority 100 from 192.168.1.10/32 lookup 200 && \
+             MH_NETNS_POLICY_INNER=1 {:?} --exact overlay::netstate::tests::linux_policy_routing_from_src_detects_vpn_lan_capture --nocapture",
+            exe
+        );
+
+        // Try `unshare -n` first (root / CAP_SYS_ADMIN), then `unshare -Urn` (userns).
+        let try_ns = |flags: &[&str]| {
+            std::process::Command::new("unshare")
+                .args(flags)
+                .args(["sh", "-ceu", &setup_and_run])
+                .output()
+        };
+        let out = match try_ns(&["-n"]) {
+            Ok(o) if o.status.success() => o,
+            _ => try_ns(&["-Urn"]).expect("failed to execute unshare"),
+        };
+        assert!(
+            out.status.success(),
+            "netns policy-routing capture test failed (status={:?}):\nstdout:\n{}\nstderr:\n{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 }

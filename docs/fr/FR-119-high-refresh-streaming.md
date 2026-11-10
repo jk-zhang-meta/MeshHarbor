@@ -1,6 +1,6 @@
 # FR-119: High-refresh streaming — 120 fps on a direct path when the host can sustain it, and the viewer asked
 
-**Issue:** [#2670](https://github.com/gjovanov/roomler-ai/issues/2670) · **Status:** proposed 2026-10-21 —
+**Issue:** [#2670](https://github.com/jk-zhang-meta/MeshHarbor/issues/2670) · **Status:** proposed 2026-10-21 —
 spec and claim · **Owner:** the agent's capture, encode and rate path, the viewer's settings and decode path ·
 **Anchors:** master `c636c6e8c` · **Program:** [StarDesk teardown](../plans/stardesk-teardown-program.md), wave 2
 ("high refresh": D1, then D2) · **Builds on:** [FR-118](FR-118-gpu-resident-frames.md) (the encode stage under
@@ -14,7 +14,7 @@ A controller on a high-refresh display, on a direct path to a host that can sust
 (D1, up to 1440p), and later **144 fps at 4K** (D2), instead of today's hard 60. It happens only when the viewer
 asked for it and the host has proven it can deliver it. Every other session stays exactly as it is today.
 
-StarDesk advertises "4K HDR at up to 144 fps" with an fps lock of 60, 120 or 144. Roomler streams at most 60 on
+StarDesk advertises "4K HDR at up to 144 fps" with an fps lock of 60, 120 or 144. MeshHarbor streams at most 60 on
 every path (§2). That halves the motion steps a person sees on a 120 Hz or 144 Hz screen. FR-98 measures the
 latency side; this FR is the cadence side.
 
@@ -22,13 +22,13 @@ latency side; this FR is the cadence side.
 
 | What | Where | Consequence |
 |---|---|---|
-| The hardware target is a constant 60 | `TARGET_FPS_HW` `agents/roomlerd/src/peer.rs:105` | By default every RTP and DC session is capped at 60 |
-| The FFmpeg DC pump already accepts more, from the environment only | `ffmpeg_target_fps` `peer.rs:9837`: `ROOMLERD_FFMPEG_FPS` clamped 1–240; default 60 direct, 30 constrained | Above 60 is a host-wide override today, not a session decision, and nothing checks the host can carry it |
+| The hardware target is a constant 60 | `TARGET_FPS_HW` `agents/meshharbord/src/peer.rs:105` | By default every RTP and DC session is capped at 60 |
+| The FFmpeg DC pump already accepts more, from the environment only | `ffmpeg_target_fps` `peer.rs:9837`: `MESHHARBORD_FFMPEG_FPS` clamped 1–240; default 60 direct, 30 constrained | Above 60 is a host-wide override today, not a session decision, and nothing checks the host can carry it |
 | The viewer cannot ask, and the agent cannot say what the screen refreshes at | no fps message among the control-channel handlers (`rc:resolution` `peer.rs:10255` is the model); `DisplayInfo` has no refresh rate (`crates/remote_control/src/models.rs:195`) | No picker is possible without a wire change |
 | pts were whole milliseconds (**fixed in P2a**, §4.2) | master `c636c6e8c` had `TIME_BASE_DEN = 1000` and `pts = monotonic_us / 1000`; now `TIME_BASE_DEN` is 1 000 000 (`encode/ffmpeg/encoder.rs:94`) and `live_pts` returns the capture time (`:97`) | At 144 fps (6.9 ms period), two frames delivered within 1 ms of each other carried equal pts |
 | The encoder's frame rate is fixed at open, and a replacement copies it | `set_frame_rate` `encoder.rs:1717`; `rebuild_spec` / `rebuild_spec_at_dims` copy `fps` (`:2289`; the second is `rebuild_spec_at` since P2b-2, which takes the rate, `:2312`) | A change of fps is an encoder rebuild. FR-70 M2's make-before-break covers dims and rate, not fps (until P2b-2, §4.4) |
 | The direct ceiling law was linear in fps and clamped at 48 Mbps (**reshaped above 60 in P2a**, §4.2) | `ffmpeg_maxrate_bps_scaled` `encode/rate_profile.rs:219`: W·H·fps·0.25, clamped to [3, 48] M × the codec factor; above 60 it now follows `rate_law_fps` | Before P2a, 1920×1080 at 144 fps computed 74.6 M and clamped to 48 M: 333 kbit per frame, where 60 fps gets 518 kbit, so above 60 the picture got softer per frame |
-| The default capture gate's period is whole milliseconds; the microsecond gate is opt-in | `capture/gate.rs` (the legacy rule caps `1000/144` at 166 fps and can phase-lock); the slot-first gate keeps µs (`:103`) behind `ROOMLERD_CAPTURE_GATE`, field A/B owed (FR-98 P1) | Above 60, the slot-first gate should be the one in use |
+| The default capture gate's period is whole milliseconds; the microsecond gate is opt-in | `capture/gate.rs` (the legacy rule caps `1000/144` at 166 fps and can phase-lock); the slot-first gate keeps µs (`:103`) behind `MESHHARBORD_CAPTURE_GATE`, field A/B owed (FR-98 P1) | Above 60, the slot-first gate should be the one in use |
 | WGC and `CGDisplayStream` deliver at the panel's refresh | WGC is compositor-driven; scrap's quartz stream is unthrottled (`throttle: 0.0`, `crates/vendored/scrap/src/quartz/config.rs:69`) | A 60 Hz panel cannot produce 120 fps. A 120 Hz MacBook already can |
 | The viewer's struggle rule counts frames | `DEFAULT_MAX_DECODE_QUEUE = 4` (`ui/src/workers/rc-hop-stats.ts:253`), `DEFAULT_STRUGGLE_QUEUE = 2` (`:256`) | At 144 fps, two frames of queue is 14 ms, where at 60 it is 33 ms: the rule tightens by itself |
 | **The encode stage alone exceeds a 120 fps period on every measured cell but one** | [FR-118](FR-118-gpu-resident-frames.md) §2.2, a 7-day fleet read: 10.6 ms (`hevc_qsv`, 1080p), 11.9 ms (`av1_qsv`, 1200p), 9.9 ms (`av1_nvenc`, 1200p), 16.4 ms (`av1_nvenc`, 1600p); **6.3 ms (`hevc_videotoolbox`, 3024×1964)** | 120 fps needs ≤ 8.3 ms per frame. On today's CPU path, only the Mac's VideoToolbox cell fits |
@@ -110,8 +110,8 @@ and as with encoder cells, the probe proves an open and only a session proves th
   screen content at 60 and at 120 shows how many bits the encoder actually spends per second. Inter frames 8 ms
   apart differ less than frames 17 ms apart, so α is expected well below 1. There is a precedent in the code:
   FR-112 already scales the RTP pump's bitrate base by `√(fps / 30)`, i.e. α = 0.5 (`bitrate_base_for_fps`,
-  `agents/roomlerd/src/encode/mod.rs`).
-- **The capture gate:** above 60, WGC runs the slot-first gate (FR-98 C1) regardless of `ROOMLERD_CAPTURE_GATE`.
+  `agents/meshharbord/src/encode/mod.rs`).
+- **The capture gate:** above 60, WGC runs the slot-first gate (FR-98 C1) regardless of `MESHHARBORD_CAPTURE_GATE`.
   Its legacy rule sleeps out the rest of a period before it looks at the slot, so a frame that landed during the
   encode waits, and at 120 fps that wait comes out of an 8.3 ms budget. scrap keeps its legacy gate, because it
   has no slot to look at first, and DRM's period is in microseconds already. (The first draft gave a phase-lock as
@@ -146,8 +146,8 @@ sequenceDiagram
 
 | P | Scope | Kill switch | Status |
 |---|---|---|---|
-| P0 | **Measure first.** (a) A µs pts unit test that is red on master's ms rule (two frames 0.5 ms apart). (b) L0 cells at 120 and 144 fps on the synthetic source: cadence and pts. (c) The vendored webrtc-rs data-channel throughput ceiling, measured in process over loopback (`agents/roomlerd/tests/dc_throughput.rs`), which decides D2's transport. (d) α, from a constant-quality run at 60 and 120 fps. (a) and (b) need P2's changes to mean anything, so they land with P2 as red → green tests | none: tests and measurements | **(c) measured** (§4.1, §8); **(d) measured offline** (§8): α ≈ 0–0.8, and 0.8 is used; **(a) red → green with P2a** (§4.2); (b) owed with P2b |
-| P1 | **The wire.** `fps-high`, `rc:fps`, and the answer in `rc:video-info`, plus the viewer's picker. The agent grants nothing above today's cap yet: every ask is answered at that cap, with `fps_reason` `"unproven"` (or `"constrained"`) | `ROOMLERD_FPS_HIGH`, or the `fps_high` config key since P2b-3 (default OFF): no `fps-high` in the hello, so no viewer asks | **built** (§4.1); the host's `refresh_hz` is reported since P2b-3 (§4.5) |
+| P0 | **Measure first.** (a) A µs pts unit test that is red on master's ms rule (two frames 0.5 ms apart). (b) L0 cells at 120 and 144 fps on the synthetic source: cadence and pts. (c) The vendored webrtc-rs data-channel throughput ceiling, measured in process over loopback (`agents/meshharbord/tests/dc_throughput.rs`), which decides D2's transport. (d) α, from a constant-quality run at 60 and 120 fps. (a) and (b) need P2's changes to mean anything, so they land with P2 as red → green tests | none: tests and measurements | **(c) measured** (§4.1, §8); **(d) measured offline** (§8): α ≈ 0–0.8, and 0.8 is used; **(a) red → green with P2a** (§4.2); (b) owed with P2b |
+| P1 | **The wire.** `fps-high`, `rc:fps`, and the answer in `rc:video-info`, plus the viewer's picker. The agent grants nothing above today's cap yet: every ask is answered at that cap, with `fps_reason` `"unproven"` (or `"constrained"`) | `MESHHARBORD_FPS_HIGH`, or the `fps_high` config key since P2b-3 (default OFF): no `fps-high` in the hello, so no viewer asks | **built** (§4.1); the host's `refresh_hz` is reported since P2b-3 (§4.5) |
 | P2 | **The encoder and the gate.** µs pts, the fps swap, the ceiling law, the slot-first gate above 60, the rate-class cache and trial, `fps_deny` | the same switch; `fps_deny` | **P2a built** (§4.2): µs pts and the rate law, both byte-identical at and below 60. **P2b-1 built** (§4.3): the grant, the rate class and its trial, `fps_deny`, the rate-class cache. **P2b-2 built** (§4.4): the fps swap, a capture pace that moves without a reopen, the slot-first gate above 60, the wiring. **P2b-3 built** (§4.5): the screen's refresh rate, `fps_deny` in config and remote config, the viewer's words. P2 is built; its field proof is P3 |
 | P3 | **D1, the first cells.** The MacBook host (VideoToolbox, ProMotion) to a 120 Hz-or-faster viewer, direct. Then the Windows cells as FR-118 lands them | the same | — |
 | P4 | **D2: 4K at 144**, after FR-118's cells and P0(c)'s transport verdict | the same | — |
@@ -155,7 +155,7 @@ sequenceDiagram
 
 ### 4.1 P0(c) and P1 — as built (2026-10-21)
 
-**P0(c), the data-channel ceiling.** `agents/roomlerd/tests/dc_throughput.rs` runs two peers in one process
+**P0(c), the data-channel ceiling.** `agents/meshharbord/tests/dc_throughput.rs` runs two peers in one process
 over real loopback UDP (host candidates, mDNS off), sending 16 KiB messages back to back the way the
 production send task does. It is `#[ignore]`d: CI runners are too noisy for a throughput assertion, so the
 numbers live in §8. The first run (neo16, release build) delivered every byte:
@@ -172,9 +172,9 @@ That is ~2.7× D2's ~100 Mbit/s on that CPU. A weaker host and a real round trip
 
 | Piece | Where |
 |---|---|
-| `fps-high` in `AgentCaps.video`, only with `ROOMLERD_FPS_HIGH=1` (a test locks the default off) | `encode::frame_rate::CAP`, `video_features` in `agents/roomlerd/src/encode/caps.rs` |
-| `rc:fps {fps}`: 60, 120 or 144; anything else is dropped. The ask is stored on the session's `ViewerFeedback`, which already reaches the control handler and every pump | the `rc:fps` arm next to `rc:resolution` in `agents/roomlerd/src/peer.rs`; `agents/roomlerd/src/encode/frame_rate.rs` |
-| The answer, in `rc:video-info`: `fps` (what the stream runs at) and, when it refused an ask, `fps_asked` + `fps_reason` (`unproven`, or `constrained` on a relay) | `video_info_payload` and the FFmpeg pump in `agents/roomlerd/src/peer.rs` |
+| `fps-high` in `AgentCaps.video`, only with `MESHHARBORD_FPS_HIGH=1` (a test locks the default off) | `encode::frame_rate::CAP`, `video_features` in `agents/meshharbord/src/encode/caps.rs` |
+| `rc:fps {fps}`: 60, 120 or 144; anything else is dropped. The ask is stored on the session's `ViewerFeedback`, which already reaches the control handler and every pump | the `rc:fps` arm next to `rc:resolution` in `agents/meshharbord/src/peer.rs`; `agents/meshharbord/src/encode/frame_rate.rs` |
+| The answer, in `rc:video-info`: `fps` (what the stream runs at) and, when it refused an ask, `fps_asked` + `fps_reason` (`unproven`, or `constrained` on a relay) | `video_info_payload` and the FFmpeg pump in `agents/meshharbord/src/peer.rs` |
 | The viewer's half: the options, the wire message, the answer read back, the words | `ui/src/composables/frameRate.ts` |
 | The pick (per browser), re-sent when the control channel opens, to an agent with `fps-high` only; a Frame rate picker shown only for such an agent | `ui/src/composables/useRemoteControl.ts`, `ui/src/views/remote/RemoteControl.vue` |
 
@@ -201,14 +201,14 @@ That is ~2.7× D2's ~100 Mbit/s on that CPU. A weaker host and a real round trip
 
 These are the encoder-side half of P2, the half that changes nothing at or below 60. P2b builds the grant (the
 rate class and its trial, `fps_deny`, the fps swap, the slot-first gate above 60). Until then, only an
-operator's `ROOMLERD_FFMPEG_FPS` reaches anything here.
+operator's `MESHHARBORD_FFMPEG_FPS` reaches anything here.
 
 | Piece | What changed | Where |
 |---|---|---|
-| The time base | `TIME_BASE_DEN` 1000 → 1 000 000; a live frame's pts is its capture time (`live_pts`) | `agents/roomlerd/src/encode/ffmpeg/encoder.rs` |
+| The time base | `TIME_BASE_DEN` 1000 → 1 000 000; a live frame's pts is its capture time (`live_pts`) | `agents/meshharbord/src/encode/ffmpeg/encoder.rs` |
 | The recorder's counter pts | `recording_pts_ms` → `recording_pts`, in the same base | the same |
 | Packet durations | `ticks_to_us`, where `* 1000` assumed milliseconds. No consumer reads `duration_us` from this encoder today; it is kept right anyway | the same |
-| The rate law | `rate_law_fps`: fps itself up to 60, `60 × (fps / 60)^0.8` above; the band's top grows the same way (`HIGH_FPS_ALPHA`) | `agents/roomlerd/src/encode/rate_profile.rs` |
+| The rate law | `rate_law_fps`: fps itself up to 60, `60 × (fps / 60)^0.8` above; the band's top grows the same way (`HIGH_FPS_ALPHA`) | `agents/meshharbord/src/encode/rate_profile.rs` |
 
 - **Why the pts change is safe on every backend.** Each FFmpeg backend either rescales pts from the codec time
   base itself (QSV to 90 kHz, AMF and VideoToolbox to their own clocks) or carries it through untouched
@@ -244,11 +244,11 @@ pump: the fps swap, a capture pace that moves without a reopen, and the trial ru
 
 | Piece | What it decides | Where |
 |---|---|---|
-| `grant()` | above the cap only when every condition holds; otherwise refused at the cap, with one named reason | `agents/roomlerd/src/encode/frame_rate.rs` |
+| `grant()` | above the cap only when every condition holds; otherwise refused at the cap, with one named reason | `agents/meshharbord/src/encode/frame_rate.rs` |
 | `pipe_covers()` | the pipe input: nothing measured says the path carries less than the ceiling at the asked rate | the same |
 | `TrialMeter` | whether this host sustains the rate while the content moves | the same |
 | `parse_fps_deny` / `fps_denied` | the owner's removals, in the `encoder_cells_deny` shape (`name:fps`, `*` for every encoder) | the same |
-| `fps_class_cache` | what trials concluded, next to the probe cache and under its key | `agents/roomlerd/src/encode/fps_class_cache.rs` |
+| `fps_class_cache` | what trials concluded, next to the probe cache and under its key | `agents/meshharbord/src/encode/fps_class_cache.rs` |
 
 - **The refusal order** follows what a viewer can see and act on: `constrained`, then `refresh` (the captured
   screen refreshes slower than the ask), then `denied`, then `unproven` (a failed trial), then `pipe`. A class
@@ -261,7 +261,7 @@ pump: the fps swap, a capture pace that moves without a reopen, and the trial ru
   gap at the p99 and fails a host that kept up, and the verdict is cached as a fact about the host.
 - **The cache** keeps one verdict per class, the newest. It is keyed exactly like the probe cache (build,
   hardware fingerprint, knobs hash), so any change forgets it. Any miss reads as unproven, a verdict older than
-  a week is forgotten, and `ROOMLERD_CAPS_CACHE=0` switches it off with the probe cache. ⚠️ macOS has no
+  a week is forgotten, and `MESHHARBORD_CAPS_CACHE=0` switches it off with the probe cache. ⚠️ macOS has no
   hardware fingerprint, so no key and no cache: there, every session's first ask above the cap is a trial.
 - **Tests:**
   - every refusal reason, and the order between them;
@@ -291,13 +291,13 @@ moves in place. An unproven class runs as a trial, and its verdict is cached.
 
 | Piece | What it does | Where |
 |---|---|---|
-| `ScreenCapture::set_target_fps` | moves the capture's pace without a reopen. WGC, scrap and DRM move their sleep, and WGC runs the slot-first gate above 60. The portal keeps its helper's pace (the default), so a trial there fails on what it delivers | `agents/roomlerd/src/capture/mod.rs` and the backends |
+| `ScreenCapture::set_target_fps` | moves the capture's pace without a reopen. WGC, scrap and DRM move their sleep, and WGC runs the slot-first gate above 60. The portal keeps its helper's pace (the default), so a trial there fails on what it delivers | `agents/meshharbord/src/capture/mod.rs` and the backends |
 | `ScreenCapture::backend` | the backend's name in a rate class | the same |
-| `GateMode::at_fps`, `gate::legacy_period` | the gate a granted rate runs, and the legacy period every backend computed inline | `agents/roomlerd/src/capture/gate.rs` |
-| `FfmpegEncoder::rebuild_spec_at` | a replacement at new dims, at a new rate, or both; `adopt_rebuilt` takes the rate too | `agents/roomlerd/src/encode/ffmpeg/encoder.rs`, `agents/roomlerd/src/encode/thread.rs` |
-| `RateState` | one session's decision: the grant, the running rate, what the session knows of each class, the trial | `agents/roomlerd/src/encode/frame_rate.rs` |
-| `Pipeline::merged_fps_ask` | a shared stream's ask: the smallest, and a viewer that asked nothing holds today's rate | `agents/roomlerd/src/media_share.rs` |
-| the pump | decides, swaps, paces, feeds the trial, persists the verdict | `media_pump_ffmpeg_dc`, `agents/roomlerd/src/peer.rs` |
+| `GateMode::at_fps`, `gate::legacy_period` | the gate a granted rate runs, and the legacy period every backend computed inline | `agents/meshharbord/src/capture/gate.rs` |
+| `FfmpegEncoder::rebuild_spec_at` | a replacement at new dims, at a new rate, or both; `adopt_rebuilt` takes the rate too | `agents/meshharbord/src/encode/ffmpeg/encoder.rs`, `agents/meshharbord/src/encode/thread.rs` |
+| `RateState` | one session's decision: the grant, the running rate, what the session knows of each class, the trial | `agents/meshharbord/src/encode/frame_rate.rs` |
+| `Pipeline::merged_fps_ask` | a shared stream's ask: the smallest, and a viewer that asked nothing holds today's rate | `agents/meshharbord/src/media_share.rs` |
+| the pump | decides, swaps, paces, feeds the trial, persists the verdict | `media_pump_ffmpeg_dc`, `agents/meshharbord/src/peer.rs` |
 
 ```mermaid
 sequenceDiagram
@@ -409,12 +409,12 @@ refreshes at, lets an admin push the frame-rate denylist, and has the viewer say
   viewer's picker disables the rates above it, with the reason.
 - **The viewer's words:** a trial reads "on trial until this host has shown it can keep up". `refresh`, `denied`
   and `pipe` get sentences, and an unknown word is still shown as it came.
-- **`fps_high` in config.** The switch is no longer environment-only: `roomler config set fps_high true`
-  (Video encoding, Advanced) bridges to `ROOMLERD_FPS_HIGH`. It is read at start with the hello's capabilities,
+- **`fps_high` in config.** The switch is no longer environment-only: `mh config set fps_high true`
+  (Video encoding, Advanced) bridges to `MESHHARBORD_FPS_HIGH`. It is read at start with the hello's capabilities,
   so a change needs a restart, and it stays device-local: it is not pushable, because it widens what a session
   may do. Default off.
 - **`fps_deny` in config.** The denylist is now a config key on `encoder_cells_deny`'s terms.
-  `roomler config set fps_deny` validates it: a plain FFmpeg name or `*`, and a rate above 60, because an entry
+  `mh config set fps_deny` validates it: a plain FFmpeg name or `*`, and a rate above 60, because an entry
   that could only deny nothing would read as in force. It rides `desired_config` with `MANAGE_AGENTS` alone,
   since it only ever removes rates. The device writes it, reports `needs_restart` (the fallbacks are registered
   once per process), and a blank push clears it. `none` denies nothing, where a blank box in the dialog hands the
@@ -431,7 +431,7 @@ refreshes at, lets an admin push the frame-rate denylist, and has the viewer say
   - `fps_deny`: the config surface (set, echo, `none`, clear, refusals), the fallback bridge, the route's
     permission (`MANAGE_AGENTS` alone, refused without it), and the agent's apply (written, `needs_restart`,
     idempotent, a blank clears it);
-  - `fps_high`: a tribool that reaches the daemon as `ROOMLERD_FPS_HIGH`, unset bridging nothing; the check that
+  - `fps_high`: a tribool that reaches the daemon as `MESHHARBORD_FPS_HIGH`, unset bridging nothing; the check that
     every bridged switch is a config key of the right kind now covers it;
   - in the viewer: a trial read only when the agent says so, the trial's words and a refusal outranking them,
     the three new reasons, the host refresh rate, a 60 Hz host disabling 120 and 144, and the store passing the
@@ -494,7 +494,7 @@ refreshes at, lets an admin push the frame-rate denylist, and has the viewer say
 | Date | Build | Cell | Result |
 |---|---|---|---|
 | 2026-10-21 | fleet, agents 0.4.135–0.4.148 | every FFmpeg DC session for 7 days (FR-118 §2.2) | **The red record for the encode stage.** Only `hevc_videotoolbox` (6.3 ms at 3024×1964) fits a 120 fps period on today's CPU path; QSV and NVENC need 9.9–16.4 ms per 1080p–1600p frame. No session ran above 60, because nothing lets one |
-| 2026-10-21 | dev build, release profile, neo16 (a Ryzen 9 7945HX laptop, Windows 11) | P0(c): the data channel alone, in process over loopback UDP (`agents/roomlerd/tests/dc_throughput.rs`): 16 KiB messages awaited back to back, as the production send task sends them; 5 s × 3 rounds per mode | **The transport is not D1's limiter.** Ordered: 375.9 / 278.8 / 275.7 Mbit/s. Unordered: 281.0 / 287.1 / 271.6. Every byte was delivered. That is ~2.7× D2's ~100 Mbit/s on this CPU. Still owed before open decision 3 closes: a weaker host's CPU and a real round trip, because this is an upper bound for a LAN path |
+| 2026-10-21 | dev build, release profile, neo16 (a Ryzen 9 7945HX laptop, Windows 11) | P0(c): the data channel alone, in process over loopback UDP (`agents/meshharbord/tests/dc_throughput.rs`): 16 KiB messages awaited back to back, as the production send task sends them; 5 s × 3 rounds per mode | **The transport is not D1's limiter.** Ordered: 375.9 / 278.8 / 275.7 Mbit/s. Unordered: 281.0 / 287.1 / 271.6. Every byte was delivered. That is ~2.7× D2's ~100 Mbit/s on this CPU. Still owed before open decision 3 closes: a weaker host's CPU and a real round trip, because this is an upper bound for a LAN path |
 | 2026-10-21 | ffmpeg (a winget build) with NVENC on neo16 (RTX 5090), offline | P0(d): α. The same content at 60, 120 and 144 fps: code-like text scrolling at a fixed **px/s** (each frame's y is `40 − t·speed`). HEVC at `cq 28`, AV1 at `cq 34`, `-b:v 0`; preset p4, tune ll, no B-frames, no periodic keyframes. 10 s per clip, bits counted after the first IDR | **α ≈ 0 to 0.8 by codec and content.** HEVC on text moving a whole number of pixels per frame (720 px/s: 12 / 6 / 5 px): 471 / 805 / 950 kbit/s, so α = 0.77 (120 vs 60) and 0.80 (144 vs 60). HEVC at 200 px/s: 0.73. HEVC at 800 px/s: −0.12. HEVC static: 0.23. AV1: 0.02–0.32. **Wrong turn:** every 144 fps clip with fractional per-frame motion came out 31–34 Mbit/s, about 20× its neighbours. `drawtext` renders each frame at a different sub-pixel glyph phase (18 at 200 px/s), which defeats motion compensation. Whole-pixel steps behave. That is a caveat for real smooth-scrolled text too, for P3. P2a uses 0.8, the upper envelope. Posted on #2670 |
 
 ## 9. Related

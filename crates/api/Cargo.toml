@@ -1,16 +1,16 @@
 [package]
-name = "roomler-ai-api"
+name = "meshharbor-api"
 license = "AGPL-3.0-only"
 publish = false
 version.workspace = true
 edition.workspace = true
 
 [lib]
-name = "roomler_ai_api"
+name = "meshharbor_api"
 path = "src/lib.rs"
 
 [[bin]]
-name = "roomler-ai-api"
+name = "meshharbor-api"
 path = "src/main.rs"
 
 [features]
@@ -33,54 +33,54 @@ profile-collab = ["chat", "conference"]
 profile-remote = ["fleet", "remote"]
 profile-mesh = ["fleet", "network"]
 profile-access = ["fleet", "remote", "network"]
-saas = ["dep:roomler-ai-mod-saas"]
-chat = ["dep:roomler-ai-mod-chat"]
+saas = ["dep:meshharbor-mod-saas"]
+chat = ["dep:meshharbor-mod-chat"]
 # `conference` is the only feature that links mediasoup (the C++ worker build).
 # It is built ON `chat` (rooms are the container calls run in — the graph's
 # `conference → chat` edge), so the feature implies it.
-conference = ["dep:roomler-ai-mod-conference", "chat"]
+conference = ["dep:meshharbor-mod-conference", "chat"]
 # `fleet` (P5a) is device management; `remote` (P6) and `network` (P7) are built
 # ON it, so their features imply it. Kill switches: `[modules] <id> = false`.
-fleet = ["dep:roomler-ai-mod-fleet"]
-remote = ["dep:roomler-ai-mod-remote", "fleet"]
-network = ["dep:roomler-ai-mod-network", "fleet"]
+fleet = ["dep:meshharbor-mod-fleet"]
+remote = ["dep:meshharbor-mod-remote", "fleet"]
+network = ["dep:meshharbor-mod-network", "fleet"]
 # FR-90 — agent sessions, built ON `fleet` (a session's frames ride the agent
 # socket) and ON `chat` (a session is a room; its turns are messages in it).
 # In `profile-full` only, and its runtime switch is the one that defaults OFF:
 # `[modules] hive = true` turns it on.
-hive = ["dep:roomler-ai-mod-hive", "fleet", "chat"]
+hive = ["dep:meshharbor-mod-hive", "fleet", "chat"]
 # FR-90 P3-1 — the vault: secrets under envelope encryption. Built ON `hive`
 # from P3-3b (a lease is believed from a session's record — the graph's
 # `vault → hive` edge), so the feature implies it. In `profile-full` only,
 # and its runtime switch defaults OFF like hive's: `[modules] vault = true`,
 # or a `vault.tenants` list.
-vault = ["dep:roomler-ai-mod-vault", "hive"]
+vault = ["dep:meshharbor-mod-vault", "hive"]
 
 
 [dependencies]
-roomler-ai-config = { path = "../config" }
-roomler-ai-db = { path = "../db" }
-roomler-ai-services = { path = "../services" }
-roomler-ai-remote-control = { path = "../remote_control" }
+meshharbor-config = { path = "../config" }
+meshharbor-db = { path = "../db" }
+meshharbor-services = { path = "../services" }
+meshharbor-remote-control = { path = "../remote_control" }
 # FR-69 — the composition contract, `Core`, and the primitives every module
 # handler needs.
-roomler-core = { path = "../core" }
+meshharbor-core = { path = "../core" }
 # FR-69 — module crates, one optional dependency each, selected by the
 # features below (`crates/api/src/compose.rs` is where they are mounted).
-roomler-ai-mod-saas = { path = "../modules/saas", optional = true }
-roomler-ai-mod-chat = { path = "../modules/chat", optional = true }
-roomler-ai-mod-conference = { path = "../modules/conference", optional = true }
-roomler-ai-mod-remote = { path = "../modules/remote", optional = true }
+meshharbor-mod-saas = { path = "../modules/saas", optional = true }
+meshharbor-mod-chat = { path = "../modules/chat", optional = true }
+meshharbor-mod-conference = { path = "../modules/conference", optional = true }
+meshharbor-mod-remote = { path = "../modules/remote", optional = true }
 # FR-69 P5a — NOT optional yet: the host still serves the agent socket from
 # the fleet module's handles (the Hub, the agent row, presence). It becomes a
 # feature like the others when the socket moves into the module (P5b).
-roomler-ai-mod-fleet = { path = "../modules/fleet", optional = true }
+meshharbor-mod-fleet = { path = "../modules/fleet", optional = true }
 # FR-69 P7a — NOT optional yet either: the host's tunnel, DERP and agent-socket
 # code still calls the engine that moved here (`state.network()`). It becomes a
 # feature when the sockets move (P7b).
-roomler-ai-mod-network = { path = "../modules/network", optional = true }
-roomler-ai-mod-hive = { path = "../modules/hive", optional = true }
-roomler-ai-mod-vault = { path = "../modules/vault", optional = true }
+meshharbor-mod-network = { path = "../modules/network", optional = true }
+meshharbor-mod-hive = { path = "../modules/hive", optional = true }
+meshharbor-mod-vault = { path = "../modules/vault", optional = true }
 
 axum.workspace = true
 tokio.workspace = true
@@ -121,7 +121,7 @@ ipnet = "2" # subnet-route CIDR validation for the mesh subnet-router admin API
 infer = "0.19"
 # FR-69 P1b — `object_store`, `maxminddb`, `redis`, `bytes` and `tempfile`
 # left with the storage / analytics / cluster / pub-sub modules that used
-# them; they are `roomler-core`'s now.
+# them; they are `meshharbor-core`'s now.
 
 # #1731 — the stall watchdog (`src/stall_watchdog.rs`) walks and names every
 # thread's stack while the runtime is frozen. Linux only: it signals threads

@@ -2,15 +2,15 @@
 
 > **CLOSED 2026-09-01** — issue #1083 is closed and its acceptance criteria are met. Any status line below is the state while the work was in flight, kept as the record.
 
-**Issue:** [#1083](https://github.com/gjovanov/roomler-ai/issues/1083) ·
+**Issue:** [#1083](https://github.com/jk-zhang-meta/MeshHarbor/issues/1083) ·
 Status: **P0 — spec** (2026-08-31) · Child of
 [FR-42](FR-42-selfhost-verified-on-a-clean-box.md) (#967), which found this by
 running the documented self-host path on a clean box.
 
 ## Goal
 
-A device installed from a self-hosted Roomler must enrol **against that
-Roomler**. Today it enrols against the hosted service, because the installer
+A device installed from a self-hosted MeshHarbor must enrol **against that
+MeshHarbor**. Today it enrols against the hosted service, because the installer
 carries a compile-time default and a piped script cannot see the URL it was
 fetched from.
 
@@ -22,13 +22,13 @@ script substitutes the default before the bytes leave the process.
 `scripts/install.sh:46`
 
 ```sh
-SERVER="https://roomler.ai"
+SERVER="https://meshharbor.itachi.fans"
 ```
 
 `scripts/install.ps1:64`
 
 ```powershell
-[string]$Server = 'https://roomler.ai',
+[string]$Server = 'https://meshharbor.itachi.fans',
 ```
 
 Both are served by `crates/api/src/routes/setup_release.rs:170-189` as
@@ -47,7 +47,7 @@ The handlers take **no state and no request** — they cannot know their own
 origin even in principle. And the documented invocation is a pipe:
 
 ```sh
-curl -fsSL https://my-roomler.example/api/setup/install.sh | sh -s -- --role daemon --token <jwt>
+curl -fsSL https://my-meshharbor.example/api/setup/install.sh | sh -s -- --role daemon --token <jwt>
 ```
 
 so there is no filename, no `$0`, and no referrer for the script to inspect
@@ -62,18 +62,18 @@ fails in the least legible way available:
 2. `curl` fetches it from their host. The script downloads the agent from
    *their* host too (`$SERVER/api/agent/installer/...` — that part is
    parameterised and works).
-3. It then runs `roomlerd enroll --server https://roomler.ai --token <jwt>`.
+3. It then runs `meshharbord enroll --server https://meshharbor.itachi.fans --token <jwt>`.
 4. The hosted service rejects a token only their server can verify.
 
 The error names the token, not the server. Nothing in the output says
-`roomler.ai` was contacted unless the operator reads the whole log. A
+`meshharbor.itachi.fans` was contacted unless the operator reads the whole log. A
 self-hoster's reasonable first conclusion is that **the product's enrolment is
 broken**, and the FR-42 field run reached exactly that conclusion before
 reading the source.
 
 ⚠️ It is also worse than a plain failure on the `--role tunnel` path, where the
 enrolment is the *only* server-bound step: a tunnel client that enrols against
-`roomler.ai` with a token from elsewhere leaks the token's existence to a
+`meshharbor.itachi.fans` with a token from elsewhere leaks the token's existence to a
 third-party server. Not the token's *value* — it is single-use and invalid
 there — but the request is made.
 
@@ -100,8 +100,8 @@ the needle as a constant with a **unit test asserting it occurs exactly once**
 in each embedded script. Editing the line fails the build.
 
 ```rust
-const SERVER_NEEDLE_SH: &str = "SERVER=\"https://roomler.ai\"";
-const SERVER_NEEDLE_PS1: &str = "[string]$Server = 'https://roomler.ai',";
+const SERVER_NEEDLE_SH: &str = "SERVER=\"https://meshharbor.itachi.fans\"";
+const SERVER_NEEDLE_PS1: &str = "[string]$Server = 'https://meshharbor.itachi.fans',";
 
 #[test]
 fn the_server_default_is_substitutable_exactly_once() {
@@ -137,11 +137,11 @@ depend on how it was addressed rather than on how the deployment is configured
 ### Prod is a byte-for-byte no-op — verified before writing the code
 
 ```
-$ kubectl -n roomler-ai get cm -o yaml | grep FRONTEND_URL
-    ROOMLER__APP__FRONTEND_URL: https://roomler.ai
+$ kubectl -n meshharbor get cm -o yaml | grep FRONTEND_URL
+    MESHHARBOR__APP__FRONTEND_URL: https://meshharbor.itachi.fans
 ```
 
-The hosted service substitutes `https://roomler.ai` for `https://roomler.ai`.
+The hosted service substitutes `https://meshharbor.itachi.fans` for `https://meshharbor.itachi.fans`.
 That is what makes this safe to ship without a staged rollout: the population
 that could regress is the population whose served bytes do not change.
 
@@ -156,22 +156,22 @@ that could regress is the population whose served bytes do not change.
 ## Acceptance criteria
 
 - [ ] `curl <self-hosted>/api/setup/install.sh` returns a script whose `SERVER`
-      is that host, not `roomler.ai` — verified against a **running** self-host
+      is that host, not `meshharbor.itachi.fans` — verified against a **running** self-host
       instance, not a unit test
-- [ ] `curl https://roomler.ai/api/setup/install.sh` is byte-identical to the
+- [ ] `curl https://meshharbor.itachi.fans/api/setup/install.sh` is byte-identical to the
       committed `scripts/install.sh`
 - [ ] the same holds for `install.ps1`
 - [ ] a `frontend_url` carrying a shell metacharacter serves the compiled-in
       default and logs a refusal (unit test)
-- [ ] editing the `SERVER=` line in either script fails `cargo test -p roomler-ai-api`
+- [ ] editing the `SERVER=` line in either script fails `cargo test -p meshharbor-api`
 - [ ] `docs/self-hosting.md` and `README.md` no longer instruct the reader to
       pass `--server` on the served path
 
 ## Out of scope
 
-- **The GUI wizard** (`agents/roomler-setup`) has a server field the operator
+- **The GUI wizard** (`agents/meshharbor-setup`) has a server field the operator
   fills in, and is not piped. Unaffected.
-- **`roomler self-update`** resolving its own origin — a different fetch with a
+- **`mh self-update`** resolving its own origin — a different fetch with a
   different (signed) trust story, tracked separately.
 - **Publishing a container image** so the self-host path is a pull rather than a
   build. Real, and the single largest remaining friction on that path, but it is

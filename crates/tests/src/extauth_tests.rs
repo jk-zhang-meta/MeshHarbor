@@ -4,7 +4,7 @@
 //! server, and the device verifies.
 //!
 //! Everything real except the browser: a real API server, the REAL agent
-//! signalling loop (`roomlerd`, with `external-access`) reading a real config
+//! signalling loop (`meshharbord`, with `external-access`) reading a real config
 //! file for gate 3 and the password record, an org-less user on a real user
 //! socket, and opaque-ke standing in for `@serenity-kit/opaque` — which is
 //! opaque-ke compiled to WASM, and was proven to log into this agent's records
@@ -20,10 +20,10 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use futures::{SinkExt, StreamExt};
+use meshharbord::external_access::{Suite, set_password};
+use meshharbord::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
 use opaque_ke::{ClientLogin, ClientLoginFinishParameters, CredentialResponse};
 use rand_opaque::rngs::OsRng;
-use roomlerd::external_access::{Suite, set_password};
-use roomlerd::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
 use serde_json::{Value, json};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -100,17 +100,17 @@ fn spawn_agent(
     tokio::spawn(async move {
         let connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
-        let broker = roomlerd::consent::ConsentBroker::new(
-            roomlerd::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-extauth-consent-{}", cfg.agent_id)),
+        let broker = meshharbord::consent::ConsentBroker::new(
+            meshharbord::consent::Mode::AutoGrant,
+            std::env::temp_dir().join(format!("meshharbor-extauth-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         let (exec_enabled, remote_config_enabled) = (cfg.exec_enabled, cfg.remote_config_enabled);
         let _ = signaling::run(
-            signaling::OrgCtx::primary(roomlerd::token_slot::TokenSlot::new(
+            signaling::OrgCtx::primary(meshharbord::token_slot::TokenSlot::new(
                 cfg.agent_token.clone(),
             )),
-            roomlerd::delegate::Delegation::Off,
+            meshharbord::delegate::Delegation::Off,
             cfg,
             EncoderPreference::Software,
             stop_rx,
@@ -118,14 +118,14 @@ fn spawn_agent(
             view_tx,
             Default::default(),
             broker,
-            roomlerd::tunnel::client_mgr::TunnelClientHub::new("test".into()),
-            roomlerd::remote_config::RemoteConfigServices::new(
+            meshharbord::tunnel::client_mgr::TunnelClientHub::new("test".into()),
+            meshharbord::remote_config::RemoteConfigServices::new(
                 config_path,
                 std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 exec_enabled,
                 remote_config_enabled,
             ),
-            roomlerd::rc_sessions::RcSessionRegistry::new(),
+            meshharbord::rc_sessions::RcSessionRegistry::new(),
         )
         .await;
     })
@@ -174,7 +174,7 @@ async fn device_with(
     cfg.external_max_permissions = terms.ceiling.map(str::to_string);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    roomlerd::config::save(&path, &cfg).unwrap();
+    meshharbord::config::save(&path, &cfg).unwrap();
     let agent_id = cfg.agent_id.clone();
 
     let (stop, stop_rx) = tokio::sync::watch::channel(false);
@@ -600,7 +600,7 @@ fn app_key(session_key: &[u8], attempt_id: &str, principal: &str) -> [u8; 32] {
     extract.update(session_key);
     let prk = extract.finalize().into_bytes();
     // Expand, one block: T(1) = HMAC(PRK, info ‖ 0x01), truncated to 32.
-    let mut info = b"roomler-extauth-v1 app-key".to_vec();
+    let mut info = b"meshharbor-extauth-v1 app-key".to_vec();
     for field in [attempt_id.as_bytes(), principal.as_bytes()] {
         info.extend_from_slice(&(field.len() as u16).to_be_bytes());
         info.extend_from_slice(field);
@@ -615,7 +615,7 @@ fn app_key(session_key: &[u8], attempt_id: &str, principal: &str) -> [u8; 32] {
 fn transport_mac(key: &[u8; 32], role: &str, fingerprint: &str) -> String {
     use hmac::Mac as _;
     let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::Mac>::new_from_slice(key).unwrap();
-    mac.update(b"roomler-extauth-v1 transport");
+    mac.update(b"meshharbor-extauth-v1 transport");
     for field in [role.as_bytes(), fingerprint.as_bytes()] {
         mac.update(&(field.len() as u16).to_be_bytes());
         mac.update(field);

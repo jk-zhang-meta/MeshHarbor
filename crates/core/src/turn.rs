@@ -5,8 +5,8 @@
 //! the tunnel socket (network, P7b) mint per-session configs the same way —
 //! so the builders are core's, next to the map they fill.
 
-use roomler_ai_config::{Settings, TurnSettings};
-use roomler_ai_remote_control::{
+use meshharbor_config::{Settings, TurnSettings};
+use meshharbor_remote_control::{
     turn_creds::{TurnConfig, TurnMap},
     turn_url::{VariantCaps, expand_turn_url},
 };
@@ -48,12 +48,12 @@ pub fn build_turn_config(turn: &TurnSettings) -> Option<TurnConfig> {
 
 /// Build the region-keyed [`TurnMap`]: the legacy `turn.*` config as the
 /// default region plus one [`TurnConfig`] per enabled spec in
-/// `ROOMLER__RELAY__REGIONS`. A malformed JSON or a region without any usable
+/// `MESHHARBOR__RELAY__REGIONS`. A malformed JSON or a region without any usable
 /// shared secret is logged and skipped — never fatal, and with
 /// `relay.regions_enabled=false` the map degrades to exactly the legacy
 /// behaviour.
 pub fn build_turn_map(settings: &Settings) -> TurnMap {
-    use roomler_ai_remote_control::turn_creds::RelayRegionSpec;
+    use meshharbor_remote_control::turn_creds::RelayRegionSpec;
 
     let default = build_turn_config(&settings.turn);
     let ttl_secs = settings.turn.ttl_secs.unwrap_or(600);
@@ -95,7 +95,7 @@ pub fn build_turn_map(settings: &Settings) -> TurnMap {
                 }
             }
             Err(e) => {
-                tracing::error!(%e, "ROOMLER__RELAY__REGIONS is not valid JSON; ignoring regions");
+                tracing::error!(%e, "MESHHARBOR__RELAY__REGIONS is not valid JSON; ignoring regions");
             }
         }
     }

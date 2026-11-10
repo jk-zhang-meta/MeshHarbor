@@ -7,7 +7,7 @@ over-complication to someone who did not see the failure.
 
 > **Scope.** This is the *server and web* baseline. The device-side gates —
 > exec, SSH, remote config, peer relays — are default-deny ladders documented
-> with their features: [fleet-rpc.md](fleet-rpc.md), [roomler-ssh.md](roomler-ssh.md),
+> with their features: [fleet-rpc.md](fleet-rpc.md), [meshharbor-ssh.md](meshharbor-ssh.md),
 > [remote-config.md](remote-config.md), [peer-relays.md](peer-relays.md).
 > The permission bit catalogue is [permissions.md](permissions.md).
 
@@ -41,7 +41,7 @@ flowchart TB
 
 | Control | Shape |
 |---|---|
-| Access token | 7 d (`ROOMLER__JWT__*`) |
+| Access token | 7 d (`MESHHARBOR__JWT__*`) |
 | Refresh token | 30 d |
 | Hashing | Argon2 |
 | Audiences | `Access` · `Refresh` · `Enrollment` (single-use, 10 min) · `Agent` (1 y) |
@@ -138,7 +138,7 @@ unactivated-signup paths open. Locked by 4 unit tests on the placeholders + 4
 integration tests in `oauth_tests`.
 ⚠️ #610 and #613 fixed the same defect with different designs, in parallel
 sessions, and git auto-merged them cleanly — verify the result on the buildhost
-lane, because CI does not run this crate.
+lane, because no automated CI runs this crate.
 ⚠️ **Microsoft is the only provider that is *always* unverified** (its Graph
 `mail`/UPN are tenant-settable); its `id` (the `oid`) stays trusted and is the
 provider-identity key.
@@ -305,7 +305,7 @@ verifies: [`overlay-key-rotation.md`](overlay-key-rotation.md) (FR-40).
 endpoint carries administrative verbs: exec, SSH grants, config, routes, restart. On
 Windows it is a named pipe whose security descriptor admits `SYSTEM`,
 `Administrators` and the interactive user. On Unix a root daemon's socket is
-`/var/run/roomler/roomler.sock`, 0700 / 0600, root only. Per-verb checks sit on top:
+`/var/run/meshharbor/meshharbor.sock`, 0700 / 0600, root only. Per-verb checks sit on top:
 the recording verbs require the console user (FR-85) and an update hold requires
 root (FR-90).
 
@@ -313,7 +313,7 @@ root (FR-90).
 Linux system install's companion runs as the desktop user and could not reach the root
 socket. That left the person at the screen with no "being viewed" banner, no
 Disconnect, and on Wayland no consent prompt. The root daemon therefore also serves
-`/run/user/<uid>/roomler.sock`:
+`/run/user/<uid>/meshharbor.sock`:
 - it belongs to the user of the **active** graphical session only;
 - it is 0600 and theirs because it is **made as them**: the bind and the `chmod` run on a
   thread switched to their filesystem ids (`setfsuid`/`setfsgid`). Their own directory
@@ -344,10 +344,10 @@ which the overlay addresses already on the Devices page do not.
 **A Mac's root half serves one too (FR-97 P2g).** Only root can hold a utun, so a
 two-half Mac (FR-43) is on the private network through its root half alone, and the
 per-user half that the companion talks to has no node. The root half therefore serves
-the console user a person socket at `/var/run/roomler-person/<uid>.sock`, and the
+the console user a person socket at `/var/run/meshharbor-person/<uid>.sock`, and the
 per-user half asks it for `Devices` and `Mesh`. The bind is not the Linux one, because
 the directory is not the person's:
-- `/var/run/roomler-person` must be a real directory (not a link), owned by root, and
+- `/var/run/meshharbor-person` must be a real directory (not a link), owned by root, and
   writable by nobody else (`root_only_dir`, checked on every bind). Nobody but root
   can create, swap or link an entry there, so root may bind and then hand the socket
   over (`lchown` to the person, then 0600). In a directory the person owns, that is
@@ -364,21 +364,21 @@ the directory is not the person's:
 The allowlist (`localapi::person_may`) is an exhaustive match with no `_` arm, so a
 new verb cannot reach it by default. Widening it is a security change and needs
 review like one. The root socket itself is unchanged. Kill switch:
-`ROOMLERD_PERSON_SOCKET=0`.
+`MESHHARBORD_PERSON_SOCKET=0`.
 
 **A remote-desktop session's media transport is hardened past webrtc-rs' defaults**
-(FR-101 P1, `agents/roomlerd/src/rc_transport.rs`, applied in `AgentPeer::new`):
+(FR-101 P1, `agents/meshharbord/src/rc_transport.rs`, applied in `AgentPeer::new`):
 
 | Setting | Default now | Why | Switch back |
 |---|---|---|---|
-| DTLS cipher suites | the two ECDHE-AES-128-GCM-SHA256 suites | webrtc-dtls' default list still offers ECDHE-AES-256-CBC-SHA; every supported browser negotiates GCM | `ROOMLERD_DTLS_LEGACY_SUITES=1` |
-| SRTP + SRTCP replay window | 64, **pinned**, not switched on | webrtc-srtp's `Session::new` already gives the remote context a 64-packet window when its config has none, so sessions refused replays before FR-101 too. Setting it explicitly keeps it 64 should a release change that default | none: `ROOMLERD_SRTP_REPLAY_WINDOW=N` sizes it, and `0` leaves the library's 64 |
+| DTLS cipher suites | the two ECDHE-AES-128-GCM-SHA256 suites | webrtc-dtls' default list still offers ECDHE-AES-256-CBC-SHA; every supported browser negotiates GCM | `MESHHARBORD_DTLS_LEGACY_SUITES=1` |
+| SRTP + SRTCP replay window | 64, **pinned**, not switched on | webrtc-srtp's `Session::new` already gives the remote context a 64-packet window when its config has none, so sessions refused replays before FR-101 too. Setting it explicitly keeps it 64 should a release change that default | none: `MESHHARBORD_SRTP_REPLAY_WINDOW=N` sizes it, and `0` leaves the library's 64 |
 
 > [!NOTE]
 > **Corrected 2026-10-13: replay protection was never off.** FR-101's evidence said
 > webrtc-srtp 0.14 had no replay window unless one was set. That read the fallback in
 > `Context::new`, and a session never reaches it, because `Session::new` supplies a
-> window first. FR-16 L0's replay cells (`agents/roomlerd/tests/l4_latency.rs`) capture
+> window first. FR-16 L0's replay cells (`agents/meshharbord/tests/l4_latency.rs`) capture
 > the controller's SRTCP PLI on the link and deliver it to the agent again, into a live
 > session:
 >
@@ -406,16 +406,16 @@ enters: a remote `http://` is read as `https://`, and `ws://` as `wss://`.
 
 | Entry point | A remote plaintext URL | Before |
 |---|---|---|
-| The agent's enrollment: `roomlerd enroll` and `re-enroll`, the wizard's agent role, the desktop companion | promoted | promoted, but only when spelled `http://` in lower case |
+| The agent's enrollment: `meshharbord enroll` and `re-enroll`, the wizard's agent role, the desktop companion | promoted | promoted, but only when spelled `http://` in lower case |
 | Every load of the agent's config: `server_url`, `ws_url`, and each `[[orgs]]` entry's | promoted, with a warning naming the field | dialled as written |
-| `roomler enroll`, the wizard's tunnel role | promoted | **the tunnel enrollment token was posted in plaintext** |
-| The tunnel CLI's config, from the file or `ROOMLER_TUNNEL_SERVER` | promoted | dialled as written |
-| `roomlerd anchor create` (FR-104) | refused, unchanged: the claim's answer is the command SYSTEM runs | refused |
+| `mh enroll`, the wizard's tunnel role | promoted | **the tunnel enrollment token was posted in plaintext** |
+| The tunnel CLI's config, from the file or `MESHHARBOR_TUNNEL_SERVER` | promoted | dialled as written |
+| `meshharbord anchor create` (FR-104) | refused, unchanged: the claim's answer is the command SYSTEM runs | refused |
 
 - **Loopback is exempt** (`localhost`, `127.0.0.0/8`, `::1`). It has no off-host path to
-  defend, and dev, test and CI servers run plaintext there.
+  defend, and isolated dev/test servers may run plaintext there.
 - ⚠️ **The guard reads a URL the way its dialler does.** reqwest parses by the WHATWG
-  rules, which accept `HTTP:roomler.ai`, `http:\\roomler.ai`, surrounding whitespace and
+  rules, which accept `HTTP:meshharbor.itachi.fans`, `http:\\meshharbor.itachi.fans`, surrounding whitespace and
   a tab inside the scheme. They also put the host after the authority's last `@`, so
   `http://localhost:80@evil.example` dials `evil.example`. A guard stricter than its
   dialler is a guard with a hole. A unit test therefore parses every spelling with the
@@ -424,7 +424,7 @@ enters: a remote `http://` is read as `https://`, and `ws://` as `wss://`.
   `allow_plaintext_server = true` in the device's own `config.toml`. The LocalAPI accepts
   that key only from the console, and it is structurally absent from `DesiredConfig`, so
   a compromised server cannot talk a fleet down to plaintext. The tunnel CLI reads the
-  same key, or `ROOMLER_TUNNEL_ALLOW_PLAINTEXT=1` on its environment path. There is no
+  same key, or `MESHHARBOR_TUNNEL_ALLOW_PLAINTEXT=1` on its environment path. There is no
   escape at enrollment: a token always travels over TLS.
 - **Counted before the default changed.** The ingress logged no plaintext agent `/ws`
   attempt over about eight hours. Production's port 80 answers everything with a 301, and
@@ -455,7 +455,7 @@ flowchart LR
         REQ["session_requested:<br/>features_stripped, idle_secs"]
         END["session_ended:<br/>reason, limit (max_duration / idle)"]
     end
-    subgraph dev["roomlerd (the device's claims)"]
+    subgraph dev["meshharbord (the device's claims)"]
         TR["clipboard + file tallies<br/>on rc:session.stats"]
     end
     REQ --> RA[("remote_audit")]
@@ -638,7 +638,7 @@ failed, nothing warned.
 |---|---|---|
 | `.githooks/pre-commit` (`--pending`, pure bash+git so it runs where python does not) | the commit about to be made | pushes that skip hooks |
 | `.githooks/pre-push` | **survives `--no-verify`** and a clone that never set `core.hooksPath` | GitHub-side writes |
-| CI job **No foreign commit identity** | anything that reached a branch | account logins |
+| Manual commit-identity audit (former CI job retired) | the explicitly checked commit range | account logins |
 | `PreToolUse` hook `.claude/hooks/gh-account-guard.sh` | GitHub **writes** by the active `gh` account (reads always pass — auditing the wrong account is legitimate, and is what found this) | commits |
 
 ⚠️ **Allowlist, never a denylist.** A denylist would have to write the unwanted
@@ -651,7 +651,7 @@ a shared config, and `gh issue comment` prints a URL, not an identity, so the
 mistake is invisible from inside the session making it. The hook refuses it
 outright; `scripts/gh-scoped-config.sh` builds a config the other account is not
 *in*.
-⚠️ **`--require-commits` in CI is load-bearing**: an empty range otherwise answers
+⚠️ **`--require-commits` in a manual range audit is load-bearing**: an empty range otherwise answers
 "all known" over zero commits — the same shape as a `cargo test` filter matching
 no test.
 ⚠️ **Neither leak is recoverable downstream.** A commit identity can only be
@@ -669,12 +669,11 @@ only and is refused with HTTP 422 on this user-owned repo, in `active` enforceme
 as well (`evaluate` is separately Enterprise-only). Measured 2026-09-06 — do not
 plan around it.
 
-What covers it is the CI job's **push-to-master** run
-(`github.event.before..github.sha`), which turns master red within a minute —
-detection, not prevention. ⚠️ Its fallback is load-bearing and was exercised on
-day one: after a force-push `event.before` names a commit that no longer exists,
-so it falls back to `<sha>~1..<sha>` instead of erroring or silently scanning
-nothing.
+There is no CI detection after a GitHub-side merge. Run the commit-identity
+audit manually against the actual new range; require at least one commit and
+record its result. The former push-to-master job was detection, not prevention.
+For a missing old revision, choose and report a valid explicit comparison range;
+never silently scan no commits.
 
 The actual fix for the account is GitHub Settings → Emails.
 
@@ -684,8 +683,8 @@ The actual fix for the account is GitHub Settings → Emails.
 
 - TURN `static-auth-secret` was rotated out of the repo on 2026-05-23 — the
   committed `turnserver.conf` carries a `CHANGE-ME` placeholder; the live value
-  lives in the operator's `ROOMLER__TURN__SHARED_SECRET` env.
-- **No git hooks for secrets**: there is no gitleaks/trufflehog scanner in CI.
+  lives in the operator's `MESHHARBOR__TURN__SHARED_SECRET` env.
+- **No git hooks for secrets**: no gitleaks/trufflehog scanner is configured; there is no CI.
   *(Open, [LOW], 2026-03-10.)*
 
 ### Dependency-uplift pass (2026-07-29)

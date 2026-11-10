@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 /**
- * roomler-desktop's "being viewed" banner (FR-27), and what FR-85 P3b adds to
+ * meshharbor-desktop's "being viewed" banner (FR-27), and what FR-85 P3b adds to
  * it: a controller RECORDING the screen is the first thing it says, with a
  * Stop that ends the recording and keeps the session.
  *
@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const FRONT = join(HERE, '..', '..', '..', '..', 'agents', 'roomler-desktop', 'src', 'front')
+const FRONT = join(HERE, '..', '..', '..', '..', 'agents', 'meshharbor-desktop', 'src', 'front')
 const HTML = readFileSync(join(FRONT, 'panel-viewing.html'), 'utf8')
 const SCRIPT = readFileSync(join(FRONT, 'panel-viewing.js'), 'utf8')
 

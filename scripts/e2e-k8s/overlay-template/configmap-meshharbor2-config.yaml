@@ -1,0 +1,64 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: meshharbor2-config
+data:
+  MESHHARBOR__APP__HOST: "0.0.0.0"
+  MESHHARBOR__APP__PORT: "3000"
+  MESHHARBOR__APP__FRONTEND_URL: "http://meshharbor2"
+  # CORS_ORIGINS deserializes as Vec<String>; the config crate
+  # rejects scalar strings ('*' would crash with `invalid type:
+  # string "*", expected a sequence`). Leaving it unset uses the
+  # default (empty list) — fine because the Playwright test
+  # browser and the API are same-origin (`http://meshharbor2`)
+  # in-cluster, so the CORS middleware never trips.
+
+  MESHHARBOR__DATABASE__URL: "mongodb://mongodb.meshharbor-e2e.svc.cluster.local:27017"
+  MESHHARBOR__DATABASE__NAME: "meshharbor_e2e"
+
+  MESHHARBOR__REDIS__URL: "redis://redis.meshharbor-e2e.svc.cluster.local:6379"
+
+  MESHHARBOR__S3__ENDPOINT: "http://minio.meshharbor-e2e.svc.cluster.local:9000"
+  MESHHARBOR__S3__BUCKET: "meshharbor2-e2e"
+  MESHHARBOR__S3__REGION: "us-east-1"
+
+  MESHHARBOR__JWT__ISSUER: "meshharbor-e2e"
+
+  # Rate limit bumped — Playwright Job runs from a single Pod IP and
+  # blasts ~5-10 reqs per spec across ~50 specs, easily blowing past
+  # the prod 60/min default. 1000 tokens/sec + 5000 burst is
+  # effectively "no rate limit" for the duration of an e2e run.
+  MESHHARBOR__APP__RATE_LIMIT_PER_SEC: "1000"
+  MESHHARBOR__APP__RATE_LIMIT_BURST: "5000"
+
+  # E2E ACTIVATION SHORTCUT — Phase 1 unblocker for Cycle 3.
+  # When set, `auth::register` immediately marks the new user
+  # `is_verified: true`, bypassing the email-link gate at login.
+  # Cycle 4 keeps this `true` for safety: the register handler
+  # ALSO sends the activation email unconditionally (when
+  # state.email is Some), so email-flows.spec.ts can poll Mailpit
+  # to verify SMTP delivery and the activation-link round-trip
+  # WITHOUT having to flip this off and break the 100+ specs
+  # that depend on register → login working in one round-trip.
+  MESHHARBOR__AUTH__AUTO_VERIFY: "true"
+
+  # E2E EMAIL CAPTURE (Cycle 4 Chunk 1) — flip the EmailService
+  # backend from SendGrid HTTP (prod default, gated on api_key)
+  # to plaintext SMTP against the in-cluster Mailpit pod. Mailpit
+  # listens on :1025 unauthenticated; the EmailService uses
+  # lettre's `builder_dangerous` path (no TLS, no auth) which
+  # matches that. With `email.api_key` left empty (default), the
+  # service picks SMTP when both smtp_host + smtp_port are set.
+  MESHHARBOR__EMAIL__SMTP_HOST: "mailpit.meshharbor-e2e.svc.cluster.local"
+  MESHHARBOR__EMAIL__SMTP_PORT: "1025"
+  MESHHARBOR__EMAIL__FROM_EMAIL: "noreply@e2e.local"
+
+  # Phase 4 will set these when in-cluster coturn / oauth2-mock-server
+  # land. Until then, the specs that depend on them are filtered
+  # out via the testIgnore block in ui/playwright.config.cjs
+  # gated on E2E_SKIP_PHASE_3=1.
+  MESHHARBOR__TURN__URL: ""
+
+  MESHHARBOR__MEDIASOUP__NUM_WORKERS: "1"
+
+  RUST_LOG: "info,meshharbor=debug"

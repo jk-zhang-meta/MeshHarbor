@@ -1,5 +1,5 @@
 #!/bin/bash
-# Roomler AI e2e orchestrator. Run on the build host from any directory.
+# MeshHarbor e2e orchestrator. Run on the build host from any directory.
 # Override REPO_ROOT / DEPLOY_REPO / REGISTRY env vars if your local
 # layout differs from the defaults below.
 #
@@ -13,11 +13,11 @@
 # Outputs the HTML report path on success.
 #
 # Flow:
-#   1. (Optionally) build + push roomler-ai-e2e:<sha> if specs/lockfile
+#   1. (Optionally) build + push meshharbor-e2e:<sha> if specs/lockfile
 #      changed since the last build.
 #   2. Apply the e2e overlay (idempotent).
 #   3. Wait for stack ready.
-#   4. Smoke-probe roomler2 /health.
+#   4. Smoke-probe meshharbor2 /health.
 #   5. Render + apply the Job manifest.
 #   6. Stream logs.
 #   7. Poll for /results/.done in the runner pod.
@@ -25,11 +25,11 @@
 #   9. Print the path to the HTML report.
 set -euo pipefail
 
-REPO_ROOT="${REPO_ROOT:-$HOME/roomler-ai}"
-DEPLOY_REPO="${DEPLOY_REPO:-$HOME/roomler-ai-deploy}"
-NAMESPACE="${NAMESPACE:-roomler-ai-e2e}"
+REPO_ROOT="${REPO_ROOT:-$HOME/meshharbor}"
+DEPLOY_REPO="${DEPLOY_REPO:-$HOME/meshharbor-deploy}"
+NAMESPACE="${NAMESPACE:-meshharbor-e2e}"
 REGISTRY="${REGISTRY:?set REGISTRY=<internal-registry>}"
-IMAGE_NAME="roomler-ai-e2e"
+IMAGE_NAME="meshharbor-e2e"
 RESULTS_ROOT="${RESULTS_ROOT:-$HOME/e2e-results}"
 
 RESET=0
@@ -103,7 +103,7 @@ echo "[e2e-k8s] waiting for stack ready"
 # it in the wait so the orchestrator fails fast if the deployment is
 # missing or unhealthy rather than the spec hitting connection-refused
 # 30 s later.
-for selector in "app=mongodb" "app=redis" "app=minio" "app=mailpit" "app=roomler2"; do
+for selector in "app=mongodb" "app=redis" "app=minio" "app=mailpit" "app=meshharbor2"; do
   kubectl -n "$NAMESPACE" wait --for=condition=ready pod \
     -l "$selector" --timeout=180s
 done
@@ -142,10 +142,10 @@ fi
 # ──────────────────────────────────────────────────────────────────────
 # 4. Smoke probe
 # ──────────────────────────────────────────────────────────────────────
-echo "[e2e-k8s] smoke-probing http://roomler2.${NAMESPACE}.svc.cluster.local/health"
+echo "[e2e-k8s] smoke-probing http://meshharbor2.${NAMESPACE}.svc.cluster.local/health"
 kubectl -n "$NAMESPACE" run smoke-probe --rm -i --restart=Never \
   --image=curlimages/curl:8.10.1 -- \
-  curl -sf "http://roomler2/health" || {
+  curl -sf "http://meshharbor2/health" || {
     echo "[e2e-k8s] smoke probe FAILED" >&2
     exit 1
   }
@@ -211,11 +211,11 @@ spec:
           imagePullPolicy: Always
           env:
             - name: E2E_BASE_URL
-              value: "http://roomler2"
+              value: "http://meshharbor2"
             - name: E2E_API_URL
-              value: "http://roomler2"
+              value: "http://meshharbor2"
             - name: VITE_API_URL
-              value: "http://roomler2"
+              value: "http://meshharbor2"
             # Mailpit HTTP API endpoint used by fetchActivationEmail
             # in the email-flows spec. Mailpit's web UI / REST API
             # listens on :8025 inside the cluster. (Backticks in this

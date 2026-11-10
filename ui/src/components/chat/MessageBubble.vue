@@ -33,14 +33,14 @@
                and inert while hidden (it used to take taps at opacity 0, so a
                tap near a name could pin a message for the whole room). -->
           <div v-if="!editing" class="message-actions">
-            <v-btn icon="mdi-emoticon-outline" size="x-small" variant="text" aria-label="React with emoji" @click="showEmojiPicker = true" />
-            <v-btn icon="mdi-reply" size="x-small" variant="text" aria-label="Reply in thread" @click="$emit('reply')" />
+            <v-btn icon="mdi-emoticon-outline" size="x-small" variant="text" :aria-label="t('mh.chat.react')" @click="showEmojiPicker = true" />
+            <v-btn icon="mdi-reply" size="x-small" variant="text" :aria-label="t('mh.chat.replyInThread')" @click="$emit('reply')" />
             <v-btn
               v-if="editable"
               icon="mdi-pencil"
               size="x-small"
               variant="text"
-              aria-label="Edit message"
+              :aria-label="t('mh.chat.editMessage')"
               @click="startEditing"
             />
             <v-btn
@@ -49,7 +49,7 @@
               size="x-small"
               variant="text"
               color="error"
-              aria-label="Delete message"
+              :aria-label="t('mh.chat.deleteMessage')"
               @click="showDeleteConfirm = true"
             />
             <v-btn
@@ -69,13 +69,13 @@
                 icon="mdi-dots-vertical"
                 size="small"
                 variant="text"
-                aria-label="Message actions"
+                :aria-label="t('mh.chat.actions')"
               />
             </template>
             <v-list density="compact" min-width="200">
-              <v-list-item prepend-icon="mdi-emoticon-outline" title="React" @click="showEmojiPicker = true" />
-              <v-list-item prepend-icon="mdi-reply" title="Reply in thread" @click="$emit('reply')" />
-              <v-list-item v-if="editable" prepend-icon="mdi-pencil" title="Edit" @click="startEditing" />
+              <v-list-item prepend-icon="mdi-emoticon-outline" :title="t('mh.chat.reactShort')" @click="showEmojiPicker = true" />
+              <v-list-item prepend-icon="mdi-reply" :title="t('mh.chat.replyInThread')" @click="$emit('reply')" />
+              <v-list-item v-if="editable" prepend-icon="mdi-pencil" :title="t('mh.common.edit')" @click="startEditing" />
               <v-list-item
                 :prepend-icon="message.is_pinned ? 'mdi-pin-off' : 'mdi-pin'"
                 :title="message.is_pinned ? 'Unpin' : 'Pin'"
@@ -84,7 +84,7 @@
               <v-list-item
                 v-if="editable"
                 prepend-icon="mdi-delete"
-                title="Delete"
+                :title="t('mh.common.delete')"
                 base-color="error"
                 @click="showDeleteConfirm = true"
               />
@@ -97,12 +97,12 @@
           <message-editor
             ref="editEditorRef"
             :initial-content="message.content"
-            placeholder="Edit message..."
+            :placeholder="t('mh.chat.editPlaceholder')"
             @send="saveEdit"
           />
           <div class="d-flex ga-1 mt-1">
             <v-btn size="x-small" variant="text" @click="cancelEdit">
-              Cancel <span class="text-caption ml-1">(Esc)</span>
+              {{ t('common.cancel') }} <span class="text-caption ml-1">(Esc)</span>
             </v-btn>
           </div>
         </div>
@@ -165,8 +165,8 @@
           @click="$emit('reply')"
         >
           <v-icon size="14">mdi-comment-outline</v-icon>
-          <span v-if="message.reply_count">{{ message.reply_count }} {{ message.reply_count === 1 ? 'reply' : 'replies' }}</span>
-          <span v-else>View thread</span>
+          <span v-if="message.reply_count">{{ t(message.reply_count === 1 ? 'mh.chat.replyOne' : 'mh.chat.replyMany', { n: message.reply_count }) }}</span>
+          <span v-else>{{ t('mh.chat.viewThread') }}</span>
           <span v-if="message.last_reply_at" class="text-medium-emphasis">{{ formatRelativeTime(message.last_reply_at) }}</span>
         </div>
       </div>
@@ -181,12 +181,12 @@
     <!-- Delete confirmation dialog -->
     <v-dialog v-model="showDeleteConfirm" max-width="360">
       <v-card>
-        <v-card-title class="text-h6">Delete message?</v-card-title>
-        <v-card-text>This action cannot be undone.</v-card-text>
+        <v-card-title class="text-h6">{{ t('mh.chat.deleteTitle') }}</v-card-title>
+        <v-card-text>{{ t('mh.chat.cannotUndo') }}</v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="showDeleteConfirm = false">Cancel</v-btn>
-          <v-btn color="error" variant="tonal" @click="confirmDelete">Delete</v-btn>
+          <v-btn variant="text" @click="showDeleteConfirm = false">{{ t('common.cancel') }}</v-btn>
+          <v-btn color="error" variant="tonal" @click="confirmDelete">{{ t('mh.common.delete') }}</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -199,6 +199,9 @@ import { renderMarkdown } from '@/composables/useMarkdown'
 import EmojiPicker from '@/components/chat/EmojiPicker.vue'
 import MessageEditor from '@/components/chat/MessageEditor.vue'
 import VaultApprovalCard from '@/components/vault/VaultApprovalCard.vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 interface Reaction {
   emoji: string
@@ -271,13 +274,13 @@ function formatRelativeTime(iso: string): string {
   const then = new Date(iso).getTime()
   const diffMs = now - then
   const diffSec = Math.floor(diffMs / 1000)
-  if (diffSec < 60) return 'just now'
+  if (diffSec < 60) return t('mh.ago.now')
   const diffMin = Math.floor(diffSec / 60)
-  if (diffMin < 60) return `${diffMin}m ago`
+  if (diffMin < 60) return t('mh.ago.m', { n: diffMin })
   const diffHr = Math.floor(diffMin / 60)
-  if (diffHr < 24) return `${diffHr}h ago`
+  if (diffHr < 24) return t('mh.ago.h', { n: diffHr })
   const diffDay = Math.floor(diffHr / 24)
-  return `${diffDay}d ago`
+  return t('mh.ago.d', { n: diffDay })
 }
 
 function startEditing() {

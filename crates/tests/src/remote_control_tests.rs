@@ -1104,9 +1104,9 @@ fn urlencode(s: &str) -> String {
 #[tokio::test]
 async fn session_audit_reads_back_rows_the_audit_sink_wrote() {
     use bson::oid::ObjectId;
-    use roomler_ai_remote_control::audit::AuditSink;
-    use roomler_ai_remote_control::models::{AuditKind, EndReason, RemoteAuditEvent};
-    use roomler_ai_remote_control::permissions::Permissions;
+    use meshharbor_remote_control::audit::AuditSink;
+    use meshharbor_remote_control::models::{AuditKind, EndReason, RemoteAuditEvent};
+    use meshharbor_remote_control::permissions::Permissions;
 
     let app = TestApp::spawn().await;
     let seeded = app.seed_tenant("audit1630").await;
@@ -1230,4 +1230,478 @@ async fn session_audit_reads_back_rows_the_audit_sink_wrote() {
     assert_eq!(resp.status().as_u16(), 200);
     let session: Value = resp.json().await.unwrap();
     assert_eq!(session["permissions"], "VIEW");
+}
+
+/// X14: the actual local HTTP upgrade + user socket + PDP creates the source.
+/// Agents below are bounded in-memory sinks, never sockets or peer connections.
+/// This does not enable the production child capability or attest delegation.
+#[tokio::test]
+async fn file_child_local_controller_source_requires_http_authentication_and_actual_pdp() {
+    use bson::oid::ObjectId;
+    use meshharbor_remote_control::{
+        models::{EndReason, OsKind},
+        permissions::Permissions,
+        signaling::{ClientMsg, ServerMsg},
+    };
+    use std::time::Duration;
+    use tokio::net::TcpStream;
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+    async fn frame_of_type(
+        socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+        expected: &str,
+    ) -> Value {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let message = socket
+                    .next()
+                    .await
+                    .expect("synthetic controller open")
+                    .expect("synthetic controller frame");
+                if let Message::Text(text) = message {
+                    let value: Value = serde_json::from_str(&text).expect("server JSON frame");
+                    if value["t"] == expected {
+                        return value;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("bounded X14 local controller response")
+    }
+    fn request(agent_id: ObjectId) -> String {
+        serde_json::to_string(&ClientMsg::SessionRequest {
+            agent_id,
+            share_grant_id: None,
+            permissions: Permissions::VIEW | Permissions::FILES,
+            browser_caps: Vec::new(),
+            preferred_transport: None,
+            chroma_pref: None,
+            chunk_framing: None,
+            audio_enabled: false,
+            override_reason: None,
+            local_relay: None,
+        })
+        .unwrap()
+    }
+
+    let app = TestApp::spawn().await;
+    let owner = app.seed_tenant("x14-local-pdp-owner").await;
+    let outsider = app.seed_tenant("x14-local-pdp-outsider").await;
+    let (agent_hex, _) = enroll_helper(&app, &owner, "x14-synthetic-parent", "X14 Synthetic").await;
+    let agent = ObjectId::parse_str(&agent_hex).unwrap();
+    let tenant = ObjectId::parse_str(&owner.tenant_id).unwrap();
+    let owner_id = ObjectId::parse_str(&owner.admin.id).unwrap();
+    let hub = &app.state.fleet().rc_hub;
+    let (_, _cancel, mut agent_rx) =
+        hub.register_agent(agent, tenant, owner_id, OsKind::Linux, 3, false, false);
+
+    let unauthenticated = connect_async(format!("ws://{}/ws", app.addr)).await;
+    match unauthenticated {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status().as_u16(), 401)
+        }
+        _ => panic!("X14 unauthenticated local controller must receive HTTP 401"),
+    }
+    assert!(agent_rx.try_recv().is_err());
+
+    // A valid account from another tenant reaches the actual PDP, which must
+    // refuse before creating a parent or enqueueing any agent Request.
+    let outsider_url = format!(
+        "ws://{}/ws?token={}",
+        app.addr,
+        urlencode(&outsider.admin.access_token)
+    );
+    let outsider_socket = connect_async(&outsider_url).await;
+    assert!(
+        outsider_socket.is_ok(),
+        "synthetic authenticated outsider upgrade"
+    );
+    let (mut outsider_socket, _) = outsider_socket.unwrap();
+    outsider_socket
+        .send(Message::Text(request(agent).into()))
+        .await
+        .unwrap();
+    let denied = frame_of_type(&mut outsider_socket, "rc:error").await;
+    assert_eq!(denied["code"], "permission_denied");
+    assert!(
+        agent_rx.try_recv().is_err(),
+        "denied PDP must not reach an agent"
+    );
+    outsider_socket.close(None).await.unwrap();
+
+    let owner_url = format!(
+        "ws://{}/ws?token={}",
+        app.addr,
+        urlencode(&owner.admin.access_token)
+    );
+    let owner_socket = connect_async(&owner_url).await;
+    assert!(
+        owner_socket.is_ok(),
+        "synthetic authenticated owner upgrade"
+    );
+    let (mut owner_socket, _) = owner_socket.unwrap();
+    owner_socket
+        .send(Message::Text(request(agent).into()))
+        .await
+        .unwrap();
+    let created = frame_of_type(&mut owner_socket, "rc:session.created").await;
+    let sid = ObjectId::parse_str(created["session_id"].as_str().unwrap()).unwrap();
+    assert_eq!(hub.file_child_local_pdp_for_tests(sid), Some(true));
+    assert!(
+        matches!(tokio::time::timeout(Duration::from_secs(2), agent_rx.recv()).await.expect("bounded synthetic agent Request"), Some(ServerMsg::Request { session_id, .. }) if session_id == sid)
+    );
+    // A real consent transition cannot stamp/upgrade the provenance later.
+    hub.deliver_consent(sid, true, None).unwrap();
+    frame_of_type(&mut owner_socket, "rc:ready").await;
+    assert_eq!(hub.file_child_local_pdp_for_tests(sid), Some(true));
+    owner_socket
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::FileChildReserve {
+                session_id: sid,
+                transfer_id: "synthetic-download".into(),
+                direction: meshharbor_remote_control::signaling::FileChildDirection::Download,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        frame_of_type(&mut owner_socket, "rc:error").await["code"],
+        "file_child_error"
+    );
+    assert!(
+        agent_rx.try_recv().is_err(),
+        "default-off capability must not forward any child"
+    );
+    hub.terminate(sid, EndReason::ControllerHangup).unwrap();
+
+    // A stale Hub connection with no matching Mongo agent hits the legacy
+    // PDP early-out (Ok(Prompt)); that is not an actual authorization proof.
+    let stale = ObjectId::new();
+    let (_, _stale_cancel, mut stale_rx) =
+        hub.register_agent(stale, tenant, owner_id, OsKind::Linux, 3, false, false);
+    owner_socket
+        .send(Message::Text(request(stale).into()))
+        .await
+        .unwrap();
+    let created = frame_of_type(&mut owner_socket, "rc:session.created").await;
+    let stale_sid = ObjectId::parse_str(created["session_id"].as_str().unwrap()).unwrap();
+    assert_eq!(hub.file_child_local_pdp_for_tests(stale_sid), Some(false));
+    assert!(
+        matches!(tokio::time::timeout(Duration::from_secs(2), stale_rx.recv()).await.expect("bounded synthetic stale agent Request"), Some(ServerMsg::Request { session_id, .. }) if session_id == stale_sid)
+    );
+    hub.terminate(stale_sid, EndReason::ControllerHangup)
+        .unwrap();
+    owner_socket.close(None).await.unwrap();
+}
+
+/// X14 upload direction: default-off capability, isolation from download
+/// capability and kill switch, direction-bound reservation/offer, and policy
+/// revision revocation over the real controller WebSocket + MongoDB PDP.
+#[tokio::test]
+async fn file_child_upload_direction_default_off_opt_in_kill_switch_and_revocation_contract() {
+    use bson::oid::ObjectId;
+    use meshharbor_remote_control::{
+        models::{EndReason, OsKind},
+        permissions::Permissions,
+        signaling::{ClientMsg, FileChildDirection, FileChildOfferProof, ServerMsg},
+    };
+    use std::time::Duration;
+    use tokio::net::TcpStream;
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+    async fn frame_of_type(
+        socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+        expected: &str,
+    ) -> Value {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let message = socket
+                    .next()
+                    .await
+                    .expect("controller ws open")
+                    .expect("controller ws frame");
+                if let Message::Text(text) = message {
+                    let value: Value = serde_json::from_str(&text).expect("server JSON frame");
+                    if value["t"] == expected {
+                        return value;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("bounded X14 upload controller response")
+    }
+
+    let app = TestApp::spawn().await;
+    let owner = app.seed_tenant("x14-upload-owner").await;
+    let (agent_hex, _) = enroll_helper(&app, &owner, "x14-upload-agent", "X14 Upload Agent").await;
+    let agent = ObjectId::parse_str(&agent_hex).unwrap();
+    let tenant = ObjectId::parse_str(&owner.tenant_id).unwrap();
+    let owner_id = ObjectId::parse_str(&owner.admin.id).unwrap();
+    let hub = &app.state.fleet().rc_hub;
+    let (_, _cancel, mut agent_rx) =
+        hub.register_agent(agent, tenant, owner_id, OsKind::Linux, 4, false, false);
+
+    let owner_url = format!(
+        "ws://{}/ws?token={}",
+        app.addr,
+        urlencode(&owner.admin.access_token)
+    );
+    let (mut owner_socket, _) = connect_async(&owner_url).await.expect("owner ws connect");
+
+    // 1. Session with ONLY `file-child-download` opted in: download reserve works, upload reserve fails with `file_child_error`.
+    owner_socket
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::SessionRequest {
+                agent_id: agent,
+                share_grant_id: None,
+                permissions: Permissions::VIEW | Permissions::FILES,
+                browser_caps: vec!["file-child-download".into()],
+                preferred_transport: None,
+                chroma_pref: None,
+                chunk_framing: None,
+                audio_enabled: false,
+                override_reason: None,
+                local_relay: None,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let created = frame_of_type(&mut owner_socket, "rc:session.created").await;
+    let sid1 = ObjectId::parse_str(created["session_id"].as_str().unwrap()).unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), agent_rx.recv())
+        .await
+        .unwrap();
+    hub.deliver_consent(sid1, true, None).unwrap();
+    frame_of_type(&mut owner_socket, "rc:ready").await;
+    owner_socket
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::SdpOffer {
+                session_id: sid1,
+                sdp: "v=0\r\n".into(),
+                extauth_mac: None,
+                peer_auth: None,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), agent_rx.recv())
+        .await
+        .unwrap();
+    hub.forward_answer(sid1, "v=0\r\n".into(), None, None, None)
+        .unwrap();
+    frame_of_type(&mut owner_socket, "rc:sdp.answer").await;
+
+    // Upload reserve on download-only session -> `file_child_error`
+    owner_socket
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::FileChildReserve {
+                session_id: sid1,
+                transfer_id: "up-denied".into(),
+                direction: FileChildDirection::Upload,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let err_frame = frame_of_type(&mut owner_socket, "rc:error").await;
+    assert_eq!(err_frame["code"], "file_child_error");
+
+    // Download reserve on the same session -> succeeds
+    owner_socket
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::FileChildReserve {
+                session_id: sid1,
+                transfer_id: "dl-ok".into(),
+                direction: FileChildDirection::Download,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let dl_reserved = frame_of_type(&mut owner_socket, "rc:file.child.reserved").await;
+    assert_eq!(dl_reserved["transfer_id"], "dl-ok");
+    hub.terminate(sid1, EndReason::ControllerHangup).unwrap();
+    while agent_rx.try_recv().is_ok() {}
+
+    // 2. Session opting into both `file-child-upload` and `file-child-download`.
+    owner_socket
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::SessionRequest {
+                agent_id: agent,
+                share_grant_id: None,
+                permissions: Permissions::VIEW | Permissions::FILES,
+                browser_caps: vec!["file-child-upload".into(), "file-child-download".into()],
+                preferred_transport: None,
+                chroma_pref: None,
+                chunk_framing: None,
+                audio_enabled: false,
+                override_reason: None,
+                local_relay: None,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let created2 = frame_of_type(&mut owner_socket, "rc:session.created").await;
+    let sid2 = ObjectId::parse_str(created2["session_id"].as_str().unwrap()).unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), agent_rx.recv())
+        .await
+        .unwrap();
+    hub.deliver_consent(sid2, true, None).unwrap();
+    frame_of_type(&mut owner_socket, "rc:ready").await;
+    owner_socket
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::SdpOffer {
+                session_id: sid2,
+                sdp: "v=0\r\n".into(),
+                extauth_mac: None,
+                peer_auth: None,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), agent_rx.recv())
+        .await
+        .unwrap();
+    hub.forward_answer(sid2, "v=0\r\n".into(), None, None, None)
+        .unwrap();
+    frame_of_type(&mut owner_socket, "rc:sdp.answer").await;
+
+    // Reserve an upload child.
+    owner_socket
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::FileChildReserve {
+                session_id: sid2,
+                transfer_id: "up-1".into(),
+                direction: FileChildDirection::Upload,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let up_reserved = frame_of_type(&mut owner_socket, "rc:file.child.reserved").await;
+    assert_eq!(up_reserved["direction"], "upload");
+    let up_cid = ObjectId::parse_str(up_reserved["child_id"].as_str().unwrap()).unwrap();
+
+    // Cross-direction offer (Download offer for Upload reservation) -> `file_child_error`.
+    owner_socket
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::FileSdpOffer {
+                session_id: sid2,
+                child_id: up_cid,
+                transfer_id: "up-1".into(),
+                direction: FileChildDirection::Download,
+                sdp: "v=0\r\na=fingerprint:sha-256 AA:BB\r\n".into(),
+                proof: FileChildOfferProof {
+                    nonce: "nonce-12345678".into(),
+                    key: "key-b64".into(),
+                    sig: "sig-b64".into(),
+                },
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let cross_err = frame_of_type(&mut owner_socket, "rc:error").await;
+    assert_eq!(cross_err["code"], "file_child_error");
+    assert!(agent_rx.try_recv().is_err());
+
+    // Matching Upload offer -> delivered to agent_rx with `direction: Upload`.
+    owner_socket
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::FileSdpOffer {
+                session_id: sid2,
+                child_id: up_cid,
+                transfer_id: "up-1".into(),
+                direction: FileChildDirection::Upload,
+                sdp: "v=0\r\na=fingerprint:sha-256 AA:BB\r\n".into(),
+                proof: FileChildOfferProof {
+                    nonce: "nonce-12345678".into(),
+                    key: "key-b64".into(),
+                    sig: "sig-b64".into(),
+                },
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    match tokio::time::timeout(Duration::from_secs(2), agent_rx.recv())
+        .await
+        .unwrap()
+    {
+        Some(ServerMsg::FileSdpOffer {
+            session_id,
+            child_id,
+            direction: FileChildDirection::Upload,
+            ..
+        }) => {
+            assert_eq!(session_id, sid2);
+            assert_eq!(child_id, up_cid);
+        }
+        other => panic!("expected upload FileSdpOffer, got {other:?}"),
+    }
+
+    // 3. Disabling ONLY upload kill switch blocks upload while download still works.
+    hub.set_file_child_direction_disabled(FileChildDirection::Upload, true);
+    owner_socket
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::FileChildReserve {
+                session_id: sid2,
+                transfer_id: "up-killed".into(),
+                direction: FileChildDirection::Upload,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let killed_err = frame_of_type(&mut owner_socket, "rc:error").await;
+    assert_eq!(killed_err["code"], "file_child_error");
+
+    owner_socket
+        .send(Message::Text(
+            serde_json::to_string(&ClientMsg::FileChildReserve {
+                session_id: sid2,
+                transfer_id: "dl-unaffected".into(),
+                direction: FileChildDirection::Download,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let dl_still_ok = frame_of_type(&mut owner_socket, "rc:file.child.reserved").await;
+    assert_eq!(dl_still_ok["transfer_id"], "dl-unaffected");
+    hub.set_file_child_direction_disabled(FileChildDirection::Upload, false);
+
+    // 4. Policy revision bump in MongoDB triggers `rc:file.child.revoke` within <= 5s.
+    app.db
+        .collection::<bson::Document>("tenants")
+        .update_one(
+            bson::doc! { "_id": tenant },
+            bson::doc! { "$inc": { "security_rev": 1_i64 } },
+        )
+        .await
+        .unwrap();
+    let revoke_frame = frame_of_type(&mut owner_socket, "rc:file.child.revoke").await;
+    assert_eq!(revoke_frame["session_id"], sid2.to_hex());
+
+    hub.terminate(sid2, EndReason::ControllerHangup).unwrap();
+    owner_socket.close(None).await.unwrap();
 }

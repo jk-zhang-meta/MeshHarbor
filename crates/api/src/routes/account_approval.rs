@@ -5,9 +5,9 @@ use axum::{
     extract::{Path, Query, State},
 };
 use bson::{Document, doc, oid::ObjectId};
-use roomler_ai_db::models::{AccountApprovalState, User};
-use roomler_ai_services::dao::base::PaginationParams;
-use roomler_core::{ApiError, Core, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, Core, extractors::auth::AuthUser};
+use meshharbor_db::models::{AccountApprovalState, User};
+use meshharbor_services::dao::base::PaginationParams;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -46,7 +46,7 @@ pub async fn status(
 }
 
 fn require_owner(core: &Core, auth: &AuthUser) -> Result<ObjectId, ApiError> {
-    let owner = roomler_core::admission::owner_id(&core.settings.auth.account_approval)?
+    let owner = meshharbor_core::admission::owner_id(&core.settings.auth.account_approval)?
         .ok_or_else(|| ApiError::NotFound("Account approval not enabled".into()))?;
     if owner != auth.user_id {
         return Err(ApiError::Forbidden(
@@ -69,7 +69,7 @@ pub async fn access(
     auth: AuthUser,
 ) -> Result<Json<ApprovalAccess>, ApiError> {
     let policy = &core.settings.auth.account_approval;
-    let owner = roomler_core::admission::owner_id(policy)?;
+    let owner = meshharbor_core::admission::owner_id(policy)?;
     Ok(Json(ApprovalAccess {
         enabled: policy.enabled,
         is_owner: owner == Some(auth.user_id),

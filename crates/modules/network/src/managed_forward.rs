@@ -40,10 +40,10 @@
 use std::net::IpAddr;
 
 use bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_remote_control::models::{NodeRef, RpcCap};
-use roomler_ai_remote_control::net_inventory::{FirewallOwner, L4, SectionState, truncate_str};
-pub use roomler_ai_remote_control::signaling::ForwardBackend;
-use roomler_ai_remote_control::signaling::{
+use meshharbor_remote_control::models::{NodeRef, RpcCap};
+use meshharbor_remote_control::net_inventory::{FirewallOwner, L4, SectionState, truncate_str};
+pub use meshharbor_remote_control::signaling::ForwardBackend;
+use meshharbor_remote_control::signaling::{
     ManagedForwardAssignment, ManagedForwardStatusWire, ServerMsg,
 };
 use serde::{Deserialize, Serialize};
@@ -367,7 +367,7 @@ pub async fn plan(
     if let Some(id) = ingress.filter(|_| ingress_agent.is_some()) {
         let bind: Option<IpAddr> = spec.bind_addr.trim().parse().ok();
         // The ports this node's managed forwards hold: once applied, their
-        // own listeners show in the inventory as roomlerd's, and are not
+        // own listeners show in the inventory as meshharbord's, and are not
         // foreign (another forward on the same port fails `managed overlap`).
         let managed_ports: Vec<(L4, u16)> = list(state, tenant_id)
             .await
@@ -380,7 +380,7 @@ pub async fn plan(
             Ok(Some(row)) if row.fresh(DateTime::now()) => {
                 let l = &row.inventory.listeners;
                 let clash = l.items.iter().find(|x| {
-                    let ours = matches!(x.process.as_deref(), Some("meshharbord" | "roomlerd"))
+                    let ours = matches!(x.process.as_deref(), Some("meshharbord"))
                         && managed_ports.contains(&(x.proto, x.port));
                     !ours
                         && x.proto == spec.proto
@@ -398,7 +398,7 @@ pub async fn plan(
                         format!("{who} already listens on {}:{}", x.addr, x.port),
                     );
                 } else if l.state
-                    != roomler_ai_remote_control::net_inventory::SectionState::Complete
+                    != meshharbor_remote_control::net_inventory::SectionState::Complete
                 {
                     check(
                         &mut checks,
@@ -575,12 +575,12 @@ pub async fn plan(
 /// Does one of `rules` (a source's grants into a node) cover `ip`, `port`
 /// and `proto`?
 pub fn rules_allow(
-    rules: &[roomler_ai_remote_control::models::OverlayRule],
+    rules: &[meshharbor_remote_control::models::OverlayRule],
     ip: IpAddr,
     port: u16,
     proto: L4,
 ) -> bool {
-    use roomler_ai_remote_control::models::ProtocolKind;
+    use meshharbor_remote_control::models::ProtocolKind;
     rules.iter().any(|r| {
         parse_cidr(&r.cidr).is_some_and(|n| in_net(ip, n))
             && (r.port_range.low..=r.port_range.high).contains(&port)
@@ -606,8 +606,8 @@ async fn overlay_path(
     spec: &ForwardSpec,
     topo: &business_isolation::Lines,
     checks: &mut Vec<Check>,
-) -> Option<roomler_ai_remote_control::models::OverlayNode> {
-    use roomler_ai_remote_control::models::{OverlayAclMode, OverlayNode};
+) -> Option<meshharbor_remote_control::models::OverlayNode> {
+    use meshharbor_remote_control::models::{OverlayAclMode, OverlayNode};
     let dest: IpAddr = spec.dest_addr.trim().parse().ok()?;
     let ingress = state
         .overlay_nodes
@@ -829,9 +829,9 @@ async fn overlay_path(
 async fn source_region(
     state: &NetworkState,
     tenant_id: ObjectId,
-    nodes: &[roomler_ai_remote_control::models::OverlayNode],
-    ingress: &roomler_ai_remote_control::models::OverlayNode,
-    dest_node: &roomler_ai_remote_control::models::OverlayNode,
+    nodes: &[meshharbor_remote_control::models::OverlayNode],
+    ingress: &meshharbor_remote_control::models::OverlayNode,
+    dest_node: &meshharbor_remote_control::models::OverlayNode,
     spec: &ForwardSpec,
     topo: &business_isolation::Lines,
     checks: &mut Vec<Check>,
@@ -900,14 +900,14 @@ async fn source_region(
     }
 }
 
-/// The table the agent's nft backend owns (roomlerd's
+/// The table the agent's nft backend owns (meshharbord's
 /// `managed_forward_nft::TABLE`; the inventory names it).
 pub const NFT_TABLE: &str = "meshharbor_fwd";
 
 /// Is `r`, from the ingress's inventory, `spec`'s DNAT rule in the owned
 /// table: its address and port, to its destination?
 pub fn is_nft_rule_of(
-    r: &roomler_ai_remote_control::net_inventory::FirewallRule,
+    r: &meshharbor_remote_control::net_inventory::FirewallRule,
     spec: &ForwardSpec,
 ) -> bool {
     let words: Vec<&str> = r.matches.split_whitespace().collect();
@@ -964,7 +964,7 @@ async fn native_checks(
     state: &NetworkState,
     tenant_id: ObjectId,
     id: ObjectId,
-    agent: &roomler_ai_remote_control::models::Agent,
+    agent: &meshharbor_remote_control::models::Agent,
     spec: &ForwardSpec,
     checks: &mut Vec<Check>,
 ) {
@@ -1240,7 +1240,7 @@ async fn push_to_checked(state: &NetworkState, tenant_id: ObjectId, agent_id: Ob
         .await
     {
         Ok(agent) => agent,
-        Err(roomler_ai_services::dao::base::DaoError::NotFound) => return true,
+        Err(meshharbor_services::dao::base::DaoError::NotFound) => return true,
         Err(_) => return false,
     };
     if !agent.capabilities.has_rpc(RpcCap::ManagedForward)
@@ -1438,7 +1438,7 @@ mod tests {
 
     #[test]
     fn an_nft_rule_is_recognised_by_address_port_and_destination() {
-        use roomler_ai_remote_control::net_inventory::{FirewallOwner, FirewallRule};
+        use meshharbor_remote_control::net_inventory::{FirewallOwner, FirewallRule};
         let mut s = spec();
         s.backend = ForwardBackend::Nft;
         let rule = |matches: &str, target: &str| FirewallRule {
@@ -1481,7 +1481,7 @@ mod tests {
 
     #[test]
     fn overlay_rules_match_address_port_and_protocol() {
-        use roomler_ai_remote_control::models::{OverlayRule, PortRange, ProtocolKind};
+        use meshharbor_remote_control::models::{OverlayRule, PortRange, ProtocolKind};
         let rule = |cidr: &str, low: u16, high: u16, proto: ProtocolKind| OverlayRule {
             cidr: cidr.into(),
             port_range: PortRange { low, high },

@@ -57,7 +57,7 @@ describe('useGridColumns', () => {
       'name',
       'kind',
     ])
-    expect(localStorage.getItem('roomler:grid-cols:u1:t1:devices')).toBeTruthy()
+    expect(localStorage.getItem('meshharbor:grid-cols:u1:t1:devices')).toBeTruthy()
     g.reset()
     expect(g.effectiveHeaders.value.map((h: any) => h.key)).toEqual([
       'actions',
@@ -65,13 +65,13 @@ describe('useGridColumns', () => {
       'kind',
       'os',
     ])
-    expect(localStorage.getItem('roomler:grid-cols:u1:t1:devices')).toBeNull()
+    expect(localStorage.getItem('meshharbor:grid-cols:u1:t1:devices')).toBeNull()
   })
 
   it('a column shipped AFTER the user customized splices in at its catalog position', () => {
     // User saved an order over the old 4-column catalog…
     localStorage.setItem(
-      'roomler:grid-cols:u1:t1:devices',
+      'meshharbor:grid-cols:u1:t1:devices',
       JSON.stringify({ order: ['os', 'actions', 'name', 'kind'], hidden: [] }),
     )
     // …then the app ships a 'tags' column between kind and os in the catalog.
@@ -91,7 +91,7 @@ describe('useGridColumns', () => {
   })
 
   it('survives corrupt storage', () => {
-    localStorage.setItem('roomler:grid-cols:u1:t1:devices', '{not json')
+    localStorage.setItem('meshharbor:grid-cols:u1:t1:devices', '{not json')
     const g = fresh()
     expect(g.effectiveHeaders.value).toHaveLength(4)
   })

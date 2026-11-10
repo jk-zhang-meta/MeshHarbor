@@ -38,7 +38,7 @@
 //! the security boundary.
 //!
 //! Borrowing `EXEC_DEVICE` for this would be defensible — an `EXEC_DEVICE`
-//! holder can already `roomler exec` its way to setting the device password as
+//! holder can already `mh exec` its way to setting the device password as
 //! root — but it would exclude the natural approver, a fleet admin who holds
 //! no root-command grant, in exchange for a hurdle the design does not lean
 //! on. A dedicated bit waits on the BigInt migration; FR-52 open decision 5.
@@ -56,8 +56,8 @@ use axum::{
     extract::{Path, Query, State},
 };
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::{
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::{
     connect_code,
     models::{
         Agent, AgentStatus, ExternalAccessPolicy, ExternalRcAuditAction, ExternalRcAuditEvent,
@@ -65,11 +65,11 @@ use roomler_ai_remote_control::{
     },
     permissions::Permissions,
 };
-use roomler_ai_services::dao::base::PaginationParams;
+use meshharbor_services::dao::base::PaginationParams;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use roomler_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
 
 use crate::FleetState;
 use crate::agent::fmt_dt;
@@ -295,7 +295,7 @@ pub struct ExternalRcAuditView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempt_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub login_refused: Option<roomler_ai_remote_control::models::ExtauthRefusal>,
+    pub login_refused: Option<meshharbor_remote_control::models::ExtauthRefusal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login_detail: Option<String>,
     /// FR-52 P4 — `session` rows: the session an admitted login opened.
@@ -407,11 +407,7 @@ pub async fn set_enabled(
     .await?;
     state
         .tenants
-        .base
-        .update_by_id(
-            tid,
-            bson::doc! { "$set": { "settings.external_rc_enabled": body.enabled } },
-        )
+        .set_external_rc_enabled(tid, body.enabled)
         .await?;
     // WARN rather than INFO: this is the switch that decides whether strangers
     // can reach this org's machines, and it should be visible in a log an

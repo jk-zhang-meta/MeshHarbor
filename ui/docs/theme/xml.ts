@@ -153,7 +153,7 @@ export function feedHtml(html: string, origin: string): string {
 
 export function robotsTxt(origin: string): string {
   return (
-    `# Roomler — ${origin}\n` +
+    `# MeshHarbor — ${origin}\n` +
     `User-agent: *\n` +
     `Allow: /\n` +
     `# The application itself is behind auth and client-rendered; there is\n` +

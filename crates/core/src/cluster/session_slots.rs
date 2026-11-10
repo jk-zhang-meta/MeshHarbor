@@ -6,9 +6,9 @@
 //! directory here, not a database: every record can be re-derived from the
 //! live hubs, a reader fails soft, and a TTL backs up every release.
 //!
-//! * One sorted set per payer, `roomler:rc:slots:{db}:{org|user}:{id}`:
+//! * One sorted set per payer, `meshharbor:rc:slots:{db}:{org|user}:{id}`:
 //!   member = session id, score = lease expiry (ms).
-//! * One hash per session, `roomler:rc:slot:{db}:{session}`: the holder (user
+//! * One hash per session, `meshharbor:rc:slot:{db}:{session}`: the holder (user
 //!   and device), which the refusal names.
 //!
 //! The hub that holds a session renews its lease every [`SLOT_RENEW_SECS`];
@@ -21,7 +21,7 @@
 //! The holder record names the claiming pod. A caller refused by a full set
 //! may drop a holder that ITS OWN pod claimed but no longer holds (a release
 //! that failed): that pod is the one that would know. It never judges another
-//! pod's holders (`roomler_ai_mod_remote::slots`).
+//! pod's holders (`meshharbor_mod_remote::slots`).
 //!
 //! The claim is ONE Lua script (drop expired, already mine → renew, under the
 //! cap → add, else full), so two starts in the same instant cannot both pass
@@ -134,13 +134,13 @@ impl SessionSlots {
     /// The payer's set.
     pub fn slots_key(&self, scope: SlotScope) -> String {
         match scope {
-            SlotScope::Org(id) => format!("roomler:rc:slots:{}:org:{}", self.db, id.to_hex()),
-            SlotScope::User(id) => format!("roomler:rc:slots:{}:user:{}", self.db, id.to_hex()),
+            SlotScope::Org(id) => format!("meshharbor:rc:slots:{}:org:{}", self.db, id.to_hex()),
+            SlotScope::User(id) => format!("meshharbor:rc:slots:{}:user:{}", self.db, id.to_hex()),
         }
     }
 
     fn holder_prefix(&self) -> String {
-        format!("roomler:rc:slot:{}:", self.db)
+        format!("meshharbor:rc:slot:{}:", self.db)
     }
 
     fn holder_key(&self, session: ObjectId) -> String {

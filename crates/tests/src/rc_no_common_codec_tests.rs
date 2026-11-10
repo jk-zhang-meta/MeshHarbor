@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //! #2251 — an offer the RTP video track cannot answer is refused by the REAL
-//! agent library (`roomlerd::signaling::run`) before it builds a peer, as
+//! agent library (`meshharbord::signaling::run`) before it builds a peer, as
 //! `error` naming `limit: "no_common_codec"`, which the hub names to the
 //! controller and in the `session_ended` audit row.
 //!

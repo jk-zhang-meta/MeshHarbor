@@ -36,9 +36,9 @@
 //! and the grant's end bounds the rest (the spec's §3e, "its life").
 
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_remote_control::vault::{LeaseRefusal, NetKind, canonical_net_host, lease_limits};
-use roomler_ai_services::auth::NetGrant;
-use roomler_ai_services::dao::base::DaoError;
+use meshharbor_remote_control::vault::{LeaseRefusal, NetKind, canonical_net_host, lease_limits};
+use meshharbor_services::auth::NetGrant;
+use meshharbor_services::dao::base::DaoError;
 use tracing::warn;
 
 use crate::VaultState;

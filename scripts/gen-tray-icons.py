@@ -1,158 +1,126 @@
 #!/usr/bin/env python3
-"""Generate the desktop companion's and the setup wizard's icons from the
-product's brand mark.
+"""Install X18 product icons and derive the desktop recording indicator.
 
-Why this exists: the icons shipped as 1x1 PLACEHOLDERS (67-byte PNGs). Windows
-tolerated them; macOS did not — `tao`'s tray setup panics before the app
-window ever appears:
+    python3 scripts/gen-tray-icons.py                   # desktop (default)
+    python3 scripts/gen-tray-icons.py --target setup    # setup wizard
+    python3 scripts/gen-tray-icons.py --output-dir /tmp/meshharbor-icons
 
-    invalid icon: The specified dimensions (1x1) don't match the number of
-    pixels supplied by the `rgba` argument (0)
+Product PNG/ICO and the transparent tray template are copied byte-for-byte
+from design/x18/assets after checking their manifest hashes. No brand mark is
+redrawn here. Desktop recording uses the approved colour mark with the existing
+white-ringed red dot; it remains a non-template image (tray.rs).
 
-and a panic in that callback "cannot unwind", so the process aborts. The
-companion could not start on macOS at all. The setup wizard carried the same
-1x1 placeholders for its whole life (its build.rs still writes them when the
-files are missing), so the one EXE a new user double-clicks had a blank icon
-in Explorer and the taskbar — FR-84 S2 gave it a real one.
-
-Generated rather than hand-drawn so regenerating is a command rather than an
-afternoon in a paint program. The mark is the web favicon as it was before the
-2026-10 logo (a #1565C0 rounded square with a white R): the native icon sets
-have not moved to the new logo, so `ui/public/favicon.svg` no longer matches.
-
-    python3 scripts/gen-tray-icons.py                   # the companion (default)
-    python3 scripts/gen-tray-icons.py --target setup    # the setup wizard
-
-Requires Pillow. `desktop` writes agents/roomler-desktop/icons/ (app icon,
-menu-bar template, the tray while a recording runs, .ico). `setup` writes
-agents/roomler-setup/icons/ — the same R on GREEN (#2E7D32), so a wizard and
-a companion side by side in a taskbar are told apart at a glance; app icon +
-.ico only, the wizard has no tray. CI asserts both sets are real (ci.yml
-"Assert the icons are real").
+Python's standard library suffices for setup. Desktop additionally needs the
+system libcairo used by the X18 renderer, solely for the offscreen red dot.
+--assets selects an alternative X18 asset directory; --output-dir allows an
+isolated regeneration without touching the installed source-tree icons.
 """
 
 import argparse
+import ctypes as c
+import ctypes.util
+import hashlib
+import json
+import math
 import pathlib
-import sys
-
-try:
-    from PIL import Image, ImageDraw, ImageFont
-except ImportError:  # pragma: no cover - developer tooling
-    sys.exit("this needs Pillow:  pip install pillow")
+import struct
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-BRAND = (21, 101, 192, 255)  # #1565C0, from the pre-2026-10 favicon.svg
-SETUP = (46, 125, 50, 255)  # #2E7D32 — the wizard's green (operator, 2026-09-25)
-WHITE = (255, 255, 255, 255)
-RED = (229, 57, 53, 255)  # #E53935 — the dot on the tray while recording (FR-85)
-
-# target → (output dir, background, whether a menu-bar/tray icon is written)
 TARGETS = {
-    "desktop": (ROOT / "agents/roomler-desktop/icons", BRAND, True),
-    "setup": (ROOT / "agents/roomler-setup/icons", SETUP, False),
+    "desktop": ROOT / "agents/meshharbor-desktop/icons",
+    "setup": ROOT / "agents/meshharbor-setup/icons",
 }
-
-# The classic Windows sizes, in one file. 256 is stored with a width byte of
-# 0 — what the CI guard looks for.
-ICO_SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (256, 256)]
-
-FONT_CANDIDATES = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-    "C:/Windows/Fonts/arialbd.ttf",
-]
-
-# 4x supersample, then LANCZOS down — the rounded corners and the R's bowl
-# both alias badly at 22px otherwise, which is exactly the size the menu bar
-# renders at.
-SS = 4
+PRODUCT = "linux/hicolor/512x512/apps/meshharbor-desktop.png"
+ICO = "windows/meshharbor.ico"
+TRAY = "template/tray/black-48.png"
+RECORDING = "linux/hicolor/48x48/apps/meshharbor-desktop.png"
 
 
-def _font(px: int):
-    for path in FONT_CANDIDATES:
-        if pathlib.Path(path).exists():
-            return ImageFont.truetype(path, px)
-    return None
+def approved(assets, manifest, name):
+    data = (assets / name).read_bytes()
+    if hashlib.sha256(data).hexdigest() != manifest["files"][name]:
+        raise ValueError("X18 manifest hash mismatch: " + name)
+    return data
 
 
-def _mark(size: int, fg, bg):
-    """The brand mark: rounded square `bg`, letter R in `fg`."""
-    n = size * SS
-    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    # The pre-2026-10 favicon.svg used rx=6 on a 32px box — keep that ratio.
-    d.rounded_rectangle([0, 0, n - 1, n - 1], radius=int(n * 6 / 32), fill=bg)
+def recording_mark(source, output):
+    """Use the approved colour pixels; paint only the FR-85 status overlay."""
+    library = ctypes.util.find_library("cairo")
+    if not library:
+        raise RuntimeError("desktop recording icon needs system libcairo (X18 renderer)")
+    cairo = c.CDLL(library)
+    signatures = {
+        "cairo_image_surface_create_from_png": ([c.c_char_p], c.c_void_p),
+        "cairo_surface_status": ([c.c_void_p], c.c_int),
+        "cairo_image_surface_get_width": ([c.c_void_p], c.c_int),
+        "cairo_image_surface_get_height": ([c.c_void_p], c.c_int),
+        "cairo_create": ([c.c_void_p], c.c_void_p),
+        "cairo_status": ([c.c_void_p], c.c_int),
+        "cairo_set_source_rgb": ([c.c_void_p, c.c_double, c.c_double, c.c_double], None),
+        "cairo_arc": ([c.c_void_p] + [c.c_double] * 5, None),
+        "cairo_fill": ([c.c_void_p], None),
+        "cairo_surface_write_to_png": ([c.c_void_p, c.c_char_p], c.c_int),
+        "cairo_destroy": ([c.c_void_p], None),
+        "cairo_surface_destroy": ([c.c_void_p], None),
+    }
+    for name, (arguments, result) in signatures.items():
+        function = getattr(cairo, name)
+        function.argtypes, function.restype = arguments, result
+    surface = cairo.cairo_image_surface_create_from_png(str(source).encode())
+    context = None
+    try:
+        if cairo.cairo_surface_status(surface):
+            raise RuntimeError("cannot decode approved recording PNG")
+        width = cairo.cairo_image_surface_get_width(surface)
+        height = cairo.cairo_image_surface_get_height(surface)
+        if (width, height) != (48, 48):
+            raise ValueError("recording source must be the approved 48px asset")
+        context = cairo.cairo_create(surface)
+        radius = width * .22
+        ring = max(1.0, width * .05)
+        center = width - radius - ring - 1
+        for size, color in [(radius + ring, (1.0, 1.0, 1.0)),
+                            (radius, (229 / 255, 57 / 255, 53 / 255))]:
+            cairo.cairo_set_source_rgb(context, *color)
+            cairo.cairo_arc(context, center, center, size, 0, 2 * math.pi)
+            cairo.cairo_fill(context)
+        if cairo.cairo_status(context) or cairo.cairo_surface_write_to_png(surface, str(output).encode()):
+            raise RuntimeError("cannot render recording icon")
+    finally:
+        if context:
+            cairo.cairo_destroy(context)
+        cairo.cairo_surface_destroy(surface)
 
-    font = _font(int(n * 0.66))
-    if font is None:
-        # No font anywhere: fall back to a ring so the icon is still a valid,
-        # recognisable shape rather than a blank square.
-        inset = int(n * 0.28)
-        d.ellipse([inset, inset, n - inset, n - inset], fill=(0, 0, 0, 0))
-    else:
-        # `anchor="mm"` centres on the glyph's own box, which is what makes the
-        # R sit optically centred rather than baseline-aligned.
-        d.text((n / 2, n / 2 - int(n * 0.04)), "R", font=font, fill=fg, anchor="mm")
-    return img.resize((size, size), Image.LANCZOS)
 
-
-def _recording_mark(size: int):
-    """FR-85 — the tray while a recording runs: the mark in full colour with
-    a red dot at the bottom right, ringed in white so it reads on the blue
-    mark and on a light or a dark menu bar or taskbar alike."""
-    img = _mark(size, WHITE, BRAND)
-    n = size * SS
-    dot = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    d = ImageDraw.Draw(dot)
-    r = int(n * 0.22)  # the red dot's radius
-    ring = max(SS, int(n * 0.05))  # the white ring around it
-    c = n - r - ring - 1  # touching the bottom-right corner
-    d.ellipse([c - r - ring, c - r - ring, c + r + ring, c + r + ring], fill=WHITE)
-    d.ellipse([c - r, c - r, c + r, c + r], fill=RED)
-    img.alpha_composite(dot.resize((size, size), Image.LANCZOS))
-    return img
-
-
-def main(argv=None) -> None:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument(
-        "--target",
-        choices=sorted(TARGETS),
-        default="desktop",
-        help="which icon set to write (default: desktop, the companion)",
-    )
-    args = ap.parse_args(argv)
-    out, bg, with_tray = TARGETS[args.target]
-    out.mkdir(parents=True, exist_ok=True)
-
-    # App icon — full colour.
-    _mark(512, WHITE, bg).save(out / "icon.png")
-    written = ["icon.png"]
-
-    if with_tray:
-        # Menu-bar icon. macOS TEMPLATE images use the alpha channel only and
-        # are tinted by the system, so this is black-on-transparent: one asset
-        # that is correct in both the light and the dark menu bar. 44px =
-        # 22pt @2x.
-        tray = _mark(44, (0, 0, 0, 0), (0, 0, 0, 255))
-        tray.save(out / "tray.png")
-        written.append("tray.png")
-
-        # FR-85 — the tray while a recording runs. NOT a template: the
-        # system tints a template to the menu bar, and this one has to stay
-        # red. roomler-desktop swaps it in (tray.rs) and back out after.
-        _recording_mark(44).save(out / "tray-recording.png")
-        written.append("tray-recording.png")
-
-    # Windows wants the classic sizes in one file.
-    _mark(256, WHITE, bg).save(out / "icon.ico", sizes=ICO_SIZES)
-    written.append("icon.ico")
-
-    print(f"{args.target} -> {out}")
-    for f in written:
-        p = out / f
-        with Image.open(p) as im:
-            print(f"  {f}: {im.size[0]}x{im.size[1]} {im.mode}, {p.stat().st_size} bytes")
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--target", choices=sorted(TARGETS), default="desktop")
+    parser.add_argument("--assets", type=pathlib.Path, default=ROOT / "design/x18/assets")
+    parser.add_argument("--output-dir", type=pathlib.Path)
+    args = parser.parse_args(argv)
+    assets = args.assets.resolve()
+    output = (args.output_dir or TARGETS[args.target]).resolve()
+    if output == assets or assets in output.parents:
+        parser.error("output must not overwrite approved X18 assets")
+    manifest = json.loads((assets / "manifest.json").read_text())
+    # Validate all required inputs before touching an existing product icon.
+    files = {"icon.png": approved(assets, manifest, PRODUCT),
+             "icon.ico": approved(assets, manifest, ICO)}
+    if args.target == "desktop":
+        files["tray.png"] = approved(assets, manifest, TRAY)
+        approved(assets, manifest, RECORDING)
+        if not ctypes.util.find_library("cairo"):
+            parser.error("desktop recording icon needs system libcairo (X18 renderer)")
+    output.mkdir(parents=True, exist_ok=True)
+    if args.target == "desktop":
+        recording_mark(assets / RECORDING, output / "tray-recording.png")
+    for name, data in files.items():
+        (output / name).write_bytes(data)
+    print(f"{args.target} -> {output}")
+    for name in [*files, *(["tray-recording.png"] if args.target == "desktop" else [])]:
+        data = (output / name).read_bytes()
+        dimensions = struct.unpack_from(">II", data, 16) if name.endswith(".png") else None
+        print(f"  {name}: {dimensions or 'ICO'} {len(data)} bytes sha256={hashlib.sha256(data).hexdigest()}")
 
 
 if __name__ == "__main__":

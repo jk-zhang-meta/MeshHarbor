@@ -263,7 +263,7 @@
         <span v-if="metrics.age && statsAgeLabel" class="stats-pill">{{ statsAgeLabel }}</span>
         <!-- P1 — per-hop pipeline diagnostics (paint / fwd / decode ms,
              output gap, queue, drops, main-thread long tasks). Opt-in via
-             localStorage roomler-rc-diag-hud=1; the numbers that decide
+             localStorage meshharbor-rc-diag-hud=1; the numbers that decide
              whether an fps ceiling is paint-, decode-, or main-thread-bound. -->
         <span v-if="showDiagHud && diagLabel" class="stats-pill">{{ diagLabel }}</span>
       </div>
@@ -341,7 +341,7 @@
       </v-btn>
       <!-- FR-111 P2 — on a touch screen: the finger is the pointer (direct),
            or the screen is a trackpad that moves the pointer. Hidden where
-           there is no touch, and under the `roomler-rc-touch=legacy` switch. -->
+           there is no touch, and under the `meshharbor-rc-touch=legacy` switch. -->
       <v-btn
         v-if="rc.phase.value === 'connected' && touchModeOffered"
         icon
@@ -894,7 +894,7 @@
       border
       class="ma-2 ma-md-3 remote-stage-card flex-grow-1 d-flex"
     >
-    <div class="remote-stage">
+    <div ref="stageHostEl" class="remote-stage">
       <!-- An overlay along the top of the stage. As flex siblings of the
            picture in a ROW flexbox these alerts were 32 px strips beside it at
            every width — text, icon and close invisible — and each one's
@@ -2306,6 +2306,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { takeExternalSession } from '@/composables/useExternalLogin'
 import { useAgentStore, type Agent } from '@/stores/agents'
 import { useAuthStore } from '@/stores/auth'
+import { useWsStore } from '@/stores/ws'
 import { peerAuthBadge } from '@/utils/peerAuth'
 import {
   useRemoteControl,
@@ -2316,6 +2317,7 @@ import {
   displayScale,
   persistMetricToggles,
   remoteCursorCssFor,
+  clampFitDimensions,
   type RcScaleMode,
   type RcResolutionSetting,
   type RcPriority,
@@ -2405,6 +2407,7 @@ const externalCode = typeof route.query.code === 'string' ? route.query.code : '
 
 const agentStore = useAgentStore()
 const authStore = useAuthStore()
+const wsStore = useWsStore()
 const agent = ref<Agent | null>(null)
 // The header's machine-name subtitle — the Devices grid's preference, per
 // user + org, so hiding it there hides it here too.
@@ -2645,6 +2648,7 @@ const videoEl = ref<HTMLVideoElement | null>(null)
 // `videoEl` (which is muted + may carry no track under the DC video
 // paths).
 const audioEl = ref<HTMLAudioElement | null>(null)
+const stageHostEl = ref<HTMLElement | null>(null)
 const stageEl = ref<HTMLElement | null>(null)
 const cursorCanvas = ref<HTMLCanvasElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -2779,9 +2783,9 @@ async function onFilePicked(ev: Event) {
 // FR-21 P4: this was a hardcoded
 // RETIRED-NAME-RECORD: quotes the defective literal this fix removed; the old
 // spelling is the evidence, not a stale reference. docs/fr/FR-21
-// `C:\ProgramData\roomler\roomler-agent\staging`, which was right only on
+// `C:\ProgramData\meshharbor\meshharbor-agent\staging`, which was right only on
 // hosts carrying the pre-rename tree — `machine_global_dir()` resolves the
-// `roomler` segment on a fresh install. Confirmed broken on a real
+// `meshharbor` segment on a fresh install. Confirmed broken on a real
 // SYSTEM-mode Windows host, where that parent directory does not exist.
 //
 // Sending a token instead of a path also retires the Vue-template /
@@ -3346,7 +3350,7 @@ function toggleAudio() {
 // toggle's next-Connect semantics: the probe + ICE injection happen in
 // connect(), so a mid-session flip would look like it did nothing —
 // disable while live. Reads the composable's persisted opt-in
-// (localStorage `roomler-rc-local-relay`).
+// (localStorage `meshharbor-rc-local-relay`).
 const localRelayOn = computed<boolean>(() => rc.localRelayEnabled.value)
 const localRelayTooltip = computed<string>(() => {
   if (sessionLive.value) {
@@ -3420,7 +3424,7 @@ const relativeMouseOffered = computed<boolean>(() => {
 watch(relativeMouseOffered, (offered) => rc.setRelativeMouseAllowed(offered), { immediate: true })
 // FR-111 — every touch on the picture belongs to the viewer. Without
 // `touch-action: none` a touch browser takes a drag over as a pan, and the
-// press already on the host is never let go. `roomler-rc-touch=legacy` gives
+// press already on the host is never let go. `meshharbor-rc-touch=legacy` gives
 // the stage back to the browser; read once, like the other kill switches.
 const stageTouchActionCss = (() => {
   let storage: Storage | null = null
@@ -3812,11 +3816,11 @@ function bindVp9_444Canvas(el: Element | unknown) {
 // canvas mount.
 const isHevcRender = computed<boolean>(() => rc.hevcActive.value)
 
-// P1 — per-hop diagnostics pill (opt-in localStorage roomler-rc-diag-hud=1).
+// P1 — per-hop diagnostics pill (opt-in localStorage meshharbor-rc-diag-hud=1).
 // Read once at mount: flipping the flag is a reload-scoped A/B, matching the
-// other roomler-rc-* diagnosis knobs.
+// other meshharbor-rc-* diagnosis knobs.
 // FR-26 - per-pill visibility, persisted per user. `paint` inherits the
-// legacy roomler-rc-diag-hud flag on first read (see storedMetricToggles).
+// legacy meshharbor-rc-diag-hud flag on first read (see storedMetricToggles).
 const settingsTab = ref<'video' | 'display' | 'metrics' | 'session'>('video')
 const metrics = ref(storedMetricToggles())
 watch(metrics, (m) => persistMetricToggles(m), { deep: true })
@@ -3968,7 +3972,7 @@ const resolutionPresetValue = computed<string>({
     if (v === 'original') {
       rc.setResolution({ mode: 'original' })
     } else if (v === 'fit') {
-      applyFitResolution()
+      applyFitResolution(true)
     } else if (v === 'custom-edit') {
       // Seed the dialog from the current values (or the stage's
       // dimensions if we have none yet) so the user isn't starting
@@ -4090,21 +4094,30 @@ function confirmCustomResolution() {
 
 /** Apply Fit mode using the current stage dimensions × devicePixelRatio
  *  — captures "what fits in my browser right now at its native pixel
- *  density". Also re-emitted on stage resize via `ResizeObserver`
- *  below, debounced 250 ms so drag-resize doesn't churn the encoder. */
-function applyFitResolution() {
-  const el = stageEl.value
+ *  density", capped at the host's reported native resolution (`rc:video-info`
+ *  `native_w`/`native_h`) when known so Fit never asks to upscale.
+ *  When `persist` is false (automatic stage/resize measurement), updates
+ *  live Fit dimensions without writing a manual pick to localStorage. */
+function applyFitResolution(persist = false) {
+  const el = stageEl.value ?? stageHostEl.value
   if (!el) return
   const rect = el.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0) return
   const dpr = window.devicePixelRatio || 1
-  // Floor to even numbers — MF HEVC encoder requires even dims and
-  // fail-closes to NoopEncoder otherwise (permanent black screen
-  // until reconnect). The agent also rounds defensively, but
-  // emitting clean numbers here avoids the log churn. Clamp mins
-  // to 160×90 so weird <= 1 layouts don't flood with tiny requests.
-  const w = Math.max(160, Math.round(rect.width * dpr) & ~1)
-  const h = Math.max(90, Math.round(rect.height * dpr) & ~1)
-  rc.setResolution({ mode: 'fit', width: w, height: h })
+  const vi = rc.videoInfo.value
+  const nw = (vi?.native_w ?? 0) > 0 ? vi!.native_w : null
+  const nh = (vi?.native_h ?? 0) > 0 ? vi!.native_h : null
+  const { width: w, height: h } = clampFitDimensions(
+    rect.width * dpr,
+    rect.height * dpr,
+    nw,
+    nh,
+  )
+  if (persist) {
+    rc.setResolution({ mode: 'fit', width: w, height: h })
+  } else {
+    rc.setFitDimensions(rect.width * dpr, rect.height * dpr, nw, nh)
+  }
 }
 
 // rc.191 — "Match remote display" toggle. When ON, the agent switches the
@@ -4113,7 +4126,7 @@ function applyFitResolution() {
 // pixel chain 1:1 so remote text is rendered AT the viewed size instead of
 // downscaled into mush. Opt-in (changing a host's display mode is
 // invasive), persisted per-agent, Windows hosts only (v1).
-const DISPLAY_MATCH_STORAGE_PREFIX = 'roomler-rc-display-match.v2:'
+const DISPLAY_MATCH_STORAGE_PREFIX = 'meshharbor-rc-display-match.v2:'
 const displayMatchOn = ref(false)
 // FR-97 P3e-2 — the device's own word, not its OS: a host whose display
 // cannot be switched says so (`AgentCaps.unavailable['display-match']`), with
@@ -4663,7 +4676,13 @@ function onStagePointerMove(ev: PointerEvent) {
   cursorY.value = ev.clientY - rect.top + host.scrollTop
 }
 
-const canConnect = computed(() => !!agent.value)
+const agentNotFound = ref(false)
+watch(agentId, () => {
+  agentNotFound.value = false
+})
+const canConnect = computed(
+  () => !!agent.value || (!isExternal && !!agentId.value && !agentNotFound.value),
+)
 const statusColor = computed(() => (agent.value?.is_online ? 'success' : 'grey'))
 const phaseColor = computed(() => {
   switch (rc.phase.value) {
@@ -4867,8 +4886,12 @@ async function loadAgent() {
   }
   try {
     agent.value = await resolveAgent()
+    agentNotFound.value = false
   } catch (e) {
-    if (saysNoSuchDevice(e)) agent.value = null
+    if (saysNoSuchDevice(e)) {
+      agent.value = null
+      agentNotFound.value = true
+    }
     /* else transient — keep the previous snapshot (null on a first load) */
   }
 }
@@ -4890,8 +4913,12 @@ async function refreshAgentStatus() {
     // instead and only replace the snapshot with an answer.
     await agentStore.fetchAgents(tenantId.value)
     agent.value = await resolveAgent()
+    agentNotFound.value = false
   } catch (e) {
-    if (saysNoSuchDevice(e)) agent.value = null
+    if (saysNoSuchDevice(e)) {
+      agent.value = null
+      agentNotFound.value = true
+    }
     /* else transient — keep the previous snapshot */
   }
 }
@@ -4956,6 +4983,7 @@ function dismissRating() {
 }
 
 function startSession() {
+  applyFitResolution(false)
   // FR-52 P4e — an external session starts from the login `/connect` handed
   // over, once. With none (a reload, or Connect after the session ended) the
   // only way in is the password again.
@@ -4968,7 +4996,8 @@ function startSession() {
     void rc.connectExternal(auth)
     return
   }
-  if (!agent.value) return
+  const targetAgentId = agent.value?.id || (!isExternal ? agentId.value : '')
+  if (!targetAgentId) return
   // Surface Chrome's clipboard-read permission prompt UNDER the
   // Connect click gesture (auto-sync's later background reads can't
   // prompt as nicely). Fire-and-forget throwaway read — the result
@@ -4979,7 +5008,7 @@ function startSession() {
   }
   // PR-1: thread the agent's org so the pre-flight keys the signalling
   // socket to the right pod even when this view is hosted cross-org.
-  rc.connect(agent.value.id, undefined, false, tenantId.value)
+  rc.connect(targetAgentId, undefined, false, tenantId.value)
 }
 
 // FR-100 P2a — the toolbar's word on the device's identity key, and the one
@@ -5175,6 +5204,13 @@ watch(
 )
 
 onMounted(() => {
+  applyFitResolution(false)
+  if (!isExternal && tenantId.value) {
+    wsStore.setTenantAffinity(tenantId.value)
+    if (wsStore.status === 'disconnected') {
+      wsStore.connect()
+    }
+  }
   void loadAgent()
   void agentStore.fetchKeepBusyDefaultPattern(tenantId.value).then((p) => {
     orgKeepBusyDefault.value = p

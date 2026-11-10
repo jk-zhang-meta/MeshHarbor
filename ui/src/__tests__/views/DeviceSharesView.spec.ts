@@ -16,36 +16,107 @@ vi.mock('@/stores/auth', async () => {
 })
 const auth = useAuthStore() as unknown as { user: { id: string } | null }
 const vuetify = createVuetify({ components, directives })
-const grant = '111111111111111111111111', device = '222222222222222222222222', recipient = '555555555555555555555555'
+const grant = '111111111111111111111111', device = '222222222222222222222222', recipient = 'share_recipient'
+const ownedPage = { items: [{ id: device, name: 'Fixture box', status: 'online' }], page: 1, total: 1 }
 const no = { ssh: false, desktop_view: false, desktop_control: false, files_read: false, files_write: false }
 const shared = () => ({ id: grant, device_id: device, owner_user_id: '333333333333333333333333', recipient_user_id: auth.user!.id, permissions: { ...no, ssh: true }, tcp_ports: [], expires_at_ms: Date.now() + 60_000, revoked_at_ms: null, revision: 0 })
+const deviceAccounts = { accounts: [{ name: 'alice', uid: 1000, admin: false }, { name: 'ops', uid: 1001, admin: true }] }
 const metadata = { id: device, name: 'Fixture shared SSH device', host_pubkey: 'ssh-ed25519 AAAAFIXTUREPUBLICKEY' }
 let wrapper: VueWrapper | undefined
-async function open() {
+async function open(at = '/') {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: DeviceSharesView }, { path: '/device-shares/:shareId/remote', name: 'shared-remote', component: { template: '<div />' } }] })
-  await router.push('/'); await router.isReady()
+  await router.push(at); await router.isReady()
   wrapper = mount(DeviceSharesView, { global: { plugins: [vuetify, router], stubs: { VDialog: { props: ['modelValue'], template: '<div v-if="modelValue"><slot /></div>' } } } })
   await flushPromises(); return wrapper
 }
 async function form() {
   const w = wrapper!
   await w.get('.v-expansion-panel-title').trigger('click'); await flushPromises()
-  await w.findAllComponents({ name: 'VTextField' }).find(c => c.props('label') === 'Device ID (one device you own)')!.get('input').setValue(device)
-  await w.findAllComponents({ name: 'VTextField' }).find(c => c.props('label') === 'Approved recipient user ID')!.get('input').setValue(recipient)
+  await w.findAllComponents({ name: 'VSelect' }).find(c => c.props('label') === 'Device (one you own)')!.setValue(device)
+  await w.findAllComponents({ name: 'VTextField' }).find(c => c.props('label') === 'Recipient username or email')!.get('input').setValue(recipient)
 }
+async function account(name: string) { await wrapper!.get('[data-testid="share-ssh-account"] input').setValue(name) }
 async function checkbox(id: string, value: boolean) { const labels: Record<string, string> = { 'share-desktop-permission': 'View desktop', 'share-ssh-permission': 'SSH shell / exec (native client)', 'share-files-permission': 'Bidirectional file transfer (read AND write)' }; const control = wrapper!.findAllComponents({ name: 'VCheckbox' }).find(c => c.props('label') === labels[id]); expect(control, `explicit checkbox ${labels[id]}`).toBeDefined(); await control!.get('input').setValue(value) }
 beforeEach(() => {
   vi.clearAllMocks(); auth.user = { id: '444444444444444444444444' }
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
-  vi.mocked(api.get).mockImplementation(async path => String(path).endsWith('/ssh') ? metadata : { items: [shared()], total: 1 })
+  vi.mocked(api.get).mockImplementation(async path => String(path).endsWith('/ssh') ? metadata : String(path).endsWith('/local-accounts') ? deviceAccounts : String(path).startsWith('/account/devices') ? ownedPage : { items: [shared()], total: 1 })
   vi.mocked(api.post).mockResolvedValue({})
 })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; vi.unstubAllGlobals() })
 describe('single-device SSH share authorization and truthful native instructions', () => {
   it('creates an SSH-only grant without silently enabling desktop, files or TCP ports', async () => {
-    await open(); await form(); await checkbox('share-desktop-permission', false); await checkbox('share-ssh-permission', true)
+    await open(); await form(); await checkbox('share-desktop-permission', false); await checkbox('share-ssh-permission', true); await account(' alice ')
     await wrapper!.get('form').trigger('submit'); await flushPromises()
-    expect(api.post).toHaveBeenCalledWith('/device-shares', { device_id: device, recipient_user_id: recipient, permissions: { ...no, ssh: true }, tcp_ports: [], expires_in_secs: 86400 })
+    expect(api.post).toHaveBeenCalledWith('/device-shares', { device_id: device, recipient, permissions: { ...no, ssh: true }, tcp_ports: [], expires_in_secs: 86400, ssh_account: 'alice' })
+  })
+  it('asks for the device account only with SSH, and refuses a missing or malformed one without calling the server', async () => {
+    await open(); await form()
+    expect(wrapper!.find('[data-testid="share-ssh-account"]').exists()).toBe(false)
+    await checkbox('share-ssh-permission', true)
+    for (const bad of ['', 'Alice', '../etc', 'a b']) {
+      await account(bad); await wrapper!.get('form').trigger('submit'); await flushPromises()
+      expect(api.post).not.toHaveBeenCalled()
+      expect(wrapper!.text()).toContain('Enter the device account for SSH')
+    }
+    await account('root'); await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(api.post).not.toHaveBeenCalled(); expect(wrapper!.text()).toContain('root cannot be shared directly')
+  })
+  it('asks the device for its accounts and lets one be picked instead of typed', async () => {
+    await open(); await form(); await checkbox('share-desktop-permission', false); await checkbox('share-ssh-permission', true); await flushPromises()
+    expect(api.get).toHaveBeenCalledWith(`/account/devices/${device}/local-accounts`)
+    expect(wrapper!.get('[data-testid="share-ssh-account-ops"]').text()).toContain('administrator')
+    await wrapper!.get('[data-testid="share-ssh-account-alice"]').trigger('click')
+    await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(api.post).toHaveBeenCalledWith('/device-shares', expect.objectContaining({ ssh_account: 'alice' }))
+  })
+  it('has the device create an administrator account and shares SSH as it', async () => {
+    vi.mocked(api.post).mockImplementation(async path => String(path).endsWith('/local-accounts') ? { accounts: [...deviceAccounts.accounts, { name: 'share1', uid: 1002, admin: true }] } : {})
+    await open(); await form(); await checkbox('share-desktop-permission', false); await checkbox('share-ssh-permission', true); await flushPromises()
+    await wrapper!.get('[data-testid="share-new-account"] input').setValue('root')
+    await wrapper!.get('[data-testid="share-new-account-create"]').trigger('click'); await flushPromises()
+    expect(api.post).not.toHaveBeenCalled()
+    await wrapper!.get('[data-testid="share-new-account"] input').setValue('share1')
+    await wrapper!.get('[data-testid="share-new-account-admin"] input').setValue(true)
+    await wrapper!.get('[data-testid="share-new-account-create"]').trigger('click'); await flushPromises()
+    expect(api.post).toHaveBeenCalledWith(`/account/devices/${device}/local-accounts`, { name: 'share1', admin: true })
+    expect(wrapper!.get('[data-testid="share-ssh-account-created"]').text()).toContain('share1')
+    await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(api.post).toHaveBeenLastCalledWith('/device-shares', expect.objectContaining({ ssh_account: 'share1', permissions: { ...no, ssh: true } }))
+  })
+  it('still allows typing an account when the device cannot list them', async () => {
+    vi.mocked(api.get).mockImplementation(async path => { if (String(path).endsWith('/local-accounts')) throw new Error('The device is not connected to this server'); return String(path).startsWith('/account/devices') ? ownedPage : { items: [shared()], total: 1 } })
+    await open(); await form(); await checkbox('share-ssh-permission', true); await flushPromises()
+    expect(wrapper!.get('[data-testid="share-ssh-accounts-error"]').text()).toContain('not connected')
+    await account('alice'); await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(api.post).toHaveBeenCalledWith('/device-shares', expect.objectContaining({ ssh_account: 'alice' }))
+  })
+  it('sends no device account on a share without SSH', async () => {
+    await open(); await form(); await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(vi.mocked(api.post).mock.calls[0]![1]).not.toHaveProperty('ssh_account')
+  })
+  it('offers the devices this account owns and names the recipient, never asking for raw ids', async () => {
+    await open(); await wrapper!.get('.v-expansion-panel-title').trigger('click'); await flushPromises()
+    expect(api.get).toHaveBeenCalledWith('/account/devices?page=1&per_page=25')
+    const select = wrapper!.findAllComponents({ name: 'VSelect' }).find(c => c.props('label') === 'Device (one you own)')!
+    expect(select.props('items')).toEqual([{ title: 'Fixture box (online)', value: device }])
+    expect(wrapper!.findAllComponents({ name: 'VTextField' }).some(c => /user ID/i.test(String(c.props('label'))))).toBe(false)
+  })
+  it('refuses a blank recipient without calling the server', async () => {
+    await open(); await form()
+    await wrapper!.findAllComponents({ name: 'VTextField' }).find(c => c.props('label') === 'Recipient username or email')!.get('input').setValue('   ')
+    await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(api.post).not.toHaveBeenCalled(); expect(wrapper!.text()).toContain('name the recipient')
+  })
+  it('opens the form with the device a "Share" link carried', async () => {
+    await open(`/?direction=sent&share_device=${device}`)
+    const select = wrapper!.findAllComponents({ name: 'VSelect' }).find(c => c.props('label') === 'Device (one you own)')!
+    expect(select.props('modelValue')).toBe(device)
+  })
+  it('lists device and account names, keeping the device id visible beside the name', async () => {
+    vi.mocked(api.get).mockImplementation(async path => String(path).startsWith('/account/devices') ? ownedPage : { items: [{ ...shared(), device_name: 'Office box', owner_username: 'alice', recipient_username: 'bob' }], total: 1 })
+    await open()
+    expect(wrapper!.text()).toContain('Office box'); expect(wrapper!.text()).toContain('alice → bob'); expect(wrapper!.text()).toContain(device)
   })
   it('still refuses an entirely empty service selection', async () => {
     await open(); await form(); await checkbox('share-desktop-permission', false)
@@ -53,7 +124,7 @@ describe('single-device SSH share authorization and truthful native instructions
     expect(api.post).not.toHaveBeenCalled(); expect(wrapper!.text()).toContain('a supported capability')
   })
   it('preserves explicit desktop and bidirectional file permissions when SSH is also selected', async () => {
-    await open(); await form(); await checkbox('share-ssh-permission', true); await checkbox('share-files-permission', true)
+    await open(); await form(); await checkbox('share-ssh-permission', true); await account('alice'); await checkbox('share-files-permission', true)
     await wrapper!.get('form').trigger('submit'); await flushPromises()
     expect(api.post).toHaveBeenCalledWith('/device-shares', expect.objectContaining({ permissions: { ...no, ssh: true, desktop_view: true, files_read: true, files_write: true }, tcp_ports: [] }))
   })
@@ -71,7 +142,9 @@ describe('single-device SSH share authorization and truthful native instructions
     const a = { ...shared(), expires_at_ms: Date.now() - 1 }, b = { ...shared(), id: '666666666666666666666666', revoked_at_ms: 1 }, c = { ...shared(), id: '777777777777777777777777', permissions: { ...no, desktop_view: true } }
     vi.mocked(api.get).mockResolvedValue({ items: [a, b, c], total: 3 }); await open()
     const buttons = wrapper!.findAll('[data-testid="shared-ssh-open"]'); expect(buttons).toHaveLength(2); expect(buttons.every(b => b.attributes('disabled') !== undefined)).toBe(true)
-    expect(api.get).toHaveBeenCalledTimes(1)
+    // No SSH metadata is fetched for a grant that cannot use it (the list and the owned-device
+    // directory are the only reads).
+    expect(vi.mocked(api.get).mock.calls.filter(([p]) => String(p).endsWith('/ssh'))).toHaveLength(0)
   })
   it('shows current server denial and exposes no launch details after revocation', async () => {
     vi.mocked(api.get).mockImplementation(async path => { if (String(path).endsWith('/ssh')) throw new Error('Share no longer permits SSH'); return { items: [shared()], total: 1 } })

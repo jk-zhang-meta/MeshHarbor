@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use bson::oid::ObjectId;
-use roomler_ai_db::models::tenant::{Plan, TenantSettings};
+use meshharbor_db::models::tenant::{Plan, TenantSettings};
 use serde::{Deserialize, Serialize};
 
 /// The tenant a capability question is asked for.

@@ -1,6 +1,6 @@
 # FR-74 — Text clarity on direct paths: the bitrate ceiling follows the content, not a constant
 
-**Issue:** [#1442](https://github.com/gjovanov/roomler-ai/issues/1442) · **Status:** P0 done 2026-09-06;
+**Issue:** [#1442](https://github.com/jk-zhang-meta/MeshHarbor/issues/1442) · **Status:** P0 done 2026-09-06;
 P1 (0.4.77) + P1b (0.4.79) + P3 (0.4.80) released and **field-verified 2026-09-07 on all four
 codecs** by the operator's read and the heartbeat; P2 retired by measurement (0 rate swaps);
 AC3 ticked; the thin-direct-path read of the q-cap done 2026-09-07 (sharp but laggy below the
@@ -87,8 +87,8 @@ reproducing the FAIL on the current settings, then one change at a time:
 | cell | knob | from → to | what it isolates |
 |---|---|---|---|
 | A | `direct_queue_ms` (config) | 150 → 600 | the gate/AIMD reaction to a burst the wire drains |
-| B | `ROOMLERD_FFMPEG_MAXRATE_KBPS` (env) | 9677 → 24000 | the ceiling (the VP9 pump's bpp at this geometry) |
-| C | `ROOMLERD_FFMPEG_CQ` (env) | 22 → 16 | the still-text quality floor |
+| B | `MESHHARBORD_FFMPEG_MAXRATE_KBPS` (env) | 9677 → 24000 | the ceiling (the VP9 pump's bpp at this geometry) |
+| C | `MESHHARBORD_FFMPEG_CQ` (env) | 22 → 16 | the still-text quality floor |
 
 Read from the heartbeat: `target_bps` trajectory through a scroll, `frames_skipped`,
 `swaps`, keyframes; from the operator: readable while moving, settle time, still
@@ -128,8 +128,8 @@ sharpness. A cell that helps names the phase; a cell that does not retires a gue
   each real full-screen text delta got a 30-fps slot's bits — `avg_qp` 108 → 184
   of 255 in the scroll, 5 at rest. That is P3's item, with its own mechanism.
 - Left live on CORPLAP-3 until P1 ships: `direct_queue_ms = 600` (config) and
-  the machine environment `ROOMLERD_FFMPEG_MAXRATE_KBPS=40000`. Revert:
-  `roomler config clear direct_queue_ms`, remove the variable, restart.
+  the machine environment `MESHHARBORD_FFMPEG_MAXRATE_KBPS=40000`. Revert:
+  `mh config clear direct_queue_ms`, remove the variable, restart.
 
 ### P1 — a content-following ceiling on direct paths
 
@@ -243,7 +243,7 @@ encoder was not out of bits, it was choosing not to spend them.
 a 90-frame steady scroll at 24 px/frame, a stop, and a **wheel pattern** (a 54 px
 notch, then four repeat frames at the keepalive cadence, ×12). Per-frame q and
 bytes, per arm. (WSL: build the harness with
-`cargo rustc -p roomlerd --lib --profile test --features ffmpeg-encoder,vp9-444 -- -A warnings`
+`cargo rustc -p meshharbord --lib --profile test --features ffmpeg-encoder,vp9-444 -- -A warnings`
 and run the deps binary — a plain `cargo test` under `vp9-444` alone crashes
 rustc's diagnostic renderer on a governor dead-code warning, not on the test.)
 
@@ -270,7 +270,7 @@ decision at all.
 
 **Built.** `Vp9Encoder::set_max_quantizer` (a runtime `vpx_codec_enc_config_set`,
 no IDR) and `vp9_direct_max_q_from_env` (default **16** = q-index 64, env
-`ROOMLERD_VP9_DIRECT_MAX_Q`, clamp 0–63, **63 = the pre-P3 behaviour** — the way
+`MESHHARBORD_VP9_DIRECT_MAX_Q`, clamp 0–63, **63 = the pre-P3 behaviour** — the way
 back). The pump applies the cap on a DIRECT transport at encoder open and
 re-applies it on every transport flip (uncapped again on a relay, where the rate
 cap is what matters). Nothing else changes: CBR, the target, the AIMD, the idle
@@ -287,7 +287,7 @@ with the bitrate inside the target (the pre-P3 shape was max 255 at 8–13 Mbps 
 **Thin direct path — measured (2026-09-07 20:08 UTC, field log).** The P1b/P3
 expectation ("on a thinner direct path the DC buffered-bytes gate sheds frames
 rather than sharpness") is refuted for a pipe throttled below the socket: with
-`roomlerd.exe` egress capped at 15 Mbps by a Windows QoS policy (two viewers,
+`meshharbord.exe` egress capped at 15 Mbps by a Windows QoS policy (two viewers,
 ~7.5 Mbps each) the cap held q at ≤ 64 and the encoder kept emitting 10–19 Mbps
 — the cap's floor for a full-screen 4:4:4 text scroll — while the AIMD cut the
 target to 4.6–5.1 Mbps to no effect, the gate shed nothing (the queue lived in
@@ -337,7 +337,7 @@ now nothing on screen said whether the frame that came back actually matched the
 | P1 | direct ceiling 0.25 bpp / [3, 48] M; direct queue budget denominated in the ceiling | — (no switch: `FFMPEG_MAXRATE_KBPS` and `direct_queue_ms` are the way back) | **built 2026-09-06** (§"P1 — as built"); field gate on the release carrying it |
 | P1b | the direct gate is the measured send wait's call below the encoder's HRD reservoir (EMA of completed waits ∨ live head-of-queue age); bytes alone gate only at the reservoir | — (no switch; `direct_queue_ms` keeps its meaning as the lag bound, `0` disables) | **field-verified 2026-09-07 on 0.4.79** — operator: "not seeing the blurring anymore" on AV1, VP9 4:2:0 and H.264; heartbeats of those sessions: 0 cuts, 0 gate skips, 0 gate lines. VP9 4:4:4 (the libvpx pump) still blurs ⇒ P3 |
 | P2 | ladder hysteresis on QSV | — (pure policy, measured by `swaps`) | **retired by measurement 2026-09-07** — after P1 the rate ladder no longer fires on direct paths: 0 rate swaps in all 17 sessions on the three hosts today (QSV direct on CORPLAP-1/-3, nvenc relay on CORPLAP-2; the 2026-09-06 baseline had 37 in 11 min). Reopen only if a relay-path QSV session shows swaps |
-| P3 | the libvpx pump: `rc_max_quantizer` 16 on DIRECT transports (63 on relay) — libvpx's scene-change reset to the worst quality on every wheel notch was the 4:4:4 blur, measured offline in four rounds (§P3) | `ROOMLERD_VP9_DIRECT_MAX_Q` (63 = pre-P3) | **built 2026-09-07, released in 0.4.80** — offline: every notch frame at q 64 instead of 255, refine to lossless kept; field gate: **instrument PASS 13:25 UTC** (`max_qp` 64 in every scroll window, was 255; settles to q 0; 0 skips) and **operator PASS** ("scrolling large texts seems much better") ⇒ **field-verified 2026-09-07**; thin direct path measured 20:08 UTC — sharp but laggy below the cap's ~10 Mbps floor (§P3), an open decision |
+| P3 | the libvpx pump: `rc_max_quantizer` 16 on DIRECT transports (63 on relay) — libvpx's scene-change reset to the worst quality on every wheel notch was the 4:4:4 blur, measured offline in four rounds (§P3) | `MESHHARBORD_VP9_DIRECT_MAX_Q` (63 = pre-P3) | **built 2026-09-07, released in 0.4.80** — offline: every notch frame at q 64 instead of 255, refine to lossless kept; field gate: **instrument PASS 13:25 UTC** (`max_qp` 64 in every scroll window, was 255; settles to q 0; 0 skips) and **operator PASS** ("scrolling large texts seems much better") ⇒ **field-verified 2026-09-07**; thin direct path measured 20:08 UTC — sharp but laggy below the cap's ~10 Mbps floor (§P3), an open decision |
 | P4 | viewer display-scale pill + 1:1 guidance: screen pixels per remote pixel, `1:1 pixels` or `shown at 1.05×`, the way to 1:1 in the tooltip and the Display tab (§P4) | — (UI; the pill has its own metrics checkbox) | **built 2026-09-08 (#1497), field-verified the same morning** on `hosted-20260908-a6257b8`: `shown at 1.05×` in Adaptive = the FSR canvas exactly (2018 ÷ 1920), `1:1 pixels` at Custom zoom 100/dpr % with FSR disengaging on its own; docs `docs/remote-control.md` §18.6.1 |
 | P5 | **the direct ceiling FOLLOWS the measured path** — `clamp(believed × HEADROOM, legibility_floor, bpp_bound)`; the bpp product stops being the operating point and becomes a cap (§"P5 — the ceiling follows the path") | — (the belief itself is the way back: with no belief the bound still applies, which is today's behaviour byte for byte) | **decided 2026-09-10, not built.** Gated on FR-79 V3b's belief reading sane in the field first — the shadow ships before the law. **Gate read 2026-09-25** (§"The gate, read 2026-09-25"; 104,698 heartbeats, 37 sessions, four hosts, 0.4.99–0.4.102): the relay half holds; V3b-2 confirmed (19 of 19 push-back-free direct sessions kept their floor); the direct half is content-bound before the first burst by construction; and the refined law's floor guard **erodes** — V3b-2 halves the floor on every push-back regardless of spacing (28.84 → 7.76 M on three, 38.90 → 8.57 M on five) ⇒ **stays unbuilt** until the guard is decided (an undamped demonstrated max beside the damped floor, or time-aware damping — FR-79's `Pipe`), `HEADROOM` and the decay rate are fixed, and a sim replay of the Regal 09-25 arc is read |
 | P6 | **docs, in the house style** (the docs-before-close rule, #1401): a design section in `docs/rate-control.md` for P1's direct ceiling and P1b's measured-send-wait gate — today only three changelog rows there, and no mermaid diagram of how the ceiling and the gate compose — joined by P5's path-following ceiling when it is built; linked from `docs/README.md`. P3 (`docs/encoders.md`) and P4 (`docs/remote-control.md` §18.6.1) are documented already | — (docs) | **written 2026-09-25** in the PR carrying this row: `docs/rate-control.md` §"The direct path (FR-74)" — the ceiling chain (P1), the measured-wait gate (P1b), one mermaid of how they compose, the field reads, and P5's status with the gate read; two config rows; the `docs/README.md` row. AC5 ticks on merge |
@@ -554,8 +554,8 @@ silent on the hosts that needed it, and the fleet had to tell us.
 
 ### The gate, read 2026-09-25 — P5 stays unbuilt
 
-**Method.** The hosts' own daemon log files (`service-logs\roomlerd.log.<date>`,
-`KEEP_DAYS = 14`) read over Fleet RPC — not `roomler logs`, whose 64 KiB tail
+**Method.** The hosts' own daemon log files (`service-logs\meshharbord.log.<date>`,
+`KEEP_DAYS = 14`) read over Fleet RPC — not `mh logs`, whose 64 KiB tail
 a finished session ages out of. Every heartbeat carrying `pipe_belief=` was
 parsed on the host (one regex per pump) and aggregated per session there, so
 the wire carried summaries and the windows with a live capacity, never the
@@ -706,7 +706,7 @@ program FR-17 / 16 / 14.
 | 2026-09-07 09:20–10:44 UTC | 0.4.79 | CORPLAP-1 + CORPLAP-2, every session since the 07:29 restart | **AC3 read.** CORPLAP-2 relay (av1_nvenc, `constrained=true`): a 66-min session at 0 → 7.45 Mbps, 15 backpressure skips, 0 gate lines, `pipe_states` [1, 3761, 1, 53, 0] (1.4 % transit-stalled — the FR-71 gap mix of every previous read); a 7.8-min session 0.2 → 3.0 M, 4 skips; three short ones 0 skips. CORPLAP-1 ran **direct** today (hevc_qsv / vp9_qsv at 43.2 M, 0 skips, 0 gate lines, `pipe_states` all 0). The constrained branch is untouched by P1/P1b/P3 and the counters agree ⇒ AC3 holds. |
 | 2026-09-07 10:59–11:04 UTC | 0.4.80 | release | P3 (#1463 → `7b0f7a2a`, bump #1464 → `cc83693f`, 28 assets). CORPLAP-3 pid 7968 (11:01:47), CORPLAP-1 pid 5320 (11:02:30), CORPLAP-2 pid 15416 (11:03:33), each updated while idle. Field gate open: the operator's VP9 4:4:4 wheel scroll on CORPLAP-3. |
 | 2026-09-07 13:25 UTC | 0.4.80 | CORPLAP-3, VP9 4:4:4 (libvpx), direct, the operator's scroll | **P3 gate — instrument PASS.** The session opened with `worst-quality cap applied max_q=16`; through the 17 s scroll every 1 s window had **`max_qp` = 64** (0.4.79: max 255, avg 113–192), avg 45–64 while moving, then 4 → 0 within ~2 s of stopping (refine to lossless intact); 0 skips; viewer age ≤ 39 ms. Bitrate 22–52 Mbps in the scroll windows — **above the 20.7 M target**: with q pinned at ≤ 64 the CBR target is a soft bound on content that needs more at that quality; on this direct path it cost nothing, and on a thinner one the DC buffered-bytes gate sheds frames rather than sharpness (the intended trade for a mode chosen for text). Operator's read pending. |
-| 2026-09-07 20:06–20:09 UTC | 0.4.82 | CORPLAP-3, VP9 4:4:4, direct, **two viewers** (the operator's tab + the automation tab, `shared ×2`), a Notepad++ copy of the day's log, wheel input by `SendInput` at 15 notches/s (15 s down, 15 s up) from a one-shot task in the interactive session | **Thin direct path, measured.** Control (20:06:58–20:07:29): 30 captures/s, 13–21 Mbps at q 0–2 on the down leg, one ×0.85 cut at the direction change (a 55 Mbps window, q 15/64, +2 skips), up leg 18–35 Mbps at q 0–32, viewer age 19–60 ms. **Throttled** (a Windows QoS policy capping `roomlerd.exe` egress at 15 Mbps — ~7.5 Mbps per viewer; 20:08:26–20:08:57): seven AIMD cuts in 9 s (9.95 → 5.68 M, then 4.6–5.1 M), the encoder still emitting **10–19 Mbps at avg q 56–60 / max 64** — the cap's floor for a full-screen 4:4:4 text scroll is ~10 Mbps and the target below it is inert — **zero new gate skips** (the OS pacer queues below the socket, so the DC buffered-bytes gate never saw a queue) and **viewer age 160–380 ms**. The cost of the cap on a pipe thinner than its floor is lag, not blur. |
+| 2026-09-07 20:06–20:09 UTC | 0.4.82 | CORPLAP-3, VP9 4:4:4, direct, **two viewers** (the operator's tab + the automation tab, `shared ×2`), a Notepad++ copy of the day's log, wheel input by `SendInput` at 15 notches/s (15 s down, 15 s up) from a one-shot task in the interactive session | **Thin direct path, measured.** Control (20:06:58–20:07:29): 30 captures/s, 13–21 Mbps at q 0–2 on the down leg, one ×0.85 cut at the direction change (a 55 Mbps window, q 15/64, +2 skips), up leg 18–35 Mbps at q 0–32, viewer age 19–60 ms. **Throttled** (a Windows QoS policy capping `meshharbord.exe` egress at 15 Mbps — ~7.5 Mbps per viewer; 20:08:26–20:08:57): seven AIMD cuts in 9 s (9.95 → 5.68 M, then 4.6–5.1 M), the encoder still emitting **10–19 Mbps at avg q 56–60 / max 64** — the cap's floor for a full-screen 4:4:4 text scroll is ~10 Mbps and the target below it is inert — **zero new gate skips** (the OS pacer queues below the socket, so the DC buffered-bytes gate never saw a queue) and **viewer age 160–380 ms**. The cost of the cap on a pipe thinner than its floor is lag, not blur. |
 | 2026-09-07 21:34 UTC | 0.4.83 | CORPLAP-3, AV1 4:2:0 (av1_qsv, ICQ 22), sole viewer, settled text | **AC1 pixel comparison, HW path.** Host truth = a DPI-aware `CopyFromScreen` PNG from a one-shot task in the interactive session; viewer side = the decoded frame read from the viewer's canvas with the scale mode at `original` (1:1, 1920×1200 — in `adaptive` the canvas is the FSR-upscaled 2018×1261); a 260×160 text block at (100,400), the two captures 6 s apart on a static screen, compared in-page, alignment best at dx=dy=0: **mean \|Δ\| 12.6, 54 % of pixels within ±2, 73 % within ±8, 82 % within ±16, 13.6 % more than 32 off, max 123.** The settled 4:2:0 picture is not pixel-faithful on ClearType text — finding 4, quantified. |
 | 2026-09-07 21:42 UTC | 0.4.83 | CORPLAP-3, VP9 4:4:4 (libvpx, settled at q 0), sole viewer, same text block | **AC1 pixel comparison, 4:4:4.** Same method and block: **mean \|Δ\| 1.37, 85 % within ±2, 96.8 % within ±8, 100 % within ±16, max 15, none more than 32 off.** Pixel-faithful up to the BGRA↔YUV 4:4:4 rounding. The two host shots taken 8 min apart differed by mean 5.3 (a caret-line highlight toggling with window focus), so a comparison is only valid when both captures are seconds apart. |
 | 2026-09-08 08:27–08:31 UTC | server `hosted-20260908-a6257b8` (0.4.86), agent 0.4.85 | CORPLAP-3, AV1 4:2:0 (av1_qsv), direct, view-only from an automation tab (hidden, display scaling 1.125×, stage 1926×1121 CSS) | **P4 field gate — PASS.** Adaptive: pill `shown at 1.05×`, tooltip "Each remote pixel is spread over 1.05 screen pixels … For 1:1 use Display → Custom zoom 88.9 %, or Match remote display so the host renders at your window's 2167×1261 (your display scaling is 1.125×, so Original is 1.13× on screen)"; the FSR canvas backing was 2018×1261 = 1920 × 1.051, i.e. the pill and the sharpening pass computed the same factor. The Display tab's hint under *Fit in my window* carried the same text. Custom zoom 88.9 % (stored preference, reload, reconnect): pill `1:1 pixels`, tooltip "Pixel-exact", the canvas backing 1920×1200 at 1706.88 CSS px (= 1920 ÷ 1.125) and **FSR disengaged on its own** (the codec pill lost its `· FSR`), which is the sizing policy's own 1:1 verdict agreeing with the pill's. The stored metrics set predated the pill (`{codec,bitrate,fps,resolution,age,paint}`) and the pill still showed — the per-key fallback in the field. |

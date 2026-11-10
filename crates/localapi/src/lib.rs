@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! Roomler **LocalAPI** — the local control surface (P1: read-only).
+//! MeshHarbor **LocalAPI** — the local control surface (P1: read-only).
 //!
-//! The unified daemon (`roomlerd`) will expose this over a local-only channel
+//! The unified daemon (`meshharbord`) will expose this over a local-only channel
 //! (named pipe on Windows / unix socket elsewhere; ACL-authenticated — wired in
-//! P1-cont) so thin clients — the CLI (`roomler`) and the desktop app (Roomler)
+//! P1-cont) so thin clients — the CLI (`mh`) and the desktop app (MeshHarbor)
 //! — can read live
 //! node / peer / flow state without reaching into the daemon's internals. This
 //! module is the **transport-agnostic protocol**: the request/response wire
@@ -53,7 +53,7 @@ pub enum ConnectionType {
 }
 
 /// What kind of node the daemon is. It says nothing about the account the
-/// process runs as: a per-user `roomlerd` is a full node and reports
+/// process runs as: a per-user `meshharbord` is a full node and reports
 /// `Service`. That account is [`NodeStatus::privileged`].
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -65,7 +65,7 @@ pub enum DaemonMode {
 }
 
 /// P5 exit-node — this node's default-route-egress status (Tailscale "use exit
-/// node"). Published by the overlay runtime so `meshharbor status` / the desktop can
+/// node"). Published by the overlay runtime so `mh status` / the desktop can
 /// show whether this node is routing its internet egress through a mesh peer and,
 /// crucially, WHY it isn't when it's configured but not active — the split-tunnel
 /// signal (S4): the client withholds default routing rather than self-wedge when
@@ -123,7 +123,7 @@ pub struct ExitNodeStatus {
 pub struct HostFirewallStatus {
     /// `firewalld` or `ufw`.
     pub kind: String,
-    /// The overlay adapter this describes (`roomler0`).
+    /// The overlay adapter this describes (`meshharbor0`).
     pub interface: String,
     /// firewalld: the zone that governs the adapter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -167,6 +167,10 @@ pub struct NodeStatus {
     /// the overlay runtime alongside the v4. Absent on a v4-only daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overlay_ip6: Option<String>,
+    /// Primary overlay's configured loopback SOCKS5 front. Netstack clients
+    /// dial it instead of relying on OS routes. Absent on OS-TUN/older nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_socks5_port: Option<u16>,
     /// Connected to the coordination server.
     pub connected: bool,
     /// FR-51 P4 — this daemon's PRIMARY enrollment is ephemeral: the server
@@ -243,7 +247,7 @@ pub struct NodeStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join_refusal: Option<JoinRefusalStatus>,
     /// B4 (overlay v3) — the measured netcheck capability vector + its age
-    /// (`roomler netcheck`). `None` from a pre-B4 daemon or before the
+    /// (`mh netcheck`). `None` from a pre-B4 daemon or before the
     /// first measurement completes (~45 s after start).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub netcheck: Option<NetcheckStatus>,
@@ -350,12 +354,12 @@ pub struct NodeStatus {
     // It is live compatibility, not history: delete the legacy arm in `node_env` and
     // this field has nothing left to report, so it goes with it. docs/fr/FR-46
     /// FR-46 (#1051) — full env-var names this daemon has actually READ through
-    /// a RETIRED prefix since it started (`ROOMLER_NODE_*`), sorted and deduped.
-    /// `None` from a daemon predating the field. Since FR-46 P2b `ROOMLER_AGENT_*`
+    /// a RETIRED prefix since it started (`MESHHARBOR_NODE_*`), sorted and deduped.
+    /// `None` from a daemon predating the field. Since FR-46 P2b `MESHHARBOR_AGENT_*`
     /// can never appear here — it is not read at all; see `retired_env_present`.
     ///
     /// This exists because the warning was write-only. `env::note_legacy_use`
-    /// logs once per variable near startup, so a `meshharbor logs` tail on a
+    /// logs once per variable near startup, so a `mh logs` tail on a
     /// long-running daemon cannot find it, and "does any host still depend on a
     /// retired name?" had to be answered by sweeping env vars and registries by
     /// hand — which under-reported twice: once to a `tail -1`, once because
@@ -415,7 +419,7 @@ pub struct NodeStatus {
 /// summarises its counters every 300 s **and sleeps before the first report**,
 /// so a freshly restarted relay is unreadable for five minutes — exactly the
 /// window in which someone is asking "is it working?". Reading it out of
-/// `meshharbor status` answers that immediately.
+/// `mh status` answers that immediately.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct OrgRelayStatus {
     /// The bound `ip:port`.
@@ -501,12 +505,12 @@ fn is_zero_u32(v: &u32) -> bool {
 }
 
 /// S2 — the MagicDNS state the overlay runtime publishes: what the
-/// desktop's DNS section and `meshharbor status` render. Tenant-level
+/// desktop's DNS section and `mh status` render. Tenant-level
 /// domain administration stays server-side (web admin); these are the
 /// per-node facts.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct DnsStatus {
-    /// The magic domain in effect (e.g. `tenant.roomler.net`).
+    /// The magic domain in effect (e.g. `tenant.meshharbor.net`).
     pub magic_domain: String,
     /// The local resolver bound `<overlay-ip>:53` (the split-DNS target).
     pub resolver_bound: bool,
@@ -557,7 +561,7 @@ pub struct SrflxStatus {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub via_public_dial: bool,
     /// Why the gather produced nothing, when it produced nothing. `None` on
-    /// success. Rendered verbatim by `meshharbor status`.
+    /// success. Rendered verbatim by `mh status`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// §6 item 5 — the gateway port mapping advertised first among
@@ -575,7 +579,7 @@ impl SrflxStatus {
 }
 
 /// B4 (overlay v3) — the measured netcheck capability vector as surfaced by
-/// `roomler netcheck`: what selection actually keys on, plus the
+/// `mh netcheck`: what selection actually keys on, plus the
 /// measurement's age (fresh under 60 min; stale vectors are treated as
 /// absent by every consumer).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -628,7 +632,7 @@ pub struct WarmRelayStatus {
     /// permission assert through the allocation).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_probe_ok_s: Option<u64>,
-    /// Why `none`/`lost`, when known. Rendered verbatim by `meshharbor status`.
+    /// Why `none`/`lost`, when known. Rendered verbatim by `mh status`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
@@ -716,7 +720,7 @@ pub struct PeerInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debug: Option<PeerCarrierDebug>,
     /// F — the path decision for this peer, in readable form
-    /// (`roomler why <peer>`). Always populated by a current daemon; `None`
+    /// (`mh why <peer>`). Always populated by a current daemon; `None`
     /// from an older one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<PeerWhy>,
@@ -729,7 +733,7 @@ pub struct PeerInfo {
 /// A — the disco prober's measurement of one path to this peer (C2).
 ///
 /// Measurement ONLY: nothing in the selector reads this. It is here so an
-/// operator (and `roomler why`) can see what the path actually does next to
+/// operator (and `mh why`) can see what the path actually does next to
 /// the decision the selector made about it — the two disagreeing is the
 /// interesting case, and until now the measurement was visible only in a
 /// 5-minute digest log line.
@@ -753,7 +757,7 @@ pub struct PathProbe {
     pub rtt_max_ms: Option<f64>,
 }
 
-/// F — why this peer sits on the tier it sits on (`roomler why <peer>`).
+/// F — why this peer sits on the tier it sits on (`mh why <peer>`).
 ///
 /// Populated on every view publish, like [`PeerCarrierDebug`], rather than
 /// computed on demand: an incident capture is usually a `peers --json` taken
@@ -1039,7 +1043,7 @@ pub struct RouteInfo {
 /// sentinel dir — which lives in the daemon's profile and is unreachable to the
 /// interactive-user app when the daemon runs as SYSTEM (P2b bug fix).
 ///
-/// FR-27 — no longer remote-control only. Fleet-RPC `exec` and Roomler SSH have
+/// FR-27 — no longer remote-control only. Fleet-RPC `exec` and MeshHarbor SSH have
 /// always prompted through the same broker, but never wrote a marker, so their
 /// prompts were invisible to every UI and answerable only by someone who greped
 /// the daemon log for a request id inside 30 s. [`Self::kind`] is what lets one
@@ -1082,7 +1086,7 @@ pub struct ConsentRequest {
     ///
     /// ⚠️ Load-bearing for the desktop app, not informational. The daemon
     /// writes a marker even when its native panel is up, because this list is
-    /// also what `roomlerd consent --list` reads — so without this field the
+    /// also what `meshharbord consent --list` reads — so without this field the
     /// companion would pop a SECOND panel asking the same question, and two
     /// Approve buttons for one decision is how someone approves the wrong
     /// thing. A UI must LIST a `native` entry and not render a prompt for it.
@@ -1155,7 +1159,7 @@ pub struct RcSessionInfo {
 /// rule instead of a comment. [`Request`] derives `Debug`, and the day someone
 /// adds `tracing::debug!(?req)` to [`serve_connection`] — an entirely reasonable
 /// thing to want while debugging a client — the plaintext external-access
-/// password would land in the daemon's rolling log, which `meshharbor logs` uploads.
+/// password would land in the daemon's rolling log, which `mh logs` uploads.
 /// Serialisation is transparent (the wire carries the bare string); only `Debug`
 /// is redacted, which is exactly the direction the leak travels.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -1189,7 +1193,7 @@ impl Secret {
 ///   have different fixes and must not render alike.)
 /// - `password_set: false` — the build can hold one, none is set. Fix: set it.
 /// - `enabled: false` — a password may be set, but gate 3 is shut, so nothing
-///   external is admitted. Fix: `meshharbor config set external_access_enabled true`.
+///   external is admitted. Fix: `mh config set external_access_enabled true`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExternalPasswordState {
     /// Was this daemon compiled with the external-access credential stack?
@@ -1238,7 +1242,7 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: u64,
         /// Resolve a *name* target to the peer's derived overlay IPv6 instead
-        /// of its v4 (`meshharbor ping -6`). Ignored for literal-IP targets.
+        /// of its v4 (`mh ping -6`). Ignored for literal-IP targets.
         #[serde(default)]
         prefer_v6: bool,
     },
@@ -1379,7 +1383,7 @@ pub enum Request {
         max_bytes: Option<u64>,
     },
     /// Fleet RPC — run a command on ANOTHER device in this org and return its
-    /// output (`meshharbor exec <device> -- <cmd>`).
+    /// output (`mh exec <device> -- <cmd>`).
     ///
     /// The daemon relays this over its own already-authenticated agent WS, so
     /// the CLI needs no user credentials of its own. The server resolves this
@@ -1402,8 +1406,8 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: u64,
     },
-    /// Roomler SSH (P6b) — ask the server for a single-use session grant on
-    /// ANOTHER device, so `meshharbor ssh <device>` can dial it.
+    /// MeshHarbor SSH (P6b) — ask the server for a single-use session grant on
+    /// ANOTHER device, so `mh ssh <device>` can dial it.
     ///
     /// The daemon relays this over its already-authenticated agent WS; the CLI
     /// carries no user credentials of its own, exactly as with
@@ -1426,7 +1430,7 @@ pub enum Request {
         session_secs: u64,
     },
     /// FR-85 — start a LOCAL screen recording (the daemon spawns
-    /// `roomlerd record`). Mutating, and the endpoint ACL is NOT the whole
+    /// `meshharbord record`). Mutating, and the endpoint ACL is NOT the whole
     /// boundary: the caller must be the console user
     /// ([`ClientPeer::is_console_user`]) — an RDP guest must not record the
     /// console user's desktop. Returns [`Response::Recording`].
@@ -1454,11 +1458,11 @@ pub enum Request {
     /// person's own pointer. Returns [`Response::KeepBusy`].
     KeepBusyOff,
     /// FR-92 P10 — the person at the console turns keep busy ON (the tray's
-    /// "Start keep busy", `roomler keep-busy on`). Unlike status and off,
+    /// "Start keep busy", `mh keep-busy on`). Unlike status and off,
     /// this is gated on the peer ([`ClientPeer::may_start_keep_busy`]): root
     /// never, SYSTEM never (P10b), session 0 never, another session never.
     /// The server itself has no "on" (FR-92 §7). ⚠️ The gate decides who is
-    /// NAMED; it is not a wall against `meshharbor exec`, which on an attended
+    /// NAMED; it is not a wall against `mh exec`, which on an attended
     /// Windows install runs as the person and passes it (FR-92 §3g). Returns
     /// [`Response::KeepBusy`].
     KeepBusyOn {
@@ -1500,7 +1504,7 @@ pub enum Request {
         org: String,
     },
     /// FR-84 D3 — restart this daemon through the service manager that
-    /// supervises it ("Apply now" in the companion, `roomler restart`).
+    /// supervises it ("Apply now" in the companion, `mh restart`).
     ///
     /// Mutating; the endpoint ACL is the trust boundary, as for
     /// [`Self::ConfigSet`], and the daemon refuses on its own terms: no
@@ -1538,7 +1542,7 @@ pub enum Request {
     /// than the verb answers `Error("bad request: …")`, and the helper
     /// installs without a hold, as before.
     HiveUpdateHold,
-    /// FR-90 P3-9-2b — `meshharbor connect`: a local endpoint that signs in to a
+    /// FR-90 P3-9-2b — `mh connect`: a local endpoint that signs in to a
     /// secret's upstream as the secret's user, the value held by the daemon.
     /// Its leases are asked for the device's OWNER (decision 23) and renewed
     /// while it is held (decision 25), and it serves the account that asked,
@@ -1554,7 +1558,7 @@ pub enum Request {
     ConnectStatus { id: u64 },
 }
 
-/// FR-90 P3-9-2b — what `meshharbor connect` asks for: the arguments a
+/// FR-90 P3-9-2b — what `mh connect` asks for: the arguments a
 /// session's `vault_connect` takes, by the same names, and checked by the
 /// daemon as it checks a session's (`docs/vault.md` §19).
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
@@ -1603,7 +1607,7 @@ pub struct EndpointState {
 
 /// FR-84 D4 — what this device can encode, as [`Request::EncoderCaps`]
 /// reports it. Plain strings on the wire (the vocabulary lives in
-/// `roomler_ai_remote_control::models`; this leaf crate carries none of it),
+/// `meshharbor_remote_control::models`; this leaf crate carries none of it),
 /// every field additive.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct EncoderCapsSummary {
@@ -1617,7 +1621,7 @@ pub struct EncoderCapsSummary {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cells: Vec<EncoderCell>,
     /// The legacy descriptive labels (`ffmpeg-hevc_nvenc`, `openh264-sw`, …)
-    /// exactly as the hello advertises them — what `roomlerd caps` prints.
+    /// exactly as the hello advertises them — what `meshharbord caps` prints.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hw_encoders: Vec<String>,
     /// Codecs this device can produce (`h264`, `h265`, `av1`, `vp9`).
@@ -2035,7 +2039,7 @@ pub struct KeepBusyStartOpts {
 }
 
 /// FR-92 P10 — every keep-busy pattern's wire name, in the viewer's order:
-/// what `roomler keep-busy on --pattern` offers. The agent owns the list (a
+/// what `mh keep-busy on --pattern` offers. The agent owns the list (a
 /// test there keeps this copy equal to it).
 pub const KEEP_BUSY_PATTERNS: [&str; 13] = [
     "circle",
@@ -2239,7 +2243,7 @@ impl ClientPeer {
         peer_may_start_keep_busy(self, scope, console_session_id(), own_uid())
     }
 
-    /// FR-90 P3-9-2b — may this peer run `meshharbor connect` here (decision
+    /// FR-90 P3-9-2b — may this peer run `mh connect` here (decision
     /// 26)? [`peer_may_connect`].
     pub fn may_connect(&self) -> bool {
         peer_may_connect(self, own_uid(), own_sid())
@@ -2271,7 +2275,7 @@ pub enum Asker {
 /// FR-90 P3-9-2b — the pure decision behind [`ClientPeer::may_connect`]
 /// (decision 26, its recommendation, pending the operator's word).
 ///
-/// `meshharbor connect` lends the device's OWNER's vault grants (decision 23),
+/// `mh connect` lends the device's OWNER's vault grants (decision 23),
 /// whoever runs it, so it is held to who may already act for the whole
 /// device:
 /// - **Unix**: root, or the daemon's own uid. On a system install the daemon's
@@ -2302,8 +2306,8 @@ pub fn peer_may_connect(peer: &ClientPeer, own_uid: Option<u32>, own_sid: Option
 ///
 /// Stricter than [`peer_is_console_user`] in one way that matters: **root
 /// never**. That gate lets root through on Unix, and root is how
-/// `meshharbor exec` arrives there — so with it, a plain
-/// `meshharbor exec <host> -- roomler keep-busy on` would start synthetic input
+/// `mh exec` arrives there — so with it, a plain
+/// `mh exec <host> -- mh keep-busy on` would start synthetic input
 /// under the person's name.
 /// - **Windows**: the active console session, never session 0 (services),
 ///   and (P10b) **never a service account** — SYSTEM, LocalService or
@@ -2315,7 +2319,7 @@ pub fn peer_may_connect(peer: &ClientPeer, own_uid: Option<u32>, own_sid: Option
 /// - Anything unknown: no.
 ///
 /// **SYSTEM is Windows' root** (P10b). A SystemContext-mode worker runs as
-/// SYSTEM *inside* the console session, and `meshharbor exec` runs as that
+/// SYSTEM *inside* the console session, and `mh exec` runs as that
 /// worker, so before P10b an exec there passed the session test. The account
 /// comes from the client's token, read by the listener at accept time
 /// ([`ClientPeer::system_account`]), never from anything the client says.
@@ -2332,7 +2336,7 @@ pub fn peer_may_connect(peer: &ClientPeer, own_uid: Option<u32>, own_sid: Option
 ///   person reads as a user; an exec runs as the worker, reads as SYSTEM, and
 ///   is refused.
 ///
-/// ⚠️ **Not a wall against `meshharbor exec`.** On an attended install exec runs
+/// ⚠️ **Not a wall against `mh exec`.** On an attended install exec runs
 /// as the signed-in user, in the console session, so it passes and is named
 /// "the person at this computer" (measured on 0.4.129, FR-92 §9 row 43). On
 /// Unix root can `sudo -u` the person. Nothing a local gate sees tells them
@@ -2613,6 +2617,8 @@ pub struct OverlayView {
     /// alongside `self_ip` (the daemon never derives — it has no `overlay`
     /// feature guarantee).
     pub self_ip6: Option<String>,
+    /// Runtime's configured loopback front, independent of exit use.
+    pub overlay_socks5_port: Option<u16>,
     /// Peers as the runtime currently reaches them.
     pub peers: Vec<PeerInfo>,
     /// P5 exit-node routing status (S4), filled by the overlay runtime. `None`
@@ -2944,7 +2950,7 @@ pub trait LocalApiState: Send + Sync {
     /// that worked restarted the daemon long before, so this is one that did
     /// not: take prompts and starts again. Default: no-op.
     fn hive_update_release(&self) {}
-    /// FR-90 P3-9-2b — open a person's endpoint (`meshharbor connect`) served to
+    /// FR-90 P3-9-2b — open a person's endpoint (`mh connect`) served to
     /// `asker`, the account that asked, and answer [`Response::Connected`].
     /// The peer has passed [`peer_may_connect`] by now. Default: a daemon
     /// built without the vault lends nothing.
@@ -3004,17 +3010,17 @@ fn not_the_person_for_keep_busy() -> Response {
     }
 }
 
-/// FR-90 P3-9-2b (decision 26) — the answer to a `meshharbor connect` from
+/// FR-90 P3-9-2b (decision 26) — the answer to a `mh connect` from
 /// anyone [`peer_may_connect`] refuses.
 fn not_one_who_may_connect() -> Response {
     Response::Error {
         message: if cfg!(windows) {
-            "meshharbor connect lends this device's owner's vault grants, so here only SYSTEM, an \
-             elevated administrator, or the account Roomler's service runs as may run it: run \
+            "mh connect lends this device's owner's vault grants, so here only SYSTEM, an \
+             elevated administrator, or the account MeshHarbor's service runs as may run it: run \
              it from an elevated prompt"
         } else {
-            "meshharbor connect lends this device's owner's vault grants, so here only root, or \
-             the account the daemon runs as, may run it: `sudo meshharbor connect …`"
+            "mh connect lends this device's owner's vault grants, so here only root, or \
+             the account the daemon runs as, may run it: `sudo mh connect …`"
         }
         .into(),
     }
@@ -3088,7 +3094,7 @@ pub fn person_may(req: &Request) -> bool {
         | Request::ConfigGet
         | Request::ConfigSet { .. }
         // FR-52 — the device-held external-access password: administrative,
-        // like every config verb (`sudo roomler rc password …` on a system
+        // like every config verb (`sudo mh rc password …` on a system
         // install).
         | Request::ExternalPasswordSet { .. }
         | Request::ExternalPasswordClear
@@ -3103,7 +3109,7 @@ pub fn person_may(req: &Request) -> bool {
         | Request::RestartDaemon { .. }
         | Request::EncoderCaps
         | Request::HiveUpdateHold
-        // FR-90 P3-9-2b — `meshharbor connect` lends the device OWNER's vault
+        // FR-90 P3-9-2b — `mh connect` lends the device OWNER's vault
         // grants: whoever sits at the screen need not be the owner.
         | Request::Connect { .. }
         | Request::ConnectStatus { .. } => false,
@@ -3140,7 +3146,7 @@ fn not_on_the_person_socket() -> Response {
         message: "this is the person-at-the-device socket of a system install: it shows who is \
                   viewing this screen, ends it, answers consent prompts, and lists the devices \
                   this machine's private network reaches and its links to them. Everything else \
-                  goes to the daemon's own socket — run `sudo roomler …`"
+                  goes to the daemon's own socket — run `sudo meshharbor …`"
             .into(),
     }
 }
@@ -3263,7 +3269,7 @@ where
     // ends: EOF, a read error, a write error.
     let mut held = false;
     // FR-90 P3-9-2b — and so does every endpoint it opened (decision 25:
-    // `meshharbor connect` in the foreground).
+    // `mh connect` in the foreground).
     let mut opened: Vec<u64> = Vec::new();
     let served: std::io::Result<()> = async {
         while let Some(line) = lines.next_line().await? {
@@ -3466,7 +3472,7 @@ where
                 Ok(Request::KeepBusyStatus) => state.keep_busy_status().await,
                 Ok(Request::KeepBusyOff) => state.keep_busy_off().await,
                 // P10 — turning it ON is the console person's alone: root
-                // never (how `meshharbor exec` arrives on Unix), session 0 never,
+                // never (how `mh exec` arrives on Unix), session 0 never,
                 // and (P10b) SYSTEM never — how exec arrives on a Windows
                 // host in SystemContext mode. ⚠️ Not a wall against exec on an
                 // attended Windows install, where it runs as the person
@@ -3511,7 +3517,7 @@ where
                     message: "only root may hold this daemon for an update".into(),
                 },
                 Ok(Request::HiveUpdateHold) => state.hive_update_hold().await,
-                // FR-90 P3-9-2b (decision 26) — `meshharbor connect` lends the
+                // FR-90 P3-9-2b (decision 26) — `mh connect` lends the
                 // device owner's grants: root or SYSTEM, an elevated
                 // administrator, or the daemon's own account. The endpoint
                 // serves the account that asked, as the OS read it.
@@ -3586,7 +3592,7 @@ where
 // ---------------------------------------------------------------------------
 // Platform listener (unification P1-cont)
 //
-// The daemon (`roomlerd` / today's `roomlerd`) calls [`serve`] once at
+// The daemon (`meshharbord` / today's `meshharbord`) calls [`serve`] once at
 // startup. It binds the local-only control endpoint — a named pipe on Windows,
 // a unix socket elsewhere — restricts it to trusted local principals via the
 // pipe/socket ACL (no token: the OS enforces WHO can connect), and serves each
@@ -3596,7 +3602,7 @@ where
 
 /// Bind the platform LocalAPI endpoint and serve clients until `shutdown`
 /// fires. Auth is the endpoint ACL, not a token:
-/// - **Windows**: named pipe `\\.\pipe\roomler` with a security descriptor
+/// - **Windows**: named pipe `\\.\pipe\meshharbor` with a security descriptor
 ///   granting only `SYSTEM`, `Administrators`, and the interactive user — so a
 ///   low-privilege local process can't read node state (and, once mutating
 ///   verbs land in P2, can't drive the daemon).
@@ -3662,7 +3668,7 @@ pub fn effective_pipe_pool(configured: Option<u32>) -> u32 {
 /// The LocalAPI named-pipe path. Fixed name so thin clients (CLI, desktop app)
 /// know where to connect.
 #[cfg(windows)]
-const LOCALAPI_PIPE_NAME: &str = r"\\.\pipe\roomler";
+const LOCALAPI_PIPE_NAME: &str = r"\\.\pipe\meshharbor";
 
 /// SDDL for the pipe. DACL: allow (`A`) generic-all (`GA`) to Local `SY`stem,
 /// `B`uiltin `A`dministrators, and `I`nteractive `U`sers — and, by omission,
@@ -3792,7 +3798,7 @@ pub(crate) async fn serve_windows_at(
     let pool = effective_pipe_pool(Some(pipe_pool));
     let mut security = PipeSecurity::new(LOCALAPI_SDDL)?;
     // Retry the FIRST-instance create instead of failing permanently. If another
-    // process already holds `\\.\pipe\roomler` (a stale/leftover agent, or a
+    // process already holds `\\.\pipe\meshharbor` (a stale/leftover agent, or a
     // rogue squatter), a one-shot bind would leave the LocalAPI dead until the
     // daemon restarts — and a squatter keeps feeding thin clients FAKE data
     // (field-observed: a leftover test server made the tray show mock peers +
@@ -3973,7 +3979,7 @@ const LOCALAPI_SOCKET_NAME: &str = "meshharbor.sock";
 ///
 /// A per-user path cannot serve a root daemon. On macOS `temp_dir()` is
 /// already per-user (`/var/folders/…`), so a root daemon's socket would land
-/// in ROOT's folder and a user-session `meshharbor peers` would look in its own
+/// in ROOT's folder and a user-session `mh peers` would look in its own
 /// and find *nothing* — not a permission error, an apparent absence. That is
 /// the trap the macOS LaunchDaemon split walks into, and this is the fix:
 /// when the process can own `/var/run/meshharbor`, it is the daemon and the
@@ -3983,7 +3989,7 @@ const LOCALAPI_SYSTEM_DIR: &str = "/var/run/meshharbor";
 
 /// The PER-USER socket path — `$XDG_RUNTIME_DIR/meshharbor.sock` when the
 /// runtime dir is set (systemd guarantees it's 0700 + user-owned — the right
-/// home for a control socket), else a `roomler/` subdir under the temp dir
+/// home for a control socket), else a `meshharbor/` subdir under the temp dir
 /// (locked to 0700 by the listener). The socket itself is chmod 0600.
 #[cfg(unix)]
 pub(crate) fn user_socket_path() -> std::path::PathBuf {
@@ -3992,7 +3998,7 @@ pub(crate) fn user_socket_path() -> std::path::PathBuf {
     }
     // No runtime dir (common on macOS, where temp_dir() is already per-user).
     std::env::temp_dir()
-        .join("roomler")
+        .join("meshharbor")
         .join(LOCALAPI_SOCKET_NAME)
 }
 
@@ -4021,7 +4027,7 @@ pub(crate) fn unix_socket_candidates() -> [std::path::PathBuf; 2] {
 ///
 /// A system daemon ALSO binds the per-user path, best-effort. That is
 /// forward-compat for one release, the same shape as the P2a rollout: a
-/// `roomler` CLI that predates this change only knows the per-user path, and
+/// `mh` CLI that predates this change only knows the per-user path, and
 /// packaging does not guarantee the CLI and the daemon step forward in the
 /// same instant. Drop the second bind once the fleet is past it.
 #[cfg(unix)]
@@ -4464,7 +4470,7 @@ fn bind_as_person(
 // ---------------------------------------------------------------------------
 // Client (unification P2)
 //
-// The thin clients — the CLI (`roomler`) and the desktop app — connect to the
+// The thin clients — the CLI (`mh`) and the desktop app — connect to the
 // daemon's LocalAPI over the same platform endpoint the server binds and issue
 // read-only requests. Lives in-module so it shares the endpoint constants
 // (`LOCALAPI_PIPE_NAME` / `unix_socket_candidates`) and the wire types with the
@@ -4485,7 +4491,7 @@ pub struct Client {
 }
 
 /// Connect to the local daemon's LocalAPI endpoint (the fixed
-/// `\\.\pipe\roomler` / `$XDG_RUNTIME_DIR/meshharbor.sock`). "Daemon not running"
+/// `\\.\pipe\meshharbor` / `$XDG_RUNTIME_DIR/meshharbor.sock`). "Daemon not running"
 /// surfaces as [`std::io::ErrorKind::NotFound`] — callers should render that as
 /// "device service not running", not a hard failure.
 pub async fn connect() -> std::io::Result<Client> {
@@ -4519,8 +4525,8 @@ pub async fn connect() -> std::io::Result<Client> {
 /// macOS installs two halves by necessity — a per-user LaunchAgent for capture
 /// and input, a root LaunchDaemon for the overlay — and they listen on
 /// different sockets. `connect()` prefers the per-user one, so an unprivileged
-/// `meshharbor status` on such a host answers for the half that has no overlay and
-/// prints `overlay ip —`, while `meshharbor peers` prints nothing. Both are
+/// `mh status` on such a host answers for the half that has no overlay and
+/// prints `overlay ip —`, while `mh peers` prints nothing. Both are
 /// truthful about the process they reached and completely misleading about the
 /// machine, which reads as "the overlay is broken".
 ///
@@ -4530,7 +4536,7 @@ pub async fn connect() -> std::io::Result<Client> {
 /// #2511 — both existing is not two daemons. A system daemon ALSO binds the
 /// legacy per-user path (`serve_unix`), so a root CLI on a host with one root
 /// daemon found both, and told its reader a second daemon ran and to use the
-/// sudo they already had: on every `meshharbor exec <linux host> -- roomler
+/// sudo they already had: on every `mh exec <linux host> -- meshharbor
 /// status`. Each socket is now asked who answers it, by the peer's PID. A PID
 /// that cannot be read keeps the note, because staying silent would hide a
 /// real second daemon.
@@ -5244,7 +5250,7 @@ pub fn is_unknown_verb(message: &str) -> bool {
 pub const RESTART_WAIT_MARGIN: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// #1684 — the most a caller will ever wait, whatever the supervisor reports: a
-/// unit with `TimeoutStopSec=1h` must not turn `roomler restart` into an
+/// unit with `TimeoutStopSec=1h` must not turn `mh restart` into an
 /// hour-long hang.
 pub const RESTART_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(600);
 
@@ -5467,7 +5473,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn the_peer_pid_of_a_listener_is_its_process() {
-        let path = std::env::temp_dir().join(format!("roomler-2511-{}.sock", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("meshharbor-2511-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let listener = tokio::net::UnixListener::bind(&path).expect("bind a test socket");
         let accept = tokio::spawn(async move { listener.accept().await.map(|_| ()) });
@@ -5518,7 +5525,7 @@ mod tests {
 
     /// WIRE SHAPE. A node that is not serving relay probes must produce
     /// **byte-identical** status JSON to one built before FR-19 existed —
-    /// otherwise every older `meshharbor status` / desktop reader has its shape
+    /// otherwise every older `mh status` / desktop reader has its shape
     /// changed by a feature it does not have.
     ///
     /// And the `Some` case must carry the counters even when they are zero:
@@ -5553,6 +5560,24 @@ mod tests {
         // Round trip, so an older field order or a rename is caught here.
         let back: NodeStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(back.org_relay, s.org_relay);
+    }
+
+    #[test]
+    fn overlay_socks_front_is_reported_without_being_an_exit_client() {
+        let mut status = Mock.status();
+        assert!(status.exit_node.is_none());
+        let old = serde_json::to_value(&status).unwrap();
+        assert!(old.get("overlay_socks5_port").is_none());
+        assert_eq!(
+            serde_json::from_value::<NodeStatus>(old)
+                .unwrap()
+                .overlay_socks5_port,
+            None
+        );
+        status.overlay_socks5_port = Some(1089);
+        let value = serde_json::to_value(status).unwrap();
+        assert_eq!(value["overlay_socks5_port"], 1089);
+        assert!(value.get("exit_node").is_none());
     }
 
     /// FR-33 — the probe-off state must be distinguishable on the wire from
@@ -5595,6 +5620,7 @@ mod tests {
                 tenant_id: Some("t1".into()),
                 overlay_ip: Some("100.64.0.2".into()),
                 overlay_ip6: None,
+                overlay_socks5_port: None,
                 connected: true,
                 ephemeral: false,
                 exit_node: None,
@@ -6269,7 +6295,7 @@ mod tests {
             std::time::Duration::from_secs(95) + RESTART_WAIT_MARGIN
         );
         // …and never past the cap: a unit with TimeoutStopSec=1h must not turn
-        // `roomler restart` into an hour-long hang.
+        // `mh restart` into an hour-long hang.
         assert!(RESTART_WAIT_CAP > std::time::Duration::from_secs(95) + RESTART_WAIT_MARGIN);
         assert_eq!(restart_wait(Some(3600), floor), RESTART_WAIT_CAP);
         assert_eq!(restart_wait(Some(u64::MAX), floor), RESTART_WAIT_CAP);
@@ -6572,7 +6598,7 @@ mod tests {
     }
 
     /// FR-84 D4 — the encoder-caps verb: wire shape locked (the desktop and
-    /// `roomler` depend on the discriminators), every summary field
+    /// `meshharbor` depend on the discriminators), every summary field
     /// additive (absent when default, so an old reader sees nothing new and
     /// a new reader of an old daemon fills in defaults), and the trait
     /// default is a clean Error — a mock is not an encoder host.
@@ -7127,7 +7153,7 @@ mod tests {
     }
 
     /// FR-92 P10 — who may turn keep busy ON. Root never: it is how
-    /// `meshharbor exec` arrives on Unix, and [`peer_is_console_user`] would let
+    /// `mh exec` arrives on Unix, and [`peer_is_console_user`] would let
     /// it through. P10b — SYSTEM never either, nor a Windows peer whose
     /// account could not be read.
     #[test]
@@ -7156,7 +7182,7 @@ mod tests {
         // Windows: the active console session only; session 0 never.
         assert!(peer_may_start_keep_busy(&win(1), full, Some(1), None));
         // P10b — SYSTEM (and LocalService / NetworkService) never, even inside
-        // the console session: that is how `meshharbor exec` arrives on a host in
+        // the console session: that is how `mh exec` arrives on a host in
         // SystemContext mode. The console-user gate would let it through.
         assert!(
             !peer_may_start_keep_busy(&win_as(1, Some(true)), full, Some(1), None),
@@ -7331,7 +7357,7 @@ mod tests {
     async fn a_pipe_client_is_read_from_its_token() {
         use std::os::windows::io::AsRawHandle;
         use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
-        let pipe = format!(r"\\.\pipe\roomler-test-p10b-{}", std::process::id());
+        let pipe = format!(r"\\.\pipe\meshharbor-test-p10b-{}", std::process::id());
         let server = ServerOptions::new()
             .first_pipe_instance(true)
             .create(&pipe)
@@ -7382,7 +7408,7 @@ mod tests {
             Request::RecordStatus,
             Request::RecordingsList,
             Request::RecordingDelete {
-                name: "Roomler Recording 2026-09-25 14-30-12.mp4".into(),
+                name: "MeshHarbor Recording 2026-09-25 14-30-12.mp4".into(),
             },
         ] {
             let j = serde_json::to_string(&req).unwrap();
@@ -7550,7 +7576,7 @@ mod tests {
         let r = ask_scoped(Scope::Person, r#"{"t":"config_get"}"#).await;
         assert!(is_person_refusal(&r), "{r:?}");
         assert!(
-            matches!(&r, Response::Error { message } if message.contains("sudo roomler")),
+            matches!(&r, Response::Error { message } if message.contains("sudo meshharbor")),
             "the refusal says where to go instead: {r:?}"
         );
         let r = ask_scoped(Scope::Person, r#"{"t":"flows"}"#).await;
@@ -7685,7 +7711,7 @@ mod tests {
     #[tokio::test]
     async fn a_machine_view_is_taken_only_from_root() {
         let me = own_uid().unwrap();
-        let dir = std::env::temp_dir().join(format!("roomler-p2g-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("meshharbor-p2g-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("served.sock");
@@ -7716,7 +7742,7 @@ mod tests {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
         let me = own_uid().unwrap();
-        let dir = std::env::temp_dir().join(format!("roomler-p11-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("meshharbor-p11-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("meshharbor.sock");
@@ -7785,11 +7811,11 @@ mod tests {
         // created in it (skipped as root, where `/` would be "owned").
         if me != 0 {
             let (_tx3, rx3) = watch::channel(false);
-            let e = serve_person_socket("/roomler-p11-never.sock".into(), me, state, rx3)
+            let e = serve_person_socket("/meshharbor-p11-never.sock".into(), me, state, rx3)
                 .await
                 .unwrap_err();
             assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
-            assert!(!std::path::Path::new("/roomler-p11-never.sock").exists());
+            assert!(!std::path::Path::new("/meshharbor-p11-never.sock").exists());
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -7956,7 +7982,7 @@ mod tests {
     const CONNECT: &str = r#"{"t":"connect","d":{"args":{"handle":"db/orders","engine":"postgres","upstream":"db.internal:5432"}}}"#;
 
     /// FR-90 P3-9-2b — an endpoint lives as long as the connection that
-    /// opened it (decision 25: `meshharbor connect` in the foreground): it is
+    /// opened it (decision 25: `mh connect` in the foreground): it is
     /// served to the account that asked, read by the listener, and its state
     /// is that connection's to read, no other's.
     #[tokio::test]
@@ -8010,7 +8036,7 @@ mod tests {
         );
     }
 
-    /// FR-90 P3-9-2b (decision 26) — `meshharbor connect` lends the device
+    /// FR-90 P3-9-2b (decision 26) — `mh connect` lends the device
     /// owner's grants: anyone the gate refuses, a peer whose account the OS
     /// did not name, and the person socket all get a refusal, and the daemon
     /// is never asked.
@@ -8053,7 +8079,7 @@ mod tests {
         }
     }
 
-    /// FR-90 P3-9-2b (decision 26) — who may run `meshharbor connect`: root or
+    /// FR-90 P3-9-2b (decision 26) — who may run `mh connect`: root or
     /// the daemon's own uid on Unix; SYSTEM, an elevated administrator or the
     /// daemon's own account on Windows. Never another interactive user (the
     /// pipe admits them all), and never a peer nothing is known about.
@@ -8519,7 +8545,7 @@ mod tests {
         // named pipe + the SDDL security descriptor (PipeSecurity::new must
         // convert the SDDL, or bind fails) + the client connect/request path. A
         // private pipe name avoids colliding with a real daemon on the box.
-        let pipe = format!(r"\\.\pipe\roomler-test-{}", std::process::id());
+        let pipe = format!(r"\\.\pipe\meshharbor-test-{}", std::process::id());
         let (sd_tx, sd_rx) = watch::channel(false);
         let state: Arc<dyn LocalApiState> = Arc::new(Mock);
         let pipe_srv = pipe.clone();
@@ -8625,7 +8651,10 @@ mod tests {
         ),
     ) {
         use tokio::net::windows::named_pipe::ClientOptions;
-        let pipe = format!(r"\\.\pipe\roomler-test-pool{pool}-{}", std::process::id());
+        let pipe = format!(
+            r"\\.\pipe\meshharbor-test-pool{pool}-{}",
+            std::process::id()
+        );
         let (sd_tx, sd_rx) = watch::channel(false);
         let state: Arc<dyn LocalApiState> = Arc::new(Mock);
         let pipe_srv = pipe.clone();
@@ -8709,7 +8738,7 @@ mod tests {
         // is owner-only.
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = std::env::temp_dir().join(format!("roomler-lat-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("meshharbor-lat-{}", std::process::id()));
         let path = dir.join("s.sock");
         let (sd_tx, sd_rx) = watch::channel(false);
         let state: Arc<dyn LocalApiState> = Arc::new(Mock);
@@ -8871,7 +8900,7 @@ mod tests {
         // to run, and until when.
         let exec = ConsentRequest {
             kind: "exec".into(),
-            detail: "systemctl restart roomlerd".into(),
+            detail: "systemctl restart meshharbord".into(),
             expires_at_ms: 1_700_000_000_000,
             surface: String::new(),
             ..rc
@@ -8879,13 +8908,13 @@ mod tests {
         let round: ConsentRequest =
             serde_json::from_str(&serde_json::to_string(&exec).unwrap()).unwrap();
         assert_eq!(round.kind, "exec");
-        assert_eq!(round.detail, "systemctl restart roomlerd");
+        assert_eq!(round.detail, "systemctl restart meshharbord");
         assert_eq!(round.expires_at_ms, 1_700_000_000_000);
     }
 
     /// FR-27 — `surface` decides whether a UI RENDERS a prompt or merely lists
     /// it. The daemon writes a marker even when its own native panel is up
-    /// (this list is also what `roomlerd consent --list` reads), so a UI that
+    /// (this list is also what `meshharbord consent --list` reads), so a UI that
     /// ignored the field would put a SECOND Approve button in front of one
     /// decision.
     ///

@@ -29,8 +29,8 @@ Usage:
   healthcheck.py REGION=coturn-host:port,derp-host [REGION=...]...
 e.g.
   TURN_SECRET_FILE=~/coturn.auth healthcheck.py \
-      us-east=coturn-us-east.roomler.ai:3478,derp-us-east.roomler.ai \
-      eu-central=coturn.roomler.ai:3478,
+      us-east=coturn-us-east.meshharbor.itachi.fans:3478,derp-us-east.meshharbor.itachi.fans \
+      eu-central=coturn.meshharbor.itachi.fans:3478,
 (the trailing comma / empty derp host = region without a DERP relay;
 TURN_SECRET works too when a file is impractical)
 """

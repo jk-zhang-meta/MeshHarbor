@@ -1,6 +1,6 @@
 # FR-30 — Camera/mic state is never signalled, so peers cannot see who turned their camera off
 
-**Issue:** [#884](https://github.com/gjovanov/roomler-ai/issues/884)
+**Issue:** [#884](https://github.com/jk-zhang-meta/MeshHarbor/issues/884)
 **Status:** **complete** — P1–P4 shipped (#886, #913, #918) and field-verified 2026-08-29 on prod `v20260829-4e22ba66a099`
 
 ## Goal

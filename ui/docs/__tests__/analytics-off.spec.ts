@@ -68,7 +68,7 @@ const post: Post = {
   outFile: 'x/index.html',
   sourceFile: 'ui/blog/posts/x.md',
   heroImage: { url: '/docs/assets/remote-desktop.cfab9256a7.svg', width: 760, height: 400 },
-  og: { url: 'https://roomler.ai/docs/assets/og.0123456789.png', width: 1200, height: 630, alt: 'A browser tab' },
+  og: { url: 'https://meshharbor.itachi.fans/docs/assets/og.0123456789.png', width: 1200, height: 630, alt: 'A browser tab' },
   html: '<p>Body.</p>',
   headings: [],
   plain: '',

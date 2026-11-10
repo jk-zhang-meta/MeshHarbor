@@ -4,7 +4,7 @@ Two name namespaces exist per device, denormalized once at overlay join:
 
 | Namespace | Field | Written by | Consumed by |
 |---|---|---|---|
-| **Fleet name** | `Agent.name` / `TunnelClient.name` | enrollment (machine-reported) + the admin rename routes | devices grid, `roomler exec/ssh <name>` resolution, SOCKS mesh roster, audit rows, presence events |
+| **Fleet name** | `Agent.name` / `TunnelClient.name` | enrollment (machine-reported) + the admin rename routes | devices grid, `mh exec/ssh <name>` resolution, SOCKS mesh roster, audit rows, presence events |
 | **Overlay/DNS label** | `OverlayNode.name` | overlay join (`dns_label` + in-network de-dup) and, since the rename feature, `propagate_node_rename` | MagicDNS (`<label>.<tenant domain>`), `NetmapPeer.name`, exit-node selection by name |
 
 On top of those, two **display-only** admin fields never propagate into the
@@ -33,7 +33,7 @@ name is `secondaryDeviceName` (`:76`). It shows nothing when there is no
 display name (the fleet name already is the title) or when the two names are
 equal.
 
-> ⚠️ The storage key, `roomler:grid-name-pref:<userId>:<tenantId>:devices`
+> ⚠️ The storage key, `meshharbor:grid-name-pref:<userId>:<tenantId>:devices`
 > (`:23`), predates the composable. It is the Devices grid's original key, kept
 > byte-identical so every saved choice carries over. Renaming it would silently
 > reset everyone to the default.
@@ -41,16 +41,16 @@ equal.
 ## Display names on the command line
 
 `display_name` still never enters the netmap, so `PeerInfo.name` — the NAME
-`roomler peers` prints — is the MagicDNS label, and neither resolver a typed
+`mh peers` prints — is the MagicDNS label, and neither resolver a typed
 selector reaches knows a display name: the server's exec/SSH target resolver
 (`crates/modules/fleet/src/socket.rs:1115` `resolve_exec_target`: hex id → exact
 `agents.name` → case-insensitive `agents.name`) or the daemon's ping resolver
-(`agents/roomlerd/src/localapi_state.rs:485` `resolve_overlay`: literal address
+(`agents/meshharbord/src/localapi_state.rs:485` `resolve_overlay`: literal address
 → mesh label, whole or first label). The CLI closes the gap **on the client**,
 by joining the device list the daemon already fetches for this device
-(`roomler devices`, FR-84 D5b) onto the peer list — the same two join keys the
+(`mh devices`, FR-84 D5b) onto the peer list — the same two join keys the
 `devices` CONN column uses, overlay node id then backing agent id
-(`agents/roomler-cli/src/names.rs:47`, `:61`). Nothing on the wire changes and
+(`agents/meshharbor-cli/src/names.rs:47`, `:61`). Nothing on the wire changes and
 the server is not consulted for the translation; it resolves and gates whatever
 selector it is sent exactly as before. The join, the filter and the selector
 rule are pure functions (`names.rs:101` `name_peers`, `:124` `filter_by_names`,
@@ -58,10 +58,10 @@ rule are pure functions (`names.rs:101` `name_peers`, `:124` `filter_by_names`,
 
 | Command | What a display name does | Device list consulted |
 |---|---|---|
-| `roomler peers --display-name` | NAME shows the display name where one is set, else the mesh name (the column widens to fit and is cut at 34, like `devices`); `--json` gains a `display_name` per peer, `null` when unknown — without the flag the JSON is the wire verbatim | each printed org section's own; `--org` narrows (`localclient.rs:314` `device_lists_for`) |
-| `roomler peers NAME…` | only the peers whose mesh name **or** display name equals an argument, case-insensitively, in argument order; an argument that matches nothing is one stderr warning, and the exit is non-zero only when none matched | same |
-| `roomler ping <display name>` | sent as the device's overlay IPv4 — with `-6`, the derived IPv6 the local peer view publishes for it; the output line keeps the **typed** target (`localclient.rs:423` `ping_target`) | the primary's: the daemon's `ping` reads only the primary's mesh (`localapi_state.rs:485`) |
-| `roomler exec` / `roomler ssh` / `roomler diag <display name>` | sent as the device's hex agent id (`localclient.rs:404` `agent_selector`) | the primary's: both ride the primary enrollment's control WS — `DaemonState.tunnel_hub` is the ONE hub `agents/roomlerd/src/main.rs:3763` shares with the primary loop, while every secondary loop gets an isolated one (`main.rs:4134`) — so the server resolves within that org |
+| `mh peers --display-name` | NAME shows the display name where one is set, else the mesh name (the column widens to fit and is cut at 34, like `devices`); `--json` gains a `display_name` per peer, `null` when unknown — without the flag the JSON is the wire verbatim | each printed org section's own; `--org` narrows (`localclient.rs:314` `device_lists_for`) |
+| `mh peers NAME…` | only the peers whose mesh name **or** display name equals an argument, case-insensitively, in argument order; an argument that matches nothing is one stderr warning, and the exit is non-zero only when none matched | same |
+| `mh ping <display name>` | sent as the device's overlay IPv4 — with `-6`, the derived IPv6 the local peer view publishes for it; the output line keeps the **typed** target (`localclient.rs:423` `ping_target`) | the primary's: the daemon's `ping` reads only the primary's mesh (`localapi_state.rs:485`) |
+| `mh exec` / `mh ssh` / `mh diag <display name>` | sent as the device's hex agent id (`localclient.rs:404` `agent_selector`) | the primary's: both ride the primary enrollment's control WS — `DaemonState.tunnel_hub` is the ONE hub `agents/meshharbord/src/main.rs:3763` shares with the primary loop, while every secondary loop gets an isolated one (`main.rs:4134`) — so the server resolves within that org |
 
 ### The selector rule — a display name never shadows what works today
 
@@ -138,7 +138,7 @@ brand-new row). Both `MANAGE_AGENTS`. What happens:
   `overlay_exit_node = "<old-name>"` fails to re-resolve after ITS next
   restart. Pin by **node-id hex** instead (`route_guard` resolves both) to be
   rename-proof; the rename dialog warns about this.
-- `roomler exec/ssh <name>` and the SOCKS mesh roster resolve server-side per
+- `mh exec/ssh <name>` and the SOCKS mesh roster resolve server-side per
   call / lazily — they self-heal onto the new name. A display name typed to
   `ping`/`exec`/`ssh` is likewise translated per call, client-side, so a
   dashboard relabel is picked up by the next command.

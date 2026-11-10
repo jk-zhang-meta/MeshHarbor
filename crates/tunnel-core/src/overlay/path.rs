@@ -85,13 +85,13 @@ use super::lifecycle::{DeathReason, DirectTier};
 // Mode
 // ---------------------------------------------------------------------------
 
-/// `ROOMLERD_OVERLAY_PATHMON` — how far the monitor is engaged.
+/// `MESHHARBORD_OVERLAY_PATHMON` — how far the monitor is engaged.
 /// Parsed by [`PathMonMode::parse`]; the env READ lives with the caller
 /// (`runtime.rs`) so this module stays env-free.
 /// PR-E — the legacy selection machinery is DELETED: the monitor is the one
 /// and only path selector, unconditionally. This enum now gates TELEMETRY
 /// only (the 10-min summaries + divergence-style execution logs); it is kept
-/// so `ROOMLERD_OVERLAY_PATHMON=shadow|off` set on a pre-PR-E host keeps
+/// so `MESHHARBORD_OVERLAY_PATHMON=shadow|off` set on a pre-PR-E host keeps
 /// parsing — the runtime warns once at startup that those values no longer
 /// change selection (rollback to legacy = deploy a pre-PR-E rc).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -133,7 +133,7 @@ impl PathMonMode {
 }
 
 /// B2 — score-driven demotion engagement (`overlay_demote` config /
-/// `ROOMLERD_OVERLAY_DEMOTE`): `off` | `shadow` (compute + count
+/// `MESHHARBORD_OVERLAY_DEMOTE`): `off` | `shadow` (compute + count
 /// would-be demotions, never act — the rc.296 first-ship default) |
 /// `on` (voluntary demotions execute as MBB probes — the default since
 /// B3/rc.303: the ~43 h fleet shadow read was spotless, ZERO would-be
@@ -1094,7 +1094,7 @@ impl PathMonitor {
 
     // -- explaining the decision ---------------------------------------------
 
-    /// Why this peer sits on the tier it sits on, as data (F / `roomler why`).
+    /// Why this peer sits on the tier it sits on, as data (F / `mh why`).
     ///
     /// Every field here is already consulted by [`Self::eligible`] and
     /// [`Self::score`]; the point is that NONE of it was readable from
@@ -1524,7 +1524,7 @@ pub(crate) enum BlockedBy {
     /// FR-33 P2 — THIS host's own routing hands the peer's LAN prefix to
     /// another interface (a corporate VPN client's split-prefix capture), so
     /// a LAN dial cannot work whatever the path's history says. A fact about
-    /// this host, not the path: `meshharbor status` names the capturing
+    /// this host, not the path: `mh status` names the capturing
     /// adapter, and the fix lives in the VPN profile.
     LanCaptured,
     /// The tier's own penalty has pushed `base − penalty` below the relay
@@ -3204,7 +3204,7 @@ mod tests {
     /// promotion into a flap — without costing the pair its hearing.
     #[test]
     fn a_followed_peer_is_still_answered_when_accepting_costs_nothing() {
-        let key = "ROOMLERD_OVERLAY_ANSWER_WHILE_FOLLOWED";
+        let key = "MESHHARBORD_OVERLAY_ANSWER_WHILE_FOLLOWED";
         let restore = std::env::var(key).ok();
         let t0 = Instant::now();
         let t1 = t0 + Duration::from_secs(1);

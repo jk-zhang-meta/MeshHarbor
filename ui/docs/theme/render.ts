@@ -174,7 +174,7 @@ function renderEnroll(kind: 'agent' | 'tunnel', groupId: string): string {
 
 /**
  * FR-88 (#1790) §3b: an agent install or enroll command — the one-line
- * installers, or `roomlerd`/`roomler … enroll … --server`. Its copy button
+ * installers, or `meshharbord`/`meshharbor … enroll … --server`. Its copy button
  * counts toward purestat's `install-copy` goal (`docs.js` reads the
  * `data-install` this puts on the block). Decided from the command itself, so
  * the `:::enroll` blocks and the install guides' hand-written fences count
@@ -183,7 +183,7 @@ function renderEnroll(kind: 'agent' | 'tunnel', groupId: string): string {
 export function isInstallCommand(code: string): boolean {
   return (
     /\/api\/setup\/install\.(?:sh|ps1)\b/.test(code) ||
-    /\broomlerd?\b[^\n]*\benroll\b[^\n]*--server\b/.test(code)
+    /\b(?:meshharbord|mh)\b[^\n]*\benroll\b[^\n]*--server\b/.test(code)
   )
 }
 

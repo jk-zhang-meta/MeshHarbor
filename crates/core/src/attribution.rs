@@ -40,7 +40,7 @@
 use std::{collections::HashMap, future::Future, pin::Pin, time::Duration};
 
 use bson::DateTime;
-use roomler_ai_db::models::{MAX_ATTRIBUTION_VALUE_LEN, SignupAttribution};
+use meshharbor_db::models::{MAX_ATTRIBUTION_VALUE_LEN, SignupAttribution};
 use serde::{Deserialize, Deserializer};
 use tracing::debug;
 
@@ -251,11 +251,11 @@ fn clean_path(raw: &str) -> Option<String> {
 /// claimed anyway.
 pub const OAUTH_PARK_TTL_SECS: u64 = 600;
 
-/// `roomler:oauth_attr:<csrf_state>` — the `roomler:` namespace every other
+/// `meshharbor:oauth_attr:<csrf_state>` — the `meshharbor:` namespace every other
 /// key this server writes lives in. The state is a server-minted UUID, so
 /// the key cannot be guessed or chosen by a client.
 pub fn oauth_park_key(csrf_state: &str) -> String {
-    format!("roomler:oauth_attr:{csrf_state}")
+    format!("meshharbor:oauth_attr:{csrf_state}")
 }
 
 /// How long either parking-spot call may take before it is abandoned.
@@ -403,7 +403,7 @@ pub async fn take_for_oauth(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_ai_db::models::{NotificationPrefs, Presence, TutorialState, User, UserStatusInfo};
+    use meshharbor_db::models::{NotificationPrefs, Presence, TutorialState, User, UserStatusInfo};
     use serde_json::json;
 
     fn input(v: serde_json::Value) -> AttributionInput {
@@ -470,7 +470,9 @@ mod tests {
             None
         );
         assert_eq!(
-            sanitize(input(json!({ "landing_path": "https://roomler.ai/" }))),
+            sanitize(input(
+                json!({ "landing_path": "https://meshharbor.itachi.fans/" })
+            )),
             None
         );
         // Protocol-relative and backslash forms are not paths either.
@@ -647,6 +649,7 @@ mod tests {
         let now = DateTime::now();
         User {
             id: None,
+            security_rev: Some(1_i64.into()),
             email: "round@trip.test".into(),
             unverified_email: None,
             username: "roundtrip".into(),
@@ -659,7 +662,7 @@ mod tests {
             locale: "en-US".into(),
             timezone: "UTC".into(),
             is_verified: false,
-            account_approval: roomler_ai_db::models::AccountApproval::pending(),
+            account_approval: meshharbor_db::models::AccountApproval::pending(),
             is_mfa_enabled: false,
             last_active_at: None,
             oauth_providers: Vec::new(),
@@ -722,7 +725,7 @@ mod tests {
         assert_eq!(back, attr);
         assert_eq!(
             oauth_park_key("11111111-2222-3333-4444-555555555555"),
-            "roomler:oauth_attr:11111111-2222-3333-4444-555555555555"
+            "meshharbor:oauth_attr:11111111-2222-3333-4444-555555555555"
         );
     }
 

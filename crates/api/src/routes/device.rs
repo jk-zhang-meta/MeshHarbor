@@ -11,7 +11,7 @@
 //!
 //! ⚠️ The overlay network is resolved with `find_for_tenant`, NEVER
 //! `get_or_create`: the create half inserts a network row and (under
-//! `ROOMLER__OVERLAY__BLOCKS_ENABLED`) carves a global P2b `/22` block that
+//! `MESHHARBOR__OVERLAY__BLOCKS_ENABLED`) carves a global P2b `/22` block that
 //! is quarantined forever once freed — a resource allocation no GET may
 //! perform. A tenant with no network simply lists devices with no overlay
 //! columns.
@@ -23,13 +23,13 @@ use axum::{
     extract::{Path, Query, State},
 };
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::models::{Agent, AgentStatus, NodeRef, OsKind, TunnelClient};
+use meshharbor_remote_control::models::{Agent, AgentStatus, NodeRef, OsKind, TunnelClient};
 use serde::{Deserialize, Serialize};
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::state::AppState;
-use roomler_ai_mod_fleet::agent::{AgentPresence, agent_presence_batch, derive_agent_presence};
+use meshharbor_mod_fleet::agent::{AgentPresence, agent_presence_batch, derive_agent_presence};
 
 /// Fields are declared INLINE, deliberately not `#[serde(flatten)]
 /// PaginationParams` — axum's `Query` deserializes via serde_urlencoded,
@@ -196,7 +196,7 @@ pub async fn list_devices(
     #[cfg(not(feature = "network"))]
     let (clients, nodes, dns_domain): (
         Vec<TunnelClient>,
-        Vec<roomler_ai_remote_control::models::OverlayNode>,
+        Vec<meshharbor_remote_control::models::OverlayNode>,
         Option<String>,
     ) = (Vec::new(), Vec::new(), None);
     let mut node_by_agent = std::collections::HashMap::new();
@@ -382,7 +382,7 @@ pub(crate) fn agent_row(
     a: Agent,
     presence: AgentPresence,
     is_online: bool,
-    node: Option<&roomler_ai_remote_control::models::OverlayNode>,
+    node: Option<&meshharbor_remote_control::models::OverlayNode>,
     dns_domain: Option<&str>,
 ) -> DeviceRow {
     let (overlay_ip, overlay_node_id, magic_dns_name, magic_dns_fqdn) = node_bits(node, dns_domain);
@@ -413,7 +413,7 @@ pub(crate) fn agent_row(
 
 pub(crate) fn client_row(
     c: TunnelClient,
-    node: Option<&roomler_ai_remote_control::models::OverlayNode>,
+    node: Option<&meshharbor_remote_control::models::OverlayNode>,
     dns_domain: Option<&str>,
 ) -> DeviceRow {
     let (overlay_ip, overlay_node_id, magic_dns_name, magic_dns_fqdn) = node_bits(node, dns_domain);
@@ -456,7 +456,7 @@ type NodeBits = (
 );
 
 fn node_bits(
-    node: Option<&roomler_ai_remote_control::models::OverlayNode>,
+    node: Option<&meshharbor_remote_control::models::OverlayNode>,
     dns_domain: Option<&str>,
 ) -> NodeBits {
     let Some(n) = node else {

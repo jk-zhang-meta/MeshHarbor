@@ -1,5 +1,5 @@
 [package]
-name = "roomler-ai-config"
+name = "meshharbor-config"
 license = "AGPL-3.0-only"
 publish = false
 version.workspace = true

@@ -8,15 +8,15 @@
   <div :class="['device-policy-fields', `device-policy-fields--${variant}`]">
     <v-select
       :model-value="agent.access_policy.consent_mode ?? 'prompt'"
-      :items="CONSENT_MODE_ITEMS"
-      :label="labelled ? 'Consent' : undefined"
+      :items="consentModeItems()"
+      :label="labelled ? t('mh.policy.label.consent') : undefined"
       density="compact"
       :variant="variant"
       hide-details
       :disabled="busy"
       :loading="busy"
       class="consent-select"
-      :aria-label="`Consent mode for ${deviceName}`"
+      :aria-label="t('mh.policy.aria.consent', { name: deviceName })"
       @update:model-value="(m) => emit('consent', m as ConsentMode)"
     />
     <!-- FR-27 — the owner shortcut, made visible. Controlling your OWN device
@@ -31,21 +31,21 @@
       hide-details
       :disabled="busy"
       :label="ownerPromptLabel(agent.access_policy)"
-      :aria-label="`Apply the consent mode to me, the owner of ${deviceName}`"
+      :aria-label="t('mh.policy.aria.owner', { name: deviceName })"
       class="consent-owner-toggle"
       @update:model-value="(v) => emit('prompt-owner', v === true)"
     />
     <!-- P6 — multi-user input mode (free-for-all | exclusive). -->
     <v-select
       :model-value="agent.access_policy.input_mode ?? 'free'"
-      :items="INPUT_MODE_ITEMS"
-      :label="labelled ? 'Input' : undefined"
+      :items="inputModeItems()"
+      :label="labelled ? t('mh.policy.label.input') : undefined"
       density="compact"
       :variant="variant"
       hide-details
       :disabled="busy"
       class="consent-select"
-      :aria-label="`Input mode for ${deviceName}`"
+      :aria-label="t('mh.policy.aria.input', { name: deviceName })"
       @update:model-value="(m) => emit('input-mode', m as 'free' | 'exclusive')"
     />
     <!-- FR-101 P4b-2b — this device's own idle limit. The shorter of it and
@@ -54,14 +54,14 @@
     <v-select
       :model-value="agent.access_policy.auto_terminate_idle_minutes ?? 0"
       :items="idleMinuteItems(agent.access_policy.auto_terminate_idle_minutes)"
-      :label="labelled ? 'Idle limit' : undefined"
+      :label="labelled ? t('mh.policy.label.idle') : undefined"
       density="compact"
       :variant="variant"
       hide-details
       :disabled="busy"
       class="consent-select"
-      :title="IDLE_LIMIT_HINT"
-      :aria-label="`Idle limit for ${deviceName}`"
+      :title="idleLimitHint()"
+      :aria-label="t('mh.policy.aria.idle', { name: deviceName })"
       @update:model-value="(m) => emit('idle-minutes', m as number)"
     />
     <!-- FR-99 P3b — ask this device to lock its screen when the last remote
@@ -69,15 +69,15 @@
          own setting, so it can only tighten it. -->
     <v-select
       :model-value="agent.access_policy.lock_on_end ?? 'never'"
-      :items="LOCK_ON_END_ITEMS"
-      :label="labelled ? 'Lock when sessions end' : undefined"
+      :items="lockOnEndItems()"
+      :label="labelled ? t('mh.policy.label.lock') : undefined"
       density="compact"
       :variant="variant"
       hide-details
       :disabled="busy"
       class="consent-select"
-      :title="LOCK_ON_END_HINT"
-      :aria-label="`Lock ${deviceName} when its remote sessions end`"
+      :title="lockOnEndHint()"
+      :aria-label="t('mh.policy.aria.lock', { name: deviceName })"
       @update:model-value="(m) => emit('lock-on-end', m as LockOnEnd)"
     />
     <!-- #1882 — may a session to this device ride the mesh? Off by default:
@@ -87,9 +87,9 @@
       density="compact"
       hide-details
       :disabled="busy"
-      label="Remote desktop over the mesh"
-      :title="RC_OVERLAY_HINT"
-      :aria-label="`Let remote desktop to ${deviceName} use the mesh (overlay)`"
+      :label="t('mh.policy.label.rcOverlay')"
+      :title="rcOverlayHint()"
+      :aria-label="t('mh.policy.aria.rcOverlay', { name: deviceName })"
       class="consent-owner-toggle"
       @update:model-value="(v) => emit('rc-overlay', v === true)"
     />
@@ -102,12 +102,12 @@
         :aria-expanded="showHints"
         @click.prevent="showHints = !showHints"
       >
-        {{ showHints ? 'Hide what these do' : 'What do these do?' }}
+        {{ showHints ? t('mh.policy.hideHints') : t('mh.policy.showHints') }}
       </a>
       <ul v-if="showHints" class="ps-4 mt-1">
-        <li class="mb-1"><strong>Idle limit</strong> — {{ IDLE_LIMIT_HINT }}</li>
-        <li class="mb-1"><strong>Lock when sessions end</strong> — {{ LOCK_ON_END_HINT }}</li>
-        <li><strong>Remote desktop over the mesh</strong> — {{ RC_OVERLAY_HINT }}</li>
+        <li class="mb-1"><strong>{{ t('mh.policy.label.idle') }}</strong> — {{ idleLimitHint() }}</li>
+        <li class="mb-1"><strong>{{ t('mh.policy.label.lock') }}</strong> — {{ lockOnEndHint() }}</li>
+        <li><strong>{{ t('mh.policy.label.rcOverlay') }}</strong> — {{ rcOverlayHint() }}</li>
       </ul>
     </div>
   </div>
@@ -115,17 +115,20 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { Agent, ConsentMode, LockOnEnd } from '@/stores/agents'
 import {
-  CONSENT_MODE_ITEMS,
-  IDLE_LIMIT_HINT,
-  INPUT_MODE_ITEMS,
-  LOCK_ON_END_HINT,
-  LOCK_ON_END_ITEMS,
-  RC_OVERLAY_HINT,
+  consentModeItems,
+  idleLimitHint,
   idleMinuteItems,
+  inputModeItems,
+  lockOnEndHint,
+  lockOnEndItems,
   ownerPromptLabel,
+  rcOverlayHint,
 } from './devicePolicy'
+
+const { t } = useI18n()
 
 const props = withDefaults(
   defineProps<{

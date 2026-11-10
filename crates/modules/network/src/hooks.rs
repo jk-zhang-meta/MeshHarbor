@@ -4,17 +4,17 @@
 //! will register through `Module::hooks` once it is a module, implemented
 //! over the host's own overlay code until then and registered under the
 //! `network` id, so the fleet module's cascades already run in
-//! [`roomler_core::hooks::HOOK_ORDER`] through the core registry.
+//! [`meshharbor_core::hooks::HOOK_ORDER`] through the core registry.
 //!
 //! When `network` is extracted (P7) this file goes with it — the `impl`
 //! moves, the registration becomes the module's own.
 
 use async_trait::async_trait;
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::models::NodeRef;
-use roomler_core::hooks::{
+use meshharbor_core::hooks::{
     FleetLifecycle, ReleasedLease, RenamePropagation, TenantArchived, TenantLifecycle,
 };
+use meshharbor_remote_control::models::NodeRef;
 
 use crate::NetworkState;
 

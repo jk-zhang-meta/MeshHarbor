@@ -2,6 +2,10 @@
 // Copyright (C) 2026 G ROX EOOD
 pub mod fixtures;
 
+/// X14's policy writers against an explicitly isolated synthetic MongoDB.
+#[cfg(test)]
+mod x14_file_child_policy_revision_tests;
+
 /// Real HTTP/Mongo central account approval console routes.
 #[cfg(test)]
 mod account_approval_management_tests;
@@ -299,7 +303,7 @@ mod vault_activity_tests;
 /// session's room, a driver's answer, and the one lease a yes allows.
 #[cfg(test)]
 mod vault_approval_tests;
-/// FR-90 P3-9-1 — a person's `roomler connect`, the vault's half:
+/// FR-90 P3-9-1 — a person's `mh connect`, the vault's half:
 /// `rc:vault.connect` decided by Cedar's `secret:connect` for the device's
 /// OWNER as its row names them, lent only where `vault.people` lists the
 /// organization, never by a policy written for sessions, and taken back when
@@ -352,6 +356,14 @@ mod ws_auth_tests;
 
 #[cfg(test)]
 mod device_share_tests;
+
+/// X17 default-off HTTP gate, independent of the shared-SSH transport tests.
+#[cfg(test)]
+mod native_ssh_gate_tests;
+
+/// X17 policy ABA must invalidate an older browser-approved native SSH request.
+#[cfg(test)]
+mod native_ssh_revision_tests;
 
 #[cfg(test)]
 mod account_devices_tests;

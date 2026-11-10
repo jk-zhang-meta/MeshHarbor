@@ -11,10 +11,10 @@ use axum::{
     extract::{Path, State},
 };
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::net_inventory::{NetInventory, Section, SectionState};
-use roomler_core::guards::require_permission;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::guards::require_permission;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::net_inventory::{NetInventory, Section, SectionState};
 use serde::Serialize;
 
 use crate::NetworkState;

@@ -4,8 +4,8 @@
 //! across two in-process "pods" sharing one Redis.
 
 use crate::fixtures::test_app::TestApp;
-use roomler_ai_api::cluster::directory::{ClaimOutcome, OwnerRecord};
-use roomler_ai_mod_conference::ConferenceState;
+use meshharbor_api::cluster::directory::{ClaimOutcome, OwnerRecord};
+use meshharbor_mod_conference::ConferenceState;
 
 /// FR-69 P4 — the mediasoup room manager and the media claim maps are the
 /// `conference` module's state now.
@@ -29,7 +29,7 @@ async fn directory_claim_refresh_release_conflict() {
         eprintln!("skipping: no Redis available");
         return;
     };
-    let key = format!("roomler:test:own:{}", uuid::Uuid::new_v4().simple());
+    let key = format!("meshharbor:test:own:{}", uuid::Uuid::new_v4().simple());
 
     // LWW: pod1 claims, pod2 overwrites (newest wins), pod1's late release
     // must NOT free pod2's claim.
@@ -59,7 +59,7 @@ async fn directory_claim_refresh_release_conflict() {
     assert_eq!(d1.get(&key).await.unwrap(), None);
 
     // NX mutex: exactly one winner; loser learns the holder.
-    let m_key = format!("roomler:test:mutex:{}", uuid::Uuid::new_v4().simple());
+    let m_key = format!("meshharbor:test:mutex:{}", uuid::Uuid::new_v4().simple());
     let (m1, m2) = (d1.owner_token("x"), d2.owner_token("y"));
     assert_eq!(
         d1.claim_nx(&m_key, &m1, 30).await.unwrap(),
@@ -118,7 +118,7 @@ async fn bus_rpc_roundtrip_nack_and_deadline() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, roomler_ai_api::cluster::bus::BusError::Nack(_)),
+        matches!(err, meshharbor_api::cluster::bus::BusError::Nack(_)),
         "expected NACK, got {err:?}"
     );
 
@@ -135,7 +135,7 @@ async fn bus_rpc_roundtrip_nack_and_deadline() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, roomler_ai_api::cluster::bus::BusError::Deadline(_)),
+        matches!(err, meshharbor_api::cluster::bus::BusError::Deadline(_)),
         "expected Deadline, got {err:?}"
     );
     assert!(t0.elapsed() >= std::time::Duration::from_millis(550));
@@ -158,7 +158,7 @@ async fn agent_presence_records_are_canonical_and_pod_attributed() {
 
     let d2 = app2.state.cluster_directory.clone().unwrap();
     let raw = d2
-        .get(&roomler_ai_api::cluster::directory::agent_key(&agent_id))
+        .get(&meshharbor_api::cluster::directory::agent_key(&agent_id))
         .await
         .unwrap()
         .expect("presence record exists");
@@ -713,7 +713,7 @@ async fn media_owner_shutdown_releases_claim_rejoin_wins() {
     };
     let (tenant, room_id) = seed_started_call(&app1).await;
     let rid = bson::oid::ObjectId::parse_str(&room_id).unwrap();
-    let key = roomler_ai_api::cluster::directory::media_key(&room_id);
+    let key = meshharbor_api::cluster::directory::media_key(&room_id);
 
     let mut ws2 = connect_user_ws(&app2, &tenant.member.access_token).await;
     send_media(&mut ws2, "media:join", &room_id).await;
@@ -723,7 +723,7 @@ async fn media_owner_shutdown_releases_claim_rejoin_wins() {
     assert_eq!(m["type"], "media:transport_created");
 
     // Graceful owner shutdown → claim compare-DELed immediately.
-    roomler_ai_api::state::shutdown_cleanup(&app1.state).await;
+    meshharbor_api::state::shutdown_cleanup(&app1.state).await;
     assert_eq!(
         d2.get(&key).await.unwrap(),
         None,
@@ -759,7 +759,7 @@ async fn media_claim_race_single_winner() {
         return;
     };
     let key =
-        roomler_ai_api::cluster::directory::media_key(&uuid::Uuid::new_v4().simple().to_string());
+        meshharbor_api::cluster::directory::media_key(&uuid::Uuid::new_v4().simple().to_string());
     let (t1, t2) = (d1.owner_token("media"), d2.owner_token("media"));
     let (r1, r2) = tokio::join!(d1.claim_nx(&key, &t1, 30), d2.claim_nx(&key, &t2, 30));
     let wins = [r1.unwrap(), r2.unwrap()]
@@ -790,11 +790,11 @@ async fn media_conflict_folds_loser_island() {
     assert_eq!(m["type"], "media:transport_created");
 
     // Simulate the post-Redis-outage double claim: app2 overwrites the key.
-    let key = roomler_ai_api::cluster::directory::media_key(&room_id);
+    let key = meshharbor_api::cluster::directory::media_key(&room_id);
     d2.claim_lww(&key, &d2.owner_token("media")).await.unwrap();
 
     // One maintenance pass on the loser: CONFLICT → fold.
-    roomler_ai_mod_conference::media_cluster::refresh_media_claims_once(conf(&app1)).await;
+    meshharbor_mod_conference::media_cluster::refresh_media_claims_once(conf(&app1)).await;
     assert!(
         !conf(&app1).room_manager.has_room(&rid),
         "claim loser must tear down its island"
@@ -816,9 +816,9 @@ async fn media_conflict_folds_loser_island() {
 async fn derp_split_rehomes_toward_newest_registration() {
     use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
     use futures::{SinkExt, StreamExt};
-    use roomler_ai_api::cluster::directory::derp_key;
-    use roomler_ai_mod_network::derp_cluster::pk_hex;
-    use roomler_ai_remote_control::models::NodeRef;
+    use meshharbor_api::cluster::directory::derp_key;
+    use meshharbor_mod_network::derp_cluster::pk_hex;
+    use meshharbor_remote_control::models::NodeRef;
     use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     let (app1, app2) = TestApp::spawn_pair(|_| {}).await;
@@ -835,8 +835,8 @@ async fn derp_split_rehomes_toward_newest_registration() {
     // Overlay network + node rows (what rc:overlay.join would create) —
     // /derp registration resolves the agent's node and validates its
     // wg_public_key against the registration frame.
-    let networks = roomler_ai_services::dao::overlay_network::OverlayNetworkDao::new(&app1.db);
-    let nodes = roomler_ai_services::dao::overlay_node::OverlayNodeDao::new(&app1.db);
+    let networks = meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&app1.db);
+    let nodes = meshharbor_services::dao::overlay_node::OverlayNodeDao::new(&app1.db);
     let network_id = networks.get_or_create(tid).await.unwrap().id.unwrap();
     let pk_a: [u8; 32] = [0xa1; 32];
     let pk_b: [u8; 32] = [0xb2; 32];
@@ -853,7 +853,7 @@ async fn derp_split_rehomes_toward_newest_registration() {
         (&aid_b, "derp-mach-b", pk_b, "100.64.0.2", "derp-node-b"),
     ] {
         nodes
-            .create(roomler_ai_services::dao::overlay_node::NewOverlayNode {
+            .create(meshharbor_services::dao::overlay_node::NewOverlayNode {
                 tenant_id: tid,
                 node_ref: NodeRef::Agent {
                     agent_id: bson::oid::ObjectId::parse_str(aid).unwrap(),
@@ -1037,9 +1037,9 @@ async fn cluster_status_reports_pod_counters_and_gauges() {
 async fn shutdown_releases_tunnel_and_derp_records() {
     use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
     use futures::SinkExt;
-    use roomler_ai_api::cluster::directory::{derp_key, tunnel_key};
-    use roomler_ai_mod_network::derp_cluster::pk_hex;
-    use roomler_ai_remote_control::models::NodeRef;
+    use meshharbor_api::cluster::directory::{derp_key, tunnel_key};
+    use meshharbor_mod_network::derp_cluster::pk_hex;
+    use meshharbor_remote_control::models::NodeRef;
     use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     let app = TestApp::spawn().await;
@@ -1052,12 +1052,12 @@ async fn shutdown_releases_tunnel_and_derp_records() {
 
     // A live derp registration (real socket over a seeded overlay node).
     let (aid, tok) = crate::agent_presence_tests::enroll(&app, &tenant, "shut-mach").await;
-    let networks = roomler_ai_services::dao::overlay_network::OverlayNetworkDao::new(&app.db);
-    let nodes = roomler_ai_services::dao::overlay_node::OverlayNodeDao::new(&app.db);
+    let networks = meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&app.db);
+    let nodes = meshharbor_services::dao::overlay_node::OverlayNodeDao::new(&app.db);
     let network_id = networks.get_or_create(tid).await.unwrap().id.unwrap();
     let pk: [u8; 32] = [0xc3; 32];
     nodes
-        .create(roomler_ai_services::dao::overlay_node::NewOverlayNode {
+        .create(meshharbor_services::dao::overlay_node::NewOverlayNode {
             tenant_id: tid,
             node_ref: NodeRef::Agent {
                 agent_id: bson::oid::ObjectId::parse_str(&aid).unwrap(),
@@ -1106,7 +1106,7 @@ async fn shutdown_releases_tunnel_and_derp_records() {
         .tunnel_presence_tokens
         .insert(sid, ttoken);
 
-    roomler_ai_api::state::shutdown_cleanup(&app.state).await;
+    meshharbor_api::state::shutdown_cleanup(&app.state).await;
 
     assert_eq!(
         dir.get(&dkey).await.unwrap(),

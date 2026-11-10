@@ -4,7 +4,7 @@
 **Status:** **CLOSED — field-verified on production, 2026-09-02** (deploy
 `v20260901-bfc5f58ef358`; the full loop in the field-verification log below). P0–P5 merged
 2026-09-01 (#1171 #1176 #1185 #1188 #1189 #1190). Tracking issue:
-[#1170](https://github.com/gjovanov/roomler-ai/issues/1170).
+[#1170](https://github.com/jk-zhang-meta/MeshHarbor/issues/1170).
 Anchors verified against master `fc1ab18d` at claim time.
 
 ## Goal
@@ -117,12 +117,12 @@ existing `send` delegates, so the seven transactional callers are untouched.
 - The branded wrapper is a `format!` template like every existing mail: 600 px table,
   landing palette (teal `#009688`/`#00796B`, ink `#1a1a2e`, light-only), optional hero
   `<img>`, optional CTA button, and a footer with the company identity, the unsubscribe
-  link, *"you subscribed at roomler.ai"* — and **no tracking pixels**, stated in the
+  link, *"you subscribed at meshharbor.itachi.fans"* — and **no tracking pixels**, stated in the
   footer, because `source` remains the only analytics (FR-39's line, kept).
 - ⚠️ Subject/preheader are stripped of control characters and length-capped at the
   route: a `\r\n` in a subject is SMTP header injection on the lettre backend. Every
   operator string entering the wrapper passes a (new, first-in-tree) `escape_html`.
-- A separate newsletter From (`ROOMLER__NEWSLETTER__FROM_EMAIL`/`__FROM_NAME`, fallback
+- A separate newsletter From (`MESHHARBOR__NEWSLETTER__FROM_EMAIL`/`__FROM_NAME`, fallback
   to `email.from_*`) isolates campaign reputation from transactional (activation) mail.
 
 ### Gate
@@ -140,7 +140,7 @@ config flag guarding the same door would be a second switch to forget.
   shape (`router.ts:58-65`): **no `meta.auth`, no `meta.guest`** (guest would bounce a
   signed-in unsubscriber to the dashboard), registered above the catch-all, render-only.
 - **Deferred landing prompt**: a dismissible card after ~60 % scroll or ~20 s, once ever —
-  flat `roomler-newsletter-dismissed` latch (an anonymous visitor has no user id), every
+  flat `meshharbor-newsletter-dismissed` latch (an anonymous visitor has no user id), every
   storage access try/caught, unreadable storage ⇒ treated as dismissed (fail toward not
   annoying — the `useTutorialProgress` house rules). Never a blocking modal.
 - **Profile toggle + dashboard card** for signed-in users ride a new authed path that
@@ -156,7 +156,7 @@ config flag guarding the same door would be a second switch to forget.
 ### Content (the ten issues)
 
 Drafts, editorial calendar and hero sources live in the **private annex**
-(`roomler-ai-news`: `news/` = the campaign queue, `fixes/` = engineering war stories on their own schedule), per the FR-39 scope rule — post copy is not an
+(`meshharbor-news`: `news/` = the campaign queue, `fixes/` = engineering war stories on their own schedule), per the FR-39 scope rule — post copy is not an
 engineering artifact and does not live in a public repo. What is engineering and stays
 here: heroes follow the tutorial artwork contract (locked landing palette, flat vector,
 light-surface — stated in `ui/src/assets/tutorial/*.svg`), are **rendered headless to
@@ -194,7 +194,7 @@ immutable cache, so **filenames are versioned and never edited in place**.
 - [x] Issue #1 sent to the real list from its `.md` source; ledger counts matched the
       status payload exactly (`{total:1, sent:1}` → `completed`); preview bytes equal
       sent bytes by construction and every marker was asserted on the live preview.
-      Delivered to the Gmail INBOX as "Roomler Field Notes" (the configmap From override
+      Delivered to the Gmail INBOX as "MeshHarbor Field Notes" (the configmap From override
       live).
 - [x] One-click unsubscribe verified with the address's real token via the exact
       RFC-8058 provider POST (200, idempotent, row stamped), and a second send provably
@@ -236,7 +236,7 @@ immutable cache, so **filenames are versioned and never edited in place**.
 - A minimal platform-admin compose/send UI page later, on the same routes (v1 is API +
   an operator script from the annex sources).
 - An e2e Mailpit journey (subscribe → confirm → unsubscribe) in `email-flows.spec.ts`.
-- Whether `roomler.ai` should eventually render a public archive of past issues (today:
+- Whether `meshharbor.itachi.fans` should eventually render a public archive of past issues (today:
   out of scope).
 
 ## Out of scope
@@ -263,11 +263,11 @@ immutable cache, so **filenames are versioned and never edited in place**.
 | date | what was checked | result |
 |---|---|---|
 | 2026-09-01 | P0 prod measures | subscribers = **0 rows ever** (the 404 measured at population level); SendGrid configured + delivering; `platform_admins` already set |
-| 2026-09-02 | Deploy `v20260901-bfc5f58ef358` (HEAD `e8e72131`) | both pods rolled, health 200; configmap `ROOMLER__NEWSLETTER__FROM_NAME` live |
+| 2026-09-02 | Deploy `v20260901-bfc5f58ef358` (HEAD `e8e72131`) | both pods rolled, health 200; configmap `MESHHARBOR__NEWSLETTER__FROM_NAME` live |
 | 2026-09-02 | Anonymous surfaces (fresh-profile headless Chrome) | deferred prompt rendered bottom-right; CTA + footer forms present; served bundle carries the latch key |
-| 2026-09-02 | Real form click (Playwright, live landing) | `POST https://roomler.ai/api/subscribe` → **202** — the wire path that had 404'd for months; first subscriber row ever created |
+| 2026-09-02 | Real form click (Playwright, live landing) | `POST https://meshharbor.itachi.fans/api/subscribe` → **202** — the wire path that had 404'd for months; first subscriber row ever created |
 | 2026-09-02 | Confirmation mail | landed in Gmail **INBOX**; ⚠️ confirmed by Gmail's link scanner before any human click (finding above); token burned single-use; outcome page renders |
-| 2026-09-02 | Issue #1 (`three-products-one-daemon`) from its `.md` | create 201 → preview verified (branded, substituted, no raw HTML) → test-send `{sent:true}` → send 202 → `completed {total:1, sent:1}`; delivered to the inbox as **"Roomler Field Notes"** |
+| 2026-09-02 | Issue #1 (`three-products-one-daemon`) from its `.md` | create 201 → preview verified (branded, substituted, no raw HTML) → test-send `{sent:true}` → send 202 → `completed {total:1, sent:1}`; delivered to the inbox as **"MeshHarbor Field Notes"** |
 | 2026-09-02 | RFC-8058 one-click (real token, provider-shaped POST ×2) | 200 + 200 (idempotent), row stamped `unsubscribed_at` |
 | 2026-09-02 | Suppression | probe issue → `completed {total:0}`, **zero** ledger rows for the unsubscribed address |
 | 2026-09-02 | Signed-in door | dashboard card shown for the unsubscribed account → "Keep me posted" → `{subscribed:true}`, row revived `source: account`; profile toggle reads ON |

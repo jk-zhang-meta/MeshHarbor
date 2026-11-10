@@ -1,6 +1,6 @@
-# roomler-ai-e2e overlay
+# meshharbor-e2e overlay
 # Spins up a parallel stack of the API + MongoDB + Redis + MinIO in
-# the `roomler-ai-e2e` namespace for Playwright e2e runs. Read
+# the `meshharbor-e2e` namespace for Playwright e2e runs. Read
 # scripts/e2e-k8s.sh for the orchestration script.
 #
 # Differences from prod overlay:
@@ -10,26 +10,26 @@
 #   - no tier=high-performance affinity (any node)
 #   - plaintext Secrets (sealed-secrets are encrypted per-namespace
 #     and don't decrypt when copied across namespaces)
-#   - NEW Service for roomler2 (prod relies on hostNetwork)
+#   - NEW Service for meshharbor2 (prod relies on hostNetwork)
 #   - lowered resource requests/limits
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: roomler-ai-e2e
+namespace: meshharbor-e2e
 
 resources:
   - namespace.yaml
-  - configmap-roomler2-config.yaml
-  - secret-roomler2.yaml
+  - configmap-meshharbor2-config.yaml
+  - secret-meshharbor2.yaml
   - secret-mongodb.yaml
   - secret-minio.yaml
   - service-mongodb.yaml
   - service-redis.yaml
   - service-minio.yaml
-  - service-roomler2.yaml
+  - service-meshharbor2.yaml
   - service-mailpit.yaml
   - deployment-redis.yaml
-  - deployment-roomler2.yaml
+  - deployment-meshharbor2.yaml
   - deployment-mailpit.yaml
   - statefulset-mongodb.yaml
   - statefulset-minio.yaml
@@ -45,20 +45,20 @@ resources:
   - statefulset-agent-e2e.yaml
 
 # Pin to whichever prod tag is currently live. Bump in lockstep when
-# you want e2e to validate a newer build than what's on roomler.ai.
+# you want e2e to validate a newer build than what's on meshharbor.itachi.fans.
 images:
-  - name: gjovanov/roomler-ai
-    newName: registry.roomler.ai/roomler-ai
+  - name: jk-zhang-meta/MeshHarbor
+    newName: registry.meshharbor.itachi.fans/meshharbor
     newTag: v20260506-c89d55489f21
   # Phase 1 Chunk 1B — agent-e2e Linux image, built from
   # Dockerfile.agent-e2e. FR-114: pinned to the DATED tag that was pushed,
   # never `latest` (install-overlay.sh pins it from AGENT_E2E_TAG), so a
   # night's agent is a known build. The placeholder fails a pull loudly
   # rather than run an unknown agent.
-  - name: gjovanov/roomlerd-e2e
-    newName: registry.roomler.ai/roomlerd-e2e
+  - name: jk-zhang-meta/meshharbord-e2e
+    newName: registry.meshharbor.itachi.fans/meshharbord-e2e
     newTag: set-by-AGENT_E2E_TAG
 
 commonLabels:
   env: e2e
-  app.kubernetes.io/instance: roomler-ai-e2e
+  app.kubernetes.io/instance: meshharbor-e2e

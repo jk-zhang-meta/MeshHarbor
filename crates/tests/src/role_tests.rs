@@ -274,7 +274,7 @@ async fn non_member_cannot_list_roles() {
 /// `check_grant` still passes every unit test.
 #[tokio::test]
 async fn an_admin_cannot_grant_permissions_it_does_not_hold() {
-    // Mirrors `roomler_ai_db::models::role::permissions`, spelled out here so a
+    // Mirrors `meshharbor_db::models::role::permissions`, spelled out here so a
     // rename over there is a visible break rather than a silently skipped test.
     const ADMINISTRATOR: u64 = 1 << 23;
     const EXEC_DEVICE: u64 = 1 << 27;

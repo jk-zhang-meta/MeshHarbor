@@ -1,4 +1,4 @@
-Roomler is distributed under a split licence. This file explains which licence
+MeshHarbor is distributed under a split licence. This file explains which licence
 applies to which part; it is not itself a licence grant.
 
 Copyright (C) 2026 G ROX EOOD
@@ -11,7 +11,7 @@ Copyright (C) 2026 G ROX EOOD
   ├──────────────────────────────────────────────┼──────────────────┤
   │ Everything you install on your own machines  │ MPL-2.0          │
   │   agents/*, crates/agent-core,               │                  │
-  │   crates/roomler-setup-core,                 │ LICENSE-MPL-2.0  │
+  │   crates/meshharbor-setup-core,                 │ LICENSE-MPL-2.0  │
   │   crates/tunnel-core, crates/remote_control, │                  │
   │   crates/localapi, crates/tcp-turn-conn      │                  │
   ├──────────────────────────────────────────────┼──────────────────┤

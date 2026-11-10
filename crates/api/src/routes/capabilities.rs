@@ -11,7 +11,7 @@
 //! `modules` is what THIS server mounts (P8: the profile it was built as,
 //! minus any `[modules]` switch); `compiled` is what the build linked. Per-
 //! tenant capabilities (plan limits, tenant settings, the module's own flags)
-//! arrive with each module (`roomler_core::Module::capabilities`) and are
+//! arrive with each module (`meshharbor_core::Module::capabilities`) and are
 //! mirrored into `/api/auth/me`, so a signed-in client pays no extra request
 //! for them.
 //!
@@ -23,7 +23,7 @@
 //! `features` (FR-102 P9b) are server-wide switches a client must read
 //! before offering something — unlike a module, a feature is something the
 //! SPA fails **closed** on: `session_feedback` is the post-session rating,
-//! off by `ROOMLER__GROWTH__FEEDBACK=false`, and a viewer that has not read
+//! off by `MESHHARBOR__GROWTH__FEEDBACK=false`, and a viewer that has not read
 //! `true` never offers it.
 
 use axum::{Json, extract::State};

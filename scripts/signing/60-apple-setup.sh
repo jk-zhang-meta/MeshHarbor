@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 60-apple-setup.sh -- produce the six Apple secrets that release-agent.yml's
-# macOS job already expects, without ever touching Keychain Access.
-#
-# The signing + notarisation flow in .github/workflows/release-agent.yml is
-# complete and correct; it has simply never had credentials. This script
+# 60-apple-setup.sh -- historical Apple credential-provisioning helper.
+# Original release-job inputs can be inspected through the Historical workflow
+# sources section in docs/local-build.md; current macOS signing requirements
+# are documented there under Packaging and signing. This reference does not
+# perform provisioning or signing. This script, when explicitly invoked,
 # generates the keys and CSRs with openssl, assembles the .p12 bundles from
 # the certificates Apple issues, and pushes everything to GitHub.
 #
@@ -32,7 +32,7 @@
 
 set -euo pipefail
 
-REPO="${REPO:-gjovanov/roomler-ai}"
+REPO="${REPO:-jk-zhang-meta/MeshHarbor}"
 OUTDIR="${OUTDIR:-$(cd "$(dirname "$0")" && pwd)/apple}"
 CERT_PASSWORD="${CERT_PASSWORD:-}"
 
@@ -223,13 +223,13 @@ cmd_secrets() {
 
     cat <<EOF
 
-$(say 'All six set. Apple signing is all-or-nothing in CI:')
+$(say 'All six set. Official local Apple signing must be all-or-nothing:')
     a partially-configured run now FAILS rather than quietly producing a
     signed-but-unnotarised .pkg (which Gatekeeper rejects on any Mac that
     cannot reach Apple's notary service).
 
 $(say 'Rehearse without publishing:')
-    gh workflow run release-agent.yml --repo $REPO -f publish_release=false
+    Read docs/local-build.md and its native signing recipes; CI is retired.
 
     The acceptance check in the job log is:
       spctl -a -vvv -t install <pkg>   ->   source=Notarized Developer ID

@@ -150,7 +150,7 @@ pub fn nudge_gate_at(
         return NudgeGate::Cooldown;
     }
     if entry.attempts >= pacing.max_attempts {
-        let total = roomler_core::cluster::metrics::AGENT_NUDGE_STUCK_TOTAL
+        let total = meshharbor_core::cluster::metrics::AGENT_NUDGE_STUCK_TOTAL
             .fetch_add(1, Ordering::Relaxed)
             + 1;
         warn!(
@@ -290,7 +290,7 @@ pub fn spawn_agent_nudge(state: &FleetState, owner_pod: String, agent_hex: Strin
 /// (steady-state nonzero = stable split; spikes only around rolls =
 /// churn). Fire-and-forget: never blocks the caller.
 pub fn note_agent_offline_evidence(
-    state: &roomler_core::Core,
+    state: &meshharbor_core::Core,
     agent_hex: String,
     caller: &'static str,
 ) {
@@ -318,7 +318,7 @@ pub fn note_agent_offline_evidence(
     tokio::spawn(async move {
         match redis.agent_presence_foreign(&agent_hex).await {
             Ok(Some(owner)) => {
-                let total = roomler_core::cluster::metrics::SPLIT_EVIDENCE_TOTAL
+                let total = meshharbor_core::cluster::metrics::SPLIT_EVIDENCE_TOTAL
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                     + 1;
                 warn!(
@@ -338,7 +338,7 @@ pub fn note_agent_offline_evidence(
 /// cycles that WS iff the agent is FULLY idle — no rc sessions, and nothing
 /// another holder would lose (the tunnel sessions targeting it, and PR-1's
 /// sessions it ORIGINATED through declared routes — both `network`'s, asked
-/// through [`roomler_core::hooks::HookRegistry::agent_busy`]) — so both ends
+/// through [`meshharbor_core::hooks::HookRegistry::agent_busy`]) — so both ends
 /// re-land at the current LB hash. PR-1 adds the cooldown trio (a cycle tears
 /// the agent's rc/tunnel/overlay planes; it must never flap), truthful
 /// refusal reasons on the reply, and refusal/stuck counters.
@@ -388,8 +388,8 @@ pub fn register_bus_handler(state: &FleetState) {
                         o
                     }
                     NudgeGate::Cooldown | NudgeGate::Stuck => {
-                        roomler_core::cluster::metrics::bump(
-                            &roomler_core::cluster::metrics::AGENT_NUDGE_REFUSED_TOTAL,
+                        meshharbor_core::cluster::metrics::bump(
+                            &meshharbor_core::cluster::metrics::AGENT_NUDGE_REFUSED_TOTAL,
                         );
                         return Ok(serde_json::json!({
                             "nudged": false,
@@ -399,13 +399,13 @@ pub fn register_bus_handler(state: &FleetState) {
                 }
             };
             if outcome == NudgeOutcome::Nudged {
-                roomler_core::cluster::metrics::bump(
-                    &roomler_core::cluster::metrics::AGENT_NUDGE_TOTAL,
+                meshharbor_core::cluster::metrics::bump(
+                    &meshharbor_core::cluster::metrics::AGENT_NUDGE_TOTAL,
                 );
                 return Ok(serde_json::json!({ "nudged": true, "reason": "nudged" }));
             }
-            roomler_core::cluster::metrics::bump(
-                &roomler_core::cluster::metrics::AGENT_NUDGE_REFUSED_TOTAL,
+            meshharbor_core::cluster::metrics::bump(
+                &meshharbor_core::cluster::metrics::AGENT_NUDGE_REFUSED_TOTAL,
             );
             // The truthful reason, at info: pre-PR-1 refusals were
             // debug-only and the 2026-08-04 stuck loop was

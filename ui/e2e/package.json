@@ -1,5 +1,5 @@
 {
-  "name": "roomler-ai-e2e",
+  "name": "meshharbor-e2e",
   "private": true,
   "comment": "Empty package marker — overrides ui/package.json's `type: module` so Playwright's TS transform treats .spec.ts files as CJS. Bun's Node compat layer can't handle Playwright's ESM preflight loader (looks for a synthetic `<file>.esm.preflight` module), so we keep the e2e tree CJS-classified. Same trick used in gjovanov/lgr/packages/e2e."
 }

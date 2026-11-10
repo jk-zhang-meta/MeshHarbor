@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! WebSocket handler for `roomler` clients (`role=tunnel-client`).
+//! WebSocket handler for `mh` clients (`role=tunnel-client`).
 //!
 //! T2.5 wires the server-side ACL gate. Lifecycle:
 //!
@@ -33,7 +33,7 @@
 use axum::extract::ws::{Message, WebSocket};
 use bson::{DateTime, oid::ObjectId};
 use futures::{SinkExt, StreamExt, stream::SplitSink};
-use roomler_ai_remote_control::{
+use meshharbor_remote_control::{
     models::{AgentStatus, NodeRef, OsKind, RelayMode, TunnelAuditEvent, TunnelAuditKind},
     signaling::{
         ClientMsg, CloseReason, REJECT_REASON_NO_SESSION, REJECT_REASON_SESSION_MISMATCH,
@@ -41,7 +41,7 @@ use roomler_ai_remote_control::{
     },
     vault::{NET_GRANT_REFUSED, NetKind, canonical_net_host},
 };
-use roomler_ai_services::auth::AuthService;
+use meshharbor_services::auth::AuthService;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
@@ -54,8 +54,10 @@ use tunnel_core::transport::{TRANSPORT_QUIC_V1, TRANSPORT_WEBRTC_DC_V1};
 use crate::NetworkState;
 use crate::agent_arms::pump_server_messages;
 use axum::{extract::WebSocketUpgrade, response::Response};
-use roomler_core::ws::upgrade::{MAX_WS_MESSAGE_BYTES, send_goodbye_and_close, tid_matches_claim};
-use roomler_core::{business_authority::AuthenticatedDevice, client_ip::ConnectionOrigin};
+use meshharbor_core::ws::upgrade::{
+    MAX_WS_MESSAGE_BYTES, send_goodbye_and_close, tid_matches_claim,
+};
+use meshharbor_core::{business_authority::AuthenticatedDevice, client_ip::ConnectionOrigin};
 
 /// Outbound channel capacity. Per-tunnel-client. Generous because a
 /// single peer multiplexes many flows; the dominant traffic is per-
@@ -98,11 +100,11 @@ async fn observe_business_connection(
                 row.owner_user_id,
             )
         {
-            return Err(roomler_core::ApiError::Unauthorized(
+            return Err(meshharbor_core::ApiError::Unauthorized(
                 "Current client identity required for business evidence".into(),
             ));
         }
-        roomler_core::admission::authorize_user_id(&state.core, row.owner_user_id, None).await?;
+        meshharbor_core::admission::authorize_user_id(&state.core, row.owner_user_id, None).await?;
         AuthenticatedDevice::from_tunnel_client(&row)
     })
     .await;
@@ -116,7 +118,7 @@ async fn observe_business_connection(
     if !matches!(
         tokio::time::timeout(
             Duration::from_secs(1),
-            roomler_core::business_authority::record_connection_observation(
+            meshharbor_core::business_authority::record_connection_observation(
                 &state.core,
                 &device,
                 origin,
@@ -211,7 +213,7 @@ pub async fn handle_tunnel_client_socket(
     }
 
     // The opening observation belongs to the connection just bound above.
-    let business_observation = roomler_core::business_authority::ObservationTask::spawn({
+    let business_observation = meshharbor_core::business_authority::ObservationTask::spawn({
         let (state, origin, connection_id) = (
             state.clone(),
             connection_origin.clone(),
@@ -249,7 +251,7 @@ pub async fn handle_tunnel_client_socket(
             warn!(%tunnel_client_id, %e, "tunnel-client lookup failed; audit rows will be sparse");
             (
                 String::new(),
-                roomler_ai_remote_control::models::OsKind::Linux,
+                meshharbor_remote_control::models::OsKind::Linux,
             )
         }
     };
@@ -750,7 +752,7 @@ fn bind_net_grant(
 
 /// Identity + reply channel of whoever originated a tunnel-CLIENT session
 /// on this server. Two principals drive the identical handlers:
-///   * `Principal::TunnelClient` — a dedicated `roomler` WS
+///   * `Principal::TunnelClient` — a dedicated `meshharbor` WS
 ///     (`handle_tunnel_client_socket`).
 ///   * `Principal::Agent` — an enrolled agent driving the tunnel-client
 ///     role over its own agent WS (P3b-2,
@@ -912,7 +914,7 @@ async fn handle_tunnel_open(
         )
         .await
     {
-        let record = roomler_core::cluster::directory::OwnerRecord::parse(&owner);
+        let record = meshharbor_core::cluster::directory::OwnerRecord::parse(&owner);
         let owner_pod = record
             .as_ref()
             .map(|r| r.pod_id.clone())
@@ -928,31 +930,33 @@ async fn handle_tunnel_open(
         // wrong-keyed / older-or-ambiguous originator is itself the
         // mis-placed party and its own fresh redial converges it.
         // `agent` (the target's row) is already fetched above.
-        match roomler_ai_mod_fleet::nudge::rehome_direction(
+        match meshharbor_mod_fleet::nudge::rehome_direction(
             orig.dialed_tid.as_deref(),
             &agent.tenant_id.to_hex(),
             orig.conn_established_ms,
             agent_since_ms,
             state.settings.rc.rehome_direction_guard_ms,
         ) {
-            roomler_ai_mod_fleet::nudge::RehomeDirection::ControllerMove { reason } => {
-                roomler_core::cluster::metrics::bump(
-                    &roomler_core::cluster::metrics::RC_REHOME_CONTROLLER_TOTAL,
+            meshharbor_mod_fleet::nudge::RehomeDirection::ControllerMove { reason } => {
+                meshharbor_core::cluster::metrics::bump(
+                    &meshharbor_core::cluster::metrics::RC_REHOME_CONTROLLER_TOTAL,
                 );
                 info!(
                     origin = %orig.log_id(), %agent_id, %owner_pod, reason,
                     "cross-pod tunnel miss: originator re-dials (nudge suppressed)"
                 );
             }
-            roomler_ai_mod_fleet::nudge::RehomeDirection::NudgeAgent => {
-                roomler_ai_mod_fleet::nudge::spawn_agent_nudge(
+            meshharbor_mod_fleet::nudge::RehomeDirection::NudgeAgent => {
+                meshharbor_mod_fleet::nudge::spawn_agent_nudge(
                     &state.fleet,
                     owner_pod.clone(),
                     agent_id.to_hex(),
                 );
             }
         }
-        roomler_core::cluster::metrics::bump(&roomler_core::cluster::metrics::TUNNEL_REHOME_TOTAL);
+        meshharbor_core::cluster::metrics::bump(
+            &meshharbor_core::cluster::metrics::TUNNEL_REHOME_TOTAL,
+        );
         // Pod identity stays in server logs; the wire carries only the
         // actionable fact + the open_nonce so the CLI fails the exact
         // pending flow and its reconnect loop dials fresh.
@@ -1155,7 +1159,7 @@ async fn handle_tunnel_open(
         let token = dir.owner_token(&tunnel_session_id.to_hex());
         if let Err(e) = dir
             .claim_lww(
-                &roomler_core::cluster::directory::tunnel_key(&tunnel_session_id.to_hex()),
+                &meshharbor_core::cluster::directory::tunnel_key(&tunnel_session_id.to_hex()),
                 &token,
             )
             .await
@@ -1270,8 +1274,8 @@ async fn handle_tunnel_open(
     // host/srflx candidates. `user_id` for the HMAC is the session id so
     // both peers derive identical, session-scoped creds.
     // FR-115 P4b — charged to the tunnel's org, so coturn's statistics name it.
-    let quic_ice_servers = roomler_ai_remote_control::turn_creds::ice_servers_for(
-        &roomler_ai_remote_control::turn_creds::charged(
+    let quic_ice_servers = meshharbor_remote_control::turn_creds::ice_servers_for(
+        &meshharbor_remote_control::turn_creds::charged(
             &tunnel_session_id.to_hex(),
             &orig.tenant_id.to_hex(),
         ),
@@ -1642,7 +1646,7 @@ async fn handle_forward_request(
                 Err(e) => {
                     // Agent not online or its channel is wedged.
                     warn!(origin = %orig.log_id(), %flow_id, agent = %s.agent_id, %e, "agent relay failed");
-                    roomler_ai_mod_fleet::nudge::note_agent_offline_evidence(
+                    meshharbor_mod_fleet::nudge::note_agent_offline_evidence(
                         state,
                         s.agent_id.to_hex(),
                         "tunnel_forward",
@@ -1847,7 +1851,7 @@ async fn relay_half_close_to_agent(
     tunnel_client_id: ObjectId,
     request_session_id: ObjectId,
     flow_id: u32,
-    direction: roomler_ai_remote_control::signaling::Direction,
+    direction: meshharbor_remote_control::signaling::Direction,
 ) {
     let Some(s) = session else {
         debug!(%tunnel_client_id, %flow_id, "half-close on dead session — ignoring");
@@ -1994,7 +1998,7 @@ async fn relay_ice_to_agent(
         },
     ) {
         debug!(%request_session_id, %e, "tunnel ICE relay to agent failed");
-        roomler_ai_mod_fleet::nudge::note_agent_offline_evidence(
+        meshharbor_mod_fleet::nudge::note_agent_offline_evidence(
             state,
             s.agent_id.to_hex(),
             "tunnel_ice",
@@ -2696,7 +2700,7 @@ pub fn ws_upgrade_tunnel_client(
         if client.deleted_at.is_some()
             || matches!(
                 client.status,
-                roomler_ai_remote_control::models::AgentStatus::Quarantined
+                meshharbor_remote_control::models::AgentStatus::Quarantined
             )
         {
             // rc.53: mirror of the agent refusal path. Tunnel-clients
@@ -2706,7 +2710,7 @@ pub fn ws_upgrade_tunnel_client(
             // same notification to the connect-time refusal so the CLI
             // logs "tunnel revoked" instead of opaque socket close.
             info!(%tunnel_client_id, "tunnel-client is quarantined or deleted; refusing WS with rc:tunnel.revoked");
-            let revoked = roomler_ai_remote_control::signaling::ServerMsg::TunnelRevoked {
+            let revoked = meshharbor_remote_control::signaling::ServerMsg::TunnelRevoked {
                 reason: "tunnel-client row was deleted or quarantined; re-enrol to revive".into(),
             };
             send_goodbye_and_close(socket, &revoked, 4003, "tunnel_client_deleted").await;
@@ -2715,13 +2719,13 @@ pub fn ws_upgrade_tunnel_client(
         // FR-103 — a token minted before this client was removed and
         // re-enrolled. To the CLI that is a revoked credential: it stops and
         // says to re-enroll, which is exactly the remedy.
-        if let Some(reason) = roomler_ai_mod_fleet::auth_agent::generation_refusal(
+        if let Some(reason) = meshharbor_mod_fleet::auth_agent::generation_refusal(
             token_gen,
             client.token_gen,
             state.fleet.settings.rc.token_generation_check,
         ) {
             info!(%tunnel_client_id, reason, row_gen = client.token_gen, "tunnel-client token predates its removal; refusing WS with rc:tunnel.revoked");
-            let revoked = roomler_ai_remote_control::signaling::ServerMsg::TunnelRevoked {
+            let revoked = meshharbor_remote_control::signaling::ServerMsg::TunnelRevoked {
                 reason: reason.into(),
             };
             send_goodbye_and_close(socket, &revoked, 4003, "tunnel_client_superseded").await;
@@ -2847,12 +2851,12 @@ mod tests {
 
     /// An auth service under a secret made at run time.
     fn auth() -> AuthService {
-        AuthService::new(roomler_ai_config::JwtSettings {
+        AuthService::new(meshharbor_config::JwtSettings {
             secret: format!("p372a-{}-{}", ObjectId::new(), ObjectId::new()),
             previous_secrets: String::new(),
             access_token_ttl_secs: 3600,
             refresh_token_ttl_secs: 3600,
-            issuer: "roomler-ai-test".into(),
+            issuer: "meshharbor-test".into(),
         })
     }
 
@@ -2876,7 +2880,7 @@ mod tests {
     /// as the grant names it. Each refusal is in its own words.
     #[test]
     fn a_grant_binds_only_where_it_holds() {
-        use roomler_ai_services::auth::NetGrant;
+        use meshharbor_services::auth::NetGrant;
         let ours = auth();
         let (tenant, device, exit) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
         let (session, owner, grant_id) = (ObjectId::new(), ObjectId::new(), ObjectId::new());

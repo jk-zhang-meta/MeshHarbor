@@ -29,12 +29,12 @@ use axum::{
 };
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
 use chrono::NaiveDate;
-use roomler_ai_api::growth::{
+use meshharbor_api::growth::{
     digest::{self, DigestMailer, Measured, Sections},
     purestat::{Filter, PurestatClient, PurestatError, Query},
 };
-use roomler_ai_services::dao::growth_digest::{DigestStatus, DigestStore};
-use roomler_core::growth::ExclusionSet;
+use meshharbor_core::growth::ExclusionSet;
+use meshharbor_services::dao::growth_digest::{DigestStatus, DigestStore};
 use serde_json::{Value, json};
 
 use crate::fixtures::test_app::TestApp;
@@ -787,14 +787,14 @@ async fn every_section_counts_the_seeded_day_exactly() {
     assert_eq!(
         not_measured(&j["search"]["google"]),
         Some((
-            "no Search Console key configured (ROOMLER__GROWTH__SEARCH_CONSOLE_KEY)",
+            "no Search Console key configured (MESHHARBOR__GROWTH__SEARCH_CONSOLE_KEY)",
             None
         ))
     );
     assert_eq!(
         not_measured(&j["search"]["bing"]),
         Some((
-            "no Bing Webmaster API key configured (ROOMLER__GROWTH__BING_API_KEY)",
+            "no Bing Webmaster API key configured (MESHHARBOR__GROWTH__BING_API_KEY)",
             None
         ))
     );
@@ -909,7 +909,7 @@ async fn two_concurrent_runs_store_once_and_send_once() {
         let sends = mailer.sends.lock().unwrap();
         let (to, subject, html, text) = &sends[0];
         assert_eq!(to, "padmin@test.io");
-        assert_eq!(subject, &format!("Roomler daily digest — {DAY}"));
+        assert_eq!(subject, &format!("MeshHarbor daily digest — {DAY}"));
         assert!(
             html.contains("Sign-ups</strong>: 2 (7d 3 · 28d 31)")
                 || html.contains("2 (7d 3 · 28d 4)"),
@@ -1375,7 +1375,7 @@ async fn fake_query(
         .map(str::to_string);
     f.seen.lock().unwrap().push((key.clone(), body.clone()));
     let meta = |has_more: bool, offset: u64| {
-        json!({ "site_domain": "roomler.ai", "hostnames": ["roomler.ai"], "date_from": body["date_from"],
+        json!({ "site_domain": "meshharbor.itachi.fans", "hostnames": ["meshharbor.itachi.fans"], "date_from": body["date_from"],
                 "date_to": body["date_to"], "limit": 100, "offset": offset, "has_more": has_more })
     };
     match key.as_deref() {

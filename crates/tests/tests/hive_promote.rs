@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use roomler_ai_tests::fixtures::seed::SeededTenant;
-use roomler_ai_tests::fixtures::test_app::TestApp;
+use meshharbor_tests::fixtures::seed::SeededTenant;
+use meshharbor_tests::fixtures::test_app::TestApp;
 use serde_json::{Value, json};
 
 mod hive_support;
@@ -111,9 +111,9 @@ fn device_process() {
                 .build()
                 .unwrap();
             rt.block_on(async move {
-                let cfg =
-                    roomlerd::config::load(&dir.join("config.toml")).expect("the device's config");
-                roomlerd::hive::init_as_daemon(
+                let cfg = meshharbord::config::load(&dir.join("config.toml"))
+                    .expect("the device's config");
+                meshharbord::hive::init_as_daemon(
                     &cfg,
                     &dir.join("hive.db"),
                     &dir.join("run"),
@@ -174,7 +174,7 @@ fn device_dir(dir: &Path) -> PathBuf {
 }
 
 /// A device that runs the owner's sessions and holds copies of them.
-fn runs_and_holds(cfg: &mut roomlerd::config::AgentConfig, seeded: &SeededTenant, dir: &Path) {
+fn runs_and_holds(cfg: &mut meshharbord::config::AgentConfig, seeded: &SeededTenant, dir: &Path) {
     cfg.hive_enabled = true;
     cfg.hive_replica = true;
     cfg.hive_accounts
@@ -188,9 +188,9 @@ async fn device(
     app: &TestApp,
     seeded: &SeededTenant,
     dir: &Path,
-    cfg: &roomlerd::config::AgentConfig,
+    cfg: &meshharbord::config::AgentConfig,
 ) -> tokio::process::Child {
-    roomlerd::config::save(&dir.join("config.toml"), cfg).expect("the device's config");
+    meshharbord::config::save(&dir.join("config.toml"), cfg).expect("the device's config");
     let child = tokio::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "device_process",
@@ -307,8 +307,8 @@ async fn promote(
 }
 
 /// Every event of `sid` the store at `db` holds, as kept.
-fn copy_of(db: &Path, sid: &str) -> Vec<roomler_hive_node::EventEnvelope> {
-    let store = roomler_hive_node::store::Store::open(db).expect("the device's store");
+fn copy_of(db: &Path, sid: &str) -> Vec<meshharbor_hive_node::EventEnvelope> {
+    let store = meshharbor_hive_node::store::Store::open(db).expect("the device's store");
     store.page(sid, 0, 100_000).expect("its copy")
 }
 
@@ -358,7 +358,7 @@ async fn heard_last(app: &TestApp, agent_id: &str, secs: u64) {
 fn resume_note_of(dir: &Path, sid: &str) -> (String, Value) {
     let run = dir.join("run").join(sid);
     let note =
-        std::fs::read_to_string(run.join(roomlerd::hive::RESUME_NOTE_FILE)).unwrap_or_default();
+        std::fs::read_to_string(run.join(meshharbord::hive::RESUME_NOTE_FILE)).unwrap_or_default();
     let settings: Value = std::fs::read_to_string(run.join("settings.json"))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -405,7 +405,7 @@ async fn scenario() {
     std::fs::write(a_work.join("notes.md"), WORK).unwrap();
     let mut a_cfg = enrol(&app, &seeded, "hive-promote-a").await;
     runs_and_holds(&mut a_cfg, &seeded, &a_dir);
-    roomlerd::hive::init_as_daemon(
+    meshharbord::hive::init_as_daemon(
         &a_cfg,
         &a_dir.join("hive.db"),
         &a_dir.join("run"),
@@ -612,7 +612,7 @@ async fn scenario() {
     )
     .await;
     assert_eq!(synced["fence"], 2, "{synced}");
-    let record = roomler_ai_mod_hive::dao::AgentSessionDao::new(&app.db)
+    let record = meshharbor_mod_hive::dao::AgentSessionDao::new(&app.db)
         .find(bson::oid::ObjectId::parse_str(&sid).unwrap())
         .await
         .unwrap()
@@ -709,7 +709,7 @@ async fn scenario() {
         },
     )
     .await;
-    let record = roomler_ai_mod_hive::dao::AgentSessionDao::new(&app.db)
+    let record = meshharbor_mod_hive::dao::AgentSessionDao::new(&app.db)
         .find(bson::oid::ObjectId::parse_str(&sid).unwrap())
         .await
         .unwrap()
@@ -730,7 +730,7 @@ async fn scenario() {
     // A holds B's whole history at fence 4. B's process stops, so nothing
     // drains it: refused while B may still call the model, then moved to
     // where A's own ready says its copy ends, into a folder of A's own.
-    use roomler_ai_remote_control::hive::promote_limits::UNREACHABLE_SECS;
+    use meshharbor_remote_control::hive::promote_limits::UNREACHABLE_SECS;
     let want = primary_tip(&mut ws, &sid).await;
     until_session(
         &app,
@@ -810,7 +810,7 @@ async fn scenario() {
         "A resumed B's state from its copy, all four prompts and this one: {turn:?}"
     );
     on_a.close(&mut ws).await;
-    let record = roomler_ai_mod_hive::dao::AgentSessionDao::new(&app.db)
+    let record = meshharbor_mod_hive::dao::AgentSessionDao::new(&app.db)
         .find(bson::oid::ObjectId::parse_str(&sid).unwrap())
         .await
         .unwrap()
@@ -863,7 +863,7 @@ async fn scenario() {
         f
     };
     assert_eq!(fences, [1, 2, 4, 5], "A's fence 3 wrote nothing: {on_c:?}");
-    let c_store = roomler_hive_node::store::Store::open(&c_dir.join("hive.db")).unwrap();
+    let c_store = meshharbor_hive_node::store::Store::open(&c_dir.join("hive.db")).unwrap();
     let c_ends: Vec<(u64, u64, String)> = c_store
         .fence_ends(&sid)
         .unwrap()

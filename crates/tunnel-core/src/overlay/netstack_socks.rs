@@ -19,7 +19,7 @@
 //! Target addressing (all three SOCKS5 `ATYP`, and the UDP header's):
 //! * **IPv4** — a literal overlay address (`100.64.0.5`).
 //! * **DOMAIN** — a peer **name** or MagicDNS FQDN (`devbox` /
-//!   `devbox.myorg.roomler.net`), resolved to an overlay IPv4 from the live mesh
+//!   `devbox.myorg.meshharbor.net`), resolved to an overlay IPv4 from the live mesh
 //!   view ([`resolve_overlay_host`]). MagicDNS-independent: it reads the
 //!   netmap's `name → overlay-IP` directly, no DNS server / magic-domain needed.
 //! * **IPv6** — a **derived overlay v6** (`fd72:6f6f:6d6c::<v4>`) dials over
@@ -66,7 +66,7 @@ const UDP_RELAY_BUF: usize = 64 * 1024 + 512;
 ///      host-unreachable instead of a doomed connect that times out;
 /// 3. an exact, case-insensitive match against a peer's name (`"devbox"`) — its
 ///    IPv4 (universal; every peer has one, v6 is derived from it);
-/// 4. the first DNS label, so a MagicDNS FQDN (`"devbox.myorg.roomler.net"`)
+/// 4. the first DNS label, so a MagicDNS FQDN (`"devbox.myorg.meshharbor.net"`)
 ///    resolves to the same peer as its bare label.
 ///
 /// `None` if nothing matches. Names come straight from the netmap the runtime
@@ -352,6 +352,7 @@ mod tests {
             path_trials: None,
             self_ip: Some("100.64.0.1".into()),
             self_ip6: None,
+            overlay_socks5_port: None,
             peers: vec![
                 peer("DEVBOX", "100.64.0.2"),
                 peer("winhost-a", "100.64.0.4"),
@@ -374,7 +375,7 @@ mod tests {
             Some(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2)))
         );
         assert_eq!(
-            resolve_overlay_host(&view, "WINHOST-A.myorg.roomler.net"),
+            resolve_overlay_host(&view, "WINHOST-A.myorg.meshharbor.net"),
             Some(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 4)))
         );
         // IPv4-mapped IPv6 literal → embedded overlay IPv4.
@@ -434,6 +435,7 @@ mod tests {
             path_trials: None,
             self_ip: Some(a_ip.to_string()),
             self_ip6: None,
+            overlay_socks5_port: None,
             peers: vec![peer("peerb", &b_ip.to_string())],
             exit_node: None,
             route_offer_withheld: None,

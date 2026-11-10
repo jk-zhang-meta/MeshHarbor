@@ -21,8 +21,8 @@ use bson::DateTime;
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
-use roomler_ai_db::models::{NewsletterIssue, Subscriber};
-use roomler_ai_services::newsletter::render_issue_html;
+use meshharbor_db::models::{NewsletterIssue, Subscriber};
+use meshharbor_services::newsletter::render_issue_html;
 
 use crate::SaasState;
 use crate::newsletter::{compose, link_tags, newsletter_from, unsubscribe_url};
@@ -31,7 +31,7 @@ use crate::newsletter::{compose, link_tags, newsletter_from, unsubscribe_url};
 /// residue the status surface reports and `retry_stale` may re-attempt.
 /// Defined beside the ledger DAO since FR-102 P5 (the host's newsletter view
 /// reads it too); re-exported so the path stays.
-pub use roomler_ai_services::dao::newsletter_send::STALE_ROW_SECS;
+pub use meshharbor_services::dao::newsletter_send::STALE_ROW_SECS;
 /// An issue claim older than this may be re-claimed by a resume POST. Kept
 /// well above the heartbeat interval so a live fan-out is never usurped.
 pub const ISSUE_CLAIM_STALE_SECS: i64 = 10 * 60;
@@ -44,7 +44,7 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(30);
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(30);
 
 pub fn stale_cutoff() -> DateTime {
-    roomler_ai_services::dao::newsletter_send::stale_cutoff_at(DateTime::now())
+    meshharbor_services::dao::newsletter_send::stale_cutoff_at(DateTime::now())
 }
 
 /// The fan-out. Pre-renders once, then per recipient: claim (unique index
@@ -246,12 +246,12 @@ pub async fn run_send(state: SaasState, issue: NewsletterIssue, retry_stale: boo
 #[cfg(test)]
 mod tests {
     use bson::DateTime;
-    use roomler_ai_db::models::{IssueStatus, NewsletterIssue};
-    use roomler_ai_services::newsletter::{LinkTags, render_issue_html, site_hosts};
+    use meshharbor_db::models::{IssueStatus, NewsletterIssue};
+    use meshharbor_services::newsletter::{LinkTags, render_issue_html, site_hosts};
 
     use crate::newsletter::{compose, unsubscribe_link};
 
-    const FRONTEND: &str = "https://roomler.ai";
+    const FRONTEND: &str = "https://meshharbor.itachi.fans";
 
     fn issue() -> NewsletterIssue {
         NewsletterIssue {
@@ -259,15 +259,15 @@ mod tests {
             slug: "october-notes".into(),
             subject: "Three products, one daemon".into(),
             preheader: "Why one agent per machine is the whole point.".into(),
-            body_md: "## The story\n\nRead [the docs](https://roomler.ai/docs/install), \
-                      [the post](https://roomler.ai/blog/one-daemon#why), the \
-                      [source](https://github.com/gjovanov/roomler-ai) and \
-                      <https://www.roomler.ai/pricing>.\n\n![a diagram](https://roomler.ai/newsletter-img/d.png)\n"
+            body_md: "## The story\n\nRead [the docs](https://meshharbor.itachi.fans/docs/install), \
+                      [the post](https://meshharbor.itachi.fans/blog/one-daemon#why), the \
+                      [source](https://github.com/jk-zhang-meta/MeshHarbor) and \
+                      <https://www.meshharbor.itachi.fans/pricing>.\n\n![a diagram](https://meshharbor.itachi.fans/newsletter-img/d.png)\n"
                 .into(),
-            hero_url: Some("https://roomler.ai/newsletter-img/october-notes-v1.png".into()),
+            hero_url: Some("https://meshharbor.itachi.fans/newsletter-img/october-notes-v1.png".into()),
             hero_alt: Some("One daemon".into()),
-            cta_text: Some("Try Roomler".into()),
-            cta_url: Some("https://roomler.ai/register".into()),
+            cta_text: Some("Try MeshHarbor".into()),
+            cta_url: Some("https://meshharbor.itachi.fans/register".into()),
             audience: None,
             status: IssueStatus::Sending,
             claimed_by: None,
@@ -331,7 +331,8 @@ mod tests {
         // The links to this site carry the issue's tags; the rest do not.
         let tagged = "utm_source=newsletter&amp;utm_medium=email&amp;utm_campaign=nl-october-notes";
         for l in &la {
-            let ours = l.contains("://roomler.ai/") || l.contains("://www.roomler.ai/");
+            let ours = l.contains("://meshharbor.itachi.fans/")
+                || l.contains("://www.meshharbor.itachi.fans/");
             let is_link = l.starts_with("href=");
             let is_unsub = l.contains("/api/subscribe/unsubscribe/");
             if is_link && ours && !is_unsub {
@@ -354,7 +355,7 @@ mod tests {
             vec![("nl_issue".to_string(), "october-notes".to_string())]
         );
         assert!(opts_a.no_tracking && opts_b.no_tracking);
-        let other = |o: &roomler_ai_services::email::SendOptions, unsub: &str| {
+        let other = |o: &meshharbor_services::email::SendOptions, unsub: &str| {
             o.headers
                 .iter()
                 .map(|(k, v)| (k.clone(), v.replace(unsub, "UNSUBSCRIBE")))
@@ -376,7 +377,7 @@ mod tests {
             None,
         );
         assert!(!html.contains("utm_"));
-        assert!(html.contains("href=\"https://roomler.ai/register\""));
+        assert!(html.contains("href=\"https://meshharbor.itachi.fans/register\""));
     }
 
     /// A test-send carries no custom arg: it has no ledger row, so an event

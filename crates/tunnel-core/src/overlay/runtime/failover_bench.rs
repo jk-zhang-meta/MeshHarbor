@@ -2,7 +2,7 @@
 //! dead direct path, and the return to direct once it heals, measured end to
 //! end on the production carrier logic instead of asserted on one detector.
 //!
-//! Two RELAY-mode runtimes (`new_relay`, as `roomlerd` builds them), each on
+//! Two RELAY-mode runtimes (`new_relay`, as `meshharbord` builds them), each on
 //! its OWN [`CarrierPlane`] — two machines, not two orgs of one — joined by a
 //! fake control plane that answers each `rc:overlay.join` with a netmap naming
 //! the other, and a fake `/derp` relay that cross-wires their [`DerpMux`]es
@@ -18,14 +18,14 @@
 //! - `heal_gap_*_ms`: the longest gap after the heal (make-before-break ⇒ ~tick).
 //!
 //! Ignored (real time, ~2 min). One binary measures each phase through the
-//! kill switches `ROOMLERD_OVERLAY_BUSINESS_POKE_FAST=0` (F1 off) and
-//! `ROOMLERD_OVERLAY_FAST_RETURN=0` (F3 off). Knobs: `MH_FO_BLOCK_S` (25),
+//! kill switches `MESHHARBORD_OVERLAY_BUSINESS_POKE_FAST=0` (F1 off) and
+//! `MESHHARBORD_OVERLAY_FAST_RETURN=0` (F3 off). Knobs: `MH_FO_BLOCK_S` (25),
 //! `MH_FO_OBSERVE_S` (75), `MH_FO_JITTER_MS` (0: a random extra wait before
 //! the cut, so repeated runs sample the runtime's 1 s / 5 s tick phases
 //! instead of hitting the same one every time). Each plane binds ONE address of the shared netns
 //! (`MH_FO_LAN_A`/`_B`, default the suite's veth 10.254.41.1/.2), because a
 //! peer endpoint on one of our own addresses is never a LAN candidate; run
-//! with `ROOMLERD_OVERLAY_DIRECT_PORT=0` so the two planes don't race a port.
+//! with `MESHHARBORD_OVERLAY_DIRECT_PORT=0` so the two planes don't race a port.
 //!
 //! [`failover_wan_node`] is the same measurement split across two machines
 //! (one runtime each, a real WAN path, real STUN), see its doc.
@@ -272,7 +272,7 @@ async fn failover_stall_and_return() {
     assert!(
         !ea.is_empty() && !eb.is_empty(),
         "no LAN endpoint to go direct on: a={ea:?} b={eb:?} \
-         (needs a LAN interface and ROOMLERD_OVERLAY_DIRECT_PORT=0)"
+         (needs a LAN interface and MESHHARBORD_OVERLAY_DIRECT_PORT=0)"
     );
     println!("FAILOVER-ENDPOINTS a={ea:?} b={eb:?}");
 
@@ -382,7 +382,7 @@ async fn failover_stall_and_return() {
         Some(t) if end - t >= QUIET => Some((t - heal).as_millis()),
         Some(_) => None,
     };
-    let env = |k: &str| std::env::var(format!("ROOMLERD_{k}")).unwrap_or_else(|_| "-".into());
+    let env = |k: &str| std::env::var(format!("MESHHARBORD_{k}")).unwrap_or_else(|_| "-".into());
     println!(
         "FAILOVER {{\"poke_fast\":\"{}\",\"fast_return\":\"{}\",\"direct_after_ms\":{},\"block_s\":{},\
          \"stall_ab_ms\":{},\"stall_ba_ms\":{},\"floor_frames\":{},\"return_ms\":{},\
@@ -737,7 +737,7 @@ async fn failover_wan_node() {
     .unwrap();
     let ret = |v: &serde_json::Value| v["return_out_ms"].as_u64();
     let return_ms = ret(&mine).zip(ret(&b)).map(|(x, y)| x.max(y));
-    let env = |k: &str| std::env::var(format!("ROOMLERD_{k}")).unwrap_or_else(|_| "-".into());
+    let env = |k: &str| std::env::var(format!("MESHHARBORD_{k}")).unwrap_or_else(|_| "-".into());
     let line = serde_json::json!({
         "standby_copies_env": env("OVERLAY_STANDBY_COPIES"),
         "poke_fast": env("OVERLAY_BUSINESS_POKE_FAST"),

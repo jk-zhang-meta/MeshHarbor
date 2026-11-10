@@ -59,7 +59,7 @@ function harness(opts: { storage?: Storage | 'throws'; onLine?: boolean } = {}) 
   }
 }
 
-const chunkError = new TypeError('Failed to fetch dynamically imported module: https://roomler.ai/assets/AgentsSection-Ab12.js')
+const chunkError = new TypeError('Failed to fetch dynamically imported module: https://meshharbor.itachi.fans/assets/AgentsSection-Ab12.js')
 
 describe('isChunkLoadError', () => {
   it('knows the failed-import message of each browser', () => {

@@ -1,6 +1,6 @@
 # Licensing
 
-Roomler is open source under a **split licence**: the server you would *host* is
+MeshHarbor is open source under a **split licence**: the server you would *host* is
 AGPL-3.0-only, and everything you *install on a machine* is MPL-2.0.
 
 If you only read one paragraph: **you can self-host all of it, free, on unlimited
@@ -26,7 +26,7 @@ reported home would be indefensible.
 
 **Yes, and this is the case the split exists to protect.**
 
-The agent you deploy at a client site — `roomlerd`, the `roomler` CLI, the
+The agent you deploy at a client site — `meshharbord`, the `mh` CLI, the
 desktop and setup apps — is **MPL-2.0**. MPL is a *file-level* copyleft: if you
 modify one of our files, you publish that file. It imposes **nothing** on your
 service, your RMM stack, your scripts, your billing system, or any proprietary
@@ -57,7 +57,7 @@ Not under the AGPL, if that product is proprietary. See
 [COMMERCIAL.md](COMMERCIAL.md) — an exception is available and is a normal,
 uncomplicated purchase.
 
-### Can I resell Roomler as a hosted service?
+### Can I resell MeshHarbor as a hosted service?
 
 Under the AGPL, yes — provided you publish your modifications to the server under
 the AGPL as well. If you want to host a proprietary fork, that needs a commercial
@@ -91,12 +91,12 @@ The authoritative statement for any given file is its own
 | Regional DERP relay | `crates/derp-relay` | `AGPL-3.0-only` |
 | Integration tests | `crates/tests` | `AGPL-3.0-only` |
 | Web UI | `ui/` | `AGPL-3.0-only` |
-| Remote-control agent (`roomlerd`) | `agents/roomlerd` | `MPL-2.0` |
-| Tunnel/CLI client (`roomler`) | `agents/roomler-cli` | `MPL-2.0` |
-| CLI shim | `agents/roomler-cli-shim` | `MPL-2.0` |
-| Desktop companion | `agents/roomler-desktop` | `MPL-2.0` |
-| Install wizard | `agents/roomler-setup` | `MPL-2.0` |
-| Wizard machinery | `crates/roomler-setup-core` | `MPL-2.0` |
+| Remote-control agent (`meshharbord`) | `agents/meshharbord` | `MPL-2.0` |
+| Tunnel/CLI client (`mh`) | `agents/meshharbor-cli` | `MPL-2.0` |
+| CLI shim | `agents/meshharbor-cli-shim` | `MPL-2.0` |
+| Desktop companion | `agents/meshharbor-desktop` | `MPL-2.0` |
+| Install wizard | `agents/meshharbor-setup` | `MPL-2.0` |
+| Wizard machinery | `crates/meshharbor-setup-core` | `MPL-2.0` |
 | Agent building blocks | `crates/agent-core` | `MPL-2.0` |
 | Overlay/tunnel transport core | `crates/tunnel-core` | `MPL-2.0` |
 | Remote-control protocol | `crates/remote_control` | `MPL-2.0` |
@@ -119,7 +119,7 @@ distributed as part of a Larger Work under a secondary licence such as the
 
 The same rule applies to a single file: `ui/src/utils/mesh.ts` (the mesh graph's
 edge rules) is bundled into the desktop companion as
-`agents/roomler-desktop/src/front/mesh-util.js`, so it is MPL-2.0 inside the
+`agents/meshharbor-desktop/src/front/mesh-util.js`, so it is MPL-2.0 inside the
 otherwise AGPL web app (`CLIENT_FILES` in `scripts/licence-classes.sh`).
 
 We would rather state this plainly than let someone discover it by reading the
@@ -145,7 +145,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Third-party components
 
-Roomler ships third-party code, some of it under licences with their own
+MeshHarbor ships third-party code, some of it under licences with their own
 obligations — including a **written offer for LGPL relinking** covering the
 statically-linked FFmpeg libraries in the Windows agent.
 
@@ -155,11 +155,11 @@ See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ## Contact
 
-Licensing questions: **legal@roomler.ai**
+Licensing questions: **legal@meshharbor.itachi.fans**
 
 G ROX EOOD · Plovdivska 110, 4400 Pazardzhik, Bulgaria · UIC 205174895 ·
 VAT BG205174895. Full company details at
-[roomler.ai/imprint](https://roomler.ai/imprint).
+[meshharbor.itachi.fans/imprint](https://meshharbor.itachi.fans/imprint).
 
 *This document explains our licensing in plain language for convenience. Where it
 and a licence text disagree, the licence text governs.*

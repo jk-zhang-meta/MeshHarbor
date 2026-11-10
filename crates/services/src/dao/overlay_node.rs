@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
+use meshharbor_remote_control::models::{AgentStatus, DEFAULT_ROUTE_V4, NodeRef, OverlayNode};
 use mongodb::Database;
 use mongodb::options::ReturnDocument;
-use roomler_ai_remote_control::models::{AgentStatus, DEFAULT_ROUTE_V4, NodeRef, OverlayNode};
 
 use super::base::{BaseDao, DaoError, DaoResult};
 
@@ -97,7 +97,7 @@ pub struct NewOverlayNode {
 
 /// B4 — Minimum allowed key authorization TTL (seconds), matching the HTTP API
 /// validation floor in `routes/overlay_key.rs` so a misconfigured environment
-/// variable (`ROOMLER_OVERLAY_KEY_TTL_SECS=1`) cannot cause a 5-second reaper
+/// variable (`MESHHARBOR_OVERLAY_KEY_TTL_SECS=1`) cannot cause a 5-second reaper
 /// revocation storm.
 pub const MIN_KEY_TTL_SECS: u64 = 60;
 
@@ -505,7 +505,7 @@ impl OverlayNodeDao {
                 // allocation; its heartbeats re-mirror a fresh one.
                 "warm_relay_endpoint": bson::Bson::Null,
                 // rc.142 — refresh the QUIC capability on each re-join
-                // (an operator may flip ROOMLERD_OVERLAY_QUIC).
+                // (an operator may flip MESHHARBORD_OVERLAY_QUIC).
                 "supports_quic": supports_quic,
                 // Phase D — refresh the single-relay capability on each
                 // re-join (an operator may flip OVERLAY_RELAY_SINGLE).
@@ -904,7 +904,7 @@ impl OverlayNodeDao {
     /// per peer, and the broker's pair-region pick reads it from here.
     /// The LIVE overlay row for an agent, if it has one.
     ///
-    /// Roomler SSH needs it to tell a caller where to dial. Live-scoped
+    /// MeshHarbor SSH needs it to tell a caller where to dial. Live-scoped
     /// (`deleted_at: null`) on purpose: a tombstone keeps the address it once
     /// held as a forensic record, and handing that out would send the caller
     /// to whoever holds it now.
@@ -1021,7 +1021,7 @@ impl OverlayNodeDao {
     pub async fn update_netcheck_caps(
         &self,
         node_id: ObjectId,
-        caps: roomler_ai_remote_control::signaling::CapVectorWire,
+        caps: meshharbor_remote_control::signaling::CapVectorWire,
     ) -> DaoResult<bool> {
         self.base
             .update_by_id(
@@ -1212,7 +1212,7 @@ pub fn clamp_default_key_ttl_secs(raw: u64) -> Option<u64> {
 }
 
 fn default_key_ttl_secs() -> Option<u64> {
-    std::env::var("ROOMLER_OVERLAY_KEY_TTL_SECS")
+    std::env::var("MESHHARBOR_OVERLAY_KEY_TTL_SECS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .and_then(clamp_default_key_ttl_secs)

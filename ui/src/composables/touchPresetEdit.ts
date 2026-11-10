@@ -20,7 +20,7 @@ import type { ButtonControl, ControlPlace, MacroStep, TouchControl, TouchPreset 
 export { MINE_PRESET_PREFIX }
 
 /** Per user, in this browser. */
-export const MY_PRESETS_STORAGE_PREFIX = 'roomler-rc-touch-presets:'
+export const MY_PRESETS_STORAGE_PREFIX = 'meshharbor-rc-touch-presets:'
 
 /** The server's limits, kept in lockstep with `TouchPresetRequest`. */
 export const LIMITS = {

@@ -4,7 +4,7 @@
 //! nothing the server keeps.
 //!
 //! A real server (`TestApp`, module `hive` on) and a real device in-process:
-//! `roomlerd`'s signalling loop, its Hive supervisor, its replica store and
+//! `meshharbord`'s signalling loop, its Hive supervisor, its replica store and
 //! its viewer peer — sessions launched as this test's own account through
 //! `hive::init_as_daemon` (feature `hive-test-launcher`). This file is its own
 //! test BINARY because that supervisor is process-global: in the lib's test
@@ -54,8 +54,8 @@ use std::time::{Duration, Instant};
 
 use bson::{Document, doc};
 use futures::TryStreamExt;
-use roomler_ai_tests::fixtures::seed::SeededTenant;
-use roomler_ai_tests::fixtures::test_app::TestApp;
+use meshharbor_tests::fixtures::seed::SeededTenant;
+use meshharbor_tests::fixtures::test_app::TestApp;
 use serde_json::{Value, json};
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
@@ -114,15 +114,15 @@ impl Watch {
     }
 
     /// The SERVER's lines that carried `s`: every crate of the server is
-    /// `roomler_ai_*` or `roomler_core`; the device's are `roomlerd` and
-    /// `roomler_node_core`, and its store `roomler_hive_node`.
+    /// `meshharbor_*` or `meshharbor_core`; the device's are `meshharbord` and
+    /// `meshharbor_node_core`, and its store `meshharbor_hive_node`.
     fn server_hits(&self, s: &str) -> Vec<String> {
         self.hits
             .lock()
             .unwrap()
             .iter()
             .filter(|(t, w)| {
-                w == s && (t.starts_with("roomler_ai") || t.starts_with("roomler_core"))
+                w == s && (t.starts_with("meshharbor") || t.starts_with("meshharbor_core"))
             })
             .map(|(t, _)| t.clone())
             .collect()
@@ -271,9 +271,9 @@ fn member_device_process() {
                 .build()
                 .unwrap();
             rt.block_on(async move {
-                let cfg =
-                    roomlerd::config::load(&dir.join("config.toml")).expect("the member's config");
-                roomlerd::hive::init_as_daemon(
+                let cfg = meshharbord::config::load(&dir.join("config.toml"))
+                    .expect("the member's config");
+                meshharbord::hive::init_as_daemon(
                     &cfg,
                     &dir.join("hive.db"),
                     &dir.join("run"),
@@ -335,7 +335,7 @@ async fn member_caught_up(
 
 /// P2d-6 — every event of `sid` the store at `db` holds, its JSON as kept.
 fn copy_of(db: &Path, sid: &str) -> String {
-    let store = roomler_hive_node::store::Store::open(db).expect("the member's store");
+    let store = meshharbor_hive_node::store::Store::open(db).expect("the member's store");
     let events = store.page(sid, 0, 100_000).expect("the member's copy");
     events
         .iter()
@@ -400,7 +400,7 @@ async fn scenario(watch: Watch) {
     cfg.hive_roots = vec![roots.display().to_string()];
     cfg.hive_harness = Some(harness.display().to_string());
     cfg.hive_max_sessions = Some(2);
-    roomlerd::hive::init_as_daemon(
+    meshharbord::hive::init_as_daemon(
         &cfg,
         &dir.path().join("hive.db"),
         &dir.path().join("run"),
@@ -419,7 +419,7 @@ async fn scenario(watch: Watch) {
     let mut member_cfg = enrol(&app, &seeded, "hive-canary-member").await;
     member_cfg.hive_replica = true;
     let member = member_cfg.agent_id.clone();
-    roomlerd::config::save(&member_dir.join("config.toml"), &member_cfg)
+    meshharbord::config::save(&member_dir.join("config.toml"), &member_cfg)
         .expect("the member's config");
     let mut member_process = tokio::process::Command::new(std::env::current_exe().unwrap())
         .args([
@@ -563,7 +563,7 @@ async fn scenario(watch: Watch) {
     let _ = tokio::time::timeout(Duration::from_secs(10), device_task).await;
 
     // ── The server's side ───────────────────────────────────────────────────
-    let uploads = roomler_core::storage::local_upload_dir();
+    let uploads = meshharbor_core::storage::local_upload_dir();
     let frames = ws.seen.lock().unwrap().clone();
     let in_frames = |s: &str| frames.iter().filter(|f| f.contains(s)).count();
 

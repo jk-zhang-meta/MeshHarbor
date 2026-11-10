@@ -1,0 +1,99 @@
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Copyright (C) 2026 G ROX EOOD -->
+<!doctype html>
+<!--
+  FR-27 — the consent prompt, as its own small always-on-top window.
+
+  Deliberately NOT the main SPA: throwing a 1100x740 app window over whatever
+  someone is doing, to ask one yes/no, is the wrong shape for a prompt. This
+  page carries no router, no polling of anything else, and no dependency on
+  the app shell.
+
+  Everything from the daemon is written with textContent. It originates
+  off-device (a controller's display name, a command line) and is REDACTED,
+  not sanitised — the two are not the same, and only one of them makes a
+  string safe to put in innerHTML.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MeshHarbor — permission needed</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      /* Its own window: no chrome, no scroll, fills the frame exactly. */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        padding: 14px 16px;
+        gap: 8px;
+        box-sizing: border-box;
+        /* Borderless + always-on-top: an outline is the only thing telling
+           the eye where the window ends. */
+        border: 1px solid var(--border, rgba(255, 255, 255, 0.16));
+        border-radius: 8px;
+      }
+      .p-title {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .p-lead {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.4;
+      }
+      .p-meta {
+        margin: 0;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .p-detail {
+        margin: 0;
+        padding: 6px 8px;
+        border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+        border-radius: 5px;
+        background: rgba(127, 127, 127, 0.08);
+        font-size: 11.5px;
+        line-height: 1.4;
+        max-height: 4.4em;
+        overflow-y: auto;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+      }
+      .p-actions {
+        margin-top: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      /* The countdown is the honest part: this decision expires, and a prompt
+         that silently stops mattering is how "consent seems not to work"
+         looks from the other end. */
+      #p-countdown {
+        font-size: 12px;
+        color: var(--muted);
+        margin-right: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 class="p-title" id="p-title">Remote control request</h1>
+    <p class="p-lead"><strong id="p-who"></strong> <span id="p-verb"></span>.</p>
+    <p class="p-meta" id="p-org-row" hidden>On behalf of <strong id="p-org"></strong></p>
+    <p class="p-detail" id="p-detail-row" hidden><span id="p-detail"></span></p>
+    <p class="p-meta" id="p-perms-row">Permissions: <span id="p-perms" class="mono"></span></p>
+    <div class="p-actions">
+      <span id="p-countdown"></span>
+      <button type="button" id="p-deny" class="consent-btn consent-deny">Deny</button>
+      <button type="button" id="p-approve" class="consent-btn consent-approve">Approve</button>
+    </div>
+    <script src="panel-consent.js"></script>
+  </body>
+</html>

@@ -250,7 +250,7 @@ async fn a_session_whose_agent_recorded_no_carrier_has_none() {
 // tick, records its carrier. The tests above drive the server with hand-made
 // `rc:session.stats` frames; this one drives the actual agent library through a
 // real webrtc-rs peer, so the genuine carrier observation
-// (`roomlerd::session_carrier::observe`) and the P9d early-send trigger fire.
+// (`meshharbord::session_carrier::observe`) and the P9d early-send trigger fire.
 //
 // On master this FAILS: the only carrier send is the 30 s tick (which never
 // fires in a ~15 s session) and `final_session_stats` (no transfers ⇒ `None`,
@@ -259,7 +259,7 @@ async fn a_session_whose_agent_recorded_no_carrier_has_none() {
 // the row while the server still holds the session live.
 // ────────────────────────────────────────────────────────────────────────────
 
-use roomlerd::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
+use meshharbord::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
 use std::net::IpAddr;
 use std::sync::Arc;
 use webrtc::api::APIBuilder;
@@ -280,18 +280,18 @@ fn spawn_real_agent(
     tokio::spawn(async move {
         let connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
-        let broker = roomlerd::consent::ConsentBroker::new(
-            roomlerd::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-test-consent-{}", cfg.agent_id)),
+        let broker = meshharbord::consent::ConsentBroker::new(
+            meshharbord::consent::Mode::AutoGrant,
+            std::env::temp_dir().join(format!("meshharbor-test-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         let exec_enabled = cfg.exec_enabled;
         let remote_config_enabled = cfg.remote_config_enabled;
         let _ = signaling::run(
-            signaling::OrgCtx::primary(roomlerd::token_slot::TokenSlot::new(
+            signaling::OrgCtx::primary(meshharbord::token_slot::TokenSlot::new(
                 cfg.agent_token.clone(),
             )),
-            roomlerd::delegate::Delegation::Off,
+            meshharbord::delegate::Delegation::Off,
             cfg,
             EncoderPreference::Software,
             stop_rx,
@@ -299,14 +299,14 @@ fn spawn_real_agent(
             view_tx,
             Default::default(),
             broker,
-            roomlerd::tunnel::client_mgr::TunnelClientHub::new("test".into()),
-            roomlerd::remote_config::RemoteConfigServices::new(
+            meshharbord::tunnel::client_mgr::TunnelClientHub::new("test".into()),
+            meshharbord::remote_config::RemoteConfigServices::new(
                 std::path::PathBuf::from("unused-in-tests.toml"),
                 Arc::new(tokio::sync::Mutex::new(())),
                 exec_enabled,
                 remote_config_enabled,
             ),
-            roomlerd::rc_sessions::RcSessionRegistry::new(),
+            meshharbord::rc_sessions::RcSessionRegistry::new(),
         )
         .await;
     })
@@ -353,7 +353,7 @@ async fn wait_online(app: &TestApp, seeded: &SeededTenant, cfg: &AgentConfig) {
 }
 
 /// The overlay's address ranges, as the agent's carrier observation reads them
-/// (`roomlerd::peer::addr_is_overlay_range`): the CGNAT `/10` the overlay
+/// (`meshharbord::peer::addr_is_overlay_range`): the CGNAT `/10` the overlay
 /// lives in, and the derived-v6 ULA `fd72:6f6f:6d6c::/48`.
 fn is_overlay_range(ip: IpAddr) -> bool {
     match ip {

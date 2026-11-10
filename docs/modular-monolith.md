@@ -9,10 +9,10 @@ works now, for whoever has to change it.
 
 Not services, not plugins: nothing is loaded dynamically, nothing talks over a network that used
 to be a function call, and no document or wire message changed shape. What changed is **who owns
-what**, and that the ownership is enforced by the compiler and by a composition baseline in CI.
+what**, and that the ownership is enforced by the compiler and by a locally run composition baseline.
 
 > Start with [architecture.md](architecture.md) for the whole system; this page is the server's
-> internal composition only. The daemon (`roomlerd`) is untouched by it.
+> internal composition only. The daemon (`meshharbord`) is untouched by it.
 
 ---
 
@@ -20,12 +20,12 @@ what**, and that the ownership is enforced by the compiler and by a composition 
 
 ```mermaid
 flowchart BT
-    core["crates/core → <b>roomler-core</b> (AGPL)<br/>identity · tenancy · plans · notifications · storage<br/>the /ws socket + its fan-out · Redis pub/sub · cluster bus<br/>TURN creds · metering · rate-limit primitive · hooks registry"]
+    core["crates/core → <b>meshharbor-core</b> (AGPL)<br/>identity · tenancy · plans · notifications · storage<br/>the /ws socket + its fan-out · Redis pub/sub · cluster bus<br/>TURN creds · metering · rate-limit primitive · hooks registry"]
     fleet["modules/fleet<br/>agents · enrollment · presence · <b>the Hub</b> · consent<br/>exec + audit · releases · remote config · removal"]
     chat["modules/chat<br/>rooms · messages · reactions · files · search<br/>xlsx export · giphy · typing:*"]
     conference["modules/conference<br/>mediasoup SFU · media:* · calls · recordings<br/>(the ONLY crate that links mediasoup)"]
     remote["modules/remote<br/>RC sessions · rc:* controller dispatch<br/>/turn/credentials · /relay/regions · cross-pod relay"]
-    network["modules/network<br/>overlay IPAM + netmaps + ACL · tunnels · /derp<br/>peer relays · Roomler SSH · MagicDNS"]
+    network["modules/network<br/>overlay IPAM + netmaps + ACL · tunnels · /derp<br/>peer relays · MeshHarbor SSH · MagicDNS"]
     saas["modules/saas (add-on)<br/>Stripe · newsletter · plan compliance"]
     hive["modules/hive (FR-90, default OFF)<br/>agent sessions: the record + lifecycle<br/>rc:hive.* · hive_audit · turn stubs · never content"]
     vault["modules/vault (FR-90 P3, default OFF)<br/>secrets under envelope encryption (an age KEK)<br/>RRNs · vault_audit · never a value in an answer"]
@@ -49,12 +49,12 @@ Three rules keep it a monolith rather than a pile of crates:
 | Rule | What it means in code |
 |---|---|
 | **The DAG is data** | `crates/core/src/graph.rs` lists the modules and the six edges (`conference → chat`, `remote → fleet`, `network → fleet`, `hive → fleet`, `hive → chat`, `vault → hive`); FR-90 P3-3b added `vault → hive` (a lease is believed only from the session record's device at its fence), and `vault → fleet` arrives with P3-3c. Any module may call core; core **never** calls a module. |
-| **Core membership is narrow** | Something is in `roomler-core` only if at least two modules need it **and** it is identity, tenancy or infrastructure. Everything else belongs to exactly one module. |
+| **Core membership is narrow** | Something is in `meshharbor-core` only if at least two modules need it **and** it is identity, tenancy or infrastructure. Everything else belongs to exactly one module. |
 | **Inverse flows are hooks** | When core must reach "up" (a tenant is archived, an agent is removed), it invokes a registry of hooks in a fixed order — see §6. |
 
-The licence split follows the crate boundary: `roomler-core` and every module are AGPL-3.0
-(server side); the daemon's shared crate is `roomler-node-core` (`crates/agent-core`, MPL-2.0)
-and a CI assertion inverts `cargo tree` from every agent binary to prove `roomler-core` is never
+The licence split follows the crate boundary: `meshharbor-core` and every module are AGPL-3.0
+(server side); the daemon's shared crate is `meshharbor-node-core` (`crates/agent-core`, MPL-2.0)
+and a local assertion must invert `cargo tree` from every agent binary to prove `meshharbor-core` is never
 inside one (FR-24, FR-69 AC10).
 
 ---
@@ -69,7 +69,7 @@ inside one (FR-24, FR-69 AC10).
 | rooms, messages, reactions, files (+ media-type sniffing), search, export, giphy, `typing:*` | **chat** | `conference` depends on it: room guards have `_with(tenants, rooms, …)` forms so both modules run ONE visibility rule |
 | the mediasoup workers, `media:*`, calls, recordings | **conference** | first user of the stateful surfaces: `WsHandler::closed`, `Module::jobs`, `Module::shutdown` |
 | RC session routes, `rc:*` controller dispatch + authz + consent-mode gate, the cross-pod RC relay, `/turn/credentials`, `/relay/regions` | **remote** | the session state machine stays in fleet's Hub; the controller path is a host → module **call**, not a `ws` namespace |
-| overlay engine (IPAM, netmaps, leases, L3 ACL, relay grants), the org relay mint, the DERP ACL cache + `/derp` upgrade + cluster convergence, tunnel clients + policies, peer relays, Roomler SSH, the ephemeral reaper | **network** | `Module::indexes_for(multi_block)` is born here — `overlay_blocks` has two schemas |
+| overlay engine (IPAM, netmaps, leases, L3 ACL, relay grants), the org relay mint, the DERP ACL cache + `/derp` upgrade + cluster convergence, tunnel clients + policies, peer relays, MeshHarbor SSH, the ephemeral reaper | **network** | `Module::indexes_for(multi_block)` is born here — `overlay_blocks` has two schemas |
 | Stripe, the public updates list + newsletter, plan compliance | **saas** | an add-on feature on the api crate; no self-host image carries it |
 | agent sessions: `agent_sessions` + `hive_audit`, the start/stop routes and their gates, the devices' `rc:hive.*` answers, reconcile-on-connect, each session's room notes and turn stubs | **hive** (FR-90) | built ON fleet (`Module::Deps = FleetState`: the Hub) **and** chat (the session room) — chat is stateless, so hive re-creates `chat::bound::BoundChat` from the core rather than taking chat's state (rule 5). Chat stores a room's or message's `binding {module, ref}` and never interprets it; one of the two modules whose switch defaults **off** (`ModulesSettings::DEFAULT_OFF`, with `vault`), so `switched_off` lists it until an operator turns it on (`[modules] hive`, or a `hive.tenants` list — FR-90 P1g-2); leads `HOOK_ORDER` as a session holder |
 | the vault: `vault_secrets` + `vault_versions` (each value sealed under its own data key, wrapped to an `age` KEK) + `vault_audit`, the administrator's metadata routes — none answers a value; P3-2a's `vault_roles` + `vault_policies` (Cedar, checked on write) and `simulate`; P3-3b's leases (`rc:vault.lease` answered on the asking connection) and `vault_leases`; P3-3c's revocation (`rc:vault.revoke`); P3-4d's device reports (`rc:vault.activity`, fire-and-forget) into `vault_activity`, a claim kept apart from `vault_audit`; P3-4e's approval cards (`vault_approvals`, the answer route) | **vault** (FR-90 P3-1, P3-2a, P3-2b, P3-3b, P3-3c, P3-4d, P3-4e) | `Module::Deps = ()`: its one edge, `vault → hive` (P3-3b), reads session records through hive's stateless DAO, which is not a `Deps` (rule 5), so a vault mounted without hive finds no session to lease for. P3-4e calls hive's public `access::may_answer` and `room::post_approval_card` over the same edge; each builds what it needs from the core (chat's `BoundChat` is stateless), so there is still no `Deps` and no `vault → chat` edge. It registers an agent-socket handler for the `rc:vault.*` namespace (`Owner::Vault`), with one lease queue per connection. Its switch defaults **off** like hive's, and a `vault.tenants` list mounts it by itself. Second in `HOOK_ORDER`, right after `hive`: from P3-3 it holds leases that sessions hold, so it revokes them once the sessions have ended and while the device is still there to be told. P3-2b — it registers the **session gate** (`Hooks.session`, a `SessionGate`): hive asks it, through core, before a session takes a vault role or moves with one, since hive must never call the vault ([vault.md](vault.md) §8). P3-3c — it registers a `FleetLifecycle` for `agent_removed` (a removed device's leases taken back and told, a failure logged rather than refusing the removal), and pushes a revocation itself: each pod tells the devices connected to it on the connections its lease socket holds, so it needs neither fleet's Hub nor a `vault → fleet` edge ([vault.md](vault.md) §11) |
@@ -85,7 +85,7 @@ core's extractors work unchanged inside it.
 
 ```mermaid
 flowchart LR
-    subgraph contract["roomler_core::Module — the surfaces"]
+    subgraph contract["meshharbor_core::Module — the surfaces"]
         R["routes() → Router<()><br/>unlimited_routes() (outside the governor)"]
         W["ws() → WsRegistration<br/>handlers (typing:*, media:*) · upgrades (/derp)"]
         I["indexes_for(multi_block)<br/>the module's index sets"]
@@ -137,9 +137,9 @@ flowchart LR
         F5["profile-access = fleet + remote + network"]
         S["saas — an ADD-ON, never in a published self-host image"]
     end
-    DF["Dockerfile<br/>ARG PROFILE=full · ARG SAAS=1<br/>--no-default-features --features roomler-ai-api/profile-$PROFILE[,saas]"]
-    subgraph images["images on ghcr.io/gjovanov/roomler-ai"]
-        H["hosted-&lt;date&gt;-&lt;sha7&gt; · <b>hosted</b><br/>full + saas — what roomler.ai runs (FR-73)"]
+    DF["Dockerfile<br/>ARG PROFILE=full · ARG SAAS=1<br/>--no-default-features --features meshharbor-api/profile-$PROFILE[,saas]"]
+    subgraph images["images on ghcr.io/jk-zhang-meta/meshharbor"]
+        H["hosted-&lt;date&gt;-&lt;sha7&gt; · <b>hosted</b><br/>full + saas — what meshharbor.itachi.fans runs (FR-73)"]
         V["&lt;tag&gt; = full · <b>latest</b><br/>&lt;tag&gt;-collab · -remote · -mesh · -access<br/>SAAS=0, asserted by the publish smoke"]
     end
     HEALTH["/health · /api/capabilities<br/>modules = the MOUNTED set<br/>compiled = compose::EXTRACTED"]
@@ -148,10 +148,10 @@ flowchart LR
     style H fill:#e8f0fe
 ```
 
-| Profile | Carries | Needs beside it | Leaves out (and CI asserts it) |
+| Profile | Carries | Needs beside it | Leaves out (assert locally) |
 |---|---|---|---|
 | `full` | everything | MongoDB, Redis, MinIO, coturn, the media port range | — |
-| `collab` | chat, conference | MongoDB, Redis, MinIO, coturn | the fleet, the overlay, remote desktop; **no `roomler-ai-tunnel-core`** |
+| `collab` | chat, conference | MongoDB, Redis, MinIO, coturn | the fleet, the overlay, remote desktop; **no `meshharbor-tunnel-core`** |
 | `remote` | fleet, remote | MongoDB, Redis, coturn | the SFU worker build, MinIO, the overlay; **no `mediasoup`** |
 | `mesh` | fleet, network | MongoDB, Redis, coturn (+ DERP relays if run) | the SFU worker build, MinIO; **no `mediasoup`** |
 | `access` | fleet, remote, network | MongoDB, Redis, coturn | chat, calls; **no `mediasoup`** |
@@ -164,7 +164,7 @@ Three facts about profiles that are easy to get wrong:
 - `/health` and `/api/capabilities` report the **mounted** set, never the DAG — a `mesh` image
   must answer `["fleet","network"]`, not all six.
 - `cargo clippy --workspace` compiles the feature **union** and can never see a profile. The
-  `profiles` CI job checks each reduced profile with `--no-default-features` and asserts the
+  local profile checks must check each reduced profile with `--no-default-features` and asserts the
   absences against a `cargo tree` that must list ≥100 crates **and** a positive control on the
   full graph — an absence assertion that cannot fail proves nothing.
 
@@ -226,10 +226,10 @@ Three properties of the design are load-bearing:
 - **A dropped module answers 404, never 500.** 500 would mean a route mounted onto absent state.
 - **The browser runs inside the server VM**, against loopback. RTP does not survive a
   port-forward; a LAN URL is not a secure context, so `navigator.mediaDevices` is `undefined`; and
-  `ROOMLER__APP__FRONTEND_URL` must **equal** the browser's Origin or the cookie-authenticated
+  `MESHHARBOR__APP__FRONTEND_URL` must **equal** the browser's Origin or the cookie-authenticated
   `/ws` upgrade is 403'd. The prod e2e lane uses an in-pod sidecar for the same three reasons.
 
-⚠️ **A second machine needs TLS.** `roomlerd enroll` rewrites `http://` to `https://` for any
+⚠️ **A second machine needs TLS.** `meshharbord enroll` rewrites `http://` to `https://` for any
 non-loopback host — enrollment tokens must travel over TLS — so a plain-HTTP self-host can only
 enrol devices from its own box. ⚠️ And the daemon's two TLS stacks disagree about a self-signed
 certificate that is its own CA: enrollment (OpenSSL) accepts it, the signalling WebSocket (rustls)
@@ -237,7 +237,7 @@ refuses it as `CaUsedAsEndEntity`. The visible symptom is an agent that enrols p
 comes online.
 
 **Verified 2026-09-07** on `v0.4.76-{collab,remote,mesh,access}` and a current-code `full`: all
-five cells green, 79 checks. The harness is `roomler-ai-deploy/profiletest/` plus the
+five cells green, 79 checks. The harness is `meshharbor-deploy/profiletest/` plus the
 `profiletest` skill.
 
 ---
@@ -280,7 +280,7 @@ composition baseline.
 
 ```mermaid
 sequenceDiagram
-    participant A as Agent (roomlerd)
+    participant A as Agent (meshharbord)
     participant H as Host: /ws role gate
     participant F as fleet::socket (owns the socket)
     participant M as remote / network (AgentMsgHandler)
@@ -330,7 +330,7 @@ crates (agent, api/ws, hub). Adding a preemptive `_ =>` / `other =>` arm to a
 consumer match **without** the new variants that would make it reachable makes
 `cargo clippy --workspace -- -D warnings` fail with `unreachable_patterns` — the
 existing arms already cover every known variant. CI run
-[25972574628](https://github.com/gjovanov/roomler-ai/actions/runs/25972574628) hit
+[25972574628](https://github.com/jk-zhang-meta/MeshHarbor/actions/runs/25972574628) hit
 this: the defensive catch-all landed in `ec61f03` before the corresponding T2 wire
 variants did.
 
@@ -434,9 +434,9 @@ never as a side call, because a spec outside the plan is invisible to the gate.
 6. **A new workspace member needs `cargo update -w`** before the lane builds it.
 7. **Re-record the baseline only when the diff is the claim.**
 
-A stacked branch compiles on CI in ~4 min via
-`gh workflow run integration-tests.yml --ref <branch> -f filter=composition_matches_baseline` —
-cheaper than a local server build on a Windows box, which cannot build the server natively.
+Run `RUST_MIN_STACK=8388608 cargo test -p meshharbor-tests composition_matches_baseline -- --nocapture`
+on an isolated Linux environment with the test services. Require the expected
+nonzero test count; see [local builds](local-build.md). There is no CI dispatch.
 
 ---
 

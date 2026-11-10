@@ -85,7 +85,7 @@ impl HevcPayloader {
         let payload_header = H265NALUHeader::new(nalu[0], nalu[1]);
         let payload_nalu_type = payload_header.nalu_type();
         let nalu_type = UnitType::for_id(payload_nalu_type).unwrap_or(UnitType::IGNORE);
-        // Roomler patch (2026-04-20): upstream drops every NAL whose
+        // MeshHarbor patch (2026-04-20): upstream drops every NAL whose
         // type isn't in the hardcoded UnitType list (i.e., 0, 1, 19,
         // 21, 32, 33, 34, 39). That silently discards IDR_N_LP (20),
         // TRAIL_R (2) and most slice types that MF / HW HEVC encoders
@@ -127,7 +127,7 @@ impl HevcPayloader {
                 self.vps_nalu.take();
                 self.sps_nalu.take();
                 self.pps_nalu.take();
-                // Roomler patch (2026-04-20): upstream unconditionally
+                // MeshHarbor patch (2026-04-20): upstream unconditionally
                 // returns here, silently dropping the CURRENT NAL (the
                 // IDR / P-frame that triggered aggregation). Chrome
                 // then receives an AP packet with VPS+SPS+PPS but no
@@ -185,7 +185,7 @@ impl HevcPayloader {
             |S|E|  fu_type  |
             +---------------+
             */
-            // Roomler patch (2026-04-20): the upstream code only
+            // MeshHarbor patch (2026-04-20): the upstream code only
             // emits an FU header byte when nalu_type is IDR/PFR/BFR
             // (from the hardcoded UnitType list). For any other NAL
             // type (IDR_N_LP=20, CRA=21, TRAIL_R=2, TSA/STSA/RADL

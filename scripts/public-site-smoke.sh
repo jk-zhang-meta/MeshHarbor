@@ -4,8 +4,8 @@
 #
 #   scripts/public-site-smoke.sh <base-url> [<repo-dir> [<git-rev>]]
 #   scripts/public-site-smoke.sh http://localhost:8080 .           # the hosted-image smoke
-#   scripts/public-site-smoke.sh https://roomler.ai . <deployed-sha> # production, after a roll
-#   scripts/public-site-smoke.sh --blog https://roomler.ai           # the blog lane (FR-91),
+#   scripts/public-site-smoke.sh https://meshharbor.itachi.fans . <deployed-sha> # production, after a roll
+#   scripts/public-site-smoke.sh --blog https://meshharbor.itachi.fans           # the blog lane (FR-91),
 #                                                                    # after every publish
 #
 #   With <repo-dir> (a clone with FULL history), every docs page's sitemap
@@ -14,7 +14,7 @@
 #
 # WHY THIS EXISTS
 #   The static site (docs, blog, the homepage) is where search engines meet
-#   roomler.ai, and every defect FR-87 fixes was invisible from inside the build:
+#   meshharbor.itachi.fans, and every defect FR-87 fixes was invisible from inside the build:
 #     - `/docs` redirected to `http://` (a scheme downgrade);
 #     - unknown paths answered 200 with the SPA shell (soft 404s);
 #     - `/docs/x` and `/docs/x/` both answered 200 (duplicate URLs);
@@ -34,8 +34,8 @@
 set -u
 
 # FR-91 (#1880): `--blog <base-url> [<docs-base-url>]` checks the blog lane —
-# the `roomler-blog` server that `bun docs/build.ts --blog-only` feeds — instead
-# of the whole site. In production both arguments are https://roomler.ai (the
+# the `meshharbor-blog` server that `bun docs/build.ts --blog-only` feeds — instead
+# of the whole site. In production both arguments are https://meshharbor.itachi.fans (the
 # edge routes /blog/ to the lane and /docs/ to the pod); against two local
 # servers, the second names the one that serves /docs/.
 BLOG_MODE=0
@@ -108,7 +108,7 @@ if [ "$BLOG_MODE" = "1" ]; then
     bad "/sitemap-blog.xml names no post"
   else
     html="$(curl -ksS -m 15 "$BASE$post" 2>/dev/null)"
-    if [ "$(status "$BASE$post")" = "200" ] && printf '%s' "$html" | grep -q "<link rel=\"canonical\" href=\"https://roomler.ai$post\">" \
+    if [ "$(status "$BASE$post")" = "200" ] && printf '%s' "$html" | grep -q "<link rel=\"canonical\" href=\"https://meshharbor.itachi.fans$post\">" \
        && printf '%s' "$html" | grep -q '"@type":"BlogPosting"'; then
       ok "$post -> 200, its own canonical, BlogPosting JSON-LD"
     else

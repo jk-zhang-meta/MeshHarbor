@@ -17,7 +17,7 @@ Idempotent: re-running skips workers that already carry the sidecar and a
 `prometheus` line.
 
 Usage (on a host with cluster access):
-    IMAGE=registry.roomler.ai/roomler-ai:<tag> \
+    IMAGE=registry.meshharbor.itachi.fans/meshharbor:<tag> \
     DERP_TICKET_PUBLIC_KEY=<base64 pubkey> \
     python3 scripts/coturn-stats-sidecar.py [--workers 1,2,3] [--dry-run]
 
@@ -35,10 +35,10 @@ NS = "coturn"
 SIDECAR_NAME = "stats"
 STATS_PORT = int(os.environ.get("STATS_PORT", "9645"))
 REGION = os.environ.get("REGION", "eu-central")
-# The registry pull secret lives in the roomler-ai namespace; the coturn
+# The registry pull secret lives in the meshharbor namespace; the coturn
 # namespace needs its own copy to pull the API image.
 PULL_SECRET = os.environ.get("PULL_SECRET", "regcred")
-PULL_SECRET_SRC_NS = os.environ.get("PULL_SECRET_SRC_NS", "roomler-ai")
+PULL_SECRET_SRC_NS = os.environ.get("PULL_SECRET_SRC_NS", "meshharbor")
 
 
 def kubectl(*args, capture=True, check=True):

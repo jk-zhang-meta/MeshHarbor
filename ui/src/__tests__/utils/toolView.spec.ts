@@ -59,7 +59,7 @@ describe('toolView (FR-90 P1f)', () => {
     expect(toolView('Edit', { file_path: '/w/a', old_string: 1, new_string: 'x' }).kind).toBe('json')
     expect(toolView('Bash', { command: ['rm', '-rf'] }).kind).toBe('json')
     expect(toolView('TodoWrite', { todos: [{ content: 'ok' }, 'not a todo'] }).kind).toBe('json')
-    expect(toolView('mcp__roomler__approve', { a: 1 })).toEqual({ kind: 'json', text: '{\n  "a": 1\n}' })
+    expect(toolView('mcp__meshharbor__approve', { a: 1 })).toEqual({ kind: 'json', text: '{\n  "a": 1\n}' })
     expect(toolView('Bash', 'ls').kind).toBe('json')
   })
 

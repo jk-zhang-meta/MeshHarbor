@@ -56,16 +56,16 @@ use super::{Capabilities, TRANSPORT_QUIC_V1, Transport};
 /// answer it, and only then does the old one go.
 // RETIRED-NAME-ANCHOR(2): WIRE VALUE — this is what deployed peers offer today,
 // and it stays until the client half has flipped everywhere. docs/fr/FR-46
-const ALPN_LEGACY: &[u8] = b"roomler-tunnel-quic-v1";
+const ALPN_LEGACY: &[u8] = b"meshharbor-tunnel-quic-v1";
 
 /// The ALPN the tunnel is moving TO. Accepted by the server from this release;
 /// not yet offered by the client (see [`ALPN_LEGACY`]).
-const ALPN: &[u8] = b"roomlerd-quic-v1";
+const ALPN: &[u8] = b"meshharbord-quic-v1";
 
 /// ALPN id for the overlay's WG-over-QUIC **datagram** carrier. Distinct from
 /// [`ALPN`] so a stream-tunnel endpoint and a datagram endpoint can never
 /// complete a handshake against each other (mismatched ALPN → clean failure).
-const OVERLAY_ALPN: &[u8] = b"roomler-overlay-wg-v1";
+const OVERLAY_ALPN: &[u8] = b"meshharbor-overlay-wg-v1";
 
 /// Placeholder SNI — the client pins by cert fingerprint, not by name.
 ///
@@ -75,7 +75,7 @@ const OVERLAY_ALPN: &[u8] = b"roomler-overlay-wg-v1";
 /// generated per process, so a new SAN simply yields a new fingerprint that is
 /// advertised over signalling like any other. It is not a version guard and
 /// never was — the ALPN above is.
-const SNI: &str = "roomlerd";
+const SNI: &str = "meshharbord";
 
 /// SHA-256 fingerprint of a DER certificate, lowercase hex. This is the
 /// value the agent advertises over signaling and the client pins.

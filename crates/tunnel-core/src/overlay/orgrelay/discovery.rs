@@ -3,7 +3,7 @@
 //! Bounded discovery METADATA only. No sockets, secrets, sessions, or carrier decisions.
 use crate::overlay::runtime::ControlTx;
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::signaling::{
+use meshharbor_remote_control::signaling::{
     ClientMsg, NetmapPeer, OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire,
     OrgRelayDiscoveryScanWire, RelayPathWire,
 };
@@ -942,7 +942,7 @@ mod tests {
     }
     #[tokio::test]
     async fn org_relay_discovery_legacy_full_netmap_does_not_request() {
-        use roomler_ai_remote_control::signaling::ServerMsg;
+        use meshharbor_remote_control::signaling::ServerMsg;
         let msg: ServerMsg = serde_json::from_value(serde_json::json!({
             "t":"rc:overlay.netmap", "self_ip":"100.64.0.1",
             "network":{"cidr":"100.64.0.0/10","mtu":1280}, "peers":[]

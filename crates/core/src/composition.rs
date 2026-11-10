@@ -56,7 +56,7 @@ pub struct Snapshot {
 /// records them (FR-69 D7): the table the wire crate keeps next to the
 /// exhaustive `ClientMsg::namespace()` match.
 pub fn namespaces() -> std::collections::BTreeMap<String, String> {
-    roomler_ai_remote_control::signaling::CLIENT_MSG_OWNERS
+    meshharbor_remote_control::signaling::CLIENT_MSG_OWNERS
         .iter()
         .map(|(tag, owner)| (tag.to_string(), owner.id().to_string()))
         .collect()
@@ -133,7 +133,7 @@ pub fn wire_names(source: &str) -> Vec<String> {
 
 /// The index plan as JSON, for the snapshot.
 pub fn index_plan_json(multi_block: bool) -> serde_json::Value {
-    serde_json::to_value(roomler_ai_db::indexes::index_plan(multi_block))
+    serde_json::to_value(meshharbor_db::indexes::index_plan(multi_block))
         .expect("an index plan is plain data")
 }
 
@@ -142,7 +142,7 @@ pub fn index_plan_json(multi_block: bool) -> serde_json::Value {
 /// not depend on which crate a set happens to live in. A module PR moves
 /// sets between crates; it must not change them, and this is what checks
 /// that.
-pub fn index_sets_json(mut sets: Vec<roomler_ai_db::indexes::IndexSet>) -> serde_json::Value {
+pub fn index_sets_json(mut sets: Vec<meshharbor_db::indexes::IndexSet>) -> serde_json::Value {
     sets.sort_by(|a, b| a.collection.cmp(b.collection));
     serde_json::to_value(sets).expect("index sets are plain data")
 }
@@ -262,7 +262,7 @@ mod tests {
     /// and the snapshot section carries the whole table.
     #[test]
     fn every_client_message_owner_is_a_module() {
-        for (tag, owner) in roomler_ai_remote_control::signaling::CLIENT_MSG_OWNERS {
+        for (tag, owner) in meshharbor_remote_control::signaling::CLIENT_MSG_OWNERS {
             assert!(
                 crate::graph::MODULES.contains(&owner.id()),
                 "{tag} names `{}`, which is not a module",
@@ -272,7 +272,7 @@ mod tests {
         let map = namespaces();
         assert_eq!(
             map.len(),
-            roomler_ai_remote_control::signaling::CLIENT_MSG_OWNERS.len()
+            meshharbor_remote_control::signaling::CLIENT_MSG_OWNERS.len()
         );
         assert_eq!(map.get("rc:agent.hello").map(String::as_str), Some("fleet"));
     }

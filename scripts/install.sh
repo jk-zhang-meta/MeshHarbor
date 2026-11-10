@@ -1,7 +1,7 @@
 #!/bin/sh
-# meshharbor install.sh — terminal-driven install of the Roomler node stack
-# (Linux + macOS), replicating the roomler-setup wizard's steps without a
-# GUI: resolve via the roomler.ai proxy → download → sha256-verify →
+# meshharbor install.sh — terminal-driven install of the MeshHarbor node stack
+# (Linux + macOS), replicating the meshharbor-setup wizard's steps without a
+# GUI: resolve via the meshharbor.itachi.fans proxy → download → sha256-verify →
 # install → enroll → autostart.
 #
 # Usage (pipe from the API, or run a checked-out copy):
@@ -11,10 +11,10 @@
 #       [--name "$(hostname)"]
 #
 #   Roles:
-#     daemon  — the roomlerd daemon ("be accessed"): Linux .deb / macOS .pkg,
+#     daemon  — the meshharbord daemon ("be accessed"): Linux .deb / macOS .pkg,
 #               enrolls with an AGENT enrollment token (Admin → Agents),
 #               enables the packaged autostart (systemd user unit / LaunchAgent).
-#     tunnel  — the roomler CLI only ("reach others"): enrolls with a TUNNEL
+#     tunnel  — the meshharbor CLI only ("reach others"): enrolls with a TUNNEL
 #               enrollment token (Admin → Tunnels).
 #
 #   --system          (daemon role, Linux only) install as a ROOT systemd
@@ -37,7 +37,7 @@
 #                     for a server the central owner approves as a `server`
 #                     role. Primary enrollment only; the server never pushes it.
 #
-# The desktop companion (roomler-desktop) rides IN the macOS .pkg. On Linux it
+# The desktop companion (meshharbor-desktop) rides IN the macOS .pkg. On Linux it
 # is a SEPARATE .deb (FR-27), or .rpm on Fedora, the RHEL family and openSUSE
 # (FR-93 P6d) — installed automatically when this box has a
 # graphical session, since the companion is the device's consent PROMPT
@@ -52,7 +52,7 @@ set -eu
 
 # ⚠️ FR-50 — this line is REWRITTEN at serve time by the server that hands you
 # this script (`crates/modules/fleet/src/setup_release.rs`), so a script fetched
-# from a self-hosted Roomler enrols against THAT server and not the hosted one.
+# from a self-hosted MeshHarbor enrols against THAT server and not the hosted one.
 # A piped script cannot see the URL it was fetched from — there is no $0 and no
 # filename — so the substitution has to happen on the server side. The literal
 # below is the default for a checkout, and it is also what a server serves
@@ -66,7 +66,7 @@ SERVER="https://www.itachi.fans/meshharbor"
 ROLE=""
 TOKEN=""
 CREDENTIALS_STDIN=0
-NAME="$(hostname 2>/dev/null || echo roomler-device)"
+NAME="$(hostname 2>/dev/null || echo meshharbor-device)"
 DOWNLOAD_ONLY=0
 # Explicit reviewed local-only daemon + CLI mode; never resolves latest assets.
 LOCAL_PACKAGE=""
@@ -88,7 +88,7 @@ SYSTEM=0
 # in the wrong tree entirely. Must match meshharbord.service's MESHHARBORD_CONFIG.
 SYSTEM_CONFIG="/etc/meshharbor/config.toml"
 # macOS's privileged half has its OWN path, and it is NOT $SYSTEM_CONFIG above:
-# com.roomler.daemon.plist passes it explicitly as `--config`, and the agent's
+# fans.itachi.meshharbor.daemon.plist passes it explicitly as `--config`, and the agent's
 # root-aware config ladder is Linux-only. Reusing one variable for both would
 # enroll into a file nothing reads.
 # FR-46 P5a moved this off the retired name; the .pkg postinstall migrates an
@@ -116,7 +116,7 @@ usage() {
     echo "                   --local-cli PATH --local-cli-sha256 HEX] (daemon only; no downloads)"
     echo "       install.sh --uninstall [--keep-config]"
     echo
-    echo "  --uninstall     Remove every Roomler part on this machine — the daemon, the"
+    echo "  --uninstall     Remove every MeshHarbor part on this machine — the daemon, the"
     echo "                  companion, the tunnel CLI — however it was installed (this"
     echo "                  script, a package, the tarball). Each service is stopped through"
     echo "                  its manager first: its clean stop takes back the routes and the"
@@ -124,7 +124,7 @@ usage() {
     echo "                  holds the device's credential. --keep-config keeps the config."
     echo "                  Then remove the device in the dashboard: that revokes it."
     echo
-    echo "  --desktop       Linux only. Force the roomler-desktop companion on or off."
+    echo "  --desktop       Linux only. Force the meshharbor-desktop companion on or off."
     echo "                  Default: installed when a graphical session is detected. It is"
     echo "                  the device's on-screen consent prompt, so a host set to"
     echo "                  'Prompt on host' without it cannot ask anybody."
@@ -178,13 +178,13 @@ if [ "$CREDENTIALS_STDIN" = 1 ]; then
 fi
 
 if [ "$UNINSTALL" = 1 ]; then
-    # It removes every Roomler part on this machine, so a --role would read as
+    # It removes every MeshHarbor part on this machine, so a --role would read as
     # "only this part" and remove more than was asked: refuse it, with the rest
     # of the install options.
     if [ -n "$ROLE" ] || [ -n "$TOKEN" ] || [ -n "$DAEMON_TOKEN" ] || [ "$SYSTEM" = 1 ] ||
         [ "$DOWNLOAD_ONLY" = 1 ] || [ "$NO_ENROLL" = 1 ] || [ -n "$DESKTOP" ] || [ "$RELAY_SERVER" = 1 ] ||
         [ -n "$LOCAL_PACKAGE$LOCAL_PACKAGE_SHA$LOCAL_CLI$LOCAL_CLI_SHA" ]; then
-        echo "error: --uninstall removes every Roomler part on this machine and takes no install options (only --keep-config)" >&2
+        echo "error: --uninstall removes every MeshHarbor part on this machine and takes no install options (only --keep-config)" >&2
         exit 1
     fi
 else
@@ -287,7 +287,7 @@ if [ "$OS" = Darwin ] && [ "$UNINSTALL" != 1 ]; then
     fi
 fi
 
-STAGE="$(mktemp -d /tmp/roomler-install.XXXXXX)"
+STAGE="$(mktemp -d /tmp/meshharbor-install.XXXXXX)"
 finish_install() {
     local_exit=$1
     if [ "$LOCAL_MODE" = 1 ] && [ "$local_exit" != 0 ]; then
@@ -295,7 +295,7 @@ finish_install() {
         # marker, config, package or service. Package managers can have partial
         # effects even on nonzero exit: this is NOT an OS rollback.
         if [ "$LOCAL_MARKER_STATE" = owned-created ]; then
-            if sudo /bin/sh -c '[ -f "$1" ] && [ ! -L "$1" ] && printf "%s\n" "$2" | cmp -s - "$1" && rm -f "$1"' roomler-local-marker "$MACOS_DAEMON_MARKER" "$LOCAL_MARKER_TAG"; then
+            if sudo /bin/sh -c '[ -f "$1" ] && [ ! -L "$1" ] && printf "%s\n" "$2" | cmp -s - "$1" && rm -f "$1"' meshharbor-local-marker "$MACOS_DAEMON_MARKER" "$LOCAL_MARKER_TAG"; then
                 LOCAL_MARKER_STATE=owned-marker-compensated
             else
                 LOCAL_MARKER_STATE=marker-changed-or-retained-inspect
@@ -400,7 +400,7 @@ repair_tarball_owners() {
         fi
     done
     # RETIRED-NAME-ANCHOR(3): the same two payload dirs, for the files in them.
-    for f in /usr/bin/meshharbord /usr/bin/meshharbor /usr/lib/meshharbor/* \
+    for f in /usr/bin/meshharbord /usr/bin/mh /usr/lib/meshharbor/* \
              /usr/lib/systemd/system/meshharbord.service /usr/lib/systemd/user/meshharbor.service \
              /usr/share/doc/meshharbor/README.Debian; do
         { [ -f "$f" ] && [ ! -L "$f" ]; } || continue
@@ -484,15 +484,15 @@ restart_old_user_daemon() {
     running="$("/proc/$pid/exe" --version 2>/dev/null || true)"
     if [ "$running" = "$installed" ]; then
         if [ "$helper_changed" = 0 ]; then
-            say "the running daemon (pid $pid) already runs ${installed#roomlerd }: nothing to restart"
+            say "the running daemon (pid $pid) already runs ${installed#meshharbord }: nothing to restart"
             return 0
         fi
         why="the root update helper was just turned on, and the daemon decides at its start who installs its updates"
     elif "/proc/$pid/exe" update-helper --capabilities 2>/dev/null | grep -qx 'restart-on-replace'; then
-        say "the running daemon (pid $pid) restarts onto ${installed#roomlerd } by itself, once nothing it serves would be cut"
+        say "the running daemon (pid $pid) restarts onto ${installed#meshharbord } by itself, once nothing it serves would be cut"
         return 0
     else
-        rv="${running#roomlerd }"
+        rv="${running#meshharbord }"
         why="it runs ${rv:-an unknown version}, which cannot restart onto a new binary by itself"
     fi
     say "restarting the running daemon (pid $pid): $why (a remote or SSH session to this device drops for a few seconds)"
@@ -538,7 +538,7 @@ install_daemon_linux() {
         digest="$(asset_field_for "$releases" "$pattern" digest)"
     fi
     [ -n "$url" ] || { echo "error: no linux/${arch} .${fmt} asset in the latest agent release" >&2; exit 1; }
-    deb="$STAGE/roomlerd.${fmt}"
+    deb="$STAGE/meshharbord.${fmt}"
     download "$url" "$deb"
     verify_sha256 "$deb" "$digest"
 
@@ -551,7 +551,7 @@ install_daemon_linux() {
             say "download-only: would run: sudo tar -xzf $deb --strip-components=1 -C /"
         fi
         if [ "$SYSTEM" = 1 ]; then
-            say "download-only: would run: sudo roomlerd --config $SYSTEM_CONFIG enroll --server $SERVER --token <token> --name $NAME $RELAY_ARG"
+            say "download-only: would run: sudo meshharbord --config $SYSTEM_CONFIG enroll --server $SERVER --token <token> --name $NAME $RELAY_ARG"
             say "download-only: would run: sudo systemctl disable --now meshharbor-update.timer meshharbor-update.path (only if a per-user install left them enabled)"
             say "download-only: would run: sudo systemctl enable --now meshharbord.service"
         else
@@ -563,7 +563,7 @@ install_daemon_linux() {
     fi
 
     if [ "$fmt" = deb ]; then
-        say "installing the roomlerd daemon (.deb — sudo required)"
+        say "installing the meshharbord daemon (.deb — sudo required)"
         if [ "$LOCAL_MODE" = 1 ]; then
             LOCAL_PHASE=package-install; LOCAL_PACKAGE_STATE=attempted
             sudo dpkg -i "$deb" # no package-manager download/fallback in local mode
@@ -572,7 +572,7 @@ install_daemon_linux() {
             sudo dpkg -i "$deb" || sudo apt-get -f install -y
         fi
     else
-        say "installing the roomlerd daemon (tarball — sudo required)"
+        say "installing the meshharbord daemon (tarball — sudo required)"
         # --strip-components=1 drops the versioned prefix dir so the payload
 # RETIRED-NAME-ANCHOR: usr/lib/meshharbor is baked into the binary as an
 # RPATH — the directory name cannot move without a relink.
@@ -636,21 +636,21 @@ install_daemon_macos() {
     url="$(asset_field_for "$releases" 'aarch64-apple-darwin[^"]*\.pkg' browser_download_url)"
     digest="$(asset_field_for "$releases" 'aarch64-apple-darwin[^"]*\.pkg' digest)"
     [ -n "$url" ] || { echo "error: no macOS .pkg asset in the latest agent release" >&2; exit 1; }
-    pkg="$STAGE/roomlerd.pkg"
+    pkg="$STAGE/meshharbord.pkg"
     download "$url" "$pkg"
     verify_sha256 "$pkg" "$digest"
 
     fi
 
-    # The .app kept its legacy internal name through the roomlerd rename —
+    # The .app kept its legacy internal name through the meshharbord rename —
 # RETIRED-NAME-ANCHOR(5): the macOS .app bundle name is FROZEN (FR-21 D5) —
 # it keys the host's Screen Recording and Accessibility TCC grants, which a
 # rename would silently void, leaving a black screen with no error.
-    # CFBundleExecutable is `roomler-agent`, and CI asserts it, because
+    # CFBundleExecutable is `meshharbor-agent`, and CI asserts it, because
     # renaming would change the binary's TCC identity and force every existing
     # Mac to re-grant Screen Recording and Accessibility. The old probe led
-    # with `roomlerd`, which never exists, and relied on the fallback.
-    daemon_bin="/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd"
+    # with `meshharbord`, which never exists, and relied on the fallback.
+    daemon_bin="/Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord"
 
     if [ "$DOWNLOAD_ONLY" = 1 ]; then
         say "download-only: would run: sudo installer -pkg $pkg -target /"
@@ -671,9 +671,9 @@ install_daemon_macos() {
             if sudo test -e "$MACOS_DAEMON_MARKER"; then
                 LOCAL_MARKER_STATE=preexisting-preserved
             else
-                LOCAL_MARKER_TAG="roomler-local-$$-$(basename "$STAGE")"
+                LOCAL_MARKER_TAG="meshharbor-local-$$-$(basename "$STAGE")"
                 sudo mkdir -p "$(dirname "$MACOS_DAEMON_MARKER")"
-                sudo /bin/sh -c 'umask 077; set -C; printf "%s\n" "$2" > "$1"' roomler-local-marker "$MACOS_DAEMON_MARKER" "$LOCAL_MARKER_TAG"
+                sudo /bin/sh -c 'umask 077; set -C; printf "%s\n" "$2" > "$1"' meshharbor-local-marker "$MACOS_DAEMON_MARKER" "$LOCAL_MARKER_TAG"
                 LOCAL_MARKER_STATE=owned-created
             fi
         else
@@ -682,7 +682,7 @@ install_daemon_macos() {
         fi
     fi
 
-    say "installing the roomler agent (.pkg — sudo required)"
+    say "installing the meshharbor agent (.pkg — sudo required)"
     if [ "$LOCAL_MODE" = 1 ]; then LOCAL_PHASE=package-install; LOCAL_PACKAGE_STATE=attempted; fi
     sudo installer -pkg "$pkg" -target /
     if [ "$LOCAL_MODE" = 1 ]; then LOCAL_PACKAGE_STATE=command-succeeded; fi
@@ -696,13 +696,13 @@ install_daemon_macos() {
     # ── the per-user half: capture + input, inside the GUI session ──
     enroll_daemon "$daemon_bin"
 
-    # postinstall bootstrapped com.roomler.agent into the CONSOLE user's gui
+    # postinstall bootstrapped fans.itachi.meshharbor.agent into the CONSOLE user's gui
     # domain, so kickstart it THERE. `gui/$(id -u)` was wrong under sudo — uid
     # 0 has no Aqua domain, the error went to /dev/null, and the warning that
     # replaced it ("will pick up the config at next login") was misleading.
     say "restarting the LaunchAgent so it picks up the enrollment"
     if [ "$LOCAL_MODE" = 1 ]; then LOCAL_PHASE=launchagent-start; LOCAL_STARTUP_STATE=attempted; fi
-    if ! launchctl kickstart -k "gui/$CONSOLE_UID/com.roomler.agent" 2>/dev/null; then
+    if ! launchctl kickstart -k "gui/$CONSOLE_UID/fans.itachi.meshharbor.agent" 2>/dev/null; then
         [ "$LOCAL_MODE" != 1 ] || { echo "error: local LaunchAgent startup failed" >&2; exit 1; }
         warn "launchctl kickstart failed — the agent will pick up the config at next login"
     fi
@@ -726,7 +726,7 @@ install_daemon_macos() {
 install_macos_privileged_half() {
     daemon_bin="$1"
 
-    if [ ! -f /Library/LaunchDaemons/com.roomler.daemon.plist ]; then
+    if [ ! -f /Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist ]; then
         [ "$LOCAL_MODE" != 1 ] || { echo "error: local package omitted the privileged backend" >&2; exit 1; }
         warn "the package did not install the LaunchDaemon — skipping the privileged half"
         return 0
@@ -752,7 +752,7 @@ install_macos_privileged_half() {
 
     say "starting the privileged half"
     if [ "$LOCAL_MODE" = 1 ]; then LOCAL_PHASE=launchdaemon-start; LOCAL_STARTUP_STATE=backend-attempted; fi
-    if ! sudo launchctl kickstart -k system/com.roomler.daemon 2>/dev/null; then
+    if ! sudo launchctl kickstart -k system/fans.itachi.meshharbor.daemon 2>/dev/null; then
         [ "$LOCAL_MODE" != 1 ] || { echo "error: local privileged backend startup failed" >&2; exit 1; }
         warn "launchctl kickstart failed for the daemon — it will start at next boot"
     fi
@@ -768,12 +768,12 @@ macos_permissions_notice() {
     say "ONE MANUAL STEP REMAINS — macOS will not grant these without you:"
 # RETIRED-NAME-ANCHOR(2): this is the string macOS SHOWS in the privacy pane;
 # it comes from the frozen bundle, so it must match what the user will see.
-    say "  System Settings → Privacy & Security → Screen Recording  → enable 'roomler-agent'"
-    say "  System Settings → Privacy & Security → Accessibility     → enable 'roomler-agent'"
+    say "  System Settings → Privacy & Security → Screen Recording  → enable 'meshharbor-agent'"
+    say "  System Settings → Privacy & Security → Accessibility     → enable 'meshharbor-agent'"
     say ""
     say "Without Screen Recording the remote screen is blank; without Accessibility the"
     say "remote keyboard and mouse do nothing. Neither reports an error. After granting:"
-    say "  launchctl kickstart -k gui/$CONSOLE_UID/com.roomler.agent"
+    say "  launchctl kickstart -k gui/$CONSOLE_UID/fans.itachi.meshharbor.agent"
 }
 
 # FR-102 — the install trace: tell the server HOW this install happened, so
@@ -785,7 +785,7 @@ macos_permissions_notice() {
 # carries the pair across `sudo`, which may strip `VAR=value` words from the
 # command line depending on the sudoers policy.
 install_trace() {
-    echo "env ROOMLER_INSTALL_METHOD=script-sh ROOMLER_INSTALL_SCOPE=$1"
+    echo "env MESHHARBOR_INSTALL_METHOD=script-sh MESHHARBOR_INSTALL_SCOPE=$1"
 }
 
 enroll_daemon() {
@@ -843,12 +843,12 @@ install_tunnel_linux() {
     # it the proxy answers 404, which on its own says nothing.
     if [ "$tunnel_tar" = linux-aarch64 ] &&
         ! curl -fs -o /dev/null "$SERVER/api/tunnel/installer/linux-aarch64/health?version=latest"; then
-        echo "error: $SERVER serves no aarch64 build of the roomler CLI yet (its latest tunnel release has none)" >&2
+        echo "error: $SERVER serves no aarch64 build of the meshharbor CLI yet (its latest tunnel release has none)" >&2
         exit 1
     fi
     if command -v dpkg >/dev/null 2>&1; then
-        deb="$STAGE/roomler-cli.deb"
-        say "downloading the roomler CLI (.deb, $tunnel_deb) via the proxy"
+        deb="$STAGE/meshharbor-cli.deb"
+        say "downloading the meshharbor CLI (.deb, $tunnel_deb) via the proxy"
         download "$SERVER/api/tunnel/installer/$tunnel_deb?version=latest" "$deb"
         if [ "$DOWNLOAD_ONLY" = 1 ]; then
             say "download-only: would run: sudo dpkg -i $deb (the tarball instead, if its dependencies cannot be met here)"
@@ -861,13 +861,13 @@ install_tunnel_linux() {
         # tarball needs only libssl.so.3, which both ship.
         if ! tunnel_cli_runs; then
             warn "the .deb did not install here (its dependencies cannot be met on this distro) — installing the tarball instead"
-            tarball="$STAGE/roomler-cli.tar.gz"
+            tarball="$STAGE/meshharbor-cli.tar.gz"
             download "$SERVER/api/tunnel/installer/$tunnel_tar?version=latest" "$tarball"
             install_tunnel_tarball "$tarball"
         fi
     else
-        tarball="$STAGE/roomler-cli.tar.gz"
-        say "downloading the roomler CLI (tarball, $tunnel_tar) via the proxy"
+        tarball="$STAGE/meshharbor-cli.tar.gz"
+        say "downloading the meshharbor CLI (tarball, $tunnel_tar) via the proxy"
         download "$SERVER/api/tunnel/installer/$tunnel_tar?version=latest" "$tarball"
         if [ "$DOWNLOAD_ONLY" = 1 ]; then
             say "download-only: would extract to /usr/local/bin"
@@ -880,8 +880,8 @@ install_tunnel_linux() {
 }
 
 install_tunnel_macos() {
-    tarball="$STAGE/roomler-cli.tar.gz"
-    say "downloading the roomler CLI (universal tarball) via the proxy"
+    tarball="$STAGE/meshharbor-cli.tar.gz"
+    say "downloading the meshharbor CLI (universal tarball) via the proxy"
     download "$SERVER/api/tunnel/installer/macos?version=latest" "$tarball"
     if [ "$DOWNLOAD_ONLY" = 1 ]; then
         say "download-only: would extract to /usr/local/bin"
@@ -895,17 +895,17 @@ install_tunnel_macos() {
 # Does the installed CLI run here? `command -v` alone is not enough: a binary
 # for another architecture, or one missing a library, is on PATH too.
 tunnel_cli_runs() {
-    cli="$(command -v roomler || true)"
+    cli="$(command -v mh || true)"
     [ -n "$cli" ] && "$cli" --version >/dev/null 2>&1
 }
 
 # #2472 — never say "done" with nothing installed.
 require_tunnel_cli() {
     if ! tunnel_cli_runs; then
-        echo "error: the roomler CLI did not install: no working \`roomler\` on PATH" >&2
+        echo "error: the MeshHarbor CLI did not install: no working \`mh\` on PATH" >&2
         exit 1
     fi
-    say "installed: $(meshharbor --version 2>/dev/null | head -n 1)"
+    say "installed: $(mh --version 2>/dev/null | head -n 1)"
 }
 
 install_tunnel_tarball() {
@@ -913,27 +913,16 @@ install_tunnel_tarball() {
     xdir="$STAGE/tunnel"
     mkdir -p "$xdir"
     tar -xzf "$tarball" -C "$xdir"
-    # Archives ship BOTH names since the P3d rename; prefer `roomler`.
-    bin=""
-# RETIRED-NAME-ANCHOR-BEGIN
-# The tunnel CLI is installed on hosts that predate the rename, so the archive
-# may carry either name and an existing `roomler-tunnel` on PATH must keep
-# working. The symlink below is that compatibility promise, not a leftover.
-    for name in roomler roomler-tunnel; do
-        found="$(find "$xdir" -maxdepth 2 -type f -name "$name" | head -n 1)"
-        [ -n "$found" ] && { bin="$found"; break; }
-    done
-    [ -n "$bin" ] || { echo "error: no roomler/roomler-tunnel binary in the archive" >&2; exit 1; }
-    say "installing $(basename "$bin") to /usr/local/bin/roomler (sudo required)"
-    sudo install -m 755 "$bin" /usr/local/bin/roomler
-    # Legacy-name convenience symlink, matching the archives' compat alias.
-    sudo ln -sf /usr/local/bin/roomler /usr/local/bin/roomler-tunnel
+    # The public CLI has one name in both the archive and the install layout.
+    bin="$(find "$xdir" -maxdepth 2 -type f -name mh | head -n 1)"
+    [ -n "$bin" ] || { echo "error: no mh binary in the archive" >&2; exit 1; }
+    say "installing $(basename "$bin") to /usr/local/bin/mh (sudo required)"
+    sudo install -m 755 "$bin" /usr/local/bin/mh
 }
 
 enroll_tunnel() {
-    cli="$(command -v roomler || command -v roomler-tunnel || true)"
-# RETIRED-NAME-ANCHOR-END
-    [ -n "$cli" ] || cli=/usr/local/bin/roomler
+    cli="$(command -v mh || true)"
+    [ -n "$cli" ] || cli=/usr/local/bin/mh
     if [ "$NO_ENROLL" = 1 ] || [ -z "$TOKEN" ]; then
         [ "$NO_ENROLL" = 1 ] || warn "no --token given — skipping enrollment"
         say "enroll later with: $cli enroll --server $SERVER --token <tunnel-enrollment-jwt> --name \"$NAME\""
@@ -1021,14 +1010,14 @@ install_desktop_linux() {
         return 0
     fi
 
-    desktop_pattern="roomler-desktop-.*${arch}-unknown-linux-gnu\\.${desktop_ext}"
+    desktop_pattern="meshharbor-desktop-.*${arch}-unknown-linux-gnu\\.${desktop_ext}"
     desktop_url="$(asset_field_for "$releases" "$desktop_pattern" browser_download_url)"
     if [ -z "$desktop_url" ]; then
-        say "no roomler-desktop .${desktop_ext} for ${arch} in this release — skipping the companion"
+        say "no meshharbor-desktop .${desktop_ext} for ${arch} in this release — skipping the companion"
         return 0
     fi
     desktop_digest="$(asset_field_for "$releases" "$desktop_pattern" digest)"
-    desktop_pkg="$STAGE/roomler-desktop.${desktop_ext}"
+    desktop_pkg="$STAGE/meshharbor-desktop.${desktop_ext}"
     download "$desktop_url" "$desktop_pkg"
     verify_sha256 "$desktop_pkg" "$desktop_digest"
 
@@ -1040,17 +1029,17 @@ install_desktop_linux() {
         fi
         return 0
     fi
-    say "installing the roomler-desktop companion (.${desktop_ext} — sudo required)"
+    say "installing the meshharbor-desktop companion (.${desktop_ext} — sudo required)"
     if desktop_install "$desktop_pkg"; then
         # FR-84 D6 — the daemon (started above) watches for the companion and
         # opens it once, with the Welcome tour, in the logged-in graphical
         # session; the package's XDG entry starts it at every later login.
-        say "desktop companion installed — the Roomler service opens it on this screen within a few"
+        say "desktop companion installed — the MeshHarbor service opens it on this screen within a few"
         say "  seconds (the Welcome tour), or at the next login if nobody is signed in graphically."
     else
         warn "the desktop companion did not install; the daemon is unaffected."
         warn "  Without it this device has no on-screen consent prompt — use"
-        warn "  'roomler consent --list' / '--approve', or set it to email/push consent."
+        warn "  'mh consent --list' / '--approve', or set it to email/push consent."
     fi
 }
 
@@ -1126,7 +1115,7 @@ root_helper() {
 }
 
 # Remove each path given that exists: a file, a link or a whole directory.
-# Every caller passes a fixed Roomler name, absolute or under a home.
+# Every caller passes a fixed MeshHarbor name, absolute or under a home.
 remove_paths() {
     [ $# -gt 0 ] || return 0
     # shellcheck disable=SC2016 # the script expands as root, not here
@@ -1179,21 +1168,21 @@ account_config_paths() {
     h="$1"
     case "$h" in ''|/) return 0 ;; esac
     if [ "$OS" = Darwin ]; then
-        echo "$h/Library/Application Support/live.roomler.roomler"
+        echo "$h/Library/Application Support/live.meshharbor.meshharbor"
         # RETIRED-NAME-ANCHOR(2): the tunnel CLI's config segment is still the
-        # old name (roomler-cli config.rs), and a pre-rename daemon tree may
+        # old name (meshharbor-cli config.rs), and a pre-rename daemon tree may
         # still hold an enrolled credential: skipping either leaves a live token.
-        echo "$h/Library/Application Support/ai.roomler.roomler-tunnel"
-        echo "$h/Library/Application Support/live.roomler.roomler-agent"
+        echo "$h/Library/Application Support/fans.itachi.meshharbor.meshharbor-tunnel"
+        echo "$h/Library/Application Support/live.meshharbor.meshharbor-agent"
     else
         echo "$h/.config/meshharbor"
         echo "$h/.local/share/meshharbor"
         echo "$h/.local/state/meshharbor"
         # RETIRED-NAME-ANCHOR(3): as above — the tunnel CLI's current config
         # segment, then the two pre-rename daemon trees.
-        echo "$h/.config/roomler-tunnel"
-        echo "$h/.config/roomler-agent"
-        echo "$h/.local/share/roomler-agent"
+        echo "$h/.config/meshharbor-tunnel"
+        echo "$h/.config/meshharbor-agent"
+        echo "$h/.local/share/meshharbor-agent"
     fi
 }
 
@@ -1255,14 +1244,14 @@ stop_leftovers() {
     done
     procs_gone_within "$name" 30 && return 0
     for pid in $(find_procs "$name"); do
-        if [ "$name" = roomler-desktop ]; then
+        if [ "$name" = meshharbor-desktop ]; then
             warn "$name pid $pid outlived its SIGTERM by 30 s; killing it (a UI, nothing to clean up)"
             as_root kill -KILL "$pid" 2>/dev/null || true
         else
             uninstall_failed "stop $name pid $pid within 30 s of a SIGTERM: $(describe_proc "$pid")"
         fi
     done
-    if [ "$name" = roomler-desktop ] && ! procs_gone_within "$name" 5; then
+    if [ "$name" = meshharbor-desktop ] && ! procs_gone_within "$name" 5; then
         uninstall_failed "stop $name: it outlived a SIGKILL"
     fi
 }
@@ -1289,7 +1278,7 @@ EOF
     # shellcheck disable=SC2016 # the script expands as root, not here
     left="$(as_root sh -c 'for p do if [ -e "$p" ]; then echo "  $p"; fi; done' sh "$@" 2>/dev/null || true)"
     if [ -n "$left" ]; then
-        say "NOTE: other accounts' Roomler config is left in place (each holds that account's own device credential):"
+        say "NOTE: other accounts' MeshHarbor config is left in place (each holds that account's own device credential):"
         printf '%s\n' "$left"
         say "      Remove it as that account, or as root."
     fi
@@ -1388,10 +1377,9 @@ remove_packages_linux() {
         pkgs=""
         # Dependents first: the companion depends on the daemon. Then the
         # tunnel CLI.
-        # RETIRED-NAME-ANCHOR: the last two are the packages the daemon's .deb
-        # took over (Cargo.toml `replaces`); a host that had them keeps their
-        # dpkg entries until they are removed by name.
-        for p in roomler-desktop roomlerd roomler-cli roomler-tunnel roomler-agent; do
+        # RETIRED-NAME-ANCHOR: keep prior daemon and CLI package names so
+        # existing installations are also removed by their dpkg identity.
+        for p in meshharbor-desktop meshharbor meshharbord meshharbor-cli meshharbor-tunnel meshharbor-agent; do
             # The status letter: i installed, c only its config left, n none.
             case "$(dpkg-query -W -f='${db:Status-Abbrev}' "$p" 2>/dev/null | cut -c2 || true)" in
                 ''|n) ;;
@@ -1407,9 +1395,9 @@ remove_packages_linux() {
             as_root dpkg "$mode" $pkgs || uninstall_failed "remove the packages:$pkgs (dpkg $mode)"
         fi
     fi
-    if command -v rpm >/dev/null 2>&1 && rpm -q roomler-desktop >/dev/null 2>&1; then
-        say "removing the roomler-desktop package (rpm)"
-        as_root rpm -e roomler-desktop || uninstall_failed "remove the roomler-desktop package (rpm -e)"
+    if command -v rpm >/dev/null 2>&1 && rpm -q meshharbor-desktop >/dev/null 2>&1; then
+        say "removing the meshharbor-desktop package (rpm)"
+        as_root rpm -e meshharbor-desktop || uninstall_failed "remove the meshharbor-desktop package (rpm -e)"
     fi
 }
 
@@ -1419,13 +1407,13 @@ remove_packages_linux() {
 remove_tarball_linux() {
     set --
     # RETIRED-NAME-ANCHOR(5): the tarball's lib dir is the binary's RPATH and
-    # its doc dir the payload's (as in repair_tarball_owners); roomler-tunnel
+    # its doc dir the payload's (as in repair_tarball_owners); meshharbor-tunnel
     # is the CLI's legacy-name symlink, which install_tunnel_tarball creates.
-    for f in /usr/bin/meshharbord /usr/bin/meshharbor /usr/lib/meshharbor \
+    for f in /usr/bin/meshharbord /usr/bin/mh /usr/lib/meshharbor \
              /usr/lib/systemd/system/meshharbord.service /usr/lib/systemd/user/meshharbor.service \
              /usr/lib/systemd/system/meshharbor-update.service /usr/lib/systemd/system/meshharbor-update.timer \
              /usr/lib/systemd/system/meshharbor-update.path /usr/share/doc/meshharbor \
-             /usr/local/bin/roomler /usr/local/bin/roomler-tunnel; do
+             /usr/local/bin/mh /usr/local/bin/meshharbor-tunnel; do
         { [ -L "$f" ] || [ -e "$f" ]; } || continue
         owner=""
         if command -v dpkg >/dev/null 2>&1; then
@@ -1445,7 +1433,7 @@ remove_tarball_linux() {
 
 # Login registrations, for every account: they name a program that is gone.
 # The per-user unit's enable links (its WantedBy), and the companion's own
-# autostart entry, only where it is ours (`X-Roomler-Managed`).
+# autostart entry, only where it is ours (`X-MeshHarbor-Managed`).
 remove_registrations_linux() {
     links=""
     entries=""
@@ -1455,7 +1443,7 @@ remove_registrations_linux() {
 $home/.config/systemd/user/default.target.wants/meshharbor.service
 $home/.config/systemd/user/graphical-session.target.wants/meshharbor.service"
         entries="$entries
-$home/.config/autostart/roomler-desktop.desktop"
+$home/.config/autostart/meshharbor-desktop.desktop"
     done <<EOF
 $(local_accounts)
 EOF
@@ -1468,7 +1456,7 @@ $entries
 EOF
     # shellcheck disable=SC2016 # the script expands as root, not here
     root_helper 'for p do
-        if grep -qs "X-Roomler-Managed=true" "$p"; then
+        if grep -qs "X-MeshHarbor-Managed=true" "$p"; then
             if rm -f -- "$p"; then echo "removed $p"; else echo "FAILED remove $p"; fi
         fi
     done' "$@"
@@ -1483,8 +1471,8 @@ EOF
 uninstall_linux() {
     uninstall_stop_linux
     # No grace: every stop above has already waited for its unit.
-    stop_leftovers roomlerd 0
-    stop_leftovers roomler-desktop 0
+    stop_leftovers meshharbord 0
+    stop_leftovers meshharbor-desktop 0
     remove_packages_linux
     remove_tarball_linux
     remove_registrations_linux
@@ -1500,7 +1488,7 @@ uninstall_linux() {
     # the system unit's environment file and an administrator's drop-ins.
     # RETIRED-NAME-ANCHOR: the pre-rename system config dir; a host that never
     # migrated holds its enrolled credential there.
-    remove_paths /etc/meshharbor /etc/roomler-agent /etc/default/meshharbord \
+    remove_paths /etc/meshharbor /etc/meshharbor-agent /etc/default/meshharbord \
         /etc/systemd/system/meshharbord.service.d
     remove_listed "$list"
     report_other_config "$accounts"
@@ -1512,23 +1500,23 @@ uninstall_stop_macos() {
     # The update helper first, and never in the middle of an install: booting
     # it out kills its whole process group, `installer` included (the .pkg
     # postinstall's own warning).
-    if as_root launchctl print system/com.roomler.update >/dev/null 2>&1; then
+    if as_root launchctl print system/fans.itachi.meshharbor.update >/dev/null 2>&1; then
         n=0
-        while as_root launchctl print system/com.roomler.update 2>/dev/null | grep -q 'state = running'; do
-            [ "$n" = 0 ] && say "waiting for com.roomler.update to finish: it is installing an update"
+        while as_root launchctl print system/fans.itachi.meshharbor.update 2>/dev/null | grep -q 'state = running'; do
+            [ "$n" = 0 ] && say "waiting for fans.itachi.meshharbor.update to finish: it is installing an update"
             n=$((n + 1))
-            [ "$n" -ge 300 ] && { warn "com.roomler.update still runs after 300 s; stopping it"; break; }
+            [ "$n" -ge 300 ] && { warn "fans.itachi.meshharbor.update still runs after 300 s; stopping it"; break; }
             sleep 1
         done
-        say "stopping com.roomler.update"
-        as_root launchctl bootout system/com.roomler.update 2>/dev/null ||
-            uninstall_failed "stop com.roomler.update"
+        say "stopping fans.itachi.meshharbor.update"
+        as_root launchctl bootout system/fans.itachi.meshharbor.update 2>/dev/null ||
+            uninstall_failed "stop fans.itachi.meshharbor.update"
     fi
     # Every account's per-user half and companion: one per GUI login.
     uids="$(dscl . -list /Users UniqueID 2>/dev/null | awk '$1 !~ /^_/ && $2 >= 500 { print $2 }' || true)"
     # shellcheck disable=SC2016,SC2086 # the script expands as root; one uid per word
     root_helper 'for uid do
-        for l in com.roomler.desktop com.roomler.agent; do
+        for l in fans.itachi.meshharbor.desktop fans.itachi.meshharbor.agent; do
             if launchctl print "gui/$uid/$l" >/dev/null 2>&1; then
                 if launchctl bootout "gui/$uid/$l" 2>/dev/null; then
                     echo "stopping gui/$uid/$l"
@@ -1538,34 +1526,34 @@ uninstall_stop_macos() {
             fi
         done
     done' $uids
-    if as_root launchctl print system/com.roomler.daemon >/dev/null 2>&1; then
-        say "stopping com.roomler.daemon (the root half)"
-        as_root launchctl bootout system/com.roomler.daemon 2>/dev/null ||
-            uninstall_failed "stop com.roomler.daemon"
+    if as_root launchctl print system/fans.itachi.meshharbor.daemon >/dev/null 2>&1; then
+        say "stopping fans.itachi.meshharbor.daemon (the root half)"
+        as_root launchctl bootout system/fans.itachi.meshharbor.daemon 2>/dev/null ||
+            uninstall_failed "stop fans.itachi.meshharbor.daemon"
     fi
 }
 
 uninstall_macos() {
     uninstall_stop_macos
-    stop_leftovers roomlerd 20
+    stop_leftovers meshharbord 20
     # A companion the person opened from Finder runs under LaunchServices,
     # which no bootout reaches.
-    stop_leftovers roomler-desktop 20
+    stop_leftovers meshharbor-desktop 20
     if [ "$KEEP_CONFIG" != 1 ]; then
         # The two grants, while the bundle that names them is still there to
         # resolve: a fresh install then asks again, instead of showing a toggle
         # that is on for a binary that is gone.
         for svc in ScreenCapture Accessibility; do
-            as_root tccutil reset "$svc" com.roomler.agent >/dev/null 2>&1 ||
-                warn "could not reset the $svc grant (tccutil reset $svc com.roomler.agent)"
+            as_root tccutil reset "$svc" fans.itachi.meshharbor.agent >/dev/null 2>&1 ||
+                warn "could not reset the $svc grant (tccutil reset $svc fans.itachi.meshharbor.agent)"
         done
     fi
     agents=""
     while read -r name home; do
         case "$home" in ''|/) continue ;; esac
         agents="$agents
-$home/Library/LaunchAgents/com.roomler.agent.plist
-$home/Library/LaunchAgents/com.roomler.desktop.plist"
+$home/Library/LaunchAgents/fans.itachi.meshharbor.agent.plist
+$home/Library/LaunchAgents/fans.itachi.meshharbor.desktop.plist"
     done <<EOF
 $(local_accounts)
 EOF
@@ -1574,15 +1562,15 @@ EOF
     # RETIRED-NAME-ANCHOR(6): the pre-rc.457 /Applications bundle the .pkg
     # postinstall also sweeps, and the CLI's legacy-name symlink that
     # install_tunnel_tarball creates.
-    remove_paths /Library/LaunchDaemons/com.roomler.daemon.plist \
-        /Library/LaunchDaemons/com.roomler.update.plist \
-        /Library/LaunchAgents/com.roomler.agent.plist \
-        /Library/LaunchAgents/com.roomler.desktop.plist /Library/Roomler \
-        /Applications/Roomler.app /Applications/roomler-agent.app \
-        /usr/local/bin/roomler /usr/local/bin/roomlerd /usr/local/bin/roomler-tunnel \
+    remove_paths /Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist \
+        /Library/LaunchDaemons/fans.itachi.meshharbor.update.plist \
+        /Library/LaunchAgents/fans.itachi.meshharbor.agent.plist \
+        /Library/LaunchAgents/fans.itachi.meshharbor.desktop.plist /Library/MeshHarbor \
+        /Applications/MeshHarbor.app /Applications/meshharbor-agent.app \
+        /usr/local/bin/mh /usr/local/bin/meshharbord /usr/local/bin/meshharbor-tunnel \
         /private/var/tmp/meshharbor-update-check /var/run/meshharbor
     remove_listed "$agents"
-    for id in $(pkgutil --pkgs 2>/dev/null | grep '^com\.roomler\.' || true); do
+    for id in $(pkgutil --pkgs 2>/dev/null | grep '^fans\.itachi\.meshharbor\.' || true); do
         if as_root pkgutil --forget "$id" >/dev/null 2>&1; then
             say "forgot the package receipt $id"
         else
@@ -1598,9 +1586,9 @@ EOF
     # /etc/meshharbor holds the root half's credential; the logs follow it.
     # RETIRED-NAME-ANCHOR: the pre-rename system config and log dirs, which
     # the .pkg postinstall migrates but never deletes.
-    remove_paths /etc/meshharbor /etc/roomler-agent /var/log/roomler /var/log/roomler-agent \
-        /tmp/roomlerd.out.log /tmp/roomlerd.err.log \
-        /tmp/roomler-desktop.out.log /tmp/roomler-desktop.err.log
+    remove_paths /etc/meshharbor /etc/meshharbor-agent /var/log/meshharbor /var/log/meshharbor-agent \
+        /tmp/meshharbord.out.log /tmp/meshharbord.err.log \
+        /tmp/meshharbor-desktop.out.log /tmp/meshharbor-desktop.err.log
     remove_listed "$list"
     report_other_config "$accounts"
 }
@@ -1611,9 +1599,9 @@ uninstall_finish() {
         exit 1
     fi
     if [ "$KEEP_CONFIG" = 1 ]; then
-        say "Roomler is removed from this machine; its config is kept."
+        say "MeshHarbor is removed from this machine; its config is kept."
     else
-        say "Roomler is removed from this machine."
+        say "MeshHarbor is removed from this machine."
     fi
     say "Now remove the device in the dashboard (Devices → remove): that revokes its"
     say "  credential and releases its network address."
@@ -1636,47 +1624,47 @@ if [ "$UNINSTALL" = 1 ]; then
 fi
 
 local_fresh_install_only() {
-    for parent in /etc/meshharbor /etc/roomler-agent; do
+    for parent in /etc/meshharbor /etc/meshharbor-agent; do
         [ ! -d "$parent" ] || { [ -r "$parent" ] && [ -x "$parent" ]; } || {
             echo "error: existing daemon configuration scope is inaccessible; refusing local bootstrap" >&2; exit 1;
         }
     done
-    for existing in /usr/local/bin/roomler /usr/local/bin/roomler-tunnel /usr/local/bin/roomlerd /etc/meshharbor/config.toml /etc/roomler-agent/config.toml /etc/default/meshharbord; do
+    for existing in /usr/local/bin/mh /usr/local/bin/meshharbor-tunnel /usr/local/bin/meshharbord /etc/meshharbor/config.toml /etc/meshharbor-agent/config.toml /etc/default/meshharbord; do
         [ ! -e "$existing" ] && [ ! -L "$existing" ] || {
-            echo "error: local bootstrap preserves existing Roomler state; reviewed migration required" >&2; exit 1;
+            echo "error: local bootstrap preserves existing MeshHarbor state; reviewed migration required" >&2; exit 1;
         }
     done
     if [ "$OS" = Linux ]; then
         command -v dpkg-query >/dev/null 2>&1 || { echo "error: local .deb requires readable native package inventory" >&2; exit 1; }
-        for package_name in roomlerd roomler-agent roomler-desktop roomler roomler-tunnel; do
+        for package_name in meshharbord meshharbor-agent meshharbor-desktop meshharbor meshharbor-tunnel; do
             if dpkg-query -W "$package_name" >/dev/null 2>&1; then
-                echo "error: existing Roomler package state requires reviewed migration" >&2; exit 1
+                echo "error: existing MeshHarbor package state requires reviewed migration" >&2; exit 1
             else
                 inventory_exit=$?
                 [ "$inventory_exit" = 1 ] || { echo "error: package inventory unavailable; refusing local bootstrap" >&2; exit 1; }
             fi
         done
-        for unit in meshharbord.service meshharbor.service roomler-agent.service meshharbor-update.service meshharbor-update.timer meshharbor-update.path; do
+        for unit in meshharbord.service meshharbor.service meshharbor-agent.service meshharbor-update.service meshharbor-update.timer meshharbor-update.path; do
             for base in /etc/systemd/system /usr/lib/systemd/system /lib/systemd/system /etc/systemd/user /usr/lib/systemd/user "${HOME}/.config/systemd/user"; do
-                [ ! -e "$base/$unit" ] && [ ! -L "$base/$unit" ] || { echo "error: existing Roomler service state is preserved" >&2; exit 1; }
+                [ ! -e "$base/$unit" ] && [ ! -L "$base/$unit" ] || { echo "error: existing MeshHarbor service state is preserved" >&2; exit 1; }
             done
         done
-        for existing in /usr/bin/meshharbord /usr/bin/meshharbor /usr/bin/roomler-tunnel /usr/bin/roomler-agent /usr/bin/roomler-desktop /usr/lib/meshharbor; do
+        for existing in /usr/bin/meshharbord /usr/bin/mh /usr/bin/meshharbor-tunnel /usr/bin/meshharbor-agent /usr/bin/meshharbor-desktop /usr/lib/meshharbor; do
             [ ! -e "$existing" ] && [ ! -L "$existing" ] || { echo "error: existing Linux daemon must be migrated explicitly" >&2; exit 1; }
         done
     else
         command -v pkgutil >/dev/null 2>&1 || { echo "error: native macOS package inventory is unavailable" >&2; exit 1; }
         registered_packages="$(pkgutil --pkgs 2>/dev/null)" || { echo "error: native macOS package inventory failed" >&2; exit 1; }
         [ "${#registered_packages}" -le 65536 ] || { echo "error: native package inventory exceeds bootstrap bound" >&2; exit 1; }
-        if printf '%s\n' "$registered_packages" | grep -q '^com\.roomler\.'; then
-            echo "error: existing macOS Roomler package requires reviewed migration" >&2; exit 1
+        if printf '%s\n' "$registered_packages" | grep -q '^fans\.itachi\.meshharbor\.'; then
+            echo "error: existing macOS MeshHarbor package requires reviewed migration" >&2; exit 1
         fi
-        for existing in /Library/Roomler /Library/LaunchDaemons/com.roomler.daemon.plist /Library/LaunchDaemons/com.roomler.update.plist /Library/LaunchAgents/com.roomler.agent.plist /Library/LaunchAgents/com.roomler.desktop.plist; do
+        for existing in /Library/MeshHarbor /Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist /Library/LaunchDaemons/fans.itachi.meshharbor.update.plist /Library/LaunchAgents/fans.itachi.meshharbor.agent.plist /Library/LaunchAgents/fans.itachi.meshharbor.desktop.plist; do
             [ ! -e "$existing" ] && [ ! -L "$existing" ] || { echo "error: existing macOS daemon must be migrated explicitly" >&2; exit 1; }
         done
         console_home="$(home_of "$CONSOLE_USER")"
         case "$console_home" in /*) ;; *) echo "error: cannot identify console-user configuration scope" >&2; exit 1 ;; esac
-        for existing in "$console_home/Library/LaunchAgents/com.roomler.agent.plist" "$console_home/Library/LaunchAgents/com.roomler.desktop.plist"; do
+        for existing in "$console_home/Library/LaunchAgents/fans.itachi.meshharbor.agent.plist" "$console_home/Library/LaunchAgents/fans.itachi.meshharbor.desktop.plist"; do
             [ ! -e "$existing" ] && [ ! -L "$existing" ] || { echo "error: existing user LaunchAgent state is preserved" >&2; exit 1; }
         done
         account_config_paths "$console_home" | while IFS= read -r existing; do
@@ -1691,9 +1679,9 @@ prepare_local_artifacts() {
     # the reviewed bytes between SHA verification and privileged installation.
     case "$OS" in Linux) local_suffix=deb ;; Darwin) local_suffix=pkg ;; esac
     cp "$LOCAL_PACKAGE" "$STAGE/local-daemon.$local_suffix"
-    cp "$LOCAL_CLI" "$STAGE/local-roomler"
+    cp "$LOCAL_CLI" "$STAGE/local-meshharbor"
     LOCAL_PACKAGE="$STAGE/local-daemon.$local_suffix"
-    LOCAL_CLI="$STAGE/local-roomler"
+    LOCAL_CLI="$STAGE/local-meshharbor"
     verify_sha256 "$LOCAL_PACKAGE" "$LOCAL_PACKAGE_SHA"
     verify_sha256 "$LOCAL_CLI" "$LOCAL_CLI_SHA"
     LOCAL_PHASE=cli-preflight
@@ -1704,21 +1692,19 @@ prepare_local_artifacts() {
 
 check_local_cli_after_package() {
     LOCAL_PHASE=cli-post-package-check
-    verify_sha256 /usr/local/bin/roomler "$LOCAL_CLI_SHA"
-    /usr/local/bin/roomler --version >/dev/null
+    verify_sha256 /usr/local/bin/mh "$LOCAL_CLI_SHA"
+    /usr/local/bin/mh --version >/dev/null
 }
 
 install_local_cli() {
     if [ "$DOWNLOAD_ONLY" = 1 ]; then
-        say "download-only: would run: sudo install -m 755 $LOCAL_CLI /usr/local/bin/roomler"
+        say "download-only: would run: sudo install -m 755 $LOCAL_CLI /usr/local/bin/mh"
         return 0
     fi
     LOCAL_PHASE=cli-install; LOCAL_CLI_STATE=attempted
-    sudo install -m 755 "$LOCAL_CLI" /usr/local/bin/roomler
-    LOCAL_PHASE=cli-alias
-    sudo ln -sf /usr/local/bin/roomler /usr/local/bin/roomler-tunnel
+    sudo install -m 755 "$LOCAL_CLI" /usr/local/bin/mh
     LOCAL_PHASE=cli-installed-check
-    /usr/local/bin/roomler --version >/dev/null
+    /usr/local/bin/mh --version >/dev/null
     LOCAL_CLI_STATE=ready
 }
 
@@ -1727,7 +1713,7 @@ install_local_cli() {
 say "meshharbor install.sh — role=$ROLE os=$OS server=$SERVER"
 
 case "$ROLE/$OS" in
-    # FR-27 — the companion AFTER the daemon: it depends on `roomlerd` (the
+    # FR-27 — the companion AFTER the daemon: it depends on `meshharbor` (the
     # .deb literally Depends on it), and it reuses the release listing the
     # daemon step already fetched.
     daemon/Linux)

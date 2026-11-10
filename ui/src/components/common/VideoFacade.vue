@@ -31,7 +31,7 @@
     </button>
     <figcaption class="text-body-2 text-medium-emphasis mt-2">
       {{ caption || video.title }}
-      <span class="d-block text-caption">Plays from YouTube when you press play.</span>
+      <span class="d-block text-caption">{{ t('mh.video.fromYoutube') }}</span>
     </figcaption>
   </figure>
 </template>
@@ -39,6 +39,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { clockOf, embedUrl, minutesOf, videoById } from '@/utils/videos'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   /** A YouTube id from `ui/src/utils/videos.ts`; anything else renders nothing. */
@@ -51,7 +54,7 @@ const props = defineProps<{
 const video = computed(() => videoById(props.videoId))
 const label = computed(() =>
   video.value
-    ? `Play the video "${video.value.title}" (${minutesOf(video.value.duration)} minutes, plays from YouTube)`
+    ? t('mh.video.play', { title: video.value.title, n: minutesOf(video.value.duration) })
     : '',
 )
 const playing = ref(false)

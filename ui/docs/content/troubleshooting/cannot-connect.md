@@ -11,7 +11,7 @@ path they should be on.
 ## Start here — which path are you on?
 
 ```bash
-roomler peers
+mh peers
 ```
 
 The remote-desktop session shows the same as a **LAN / Direct / Relay**

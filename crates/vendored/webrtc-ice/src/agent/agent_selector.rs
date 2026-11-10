@@ -17,7 +17,7 @@ use crate::control::*;
 use crate::priority::*;
 use crate::use_candidate::*;
 
-/// Roomler patch (follow-renomination v2, 2026-07-28): how long the currently
+/// MeshHarbor patch (follow-renomination v2, 2026-07-28): how long the currently
 /// selected pair may go without ANY inbound before a renomination onto an
 /// overlay-remote pair is accepted as a failover. Live pairs see STUN consent
 /// checks and media continuously, so 3 s of silence means the pair is dying.
@@ -51,7 +51,7 @@ const FOLLOW_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(3
 ///   equal/lower priority included.
 ///
 /// Unparseable remotes (mDNS names) are conservatively treated as
-/// overlay-possible. Env overrides: `ROOMLER_ICE_FOLLOW_RENOMINATION=0`
+/// overlay-possible. Env overrides: `MESHHARBOR_ICE_FOLLOW_RENOMINATION=0`
 /// never follows (rc.262 semantics), `=1` always follows (rc.260 semantics).
 fn selected_pair_inbound_age(pair: &CandidatePair, use_pair_proof: bool) -> Duration {
     let authenticated = if use_pair_proof {
@@ -68,13 +68,30 @@ fn selected_pair_inbound_age(pair: &CandidatePair, use_pair_proof: bool) -> Dura
 fn same_pair(a: &CandidatePair, b: &CandidatePair) -> bool {
     a.local.equal(&*b.local) && a.remote.equal(&*b.remote)
 }
+fn candidate_resolved_ip(
+    candidate: &Arc<dyn Candidate + Send + Sync>,
+    resolve_mdns_addr: bool,
+) -> Option<std::net::IpAddr> {
+    candidate
+        .address()
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .or_else(|| {
+            if !resolve_mdns_addr {
+                return None;
+            }
+            let ip = candidate.addr().ip();
+            (!ip.is_unspecified()).then_some(ip)
+        })
+}
 fn direct_real_path(pair: &CandidatePair) -> bool {
+    direct_real_path_with_mdns(pair, false)
+}
+fn direct_real_path_with_mdns(pair: &CandidatePair, resolve_mdns_addr: bool) -> bool {
     [&pair.local, &pair.remote].iter().all(|candidate| {
         candidate.candidate_type() != CandidateType::Relay
-            && candidate
-                .address()
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| !crate::agent::agent_gather::is_roomler_overlay_ip(&ip))
+            && candidate_resolved_ip(candidate, resolve_mdns_addr)
+                .is_some_and(|ip| !crate::agent::agent_gather::is_meshharbor_overlay_ip(&ip))
     })
 }
 fn should_follow_renomination(
@@ -82,15 +99,19 @@ fn should_follow_renomination(
     current: &CandidatePair,
     use_pair_proof: bool,
 ) -> bool {
-    let new_remote_is_real_path = new_pair
-        .remote
-        .address()
-        .parse::<std::net::IpAddr>()
-        .map(|ip| !crate::agent::agent_gather::is_roomler_overlay_ip(&ip))
-        .unwrap_or(false);
+    should_follow_renomination_with_mdns(new_pair, current, use_pair_proof, false)
+}
+fn should_follow_renomination_with_mdns(
+    new_pair: &CandidatePair,
+    current: &CandidatePair,
+    use_pair_proof: bool,
+    resolve_mdns_addr: bool,
+) -> bool {
+    let new_remote_is_real_path = candidate_resolved_ip(&new_pair.remote, resolve_mdns_addr)
+        .is_some_and(|ip| !crate::agent::agent_gather::is_meshharbor_overlay_ip(&ip));
     let current_stale = selected_pair_inbound_age(current, use_pair_proof) > FOLLOW_STALE_AFTER;
     follow_renomination_policy(
-        std::env::var("ROOMLER_ICE_FOLLOW_RENOMINATION")
+        std::env::var("MESHHARBOR_ICE_FOLLOW_RENOMINATION")
             .ok()
             .as_deref(),
         new_remote_is_real_path,
@@ -113,7 +134,21 @@ fn follow_renomination_policy(
     }
 }
 
-/// Roomler patch (warm standby, 2026-07-28): cadence for pinging validated
+/// Whether the controlled agent probes higher-priority direct `Waiting`/`InProgress`
+/// pairs while a pair is already selected (default ON; opt-out via
+/// `MESHHARBOR_ICE_CONTROLLED_PROBE_LATE_DIRECT=0`).
+pub(crate) fn controlled_probe_late_direct_policy(env: Option<&str>) -> bool {
+    !matches!(
+        env.map(str::trim),
+        Some(v)
+            if v == "0"
+                || v.eq_ignore_ascii_case("false")
+                || v.eq_ignore_ascii_case("off")
+                || v.eq_ignore_ascii_case("no")
+    )
+}
+
+/// MeshHarbor patch (warm standby, 2026-07-28): cadence for pinging validated
 /// pairs that are NOT the selected one. Upstream keepalives only the selected
 /// pair, so every other validated pair's NAT mapping expires minutes after it
 /// goes idle (field, WINHOST-C: the agent's srflx mapping died within
@@ -149,6 +184,12 @@ impl AgentInternal {
         self.refresh_standby_pairs(WARM_STANDBY_INTERVAL, false, false)
             .await;
     }
+    pub(crate) fn controlled_probe_late_direct_enabled(&self) -> bool {
+        match std::env::var("MESHHARBOR_ICE_CONTROLLED_PROBE_LATE_DIRECT") {
+            Ok(v) => controlled_probe_late_direct_policy(Some(v.as_str())),
+            Err(_) => self.controlled_probe_late_direct.load(Ordering::SeqCst),
+        }
+    }
     async fn refresh_standby_pairs(
         &self,
         interval: Duration,
@@ -156,10 +197,11 @@ impl AgentInternal {
         check_unvalidated: bool,
     ) {
         if self.migration_terminal()
-            || std::env::var("ROOMLER_ICE_WARM_STANDBY").as_deref() == Ok("0")
+            || std::env::var("MESHHARBOR_ICE_WARM_STANDBY").as_deref() == Ok("0")
         {
             return;
         }
+        let resolve_mdns_addr = self.controlled_probe_late_direct_enabled();
         let selected = self.agent_conn.get_selected_pair();
         let standby: Vec<_> = {
             let checklist = self.agent_conn.checklist.lock().await;
@@ -172,10 +214,17 @@ impl AgentInternal {
                             && (state == CandidatePairState::Waiting as u8
                                 || state == CandidatePairState::InProgress as u8))
                 })
-                .filter(|p| selected.as_ref().is_none_or(|s| !same_pair(p, s)))
+                .filter(|p| {
+                    selected.as_ref().is_none_or(|s| {
+                        !same_pair(p, s)
+                            && !(!s.remote.addr().ip().is_unspecified()
+                                && p.local.addr() == s.local.addr()
+                                && p.remote.addr() == s.remote.addr())
+                    })
+                })
                 .filter(|p| {
                     !direct_only
-                        || (direct_real_path(p)
+                        || (direct_real_path_with_mdns(p, resolve_mdns_addr)
                             && selected
                                 .as_ref()
                                 .is_some_and(|s| p.priority() > s.priority()))
@@ -433,7 +482,7 @@ impl AgentInternal {
                 };
 
                 if let Err(err) = result {
-                    // Roomler vendor patch (2026-05-18 a third field-test host log-flood
+                    // MeshHarbor vendor patch (2026-05-18 a third field-test host log-flood
                     // fix): downgrade per-attempt STUN build failures
                     // to DEBUG so they don't drown the rolling log,
                     // and prefix with a target so they're greppable.
@@ -602,7 +651,7 @@ impl ControllingSelector for AgentInternal {
         };
 
         if let Err(err) = result {
-            // Roomler vendor patch (2026-05-18 a third field-test host log-flood fix):
+            // MeshHarbor vendor patch (2026-05-18 a third field-test host log-flood fix):
             // see nominate_pair above; per-candidate STUN build
             // failures are not session-fatal.
             log::debug!(target: "webrtc_ice::ping_candidate", "STUN message build failed: {}", err);
@@ -653,7 +702,7 @@ impl ControllingSelector for AgentInternal {
                     pending_request.is_use_candidate,
                     selected_pair_is_none
                 );
-                // Roomler patch (follow renomination): mirror of the
+                // MeshHarbor patch (follow renomination): mirror of the
                 // handle_binding_request policy — when the USE-CANDIDATE
                 // arrived before this pair's own check completed, the
                 // triggered check's success must also honour the controlling
@@ -663,7 +712,7 @@ impl ControllingSelector for AgentInternal {
                 // agent-srflx validates one-way through the home-NAT masquerade;
                 // the reverse direction routes into the TUN with a physical
                 // source) — SCTP died ~4 s in, every session. Opt-in via
-                // ROOMLER_ICE_FOLLOW_RENOMINATION=1 until the follow policy
+                // MESHHARBOR_ICE_FOLLOW_RENOMINATION=1 until the follow policy
                 // validates pair liveness both ways.
                 // v2 (2026-07-28): policy in should_follow_renomination() —
                 // real-path remotes always, overlay remotes only off a stale
@@ -767,6 +816,10 @@ impl ControlledSelector for AgentInternal {
             if self.validate_selected_pair().await {
                 log::trace!("[{}]: checking keepalive", self.get_name());
                 self.refresh_selected_consent().await;
+                if self.controlled_probe_late_direct_enabled() {
+                    self.refresh_standby_pairs(Duration::from_secs(2), true, true)
+                        .await;
+                }
                 self.warm_standby_pairs().await;
             }
         } else {
@@ -798,7 +851,7 @@ impl ControlledSelector for AgentInternal {
         };
 
         if let Err(err) = result {
-            // Roomler vendor patch (2026-05-18 a third field-test host log-flood fix):
+            // MeshHarbor vendor patch (2026-05-18 a third field-test host log-flood fix):
             // see nominate_pair above; per-candidate STUN build
             // failures are not session-fatal.
             log::debug!(target: "webrtc_ice::ping_candidate", "STUN message build failed: {}", err);
@@ -890,7 +943,7 @@ impl ControlledSelector for AgentInternal {
                     // generated a valid pair (Section 7.2.5.3.2).  The agent sets the
                     // nominated flag value of the valid pair to true.
                     //
-                    // Roomler patch (follow renomination): upstream only set the
+                    // MeshHarbor patch (follow renomination): upstream only set the
                     // selected pair when NONE was set, pinning the controlled
                     // agent to the FIRST nominated pair for the connection's
                     // lifetime. Browsers renominate deliberately when they
@@ -908,13 +961,18 @@ impl ControlledSelector for AgentInternal {
                     // (browser-TUN-host × agent-srflx validates one-way through
                     // the home-NAT masquerade; the reverse direction routes into
                     // the TUN with a physical source) — SCTP died ~4 s in, every
-                    // session. Opt-in via ROOMLER_ICE_FOLLOW_RENOMINATION=1 until
+                    // session. Opt-in via MESHHARBOR_ICE_FOLLOW_RENOMINATION=1 until
                     // the follow policy validates pair liveness both ways.
                     // v2 (2026-07-28): see should_follow_renomination().
                     let follow_renomination = {
                         let selected = self.agent_conn.get_selected_pair();
                         selected.as_ref().is_some_and(|s| {
-                            should_follow_renomination(&p, s, !self.keepalive_interval.is_zero())
+                            should_follow_renomination_with_mdns(
+                                &p,
+                                s,
+                                !self.keepalive_interval.is_zero(),
+                                self.controlled_probe_late_direct_enabled(),
+                            )
                         })
                     };
                     let already_selected = {
@@ -1852,6 +1910,771 @@ mod same_session_failover_tests {
             .await
             .is_empty());
         f.agent.close().await?;
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_probe_late_direct_env_policy_is_default_on() {
+        assert!(super::controlled_probe_late_direct_policy(None));
+        assert!(super::controlled_probe_late_direct_policy(Some("1")));
+        assert!(super::controlled_probe_late_direct_policy(Some("true")));
+        assert!(!super::controlled_probe_late_direct_policy(Some("0")));
+        assert!(!super::controlled_probe_late_direct_policy(Some("false")));
+    }
+
+    #[tokio::test]
+    async fn controlled_late_high_priority_direct_waiting_pair_probed_and_budget_bounded(
+    ) -> Result<()> {
+        let agent = Agent::new(AgentConfig {
+            is_controlling: false,
+            keepalive_interval: Some(Duration::from_secs(2)),
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            ..Default::default()
+        })
+        .await?;
+        assert!(
+            agent
+                .internal
+                .controlled_probe_late_direct
+                .load(Ordering::SeqCst),
+            "controlled_probe_late_direct must default to true"
+        );
+        let local_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.168.1.253".into(),
+                    port: 58000,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        let remote_relay: Arc<CandidateBase> = Arc::new(
+            CandidateRelayConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.0.2.111".into(),
+                    port: 49200,
+                    component: 1,
+                    ..Default::default()
+                },
+                rel_addr: "198.51.100.8".into(),
+                rel_port: 13000,
+                ..Default::default()
+            }
+            .new_candidate_relay()?,
+        );
+        remote_relay.set_last_received(SystemTime::now().duration_since(UNIX_EPOCH).unwrap());
+        let selected_low = Arc::new(CandidatePair::new(local_host.clone(), remote_relay, false));
+        selected_low
+            .state
+            .store(CandidatePairState::Succeeded as u8, Ordering::SeqCst);
+
+        // Late-arriving (e.g. post-mDNS-resolution) higher-priority direct host pair in Waiting.
+        let remote_late_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.168.1.42".into(),
+                    port: 59000,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        let late_direct = Arc::new(CandidatePair::new(
+            local_host.clone(),
+            remote_late_host,
+            false,
+        ));
+        assert!(late_direct.priority() > selected_low.priority());
+        assert_eq!(
+            late_direct.state.load(Ordering::SeqCst),
+            CandidatePairState::Waiting as u8
+        );
+
+        // Also a lower-priority Waiting pair (must NEVER be probed by direct_only=true).
+        let remote_low_waiting: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateRelayConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.0.2.111".into(),
+                    port: 49201,
+                    component: 1,
+                    ..Default::default()
+                },
+                rel_addr: "198.51.100.8".into(),
+                rel_port: 13001,
+                ..Default::default()
+            }
+            .new_candidate_relay()?,
+        );
+        let low_waiting = Arc::new(CandidatePair::new(
+            local_host.clone(),
+            remote_low_waiting,
+            false,
+        ));
+        assert!(low_waiting.priority() <= selected_low.priority());
+
+        agent.internal.agent_conn.checklist.lock().await.extend([
+            selected_low.clone(),
+            late_direct.clone(),
+            low_waiting.clone(),
+        ]);
+        {
+            let mut credentials = agent.internal.ufrag_pwd.lock().await;
+            credentials.remote_ufrag = "remote-ufrag".into();
+            credentials.remote_pwd = "remote-password-with-sufficient-entropy".into();
+        }
+        agent
+            .internal
+            .set_selected_pair(Some(selected_low.clone()))
+            .await;
+
+        // 1. Flag OFF (=0): late high-priority Waiting pair is NOT probed.
+        agent
+            .internal
+            .controlled_probe_late_direct
+            .store(false, Ordering::SeqCst);
+        ControlledSelector::contact_candidates(&*agent.internal).await;
+        assert_eq!(
+            late_direct.binding_request_count.load(Ordering::SeqCst),
+            0,
+            "disabled flag (=0) must not probe late Waiting pairs on controlled side"
+        );
+        assert_eq!(
+            late_direct.state.load(Ordering::SeqCst),
+            CandidatePairState::Waiting as u8
+        );
+
+        // 2. Default ON (=1): late high-priority direct Waiting pair IS probed (without USE-CANDIDATE),
+        // while lower-priority Waiting pair is NOT probed, and selected_pair does not change.
+        agent
+            .internal
+            .controlled_probe_late_direct
+            .store(true, Ordering::SeqCst);
+        ControlledSelector::contact_candidates(&*agent.internal).await;
+        assert_eq!(
+            late_direct.binding_request_count.load(Ordering::SeqCst),
+            1,
+            "enabled flag must probe higher-priority direct Waiting pair"
+        );
+        assert_eq!(
+            late_direct.state.load(Ordering::SeqCst),
+            CandidatePairState::InProgress as u8
+        );
+        assert_eq!(
+            low_waiting.binding_request_count.load(Ordering::SeqCst),
+            0,
+            "lower-priority Waiting pair must not be probed"
+        );
+        assert_eq!(
+            low_waiting.state.load(Ordering::SeqCst),
+            CandidatePairState::Waiting as u8
+        );
+        assert!(Arc::ptr_eq(
+            &agent.internal.agent_conn.get_selected_pair().unwrap(),
+            &selected_low
+        ));
+        let late_probes: Vec<_> = agent
+            .internal
+            .pending_binding_requests
+            .lock()
+            .await
+            .iter()
+            .filter(|r| r.destination == late_direct.remote.addr())
+            .cloned()
+            .collect();
+        assert_eq!(late_probes.len(), 1);
+        assert!(
+            !late_probes[0].is_use_candidate,
+            "controlled probe must never carry USE-CANDIDATE"
+        );
+
+        // Immediate second tick within the 2s pacing window must not re-probe.
+        ControlledSelector::contact_candidates(&*agent.internal).await;
+        assert_eq!(late_direct.binding_request_count.load(Ordering::SeqCst), 1);
+
+        // 3. Exhaust budget (> max_binding_requests): transitions to Failed and stops probing.
+        late_direct
+            .binding_request_count
+            .store(agent.internal.max_binding_requests + 1, Ordering::SeqCst);
+        late_direct.proof.lock().probed_at = Some(Instant::now() - Duration::from_secs(3));
+        ControlledSelector::contact_candidates(&*agent.internal).await;
+        assert_eq!(
+            late_direct.state.load(Ordering::SeqCst),
+            CandidatePairState::Failed as u8,
+            "exceeding max_binding_requests must transition pair to Failed"
+        );
+        let late_probes_after_exhaust = agent
+            .internal
+            .pending_binding_requests
+            .lock()
+            .await
+            .iter()
+            .filter(|r| r.destination == late_direct.remote.addr())
+            .count();
+        assert_eq!(
+            late_probes_after_exhaust, 1,
+            "exhausted pair must not emit further STUN probes"
+        );
+        assert!(Arc::ptr_eq(
+            &agent.internal.agent_conn.get_selected_pair().unwrap(),
+            &selected_low
+        ));
+
+        agent.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn controlled_late_mdns_host_pair_probed_and_renominated_when_flag_enabled() -> Result<()>
+    {
+        use crate::candidate::candidate_server_reflexive::CandidateServerReflexiveConfig;
+
+        let agent = Agent::new(AgentConfig {
+            is_controlling: false,
+            keepalive_interval: Some(Duration::from_secs(2)),
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            ..Default::default()
+        })
+        .await?;
+
+        let local_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.168.1.253".into(),
+                    port: 54321,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        let remote_srflx: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateServerReflexiveConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "198.51.100.8".into(),
+                    port: 61001,
+                    component: 1,
+                    ..Default::default()
+                },
+                rel_addr: "0.0.0.0".into(),
+                rel_port: 0,
+            }
+            .new_candidate_server_reflexive()?,
+        );
+        let selected_srflx = Arc::new(CandidatePair::new(
+            local_host.clone(),
+            remote_srflx.clone(),
+            false,
+        ));
+        selected_srflx
+            .state
+            .store(CandidatePairState::Succeeded as u8, Ordering::SeqCst);
+        selected_srflx.note_authenticated_success();
+
+        // Simulate a `.local` mDNS host candidate resolved inside `webrtc-ice`
+        // (`resolve_and_add_multicast_candidate`): `c.address()` remains
+        // `"<uuid>.local"` while `c.set_ip` updates `c.addr()` to `192.168.1.42:54324`.
+        let remote_mdns_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "4a5b6c7d-0000-1111-2222-333344445555.local".into(),
+                    port: 54324,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        remote_mdns_host.set_ip(&"192.168.1.42".parse().unwrap())?;
+        assert_eq!(
+            remote_mdns_host.address(),
+            "4a5b6c7d-0000-1111-2222-333344445555.local"
+        );
+        assert_eq!(
+            remote_mdns_host.addr(),
+            "192.168.1.42:54324".parse().unwrap()
+        );
+
+        let late_mdns_pair = Arc::new(CandidatePair::new(
+            local_host.clone(),
+            remote_mdns_host.clone(),
+            false,
+        ));
+        assert!(late_mdns_pair.priority() > selected_srflx.priority());
+
+        agent
+            .internal
+            .agent_conn
+            .checklist
+            .lock()
+            .await
+            .extend([selected_srflx.clone(), late_mdns_pair.clone()]);
+        agent
+            .internal
+            .remote_candidates
+            .lock()
+            .await
+            .entry(local_host.network_type())
+            .or_default()
+            .extend([remote_srflx, remote_mdns_host.clone()]);
+        {
+            let mut credentials = agent.internal.ufrag_pwd.lock().await;
+            credentials.local_ufrag = "local-ufrag".into();
+            credentials.local_pwd = "local-password-with-sufficient-entropy".into();
+            credentials.remote_ufrag = "remote-ufrag".into();
+            credentials.remote_pwd = "remote-password-with-sufficient-entropy".into();
+        }
+        agent
+            .internal
+            .set_selected_pair(Some(selected_srflx.clone()))
+            .await;
+
+        // 1. Flag OFF (=0): `.local` candidate is not treated as direct_real_path and not probed.
+        assert!(!direct_real_path_with_mdns(&late_mdns_pair, false));
+        agent
+            .internal
+            .controlled_probe_late_direct
+            .store(false, Ordering::SeqCst);
+        ControlledSelector::contact_candidates(&*agent.internal).await;
+        assert_eq!(
+            late_mdns_pair.binding_request_count.load(Ordering::SeqCst),
+            0
+        );
+
+        // 2. Flag ON: `.local` candidate resolved to 192.168.1.42 IS probed.
+        assert!(direct_real_path_with_mdns(&late_mdns_pair, true));
+        agent
+            .internal
+            .controlled_probe_late_direct
+            .store(true, Ordering::SeqCst);
+        ControlledSelector::contact_candidates(&*agent.internal).await;
+        assert_eq!(
+            late_mdns_pair.binding_request_count.load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            late_mdns_pair.state.load(Ordering::SeqCst),
+            CandidatePairState::InProgress as u8
+        );
+
+        let probe_tx = agent
+            .internal
+            .pending_binding_requests
+            .lock()
+            .await
+            .iter()
+            .find(|r| r.destination == remote_mdns_host.addr())
+            .expect("probe sent to resolved .local SocketAddr")
+            .transaction_id;
+
+        // 3. Remote replies from 192.168.1.42:54324 with BINDING_SUCCESS -> matches `.local`
+        // CandidateHost via `find_remote_candidate` (`c.addr() == addr`) and validates pair.
+        let remote_pwd = agent.internal.ufrag_pwd.lock().await.remote_pwd.clone();
+        let mut resp = Message::new();
+        resp.build(&[
+            Box::new(BINDING_SUCCESS),
+            Box::new(probe_tx),
+            Box::new(MessageIntegrity::new_short_term_integrity(remote_pwd)),
+            Box::new(FINGERPRINT),
+        ])?;
+        agent
+            .internal
+            .handle_inbound(&mut resp, &local_host, remote_mdns_host.addr())
+            .await;
+        assert_eq!(
+            late_mdns_pair.state.load(Ordering::SeqCst),
+            CandidatePairState::Succeeded as u8
+        );
+        assert!(late_mdns_pair.authenticated_fresh());
+
+        // 4. Controlling peer (Chrome) sends BINDING_REQUEST with USE-CANDIDATE from
+        // 192.168.1.42:54324 -> controlled agent follows renomination onto `.local` host pair.
+        let (local_ufrag, remote_ufrag, local_pwd) = {
+            let u = agent.internal.ufrag_pwd.lock().await;
+            (
+                u.local_ufrag.clone(),
+                u.remote_ufrag.clone(),
+                u.local_pwd.clone(),
+            )
+        };
+        let mut nom_req = Message::new();
+        nom_req.build(&[
+            Box::new(BINDING_REQUEST),
+            Box::new(TransactionId::new()),
+            Box::new(Username::new(
+                ATTR_USERNAME,
+                format!("{local_ufrag}:{remote_ufrag}"),
+            )),
+            Box::<UseCandidateAttr>::default(),
+            Box::new(AttrControlling(1)),
+            Box::new(PriorityAttr(remote_mdns_host.priority())),
+            Box::new(MessageIntegrity::new_short_term_integrity(local_pwd)),
+            Box::new(FINGERPRINT),
+        ])?;
+        agent
+            .internal
+            .handle_inbound(&mut nom_req, &local_host, remote_mdns_host.addr())
+            .await;
+
+        assert!(
+            Arc::ptr_eq(
+                &agent.internal.agent_conn.get_selected_pair().unwrap(),
+                &late_mdns_pair
+            ),
+            "controlled agent must switch selected_pair to higher-priority resolved .local host pair"
+        );
+
+        agent.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mdns_candidate_resolved_to_overlay_ip_is_rejected_by_ip_filter() -> Result<()> {
+        // Locks the post-fix behavior for 18:42 Section 4:
+        // 1. When `ip_filter` is set (`rc_overlay=off`), a `.local` candidate that
+        //    resolves to an overlay IP (`100.65.4.33` or `fd72:6f6f:6d6c::6441:421`)
+        //    or an unresolved `.local` candidate (`0.0.0.0`) is rejected fail-closed
+        //    by `AgentInternal::add_remote_candidate`, and an inbound STUN
+        //    `BindingRequest` from an unknown overlay IP (`prflx` path in
+        //    `AgentInternal::handle_inbound`) is also rejected fail-closed.
+        //    Meanwhile, a `.local` candidate that resolves to a non-overlay LAN IP
+        //    (`192.168.1.42`) is admitted into `remote_candidates` and `checklist`.
+        // 2. When `ip_filter` is `None` (`rc_overlay=on`), `.local` candidates
+        //    resolving to `100.65.4.33` continue to be admitted into `checklist`.
+        use crate::agent::agent_gather::is_meshharbor_overlay_ip;
+        use crate::network_type::NetworkType;
+
+        let agent_off = Agent::new(AgentConfig {
+            is_controlling: false,
+            keepalive_interval: Some(Duration::from_secs(2)),
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            ip_filter: Arc::new(Some(Box::new(|ip| !is_meshharbor_overlay_ip(&ip)))),
+            ..Default::default()
+        })
+        .await?;
+
+        let local_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.168.1.253".into(),
+                    port: 54321,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        agent_off
+            .internal
+            .local_candidates
+            .lock()
+            .await
+            .insert(local_host.network_type(), vec![local_host.clone()]);
+        {
+            let mut credentials = agent_off.internal.ufrag_pwd.lock().await;
+            credentials.local_ufrag = "local-ufrag".into();
+            credentials.local_pwd = "local-password-with-sufficient-entropy".into();
+            credentials.remote_ufrag = "remote-ufrag".into();
+            credentials.remote_pwd = "remote-password-with-sufficient-entropy".into();
+        }
+
+        // Case 1a (rc_overlay=off): unresolved `.local` candidate (`0.0.0.0`) -> fail-closed.
+        let unresolved_mdns_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "00000000-0000-1111-2222-333344445555.local".into(),
+                    port: 54320,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        agent_off
+            .internal
+            .add_remote_candidate(&unresolved_mdns_host)
+            .await;
+        assert!(
+            agent_off
+                .internal
+                .find_pair(&local_host, &unresolved_mdns_host)
+                .await
+                .is_none(),
+            "unresolved .local candidate must fail closed when ip_filter is set"
+        );
+
+        // Case 1b (rc_overlay=off): `.local` resolved to overlay IPv4 `100.65.4.33` -> dropped.
+        let overlay_mdns_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "4a5b6c7d-0000-1111-2222-333344445555.local".into(),
+                    port: 54324,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        overlay_mdns_host.set_ip(&"100.65.4.33".parse().unwrap())?;
+        agent_off
+            .internal
+            .add_remote_candidate(&overlay_mdns_host)
+            .await;
+        assert!(
+            agent_off
+                .internal
+                .find_pair(&local_host, &overlay_mdns_host)
+                .await
+                .is_none(),
+            "overlay .local candidate must be dropped before entering checklist when rc_overlay=off"
+        );
+
+        // Case 1c (rc_overlay=off): inbound STUN BindingRequest from unknown overlay IP (`prflx`) -> dropped.
+        let mut prflx_req = Message::new();
+        prflx_req.build(&[
+            Box::new(BINDING_REQUEST),
+            Box::new(TransactionId::new()),
+            Box::new(Username::new(
+                ATTR_USERNAME,
+                "local-ufrag:remote-ufrag".to_owned(),
+            )),
+            Box::new(UseCandidateAttr::default()),
+            Box::new(PriorityAttr(1_853_824_767)),
+            Box::new(AttrControlling(1)),
+            Box::new(MessageIntegrity::new_short_term_integrity(
+                "local-password-with-sufficient-entropy".to_owned(),
+            )),
+            Box::new(FINGERPRINT),
+        ])?;
+        agent_off
+            .internal
+            .handle_inbound(
+                &mut prflx_req,
+                &local_host,
+                "100.65.4.33:54399".parse().unwrap(),
+            )
+            .await;
+        assert!(
+            agent_off
+                .internal
+                .find_remote_candidate(
+                    NetworkType::Udp4,
+                    "100.65.4.33:54399".parse().unwrap()
+                )
+                .await
+                .is_none(),
+            "inbound STUN request from overlay IP must not synthesize a prflx candidate when rc_overlay=off"
+        );
+        assert!(
+            agent_off.get_selected_candidate_pair().is_none(),
+            "overlay prflx nomination must not select a pair when rc_overlay=off"
+        );
+
+        // Case 1d (rc_overlay=off): `.local` resolved to LAN IPv4 `192.168.1.42` -> kept!
+        let lan_mdns_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "9b8a7c6d-0000-1111-2222-333344445555.local".into(),
+                    port: 59501,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        lan_mdns_host.set_ip(&"192.168.1.42".parse().unwrap())?;
+        agent_off
+            .internal
+            .add_remote_candidate(&lan_mdns_host)
+            .await;
+        assert!(
+            agent_off
+                .internal
+                .find_pair(&local_host, &lan_mdns_host)
+                .await
+                .is_some(),
+            "non-overlay LAN .local candidate must be admitted into checklist"
+        );
+
+        agent_off.close().await?;
+
+        // Case 2 (rc_overlay=on): `ip_filter` is `None`, so `.local` resolved to
+        // `100.65.4.33` IS admitted into `remote_candidates` and `checklist`.
+        let agent_on = Agent::new(AgentConfig {
+            is_controlling: false,
+            keepalive_interval: Some(Duration::from_secs(2)),
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            ip_filter: Arc::new(None),
+            ..Default::default()
+        })
+        .await?;
+        let local_host_on: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.168.1.253".into(),
+                    port: 54321,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        agent_on
+            .internal
+            .local_candidates
+            .lock()
+            .await
+            .insert(local_host_on.network_type(), vec![local_host_on.clone()]);
+        agent_on
+            .internal
+            .add_remote_candidate(&overlay_mdns_host)
+            .await;
+        assert!(
+            agent_on
+                .internal
+                .find_pair(&local_host_on, &overlay_mdns_host)
+                .await
+                .is_some(),
+            "when rc_overlay=on (no ip_filter), .local candidate resolving to overlay IP must be kept"
+        );
+        agent_on.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn controlled_prflx_selected_pair_not_starved_by_late_same_addr_host_candidate(
+    ) -> Result<()> {
+        use crate::candidate::candidate_peer_reflexive::CandidatePeerReflexiveConfig;
+        use crate::network_type::NetworkType;
+
+        let agent = Agent::new(AgentConfig {
+            is_controlling: false,
+            keepalive_interval: Some(Duration::from_secs(2)),
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            ..Default::default()
+        })
+        .await?;
+
+        let local_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.168.1.253".into(),
+                    port: 54321,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        agent
+            .internal
+            .local_candidates
+            .lock()
+            .await
+            .insert(local_host.network_type(), vec![local_host.clone()]);
+
+        // 1. Inbound STUN before trickle creates a PeerReflexive candidate first
+        // and selects `(local_host, remote_prflx)`.
+        let remote_prflx: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidatePeerReflexiveConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.168.1.42".into(),
+                    port: 50000,
+                    component: 1,
+                    ..Default::default()
+                },
+                rel_addr: String::new(),
+                rel_port: 0,
+            }
+            .new_candidate_peer_reflexive()?,
+        );
+        agent.internal.add_remote_candidate(&remote_prflx).await;
+        let prflx_pair = agent
+            .internal
+            .find_pair(&local_host, &remote_prflx)
+            .await
+            .expect("prflx pair must exist");
+        prflx_pair
+            .state
+            .store(CandidatePairState::Succeeded as u8, Ordering::SeqCst);
+        prflx_pair.note_authenticated_success();
+        agent
+            .internal
+            .set_selected_pair(Some(Arc::clone(&prflx_pair)))
+            .await;
+
+        // 2. Late trickle adds the plain IP Host candidate for the exact same SocketAddr.
+        let remote_host: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".into(),
+                    address: "192.168.1.42".into(),
+                    port: 50000,
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        agent.internal.add_remote_candidate(&remote_host).await;
+        let host_pair = agent
+            .internal
+            .find_pair(&local_host, &remote_host)
+            .await
+            .expect("host pair must exist");
+
+        // 3. `find_remote_candidate` for 192.168.1.42:50000 must resolve to
+        // `selected_pair.remote` (`remote_prflx`) so consent keepalive replies
+        // refresh `selected_pair.authenticated_age()`.
+        let matched = agent
+            .internal
+            .find_remote_candidate(NetworkType::Udp4, "192.168.1.42:50000".parse().unwrap())
+            .await
+            .expect("must match remote candidate");
+        assert!(
+            matched.equal(&*remote_prflx),
+            "find_remote_candidate must return selected_pair.remote (prflx), got {matched}"
+        );
+
+        // 4. `refresh_standby_pairs` must not probe `host_pair` on the identical 4-tuple.
+        agent
+            .internal
+            .refresh_standby_pairs(Duration::from_millis(1), true, true)
+            .await;
+        assert_eq!(
+            host_pair.binding_request_count.load(Ordering::SeqCst),
+            0,
+            "duplicate host pair on same 4-tuple as selected prflx pair must not be probed"
+        );
+
+        agent.close().await?;
         Ok(())
     }
 }

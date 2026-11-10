@@ -34,7 +34,7 @@
             icon="mdi-chevron-double-left"
             size="x-small"
             variant="text"
-            aria-label="Collapse sidebar"
+            :aria-label="t('mh.layout.collapseSidebar')"
             @click.stop="rail = true"
           />
         </template>
@@ -51,7 +51,7 @@
           <template #activator="{ props: menuProps }">
             <v-list-item
               v-bind="menuProps"
-              :title="tenantStore.current?.name || 'Select organization'"
+              :title="tenantStore.current?.name || t('mh.layout.selectOrg')"
               prepend-icon="mdi-domain"
             >
               <template #append>
@@ -98,12 +98,12 @@
             </v-list-item>
             <v-divider />
             <v-list-item
-              title="New organization"
+              :title="t('mh.layout.newOrg')"
               prepend-icon="mdi-plus"
               @click="showCreateOrg = true"
             />
             <v-list-item
-              title="All organizations"
+              :title="t('mh.layout.allOrgs')"
               prepend-icon="mdi-view-grid-outline"
               @click="goHome"
             />
@@ -165,8 +165,8 @@
                   size="x-small"
                   variant="text"
                   :to="`/tenant/${tenantId}/devices`"
-                  title="Open the devices page"
-                  aria-label="Open the devices page"
+                  :title="t('mh.layout.openDevices')"
+                  :aria-label="t('mh.layout.openDevices')"
                   @click.stop
                 />
               </template>
@@ -183,7 +183,7 @@
             prepend-inner-icon="mdi-magnify"
             :placeholder="$t('common.search')"
             class="mx-2 my-1 nav-search"
-            aria-label="Search devices"
+            :aria-label="t('mh.layout.searchDevices')"
           />
           <v-list-item
             v-for="d in deviceNav.items.value"
@@ -253,8 +253,8 @@
                   size="x-small"
                   variant="text"
                   :to="`/tenant/${tenantId}/rooms`"
-                  title="Open the rooms page"
-                  aria-label="Open the rooms page"
+                  :title="t('mh.layout.openRooms')"
+                  :aria-label="t('mh.layout.openRooms')"
                   @click.stop
                 />
               </template>
@@ -281,7 +281,7 @@
             prepend-inner-icon="mdi-magnify"
             :placeholder="$t('common.search')"
             class="mx-2 my-1 nav-search"
-            aria-label="Search rooms"
+            :aria-label="t('mh.layout.searchRooms')"
           />
           <v-list-item
             v-for="room in roomNav.items.value"
@@ -407,13 +407,13 @@
 
 
       <v-list density="compact">
-        <v-list-item :to="{ path: '/my-devices', query: route.query.desktop === '1' ? { desktop: '1' } : {} }" prepend-icon="mdi-account-multiple" title="My devices &amp; sharing" data-testid="personal-devices-nav" />
-        <v-list-item :to="{ path: '/device-shares', query: route.query.desktop === '1' ? { desktop: '1' } : {} }" prepend-icon="mdi-share-variant" title="Device shares" data-testid="device-shares-nav" />
+        <v-list-item :to="{ path: '/my-devices', query: route.query.desktop === '1' ? { desktop: '1' } : {} }" prepend-icon="mdi-account-multiple" :title="$t('mh.nav.myDevices')" data-testid="personal-devices-nav" />
+        <v-list-item :to="{ path: '/device-shares', query: route.query.desktop === '1' ? { desktop: '1' } : {} }" prepend-icon="mdi-share-variant" :title="$t('mh.nav.deviceShares')" data-testid="device-shares-nav" />
       </v-list>
 
       <!-- Central approval is global; never hide it behind tenant membership. -->
       <v-list v-if="accountApproval.isOwner" density="compact">
-        <v-list-item to="/account-approval" prepend-icon="mdi-account-check" title="Account approvals" data-testid="account-approval-nav" />
+        <v-list-item to="/account-approval" prepend-icon="mdi-account-check" :title="$t('mh.nav.accountApprovals')" data-testid="account-approval-nav" />
       </v-list>
 
       <template #append>
@@ -434,7 +434,7 @@
         <v-list density="compact">
           <v-list-item
             prepend-icon="mdi-cog"
-            title="Settings"
+            :title="t('nav.settings')"
             :to="settingsRoute"
           />
         </v-list>
@@ -454,7 +454,7 @@
           offset-x="10"
           offset-y="10"
         >
-          <v-app-bar-nav-icon aria-label="Menu" @click="drawer = !drawer" />
+          <v-app-bar-nav-icon :aria-label="t('mh.layout.menu')" @click="drawer = !drawer" />
         </v-badge>
       </template>
       <v-app-bar-title class="app-bar-title-truncate">
@@ -481,26 +481,26 @@
               color="success"
               class="call-pulse mr-1"
               data-testid="in-call-menu"
-              :aria-label="conferenceStore.isMuted ? 'In a call, muted — call controls' : 'In a call — call controls'"
+              :aria-label="conferenceStore.isMuted ? t('mh.layout.inCallMuted') : t('mh.layout.inCall')"
             >
               <v-icon>{{ conferenceStore.isMuted ? 'mdi-microphone-off' : 'mdi-phone-in-talk' }}</v-icon>
             </v-btn>
           </template>
           <v-list density="compact" min-width="220">
-            <v-list-subheader>{{ conferenceStore.roomName || 'Call' }}</v-list-subheader>
-            <v-list-item prepend-icon="mdi-arrow-expand" title="Return to call" @click="returnToCall" />
+            <v-list-subheader>{{ conferenceStore.roomName || t('mh.layout.call') }}</v-list-subheader>
+            <v-list-item prepend-icon="mdi-arrow-expand" :title="t('mh.layout.returnToCall')" @click="returnToCall" />
             <v-list-item
               :prepend-icon="conferenceStore.isMuted ? 'mdi-microphone-off' : 'mdi-microphone'"
-              :title="conferenceStore.isMuted ? 'Unmute' : 'Mute'"
+              :title="conferenceStore.isMuted ? t('call.unmute') : t('call.mute')"
               @click="conferenceStore.toggleMute()"
             />
             <v-list-item
               :prepend-icon="conferenceStore.isVideoOn ? 'mdi-video' : 'mdi-video-off'"
-              :title="conferenceStore.isVideoOn ? 'Turn camera off' : 'Turn camera on'"
+              :title="conferenceStore.isVideoOn ? t('mh.layout.cameraOff') : t('mh.layout.cameraOn')"
               @click="conferenceStore.toggleVideo()"
             />
             <v-divider />
-            <v-list-item prepend-icon="mdi-phone-hangup" title="Hang up" base-color="error" @click="hangUp" />
+            <v-list-item prepend-icon="mdi-phone-hangup" :title="t('mh.layout.hangUp')" base-color="error" @click="hangUp" />
           </v-list>
         </v-menu>
         <!-- Active call indicator -->
@@ -514,7 +514,7 @@
               variant="tonal"
               color="success"
               class="call-pulse mr-1"
-              :aria-label="`${activeCallRooms.length} active call${activeCallRooms.length !== 1 ? 's' : ''}`"
+              :aria-label="t(activeCallRooms.length !== 1 ? 'mh.layout.activeCallMany' : 'mh.layout.activeCallOne', { n: activeCallRooms.length })"
             >
               <v-badge :content="activeCallRooms.length" color="success" floating>
                 <v-icon>mdi-phone-ring</v-icon>
@@ -533,7 +533,7 @@
             </v-btn>
           </template>
           <v-list density="compact">
-            <v-list-subheader>Active Calls</v-list-subheader>
+            <v-list-subheader>{{ t('mh.layout.activeCalls') }}</v-list-subheader>
             <v-list-item
               v-for="room in activeCallRooms"
               :key="room.id"
@@ -553,7 +553,7 @@
             variant="tonal"
             color="error"
             class="mr-1"
-            :aria-label="`${roomStore.totalUnread} unread message${roomStore.totalUnread !== 1 ? 's' : ''}`"
+            :aria-label="t(roomStore.totalUnread !== 1 ? 'mh.layout.unreadMany' : 'mh.layout.unreadOne', { n: roomStore.totalUnread })"
             @click="goToFirstUnread"
           >
             <v-badge :content="roomStore.totalUnread" color="error" floating>
@@ -572,7 +572,7 @@
             {{ roomStore.totalUnread }}
           </v-btn>
         </template>
-        <v-btn icon="mdi-magnify" size="small" aria-label="Search" @click="showSearch = true" />
+        <v-btn icon="mdi-magnify" size="small" :aria-label="t('common.search')" @click="showSearch = true" />
         <!-- FR-12 — the tour, reachable forever (not only at first login).
              Below 600 px it lives in the avatar menu only (it is already
              there), to keep the bar inside a phone's width. -->
@@ -590,9 +590,31 @@
           :icon="isDark ? 'mdi-weather-sunny' : 'mdi-weather-night'"
           size="small"
           class="d-none d-sm-inline-flex"
-          :aria-label="isDark ? 'Light mode' : 'Dark mode'"
+          :aria-label="isDark ? t('mh.layout.lightMode') : t('mh.layout.darkMode')"
           @click="toggleTheme"
         />
+        <v-menu>
+          <template #activator="{ props: langProps }">
+            <v-btn
+              icon="mdi-translate"
+              size="small"
+              v-bind="langProps"
+              :title="$t('mh.lang.label')"
+              :aria-label="$t('mh.lang.label')"
+              data-testid="language-menu"
+            />
+          </template>
+          <v-list density="compact">
+            <v-list-item
+              v-for="l in LOCALES"
+              :key="l.code"
+              :title="l.label"
+              :active="currentLocale === l.code"
+              :data-testid="`language-${l.code}`"
+              @click="setLocale(l.code)"
+            />
+          </v-list>
+        </v-menu>
         <v-menu v-model="showNotifications" :close-on-content-click="false">
           <template #activator="{ props: menuProps }">
             <v-btn icon size="small" v-bind="menuProps">
@@ -617,7 +639,7 @@
             </v-btn>
           </template>
           <v-list density="compact">
-            <v-list-item prepend-icon="mdi-account" title="Profile" @click="goToProfile" />
+            <v-list-item prepend-icon="mdi-account" :title="t('mh.layout.profile')" @click="goToProfile" />
             <v-list-item
               v-if="tenantId"
               prepend-icon="mdi-school-outline"
@@ -631,7 +653,7 @@
                  what someone opening docs wants. -->
             <v-list-item
               prepend-icon="mdi-book-open-variant"
-              title="Documentation"
+              :title="t('mh.layout.docs')"
               :href="appPath('/docs/')"
               target="_blank"
               rel="noopener"
@@ -641,10 +663,10 @@
             <v-list-item
               v-if="xs"
               :prepend-icon="isDark ? 'mdi-weather-sunny' : 'mdi-weather-night'"
-              :title="isDark ? 'Light mode' : 'Dark mode'"
+              :title="isDark ? t('mh.layout.lightMode') : t('mh.layout.darkMode')"
               @click="toggleTheme"
             />
-            <v-list-item prepend-icon="mdi-logout" title="Logout" @click="handleLogout" />
+            <v-list-item prepend-icon="mdi-logout" :title="t('auth.logout')" @click="handleLogout" />
           </v-list>
         </v-menu>
       </template>
@@ -668,7 +690,7 @@
       closable
       class="ws-status-banner"
     >
-      Disconnected. Reconnecting...
+      {{ t('mh.layout.reconnecting') }}
     </v-alert>
 
     <v-main ref="mainRef" class="app-main-no-scroll">
@@ -689,19 +711,19 @@
     <!-- New organization dialog (reachable from the org switcher) -->
     <v-dialog v-model="showCreateOrg" max-width="420">
       <v-card>
-        <v-card-title>New organization</v-card-title>
+        <v-card-title>{{ t('mh.layout.newOrg') }}</v-card-title>
         <v-card-text>
           <v-form ref="createOrgForm" @submit.prevent="handleCreateOrg">
             <v-text-field
               v-model="orgName"
-              label="Name"
+              :label="t('mh.layout.orgName')"
               :rules="[rules.required]"
               @update:model-value="autoSlugFromName"
             />
             <v-text-field
               v-model="orgSlug"
-              label="Slug"
-              hint="URL-friendly identifier, globally unique"
+              :label="t('mh.layout.orgSlug')"
+              :hint="t('mh.layout.orgSlugHint')"
               :rules="[rules.required, rules.slug]"
               @update:model-value="orgSlugTouched = true"
             />
@@ -709,8 +731,8 @@
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="showCreateOrg = false">Cancel</v-btn>
-          <v-btn color="primary" :loading="creatingOrg" @click="handleCreateOrg">Create</v-btn>
+          <v-btn variant="text" @click="showCreateOrg = false">{{ t('common.cancel') }}</v-btn>
+          <v-btn color="primary" :loading="creatingOrg" @click="handleCreateOrg">{{ t('mh.layout.create') }}</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -719,7 +741,7 @@
     <v-snackbar v-model="callSnackbar" :timeout="8000" color="success" location="top right">
       {{ callSnackbarText }}
       <template #actions>
-        <v-btn variant="text" @click="joinCallFromSnackbar">Join</v-btn>
+        <v-btn variant="text" @click="joinCallFromSnackbar">{{ t('room.joinCall') }}</v-btn>
         <v-btn variant="text" icon="mdi-close" @click="callSnackbar = false" />
       </template>
     </v-snackbar>
@@ -731,6 +753,8 @@ import { appPath } from '@/utils/deployment'
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme, useDisplay } from 'vuetify'
+import { useI18n } from 'vue-i18n'
+import { LOCALES, setLocale } from '@/plugins/i18n'
 import { useAuth } from '@/composables/useAuth'
 import { useAccountApprovalStore } from '@/stores/accountApproval'
 import { useBrand } from '@/composables/useBrand'
@@ -870,7 +894,7 @@ const openGroups = ref<string[]>(['devices'])
 
 // ── Resizable drawer ─────────────────────────────────────────────
 // Default 308 ≈ Vuetify's 256 + 20%; drag the right edge, persisted.
-const NAV_WIDTH_KEY = 'roomler-nav-width'
+const NAV_WIDTH_KEY = 'meshharbor-nav-width'
 const NAV_WIDTH_DEFAULT = 308
 function loadNavWidth(): number {
   try {
@@ -982,7 +1006,7 @@ const isDark = computed(() => theme.global.current.value.dark)
 function toggleTheme() {
   const next = isDark.value ? 'light' : 'dark'
   theme.global.name.value = next
-  localStorage.setItem('roomler-theme', next)
+  localStorage.setItem('meshharbor-theme', next)
 }
 
 // Call notification snackbar
@@ -992,7 +1016,7 @@ const callSnackbarRoomId = ref('')
 
 function onCallStarted(e: Event) {
   const detail = (e as CustomEvent).detail as { room_id: string; room_name: string }
-  callSnackbarText.value = `Call started in ${detail.room_name}`
+  callSnackbarText.value = t('room.callStarted', { room: detail.room_name })
   callSnackbarRoomId.value = detail.room_id
   callSnackbar.value = true
 }
@@ -1139,11 +1163,12 @@ const settingsRoute = computed(() =>
   tenantId.value ? `/tenant/${tenantId.value}/admin` : '/',
 )
 
+const { t, locale: currentLocale } = useI18n()
 const pageTitle = computed(() => {
   const name = route.name as string
-  if (name === 'my-devices') return 'My devices & sharing'
-  if (name === 'device-shares' || name === 'shared-remote') return 'Device shares'
-  if (name === 'account-approval') return 'Account approvals'
+  if (name === 'my-devices') return t('mh.nav.myDevices')
+  if (name === 'device-shares' || name === 'shared-remote') return t('mh.nav.deviceShares')
+  if (name === 'account-approval') return t('mh.nav.accountApprovals')
   if (name === 'room-chat') return 'Chat'
   if (name === 'room-call') return 'Call'
   return (route.meta.title as string) || PRODUCT_TITLE
@@ -1206,11 +1231,11 @@ async function handleCreateOrg() {
     orgSlugTouched.value = false
     router.push(`/tenant/${tenant.id}`)
   } catch (e) {
-    const msg = e instanceof Error ? e.message : 'Failed to create organization'
+    const msg = e instanceof Error ? e.message : t('mh.layout.createOrgFailed')
     // tenants.slug is globally unique — surface the dup-key case in words.
     showCreateOrgError(
       msg.includes('duplicate') || msg.includes('E11000')
-        ? 'That slug is already taken — pick another'
+        ? t('mh.layout.slugTaken')
         : msg,
     )
   } finally {

@@ -2202,3 +2202,568 @@ async fn test_lite_lifecycle() -> Result<()> {
 
     Ok(())
 }
+
+// Regression test: closing a connected Agent (with an active selected_pair, nominated_pair,
+// and checklist) must release every internal Arc<dyn Candidate> reference so the underlying
+// UDP sockets are immediately dropped rather than retained by selected_pair/checklist.
+#[tokio::test]
+async fn test_close_releases_all_local_candidate_arcs_when_connected() -> Result<()> {
+    let a_agent = Arc::new(
+        Agent::new(AgentConfig {
+            network_types: supported_network_types(),
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            ..Default::default()
+        })
+        .await?,
+    );
+    let b_agent = Arc::new(
+        Agent::new(AgentConfig {
+            network_types: supported_network_types(),
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            ..Default::default()
+        })
+        .await?,
+    );
+
+    connect_with_vnet(&a_agent, &b_agent).await?;
+
+    assert!(
+        a_agent.get_selected_candidate_pair().is_some(),
+        "a_agent must have a selected candidate pair while connected"
+    );
+    assert!(
+        b_agent.get_selected_candidate_pair().is_some(),
+        "b_agent must have a selected candidate pair while connected"
+    );
+
+    let a_local_cands: Vec<Arc<dyn Candidate + Send + Sync>> = {
+        let guard = a_agent.internal.local_candidates.lock().await;
+        guard
+            .values()
+            .flat_map(|cands| cands.iter().cloned())
+            .collect()
+    };
+    let b_local_cands: Vec<Arc<dyn Candidate + Send + Sync>> = {
+        let guard = b_agent.internal.local_candidates.lock().await;
+        guard
+            .values()
+            .flat_map(|cands| cands.iter().cloned())
+            .collect()
+    };
+    assert!(
+        !a_local_cands.is_empty(),
+        "a_agent must have local candidates"
+    );
+    assert!(
+        !b_local_cands.is_empty(),
+        "b_agent must have local candidates"
+    );
+    assert!(
+        a_local_cands.iter().any(|c| Arc::strong_count(c) >= 3),
+        "connected selected local candidate must be referenced by local_candidates + checklist/selected_pair"
+    );
+    assert!(
+        b_local_cands.iter().any(|c| Arc::strong_count(c) >= 3),
+        "connected selected local candidate must be referenced by local_candidates + checklist/selected_pair"
+    );
+
+    a_agent.close().await?;
+    b_agent.close().await?;
+
+    assert!(a_agent.get_selected_candidate_pair().is_none());
+    assert!(b_agent.get_selected_candidate_pair().is_none());
+    assert!(a_agent.internal.nominated_pair.lock().await.is_none());
+    assert!(b_agent.internal.nominated_pair.lock().await.is_none());
+    assert!(a_agent
+        .internal
+        .agent_conn
+        .checklist
+        .lock()
+        .await
+        .is_empty());
+    assert!(b_agent
+        .internal
+        .agent_conn
+        .checklist
+        .lock()
+        .await
+        .is_empty());
+
+    // Allow spawned candidate recv_loop tasks woken by closed_ch to exit.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    while tokio::time::Instant::now() < deadline {
+        if a_local_cands.iter().all(|c| Arc::strong_count(c) == 1)
+            && b_local_cands.iter().all(|c| Arc::strong_count(c) == 1)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    for cand in &a_local_cands {
+        assert_eq!(
+            Arc::strong_count(cand),
+            1,
+            "a_agent local candidate {} retained extra Arc references after close()",
+            cand
+        );
+    }
+    for cand in &b_local_cands {
+        assert_eq!(
+            Arc::strong_count(cand),
+            1,
+            "b_agent local candidate {} retained extra Arc references after close()",
+            cand
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_f1_hung_conn_isolated_inflight_capped_keepalive_runs_and_close_drains() -> Result<()>
+{
+    struct HungSendConn {
+        addr: SocketAddr,
+        send_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Conn for HungSendConn {
+        async fn connect(&self, _addr: SocketAddr) -> std::result::Result<(), util::Error> {
+            Ok(())
+        }
+        async fn recv(&self, _buf: &mut [u8]) -> std::result::Result<usize, util::Error> {
+            std::future::pending().await
+        }
+        async fn recv_from(
+            &self,
+            _buf: &mut [u8],
+        ) -> std::result::Result<(usize, SocketAddr), util::Error> {
+            std::future::pending().await
+        }
+        async fn send(&self, _buf: &[u8]) -> std::result::Result<usize, util::Error> {
+            self.send_calls.fetch_add(1, Ordering::SeqCst);
+            std::future::pending().await
+        }
+        async fn send_to(
+            &self,
+            _buf: &[u8],
+            _target: SocketAddr,
+        ) -> std::result::Result<usize, util::Error> {
+            self.send_calls.fetch_add(1, Ordering::SeqCst);
+            std::future::pending().await
+        }
+        fn local_addr(&self) -> std::result::Result<SocketAddr, util::Error> {
+            Ok(self.addr)
+        }
+        fn remote_addr(&self) -> Option<SocketAddr> {
+            None
+        }
+        async fn close(&self) -> std::result::Result<(), util::Error> {
+            Ok(())
+        }
+        fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+            self
+        }
+    }
+
+    // Part A: deterministic per-pair <= 1 in-flight cap + remaining pairs unaffected + close() drains to 0.
+    {
+        let remote_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+        let remote_addr = remote_sock.local_addr()?;
+        let healthy_sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await?);
+        let healthy_addr = healthy_sock.local_addr()?;
+        let hung_calls = Arc::new(AtomicUsize::new(0));
+
+        let agent = Agent::new(AgentConfig::default()).await?;
+        agent
+            .set_remote_credentials("remUfrag".to_owned(), "remPwd1234567890".to_owned())
+            .await?;
+
+        let hung_local: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".to_owned(),
+                    address: "127.0.0.1".to_owned(),
+                    port: 59998,
+                    component: 1,
+                    priority: 2_130_706_431,
+                    conn: Some(Arc::new(HungSendConn {
+                        addr: "127.0.0.1:59998".parse().unwrap(),
+                        send_calls: Arc::clone(&hung_calls),
+                    })),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        let healthy_local: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateRelayConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".to_owned(),
+                    address: healthy_addr.ip().to_string(),
+                    port: healthy_addr.port(),
+                    component: 1,
+                    priority: 16_777_215,
+                    conn: Some(healthy_sock),
+                    ..Default::default()
+                },
+                rel_addr: "127.0.0.1".to_owned(),
+                rel_port: 3478,
+                relay_client: None,
+            }
+            .new_candidate_relay()?,
+        );
+        let remote_cand: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".to_owned(),
+                    address: remote_addr.ip().to_string(),
+                    port: remote_addr.port(),
+                    component: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+
+        agent.internal.add_candidate(&hung_local).await?;
+        agent.internal.add_candidate(&healthy_local).await?;
+        agent.internal.add_remote_candidate(&remote_cand).await;
+
+        let mut buf = [0u8; 512];
+        for round in 1..=3 {
+            tokio::time::timeout(
+                Duration::from_millis(50),
+                agent.internal.ping_all_candidates(),
+            )
+            .await
+            .expect("ping_all_candidates must never block on a hung Conn");
+            assert_eq!(
+                agent.internal.inflight_stun_send_count(),
+                1,
+                "round {round}: per-pair in-flight STUN send count must be capped at 1"
+            );
+            assert_eq!(
+                hung_calls.load(Ordering::SeqCst),
+                1,
+                "round {round}: duplicate STUN send must not pile up while pair is already in flight"
+            );
+            let (n, src) =
+                tokio::time::timeout(Duration::from_millis(100), remote_sock.recv_from(&mut buf))
+                    .await
+                    .expect("healthy pair must still emit STUN request on every round")?;
+            assert!(n >= 20 && is_message(&buf[..n]));
+            assert_eq!(src, healthy_addr);
+        }
+
+        agent.close().await?;
+        assert_eq!(
+            agent.internal.inflight_stun_send_count(),
+            0,
+            "all in-flight STUN send tasks must exit before close() returns"
+        );
+        tokio::task::yield_now().await;
+        assert_eq!(Arc::strong_count(&hung_local), 1);
+        assert_eq!(Arc::strong_count(&healthy_local), 1);
+    }
+
+    // Part B: live Controlling <-> Controlled connection where Controlled has a permanently hung pair,
+    // proving Controlled still completes ICE and continues executing keepalive / consent refresh!
+    {
+        let ctrl = Arc::new(
+            Agent::new(AgentConfig {
+                network_types: vec![NetworkType::Udp4],
+                candidate_types: vec![CandidateType::Host],
+                include_loopback: true,
+                check_interval: Duration::from_millis(30),
+                keepalive_interval: Some(Duration::from_millis(80)),
+                ..Default::default()
+            })
+            .await?,
+        );
+        let ctld = Arc::new(
+            Agent::new(AgentConfig {
+                network_types: vec![NetworkType::Udp4],
+                candidate_types: vec![CandidateType::Host],
+                include_loopback: true,
+                check_interval: Duration::from_millis(30),
+                keepalive_interval: Some(Duration::from_millis(80)),
+                ..Default::default()
+            })
+            .await?,
+        );
+
+        let hung_calls = Arc::new(AtomicUsize::new(0));
+        let hung_local: Arc<dyn Candidate + Send + Sync> = Arc::new(
+            CandidateHostConfig {
+                base_config: CandidateBaseConfig {
+                    network: "udp".to_owned(),
+                    address: "127.0.0.1".to_owned(),
+                    port: 59997,
+                    component: 1,
+                    priority: 2_130_706_431,
+                    conn: Some(Arc::new(HungSendConn {
+                        addr: "127.0.0.1:59997".parse().unwrap(),
+                        send_calls: Arc::clone(&hung_calls),
+                    })),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .new_candidate_host()?,
+        );
+        ctld.internal.add_candidate(&hung_local).await?;
+
+        let (c_ufrag, c_pwd) = ctrl.get_local_user_credentials().await;
+        let (d_ufrag, d_pwd) = ctld.get_local_user_credentials().await;
+        ctrl.set_remote_credentials(d_ufrag.clone(), d_pwd.clone())
+            .await?;
+        ctld.set_remote_credentials(c_ufrag.clone(), c_pwd.clone())
+            .await?;
+        gather_and_exchange_candidates(&ctrl, &ctld).await?;
+
+        let (_tx1, rx1) = mpsc::channel(1);
+        let (_tx2, rx2) = mpsc::channel(1);
+        let ctrl_c = Arc::clone(&ctrl);
+        let ctld_c = Arc::clone(&ctld);
+        let (res_a, res_b) = tokio::time::timeout(Duration::from_secs(3), async move {
+            tokio::join!(
+                ctrl_c.dial(rx1, d_ufrag, d_pwd),
+                ctld_c.accept(rx2, c_ufrag, c_pwd),
+            )
+        })
+        .await
+        .expect("dial/accept must succeed despite hung pair");
+        let (_conn_a, _conn_b) = (res_a?, res_b?);
+
+        assert!(
+            hung_calls.load(Ordering::SeqCst) >= 1,
+            "hung pair must have been probed during connectivity_checks"
+        );
+        let selected_t0 = ctld
+            .internal
+            .agent_conn
+            .get_selected_pair()
+            .expect("ctld must have a selected pair");
+        let sent_t0 = selected_t0.local.last_sent();
+        let recv_t0 = selected_t0.remote.last_received();
+
+        // Hold past refresh_selected_consent cadence (keepalive_interval = 80ms; check loop ~30ms)
+        // and verify selected.local.last_sent() and selected.remote.last_received() both advance!
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        let sent_t1 = selected_t0.local.last_sent();
+        let recv_t1 = selected_t0.remote.last_received();
+        assert!(
+            sent_t1 > sent_t0 && recv_t1 > recv_t0,
+            "Controlled connectivity_checks keepalive/consent refresh must keep firing (sent_t0={sent_t0:?}, sent_t1={sent_t1:?}, recv_t0={recv_t0:?}, recv_t1={recv_t1:?})"
+        );
+
+        ctrl.close().await?;
+        ctld.close().await?;
+        assert_eq!(ctld.internal.inflight_stun_send_count(), 0);
+        tokio::task::yield_now().await;
+        assert_eq!(Arc::strong_count(&hung_local), 1);
+    }
+
+    Ok(())
+}
+
+#[cfg(target_vendor = "apple")]
+#[tokio::test]
+async fn test_f1_apple_udp_write_to_no_double_close() -> Result<()> {
+    let recv_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+    let recv_addr = recv_sock.local_addr()?;
+
+    let send_sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await?);
+    let send_addr = send_sock.local_addr()?;
+
+    let local: Arc<dyn Candidate + Send + Sync> = Arc::new(
+        CandidateHostConfig {
+            base_config: CandidateBaseConfig {
+                network: "udp".to_owned(),
+                address: send_addr.ip().to_string(),
+                port: send_addr.port(),
+                component: 1,
+                conn: Some(Arc::clone(&send_sock) as Arc<dyn Conn + Send + Sync>),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .new_candidate_host()?,
+    );
+    let dst: Arc<dyn Candidate + Send + Sync> = Arc::new(
+        CandidateHostConfig {
+            base_config: CandidateBaseConfig {
+                network: "udp".to_owned(),
+                address: recv_addr.ip().to_string(),
+                port: recv_addr.port(),
+                component: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .new_candidate_host()?,
+    );
+
+    // Initialize closed_ch so `local.close().await` exercises the real close path.
+    let (closed_tx, _closed_rx) = broadcast::channel(1);
+    *local.get_closed_ch().lock().await = Some(closed_tx);
+
+    let mut buf = [0u8; 64];
+    for i in 0..5u8 {
+        let payload = [0xAA, i];
+        let n = local.write_to(&payload, &*dst).await?;
+        assert_eq!(n, 2);
+        let (r, src) = recv_sock.recv_from(&mut buf).await?;
+        assert_eq!(&buf[..r], &payload);
+        assert_eq!(src, send_addr);
+        // Verify fd was NOT closed by ManuallyDrop
+        assert_eq!(send_sock.local_addr()?, send_addr);
+    }
+
+    local.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_f1_non_udp_conn_downcast_fallback() -> Result<()> {
+    struct WrappedUdpConn(tokio::net::UdpSocket);
+
+    #[async_trait]
+    impl Conn for WrappedUdpConn {
+        async fn connect(&self, addr: SocketAddr) -> std::result::Result<(), util::Error> {
+            self.0.connect(addr).await.map_err(Into::into)
+        }
+        async fn recv(&self, buf: &mut [u8]) -> std::result::Result<usize, util::Error> {
+            self.0.recv(buf).await.map_err(Into::into)
+        }
+        async fn recv_from(
+            &self,
+            buf: &mut [u8],
+        ) -> std::result::Result<(usize, SocketAddr), util::Error> {
+            self.0.recv_from(buf).await.map_err(Into::into)
+        }
+        async fn send(&self, buf: &[u8]) -> std::result::Result<usize, util::Error> {
+            self.0.send(buf).await.map_err(Into::into)
+        }
+        async fn send_to(
+            &self,
+            buf: &[u8],
+            target: SocketAddr,
+        ) -> std::result::Result<usize, util::Error> {
+            self.0.send_to(buf, target).await.map_err(Into::into)
+        }
+        fn local_addr(&self) -> std::result::Result<SocketAddr, util::Error> {
+            self.0.local_addr().map_err(Into::into)
+        }
+        fn remote_addr(&self) -> Option<SocketAddr> {
+            None
+        }
+        async fn close(&self) -> std::result::Result<(), util::Error> {
+            Ok(())
+        }
+        fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+            self
+        }
+    }
+
+    let recv_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+    let recv_addr = recv_sock.local_addr()?;
+    let inner = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+    let send_addr = inner.local_addr()?;
+    let wrapped: Arc<dyn Conn + Send + Sync> = Arc::new(WrappedUdpConn(inner));
+    assert!(wrapped
+        .as_any()
+        .downcast_ref::<tokio::net::UdpSocket>()
+        .is_none());
+
+    let local: Arc<dyn Candidate + Send + Sync> = Arc::new(
+        CandidateHostConfig {
+            base_config: CandidateBaseConfig {
+                network: "udp".to_owned(),
+                address: send_addr.ip().to_string(),
+                port: send_addr.port(),
+                component: 1,
+                conn: Some(wrapped),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .new_candidate_host()?,
+    );
+    let dst: Arc<dyn Candidate + Send + Sync> = Arc::new(
+        CandidateHostConfig {
+            base_config: CandidateBaseConfig {
+                network: "udp".to_owned(),
+                address: recv_addr.ip().to_string(),
+                port: recv_addr.port(),
+                component: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .new_candidate_host()?,
+    );
+
+    assert_eq!(local.last_sent(), std::time::UNIX_EPOCH);
+    let n = local.write_to(b"fallback-ok", &*dst).await?;
+    assert_eq!(n, 11);
+    assert_ne!(local.last_sent(), std::time::UNIX_EPOCH);
+
+    let mut buf = [0u8; 32];
+    let (r, src) = recv_sock.recv_from(&mut buf).await?;
+    assert_eq!(&buf[..r], b"fallback-ok");
+    assert_eq!(src, send_addr);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_f1_wouldblock_bounded_retry_recovers_and_caps_attempts() -> Result<()> {
+    use crate::candidate::candidate_base::send_with_wouldblock_retry;
+
+    // 1. Transient WouldBlock (3 times, then succeeds on attempt #4)
+    let calls_transient = AtomicUsize::new(0);
+    let res_ok = send_with_wouldblock_retry(5, Duration::from_millis(1), || {
+        let c = calls_transient.fetch_add(1, Ordering::SeqCst);
+        if c < 3 {
+            Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+        } else {
+            Ok(1200)
+        }
+    })
+    .await?;
+    assert_eq!(res_ok, 1200);
+    assert_eq!(calls_transient.load(Ordering::SeqCst), 4);
+
+    // 2. Persistent WouldBlock: bounded at 1 + 5 = 6 attempts, returns WouldBlock
+    let calls_persist = AtomicUsize::new(0);
+    let t0 = tokio::time::Instant::now();
+    let res_wb = send_with_wouldblock_retry(5, Duration::from_millis(1), || {
+        calls_persist.fetch_add(1, Ordering::SeqCst);
+        Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+    })
+    .await;
+    assert_eq!(res_wb.unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+    assert_eq!(calls_persist.load(Ordering::SeqCst), 6);
+    assert!(t0.elapsed() < Duration::from_millis(200));
+
+    // 3. Non-WouldBlock error returns immediately without retry
+    let calls_other = AtomicUsize::new(0);
+    let res_other = send_with_wouldblock_retry(5, Duration::from_millis(1), || {
+        calls_other.fetch_add(1, Ordering::SeqCst);
+        Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable))
+    })
+    .await;
+    assert_eq!(
+        res_other.unwrap_err().kind(),
+        std::io::ErrorKind::AddrNotAvailable
+    );
+    assert_eq!(calls_other.load(Ordering::SeqCst), 1);
+
+    Ok(())
+}

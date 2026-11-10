@@ -12,15 +12,15 @@ COUNT="${1:-2}"; HOLD="${2:-180}"; REST="${3:-120}"; BRANCH="${4:-vpn-lab}"
 # The installed CLI, not a build tree: `C:\rwexec` was a scratch worktree that
 # no longer exists, and the lab is normally driven from a checkout with no
 # built agent at all. Overridable for a host that installed elsewhere.
-EXEC="${EXEC:-/c/Program Files/Roomler/roomler.exe}"
+EXEC="${EXEC:-/c/Program Files/MeshHarbor/mh.exe}"
 # Fleet device names the lab drives. Override to the real names at runtime so
-# no hostname is committed. LAB_TARGET = the laptop's `roomler exec` device
-# name; DEVBOX_NAME = how the dev box shows up in `roomler peers` output.
+# no hostname is committed. LAB_TARGET = the laptop's `mh exec` device
+# name; DEVBOX_NAME = how the dev box shows up in `mh peers` output.
 LAB_TARGET="${LAB_TARGET:-WINHOST-A}"; export LAB_TARGET
 DEVBOX_NAME="${DEVBOX_NAME:-devbox}"
 RUNID=$(date -u +%Y%m%d-%H%M%S)
 OUT="${VPNLAB_OUT:-$HOME/vpnlab}/$RUNID"
-RAW="https://raw.githubusercontent.com/gjovanov/roomler-ai/$BRANCH/scripts/vpn-lab/vpn-lab.ps1"
+RAW="https://raw.githubusercontent.com/jk-zhang-meta/MeshHarbor/$BRANCH/scripts/vpn-lab/vpn-lab.ps1"
 mkdir -p "$OUT"
 
 psexec() { # run an encoded PS command on the target host, CLIXML noise stripped
@@ -32,9 +32,9 @@ psexec() { # run an encoded PS command on the target host, CLIXML noise stripped
 echo "== deploy ($BRANCH) =="
 # Best-effort: an IN-VPN laptop reaches github via the corp egress (usually
 # blocked), and the on-box copy is normally already current — warn and continue.
-psexec "New-Item -ItemType Directory -Path 'C:\ProgramData\roomler\vpnlab' -Force | Out-Null;
-try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 20 -Uri '$RAW' -OutFile 'C:\ProgramData\roomler\vpnlab\vpn-lab.ps1' } catch { \"deploy fetch failed (\$(\$_.Exception.Message)) — using the existing copy\" };
-(Get-Item 'C:\ProgramData\roomler\vpnlab\vpn-lab.ps1' -ErrorAction SilentlyContinue).Length" 120000 || echo "deploy step unreachable — continuing with the existing on-box copy"
+psexec "New-Item -ItemType Directory -Path 'C:\ProgramData\meshharbor\vpnlab' -Force | Out-Null;
+try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 20 -Uri '$RAW' -OutFile 'C:\ProgramData\meshharbor\vpnlab\vpn-lab.ps1' } catch { \"deploy fetch failed (\$(\$_.Exception.Message)) — using the existing copy\" };
+(Get-Item 'C:\ProgramData\meshharbor\vpnlab\vpn-lab.ps1' -ErrorAction SilentlyContinue).Length" 120000 || echo "deploy step unreachable — continuing with the existing on-box copy"
 
 # Clock skew between the two halves, measured BEFORE the cycle and recorded
 # with the run. The two sides timestamp from their own unsynchronised clocks,
@@ -68,10 +68,10 @@ else
 fi
 
 echo "== launch detached run $RUNID =="
-psexec "\$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\roomler\vpnlab\vpn-lab.ps1 -Cmd cycle -Count $COUNT -HoldSec $HOLD -RestSec $REST -RunId $RUNID';
+psexec "\$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\meshharbor\vpnlab\vpn-lab.ps1 -Cmd cycle -Count $COUNT -HoldSec $HOLD -RestSec $REST -RunId $RUNID';
 \$t = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5);
-Register-ScheduledTask -TaskName 'roomler-vpnlab-run' -Action \$a -Trigger \$t -User 'SYSTEM' -RunLevel Highest -Force | Out-Null;
-Start-ScheduledTask -TaskName 'roomler-vpnlab-run'; 'LAUNCHED $RUNID'" 60000
+Register-ScheduledTask -TaskName 'meshharbor-vpnlab-run' -Action \$a -Trigger \$t -User 'SYSTEM' -RunLevel Highest -Force | Out-Null;
+Start-ScheduledTask -TaskName 'meshharbor-vpnlab-run'; 'LAUNCHED $RUNID'" 60000
 
 # Total = optional normalize (disc+rest) + N*(connect~30s+hold+disc~15s+rest)
 # + the 90 s post-transition sampler window + slack
@@ -87,7 +87,7 @@ echo "== collect from $LAB_TARGET =="
 # right after a run (that recovery IS part of what the run measures) — a
 # failed pull must not abort the local analysis. Re-collect later via the
 # same Get-Content calls; the run dir persists on the box.
-RD="C:\\ProgramData\\roomler\\vpnlab\\run-$RUNID"
+RD="C:\\ProgramData\\meshharbor\\vpnlab\\run-$RUNID"
 psexec "Get-Content '$RD\\events.csv' -ErrorAction SilentlyContinue" 60000 > "$OUT/pc-events.csv" || true
 for t in 100_65_4_2 100_65_0_6; do
   psexec "Get-Content '$RD\\ping-$t.csv' -ErrorAction SilentlyContinue" 90000 > "$OUT/pc-ping-$t.csv" || true
@@ -98,7 +98,7 @@ done
 # half silent on exactly the question that run was measuring, while the dev-box
 # half (read live) answered it. The counters are cumulative, so the value is in
 # the DIFF across samples — which is why every sample must be kept.
-psexec "Get-Content '$RD\\roomler-samples.txt' -ErrorAction SilentlyContinue | Select-String -Pattern '=== |version|srflx|warm|derp drops|${DEVBOX_NAME}|org:' | ForEach-Object { \$_.Line }" 90000 > "$OUT/pc-roomler-samples.txt" || true
+psexec "Get-Content '$RD\\meshharbor-samples.txt' -ErrorAction SilentlyContinue | Select-String -Pattern '=== |version|srflx|warm|derp drops|${DEVBOX_NAME}|org:' | ForEach-Object { \$_.Line }" 90000 > "$OUT/pc-meshharbor-samples.txt" || true
 psexec "Get-Content '$RD\\trac-connect.log' -ErrorAction SilentlyContinue" 60000 > "$OUT/pc-trac.log" || true
 
 echo "== outage windows (>=3 consecutive lost pings) =="

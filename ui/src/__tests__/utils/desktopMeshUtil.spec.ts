@@ -3,7 +3,7 @@
 // @vitest-environment node
 //
 // FR-84 D5c — the desktop companion's mesh graph reads edges by the SAME rules
-// as the web one: agents/roomler-desktop/src/front/mesh-util.js is generated
+// as the web one: agents/meshharbor-desktop/src/front/mesh-util.js is generated
 // from ui/src/utils/mesh.ts and checked in (the companion has no bundler).
 // This fails when the checked-in copy is not what mesh.ts builds to today.
 //
@@ -23,7 +23,7 @@ interface MeshUtil {
 /** Run the classic-script text the way a <script src> would, and hand back
  *  the global it defines. */
 function load(text: string): MeshUtil {
-  return new Function(`${text}\nreturn RoomlerMesh;`)() as MeshUtil
+  return new Function(`${text}\nreturn MeshHarborMesh;`)() as MeshUtil
 }
 
 describe('desktop mesh-util.js', () => {
@@ -33,11 +33,11 @@ describe('desktop mesh-util.js', () => {
     const checkedIn = readFileSync(TARGET, 'utf8').replace(/\r\n/g, '\n')
     expect(
       checkedIn,
-      'agents/roomler-desktop/src/front/mesh-util.js is stale — run: cd ui && bun scripts/build-desktop-mesh-util.mjs',
+      'agents/meshharbor-desktop/src/front/mesh-util.js is stale — run: cd ui && bun scripts/build-desktop-mesh-util.mjs',
     ).toBe(fresh)
   })
 
-  it('defines window.RoomlerMesh with helpers that answer like mesh.ts', () => {
+  it('defines window.MeshHarborMesh with helpers that answer like mesh.ts', () => {
     const util = load(readFileSync(TARGET, 'utf8'))
     const ends = [
       { node: 'a', carrier: 'direct', rtt_ms: 4 },

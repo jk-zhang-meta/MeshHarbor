@@ -2,7 +2,7 @@
 
 > **CLOSED 2026-09-01** — issue #1130 is closed and its acceptance criteria are met. Any status line below is the state while the work was in flight, kept as the record.
 
-**Issue:** [#1130](https://github.com/gjovanov/roomler-ai/issues/1130) ·
+**Issue:** [#1130](https://github.com/jk-zhang-meta/MeshHarbor/issues/1130) ·
 **Status:** proposed · **Owner:** overlay/networking
 
 ## Goal

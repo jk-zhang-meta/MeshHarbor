@@ -6,7 +6,7 @@
 //! admins' own sign-ups, the orgs they create to test with, the throwaway
 //! orgs a field test leaves behind. Two kinds of exclusion fold into ONE set:
 //!
-//! * **implicit** — every platform admin (`ROOMLER__STATS__PLATFORM_ADMINS`)
+//! * **implicit** — every platform admin (`MESHHARBOR__STATS__PLATFORM_ADMINS`)
 //!   and every org owned by an excluded user. No row needed: the allowlist
 //!   is the record, and an admin who creates a new test org tomorrow is
 //!   excluded with it.
@@ -23,7 +23,7 @@ use std::collections::HashSet;
 
 use bson::{Document, doc, oid::ObjectId};
 use futures::TryStreamExt;
-use roomler_ai_services::dao::{
+use meshharbor_services::dao::{
     base::DaoResult,
     growth::{ExclusionKind, GrowthDao, GrowthExclusion},
 };
@@ -248,9 +248,9 @@ impl InternalNetworks {
 pub async fn purge_tenant(
     core: &Core,
     tenant_id: ObjectId,
-) -> DaoResult<roomler_ai_services::dao::growth::PurgedCounts> {
+) -> DaoResult<meshharbor_services::dao::growth::PurgedCounts> {
     let mut counts = GrowthDao::new(&core.db).purge_tenant(tenant_id).await?;
-    counts.billing_events = roomler_ai_services::dao::billing_event::BillingEventDao::new(&core.db)
+    counts.billing_events = meshharbor_services::dao::billing_event::BillingEventDao::new(&core.db)
         .purge_tenant(tenant_id)
         .await?;
     Ok(counts)

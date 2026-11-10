@@ -12,7 +12,7 @@
 //!
 //! The cure is **rehome, never forward**: no WG-rate bytes ever ride
 //! the bus. Each registration writes an LWW record
-//! (`roomler:own:derp:<net>:<pubkey>`) plus a per-network member index,
+//! (`meshharbor:own:derp:<net>:<pubkey>`) plus a per-network member index,
 //! then runs one convergence sweep: the pod of the NEWEST registration
 //! is the target (the newest dial reflects the LB's *current* verdict —
 //! rehoming toward a parked majority would chase the past), and every
@@ -34,8 +34,8 @@ use tracing::{debug, info, warn};
 
 use crate::NetworkState;
 use crate::derp_types::{DerpKey, DerpPubKey};
-use roomler_core::cluster::directory::{OwnerRecord, derp_key, derpnet_key};
-use roomler_core::cluster::metrics::DERP_REHOME_STUCK_TOTAL;
+use meshharbor_core::cluster::directory::{OwnerRecord, derp_key, derpnet_key};
+use meshharbor_core::cluster::metrics::DERP_REHOME_STUCK_TOTAL;
 
 const REHOME_COOLDOWN: Duration = Duration::from_secs(60);
 const REHOME_MAX_ATTEMPTS: u32 = 3;
@@ -200,8 +200,8 @@ pub fn local_rehome_close(state: &NetworkState, network_id: ObjectId, pks: &[Str
         }
         if let Some(cancel) = state.derp_cancels.get(&(network_id, pk)) {
             info!(%network_id, pubkey = %member, "derp: closing socket for cluster rehome");
-            roomler_core::cluster::metrics::bump(
-                &roomler_core::cluster::metrics::DERP_REHOME_CLOSE_TOTAL,
+            meshharbor_core::cluster::metrics::bump(
+                &meshharbor_core::cluster::metrics::DERP_REHOME_CLOSE_TOTAL,
             );
             cancel.notify_one();
         }

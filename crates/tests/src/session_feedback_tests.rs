@@ -20,10 +20,10 @@
 
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
 use chrono::NaiveDate;
-use roomler_ai_api::growth::digest;
-use roomler_ai_remote_control::models::{SessionFeedback, SessionFeedbackRequest};
-use roomler_ai_services::dao::session_feedback::SessionFeedbackDao;
-use roomler_core::growth::ExclusionSet;
+use meshharbor_api::growth::digest;
+use meshharbor_core::growth::ExclusionSet;
+use meshharbor_remote_control::models::{SessionFeedback, SessionFeedbackRequest};
+use meshharbor_services::dao::session_feedback::SessionFeedbackDao;
 use serde_json::{Value, json};
 
 use crate::fixtures::test_app::TestApp;
@@ -416,7 +416,7 @@ async fn purge_user_takes_one_persons_ratings_and_nobody_elses() {
         tenant_id: tid,
         user_id: user,
         agent_id: ObjectId::new(),
-        rating: roomler_ai_remote_control::models::FeedbackRating::Up,
+        rating: meshharbor_remote_control::models::FeedbackRating::Up,
         reasons: vec![],
         ts: DateTime::now(),
     };
@@ -469,7 +469,7 @@ async fn the_digest_counts_the_ratings_and_reads_off_when_the_prompt_is_off() {
             tenant_id: tenant,
             user_id: user,
             agent_id: ObjectId::new(),
-            rating: roomler_ai_remote_control::models::FeedbackRating::parse(rating).unwrap(),
+            rating: meshharbor_remote_control::models::FeedbackRating::parse(rating).unwrap(),
             reasons: reasons.into_iter().map(str::to_string).collect(),
             ts,
         }

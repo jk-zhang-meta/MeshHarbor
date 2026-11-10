@@ -1,6 +1,6 @@
 # FR-118: GPU-resident frames — a captured frame stays on the GPU until the encoder takes it
 
-**Issue:** [#2669](https://github.com/gjovanov/roomler-ai/issues/2669) · **Status:** proposed 2026-10-21 —
+**Issue:** [#2669](https://github.com/jk-zhang-meta/MeshHarbor/issues/2669) · **Status:** proposed 2026-10-21 —
 spec and claim · **Owner:** the agent's capture and encode path · **Anchors:** master `c636c6e8c` ·
 **Program:** [StarDesk teardown](../plans/stardesk-teardown-program.md), wave 2 ("zero-copy") ·
 **Builds on:** [FR-70](FR-70-media-pipeline-leaves-the-runtime.md) (the encoder thread, M1),
@@ -168,7 +168,7 @@ The GPU input path is a property of a **cell** (encoder × chroma × input path)
   means no GPU cell, never a crashed daemon.
 - **Only a session proves the cell.** The first sessions on a new cell are read for decode errors, keyframe
   requests and colour before the cell is trusted.
-- **One kill switch, honoured everywhere.** `ROOMLERD_ZERO_COPY` (config `zero_copy`), default OFF for one
+- **One kill switch, honoured everywhere.** `MESHHARBORD_ZERO_COPY` (config `zero_copy`), default OFF for one
   release. Plus `zero_copy_deny` in the `encoder_cells_deny` shape (`name:path`). Both are honoured by the probe
   **and** by session dispatch: "a kill switch a child process honours and the daemon ignores keeps nothing out of
   the daemon".
@@ -198,7 +198,7 @@ flowchart LR
 |---|---|---|---|
 | P0 | **The split.** `encode_sync`'s five steps timed apart: `avg_convert_ms`, `avg_upload_ms`, `avg_submit_ms`, `avg_drain_ms` on the FFmpeg DC heartbeat, plus `avg_readback_ms` from WGC's capture thread (the DXGI arm is split with P4). Then a fleet read, per encoder × geometry | none: telemetry, a handful of `Instant` pairs per frame, no knobs read in the frame path | **built** (§5.1), ships with the next agent release; the fleet read is AC1 |
 | P1 | **C0, the contract.** `FrameData` + `Frame::cpu()`. Only `Cpu` is produced | none: no behaviour change, byte-identical by test | — |
-| P2 | **Windows, WGC → QSV, the first cell.** The GPU scale + NV12 conversion, `HwKind::D3d11va` on the capture device, the adapter rule, the probe's GPU-input open, the session's `input_path` and reason | `ROOMLERD_ZERO_COPY` (default OFF) + `zero_copy_deny` | — |
+| P2 | **Windows, WGC → QSV, the first cell.** The GPU scale + NV12 conversion, `HwKind::D3d11va` on the capture device, the adapter rule, the probe's GPU-input open, the session's `input_path` and reason | `MESHHARBORD_ZERO_COPY` (default OFF) + `zero_copy_deny` | — |
 | P3 | NVENC and AMF on D3D11 frames; open decision 1 measured on a hybrid laptop | the same | — |
 | P4 | The SystemContext DXGI arm (the lock screen and UAC) | the same | — |
 | P5 | macOS: IOSurface → VideoToolbox | the same | — |
@@ -215,11 +215,11 @@ what the pump does.
 
 | Heartbeat field | What it times | Where |
 |---|---|---|
-| `avg_convert_ms` | `convert_bgra` and the `AVFrame` build: the CPU colour conversion and a plane copy | `encode_sync`, `agents/roomlerd/src/encode/ffmpeg/encoder.rs` |
+| `avg_convert_ms` | `convert_bgra` and the `AVFrame` build: the CPU colour conversion and a plane copy | `encode_sync`, `agents/meshharbord/src/encode/ffmpeg/encoder.rs` |
 | `avg_upload_ms` | the hardware-frame upload: VAAPI, D3D12 and Vulkan; zero for every other encoder | the same |
 | `avg_submit_ms` | `send_frame`, where NVENC, QSV and AMF upload a software frame themselves | the same |
 | `avg_drain_ms` | receiving the packets | the same |
-| `avg_readback_ms` | WGC's copy of the capture surface into CPU memory, on its capture thread. This is off the pump's clock, so `avg_capture_ms` never contained it | the `FrameArrived` handler, `agents/roomlerd/src/capture/wgc_backend.rs` |
+| `avg_readback_ms` | WGC's copy of the capture surface into CPU memory, on its capture thread. This is off the pump's clock, so `avg_capture_ms` never contained it | the `FrameArrived` handler, `agents/meshharbord/src/capture/wgc_backend.rs` |
 
 - **The four parts add up to the encode stage** (`avg_encode_ms` also includes the hop to FR-70's encoder
   thread). They are cumulative per encoder (`StageTimes`, carried by `rate_stats()`) and reported per frame

@@ -1,5 +1,5 @@
 [
-  { "scene": 1,  "text": "Welcome to Roomler — where teams actually talk. Novel concept.",                    "duration": 4000 },
+  { "scene": 1,  "text": "Welcome to MeshHarbor — where teams actually talk. Novel concept.",                    "duration": 4000 },
   { "scene": 2,  "text": "Creating an account. No carrier pigeon required.",                                   "duration": 5000 },
   { "scene": 3,  "text": "Check your inbox. We promise it's not spam. Probably.",                              "duration": 4000 },
   { "scene": 4,  "text": "Every empire starts with a workspace. Yours starts here.",                           "duration": 4000 },
@@ -19,5 +19,5 @@
   { "scene": 18, "text": "Privacy policy. We actually read ours. You should too.",                             "duration": 3000 },
   { "scene": 19, "text": "Terms of service. The fine print, but make it friendly.",                            "duration": 3000 },
   { "scene": 20, "text": "Dark mode. Because staring at the sun is overrated.",                                "duration": 4000 },
-  { "scene": 21, "text": "Roomler. Chat. Call. Collaborate. Ship.",                                            "duration": 5000 }
+  { "scene": 21, "text": "MeshHarbor. Chat. Call. Collaborate. Ship.",                                            "duration": 5000 }
 ]

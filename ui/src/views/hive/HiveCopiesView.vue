@@ -340,7 +340,7 @@ import { canSetHivePolicy } from '@/utils/permissions'
 
 /** The archive replica image (`Dockerfile.hive-archive`), as the
  *  `Archive replica image` workflow publishes it. */
-const ARCHIVE_IMAGE = 'ghcr.io/gjovanov/roomler-ai/hive-archive:latest'
+const ARCHIVE_IMAGE = 'ghcr.io/jk-zhang-meta/meshharbor/hive-archive:latest'
 
 const route = useRoute()
 const { t } = useI18n()
@@ -638,8 +638,8 @@ const snippets = computed(() => {
       text: [
         'docker run -d --name hive-archive --hostname hive-archive-1 \\',
         '  --restart unless-stopped -v hive-archive:/data \\',
-        `  -e ROOMLER_SERVER=${server} \\`,
-        `  -e ROOMLER_ENROLL_TOKEN=${token} \\`,
+        `  -e MESHHARBOR_SERVER=${server} \\`,
+        `  -e MESHHARBOR_ENROLL_TOKEN=${token} \\`,
         `  ${ARCHIVE_IMAGE}`,
       ].join('\n'),
     },
@@ -654,8 +654,8 @@ const snippets = computed(() => {
         '    volumes:',
         '      - hive-archive:/data',
         '    environment:',
-        `      ROOMLER_SERVER: ${server}`,
-        `      ROOMLER_ENROLL_TOKEN: ${token}`,
+        `      MESHHARBOR_SERVER: ${server}`,
+        `      MESHHARBOR_ENROLL_TOKEN: ${token}`,
         'volumes:',
         '  hive-archive: {}',
       ].join('\n'),

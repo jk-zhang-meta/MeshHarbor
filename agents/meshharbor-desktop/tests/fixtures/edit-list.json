@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "source": "MeshHarbor Recording 2026-09-26 10-00-00.mp4",
+  "segments": [
+    { "start_ms": 0, "end_ms": 2000, "action": "keep" },
+    { "start_ms": 2000, "end_ms": 4000, "action": "cut" },
+    { "start_ms": 4000, "end_ms": 8000, "action": "speed", "speed": 4 },
+    { "start_ms": 8000, "end_ms": 10000, "action": "keep" }
+  ],
+  "original_volume": 0.8,
+  "music": {
+    "path": "C:\\Users\\me\\Music\\song.mp3",
+    "volume": 0.35,
+    "start_ms": 1000,
+    "fade_in_ms": 2000,
+    "fade_out_ms": 1500,
+    "loop": false
+  }
+}

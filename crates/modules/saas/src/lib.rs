@@ -16,7 +16,7 @@
 //! backfill of Stripe's paid invoices), and P7's GitHub puller
 //! ([`github_pull`] — the repository's public counters as daily cumulative
 //! snapshots, its traffic with a token). Everything here
-//! exists because roomler.ai is a hosted product; a self-hosted deployment
+//! exists because meshharbor.itachi.fans is a hosted product; a self-hosted deployment
 //! runs without it, which is why it is an **add-on feature** on the host
 //! rather than part of any profile.
 //!
@@ -33,7 +33,7 @@
 //! owns. It derefs to `Core`, so handlers read `state.settings`,
 //! `state.email`, `state.tenants` exactly as they did on the host's
 //! `AppState`; `impl FromRef<SaasState> for Core` lets a handler that needs
-//! only the core take `State<Core>`, and lets `roomler-core`'s extractors
+//! only the core take `State<Core>`, and lets `meshharbor-core`'s extractors
 //! (`AuthUser`, `TenantId`) serve this router unchanged.
 
 use std::sync::Arc;
@@ -43,15 +43,15 @@ use axum::{
     extract::{DefaultBodyLimit, FromRef},
     routing::{get, post, put},
 };
-use roomler_ai_config::Settings;
-use roomler_ai_db::indexes::{
+use meshharbor_config::Settings;
+use meshharbor_core::{Capabilities, Core, Module, TenantCtx};
+use meshharbor_db::indexes::{
     IndexSet, index, index_unique, index_unique_partial, index_unique_sparse,
 };
-use roomler_ai_services::dao::{
+use meshharbor_services::dao::{
     newsletter_issue::NewsletterIssueDao, newsletter_send::NewsletterSendDao,
     subscriber::SubscriberDao,
 };
-use roomler_core::{Capabilities, Core, Module, TenantCtx};
 
 pub mod bing_pull;
 pub mod capped;
@@ -334,7 +334,7 @@ impl Module for SaasState {
             // Inspection verdict. Read newest first by the Content table.
             // No TTL: our own content, no person (spec §3p).
             IndexSet {
-                collection: roomler_ai_services::dao::growth_content::GROWTH_CONTENT,
+                collection: meshharbor_services::dao::growth_content::GROWTH_CONTENT,
                 pre_ops: Vec::new(),
                 indexes: vec![index(bson::doc! { "published_at": -1 })],
             },

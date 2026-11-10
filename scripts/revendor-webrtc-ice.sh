@@ -14,7 +14,7 @@
 #                                                      (after editing the fork)
 #
 # Default version: 0.12.0 (the vendored release). After a rebuild, run
-# `cargo check -p roomlerd` — the agent's WebRTC path is the fork's
+# `cargo check -p meshharbord` — the agent's WebRTC path is the fork's
 # only remaining consumer.
 set -euo pipefail
 
@@ -75,7 +75,7 @@ check | revendor)
         rm -rf "$VENDORED"
         mv "$TMP/rebuilt" "$VENDORED"
         echo "revendored webrtc-ice $VER + patch into crates/vendored/webrtc-ice"
-        echo "next: cargo check -p roomlerd"
+        echo "next: cargo check -p meshharbord"
     fi
     ;;
 esac

@@ -3,7 +3,7 @@
 <template>
   <v-card>
     <v-card-title class="d-flex align-center">
-      <span>Roles &amp; Permissions</span>
+      <span>{{ t('mh.roles.title') }}</span>
       <v-spacer />
       <v-btn
         prepend-icon="mdi-plus"
@@ -12,7 +12,7 @@
         size="small"
         @click="openCreateDialog"
       >
-        New Role
+        {{ t('mh.roles.new') }}
       </v-btn>
     </v-card-title>
 
@@ -29,10 +29,9 @@
       </v-alert>
 
       <p class="text-body-2 text-medium-emphasis mb-4">
-        Roles bundle permissions; members can hold several. Mutations need the
-        <span class="font-weight-medium">Manage roles</span> permission — the
-        server rejects anything else. Assign roles to people in the Members
-        section.
+        <i18n-t keypath="mh.roles.intro" tag="span" scope="global">
+          <template #perm><span class="font-weight-medium">{{ permissionLabel('MANAGE_ROLES') }}</span></template>
+        </i18n-t>
       </p>
 
       <div v-if="roleStore.loading && roleStore.roles.length === 0" class="d-flex justify-center pa-8">
@@ -43,7 +42,7 @@
         v-else-if="roleStore.roles.length === 0"
         class="text-medium-emphasis pa-4 pa-md-6"
       >
-        No roles yet — create one to start delegating permissions.
+        {{ t('mh.roles.empty') }}
       </p>
 
       <!-- FR-116: `table-stack-xs` — on a phone each role is a block, with
@@ -51,9 +50,9 @@
       <v-table v-else density="compact" class="table-stack-xs">
         <thead>
           <tr>
-            <th>Role</th>
-            <th>Permissions</th>
-            <th class="text-right">Actions</th>
+            <th>{{ t('mh.roles.col.role') }}</th>
+            <th>{{ t('mh.roles.col.permissions') }}</th>
+            <th class="text-right">{{ t('mh.roles.col.actions') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -67,8 +66,8 @@
                 <div>
                   <div class="font-weight-medium">
                     {{ role.name }}
-                    <v-chip v-if="role.is_default" size="x-small" variant="tonal" class="ml-1">default</v-chip>
-                    <v-chip v-if="role.is_managed" size="x-small" variant="tonal" class="ml-1">managed</v-chip>
+                    <v-chip v-if="role.is_default" size="x-small" variant="tonal" class="ml-1">{{ t('mh.roles.default') }}</v-chip>
+                    <v-chip v-if="role.is_managed" size="x-small" variant="tonal" class="ml-1">{{ t('mh.roles.managed') }}</v-chip>
                   </div>
                   <div v-if="role.description" class="text-caption text-medium-emphasis">
                     {{ role.description }}
@@ -83,7 +82,7 @@
                 color="warning"
                 variant="tonal"
               >
-                Administrator (all)
+                {{ t('mh.roles.adminAll') }}
               </v-chip>
               <template v-else>
                 <!-- FR-116 — what a role grants was a hover tooltip and
@@ -106,7 +105,7 @@
                       {{ permissionSummary(role.permissions) }}
                     </span>
                   </template>
-                  <span>{{ describePermissions(role.permissions).join(' · ') || 'No permissions' }}</span>
+                  <span>{{ describePermissions(role.permissions).join(' · ') || t('mh.roles.noPermissions') }}</span>
                 </v-tooltip>
                 <div v-if="openGrants === role.id" class="d-flex flex-wrap ga-1 mt-1">
                   <v-chip
@@ -154,7 +153,7 @@
     :scrollable="fullscreen"
   >
     <v-card>
-      <v-card-title>{{ editingId ? 'Edit Role' : 'New Role' }}</v-card-title>
+      <v-card-title>{{ editingId ? t('mh.roles.edit') : t('mh.roles.new') }}</v-card-title>
       <v-card-text>
         <v-alert v-if="formError" type="error" variant="tonal" density="compact" class="mb-4">
           {{ formError }}
@@ -164,7 +163,7 @@
           <v-col cols="12" md="6">
             <v-text-field
               v-model="form.name"
-              label="Name"
+              :label="t('mh.roles.name')"
               variant="outlined"
               density="compact"
               hide-details
@@ -173,7 +172,7 @@
           <v-col cols="12" md="6">
             <v-text-field
               v-model.number="form.position"
-              label="Position (lower sorts first)"
+              :label="t('mh.roles.position')"
               type="number"
               min="0"
               variant="outlined"
@@ -184,7 +183,7 @@
           <v-col cols="12">
             <v-text-field
               v-model="form.description"
-              label="Description (optional)"
+              :label="t('mh.roles.description')"
               variant="outlined"
               density="compact"
               hide-details
@@ -192,7 +191,7 @@
           </v-col>
         </v-row>
 
-        <div class="text-caption text-medium-emphasis mt-4 mb-1">Color</div>
+        <div class="text-caption text-medium-emphasis mt-4 mb-1">{{ t('mh.roles.color') }}</div>
         <div class="d-flex align-center flex-wrap ga-1">
           <!-- 0 is the "no color" sentinel: the server stores it verbatim and
                colorHex(0) renders as colorless, which makes clearing an
@@ -213,11 +212,11 @@
           <span
             class="text-caption text-medium-emphasis"
             :style="fullscreen ? 'flex-basis: 100%' : undefined"
-          >Permissions</span>
+          >{{ t('mh.roles.col.permissions') }}</span>
           <v-spacer />
-          <v-btn size="x-small" variant="text" @click="applyPreset(DEFAULT_MEMBER)">Member defaults</v-btn>
-          <v-btn size="x-small" variant="text" @click="applyPreset(DEFAULT_ADMIN)">Admin defaults</v-btn>
-          <v-btn size="x-small" variant="text" @click="applyPreset(0)">None</v-btn>
+          <v-btn size="x-small" variant="text" @click="applyPreset(DEFAULT_MEMBER)">{{ t('mh.roles.memberDefaults') }}</v-btn>
+          <v-btn size="x-small" variant="text" @click="applyPreset(DEFAULT_ADMIN)">{{ t('mh.roles.adminDefaults') }}</v-btn>
+          <v-btn size="x-small" variant="text" @click="applyPreset(0)">{{ t('mh.roles.none') }}</v-btn>
         </div>
 
         <v-alert
@@ -227,13 +226,12 @@
           density="compact"
           class="mb-2"
         >
-          Administrator bypasses every other permission check — holders can do
-          everything, including managing roles and remote-controlling devices.
+          {{ t('mh.roles.adminWarn') }}
         </v-alert>
 
         <v-row dense>
           <v-col v-for="group in PERMISSION_GROUPS" :key="group" cols="12" sm="6" md="4">
-            <div class="text-caption font-weight-medium mb-1">{{ group }}</div>
+            <div class="text-caption font-weight-medium mb-1">{{ permissionGroupLabel(group) }}</div>
             <!-- FR-116 — on a touch screen the description is a hint under
                  the box: as a tooltip on the label, the tap meant to read it
                  toggled the permission instead. -->
@@ -262,9 +260,9 @@
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" :disabled="saving" @click="editDialog = false">Cancel</v-btn>
+        <v-btn variant="text" :disabled="saving" @click="editDialog = false">{{ t('common.cancel') }}</v-btn>
         <v-btn color="primary" variant="flat" :loading="saving" @click="saveRole">
-          {{ editingId ? 'Save' : 'Create' }}
+          {{ editingId ? t('mh.roles.save') : t('mh.roles.create') }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -273,15 +271,16 @@
   <!-- Delete confirm -->
   <v-dialog v-model="deleteDialog" max-width="500">
     <v-card>
-      <v-card-title>Delete role</v-card-title>
+      <v-card-title>{{ t('mh.roles.deleteTitle') }}</v-card-title>
       <v-card-text>
-        Delete <span class="font-weight-medium">{{ deleteTarget?.name }}</span>?
-        Members holding it lose its permissions immediately.
+        <i18n-t keypath="mh.roles.deleteBody" tag="span" scope="global">
+          <template #name><span class="font-weight-medium">{{ deleteTarget?.name }}</span></template>
+        </i18n-t>
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" :disabled="deleting" @click="deleteDialog = false">Cancel</v-btn>
-        <v-btn color="error" variant="flat" :loading="deleting" @click="doDelete">Delete</v-btn>
+        <v-btn variant="text" :disabled="deleting" @click="deleteDialog = false">{{ t('common.cancel') }}</v-btn>
+        <v-btn color="error" variant="flat" :loading="deleting" @click="doDelete">{{ t('mh.common.delete') }}</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -298,10 +297,15 @@ import {
   PERMISSION_FLAGS,
   PERMISSION_GROUPS,
   describePermissions,
+  permissionGroupLabel,
+  permissionLabel,
   maskHas,
   maskSet,
   maskClear,
 } from '@/utils/permissions'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{ tenantId: string }>()
 
@@ -337,7 +341,7 @@ function isAdministrator(mask: number): boolean {
 
 function permissionSummary(mask: number): string {
   const n = describePermissions(mask).length
-  return n === 0 ? 'No permissions' : `${n} permission${n === 1 ? '' : 's'}`
+  return n === 0 ? t('mh.roles.noPermissions') : t(n === 1 ? 'mh.roles.permOne' : 'mh.roles.permMany', { n })
 }
 
 function flagsFor(group: string) {
@@ -396,8 +400,8 @@ function applyPreset(mask: number) {
 }
 
 function validateForm(): string | null {
-  if (!form.name.trim()) return 'Name is required.'
-  if (!Number.isInteger(form.position) || form.position < 0) return 'Position must be ≥ 0.'
+  if (!form.name.trim()) return t('mh.roles.nameRequired')
+  if (!Number.isInteger(form.position) || form.position < 0) return t('mh.roles.positionInvalid')
   return null
 }
 

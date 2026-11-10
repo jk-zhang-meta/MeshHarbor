@@ -25,7 +25,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
-use roomler_ai_tests::fixtures::test_app::TestApp;
+use meshharbor_tests::fixtures::test_app::TestApp;
 use serde_json::{Value, json};
 
 mod hive_support;
@@ -129,7 +129,7 @@ async fn scenario() {
         .insert(seeded.member.email.clone(), "drivers".into());
     cfg.hive_roots = vec![roots.display().to_string()];
     cfg.hive_harness = Some(harness.display().to_string());
-    roomlerd::hive::init_as_daemon(
+    meshharbord::hive::init_as_daemon(
         &cfg,
         &dir.path().join("hive.db"),
         &dir.path().join("run"),

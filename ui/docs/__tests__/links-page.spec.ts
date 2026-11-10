@@ -64,7 +64,7 @@ describe('the link hub page', () => {
     expect(LINKS_DESCRIPTION.length).toBeLessThanOrEqual(MAX_DESCRIPTION_CHARS)
     const doc = parse(html())
     expect(doc.title).toBe(LINKS_TITLE)
-    expect(doc.querySelector('link[rel="canonical"]')?.getAttribute('href')).toBe(`https://roomler.ai${LINKS_URL}`)
+    expect(doc.querySelector('link[rel="canonical"]')?.getAttribute('href')).toBe(`https://meshharbor.itachi.fans${LINKS_URL}`)
     // It repeats the homepage for people who arrive from a profile; its links stay followed.
     expect(doc.querySelector('meta[name="robots"]')?.getAttribute('content')).toBe('noindex, follow')
     expect(doc.querySelectorAll('h1')).toHaveLength(1)
@@ -123,8 +123,8 @@ describe('a profile visitor’s campaign, carried from the hub', () => {
 
   it('reaches sign-up and the install pages with the campaign the short path set', () => {
     const tt = CHANNELS.find((c) => c.id === 'tiktok')!
-    const doc = run(`https://roomler.ai${shortPathLocation(tt)}`)
-    const register = new URL(doc.querySelector('.links-actions a.btn--primary')!.getAttribute('href')!, 'https://roomler.ai')
+    const doc = run(`https://meshharbor.itachi.fans${shortPathLocation(tt)}`)
+    const register = new URL(doc.querySelector('.links-actions a.btn--primary')!.getAttribute('href')!, 'https://meshharbor.itachi.fans')
     expect(register.pathname).toBe('/register')
     expect(Object.fromEntries(register.searchParams)).toEqual({
       utm_source: 'tiktok',
@@ -140,7 +140,7 @@ describe('a profile visitor’s campaign, carried from the hub', () => {
   })
 
   it('changes nothing without a campaign', () => {
-    expect(hrefs(run('https://roomler.ai/links/'))).toEqual(hrefs(parse(html())))
+    expect(hrefs(run('https://meshharbor.itachi.fans/links/'))).toEqual(hrefs(parse(html())))
   })
 })
 
@@ -150,7 +150,7 @@ describe('the short paths (files/nginx-pod.conf)', () => {
   it('redirect each channel’s path to the hub with that channel as the source', () => {
     for (const c of CHANNELS) {
       expect(locations.get(c.short), `${c.short} in nginx-pod.conf`).toBe(shortPathLocation(c))
-      expect(new URL(shortPathLocation(c), 'https://roomler.ai').searchParams.get('utm_source')).toBe(c.id)
+      expect(new URL(shortPathLocation(c), 'https://meshharbor.itachi.fans').searchParams.get('utm_source')).toBe(c.id)
     }
   })
 

@@ -153,7 +153,7 @@ const overlayAcl = {
 const execAudit = {
   items: Array.from({ length: 3 }, (_, i) => ({
     tenant_id: TID, agent_id: AGENT, user_id: UID, request_id: 'req' + i, source: 'console', shell: 'sh',
-    command: i === 0 ? "journalctl -u roomlerd --since '1 hour ago' --no-pager | grep -E 'overlay|derp|carrier' | tail -n 200" : 'uptime',
+    command: i === 0 ? "journalctl -u meshharbord --since '1 hour ago' --no-pager | grep -E 'overlay|derp|carrier' | tail -n 200" : 'uptime',
     at: ago(i * 3.6e6), exit_code: 0, duration_ms: 120 + i, denied: null,
   })),
   total: 3,
@@ -172,9 +172,9 @@ function json(route: Route, body: unknown, status = 200) {
  *  smoke's annotations instead of passing silently on an error state. */
 export async function installMocks(context: BrowserContext, unmocked: Set<string>) {
   await context.addInitScript(([uid, tid]) => {
-    localStorage.setItem('roomler-signed-in', '1')
-    localStorage.setItem('roomler-tour-seen:' + uid, '1')
-    localStorage.setItem('roomler-current-tenant', tid)
+    localStorage.setItem('meshharbor-signed-in', '1')
+    localStorage.setItem('meshharbor-tour-seen:' + uid, '1')
+    localStorage.setItem('meshharbor-current-tenant', tid)
   }, [UID, TID])
   // A test browser must never load the analytics script: it would record
   // fake visits (standing rule).

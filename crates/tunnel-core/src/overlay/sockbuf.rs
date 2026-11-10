@@ -36,7 +36,7 @@ pub(crate) const CARRIER_SOCKBUF: usize = 7 << 20;
 /// measured drops at 208 KB and none at 4 MiB.
 const DEGRADED_BELOW: usize = 1 << 20;
 
-/// FR-110 kill switch `ROOMLERD_OVERLAY_SOCKBUF=0`: the OS default, as before
+/// FR-110 kill switch `MESHHARBORD_OVERLAY_SOCKBUF=0`: the OS default, as before
 /// FR-110.
 pub(crate) fn enabled() -> bool {
     crate::env::flag("OVERLAY_SOCKBUF", true)
@@ -148,7 +148,7 @@ pub(crate) fn tune_carrier(sock: &UdpSocket, what: &'static str) {
         tracing::info!(
             what,
             %local,
-            "overlay: carrier socket buffers left at the OS default (ROOMLERD_OVERLAY_SOCKBUF=0, FR-110)"
+            "overlay: carrier socket buffers left at the OS default (MESHHARBORD_OVERLAY_SOCKBUF=0, FR-110)"
         );
         return;
     }
@@ -164,7 +164,7 @@ pub(crate) fn tune_carrier(sock: &UdpSocket, what: &'static str) {
         tracing::info!(
             what, %local, recv = t.recv, send = t.send,
             recv_how = ?t.recv_how, send_how = ?t.send_how,
-            "overlay: carrier socket buffers (FR-110; ROOMLERD_OVERLAY_SOCKBUF=0 keeps the OS default)"
+            "overlay: carrier socket buffers (FR-110; MESHHARBORD_OVERLAY_SOCKBUF=0 keeps the OS default)"
         );
     }
 }

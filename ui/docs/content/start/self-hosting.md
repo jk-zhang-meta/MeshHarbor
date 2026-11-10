@@ -1,6 +1,6 @@
 ---
-title: Self-hosting Roomler
-description: Run the whole Roomler server yourself with one compose file and a published container image — accounts, signalling, chat, conferencing and relays.
+title: Self-hosting MeshHarbor
+description: Run the whole MeshHarbor server yourself with one compose file and a published container image — accounts, signalling, chat, conferencing and relays.
 tags: [self-hosting, install, docker, getting-started, operations]
 order: 15
 ---
@@ -21,16 +21,16 @@ file storage.
 ## Quickstart
 
 ```bash
-git clone https://github.com/gjovanov/roomler-ai.git
-cd roomler-ai
+git clone https://github.com/jk-zhang-meta/MeshHarbor.git
+cd meshharbor
 cp .env.selfhost.example .env.selfhost
 ```
 
 Fill in the required values in `.env.selfhost`. Generate the secrets:
 
 ```bash
-openssl rand -hex 32   # ROOMLER_JWT_SECRET
-openssl rand -hex 32   # ROOMLER_TURN_SECRET
+openssl rand -hex 32   # MESHHARBOR_JWT_SECRET
+openssl rand -hex 32   # MESHHARBOR_TURN_SECRET
 openssl rand -hex 24   # MONGO_ROOT_PASSWORD
 openssl rand -hex 24   # MINIO_ROOT_PASSWORD
 ```
@@ -59,22 +59,22 @@ stretches: an earlier run over a home connection took 88 seconds in all.
 Building instead takes roughly **six minutes** on a 16-core machine.
 :::
 
-Images are published at `ghcr.io/gjovanov/roomler-ai` for **linux/amd64 and
+Images are published at `ghcr.io/jk-zhang-meta/meshharbor` for **linux/amd64 and
 linux/arm64** and are anonymously pullable; every other image in the file is
-published for both as well. The arm64 Roomler image is built and smoke-tested
+published for both as well. The arm64 MeshHarbor image is built and smoke-tested
 on a native arm64 machine, but the whole stack has not yet been run on an arm64
 host.
 
 Watch it come up:
 
 ```bash
-docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost logs -f roomler
+docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost logs -f meshharbor
 ```
 
 ## Add your first machine
 
 Your server serves its **own** installers, and the script it hands out names
-*your* origin rather than `roomler.ai` — so a machine enrolled from a
+*your* origin rather than `meshharbor.itachi.fans` — so a machine enrolled from a
 self-hosted instance enrols against that instance. Mint a token in your own
 dashboard and follow [Get started](/docs/start/).
 
@@ -105,7 +105,7 @@ Two settings decide it:
 | The **announced IP** | The address browsers should send media to. `127.0.0.1` works only for calls made on the host itself. |
 | The **RTC port range** | 32 ports are mapped by default — enough to try it. A real deployment wants the full range. |
 
-On **Linux**, the clean answer is host networking: give the `roomler` service
+On **Linux**, the clean answer is host networking: give the `meshharbor` service
 `network_mode: host` and drop its `ports:` block, and the whole range is
 reachable. That is how the hosted service runs. It is not available on Docker
 Desktop for macOS or Windows, which is why the port-mapped form is the default.
@@ -137,5 +137,5 @@ back those up, not the container.
 
 The server is **AGPL-3.0**; the agent that runs on your machines is **MPL-2.0**.
 Running it for yourself, your family or your company is exactly what the licence
-is for. See [`LICENSING.md`](https://github.com/gjovanov/roomler-ai/blob/master/LICENSING.md)
+is for. See [`LICENSING.md`](https://github.com/jk-zhang-meta/MeshHarbor/blob/master/LICENSING.md)
 for the split and what it means if you intend to offer it as a service.

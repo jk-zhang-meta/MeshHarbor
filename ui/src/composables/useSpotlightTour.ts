@@ -76,7 +76,7 @@ export const TOURS: Record<string, TourDef> = {
 const activeId = ref<string | null>(null)
 const stepIndex = ref(0)
 
-const SEEN_KEY = 'roomler-tour-seen'
+const SEEN_KEY = 'meshharbor-tour-seen'
 
 function readSeen(): string[] {
   try {

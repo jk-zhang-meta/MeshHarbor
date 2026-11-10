@@ -22,7 +22,7 @@
 //!   enrol → enrol again with the same `machine_id` → assert the
 //!   second response carries the same `tunnel_client_id`. Locks the
 //!   `find_by_tenant_and_machine` + `rehydrate` path. Without this
-//!   the operator who re-runs `roomler enroll` after a config
+//!   the operator who re-runs `mh enroll` after a config
 //!   loss would mint a fresh row each time and the listing UI would
 //!   show ghosts.
 //!
@@ -76,10 +76,10 @@
 
 use crate::fixtures::test_app::TestApp;
 use futures::{SinkExt, StreamExt};
-use roomlerd::config::AgentConfig;
-use roomlerd::encode::EncoderPreference;
-use roomlerd::tunnel::client_mgr::TunnelClientHub;
-use roomlerd::{enrollment, signaling};
+use meshharbord::config::AgentConfig;
+use meshharbord::encode::EncoderPreference;
+use meshharbord::tunnel::client_mgr::TunnelClientHub;
+use meshharbord::{enrollment, signaling};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
@@ -268,7 +268,7 @@ async fn policy_crud_round_trips() {
     // 200; with it taken out of the write filter, at "a write must not land
     // on a tombstone".
     use bson::{Bson, doc, oid::ObjectId};
-    use roomler_ai_services::dao::base::DaoError;
+    use meshharbor_services::dao::base::DaoError;
     let tid = ObjectId::parse_str(&seeded.tenant_id).unwrap();
     let pid = ObjectId::parse_str(policy_id).unwrap();
     let policies = app.db.collection::<bson::Document>("tunnel_policies");
@@ -540,7 +540,7 @@ async fn enroll_tunnel_client(
 #[tokio::test]
 async fn a_removed_tunnel_client_is_a_404_on_its_per_client_routes() {
     use bson::{Bson, doc, oid::ObjectId};
-    use roomler_ai_services::dao::base::DaoError;
+    use meshharbor_services::dao::base::DaoError;
 
     let app = TestApp::spawn().await;
     let seeded = app.seed_tenant("tunnel-client-gone").await;
@@ -1253,22 +1253,22 @@ fn spawn_origin_signaling(
     tokio::spawn(async move {
         let connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
-        let broker = roomlerd::consent::ConsentBroker::new(
-            roomlerd::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-test-consent-{}", cfg.agent_id)),
+        let broker = meshharbord::consent::ConsentBroker::new(
+            meshharbord::consent::Mode::AutoGrant,
+            std::env::temp_dir().join(format!("meshharbor-test-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         // Read before `cfg` is moved into the call below.
         let exec_enabled = cfg.exec_enabled;
         let remote_config_enabled = cfg.remote_config_enabled;
         let _ = signaling::run(
-            signaling::OrgCtx::primary(roomlerd::token_slot::TokenSlot::new(
+            signaling::OrgCtx::primary(meshharbord::token_slot::TokenSlot::new(
                 cfg.agent_token.clone(),
             )),
             // FR-43 P2b — no GUI-worker delegation in tests: `Off` is not a
             // stub but the real production value on every platform except a
             // macOS daemon supervising a worker, or the worker it supervises.
-            roomlerd::delegate::Delegation::Off,
+            meshharbord::delegate::Delegation::Off,
             cfg,
             EncoderPreference::Software,
             stop_rx,
@@ -1283,7 +1283,7 @@ fn spawn_origin_signaling(
             // must still be SEEDED from the config this agent was handed —
             // which is exactly what `main.rs` does. See agent_exec_tests for
             // the failure hardcoding `false` produced.
-            roomlerd::remote_config::RemoteConfigServices::new(
+            meshharbord::remote_config::RemoteConfigServices::new(
                 std::path::PathBuf::from("unused-in-tests.toml"),
                 std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 exec_enabled,
@@ -1293,7 +1293,7 @@ fn spawn_origin_signaling(
             // read it back, but the signalling loop registers into it, so a
             // fresh one per harness is the honest value (not a shared global
             // that would leak sessions between tests).
-            roomlerd::rc_sessions::RcSessionRegistry::new(),
+            meshharbord::rc_sessions::RcSessionRegistry::new(),
         )
         .await;
     })
@@ -1478,7 +1478,7 @@ async fn agent_daemon_originated_forward_reaches_target() {
     // terminate was ever sent — field-measured on 0.4.110, a macOS root exit
     // agent's UDP sockets climbed 5 → 11 → 16 across five kills. (A client that
     // never sends one is layer B's job: the agent reaps on its own signals,
-    // `agents/roomlerd/src/tunnel/reap.rs`.)
+    // `agents/meshharbord/src/tunnel/reap.rs`.)
     let terminated = read_until(&mut b_ws, "rc:tunnel.terminate").await;
     assert!(
         terminated.is_some(),

@@ -42,11 +42,11 @@ use axum::{
 };
 use bson::{Bson, DateTime, Document, doc};
 use chrono::{Duration, NaiveDate, Timelike, Weekday};
-use roomler_ai_services::{
+use meshharbor_core::{campaign::KeyDepth, growth::ExclusionSet};
+use meshharbor_services::{
     dao::growth_digest::{DigestDoc, DigestStatus, DigestStore, ExcludedCounts},
     purestat::Query as PsQuery,
 };
-use roomler_core::{campaign::KeyDepth, growth::ExclusionSet};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -442,7 +442,7 @@ pub async fn compute(
         Measured::Value(alerts::window_section(state, start_ms, end_ms).await?)
     } else {
         Measured::NotMeasured(NotMeasured::now(
-            "alerts are off on this server (ROOMLER__GROWTH__ALERTS)",
+            "alerts are off on this server (MESHHARBOR__GROWTH__ALERTS)",
         ))
     };
     let quality = quality::compute(state, set, monday, sunday, include_internal, now).await?;

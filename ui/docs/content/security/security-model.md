@@ -76,7 +76,7 @@ Honest documentation includes what is not yet done:
 ## Reporting a vulnerability
 
 Please report privately rather than opening a public issue. Details are in
-[`SECURITY.md`](https://github.com/gjovanov/roomler-ai/blob/master/SECURITY.md).
+[`SECURITY.md`](https://github.com/jk-zhang-meta/MeshHarbor/blob/master/SECURITY.md).
 
 ## Verifying rather than believing
 

@@ -4,13 +4,13 @@
 # Runs locally (Git Bash), no fleet-exec dependency; writes into $OUT.
 #
 # Usage: vpn-lab-devbox.sh <out-dir> <duration-s> [target ...]
-# The fleet device name the sampler greps for in `roomler peers` output comes
+# The fleet device name the sampler greps for in `mh peers` output comes
 # from $LAB_TARGET (default "winhost-a") so no real hostname is baked in here.
 set -u
 OUT="${1:?out dir}"; DUR="${2:?duration seconds}"; shift 2
 TARGETS=("${@:-100.65.4.28 100.65.0.5}")
 [ $# -eq 0 ] && TARGETS=(100.65.4.28 100.65.0.5)
-ROOMLER="/c/Program Files/Roomler/roomler.exe"
+MESHHARBOR="/c/Program Files/MeshHarbor/mh.exe"
 LAB_TARGET="${LAB_TARGET:-winhost-a}"
 mkdir -p "$OUT"
 
@@ -34,13 +34,13 @@ ping_loop() {
 }
 
 sampler_loop() {
-  local f="$OUT/roomler-samples.txt" i=0
+  local f="$OUT/meshharbor-samples.txt" i=0
   while [ "$(date +%s)" -lt "$end" ]; do
     echo "=== $(date -u +%Y-%m-%dT%H:%M:%S.%3NZ) status" >> "$f"
-    "$ROOMLER" status 2>&1 | grep -iE "version|srflx|warm|direct sock" >> "$f"
+    "$MESHHARBOR" status 2>&1 | grep -iE "version|srflx|warm|direct sock" >> "$f"
     if [ $((i % 3)) -eq 0 ]; then
       echo "=== $(date -u +%Y-%m-%dT%H:%M:%S.%3NZ) peers" >> "$f"
-      "$ROOMLER" peers 2>&1 | grep -E "${LAB_TARGET}|org:" >> "$f"
+      "$MESHHARBOR" peers 2>&1 | grep -E "${LAB_TARGET}|org:" >> "$f"
     fi
     i=$((i + 1))
     sleep 10

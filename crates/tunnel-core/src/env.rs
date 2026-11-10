@@ -3,22 +3,22 @@
 // RETIRED-NAME-ANCHOR-BEGIN
 // This whole module IS the env-prefix fallback chain. Every occurrence of a
 // retired name in it is a prefix the chain must keep honouring
-// (`ROOMLER_AGENT_`, `ROOMLER_NODE_`), its documentation, or a test that sets one
+// (`MESHHARBOR_AGENT_`, `MESHHARBOR_NODE_`), its documentation, or a test that sets one
 // to prove the field keeps working.
 // INVARIANT: if you add a retired name here that is NOT part of that chain, that
 // is a bug, not a new exemption. docs/fr/FR-21
-//! Roomler node env-var reads with legacy-prefix fallback.
+//! MeshHarbor node env-var reads with legacy-prefix fallback.
 //!
-//! The controlled-host daemon is being renamed `roomler-agent` → `roomlerd`
+//! The controlled-host daemon is being renamed `meshharbor-agent` → `meshharbord`
 //! (the unified "device / node" model — see the unification plan). Operators
 //! set tuning vars in the Windows service Environment block (e.g.
-//! `ROOMLER_AGENT_OVERLAY_DIRECT`), and those MUST keep working across the
+//! `MESHHARBOR_AGENT_OVERLAY_DIRECT`), and those MUST keep working across the
 //! rename: silently dropping a prefix is the MajorUpgrade-drops-env-vars class
 //! of bug that already bit the fleet. So every node env read goes through
-//! [`node_env`], which tries `ROOMLERD_<SUFFIX>` first, then the interim
-//! `ROOMLER_NODE_<SUFFIX>`, then the original `ROOMLER_AGENT_<SUFFIX>`.
+//! [`node_env`], which tries `MESHHARBORD_<SUFFIX>` first, then the interim
+//! `MESHHARBOR_NODE_<SUFFIX>`, then the original `MESHHARBOR_AGENT_<SUFFIX>`.
 //!
-//! FR-21 P3 (decision D1) makes `ROOMLERD_*` the spelling new code and docs
+//! FR-21 P3 (decision D1) makes `MESHHARBORD_*` the spelling new code and docs
 //! use — it matches the binary. Both older prefixes stay readable
 //! INDEFINITELY: they are a contract with hosts already in the field, and the
 //! cost of honouring them is one `or_else` arm. Adding a preferred prefix is a
@@ -57,7 +57,7 @@ fn config_fallback(suffix: &str) -> Option<String> {
 /// The registered config fallbacks as REAL env-var pairs for a child process.
 ///
 /// The registry is process-local, so a child this daemon spawns — the caps
-/// probe (`roomlerd caps-probe`, rc.433) — inherits the environment but NOT
+/// probe (`meshharbord caps-probe`, rc.433) — inherits the environment but NOT
 /// the registry, and every `node_env` read inside it falls straight to the
 /// built-in default. Field 2026-08-29 (FR-19 P4c): `relay_server_enabled =
 /// true` in `config.toml` started the relay server in-process, while the
@@ -72,12 +72,12 @@ pub fn config_fallbacks_for_child() -> Vec<(String, String)> {
         return Vec::new();
     };
     map.keys()
-        .filter_map(|suffix| node_env(suffix).map(|v| (format!("ROOMLERD_{suffix}"), v)))
+        .filter_map(|suffix| node_env(suffix).map(|v| (format!("MESHHARBORD_{suffix}"), v)))
         .collect()
 }
 
 /// Test-only helpers for the env chain. Compiled unconditionally because the
-/// tests that need them live in OTHER crates — `roomlerd`'s lib AND its bin —
+/// tests that need them live in OTHER crates — `meshharbord`'s lib AND its bin —
 /// and `#[cfg(test)]` does not cross a crate boundary.
 ///
 /// Why this exists rather than each test hand-rolling `remove_var`: [`node_env`]
@@ -169,15 +169,15 @@ pub mod test_env {
 
 // RETIRED-NAME-ANCHOR(4): arms 2 and 3 are the reason a rename here costs
 // nothing in the field. Both spellings are set on real hosts today — mars,
-// jupiter and zeus each carry four `ROOMLER_AGENT_*` entries in an
+// jupiter and zeus each carry four `MESHHARBOR_AGENT_*` entries in an
 // operator-authored `/etc/systemd/system/meshharbord.service.d/` drop-in, which a
 // package upgrade never rewrites. Dropping either arm silently un-configures
 // those hosts: the daemon starts fine and simply ignores what it was told.
-/// Read a Roomler node env var by suffix. Precedence, highest first:
+/// Read a MeshHarbor node env var by suffix. Precedence, highest first:
 ///
-///   1. `ROOMLERD_<suffix>`      — the current spelling (FR-21 P3, decision D1)
-///   2. `ROOMLER_NODE_<suffix>`  — the previous "new" spelling, still honoured
-///   3. `ROOMLER_AGENT_<suffix>` — the original, still honoured
+///   1. `MESHHARBORD_<suffix>`      — the current spelling (FR-21 P3, decision D1)
+///   2. `MESHHARBOR_NODE_<suffix>`  — the previous "new" spelling, still honoured
+///   3. `MESHHARBOR_AGENT_<suffix>` — the original, still honoured
 ///   4. a registered config-backed fallback (S2)
 ///
 /// Returns `None` if none is set (or the env value isn't valid Unicode).
@@ -194,12 +194,12 @@ pub mod test_env {
 /// asserts a default is not hermetic — an inherited value under another
 /// spelling silently decides the assertion — so `test_env` clears from this
 /// list AND from [`RETIRED_PREFIXES`].
-/// MeshHarbor: `MESHHARBORD_` is the spelling to use; the Roomler ones still read.
-pub const PREFIXES: [&str; 3] = ["MESHHARBORD_", "ROOMLERD_", "ROOMLER_NODE_"];
+/// `MESHHARBORD_` is the spelling to use.
+pub const PREFIXES: [&str; 2] = ["MESHHARBORD_", "MESHHARBOR_NODE_"];
 
 /// Prefixes that are no longer READ, but are still LOOKED FOR.
 ///
-/// FR-46 P2b removed `ROOMLER_AGENT_` from the read chain. Dropping it outright
+/// FR-46 P2b removed `MESHHARBOR_AGENT_` from the read chain. Dropping it outright
 /// would have made a host that still sets one start fine and silently ignore
 /// what it was told — the exact failure this program spent two sweeps proving
 /// is real (three cluster nodes in operator-authored systemd drop-ins, and a
@@ -207,13 +207,13 @@ pub const PREFIXES: [&str; 3] = ["MESHHARBORD_", "ROOMLERD_", "ROOMLER_NODE_"];
 /// runbook).
 ///
 /// So the prefix is retired from the chain and kept in the SEARCH: every host
-/// that sets one is told, loudly, at startup and on `meshharbor status`, naming
+/// that sets one is told, loudly, at startup and on `mh status`, naming
 /// the current spelling to use. A dormant device that wakes up months from now
 /// announces itself instead of quietly losing a setting.
 ///
 /// ⚠️ This is not a compatibility arm and must never grow into one. Nothing
 /// here is ever returned to a caller.
-pub const RETIRED_PREFIXES: [&str; 1] = ["ROOMLER_AGENT_"];
+pub const RETIRED_PREFIXES: [&str; 1] = ["MESHHARBOR_AGENT_"];
 
 /// Full names of retired-prefix variables PRESENT in this process's
 /// environment, sorted. Ignored by every reader — reported so that being
@@ -333,7 +333,7 @@ fn note_legacy_use(prefix: &str, suffix: &str) {
 ///
 /// Hoisted out of [`legacy_use_is_new`] by FR-46 (#1051) so the set can be
 /// READ, not only warned about. The warning alone was write-only: it fires once
-/// near startup, so a `meshharbor logs` tail on a long-running daemon cannot find
+/// near startup, so a `mh logs` tail on a long-running daemon cannot find
 /// it, and answering "does any host still depend on a retired name?" meant
 /// sweeping env vars and registries by hand — which under-reported twice.
 static LEGACY_SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -405,33 +405,33 @@ mod tests {
         let registry = CONFIG_FALLBACKS.get().expect("registered above");
         let pairs = config_fallbacks_for_child();
         assert!(
-            pairs.contains(&("ROOMLERD_CAPSFIX_TEST_ONLY".to_string(), "1".to_string())),
+            pairs.contains(&("MESHHARBORD_CAPSFIX_TEST_ONLY".to_string(), "1".to_string())),
             "{pairs:?}"
         );
         for (k, _) in &pairs {
             let suffix = k
-                .strip_prefix("ROOMLERD_")
+                .strip_prefix("MESHHARBORD_")
                 .unwrap_or_else(|| panic!("exported name lacks the current prefix: {k}"));
             assert!(registry.contains_key(suffix), "unregistered export: {k}");
         }
     }
 
-    // ── FR-21 P3 (D1): ROOMLERD_* wins, and NOTHING in the field stops working ──
+    // ── FR-21 P3 (D1): MESHHARBORD_* wins, and NOTHING in the field stops working ──
 
     const S3: &str = "UNIFY_TEST_P3_PRECEDENCE";
 
     fn dk() -> String {
-        format!("ROOMLERD_{S3}")
+        format!("MESHHARBORD_{S3}")
     }
     fn nk3() -> String {
-        format!("ROOMLER_NODE_{S3}")
+        format!("MESHHARBOR_NODE_{S3}")
     }
     fn ak3() -> String {
-        format!("ROOMLER_AGENT_{S3}")
+        format!("MESHHARBOR_AGENT_{S3}")
     }
 
     #[test]
-    fn roomlerd_prefix_wins_and_the_retired_spelling_is_ignored_but_reported() {
+    fn meshharbord_prefix_wins_and_the_retired_spelling_is_ignored_but_reported() {
         // SAFETY (edition 2024): suffix is unique to this test, no concurrency.
         unsafe {
             std::env::remove_var(dk());
@@ -465,8 +465,8 @@ mod tests {
         assert_eq!(node_env(S3).as_deref(), Some("from-node"));
 
         // And the current spelling outranks it.
-        unsafe { std::env::set_var(dk(), "from-roomlerd") };
-        assert_eq!(node_env(S3).as_deref(), Some("from-roomlerd"));
+        unsafe { std::env::set_var(dk(), "from-meshharbord") };
+        assert_eq!(node_env(S3).as_deref(), Some("from-meshharbord"));
 
         // Removing the winner falls back one step — and then to None, NOT to
         // the retired spelling, which is still set at this point.
@@ -494,17 +494,17 @@ mod tests {
         // assumed.
         const S4: &str = "UNIFY_TEST_P3_OS_TWIN";
         unsafe {
-            std::env::set_var(format!("ROOMLER_AGENT_{S4}"), "agent");
-            std::env::set_var(format!("ROOMLER_NODE_{S4}"), "node");
-            std::env::set_var(format!("ROOMLERD_{S4}"), "roomlerd");
+            std::env::set_var(format!("MESHHARBOR_AGENT_{S4}"), "agent");
+            std::env::set_var(format!("MESHHARBOR_NODE_{S4}"), "node");
+            std::env::set_var(format!("MESHHARBORD_{S4}"), "meshharbord");
         }
-        assert_eq!(node_env(S4).as_deref(), Some("roomlerd"));
+        assert_eq!(node_env(S4).as_deref(), Some("meshharbord"));
         assert_eq!(
             node_env_os(S4).as_deref(),
-            Some(std::ffi::OsStr::new("roomlerd"))
+            Some(std::ffi::OsStr::new("meshharbord"))
         );
         unsafe {
-            std::env::remove_var(format!("ROOMLERD_{S4}"));
+            std::env::remove_var(format!("MESHHARBORD_{S4}"));
         }
         assert_eq!(node_env(S4).as_deref(), Some("node"));
         assert_eq!(
@@ -512,8 +512,8 @@ mod tests {
             Some(std::ffi::OsStr::new("node"))
         );
         unsafe {
-            std::env::remove_var(format!("ROOMLER_NODE_{S4}"));
-            std::env::remove_var(format!("ROOMLER_AGENT_{S4}"));
+            std::env::remove_var(format!("MESHHARBOR_NODE_{S4}"));
+            std::env::remove_var(format!("MESHHARBOR_AGENT_{S4}"));
         }
     }
 
@@ -525,10 +525,10 @@ mod tests {
     const S: &str = "UNIFY_TEST_DUALREAD";
 
     fn nk() -> String {
-        format!("ROOMLER_NODE_{S}")
+        format!("MESHHARBOR_NODE_{S}")
     }
     fn dks() -> String {
-        format!("ROOMLERD_{S}")
+        format!("MESHHARBORD_{S}")
     }
 
     // Unique suffix for the S2 config-fallback test (no other code touches it).
@@ -549,9 +549,9 @@ mod tests {
 
         // Env (the older prefix) beats the registered fallback.
         // SAFETY (edition 2024): unique suffix, no concurrent access.
-        unsafe { std::env::set_var(format!("ROOMLER_NODE_{S_CFG}"), "from-env") };
+        unsafe { std::env::set_var(format!("MESHHARBOR_NODE_{S_CFG}"), "from-env") };
         assert_eq!(node_env(S_CFG).as_deref(), Some("from-env"));
-        unsafe { std::env::remove_var(format!("ROOMLER_NODE_{S_CFG}")) };
+        unsafe { std::env::remove_var(format!("MESHHARBOR_NODE_{S_CFG}")) };
         assert_eq!(node_env(S_CFG).as_deref(), Some("from-config"));
 
         // A suffix in neither env nor the map stays None.
@@ -559,9 +559,9 @@ mod tests {
     }
 
     #[test]
-    fn prefers_roomlerd_then_falls_back_to_node_then_none() {
+    fn prefers_meshharbord_then_falls_back_to_node_then_none() {
         // FR-46 P2b: the chain is two prefixes now, so the dual-read this
-        // asserts is ROOMLERD_ over ROOMLER_NODE_. The retired third arm has
+        // asserts is MESHHARBORD_ over MESHHARBOR_NODE_. The retired third arm has
         // its own test, which checks it is IGNORED and REPORTED.
         //
         // SAFETY (edition 2024): set/remove_var are `unsafe`; safe here because
@@ -576,14 +576,14 @@ mod tests {
         assert_eq!(
             node_env(S).as_deref(),
             Some("legacy"),
-            "ROOMLER_NODE_* is still honoured"
+            "MESHHARBOR_NODE_* is still honoured"
         );
 
         unsafe { std::env::set_var(dks(), "new") };
         assert_eq!(
             node_env(S).as_deref(),
             Some("new"),
-            "ROOMLERD_* wins when both are set"
+            "MESHHARBORD_* wins when both are set"
         );
 
         unsafe { std::env::remove_var(dks()) };
@@ -608,40 +608,40 @@ mod tests {
         // default-ON: unset → true; only an explicit falsy turns it off.
         assert!(flag(ON, true));
         // SAFETY (edition 2024): unique suffix, no concurrent access.
-        unsafe { std::env::set_var(format!("ROOMLER_NODE_{ON}"), "off") };
+        unsafe { std::env::set_var(format!("MESHHARBOR_NODE_{ON}"), "off") };
         assert!(!flag(ON, true));
-        unsafe { std::env::set_var(format!("ROOMLER_NODE_{ON}"), "weird") };
+        unsafe { std::env::set_var(format!("MESHHARBOR_NODE_{ON}"), "weird") };
         assert!(
             flag(ON, true),
             "unrecognised value keeps a default-ON gate on"
         );
-        unsafe { std::env::remove_var(format!("ROOMLER_NODE_{ON}")) };
+        unsafe { std::env::remove_var(format!("MESHHARBOR_NODE_{ON}")) };
 
         // opt-in: unset → false; only an explicit truthy turns it on (the
-        // the older ROOMLER_NODE_ prefix must work too).
+        // the older MESHHARBOR_NODE_ prefix must work too).
         assert!(!flag(OPT, false));
-        unsafe { std::env::set_var(format!("ROOMLER_NODE_{OPT}"), "YES") };
+        unsafe { std::env::set_var(format!("MESHHARBOR_NODE_{OPT}"), "YES") };
         assert!(flag(OPT, false));
-        unsafe { std::env::set_var(format!("ROOMLER_NODE_{OPT}"), "weird") };
+        unsafe { std::env::set_var(format!("MESHHARBOR_NODE_{OPT}"), "weird") };
         assert!(
             !flag(OPT, false),
             "unrecognised value keeps an opt-in gate off"
         );
-        unsafe { std::env::remove_var(format!("ROOMLER_NODE_{OPT}")) };
+        unsafe { std::env::remove_var(format!("MESHHARBOR_NODE_{OPT}")) };
     }
 
     // A distinct unique suffix so this test can't race the String-variant one.
     const S_OS: &str = "UNIFY_TEST_DUALREAD_OS";
 
     fn nk_os() -> String {
-        format!("ROOMLER_NODE_{S_OS}")
+        format!("MESHHARBOR_NODE_{S_OS}")
     }
     fn dks_os() -> String {
-        format!("ROOMLERD_{S_OS}")
+        format!("MESHHARBORD_{S_OS}")
     }
 
     #[test]
-    fn os_prefers_roomlerd_then_falls_back_to_node_then_none() {
+    fn os_prefers_meshharbord_then_falls_back_to_node_then_none() {
         // The OsString twin of the string reader, on the two prefixes the chain
         // still has after FR-46 P2b. Kept in lockstep deliberately: two readers
         // of one knob that disagree about precedence is a bug nobody would
@@ -659,14 +659,14 @@ mod tests {
         assert_eq!(
             node_env_os(S_OS).as_deref(),
             Some(std::ffi::OsStr::new("legacy")),
-            "ROOMLER_NODE_* is still honoured"
+            "MESHHARBOR_NODE_* is still honoured"
         );
 
         unsafe { std::env::set_var(dks_os(), "new") };
         assert_eq!(
             node_env_os(S_OS).as_deref(),
             Some(std::ffi::OsStr::new("new")),
-            "ROOMLERD_* wins when both are set"
+            "MESHHARBORD_* wins when both are set"
         );
 
         unsafe { std::env::remove_var(dks_os()) };
@@ -713,7 +713,7 @@ mod tests {
     /// still depend on a retired name?", so it must be readable, not only
     /// warnable. Before this the set was a local static inside
     /// `legacy_use_is_new` and the only trace of a legacy read was one WARN
-    /// line near startup — unreachable from a `meshharbor logs` tail on a
+    /// line near startup — unreachable from a `mh logs` tail on a
     /// long-running daemon, which is exactly when the question gets asked.
     #[test]
     fn legacy_uses_are_readable_and_exclude_the_current_spelling() {

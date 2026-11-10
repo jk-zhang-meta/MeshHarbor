@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
+use meshharbor_db::models::{EmojiRef, EmojiType, Reaction, ReactionSummary};
 use mongodb::Database;
-use roomler_ai_db::models::{EmojiRef, EmojiType, Reaction, ReactionSummary};
 
 use super::base::{BaseDao, DaoError, DaoResult};
 use super::message::MessageDao;

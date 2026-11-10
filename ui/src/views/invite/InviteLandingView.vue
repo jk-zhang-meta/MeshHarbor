@@ -8,33 +8,37 @@
           <!-- Loading -->
           <div v-if="inviteStore.loading" class="text-center py-4 py-md-8">
             <v-progress-circular indeterminate color="primary" />
-            <p class="mt-4 text-body-1">Loading invite...</p>
+            <p class="mt-4 text-body-1">{{ t('mh.invite.loading') }}</p>
           </div>
 
           <!-- Error -->
           <div v-else-if="inviteStore.error" class="text-center py-4 py-md-8">
             <v-icon size="64" color="error">mdi-alert-circle</v-icon>
-            <p class="mt-4 text-h6">Invite not found</p>
+            <p class="mt-4 text-h6">{{ t('mh.invite.notFound') }}</p>
             <p class="text-body-2 text-medium-emphasis">
-              This invite link may be invalid or expired.
+              {{ t('mh.invite.invalidLink') }}
             </p>
-            <v-btn color="primary" to="/login" class="mt-4">Go to Login</v-btn>
+            <v-btn color="primary" to="/login" class="mt-4">{{ t('mh.invite.goLogin') }}</v-btn>
           </div>
 
           <!-- Invite info loaded -->
           <template v-else-if="info">
             <v-card-title class="text-center text-h5 mb-2">
               <v-icon color="primary" class="mr-2">mdi-account-plus</v-icon>
-              You're invited!
+              {{ t('mh.invite.invited') }}
             </v-card-title>
 
             <v-card-subtitle class="text-center mb-4">
-              Join <strong>{{ info.tenant_name }}</strong>
+              <i18n-t keypath="mh.invite.join" tag="span" scope="global">
+                <template #org><strong>{{ info.tenant_name }}</strong></template>
+              </i18n-t>
             </v-card-subtitle>
 
             <v-card-text class="text-center text-body-1 mb-4">
               <v-icon size="20" class="mr-1">mdi-account</v-icon>
-              Invited by <strong>{{ info.inviter_name }}</strong>
+              <i18n-t keypath="mh.invite.invitedBy" tag="span" scope="global">
+                <template #name><strong>{{ info.inviter_name }}</strong></template>
+              </i18n-t>
             </v-card-text>
 
             <!-- Invalid invite -->
@@ -44,13 +48,13 @@
               variant="tonal"
               class="mb-4"
             >
-              This invite is no longer valid ({{ info.status }}).
+              {{ t('mh.invite.noLongerValid', { status: info.status }) }}
             </v-alert>
 
             <!-- Already a member -->
             <template v-else-if="info.already_member">
               <v-alert type="info" variant="tonal" class="mb-4">
-                You're already a member of this tenant.
+                {{ t('mh.invite.alreadyMember') }}
               </v-alert>
               <v-btn
                 color="primary"
@@ -58,7 +62,7 @@
                 size="large"
                 :to="tenantRoute"
               >
-                Go to {{ info.tenant_name }}
+                {{ t('mh.invite.goTo', { org: info.tenant_name }) }}
               </v-btn>
             </template>
 
@@ -74,7 +78,7 @@
                 :loading="accepting"
                 @click="handleAccept"
               >
-                Accept & Join
+                {{ t('mh.invite.accept') }}
               </v-btn>
             </template>
 
@@ -87,7 +91,7 @@
                   size="large"
                   :to="`/register?invite=${code}`"
                 >
-                  Register to Join
+                  {{ t('mh.invite.registerJoin') }}
                 </v-btn>
                 <v-btn
                   variant="outlined"
@@ -95,7 +99,7 @@
                   size="large"
                   :to="`/login?invite=${code}`"
                 >
-                  Login to Join
+                  {{ t('mh.invite.loginJoin') }}
                 </v-btn>
               </div>
             </template>
@@ -111,6 +115,9 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useInviteStore } from '@/stores/invite'
 import { useAuthStore } from '@/stores/auth'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const router = useRouter()

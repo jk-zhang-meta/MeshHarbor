@@ -11,7 +11,7 @@
 //! against its vocabulary or format
 //! ([`SetupDiagnostic::validate`]); anything else is a 422 with a code and
 //! nothing stored. A run can hold at most
-//! [`roomler_ai_services::dao::setup_diagnostics::MAX_ROWS_PER_RUN`] rows.
+//! [`meshharbor_services::dao::setup_diagnostics::MAX_ROWS_PER_RUN`] rows.
 //!
 //! What is stored is the record plus the server's clock. The handler takes
 //! the body and nothing else about the request — no `HeaderMap`, no
@@ -32,13 +32,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bson::DateTime;
-use roomler_ai_services::dao::setup_diagnostics::Recorded;
+use meshharbor_services::dao::setup_diagnostics::Recorded;
 use serde::Serialize;
 use tracing::{debug, warn};
 
 use crate::FleetState;
 
-pub use roomler_ai_remote_control::setup_diagnostics::{MAX_BODY_BYTES, SetupDiagnostic};
+pub use meshharbor_remote_control::setup_diagnostics::{MAX_BODY_BYTES, SetupDiagnostic};
 
 /// A refused record: a stable code for the wizard's log, never the value
 /// that was refused.

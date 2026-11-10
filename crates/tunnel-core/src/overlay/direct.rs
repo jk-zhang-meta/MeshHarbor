@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use tokio::net::UdpSocket;
 
-/// `ROOMLERD_OVERLAY_DIRECT` (the older `ROOMLER_NODE_OVERLAY_DIRECT` still
+/// `MESHHARBORD_OVERLAY_DIRECT` (the older `MESHHARBOR_NODE_OVERLAY_DIRECT` still
 /// honoured — see [`crate::env::node_env`]) — default **ON**. Set
 /// `0`/`false`/`no`/`off` to disable the direct LAN path and force pure relay
 /// (the pre-rc.131 behaviour) if a field host misbehaves. Matches the node's
@@ -114,7 +114,7 @@ pub fn direct_port_candidates(base: u16) -> impl Iterator<Item = u16> + Clone {
 }
 
 /// Stable UDP port for the overlay's direct sockets
-/// (`ROOMLERD_OVERLAY_DIRECT_PORT`; config key `overlay_direct_port`).
+/// (`MESHHARBORD_OVERLAY_DIRECT_PORT`; config key `overlay_direct_port`).
 ///
 /// Per-interface LAN sockets bind `(iface_ip, port)`; the public/srflx
 /// dialer binds `(0.0.0.0, port+1)` (a wildcard bind on the SAME port as a
@@ -224,7 +224,14 @@ pub fn gather_lan_ips() -> Vec<Ipv4Addr> {
 /// `if-addrs` can't supply one (then egress can't be pinned — the socket falls
 /// back to rc.143 source-IP binding only). Deduped by IP.
 pub fn gather_lan_interfaces() -> Vec<(Ipv4Addr, Option<u32>)> {
-    let mut out: Vec<(Ipv4Addr, Option<u32>)> = Vec::new();
+    gather_lan_interfaces_named()
+        .into_iter()
+        .map(|(_, ip, idx)| (ip, idx))
+        .collect()
+}
+
+fn gather_lan_interfaces_named() -> Vec<(String, Ipv4Addr, Option<u32>)> {
+    let mut out: Vec<(String, Ipv4Addr, Option<u32>)> = Vec::new();
     let filter = lan_iface_filter_enabled();
     // A WSL2 guest under MIRRORED networking has NO LAN identity of its own:
     // every address it can see is the Windows host's, mirrored in. Gathering
@@ -247,7 +254,7 @@ pub fn gather_lan_interfaces() -> Vec<(Ipv4Addr, Option<u32>)> {
         for a in addrs {
             if let std::net::IpAddr::V4(ip) = a.ip()
                 && is_usable_lan_ipv4(ip)
-                && !out.iter().any(|(existing, _)| *existing == ip)
+                && !out.iter().any(|(_, existing, _)| *existing == ip)
             {
                 // rc.275 hygiene — skip virtual / host-only / other-VPN
                 // interfaces (see `lan_iface_denied`). Field: winhost-a
@@ -278,7 +285,7 @@ pub fn gather_lan_interfaces() -> Vec<(Ipv4Addr, Option<u32>)> {
                         continue;
                     }
                 }
-                out.push((ip, a.index));
+                out.push((a.name, ip, a.index));
             }
         }
     }
@@ -364,22 +371,202 @@ pub fn pick_v6_endpoint_rotated(
     viable.get(attempt as usize % viable.len().max(1)).copied()
 }
 
-/// First `(ip, ifindex)` from the deny-listed LAN gather — the physical-uplink
-/// egress candidate for a TURN/STUN client socket on a corp-VPN-captured host.
-/// An UNSPECIFIED-bound socket source-selects the captured default route and
-/// its UDP dies inside the tunnel; binding this IP (+ the `IP_UNICAST_IF` pin
-/// when the index is known) escapes the capture exactly like the direct socks
-/// do. Field 2026-08-15 winhost-b: srflx `cone via 5.9.157.221:3478` from the
-/// bound direct sock while the unbound warm TURN allocate to the SAME host
-/// failed every candidate. `None` when the gather is empty (enumeration
-/// failure or a WSL-mirrored guest) — callers then keep the unbound behaviour.
-pub fn first_non_vpn_uplink() -> Option<(Ipv4Addr, Option<u32>)> {
-    gather_lan_interfaces().into_iter().next()
+/// Maximum number of physical non-VPN uplinks tried during corp-VPN TURN
+/// Allocate rescue (F2).
+pub const MAX_NON_VPN_UPLINKS: usize = 3;
+
+/// Synthetic/enumerated physical uplink candidate fed to [`select_non_vpn_uplinks`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonVpnUplinkCandidate {
+    pub ip: Ipv4Addr,
+    pub ifindex: Option<u32>,
+    /// Lowest route cost among `0.0.0.0/0` default routes with a gateway on
+    /// this NIC (`Some(cost)` = default-gateway-bearing NIC; `None` = LAN-only
+    /// NIC with no default gateway).
+    pub default_gw_metric: Option<u64>,
+}
+
+/// Pure ordering + cap for corp-VPN TURN rescue uplinks (F2):
+/// - Deduplicates by `ip` (preserving first-seen order and keeping the lowest
+///   `default_gw_metric` seen for that IP).
+/// - Places NICs WITH a default gateway (`default_gw_metric.is_some()`) ahead
+///   of NICs without one, sorted by ascending `default_gw_metric` (tie-broken
+///   by original enumeration order).
+/// - Caps the returned list at [`MAX_NON_VPN_UPLINKS`] (`3`).
+pub fn select_non_vpn_uplinks(
+    candidates: &[NonVpnUplinkCandidate],
+) -> Vec<(Ipv4Addr, Option<u32>)> {
+    let mut deduped: Vec<(usize, NonVpnUplinkCandidate)> = Vec::with_capacity(candidates.len());
+    for (ord, c) in candidates.iter().enumerate() {
+        if let Some((_, existing)) = deduped.iter_mut().find(|(_, e)| e.ip == c.ip) {
+            if existing.ifindex.is_none() {
+                existing.ifindex = c.ifindex;
+            }
+            existing.default_gw_metric = match (existing.default_gw_metric, c.default_gw_metric) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (None, Some(b)) => Some(b),
+                (a, None) => a,
+            };
+            continue;
+        }
+        deduped.push((ord, c.clone()));
+    }
+    deduped.sort_by_key(|(ord, c)| match c.default_gw_metric {
+        Some(m) => (0u8, m, *ord),
+        None => (1u8, u64::MAX, *ord),
+    });
+    deduped
+        .into_iter()
+        .take(MAX_NON_VPN_UPLINKS)
+        .map(|(_, c)| (c.ip, c.ifindex))
+        .collect()
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_linux_proc_net_route_default_gws(text: &str) -> std::collections::BTreeMap<String, u64> {
+    let mut out = std::collections::BTreeMap::new();
+    for line in text.lines().skip(1) {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 7 {
+            continue;
+        }
+        let iface = cols[0];
+        let dest = cols[1];
+        let gw = cols[2];
+        let flags = u32::from_str_radix(cols[3], 16).unwrap_or(0);
+        let metric = cols[6].parse::<u64>().unwrap_or(0);
+        // RTF_UP = 0x1, RTF_GATEWAY = 0x2; default route has Destination == 00000000 and non-zero Gateway.
+        if dest == "00000000" && gw != "00000000" && (flags & 0x1) != 0 {
+            out.entry(iface.to_string())
+                .and_modify(|m: &mut u64| *m = (*m).min(metric))
+                .or_insert(metric);
+        }
+    }
+    out
+}
+
+#[cfg(all(windows, feature = "overlay-l3"))]
+fn os_default_gw_metrics_v4() -> std::collections::BTreeMap<String, u64> {
+    use windows_sys::Win32::Foundation::NO_ERROR;
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        FreeMibTable, GetIpForwardTable2, GetIpInterfaceEntry, MIB_IPFORWARD_TABLE2,
+        MIB_IPINTERFACE_ROW,
+    };
+    use windows_sys::Win32::Networking::WinSock::AF_INET;
+
+    let mut out = std::collections::BTreeMap::new();
+    unsafe {
+        let mut table: *mut MIB_IPFORWARD_TABLE2 = std::ptr::null_mut();
+        if GetIpForwardTable2(AF_INET, &mut table) != NO_ERROR || table.is_null() {
+            return out;
+        }
+        let n = (*table).NumEntries as usize;
+        let rows = std::slice::from_raw_parts((*table).Table.as_ptr(), n);
+        for r in rows {
+            if r.DestinationPrefix.PrefixLength != 0
+                || r.DestinationPrefix.Prefix.si_family != AF_INET
+                || r.NextHop.si_family != AF_INET
+            {
+                continue;
+            }
+            let dst = r.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr;
+            let gw = r.NextHop.Ipv4.sin_addr.S_un.S_addr;
+            if dst != 0 || gw == 0 {
+                continue;
+            }
+            let mut ifrow: MIB_IPINTERFACE_ROW = std::mem::zeroed();
+            ifrow.Family = AF_INET;
+            ifrow.InterfaceLuid = r.InterfaceLuid;
+            let if_metric = if GetIpInterfaceEntry(&mut ifrow) == NO_ERROR {
+                u64::from(ifrow.Metric)
+            } else {
+                0
+            };
+            let cost = u64::from(r.Metric) + if_metric;
+            let key = r.InterfaceIndex.to_string();
+            out.entry(key)
+                .and_modify(|m: &mut u64| *m = (*m).min(cost))
+                .or_insert(cost);
+        }
+        FreeMibTable(table as *const core::ffi::c_void);
+    }
+    out
+}
+
+#[cfg(all(target_os = "linux", not(windows)))]
+fn os_default_gw_metrics_v4() -> std::collections::BTreeMap<String, u64> {
+    std::fs::read_to_string("/proc/net/route")
+        .map(|s| parse_linux_proc_net_route_default_gws(&s))
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn os_default_gw_metrics_v4() -> std::collections::BTreeMap<String, u64> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(res) = std::process::Command::new("netstat")
+        .args(["-rn", "-f", "inet"])
+        .output()
+    else {
+        return out;
+    };
+    let text = String::from_utf8_lossy(&res.stdout);
+    let mut rank = 0u64;
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 4 {
+            continue;
+        }
+        if (cols[0] == "default" || cols[0] == "0.0.0.0/0") && !cols[1].starts_with("link#") {
+            let netif = cols[3];
+            out.entry(netif.to_string()).or_insert(rank);
+            rank += 1;
+        }
+    }
+    out
+}
+
+#[cfg(not(any(
+    all(windows, feature = "overlay-l3"),
+    target_os = "linux",
+    target_os = "macos"
+)))]
+fn os_default_gw_metrics_v4() -> std::collections::BTreeMap<String, u64> {
+    std::collections::BTreeMap::new()
+}
+
+/// Ordered `(ip, ifindex)` physical-uplink egress candidates (up to
+/// [`MAX_NON_VPN_UPLINKS`] = 3) for TURN/STUN rescue on a corp-VPN-captured
+/// or multi-NIC host (F2). Default-gateway-bearing physical NICs come first
+/// (ordered by route cost), followed by non-gateway physical NICs, so a
+/// secondary physical NIC with real TURN reachability rescues when the first
+/// enumerated or higher-metric NIC cannot reach coturn.
+pub fn non_vpn_uplinks() -> Vec<(Ipv4Addr, Option<u32>)> {
+    let named = gather_lan_interfaces_named();
+    if named.is_empty() {
+        return Vec::new();
+    }
+    let gw_metrics = os_default_gw_metrics_v4();
+    let candidates: Vec<NonVpnUplinkCandidate> = named
+        .into_iter()
+        .map(|(name, ip, ifindex)| {
+            #[cfg(windows)]
+            let key = ifindex.map(|i| i.to_string()).unwrap_or(name);
+            #[cfg(not(windows))]
+            let key = name;
+            let default_gw_metric = gw_metrics.get(&key).copied();
+            NonVpnUplinkCandidate {
+                ip,
+                ifindex,
+                default_gw_metric,
+            }
+        })
+        .collect();
+    select_non_vpn_uplinks(&candidates)
 }
 
 /// Net-change poke acceleration — gate for arming forced revalidation pokes on
 /// every established direct carrier when an OS addr/iface event fires
-/// (`ROOMLERD_OVERLAY_NETCHANGE_POKE`). Default **ON**; set
+/// (`MESHHARBORD_OVERLAY_NETCHANGE_POKE`). Default **ON**; set
 /// `0`/`false`/`no`/`off` to fall back to the passive gates
 /// (`POKE_SILENCE_AFTER` + rx-stale) if forced pokes ever misbehave in the
 /// field. The mechanism is safe by construction — an answered poke clears with
@@ -398,7 +585,7 @@ pub fn netchange_poke_enabled() -> bool {
 }
 
 /// rc.275 hygiene — gate for the LAN-gather virtual-interface filter
-/// (`ROOMLERD_OVERLAY_LAN_IFACE_FILTER` — see [`crate::env::node_env`]).
+/// (`MESHHARBORD_OVERLAY_LAN_IFACE_FILTER` — see [`crate::env::node_env`]).
 /// Default **ON**; set `0`/`false`/`no`/`off` to restore the unfiltered
 /// pre-rc.275 gather if the deny-list ever misclassifies a real NIC in the
 /// field (the failure mode is benign either way — a skipped interface just
@@ -417,7 +604,7 @@ pub fn lan_iface_filter_enabled() -> bool {
 }
 
 /// Gate for the WSL2 **mirrored-networking** guard
-/// (`ROOMLERD_OVERLAY_WSL_MIRRORED_GUARD`; config `overlay_wsl_mirrored_guard`).
+/// (`MESHHARBORD_OVERLAY_WSL_MIRRORED_GUARD`; config `overlay_wsl_mirrored_guard`).
 /// Default **ON**; set `0`/`false`/`no`/`off` to restore the pre-guard gather.
 pub fn wsl_mirrored_guard_enabled() -> bool {
     crate::env::flag("OVERLAY_WSL_MIRRORED_GUARD", true)
@@ -522,12 +709,33 @@ pub fn lan_iface_denied(name: &str, description: &str) -> bool {
     // wg0, ppp0, bridge100). Prefix (not substring) so real adapters whose
     // names merely CONTAIN these stay allowed.
     const NAME_PREFIX: &[&str] = &[
-        "docker", "veth", "virbr", "br-", "bridge", "tun", "tap", "utun", "wg", "ppp", "roomler",
+        "docker",
+        "veth",
+        "virbr",
+        "br-",
+        "bridge",
+        "tun",
+        "tap",
+        "utun",
+        "wg",
+        "ppp",
+        "meshharbor",
     ];
     let n = name.to_ascii_lowercase();
     let d = description.to_ascii_lowercase();
     SUBSTRING.iter().any(|s| n.contains(s) || d.contains(s))
         || NAME_PREFIX.iter().any(|p| n.starts_with(p))
+}
+
+/// Shared structural + deny-list VPN/virtual classification for both LAN
+/// candidate gathering and [`super::netstate`]'s `vpn_class`: combines
+/// [`lan_iface_denied`] (with Windows `GetIfEntry2` driver description),
+/// the Windows `HardwareInterface == false` check, and [`linux_tunnel_iface`].
+pub(super) fn is_vpn_or_virtual_iface(name: &str, index: Option<u32>) -> bool {
+    let info = index.and_then(iface_info);
+    let desc = info.as_ref().map(|(d, _)| d.as_str()).unwrap_or_default();
+    let hardware = info.as_ref().map(|(_, h)| *h);
+    lan_iface_denied(name, desc) || hardware == Some(false) || linux_tunnel_iface(name)
 }
 
 /// Windows — the interface DESCRIPTION + hardware bit for an OS ifindex via
@@ -645,13 +853,13 @@ pub fn force_egress_interface(sock: &tokio::net::UdpSocket, ifindex: u32) {
 pub fn force_egress_interface(_sock: &tokio::net::UdpSocket, _ifindex: u32) {}
 
 /// Gate for **bind-to-interface-by-route** LAN-carrier egress selection
-/// (`ROOMLERD_OVERLAY_BIND_BY_ROUTE`). **Default OFF** until field-proven,
+/// (`MESHHARBORD_OVERLAY_BIND_BY_ROUTE`). **Default OFF** until field-proven,
 /// mirroring the QUIC / `public_direct` arc. When on, a LAN direct carrier's
 /// egress interface is chosen per-destination from the OS route table (the
 /// connect-trick, [`os_src_ip_for`]) + [`classify_egress`], and the socket is
 /// re-pinned to the CURRENT ifindex — instead of relying on the same-subnet
 /// heuristic and a pin computed once at startup. This is Tailscale's
-/// `bindToInterfaceByRoute` (net/netns) adapted to roomler: an on-link `/24`
+/// `bindToInterfaceByRoute` (net/netns) adapted to meshharbor: an on-link `/24`
 /// beats a full-tunnel VPN's `/1` default, so a genuine same-LAN peer stays on
 /// the physical NIC even under a corporate VPN, and a peer the OS routes
 /// elsewhere (VPN-captured) falls to relay honestly instead of flapping a
@@ -669,7 +877,7 @@ pub fn bind_by_route_enabled() -> bool {
     }
 }
 
-/// Gate for **VPN-bypass** carrier egress (`ROOMLERD_OVERLAY_VPN_BYPASS`).
+/// Gate for **VPN-bypass** carrier egress (`MESHHARBORD_OVERLAY_VPN_BYPASS`).
 /// **Default OFF** opt-in. When on (and an uplink ifindex is resolved), EVERY
 /// overlay underlay carrier socket — the `public_sock`, the single-relay
 /// dialer, and the coturn TURN underlay — has its egress pinned
@@ -696,7 +904,7 @@ pub fn vpn_bypass_enabled() -> bool {
 }
 
 /// Operator-pinned physical-uplink OS interface index for [`vpn_bypass_enabled`]
-/// (`ROOMLERD_OVERLAY_UPLINK_IF` = a numeric ifindex, e.g. the Wi-Fi
+/// (`MESHHARBORD_OVERLAY_UPLINK_IF` = a numeric ifindex, e.g. the Wi-Fi
 /// adapter's index from `Get-NetIPInterface`). This explicit override
 /// field-proves the bypass mechanism before auto-discovery of the physical
 /// uplink beneath a captured VPN is built. `None` when unset/unparseable.
@@ -806,7 +1014,7 @@ fn is_cgnat(ip: Ipv4Addr) -> bool {
 }
 
 /// NAT-traversal Phase A — opt-in gate for the **direct-to-public** carrier
-/// tier (`ROOMLERD_OVERLAY_PUBLIC_DIRECT` — see [`crate::env::node_env`]).
+/// tier (`MESHHARBORD_OVERLAY_PUBLIC_DIRECT` — see [`crate::env::node_env`]).
 /// **Default OFF** until field-proven, mirroring the QUIC gate's arc (CC8 in
 /// the NAT-traversal plan). Gates the whole tier: dialing a peer's public
 /// endpoint, AND the accept side (the runtime only wires the inbound-handshake
@@ -826,13 +1034,13 @@ pub fn public_direct_enabled() -> bool {
     }
 }
 
-/// Gate for **make-before-break** carrier upgrades (`ROOMLERD_OVERLAY_MBB`).
+/// Gate for **make-before-break** carrier upgrades (`MESHHARBORD_OVERLAY_MBB`).
 /// **Default ON since rc.210** — field-proven 2026-07-25 on the netns NAT lab
 /// (buildhost↔fleet-host-2, the false-same-/24-LAN-match freeze scenario):
 /// MBB=1 held the relay while a doomed direct upgrade was probed then dropped
 /// it ("kept relay (no stall)"), where MBB=0 tore the relay down ("upgrading
 /// relay peer to direct LAN carrier"). Disable per-host with
-/// `ROOMLERD_OVERLAY_MBB=0` (kill-switch): only an explicit
+/// `MESHHARBORD_OVERLAY_MBB=0` (kill-switch): only an explicit
 /// `0`/`false`/`no`/`off` turns it back off; unset / truthy / anything else
 /// keeps the default ON.
 ///
@@ -895,7 +1103,7 @@ pub fn make_before_break_enabled() -> bool {
 }
 
 /// NAT-traversal Phase B/C — gate for the **srflx** carrier tier
-/// (`ROOMLERD_OVERLAY_SRFLX`). **Default ON** since 2026-07-20 (field-proven:
+/// (`MESHHARBORD_OVERLAY_SRFLX`). **Default ON** since 2026-07-20 (field-proven:
 /// a cone↔cone pair hole-punches to a DIRECT carrier — buildhost↔fleet-host-2
 /// netns lab, 0% loss, ~0.6 ms, half the relay RTT). Turns on the whole srflx
 /// tier: gathering + advertising this node's own server-reflexive candidates
@@ -918,7 +1126,7 @@ pub fn srflx_enabled() -> bool {
 }
 
 /// NAT-traversal Phase D — gate for the **single-relay** carrier tier
-/// (`ROOMLERD_OVERLAY_RELAY_SINGLE`). **Default ON** since 2026-07-20. When on
+/// (`MESHHARBORD_OVERLAY_RELAY_SINGLE`). **Default ON** since 2026-07-20. When on
 /// (and both ends advertise the capability), a relay-tier pair uses ONE coturn
 /// allocation — the ANCHOR (smaller pubkey) allocates + runs the QUIC server +
 /// permits the dialer's IP; the DIALER (larger pubkey) sends raw UDP to the
@@ -945,9 +1153,9 @@ pub fn relay_single_enabled() -> bool {
 }
 
 /// rc.276 (B-probe) — force ALL overlay coturn allocations onto the
-/// **TURNS/TCP (TLS) tier** (`ROOMLERD_OVERLAY_RELAY_TLS`). **Default OFF**
+/// **TURNS/TCP (TLS) tier** (`MESHHARBORD_OVERLAY_RELAY_TLS`). **Default OFF**
 /// opt-in (positive truthy only), mirroring `public_direct_enabled` — this is
-/// the field-diagnostic twin of remote-control's `ROOMLERD_ICE_RELAY_TCP`: the
+/// the field-diagnostic twin of remote-control's `MESHHARBORD_ICE_RELAY_TCP`: the
 /// WebRTC screen-share survives corp endpoint VPNs via `turns:coturn:443?tcp`
 /// (real TLS + SNI, OS-native trust — indistinguishable from HTTPS), while the
 /// overlay's Tier-2 UDP allocate "succeeds" and then runs silently one-way, so
@@ -976,7 +1184,7 @@ pub fn relay_tls_forced() -> bool {
 }
 
 /// Phase D (DERP) — is the pubkey-addressed `/derp` relay carrier ENABLED?
-/// (`ROOMLERD_OVERLAY_DERP`.) **Default ON** since 2026-07-21 (field-proven).
+/// (`MESHHARBORD_OVERLAY_DERP`.) **Default ON** since 2026-07-21 (field-proven).
 /// DERP is the last-resort carrier for two BOTH-UDP-blocked peers (a strict
 /// corp firewall that permits only TCP/TLS-443), which no other tier can
 /// serve; both peers dial OUT to the relay over WSS:443 and WG rides
@@ -1002,7 +1210,7 @@ pub fn derp_enabled() -> bool {
 }
 
 /// U2 — does this node accept a SERVER-COMPUTED relay-tier verdict
-/// (`ROOMLERD_OVERLAY_SERVER_RELAY_STRATEGY`) in place of its own local
+/// (`MESHHARBORD_OVERLAY_SERVER_RELAY_STRATEGY`) in place of its own local
 /// `relay_strategy()` derivation? **Default-OFF** (the inverse polarity of
 /// `derp_enabled`): server-authoritative tier selection is the U2 program,
 /// and it stays inert until deliberately enabled per host for soak, then
@@ -1040,7 +1248,7 @@ pub fn org_relay_enabled() -> bool {
 /// `/derp` mux at startup UNCONDITIONALLY (not just when the srflx gather
 /// came up empty), advertise `supports_derp_floor`, and (A2) install the
 /// DERP carrier as every fresh pair's floor while better tiers upgrade over
-/// it MBB-style. `ROOMLERD_OVERLAY_DERP_FLOOR`, config-surface key
+/// it MBB-style. `MESHHARBORD_OVERLAY_DERP_FLOOR`, config-surface key
 /// `overlay_derp_floor`. **Default-ON since rc.400** (devbox+corplap soak
 /// 08-17: floor pairs carried straight through corplap's latch re-earn windows
 /// — the class that used to block ~2 min per 30 — and the rc.398 post-roll
@@ -1057,7 +1265,7 @@ pub fn derp_floor_enabled() -> bool {
 /// egress capabilities (relay-band reachability over the exact dialer
 /// path, STUN/NAT snapshot, `/derp` WS health) and publish the
 /// [`CapVector`](super::netcheck::CapVector) selection consumes instead of
-/// presence folklore. `ROOMLERD_OVERLAY_NETCHECK`, config-surface key
+/// presence folklore. `MESHHARBORD_OVERLAY_NETCHECK`, config-surface key
 /// `overlay_netcheck`. Default-ON: measurement-only in PR-B1 (nothing
 /// selects on it until PR-B3), one dedicated TURN allocation per ~20 min.
 pub fn netcheck_enabled() -> bool {
@@ -1079,7 +1287,7 @@ pub fn srflx_gather_active() -> bool {
 }
 
 /// Phase C — the srflx keepalive/re-gather interval in seconds
-/// (`ROOMLERD_OVERLAY_SRFLX_KEEPALIVE_SECS`, default 20). The task re-runs a
+/// (`MESHHARBORD_OVERLAY_SRFLX_KEEPALIVE_SECS`, default 20). The task re-runs a
 /// STUN Binding on the punch socket every interval to (a) hold the NAT mapping
 /// open on an idle link and (b) detect + re-advertise a changed mapping. **`0`
 /// disables the task entirely** — the startup gather still advertises once, but
@@ -1301,7 +1509,7 @@ async fn lookup_host_cached(hostport: &str) -> Vec<SocketAddr> {
 /// Phase B — resolve the FIRST usable STUN server from the netmap's `stun_urls`
 /// to a concrete v4 `SocketAddr`. An IP-literal URL is parsed synchronously
 /// ([`parse_stun_url`], no DNS); a hostname URL (the fleet's
-/// `stun:coturn.roomler.ai:3478`) is resolved via DNS and the first IPv4 answer
+/// `stun:coturn.meshharbor.itachi.fans:3478`) is resolved via DNS and the first IPv4 answer
 /// taken (v4-only, CC7). Tries each URL in order; `None` if none resolve to an
 /// IPv4 endpoint. Any single reachable STUN worker suffices — srflx doesn't need
 /// the coturn worker-pinning that the relay hairpin does.
@@ -1334,7 +1542,7 @@ pub async fn resolve_stun_server(stun_urls: &[String], exclude: &[Ipv4Addr]) -> 
     None
 }
 
-/// Diagnostic (`ROOMLERD_OVERLAY_SESSION_TRACE`, default **off**): emit
+/// Diagnostic (`MESHHARBORD_OVERLAY_SESSION_TRACE`, default **off**): emit
 /// per-session INFO traces from the plane demux (inbound src vs expected_src
 /// vs verdict) and the carrier-health sweep (poke/proof/rx state per direct
 /// carrier). For field-diagnosing a specific peer's carrier (e.g. a
@@ -1345,7 +1553,7 @@ pub fn session_trace_enabled() -> bool {
 }
 
 /// C2 — PROBE peers with out-of-tunnel disco echoes and record per-path
-/// loss + RTT (`ROOMLERD_OVERLAY_DISCO_PROBE`; default **ON** since A).
+/// loss + RTT (`MESHHARBORD_OVERLAY_DISCO_PROBE`; default **ON** since A).
 ///
 /// Strictly measurement: the table it fills is read by the LocalAPI and the
 /// summary log, never by anything that moves traffic. Scoring is C3 and
@@ -1369,7 +1577,7 @@ pub fn disco_probe_enabled() -> bool {
 }
 
 /// C1 — answer out-of-tunnel disco echoes on the carrier socket
-/// (`ROOMLERD_OVERLAY_DISCO_RESPOND`; default **ON**). Answering is
+/// (`MESHHARBORD_OVERLAY_DISCO_RESPOND`; default **ON**). Answering is
 /// unconditional and costs a map lookup + one X25519 per verified ping;
 /// nothing on this node ASKS yet (the prober is C2).
 ///
@@ -1381,7 +1589,7 @@ pub fn disco_respond_enabled() -> bool {
 }
 
 /// B4 — carrier-plane socket-liveness watchdog
-/// (`ROOMLERD_OVERLAY_PLANE_WATCHDOG`; default **ON**): when the plane's
+/// (`MESHHARBORD_OVERLAY_PLANE_WATCHDOG`; default **ON**): when the plane's
 /// punch-socket keepalive fails [`PLANE_WATCHDOG_FAILS`] consecutive cycles (a
 /// reader-less / wedged socket — the 2026-08-10 class of bug B1 fixed
 /// structurally), self-heal by requesting a debounced plane rebuild that
@@ -1397,7 +1605,7 @@ pub fn plane_watchdog_enabled() -> bool {
 /// re-resolve at 3 handles) never trips it, short enough to bound the wedge.
 pub const PLANE_WATCHDOG_FAILS: u32 = 6;
 
-/// A3 — WG-style endpoint roaming (`ROOMLERD_OVERLAY_ROAM`; default **ON**):
+/// A3 — WG-style endpoint roaming (`MESHHARBORD_OVERLAY_ROAM`; default **ON**):
 /// adopt a peer's observed source after an AUTHENTICATED inbound from it,
 /// repointing the carrier in place. The kill switch reverts to the strict
 /// no-roam demux. Off ⇒ a symmetric-NAT peer whose real per-destination
@@ -1407,7 +1615,7 @@ pub fn roam_enabled() -> bool {
     crate::env::flag("OVERLAY_ROAM", true)
 }
 
-/// W5 — srflx SEEKING mode (`ROOMLERD_OVERLAY_SRFLX_SEEK`; default **ON**):
+/// W5 — srflx SEEKING mode (`MESHHARBORD_OVERLAY_SRFLX_SEEK`; default **ON**):
 /// when the plane's srflx gather yields NO candidate, keep the plane srflx
 /// task alive in a query-only state that periodically re-gathers (backoff 20 s
 /// → ×3 → 300 s cap, plus an immediate poke on interface events). Before this,
@@ -1423,7 +1631,7 @@ pub fn srflx_seek_enabled() -> bool {
 }
 
 /// C4 stage 1 — the standing warm TURN/UDP allocation
-/// (`ROOMLERD_OVERLAY_WARM_RELAY`; default **OFF**): established
+/// (`MESHHARBORD_OVERLAY_WARM_RELAY`; default **OFF**): established
 /// whenever the srflx tier proves UDP egress works, kept alive so
 /// corp-VPN flow-grandfathering preserves a UDP relay leg across a VPN
 /// connect. Measurement-only in stage 1 — nothing routes over it; see
@@ -1434,7 +1642,7 @@ pub fn warm_relay_enabled() -> bool {
 
 /// R2 (corp-laptop program) — rescue the srflx gather via the wildcard
 /// PUBLIC-DIAL socket when every LAN-bound vantage yields nothing
-/// (`ROOMLERD_OVERLAY_VPN_VANTAGE`; default **ON**). A full-tunnel
+/// (`MESHHARBORD_OVERLAY_VPN_VANTAGE`; default **ON**). A full-tunnel
 /// endpoint VPN (field 2026-08-15: corplap-3, Cisco AnyConnect with
 /// local-LAN access disabled) filters the physical NICs BOTH directions
 /// while the tunnel itself passes UDP — so the LAN-bound socks are dead but
@@ -1446,7 +1654,7 @@ pub fn vpn_vantage_enabled() -> bool {
 }
 
 /// W6 phase 3 — raw-first QUIC-over-TURN upgrade
-/// (`ROOMLERD_OVERLAY_QUIC_ASYNC`; default **ON**): commit the raw
+/// (`MESHHARBORD_OVERLAY_QUIC_ASYNC`; default **ON**): commit the raw
 /// relay carrier immediately and run the QUIC rendezvous in the
 /// background with a 90 s window, swapping in on success. OFF restores
 /// the blocking 8 s pre-install window (the pair is dark for the whole
@@ -1458,7 +1666,7 @@ pub fn quic_async_enabled() -> bool {
 }
 
 /// Auth-first type-1 routing on a MULTI-ORG carrier plane
-/// (`ROOMLERD_OVERLAY_INIT_AUTH_FIRST`; default **ON**): with more than one
+/// (`MESHHARBORD_OVERLAY_INIT_AUTH_FIRST`; default **ON**): with more than one
 /// engine attached, an inbound handshake initiation is routed by
 /// trial-authentication against each engine's static
 /// (candidates-with-a-session-at-that-source first), never by the source-keyed
@@ -1706,15 +1914,26 @@ pub fn srflx_hairpin_pointless(
     if !peer_has_lan_candidate || peer_srflx.is_empty() {
         return false;
     }
-    let Some(my_ip) = my_srflx
-        .and_then(|s| s.parse::<SocketAddr>().ok())
-        .map(|s| s.ip())
+    let Some(SocketAddr::V4(my_sa)) = my_srflx.and_then(|s| s.trim().parse::<SocketAddr>().ok())
     else {
         return false;
     };
-    peer_srflx
-        .iter()
-        .all(|e| e.parse::<SocketAddr>().ok().map(|s| s.ip()) == Some(my_ip))
+    let my_v4 = *my_sa.ip();
+    // F3b: evaluate ONLY IPv4 srflx entries. Call site `establish.rs` resolves
+    // IPv6 srflx (`pick_v6_endpoint_rotated`) ahead of this IPv4 `.or_else(...)`
+    // branch, so a peer advertising `[v4, v6]` on the same IPv4 NAT still must
+    // skip futile IPv4 hairpinning, while a peer with ZERO IPv4 srflx entries
+    // (`[]` or v6-only) is NOT a same-IPv4-NAT hairpin and returns `false`.
+    let mut saw_v4 = false;
+    for e in peer_srflx {
+        if let Ok(SocketAddr::V4(sa)) = e.trim().parse::<SocketAddr>() {
+            saw_v4 = true;
+            if *sa.ip() != my_v4 {
+                return false;
+            }
+        }
+    }
+    saw_v4
 }
 
 /// Bind one direct socket on a STABLE port so a rebuilt carrier reproduces
@@ -1797,7 +2016,7 @@ async fn bind_on_band(ip: Ipv4Addr, base: u16, what: &'static str) -> Option<Udp
                 // PR-B1 tripwire — on a host with a stable port this walk is
                 // either an external squatter or a second in-process binder
                 // colliding with leaked sockets (the 2026-08-10 ensure_bound
-                // race). Counted so `meshharbor status` shows it as a number.
+                // race). Counted so `mh status` shows it as a number.
                 crate::evidence::DIRECT_BIND_WALKS
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 tracing::warn!(
@@ -1827,7 +2046,7 @@ async fn bind_on_band(ip: Ipv4Addr, base: u16, what: &'static str) -> Option<Udp
 /// owns the socket (plane or per-device demux) and snapshotted into
 /// `NodeStatus.direct_socks`. Exists so a bound-but-reader-less socket (the
 /// 2026-08-10 ensure_bound-race wedge: advertised endpoint, Recv-Q pegged at
-/// rmem, zero reads) is visible in `meshharbor status` instead of only in
+/// rmem, zero reads) is visible in `mh status` instead of only in
 /// `ss -uanp` queue depths.
 pub(crate) struct SockStat {
     pub local: String,
@@ -1875,7 +2094,7 @@ fn epoch_ms_now() -> u64 {
 
 /// #33 — answer a peer's direct handshake initiation even while that tier is
 /// suppressed, when accepting cannot cost us the relay
-/// (`ROOMLERD_OVERLAY_ANSWER_WHILE_FOLLOWED`; default **ON** since 0.4.2).
+/// (`MESHHARBORD_OVERLAY_ANSWER_WHILE_FOLLOWED`; default **ON** since 0.4.2).
 ///
 /// The #30 demote-follow hold-down exists to stop us PROMOTING into a flap. It
 /// also made `PathMonitor::inbound_init` refuse — and that verdict is
@@ -1948,8 +2167,8 @@ mod tests {
     /// (Serialises env mutation; the overlay-l3 suite runs `--test-threads=1`.)
     #[test]
     fn make_before_break_defaults_on_with_kill_switch() {
-        let n = "ROOMLERD_OVERLAY_MBB";
-        let a = "ROOMLERD_OVERLAY_MBB";
+        let n = "MESHHARBORD_OVERLAY_MBB";
+        let a = "MESHHARBORD_OVERLAY_MBB";
         let (rn, ra) = (std::env::var(n).ok(), std::env::var(a).ok());
         unsafe {
             std::env::remove_var(n);
@@ -2002,8 +2221,8 @@ mod tests {
     /// ephemeral (a typo must not turn the feature off fleet-wide).
     #[test]
     fn direct_port_resolution() {
-        let n = "ROOMLERD_OVERLAY_DIRECT_PORT";
-        let a = "ROOMLERD_OVERLAY_DIRECT_PORT";
+        let n = "MESHHARBORD_OVERLAY_DIRECT_PORT";
+        let a = "MESHHARBORD_OVERLAY_DIRECT_PORT";
         let (rn, ra) = (std::env::var(n).ok(), std::env::var(a).ok());
         unsafe {
             std::env::remove_var(n);
@@ -2186,7 +2405,7 @@ mod tests {
             ("utun3", "", true),
             ("wg0", "", true),
             ("ppp0", "", true),
-            ("roomler0", "", true),
+            ("meshharbor0", "", true),
             ("tailscale0", "", true),
             // TAP/OpenVPN on Windows hides behind a generic name too:
             ("Ethernet 2", "TAP-Windows Adapter V9", true),
@@ -2243,8 +2462,8 @@ mod tests {
     /// suite runs `--test-threads=1`.)
     #[test]
     fn lan_iface_filter_defaults_on_with_kill_switch() {
-        let n = "ROOMLERD_OVERLAY_LAN_IFACE_FILTER";
-        let a = "ROOMLERD_OVERLAY_LAN_IFACE_FILTER";
+        let n = "MESHHARBORD_OVERLAY_LAN_IFACE_FILTER";
+        let a = "MESHHARBORD_OVERLAY_LAN_IFACE_FILTER";
         let (rn, ra) = (std::env::var(n).ok(), std::env::var(a).ok());
         unsafe {
             std::env::remove_var(n);
@@ -2276,8 +2495,8 @@ mod tests {
     /// mutation; the overlay-l3 suite runs `--test-threads=1`.)
     #[test]
     fn relay_tls_forced_defaults_off_with_opt_in() {
-        let n = "ROOMLERD_OVERLAY_RELAY_TLS";
-        let a = "ROOMLERD_OVERLAY_RELAY_TLS";
+        let n = "MESHHARBORD_OVERLAY_RELAY_TLS";
+        let a = "MESHHARBORD_OVERLAY_RELAY_TLS";
         let (rn, ra) = (std::env::var(n).ok(), std::env::var(a).ok());
         unsafe {
             std::env::remove_var(n);
@@ -2308,8 +2527,8 @@ mod tests {
     /// mirroring `public_direct_enabled`. (Serialises env mutation.)
     #[test]
     fn bind_by_route_defaults_off_with_opt_in() {
-        let n = "ROOMLERD_OVERLAY_BIND_BY_ROUTE";
-        let a = "ROOMLERD_OVERLAY_BIND_BY_ROUTE";
+        let n = "MESHHARBORD_OVERLAY_BIND_BY_ROUTE";
+        let a = "MESHHARBORD_OVERLAY_BIND_BY_ROUTE";
         let (rn, ra) = (std::env::var(n).ok(), std::env::var(a).ok());
         unsafe {
             std::env::remove_var(n);
@@ -2341,10 +2560,10 @@ mod tests {
     /// env mutation; the overlay-l3 suite runs `--test-threads=1`.)
     #[test]
     fn vpn_bypass_gate_and_ifindex_override() {
-        let g = "ROOMLERD_OVERLAY_VPN_BYPASS";
-        let ga = "ROOMLERD_OVERLAY_VPN_BYPASS";
-        let u = "ROOMLERD_OVERLAY_UPLINK_IF";
-        let ua = "ROOMLERD_OVERLAY_UPLINK_IF";
+        let g = "MESHHARBORD_OVERLAY_VPN_BYPASS";
+        let ga = "MESHHARBORD_OVERLAY_VPN_BYPASS";
+        let u = "MESHHARBORD_OVERLAY_UPLINK_IF";
+        let ua = "MESHHARBORD_OVERLAY_UPLINK_IF";
         let save = [g, ga, u, ua].map(|k| (k, std::env::var(k).ok()));
         unsafe {
             for k in [g, ga, u, ua] {
@@ -2511,7 +2730,7 @@ mod tests {
     #[test]
     fn wsl_mirrored_guard_defaults_on_with_kill_switch() {
         // SAFETY: single-threaded test, restored before returning.
-        let key = "ROOMLERD_OVERLAY_WSL_MIRRORED_GUARD";
+        let key = "MESHHARBORD_OVERLAY_WSL_MIRRORED_GUARD";
         unsafe { std::env::remove_var(key) };
         assert!(wsl_mirrored_guard_enabled(), "default ON");
         unsafe { std::env::set_var(key, "0") };
@@ -2682,7 +2901,10 @@ mod tests {
         assert_eq!(parse_stun_url("5.9.157.221:3478"), Some(want));
         assert_eq!(parse_stun_url("  stun:5.9.157.221:3478  "), Some(want));
         // Hostnames need async DNS → the sync parser declines (caller resolves).
-        assert_eq!(parse_stun_url("stun:coturn.roomler.ai:3478"), None);
+        assert_eq!(
+            parse_stun_url("stun:coturn.meshharbor.itachi.fans:3478"),
+            None
+        );
         // IPv6 is out of scope (v4-only cascade).
         assert_eq!(parse_stun_url("stun:[2a01:4f8::2]:3478"), None);
         assert_eq!(parse_stun_url("garbage"), None);
@@ -2695,18 +2917,18 @@ mod tests {
     #[test]
     fn stun_hostport_strips_scheme_and_query_for_every_form() {
         for url in [
-            "stun:coturn-us-east.roomler.ai:3478",
-            "stuns:coturn-us-east.roomler.ai:3478",
-            "turn:coturn-us-east.roomler.ai:3478",
-            "turns:coturn-us-east.roomler.ai:3478",
-            "turn:coturn-us-east.roomler.ai:3478?transport=udp",
-            "turns:coturn-us-east.roomler.ai:3478#frag",
-            "  stun:coturn-us-east.roomler.ai:3478  ",
-            "coturn-us-east.roomler.ai:3478",
+            "stun:coturn-us-east.meshharbor.itachi.fans:3478",
+            "stuns:coturn-us-east.meshharbor.itachi.fans:3478",
+            "turn:coturn-us-east.meshharbor.itachi.fans:3478",
+            "turns:coturn-us-east.meshharbor.itachi.fans:3478",
+            "turn:coturn-us-east.meshharbor.itachi.fans:3478?transport=udp",
+            "turns:coturn-us-east.meshharbor.itachi.fans:3478#frag",
+            "  stun:coturn-us-east.meshharbor.itachi.fans:3478  ",
+            "coturn-us-east.meshharbor.itachi.fans:3478",
         ] {
             assert_eq!(
                 stun_hostport(url),
-                "coturn-us-east.roomler.ai:3478",
+                "coturn-us-east.meshharbor.itachi.fans:3478",
                 "hostport for {url:?}"
             );
         }
@@ -3071,5 +3293,134 @@ mod tests {
         assert!(srflx_punch_worth_trying(Some("symmetric"), None));
         assert!(srflx_punch_worth_trying(None, Some("symmetric")));
         assert!(srflx_punch_worth_trying(None, None));
+    }
+
+    #[test]
+    fn srflx_hairpin_pointless_handles_empty_mixed_v6_same_and_distinct_v4() {
+        let mine = Some("198.51.100.8:51000");
+
+        // 1. Empty or IPv6-only peer srflx -> false (never vacuous true)
+        assert!(!srflx_hairpin_pointless(mine, &[], true));
+        let v6_only = vec!["[2001:db8:1234::9]:43620".to_string()];
+        assert!(!srflx_hairpin_pointless(mine, &v6_only, true));
+
+        // 2. Mixed IPv4 + IPv6 where all IPv4 entries share our public IPv4 -> true
+        let mixed_same = vec![
+            "198.51.100.8:43816".to_string(),
+            "[2001:db8:1234::9]:43620".to_string(),
+        ];
+        assert!(srflx_hairpin_pointless(mine, &mixed_same, true));
+        assert!(!srflx_hairpin_pointless(mine, &mixed_same, false));
+
+        // 3. Multiple IPv4 entries all matching our public IPv4 -> true
+        let all_same_v4 = vec![
+            "198.51.100.8:43816".to_string(),
+            "198.51.100.8:43817".to_string(),
+        ];
+        assert!(srflx_hairpin_pointless(mine, &all_same_v4, true));
+
+        // 4. Differing public IPv4 (pure v4 or mixed with v6) -> false
+        let diff_v4 = vec![
+            "198.51.100.8:43816".to_string(),
+            "203.0.113.238:51287".to_string(),
+            "[2001:db8:1234::9]:43620".to_string(),
+        ];
+        assert!(!srflx_hairpin_pointless(mine, &diff_v4, true));
+    }
+
+    #[test]
+    fn select_non_vpn_uplinks_orders_default_gateways_first_dedupes_and_caps_at_three() {
+        let ip = |s: &str| s.parse::<Ipv4Addr>().unwrap();
+
+        // Empty list -> empty
+        assert!(select_non_vpn_uplinks(&[]).is_empty());
+
+        // Synthetic 5-NIC list:
+        // - NIC 0: LAN-only (no default gateway) enumerated first -> must sort AFTER gateway NICs
+        // - NIC 1: Wi-Fi with default gateway metric 30
+        // - NIC 2: USB RNDIS with default gateway metric 25 -> must sort FIRST
+        // - NIC 3: Duplicate IP of NIC 1 with lower metric 20 -> deduped & upgrades NIC 1 to metric 20!
+        // - NIC 4: Docked Ethernet with default gateway metric 28
+        // - NIC 5: Second LAN-only NIC -> dropped by MAX_NON_VPN_UPLINKS = 3 cap
+        let cands = vec![
+            NonVpnUplinkCandidate {
+                ip: ip("172.16.0.2"),
+                ifindex: Some(23),
+                default_gw_metric: None,
+            },
+            NonVpnUplinkCandidate {
+                ip: ip("192.168.1.253"),
+                ifindex: Some(12),
+                default_gw_metric: Some(30),
+            },
+            NonVpnUplinkCandidate {
+                ip: ip("192.168.42.45"),
+                ifindex: Some(58),
+                default_gw_metric: Some(25),
+            },
+            NonVpnUplinkCandidate {
+                ip: ip("192.168.1.253"),
+                ifindex: Some(12),
+                default_gw_metric: Some(20),
+            },
+            NonVpnUplinkCandidate {
+                ip: ip("10.0.10.50"),
+                ifindex: Some(9),
+                default_gw_metric: Some(28),
+            },
+            NonVpnUplinkCandidate {
+                ip: ip("192.168.100.2"),
+                ifindex: Some(41),
+                default_gw_metric: None,
+            },
+        ];
+        let selected = select_non_vpn_uplinks(&cands);
+        assert_eq!(
+            selected,
+            vec![
+                (ip("192.168.1.253"), Some(12)), // upgraded metric 20
+                (ip("192.168.42.45"), Some(58)), // metric 25
+                (ip("10.0.10.50"), Some(9)),     // metric 28 (caps at 3; non-gateway NICs excluded)
+            ]
+        );
+
+        // When fewer than 3 NICs have a default gateway, non-gateway physical NICs fill remaining slots in enumeration order
+        let mixed = vec![
+            NonVpnUplinkCandidate {
+                ip: ip("10.10.0.2"),
+                ifindex: Some(7),
+                default_gw_metric: None,
+            },
+            NonVpnUplinkCandidate {
+                ip: ip("192.168.1.253"),
+                ifindex: Some(12),
+                default_gw_metric: Some(30),
+            },
+            NonVpnUplinkCandidate {
+                ip: ip("10.20.0.2"),
+                ifindex: Some(8),
+                default_gw_metric: None,
+            },
+        ];
+        assert_eq!(
+            select_non_vpn_uplinks(&mixed),
+            vec![
+                (ip("192.168.1.253"), Some(12)),
+                (ip("10.10.0.2"), Some(7)),
+                (ip("10.20.0.2"), Some(8)),
+            ]
+        );
+
+        // Verify Linux /proc/net/route default-gateway parser
+        let proc_route = "\
+Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+eth1\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0
+wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0
+eth0\t00000000\tEC2AA8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
+";
+        let gws = parse_linux_proc_net_route_default_gws(proc_route);
+        assert_eq!(gws.get("eth0"), Some(&100));
+        assert_eq!(gws.get("wlan0"), Some(&600));
+        assert_eq!(gws.get("eth1"), None);
     }
 }

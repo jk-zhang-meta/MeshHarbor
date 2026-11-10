@@ -1,6 +1,6 @@
 ---
 title: Verify your install
-description: Confirm the Roomler agent is running, enrolled, reachable and on the mesh — and verify the artifact you installed was really signed by us.
+description: Confirm the MeshHarbor agent is running, enrolled, reachable and on the mesh — and verify the artifact you installed was really signed by us.
 tags: [install, verification, security, troubleshooting, getting-started]
 order: 16
 ---
@@ -11,7 +11,7 @@ really ours?**
 ## Is it working?
 
 ```bash
-roomler status
+mh status
 ```
 
 A healthy machine reports its version, its organization, that its control
@@ -27,7 +27,7 @@ says nothing about whether the machine has a private address.
 Then, from any other enrolled machine:
 
 ```bash
-roomler peers
+mh peers
 ```
 
 Every peer, its address, and **how it is currently reached** — direct, or via a
@@ -50,7 +50,7 @@ know what "signed" means here.
 ### Windows — Authenticode
 
 ```powershell
-Get-AuthenticodeSignature "C:\Program Files\Roomler\roomlerd.exe" |
+Get-AuthenticodeSignature "C:\Program Files\MeshHarbor\meshharbord.exe" |
   Select-Object Status, @{n='Signer';e={$_.SignerCertificate.Subject}}
 ```
 
@@ -70,9 +70,9 @@ Every release asset ships a detached `.asc` signature against a published
 release key, plus a SHA-256 sidecar and SLSA build provenance:
 
 ```bash
-gpg --verify roomlerd-<version>-x86_64-unknown-linux-gnu.deb.asc roomlerd-<version>-x86_64-unknown-linux-gnu.deb
+gpg --verify meshharbord-<version>-x86_64-unknown-linux-gnu.deb.asc meshharbord-<version>-x86_64-unknown-linux-gnu.deb
 
-gh attestation verify roomlerd-<version>-x86_64-unknown-linux-gnu.deb --repo gjovanov/roomler-ai
+gh attestation verify meshharbord-<version>-x86_64-unknown-linux-gnu.deb --repo jk-zhang-meta/MeshHarbor
 ```
 
 The updater verifies that signature against a key **pinned inside the binary**,
@@ -95,9 +95,9 @@ build.
 ## Quick checklist
 
 :::steps
-1. `roomler status` reports **connected**.
+1. `mh status` reports **connected**.
 2. The device shows **Online** in the dashboard.
-3. `roomler peers` from another machine lists it — if you expect it on the mesh.
+3. `mh peers` from another machine lists it — if you expect it on the mesh.
 4. *View screen* shows the real desktop, not wallpaper. On macOS, wallpaper means [a missing privacy grant](/docs/start/install/macos/).
 5. The installed binary verifies against the expected publisher.
 :::

@@ -15,7 +15,7 @@ import {
   verifyTransportMac,
 } from '@/utils/extauth'
 
-/** The vectors the DEVICE's tests pin too (`agents/roomlerd/src/external_logins.rs`). */
+/** The vectors the DEVICE's tests pin too (`agents/meshharbord/src/external_logins.rs`). */
 const FP =
   'sha-256 4A:AD:B9:B1:3F:82:18:3B:54:02:12:DF:3E:5D:49:6B:19:E5:7C:AB:3C:5F:03:24:5E:E5:66:1C:20:D2:28:A8'
 const OTHER_FP =
@@ -35,7 +35,7 @@ function sdpWith(...fingerprints: string[]): string {
 describe('FR-52 transport binding — the browser half', () => {
   it('derives the AppKey the device derives (HKDF known answer)', async () => {
     const key = await deriveAppKey(bytes(64), 'a1b2c3d4e5f60718293a4b5c6d7e8f90', '665f1c2a9b3e4d5f6a7b8c9d')
-    expect(hex(key)).toBe('7718aa60e955c361d08a866cc97778ce06006d767a0d0d5503510b98cde651e5')
+    expect(hex(key)).toBe('954ea3ac4b530943febcf31adc09b4d1809043e30848d9623dff80e24d97085f')
   })
 
   it('moving bytes between the two fields changes the key (length prefixes, not separators)', async () => {
@@ -46,13 +46,13 @@ describe('FR-52 transport binding — the browser half', () => {
   })
 
   it('MACs a fingerprint exactly as the device does (HMAC known answers)', async () => {
-    expect(await transportMac(bytes(32), 'offer', FP)).toBe('9C7Hj7E39lXWd1VP-ttMoR3G39CrYJLXbaNjkGJ4W5w')
-    expect(await transportMac(bytes(32), 'answer', FP)).toBe('dvUftw510jDyQn0j9c6XslWOoB19z-QTW3FUgUCz6rY')
+    expect(await transportMac(bytes(32), 'offer', FP)).toBe('zHMNxMvv1Ltc8K1Ixg4v64XqQKmQUy6_5UnmxIwX3js')
+    expect(await transportMac(bytes(32), 'answer', FP)).toBe('WHXJ-r2tZDGvmjehcBCknC72dHrmA-7UCstd26EboRI')
   })
 
   it('verifies only the right role, key and certificate', async () => {
     const key = bytes(32)
-    const answer = 'dvUftw510jDyQn0j9c6XslWOoB19z-QTW3FUgUCz6rY'
+    const answer = 'WHXJ-r2tZDGvmjehcBCknC72dHrmA-7UCstd26EboRI'
     expect(await verifyTransportMac(key, 'answer', FP, answer)).toBe(true)
     // The offer's tag replayed as the answer's.
     expect(await verifyTransportMac(key, 'answer', FP, await transportMac(key, 'offer', FP))).toBe(false)

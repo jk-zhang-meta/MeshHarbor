@@ -20,6 +20,12 @@
 #     that is really closed is still detected by the read loop.
 #   - src/association/association_test.rs: the regression test (a send
 #     that fails once; the message must arrive by retransmission).
+#   - src/association/association_internal.rs: fast recovery covers the
+#     entire outstanding flight (RFC 9260 section 7.2.4), so separate holes
+#     in one flight do not repeatedly halve cwnd. T3 leaves fast recovery
+#     so advancing ACKs can resume slow start after a timeout. SACK loss reports
+#     follow HTNA during recovery and exclude the unreported tail. Regressions in
+#     src/association/association_internal/association_internal_test.rs.
 
 [package]
 edition = "2021"

@@ -10,10 +10,10 @@ use super::{
 };
 use crate::NetworkState;
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::models::{
+use meshharbor_core::business_authority::BusinessZone;
+use meshharbor_remote_control::models::{
     NodeRef, OverlayNode, PeerRelayDenyReason as Deny, PeerRelayMode, peer_relay_limits as limits,
 };
-use roomler_core::business_authority::BusinessZone;
 use std::collections::HashMap;
 
 pub(super) struct PreparedGraph {
@@ -108,7 +108,7 @@ pub(super) async fn prepare_reusing(
     let enforce_zone = iso::mode(state) == Mode::Enforce;
     let unknown_role_mode = iso::unknown_role_mode(state);
     if enforce_zone || unknown_role_mode != Mode::Off {
-        let roles = match roomler_core::business_authority::current_approved_roles(
+        let roles = match meshharbor_core::business_authority::current_approved_roles(
             &state.core,
             requester.tenant_id,
         )
@@ -159,7 +159,7 @@ pub(super) async fn prepare_reusing(
                 // `business_isolation::lines` deliberately hides role/DB
                 // failures for netmap shaping. The authorization snapshot
                 // must not mistake a failed read for a non-server pair.
-                let servers = roomler_core::business_authority::current_server_agents(
+                let servers = meshharbor_core::business_authority::current_server_agents(
                     &state.core,
                     requester.tenant_id,
                 )
@@ -174,7 +174,7 @@ pub(super) async fn prepare_reusing(
                         .await
                         .map_err(|_| Deny::PolicyUnreadable)?
                         .ok_or(Deny::PolicyUnreadable)?;
-                    let pair = roomler_ai_remote_control::models::ServerLink::ordered(*a, *b);
+                    let pair = meshharbor_remote_control::models::ServerLink::ordered(*a, *b);
                     Some(
                         network
                             .server_links
@@ -312,7 +312,7 @@ pub(super) async fn prepare_reusing(
 mod tests {
     use super::*;
     use bson::DateTime;
-    use roomler_core::business_authority::BusinessZone::Mainland;
+    use meshharbor_core::business_authority::BusinessZone::Mainland;
     fn plan(tenant: ObjectId, agent: ObjectId, node_id: ObjectId, implicit: bool) -> Plan {
         let mut node: OverlayNode = serde_json::from_value(serde_json::json!({
             "tenant_id": tenant, "node_ref": {"kind":"agent", "id": agent},

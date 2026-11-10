@@ -28,9 +28,9 @@ if [ -d "$RUN" ]; then
 fi
 
 # --- STEP 1: the document's clone ------------------------------------------
-say "STEP 1  git clone (document says: git clone https://github.com/gjovanov/roomler-ai.git)"
+say "STEP 1  git clone (document says: git clone https://github.com/jk-zhang-meta/MeshHarbor.git)"
 T0=$(date +%s)
-git clone --depth 1 https://github.com/gjovanov/roomler-ai.git "$RUN" >>"$LOG" 2>&1 \
+git clone --depth 1 https://github.com/jk-zhang-meta/MeshHarbor.git "$RUN" >>"$LOG" 2>&1 \
   || { say "FAIL: clone"; exit 1; }
 cd "$RUN"
 say "        cloned in $(( $(date +%s) - T0 ))s, HEAD=$(git rev-parse --short HEAD)"
@@ -47,11 +47,11 @@ JWT=$(openssl rand -hex 32)
 TURN=$(openssl rand -hex 32)
 MONGOPW=$(openssl rand -hex 24)
 MINIOPW=$(openssl rand -hex 24)
-sed -i "s|^ROOMLER_JWT_SECRET=.*|ROOMLER_JWT_SECRET=$JWT|" .env.selfhost
-sed -i "s|^ROOMLER_TURN_SECRET=.*|ROOMLER_TURN_SECRET=$TURN|" .env.selfhost
+sed -i "s|^MESHHARBOR_JWT_SECRET=.*|MESHHARBOR_JWT_SECRET=$JWT|" .env.selfhost
+sed -i "s|^MESHHARBOR_TURN_SECRET=.*|MESHHARBOR_TURN_SECRET=$TURN|" .env.selfhost
 sed -i "s|^MONGO_ROOT_PASSWORD=.*|MONGO_ROOT_PASSWORD=$MONGOPW|" .env.selfhost
 sed -i "s|^MINIO_ROOT_PASSWORD=.*|MINIO_ROOT_PASSWORD=$MINIOPW|" .env.selfhost
-say "        filled; remaining empty REQUIRED values: $(grep -cE '^(ROOMLER_JWT_SECRET|ROOMLER_TURN_SECRET|MONGO_ROOT_PASSWORD|MINIO_ROOT_PASSWORD)=$' .env.selfhost)"
+say "        filled; remaining empty REQUIRED values: $(grep -cE '^(MESHHARBOR_JWT_SECRET|MESHHARBOR_TURN_SECRET|MONGO_ROOT_PASSWORD|MINIO_ROOT_PASSWORD)=$' .env.selfhost)"
 
 # --- STEP 3: the document's up ---------------------------------------------
 say "STEP 3  docker compose ... up -d --build   (document claims 10-20 min first build)"
@@ -78,7 +78,7 @@ for i in $(seq 1 60); do
     curl -fsS http://localhost:8080/health 2>&1 | head -3 | tee -a "$LOG"
     break
   fi
-  [ "$i" = 60 ] && { say "        ✘ /health never answered within 600s"; docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost logs --tail 60 roomler 2>&1 | tee -a "$LOG"; exit 1; }
+  [ "$i" = 60 ] && { say "        ✘ /health never answered within 600s"; docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost logs --tail 60 meshharbor 2>&1 | tee -a "$LOG"; exit 1; }
   sleep 10
 done
 

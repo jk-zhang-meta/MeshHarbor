@@ -14,12 +14,12 @@ use std::time::{Duration, Instant};
 
 use bson::{Document, doc, oid::ObjectId};
 use futures::TryStreamExt;
-use roomler_ai_remote_control::turn_creds::{charged, org_of_username};
+use meshharbor_remote_control::turn_creds::{charged, org_of_username};
 use serde_json::{Value, json};
 
 use crate::fixtures::{seed::SeededTenant, test_app::TestApp};
 
-fn attribution_on(s: &mut roomler_ai_config::Settings) {
+fn attribution_on(s: &mut meshharbor_config::Settings) {
     s.relay_allowance.turn_attribution = true;
 }
 
@@ -41,8 +41,9 @@ async fn turn_bytes(app: &TestApp, tenant: ObjectId) -> i64 {
 /// coturn's two total channels for one allocation: the client leg, and the
 /// relay ↔ peer leg.
 fn channels(username: &str, allocation: u64) -> (String, String) {
-    let client =
-        format!("turn/realm/roomler.ai/user/{username}/allocation/{allocation:018}/total_traffic");
+    let client = format!(
+        "turn/realm/meshharbor.itachi.fans/user/{username}/allocation/{allocation:018}/total_traffic"
+    );
     let peer = format!("{client}/peer");
     (client, peer)
 }
@@ -130,7 +131,7 @@ async fn a_username_naming_no_org_is_not_counted() {
 }
 
 /// TURN configured, with a secret made at runtime.
-fn turn_on(s: &mut roomler_ai_config::Settings) {
+fn turn_on(s: &mut meshharbor_config::Settings) {
     s.turn.url = Some("turn:coturn.example:3478".into());
     s.turn.shared_secret = Some(ObjectId::new().to_hex());
 }

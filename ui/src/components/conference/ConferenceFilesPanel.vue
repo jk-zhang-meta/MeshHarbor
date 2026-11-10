@@ -11,11 +11,11 @@
         icon="mdi-upload"
         variant="text"
         size="small"
-        aria-label="Upload a file"
+        :aria-label="t('mh.conf.upload')"
         @click="triggerUpload"
       />
       <!-- Below 960 px the panel covers the video: this is the way back. -->
-      <v-btn class="d-md-none" icon="mdi-close" variant="text" size="small" aria-label="Close files" @click="$emit('close')" />
+      <v-btn class="d-md-none" icon="mdi-close" variant="text" size="small" :aria-label="t('mh.conf.closeFiles')" @click="$emit('close')" />
     </v-toolbar>
     <v-divider />
 
@@ -92,6 +92,9 @@
 import { appPath } from '@/utils/deployment'
 import { ref } from 'vue'
 import { useRoomStore, type FileEntry } from '@/stores/rooms'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   tenantId: string

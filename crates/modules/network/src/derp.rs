@@ -38,7 +38,7 @@
 //!   the sender's own network. The `(network_id, pubkey)` registry key makes a
 //!   cross-network delivery structurally impossible.
 //!
-//! Placement (v1): on the `roomler2` API pods (hostNetwork, :443), behind the
+//! Placement (v1): on the `meshharbor2` API pods (hostNetwork, :443), behind the
 //! dedicated `/derp` nginx `location`. The registry is in-memory on a
 //! single-replica Recreate deployment, so a web deploy severs all DERP links
 //! (they rebuild via the carrier `dead` latch) and it can't scale past one
@@ -57,7 +57,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bson::oid::ObjectId;
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
-use roomler_core::ws::upgrade::WsParams;
+use meshharbor_core::ws::upgrade::WsParams;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -233,7 +233,7 @@ pub fn spawn_derp_usage_flush(state: NetworkState) {
                     .stats
                     .add_usage(
                         tenant_id,
-                        roomler_ai_services::dao::stats::Meter::DerpBytes,
+                        meshharbor_services::dao::stats::Meter::DerpBytes,
                         now,
                         bytes as i64,
                     )
@@ -393,7 +393,7 @@ pub async fn derp_upgrade(
         .await
     {
         Ok(agent) => {
-            if let Some(reason) = roomler_ai_mod_fleet::auth_agent::refusal_reason(&agent) {
+            if let Some(reason) = meshharbor_mod_fleet::auth_agent::refusal_reason(&agent) {
                 info!(%agent_id, %tenant_id, reason, "derp: REFUSED before upgrade");
                 return Response::builder()
                     .status(401)
@@ -401,7 +401,7 @@ pub async fn derp_upgrade(
                     .unwrap();
             }
             // FR-103 — a token minted before the device was removed.
-            if let Some(reason) = roomler_ai_mod_fleet::auth_agent::generation_refusal(
+            if let Some(reason) = meshharbor_mod_fleet::auth_agent::generation_refusal(
                 claims.generation,
                 agent.token_gen,
                 state.fleet.settings.rc.token_generation_check,
@@ -430,7 +430,7 @@ pub async fn derp_upgrade(
     if state.settings.auth.account_approval.enabled {
         let gate = tokio::time::timeout(
             Duration::from_secs(3),
-            roomler_ai_mod_fleet::auth_agent::accepted_agent(
+            meshharbor_mod_fleet::auth_agent::accepted_agent(
                 &state.fleet,
                 &claims.sub,
                 &claims.tenant_id,
@@ -445,8 +445,8 @@ pub async fn derp_upgrade(
                 .unwrap();
         }
     }
-    ws.max_message_size(roomler_core::ws::upgrade::MAX_WS_MESSAGE_BYTES)
-        .max_frame_size(roomler_core::ws::upgrade::MAX_WS_MESSAGE_BYTES)
+    ws.max_message_size(meshharbor_core::ws::upgrade::MAX_WS_MESSAGE_BYTES)
+        .max_frame_size(meshharbor_core::ws::upgrade::MAX_WS_MESSAGE_BYTES)
         .on_upgrade(move |socket| handle_derp_socket(state, socket, agent_id))
 }
 /// Immediately evict a WireGuard public key from the local DERP registry and
@@ -519,7 +519,7 @@ async fn handle_derp_socket(state: NetworkState, socket: WebSocket, agent_id: Ob
     let admission_check = || async {
         tokio::time::timeout(
             Duration::from_secs(3),
-            roomler_ai_mod_fleet::auth_agent::accepted_agent(
+            meshharbor_mod_fleet::auth_agent::accepted_agent(
                 &state.fleet,
                 &agent_id.to_hex(),
                 &node.tenant_id.to_hex(),
@@ -789,7 +789,7 @@ fn forward_frame(
         // FR-19 — the pod actually relayed `out_len` bytes for this pair over
         // the control plane. Counted only on a SUCCESSFUL enqueue: a dropped
         // frame is not carried, so it must not inflate the offload baseline.
-        roomler_core::cluster::metrics::DERP_BYTES_RELAYED_TOTAL
+        meshharbor_core::cluster::metrics::DERP_BYTES_RELAYED_TOTAL
             .fetch_add(out_len, Ordering::Relaxed);
         // FR-20 collection point A — the same bytes, attributed per network so
         // they can become a per-tenant cost bucket.
@@ -873,7 +873,7 @@ mod tests {
     /// pass/fail assertion, and its numbers are machine-specific.
     ///
     /// ```text
-    /// cargo test -p roomler-ai-api --lib bench_add_network_bytes_cost \
+    /// cargo test -p meshharbor-api --lib bench_add_network_bytes_cost \
     ///     -- --ignored --nocapture
     /// ```
     ///

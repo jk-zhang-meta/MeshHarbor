@@ -58,7 +58,7 @@ For scripted or repeated movement of files, a session is the wrong tool. Two
 better options:
 
 :::cards
-- **[SFTP over Roomler SSH](/docs/network/ssh/)** icon:terminal — `scp` and `sftp` work against a node with no `sshd` running. Transfers run as the session's own account, not as the daemon.
+- **[SFTP over MeshHarbor SSH](/docs/network/ssh/)** icon:terminal — `scp` and `sftp` work against a node with no `sshd` running. Transfers run as the session's own account, not as the daemon.
 - **[Tunnels](/docs/network/tunnels/)** icon:network — forward a file service's port and use whatever client you already have.
 :::
 
@@ -68,5 +68,5 @@ better options:
 - **An image copied on a Mac, or on a Linux machine under Wayland, waits to be fetched.** A Windows host notices copied images by itself, and so does a Linux desktop on X11 with a per-user install, from agent 0.4.148; elsewhere text still follows you automatically, and the clipboard button brings an image across.
 - **A Linux machine whose agent runs as a system service outside any desktop session has no clipboard to share.** Its clipboard buttons stay greyed, with the reason in their tooltip.
 - **On macOS**, remote *audio* capture is unavailable, which occasionally surprises people expecting a full session mirror. The receive-audio toggle says so.
-- **The Ctrl+Alt+Del button reaches the Windows lock screen only where Windows allows it.** A Windows machine that runs Roomler as a service, and whose "software Secure Attention Sequence" policy lets services send it, gets the real Ctrl+Alt+Del: it reaches the lock and sign-in screens. Elsewhere the button types the three keys. Those reach the programs on the desktop but not the lock or sign-in screen, and the button's tooltip says which condition is missing. On Linux the desktop decides what the keys do: GNOME and KDE offer to log out. A Mac gives the keys no meaning, so the button is not shown there.
-- **SFTP against a Windows target** runs as the session's account. On a Windows machine that runs Roomler as a service, a session set to the person signed in at the console transfers files as that person: the transfer starts in their home folder, and an upload belongs to them.
+- **The Ctrl+Alt+Del button reaches the Windows lock screen only where Windows allows it.** A Windows machine that runs MeshHarbor as a service, and whose "software Secure Attention Sequence" policy lets services send it, gets the real Ctrl+Alt+Del: it reaches the lock and sign-in screens. Elsewhere the button types the three keys. Those reach the programs on the desktop but not the lock or sign-in screen, and the button's tooltip says which condition is missing. On Linux the desktop decides what the keys do: GNOME and KDE offer to log out. A Mac gives the keys no meaning, so the button is not shown there.
+- **SFTP against a Windows target** runs as the session's account. On a Windows machine that runs MeshHarbor as a service, a session set to the person signed in at the console transfers files as that person: the transfer starts in their home folder, and an upload belongs to them.

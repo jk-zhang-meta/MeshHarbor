@@ -11,7 +11,7 @@
  *                            (Linux-only root systemd SYSTEM unit)
  *   - scripts/install.ps1  — roles `daemon-user` | `daemon-machine` |
  *                            `daemon-system` | `tunnel-client`
- *   - roomlerd / roomler   — `enroll --server … --token … --name …`
+ *   - meshharbord / mh   — `enroll --server … --token … --name …`
  *     (+ `--machine-global` for the Windows SystemContext flavour ONLY —
  *     S1b: a plain-SCM daemon-machine service reads the per-user config)
  *   - /api/setup/{platform} — wizard EXE download proxy
@@ -75,11 +75,11 @@ export const DEVICE_ID_PLACEHOLDER = '<device-id>'
  *
  * `anchor` (FR-104): the token may also anchor the Windows device it
  * enrolls. A machine-wide Windows install then gets a fourth block, the
- * elevated `roomlerd anchor create` with the same token, for the script
- * and manual paths; Roomler Setup runs it itself.
+ * elevated `meshharbord anchor create` with the same token, for the script
+ * and manual paths; MeshHarbor Setup runs it itself.
  *
- * FR-97 D5: Roomler Setup installs the agent on Windows only — on Linux and
- * macOS it installs the tunnel client (`agents/roomler-setup`), so an agent
+ * FR-97 D5: MeshHarbor Setup installs the agent on Windows only — on Linux and
+ * macOS it installs the tunnel client (`agents/meshharbor-setup`), so an agent
  * enrollment there offers the script and the manual path, never the wizard.
  */
 export function enrollCommands(
@@ -97,7 +97,7 @@ export function enrollCommands(
   const psRole = kind === 'agent' ? PS_ROLE[scoped] : 'tunnel-client'
   // S1b: ONLY the SystemContext flavour reads the machine-global config.
   const psMg = kind === 'agent' && scoped === 'system' ? ' --machine-global' : ''
-  const manualBin = kind === 'agent' ? 'roomlerd' : 'roomler'
+  const manualBin = kind === 'agent' ? 'meshharbord' : 'mh'
   const manualName = kind === 'agent' ? '"$(hostname)"' : '"My laptop"'
 
   const shOneLiner = (os: EnrollOs): CommandBlock => ({
@@ -108,19 +108,19 @@ export function enrollCommands(
   })
 
   // macOS installs the daemon inside an .app bundle, and there is no bare
-  // `roomlerd` on PATH for the enrolling user — so the generic `roomlerd
+  // `meshharbord` on PATH for the enrolling user — so the generic `meshharbord
   // enroll` this used to print could not work on a Mac. FR-46 P5b renamed the
   // bundle, so the path below carries the current name like every other OS.
-  const macAgentBin = '/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd'
+  const macAgentBin = '/Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord'
 
   const manual = (os: EnrollOs): CommandBlock => ({
     id: `${kind}-${os}-manual`,
     label: 'Already installed? Enroll manually',
     // Linux machine-wide mirrors install.sh --system's own "enroll later"
-    // hint: root enroll into the system unit's /etc/roomler config.
+    // hint: root enroll into the system unit's /etc/meshharbor config.
     command:
       os === 'linux' && machineWide
-        ? `sudo roomlerd --config /etc/roomler/config.toml enroll --server ${base} --token ${tok} --name ${manualName}`
+        ? `sudo meshharbord --config /etc/meshharbor/config.toml enroll --server ${base} --token ${tok} --name ${manualName}`
         : os === 'macos' && kind === 'agent'
           ? `${macAgentBin} enroll --server ${base} --token ${tok} --name ${manualName}`
           : `${manualBin} enroll --server ${base} --token ${tok} --name ${manualName}`,
@@ -128,7 +128,7 @@ export function enrollCommands(
 
   const wizard = (os: EnrollOs, platform: string): CommandBlock => ({
     id: `${kind}-${os}-wizard`,
-    label: 'Graphical installer (Roomler Setup)',
+    label: 'Graphical installer (MeshHarbor Setup)',
     command: `${base}/api/setup/${platform}`,
     isDownload: true,
   })
@@ -161,7 +161,7 @@ export function enrollCommands(
               {
                 id: 'agent-windows-anchor',
                 label: `Then anchor it, from the same Administrator PowerShell (replace ${DEVICE_ID_PLACEHOLDER} with the id on the device's page)`,
-                command: `roomlerd anchor create --server ${base} --token ${tok} --device ${DEVICE_ID_PLACEHOLDER}`,
+                command: `meshharbord anchor create --server ${base} --token ${tok} --device ${DEVICE_ID_PLACEHOLDER}`,
               },
             ]
           : []),
@@ -202,7 +202,7 @@ export interface InstallCard {
   command: string
   /**
    * The graphical installer where it installs the agent, else null. FR-97 D5,
-   * read from the same blocks as the enroll dialog: off Windows Roomler Setup
+   * read from the same blocks as the enroll dialog: off Windows MeshHarbor Setup
    * has only the tunnel client to install. The homepages kept their own per-OS
    * map until P0c-4, so they offered a visitor on a Mac or Linux a wizard that
    * could not set up the device they came for.

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# FR-41 (#965) — dress a roomlerd virtual desktop so a demo recording has
+# FR-41 (#965) — dress a meshharbord virtual desktop so a demo recording has
 # something worth filming, instead of two small windows on black.
 #
 # Run as root on the agent host, AFTER the daemon is up with
-# ROOMLERD_VIRTUAL_DESKTOP=1:
+# MESHHARBORD_VIRTUAL_DESKTOP=1:
 #
 #   sudo bash scripts/demo-desktop.sh
 #
@@ -32,7 +32,7 @@ set -u
 
 # --- discover the display the daemon actually brought up --------------------
 DPY="$(pgrep -a Xvfb | grep -oE ':[0-9]+' | head -1)"
-[ -n "$DPY" ] || { echo "no Xvfb running — is ROOMLERD_VIRTUAL_DESKTOP=1 set?"; exit 1; }
+[ -n "$DPY" ] || { echo "no Xvfb running — is MESHHARBORD_VIRTUAL_DESKTOP=1 set?"; exit 1; }
 export DISPLAY="$DPY"
 echo "display: $DISPLAY"
 
@@ -43,8 +43,8 @@ export QT_QPA_PLATFORM=xcb
 timeout 10 xdpyinfo >/dev/null 2>&1 || { echo "X on $DISPLAY is not answering"; exit 1; }
 
 # --- wallpaper --------------------------------------------------------------
-WALL=/opt/roomler-demo/wall.png
-mkdir -p /opt/roomler-demo
+WALL=/opt/meshharbor-demo/wall.png
+mkdir -p /opt/meshharbor-demo
 # Flat diagonal gradient in the product's teal. A radial vignette was tried and
 # crushed it to near-black at capture bitrates — screen content is not a photo.
 convert -size 1920x1080 gradient:#12463F-#0a2a26 -rotate 90 "$WALL"

@@ -3,7 +3,7 @@
 //! Uses TestApp's isolated database and loopback listener; never a production host.
 use crate::fixtures::test_app::TestApp;
 use bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_db::models::{AccountApprovalState, User};
+use meshharbor_db::models::{AccountApprovalState, User};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -509,7 +509,7 @@ async fn approval_management_suspension_fences_enrollment_renewal_and_live_agent
         .unwrap();
     }
     let victim_node = app.state.network().admission_nodes.iter().find(|n|
-        matches!(n.node_ref, roomler_ai_remote_control::models::NodeRef::Agent { agent_id } if agent_id == aid)
+        matches!(n.node_ref, meshharbor_remote_control::models::NodeRef::Agent { agent_id } if agent_id == aid)
     ).unwrap().id.unwrap();
     let derp_url = format!("ws://{}/derp?token={}", app.addr, token);
     let (mut derp, _) = tokio_tungstenite::connect_async(&derp_url).await.unwrap();

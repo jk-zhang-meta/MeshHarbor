@@ -23,12 +23,12 @@ negotiable:
 | capture / input / clipboard | a WindowServer connection | the console user's GUI session |
 | `utun` + route table + SSH | root | session 0 |
 
-`docs/installation.md:104-113` states it; `agents/roomlerd/packaging/macos/com.roomler.agent.plist`
-and `com.roomler.daemon.plist` are the two units, and both invoke the *same* binary with
+`docs/installation.md:104-113` states it; `agents/meshharbord/packaging/macos/fans.itachi.meshharbor.agent.plist`
+and `fans.itachi.meshharbor.daemon.plist` are the two units, and both invoke the *same* binary with
 the same `run` subcommand — the split is context, not code.
 
 **Windows does not need two because a SYSTEM process can reach the interactive desktop.**
-`agents/roomlerd/src/win_service/desktop.rs:1-16` documents the mechanism (a thread
+`agents/meshharbord/src/win_service/desktop.rs:1-16` documents the mechanism (a thread
 attaches to `winsta0\Default` / `winsta0\Winlogon` and captures/injects there), and
 `win_service/supervisor.rs:266` (`spawn_in_session`) + `:746` (`decide_spawn`) is the shape: the SCM
 service supervises, the agent proper runs in a session. macOS has **no `SetThreadDesktop`
@@ -38,7 +38,7 @@ That is the whole asymmetry.
 **What is NOT forced is two enrollments.** That comes from us: the hub keys a device's
 control WS on `agent_id` and a second connection displaces the first
 (`crates/modules/fleet/src/hub.rs:94`), so we gave each half its own identity and the
-Mac became two rows. Cost, paid daily: every `roomler exec` / `roomler ssh` must target
+Mac became two rows. Cost, paid daily: every `mh exec` / `mh ssh` must target
 the *right* row (the GUI row cannot reach root, the root row cannot see the screen), the
 install needs two tokens, and Devices shows one machine twice.
 
@@ -51,7 +51,7 @@ boot); the GUI-session process becomes an **unenrolled worker** it spawns and dr
   the launchd analogue of `spawn_in_session`. Console-user changes (login, logout, fast
   user switch) drive respawn, mirroring `decide_spawn`'s session-change handling.
 - **Transport**: the LocalAPI unix socket, which already solves exactly this addressing
-  problem — `crates/localapi/src/lib.rs:1966-1875` documents `/var/run/roomler` as the
+  problem — `crates/localapi/src/lib.rs:1966-1875` documents `/var/run/meshharbor` as the
   root daemon's well-known socket precisely because "a per-user path cannot serve a root
   daemon … that is the trap the macOS LaunchDaemon split walks into".
 - **Division**: signalling + consent + policy in the daemon; the rc session's WebRTC
@@ -90,7 +90,7 @@ work, and the design below should be read as such rather than as a translation.
 ### Why not the Windows shape (worker enrolled, daemon only supervising)
 
 Because it deletes the reason the macOS daemon half exists. With nobody logged in there
-would be no agent at all: no overlay, no `roomler ssh`, no `roomler exec`, no presence —
+would be no agent at all: no overlay, no `mh ssh`, no `mh exec`, no presence —
 exactly the "reachable before anyone logs in" property `win_service/mod.rs`'s own module
 docs list as the point of service mode. So the **daemon must hold the enrollment**, and
 the session has to reach the worker some other way.
@@ -154,7 +154,7 @@ screen appears".
 ⚠️ `RcAttach` must be **daemon-only**, not something any local process can call: it would
 otherwise let any user-session process on the box volunteer to serve remote-control
 sessions. The socket's own ACL is the trust boundary today
-(`lib.rs:1818-1828` — `/var/run/roomler`, 0600), which is *not* sufficient on its own here,
+(`lib.rs:1818-1828` — `/var/run/meshharbor`, 0600), which is *not* sufficient on its own here,
 because the worker is an ordinary user process and so is an attacker's. The attach must
 carry the one-shot secret the daemon passed to the worker in its spawn environment, and the
 daemon must accept exactly one attached worker at a time.
@@ -162,7 +162,7 @@ daemon must accept exactly one attached worker at a time.
 ### Consent
 
 Stays in the daemon, and this is not a compromise — FR-27 already built the mechanism.
-`PromptSurface` (`agents/roomlerd/src/consent.rs:184`) is a chain, and its **companion**
+`PromptSurface` (`agents/meshharbord/src/consent.rs:184`) is a chain, and its **companion**
 rung is precisely "a per-user process the daemon starts on demand"
 (`companion::ensure_running()`). A session-0 daemon has no native surface and correctly
 falls through to it. So the daemon keeps the policy decision (`strictest_of`, the local
@@ -274,7 +274,7 @@ The obvious fix — delay the hello until a worker has attached, so the caps are
 right first time — is **wrong, and expensively so**. It couples the daemon's
 control WS to GUI-worker readiness, which destroys the one property the daemon
 half exists for: reachable *before anyone logs in*. A headless reboot would
-never connect at all, and `roomler ssh` / `exec` / the mesh would wait on a
+never connect at all, and `mh ssh` / `exec` / the mesh would wait on a
 login that may never come. The daemon must say hello immediately and correct
 itself later.
 
@@ -326,7 +326,7 @@ shape as [`crate::power::PowerKeeper`].
 
 **P2 had a half-life of one release, and the release was the thing that ended
 it.** `macos_supervisor::decide` stands down whenever
-`gui/<uid>/com.roomler.agent` is loaded — correctly, since the loser of that
+`gui/<uid>/fans.itachi.meshharbor.agent` is loaded — correctly, since the loser of that
 race must be the supervisor rather than the enrolled agent. The `.pkg`'s
 `postinstall` then re-bootstrapped that exact label unconditionally, so every
 package update handed the GUI worker back to launchd and disarmed delegation.
@@ -334,14 +334,14 @@ The daemon's row went back to advertising a capture target it cannot serve, and
 a controller connecting to it got the black-screen-with-working-input symptom
 this FR exists to remove.
 
-The operator's remedy (`launchctl bootout gui/<uid>/com.roomler.agent`, which
+The operator's remedy (`launchctl bootout gui/<uid>/fans.itachi.meshharbor.agent`, which
 the daemon's own log tells them to run) survived exactly until the next update —
 and an update is precisely when nobody is watching.
 
 Neither half was wrong on its own; nothing connected them. The supervisor knew
 about the LaunchAgent, and the installer had never heard of the supervisor.
 
-**The guard** (`agents/roomlerd/packaging/macos/postinstall`): when the root
+**The guard** (`agents/meshharbord/packaging/macos/postinstall`): when the root
 daemon is opted in **and** its config carries
 `macos_supervise_gui_worker = true`, the LaunchAgent is booted out and its plist
 removed, and the daemon owns the worker.
@@ -367,7 +367,7 @@ removed, and the daemon owns the worker.
   always booted this label out as its first act. The change is that it is no
   longer bootstrapped back.
 
-⚠️ `agents/roomlerd/packaging/macos/postinstall` had **no `.gitattributes`
+⚠️ `agents/meshharbord/packaging/macos/postinstall` had **no `.gitattributes`
 rule**, only `core.autocrlf` on one developer's box. It has no extension, so
 `scripts/*.sh` never matched it, and the rule written for the dpkg maintainer
 scripts — *"`#!/bin/sh\r` … fails to configure on EVERY host"* — had no macOS
@@ -377,11 +377,11 @@ counterpart despite the identical failure mode under PackageKit. Pinned
 ## Acceptance criteria
 
 - [ ] A fresh install with **one** token produces **one** device row, and that row serves
-      both a remote-desktop session and `roomler ssh`.
-- [ ] `roomler exec <mac>` reaches root-owned paths **and** the GUI session's log from the
+      both a remote-desktop session and `mh ssh`.
+- [ ] `mh exec <mac>` reaches root-owned paths **and** the GUI session's log from the
       same row (today this needs two different rows).
-- [ ] After a reboot with **nobody logged in**, the Mac is present in `roomler peers` and
-      `roomler ssh` works — the capability the daemon half exists for.
+- [ ] After a reboot with **nobody logged in**, the Mac is present in `mh peers` and
+      `mh ssh` works — the capability the daemon half exists for.
 - [ ] A remote-desktop session started while logged in streams real pixels and accepts
       input, with `caps` reporting `has_input_permission: true` and **no TCC re-prompt**.
 - [ ] `codesign -d -r-` on the bundle is byte-identical before and after the migration.
@@ -397,15 +397,15 @@ counterpart despite the identical failure mode under PackageKit. Pinned
       the switch off) sends no `caps` on its heartbeats at all — measured on the
       wire, not inferred from behaviour.
 - [x] P2d: a supervised Mac takes a package **update** and delegation is still
-      armed afterwards — `gui/<uid>/com.roomler.agent` is not loaded, the plist
+      armed afterwards — `gui/<uid>/fans.itachi.meshharbor.agent` is not loaded, the plist
       is gone from `~/Library/LaunchAgents`, and a session started after the
       update streams real pixels. This is the criterion the old build fails, so
       measure it on the CURRENT release first.
       *(2026-09-24, `agent-v0.4.100` — the first package update to reach a
       supervised Mac since P2d landed; the Mac took it unattended. After it:
-      `launchctl print gui/501/com.roomler.agent` → **`Could not find service`**;
-      `~/Library/LaunchAgents` holds only `com.roomler.desktop.plist` — **no
-      `com.roomler.agent.plist`**; a session started afterwards on the daemon row
+      `launchctl print gui/501/fans.itachi.meshharbor.agent` → **`Could not find service`**;
+      `~/Library/LaunchAgents` holds only `fans.itachi.meshharbor.desktop.plist` — **no
+      `fans.itachi.meshharbor.agent.plist`**; a session started afterwards on the daemon row
       rendered **3024×1968** (native Retina), luma variance **3957** (a black frame
       reads ~0), **H.265** at **8 fps** with the bitrate counter live. Preconditions
       on the device: `macos_supervise_gui_worker = true`. ⚠️ **The fail half is the
@@ -469,13 +469,13 @@ counterpart despite the identical failure mode under PackageKit. Pinned
 ## Out of scope
 
 Apple Developer ID / notarization (FR-7) · Windows and Linux, unchanged · the update half
-`com.roomler.update` (FR-5), which stays a separate root unit by design · the desktop
+`fans.itachi.meshharbor.update` (FR-5), which stays a separate root unit by design · the desktop
 companion.
 
 ## Field-verification log
 
 All of it on the operator's MacBook (Apple Silicon), driven
-remotely — `roomler exec` for P0, `roomler ssh` on the daemon row from P1 onwards.
+remotely — `mh exec` for P0, `mh ssh` on the daemon row from P1 onwards.
 
 ### 2026-08-30 — P0 spike: the mechanism works, and one half was never measured
 
@@ -485,7 +485,7 @@ screenshot in **233 ms**, and our own binary spawned that way reported both a li
 session and its TCC grants — so the grants survive, which is what made P1 worth building.
 
 **What the spike got wrong, and why:** it never measured the worker's *identity*. The
-probe was `roomlerd caps`, which reports the GUI session and the TCC grants — both of
+probe was `meshharbord caps`, which reports the GUI session and the TCC grants — both of
 which root-in-a-session genuinely has — and says nothing about *which config* the process
 would load. **A probe that shares a blind spot with the design confirms the design.**
 `id -u` was the missing measurement, and it cost the outage below.
@@ -529,9 +529,9 @@ The group structure, measured under supervision:
      (FR-21). Rewriting the capture to the current name would make it a
      transcription rather than evidence. -->
 ```
-25894     1 25894     0  roomler-agent   <- root daemon
+25894     1 25894     0  meshharbor-agent   <- root daemon
 34322 25894 34322     0  sudo            <- our child, OWN group (process_group(0))
-34323 34322 34322   501  roomler-agent   <- worker, SAME group, uid 501
+34323 34322 34322   501  meshharbor-agent   <- worker, SAME group, uid 501
 ```
 
 `sudo` does not `setsid` here (a separate probe showed a shell under `sudo -u "#501"`
@@ -652,8 +652,8 @@ came back on 0.4.100.
 
 | check, after the update | result |
 |---|---|
-| `launchctl print gui/501/com.roomler.agent` | **`Could not find service`** — not loaded |
-| `~/Library/LaunchAgents/` | only `com.roomler.desktop.plist` (touched by this update) — **no `com.roomler.agent.plist`** |
+| `launchctl print gui/501/fans.itachi.meshharbor.agent` | **`Could not find service`** — not loaded |
+| `~/Library/LaunchAgents/` | only `fans.itachi.meshharbor.desktop.plist` (touched by this update) — **no `fans.itachi.meshharbor.agent.plist`** |
 | a session started afterwards, on the daemon row | canvas **3024 × 1968**, luma variance **3957**, **H.265**, **8 fps**, bitrate counter live (95 → 93 kbps between reads) |
 | `macos_supervise_gui_worker` | `true` — this is the supervised case AC9 names |
 

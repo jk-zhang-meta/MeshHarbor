@@ -8,7 +8,7 @@
         <!-- The span shrinks with an ellipsis (min-width: 0), so the title's own
              buttons stay on screen: a title never wraps, and a long device name
              used to push Close or Refresh past the edge on a phone. -->
-        <span class="text-truncate" style="min-width: 0">Agent logs — {{ agentName }}</span>
+        <span class="text-truncate" style="min-width: 0">{{ t('mh.logs.title', { name: agentName }) }}</span>
         <v-spacer />
         <v-btn
           icon="mdi-refresh"
@@ -16,14 +16,14 @@
           variant="text"
           :loading="loading"
           @click="refresh"
-          aria-label="Refresh logs"
+          :aria-label="t('mh.logs.refresh')"
         />
         <v-btn
           icon="mdi-close"
           size="small"
           variant="text"
           @click="close"
-          aria-label="Close"
+          :aria-label="t('mh.common.close')"
         />
       </v-card-title>
 
@@ -37,7 +37,7 @@
           <v-select
             v-model="minLevel"
             :items="levelOptions"
-            label="Min level"
+            :label="t('mh.logs.minLevel')"
             density="compact"
             variant="outlined"
             hide-details
@@ -45,7 +45,7 @@
           />
           <v-text-field
             v-model="targetFilter"
-            label="Target / message contains"
+            :label="t('mh.logs.filter')"
             density="compact"
             variant="outlined"
             hide-details
@@ -60,11 +60,11 @@
             @click="toggleThroughput"
           >
             <v-icon start size="small">mdi-speedometer</v-icon>
-            Tunnel throughput only
+            {{ t('mh.logs.throughput') }}
           </v-chip>
           <v-spacer />
           <span class="text-caption text-medium-emphasis">
-            {{ filteredLines.length }} / {{ allLines.length }} lines
+            {{ t('mh.logs.count', { shown: filteredLines.length, total: allLines.length }) }}
           </span>
         </div>
       </div>
@@ -89,10 +89,9 @@
           class="text-center pa-6 text-medium-emphasis"
         >
           <v-icon size="48" color="grey-lighten-1" class="mb-2">mdi-text-box-remove-outline</v-icon>
-          <p>No logs uploaded yet.</p>
+          <p>{{ t('mh.logs.none') }}</p>
           <p class="text-body-2">
-            The agent uploads logs in batches; if it just started or has been idle,
-            give it a minute and hit refresh.
+            {{ t('mh.logs.noneHint') }}
           </p>
         </div>
 
@@ -101,7 +100,7 @@
           class="text-center pa-6 text-medium-emphasis"
         >
           <v-icon size="48" color="grey-lighten-1" class="mb-2">mdi-filter-remove-outline</v-icon>
-          <p>No lines match the current filter.</p>
+          <p>{{ t('mh.logs.noMatch') }}</p>
         </div>
 
         <div v-else class="log-view">
@@ -121,11 +120,11 @@
 
       <v-card-actions class="flex-wrap">
         <span class="text-caption text-medium-emphasis ml-2">
-          {{ batches.length }} batch(es) · newest {{ newestBatchAge }}
+          {{ t('mh.logs.batches', { n: batches.length, age: newestBatchAge }) }}
         </span>
         <v-spacer />
-        <v-btn variant="text" @click="copyVisible">Copy visible</v-btn>
-        <v-btn variant="text" @click="close">Close</v-btn>
+        <v-btn variant="text" @click="copyVisible">{{ t('mh.logs.copy') }}</v-btn>
+        <v-btn variant="text" @click="close">{{ t('mh.common.close') }}</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -133,6 +132,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import { useAgentStore, type AgentLogBatch, type AgentLogLine } from '@/stores/agents'
 
@@ -147,6 +147,7 @@ const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void
 }>()
 
+const { t } = useI18n()
 const { fullscreen } = useResponsiveDialog()
 const open = computed({
   get: () => props.modelValue,
@@ -263,7 +264,7 @@ function fmtFields(fields: Record<string, unknown> | undefined): string {
 }
 
 /** Strip the leading module path so the target column stays narrow —
- *  e.g. `tunnel_core::forward` → `forward`, `roomlerd::tunnel::
+ *  e.g. `tunnel_core::forward` → `forward`, `meshharbord::tunnel::
  *  acceptor` → `acceptor`. Full target is still searchable via the
  *  filter box (which matches the un-shortened string). */
 function shortTarget(target: string): string {
@@ -287,14 +288,14 @@ function fmtRelative(iso: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
   const diff = Date.now() - d.getTime()
-  if (diff < 0) return 'just now'
+  if (diff < 0) return t('mh.ago.now')
   const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
+  if (mins < 1) return t('mh.ago.now')
+  if (mins < 60) return t('mh.ago.m', { n: mins })
   const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
+  if (hours < 24) return t('mh.ago.h', { n: hours })
   const days = Math.floor(hours / 24)
-  return `${days}d ago`
+  return t('mh.ago.d', { n: days })
 }
 </script>
 

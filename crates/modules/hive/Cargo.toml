@@ -1,5 +1,5 @@
 [package]
-name = "roomler-ai-mod-hive"
+name = "meshharbor-mod-hive"
 license = "AGPL-3.0-only"
 publish = false
 version.workspace = true
@@ -7,7 +7,7 @@ edition.workspace = true
 description = "FR-90 module: hive — agent sessions, the server side: the session record and its lifecycle, the start/stop routes with their gates, and the devices' rc:hive.* answers. Never what is in a session."
 
 [lib]
-name = "roomler_ai_mod_hive"
+name = "meshharbor_mod_hive"
 path = "src/lib.rs"
 
 # Built ON `fleet` (`hive → fleet` in the module graph): a session lives on a
@@ -16,13 +16,13 @@ path = "src/lib.rs"
 # turns are messages in it. Never on `remote` or `network` — a session's
 # content travels device-to-browser, not through another module.
 [dependencies]
-roomler-core = { path = "../../core" }
-roomler-ai-config = { path = "../../config" }
-roomler-ai-db = { path = "../../db" }
-roomler-ai-services = { path = "../../services" }
-roomler-ai-remote-control = { path = "../../remote_control" }
-roomler-ai-mod-fleet = { path = "../fleet" }
-roomler-ai-mod-chat = { path = "../chat" }
+meshharbor-core = { path = "../../core" }
+meshharbor-config = { path = "../../config" }
+meshharbor-db = { path = "../../db" }
+meshharbor-services = { path = "../../services" }
+meshharbor-remote-control = { path = "../../remote_control" }
+meshharbor-mod-fleet = { path = "../fleet" }
+meshharbor-mod-chat = { path = "../chat" }
 
 anyhow.workspace = true
 async-trait.workspace = true

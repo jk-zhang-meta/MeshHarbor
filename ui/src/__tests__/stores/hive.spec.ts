@@ -195,7 +195,7 @@ describe('hive store — the organizations agent sessions serve (FR-90 P1g)', ()
   it('tells a session that may become a managed one, and one becoming it', () => {
     const s = { origin: 'adopted' as const, status: 'ended' as const, end_reason: 'exited' }
     expect(mayBecomeManaged(s), 'its terminal ended it').toBe(true)
-    expect(mayBecomeManaged({ ...s, end_reason: 'stopped' }), 'stopped from Roomler').toBe(false)
+    expect(mayBecomeManaged({ ...s, end_reason: 'stopped' }), 'stopped from MeshHarbor').toBe(false)
     expect(mayBecomeManaged({ ...s, status: 'running' }), 'still running').toBe(false)
     expect(mayBecomeManaged({ ...s, origin: 'started' }), 'a started session').toBe(false)
     expect(mayBecomeManaged(null)).toBe(false)

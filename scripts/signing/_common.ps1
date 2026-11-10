@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 # State shared across the numbered scripts so the operator types each
 # value once. Deliberately NOT secret: account names, GUIDs and a
 # tenant id are all public-ish identifiers. Gitignored anyway.
-$script:StatePath = Join-Path $PSScriptRoot '.roomler-signing.json'
+$script:StatePath = Join-Path $PSScriptRoot '.meshharbor-signing.json'
 
 function Say  ([string]$msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Ok   ([string]$msg) { Write-Host "    OK  $msg" -ForegroundColor Green }
@@ -114,7 +114,7 @@ function Get-SigningEndpoint([string]$Location) {
 
 # Countries where Artifact Signing issues PUBLIC TRUST certificates to an
 # ORGANIZATION. (Individual developers are restricted to US/CA -- which is
-# why roomler signs under a company identity.) EU members are listed
+# why meshharbor signs under a company identity.) EU members are listed
 # individually so the preflight can give a definite yes/no.
 $script:PublicTrustOrgCountries = @(
     # EU
@@ -128,4 +128,4 @@ function Test-PublicTrustCountry([string]$TwoLetter) {
     return $script:PublicTrustOrgCountries -contains $TwoLetter.ToUpper()
 }
 
-$script:DefaultRepo = 'gjovanov/roomler-ai'
+$script:DefaultRepo = 'jk-zhang-meta/MeshHarbor'

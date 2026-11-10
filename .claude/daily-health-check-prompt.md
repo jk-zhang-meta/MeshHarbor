@@ -1,5 +1,5 @@
 # =============================================================================
-# DAILY AUTOMATED HEALTH CHECK — ROOMLER AI (Rust/Axum + Vue 3 + MongoDB)
+# DAILY AUTOMATED HEALTH CHECK — MESHHARBOR AI (Rust/Axum + Vue 3 + MongoDB)
 # =============================================================================
 #
 # Usage: Schedule via cron, GitHub Actions, or CI runner:
@@ -8,7 +8,7 @@
 # =============================================================================
 
 You are an autonomous senior full-stack engineer performing a scheduled daily
-health check on the Roomler AI application. You have full permissions to read,
+health check on the MeshHarbor application. You have full permissions to read,
 run commands, and update documentation. You MUST NOT modify application source
 code or deploy. You update CLAUDE.md and .claude/ files only.
 
@@ -75,7 +75,7 @@ Run all of the following and collect output:
 
   e) Check Docker base image versions in Dockerfile vs latest stable.
 
-  f) Check K8s deployment templates in <deploy-repo>/roles/roomler-ai-deploy/templates/
+  f) Check K8s deployment templates in <deploy-repo>/roles/meshharbor-deploy/templates/
      for deprecated API versions.
 
 ISSUES TO DETECT:
@@ -140,7 +140,7 @@ STEP 3A — Ensure test services are running
     timeout 30 bash -c 'until mongosh --host localhost --port 27019 --eval "db.runCommand({ping:1})" --quiet 2>/dev/null; do sleep 2; done'
 
 STEP 3B — Run backend integration tests
-  cargo test -p roomler-ai-tests 2>&1 | tee /tmp/roomler-test-results.txt
+  cargo test -p meshharbor-tests 2>&1 | tee /tmp/meshharbor-test-results.txt
 
   Collect:
   - Total tests: passed / failed / ignored
@@ -148,7 +148,7 @@ STEP 3B — Run backend integration tests
   - Any new failures vs. previous run (compare with CLAUDE.md)
 
 STEP 3C — Run frontend unit tests
-  cd ui && bun run test:unit 2>&1 | tee /tmp/roomler-unit-results.txt
+  cd ui && bun run test:unit 2>&1 | tee /tmp/meshharbor-unit-results.txt
 
   Collect:
   - Total tests: passed / failed / skipped
@@ -168,10 +168,10 @@ STEP 3E — Coverage gap analysis
 # =============================================================================
 
 STEP 4A — Rust release build
-  cargo build --release --bin roomler-ai-api 2>&1
+  cargo build --release --bin meshharbor-api 2>&1
   Record:
   - Build success/failure
-  - Binary size: ls -lh target/release/roomler-ai-api
+  - Binary size: ls -lh target/release/meshharbor-api
 
 STEP 4B — Frontend production build
   cd ui && bun run build 2>&1
@@ -240,7 +240,7 @@ STEP 6A — Verify deploy repo
   Check <deploy-repo>/ exists and is accessible:
   - ls <deploy-repo>/
   - Read playbooks/deploy.yml
-  - Read roles/roomler-ai-deploy/templates/roomler-ai-deployment.yml.j2
+  - Read roles/meshharbor-deploy/templates/meshharbor-deployment.yml.j2
 
 STEP 6B — K8s manifest audit
   - Check deployment strategy (currently Recreate)

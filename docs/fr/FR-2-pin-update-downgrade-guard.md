@@ -2,7 +2,7 @@
 
 > **CLOSED 2026-08-27** — issue #770 is closed and its acceptance criteria are met. Any status line below is the state while the work was in flight, kept as the record.
 
-**Issue:** gjovanov/roomler-ai — `FR-2: pin-update downgrade guard` (filed with this doc)
+**Issue:** jk-zhang-meta/MeshHarbor — `FR-2: pin-update downgrade guard` (filed with this doc)
 **Status:** implemented, pending field verification
 
 ## Goal
@@ -40,7 +40,7 @@ server, where it cannot be skipped by a stale script.
     (`#[serde(default)]` — additive; existing callers unchanged).
   - New `release_ord(&str) -> Option<(u64,u64,u64,u64)>`: the same ordering
     tuple as the agent updater's `parse_version`
-    (`agents/roomlerd/src/updater.rs:258-296`) — `rc.N` ranks `N`, finals
+    (`agents/meshharbord/src/updater.rs:258-296`) — `rc.N` ranks `N`, finals
     rank `u64::MAX`, so `0.3.0-rc.482 < 0.4.0 < 0.4.1`. Tags and bare semvers
     both parse; unparseable → `None`.
   - New `pin_downgrade(pin, agent_version) -> Option<String>`: `Some(reason)`

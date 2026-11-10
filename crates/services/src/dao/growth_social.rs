@@ -39,7 +39,7 @@ pub const SNAPSHOTS: [&str; 3] = ["T+1d", "T+7d", "T+28d"];
 pub const MAX_POSTS: i64 = 5_000;
 
 /// The campaign key a post's link carries, normalised at ingest — the same
-/// four fields as `roomler_core::campaign::CampaignKey`, which this crate
+/// four fields as `meshharbor_core::campaign::CampaignKey`, which this crate
 /// sits below.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PostKey {
@@ -266,7 +266,7 @@ mod tests {
             id: None,
             platform: "linkedin".into(),
             platform_id: "urn:li:share:7123".into(),
-            account: "roomler-ai".into(),
+            account: "meshharbor".into(),
             format: "post".into(),
             url: "https://www.linkedin.com/feed/update/urn:li:share:7123".into(),
             published_at: DateTime::now(),

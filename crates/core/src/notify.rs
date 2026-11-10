@@ -9,7 +9,7 @@
 //! the socket fan-out, push and email are all core's.
 
 use bson::oid::ObjectId;
-use roomler_ai_db::models::{NotificationSource, NotificationType};
+use meshharbor_db::models::{NotificationSource, NotificationType};
 
 use crate::{Core, ws};
 

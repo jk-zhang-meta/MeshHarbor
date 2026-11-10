@@ -5,8 +5,8 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
-const base = process.env.E2E_BASE_URL || 'https://roomler.ai'
-const state = process.env.E2E_STORAGE_STATE || join(homedir(), '.roomler-demo-state.json')
+const base = process.env.E2E_BASE_URL || 'https://meshharbor.itachi.fans'
+const state = process.env.E2E_STORAGE_STATE || join(homedir(), '.meshharbor-demo-state.json')
 if (!existsSync(state)) {
   console.error(`no saved session at ${state}: run record-demo.sh --login first`)
   process.exit(1)

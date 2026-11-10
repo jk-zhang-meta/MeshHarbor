@@ -42,7 +42,7 @@ use super::ingress::{dst_ip_of, parse_l4, rules_permit};
 use super::router::{LocalScope, Router, RpfMode, RpfVerdict};
 use crate::transport::quic::QuicPeer;
 use crate::transport::relay::{RelayConn, RelayUdpSocket};
-use roomler_ai_remote_control::models::OverlayRule;
+use meshharbor_remote_control::models::OverlayRule;
 
 mod multipath_runtime;
 pub(crate) use multipath_runtime::MultipathFailure;
@@ -89,8 +89,8 @@ pub const QUIC_UPGRADE_DEADLINE: Duration = Duration::from_secs(90);
 /// [`QUIC_BUILD_TIMEOUT`], so the cycle is ~12 s).
 pub const QUIC_UPGRADE_RETRY_GAP: Duration = Duration::from_secs(4);
 
-/// Opt-in gate for the QUIC-over-TURN carrier (`ROOMLERD_OVERLAY_QUIC`;
-/// the older `ROOMLER_NODE_OVERLAY_QUIC` still honoured — see
+/// Opt-in gate for the QUIC-over-TURN carrier (`MESHHARBORD_OVERLAY_QUIC`;
+/// the older `MESHHARBOR_NODE_OVERLAY_QUIC` still honoured — see
 /// [`crate::env::node_env`]). **Default OFF** — the raw relay is the proven
 /// path; QUIC is enabled per-host only after field-proving (mirrors the
 /// direct-path arc). Truthy = `1`/`true`/`yes`/`on` (case-insensitive);
@@ -229,7 +229,7 @@ impl Carrier {
     /// `(transport, server)` — e.g. `(Udp, Some("5.9.157.221:3478"))`. The
     /// relay KIND (turn/derp) is an overlay decision already carried by
     /// `Installed::relay_kind`; this adds the transport-layer half so
-    /// `meshharbor peers` can print `relay:turn/udp` rather than a bare `relay`
+    /// `mh peers` can print `relay:turn/udp` rather than a bare `relay`
     /// — a 52 ms coturn/UDP hop and a 175 ms DERP/TCP hop used to look
     /// identical, as did a healthy PoP and a dead one (2026-08-12: a coturn
     /// worker was down 90 min while this column said nothing).
@@ -5746,7 +5746,7 @@ impl WgDevice {
     /// reason the wire field is an `Option`.
     pub fn sync_peer_ingress(
         &mut self,
-        peers: &HashMap<bson::oid::ObjectId, roomler_ai_remote_control::signaling::NetmapPeer>,
+        peers: &HashMap<bson::oid::ObjectId, meshharbor_remote_control::signaling::NetmapPeer>,
     ) {
         let mut table: HashMap<[u8; 32], Arc<Vec<OverlayRule>>> = HashMap::new();
         for p in peers.values() {
@@ -7508,9 +7508,9 @@ mod tests {
     fn netmap_peer_for(
         kp: &WgKeypair,
         ip: Ipv4Addr,
-    ) -> roomler_ai_remote_control::signaling::NetmapPeer {
+    ) -> meshharbor_remote_control::signaling::NetmapPeer {
         use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-        roomler_ai_remote_control::signaling::NetmapPeer {
+        meshharbor_remote_control::signaling::NetmapPeer {
             node_id: bson::oid::ObjectId::new(),
             overlay_ip: ip.to_string(),
             name: String::new(),
@@ -7766,7 +7766,7 @@ mod tests {
     /// the netmap `routes` list nor `LocalScope` can express.
     #[tokio::test(flavor = "multi_thread")]
     async fn per_source_rules_narrow_one_peer_without_touching_another() {
-        use roomler_ai_remote_control::models::{PortRange, ProtocolKind};
+        use meshharbor_remote_control::models::{PortRange, ProtocolKind};
 
         let a = WgKeypair::generate();
         let b = WgKeypair::generate();
@@ -7916,7 +7916,7 @@ mod tests {
     /// started is not.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_acl_narrows_traffic_to_the_node_itself_and_admits_its_replies() {
-        use roomler_ai_remote_control::models::{PortRange, ProtocolKind};
+        use meshharbor_remote_control::models::{PortRange, ProtocolKind};
 
         let a = WgKeypair::generate();
         let b = WgKeypair::generate();
@@ -8710,18 +8710,18 @@ mod tests {
     // devices, each riding its own coturn allocation, complete a
     // handshake + round-trip a packet over the live cluster. `#[ignore]`
     // + env-gated. Provide:
-    //   ROOMLER_TEST_TURN_HOST   = coturn.roomler.ai
-    //   ROOMLER_TEST_TURN_SECRET = coturn's static-auth-secret
+    //   MESHHARBOR_TEST_TURN_HOST   = coturn.meshharbor.itachi.fans
+    //   MESHHARBOR_TEST_TURN_SECRET = coturn's static-auth-secret
     // and run on a host with outbound UDP/3478 (or TCP/443 for the TURNS
     // variant) to coturn:
-    //   cargo test -p roomler-ai-tunnel-core --features overlay --ignored wg_against_real_coturn
+    //   cargo test -p meshharbor-tunnel-core --features overlay --ignored wg_against_real_coturn
 
     fn live_coturn_creds(
         url_fmt: impl Fn(&str) -> Vec<String>,
     ) -> Option<(Vec<String>, String, String)> {
-        let host = std::env::var("ROOMLER_TEST_TURN_HOST").ok()?;
-        let secret = std::env::var("ROOMLER_TEST_TURN_SECRET").ok()?;
-        let cfg = roomler_ai_remote_control::turn_creds::TurnConfig {
+        let host = std::env::var("MESHHARBOR_TEST_TURN_HOST").ok()?;
+        let secret = std::env::var("MESHHARBOR_TEST_TURN_SECRET").ok()?;
+        let cfg = meshharbor_remote_control::turn_creds::TurnConfig {
             workers: vec![],
             urls: url_fmt(&host),
             shared_secret: secret,
@@ -8779,7 +8779,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "hits live coturn; set ROOMLER_TEST_TURN_HOST + ROOMLER_TEST_TURN_SECRET"]
+    #[ignore = "hits live coturn; set MESHHARBOR_TEST_TURN_HOST + MESHHARBOR_TEST_TURN_SECRET"]
     async fn wg_against_real_coturn_udp() {
         let Some((urls, user, cred)) =
             live_coturn_creds(|h| vec![format!("turn:{h}:3478?transport=udp")])
@@ -8791,7 +8791,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "hits live coturn over TLS/TCP; set ROOMLER_TEST_TURN_HOST + ROOMLER_TEST_TURN_SECRET"]
+    #[ignore = "hits live coturn over TLS/TCP; set MESHHARBOR_TEST_TURN_HOST + MESHHARBOR_TEST_TURN_SECRET"]
     async fn wg_against_real_coturn_turns_tcp() {
         let Some((urls, user, cred)) =
             live_coturn_creds(|h| vec![format!("turns:{h}:443?transport=tcp")])
@@ -8803,7 +8803,7 @@ mod tests {
     }
 
     /// ROOT-CAUSE DIAG for the both-allocate `REKEY_TIMEOUT`: full WG over TWO
-    /// allocations pinned to the SAME worker (`ROOMLER_TEST_TURN_WORKER`). The
+    /// allocations pinned to the SAME worker (`MESHHARBOR_TEST_TURN_WORKER`). The
     /// raw relay-to-relay hairpin already flows (see relay.rs
     /// `relay_to_relay_hairpin_against_real_coturn`), so if THIS passes the
     /// both-allocate CARRIER is sound when both allocations co-locate — meaning
@@ -8812,10 +8812,10 @@ mod tests {
     /// there's a WG-layer both-allocate bug the single-allocation single-relay
     /// path sidesteps. Set HOST/SECRET + WORKER (off-host).
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "hits live coturn; set ROOMLER_TEST_TURN_HOST/SECRET + ROOMLER_TEST_TURN_WORKER"]
+    #[ignore = "hits live coturn; set MESHHARBOR_TEST_TURN_HOST/SECRET + MESHHARBOR_TEST_TURN_WORKER"]
     async fn wg_both_allocate_pinned_against_real_coturn() {
-        let Some(worker) = std::env::var("ROOMLER_TEST_TURN_WORKER").ok() else {
-            eprintln!("SKIP wg_both_allocate_pinned: ROOMLER_TEST_TURN_WORKER unset");
+        let Some(worker) = std::env::var("MESHHARBOR_TEST_TURN_WORKER").ok() else {
+            eprintln!("SKIP wg_both_allocate_pinned: MESHHARBOR_TEST_TURN_WORKER unset");
             return;
         };
         let Some((urls, user, cred)) =
@@ -8832,7 +8832,7 @@ mod tests {
     /// Phase D single-relay LIVE — WG completes over ONE real coturn allocation
     /// (the anchor) + a RAW-UDP dialer with NO allocation: the production
     /// single-relay carrier, end to end over prod coturn. The anchor allocates on
-    /// a REMOTE worker (`ROOMLER_TEST_TURN_WORKER` — a worker that is NOT a local
+    /// a REMOTE worker (`MESHHARBOR_TEST_TURN_WORKER` — a worker that is NOT a local
     /// IP of this host, so the dialer's packet crosses the real network + coturn's
     /// PREROUTING DNAT rather than hair-pinning on loopback, the same-host artifact
     /// V-D1 hit). The dialer STUN-discovers its own public srflx so the anchor can
@@ -8844,20 +8844,20 @@ mod tests {
     /// allocation with one IP-only permission.
     ///
     /// Run on a host with UDP/3478 to the worker (e.g. buildhost → fleet-host-1's worker):
-    ///   ROOMLER_TEST_TURN_HOST=coturn.roomler.ai \
-    ///   ROOMLER_TEST_TURN_SECRET=<coturn static-auth-secret> \
-    ///   ROOMLER_TEST_TURN_WORKER=5.9.157.221 \
-    ///   cargo test -p roomler-ai-tunnel-core --features overlay-l3 \
+    ///   MESHHARBOR_TEST_TURN_HOST=coturn.meshharbor.itachi.fans \
+    ///   MESHHARBOR_TEST_TURN_SECRET=<coturn static-auth-secret> \
+    ///   MESHHARBOR_TEST_TURN_WORKER=5.9.157.221 \
+    ///   cargo test -p meshharbor-tunnel-core --features overlay-l3 \
     ///     --lib wg_single_relay_against_real_coturn_udp -- --ignored --nocapture
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "hits live coturn; set ROOMLER_TEST_TURN_HOST/SECRET + ROOMLER_TEST_TURN_WORKER"]
+    #[ignore = "hits live coturn; set MESHHARBOR_TEST_TURN_HOST/SECRET + MESHHARBOR_TEST_TURN_WORKER"]
     async fn wg_single_relay_against_real_coturn_udp() {
         use crate::transport::relay::{UdpRelayConn, allocate_relay_from_ice};
         use crate::transport::stun::srflx_query;
 
-        let Some(worker) = std::env::var("ROOMLER_TEST_TURN_WORKER").ok() else {
+        let Some(worker) = std::env::var("MESHHARBOR_TEST_TURN_WORKER").ok() else {
             eprintln!(
-                "SKIP wg_single_relay_against_real_coturn_udp: ROOMLER_TEST_TURN_WORKER unset"
+                "SKIP wg_single_relay_against_real_coturn_udp: MESHHARBOR_TEST_TURN_WORKER unset"
             );
             return;
         };
@@ -8868,8 +8868,9 @@ mod tests {
             eprintln!("SKIP wg_single_relay_against_real_coturn_udp: TURN env unset");
             return;
         };
-        let worker_ip: std::net::IpAddr =
-            worker.parse().expect("ROOMLER_TEST_TURN_WORKER is an IP");
+        let worker_ip: std::net::IpAddr = worker
+            .parse()
+            .expect("MESHHARBOR_TEST_TURN_WORKER is an IP");
         let stun_server = SocketAddr::new(worker_ip, 3478);
 
         // Anchor = smaller pubkey (QUIC server + WG initiator, install_ready's
@@ -11032,12 +11033,22 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn pq_psk_direct_probe_created_during_initial_guard_blocks_classical_and_unlocks_on_establish()
      {
+        for a_is_preferred in [true, false] {
+            pq_psk_direct_probe_initial_guard_scenario(a_is_preferred).await;
+        }
+    }
+
+    async fn pq_psk_direct_probe_initial_guard_scenario(a_is_preferred: bool) {
         use super::super::pq_psk::{PqPeerStatus, PqPskConfig, PqPskMode};
 
-        let a = WgKeypair::generate();
-        let b = WgKeypair::generate();
+        let mut a = WgKeypair::generate();
+        let mut b = WgKeypair::generate();
+        if (a.public.to_bytes() < b.public.to_bytes()) != a_is_preferred {
+            std::mem::swap(&mut a, &mut b);
+        }
         let pk_a = a.public.to_bytes();
         let pk_b = b.public.to_bytes();
+        assert_eq!(pk_a < pk_b, a_is_preferred);
 
         // Bind dead/unconnected relay sockets first so initial PQ negotiation stays in `Negotiating { epoch: 1 }`
         // with `guard_active == true`.
@@ -11096,21 +11107,23 @@ mod tests {
         );
         assert_eq!(dev_a.probe_handshake_done(&pk_b), Some(false));
 
-        // Now connect the incumbent carriers by pointing them at the direct sockets so the
-        // in-flight `epoch = 1` PQ-PSK retry completes, and verify the shadow probe automatically
-        // receives the negotiated `epoch = 1` PSK and completes its direct WG handshake!
+        // Connect the incumbents through their own dedicated-reader sockets.
+        // The shadow sockets already have demux readers: migrating a primary
+        // onto one adds competing readers and a shadow source route can then
+        // consume its WG records. This test exercises PQ guard unlock, not
+        // carrier socket migration.
         dev_a
             .peers
             .get(&pk_b)
             .unwrap()
             .carrier
-            .set_direct_endpoint(direct_sock_a.clone(), direct_addr_b);
+            .set_direct_dst(dead_sock_b.local_addr().unwrap());
         dev_b
             .peers
             .get(&pk_a)
             .unwrap()
             .carrier
-            .set_direct_endpoint(direct_sock_b.clone(), direct_addr_a);
+            .set_direct_dst(dead_sock_a.local_addr().unwrap());
 
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
@@ -11850,7 +11863,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn b6_on_demand_real_linux_netns_nat_wake_and_expired_conntrack_fallback() {
-        const INNER_ENV: &str = "ROOMLER_B6_NETNS_INNER";
+        const INNER_ENV: &str = "MESHHARBOR_B6_NETNS_INNER";
         if std::env::var_os(INNER_ENV).is_none() {
             // Outer process: spawn `unshare -Urn` to construct a real 3-namespace
             // Linux network topology (`ns_a` behind stateful masquerading NAT ->
@@ -11919,7 +11932,7 @@ NFT
                 ip -n ns_b link set veth_b up
                 ip -n ns_b route add default via 198.51.100.1
 
-                ROOMLER_B6_NETNS_INNER=1 "$TEST_EXE" --exact overlay::wg::tests::b6_on_demand_real_linux_netns_nat_wake_and_expired_conntrack_fallback --nocapture
+                MESHHARBOR_B6_NETNS_INNER=1 "$TEST_EXE" --exact overlay::wg::tests::b6_on_demand_real_linux_netns_nat_wake_and_expired_conntrack_fallback --nocapture
             "#;
             let status = std::process::Command::new("unshare")
                 .args(["-Urnm", "sh", "-c", script])

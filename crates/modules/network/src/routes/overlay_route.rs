@@ -8,7 +8,7 @@
 //! re-fan the node's netmap entry so peers pick up the routes immediately
 //! instead of waiting for the next join.
 
-use roomler_ai_services::quota;
+use meshharbor_services::quota;
 use std::collections::{HashMap, HashSet};
 
 use axum::{
@@ -16,14 +16,14 @@ use axum::{
     extract::{Path, State},
 };
 use bson::{doc, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::models::{
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::models::{
     AgentStatus, DEFAULT_ROUTE_V4, NodeRef, OsKind, OverlayNode,
 };
 use serde::{Deserialize, Serialize};
 
-use roomler_core::guards::require_permission;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::guards::require_permission;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::NetworkState;
 
@@ -494,7 +494,7 @@ pub async fn set_exit_node(
         let tenant = state.tenants.base.find_by_id(tid).await?;
         // FR-102 P4 — through core, which also counts the collision per org.
         if let Err(d) =
-            roomler_core::quota::require_feature(&state, &tenant, quota::Limit::ExitNodes)
+            meshharbor_core::quota::require_feature(&state, &tenant, quota::Limit::ExitNodes)
         {
             return Err(ApiError::Forbidden(d.message()));
         }
@@ -662,7 +662,7 @@ pub async fn set_magic_dns(
         let tenant = state.tenants.base.find_by_id(tid).await?;
         // FR-102 P4 — through core, which also counts the collision per org.
         if let Err(d) =
-            roomler_core::quota::require_feature(&state, &tenant, quota::Limit::MagicDns)
+            meshharbor_core::quota::require_feature(&state, &tenant, quota::Limit::MagicDns)
         {
             return Err(ApiError::Forbidden(d.message()));
         }
@@ -681,13 +681,13 @@ pub async fn set_magic_dns(
     // agent resolver is AUTHORITATIVE for its zone (in-zone miss =
     // NXDOMAIN, never forwarded), so a tenant zone named after fleet
     // infrastructure would shadow it org-wide from EVERY member host — a
-    // zone `coturn.roomler.ai` NXDOMAINs the relay fleet itself. Only
-    // `*.roomler.ai` is guarded; foreign apex domains are the operator's
+    // zone `coturn.meshharbor.itachi.fans` NXDOMAINs the relay fleet itself. Only
+    // `*.meshharbor.itachi.fans` is guarded; foreign apex domains are the operator's
     // own business.
     if let Some(d) = &domain
-        && let Some(label) = d.strip_suffix(".roomler.ai").map(|p| {
+        && let Some(label) = d.strip_suffix(".meshharbor.itachi.fans").map(|p| {
             // The rightmost remaining label is the [org] slot directly
-            // under roomler.ai (e.g. "grox" from "grox.roomler.ai").
+            // under meshharbor.itachi.fans (e.g. "grox" from "grox.meshharbor.itachi.fans").
             p.rsplit('.').next().unwrap_or(p).to_string()
         })
     {
@@ -699,7 +699,7 @@ pub async fn set_magic_dns(
             || label.starts_with("derp");
         if shadowed {
             return Err(ApiError::BadRequest(format!(
-                "magic_dns_domain '{label}.roomler.ai' would shadow reserved \
+                "magic_dns_domain '{label}.meshharbor.itachi.fans' would shadow reserved \
                  infrastructure names for every org member; pick another name"
             )));
         }

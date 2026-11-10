@@ -1,5 +1,5 @@
 /**
- * FR-93 P5 — LAB ONLY: the lifecycle oracle (AC7), driven by roomler-ai-deploy's `vmtest/lab/lifecycle/run.sh`
+ * FR-93 P5 — LAB ONLY: the lifecycle oracle (AC7), driven by meshharbor-deploy's `vmtest/lab/lifecycle/run.sh`
  * and skipped without the vmtest env. ONE viewer session to the named agent,
  * held while the harness drives lifecycle events from outside the guest (QMP keys, loginctl, gdbus) and dates
  * each one. Every 500 ms this logs what a person at the viewer would see: whether the session says connected,
@@ -205,7 +205,7 @@ test.describe('vmtest lifecycle (named agent)', () => {
     const token = ((await loginResp.json()) as { access_token: string }).access_token
     await context.addInitScript(() => {
       try {
-        window.localStorage.setItem('roomler-signed-in', '1')
+        window.localStorage.setItem('meshharbor-signed-in', '1')
       } catch {
         /* the cookie still authenticates */
       }

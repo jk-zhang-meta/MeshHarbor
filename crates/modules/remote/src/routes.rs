@@ -13,20 +13,20 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_mod_fleet::agent::fmt_dt;
-use roomler_ai_remote_control::{
+use meshharbor_core::guards::require_permission;
+use meshharbor_db::models::role::permissions;
+use meshharbor_mod_fleet::agent::fmt_dt;
+use meshharbor_remote_control::{
     models::{RemoteAuditEvent, RemoteSession, SessionFeedback, SessionFeedbackRequest},
     permissions::Permissions,
     signaling::IceServer,
     turn_creds::{self, ice_servers_for},
 };
-use roomler_ai_services::dao::{base::PaginationParams, session_feedback::Recorded};
-use roomler_core::guards::require_permission;
+use meshharbor_services::dao::{base::PaginationParams, session_feedback::Recorded};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::RemoteState;
 
@@ -41,7 +41,7 @@ pub struct SessionResponse {
     pub tenant_id: String,
     pub controller_user_id: String,
     pub permissions: Permissions,
-    pub phase: roomler_ai_remote_control::models::SessionPhase,
+    pub phase: meshharbor_remote_control::models::SessionPhase,
     pub created_at: String,
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
@@ -112,7 +112,7 @@ pub async fn terminate_session(
         .rc_hub
         .terminate(
             sid,
-            roomler_ai_remote_control::models::EndReason::AdminTerminated,
+            meshharbor_remote_control::models::EndReason::AdminTerminated,
         )
         .is_ok();
     // P3 — rc sessions are pod-local (S6): when the session is homed on a
@@ -120,7 +120,7 @@ pub async fn terminate_session(
     // returned `{"terminated": true}`. Broadcast an idempotent ctrl event so
     // the owning pod applies it; `terminated` now reports only what THIS
     // request could verify locally.
-    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
+    meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
         &state,
         "terminate",
         serde_json::json!({
@@ -324,7 +324,7 @@ pub struct RelayRegionSummary {
     pub derp_url: Option<String>,
     pub enabled: bool,
     /// P6b — the poller's latest load snapshot (`None` = never sampled).
-    pub load: Option<roomler_ai_remote_control::turn_creds::RegionLoad>,
+    pub load: Option<meshharbor_remote_control::turn_creds::RegionLoad>,
     /// P6b — currently steered around by the load-aware pick (fresh-busy).
     pub busy: bool,
 }
@@ -342,7 +342,7 @@ pub async fn relay_regions(
         .iter()
         .map(|s| RelayRegionSummary {
             load: state.relay_load.get(&s.id).map(|l| l.value().clone()),
-            busy: roomler_ai_remote_control::turn_creds::region_busy(&state.relay_load, &s.id),
+            busy: meshharbor_remote_control::turn_creds::region_busy(&state.relay_load, &s.id),
             id: s.id.clone(),
             turn_url: s.turn_url.clone(),
             derp_url: s.derp_url.clone(),
@@ -432,7 +432,7 @@ pub struct RecordingActivityDto {
     pub id: String,
     pub session_id: String,
     pub controller_user_id: String,
-    pub kind: roomler_ai_remote_control::models::RecordingActivityKind,
+    pub kind: meshharbor_remote_control::models::RecordingActivityKind,
     pub name: Option<String>,
     pub bytes: Option<u64>,
     pub duration_ms: Option<u64>,
@@ -510,7 +510,7 @@ pub struct TransferActivityDto {
     pub id: String,
     pub session_id: String,
     pub controller_user_id: String,
-    pub kind: roomler_ai_remote_control::models::TransferActivityKind,
+    pub kind: meshharbor_remote_control::models::TransferActivityKind,
     pub count: u64,
     pub bytes: u64,
     pub name_sha256: Option<String>,
@@ -582,7 +582,7 @@ pub struct PrivacyActivityDto {
     pub id: String,
     pub session_id: String,
     pub controller_user_id: String,
-    pub kind: roomler_ai_remote_control::models::PrivacyActivityKind,
+    pub kind: meshharbor_remote_control::models::PrivacyActivityKind,
     pub reason: Option<String>,
     pub at: String,
 }

@@ -184,7 +184,7 @@
       >
         No unit costs are configured, so every cost below reads
         <strong>not priced</strong> rather than 0.00. Set them in
-        <code>config/relay-costs.toml</code> (or <code>ROOMLER__RELAY_COSTS__*</code>).
+        <code>config/relay-costs.toml</code> (or <code>MESHHARBOR__RELAY_COSTS__*</code>).
       </v-alert>
 
       <v-card class="mt-2">

@@ -10,7 +10,7 @@
     <v-card-title class="text-subtitle-1 d-flex align-center flex-wrap" style="gap: 8px">
       Alerts
       <v-chip v-if="alerts" size="x-small" variant="tonal" :color="alerts.enabled ? 'success' : 'grey'">
-        {{ alerts.enabled ? 'evaluated hourly' : 'off on this server (ROOMLER__GROWTH__ALERTS)' }}
+        {{ alerts.enabled ? 'evaluated hourly' : 'off on this server (MESHHARBOR__GROWTH__ALERTS)' }}
       </v-chip>
       <v-spacer />
       <v-btn size="x-small" variant="text" :loading="evaluating" @click="evaluate(true)">Dry run</v-btn>

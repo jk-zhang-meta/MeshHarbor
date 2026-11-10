@@ -4,20 +4,20 @@
   <v-card variant="outlined">
     <v-card-title class="d-flex align-center">
       <v-icon icon="mdi-script-text-outline" color="primary" class="mr-2" />
-      <span>SSH activity</span>
+      <span>{{ t('mh.audit.act.title') }}</span>
       <v-spacer />
       <v-btn
         icon="mdi-refresh"
         size="small"
         variant="text"
         :loading="loading"
-        aria-label="Refresh"
+        :aria-label="t('mh.audit.refresh')"
         @click="load"
       />
     </v-card-title>
 
     <v-card-subtitle class="pb-2 text-wrap">
-      What devices reported doing inside their SSH sessions. Retained for 90 days.
+      {{ t('mh.audit.act.subtitle') }}
     </v-card-subtitle>
 
     <v-card-text>
@@ -29,24 +29,21 @@
            than anything in the table. Neither is a caveat we can drop later:
            they are properties of the design. -->
       <v-alert type="warning" variant="tonal" density="compact" class="mb-3">
-        <strong>An empty list does not mean nothing happened.</strong>
-        Reporting is a per-device setting (<code>ssh_activity_log</code>) and is
-        off by default, so a device that never opted in looks exactly like an
-        idle one. These rows are also the device's own account of itself — a
-        compromised host can simply stop talking. The
-        <strong>SSH audit</strong> log records every access decision the server
-        made, regardless of what the device says afterwards.
+        <i18n-t keypath="mh.audit.act.warn" tag="span" scope="global">
+          <template #emptyNote><strong>{{ t('mh.audit.act.emptyNote') }}</strong></template>
+          <template #setting><code>ssh_activity_log</code></template>
+          <template #auditLog><strong>{{ t('mh.audit.ssh.title') }}</strong></template>
+        </i18n-t>
       </v-alert>
 
       <v-alert type="info" variant="tonal" density="compact" class="mb-3">
-        Commands are recorded; <strong>session content is not</strong>. There is
-        no terminal recording and no command output here — capturing a session
-        would mean sending whatever was typed, passwords included, off the
-        device. Commands are redacted and truncated before they leave the host.
+        <i18n-t keypath="mh.audit.act.info" tag="span" scope="global">
+          <template #notContent><strong>{{ t('mh.audit.act.notContent') }}</strong></template>
+        </i18n-t>
       </v-alert>
 
       <div v-if="!loading && !entries.length" class="text-medium-emphasis text-caption">
-        No device has reported SSH activity.
+        {{ t('mh.audit.act.empty') }}
       </div>
 
       <!-- A card per entry below 600 px (table-stack-xs): the result and the
@@ -57,24 +54,24 @@
         <v-table density="compact" class="table-stack-xs table-stack-xs--compact">
           <thead>
             <tr>
-              <th>When</th>
-              <th>Device</th>
-              <th>What</th>
-              <th>Detail</th>
-              <th>Result</th>
-              <th>Who</th>
+              <th>{{ t('mh.audit.col.when') }}</th>
+              <th>{{ t('mh.audit.col.device') }}</th>
+              <th>{{ t('mh.audit.col.what') }}</th>
+              <th>{{ t('mh.audit.col.detail') }}</th>
+              <th>{{ t('mh.audit.col.result') }}</th>
+              <th>{{ t('mh.audit.col.who') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(e, i) in visible" :key="e.id ?? `${e.at}-${i}`">
-              <td data-label="When" class="text-no-wrap">{{ fmtWhen(e.at) }}</td>
-              <td data-label="Device" class="text-no-wrap">{{ deviceName(e.agent_id) }}</td>
-              <td data-label="What" class="text-no-wrap">
+              <td :data-label="t('mh.audit.col.when')" class="text-no-wrap">{{ fmtWhen(e.at) }}</td>
+              <td :data-label="t('mh.audit.col.device')" class="text-no-wrap">{{ deviceName(e.agent_id) }}</td>
+              <td :data-label="t('mh.audit.col.what')" class="text-no-wrap">
                 <v-chip size="x-small" :color="kindColor(e.kind)" variant="tonal">
                   {{ kindLabel(e.kind) }}
                 </v-chip>
               </td>
-              <td data-label="Detail" class="text-truncate stack-block" style="max-width: 26rem">
+              <td :data-label="t('mh.audit.col.detail')" class="text-truncate stack-block" style="max-width: 26rem">
                 <template v-if="e.detail">
                   <code
                     class="text-caption activity-detail"
@@ -88,16 +85,16 @@
                     :aria-expanded="openDetails.has(rowKey(e, i))"
                     @click="toggleDetail(rowKey(e, i))"
                   >
-                    {{ openDetails.has(rowKey(e, i)) ? 'Show less' : 'Show all' }}
+                    {{ openDetails.has(rowKey(e, i)) ? t('mh.audit.showLess') : t('mh.audit.showAll') }}
                   </button>
                 </template>
                 <span v-else class="text-medium-emphasis">—</span>
               </td>
-              <td data-label="Result" class="text-no-wrap">
+              <td :data-label="t('mh.audit.col.result')" class="text-no-wrap">
                 <!-- A refused forward is the row an operator most wants to find,
                      so it gets the loud treatment rather than a neutral dash. -->
                 <v-chip v-if="!e.allowed" size="x-small" color="error" variant="flat">
-                  refused
+                  {{ t('mh.audit.refused') }}
                 </v-chip>
                 <v-chip
                   v-else-if="e.exit_code !== null && e.exit_code !== undefined"
@@ -105,11 +102,11 @@
                   :color="e.exit_code === 0 ? 'success' : 'warning'"
                   variant="flat"
                 >
-                  exit {{ e.exit_code }}
+                  {{ t('mh.audit.exit', { code: e.exit_code }) }}
                 </v-chip>
                 <span v-else class="text-medium-emphasis">—</span>
               </td>
-              <td data-label="Who" class="text-no-wrap text-caption text-medium-emphasis">
+              <td :data-label="t('mh.audit.col.who')" class="text-no-wrap text-caption text-medium-emphasis">
                 {{ shortCaller(e.caller) }}
               </td>
             </tr>
@@ -117,7 +114,7 @@
         </v-table>
         <div v-if="remaining" class="text-center mt-2">
           <v-btn variant="tonal" size="small" data-testid="audit-show-more" @click="showMore">
-            Show {{ nextCount }} more
+            {{ t('mh.audit.showMore', { n: nextCount }) }}
           </v-btn>
         </div>
       </template>
@@ -131,6 +128,9 @@ import { useDisplay } from 'vuetify'
 import { useAgentStore, type SshActivityEntry, type SshActivityKind } from '@/stores/agents'
 import { deviceLabel } from '@/composables/useHideDeviceName'
 import { usePhoneSlice } from '@/composables/usePhoneSlice'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   tenantId: string
@@ -161,14 +161,7 @@ function toggleDetail(key: string) {
 const loading = ref(false)
 const error = ref<string | null>(null)
 
-const KIND_LABEL: Record<SshActivityKind, string> = {
-  session_open: 'connected',
-  session_close: 'disconnected',
-  exec: 'ran command',
-  shell: 'opened shell',
-  sftp: 'file transfer',
-  forward: 'port forward',
-}
+const KINDS = new Set<string>(['session_open', 'session_close', 'exec', 'shell', 'sftp', 'forward'])
 
 /** Only the two rows that carry a decision get colour. The session envelope is
  *  bookkeeping and should not compete for attention with what happened inside
@@ -180,7 +173,7 @@ function kindColor(kind: SshActivityKind): string | undefined {
 }
 
 function kindLabel(kind: SshActivityKind): string {
-  return KIND_LABEL[kind] ?? kind
+  return KINDS.has(kind) ? t(`mh.audit.kind.${kind}`) : kind
 }
 
 const deviceNames = computed(() => {

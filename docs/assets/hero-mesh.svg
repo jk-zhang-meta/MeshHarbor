@@ -3,12 +3,12 @@
        (the landing-page hero animation). Pure CSS animations — GitHub renders
        these when the SVG is embedded via <img>. Keep palette in sync with the
        landing page: teal #009688/#00796B, accent #ef5350, ink #1a1a2e. -->
-  <title id="hm-title">Roomler at a glance</title>
+  <title id="hm-title">MeshHarbor at a glance</title>
   <desc id="hm-desc">
     Four machines — your laptop, a GPU workstation, a Kubernetes cluster, and a
     home server routing its LAN — joined in a direct encrypted mesh with stable
     private addresses that crosses NATs and firewalls. Thin control channels link
-    each machine to the roomler.ai control plane, and a live remote desktop
+    each machine to the meshharbor.itachi.fans control plane, and a live remote desktop
     stream runs from the GPU workstation to the laptop's browser.
   </desc>
   <style>
@@ -70,7 +70,7 @@
       <circle class="ripple" cx="277" cy="63" r="52" fill="none" stroke="rgba(0,150,136,.35)" style="animation-delay: 1.8s" />
       <path d="M240 92 h84 a20 20 0 0 0 7 -39 a30 30 0 0 0 -53 -18 a26 26 0 0 0 -45 18 a20 20 0 0 0 7 39 z"
         fill="#ffffff" stroke="rgba(0,150,136,.45)" stroke-width="1.5" />
-      <text x="277" y="60" text-anchor="middle" font-size="12" font-weight="700" fill="#00796B">roomler.ai</text>
+      <text x="277" y="60" text-anchor="middle" font-size="12" font-weight="700" fill="#00796B">meshharbor.itachi.fans</text>
       <text x="277" y="75" text-anchor="middle" font-size="9" fill="rgba(26,26,46,.55)">control plane</text>
       <path class="ctrl-line" d="M234 84 Q130 130 100 198" />
       <path class="ctrl-line" d="M324 84 Q430 128 458 192" />

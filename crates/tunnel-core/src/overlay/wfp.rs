@@ -4,13 +4,13 @@
 //!
 //! On a corporate host whose Windows Defender Firewall is locked down by
 //! Group Policy (`AllowLocalFirewallRules=False`), an unsolicited inbound
-//! packet to the overlay's `roomler` adapter is dropped — and a local
+//! packet to the overlay's `meshharbor` adapter is dropped — and a local
 //! `New-NetFirewallRule` is ignored. The overlay's relay, WireGuard, and
 //! routing all work; the host just won't *answer* inbound.
 //!
 //! Tailscale solves this by programming WFP directly from its LocalSystem
 //! service rather than adding Defender rules. We do the same: install a
-//! **high-weight, hard-permit sublayer** scoped to the `roomler` adapter's
+//! **high-weight, hard-permit sublayer** scoped to the `meshharbor` adapter's
 //! interface LUID across the four ALE V4/V6 layers. A *hard* permit
 //! (`FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT`) in a sublayer at weight `0xFFFE`
 //! (above the MPSSVC firewall sublayer's ~weight 2) overrides a GPO
@@ -29,9 +29,9 @@
 //! owns the handle and rides [`super::tun::SystemTun`]'s lifetime.
 //!
 //! See `docs/overlay-wfp.md`. This pattern reads as "WFP tampering" to
-//! some EDRs — it is **additive permit only**, LUID-scoped to `roomler`,
+//! some EDRs — it is **additive permit only**, LUID-scoped to `meshharbor`,
 //! never shields-up, and break-glass-disable-able via
-//! `ROOMLERD_WFP_PERMIT=0`.
+//! `MESHHARBORD_WFP_PERMIT=0`.
 #![cfg(all(feature = "overlay-l3", windows))]
 
 use windows_sys::Win32::Foundation::{FWP_E_ALREADY_EXISTS, HANDLE};
@@ -40,7 +40,7 @@ use windows_sys::Win32::System::Rpc::RPC_C_AUTHN_WINNT;
 use windows_sys::core::GUID;
 
 /// Identity for our WFP objects, greppable in `netsh wfp show filters` via the
-/// ASCII "ROOMLER" prefix and recognizable if a dynamic session ever leaks.
+/// ASCII "MESHHARBOR" prefix and recognizable if a dynamic session ever leaks.
 ///
 /// **PER-ADAPTER, not process-wide.** These were two fixed constants, and on a
 /// MULTI-ORG host that silently broke one org's inbound:
@@ -74,9 +74,9 @@ fn sublayer_guid(luid: u64) -> GUID {
     GUID::from_u128(0x524f4f4d_4c45_5201_0000_000000000000 | u128::from(luid))
 }
 
-const PROVIDER_NAME: &str = "Roomler Overlay";
-const SUBLAYER_NAME: &str = "Roomler Overlay Permit (LUID-scoped)";
-const FILTER_NAME: &str = "Roomler Overlay Inbound/Outbound Permit";
+const PROVIDER_NAME: &str = "MeshHarbor Overlay";
+const SUBLAYER_NAME: &str = "MeshHarbor Overlay Permit (LUID-scoped)";
+const FILTER_NAME: &str = "MeshHarbor Overlay Inbound/Outbound Permit";
 
 /// Sublayer weight. Above the MPSSVC firewall sublayer (~weight 2) so our
 /// sublayer is arbitrated first; just below `0xFFFF` to leave headroom.
@@ -97,7 +97,7 @@ const LAYERS: [GUID; 4] = [
 /// have caught the 2026-08-12 outage in seconds (4 filters, 2 adapters).
 pub const FILTERS_PER_ADAPTER: usize = LAYERS.len();
 
-/// `ROOMLERD_WFP_PERMIT` — default **ON** for `overlay-l3`. Set to
+/// `MESHHARBORD_WFP_PERMIT` — default **ON** for `overlay-l3`. Set to
 /// `0`/`false`/`no`/`off` (case-insensitive) to skip WFP programming, e.g.
 /// on a host where IT installed a managed exception, or to silence an
 /// AV "firewall tampering" alert. Matches the agent's truthy convention.
@@ -123,7 +123,7 @@ pub enum WfpError {
     )]
     EngineOpen(u32),
     #[error(
-        "WFP filter add/commit failed (err={0:#x}); LocalSystem rights, a callout-driver veto, or an IPsec connection-security GPO may be blocking — request an IT-managed firewall exception for the roomler adapter"
+        "WFP filter add/commit failed (err={0:#x}); LocalSystem rights, a callout-driver veto, or an IPsec connection-security GPO may be blocking — request an IT-managed firewall exception for the meshharbor adapter"
     )]
     Commit(u32),
 }
@@ -179,7 +179,7 @@ fn build_filter(
 }
 
 impl WfpGuard {
-    /// Install the LUID-scoped hard-permit filters for the `roomler`
+    /// Install the LUID-scoped hard-permit filters for the `meshharbor`
     /// adapter. `luid` comes from `tun::AbstractDeviceExt::tun_luid()`.
     pub fn install(luid: u64) -> Result<Self, WfpError> {
         // Backing storage that must outlive the FFI calls below.
@@ -288,7 +288,7 @@ impl Drop for WfpGuard {
     }
 }
 
-/// Fallback: resolve an adapter alias (e.g. `"roomler"`) to its `NET_LUID`
+/// Fallback: resolve an adapter alias (e.g. `"meshharbor"`) to its `NET_LUID`
 /// value. Only needed if a future device type doesn't expose the LUID
 /// directly — `SystemTun` uses `tun_luid()`. Returns the raw `u64`.
 #[allow(dead_code)]
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn guids_are_stable_for_a_given_luid() {
-        // Operators grep these in `netsh wfp show filters`; the "ROOMLER"
+        // Operators grep these in `netsh wfp show filters`; the "MESHHARBOR"
         // prefix stays fixed and only the low bits carry the LUID.
         assert_eq!(
             guid_u128(provider_guid(LUID_A)),
@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn wfp_enabled_parses_truthy_table() {
         // Serialize env mutation across the table.
-        let key = "ROOMLERD_WFP_PERMIT";
+        let key = "MESHHARBORD_WFP_PERMIT";
         let restore = std::env::var(key).ok();
 
         unsafe { std::env::remove_var(key) };

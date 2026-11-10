@@ -20,7 +20,7 @@ import { appPath } from '@/utils/deployment'
  */
 import type { Router } from 'vue-router'
 
-export const RELOAD_KEY = 'roomler.staleBuildReloadAt'
+export const RELOAD_KEY = 'meshharbor.staleBuildReloadAt'
 export const RELOAD_WINDOW_MS = 10_000
 
 /** The messages a failed dynamic import carries in Chrome, Firefox and Safari. */

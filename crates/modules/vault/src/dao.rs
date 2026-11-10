@@ -9,8 +9,8 @@
 
 use bson::{DateTime, Document, doc, oid::ObjectId};
 use futures::TryStreamExt;
+use meshharbor_services::dao::base::{BaseDao, DaoError, DaoResult, escape_regex};
 use mongodb::{Database, options::ReturnDocument};
-use roomler_ai_services::dao::base::{BaseDao, DaoError, DaoResult, escape_regex};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
@@ -363,13 +363,13 @@ impl VaultAuditDao {
 /// `DuplicateKey` on the path index, told apart from any other collision.
 pub fn is_path_taken(e: &DaoError) -> bool {
     matches!(e, DaoError::DuplicateKey(msg)
-        if roomler_ai_services::dao::base::duplicate_key_is_on(msg, "path"))
+        if meshharbor_services::dao::base::duplicate_key_is_on(msg, "path"))
 }
 
 /// `DuplicateKey` on a `name` index (roles, policies).
 pub fn is_name_taken(e: &DaoError) -> bool {
     matches!(e, DaoError::DuplicateKey(msg)
-        if roomler_ai_services::dao::base::duplicate_key_is_on(msg, "name"))
+        if meshharbor_services::dao::base::duplicate_key_is_on(msg, "name"))
 }
 
 /// Every live row of `T` in an organization, sorted, at most `limit`.

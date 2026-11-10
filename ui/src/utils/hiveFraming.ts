@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 /**
  * FR-90 P0d-3 — how a viewer peer's messages cross its DataChannel: the
- * browser's half of `agents/roomlerd/src/hive/framing.rs`, byte for byte.
+ * browser's half of `agents/meshharbord/src/hive/framing.rs`, byte for byte.
  *
  * One SCTP message may not exceed the negotiated `max_message_size` (65,536
  * bytes by default), and a larger one is not refused — it is silently LOST.

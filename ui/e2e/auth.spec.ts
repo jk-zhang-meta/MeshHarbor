@@ -92,11 +92,11 @@ test.describe('Authentication', () => {
     // browser to the app, the refresh 401s, and the SPA clears the hint and
     // shows its login page — which is where it must STAY.
     await page.goto('/login')
-    await page.evaluate(() => localStorage.setItem('roomler-signed-in', '1'))
+    await page.evaluate(() => localStorage.setItem('meshharbor-signed-in', '1'))
     await page.goto('/')
     await expect(page).toHaveURL(/\/login/, { timeout: 15000 })
     await expect(page.locator('input[type="password"]')).toBeVisible()
-    expect(await page.evaluate(() => localStorage.getItem('roomler-signed-in'))).toBeNull()
+    expect(await page.evaluate(() => localStorage.getItem('meshharbor-signed-in'))).toBeNull()
     await expect(page).toHaveURL(/\/login/)
   })
 

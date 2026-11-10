@@ -62,12 +62,23 @@ pub fn screen_recording_granted() -> bool {
 /// hunting for a "+" button. Returns the current grant state — the user's
 /// answer lands asynchronously, after a restart.
 pub fn request_screen_recording() -> bool {
-    unsafe { CGRequestScreenCaptureAccess() }
+    static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *REQUESTED.get_or_init(|| {
+        tracing::info!("tcc: requesting Screen Recording once for this process");
+        unsafe { CGRequestScreenCaptureAccess() }
+    })
 }
 
 /// Is this process trusted for Accessibility (input injection)?
 pub fn accessibility_trusted() -> bool {
-    unsafe { AXIsProcessTrusted() != 0 }
+    static GRANT: std::sync::Mutex<super::privacy_cache::GrantCache> =
+        std::sync::Mutex::new(super::privacy_cache::GrantCache::new());
+    GRANT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .query(std::time::Instant::now(), || unsafe {
+            AXIsProcessTrusted() != 0
+        })
 }
 
 /// Ask for Accessibility, popping the system prompt if it has not been

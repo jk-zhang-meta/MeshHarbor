@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nightly Playwright sweep against the standing `roomler-ai-e2e` stack.
+# Nightly Playwright sweep against the standing `meshharbor-e2e` stack.
 #
 # The suite has NO GitHub CI lane (it needs a full backend + Mailpit), and
 # when it never runs it rots: the first manual sweep (2026-07-28) found two
@@ -9,11 +9,11 @@
 #   1. Fast-forwards the repo clone: the source of THIS script and of the
 #      expected-failures list. The SPECS come from the image's own commit
 #      (step 4), never from master.
-#   2. Points the e2e stack's roomler2 at the CURRENT PROD image tag (read
+#   2. Points the e2e stack's meshharbor2 at the CURRENT PROD image tag (read
 #      from the deploy repo's prod overlay) via `kubectl set image` — the
 #      e2e namespace is deliberately NOT ArgoCD-managed.
 #   3. Runs the browser as the `pwrunner` sidecar INSIDE the app pod.
-#      ⚠️ The stack's ROOMLER__APP__FRONTEND_URL must equal the origin the
+#      ⚠️ The stack's MESHHARBOR__APP__FRONTEND_URL must equal the origin the
 #      browser uses — here http://127.0.0.1, and a PORT is part of an Origin.
 #      Since the session-cookie migration the /ws upgrade authenticates by
 #      COOKIE and refuses an untrusted Origin with 403 (cookies are ambient
@@ -38,10 +38,10 @@
 #     is routinely parked on another session's branch.
 set -uo pipefail
 
-REPO="${REPO:-$HOME/roomler-ai}"
-DEPLOY_REPO="${DEPLOY_REPO:-$HOME/roomler-ai-deploy}"
+REPO="${REPO:-$HOME/meshharbor}"
+DEPLOY_REPO="${DEPLOY_REPO:-$HOME/meshharbor-deploy}"
 OUT="${OUT:-$HOME/e2e-nightly}"
-NS=roomler-ai-e2e
+NS=meshharbor-e2e
 # ⚠️ The runner image is pinned in the deploy repo's e2e overlay (the
 # `pwrunner` sidecar), NOT here: browser binaries are version-locked to the
 # image, so bumping @playwright/test means bumping that manifest too.
@@ -68,7 +68,7 @@ note "repo at $(git log --oneline -1) (this script and the expected-failures lis
 # bash reads a script as it executes it. When the checkout above changes THIS
 # file, the rest of the run can execute a mix of the old and the new text —
 # 2026-09-06: a pre-FR-73 copy of this script, invoked exactly as the cron line
-# does, pinned the stack to `registry.roomler.ai/…:hosted-…`, a tag that
+# does, pinned the stack to `registry.meshharbor.itachi.fans/…:hosted-…`, a tag that
 # registry never had, and the e2e pod sat in ImagePullBackOff. So the updated
 # file is copied out and exec'd once, with the update step skipped.
 if [ "${E2E_NIGHTLY_REEXEC:-}" != "1" ]; then
@@ -82,7 +82,7 @@ fi
 # deploy repo on GitHub and nothing pulls the build host's clone, so that clone
 # is stale by construction; it is only the fallback, pulled first, when the
 # cluster cannot be read.
-PRODIMG=$(kubectl -n roomler-ai get deploy roomler2 -o jsonpath='{.spec.template.spec.containers[?(@.name=="roomler2")].image}' 2>/dev/null)
+PRODIMG=$(kubectl -n meshharbor get deploy meshharbor2 -o jsonpath='{.spec.template.spec.containers[?(@.name=="meshharbor2")].image}' 2>/dev/null)
 if [ -z "$PRODIMG" ]; then
   note "could not read the prod image from the cluster — falling back to the deploy repo's overlay"
   git -C "$DEPLOY_REPO" pull --quiet --ff-only 2>/dev/null || note "deploy repo pull failed — its overlay may be stale"
@@ -94,8 +94,8 @@ fi
 # The tag alone, for LATEST and the regression issue (the second hand-run of
 # 2026-09-06 died here under `set -u`: the summary lines still said $PRODTAG).
 PRODTAG="${PRODIMG##*:}"
-kubectl -n "$NS" set image deploy/roomler2 "roomler2=${PRODIMG}" >> "$LOG" 2>&1
-kubectl -n "$NS" rollout status deploy/roomler2 --timeout=300s >> "$LOG" 2>&1 || fail_hard "e2e stack failed to roll to ${PRODIMG}"
+kubectl -n "$NS" set image deploy/meshharbor2 "meshharbor2=${PRODIMG}" >> "$LOG" 2>&1
+kubectl -n "$NS" rollout status deploy/meshharbor2 --timeout=300s >> "$LOG" 2>&1 || fail_hard "e2e stack failed to roll to ${PRODIMG}"
 note "e2e stack on ${PRODIMG}"
 
 # ── 3. the browser is IN the pod ─────────────────────────────────────
@@ -117,8 +117,8 @@ note "e2e stack on ${PRODIMG}"
 #   * the ~60 lines of self-healing port-forward supervisor this replaces are
 #     gone, along with the failure mode where a forward stays alive while
 #     forwarding nothing.
-POD=$(kubectl -n "$NS" get pod -l app=roomler2 -o jsonpath='{.items[0].metadata.name}')
-[ -n "$POD" ] || fail_hard "no roomler2 pod in $NS"
+POD=$(kubectl -n "$NS" get pod -l app=meshharbor2 -o jsonpath='{.items[0].metadata.name}')
+[ -n "$POD" ] || fail_hard "no meshharbor2 pod in $NS"
 kubectl -n "$NS" get pod "$POD" -o jsonpath='{.spec.containers[*].name}' | tr ' ' '
 ' | grep -qx pwrunner   || fail_hard "pod $POD has no pwrunner sidecar — apply k8s/overlays/e2e in the deploy repo"
 note "runner: $POD/pwrunner"
@@ -252,7 +252,7 @@ if [ -n "$UNEXPECTED" ]; then
   echo "$UNEXPECTED" | tee -a "$LOG"
   echo "$STAMP REGRESSION ($SUMMARY) tag=$PRODTAG — see $LOG" > "$OUT/LATEST"
   if command -v gh > /dev/null 2>&1 && gh auth status > /dev/null 2>&1; then
-    gh issue create --repo gjovanov/roomler-ai \
+    gh issue create --repo jk-zhang-meta/MeshHarbor \
       --title "e2e nightly regression ($STAMP)" \
       --body "$(printf 'Image: %s\nSummary: %s\n\nRegressions (failed the main run AND the isolated re-run):\n```\n%s```\n' "$PRODIMG" "$SUMMARY" "$UNEXPECTED")" \
       >> "$LOG" 2>&1 || note "gh issue creation failed"

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //! FR-101 P4b-2 — the idle limit, through a real server, a real MongoDB and
-//! the REAL agent library (`roomlerd::signaling::run`).
+//! the REAL agent library (`meshharbord::signaling::run`).
 //!
 //! The device keeps this limit, since only it sees both halves of "idle" (the
 //! controller's input rides the peer-to-peer channels, the pixels never leave
@@ -17,7 +17,7 @@
 use crate::fixtures::seed::SeededTenant;
 use crate::fixtures::test_app::TestApp;
 use futures::{SinkExt, StreamExt};
-use roomlerd::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
+use meshharbord::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -42,18 +42,18 @@ pub(crate) fn spawn_agent_signaling(
     tokio::spawn(async move {
         let connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
-        let broker = roomlerd::consent::ConsentBroker::new(
-            roomlerd::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-test-consent-{}", cfg.agent_id)),
+        let broker = meshharbord::consent::ConsentBroker::new(
+            meshharbord::consent::Mode::AutoGrant,
+            std::env::temp_dir().join(format!("meshharbor-test-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         let exec_enabled = cfg.exec_enabled;
         let remote_config_enabled = cfg.remote_config_enabled;
         let _ = signaling::run(
-            signaling::OrgCtx::primary(roomlerd::token_slot::TokenSlot::new(
+            signaling::OrgCtx::primary(meshharbord::token_slot::TokenSlot::new(
                 cfg.agent_token.clone(),
             )),
-            roomlerd::delegate::Delegation::Off,
+            meshharbord::delegate::Delegation::Off,
             cfg,
             EncoderPreference::Software,
             stop_rx,
@@ -61,14 +61,14 @@ pub(crate) fn spawn_agent_signaling(
             view_tx,
             Default::default(),
             broker,
-            roomlerd::tunnel::client_mgr::TunnelClientHub::new("test".into()),
-            roomlerd::remote_config::RemoteConfigServices::new(
+            meshharbord::tunnel::client_mgr::TunnelClientHub::new("test".into()),
+            meshharbord::remote_config::RemoteConfigServices::new(
                 std::path::PathBuf::from("unused-in-tests.toml"),
                 Arc::new(tokio::sync::Mutex::new(())),
                 exec_enabled,
                 remote_config_enabled,
             ),
-            roomlerd::rc_sessions::RcSessionRegistry::new(),
+            meshharbord::rc_sessions::RcSessionRegistry::new(),
         )
         .await;
     })

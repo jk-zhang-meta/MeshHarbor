@@ -1,5 +1,5 @@
 [package]
-name = "roomler-ai-mod-conference"
+name = "meshharbor-mod-conference"
 license = "AGPL-3.0-only"
 publish = false
 version.workspace = true
@@ -7,22 +7,22 @@ edition.workspace = true
 description = "FR-69 module: conference — the mediasoup SFU rooms, the media:* WebSocket namespace, the call lifecycle, recordings and the media sampler."
 
 [lib]
-name = "roomler_ai_mod_conference"
+name = "meshharbor_mod_conference"
 path = "src/lib.rs"
 
 # The third module crate (FR-69 P4), and the only crate in the workspace that
 # links `mediasoup` — the C++ worker build leaves every other server crate's
 # graph with this PR. Depends on `chat` (rooms are the container a call runs
-# in; the room guards are chat's) and on `roomler-core`, never on the api crate.
+# in; the room guards are chat's) and on `meshharbor-core`, never on the api crate.
 [dependencies]
-roomler-core = { path = "../../core" }
-roomler-ai-config = { path = "../../config" }
-roomler-ai-db = { path = "../../db" }
-roomler-ai-services = { path = "../../services" }
+meshharbor-core = { path = "../../core" }
+meshharbor-config = { path = "../../config" }
+meshharbor-db = { path = "../../db" }
+meshharbor-services = { path = "../../services" }
 # TURN credential minting + URL expansion for the media join's ICE servers and
 # the sampler's relay classification (`turn_creds`, `turn_url`).
-roomler-ai-remote-control = { path = "../../remote_control" }
-roomler-ai-mod-chat = { path = "../chat" }
+meshharbor-remote-control = { path = "../../remote_control" }
+meshharbor-mod-chat = { path = "../chat" }
 
 anyhow.workspace = true
 async-trait.workspace = true

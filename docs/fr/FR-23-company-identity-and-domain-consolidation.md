@@ -1,6 +1,6 @@
 # FR-23: Company identity on the site, and one product on both domains
 
-**Issue:** [#827](https://github.com/gjovanov/roomler-ai/issues/827)
+**Issue:** [#827](https://github.com/jk-zhang-meta/MeshHarbor/issues/827)
 **Status:** **CLOSED 2026-09-08** — Apple enrolment 5XS5WN8R99 resolved (Team `4TG7586MY5`,
 G ROX EOOD); every criterion met or explicitly withdrawn (phase 4 skipped, phase 5 shipped
 as a 301). ⚠️ Apple states no reason for a review clearing, so the wrong phone number is the
@@ -10,9 +10,9 @@ defects were real and are fixed, which is what this FR can claim.
 
 ## Goal
 
-Make the legal entity behind Roomler **publicly verifiable**, correct the company
+Make the legal entity behind MeshHarbor **publicly verifiable**, correct the company
 phone number everywhere it was recorded wrong, and retire the obsolete
-`roomler.live` deployment so that both company domains serve the current product.
+`meshharbor.itachi.fans` deployment so that both company domains serve the current product.
 
 The immediate driver is Apple Developer Program enrolment **5XS5WN8R99**, which
 has sat in review since 2026-08-19. But the imprint is not merely an Apple
@@ -56,20 +56,20 @@ documents into a public repository.
 Apple's enrolment requirements state that the organisation's website must be
 publicly available and **the domain name must be associated with the
 organisation**, with a work email on that domain. The enrolment declares
-`goran.jovanov@roomler.live`.
+`goran.jovanov@meshharbor.itachi.fans`.
 
 Checked 2026-08-28 — `G ROX`, `EOOD` and `205174895` appear **nowhere** in `ui/`.
 `TermsView.vue` and `PrivacyPolicyView.vue` name only the product and give
-`legal@roomler.ai` / `privacy@roomler.ai`. There is no imprint, no legal-notice
+`legal@meshharbor.itachi.fans` / `privacy@meshharbor.itachi.fans`. There is no imprint, no legal-notice
 block, and no company registration anywhere on either site.
 
-So a reviewer tracing **Goran Jovanov → @roomler.live → G ROX EOOD** finds no
+So a reviewer tracing **Goran Jovanov → @meshharbor.itachi.fans → G ROX EOOD** finds no
 public evidence for the last hop. D&B proves the company exists; the register
 excerpt proves he owns and manages it; nothing proved the *domains* are its.
 
-Compounding it: the work-email domain (`roomler.live`) served the **legacy**
-product (`<title>roomler.ui</title>`), while the current product and every
-published contact address live on `roomler.ai`.
+Compounding it: the work-email domain (`meshharbor.itachi.fans`) served the **legacy**
+product (`<title>meshharbor.ui</title>`), while the current product and every
+published contact address live on `meshharbor.itachi.fans`.
 
 ### 3. Three-way name reconciliation
 
@@ -109,7 +109,7 @@ copyright line names the operating company. Terms §16 and Privacy §11 each gai
 company block; on Privacy that block also names the **data controller**, which
 GDPR requires and which was missing.
 
-### Phase 5 — roomler.live serves the current app
+### Phase 5 — meshharbor.itachi.fans serves the current app
 
 Mostly free. `files/nginx-pod.conf:3` is `server_name _` (a catch-all), the SPA is
 entirely origin-relative, and the API never reads the `Host` header.
@@ -126,7 +126,7 @@ and the `/ws` cookie handshake (`crates/api/src/ws/handler.rs:109`, via
 `origin_is_ours` at `:146-154`). A WebSocket handshake is not subject to CORS, so
 this is the check standing between an attacker's page and an authenticated socket.
 
-⇒ both origins must be trusted. Trusting only `roomler.live` breaks `roomler.ai`.
+⇒ both origins must be trusted. Trusting only `meshharbor.itachi.fans` breaks `meshharbor.itachi.fans`.
 The `/ws` check applies **only to the cookie path** (`handler.rs:88-113`) — a
 `?token=` client sends a credential it had to obtain, and native clients send no
 `Origin` at all — so agents and tunnel clients are unaffected, while every
@@ -134,7 +134,7 @@ The `/ws` check applies **only to the cookie path** (`handler.rs:88-113`) — a
 presence and RC signalling all die.
 
 ⚠️ **Measured 2026-08-28: "list both in the configmap" is IMPOSSIBLE today.**
-`settings.rs:584` is `Environment::default().separator("__").prefix("ROOMLER")`
+`settings.rs:584` is `Environment::default().separator("__").prefix("MESHHARBOR")`
 with **no `list_separator`**, and `app.cors_origins` is `Vec<String>` — so a
 scalar env var deserialising into a sequence *fails outright*
 (`invalid type: string, expected a sequence`) and the API would **refuse to
@@ -149,12 +149,12 @@ Two real paths, neither of them "just set the configmap":
   runtime stage sets **no `WORKDIR`**, so CWD is `/` and a ConfigMap at
   `/config/local.toml` is read. No code change. ⚠️ But the source is
   `required(false)`, so **a wrong path is a silent no-op** — the API boots, the
-  trust set stays `roomler.ai`-only, and the sole symptom is that browser
-  WebSockets on `roomler.live` fail. Silent-on-misconfiguration is a bad property
+  trust set stays `meshharbor.itachi.fans`-only, and the sole symptom is that browser
+  WebSockets on `meshharbor.itachi.fans` fail. Silent-on-misconfiguration is a bad property
   for the control gating ambient-credential auth.
 - **B — two lines, recommended.** Scope list parsing to just this key:
   `.list_separator(",").with_list_parse_key("app.cors_origins")` (config 0.14.1
-  supports both). Then `ROOMLER__APP__CORS_ORIGINS` works in the existing
+  supports both). Then `MESHHARBOR__APP__CORS_ORIGINS` works in the existing
   configmap and a malformed value fails **loudly at boot**. Scoped, so no other
   field's parsing changes — a global `list_separator` would silently split any
   string containing a comma.
@@ -166,7 +166,7 @@ parse and crash-loops.
 
 ### ⚠️ Sequencing correction (found during phase 4's inventory)
 
-Phases 4 and 5 as written are **ordered wrong**. `roomler.live.conf` currently
+Phases 4 and 5 as written are **ordered wrong**. `meshharbor.itachi.fans.conf` currently
 proxies the *old* app (`proxy_pass http://10.10.10.11:30030`), so tearing that
 down first makes the apex **502** — on the very domain whose credibility the
 Apple review turns on. **Cut `.live` over first, verify, then tear down.**
@@ -175,19 +175,19 @@ Apple review turns on. **Cut `.live` over first, verify, then tear down.**
 
 | | |
 |---|---|
-| ArgoCD app | `roomler-old` → `github.com/gjovanov/roomler-deploy.git`, `k8s/overlays/prod`, `main` |
+| ArgoCD app | `meshharbor-old` → `github.com/jk-zhang-meta/meshharbor-deploy.git`, `k8s/overlays/prod`, `main` |
 | Registered in | app-of-apps `github.com/gjovanov/argocd-apps.git`, path `apps`, `recurse: true` |
-| Namespace | `roomler` (179 d) |
-| Workloads | deployments `janus`, `redis`, `roomler`; statefulset `mongodb`; 4 running pods |
-| PVCs / PVs | `mongodb-data` + `roomler-uploads`, 5Gi each → **hostPath**, **reclaim=Retain**, nodeAffinity **`k8s-worker-2`** |
-| On disk | `/data/roomler/mongodb`, `/data/roomler/uploads` |
+| Namespace | `meshharbor` (179 d) |
+| Workloads | deployments `janus`, `redis`, `meshharbor`; statefulset `mongodb`; 4 running pods |
+| PVCs / PVs | `mongodb-data` + `meshharbor-uploads`, 5Gi each → **hostPath**, **reclaim=Retain**, nodeAffinity **`k8s-worker-2`** |
+| On disk | `/data/meshharbor/mongodb`, `/data/meshharbor/uploads` |
 
 ⚠️ The namespace is **not** owned by the Application, so pruning leaves
-`ns/roomler` behind. ⚠️ Both PVs are `Retain`, so they outlive the prune and the
-hostPath dirs outlive the PVs — `/data/roomler/*` must be removed explicitly on
+`ns/meshharbor` behind. ⚠️ Both PVs are `Retain`, so they outlive the prune and the
+hostPath dirs outlive the PVs — `/data/meshharbor/*` must be removed explicitly on
 that node, and must not be confused with the **current** product's
-`/data/roomler-ai/*` on the same node. ⚠️ The parent app runs `prune: false`
-deliberately, so deleting `apps/roomler-old.yaml` does not cascade.
+`/data/meshharbor/*` on the same node. ⚠️ The parent app runs `prune: false`
+deliberately, so deleting `apps/meshharbor-old.yaml` does not cascade.
 
 ## Phases
 
@@ -198,8 +198,8 @@ deliberately, so deleting `apps/roomler-old.yaml` does not cascade.
 | 2 | FR + PR | — | ✅ shipped |
 | 3 | Deploy | previous image tag | ✅ shipped + field-verified (`v20260828-de59383da2fe`) |
 | 3b | Send Apple the correction | — | ✅ done — enrolment cleared 2026-09-08 |
-| 4 | Delete the obsolete `roomler-old` app | — | 🚫 **SKIPPED** by the operator — the old app keeps running; its `janus`/`coturn` subdomains still depend on it |
-| 5 | `roomler.live` → **301** to `roomler.ai` | restore `roomler.live.conf.bak-pre301-*`, `nginx -t`, reload | ✅ shipped + field-verified |
+| 4 | Delete the obsolete `meshharbor-old` app | — | 🚫 **SKIPPED** by the operator — the old app keeps running; its `janus`/`coturn` subdomains still depend on it |
+| 5 | `meshharbor.itachi.fans` → **301** to `meshharbor.itachi.fans` | restore `meshharbor.itachi.fans.conf.bak-pre301-*`, `nginx -t`, reload | ✅ shipped + field-verified |
 | 6 | Legal pages describe all three pillars | revert one commit | ✅ shipped (#835) |
 
 ## Acceptance criteria
@@ -210,37 +210,37 @@ deliberately, so deleting `apps/roomler-old.yaml` does not cascade.
 - [x] Terms and Privacy name the entity; Privacy names the **data controller**
 - [x] The landing footer links the imprint and names the operating company
 - [x] `bun run build` (incl. `vue-tsc --noEmit`) and `bun run test:unit` pass
-- [x] `https://roomler.ai/imprint` is live — verified against the **shipped bundle**, not the source
+- [x] `https://meshharbor.itachi.fans/imprint` is live — verified against the **shipped bundle**, not the source
 - [x] Apple has the corrected number and the imprint URL
-- [x] ~~The `roomler-old` namespace … are gone~~ — **withdrawn**: the operator chose to skip the teardown, and `janus.roomler.live` / `coturn.roomler.live` still depend on that namespace
-- [x] `https://roomler.live` **301s to `roomler.ai`**; `roomler.ai` verified unaffected (200, title `Roomler`), and every co-hosted vhost re-checked
+- [x] ~~The `meshharbor-old` namespace … are gone~~ — **withdrawn**: the operator chose to skip the teardown, and `janus.meshharbor.itachi.fans` / `coturn.meshharbor.itachi.fans` still depend on that namespace
+- [x] `https://meshharbor.itachi.fans` **301s to `meshharbor.itachi.fans`**; `meshharbor.itachi.fans` verified unaffected (200, title `MeshHarbor`), and every co-hosted vhost re-checked
 - [x] Terms and Privacy describe **all three pillars**, and the Privacy Policy's false `localStorage` claim is gone
 - [x] Apple enrolment 5XS5WN8R99 resolves — **2026-09-08**, Team `4TG7586MY5`. Both Developer ID certificates issued; `agent-v0.4.92`'s `.pkg` notarised, stapled, and Gatekeeper-accepted on a real MacBook **with the quarantine attribute set** (the Finder path — `curl | install.sh` never sets quarantine and so proves nothing)
 - [x] **Docs** — this FR's deliverable *is* user-facing documentation (`/imprint`, Terms, Privacy), so the "docs before close" standing rule is satisfied by the pages themselves; there is no `docs/*.md` subsystem to describe and none was invented to tick a box
 
 ## Open decisions
 
-- **OAuth on `roomler.live` will fail** and is shipped that way unless mitigated.
-  `oauth.base_url` is a single string, so the callback lands on `roomler.ai` while
-  the `oauth_state` CSRF cookie was set **host-only** on `roomler.live` — the
+- **OAuth on `meshharbor.itachi.fans` will fail** and is shipped that way unless mitigated.
+  `oauth.base_url` is a single string, so the callback lands on `meshharbor.itachi.fans` while
+  the `oauth_state` CSRF cookie was set **host-only** on `meshharbor.itachi.fans` — the
   double-submit check refuses, correctly. Password login is unaffected. Cheapest
   mitigation is an edge redirect of `/oauth/*` on `.live` to `.ai`.
 - **Analytics mis-attribute on `.live`** — `ui/index.html:8` hardcodes
-  `data-domain="roomler.ai"`.
-- **Whether `roomler.live` should serve the app at all, or simply 301 to
-  `roomler.ai`.** This was written as a footnote and implementation has promoted
+  `data-domain="meshharbor.itachi.fans"`.
+- **Whether `meshharbor.itachi.fans` should serve the app at all, or simply 301 to
+  `meshharbor.itachi.fans`.** This was written as a footnote and implementation has promoted
   it to the live decision, on three facts that were not known when the phase was
   planned:
   1. **It is not config-only** — either a code change or a silently-failing file
      mount (above).
   2. **OAuth on `.live` stays broken either way.**
-  3. **`roomler.live` is not a spare domain.** It hosts live, unrelated services
+  3. **`meshharbor.itachi.fans` is not a spare domain.** It hosts live, unrelated services
      as subdomains — `bauleiter`, `regal`, `janus`, `coturn`, `neko`, `ping`,
      `asterisk`, `audio-waveform`, `scws`. Only the **apex** is the obsolete
      product, and only the apex may be touched.
 
   And the phase's original Apple rationale has already been delivered by phase 1:
-  the imprint names `roomler.live` as company-operated, so a reviewer can close
+  the imprint names `meshharbor.itachi.fans` as company-operated, so a reviewer can close
   the loop today. What actually remains is *"don't serve an obsolete product on
   our own domain"* — for which a **301 is the cleanest answer**, needs one nginx
   file, no code, no configmap, and composes naturally with phase 4 (once the old
@@ -252,15 +252,15 @@ deliberately, so deleting `apps/roomler-old.yaml` does not cascade.
 - Aligning the code-signing certificate subject (`G ROX LTD`) with the register
   form — needs a fresh Azure identity validation.
 - i18n for the legal pages — none of the three is translated today.
-- **Enrolling agents against `roomler.live`.** Agent identity is
+- **Enrolling agents against `meshharbor.itachi.fans`.** Agent identity is
   `(server_url, tenant_id)`, so the same tenant reached via `.live` registers as a
   *second org* with its own WireGuard identity. The installer scripts default to
-  `https://roomler.ai` and the dashboard passes `--server ${origin}` — those
+  `https://meshharbor.itachi.fans` and the dashboard passes `--server ${origin}` — those
   defaults stay untouched.
 
 ## Phase 6 — the legal pages described a product that no longer existed
 
-Both pages were dated **February 2026** and defined Roomler as *"a real-time
+Both pages were dated **February 2026** and defined MeshHarbor as *"a real-time
 collaboration platform … chat, video conferencing, file sharing, and multi-tenant
 workspace management"* — now one of three pillars, and the one carrying the least
 risk. Remote desktop and the private mesh appeared **nowhere** in either document.
@@ -276,7 +276,7 @@ Use previously covered chat abuse and nothing else. `Microsoft` was a supported
 sign-in provider listed nowhere. Ownership and governing law are now answerable
 (**G ROX EOOD**, **Bulgaria**) because the imprint exists.
 
-⚠️ **The Privacy Policy contained a false statement**: *"Roomler uses a JWT …
+⚠️ **The Privacy Policy contained a false statement**: *"MeshHarbor uses a JWT …
 stored in your browser's `localStorage`."* Untrue since the cookie-only session
 work (#680/#682/#690/#691) — local storage holds a boolean signed-in hint and
 grid preferences. The policy was publishing a **worse security posture than the
@@ -305,20 +305,20 @@ discipline the repealed-ODR-link defect earned.
 | 2026-08-28 | `rg 'G ROX\|EOOD\|205174895' ui/` | **zero hits** — the gap Apple cannot close |
 | 2026-08-28 | Ledger vs GitHub issues | FR-1…FR-22 taken (FR-3 vacated); FR-20/#807 and FR-21/#809 have issues but no rows on master ⇒ claimed FR-23 |
 | 2026-08-28 | Deployed `v20260828-de59383da2fe`; `grep -c imprint` on the **live main bundle** | **0 → 1** (`index-CaaVw1X0.js` → `index-CkmwLR-m.js`). The route did not exist in the shipped artifact before and does now |
-| 2026-08-28 | Live lazy chunk `ImprintView-CuuvccrS.js` | all present: `G ROX EOOD`, `205174895`, `BG205174895`, `Plovdivska 110`, `Pazardzhik`, `Goran Jovanov`, `711 8883`, `roomler.live`, `РОКС` (UTF-8 survived the whole pipeline) |
+| 2026-08-28 | Live lazy chunk `ImprintView-CuuvccrS.js` | all present: `G ROX EOOD`, `205174895`, `BG205174895`, `Plovdivska 110`, `Pazardzhik`, `Goran Jovanov`, `711 8883`, `meshharbor.itachi.fans`, `РОКС` (UTF-8 survived the whole pipeline) |
 | 2026-08-28 | Live `TermsView` / `PrivacyPolicyView` / `LandingView` chunks | each names the entity and links `/imprint`; Privacy carries `data controller` |
 | 2026-08-28 | **Defect in my own imprint** | it cited the EU ODR platform, **repealed by Reg. (EU) 2024/3228, offline since 2025-07-20**. Confirmed live (`grep -c consumers/odr` → 1), removed in #830 |
-| 2026-08-28 | `roomler.live` vs `roomler.ai` titles | `roomler.ui - roomler.ui` vs `Roomler` — the apex really is still the obsolete product |
-| 2026-08-28 | `settings.rs:558` env source | no `list_separator` ⇒ `ROOMLER__APP__CORS_ORIGINS` would **crash the API at boot**, not merely be ignored. Phase 5 is not config-only |
+| 2026-08-28 | `meshharbor.itachi.fans` vs `meshharbor.itachi.fans` titles | `meshharbor.ui - meshharbor.ui` vs `MeshHarbor` — the apex really is still the obsolete product |
+| 2026-08-28 | `settings.rs:558` env source | no `list_separator` ⇒ `MESHHARBOR__APP__CORS_ORIGINS` would **crash the API at boot**, not merely be ignored. Phase 5 is not config-only |
 | 2026-08-28 | `ws/handler.rs:88-113` | the origin check gates the **cookie path only** ⇒ agents unaffected, browser sessions on an untrusted origin lose every socket |
 | 2026-08-28 | Cluster access | `kubectl`+`argocd` on the build host, kubeconfig at `/home/gjovanov/.kube/config`. The earlier "no kubeconfig" was wrong — it checked `/root` only |
-| 2026-08-28 | **Phase 5 shipped as a 301.** `roomler.live` (http + https) | `301 → https://roomler.ai/`; `roomler.ai` **unaffected** (200, title `Roomler`) |
-| 2026-08-28 | Co-hosted vhosts re-checked after the reload | `bauleiter`/`regal`/`asterisk`.roomler.live, `argocd.roomler.ai`, `purestat.ai`, `lgrai.app` all 200. `janus` 404 at `/` but **healthy** (`/janus/info` → 200). `ping` 502 — **pre-existing**, its backend `:4000` has zero listening sockets. `coturn` 000 — that conf has **no HTTPS server block**. nginx error log empty since reload |
-| 2026-08-28 | `roomler.live` cert | wildcard `*.roomler.live`, **DNS-01 via Cloudflare**, valid to 2026-11-18 ⇒ a blanket redirect cannot break renewal |
-| 2026-08-28 | `$tls1_3_early_data` map | was defined **twice** across `conf.d`; the surviving definition is `asterisk.roomler.live.conf`, the file that uses it |
+| 2026-08-28 | **Phase 5 shipped as a 301.** `meshharbor.itachi.fans` (http + https) | `301 → https://meshharbor.itachi.fans/`; `meshharbor.itachi.fans` **unaffected** (200, title `MeshHarbor`) |
+| 2026-08-28 | Co-hosted vhosts re-checked after the reload | `bauleiter`/`regal`/`asterisk`.meshharbor.itachi.fans, `argocd.meshharbor.itachi.fans`, `purestat.ai`, `lgrai.app` all 200. `janus` 404 at `/` but **healthy** (`/janus/info` → 200). `ping` 502 — **pre-existing**, its backend `:4000` has zero listening sockets. `coturn` 000 — that conf has **no HTTPS server block**. nginx error log empty since reload |
+| 2026-08-28 | `meshharbor.itachi.fans` cert | wildcard `*.meshharbor.itachi.fans`, **DNS-01 via Cloudflare**, valid to 2026-11-18 ⇒ a blanket redirect cannot break renewal |
+| 2026-08-28 | `$tls1_3_early_data` map | was defined **twice** across `conf.d`; the surviving definition is `asterisk.meshharbor.itachi.fans.conf`, the file that uses it |
 | 2026-08-28 | Legal-page facts checked against code | `"microsoft"` is a real provider; `localStorage` holds only `SIGNED_IN` + grid prefs (so the policy's JWT claim was **false**); 90-day and 7-day TTLs exist in `crates/db/src/indexes.rs`; crash reports carry `hostname`, `pid`, `log_tail` |
 | 2026-08-28 | Live legal chunks **before** the phase-6 deploy | privacy `JSON Web Token` → **1** (the false claim was live); `HttpOnly` → 0; terms `exit node` → 0; `Microsoft` → 0 |
 | 2026-09-08 | **Apple enrolment 5XS5WN8R99 resolved.** Team `4TG7586MY5`, G ROX EOOD | Both Developer ID certificates issued; six `APPLE_*` secrets set; `agent-v0.4.92` `.pkg` notarised + stapled |
 | 2026-09-08 | Gatekeeper on a real MacBook (26.6.2 arm64), **quarantine attribute set** | `accepted` · `source=Notarized Developer ID` · `origin=Developer ID Installer: G ROX EOOD (4TG7586MY5)` · `stapler validate` OK · `pkgutil` → *trusted by the Apple notary service* |
-| 2026-09-08 | Close-out re-check of the **shipped bundle** (not the route) | `index-CWf4GqhQ.js` → 1 × `imprint`; `ImprintView-BJDZ-oN2.js` → `205174895`, `G ROX EOOD`, `711 8883`, `roomler.live` |
-| 2026-09-08 | Close-out re-check of the redirect | `https://roomler.live/` → `301 Location: https://roomler.ai/`; `roomler.ai/` 200, `roomler.ai/health` 200 |
+| 2026-09-08 | Close-out re-check of the **shipped bundle** (not the route) | `index-CWf4GqhQ.js` → 1 × `imprint`; `ImprintView-BJDZ-oN2.js` → `205174895`, `G ROX EOOD`, `711 8883`, `meshharbor.itachi.fans` |
+| 2026-09-08 | Close-out re-check of the redirect | `https://meshharbor.itachi.fans/` → `301 Location: https://meshharbor.itachi.fans/`; `meshharbor.itachi.fans/` 200, `meshharbor.itachi.fans/health` 200 |

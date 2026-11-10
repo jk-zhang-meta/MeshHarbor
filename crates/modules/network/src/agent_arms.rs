@@ -8,18 +8,18 @@
 //! here leaves with `network` (P7).
 
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::signaling::{ClientMsg, RelayRegionRtt, ServerMsg};
+use meshharbor_remote_control::signaling::{ClientMsg, RelayRegionRtt, ServerMsg};
 use tracing::{debug, info, warn};
 
 use crate::NetworkState;
 
 // FR-69 P5a: the rc control pair (publish + apply) is the fleet module's now;
 // re-exported so every path in this crate reads as before.
-pub use roomler_ai_mod_fleet::ctrl::{apply_rc_ctrl, publish_rc_ctrl};
+pub use meshharbor_mod_fleet::ctrl::{apply_rc_ctrl, publish_rc_ctrl};
 // FR-69 P5c — the agent socket and its pump moved to the fleet module too;
 // the tunnel socket and the controller socket share the pump, and the relay
 // probe report (network's, still here) reads the RTT ladder the hello uses.
-pub use roomler_ai_mod_fleet::socket::{prefs_from_rtt, pump_server_messages};
+pub use meshharbor_mod_fleet::socket::{prefs_from_rtt, pump_server_messages};
 
 /// Minimum spacing between Mongo persists of an agent's probe table. The
 /// Hub's live copy refreshes on EVERY report regardless.
@@ -42,12 +42,12 @@ pub async fn record_ssh_activity(
     agent_id: ObjectId,
     grant_id: Option<String>,
     caller: String,
-    kind: roomler_ai_remote_control::models::SshActivityKind,
+    kind: meshharbor_remote_control::models::SshActivityKind,
     detail: Option<String>,
     exit_code: Option<i32>,
     allowed: bool,
 ) {
-    use roomler_ai_remote_control::models::SshActivityEvent;
+    use meshharbor_remote_control::models::SshActivityEvent;
 
     let detail = detail.map(|mut d| {
         if d.chars().count() > SshActivityEvent::MAX_DETAIL {
@@ -83,13 +83,13 @@ pub async fn record_key_rotation_report(
     tenant_id: ObjectId,
     agent_id: ObjectId,
     request_id: String,
-    outcome: roomler_ai_remote_control::models::KeyRotationOutcome,
+    outcome: meshharbor_remote_control::models::KeyRotationOutcome,
     old_public_key: Option<String>,
     new_public_key: Option<String>,
     key_epoch: u32,
     detail: Option<String>,
 ) {
-    use roomler_ai_remote_control::models::KeyRotationReport;
+    use meshharbor_remote_control::models::KeyRotationReport;
 
     let clamp = |s: String, max: usize| -> String {
         if s.chars().count() > max {
@@ -125,7 +125,7 @@ pub async fn record_key_rotation_report(
     }
 }
 
-/// The device-originated SSH leg (`roomler ssh <device>`).
+/// The device-originated SSH leg (`mh ssh <device>`).
 ///
 /// Mirrors the fleet module's exec request and goes through the SAME
 /// [`agent_ssh::dispatch`] the HTTP route uses, so there is exactly one place
@@ -143,7 +143,7 @@ pub async fn handle_agent_ssh_request(
     session_secs: u64,
     // FR-90 P3-8-1b — an agent session's ticket, when a session asks.
     ssh_ticket: Option<String>,
-    reply_tx: roomler_ai_remote_control::session::ClientTx,
+    reply_tx: meshharbor_remote_control::session::ClientTx,
 ) {
     // A refusal carries no address, so it carries no host key either — the two
     // are only ever meaningful together.
@@ -175,7 +175,7 @@ pub async fn handle_agent_ssh_request(
     };
 
     let agent =
-        match roomler_ai_mod_fleet::socket::resolve_exec_target(&state.fleet, tenant_id, &target)
+        match meshharbor_mod_fleet::socket::resolve_exec_target(&state.fleet, tenant_id, &target)
             .await
         {
             Some(a) => a,
@@ -619,11 +619,11 @@ async fn relay_to_client(state: &NetworkState, session_id: bson::oid::ObjectId, 
                     .is_ok()
             {
                 tokio::spawn(async move {
-                    let key = roomler_core::cluster::directory::tunnel_key(&session_id.to_hex());
+                    let key = meshharbor_core::cluster::directory::tunnel_key(&session_id.to_hex());
                     if let Ok(Some(owner)) = dir.get(&key).await
                         && dir.is_foreign(&owner)
                     {
-                        let total = roomler_core::cluster::metrics::SPLIT_EVIDENCE_TOTAL
+                        let total = meshharbor_core::cluster::metrics::SPLIT_EVIDENCE_TOTAL
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                             + 1;
                         warn!(

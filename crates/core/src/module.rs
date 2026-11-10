@@ -5,7 +5,7 @@
 use std::future::Future;
 
 use axum::Router;
-use roomler_ai_config::Settings;
+use meshharbor_config::Settings;
 
 use crate::{Capabilities, Core, Hooks, IndexSet, Job, TenantCtx, WsRegistration};
 

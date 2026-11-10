@@ -8,7 +8,7 @@
 # 100 % margin — the two most expensive numbers on the page to get wrong.
 #
 # Edit here, redeploy, done. Every value may also be overridden per
-# environment with `ROOMLER__RELAY_COSTS__<KEY>`; the k8s deployment uses the
+# environment with `MESHHARBOR__RELAY_COSTS__<KEY>`; the k8s deployment uses the
 # env form so a price change does not require an image rebuild.
 #
 # ⚠ These are COSTS (what the resource costs us), not prices (what a customer

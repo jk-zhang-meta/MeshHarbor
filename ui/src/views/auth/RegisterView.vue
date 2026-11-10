@@ -151,7 +151,7 @@ const displayName = ref('')
 const password = ref('')
 const showPassword = ref(false)
 
-// FR-88 §3a — "How did you hear about Roomler?", sent as `self_reported`.
+// FR-88 §3a — "How did you hear about MeshHarbor?", sent as `self_reported`.
 const heardAbout = ref<SelfReported | null>(null)
 const heardAboutItems = computed(() =>
   SELF_REPORTED_OPTIONS.map((value) => ({ value, title: t(`auth.heardAboutOptions.${value}`) })),

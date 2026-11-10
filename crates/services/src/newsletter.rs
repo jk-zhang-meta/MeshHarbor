@@ -29,8 +29,8 @@
 
 use std::collections::HashSet;
 
+use meshharbor_db::models::NewsletterIssue;
 use pulldown_cmark::{Event, Options, Parser, Tag, html};
-use roomler_ai_db::models::NewsletterIssue;
 
 /// Sentinel the wrapper embeds where a recipient's unsubscribe URL belongs.
 /// Chosen to survive both markdown rendering and HTML escaping unchanged; an
@@ -46,8 +46,8 @@ pub const ISSUE_UTM_MEDIUM: &str = "email";
 /// FR-102 P5 (D5) — an issue's `utm_campaign` is this prefix and its slug.
 pub const ISSUE_CAMPAIGN_PREFIX: &str = "nl-";
 /// The hosted site's own hosts, tagged whatever `app.frontend_url` says
-/// (the footer links to `https://roomler.ai`).
-pub const HOSTED_SITE_HOSTS: [&str; 2] = ["roomler.ai", "www.roomler.ai"];
+/// (the footer links to `https://meshharbor.itachi.fans`).
+pub const HOSTED_SITE_HOSTS: [&str; 2] = ["meshharbor.itachi.fans", "www.meshharbor.itachi.fans"];
 
 /// `nl-<slug>`, cut to the longest value a sign-up's attribution keeps
 /// (`MAX_ATTRIBUTION_VALUE_LEN`, the clamp ingress applies): a longer
@@ -57,7 +57,7 @@ pub const HOSTED_SITE_HOSTS: [&str; 2] = ["roomler.ai", "www.roomler.ai"];
 pub fn issue_campaign(slug: &str) -> String {
     format!("{ISSUE_CAMPAIGN_PREFIX}{slug}")
         .chars()
-        .take(roomler_ai_db::models::MAX_ATTRIBUTION_VALUE_LEN)
+        .take(meshharbor_db::models::MAX_ATTRIBUTION_VALUE_LEN)
         .collect()
 }
 
@@ -248,7 +248,7 @@ fn style_rendered_html(body: &str) -> String {
 
 const FONT_STACK: &str = "system-ui,-apple-system,'Segoe UI',Roboto,sans-serif";
 
-/// The branded 600 px light-only wrapper (Roomler Field Notes). Returns the
+/// The branded 600 px light-only wrapper (MeshHarbor Field Notes). Returns the
 /// COMPLETE email HTML with [`UNSUB_PLACEHOLDER`] where the recipient's
 /// unsubscribe URL belongs — the exact bytes a recipient receives, which is
 /// also exactly what the admin preview serves.
@@ -265,7 +265,7 @@ pub fn render_issue_html(issue: &NewsletterIssue, tags: Option<&LinkTags>) -> St
     let subject = escape_html(&issue.subject);
     let preheader = escape_html(&issue.preheader);
     let body = style_rendered_html(&render_markdown_tagged(&issue.body_md, tags));
-    let home = escape_html(&tag("https://roomler.ai"));
+    let home = escape_html(&tag("https://meshharbor.itachi.fans"));
 
     let hero = match (&issue.hero_url, &issue.hero_alt) {
         (Some(url), alt) => format!(
@@ -300,7 +300,7 @@ pub fn render_issue_html(issue: &NewsletterIssue, tags: Option<&LinkTags>) -> St
          <td align=\"center\" style=\"padding:24px 12px;\">\n\
          <table role=\"presentation\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:600px;max-width:100%;\">\n\
          <tr><td style=\"padding:0 8px 14px;font-family:{font};font-size:18px;font-weight:700;color:#1a1a2e;\">\
-         Roomler <span style=\"color:#009688;\">Field Notes</span></td></tr>\n\
+         MeshHarbor <span style=\"color:#009688;\">Field Notes</span></td></tr>\n\
          <tr><td style=\"background:#ffffff;border:1px solid rgba(0,150,136,0.18);border-radius:12px;overflow:hidden;\">\n\
          {hero}\n\
          <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr>\
@@ -310,10 +310,10 @@ pub fn render_issue_html(issue: &NewsletterIssue, tags: Option<&LinkTags>) -> St
          </td></tr></table>\n\
          </td></tr>\n\
          <tr><td style=\"padding:20px 8px 0;font-family:{font};font-size:12.5px;line-height:1.7;color:#5b6570;text-align:center;\">\n\
-         You subscribed at roomler.ai. Product updates only, never more than monthly.<br />\n\
+         You subscribed at meshharbor.itachi.fans. Product updates only, never more than monthly.<br />\n\
          No tracking pixels — the only per-recipient thing in this email is your unsubscribe link.<br />\n\
-         <a href=\"{unsub}\" style=\"color:#00796B;\">Unsubscribe</a>&nbsp;&middot;&nbsp;<a href=\"{home}\" style=\"color:#00796B;\">roomler.ai</a><br />\n\
-         Roomler &middot; G ROX LTD, Pazardzhik, Bulgaria\n\
+         <a href=\"{unsub}\" style=\"color:#00796B;\">Unsubscribe</a>&nbsp;&middot;&nbsp;<a href=\"{home}\" style=\"color:#00796B;\">meshharbor.itachi.fans</a><br />\n\
+         MeshHarbor &middot; G ROX LTD, Pazardzhik, Bulgaria\n\
          </td></tr>\n\
          </table>\n</td></tr></table>\n</body>\n</html>\n",
         subject = subject,
@@ -337,7 +337,7 @@ pub fn substitute_recipient(rendered: &str, unsubscribe_url: &str) -> String {
 mod tests {
     use super::*;
     use bson::DateTime;
-    use roomler_ai_db::models::IssueStatus;
+    use meshharbor_db::models::IssueStatus;
 
     fn issue(body_md: &str) -> NewsletterIssue {
         NewsletterIssue {
@@ -346,10 +346,10 @@ mod tests {
             subject: "A <subject> & so".into(),
             preheader: "Preview line".into(),
             body_md: body_md.into(),
-            hero_url: Some("https://roomler.ai/newsletter-img/test-v1.png".into()),
+            hero_url: Some("https://meshharbor.itachi.fans/newsletter-img/test-v1.png".into()),
             hero_alt: Some("An \"alt\" text".into()),
             cta_text: Some("Try it".into()),
-            cta_url: Some("https://roomler.ai/".into()),
+            cta_url: Some("https://meshharbor.itachi.fans/".into()),
             audience: None,
             status: IssueStatus::Draft,
             claimed_by: None,
@@ -364,7 +364,10 @@ mod tests {
     }
 
     fn tags() -> LinkTags {
-        LinkTags::for_issue("october-notes", site_hosts("https://roomler.ai"))
+        LinkTags::for_issue(
+            "october-notes",
+            site_hosts("https://meshharbor.itachi.fans"),
+        )
     }
 
     const TAGGED: &str = "utm_source=newsletter&utm_medium=email&utm_campaign=nl-october-notes";
@@ -376,32 +379,32 @@ mod tests {
     fn only_links_to_this_site_are_tagged_and_the_rest_are_untouched() {
         let t = tags();
         assert_eq!(
-            t.tag("https://roomler.ai/docs/install"),
-            format!("https://roomler.ai/docs/install?{TAGGED}")
+            t.tag("https://meshharbor.itachi.fans/docs/install"),
+            format!("https://meshharbor.itachi.fans/docs/install?{TAGGED}")
         );
         assert_eq!(
-            t.tag("https://www.roomler.ai/blog/x#part-2"),
-            format!("https://www.roomler.ai/blog/x?{TAGGED}#part-2"),
+            t.tag("https://www.meshharbor.itachi.fans/blog/x#part-2"),
+            format!("https://www.meshharbor.itachi.fans/blog/x?{TAGGED}#part-2"),
             "the fragment stays last"
         );
         assert_eq!(
-            t.tag("https://ROOMLER.ai/pricing?plan=pro"),
-            format!("https://roomler.ai/pricing?plan=pro&{TAGGED}"),
+            t.tag("https://meshharbor.itachi.fans/pricing?plan=pro"),
+            format!("https://meshharbor.itachi.fans/pricing?plan=pro&{TAGGED}"),
             "the existing query is kept, the tags appended"
         );
         assert_eq!(
-            t.tag("https://roomler.ai"),
-            format!("https://roomler.ai/?{TAGGED}")
+            t.tag("https://meshharbor.itachi.fans"),
+            format!("https://meshharbor.itachi.fans/?{TAGGED}")
         );
         for untouched in [
-            "https://github.com/gjovanov/roomler-ai",
-            "https://roomler.ai.evil.example/x",
-            "https://evil.example/?u=https://roomler.ai/",
-            "https://user@roomler.ai/x",
-            "mailto:hello@roomler.ai",
+            "https://github.com/jk-zhang-meta/MeshHarbor",
+            "https://meshharbor.itachi.fans.evil.example/x",
+            "https://evil.example/?u=https://meshharbor.itachi.fans/",
+            "https://user@meshharbor.itachi.fans/x",
+            "mailto:hello@meshharbor.itachi.fans",
             "/relative/path",
             "not a url",
-            "ftp://roomler.ai/file",
+            "ftp://meshharbor.itachi.fans/file",
         ] {
             assert_eq!(t.tag(untouched), untouched, "{untouched}");
         }
@@ -413,10 +416,10 @@ mod tests {
     fn an_operators_own_tag_is_kept() {
         let t = tags();
         assert_eq!(
-            t.tag("https://roomler.ai/x?utm_campaign=custom"),
-            "https://roomler.ai/x?utm_campaign=custom&utm_source=newsletter&utm_medium=email"
+            t.tag("https://meshharbor.itachi.fans/x?utm_campaign=custom"),
+            "https://meshharbor.itachi.fans/x?utm_campaign=custom&utm_source=newsletter&utm_medium=email"
         );
-        let full = "https://roomler.ai/x?utm_source=a&utm_medium=b&utm_campaign=c";
+        let full = "https://meshharbor.itachi.fans/x?utm_source=a&utm_medium=b&utm_campaign=c";
         assert_eq!(t.tag(full), full);
     }
 
@@ -427,21 +430,24 @@ mod tests {
         assert_eq!(issue_campaign("october-notes"), "nl-october-notes");
         let long = "a".repeat(64);
         let c = issue_campaign(&long);
-        assert_eq!(c.len(), roomler_ai_db::models::MAX_ATTRIBUTION_VALUE_LEN);
+        assert_eq!(c.len(), meshharbor_db::models::MAX_ATTRIBUTION_VALUE_LEN);
         assert!(c.starts_with("nl-aaa"));
     }
 
     #[test]
     fn the_site_hosts_are_the_hosted_pair_and_the_frontend() {
         assert_eq!(
-            site_hosts("https://roomler.ai"),
-            vec!["roomler.ai".to_string(), "www.roomler.ai".to_string()]
+            site_hosts("https://meshharbor.itachi.fans"),
+            vec![
+                "meshharbor.itachi.fans".to_string(),
+                "www.meshharbor.itachi.fans".to_string()
+            ]
         );
         assert_eq!(
             site_hosts("http://Localhost:5173/"),
             vec![
-                "roomler.ai".to_string(),
-                "www.roomler.ai".to_string(),
+                "meshharbor.itachi.fans".to_string(),
+                "www.meshharbor.itachi.fans".to_string(),
                 "localhost".to_string()
             ]
         );
@@ -454,35 +460,39 @@ mod tests {
     #[test]
     fn a_tagged_issue_tags_body_cta_and_footer_and_nothing_else() {
         let i = issue(
-            "See [the docs](https://roomler.ai/docs), [GitHub](https://github.com/gjovanov/roomler-ai) \
-             and <https://roomler.ai/blog/x>.",
+            "See [the docs](https://meshharbor.itachi.fans/docs), [GitHub](https://github.com/jk-zhang-meta/MeshHarbor) \
+             and <https://meshharbor.itachi.fans/blog/x>.",
         );
         let html = render_issue_html(&i, Some(&tags()));
         let amp = TAGGED.replace('&', "&amp;");
         assert!(
-            html.contains(&format!("href=\"https://roomler.ai/docs?{amp}\"")),
+            html.contains(&format!(
+                "href=\"https://meshharbor.itachi.fans/docs?{amp}\""
+            )),
             "{html}"
         );
-        assert!(html.contains(&format!("href=\"https://roomler.ai/blog/x?{amp}\"")));
+        assert!(html.contains(&format!(
+            "href=\"https://meshharbor.itachi.fans/blog/x?{amp}\""
+        )));
         assert!(
-            html.contains("href=\"https://github.com/gjovanov/roomler-ai\""),
+            html.contains("href=\"https://github.com/jk-zhang-meta/MeshHarbor\""),
             "third-party links are untouched"
         );
         assert!(
             html.contains(&format!(
-                "href=\"https://roomler.ai/?{amp}\" style=\"display:inline-block"
+                "href=\"https://meshharbor.itachi.fans/?{amp}\" style=\"display:inline-block"
             )),
             "the call to action is tagged"
         );
         assert!(
             html.contains(&format!(
-                "href=\"https://roomler.ai/?{amp}\" style=\"color:#00796B;\">roomler.ai</a>"
+                "href=\"https://meshharbor.itachi.fans/?{amp}\" style=\"color:#00796B;\">meshharbor.itachi.fans</a>"
             )),
             "the footer's link is tagged"
         );
         assert!(html.contains(&format!("href=\"{UNSUB_PLACEHOLDER}\"")));
         assert!(
-            html.contains("src=\"https://roomler.ai/newsletter-img/test-v1.png\""),
+            html.contains("src=\"https://meshharbor.itachi.fans/newsletter-img/test-v1.png\""),
             "the hero image is not a link and is not tagged"
         );
         // Untagged, every link is as written.
@@ -579,7 +589,10 @@ mod tests {
     #[test]
     fn substitution_replaces_every_occurrence() {
         let html = render_issue_html(&issue("body"), None);
-        let out = substitute_recipient(&html, "https://roomler.ai/api/subscribe/unsubscribe/abc");
+        let out = substitute_recipient(
+            &html,
+            "https://meshharbor.itachi.fans/api/subscribe/unsubscribe/abc",
+        );
         assert!(!out.contains(UNSUB_PLACEHOLDER));
         assert!(out.contains("unsubscribe/abc"));
     }

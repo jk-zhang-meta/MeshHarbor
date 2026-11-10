@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # RETIRED-NAME-ANCHOR-BEGIN
-# FR-46: the ARCHIVE name is now `roomlerd-…`. Every consumer was measured first —
+# FR-46: the ARCHIVE name is now `meshharbord-…`. Every consumer was measured first —
 # the extractor uses `--strip-components=1` so the internal dir name is inert, and no
 # picker keys on the prefix. What stays frozen here is `usr/lib/meshharbor` (the
 # RPATH baked into the shipped binary by patchelf, which must move in lockstep with
@@ -9,11 +9,11 @@
 # hosts with no dpkg/apt (Fedora, RHEL, SUSE, Arch …), which otherwise cannot
 # install ANY published artifact and so can never self-update.
 #
-# The tree MUST mirror the `.deb` asset map in agents/roomlerd/Cargo.toml:
+# The tree MUST mirror the `.deb` asset map in agents/meshharbord/Cargo.toml:
 # same payload, same destinations, so the two formats install identically and
 # `docs/linux-self-update.md`'s installer can be format-agnostic below the
 # extraction. Run from the repo root, AFTER the lane's bundle step has
-# populated agents/roomlerd/vendor-ffmpeg/.
+# populated agents/meshharbord/vendor-ffmpeg/.
 #
 # Usage: scripts/stage-linux-tarball.sh <version> <target-triple>
 #   e.g. scripts/stage-linux-tarball.sh 0.3.0-rc.371 x86_64-unknown-linux-gnu
@@ -24,13 +24,13 @@ triple="${2:?target triple}"
 name="meshharbor-${version}-${triple}"
 root="/tmp/${name}"
 
-pkg=agents/roomlerd
+pkg=agents/meshharbord
 rm -rf "$root"
 
-# Binaries. `roomler-shim` installs UNDER the user-facing name: it re-execs
-# `roomlerd cli`, so a stale shim can never version-skew from the daemon.
+# Binaries. `meshharbor-shim` installs UNDER the user-facing name: it re-execs
+# `meshharbord cli`, so a stale shim can never version-skew from the daemon.
 install -D -m755 target/release/meshharbord    "$root/usr/bin/meshharbord"
-install -D -m755 target/release/roomler-shim "$root/usr/bin/meshharbor"
+install -D -m755 target/release/meshharbor-shim "$root/usr/bin/mh"
 
 # Bundled libs (FFmpeg on x86_64, libvpx everywhere) — the payload is
 # self-contained by design: stock distros ship ABI-incompatible versions, and

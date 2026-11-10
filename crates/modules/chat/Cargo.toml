@@ -1,5 +1,5 @@
 [package]
-name = "roomler-ai-mod-chat"
+name = "meshharbor-mod-chat"
 license = "AGPL-3.0-only"
 publish = false
 version.workspace = true
@@ -7,17 +7,17 @@ edition.workspace = true
 description = "FR-69 module: chat — rooms and membership, messages, reactions, files, search, export, Giphy, the typing indicator."
 
 [lib]
-name = "roomler_ai_mod_chat"
+name = "meshharbor_mod_chat"
 path = "src/lib.rs"
 
-# The second module crate (FR-69 P3). Depends on `roomler-core` and the crates
+# The second module crate (FR-69 P3). Depends on `meshharbor-core` and the crates
 # below it, never on the api crate. `conference` will depend on THIS crate:
 # rooms are the container calls run in.
 [dependencies]
-roomler-core = { path = "../../core" }
-roomler-ai-config = { path = "../../config" }
-roomler-ai-db = { path = "../../db" }
-roomler-ai-services = { path = "../../services" }
+meshharbor-core = { path = "../../core" }
+meshharbor-config = { path = "../../config" }
+meshharbor-db = { path = "../../db" }
+meshharbor-services = { path = "../../services" }
 
 anyhow.workspace = true
 async-trait.workspace = true

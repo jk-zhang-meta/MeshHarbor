@@ -1,12 +1,12 @@
 [package]
-name = "roomler-ai-remote-control"
+name = "meshharbor-remote-control"
 license = "MPL-2.0"
 publish = false
 version.workspace = true
 edition.workspace = true
 
 [lib]
-name = "roomler_ai_remote_control"
+name = "meshharbor_remote_control"
 path = "src/lib.rs"
 
 [dependencies]
@@ -39,6 +39,8 @@ bitflags = { workspace = true, features = ["serde"] }
 # consent, TURN creds and worker_pick are always available.
 default = ["server"]
 server = ["dep:mongodb"]
+# In-memory audit fixtures for downstream tests; never enabled by default.
+test-fixtures = ["server"]
 
 [dev-dependencies]
 tokio-test.workspace = true

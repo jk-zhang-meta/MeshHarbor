@@ -1,6 +1,6 @@
-# How Roomler compares
+# How MeshHarbor compares
 
-Roomler is unusual in that it occupies two categories at once: a browser-based
+MeshHarbor is unusual in that it occupies two categories at once: a browser-based
 remote desktop, and a WireGuard overlay network — on one agent, one identity and
 one server you can host yourself. So the honest comparison is never against a
 single product. It is against the *stack* most people assemble.
@@ -16,14 +16,14 @@ single product. It is against the *stack* most people assemble.
 
 ## The short version
 
-Every one of those products is better than Roomler at the thing it was built
+Every one of those products is better than MeshHarbor at the thing it was built
 for. They have more years, more users, more platforms and more polish in their
 own lane, and each page below says exactly where.
 
 What none of them does is **both lanes on one agent**. If you run Tailscale *and*
 RustDesk, you are running two agents, two control planes, two identity systems
 and two audit trails on every machine — and the remote-desktop half has no idea
-the mesh exists. Roomler is one daemon that is simultaneously the remote-desktop
+the mesh exists. MeshHarbor is one daemon that is simultaneously the remote-desktop
 target, the mesh node, the tunnel exit and the SSH server, so a session, a port
 forward and a shell are the same identity, the same policy and the same log.
 
@@ -42,10 +42,10 @@ you can decide that honestly rather than be sold on it.
    rival are not evidence, and publishing them would not make them evidence.
 4. **Facts go stale.** Everything here was checked on the date at the bottom of
    each page. If something is wrong or out of date,
-   [open an issue](https://github.com/gjovanov/roomler-ai/issues) — we would
+   [open an issue](https://github.com/jk-zhang-meta/MeshHarbor/issues) — we would
    rather correct it than win an argument on a fact that expired.
 
-## The one-paragraph version of Roomler
+## The one-paragraph version of MeshHarbor
 
 One small agent per machine, connecting outbound only. It gives you that
 machine's desktop in a browser tab, a stable private address and name on an

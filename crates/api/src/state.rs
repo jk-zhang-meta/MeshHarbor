@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::oid::ObjectId;
-use mongodb::Database;
-use roomler_ai_config::Settings;
-use roomler_ai_services::{
+use meshharbor_config::Settings;
+use meshharbor_core::turn::build_turn_map;
+use meshharbor_services::{
     AuthService, EmailService, OAuthService, PushService, TaskService,
     dao::{
         activation_code::ActivationCodeDao, invite::InviteDao, notification::NotificationDao,
@@ -11,7 +11,7 @@ use roomler_ai_services::{
         tenant::TenantDao, user::UserDao,
     },
 };
-use roomler_core::turn::build_turn_map;
+use mongodb::Database;
 
 use std::sync::Arc;
 
@@ -59,7 +59,7 @@ impl AppState {
     /// since P7b: host code that may run without the module reads
     /// `modules.fleet` and handles `None`.
     #[cfg(feature = "fleet")]
-    pub fn fleet(&self) -> &roomler_ai_mod_fleet::FleetState {
+    pub fn fleet(&self) -> &meshharbor_mod_fleet::FleetState {
         self.modules
             .fleet
             .as_ref()
@@ -68,7 +68,7 @@ impl AppState {
 
     /// The network module's state, under the same rule as [`Self::fleet`].
     #[cfg(feature = "network")]
-    pub fn network(&self) -> &roomler_ai_mod_network::NetworkState {
+    pub fn network(&self) -> &meshharbor_mod_network::NetworkState {
         self.modules
             .network
             .as_ref()
@@ -170,12 +170,12 @@ impl AppState {
         // FR-115 P3b — remote-session slots, on the same connection manager
         // and the same fail-soft rule; scoped to this database.
         let session_slots = redis_pubsub.as_ref().map(|ps| {
-            roomler_core::cluster::session_slots::SessionSlots::new(ps.connection(), db.name())
+            meshharbor_core::cluster::session_slots::SessionSlots::new(ps.connection(), db.name())
         });
 
         // Remote-control subsystem
-        let used_tokens = Arc::new(roomler_ai_services::dao::used_token::UsedTokenDao::new(&db));
-        let stats = Arc::new(roomler_ai_services::dao::stats::StatsDao::new(&db));
+        let used_tokens = Arc::new(meshharbor_services::dao::used_token::UsedTokenDao::new(&db));
+        let stats = Arc::new(meshharbor_services::dao::stats::StatsDao::new(&db));
         // Stats PR-3 — malformed allowlist entries are skipped LOUDLY (a
         // silent skip would read as "dashboards mysteriously 404").
         let platform_admins: std::collections::HashSet<ObjectId> = settings
@@ -194,7 +194,7 @@ impl AppState {
                     Err(_) => {
                         tracing::warn!(
                             entry = %s,
-                            "ROOMLER__STATS__PLATFORM_ADMINS entry is not a 24-hex ObjectId — skipped"
+                            "MESHHARBOR__STATS__PLATFORM_ADMINS entry is not a 24-hex ObjectId — skipped"
                         );
                         None
                     }
@@ -230,7 +230,7 @@ impl AppState {
         // at issuance). Spawned only when regions are enabled and at least
         // one carries a derp_url (the stats host). The stats sink makes each
         // poll tick durable (`stats_relay` buckets) when stats are enabled.
-        let relay_load: roomler_ai_remote_control::turn_creds::RelayLoadMap = Default::default();
+        let relay_load: meshharbor_remote_control::turn_creds::RelayLoadMap = Default::default();
         crate::relay_load::spawn_poller(
             turn_map.clone(),
             relay_load.clone(),
@@ -308,8 +308,8 @@ impl AppState {
             cluster_bus: cluster_bus.clone(),
             turn_map: turn_map.clone(),
             relay_load: relay_load.clone(),
-            hooks: roomler_core::HookRegistry::default(),
-            agent_socket: roomler_core::AgentSocketRegistry::default(),
+            hooks: meshharbor_core::HookRegistry::default(),
+            agent_socket: meshharbor_core::AgentSocketRegistry::default(),
             // FR-115 — plans bind only where they are sold (`saas` compiled
             // in and switched on); self-hosting stays free and unlimited.
             plans_sold: cfg!(feature = "saas") && settings.modules.saas,

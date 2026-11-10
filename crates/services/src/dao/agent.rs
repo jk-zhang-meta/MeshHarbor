@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 
 use bson::{DateTime, Document, doc, oid::ObjectId};
-use mongodb::Database;
-use roomler_ai_remote_control::models::{
+use meshharbor_remote_control::models::{
     AccessPolicy, Agent, AgentCaps, AgentStatus, DesiredConfig, DisplayInfo, ExecPolicy,
     ExternalAccessPolicy, InstallInfo, OsKind, PeerRelayPolicy, RpcCap, SshPolicy,
 };
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 
@@ -22,7 +22,7 @@ pub struct AgentDao {
 pub struct HeartbeatBefore {
     /// The previous stored brief; `None` = the device had not said (unknown,
     /// never "off").
-    pub keep_busy: Option<roomler_ai_remote_control::models::KeepBusyBrief>,
+    pub keep_busy: Option<meshharbor_remote_control::models::KeepBusyBrief>,
     pub name: String,
     pub display_name: Option<String>,
 }
@@ -125,6 +125,7 @@ impl AgentDao {
             id: None,
             tenant_id,
             owner_user_id,
+            access_policy_rev: Some(1_i64.into()),
             enrolled_by: Some(owner_user_id),
             name,
             display_name: None,
@@ -239,7 +240,7 @@ impl AgentDao {
     ///
     /// `install` (FR-102 P3) is refreshed only when the re-enrolling request
     /// SAID how it was installed: a re-enroll by an agent from before P3, or
-    /// a `roomlerd re-enroll` (which sends nothing), must not downgrade a
+    /// a `meshharbord re-enroll` (which sends nothing), must not downgrade a
     /// known method to `unknown`.
     pub async fn rehydrate(
         &self,
@@ -262,8 +263,7 @@ impl AgentDao {
                 bson::to_bson(install).unwrap_or(bson::Bson::Null),
             );
         }
-        self.base
-            .update_by_id(agent_id, doc! { "$set": set })
+        self.update_agent_security_filtered(doc! { "_id": agent_id }, doc! { "$set": set })
             .await?;
         // Second, FILTERED update for the name half — update_by_id can't
         // carry the extra predicate. Matching zero docs (admin-renamed row)
@@ -536,17 +536,16 @@ impl AgentDao {
     }
 
     pub async fn mark_status(&self, agent_id: ObjectId, status: AgentStatus) -> DaoResult<bool> {
-        self.base
-            .update_by_id(
-                agent_id,
-                doc! {
-                    "$set": {
-                        "status": bson::to_bson(&status).unwrap(),
-                        "last_seen_at": DateTime::now(),
-                    }
-                },
-            )
-            .await
+        let set = doc! {
+            "status": bson::to_bson(&status)?,
+            "last_seen_at": DateTime::now(),
+        };
+        if matches!(status, AgentStatus::Quarantined) {
+            return self
+                .update_agent_security_filtered(doc! { "_id": agent_id }, doc! { "$set": set })
+                .await;
+        }
+        self.base.update_by_id(agent_id, doc! { "$set": set }).await
     }
 
     /// Refresh `last_seen_at` from a periodic agent heartbeat. Hello +
@@ -571,7 +570,7 @@ impl AgentDao {
         agent_id: ObjectId,
         warm_relay: Option<&str>,
         companion_version: Option<&str>,
-        keep_busy: Option<&roomler_ai_remote_control::models::KeepBusyBrief>,
+        keep_busy: Option<&meshharbor_remote_control::models::KeepBusyBrief>,
     ) -> DaoResult<Option<HeartbeatBefore>> {
         // C4 stage 2 — the standing warm allocation's relayed address rides
         // the same per-heartbeat write: stored pair-less so a peer can be
@@ -655,7 +654,7 @@ impl AgentDao {
         &self,
         agent_id: ObjectId,
         relay_home: Option<&str>,
-        relay_rtt: &[roomler_ai_remote_control::signaling::RelayRegionRtt],
+        relay_rtt: &[meshharbor_remote_control::signaling::RelayRegionRtt],
     ) -> DaoResult<bool> {
         let rtt_bson = bson::to_bson(relay_rtt).unwrap_or(bson::Bson::Array(vec![]));
         self.base
@@ -758,13 +757,74 @@ impl AgentDao {
         agent_id: ObjectId,
         policy: &AccessPolicy,
     ) -> DaoResult<bool> {
-        let policy_bson = bson::to_bson(policy).unwrap_or(bson::Bson::Null);
-        self.base
-            .update_one(
-                Self::live_row(tenant_id, agent_id),
-                doc! { "$set": { "access_policy": policy_bson } },
-            )
-            .await
+        self.update_child_access_policy(
+            tenant_id,
+            agent_id,
+            doc! { "access_policy": bson::to_bson(policy)? },
+        )
+        .await
+    }
+
+    /// The policy/owner change and its monotonic counter share one Mongo
+    /// update. Invalid/exhausted counters remain invalid, but must not block a
+    /// restriction or owner reassignment. No read path repairs them.
+    async fn update_child_access_policy(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+        mut set: bson::Document,
+    ) -> DaoResult<bool> {
+        set.insert("updated_at", DateTime::now());
+        let valid = doc! { "$and": [
+            { "$eq": [{ "$type": "$access_policy_rev" }, "long"] },
+            { "$gt": ["$access_policy_rev", 0_i64] },
+            { "$lt": ["$access_policy_rev", i64::MAX] },
+        ] };
+        let collection = self.base.collection();
+        for _ in 0..3 {
+            let mut incrementing = Self::live_row(tenant_id, agent_id);
+            incrementing.insert(
+                "$or",
+                bson::bson!([
+                    { "access_policy_rev": { "$exists": false } },
+                    { "$expr": valid.clone() },
+                ]),
+            );
+            if collection
+                .update_one(
+                    incrementing,
+                    doc! { "$set": set.clone(), "$inc": { "access_policy_rev": 1_i64 } },
+                )
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            let mut invalid = Self::live_row(tenant_id, agent_id);
+            invalid.insert("access_policy_rev", doc! { "$exists": true });
+            invalid.insert("$expr", doc! { "$not": [valid.clone()] });
+            if collection
+                .update_one(invalid, doc! { "$set": set.clone() })
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            // A repair may race the two predicates; retry without ever writing
+            // an unversioned policy onto a now-valid counter.
+            if collection
+                .find_one(Self::live_row(tenant_id, agent_id))
+                .await?
+                .is_none()
+            {
+                return Ok(false);
+            }
+        }
+        Err(super::base::DaoError::Validation(
+            "Agent access policy revision changed; retry".into(),
+        ))
     }
 
     /// Replace the device's Fleet-RPC policy (gate 3). A `MANAGE_AGENTS`
@@ -786,7 +846,7 @@ impl AgentDao {
             .await
     }
 
-    /// Replace the device's roomler-SSH policy (gate 3). A `MANAGE_AGENTS`
+    /// Replace the device's meshharbor-SSH policy (gate 3). A `MANAGE_AGENTS`
     /// admin action, exactly like [`Self::update_exec_policy`] — and kept
     /// separate from it so enabling one can never be a side effect of
     /// enabling the other.
@@ -796,13 +856,101 @@ impl AgentDao {
         agent_id: ObjectId,
         policy: &SshPolicy,
     ) -> DaoResult<bool> {
-        let policy_bson = bson::to_bson(policy).unwrap_or(bson::Bson::Null);
-        self.base
-            .update_one(
-                Self::live_row(tenant_id, agent_id),
-                doc! { "$set": { "ssh_policy": policy_bson } },
-            )
-            .await
+        self.update_child_access_policy(
+            tenant_id,
+            agent_id,
+            doc! { "ssh_policy": bson::to_bson(policy)? },
+        )
+        .await
+    }
+
+    /// Filtered device security/identity mutation (`$set` / `$unset` / `$inc`)
+    /// that atomically advances `access_policy_rev` when missing or valid, and
+    /// preserves raw invalid/exhausted counters without blocking removal,
+    /// revival, anchor revocation, or service publication.
+    async fn update_agent_security_filtered(
+        &self,
+        base_filter: Document,
+        mut base_update: Document,
+    ) -> DaoResult<bool> {
+        match base_update.get_document_mut("$set") {
+            Ok(set) => {
+                set.insert("updated_at", DateTime::now());
+            }
+            Err(_) => {
+                base_update.insert("$set", doc! { "updated_at": DateTime::now() });
+            }
+        }
+        let valid = doc! { "$and": [
+            { "$eq": [{ "$type": "$access_policy_rev" }, "long"] },
+            { "$gt": ["$access_policy_rev", 0_i64] },
+            { "$lt": ["$access_policy_rev", i64::MAX] },
+        ] };
+        let collection = self.base.collection();
+        for _ in 0..3 {
+            let mut incrementing = base_filter.clone();
+            incrementing.insert(
+                "$or",
+                bson::bson!([
+                    { "access_policy_rev": { "$exists": false } },
+                    { "$expr": valid.clone() },
+                ]),
+            );
+            let mut incrementing_update = base_update.clone();
+            match incrementing_update.get_document_mut("$inc") {
+                Ok(inc) => {
+                    inc.insert("access_policy_rev", 1_i64);
+                }
+                Err(_) => {
+                    incrementing_update.insert("$inc", doc! { "access_policy_rev": 1_i64 });
+                }
+            }
+            if collection
+                .update_one(incrementing, incrementing_update)
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            let mut invalid = base_filter.clone();
+            invalid.insert("access_policy_rev", doc! { "$exists": true });
+            invalid.insert("$expr", doc! { "$not": [valid.clone()] });
+            if collection
+                .update_one(invalid, base_update.clone())
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            if collection.find_one(base_filter.clone()).await?.is_none() {
+                return Ok(false);
+            }
+        }
+        Err(super::base::DaoError::Validation(
+            "Agent access policy revision changed; retry".into(),
+        ))
+    }
+
+    pub async fn set_exec_anchor(
+        &self,
+        agent_id: ObjectId,
+        anchor: &meshharbor_remote_control::models::ExecAnchor,
+    ) -> DaoResult<bool> {
+        self.update_agent_security_filtered(
+            doc! { "_id": agent_id },
+            doc! { "$set": { "exec_anchor": bson::to_bson(anchor)? } },
+        )
+        .await
+    }
+
+    pub async fn clear_exec_anchor(&self, agent_id: ObjectId) -> DaoResult<bool> {
+        self.update_agent_security_filtered(
+            doc! { "_id": agent_id },
+            doc! { "$unset": { "exec_anchor": "" } },
+        )
+        .await
     }
 
     /// FR-19 gate 3 — replace the device's org-relay approval. A
@@ -976,7 +1124,7 @@ impl AgentDao {
         &self,
         tenant_id: ObjectId,
         agent_id: ObjectId,
-        report: &roomler_ai_remote_control::models::ConfigReport,
+        report: &meshharbor_remote_control::models::ConfigReport,
     ) -> DaoResult<bool> {
         let report_bson = bson::to_bson(report).unwrap_or(bson::Bson::Null);
         self.base
@@ -996,7 +1144,7 @@ impl AgentDao {
         &self,
         tenant_id: ObjectId,
         agent_id: ObjectId,
-        request: &roomler_ai_remote_control::models::KeyRotationRequest,
+        request: &meshharbor_remote_control::models::KeyRotationRequest,
     ) -> DaoResult<bool> {
         let bson = bson::to_bson(request).unwrap_or(bson::Bson::Null);
         self.base
@@ -1036,9 +1184,9 @@ impl AgentDao {
         &self,
         tenant_id: ObjectId,
         agent_id: ObjectId,
-        report: &roomler_ai_remote_control::models::KeyRotationReport,
+        report: &meshharbor_remote_control::models::KeyRotationReport,
     ) -> DaoResult<bool> {
-        use roomler_ai_remote_control::models::KeyRotationOutcome;
+        use meshharbor_remote_control::models::KeyRotationOutcome;
 
         let bson = bson::to_bson(report).unwrap_or(bson::Bson::Null);
         // P1b — a rotation that happened, happened. A LATER refusal for the
@@ -1071,7 +1219,7 @@ impl AgentDao {
         &self,
         tenant_id: ObjectId,
         agent_id: ObjectId,
-        identity: &roomler_ai_remote_control::models::OverlayIdentity,
+        identity: &meshharbor_remote_control::models::OverlayIdentity,
     ) -> DaoResult<bool> {
         let bson = bson::to_bson(identity).unwrap_or(bson::Bson::Null);
         self.base
@@ -1110,11 +1258,11 @@ impl AgentDao {
         agent_id: ObjectId,
         name: &str,
     ) -> DaoResult<bool> {
+        // The flag is what stops the next re-enroll's `rehydrate`
+        // from clobbering this rename with the machine-reported name.
         self.base
             .update_one(
                 Self::live_row(tenant_id, agent_id),
-                // The flag is what stops the next re-enroll's `rehydrate`
-                // from clobbering this rename with the machine-reported name.
                 doc! { "$set": { "name": name, "name_admin_set": true } },
             )
             .await
@@ -1156,18 +1304,76 @@ impl AgentDao {
     /// SSH endpoint. Written only while the row is LIVE and still carries the
     /// anchor the publishing credential named, so a publish racing a
     /// re-anchor, an un-anchor or a removal writes nothing (`false`).
+    ///
+    /// Periodic same-content republishes (`REPUBLISH_EVERY = 6h` or daemon
+    /// restarts) refresh only `published_at` without advancing
+    /// `access_policy_rev`; only a change to `host_pubkey`, `ceiling`,
+    /// `anchor_id`, or `one_command` advances the revision.
     pub async fn publish_ssh_service(
         &self,
         tenant_id: ObjectId,
         agent_id: ObjectId,
-        endpoint: &roomler_ai_remote_control::models::SshServiceEndpoint,
+        endpoint: &meshharbor_remote_control::models::SshServiceEndpoint,
     ) -> DaoResult<bool> {
         let mut filter = Self::live_row(tenant_id, agent_id);
         filter.insert("exec_anchor.anchor_id", endpoint.anchor_id.as_str());
-        let endpoint = bson::to_bson(endpoint)?;
-        self.base
-            .update_one(filter, doc! { "$set": { "ssh_service": endpoint } })
-            .await
+        let ceiling_bson = bson::to_bson(&endpoint.ceiling)?;
+        let endpoint_bson = bson::to_bson(endpoint)?;
+        let mut same_fields = doc! {
+            "ssh_service.host_pubkey": endpoint.host_pubkey.as_str(),
+            "ssh_service.ceiling": ceiling_bson,
+            "ssh_service.anchor_id": endpoint.anchor_id.as_str(),
+        };
+        if endpoint.one_command {
+            same_fields.insert("ssh_service.one_command", true);
+        } else {
+            same_fields.insert(
+                "$or",
+                bson::bson!([
+                    { "ssh_service.one_command": false },
+                    { "ssh_service.one_command": { "$exists": false } },
+                ]),
+            );
+        }
+        let mut unchanged = filter.clone();
+        unchanged.extend(same_fields.clone());
+        let mut changed = filter.clone();
+        changed.insert("$nor", vec![same_fields]);
+        let collection = self.base.collection();
+        for _ in 0..3 {
+            if collection
+                .update_one(
+                    unchanged.clone(),
+                    doc! {
+                        "$set": {
+                            "ssh_service.published_at": endpoint.published_at,
+                            "ssh_service.one_command": endpoint.one_command,
+                            "updated_at": DateTime::now(),
+                        }
+                    },
+                )
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            if self
+                .update_agent_security_filtered(
+                    changed.clone(),
+                    doc! { "$set": { "ssh_service": endpoint_bson.clone() } },
+                )
+                .await?
+            {
+                return Ok(true);
+            }
+            if collection.find_one(filter.clone()).await?.is_none() {
+                return Ok(false);
+            }
+        }
+        Err(super::base::DaoError::Validation(
+            "Agent SSH service endpoint changed concurrently; retry".into(),
+        ))
     }
 
     /// Tombstone a LIVE row. `deleted_at` is the removal time and is written
@@ -1188,16 +1394,15 @@ impl AgentDao {
     /// revival: re-enrollment mints at the new generation. `rehydrate`
     /// touches neither field, because re-enrolling a LIVE device keeps both.
     pub async fn soft_delete(&self, tenant_id: ObjectId, agent_id: ObjectId) -> DaoResult<bool> {
-        self.base
-            .update_one(
-                Self::live_row(tenant_id, agent_id),
-                doc! {
-                    "$set": { "deleted_at": DateTime::now() },
-                    "$unset": { "exec_anchor": "" },
-                    "$inc": { "token_gen": 1 },
-                },
-            )
-            .await
+        self.update_agent_security_filtered(
+            Self::live_row(tenant_id, agent_id),
+            doc! {
+                "$set": { "deleted_at": DateTime::now() },
+                "$unset": { "exec_anchor": "" },
+                "$inc": { "token_gen": 1 },
+            },
+        )
+        .await
     }
 
     /// FR-103: record the `exp` (unix seconds) of the token a device just
@@ -1293,11 +1498,11 @@ impl AgentDao {
         agent_id: ObjectId,
         owner_user_id: ObjectId,
     ) -> DaoResult<bool> {
-        self.base
-            .update_one(
-                Self::live_row(tenant_id, agent_id),
-                doc! { "$set": { "owner_user_id": owner_user_id } },
-            )
-            .await
+        self.update_child_access_policy(
+            tenant_id,
+            agent_id,
+            doc! { "owner_user_id": owner_user_id },
+        )
+        .await
     }
 }

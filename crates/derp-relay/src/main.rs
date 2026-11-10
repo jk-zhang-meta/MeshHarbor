@@ -21,7 +21,7 @@
 //! — `DerpConn`/`DerpMux` on the agent work unchanged.
 //!
 //! Deployment: plain HTTP/WS on `DERP_BIND` (default `127.0.0.1:8443`); the
-//! PoP's nginx terminates TLS for `derp-{region}.roomler.ai:443` and proxies
+//! PoP's nginx terminates TLS for `derp-{region}.meshharbor.itachi.fans:443` and proxies
 //! here (`scripts/relay-pop/`). `/healthz` serves the health cron.
 //!
 //! v1 scope note: the central relay additionally consults the overlay-ACL
@@ -44,10 +44,10 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
-use roomler_ai_remote_control::derp_frame::frame_is_bulk;
-use roomler_ai_remote_control::derp_ticket::{self, AllowanceSetClaims};
+use meshharbor_remote_control::derp_frame::frame_is_bulk;
+use meshharbor_remote_control::derp_ticket::{self, AllowanceSetClaims};
 // Shared through remote_control so mint and verify can never version-drift.
-use roomler_ai_remote_control::derp_ticket::jsonwebtoken::DecodingKey;
+use meshharbor_remote_control::derp_ticket::jsonwebtoken::DecodingKey;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -569,7 +569,7 @@ fn forward_frame(
 mod tests {
     use super::*;
     use futures::{SinkExt, StreamExt};
-    use roomler_ai_remote_control::derp_ticket::DerpTicketSigner;
+    use meshharbor_remote_control::derp_ticket::DerpTicketSigner;
     use tokio_tungstenite::tungstenite::Message as WsMsg;
 
     fn pk(byte: u8) -> DerpPubKey {
@@ -717,7 +717,7 @@ mod tests {
 
     // ── FR-115 P4a-2 — the relay allowance on a PoP ─────────────────────
 
-    use roomler_ai_remote_control::derp_ticket::jsonwebtoken::{
+    use meshharbor_remote_control::derp_ticket::jsonwebtoken::{
         self, Algorithm, EncodingKey, Header,
     };
 

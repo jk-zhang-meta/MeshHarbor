@@ -9,19 +9,19 @@
 //! each routing through [`record`] with a [`CrashReason`] +
 //! [`WriterContext`]. The recorder serialises an
 //! [`AgentCrashPayload`] (shared wire type defined in
-//! `roomler_ai_remote_control::models`) to a sidecar JSON file under
+//! `meshharbor_remote_control::models`) to a sidecar JSON file under
 //! the appropriate crashes dir; on next agent startup,
-//! `crash_uploader::drain_and_upload` POSTs each file to roomler.ai
+//! `crash_uploader::drain_and_upload` POSTs each file to meshharbor.itachi.fans
 //! and deletes it on 2xx.
 //!
 //! ## Two writer contexts on Windows
 //!
 //! - **Worker** (user-context): writes under `logging::log_dir()/
-//!   crashes/` which resolves to `%LOCALAPPDATA%\roomler\
-//!   roomler-agent\data\logs\crashes\`. The user-context uploader
+//!   crashes/` which resolves to `%LOCALAPPDATA%\meshharbor\
+//!   meshharbor-agent\data\logs\crashes\`. The user-context uploader
 //!   reads from this same dir on startup.
 //! - **Supervisor** (LocalSystem, Windows-only): writes under
-//!   `%PROGRAMDATA%\roomler\roomler-agent\crashes\` because
+//!   `%PROGRAMDATA%\meshharbor\meshharbor-agent\crashes\` because
 //!   `directories::ProjectDirs::data_local_dir()` under LocalSystem
 //!   resolves to `C:\Windows\System32\config\systemprofile\…` which
 //!   the user-context worker can't read. PROGRAMDATA is world-
@@ -64,8 +64,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use roomler_ai_remote_control::models::{AgentCrashPayload, CrashReason};
-pub use roomler_ai_remote_control::models::{AgentCrashPayload as Payload, CrashReason as Reason};
+use meshharbor_remote_control::models::{AgentCrashPayload, CrashReason};
+pub use meshharbor_remote_control::models::{AgentCrashPayload as Payload, CrashReason as Reason};
 
 /// Maximum serialised JSON payload size. The backend's ingest route
 /// caps at 80 KiB to leave HTTP overhead room; we cap the payload
@@ -103,7 +103,7 @@ pub enum WriterContext {
     // RETIRED-NAME-ANCHOR(3): the PRE-RENAME tree appdirs still resolves on an upgraded
     // host.
     /// LocalSystem SCM supervisor. Writes under
-    /// `%PROGRAMDATA%\roomler\roomler-agent\crashes\` on Windows,
+    /// `%PROGRAMDATA%\meshharbor\meshharbor-agent\crashes\` on Windows,
     /// falls back to the Worker dir on non-Windows: on macOS that is
     /// the root daemon's, recording its GUI worker (FR-97 P6e-2).
     Supervisor,
@@ -642,7 +642,7 @@ fn scrub_password_param(input: &str, count: &mut usize) -> String {
 /// params (`token=eyJ…`). The agent's `config.toml` stores the
 /// long-lived Agent JWT this way; a crash sidecar that logs config
 /// contents would otherwise leak it into the (world-readable until
-/// rc.52's dir-ACL) `%PROGRAMDATA%\roomler\…\crashes\` tree.
+/// rc.52's dir-ACL) `%PROGRAMDATA%\meshharbor\…\crashes\` tree.
 /// `scrub_jwt_shape` misses this case because the surrounding quotes
 /// break its whitespace-delimited-word boundary detection.
 ///

@@ -9,7 +9,7 @@
 
 use std::net::Ipv4Addr;
 
-use roomler_ai_remote_control::signaling::NetmapPeer;
+use meshharbor_remote_control::signaling::NetmapPeer;
 
 use super::decode_public;
 use super::router::Cidr;
@@ -91,7 +91,7 @@ pub struct PeerConfig {
     /// server didn't stamp one (pre-U2 server, or either end unflagged). When
     /// present AND our own `server_relay_strategy_enabled()` is on, the
     /// coordinator uses it verbatim in place of its local derivation.
-    pub relay_strategy: Option<roomler_ai_remote_control::signaling::RelayStrategyWire>,
+    pub relay_strategy: Option<meshharbor_remote_control::signaling::RelayStrategyWire>,
     /// U2 — the peer's coturn region hint (server `relay_home`), previously
     /// DROPPED by this conversion. Carried so the client's region/worker
     /// selection matches the server's when it computes the strategy.
@@ -197,7 +197,7 @@ mod tests {
         let kp = WgKeypair::generate();
         let mut p = netmap_peer(&kp.public_base64(), "100.64.0.5", true);
         assert_eq!(peer_config_from_netmap(&p).unwrap().relay_band_udp, None);
-        p.caps = Some(roomler_ai_remote_control::signaling::CapVectorWire {
+        p.caps = Some(meshharbor_remote_control::signaling::CapVectorWire {
             stun_udp: true,
             relay_band_udp: Some(false),
             derp_ws_ok: true,

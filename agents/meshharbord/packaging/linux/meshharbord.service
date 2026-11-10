@@ -1,0 +1,80 @@
+[Unit]
+# Opt-in SYSTEM unit for headless nodes (servers, WSL, containers-on-metal).
+# The default install uses the per-user unit `meshharbor.service` instead — see
+# README.Debian for which one you want. Nothing enables this automatically.
+#
+# Why a root unit exists at all:
+#   * self-update — installing the new .deb needs root. An unprivileged
+#     daemon has to escalate, and pkexec cannot authenticate without a
+#     polkit agent, which a headless host does not have. As root the
+#     daemon installs directly and upgrades itself unattended.
+#   * overlay mesh — bringing up the `meshharbor0` TUN and its routes needs
+#     CAP_NET_ADMIN.
+# What you give up: screen capture and input injection, which need the
+# logged-in user's X session. A remote-desktop host wants meshharbor.service.
+Description=MeshHarbor Daemon (system) — headless mesh node
+Documentation=https://www.itachi.fans/meshharbor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+
+# Machine-global config, deliberately NOT a user profile: this unit starts at
+# boot, before any login, so a $HOME-derived path would be unreachable (as
+# root, $HOME is /root and the agent's appdirs resolver would look in the
+# wrong tree entirely). Enroll against the SAME path:
+#
+#   sudo meshharbord --config /etc/meshharbor/config.toml \
+#        enroll --server https://meshharbor.itachi.fans --token <jwt> --name "$(hostname)"
+#
+# `enroll` creates the directory and writes the file 0600 (it holds a bearer
+# token). NOTE: this variable is consumed by systemd to build the argv — it is
+# NOT an agent env var and has no config-surface key; the daemon only ever
+# sees `--config`.
+#
+# Since rc.435 the DAEMON agrees with this path on its own: running as root on
+# Linux it resolves `/etc/meshharbor/config.toml` by default, and it migrates a
+# legacy `/root/.config/meshharbor/config.toml` here once at startup. That closes
+# the gap that made this unit dangerous — a host enrolled before the convention
+# ran happily on an orphan `meshharbord run` (profile path) and then died
+# `no config found` the first time systemd started it, with `Restart=always`
+# turning that into a crash-loop. Hit on buildhost, fleet-host-2 and the WSL sibling; the
+# last one needed nothing but a `dpkg -i`. Explicit `--config` is now
+# belt-and-braces rather than the only thing holding the two in agreement.
+Environment=MESHHARBORD_CONFIG=/etc/meshharbor/config.toml
+EnvironmentFile=-/etc/default/meshharbord
+ExecStart=/usr/bin/meshharbord --config ${MESHHARBORD_CONFIG} run
+
+# RETIRED-NAME-ANCHOR: `meshharbor_agent` is the pre-FR-21 tracing target. Kept
+# alongside the new one so this unit reads correctly on a daemon from either
+# side of the rename; agent-core::logging mirrors it for units already on disk.
+Environment=RUST_LOG=meshharbord=info,warn
+
+# `always`, not `on-failure`: a self-update exits 0 on purpose (the agent
+# hands off to the installer and shuts down cleanly), and `on-failure` would
+# leave the node stopped after a SUCCESSFUL upgrade. Codes from `watchdog.rs`:
+# 2 = STALL (watchdog forced exit) MUST come back; 7 = AGENT_DELETED (row
+# deleted / quarantined server-side) must NOT — restarting only hammers a
+# server that already said no; 8 = ALREADY_RUNNING (another process holds the
+# single-instance lock) must NOT either — this process is redundant by
+# definition, and without the exception `always` restarts it every 5 s
+# forever. That is not hypothetical: on 2026-08-21 buildhost, fleet-host-2 and fleet-host-1 each
+# RETIRED-NAME-ANCHOR(3): names the LEGACY unit that may still be enabled on
+# an upgraded host. The whole point of the note is that both can be enabled
+# at once, so it has to name the other one.
+# had TWO units enabled (this one plus a legacy `meshharbor-agent.service`), and
+# the loser of the lock race had burned 1500+ restarts while the winner served
+# normally — `systemctl is-active` read green the whole time.
+Restart=always
+RestartSec=5
+RestartPreventExitStatus=7 8
+
+# No ProtectSystem / ProtectHome / NoNewPrivileges here: this unit's whole
+# purpose is doing the privileged things the user unit cannot — writing the
+# TUN + routes, and running dpkg (which writes /usr and runs maintainer
+# scripts) during self-update.
+
+[Install]
+WantedBy=multi-user.target

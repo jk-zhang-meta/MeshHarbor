@@ -3,7 +3,7 @@
 //! What the server stores about an agent session — and, by omission, what it
 //! does not. No field here holds a prompt, a tool call, an output or a line
 //! of transcript; the session's content lives on the devices that run and
-//! replicate it (`docs/roomler-hive-design.md` §3.3).
+//! replicate it (`docs/meshharbor-hive-design.md` §3.3).
 
 use bson::{DateTime, oid::ObjectId};
 use serde::{Deserialize, Serialize};
@@ -80,7 +80,7 @@ impl SessionStatus {
 /// The harness a session runs, and its own id for the conversation.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct HarnessRef {
-    /// [`roomler_ai_remote_control::hive::HARNESS_CLAUDE_CODE`] in P0.
+    /// [`meshharbor_remote_control::hive::HARNESS_CLAUDE_CODE`] in P0.
     pub id: String,
     /// The harness's session id (a UUID), minted here so every replica
     /// resumes the same conversation.
@@ -165,7 +165,7 @@ pub struct AgentSession {
     /// move and fork. Absent = no role: nothing in the vault is allowed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault_role: Option<String>,
-    /// FR-90 P1j — how the session came to be. Absent = started from Roomler
+    /// FR-90 P1j — how the session came to be. Absent = started from MeshHarbor
     /// (every record before P1j).
     #[serde(default, skip_serializing_if = "SessionOrigin::is_started")]
     pub origin: SessionOrigin,
@@ -485,7 +485,7 @@ pub struct ReplicaMember {
     #[serde(default)]
     pub state: MemberState,
     /// The device's word, when it refused the join
-    /// ([`roomler_ai_remote_control::hive::HiveJoinRefusal::as_str`]).
+    /// ([`meshharbor_remote_control::hive::HiveJoinRefusal::as_str`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<String>,
     /// When the device answered its join.
@@ -565,10 +565,10 @@ pub struct MemberTip {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionOrigin {
-    /// Its owner started it from Roomler, through every start gate.
+    /// Its owner started it from MeshHarbor, through every start gate.
     #[default]
     Started,
-    /// A terminal session its owner adopted on a device (`roomler hive
+    /// A terminal session its owner adopted on a device (`mh hive
     /// adopt`, decision 11). Read-only: the terminal holds the harness, so
     /// nobody drives it from here, the owner included, and it passed none of
     /// the start gates.
@@ -600,10 +600,10 @@ impl AgentSession {
     /// FR-90 P2f-3 — what every start of this session tells its device of
     /// the session it was forked from: `rc:hive.start`'s `fork_of`. `None`
     /// for a session that is no fork.
-    pub fn fork_of(&self) -> Option<roomler_ai_remote_control::hive::HiveForkOf> {
+    pub fn fork_of(&self) -> Option<meshharbor_remote_control::hive::HiveForkOf> {
         self.parent
             .as_ref()
-            .map(|p| roomler_ai_remote_control::hive::HiveForkOf {
+            .map(|p| meshharbor_remote_control::hive::HiveForkOf {
                 session_id: p.session_id,
                 harness_session: p.harness_session.clone(),
             })
@@ -901,7 +901,7 @@ pub struct AgentApproval {
     pub approval_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn: Option<u32>,
-    /// [`roomler_ai_remote_control::hive::HiveApprovalStatus::as_str`].
+    /// [`meshharbor_remote_control::hive::HiveApprovalStatus::as_str`].
     pub status: String,
     /// The stub in the session's room, edited when it ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1022,7 +1022,7 @@ pub struct PurgeEntry {
     pub device_id: ObjectId,
     pub state: PurgeEntryState,
     /// Its words for each part, from its last answer
-    /// ([`roomler_ai_remote_control::hive::HivePurgePart::as_str`]).
+    /// ([`meshharbor_remote_control::hive::HivePurgePart::as_str`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

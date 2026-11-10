@@ -17,7 +17,7 @@
 //! lock rather than the only one; both are cheap and neither is sufficient
 //! alone in the presence of a browser bug or a policy change.
 
-use roomler_ai_config::Settings;
+use meshharbor_config::Settings;
 
 /// Which origins may authenticate with an ambient credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,10 +105,13 @@ mod tests {
 
     #[test]
     fn with_no_cors_origins_only_the_frontend_is_trusted() {
-        let p = origin_policy(&[], "https://roomler.ai");
-        assert!(is_trusted(&p, "https://roomler.ai"));
+        let p = origin_policy(&[], "https://meshharbor.itachi.fans");
+        assert!(is_trusted(&p, "https://meshharbor.itachi.fans"));
         assert!(!is_trusted(&p, "https://evil.example"));
-        assert!(!is_trusted(&p, "https://roomler.ai.evil.example"));
+        assert!(!is_trusted(
+            &p,
+            "https://meshharbor.itachi.fans.evil.example"
+        ));
     }
 
     #[test]
@@ -116,13 +119,13 @@ mod tests {
         // The operator types a URL, not an Origin. Getting this wrong would
         // mean no browser could open a socket.
         for configured in [
-            "https://roomler.ai/",
-            "https://roomler.ai",
-            "https://roomler.ai/app",
+            "https://meshharbor.itachi.fans/",
+            "https://meshharbor.itachi.fans",
+            "https://meshharbor.itachi.fans/app",
         ] {
             let p = origin_policy(&[], configured);
             assert!(
-                is_trusted(&p, "https://roomler.ai"),
+                is_trusted(&p, "https://meshharbor.itachi.fans"),
                 "configured as {configured:?}"
             );
         }
@@ -130,10 +133,13 @@ mod tests {
 
     #[test]
     fn scheme_and_port_are_part_of_the_identity() {
-        let p = origin_policy(&[], "https://roomler.ai");
-        assert!(!is_trusted(&p, "http://roomler.ai"), "scheme must match");
+        let p = origin_policy(&[], "https://meshharbor.itachi.fans");
         assert!(
-            !is_trusted(&p, "https://roomler.ai:8443"),
+            !is_trusted(&p, "http://meshharbor.itachi.fans"),
+            "scheme must match"
+        );
+        assert!(
+            !is_trusted(&p, "https://meshharbor.itachi.fans:8443"),
             "port must match"
         );
 
@@ -144,13 +150,13 @@ mod tests {
 
     #[test]
     fn host_comparison_is_case_insensitive() {
-        let p = origin_policy(&[], "https://Roomler.AI");
-        assert!(is_trusted(&p, "https://roomler.ai"));
+        let p = origin_policy(&[], "https://meshharbor.itachi.fans");
+        assert!(is_trusted(&p, "https://meshharbor.itachi.fans"));
     }
 
     #[test]
     fn an_explicit_star_trusts_everything() {
-        let p = origin_policy(&["*".to_string()], "https://roomler.ai");
+        let p = origin_policy(&["*".to_string()], "https://meshharbor.itachi.fans");
         assert_eq!(p, OriginPolicy::AnyOrigin);
         assert!(is_trusted(&p, "https://evil.example"));
     }
@@ -159,19 +165,25 @@ mod tests {
     fn an_explicit_list_replaces_the_frontend_default() {
         let p = origin_policy(
             &["https://a.example".into(), "https://b.example".into()],
-            "https://roomler.ai",
+            "https://meshharbor.itachi.fans",
         );
         assert!(is_trusted(&p, "https://a.example"));
         assert!(is_trusted(&p, "https://b.example"));
         // The frontend is NOT implicitly added — an operator who enumerates
         // origins is stating the whole set. (CORS behaves the same way.)
-        assert!(!is_trusted(&p, "https://roomler.ai"));
+        assert!(!is_trusted(&p, "https://meshharbor.itachi.fans"));
     }
 
     #[test]
     fn junk_and_null_origins_are_refused() {
-        let p = origin_policy(&[], "https://roomler.ai");
-        for origin in ["", "   ", "null", "roomler.ai", "://roomler.ai"] {
+        let p = origin_policy(&[], "https://meshharbor.itachi.fans");
+        for origin in [
+            "",
+            "   ",
+            "null",
+            "meshharbor.itachi.fans",
+            "://meshharbor.itachi.fans",
+        ] {
             assert!(!is_trusted(&p, origin), "{origin:?} must not be trusted");
         }
     }
@@ -183,7 +195,7 @@ mod tests {
         // ambient cookie is not a credential the caller had to obtain.
         let p = origin_policy(&[], "");
         assert_eq!(p, OriginPolicy::Only(vec![]));
-        assert!(!is_trusted(&p, "https://roomler.ai"));
+        assert!(!is_trusted(&p, "https://meshharbor.itachi.fans"));
         assert!(!is_trusted(&p, "https://evil.example"));
     }
 }

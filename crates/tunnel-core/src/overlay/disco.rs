@@ -1271,7 +1271,7 @@ pub(crate) mod derp_follow {
         #[test]
         fn follow_wire_keeps_legacy_classifier_and_shape_disjointness() {
             let p = encode(&sample(), &[1; 32], &[2; 32], &[9; 32]).unwrap();
-            assert!(roomler_ai_remote_control::derp_frame::payload_is_wg_or_disco(&p));
+            assert!(meshharbor_remote_control::derp_frame::payload_is_wg_or_disco(&p));
             assert!(
                 !super::super::is_disco_shaped(&p),
                 "old receiver ignores the longer kind"

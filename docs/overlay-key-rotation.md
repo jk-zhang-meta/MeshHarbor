@@ -26,8 +26,8 @@ connect. **The server never holds, transports or chooses a private key at any st
 sequenceDiagram
     autonumber
     participant A as Admin (device grid)
-    participant S as roomler server
-    participant D as roomlerd (the device)
+    participant S as meshharbor server
+    participant D as meshharbord (the device)
     participant P as every peer
 
     A->>S: POST …/agent/{id}/overlay-key/rotate
@@ -52,7 +52,7 @@ sequenceDiagram
 | the **agent token** (JWT, the control-plane credential) | no | a different identity with a different fix (`token_epoch`, Known Issues); a leaked token is a control-plane compromise |
 | the **SSH host key** (`ssh_host_key`) | no | clients pin it; rotating it is a client-side TOFU event with its own runbook |
 | `config.toml.prev` | not scrubbed | the retired secret stays in the `.prev` copy until the next save; an on-host reader of `.prev` can read `config.toml` too, so it is not a boundary — P2's retired-key list is what makes the copy worthless off-host |
-| the standalone `roomler` tunnel client's key | no (P3) | tunnel-only hosts have no agent WS to receive the order |
+| the standalone `mh` tunnel client's key | no (P3) | tunnel-only hosts have no agent WS to receive the order |
 
 The control plane is **not** reachable with a leaked overlay key: joins and DERP
 registration need the agent JWT, and DERP additionally refuses a registration whose
@@ -115,7 +115,7 @@ suspect first.
 ## On the device
 
 The handler sits in the WS loop that received the order, next to `ConfigPush`
-(`agents/roomlerd/src/signaling.rs:6039-6181`). Every branch **reports**, refusals
+(`agents/meshharbord/src/signaling.rs:6039-6181`). Every branch **reports**, refusals
 included — the operator is looking at a security action and each refusal has a
 different fix:
 
@@ -123,12 +123,12 @@ different fix:
 |---|---|---|---|
 | 1 | kill switch `overlay_key_rotation == false` | `refused: disabled` | `signaling.rs:4201-4168` |
 | 2 | the device's **own** 60 s ceiling, per org — "a bound that exists only on the ordering side is not a bound" | `refused: rate_limited` | `signaling.rs:2404-2416`, `:4189-4205` |
-| 3 | mint `WgKeypair::generate()` — the enrollment mint; `None` in a build with no overlay surface | `refused: unsupported` | `agents/roomlerd/src/key_rotation.rs:19-30` |
-| 4 | **persist first**: under the daemon-wide write lock, `config::load` → set the secret on the primary scalar or on the `[[orgs]]` entry whose `tenant_id` is this loop's → bump `overlay_wg_key_epoch` → atomic `config::save` (tmp + fsync + 0600/ACL + `.prev` + rename) | on error: `failed` + detail, **identity unchanged** | `agents/roomlerd/src/remote_config.rs:346-245` |
+| 3 | mint `WgKeypair::generate()` — the enrollment mint; `None` in a build with no overlay surface | `refused: unsupported` | `agents/meshharbord/src/key_rotation.rs:19-30` |
+| 4 | **persist first**: under the daemon-wide write lock, `config::load` → set the secret on the primary scalar or on the `[[orgs]]` entry whose `tenant_id` is this loop's → bump `overlay_wg_key_epoch` → atomic `config::save` (tmp + fsync + 0600/ACL + `.prev` + rename) | on error: `failed` + detail, **identity unchanged** | `agents/meshharbord/src/remote_config.rs:346-245` |
 | 5 | queue the same report for the *next* session, then send `rc:agent.key_rotated { rotated, old_pub, new_pub, key_epoch }` on this one and give the pump 300 ms | `rotated` | `signaling.rs:4298-4302` |
 | 6 | close every peer, tunnel peer and QUIC peer this org loop carries (the `Goodbye` teardown), return `ConnectError::KeyRotated { secret, epoch }` | — | `signaling.rs:4326-4291`, `:1077` |
 | 7 | the loop adopts the key + epoch into its one config snapshot and re-enters `connect_once` **immediately** — one device re-joining, not a fleet event, so no stagger | — | `signaling.rs:819-836` |
-| 8 | `overlay::maybe_start` sees the fingerprint change (it includes the public key), rebuilds the runtime; the join carries the new key and epoch | — | `agents/roomlerd/src/overlay.rs:399` |
+| 8 | `overlay::maybe_start` sees the fingerprint change (it includes the public key), rebuilds the runtime; the join carries the new key and epoch | — | `agents/meshharbord/src/overlay.rs:399` |
 
 ⚠️ **Persist before anything else.** A key that is not written down would be lost at
 the next restart and the device would come back as the identity it just retired —
@@ -252,7 +252,7 @@ the grid honest for a device that has not yet updated to it — a 0.4.25 device 
 
 | key | where | default | effect |
 |---|---|---|---|
-| `overlay_key_rotation` | device config (tribool), config surface, env `ROOMLERD_OVERLAY_KEY_ROTATION` (`crates/agent-core/src/config.rs:980-868`, `config_surface.rs:1096-1069`) | **on** | `false` ⇒ every order is answered `refused: disabled`, key unchanged. Read from the start-time snapshot — **restart required** |
+| `overlay_key_rotation` | device config (tribool), config surface, env `MESHHARBORD_OVERLAY_KEY_ROTATION` (`crates/agent-core/src/config.rs:980-868`, `config_surface.rs:1096-1069`) | **on** | `false` ⇒ every order is answered `refused: disabled`, key unchanged. Read from the start-time snapshot — **restart required** |
 | `overlay_wg_key_epoch` | persisted next to the key, primary scalar and per `[[orgs]]` entry (`config.rs:1861`, `:1975-1977`) | `0` | bumped per rotation; presented on every join, shown in the grid |
 | server switch | — | — | **none, deliberately**: the route is admin-initiated and permission-gated; a defective push is stopped by the device switch |
 
@@ -275,14 +275,14 @@ The server cannot see the device switch, so a switched-off device is still order
 3. Peers reinstall the carrier on the netmap upsert — 18 ms after the join when
    measured (`establish.rs`, *"peer's WG public key changed — reinstalling its
    carrier"*). Traffic resumes after WireGuard's next handshake; a relay-locked pair
-   re-climbs the ladder from the floor. ⚠️ `roomler peers --json` carries **no key
+   re-climbs the ladder from the floor. ⚠️ `mh peers --json` carries **no key
    field** — the peer's log line is the evidence that the old key is gone.
 4. Both ceilings are 60 s. A second click inside the minute is **409 `rate_limited`**
    from the server; if an order still reaches the device inside *its* minute (the
    duplicate-delivery race), the device refuses and the grid shows `refused
    (rate_limited)` only when no `rotated` report exists for that order.
 5. `reported_not_joined` means the device claims it rotated and has not come back
-   under the new key within a minute: `roomler exec <device> -- roomler logs --grep
+   under the new key within a minute: `mh exec <device> -- mh logs --grep
    key_rotate` (never a path guess, `fleet-rpc.md`). On a corp-VPN host, expect the
    re-join to land on relay first.
 6. **DERP transient, bounded**: `derp_acl::rebuild` is spawned at the join, so the
@@ -306,7 +306,7 @@ The server cannot see the device switch, so a switched-off device is still order
 
 | piece | where |
 |---|---|
-| capability verb `key-rotate` (equality match, `ALL` entry, wire string locked) | `crates/remote_control/src/models.rs:657`, `:688`, `:702`, test `:5678`; advertised by any build with an overlay surface, `agents/roomlerd/src/encode/caps.rs:1812-1800` |
+| capability verb `key-rotate` (equality match, `ALL` entry, wire string locked) | `crates/remote_control/src/models.rs:657`, `:688`, `:702`, test `:5678`; advertised by any build with an overlay surface, `agents/meshharbord/src/encode/caps.rs:1812-1800` |
 | wire: `rc:agent.key_rotate` (order), `rc:agent.key_rotated` (report) | `crates/remote_control/src/signaling.rs:2970`, `:972`; owner `network` (`:2184`, `modular-monolith.md`) |
 | models: request · outcome · report · identity · audit event · `order_is_satisfied` · `should_redeliver` | `models.rs:1782`, `:1808`, `:1833`, `:1864`, `:3365`, `:5975`, `:5990` |
 | route, `decide()`, the 409 bodies, the audit call site | `crates/modules/network/src/routes/overlay_key.rs` |
@@ -316,8 +316,8 @@ The server cannot see the device switch, so a switched-off device is still order
 | the conditional report write | `crates/services/src/dao/agent.rs:999-1029` |
 | state resolver + grid view | `crates/modules/fleet/src/agent.rs:521-676`, `:1452-1460` |
 | audit DAO + index plan | `crates/services/src/dao/key_rotation_audit.rs`; `crates/modules/network/src/lib.rs:731-738` |
-| device handler · re-send · ceiling · adoption on reconnect | `agents/roomlerd/src/signaling.rs:6039-6181`, `:2940-2982`, `:2984-3005`, `:1102-1126` |
-| mint · persist | `agents/roomlerd/src/key_rotation.rs`; `agents/roomlerd/src/remote_config.rs:346-245` |
+| device handler · re-send · ceiling · adoption on reconnect | `agents/meshharbord/src/signaling.rs:6039-6181`, `:2940-2982`, `:2984-3005`, `:1102-1126` |
+| mint · persist | `agents/meshharbord/src/key_rotation.rs`; `agents/meshharbord/src/remote_config.rs:346-245` |
 | kill switch · epoch | `crates/agent-core/src/config.rs:980-868`, `:1575`, `:1576-1578`; `config_surface.rs:1096-1069` |
 | UI: action, dialog, chip, store | `ui/src/components/admin/AgentsSection.vue:177`, `:1199-1226`, `:1995-2096`; `ui/src/stores/agents.ts:948-902` |
 
@@ -349,8 +349,8 @@ The server cannot see the device switch, so a switched-off device is still order
      `key_issued_at` resets to `now`, while `key_ttl_secs` inherits
      `min(default_key_ttl_secs(), latest_row_on_same_machine.key_ttl_secs)` so an operator-assigned
      shorter per-node TTL is preserved across tombstone + re-create.
-- **Legacy agents under `ROOMLER_OVERLAY_KEY_TTL_SECS`.** `OverlayNodeDao::create` applies
-  `ROOMLER_OVERLAY_KEY_TTL_SECS` (clamped to `>= 60` seconds when non-zero) to all newly
+- **Legacy agents under `MESHHARBOR_OVERLAY_KEY_TTL_SECS`.** `OverlayNodeDao::create` applies
+  `MESHHARBOR_OVERLAY_KEY_TTL_SECS` (clamped to `>= 60` seconds when non-zero) to all newly
   created overlay nodes regardless of agent version. Pre-`0.4.25` agents that do not
   advertise `key-rotate` cannot execute automatic `rc:agent.key_rotate` orders and require
   manual agent update or operator intervention when their key TTL expires.
@@ -363,7 +363,7 @@ The server cannot see the device switch, so a switched-off device is still order
 
 ## Not built
 
-- **`roomler overlay rotate-key [--org]` (P3)** over LocalAPI — the break-glass path
+- **`meshharbor overlay rotate-key [--org]` (P3)** over LocalAPI — the break-glass path
   for when the control plane is the compromised thing — and rotation for tunnel-only
   clients.
 - **Bulk rotation** — deliberately not offered. Rotating a fleet at once makes every

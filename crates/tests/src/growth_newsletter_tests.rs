@@ -39,7 +39,7 @@ fn keypair() -> (EcdsaKeyPair, String) {
     let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
     let pair =
         EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng).unwrap();
-    let mut spki = roomler_ai_services::sendgrid::P256_SPKI_PREFIX.to_vec();
+    let mut spki = meshharbor_services::sendgrid::P256_SPKI_PREFIX.to_vec();
     spki.extend_from_slice(pair.public_key().as_ref());
     (pair, base64::engine::general_purpose::STANDARD.encode(spki))
 }
@@ -400,7 +400,7 @@ async fn delivered_and_a_hard_bounce_are_recorded_and_the_bounce_is_suppressed_a
         .auth_post("/api/admin/newsletter/issues", &token)
         .json(&json!({
             "slug": "nov", "subject": "November", "preheader": "p",
-            "body_md": "Read [the docs](https://roomler.ai/docs).",
+            "body_md": "Read [the docs](https://meshharbor.itachi.fans/docs).",
         }))
         .send()
         .await
@@ -477,7 +477,7 @@ async fn a_test_issue_goes_only_to_its_audience() {
         .auth_post("/api/admin/newsletter/issues", &token)
         .json(&json!({
             "slug": "field-test", "subject": "Field test", "preheader": "p",
-            "body_md": "Read [the docs](https://roomler.ai/docs).",
+            "body_md": "Read [the docs](https://meshharbor.itachi.fans/docs).",
             "audience": ["A@Test.io", "c@test.io", "nobody@test.io"],
         }))
         .send()

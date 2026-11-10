@@ -11,7 +11,7 @@
         variant="text"
         @click="returnToCall"
       >
-        <v-tooltip activator="parent" location="top">Return to call</v-tooltip>
+        <v-tooltip activator="parent" location="top">{{ t('mh.conf.returnToCall') }}</v-tooltip>
       </v-btn>
     </div>
 
@@ -26,7 +26,7 @@
           playsinline
           class="mini-video"
         />
-        <span class="mini-label">You</span>
+        <span class="mini-label">{{ t('mh.conf.you') }}</span>
       </div>
 
       <!-- Remote streams (up to 3) -->
@@ -78,6 +78,9 @@ import { computed, ref, watch, nextTick, onMounted } from 'vue'
 import { useConferenceStore } from '@/stores/conference'
 import { useRoomStore } from '@/stores/rooms'
 import { useCallControls } from '@/composables/useCallControls'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const conferenceStore = useConferenceStore()
 const roomStore = useRoomStore()

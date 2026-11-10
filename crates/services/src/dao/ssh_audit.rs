@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! Roomler-SSH audit log (`ssh_audit`).
+//! MeshHarbor-SSH audit log (`ssh_audit`).
 //!
 //! Every session REQUEST lands here — granted or refused. The refused rows are
 //! the point: without them, someone probing which devices will let them in
@@ -18,8 +18,8 @@
 //! (`crates/db/src/indexes.rs`), matching `exec_audit` / `remote_audit`.
 
 use bson::{doc, oid::ObjectId};
+use meshharbor_remote_control::models::SshAuditEvent;
 use mongodb::Database;
-use roomler_ai_remote_control::models::SshAuditEvent;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

@@ -1,6 +1,6 @@
 # FR-67 — An update's outcome is written, and nothing ever reads it
 
-**Issue:** [#1267](https://github.com/gjovanov/roomler-ai/issues/1267) · **Status:** in progress (P1, P2, P7 shipped; P7 field-verified on 0.4.146) · **Found:** field-testing `agent-v0.4.48`, 2026-09-02
+**Issue:** [#1267](https://github.com/jk-zhang-meta/MeshHarbor/issues/1267) · **Status:** in progress (P1, P2, P7 shipped; P7 field-verified on 0.4.146) · **Found:** field-testing `agent-v0.4.48`, 2026-09-02
 
 ## Goal
 
@@ -9,7 +9,7 @@ Today the question has an answer computed for it, and that answer is thrown away
 
 ## The evidence
 
-`roomlerd` already computes a verdict for every install: `InstallStatus` is a
+`meshharbord` already computes a verdict for every install: `InstallStatus` is a
 five-state enum (`InProgress | SucceededVerified | SucceededUnverified |
 InstallerFailed | Timeout`, `post_install.rs:125-146`) persisted to
 `<log_dir>/last-install.json` (`post_install.rs:161`).
@@ -42,8 +42,8 @@ nothing being waited *for*: the install finished before the watcher existed. The
 `child.wait()` and returns an already-exited pid.
 
 **2. The cgroup teardown then removes any chance of finishing.** Both packaged
-units ship with no `KillMode` (`packaging/linux/roomlerd.service`,
-`roomler.service`) ⇒ systemd's default `control-group`. `spawn_watcher` launches
+units ship with no `KillMode` (`packaging/linux/meshharbord.service`,
+`meshharbor.service`) ⇒ systemd's default `control-group`. `spawn_watcher` launches
 the watcher as a plain child (`updater.rs:2573`) on the reasoning that it "is
 reparented to init and runs to completion on its own" — but reparenting to PID 1
 does not leave the cgroup. `docs/fr/FR-36-wayland-capture.md:371` already recorded
@@ -117,7 +117,7 @@ yet*, and no version check can tell it apart from them.
 
 ```mermaid
 sequenceDiagram
-    participant D as roomlerd (one enrollment)
+    participant D as meshharbord (one enrollment)
     participant S as server
     participant UI as dashboard
     D->>S: rc:agent.hello, and every heartbeat re-announce<br/>update_mode = self | primary_org | off
@@ -137,7 +137,7 @@ sequenceDiagram
 | Piece | Where |
 |---|---|
 | The word, per connection | `AgentCaps::update_mode` (`crates/remote_control/src/models.rs:353`); `UpdateRefusal` and `update_refusal()` (`:562`, `:1373`) |
-| Computed from the two facts the `UpdateNow` arm checks (`agents/roomlerd/src/signaling.rs:4719`) | `updater::update_mode` (`agents/roomlerd/src/updater.rs:2983`): `primary_org` on a secondary enrollment, `off` when no trigger is installed (`:2966`), else `self` |
+| Computed from the two facts the `UpdateNow` arm checks (`agents/meshharbord/src/signaling.rs:4719`) | `updater::update_mode` (`agents/meshharbord/src/updater.rs:2983`): `primary_org` on a secondary enrollment, `off` when no trigger is installed (`:2966`), else `self` |
 | Stamped at **every** announcement | `stub_caps` (`signaling.rs:6888`, `:6901`) |
 | Refused up front | `device_refusal` (`crates/modules/fleet/src/agent.rs:1427`): a 409 on one device (`:1474`), a `refused` row with its `refused_code` in a bulk (`:1606`) |
 | Shown before the click | `ui/src/utils/updateRefusal.ts`; `AgentsSection.vue` disables "Update now" with the reason and lists those devices in the Update-all dialog |
@@ -163,8 +163,8 @@ sequenceDiagram
 |---|-------|-------------|--------|
 | P1 | Stop waiting on a synchronously-completed install (Linux) | revert = today's unconditional wait | **shipped (#1400)** — field verification pending a release |
 | P2 | Recover a `(deleted)` exe path + refuse a non-existent watcher binary + log the anyhow chain | revert = today's ENOENT | **shipped (#1427)** — ⚠️ NOT the guard it was scoped as: this is the whole reason the `.deb` path had no watcher |
-| P3 | Read the verdict: startup log + `NodeStatus` + `roomler status` | pure addition; revert = today's silence | proposed |
-| P4 | macOS `AbandonProcessGroup` — **`com.roomler.update.plist`** is the job that matters (`update-helper` is that LaunchDaemon's body and is where `installer -pkg` is spawned) | packaging-only revert | proposed — see the note below |
+| P3 | Read the verdict: startup log + `NodeStatus` + `mh status` | pure addition; revert = today's silence | proposed |
+| P4 | macOS `AbandonProcessGroup` — **`fans.itachi.meshharbor.update.plist`** is the job that matters (`update-helper` is that LaunchDaemon's body and is where `installer -pkg` is spawned) | packaging-only revert | proposed — see the note below |
 | P5 | Fleet answer: report the outcome to the server and show it | render-only; absent field ⇒ today's blank | proposed |
 | P6 | Transient systemd unit — **only if P1 leaves a measurable race** | `update_watcher_escape_cgroup`, default OFF | deferred, evidence-gated |
 | P7 | The dashboard is told which devices will not act on an update ordered from it, and why: `update_mode` in the caps, refused up front with a `refused_code`, marked before the click | revert = today's blind push; an agent without the word is pushed as before | **shipped (#2545)** · field-verified on 0.4.146 + `hosted-20261019-e46da07` |
@@ -175,9 +175,9 @@ sequenceDiagram
       terminal status. ⚠️ Show it is `InProgress` on the current release first — a
       pass proves nothing without the failing "before"
 - [ ] ⚠️ Verified on the **auto-update** path, not a manual foreground
-      `roomlerd self-update` — that reaches a verdict today and hides the bug
+      `meshharbord self-update` — that reaches a verdict today and hides the bug
 - [ ] A non-`SucceededVerified` outcome is visible without SSH: in the daemon's
-      startup log and in `roomler status`
+      startup log and in `mh status`
 - [ ] **absent** (no install yet) and **`InProgress`** (an install that never
       reported) stay distinguishable — collapsing them recreates this bug one
       layer up
@@ -218,16 +218,16 @@ sequenceDiagram
 |---|---|---|
 | 2026-09-02 | Found while field-testing `agent-v0.4.48` | `last-install.json` stuck at `InProgress` on two hosts, one since 2026-08-29 for `agent-v0.4.16` while running 0.4.50 |
 | 2026-09-02 | Preconditions measured on two distros | `systemd-run` present and `INVOCATION_ID` set in the unit process on both (Fedora/systemd 257, Ubuntu/systemd 255); `KillMode=control-group` on both |
-| 2026-09-02 | ⚠️ Measurement hazard | `pgrep -x roomlerd` matched a **container's** process on a host running containerised test nodes (cgroup `/system.slice/docker-….scope`). A first reading wrongly showed `INVOCATION_ID` absent on Ubuntu. Probe `systemctl show roomlerd -p MainPID` instead |
+| 2026-09-02 | ⚠️ Measurement hazard | `pgrep -x meshharbord` matched a **container's** process on a host running containerised test nodes (cgroup `/system.slice/docker-….scope`). A first reading wrongly showed `INVOCATION_ID` absent on Ubuntu. Probe `systemctl show meshharbord -p MainPID` instead |
 | 2026-09-02 | ⛔ First design refuted before implementation | A systemd transient unit was the initial P1. Adversarial review found its safety premise false without `--service-type=exec`, its kill switch inert against the mode it guards, and that it would *create* a PID-reuse false-`Timeout` mode. The real defect is the self-pid wait (`updater.rs:1577` + `post_install.rs:221`) — removing it needs no systemd at all |
-| 2026-10-19 | ❌ P7's "before", on the fleet | The operator's **Update all** counted a two-org aarch64 device (Fedora/Asahi) as pushed three times. Its journal logged `rc:agent.update ignored — only the primary enrollment drives the machine-wide self-updater` three times: the dashboard's org was its secondary enrollment. That day's remedy was `roomlerd org set-primary` on the device, which exposed #2540 (both meshes off; fixed in #2541) |
+| 2026-10-19 | ❌ P7's "before", on the fleet | The operator's **Update all** counted a two-org aarch64 device (Fedora/Asahi) as pushed three times. Its journal logged `rc:agent.update ignored — only the primary enrollment drives the machine-wide self-updater` three times: the dashboard's org was its secondary enrollment. That day's remedy was `meshharbord org set-primary` on the device, which exposed #2540 (both meshes off; fixed in #2541) |
 | 2026-10-19 | ❌ The "before" on a cell | A kept vmtest Ubuntu cell in two orgs, on 0.4.145 and the then-prod server `hosted-20261019-dd59ede`. A push to its secondary org's row: `HTTP 200 {"delivered":true}`, and in the same second the device logged `rc:agent.update ignored … ignored_total=1` |
-| 2026-10-19 | ✅ **P7 field-verified on 0.4.146** | Server `hosted-20261019-e46da07`, candidate run 39331259421 (its `.deb` byte-identical to the published one). AC1: a push from the secondary org → `HTTP 409` naming `roomlerd org set-primary`, and 0 `rc:agent.update` lines on the device. AC2: `auto_update false` → row `update_mode=off` → `HTTP 409` (`auto_update_off`). AC3: a 0.4.145 agent (no word) → `HTTP 200 delivered`, as before. AC4: a live `keep_busy_enabled` flip made both connections re-announce their caps (`announcing changed capabilities on the heartbeat`), and both rows still carried the word. A lock/unlock first changed no caps, so it re-announced nothing and is not counted. A Win11 SYSTEM install laid over 0.4.145 reads `update_mode=self` |
+| 2026-10-19 | ✅ **P7 field-verified on 0.4.146** | Server `hosted-20261019-e46da07`, candidate run 39331259421 (its `.deb` byte-identical to the published one). AC1: a push from the secondary org → `HTTP 409` naming `meshharbord org set-primary`, and 0 `rc:agent.update` lines on the device. AC2: `auto_update false` → row `update_mode=off` → `HTTP 409` (`auto_update_off`). AC3: a 0.4.145 agent (no word) → `HTTP 200 delivered`, as before. AC4: a live `keep_busy_enabled` flip made both connections re-announce their caps (`announcing changed capabilities on the heartbeat`), and both rows still carried the word. A lock/unlock first changed no caps, so it re-announced nothing and is not counted. A Win11 SYSTEM install laid over 0.4.145 reads `update_mode=self` |
 | 2026-10-19 | ✅ **The field case itself, on the release** | The two-org aarch64 device from the top of this log, updated to 0.4.146 by its own updater (`.asc` verified against the pinned key; `post-install verdict: SucceededVerified`). Its secondary org's row now reads `update_mode=primary_org`, and a push from that org gets `HTTP 409` with the way out. Earlier the same day the same click was counted delivered three times while the device ignored it |
 
 ## P4 — scoped, and one question left before it is safe to write
 
-Verified: **no** plist in `agents/roomlerd/packaging/macos/` sets
+Verified: **no** plist in `agents/meshharbord/packaging/macos/` sets
 `AbandonProcessGroup`, so it defaults to false and launchd reaps the job's
 remaining process group when the job exits — the same bug class as the systemd
 cgroup teardown.
@@ -237,9 +237,9 @@ installer genuinely IS asynchronous: `installer -pkg` is `.spawn()`ed and return
 a live pid, so **P1 does not help there** — the watcher must actually wait, and
 therefore must actually survive.
 
-The job to fix is **`com.roomler.update`**, whose body is `roomlerd update-helper`
+The job to fix is **`fans.itachi.meshharbor.update`**, whose body is `meshharbord update-helper`
 (`main.rs`, `Command::UpdateHelper`) — that is where the install runs.
-`com.roomler.daemon` may need it too if the daemon ever spawns an installer
+`fans.itachi.meshharbor.daemon` may need it too if the daemon ever spawns an installer
 directly rather than delegating to the helper.
 
 ⚠️ Deliberately not written yet: `AbandonProcessGroup=true` stops launchd reaping
@@ -256,7 +256,7 @@ mesh) before a packaging change lands.
 |---|---|---|
 | 2026-09-05 | The failing **"before"**, three hosts, prior to any fix | all `InProgress`: two stuck on `agent-v0.4.16` (written 2026-08-29) and one on `agent-v0.4.13` (2026-08-28), while all three were running **0.4.70**. ~54 releases, not one recorded outcome |
 | 2026-09-05 | P2's `(deleted)` check | **INCONCLUSIVE, not negative** — `readlink /proc/<MainPID>/exe` is clean on all three, but the suffix can only exist between a `.deb` install and the next restart, and all three had restarted since. Needs running inside that window |
-| 2026-09-05 | ⚠️ Probe hygiene | measured via `systemctl show roomlerd -p MainPID`, never `pgrep -x roomlerd` — the latter matches containerised test nodes and already produced one wrong reading in this FR |
-| 2026-09-06 | ✅ **P2's question answered — and it inverts P1's evidence** | The `.deb` path has **never** had a watcher. On a cluster node: **21** `post-install watcher spawn failed` in 7 days, **0** `post-install watcher started`, `last-install.json` untouched since 2026-08-29 while the host moved 0.4.16 → 0.4.73. `apt` replaces `/usr/bin/roomlerd`, unlinking the running image, so `current_exe()` reads `…(deleted)` and `Command::spawn` fails ENOENT. 🔑 The code asserted the opposite — *"Unix package managers replace files without stopping readers, so the in-place spawn stays correct there"* — and replacing the file is exactly what breaks it. ⚠️ **This corrects what P1's "before" evidence meant**: the frozen `InProgress` records were read as the cgroup killing the watcher; on this path there was no watcher to kill. P1 still fixes the *tarball* path, where the watcher does start. |
+| 2026-09-05 | ⚠️ Probe hygiene | measured via `systemctl show meshharbord -p MainPID`, never `pgrep -x meshharbord` — the latter matches containerised test nodes and already produced one wrong reading in this FR |
+| 2026-09-06 | ✅ **P2's question answered — and it inverts P1's evidence** | The `.deb` path has **never** had a watcher. On a cluster node: **21** `post-install watcher spawn failed` in 7 days, **0** `post-install watcher started`, `last-install.json` untouched since 2026-08-29 while the host moved 0.4.16 → 0.4.73. `apt` replaces `/usr/bin/meshharbord`, unlinking the running image, so `current_exe()` reads `…(deleted)` and `Command::spawn` fails ENOENT. 🔑 The code asserted the opposite — *"Unix package managers replace files without stopping readers, so the in-place spawn stays correct there"* — and replacing the file is exactly what breaks it. ⚠️ **This corrects what P1's "before" evidence meant**: the frozen `InProgress` records were read as the cgroup killing the watcher; on this path there was no watcher to kill. P1 still fixes the *tarball* path, where the watcher does start. |
 | 2026-09-06 | ⚠️ Why it hid for months | the failure surfaced as a single context-less `WARN` — `%e` on an `anyhow::Error` prints only the outermost context (*"spawning post-install-watch subprocess"*) and drops the ENOENT that explains it. P2 logs the chain (`{:#}`). A diagnostic that cannot say *why* is how 21 consecutive failures read as noise. |
 | 2026-09-06 | ⏳ P1 field verification still open | P1 is in released 0.4.72/73/74 and the fleet is on 0.4.73, but every host checked takes the `.deb` path — where P2 had to land first for a watcher to exist at all. Re-verify on a **tarball** host, or on any host once P2 ships. |

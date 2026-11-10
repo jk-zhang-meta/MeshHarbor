@@ -9,8 +9,8 @@ use axum::{
     extract::{Path, State},
 };
 use bson::oid::ObjectId;
-use roomler_ai_config::AccountApprovalSettings;
-use roomler_core::{
+use meshharbor_config::AccountApprovalSettings;
+use meshharbor_core::{
     ApiError,
     business_authority::{
         AuthenticatedDevice, DeviceAuthorityView, DeviceKind, DeviceUseRole, RoleApproval,
@@ -26,7 +26,7 @@ fn require_review_owner(
     policy: &AccountApprovalSettings,
     user_id: ObjectId,
 ) -> Result<(), ApiError> {
-    let owner = roomler_core::admission::owner_id(policy)?
+    let owner = meshharbor_core::admission::owner_id(policy)?
         .ok_or_else(|| ApiError::NotFound("Central role approval is not configured".into()))?;
     if owner != user_id {
         return Err(ApiError::Forbidden(
@@ -308,7 +308,7 @@ async fn run_role_change_reconcile(
         .current_auth_revision(tenant_id)
         .await
         .unwrap_or(1);
-    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
+    meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
         state,
         "overlay_policy_sync",
         serde_json::json!({

@@ -63,10 +63,10 @@ pub(crate) const DEFAULT_MAX_MESSAGE_SIZE: u32 = 65536;
 /// other constants
 pub(crate) const ACCEPT_CH_SIZE: usize = 16;
 
-/// roomler (#1856): while sends keep failing, log at most this often.
+/// meshharbor (#1856): while sends keep failing, log at most this often.
 const SEND_FAILURE_LOG_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// roomler (#1856): a run of consecutive failed `net_conn` sends. The write
+/// meshharbor (#1856): a run of consecutive failed `net_conn` sends. The write
 /// loop drops the packet and lets SCTP retransmit it; this only decides what
 /// gets logged: the first failure of a run, then at most one line per
 /// [`SEND_FAILURE_LOG_EVERY`], and one line when sends recover.
@@ -217,6 +217,16 @@ pub struct Config {
     pub name: String,
 }
 
+/// Explicit per-association parameters for the file-only pacing experiment.
+/// This is fixed-rate DATA pacing, independent of SCTP congestion control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilePacingConfig {
+    /// Byte rate including SCTP packet headers.
+    pub rate_bytes_per_second: u64,
+    /// Wire-byte burst budget, including DATA padding.
+    pub burst_bytes: usize,
+}
+
 ///Association represents an SCTP association
 ///13.2.  Parameters Necessary per Association (i.e., the TCB)
 ///Peer : Tag value to be sent in every packet and is received
@@ -251,6 +261,20 @@ pub struct Association {
 }
 
 impl Association {
+    /// Opt in this idle established association to a fixed DATA wire-byte rate.
+    /// The burst must accommodate its current MTU. Control packets are exempt;
+    /// retransmitted DATA consumes the same budget as new DATA. `None` restores
+    /// the existing sender immediately, including when DATA is waiting for credit.
+    /// Rejections leave the current configuration and queued data unchanged.
+    pub async fn set_file_pacing(&self, config: Option<FilePacingConfig>) -> Result<()> {
+        {
+            let mut ai = self.association_internal.lock().await;
+            ai.configure_file_pacing(config)?;
+        }
+        let _ = self.awake_write_loop_ch.try_send(());
+        Ok(())
+    }
+
     /// server accepts a SCTP stream over a conn
     pub async fn server(config: Config) -> Result<Self> {
         let (a, mut handshake_completed_ch_rx) = Association::new(config, false).await?;
@@ -505,10 +529,12 @@ impl Association {
 
         'outer: while !done.load(Ordering::Relaxed) {
             //log::debug!("[{}] gather_outbound begin", name);
-            let (packets, continue_loop) = {
+            let (packets, continue_loop, paced) = {
                 let mut ai = association_internal.lock().await;
-                ai.gather_outbound().await
+                let (packets, continue_loop) = ai.gather_outbound().await;
+                (packets, continue_loop, ai.file_pacing_enabled())
             };
+            let mut dispatched_data = false;
             //log::debug!("[{}] gather_outbound done with {}", name, packets.len());
 
             let net_conn = Arc::clone(&net_conn);
@@ -516,6 +542,11 @@ impl Association {
             let name2 = Arc::clone(&name);
             let mut buffer = None;
             for raw in packets {
+                let paced_data = paced
+                    && raw
+                        .chunks
+                        .iter()
+                        .any(|c| c.as_any().is::<ChunkPayloadData>());
                 let mut buf = buffer
                     .take()
                     .unwrap_or_else(|| BytesMut::with_capacity(16 * 1024));
@@ -529,7 +560,7 @@ impl Association {
                 {
                     Ok(Ok(mut buf)) => {
                         let raw = buf.as_ref();
-                        // roomler (#1856): a failed send is a LOST PACKET, not a
+                        // meshharbor (#1856): a failed send is a LOST PACKET, not a
                         // dead association. Upstream ended the loop here, which
                         // closed the association and every stream on it, so one
                         // datagram a route change bounced (EHOSTUNREACH on a
@@ -545,7 +576,7 @@ impl Association {
                                 if let Some((dropped, over)) =
                                     send_failures.sent(std::time::Instant::now())
                                 {
-                                    // roomler (#1867): warn, like the failure line it
+                                    // meshharbor (#1867): warn, like the failure line it
                                     // closes. The agent keeps `webrtc_sctp` at warn, so
                                     // at info the field saw failures and never this.
                                     log::warn!(
@@ -588,6 +619,10 @@ impl Association {
                         }
                     }
                 }
+                if paced_data {
+                    association_internal.lock().await.file_pacing_dispatched();
+                    dispatched_data = true;
+                }
                 //log::debug!("[{}] sending {} bytes done", name, raw.len());
             }
 
@@ -595,12 +630,26 @@ impl Association {
                 break;
             }
 
-            //log::debug!("[{}] wait awake_write_loop_ch", name);
+            // A paced gather emits at most one DATA packet. Recheck queues
+            // after its dispatch to either send the next funded packet or arm
+            // one deadline. No association mutex is held while waiting.
+            if dispatched_data {
+                continue;
+            }
+            let deadline = association_internal.lock().await.file_pacing_deadline();
+            let pacing_ready = async {
+                if let Some(deadline) = deadline {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
             tokio::select! {
                 _ = awake_write_loop_ch.recv() =>{}
                 _ = close_loop_ch.recv() => {
                     done.store(true, Ordering::Relaxed);
                 }
+                _ = pacing_ready => {}
             };
             //log::debug!("[{}] wait awake_write_loop_ch done", name);
         }

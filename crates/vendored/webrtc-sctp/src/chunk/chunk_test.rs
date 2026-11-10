@@ -205,7 +205,7 @@ fn test_chunk_forward_tsn_success() -> Result<()> {
     Ok(())
 }
 
-/// roomler fork — a FORWARD-TSN followed by a bundled chunk in the SAME
+/// meshharbor fork — a FORWARD-TSN followed by a bundled chunk in the SAME
 /// buffer (what `Packet::unmarshal` hands every chunk parser: the remainder
 /// of the packet) must parse ITS stream entries only. Upstream counted to
 /// the end of the buffer, ran into the next chunk, and failed the packet.
@@ -231,7 +231,7 @@ fn test_chunk_forward_tsn_ignores_bundled_trailing_chunk() -> Result<()> {
     Ok(())
 }
 
-/// roomler fork — and the packet level: both chunks come out.
+/// meshharbor fork — and the packet level: both chunks come out.
 #[test]
 fn test_packet_with_forward_tsn_then_another_chunk_parses_both() -> Result<()> {
     use crate::packet::Packet;

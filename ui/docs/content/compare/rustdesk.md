@@ -1,7 +1,7 @@
 ---
-title: Roomler vs RustDesk
-seoTitle: "Roomler vs RustDesk: an open-source RustDesk alternative"
-description: An honest comparison of two open-source remote desktop tools — what RustDesk does better, where Roomler differs, and which of the two fits your situation.
+title: MeshHarbor vs RustDesk
+seoTitle: "MeshHarbor vs RustDesk: an open-source RustDesk alternative"
+description: An honest comparison of two open-source remote desktop tools — what RustDesk does better, where MeshHarbor differs, and which of the two fits your situation.
 tags: [compare, rustdesk, remote-desktop, alternatives, open-source]
 order: 2
 ---
@@ -9,8 +9,8 @@ order: 2
 ## What RustDesk does better
 
 :::cards
-- **Maturity in remote desktop** icon:check — Years of production use and an enormous install base. Its viewer and codec paths have been beaten on by far more people and more hardware than Roomler's.
-- **Native clients everywhere** icon:monitor — Desktop viewers plus **iOS and Android**. Roomler's viewer is a browser tab: nothing to install, but also no native mobile app.
+- **Maturity in remote desktop** icon:check — Years of production use and an enormous install base. Its viewer and codec paths have been beaten on by far more people and more hardware than MeshHarbor's.
+- **Native clients everywhere** icon:monitor — Desktop viewers plus **iOS and Android**. MeshHarbor's viewer is a browser tab: nothing to install, but also no native mobile app.
 - **A large community** icon:book — Translations, and a decade of accumulated recipes.
 - **Simplicity of scope** icon:flag — It does one thing. If that is the one thing you need, a smaller product is a feature.
 :::
@@ -19,11 +19,11 @@ order: 2
 RustDesk solves exactly that, and solves it well.
 :::
 
-## Where Roomler differs
+## Where MeshHarbor differs
 
 ### A private network comes with it
 
-RustDesk gives you a screen. Roomler gives you a screen **and** the machine, on
+RustDesk gives you a screen. MeshHarbor gives you a screen **and** the machine, on
 a stable private address with a name — so a port forward, a database connection
 or an SSH session needs no second product and no second agent.
 
@@ -57,7 +57,7 @@ independent default-deny gates on the powerful ones and every decision audited.
 
 ## Side by side
 
-| Capability | Roomler | RustDesk |
+| Capability | MeshHarbor | RustDesk |
 |---|---|---|
 | Remote desktop | Yes | Yes |
 | Viewer install needed | **No — a browser** | Yes |
@@ -72,9 +72,9 @@ independent default-deny gates on the powerful ones and every decision audited.
 ## Choosing
 
 :::steps
-1. **You need a mobile viewer** → RustDesk. Roomler has none.
+1. **You need a mobile viewer** → RustDesk. MeshHarbor has none.
 2. **You want the most proven remote-desktop stack** → RustDesk.
-3. **You want the machine reachable, not just visible** → Roomler.
-4. **You are supporting people on machines you do not control** → Roomler; there is nothing for them to install.
-5. **You need one agent, one identity and one audit trail** → Roomler.
+3. **You want the machine reachable, not just visible** → MeshHarbor.
+4. **You are supporting people on machines you do not control** → MeshHarbor; there is nothing for them to install.
+5. **You need one agent, one identity and one audit trail** → MeshHarbor.
 :::

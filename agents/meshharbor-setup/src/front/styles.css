@@ -1,0 +1,366 @@
+/* MeshHarbor Setup — unified SPA stylesheet.
+ *
+ * Adapted from the agent installer's styles.css (the richer of the
+ * two legacy sheets: light/dark theme via `color-scheme`, checklist
+ * icons, kv grid). Vanilla CSS, no framework. Additions for the
+ * unified app: textarea token field (from the tunnel sheet) and the
+ * in-HTML force-kill confirmation (plain .warning block). The
+ * recovery-cog panel from the agent wizard was dropped — its reset
+ * affordance is covered by the error panel's "Back to start". */
+
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --bg-elevated: #f9fafb;
+  --fg: #1a1a1a;
+  --fg-strong: #0f172a;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-fg: #ffffff;
+  --border: #e5e7eb;
+  --warning-bg: #fef3c7;
+  --warning-fg: #92400e;
+  --warning-border: #fbbf24;
+  --error-bg: #fef2f2;
+  --error-fg: #991b1b;
+  --error-border: #f87171;
+  --info-bg: #eff6ff;
+  --info-fg: #1e40af;
+  --info-border: #60a5fa;
+  --success-fg: #047857;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a;
+    --bg-elevated: #1e293b;
+    --fg: #e5e7eb;
+    --fg-strong: #f1f5f9;
+    --muted: #94a3b8;
+    --accent: #3b82f6;
+    --accent-hover: #60a5fa;
+    --accent-fg: #0f172a;
+    --border: #334155;
+    --warning-bg: #422006;
+    --warning-fg: #fbbf24;
+    --warning-border: #92400e;
+    --error-bg: #450a0a;
+    --error-fg: #fca5a5;
+    --error-border: #991b1b;
+    --info-bg: #0c1e3a;
+    --info-fg: #93c5fd;
+    --info-border: #1e3a8a;
+    --success-fg: #34d399;
+  }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 20px;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+h1 { font-size: 1.5rem; font-weight: 600; color: var(--fg-strong); }
+h2 { font-size: 1rem; font-weight: 600; color: var(--fg-strong); margin-bottom: 8px; }
+h3 { font-size: 0.95rem; font-weight: 600; margin-bottom: 6px; }
+
+p { margin: 0 0 8px 0; }
+p:last-child { margin-bottom: 0; }
+
+.lead { color: var(--muted); margin-bottom: 12px; }
+.muted { color: var(--muted); }
+
+code, pre {
+  font-family: "Cascadia Mono", "Consolas", "SF Mono", Menlo, monospace;
+  font-size: 0.85em;
+}
+pre {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.code {
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 0.9em;
+  word-break: break-all;
+}
+
+/* Step indicator (1 of 5 across the top) */
+.step-indicator { margin-bottom: 4px; }
+.step-indicator ol {
+  list-style: none;
+  display: flex;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.step-indicator li {
+  flex: 1;
+  padding: 6px 8px;
+  border-top: 3px solid var(--border);
+  text-align: center;
+}
+.step-indicator li.active {
+  color: var(--accent);
+  border-top-color: var(--accent);
+  font-weight: 600;
+}
+.step-indicator li.done {
+  color: var(--success-fg);
+  border-top-color: var(--success-fg);
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* A step's `display: flex` OVERRIDES the `[hidden]` attribute's UA
+   `display: none`, so every section stayed visible stacked vertically
+   and render()'s per-step `hidden` toggle had no visual effect — the
+   wizard looked like one long scroll instead of discrete pages, and
+   Next appeared to do nothing (2026-07-17). `.step[hidden]`
+   (specificity 0,1,1) beats `.step` (0,1,0) → only the current step
+   renders → true step-pages. */
+.step[hidden] {
+  display: none;
+}
+
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+/* Form elements */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.field:last-child { margin-bottom: 0; }
+.field > span {
+  font-weight: 500;
+  color: var(--fg-strong);
+  font-size: 0.875rem;
+}
+.field > small { font-size: 0.75rem; }
+
+input[type="text"],
+input[type="url"],
+input[type="password"],
+textarea {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+  font-family: inherit;
+}
+textarea {
+  resize: vertical;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+}
+input:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+label.radio,
+label.checkbox {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  background: var(--bg);
+}
+label.radio:hover,
+label.checkbox:hover {
+  border-color: var(--accent);
+}
+label.radio input,
+label.checkbox input {
+  margin-top: 3px;
+}
+label.radio strong { display: block; margin-bottom: 4px; }
+label.checkbox {
+  align-items: flex-start;
+  font-size: 0.875rem;
+  margin-top: 12px;
+}
+
+/* Buttons */
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+button {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+  font-family: inherit;
+}
+button:hover:not(:disabled) { background: var(--accent-hover); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.secondary {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+button.secondary:hover:not(:disabled) {
+  background: var(--bg-elevated);
+}
+
+/* Banners */
+.warning {
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  border: 1px solid var(--warning-border);
+  border-radius: 4px;
+  padding: 12px;
+  margin-top: 12px;
+  font-size: 0.875rem;
+}
+.error {
+  background: var(--error-bg);
+  color: var(--error-fg);
+  border: 1px solid var(--error-border);
+  border-radius: 4px;
+  padding: 12px;
+  font-size: 0.875rem;
+}
+.info {
+  background: var(--info-bg);
+  color: var(--info-fg);
+  border: 1px solid var(--info-border);
+  border-radius: 4px;
+  padding: 12px;
+  font-size: 0.875rem;
+  margin-top: 12px;
+}
+
+/* Install checklist */
+.checklist {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+}
+.checklist li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+.checklist li .icon { width: 20px; text-align: center; }
+.checklist li.running .icon::before { content: "⏳"; }
+.checklist li.ok .icon::before { content: "✓"; color: var(--success-fg); }
+.checklist li.error .icon::before { content: "✗"; color: var(--error-fg); }
+.checklist li.warning .icon::before { content: "⚠"; color: var(--warning-fg); }
+
+/* Progress bar */
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  width: 0%;
+  transition: width 0.2s ease-out;
+}
+
+/* Key-value list on Done page */
+.kv {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  row-gap: 8px;
+  column-gap: 16px;
+}
+.kv dt {
+  font-weight: 500;
+  color: var(--muted);
+}
+.kv dd { word-break: break-all; }
+
+/* Snackbar */
+.snackbar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--fg-strong);
+  color: var(--bg);
+  padding: 10px 20px;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  z-index: 200;
+  animation: snackbar-in 0.2s ease-out;
+}
+@keyframes snackbar-in {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* S2: advanced-options collapsible on the Server step */
+details.card > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  user-select: none;
+}
+details.card[open] > summary { margin-bottom: 12px; }
+.field.checkline {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+}
+.field.checkline > span { font-weight: 400; }

@@ -11,10 +11,10 @@
 //!   re-enrolls and revives the row, every token minted before the removal
 //!   is refused, at the HTTP routes, the agent socket, DERP and the renew
 //!   route alike;
-//! - the same for a `roomler` tunnel client;
+//! - the same for a `mh` tunnel client;
 //! - both kill switches; and the device list's "credential expires".
 //!
-//! And the device's half (P2), the real `roomlerd` code against this server:
+//! And the device's half (P2), the real `meshharbord` code against this server:
 //! a due token is renewed and saved before use; a device that was off across
 //! its expiry renews inside the grace and comes back by itself; a token
 //! re-enrolled on disk is taken up without a restart; a secondary org renews
@@ -494,7 +494,7 @@ async fn a_renewal_shows_in_the_device_list_without_a_reconnect() {
     );
 }
 
-/// A `roomler` tunnel client renews its own token, and removing it ends every
+/// A `mh` tunnel client renews its own token, and removing it ends every
 /// earlier token, as for an agent. The roster route now checks the row too.
 #[tokio::test]
 async fn a_tunnel_client_renews_and_a_removal_ends_its_tokens() {
@@ -591,7 +591,7 @@ async fn a_tunnel_client_renews_and_a_removal_ends_its_tokens() {
 }
 
 // ---------------------------------------------------------------------------
-// FR-103 P2 — the DEVICE's half: the real `roomlerd` renewal code against
+// FR-103 P2 — the DEVICE's half: the real `meshharbord` renewal code against
 // this server.
 // ---------------------------------------------------------------------------
 
@@ -630,8 +630,8 @@ async fn wait_online(app: &TestApp, seeded: &crate::fixtures::seed::SeededTenant
     panic!("agent {agent_id} never came online");
 }
 
-fn config_services(path: &std::path::Path) -> roomlerd::remote_config::RemoteConfigServices {
-    roomlerd::remote_config::RemoteConfigServices::new(
+fn config_services(path: &std::path::Path) -> meshharbord::remote_config::RemoteConfigServices {
+    meshharbord::remote_config::RemoteConfigServices::new(
         path.to_path_buf(),
         std::sync::Arc::new(tokio::sync::Mutex::new(())),
         false,
@@ -644,20 +644,20 @@ fn config_services(path: &std::path::Path) -> roomlerd::remote_config::RemoteCon
 /// not due, and nothing is asked.
 #[tokio::test]
 async fn a_device_renews_before_its_token_expires() {
-    use roomlerd::token_renewal::{self, Settings};
+    use meshharbord::token_renewal::{self, Settings};
     let app = TestApp::spawn().await;
     let seeded = app.seed_tenant("fr103due").await;
     let cfg = crate::agent_tests::enrol_via_agent_lib(&app, &seeded, "m-fr103-due", "due").await;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    roomlerd::config::save(&path, &cfg).unwrap();
+    meshharbord::config::save(&path, &cfg).unwrap();
     let services = config_services(&path);
     let enrollment = token_renewal::Enrollment {
         label: "primary".into(),
         server_url: cfg.server_url.clone(),
         tenant_id: cfg.tenant_id.clone(),
         agent_id: cfg.agent_id.clone(),
-        token: roomlerd::token_slot::TokenSlot::new(cfg.agent_token.clone()),
+        token: meshharbord::token_slot::TokenSlot::new(cfg.agent_token.clone()),
     };
     let now = chrono::Utc::now().timestamp();
 
@@ -684,7 +684,7 @@ async fn a_device_renews_before_its_token_expires() {
     let renewed = enrollment.token.get();
     assert!(renewed != cfg.agent_token, "renewed once due");
     assert!(
-        roomlerd::config::load(&path).unwrap().agent_token == renewed,
+        meshharbord::config::load(&path).unwrap().agent_token == renewed,
         "saved before it was used"
     );
     assert_eq!(self_devices(&app, &renewed).await, 200);
@@ -714,12 +714,12 @@ async fn a_lapsed_device_renews_in_the_grace_and_comes_back() {
     cfg.agent_token = lapsed.clone();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    roomlerd::config::save(&path, &cfg).unwrap();
+    meshharbord::config::save(&path, &cfg).unwrap();
 
-    let slot = roomlerd::token_slot::TokenSlot::new(lapsed.clone());
+    let slot = meshharbord::token_slot::TokenSlot::new(lapsed.clone());
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let task = crate::agent_tests::spawn_agent_signaling_on(
-        roomlerd::signaling::OrgCtx::primary(slot.clone()),
+        meshharbord::signaling::OrgCtx::primary(slot.clone()),
         cfg.clone(),
         path.clone(),
         stop_rx,
@@ -729,7 +729,7 @@ async fn a_lapsed_device_renews_in_the_grace_and_comes_back() {
     let in_use = slot.get();
     assert!(in_use != lapsed, "a renewed token is in use");
     assert!(
-        roomlerd::config::load(&path).unwrap().agent_token == in_use,
+        meshharbord::config::load(&path).unwrap().agent_token == in_use,
         "and it is the one on disk"
     );
     assert_eq!(self_devices(&app, &in_use).await, 200);
@@ -737,7 +737,7 @@ async fn a_lapsed_device_renews_in_the_grace_and_comes_back() {
     task.abort();
 }
 
-/// A device removed and enrolled again (`roomlerd re-enroll`) while its
+/// A device removed and enrolled again (`meshharbord re-enroll`) while its
 /// daemon kept running: the running token is now refused (the removal
 /// advanced the generation), and the daemon switches to the token the
 /// re-enrollment wrote to its config file, without a restart.
@@ -758,13 +758,13 @@ async fn a_token_re_enrolled_on_disk_is_used_without_a_restart() {
     );
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    roomlerd::config::save(&path, &again).unwrap();
+    meshharbord::config::save(&path, &again).unwrap();
 
     // The daemon still runs on the token it started with.
-    let slot = roomlerd::token_slot::TokenSlot::new(first.agent_token.clone());
+    let slot = meshharbord::token_slot::TokenSlot::new(first.agent_token.clone());
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let task = crate::agent_tests::spawn_agent_signaling_on(
-        roomlerd::signaling::OrgCtx::primary(slot.clone()),
+        meshharbord::signaling::OrgCtx::primary(slot.clone()),
         first.clone(),
         path,
         stop_rx,
@@ -785,7 +785,7 @@ async fn a_token_re_enrolled_on_disk_is_used_without_a_restart() {
 /// primary's token would cut the primary off at the next restart.
 #[tokio::test]
 async fn a_secondary_org_renews_against_its_own_server() {
-    use roomlerd::token_renewal::{self, Settings};
+    use meshharbord::token_renewal::{self, Settings};
     let primary = TestApp::spawn().await;
     let secondary = TestApp::spawn().await;
     let seeded_a = primary.seed_tenant("fr103orga").await;
@@ -801,7 +801,7 @@ async fn a_secondary_org_renews_against_its_own_server() {
         200,
         "the primary's server must not renew a token it never issued"
     );
-    cfg.orgs.push(roomlerd::config::OrgEntry {
+    cfg.orgs.push(meshharbord::config::OrgEntry {
         label: "org-b".into(),
         server_url: org_b.server_url.clone(),
         ws_url: None,
@@ -809,7 +809,7 @@ async fn a_secondary_org_renews_against_its_own_server() {
         agent_id: org_b.agent_id.clone(),
         tenant_id: org_b.tenant_id.clone(),
         enabled: true,
-        overlay_mode: roomlerd::config::OrgOverlayMode::Off,
+        overlay_mode: meshharbord::config::OrgOverlayMode::Off,
         overlay_wg_secret_key: None,
         overlay_wg_key_epoch: 0,
         overlay_advertised_routes: Vec::new(),
@@ -819,7 +819,7 @@ async fn a_secondary_org_renews_against_its_own_server() {
     });
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    roomlerd::config::save(&path, &cfg).unwrap();
+    meshharbord::config::save(&path, &cfg).unwrap();
     let services = config_services(&path);
     // The secondary org's own enrollment, as its signalling loop builds it.
     let enrollment = token_renewal::Enrollment {
@@ -827,7 +827,7 @@ async fn a_secondary_org_renews_against_its_own_server() {
         server_url: org_b.server_url.clone(),
         tenant_id: org_b.tenant_id.clone(),
         agent_id: org_b.agent_id.clone(),
-        token: roomlerd::token_slot::TokenSlot::new(org_b.agent_token.clone()),
+        token: meshharbord::token_slot::TokenSlot::new(org_b.agent_token.clone()),
     };
     // A token minted in the same second as the enrollment's is byte-identical.
     tokio::time::sleep(Duration::from_millis(1100)).await;
@@ -845,7 +845,7 @@ async fn a_secondary_org_renews_against_its_own_server() {
     let renewed = enrollment.token.get();
     assert!(renewed != org_b.agent_token, "renewed, by its own server");
     assert_eq!(self_devices(&secondary, &renewed).await, 200);
-    let back = roomlerd::config::load(&path).unwrap();
+    let back = meshharbord::config::load(&path).unwrap();
     assert!(
         back.orgs[0].agent_token == renewed,
         "saved into its own [[orgs]] entry"
@@ -867,14 +867,14 @@ async fn a_secondary_org_renews_against_its_own_server() {
 /// the normal schedule), and the token still accepted.
 #[tokio::test]
 async fn an_old_server_answering_404_changes_nothing() {
-    use roomlerd::token_renewal::{self, Settings};
+    use meshharbord::token_renewal::{self, Settings};
     let old = TestApp::spawn_with_settings(|s| s.rc.token_renewal = false).await;
     let seeded = old.seed_tenant("fr103oldsrv").await;
     let cfg =
         crate::agent_tests::enrol_via_agent_lib(&old, &seeded, "m-fr103-oldsrv", "oldsrv").await;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    roomlerd::config::save(&path, &cfg).unwrap();
+    meshharbord::config::save(&path, &cfg).unwrap();
     let before = std::fs::read_to_string(&path).unwrap();
     let services = config_services(&path);
     let enrollment = token_renewal::Enrollment {
@@ -882,7 +882,7 @@ async fn an_old_server_answering_404_changes_nothing() {
         server_url: cfg.server_url.clone(),
         tenant_id: cfg.tenant_id.clone(),
         agent_id: cfg.agent_id.clone(),
-        token: roomlerd::token_slot::TokenSlot::new(cfg.agent_token.clone()),
+        token: meshharbord::token_slot::TokenSlot::new(cfg.agent_token.clone()),
     };
     let due_now = Settings {
         horizon: Some(Duration::from_secs(400 * 86_400)),

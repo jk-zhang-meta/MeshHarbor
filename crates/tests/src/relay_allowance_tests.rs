@@ -11,8 +11,8 @@
 //! PUBLISHES, which is scoped to each test's own database.
 
 use bson::{DateTime, Document, doc, oid::ObjectId};
-use roomler_ai_mod_network::{NetworkState, relay_allowance};
-use roomler_ai_services::dao::overlay_network::OverlayNetworkDao;
+use meshharbor_mod_network::{NetworkState, relay_allowance};
+use meshharbor_services::dao::overlay_network::OverlayNetworkDao;
 
 use crate::fixtures::test_app::TestApp;
 
@@ -30,7 +30,7 @@ fn oid(hex: &str) -> ObjectId {
     ObjectId::parse_str(hex).unwrap()
 }
 
-fn enable(s: &mut roomler_ai_config::Settings) {
+fn enable(s: &mut meshharbor_config::Settings) {
     s.relay_allowance.enabled = true;
 }
 
@@ -298,7 +298,7 @@ async fn the_org_page_says_when_the_throttle_is_on() {
 #[tokio::test]
 async fn the_poller_pushes_the_signed_set_to_the_pops() {
     use base64::Engine as _;
-    use roomler_ai_remote_control::derp_ticket::{self, DerpTicketSigner};
+    use meshharbor_remote_control::derp_ticket::{self, DerpTicketSigner};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 

@@ -155,7 +155,7 @@ describe('KeepBusyMenu (FR-92)', () => {
 
   // ── FR-92 P8 — the org's default pattern ──────────────────────────
 
-  const KEY = 'roomler-rc-keep-busy.v1:'
+  const KEY = 'meshharbor-rc-keep-busy.v1:'
 
   it('P8: pre-selects the org default on a device nothing is remembered for', async () => {
     localStorage.removeItem(KEY + 'agent-fresh')

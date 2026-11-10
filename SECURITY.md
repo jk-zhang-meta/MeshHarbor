@@ -1,17 +1,17 @@
 # Security policy
 
-Roomler asks you to run a privileged daemon that can see your screen, inject
+MeshHarbor asks you to run a privileged daemon that can see your screen, inject
 input and route your traffic. We treat security reports accordingly.
 
 ## Reporting a vulnerability
 
-**security@roomler.ai** — or open a [private security advisory](https://github.com/gjovanov/roomler-ai/security/advisories/new)
+**security@meshharbor.itachi.fans** — or open a [private security advisory](https://github.com/jk-zhang-meta/MeshHarbor/security/advisories/new)
 on GitHub, which is preferred because it keeps the discussion attached to the code.
 
 Please do **not** open a public issue for a suspected vulnerability.
 
 Useful to include: what you did, what happened, the version
-(`roomlerd --version`), platform, and whether the issue needs an authenticated
+(`meshharbord --version`), platform, and whether the issue needs an authenticated
 account or prior access to a device.
 
 ### What to expect
@@ -28,14 +28,14 @@ it ships and in which version. We do not currently operate a paid bounty.
 
 ## Supported versions
 
-Roomler ships as a rolling release. **The current release line receives security
+MeshHarbor ships as a rolling release. **The current release line receives security
 fixes**; older agent builds self-update. If you are running a pinned or
 air-gapped deployment and need a fix backported, say so in your report.
 
 ## Scope
 
-In scope: the server, the agent (`roomlerd`), the CLI, desktop and setup apps,
-the overlay/tunnel data planes, and the hosted service at `roomler.ai`.
+In scope: the server, the agent (`meshharbord`), the CLI, desktop and setup apps,
+the overlay/tunnel data planes, and the hosted service at `meshharbor.itachi.fans`.
 
 Out of scope: findings that require a compromised host as a precondition;
 denial of service against your own deployment; missing hardening headers with no
@@ -56,7 +56,7 @@ Releases are signed and attested — Windows Authenticode (publisher
 the binary, and SLSA build provenance:
 
 ```
-gh attestation verify <artifact> --repo gjovanov/roomler-ai
+gh attestation verify <artifact> --repo jk-zhang-meta/MeshHarbor
 ```
 
 See [docs/code-signing.md](docs/code-signing.md).

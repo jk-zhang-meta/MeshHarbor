@@ -9,6 +9,10 @@
       "methods": "GET,HEAD"
     },
     {
+      "path": "/api/account/devices/{id}/local-accounts",
+      "methods": "GET,HEAD,POST"
+    },
+    {
       "path": "/api/admin/business-authority/{kind}/{tenant_id}/{device_id}",
       "methods": "GET,HEAD,PUT"
     },
@@ -362,6 +366,22 @@
     },
     {
       "path": "/api/log/browser",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/share-ssh/authorizations",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/share-ssh/authorizations/exchange",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/share-ssh/authorizations/{id}/decision",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/share-ssh/authorizations/{id}/preview",
       "methods": "POST"
     },
     {
@@ -2086,6 +2106,100 @@
             "key": {
               "content": "text"
             }
+          }
+        ]
+      },
+      {
+        "collection": "native_ssh_audit",
+        "indexes": [
+          {
+            "key": {
+              "authorization_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "share_grant_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "tenant_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "device_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "recipient_user_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "at": 1
+            },
+            "expireAfterSeconds": 7776000
+          }
+        ]
+      },
+      {
+        "collection": "native_ssh_authorizations",
+        "indexes": [
+          {
+            "key": {
+              "authorization_id": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "device_code_hash": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "client_hash": 1,
+              "client_slot": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "share_hash": 1,
+              "share_slot": 1
+            },
+            "unique": true,
+            "partialFilterExpression": {
+              "share_hash": {
+                "$type": "string"
+              }
+            }
+          },
+          {
+            "key": {
+              "grant_hash": 1
+            },
+            "unique": true,
+            "partialFilterExpression": {
+              "grant_hash": {
+                "$type": "string"
+              }
+            }
+          },
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
           }
         ]
       },
@@ -4380,6 +4494,100 @@
         ]
       },
       {
+        "collection": "native_ssh_audit",
+        "indexes": [
+          {
+            "key": {
+              "authorization_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "share_grant_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "tenant_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "device_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "recipient_user_id": 1,
+              "at": -1
+            }
+          },
+          {
+            "key": {
+              "at": 1
+            },
+            "expireAfterSeconds": 7776000
+          }
+        ]
+      },
+      {
+        "collection": "native_ssh_authorizations",
+        "indexes": [
+          {
+            "key": {
+              "authorization_id": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "device_code_hash": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "client_hash": 1,
+              "client_slot": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "share_hash": 1,
+              "share_slot": 1
+            },
+            "unique": true,
+            "partialFilterExpression": {
+              "share_hash": {
+                "$type": "string"
+              }
+            }
+          },
+          {
+            "key": {
+              "grant_hash": 1
+            },
+            "unique": true,
+            "partialFilterExpression": {
+              "grant_hash": {
+                "$type": "string"
+              }
+            }
+          },
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
+          }
+        ]
+      },
+      {
         "collection": "newsletter_issues",
         "indexes": [
           {
@@ -5760,6 +5968,7 @@
   "wire": [
     "rc:share.ssh.connect",
     "rc:share.ssh.prepared",
+    "rc:accounts.result",
     "rc:share.ssh.lease.challenge",
     "rc:share.lease.challenge",
     "rc:agent.hello",
@@ -5811,6 +6020,12 @@
     "rc:consent.pending",
     "rc:session.request",
     "rc:sdp.offer",
+    "rc:file.child.reserve",
+    "rc:file.sdp.offer",
+    "rc:file.sdp.answer",
+    "rc:file.ice",
+    "rc:file.child.complete",
+    "rc:file.child.revoke_ack",
     "rc:ice",
     "rc:terminate",
     "rc:ping",
@@ -5856,6 +6071,7 @@
     "rc:extauth.ke2",
     "rc:extauth.outcome",
     "rc:extauth.session",
+    "rc:accounts.request",
     "rc:share.ssh.setup",
     "rc:share.ssh.forward",
     "rc:share.ssh.lease.renewal",
@@ -5863,6 +6079,12 @@
     "rc:session.created",
     "rc:request",
     "rc:sdp.offer",
+    "rc:file.child.reserved",
+    "rc:file.sdp.offer",
+    "rc:file.sdp.answer",
+    "rc:file.ice",
+    "rc:file.child.complete",
+    "rc:file.child.revoke",
     "rc:sdp.answer",
     "rc:ice",
     "rc:consent.pending",
@@ -5963,6 +6185,7 @@
     "rc:overlay.netmap"
   ],
   "namespaces": {
+    "rc:accounts.result": "fleet",
     "rc:agent.config_status": "fleet",
     "rc:agent.heartbeat": "fleet",
     "rc:agent.hello": "fleet",
@@ -5975,6 +6198,12 @@
     "rc:extauth.outcome": "remote",
     "rc:extauth.session": "remote",
     "rc:extauth.start": "remote",
+    "rc:file.child.complete": "remote",
+    "rc:file.child.reserve": "remote",
+    "rc:file.child.revoke_ack": "remote",
+    "rc:file.ice": "remote",
+    "rc:file.sdp.answer": "remote",
+    "rc:file.sdp.offer": "remote",
     "rc:forward.status": "network",
     "rc:hive.adopt": "hive",
     "rc:hive.approval": "hive",

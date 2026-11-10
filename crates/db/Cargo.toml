@@ -1,12 +1,12 @@
 [package]
-name = "roomler-ai-db"
+name = "meshharbor-db"
 license = "AGPL-3.0-only"
 publish = false
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-roomler-ai-config = { path = "../config" }
+meshharbor-config = { path = "../config" }
 mongodb.workspace = true
 bson.workspace = true
 serde.workspace = true

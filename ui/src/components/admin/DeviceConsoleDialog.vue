@@ -8,9 +8,9 @@
         <!-- The span shrinks with an ellipsis (min-width: 0), so the title's own
              buttons stay on screen: a title never wraps, and a long device name
              used to push Close or Refresh past the edge on a phone. -->
-        <span class="text-truncate" style="min-width: 0">Device console — {{ agentName }}</span>
+        <span class="text-truncate" style="min-width: 0">{{ t('mh.console.title', { name: agentName }) }}</span>
         <v-spacer />
-        <v-btn icon="mdi-close" size="small" variant="text" @click="close" aria-label="Close" />
+        <v-btn icon="mdi-close" size="small" variant="text" @click="close" :aria-label="t('mh.console.close')" />
       </v-card-title>
 
       <!-- Say plainly what running a command here means. Under systemd the
@@ -21,7 +21,7 @@
            UI, not from an incident. -->
       <!-- In the card text, not a v-card-subtitle: a subtitle never wraps and
            dims its content, which turned this warning into one clipped grey
-           line ("Commands run with the Roomler d…") at every width. -->
+           line ("Commands run with the MeshHarbor d…") at every width. -->
       <v-card-text :style="fullscreen ? undefined : 'max-height: 70vh'">
         <v-alert
           type="warning"
@@ -30,11 +30,11 @@
           class="mb-3"
           icon="mdi-shield-alert-outline"
         >
-          Commands run with the Roomler daemon's privileges:
-          <strong>root</strong> on Linux. On Windows they run as the
-          <strong>signed-in user</strong> on an attended install, or as
-          <strong>SYSTEM</strong> in SystemContext mode.
-          Every attempt is recorded in the org's execution audit log.
+          <i18n-t keypath="mh.console.warn" tag="span" scope="global">
+            <template #root><strong>root</strong></template>
+            <template #user><strong>{{ t('mh.settings.exec.signedInUser') }}</strong></template>
+            <template #system><strong>SYSTEM</strong></template>
+          </i18n-t>
         </v-alert>
 
         <!-- Explain a closed gate BEFORE the operator types a command and
@@ -55,7 +55,7 @@
           <v-select
             v-model="shell"
             :items="shellOptions"
-            label="Shell"
+            :label="t('mh.console.shell')"
             density="compact"
             variant="outlined"
             hide-details
@@ -63,7 +63,7 @@
           />
           <v-text-field
             v-model.number="timeoutSecs"
-            label="Timeout (s)"
+            :label="t('mh.console.timeout')"
             type="number"
             density="compact"
             variant="outlined"
@@ -86,7 +86,7 @@
 
         <v-textarea
           v-model="command"
-          label="Command"
+          :label="t('mh.console.command')"
           rows="3"
           auto-grow
           density="compact"
@@ -97,7 +97,7 @@
           @keydown.ctrl.enter.prevent="run"
         />
         <div class="d-flex align-center mb-4">
-          <span class="text-caption text-medium-emphasis">Ctrl+Enter to run</span>
+          <span class="text-caption text-medium-emphasis">{{ t('mh.console.hint') }}</span>
           <v-spacer />
           <v-btn
             color="primary"
@@ -106,7 +106,7 @@
             :disabled="!command.trim()"
             @click="run"
           >
-            Run
+            {{ t('mh.console.run') }}
           </v-btn>
         </div>
 
@@ -119,17 +119,17 @@
             <v-chip size="small" :color="statusColor(entry)" variant="flat">
               {{ statusLabel(entry) }}
             </v-chip>
-            <code class="text-caption">{{ entry.shell || 'default' }}</code>
+            <code class="text-caption">{{ entry.shell || t('mh.console.default') }}</code>
             <span class="text-caption text-medium-emphasis">{{ entry.duration_ms }} ms</span>
             <v-chip v-if="entry.truncated" size="x-small" color="warning" variant="tonal">
-              output truncated
+              {{ t('mh.console.truncated') }}
             </v-chip>
             <v-spacer />
             <v-btn
               icon="mdi-content-copy"
               size="x-small"
               variant="text"
-              aria-label="Copy output"
+              :aria-label="t('mh.console.copy')"
               @click="copyOutput(entry)"
             />
           </div>
@@ -140,7 +140,7 @@
         </div>
 
         <div v-if="!history.length && !running" class="text-medium-emphasis text-caption">
-          No commands run in this session yet.
+          {{ t('mh.console.empty') }}
         </div>
       </v-card-text>
     </v-card>
@@ -152,6 +152,9 @@ import { computed, ref, watch } from 'vue'
 import { useAgentStore, type Agent, type ExecResult } from '@/stores/agents'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import { deviceLabel } from '@/composables/useHideDeviceName'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   modelValue: boolean
@@ -188,13 +191,13 @@ const inFlight = ref<string | null>(null)
 const shellOptions = computed(() =>
   props.agent?.os === 'windows'
     ? [
-        { title: 'Host default (PowerShell)', value: '' },
+        { title: t('mh.console.hostDefaultPs'), value: '' },
         { title: 'powershell', value: 'powershell' },
         { title: 'pwsh', value: 'pwsh' },
         { title: 'cmd', value: 'cmd' },
       ]
     : [
-        { title: 'Host default (bash)', value: '' },
+        { title: t('mh.console.hostDefaultBash'), value: '' },
         { title: 'bash', value: 'bash' },
         { title: 'sh', value: 'sh' },
       ],
@@ -205,24 +208,23 @@ const shellOptions = computed(() =>
  *  blocking. */
 const blockedReason = computed<string | null>(() => {
   if (agentStore.orgExecEnabled === false) {
-    return 'Remote execution is switched off for this organization. An org owner can enable it in Settings.'
+    return t('mh.console.orgOff')
   }
   if ((props.agent?.exec_policy?.mode ?? 'off') !== 'on') {
-    return 'This device does not accept remote commands. Enable it in the device’s execution policy.'
+    return t('mh.console.deviceOff')
   }
   if (props.agent && !props.agent.is_online && props.agent.presence !== 'online') {
-    return 'This device is offline — commands will fail until it reconnects.'
+    return t('mh.console.offline')
   }
   if (!(props.agent?.capabilities?.rpc ?? []).includes('exec')) {
-    return `This device runs agent ${props.agent?.agent_version ?? '?'}, which predates remote execution. Update it first.`
+    return t('mh.console.tooOld', { version: props.agent?.agent_version ?? '?' })
   }
   return null
 })
 
 function statusLabel(e: ExecResult): string {
-  if (e.error) return 'refused'
-  if (e.exit_code === 0) return 'exit 0'
-  return `exit ${e.exit_code ?? '?'}`
+  if (e.error) return t('mh.audit.refused')
+  return t('mh.audit.exit', { code: e.exit_code ?? '?' })
 }
 
 function statusColor(e: ExecResult): string {

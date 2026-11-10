@@ -10,7 +10,7 @@
 //! other organization is answered as if the module were not there for it.
 //!
 //! ⚠️ `vault.people` reads the other way about: empty is NO organization
-//! ([`TenantScope::parse_opt_in`]). A person's `roomler connect` is a new
+//! ([`TenantScope::parse_opt_in`]). A person's `mh connect` is a new
 //! kind of principal, and an organization the vault already serves for its
 //! sessions must not start lending to its people on an upgrade.
 //!

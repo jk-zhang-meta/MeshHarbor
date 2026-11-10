@@ -9,7 +9,7 @@ use lettre::{
         header::{ContentType, HeaderName, HeaderValue},
     },
 };
-use roomler_ai_config::EmailSettings;
+use meshharbor_config::EmailSettings;
 use serde::Serialize;
 use tracing::{info, warn};
 
@@ -403,11 +403,11 @@ impl EmailService {
         tenant_name: &str,
         invite_url: &str,
     ) -> anyhow::Result<()> {
-        let subject = format!("You're invited to join {} on Roomler", tenant_name);
+        let subject = format!("You're invited to join {} on MeshHarbor", tenant_name);
         let html = format!(
             r#"<div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
 <h2>You're invited!</h2>
-<p><strong>{inviter}</strong> has invited you to join <strong>{tenant}</strong> on Roomler.</p>
+<p><strong>{inviter}</strong> has invited you to join <strong>{tenant}</strong> on MeshHarbor.</p>
 <p style="margin: 24px 0;">
   <a href="{url}" style="background: #1976d2; color: #fff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold;">
     Accept Invitation
@@ -416,7 +416,7 @@ impl EmailService {
 <p style="color: #666; font-size: 13px;">
   Or copy this link: <a href="{url}">{url}</a>
 </p>
-<p style="color: #999; font-size: 12px; margin-top: 32px;">— The Roomler Team</p>
+<p style="color: #999; font-size: 12px; margin-top: 32px;">— The MeshHarbor Team</p>
 </div>"#,
             inviter = inviter_name,
             tenant = tenant_name,
@@ -453,7 +453,7 @@ impl EmailService {
   If you didn't expect this, open the link and deny — the session cannot start
   without your approval, and the link expires shortly.
 </p>
-<p style="color: #999; font-size: 12px; margin-top: 32px;">— The Roomler Team</p>
+<p style="color: #999; font-size: 12px; margin-top: 32px;">— The MeshHarbor Team</p>
 </div>"#,
             controller = controller_name,
             device = device_name,
@@ -486,7 +486,7 @@ consent prompt.</p>
   If this was unexpected, contact your tenant administrator. This access is recorded in
   the remote-control audit log.
 </p>
-<p style="color: #999; font-size: 12px; margin-top: 32px;">— The Roomler Team</p>
+<p style="color: #999; font-size: 12px; margin-top: 32px;">— The MeshHarbor Team</p>
 </div>"#,
             admin = admin_name,
             device = device_name,
@@ -517,7 +517,7 @@ consent prompt.</p>
     View Message
   </a>
 </p>
-<p style="color: #999; font-size: 12px; margin-top: 32px;">— The Roomler Team</p>
+<p style="color: #999; font-size: 12px; margin-top: 32px;">— The MeshHarbor Team</p>
 </div>"#,
             mentioner = mentioner_name,
             room = room_name,
@@ -535,7 +535,7 @@ consent prompt.</p>
         activation_url: &str,
         ttl_minutes: u64,
     ) -> anyhow::Result<()> {
-        let subject = "Activate your Roomler account".to_string();
+        let subject = "Activate your MeshHarbor account".to_string();
         let html = format!(
             r#"<div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
 <h2>Welcome, {name}!</h2>
@@ -562,12 +562,12 @@ consent prompt.</p>
         display_name: &str,
         login_url: &str,
     ) -> anyhow::Result<()> {
-        let subject = "Your Roomler account is active".to_string();
+        let subject = "Your MeshHarbor account is active".to_string();
         let html = format!(
             r#"<div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
 <h2>Account activated, {name}!</h2>
-<p>Your Roomler account is now active. You can <a href="{url}">sign in here</a>.</p>
-<p style="color: #999; font-size: 12px; margin-top: 32px;">— The Roomler Team</p>
+<p>Your MeshHarbor account is now active. You can <a href="{url}">sign in here</a>.</p>
+<p style="color: #999; font-size: 12px; margin-top: 32px;">— The MeshHarbor Team</p>
 </div>"#,
             name = display_name,
             url = login_url,
@@ -582,17 +582,17 @@ consent prompt.</p>
         display_name: &str,
         app_url: &str,
     ) -> anyhow::Result<()> {
-        let subject = "Welcome to Roomler!".to_string();
+        let subject = "Welcome to MeshHarbor!".to_string();
         let html = format!(
             r#"<div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
 <h2>Welcome, {name}!</h2>
-<p>Your Roomler account is ready. Start collaborating with your team.</p>
+<p>Your MeshHarbor account is ready. Start collaborating with your team.</p>
 <p style="margin: 24px 0;">
   <a href="{url}" style="background: #1976d2; color: #fff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold;">
     Get Started
   </a>
 </p>
-<p style="color: #999; font-size: 12px; margin-top: 32px;">— The Roomler Team</p>
+<p style="color: #999; font-size: 12px; margin-top: 32px;">— The MeshHarbor Team</p>
 </div>"#,
             name = display_name,
             url = app_url,
@@ -667,7 +667,7 @@ mod tests {
         vec![
             (
                 "List-Unsubscribe".to_string(),
-                "<https://roomler.test/api/subscribe/unsubscribe/tok>".to_string(),
+                "<https://meshharbor.test/api/subscribe/unsubscribe/tok>".to_string(),
             ),
             (
                 "List-Unsubscribe-Post".to_string(),
@@ -769,7 +769,7 @@ mod tests {
         );
         assert_eq!(
             json["headers"]["List-Unsubscribe"],
-            "<https://roomler.test/api/subscribe/unsubscribe/tok>"
+            "<https://meshharbor.test/api/subscribe/unsubscribe/tok>"
         );
         assert_eq!(json["from"]["email"], "news@test.local");
         assert_eq!(json["from"]["name"], "Field Notes");
@@ -789,7 +789,9 @@ mod tests {
             .expect("message should build");
         let wire = String::from_utf8_lossy(&msg.formatted()).to_string();
         assert!(
-            wire.contains("List-Unsubscribe: <https://roomler.test/api/subscribe/unsubscribe/tok>"),
+            wire.contains(
+                "List-Unsubscribe: <https://meshharbor.test/api/subscribe/unsubscribe/tok>"
+            ),
             "unsubscribe header missing from the wire form:\n{wire}"
         );
         assert!(wire.contains("List-Unsubscribe-Post: List-Unsubscribe=One-Click"));

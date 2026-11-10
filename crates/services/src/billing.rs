@@ -29,7 +29,7 @@ use bson::{DateTime, oid::ObjectId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use roomler_ai_db::models::tenant::BillingInterval;
+use meshharbor_db::models::tenant::BillingInterval;
 
 use crate::dao::billing_event::{BillingEvent, BillingKind, BillingSource};
 
@@ -266,7 +266,7 @@ pub struct PriceIds<'a> {
 }
 
 impl<'a> PriceIds<'a> {
-    pub fn of(s: &'a roomler_ai_config::StripeSettings) -> Self {
+    pub fn of(s: &'a meshharbor_config::StripeSettings) -> Self {
         Self {
             pro: s.price_pro.trim(),
             business: s.price_business.trim(),

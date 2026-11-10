@@ -16,7 +16,7 @@
 //!   the Campaigns table's `reach` column filled from the same posts.
 
 use bson::{Document, doc};
-use roomler_ai_services::dao::{
+use meshharbor_services::dao::{
     growth_key::GROWTH_KEYS,
     growth_social::{GROWTH_POST_SNAPSHOTS, GROWTH_POSTS},
 };
@@ -74,7 +74,7 @@ fn post_body(platform: &str, id: &str, published: &str) -> Value {
     json!({
         "platform": platform,
         "platform_id": id,
-        "account": "roomler-ai",
+        "account": "meshharbor",
         "format": "post",
         "url": format!("https://www.linkedin.com/feed/update/{id}/"),
         "published_at": published,
@@ -348,9 +348,9 @@ async fn ac18_a_missing_wrong_or_revoked_key_gets_404_never_401() {
     let (off, off_token) = admin_app(&base, "good", |s| s.growth.enabled = false).await;
     let (off_key, _) = {
         // Minting is a growth route too — off here; write a key directly.
-        let (k, raw) = roomler_ai_services::dao::growth_key::GrowthKeyDao::new(&off.db)
+        let (k, raw) = meshharbor_services::dao::growth_key::GrowthKeyDao::new(&off.db)
             .mint(
-                roomler_ai_services::dao::growth_key::GrowthKeyKind::Ingest,
+                meshharbor_services::dao::growth_key::GrowthKeyKind::Ingest,
                 "test",
                 bson::oid::ObjectId::new(),
                 bson::DateTime::now(),
@@ -367,9 +367,9 @@ async fn ac18_a_missing_wrong_or_revoked_key_gets_404_never_401() {
     // Without `saas` the routes do not exist at all.
     let (bare, _) = admin_app(&base, "good", |s| s.modules.saas = false).await;
     let (raw, _) = {
-        let (k, raw) = roomler_ai_services::dao::growth_key::GrowthKeyDao::new(&bare.db)
+        let (k, raw) = meshharbor_services::dao::growth_key::GrowthKeyDao::new(&bare.db)
             .mint(
-                roomler_ai_services::dao::growth_key::GrowthKeyKind::Ingest,
+                meshharbor_services::dao::growth_key::GrowthKeyKind::Ingest,
                 "test",
                 bson::oid::ObjectId::new(),
                 bson::DateTime::now(),
@@ -520,7 +520,7 @@ async fn the_channels_view_joins_reach_visitors_signups_and_spend_by_each_posts_
     assert_eq!(push(&app, POSTS, &key, &yt).await.0, 201);
     // X with a key purestat never saw.
     let mut x = post_body("x", "1849000000000000001", &published);
-    x["url"] = json!("https://x.com/roomler_ai/status/1849000000000000001");
+    x["url"] = json!("https://x.com/meshharbor/status/1849000000000000001");
     x["utm_source"] = json!("x");
     x["utm_campaign"] = json!("c9");
     x.as_object_mut().unwrap().remove("cost_cents");
@@ -650,10 +650,10 @@ async fn the_channels_view_joins_reach_visitors_signups_and_spend_by_each_posts_
     );
     taken_yesterday["taken_at"] = json!(yesterday_at(20));
     assert_eq!(push(&app, SNAPSHOTS, &key, &taken_yesterday).await.0, 201);
-    let sections = roomler_ai_api::growth::digest::compute(
+    let sections = meshharbor_api::growth::digest::compute(
         &app.state,
         y,
-        &roomler_core::growth::ExclusionSet::none(),
+        &meshharbor_core::growth::ExclusionSet::none(),
         bson::DateTime::now(),
     )
     .await

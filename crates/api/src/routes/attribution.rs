@@ -35,7 +35,7 @@ use axum::{
     extract::{Query, State},
 };
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_services::dao::user::{MAX_SIGNUP_ROWS, SignupRow};
+use meshharbor_services::dao::user::{MAX_SIGNUP_ROWS, SignupRow};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -345,7 +345,7 @@ pub(crate) fn tally(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_ai_db::models::SignupAttribution;
+    use meshharbor_db::models::SignupAttribution;
 
     const DAY: i64 = 86_400_000;
 

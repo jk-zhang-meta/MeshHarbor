@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //! FR-90 — what the Hive test binaries share: a real server (`TestApp`), a
-//! real device in-process (`roomlerd`'s signalling loop), a browser's user
+//! real device in-process (`meshharbord`'s signalling loop), a browser's user
 //! socket and its viewer peer, and the harness's side of a toolbelt. Each
 //! binary is its own process because the device's Hive supervisor is
 //! process-global (`hive_canary.rs`, `hive_drivers.rs`, `hive_memory.rs`,
@@ -14,12 +14,12 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use roomler_ai_tests::fixtures::seed::SeededTenant;
-use roomler_ai_tests::fixtures::test_app::TestApp;
-use roomlerd::config::AgentConfig;
-use roomlerd::encode::EncoderPreference;
-use roomlerd::hive::framing::{self, Bounds, Reassembler};
-use roomlerd::{enrollment, signaling};
+use meshharbor_tests::fixtures::seed::SeededTenant;
+use meshharbor_tests::fixtures::test_app::TestApp;
+use meshharbord::config::AgentConfig;
+use meshharbord::encode::EncoderPreference;
+use meshharbord::hive::framing::{self, Bounds, Reassembler};
+use meshharbord::{enrollment, signaling};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
@@ -310,7 +310,7 @@ pub async fn enrol(app: &TestApp, seeded: &SeededTenant, machine: &str) -> Agent
     .expect("agent enrollment")
 }
 
-/// `roomlerd run`'s signalling loop, with the handles `main.rs` gives it.
+/// `meshharbord run`'s signalling loop, with the handles `main.rs` gives it.
 pub fn spawn_device(
     cfg: AgentConfig,
     stop: tokio::sync::watch::Receiver<bool>,
@@ -318,18 +318,18 @@ pub fn spawn_device(
     tokio::spawn(async move {
         let connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
-        let broker = roomlerd::consent::ConsentBroker::new(
-            roomlerd::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-test-consent-{}", cfg.agent_id)),
+        let broker = meshharbord::consent::ConsentBroker::new(
+            meshharbord::consent::Mode::AutoGrant,
+            std::env::temp_dir().join(format!("meshharbor-test-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         let exec_enabled = cfg.exec_enabled;
         let remote_config_enabled = cfg.remote_config_enabled;
         let _ = signaling::run(
-            signaling::OrgCtx::primary(roomlerd::token_slot::TokenSlot::new(
+            signaling::OrgCtx::primary(meshharbord::token_slot::TokenSlot::new(
                 cfg.agent_token.clone(),
             )),
-            roomlerd::delegate::Delegation::Off,
+            meshharbord::delegate::Delegation::Off,
             cfg,
             EncoderPreference::Software,
             stop,
@@ -337,14 +337,14 @@ pub fn spawn_device(
             view_tx,
             Default::default(),
             broker,
-            roomlerd::tunnel::client_mgr::TunnelClientHub::new("test".into()),
-            roomlerd::remote_config::RemoteConfigServices::new(
+            meshharbord::tunnel::client_mgr::TunnelClientHub::new("test".into()),
+            meshharbord::remote_config::RemoteConfigServices::new(
                 PathBuf::from("unused-in-tests.toml"),
                 Arc::new(tokio::sync::Mutex::new(())),
                 exec_enabled,
                 remote_config_enabled,
             ),
-            roomlerd::rc_sessions::RcSessionRegistry::new(),
+            meshharbord::rc_sessions::RcSessionRegistry::new(),
         )
         .await;
     })
@@ -636,7 +636,7 @@ pub async fn memory_device(
     cfg.hive_roots = vec![roots.display().to_string()];
     cfg.hive_harness = Some(harness.display().to_string());
     cfg.hive_core_memory = core_memory;
-    roomlerd::hive::init_as_daemon(
+    meshharbord::hive::init_as_daemon(
         &cfg,
         &dir.path().join("hive.db"),
         &dir.path().join("run"),
@@ -662,7 +662,7 @@ impl MemoryDevice {
     /// The session's own config directory: where Claude Code reads
     /// `CLAUDE.md`, and under `projects/` the auto-memory index.
     pub fn config_dir(&self, sid: &str) -> PathBuf {
-        self.home.join(".roomler/hive").join(sid).join("claude")
+        self.home.join(".meshharbor/hive").join(sid).join("claude")
     }
 
     /// The daemon's own copy of a session's core memory, which the account

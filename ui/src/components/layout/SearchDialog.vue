@@ -11,14 +11,14 @@
           size="small"
           variant="text"
           class="mr-1"
-          aria-label="Close search"
+          :aria-label="t('mh.search.close')"
           @click="dialogModel = false"
         />
         <v-icon v-else class="mr-2" size="small">mdi-magnify</v-icon>
         <v-text-field
           ref="searchInput"
           v-model="query"
-          placeholder="Search messages, rooms, people..."
+          :placeholder="t('mh.search.placeholder')"
           variant="plain"
           hide-details
           autofocus
@@ -34,15 +34,15 @@
           <v-progress-circular indeterminate size="24" />
         </div>
         <div v-else-if="!query" class="text-center pa-4 text-medium-emphasis">
-          Type to search across messages, rooms, and people
+          {{ t('mh.search.intro') }}
         </div>
         <div v-else-if="noResults" class="text-center pa-4 text-medium-emphasis">
-          No results found for "{{ query }}"
+          {{ t('mh.search.noResults', { query }) }}
         </div>
         <div v-else>
           <!-- Messages -->
           <div v-if="results.messages.length > 0">
-            <div class="text-overline px-4 pt-2">Messages</div>
+            <div class="text-overline px-4 pt-2">{{ t('mh.search.messages') }}</div>
             <v-list density="compact">
               <v-list-item
                 v-for="msg in results.messages"
@@ -54,14 +54,14 @@
                 </template>
                 <v-list-item-title class="text-body-2">{{ msg.content_preview }}</v-list-item-title>
                 <v-list-item-subtitle>
-                  {{ msg.author_name }} in #{{ msg.room_name }} &middot; {{ formatDate(msg.created_at) }}
+                  {{ t('mh.search.inRoom', { author: msg.author_name, room: msg.room_name }) }} &middot; {{ formatDate(msg.created_at) }}
                 </v-list-item-subtitle>
               </v-list-item>
             </v-list>
           </div>
           <!-- Rooms -->
           <div v-if="results.rooms.length > 0">
-            <div class="text-overline px-4 pt-2">Rooms</div>
+            <div class="text-overline px-4 pt-2">{{ t('mh.search.rooms') }}</div>
             <v-list density="compact">
               <v-list-item
                 v-for="room in results.rooms"
@@ -78,7 +78,7 @@
           </div>
           <!-- People -->
           <div v-if="results.users.length > 0">
-            <div class="text-overline px-4 pt-2">People</div>
+            <div class="text-overline px-4 pt-2">{{ t('mh.search.people') }}</div>
             <v-list density="compact">
               <v-list-item
                 v-for="user in results.users"
@@ -107,6 +107,9 @@ import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { useTenantStore } from '@/stores/tenant'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 interface SearchMessageResult {
   id: string
@@ -232,7 +235,7 @@ function formatDate(iso: string): string {
       return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
     if (diffDays < 7) {
-      return `${diffDays}d ago`
+      return t('mh.ago.d', { n: diffDays })
     }
     return d.toLocaleDateString()
   } catch {

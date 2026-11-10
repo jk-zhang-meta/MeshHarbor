@@ -59,8 +59,8 @@ while IFS= read -r file; do
     # ⚠️ Unclassified is an ERROR in --check, never a silent skip. A directory
     # RETIRED-NAME-ANCHOR: names the pre-FR-21 path on purpose — this comment
     # exists to record the rename that motivated the check.
-    # RENAME is what makes this matter: FR-21 moved agents/roomler-agent ->
-    # agents/roomlerd, and with a skip the whole daemon would have dropped out
+    # RENAME is what makes this matter: FR-21 moved agents/meshharbor-agent ->
+    # agents/meshharbord, and with a skip the whole daemon would have dropped out
     # of the sweep while the check still reported OK — files shipping with no
     # licence header at all, and nothing saying so.
     if [ "$MODE" = check ] && ! is_excluded "$file"; then

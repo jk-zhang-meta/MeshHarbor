@@ -4,7 +4,7 @@ use std::{ops, ptr, slice};
 pub struct Frame {
     surface: IOSurfaceRef,
     inner: &'static [u8],
-    // ROOMLER PATCH: see `bytes_per_row` below.
+    // MESHHARBOR PATCH: see `bytes_per_row` below.
     bytes_per_row: usize
 }
 
@@ -29,7 +29,7 @@ impl Frame {
         Frame { surface, inner, bytes_per_row }
     }
 
-    /// ROOMLER PATCH: bytes between the starts of two consecutive rows.
+    /// MESHHARBOR PATCH: bytes between the starts of two consecutive rows.
     ///
     /// This is NOT derivable from the slice: `len()` is
     /// `IOSurfaceGetAllocSize`, the page-rounded total allocation, so

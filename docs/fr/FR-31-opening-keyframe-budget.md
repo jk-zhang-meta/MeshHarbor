@@ -37,7 +37,7 @@ every run:
 
 Two things this is NOT, both refuted by data rather than assumed:
 - Not the viewer's FSR pass (FR-26 made it default-on): the curve is the same with
-  `roomler-rc-sharpen=off`.
+  `meshharbor-rc-sharpen=off`.
 - Not the DC-open race: `dc_unopen_drops` was 4 and 7 on runs that looked sharp and 5–16 on
   runs that looked blurry — and the "sharp" runs turned out to be a sampling artifact (Chrome
   throttles background-tab timers to 1 Hz, so the sampler missed the first second).
@@ -49,7 +49,7 @@ Two things this is NOT, both refuted by data rather than assumed:
    `if (ctx->quality)` block, which runs *later* in `nvenc_setup_rate_control` — does
    `averageBitRate = bit_rate = 0; vbvBufferSize = rc_buffer_size = 0; maxBitRate = rc_max_rate`.
    So the agent's HRD sizing in `encoder_options`
-   (`agents/roomlerd/src/encode/ffmpeg/encoder.rs:246-278`, the rc.234 "2× the ceiling" design
+   (`agents/meshharbord/src/encode/ffmpeg/encoder.rs:246-278`, the rc.234 "2× the ceiling" design
    and the rc.442/443 constrained-window notes) **never reaches the driver on NVENC**. The
    driver runs its own default for the `ll` tuning, which behaves as a single-frame reservoir:
    the opening IDR may spend ~`maxrate/fps` (85 kbit at 2.55 Mbps / 30 fps — the observed
@@ -82,7 +82,7 @@ is the same HRD window `encoder_options` already computes (`maxrate × hrd_pct /
 floored at 200 % both ways for the rc.443 reason) — factored into one pure function so the
 option dictionary and the post-open write cannot drift.
 
-Knob: env `ROOMLERD_NVENC_OPEN_VBV_PCT` / config-surface key `nvenc_open_vbv_pct`
+Knob: env `MESHHARBORD_NVENC_OPEN_VBV_PCT` / config-surface key `nvenc_open_vbv_pct`
 (new-env ⇒ config-key rule). `0` = kill switch (today's behaviour, byte-identical wire), `100`
 = the HRD the code always claimed. Default: ships as `100` (the window the code always claimed); the A/B below decides whether it stays or moves to `40` — a choice made on data, **not** by reasoning —
 the trade is real: a fuller opening IDR is a larger first frame, which on a 2.55 Mbps pipe is
@@ -100,11 +100,11 @@ knob (`nvenc_ldkfs`, default unset) in the rejection-tolerant `lowlat` tier. P1'
 default 0 (inert). If the driver honours `ldkfs` only under CBR, the remaining path is a
 vendored-ffmpeg patch mapping `rc_initial_buffer_occupancy` → `vbvInitialDelay`.
 
-**P0 — the A/B, on this box's own daemon** (self-view over `ROOMLERD_ICE_RELAY_TCP=1`, which
+**P0 — the A/B, on this box's own daemon** (self-view over `MESHHARBORD_ICE_RELAY_TCP=1`, which
 forces both a relay-class ICE path and the constrained profile — `peer.rs:1479`; the mirror
 recursion only affects inter-frame dynamics, the opening IDR captures a static screen). Legs:
 baseline · `pct=100` · `pct=40` · `tune=hq` (driver-default reservoir under a different
-tuning; env `ROOMLERD_FFMPEG_TUNE`, no code). Metrics per leg, N ≥ 5, foreground tab, 100 ms
+tuning; env `MESHHARBORD_FFMPEG_TUNE`, no code). Metrics per leg, N ≥ 5, foreground tab, 100 ms
 sampling logged: frame-1 bytes on the wire, TTFF, first-light sharpness as a fraction of the
 8 s steady state, time-to-crisp (≥ 90 % of steady state).
 
@@ -134,7 +134,7 @@ on the relay stand-in and then on the real pair `neo16 → CORPLAP-2`, N ≥ 5 e
 - [ ] TTFF p50 **not worse than today + 400 ms**; the number is reported either way
 - [ ] a 60 s drag on the same session: `send_wait` p99 and `viewer_age` max not regressed
       against the FR-18 numbers (the opening reservoir must not become a mid-session lump)
-- [ ] `ROOMLERD_NVENC_OPEN_VBV_PCT=0` restores today's wire byte-for-byte (frame 1 ≈ 5.6 KB)
+- [ ] `MESHHARBORD_NVENC_OPEN_VBV_PCT=0` restores today's wire byte-for-byte (frame 1 ≈ 5.6 KB)
 - [ ] no change on a DIRECT session's `send_wait` (the knob applies to every NVENC open; a
       direct session's larger cap makes the reservoir larger still)
 
@@ -148,7 +148,7 @@ on the relay stand-in and then on the real pair `neo16 → CORPLAP-2`, N ≥ 5 e
 
 - The carrier. CORPLAP-2 is relayed because a corporate VPN captures its LAN prefix; routing
   around that is VPN policy evasion (operator's standing rule). Surfacing the capture in
-  `roomler status` / the RC pill is its own FR.
+  `mh status` / the RC pill is its own FR.
 - The relay ceiling (`relay_max_bps`, the measured-rate program) — a faster relay would
   shrink every number here but is a different lever.
 - The viewer's FSR pass, the idle-refine machine, and `dc_unopen_drops` — all measured, none
@@ -160,5 +160,5 @@ on the relay stand-in and then on the real pair `neo16 → CORPLAP-2`, N ≥ 5 e
 |---|---|---|
 | 2026-08-29 | agent 0.4.15/0.4.17 (CORPLAP-2), web `v20260829-40e8fc071129` | P0: the table above; 5/5 runs; sharpening on/off identical; `dc_unopen_drops` uncorrelated. ffmpeg n8.1 `nvenc.c` read: `cq` zeroes the VBV after `-bufsize` is mapped; `vbvInitialDelay` never set; reconfigure honours `rc_buffer_size`. |
 | 2026-08-29 | agent 0.4.17 (CORPLAP-3, `av1_qsv`, relayed) | P2: frame 1 = 161 B key, frame 2 = 131 581 B inter at +300 ms, ~25 KB over the next 14 frames — converges in one frame; QSV needs nothing. |
-| 2026-08-29 | branch build (neo16 self-view, `ROOMLERD_ICE_RELAY_TCP=1`) | P0 A/B: kill switch = baseline (13–16 KB); `pct=100` 11.4 KB ×3; `tune=hq` 11.8–14.2 KB; `maxrate` ×10 → 132–140 KB, first light 99–100 %. P1 refuted; `ldkfs` next. |
+| 2026-08-29 | branch build (neo16 self-view, `MESHHARBORD_ICE_RELAY_TCP=1`) | P0 A/B: kill switch = baseline (13–16 KB); `pct=100` 11.4 KB ×3; `tune=hq` 11.8–14.2 KB; `maxrate` ×10 → 132–140 KB, first light 99–100 %. P1 refuted; `ldkfs` next. |
 | 2026-08-29 | branch build + `ldkfs=8` (option line confirms `… delay=0 ldkfs=8` accepted) | frame 1 = 17.2 · 15.3 KB — inert under `rc=vbr`+`cq` (documented for single-frame VBV **and CBR**). `maxrate` ×3 → 34.7 KB: the slope is linear. Remaining levers on #897: the relay ceiling (a different FR), a vendored-ffmpeg `vbvInitialDelay` patch (uncertain), or accept the physics. |

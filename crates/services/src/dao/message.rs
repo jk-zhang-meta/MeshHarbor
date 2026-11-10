@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
-use mongodb::Database;
-use roomler_ai_db::models::{
+use meshharbor_db::models::{
     AuthorType, ContentType, Mentions, Message, MessageAttachment, MessageType, ReactionSummary,
 };
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 
@@ -117,7 +117,7 @@ impl MessageDao {
         room_id: ObjectId,
         author_id: ObjectId,
         author_display: String,
-        binding: roomler_ai_db::models::Binding,
+        binding: meshharbor_db::models::Binding,
         content: String,
     ) -> DaoResult<Message> {
         let now = DateTime::now();

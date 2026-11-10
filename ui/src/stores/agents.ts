@@ -191,7 +191,7 @@ export interface AgentCapabilities {
    *  `crates/remote_control/src/models.rs`. */
   audio?: string[]
   /** Fleet RPC. Known values: `'exec'` (honours rc:rpc.exec) and
-   *  `'originate'` (its LocalAPI can drive `roomler exec` at other
+   *  `'originate'` (its LocalAPI can drive `mh exec` at other
    *  devices). Empty / unset on agents that predate the feature — the
    *  console tells the operator to update the agent rather than letting
    *  them send a frame it would silently drop. */
@@ -252,6 +252,14 @@ export interface AgentCapabilities {
    *  "unavailable". Read it through `utils/hostUnavailable`, never directly.
    *  Mirrors `AgentCaps.unavailable`. */
   unavailable?: Record<string, { code: string; reason: string }>
+  /** RC/RDP Phase B — whether a local RDP server is listening on TCP port 3389
+   *  (`false` on Windows Home SKUs or when nothing listens on 3389). Absent on
+   *  older agents. Mirrors `AgentCaps.rdp_available`. */
+  rdp_available?: boolean
+  /** RC/RDP Phase B — lowercase colon-separated SHA-256 fingerprint of the
+   *  local RDP server's TLS certificate (`aa:bb:…`), when readable. Mirrors
+   *  `AgentCaps.rdp_cert_sha256`. */
+  rdp_cert_sha256?: string
 }
 
 /** FR-77 — one encoder and the chroma formats it opened in. Wire strings:
@@ -292,7 +300,7 @@ export interface Agent {
   machine_id: string
   os: AgentOs
   agent_version: string
-  /** FR-27 — the `roomler-desktop` version installed on the host, reported on
+  /** FR-27 — the `meshharbor-desktop` version installed on the host, reported on
    *  the heartbeat. Absent means one of three things and the UI must not
    *  flatten them: a pre-FR-27 agent, no companion installed, or a probe that
    *  could not read one. The daemon and the companion update by different
@@ -326,7 +334,7 @@ export interface Agent {
   token_expires_at?: string | null
   access_policy: AccessPolicy
   /** Subnet-router CIDRs this agent advertises for the mesh subnet-router
-   *  (Phase 2). Managed via the Subnet-routes dialog; the `roomler`
+   *  (Phase 2). Managed via the Subnet-routes dialog; the `meshharbor`
    *  mesh longest-prefix-matches a LAN target IP against these to pick the
    *  covering agent. Optional because pre-Phase-2 agents / older API
    *  responses may omit it. */
@@ -349,7 +357,7 @@ export interface Agent {
    *  its commands run as SYSTEM through its service. Who and when; the
    *  credential never leaves the device. */
   exec_anchor?: { anchored_at: string; anchored_by: string } | null
-  /** Roomler SSH gate 3. Same rule as `exec_policy`: absent means OFF.
+  /** MeshHarbor SSH gate 3. Same rule as `exec_policy`: absent means OFF.
    *
    *  ⚠️ Absent is also the ONLY correct reading for an unconfigured device:
    *  the server's model default names `account_mode: 'daemon'` (SYSTEM /
@@ -407,7 +415,7 @@ export type ExecMode = 'off' | 'on'
  *  granting root on that device, which the dialog says in those words. */
 export interface ExecPolicy {
   mode: ExecMode
-  /** May this device ORIGINATE commands against others (`roomler exec` from
+  /** May this device ORIGINATE commands against others (`mh exec` from
    *  its CLI)? Default false — without it, one compromised laptop would
    *  inherit its owner's exec rights across the whole fleet. */
   can_originate: boolean
@@ -426,7 +434,7 @@ export interface ExecPolicy {
   run_as?: 'system' | 'console_user'
 }
 
-/** Roomler SSH — whether a device accepts interactive sessions at all.
+/** MeshHarbor SSH — whether a device accepts interactive sessions at all.
  *  Mirrors the Rust `SshMode`. Default `off` everywhere. */
 export type SshMode = 'off' | 'on'
 
@@ -440,7 +448,7 @@ export type SshMode = 'off' | 'on'
  *  (FR-97 P5a), for an agent that says `console-user`. */
 export type SshAccountMode = 'daemon' | 'console_user' | 'named'
 
-/** Roomler SSH gate 3 — the per-device session policy.
+/** MeshHarbor SSH gate 3 — the per-device session policy.
  *
  *  Deliberately separate from {@link ExecPolicy}, mirroring the server's
  *  separate `SSH_DEVICE` bit: an SSH session is strictly more than a bounded
@@ -717,7 +725,7 @@ export interface ExecAuditEntry {
   ran_as?: string | null
 }
 
-/** Why a roomler-SSH request was refused. Mirrors the Rust `SshDenyReason`. */
+/** Why a meshharbor-SSH request was refused. Mirrors the Rust `SshDenyReason`. */
 export type SshDenyReason =
   | 'org_disabled'
   | 'no_permission'
@@ -1301,7 +1309,7 @@ export const useAgentStore = defineStore('agents', () => {
     if (idx !== -1) agents.value[idx]!.exec_anchor = null
   }
 
-  // ── Roomler SSH ──────────────────────────────────────────────────
+  // ── MeshHarbor SSH ──────────────────────────────────────────────────
   //
   // A separate org switch and a separate per-device policy from exec's, all
   // the way down — allowing bounded diagnostic commands is not the same

@@ -1,0 +1,1112 @@
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Copyright (C) 2026 G ROX EOOD -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MeshHarbor</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- ── Sidebar ─────────────────────────────────────────────────── -->
+    <aside id="sidebar">
+      <div class="brand">
+        <div class="brand-mark">R</div>
+        <div>
+          <div class="brand-name">MeshHarbor</div>
+          <div class="brand-version" id="brand-version"></div>
+        </div>
+      </div>
+
+      <nav id="nav">
+        <a href="#/overview" data-view="overview">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+            <polyline points="9 22 9 12 15 12 15 22"></polyline>
+          </svg>
+          Overview
+        </a>
+        <a href="#/devices" data-view="devices">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+            <line x1="8" y1="21" x2="16" y2="21"></line>
+            <line x1="12" y1="17" x2="12" y2="21"></line>
+          </svg>
+          Devices
+        </a>
+        <a href="#/account" data-view="account">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="7" r="4"></circle><path d="M4 22v-3a8 8 0 0 1 16 0v3"></path></svg>
+          My devices &amp; sharing
+        </a>
+        <a href="#/tunnels" data-view="tunnels">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="17 1 21 5 17 9"></polyline>
+            <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+            <polyline points="7 23 3 19 7 15"></polyline>
+            <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+          </svg>
+          Routes
+        </a>
+        <a href="#/recordings" data-view="recordings">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle>
+            <circle cx="12" cy="12" r="3.5" fill="currentColor"></circle>
+          </svg>
+          Recordings
+        </a>
+        <a href="#/settings" data-view="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          Settings
+        </a>
+        <a href="#/onboarding" data-view="onboarding">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+          </svg>
+          Onboarding
+        </a>
+      </nav>
+
+      <div id="conn-indicator">
+        <span class="dot dot-off" id="conn-dot"></span>
+        <span id="conn-label">Connecting…</span>
+      </div>
+    </aside>
+
+    <!-- ── Content pane ────────────────────────────────────────────── -->
+    <main id="content">
+      <!-- Overview -->
+      <section id="view-overview" class="view" hidden>
+        <div class="view-head"><h2>Overview</h2></div>
+        <p class="view-sub">This device and its place in your MeshHarbor network.</p>
+
+        <div id="ov-not-enrolled" class="banner banner-warn" hidden>
+          <div>
+            <strong>Not enrolled</strong>
+            <p class="muted small" style="margin: 4px 0 8px">
+              This device isn't part of a MeshHarbor network yet. Enroll it with a
+              token from a tenant admin.
+            </p>
+            <button type="button" class="primary" id="ov-btn-onboard">Set up this device</button>
+          </div>
+        </div>
+
+        <!--
+          macOS only, and hidden entirely elsewhere. Without these two grants
+          the product looks broken rather than blocked: the remote screen is
+          wallpaper-only and every injected click vanishes, with no error
+          anywhere. This is the one place that says so before you find out.
+        -->
+        <div id="ov-permissions" class="banner banner-warn" hidden>
+          <div>
+            <strong>macOS permissions needed</strong>
+            <p class="muted small" style="margin: 4px 0 8px">
+              macOS does not report an error when these are missing — the screen
+              streams as wallpaper only, and remote clicks and keys do nothing.
+            </p>
+            <div id="ov-perm-screen" class="row" hidden style="margin-bottom: 6px">
+              <span>Screen Recording — the remote screen will be blank</span>
+              <button type="button" class="primary" id="ov-btn-perm-screen">Grant</button>
+            </div>
+            <div id="ov-perm-input" class="row" hidden>
+              <span>Accessibility — remote keyboard and mouse will do nothing</span>
+              <button type="button" class="primary" id="ov-btn-perm-input">Grant</button>
+            </div>
+            <p class="muted small" style="margin: 8px 0 0">
+              After enabling a toggle, restart the agent for it to take effect.
+            </p>
+          </div>
+        </div>
+
+        <div id="ov-attention" class="banner banner-error" hidden>
+          <strong>Attention required</strong>
+          <p class="small" id="ov-attention-msg" style="margin: 4px 0; white-space: pre-wrap"></p>
+          <span class="muted small" id="ov-attention-path"></span>
+          <div class="actions" style="margin-top: 6px">
+            <button type="button" class="primary" id="ov-attention-reenroll" hidden>
+              Re-enroll this device…
+            </button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title-row">
+            <h3>This device</h3>
+            <span id="ov-enrolled-chip" class="chip chip-muted">…</span>
+          </div>
+          <dl class="kv">
+            <dt>Device name</dt>
+            <dd id="ov-name">—</dd>
+            <dt>Overlay IP</dt>
+            <dd id="ov-ip" class="mono">—</dd>
+            <dt>Server</dt>
+            <dd id="ov-server" class="mono">—</dd>
+            <dt>Server link</dt>
+            <dd id="ov-link">—</dd>
+            <dt>Service</dt>
+            <dd id="ov-service">—</dd>
+            <dt>App version</dt>
+            <dd id="ov-app-version" class="mono">—</dd>
+            <dt>Service version</dt>
+            <dd id="ov-daemon-version" class="mono">—</dd>
+            <dt>Network</dt>
+            <dd id="ov-counts">—</dd>
+            <!-- S2: MagicDNS status — row hidden unless the overlay
+                 publishes a magic domain for this tenant. -->
+            <dt id="ov-dns-label" hidden>MagicDNS</dt>
+            <dd id="ov-dns" class="mono small" hidden>—</dd>
+          </dl>
+          <!-- S7: the embedded web-app window (WebView2 on Windows;
+               default browser elsewhere). -->
+          <div class="actions" style="margin-top: 8px">
+            <button type="button" class="primary" id="ov-btn-open-web">Open MeshHarbor</button>
+          </div>
+        </div>
+
+        <div class="card" id="ov-exit-card" hidden>
+          <div class="card-title-row">
+            <h3>Exit node</h3>
+            <span id="ov-exit-chip" class="chip chip-muted">…</span>
+          </div>
+          <dl class="kv">
+            <dt>Routing via</dt>
+            <dd id="ov-exit-selector" class="mono">—</dd>
+            <dt>Status</dt>
+            <dd id="ov-exit-status">—</dd>
+          </dl>
+        </div>
+
+        <!-- FR-84 D4: what the capability probe found — the same cells the
+             service advertises to viewers (`meshharbor caps` prints them too).
+             The service probes at its first server connection; this card
+             never starts a probe. -->
+        <div class="card" id="ov-enc-card">
+          <div class="card-title-row">
+            <h3>Hardware video encoding</h3>
+            <span id="ov-enc-chip" class="chip chip-muted">…</span>
+          </div>
+          <p id="ov-enc-note" class="muted small" hidden></p>
+          <div id="ov-enc-matrix" class="tbl-wrap" hidden>
+            <table class="tbl enc-matrix">
+              <thead><tr id="ov-enc-head"></tr></thead>
+              <tbody id="ov-enc-rows"></tbody>
+            </table>
+            <p class="muted small enc-legend">
+              <span class="enc-cell enc-hw">4:2:0</span> hardware
+              <span class="enc-cell enc-sw">4:2:0</span> software
+              <span class="enc-cell enc-denied">4:4:4</span> denied by
+              <span class="mono">encoder_cells_deny</span>
+            </p>
+          </div>
+          <p id="ov-enc-foot" class="muted small" hidden></p>
+          <p id="ov-enc-denied" class="muted small" hidden></p>
+          <details id="ov-enc-raw" class="small" hidden>
+            <summary class="muted">As advertised to viewers</summary>
+            <dl class="kv" style="margin-top: 6px">
+              <dt>Encoders</dt>
+              <dd id="ov-enc-hw" class="mono small">—</dd>
+              <dt>Codecs</dt>
+              <dd id="ov-enc-codecs" class="mono small">—</dd>
+            </dl>
+          </details>
+        </div>
+
+        <!-- FR-84 D4: where files dropped onto this device land (`files_dir`).
+             Every change goes through the service, which checks the folder
+             for the identity it writes as; its refusals show verbatim. -->
+        <div class="card" id="ov-files-card">
+          <div class="card-title-row">
+            <h3>Incoming files</h3>
+            <span id="ov-files-chip" class="chip chip-muted">…</span>
+          </div>
+          <p class="muted small" style="margin: 0 0 8px">
+            Where files dropped onto this device during a remote session land.
+          </p>
+          <dl class="kv">
+            <dt>Folder</dt>
+            <dd id="ov-files-path" class="mono">—</dd>
+            <dt>Setting</dt>
+            <dd id="ov-files-setting">—</dd>
+          </dl>
+          <p id="ov-files-note" class="muted small" hidden></p>
+          <div class="actions" id="ov-files-actions">
+            <button type="button" id="ov-files-open">Open folder</button>
+            <button type="button" id="ov-files-change" class="primary">Change…</button>
+            <button type="button" id="ov-files-default">Use default</button>
+          </div>
+          <p id="ov-files-msg" class="small" hidden style="white-space: pre-wrap"></p>
+        </div>
+
+        <div class="card">
+          <h3>Updates</h3>
+          <div class="actions" style="margin-top: 0">
+            <button type="button" id="btn-check-update">Check for updates</button>
+            <button type="button" id="btn-apply-update" class="primary" hidden>Install update</button>
+          </div>
+          <pre id="action-output" class="output" hidden></pre>
+        </div>
+      </section>
+
+      <!-- Devices (FR-84 D5c): the devices this one's private network lets it
+           see, as the server lists them (devices.js + grid.js), and the mesh
+           graph of the same set (mesh.js). -->
+      <section id="view-account" class="view" hidden>
+        <div class="view-head"><h2>My devices &amp; sharing</h2></div>
+        <p class="view-sub">Your personal device inventory and the centre's authoritative sharing records — separate from this node's organization network.</p>
+        <div class="card">
+          <h3>Personal account</h3>
+          <p>Sign in inside the built-in account window. See device counts, shares received and sent, permissions, creation/expiry times and revocations. Revoked and expired records remain visible.</p>
+          <div class="actions">
+            <button type="button" class="primary" id="account-devices">My devices &amp; counts</button>
+            <button type="button" id="account-received">Shared with me</button>
+            <button type="button" id="account-sent">Shared by me</button>
+          </div>
+          <p id="account-error" role="alert" hidden></p>
+          <p class="muted">Account sign-in and sharing permissions are enforced by the centre. This window never borrows the device service's credentials. Desktop/file sessions use the existing supported viewer or browser.</p>
+        </div>
+      </section>
+      <section id="view-devices" class="view" hidden>
+        <div class="view-head"><h2>Devices</h2></div>
+        <p class="view-sub">
+          The devices your private network lets this one see — itself included —
+          and how it reaches each of them right now.
+        </p>
+
+        <div id="devices-unavailable" class="banner banner-warn" hidden>
+          <div>
+            <strong>Device service not running</strong>
+            <p class="muted small" style="margin: 4px 0 0">
+              The MeshHarbor service isn't running on this machine, so live device
+              state is unavailable.
+            </p>
+          </div>
+        </div>
+
+        <div id="devices-content" hidden>
+          <div class="card" id="dv-card">
+            <div class="card-title-row">
+              <h3>Devices</h3>
+              <span id="dv-total" class="muted small"></span>
+            </div>
+            <div class="dv-toolbar">
+              <input
+                type="search"
+                id="dv-search"
+                placeholder="Search name, tag, IP, MagicDNS…"
+                aria-label="Search devices"
+                spellcheck="false"
+                autocapitalize="off"
+                autocomplete="off"
+              />
+              <select id="dv-org" aria-label="Organization" title="Organization" hidden></select>
+              <label class="dv-size muted small">
+                Rows
+                <select id="dv-page-size" aria-label="Rows per page">
+                  <option value="10">10</option>
+                  <option value="25" selected>25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
+              <button type="button" id="dv-cols-btn" class="sm" title="Show, hide and reorder columns">
+                Columns
+              </button>
+              <button type="button" id="dv-refresh" class="sm">Refresh</button>
+            </div>
+            <p id="dv-grid-status" class="muted small dv-note" hidden></p>
+            <p id="dv-grid-error" class="banner banner-warn small" hidden></p>
+            <div class="tbl-wrap">
+              <table id="dv-grid" class="tbl dv-grid">
+                <thead></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="dv-pager">
+              <span id="dv-pager-range" class="muted small"></span>
+              <button type="button" id="dv-prev" class="sm" aria-label="Previous page">‹ Prev</button>
+              <button type="button" id="dv-next" class="sm" aria-label="Next page">Next ›</button>
+            </div>
+          </div>
+
+          <div class="card" id="dv-mesh-card">
+            <div class="card-title-row">
+              <h3>Mesh</h3>
+              <span id="dv-mesh-meta" class="muted small"></span>
+            </div>
+            <p id="dv-mesh-note" class="muted small dv-note">Loading the mesh graph…</p>
+            <div id="dv-mesh-body" hidden>
+              <div id="dv-mesh-controls" class="mesh-controls"></div>
+              <div id="dv-mesh-wrap" class="mesh-wrap">
+                <svg id="dv-mesh" class="mesh-svg" role="img" aria-label="Mesh graph"></svg>
+                <div id="dv-mesh-tip" class="mesh-tooltip" hidden></div>
+              </div>
+              <div id="dv-mesh-legend" class="mesh-legend muted small"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- The column chooser (grid.js): tick to show, drag or ▲▼ to reorder —
+             the buttons because drag-and-drop is unreliable in WebKitGTK. -->
+        <dialog id="dv-cols-dialog" class="cols-dialog" aria-label="Columns">
+          <form method="dialog">
+            <h3>Columns</h3>
+            <p class="muted small" style="margin: 0">
+              Tick to show a column; drag a row or use ▲ ▼ to reorder. Saved per
+              organization on this computer.
+            </p>
+            <ul data-role="list" class="cols-list"></ul>
+            <div class="actions">
+              <button type="button" data-role="reset">Reset</button>
+              <button type="submit" value="done" class="primary">Done</button>
+            </div>
+          </form>
+        </dialog>
+      </section>
+
+      <!-- Tunnels -->
+      <section id="view-tunnels" class="view" hidden>
+        <div class="view-head"><h2>Routes</h2></div>
+        <p class="view-sub">
+          Declared routes are supervised by the device service — they come back
+          on every restart until removed.
+        </p>
+
+        <!-- FR-84 D1: a failed refresh keeps the tables below as they were and
+             says so here (since when, how often, why); cleared on recovery. -->
+        <p id="tn-stale" class="banner banner-warn small" hidden></p>
+
+        <div class="card">
+          <h3>Declared routes</h3>
+          <p id="tn-empty" class="muted small" style="margin: 0" hidden>
+            No declared routes yet — add one below.
+          </p>
+          <div class="tbl-wrap">
+            <table id="tn-table" class="tbl" hidden>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Kind</th>
+                  <th>Local</th>
+                  <th>Remote</th>
+                  <th>Device</th>
+                  <th>State</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="tn-body"></tbody>
+            </table>
+          </div>
+
+          <details id="tn-add">
+            <summary id="tn-form-title">Add route…</summary>
+            <form id="tn-form" class="form-narrow" autocomplete="off">
+              <label>Target device
+                <select id="tn-node"></select>
+              </label>
+              <input
+                id="tn-custom-node"
+                type="text"
+                placeholder="24-hex agent id"
+                spellcheck="false"
+                hidden
+              />
+              <label>Local port
+                <input id="tn-local" type="number" min="1" max="65535" required />
+              </label>
+              <label>Remote (host:port — leave empty for SOCKS5)
+                <input id="tn-remote" type="text" placeholder="10.0.0.5:5432" spellcheck="false" />
+              </label>
+              <label>Transport
+                <select id="tn-transport">
+                  <option value="" selected>auto</option>
+                  <option value="quic">quic</option>
+                  <option value="webrtc">webrtc</option>
+                </select>
+              </label>
+              <label>Route id (optional)
+                <input id="tn-id" type="text" placeholder="generated when empty" spellcheck="false" />
+              </label>
+              <div class="actions">
+                <button type="submit" id="tn-submit" class="primary">Add route</button>
+                <button type="button" id="tn-cancel" hidden>Cancel</button>
+              </div>
+              <p id="tn-form-error" class="error small" hidden></p>
+            </form>
+          </details>
+        </div>
+
+        <div class="card" id="tn-flows-card" hidden>
+          <h3>Live forwards</h3>
+          <div class="tbl-wrap">
+            <table id="tn-flows-table" class="tbl">
+              <thead>
+                <tr>
+                  <th>Kind</th>
+                  <th>Local</th>
+                  <th>Target</th>
+                  <th>Device</th>
+                  <th>Transport</th>
+                  <th>Conns</th>
+                  <th>Traffic</th>
+                </tr>
+              </thead>
+              <tbody id="tn-flows-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Recordings (FR-85) -->
+      <section id="view-recordings" class="view" hidden>
+        <div class="view-head"><h2>Recordings</h2></div>
+        <!-- FR-85 P5c — the list and the Edit view take turns: `editor.js`
+             hides this while one recording is being edited. -->
+        <div id="rec-main">
+        <p class="view-sub">
+          Record this screen to a high-quality video file. Recordings stay on
+          this device, in the folder below.
+        </p>
+
+        <!-- Why the page cannot act: the service is down, has no recorder,
+             or a refresh failed (the last good data stays below). -->
+        <p id="rec-banner" class="banner banner-warn small" hidden></p>
+
+        <div class="card" id="rec-control">
+          <div class="card-title-row">
+            <h3>Record this screen</h3>
+            <span id="rec-live" class="chip chip-err" hidden>
+              <span class="dot rec-dot"></span> REC <span id="rec-live-time">0:00</span>
+            </span>
+          </div>
+          <p id="rec-status" class="muted small" style="margin: 0">Not recording.</p>
+          <p id="rec-unavailable" class="banner banner-warn small" hidden></p>
+          <div class="actions" id="rec-options">
+            <label>Frame rate
+              <select id="rec-fps">
+                <option value="30" selected>30 fps</option>
+                <option value="60">60 fps</option>
+              </select>
+            </label>
+            <label>Encoder
+              <select id="rec-encoder">
+                <option value="auto" selected>Automatic (GPU, else software)</option>
+                <option value="hardware">GPU only</option>
+                <option value="software">Software only</option>
+              </select>
+            </label>
+          </div>
+          <!-- FR-85 P1c — both OFF unless the person ticks them. -->
+          <div class="actions" id="rec-audio">
+            <label><input type="checkbox" id="rec-system-audio" /> Computer audio</label>
+            <label><input type="checkbox" id="rec-microphone" /> Microphone</label>
+          </div>
+          <!-- #1760 — where the service cannot record what the computer plays
+               (a Mac), the box above is greyed out and this says why. -->
+          <p id="rec-system-audio-unavailable" class="muted small" hidden></p>
+          <div class="actions">
+            <button type="button" id="rec-start" class="primary">Start recording</button>
+            <button type="button" id="rec-stop" class="danger" hidden>Stop recording</button>
+          </div>
+          <p id="rec-last" class="muted small" hidden></p>
+          <p id="rec-error" class="error small" hidden></p>
+        </div>
+
+        <div class="card">
+          <h3>Where recordings are saved</h3>
+          <p class="mono small" id="rec-folder" style="margin: 0">—</p>
+          <p id="rec-folder-note" class="muted small" hidden></p>
+          <p id="rec-folder-reason" class="banner banner-warn small" hidden></p>
+          <div class="actions">
+            <button type="button" id="rec-folder-change">Change folder…</button>
+            <button type="button" id="rec-folder-default" hidden>Use the default folder</button>
+            <button type="button" id="rec-folder-open">Open folder</button>
+          </div>
+          <p id="rec-folder-error" class="error small" hidden></p>
+        </div>
+
+        <!-- FR-85 P3b — the owner's remote-recording gates (hidden against a
+             device service that predates them). -->
+        <div class="card" id="rec-remote" hidden>
+          <h3>Recording by a remote controller</h3>
+          <p class="muted small" style="margin: 0 0 8px">
+            Off unless you turn it on. When on, someone controlling this device through MeshHarbor
+            may ask to record the screen. The recording is saved on this device, a banner shows
+            while it runs, and you can stop it at any time. Your microphone is never recorded
+            remotely.
+          </p>
+          <div class="actions">
+            <label><input type="checkbox" id="rec-remote-enabled" /> Allow remote recording</label>
+            <label><input type="checkbox" id="rec-remote-audio" /> Include computer audio</label>
+          </div>
+          <p id="rec-remote-audio-unavailable" class="muted small" hidden></p>
+          <p id="rec-remote-error" class="error small" hidden></p>
+        </div>
+
+        <div class="card">
+          <h3>Saved recordings</h3>
+          <p id="rec-empty" class="muted small" style="margin: 0" hidden>No recordings yet.</p>
+          <div class="tbl-wrap">
+            <table id="rec-table" class="tbl" hidden>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Recorded</th>
+                  <th>Length</th>
+                  <th>Size</th>
+                  <th>By</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="rec-body"></tbody>
+            </table>
+          </div>
+          <p id="rec-list-error" class="error small" hidden></p>
+        </div>
+        </div>
+
+        <!-- FR-85 P5c — the Edit view: one recording, in place of the list.
+             Non-destructive: the edits are saved beside the recording as
+             `<name>.edit.json`, and an export is a new file beside it. -->
+        <div id="rec-editor" hidden>
+          <div class="actions" style="margin-top: 0">
+            <button type="button" id="ed-back">← Recordings</button>
+          </div>
+          <div class="card">
+            <div class="card-title-row">
+              <h3 id="ed-title">Edit</h3>
+              <span id="ed-summary" class="muted small"></span>
+            </div>
+            <p id="ed-banner" class="banner banner-warn small" hidden></p>
+            <div id="ed-body" hidden>
+              <div class="ed-preview">
+                <video id="ed-video" preload="metadata" playsinline></video>
+              </div>
+              <p id="ed-preview-note" class="muted small" hidden></p>
+              <div class="actions">
+                <button type="button" id="ed-play">Play</button>
+                <span id="ed-time" class="mono small">0:00 / 0:00</span>
+              </div>
+              <div id="ed-timeline" class="ed-timeline" role="group" aria-label="Timeline: click a piece to select it">
+                <div id="ed-playhead" class="ed-playhead"></div>
+              </div>
+              <p id="ed-selection" class="muted small"></p>
+              <div class="actions">
+                <button type="button" id="ed-split">Split at the playhead</button>
+                <button type="button" id="ed-keep">Keep</button>
+                <button type="button" id="ed-cut">Cut</button>
+                <label>
+                  <select id="ed-speed" aria-label="Speed">
+                    <option value="1.5">1.5×</option>
+                    <option value="2" selected>2×</option>
+                    <option value="4">4×</option>
+                    <option value="8">8×</option>
+                    <option value="16">16×</option>
+                  </select>
+                </label>
+                <button type="button" id="ed-speed-apply">Speed up</button>
+              </div>
+              <p id="ed-note" class="muted small" hidden></p>
+            </div>
+          </div>
+
+          <div class="card" id="ed-sound" hidden>
+            <h3>Sound</h3>
+            <div class="actions" style="margin-top: 0">
+              <label>The recording's sound
+                <input type="range" id="ed-original-volume" min="0" max="100" value="100" />
+                <span id="ed-original-volume-value" class="mono small">100 %</span>
+              </label>
+            </div>
+            <p id="ed-original-note" class="muted small" hidden>This recording has no sound of its own.</p>
+            <p class="muted small" style="margin: 0 0 8px">
+              Muted where a piece is sped up: sped-up speech is noise. Music plays on under it.
+            </p>
+            <div class="actions">
+              <button type="button" id="ed-music-pick">Add music…</button>
+              <span id="ed-music-name" class="mono small"></span>
+              <button type="button" id="ed-music-remove" hidden>Remove music</button>
+            </div>
+            <div id="ed-music-options" class="actions" hidden>
+              <label>Volume <input type="range" id="ed-music-volume" min="0" max="100" value="50" /></label>
+              <label>Starts at <input type="number" id="ed-music-start" min="0" step="0.5" value="0" /> s</label>
+              <label>Fade in <input type="number" id="ed-music-fade-in" min="0" step="0.5" value="0" /> s</label>
+              <label>Fade out <input type="number" id="ed-music-fade-out" min="0" step="0.5" value="0" /> s</label>
+              <label><input type="checkbox" id="ed-music-loop" checked /> Loop</label>
+            </div>
+            <p id="ed-music-error" class="error small" hidden></p>
+          </div>
+
+          <div class="card" id="ed-export-card" hidden>
+            <h3>Export</h3>
+            <p class="muted small" style="margin: 0 0 8px">
+              A new file beside the recording. The recording itself is never changed.
+            </p>
+            <div class="actions">
+              <label>Encoder
+                <select id="ed-encoder">
+                  <option value="auto" selected>Automatic (GPU, else software)</option>
+                  <option value="hardware">GPU only</option>
+                  <option value="software">Software only</option>
+                </select>
+              </label>
+              <button type="button" id="ed-export" class="primary">Export</button>
+              <button type="button" id="ed-export-cancel" class="danger" hidden>Cancel export</button>
+            </div>
+            <p id="ed-export-why" class="muted small" hidden></p>
+            <progress id="ed-progress" max="1" value="0" hidden></progress>
+            <p id="ed-export-status" class="muted small" hidden></p>
+            <div id="ed-result" hidden>
+              <p id="ed-result-text" class="small"></p>
+              <div class="actions">
+                <button type="button" id="ed-result-play">Play</button>
+                <button type="button" id="ed-result-show">Show in folder</button>
+              </div>
+            </div>
+            <p id="ed-export-error" class="error small" hidden></p>
+            <p id="ed-saved" class="muted small" hidden></p>
+            <p id="ed-save-error" class="error small" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section id="view-settings" class="view" hidden>
+        <div class="view-head"><h2>Settings</h2></div>
+        <p class="view-sub">Device identity, service management and file locations.</p>
+
+        <!-- FR-84 D2: keys saved this session that wait for a service restart.
+             Sticky, so it stays in view while scrolling the long configuration
+             card; D3 mounts its "Apply now" control in #cfg-restart-actions. -->
+        <div id="cfg-restart-bar" class="banner banner-warn cfg-restart-bar" hidden>
+          <span id="cfg-restart-text"></span>
+          <span id="cfg-restart-actions" class="cfg-restart-actions"></span>
+        </div>
+
+        <div id="st-split-banner" class="banner banner-warn" hidden>
+          <div>
+            <strong>Two configurations found</strong>
+            <p class="muted small" style="margin: 4px 0 0">
+              Both a machine-wide and a per-user configuration exist on this
+              machine. The service uses the one shown under Files below — the
+              other copy is likely stale.
+            </p>
+            <div class="actions" style="margin-top: 6px">
+              <button type="button" id="btn-config-cleanup">Clean up the stale copy</button>
+            </div>
+            <p class="muted small" style="margin: 4px 0 0">
+              The device service archives the stale file (never deletes) —
+              only when both copies carry the same device identity.
+            </p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Device name</h3>
+          <form id="rename-form" class="form-narrow" autocomplete="off">
+            <input
+              type="text"
+              id="rename-input"
+              placeholder="(loading current name…)"
+              spellcheck="false"
+              autocapitalize="off"
+            />
+            <div class="actions">
+              <button type="submit" class="primary">Rename device</button>
+            </div>
+          </form>
+          <p class="muted small">
+            Takes effect on the next reconnect — the service re-announces itself
+            with the new name.
+          </p>
+          <p class="muted small scm-hint" hidden>
+            This device runs a machine-wide service — the rename is applied
+            through the device service. Administrator rights are only needed
+            if the service isn't running.
+          </p>
+        </div>
+
+        <!-- S1b: enrollment lives in ONE place now — Onboarding handles both
+             fresh enroll and token refresh. This card is just the pointer. -->
+        <div class="card">
+          <h3>Enrollment</h3>
+          <p class="muted small" style="margin: 0 0 8px">
+            Need a new token (revoked/expired)? Re-enrollment moved to the
+            Onboarding view — server URL and device name are preserved there.
+          </p>
+          <div class="actions">
+            <button type="button" id="btn-goto-onboarding">Open Onboarding</button>
+          </div>
+        </div>
+
+        <!-- FR-84 D6: this person's own "Start MeshHarbor at login" (per-user;
+             the device-wide switch is `companion_autostart` below), and the
+             way back into the Welcome tour. Wired by welcome.js. -->
+        <div class="card" id="st-autostart-card">
+          <h3>Start at login</h3>
+          <label class="wl-check" id="st-autostart-label">
+            <input type="checkbox" id="st-autostart-toggle" />
+            Start MeshHarbor when I sign in
+          </label>
+          <p id="st-autostart-note" class="muted small"></p>
+          <p id="st-autostart-result" class="small" hidden></p>
+          <div class="actions">
+            <button type="button" id="btn-welcome-tour">Open the Welcome tour</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Background service</h3>
+          <dl class="kv">
+            <dt>Status</dt>
+            <dd id="st-service">—</dd>
+          </dl>
+          <div class="actions">
+            <button type="button" id="btn-service-install">Install auto-start</button>
+            <button type="button" id="btn-service-uninstall" class="danger">Remove auto-start</button>
+          </div>
+          <p class="muted small">
+            Auto-start runs the device service at login (per-user install).
+            Machine-wide service installs are managed by the MeshHarbor Setup
+            installer.
+          </p>
+        </div>
+
+        <!-- S2: the daemon's editable config surface (ConfigGet/ConfigSet).
+             Rows are built entirely by settings.js from cmd_config_entries —
+             per-key editors keyed on the entry's `kind`. FR-84 D2: an
+             Essentials section first, then one collapsible section per group
+             the daemon names; a daemon without groups gets the flat list. -->
+        <div class="card">
+          <h3>Device configuration</h3>
+          <p class="muted small" style="margin: 0 0 8px">
+            Per-device options — the essentials first, the rest grouped.
+            Changes are saved to this device's configuration; each key says
+            whether it takes effect at once or after the service restarts.
+          </p>
+          <div id="cfg-search-wrap" class="cfg-search" hidden>
+            <input
+              type="text"
+              id="cfg-search"
+              placeholder="Search keys and descriptions…"
+              spellcheck="false"
+              autocapitalize="off"
+              autocomplete="off"
+            />
+            <span id="cfg-search-count" class="muted small"></span>
+          </div>
+          <div id="cfg-rows"><p class="muted small">Loading…</p></div>
+        </div>
+
+        <div class="card">
+          <h3>Files</h3>
+          <dl class="kv">
+            <dt>Logs</dt>
+            <dd id="st-log-dir" class="mono small">—</dd>
+            <dt>Configuration</dt>
+            <dd id="st-config-dir" class="mono small">—</dd>
+          </dl>
+          <div class="actions">
+            <button type="button" id="btn-open-logs">Open logs folder</button>
+            <button type="button" id="btn-open-config">Open config folder</button>
+          </div>
+        </div>
+
+        <!-- S2: bounded log viewer (LocalAPI TailLog). The service resolves
+             role-correct files the desktop can't even read itself. -->
+        <div class="card">
+          <h3>Service log</h3>
+          <div class="actions">
+            <select id="log-source">
+              <option value="daemon" selected>Device service</option>
+              <option value="service">Service host</option>
+              <option value="panic">Crash dumps</option>
+            </select>
+            <input
+              type="text"
+              id="log-filter"
+              placeholder="filter, e.g. ERROR"
+              spellcheck="false"
+              style="flex: 1"
+            />
+            <button type="button" id="btn-log-refresh">Refresh</button>
+            <label class="muted small" style="display: inline-flex; align-items: center; gap: 4px">
+              <input type="checkbox" id="log-follow" /> Follow
+            </label>
+          </div>
+          <p id="log-path" class="muted small mono" style="margin: 6px 0 4px">—</p>
+          <pre
+            id="log-view"
+            class="mono small"
+            style="max-height: 280px; overflow: auto; white-space: pre-wrap; margin: 0"
+          >(press Refresh to load)</pre>
+        </div>
+
+        <div id="settings-result" class="banner" hidden></div>
+      </section>
+
+      <!-- Onboarding -->
+      <section id="view-onboarding" class="view" hidden>
+        <div class="view-head"><h2>Onboarding</h2></div>
+        <p class="view-sub">
+          Enroll this device into a MeshHarbor network. Ask a tenant admin for an
+          enrollment token (Admin → Devices → Generate enrollment token) — it is
+          single-use and expires after 10 minutes.
+        </p>
+
+        <div class="card form-narrow">
+          <!-- S1b: shown in re-enroll mode (device already enrolled). -->
+          <div id="onboard-reenroll-note" class="banner banner-warn" hidden>
+            This device is already enrolled — submitting refreshes its token.
+            Server URL and device name are locked to the current enrollment.
+          </div>
+          <form id="enroll-form" autocomplete="off">
+            <label for="server">Server URL</label>
+            <input
+              type="text"
+              id="server"
+              name="server"
+              value="https://meshharbor.itachi.fans"
+              spellcheck="false"
+              autocapitalize="off"
+              required
+            />
+
+            <label for="device-name">Device name</label>
+            <input
+              type="text"
+              id="device-name"
+              name="device-name"
+              placeholder="will default to this machine's hostname"
+              spellcheck="false"
+              autocapitalize="off"
+              required
+            />
+
+            <label for="token">Enrollment token</label>
+            <textarea
+              id="token"
+              name="token"
+              rows="5"
+              placeholder="eyJ…"
+              spellcheck="false"
+              autocapitalize="off"
+              required
+            ></textarea>
+
+            <div class="actions">
+              <button type="submit" id="btn-enroll" class="primary">Enroll this device</button>
+            </div>
+          </form>
+          <div id="enroll-result" class="banner" hidden></div>
+        </div>
+      </section>
+
+      <!-- FR-84 D6: the Welcome tour. Not in the nav — it opens on a first
+           run however the app was started (after install, at login, from the
+           menu), and again from the tray's "Welcome tour" or Settings. All
+           dynamic text is set by welcome.js via textContent. -->
+      <section id="view-welcome" class="view" hidden>
+        <div class="view-head"><h2>Welcome to MeshHarbor</h2></div>
+        <p class="view-sub">
+          A few choices, one at a time. You can change every one of them later
+          in Settings.
+        </p>
+
+        <ol id="wl-progress" class="wl-progress" aria-label="Welcome steps">
+          <li data-step="device">This device</li>
+          <li data-step="network">Private network</li>
+          <li data-step="consent">Screen access</li>
+          <li data-step="files">Received files</li>
+          <li data-step="login">Start at login</li>
+          <li data-step="done">Done</li>
+        </ol>
+
+        <div class="card wl-card">
+          <!-- 1. This device -->
+          <div class="wl-step" data-step="device" hidden>
+            <h3>This device</h3>
+            <div id="wl-dev-enrolled" hidden>
+              <p>
+                This computer is enrolled as <strong id="wl-dev-name">—</strong>
+                on <span id="wl-dev-server" class="mono">—</span>.
+              </p>
+            </div>
+            <div id="wl-dev-unenrolled" class="banner banner-warn" hidden>
+              <div>
+                <strong>Not enrolled yet</strong>
+                <p class="muted small" style="margin: 4px 0 8px">
+                  To join your organisation, this computer needs an enrollment
+                  token from an admin (Admin → Devices → Generate enrollment
+                  token). You can also do this later.
+                </p>
+                <button type="button" class="primary" id="wl-btn-enroll">Enroll this device…</button>
+              </div>
+            </div>
+            <p>
+              MeshHarbor runs in the background as a service. This app is how that
+              service talks to you: it shows what the device is doing, and it is
+              where a request to view your screen appears.
+            </p>
+            <p id="wl-dev-offline" class="banner banner-warn small" hidden>
+              The MeshHarbor service is not running on this computer right now, so
+              the choices below are saved but cannot take effect until it starts.
+            </p>
+          </div>
+
+          <!-- 2. Private network -->
+          <div class="wl-step" data-step="network" hidden>
+            <h3>Your private network</h3>
+            <p>
+              MeshHarbor can join this computer to a private network with your
+              other devices. It is a WireGuard mesh: your devices connect to
+              each other with end-to-end encryption, directly when the network
+              allows it and through a relay when it doesn't. The MeshHarbor server
+              introduces them to each other but never sees what they send, and
+              a relay only ever carries encrypted data.
+            </p>
+            <ul class="wl-points">
+              <li>
+                <strong>What you get.</strong> Reach your devices by name. Remote
+                desktop, SSH and tunnels use this network.
+              </li>
+              <li>
+                <strong>What changes on this computer.</strong> MeshHarbor adds a
+                virtual network adapter, with routes for the network's own
+                addresses (in the 100.64.0.0/10 range). If your admins have
+                approved a subnet router (an office network reachable through
+                one of your devices, say), its addresses go through the private
+                network too. Your internet traffic is not rerouted.
+              </li>
+              <li>
+                <strong>Who can reach this computer.</strong> Only devices in your
+                organisation, and only as far as your organisation's access rules
+                allow. When your admins enforce rules, anything they have not
+                allowed is blocked.
+              </li>
+              <li>
+                <strong>Turning it off.</strong> Settings → Private network, at
+                any time.
+              </li>
+            </ul>
+            <dl class="kv wl-state">
+              <dt>Status</dt>
+              <dd id="wl-net-state">—</dd>
+            </dl>
+            <div id="wl-net-user" class="banner banner-warn" hidden>
+              <div>
+                <strong id="wl-net-user-title">Per-user installation</strong>
+                <p class="small" style="margin: 4px 0 0" id="wl-net-user-text"></p>
+              </div>
+            </div>
+            <div class="actions" id="wl-net-actions">
+              <button type="button" class="primary" id="wl-btn-net-enable">Turn on the private network</button>
+            </div>
+            <p id="wl-net-result" class="small" hidden></p>
+          </div>
+
+          <!-- 3. Who may view this screen -->
+          <div class="wl-step" data-step="consent" hidden>
+            <h3>Who may view this screen</h3>
+            <p>
+              When someone in your organisation asks to view or control this
+              computer, MeshHarbor can let them in straight away, or ask you first.
+            </p>
+            <label class="wl-check">
+              <input type="checkbox" id="wl-consent-ask" />
+              Ask me before someone connects
+            </label>
+            <p class="muted small">
+              Leave this off on a computer nobody sits at: a request that nobody
+              answers is refused.
+            </p>
+            <p id="wl-consent-result" class="small" hidden></p>
+          </div>
+
+          <!-- 4. Files you receive -->
+          <div class="wl-step" data-step="files" hidden>
+            <h3>Files you receive</h3>
+            <p>
+              Files someone sends to this computer during a remote session are
+              saved to:
+            </p>
+            <p id="wl-files-path" class="mono small">your Downloads folder</p>
+            <div class="actions" id="wl-files-actions" hidden>
+              <button type="button" id="wl-btn-files-open">Open folder</button>
+              <button type="button" id="wl-btn-files-change">Change…</button>
+              <button type="button" id="wl-btn-files-default" hidden>Use default</button>
+            </div>
+            <p id="wl-files-note" class="muted small">
+              You can pick a different folder later on the Overview.
+            </p>
+            <p id="wl-files-result" class="small" hidden></p>
+          </div>
+
+          <!-- 5. Start at login -->
+          <div class="wl-step" data-step="login" hidden>
+            <h3>Start at login</h3>
+            <p>
+              MeshHarbor lives in the notification area (the menu bar on a Mac).
+              That is where a request to view this screen appears, so keeping it
+              running is recommended.
+            </p>
+            <label class="wl-check" id="wl-login-label">
+              <input type="checkbox" id="wl-login-toggle" />
+              Start MeshHarbor when I sign in
+            </label>
+            <p id="wl-login-note" class="muted small"></p>
+            <p id="wl-login-result" class="small" hidden></p>
+          </div>
+
+          <!-- 6. Done -->
+          <div class="wl-step" data-step="done" hidden>
+            <h3>You're set</h3>
+            <dl class="kv" id="wl-summary">
+              <dt>Private network</dt>
+              <dd id="wl-sum-network">—</dd>
+              <dt>Screen access</dt>
+              <dd id="wl-sum-consent">—</dd>
+              <dt>Start at login</dt>
+              <dd id="wl-sum-login">—</dd>
+            </dl>
+            <div id="wl-pending" class="banner banner-warn" hidden>
+              <div>
+                <span id="wl-pending-text"></span>
+                <div class="actions" style="margin-top: 6px">
+                  <button type="button" class="primary" id="wl-btn-apply">Restart the service now</button>
+                </div>
+                <p id="wl-pending-result" class="small" hidden></p>
+              </div>
+            </div>
+          </div>
+
+          <div class="wl-nav">
+            <button type="button" id="wl-btn-back">Back</button>
+            <button type="button" id="wl-btn-skip" class="wl-skip">Skip the tour</button>
+            <span class="wl-nav-spacer"></span>
+            <button type="button" class="primary" id="wl-btn-next">Next</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+    <script src="overview.js"></script>
+    <!-- FR-84 D5c: the mesh helpers (generated from ui/src/utils/mesh.ts), the
+         grid and the graph, then the page that uses them. -->
+    <script src="mesh-util.js"></script>
+    <script src="grid.js"></script>
+    <script src="mesh.js"></script>
+    <script src="devices.js"></script>
+    <script src="account.js"></script>
+    <script src="tunnels.js"></script>
+    <script src="recordings.js"></script>
+    <script src="editor.js"></script>
+    <script src="settings.js"></script>
+    <script src="onboarding.js"></script>
+    <script src="welcome.js"></script>
+    <script src="consent.js"></script>
+  </body>
+</html>

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! RRNs — the vault's names (`docs/roomler-hive-design.md` §8.1):
+//! RRNs — the vault's names (`docs/meshharbor-hive-design.md` §8.1):
 //! `rrn:{org}:{type}:{path}`, the ARN's shape.
 //!
 //! The organization's slug is part of the name, so a reference to another

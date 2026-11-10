@@ -1,12 +1,12 @@
-# roomler-desktop — the companion app
+# meshharbor-desktop — the companion app
 
-**Status:** FR-84 ([#1633](https://github.com/gjovanov/roomler-ai/issues/1633)) — every
+**Status:** FR-84 ([#1633](https://github.com/jk-zhang-meta/MeshHarbor/issues/1633)) — every
 phase merged; field verification rides `agent-v0.4.103` (the FR's field-verification log
 records each result).
 
-`roomler-desktop` is the tray + window app a person uses on an enrolled machine. It is a
+`meshharbor-desktop` is the tray + window app a person uses on an enrolled machine. It is a
 **thin client of the local daemon**: every number it shows and every change it makes goes
-through the LocalAPI to `roomlerd`, which runs as SYSTEM / root (or as the user, for a
+through the LocalAPI to `meshharbord`, which runs as SYSTEM / root (or as the user, for a
 per-user install). The companion never holds a user credential and never talks to the
 server on its own — when it needs server data (the devices this machine can see), the
 daemon fetches it with the device's agent token and hands it over.
@@ -16,9 +16,9 @@ native panel, the companion shows the "someone wants to view your screen" prompt
 
 | | |
 |---|---|
-| Crate | `agents/roomler-desktop` (Tauri 2; Rust in `src/`, a plain-JS front in `src/front/`, no bundler) |
+| Crate | `agents/meshharbor-desktop` (Tauri 2; Rust in `src/`, a plain-JS front in `src/front/`, no bundler) |
 | Window | one 1100×740 main window (close = hide to tray) + two always-on-top panels (consent, "being viewed") |
-| Talks to | the LocalAPI only — `\\.\pipe\roomler` on Windows, a Unix socket elsewhere |
+| Talks to | the LocalAPI only — `\\.\pipe\meshharbor` on Windows, a Unix socket elsewhere |
 | Ships in | the agent release (standalone EXE on Windows; on Linux a `.deb` and an `.rpm`, each for x86_64 and aarch64 (FR-93 P6d, P6e; §10.1); the `.pkg` on macOS) |
 
 ## 1. Where it sits
@@ -26,15 +26,15 @@ native panel, the companion shows the "someone wants to view your screen" prompt
 ```mermaid
 flowchart LR
     subgraph host["the enrolled machine"]
-        D["roomler-desktop<br/>(the person's session)"]
-        CLI["roomler (CLI)"]
+        D["meshharbor-desktop<br/>(the person's session)"]
+        CLI["meshharbor (CLI)"]
         API["LocalAPI<br/>pipe / socket"]
-        R["roomlerd<br/>(SYSTEM / root / user)"]
+        R["meshharbord<br/>(SYSTEM / root / user)"]
         D -- "JSON request per connection" --> API
         CLI --> API
         API --> R
     end
-    R -- "agent token<br/>/api/agent/self/*" --> S[("roomler server")]
+    R -- "agent token<br/>/api/agent/self/*" --> S[("meshharbor server")]
     R -- "control WS (rc:*)" --> S
 ```
 
@@ -67,7 +67,7 @@ on one connection) and closes. Five things poll it at once in a running companio
 
 | Poller | Where | Interval | Connections per tick |
 |---|---|---|---|
-| service status | `src/front/app.js:166` | 10 s | 0 (reads config, runs `roomlerd service status`) |
+| service status | `src/front/app.js:166` | 10 s | 0 (reads config, runs `meshharbord service status`) |
 | device view (`Status` + `Peers`) | `src/front/app.js:168` → `cmd_device_view`, `src/commands.rs:254` | 2 s | 1 |
 | Routes (`RouteList` + `Flows`) | `src/front/tunnels.js:512` → `cmd_tunnels_view`, `src/commands.rs:1051` | 2 s, visible only | 1 |
 | consent (in-window) | `src/front/consent.js:148` | 1.5 s | 1 |
@@ -91,8 +91,8 @@ probe that waits cannot see a gap a non-waiting client falls into.
 sequenceDiagram
     participant P as Routes page
     participant C as cmd_tunnels_view
-    participant Pipe as \\.\pipe\roomler (pool of 4)
-    participant D as roomlerd
+    participant Pipe as \\.\pipe\meshharbor (pool of 4)
+    participant D as meshharbord
     P->>C: refresh (seq = n)
     C->>Pipe: open (PIPE_BUSY → back off 5…160 ms, ≤ 315 ms)
     Pipe->>D: RouteList
@@ -122,7 +122,7 @@ sequenceDiagram
 
 A route can now be **edited** in place: `RouteUpdate` replaces the descriptor in one save
 under the config write lock and restarts its flow; an invalid replacement is refused and the
-old route keeps running (`agents/roomlerd/src/tunnel/route_reconciler.rs:437`). A daemon
+old route keeps running (`agents/meshharbord/src/tunnel/route_reconciler.rs:437`). A daemon
 that predates the verb answers "bad request", which the companion shows as *"The device
 service predates route editing"* (`src/commands.rs:1100`), never as a blank page.
 
@@ -167,7 +167,7 @@ compile.
 | Group | Example keys | Default state |
 |---|---|---|
 | **Essentials** (every `tier = essential` key, shown first) | `overlay_enabled`, `auto_grant_session`, `exec_enabled`, `remote_config_enabled`, `ssh_enabled`, `encoder_preference`, `power_policy`, `auto_update` | **open** |
-| Access & consent · Private network · Network carriers & relays · Routing & adapter · Tunnels & SOCKS · Roomler SSH · Remote desktop · Capture & input · Video encoding · Video rate & latency · Files · Device & service | the other ~140 keys | collapsed |
+| Access & consent · Private network · Network carriers & relays · Routing & adapter · Tunnels & SOCKS · MeshHarbor SSH · Remote desktop · Capture & input · Video encoding · Video rate & latency · Files · Device & service | the other ~140 keys | collapsed |
 
 - **`restart_required` is per key.** `live = true` only where the daemon really applies a
   change at once — `exec_enabled` and `remote_config_enabled` (the LocalAPI `ConfigSet`
@@ -225,7 +225,7 @@ flowchart TD
 sequenceDiagram
     participant G as Devices page (grid.js, mesh.js)
     participant L as LocalAPI
-    participant V as roomlerd self_view
+    participant V as meshharbord self_view
     participant S as /api/agent/self/*
     G->>L: Devices {org, page, per_page, q, sort, dir}
     L->>V: cache hit (≤ 10 s)? answer it
@@ -235,7 +235,7 @@ sequenceDiagram
     Note over G: live connection / RTT cells come from the local<br/>Peers poll (2 s), joined on the overlay node id
 ```
 
-- **The daemon proxies, per org.** `agents/roomlerd/src/self_view.rs` keeps each org's server
+- **The daemon proxies, per org.** `agents/meshharbord/src/self_view.rs` keeps each org's server
   URL and agent token (the token is redacted from `Debug` and never logged) and asks with
   the right one. Answers are cached — 10 s for a page, 20 s for the mesh, 32 entries, one
   request in flight per key — so the companion, the CLI and re-renders share a fetch.
@@ -253,7 +253,7 @@ sequenceDiagram
   routes, gets the pre-FR-84 peers table with a one-line note to update. `overlay:
   "no_node"` shows this device and the "private network is off" hint; ACL `enforce` with no
   visible peers says so.
-- **From a terminal:** `roomler devices [--org L] [-q TEXT] [--sort KEY] [--desc]
+- **From a terminal:** `mh devices [--org L] [-q TEXT] [--sort KEY] [--desc]
   [--page N] [--per-page N] [--json]`.
 
 ### A two-half Mac asks its root half (FR-97 P2g)
@@ -268,7 +268,7 @@ sequenceDiagram
     participant G as Devices page
     participant U as per-user half (the console user)
     participant S as /api/agent/self/*
-    participant R as root half (/var/run/roomler-person/<uid>.sock)
+    participant R as root half (/var/run/meshharbor-person/<uid>.sock)
     G->>U: Devices / Mesh
     U->>S: with ITS token
     S-->>U: itself only · overlay = no_node
@@ -281,7 +281,7 @@ sequenceDiagram
 
 - **Only a `no_node` answer off root asks** (`person_socket::machine_view_wanted`), and only an
   `ok` answer replaces it (`machine_view_usable`). A root half that is missing, older, switched
-  off (`ROOMLERD_PERSON_SOCKET=0`) or itself off the network leaves the per-user half's own
+  off (`MESHHARBORD_PERSON_SOCKET=0`) or itself off the network leaves the per-user half's own
   answer on screen, as before. So does a socket served by anyone but root
   (`localapi::connect_unix_served_by_root`).
 - **"This device" is the root half's row.** The per-user half's own row has no node, so the
@@ -309,30 +309,30 @@ sequenceDiagram
 
 Most settings are read once at startup, so saving one is not the same as applying it. The
 Settings page collects the saved restart-required keys in a bar with an **Apply now** button;
-`roomler restart` is the same thing from a terminal. Both send `Request::RestartDaemon`
+`mh restart` is the same thing from a terminal. Both send `Request::RestartDaemon`
 (`crates/localapi/src/lib.rs:1361`), and **the daemon decides**.
 
 It restarts only when it can prove that something will start it again — exiting an
-unsupervised `roomlerd run` would take the device offline for good:
+unsupervised `meshharbord run` would take the device offline for good:
 
-| How the daemon runs | How it knows (`agents/roomlerd/src/supervision.rs:193`) | Leaves with | Who starts it again |
+| How the daemon runs | How it knows (`agents/meshharbord/src/supervision.rs:193`) | Leaves with | Who starts it again |
 |---|---|---|---|
 | Windows service (SCM host) | the host passes `run --supervisor scm` | `0` — the host respawns 0 at once | the service host |
-| Windows Scheduled Task (per-user) | the task passes `run --supervisor task` | `9` | **the caller**: the task's `IgnoreNew` policy drops a start while the old process is still exiting, so the companion / CLI runs `roomlerd service start` every 3 s until a new process answers |
+| Windows Scheduled Task (per-user) | the task passes `run --supervisor task` | `9` | **the caller**: the task's `IgnoreNew` policy drops a start while the old process is still exiting, so the companion / CLI runs `meshharbord service start` every 3 s until a new process answers |
 | systemd | `INVOCATION_ID` **and** `/proc/self/cgroup` puts the process inside one of our units, **and** `systemctl show` says this process is the unit's main PID and its restart policy restarts exit `9` | `9` | systemd |
-| launchd | `XPC_SERVICE_NAME` starts with `com.roomler.` | `9` — `KeepAlive{SuccessfulExit:false}` relaunches only a non-zero exit | launchd |
+| launchd | `XPC_SERVICE_NAME` starts with `fans.itachi.meshharbor.` | `9` — `KeepAlive{SuccessfulExit:false}` relaunches only a non-zero exit | launchd |
 | the macOS supervisor (FR-43) | the worker's `--supervised` flag | `9` | the supervisor |
 | anything else | — | **refused** | — |
 
-`9` is `RESTART_REQUESTED_EXIT_CODE` (`agents/roomlerd/src/watchdog.rs:190`); it is outside
+`9` is `RESTART_REQUESTED_EXIT_CODE` (`agents/meshharbord/src/watchdog.rs:190`); it is outside
 systemd's `RestartPreventExitStatus=7 8`, and the SCM host maps it to *respawn* as well.
 
 ```mermaid
 sequenceDiagram
-    participant C as companion / roomler restart
-    participant D as roomlerd (old process)
+    participant C as companion / mh restart
+    participant D as meshharbord (old process)
     participant S as supervisor
-    participant N as roomlerd (new process)
+    participant N as meshharbord (new process)
     C->>D: RestartDaemon {reason}
     D->>D: decide: supervised? enabled? recording? < 30 s since the last?
     D-->>C: DaemonRestarting {supervisor, restart_by, exit_code, pid, started_at_ms, restart_within_s}
@@ -345,14 +345,14 @@ sequenceDiagram
 
 - **It is not a crash.** The restart leaves through the same internal shutdown an auto-update
   uses, so the clean shutdown is recorded and the crash / rollback accounting never sees it
-  (`exit_for_requested_restart`, `agents/roomlerd/src/main.rs:1619`).
+  (`exit_for_requested_restart`, `agents/meshharbord/src/main.rs:1619`).
 - ⚠️ **A virtual-desktop host reaps its own desktop before it exits (#1684).** On Linux the
-  daemon may run a virtual desktop (Xvfb + WM + apps, `ROOMLERD_VIRTUAL_DESKTOP=1`), and under
+  daemon may run a virtual desktop (Xvfb + WM + apps, `MESHHARBORD_VIRTUAL_DESKTOP=1`), and under
   systemd `KillMode=control-group` whatever it spawned that outlives it — the desktop's
   setsid'd `at-spi-bus-launcher` grandchild, which **ignores SIGTERM** — keeps the unit's
   cgroup non-empty until systemd SIGKILLs it after `TimeoutStopSec` (90 s), then pays
-  `RestartSec`: a `roomler restart` took **96 s**. So every graceful exit now tears the whole
-  desktop tree down (`virtual_desktop::teardown`, `agents/roomlerd/src/virtual_desktop.rs`) —
+  `RestartSec`: a `mh restart` took **96 s**. So every graceful exit now tears the whole
+  desktop tree down (`virtual_desktop::teardown`, `agents/meshharbord/src/virtual_desktop.rs`) —
   the tree is spawned into its own process group, and teardown unions the group members with
   the parent-link closure of the daemon's direct children (which reaches a setsid'd
   grandchild, since `setsid` changes the session and group but never the parent), SIGTERMs,
@@ -369,7 +369,7 @@ sequenceDiagram
   `TimeoutStopSec + RestartSec`, read from `systemctl show` and carried as the additive
   `restart_within_s` in `DaemonRestarting` — plus a margin, never below the 60 s floor and
   never past 10 minutes (`localapi::restart_wait`, `RESTART_WAIT_CAP`: a unit with
-  `TimeoutStopSec=1h` must not make `roomler restart` hang for an hour). Before this, a fixed
+  `TimeoutStopSec=1h` must not make `mh restart` hang for an hour). Before this, a fixed
   60 s wait was shorter than the supervisor's
   worst case, so the CLI reported failure on a restart that had in fact worked. `restart_within_s`
   is absent for every non-systemd supervisor and from an older daemon, where the wait stays 60 s.
@@ -393,7 +393,7 @@ the software encoders — with the chroma each cell produced (4:2:0 / 4:4:4), de
 struck through, and how long the probe took.
 
 - It asks `Request::EncoderCaps`, which answers from the probe's **cached** result only
-  (`caps::cached()`, `agents/roomlerd/src/encode/caps.rs:48`). The capability probe runs in
+  (`caps::cached()`, `agents/meshharbord/src/encode/caps.rs:48`). The capability probe runs in
   child processes (vendor driver code) at the first server hello; a control-surface poll
   must never be what launches it — locked by `not_probed_never_triggers_a_probe`.
 - Three states: `ready` (the matrix), `not_probed` (the daemon has not connected yet — the
@@ -402,7 +402,7 @@ struck through, and how long the probe took.
 - `denied` is the effective `encoder_cells_deny` list (env, config or built-in), shown
   because a denied cell is never opened by the probe or a session, so it could not appear in
   the matrix otherwise. The resolved `encoder_preference` is shown under it.
-- It is the same data `roomlerd caps` prints and the server's `AgentCaps` carries; see
+- It is the same data `meshharbord caps` prints and the server's `AgentCaps` carries; see
   [encoders.md](encoders.md) for what a cell means and why a probe proves an open, not a
   session.
 
@@ -434,7 +434,7 @@ root and the LocalAPI admits any interactive user. The rules
   edited by hand).
 - Only the **console user** may change it through the LocalAPI: an RDP user on the same
   machine must not choose where the console user's incoming files land. A SYSTEM shell
-  (`roomler exec`, SSH) can still edit the config file; the use-time check applies.
+  (`mh exec`, SSH) can still edit the config file; the use-time check applies.
 - The Status the companion shows is refreshed off the request path, so a Downloads folder
   redirected to an offline share cannot stall the 2 s poll.
 
@@ -449,13 +449,13 @@ and is **born theirs**:
 flowchart TD
     B["files:begin"] --> Q{"root on Linux,<br/>and a person at seat0?"}
     Q -- "yes" --> P["FsAs::Person<br/>(companion::seat0_user, uid 0 refused)"]
-    Q -- "no, or ROOMLERD_FILES_AS_SEAT_USER=0" --> D["FsAs::Daemon<br/>files_dir, or the ladder"]
+    Q -- "no, or MESHHARBORD_FILES_AS_SEAT_USER=0" --> D["FsAs::Daemon<br/>files_dir, or the ladder"]
     P --> F["their files_dir (inside THEIR home),<br/>else XDG_DOWNLOAD_DIR, else ~/Downloads, else ~"]
     F --> S["every path step on a blocking thread<br/>under their fsuid, fsgid and groups"]
     S --> R["staging, data file, final rename,<br/>resume, cancel, orphan sweep"]
 ```
 
-| What | Where (`agents/roomlerd/src/files.rs`) | Why |
+| What | Where (`agents/meshharbord/src/files.rs`) | Why |
 |---|---|---|
 | Who writes | `FsAs` (`:223-294`), chosen once in `begin` and carried by the transfer and by `PARTIAL_REGISTRY`'s `PartialEntry` (`:556-559`) | the end-time rename, a resume and a cancel act as whoever staged the partial, even after a user switch |
 | How | `FsAs::run` → `crate::fs_identity::FsIdentity` (FR-85's guard, moved out of `recording`) | Linux checks every open, create and unlink against the thread's fsuid, fsgid and groups; root's bypass capabilities leave with the fsuid |
@@ -477,7 +477,7 @@ Downloads and browsing (the host → viewer direction) still read as the daemon.
 
 Every install path ends with the daemon starting, so the **daemon** opens the companion —
 once per install, into the signed-in user's session, with `--first-run`
-(`agents/roomlerd/src/companion/launch_once.rs`). Who does it on each platform, the login
+(`agents/meshharbord/src/companion/launch_once.rs`). Who does it on each platform, the login
 start, the marker that makes it one-shot, and why an upgrade is *adopted* rather than
 launched into are in [installation.md](installation.md) §"After install: the companion
 opens". The rules that matter here:
@@ -485,13 +485,13 @@ opens". The rules that matter here:
 - ⚠️ **No inherited handles.** A companion the daemon starts gets none of the daemon's
   handles: `CreateProcessW` with `bInheritHandles = FALSE`, detached, and outside the
   daemon's job object where that is allowed
-  (`agents/roomlerd/src/win_service/companion_spawn.rs:98`). Before this, a companion
+  (`agents/meshharbord/src/win_service/companion_spawn.rs:98`). Before this, a companion
   spawned by a daemon worker could outlive it holding the worker's handles — the #1035
   signature, tunnel ports held by a process whose parent was already gone. A route that
   cannot bind its port for two minutes now logs who holds it.
 - **Per-machine Windows launches from the service host, with the console user's own,
   non-elevated token** — never from a worker that may run elevated.
-- **The companion decides what to show** (`agents/roomler-desktop/src/first_run.rs:63`):
+- **The companion decides what to show** (`agents/meshharbor-desktop/src/first_run.rs:63`):
   it reads its own arguments on the first launch too (`--first-run`, `--autostart`,
   `--view=<name>`) and a per-user `desktop-state.json` (`first_run_done`, the start-at-login
   opt-out; `crates/agent-core/src/desktop_state.rs`). A missing or unreadable file is a
@@ -511,7 +511,7 @@ flowchart LR
 ```
 
 - **Enable** on the private network writes `overlay_enabled`, then uses the same restart
-  flow as Settings' Apply now (`window.Roomler.restartDaemon`, `front/settings.js`) and
+  flow as Settings' Apply now (`window.MeshHarbor.restartDaemon`, `front/settings.js`) and
   waits up to a minute for the overlay address. A per-user install cannot create the
   WireGuard adapter, so it is offered **userspace mode** instead: `netstack_socks_port` on a
   free port (never a hard-coded one a declared route may already hold), explained as "apps
@@ -532,27 +532,27 @@ binary per architecture:
 
 | | x86_64 | aarch64 |
 |---|---|---|
-| `.deb` (`cargo deb`) | `roomler-desktop-<v>-x86_64-unknown-linux-gnu.deb` | `roomler-desktop-<v>-aarch64-unknown-linux-gnu.deb` |
-| `.rpm` (`cargo generate-rpm`) | `roomler-desktop-<v>-x86_64-unknown-linux-gnu.rpm` | `roomler-desktop-<v>-aarch64-unknown-linux-gnu.rpm` |
+| `.deb` (`cargo deb`) | `meshharbor-desktop-<v>-x86_64-unknown-linux-gnu.deb` | `meshharbor-desktop-<v>-aarch64-unknown-linux-gnu.deb` |
+| `.rpm` (`cargo generate-rpm`) | `meshharbor-desktop-<v>-x86_64-unknown-linux-gnu.rpm` | `meshharbor-desktop-<v>-aarch64-unknown-linux-gnu.rpm` |
 
 ```mermaid
 flowchart LR
-  B["cargo build -p roomler-desktop<br/>(Ubuntu 22.04: the oldest glibc we support)"] --> D["cargo deb"]
+  B["cargo build -p meshharbor-desktop<br/>(Ubuntu 22.04: the oldest glibc we support)"] --> D["cargo deb"]
   B --> R["cargo generate-rpm<br/>requires written out"]
-  R --> G{"guard: every DT_NEEDED<br/>soname required? no ICU,<br/>no roomlerd? the arch?"}
+  R --> G{"guard: every DT_NEEDED<br/>soname required? no ICU,<br/>no meshharbord? the arch?"}
   G -- yes --> U["the release: .deb, .rpm, .sha256, .asc"]
   G -- no --> F["the job fails"]
 ```
 
-- ⚠️ **The `.rpm`'s requires are written out** in `agents/roomler-desktop/Cargo.toml`
+- ⚠️ **The `.rpm`'s requires are written out** in `agents/meshharbor-desktop/Cargo.toml`
   (`auto-req = "no"`). `cargo generate-rpm`'s discovery runs `ldd`, which names the build host's
   *transitive* libraries, Ubuntu 22.04's ICU 70 among them, and no Fedora satisfies those. The
   list is the binary's own `DT_NEEDED`, by soname (the spelling every RPM distro provides), plus
   `libayatana-appindicator3.so.1`, which the tray dlopens. A hand-kept list drifts, so the
   release job reads both back: a library the binary links that the package does not require
   fails the job.
-- There is **no `roomlerd` require** in the `.rpm`: those hosts install the daemon from the
-  tarball, not a package. The `.deb` keeps its `Depends: roomlerd`.
+- There is **no `meshharbord` require** in the `.rpm`: those hosts install the daemon from the
+  tarball, not a package. The `.deb` keeps its `Depends: meshharbord`.
 - `install.sh` picks the package by the host's tools: `dpkg` takes the `.deb`; otherwise `rpm` with
   `dnf`, `zypper` or `yum` takes the `.rpm`, and the package manager pulls webkit2gtk, GTK and the
   tray library from the distro's repositories. zypper needs `--allow-unsigned-rpm` for a local
@@ -560,16 +560,16 @@ flowchart LR
 - The daemon reports the installed companion's version from `dpkg-query`, else from
   `rpm -q --qf '%{VERSION}'` (`companion.rs`, `installed_version_inner`).
 - Every asset is signed (`.asc`) like the daemon's. The server's daemon-first ordering
-  (`agent_release::order_assets_daemon_first`) keys on the `roomler-desktop-` prefix, so an
+  (`agent_release::order_assets_daemon_first`) keys on the `meshharbor-desktop-` prefix, so an
   `.rpm` sorts after the daemon's packages too. The daemon's own picker never takes a companion
   package: it matches the daemon's `.deb` and `.tar.gz` only. From FR-117 the updater moves an
   INSTALLED companion package to the daemon's version through a picker of its own (§13).
 
 ## 11. Testing it
 
-- **Unit:** `cargo test -p roomler-desktop` (the Rust side), `cargo test -p roomler-localapi
+- **Unit:** `cargo test -p meshharbor-desktop` (the Rust side), `cargo test -p meshharbor-localapi
   --lib` (the pipe pool and backoff, including the back-to-back-open test that fails with 231
-  on the single-instance server), `cargo test -p roomlerd --lib route_reconciler`.
+  on the single-instance server), `cargo test -p meshharbord --lib route_reconciler`.
 - **The front without a daemon:** serve `src/front/` over loopback with a fake
   `window.__TAURI__` that answers the commands from fixtures, and drive it in a browser.
   That is how the Routes page (stale-while-error, the sequence guard, stable rows, edit) and
@@ -588,13 +588,13 @@ On macOS and Linux the companion IS the "Being viewed by …" indicator (Windows
 in the daemon, `indicator/win.rs`). P9 gives it the Windows badge's manners:
 
 ⚠️ **Only where the companion can reach its daemon.** On a Linux **system** install the
-daemon's own LocalAPI is root-only (`/var/run/roomler`, 0700, and the socket 0600), and the
+daemon's own LocalAPI is root-only (`/var/run/meshharbor`, 0700, and the socket 0600), and the
 companion runs as the desktop user. Until FR-27 P11 it read "Service offline". There was no
 banner, no Disconnect, and on Wayland no companion consent prompt (measured 2026-10-09;
 #1911).
 
 **P11 fixes it** without widening that ACL. The root daemon also serves a **person socket**
-at the person's own `/run/user/<uid>/roomler.sock`, which is the path the companion already
+at the person's own `/run/user/<uid>/meshharbor.sock`, which is the path the companion already
 tries first:
 - it is theirs, mode 0600, and only they or root may connect (`SO_PEERCRED`);
 - it follows the active graphical session's user;
@@ -603,11 +603,11 @@ tries first:
   and the mesh, read-only (§6); since P2h, the peers too, without the endpoints of either end
   or of a relay, the carrier snapshot, the path decision or the probes (`localapi::person_view`).
 
-Everything else on it is refused with a pointer to `sudo roomler …`, so the companion's other
-views show that refusal on a system install. The kill switch is `ROOMLERD_PERSON_SOCKET=0`.
+Everything else on it is refused with a pointer to `sudo meshharbor …`, so the companion's other
+views show that refusal on a system install. The kill switch is `MESHHARBORD_PERSON_SOCKET=0`.
 
 A Mac's root half serves its console user one as well (FR-97 P2g), at
-`/var/run/roomler-person/<uid>.sock` in a directory only root writes: there the per-user half
+`/var/run/meshharbor-person/<uid>.sock` in a directory only root writes: there the per-user half
 is the person's own daemon already, and what it asks the root half for is the machine's
 private-network view (§6).
 
@@ -621,7 +621,7 @@ companion can run, the daemon posts a notification instead: *"This screen is bei
 Alice is viewing this screen and can use its keyboard and mouse."*, with **Disconnect**, which
 ends the session as the banner's does. The notification stays on screen (critical urgency),
 comes down with the session, and stays down for that session once the person closes it.
-The kill switch is `ROOMLERD_VIEWING_NOTICE=0`.
+The kill switch is `MESHHARBORD_VIEWING_NOTICE=0`.
 A per-user install, and a supervised Mac through its worker (FR-43), never had this problem.
 
 ⚠️ **The banner waits while the desktop's own dialog asks** (FR-93 P6h). A per-user Wayland
@@ -630,12 +630,12 @@ registered the moment it connects, and the banner used to come up then. It said 
 while nothing was shared yet. On a desktop that centres new windows, it also sat right over the
 dialog the person had to answer. Measured on Plasma 6.6, its **Disconnect** sat beside the
 dialog's **Approve**. Now the capture open's wait hook marks its session `asking` while that
-dialog is the wait (`agents/roomlerd/src/peer.rs:5577`, `AskingMark`
-`agents/roomlerd/src/rc_sessions.rs:42`). The LocalAPI row carries the mark (`asking`,
+dialog is the wait (`agents/meshharbord/src/peer.rs:5577`, `AskingMark`
+`agents/meshharbord/src/rc_sessions.rs:42`). The LocalAPI row carries the mark (`asking`,
 `crates/localapi/src/lib.rs:1140`), and the banner comes up only for a session that sees the
-screen (`wants_banner`, `agents/roomler-desktop/src/main.rs:322`). The mark goes
+screen (`wants_banner`, `agents/meshharbor-desktop/src/main.rs:322`). The mark goes
 when the open does, whether the dialog was approved, denied or timed out, so a dialog nobody
-answers still ends with the banner. The kill switch is `ROOMLERD_BANNER_WAITS_FOR_DIALOG=0`.
+answers still ends with the banner. The kill switch is `MESHHARBORD_BANNER_WAITS_FOR_DIALOG=0`.
 
 ⚠️ **On a system install this banner is what lets a Wayland desktop be captured by itself**
 (FR-95 P2, [`linux-capture.md`](linux-capture.md) §1.2.1). With no capture key set, a root
@@ -643,7 +643,7 @@ daemon switches DRM and `uinput` on for the person's session on screen only wher
 person can be told: the companion runs for them, or their session's notification server
 shows buttons. That is checked live, at every capture open (`indicator::notify::can_tell`).
 An installed companion that is not running does not count on its own. Without either,
-nothing switches on, and the viewer's hint says so. `ROOMLERD_VIEWING_NOTICE=0` therefore
+nothing switches on, and the viewer's hint says so. `MESHHARBORD_VIEWING_NOTICE=0` therefore
 also keeps a system install's Wayland capture opt-in.
 
 | | Behaviour | Where |
@@ -670,7 +670,7 @@ watch thread; its six unit tests are the spec.
 ⚠️ **On macOS `show()` makes a window KEY**, whatever `focused(false)` said when it was built.
 Every session's banner therefore took key status from the window the person was using, and
 their next click into it was spent making it key again and did nothing else (measured
-2026-10-06: the first click into roomler-desktop after each new session was lost). The banner
+2026-10-06: the first click into meshharbor-desktop after each new session was lost). The banner
 is now brought up with `orderFrontRegardless` (`show_without_focus`, `panels.rs:409`), the way
 the native consent panel shows itself.
 
@@ -683,8 +683,8 @@ with no way back would be worse than one that stays.
 true the day capture moves to ScreenCaptureKit (FR-27's deviations). The controller sees a red
 frame round a Mac's screen during a session; that was the operator's call (2026-10-06).
 
-Kill switches, each on its own: `ROOMLER_DESKTOP_BANNER_AUTOHIDE=0` (the banner stays, as
-before P9) and `ROOMLER_DESKTOP_FRAME=0` (no frame).
+Kill switches, each on its own: `MESHHARBOR_DESKTOP_BANNER_AUTOHIDE=0` (the banner stays, as
+before P9) and `MESHHARBOR_DESKTOP_FRAME=0` (no frame).
 
 ### 12.1 The banner's Disconnect (FR-27 P10)
 
@@ -711,12 +711,12 @@ Windows, macOS and X11 grant it. **A Wayland compositor ignores it**, because a 
 cannot place its own window there. Measured on Plasma 6.6 and GNOME (2026-10-16), both put
 the banner in the middle of the screen for the whole session. That is where the controller
 was working, and on Linux the banner is in the captured stream too. Each desktop now gets
-the one placement it allows a client (`agents/roomler-desktop/src/pin.rs`):
+the one placement it allows a client (`agents/meshharbor-desktop/src/pin.rs`):
 
 | Desktop | How the banner gets to the top | Where |
 |---|---|---|
 | **KDE Plasma** (Wayland) | A KWin script, loaded into the running KWin over D-Bus (`org.kde.kwin.Scripting`). It finds the banner by its title (`BANNER_TITLE`), puts it at the top centre of its screen, 48 px down, and keeps it above everything and out of the task switchers. It places the banner again each time it maps, because a hidden banner comes back as a new window. Nothing is written to the person's KWin configuration, and the script goes when that KWin does. | `pin.rs:120`, the script `pin.rs:82` |
-| **GNOME** (Wayland) | mutter offers no placement, no layer-shell and no scripting. The companion runs under **Xwayland** instead (`GDK_BACKEND=x11`), where an X11 window places itself and stays above. It is set as `main`'s first statement: GTK reads it when it starts, and an environment variable may only be set while no other thread exists. | `pin.rs:63`, `agents/roomler-desktop/src/main.rs:53` |
+| **GNOME** (Wayland) | mutter offers no placement, no layer-shell and no scripting. The companion runs under **Xwayland** instead (`GDK_BACKEND=x11`), where an X11 window places itself and stays above. It is set as `main`'s first statement: GTK reads it when it starts, and an environment variable may only be set while no other thread exists. | `pin.rs:63`, `agents/meshharbor-desktop/src/main.rs:53` |
 | X11, Windows, macOS | Unchanged: the window places itself. | `panels.rs:432` |
 
 ```mermaid
@@ -737,7 +737,7 @@ a hidden banner back would never be seen. The pointer is treated as unreadable t
 min = max, which is the same fixed size without that (`panels.rs:318-324`).
 
 ⚠️ **On Linux the consent window goes in the middle, not at the top.** The daemon's own X11
-consent panel holds the top centre (`agents/roomlerd/src/indicator/x11.rs`). With the
+consent panel holds the top centre (`agents/meshharbord/src/indicator/x11.rs`). With the
 companion on Xwayland, a consent window placed there too landed right under it when both
 were asking. `WebviewWindow::center` put the window's corner at the middle under Xwayland at
 2×, half a window off, so the centre is computed the way the top centre is
@@ -750,23 +750,23 @@ Measured on Fedora Asahi Remix 42 (an Apple M2 Pro Mac mini), 2026-10-16:
 | Plasma 6.6 (KWin 6.6.4) | 360×76 at the top centre, above the other windows | ended the session (`host_disconnect`) | — |
 | GNOME, at 2× | `720x152+1688+96` (360×76 logical, 48 down), still there after its first show | ended the session | centred, clear of the daemon's panel; **Approve** on each granted its own session |
 
-The kill switch is `ROOMLER_DESKTOP_BANNER_PIN=0`. It loads no KWin script, and on GNOME the
+The kill switch is `MESHHARBOR_DESKTOP_BANNER_PIN=0`. It loads no KWin script, and on GNOME the
 companion stays on native Wayland.
 
 ## 13. One version: the companion follows the daemon (FR-117)
 
-After an update a device runs one version: the daemon (`roomlerd`), the CLI (`roomler`) and the
-companion (`roomler-desktop`). Each OS packages the companion differently, so each keeps it in
+After an update a device runs one version: the daemon (`meshharbord`), the CLI (`mh`) and the
+companion (`meshharbor-desktop`). Each OS packages the companion differently, so each keeps it in
 step differently:
 
 | OS | How the companion ships | What moves it with the daemon |
 |---|---|---|
-| Windows | a standalone EXE beside the daemon, in neither MSI | `refresh_if_stale` (`agents/roomlerd/src/companion.rs:960`): at the start of the process that owns it (#1686), and from FR-117 P2 again every 4 h (`refresh_periodically`, `companion.rs:79`) |
-| macOS | inside the daemon's `.pkg` (`/Applications/Roomler.app`) | the same `.pkg`: one install moves both |
+| Windows | a standalone EXE beside the daemon, in neither MSI | `refresh_if_stale` (`agents/meshharbord/src/companion.rs:960`): at the start of the process that owns it (#1686), and from FR-117 P2 again every 4 h (`refresh_periodically`, `companion.rs:79`) |
+| macOS | inside the daemon's `.pkg` (`/Applications/MeshHarbor.app`) | the same `.pkg`: one install moves both |
 | Linux | its own `.deb`, or `.rpm` (§10.1) | FR-117 P1: the root update owner moves the package (`companion/package_sync.rs`) |
 
-The CLI needs nothing of its own: it ships inside every daemon package (the MSI's `roomler.exe`
-shim, the `.pkg`, the `.deb`, and the tarball, where `usr/bin/roomler` is a required member).
+The CLI needs nothing of its own: it ships inside every daemon package (the MSI's `mh.exe`
+shim, the `.pkg`, the `.deb`, and the tarball, where `usr/bin/mh` is a required member).
 
 **Why Linux needed it.** The companion's package is installed once, by `install.sh` or the wizard,
 from a release asset. There is no apt or dnf repository, so nothing ever upgraded it. **Update
@@ -776,9 +776,9 @@ Windows-only on the false premise that apt upgrades the companion.
 
 ```mermaid
 flowchart TD
-    S([the root update owner:<br/>at its start, every check,<br/>an operator's push]) --> K{ROOMLERD_COMPANION_SYNC=0?}
+    S([the root update owner:<br/>at its start, every check,<br/>an operator's push]) --> K{MESHHARBORD_COMPANION_SYNC=0?}
     K -->|yes| N0[nothing]
-    K -->|no| Q{roomler-desktop<br/>installed? dpkg / rpm}
+    K -->|no| Q{meshharbor-desktop<br/>installed? dpkg / rpm}
     Q -->|no| N1[nothing: headless stays headless]
     Q -->|yes| V{its version vs<br/>this daemon's}
     V -->|equal| N2[nothing]
@@ -800,7 +800,7 @@ flowchart TD
 - **Never a downgrade, never a new install** (`plan`, `package_sync.rs:79`). A companion newer
   than the daemon is someone's deliberate install, and the next daemon update catches up. A host
   with no companion stays without one.
-- ⚠️ **The picker is a positive match** on `roomler-desktop-…-unknown-linux-gnu.<deb|rpm>`
+- ⚠️ **The picker is a positive match** on `meshharbor-desktop-…-unknown-linux-gnu.<deb|rpm>`
   (`pick_asset`, `package_sync.rs:103`), the mirror of the daemon picker's `is_daemon_asset`. So
   the two can never take each other's package (§10.1's freeze, one axis over).
 - **A running companion is restarted** (`restart_replaced`, `package_sync.rs:412`). The package
@@ -810,5 +810,5 @@ flowchart TD
   swap does (#1686). A companion that was not running stays stopped.
 - **The grid catches up at once:** the sync drops `installed_version`'s 10-minute cache
   (`forget_installed_version`, `companion.rs:322`).
-- **Kill switch:** `ROOMLERD_COMPANION_SYNC=0` turns off FR-117's two additions, the Linux sync and
+- **Kill switch:** `MESHHARBORD_COMPANION_SYNC=0` turns off FR-117's two additions, the Linux sync and
   the Windows retry. Windows' refresh at start is older and stays.

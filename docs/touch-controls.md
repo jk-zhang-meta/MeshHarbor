@@ -1,6 +1,6 @@
 # Touch controls — a phone or tablet as a real controller
 
-> **Status** (FR-111, [#2359](https://github.com/gjovanov/roomler-ai/issues/2359); spec:
+> **Status** (FR-111, [#2359](https://github.com/jk-zhang-meta/MeshHarbor/issues/2359); spec:
 > [`docs/fr/FR-111-touch-controls.md`](fr/FR-111-touch-controls.md))
 >
 > | Phase | What | State |
@@ -78,7 +78,7 @@ stateDiagram-v2
 On a phone the finger covers what it points at. In trackpad mode the screen is a laptop's trackpad instead.
 The finger **moves** the host's pointer, which stays where it is between touches, and a tap clicks where the
 pointer is, not under the finger. A toolbar control switches between direct and trackpad, shown only on a
-device with touch and remembered per browser (`localStorage['roomler-rc-touch-mode']`,
+device with touch and remembered per browser (`localStorage['meshharbor-rc-touch-mode']`,
 [`touchInput.ts:90`](../ui/src/composables/touchInput.ts#L90) `readTouchMode`). **With nothing remembered, a
 phone-sized screen starts in trackpad mode** and a larger one in direct mode, the operator's decision 1
 (2026-10-17). A phone is a screen whose shorter side is under 600 CSS px, read from the screen and not the
@@ -130,7 +130,7 @@ flowchart LR
     F[A finger on a control] -->|captured, never reaches the stage| C[TouchControls.vue]
     C --> D[The driver: what each finger holds, every key counted]
     D -->|key, button, motion| S[The stage's sink]
-    S -->|key frames| A[roomlerd]
+    S -->|key frames| A[meshharbord]
     S -->|mouse_press, mouse_rel: an agent with mouse-rel| A
     S -->|mouse_button, mouse_move: an older agent| A
 ```
@@ -160,7 +160,7 @@ flowchart LR
   Ctrl+C reaches the Mac as Cmd+C, and the button says ⌘C
   ([`touchControls.ts:312`](../ui/src/composables/touchControls.ts#L312) `controlLabel`).
 - **Per device, in this browser.** The choice is kept under
-  `localStorage['roomler-rc-touch-controls:<device id>']`, so a host that runs a game keeps its WASD and a
+  `localStorage['meshharbor-rc-touch-controls:<device id>']`, so a host that runs a game keeps its WASD and a
   work laptop its office row
   ([`touchControls.ts:263`](../ui/src/composables/touchControls.ts#L263) `readControlsPreset`). The
   default is off.
@@ -272,7 +272,7 @@ layout:
 | Kind | Changed by | Where it is kept |
 |---|---|---|
 | **Built-in** | nobody: **Copy** makes it a draft of the member's own | the build |
-| **This browser** | the member, with no permission (decision 6, settled as recommended on 2026-10-18) | `localStorage['roomler-rc-touch-presets:<user id>']`, per user ([`touchPresetEdit.ts:251`](../ui/src/composables/touchPresetEdit.ts#L251) `readMyPresets`) |
+| **This browser** | the member, with no permission (decision 6, settled as recommended on 2026-10-18) | `localStorage['meshharbor-rc-touch-presets:<user id>']`, per user ([`touchPresetEdit.ts:251`](../ui/src/composables/touchPresetEdit.ts#L251) `readMyPresets`) |
 | **Your organization** | an org admin (`MANAGE_TENANT`); anyone else sees it read-only and may copy it ([`TouchPresetEditor.vue:399`](../ui/src/components/remote/TouchPresetEditor.vue#L399) `readOnly`) | the server, P4a's routes ([`agents.ts:1481`](../ui/src/stores/agents.ts#L1481) `saveOrgTouchPreset`) |
 
 - **A draft is checked against the server's own rules before it is saved anywhere**
@@ -304,7 +304,7 @@ sequenceDiagram
     participant F as Finger
     participant B as Browser
     participant V as Viewer (the stage)
-    participant A as roomlerd
+    participant A as meshharbord
     F->>B: touch down on the picture
     B->>V: pointerdown (pointerType touch)
     F->>B: moves past the slop
@@ -334,7 +334,7 @@ sequenceDiagram
 
 | Where | How |
 |---|---|
-| One browser | `localStorage['roomler-rc-touch'] = 'legacy'` gives the stage back to the browser's own pan and zoom, and sends a finger down the mouse's path as before FR-111 ([`touchInput.ts:10`](../ui/src/composables/touchInput.ts#L10)). A cancelled pointer is released either way: that is a fix, not a mode |
+| One browser | `localStorage['meshharbor-rc-touch'] = 'legacy'` gives the stage back to the browser's own pan and zoom, and sends a finger down the mouse's path as before FR-111 ([`touchInput.ts:10`](../ui/src/composables/touchInput.ts#L10)). A cancelled pointer is released either way: that is a fix, not a mode |
 | One device, in one browser | The on-screen controls are off until a preset is chosen. The menu's **Off** removes them and remembers that (`'off'`). Under the `legacy` switch the menu is not offered and no overlay shows |
 
 ## What it does not do yet

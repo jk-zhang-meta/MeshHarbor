@@ -9,10 +9,10 @@ use axum::{
 use bson::oid::ObjectId;
 use serde::Deserialize;
 
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_db::models::tenant::{BillingCurrency, BillingInterval};
-use roomler_ai_services::stripe::{BillingSummary, CheckoutParams, StripeEvent, StripeService};
-use roomler_core::{ApiError, Core, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, Core, extractors::auth::AuthUser};
+use meshharbor_db::models::role::permissions;
+use meshharbor_db::models::tenant::{BillingCurrency, BillingInterval};
+use meshharbor_services::stripe::{BillingSummary, CheckoutParams, StripeEvent, StripeService};
 
 // ---- Request types -------------------------------------------------------
 
@@ -49,7 +49,7 @@ fn parse_interval(raw: Option<&str>) -> Result<BillingInterval, ApiError> {
     match raw.map(str::trim).filter(|s| !s.is_empty()) {
         None => Ok(BillingInterval::Month),
         Some(s) => BillingInterval::parse(s).ok_or_else(|| {
-            stripe_err(roomler_ai_services::stripe::StripeError::InvalidInterval(
+            stripe_err(meshharbor_services::stripe::StripeError::InvalidInterval(
                 s.to_string(),
             ))
         }),
@@ -60,7 +60,7 @@ fn parse_currency(raw: Option<&str>) -> Result<BillingCurrency, ApiError> {
     match raw.map(str::trim).filter(|s| !s.is_empty()) {
         None => Ok(BillingCurrency::Usd),
         Some(s) => BillingCurrency::parse(&s.to_ascii_lowercase()).ok_or_else(|| {
-            stripe_err(roomler_ai_services::stripe::StripeError::InvalidCurrency(
+            stripe_err(meshharbor_services::stripe::StripeError::InvalidCurrency(
                 s.to_string(),
             ))
         }),
@@ -77,7 +77,7 @@ pub struct PortalRequest {
 
 pub async fn get_plans(
     State(state): State<Core>,
-) -> Json<Vec<roomler_ai_services::stripe::PlanInfo>> {
+) -> Json<Vec<meshharbor_services::stripe::PlanInfo>> {
     Json(StripeService::get_plans(&state.settings.stripe))
 }
 
@@ -87,7 +87,7 @@ pub async fn create_checkout(
     State(state): State<Core>,
     auth: AuthUser,
     Json(body): Json<CheckoutRequest>,
-) -> Result<Json<roomler_ai_services::stripe::CheckoutResponse>, ApiError> {
+) -> Result<Json<meshharbor_services::stripe::CheckoutResponse>, ApiError> {
     let tenant_id = parse_oid(&body.tenant_id)?;
     require_manage_tenant(&state, tenant_id, auth.user_id).await?;
     let interval = parse_interval(body.interval.as_deref())?;
@@ -207,7 +207,7 @@ pub async fn create_portal(
     State(state): State<Core>,
     auth: AuthUser,
     Json(body): Json<PortalRequest>,
-) -> Result<Json<roomler_ai_services::stripe::PortalResponse>, ApiError> {
+) -> Result<Json<meshharbor_services::stripe::PortalResponse>, ApiError> {
     let tenant_id = parse_oid(&body.tenant_id)?;
     require_manage_tenant(&state, tenant_id, auth.user_id).await?;
 
@@ -263,7 +263,7 @@ pub struct BackfillQuery {
 #[derive(Debug, serde::Serialize)]
 pub struct BackfillAnswer {
     #[serde(flatten)]
-    pub report: roomler_ai_services::stripe::BackfillReport,
+    pub report: meshharbor_services::stripe::BackfillReport,
     /// The closed months refrozen from the rows now on record (`YYYY-MM`).
     pub refrozen: Vec<String>,
 }
@@ -279,7 +279,7 @@ pub async fn backfill(
     auth: AuthUser,
     axum::extract::Query(q): axum::extract::Query<BackfillQuery>,
 ) -> Result<Json<BackfillAnswer>, ApiError> {
-    roomler_core::guards::require_platform_admin(&state, &auth)?;
+    meshharbor_core::guards::require_platform_admin(&state, &auth)?;
     if !state.settings.growth.enabled {
         return Err(ApiError::NotFound("Not found".to_string()));
     }
@@ -307,13 +307,13 @@ pub async fn backfill(
     let report = stripe
         .backfill_paid_invoices(
             &state.db,
-            roomler_ai_services::stripe::STRIPE_API_BASE,
+            meshharbor_services::stripe::STRIPE_API_BASE,
             since_unix,
             now,
         )
         .await
         .map_err(|e| match e {
-            roomler_ai_services::stripe::StripeError::ApiError(m) => ApiError::BadRequest(m),
+            meshharbor_services::stripe::StripeError::ApiError(m) => ApiError::BadRequest(m),
             other => stripe_err(other),
         })?;
     let refrozen = refreeze(&state, &report.months, now).await?;
@@ -332,8 +332,8 @@ pub async fn refreeze(
     months: &[String],
     now: bson::DateTime,
 ) -> Result<Vec<String>, ApiError> {
-    use roomler_ai_services::billing;
-    let excluded: Vec<ObjectId> = roomler_core::growth::ExclusionSet::load(state)
+    use meshharbor_services::billing;
+    let excluded: Vec<ObjectId> = meshharbor_core::growth::ExclusionSet::load(state)
         .await?
         .tenants
         .into_iter()
@@ -384,8 +384,8 @@ async fn require_manage_tenant(
     Ok(())
 }
 
-fn stripe_err(e: roomler_ai_services::stripe::StripeError) -> ApiError {
-    use roomler_ai_services::stripe::StripeError;
+fn stripe_err(e: meshharbor_services::stripe::StripeError) -> ApiError {
+    use meshharbor_services::stripe::StripeError;
     match e {
         StripeError::TenantNotFound => ApiError::NotFound("Tenant not found".to_string()),
         StripeError::NoBillingAccount => {

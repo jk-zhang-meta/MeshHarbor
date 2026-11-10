@@ -1,4 +1,4 @@
-# Roomler vs TeamViewer (and AnyDesk)
+# MeshHarbor vs TeamViewer (and AnyDesk)
 
 TeamViewer defined this category. If you support other people's machines for a
 living, it is probably what you or your clients already use — and what you
@@ -8,9 +8,9 @@ already resent paying for.
 
 - **Reach.** Windows, macOS, Linux, ChromeOS, iOS, Android, and *attended
   support for mobile devices* — including screen sharing from a phone you do not
-  administer. Roomler has no mobile agent at all.
+  administer. MeshHarbor has no mobile agent at all.
 - **The support workflow.** Ad-hoc session codes for a stranger's machine, a
-  service desk, queues, session hand-off, ticketing integrations. Roomler's model
+  service desk, queues, session hand-off, ticketing integrations. MeshHarbor's model
   is enrolment: someone installs an agent once. That is right for machines you
   own and wrong for one-off help for a member of the public.
 - **Enterprise surface.** Compliance certifications, conditional access, mass
@@ -22,15 +22,15 @@ already resent paying for.
 If you need attended support for arbitrary machines and phones, with a vendor
 behind it, TeamViewer is the answer and this page is not going to change that.
 
-## Where Roomler differs
+## Where MeshHarbor differs
 
 **No commercial-use detection.** The single most common complaint about the free
 tier is being flagged as commercial and locked out mid-session, often
-incorrectly. Roomler has no heuristic that watches how you use it, because the
+incorrectly. MeshHarbor has no heuristic that watches how you use it, because the
 plans are counted by devices rather than policed by suspicion — and if you
 self-host, there is no counting at all.
 
-**Price shape.** Roomler is $8 per user a month (Pro, 1,000 devices) and $16
+**Price shape.** MeshHarbor is $8 per user a month (Pro, 1,000 devices) and $16
 (Business, 5,000), and free for 10 users and 100 devices with commercial use
 allowed. Remote support
 suites are typically priced per concurrent seat with device tiers layered on
@@ -60,7 +60,7 @@ and [`../../COMMERCIAL.md`](../../COMMERCIAL.md).
 
 ## Side by side
 
-| | Roomler | TeamViewer / AnyDesk |
+| | MeshHarbor | TeamViewer / AnyDesk |
 |---|---|---|
 | Attended support for a stranger's PC | **limited** — only your own already-enrolled devices, by a time-limited code the device owner approves (FR-52) | yes, session codes, nothing pre-installed |
 | Mobile device support | **no** | yes |
@@ -78,13 +78,13 @@ and [`../../COMMERCIAL.md`](../../COMMERCIAL.md).
 ## Choosing
 
 - **Stay with TeamViewer** for attended support of a device with nothing
-  Roomler installed on it — a customer's laptop, a one-off repair, a phone —
+  MeshHarbor installed on it — a customer's laptop, a one-off repair, a phone —
   or where procurement requires certifications and a support contract.
-  **Use Roomler's connect codes** once the device is already enrolled in
+  **Use MeshHarbor's connect codes** once the device is already enrolled in
   someone's fleet: its owner opens that one device for a limited window,
   approves the specific request by name ("outside your organization"), and
   the access is scoped (view + input, never files) and fully audited.
-- **Use Roomler** for a fleet you enrol once — your own machines, or clients on a
+- **Use MeshHarbor** for a fleet you enrol once — your own machines, or clients on a
   managed agreement — especially if you would also like those machines on a
   private network, and especially if you want the option to host it yourself.
 - **The migration question worth asking** is not "is it as good", it is "how much
@@ -93,10 +93,10 @@ and [`../../COMMERCIAL.md`](../../COMMERCIAL.md).
 
 ---
 
-*Checked 2026-08-29 against Roomler's own source and public vendor
-documentation; Roomler's own prices updated 2026-10-20 (FR-115); the attended-
+*Checked 2026-08-29 against MeshHarbor's own source and public vendor
+documentation; MeshHarbor's own prices updated 2026-10-20 (FR-115); the attended-
 support row updated 2026-10-20 after FR-52's connect codes were field-verified
 end to end. Pricing and
 packaging change often, so verify against your own quote. If anything here is wrong or has aged,
-[open an issue](https://github.com/gjovanov/roomler-ai/issues) — we would rather
+[open an issue](https://github.com/jk-zhang-meta/MeshHarbor/issues) — we would rather
 fix it than win on a stale fact.*

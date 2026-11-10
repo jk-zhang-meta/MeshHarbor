@@ -16,7 +16,7 @@
 //! [`crate::indexes`].
 //!
 //! See `crates/api/src/routes/agent_log.rs` for the route + validation;
-//! see `agents/roomlerd/src/logs_upload.rs` for the agent-side
+//! see `agents/meshharbord/src/logs_upload.rs` for the agent-side
 //! `tracing` layer that produces these batches.
 
 use bson::{DateTime, Document, oid::ObjectId};
@@ -71,7 +71,7 @@ pub struct AgentLogBatch {
 pub struct LogLine {
     pub ts: DateTime,
     pub level: LogLevel,
-    /// `tracing` target on the agent side (e.g. `roomlerd::peer`)
+    /// `tracing` target on the agent side (e.g. `meshharbord::peer`)
     /// or the JS module / `console` site on the browser side.
     pub target: String,
     pub msg: String,
@@ -183,7 +183,7 @@ mod tests {
         let line = LogLine {
             ts: DateTime::now(),
             level: LogLevel::Info,
-            target: "roomlerd::peer".to_string(),
+            target: "meshharbord::peer".to_string(),
             msg: "input dispatch".to_string(),
             fields: bson::doc! { "norm_x": 0.615, "px": 1181 },
         };

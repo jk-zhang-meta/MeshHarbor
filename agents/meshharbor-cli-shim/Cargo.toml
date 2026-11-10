@@ -1,0 +1,42 @@
+[package]
+name = "meshharbor-cli-shim"
+license = "MPL-2.0"
+publish = false
+version.workspace = true
+edition.workspace = true
+description = "Tiny launcher installed as mh.exe on daemon hosts — re-execs `meshharbord cli`."
+
+# Installed AS `mh.exe` (the wxs File element renames it). The build
+# output can NOT be called `mh` because the standalone tunnel CLI
+# already emits that name and `cargo build --workspace` refuses two bins
+# with the same output path.
+[[bin]]
+name = "meshharbor-shim"
+path = "src/main.rs"
+
+# No lib target, so cargo derives no test-binary name from one — nothing here
+# can trip Windows UAC's installer-detection heuristic (see CLAUDE.md's
+# "UAC lib-naming rule").
+
+[dependencies]
+
+# build.rs embeds a Windows VERSIONINFO resource. This shim INSTALLS as
+# mh.exe on every Windows daemon host, so an anonymous binary here is
+# exactly as visible to AV/inventory tooling as the daemon itself. See
+# agents/meshharbord/Cargo.toml for the embed-resource-vs-winresource
+# rationale.
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
+
+[target.'cfg(unix)'.dependencies]
+# signal()/SIG_IGN/SIG_DFL for the Ctrl-C wrapper convention (parent ignores,
+# child resets in pre_exec). Ubiquitous, no build cost.
+libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# SetConsoleCtrlHandler only. Bindings-only crate, already compiled by the
+# agent in every Windows build, so this costs no extra build time.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }

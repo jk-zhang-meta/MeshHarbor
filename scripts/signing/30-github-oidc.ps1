@@ -3,7 +3,7 @@
 # stored in the repository.
 #
 #   pwsh scripts/signing/30-github-oidc.ps1
-#   pwsh scripts/signing/30-github-oidc.ps1 -AppName roomler-ai-signing -WhatIfOnly
+#   pwsh scripts/signing/30-github-oidc.ps1 -AppName meshharbor-signing -WhatIfOnly
 #
 # Creates:
 #   1. an Entra app registration + service principal (no secret, ever)
@@ -19,7 +19,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$AppName = 'roomler-ai-github-signing',
+    [string]$AppName = 'meshharbor-github-signing',
     [string]$Repo    = '',
     # Branch allowed to sign on workflow_dispatch rehearsals.
     [string]$Branch  = 'master',
@@ -120,7 +120,7 @@ New-Fic 'github-branch' @{
     issuer    = $issuer
     subject   = "repo:${Repo}:ref:refs/heads/$Branch"
     audiences = @($audience)
-    description = "roomler-ai workflow_dispatch rehearsals from $Branch"
+    description = "meshharbor workflow_dispatch rehearsals from $Branch"
 } | Out-Null
 
 # (2) Wildcard over all three release tag families.
@@ -128,7 +128,7 @@ $tagsOk = New-Fic 'github-release-tags' @{
     name      = 'github-release-tags'
     issuer    = $issuer
     audiences = @($audience)
-    description = 'roomler-ai agent-v* / setup-v* / tunnel-v* release tags'
+    description = 'meshharbor agent-v* / setup-v* / tunnel-v* release tags'
     claimsMatchingExpression = @{
         value = "claims['sub'] matches 'repo:${Repo}:ref:refs/tags/*'"
         languageVersion = 1
@@ -145,7 +145,7 @@ if (-not $tagsOk) {
         issuer    = $issuer
         subject   = "repo:${Repo}:environment:$Environment"
         audiences = @($audience)
-        description = "roomler-ai releases via the '$Environment' environment"
+        description = "meshharbor releases via the '$Environment' environment"
     } | Out-Null
 }
 
@@ -224,9 +224,9 @@ Write-Host ''
 if ($useEnvironment) {
     Warn "This tenant needed the Environment fallback. Before tagging a release:"
     Info "  1. Create the '$Environment' environment on $Repo"
-    Info "  2. Add 'environment: $Environment' to every job that calls ./.github/actions/sign-windows"
+    Info '  2. CI is retired. Do not create signing jobs; see docs/local-build.md.'
 }
 Ok 'OIDC wiring complete. No signing key material exists in GitHub.'
 Info ''
 Info 'Verify end to end without a tag:'
-Info "  gh workflow run release-agent.yml --repo $Repo -f publish_release=false -f signing_mode=azure -f require_signing=true"
+Info '  CI is retired; follow docs/local-build.md for explicit local preparation.'

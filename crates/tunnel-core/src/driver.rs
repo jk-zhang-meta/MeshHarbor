@@ -5,14 +5,14 @@
 //!
 //! P3b-1 landed the shared **flow vocabulary** here — the per-flow
 //! reply-correlation types + the open-timeout. P3b-1b folds in the session
-//! orchestration itself (moved from `roomler::forward`) behind the
+//! orchestration itself (moved from `meshharbor::forward`) behind the
 //! [`crate::signaling_link`] seam: [`run_tunnel_session`] speaks the
 //! `rc:tunnel.*` control protocol over a cloneable
 //! [`TunnelSignalingSink`](crate::signaling_link::TunnelSignalingSink) + a
 //! single-consumer
 //! [`TunnelSignalingSource`](crate::signaling_link::TunnelSignalingSource)
 //! instead of owning a WebSocket, so the SAME engine serves the CLI (WS-backed)
-//! and — at P3b-2 — the `roomlerd` daemon (agent-WS-multiplexer-backed).
+//! and — at P3b-2 — the `meshharbord` daemon (agent-WS-multiplexer-backed).
 //!
 //! FR-86 P1 split a session into **establishment** and **carrying**:
 //! [`establish_tunnel_session`] does the hello/open, the transport handshake
@@ -33,11 +33,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::signaling::{
+use meshharbor_remote_control::signaling::{
     ClientMsg, CloseReason, Direction, IceServer, REJECT_REASON_NO_SESSION,
     REJECT_REASON_SESSION_GONE, REJECT_REASON_SESSION_MISMATCH, RejectKind, ServerMsg, TunnelRole,
 };
-use roomler_ai_remote_control::vault::NET_GRANT_REFUSED;
+use meshharbor_remote_control::vault::NET_GRANT_REFUSED;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Notify, oneshot, watch};
 use tracing::{debug, error, info, warn};
@@ -66,7 +66,7 @@ use crate::transport::{TRANSPORT_QUIC_DERP_V1, TRANSPORT_QUIC_V1, TRANSPORT_WEBR
 /// sockets, the WS and the TURN allocation — for the life of the process.
 ///
 /// Field 2026-08-22 (devbox): failing flows take exactly those early returns, so
-/// `roomlerd` accumulated **15,446 UDP sockets in 12 h**, exhausted the host's
+/// `meshharbord` accumulated **15,446 UDP sockets in 12 h**, exhausted the host's
 /// 16,384-port ephemeral range, and every process on the machine lost DNS with
 /// `WSAENOBUFS`. The bug was not the missing abort *call* — one was already
 /// there and correct — it was that the rule lived in a call site instead of in
@@ -866,7 +866,7 @@ fn tune_local_socket(tcp: &tokio::net::TcpStream, peer_addr: std::net::SocketAdd
     // P0 throughput fix (rc.64, field-repro 2026-05-26): disable
     // Nagle on the local listener's accepted TCP socket. The agent
     // side already sets TCP_NODELAY on its outbound (corp-side)
-    // dialer (see agents/roomlerd/src/tunnel/dialer.rs); the
+    // dialer (see agents/meshharbord/src/tunnel/dialer.rs); the
     // asymmetry meant TDS row tokens flowing FROM the server,
     // through the DC, OUT to the local SSMS/psql/JDBC client got
     // Nagle-coalesced on this socket. Under MSSQL TDS the small
@@ -908,7 +908,7 @@ fn tune_local_socket(tcp: &tokio::net::TcpStream, peer_addr: std::net::SocketAdd
 /// Returns [`SessionOutcome::QuicSetupFailed`] (not an `Err`) when a QUIC
 /// session can't be established, so the caller can fall back to WebRTC.
 ///
-/// This is the standalone CLI's contract (`meshharbor forward` / `socks5`),
+/// This is the standalone CLI's contract (`mh forward` / `socks5`),
 /// unchanged by FR-86 P1: it composes [`establish_tunnel_session`] with a
 /// private accept loop that binds after the data plane is ready (so a QUIC
 /// soft-fall never held the port) and runs until the carrier is [`dead`]
@@ -2020,7 +2020,7 @@ async fn setup_quic_over_relay(
         // Dial the grant's own UDP port on the pinned IP (regional PoPs may
         // serve TURN off 3478; the granted url list is authoritative).
         let udp_port =
-            roomler_ai_remote_control::turn_url::first_udp_port(urls.iter().map(String::as_str));
+            meshharbor_remote_control::turn_url::first_udp_port(urls.iter().map(String::as_str));
         alloc_urls.push(format!("turn:{host}:{udp_port}?transport=udp"));
         info!(%ip, "QUIC client: pinning relay to the agent's coturn worker (hairpin)");
     }
@@ -3069,8 +3069,8 @@ mod tests {
             },
             IceServer {
                 urls: vec![
-                    "turn:coturn.roomler.ai:3478?transport=udp".into(),
-                    "turns:coturn.roomler.ai:5349?transport=tcp".into(),
+                    "turn:coturn.meshharbor.itachi.fans:3478?transport=udp".into(),
+                    "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp".into(),
                 ],
                 username: Some("1780000000:sess".into()),
                 credential: Some("base64hmac".into()),
@@ -3091,7 +3091,7 @@ mod tests {
 
         // TURN url present but no creds → unusable.
         let no_creds = vec![IceServer {
-            urls: vec!["turn:coturn.roomler.ai:3478?transport=udp".into()],
+            urls: vec!["turn:coturn.meshharbor.itachi.fans:3478?transport=udp".into()],
             username: None,
             credential: None,
         }];

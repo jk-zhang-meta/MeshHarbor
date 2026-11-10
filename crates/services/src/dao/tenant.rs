@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, Document, doc, oid::ObjectId};
-use mongodb::Database;
-use roomler_ai_db::models::{
+use meshharbor_db::models::{
     Plan, RcFeaturePolicy, Role, Tenant, TenantMember, TenantSettings, role,
 };
+use mongodb::{Database, options::ReturnDocument};
 
 use super::base::{BaseDao, DaoError, DaoResult};
 
@@ -53,6 +53,77 @@ impl TenantDao {
         }
     }
 
+    fn valid_security_revision_expr() -> Document {
+        doc! {"$and": [
+            {"$eq": [{"$type": "$security_rev"}, "long"]},
+            {"$gt": ["$security_rev", 0_i64]},
+            {"$lt": ["$security_rev", i64::MAX]},
+        ]}
+    }
+
+    /// Normal/missing revisions increment with the policy write. Invalid
+    /// revisions stay untouched and deny native authority, but must not stop
+    /// the existing administrative setters. Both paths predicate on CURRENT
+    /// stored state; a concurrent repair must retry the incrementing path.
+    async fn update_security(&self, tenant_id: ObjectId, set: Document) -> DaoResult<Tenant> {
+        self.update_security_with_unset(tenant_id, set, Document::new())
+            .await
+    }
+
+    async fn update_security_with_unset(
+        &self,
+        tenant_id: ObjectId,
+        mut set: Document,
+        unset: Document,
+    ) -> DaoResult<Tenant> {
+        set.insert("updated_at", DateTime::now());
+        let collection = self.base.collection();
+        let valid = Self::valid_security_revision_expr();
+        let mut incrementing = doc! {"$set": set.clone(), "$inc": {"security_rev": 1_i64}};
+        let mut invalid = doc! {"$set": set};
+        if !unset.is_empty() {
+            incrementing.insert("$unset", unset.clone());
+            invalid.insert("$unset", unset);
+        }
+        for _ in 0..3 {
+            if let Some(tenant) = collection
+                .find_one_and_update(
+                    doc! {"_id": tenant_id, "$or": [
+                        {"security_rev": {"$exists": false}},
+                        {"$expr": valid.clone()},
+                    ]},
+                    incrementing.clone(),
+                )
+                .return_document(ReturnDocument::After)
+                .await?
+            {
+                return Ok(tenant);
+            }
+            if let Some(tenant) = collection
+                .find_one_and_update(
+                    doc! {"_id": tenant_id, "security_rev": {"$exists": true},
+                    "$expr": {"$not": [valid.clone()]}},
+                    invalid.clone(),
+                )
+                .return_document(ReturnDocument::After)
+                .await?
+            {
+                return Ok(tenant);
+            }
+            // Distinguish deletion from a value changing between the two CASes.
+            if collection
+                .find_one(doc! {"_id": tenant_id})
+                .await?
+                .is_none()
+            {
+                return Err(DaoError::NotFound);
+            }
+        }
+        Err(DaoError::Validation(
+            "Tenant security revision changed; retry".into(),
+        ))
+    }
+
     /// Phase 2 MagicDNS — set the tenant's overlay DNS domain + upstream
     /// nameservers (`None` domain disables MagicDNS). Returns the updated tenant.
     pub async fn set_magic_dns(
@@ -89,16 +160,8 @@ impl TenantDao {
     /// erasure is ever needed it belongs in a separate, explicitly
     /// destructive job layered on top of this.
     pub async fn set_archived(&self, tenant_id: ObjectId, archived: bool) -> DaoResult<Tenant> {
-        self.base
-            .update_by_id(
-                tenant_id,
-                doc! { "$set": {
-                    "is_archived": archived,
-                    "updated_at": DateTime::now(),
-                } },
-            )
-            .await?;
-        self.base.find_by_id(tenant_id).await
+        self.update_security(tenant_id, doc! {"is_archived": archived})
+            .await
     }
 
     /// Fleet RPC gate 1 — the org-wide kill-switch. Off by default on every
@@ -109,16 +172,8 @@ impl TenantDao {
         tenant_id: ObjectId,
         enabled: bool,
     ) -> DaoResult<Tenant> {
-        self.base
-            .update_by_id(
-                tenant_id,
-                doc! { "$set": {
-                    "settings.remote_exec_enabled": enabled,
-                    "updated_at": DateTime::now(),
-                } },
-            )
-            .await?;
-        self.base.find_by_id(tenant_id).await
+        self.update_security(tenant_id, doc! {"settings.remote_exec_enabled": enabled})
+            .await
     }
 
     /// FR-94 — refuse Windows commands that could not run as SYSTEM, rather
@@ -130,16 +185,8 @@ impl TenantDao {
         tenant_id: ObjectId,
         required: bool,
     ) -> DaoResult<Tenant> {
-        self.base
-            .update_by_id(
-                tenant_id,
-                doc! { "$set": {
-                    "settings.exec_require_system": required,
-                    "updated_at": DateTime::now(),
-                } },
-            )
-            .await?;
-        self.base.find_by_id(tenant_id).await
+        self.update_security(tenant_id, doc! {"settings.exec_require_system": required})
+            .await
     }
 
     /// FR-92 — the org's keep-busy settings: the DENY (`false` = allowed, the
@@ -197,12 +244,7 @@ impl TenantDao {
                 None => {}
             }
         }
-        let mut update = doc! { "$set": set };
-        if !unset.is_empty() {
-            update.insert("$unset", unset);
-        }
-        self.base.update_by_id(tenant_id, update).await?;
-        self.base.find_by_id(tenant_id).await
+        self.update_security_with_unset(tenant_id, set, unset).await
     }
 
     /// FR-101 P2 — set features of the org's remote-desktop session policy.
@@ -222,29 +264,18 @@ impl TenantDao {
                 set.insert(format!("settings.rc_session.{field}"), bson::to_bson(&v)?);
             }
         }
-        self.base
-            .update_by_id(tenant_id, doc! { "$set": set })
-            .await?;
-        self.base.find_by_id(tenant_id).await
+        self.update_security(tenant_id, set).await
     }
 
-    /// Roomler SSH's org kill-switch (gate 1). A separate switch from
+    /// MeshHarbor SSH's org kill-switch (gate 1). A separate switch from
     /// [`Self::set_remote_exec_enabled`] because they are separate grants.
     pub async fn set_remote_ssh_enabled(
         &self,
         tenant_id: ObjectId,
         enabled: bool,
     ) -> DaoResult<Tenant> {
-        self.base
-            .update_by_id(
-                tenant_id,
-                doc! { "$set": {
-                    "settings.remote_ssh_enabled": enabled,
-                    "updated_at": DateTime::now(),
-                } },
-            )
-            .await?;
-        self.base.find_by_id(tenant_id).await
+        self.update_security(tenant_id, doc! {"settings.remote_ssh_enabled": enabled})
+            .await
     }
 
     /// FR-51 — the ephemeral-key org switch (gate 1 of the key path). Checked
@@ -255,16 +286,18 @@ impl TenantDao {
         tenant_id: ObjectId,
         enabled: bool,
     ) -> DaoResult<Tenant> {
-        self.base
-            .update_by_id(
-                tenant_id,
-                doc! { "$set": {
-                    "settings.ephemeral_keys_enabled": enabled,
-                    "updated_at": DateTime::now(),
-                } },
-            )
-            .await?;
-        self.base.find_by_id(tenant_id).await
+        self.update_security(tenant_id, doc! {"settings.ephemeral_keys_enabled": enabled})
+            .await
+    }
+
+    /// Change the tenant-wide external remote-control gate.
+    pub async fn set_external_rc_enabled(
+        &self,
+        tenant_id: ObjectId,
+        enabled: bool,
+    ) -> DaoResult<Tenant> {
+        self.update_security(tenant_id, doc! {"settings.external_rc_enabled": enabled})
+            .await
     }
 
     pub async fn create(
@@ -281,6 +314,7 @@ impl TenantDao {
             description: None,
             icon: None,
             owner_id,
+            security_rev: Some(1_i64.into()),
             plan: Plan::Free,
             features: Vec::new(),
             settings: TenantSettings::default(),
@@ -494,6 +528,7 @@ impl TenantDao {
             id: None,
             tenant_id,
             user_id,
+            security_rev: Some(1_i64.into()),
             nickname: None,
             role_ids,
             joined_at: now,
@@ -574,12 +609,12 @@ impl TenantDao {
         user_id: ObjectId,
         role_id: ObjectId,
     ) -> DaoResult<bool> {
-        self.members
-            .update_one(
-                doc! { "tenant_id": tenant_id, "user_id": user_id },
-                doc! { "$addToSet": { "role_ids": role_id }, "$set": { "updated_at": DateTime::now() } },
-            )
-            .await
+        self.update_member_security(
+            tenant_id,
+            user_id,
+            doc! { "$addToSet": { "role_ids": role_id } },
+        )
+        .await
     }
 
     pub async fn remove_role(
@@ -588,12 +623,68 @@ impl TenantDao {
         user_id: ObjectId,
         role_id: ObjectId,
     ) -> DaoResult<bool> {
-        self.members
-            .update_one(
-                doc! { "tenant_id": tenant_id, "user_id": user_id },
-                doc! { "$pull": { "role_ids": role_id }, "$set": { "updated_at": DateTime::now() } },
-            )
-            .await
+        self.update_member_security(
+            tenant_id,
+            user_id,
+            doc! { "$pull": { "role_ids": role_id } },
+        )
+        .await
+    }
+
+    /// Role mutations and the member's monotonic security counter share one
+    /// Mongo update. Invalid/exhausted counters remain invalid and refuse
+    /// native shared-SSH authority, without blocking role administration.
+    async fn update_member_security(
+        &self,
+        tenant_id: ObjectId,
+        user_id: ObjectId,
+        mut update: Document,
+    ) -> DaoResult<bool> {
+        update.insert("$set", doc! { "updated_at": DateTime::now() });
+        let valid = doc! { "$and": [
+            { "$eq": [{ "$type": "$security_rev" }, "long"] },
+            { "$gt": ["$security_rev", 0_i64] },
+            { "$lt": ["$security_rev", i64::MAX] },
+        ] };
+        let collection = self.members.collection();
+        let base_filter = doc! { "tenant_id": tenant_id, "user_id": user_id };
+        for _ in 0..3 {
+            let mut incrementing = base_filter.clone();
+            incrementing.insert(
+                "$or",
+                bson::bson!([
+                    { "security_rev": { "$exists": false } },
+                    { "$expr": valid.clone() },
+                ]),
+            );
+            let mut incrementing_update = update.clone();
+            incrementing_update.insert("$inc", doc! { "security_rev": 1_i64 });
+            if collection
+                .update_one(incrementing, incrementing_update)
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            let mut invalid = base_filter.clone();
+            invalid.insert("security_rev", doc! { "$exists": true });
+            invalid.insert("$expr", doc! { "$not": [valid.clone()] });
+            if collection
+                .update_one(invalid, update.clone())
+                .await?
+                .matched_count
+                > 0
+            {
+                return Ok(true);
+            }
+            if collection.find_one(base_filter.clone()).await?.is_none() {
+                return Ok(false);
+            }
+        }
+        Err(DaoError::Validation(
+            "Tenant member security revision changed; retry".into(),
+        ))
     }
 
     pub async fn get_member_permissions(

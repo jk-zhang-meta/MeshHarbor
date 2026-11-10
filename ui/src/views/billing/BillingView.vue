@@ -259,7 +259,7 @@ interface BillingSummary {
 }
 
 const UNLIMITED = 4294967295
-const CURRENCY_KEY = 'roomler.billing.currency'
+const CURRENCY_KEY = 'meshharbor.billing.currency'
 
 const plans = ref<PlanInfo[]>([])
 const summary = ref<BillingSummary | null>(null)

@@ -4,15 +4,15 @@
 //! CAS acknowledgement watermarks (`OverlayNodeDao::record_applied_auth_revision`).
 
 use bson::oid::ObjectId;
-use mongodb::Client;
-use roomler_ai_remote_control::models::{NodeRef, OverlayAclMode, PeerRelayMode};
-use roomler_ai_services::dao::{
+use meshharbor_remote_control::models::{NodeRef, OverlayAclMode, PeerRelayMode};
+use meshharbor_services::dao::{
     overlay_network::OverlayNetworkDao,
     overlay_node::{NewOverlayNode, OverlayNodeDao},
 };
+use mongodb::Client;
 
 async fn test_db(name: &str) -> mongodb::Database {
-    let uri = std::env::var("ROOMLER_TEST_MONGO_URL")
+    let uri = std::env::var("MESHHARBOR_TEST_MONGO_URL")
         .or_else(|_| std::env::var("MESHHARBOR_KEY_FENCE_MONGO"))
         .unwrap_or_else(|_| "mongodb://127.0.0.1:27017".to_string());
     let client = Client::with_uri_str(&uri).await.unwrap();

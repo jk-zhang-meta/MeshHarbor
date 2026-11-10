@@ -24,11 +24,11 @@
 
 use axum::{Json, extract::State};
 use bson::{Bson, Document, doc};
-use roomler_ai_services::quota;
+use meshharbor_services::quota;
 use serde::Serialize;
 use std::collections::HashMap;
 
-use roomler_core::{ApiError, Core, extractors::auth::AuthUser, guards::require_platform_admin};
+use meshharbor_core::{ApiError, Core, extractors::auth::AuthUser, guards::require_platform_admin};
 
 #[derive(Debug, Serialize)]
 pub struct LimitRow {
@@ -118,7 +118,7 @@ pub async fn admin_plan_compliance(
         &state,
         "rooms",
         count.clone(),
-        Some(roomler_ai_services::dao::room::RoomDao::channel_filter()),
+        Some(meshharbor_services::dao::room::RoomDao::channel_filter()),
     )
     .await?;
     let devices = group_by_tenant(&state, "agents", count.clone(), Some(live.clone())).await?;
@@ -280,7 +280,7 @@ pub async fn admin_plan_compliance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_ai_db::models::{Plan, PlanEnforcement};
+    use meshharbor_db::models::{Plan, PlanEnforcement};
 
     /// The report must read its limits from the same place the gates do, or it
     /// can call a tenant compliant while the gate refuses them.

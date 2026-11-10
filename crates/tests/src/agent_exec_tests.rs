@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //! Fleet RPC end-to-end: the browser/API leg driven against a live `TestApp`
-//! with the real `roomlerd` library on the other end.
+//! with the real `meshharbord` library on the other end.
 //!
 //! What these lock is the thing unit tests can't: that the four gates are
 //! actually wired into the ONE path a command takes, that a refusal is a
@@ -11,7 +11,7 @@
 //! here.
 
 use crate::fixtures::test_app::TestApp;
-use roomlerd::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
+use meshharbord::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -36,22 +36,22 @@ fn spawn_agent(
     tokio::spawn(async move {
         let connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
-        let broker = roomlerd::consent::ConsentBroker::new(
-            roomlerd::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-exec-consent-{}", cfg.agent_id)),
+        let broker = meshharbord::consent::ConsentBroker::new(
+            meshharbord::consent::Mode::AutoGrant,
+            std::env::temp_dir().join(format!("meshharbor-exec-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         // Read before `cfg` is moved into the call below.
         let exec_enabled = cfg.exec_enabled;
         let remote_config_enabled = cfg.remote_config_enabled;
         let _ = signaling::run(
-            signaling::OrgCtx::primary(roomlerd::token_slot::TokenSlot::new(
+            signaling::OrgCtx::primary(meshharbord::token_slot::TokenSlot::new(
                 cfg.agent_token.clone(),
             )),
             // FR-43 P2b — no GUI-worker delegation in tests: `Off` is not a
             // stub but the real production value on every platform except a
             // macOS daemon supervising a worker, or the worker it supervises.
-            roomlerd::delegate::Delegation::Off,
+            meshharbord::delegate::Delegation::Off,
             cfg,
             EncoderPreference::Software,
             stop_rx,
@@ -59,14 +59,14 @@ fn spawn_agent(
             view_tx,
             Default::default(),
             broker,
-            roomlerd::tunnel::client_mgr::TunnelClientHub::new("test".into()),
+            meshharbord::tunnel::client_mgr::TunnelClientHub::new("test".into()),
             // Remote config: tests never PUSH one, but the live `exec_enabled`
             // must still be SEEDED from the config this agent was handed —
             // which is exactly what `main.rs` does. Hardcoding `false` made the
             // harness disagree with production about gate 4, so every test that
             // sets `cfg.exec_enabled = true` was answered "remote execution is
             // disabled on this device".
-            roomlerd::remote_config::RemoteConfigServices::new(
+            meshharbord::remote_config::RemoteConfigServices::new(
                 std::path::PathBuf::from("unused-in-tests.toml"),
                 std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 exec_enabled,
@@ -76,7 +76,7 @@ fn spawn_agent(
             // read it back, but the signalling loop registers into it, so a
             // fresh one per harness is the honest value (not a shared global
             // that would leak sessions between tests).
-            roomlerd::rc_sessions::RcSessionRegistry::new(),
+            meshharbord::rc_sessions::RcSessionRegistry::new(),
         )
         .await;
     })

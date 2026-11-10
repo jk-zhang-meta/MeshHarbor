@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bytes::Bytes;
-use roomler_ai_remote_control::signaling::CloseReason;
+use meshharbor_remote_control::signaling::CloseReason;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, Notify, mpsc};
@@ -77,7 +77,7 @@ pub const CHUNK_BYTES: usize = u16::MAX as usize;
 /// rc.66 bump: 256 → 4096. Field-test 2026-05-27 with TDS bulk read
 /// stalled at ~50 KB/s effective throughput while SCTP was happily
 /// acknowledging at 1-2 MB/s; arwnd closed monotonically and
-/// `roomler-tunnel.exe` was at 0% CPU (so not busy-loop, not lock
+/// `meshharbor-tunnel.exe` was at 0% CPU (so not busy-loop, not lock
 /// contention — purely I/O-bound waiting for the local app to
 /// drain). With 4096 × ~64 KiB chunks the per-flow buffer ceiling
 /// is ~256 MiB; a momentary slow consumer no longer cascades back
@@ -92,7 +92,7 @@ const FLOW_INBOX_CAP: usize = 4096;
 /// 2 s cadence and we can see EXACTLY which of the four pump stages
 /// is rate-limiting under bulk-stream load.
 ///
-/// Field-test 2026-05-27 with TDS bulk read showed `roomler-tunnel.
+/// Field-test 2026-05-27 with TDS bulk read showed `meshharbor-tunnel.
 /// exe` at 0% CPU while throughput effectively topped out at
 /// ~50 KB/s. These counters are the diagnostic we needed: by
 /// comparing `tcp_read_bytes` (producer side) against
@@ -149,7 +149,7 @@ pub struct FlowStats {
     /// agent target side + the CLI + every `FlowStats::default()`, so
     /// those carry no aggregate. When present, the pumps mirror each
     /// TCP-side byte add into the session cumulative (`bytes_out` =
-    /// local→peer, `bytes_in` = peer→local) so `roomler flows` can
+    /// local→peer, `bytes_in` = peer→local) so `mh flows` can
     /// report per-forward throughput. TCP-side (not `dc_send`) so the
     /// count is the true application payload — comparable across
     /// WebRTC (which adds a 4-byte frame prefix) and QUIC.
@@ -189,13 +189,13 @@ impl FlowStats {
 }
 
 /// Session-level throughput aggregate for a daemon-originated tunnel
-/// (P3b-3). One per `meshharbor forward` / `socks5` flow, shared across
+/// (P3b-3). One per `mh forward` / `socks5` flow, shared across
 /// its per-connection [`FlowStats`] and across WS-reconnect attempts
 /// (so `bytes_in`/`bytes_out` are cumulative for the forward's life).
 /// Read by the daemon's `flows` LocalAPI verb.
 ///
 /// Named `SessionThroughput` (not `SessionStats`) to avoid colliding
-/// with the unrelated video-session `roomler_ai_remote_control::models::
+/// with the unrelated video-session `meshharbor_remote_control::models::
 /// SessionStats`.
 ///
 /// `bytes_*` are cumulative (never decremented). `active_flows` is a

@@ -151,7 +151,7 @@ describe('HiveManage (FR-90 P2j-5)', () => {
     await not('signed out', () => (hoisted.user = null))
     await not('a started session', () => (hoisted.sessions = [session({ origin: 'started' })]))
     await not('one whose terminal still runs', () => (hoisted.sessions = [session({ status: 'running' })]))
-    await not('one stopped from Roomler', () => (hoisted.sessions = [session({ end_reason: 'stopped' })]))
+    await not('one stopped from MeshHarbor', () => (hoisted.sessions = [session({ end_reason: 'stopped' })]))
     await not('one ended any other way', () => (hoisted.sessions = [session({ end_reason: 'lost' })]))
   })
 

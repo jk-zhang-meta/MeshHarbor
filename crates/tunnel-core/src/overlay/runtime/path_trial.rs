@@ -7,7 +7,7 @@ use crate::overlay::{
     orgrelay::{client::OrgRelayConn, member::OrgSession},
 };
 use crate::transport::relay::RelayConn;
-use roomler_ai_remote_control::signaling::{OrgRelayCandidateWire, ServerMsg};
+use meshharbor_remote_control::signaling::{OrgRelayCandidateWire, ServerMsg};
 
 mod observation;
 pub(super) use observation::{
@@ -1525,7 +1525,7 @@ mod failure_feedback_regression {
             panic!("actual discovery")
         };
         let first = OrgRelayCandidateWire {
-            path: roomler_ai_remote_control::signaling::RelayPathWire::new(vec![
+            path: meshharbor_remote_control::signaling::RelayPathWire::new(vec![
                 ObjectId::new(),
                 ObjectId::new(),
             ])
@@ -1534,7 +1534,7 @@ mod failure_feedback_regression {
             endpoints: vec!["8.8.8.8:3478".into()],
         };
         let second = OrgRelayCandidateWire {
-            path: roomler_ai_remote_control::signaling::RelayPathWire::new(vec![ObjectId::new()])
+            path: meshharbor_remote_control::signaling::RelayPathWire::new(vec![ObjectId::new()])
                 .unwrap(),
             requester_at_exit: false,
             endpoints: vec!["1.1.1.1:3478".into()],

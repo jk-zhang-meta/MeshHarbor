@@ -30,10 +30,10 @@ use axum::{
 };
 use bson::{Document, doc};
 use chrono::Duration;
-use roomler_ai_api::growth::{digest, github};
-use roomler_ai_config::GrowthSettings;
-use roomler_ai_mod_saas::github_pull::{self, GithubClient};
-use roomler_ai_services::dao::growth::{
+use meshharbor_api::growth::{digest, github};
+use meshharbor_config::GrowthSettings;
+use meshharbor_mod_saas::github_pull::{self, GithubClient};
+use meshharbor_services::dao::growth::{
     GITHUB_SOURCE, GITHUB_TRAFFIC_SOURCE, GROWTH_DAILY, GROWTH_PULLS,
 };
 use serde_json::{Value, json};
@@ -202,7 +202,7 @@ fn seed_releases(f: &Fake) {
         "agent-v0.4.999".to_string(),
         true,
         vec![(
-            "roomlerd-0.4.999-x86_64-pc-windows-msvc.msi".to_string(),
+            "meshharbord-0.4.999-x86_64-pc-windows-msvc.msi".to_string(),
             500,
         )],
     )];
@@ -211,9 +211,9 @@ fn seed_releases(f: &Fake) {
             format!("agent-v0.4.{i}"),
             false,
             vec![
-                (format!("roomlerd-0.4.{i}-x86_64-pc-windows-msvc.msi"), 2),
-                (format!("roomlerd_0.4.{i}_amd64.deb"), 1),
-                (format!("roomlerd_0.4.{i}_amd64.deb.asc"), 5),
+                (format!("meshharbord-0.4.{i}-x86_64-pc-windows-msvc.msi"), 2),
+                (format!("meshharbord_0.4.{i}_amd64.deb"), 1),
+                (format!("meshharbord_0.4.{i}_amd64.deb.asc"), 5),
             ],
         ));
     }
@@ -403,7 +403,7 @@ async fn the_puller_snapshots_the_closed_day_once_inside_its_window() {
             GITHUB_SOURCE,
             &y,
             "downloads",
-            doc! { "by": "flavour", "flavour": "roomlerd-x86_64-pc-windows-msvc.msi" }
+            doc! { "by": "flavour", "flavour": "meshharbord-x86_64-pc-windows-msvc.msi" }
         )
         .await,
         Some(298)
@@ -414,7 +414,7 @@ async fn the_puller_snapshots_the_closed_day_once_inside_its_window() {
             GITHUB_SOURCE,
             &y,
             "downloads",
-            doc! { "by": "flavour", "flavour": "roomlerd_amd64.deb" }
+            doc! { "by": "flavour", "flavour": "meshharbord_amd64.deb" }
         )
         .await,
         Some(149)
@@ -425,7 +425,7 @@ async fn the_puller_snapshots_the_closed_day_once_inside_its_window() {
             GITHUB_SOURCE,
             &y,
             "downloads",
-            doc! { "by": "flavour", "flavour": "roomlerd_amd64.deb.asc" }
+            doc! { "by": "flavour", "flavour": "meshharbord_amd64.deb.asc" }
         )
         .await,
         None,
@@ -783,7 +783,7 @@ async fn the_digest_differences_snapshots_and_never_reads_a_gap_as_zero() {
     let sections = digest::compute(
         &app.state,
         t - Duration::days(3),
-        &roomler_core::growth::ExclusionSet::none(),
+        &meshharbor_core::growth::ExclusionSet::none(),
         bson::DateTime::now(),
     )
     .await
@@ -792,6 +792,6 @@ async fn the_digest_differences_snapshots_and_never_reads_a_gap_as_zero() {
     assert_eq!(j["github"]["counters"]["stars"], 105);
     assert_eq!(
         j["github"]["traffic"]["not_measured"],
-        "no GitHub token configured (ROOMLER__GROWTH__GITHUB_TOKEN)"
+        "no GitHub token configured (MESHHARBOR__GROWTH__GITHUB_TOKEN)"
     );
 }

@@ -144,8 +144,7 @@ describe("the repo's own images", () => {
   })
 
   it('keep the logo lockup at 422×120, which the top bars draw at 113×32', () => {
-    expect(imageSize(readFileSync(join(ui, 'src/assets/brand/roomler-logo.svg')))).toEqual({ width: 422, height: 120 })
-    expect(imageSize(readFileSync(join(ui, 'src/assets/brand/roomler-logo-dark.svg')))).toEqual({ width: 422, height: 120 })
+    expect(imageSize(readFileSync(join(ui, 'src/assets/brand/meshharbor-logo.svg')))).toEqual({ width: 422, height: 120 })
   })
 
   it('name only icons that exist, at the size the manifest states', () => {

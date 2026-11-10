@@ -63,8 +63,8 @@ $cert = New-SelfSignedCertificate `
 Ok "thumbprint: $($cert.Thumbprint)"
 Ok "expires:    $($cert.NotAfter)"
 
-$pfxPath = Join-Path $OutDir 'roomler-dev.pfx'
-$cerPath = Join-Path $OutDir 'roomler-dev.cer'
+$pfxPath = Join-Path $OutDir 'meshharbor-dev.pfx'
+$cerPath = Join-Path $OutDir 'meshharbor-dev.cer'
 $pwSecure = ConvertTo-SecureString -String $Password -Force -AsPlainText
 
 Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $pwSecure | Out-Null
@@ -73,9 +73,9 @@ Ok "pfx: $pfxPath   (PRIVATE KEY -- gitignored, never commit)"
 Ok "cer: $cerPath   (public, safe to distribute for GPO/Intune trust)"
 
 $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($pfxPath))
-$b64Path = Join-Path $OutDir 'roomler-dev.pfx.base64'
+$b64Path = Join-Path $OutDir 'meshharbor-dev.pfx.base64'
 Set-Content -Path $b64Path -Value $b64 -Encoding ascii
-$pwPath = Join-Path $OutDir 'roomler-dev.password.txt'
+$pwPath = Join-Path $OutDir 'meshharbor-dev.password.txt'
 Set-Content -Path $pwPath -Value $Password -Encoding ascii
 
 Write-Host ''
@@ -98,13 +98,11 @@ if ($PushSecrets) {
 }
 
 Write-Host ''
-Say 'Rehearse the pipeline with it (no tag, no publish, no Azure):'
-Info "  gh workflow run release-agent.yml  --repo $Repo -f publish_release=false -f signing_mode=local -f require_signing=true"
-Info "  gh workflow run release-setup.yml  --repo $Repo -f publish_release=false -f signing_mode=local"
-Info "  gh workflow run release-tunnel.yml --repo $Repo -f publish_release=false -f signing_mode=local"
+Say 'Local test-certificate rehearsal (no tag or publication):'
+Info '  CI is retired; follow docs/local-build.md for explicit local preparation.'
 Write-Host ''
 Info 'Negative test -- the gate must FAIL, not warn:'
-Info "  gh workflow run release-agent.yml  --repo $Repo -f publish_release=false -f signing_mode=off -f require_signing=true"
+Info '  CI is retired; follow docs/local-build.md for explicit local preparation.'
 Write-Host ''
 Info 'To trust it on pilot machines: pwsh scripts/signing/51-trust-dev-cert.ps1'
 Write-Host ''

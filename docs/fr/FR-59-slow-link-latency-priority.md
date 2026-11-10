@@ -1,6 +1,6 @@
 # FR-59 — Slow-link latency priority: make delay the controlled variable
 
-**Issue:** [#1163](https://github.com/gjovanov/roomler-ai/issues/1163) · **Status:** P1–P8 shipped (0.4.47 → 0.4.50); **0.4.47–0.4.49 regressed the fleet** — see "What the field regression taught"; AC4 open ·
+**Issue:** [#1163](https://github.com/jk-zhang-meta/MeshHarbor/issues/1163) · **Status:** P1–P8 shipped (0.4.47 → 0.4.50); **0.4.47–0.4.49 regressed the fleet** — see "What the field regression taught"; AC4 open ·
 **Parent/siblings:** FR-1 (drag smoothness), FR-14 (direct jitter), FR-15 (age feedback),
 FR-17 (partial-reliability video), FR-35 (relay ceiling learns the pair)
 
@@ -40,7 +40,7 @@ therefore **increased**.
 ### The six mechanisms
 
 1. **A hard 1.5 Mbps bitrate floor.** `MIN_BITRATE_BPS = 1_500_000`
-   (`agents/roomlerd/src/encode/mod.rs:202`); on a constrained path `area_min_bitrate_bps()`
+   (`agents/meshharbord/src/encode/mod.rs:202`); on a constrained path `area_min_bitrate_bps()`
    (`:215`) returns exactly it, and `governor.rs:317` passes it as the AIMD's `floor_bps`.
    **The encoder cannot be told to emit less than 1.5 Mbps, ever** — 3.8× the measured pipe at
    best, 23× in the worst window. Every other lever is downstream of a target the encoder is
@@ -103,13 +103,13 @@ Aside, and load-bearing for P6: FR-35's rate memory keys on `nominated_remote_ip
 
 | # | Phase | What | Kill switch | Status |
 |---|---|---|---|---|
-| **P1** | Evidence-gated floor relief | The AIMD floor descends toward the measured pipe on constrained paths, clamped at `slow_link_min_bitrate_bps`. Evidence = the agent's goodput estimate OR the viewer's arrival rate, whichever is lower | `ROOMLERD_SLOW_LINK_FLOOR=0` / `slow_link_floor` | **implemented** (#1169) |
-| **P2** | Budgets in measured rate | `constrained_queue_budget_bytes` re-derived per iteration; a measurement may only ever LOWER the reference | `ROOMLERD_CONSTRAINED_QUEUE_MEASURED=0` | **implemented** (#1169) |
-| **P6** | Abandon a contradicted seed | A held measurement more than 2× below `learned_bps` resets the FR-35 learner to nominal | `ROOMLERD_SEED_CONTRADICTION=0` | **implemented** (#1169) |
-| **P3** | A signal that can't be fooled | Viewer reports `rx_bps` + queue **growth**, the latter as `Σ(Δarrival − Δwire)` — a difference of intervals, so the clock offset cancels and no probe is needed. Sustained growth caps fps, feeds the AIMD a congestion sample, and bounds the ceiling at 90 % of the arrival rate | `ROOMLERD_VIEWER_RATE_CLAMP=0` | **implemented** (#1169) |
-| **P4** | Drain, don't wait | P3's drift INTEGRATED into a depth estimate; past `DRAIN_THRESHOLD_MS` the pump stops producing for a bounded sub-second pause | `ROOMLERD_QUEUE_DRAIN=0` | **implemented** (#1169) |
-| **P5** | Slow-link profile, engaged once | Below a measured threshold: resolution + fps capped **at pump start** (never as a mid-session rung — that is why `PRIORITY_RES_CAP` is off by default: an 865 ms blocking QSV rebuild), with a viewer badge | `ROOMLERD_SLOW_LINK_PROFILE=0` | **implemented** (#1169); ⚠️ without P8 it made things WORSE — see below |
-| **P7** | Unordered video — the reorder buffer | **FR-17 stage C**: chunks assemble into slots in ANY order and the frame emits whole; a frame overtaken by a newer completed one is abandoned with a gap (→ IDR); partials bounded at 3 | existing `roomler-rc-unordered-video` | **buffer implemented** (#1169); **default flip deliberately NOT taken — see below** |
+| **P1** | Evidence-gated floor relief | The AIMD floor descends toward the measured pipe on constrained paths, clamped at `slow_link_min_bitrate_bps`. Evidence = the agent's goodput estimate OR the viewer's arrival rate, whichever is lower | `MESHHARBORD_SLOW_LINK_FLOOR=0` / `slow_link_floor` | **implemented** (#1169) |
+| **P2** | Budgets in measured rate | `constrained_queue_budget_bytes` re-derived per iteration; a measurement may only ever LOWER the reference | `MESHHARBORD_CONSTRAINED_QUEUE_MEASURED=0` | **implemented** (#1169) |
+| **P6** | Abandon a contradicted seed | A held measurement more than 2× below `learned_bps` resets the FR-35 learner to nominal | `MESHHARBORD_SEED_CONTRADICTION=0` | **implemented** (#1169) |
+| **P3** | A signal that can't be fooled | Viewer reports `rx_bps` + queue **growth**, the latter as `Σ(Δarrival − Δwire)` — a difference of intervals, so the clock offset cancels and no probe is needed. Sustained growth caps fps, feeds the AIMD a congestion sample, and bounds the ceiling at 90 % of the arrival rate | `MESHHARBORD_VIEWER_RATE_CLAMP=0` | **implemented** (#1169) |
+| **P4** | Drain, don't wait | P3's drift INTEGRATED into a depth estimate; past `DRAIN_THRESHOLD_MS` the pump stops producing for a bounded sub-second pause | `MESHHARBORD_QUEUE_DRAIN=0` | **implemented** (#1169) |
+| **P5** | Slow-link profile, engaged once | Below a measured threshold: resolution + fps capped **at pump start** (never as a mid-session rung — that is why `PRIORITY_RES_CAP` is off by default: an 865 ms blocking QSV rebuild), with a viewer badge | `MESHHARBORD_SLOW_LINK_PROFILE=0` | **implemented** (#1169); ⚠️ without P8 it made things WORSE — see below |
+| **P7** | Unordered video — the reorder buffer | **FR-17 stage C**: chunks assemble into slots in ANY order and the frame emits whole; a frame overtaken by a newer completed one is abandoned with a gap (→ IDR); partials bounded at 3 | existing `meshharbor-rc-unordered-video` | **buffer implemented** (#1169); **default flip deliberately NOT taken — see below** |
 | **P8** | Reach the encoder | The `coarsen_bitrate` ladder extends below 1.5 M (it was a second copy of the pin P1 removed: every relieved target snapped back to the 1.5 M rung and `set_bitrate` returned without touching the encoder); the additive step is relative (`desired/8`) below the nominal floor so a probe does not overshoot a 300 kbps pipe by 43 % and pay an IDR for it; a pair remembered BELOW the nominal floor **opens at the remembered rate** (the FR-35 learner only ever RAISES the ceiling, so a slow memory never reached the opener) and seeds the floor relief; the idle-refine lift is held while the P5 profile is in force (it was the mid-session rung flip P5 exists to avoid — one native IDR each way, on every heartbeat) | `slow_link_floor` (the opener + the relative step ride on it); the ladder itself has none — it is a table | **implemented** (0.4.50) |
 | **T1** | webrtc-sctp FORWARD-TSN parse | Found alongside, not an FR-59 phase: upstream `ChunkForwardTsn::unmarshal` bounded its stream loop by the PACKET buffer, so any chunk bundled after a FORWARD-TSN failed the whole packet — Chrome bundles FORWARD-TSN + SACK whenever it abandons a message on the unreliable `input` channel, i.e. on every viewer→agent loss while the mouse moves; each drop is a lost acknowledgement and the video stalls on an RTO. Vendored (`crates/vendored/webrtc-sctp`, canonical `.patch`, CI drift gate) | none — a parse fix | **implemented** (0.4.50) |
 
@@ -123,7 +123,7 @@ frame, on the thinnest pipe. So the existing opt-in was, in practice, unusable.
 It now works, which is what makes a field test of the flip possible at all.
 
 The flip itself is deliberately still opt-in
-(`localStorage['roomler-rc-unordered-video'] = '1'`), for three reasons:
+(`localStorage['meshharbor-rc-unordered-video'] = '1'`), for three reasons:
 
 1. **It cannot be scoped to slow links.** A DataChannel's ordering is fixed at
    creation, before ICE nominates a pair, so neither side knows yet whether the
@@ -195,7 +195,7 @@ Four things the plan did not anticipate, all now load-bearing:
    the carrier, already sent and unrecallable. So P4 is a production PAUSE, and — because a
    pause loses no frames — it deliberately does NOT force a keyframe on resume, which at
    these rates would itself be seconds of transit. The kill switch is therefore
-   `ROOMLERD_QUEUE_DRAIN`, not the planned `ROOMLERD_AGE_DRAIN`.
+   `MESHHARBORD_QUEUE_DRAIN`, not the planned `MESHHARBORD_AGE_DRAIN`.
 
 ## What the field regression taught (2026-09-02, 0.4.47 → 0.4.49)
 
@@ -251,7 +251,7 @@ Two different failures, one per host, and neither was the clamp the handover sus
 6. **The viewer host was not healthy, and that is a separate issue.** neo16's daemon logged
    ~100 overlay carrier revalidations per minute from 10:10 UTC on, triggered by 718 route
    evictions of `fd72:6f6f:6d6c::/96` (the derived-ULA v6 prefix) — 630 of them naming the
-   PRIMARY `roomler` adapter as the "competing product", 88 naming `roomler-<org>`: the two org
+   PRIMARY `meshharbor` adapter as the "competing product", 88 naming `meshharbor-<org>`: the two org
    runtimes inside one multi-org daemon evicting each other's route, and every eviction a
    Windows route-change notification that pokes every peer. Both corp laptops show the same
    fight (filed as #1237). Chrome on neo16 also auto-updated 151 → 152 at 02:12 UTC that day.

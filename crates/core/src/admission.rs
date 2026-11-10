@@ -2,9 +2,9 @@
 //! Optional deployment-wide account admission. Tenant roles cannot approve users.
 use crate::{ApiError, Core};
 use bson::oid::ObjectId;
-use roomler_ai_config::AccountApprovalSettings;
-use roomler_ai_db::models::{AccountApprovalState, User};
-use roomler_ai_services::auth::Claims;
+use meshharbor_config::AccountApprovalSettings;
+use meshharbor_db::models::{AccountApprovalState, User};
+use meshharbor_services::auth::Claims;
 
 pub fn owner_id(policy: &AccountApprovalSettings) -> Result<Option<ObjectId>, ApiError> {
     if !policy.enabled {

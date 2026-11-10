@@ -9,12 +9,12 @@
 ## The problem
 
 The Tailscale-style L3 overlay (feature `overlay-l3`, default-OFF) brings up
-a Wintun virtual NIC named **`roomler`** and routes per-tenant overlay IPs
+a Wintun virtual NIC named **`meshharbor`** and routes per-tenant overlay IPs
 (`100.64.0.0/10`) over WireGuard, relayed through coturn when direct
 hole-punching fails. On a clean host this works both directions.
 
 On a **corporate host whose Defender Firewall is controlled by Group
-Policy**, unsolicited *inbound* packets to the `roomler` adapter are
+Policy**, unsolicited *inbound* packets to the `meshharbor` adapter are
 dropped. The relay, the WireGuard handshake, and the routing are all fine —
 the peer's packets reach the host's TUN — but the host won't *answer*
 inbound, so the reverse direction fails. Worse, a local
@@ -33,7 +33,7 @@ its LocalSystem service instead of adding Defender rules. The agent already
 runs as a LocalSystem Windows service, which is exactly the privilege WFP
 writes require, so it does the same.
 
-On overlay bring-up (`overlay::tun::SystemTun::up`, after the `roomler`
+On overlay bring-up (`overlay::tun::SystemTun::up`, after the `meshharbor`
 adapter exists), the agent:
 
 1. Opens a **dynamic** WFP engine session
@@ -44,7 +44,7 @@ adapter exists), the agent:
    firewall sublayer (~weight 2), so it's arbitrated first.
 3. Adds four **hard-permit** filters (one per ALE layer:
    `ALE_AUTH_RECV_ACCEPT_V4/V6`, `ALE_AUTH_CONNECT_V4/V6`), each scoped by a
-   single condition `FWPM_CONDITION_IP_LOCAL_INTERFACE == <roomler LUID>`.
+   single condition `FWPM_CONDITION_IP_LOCAL_INTERFACE == <meshharbor LUID>`.
 
 The **hard permit** is the key: the filters carry
 `FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT`, which clears the action-write right.
@@ -54,15 +54,15 @@ plain *soft* permit, which is the WFP default and what Tailscale's published
 demo uses, would lose to a GPO hard block — so we go further than the demo.)
 
 This is **additive permit only** — no shields-up, no discard filters, never
-touches any interface other than `roomler`.
+touches any interface other than `meshharbor`.
 
 ### Identity (greppable in `netsh wfp show filters`)
 
 | Object | Name | GUID |
 |---|---|---|
-| Provider | `Roomler Overlay` | `524f4f4d-4c45-5200-5052-4f5649444552` |
-| Sublayer | `Roomler Overlay Permit (LUID-scoped)` | `524f4f4d-4c45-5200-5355-424c41594552` |
-| Filters | `Roomler Overlay Inbound/Outbound Permit` | (auto-assigned per layer) |
+| Provider | `MeshHarbor Overlay` | `524f4f4d-4c45-5200-5052-4f5649444552` |
+| Sublayer | `MeshHarbor Overlay Permit (LUID-scoped)` | `524f4f4d-4c45-5200-5355-424c41594552` |
+| Filters | `MeshHarbor Overlay Inbound/Outbound Permit` | (auto-assigned per layer) |
 
 ## Limits — when this still won't work
 
@@ -75,7 +75,7 @@ A hard permit overrides a *filter* block, but **cannot** override:
 Nor can it run if the GPO has hardened the BFE security descriptors so even
 LocalSystem can't add filters. In those cases the install fails (or succeeds
 but is still vetoed downstream), and the only recourse is an **IT-managed
-exception**: a domain firewall allow-rule scoped to the `roomler` adapter /
+exception**: a domain firewall allow-rule scoped to the `meshharbor` adapter /
 `100.64.0.0/10`, or a connection-security exemption.
 
 The install is **best-effort**: a failure logs a WARN and the overlay still
@@ -85,7 +85,7 @@ for the sublayer above) and a reverse-direction ping/curl.
 
 ## Disabling it
 
-Set `ROOMLERD_WFP_PERMIT=0` (or `false`/`no`/`off`) to skip WFP
+Set `MESHHARBORD_WFP_PERMIT=0` (or `false`/`no`/`off`) to skip WFP
 programming entirely — e.g. on a host where IT installed a managed
 exception, or to silence an AV "firewall tampering" alert. Default is **ON**
 whenever `overlay-l3` is active.
@@ -96,12 +96,12 @@ A high-weight, hard-permit sublayer from a non-Microsoft provider that
 overrides a GPO firewall block is exactly the pattern some EDRs flag as
 "WFP tampering". Mitigating properties:
 
-- **LUID-scoped to `roomler`** — it cannot open the host's other
+- **LUID-scoped to `meshharbor`** — it cannot open the host's other
   interfaces; it only permits traffic on the overlay NIC the agent itself
   created.
 - **Additive permit only** — never shields-up, never a discard/block.
 - Runs as **LocalSystem** (the service privilege that makes BFE writable).
-- **Break-glass disable** via `ROOMLERD_WFP_PERMIT=0` — an IT/security
+- **Break-glass disable** via `MESHHARBORD_WFP_PERMIT=0` — an IT/security
   team can neutralize it without rebuilding.
 
 Implementation: `crates/tunnel-core/src/overlay/wfp.rs` (raw `windows-sys`
@@ -109,19 +109,19 @@ Implementation: `crates/tunnel-core/src/overlay/wfp.rs` (raw `windows-sys`
 
 ## The other Windows firewall rule: the daemon's own inbound UDP (#1698)
 
-WFP above covers the **`roomler` adapter**. The daemon's WireGuard, disco/STUN
+WFP above covers the **`meshharbor` adapter**. The daemon's WireGuard, disco/STUN
 and WebRTC sockets bind on the **physical** adapters too, and for those the
-ordinary Defender rule set applies: with no rule for `roomlerd.exe`, an
+ordinary Defender rule set applies: with no rule for `meshharbord.exe`, an
 unsolicited inbound UDP packet (a LAN-direct dial, a srflx punch) dies at the
 Public profile's default-deny. Since P9 (field-hit 2026-07-28) the daemon
 writes itself an allow rule at every TUN bring-up:
 
 | | |
 |---|---|
-| Name | `Roomler UDP-In (roomlerd)` — the exe stem, so the `roomler` tunnel client gets its own (`Roomler UDP-In (roomler)`) |
-| Shape | `dir=in action=allow protocol=udp program=<full path of roomlerd.exe>`, all profiles, every port |
+| Name | `MeshHarbor UDP-In (meshharbord)` — the exe stem, so the `mh` tunnel client gets its own (`MeshHarbor UDP-In (meshharbor)`) |
+| Shape | `dir=in action=allow protocol=udp program=<full path of meshharbord.exe>`, all profiles, every port |
 | Definition | `crates/tunnel-core/src/winfw.rs` — `UdpInAllowRule` is the ONE definition; both writers build their `netsh` calls from it |
-| Kill switch | `ROOMLERD_TUN_HYGIENE=0` — skips both writers (and the adapter's Private-profile set) |
+| Kill switch | `MESHHARBORD_TUN_HYGIENE=0` — skips both writers (and the adapter's Private-profile set) |
 
 ### Who writes it, and when — the attended-install prompt
 
@@ -131,7 +131,7 @@ perMachine flavour, whose worker the SCM host spawns in the signed-in user's
 session. Measured on a 0.4.104 vmtest guest (#1698): the worker bound its UDP
 sockets before the detached hygiene thread had added the rule, Windows raised
 the prompt (`PickerHost.exe`, "Windows Security", over the companion's
-Welcome), and the prompt wrote two `Roomler Daemon` **Block** rules (TCP + UDP,
+Welcome), and the prompt wrote two `MeshHarbor Daemon` **Block** rules (TCP + UDP,
 profile Public) for the exe. In Defender an explicit Block beats an Allow, so
 on every Public-profile network — home, hotel — unsolicited inbound UDP to the
 daemon stayed blocked until someone clicked Allow. Cancel, the cautious click,
@@ -140,13 +140,13 @@ was the harmful one.
 ```mermaid
 sequenceDiagram
     participant SCM
-    participant Host as roomlerd service-run (SYSTEM)
+    participant Host as meshharbord service-run (SYSTEM)
     participant FW as Defender Firewall
-    participant Worker as roomlerd run --supervisor scm (user session)
+    participant Worker as meshharbord run --supervisor scm (user session)
     SCM->>Host: start
     Host->>SCM: Running
-    Host->>FW: netsh delete + add "Roomler UDP-In (roomlerd)" (≤ 10 s per call)
-    Host->>FW: read the rule store, Remove-NetFirewallRule for inbound Block rules whose program == roomlerd.exe (≤ 30 s, only if any)
+    Host->>FW: netsh delete + add "MeshHarbor UDP-In (meshharbord)" (≤ 10 s per call)
+    Host->>FW: read the rule store, Remove-NetFirewallRule for inbound Block rules whose program == meshharbord.exe (≤ 30 s, only if any)
     Host->>Worker: CreateProcessAsUserW
     Worker->>FW: bind 0.0.0.0:<udp> — a rule exists for this path
     Note over FW,Worker: no prompt, so no Block rules
@@ -154,7 +154,7 @@ sequenceDiagram
 ```
 
 Since #1698 the **service host** writes the rule **before its first worker
-spawn** — `agents/roomlerd/src/win_service/firewall.rs`
+spawn** — `agents/meshharbord/src/win_service/firewall.rs`
 (`prepare_before_first_spawn`), driven by the `run_startup_sequence` seam in
 `win_service/mod.rs`, whose recorder test locks the order. Synchronous,
 bounded, best-effort: a refused or timed-out `netsh` is logged at WARN and the
@@ -166,12 +166,12 @@ install's prompt left behind.
 | perMachine, SystemContext (worker = SYSTEM) | service host, before the spawn | never (SYSTEM was never prompted) |
 | perMachine, attended (worker = signed-in user) | service host, before the spawn | **no longer** — yes before #1698 |
 | perUser (Scheduled Task, cannot elevate) | the worker's own hygiene pass, only if the user is an admin | unchanged — may still prompt |
-| `roomler` tunnel client | its own hygiene pass (`Roomler UDP-In (roomler)`), only if elevated | unchanged |
+| `mh` tunnel client | its own hygiene pass (`MeshHarbor UDP-In (meshharbor)`), only if elevated | unchanged |
 
 ### The cleanup's predicate — exact, and never by name
 
 A rule is removed iff **direction inbound ∧ action Block ∧ program path equal
-to our `roomlerd.exe`** (case-insensitive, `%VAR%` expanded, `/`→`\`, `\\?\`
+to our `meshharbord.exe`** (case-insensitive, `%VAR%` expanded, `/`→`\`, `\\?\`
 stripped) **∧ its store id starts with `TCP Query User{` or
 `UDP Query User{`** — the notification prompt's own id signature, matched
 case-sensitively. `prompt_block_rules_for_program` in `winfw.rs` is the whole
@@ -179,14 +179,14 @@ decision; its table test holds every neighbour it must not touch.
 
 - ⚠️ **A deliberate Block is left alone.** The id condition is what keeps
   this from being tampering: a Block an administrator placed on
-  `roomlerd.exe` through `netsh`, `wf.msc` or `New-NetFirewallRule` has a
+  `meshharbord.exe` through `netsh`, `wf.msc` or `New-NetFirewallRule` has a
   `{GUID}` or the caller's own id, never the prompt's shape, and stays exactly
   where it is at every start. The device owner's local setting is a floor
   (compare `consent::strictest_of`); only the prompt's leftovers are ours.
 - ⚠️ **Never by display name.** The prompt names its rules after the exe's
-  FileDescription (`Roomler Daemon`); any program can carry that name, and a
-  same-named `roomlerd.exe` in another directory is a different program.
-- ⚠️ **Allow rules are never touched** — not the prompt's own `Roomler Daemon`
+  FileDescription (`MeshHarbor Daemon`); any program can carry that name, and a
+  same-named `meshharbord.exe` in another directory is a different program.
+- ⚠️ **Allow rules are never touched** — not the prompt's own `MeshHarbor Daemon`
   Allow pair (someone clicked Allow), not ours. That is why the removal goes
   through PowerShell (`Remove-NetFirewallRule -Name <store id>`) and not
   `netsh delete`: netsh selects by name + dir + program and cannot filter on
@@ -200,7 +200,7 @@ decision; its table test holds every neighbour it must not touch.
   is never written: the firewall service owns writes.
 - GPO-delivered rules live under `SOFTWARE\Policies\…` and are neither read
   nor removable. The daemon-side switch for the whole pass is
-  `ROOMLERD_TUN_HYGIENE=0`.
+  `MESHHARBORD_TUN_HYGIENE=0`.
 
 ### The self-heal, without the gap
 
@@ -227,13 +227,13 @@ adapter.
 Get-Process PickerHost -ErrorAction SilentlyContinue | Select-Object Id, MainWindowTitle
 # 2. Our Allow rule exists, and no Block rule names our exe.
 Get-NetFirewallRule -Direction Inbound | Where-Object {
-  ($_ | Get-NetFirewallApplicationFilter).Program -ieq "$env:ProgramFiles\Roomler\roomlerd.exe"
+  ($_ | Get-NetFirewallApplicationFilter).Program -ieq "$env:ProgramFiles\MeshHarbor\meshharbord.exe"
 } | Select-Object Name, DisplayName, Action, Enabled, Profile
 # 3. Order: the host's line is logged before the worker's first bind.
-Select-String -Path "$env:ProgramData\roomler\roomler\service-logs\roomlerd-service.log.*" `
+Select-String -Path "$env:ProgramData\meshharbor\meshharbor\service-logs\meshharbord-service.log.*" `
   -Pattern 'installed for the worker BEFORE its first bind'
 ```
 
-On an upgrade over a guest that already holds the `Roomler Daemon` Block pair,
+On an upgrade over a guest that already holds the `MeshHarbor Daemon` Block pair,
 the service log carries `removed inbound Block rules for this binary` once and
 step 2 then lists only the Allow rule.

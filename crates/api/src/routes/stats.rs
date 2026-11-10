@@ -40,10 +40,10 @@ use crate::{core_state::Core, error::ApiError, extractors::auth::AuthUser};
 // ── Guards ──────────────────────────────────────────────────────────────
 //
 // FR-69 P2 — the platform-admin and tenant-stats gates moved into
-// `roomler_core::guards` (the `saas` module gates its admin surface on the
+// `meshharbor_core::guards` (the `saas` module gates its admin surface on the
 // first one, and a module cannot reach into this crate). Re-exported so the
 // `super::stats::require_platform_admin` paths in this crate read as before.
-pub(crate) use roomler_core::guards::{parse_tid, require_platform_admin, require_tenant_stats};
+pub(crate) use meshharbor_core::guards::{parse_tid, require_platform_admin, require_tenant_stats};
 
 // ── Range plumbing ──────────────────────────────────────────────────────
 
@@ -602,7 +602,7 @@ async fn uptime_intervals(
     let mut prior: HashMap<String, String> = HashMap::new();
     for d in agg(
         state,
-        roomler_ai_services::dao::stats::STATS_EVENTS,
+        meshharbor_services::dao::stats::STATS_EVENTS,
         vec![
             doc! { "$match": { "tenant_id": tid, "ts": { "$lt": floor } } },
             doc! { "$sort": { "ts": -1 } },
@@ -625,7 +625,7 @@ async fn uptime_intervals(
     let mut events: HashMap<String, Vec<(i64, String)>> = HashMap::new();
     for d in agg(
         state,
-        roomler_ai_services::dao::stats::STATS_EVENTS,
+        meshharbor_services::dao::stats::STATS_EVENTS,
         vec![
             doc! { "$match": { "tenant_id": tid, "ts": { "$gte": floor } } },
             doc! { "$sort": { "ts": 1 } },
@@ -658,7 +658,7 @@ async fn uptime_intervals(
     // with no events simply never changed state.
     let ledger_start = agg(
         state,
-        roomler_ai_services::dao::stats::STATS_EVENTS,
+        meshharbor_services::dao::stats::STATS_EVENTS,
         vec![
             doc! { "$match": { "tenant_id": tid } },
             doc! { "$group": { "_id": Bson::Null, "first": { "$min": "$ts" } } },
@@ -854,7 +854,7 @@ pub(crate) fn to_payload(
     }
     let mut out = serde_json::json!({
         "enabled": true,
-        "center": { "id": "control-plane", "name": "roomler.ai" },
+        "center": { "id": "control-plane", "name": "meshharbor.itachi.fans" },
         "nodes": nodes,
         "agents": agents,
         "edges": edges,
@@ -929,7 +929,7 @@ pub(crate) async fn build_mesh(state: &Core, tid: ObjectId) -> Result<BuiltMesh,
     let fresh_floor = DateTime::from_millis(DateTime::now().timestamp_millis() - 180 * 1000);
     let snapshots = agg(
         state,
-        roomler_ai_services::dao::stats::STATS_MESH,
+        meshharbor_services::dao::stats::STATS_MESH,
         vec![
             doc! { "$match": { "tenant_id": tid, "ts": { "$gte": fresh_floor } } },
             doc! { "$set": { "from": { "$toString": "$agent_id" } } },
@@ -1406,7 +1406,7 @@ pub async fn admin_relay_current(
         .specs
         .iter()
         .map(|s| {
-            let busy = roomler_ai_remote_control::turn_creds::region_busy(&state.relay_load, &s.id);
+            let busy = meshharbor_remote_control::turn_creds::region_busy(&state.relay_load, &s.id);
             serde_json::json!({
                 "id": s.id,
                 "enabled": s.enabled,
@@ -1629,7 +1629,7 @@ mod mesh_payload_tests {
         let b = built();
         let expected = json!({
             "enabled": true,
-            "center": { "id": "control-plane", "name": "roomler.ai" },
+            "center": { "id": "control-plane", "name": "meshharbor.itachi.fans" },
             "nodes": b.nodes.clone(),
             "agents": b.agents.clone(),
             "edges": b.edges.clone(),

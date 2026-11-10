@@ -20,40 +20,53 @@ use std::sync::Arc;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-use roomler_core::cluster::session_slots::{Lease, SessionSlots};
+use meshharbor_core::cluster::session_slots::{Lease, SessionSlots};
 
-use roomler_ai_remote_control::audit::AuditSink;
-use roomler_ai_remote_control::consent::{
+use meshharbor_remote_control::audit::AuditSink;
+use meshharbor_remote_control::consent::{
     ASYNC_CONSENT_TIMEOUT, ConsentOutcome, DEFAULT_CONSENT_TIMEOUT, HOST_PROMPT_TIMEOUT,
     hub_consent_deadline,
 };
-use roomler_ai_remote_control::error::{Error, Result};
-use roomler_ai_remote_control::models::{
+use meshharbor_remote_control::error::{Error, Result};
+use meshharbor_remote_control::models::{
     AgentCaps, AuditKind, ConsentMode, EndReason, ExecOutcome, FeaturePolicy, LockOnEnd, OsKind,
     RecordCap, RpcCap, SessionPhase, SessionPolicy,
 };
-use roomler_ai_remote_control::permissions::Permissions;
-use roomler_ai_remote_control::session::{ClientTx, LiveSession};
-use roomler_ai_remote_control::signaling::{
+use meshharbor_remote_control::permissions::Permissions;
+use meshharbor_remote_control::session::{ClientTx, FileChildControllerScope, LiveSession};
+use meshharbor_remote_control::signaling::{
     AgentCloseReason, ClientMsg, IceServer, LIMIT_NO_COMMON_CODEC, LocalRelayDescriptor, Role,
     ServerMsg,
 };
-use roomler_ai_remote_control::turn_creds::{
+use meshharbor_remote_control::turn_creds::{
     self, RelayLoadMap, TurnConfig, TurnMap, ice_servers_for_session, pick_region_with_load,
 };
 
 const SERVER_TX_CAPACITY: usize = 64;
 
 // The consent windows (`DEFAULT_CONSENT_TIMEOUT`, `ASYNC_CONSENT_TIMEOUT`,
-// `HOST_PROMPT_TIMEOUT`) live in `roomler_ai_remote_control::consent` — FR-27 moved
+// `HOST_PROMPT_TIMEOUT`) live in `meshharbor_remote_control::consent` — FR-27 moved
 // `ASYNC_CONSENT_TIMEOUT` there from here, because the on-host and owner-side
 // windows now differ within a single mode and the split needs one home.
+
+// An internal call-site choice, never deserialized from a controller/relay frame.
+#[derive(Clone, Copy)]
+enum SessionCreationOrigin {
+    Unknown,
+    LocalPdp,
+}
 
 /// How long a session may sit in `Negotiating` (consent granted, `Ready`
 /// pushed) without the controller's SDP offer before the Hub terminates it.
 /// Generous: a live controller sends its offer within milliseconds of
 /// `rc:ready`; only a controller that never received `Ready` waits longer.
 const NEGOTIATING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// X14 — fail-closed deadline for the agent to acknowledge `rc:file.child.revoke`.
+/// If `rc:file.child.revoke_ack` does not arrive within 5 seconds of a child
+/// revocation, the Hub terminates the parent session (`EndReason::AdminTerminated`)
+/// rather than leaving an unverified child transport alive.
+pub const FILE_CHILD_REVOKE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Loopback-TURN corp-relay (Phase 2) guard. The overlay assigns node IPs from
 /// the RFC 6598 CGNAT range 100.64.0.0/10 (v4) or a ULA `fc00::/7` (v6, derived
@@ -134,7 +147,7 @@ pub struct ConnectedAgent {
     /// root, so after a rollback the row's promise would be exactly that.
     /// `false` ⇒ [`Hub::exec_on_agent`] refuses such a frame.
     pub supports_console_user: bool,
-    /// Roomler SSH — the agent advertises `AgentCaps.rpc` containing `ssh`,
+    /// MeshHarbor SSH — the agent advertises `AgentCaps.rpc` containing `ssh`,
     /// i.e. it was built with the `ssh-server` feature and will record an
     /// `rc:ssh.grant`. Same rationale as [`Self::supports_exec`]: pushing a
     /// grant to a build that drops it would leave the caller dialling a port
@@ -297,7 +310,7 @@ pub enum KickOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RecordSupport {
     /// No recorder can serve a remote session here: an agent that predates
-    /// recording, a build without it, `ROOMLERD_RECORDING=0`, or a host that
+    /// recording, a build without it, `MESHHARBORD_RECORDING=0`, or a host that
     /// cannot record at all. Nothing to offer a controller.
     #[default]
     None,
@@ -408,7 +421,7 @@ impl PrivacySupport {
 /// a name the stranger chose, and is the only one placed to see what that
 /// stranger then does: a curtain would hide it from them. The same sessions
 /// are never recorded (`controller_not_allowed`, FR-52 §10). The device
-/// strips both again on its own terms (`roomlerd`'s `extauth::admit_session`),
+/// strips both again on its own terms (`meshharbord`'s `extauth::admit_session`),
 /// so this gate is not the only thing keeping them out.
 ///
 /// A device that cannot curtain at all is named FIRST, as in
@@ -594,6 +607,10 @@ pub struct ConnectedController {
 /// [`Hub::exec_on_agent`] — an early `send_to_agent` error or an expired
 /// deadline must not leave a slot behind that a later request id could be
 /// delivered into.
+/// A device's answer about its accounts: the list after the operation, or its refusal.
+pub type LocalAccountsAnswer =
+    std::result::Result<Vec<meshharbor_remote_control::signaling::LocalAccount>, String>;
+
 struct ExecWaiterGuard {
     hub: Hub,
     request_id: String,
@@ -717,13 +734,22 @@ pub struct HubInner {
     /// the owner pod BEFORE reaching the Hub (see `ws/rc_relay.rs`).
     exec_waiters: DashMap<String, oneshot::Sender<ExecOutcome>>,
 
+    /// MeshHarbor — owners parked on a `rc:accounts.result`, keyed by request
+    /// id. Same-pod only, like [`Self::exec_waiters`].
+    account_waiters: DashMap<String, oneshot::Sender<LocalAccountsAnswer>>,
+
     /// FR-115 P3b — the cluster-wide slot record, set once at startup when
-    /// the deployment has Redis (`roomler_core::cluster::session_slots`).
+    /// the deployment has Redis (`meshharbor_core::cluster::session_slots`).
     session_slots: std::sync::OnceLock<SessionSlots>,
     /// FR-115 P3b — the live sessions that hold a slot, each with the lease
     /// this pod renews (`slot_leases`) and gives back when the session ends
     /// (`terminate_with_limit`, the one place every session ends).
     slotted: DashMap<ObjectId, Lease>,
+
+    /// X14 — independent direction kill switches so disabling upload never
+    /// affects download (and vice versa).
+    file_child_download_disabled: std::sync::atomic::AtomicBool,
+    file_child_upload_disabled: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone)]
@@ -744,6 +770,14 @@ impl Hub {
         consent_tx: Option<mpsc::Sender<ConsentEvent>>,
         relay_load: RelayLoadMap,
     ) -> Self {
+        let download_disabled =
+            std::env::var("MESHHARBOR_DISABLE_FILE_CHILD_DOWNLOAD").is_ok_and(|v| {
+                meshharbor_remote_control::signaling::parse_file_child_disable_switch(&v)
+            });
+        let upload_disabled =
+            std::env::var("MESHHARBOR_DISABLE_FILE_CHILD_UPLOAD").is_ok_and(|v| {
+                meshharbor_remote_control::signaling::parse_file_child_disable_switch(&v)
+            });
         Self {
             inner: Arc::new(HubInner {
                 agents: DashMap::new(),
@@ -754,9 +788,57 @@ impl Hub {
                 audit,
                 consent_tx,
                 exec_waiters: DashMap::new(),
+                account_waiters: DashMap::new(),
                 session_slots: std::sync::OnceLock::new(),
                 slotted: DashMap::new(),
+                file_child_download_disabled: std::sync::atomic::AtomicBool::new(download_disabled),
+                file_child_upload_disabled: std::sync::atomic::AtomicBool::new(upload_disabled),
             }),
+        }
+    }
+
+    pub fn is_file_child_direction_disabled(
+        &self,
+        direction: meshharbor_remote_control::signaling::FileChildDirection,
+    ) -> bool {
+        use meshharbor_remote_control::signaling::FileChildDirection;
+        use std::sync::atomic::Ordering;
+        match direction {
+            FileChildDirection::Download => self
+                .inner
+                .file_child_download_disabled
+                .load(Ordering::Relaxed),
+            FileChildDirection::Upload => self
+                .inner
+                .file_child_upload_disabled
+                .load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn set_file_child_direction_disabled(
+        &self,
+        direction: meshharbor_remote_control::signaling::FileChildDirection,
+        disabled: bool,
+    ) {
+        use meshharbor_remote_control::signaling::FileChildDirection;
+        use std::sync::atomic::Ordering;
+        match direction {
+            FileChildDirection::Download => {
+                self.inner
+                    .file_child_download_disabled
+                    .store(disabled, Ordering::Relaxed);
+            }
+            FileChildDirection::Upload => {
+                self.inner
+                    .file_child_upload_disabled
+                    .store(disabled, Ordering::Relaxed);
+            }
+        }
+        if disabled {
+            for entry in self.inner.sessions.iter() {
+                let mut s = entry.value().lock();
+                s.set_file_children_enabled_for(direction, false);
+            }
         }
     }
 
@@ -1145,7 +1227,7 @@ impl Hub {
             reason: AgentCloseReason::AgentDeleted,
             message: "This device was removed from its organization. Re-enrol it with a \
                       fresh enrollment token from the admin UI \
-                      (`roomlerd re-enroll --token <jwt>`)."
+                      (`meshharbord re-enroll --token <jwt>`)."
                 .into(),
         };
         match entry.tx.try_send(msg) {
@@ -1360,7 +1442,7 @@ impl Hub {
         consent_mode: ConsentMode,
         override_reason: Option<String>,
         local_relay: Option<LocalRelayDescriptor>,
-        input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+        input_mode: Option<meshharbor_remote_control::models::InputMode>,
         tenant_name: Option<String>,
     ) -> Result<ObjectId> {
         // FR-85 P3 — a caller that does not say may NOT record: RECORD is
@@ -1421,7 +1503,7 @@ impl Hub {
         // authz gate. Rides `ServerMsg::Request`, and gates whether
         // `forward_offer` hands the agent `local_relay` at all.
         rc_overlay: bool,
-        input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+        input_mode: Option<meshharbor_remote_control::models::InputMode>,
         // Multi-org — display name of the requesting org, for the host's
         // consent prompt. See `ServerMsg::Request::tenant_name`.
         tenant_name: Option<String>,
@@ -1440,10 +1522,10 @@ impl Hub {
         lock_on_end: Option<LockOnEnd>,
         // FR-52 P4 — `Some` for an EXTERNAL session: the login the device must
         // bind it to, forwarded in `ServerMsg::Request`. Passed only by the
-        // extauth relay (`roomler_ai_mod_remote::extauth`), after it found the
+        // extauth relay (`meshharbor_mod_remote::extauth`), after it found the
         // principal's verified login and checked the device advertises
         // `external-session`; `dispatch` always passes `None`.
-        external: Option<roomler_ai_remote_control::signaling::ExternalGrant>,
+        external: Option<meshharbor_remote_control::signaling::ExternalGrant>,
         // FR-115 P3 — how many remote sessions the device's organization may
         // run at once (`DispatchCtx::org_session_cap`). `None` = no cap.
         org_session_cap: Option<u32>,
@@ -1481,6 +1563,7 @@ impl Hub {
             org_session_cap,
             slot,
             None,
+            SessionCreationOrigin::Unknown,
         )
     }
 
@@ -1506,7 +1589,7 @@ impl Hub {
         // authz gate. Rides `ServerMsg::Request`, and gates whether
         // `forward_offer` hands the agent `local_relay` at all.
         rc_overlay: bool,
-        input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+        input_mode: Option<meshharbor_remote_control::models::InputMode>,
         // Multi-org — display name of the requesting org, for the host's
         // consent prompt. See `ServerMsg::Request::tenant_name`.
         tenant_name: Option<String>,
@@ -1525,10 +1608,10 @@ impl Hub {
         lock_on_end: Option<LockOnEnd>,
         // FR-52 P4 — `Some` for an EXTERNAL session: the login the device must
         // bind it to, forwarded in `ServerMsg::Request`. Passed only by the
-        // extauth relay (`roomler_ai_mod_remote::extauth`), after it found the
+        // extauth relay (`meshharbor_mod_remote::extauth`), after it found the
         // principal's verified login and checked the device advertises
         // `external-session`; `dispatch` always passes `None`.
-        external: Option<roomler_ai_remote_control::signaling::ExternalGrant>,
+        external: Option<meshharbor_remote_control::signaling::ExternalGrant>,
         // FR-115 P3 — how many remote sessions the device's organization may
         // run at once (`DispatchCtx::org_session_cap`). `None` = no cap.
         org_session_cap: Option<u32>,
@@ -1540,14 +1623,31 @@ impl Hub {
         // (a refusal, or a coalesced duplicate that returned another id).
         slot: Option<Lease>,
         share_grant_id: Option<ObjectId>,
+        origin: SessionCreationOrigin,
     ) -> Result<ObjectId> {
+        // Positive provenance requires the dedicated, post-PDP local entry.
+        // Optional scopes below only veto it; their absence never creates it.
+        let controller_scope = if matches!(origin, SessionCreationOrigin::LocalPdp)
+            && share_grant_id.is_none()
+            && external.is_none()
+            && override_reason.is_none()
+            && matches!(consent_mode, ConsentMode::Auto | ConsentMode::Prompt)
+        {
+            FileChildControllerScope::local_pdp(consent_mode)
+        } else {
+            FileChildControllerScope::unknown(
+                consent_mode,
+                external.as_ref().map(|grant| grant.attempt_id.clone()),
+                override_reason.is_some(),
+            )
+        };
         let permissions = if share_grant_id.is_some() {
             permissions & (Permissions::VIEW | Permissions::INPUT | Permissions::FILES)
         } else {
             permissions
         };
         let device_share_scope = share_grant_id.map(|grant_id| {
-            roomler_ai_remote_control::session::DeviceShareSessionScope {
+            meshharbor_remote_control::session::DeviceShareSessionScope {
                 grant_id,
                 ceiling: permissions,
             }
@@ -1611,6 +1711,8 @@ impl Hub {
         let existing = self.inner.sessions.iter().find_map(|e| {
             let s = e.value().lock();
             let is_dup = s.agent_id == agent_id
+                && s.controller_user_id == controller_user_id
+                && s.matches_file_child_controller_scope(&controller_scope)
                 && s.device_share_scope() == device_share_scope
                 && s.controller_tx
                     .as_ref()
@@ -1844,13 +1946,14 @@ impl Hub {
 
         // FR-115 P3b — the id the caller claimed a slot for, when it did.
         let session_id = slot.as_ref().map_or_else(ObjectId::new, |l| l.session);
-        let (mut live, waiter) = LiveSession::new(
+        let (mut live, waiter) = LiveSession::new_with_controller_scope(
             session_id,
             agent_id,
             agent_org,
             controller_user_id,
             permissions,
             controller_tx.clone(),
+            controller_scope,
         );
         if let Some(scope) = device_share_scope {
             live.bind_device_share(scope)?;
@@ -1877,6 +1980,18 @@ impl Hub {
         // older agent ignores would be a promise nothing keeps.
         let idle_told = idle_secs.filter(|_| agent_enforces_idle);
         live.idle_secs = idle_told;
+        live.set_file_children_opted_in_for(
+            meshharbor_remote_control::signaling::FileChildDirection::Download,
+            !self.is_file_child_direction_disabled(
+                meshharbor_remote_control::signaling::FileChildDirection::Download,
+            ) && browser_caps.iter().any(|c| c == "file-child-download"),
+        );
+        live.set_file_children_opted_in_for(
+            meshharbor_remote_control::signaling::FileChildDirection::Upload,
+            !self.is_file_child_direction_disabled(
+                meshharbor_remote_control::signaling::FileChildDirection::Upload,
+            ) && browser_caps.iter().any(|c| c == "file-child-upload"),
+        );
         // Multi-region relay: freeze the session's region NOW — a load-aware
         // pick over the agent's home + its RTT-ordered prefs — so Ready/
         // Offer/Answer all issue from the same PoP regardless of mid-setup
@@ -2174,7 +2289,7 @@ impl Hub {
         granted: bool,
         reason: Option<&str>,
     ) -> Result<()> {
-        let outcome = roomler_ai_remote_control::consent::outcome_of(granted, reason);
+        let outcome = meshharbor_remote_control::consent::outcome_of(granted, reason);
         let arc = self
             .inner
             .sessions
@@ -2237,7 +2352,7 @@ impl Hub {
         extauth_mac: Option<String>,
         // FR-100 P1b — relayed verbatim, as `extauth_mac` is: the nonce the
         // device signs its answer against. The hub never reads it.
-        peer_auth: Option<roomler_ai_remote_control::signaling::PeerAuthOffer>,
+        peer_auth: Option<meshharbor_remote_control::signaling::PeerAuthOffer>,
     ) -> Result<()> {
         let (agent_id, local_relay, rc_overlay, region, org, shared_lease) =
             self.with_session(session_id, |s| {
@@ -2252,7 +2367,7 @@ impl Hub {
                     s.tenant_id,
                     match s.device_share_scope() {
                         Some(scope) => {
-                            Some(roomler_ai_remote_control::signaling::SharedSessionLease {
+                            Some(meshharbor_remote_control::signaling::SharedSessionLease {
                                 grant_id: scope.grant_id,
                                 lease_epoch: s
                                     .shared_lease_epoch()
@@ -2338,7 +2453,7 @@ impl Hub {
         session_id: ObjectId,
         sdp: String,
         extauth_mac: Option<String>,
-        peer_auth: Option<roomler_ai_remote_control::signaling::PeerAuthAnswer>,
+        peer_auth: Option<meshharbor_remote_control::signaling::PeerAuthAnswer>,
         peer_auth_verdict: Option<String>,
     ) -> Result<()> {
         let (controller_tx, user_id, region, org) = {
@@ -2377,7 +2492,7 @@ impl Hub {
             Ok((s.id, s.agent_id, s.tenant_id, s.max_duration.take()))
         })?;
         let peer_auth = peer_auth_verdict.filter(|v| {
-            let known = roomler_ai_remote_control::signaling::peer_auth_verdict_is_known(v);
+            let known = meshharbor_remote_control::signaling::peer_auth_verdict_is_known(v);
             if !known {
                 debug!(session = %sid.to_hex(), verdict = %v.escape_debug(),
                     "peer-auth: a verdict this server does not know, not recorded");
@@ -2511,7 +2626,7 @@ impl Hub {
     /// `SendFailed` if the channel is full (rare — the agent rx pump
     /// reads as fast as it can serialise + write to the socket).
     ///
-    /// Used by the `roomler` relay path in
+    /// Used by the `mh` relay path in
     /// `crates/api/src/ws/tunnel.rs` to forward
     /// `ServerMsg::TcpForwardForward` / `TcpHalfClose` /
     /// `TcpClosed` / `TunnelTerminate` to the agent on behalf of a
@@ -3595,10 +3710,10 @@ impl Hub {
     pub fn shared_lease(
         &self,
         session_id: ObjectId,
-    ) -> Option<roomler_ai_remote_control::signaling::SharedSessionLease> {
+    ) -> Option<meshharbor_remote_control::signaling::SharedSessionLease> {
         let e = self.inner.sessions.get(&session_id)?;
         let s = e.value().lock();
-        Some(roomler_ai_remote_control::signaling::SharedSessionLease {
+        Some(meshharbor_remote_control::signaling::SharedSessionLease {
             grant_id: s.device_share_scope()?.grant_id,
             lease_epoch: s.shared_lease_epoch()?.to_string(),
         })
@@ -3615,6 +3730,334 @@ impl Hub {
             let s = e.value().lock();
             (s.agent_id, s.controller_user_id, s.permissions())
         })
+    }
+
+    /// X14 — inspect a live parent session before querying MongoDB for fresh
+    /// tenant/agent policy revisions. Never holds the session lock across `.await`.
+    pub fn session_file_child_target(
+        &self,
+        session_id: ObjectId,
+        user_id: ObjectId,
+        controller_tx: &ClientTx,
+    ) -> Result<(
+        ObjectId,
+        ObjectId,
+        Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
+    )> {
+        self.session_file_child_target_for_direction(
+            session_id,
+            user_id,
+            controller_tx,
+            meshharbor_remote_control::signaling::FileChildDirection::Download,
+        )
+    }
+
+    pub fn session_file_child_target_for_direction(
+        &self,
+        session_id: ObjectId,
+        user_id: ObjectId,
+        controller_tx: &ClientTx,
+        direction: meshharbor_remote_control::signaling::FileChildDirection,
+    ) -> Result<(
+        ObjectId,
+        ObjectId,
+        Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
+    )> {
+        if self.is_file_child_direction_disabled(direction) {
+            return Err(Error::PermissionDenied(
+                "file child transport direction is disabled",
+            ));
+        }
+        self.with_session(session_id, |s| {
+            if s.controller_user_id != user_id {
+                return Err(Error::PermissionDenied("not the parent controller"));
+            }
+            if !s
+                .controller_tx
+                .as_ref()
+                .is_some_and(|current| ptr_eq(current, controller_tx) && !current.is_closed())
+            {
+                return Err(Error::PermissionDenied(
+                    "not the parent controller connection",
+                ));
+            }
+            if s.device_share_scope().is_some() {
+                return Err(Error::PermissionDenied(
+                    "shared child inheritance unavailable",
+                ));
+            }
+            if s.is_file_children_revoked() {
+                return Err(Error::PermissionDenied(
+                    "file child transports revoked for this session",
+                ));
+            }
+            if !s.is_file_children_opted_in_for(direction)
+                && !s.is_file_children_enabled_for(direction)
+            {
+                return Err(Error::PermissionDenied(
+                    "file child transport is not enabled for this session",
+                ));
+            }
+            if s.phase != SessionPhase::Active || !s.permissions().contains(Permissions::FILES) {
+                return Err(Error::PermissionDenied(
+                    "file child parent session is not active with FILES permission",
+                ));
+            }
+            Ok((s.agent_id, s.tenant_id, s.file_child_policy_snapshot()))
+        })
+    }
+
+    /// X14 — check whether the background file-child policy watcher should
+    /// continue polling MongoDB for `session_id`. When no `Reserved` or
+    /// `Active` child slots remain (`s.file_children.is_empty()`), this
+    /// atomically resets `file_child_watch_started = false` and returns
+    /// `Ok(false)` so the watcher exits without querying MongoDB while idle,
+    /// and a future `rc:file.child.reserve` will re-claim the watcher.
+    pub fn poll_file_child_watch_target(
+        &self,
+        session_id: ObjectId,
+        user_id: ObjectId,
+        controller_tx: &ClientTx,
+    ) -> Result<bool> {
+        self.with_session(session_id, |s| {
+            if s.controller_user_id != user_id {
+                return Err(Error::PermissionDenied("not the parent controller"));
+            }
+            if !s
+                .controller_tx
+                .as_ref()
+                .is_some_and(|current| ptr_eq(current, controller_tx) && !current.is_closed())
+            {
+                return Err(Error::PermissionDenied(
+                    "not the parent controller connection",
+                ));
+            }
+            if s.device_share_scope().is_some() {
+                return Err(Error::PermissionDenied(
+                    "shared child inheritance unavailable",
+                ));
+            }
+            if s.is_file_children_revoked() {
+                return Err(Error::PermissionDenied(
+                    "file child transports revoked for this session",
+                ));
+            }
+            if !s.is_any_file_children_opted_in_or_enabled() {
+                return Err(Error::PermissionDenied(
+                    "file child transport is not enabled for this session",
+                ));
+            }
+            if s.phase != SessionPhase::Active || !s.permissions().contains(Permissions::FILES) {
+                return Err(Error::PermissionDenied(
+                    "file child parent session is not active with FILES permission",
+                ));
+            }
+            if s.release_file_child_watch_if_idle() {
+                return Ok(false);
+            }
+            Ok(true)
+        })
+    }
+
+    /// X14 — release the background policy-watcher claim if `session_id` has no
+    /// `Reserved` or `Active` file-child slots. Returns `true` when the session
+    /// is now idle (or gone).
+    pub fn release_file_child_watch_if_idle(&self, session_id: ObjectId) -> bool {
+        self.with_session(session_id, |s| Ok(s.release_file_child_watch_if_idle()))
+            .unwrap_or(true)
+    }
+
+    /// X14 — ensure the background policy-watcher flag is claimed when at least
+    /// one `Reserved` or `Active` file-child slot is present on `session_id`.
+    pub fn ensure_file_child_watch_started(&self, session_id: ObjectId) -> bool {
+        self.with_session(session_id, |s| {
+            Ok(s.has_file_children() && s.claim_file_child_watch())
+        })
+        .unwrap_or(false)
+    }
+
+    /// X14 — re-lock the parent session after the live DB PDP and bind or
+    /// compare `(tenant.security_revision(), agent.access_policy_revision())`.
+    /// On success, enables file-child capability on the parent session and
+    /// returns `Ok(true)` the first time so the caller can spawn the background
+    /// policy watcher once. On mismatch or `None`, irreversibly revokes child
+    /// capability, notifies both peers (`rc:file.child.revoke`), and arms the
+    /// 5-second fail-closed ACK deadline.
+    pub fn admit_file_child_policy_snapshot(
+        &self,
+        session_id: ObjectId,
+        user_id: ObjectId,
+        controller_tx: &ClientTx,
+        current: Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
+    ) -> Result<bool> {
+        self.admit_file_child_policy_snapshot_inner(
+            session_id,
+            user_id,
+            controller_tx,
+            None,
+            current,
+        )
+    }
+
+    pub fn admit_file_child_policy_snapshot_for_direction(
+        &self,
+        session_id: ObjectId,
+        user_id: ObjectId,
+        controller_tx: &ClientTx,
+        direction: meshharbor_remote_control::signaling::FileChildDirection,
+        current: Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
+    ) -> Result<bool> {
+        if self.is_file_child_direction_disabled(direction) {
+            return Err(Error::PermissionDenied(
+                "file child transport direction is disabled",
+            ));
+        }
+        self.admit_file_child_policy_snapshot_inner(
+            session_id,
+            user_id,
+            controller_tx,
+            Some(direction),
+            current,
+        )
+    }
+
+    fn admit_file_child_policy_snapshot_inner(
+        &self,
+        session_id: ObjectId,
+        user_id: ObjectId,
+        controller_tx: &ClientTx,
+        direction: Option<meshharbor_remote_control::signaling::FileChildDirection>,
+        current: Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
+    ) -> Result<bool> {
+        use meshharbor_remote_control::signaling::FileChildDirection;
+        let outcome = self.with_session(session_id, |s| {
+            if s.controller_user_id != user_id {
+                return Err(Error::PermissionDenied("not the parent controller"));
+            }
+            if !s.controller_tx.as_ref().is_some_and(|current_tx| {
+                ptr_eq(current_tx, controller_tx) && !current_tx.is_closed()
+            }) {
+                return Err(Error::PermissionDenied(
+                    "not the parent controller connection",
+                ));
+            }
+            if s.device_share_scope().is_some() {
+                return Err(Error::PermissionDenied(
+                    "shared child inheritance unavailable",
+                ));
+            }
+            if let Some(dir) = direction
+                && !s.is_file_children_opted_in_for(dir)
+                && !s.is_file_children_enabled_for(dir)
+            {
+                return Err(Error::PermissionDenied(
+                    "file child transport is not enabled for this session",
+                ));
+            }
+            let was_revoked = s.is_file_children_revoked();
+            match s.verify_or_bind_file_child_policy_snapshot(current) {
+                Ok(()) => {
+                    match direction {
+                        Some(dir) => s.set_file_children_enabled_for(dir, true),
+                        None => {
+                            if s.is_file_children_opted_in_for(FileChildDirection::Upload)
+                                || s.is_file_children_enabled_for(FileChildDirection::Upload)
+                            {
+                                s.set_file_children_enabled_for(FileChildDirection::Upload, true);
+                            }
+                            if s.is_file_children_opted_in_for(FileChildDirection::Download)
+                                || s.is_file_children_enabled_for(FileChildDirection::Download)
+                                || !s.is_any_file_children_opted_in_or_enabled()
+                            {
+                                s.set_file_children_enabled_for(FileChildDirection::Download, true);
+                            }
+                        }
+                    }
+                    Ok(Ok(s.claim_file_child_watch()))
+                }
+                Err(err) => {
+                    let newly_revoked = !was_revoked && s.is_file_children_revoked();
+                    Ok(Err((
+                        err,
+                        newly_revoked,
+                        s.agent_id,
+                        s.controller_tx.clone(),
+                    )))
+                }
+            }
+        })?;
+
+        match outcome {
+            Ok(start_watch) => Ok(start_watch),
+            Err((err, newly_revoked, agent_id, ctl_tx)) => {
+                if newly_revoked {
+                    self.notify_and_arm_file_child_revoke(
+                        session_id,
+                        agent_id,
+                        ctl_tx,
+                        "policy_revision_changed",
+                    );
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// X14 — irreversibly revoke all download-only file child capability on
+    /// `session_id`, push `rc:file.child.revoke` to both peers, and arm the
+    /// 5-second fail-closed ACK timer that terminates the parent session if
+    /// the agent does not answer with `rc:file.child.revoke_ack`.
+    pub fn revoke_file_children(&self, session_id: ObjectId, reason: &str) -> Result<bool> {
+        let (first, agent_id, ctl_tx) = self.with_session(session_id, |s| {
+            let first = s.revoke_file_children_irreversibly();
+            Ok((first, s.agent_id, s.controller_tx.clone()))
+        })?;
+        if first {
+            self.notify_and_arm_file_child_revoke(session_id, agent_id, ctl_tx, reason);
+        }
+        Ok(first)
+    }
+
+    fn notify_and_arm_file_child_revoke(
+        &self,
+        session_id: ObjectId,
+        agent_id: ObjectId,
+        controller_tx: Option<ClientTx>,
+        reason: &str,
+    ) {
+        let msg = ServerMsg::FileChildRevoke {
+            session_id,
+            reason: reason.to_string(),
+        };
+        if let Some(tx) = controller_tx {
+            let _ = tx.try_send(msg.clone());
+        }
+        let _ = self.send_to_agent(agent_id, msg);
+        let hub = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(FILE_CHILD_REVOKE_ACK_TIMEOUT).await;
+            hub.enforce_file_child_revoke_deadline(session_id);
+        });
+    }
+
+    fn enforce_file_child_revoke_deadline(&self, session_id: ObjectId) {
+        let pending = self
+            .inner
+            .sessions
+            .get(&session_id)
+            .map(|arc| {
+                let s = arc.value().lock();
+                s.phase != SessionPhase::Closed && s.is_file_child_revoke_pending_ack()
+            })
+            .unwrap_or(false);
+        if pending {
+            warn!(
+                session = %session_id.to_hex(),
+                "file child revocation not acknowledged within {}s — terminating parent session fail-closed",
+                FILE_CHILD_REVOKE_ACK_TIMEOUT.as_secs()
+            );
+            let _ = self.terminate(session_id, EndReason::AdminTerminated);
+        }
     }
 
     /// Push `rc:rpc.exec` and await the matching `rc:rpc.result`.
@@ -3718,6 +4161,52 @@ impl Hub {
         // On a send error the guard drops here and takes the waiter with it.
         self.send_to_agent(agent_id, msg)?;
         Ok(StartedExec { rx, _guard: guard })
+    }
+
+    /// MeshHarbor — ask a device connected HERE for its login accounts, or to
+    /// create one. The outer error is the transport (offline, timeout); the
+    /// inner `Err` is the device's own refusal, in its words.
+    pub async fn local_accounts(
+        &self,
+        agent_id: ObjectId,
+        tenant_id: ObjectId,
+        op: meshharbor_remote_control::signaling::LocalAccountOp,
+        deadline: std::time::Duration,
+    ) -> Result<LocalAccountsAnswer> {
+        {
+            let entry = self
+                .inner
+                .agents
+                .get(&agent_id)
+                .ok_or_else(|| Error::AgentOffline(agent_id.to_hex()))?;
+            if entry.tenant_id != tenant_id {
+                return Err(Error::AgentOffline(agent_id.to_hex()));
+            }
+        }
+        let request_id = ObjectId::new().to_hex();
+        let (tx, rx) = oneshot::channel();
+        self.inner.account_waiters.insert(request_id.clone(), tx);
+        struct Unpark<'a>(&'a Hub, String);
+        impl Drop for Unpark<'_> {
+            fn drop(&mut self) {
+                self.0.inner.account_waiters.remove(&self.1);
+            }
+        }
+        let _unpark = Unpark(self, request_id.clone());
+        self.send_to_agent(agent_id, ServerMsg::LocalAccountsRequest { request_id, op })?;
+        match tokio::time::timeout(deadline, rx).await {
+            Ok(Ok(answer)) => Ok(answer),
+            Ok(Err(_)) => Err(Error::AgentOffline(agent_id.to_hex())),
+            Err(_) => Err(Error::ExecTimeout(agent_id.to_hex())),
+        }
+    }
+
+    /// Hand a `rc:accounts.result` to the owner parked on it. `false` = nobody was.
+    pub fn deliver_local_accounts(&self, request_id: &str, answer: LocalAccountsAnswer) -> bool {
+        match self.inner.account_waiters.remove(request_id) {
+            Some((_, tx)) => tx.send(answer).is_ok(),
+            None => false,
+        }
     }
 
     /// Hand a `rc:rpc.result` to whoever is parked on it. `false` = nobody
@@ -3825,7 +4314,7 @@ pub struct DispatchCtx {
     /// P6 — the device's `AccessPolicy.input_mode`, resolved by the API WS
     /// layer alongside `consent_mode`; forwarded to the agent's InputArbiter
     /// in `ServerMsg::Request`. `None` = agent default (free).
-    pub input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+    pub input_mode: Option<meshharbor_remote_control::models::InputMode>,
     /// Multi-org — the display name of the organization the request is made
     /// in, resolved by the API WS layer (the Hub has no DB access) and
     /// forwarded in `ServerMsg::Request` so the host's consent prompt can
@@ -3926,6 +4415,62 @@ impl Hub {
         msg: ClientMsg,
         created: &mut Option<ObjectId>,
     ) -> Result<()> {
+        self.dispatch_with_origin(ctx, msg, created, SessionCreationOrigin::Unknown)
+    }
+
+    /// Backend-only entry for remote's module-private, authenticated local-PDP
+    /// request. This is not a wire authority and must never be called by relay
+    /// dispatch, legacy/full creation, external access or share creation.
+    #[doc(hidden)]
+    pub fn dispatch_local_pdp_session_request(
+        &self,
+        ctx: &DispatchCtx,
+        msg: ClientMsg,
+        policy_snapshot: Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
+    ) -> Result<()> {
+        if ctx.role != Role::Controller
+            || ctx.user_id.is_none()
+            || ctx.controller_tx.is_none()
+            || ctx.override_reason.is_some()
+            || !matches!(ctx.consent_mode, ConsentMode::Auto | ConsentMode::Prompt)
+            || !matches!(
+                &msg,
+                ClientMsg::SessionRequest {
+                    share_grant_id: None,
+                    ..
+                }
+            )
+        {
+            return Err(Error::PermissionDenied(
+                "local PDP session source unavailable",
+            ));
+        }
+        let mut created = None;
+        self.dispatch_with_origin(ctx, msg, &mut created, SessionCreationOrigin::LocalPdp)?;
+        if let (Some(session_id), Some(snapshot)) = (created, policy_snapshot) {
+            let _ = self.with_session(session_id, |s| {
+                s.seed_file_child_policy_snapshot(snapshot);
+                Ok(())
+            });
+        }
+        Ok(())
+    }
+
+    /// Read-only test observation; never enables a capability or exposes scope data.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[doc(hidden)]
+    pub fn file_child_local_pdp_for_tests(&self, session_id: ObjectId) -> Option<bool> {
+        self.with_session(session_id, |s| Ok(s.file_child_local_pdp_for_tests()))
+            .ok()
+    }
+
+    fn dispatch_with_origin(
+        &self,
+        ctx: &DispatchCtx,
+        msg: ClientMsg,
+        created: &mut Option<ObjectId>,
+        origin: SessionCreationOrigin,
+    ) -> Result<()> {
         *created = None;
         match (ctx.role, msg) {
             (
@@ -3994,9 +4539,242 @@ impl Hub {
                     // FR-115 P3b — the slot the owner pod claimed, if any.
                     ctx.slot.clone(),
                     share_grant_id,
+                    origin,
                 )?;
                 *created = Some(session_id);
                 Ok(())
+            }
+            (
+                Role::Controller,
+                ClientMsg::FileChildReserve {
+                    session_id,
+                    transfer_id,
+                    direction,
+                },
+            ) => self.with_session(session_id, |s| {
+                if self.is_file_child_direction_disabled(direction) {
+                    return Err(Error::PermissionDenied(
+                        "file child transport direction is disabled",
+                    ));
+                }
+                if ctx.user_id != Some(s.controller_user_id) {
+                    return Err(Error::PermissionDenied("not the parent controller"));
+                }
+                let requester = ctx
+                    .controller_tx
+                    .as_ref()
+                    .ok_or(Error::PermissionDenied("missing controller connection"))?;
+                let controller = s
+                    .controller_tx
+                    .as_ref()
+                    .filter(|current| ptr_eq(current, requester))
+                    .cloned()
+                    .ok_or(Error::PermissionDenied(
+                        "not the parent controller connection",
+                    ))?;
+                if controller.is_closed() {
+                    return Err(Error::SendFailed);
+                }
+                if s.device_share_scope().is_some() {
+                    return Err(Error::PermissionDenied(
+                        "shared child inheritance unavailable",
+                    ));
+                }
+                let child_id = s.reserve_file_child_for_direction(&transfer_id, direction)?;
+                let reply = ServerMsg::FileChildReserved {
+                    session_id,
+                    child_id,
+                    transfer_id: transfer_id.clone(),
+                    direction,
+                };
+                // No await or agent message: parent closure and permission
+                // updates cannot interleave with this exact Reserved rollback.
+                if controller.try_send(reply).is_err() {
+                    s.cancel_file_child_reservation(child_id, &transfer_id)?;
+                    return Err(Error::SendFailed);
+                }
+                Ok(())
+            }),
+            (
+                Role::Controller,
+                ClientMsg::FileSdpOffer {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                    direction,
+                    sdp,
+                    proof,
+                },
+            ) => self.with_session(session_id, |s| {
+                if self.is_file_child_direction_disabled(direction) {
+                    return Err(Error::PermissionDenied(
+                        "file child transport direction is disabled",
+                    ));
+                }
+                if ctx.user_id != Some(s.controller_user_id) {
+                    return Err(Error::PermissionDenied("not the parent controller"));
+                }
+                let requester = ctx
+                    .controller_tx
+                    .as_ref()
+                    .ok_or(Error::PermissionDenied("missing controller connection"))?;
+                if !s
+                    .controller_tx
+                    .as_ref()
+                    .is_some_and(|current| ptr_eq(current, requester) && !current.is_closed())
+                {
+                    return Err(Error::PermissionDenied(
+                        "not the parent controller connection",
+                    ));
+                }
+                let agent_id = s.agent_id;
+                s.enqueue_file_child_offer_for_direction(child_id, &transfer_id, direction, || {
+                    self.agent_tx(agent_id)?
+                        .try_send(ServerMsg::FileSdpOffer {
+                            session_id,
+                            child_id,
+                            transfer_id: transfer_id.clone(),
+                            direction,
+                            sdp,
+                            proof,
+                        })
+                        .map_err(|_| Error::SendFailed)
+                })
+            }),
+            (
+                Role::Agent,
+                ClientMsg::FileSdpAnswer {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                    sdp,
+                },
+            ) => {
+                self.check_session_party(ctx, session_id)?;
+                let (controller_tx, user_id, region, org) = self.with_session(session_id, |s| {
+                    if !s.has_active_file_child(child_id, &transfer_id) {
+                        return Err(Error::PermissionDenied("file child is not active"));
+                    }
+                    Ok((
+                        s.controller_tx.clone(),
+                        s.controller_user_id,
+                        s.relay_region.clone(),
+                        s.tenant_id,
+                    ))
+                })?;
+                let tx = controller_tx.ok_or(Error::SendFailed)?;
+                let ice_servers = ice_servers_for_session(
+                    &Self::turn_user(user_id, org),
+                    &session_id.to_hex(),
+                    self.inner.turn.cfg_for(region.as_deref()),
+                );
+                tx.try_send(ServerMsg::FileSdpAnswer {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                    sdp,
+                    ice_servers,
+                })
+                .map_err(|_| Error::SendFailed)
+            }
+            (
+                role,
+                ClientMsg::FileIce {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                    candidate,
+                },
+            ) => {
+                self.check_session_party(ctx, session_id)?;
+                let (agent_id, controller_tx) = self.with_session(session_id, |s| {
+                    if role == Role::Controller {
+                        let requester = ctx
+                            .controller_tx
+                            .as_ref()
+                            .ok_or(Error::PermissionDenied("missing controller connection"))?;
+                        if !s.controller_tx.as_ref().is_some_and(|current| {
+                            ptr_eq(current, requester) && !current.is_closed()
+                        }) {
+                            return Err(Error::PermissionDenied(
+                                "not the parent controller connection",
+                            ));
+                        }
+                    }
+                    if !s.has_active_file_child(child_id, &transfer_id) {
+                        return Err(Error::PermissionDenied("file child is not active"));
+                    }
+                    Ok((s.agent_id, s.controller_tx.clone()))
+                })?;
+                let dest_tx = match role {
+                    Role::Controller => self.agent_tx(agent_id)?,
+                    Role::Agent => controller_tx.ok_or(Error::SendFailed)?,
+                };
+                dest_tx
+                    .try_send(ServerMsg::FileIce {
+                        session_id,
+                        child_id,
+                        transfer_id,
+                        candidate,
+                    })
+                    .map_err(|_| Error::SendFailed)
+            }
+            (
+                role,
+                ClientMsg::FileChildComplete {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                },
+            ) => {
+                self.check_session_party(ctx, session_id)?;
+                let (agent_id, controller_tx) = self.with_session(session_id, |s| {
+                    if role == Role::Controller {
+                        let requester = ctx
+                            .controller_tx
+                            .as_ref()
+                            .ok_or(Error::PermissionDenied("missing controller connection"))?;
+                        if !s.controller_tx.as_ref().is_some_and(|current| {
+                            ptr_eq(current, requester) && !current.is_closed()
+                        }) {
+                            return Err(Error::PermissionDenied(
+                                "not the parent controller connection",
+                            ));
+                        }
+                    }
+                    s.complete_file_child(child_id, &transfer_id)?;
+                    Ok((s.agent_id, s.controller_tx.clone()))
+                })?;
+                let msg = ServerMsg::FileChildComplete {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                };
+                match role {
+                    Role::Controller => {
+                        let _ = self.send_to_agent(agent_id, msg);
+                    }
+                    Role::Agent => {
+                        if let Some(tx) = controller_tx {
+                            let _ = tx.try_send(msg);
+                        }
+                    }
+                }
+                Ok(())
+            }
+            (
+                Role::Agent,
+                ClientMsg::FileChildRevokeAck {
+                    session_id,
+                    closed_children: _,
+                    in_flight_buffered_bytes: _,
+                },
+            ) => {
+                self.check_session_party(ctx, session_id)?;
+                self.with_session(session_id, |s| {
+                    s.ack_file_child_revocation();
+                    Ok(())
+                })
             }
             (
                 Role::Controller,
@@ -4130,8 +4908,9 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use meshharbor_remote_control::audit::AuditSink;
+    use meshharbor_remote_control::signaling::{FileChildDirection, FileChildOfferProof};
     use mongodb::Client;
-    use roomler_ai_remote_control::audit::AuditSink;
     use std::time::Duration;
 
     async fn test_hub() -> Hub {
@@ -4288,7 +5067,7 @@ mod tests {
             false,
         );
         let (ctl_tx, mut ctl_rx) = mpsc::channel(8);
-        let grant = roomler_ai_remote_control::signaling::ExternalGrant {
+        let grant = meshharbor_remote_control::signaling::ExternalGrant {
             attempt_id: "a1".into(),
         };
         let clamped = Permissions::default(); // VIEW | INPUT | CLIPBOARD
@@ -4564,7 +5343,7 @@ mod tests {
     /// checks neither, and must drop neither.
     #[tokio::test]
     async fn the_hub_relays_peer_auth_verbatim_both_ways() {
-        use roomler_ai_remote_control::signaling::{PeerAuthAnswer, PeerAuthOffer};
+        use meshharbor_remote_control::signaling::{PeerAuthAnswer, PeerAuthOffer};
         let hub = test_hub().await;
         let agent_id = ObjectId::new();
         let (_agent_tx, _cancel, mut agent_rx) = hub.register_agent(
@@ -5052,6 +5831,1322 @@ mod tests {
             hub.session_snapshot(sid).is_some(),
             "a refused offer does not end the session"
         );
+    }
+
+    #[tokio::test]
+    async fn unavailable_child_capability_denies_offer_and_preserves_remote_session() {
+        let hub = test_hub().await;
+        let agent_id = ObjectId::new();
+        let (_agent_tx, _cancel, mut agent_rx) = hub.register_agent(
+            agent_id,
+            ObjectId::new(),
+            ObjectId::new(),
+            OsKind::Linux,
+            3,
+            false,
+            false,
+        );
+        let owner = ObjectId::new();
+        let (ctl_tx, mut ctl_rx) = mpsc::channel(8);
+        let sid = hub
+            .create_session(
+                agent_id,
+                owner,
+                "Owner".into(),
+                ctl_tx.clone(),
+                Permissions::VIEW | Permissions::FILES,
+                Vec::new(),
+                None,
+                None,
+                None,
+                false,
+                ConsentMode::Prompt,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let owner_ctx = DispatchCtx {
+            role: Role::Controller,
+            user_id: Some(owner),
+            agent_id: None,
+            controller_name: None,
+            controller_tx: Some(ctl_tx),
+            consent_mode: ConsentMode::Prompt,
+            override_reason: None,
+            input_mode: None,
+            tenant_name: None,
+            may_record: false,
+            rc_overlay: false,
+            session_policy: OrgPolicy::Read(SessionPolicy::default()),
+            max_duration: None,
+            idle_secs: None,
+            lock_on_end: None,
+            org_session_cap: None,
+            slot: None,
+        };
+        assert!(matches!(
+            ctl_rx.recv().await,
+            Some(ServerMsg::SessionCreated { .. })
+        ));
+        hub.deliver_consent(sid, true, None).unwrap();
+        assert!(matches!(ctl_rx.recv().await, Some(ServerMsg::Ready { .. })));
+        hub.dispatch(
+            &owner_ctx,
+            ClientMsg::SdpOffer {
+                session_id: sid,
+                sdp: "v=0".into(),
+                extauth_mac: None,
+                peer_auth: None,
+            },
+        )
+        .unwrap();
+        hub.forward_answer(sid, "v=0".into(), None, None, None)
+            .unwrap();
+        while agent_rx.try_recv().is_ok() {}
+
+        let child_id = ObjectId::new().to_hex();
+        let request = serde_json::json!({
+            "t": "rc:file.sdp.offer",
+            "session_id": sid.to_hex(),
+            "child_id": child_id,
+            "transfer_id": "download-test",
+            "direction": "download",
+            "sdp": "v=0",
+            // Synthetic wire data only. Agent-side identity verification is
+            // a separate mandatory gate, not established by this Hub test.
+            "proof": {"nonce": "synthetic", "key": "synthetic", "sig": "synthetic"},
+        });
+        let parsed: ClientMsg = serde_json::from_value(request)
+            .expect("a download child offer must be a recognized session message");
+        assert!(hub.dispatch(&owner_ctx, parsed).is_err());
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "no child offer may reach an agent without explicit capability"
+        );
+        assert!(
+            hub.session_snapshot(sid).is_some(),
+            "the original remote session remains active"
+        );
+    }
+
+    fn file_child_session_request(agent_id: ObjectId) -> ClientMsg {
+        ClientMsg::SessionRequest {
+            agent_id,
+            share_grant_id: None,
+            permissions: Permissions::VIEW | Permissions::FILES,
+            browser_caps: Vec::new(),
+            preferred_transport: None,
+            chroma_pref: None,
+            chunk_framing: None,
+            audio_enabled: false,
+            override_reason: None,
+            local_relay: None,
+        }
+    }
+
+    struct FileChildDispatchFixture {
+        hub: Hub,
+        sid: ObjectId,
+        owner: ObjectId,
+        controller_tx: ClientTx,
+        controller_rx: mpsc::Receiver<ServerMsg>,
+        agent_tx: ClientTx,
+        agent_rx: mpsc::Receiver<ServerMsg>,
+        other_agent_rx: mpsc::Receiver<ServerMsg>,
+        _audit_events: mpsc::Receiver<meshharbor_remote_control::models::RemoteAuditEvent>,
+    }
+    impl FileChildDispatchFixture {
+        async fn new() -> Self {
+            // No Mongo client, flusher, network, agent task, or child PC.
+            let (audit, audit_events) = AuditSink::channel_for_tests();
+            let hub = Hub::new(audit, None);
+            let agent = ObjectId::new();
+            let owner = ObjectId::new();
+            let (agent_tx, _, mut agent_rx) = hub.register_agent(
+                agent,
+                ObjectId::new(),
+                owner,
+                OsKind::Linux,
+                3,
+                false,
+                false,
+            );
+            let (_, _, other_agent_rx) = hub.register_agent(
+                ObjectId::new(),
+                ObjectId::new(),
+                ObjectId::new(),
+                OsKind::Linux,
+                3,
+                false,
+                false,
+            );
+            let (controller_tx, mut controller_rx) = mpsc::channel(16);
+            hub.dispatch_local_pdp_session_request(
+                &Self::context(owner, controller_tx.clone()),
+                file_child_session_request(agent),
+                meshharbor_remote_control::session::FileChildPolicySnapshot::new(Some(2), Some(4)),
+            )
+            .unwrap();
+            let sid = match controller_rx.try_recv().unwrap() {
+                ServerMsg::SessionCreated { session_id, .. } => session_id,
+                other => panic!("expected parent creation, got {other:?}"),
+            };
+            assert_eq!(hub.file_child_local_pdp_for_tests(sid), Some(true));
+            hub.deliver_consent(sid, true, None).unwrap();
+            let ready = tokio::time::timeout(Duration::from_secs(2), controller_rx.recv())
+                .await
+                .expect("bounded synthetic consent Ready");
+            assert!(matches!(ready, Some(ServerMsg::Ready { .. })));
+            hub.dispatch(
+                &Self::context(owner, controller_tx.clone()),
+                ClientMsg::SdpOffer {
+                    session_id: sid,
+                    sdp: "v=0".into(),
+                    extauth_mac: None,
+                    peer_auth: None,
+                },
+            )
+            .unwrap();
+            hub.forward_answer(sid, "v=0".into(), None, None, None)
+                .unwrap();
+            assert!(matches!(
+                controller_rx.try_recv(),
+                Ok(ServerMsg::SdpAnswer { .. })
+            ));
+            while agent_rx.try_recv().is_ok() {}
+            hub.with_session(sid, |s| {
+                assert_eq!(s.phase, SessionPhase::Active);
+                assert!(s.permissions().contains(Permissions::FILES));
+                Ok(())
+            })
+            .unwrap();
+            Self {
+                hub,
+                sid,
+                owner,
+                controller_tx,
+                controller_rx,
+                agent_tx,
+                agent_rx,
+                other_agent_rx,
+                _audit_events: audit_events,
+            }
+        }
+        fn context(owner: ObjectId, tx: ClientTx) -> DispatchCtx {
+            DispatchCtx {
+                role: Role::Controller,
+                user_id: Some(owner),
+                agent_id: None,
+                controller_tx: Some(tx),
+                controller_name: None,
+                consent_mode: ConsentMode::Prompt,
+                override_reason: None,
+                input_mode: None,
+                tenant_name: None,
+                may_record: false,
+                rc_overlay: false,
+                session_policy: OrgPolicy::Read(SessionPolicy::default()),
+                max_duration: None,
+                idle_secs: None,
+                lock_on_end: None,
+                org_session_cap: None,
+                slot: None,
+            }
+        }
+        fn ctx(&self) -> DispatchCtx {
+            Self::context(self.owner, self.controller_tx.clone())
+        }
+        fn enable_for_test(&self) {
+            self.hub
+                .with_session(self.sid, |s| {
+                    s.set_file_children_enabled(true);
+                    Ok(())
+                })
+                .unwrap();
+        }
+        fn reserve_message(&self, transfer: &str) -> ClientMsg {
+            ClientMsg::FileChildReserve {
+                session_id: self.sid,
+                transfer_id: transfer.into(),
+                direction: FileChildDirection::Download,
+            }
+        }
+        fn reserve(&mut self, transfer: &str) -> ObjectId {
+            self.hub
+                .dispatch(&self.ctx(), self.reserve_message(transfer))
+                .unwrap();
+            match self
+                .controller_rx
+                .try_recv()
+                .expect("reserve must enqueue its bound reply")
+            {
+                ServerMsg::FileChildReserved {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                    direction: FileChildDirection::Download,
+                } => {
+                    assert_eq!(session_id, self.sid);
+                    assert_eq!(transfer_id, transfer);
+                    child_id
+                }
+                other => panic!("unexpected reserve reply: {other:?}"),
+            }
+        }
+        fn offer(&self, child: ObjectId, transfer: &str) -> ClientMsg {
+            ClientMsg::FileSdpOffer {
+                session_id: self.sid,
+                child_id: child,
+                transfer_id: transfer.into(),
+                direction: FileChildDirection::Download,
+                sdp: "v=0\r\na=fingerprint:sha-256 AA:BB:CC\r\n".into(),
+                // Deliberately opaque at the Hub: only the real agent's
+                // parent-bound crypto gate can authenticate these bytes.
+                // This test never constructs that agent or claims acceptance.
+                proof: FileChildOfferProof {
+                    nonce: "opaque-nonce".into(),
+                    key: "opaque-key".into(),
+                    sig: "opaque-signature".into(),
+                },
+            }
+        }
+        fn binding(&self, child: ObjectId, transfer: &str) -> Option<bool> {
+            self.hub
+                .with_session(self.sid, |s| {
+                    Ok(s.file_child_active_for_tests(child, transfer))
+                })
+                .unwrap()
+        }
+        fn no_offer(&mut self) {
+            assert!(
+                self.agent_rx.try_recv().is_err(),
+                "refusal must not enqueue an agent offer"
+            );
+            assert!(
+                self.other_agent_rx.try_recv().is_err(),
+                "unrelated agent must stay untouched"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn file_child_default_capability_stays_off_for_local_pdp_parent() {
+        let mut f = FileChildDispatchFixture::new().await;
+        assert!(
+            f.hub
+                .dispatch(&f.ctx(), f.reserve_message("disabled"))
+                .is_err()
+        );
+        assert!(
+            f.hub
+                .dispatch(&f.ctx(), f.offer(ObjectId::new(), "disabled"))
+                .is_err()
+        );
+        f.no_offer();
+        assert!(f.controller_rx.try_recv().is_err());
+        assert!(f.hub.session_snapshot(f.sid).is_some());
+    }
+
+    #[tokio::test]
+    async fn file_child_controller_origin_is_frozen_and_not_selected_by_legacy_or_relay_wire() {
+        let f = FileChildDispatchFixture::new().await;
+        let ctx = f.ctx();
+        let agent = f.hub.with_session(f.sid, |s| Ok(s.agent_id)).unwrap();
+        let mut receiver = f.controller_rx;
+        // The same authorized local producer may retry, without a new source stamp.
+        f.hub
+            .dispatch_local_pdp_session_request(&ctx, file_child_session_request(agent), None)
+            .unwrap();
+        assert!(
+            matches!(receiver.try_recv(), Ok(ServerMsg::SessionCreated { session_id, .. }) if session_id == f.sid)
+        );
+        // Relay and old dispatch consume only wire+DispatchCtx. Unknown JSON
+        // fields cannot choose the server-only creator, even on this exact tab.
+        let mut wire = serde_json::to_value(file_child_session_request(agent)).unwrap();
+        wire["local_pdp"] = serde_json::json!(true);
+        wire["file_child_controller_scope"] = serde_json::json!({"local_pdp": true});
+        f.hub
+            .dispatch(&ctx, serde_json::from_value(wire).unwrap())
+            .unwrap();
+        let unknown = match receiver.try_recv().unwrap() {
+            ServerMsg::SessionCreated { session_id, .. } => session_id,
+            other => panic!("expected Unknown parent, got {other:?}"),
+        };
+        assert_ne!(
+            unknown, f.sid,
+            "coalescing must not upgrade Unknown or inherit a trusted source"
+        );
+        assert_eq!(f.hub.file_child_local_pdp_for_tests(unknown), Some(false));
+        // Legacy create delegates through the public full constructor, both
+        // deliberately Unknown, and may coalesce only with that same scope.
+        let legacy = f
+            .hub
+            .create_session(
+                agent,
+                f.owner,
+                "Synthetic".into(),
+                f.controller_tx.clone(),
+                Permissions::VIEW | Permissions::FILES,
+                Vec::new(),
+                None,
+                None,
+                None,
+                false,
+                ConsentMode::Prompt,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(legacy, unknown);
+        assert!(
+            matches!(receiver.try_recv(), Ok(ServerMsg::SessionCreated { session_id, .. }) if session_id == unknown)
+        );
+        f.hub
+            .with_session(unknown, |s| {
+                s.set_file_children_enabled(true);
+                s.phase = SessionPhase::Active;
+                assert!(s.reserve_file_child("cannot-inherit").is_err());
+                Ok(())
+            })
+            .unwrap();
+        // No owner-remote consent / override / share request may select the
+        // dedicated local source. Rejection leaves both original scopes frozen.
+        for mode in [
+            ConsentMode::Email,
+            ConsentMode::Push,
+            ConsentMode::PromptThenEmail,
+        ] {
+            let invalid = DispatchCtx {
+                consent_mode: mode,
+                ..FileChildDispatchFixture::context(f.owner, f.controller_tx.clone())
+            };
+            assert!(
+                f.hub
+                    .dispatch_local_pdp_session_request(
+                        &invalid,
+                        file_child_session_request(agent),
+                        None,
+                    )
+                    .is_err()
+            );
+        }
+        let invalid = DispatchCtx {
+            override_reason: Some("synthetic".into()),
+            ..FileChildDispatchFixture::context(f.owner, f.controller_tx.clone())
+        };
+        assert!(
+            f.hub
+                .dispatch_local_pdp_session_request(
+                    &invalid,
+                    file_child_session_request(agent),
+                    None,
+                )
+                .is_err()
+        );
+        let mut shared = file_child_session_request(agent);
+        if let ClientMsg::SessionRequest { share_grant_id, .. } = &mut shared {
+            *share_grant_id = Some(ObjectId::new());
+        }
+        assert!(
+            f.hub
+                .dispatch_local_pdp_session_request(&ctx, shared, None)
+                .is_err()
+        );
+        assert_eq!(f.hub.file_child_local_pdp_for_tests(f.sid), Some(true));
+        assert_eq!(f.hub.file_child_local_pdp_for_tests(unknown), Some(false));
+    }
+
+    #[tokio::test]
+    async fn file_child_offer_forwards_only_matching_reserved_parent_tab() {
+        use meshharbor_remote_control::session::DeviceShareSessionScope;
+
+        type Fixture = FileChildDispatchFixture;
+
+        let mut f = Fixture::new().await;
+        assert!(
+            f.hub
+                .dispatch(&f.ctx(), f.reserve_message("default-off"))
+                .is_err()
+        );
+        assert!(
+            f.hub
+                .dispatch(&f.ctx(), f.offer(ObjectId::new(), "default-off"))
+                .is_err()
+        );
+        assert!(f.controller_rx.try_recv().is_err());
+        f.no_offer();
+        assert!(
+            f.hub.session_snapshot(f.sid).is_some(),
+            "default refusal preserves the parent"
+        );
+
+        f.enable_for_test();
+        let active = f.reserve("active");
+        let (tab_tx, mut tab_rx) = mpsc::channel(16);
+        for ctx in [
+            Fixture::context(f.owner, tab_tx),
+            Fixture::context(ObjectId::new(), f.controller_tx.clone()),
+        ] {
+            assert!(f.hub.dispatch(&ctx, f.offer(active, "active")).is_err());
+            assert_eq!(f.binding(active, "active"), Some(false));
+            f.no_offer();
+        }
+        assert!(tab_rx.try_recv().is_err());
+        assert!(
+            f.hub
+                .dispatch(&f.ctx(), f.offer(active, "wrong-transfer"))
+                .is_err()
+        );
+        assert!(
+            f.hub
+                .dispatch(&f.ctx(), f.offer(ObjectId::new(), "active"))
+                .is_err()
+        );
+        let mut missing_parent = f.offer(active, "active");
+        if let ClientMsg::FileSdpOffer { session_id, .. } = &mut missing_parent {
+            *session_id = ObjectId::new();
+        }
+        assert!(f.hub.dispatch(&f.ctx(), missing_parent).is_err());
+        assert_eq!(f.binding(active, "active"), Some(false));
+        f.no_offer();
+
+        let offer = f.offer(active, "active");
+        let expected = serde_json::to_value(&offer).unwrap();
+        let forwarded = f.hub.dispatch(&f.ctx(), offer);
+        assert!(
+            forwarded.is_ok(),
+            "X14 reserved file child offer must dispatch once to its parent agent: {forwarded:?}"
+        );
+        // Nobody polls the fake agent: Active here means queue admission,
+        // not remote delivery, proof verification, or an established PC.
+        assert_eq!(f.agent_rx.len(), 1);
+        assert_eq!(f.binding(active, "active"), Some(true));
+        assert!(f.other_agent_rx.try_recv().is_err());
+        assert_eq!(
+            serde_json::to_value(f.agent_rx.try_recv().unwrap()).unwrap(),
+            expected
+        );
+        assert!(f.hub.dispatch(&f.ctx(), f.offer(active, "active")).is_err());
+        f.no_offer();
+
+        let kept = f.reserve("kept");
+        // Both bounded mpsc failure variants must roll back only the offered
+        // Reserved binding. The already-Active child and another reservation
+        // survive; no failed attempt can become Active or consume a slot.
+        for closed in [false, true] {
+            let failed = f.reserve("send-failed");
+            if closed {
+                f.agent_rx.close();
+                assert!(f.agent_tx.is_closed());
+            } else {
+                assert_eq!(f.agent_rx.len(), 0);
+                for _ in 0..f.agent_tx.max_capacity() {
+                    f.agent_tx.try_send(ServerMsg::Pong { id: 7 }).unwrap();
+                }
+                assert_eq!(f.agent_tx.capacity(), 0);
+            }
+            assert!(matches!(
+                f.hub.dispatch(&f.ctx(), f.offer(failed, "send-failed")),
+                Err(Error::SendFailed)
+            ));
+            assert_eq!(f.binding(failed, "send-failed"), None);
+            assert_eq!(f.binding(active, "active"), Some(true));
+            assert_eq!(f.binding(kept, "kept"), Some(false));
+            let first = f.reserve("filler-1");
+            let second = f.reserve("filler-2");
+            assert!(
+                f.hub
+                    .dispatch(&f.ctx(), f.reserve_message("fifth"))
+                    .is_err()
+            );
+            assert!(f.controller_rx.try_recv().is_err());
+            f.hub
+                .with_session(f.sid, |s| {
+                    assert!(s.cancel_file_child_reservation(active, "active").is_err());
+                    assert!(
+                        s.cancel_file_child_reservation(kept, "wrong-transfer")
+                            .is_err()
+                    );
+                    s.cancel_file_child_reservation(first, "filler-1")?;
+                    s.cancel_file_child_reservation(second, "filler-2")?;
+                    Ok(())
+                })
+                .unwrap();
+            if !closed {
+                let mut count = 0;
+                while let Ok(msg) = f.agent_rx.try_recv() {
+                    assert!(matches!(msg, ServerMsg::Pong { id: 7 }));
+                    count += 1;
+                }
+                assert_eq!(count, f.agent_tx.max_capacity());
+            }
+            assert!(f.other_agent_rx.try_recv().is_err());
+        }
+
+        let mut shared = Fixture::new().await;
+        shared.enable_for_test();
+        let child = shared.reserve("scoped");
+        shared
+            .hub
+            .with_session(shared.sid, |s| {
+                s.bind_device_share(DeviceShareSessionScope {
+                    grant_id: ObjectId::new(),
+                    ceiling: Permissions::VIEW | Permissions::FILES,
+                })
+            })
+            .unwrap();
+        assert!(
+            shared
+                .hub
+                .dispatch(&shared.ctx(), shared.offer(child, "scoped"))
+                .is_err()
+        );
+        shared.no_offer();
+
+        let mut narrowed = Fixture::new().await;
+        narrowed.enable_for_test();
+        let child = narrowed.reserve("narrowed");
+        narrowed
+            .hub
+            .with_session(narrowed.sid, |s| {
+                s.set_permissions(Permissions::VIEW);
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            narrowed
+                .hub
+                .dispatch(&narrowed.ctx(), narrowed.offer(child, "narrowed"))
+                .is_err()
+        );
+        assert_eq!(narrowed.binding(child, "narrowed"), None);
+        narrowed
+            .hub
+            .with_session(narrowed.sid, |s| {
+                s.set_permissions(Permissions::VIEW | Permissions::FILES);
+                s.set_file_children_enabled(true);
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            narrowed
+                .hub
+                .dispatch(&narrowed.ctx(), narrowed.offer(child, "narrowed"))
+                .is_err()
+        );
+        narrowed.no_offer(); // Local setter gate only, not a remote revocation claim.
+
+        let mut ended = Fixture::new().await;
+        ended.enable_for_test();
+        let child = ended.reserve("ended");
+        ended
+            .hub
+            .terminate(ended.sid, EndReason::ControllerHangup)
+            .unwrap();
+        assert!(ended.hub.session_snapshot(ended.sid).is_none());
+        assert!(
+            ended
+                .hub
+                .dispatch(&ended.ctx(), ended.offer(child, "ended"))
+                .is_err()
+        );
+        while let Ok(msg) = ended.agent_rx.try_recv() {
+            assert!(
+                matches!(msg, ServerMsg::Terminate { session_id, .. } if session_id == ended.sid)
+            );
+        }
+        assert!(ended.other_agent_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn file_reservation_is_parent_bound_and_rejected_after_close_or_files_loss() {
+        use meshharbor_remote_control::signaling::{FileChildDirection, FileChildOfferProof};
+        use std::collections::HashSet;
+
+        async fn next(rx: &mut mpsc::Receiver<ServerMsg>) -> ServerMsg {
+            tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("bounded synthetic parent setup")
+                .expect("controller remains connected")
+        }
+        fn reserved(
+            rx: &mut mpsc::Receiver<ServerMsg>,
+            parent: ObjectId,
+            transfer: &str,
+        ) -> ObjectId {
+            match rx
+                .try_recv()
+                .expect("successful synchronous reserve must enqueue its reply")
+            {
+                ServerMsg::FileChildReserved {
+                    session_id,
+                    child_id,
+                    transfer_id,
+                    direction: FileChildDirection::Download,
+                } => {
+                    assert_eq!(session_id, parent);
+                    assert_eq!(transfer_id, transfer);
+                    child_id
+                }
+                other => panic!("expected bound server reservation, got {other:?}"),
+            }
+        }
+        // No localhost Mongo Client, DB flusher, sockets, or child PCs. Keep
+        // the bounded receiver alive so ordinary audit records can be queued.
+        let (audit, _audit_events) = AuditSink::channel_for_tests();
+        let hub = Hub::new(audit, None);
+        let agent = ObjectId::new();
+        let (_agent_tx, _cancel, mut agent_rx) = hub.register_agent(
+            agent,
+            ObjectId::new(),
+            ObjectId::new(),
+            OsKind::Linux,
+            3,
+            false,
+            false,
+        );
+        let owner = ObjectId::new();
+        let (ctl_tx, mut ctl_rx) = mpsc::channel(8);
+        let context = |role, user_id, agent_id, controller_tx| DispatchCtx {
+            role,
+            user_id,
+            agent_id,
+            controller_tx,
+            controller_name: None,
+            consent_mode: ConsentMode::Prompt,
+            override_reason: None,
+            input_mode: None,
+            tenant_name: None,
+            may_record: false,
+            rc_overlay: false,
+            session_policy: OrgPolicy::Read(SessionPolicy::default()),
+            max_duration: None,
+            idle_secs: None,
+            lock_on_end: None,
+            org_session_cap: None,
+            slot: None,
+        };
+        let owner_ctx = context(Role::Controller, Some(owner), None, Some(ctl_tx.clone()));
+        hub.dispatch_local_pdp_session_request(&owner_ctx, file_child_session_request(agent), None)
+            .unwrap();
+        let sid = match next(&mut ctl_rx).await {
+            ServerMsg::SessionCreated { session_id, .. } => session_id,
+            other => panic!("expected parent creation, got {other:?}"),
+        };
+        let reserve = |session_id, transfer: &str| ClientMsg::FileChildReserve {
+            session_id,
+            transfer_id: transfer.into(),
+            direction: FileChildDirection::Download,
+        };
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "before-consent"))
+                .is_err()
+        );
+        hub.deliver_consent(sid, true, None).unwrap();
+        assert!(matches!(next(&mut ctl_rx).await, ServerMsg::Ready { .. }));
+        hub.dispatch(
+            &owner_ctx,
+            ClientMsg::SdpOffer {
+                session_id: sid,
+                sdp: "v=0".into(),
+                extauth_mac: None,
+                peer_auth: None,
+            },
+        )
+        .unwrap();
+        hub.forward_answer(sid, "v=0".into(), None, None, None)
+            .unwrap();
+        assert!(matches!(
+            next(&mut ctl_rx).await,
+            ServerMsg::SdpAnswer { .. }
+        ));
+        while agent_rx.try_recv().is_ok() {}
+        assert!(
+            hub.session_grant(sid)
+                .unwrap()
+                .2
+                .contains(Permissions::FILES),
+            "fixture must really have an effective FILES grant"
+        );
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "default-off"))
+                .is_err()
+        );
+        assert!(ctl_rx.try_recv().is_err());
+        assert!(
+            hub.session_snapshot(sid).is_some(),
+            "default refusal preserves ordinary RC"
+        );
+
+        // Explicit test setup only; no production negotiation or caller field
+        // enables this gate. Probe and reset the existing state gate so a bad
+        // fixture cannot be mistaken for the missing dispatcher behavior.
+        hub.with_session(sid, |s| {
+            assert_eq!(s.phase, SessionPhase::Active);
+            s.set_file_children_enabled(true);
+            s.reserve_file_child("fixture-gate-probe")?;
+            s.set_file_children_enabled(false);
+            s.set_file_children_enabled(true);
+            Ok(())
+        })
+        .unwrap();
+        let stranger = context(
+            Role::Controller,
+            Some(ObjectId::new()),
+            None,
+            Some(ctl_tx.clone()),
+        );
+        let (other_tx, mut other_rx) = mpsc::channel(8);
+        let other_tab = context(Role::Controller, Some(owner), None, Some(other_tx));
+        let agent_ctx = context(Role::Agent, None, Some(agent), None);
+        for ctx in [&stranger, &other_tab, &agent_ctx] {
+            assert!(
+                hub.dispatch(ctx, reserve(sid, "not-this-parent-connection"))
+                    .is_err()
+            );
+        }
+        assert!(
+            other_rx.try_recv().is_err(),
+            "same user on another tab receives no reservation"
+        );
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(ObjectId::new(), "missing-parent"))
+                .is_err()
+        );
+        for transfer in [String::new(), "x".repeat(129), "bad\ntransfer".into()] {
+            assert!(hub.dispatch(&owner_ctx, reserve(sid, &transfer)).is_err());
+        }
+        assert!(ctl_rx.try_recv().is_err());
+        let mut children = HashSet::new();
+        for _ in 0..4 {
+            let result = hub.dispatch(&owner_ctx, reserve(sid, "download-test"));
+            assert!(
+                result.is_ok(),
+                "enabled active FILES parent must dispatch a server reservation for its current tab: {result:?}"
+            );
+            assert!(children.insert(reserved(&mut ctl_rx, sid, "download-test")));
+        }
+        assert!(hub.dispatch(&owner_ctx, reserve(sid, "fifth")).is_err());
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "reservations never reach the agent as child offers"
+        );
+        let offered = *children.iter().next().unwrap();
+        assert!(
+            hub.dispatch(
+                &owner_ctx,
+                ClientMsg::FileSdpOffer {
+                    session_id: sid,
+                    child_id: offered,
+                    transfer_id: "wrong-transfer".into(),
+                    direction: FileChildDirection::Download,
+                    sdp: "v=0".into(),
+                    proof: FileChildOfferProof {
+                        nonce: "synthetic".into(),
+                        key: "synthetic".into(),
+                        sig: "synthetic".into()
+                    },
+                }
+            )
+            .is_err(),
+            "an offer must match its reserved transfer even with the test capability"
+        );
+        assert!(agent_rx.try_recv().is_err());
+
+        // This simulates the existing local effective-permission setter. It
+        // does not prove an admin route, remote notification, or transport stop.
+        hub.with_session(sid, |s| {
+            s.set_permissions(Permissions::VIEW);
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "files-withdrawn"))
+                .is_err()
+        );
+        hub.with_session(sid, |s| {
+            s.set_permissions(Permissions::VIEW | Permissions::FILES);
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            hub.dispatch(
+                &owner_ctx,
+                reserve(sid, "files-restored-without-renegotiation")
+            )
+            .is_err()
+        );
+        hub.with_session(sid, |s| {
+            s.set_file_children_enabled(true);
+            for child in &children {
+                assert!(s.admit_file_child(*child, "download-test").is_err());
+                assert!(s.complete_file_child(*child, "download-test").is_err());
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        // Existing Active and Reserved records make a wrong rollback visible:
+        // freeing one old record while leaking the new one must not pass.
+        let (active, kept) = hub
+            .with_session(sid, |s| {
+                let active = s.reserve_file_child("active-fixture")?;
+                s.admit_file_child(active, "active-fixture")?;
+                let kept = s.reserve_file_child("reserved-fixture")?;
+                assert!(
+                    s.cancel_file_child_reservation(active, "active-fixture")
+                        .is_err()
+                );
+                assert!(
+                    s.cancel_file_child_reservation(kept, "wrong-transfer")
+                        .is_err()
+                );
+                Ok((active, kept))
+            })
+            .unwrap();
+        let filler = ServerMsg::Error {
+            session_id: None,
+            code: "fixture".into(),
+            message: "bounded reply queue".into(),
+            open_nonce: None,
+        };
+        for _ in 0..8 {
+            ctl_tx.try_send(filler.clone()).unwrap();
+        }
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "failed-reply"))
+                .is_err(),
+            "a full reply queue must not be reported as a successful reservation"
+        );
+        while ctl_rx.try_recv().is_ok() {}
+        hub.with_session(sid, |s| {
+            s.complete_file_child(active, "active-fixture")?;
+            let replacement = s.reserve_file_child("active-replacement")?;
+            s.admit_file_child(replacement, "active-replacement")?;
+            s.admit_file_child(kept, "reserved-fixture")?;
+            Ok(())
+        })
+        .expect("reply rollback preserves each pre-existing Active/Reserved binding");
+        for transfer in ["remaining-one", "remaining-two"] {
+            hub.dispatch(&owner_ctx, reserve(sid, transfer)).unwrap();
+            reserved(&mut ctl_rx, sid, transfer);
+        }
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "overflow-after-rollback"))
+                .is_err(),
+            "exactly two slots remain after the failed reply; no leak or unrelated release"
+        );
+        assert!(hub.session_snapshot(sid).is_some());
+
+        hub.with_session(sid, |s| {
+            s.set_file_children_enabled(false);
+            s.set_file_children_enabled(true);
+            Ok(())
+        })
+        .unwrap();
+        drop(ctl_rx);
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "closed-reply-channel"))
+                .is_err()
+        );
+        if hub.session_snapshot(sid).is_some() {
+            hub.with_session(sid, |s| {
+                for _ in 0..4 {
+                    s.reserve_file_child("closed-channel-budget-check")?;
+                }
+                assert!(s.reserve_file_child("fifth").is_err());
+                Ok(())
+            })
+            .expect("closed reply either ends the parent or leaves no leaked reservation");
+        }
+        hub.terminate(sid, EndReason::ControllerHangup).unwrap();
+        assert!(hub.session_snapshot(sid).is_none());
+        assert!(
+            hub.dispatch(&owner_ctx, reserve(sid, "after-parent-close"))
+                .is_err()
+        );
+        let frames: Vec<_> = std::iter::from_fn(|| agent_rx.try_recv().ok()).collect();
+        assert!(
+            frames
+                .iter()
+                .all(|frame| !matches!(frame, ServerMsg::FileSdpOffer { .. })),
+            "no branch in the reservation test starts a child transport"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn file_child_revocation_notifies_peers_and_keeps_parent_when_acked_within_5s() {
+        use meshharbor_remote_control::session::FileChildPolicySnapshot;
+
+        let mut f = FileChildDispatchFixture::new().await;
+        let agent = f.hub.with_session(f.sid, |s| Ok(s.agent_id)).unwrap();
+        let snap1 = FileChildPolicySnapshot::new(Some(2), Some(4));
+        let started_watch = f
+            .hub
+            .admit_file_child_policy_snapshot(f.sid, f.owner, &f.controller_tx, snap1)
+            .expect("initial policy snapshot must bind and enable child capability");
+        assert!(started_watch, "first snapshot bind must claim the watcher");
+        assert!(
+            !f.hub
+                .admit_file_child_policy_snapshot(f.sid, f.owner, &f.controller_tx, snap1)
+                .unwrap(),
+            "subsequent matching snapshot must not spawn a duplicate watcher"
+        );
+
+        let child = f.reserve("striped-dl");
+        f.hub
+            .dispatch(&f.ctx(), f.offer(child, "striped-dl"))
+            .unwrap();
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileSdpOffer { child_id, .. }) if child_id == child
+        ));
+
+        let agent_ctx = DispatchCtx {
+            role: Role::Agent,
+            user_id: None,
+            agent_id: Some(agent),
+            controller_tx: None,
+            controller_name: None,
+            consent_mode: ConsentMode::Prompt,
+            override_reason: None,
+            input_mode: None,
+            tenant_name: None,
+            may_record: false,
+            rc_overlay: false,
+            session_policy: OrgPolicy::Read(SessionPolicy::default()),
+            max_duration: None,
+            idle_secs: None,
+            lock_on_end: None,
+            org_session_cap: None,
+            slot: None,
+        };
+        f.hub
+            .dispatch(
+                &agent_ctx,
+                ClientMsg::FileSdpAnswer {
+                    session_id: f.sid,
+                    child_id: child,
+                    transfer_id: "striped-dl".into(),
+                    sdp: "v=0\r\na=answer\r\n".into(),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            f.controller_rx.try_recv(),
+            Ok(ServerMsg::FileSdpAnswer { child_id, .. }) if child_id == child
+        ));
+
+        f.hub
+            .dispatch(
+                &f.ctx(),
+                ClientMsg::FileIce {
+                    session_id: f.sid,
+                    child_id: child,
+                    transfer_id: "striped-dl".into(),
+                    candidate: serde_json::json!({"candidate": "candidate:1"}),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileIce { child_id, .. }) if child_id == child
+        ));
+
+        // Simulate ABA or policy tightening advancing tenant security_rev from 2 -> 3.
+        let snap2 = FileChildPolicySnapshot::new(Some(3), Some(4));
+        assert!(
+            f.hub
+                .admit_file_child_policy_snapshot(f.sid, f.owner, &f.controller_tx, snap2)
+                .is_err(),
+            "revision mismatch must fail closed"
+        );
+        assert!(matches!(
+            f.controller_rx.try_recv(),
+            Ok(ServerMsg::FileChildRevoke { session_id, .. }) if session_id == f.sid
+        ));
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileChildRevoke { session_id, .. }) if session_id == f.sid
+        ));
+
+        // Agent acknowledges within the 5-second deadline.
+        f.hub
+            .dispatch(
+                &agent_ctx,
+                ClientMsg::FileChildRevokeAck {
+                    session_id: f.sid,
+                    closed_children: 1,
+                    in_flight_buffered_bytes: 0,
+                },
+            )
+            .unwrap();
+
+        tokio::time::sleep(FILE_CHILD_REVOKE_ACK_TIMEOUT + Duration::from_secs(1)).await;
+        assert!(
+            f.hub.session_snapshot(f.sid).is_some(),
+            "parent session must remain alive when agent acknowledges child revocation in time"
+        );
+        // And child capability stays irreversibly revoked for this parent session.
+        assert!(
+            f.hub
+                .dispatch(&f.ctx(), f.reserve_message("after-revoke"))
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn file_child_watcher_stops_when_idle_and_restarts_on_next_reserve() {
+        use meshharbor_remote_control::session::FileChildPolicySnapshot;
+
+        let mut f = FileChildDispatchFixture::new().await;
+        let snap = FileChildPolicySnapshot::new(Some(2), Some(4));
+
+        // 1. First admission claims the watcher.
+        assert!(
+            f.hub
+                .admit_file_child_policy_snapshot(f.sid, f.owner, &f.controller_tx, snap)
+                .unwrap()
+        );
+        // Before any child slot is reserved, an idle poll releases the watcher.
+        assert!(
+            !f.hub
+                .poll_file_child_watch_target(f.sid, f.owner, &f.controller_tx)
+                .unwrap()
+        );
+        // Next reserve admission re-claims the watcher.
+        assert!(
+            f.hub
+                .admit_file_child_policy_snapshot(f.sid, f.owner, &f.controller_tx, snap)
+                .unwrap()
+        );
+        let child = f.reserve("dl-batch-1");
+        // While Reserved, watcher stays active.
+        assert!(
+            f.hub
+                .poll_file_child_watch_target(f.sid, f.owner, &f.controller_tx)
+                .unwrap()
+        );
+        f.hub
+            .dispatch(&f.ctx(), f.offer(child, "dl-batch-1"))
+            .unwrap();
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileSdpOffer { .. })
+        ));
+        // While Active, watcher stays active.
+        assert!(
+            f.hub
+                .poll_file_child_watch_target(f.sid, f.owner, &f.controller_tx)
+                .unwrap()
+        );
+        // Completing the last active child allows the watcher to exit on the next poll.
+        f.hub
+            .dispatch(
+                &f.ctx(),
+                ClientMsg::FileChildComplete {
+                    session_id: f.sid,
+                    child_id: child,
+                    transfer_id: "dl-batch-1".into(),
+                },
+            )
+            .unwrap();
+        assert!(
+            !f.hub
+                .poll_file_child_watch_target(f.sid, f.owner, &f.controller_tx)
+                .unwrap(),
+            "watcher must exit when no Reserved/Active children remain"
+        );
+        // And the next reserve admission re-claims `start_watch = true` while still enforcing the bound snapshot.
+        assert!(
+            f.hub
+                .admit_file_child_policy_snapshot(f.sid, f.owner, &f.controller_tx, snap)
+                .unwrap(),
+            "next reserve after idle watcher exit must return start_watch = true"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn file_child_revocation_without_ack_within_5s_terminates_parent_fail_closed() {
+        let mut f = FileChildDispatchFixture::new().await;
+        f.enable_for_test();
+        let child = f.reserve("unacked-revoke");
+        f.hub
+            .dispatch(&f.ctx(), f.offer(child, "unacked-revoke"))
+            .unwrap();
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileSdpOffer { .. })
+        ));
+
+        f.hub
+            .revoke_file_children(f.sid, "policy_tightened")
+            .unwrap();
+        assert!(matches!(
+            f.controller_rx.try_recv(),
+            Ok(ServerMsg::FileChildRevoke { session_id, .. }) if session_id == f.sid
+        ));
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileChildRevoke { session_id, .. }) if session_id == f.sid
+        ));
+
+        // No FileChildRevokeAck arrives within 5 seconds -> fail-closed parent termination.
+        tokio::time::sleep(FILE_CHILD_REVOKE_ACK_TIMEOUT + Duration::from_secs(1)).await;
+        assert!(
+            f.hub.session_snapshot(f.sid).is_none(),
+            "unacknowledged child revocation must terminate the parent session after 5s"
+        );
+        assert!(matches!(
+            f.controller_rx.try_recv(),
+            Ok(ServerMsg::Terminate { session_id, reason: EndReason::AdminTerminated, .. })
+                if session_id == f.sid
+        ));
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::Terminate { session_id, reason: EndReason::AdminTerminated, .. })
+                if session_id == f.sid
+        ));
+    }
+
+    #[tokio::test]
+    async fn file_child_upload_opt_in_and_kill_switch_are_independent_of_download() {
+        use meshharbor_remote_control::session::FileChildPolicySnapshot;
+
+        let mut f = FileChildDispatchFixture::new().await;
+        let snap = FileChildPolicySnapshot::new(Some(2), Some(4));
+
+        // Opt in only to download first: upload admission must be denied.
+        f.hub
+            .with_session(f.sid, |s| {
+                s.set_file_children_opted_in_for(FileChildDirection::Download, true);
+                s.set_file_children_opted_in_for(FileChildDirection::Upload, false);
+                Ok(())
+            })
+            .unwrap();
+        f.hub
+            .admit_file_child_policy_snapshot_for_direction(
+                f.sid,
+                f.owner,
+                &f.controller_tx,
+                FileChildDirection::Download,
+                snap,
+            )
+            .expect("download opted in");
+        assert!(
+            f.hub
+                .admit_file_child_policy_snapshot_for_direction(
+                    f.sid,
+                    f.owner,
+                    &f.controller_tx,
+                    FileChildDirection::Upload,
+                    snap,
+                )
+                .is_err(),
+            "upload must be denied when only download is opted in"
+        );
+
+        // Opt in to upload as well.
+        f.hub
+            .with_session(f.sid, |s| {
+                s.set_file_children_opted_in_for(FileChildDirection::Upload, true);
+                Ok(())
+            })
+            .unwrap();
+        f.hub
+            .admit_file_child_policy_snapshot_for_direction(
+                f.sid,
+                f.owner,
+                &f.controller_tx,
+                FileChildDirection::Upload,
+                snap,
+            )
+            .expect("upload opted in");
+
+        // Reserve and offer an upload child.
+        f.hub
+            .dispatch(
+                &f.ctx(),
+                ClientMsg::FileChildReserve {
+                    session_id: f.sid,
+                    transfer_id: "up-1".into(),
+                    direction: FileChildDirection::Upload,
+                },
+            )
+            .unwrap();
+        let up_cid = match f.controller_rx.try_recv().unwrap() {
+            ServerMsg::FileChildReserved {
+                child_id,
+                direction: FileChildDirection::Upload,
+                ..
+            } => child_id,
+            other => panic!("expected upload reservation, got {other:?}"),
+        };
+
+        // Cross-direction offer (Download offer against Upload reservation) is rejected.
+        assert!(
+            f.hub.dispatch(&f.ctx(), f.offer(up_cid, "up-1")).is_err(),
+            "download offer must not consume an upload reservation"
+        );
+        // Matching Upload offer succeeds.
+        f.hub
+            .dispatch(
+                &f.ctx(),
+                ClientMsg::FileSdpOffer {
+                    session_id: f.sid,
+                    child_id: up_cid,
+                    transfer_id: "up-1".into(),
+                    direction: FileChildDirection::Upload,
+                    sdp: "v=0\r\na=fingerprint:sha-256 AA:BB:CC\r\n".into(),
+                    proof: FileChildOfferProof {
+                        nonce: "opaque-nonce".into(),
+                        key: "opaque-key".into(),
+                        sig: "opaque-signature".into(),
+                    },
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileSdpOffer {
+                child_id,
+                direction: FileChildDirection::Upload,
+                ..
+            }) if child_id == up_cid
+        ));
+
+        // Flip ONLY the upload kill switch: upload fails closed while download keeps working!
+        f.hub
+            .set_file_child_direction_disabled(FileChildDirection::Upload, true);
+        assert!(
+            f.hub
+                .dispatch(
+                    &f.ctx(),
+                    ClientMsg::FileChildReserve {
+                        session_id: f.sid,
+                        transfer_id: "up-blocked".into(),
+                        direction: FileChildDirection::Upload,
+                    },
+                )
+                .is_err(),
+            "upload kill switch must block upload reservations"
+        );
+        let dl_cid = f.reserve("dl-still-works");
+        f.hub
+            .dispatch(&f.ctx(), f.offer(dl_cid, "dl-still-works"))
+            .expect("download must continue working when only upload kill switch is set");
+        assert!(matches!(
+            f.agent_rx.try_recv(),
+            Ok(ServerMsg::FileSdpOffer {
+                child_id,
+                direction: FileChildDirection::Download,
+                ..
+            }) if child_id == dl_cid
+        ));
     }
 
     /// P3 security — `dispatch` refuses session verbs from a connection
@@ -5713,7 +7808,7 @@ mod tests {
                 None,
                 None,
                 // FR-52 P4 — what the extauth relay passes for an outsider.
-                external.then(|| roomler_ai_remote_control::signaling::ExternalGrant {
+                external.then(|| meshharbor_remote_control::signaling::ExternalGrant {
                     attempt_id: "a1".into(),
                 }),
                 None,
@@ -6026,6 +8121,7 @@ mod tests {
             bool,
             Option<SessionPolicy>,
         );
+        let controller_id = ObjectId::new();
         let mut ask = |hub: &Hub,
                        tx: ClientTx,
                        rx: &mut mpsc::Receiver<ServerMsg>,
@@ -6034,7 +8130,7 @@ mod tests {
          -> Told {
             hub.create_session_full(
                 agent_id,
-                ObjectId::new(),
+                controller_id,
                 "ctl".into(),
                 tx,
                 wants,
@@ -6113,7 +8209,7 @@ mod tests {
         // that session (no second prompt), and repeats the same reasons.
         hub.create_session_full(
             agent_id,
-            ObjectId::new(),
+            controller_id,
             "ctl".into(),
             first_tx,
             all,
@@ -6310,7 +8406,7 @@ mod tests {
                 ConsentMode::Prompt,
                 None,
                 None,
-                Some(roomler_ai_remote_control::models::InputMode::Exclusive),
+                Some(meshharbor_remote_control::models::InputMode::Exclusive),
                 None, // tenant_name
             )
         };
@@ -6336,7 +8432,7 @@ mod tests {
             ServerMsg::Request { input_mode, .. } => {
                 assert_eq!(
                     input_mode,
-                    Some(roomler_ai_remote_control::models::InputMode::Exclusive)
+                    Some(meshharbor_remote_control::models::InputMode::Exclusive)
                 );
             }
             other => panic!("expected Request, got {other:?}"),
@@ -7441,7 +9537,7 @@ mod tests {
         let join = || ServerMsg::HiveReplicaJoin {
             session_id: ObjectId::new(),
             fence: 1,
-            role: Some(roomler_ai_remote_control::hive::HiveReplicaRole::Teleport),
+            role: Some(meshharbor_remote_control::hive::HiveReplicaRole::Teleport),
             fences: Vec::new(),
         };
         hub.set_agent_hive_support(agent_id, true);
@@ -8045,5 +10141,22 @@ mod tests {
             !hub.deliver_exec_result("req-4", ExecOutcome::default()),
             "waiter must have been deregistered"
         );
+    }
+
+    #[test]
+    fn file_child_disable_switch_treats_on_yes_and_non_false_values_as_disabled() {
+        use meshharbor_remote_control::signaling::parse_file_child_disable_switch;
+        for val in ["1", "true", "TRUE", "on", "ON", "yes", "YES", "disabled"] {
+            assert!(
+                parse_file_child_disable_switch(val),
+                "server/agent shared parser must treat {val:?} as disabled"
+            );
+        }
+        for val in ["", "  ", "0", "false", "FALSE", "no", "NO", "off", "OFF"] {
+            assert!(
+                !parse_file_child_disable_switch(val),
+                "server/agent shared parser must treat {val:?} as not disabled"
+            );
+        }
     }
 }

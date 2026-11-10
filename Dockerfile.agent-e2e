@@ -1,7 +1,7 @@
-# Phase 1 Chunk 1B — Linux agent image for the roomler-ai-agent-e2e
+# Phase 1 Chunk 1B — Linux agent image for the meshharbor-agent-e2e
 # overlay. Identical pattern to Dockerfile.e2e (multi-stage builder +
 # slim runtime + entrypoint script that touches /results/.done after
-# work completes), but the runtime is `roomlerd run` driven by a
+# work completes), but the runtime is `meshharbord run` driven by a
 # synthetic frame source instead of Playwright.
 #
 # Feature selection — DELIBERATELY minimal:
@@ -31,14 +31,14 @@
 # and today's dependencies do not build on the 1.88 this stage used to pin.
 FROM rust:1.95-bookworm AS builder
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends cmake \
+    && apt-get install -y --no-install-recommends cmake nasm \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
 # Build the agent binary with the e2e-only feature set. `--locked`
 # pins to Cargo.lock so a transient registry change can't shift
 # resolved versions between this build and the workspace.
-RUN cargo build --release -p roomlerd --locked \
+RUN cargo build --release -p meshharbord --locked \
     --no-default-features \
     --features synthetic-frame-source,openh264-encoder,clipboard,recording
 
@@ -54,42 +54,42 @@ RUN apt-get update \
         libssl3 \
         libgcc-s1 \
     && rm -rf /var/lib/apt/lists/*
-# P3d Slice B: the built binary is now `roomlerd` (the [[bin]] output name).
+# P3d Slice B: the built binary is now `meshharbord` (the [[bin]] output name).
 # This self-contained e2e image installs it under the legacy in-image path
-# `/usr/local/bin/roomlerd` (the bootstrap + run scripts below invoke that
+# `/usr/local/bin/meshharbord` (the bootstrap + run scripts below invoke that
 # path); only the COPY SOURCE changes. The e2e image is not the field fleet.
-COPY --from=builder /src/target/release/roomlerd /usr/local/bin/roomlerd
+COPY --from=builder /src/target/release/meshharbord /usr/local/bin/meshharbord
 
-# Bootstrap script. The Pod's StatefulSet sets `ROOMLER_E2E_SERVER`
-# (the in-cluster API URL) + `ROOMLER_E2E_TENANT_SLUG` + `ROOMLER_E2E_
-# ADMIN_EMAIL` / `ROOMLER_E2E_ADMIN_PASSWORD` (idempotent seed admin)
+# Bootstrap script. The Pod's StatefulSet sets `MESHHARBOR_E2E_SERVER`
+# (the in-cluster API URL) + `MESHHARBOR_E2E_TENANT_SLUG` + `MESHHARBOR_E2E_
+# ADMIN_EMAIL` / `MESHHARBOR_E2E_ADMIN_PASSWORD` (idempotent seed admin)
 # + the StatefulSet's pod index via `HOSTNAME` for the agent name.
 #
 # Flow:
 #   1. Poll the API's /health until 200 (Pod startup race with the
-#      roomler2 Deployment in the same namespace).
+#      meshharbor2 Deployment in the same namespace).
 #   2. POST /api/auth/login with the seed admin creds. If 401, the
 #      admin doesn't exist yet — POST /api/auth/register first, then
 #      mark verified via a one-shot SQL-equivalent endpoint (or just
 #      let the seed Job handle it; see job-agent-seed.yaml).
 #   3. POST /api/tenant/<tid>/agent/enroll-token to mint a fresh
 #      enrollment JWT.
-#   4. Run `roomlerd --config /etc/roomler/config.toml
+#   4. Run `meshharbord --config /etc/meshharbor/config.toml
 #      enroll --server $SERVER --token <jwt> --name <pod-hostname>`.
 #   5. Touch /results/.bootstrap-done so an external orchestrator
 #      can wait on Pod-readiness without scraping logs.
 COPY <<'EOF' /usr/local/bin/agent-bootstrap.sh
 #!/bin/sh
 set -eu
-SERVER="${ROOMLER_E2E_SERVER:?ROOMLER_E2E_SERVER must point at the in-cluster API}"
-ADMIN_EMAIL="${ROOMLER_E2E_ADMIN_EMAIL:?seed admin email}"
-ADMIN_PASS="${ROOMLER_E2E_ADMIN_PASSWORD:?seed admin password}"
+SERVER="${MESHHARBOR_E2E_SERVER:?MESHHARBOR_E2E_SERVER must point at the in-cluster API}"
+ADMIN_EMAIL="${MESHHARBOR_E2E_ADMIN_EMAIL:?seed admin email}"
+ADMIN_PASS="${MESHHARBOR_E2E_ADMIN_PASSWORD:?seed admin password}"
 # FR-114 — the tenant is found by its SLUG after the login, unless an id is
 # pinned: a pasted id went stale with every wiped e2e DB.
-TENANT_SLUG="${ROOMLER_E2E_TENANT_SLUG:-agent-e2e}"
-TENANT_ID="${ROOMLER_E2E_TENANT_ID:-}"
+TENANT_SLUG="${MESHHARBOR_E2E_TENANT_SLUG:-agent-e2e}"
+TENANT_ID="${MESHHARBOR_E2E_TENANT_ID:-}"
 AGENT_NAME="${HOSTNAME:-agent-e2e}"
-CONFIG_PATH="${ROOMLERD_CONFIG_PATH:-/etc/roomler/config.toml}"
+CONFIG_PATH="${MESHHARBORD_CONFIG_PATH:-/etc/meshharbor/config.toml}"
 
 mkdir -p "$(dirname "$CONFIG_PATH")"
 mkdir -p /results
@@ -138,7 +138,7 @@ if [ -z "$ENROLL_JWT" ]; then
 fi
 
 echo "[bootstrap] enrolling agent name=$AGENT_NAME"
-/usr/local/bin/roomlerd --config "$CONFIG_PATH" \
+/usr/local/bin/meshharbord --config "$CONFIG_PATH" \
   enroll \
   --server "$SERVER" \
   --token "$ENROLL_JWT" \
@@ -155,7 +155,7 @@ echo "[bootstrap] enrolling agent name=$AGENT_NAME"
 # `0,/^\[/` is the root table (everything before the first [table]); a config
 # without the key gets it prepended, which is valid TOML for a root key.
 ORD="${AGENT_NAME##*-}"
-case " ${ROOMLER_E2E_RECORD_REMOTE_ORDINALS:-} " in
+case " ${MESHHARBOR_E2E_RECORD_REMOTE_ORDINALS:-} " in
   *" $ORD "*)
     if sed -n '0,/^\[/p' "$CONFIG_PATH" | grep -qE '^[[:space:]]*record_remote_enabled[[:space:]]*='; then
       sed -i -E '0,/^\[/ s/^[[:space:]]*record_remote_enabled[[:space:]]*=.*/record_remote_enabled = true/' "$CONFIG_PATH"
@@ -177,9 +177,9 @@ RUN chmod +x /usr/local/bin/agent-bootstrap.sh
 
 # Runner script: bootstrap (idempotent — re-enrol on every restart
 # uses a fresh token, which is correct for ephemeral e2e Pods) then
-# exec the agent. ROOMLERD_SYNTHETIC_FRAMES=1 is set by the
+# exec the agent. MESHHARBORD_SYNTHETIC_FRAMES=1 is set by the
 # Deployment env so the capture cascade routes to the synthetic
-# backend; ROOMLERD_AUTO_UPDATE=0 disables the auto-updater
+# backend; MESHHARBORD_AUTO_UPDATE=0 disables the auto-updater
 # (the e2e image carries the version we want to test; an in-Pod
 # update would defeat the point).
 COPY <<'EOF' /usr/local/bin/run-agent-e2e.sh
@@ -189,15 +189,15 @@ set -eu
 # FR-114 — the "no recorder" device: the recorder's own kill switch, so the
 # agent advertises an empty `record` capability, for the ordinals named.
 ORD="${HOSTNAME##*-}"
-case " ${ROOMLER_E2E_NO_RECORDER_ORDINALS:-} " in
-  *" $ORD "*) export ROOMLERD_RECORDING=0; echo "[run] recording switched off (ordinal $ORD)" ;;
+case " ${MESHHARBOR_E2E_NO_RECORDER_ORDINALS:-} " in
+  *" $ORD "*) export MESHHARBORD_RECORDING=0; echo "[run] recording switched off (ordinal $ORD)" ;;
 esac
-exec /usr/local/bin/roomlerd --config "${ROOMLERD_CONFIG_PATH:-/etc/roomler/config.toml}" run
+exec /usr/local/bin/meshharbord --config "${MESHHARBORD_CONFIG_PATH:-/etc/meshharbor/config.toml}" run
 EOF
 RUN chmod +x /usr/local/bin/run-agent-e2e.sh
 
-ENV ROOMLERD_SYNTHETIC_FRAMES=1
-ENV ROOMLERD_AUTO_UPDATE=0
-ENV ROOMLERD_CONFIG_PATH=/etc/roomler/config.toml
+ENV MESHHARBORD_SYNTHETIC_FRAMES=1
+ENV MESHHARBORD_AUTO_UPDATE=0
+ENV MESHHARBORD_CONFIG_PATH=/etc/meshharbor/config.toml
 
 ENTRYPOINT ["/usr/local/bin/run-agent-e2e.sh"]

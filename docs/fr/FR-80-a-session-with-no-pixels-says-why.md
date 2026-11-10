@@ -1,6 +1,6 @@
 # FR-80 — a session with no pixels says why
 
-**Issue:** [#1532](https://github.com/gjovanov/roomler-ai/issues/1532) · **Status:** **closed 2026-09-08** — shipped `agent-v0.4.94` + `hosted-20260908-aa36044`; both halves field-verified, with the failure cell created deliberately · **Glossary:** [`CONTEXT.md`](../../CONTEXT.md) · **Related:** [FR-27](FR-27-host-consent-prompt-surfaces.md) · [FR-77](FR-77-encoder-chroma-matrix.md) · [`docs/remote-control.md`](../remote-control.md)
+**Issue:** [#1532](https://github.com/jk-zhang-meta/MeshHarbor/issues/1532) · **Status:** **closed 2026-09-08** — shipped `agent-v0.4.94` + `hosted-20260908-aa36044`; both halves field-verified, with the failure cell created deliberately · **Glossary:** [`CONTEXT.md`](../../CONTEXT.md) · **Related:** [FR-27](FR-27-host-consent-prompt-surfaces.md) · [FR-77](FR-77-encoder-chroma-matrix.md) · [`docs/remote-control.md`](../remote-control.md)
 
 ## Goal
 
@@ -28,7 +28,7 @@ What actually happened, in order:
   (`Developer ID Application: G ROX EOOD (4TG7586MY5)`), replacing the interim
   self-signed identity. macOS binds a TCC grant to the signature, so the
   host's existing Screen Recording permission stopped matching:
-  `Failed to match existing code requirement for subject com.roomler.agent and
+  `Failed to match existing code requirement for subject fans.itachi.meshharbor.agent and
   service kTCCServiceScreenCapture` — the stored requirement named the old
   certificate root, the binary presented the Developer ID leaf.
 - `scrap::Capturer` therefore failed to open. `capture::open_default` logged
@@ -53,7 +53,7 @@ operator's to restore; the product's job is to say so.
 ## Key design
 
 1. **The reason survives the fallback.** `capture::open_default`
-   (`agents/roomlerd/src/capture/mod.rs:549`) currently drops the backend's
+   (`agents/meshharbord/src/capture/mod.rs:549`) currently drops the backend's
    error on the floor and returns `Box::new(NoopCapture)`
    (`mod.rs:683`). `NoopCapture` carries a `CaptureUnavailable { code, detail }`
    instead, exposed through one new `ScreenCapture` trait method defaulting to
@@ -61,7 +61,7 @@ operator's to restore; the product's job is to say so.
 2. **The code is derived, never guessed.** `code` is a small closed set —
    `permission` · `no_display` · `not_built` · `backend_error`. On macOS a
    failed open asks the OS through the TCC preflight the agent already owns
-   (`roomler_node_core::tcc::screen_recording_granted`, the same probe
+   (`meshharbor_node_core::tcc::screen_recording_granted`, the same probe
    `scrap_backend` warns from) rather than pattern-matching an error string,
    because scrap reports a bare `other error` for a denied grant and a broken
    display alike and a guess would be a second lie. On Linux an absent
@@ -147,8 +147,8 @@ operator's to restore; the product's job is to say so.
 |---|---|---|---|
 | 2026-09-08 | release + deploy | P1–P4 | `agent-v0.4.94` (#1534 → bump #1536 → `81d23b9f7`; release run 34274486566, 28 assets) rolled to all seven hosts in 6 min. The viewer half went to production as `hosted-20260908-aa36044` (promote run 34273234756; both pods confirmed on the image, `/health` 200) |
 | 2026-09-08 | MacBook-1 (macOS, grant restored), an H.264 session — **the positive control** | P3 | **PASS, and it is the string that started this.** Pill: `H.264 4:2:0 HW (h264_videotoolbox) · direct · dec HW · FSR`, 17.7 Mbps, 31 fps, real picture at 1940×1260 of a 3024×1964 desktop; `rc:video-info` names `h264_videotoolbox`; **no `rc:media-unavailable` at all** — a healthy session says nothing. The same session on 0.4.92 reported `VP9 4:4:4` |
-| 2026-09-08 | zeus, `ROOMLERD_VIRTUAL_DESKTOP=0` via a drop-in — **the failure cell, created deliberately** | P1–P3 | **PASS on every half.** Agent: `scrap capture unavailable — falling back to NoopCapture error=no primary display: connection refused code="no_display"` → `capture unavailable — this session will produce no pixels; telling the controller … code="no_display"`. Wire: `{"t":"rc:media-unavailable","code":"no_display","detail":"no primary display: connection refused","hint":"This host has no display to capture…"}`. Viewer: the canvas reads *This device cannot capture its screen*, the hint, `Reported by the device as no_display`, scrap's own words, and *Remote shell, file transfer and the other channels are unaffected*; the health label reads **`connected · no screen capture`**, not "video stalled"; and **the word VP9 appears nowhere** (the pill names H.265, the codec its decoder was configured with). The classification is the right one of four: `no_display`, not `permission` and not `backend_error` |
-| 2026-09-08 | zeus, drop-in removed | — | Restored and re-verified: `ROOMLERD_VIRTUAL_DESKTOP=1`, only `virtual-desktop.conf` remains, and a session streams `H.265 4:2:0 HW (hevc_vaapi) · relay`, 1600×900, with no overlay. The host was left exactly as it was found |
+| 2026-09-08 | zeus, `MESHHARBORD_VIRTUAL_DESKTOP=0` via a drop-in — **the failure cell, created deliberately** | P1–P3 | **PASS on every half.** Agent: `scrap capture unavailable — falling back to NoopCapture error=no primary display: connection refused code="no_display"` → `capture unavailable — this session will produce no pixels; telling the controller … code="no_display"`. Wire: `{"t":"rc:media-unavailable","code":"no_display","detail":"no primary display: connection refused","hint":"This host has no display to capture…"}`. Viewer: the canvas reads *This device cannot capture its screen*, the hint, `Reported by the device as no_display`, scrap's own words, and *Remote shell, file transfer and the other channels are unaffected*; the health label reads **`connected · no screen capture`**, not "video stalled"; and **the word VP9 appears nowhere** (the pill names H.265, the codec its decoder was configured with). The classification is the right one of four: `no_display`, not `permission` and not `backend_error` |
+| 2026-09-08 | zeus, drop-in removed | — | Restored and re-verified: `MESHHARBORD_VIRTUAL_DESKTOP=1`, only `virtual-desktop.conf` remains, and a session streams `H.265 4:2:0 HW (hevc_vaapi) · relay`, 1600×900, with no overlay. The host was left exactly as it was found |
 
 ⚠️ **The cell had to be created, and that is worth recording.** The plan was to
 use the MacBook's daemon row, which could not capture that afternoon. By

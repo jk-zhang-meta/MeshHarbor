@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
-use mongodb::Database;
-use roomler_ai_remote_control::models::{
+use meshharbor_remote_control::models::{
     OverlayPolicy, OverlayRule, OverlaySelector, OverlayTarget,
 };
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

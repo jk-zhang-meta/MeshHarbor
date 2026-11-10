@@ -6,7 +6,7 @@ endpoints across 38 route modules.* Request/response schemas are shown for the k
 flows; for everything else the handler modules in `crates/api/src/routes/` are the
 source of truth.
 
-- **Base URL**: `https://roomler.ai` (or your deployment). All JSON.
+- **Base URL**: `https://meshharbor.itachi.fans` (or your deployment). All JSON.
 - **IDs** are MongoDB ObjectIds serialized as 24-char hex strings.
 - **Errors** are JSON with an HTTP status; 404 is also used to *hide* resources the
   caller may not see (platform-admin routes).
@@ -21,9 +21,9 @@ audience-checked token types — a token of one audience is rejected everywhere 
 | `Access` | user routes + `/ws` (user role) | 7 d (config) | browser |
 | `Refresh` | `POST /api/auth/refresh` only | 30 d (config) | browser |
 | `Enrollment` | `POST /api/agent/enroll` | 10 min, single-use (`jti`) | pasted into installer |
-| `Agent` | `/ws?role=agent`, agent ingest routes, `/derp` | long-lived | `roomlerd` config |
+| `Agent` | `/ws?role=agent`, agent ingest routes, `/derp` | long-lived | `meshharbord` config |
 | `TunnelEnrollment` | `POST /api/tunnel-client/enroll` | 10 min, single-use | pasted into CLI |
-| `TunnelClient` | `/ws?role=tunnel-client`, tunnel routes | long-lived | `roomler` CLI config |
+| `TunnelClient` | `/ws?role=tunnel-client`, tunnel routes | long-lived | `mh` CLI config |
 
 ```mermaid
 sequenceDiagram
@@ -45,7 +45,7 @@ installer trades it for the device's long-lived credential:
 sequenceDiagram
     participant A as Admin (browser)
     participant S as API
-    participant D as New machine (roomlerd)
+    participant D as New machine (meshharbord)
 
     A->>S: POST /api/tenant/{tid}/agent/enroll-token
     S-->>A: {enrollment_token, expires_in: 600, jti}
@@ -88,18 +88,18 @@ capability URLs, webhook signatures).
 | GET | `/api/stripe/plans` | Plan catalogue |
 | POST | `/api/stripe/checkout` · `/portal` | Stripe checkout / customer portal |
 | POST | `/api/stripe/webhook` | Stripe events (HMAC-signed; un-governed). FR-102 P4: the six billing kinds (`customer.subscription.{created,updated,deleted,trial_will_end}`, `invoice.paid`, `invoice.payment_failed`) are also recorded in `billing_events` with the invoice's amounts ([growth-observability.md](growth-observability.md#revenue-what-stripe-billed-p4)) |
-| POST | `/api/sendgrid/webhook` | FR-102 P5 (`saas`): SendGrid's Event Webhook — ECDSA P-256 signed, verified **before the body is parsed** (401), the empty 404 without `ROOMLER__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY`; records `delivered` · `bounce` · `dropped` · `spamreport` of newsletter messages on their ledger rows (never opens or clicks); un-governed ([growth-observability.md](growth-observability.md#the-newsletter-delivery-per-issue-tags-and-unsubscribes-p5)) |
+| POST | `/api/sendgrid/webhook` | FR-102 P5 (`saas`): SendGrid's Event Webhook — ECDSA P-256 signed, verified **before the body is parsed** (401), the empty 404 without `MESHHARBOR__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY`; records `delivered` · `bounce` · `dropped` · `spamreport` of newsletter messages on their ledger rows (never opens or clicks); un-governed ([growth-observability.md](growth-observability.md#the-newsletter-delivery-per-issue-tags-and-unsubscribes-p5)) |
 | POST | `/api/agent/enroll` | Exchange enrollment token → agent credential |
 | GET | `/api/agent/latest-release` | Agent release manifest (cached GitHub proxy) |
-| GET | `/api/agent/installer/{flavour}` (+`/health`) | Stream the MSI/installer through roomler.ai (`peruser` \| `permachine`) |
+| GET | `/api/agent/installer/{flavour}` (+`/health`) | Stream the MSI/installer through meshharbor.itachi.fans (`peruser` \| `permachine`) |
 | POST | `/api/agent/crash` | Crash-report ingest (agent JWT in-handler) |
 | POST | `/api/consent/{token}/approve` · `/deny` | Owner-consent capability URLs (token **is** the auth, single-use) |
 | POST | `/api/tunnel-client/enroll` | Exchange tunnel enrollment token → client credential |
 | GET | `/api/tunnel-client/agents` | Reachable agents (TunnelClient bearer) |
 | GET | `/api/tunnel/latest-release` · `/installer/{platform}` (+`/health`) | Tunnel-CLI release manifest + artifact proxy |
-| GET | `/api/setup/latest-release` · `/{platform}` (+`/health`) | `roomler-setup` wizard manifest + artifact proxy |
+| GET | `/api/setup/latest-release` · `/{platform}` (+`/health`) | `meshharbor-setup` wizard manifest + artifact proxy |
 | GET | `/api/setup/install.sh` · `/install.ps1` | Terminal installers (served from the binary, curl-able) |
-| POST | `/api/setup/diagnostics` | FR-102 P3b: the setup wizard's **opt-in** step diagnostics — one `{run, step, outcome, elapsed_ms, error_code, os, wizard_version}` per step boundary, sent only when the person ticked the box. Unauthenticated by necessity, so every field is checked against its vocabulary (422 with a code, nothing stored); body ≤ 1 KiB; ≤ 48 rows per run (429 `run_capped`); 202 with no body. Stores no IP and no User-Agent. The empty 404 while `ROOMLER__GROWTH__SETUP_DIAGNOSTICS=false` ([growth-observability.md](growth-observability.md#the-wizards-opt-in-diagnostics-p3b)). The static segment also makes `GET /api/setup/diagnostics` a 405 (it used to fall into the `{platform}` proxy's 400) |
+| POST | `/api/setup/diagnostics` | FR-102 P3b: the setup wizard's **opt-in** step diagnostics — one `{run, step, outcome, elapsed_ms, error_code, os, wizard_version}` per step boundary, sent only when the person ticked the box. Unauthenticated by necessity, so every field is checked against its vocabulary (422 with a code, nothing stored); body ≤ 1 KiB; ≤ 48 rows per run (429 `run_capped`); 202 with no body. Stores no IP and no User-Agent. The empty 404 while `MESHHARBOR__GROWTH__SETUP_DIAGNOSTICS=false` ([growth-observability.md](growth-observability.md#the-wizards-opt-in-diagnostics-p3b)). The static segment also makes `GET /api/setup/diagnostics` a 405 (it used to fall into the `{platform}` proxy's 400) |
 | POST | `/api/releases/refresh` | CI cache-bust after a release is published (bearer; fans out to all pods) |
 | GET | `/api/turn/credentials` | Ephemeral TURN credentials (user-scoped) |
 | GET | `/api/relay/regions` | Multi-region relay PoP topology (read-only) |
@@ -187,7 +187,7 @@ before the search runs, so `q` cannot probe them.
 | GET | `/api/admin/growth/funnel?since&until&by&include_internal` · `/cohorts?unit=week&since` · `/orgs?limit&include_internal` · `/org/{tenant_id}/timeline` | FR-102 P2: the account funnel with `pending`/`settled` per step and time to value, the weekly cohorts with the WAO north star, the org table, one org's milestones |
 | POST | `/api/admin/growth/org-daily/backfill?since&until` | FR-102 P2: recompute a closed range of `growth_org_daily`, clamped to its 25-month retention |
 | GET | `/api/admin/growth/revenue?since=YYYY-MM&until=YYYY-MM&include_internal` | FR-102 P4: billed revenue from `billing_events` — billed MRR and paying orgs now per currency, new · expansion · contraction · churned MRR month by month (a closed month read frozen from `growth_daily`; a month before the first billing row `on_record: false`, never 0), trial → paid, by the owner's channel; beside the list-price ESTIMATE, the 30-day cost to serve and margin per org, and the range's plan-limit collisions. `billed` is `not_measured` without `saas` or with nothing on record ([growth-observability.md](growth-observability.md#revenue-what-stripe-billed-p4)) |
-| POST | `/api/admin/growth/billing/backfill?since=YYYY-MM-DD` | FR-102 P4 (`saas`): the operator's one-off read of Stripe's paid invoices into `billing_events` (idempotent; reads Stripe, never writes), then a refreeze of the closed months they touch; answers the counts (`invoices`, `recorded`, `already`, `no_org`, `truncated`) and the months. 400 without `ROOMLER__STRIPE__SECRET_KEY` |
+| POST | `/api/admin/growth/billing/backfill?since=YYYY-MM-DD` | FR-102 P4 (`saas`): the operator's one-off read of Stripe's paid invoices into `billing_events` (idempotent; reads Stripe, never writes), then a refreeze of the closed months they touch; answers the counts (`invoices`, `recorded`, `already`, `no_org`, `truncated`) and the months. 400 without `MESHHARBOR__STRIPE__SECRET_KEY` |
 | GET | `/api/admin/growth/channels?since&until&include_internal` | FR-102 P8: per platform and per post published in the range — the platform's own reach (raw metric names, summed per snapshot age), then visitors → sign-ups → activated by each post's normalised key, and spend (`cost_cents`, per visitor / per sign-up from n ≥ 30); a platform with nothing pushed reads `not_measured` |
 | GET/POST | `/api/admin/growth/keys` | FR-102 P8 (D12): list the growth machine keys (prefix, label, use, revoked — never the key or its hash) / mint one `{kind: "ingest" \| "read", label}` — the key is in the 201 answer only, its SHA-256 is all that is stored; at most 10 live per kind. **Session only**: a read key meets the empty 404 here, GET included |
 | DELETE | `/api/admin/growth/keys/{key_id}` | Revoke a key (204, idempotent) |
@@ -198,7 +198,7 @@ before the search runs, so `q` cannot probe them.
 | POST | `/api/admin/growth/alerts/evaluate?dry_run=` | Evaluate every rule now as the hourly job would (fire, clear, mail at most once per rule and key per day); 409 when `growth.alerts` is off unless `dry_run=true`, which decides and writes nothing |
 | GET | `/api/admin/growth/quality?since&until&include_internal` | FR-102 P9a: remote-desktop quality over a closed range of days frozen nightly into `growth_quality_daily` (default the last 28; an open `until` is clamped to yesterday; at most 400 days) — `totals` (every version pooled: sessions requested → reached Active / never / pending with `by_end_reason`, duration · peak fps · RTT as pooled `{n, p50, p90, exact}`, FR-22's time to first frame with the records set aside, crashes, device-days, crashes per 100 device-days from n = 30), `by_agent_version` (newest first, `unknown` last), `series` (one row per frozen day), `frozen_days` of `days`; `not_measured` with the reason when nothing is frozen; `include_internal=true` reads the `all` scope ([growth-observability.md](growth-observability.md#remote-desktop-quality-from-what-is-recorded-p9a)) |
 | POST | `/api/admin/growth/quality/backfill?since=YYYY-MM-DD&until=` | FR-102 P9a: re-freeze a closed range, both scopes, with the current exclusion set — clamped to 730 days back, never today (400 otherwise); time to first frame comes back only for the days whose `agent_logs` are still complete |
-| POST | `/api/tenant/{tenant_id}/session/{session_id}/feedback` | FR-102 P9b (`remote`): the viewer's post-session rating `{rating: up \| down, reasons: [lag \| picture \| input \| could_not_connect \| other]}` (≤ 1 KiB, `deny_unknown_fields`), from the session's controller or a watcher, resolved within the org — 201 with what was stored; 403 `not_a_member` / `forbidden`; 404 for a session the org does not own; 409 `too_early` (sooner than 30 s after the request) / `already_rated` (one per session **per person** — the unique `(session_id, user_id)` index decides; the controller and each watcher rate once each); 422 `invalid_json` / `unknown_rating` / `unknown_reason` / `too_many_reasons` with a code and nothing stored; 413 over the limit; the **empty 404** of an absent path while `ROOMLER__GROWTH__FEEDBACK=false`. `GET /api/capabilities` → `features.session_feedback` says whether a viewer may offer the prompt ([growth-observability.md](growth-observability.md#the-post-session-rating-p9b)) |
+| POST | `/api/tenant/{tenant_id}/session/{session_id}/feedback` | FR-102 P9b (`remote`): the viewer's post-session rating `{rating: up \| down, reasons: [lag \| picture \| input \| could_not_connect \| other]}` (≤ 1 KiB, `deny_unknown_fields`), from the session's controller or a watcher, resolved within the org — 201 with what was stored; 403 `not_a_member` / `forbidden`; 404 for a session the org does not own; 409 `too_early` (sooner than 30 s after the request) / `already_rated` (one per session **per person** — the unique `(session_id, user_id)` index decides; the controller and each watcher rate once each); 422 `invalid_json` / `unknown_rating` / `unknown_reason` / `too_many_reasons` with a code and nothing stored; 413 over the limit; the **empty 404** of an absent path while `MESHHARBOR__GROWTH__FEEDBACK=false`. `GET /api/capabilities` → `features.session_feedback` says whether a viewer may offer the prompt ([growth-observability.md](growth-observability.md#the-post-session-rating-p9b)) |
 | POST | `/api/admin/growth/ingest/posts` · `/ingest/snapshots` | FR-102 P8, **`saas` only, authenticated by an ingest key** (`Authorization: Bearer rgi_…`), not a user JWT: the promotion pipeline pushes a post `{platform, platform_id, account, format, url, published_at, utm_*, cost_cents?}` (idempotent on `(platform, platform_id)`) or a snapshot `{platform, platform_id, snapshot: T+1d\|T+7d\|T+28d, taken_at, metrics}` (stored once). A missing, wrong or revoked key is the empty 404 of an absent path; unknown platforms and any field that looks like post text are `422` ([growth-observability.md](growth-observability.md)) |
 | GET | `/api/admin/growth/newsletter?since&until&include_internal` | FR-102 P5: the list over time (new · confirmed · unsubscribed · suppressed per day and by source, the size now) and one row per issue sent in the range — recipients and accepted from the ledger, delivered · bounced · complaints from SendGrid's signed events, unsubscribed through the issue's link, purestat visits and sign-ups by the issue's campaign key; delivery `not_measured` without the webhook key, never 0 ([growth-observability.md](growth-observability.md#the-newsletter-delivery-per-issue-tags-and-unsubscribes-p5)) |
 | GET | `/api/admin/growth/campaigns?since&until&by&include_internal` | FR-102 P6: per normalised campaign key (`by` = `source`·`medium`·`campaign`·`content`), purestat's web plane queried **live** for the exact UTC-day range beside the account funnel; a purestat outage or revoked key reads `not_measured`, never 0; every rate `{n, value}` with a value only at n ≥ 30 ([growth-observability.md](growth-observability.md)) |
@@ -337,7 +337,7 @@ before it leaves the host.
 
 ### Agent sessions (FR-90, module `hive` — mounted only with `[modules] hive = true` or a `hive.tenants` list)
 
-FR-90 P1g — and only for the organizations in `hive.tenants` (`ROOMLER__HIVE__TENANTS`,
+FR-90 P1g — and only for the organizations in `hive.tenants` (`MESHHARBOR__HIVE__TENANTS`,
 comma-separated ids; empty or `*` is every organization). A member of any other organization gets
 **404** on every route below (`agent sessions are not available to this organization`), the viewer
 answers `not_found`, and its devices are told to stop what they still run for it when they connect.
@@ -356,7 +356,7 @@ off instead of open to every organization.
 | POST | `…/hive/session/{sid}/promote` | FR-90 P2e-3 — `{device_id, folder?}` — the owner, holding `HIVE_RUN`, moves the session to a member of its replicaset that took its copy. Always **200** for a well-formed request: `outcome` is `promoting` (the member is ready; the primary drains), `refused` (`reason` names the gate: the server's `org_archived` · `no_permission` · `session_not_running` · `promotion_in_progress` · `moved_too_often` · `not_a_member` · `not_freshest` · `already_primary` · `device_offline` · `device_unsupported` · `primary_offline` · `primary_unsupported` · `rate_limited` · `role_refused` · `vault_unavailable` · `role_undecided` (P3-2b: a session with a vault role moves with it only as the vault allows it on the target), or the member's own start refusals) or `pending` (no answer within 10 s). The session's `promotion` (`{id, to, to_name, folder, from, from_fence, by, state, started_at, deadline, teleport?}`, `state` being `preparing` · `joining` · `draining` · `syncing` · `moving`) and its room say how it goes on. **404** with `hive.replicaset` off; every attempt is in `hive_audit` (`action: promote`) |
 | POST | `…/hive/session/{sid}/teleport` | FR-90 P2f-1 — `{device_id, folder?}` — the same, to a device that holds no copy of the session: it prepares without one, takes a copy in a `joining` step while the session still runs, then the drain, the sync and the move are a promotion's. `outcome` is `teleporting`, `refused` or `pending`. The refusals are the promotion's, with `already_a_member` (the device holds a copy: promote to it) in place of `not_a_member`; the primary must be online (`primary_offline`: a teleport copies from it), and both ends must advertise `hive-teleport`. Audited as `action: teleport` |
 | POST | `…/hive/session/{sid}/fork` | FR-90 P2f-3 — `{device_id, folder, title?}` — the owner, holding `HIVE_RUN`, makes a new session from this one's conversation, on a device that holds a copy of it (its primary, or a member that took its copy) or, from P2f-3c, on one that takes a copy first. The fork is a record of its own, its owner's, with its own room and replicaset under the session's restricted tags, naming the session in `parent_session_id`. The answer is a start's (`accepted` · `refused` · `pending`), or `joining` while a device with no copy takes one. The server's refusals: `org_archived` · `no_permission` · `not_forkable` (an adopted session) · `not_replicated` · `no_conversation` · `in_progress` · `no_copy` · `same_folder` · `restricted` · `copy_behind` · `device_offline` · `device_unsupported` · `primary_offline` · `primary_unsupported` · `rate_limited` · `role_refused` · `vault_unavailable` · `role_undecided` (P3-2b: the parent's vault role, decided again for the fork's device). **404** with `hive.replicaset` off, and for anyone but the owner. Audited as `action: fork`, naming the session it forks |
-| POST | `…/hive/session/{sid}/manage` | FR-90 P2f-4 — `{folder?}` — the owner, holding `HIVE_RUN`, makes their ended adopted session (P1j) a managed one: the SAME record, at its fence, on the device that adopted it, which resumes the terminal's own history (P2f-4a). `folder` defaults to the terminal's. The answer is a start's: `accepted`, `refused` (the server's `org_archived` · `no_permission` · `in_progress` · `not_adopted` · `not_ended` · `stopped` (its mirroring was stopped from Roomler) · `ended_otherwise` · `device_offline` · `device_unsupported` · `rate_limited`, or the device's own start refusals) or `pending`. A start the device refuses, or that never reaches it, leaves the adopted session it was, the word kept as `from_terminal.refused`. The session's `from_terminal` (`{at, refused?}`) says it began in a terminal. **404** with `hive.replicaset` off, and for anyone but the owner. Audited as `action: manage` |
+| POST | `…/hive/session/{sid}/manage` | FR-90 P2f-4 — `{folder?}` — the owner, holding `HIVE_RUN`, makes their ended adopted session (P1j) a managed one: the SAME record, at its fence, on the device that adopted it, which resumes the terminal's own history (P2f-4a). `folder` defaults to the terminal's. The answer is a start's: `accepted`, `refused` (the server's `org_archived` · `no_permission` · `in_progress` · `not_adopted` · `not_ended` · `stopped` (its mirroring was stopped from MeshHarbor) · `ended_otherwise` · `device_offline` · `device_unsupported` · `rate_limited`, or the device's own start refusals) or `pending`. A start the device refuses, or that never reaches it, leaves the adopted session it was, the word kept as `from_terminal.refused`. The session's `from_terminal` (`{at, refused?}`) says it began in a terminal. **404** with `hive.replicaset` off, and for anyone but the owner. Audited as `action: manage` |
 | DELETE | `…/hive/session/{sid}` | FR-90 P2g-2 — the owner, holding `HIVE_RUN`, purges the session from every device that held it (where it runs, its replicaset's members, where it ran before). The record becomes the purge's tombstone at once, read by nobody, the owner included; its room, core memory snapshot and approvals are deleted. Each device is sent `rc:hive.purge` while it is connected, and first at its next connection, until it answers. Always **200** for a well-formed request: `outcome` is `purging`, `purged` (every device answered, or none could be asked) or `refused` (`reason`: `no_permission` · `in_progress`, a promotion in flight); `purge` is `{id, session_id, reason, at, done_at?, devices[{device_id, state, store?, account?, detail?, answered_at?, closed?}]}`, `state` being `pending` · `done` · `closed` (`closed`: `device_removed` · `holds_nothing`), `detail` `device_unsupported` for a device whose agent does not purge yet; `forks` counts the sessions forked from it, which keep its conversation up to their fork. Asking again answers with the same purge. **404** with `hive.replicaset` off, and for anyone but the owner. Audited as `action: purge` (`issued`, `refused`, `complete`) |
 | GET | `…/hive/session/{sid}/purge` | FR-90 P2g-2 — the owner's read of the purge of their session: the `purge` above, while it is pending and for 90 days after it completed. Its `reason` is `owner`, or (P2g-3a) `retention` for one the server's sweep issued once the session had been over for longer than the organization's `retention_days`. **404** for anyone else, for a session never purged, and with `hive.replicaset` off |
 | GET | `…/hive/session/{sid}/participant` | FR-90 P1c — who takes part: `items[{user_id, display_name, role}]`, `role` `owner` · `driver` · `reader`, and `may_manage` (the owner alone). For anyone who may read the session |
@@ -370,7 +370,7 @@ off instead of open to every organization.
 | PUT | `…/hive/policy` | `{replicaset, retention_days, archive_devices[], revision}` — an `ADMINISTRATOR` sets it from the `revision` they read (**403** otherwise): `min` 1–8, `max` `min`–8, `prefer` only `owner_devices`, `restricted_tags` normalized as device tags are, `retention_days` 0–3650 (0 keeps sessions for ever), at most 16 archive devices, each a live device of this organization and not ephemeral (**400** otherwise). A write from a revision no longer stored is **409**. Every attempt is audited (`hive_audit`, `action: policy`), and a stored one places the organization's live sessions again (P2c-4a). **404** while `hive.replicaset` is off |
 
 Metadata only, in both directions: no route here takes or returns a prompt, a tool call or an
-output — see [the design](roomler-hive-design.md) §3.3. Core memory is the one exception by design:
+output — see [the design](meshharbor-hive-design.md) §3.3. Core memory is the one exception by design:
 curated facts, never a session's content. Every write is audited (`hive_audit`, `action: brain`),
 and every write bumps the org's `brain_rev`. A session pins it when it starts and gets a frozen
 snapshot of it (`rc:hive.memory`, sent just before `rc:hive.start` to a device that advertises
@@ -400,7 +400,7 @@ browser ⇄ device over the peer and never through the server. Every open is in 
 organization can be searched, for the SPA's box.
 
 **Adopted sessions (P1j) are not started by a route either.** A person adopts the Claude Code
-sessions they run in a terminal (`roomler hive adopt`, on a device whose owner allows it:
+sessions they run in a terminal (`mh hive adopt`, on a device whose owner allows it:
 `hive_adopt`, advertised as `hive-adopt`). The device offers each one with `rc:hive.adopt
 {adopt_id, harness_session, keys, account, folder}`. The answer is `rc:hive.adopt_ack {adopt_id,
 session_id, fence}`, or `{adopt_id, refused}`: `hive_not_enabled` · `rate_limited` · `no_account`
@@ -414,12 +414,12 @@ session already held is answered with the same record. Every adoption is in `hiv
 
 ### Vault (FR-90 P3-1, module `vault` — mounted only with `[modules] vault = true` or a `vault.tenants` list)
 
-The org gate reads like Hive's: `vault.tenants` (`ROOMLER__VAULT__TENANTS`) names the organizations
+The org gate reads like Hive's: `vault.tenants` (`MESHHARBOR__VAULT__TENANTS`) names the organizations
 served, a list mounts the module by itself, and a member of any other organization gets **404**
 (`the vault is not available to this organization`) after the membership check. Every route is
 for the organization's `ADMINISTRATOR`s (**403** otherwise), and **no route answers a value**.
-The vault lends to a served organization's PEOPLE (`roomler connect`, P3-9-1) only where
-`vault.people` (`ROOMLER__VAULT__PEOPLE`) lists it, opt-in and empty by default.
+The vault lends to a served organization's PEOPLE (`mh connect`, P3-9-1) only where
+`vault.people` (`MESHHARBOR__VAULT__PEOPLE`) lists it, opt-in and empty by default.
 Every `secret:*` and `vault:verify` decision is recorded in `vault_audit`, allow and deny; an allow
 is written before it is acted on. Full treatment: [vault.md](vault.md).
 
@@ -460,4 +460,4 @@ is written before it is acted on. Full treatment: [vault.md](vault.md).
 |---|---|
 | `/ws` — user, agent, and tunnel-client roles; chat/presence/media signalling + the whole `rc:*` protocol | [real-time.md](real-time.md) |
 | `/derp` — pubkey-addressed relay for UDP-blocked overlay pairs | [real-time.md](real-time.md#derp) |
-| LocalAPI — on-host named pipe / unix socket used by `roomler`, `roomler-desktop` | [tunnels.md](tunnels.md#localapi) |
+| LocalAPI — on-host named pipe / unix socket used by `meshharbor`, `meshharbor-desktop` | [tunnels.md](tunnels.md#localapi) |

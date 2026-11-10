@@ -7,7 +7,7 @@ use mediasoup::types::data_structures::DtlsState;
 use mediasoup::webrtc_transport::{
     WebRtcTransportListenInfos, WebRtcTransportOptions, WebRtcTransportRemoteParameters,
 };
-use roomler_ai_config::MediasoupSettings;
+use meshharbor_config::MediasoupSettings;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::num::NonZero;
@@ -132,10 +132,10 @@ impl RoomManager {
             .unwrap_or_else(|_| "0.0.0.0".parse().unwrap());
 
         // S6 — multi-pod: each pod may need a different public announced
-        // IP (it rides its node's DNAT). `ROOMLER__POD_HOST_IP` is
+        // IP (it rides its node's DNAT). `MESHHARBOR__POD_HOST_IP` is
         // injected via the Downward API (status.hostIP); single-pod
         // deployments without the map behave exactly as before.
-        let pod_host_ip = std::env::var("ROOMLER__POD_HOST_IP").ok();
+        let pod_host_ip = std::env::var("MESHHARBOR__POD_HOST_IP").ok();
         let announced_ip = settings.resolve_announced_ip(pod_host_ip.as_deref());
         if let Some(ip) = &announced_ip {
             tracing::info!(announced_ip = %ip, pod_host_ip = ?pod_host_ip, "mediasoup announced IP resolved");

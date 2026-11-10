@@ -21,7 +21,7 @@
  * opaque compositor fast path; `desynchronized:true` requests the
  * low-latency canvas swap chain (may be a no-op for placeholder-composited
  * OffscreenCanvas — which is exactly why it ships as an A/B, not an
- * assumed win). localStorage `roomler-rc-ctx-mode` drives it.
+ * assumed win). localStorage `meshharbor-rc-ctx-mode` drives it.
  */
 
 /** One window's aggregate for a hop. `minMs` (FR-15) is what makes the

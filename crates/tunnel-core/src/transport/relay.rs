@@ -67,7 +67,7 @@ pub trait RelayConn: Send + Sync + 'static {
 
     /// How this relay leg is reached — operator-facing.
     ///
-    /// `meshharbor peers` printed a bare `relay` for every relayed carrier, so a
+    /// `mh peers` printed a bare `relay` for every relayed carrier, so a
     /// 52 ms coturn/UDP hop and a 175 ms DERP/TCP hop were indistinguishable.
     /// The relay *kind* is an overlay-layer decision and already exists as
     /// [`crate::overlay::relay_link::RelayKind`]; only the transport is a
@@ -324,7 +324,7 @@ impl AsyncUdpSocket for RelayUdpSocket {
 /// allocation down.
 pub struct TurnRelayConn {
     /// How this allocation was reached (udp `turn:` vs tcp/tls `turns:`) and
-    /// which PoP served it — surfaced in `meshharbor peers` so a dead relay is
+    /// which PoP served it — surfaced in `mh peers` so a dead relay is
     /// distinguishable from a healthy one.
     transport: RelayTransport,
     server: String,
@@ -677,13 +677,83 @@ pub fn turn_tls_server(urls: &[String]) -> Option<(String, u16, Option<IpAddr>)>
 /// computing MESSAGE-INTEGRITY (`turn-0.9.0` `client/mod.rs:542`), so the
 /// value only has to be non-empty; the live realm wins regardless. We use
 /// the production realm for tidiness.
-const DEFAULT_TURN_REALM: &str = "roomler.ai";
+const DEFAULT_TURN_REALM: &str = "meshharbor.itachi.fans";
 
 /// Cap on the UDP TURN-allocate attempt before falling back to TURNS/TCP.
 /// On a UDP-OK net the allocate completes in ~1 RTT; on a net that blocks
 /// outbound UDP to coturn the `turn` client would otherwise retransmit for
 /// ~tens of seconds before erroring, so we bound it and switch to Tier 3.
 const UDP_ALLOC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// F2 — total wall-clock budget shared across all physical non-VPN uplinks
+/// tried during corp-VPN / multi-NIC UDP TURN rescue (`<= 3` NICs).
+#[cfg(any(feature = "overlay-l3", test))]
+const UDP_RESCUE_TOTAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// F2 — try up to 3 ordered physical uplinks under a single shared
+/// `total_budget`, using an authenticated TURN Allocate response (`Ok(T)`) as
+/// the reachability proof. Each NIC gets an equal slice of the remaining
+/// budget so an early blackholed NIC (e.g. a cellular RNDIS uplink or isolated
+/// LAN) cannot starve subsequent reachable NICs, while a single-NIC host still
+/// receives the full budget.
+#[cfg(any(feature = "overlay-l3", test))]
+async fn try_rescue_uplinks_bounded<T, F, Fut>(
+    uplinks: &[(std::net::Ipv4Addr, Option<u32>)],
+    total_budget: std::time::Duration,
+    server: SocketAddr,
+    mut attempt: F,
+) -> Option<(std::net::Ipv4Addr, T)>
+where
+    F: FnMut(std::net::Ipv4Addr, Option<u32>) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let capped = &uplinks[..uplinks
+        .len()
+        .min(crate::overlay::direct::MAX_NON_VPN_UPLINKS)];
+    if capped.is_empty() || total_budget.is_zero() {
+        return None;
+    }
+    let deadline = tokio::time::Instant::now() + total_budget;
+    for (idx, &(ip, ifindex)) in capped.iter().enumerate() {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let remaining_nics = (capped.len() - idx) as u32;
+        let remaining_time = deadline - now;
+        let per_nic_timeout = (remaining_time / remaining_nics).min(remaining_time);
+        if per_nic_timeout.is_zero() {
+            break;
+        }
+        tracing::info!(
+            %server, %ip, ?ifindex, attempt = idx + 1, total = capped.len(),
+            timeout_ms = per_nic_timeout.as_millis() as u64,
+            "UDP TURN allocate: retrying pinned to physical uplink (corp-VPN rescue)"
+        );
+        match tokio::time::timeout(per_nic_timeout, attempt(ip, ifindex)).await {
+            Ok(Ok(relay)) => {
+                tracing::info!(
+                    %server, %ip, attempt = idx + 1,
+                    "TURN relay allocated (tier2-udp, pinned egress)"
+                );
+                return Some((ip, relay));
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    %server, %ip, %e, attempt = idx + 1,
+                    "pinned UDP TURN allocate failed; trying next uplink"
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    %server, %ip, attempt = idx + 1,
+                    "pinned UDP TURN allocate timed out; trying next uplink"
+                );
+            }
+        }
+    }
+    None
+}
 
 /// Cap on the TURNS/TCP TCP-connect to coturn. A firewalled port (e.g.
 /// `:5349` on a corp net) otherwise hangs in `connect()` for the OS SYN
@@ -815,42 +885,31 @@ pub async fn allocate_relay_from_ice_tiered(
                 Ok(Err(e)) => tracing::warn!(%server, %e, "UDP TURN allocate failed; trying next"),
                 Err(_) => tracing::warn!(%server, "UDP TURN allocate timed out; trying next"),
             }
-            // Corp-VPN rescue: the unbound attempt source-selects a captured
-            // default route into the tunnel, where UDP dies — retry ONCE
-            // bound to the first non-VPN uplink (the deny-listed LAN gather
-            // the direct socks bind), which escapes the capture on a
-            // strong-host stack. Strictly additive: runs only after the
-            // unbound attempt already failed, costs ≤ one more
-            // UDP_ALLOC_TIMEOUT, and hosts without overlay-l3 (or with an
-            // empty gather, e.g. a WSL-mirrored guest) skip it entirely.
+            // Corp-VPN / multi-NIC rescue (F2): when the unbound attempt fails
+            // (VPN-captured default route, or preferred uplink unreachable to
+            // coturn), walk up to 3 physical non-VPN uplinks (default-gateway
+            // NICs first) under a single bounded `UDP_RESCUE_TOTAL_BUDGET`,
+            // accepting the first NIC that completes a real TURN Allocate.
             #[cfg(feature = "overlay-l3")]
-            if let Some((ip, ifindex)) = crate::overlay::direct::first_non_vpn_uplink() {
-                tracing::info!(
-                    %server, %ip, ?ifindex,
-                    "UDP TURN allocate: retrying pinned to the physical uplink (corp-VPN rescue)"
-                );
-                match tokio::time::timeout(
-                    UDP_ALLOC_TIMEOUT,
-                    allocate_turn_relay_from(
-                        resolved,
-                        username.to_string(),
-                        credential.to_string(),
-                        DEFAULT_TURN_REALM.to_string(),
-                        Some((ip, ifindex)),
-                    ),
+            {
+                let uplinks = crate::overlay::direct::non_vpn_uplinks();
+                if let Some((_ip, relay)) = try_rescue_uplinks_bounded(
+                    &uplinks,
+                    UDP_RESCUE_TOTAL_BUDGET,
+                    resolved,
+                    |ip, ifindex| {
+                        allocate_turn_relay_from(
+                            resolved,
+                            username.to_string(),
+                            credential.to_string(),
+                            DEFAULT_TURN_REALM.to_string(),
+                            Some((ip, ifindex)),
+                        )
+                    },
                 )
                 .await
                 {
-                    Ok(Ok(relay)) => {
-                        tracing::info!(%server, %ip, "TURN relay allocated (tier2-udp, pinned egress)");
-                        return Ok(relay);
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!(%server, %ip, %e, "pinned UDP TURN allocate failed; trying next")
-                    }
-                    Err(_) => {
-                        tracing::warn!(%server, %ip, "pinned UDP TURN allocate timed out; trying next")
-                    }
+                    return Ok(relay);
                 }
             }
         }
@@ -1023,8 +1082,8 @@ mod tests {
     #[test]
     fn split_host_port_handles_names_v6_and_garbage() {
         assert_eq!(
-            split_host_port("coturn.roomler.ai:3478"),
-            Some(("coturn.roomler.ai", 3478))
+            split_host_port("coturn.meshharbor.itachi.fans:3478"),
+            Some(("coturn.meshharbor.itachi.fans", 3478))
         );
         assert_eq!(split_host_port("[::1]:443"), Some(("::1", 443)));
         assert_eq!(
@@ -1109,13 +1168,13 @@ mod tests {
     fn turn_udp_server_picks_the_udp_url() {
         let prod = vec![
             "stun:stun.l.google.com:19302".to_string(),
-            "turns:coturn.roomler.ai:5349?transport=tcp".to_string(),
-            "turn:coturn.roomler.ai:3478?transport=udp".to_string(),
-            "turn:coturn.roomler.ai:3478?transport=tcp".to_string(),
+            "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp".to_string(),
+            "turn:coturn.meshharbor.itachi.fans:3478?transport=udp".to_string(),
+            "turn:coturn.meshharbor.itachi.fans:3478?transport=tcp".to_string(),
         ];
         assert_eq!(
             turn_udp_server(&prod).as_deref(),
-            Some("coturn.roomler.ai:3478")
+            Some("coturn.meshharbor.itachi.fans:3478")
         );
         // No `?transport` ⇒ UDP default.
         assert_eq!(
@@ -1141,23 +1200,23 @@ mod tests {
     fn turn_tls_server_prefers_443_over_5349() {
         // Mirrors crates/api/src/state.rs::build_turn_config emission order.
         let prod = vec![
-            "turn:coturn.roomler.ai:3478".to_string(), // base (udp default)
-            "turn:coturn.roomler.ai:443?transport=udp".to_string(),
-            "turn:coturn.roomler.ai:3478?transport=tcp".to_string(), // plain turn-tcp (unusable)
-            "turns:coturn.roomler.ai:5349?transport=tcp".to_string(), // :5349 listed FIRST
-            "turns:coturn.roomler.ai:443?transport=udp".to_string(), // turns-udp (DTLS, skipped)
-            "turns:coturn.roomler.ai:443?transport=tcp".to_string(), // :443 listed LATER
+            "turn:coturn.meshharbor.itachi.fans:3478".to_string(), // base (udp default)
+            "turn:coturn.meshharbor.itachi.fans:443?transport=udp".to_string(),
+            "turn:coturn.meshharbor.itachi.fans:3478?transport=tcp".to_string(), // plain turn-tcp (unusable)
+            "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp".to_string(), // :5349 listed FIRST
+            "turns:coturn.meshharbor.itachi.fans:443?transport=udp".to_string(), // turns-udp (DTLS, skipped)
+            "turns:coturn.meshharbor.itachi.fans:443?transport=tcp".to_string(), // :443 listed LATER
         ];
         assert_eq!(
             turn_tls_server(&prod),
-            Some(("coturn.roomler.ai".to_string(), 443, None)),
+            Some(("coturn.meshharbor.itachi.fans".to_string(), 443, None)),
             ":443 must win over :5349 even though :5349 is listed first"
         );
         assert_eq!(
             turn_tls_servers(&prod),
             vec![
-                ("coturn.roomler.ai".to_string(), 443, None),
-                ("coturn.roomler.ai".to_string(), 5349, None),
+                ("coturn.meshharbor.itachi.fans".to_string(), 443, None),
+                ("coturn.meshharbor.itachi.fans".to_string(), 5349, None),
             ],
             "plural returns all turns:tcp, :443 first"
         );
@@ -1166,8 +1225,8 @@ mod tests {
         assert_eq!(
             turn_udp_servers(&prod),
             vec![
-                "coturn.roomler.ai:3478".to_string(),
-                "coturn.roomler.ai:443".to_string(),
+                "coturn.meshharbor.itachi.fans:3478".to_string(),
+                "coturn.meshharbor.itachi.fans:443".to_string(),
             ]
         );
         // turns: without transport=tcp ⇒ DTLS/UDP, unusable by the adapter.
@@ -1186,10 +1245,11 @@ mod tests {
     fn turn_tls_servers_extracts_pin_but_keeps_hostname() {
         assert_eq!(
             turn_tls_servers(&[
-                "turns:coturn.roomler.ai:443?transport=tcp&pin=94.130.141.74".to_string()
+                "turns:coturn.meshharbor.itachi.fans:443?transport=tcp&pin=94.130.141.74"
+                    .to_string()
             ]),
             vec![(
-                "coturn.roomler.ai".to_string(),
+                "coturn.meshharbor.itachi.fans".to_string(),
                 443,
                 Some("94.130.141.74".parse::<IpAddr>().unwrap())
             )],
@@ -1198,9 +1258,9 @@ mod tests {
         // Unparseable pin ⇒ None (fall back to hostname DNS resolution).
         assert_eq!(
             turn_tls_servers(&[
-                "turns:coturn.roomler.ai:443?transport=tcp&pin=not-an-ip".to_string()
+                "turns:coturn.meshharbor.itachi.fans:443?transport=tcp&pin=not-an-ip".to_string()
             ]),
-            vec![("coturn.roomler.ai".to_string(), 443, None)]
+            vec![("coturn.meshharbor.itachi.fans".to_string(), 443, None)]
         );
         // A stray `&pin=` on a UDP url must not confuse the UDP enumerator.
         assert_eq!(
@@ -1363,7 +1423,7 @@ mod turn_tests {
     use turn::server::config::{ConnConfig, ServerConfig};
     use webrtc_util::vnet::net::Net;
 
-    const REALM: &str = "roomler.test";
+    const REALM: &str = "meshharbor.test";
     const USER: &str = "quic-tester";
     const PASS: &str = "turn-secret";
 
@@ -1423,6 +1483,28 @@ mod turn_tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_cancelled_turn_allocate_does_not_strand_its_underlay_socket() {
+        // `/proc/self/fd` is process-global across all concurrent test threads;
+        // run in an isolated child process so sibling tests opening sockets do
+        // not pollute the FD count while keeping `after <= before + 1` exact.
+        if std::env::var_os("MH_TURN_FD_ISOLATED").is_none() {
+            let exe = std::env::current_exe().expect("current_exe");
+            let out = std::process::Command::new(exe)
+                .env("MH_TURN_FD_ISOLATED", "1")
+                .args([
+                    "--exact",
+                    "transport::relay::turn_tests::a_cancelled_turn_allocate_does_not_strand_its_underlay_socket",
+                    "--nocapture",
+                ])
+                .output()
+                .expect("spawn isolated TURN FD leak test");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.success() && stdout.contains("1 passed"),
+                "isolated a_cancelled_turn_allocate_does_not_strand_its_underlay_socket failed:\n{stdout}\n{stderr}"
+            );
+            return;
+        }
         fn open_fds() -> usize {
             std::fs::read_dir("/proc/self/fd")
                 .map(|d| d.count())
@@ -1485,6 +1567,93 @@ mod turn_tests {
         assert!(
             relayed.ip().is_loopback(),
             "allocation completed via the pinned source: {relayed}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rescue_uplinks_succeeds_on_second_nic_after_first_stalls_and_bounds_total_time() {
+        let turn_addr: SocketAddr = "127.0.0.1:3478".parse().unwrap();
+        let dead_nic1: Ipv4Addr = "192.168.42.45".parse().unwrap();
+        let live_nic2: Ipv4Addr = Ipv4Addr::LOCALHOST;
+        let unused_nic3: Ipv4Addr = "192.168.100.2".parse().unwrap();
+        let extra_nic4: Ipv4Addr = "10.0.0.2".parse().unwrap();
+
+        // 1. NIC #1 stalls past its 300ms slice (900ms / 3 capped NICs); NIC #2
+        // completes TURN Allocate in 20ms virtual time; NIC #3 and NIC #4 are
+        // never attempted.
+        let tried = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let tried_c = tried.clone();
+        let t_ok = tokio::time::Instant::now();
+        let res = try_rescue_uplinks_bounded(
+            &[
+                (dead_nic1, Some(58)),
+                (live_nic2, None),
+                (unused_nic3, Some(41)),
+                (extra_nic4, Some(42)),
+            ],
+            std::time::Duration::from_millis(900),
+            turn_addr,
+            move |ip, ifindex| {
+                tried_c.lock().unwrap().push((ip, ifindex));
+                async move {
+                    if ip == dead_nic1 {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        unreachable!("stalled NIC #1 must be cancelled by per-NIC timeout");
+                    } else {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        Ok::<&'static str, anyhow::Error>("turn-allocated-on-nic2")
+                    }
+                }
+            },
+        )
+        .await;
+
+        let (won_ip, token) = res.expect("second NIC must rescue once TURN Allocate completes");
+        assert_eq!(won_ip, live_nic2);
+        assert_eq!(token, "turn-allocated-on-nic2");
+        assert_eq!(
+            *tried.lock().unwrap(),
+            vec![(dead_nic1, Some(58)), (live_nic2, None)],
+            "must stop immediately once TURN Allocate succeeds on NIC #2"
+        );
+        assert_eq!(
+            t_ok.elapsed(),
+            std::time::Duration::from_millis(320),
+            "virtual elapsed time must be 300ms (NIC #1 timeout) + 20ms (NIC #2 allocate)"
+        );
+
+        // 2. Verify 3-NIC cap and exact virtual total_budget bound when all NICs fail/stall.
+        let tried_all = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let tried_all_c = tried_all.clone();
+        let t0 = tokio::time::Instant::now();
+        let none_res = try_rescue_uplinks_bounded(
+            &[
+                (dead_nic1, Some(58)),
+                (unused_nic3, Some(41)),
+                (extra_nic4, Some(42)),
+                ("10.9.9.9".parse().unwrap(), Some(99)),
+            ],
+            std::time::Duration::from_millis(240),
+            turn_addr,
+            move |ip, _ifindex| {
+                tried_all_c.lock().unwrap().push(ip);
+                async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    Ok::<&'static str, anyhow::Error>("unreachable")
+                }
+            },
+        )
+        .await;
+        assert!(none_res.is_none());
+        assert_eq!(
+            t0.elapsed(),
+            std::time::Duration::from_millis(240),
+            "entire multi-NIC rescue must terminate at exact virtual total_budget (240ms)"
+        );
+        assert_eq!(
+            *tried_all.lock().unwrap(),
+            vec![dead_nic1, unused_nic3, extra_nic4],
+            "rescue must cap tried NICs at MAX_NON_VPN_UPLINKS (3)"
         );
     }
 
@@ -1555,7 +1724,7 @@ mod turn_tests {
     }
 
     /// Phase-0 spike for the **loopback-TURN corp-relay** plan
-    /// (`~/.claude/plans/roomler-loopback-turn-corp-relay.md`).
+    /// (`~/.claude/plans/meshharbor-loopback-turn-corp-relay.md`).
     ///
     /// The make-or-break unknown: will TWO **webrtc-rs** peers (the browser
     /// and the remote agent both speak webrtc-rs' TURN client) converge on a
@@ -1715,13 +1884,13 @@ mod turn_tests {
     // work against live coturn, isolating the relay primitives from the
     // agent/client signaling (which is covered by the wire-lock + glue
     // tests). `#[ignore]` + env-gated so they never run in CI: provide
-    //   ROOMLER_TEST_TURN_HOST   = coturn.roomler.ai
-    //   ROOMLER_TEST_TURN_SECRET = coturn's static-auth-secret (from the
-    //                              k8s secret / ROOMLER__TURN__SHARED_SECRET)
+    //   MESHHARBOR_TEST_TURN_HOST   = coturn.meshharbor.itachi.fans
+    //   MESHHARBOR_TEST_TURN_SECRET = coturn's static-auth-secret (from the
+    //                              k8s secret / MESHHARBOR__TURN__SHARED_SECRET)
     // and run on a host with outbound UDP/3478 (UDP smoke) or TCP/443
     // (TURNS/TCP smoke) to coturn. The secret stays in the env — never in
     // source. Run e.g.:
-    //   cargo test -p roomler-ai-tunnel-core --ignored relay_against_real_coturn
+    //   cargo test -p meshharbor-tunnel-core --ignored relay_against_real_coturn
 
     /// Allocate TWO relays via the real [`allocate_relay_from_ice`] entry,
     /// mutually permission them, and run a full quinn handshake + flow
@@ -1788,9 +1957,9 @@ mod turn_tests {
     fn live_coturn_creds(
         urls_for: impl Fn(&str) -> Vec<String>,
     ) -> Option<(Vec<String>, String, String)> {
-        let host = std::env::var("ROOMLER_TEST_TURN_HOST").ok()?;
-        let secret = std::env::var("ROOMLER_TEST_TURN_SECRET").ok()?;
-        let cfg = roomler_ai_remote_control::turn_creds::TurnConfig {
+        let host = std::env::var("MESHHARBOR_TEST_TURN_HOST").ok()?;
+        let secret = std::env::var("MESHHARBOR_TEST_TURN_SECRET").ok()?;
+        let cfg = meshharbor_remote_control::turn_creds::TurnConfig {
             workers: vec![],
             urls: urls_for(&host),
             shared_secret: secret,
@@ -1801,12 +1970,12 @@ mod turn_tests {
     }
 
     /// LIVE Tier-2: UDP relay against the production coturn cluster.
-    /// `ROOMLER_TEST_TURN_UDP_PORT=443` points it at the udp/443 DNAT
+    /// `MESHHARBOR_TEST_TURN_UDP_PORT=443` points it at the udp/443 DNAT
     /// (the corp-escape tier the fleet + relay PoPs expose) instead of 3478.
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "hits live coturn; set ROOMLER_TEST_TURN_HOST + ROOMLER_TEST_TURN_SECRET"]
+    #[ignore = "hits live coturn; set MESHHARBOR_TEST_TURN_HOST + MESHHARBOR_TEST_TURN_SECRET"]
     async fn relay_against_real_coturn_udp() {
-        let port = std::env::var("ROOMLER_TEST_TURN_UDP_PORT").unwrap_or_else(|_| "3478".into());
+        let port = std::env::var("MESHHARBOR_TEST_TURN_UDP_PORT").unwrap_or_else(|_| "3478".into());
         let Some((urls, user, cred)) =
             live_coturn_creds(|h| vec![format!("turn:{h}:{port}?transport=udp")])
         else {
@@ -1819,12 +1988,12 @@ mod turn_tests {
     /// LIVE Tier-3: TURNS/TCP relay (TLS over TCP/443 — the UDP-blocked-net
     /// path). The url list has no `turn:…udp` entry, so
     /// `allocate_relay_from_ice` falls through to the TURNS/TCP tier.
-    /// `ROOMLER_TEST_TURN_TLS_PORT=5349` targets coturn's own TLS listener
+    /// `MESHHARBOR_TEST_TURN_TLS_PORT=5349` targets coturn's own TLS listener
     /// directly — isolates a PoP's nginx SNI hop from coturn itself.
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "hits live coturn over TLS/TCP; set ROOMLER_TEST_TURN_HOST + ROOMLER_TEST_TURN_SECRET"]
+    #[ignore = "hits live coturn over TLS/TCP; set MESHHARBOR_TEST_TURN_HOST + MESHHARBOR_TEST_TURN_SECRET"]
     async fn relay_against_real_coturn_turns_tcp() {
-        let port = std::env::var("ROOMLER_TEST_TURN_TLS_PORT").unwrap_or_else(|_| "443".into());
+        let port = std::env::var("MESHHARBOR_TEST_TURN_TLS_PORT").unwrap_or_else(|_| "443".into());
         let Some((urls, user, cred)) =
             live_coturn_creds(|h| vec![format!("turns:{h}:{port}?transport=tcp")])
         else {
@@ -1839,20 +2008,20 @@ mod turn_tests {
     /// intra-worker "relay-to-relay hairpin")? both-allocate needs A's
     /// allocation to relay a datagram to B's allocation; single-relay never does
     /// (one allocation + a raw dialer), which is why single-relay carries where
-    /// both-allocate deadlocks. Pins BOTH allocations to `ROOMLER_TEST_TURN_WORKER`
+    /// both-allocate deadlocks. Pins BOTH allocations to `MESHHARBOR_TEST_TURN_WORKER`
     /// (an off-host worker, else the sender hairpins on the local host DNAT) and
     /// sends RAW datagrams both ways — no QUIC/WG, so a failure is coturn's, not
     /// a handshake-timing artifact.
     ///
-    ///   ROOMLER_TEST_TURN_HOST=coturn.roomler.ai \
-    ///   ROOMLER_TEST_TURN_SECRET=<secret> ROOMLER_TEST_TURN_WORKER=5.9.157.221 \
-    ///   cargo test -p roomler-ai-tunnel-core --features overlay-l3 \
+    ///   MESHHARBOR_TEST_TURN_HOST=coturn.meshharbor.itachi.fans \
+    ///   MESHHARBOR_TEST_TURN_SECRET=<secret> MESHHARBOR_TEST_TURN_WORKER=5.9.157.221 \
+    ///   cargo test -p meshharbor-tunnel-core --features overlay-l3 \
     ///     --lib relay_to_relay_hairpin_against_real_coturn -- --ignored --nocapture
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "hits live coturn; set ROOMLER_TEST_TURN_HOST/SECRET + ROOMLER_TEST_TURN_WORKER"]
+    #[ignore = "hits live coturn; set MESHHARBOR_TEST_TURN_HOST/SECRET + MESHHARBOR_TEST_TURN_WORKER"]
     async fn relay_to_relay_hairpin_against_real_coturn() {
-        let Some(worker) = std::env::var("ROOMLER_TEST_TURN_WORKER").ok() else {
-            eprintln!("SKIP relay_to_relay_hairpin: ROOMLER_TEST_TURN_WORKER unset");
+        let Some(worker) = std::env::var("MESHHARBOR_TEST_TURN_WORKER").ok() else {
+            eprintln!("SKIP relay_to_relay_hairpin: MESHHARBOR_TEST_TURN_WORKER unset");
             return;
         };
         let Some((urls, user, cred)) =

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-use mongodb::bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_config::StripeSettings;
-use roomler_ai_db::models::tenant::{
+use meshharbor_config::StripeSettings;
+use meshharbor_db::models::tenant::{
     BillingCurrency, BillingInfo, BillingInterval, Plan, PlanLimits, SubscriptionStatus, Tenant,
 };
+use mongodb::bson::{DateTime, doc, oid::ObjectId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{info, warn};
@@ -779,7 +779,7 @@ impl StripeService {
         use crate::dao::billing_event::{BillingEventDao, BillingKind, BillingSource, Recorded};
         if self.settings.secret_key.trim().is_empty() {
             return Err(StripeError::ApiError(
-                "no Stripe secret key configured (ROOMLER__STRIPE__SECRET_KEY)".into(),
+                "no Stripe secret key configured (MESHHARBOR__STRIPE__SECRET_KEY)".into(),
             ));
         }
         let dao = BillingEventDao::new(db);
@@ -1565,6 +1565,7 @@ mod tests {
             description: None,
             icon: None,
             owner_id: ObjectId::new(),
+            security_rev: Some(1_i64.into()),
             plan: Plan::Pro,
             features: vec![],
             settings: Default::default(),

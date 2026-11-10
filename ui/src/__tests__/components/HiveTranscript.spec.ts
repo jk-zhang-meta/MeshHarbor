@@ -288,7 +288,7 @@ describe('HiveTranscript — who drives (FR-90 P1c)', () => {
     const w = await render({ adopted: true })
     expect(w.find('[data-testid="hive-ask"]').exists()).toBe(false)
     expect(w.find('[data-testid="hive-read-only"]').text()).toBe(
-      'This session runs in a terminal on its device, so it is read-only here: nobody prompts it from Roomler.',
+      'This session runs in a terminal on its device, so it is read-only here: nobody prompts it from MeshHarbor.',
     )
   })
 

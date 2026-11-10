@@ -2,14 +2,14 @@
 // Copyright (C) 2026 G ROX EOOD
 //! One-shot enrollment exchange.
 //!
-//! Flow: admin issues an enrollment token in the Roomler UI and hands it to
+//! Flow: admin issues an enrollment token in the MeshHarbor UI and hands it to
 //! the machine operator. `meshharbord enroll --token <t>` posts it to
 //! `POST /api/agent/enroll` with machine metadata, gets back a long-lived
 //! agent token, and persists everything to the config file.
 
 use anyhow::{Context, Result, bail};
-use roomler_ai_remote_control::models::OsKind;
-pub use roomler_ai_remote_control::models::{InstallInfo, InstallMethod, InstallScope};
+use meshharbor_remote_control::models::OsKind;
+pub use meshharbor_remote_control::models::{InstallInfo, InstallMethod, InstallScope};
 use serde::{Deserialize, Serialize};
 
 use crate::config::AgentConfig;
@@ -21,8 +21,8 @@ use crate::config::AgentConfig;
 /// still enrolls from a post-P3 script; it simply ignores the variables.
 /// For the same reason a value in them that this build does not know is
 /// clamped, never refused ([`resolve_install`]).
-pub const INSTALL_METHOD_ENV: &str = "ROOMLER_INSTALL_METHOD";
-pub const INSTALL_SCOPE_ENV: &str = "ROOMLER_INSTALL_SCOPE";
+pub const INSTALL_METHOD_ENV: &str = "MESHHARBOR_INSTALL_METHOD";
+pub const INSTALL_SCOPE_ENV: &str = "MESHHARBOR_INSTALL_SCOPE";
 
 #[derive(Debug, Serialize)]
 struct EnrollRequest<'a> {
@@ -654,7 +654,7 @@ fn unique_org_label(
             )
         })?;
         if cfg.find_org(&label).is_some() {
-            bail!("--label {label:?} is already in use (see `roomlerd org ls`)");
+            bail!("--label {label:?} is already in use (see `meshharbord org ls`)");
         }
         return Ok(label);
     }
@@ -729,7 +729,7 @@ pub fn takes_service_install_defaults(machine_global: bool, outcome: &EnrollOutc
 /// shown a remote unlock there. Both keep `never`, as does every existing
 /// config that lacks the key.
 pub fn apply_service_install_defaults(cfg: &mut AgentConfig) {
-    cfg.lock_on_end = roomler_ai_remote_control::models::LockOnEnd::Auto;
+    cfg.lock_on_end = meshharbor_remote_control::models::LockOnEnd::Auto;
 }
 
 /// Strip the trailing slash and force the scheme to `https://` if the
@@ -746,10 +746,10 @@ pub fn apply_service_install_defaults(cfg: &mut AgentConfig) {
 /// A remote host (the production case) is still upgraded.
 fn normalize_server_url(raw: &str) -> String {
     // FR-101 P1b — the same rule every reader of a server URL applies now
-    // (`roomler_ai_remote_control::server_url`), which reads the URL as
-    // reqwest will: `HTTP:roomler.ai` is plaintext too. No plaintext escape
+    // (`meshharbor_remote_control::server_url`), which reads the URL as
+    // reqwest will: `HTTP:meshharbor.itachi.fans` is plaintext too. No plaintext escape
     // at enrollment: the token must travel over TLS.
-    let secured = roomler_ai_remote_control::server_url::secure(raw, false);
+    let secured = meshharbor_remote_control::server_url::secure(raw, false);
     if secured.promoted {
         tracing::warn!(
             original = raw,
@@ -778,12 +778,12 @@ mod tests {
     #[test]
     fn http_is_promoted_to_https() {
         assert_eq!(
-            normalize_server_url("http://roomler.ai"),
-            "https://roomler.ai"
+            normalize_server_url("http://meshharbor.itachi.fans"),
+            "https://meshharbor.itachi.fans"
         );
         assert_eq!(
-            normalize_server_url("http://roomler.ai/"),
-            "https://roomler.ai"
+            normalize_server_url("http://meshharbor.itachi.fans/"),
+            "https://meshharbor.itachi.fans"
         );
         assert_eq!(
             normalize_server_url("http://10.0.0.5:3000"),
@@ -791,8 +791,8 @@ mod tests {
         );
         // FR-101 P1b — spelled as reqwest would still dial it in plaintext.
         assert_eq!(
-            normalize_server_url(" HTTP:roomler.ai/ "),
-            "https://roomler.ai"
+            normalize_server_url(" HTTP:meshharbor.itachi.fans/ "),
+            "https://meshharbor.itachi.fans"
         );
     }
 
@@ -823,12 +823,12 @@ mod tests {
     #[test]
     fn https_is_left_alone() {
         assert_eq!(
-            normalize_server_url("https://roomler.ai"),
-            "https://roomler.ai"
+            normalize_server_url("https://meshharbor.itachi.fans"),
+            "https://meshharbor.itachi.fans"
         );
         assert_eq!(
-            normalize_server_url("https://roomler.ai/"),
-            "https://roomler.ai"
+            normalize_server_url("https://meshharbor.itachi.fans/"),
+            "https://meshharbor.itachi.fans"
         );
     }
 
@@ -837,7 +837,10 @@ mod tests {
         // We don't validate — the reqwest call will fail with a clearer
         // error than we could produce here. Just confirm we don't
         // accidentally rewrite these.
-        assert_eq!(normalize_server_url("roomler.ai"), "roomler.ai");
+        assert_eq!(
+            normalize_server_url("meshharbor.itachi.fans"),
+            "meshharbor.itachi.fans"
+        );
         assert_eq!(normalize_server_url("file:///tmp/foo"), "file:///tmp/foo");
     }
 
@@ -957,7 +960,7 @@ mod tests {
         existing.last_known_good_version = Some("0.3.0-rc.199".into());
 
         let mut fresh = crate::config::test_fixture();
-        fresh.server_url = "https://roomler.ai".into();
+        fresh.server_url = "https://meshharbor.itachi.fans".into();
         fresh.agent_token = "NEW-TOKEN".into();
         fresh.agent_id = "NEW-AGENT-ID".into();
         fresh.tenant_id = "NEW-TENANT".into();
@@ -978,7 +981,7 @@ mod tests {
         );
 
         // Identity comes from the fresh enrollment…
-        assert_eq!(merged.server_url, "https://roomler.ai");
+        assert_eq!(merged.server_url, "https://meshharbor.itachi.fans");
         assert_eq!(merged.agent_token, "NEW-TOKEN");
         assert_eq!(merged.agent_id, "NEW-AGENT-ID");
         assert_eq!(merged.tenant_id, "NEW-TENANT");
@@ -1042,7 +1045,7 @@ mod tests {
     /// reads `never`, and so does a per-user install.
     #[test]
     fn only_a_fresh_service_install_starts_at_lock_on_end_auto() {
-        use roomler_ai_remote_control::models::LockOnEnd;
+        use meshharbor_remote_control::models::LockOnEnd;
 
         // A fresh service install: the default applies.
         let fresh = fresh_for("https://a.invalid", "t1", "tok1");
@@ -1132,12 +1135,15 @@ mod tests {
     #[test]
     fn apply_enrollment_new_identity_appends_secondary() {
         let existing = crate::config::test_fixture();
-        let fresh = fresh_for("https://roomler.ai", "t-new", "tok-new");
+        let fresh = fresh_for("https://meshharbor.itachi.fans", "t-new", "tok-new");
         let (cfg, outcome) = apply_enrollment(Some(existing), fresh, None, false).unwrap();
         let EnrollOutcome::AppendedOrg { label } = outcome else {
             panic!("expected append, got {outcome:?}");
         };
-        assert_eq!(label, "roomler-ai", "label derives from the server host");
+        assert_eq!(
+            label, "meshharbor-itachi-fans",
+            "label derives from the server host"
+        );
         assert_eq!(cfg.orgs.len(), 1);
         let entry = &cfg.orgs[0];
         assert_eq!(entry.tenant_id, "t-new");
@@ -1209,13 +1215,17 @@ mod tests {
     #[test]
     fn apply_enrollment_appended_label_uniquifies_on_collision() {
         let mut existing = crate::config::test_fixture();
-        existing.orgs = vec![org("roomler-ai", "https://other.invalid", "t-x")];
-        let fresh = fresh_for("https://roomler.ai", "t-y", "tok-y");
+        existing.orgs = vec![org(
+            "meshharbor-itachi-fans",
+            "https://other.invalid",
+            "t-x",
+        )];
+        let fresh = fresh_for("https://meshharbor.itachi.fans", "t-y", "tok-y");
         let (_cfg, outcome) = apply_enrollment(Some(existing), fresh, None, false).unwrap();
         assert_eq!(
             outcome,
             EnrollOutcome::AppendedOrg {
-                label: "roomler-ai-2".into()
+                label: "meshharbor-itachi-fans-2".into()
             }
         );
     }

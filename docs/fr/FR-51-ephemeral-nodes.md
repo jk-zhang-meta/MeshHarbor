@@ -1,15 +1,15 @@
 # FR-51: Ephemeral nodes — a device that removes itself
 
-**Issue:** [#1095](https://github.com/gjovanov/roomler-ai/issues/1095) ·
+**Issue:** [#1095](https://github.com/jk-zhang-meta/MeshHarbor/issues/1095) ·
 **Status:** **CLOSED (#1095, 2026-09-04)** — all ten ACs field-verified on prod 0.4.46;
 AC5 confirmed at +72 h across the FR-69 refactor deploys (4/4 surviving permanent
 sentinels alive, `ephemeral_live=0`, reaper flag still ON; the one sentinel that left was
 a logged admin `DELETE`, not the reaper). The non-affine `removes` fan gap
-([#1186](https://github.com/gjovanov/roomler-ai/issues/1186)) was fixed + closed (#1241) ·
+([#1186](https://github.com/jk-zhang-meta/MeshHarbor/issues/1186)) was fixed + closed (#1241) ·
 **Owner:** overlay/networking + control plane ·
 **Anchors verified against master `ccc58bb0`**
 
-The roomler answer to [Tailscale ephemeral nodes](https://tailscale.com/docs/features/ephemeral-nodes).
+The meshharbor answer to [Tailscale ephemeral nodes](https://tailscale.com/docs/features/ephemeral-nodes).
 
 ## Goal
 
@@ -17,7 +17,7 @@ A device can join an org **knowing in advance that it is temporary**: it appears
 fleet while it runs, and then **removes itself** — device row, overlay lease, address,
 MagicDNS name — shortly after it stops, with nobody clicking Delete.
 
-This is what makes roomler usable for the population it currently cannot serve at all: CI
+This is what makes meshharbor usable for the population it currently cannot serve at all: CI
 runners, containers, autoscaled workers, preview environments, short-lived VMs — anywhere
 the device set turns over faster than a human can curate it.
 
@@ -33,7 +33,7 @@ Four properties, stated as the acceptance bar rather than as a description:
    made ephemeral by something it says about itself, and an ephemeral one can never quietly
    become permanent.
 
-## 1. Field evidence — measured on production, 2026-09-01 (`roomler2`)
+## 1. Field evidence — measured on production, 2026-09-01 (`meshharbor2`)
 
 | collection | total rows | live | tombstoned |
 |---|---|---|---|
@@ -190,7 +190,7 @@ quota**. That is defensible when the reaper is prompt and indefensible when it i
 the deadline is not only a hygiene knob.
 
 Tailscale's answer is a separate meter (free below a monthly ceiling; ≥ 4 h converts to a
-standard device). Roomler's plan model has no such notion — `max_devices` is a flat count —
+standard device). MeshHarbor's plan model has no such notion — `max_devices` is a flat count —
 so this FR either takes the simple reading (an ephemeral node consumes a slot while it
 exists) or introduces a second meter. Recommendation: **the simple reading in P1**, with the
 node-hours meter deferred and named as out of scope, because FR-20 already owns the metering
@@ -201,7 +201,7 @@ machinery and this should not fork it.
 Tailscale's ephemeral property lives on the **auth key**, and those keys are typically
 **reusable** — that is exactly what lets one Helm value or one CI secret bring up N replicas.
 
-Roomler's enrollment token is the deliberate opposite:
+MeshHarbor's enrollment token is the deliberate opposite:
 
 - `EnrollmentClaims` (`crates/services/src/auth/mod.rs:56`) carries a `jti`;
 - `enroll_agent` claims it once through `used_tokens`
@@ -247,7 +247,7 @@ minted by an authenticated admin; the body is attacker-controlled input.
 | P1 | model + reaper | **shipped (#1125), dark.** `ephemeral` + `ephemeral_ttl_secs` on `Agent` (⚠️ deviation, recorded: `TunnelClient` gets its fields WITH its reaper arm in P5 — decision 5's "prove on one population", and fields without their consumer would be drift-prone dead weight); `remove_agent_device` factored out of `delete_agent` (F3) — the removal kind is chosen by the ROW's nature, so the admin DELETE hard-deletes an ephemeral row too; a cluster-singleton `reap_ephemeral` loop with its own query (F2), the sweep's presence guards, and a read-time 60 s TTL floor; hard delete via a DAO filter carrying `ephemeral: true`, so a permanent row structurally cannot take it (F4). 5 integration tests + a serde-closed-default lock; the abort-on-unreachable-directory guard was observed firing against a NOAUTH local redis during verification | `rc.ephemeral_reaper_enabled`, default **false** ⇒ nothing spawns, zero queries, zero deletes |
 | P2 | ephemeral enrollment keys | **shipped (#1135), dark.** Answers §7 decision 1 as the table committed: keys are REUSABLE, the four §4 controls all-four-or-none and structural — atomic `$expr` use-claim, row+JWT expiry, `revoked_at` inside the same claim, `enrollment_key_uses` (90 d) per mint (the record that outlives the hard-deleted device row) + `Agent.enroll_key_id`. `TokenType::EphemeralEnrollment` is its OWN audience; the flag rides the credential, never the body (AC9 locked both ways); the key path is **create-only** — an existing machine_id gets a final 409, closing the row-takeover a rehydrate would open. Org switch is `MANAGE_TENANT` (the exec/ssh shape) and is re-checked on every USE ahead of the claim, so off = class-wide revocation burning nothing. Mint = `MANAGE_AGENTS` (no free permission bit to spend). Clamps: uses 1..=10 000 / expiry 5 min..=90 d / device TTL 60 s..=7 d | per-org `ephemeral_keys_enabled`, default **off** ⇒ the route mints nothing, every outstanding key refuses |
 | P3 | clean exit removes now | **shipped (#1141), inert until used.** `enroll --ephemeral` = random 64-hex fingerprint + refuse-if-config-exists (the F1 trap runs both directions); the CONFIG records the server's answer, never the flag (`--ephemeral` + a standard token warns loudly — the permanent row under a random id already exists). De-enroll fires on the two OS-signal arms only — the internal arm is the auto-updater, and de-enrolling there would delete the device on every update; 3 s cap, best-effort, 401/404 read as "already gone". Server: `POST /api/agent/self/unenroll` (agent JWT; **ephemeral rows only**, 403 otherwise — self-erasure of a permanent fleet record must stay an admin action), through the same `remove_agent_device` sequence. Includes the extractor fix the hard delete made necessary: `AuthAgent` now maps row-`NotFound` → 401 (an authoritative "no row" is a revocation, not a blip; 500 had a reaped-but-running device retrying forever). ⚠️ AC4/AC7 (docker stop < 10 s; ten replicas = ten devices) still need a real container host — machinery shipped, field run pending | the agent's `ephemeral` config key is itself the switch (absent ⇒ today's behaviour byte-for-byte) |
-| P4 | surfaces | `Ephemeral` badge + deadline in the device grid; the reap in `audit_logs`; key list + revoke in Settings; `roomler status` says ephemeral and when it expires | UI-only |
+| P4 | surfaces | `Ephemeral` badge + deadline in the device grid; the reap in `audit_logs`; key list + revoke in Settings; `mh status` says ephemeral and when it expires | UI-only |
 | P5 | tunnel clients + docs | **docs shipped (#1145): `docs/ephemeral-nodes.md`** (lifecycle, key controls, the CI/container recipe, operational notes, honest boundaries) + the docs index row. **Tunnel clients: deliberately NOT built, decision recorded** — the ephemeral credential is its own JWT audience and the tunnel enrollment refuses foreign audiences by design, so tunnel-ephemerality is a second credential kind; fields+reaper without a mint path would be exactly the drift-prone dead weight the P1 deviation refused. Build it when a consumer exists (§7 decision 5 closed as "deferred, on evidence of need") | reuses P1's switch |
 
 ⚠️ **P3 depends on P1 shipping first and being observed.** A daemon that removes itself
@@ -299,7 +299,7 @@ Falsifiable, and each names how it is shown to have FAILED first — CI green is
    than discovered.
 2. **Hard delete vs TTL index** on the reaped `agents` row (F4 recommends hard delete for the
    device row plus a TTL on the overlay tombstone).
-3. **Default deadline.** Tailscale is 30–60 min. Roomler's presence machinery already
+3. **Default deadline.** Tailscale is 30–60 min. MeshHarbor's presence machinery already
    resolves at 90 s (`STALE_AFTER_MS`, `device_presence.rs:46`) with a 30 s sweep, so a much
    shorter default is *available* — but a short deadline turns a network blip into a deleted
    device. Proposal: **default 15 min, per-key override, floor 60 s.**
@@ -309,12 +309,12 @@ Falsifiable, and each names how it is shown to have FAILED first — CI green is
    whether to prove the mechanism on one population first.
 6. **Does an ephemeral node get MagicDNS at all?** A name that resolves for four minutes and
    then belongs to a different machine is arguably worse than no name. Tailscale gives them
-   names; roomler's per-network unique-name index would recycle them exactly as it recycles
+   names; meshharbor's per-network unique-name index would recycle them exactly as it recycles
    addresses.
 
 ## 8. Out of scope
 
-- **A stateless daemon** (Tailscale's `--state=mem:`). `roomlerd` persists its WG key and its
+- **A stateless daemon** (Tailscale's `--state=mem:`). `meshharbord` persists its WG key and its
   SSH host key in `config.toml`, and the SSH host key is deliberately refused rather than
   held in memory if it cannot be persisted. Running with no disk state is a separate program.
 - **Node-hours metering / ephemeral-specific pricing.** FR-20 owns metering; forking it here
@@ -340,10 +340,10 @@ Falsifiable, and each names how it is shown to have FAILED first — CI green is
 
 **2026-09-01 — full matrix run on prod `v20260901-6762fae9b2eb` (0.4.46), docker
 containers on the build host** (full evidence: the Result comment on
-[#1095](https://github.com/gjovanov/roomler-ai/issues/1095)). Fail-first captured on the
+[#1095](https://github.com/jk-zhang-meta/MeshHarbor/issues/1095)). Fail-first captured on the
 prior image (self-unenroll 404, zero `ephemeral` fields in the device feed, an expired
 ephemeral row sitting unreaped with the flag off). Then, with ≥ `d08ec741` +
-`ROOMLER__RC__EPHEMERAL_REAPER_ENABLED=true`:
+`MESHHARBOR__RC__EPHEMERAL_REAPER_ENABLED=true`:
 
 - SIGKILL → reaped at `silent_secs=118, ttl=60` (~2 min); `docker stop` → row gone in
   ~2 s (`ephemeral device unenrolled itself on shutdown`); revoked key refused by name
@@ -357,7 +357,7 @@ ephemeral row sitting unreaped with the flag off). Then, with ≥ `d08ec741` +
   (`ephemeral_expired` ×3 / `ephemeral_self_unenroll` ×5 / `agent_delete` ×1).
 - Bonuses: two containers promoted a direct LAN carrier over netstack
   (`probe_ms=2120`); the fresh org carved its own `/22` (FR-47 live);
-  `roomler status` prints the ephemeral line.
+  `mh status` prints the ephemeral line.
 - Findings: the non-affine removes fan (**#1186**, measured both arms — the affine
   admin-DELETE delivers in seconds, the tenant-less self-unenroll misses; recycle
   safety verified intact via the joiner's affine upsert); configmap-only changes need a

@@ -1023,7 +1023,7 @@ async fn metadata_discovery_is_bounded_and_never_allocates_or_spends_mint_budget
     assert!(
         network
             .org_relay
-            .active_session(&roomler_ai_mod_network::overlay::pair_key(a, b))
+            .active_session(&meshharbor_mod_network::overlay::pair_key(a, b))
             .is_none()
     );
     assert_eq!(network.org_relay.sessions_on_relay(r), 0);
@@ -1164,7 +1164,7 @@ async fn metadata_discovery_multi_onehop_negotiates_caps_and_preserves_all_gates
             .state
             .network()
             .org_relay
-            .active_session(&roomler_ai_mod_network::overlay::pair_key(
+            .active_session(&meshharbor_mod_network::overlay::pair_key(
                 ObjectId::parse_str(&rig.a_node).unwrap(),
                 ObjectId::parse_str(&peer).unwrap()
             ))
@@ -1345,7 +1345,7 @@ async fn live_listener_withdrawal_revokes_and_removes_discovery_without_reconnec
             .await
             .unwrap()
             .capabilities
-            .has_rpc(roomler_ai_remote_control::models::RpcCap::RelayServer),
+            .has_rpc(meshharbor_remote_control::models::RpcCap::RelayServer),
         "explicit port withdrawal must win even before heartbeat caps arrive"
     );
     assert_eq!(rig.app.state.network().org_relay.sessions_on_relay(node), 0);
@@ -1706,7 +1706,7 @@ async fn path_trial_bilateral_ack_preserves_active_session_and_uses_independent_
             *id
         );
     }
-    let pair = roomler_ai_mod_network::overlay::pair_key(
+    let pair = meshharbor_mod_network::overlay::pair_key(
         ObjectId::parse_str(&rig.a_node).unwrap(),
         ObjectId::parse_str(&rig.b_node).unwrap(),
     );
@@ -2126,7 +2126,7 @@ async fn backbone_discovery_trial_dual_grants_return_and_edge_withdrawal_are_one
         .await
         .unwrap();
     assert!(
-        roomler_ai_remote_control::models::overlay_host(&network.cidr, &peer_row.overlay_ip)
+        meshharbor_remote_control::models::overlay_host(&network.cidr, &peer_row.overlay_ip)
             .is_some(),
         "fixture forbidden address must belong to this tenant's actual CIDR"
     );
@@ -2427,13 +2427,16 @@ impl CompositeDirectLink {
     pub(crate) fn recover(&self) {
         self.delay.store(0, std::sync::atomic::Ordering::Relaxed);
     }
+    pub(crate) fn degrade(&self) {
+        self.delay.store(40, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 #[cfg(target_os = "linux")]
 async fn composite_drive(
     label: &str,
-    h: &mut roomlerd::relay_server::backbone_test_support::PathTrialTestHarness,
-    output: &mut tokio::sync::mpsc::Receiver<roomler_ai_remote_control::signaling::ClientMsg>,
+    h: &mut meshharbord::relay_server::backbone_test_support::PathTrialTestHarness,
+    output: &mut tokio::sync::mpsc::Receiver<meshharbor_remote_control::signaling::ClientMsg>,
     ws: &mut Ws,
     trace: &mut Vec<(String, String)>,
     trial: ObjectId,
@@ -2507,8 +2510,8 @@ pub(crate) fn composite_ip(
 #[cfg(target_os = "linux")]
 async fn backbone_real_manager_fault_actual_echo_hysteresis_and_server_return_2pc() {
     tokio::time::timeout(Duration::from_secs(45),async {
-        use roomlerd::relay_server::backbone_test_support::{NativeRelay,PathTrialTestHarness,WgKeypair};
-        use roomler_ai_remote_control::signaling::{NetmapPeer,ServerMsg};
+        use meshharbord::relay_server::backbone_test_support::{NativeRelay,PathTrialTestHarness,WgKeypair};
+        use meshharbor_remote_control::signaling::{NetmapPeer,ServerMsg};
         use std::{sync::Arc,net::Ipv4Addr,time::Instant};
         let mut rig=Rig::up_zoned("backbone-real-fault",true,Some(true)).await;rig.arm().await;
         let source=NativeRelay::start().await.unwrap();let target=NativeRelay::start().await.unwrap();
@@ -2595,8 +2598,8 @@ async fn backbone_real_manager_fault_actual_echo_hysteresis_and_server_return_2p
 #[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
 async fn alternate_composite_drive(
-    h: &mut roomlerd::relay_server::backbone_test_support::PathTrialTestHarness,
-    output: &mut tokio::sync::mpsc::Receiver<roomler_ai_remote_control::signaling::ClientMsg>,
+    h: &mut meshharbord::relay_server::backbone_test_support::PathTrialTestHarness,
+    output: &mut tokio::sync::mpsc::Receiver<meshharbor_remote_control::signaling::ClientMsg>,
     ws: &mut Ws,
     discover: bool,
     expected_hint_count: usize,
@@ -2606,7 +2609,7 @@ async fn alternate_composite_drive(
     requests: &mut Vec<(String, std::time::Instant)>,
     controls: &mut Vec<(String, ObjectId)>,
 ) {
-    use roomler_ai_remote_control::signaling::ClientMsg;
+    use meshharbor_remote_control::signaling::ClientMsg;
     h.tick().await;
     if discover {
         h.request_discovery().await;
@@ -2699,8 +2702,8 @@ async fn org_relay_discovery_five_registered_hidden_relay_actual_wg_and_late_bin
 #[cfg(target_os = "linux")]
 async fn run_alternate_wg_composite(five_registered_relays: bool) {
     tokio::time::timeout(Duration::from_secs(100), async {
-        use roomlerd::relay_server::backbone_test_support::{NativeRelay, PathTrialTestHarness, WgKeypair};
-        use roomler_ai_remote_control::signaling::{ClientMsg, NetmapPeer, ServerMsg};
+        use meshharbord::relay_server::backbone_test_support::{NativeRelay, PathTrialTestHarness, WgKeypair};
+        use meshharbor_remote_control::signaling::{ClientMsg, NetmapPeer, ServerMsg};
         use std::{net::Ipv4Addr, sync::Arc, time::Instant};
         let diagnostic_started=Instant::now();
         println!("ALT_STAGE setup elapsed_ms=0");
@@ -2890,7 +2893,7 @@ async fn run_alternate_wg_composite(five_registered_relays: bool) {
         }
         // Read the actual accepted Engine phases via the SAME production
         // bounded watch publisher, after real bilateral WG/2PC (no fake state).
-        let observed_controls=|status:&roomlerd::relay_server::backbone_test_support::PathTrialStatus| {
+        let observed_controls=|status:&meshharbord::relay_server::backbone_test_support::PathTrialStatus| {
             status.transitions.iter().map(|t|(t.sequence,t.trial_id.clone(),t.peer_node_id.clone(),t.from,t.to,t.event,t.return_id.clone())).collect::<Vec<_>>()
         };
         for (h,expected_peer) in [(&a,b_id),(&b,a_id)] {
@@ -2898,13 +2901,13 @@ async fn run_alternate_wg_composite(five_registered_relays: bool) {
             assert!(observed.active.len()<=4 && observed.transitions.len()<=32);
             let current=observed.active.iter().find(|t|t.trial_id==second_trial.to_hex()).expect("real current alternate trial visible");
             assert_eq!(current.peer_node_id,expected_peer.to_hex());
-            assert_eq!(current.phase,roomlerd::relay_server::backbone_test_support::PathTrialPhase::Finalized);
+            assert_eq!(current.phase,meshharbord::relay_server::backbone_test_support::PathTrialPhase::Finalized);
             assert_eq!(current.return_id,None);
             assert_eq!(current.samples.len(),9);assert!(current.samples.len()<=9);
             assert_eq!(usize::from(current.direct_success),current.samples.iter().filter(|s|s.direct_rtt_ns.is_some()).count());
             assert_eq!(usize::from(current.candidate_success),current.samples.iter().filter(|s|s.candidate_rtt_ns.is_some()).count());
-            for (event,from,to) in [(roomlerd::relay_server::backbone_test_support::PathTrialEvent::Commit,roomlerd::relay_server::backbone_test_support::PathTrialPhase::Ready,roomlerd::relay_server::backbone_test_support::PathTrialPhase::Committed),
-                (roomlerd::relay_server::backbone_test_support::PathTrialEvent::Finalize,roomlerd::relay_server::backbone_test_support::PathTrialPhase::Committed,roomlerd::relay_server::backbone_test_support::PathTrialPhase::Finalized)] {
+            for (event,from,to) in [(meshharbord::relay_server::backbone_test_support::PathTrialEvent::Commit,meshharbord::relay_server::backbone_test_support::PathTrialPhase::Ready,meshharbord::relay_server::backbone_test_support::PathTrialPhase::Committed),
+                (meshharbord::relay_server::backbone_test_support::PathTrialEvent::Finalize,meshharbord::relay_server::backbone_test_support::PathTrialPhase::Committed,meshharbord::relay_server::backbone_test_support::PathTrialPhase::Finalized)] {
                 let entries:Vec<_>=observed.transitions.iter().filter(|t|t.trial_id==second_trial.to_hex()&&t.event==event).collect();
                 assert_eq!(entries.len(),1,"exactly one accepted actual transition");
                 assert_eq!(entries[0].peer_node_id,expected_peer.to_hex());assert_eq!(entries[0].from,Some(from));assert_eq!(entries[0].to,Some(to));assert_eq!(entries[0].return_id,None);
@@ -3073,7 +3076,7 @@ async fn metadata_discovery_cursor_covers_five_relays_and_rechecks_acl_between_p
             .state
             .network()
             .org_relay
-            .active_session(&roomler_ai_mod_network::overlay::pair_key(
+            .active_session(&meshharbor_mod_network::overlay::pair_key(
                 ObjectId::parse_str(&rig.a_node).unwrap(),
                 ObjectId::parse_str(&rig.b_node).unwrap()
             ))
@@ -3220,7 +3223,7 @@ async fn org_only_fallback_mints_without_turn_churn_and_repushes_remaining_ttl()
     let a = ObjectId::parse_str(&rig.a_node).unwrap();
     let b = ObjectId::parse_str(&rig.b_node).unwrap();
     let r = ObjectId::parse_str(&rig.r_node).unwrap();
-    let pk = roomler_ai_mod_network::overlay::pair_key(a, b);
+    let pk = meshharbor_mod_network::overlay::pair_key(a, b);
     let first = rig
         .app
         .state
@@ -3279,7 +3282,7 @@ async fn org_only_fallback_remints_once_the_bind_window_has_passed() {
     assert_eq!(sa["vni"], serve["vni"]);
     let a = ObjectId::parse_str(&rig.a_node).unwrap();
     let b = ObjectId::parse_str(&rig.b_node).unwrap();
-    let pk = roomler_ai_mod_network::overlay::pair_key(a, b);
+    let pk = meshharbor_mod_network::overlay::pair_key(a, b);
     request_org_only(&mut rig, 2).await;
     let within = recv_org_only_session(&mut rig.a).await;
     assert_eq!(
@@ -3320,7 +3323,7 @@ async fn org_only_fallback_remints_once_the_bind_window_has_passed() {
 
 #[tokio::test]
 async fn org_only_fallback_preserves_forced_derp_pin_without_churn_or_mint() {
-    use roomler_ai_mod_network::overlay::{PairChurn, arm_grant, churn_note_request, pair_key};
+    use meshharbor_mod_network::overlay::{PairChurn, arm_grant, churn_note_request, pair_key};
     let mut rig = Rig::up("org-only-pin", true, Some(true)).await;
     rig.arm().await;
     let pk = pair_key(
@@ -3426,7 +3429,7 @@ async fn org_loss_report_pins_the_pair_to_derp_and_revokes_the_session() {
         .await
         .unwrap();
     let vni = sa["vni"].as_u64().unwrap();
-    let pk = roomler_ai_mod_network::overlay::pair_key(
+    let pk = meshharbor_mod_network::overlay::pair_key(
         ObjectId::parse_str(&rig.a_node).unwrap(),
         ObjectId::parse_str(&rig.b_node).unwrap(),
     );
@@ -3535,7 +3538,7 @@ async fn a_lossy_relay_moves_the_pair_to_another_relay_in_the_zone() {
         (extra_node.clone(), rig.r_node.clone())
     };
     let vni = old["vni"].as_u64().unwrap();
-    let pk = roomler_ai_mod_network::overlay::pair_key(
+    let pk = meshharbor_mod_network::overlay::pair_key(
         ObjectId::parse_str(&rig.a_node).unwrap(),
         ObjectId::parse_str(&rig.b_node).unwrap(),
     );
@@ -3897,7 +3900,7 @@ async fn rejoin_as(ws: &mut Ws, seed: u8, instance: Option<&str>) {
 /// one, changes nothing.
 #[tokio::test]
 async fn a_restarted_node_starts_its_churn_count_afresh() {
-    use roomler_ai_mod_network::overlay::{
+    use meshharbor_mod_network::overlay::{
         PairChurn, arm_grant, churn_note_request, org_loss_pin, pair_key,
     };
     let mut rig = Rig::up("restart-churn", true, Some(true)).await;
@@ -3954,12 +3957,12 @@ async fn a_restarted_node_starts_its_churn_count_afresh() {
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn nhop_delivery_three_native_relays_forward_and_revoke_middle_bridge() {
-    use roomler_ai_mod_network::org_relay::{
+    use meshharbor_mod_network::org_relay::{
         LineLeg, OrgRelaySession, SessionMember, SessionParty,
     };
-    use roomler_ai_remote_control::models::NodeRef;
-    use roomler_ai_remote_control::signaling::ServerMsg;
-    use roomlerd::relay_server::backbone_test_support::{
+    use meshharbor_remote_control::models::NodeRef;
+    use meshharbor_remote_control::signaling::ServerMsg;
+    use meshharbord::relay_server::backbone_test_support::{
         BindSecret, NativeRelay, WgKeypair, bind_member, build_data, parse_data,
     };
     use std::time::Instant;
@@ -4017,7 +4020,7 @@ async fn nhop_delivery_three_native_relays_forward_and_revoke_middle_bridge() {
         ],
     };
     let frames =
-        roomler_ai_mod_network::org_relay::candidate_test_support::delivery_frames_for_fixture(&s)
+        meshharbor_mod_network::org_relay::candidate_test_support::delivery_frames_for_fixture(&s)
             .unwrap();
     assert_eq!(frames.len(), 5);
     for (index, (target, msg)) in frames.into_iter().enumerate() {

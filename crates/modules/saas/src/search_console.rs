@@ -4,7 +4,7 @@
 //! account's access token, Search Analytics and URL Inspection.
 //!
 //! * **The credential** is a service account's JSON key
-//!   (`ROOMLER__GROWTH__SEARCH_CONSOLE_KEY`, from a Secret). The token is the
+//!   (`MESHHARBOR__GROWTH__SEARCH_CONSOLE_KEY`, from a Secret). The token is the
 //!   OAuth 2.0 JWT-bearer grant: an RS256 assertion `{iss: client_email,
 //!   scope: webmasters.readonly, aud: token_uri, iat, exp ≤ iat + 1 h}`
 //!   posted to the key's `token_uri`, and the access token cached until a
@@ -257,7 +257,7 @@ impl ScClient {
     /// This server's client: `None` without a key (nothing is ever asked),
     /// `Some(Err)` when the key is set but unusable — the pullers say so
     /// once and ask nothing.
-    pub fn from_settings(g: &roomler_ai_config::GrowthSettings) -> Option<Result<Self, ScError>> {
+    pub fn from_settings(g: &meshharbor_config::GrowthSettings) -> Option<Result<Self, ScError>> {
         if !g.search_console_configured() {
             return None;
         }
@@ -420,8 +420,8 @@ impl ScClient {
         serde_json::from_slice::<T>(&body).map_err(|e| ScError::Decode(short(&e.to_string())))
     }
 
-    /// The property's path segment: `sc-domain:roomler.ai` →
-    /// `sc-domain%3Aroomler.ai` (every reserved character encoded).
+    /// The property's path segment: `sc-domain:meshharbor.itachi.fans` →
+    /// `sc-domain%3Ameshharbor.itachi.fans` (every reserved character encoded).
     fn site_segment(&self) -> String {
         url::form_urlencoded::byte_serialize(self.site.as_bytes()).collect()
     }
@@ -485,7 +485,7 @@ fn transport(e: reqwest::Error) -> ScError {
 
 fn http_client(timeout: Duration) -> reqwest::Client {
     reqwest::Client::builder()
-        .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
         .timeout(timeout)
         .build()
         .expect("a reqwest client with a timeout builds")
@@ -562,7 +562,7 @@ mod tests {
                 "indexStatusResult":{"verdict":"PASS","coverageState":"Submitted and indexed",
                 "robotsTxtState":"ALLOWED","indexingState":"INDEXING_ALLOWED",
                 "lastCrawlTime":"2026-10-12T08:00:00Z","pageFetchState":"SUCCESSFUL",
-                "googleCanonical":"https://roomler.ai/blog/x/","crawledAs":"MOBILE"}}}"#,
+                "googleCanonical":"https://meshharbor.itachi.fans/blog/x/","crawledAs":"MOBILE"}}}"#,
         )
         .unwrap();
         let s = r.inspection_result.unwrap().index_status_result.unwrap();
@@ -575,7 +575,7 @@ mod tests {
     /// read-only scope, the token endpoint as audience, an hour at most.
     #[test]
     fn the_assertion_carries_the_grants_claims() {
-        let c = hs_client("sc-domain:roomler.ai");
+        let c = hs_client("sc-domain:meshharbor.itachi.fans");
         let jwt = c.assertion(1_760_000_000).unwrap();
         let mut v = jsonwebtoken::Validation::new(Algorithm::HS256);
         v.set_audience(&["https://oauth2.example.test/token"]);
@@ -611,14 +611,15 @@ mod tests {
             .unwrap();
         let key_json = serde_json::json!({
             "type": "service_account",
-            "project_id": "roomler-test",
+            "project_id": "meshharbor-test",
             "private_key_id": "a1b2c3",
             "private_key": pem.as_str(),
-            "client_email": "growth-reader@roomler-test.iam.gserviceaccount.com",
+            "client_email": "growth-reader@meshharbor-test.iam.gserviceaccount.com",
             "token_uri": "https://oauth2.googleapis.com/token",
         })
         .to_string();
-        let c = ScClient::from_key_json("sc-domain:roomler.ai", "https://x", &key_json).unwrap();
+        let c = ScClient::from_key_json("sc-domain:meshharbor.itachi.fans", "https://x", &key_json)
+            .unwrap();
         let now = DateTime::now().timestamp_millis() / 1000;
         let jwt = c.assertion(now).unwrap();
         let mut v = jsonwebtoken::Validation::new(Algorithm::RS256);
@@ -633,7 +634,7 @@ mod tests {
         assert_eq!(data.header.kid.as_deref(), Some("a1b2c3"));
         assert_eq!(
             data.claims["iss"],
-            "growth-reader@roomler-test.iam.gserviceaccount.com"
+            "growth-reader@meshharbor-test.iam.gserviceaccount.com"
         );
         assert_eq!(data.claims["scope"], SCOPE);
         assert_eq!(data.claims["exp"], now + 3600);
@@ -655,12 +656,12 @@ mod tests {
     #[test]
     fn the_property_is_one_encoded_path_segment() {
         assert_eq!(
-            hs_client("sc-domain:roomler.ai").site_segment(),
-            "sc-domain%3Aroomler.ai"
+            hs_client("sc-domain:meshharbor.itachi.fans").site_segment(),
+            "sc-domain%3Ameshharbor.itachi.fans"
         );
         assert_eq!(
-            hs_client("https://roomler.ai/").site_segment(),
-            "https%3A%2F%2Froomler.ai%2F"
+            hs_client("https://meshharbor.itachi.fans/").site_segment(),
+            "https%3A%2F%2Fmeshharbor.itachi.fans%2F"
         );
     }
 
@@ -687,6 +688,6 @@ mod tests {
         let shown = format!("{:?}", hs_client("sc-domain:x"));
         assert!(!shown.contains("test-secret"), "{shown}");
         // No key configured: no client, nothing asked.
-        assert!(ScClient::from_settings(&roomler_ai_config::GrowthSettings::default()).is_none());
+        assert!(ScClient::from_settings(&meshharbor_config::GrowthSettings::default()).is_none());
     }
 }

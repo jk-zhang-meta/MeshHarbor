@@ -17,9 +17,9 @@
       class="flex-shrink-0"
       @update:model-value="pick"
     >
-      <v-btn value="unmanaged" size="small">Leave alone</v-btn>
-      <v-btn value="off" size="small">Off</v-btn>
-      <v-btn value="on" size="small">On</v-btn>
+      <v-btn value="unmanaged" size="small">{{ t('mh.managed.leave') }}</v-btn>
+      <v-btn value="off" size="small">{{ t('mh.managed.off') }}</v-btn>
+      <v-btn value="on" size="small">{{ t('mh.managed.on') }}</v-btn>
     </v-btn-toggle>
     <span class="text-body-2">{{ label }}</span>
   </div>
@@ -37,6 +37,7 @@
  * `DesiredConfig`'s fields are all `Option` on the server.
  */
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
   modelValue: boolean | undefined
@@ -47,6 +48,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean | undefined): void
 }>()
+
+const { t } = useI18n()
 
 type Choice = 'unmanaged' | 'off' | 'on'
 

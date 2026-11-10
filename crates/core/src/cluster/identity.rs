@@ -6,7 +6,7 @@
 //! per-pod bus channel and appears in every ownership record), and unique
 //! per concurrently-running pod. Under hostNetwork there is at most one
 //! API pod per node, so the node host IP — already injected as
-//! `ROOMLER__POD_HOST_IP` (Downward API `status.hostIP`) and already the
+//! `MESHHARBOR__POD_HOST_IP` (Downward API `status.hostIP`) and already the
 //! key the LB upstream list and the mediasoup announced-ip map speak — is
 //! the natural identity. `epoch` is a per-process fencing token: a
 //! restarted pod re-subscribes to the same channel but must NOT be
@@ -14,8 +14,8 @@
 
 #[derive(Debug, Clone)]
 pub struct PodIdentity {
-    /// Stable across restarts: settings override (`ROOMLER__APP__POD_ID`,
-    /// per-TestApp in tests) → node host IP (`ROOMLER__POD_HOST_IP`) →
+    /// Stable across restarts: settings override (`MESHHARBOR__APP__POD_ID`,
+    /// per-TestApp in tests) → node host IP (`MESHHARBOR__POD_HOST_IP`) →
     /// machine hostname → random dev id.
     pub pod_id: String,
     /// Random per-process token (uuid, first 8 hex chars).
@@ -26,7 +26,7 @@ impl PodIdentity {
     pub fn resolve(explicit: Option<String>) -> Self {
         let pod_id = explicit
             .filter(|s| !s.trim().is_empty())
-            .or_else(|| non_empty_env("ROOMLER__POD_HOST_IP"))
+            .or_else(|| non_empty_env("MESHHARBOR__POD_HOST_IP"))
             // Dev convenience only — in k8s HOSTNAME is the (per-restart)
             // pod name, but POD_HOST_IP always wins there.
             .or_else(|| non_empty_env("COMPUTERNAME"))

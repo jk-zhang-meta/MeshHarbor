@@ -3,7 +3,7 @@
 Everything between the remote host's framebuffer and the viewer's canvas: capture
 backends, the **cell matrix** a host advertises and how the viewer resolves it, the
 probe that discovers it, the encoder cascade per platform, rate control, and the
-browser decode paths. Agent side lives in `agents/roomlerd/src/{capture,encode}/`;
+browser decode paths. Agent side lives in `agents/meshharbord/src/{capture,encode}/`;
 viewer side in `ui/src/composables/{useRemoteControl,videoCells}.ts` + `ui/src/workers/`.
 *As of 0.4.87 (FR-77 P0–P4, 2026-09-08).* The design record with every decision's
 pros and cons is [`docs/fr/FR-77-encoder-chroma-matrix.md`](fr/FR-77-encoder-chroma-matrix.md);
@@ -16,7 +16,7 @@ the words below are the glossary's ([`CONTEXT.md`](../CONTEXT.md)).
 | **encoder** | codec × backend, an FFmpeg name | `hevc_nvenc`, `vp9_vaapi` |
 | **chroma format** | how much colour the bitstream keeps | 4:2:0 (`yuv420`) · 4:4:4 (`yuv444`, "crisp text") |
 | **cell** | codec × chroma format — what a session actually asks for | HEVC 4:4:4 |
-| **probe** | the real-bytes trial that proves a cell on a host | `roomlerd caps-probe` |
+| **probe** | the real-bytes trial that proves a cell on a host | `meshharbord caps-probe` |
 | **probe cache** | the remembered answer of the last probe, kept only under the build, hardware, drivers and settings that produced it | `caps-cache.json` |
 | **denylist** | cells a device must not open or advertise — the kill switch | `hevc_qsv:yuv444` |
 
@@ -24,7 +24,7 @@ the words below are the glossary's ([`CONTEXT.md`](../CONTEXT.md)).
 
 ```mermaid
 flowchart LR
-    subgraph host["Controlled host (roomlerd)"]
+    subgraph host["Controlled host (meshharbord)"]
         CAP["Capture<br/>WGC · DXGI · scrap · GDI · X11"]
         CVT["Convert<br/>BGRA→NV12 / I420 / I444 / VUYX<br/>FP16→BGRA (HDR/ACM) · downscale ≥3.5 Mpx"]
         ENC["Encode<br/>MF · FFmpeg (NVENC · QSV · AMF · VideoToolbox · VAAPI)<br/>OpenH264 · libvpx VP9"]
@@ -72,7 +72,7 @@ Two transport families with different latency behaviour:
 One build per OS and architecture carries **every** hardware backend FFmpeg offers
 for that platform; the probe below discovers at runtime which ones the host can
 open. That was decided by a measurement, not a preference — every wrapper is under
-1 MB against a 35 MiB `roomlerd.exe` (ADR
+1 MB against a 35 MiB `meshharbord.exe` (ADR
 [0001](adr/0001-encoder-backends-compiled-in-discovered-at-runtime.md)).
 
 | Codec | Windows | Linux x86_64 | macOS arm64 | Notes |
@@ -115,7 +115,7 @@ plus `probe_ms` and `probe_cached`.
 | `hw` is verified, never assumed | NVENC / AMF / VideoToolbox / VAAPI are hardware by construction; a QSV open proves hardware only on the oneVPL build (FFmpeg's internal MFX session filters `MFX_IMPL_TYPE_HARDWARE`), which `qsv_is_hardware_by_construction` detects by `av1_qsv` being registered (libvpl-only); the native MF cell reports what its cascade landed on |
 | A 4:4:4 cell is **opened**, never asserted by name | the pre-FR-77 code advertised `hevc_chroma: yuv444` for any `hevc_nvenc`; now the legacy field says 4:4:4 only when that open succeeded |
 | `h264_nvenc` 4:4:4 sets `profile=high444p` | `rext` is HEVC's profile and h264_nvenc rejects it at open, which would read as "cannot do 4:4:4" |
-| **The denylist** = the kill switch, both chroma forms: a `name:chroma` cell on it is never opened nor advertised — by the probe AND by a session (`cells::names_420` / `names_444` are the cascade minus the list; the probe and every session constructor read them). Built-in: `hevc_qsv:yuv444, hevc_vaapi:yuv444, vp9_qsv:yuv444, vp9_vaapi:yuv444, hevc_vulkan:yuv444`, and one 4:2:0 cell, `av1_vulkan:yuv420` — its frames do not decode (dav1d fails every frame header, libaom aborts, Chrome paints garbage), reproduced with the FFmpeg CLI's own `av1_vulkan` on the same NVIDIA GPU: an FFmpeg 9.0.1 / driver defect, §Hardware frames | each unproven 4:4:4 cell leaves the list on a field pass; CORPLAP-3's Intel runtime died on the first VUYX open. `encoder_cells_deny` (config, env `ROOMLERD_ENCODER_CELLS_DENY`, pushable through remote config; a change takes effect at the next daemon start) **replaces** the default; `none` denies nothing. Until 0.4.87 it gated only the 4:4:4 open; until 0.4.90 only the probe and the 4:4:4 list read it at all — a 4:2:0 session cascade opened a denied `hevc_vaapi` on jupiter while the hello advertised only the Vulkan cells (FR-78 P3) |
+| **The denylist** = the kill switch, both chroma forms: a `name:chroma` cell on it is never opened nor advertised — by the probe AND by a session (`cells::names_420` / `names_444` are the cascade minus the list; the probe and every session constructor read them). Built-in: `hevc_qsv:yuv444, hevc_vaapi:yuv444, vp9_qsv:yuv444, vp9_vaapi:yuv444, hevc_vulkan:yuv444`, and one 4:2:0 cell, `av1_vulkan:yuv420` — its frames do not decode (dav1d fails every frame header, libaom aborts, Chrome paints garbage), reproduced with the FFmpeg CLI's own `av1_vulkan` on the same NVIDIA GPU: an FFmpeg 9.0.1 / driver defect, §Hardware frames | each unproven 4:4:4 cell leaves the list on a field pass; CORPLAP-3's Intel runtime died on the first VUYX open. `encoder_cells_deny` (config, env `MESHHARBORD_ENCODER_CELLS_DENY`, pushable through remote config; a change takes effect at the next daemon start) **replaces** the default; `none` denies nothing. Until 0.4.87 it gated only the 4:4:4 open; until 0.4.90 only the probe and the 4:4:4 list read it at all — a 4:2:0 session cascade opened a denied `hevc_vaapi` on jupiter while the hello advertised only the Vulkan cells (FR-78 P3) |
 | AV1, AMF, VideoToolbox and Media Foundation are never asked for 4:4:4 | `av1_nvenc` hard-errors on it and every other AV1 backend lists 4:2:0 only; AMF has no 4:4:4 surface; VideoToolbox HEVC has only Main / Main10 / Main42210; `*_mf` takes NV12 — locked by a test against the vocabulary |
 
 What the fleet advertised on 0.4.88 (server records, 2026-09-08; the D3D12 and
@@ -185,21 +185,21 @@ mistaken for the cell that was asked for.
 
 A capability probe is untrusted third-party code by definition — vendor drivers
 and, through them, GPU firmware — so it does not run in the daemon's address
-space. `encode::caps::detect()` (`agents/roomlerd/src/encode/caps.rs`) answers
-from the cache when it can, and otherwise spawns `roomlerd caps-probe` twice:
+space. `encode::caps::detect()` (`agents/meshharbord/src/encode/caps.rs`) answers
+from the cache when it can, and otherwise spawns `meshharbord caps-probe` twice:
 
 ```mermaid
 flowchart TD
     S([daemon start]) --> K{cache key?<br/>build × hardware × knobs}
-    K -- "macOS: no fingerprint<br/>ROOMLERD_CAPS_CACHE=0" --> B
+    K -- "macOS: no fingerprint<br/>MESHHARBORD_CAPS_CACHE=0" --> B
     K --> L{caps-cache.json<br/>same key, < 7 days?}
     L -- hit --> M[merge: driver-derived fields from the cache,<br/>permissions / verbs recomputed now<br/>probe_cached = true]
-    L -- "miss (reason logged)" --> B["child 1 — ROOMLERD_CAPS_PHASE=base<br/>every 4:2:0 cell, the software cells,<br/>the vp9_qsv IDR verdict"]
+    L -- "miss (reason logged)" --> B["child 1 — MESHHARBORD_CAPS_PHASE=base<br/>every 4:2:0 cell, the software cells,<br/>the vp9_qsv IDR verdict"]
     B -- "died / hung / unparseable" --> F[driver-free caps,<br/>no hardware advertised]
-    B -- ROOMLER_CAPS_JSON --> C{candidates_444:<br/>hardware NVENC / QSV / VAAPI cells<br/>on the 4:4:4-capable list, minus the denylist}
+    B -- MESHHARBOR_CAPS_JSON --> C{candidates_444:<br/>hardware NVENC / QSV / VAAPI cells<br/>on the 4:4:4-capable list, minus the denylist}
     C -- none --> H
-    C -- some --> T["child 2 — PHASE=444<br/>ROOMLERD_CAPS_444_NAMES=…<br/>announces each open on stdout first"]
-    T -- ROOMLER_CAPS_444 --> G[merge_444: the named cells gain yuv444;<br/>hevc_chroma follows the legacy rule]
+    C -- some --> T["child 2 — PHASE=444<br/>MESHHARBORD_CAPS_444_NAMES=…<br/>announces each open on stdout first"]
+    T -- MESHHARBOR_CAPS_444 --> G[merge_444: the named cells gain yuv444;<br/>hevc_chroma follows the legacy rule]
     T -- "died / hung" --> H2["the 4:2:0 matrix, and the log names<br/>the last open — the entry for encoder_cells_deny"]
     G --> W{any hardware cell?}
     H2 --> W
@@ -223,18 +223,18 @@ with `0xc0000005` on the first `vp9_qsv` 4:4:4 open over VUYX, and with ONE chil
 that cost the daemon every hardware cell — `av1_qsv`, `h264_qsv`, `vp9_qsv` 4:2:0
 gone for a cell no session needed. A faulting 4:4:4 open now costs only the
 4:4:4 forms. The second child announces every open on stdout first
-(`ROOMLER_CAPS_PROGRESS:`, line-buffered so it survives the crash) because on a
+(`MESHHARBOR_CAPS_PROGRESS:`, line-buffered so it survives the crash) because on a
 service host its stderr reaches no log.
 
 Why a cache (P3a): the matrix probe costs 4–6 s on a Windows host with two GPUs,
 paid on every daemon start for an answer that changes only when the GPU, its
-driver, the OS build or the roomlerd build changes. The key:
+driver, the OS build or the meshharbord build changes. The key:
 
 | Key part | What it is | Why |
 |---|---|---|
 | **build** | crate version + the executable's length and mtime | a dev build with the same version number is a different build |
 | **hardware** (`encode/hwid.rs`) | Windows: every display-class driver instance's `DriverDesc` / `DriverVersion` / `MatchingDeviceId` from the registry + the OS build and UBR. Linux: sysfs DRM ids + kernel driver per card, the NVIDIA module version, the kernel release, size + mtime of the userspace driver libraries the backends dlopen. macOS: none | NVENC, the Intel media runtime and AMF all ship inside the display driver; Media Foundation's codec set is the OS build's. macOS's probe is ~100 ms and VideoToolbox is the OS — no key, no cache |
-| **knobs** | SHA-256 of every `ROOMLERD_*` knob (env + the config fallbacks the child receives) | a denylist edit or `ROOMLERD_DC_H264=0` changes the answer; hashed because an env block can carry a token |
+| **knobs** | SHA-256 of every `MESHHARBORD_*` knob (env + the config fallbacks the child receives) | a denylist edit or `MESHHARBORD_DC_H264=0` changes the answer; hashed because an env block can carry a token |
 
 Rules that are load-bearing: only a result with a **hardware** cell is cached (a
 no-hardware answer is the cheap case, and the one a service starting before the
@@ -247,14 +247,14 @@ Windows service host the WORKER (console session) runs the probe and owns the
 cache file. Measured: a hit answers 0.5 s after `agent starting` where the probe
 took 3.6 s.
 
-⚠️ **The knob half of the key makes every `ROOMLERD_*` variable a probe
+⚠️ **The knob half of the key makes every `MESHHARBORD_*` variable a probe
 trigger, including ones that have nothing to do with encoding.** Flipping a
-capture flag (`ROOMLERD_PORTAL_CAPTURE`, `ROOMLERD_VIRTUAL_DESKTOP`, …) misses
-the single-entry cache (`a ROOMLERD_* knob changed`) and the next start runs
+capture flag (`MESHHARBORD_PORTAL_CAPTURE`, `MESHHARBORD_VIRTUAL_DESKTOP`, …) misses
+the single-entry cache (`a MESHHARBORD_* knob changed`) and the next start runs
 the full probe — and restoring the old value is a *second* miss. Measured on
 the WSL2 dev host (2026-09-25, FR-45 AC2): a fresh NVENC probe **hung** while a
 software-rendering compositor rig loaded the box — `caps probe: the probe child
-hung` after the 60 s bound, `env -i roomlerd caps` reproducing a 75 s stall
+hung` after the 60 s bound, `env -i meshharbord caps` reproducing a 75 s stall
 where the same command from a login shell took ~5 s — and the pumps then
 missed the watchdog's 90 s window, so the daemon forced `exit(2)` and systemd
 restarted it into the same probe. With the load stopped the identical probe
@@ -264,7 +264,7 @@ sequence is written out in [`linux-capture.md` §7](linux-capture.md#7-configura
 
 Implementation notes that keep the child honest:
 
-- The child sets `ROOMLERD_CAPS_CHILD=1`; `detect()` seeing it computes
+- The child sets `MESHHARBORD_CAPS_CHILD=1`; `detect()` seeing it computes
   in-process, so nothing can recurse into an endless spawn.
 - stdout is **marker-parsed, not last-line-parsed** — the daemon logs to stdout,
   so "the last line" would have been a log line on the very first run.
@@ -272,18 +272,18 @@ Implementation notes that keep the child honest:
   the record of *which* codec died, and they belong in the daemon log directly
   above the verdict.
 - The child does not inherit the config-fallback registry, so `child::probe()`
-  exports every registered knob as a real `ROOMLERD_*` variable (precedence
+  exports every registered knob as a real `MESHHARBORD_*` variable (precedence
   preserved), and the parent recomputes `caps.rpc` — a verb derived from CONFIG
   belongs to the parent, never the probe.
 - The child prints a `ProbeReport` envelope (`{caps, vp9_qsv_idr}`); the
   vp9_qsv runtime-IDR verdict lived in the child from rc.433 to 0.4.84 and never
   reached a session.
-- `ROOMLERD_HW_AUTO=0` and `ROOMLERD_ENCODER=software` do **not** skip the probe.
+- `MESHHARBORD_HW_AUTO=0` and `MESHHARBORD_ENCODER=software` do **not** skip the probe.
   Those select an encoder; the probe enumerates what to *advertise*.
 
 ## Selection at session time
 
-Preference resolution: **CLI `--encoder` > env `ROOMLERD_ENCODER` >
+Preference resolution: **CLI `--encoder` > env `MESHHARBORD_ENCODER` >
 `encoder_preference` in config.toml > `auto`**. Values: `auto` | `hardware`
 (`hw`/`mf`) | `software` (`sw`/`openh264`).
 
@@ -321,8 +321,8 @@ Key properties:
 - **Fail closed**: once a session's track is bound to `video/HEVC` or
   `video/AV1`, an encoder failure yields a null encoder rather than silently
   switching bitstreams.
-- **Escape hatch**: `ROOMLERD_HW_AUTO=0` reverts `auto` to software-first
-  without a rebuild; `ROOMLERD_USE_FFMPEG=0` removes the FFmpeg backends.
+- **Escape hatch**: `MESHHARBORD_HW_AUTO=0` reverts `auto` to software-first
+  without a rebuild; `MESHHARBORD_USE_FFMPEG=0` removes the FFmpeg backends.
 - **Auto does not keep the GPU-less software MFT** (#2283). When the
   default-adapter fallback also ignores the D3D manager, the session gets
   OpenH264 instead (`keeps_mf`), and the log says so. On a VM whose only
@@ -442,7 +442,7 @@ that rejects them costs the knob, never the open.
 
 **The positive cell is AMD.** jupiter and zeus (Raphael iGPU, VCN 3.1, Mesa's
 `radeonsi` from `mesa-va-drivers` 25.2.8, Ubuntu 24.04) advertise `hevc/vaapi` +
-`h264/vaapi` in a 100 ms probe, and `roomlerd encoder-smoke --codec hevc` puts real
+`h264/vaapi` in a 100 ms probe, and `meshharbord encoder-smoke --codec hevc` puts real
 HEVC bytes through the pump (`vaapi: device opened /dev/dri/renderD128`). Intel
 (iHD) has no fleet host yet, so its VAAPI cells are exactly as probe-gated as any
 other unproven backend.
@@ -473,7 +473,7 @@ then advertised `hevc/vaapi` and `h264/vaapi` and exited normally.
 session per new cell (CORPLAP-3, jupiter, the dev box — the denylist steering each
 session onto the cell under test). Six decoded cleanly; the dev box's `av1_vulkan`
 opened, encoded, reported nothing wrong, and painted garbage under Chrome's
-hardware AV1 decoder — under dav1d (`localStorage roomler-rc-decode-pref=software`)
+hardware AV1 decoder — under dav1d (`localStorage meshharbor-rc-decode-pref=software`)
 it stalled outright. `encoder-smoke --name av1_vulkan --dump <file>` and the FFmpeg
 CLI's decoders attributed it in one run: the stream is `SeqHdr · 240 B of padding ·
 Frame · Frame …` with **no temporal-delimiter OBU**, which the AV1 spec puts at the
@@ -487,25 +487,25 @@ region smears — correct keyframes, corrupt inter frames — and the FFmpeg CLI
 `av1_vulkan` on the same GPU (testsrc2, the `ivf` muxer inserting the delimiters
 itself) produces frames dav1d refuses at the header (`Error parsing frame header`,
 29 of 29) and libaom aborts on. An FFmpeg 9.0.1 / NVIDIA driver defect with no
-roomler code in the loop, so the cell sits on the built-in denylist
+meshharbor code in the loop, so the cell sits on the built-in denylist
 (`av1_vulkan:yuv420`) until a driver or FFmpeg release decodes. The `--dump` flag
 stays: a cell whose session looks wrong is attributed offline before anyone touches
 the denylist, and the raw dump of a healthy build decodes as-is.
 
 ## Configuration
 
-| Key (config.toml / `roomler config set`) | Env | Default | What |
+| Key (config.toml / `mh config set`) | Env | Default | What |
 |---|---|---|---|
-| `encoder_preference` | `ROOMLERD_ENCODER` (CLI `--encoder` wins) | `auto` | `auto` · `hardware` · `software` |
-| `encoder_cells_deny` | `ROOMLERD_ENCODER_CELLS_DENY` | the built-in list | `name:chroma` cells never opened nor advertised; `none` = deny nothing; pushable through remote config (`MANAGE_AGENTS`), `needs_restart` |
-| `caps_cache` | `ROOMLERD_CAPS_CACHE` | on | the probe cache (read and write) |
-| `vaapi_device` | `ROOMLERD_VAAPI_DEVICE` | unset | pin the render node; unset = `/dev/dri/renderD128`…`135` in order |
-| `d3d12_adapter` | `ROOMLERD_D3D12_ADAPTER` | unset | pin the DXGI adapter index for D3D12 video encode (Windows); unset = adapters `0`…`3` in order |
-| `vulkan_device` | `ROOMLERD_VULKAN_DEVICE` | unset | pin the Vulkan physical device by index or name; unset = the loader's default |
-| `rate_factor_{h264,hevc,vp9}_444` | `ROOMLERD_RATE_FACTOR_<CODEC>_444` | 150 | the 4:4:4 ceiling factor (%), 50–400 |
-| — | `ROOMLERD_HW_AUTO=0` | — | `auto` becomes software-first |
-| — | `ROOMLERD_USE_FFMPEG=0` | — | no FFmpeg backends at all |
-| — | `ROOMLERD_DC_H264=0` | — | no H.264-over-DataChannel advertisement (its cells are then not probed either) |
+| `encoder_preference` | `MESHHARBORD_ENCODER` (CLI `--encoder` wins) | `auto` | `auto` · `hardware` · `software` |
+| `encoder_cells_deny` | `MESHHARBORD_ENCODER_CELLS_DENY` | the built-in list | `name:chroma` cells never opened nor advertised; `none` = deny nothing; pushable through remote config (`MANAGE_AGENTS`), `needs_restart` |
+| `caps_cache` | `MESHHARBORD_CAPS_CACHE` | on | the probe cache (read and write) |
+| `vaapi_device` | `MESHHARBORD_VAAPI_DEVICE` | unset | pin the render node; unset = `/dev/dri/renderD128`…`135` in order |
+| `d3d12_adapter` | `MESHHARBORD_D3D12_ADAPTER` | unset | pin the DXGI adapter index for D3D12 video encode (Windows); unset = adapters `0`…`3` in order |
+| `vulkan_device` | `MESHHARBORD_VULKAN_DEVICE` | unset | pin the Vulkan physical device by index or name; unset = the loader's default |
+| `rate_factor_{h264,hevc,vp9}_444` | `MESHHARBORD_RATE_FACTOR_<CODEC>_444` | 150 | the 4:4:4 ceiling factor (%), 50–400 |
+| — | `MESHHARBORD_HW_AUTO=0` | — | `auto` becomes software-first |
+| — | `MESHHARBORD_USE_FFMPEG=0` | — | no FFmpeg backends at all |
+| — | `MESHHARBORD_DC_H264=0` | — | no H.264-over-DataChannel advertisement (its cells are then not probed either) |
 | — | `LIBVA_DRIVERS_PATH` | the distros' `dri` dirs | where the bundled libva looks for the host's VA driver |
 
 ## Capture backends
@@ -514,11 +514,11 @@ Cascade (first that works wins): synthetic (CI, env-gated) → **SystemContext**
 (service worker on Windows — adapter-bound DXGI that picks the adapter *owning the
 primary output*, fixing Optimus hybrid GPUs, with a GDI `BitBlt` fallback after
 three consecutive hard errors) → **Windows.Graphics.Capture** (hardware cursor,
-dirty regions on Win11) → **DRM/KMS** (Linux, opt-in `ROOMLERD_DRM_CAPTURE=1` —
+dirty regions on Win11) → **DRM/KMS** (Linux, opt-in `MESHHARBORD_DRM_CAPTURE=1` —
 the scanout plane below the compositor, FR-36) → **the desktop portal** (Linux,
-opt-in `ROOMLERD_PORTAL_CAPTURE=1` — a privilege-dropped `portal-helper` in the
+opt-in `MESHHARBORD_PORTAL_CAPTURE=1` — a privilege-dropped `portal-helper` in the
 user's session feeding PipeWire frames over a pipe, FR-45; with
-`ROOMLERD_MUTTER_CAPTURE=1` the same helper takes them from
+`MESHHARBORD_MUTTER_CAPTURE=1` the same helper takes them from
 `org.gnome.Mutter.ScreenCast` instead, unattended; a per-user install in its own
 Wayland session with no key set switches mutter, else the portal, on by itself,
 FR-93 P2) → **scrap** (DXGI duplication
@@ -607,13 +607,13 @@ flowchart LR
   and the DRM capture worker each set their own utilisation clamp (`sched_setattr`, `SCHED_FLAG_UTIL_CLAMP_MIN`,
   `uclamp_min` 1024, `encode/clock.rs:36`), keeping their policy and priority. A clamp counts only while the
   thread is runnable, and threads it starts afterwards inherit it: libvpx's workers, and Mesa's shader-cache
-  thread from the capture worker's EGL. Kill switch: `ROOMLERD_ENCODER_CLOCK=0`.
+  thread from the capture worker's EGL. Kill switch: `MESHHARBORD_ENCODER_CLOCK=0`.
   - ⚠️ **Not the async runtime.** Clamping every daemon thread was measured and added nothing (56.3 fps either
     way), and a clamped runtime would clock up every timer the daemon wakes for, with no session open.
   - Elsewhere it is a no-op. macOS (a QoS class) and Windows (power throttling) are P3, each to be measured on
     its own hardware first.
 - **Software paths target 60, paced to what they sustain** (P2). `SoftwarePace` (`encode/encode_pressure.rs:242`)
-  runs FR-1's `FpsPace` over its own encode EWMA. It is its own EWMA so that `ROOMLERD_ENCODE_PRESSURE=0`, the
+  runs FR-1's `FpsPace` over its own encode EWMA. It is its own EWMA so that `MESHHARBORD_ENCODE_PRESSURE=0`, the
   hardware path's switch, cannot turn the software pace off as a side effect. The pace is never below 30
   (`SW_PACE_FLOOR_FPS`, `encode/mod.rs:741`), so a host that cannot sustain 30 runs exactly as it did before.
   The RTP pump starts at 60 under the tier (`target_fps_with_tier`, `peer.rs:123`). The auto-fps-cap that drops
@@ -621,14 +621,14 @@ flowchart LR
   readback it was written for lives.
   - ⚠️ **On by default on Linux only** (`sw_fps_60_enabled`, `encode/mod.rs:734`). On a host whose clock was
     never the limit, 60 frames cost twice the CPU of 30, and an attended desktop pays for it, so Windows and
-    macOS opt in with `ROOMLERD_SW_FPS_60=1` until P3. `ROOMLERD_SW_FPS_60=0` gives back 30 everywhere.
+    macOS opt in with `MESHHARBORD_SW_FPS_60=1` until P3. `MESHHARBORD_SW_FPS_60=0` gives back 30 everywhere.
   - ⚠️ **A step up waits for headroom** (P2d, `SW_PACE_UP_MARGIN_FPS`, `encode/encode_pressure.rs:255`).
     `FpsPace` was meant to hold an engaged pace until the estimate moved a full step, but it compared two 5-fps
     steps, which always differ by at least a whole step, so on 0.4.142 a pace on a step boundary moved every
     window the estimate crossed it. The software pace steps down at once and up only when the encoder clears the higher step by
-    2.5 fps; `ROOMLERD_SW_PACE_UP_MARGIN=0` gives back 0.4.142's pace. A unit test replays the field trace that
+    2.5 fps; `MESHHARBORD_SW_PACE_UP_MARGIN=0` gives back 0.4.142's pace. A unit test replays the field trace that
     found it, window for window. The hardware pace keeps margin 0 until it is measured on hardware
-    ([#2432](https://github.com/gjovanov/roomler-ai/issues/2432)).
+    ([#2432](https://github.com/jk-zhang-meta/MeshHarbor/issues/2432)).
 - **The bitrate base follows the rate the pump runs at**, by √(fps/30) (`bitrate_base_for_fps`,
   `encode/mod.rs:719`): exactly the old figure at 30, ×1.41 at 60. A linear ×2 bought nothing when it was
   measured.
@@ -662,8 +662,8 @@ workflow's "Fetch vendored FFmpeg" step does, on a dev box:
 pwsh scripts/dev-ffmpeg-windows.ps1          # download + verify + stage under C:\ffmpeg-pin, once
 # in a vcvars64 / "x64 Native Tools" shell (bindgen wants MSVC's stdint.h):
 Invoke-Expression (pwsh scripts/dev-ffmpeg-windows.ps1 -Env | Out-String)
-cargo build -p roomlerd --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
-.\target\release\roomlerd.exe encoder-smoke --encoder hardware --codec hevc
+cargo build -p meshharbord --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
+.\target\release\meshharbord.exe encoder-smoke --encoder hardware --codec hevc
 ```
 
 It stages FFmpeg under `C:\ffmpeg-pin\installed\x64-windows-static-md` and libvpx
@@ -688,7 +688,7 @@ On Linux the same recipe is the release lane's: extract the `-minimal-vaapi-vulk
 asset, rewrite the `.pc` prefixes, set `FFMPEG_DIR` / `PKG_CONFIG_PATH` /
 `LD_LIBRARY_PATH` at the tree, and build with `--features ffmpeg-encoder,vp9-444`.
 To drive one backend past the cascade on any host — a cell the vendor SDK
-outranks there — `roomlerd encoder-smoke --name hevc_vulkan` (real bytes) and
+outranks there — `meshharbord encoder-smoke --name hevc_vulkan` (real bytes) and
 `--reconfigure-sweep --name hevc_vulkan --codec hevc` (the FR-62 ladder) open
 exactly that encoder, the same open the capability probe runs.
 The Linux-only code (`encode/ffmpeg/vaapi.rs`) is linted by nothing on Windows —
@@ -740,7 +740,7 @@ first encode. `encode/libvpx.rs` therefore binds `env-libvpx-sys` directly:
   target (measured offline against the real encoder, four rounds; spec §P3).
   The cap holds the notch frames at q 64; the steady scroll still refines to
   q 0 inside the budget and idle stays lossless. Env
-  `ROOMLERD_VP9_DIRECT_MAX_Q` (63 = pre-P3).
+  `MESHHARBORD_VP9_DIRECT_MAX_Q` (63 = pre-P3).
 
 Bindgen (`vp9-444-bindgen` feature) generates bindings against system headers on
 Linux/macOS; Windows links the vendored prebuilt libvpx.

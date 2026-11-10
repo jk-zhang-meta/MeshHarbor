@@ -32,8 +32,8 @@ const flag = (name, dflt) => {
   const i = args.indexOf(`--${name}`);
   return i >= 0 && args[i + 1] ? args[i + 1] : dflt;
 };
-const REPO = flag('repo', 'C:/dev/gjovanov/roomler-ai');
-const DOCS = flag('docs', 'C:/dev/gjovanov/roomler-ai-docs');
+const REPO = flag('repo', 'C:/dev/jk-zhang-meta/MeshHarbor');
+const DOCS = flag('docs', 'C:/dev/jk-zhang-meta/meshharbor-docs');
 const STATE = join(DOCS, 'kanban', 'state');
 
 // ---------------------------------------------------------------- ledger
@@ -268,7 +268,7 @@ function gh(argv) {
 
 function openIssues() {
   const raw = gh([
-    'issue', 'list', '--repo', 'gjovanov/roomler-ai',
+    'issue', 'list', '--repo', 'jk-zhang-meta/MeshHarbor',
     '--state', 'open', '--limit', '300',
     '--json', 'number,title,labels,updatedAt',
   ]);
@@ -277,7 +277,7 @@ function openIssues() {
 
 function openPrs() {
   const raw = gh([
-    'pr', 'list', '--repo', 'gjovanov/roomler-ai',
+    'pr', 'list', '--repo', 'jk-zhang-meta/MeshHarbor',
     '--state', 'open', '--limit', '100',
     '--json', 'number,title,headRefName,isDraft,updatedAt,files',
   ]);
@@ -351,7 +351,7 @@ function mergedBranches() {
   if (MERGED_BRANCHES) return MERGED_BRANCHES;
   try {
     const raw = gh([
-      'pr', 'list', '--repo', 'gjovanov/roomler-ai',
+      'pr', 'list', '--repo', 'jk-zhang-meta/MeshHarbor',
       '--state', 'merged', '--limit', '1000', '--json', 'headRefName',
     ]);
     MERGED_BRANCHES = new Set(JSON.parse(raw).map((p) => p.headRefName));
@@ -612,7 +612,7 @@ function scan() {
     if (workerPr && card.run.started_at) {
       let state = null;
       try {
-        state = gh(['pr', 'view', String(workerPr), '--repo', 'gjovanov/roomler-ai', '--json', 'state', '-q', '.state']).trim();
+        state = gh(['pr', 'view', String(workerPr), '--repo', 'jk-zhang-meta/MeshHarbor', '--json', 'state', '-q', '.state']).trim();
       } catch { /* unreadable: leave the claim alone rather than guess */ }
       if (state === 'MERGED' || state === 'CLOSED') {
         card.run.notes.push(`worker PR #${workerPr} ${state.toLowerCase()}: run ended, column re-derived`);
@@ -722,7 +722,7 @@ function board() {
   const stamp = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
   const L = [];
 
-  L.push('# Roomler autopilot board');
+  L.push('# MeshHarbor autopilot board');
   L.push('');
   L.push(`_Generated ${stamp} by \`.claude/skills/autopilot\`. **Do not hand-edit** — every`);
   L.push('field comes from `kanban/state/*.json`, the FR specs and the GitHub issues, and a');
@@ -741,11 +741,11 @@ function board() {
     L.push('|---|---|---|');
     for (const c of waiting) {
       const items = operatorOnly(c).map((a) => `${a.id}: ${a.text}`).join('; ');
-      L.push(`| **${c.id}** | [#${c.issue}](https://github.com/gjovanov/roomler-ai/issues/${c.issue}) | ${trunc(items, 220)} |`);
+      L.push(`| **${c.id}** | [#${c.issue}](https://github.com/jk-zhang-meta/MeshHarbor/issues/${c.issue}) | ${trunc(items, 220)} |`);
     }
     for (const c of draftCall) {
       const why = c.run.notes.slice(-1)[0] || 'sorted here at admission';
-      L.push(`| **${c.id}** | [#${c.issue}](https://github.com/gjovanov/roomler-ai/issues/${c.issue}) | ${trunc(why, 220)} |`);
+      L.push(`| **${c.id}** | [#${c.issue}](https://github.com/jk-zhang-meta/MeshHarbor/issues/${c.issue}) | ${trunc(why, 220)} |`);
     }
   }
   L.push('');
@@ -777,7 +777,7 @@ function board() {
       const done = c.acs.filter((a) => a.done).length;
       const half = c.acs.filter((a) => !a.done && a.mark === '~').length;
       const op = operatorOnly(c).length;
-      const title = `**[${c.id}](https://github.com/gjovanov/roomler-ai/issues/${c.issue})** ${trunc(c.title, 60)}`;
+      const title = `**[${c.id}](https://github.com/jk-zhang-meta/MeshHarbor/issues/${c.issue})** ${trunc(c.title, 60)}`;
       const marks = [half ? `${half} ◐` : '', op ? `${op} 👤` : '', docsOwed(c) ? '📘' : ''].filter(Boolean);
       const acCell = `${done}/${c.acs.length}${marks.length ? ` (${marks.join(', ')})` : ''}`;
       const next = c.run.hands_off ? `🔒 ${c.run.hands_off_reason}`

@@ -18,7 +18,7 @@ stock install picks for itself where it safely can.
 
 ```mermaid
 flowchart TD
-    A([a Linux host showing a Wayland desktop]) --> I{"how was roomlerd installed?"}
+    A([a Linux host showing a Wayland desktop]) --> I{"how was meshharbord installed?"}
     I -- "per-user (install.sh's default)" --> D{"which desktop?"}
     D -- "GNOME" --> M["mutter's own screencast, automatic<br/>asks nobody · input through mutter's RemoteDesktop"]
     D -- "KDE Plasma, others" --> P["the desktop portal, automatic<br/>asks the person at the screen ONCE,<br/>then a restore token answers"]
@@ -57,7 +57,7 @@ flowchart TD
 | GNOME, KDE | system, stock, the greeter on screen or nobody to tell | ❌ `wayland_not_enabled`, naming what is missing | — | — | — | — | 0.4.130 |
 | GNOME, KDE | system, `drm_capture` + `uinput` | ✅ DRM: the scanout plane, below the compositor | ✅ `uinput`: host-global, it types into whatever has focus | ✅ the cursor plane, on the cursor channel | **no** | ✅ both are pixels on the scanout | picture 0.4.130 · input 0.4.128 · cursor 0.4.134 · idle cost 0.4.135 |
 | wlroots (sway and others) | per-user, `portal_capture` | ⚠️ the portal through `xdg-desktop-portal-wlr`: proven only to the handshake (no GPU on the host measured) | ❌ the wlr portal has no RemoteDesktop | — | — | — | unproven |
-| any | either, `ROOMLERD_VIRTUAL_DESKTOP=1` | ✅ the daemon's own Xvfb, which it captures over X11 | ✅ | ✅ | no | — | (X11, not Wayland) |
+| any | either, `MESHHARBORD_VIRTUAL_DESKTOP=1` | ✅ the daemon's own Xvfb, which it captures over X11 | ✅ | ✅ | no | — | (X11, not Wayland) |
 
 "Verified on" names the released build each cell was measured on in the lab.
 An idle DRM session costs **6.3 % of a core** on 0.4.135 (FR-93 AC8), where
@@ -101,7 +101,7 @@ notice at the first frame it counts. The viewer then reconnects once, and the ne
 ```mermaid
 sequenceDiagram
     participant H as the host
-    participant D as roomlerd
+    participant D as meshharbord
     participant V as the viewer
     H->>D: the screen locks / the display goes dark / another session takes the seat
     D->>V: rc:media-waiting (what for, a hint)
@@ -121,7 +121,7 @@ Two messages carry it (`useRemoteControl.ts`, `mediaWaitingCopy`).
 | `rc:media-unavailable` | `backend_error` | an arm that was on, or that switched itself on, failed; the detail is its own error | read the detail: it names the arm and the cause |
 | `rc:media-unavailable` | `backend_error`: *"…the person at the screen declined the request"* (0.4.136; before it, *"…exited before announcing a stream"*) | the person at the screen said no to remote control and then to a screen share | ask them; the next session asks again |
 | `rc:media-unavailable` | `backend_error`: *"…the portal ended the request on its own…"* (the same release) | the portal refused without a dialog: its backend for this desktop is stopped or missing | restart the backend the detail names, then `xdg-desktop-portal` (`systemctl --user restart …`) |
-| `rc:media-unavailable` | `backend_error`: *"…reading the scanout needs CAP_SYS_ADMIN (root)…"* (the same release; before it, the session re-created itself with no reason) | `drm_capture` is set on a per-user install, which cannot read the scanout | `roomler config clear drm_capture`: the desktop's own screencast takes over |
+| `rc:media-unavailable` | `backend_error`: *"…reading the scanout needs CAP_SYS_ADMIN (root)…"* (the same release; before it, the session re-created itself with no reason) | `drm_capture` is set on a per-user install, which cannot read the scanout | `mh config clear drm_capture`: the desktop's own screencast takes over |
 | `rc:media-waiting` | `person_at_screen` | the desktop portal is asking the person at the screen to share it (or to allow remote control) | someone at the computer answers; the viewer waits for the dialog's deadline instead of reconnecting |
 | `rc:media-waiting` | `screen_unlock` | GNOME's screen is locked, and GNOME shares no locked screen | unlock it at the computer; the picture comes back by itself |
 | `rc:media-waiting` | `display_wake` | the display is off, so DRM has no scanout to read | move the viewer's mouse, or any input at the computer |
@@ -153,7 +153,7 @@ it as the desktop's own notification (P6f), from inside the person's session, at
 critical urgency. Approve and Deny answer it; closing it is a Deny; a click on its
 body brings it back; and it leaves the screen when the question ends any other
 way ([`remote-control.md`](remote-control.md), "Prompt surfaces").
-`ROOMLERD_NOTIFY_CONSENT=0` switches it off.
+`MESHHARBORD_NOTIFY_CONSENT=0` switches it off.
 
 ⚠️ **The desktop's own stop control did not end a session** on 0.4.135. The
 square in GNOME's screen-sharing pill closed mutter's screencast, and a per-user
@@ -162,7 +162,7 @@ froze the viewer instead, and P5d's reopen then undid it from the restore token
 3 s later. From P6c (0.4.137), either one ends the session as the companion's
 **Disconnect** does:
 the viewer is told the person at the device ended it, and does not reconnect
-([`linux-capture.md`](linux-capture.md) §5.7). `ROOMLERD_SCREEN_STOP=0` puts
+([`linux-capture.md`](linux-capture.md) §5.7). `MESHHARBORD_SCREEN_STOP=0` puts
 the reopen back.
 
 ## 5. Choosing an install
@@ -203,14 +203,14 @@ ones that decide this page:
 
 | Key | Env | Default | Effect |
 |---|---|---|---|
-| `wayland_auto` | `ROOMLERD_WAYLAND_AUTO` | **on** | a per-user daemon in its own Wayland session switches capture on by itself; off = everything opt-in, as before FR-93 P2 |
-| `wayland_auto_system` | `ROOMLERD_WAYLAND_AUTO_SYSTEM` | **on** | a system daemon switches DRM + `uinput` on by itself for a person's session it can tell (FR-95); off = the system half before FR-95 |
-| `x11_auto_system` | `ROOMLERD_X11_AUTO_SYSTEM` | **on** | the same for a person's **X11** session, where the desktop reports its lock (GNOME, KDE) (FR-113, [`linux-capture.md`](linux-capture.md) §1.2.2); off = 0.4.143: no picture of an X11 desktop by default |
-| `wayland_aware` | `ROOMLERD_WAYLAND_AWARE` | **on** | a Wayland desktop no arm may capture says `wayland_not_enabled`; off = the behaviour before FR-93, with no input-reach warning either (P1a) |
-| `drm_capture`, `uinput` | `ROOMLERD_DRM_CAPTURE`, `ROOMLERD_UINPUT` | off | the system arms (§1) |
-| `portal_capture`, `mutter_capture` | `ROOMLERD_PORTAL_CAPTURE`, `ROOMLERD_MUTTER_CAPTURE` | off | the per-user arms, explicitly; any capture key hands the choice back to the operator |
-| — | `ROOMLERD_MEDIA_WAITING` | on | the `rc:media-waiting` notices (§4); off = the viewer is told nothing and reconnects as before |
-| — | `ROOMLERD_SESSION_WATCH` | on | the user-switch notice (`session_away`); off = the last frame stays, with no reason |
-| — | `ROOMLERD_SLEEP_NOTICE` | on | the sleep notice (`host_sleep`) and the logind delay inhibitor that gives it time; off = a sleeping computer says nothing, as before P5h |
-| — | `ROOMLERD_NOTIFY_CONSENT` | on | a consent question no panel or companion can show goes to the desktop's notification (P6f); off = `no_prompt_surface` there, as before |
-| — | `ROOMLERD_VIEWING_NOTICE` | on | a session on the DRM arm, which no compositor indicator shows, starts the companion, else posts a being-viewed notification with Disconnect (P6g); off = nothing at the screen, as before |
+| `wayland_auto` | `MESHHARBORD_WAYLAND_AUTO` | **on** | a per-user daemon in its own Wayland session switches capture on by itself; off = everything opt-in, as before FR-93 P2 |
+| `wayland_auto_system` | `MESHHARBORD_WAYLAND_AUTO_SYSTEM` | **on** | a system daemon switches DRM + `uinput` on by itself for a person's session it can tell (FR-95); off = the system half before FR-95 |
+| `x11_auto_system` | `MESHHARBORD_X11_AUTO_SYSTEM` | **on** | the same for a person's **X11** session, where the desktop reports its lock (GNOME, KDE) (FR-113, [`linux-capture.md`](linux-capture.md) §1.2.2); off = 0.4.143: no picture of an X11 desktop by default |
+| `wayland_aware` | `MESHHARBORD_WAYLAND_AWARE` | **on** | a Wayland desktop no arm may capture says `wayland_not_enabled`; off = the behaviour before FR-93, with no input-reach warning either (P1a) |
+| `drm_capture`, `uinput` | `MESHHARBORD_DRM_CAPTURE`, `MESHHARBORD_UINPUT` | off | the system arms (§1) |
+| `portal_capture`, `mutter_capture` | `MESHHARBORD_PORTAL_CAPTURE`, `MESHHARBORD_MUTTER_CAPTURE` | off | the per-user arms, explicitly; any capture key hands the choice back to the operator |
+| — | `MESHHARBORD_MEDIA_WAITING` | on | the `rc:media-waiting` notices (§4); off = the viewer is told nothing and reconnects as before |
+| — | `MESHHARBORD_SESSION_WATCH` | on | the user-switch notice (`session_away`); off = the last frame stays, with no reason |
+| — | `MESHHARBORD_SLEEP_NOTICE` | on | the sleep notice (`host_sleep`) and the logind delay inhibitor that gives it time; off = a sleeping computer says nothing, as before P5h |
+| — | `MESHHARBORD_NOTIFY_CONSENT` | on | a consent question no panel or companion can show goes to the desktop's notification (P6f); off = `no_prompt_surface` there, as before |
+| — | `MESHHARBORD_VIEWING_NOTICE` | on | a session on the DRM arm, which no compositor indicator shows, starts the companion, else posts a being-viewed notification with Disconnect (P6g); off = nothing at the screen, as before |

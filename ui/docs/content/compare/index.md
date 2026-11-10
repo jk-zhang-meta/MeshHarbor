@@ -1,11 +1,11 @@
 ---
-title: How Roomler compares
+title: How MeshHarbor compares
 description: Honest head-to-head comparisons against Tailscale, RustDesk, TeamViewer, MeshCentral and NetBird — each naming what the other product does better, first.
 tags: [compare, overview, alternatives]
 order: 0
 ---
 
-Roomler occupies two categories at once — a browser-based remote desktop **and**
+MeshHarbor occupies two categories at once — a browser-based remote desktop **and**
 a WireGuard-style overlay network, on one agent, one identity and one server you
 can host yourself. So the honest comparison is rarely against a single product.
 It is against the **stack** most people assemble.
@@ -20,7 +20,7 @@ It is against the **stack** most people assemble.
 
 ## The short version
 
-Every one of those products is **better than Roomler at the thing it was built
+Every one of those products is **better than MeshHarbor at the thing it was built
 for**. They have more years, more users, more platforms and more polish in their
 own lane, and each page below says exactly where — first, before anything else.
 
@@ -31,7 +31,7 @@ If you run Tailscale *and* RustDesk you are running two agents, two control
 planes, two identity systems and two audit trails on every machine — and the
 remote-desktop half has no idea the mesh exists.
 
-Roomler is one daemon that is simultaneously the remote-desktop target, the mesh
+MeshHarbor is one daemon that is simultaneously the remote-desktop target, the mesh
 node, the tunnel endpoint and the SSH server. The machine you just connected to
 is already reachable by address and name.
 :::

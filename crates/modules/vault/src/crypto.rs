@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! Envelope encryption (`docs/roomler-hive-design.md` §8.2).
+//! Envelope encryption (`docs/meshharbor-hive-design.md` §8.2).
 //!
 //! Every version of every field gets a data key of its own (a DEK, 32
 //! random bytes). The value is sealed under it with XChaCha20-Poly1305, and
@@ -33,7 +33,7 @@ use chacha20poly1305::{
     Key, XChaCha20Poly1305, XNonce,
     aead::{Aead, AeadCore, KeyInit, OsRng, Payload, rand_core::RngCore},
 };
-use roomler_ai_config::VaultSettings;
+use meshharbor_config::VaultSettings;
 use zeroize::Zeroizing;
 
 /// The length of a data key.
@@ -58,7 +58,7 @@ impl Binding<'_> {
     /// places encode alike.
     fn aad(&self) -> Vec<u8> {
         format!(
-            "roomler-vault/v1\0{}\0{}\0{}\0{}",
+            "meshharbor-vault/v1\0{}\0{}\0{}\0{}",
             self.tenant_id.to_hex(),
             self.secret_id.to_hex(),
             self.field,
@@ -314,7 +314,7 @@ pub enum DeviceSealError {
 /// look alike on the wire.
 pub fn seal_for_device(key_b64: &str, value: &[u8]) -> Result<Vec<u8>, DeviceSealError> {
     use base64::Engine;
-    if !roomler_ai_remote_control::signaling::vault_key_is_well_formed(key_b64) {
+    if !meshharbor_remote_control::signaling::vault_key_is_well_formed(key_b64) {
         return Err(DeviceSealError::BadKey);
     }
     let bytes = base64::engine::general_purpose::STANDARD
@@ -510,7 +510,7 @@ mod tests {
         };
         assert_eq!(
             b.aad(),
-            b"roomler-vault/v1\x0065f0000000000000000000a1\x0065f0000000000000000000b2\x00value\x0012"
+            b"meshharbor-vault/v1\x0065f0000000000000000000a1\x0065f0000000000000000000b2\x00value\x0012"
         );
     }
 
@@ -557,15 +557,15 @@ mod tests {
         assert!(matches!(KekState::load(&s("", "")), KekState::Missing));
         assert!(KekState::load(&s(&secret, "")).ready().is_some());
         assert!(matches!(
-            KekState::load(&s(&secret, "/etc/roomler/kek.txt")),
+            KekState::load(&s(&secret, "/etc/meshharbor/kek.txt")),
             KekState::Invalid(_)
         ));
         assert!(matches!(
-            KekState::load(&s("", "/nonexistent/roomler-vault-kek.txt")),
+            KekState::load(&s("", "/nonexistent/meshharbor-vault-kek.txt")),
             KekState::Invalid("vault.kek_file cannot be read")
         ));
 
-        let dir = std::env::temp_dir().join(format!("roomler-vault-kek-{}", ObjectId::new()));
+        let dir = std::env::temp_dir().join(format!("meshharbor-vault-kek-{}", ObjectId::new()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("kek.txt");
         std::fs::write(&file, format!("# public key: x\n{secret}\n")).unwrap();
@@ -593,7 +593,7 @@ mod tests {
     /// P3-3b — a value sealed for a device opens with that device's secret
     /// half and no other; every box is new; a key that is not one is
     /// refused before anything is sealed. The device's key is made here, as
-    /// the daemon makes it (`roomlerd`'s `vault.rs`).
+    /// the daemon makes it (`meshharbord`'s `vault.rs`).
     #[test]
     fn a_value_sealed_for_a_device_opens_only_there() {
         use base64::Engine;

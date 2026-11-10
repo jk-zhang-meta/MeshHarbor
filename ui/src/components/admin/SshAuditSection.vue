@@ -4,21 +4,20 @@
   <v-card variant="outlined">
     <v-card-title class="d-flex align-center">
       <v-icon icon="mdi-console-network-outline" color="primary" class="mr-2" />
-      <span>SSH audit</span>
+      <span>{{ t('mh.audit.ssh.title') }}</span>
       <v-spacer />
       <v-btn
         icon="mdi-refresh"
         size="small"
         variant="text"
         :loading="loading"
-        aria-label="Refresh"
+        :aria-label="t('mh.audit.refresh')"
         @click="load"
       />
     </v-card-title>
 
     <v-card-subtitle class="pb-2 text-wrap">
-      Every SSH session requested on this organization's devices — including
-      the ones that were refused. Retained for 90 days.
+      {{ t('mh.audit.ssh.subtitle') }}
     </v-card-subtitle>
 
     <v-card-text>
@@ -30,13 +29,13 @@
            audit" is a session log and this is not one. The server hands out a
            grant and then steps out of the way. -->
       <v-alert type="info" variant="tonal" density="compact" class="mb-3">
-        These are access <strong>decisions</strong>, not session recordings.
-        Roomler SSH runs peer-to-peer over the mesh, so the server sees who was
-        allowed in and as which account — never what was typed.
+        <i18n-t keypath="mh.audit.ssh.info" tag="span" scope="global">
+          <template #decisions><strong>{{ t('mh.audit.ssh.decisions') }}</strong></template>
+        </i18n-t>
       </v-alert>
 
       <div v-if="!loading && !entries.length" class="text-medium-emphasis text-caption">
-        No SSH sessions have been requested yet.
+        {{ t('mh.audit.ssh.empty') }}
       </div>
 
       <!-- A card per entry below 600 px (table-stack-xs): the result and the
@@ -46,23 +45,23 @@
         <v-table density="compact" class="table-stack-xs table-stack-xs--compact">
           <thead>
             <tr>
-              <th>When</th>
-              <th>Device</th>
-              <th>Who</th>
-              <th>Via</th>
-              <th>As</th>
-              <th>Result</th>
+              <th>{{ t('mh.audit.col.when') }}</th>
+              <th>{{ t('mh.audit.col.device') }}</th>
+              <th>{{ t('mh.audit.col.who') }}</th>
+              <th>{{ t('mh.audit.col.via') }}</th>
+              <th>{{ t('mh.audit.col.as') }}</th>
+              <th>{{ t('mh.audit.col.result') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(e, i) in visible" :key="e.id ?? `${e.at}-${i}`">
-              <td data-label="When" class="text-no-wrap">{{ fmtWhen(e.at) }}</td>
-              <td data-label="Device" class="text-no-wrap">{{ deviceName(e.agent_id) }}</td>
-              <td data-label="Who" class="text-no-wrap">{{ userName(e.user_id) }}</td>
-              <td data-label="Via">
+              <td :data-label="t('mh.audit.col.when')" class="text-no-wrap">{{ fmtWhen(e.at) }}</td>
+              <td :data-label="t('mh.audit.col.device')" class="text-no-wrap">{{ deviceName(e.agent_id) }}</td>
+              <td :data-label="t('mh.audit.col.who')" class="text-no-wrap">{{ userName(e.user_id) }}</td>
+              <td :data-label="t('mh.audit.col.via')">
                 <v-chip size="x-small" variant="tonal">{{ e.source }}</v-chip>
               </td>
-              <td data-label="As" class="text-no-wrap">
+              <td :data-label="t('mh.audit.col.as')" class="text-no-wrap">
                 <v-chip
                   v-if="asChip(e)"
                   size="x-small"
@@ -74,7 +73,7 @@
                 </v-chip>
                 <span v-else class="text-medium-emphasis">—</span>
               </td>
-              <td data-label="Result" class="text-no-wrap">
+              <td :data-label="t('mh.audit.col.result')" class="text-no-wrap">
                 <!-- One v-if / v-else pair around the whole refusal: the
                      reason line must not sit between them, or a refusal
                      without a message also showed "granted". -->
@@ -92,14 +91,14 @@
                     {{ e.denied_message }}
                   </div>
                 </template>
-                <v-chip v-else size="x-small" color="success" variant="flat">granted</v-chip>
+                <v-chip v-else size="x-small" color="success" variant="flat">{{ t('mh.audit.granted') }}</v-chip>
               </td>
             </tr>
           </tbody>
         </v-table>
         <div v-if="remaining" class="text-center mt-2">
           <v-btn variant="tonal" size="small" data-testid="audit-show-more" @click="showMore">
-            Show {{ nextCount }} more
+            {{ t('mh.audit.showMore', { n: nextCount }) }}
           </v-btn>
         </div>
       </template>
@@ -113,6 +112,9 @@ import { useAgentStore, type SshAuditEntry } from '@/stores/agents'
 import { deviceLabel } from '@/composables/useHideDeviceName'
 import { usePhoneSlice } from '@/composables/usePhoneSlice'
 import { sshAsChip, type SshAsChip } from '@/utils/sshIdentity'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   tenantId: string
@@ -131,23 +133,24 @@ const error = ref<string | null>(null)
  *  glance. The server also sends the full sentence as `denied_message`, which
  *  the tooltip shows — this map is only for the chip, and an unknown reason
  *  falls through to the raw value rather than rendering blank. */
-const DENY_LABEL: Record<string, string> = {
-  org_disabled: 'org switched off',
-  no_permission: 'no permission',
-  device_disabled: 'device switched off',
-  caller_not_allowed: 'caller not allowed',
-  origin_not_allowed: 'origin not allowed',
-  unsupported: 'agent too old',
-  offline: 'device offline',
-  no_overlay_address: 'not on the mesh',
-  rate_limited: 'rate limited',
-  bad_public_key: 'bad public key',
-  agent_disabled: 'SSH off on the device',
-  grant_expired_on_arrival: 'grant expired (clock skew?)',
-  grant_refused: 'device refused grant',
-  grant_unconfirmed: 'device did not confirm',
-  claim_refused: 'service claim refused',
-}
+/** Refusal codes this UI names; any other is shown as sent. SSH words two of
+ *  them its own way. */
+const DENY_CODES = new Set([
+  'org_disabled',
+  'no_permission',
+  'device_disabled',
+  'caller_not_allowed',
+  'origin_not_allowed',
+  'unsupported',
+  'offline',
+  'no_overlay_address',
+  'rate_limited',
+  'bad_public_key',
+  'grant_expired_on_arrival',
+  'grant_refused',
+  'grant_unconfirmed',
+])
+const SSH_DENY_CODES = new Set(['agent_disabled', 'claim_refused'])
 
 const deviceNames = computed(() => {
   const m: Record<string, string> = {}
@@ -171,12 +174,14 @@ function deviceName(id: string): string {
 const NO_USER = '000000000000000000000000'
 
 function userName(id: string): string {
-  if (id === NO_USER) return "device's service"
+  if (id === NO_USER) return t('mh.audit.deviceService')
   return userNames.value[id] ?? id.slice(0, 8)
 }
 
 function denyLabel(e: SshAuditEntry): string {
-  return (e.denied && DENY_LABEL[e.denied]) || e.denied || 'denied'
+  if (!e.denied) return t('mh.audit.denied')
+  if (SSH_DENY_CODES.has(e.denied)) return t(`mh.audit.sshDeny.${e.denied}`)
+  return DENY_CODES.has(e.denied) ? t(`mh.audit.deny.${e.denied}`) : e.denied
 }
 
 /** FR-105 — the account the session ran as, from what the grant asked for AND

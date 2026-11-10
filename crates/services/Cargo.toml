@@ -1,14 +1,14 @@
 [package]
-name = "roomler-ai-services"
+name = "meshharbor-services"
 license = "AGPL-3.0-only"
 publish = false
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-roomler-ai-config = { path = "../config" }
-roomler-ai-db = { path = "../db" }
-roomler-ai-remote-control = { path = "../remote_control" }
+meshharbor-config = { path = "../config" }
+meshharbor-db = { path = "../db" }
+meshharbor-remote-control = { path = "../remote_control" }
 mongodb.workspace = true
 bson.workspace = true
 serde.workspace = true
@@ -46,3 +46,9 @@ hmac.workspace = true
 sha2.workspace = true
 hex.workspace = true
 web-push.workspace = true
+
+[dev-dependencies]
+# Source-only tenant write boundary; never a production parser dependency.
+syn = { version = "=2.0.117", features = ["full", "visit"] }
+quote = "=1.0.45"
+proc-macro2 = "=1.0.106"

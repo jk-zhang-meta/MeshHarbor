@@ -53,7 +53,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use bson::DateTime;
 use chrono::{Duration, NaiveDate};
-use roomler_ai_services::{
+use meshharbor_core::{
+    Core,
+    campaign::{CampaignKey, UTM_DIMENSIONS},
+};
+use meshharbor_services::{
     dao::{
         base::DaoResult,
         growth::{
@@ -62,10 +66,6 @@ use roomler_ai_services::{
         },
     },
     purestat::{PurestatClient, PurestatError, Query, Row},
-};
-use roomler_core::{
-    Core,
-    campaign::{CampaignKey, UTM_DIMENSIONS},
 };
 use serde::Serialize;
 use tracing::{debug, info, warn};
@@ -374,7 +374,7 @@ pub fn spawn_puller(core: Core) {
     }
     let Some(client) = PurestatClient::new(&growth.purestat_url, &growth.purestat_api_key) else {
         info!(
-            "growth purestat puller: no purestat key configured (ROOMLER__GROWTH__PURESTAT_API_KEY) — nothing is pulled"
+            "growth purestat puller: no purestat key configured (MESHHARBOR__GROWTH__PURESTAT_API_KEY) — nothing is pulled"
         );
         return;
     };
@@ -384,7 +384,7 @@ pub fn spawn_puller(core: Core) {
         loop {
             let claimed = match &core.redis_pubsub {
                 Some(redis) => {
-                    let key = format!("roomler:growth-purestat-pull:{}", core.db.name());
+                    let key = format!("meshharbor:growth-purestat-pull:{}", core.db.name());
                     match redis.try_claim(&key, LOOP_INTERVAL_SECS - 60).await {
                         Ok(c) => c,
                         Err(e) => {
@@ -432,9 +432,9 @@ mod tests {
             source: SOURCE.into(),
             day: day.into(),
             status: if pulled_at.is_some() {
-                roomler_ai_services::dao::growth::PullStatus::Ok
+                meshharbor_services::dao::growth::PullStatus::Ok
             } else {
-                roomler_ai_services::dao::growth::PullStatus::Failed
+                meshharbor_services::dao::growth::PullStatus::Failed
             },
             pulled_at: pulled_at.map(at),
             attempted_at: at("2026-10-14T01:30:00Z"),

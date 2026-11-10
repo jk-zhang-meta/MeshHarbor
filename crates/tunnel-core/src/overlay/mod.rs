@@ -4,7 +4,7 @@
 //!
 //! Feature-gated behind `overlay`. Pulls in `boringtun` for the Noise
 //! crypto state machine; everything else (carrier selection, routing,
-//! netmap application) is Roomler code.
+//! netmap application) is MeshHarbor code.
 //!
 //! Layout:
 //! * [`wg`] — the [`wg::WgDevice`]: a static keypair + a per-peer
@@ -113,7 +113,7 @@ pub(crate) mod warm_relay;
 pub mod wg;
 
 /// WFP firewall override (Windows + `overlay-l3`): hard-permit the
-/// `roomler` adapter so the overlay survives a GPO-locked Defender Firewall.
+/// `meshharbor` adapter so the overlay survives a GPO-locked Defender Firewall.
 #[cfg(all(feature = "overlay-l3", windows))]
 pub mod wfp;
 

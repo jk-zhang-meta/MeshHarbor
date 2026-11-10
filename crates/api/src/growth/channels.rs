@@ -34,13 +34,13 @@ use axum::{
 };
 use bson::DateTime;
 use chrono::NaiveDate;
-use roomler_ai_services::dao::{
-    growth_digest::ExcludedCounts,
-    growth_social::{GrowthPost, GrowthSocialDao, MAX_POSTS, PostSnapshot, SNAPSHOTS},
-};
-use roomler_core::{
+use meshharbor_core::{
     campaign::{CampaignKey, KeyDepth, PLATFORMS, platform_retired},
     growth::ExclusionSet,
+};
+use meshharbor_services::dao::{
+    growth_digest::ExcludedCounts,
+    growth_social::{GrowthPost, GrowthSocialDao, MAX_POSTS, PostSnapshot, SNAPSHOTS},
 };
 use serde::{Deserialize, Serialize};
 
@@ -698,7 +698,7 @@ pub async fn compute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_ai_services::dao::growth_social::PostKey;
+    use meshharbor_services::dao::growth_social::PostKey;
 
     fn at(s: &str) -> DateTime {
         DateTime::parse_rfc3339_str(s).unwrap()
@@ -715,7 +715,7 @@ mod tests {
             id: None,
             platform: platform.into(),
             platform_id: id.into(),
-            account: "roomler-ai".into(),
+            account: "meshharbor".into(),
             format: "post".into(),
             url: format!("https://{platform}.example/{id}"),
             published_at: at("2026-10-12T09:00:00Z"),

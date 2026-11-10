@@ -1,19 +1,19 @@
-# Roomler daemon & tunnel CLI — High-Level Architecture
+# MeshHarbor daemon & tunnel CLI — High-Level Architecture
 
 *Audience: end users and operators. For the deep technical design see
 [`remote-control.md`](remote-control.md) (remote desktop) and
 [`tunnel-install.md`](tunnel-install.md) (tunnel setup).*
 
-Roomler's remote-access stack has two user-facing pieces: **`roomlerd`**, a small
-daemon installed on every machine you want to reach, and **`roomler`**, a CLI run
-on the machine you are sitting at. The **roomler.ai** service introduces the two sides to
+MeshHarbor's remote-access stack has two user-facing pieces: **`meshharbord`**, a small
+daemon installed on every machine you want to reach, and **`mh`**, a CLI run
+on the machine you are sitting at. The **meshharbor.itachi.fans** service introduces the two sides to
 each other and enforces policy — but your screen, keystrokes, and tunneled data never pass
 through it in readable form.
 
 ## The big picture
 
 <p align="center">
-  <img src="assets/hero-mesh.svg" alt="Your devices, one encrypted mesh — a laptop, a GPU workstation, a home server and a cloud cluster connected directly, coordinated by roomler.ai" width="620">
+  <img src="assets/hero-mesh.svg" alt="Your devices, one encrypted mesh — a laptop, a GPU workstation, a home server and a cloud cluster connected directly, coordinated by meshharbor.itachi.fans" width="620">
 </p>
 
 The same picture with every flow labelled:
@@ -21,16 +21,16 @@ The same picture with every flow labelled:
 ```mermaid
 flowchart LR
     subgraph you["🧑 You"]
-        B["Browser<br/>(roomler.ai web app)"]
-        T["roomler CLI<br/>(laptop · script · CI runner)"]
+        B["Browser<br/>(meshharbor.itachi.fans web app)"]
+        T["meshharbor CLI<br/>(laptop · script · CI runner)"]
     end
 
-    subgraph cloud["☁️ roomler.ai — coordination only"]
+    subgraph cloud["☁️ meshharbor.itachi.fans — coordination only"]
         S["API + signalling<br/>auth · enrollment · consent<br/>ACL policies · audit log"]
         R["coturn TURN relay<br/>(fallback path — carries<br/>only encrypted bytes)"]
     end
 
-    subgraph fleet["🖥️ Your machines — each runs the roomlerd daemon"]
+    subgraph fleet["🖥️ Your machines — each runs the meshharbord daemon"]
         A1["Office / home PC<br/>(full desktop)"]
         A2["Headless cloud server<br/>(virtual desktop)"]
         A3["GPU workstation<br/>(AI workloads)"]
@@ -58,7 +58,7 @@ encrypted relay used only when no direct path can be punched.
 
 ## The pieces
 
-### `roomlerd` — the daemon on your machines
+### `meshharbord` — the daemon on your machines
 
 - One small native binary per machine (Windows service, Linux systemd unit, macOS pkg).
   Starts at boot, survives logout, keeps itself up to date.
@@ -75,7 +75,7 @@ encrypted relay used only when no direct path can be punched.
 - Enrolled once with a 10-minute single-use token from the admin UI; from then on it holds
   only a tenant-scoped credential.
 
-### `roomler` — the connectivity CLI
+### `mh` — the connectivity CLI
 
 - `forward` — a port on your laptop (`127.0.0.1:5432`) becomes any `host:port` the chosen
   agent can reach ("the DB behind the office firewall").
@@ -88,12 +88,12 @@ encrypted relay used only when no direct path can be punched.
 - QUIC data plane with WebRTC fallback, climbing direct → TURN/UDP → TLS over TCP 443,
   plus regional DERP relays as the everything-blocked fallback — it works even from
   strict corporate networks.
-- `roomler exec` runs commands on trusted fleet devices through four independent
+- `mh exec` runs commands on trusted fleet devices through four independent
   default-deny gates with a full audit trail ([fleet-rpc.md](fleet-rpc.md)).
 - Everything is gated by **default-deny ACL policies** managed in the admin UI, with an
   audit row per session.
 
-### roomler.ai — coordination, not data
+### meshharbor.itachi.fans — coordination, not data
 
 - Handles accounts, enrollment, consent, ACL policy, the audit trail, and the signalling
   that lets the two ends find each other.
@@ -151,5 +151,5 @@ them — is exactly the harness autonomous AI agents need:
   model, DNS-leak steering, and crash-safety.
 - [`overlay-wfp.md`](overlay-wfp.md) — Windows-only: how the overlay survives a
   Group-Policy-locked Defender Firewall via the Windows Filtering Platform.
-- [`architecture.md`](architecture.md) — the wider Roomler platform (chat, conferencing,
+- [`architecture.md`](architecture.md) — the wider MeshHarbor platform (chat, conferencing,
   rooms) that agent and tunnel plug into.

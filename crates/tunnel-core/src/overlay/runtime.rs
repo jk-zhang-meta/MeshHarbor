@@ -49,7 +49,7 @@ use crate::localapi::{
     PeerWhy, TierWhy,
 };
 use crate::transport::derp::DerpMux;
-use roomler_ai_remote_control::signaling::{ClientMsg, IceServer, NetmapPeer, OverlayNetworkInfo};
+use meshharbor_remote_control::signaling::{ClientMsg, IceServer, NetmapPeer, OverlayNetworkInfo};
 
 // rc.284 — the god-file split. The establishment half, the inbound-adopt
 // handler, and the route-ownership/exit-routing half live in CHILD modules of
@@ -130,7 +130,7 @@ const SHADOW_HARM_WINDOW: Duration = Duration::from_secs(60);
 const SHADOW_SUMMARY_EVERY: Duration = Duration::from_secs(600);
 
 /// B1 — RTT→Q ingestion gate (config `overlay_rtt_q`, env
-/// `ROOMLERD_OVERLAY_RTT_Q`). Default ON; a kill switch only —
+/// `MESHHARBORD_OVERLAY_RTT_Q`). Default ON; a kill switch only —
 /// samples are Q-plane-only either way, never eligibility.
 fn rtt_q_enabled() -> bool {
     crate::env::flag("OVERLAY_RTT_Q", true)
@@ -401,7 +401,7 @@ struct Installed {
     /// SILENTLY ONE-WAY: installed past the warm-up grace with either no
     /// completed WG handshake ever (the pre-handshake zombie whose tx/rx
     /// counters stay flat — winhost-a behind its corp VPN: every tier
-    /// "installed", zero handshakes, `meshharbor peers` said `direct`/`relay`
+    /// "installed", zero handshakes, `mh peers` said `direct`/`relay`
     /// while 100% of pings died) or the rc.137 one-way strike counter
     /// accumulating. Surfaced through the LocalAPI peer view so the CLI can
     /// render `stalled` instead of a healthy-looking tier label. Verdict
@@ -410,7 +410,7 @@ struct Installed {
     /// P4 — inbound packets from this peer refused by the ingress ACL
     /// (`PeerStats::rx_denied`), snapshotted by the health sweep. Monotonic.
     /// Surfaced through the LocalAPI so a `warn`-mode fleet can be READ
-    /// (`meshharbor peers --json`) instead of grepped: the warning line is
+    /// (`mh peers --json`) instead of grepped: the warning line is
     /// throttled to one per peer per minute, which is deliberately useless for
     /// measuring volume — and volume is exactly what decides whether `enforce`
     /// is safe to flip.
@@ -433,7 +433,7 @@ struct Installed {
     rx_denied_noroute: u64,
     /// Stats PR-5 — the prober's last RTT measurement for this peer (the
     /// B1 `RttSample` events previously fed only the path-monitor Q).
-    /// Published through [`build_overlay_view`] so `meshharbor peers` and the
+    /// Published through [`build_overlay_view`] so `mh peers` and the
     /// agent's heartbeat telemetry get a real `rtt_ms` instead of the
     /// historical hardcoded `None`.
     last_rtt_ms: Option<u32>,
@@ -593,6 +593,17 @@ async fn request_org_fallbacks(
     relay: &mut Option<RelayCoordinator>,
     now: Instant,
 ) -> Vec<ObjectId> {
+    request_org_fallbacks_inner(enabled, installed, peers, relay, now, None).await
+}
+
+async fn request_org_fallbacks_inner(
+    enabled: bool,
+    installed: &HashMap<ObjectId, Installed>,
+    peers: &HashMap<ObjectId, NetmapPeer>,
+    relay: &mut Option<RelayCoordinator>,
+    now: Instant,
+    reactive_peers: Option<&HashSet<ObjectId>>,
+) -> Vec<ObjectId> {
     if !enabled {
         return Vec::new();
     }
@@ -601,7 +612,8 @@ async fn request_org_fallbacks(
     };
     let mut candidates = Vec::new();
     for (id, current) in installed {
-        if current.is_direct
+        if reactive_peers.is_some_and(|hinted| !hinted.contains(id))
+            || current.is_direct
             || current.relay_kind != Some(RelayKind::Derp)
             || current.org_recovery_until.is_some_and(|until| now < until)
         {
@@ -618,19 +630,35 @@ async fn request_org_fallbacks(
         }
         candidates.push(*id);
     }
-    // #21 — DERP never carries a line peer, so one with no carrier at all
-    // asks for its line here (the fallback's own gap paces it).
+    // DERP never carries a line peer. An ordinary carrierless peer joins this
+    // lane only after an actual unanswered request exhausts its initial grace;
+    // fresh ordinary establishment still belongs to the normal ladder.
     candidates.extend(
         peers
             .iter()
             .filter(|(id, p)| {
-                p.backbone_only
+                reactive_peers.is_none_or(|hinted| hinted.contains(*id))
+                    && (p.backbone_only
+                        || relay.ungranted_org_retry_due(id, now)
+                        || (reactive_peers.is_some()
+                            && peer_config_from_netmap(p).is_some_and(|current| {
+                                relay.matching_ungranted_peer(id, &current)
+                            })))
                     && p.supports_org_relay
                     && p.reachable
                     && !installed.contains_key(id)
             })
             .map(|(id, _)| *id),
     );
+    if reactive_peers.is_some() {
+        let candidates = candidates
+            .into_iter()
+            .filter_map(|id| Some((id, peer_config_from_netmap(peers.get(&id)?)?)))
+            .collect();
+        return relay
+            .request_org_fallback_batch_reactive(candidates, now)
+            .await;
+    }
     let lines: Vec<ObjectId> = peers
         .iter()
         .filter(|(_, p)| p.backbone_only)
@@ -1189,7 +1217,7 @@ pub enum OverlayEvent {
         org_relay_discovery: bool,
         path_trial_v1: bool,
     },
-    PathTrial(roomler_ai_remote_control::signaling::ServerMsg),
+    PathTrial(meshharbor_remote_control::signaling::ServerMsg),
     /// Incremental update.
     NetmapDelta {
         epoch: u64,
@@ -1259,14 +1287,15 @@ pub enum OverlayEvent {
     /// org mode off, an ACL edit, the relay's approval cleared, a party gone).
     OrgRelayRevoke {
         vni: u32,
+        scope: meshharbor_remote_control::signaling::RelayRevokeScopeWire,
     },
     /// Discovery metadata only: never grants or installs an org-relay session.
     OrgRelayCandidates {
         peer_node_id: ObjectId,
         request_id: u64,
-        candidates: Vec<roomler_ai_remote_control::signaling::OrgRelayCandidateWire>,
-        next_cursor: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryCursorWire>,
-        scan: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryScanWire>,
+        candidates: Vec<meshharbor_remote_control::signaling::OrgRelayCandidateWire>,
+        next_cursor: Option<meshharbor_remote_control::signaling::OrgRelayDiscoveryCursorWire>,
+        scan: Option<meshharbor_remote_control::signaling::OrgRelayDiscoveryScanWire>,
         ttl_secs: u32,
     },
     /// R3/R4 — the embedder observed a LAN-address-set change on a
@@ -1822,11 +1851,188 @@ pub fn filter_netmap_delta_by_peer(
     any_accepted
 }
 
+fn positive_peer_hint(
+    peer: &NetmapPeer,
+    previous: Option<(u64, u64)>,
+    applied_revision: u64,
+    epoch: u64,
+    revision: u64,
+) -> bool {
+    let effective = if revision > 0 {
+        revision
+    } else {
+        previous.map_or(applied_revision, |(revision, _)| revision)
+    };
+    peer.reachable && previous.is_none_or(|old| (effective, epoch) > old)
+}
+
+/// Observe accepted control updates only for currently offered probe relays.
+/// Serials describe local hints, never a relay process incarnation. Full maps
+/// establish a baseline without manufacturing an online event. State is
+/// bounded by 32 offered identities and their current offered endpoint pairs.
+#[derive(Default)]
+pub struct RelayProbeUpdates {
+    targets: Vec<super::orgrelay::prober::Target>,
+    peers: HashMap<ObjectId, NetmapPeer>,
+    versions: HashMap<ObjectId, (u64, u64)>,
+    generations: HashMap<ObjectId, u64>,
+    reachable: HashMap<(ObjectId, SocketAddr), bool>,
+    epoch: u64,
+    revision: u64,
+    serial: u64,
+}
+
+impl RelayProbeUpdates {
+    pub fn reset_full(
+        &mut self,
+        targets: &[super::orgrelay::prober::Target],
+        peers: &[NetmapPeer],
+        auth_revision: u64,
+    ) {
+        let mut offered = HashSet::new();
+        for target in targets.iter().filter(|t| !t.endpoints.is_empty()) {
+            if offered.len() < 32 {
+                offered.insert(target.relay_node_id);
+            }
+        }
+        self.targets = targets
+            .iter()
+            .filter(|t| offered.contains(&t.relay_node_id))
+            .cloned()
+            .collect();
+        self.peers = peers
+            .iter()
+            .filter(|p| offered.contains(&p.node_id))
+            .map(|p| (p.node_id, p.clone()))
+            .collect();
+        self.versions = self
+            .peers
+            .keys()
+            .map(|id| (*id, (auth_revision, 0)))
+            .collect();
+        self.generations.retain(|id, _| offered.contains(id));
+        let endpoints = self.offered_endpoints();
+        self.reachable.retain(|key, _| endpoints.contains(key));
+        self.epoch = 0;
+        self.revision = auth_revision;
+    }
+
+    fn offered_endpoints(&self) -> HashSet<(ObjectId, SocketAddr)> {
+        self.targets
+            .iter()
+            .flat_map(|t| {
+                t.endpoints
+                    .iter()
+                    .map(|endpoint| (t.relay_node_id, *endpoint))
+            })
+            .collect()
+    }
+
+    fn next_hint(&mut self, id: ObjectId) -> Option<(ObjectId, u64)> {
+        self.serial = self.serial.checked_add(1)?;
+        Some((id, self.serial))
+    }
+
+    pub fn delta(
+        &mut self,
+        epoch: u64,
+        auth_revision: u64,
+        upserts: &[NetmapPeer],
+        removes: &[ObjectId],
+    ) -> Vec<(ObjectId, u64)> {
+        let offered: HashSet<_> = self.targets.iter().map(|t| t.relay_node_id).collect();
+        let mut upserts: Vec<_> = upserts
+            .iter()
+            .filter(|p| offered.contains(&p.node_id))
+            .cloned()
+            .collect();
+        let mut removes: Vec<_> = removes
+            .iter()
+            .filter(|id| offered.contains(*id))
+            .copied()
+            .collect();
+        let positive: HashSet<_> = upserts
+            .iter()
+            .filter(|p| {
+                positive_peer_hint(
+                    p,
+                    self.versions.get(&p.node_id).copied(),
+                    self.revision,
+                    epoch,
+                    auth_revision,
+                )
+            })
+            .map(|p| p.node_id)
+            .collect();
+        if !filter_netmap_delta_by_peer(
+            &mut self.epoch,
+            &mut self.revision,
+            &mut self.versions,
+            epoch,
+            auth_revision,
+            &mut upserts,
+            &mut removes,
+        ) {
+            return Vec::new();
+        }
+        for id in removes {
+            self.peers.remove(&id);
+        }
+        for peer in upserts {
+            self.peers.insert(peer.node_id, peer);
+        }
+        let mut ids: Vec<_> = positive
+            .into_iter()
+            .filter(|id| self.peers.get(id).is_some_and(|p| p.reachable))
+            .collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|id| self.next_hint(id))
+            .collect()
+    }
+
+    /// Called only after the coordinator accepted a new immutable session.
+    pub fn accepted_session(
+        &mut self,
+        relay_node_id: ObjectId,
+        generation: u64,
+    ) -> Option<(ObjectId, u64)> {
+        if !self
+            .targets
+            .iter()
+            .any(|t| t.relay_node_id == relay_node_id)
+            || self
+                .generations
+                .get(&relay_node_id)
+                .is_some_and(|old| generation <= *old)
+        {
+            return None;
+        }
+        self.generations.insert(relay_node_id, generation);
+        self.next_hint(relay_node_id)
+    }
+
+    /// Only a measured false -> true transition wakes recovery. An initial
+    /// positive round supplies measurements without changing startup policy.
+    pub fn reachable_results(&mut self, outcomes: &[super::orgrelay::prober::Outcome]) -> bool {
+        let offered = self.offered_endpoints();
+        let mut changed = false;
+        for outcome in outcomes {
+            let key = (outcome.relay_node_id, outcome.endpoint);
+            if offered.contains(&key) {
+                let reachable = outcome.rtt.is_some();
+                changed |= self.reachable.insert(key, reachable) == Some(false) && reachable;
+            }
+        }
+        changed
+    }
+}
+
 /// B3 — optional maximum duration a persistent `OverlayRuntime` may continue
 /// forwarding over cached netmap authority while its control-WS is detached.
 ///
-/// Configured via `ROOMLERD_OFFLINE_CONTINUITY_MAX_MS` (millisecond precision
-/// for deterministic tests) or `ROOMLERD_OFFLINE_CONTINUITY_MAX_SECS` (seconds).
+/// Configured via `MESHHARBORD_OFFLINE_CONTINUITY_MAX_MS` (millisecond precision
+/// for deterministic tests) or `MESHHARBORD_OFFLINE_CONTINUITY_MAX_SECS` (seconds).
 /// Unset or `0` = unlimited offline continuity (the rc.307 default).
 pub fn offline_continuity_max_age() -> Option<Duration> {
     if let Some(ms) = crate::env::node_env("OFFLINE_CONTINUITY_MAX_MS")
@@ -1872,7 +2078,7 @@ pub struct OverlayRuntime {
     /// FR-97 P0b — why this node offers no routes although it was configured
     /// to: the host cannot forward or NAT for the overlay ([`super::nat::gate_offer`],
     /// run at the top of [`Self::run`], before the first join). Sent in the
-    /// join and published for `meshharbor status`. `None` = offering as
+    /// join and published for `mh status`. `None` = offering as
     /// configured.
     route_offer_withheld: Option<String>,
     /// Unification P1 — where to publish this node's live overlay view (self
@@ -1970,7 +2176,7 @@ pub type DerpMuxFactory = Box<dyn FnOnce() -> Arc<DerpMux> + Send + Sync>;
 pub type RegionalDerpFactory = Box<dyn Fn(&str) -> Option<Arc<DerpMux>> + Send + Sync>;
 
 /// Map the runtime's live carrier bookkeeping into the LocalAPI [`OverlayView`]
-/// — the daemon-internal shape the `meshharbor status` / `peers` verbs read. Pure
+/// — the daemon-internal shape the `mh status` / `peers` verbs read. Pure
 /// (no I/O / no `self`) so the [`ConnectionType`] classification is unit-tested
 /// directly. `current_peers` (the netmap) is authoritative for membership;
 /// `by_node` tells us HOW we currently reach each one:
@@ -2092,6 +2298,7 @@ fn build_overlay_view(
         path_trials: None,
         self_ip: (!self_ip.is_empty()).then(|| self_ip.to_string()),
         self_ip6: derived_v6_of(self_ip),
+        overlay_socks5_port: None,
         peers,
         // Set by `publish_view` from the runtime's exit-routing state (S4)
         // and DNS bring-up state (S2).
@@ -2271,7 +2478,7 @@ impl OverlayRuntime {
     /// FR-97 P0c-3 — this runtime runs over the userspace netstack, whose
     /// SOCKS5 front listens on `127.0.0.1:<port>`. A netstack node installs no
     /// OS routes, so an exit then carries only what the front dials:
-    /// `meshharbor status` says so, never claims IPv6 through it, and the host's
+    /// `mh status` says so, never claims IPv6 through it, and the host's
     /// DNS is left alone. `None` (an OS TUN, tests) changes nothing.
     pub fn with_netstack_socks(mut self, port: Option<u16>) -> Self {
         self.netstack_socks = port;
@@ -2280,7 +2487,7 @@ impl OverlayRuntime {
 
     /// Unification P1 — publish this node's live overlay view (self IP + peers
     /// with connection type) on `tx` so the daemon's LocalAPI can answer
-    /// `meshharbor status` / `peers`. The runtime republishes on join and after
+    /// `mh status` / `peers`. The runtime republishes on join and after
     /// every netmap / carrier-state change. Unset (test / direct mode) → the
     /// runtime publishes nothing.
     pub fn with_peer_view(mut self, tx: watch::Sender<OverlayView>) -> Self {
@@ -2612,6 +2819,7 @@ impl OverlayRuntime {
                 self.org_primary && path_trial::enabled() && path_trial_supported,
             );
             view.exit_node = exit_status;
+            view.overlay_socks5_port = self.netstack_socks;
             // FR-97 P0b — why this node offers no routes it was configured to.
             view.route_offer_withheld = self.route_offer_withheld.clone();
             // S2 — ditto for the DNS bring-up outcome.
@@ -2717,11 +2925,11 @@ impl OverlayRuntime {
             // `OVERLAY_BACKBONE_ONLY=0` opts out.
             supports_backbone_only_v1: super::direct::org_relay_enabled()
                 && self.org_primary
-                && self.mtu <= roomler_ai_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
+                && self.mtu <= meshharbor_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
                 && crate::env::flag("OVERLAY_BACKBONE_ONLY", true),
             supports_path_backbone_v1: path_trial::enabled()
                 && self.org_primary
-                && self.mtu <= roomler_ai_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
+                && self.mtu <= meshharbor_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
                 && (super::orgrelay::backbone::path_enabled() || self.backbone_enabled),
             relay_backbone_ready: self.org_primary
                 && self.ready_relay_port().is_some()
@@ -2879,7 +3087,7 @@ impl OverlayRuntime {
         // adapter: probed now and every ten minutes, off the run loop, into the
         // slot every published view reads. It dies with the runtime. A device
         // with no OS surface (netstack, mocks) has no adapter to govern.
-        // `ROOMLERD_HOST_FW_PROBE=0` switches it off.
+        // `MESHHARBORD_HOST_FW_PROBE=0` switches it off.
         let probe_host_firewall = crate::env::flag("HOST_FW_PROBE", true);
         let _host_firewall_probe = tun.os_name().filter(|_| probe_host_firewall).map(|ifname| {
             let slot = self.host_firewall.clone();
@@ -3158,7 +3366,7 @@ impl OverlayRuntime {
             //   WARN magicdns: bind failed; resolver off  … AddressAlreadyInUse
             //
             // The survivor still answered, from the DEAD session's name map, so
-            // every MagicDNS name NXDOMAIN'd while `meshharbor status` reported
+            // every MagicDNS name NXDOMAIN'd while `mh status` reported
             // whichever runtime's flag it happened to read — `active` or
             // `resolver DOWN` on the same host hours apart. It reads as a
             // third-party `:53` squatter and is not one: we were colliding with
@@ -3169,7 +3377,7 @@ impl OverlayRuntime {
                     magic_domain: magic_domain.clone(),
                     upstream: dns_upstream,
                     names: names.clone(),
-                    // AAAA (derived overlay v6) default-on; ROOMLERD_DNS_AAAA=0
+                    // AAAA (derived overlay v6) default-on; MESHHARBORD_DNS_AAAA=0
                     // reverts to A-only without a rebuild — the mixed-fleet escape
                     // hatch (an old peer's OS doesn't own its derived v6, so v6 to
                     // it blackholes; happy-eyeballs apps fall back, sequential apps
@@ -3225,7 +3433,7 @@ impl OverlayRuntime {
             None
         };
         // S2 — record the DNS bring-up outcome for the LocalAPI view
-        // (`meshharbor status` / the desktop's DNS section). `answer_aaaa`
+        // (`mh status` / the desktop's DNS section). `answer_aaaa`
         // recomputes the same expression the resolver was configured with.
         self.dns_status = dns_magic.clone().map(|magic_domain| DnsStatus {
             magic_domain,
@@ -3441,7 +3649,14 @@ impl OverlayRuntime {
             ));
         let (probe_res_tx, mut probe_res_rx) =
             mpsc::channel::<Vec<super::orgrelay::prober::Outcome>>(4);
-        let _relay_prober = super::orgrelay::prober::spawn(probe_targets_rx, probe_res_tx);
+        let mut probe_updates = RelayProbeUpdates::default();
+        probe_updates.reset_full(
+            &probe_targets_tx.borrow(),
+            &first_peers,
+            network.auth_revision,
+        );
+        let (_relay_prober, reactive_probes) =
+            super::orgrelay::prober::spawn_reactive(probe_targets_rx, probe_res_tx);
         let mut org_q = OrgBindQueue {
             in_flight: HashMap::new(),
             epoch: 0,
@@ -3498,7 +3713,7 @@ impl OverlayRuntime {
         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state)
             .await;
 
-        // Unification P1 — first LocalAPI view, so `meshharbor status` right after
+        // Unification P1 — first LocalAPI view, so `mh status` right after
         // join isn't empty until the first sweep (carries the exit-node status).
         self.publish_view(
             &self_ip,
@@ -3848,7 +4063,7 @@ impl OverlayRuntime {
                         })
                         .collect();
                     info!(?rtts, "overlay relay: measured our RTT to the relays the netmap offers");
-                    for o in round {
+                    for o in &round {
                         let _ = self
                             .outbound
                             .send(ClientMsg::OverlayRelayProbe {
@@ -3858,6 +4073,16 @@ impl OverlayRuntime {
                                 rtt_ms: o.rtt.map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX)),
                             })
                             .await;
+                    }
+                    // Reports enter the actual control stream first. This is
+                    // evidence of our measured path, not a backend readiness
+                    // acknowledgement for another relay's private edges.
+                    if probe_updates.reachable_results(&round) {
+                        let hinted: HashSet<_> = current_peers.keys().copied().collect();
+                        request_org_fallbacks_inner(
+                            self.org_primary && super::direct::org_relay_enabled() && server_org_discovery && server_org_fallback,
+                            &by_node, &current_peers, &mut relay, Instant::now(), Some(&hinted),
+                        ).await;
                     }
                 },
                 // FR-19 P4b — an off-loop org-relay bind finished: report what
@@ -4970,6 +5195,11 @@ impl OverlayRuntime {
                             &new_network.backbone_probe_targets,
                             backbone_policy.as_ref(),
                         ));
+                        probe_updates.reset_full(&probe_targets_tx.borrow(), &peers, new_network.auth_revision);
+                        let positive: HashSet<_> = peers.iter().filter(|p| p.reachable && current_peers.get(&p.node_id).is_some_and(|old|
+                            !old.reachable || org_peer_identity(old) != org_peer_identity(p)
+                                || direct_endpoints_changed(old, p) || (!old.supports_org_relay && p.supports_org_relay)
+                        )).map(|p| p.node_id).collect();
                         org_discovery.invalidate(); // authoritative membership / key / ACL reconciliation
                         let old_peers = std::mem::take(&mut current_peers);
                         current_peers = peers.iter().map(|p| (p.node_id, p.clone())).collect();
@@ -5044,6 +5274,10 @@ impl OverlayRuntime {
                             ).await;
                         }
                         if let Some(names) = &dns_names { sync_name_map(names, &current_peers, network.self_name.as_deref(), self_v4).await; }
+                        request_org_fallbacks_inner(
+                            self.org_primary && super::direct::org_relay_enabled() && server_org_discovery && server_org_fallback,
+                            &by_node, &current_peers, &mut relay, Instant::now(), Some(&positive),
+                        ).await;
                         let t0 = Instant::now();
                         self.install_peers(&mut wg, &mut by_node, &mut relay, &tun, &peers, direct_ctx.as_ref(), &mut upgrade_probes, &mut relay_bq, "netmap").await;
                         warn_if_slow("install_peers(netmap)", t0);
@@ -5066,6 +5300,9 @@ impl OverlayRuntime {
                             continue;
                         }
                         let prev_auth_revision = applied_auth_revision;
+                        let mut positive: HashSet<_> = upserts.iter().filter(|p| positive_peer_hint(
+                            p, peer_netmap_versions.get(&p.node_id).copied(), applied_auth_revision, epoch, auth_revision,
+                        )).map(|p| p.node_id).collect();
                         if !filter_netmap_delta_by_peer(
                             &mut applied_netmap_epoch,
                             &mut applied_auth_revision,
@@ -5083,6 +5320,12 @@ impl OverlayRuntime {
                                 "overlay: ignoring stale or out-of-order netmap_delta"
                             );
                             continue;
+                        }
+                        positive.retain(|id| upserts.iter().any(|p| p.node_id == *id && p.reachable));
+                        let relay_hints = probe_updates.delta(epoch, auth_revision, &upserts, &removes);
+                        let relay_changed = !relay_hints.is_empty();
+                        for (id, serial) in relay_hints {
+                            reactive_probes.request(id, serial);
                         }
                         path_trials.reset_observation(crate::localapi::PathTrialResetReason::NetmapDelta);
                         path_trial::clear_observation_view(&self.peer_view,path_trials.observation_runtime_id());
@@ -5125,6 +5368,16 @@ impl OverlayRuntime {
                         // P4 — a delta can change a peer's grant without any
                         // install/removal, so the table is resynced here too.
                         wg.sync_peer_ingress(&current_peers);
+                        if relay_changed {
+                            positive.extend(current_peers.keys().copied());
+                        }
+                        // Run before install_peers: this delta must not create
+                        // an ordinary pending request and immediately use it
+                        // as evidence for bypassing its own initial grace.
+                        request_org_fallbacks_inner(
+                            self.org_primary && super::direct::org_relay_enabled() && server_org_discovery && server_org_fallback,
+                            &by_node, &current_peers, &mut relay, Instant::now(), Some(&positive),
+                        ).await;
                         let t0 = Instant::now();
                         self.install_peers(&mut wg, &mut by_node, &mut relay, &tun, &upserts, direct_ctx.as_ref(), &mut upgrade_probes, &mut relay_bq, "delta").await;
                         warn_if_slow("install_peers(delta)", t0);
@@ -5228,7 +5481,7 @@ impl OverlayRuntime {
                                 if let Some((v, _age)) = super::netcheck::current() {
                                     let _ = advert_tx
                                         .send(ClientMsg::OverlayNetcheck {
-                                            caps: roomler_ai_remote_control::signaling::CapVectorWire {
+                                            caps: meshharbor_remote_control::signaling::CapVectorWire {
                                                 stun_udp: v.stun_udp,
                                                 relay_band_udp: v.relay_band_udp,
                                                 derp_ws_ok: v.derp_ws_ok,
@@ -5325,6 +5578,9 @@ impl OverlayRuntime {
                                         &mut alloc_q, &current_peers, &by_node, standby,
                                     ) {
                                         cancel_org_upgrade_candidate(&peer_node_id, &mut wg, &mut by_node);
+                                        if let Some((id, serial)) = probe_updates.accepted_session(relay_node_id, generation) {
+                                            reactive_probes.request(id, serial);
+                                        }
                                     }
                                     for job in r.take_org_jobs() {
                                         let label = current_peers.get(&job.relay_node_id).map(|p| p.name.clone()).unwrap_or_else(|| job.relay_node_id.to_hex());
@@ -5346,10 +5602,10 @@ impl OverlayRuntime {
                             org_discovery.invalidate();
                         }
                     }
-                    Some(OverlayEvent::OrgRelayRevoke { vni }) => {
+                    Some(OverlayEvent::OrgRelayRevoke { vni, scope }) => {
                         org_discovery.invalidate(); // no stale hints survive any relay revocation
                         if let Some(r) = relay.as_mut()
-                            && let Some(peer) = r.org_session_revoke(vni)
+                            && let Some(peer) = r.org_session_revoke(vni, &scope)
                         {
                             org_q.invalidate(&peer);
                             cancel_org_upgrade_candidate(&peer, &mut wg, &mut by_node);
@@ -6863,7 +7119,9 @@ mod tests {
     /// server revoked it, the very next sweep convicts the carrier, with no
     /// send needed to trip the latch first. Field 2026-10-27 (rf-84f661a5a7e3,
     /// finding 4): a revoke left the pair with no send carrier for 2.8 s and
-    /// 4.5 s, until a send failed and the next 5 s tick saw it.
+    /// 4.5 s, until a send failed and the next 5 s tick saw it. A recent relay
+    /// refresh must not postpone this authoritative withdrawal; an ordinary
+    /// stale DERP carrier still observes the refresh holdoff.
     #[tokio::test(flavor = "multi_thread")]
     async fn sweep_convicts_an_org_carrier_whose_session_is_gone() {
         for (kind, lost) in [(RelayKind::Derp, false), (RelayKind::Org, true)] {
@@ -6892,18 +7150,20 @@ mod tests {
                 .await;
             wg.test_latch_handshake_done(&pk);
             let nid = ObjectId::from_bytes([75, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            let now = Instant::now();
+            let stale = now.checked_sub(Duration::from_secs(180)).unwrap();
             let mut by_node = HashMap::new();
             by_node.insert(
                 nid,
                 Installed {
-                    since: Instant::now().checked_sub(Duration::from_secs(20)).unwrap(),
-                    last_rx_at: Instant::now(),
+                    since: stale,
+                    last_rx_at: if kind == RelayKind::Derp { stale } else { now },
                     relay_kind: Some(kind),
                     ..Installed::base(pk, ip, DirectTier::Relay, Instant::now())
                 },
             );
             let tun: Arc<dyn TunIo> = tun_mock;
-            let mut refresh = HashMap::new();
+            let mut refresh = HashMap::from([(nid, now + RELAY_REFRESH_COOLDOWN)]);
             let peers = HashMap::new();
             assert_eq!(
                 rt.sweep_carrier_health(
@@ -6917,8 +7177,28 @@ mod tests {
                 )
                 .await,
                 lost,
-                "{kind:?} carrier with no org session"
+                "{kind:?} carrier with no org session during relay refresh holdoff"
             );
+            assert_eq!(by_node.contains_key(&nid), !lost);
+            if kind == RelayKind::Derp {
+                // The held carrier is actually stale: without the holdoff the
+                // same sweep must remove it. Missing ORG authority alone gets
+                // the immediate-withdrawal exception above.
+                refresh.remove(&nid);
+                assert!(
+                    rt.sweep_carrier_health(
+                        &mut wg,
+                        &mut by_node,
+                        &mut relay,
+                        &tun,
+                        &mut refresh,
+                        &peers,
+                        ForcedPoke::No
+                    )
+                    .await
+                );
+                assert!(!by_node.contains_key(&nid));
+            }
         }
     }
 
@@ -8426,7 +8706,7 @@ mod tests {
         let mut relay: Option<RelayCoordinator> = None;
 
         // Serialize env mutation (the CI overlay-l3 suite runs --test-threads=1).
-        let key = "ROOMLERD_OVERLAY_MBB";
+        let key = "MESHHARBORD_OVERLAY_MBB";
         let restore = std::env::var(key).ok();
 
         // ── MBB ON: accept as a probe, hold the relay ──
@@ -8785,8 +9065,8 @@ mod tests {
     /// returned — exercising the OS-routed selection path end to end.
     #[tokio::test(flavor = "multi_thread")]
     async fn lan_egress_socket_gate_off_then_on_selects_socket() {
-        let n = "ROOMLERD_OVERLAY_BIND_BY_ROUTE";
-        let a = "ROOMLERD_OVERLAY_BIND_BY_ROUTE";
+        let n = "MESHHARBORD_OVERLAY_BIND_BY_ROUTE";
+        let a = "MESHHARBORD_OVERLAY_BIND_BY_ROUTE";
         let (rn, ra) = (std::env::var(n).ok(), std::env::var(a).ok());
         let lo = Ipv4Addr::LOCALHOST;
         let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
@@ -10496,7 +10776,7 @@ mod tests {
         // once the 120ms lease expires.
         // SAFETY: test-scoped env var read by `offline_continuity_max_age`.
         unsafe {
-            std::env::set_var("ROOMLERD_OFFLINE_CONTINUITY_MAX_MS", "120");
+            std::env::set_var("MESHHARBORD_OFFLINE_CONTINUITY_MAX_MS", "120");
         }
         evt_a.send(OverlayEvent::ControlDetached).await.unwrap();
 
@@ -10585,7 +10865,7 @@ mod tests {
         ));
 
         unsafe {
-            std::env::remove_var("ROOMLERD_OFFLINE_CONTINUITY_MAX_MS");
+            std::env::remove_var("MESHHARBORD_OFFLINE_CONTINUITY_MAX_MS");
         }
     }
 
@@ -10938,7 +11218,7 @@ mod tests {
     /// FR-97 P0c-3 — measured 2026-10-17 on a netstack exit client: its SOCKS5
     /// front carried IPv4 literals through the exit (a SYN from its overlay
     /// address on the exit's TUN, one new MASQUERADE flow) and refused IPv6
-    /// destinations, while `meshharbor status` said "active, v6 on" for the whole
+    /// destinations, while `mh status` said "active, v6 on" for the whole
     /// host. The status now carries the front, never IPv6 through it.
     #[test]
     fn a_netstack_exit_reports_its_socks_front_and_never_v6() {
@@ -11917,7 +12197,453 @@ mod tests {
 #[cfg(test)]
 mod org_fallback_tests {
     use super::*;
-    use roomler_ai_remote_control::signaling::OrgRelayCandidateWire;
+    use meshharbor_remote_control::signaling::OrgRelayCandidateWire;
+
+    #[test]
+    fn relay_probe_updates_require_offered_newer_reachable_control_evidence() {
+        let mut peer = super::tests::peer(&WgKeypair::generate(), "100.64.0.3");
+        peer.reachable = false;
+        let target = super::super::orgrelay::prober::Target {
+            relay_node_id: peer.node_id,
+            endpoints: vec!["127.0.0.1:9".parse().unwrap()],
+            via: None,
+        };
+        let mut updates = RelayProbeUpdates::default();
+        updates.reset_full(&[target], &[peer.clone()], 1);
+        assert_eq!(updates.serial, 0, "a full snapshot is not an online event");
+        assert!(updates.delta(10, 2, &[peer.clone()], &[]).is_empty());
+        peer.reachable = true;
+        let first = updates.delta(20, 2, &[peer.clone()], &[]);
+        assert_eq!(first, vec![(peer.node_id, 1)]);
+        assert!(updates.delta(20, 2, &[peer.clone()], &[]).is_empty());
+        assert!(updates.delta(19, 2, &[peer.clone()], &[]).is_empty());
+        assert!(updates.delta(30, 1, &[peer.clone()], &[]).is_empty());
+        assert_eq!(
+            updates.delta(21, 2, &[peer.clone()], &[]),
+            vec![(peer.node_id, 2)]
+        );
+        assert_eq!(
+            updates.delta(22, 2, &[peer.clone()], &[peer.node_id]),
+            vec![(peer.node_id, 3)],
+            "removes precede same-packet upserts"
+        );
+        let mut unknown = peer.clone();
+        unknown.node_id = ObjectId::new();
+        assert!(updates.delta(23, 2, &[unknown], &[]).is_empty());
+        assert_eq!(updates.peers.len(), 1);
+        assert_eq!(updates.versions.len(), 1);
+        assert_eq!(
+            updates.accepted_session(peer.node_id, 8),
+            Some((peer.node_id, 4))
+        );
+        assert_eq!(updates.accepted_session(peer.node_id, 8), None);
+        assert_eq!(updates.accepted_session(peer.node_id, 7), None);
+        updates.reset_full(&[], &[peer.clone()], 2);
+        assert!(updates.delta(24, 2, &[peer.clone()], &[]).is_empty());
+        assert_eq!(updates.accepted_session(peer.node_id, 9), None);
+        assert!(updates.peers.is_empty() && updates.versions.is_empty());
+    }
+
+    #[test]
+    fn relay_probe_observations_ignore_initial_success_and_prune_with_authority() {
+        use super::super::orgrelay::prober::{Outcome, Target};
+        let peer = super::tests::peer(&WgKeypair::generate(), "100.64.0.3");
+        let endpoint = "127.0.0.1:9".parse().unwrap();
+        let target = Target {
+            relay_node_id: peer.node_id,
+            endpoints: vec![endpoint],
+            via: None,
+        };
+        let mut updates = RelayProbeUpdates::default();
+        updates.reset_full(&[target], std::slice::from_ref(&peer), 1);
+        let mut outcome = Outcome {
+            relay_node_id: peer.node_id,
+            endpoint,
+            rtt: Some(Duration::from_millis(1)),
+        };
+        assert!(!updates.reachable_results(&[outcome.clone()]));
+        assert!(!updates.reachable_results(&[outcome.clone()]));
+        outcome.rtt = None;
+        assert!(!updates.reachable_results(&[outcome.clone()]));
+        outcome.rtt = Some(Duration::from_millis(1));
+        assert!(updates.reachable_results(&[outcome.clone()]));
+        assert!(!updates.reachable_results(&[outcome.clone()]));
+        outcome.endpoint = "127.0.0.1:10".parse().unwrap();
+        assert!(!updates.reachable_results(&[outcome]));
+        assert_eq!(updates.reachable.len(), 1);
+        updates.reset_full(&[], &[peer], 1);
+        assert!(updates.reachable.is_empty());
+    }
+
+    #[test]
+    fn relay_probe_control_observer_keeps_only_thirty_two_offered_identities() {
+        use super::super::orgrelay::prober::Target;
+        let peers: Vec<_> = (0..33)
+            .map(|_| super::tests::peer(&WgKeypair::generate(), "100.64.0.3"))
+            .collect();
+        let targets: Vec<_> = peers
+            .iter()
+            .map(|p| Target {
+                relay_node_id: p.node_id,
+                endpoints: vec!["127.0.0.1:9".parse().unwrap()],
+                via: None,
+            })
+            .collect();
+        let mut updates = RelayProbeUpdates::default();
+        updates.reset_full(&targets, &peers, 1);
+        assert_eq!(updates.peers.len(), 32);
+        assert_eq!(updates.versions.len(), 32);
+        assert_eq!(updates.accepted_session(peers[32].node_id, 1), None);
+        assert!(updates.delta(1, 1, &peers[32..], &[]).is_empty());
+        assert_eq!(updates.versions.len(), 32);
+    }
+
+    #[tokio::test]
+    async fn reactive_org_recovery_requires_a_preexisting_matching_ungranted_request() {
+        let (id, mut installed, mut peers, _, _, _, _) = fixture().await;
+        installed.clear();
+        peers.get_mut(&id).unwrap().relay_strategy =
+            Some(meshharbor_remote_control::signaling::RelayStrategyWire::BothAllocate);
+        let original = peers[&id].clone();
+        let cfg = peer_config_from_netmap(&original).unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut coordinator = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        coordinator.set_org_relay(true);
+        let mut relay = Some(coordinator);
+        let hinted = HashSet::from([id]);
+        let now = Instant::now();
+        assert!(
+            request_org_fallbacks_inner(true, &installed, &peers, &mut relay, now, Some(&hinted))
+                .await
+                .is_empty()
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a hint must not create fresh ordinary coordination"
+        );
+        relay.as_mut().unwrap().request(id, cfg.clone()).await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientMsg::OverlayRelayRequest { .. })
+        ));
+        for gate in 0..4 {
+            let mut changed = original.clone();
+            match gate {
+                0 => changed.reachable = false,
+                1 => changed.supports_org_relay = false,
+                2 => changed.wg_public_key = WgKeypair::generate().public_base64(),
+                3 => changed.overlay_ip = "100.64.0.99".into(),
+                _ => unreachable!(),
+            }
+            peers.insert(id, changed);
+            assert!(
+                request_org_fallbacks_inner(
+                    true,
+                    &installed,
+                    &peers,
+                    &mut relay,
+                    now,
+                    Some(&hinted)
+                )
+                .await
+                .is_empty(),
+                "reactive metadata gate {gate}"
+            );
+            assert!(rx.try_recv().is_err());
+        }
+        peers.insert(id, original);
+        assert_eq!(
+            request_org_fallbacks_inner(true, &installed, &peers, &mut relay, now, Some(&hinted))
+                .await,
+            vec![id]
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientMsg::OverlayOrgRelayFallbackRequest { .. })
+        ));
+        installed.insert(
+            id,
+            Installed {
+                is_direct: false,
+                relay_kind: Some(RelayKind::Org),
+                ..Installed::base(cfg.public_key, cfg.overlay_ip, DirectTier::Relay, now)
+            },
+        );
+        assert!(
+            request_org_fallbacks_inner(
+                true,
+                &installed,
+                &peers,
+                &mut relay,
+                now + Duration::from_secs(60),
+                Some(&hinted)
+            )
+            .await
+            .is_empty()
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a healthy ORG carrier must not be re-requested or renewed by a hint"
+        );
+    }
+
+    async fn running_delta_runtime(
+        peers: Vec<NetmapPeer>,
+        mut network: OverlayNetworkInfo,
+        primary: bool,
+    ) -> (
+        mpsc::Sender<OverlayEvent>,
+        mpsc::Receiver<ClientMsg>,
+        tokio::task::JoinHandle<()>,
+        mpsc::UnboundedSender<Vec<u8>>,
+    ) {
+        let (tun, inject, _delivered) = super::tests::MockTun::new();
+        let factory: TunFactory = Box::new(move |_, _, _| Ok(tun.clone() as Arc<dyn TunIo>));
+        let (outbound, mut messages) = mpsc::channel(128);
+        let (events, event_rx) = mpsc::channel(32);
+        let runtime = OverlayRuntime::new_relay(WgKeypair::generate(), outbound, factory, 1280)
+            .with_org_primary(primary);
+        let task = tokio::spawn(runtime.run(event_rx, vec![]));
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), messages.recv())
+                .await
+                .unwrap(),
+            Some(ClientMsg::OverlayJoin { .. })
+        ));
+        network.auth_revision = 1;
+        events
+            .send(OverlayEvent::Netmap {
+                self_ip: "100.64.0.1".into(),
+                network,
+                peers,
+                org_relay_discovery: true,
+                path_trial_v1: false,
+            })
+            .await
+            .unwrap();
+        (events, messages, task, inject)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn accepted_peer_online_delta_retries_ungranted_org_before_initial_grace() {
+        for (primary, enabled, capable, expected) in [
+            (true, true, true, true),
+            (false, true, true, false),
+            (true, false, true, false),
+            (true, true, false, false),
+        ] {
+            let mut peer = super::tests::peer(&WgKeypair::generate(), "100.64.0.2");
+            peer.supports_org_relay = capable;
+            peer.relay_strategy =
+                Some(meshharbor_remote_control::signaling::RelayStrategyWire::BothAllocate);
+            let id = peer.node_id;
+            let mut network = super::tests::net();
+            network.org_relay_fallback_v1 = enabled;
+            let (events, mut messages, task, _inject) =
+                running_delta_runtime(vec![peer.clone()], network, primary).await;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match messages.recv().await.unwrap() {
+                        ClientMsg::OverlayRelayRequest { peer_node_id, .. }
+                            if peer_node_id == id =>
+                        {
+                            break;
+                        }
+                        ClientMsg::OverlayOrgRelayFallbackRequest { .. } => {
+                            panic!("ordinary startup must keep its initial request grace");
+                        }
+                        _ => {}
+                    }
+                }
+            })
+            .await
+            .expect("runtime must issue a real unanswered relay request");
+            let requested = Instant::now();
+            // No Grant is supplied: keep the same runtime and its actual pending
+            // request through an authoritative offline -> online transition.
+            peer.reachable = false;
+            events
+                .send(OverlayEvent::NetmapDelta {
+                    epoch: 10,
+                    auth_revision: 2,
+                    upserts: vec![peer.clone()],
+                    removes: vec![],
+                })
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    match messages.recv().await.unwrap() {
+                        ClientMsg::OverlayNetmapAck {
+                            auth_revision: 2, ..
+                        } => break,
+                        ClientMsg::OverlayOrgRelayFallbackRequest { .. } => {
+                            panic!("an offline update must not request ORG recovery");
+                        }
+                        _ => {}
+                    }
+                }
+            })
+            .await
+            .expect("offline delta must actually be accepted before the online delta");
+            peer.reachable = true;
+            let online = OverlayEvent::NetmapDelta {
+                epoch: 20,
+                auth_revision: 3,
+                upserts: vec![peer.clone()],
+                removes: vec![],
+            };
+            events.send(online.clone()).await.unwrap();
+            let first =
+                tokio::time::timeout(Duration::from_secs(if expected { 3 } else { 1 }), async {
+                    loop {
+                        match messages.recv().await.unwrap() {
+                            ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. } => {
+                                assert_eq!(peer_node_id, id);
+                                break;
+                            }
+                            ClientMsg::OverlayRelayRequest { .. } => {
+                                panic!("reactive ORG recovery must not reopen TURN coordination");
+                            }
+                            _ => {}
+                        }
+                    }
+                })
+                .await;
+            if first.is_ok() {
+                events.send(online).await.unwrap(); // duplicate epoch
+                events
+                    .send(OverlayEvent::NetmapDelta {
+                        epoch: 30,
+                        auth_revision: 2, // stale authority, even with a newer epoch
+                        upserts: vec![peer.clone()],
+                        removes: vec![],
+                    })
+                    .await
+                    .unwrap();
+                for (epoch, reachable) in [(40, true), (50, false), (60, true)] {
+                    peer.reachable = reachable;
+                    events
+                        .send(OverlayEvent::NetmapDelta {
+                            epoch,
+                            auth_revision: 3,
+                            upserts: vec![peer.clone()],
+                            removes: vec![],
+                        })
+                        .await
+                        .unwrap();
+                }
+            }
+            let repeated = tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if matches!(
+                        messages.recv().await.unwrap(),
+                        ClientMsg::OverlayOrgRelayFallbackRequest { .. }
+                            | ClientMsg::OverlayRelayRequest { .. }
+                    ) {
+                        break;
+                    }
+                }
+            })
+            .await;
+            task.abort();
+            let _ = task.await;
+            assert_eq!(
+                first.is_ok(),
+                expected,
+                "an accepted peer-online delta must wake ORG recovery before the initial 60-second grace only when primary, enabled and capable"
+            );
+            assert!(requested.elapsed() < Duration::from_secs(60));
+            assert!(
+                repeated.is_err(),
+                "duplicate, stale and repeated reachability updates must retain the actual ORG request gap"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn accepted_relay_online_delta_reprobes_the_real_offered_endpoint() {
+        use crate::overlay::orgrelay::{
+            bind::CookieKey,
+            server::{RelayServer, RelayStats},
+        };
+        use meshharbor_remote_control::signaling::RelayProbeTargetWire;
+
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let endpoint = socket.local_addr().unwrap().to_string();
+        let mut relay_peer = super::tests::peer(&WgKeypair::generate(), "100.64.0.3");
+        relay_peer.reachable = false;
+        let id = relay_peer.node_id;
+        let mut network = super::tests::net();
+        network.relay_probe_targets = vec![RelayProbeTargetWire {
+            relay_node_id: id,
+            endpoints: vec![endpoint.clone()],
+        }];
+        let (events, mut messages, task, _inject) =
+            running_delta_runtime(vec![relay_peer.clone()], network, true).await;
+        // The socket genuinely exists but has no responder yet. Require the
+        // production prober's measured failure before bringing its server up.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let ClientMsg::OverlayRelayProbe {
+                    relay_node_id,
+                    endpoint: measured,
+                    reachable,
+                    ..
+                } = messages.recv().await.unwrap()
+                    && relay_node_id == id
+                    && measured == endpoint
+                {
+                    assert!(
+                        !reachable,
+                        "silent UDP endpoint must not be reported reachable"
+                    );
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("initial real probe must report the silent endpoint unreachable");
+        let (server, _handle) = RelayServer::new(
+            CookieKey::from_bytes([1; 32]),
+            Arc::new(RelayStats::default()),
+        );
+        let server_task = tokio::spawn(server.serve(socket));
+        relay_peer.reachable = true;
+        events
+            .send(OverlayEvent::NetmapDelta {
+                epoch: 10,
+                auth_revision: 2,
+                upserts: vec![relay_peer],
+                removes: vec![],
+            })
+            .await
+            .unwrap();
+        let reprobed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let ClientMsg::OverlayRelayProbe {
+                    relay_node_id,
+                    endpoint: measured,
+                    reachable: true,
+                    ..
+                } = messages.recv().await.unwrap()
+                    && relay_node_id == id
+                    && measured == endpoint
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+        task.abort();
+        server_task.abort();
+        let _ = task.await;
+        let _ = server_task.await;
+        assert!(
+            reprobed.is_ok(),
+            "an accepted relay-online delta must trigger a real probe before the 240-second periodic round"
+        );
+    }
 
     async fn fixture() -> (
         ObjectId,
@@ -11965,7 +12691,7 @@ mod org_fallback_tests {
                 id,
                 request_id,
                 vec![OrgRelayCandidateWire {
-                    path: roomler_ai_remote_control::signaling::RelayPathWire::new(vec![
+                    path: meshharbor_remote_control::signaling::RelayPathWire::new(vec![
                         ObjectId::new()
                     ])
                     .unwrap(),
@@ -12029,6 +12755,74 @@ mod org_fallback_tests {
             assert!(rx.try_recv().is_err(), "unsafe request at gate {gate}");
         }
     }
+    #[tokio::test]
+    async fn org_fallback_runtime_retries_an_aged_unanswered_ordinary_peer_without_turn_reopen() {
+        let (id, mut installed, mut peers, _, _, _, _) = fixture().await;
+        installed.clear();
+        assert!(!peers[&id].backbone_only);
+        peers.get_mut(&id).unwrap().relay_strategy =
+            Some(meshharbor_remote_control::signaling::RelayStrategyWire::BothAllocate);
+        let cfg = peer_config_from_netmap(&peers[&id]).unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut coordinator = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        coordinator.set_org_relay(true);
+        let began = Instant::now();
+        coordinator.request(id, cfg.clone()).await;
+        assert!(matches!(rx.try_recv(), Ok(ClientMsg::OverlayRelayRequest {
+            peer_node_id, ..
+        }) if peer_node_id == id));
+        // A refused request has no Grant; retain the same control channel,
+        // current reachable ORG-capable peer, and carrierless runtime state.
+        let posted = Instant::now();
+        let gap = Duration::from_secs(60);
+        let mut relay = Some(coordinator);
+        assert!(
+            request_org_fallbacks(
+                true,
+                &installed,
+                &peers,
+                &mut relay,
+                began + gap - Duration::from_millis(1)
+            )
+            .await
+            .is_empty()
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "ordinary establishment keeps its initial grace"
+        );
+        assert_eq!(
+            request_org_fallbacks(true, &installed, &peers, &mut relay, posted + gap).await,
+            vec![id],
+            "an ordinary ungranted request must not permanently suppress ORG recovery"
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest {
+            peer_node_id, ..
+        }) if peer_node_id == id)
+        );
+        relay.as_mut().unwrap().request(id, cfg).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "ORG recovery must not reopen TURN coordination"
+        );
+        assert!(
+            request_org_fallbacks(
+                true,
+                &installed,
+                &peers,
+                &mut relay,
+                posted + gap + gap - Duration::from_millis(1)
+            )
+            .await
+            .is_empty()
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "the existing ORG request gap still applies"
+        );
+    }
+
     #[tokio::test]
     async fn org_fallback_runtime_asks_for_the_line_of_a_line_peer_with_no_carrier() {
         let (id, mut installed, mut peers, _discovery, mut relay, mut rx, now) = fixture().await;
@@ -12561,9 +13355,19 @@ mod org_upgrade_tests {
             60,
         )
         .unwrap();
+        let revoke_scope = meshharbor_remote_control::signaling::RelayRevokeScopeWire {
+            relay_node_id: session.relay_node_id,
+            generation: session.generation,
+            peer_node_id: Some(a.id),
+        };
         assert!(a.relay.as_mut().unwrap().org_session_accept(a.id, session));
         stage(&mut a, la).await;
-        let id = a.relay.as_mut().unwrap().org_session_revoke(77).unwrap();
+        let id = a
+            .relay
+            .as_mut()
+            .unwrap()
+            .org_session_revoke(77, &revoke_scope)
+            .unwrap();
         cancel_org_upgrade_candidate(&id, &mut a.wg, &mut a.installed);
         stage(&mut b, lb).await;
         tokio::time::sleep(Duration::from_millis(30)).await;
@@ -12764,8 +13568,18 @@ mod org_upgrade_tests {
                         60,
                     )
                     .unwrap();
+                    let revoke_scope = meshharbor_remote_control::signaling::RelayRevokeScopeWire {
+                        relay_node_id: session.relay_node_id,
+                        generation: session.generation,
+                        peer_node_id: Some(a.id),
+                    };
                     a.relay.as_mut().unwrap().org_session_accept(a.id, session);
-                    let peer = a.relay.as_mut().unwrap().org_session_revoke(77).unwrap();
+                    let peer = a
+                        .relay
+                        .as_mut()
+                        .unwrap()
+                        .org_session_revoke(77, &revoke_scope)
+                        .unwrap();
                     cancel_org_upgrade_candidate(&peer, &mut a.wg, &mut a.installed);
                 }
                 1 => {

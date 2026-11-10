@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::{Context, Result, bail};
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::signaling::{ClientMsg, CloseReason};
+use meshharbor_remote_control::signaling::{ClientMsg, CloseReason};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -71,7 +71,7 @@ pub async fn handle_associate(
     flow_counter: Arc<AtomicU32>,
     // P3b-4: the per-forward throughput aggregate. Each UDP flow's pump
     // mirrors datagram bytes into it (out = app→target, in = target→app) and
-    // holds a `FlowGauge` for `active_flows`, so `roomler flows` reports UDP
+    // holds a `FlowGauge` for `active_flows`, so `mh flows` reports UDP
     // the same way it reports TCP CONNECT flows (previously always 0 B).
     session: Arc<SessionThroughput>,
 ) -> Result<()> {

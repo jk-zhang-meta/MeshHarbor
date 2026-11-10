@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mailpit
-  namespace: roomler-ai-e2e
+  namespace: meshharbor-e2e
   labels:
     app: mailpit
 spec:

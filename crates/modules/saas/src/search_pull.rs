@@ -3,7 +3,7 @@
 //! FR-102 P7 — the Search Console puller (spec §3k): Google's clicks,
 //! impressions and position per page × query × day, frozen into
 //! `growth_daily` (`source: search_console`) with one `growth_pulls` row per
-//! day, through a service account added to `sc-domain:roomler.ai`.
+//! day, through a service account added to `sc-domain:meshharbor.itachi.fans`.
 //!
 //! `saas`'s, like every puller (no self-host profile compiles it). Without
 //! a key it pulls nothing and says so once; a key that does not parse is
@@ -48,11 +48,11 @@ use std::collections::BTreeMap;
 
 use bson::DateTime;
 use chrono::Duration;
-use roomler_ai_services::dao::{
+use meshharbor_core::Core;
+use meshharbor_services::dao::{
     base::DaoResult,
     growth::{GrowthDaily, GrowthDao, PulledDay, SEARCH_CONSOLE_SOURCE, daily_row},
 };
-use roomler_core::Core;
 use serde::Serialize;
 use tracing::{info, warn};
 
@@ -325,7 +325,7 @@ pub fn spawn_puller(core: Core) {
     let client = match ScClient::from_settings(growth) {
         None => {
             info!(
-                "growth search console puller: no key configured (ROOMLER__GROWTH__SEARCH_CONSOLE_KEY) — nothing is pulled"
+                "growth search console puller: no key configured (MESHHARBOR__GROWTH__SEARCH_CONSOLE_KEY) — nothing is pulled"
             );
             return;
         }
@@ -395,20 +395,28 @@ mod tests {
     fn a_breakdown_shapes_into_weighted_rows() {
         let rows = vec![
             row(
-                &["https://roomler.ai/blog/a/", "remote desktop"],
+                &["https://meshharbor.itachi.fans/blog/a/", "remote desktop"],
                 2.0,
                 40.0,
                 Some(3.5),
             ),
             row(
-                &["https://roomler.ai/blog/a/", " remote desktop\u{0}"],
+                &[
+                    "https://meshharbor.itachi.fans/blog/a/",
+                    " remote desktop\u{0}",
+                ],
                 1.0,
                 10.0,
                 Some(8.0),
             ),
-            row(&["https://roomler.ai/blog/b/", ""], 5.0, 5.0, Some(1.0)),
             row(
-                &["https://roomler.ai/blog/c/", "self hosted"],
+                &["https://meshharbor.itachi.fans/blog/b/", ""],
+                5.0,
+                5.0,
+                Some(1.0),
+            ),
+            row(
+                &["https://meshharbor.itachi.fans/blog/c/", "self hosted"],
                 0.0,
                 3.0,
                 None,
@@ -416,7 +424,7 @@ mod tests {
         ];
         let out = rows_of("2026-10-12", "page_query", &["page", "query"], &rows);
         let a = [
-            ("page", "https://roomler.ai/blog/a/"),
+            ("page", "https://meshharbor.itachi.fans/blog/a/"),
             ("query", "remote desktop"),
         ];
         assert_eq!(value(&out, &a, "clicks"), Some(3));
@@ -424,9 +432,8 @@ mod tests {
         // (3.5 × 40 + 8 × 10) × 100 = 22,000 → an average of 4.4.
         assert_eq!(value(&out, &a, "position_x100"), Some(22_000));
         assert!(
-            out.iter()
-                .all(|r| r.dims.get("page").map(String::as_str)
-                    != Some("https://roomler.ai/blog/b/")),
+            out.iter().all(|r| r.dims.get("page").map(String::as_str)
+                != Some("https://meshharbor.itachi.fans/blog/b/")),
             "an empty query is no key"
         );
         let c = [("query", "self hosted")];

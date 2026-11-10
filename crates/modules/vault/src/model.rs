@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! What the vault stores (`docs/roomler-hive-design.md` §8.2).
+//! What the vault stores (`docs/meshharbor-hive-design.md` §8.2).
 //!
 //! | Collection | One row per | Holds |
 //! |---|---|---|
@@ -23,7 +23,7 @@ pub const KIND_STATIC: &str = "static";
 pub const KIND_STRUCTURED: &str = "structured";
 /// P3-6b — an issuer, for a credential minted per lease: its fields are
 /// those its `provider` names
-/// (`roomler_ai_remote_control::vault::providers`), and a session never
+/// (`meshharbor_remote_control::vault::providers`), and a session never
 /// gets one of them. It is used in `short-lived` mode alone, and that mode
 /// uses nothing else (the guardrails `dynamic-only-short-lived` and
 /// `short-lived-only-dynamic`).
@@ -204,7 +204,7 @@ pub struct VaultRole {
     pub id: Option<ObjectId>,
     pub tenant_id: ObjectId,
     /// One spelling: [`crate::rrn::check_tag`]'s rule. The Cedar entity is
-    /// `Roomler::Role::"<name>"`.
+    /// `MeshHarbor::Role::"<name>"`.
     pub name: String,
     #[serde(default)]
     pub description: String,
@@ -271,7 +271,7 @@ pub struct VaultLease {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle: Option<BTreeMap<String, i64>>,
     /// The session it was released to. P3-9-1 — absent for a PERSON's lease
-    /// (`roomler connect`, [`crate::connect`]), which no session holds, and
+    /// (`mh connect`, [`crate::connect`]), which no session holds, and
     /// only for one: a lease with no session is checked as its owner's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<ObjectId>,

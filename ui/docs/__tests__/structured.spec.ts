@@ -19,12 +19,12 @@ import {
 
 describe('the blog (P4)', () => {
   const post = {
-    url: 'https://roomler.ai/blog/a/',
+    url: 'https://meshharbor.itachi.fans/blog/a/',
     headline: 'A',
     description: 'd',
     datePublished: '2026-09-25T22:45:13Z',
     dateModified: '2026-09-28T20:52:50Z',
-    image: { url: 'https://roomler.ai/docs/assets/a.0123456789.png', width: 1200, height: 630 },
+    image: { url: 'https://meshharbor.itachi.fans/docs/assets/a.0123456789.png', width: 1200, height: 630 },
     author: AUTHORS.goran!,
     keywords: ['teamviewer'],
   }
@@ -51,7 +51,7 @@ describe('the blog (P4)', () => {
   })
 
   it('lists the posts on the blog index', () => {
-    const b = blog({ url: 'https://roomler.ai/blog/', description: 'x', posts: [{ url: post.url, headline: 'A', datePublished: post.datePublished }] })
+    const b = blog({ url: 'https://meshharbor.itachi.fans/blog/', description: 'x', posts: [{ url: post.url, headline: 'A', datePublished: post.datePublished }] })
     expect(b).toMatchObject({ '@type': 'Blog', '@id': BLOG_ID, blogPost: [{ '@type': 'BlogPosting', headline: 'A' }] })
   })
 })
@@ -59,20 +59,20 @@ describe('the blog (P4)', () => {
 describe('the publisher', () => {
   it('is ONE Organization with the legal name every other record uses', () => {
     const org = organization()
-    expect(org['@id']).toBe('https://roomler.ai/#organization')
+    expect(org['@id']).toBe('https://meshharbor.itachi.fans/#organization')
     expect(org.legalName).toBe('G ROX EOOD')
     expect(JSON.stringify(org)).not.toContain('LTD')
   })
 
   it('is what every article points at, by @id', () => {
-    const a = techArticle({ url: 'https://roomler.ai/docs/x/', headline: 'X', description: 'd', image: 'https://roomler.ai/i.png', keywords: [] })
+    const a = techArticle({ url: 'https://meshharbor.itachi.fans/docs/x/', headline: 'X', description: 'd', image: 'https://meshharbor.itachi.fans/i.png', keywords: [] })
     expect((a.author as { '@id': string })['@id']).toBe(ORG.id)
     expect((a.publisher as { '@id': string })['@id']).toBe(ORG.id)
   })
 })
 
 describe('techArticle', () => {
-  const base = { url: 'https://roomler.ai/docs/x/', headline: 'X', description: 'd', image: 'https://roomler.ai/i.png', keywords: ['a', 'b'] }
+  const base = { url: 'https://meshharbor.itachi.fans/docs/x/', headline: 'X', description: 'd', image: 'https://meshharbor.itachi.fans/i.png', keywords: ['a', 'b'] }
 
   it('carries the dates it knows and omits the ones it does not', () => {
     expect(techArticle({ ...base, datePublished: '2026-09-01', dateModified: '2026-09-02' })).toMatchObject({
@@ -93,8 +93,8 @@ describe('the rest', () => {
   it('numbers breadcrumbs from 1 with absolute URLs', () => {
     const b = breadcrumbList([{ name: 'Docs', url: '/docs/' }, { name: 'Compare', url: '/docs/compare/' }])
     expect(b.itemListElement).toEqual([
-      { '@type': 'ListItem', position: 1, name: 'Docs', item: 'https://roomler.ai/docs/' },
-      { '@type': 'ListItem', position: 2, name: 'Compare', item: 'https://roomler.ai/docs/compare/' },
+      { '@type': 'ListItem', position: 1, name: 'Docs', item: 'https://meshharbor.itachi.fans/docs/' },
+      { '@type': 'ListItem', position: 2, name: 'Compare', item: 'https://meshharbor.itachi.fans/docs/compare/' },
     ])
   })
 

@@ -129,7 +129,7 @@ async fn oauth_user_dao_find_or_create_new_user() {
     assert_eq!(user, 0);
 
     // Create user via OAuth DAO
-    let dao = roomler_ai_services::dao::user::UserDao::new(&app.db);
+    let dao = meshharbor_services::dao::user::UserDao::new(&app.db);
     let user = dao
         .find_or_create_by_oauth(
             "google",
@@ -184,7 +184,7 @@ async fn oauth_user_dao_links_existing_user() {
     app.activate_user("existing@test.com").await;
 
     // Now use OAuth with the same email
-    let dao = roomler_ai_services::dao::user::UserDao::new(&app.db);
+    let dao = meshharbor_services::dao::user::UserDao::new(&app.db);
     let user = dao
         .find_or_create_by_oauth(
             "github",
@@ -211,7 +211,7 @@ async fn oauth_user_dao_links_existing_user() {
 async fn oauth_user_dao_does_not_duplicate_provider() {
     let app = TestApp::spawn().await;
 
-    let dao = roomler_ai_services::dao::user::UserDao::new(&app.db);
+    let dao = meshharbor_services::dao::user::UserDao::new(&app.db);
 
     // Create via OAuth
     dao.find_or_create_by_oauth(
@@ -259,7 +259,7 @@ async fn oauth_user_dao_does_not_duplicate_provider() {
 #[tokio::test]
 async fn unverified_oauth_email_never_links_into_an_existing_account() {
     let app = TestApp::spawn().await;
-    let dao = roomler_ai_services::dao::user::UserDao::new(&app.db);
+    let dao = meshharbor_services::dao::user::UserDao::new(&app.db);
 
     // Victim signs up normally AND completes activation, so the account has
     // actually PROVEN the address. The activation is load-bearing for the last
@@ -373,7 +373,7 @@ async fn unverified_oauth_email_never_links_into_an_existing_account() {
 #[tokio::test]
 async fn an_unverified_identity_does_not_reserve_the_asserted_address() {
     let app = TestApp::spawn().await;
-    let dao = roomler_ai_services::dao::user::UserDao::new(&app.db);
+    let dao = meshharbor_services::dao::user::UserDao::new(&app.db);
 
     // Attacker gets there first, asserting an address it does not own.
     let attacker = dao
@@ -448,7 +448,7 @@ async fn an_unverified_identity_does_not_reserve_the_asserted_address() {
 #[tokio::test]
 async fn an_unactivated_signup_cannot_hold_an_address_against_a_proven_identity() {
     let app = TestApp::spawn().await;
-    let dao = roomler_ai_services::dao::user::UserDao::new(&app.db);
+    let dao = meshharbor_services::dao::user::UserDao::new(&app.db);
 
     // Registered, password known to the attacker, never activated.
     let squatter = dao

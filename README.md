@@ -1,12 +1,12 @@
-# Roomler
+# MeshHarbor
 
 **Open-source remote desktop and WireGuard mesh in one daemon.**
 
 [![License](https://img.shields.io/badge/license-AGPL--3.0%20server%20%2B%20MPL--2.0%20agent-009688)](LICENSING.md)
 [![Platforms](https://img.shields.io/badge/agent-Windows%20%C2%B7%20Linux%20%C2%B7%20macOS-informational)](#platform-support)
-[![Releases](https://img.shields.io/github/v/release/gjovanov/roomler-ai?filter=agent-*&label=agent)](https://github.com/gjovanov/roomler-ai/releases)
+[![Releases](https://img.shields.io/github/v/release/jk-zhang-meta/MeshHarbor?filter=agent-*&label=agent)](https://github.com/jk-zhang-meta/MeshHarbor/releases)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-unlimited%20devices-009688)](docs/self-hosting.md)
-[![Docs](https://img.shields.io/badge/docs-roomler.ai%2Fdocs-009688)](https://roomler.ai/docs/)
+[![Docs](https://img.shields.io/badge/docs-meshharbor.itachi.fans%2Fdocs-009688)](https://meshharbor.itachi.fans/docs/)
 
 Put the desktop of any machine you own into a browser tab, and join all of those
 machines into one private encrypted network that travels with you — so a laptop
@@ -31,18 +31,18 @@ tunnelled bytes.
      The narrated trailer is on YouTube. A README cannot embed its player
      (GitHub strips iframes), so it is linked from a still of the trailer
      itself, docs/assets/trailer-thumbnail.jpg — YouTube's own automatic
-     thumbnail is a bare Windows desktop with no Roomler in it. -->
+     thumbnail is a bare Windows desktop with no MeshHarbor in it. -->
 <p align="center">
   <img src="docs/assets/demo-preview.gif" alt="One browser tab reaching four machines in turn — a MacBook and three Windows laptops: press Connect, the screen appears, and the viewer goes full screen" width="800">
 </p>
 <p align="center">
   <i>A MacBook and three Windows laptops, one of them behind a corporate VPN and reached through a relay, each live in the same browser tab.</i><br>
   Four machines, two operating systems, one tab —
-  <a href="https://raw.githubusercontent.com/gjovanov/roomler-ai/master/roomler-demo.mp4">the full 43-second demo</a>
+  <a href="https://raw.githubusercontent.com/jk-zhang-meta/MeshHarbor/master/meshharbor-demo.mp4">the full 43-second demo</a>
   is a 5.5&nbsp;MB MP4 download.
 </p>
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=ttpby58Rwyc"><img src="docs/assets/trailer-thumbnail.jpg" alt="The Roomler trailer on YouTube: a Windows laptop's desktop live in a browser tab, with a play button" width="640"></a><br>
+  <a href="https://www.youtube.com/watch?v=ttpby58Rwyc"><img src="docs/assets/trailer-thumbnail.jpg" alt="The MeshHarbor trailer on YouTube: a Windows laptop's desktop live in a browser tab, with a play button" width="640"></a><br>
   <a href="https://www.youtube.com/watch?v=ttpby58Rwyc"><b>Watch the trailer on YouTube</b></a> — the same machines, narrated, in 54 seconds.
 </p>
 
@@ -53,7 +53,7 @@ phone-home. Same code as the hosted service; there is no crippled community
 build.
 
 ```bash
-git clone https://github.com/gjovanov/roomler-ai.git && cd roomler-ai
+git clone https://github.com/jk-zhang-meta/MeshHarbor.git && cd meshharbor
 cp .env.selfhost.example .env.selfhost      # fill in 4 values; 2 are `openssl rand -hex 32`
 docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost pull
 docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d
@@ -63,14 +63,14 @@ Then open <http://localhost:8080>. Full walkthrough — TLS, reverse proxy, medi
 ports, backups — in **[`docs/self-hosting.md`](docs/self-hosting.md)**.
 
 Images are published at
-[`ghcr.io/gjovanov/roomler-ai`](https://github.com/gjovanov/roomler-ai/pkgs/container/roomler-ai)
+[`ghcr.io/jk-zhang-meta/meshharbor`](https://github.com/jk-zhang-meta/MeshHarbor/pkgs/container/meshharbor)
 for **linux/amd64 and linux/arm64** — a Raspberry Pi, an Apple Silicon Mac or an
 ARM VPS pulls the same tag. To build from source instead — always supported, and
 never merely a fallback — swap the last two lines for `up -d --build`; that
 compiles Rust and mediasoup, measured 6 minutes on a 16-core laptop, 15–20 on a
 small VPS.
 
-**Hosted** — create a workspace at [roomler.ai](https://roomler.ai) and skip to
+**Hosted** — create a workspace at [meshharbor.itachi.fans](https://meshharbor.itachi.fans) and skip to
 the next step. Free for 10 users and 100 devices, commercial use included.
 
 ### Add a machine
@@ -80,9 +80,9 @@ machine you want to reach:
 
 ```bash
 # Linux / macOS
-curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- --role daemon --token <enrollment-jwt>
+curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- --role daemon --token <enrollment-jwt>
 # Windows (PowerShell, elevated)
-& ([scriptblock]::Create((irm https://roomler.ai/api/setup/install.ps1))) `
+& ([scriptblock]::Create((irm https://meshharbor.itachi.fans/api/setup/install.ps1))) `
     -Role daemon-system -Token <enrollment-jwt>
 ```
 
@@ -90,25 +90,25 @@ The agent connects **outbound only** — nothing is opened on the machine you
 enrol, and no port is forwarded. Then, from anywhere:
 
 ```bash
-roomler ssh     gpu-1                                            # a shell — no sshd, no listening port
-roomler forward --agent office-1 --local 127.0.0.1:5432 --remote db.internal:5432
-roomler socks5  --agent berlin-1 --local 127.0.0.1:1080          # see the network as that machine sees it
+mh ssh     gpu-1                                            # a shell — no sshd, no listening port
+mh forward --agent office-1 --local 127.0.0.1:5432 --remote db.internal:5432
+mh socks5  --agent berlin-1 --local 127.0.0.1:1080          # see the network as that machine sees it
 ```
 
 …or open the machine's desktop from the web app and use it as if you were
 sitting at it.
 
-Prefer a GUI? The **roomler-setup** wizard installs any role on any OS —
+Prefer a GUI? The **meshharbor-setup** wizard installs any role on any OS —
 see [`docs/installation.md`](docs/installation.md).
 
 ## What it replaces
 
-| If you use… | …for | Roomler does it |
+| If you use… | …for | MeshHarbor does it |
 |---|---|---|
 | **TeamViewer / AnyDesk / RustDesk** | reaching a desktop | browser-based, hardware-encoded, consent-gated, works through corporate firewalls |
 | **Tailscale / ZeroTier / NetBird** | a private network between machines | WireGuard mesh, stable IPs, MagicDNS, subnet routers, exit nodes |
-| **ngrok / Cloudflare Tunnel** | reaching one service behind a NAT | `roomler forward`, SOCKS5, daemon-supervised declared routes |
-| **`sshd` + a jump host** | a shell on a remote box | `roomler ssh` — no daemon to install, no port to open, no bastion |
+| **ngrok / Cloudflare Tunnel** | reaching one service behind a NAT | `mh forward`, SOCKS5, daemon-supervised declared routes |
+| **`sshd` + a jump host** | a shell on a remote box | `mh ssh` — no daemon to install, no port to open, no bastion |
 | **Slack + Zoom** | the team layer | rooms, threads, files, HD calls on the same server and accounts |
 
 Not a claim that it beats each of those at its own game — a claim that you stop
@@ -128,7 +128,7 @@ nothing on the tooling you build around it. MSPs and IT providers: that split
 exists for you. See [`LICENSING.md`](LICENSING.md) and
 [`COMMERCIAL.md`](COMMERCIAL.md).
 
-> **On the name:** the AI in `roomler.ai` is one optional document-recognition
+> **On the name:** the AI in `meshharbor.itachi.fans` is one optional document-recognition
 > feature. This is a networking and remote-access product. Nothing calls home,
 > and self-hosted deployments send us no telemetry at all.
 
@@ -176,12 +176,12 @@ machine when you travel.
 | In detail | |
 |---|---|
 | **WireGuard mesh** | Every node gets a stable private IP (CGNAT `100.64.0.0/10`) + a MagicDNS name. Carriers auto-negotiate: LAN-direct → public-direct → NAT hole-punch → TURN relay (QUIC-upgraded) → DERP over :443 — it works even from strict corporate networks. See [`docs/overlay-communication.md`](docs/overlay-communication.md) |
-| **Tunnels** | `roomler forward` (any `host:port` an agent can reach becomes a local port), `roomler socks5` (per-agent or whole-fleet mesh proxy, TCP + UDP), declared routes supervised by the daemon |
-| **SSH without sshd** | `roomler ssh <name>` — interactive shells on any node with no listening port and no `sshd` install, consent-gated ([`docs/roomler-ssh.md`](docs/roomler-ssh.md)) |
+| **Tunnels** | `mh forward` (any `host:port` an agent can reach becomes a local port), `mh socks5` (per-agent or whole-fleet mesh proxy, TCP + UDP), declared routes supervised by the daemon |
+| **SSH without sshd** | `mh ssh <name>` — interactive shells on any node with no listening port and no `sshd` install, consent-gated ([`docs/meshharbor-ssh.md`](docs/meshharbor-ssh.md)) |
 | **Exit nodes** | Route a client's entire internet egress (v4+v6, DNS included) through a chosen mesh peer — with a never-self-wedge safety model |
 | **Multi-org** | One daemon can join several organizations at once, with per-org WireGuard keys and disjoint address blocks |
 | **Policy & audit** | Default-deny tunnel ACLs, overlay ACLs (`off`/`warn`/`enforce`), subnet-route + exit-node approval in the admin UI, audit trail per flow |
-| **Fleet operations** | `roomler exec` remote command execution (four independent default-deny gates), device console, live observability: mesh graph, per-carrier stats, relay usage |
+| **Fleet operations** | `mh exec` remote command execution (four independent default-deny gates), device console, live observability: mesh graph, per-carrier stats, relay usage |
 
 ## 💬 Bonus · Video conferencing & team collaboration
 
@@ -196,7 +196,7 @@ your team already lives here to reach its machines, meetings and chat come free.
 
 <!-- Same GitHub limitation as the demo above, and worse here: this file is
      10 MB. "Watch" was a promise the blob page cannot keep. -->
-<a href="https://raw.githubusercontent.com/gjovanov/roomler-ai/master/roomler-intro.mp4">
+<a href="https://raw.githubusercontent.com/jk-zhang-meta/MeshHarbor/master/meshharbor-intro.mp4">
   <img src="https://img.shields.io/badge/Collaboration%20Walkthrough-2%3A24%20%C2%B7%2010%20MB%20MP4-009688?style=for-the-badge" alt="Download the collaboration walkthrough video (2:24, 10 MB MP4)" />
 </a>
 
@@ -212,7 +212,7 @@ your team already lives here to reach its machines, meetings and chat come free.
 ## How it all fits together
 
 <p align="center">
-  <img src="docs/assets/hero-mesh.svg" alt="Your devices, one encrypted mesh — a laptop, a GPU workstation, a home server and a cloud cluster connected directly, coordinated by roomler.ai" width="640">
+  <img src="docs/assets/hero-mesh.svg" alt="Your devices, one encrypted mesh — a laptop, a GPU workstation, a home server and a cloud cluster connected directly, coordinated by meshharbor.itachi.fans" width="640">
 </p>
 <p align="center"><i>Your devices, one encrypted mesh — coordinated from the cloud, connected directly.<br>The server never sees your screens, keystrokes, files, or traffic.</i></p>
 
@@ -223,16 +223,16 @@ own encrypted paths:
 flowchart LR
     subgraph you["🧑 You"]
         B["Browser<br/>chat · calls · remote desktop<br/>· admin · observability"]
-        T["roomler CLI<br/>forwards · SOCKS5 · exec"]
+        T["meshharbor CLI<br/>forwards · SOCKS5 · exec"]
     end
 
-    subgraph cloud["☁️ roomler.ai — coordination, not data"]
+    subgraph cloud["☁️ meshharbor.itachi.fans — coordination, not data"]
         S["API + signalling<br/>auth · enrollment · consent<br/>ACL policy · audit"]
         M["mediasoup SFU<br/>(conference media)"]
         R["TURN + DERP relays<br/>(fallback paths — ciphertext only)"]
     end
 
-    subgraph fleet["🖥️ Your machines — each runs the roomlerd daemon"]
+    subgraph fleet["🖥️ Your machines — each runs the meshharbord daemon"]
         A1["Office / home PC"]
         A2["Headless cloud server"]
         A3["GPU workstation"]
@@ -268,7 +268,7 @@ they cannot read. Full picture: [`docs/architecture.md`](docs/architecture.md).
 | **Remote desktop** | webrtc-rs (P2P, vendored forks for H.265 payloading + TURNS/TCP), OpenH264, Media Foundation, FFmpeg (NVENC/QSV/AMF), libvpx VP9 4:4:4, WebCodecs viewer |
 | **Overlay / tunnels** | boringtun (WireGuard), quinn (QUIC), smoltcp userspace netstack, Wintun / tun / utun, coturn + standalone DERP relays |
 | **Conference media** | mediasoup 0.20 SFU + mediasoup-client |
-| **Native apps** | `roomlerd` daemon (Rust), `roomler` CLI, `roomler-desktop` tray companion (Tauri 2), `roomler-setup` install wizard (Tauri 2) |
+| **Native apps** | `meshharbord` daemon (Rust), `mh` CLI, `meshharbor-desktop` tray companion (Tauri 2), `meshharbor-setup` install wizard (Tauri 2) |
 | **Frontend** | Vue 3, Vuetify 3, Pinia, TipTap v3, d3 (observability) |
 | **Auth** | JWT (6 audience-checked token types), Argon2, OAuth 2.0 |
 | **Infrastructure** | Docker multi-stage image (nginx + API), docker-compose dev stack (MongoDB, Redis, MinIO, coturn), Kubernetes-ready |
@@ -284,7 +284,7 @@ Vite server yourself, so both hot-reload.
 docker compose up -d
 
 # 2. Backend — API on :3000
-cargo run --bin roomler-ai-api
+cargo run --bin meshharbor-api
 
 # 3. Frontend — SPA on :5000, proxying /api and /ws to :5001
 cd ui && bun install && bun run dev
@@ -302,14 +302,14 @@ and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 | Component | Windows | Linux | macOS |
 |---|---|---|---|
-| **`roomlerd` daemon** (desktop + tunnel exit + overlay node) | x64 — MSI (per-user / per-machine), signed | x86_64 + arm64 — `.deb` / tarball, systemd | arm64 — `.pkg`, LaunchAgent |
-| **`roomler` CLI** (tunnel client) | x64 zip | x86_64 tarball + `.deb` | universal tarball |
-| **`roomler-setup` wizard** | x64 (signed) | x86_64 | universal |
-| **`roomler-desktop` companion** (tray, consent, tunnels UI) | ✅ | — | — |
+| **`meshharbord` daemon** (desktop + tunnel exit + overlay node) | x64 — MSI (per-user / per-machine), signed | x86_64 + arm64 — `.deb` / tarball, systemd | arm64 — `.pkg`, LaunchAgent |
+| **`mh` CLI** (tunnel client) | x64 zip | x86_64 tarball + `.deb` | universal tarball |
+| **`meshharbor-setup` wizard** | x64 (signed) | x86_64 | universal |
+| **`meshharbor-desktop` companion** (tray, consent, tunnels UI) | ✅ | — | — |
 | **Viewer / web app** | any modern browser; WebCodecs low-latency paths are Chrome-first | | |
 
 All release artifacts ship with SHA-256 sidecars, GPG signatures, and SLSA build
-provenance (`gh attestation verify --repo gjovanov/roomler-ai`).
+provenance (`gh attestation verify --repo jk-zhang-meta/MeshHarbor`).
 
 ## Documentation
 
@@ -327,18 +327,18 @@ Start with [Use cases](docs/use-cases.md).
 | [Rate control](docs/rate-control.md) | The Priority dial, per-session rate loops, and why resolution never flips mid-motion |
 | [Overlay communication](docs/overlay-communication.md) | Every carrier path, inside and outside a corporate VPN |
 | [Tunnels](docs/tunnels.md) | Forwards, SOCKS5, declared routes, QUIC-over-TURN |
-| [Roomler SSH](docs/roomler-ssh.md) | SSH into any node — no `sshd`, no bound port |
+| [MeshHarbor SSH](docs/meshharbor-ssh.md) | SSH into any node — no `sshd`, no bound port |
 | [Architecture](docs/architecture.md) | The whole system: control plane vs three data planes |
 | [API reference](docs/api.md) | Every HTTP route + the WebSocket surfaces |
 
 ## License
 
-Roomler is open source under a **split licence**:
+MeshHarbor is open source under a **split licence**:
 
 | | |
 |---|---|
 | **The server you would host** — `crates/api`, `services`, `db`, `config`, `derp-relay`, `ui/` | [AGPL-3.0-only](LICENSE-AGPL-3.0) |
-| **Everything you install on a machine** — `roomlerd`, the `roomler` CLI, desktop + setup apps, and the transport crates they share with the server | [MPL-2.0](LICENSE-MPL-2.0) |
+| **Everything you install on a machine** — `meshharbord`, the `mh` CLI, desktop + setup apps, and the transport crates they share with the server | [MPL-2.0](LICENSE-MPL-2.0) |
 | Documentation (`docs/`) | CC-BY-4.0 |
 
 **Self-host all of it, free, on unlimited devices, forever.** The agent you

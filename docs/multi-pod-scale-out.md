@@ -34,10 +34,10 @@
 
 ### Pod identity (`crates/api/src/cluster/identity.rs`)
 
-`pod_id` — stable across restarts: `ROOMLER__APP__POD_ID` override (tests
-inject per-app values) → `ROOMLER__POD_HOST_IP` (hostNetwork ⇒ ≤1 API pod
+`pod_id` — stable across restarts: `MESHHARBOR__APP__POD_ID` override (tests
+inject per-app values) → `MESHHARBOR__POD_HOST_IP` (hostNetwork ⇒ ≤1 API pod
 per node, so the node IP IS the pod identity — the same key the LB
-upstream list and `ROOMLER__MEDIASOUP__ANNOUNCED_IP_MAP` use) → hostname →
+upstream list and `MESHHARBOR__MEDIASOUP__ANNOUNCED_IP_MAP` use) → hostname →
 random dev id. `epoch` — a per-process random token: a restarted pod
 re-subscribes to the same bus channel but must never be mistaken for the
 process that owned the previous epoch's entities.
@@ -55,11 +55,11 @@ builders live in ONE place per namespace:
 
 | Key | Discipline | TTL / refresh | Since |
 |---|---|---|---|
-| `roomler:agent-online:<agent_id>` | **LWW** (newest live socket wins — mirrors the rc-hub's displacement rule) | 90 s / on received heartbeat + a 30 s pod sweep | A-1/C-1 |
-| `roomler:own:tunnel:<session_id>` | LWW | 90 s / 30 s | C-3 |
-| `roomler:own:derp:<net>:<pubkey>` | LWW (+ per-network set key) | 90 s / 30 s | C-5 |
-| `roomler:own:media:<room_id>` | **NX mutex** — media rooms have no client-owned socket; two creations = silent split-brain, so creation itself is mutually exclusive | 30 s / 10 s | C-4 |
-| `roomler:pod-alive:<pod_id>` | plain SET | 45 s / 15 s | C-1 (advisory only) |
+| `meshharbor:agent-online:<agent_id>` | **LWW** (newest live socket wins — mirrors the rc-hub's displacement rule) | 90 s / on received heartbeat + a 30 s pod sweep | A-1/C-1 |
+| `meshharbor:own:tunnel:<session_id>` | LWW | 90 s / 30 s | C-3 |
+| `meshharbor:own:derp:<net>:<pubkey>` | LWW (+ per-network set key) | 90 s / 30 s | C-5 |
+| `meshharbor:own:media:<room_id>` | **NX mutex** — media rooms have no client-owned socket; two creations = silent split-brain, so creation itself is mutually exclusive | 30 s / 10 s | C-4 |
+| `meshharbor:pod-alive:<pod_id>` | plain SET | 45 s / 15 s | C-1 (advisory only) |
 
 Three shared operations (Lua where atomicity matters):
 - **claim** — LWW: plain `SET … EX`; NX: `SET … NX EX` (loser learns the
@@ -72,7 +72,7 @@ Three shared operations (Lua where atomicity matters):
 
 ### Inter-pod bus (`crates/api/src/cluster/bus.rs`)
 
-Each pod subscribes to `roomler:pod:<pod_id>` (stable — a restarted
+Each pod subscribes to `meshharbor:pod:<pod_id>` (stable — a restarted
 process re-subscribes and NACKs requests for entities it doesn't hold,
 actively pruning its predecessor epoch's stale records). Envelope:
 
@@ -89,7 +89,7 @@ actively pruning its predecessor epoch's stale records). Envelope:
 - Delivery: at-most-once, per-publisher FIFO (Redis pub/sub), no bus-level
   retries — every consumer path has a redial/retry fallback. Handlers are
   idempotent. Unknown class/entity ⇒ structured NACK.
-- The pre-existing global channel `roomler:ws` keeps its contract
+- The pre-existing global channel `meshharbor:ws` keeps its contract
   (`{origin, user_ids|broadcast, message}`); C-4 adds an additive `conn`
   field for connection-addressed media events; consent/kick become
   idempotent broadcast control events in C-2.

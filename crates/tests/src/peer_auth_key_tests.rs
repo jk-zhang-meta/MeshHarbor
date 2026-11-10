@@ -29,8 +29,8 @@ use std::time::Duration;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bson::{Document, doc, oid::ObjectId};
 use futures::SinkExt;
-use roomler_ai_remote_control::signaling::{peer_auth_fingerprint, peer_auth_key_is_well_formed};
-use roomlerd::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
+use meshharbor_remote_control::signaling::{peer_auth_fingerprint, peer_auth_key_is_well_formed};
+use meshharbord::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
 use serde_json::{Value, json};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -255,7 +255,7 @@ async fn the_real_agent_says_hello_with_a_key_it_keeps_beside_its_config() {
     assert!(peer_auth_key_is_well_formed(&key), "{key}");
     let file = dir
         .path()
-        .join(roomlerd::peer_auth::DIR_NAME)
+        .join(meshharbord::peer_auth::DIR_NAME)
         .join(format!("{tenant_id}.json"));
     assert!(
         file.exists(),
@@ -281,16 +281,16 @@ fn spawn_keyed_agent(
     tokio::spawn(async move {
         let connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
-        let broker = roomlerd::consent::ConsentBroker::new(
-            roomlerd::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-device-key-consent-{}", cfg.agent_id)),
+        let broker = meshharbord::consent::ConsentBroker::new(
+            meshharbord::consent::Mode::AutoGrant,
+            std::env::temp_dir().join(format!("meshharbor-device-key-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         let _ = signaling::run(
-            signaling::OrgCtx::primary(roomlerd::token_slot::TokenSlot::new(
+            signaling::OrgCtx::primary(meshharbord::token_slot::TokenSlot::new(
                 cfg.agent_token.clone(),
             )),
-            roomlerd::delegate::Delegation::Off,
+            meshharbord::delegate::Delegation::Off,
             cfg,
             EncoderPreference::Software,
             stop_rx,
@@ -298,14 +298,14 @@ fn spawn_keyed_agent(
             view_tx,
             Default::default(),
             broker,
-            roomlerd::tunnel::client_mgr::TunnelClientHub::new("test".into()),
-            roomlerd::remote_config::RemoteConfigServices::new(
+            meshharbord::tunnel::client_mgr::TunnelClientHub::new("test".into()),
+            meshharbord::remote_config::RemoteConfigServices::new(
                 config_path,
                 std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 false,
                 false,
             ),
-            roomlerd::rc_sessions::RcSessionRegistry::new(),
+            meshharbord::rc_sessions::RcSessionRegistry::new(),
         )
         .await;
     })
@@ -433,7 +433,7 @@ async fn offer_and_answer_with(
 /// before P2, gets no signature and is answered exactly as before.
 #[tokio::test]
 async fn the_real_agent_signs_the_answer_an_offer_asked_for() {
-    use roomler_ai_remote_control::signaling::{
+    use meshharbor_remote_control::signaling::{
         peer_auth_transcript, peer_auth_verify, sdp_dtls_fingerprint,
     };
     let app = TestApp::spawn().await;
@@ -538,7 +538,7 @@ fn signed_ask(
     offer_sdp: &str,
     nonce: &str,
 ) -> Value {
-    use roomler_ai_remote_control::signaling::{peer_auth_transcript, sdp_dtls_fingerprint};
+    use meshharbor_remote_control::signaling::{peer_auth_transcript, sdp_dtls_fingerprint};
     let transcript = peer_auth_transcript(
         "offer",
         signed_sid,
@@ -563,7 +563,7 @@ fn signed_ask(
 /// The verdict on session `sid`'s `session_started` audit row, once the hub's
 /// sink has flushed it (every 200 ms). `None` = recorded without one.
 async fn recorded_verdict(app: &TestApp, sid: &str) -> Option<String> {
-    use roomler_ai_remote_control::models::RemoteAuditEvent;
+    use meshharbor_remote_control::models::RemoteAuditEvent;
     let sid = ObjectId::parse_str(sid).unwrap();
     for _ in 0..50 {
         if let Some(row) = app

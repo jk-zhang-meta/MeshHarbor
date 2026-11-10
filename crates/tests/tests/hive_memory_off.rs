@@ -13,7 +13,7 @@
 //! device's own setting is what kept it from the session.
 #![cfg(target_os = "linux")]
 
-use roomler_ai_tests::fixtures::test_app::TestApp;
+use meshharbor_tests::fixtures::test_app::TestApp;
 use serde_json::json;
 
 mod hive_support;

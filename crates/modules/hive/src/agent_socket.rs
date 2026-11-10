@@ -53,7 +53,8 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use bson::{DateTime, doc, oid::ObjectId};
 use dashmap::DashMap;
-use roomler_ai_remote_control::{
+use meshharbor_core::{AgentCtx, AgentMsgHandler, AgentSocketLifecycle};
+use meshharbor_remote_control::{
     error::Error as HubError,
     hive::{
         HiveCopyPurged, HiveCopyTip, HiveDrainRefusal, HiveJoinRefusal, HiveManifestEntry,
@@ -62,7 +63,6 @@ use roomler_ai_remote_control::{
     },
     signaling::{ClientMsg, ServerMsg},
 };
-use roomler_core::{AgentCtx, AgentMsgHandler, AgentSocketLifecycle};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 

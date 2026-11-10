@@ -13,7 +13,7 @@ of it, and every motion burst (FR-31, FR-35) starts from a quiet pipe.
 ## What is in force today
 
 - The FFmpeg DC pump re-encodes `last_good_frame` every `IDLE_KEEPALIVE` = 60 ms once the capture
-  goes empty (`agents/roomlerd/src/peer.rs`, the `Ok(None)` arm: `last_capture_at.elapsed() >=
+  goes empty (`agents/meshharbord/src/peer.rs`, the `Ok(None)` arm: `last_capture_at.elapsed() >=
   IDLE_KEEPALIVE` ⇒ `f.clone()` of the same `Arc<Frame>`) — 16–17 encodes/s of bit-identical
   input, since rc.130. Its purpose is the "refinement" of a static picture after motion and a
   steady stream for the viewer's stall detector.
@@ -55,7 +55,7 @@ on top of it. It also inflates the baseline FR-35's "carried" gate measures agai
 
 | phase | what | kill switch |
 |---|---|---|
-| **P0** | Bisect on the local rig: neo16's own daemon with `ROOMLERD_ICE_RELAY_TCP=1` (the FR-31 relay stand-in), the FR-31 viewer harness reading per-frame bytes, a held-constant static screen; builds rc.474 / 0.4.10 / 0.4.15 / 0.4.20, then the suspects' switches (`ROOMLERD_IDLE_REFINE=0`, the #781 off-runtime/parallel-convert keys, the #750 knobs). | — (measurement) |
+| **P0** | Bisect on the local rig: neo16's own daemon with `MESHHARBORD_ICE_RELAY_TCP=1` (the FR-31 relay stand-in), the FR-31 viewer harness reading per-frame bytes, a held-constant static screen; builds rc.474 / 0.4.10 / 0.4.15 / 0.4.20, then the suspects' switches (`MESHHARBORD_IDLE_REFINE=0`, the #781 off-runtime/parallel-convert keys, the #750 knobs). | — (measurement) |
 | **P0b** | QP telemetry for HW encoders (packet side data / encoder stats) so "still refining" vs "skip" is visible in the heartbeat. | — (telemetry) |
 | **P1** | Fix what P0 names. Fallback if it is the encoder's steady state: a slower keepalive cadence on constrained transports (60 → 250 ms halves the spend at zero code risk) and/or a bounded refinement window after motion. | config key (P1 decides) |
 

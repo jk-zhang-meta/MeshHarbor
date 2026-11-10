@@ -268,7 +268,7 @@ leaves a warning with no ending.
 
 ## Field-verification — 2026-10-06 (prod `0.4.116`) — the stall traced end to end
 
-Run by the FR-backlog worker from the dev box, read-only, over Fleet RPC (`roomler exec mars`,
+Run by the FR-backlog worker from the dev box, read-only, over Fleet RPC (`mh exec mars`,
 then `kubectl exec mongodb-0 -- mongosh` with credentials read from the cluster secret and never
 printed): the part-4 browser records, the hub's `remote_audit`, and the agent's own `agent_logs`
 lines for the same seconds. The census itself was run by the operator the same way. Two of the
@@ -358,7 +358,7 @@ the whole reason part 4 exists.
 
 Run by the FR-backlog worker from the dev box: `remote_audit` / `remote_sessions` /
 `agent_logs` mined via the prod MongoDB (through the mars deploy session), the live carrier
-roster read from the local daemon (`roomler peers`). **No fix was under test** — parts 1/3/3b
+roster read from the local daemon (`mh peers`). **No fix was under test** — parts 1/3/3b
 already shipped — so this is a *measurement + root-cause* pass, not a fix A/B. The AC4 "before"
 is the genuine pre-#821 distribution from the 90 d audit window (#821 merged
 2026-08-28 10:46 Z; the split is at 12:00 Z that day).
@@ -548,7 +548,7 @@ The traced mechanism (§ Field-verification 2026-10-06) is agent-side and bounde
 latency: after `MAJOR network change — probing the control WS now`, the socket stayed
 believed-alive for **19–22 s** until a `ws read` returned `WSAECONNRESET`. Everything after
 detection took under 2 s, and the hub delivered the pending request 54–70 ms after `hello`. Two
-levers, both in `roomlerd`'s signalling loop; the server needs nothing.
+levers, both in `meshharbord`'s signalling loop; the server needs nothing.
 
 1. **Probe with a deadline.** On a MAJOR network change (default route moved / NAT rebind — the
    netstate watcher already classifies it and logs the probe), send a WS ping and require a pong

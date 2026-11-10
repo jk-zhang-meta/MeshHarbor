@@ -10,11 +10,11 @@
 //! structured, not secret.
 
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
-use mongodb::Database;
-use roomler_ai_remote_control::hive::{HiveApprovalStatus, HiveJoinRefusal, HiveRunState};
-use roomler_ai_services::dao::base::{
+use meshharbor_remote_control::hive::{HiveApprovalStatus, HiveJoinRefusal, HiveRunState};
+use meshharbor_services::dao::base::{
     BaseDao, DaoError, DaoResult, PaginatedResult, PaginationParams,
 };
+use mongodb::Database;
 
 use crate::model::{
     AgentApproval, AgentSession, FromTerminal, HiveAuditEvent, MemberState, MemberTip, MovedStart,
@@ -76,7 +76,7 @@ impl AgentSessionDao {
                 "_id": id, "tenant_id": tenant_id, "owner_id": owner_id, "purged": Bson::Null,
             })
             .await?
-            .ok_or(roomler_ai_services::dao::base::DaoError::NotFound)
+            .ok_or(meshharbor_services::dao::base::DaoError::NotFound)
     }
 
     /// FR-90 P2g-2 — [`Self::find_owned`], a purge's tombstone included: what

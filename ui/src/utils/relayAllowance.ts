@@ -55,7 +55,7 @@ export function relayAllowanceView(q: RelayAllowance): RelayAllowanceView {
     percent,
     throttledNote:
       q.throttled && rate
-        ? `This org is past its mesh relay allowance for the month. Mesh traffic relayed through Roomler's servers is slowed to ${rate} until ${day}. Direct connections are not affected.`
+        ? `This org is past its mesh relay allowance for the month. Mesh traffic relayed through MeshHarbor's servers is slowed to ${rate} until ${day}. Direct connections are not affected.`
         : null,
     policyNote:
       q.enforced && !q.throttled && rate

@@ -22,7 +22,7 @@ clearLegacyTokens()
 
 // FR-102 (#2127) — the analytics tracker, on the hosted site only. It was a
 // static tag in index.html, so every self-hosted install and every localhost
-// run reported to purestat.ai as roomler.ai. A no-op on any other host, and
+// run reported to purestat.ai as meshharbor.itachi.fans. A no-op on any other host, and
 // under a WebDriver, so the e2e suite never loads it either.
 loadAnalytics()
 

@@ -63,7 +63,7 @@ rejects ("maxSurge=0 means every drained second is downtime for this node"). It 
 no delay: it is a broadcast on the way out, and the process stops accepting exactly
 when it does today.
 
-⚠️ Kill switch: `ROOMLER__DERP__DRAIN_ON_SHUTDOWN` (default on once proven; off ⇒
+⚠️ Kill switch: `MESHHARBOR__DERP__DRAIN_ON_SHUTDOWN` (default on once proven; off ⇒
 today's behaviour byte-for-byte).
 
 ### Why P0 failed — the premise, not the primitive
@@ -144,7 +144,7 @@ the `DerpConn`→WS path"* (`transport/derp.rs:356-361`). Carriers hang off the 
 off the socket, so a socket swap need not be visible to them at all.
 
 What makes today's reconnect visible is `mark_down()` — the agent's WS loop
-(`agents/roomlerd/src/derp.rs:200-240`) is shaped
+(`agents/meshharbord/src/derp.rs:200-240`) is shaped
 `loop { connect; register; mark_up; inner select; mark_down; backoff }`, and every
 iteration owns one `tx`/`rx` pair. `mark_down` is what withholds carrier builds and
 ultimately drives the freeze.

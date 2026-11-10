@@ -1,6 +1,6 @@
 # Business model
 
-How Roomler makes money, what it costs to run, and which of those numbers are
+How MeshHarbor makes money, what it costs to run, and which of those numbers are
 measured rather than assumed. This is the document the pricing decisions are made
 *from* — if a tier changes, the argument for it belongs here.
 
@@ -18,7 +18,7 @@ There is exactly one codebase. Money arrives three ways.
 
 | | Who pays | For what | Status |
 |---|---|---|---|
-| **Cloud subscription** | orgs on `roomler.ai` | seats + capacity above the free tier | live (Stripe) |
+| **Cloud subscription** | orgs on `meshharbor.itachi.fans` | seats + capacity above the free tier | live (Stripe) |
 | **AGPL exception** | a company embedding or re-hosting the control plane in a proprietary product | permission the AGPL withholds | mechanism live, unpriced |
 | **Self-hosting** | nobody | — | free, unlimited, forever |
 
@@ -121,7 +121,7 @@ is built on: give away what costs nothing, cap what does.
 
 ## 4. The ladder today
 
-**FR-115** ([#2557](https://github.com/gjovanov/roomler-ai/issues/2557)), operator
+**FR-115** ([#2557](https://github.com/jk-zhang-meta/MeshHarbor/issues/2557)), operator
 decisions 2026-10-19. Paid plans are **per seat** (a seat is a member who accepted),
 monthly or **annual at two months free**, in **USD or EUR** at the same number. Plan
 ids (`free`/`pro`/`business`) are stored in tenant documents and matched in the

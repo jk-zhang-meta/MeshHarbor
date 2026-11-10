@@ -4,7 +4,7 @@
  * FR-16 L4 — input to photon in the real viewer: the main thread's half.
  *
  * In bench mode the viewer sends `{"t":"probe","seq":N}` on the input
- * channel. A bench agent (the synthetic source, `ROOMLERD_BENCH=1`) paints
+ * channel. A bench agent (the synthetic source, `MESHHARBORD_BENCH=1`) paints
  * the last probe it saw into a marker in the bottom-right of every frame
  * that follows. Whatever paints frames reads that marker back: a decode
  * worker (`rc-bench-sampler.ts`) or, on the plain `<video>` path, the
@@ -12,7 +12,7 @@
  * and `paint − send` is input to photon minus the display's own latency,
  * on one clock (`epochNowMs`), with no clock offset anywhere.
  *
- * Gated at every entry point. The knob `roomler-rc-bench` is honoured only
+ * Gated at every entry point. The knob `meshharbor-rc-bench` is honoured only
  * when the agent advertised `bench` in `AgentCaps.video`; the agent paints
  * only in a test-only build with bench mode on; the workers sample only
  * when their init says so; and probes ride `sendInput`'s channel, so a
@@ -22,13 +22,13 @@
  * 60 fps: without jitter every probe lands on the same phase of the capture
  * clock, and a run reports one arbitrary point of the wait for the next
  * capture instead of its distribution. That follows from the arithmetic;
- * the agent's in-process harness (`agents/roomlerd/tests/l4_latency.rs`)
+ * the agent's in-process harness (`agents/meshharbord/tests/l4_latency.rs`)
  * jitters for the same reason.
  */
 import * as benchMarker from '../workers/rc-bench-marker'
 import { RC_CONNECT_UPLOAD_PATH } from './rcConnectTimingUpload'
 
-export const BENCH_STORAGE_KEY = 'roomler-rc-bench'
+export const BENCH_STORAGE_KEY = 'meshharbor-rc-bench'
 /** The capability an agent advertises in `AgentCaps.video` when a frame
  *  will answer a probe. */
 export const BENCH_CAP = 'bench'
@@ -52,14 +52,14 @@ export type BenchPath = 'video' | 'webcodecs' | 'hevc' | 'vp9-444'
 /** How a session times input to photon.
  *  - `probe`: the agent paints the probe itself. Only a synthetic-source
  *    build with bench mode on can, and it advertises `bench`.
- *  - `target`: `roomlerd probe-target` paints it, a window on the host whose
+ *  - `target`: `meshharbord probe-target` paints it, a window on the host whose
  *    marker changes when a real pointer move reaches one of its cells. Any
  *    build, Windows hosts. The probe is a pointer move, so the round trip
  *    also counts injection and the host's compositor. */
 export type BenchMode = 'probe' | 'target'
 
-/** `roomler-rc-bench`: `1` → `probe`, `target` → `target`, anything else off.
- *  Read once per session, like every other `roomler-rc-*` knob. */
+/** `meshharbor-rc-bench`: `1` → `probe`, `target` → `target`, anything else off.
+ *  Read once per session, like every other `meshharbor-rc-*` knob. */
 export function storedBenchMode(): BenchMode | null {
   try {
     const v = globalThis.localStorage?.getItem(BENCH_STORAGE_KEY)
@@ -69,7 +69,7 @@ export function storedBenchMode(): BenchMode | null {
   }
 }
 
-/** `roomler-rc-bench=1` in localStorage: probe mode asked for. */
+/** `meshharbor-rc-bench=1` in localStorage: probe mode asked for. */
 export function storedBench(): boolean {
   return storedBenchMode() === 'probe'
 }
@@ -91,7 +91,7 @@ export function benchSessionActive(knob: boolean, videoCaps: readonly string[] |
   return benchSessionMode(knob ? 'probe' : null, videoCaps) === 'probe'
 }
 
-/** `roomlerd probe-target`'s layout (`agents/roomlerd/src/probe_target.rs`),
+/** `meshharbord probe-target`'s layout (`agents/meshharbord/src/probe_target.rs`),
  *  in the host monitor's physical pixels: 144 wide, a 32 px pad of 16 cells
  *  × 9 px above the 48 px marker area, flush in the bottom-right corner. */
 export const PROBE_TARGET = { width: 144, height: 80, padH: 32, cells: 16, cellW: 9 } as const

@@ -4,7 +4,7 @@
 //! own growth numbers, evaluated by an hourly host job, each opening a
 //! `growth_alerts` row once, mailing the digest's recipients at most once
 //! per rule and key per day, and closing the row when the condition goes
-//! away. `ROOMLER__GROWTH__ALERTS` (default off) switches all of them.
+//! away. `MESHHARBOR__GROWTH__ALERTS` (default off) switches all of them.
 //!
 //! # The rules
 //!
@@ -44,7 +44,8 @@ use axum::{
 };
 use bson::{Bson, DateTime, Document, doc};
 use chrono::{Duration, NaiveDate, Timelike};
-use roomler_ai_services::dao::{
+use meshharbor_core::growth::ExclusionSet;
+use meshharbor_services::dao::{
     growth::{
         BING_SOURCE, CONTENT_SOURCE, GITHUB_SOURCE, GITHUB_TRAFFIC_SOURCE, GrowthDao, GrowthPull,
         PURESTAT_SOURCE, PullStatus, SEARCH_CONSOLE_SOURCE, URL_INSPECTION_SOURCE,
@@ -52,7 +53,6 @@ use roomler_ai_services::dao::{
     growth_alert::{GrowthAlert, GrowthAlertDao},
     growth_digest::{DigestStatus, DigestStore},
 };
-use roomler_core::growth::ExclusionSet;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
@@ -289,7 +289,7 @@ fn latest_due_days(now: DateTime, hour: u8, grace_hours: u32) -> [NaiveDate; 2] 
 
 /// How a stored digest day reads for the `digest_missing` rule.
 fn digest_state(
-    doc: Option<&roomler_ai_services::dao::growth_digest::DigestDoc>,
+    doc: Option<&meshharbor_services::dao::growth_digest::DigestDoc>,
     now: DateTime,
 ) -> Option<Document> {
     let Some(d) = doc else {
@@ -402,7 +402,7 @@ async fn purestat_pull_not_measured(
 /// Whether the `saas` puller writing `source` runs on this server at all —
 /// each puller's own start condition, so a source nobody configured holds
 /// nothing. The feed needs no credential, only the growth surface.
-fn puller_configured(g: &roomler_ai_config::GrowthSettings, source: &str) -> bool {
+fn puller_configured(g: &meshharbor_config::GrowthSettings, source: &str) -> bool {
     match source {
         SEARCH_CONSOLE_SOURCE | URL_INSPECTION_SOURCE => g.search_console_configured(),
         GITHUB_SOURCE => g.github_repo().is_some(),
@@ -781,7 +781,7 @@ pub fn spawn_alert_loop(state: AppState) {
         loop {
             let claimed = match &state.redis_pubsub {
                 Some(redis) => {
-                    let key = format!("roomler:growth-alerts:{}", state.db.name());
+                    let key = format!("meshharbor:growth-alerts:{}", state.db.name());
                     match redis.try_claim(&key, LOOP_INTERVAL_SECS - 60).await {
                         Ok(c) => c,
                         Err(e) => {
@@ -950,7 +950,7 @@ pub async fn evaluate_route(
     super::require_growth_admin(&state, &auth)?;
     if !q.dry_run && !state.settings.growth.alerts {
         return Err(ApiError::Conflict(
-            "alerts are off on this server (ROOMLER__GROWTH__ALERTS); use dry_run=true".into(),
+            "alerts are off on this server (MESHHARBOR__GROWTH__ALERTS); use dry_run=true".into(),
         ));
     }
     let mailer = digest::service_mailer(&state);
@@ -1112,7 +1112,7 @@ mod tests {
     /// always, the others behind their own credentials.
     #[test]
     fn a_puller_is_watched_only_where_it_runs() {
-        let mut g = roomler_ai_config::GrowthSettings {
+        let mut g = meshharbor_config::GrowthSettings {
             github_repo: String::new(),
             github_token: String::new(),
             search_console_key: String::new(),
@@ -1251,7 +1251,7 @@ mod tests {
 
     #[test]
     fn a_digest_day_reads_missing_failed_stalled_or_fine() {
-        use roomler_ai_services::dao::growth_digest::{DIGEST_VERSION, DigestDoc, ExcludedCounts};
+        use meshharbor_services::dao::growth_digest::{DIGEST_VERSION, DigestDoc, ExcludedCounts};
         let now = at("2026-10-15T09:00:00Z");
         let row = |status, claimed_at| DigestDoc {
             day: "2026-10-14".into(),

@@ -89,7 +89,7 @@ impl InstallInfo {
 /// spelling and a digest's grouping key, so it is locked by a test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InstallMethod {
-    /// The `roomler-setup` wizard, in-process.
+    /// The `meshharbor-setup` wizard, in-process.
     Wizard,
     /// The served `install.sh`.
     ScriptSh,
@@ -101,7 +101,7 @@ pub enum InstallMethod {
     Deb,
     /// A macOS `.pkg` installed by hand.
     Pkg,
-    /// A hand-typed `roomlerd enroll` (the default when nothing says
+    /// A hand-typed `meshharbord enroll` (the default when nothing says
     /// otherwise), or the companion's enroll form.
     Manual,
     /// A container image's entrypoint.
@@ -257,7 +257,7 @@ pub struct AgentCaps {
     ///   received on the input channel (`{"t":"probe","seq":N}`) into a
     ///   marker in every frame, so a viewer in bench mode can time input
     ///   to photon. Only a build with the synthetic frame source, running
-    ///   it, with `ROOMLERD_BENCH=1`, ever advertises it; a viewer sends no
+    ///   it, with `MESHHARBORD_BENCH=1`, ever advertises it; a viewer sends no
     ///   probe to an agent without it.
     ///
     /// Empty / unset (older agents) deserialises to `[]` and the browser
@@ -339,7 +339,7 @@ pub struct AgentCaps {
     ///   only the primary enrollment drives it (multi-org; a secondary org's
     ///   admin must not force-update a binary every org shares).
     /// * `off` — it drops it: auto-update is off on the device
-    ///   (`auto_update = false` / `ROOMLERD_AUTO_UPDATE=0`).
+    ///   (`auto_update = false` / `MESHHARBORD_AUTO_UPDATE=0`).
     ///
     /// Before this the device's refusal was surfaced only locally (a WARN and
     /// a LocalAPI counter), so "Update all" counted it as delivered: on
@@ -408,13 +408,13 @@ pub struct AgentCaps {
     /// * `exec` — the agent honours `rc:rpc.exec` / `rc:rpc.cancel`: it runs
     ///   one bounded shell command and replies `rc:rpc.result`.
     /// * `originate` — the agent honours `rc:rpc.response`, i.e. its LocalAPI
-    ///   can originate an exec against ANOTHER device (the `roomler exec`
+    ///   can originate an exec against ANOTHER device (the `mh exec`
     ///   CLI path).
-    /// * `ssh` — the agent honours `rc:ssh.grant`: it serves roomler SSH on
+    /// * `ssh` — the agent honours `rc:ssh.grant`: it serves meshharbor SSH on
     ///   its overlay address and will admit the granted key.
     /// * `ssh-originate` — the agent honours `rc:ssh.response`, i.e. its
     ///   LocalAPI can originate an SSH session against ANOTHER device (the
-    ///   `roomler ssh` CLI path).
+    ///   `mh ssh` CLI path).
     ///
     /// Empty / unset = a pre-fleet-RPC agent. Same rule as [`Self::multi_org`]:
     /// the server refuses the request with `412` rather than pushing a message
@@ -556,6 +556,18 @@ pub struct AgentCaps {
     /// say, so an absent key never means "unavailable".
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub unavailable: std::collections::BTreeMap<String, Unavailable>,
+    /// RC/RDP Phase B — whether a local RDP server is listening on TCP port
+    /// 3389 (`Some(false)` on Windows Home SKUs, which ship no RDP server, or
+    /// when nothing is listening on 3389). Read-only probe; `None` on older
+    /// agents that predate the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdp_available: Option<bool>,
+    /// RC/RDP Phase B — lowercase colon-separated SHA-256 fingerprint of the
+    /// local RDP server's TLS certificate (`aa:bb:…`), when `rdp_available` is
+    /// `Some(true)` and the certificate is readable without elevation or system
+    /// modification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdp_cert_sha256: Option<String>,
 }
 
 /// FR-67 P7 — why an enrollment will not act on a pushed `rc:agent.update`;
@@ -586,14 +598,14 @@ impl UpdateRefusal {
                 "this device takes its updates from another organization: only the \
                  machine's primary enrollment drives its self-updater, so an update \
                  ordered here is ignored. Order it from that organization, or make this \
-                 one the device's primary (on the device: `roomlerd org set-primary \
+                 one the device's primary (on the device: `meshharbord org set-primary \
                  <this org's label>`, then restart its daemon)"
             }
             Self::AutoUpdateOff => {
                 "auto-update is off on this device (`auto_update = false`, or \
-                 `ROOMLERD_AUTO_UPDATE=0` in its service environment), so it drops an \
-                 update ordered from here. Switch it on at the device (`roomler config \
-                 set auto_update true`, or its Roomler settings), then restart its daemon"
+                 `MESHHARBORD_AUTO_UPDATE=0` in its service environment), so it drops an \
+                 update ordered from here. Switch it on at the device (`mh config \
+                 set auto_update true`, or its MeshHarbor settings), then restart its daemon"
             }
         }
     }
@@ -850,7 +862,7 @@ pub enum RpcCap {
     /// `rc:rpc.exec` — run a bounded command (Fleet RPC).
     Exec,
     /// This device's LocalAPI may ORIGINATE a session against another device
-    /// (`roomler ssh` / `roomler exec` from the device itself).
+    /// (`mh ssh` / `mh exec` from the device itself).
     Originate,
     /// `rc:ssh.grant` — the agent runs an SSH server and can redeem a grant.
     /// Gated on the `ssh-server` build feature, not merely on the version.
@@ -928,7 +940,7 @@ pub enum RpcCap {
     /// FR-90 — `rc:hive.start` / `rc:hive.stop`: the agent runs Hive agent
     /// sessions — it answers a start with `rc:hive.start_ack` and reports
     /// each session's lifecycle with `rc:hive.state`
-    /// (`docs/roomler-hive-design.md` §3.4).
+    /// (`docs/meshharbor-hive-design.md` §3.4).
     ///
     /// ⚠️ Never sent blind, for the `exec` reason: a caller waits for the
     /// start's answer, and a pre-feature agent drops the unknown tag at
@@ -960,13 +972,13 @@ pub enum RpcCap {
     /// drops the frame at `debug!`. Equality-matched, locked by test.
     HiveMemory,
     /// FR-90 P1j — `rc:hive.adopt`: the agent mirrors terminal sessions its
-    /// accounts adopted (`roomler hive adopt`), and its own `hive_adopt` (default
+    /// accounts adopted (`mh hive adopt`), and its own `hive_adopt` (default
     /// off, never pushable) is on. Advertised only then: a device whose owner
     /// has not allowed adopting offers nothing, and the server honours an
     /// offer only from a device that advertises it.
     ///
     /// ⚠️ `hive` is its prefix and NOT the same promise — running sessions
-    /// a person starts from Roomler is not mirroring the ones they started in a
+    /// a person starts from MeshHarbor is not mirroring the ones they started in a
     /// terminal. Equality-matched, locked by test.
     HiveAdopt,
     /// FR-90 P2c — the agent holds copies of its owner's sessions run on other
@@ -1107,7 +1119,7 @@ pub enum RpcCap {
     /// route commands to a doorbell nobody answers. Equality-matched, locked by
     /// test.
     ExecSystem,
-    /// FR-105 — a Windows device serves roomler SSH from its session-0
+    /// FR-105 — a Windows device serves meshharbor SSH from its session-0
     /// SYSTEM service: the anchor allows it (its `ssh` ceiling is not `off`),
     /// and the service answered the worker's health ring. The server then
     /// routes a grant with `via_service`: the service claims it, and the
@@ -1244,6 +1256,9 @@ pub enum RpcCap {
     SharedSessionLease,
     /// Typed single-use embedded SSH stream, no generic forwarding.
     SharedSshStream,
+    /// MeshHarbor — `rc:accounts.request`: the device lists its login accounts
+    /// and creates one for an SSH share (Linux and macOS).
+    LocalAccounts,
     /// MeshHarbor #20 — `rc:forward.set`: the agent runs managed forwards on
     /// its userspace backend and answers with `rc:forward.status`. The
     /// server pushes a forward set only to a device that advertises this.
@@ -1307,11 +1322,12 @@ impl RpcCap {
             Self::PeerAuth => "peer-auth",
             Self::SharedSessionLease => "shared-session-lease-v1",
             Self::SharedSshStream => "shared-ssh-stream-v1",
+            Self::LocalAccounts => "local-accounts-v1",
         }
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 42] = [
+    pub const ALL: [RpcCap; 43] = [
         Self::Exec,
         Self::Originate,
         Self::Ssh,
@@ -1352,6 +1368,7 @@ impl RpcCap {
         Self::PeerAuth,
         Self::SharedSessionLease,
         Self::SharedSshStream,
+        Self::LocalAccounts,
         Self::ManagedForward,
         Self::ManagedForwardNft,
     ];
@@ -1628,7 +1645,7 @@ pub enum InputMode {
 
 /// FR-101 P2 — one sensitive session feature (clipboard, files, audio), as a
 /// policy allows it. The wire twin of the org setting
-/// (`roomler_ai_db::models::RcFeaturePolicy`): this crate stays a leaf the
+/// (`meshharbor_db::models::RcFeaturePolicy`): this crate stays a leaf the
 /// agent links, so it cannot name the db type, and the two read the same.
 ///
 /// ⚠️ A value this build does not know reads as [`Self::Off`], never as an
@@ -1824,7 +1841,7 @@ pub struct ExecPolicy {
     #[serde(default)]
     pub mode: ExecMode,
     /// May this device *originate* exec against other devices (the
-    /// `roomler exec` CLI path, where the daemon's own agent WS carries the
+    /// `mh exec` CLI path, where the daemon's own agent WS carries the
     /// request)? Default `false` — without this, compromising any enrolled
     /// laptop would inherit its owner's exec rights across the whole fleet.
     #[serde(default)]
@@ -1900,7 +1917,7 @@ impl ExecPolicy {
     /// allowlist is compared against the shell that will actually run. Without
     /// this, a device allowing `["powershell"]` refuses the default-shell
     /// request that would have become powershell — which is what
-    /// `roomler exec <device> -- …` and every `roomler diag` bundle sends.
+    /// `mh exec <device> -- …` and every `mh diag` bundle sends.
     /// Field-caught 2026-08-06: it made `diag` unusable on every device with a
     /// narrowed allowlist.
     ///
@@ -1982,7 +1999,7 @@ pub struct KeepBusyBrief {
 }
 
 /// FR-92 P8 — the keep-busy patterns, by their exact wire names, as the
-/// agent spells them (`agents/roomlerd/src/keep_busy/patterns.rs`
+/// agent spells them (`agents/meshharbord/src/keep_busy/patterns.rs`
 /// `Pattern::wire`) and the viewer lists them
 /// (`ui/src/composables/keepBusy.ts` `KEEP_BUSY_PATTERNS`). The org's
 /// default pattern is validated against this list by EQUALITY — never a
@@ -2104,6 +2121,15 @@ pub struct Agent {
     /// self-controls (no external allowlist needed). Set to `enrolled_by` at
     /// enrollment; reassignable by a `MANAGE_AGENTS` admin.
     pub owner_user_id: ObjectId,
+    /// X14 child authority uses only `access_policy_revision()`. Preserve raw
+    /// BSON so legacy/corrupt counters cannot acquire authority by coercion or
+    /// block an administrative restriction. This is not a parent-session grant.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_access_policy_rev",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub access_policy_rev: Option<bson::Bson>,
     /// The user whose enrollment token created this agent (audit; the initial
     /// `owner_user_id`). `#[serde(default)]` → older rows deserialize to `None`.
     #[serde(default)]
@@ -2160,7 +2186,7 @@ pub struct Agent {
     #[serde(default)]
     pub arch_emulated: bool,
     pub agent_version: String,
-    /// FR-27 — the version of the `roomler-desktop` companion INSTALLED on this
+    /// FR-27 — the version of the `meshharbor-desktop` companion INSTALLED on this
     /// host, reported on the heartbeat. `None` means one of three different
     /// things and the grid must not flatten them: a pre-FR-27 agent that never
     /// reports the field, a host with no companion installed, or a probe that
@@ -2169,7 +2195,7 @@ pub struct Agent {
     /// It exists because the daemon and the companion update through DIFFERENT
     /// mechanisms on every platform — Windows: the daemon side-loads the EXE
     /// (`companion::refresh_if_stale`), macOS: the `.pkg` carries
-    /// `/Applications/Roomler.app`, Linux: a separate `roomler-desktop` .deb
+    /// `/Applications/MeshHarbor.app`, Linux: a separate `meshharbor-desktop` .deb
     /// that apt owns — so "Update all" moving the daemon says nothing about the
     /// companion, and until now nothing on screen could tell you it had been
     /// left behind. That was the operator's report, not a hypothetical.
@@ -2296,7 +2322,7 @@ pub struct Agent {
     /// `None` and `unknown` as *unknown*.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install: Option<InstallInfo>,
-    /// Roomler-SSH policy for this device (gate 3). Same shape and the same
+    /// MeshHarbor-SSH policy for this device (gate 3). Same shape and the same
     /// closed default as [`Self::exec_policy`] — every pre-feature row
     /// deserialises to [`SshMode::Off`].
     #[serde(default)]
@@ -2416,6 +2442,23 @@ pub struct Agent {
 
 impl Agent {
     pub const COLLECTION: &'static str = "agents";
+
+    /// Missing, corrupt, and exhausted counters refuse child authority.
+    pub fn access_policy_revision(&self) -> Option<i64> {
+        match self.access_policy_rev.as_ref() {
+            Some(bson::Bson::Int64(revision)) if *revision > 0 && *revision < i64::MAX => {
+                Some(*revision)
+            }
+            _ => None,
+        }
+    }
+}
+
+fn deserialize_access_policy_rev<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<bson::Bson>, D::Error> {
+    // Explicit null is present and invalid; only a missing field is legacy.
+    bson::Bson::deserialize(deserializer).map(Some)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2509,10 +2552,10 @@ impl EnrollmentKeyUse {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Roomler SSH
+// MeshHarbor SSH
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Bounds on a roomler-SSH session grant. The server clamps before minting;
+/// Bounds on a meshharbor-SSH session grant. The server clamps before minting;
 /// the agent re-clamps on receipt, so a forged or replayed grant cannot ask for
 /// a longer-lived session than policy allows.
 pub mod ssh_limits {
@@ -2561,7 +2604,7 @@ pub mod ssh_limits {
     }
 }
 
-/// Whether a device accepts roomler-SSH sessions at all.
+/// Whether a device accepts meshharbor-SSH sessions at all.
 ///
 /// Default `Off` — every existing row deserialises to it, so enabling the
 /// feature can never retroactively open a device.
@@ -2621,7 +2664,7 @@ impl SshAccountMode {
 }
 
 /// FR-105 — how far an anchored Windows device's SYSTEM service will go with
-/// roomler SSH. Set on the device, elevated (`roomlerd anchor ssh <…>`), in
+/// meshharbor SSH. Set on the device, elevated (`meshharbord anchor ssh <…>`), in
 /// the anchor file only SYSTEM and Administrators can write, and published by
 /// the service with its own credential. Default `off`: an exec anchor never
 /// silently gains SYSTEM SSH.
@@ -2709,7 +2752,7 @@ pub struct SshServiceEndpoint {
 /// "restart after applying". The daemon restarts itself only when a LOCAL
 /// client asks over the LocalAPI; a server that could trigger it would hold
 /// every device's uptime on a button, and a push that restarted daemons would
-/// take down exactly the orphan `roomlerd run` hosts that cannot come back
+/// take down exactly the orphan `meshharbord run` hosts that cannot come back
 /// (docs/remote-config.md §7b).
 ///
 /// ⚠️ **The whole `relay_*` surface (FR-19) is ABSENT**, and unlike the two
@@ -3019,7 +3062,7 @@ pub struct OverlayIdentity {
     pub joined_at: DateTime,
 }
 
-/// Per-device roomler-SSH policy — gate 3 of four, the exact shape of
+/// Per-device meshharbor-SSH policy — gate 3 of four, the exact shape of
 /// [`ExecPolicy`] because the reasoning is identical and a reader who knows one
 /// should recognise the other.
 ///
@@ -3039,7 +3082,7 @@ pub struct SshPolicy {
     #[serde(default)]
     pub mode: SshMode,
     /// May this device *originate* SSH against other devices (the
-    /// `roomler ssh` CLI path, where the daemon's own agent WS carries the
+    /// `mh ssh` CLI path, where the daemon's own agent WS carries the
     /// request)? Default `false` — without it, compromising any enrolled
     /// laptop would inherit its owner's SSH rights across the whole fleet.
     #[serde(default)]
@@ -3110,7 +3153,7 @@ impl SshPolicy {
 pub struct SshGates {
     /// Does this device accept SSH sessions? Gate 3.
     pub mode: SshMode,
-    /// May this device ORIGINATE sessions (`roomler ssh` over its own WS)?
+    /// May this device ORIGINATE sessions (`mh ssh` over its own WS)?
     /// Not a gate for inbound sessions — it is read off the ORIGIN device's
     /// policy on the device-originated leg.
     pub can_originate: bool,
@@ -3153,10 +3196,10 @@ pub struct SshGrantSpec {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Tunnel client (roomler-cli)
+// Tunnel client (meshharbor-cli)
 // ────────────────────────────────────────────────────────────────────────────
 
-/// A laptop running `roomler`. Mirrors [`Agent`] structurally
+/// A laptop running `meshharbor`. Mirrors [`Agent`] structurally
 /// (same lifecycle, same `AgentStatus`, same `(tenant_id, machine_id)`
 /// uniqueness for rehydrate-on-re-enroll) but slimmer — tunnel clients
 /// don't capture screens or hold capability lists. The `_role_` is
@@ -3460,7 +3503,7 @@ pub struct DestinationRule {
 /// Lived in `tunnel_core::policy` until P3e lever E moved it HERE, next to
 /// the shapes it matches over (this crate is where `HostPattern` /
 /// `PortRange` / `DestinationRule` are canonical — the doc block above this
-/// section says so). The move lets `roomler-node-core`'s config-side ACL
+/// section says so). The move lets `meshharbor-node-core`'s config-side ACL
 /// evaluate rules without depending on tunnel-core's data plane; tunnel-core
 /// re-exports both fns from `policy` so its callers are unchanged.
 pub fn dst_matches(rule: &DestinationRule, dst_host: &str, dst_port: u16) -> bool {
@@ -4628,7 +4671,7 @@ pub struct TunnelAuditEvent {
     /// this id. New ObjectId per `tunnel forward` invocation.
     pub tunnel_session_id: ObjectId,
     /// The originating tunnel-CLIENT row, set when a dedicated
-    /// `roomler` client opened this session. `None` for an
+    /// `meshharbor` client opened this session. `None` for an
     /// agent-originated session (P3b-2), where `origin_agent_id` is set
     /// instead. Exactly one of `tunnel_client_id` / `origin_agent_id`
     /// is populated. Optional (not a bare `ObjectId`) since P3b-2 —
@@ -4781,7 +4824,7 @@ pub enum ExecDenyReason {
     RunAsUnavailable,
 }
 
-/// Why a roomler-SSH grant was refused. The twin of [`ExecDenyReason`]; kept
+/// Why a meshharbor-SSH grant was refused. The twin of [`ExecDenyReason`]; kept
 /// separate so the two features' reasons cannot drift into each other's
 /// vocabulary as they diverge (SSH grows account modes and session limits that
 /// mean nothing to exec).
@@ -4854,7 +4897,7 @@ impl SshDenyReason {
     pub fn message(self) -> &'static str {
         match self {
             Self::OrgDisabled => {
-                "roomler SSH is disabled for this organization (an admin must enable it)"
+                "meshharbor SSH is disabled for this organization (an admin must enable it)"
             }
             Self::NoPermission => "you do not have the SSH_DEVICE permission in this organization",
             Self::DeviceDisabled => "this device does not accept SSH sessions (its policy is off)",
@@ -4863,7 +4906,7 @@ impl SshDenyReason {
                 "the device you are calling from is not permitted to originate SSH sessions"
             }
             Self::Unsupported => {
-                "this device's agent does not support roomler SSH (needs a build with the \
+                "this device's agent does not support meshharbor SSH (needs a build with the \
                  ssh-server feature)"
             }
             Self::Offline => "the device is offline",
@@ -4873,7 +4916,7 @@ impl SshDenyReason {
             Self::RateLimited => "too many SSH requests for this device; try again shortly",
             Self::BadPublicKey => "the session public key is missing or not a usable ed25519 key",
             Self::AgentDisabled => {
-                "roomler SSH is switched off on the device itself (its own ssh_enabled \
+                "meshharbor SSH is switched off on the device itself (its own ssh_enabled \
                  setting) — only someone with access to that device can turn it on"
             }
             Self::GrantExpiredOnArrival => {
@@ -4881,13 +4924,13 @@ impl SshDenyReason {
                  device's clock is probably ahead of the server's by a minute or more"
             }
             Self::GrantRefused => {
-                "the device refused the session grant — its own log (`roomler logs \
+                "the device refused the session grant — its own log (`mh logs \
                  --grep ssh:` on that device) says why"
             }
             Self::GrantUnconfirmed => {
                 "the device did not confirm the grant within 10 s — its connection to \
                  the server may be slow or stale; try again, or check it with \
-                 `roomler exec`"
+                 `mh exec`"
             }
             Self::ClaimRefused => {
                 "the device's SYSTEM service claimed a grant that was not pending for \
@@ -4960,7 +5003,7 @@ pub struct ExecAuditEvent {
     /// The acting principal. For a CLI-originated request this is the
     /// originating device's `owner_user_id`.
     pub user_id: ObjectId,
-    /// Set when the request came from a device's LocalAPI (`roomler exec`)
+    /// Set when the request came from a device's LocalAPI (`mh exec`)
     /// rather than an authenticated HTTP caller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_agent_id: Option<ObjectId>,
@@ -5079,7 +5122,7 @@ impl ExecPending {
     pub const CANCELLED: &'static str = "cancelled";
 }
 
-/// One roomler-SSH session REQUEST. Written on every attempt, granted or
+/// One meshharbor-SSH session REQUEST. Written on every attempt, granted or
 /// refused. TTL-expired after 90 days like [`ExecAuditEvent`].
 ///
 /// **This records the DECISION, not the session.** The server's involvement
@@ -6304,7 +6347,7 @@ pub enum CrashReason {
     SupervisorDetected,
 }
 
-/// Wire shape for the agent → roomler.ai crash-report upload AND the
+/// Wire shape for the agent → meshharbor.itachi.fans crash-report upload AND the
 /// on-disk sidecar the agent writes between crash + upload. `rename_
 /// all = "camelCase"` so JS clients get `crashedAtUnix` etc. without
 /// a translation step.
@@ -8355,7 +8398,7 @@ mod tests {
     /// `ssh-consent`) and never answers a grant. A prefix matcher would make
     /// the server wait out its full bound on every grant to every one of them
     /// and then refuse the session as unconfirmed — turning an intermittent
-    /// race into a fleet-wide outage of roomler SSH.
+    /// race into a fleet-wide outage of meshharbor SSH.
     #[test]
     fn managed_forward_does_not_imply_managed_forward_nft() {
         let userspace = AgentCaps {
@@ -9161,7 +9204,7 @@ mod tests {
 
     #[test]
     fn empty_shell_resolves_before_the_allowlist_is_checked() {
-        // Field-caught: `roomler exec <dev> -- …` and every `roomler diag`
+        // Field-caught: `mh exec <dev> -- …` and every `mh diag`
         // bundle send an EMPTY shell meaning "the host default". Comparing
         // that literal "" against ["powershell","pwsh","cmd"] refused them
         // all, which made diag unusable on every device that had narrowed its
@@ -10192,5 +10235,50 @@ mod backbone_policy_tests {
         };
         let encoded = bson::to_bson(&policy).unwrap();
         assert_eq!(bson::from_bson::<PeerRelayPolicy>(encoded).unwrap(), policy);
+    }
+
+    #[test]
+    fn agent_caps_rdp_fields_are_optional_and_forward_backward_compatible() {
+        // 1. Legacy JSON without rdp_available / rdp_cert_sha256 deserializes cleanly
+        //    to (None, None) and omits both keys when re-serialized.
+        let legacy_json = r#"{"hw_encoders":[],"codecs":["h264"],"has_input_permission":true,"supports_clipboard":true,"supports_file_transfer":true,"max_simultaneous_sessions":4}"#;
+        let parsed: AgentCaps = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(parsed.rdp_available, None);
+        assert_eq!(parsed.rdp_cert_sha256, None);
+        let reserialized = serde_json::to_value(&parsed).unwrap();
+        assert!(reserialized.get("rdp_available").is_none());
+        assert!(reserialized.get("rdp_cert_sha256").is_none());
+
+        // 2. New payload carrying rdp_available + rdp_cert_sha256 round-trips
+        //    through JSON and BSON, and is accepted without error by an older
+        //    reader struct that does not know either field.
+        let mut with_rdp = parsed.clone();
+        with_rdp.rdp_available = Some(true);
+        with_rdp.rdp_cert_sha256 = Some(
+            "00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff"
+                .to_string(),
+        );
+        let new_json = serde_json::to_string(&with_rdp).unwrap();
+        let round_trip: AgentCaps = serde_json::from_str(&new_json).unwrap();
+        assert_eq!(round_trip.rdp_available, Some(true));
+        assert_eq!(
+            round_trip.rdp_cert_sha256.as_deref(),
+            Some(
+                "00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff"
+            )
+        );
+        let encoded_bson = bson::to_bson(&with_rdp).unwrap();
+        let from_bson: AgentCaps = bson::from_bson(encoded_bson).unwrap();
+        assert_eq!(from_bson.rdp_available, Some(true));
+        assert_eq!(from_bson.rdp_cert_sha256, with_rdp.rdp_cert_sha256);
+
+        #[derive(Deserialize)]
+        struct LegacyAgentCapsReader {
+            codecs: Vec<String>,
+            has_input_permission: bool,
+        }
+        let legacy_reader: LegacyAgentCapsReader = serde_json::from_str(&new_json).unwrap();
+        assert_eq!(legacy_reader.codecs, vec!["h264".to_string()]);
+        assert!(legacy_reader.has_input_permission);
     }
 }

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
-use mongodb::Database;
-use rand::Rng;
-use roomler_ai_db::models::{
+use meshharbor_db::models::{
     ConferenceSettings, MediaSettings, ParticipantRole, ParticipantSession, Room, RoomMember,
     RoomVisibility,
 };
+use mongodb::Database;
+use rand::Rng;
 
 use super::base::{BaseDao, DaoError, DaoResult, PaginatedResult, PaginationParams};
 
@@ -174,7 +174,7 @@ impl RoomDao {
         name: String,
         path: String,
         creator_id: ObjectId,
-        binding: roomler_ai_db::models::Binding,
+        binding: meshharbor_db::models::Binding,
     ) -> DaoResult<Room> {
         let mut room = new_room(NewRoom {
             tenant_id,

@@ -3,11 +3,11 @@
 <template>
   <v-dialog :model-value="modelValue" max-width="520" @update:model-value="emit('update:modelValue', $event)">
     <v-card v-if="device">
-      <v-card-title>Edit device</v-card-title>
+      <v-card-title>{{ t('mh.devEdit.title') }}</v-card-title>
       <v-card-text>
         <v-text-field
           v-model="name"
-          label="Device name"
+          :label="t('mh.devEdit.name')"
           density="comfortable"
           :hint="nameHint"
           persistent-hint
@@ -15,20 +15,20 @@
         />
         <v-text-field
           v-model="displayName"
-          label="Display name (optional)"
+          :label="t('mh.devEdit.displayName')"
           density="comfortable"
-          hint="Friendly label shown in lists — never propagates anywhere. Leave empty to show the device name."
+          :hint="t('mh.devEdit.displayNameHint')"
           persistent-hint
           class="mb-3"
         />
         <v-combobox
           v-model="tags"
-          label="Tags"
+          :label="t('mh.devEdit.tags')"
           multiple
           chips
           closable-chips
           density="comfortable"
-          hint="Free-form labels for filtering and search (max 16, 40 chars each). Press Enter to add."
+          :hint="t('mh.devEdit.tagsHint')"
           persistent-hint
         />
         <v-alert v-if="dnsNote" type="info" variant="tonal" density="compact" class="mt-3">
@@ -51,6 +51,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useAgentStore } from '@/stores/agents'
 import { useTunnelClientStore } from '@/stores/tunnelClients'
 
@@ -85,6 +86,7 @@ const emit = defineEmits<{
   ]
 }>()
 
+const { t } = useI18n()
 const agentStore = useAgentStore()
 const tunnelClientStore = useTunnelClientStore()
 
@@ -111,8 +113,8 @@ watch(
 
 const nameHint = computed(() =>
   props.device?.kind === 'agent'
-    ? 'Propagates to the overlay + MagicDNS label. Peers selecting this device as an exit node BY NAME must update their config — pin by node-id hex to be rename-proof.'
-    : 'Propagates to the overlay + MagicDNS label (server-side rename — the CLI keeps its local machine name).',
+    ? t('mh.devEdit.nameHintAgent')
+    : t('mh.devEdit.nameHintClient'),
 )
 
 const dirty = computed(() => {
@@ -130,7 +132,7 @@ async function save() {
   if (!d) return
   const trimmed = name.value.trim()
   if (!trimmed) {
-    error.value = 'Device name must not be empty.'
+    error.value = t('mh.devEdit.nameEmpty')
     return
   }
   saving.value = true
@@ -148,10 +150,9 @@ async function save() {
         : await tunnelClientStore.updateClient(props.tenantId, d.id, fields)
     if (fields.name !== undefined) {
       if (result.dnsRenamed && result.dnsName) {
-        dnsNote.value = `MagicDNS label is now "${result.dnsName}" — peers resolve it immediately; the device itself picks up its new self-name on its next reconnect.`
+        dnsNote.value = t('mh.devEdit.dnsRenamed', { name: result.dnsName })
       } else if (result.dnsRenamed === false) {
-        dnsNote.value =
-          'The fleet name changed, but the overlay DNS label could not be updated (kept its old value).'
+        dnsNote.value = t('mh.devEdit.dnsKept')
       }
     }
     emit('saved', {

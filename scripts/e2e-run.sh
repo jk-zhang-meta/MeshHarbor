@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run some (or all) e2e specs against the standing `roomler-ai-e2e` stack, on
+# Run some (or all) e2e specs against the standing `meshharbor-e2e` stack, on
 # demand. The nightly (`e2e-nightly.sh`) runs the whole suite and triages it;
 # this is the one you want while working on a spec or bisecting a build.
 #
@@ -20,7 +20,7 @@
 # "failed" for months. See docs/fr/FR-37-e2e-in-cluster.md.
 set -uo pipefail
 
-NS=roomler-ai-e2e
+NS=meshharbor-e2e
 REPO="${REPO:-$HOME/wt-e2e-lane}"
 TAG="${1:-}"; shift || true
 SPECS=("$@")
@@ -54,26 +54,26 @@ if [ -n "$TAG" ]; then
       # the deploy repo's clone on this host is stale by construction since
       # FR-73 (promotes push GitHub, nothing pulls here), so it is only the
       # fallback, pulled first.
-      REG=$(kubectl -n roomler-ai get deploy roomler2 -o jsonpath='{.spec.template.spec.containers[?(@.name=="roomler2")].image}' 2>/dev/null | sed -E 's/:[^:/]+$//')
+      REG=$(kubectl -n meshharbor get deploy meshharbor2 -o jsonpath='{.spec.template.spec.containers[?(@.name=="meshharbor2")].image}' 2>/dev/null | sed -E 's/:[^:/]+$//')
       if [ -z "$REG" ]; then
-        DEPLOY_REPO="${DEPLOY_REPO:-$HOME/roomler-ai-deploy}"
+        DEPLOY_REPO="${DEPLOY_REPO:-$HOME/meshharbor-deploy}"
         git -C "$DEPLOY_REPO" pull --quiet --ff-only 2>/dev/null || true
         REG=$(awk '/newName:/ {print $2; exit}' "$DEPLOY_REPO/k8s/overlays/prod/kustomization.yaml" 2>/dev/null)
-        [ -n "$REG" ] || { REG=ghcr.io/gjovanov/roomler-ai; note "no cluster read and no deploy repo at $DEPLOY_REPO — assuming $REG"; }
+        [ -n "$REG" ] || { REG=ghcr.io/jk-zhang-meta/meshharbor; note "no cluster read and no deploy repo at $DEPLOY_REPO — assuming $REG"; }
       fi
       IMG="$REG:$TAG" ;;
   esac
   note "pinning the stack to $IMG"
-  kubectl -n "$NS" set image deploy/roomler2 "roomler2=$IMG" >/dev/null \
+  kubectl -n "$NS" set image deploy/meshharbor2 "meshharbor2=$IMG" >/dev/null \
     || die "could not set the image"
-  kubectl -n "$NS" rollout status deploy/roomler2 --timeout=300s >/dev/null || die "the stack did not roll to $IMG"
+  kubectl -n "$NS" rollout status deploy/meshharbor2 --timeout=300s >/dev/null || die "the stack did not roll to $IMG"
 fi
 # ⚠️ Select the app container BY NAME. `containers[0]` is the sidecar now, and
 # this line reported the browser image as "the stack" the first time it ran.
-note "stack on $(kubectl -n "$NS" get deploy roomler2   -o jsonpath='{.spec.template.spec.containers[?(@.name=="roomler2")].image}')"
+note "stack on $(kubectl -n "$NS" get deploy meshharbor2   -o jsonpath='{.spec.template.spec.containers[?(@.name=="meshharbor2")].image}')"
 
-POD=$(kubectl -n "$NS" get pod -l app=roomler2 -o jsonpath='{.items[0].metadata.name}')
-[ -n "$POD" ] || die "no roomler2 pod in $NS"
+POD=$(kubectl -n "$NS" get pod -l app=meshharbor2 -o jsonpath='{.items[0].metadata.name}')
+[ -n "$POD" ] || die "no meshharbor2 pod in $NS"
 kubectl -n "$NS" get pod "$POD" -o jsonpath='{.spec.containers[*].name}' | tr ' ' '\n' | grep -qx pwrunner \
   || die "pod $POD has no pwrunner sidecar — apply k8s/overlays/e2e from the deploy repo"
 

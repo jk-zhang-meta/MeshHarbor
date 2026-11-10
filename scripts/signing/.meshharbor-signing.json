@@ -1,0 +1,18 @@
+{
+  "subscriptionId": "cb6a5135-9bee-4a35-890f-a3f38f867e88",
+  "tenantId": "12a140a0-d2e3-4213-8292-b0189b2d325d",
+  "location": "polandcentral",
+  "endpoint": "https://plc.codesigning.azure.net",
+  "resourceGroup": "rg-meshharbor-signing",
+  "accountName": "meshharborsigning",
+  "profileName": "meshharbor-public-trust",
+  "repo": "jk-zhang-meta/MeshHarbor",
+  "country": "BG",
+  "accountResourceId": "/subscriptions/cb6a5135-9bee-4a35-890f-a3f38f867e88/resourceGroups/rg-meshharbor-signing/providers/Microsoft.CodeSigning/codeSigningAccounts/meshharborsigning",
+  "identityValidationId": "2390bcea-a3d5-4919-a624-cb209c875bf7",
+  "certificateSubject": "CN=G ROX LTD, O=G ROX LTD, L=Pazardzhik, C=BG",
+  "profileType": "PublicTrust",
+  "profileResourceId": "/subscriptions/cb6a5135-9bee-4a35-890f-a3f38f867e88/resourceGroups/rg-meshharbor-signing/providers/Microsoft.CodeSigning/codeSigningAccounts/meshharborsigning/certificateProfiles/meshharbor-public-trust",
+  "appId": "9a452e59-1312-49d8-bc4a-8f443be19c5f",
+  "usesEnvironmentFic": true
+}

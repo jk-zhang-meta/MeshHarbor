@@ -26,14 +26,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
 
 use bson::oid::ObjectId;
-use roomler_ai_mod_hive::dao::AgentSessionDao;
-use roomler_ai_mod_hive::model::{
+use meshharbor_mod_hive::dao::AgentSessionDao;
+use meshharbor_mod_hive::model::{
     AgentSession, FenceMark, MemberState, Promotion, PromotionState, ReplicaMember, Replicaset,
     SessionStatus,
 };
-use roomler_ai_remote_control::hive::{HiveFenceMark, HiveReplicaRole};
-use roomler_ai_remote_control::signaling::ServerMsg;
-use roomler_ai_tests::fixtures::test_app::TestApp;
+use meshharbor_remote_control::hive::{HiveFenceMark, HiveReplicaRole};
+use meshharbor_remote_control::signaling::ServerMsg;
+use meshharbor_tests::fixtures::test_app::TestApp;
 use serde_json::{Value, json};
 
 mod hive_support;
@@ -156,7 +156,7 @@ async fn scenario() {
         .insert(seeded.admin.id.clone(), "drainer".into());
     cfg.hive_roots = vec![roots.display().to_string()];
     cfg.hive_harness = Some(harness.display().to_string());
-    roomlerd::hive::init_as_daemon(
+    meshharbord::hive::init_as_daemon(
         &cfg,
         &dir.path().join("hive.db"),
         &dir.path().join("run"),
@@ -237,7 +237,7 @@ async fn scenario() {
         "the turn's events are below the tip (the prompt, the init, the text, the turn): {tip:?}"
     );
     assert!(
-        roomler_ai_remote_control::hive::is_hash_hex(&tip.hash),
+        meshharbor_remote_control::hive::is_hash_hex(&tip.hash),
         "{tip:?}"
     );
 

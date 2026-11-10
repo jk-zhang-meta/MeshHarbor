@@ -66,7 +66,7 @@ mod tests {
     fn a_folder_inside_a_root_resolves() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("src");
-        let repo = root.join("roomler-ai");
+        let repo = root.join("meshharbor");
         std::fs::create_dir_all(&repo).unwrap();
         let got = confine(&repo, std::slice::from_ref(&root)).unwrap();
         assert_eq!(got, repo.canonicalize().unwrap());

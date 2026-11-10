@@ -1,7 +1,7 @@
 # FR-5: macOS unattended update chain — the update half, pinned-GPG artifact trust, and a stable code-signing identity (retrospective)
 
 **Status:** SHIPPED and field-closed 2026-08-26 at agent rc.482. Tracking issue: `FR-5` (#774)
-in gjovanov/roomler-ai/issues. Retrospective FR — the arc completed before this document;
+in jk-zhang-meta/MeshHarbor/issues. Retrospective FR — the arc completed before this document;
 every claim below carries its field receipt.
 
 ## Goal
@@ -20,13 +20,13 @@ every update wiped Screen Recording + Accessibility.
 
 `installer -target /` needs root; the per-user half isn't. Worse, the exit-to-update dance
 (spawn installer, exit, hope launchd restarts you) raced launchd job replacement.
-Fix: a third launchd unit, **`com.roomler.update`**, installed by the pkg BY DEFAULT
+Fix: a third launchd unit, **`fans.itachi.meshharbor.update`**, installed by the pkg BY DEFAULT
 <!-- RETIRED-NAME-ANCHOR(2): the real macOS daemon config dir, read by the
      shipped .pkg postinstall. FR-21 D5. -->
-(opt-out marker `/etc/roomler-agent/disable-auto-update`, absence-removes): a root,
-single-shot helper (`roomlerd update-helper`, hidden subcommand) that owns
+(opt-out marker `/etc/meshharbor-agent/disable-auto-update`, absence-removes): a root,
+single-shot helper (`meshharbord update-helper`, hidden subcommand) that owns
 check → download → verify → `installer -pkg … -target /`. Agents only touch the wake file
-`/private/var/tmp/roomler-update-check` — **whose content is deliberately ignored** (a pin
+`/private/var/tmp/meshharbor-update-check` — **whose content is deliberately ignored** (a pin
 honoured from a sticky world-writable path would hand any local user a
 root-installs-a-genuine-but-old-release downgrade primitive). Wake sources: RunAtLoad +
 StartInterval 6 h + WatchPaths; `ThrottleInterval` 60 s; install-storm cooldown shared
@@ -66,7 +66,7 @@ tamper anchor. Fix: the release signing subkey's ed25519 point (fpr
 ~150 lines of RFC 4880 framing for exactly the shape CI emits (one v4 packet, class 0x00,
 EdDSA, SHA-256/512), ring doing the ed25519 (already in the graph — zero new deps).
 `pinned_key_matches_committed_pubkey` re-derives the constant from
-`scripts/signing/gpg/roomler-release-pubkey.asc` every test run, so pin and file cannot
+`scripts/signing/gpg/meshharbor-release-pubkey.asc` every test run, so pin and file cannot
 drift. Key rotation requires a release; the overlap recipe is in the module docs.
 
 - **Receipts**: the real rc.475 `.pkg` (20.2 MB) verifies, one flipped mid-file byte is
@@ -79,7 +79,7 @@ drift. Key rotation requires a release; the overlap recipe is in the module docs
 TCC keys grants on the code-signing **designated requirement**. Ad-hoc signing
 (`codesign --sign -`) pins a per-build cdhash — a new identity every build — so every
 update re-blinded the Mac (deterministic across rc.475/476). Fix: ONE self-signed cert
-(RSA-2048, `CN=Roomler Self-Signed Code Signing`, valid to 2036), minted once, held in
+(RSA-2048, `CN=MeshHarbor Self-Signed Code Signing`, valid to 2036), minted once, held in
 repo secrets (`MACOS_SELFSIGN_P12`/`_PASSWORD`, offline backup with the operator),
 imported into a temp keychain per release run; all three codesign sites use it with
 `--timestamp=none`; an Authority assert guards against silently shipping ad-hoc. Not
@@ -98,7 +98,7 @@ The **four-trap ladder** to make self-signed signing work in CI, each field-hit 
    perfectly-signed bundle.
 
 - **Receipts**: rc.479/480/482 all carry the byte-identical DR
-  `identifier "com.roomler.agent" and certificate root = H"b2a06501a54c27be3fea609ce04c1e55cd0a4f52"` —
+  `identifier "fans.itachi.meshharbor.agent" and certificate root = H"b2a06501a54c27be3fea609ce04c1e55cd0a4f52"` —
   **the DR-equivalence check (`codesign -d -r-` old vs new) proves grant survival with no
   grant present**. Operator-confirmed on rc.482: *"screen worked directly"*, no re-grant.
   Observed TCC asymmetry, recorded not modeled: Screen Recording survived even the

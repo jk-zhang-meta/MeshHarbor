@@ -53,14 +53,14 @@ use async_trait::async_trait;
 use base64::Engine;
 use bson::{DateTime, oid::ObjectId};
 use dashmap::DashMap;
-use roomler_ai_mod_hive::model::{AgentSession, SessionStatus};
-use roomler_ai_remote_control::{
+use meshharbor_core::{AgentCtx, AgentMsgHandler, AgentSocketLifecycle};
+use meshharbor_mod_hive::model::{AgentSession, SessionStatus};
+use meshharbor_remote_control::{
     models::{Agent, OsKind, RpcCap},
     signaling::{ClientMsg, ServerMsg},
     vault::{LeaseRefusal, VaultActivityKind, lease_limits, program_name_ok, providers::Provider},
 };
-use roomler_ai_services::dao::base::DaoError;
-use roomler_core::{AgentCtx, AgentMsgHandler, AgentSocketLifecycle};
+use meshharbor_services::dao::base::DaoError;
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{debug, warn};
 use zeroize::Zeroizing;
@@ -894,7 +894,7 @@ pub(crate) async fn identify<'a>(
 async fn decide_and_release(
     state: &VaultState,
     rec: &mut Record<'_>,
-    agent: &roomler_ai_remote_control::models::Agent,
+    agent: &meshharbor_remote_control::models::Agent,
     session: &AgentSession,
     req: &LeaseRequest,
 ) -> Result<Leased, LeaseRefusal> {

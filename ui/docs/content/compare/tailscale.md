@@ -1,7 +1,7 @@
 ---
-title: Roomler vs Tailscale
-seoTitle: "Roomler vs Tailscale: a self-hosted Tailscale alternative"
-description: An honest comparison — what Tailscale does better, where Roomler differs as a self-hosted mesh, and which of the two you should actually use.
+title: MeshHarbor vs Tailscale
+seoTitle: "MeshHarbor vs Tailscale: a self-hosted Tailscale alternative"
+description: An honest comparison — what Tailscale does better, where MeshHarbor differs as a self-hosted mesh, and which of the two you should actually use.
 tags: [compare, tailscale, mesh, network, alternatives]
 order: 1
 ---
@@ -11,9 +11,9 @@ order: 1
 Be clear-eyed about this before reading anything else.
 
 :::cards
-- **Maturity and scale** icon:check — Years of production use across an enormous fleet, with the operational record only time produces. Roomler is young.
-- **Platform coverage** icon:monitor — iOS, Android, Synology, QNAP, routers, embedded. Roomler's agent is Windows, Linux and macOS, and its viewer is Chromium-first.
-- **Public ingress** icon:external — Publishing a service to the public internet from a node is a first-class Tailscale feature. Roomler has **no equivalent** — its tunnels reach *into* your network from your own devices.
+- **Maturity and scale** icon:check — Years of production use across an enormous fleet, with the operational record only time produces. MeshHarbor is young.
+- **Platform coverage** icon:monitor — iOS, Android, Synology, QNAP, routers, embedded. MeshHarbor's agent is Windows, Linux and macOS, and its viewer is Chromium-first.
+- **Public ingress** icon:external — Publishing a service to the public internet from a node is a first-class Tailscale feature. MeshHarbor has **no equivalent** — its tunnels reach *into* your network from your own devices.
 - **Identity integrations** icon:shield — SSO, SCIM provisioning, device posture, and the breadth of IdP support enterprise procurement asks for.
 - **Ecosystem** icon:book — A large community, many published recipes, and integrations with things you already run.
 :::
@@ -23,13 +23,13 @@ Be clear-eyed about this before reading anything else.
 recommendation and you should use it.**
 :::
 
-## Where Roomler differs
+## Where MeshHarbor differs
 
 ### Remote desktop is not an add-on
 
 It is the other half of the product. With Tailscale you get a machine on a
 network and then still need something to see its screen — VNC, RDP, RustDesk,
-another agent. With Roomler the machine you just reached is already viewable in
+another agent. With MeshHarbor the machine you just reached is already viewable in
 a browser tab, under the same identity, with the same audit trail.
 
 ### The whole control plane is open source
@@ -41,7 +41,7 @@ the thing Tailscale runs.
 
 ### SSH with no `sshd` and no bound port
 
-Tailscale SSH is excellent and does the same job on Unix. Roomler's also serves
+Tailscale SSH is excellent and does the same job on Unix. MeshHarbor's also serves
 **Windows**, and it binds no port at all — packets are intercepted below the
 socket layer, so there is nothing for endpoint security software to terminate
 and nothing listening even locally.
@@ -53,7 +53,7 @@ its own identity system.
 
 ## Side by side
 
-| Capability | Roomler | Tailscale |
+| Capability | MeshHarbor | Tailscale |
 |---|---|---|
 | Private mesh | Yes | Yes |
 | Remote desktop | **Built in** | No — bring your own |
@@ -71,7 +71,7 @@ its own identity system.
 
 :::steps
 1. **You need mobile, public ingress, or enterprise SSO** → Tailscale. These are real gaps, not soft ones.
-2. **You need a private network *and* remote desktop** → Roomler, or you are running two agents forever.
-3. **You must host the control plane yourself, on the real code** → Roomler.
+2. **You need a private network *and* remote desktop** → MeshHarbor, or you are running two agents forever.
+3. **You must host the control plane yourself, on the real code** → MeshHarbor.
 4. **You want the most battle-tested mesh available** → Tailscale.
 :::

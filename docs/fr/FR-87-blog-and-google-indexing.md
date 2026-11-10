@@ -1,6 +1,6 @@
-# FR-87: A blog at roomler.ai/blog, a crawlable homepage, and a site Google can index
+# FR-87: A blog at meshharbor.itachi.fans/blog, a crawlable homepage, and a site Google can index
 
-**Issue:** [#1776](https://github.com/gjovanov/roomler-ai/issues/1776) · **Status:** **closed
+**Issue:** [#1776](https://github.com/jk-zhang-meta/MeshHarbor/issues/1776) · **Status:** **closed
 2026-09-30**, all 14 criteria field-verified. P1–P7 live since 2026-09-29. Follow-ups, none
 blocking: `LEGACY_UNHASHED_ASSETS` turned off on 2026-10-04 (live with the next promote), and
 Search Console reviews at +3/+14/+28 days · **Owner:** web / public site · **Builds on:**
@@ -8,7 +8,7 @@ Search Console reviews at +3/+14/+28 days · **Owner:** web / public site · **B
 
 ## 1. Goal
 
-Make roomler.ai a site that Google can read and that earns its own search traffic.
+Make meshharbor.itachi.fans a site that Google can read and that earns its own search traffic.
 
 1. **A blog at `/blog/`**: static, SEO-complete pages built by the same in-repo generator as
    `/docs`. The first post is the operator's Medium article
@@ -29,16 +29,16 @@ Each row is also an acceptance criterion's "shown failing" run.
 |---|---|---|
 | `/sitemap.xml` `<lastmod>` | **70 of 70 URLs show the build date**; the content last changed 2026-09-01 | `build.ts:99-122` reads `git log` and falls back to today. `.git` is excluded by `.dockerignore:4` and CI checks out at depth 1. The same value feeds JSON-LD `dateModified` and the "Last updated" footer |
 | `/docs/assets/docs.css`, `search.js` | unhashed names served `Cache-Control: public, immutable` for a year, **without CSP** | the regex location `nginx-pod.conf:64-69` takes precedence over `location /docs/` (`:92-94`) and declares `add_header`, which drops the inherited security headers |
-| `curl -sI https://roomler.ai/docs` | `301 Location: http://roomler.ai/docs/`, a **scheme downgrade** | absolute redirect built from the pod's `:80` listener behind the TLS edge |
+| `curl -sI https://meshharbor.itachi.fans/docs` | `301 Location: http://meshharbor.itachi.fans/docs/`, a **scheme downgrade** | absolute redirect built from the pod's `:80` listener behind the TLS edge |
 | `/blog/`, `/this-does-not-exist` | **200** with the SPA shell (soft 404) | SPA fallback `nginx-pod.conf:97-99` |
 | `/docs/start/install/windows` (no slash) | 200, duplicate of the slash form | `try_files $uri $uri/index.html` serves both |
 | `/` | a client-rendered shell: an empty `<div id="app">` for any crawler that doesn't run JS | `/` is `meta.auth` (`ui/src/plugins/router.ts:119`); guests are redirected to `/landing` client-side (`:345`) |
 | sitemap | lists `/landing /pricing /privacy /terms /imprint` (`site.ts:150`), all of which declare canonical `/` (`ui/index.html:24`) | contradictory signals |
 | docs JSON-LD | author `"G ROX LTD"` (`layout.ts:221`), but the legal name everywhere else is G ROX EOOD; no `datePublished`, `image` or `mainEntityOfPage`; the `WebSite`/`SoftwareApplication` markup spec'd by FR-60 was never built (`LayoutCtx.extraJsonLd` is never passed, `build.ts:515-523`) | — |
-| docs `<title>` | up to 71 chars (e.g. `/docs/compare/teamviewer/`) | the template `layout.ts:204-209` always appends " · section — Roomler Docs" |
+| docs `<title>` | up to 71 chars (e.g. `/docs/compare/teamviewer/`) | the template `layout.ts:204-209` always appends " · section — MeshHarbor Docs" |
 | docs pages | **no analytics**, so organic traffic isn't measured | purestat loads only in the SPA (`ui/index.html:42`) |
 | `render.ts:194` | card title opens `<h2>` and closes `</h3>` | missed in FR-60's heading pass |
-| Search Console | no verified property for roomler.ai on the operator's day-to-day Google account | — |
+| Search Console | no verified property for meshharbor.itachi.fans on the operator's day-to-day Google account | — |
 
 **What already works, and must keep working:**
 - canonical, OG and Twitter tags, and inline JSON-LD on every docs page (the CSP allows data
@@ -149,9 +149,9 @@ scripts), `theme/structured.ts` and `theme/xml.ts`.
   1200 px wide at ~1.91:1. Docs keep the social card, because their heroes are SVG, which
   social platforms don't render.
 - A `seoTitle` front-matter key, capped at 60 chars by a build gate. The default template drops
-  " · section", then " — Roomler Docs", to fit 60, and a title too long even bare is a build
+  " · section", then " — MeshHarbor Docs", to fit 60, and a title too long even bare is a build
   error asking for a `seoTitle`. Before P3, 8 of 65 titles ran 62–71 chars; after, 0 of 96.
-- One Organization entity (`@id https://roomler.ai/#organization`, name "Roomler", legalName
+- One Organization entity (`@id https://meshharbor.itachi.fans/#organization`, name "MeshHarbor", legalName
   "G ROX EOOD"), a node of every page's single `@graph`, which every author and publisher
   references.
 - **Types by page:**
@@ -258,7 +258,7 @@ the build.
 
 - **Progressive enhancement:** `home.js`, an external script (the CSP forbids inline ones).
   - **The signed-in hand-off** (§4f's gap). `home.js` loads in `<head>` without `defer`, so it
-    runs before the page paints. When the SPA's localStorage hint (`roomler-signed-in`, written
+    runs before the page paints. When the SPA's localStorage hint (`meshharbor-signed-in`, written
     by `ui/src/api/session.ts`) says signed in, it replaces the page with `/login`. It must not
     use `/`, which would serve this page again: still no cookie. The SPA's guest guard sends a
     signed-in visitor on to the dashboard, whose first 401 refreshes the session. If the
@@ -282,9 +282,9 @@ the build.
 **Operator only**, because they involve the Google account or DNS. The agent can drive steps
 1–4 in the browser, with the operator's go-ahead, if the Workspace account is signed in.
 
-1. **Search Console:** Add property → **Domain `roomler.ai`** → Verify. A
+1. **Search Console:** Add property → **Domain `meshharbor.itachi.fans`** → Verify. A
    `google-site-verification` TXT record already exists on the domain.
-2. **Sitemaps:** submit `https://roomler.ai/sitemap.xml` and expect "Success" for both child
+2. **Sitemaps:** submit `https://meshharbor.itachi.fans/sitemap.xml` and expect "Success" for both child
    sitemaps.
 3. **URL Inspection:** Request indexing for `/`, `/blog/`, the post, `/docs/`, and the
    teamviewer, rustdesk and tailscale compare pages. The quota is about 10 a day.
@@ -386,7 +386,7 @@ the build.
   request, with the Google-selected canonical the blog URL itself, not Medium's.)*
 - [x] **AC13:** Bing Webmaster Tools is verified, the first IndexNow POST returns 200/202, and
   purestat records `/blog/` visits. *(IndexNow: the first live POST, from the P6/P7 promote,
-  returned **202** for `https://roomler.ai/`. Bing: the site was imported from Search Console,
+  returned **202** for `https://meshharbor.itachi.fans/`. Bing: the site was imported from Search Console,
   so its verification carried over, and the sitemap index was submitted ("successfully
   submitted for processing"). purestat, today: `/blog/` 3 and the post 3, among the top ten
   pages. §9.)*
@@ -418,31 +418,31 @@ the build.
 | Date | Build | What | Result |
 |---|---|---|---|
 | 2026-09-28 | production (pre-FR) | the §2 baselines | all failing as listed; recorded as the "shown failing" runs |
-| 2026-09-29 | production (pre-P1) | `scripts/public-site-smoke.sh https://roomler.ai . HEAD` | **FAIL**, 10 checks: `/docs` → `http://`; `/docs/start` 200; nginx's bare 404; `/blog/…` 200 (soft 404); no Cache-Control; feed `text/html`; 5 unhashed theme/hero files on each of two pages; **65 of 65** sitemap `lastmod`s = 2026-09-28 (the build) against git's 2026-09-01 |
-| 2026-09-29 | P1 image, CI ([run 36558431414](https://github.com/gjovanov/roomler-ai/actions/runs/36558431414)) | the P1 checks | pass, 7 security headers compared on `/docs/` and `/docs/start/` |
+| 2026-09-29 | production (pre-P1) | `scripts/public-site-smoke.sh https://meshharbor.itachi.fans . HEAD` | **FAIL**, 10 checks: `/docs` → `http://`; `/docs/start` 200; nginx's bare 404; `/blog/…` 200 (soft 404); no Cache-Control; feed `text/html`; 5 unhashed theme/hero files on each of two pages; **65 of 65** sitemap `lastmod`s = 2026-09-28 (the build) against git's 2026-09-01 |
+| 2026-09-29 | P1 image, CI ([run 36558431414](https://github.com/jk-zhang-meta/MeshHarbor/actions/runs/36558431414)) | the P1 checks | pass, 7 security headers compared on `/docs/` and `/docs/start/` |
 | 2026-09-29 | P2 build in `nginx:stable` + `files/nginx-pod.conf` | the smoke with `.`, three builds | **no git, no manifest**: `lastmod` check FAILS (every entry undated), as it must. **With dates**: all 11 pass, 65 of 65 `lastmod` = git |
-| 2026-09-29 | P2 image, CI ([run 36561581485](https://github.com/gjovanov/roomler-ai/actions/runs/36561581485)) | the real image path | runner `[dates] 65 files`; Docker (no `.git`) `dates: manifest, 65 of 65 pages`; smoke all 11 pass, `lastmod == git` for 65 pages |
+| 2026-09-29 | P2 image, CI ([run 36561581485](https://github.com/jk-zhang-meta/MeshHarbor/actions/runs/36561581485)) | the real image path | runner `[dates] 65 files`; Docker (no `.git`) `dates: manifest, 65 of 65 pages`; smoke all 11 pass, `lastmod == git` for 65 pages |
 | 2026-09-29 | P3 markup, Rich Results Test (code mode, the TeamViewer compare page) | AC5, before deploy | first run: Article + Breadcrumbs valid, **4 non-critical issues** (bare dates: "invalid datetime", "missing a timezone"); after the `%cI` fix: valid, **no issues** |
-| 2026-09-29 | **production, `hosted-20260929-69fcf0a`** (P1–P5; promoted from `hosted-20260928-9834060`; 0 of 60 health probes failed during the roll) | `scripts/public-site-smoke.sh https://roomler.ai . 0d06c1d7f` | **all 12 pass**, the same script that failed 10 that morning: relative 301s; the site's 404 page on `/docs/…` and `/blog/…`; no-cache HTML; 9 security headers == `/` on `/docs/`, a leaf and `/blog/`; feed `application/atom+xml`; hashed, loading assets and sized images; **`lastmod` == git for all 65 docs pages** |
+| 2026-09-29 | **production, `hosted-20260929-69fcf0a`** (P1–P5; promoted from `hosted-20260928-9834060`; 0 of 60 health probes failed during the roll) | `scripts/public-site-smoke.sh https://meshharbor.itachi.fans . 0d06c1d7f` | **all 12 pass**, the same script that failed 10 that morning: relative 301s; the site's 404 page on `/docs/…` and `/blog/…`; no-cache HTML; 9 security headers == `/` on `/docs/`, a leaf and `/blog/`; feed `application/atom+xml`; hashed, loading assets and sized images; **`lastmod` == git for all 65 docs pages** |
 | 2026-09-29 | production | the rest of AC6/AC7/AC9 | the post: 9 security headers == `/`, `no-cache`; `/blog` and a slashless post → 301, relative; 11 asset URLs hashed and loading, 5 of 5 images sized, the share image 200 `image/png`; `/sitemap.xml` indexes `sitemap-docs.xml` + `sitemap-blog.xml` |
 | 2026-09-29 | production | AC5, Rich Results Test (URL mode) | the post: **Article + Breadcrumbs, 2 valid, no issues**; `/docs/compare/teamviewer/`: **Article + Breadcrumbs, 2 valid, no issues**. `/` is owed (P6) |
 | 2026-09-29 | production | AC8, W3C Feed Validator | "This is a valid Atom 1.0 feed", no recommendations |
 | 2026-09-29 | production | AC10, Lighthouse 12.8.2 (mobile) | `/blog/`, the post, `/docs/compare/teamviewer/`, `/docs/remote-desktop/unattended-access/`: **Performance, Accessibility, Best Practices, SEO all 100**; LCP 0.9 / 1.7 / 1.0 / 0.9 s; CLS 0.000 on all four. `/` is owed (P6). (The PageSpeed Insights API was not usable: its keyless daily quota is shared and exhausted) |
-| 2026-09-29 | Medium | AC12 (the Medium half) | the three approved typo fixes live on the public story (verified on the page, after a first "Save and publish" that silently did nothing); the story's `<link rel="canonical">` → `https://roomler.ai/blog/self-hosted-teamviewer-alternative/`. Search Console is owed (P7) |
+| 2026-09-29 | Medium | AC12 (the Medium half) | the three approved typo fixes live on the public story (verified on the page, after a first "Save and publish" that silently did nothing); the story's `<link rel="canonical">` → `https://meshharbor.itachi.fans/blog/self-hosted-teamviewer-alternative/`. Search Console is owed (P7) |
 | 2026-09-29 | the fleet, after the roll | counts only | devices 18 / 12 online / 5 offline, identical to before; peers 13 direct, 5 offline, 1 DERP, 1 upgrading (before: 13 / 5 / 2 DERP); this host's 7 tunnel flows all on `quic-v1`. No remote-desktop session was run: nothing in this roll touches that path |
-| 2026-09-29 | **production (pre-P6)**, `hosted-20260929-69fcf0a` | `scripts/public-site-smoke.sh https://roomler.ai . 0d06c1d7f`, with P6's checks | **FAIL, 6 checks**; the 14 P1–P5 checks still pass. `/` without a cookie is the SPA shell; `/` has no `Cache-Control`; `/home/` is 200; `/landing` and `/pricing` are 200, not 301; `/` names no hashed assets. The cookie branch passes only trivially, because today the SPA answers `/` either way |
+| 2026-09-29 | **production (pre-P6)**, `hosted-20260929-69fcf0a` | `scripts/public-site-smoke.sh https://meshharbor.itachi.fans . 0d06c1d7f`, with P6's checks | **FAIL, 6 checks**; the 14 P1–P5 checks still pass. `/` without a cookie is the SPA shell; `/` has no `Cache-Control`; `/home/` is 200; `/landing` and `/pricing` are 200, not 301; `/` names no hashed assets. The cookie branch passes only trivially, because today the SPA answers `/` either way |
 | 2026-09-29 | P6 build in `nginx:stable` + P6's `files/nginx-pod.conf` | the same smoke | **all 20 pass**: the static homepage without a cookie, the SPA with one, the same security headers on both, `no-cache`, `/home/` 404, `/landing` → `/`, `/pricing` → `/#pricing`, and `/`'s 8 assets hashed and loading |
 | 2026-09-29 | the same, negative controls on a second container (a scratch copy of the conf; each mutation shown applied inside the container and passing `nginx -t`) | 8 mutations | each turns its named checks red, and the unmutated conf passes on the same container: the map's values swapped; the map keyed on `refresh_token`; `internal` dropped (`/home/` 200); `expires` dropped; **`add_header Cache-Control` in place of `expires`, which strips every security header from both branches**; `absolute_redirect on`; `/pricing` without its fragment; the `/landing` block removed |
 | 2026-09-29 | `ui/docs/__tests__/home.spec.ts` (24 tests), negative controls | 6 mutations of `home.js` | each turns exactly its test red: the hint key drifting from `session.ts`'s; no `return` after the hand-off; a hand-off to `/` (the loop); the newsletter failing closed; features written as markup; the subscription dropping `source`. The first run also caught a real defect: the homepage description was 161 characters, one over the limit the build enforces on every docs page, and nothing checked the homepage's |
-| 2026-09-29 | `scripts/indexnow.sh`, locally | `snapshot` · `changed` · `submit` | production's sitemaps (67 URLs) against the P6 build's (68): `changed` is exactly `https://roomler.ai/`; identical snapshots → nothing; no baseline → a warning and nothing. `submit` against a stand-in endpoint: the key file not served (the SPA shell answered) → refused, nothing posted; accepted → 3 URLs (a duplicate and a foreign host dropped; a quote and a backslash JSON-escaped, the body parsed as JSON); 422 and an unreachable endpoint → a warning and a non-zero exit, which the promote step's `continue-on-error` absorbs |
+| 2026-09-29 | `scripts/indexnow.sh`, locally | `snapshot` · `changed` · `submit` | production's sitemaps (67 URLs) against the P6 build's (68): `changed` is exactly `https://meshharbor.itachi.fans/`; identical snapshots → nothing; no baseline → a warning and nothing. `submit` against a stand-in endpoint: the key file not served (the SPA shell answered) → refused, nothing posted; accepted → 3 URLs (a duplicate and a foreign host dropped; a quote and a backslash JSON-escaped, the body parsed as JSON); 422 and an unreachable endpoint → a warning and a non-zero exit, which the promote step's `continue-on-error` absorbs |
 | 2026-09-29 | the smoke's key-file check (P7) | served · removed · production | the P6 build with the key file: ✓; without it: ✗ ("engines would reject every submission"); **production: ✗**, together with P6's six. (A first production run also failed `/docs`'s Location once, on a slow link from this host, the only such failure in six runs; the rerun, 49 s, passed it, and no promote had run in between) |
 | 2026-09-29 | `ui/e2e/auth.spec.ts` against the hosted images on this box: each image's own nginx + API, a throwaway Mongo and Redis, and the e2e overlay's settings (`AUTH__AUTO_VERIFY`, rate limit 1000/s, burst 5000) | AC11's e2e half, before the roll | P6 (`hosted-20260929-db55edd`): **10/10, and 30/30 with `--repeat-each=3`**. Production's image (`69fcf0a`): 10/10, so no regression; there the unauthenticated-visitor spec takes its `/landing` branch. The P6 image with the hand-off removed from its served `home.<hash>.js` (the marker verified in the served file): **exactly the two hand-off specs fail** |
 | 2026-09-29 | the same, first runs | two wrong turns, recorded | (1) Without the lane's limits, the fifth spec met a general `/api` bucket (burst 60, 1/s) that the four specs before it had spent. The refresh returned 200, its retries got 429, and the app ended the session anyway. (2) With the limits, the new spec still failed, **on both images**. `loginViaUi` returns while the dashboard still has requests in flight; one sent after the test changed the cookies got a 401 and started a refresh, and the test's own `goto` aborted it. The app counts an aborted refresh as a rejection, so it cleared its hint. The spec now parks on `about:blank` before touching cookies. It also waits for a fresh cookie that `/api/auth/me` accepts, instead of dashboard text, which renders from the hint alone. Both app behaviours predate P6 and are filed as #1788 |
-| 2026-09-29 | **the P6/P7 roll**: `hosted-20260929-69fcf0a` → `hosted-20260929-c6c2934` ([promote run 36626148679](https://github.com/gjovanov/roomler-ai/actions/runs/36626148679)); `INDEXNOW_ENABLED` set first (operator's go-ahead) | the roll and AC13's IndexNow half | 0 of 60 health probes failed. IndexNow: 67 URLs before the bump, 68 after, `changed` = exactly `https://roomler.ai/`, **HTTP 202**, the first live submission |
-| 2026-09-29 | **production, `dfb78e151`** | `scripts/public-site-smoke.sh https://roomler.ai . dfb78e151` | **all 21 pass**: the same run failed P6's six checks and the key-file check before the roll. The first post-roll run failed `/landing`'s Location once, as `/docs`'s had that afternoon. The check read the status and the Location from two requests, and the second one blipped; six direct probes all answered 301 `Location: /`. The script now reads both from one response, and the eight nginx negative controls still turn red with it |
+| 2026-09-29 | **the P6/P7 roll**: `hosted-20260929-69fcf0a` → `hosted-20260929-c6c2934` ([promote run 36626148679](https://github.com/jk-zhang-meta/MeshHarbor/actions/runs/36626148679)); `INDEXNOW_ENABLED` set first (operator's go-ahead) | the roll and AC13's IndexNow half | 0 of 60 health probes failed. IndexNow: 67 URLs before the bump, 68 after, `changed` = exactly `https://meshharbor.itachi.fans/`, **HTTP 202**, the first live submission |
+| 2026-09-29 | **production, `dfb78e151`** | `scripts/public-site-smoke.sh https://meshharbor.itachi.fans . dfb78e151` | **all 21 pass**: the same run failed P6's six checks and the key-file check before the roll. The first post-roll run failed `/landing`'s Location once, as `/docs`'s had that afternoon. The check read the status and the Location from two requests, and the second one blipped; six direct probes all answered 301 `Location: /`. The script now reads both from one response, and the eight nginx negative controls still turn red with it |
 | 2026-09-29 | production `/` | AC5 and AC10, the homepage | Rich Results Test: crawled, 0 errors, "No items detected" (WebSite and Organization aren't rich-result types). Schema Markup Validator: WebSite, with its Organization publisher, **0 errors, 0 warnings**. Lighthouse 12.8.2 (mobile): **100 / 100 / 100 / 100**, LCP 1.7 s, CLS 0 |
 | 2026-09-29 | production, a signed-in browser | AC11's signed-in half | `/` loads the app straight from `/` (navigation entry `/`, no redirect: the session cookie branch), and the dashboard renders; checked by DOM, not screenshot, and the tab closed at once |
-| 2026-09-29 | **Search Console**, the Workspace account (the operator signed in; the agent never saw a credential) | AC12 | Domain property `sc-domain:roomler.ai` **auto-verified** by the existing DNS record. Sitemap index submitted: "Couldn't fetch" at first, **Success** minutes later (every sitemap answers 200 to a Googlebot user agent). The post: **"URL is on Google"**, indexed, last crawl 20:24Z, referred from `/blog/`, **Google-selected canonical = the blog URL**, not Medium's. `/`, `/blog/`, `/docs/` and the three compare pages were also on Google. Indexing requested for `/` (the static page is new), `/docs/` (last crawled 09-27) and the three compare pages (titles changed in P5): 5 of the ~10 a day |
+| 2026-09-29 | **Search Console**, the Workspace account (the operator signed in; the agent never saw a credential) | AC12 | Domain property `sc-domain:meshharbor.itachi.fans` **auto-verified** by the existing DNS record. Sitemap index submitted: "Couldn't fetch" at first, **Success** minutes later (every sitemap answers 200 to a Googlebot user agent). The post: **"URL is on Google"**, indexed, last crawl 20:24Z, referred from `/blog/`, **Google-selected canonical = the blog URL**, not Medium's. `/`, `/blog/`, `/docs/` and the three compare pages were also on Google. Indexing requested for `/` (the static page is new), `/docs/` (last crawled 09-27) and the three compare pages (titles changed in P5): 5 of the ~10 a day |
 | 2026-09-29 | the fleet, after the roll | counts only | devices 17 / 12 online / 5 not, identical to before the roll; peers 14 direct, 1 relay, 5 offline; this host's 7 tunnel flows all on `quic-v1` |
 | 2026-09-30 | **Bing Webmaster Tools**, signed in by the operator | AC13's Bing half | "Import from Google Search Console" with the operator's go-ahead: Google's consent screen asked for exactly "View Search Console data for your verified sites" (`webmasters.readonly`). 1 site found, imported with the Administrator role, so verification carried over. Sitemap index submitted: "successfully submitted for processing", 1 known sitemap. Bing's IndexNow page for the new site stays at its introduction until the import's data lands (up to 48 h) |
 | 2026-09-30 | **purestat**, the operator's dashboard | AC13's purestat half | Today: `/blog/` 3 and `/blog/self-hosted-teamviewer-alternative/` 3, plus `/docs/reference/ports-and-firewall/` 3 and `/docs/compare/teamviewer/` 2, all among the top ten pages. The static pages' analytics (P3) work. Three findings for purestat itself: the pages list stops at ten; `localhost` shows as a source (local test runs of pages that load the script get counted); and app paths carry tenant and device ids. Planned in the purestat repository, not here |

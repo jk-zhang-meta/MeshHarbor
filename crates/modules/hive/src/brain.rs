@@ -36,10 +36,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_db::models::role::permissions;
+use meshharbor_services::dao::base::{BaseDao, DaoError, DaoResult};
 use mongodb::Database;
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_services::dao::base::{BaseDao, DaoError, DaoResult};
-use roomler_core::{ApiError, extractors::auth::AuthUser};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -322,7 +322,7 @@ pub fn render_claude_md(
     if !org.is_empty() {
         out.push_str("# Organization memory\n\n");
         out.push_str(&format!(
-            "Kept by this organization's administrators in Roomler for every agent session \
+            "Kept by this organization's administrators in MeshHarbor for every agent session \
              (brain revision {rev}).\n\n"
         ));
         out.push_str(&bullets(org));
@@ -334,7 +334,7 @@ pub fn render_claude_md(
         let name = plain_name(starter_name);
         out.push_str(&format!("# Memory kept by {name}\n\n"));
         out.push_str(&format!(
-            "Kept in Roomler by {name}, who started this session, for the sessions they start.\n\n"
+            "Kept in MeshHarbor by {name}, who started this session, for the sessions they start.\n\n"
         ));
         out.push_str(&bullets(starter));
     }
@@ -349,7 +349,7 @@ pub fn render_memory_md(device: &[BrainFact], device_name: &str) -> Option<Strin
     }
     let name = plain_name(device_name);
     Some(format!(
-        "# Device memory: {name}\n\nKept in Roomler about this device, for the sessions that \
+        "# Device memory: {name}\n\nKept in MeshHarbor about this device, for the sessions that \
          run on it.\n\n{}",
         bullets(device)
     ))
@@ -1319,7 +1319,7 @@ mod tests {
     /// lets a device accept, even at four bytes a character.
     #[test]
     fn a_full_snapshot_fits_the_wire_limit() {
-        use roomler_ai_remote_control::hive::hive_limits::MAX_CORE_MEMORY_BYTES;
+        use meshharbor_remote_control::hive::hive_limits::MAX_CORE_MEMORY_BYTES;
         let wide = "𝔀".repeat(MAX_FACT_CHARS);
         let org: Vec<BrainFact> = (0..6)
             .map(|_| fact(BrainScope::Org, FactKind::Gotcha, &wide))

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! End-to-end tests that drive the `roomlerd` library crate against a
+//! End-to-end tests that drive the `meshharbord` library crate against a
 //! live `TestApp`. Unlike the REST-only `remote_control_tests`, these
 //! exercise the agent's HTTP enrollment + WSS signaling loop in-process,
 //! so a regression in either side (server rename, protocol drift, WS auth)
 //! fails here too.
 
 use crate::fixtures::test_app::TestApp;
-use roomlerd::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
+use meshharbord::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -22,7 +22,7 @@ fn spawn_agent_signaling(
     stop_rx: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     spawn_agent_signaling_as(
-        signaling::OrgCtx::primary(roomlerd::token_slot::TokenSlot::new(
+        signaling::OrgCtx::primary(meshharbord::token_slot::TokenSlot::new(
             cfg.agent_token.clone(),
         )),
         cfg,
@@ -78,9 +78,9 @@ async fn run_agent_signaling_on(
     // the tests crate needs no direct tunnel-core dep. Keep `_view_rx`
     // alive for the lifetime of `run` so its sends don't fail.
     let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
-    let broker = roomlerd::consent::ConsentBroker::new(
-        roomlerd::consent::Mode::AutoGrant,
-        std::env::temp_dir().join(format!("roomler-test-consent-{}", cfg.agent_id)),
+    let broker = meshharbord::consent::ConsentBroker::new(
+        meshharbord::consent::Mode::AutoGrant,
+        std::env::temp_dir().join(format!("meshharbor-test-consent-{}", cfg.agent_id)),
     )
     .expect("consent broker init");
     // Read before `cfg` is moved into the call below.
@@ -91,7 +91,7 @@ async fn run_agent_signaling_on(
         // FR-43 P2b — no GUI-worker delegation in tests: `Off` is not a
         // stub but the real production value on every platform except a
         // macOS daemon supervising a worker, or the worker it supervises.
-        roomlerd::delegate::Delegation::Off,
+        meshharbord::delegate::Delegation::Off,
         cfg,
         EncoderPreference::Software,
         stop_rx,
@@ -101,12 +101,12 @@ async fn run_agent_signaling_on(
         // an empty slot is the correct value, not a stub.
         Default::default(),
         broker,
-        roomlerd::tunnel::client_mgr::TunnelClientHub::new("test".into()),
+        meshharbord::tunnel::client_mgr::TunnelClientHub::new("test".into()),
         // Remote config: tests never PUSH one, but the live `exec_enabled`
         // must still be SEEDED from the config this agent was handed —
         // which is exactly what `main.rs` does. See agent_exec_tests for
         // the failure hardcoding `false` produced.
-        roomlerd::remote_config::RemoteConfigServices::new(
+        meshharbord::remote_config::RemoteConfigServices::new(
             config_path.unwrap_or_else(|| std::path::PathBuf::from("unused-in-tests.toml")),
             std::sync::Arc::new(tokio::sync::Mutex::new(())),
             exec_enabled,
@@ -116,7 +116,7 @@ async fn run_agent_signaling_on(
         // read it back, but the signalling loop registers into it, so a
         // fresh one per harness is the honest value (not a shared global
         // that would leak sessions between tests).
-        roomlerd::rc_sessions::RcSessionRegistry::new(),
+        meshharbord::rc_sessions::RcSessionRegistry::new(),
     )
     .await
 }
@@ -284,7 +284,7 @@ async fn same_machine_enrolls_into_two_tenants_and_both_connect() {
     let org_task = spawn_agent_signaling_as(
         signaling::OrgCtx::secondary(
             &cfg.orgs[0].label,
-            roomlerd::token_slot::TokenSlot::new(org_cfg.agent_token.clone()),
+            meshharbord::token_slot::TokenSlot::new(org_cfg.agent_token.clone()),
         ),
         org_cfg.clone(),
         stop_rx,
@@ -336,7 +336,7 @@ async fn update_all_from_a_secondary_org_is_refused_not_counted_delivered() {
     let org_task = spawn_agent_signaling_as(
         signaling::OrgCtx::secondary(
             "second",
-            roomlerd::token_slot::TokenSlot::new(org_cfg.agent_token.clone()),
+            meshharbord::token_slot::TokenSlot::new(org_cfg.agent_token.clone()),
         ),
         org_cfg.clone(),
         stop_rx,
@@ -376,7 +376,7 @@ async fn update_all_from_a_secondary_org_is_refused_not_counted_delivered() {
     // process, so `off` — the word the daemon's own hello computes.
     assert_eq!(
         update_mode(&t1, &cfg.agent_id).await,
-        roomlerd::updater::update_mode(true)
+        meshharbord::updater::update_mode(true)
     );
 
     // The click, in the secondary org.
@@ -399,7 +399,7 @@ async fn update_all_from_a_secondary_org_is_refused_not_counted_delivered() {
     assert!(
         resp["results"][0]["refused"]
             .as_str()
-            .is_some_and(|r| r.contains("roomlerd org set-primary")),
+            .is_some_and(|r| r.contains("meshharbord org set-primary")),
         "the reason names the way out: {resp}"
     );
 
@@ -412,7 +412,7 @@ async fn update_all_from_a_secondary_org_is_refused_not_counted_delivered() {
 /// refuses the org's WS with `rc:goodbye AgentDeleted`, and its loop must END
 /// (not retry) on the TYPED error `run_cmd`'s supervisors log at DEBUG — the
 /// loop's own WARN already said it, once — carrying text that names every way
-/// out with this org's label, since that text is what `roomler status` shows.
+/// out with this org's label, since that text is what `mh status` shows.
 /// Before, it was a plain `anyhow!` naming only re-enrollment, and every
 /// daemon start logged two ERRORs and a WARN per dead org.
 #[tokio::test]
@@ -443,7 +443,7 @@ async fn a_refused_secondary_org_ends_on_a_typed_goodbye_naming_the_ways_out() {
         run_agent_signaling_as(
             signaling::OrgCtx::secondary(
                 "demo",
-                roomlerd::token_slot::TokenSlot::new(org_cfg.agent_token.clone()),
+                meshharbord::token_slot::TokenSlot::new(org_cfg.agent_token.clone()),
             ),
             org_cfg,
             stop_rx,
@@ -459,9 +459,9 @@ async fn a_refused_secondary_org_ends_on_a_typed_goodbye_naming_the_ways_out() {
     let text = format!("{err:#}");
     for want in [
         "server goodbye (AgentDeleted)",
-        "roomlerd re-enroll --org demo --token",
-        "roomlerd org disable demo",
-        "roomlerd org rm demo",
+        "meshharbord re-enroll --org demo --token",
+        "meshharbord org disable demo",
+        "meshharbord org rm demo",
     ] {
         assert!(text.contains(want), "{want:?} missing from: {text}");
     }
@@ -487,7 +487,7 @@ async fn a_refused_upgrade_marks_the_token_refused_for_every_loop() {
         .unwrap();
     assert_eq!(res.deleted_count, 1);
 
-    let slot = roomlerd::token_slot::TokenSlot::new(cfg.agent_token.clone());
+    let slot = meshharbord::token_slot::TokenSlot::new(cfg.agent_token.clone());
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let task = spawn_agent_signaling_as(
         signaling::OrgCtx::primary(slot.clone()),
@@ -949,18 +949,18 @@ async fn join_org_pushes_a_live_device_into_a_second_organization() {
     // exactly like a boot-time one.
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = dir.path().join("config.toml");
-    roomlerd::config::save(&cfg_path, &cfg).unwrap();
+    meshharbord::config::save(&cfg_path, &cfg).unwrap();
     let spawn_rx = stop_rx.clone();
     let spawn_path = cfg_path.clone();
-    roomlerd::org_join::install(roomlerd::org_join::JoinRuntime {
+    meshharbord::org_join::install(meshharbord::org_join::JoinRuntime {
         config_path: cfg_path.clone(),
         write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         spawn_org: Box::new(move |org| {
-            let base = roomlerd::config::load(&spawn_path).expect("reload");
+            let base = meshharbord::config::load(&spawn_path).expect("reload");
             spawn_agent_signaling_as(
                 signaling::OrgCtx::secondary(
                     &org.label,
-                    roomlerd::token_slot::TokenSlot::new(org.agent_token.clone()),
+                    meshharbord::token_slot::TokenSlot::new(org.agent_token.clone()),
                 ),
                 base.for_org(&org),
                 spawn_rx.clone(),
@@ -1025,7 +1025,7 @@ async fn join_org_pushes_a_live_device_into_a_second_organization() {
 
     // The config on disk grew a labelled secondary alongside an untouched
     // primary.
-    let saved = roomlerd::config::load(&cfg_path).unwrap();
+    let saved = meshharbord::config::load(&cfg_path).unwrap();
     assert_eq!(saved.tenant_id, src.tenant_id, "primary identity untouched");
     assert_eq!(saved.agent_id, cfg.agent_id, "primary agent id untouched");
     assert_eq!(saved.orgs.len(), 1);

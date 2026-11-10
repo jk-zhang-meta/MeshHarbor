@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::ChatState;
-use roomler_core::ApiError;
-use roomler_core::extractors::auth::AuthUser;
+use meshharbor_core::ApiError;
+use meshharbor_core::extractors::auth::AuthUser;
 
 #[derive(Deserialize)]
 pub struct SearchQuery {

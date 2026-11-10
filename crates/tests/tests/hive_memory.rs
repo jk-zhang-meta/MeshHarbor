@@ -20,7 +20,7 @@
 //! | org facts past the budget | `409 over_budget` with the numbers; nothing evicted | — |
 #![cfg(target_os = "linux")]
 
-use roomler_ai_tests::fixtures::test_app::TestApp;
+use meshharbor_tests::fixtures::test_app::TestApp;
 use serde_json::{Value, json};
 
 mod hive_support;

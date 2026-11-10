@@ -1,6 +1,6 @@
 ---
 title: What the server sees
-description: Precisely what the Roomler control plane can and cannot observe — including the one feature that is deliberately an exception to the rule.
+description: Precisely what the MeshHarbor control plane can and cannot observe — including the one feature that is deliberately an exception to the rule.
 tags: [architecture, security, privacy, design]
 order: 4
 ---

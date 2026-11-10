@@ -1,6 +1,6 @@
 # Deployment
 
-Deploying the Roomler server and its supporting infrastructure. The native fleet
+Deploying the MeshHarbor server and its supporting infrastructure. The native fleet
 (agents, CLI, wizard) is *not* part of the server image — it ships through GitHub
 Releases and the server's installer proxies ([installation.md](installation.md)).
 *As of 0.3.0-rc.381.*
@@ -12,7 +12,7 @@ flowchart TB
     LB["front reverse proxy / LB<br/>TLS · consistent-hash on tenant id"]
     subgraph pod["API pod (1..N replicas)"]
         NG["nginx — SPA files ·<br/>/api /ws /derp proxy · security headers"]
-        BIN["roomler-ai-api (Rust)<br/>REST · WS · mediasoup workers"]
+        BIN["meshharbor-api (Rust)<br/>REST · WS · mediasoup workers"]
     end
     MONGO[("MongoDB")]
     REDIS[("Redis — pub/sub fan-out<br/>+ online registry")]
@@ -31,7 +31,7 @@ flowchart TB
 One multi-stage `Dockerfile`:
 
 1. `rust:1.95-bookworm` (the toolchain `rust-toolchain.toml` pins) — builds
-   `roomler-ai-api` (+ `derp-relay`) in three layers (FR-73 P1b): `chef` (toolchain +
+   `meshharbor-api` (+ `derp-relay`) in three layers (FR-73 P1b): `chef` (toolchain +
    `cargo-chef`), `planner` (the dependency recipe from the manifests) and `builder`
    (`cargo chef cook` = every dependency, the mediasoup C++ worker included, as ONE
    cached layer; then the real build over only the Rust sources — a UI-only change
@@ -39,15 +39,21 @@ One multi-stage `Dockerfile`:
    `PROFILE` (`full` | `collab` | `remote` | `mesh` | `access`, the Cargo feature
    aggregate the api crate is built with) and `SAAS` (`1` adds the hosted service's
    billing + newsletter module). **The hosted build passes `PROFILE=full SAAS=1`** —
-   also the defaults; the self-host publish workflow passes `SAAS=0` and asserts it.
+   also the defaults; a local self-host build must pass `SAAS=0` and verify it.
 2. `oven/bun:1` — builds the Vue SPA
 3. `debian:trixie-slim` — runtime: **nginx + the binary in one image**, SPA at
-   `/var/www/roomler-ai`, nginx config from `files/nginx-pod.conf` (SPA fallback,
+   `/var/www/meshharbor`, nginx config from `files/nginx-pod.conf` (SPA fallback,
    API/WS proxy, security headers incl. HSTS + CSP), `EXPOSE 80`, and the user
-   analytics' country database at `/usr/share/roomler/geoip/dbip-country-lite.mmdb`
+   analytics' country database at `/usr/share/meshharbor/geoip/dbip-country-lite.mmdb`
    ([below](#the-country-database-the-image-carries-1896))
 
-## The hosted image pipeline (FR-73)
+## Retired hosted image pipeline (FR-73 history)
+
+**Current policy: no CI.** Use [local builds](local-build.md#images-and-historical-recipes)
+for manual preparation. The diagram, timings and runner descriptions below record
+the former system; they do not describe active automation. Publication and deployment
+are separate authorized operations.
+
 
 Since 2026-09-05 the hosted image is **built by GitHub Actions on every merge to `master`**,
 served from the public package on GHCR, and **promoted to prod by a dispatch** — the build host
@@ -64,9 +70,9 @@ flowchart LR
         P["push hosted-&lt;date&gt;-&lt;sha7&gt;<br/>move <b>hosted</b> · attest provenance"]
         GE --> B --> L --> S --> P
     end
-    G[("ghcr.io/gjovanov/roomler-ai<br/>public · no pull secret")]
+    G[("ghcr.io/jk-zhang-meta/meshharbor<br/>public · no pull secret")]
     PR["promote.yml (dispatch)<br/>resolve the tag · refuse non-hosted<br/>bump newTag in the deploy repo"]
-    D["deploy repo · k8s/overlays/prod<br/>newName: ghcr.io/gjovanov/roomler-ai<br/>newTag: hosted-…"]
+    D["deploy repo · k8s/overlays/prod<br/>newName: ghcr.io/jk-zhang-meta/meshharbor<br/>newTag: hosted-…"]
     A["ArgoCD (webhook, automated + selfHeal)"]
     K["cluster: RollingUpdate<br/>maxSurge 0 / maxUnavailable 1<br/>pull ≈ 3 s per node (81 MB)"]
     F["field-verify from the fleet<br/>pods · online agents · an RC session<br/>an overlay pair · a tunnel"]
@@ -81,7 +87,7 @@ flowchart LR
 | Step | Who | Measured (first day) |
 |---|---|---|
 | build → tag on GHCR | the workflow, on every merge | cold 13 min 37 s build / 15 min 01 s merge → tag (the `COPY . .` Dockerfile), 17 min 42 s cold with the chef layers' first export; **warm: a Rust change 6 min 49 s, a UI-only change 1 min 04 s, no change 10 s** (the cache holds the previous build's layers, so consecutive merges reuse what they share) |
-| promote | a human, `gh workflow run promote.yml -f tag=…` (empty tag = the `hosted` pointer) | runs in the `release` environment, whose secret `DEPLOY_REPO_TOKEN` it uses after proving write access with a dry-run push (verified 2026-09-06); without the secret the job prints the exact bump |
+| promote | a human via the retired promotion dispatch (historical) | runs in the `release` environment, whose secret `DEPLOY_REPO_TOKEN` it uses after proving write access with a dry-run push (verified 2026-09-06); without the secret the job prints the exact bump |
 | roll | ArgoCD, one pod at a time | 20 s from the deploy-repo push to both pods on the new image; pulls 3.3 s / 2.7 s per node |
 | verify | from the fleet, after every roll | the workflow only proves the public `/health` kept answering |
 
@@ -96,7 +102,7 @@ only cache configs).
 
 **Break-glass** (a GitHub outage, or a fix that must not wait for a runner): the build host's
 recipe in `CLAUDE.md` still works — build, push to the build host's own registry, then set **both**
-`newName: registry.roomler.ai/roomler-ai` and `newTag` in the deploy repo. `promote` refuses until
+`newName: registry.meshharbor.itachi.fans/meshharbor` and `newTag` in the deploy repo. `promote` refuses until
 `newName` is switched back to GHCR. Rehearsed after the switch on 2026-09-05: a warm build of
 master in 9 min 38 s, pushed in 9 s, not deployed.
 ⚠️ Run `cd ui && bun docs/dates.ts --write` in the build host's clone **before** `docker build`
@@ -128,7 +134,7 @@ flowchart LR
     DBIP[("download.db-ip.com<br/>dbip-country-lite-YYYY-MM.mmdb.gz<br/>CC BY 4.0, monthly")]
     F["scripts/fetch-geoip.sh<br/>this month, else last month<br/>gzip · size · MaxMind metadata<br/>type DBIP-Country-Lite · chmod 0644"]
     CTX["files/geoip/<br/>dbip-country-lite.mmdb<br/>+ .provenance.txt (release, sha256)"]
-    IMG["image<br/>/usr/share/roomler/geoip/<br/>ENV ROOMLER__STATS__GEOIP_MMDB"]
+    IMG["image<br/>/usr/share/meshharbor/geoip/<br/>ENV MESHHARBOR__STATS__GEOIP_MMDB"]
     BOOT["GeoIp::open at boot<br/><i>geoip database loaded</i><br/>database=DBIP-Country-Lite built=…"]
     WS["/ws upgrade: country resolved,<br/>address dropped → ws_sessions.country"]
     API["GET /api/admin/stats/users<br/>geoip: true · geoip_database"]
@@ -157,7 +163,7 @@ data. In the case of a web application, you must include a link back to DB-IP.co
 display or use results from the database"
 ([db-ip.com](https://db-ip.com/db/download/ip-to-country-lite)). The dashboard carries that link;
 the notice (credit, licence, unmodified, no warranty) travels inside the image as
-`/usr/share/roomler/geoip/README.md` and the provenance note. GeoLite2 is out because its EULA
+`/usr/share/meshharbor/geoip/README.md` and the provenance note. GeoLite2 is out because its EULA
 (§6, updated 2026-02-12) forbids disclosing GeoLite data to any third party without MaxMind's
 written consent, and requires old versions destroyed within 30 days of an update, which an old
 public image tag can never honour. Full text and the operator recipes:
@@ -165,7 +171,7 @@ public image tag can never honour. Full text and the operator recipes:
 
 > ⚠️ **An env var beats the image, and beats the config files.** k8s `envFrom` and compose
 > `environment:` override the image's `ENV`, so a deployment that still sets
-> `ROOMLER__STATS__GEOIP_MMDB` to the old `/usr/share/roomler/geoip/GeoLite2-Country.mmdb` points
+> `MESHHARBOR__STATS__GEOIP_MMDB` to the old `/usr/share/meshharbor/geoip/GeoLite2-Country.mmdb` points
 > the server at a file no image carries: one boot warning, then `unknown` everywhere. **Delete the
 > override** (or point it at `dbip-country-lite.mmdb`). And because `envFrom` is read only when a
 > container starts, a configmap change reaches a pod with its next roll, so land it with a promote.
@@ -197,25 +203,25 @@ docker compose up -d
 | `ghcr.io/gjovanov/minio` | 9000 (API) / 9001 (console) | S3-compatible file storage: Chainguard's MinIO build, mirrored and pinned by digest, since `minio/minio` is gone from Docker Hub (#2034) |
 | `coturn/coturn` | host network | TURN relay (`turnserver.conf` — rotate the shared secret!) |
 
-Then `cargo run --bin roomler-ai-api` (API :3000) and `cd ui && bun run dev`
+Then `cargo run --bin meshharbor-api` (API :3000) and `cd ui && bun run dev`
 (SPA :5000, proxying `/api` + `/ws` to :5001).
 
 ## Configuration
 
-Everything is env-configurable with the `ROOMLER__` prefix (double underscore =
+Everything is env-configurable with the `MESHHARBOR__` prefix (double underscore =
 nesting), loaded via the `config` crate. The ones that matter first:
 
 | Variable | Purpose |
 |---|---|
-| `ROOMLER__DATABASE__URL` | MongoDB connection string |
-| `ROOMLER__JWT__SECRET` | **Must be set in production** — with `ROOMLER__APP__ENVIRONMENT=production` the server refuses to boot on the default |
-| `ROOMLER__JWT__PREVIOUS_SECRETS` | Comma-separated retired secrets that still **verify** but no longer sign. See [Rotating the JWT secret](#rotating-the-jwt-secret) |
-| `ROOMLER__APP__FRONTEND_URL` | Public origin (also the CORS default — unset `cors_origins` allows only this origin) |
-| `ROOMLER__APP__CORS_ORIGINS` | Explicit allow-list; `"*"` = deliberate permissive mode (warns) |
-| `ROOMLER__TURN__SHARED_SECRET` | coturn REST-auth secret (never committed) |
-| `ROOMLER__MEDIASOUP__ANNOUNCED_IP_MAP` | `<node_ip>=<public_ip>,…` — per-pod announced IP resolution for multi-node clusters |
-| `ROOMLER__STRIPE__*` / `ROOMLER__CLAUDE__*` / `ROOMLER__S3__*` / SMTP / OAuth | Integrations |
-| `ROOMLER__STATS__GEOIP_MMDB` | The country database for the user analytics. **The image already sets it** to the DB-IP database it carries; set it only to use your own `.mmdb`, or to empty to turn lookups off. See [the country database](#the-country-database-the-image-carries-1896) |
+| `MESHHARBOR__DATABASE__URL` | MongoDB connection string |
+| `MESHHARBOR__JWT__SECRET` | **Must be set in production** — with `MESHHARBOR__APP__ENVIRONMENT=production` the server refuses to boot on the default |
+| `MESHHARBOR__JWT__PREVIOUS_SECRETS` | Comma-separated retired secrets that still **verify** but no longer sign. See [Rotating the JWT secret](#rotating-the-jwt-secret) |
+| `MESHHARBOR__APP__FRONTEND_URL` | Public origin (also the CORS default — unset `cors_origins` allows only this origin) |
+| `MESHHARBOR__APP__CORS_ORIGINS` | Explicit allow-list; `"*"` = deliberate permissive mode (warns) |
+| `MESHHARBOR__TURN__SHARED_SECRET` | coturn REST-auth secret (never committed) |
+| `MESHHARBOR__MEDIASOUP__ANNOUNCED_IP_MAP` | `<node_ip>=<public_ip>,…` — per-pod announced IP resolution for multi-node clusters |
+| `MESHHARBOR__STRIPE__*` / `MESHHARBOR__CLAUDE__*` / `MESHHARBOR__S3__*` / SMTP / OAuth | Integrations |
+| `MESHHARBOR__STATS__GEOIP_MMDB` | The country database for the user analytics. **The image already sets it** to the DB-IP database it carries; set it only to use your own `.mmdb`, or to empty to turn lookups off. See [the country database](#the-country-database-the-image-carries-1896) |
 
 Rate limiting (per-IP governor + per-account brute-force gate) and JWT TTLs are
 also settings — see `crates/config/src/settings.rs` for the full surface.
@@ -229,8 +235,8 @@ fleet-wide re-enrollment by hand. `previous_secrets` makes it a rolling change:
 
 ```bash
 # 1. Both verify; only the new one signs. Restart/roll the pods.
-ROOMLER__JWT__SECRET=<new>
-ROOMLER__JWT__PREVIOUS_SECRETS=<old>
+MESHHARBOR__JWT__SECRET=<new>
+MESHHARBOR__JWT__PREVIOUS_SECRETS=<old>
 
 # 2. Wait out the longest TTL still in flight, or re-issue ahead of it:
 #    access 7 d · refresh 30 d · agent + tunnel-client 1 YEAR.
@@ -238,7 +244,7 @@ ROOMLER__JWT__PREVIOUS_SECRETS=<old>
 #    so in practice step 3 waits a year unless you re-enroll.
 
 # 3. Drop the old key. Only now is the old secret actually powerless.
-ROOMLER__JWT__PREVIOUS_SECRETS=
+MESHHARBOR__JWT__PREVIOUS_SECRETS=
 ```
 
 Startup logs `jwt: signing key signing_kid=… verify_keys=N`. A correct rotation
@@ -252,7 +258,7 @@ staged (re-issue on the new key, then drop the old) instead of being one
 outage-shaped event.
 
 ⚠️ Listing the default `change-me-in-production` in `previous_secrets` is
-refused under `ROOMLER__APP__ENVIRONMENT=production` — a retired secret forges
+refused under `MESHHARBOR__APP__ENVIRONMENT=production` — a retired secret forges
 exactly as well as a current one.
 
 ⚠️ Tokens minted before `kid` shipped carry no key hint, so they are tried
@@ -279,7 +285,7 @@ So the server watches its own runtime from outside it:
 sequenceDiagram
     participant HB as heartbeat task (tokio, every 500 ms)
     participant WD as stall-watchdog thread (OS thread, every 1 s)
-    participant F as /var/lib/roomler/diag (emptyDir)
+    participant F as /var/lib/meshharbor/diag (emptyDir)
     participant K as kubelet
     HB->>WD: stamps an atomic
     Note over HB: the runtime stops making progress
@@ -344,9 +350,9 @@ its own thread after the watchdog is armed, so a log pipe that is still wedged c
 boot. The whole dump stays in the file until the pod goes:
 
 ```bash
-kubectl -n roomler-ai logs <pod> | grep -n 'stall watchdog'
-kubectl -n roomler-ai exec <pod> -- ls /var/lib/roomler/diag
-kubectl -n roomler-ai exec <pod> -- cat /var/lib/roomler/diag/stall-<ms>.txt
+kubectl -n meshharbor logs <pod> | grep -n 'stall watchdog'
+kubectl -n meshharbor exec <pod> -- ls /var/lib/meshharbor/diag
+kubectl -n meshharbor exec <pod> -- cat /var/lib/meshharbor/diag/stall-<ms>.txt
 ```
 
 ⚠️ An `emptyDir` survives a container **restart**, not a pod **delete**, and a roll deletes pods.
@@ -358,9 +364,9 @@ the runtime. A dump that fell back to the temp dir dies with the container and i
 
 | Setting (env) | Default | |
 |---|---|---|
-| `ROOMLER__DIAG__STALL_WATCHDOG` | unset: **on** when `app.environment=production`, off elsewhere | a debugger pause over the threshold would otherwise signal every thread of a dev server (and gdb stops on `SIG39` once per thread) |
-| `ROOMLER__DIAG__STALL_THRESHOLD_SECS` | `10` | floor 2; well inside the ~105 s kill budget |
-| `ROOMLER__DIAG__STALL_DUMP_DIR` | `/var/lib/roomler/diag` | the `diag` emptyDir in `roomler-ai-deploy`'s base deployment. Falls back to the temp dir |
+| `MESHHARBOR__DIAG__STALL_WATCHDOG` | unset: **on** when `app.environment=production`, off elsewhere | a debugger pause over the threshold would otherwise signal every thread of a dev server (and gdb stops on `SIG39` once per thread) |
+| `MESHHARBOR__DIAG__STALL_THRESHOLD_SECS` | `10` | floor 2; well inside the ~105 s kill budget |
+| `MESHHARBOR__DIAG__STALL_DUMP_DIR` | `/var/lib/meshharbor/diag` | the `diag` emptyDir in `meshharbor-deploy`'s base deployment. Falls back to the temp dir |
 
 ## Scaling beyond one pod
 
@@ -381,11 +387,11 @@ The multi-pod design is settled and documented in
   mints ephemeral HMAC credentials (`/api/turn/credentials`); multi-region
   topology is served from `/api/relay/regions`.
   - ⚠️ **TURN is IPv4-only, by design** (FR-101 AC8, the operator's decision of
-    2026-10-18). Every TURN host the server hands out (`ROOMLER__TURN__URL` =
-    `coturn.roomler.ai`, and the `…__WORKER_URLS` `coturn-1..3.roomler.ai`) has A records
+    2026-10-18). Every TURN host the server hands out (`MESHHARBOR__TURN__URL` =
+    `coturn.meshharbor.itachi.fans`, and the `…__WORKER_URLS` `coturn-1..3.meshharbor.itachi.fans`) has A records
     and no AAAA, and the coturn pods sit behind the hosts' IPv4 DNAT. A client on an
     IPv6-only network reaches TURN through its network's NAT64/DNS64, as it reaches
-    `roomler.ai` itself, which has no AAAA either. Making TURN dual-stack takes AAAA
+    `meshharbor.itachi.fans` itself, which has no AAAA either. Making TURN dual-stack takes AAAA
     records, ip6tables DNAT on every host and dual-stack pods. A coturn restart drops
     every relayed session, so that waits for an IPv6-only audience worth it.
 - **DERP PoPs** — `cargo build -p derp-relay` produces the standalone regional
@@ -398,7 +404,7 @@ The multi-pod design is settled and documented in
 A mediasoup-serving host (zeus and jupiter, `host_firewall_mediasoup_rtc: true` in
 `k8s-cluster-multi`) answers for two unrelated things on **one public IP**:
 - the RTC range 40000–49999, which `COTURN_DNAT` rewrites into the worker VM, where the pod's media ports are;
-- its own `roomlerd` mesh node.
+- its own `meshharbord` mesh node.
 
 nat PREROUTING runs before any filter rule, so a port inside the RTC range can never
 belong to the host itself. A peer's first packet to it lands in the VM.
@@ -407,22 +413,22 @@ belong to the host itself. A peer's first packet to it lands in the VM.
 flowchart LR
   P["peer's first packet<br/>to host-pub:port"] --> Q{"port inside<br/>40000–49999?"}
   Q -- yes --> VM["COTURN_DNAT → worker VM<br/>(mediasoup) — the host never sees it"]
-  Q -- no --> IN["INPUT → HOST_FW_INPUT<br/>udp 21640:22415 ACCEPT"] --> R["roomlerd overlay socket"]
+  Q -- no --> IN["INPUT → HOST_FW_INPUT<br/>udp 21640:22415 ACCEPT"] --> R["meshharbord overlay socket"]
 ```
 
 | Layer | Setting | Where it lives |
 |---|---|---|
-| Overlay port | `overlay_direct_port = 21640`. Its footprint is 21640–22415: the base, the +256 public-dial twin and the +512 fallback band | `/etc/roomler/config.toml` on the host |
+| Overlay port | `overlay_direct_port = 21640`. Its footprint is 21640–22415: the base, the +256 public-dial twin and the +512 fallback band | `/etc/meshharbor/config.toml` on the host |
 | Host firewall | `udp 21640:22415 ACCEPT` in `HOST_FW_INPUT`. jupiter has the chain; zeus has none | `k8s-cluster-multi` host_vars, plus `rules.v4` on the host |
 | Kernel | `net.ipv4.ip_local_reserved_ports = 40000-49999`. No ephemeral socket can land in the range: not the pin's fallback bind, not an RC or tunnel session socket | host-hardening sysctl, gated on `host_firewall_mediasoup_rtc` |
-| Drift guard | `mediasoup-rtc-forwarding.sh check` fails when `roomlerd` listens on the public IP inside the range | `roomler-ai-deploy`, run by the weekly audit |
+| Drift guard | `mediasoup-rtc-forwarding.sh check` fails when `meshharbord` listens on the public IP inside the range | `meshharbor-deploy`, run by the weekly audit |
 
 ⚠️ **The overlay's default port band (43648–44415, derived per machine) sits inside
 the RTC range.** A new serving host needs the pin, or it holds a direct path only while
 it happened to open the flow itself. That was
-[#1665](https://github.com/gjovanov/roomler-ai/issues/1665): after a roll, both hosts sat
+[#1665](https://github.com/jk-zhang-meta/MeshHarbor/issues/1665): after a roll, both hosts sat
 on DERP. The tells:
-- `roomler why <host>` shows the direct candidate at 100 % loss;
+- `mh why <host>` shows the direct candidate at 100 % loss;
 - on the host, `conntrack -L -p udp --orig-port-dst <port>` shows `[UNREPLIED]` entries
   whose reply comes from the VM (`src=10.10.x.11`).
 
@@ -438,8 +444,8 @@ the server proxies the downloads and gets a cache-bust ping
 
 | Workflow | Tag | Artifacts |
 |---|---|---|
-| `release-agent.yml` | `agent-v*` | Windows MSIs (perUser + perMachine) + `roomler-desktop` companion; Linux `.deb`/tarball (x86_64 **and** aarch64); macOS `.pkg` (arm64) |
-| `release-tunnel.yml` | `tunnel-v*` | `roomler` CLI: Windows zip, Linux tarball + `.deb`, macOS universal tarball |
+| `release-agent.yml` | `agent-v*` | Windows MSIs (perUser + perMachine) + `meshharbor-desktop` companion; Linux `.deb`/tarball (x86_64 **and** aarch64); macOS `.pkg` (arm64) |
+| `release-tunnel.yml` | `tunnel-v*` | `mh` CLI: Windows zip, Linux tarball + `.deb`, macOS universal tarball |
 | `release-setup.yml` | `setup-v*` — cut **automatically at every `agent-v*` commit** by `release-agent.yml`'s `dispatch-setup-release` job (FR-84 S1; repo variable `SETUP_LOCKSTEP=false` disables it) | The install wizard: Linux/macOS tarballs, signed Windows EXE zip — all three or none |
 
 ⚠️ **The server reads one page of the newest 100 releases, and recovers by tag
@@ -448,7 +454,7 @@ Before that recovery, a family that ships less often than ~100 of the others
 fell off the page, and every route serving it 404'd. `tunnel-v0.3.0-rc.266`
 (2026-07-28) is still the newest tunnel release. From about 09-07 every
 tunnel-client install (the wizard's tunnel role, `install.ps1 -Role
-tunnel-client`, `install.sh --role tunnel`) and `roomler self-update` failed
+tunnel-client`, `install.sh --role tunnel`) and `mh self-update` failed
 with `404 no release matching version=latest`, for six weeks, unnoticed. The
 tell is `GET /api/tunnel/latest-release` answering `[]`. The refresh report's
 `newest` read those two families by list position, not version, until the

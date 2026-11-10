@@ -84,7 +84,7 @@
     "noAccount": "Don't have an account?",
     "hasAccount": "Already have an account?",
     "orRegisterWith": "Or register with",
-    "heardAbout": "How did you hear about Roomler?",
+    "heardAbout": "How did you hear about MeshHarbor?",
     "heardAboutHint": "Optional. It tells us which channels work.",
     "heardAboutOptions": {
       "search": "A search engine",
@@ -202,7 +202,10 @@
     "search": "Search",
     "loading": "Loading...",
     "close": "Close",
-    "loadMore": "Load more"
+    "loadMore": "Load more",
+    "refresh": "Refresh",
+    "yes": "Yes",
+    "no": "No"
   },
   "grid": {
     "columns": "Columns",
@@ -230,7 +233,7 @@
     "stop": "Stop",
     "stopMirroring": "Stop mirroring",
     "adopted": "Adopted",
-    "adoptedExplain": "A session you run in a terminal, mirrored here for you alone. It is read-only: nobody prompts it from Roomler.",
+    "adoptedExplain": "A session you run in a terminal, mirrored here for you alone. It is read-only: nobody prompts it from MeshHarbor.",
     "empty": {
       "title": "No agent sessions yet",
       "body": "Start one on a device whose owner has turned agent sessions on (hive_enabled). It runs there, as the account the device maps you to, and its transcript stays on the device."
@@ -306,7 +309,7 @@
       "askPlaceholder": "Ask the agent…",
       "askFailed": "The prompt did not reach the agent.",
       "readOnly": "You can read this session and talk in its room. Only its drivers can prompt the agent.",
-      "adoptedReadOnly": "This session runs in a terminal on its device, so it is read-only here: nobody prompts it from Roomler.",
+      "adoptedReadOnly": "This session runs in a terminal on its device, so it is read-only here: nobody prompts it from MeshHarbor.",
       "copyReadOnly": "You are reading a copy another device holds, because the device that runs this session cannot serve it now. It is read-only: only that device takes prompts.",
       "drivingRefused": "You drive this session, but its device does not let you act there: {why}",
       "approval": {
@@ -453,7 +456,7 @@
     "manage": {
       "button": "Make it managed",
       "title": "Make it a managed session",
-      "explain": "Its terminal session ended. Roomler can carry it on as a managed session on {device}: the same conversation, resumed from its terminal's own history, then run, copied and driven like any session started here.",
+      "explain": "Its terminal session ended. MeshHarbor can carry it on as a managed session on {device}: the same conversation, resumed from its terminal's own history, then run, copied and driven like any session started here.",
       "folder": "Folder on {device}",
       "folderHint": "Where its terminal ran, unless you name another",
       "submit": "Make it managed",
@@ -611,6 +614,1806 @@
         "device": "What the device itself reported on a heartbeat: a claim, seen at the 30-second heartbeat, never a server decision.",
         "server": "The server's own record of an admin's change."
       }
+    }
+  },
+  "mh": {
+    "lang": {
+      "label": "Language"
+    },
+    "nav": {
+      "myDevices": "My devices & sharing",
+      "deviceShares": "Device shares",
+      "accountApprovals": "Account approvals"
+    },
+    "approval": {
+      "title": "Account approvals",
+      "intro": "Central account admission. Organization roles, device enrollment and operating-system permissions are separate.",
+      "checking": "Checking approval access",
+      "notEnabled": "Account approval is not enabled on this server.",
+      "ownerOnly": "Only the central approval owner can access this console.",
+      "tab": {
+        "pending": "Pending review",
+        "approved": "Approved",
+        "rejected": "Rejected",
+        "suspended": "Suspended"
+      },
+      "summary": "{total} accounts · {perPage} per page",
+      "includesLegacy": " · Includes existing unreviewed accounts",
+      "loading": "Loading accounts",
+      "col": {
+        "account": "Account",
+        "email": "Email",
+        "status": "Status",
+        "emailVerified": "Email verified",
+        "revision": "Revision",
+        "review": "Review"
+      },
+      "state": {
+        "legacy_unreviewed": "Existing — unreviewed",
+        "pending": "pending",
+        "approved": "approved",
+        "rejected": "rejected",
+        "suspended": "suspended"
+      },
+      "approve": "Approve",
+      "reject": "Reject",
+      "suspend": "Suspend",
+      "empty": "No accounts in this view.",
+      "confirmTitle": "{action} account?",
+      "revisionNote": "The server must accept revision {revision} before any status changes.",
+      "revokeWarning": "This revokes account admission. Existing network and device sessions have their own revocation rules.",
+      "confirmAction": "Confirm {action}"
+    },
+    "mine": {
+      "title": "My devices & sharing",
+      "intro": "Only devices owned by this account, across your active organizations. Organization-wide visibility is not ownership.",
+      "refresh": "Refresh account records",
+      "myDevices": "My devices",
+      "ownedHint": "Owned devices in active, joined organizations.",
+      "distinctHint": "Distinct devices with unrevoked, unexpired shares.",
+      "grants": "{current} current grants · {retained} retained records",
+      "expiredRevoked": "{expired} expired · {revoked} revoked",
+      "countNote": "A device shared more than once is counted once per direction. Retained records include expired and revoked shares. These are sharing-record states, not proof that a device is online or its service policy permits a connection.",
+      "ownedTable": "Devices owned by me",
+      "col": {
+        "device": "Device / ID",
+        "registered": "Registered name",
+        "os": "OS",
+        "status": "Status",
+        "org": "Organization",
+        "access": "Access"
+      },
+      "openDesktop": "Open desktop",
+      "share": "Share",
+      "noneOwned": "No devices owned by this account in active, joined organizations.",
+      "nonePage": "No devices on this page. Refresh or choose another page.",
+      "footer": "Device IDs and sharing records remain separate from connection state. Desktop access still requires the device's current service policy and consent.",
+      "refreshFailed": "Could not refresh personal device and sharing records. Previous records, if shown, may be stale. The server may need an update."
+    },
+    "shares": {
+      "title": "Device shares",
+      "intro": "An explicit share grants one approved person access to one device. It does not add organization membership, LAN access, exit routing or resharing.",
+      "tabReceived": "Shared with me",
+      "tabSent": "Shared by me",
+      "col": {
+        "device": "Device",
+        "parties": "Owner → Recipient",
+        "services": "Services",
+        "created": "Created",
+        "expires": "Expires",
+        "state": "Record state",
+        "revoked": "Revoked",
+        "actions": "Actions"
+      },
+      "notReported": "Not reported by this server",
+      "grantRevision": "Grant {id} · revision {revision}",
+      "openRemote": "Open desktop / files",
+      "openSsh": "SSH (native client)",
+      "revoke": "Revoke",
+      "revoked": "Revoked",
+      "empty": "No shares in this view.",
+      "listNote": "{total} retained sharing records in this direction, not a unique-device count. Expired and revoked records remain visible. Each record identifies the device, grantor/recipient, permissions, creation, expiry, revocation and revision. Record state does not override device policy or consent.",
+      "formTitle": "Share a device I own",
+      "device": "Device (one you own)",
+      "noOwned": "No devices owned by this account",
+      "recipient": "Recipient username or email",
+      "recipientHint": "The person must have an approved, verified account.",
+      "permSsh": "SSH shell / exec (native client)",
+      "permView": "View desktop",
+      "permControl": "Control desktop",
+      "permFiles": "Bidirectional file transfer (read AND write)",
+      "hours": "Expiry in hours (maximum 720)",
+      "formNote": "Device consent and service settings still apply. Read-only file transfer is not supported by the current native file protocol. SSH sharing does not enable the device’s SSH service or organization policy. The approved recipient signs in through the native client with a hidden password prompt; a manually provisioned token file is optional. It does not enable desktop access or TCP forwarding.",
+      "create": "Create explicit share",
+      "invalid": "Choose a device, name the recipient by username or email, pick a supported capability, and an expiry of 1–720 hours.",
+      "svc": {
+        "desktop": "Desktop",
+        "control": "Control",
+        "filesRw": "Files read/write",
+        "filesRo": "Files read-only (unsupported)",
+        "sshAs": "SSH as {account}"
+      },
+      "record": {
+        "revoked": "Revoked",
+        "expired": "Expired",
+        "live": "Unrevoked / unexpired"
+      },
+      "ssh": {
+        "title": "SSH through the native client",
+        "intro": "This is an access check and instructions, not an SSH session or a browser terminal. Device consent and SSH policy still apply. The device runs its built-in SSH server; it does not need a system sshd.",
+        "device": "Shared device: {name} ({id})",
+        "base": "Server base URL:",
+        "hostKey": "Public host key (the native client verifies this identity):",
+        "run": "Run the native CLI locally, replacing the server URL and account-name placeholders:",
+        "warning": "The CLI still needs a local SSH client. With --login, enter your MeshHarbor account password at its hidden terminal prompt; the token remains in process memory. This page does not export your HttpOnly web session or launch a command. Never put a password or access token in a command, URL, or shared clipboard. MFA-required native access fails closed until a supported MFA handoff is available.",
+        "scope": "SSH grants shell/exec as the device’s configured OS account, not a sandbox. This share does not grant SFTP, SSH forwarding, LAN access, or organization membership. The CLI rechecks authorization when it connects; revocation or expiry refuses new access and terminates share-bound sessions."
+      },
+      "revokeTitle": "Revoke this device share?",
+      "revokeBody": "New access will be refused. Share-bound remote sessions are terminated by live server checks.",
+      "sshAccount": "Device account for SSH",
+      "sshAccountHint": "An existing Linux/macOS user on that device. The recipient's SSH sessions run as this account, and only this one.",
+      "sshAccountInvalid": "Enter the device account for SSH: a Linux/macOS user name (lowercase letters, digits, _ and -).",
+      "sshRootRefused": "root cannot be shared directly. Create an administrator account for the recipient instead.",
+      "acct": {
+        "existing": "Accounts on this device:",
+        "admin": "administrator",
+        "none": "The device reported no login accounts. Create one below.",
+        "unavailable": "Could not list the device's accounts ({reason}). You can still type an existing account name.",
+        "created": "Created {name} on the device and chose it.",
+        "newName": "New account name",
+        "newAdmin": "Administrator (may become root with sudo, no password)",
+        "create": "Create on device",
+        "note": "A new account has no password: it is reached only through MeshHarbor. The device creates nothing unless its own SSH is enabled, and no administrator if it forbids root sessions."
+      }
+    },
+    "topo": {
+      "title": "Server topology",
+      "intro": "Two servers connect directly exactly when an enabled edge joins them, whatever their business zones; without one they do not see each other, even in one zone. Click a server, then another, to add an edge; click an edge to switch it off or remove it. Clients are not drawn: they keep the zone rule. Edges are enforced under",
+      "introWarn1": "; under ",
+      "introWarn2": " they are only logged.",
+      "noServers": "No device has the central role Server yet. Approve one under Business authority first.",
+      "mainland": "Mainland",
+      "nonMainland": "Non-mainland",
+      "zoneUnknown": "Zone unknown",
+      "edgeOn": "Edge on",
+      "edgeOff": "Edge off",
+      "selected": "{name} selected: click a second server",
+      "svgTitle": "Server topology: servers by country and the edges between them",
+      "on": "On",
+      "off": "Off",
+      "noCountry": "no country",
+      "online": "online",
+      "offline": "offline",
+      "noLocation": "No known location:",
+      "removeEdge": "Remove edge",
+      "removeEdgeAria": "Remove edge {a} — {b}",
+      "col": {
+        "edge": "Edge",
+        "state": "State",
+        "actions": "Actions"
+      },
+      "noEdges": "No edges: every server is on its own."
+    },
+    "inv": {
+      "intro": "Reported configuration: what each node read from its own kernel (host network namespace only). It is not evidence that a path works and grants no access; the overlay ACL decides that. Freshness is the server's clock.",
+      "empty": "No node has reported an inventory yet.",
+      "fresh": "fresh",
+      "stale": "stale",
+      "reported": "reported {when}",
+      "sectionTitle": "{state}: {reported} of {total}",
+      "forwarding": "forwarding: IPv4 {v4}, IPv6 {v6}",
+      "namespaces": "namespaces: {n}",
+      "unknown": "unknown",
+      "sec": {
+        "interfaces": "interfaces",
+        "routes": "routes",
+        "rules": "rules",
+        "listeners": "listeners",
+        "fwChains": "fw chains",
+        "fwRules": "fw rules"
+      },
+      "state": {
+        "complete": "complete",
+        "partial": "partial",
+        "unsupported": "unsupported",
+        "denied": "denied",
+        "error": "error"
+      },
+      "col": {
+        "name": "name",
+        "kind": "kind",
+        "up": "up",
+        "mtu": "mtu",
+        "addresses": "addresses",
+        "family": "family",
+        "table": "table",
+        "destination": "destination",
+        "type": "type",
+        "gateway": "gateway",
+        "device": "device",
+        "protocol": "protocol",
+        "metric": "metric",
+        "priority": "priority",
+        "selector": "selector",
+        "action": "action",
+        "proto": "proto",
+        "address": "address",
+        "port": "port",
+        "process": "process",
+        "owner": "owner",
+        "chain": "chain",
+        "hook": "hook",
+        "policy": "policy",
+        "matches": "matches",
+        "verdict": "verdict",
+        "target": "target",
+        "packets": "packets"
+      }
+    },
+    "dns": {
+      "saved": "Saved. Overlay nodes pick up the change on their next join.",
+      "intro1": "Give the mesh a DNS suffix so nodes are reachable by name",
+      "intro2": " instead of overlay IP. Each node runs a local split-DNS resolver: overlay names resolve to overlay IPs, everything else forwards to the upstream nameservers below. Leave the domain blank to disable MagicDNS.",
+      "domain": "MagicDNS domain",
+      "domainHint": "Blank disables MagicDNS for the tenant.",
+      "upstream": "Upstream nameservers",
+      "upstreamHint": "Comma-separated. Blank uses each node's existing system resolvers."
+    },
+    "fwd": {
+      "intro": "A managed forward listens on one address of an ingress node, admits only its source CIDRs and relays to a destination. Every change is checked first: port collisions, overlaps, loops, the regional gate and, for the nft backend, the ingress's forwarding settings, which MeshHarbor reports and never changes.",
+      "new": "New forward",
+      "empty": "No managed forward yet.",
+      "col": {
+        "name": "name",
+        "ingress": "ingress",
+        "listen": "listen",
+        "sources": "sources",
+        "destination": "destination",
+        "backend": "backend",
+        "applied": "applied",
+        "verified": "verified",
+        "enabled": "enabled"
+      },
+      "masq": "masquerade",
+      "sourceKept": "source kept",
+      "applied": {
+        "applied": "applied",
+        "failed": "failed",
+        "pending": "pending",
+        "not_applied": "not applied"
+      },
+      "verified": {
+        "verified": "verified",
+        "drift": "drift",
+        "unverified": "unverified"
+      },
+      "edit": "Edit {name}",
+      "f": {
+        "name": "Name",
+        "ingress": "Ingress node",
+        "listenAddr": "Listen address",
+        "listenPort": "Listen port",
+        "proto": "Protocol",
+        "sources": "Allowed sources (CIDRs, space or comma separated)",
+        "destAddr": "Destination address",
+        "destPort": "Destination port",
+        "backend": "Backend",
+        "nat": "Source address",
+        "public": "Public listener (needed for a wildcard address; sources must still be narrower than /0)"
+      },
+      "planOk": "Plan passes ({backend} backend).",
+      "planRefused": "Plan refused; nothing was stored or sent to a node.",
+      "check": "Check plan",
+      "create": "Create",
+      "backendUserspace": "userspace relay (any OS)",
+      "backendNft": "nft DNAT (Linux, root, commit-confirm)",
+      "natMasq": "masquerade (the destination sees the ingress)",
+      "natKeep": "keep the client address (nft only)",
+      "planFailed": "The plan could not be made.",
+      "refused": "Refused: ",
+      "changed": "This forward changed since it was loaded; the list was reloaded. Check it again.",
+      "confirmRemove": "Remove the forward \"{name}\"? The ingress node stops it at once."
+    },
+    "routes": {
+      "deviceFilter": "device filter",
+      "intro1": "A node advertises subnet CIDRs it can route (set",
+      "intro2": " in its agent config). Approve a route to distribute it to every other node in the mesh — they'll route that LAN through this node. Nothing is routed until you approve it.",
+      "empty": "No node is advertising subnet routes or offering to be an exit node yet.",
+      "col": {
+        "node": "Node",
+        "ip": "Overlay IP",
+        "routes": "Advertised routes",
+        "exit": "Exit node"
+      },
+      "unnamed": "(unnamed)",
+      "na": "n/a",
+      "withheld": "this device cannot serve routes: {why}",
+      "noLongerOffered": "approved, but the device no longer offers it, so no client uses it",
+      "enableHint": "set overlay_exit_node_enabled in its config"
+    },
+    "acl": {
+      "title": "Overlay ACL",
+      "tunnelTitle": "Tunnel ACL",
+      "newRule": "New rule",
+      "subtitle": "Peer visibility + routes — enforced on direct, TURN-relayed and DERP-relayed paths alike",
+      "enforcement": "Enforcement",
+      "narrowed1": "{n} rule(s) narrow ports or protocol. Each node enforces those on the traffic it receives only under ",
+      "narrowed2": "; in ",
+      "narrowed3": " they are ",
+      "notChecked": "not checked",
+      "narrowed4": ". Either way a port-narrowed rule makes the whole peer visible.",
+      "empty1": "No overlay rules yet. While enforcement is ",
+      "empty2": " every node sees every peer and all of its approved routes — the pre-ACL behaviour. Add rules, switch to ",
+      "empty3": " to see what they would deny against real traffic, then ",
+      "empty4": ".",
+      "col": {
+        "name": "Name",
+        "sources": "Sources",
+        "via": "Via",
+        "destinations": "Destinations"
+      },
+      "disabled": "disabled",
+      "editTitle": "Edit overlay rule",
+      "newTitle": "New overlay rule",
+      "namePlaceholder": "e.g. devs-reach-k8s-dev",
+      "enabled": "Enabled",
+      "sourcesHint": "Which nodes this rule grants access FROM.",
+      "addSource": "Add source",
+      "everyNode": "(every node in the tenant)",
+      "viaHint": "The peer they may reach — and the gateway for its subnet routes.",
+      "addNode": "Add node",
+      "destHint": "CIDRs only — the overlay is L3, so hostnames can never match.",
+      "addCidr": "Add CIDR",
+      "cidr": "CIDR (e.g. 10.84.6.0/24)",
+      "portLow": "Port (low)",
+      "portHigh": "Port (high)",
+      "proto": "Proto",
+      "saveChanges": "Save changes",
+      "createRule": "Create rule",
+      "deleteTitle": "Delete overlay rule?",
+      "deleteBody": " will be removed. If this was the only rule granting a peer, nodes relying on it lose that peer on the next netmap push.",
+      "delete": "Delete",
+      "mode": {
+        "off": "Off — no enforcement (default)",
+        "warn": "Warn — log what would be denied",
+        "enforce": "Enforce — apply the rules"
+      },
+      "kind": {
+        "all": "All nodes",
+        "node": "Node",
+        "user": "User",
+        "role": "Role"
+      },
+      "anyProto": "Any",
+      "any": "any",
+      "hint": {
+        "off": "Rules are stored but ignored — every node sees every peer, as before.",
+        "warn": "Rules are evaluated and denials are logged, but the permissive netmap still ships. Use this to validate rules against real traffic.",
+        "enforce": "Rules are applied. A node that no rule grants loses the peer, and an installed peer is explicitly torn down."
+      },
+      "v": {
+        "name": "Name is required.",
+        "sources": "At least one source is required.",
+        "via": "At least one via node is required.",
+        "destinations": "At least one destination is required.",
+        "sourceSel": "Every non-catch-all source needs a selection.",
+        "viaSel": "Every node target needs a selection.",
+        "cidr": "Every destination needs a CIDR.",
+        "notCidr": "\"{cidr}\" is not a CIDR — a single address needs a prefix, e.g. 10.0.0.5/32."
+      }
+    },
+    "tp": {
+      "title": "Tunnel ACL",
+      "newPolicy": "New policy",
+      "empty": "No tunnel policies defined yet. Server-side ACL is default-deny — until you add at least one policy, every {cmd} request will be rejected with {code}.",
+      "col": {
+        "name": "Name",
+        "subjects": "Subjects",
+        "targets": "Targets",
+        "allowlist": "Allowlist",
+        "ceilings": "Ceilings",
+        "actions": "Actions"
+      },
+      "flows": "flows:",
+      "bytes": "bytes:",
+      "editTitle": "Edit tunnel policy",
+      "newTitle": "New tunnel policy",
+      "namePlaceholder": "e.g. ops-team-prod-postgres",
+      "subjectsHint": "Who this policy applies to. First-match-wins across all policies.",
+      "addSubject": "Add subject",
+      "catchAllUsers": "(catch-all — matches every user in the tenant)",
+      "targetsHint": "Which agents this policy lets the subjects reach.",
+      "addTarget": "Add target",
+      "catchAllAgents": "(catch-all — matches every agent in the tenant)",
+      "allowlistTitle": "Destination allowlist",
+      "allowlistHint": "Host + port-range patterns the subjects may reach via the targets.",
+      "addRule": "Add rule",
+      "match": "Match",
+      "portLow": "Port (low)",
+      "portHigh": "Port (high)",
+      "proto": "Proto",
+      "protoAny": "Any",
+      "ceilingsTitle": "Per-session ceilings",
+      "ceilingsHint": "Leave blank for unlimited.",
+      "maxFlows": "Max concurrent flows",
+      "flowsPlaceholder": "e.g. 64",
+      "maxBytes": "Max bytes / session",
+      "bytesPlaceholder": "e.g. 10737418240 (10 GiB)",
+      "saveChanges": "Save changes",
+      "createPolicy": "Create policy",
+      "deleteTitle": "Delete tunnel policy?",
+      "deleteBody": "This will soft-delete {name}. Live tunnel sessions keep working; new {req}s relying on this policy alone will start being rejected with {code}.",
+      "delete": "Delete",
+      "required": "Required.",
+      "kind": {
+        "all_users": "All users",
+        "user_id": "User",
+        "role_id": "Role",
+        "tunnel_client_id": "Tunnel client",
+        "agent_id": "Agent",
+        "all_agents": "All agents"
+      },
+      "host": {
+        "exact": "Exact",
+        "wildcard": "Wildcard"
+      },
+      "hostValue": {
+        "exact": "Hostname (e.g. db.intranet)",
+        "wildcard": "Wildcard (e.g. *.intranet)",
+        "cidr": "CIDR (e.g. 10.0.0.0/24)",
+        "other": "Value"
+      },
+      "err": {
+        "name": "Name is required.",
+        "subjects": "At least one subject is required.",
+        "targets": "At least one target is required.",
+        "allowlist": "At least one allowlist rule is required.",
+        "subjectId": "Each non-AllUsers subject needs an ID.",
+        "targetId": "Agent-ID targets need an Agent ID.",
+        "host": "Each allowlist rule needs a host value.",
+        "portSet": "Port range must be set.",
+        "portLow": "Port-range low must be 1-65535.",
+        "portOrder": "Port-range high must be ≥ low.",
+        "portHigh": "Port-range high must be ≤ 65535."
+      },
+      "label": {
+        "user": "User {name}",
+        "role": "Role {name}",
+        "client": "Client {name}",
+        "agent": "Agent {name}"
+      }
+    },
+    "ek": {
+      "title": "Ephemeral enrollment keys",
+      "mintKey": "Mint key",
+      "intro": "A reusable credential that enrolls {selfRemoving} devices — CI runners, containers, autoscaled workers. Devices it mints are reaped after inactivity (or immediately on a clean stop), and a restart is a {new} device. Revoking a key stops new enrollments on the next use; devices it already minted die by their own deadline.",
+      "selfRemoving": "self-removing",
+      "new": "new",
+      "col": {
+        "label": "Label",
+        "uses": "Uses",
+        "expires": "Expires",
+        "ttl": "Device TTL",
+        "state": "State"
+      },
+      "unnamed": "(unnamed)",
+      "minted": "minted {when}",
+      "default": "default",
+      "state": {
+        "revoked": "revoked",
+        "expired": "expired",
+        "exhausted": "exhausted",
+        "active": "active"
+      },
+      "revoke": "Revoke",
+      "revokeAria": "Revoke key {key}",
+      "empty": "No keys minted yet.",
+      "shownOnce": "Ephemeral key — shown once",
+      "mintTitle": "Mint ephemeral enrollment key",
+      "labelHint": "Display only — name the fleet this key serves",
+      "maxUses": "Max uses",
+      "maxUsesHint": "1–10 000; each enrollment consumes one",
+      "expiresDays": "Expires in (days)",
+      "expiresHint": "Up to 90 days; the key is dead after this whatever its uses",
+      "ttlLabel": "Device inactivity deadline (seconds, optional)",
+      "ttlHint": "60s–7d; blank = server default (15 min). How long a silent device lives before the reaper removes it",
+      "copyNow": "Copy it now — the key is {notStored} and cannot be shown again. Losing it means minting a new key.",
+      "notStored": "not stored",
+      "copied": "Copied",
+      "copyKey": "Copy key",
+      "enrollWith": "Enroll with:",
+      "mint": "Mint",
+      "done": "Done"
+    },
+    "dev": {
+      "updateAll": "Update all",
+      "enroll": "Enroll",
+      "enrollDevice": "Device (remote desktop + mesh)",
+      "enrollTunnel": "Tunnel client (CLI-only)",
+      "searchPlaceholder": "Search name, tag, IP, MagicDNS…",
+      "searchAria": "Search devices",
+      "kindAria": "Filter by device kind",
+      "kindDevices": "Devices",
+      "kindTunnels": "Tunnels",
+      "kindBoth": "Both",
+      "kindDevice": "device",
+      "kindTunnel": "tunnel",
+      "countDevices": "{n} device | {n} devices",
+      "countTunnels": "{n} tunnel | {n} tunnels",
+      "configureColumns": "Configure columns",
+      "connectTo": "Connect to {name}",
+      "connect": "Connect",
+      "ephemeral": "ephemeral",
+      "ephemeralTitle": "Ephemeral device — removes itself after inactivity or on clean shutdown; removal is final",
+      "copyIdFor": "Copy device ID for {name}",
+      "copied": "Copied!",
+      "copyId": "Copy device ID",
+      "deviceIdTitle": "Device ID: {id}",
+      "skewTitleLong": "The desktop companion is on v{desktop} while the daemon is on v{daemon} — the companion updates separately (its own .deb on Linux, the .pkg on macOS, a daemon-side swap on Windows)",
+      "skewTitle": "The desktop companion is on v{desktop} while the daemon is on v{daemon} — the companion updates separately",
+      "desktopVersion": "desktop v{v}",
+      "keyFingerprintTitle": "Device key fingerprint: {fp}",
+      "keyShort": "key",
+      "overlayKeyTitle": "Overlay public key, epoch {epoch}: {key}",
+      "copyDnsFor": "Copy MagicDNS name for {name}",
+      "noDnsDomain": "Tenant has no MagicDNS domain configured — bare overlay label",
+      "noMatch": "No devices match \"{q}\".",
+      "noneYet": "No devices enrolled yet.",
+      "noneHint": "Use \"Enroll\" for a one-line installer per platform — the machine appears here as soon as it enrolls.",
+      "walkThrough": "Walk me through it",
+      "keepBusy": "keep busy",
+      "access": "Access",
+      "details": "Details",
+      "noOverlay": "no overlay address",
+      "overlayKey": "Overlay key",
+      "epoch": "epoch {n}",
+      "deviceId": "Device ID",
+      "machineId": "Machine ID",
+      "deviceKey": "Device key",
+      "hideName": "Hide device name when a display name is set",
+      "different": "different",
+      "pageRange": "{first}–{last} of {total}",
+      "col": {
+        "actions": "Actions",
+        "name": "Name",
+        "kind": "Kind",
+        "status": "Status",
+        "overlay": "Overlay",
+        "tags": "Tags",
+        "consent": "Consent",
+        "codecs": "Codecs",
+        "lastSeen": "Last seen"
+      },
+      "presence": {
+        "online": "online",
+        "stale": "stale",
+        "offline": "offline",
+        "onlineStored": "Online (stored status)",
+        "offlineStored": "Offline (stored status)",
+        "onlineTitle": "Online — a control socket is registered",
+        "staleTitle": "Stale — heartbeat fresh but no socket registered (a half-open network leg or a recent server roll). It should heal within minutes; otherwise restart the MeshHarbor service on the machine."
+      },
+      "evict": {
+        "titleRejoin": "Force a new overlay address for “{name}”?",
+        "titleRemove": "Remove “{name}” from the mesh?",
+        "leaves": "It leaves the mesh immediately — every peer drops its routes, and traffic to {ip} stops.",
+        "released": "That address is released back to this organization's pool and may later be assigned to a {different} machine.",
+        "rejoins": "{name} is still enrolled, so it rejoins automatically on its next connect — with a {different} overlay address. This does not revoke access; to remove the device for good, delete the agent or tunnel client.",
+        "gone": "Its backing device is no longer enrolled, so it will not come back.",
+        "pinned": "Anything pinned to the old address stops working — firewall rules, scripts, and any client configured with {cfg}.",
+        "doRejoin": "Evict and reassign",
+        "doRemove": "Remove from mesh"
+      },
+      "tunnelDelete": {
+        "title": "Delete tunnel client?",
+        "body": "Its access token is revoked and, if it joined the overlay, its node is evicted and the overlay address released. The CLI stays installed on the machine and can be re-enrolled with a new token.",
+        "do": "Delete"
+      },
+      "rotate": {
+        "title": "Rotate the overlay key of {name}?",
+        "body": "The device mints a fresh WireGuard key {onDevice}, saves it and re-joins the mesh under it. Every peer picks the new key up within seconds and the old key stops working everywhere. The server never sees a private key.",
+        "onDevice": "on the device",
+        "disruptive": "Immediate and disruptive by design: every session this device carries in this organization (remote control, SSH over the overlay, tunnels) ends and reconnects.",
+        "offline": "The device is offline — the order is queued and runs on its next connect.",
+        "do": "Rotate key",
+        "ordered": "Key rotation ordered on {name} — it mints a new key, re-joins the mesh and reports back within seconds.",
+        "queuedOffline": "{name} is offline — the key rotation is queued and runs on its next connect."
+      },
+      "kr": {
+        "queued": "key rotation queued",
+        "queuedTip": "Ordered while the device was offline; it rotates on its next connect.",
+        "rotating": "rotating key…",
+        "deliveredTip": "The order reached the device; waiting for its answer.",
+        "rotatingTip": "The device minted its new key and is re-joining the mesh.",
+        "rotated": "key rotated · e{epoch}",
+        "rotatedTip": "Rotated {at} and joined the mesh under the new key.",
+        "notJoined": "key not re-joined",
+        "notJoinedTip": "The device reported a rotation but has not joined the mesh under the new key — read its log.",
+        "refused": "key rotation refused ({outcome})",
+        "refusedTip": "The device refused the rotation order.",
+        "failed": "key rotation failed",
+        "failedTip": "The device could not mint or save a new key; its identity is unchanged.",
+        "old": "agent too old for key rotation",
+        "oldTip": "This device's agent predates key rotation (0.4.25+). Update it — the order stays queued."
+      },
+      "upd": {
+        "title": "Update all agents?",
+        "body": "Pushes an immediate self-update to every agent in this organization ({total} total, {online} online). Each agent downloads the latest release, installs it, and restarts — active remote-control sessions on updating agents will drop for a few seconds. Offline agents update on their next periodic check.",
+        "wont": "{n} will not take it from here:",
+        "pushed": "Update pushed to {name} — it will download, install, and restart shortly.",
+        "offline": "{name} is offline — it will update on its next periodic check instead.",
+        "pushedAll": "Update pushed to {delivered} of {requested} agents — offline agents update on their next periodic check.",
+        "skipped": "{n} not updated from here: {list}."
+      },
+      "del": {
+        "title": "Remove this device from the organization?",
+        "evicted": "It is evicted from the overlay mesh immediately — peers drop its routes, and any live remote-control or tunnel session to it ends.",
+        "stays": "The agent stays installed on the host. It can be enrolled again with a new enrollment token, but it comes back with a {fresh}.",
+        "fresh": "new overlay address and a new name",
+        "pinned": "Anything pinned to the old identity stops working — scripts using this agent id, tunnel forwards targeting it, firewall rules on its old overlay address, and any client configured with {cfg}.",
+        "do": "Remove device"
+      },
+      "join": {
+        "title": "Add to another organization",
+        "body": "{name} keeps its current enrollment and gains a second one. The device connects to both organizations at once; each sees only its own sessions, and the new org gets its own encryption key.",
+        "old": "This device runs an agent version that predates remote org-join. Update it first, or enroll it at the keyboard.",
+        "offline": "This device is offline. It has to be connected to receive the invitation.",
+        "none": "You don't manage devices in any other organization. Ask an admin there to grant you device management, then try again.",
+        "org": "Organization",
+        "mesh": "Private mesh",
+        "meshOff": "No mesh access (default)",
+        "meshTun": "Join the mesh (needs multi-org TUN enabled)",
+        "restart": "This device's agent started with a single organization, so it holds its network adapter exclusively. The join is applied right away, but mesh access begins after the agent restarts — the next auto-update does that.",
+        "do": "Add device"
+      },
+      "owner": {
+        "title": "Reassign device owner",
+        "body": "Owner of {name}. The owner self-controls without an allowlist entry, and consent (email / push) routes to them.",
+        "new": "New owner",
+        "do": "Reassign"
+      },
+      "routes": {
+        "title": "Tunnel mesh routes",
+        "body": "CIDRs that {name} advertises for the mesh ({cmd}). A LAN target IP matching one of these routes is dialed by this agent, so the mesh can reach non-agent devices behind it (a NAS, a printer, a database host). Access is still gated by your {acl} — a route steers the dial, it doesn't authorize it.",
+        "none": "No routes yet — this agent only reaches its own host.",
+        "advertised": "Advertised by the agent — click to approve into the routes above:",
+        "approve": "Approve advertised route {cidr}",
+        "add": "Add route (CIDR)",
+        "hint": "e.g. 10.66.24.0/24 (subnet) or 10.66.24.53/32 (single host)",
+        "invalid": "Enter a valid CIDR, e.g. 10.66.24.0/24 or 10.66.24.53/32"
+      },
+      "rc": {
+        "restart": "restart needed",
+        "restartTip": "Config saved on the device but not yet in effect.",
+        "refused": "config refused",
+        "notPrimary": "This org is a secondary on that host; only its primary enrollment may change machine-wide config.",
+        "notOptedIn": "The device has not opted in to remote configuration.",
+        "failed": "config failed",
+        "failedTip": "The device could not write its config.",
+        "pending": "config pending",
+        "pendingTip": "Waiting for the device to reconnect and reconcile.",
+        "old": "agent too old",
+        "oldPush": "This agent predates remote configuration; nothing is sent to it.",
+        "oldReport": "This agent applies pushed config but cannot report what it did."
+      }
+    },
+    "common": {
+      "close": "Close",
+      "delete": "Delete",
+      "edit": "Edit"
+    },
+    "ago": {
+      "now": "just now",
+      "m": "{n}m ago",
+      "h": "{n}h ago",
+      "d": "{n}d ago",
+      "mo": "{n}mo ago",
+      "y": "{n}y ago"
+    },
+    "devEdit": {
+      "title": "Edit device",
+      "name": "Device name",
+      "displayName": "Display name (optional)",
+      "displayNameHint": "Friendly label shown in lists — never propagates anywhere. Leave empty to show the device name.",
+      "tags": "Tags",
+      "tagsHint": "Free-form labels for filtering and search (max 16, 40 chars each). Press Enter to add.",
+      "nameHintAgent": "Propagates to the overlay + MagicDNS label. Peers selecting this device as an exit node BY NAME must update their config — pin by node-id hex to be rename-proof.",
+      "nameHintClient": "Propagates to the overlay + MagicDNS label (server-side rename — the CLI keeps its local machine name).",
+      "nameEmpty": "Device name must not be empty.",
+      "dnsRenamed": "MagicDNS label is now \"{name}\" — peers resolve it immediately; the device itself picks up its new self-name on its next reconnect.",
+      "dnsKept": "The fleet name changed, but the overlay DNS label could not be updated (kept its old value)."
+    },
+    "policy": {
+      "consent": {
+        "prompt": "Prompt on host (attended)",
+        "auto": "Auto-grant (unattended)",
+        "email": "Email the owner",
+        "push": "Push to the owner",
+        "prompt_then_email": "Prompt host + email owner"
+      },
+      "input": {
+        "free": "Free-for-all (fenced)",
+        "exclusive": "Exclusive (one controller)"
+      },
+      "idle": {
+        "orgOnly": "Idle: org limit only",
+        "minutes": "Idle: {m} min",
+        "hint": "End a remote-desktop session to this device after this long with no input and no change on its screen. The shorter of this and the organization’s limit applies, so it can only tighten the org’s. The device keeps it: an agent that predates it does not. Applies to the next session."
+      },
+      "lock": {
+        "never": "Lock: the device decides",
+        "auto": "Lock: if locked or idle at the start",
+        "always": "Lock: always",
+        "hint": "Lock this device’s screen when the last remote-desktop session to it ends. “If locked or idle at the start” locks it again only if it was locked, or nobody was at it, when the session began. The device takes the stricter of this and its owner’s own setting, so this can only tighten it. Honoured by service installs on Windows and Linux, where a session can unlock the screen again; a per-user install, or an agent that predates it, does not take it. Applies to the next session."
+      },
+      "rcOverlay": {
+        "hint": "Off (default): remote desktop never rides the WireGuard mesh; it connects over the LAN, a direct path or a TURN relay. On: it may take the mesh when that is the best path, and inherits the mesh’s outages. Applies to the next session."
+      },
+      "owner": {
+        "applies": "Ask me too (you own this device; \"{mode}\" applies to you)",
+        "skipped": "Ask me too (you own this device, so consent is skipped for you)"
+      },
+      "short": {
+        "prompt": "Prompt on host",
+        "auto": "Auto-grant",
+        "email": "Email owner",
+        "push": "Push owner",
+        "prompt_then_email": "Prompt + email",
+        "skippedForYou": "skipped for you",
+        "oneController": "one controller",
+        "idle": "idle {m} min",
+        "lockIfLocked": "lock if locked at start",
+        "lockAtEnd": "lock at end",
+        "overMesh": "over the mesh"
+      },
+      "label": {
+        "consent": "Consent",
+        "input": "Input",
+        "idle": "Idle limit",
+        "lock": "Lock when sessions end",
+        "rcOverlay": "Remote desktop over the mesh"
+      },
+      "aria": {
+        "consent": "Consent mode for {name}",
+        "owner": "Apply the consent mode to me, the owner of {name}",
+        "input": "Input mode for {name}",
+        "idle": "Idle limit for {name}",
+        "lock": "Lock {name} when its remote sessions end",
+        "rcOverlay": "Let remote desktop to {name} use the mesh (overlay)"
+      },
+      "hideHints": "Hide what these do",
+      "showHints": "What do these do?"
+    },
+    "devMenu": {
+      "sec": {
+        "maintenance": "Maintenance",
+        "diagnostics": "Diagnostics",
+        "access": "Access",
+        "network": "Network"
+      },
+      "update": "Update now",
+      "rotateKey": "Rotate overlay key…",
+      "crashes": "Crash reports",
+      "logs": "Agent logs",
+      "console": "Device console",
+      "edit": "Edit name & tags",
+      "joinOrg": "Add to another organization",
+      "reassign": "Reassign owner",
+      "execPolicy": "Execution policy",
+      "sshPolicy": "SSH policy",
+      "externalAccess": "External access",
+      "remoteConfig": "Device configuration",
+      "routes": "Tunnel mesh routes",
+      "overlayRoutes": "Overlay routes",
+      "overlayAcl": "Overlay ACL",
+      "delete": "Delete device",
+      "deleteTunnel": "Delete tunnel client",
+      "evict": "Evict / reassign overlay address",
+      "removeMesh": "Remove from mesh",
+      "aria": "Actions for {name}"
+    },
+    "ext": {
+      "title": "External access — {name}",
+      "warn": "This lets someone who is {notMember} control this device. They will need its connect code and the password set {onMachine} — and whoever is at the device is still asked before a session starts.",
+      "notMember": "not a member of your organization",
+      "onMachine": "on the machine itself",
+      "allow": "Allow people outside this organization to control this device",
+      "allowHint": "Off by default. Approving is the second of five gates — on its own it opens nothing.",
+      "ceiling": "An outside session may at most",
+      "ceilingHint": "A ceiling, not a grant — the device can be more restrictive, never less. {viewOnly} is the safe answer for anyone you are letting watch rather than work.",
+      "viewOnly": "View only",
+      "expires": "Approval expires (optional)",
+      "expiresHint": "Leave empty and the approval stands until someone clears it. Most reasons for granting this — a contractor, a support engagement — have an end date, and an approval nobody has to remember to revoke is one that outlives its reason.",
+      "code": "Connect code",
+      "codeNone": "Not yet created",
+      "rotate": "Rotate",
+      "create": "Create",
+      "codeHint": "This is what an outside person types to reach this device. Rotating it is how you take a leaked code out of circulation — the old one stops working immediately.",
+      "orgOff": "External access is switched off for the whole organization, so this device will still refuse. An org owner enables it in Settings. It is a separate switch from remote execution and SSH.",
+      "tooOld": "This device's agent is too old for external access — it cannot tell the person at the machine that the controller is from outside your organization. Update the agent first.",
+      "devicePassword": "The device itself must also allow it, and must hold the password: {cmd} on the host. That belongs to whoever holds the machine and cannot be set from here — which is the point: the password never reaches this server.",
+      "ceil": {
+        "viewInput": "View and control (default)",
+        "view": "View only — no keyboard or mouse",
+        "clipboard": "View, control and clipboard",
+        "files": "View, control, clipboard and file transfer"
+      },
+      "rotateFailed": "Could not create a connect code.",
+      "saveFailed": "Could not save the policy."
+    },
+    "crash": {
+      "title": "Crash reports — {name}",
+      "refresh": "Refresh crash list",
+      "none": "No crashes reported. Nice.",
+      "col": {
+        "when": "When",
+        "reason": "Reason",
+        "summary": "Summary"
+      },
+      "host": "Host:",
+      "agent": "Agent:",
+      "os": "OS:",
+      "pid": "PID:",
+      "reported": "Reported:",
+      "noTail": "(no log tail attached)",
+      "reason": {
+        "panic": "Panic",
+        "watchdog": "Watchdog stall",
+        "supervisor": "Supervisor"
+      }
+    },
+    "logs": {
+      "title": "Agent logs — {name}",
+      "refresh": "Refresh logs",
+      "minLevel": "Min level",
+      "filter": "Target / message contains",
+      "throughput": "Tunnel throughput only",
+      "count": "{shown} / {total} lines",
+      "none": "No logs uploaded yet.",
+      "noneHint": "The agent uploads logs in batches; if it just started or has been idle, give it a minute and hit refresh.",
+      "noMatch": "No lines match the current filter.",
+      "batches": "{n} batch(es) · newest {age}",
+      "copy": "Copy visible"
+    },
+    "exec": {
+      "title": "Execution policy — {name}",
+      "warn": "Allowing remote execution on this device lets permitted users run commands as {root} (Linux) or, on Windows, as {system} once the device is anchored (otherwise as the {signedIn} on an attended install, and as SYSTEM in SystemContext mode). It is a separate power from remote control, which is consent-gated and visible on screen.",
+      "signedIn": "signed-in user",
+      "anchored": "Anchored {when}: commands run as {system} through this device's service.",
+      "unanchor": "Un-anchor",
+      "notAnchored": "Not anchored: commands run as the {signedIn} (an attended install) or as SYSTEM (SystemContext mode). To run them as SYSTEM, on the device, from an elevated prompt:",
+      "accept": "Accept remote commands on this device",
+      "originate": "Allow this device to run commands on OTHER devices (mh exec)",
+      "originateHint": "Off by default. Without it, a compromised copy of this device could use its owner's permissions across the whole fleet.",
+      "runAs": "Run commands as",
+      "runAsWin": "{system} is the default. {signedIn} runs each command as whoever is signed in at the console, and is refused when nobody is. Both go through the device's service, so the device must be anchored.",
+      "runAsSignedIn": "The signed-in user",
+      "runAsUnix": "{root} is the default. {person} runs each command as whoever is signed in at its own screen, and is refused when nobody is.",
+      "runAsPerson": "The person at the device's screen",
+      "runAsTooOld": "This device's agent cannot do that yet: update it, or choose root.",
+      "consentHint": "{prompt} asks whoever is at the device and denies after 30 s of silence — right for workstations. {unattended} runs immediately — right for servers with nobody sitting at them.",
+      "prompt": "Prompt",
+      "unattended": "Unattended",
+      "users": "Restrict to these users (empty = anyone with the permission)",
+      "shells": "Allowed shells (empty = any the host supports)",
+      "orgOff": "Remote execution is switched off for the whole organization, so this device will still refuse. An org owner enables it in Settings.",
+      "deviceSwitch": "The device itself must also allow it: {cmd} on the host, then restart the service. That switch belongs to whoever holds the machine and cannot be set from here.",
+      "anchorSwitch": "An anchored device's service checks its own switch as well ({cmd}, elevated).",
+      "consent": {
+        "prompt": "Prompt at the device (recommended)",
+        "auto": "Unattended — run immediately"
+      },
+      "opt": {
+        "system": "SYSTEM (default)",
+        "signedIn": "The signed-in user",
+        "root": "root (default)",
+        "person": "The person at the device's screen"
+      }
+    },
+    "sshp": {
+      "title": "SSH policy — {name}",
+      "warn": "Allowing SSH lets permitted users open an {shell} on this device. It is a separate power from remote execution — a session lasts, and it is not one bounded command you can read back afterwards.",
+      "shell": "interactive shell",
+      "accept": "Accept SSH sessions on this device",
+      "originate": "Allow this device to open sessions on OTHER devices",
+      "runAs": "Sessions run as",
+      "coerced": "This device had been set to {signedIn}, which its agent cannot do — it refuses it, so every session was failing at connect time. Update the agent, or pick an account and save to fix it.",
+      "signedInLower": "the signed-in user",
+      "signedIn": "The signed-in user",
+      "systemService": "SYSTEM service",
+      "daemon": "The daemon account",
+      "idService": "This device serves SSH through its {service}. {signedIn} is whoever is at its console, and a session is refused while nobody is; it is the least surprising choice on a workstation. {daemon} is {system}: choosing it grants full control of this device.",
+      "idAgent": "{daemon} is the agent's own: {system} on a service install, but {signedInLower} on an attended one. {signedIn} works on a service install; an attended install serves it only through the device's SYSTEM service, which an administrator turns on there with {cmd}.",
+      "idUnixNamed": "{named} is the least surprising choice on a server.",
+      "namedAccount": "A named account",
+      "idUnixPerson": "{person} is whoever is signed in at its own screen, and a session is refused while nobody is.",
+      "idUnixDaemon": "{daemon} means {root} — choosing it grants root on this device.",
+      "personNeedsNewer": "\"The person at the device's screen\" needs a newer agent on this device.",
+      "accountName": "Account name",
+      "accountPlaceholder": "e.g. deploy",
+      "unixOnly": "Unix only — a Windows device refuses this mode rather than quietly falling back to another account.",
+      "consentHint": "{prompt} asks whoever is at the device and denies after 30 s of silence — right for workstations. {unattended} opens immediately — right for servers with nobody sitting at them. A denied prompt burns the grant, so the caller must request a new one rather than re-dialling.",
+      "orgOff": "SSH is switched off for the whole organization, so this device will still refuse. An org owner enables it in Settings. It is a separate switch from remote execution.",
+      "opt": {
+        "signedIn": "The signed-in user at the device",
+        "daemonRoot": "The daemon account (root)",
+        "daemonSystem": "The daemon account (SYSTEM)",
+        "daemonAgent": "The daemon account (the agent's own)",
+        "named": "A named Unix account…"
+      },
+      "consentAuto": "Unattended — open immediately"
+    },
+    "rcfg": {
+      "title": "Device configuration — {name}",
+      "intro": "This records what you want the device to run. The device applies it the next time it connects — and it may refuse: these switches belong to whoever holds the machine, and a device only accepts them after someone enables {key} on it directly.",
+      "inForce": "In force now:",
+      "waitingRestart": "Saved on the device, waiting for a restart:",
+      "exec": "Remote execution",
+      "execSwitch": "Accept remote commands (exec_enabled)",
+      "execHint": "Commands run as the daemon: {root} under systemd; on Windows the {signedIn} (an attended install) or {system} (SystemContext mode). Takes effect immediately on the device; no restart.",
+      "needExec": "You need the {perm} permission to change this. Opening a door you cannot walk through is the same escalation as granting yourself the key.",
+      "sshSwitch": "Run the SSH server (ssh_enabled)",
+      "keys": "Authorized keys — one OpenSSH public key per line",
+      "keysHint": "Leave the box untouched to keep whatever the device already has. An empty list means {nobody}.",
+      "nobody": "nobody",
+      "accountMode": "Key-list sessions run as",
+      "accountHint": "Cleared = not managed. Unset {onDevice} means a key-list session authenticates and then runs {nothing} — deliberately, so an unread setting cannot quietly hand out SYSTEM/root.",
+      "onDevice": "on the device",
+      "nothing": "nothing",
+      "port": "SSH port (blank = not managed; the device's default is 2222)",
+      "portHint": "2222 rather than 22 so an existing {sshd} keeps serving the overlay address.",
+      "needSsh": "You need the {perm} permission to change any of these. Handing out authorized keys or an account mode is granting SSH just as much as flipping the switch is.",
+      "encoders": "Video encoders",
+      "cellsDeny": "Encoder cells to deny (encoder_cells_deny)",
+      "cellsHint": "Comma-separated {form} cells the device must not open or advertise — the cell matrix's kill switch. Blank = not managed (the device keeps its own list, built-in {builtin}); {none} = deny nothing. It only ever removes cells, so no extra permission bit; takes effect at the next daemon restart.",
+      "fpsDeny": "Frame rates to deny (fps_deny)",
+      "fpsHint": "Comma-separated {form} rates above 60 the device must not grant, {star} for every encoder. Blank = not managed (the device keeps its own, which denies nothing unless set there); {none} = deny nothing. It only ever removes rates, so no extra permission bit; takes effect at the next daemon restart.",
+      "sshOrgOff": "SSH is switched off for the whole organization — a separate switch from remote execution. An org owner enables it in Settings.",
+      "stop": "Stop managing",
+      "request": "Request",
+      "st": {
+        "applied": "Applied",
+        "appliedDetail": "The device confirmed this configuration and it is in force.",
+        "restart": "Saved on the device — restart required",
+        "restartDetail": "These keys are written to disk but not yet in effect. The SSH server is spliced into the packet path when the daemon starts, so it will not serve sessions until then.",
+        "secondary": "Refused — this organization is a secondary on that host",
+        "notOptedIn": "Refused — the device has not opted in",
+        "secondaryDetail": "These keys are machine-wide, so only the device’s primary enrollment may change them. Ask an admin of that organization, or configure the host directly.",
+        "notOptedInDetail": "Someone with access to the machine must run {cmd} on it. That switch cannot be set from here — which is the point: it is what keeps a compromised server from opening your devices.",
+        "failed": "The device tried and failed",
+        "failedDetail": "It could not write its configuration. Usually a permissions or disk problem on the host.",
+        "pending": "Waiting for the device",
+        "pendingDetail": "Requested. The device reconciles when it next connects — an offline device picks this up on its own, nothing needs re-sending.",
+        "noReport": "This device cannot report back",
+        "noReportDetail": "Agent {v} understands a pushed configuration but not how to say what it did with it. It may well have applied this — there is no way to tell from here. Update the device to find out.",
+        "tooOld": "This device is too old",
+        "tooOldDetail": "Agent {v} predates remote configuration, so nothing is sent to it at all. Update it, or set these keys on the host directly."
+      },
+      "warn": {
+        "emptyKeys": "SSH is on with an empty key list, which means nobody can connect. Add a key, or leave the key list unmanaged to keep the device’s own.",
+        "sshAlone": "Turning SSH on grants nothing by itself: the device also needs authorized keys and an account mode. If it already has them, ignore this.",
+        "noAccount": "You are sending keys but not an account mode. A key-list session on a device whose account mode is unset authenticates and then runs nothing."
+      },
+      "daemonAccount": "The daemon account (SYSTEM / root)",
+      "saveFailed": "Could not record the request."
+    },
+    "managed": {
+      "leave": "Leave alone",
+      "off": "Off",
+      "on": "On"
+    },
+    "stall": {
+      "chip": "not updating",
+      "behindPlus": "{n}+ releases",
+      "behindOne": "1 release",
+      "behindN": "{n} releases",
+      "days": "{n} d",
+      "hours": "{n} h",
+      "tooltip": "v{version} is {behind} behind: {first} came out {ago} ago and this device, online, has not installed it.",
+      "remedyLinux": "A per-user Linux install made before 0.4.138 cannot install updates by itself. Install the current release on it once (sudo apt install ./meshharbord.deb, the Software app, or a re-run of the install script), and it updates itself from then on. On a system install that stopped, check auto_update in 'mh config ls' and the log ('mh logs --grep update') on it.",
+      "remedyOther": "Check auto_update in 'mh config ls' and the log ('mh logs --grep update') on it."
+    },
+    "cred": {
+      "today": "credential expires today",
+      "inDays": "credential expires in {days} d",
+      "soonTip": "Its agent token expires on {on}. A device on agent 0.4.135 or later renews it itself 180 days early, so one this close is not renewing: update its agent, or check whether it was removed and re-enrolled elsewhere.",
+      "expired": "credential expired",
+      "renewableTip": "Its agent token expired on {on}. The server still renews it for {days} more day(s) once the device runs agent 0.4.135 or later; after that, re-enroll it.",
+      "lostTip": "Its agent token expired on {on}, more than {grace} days ago: re-enroll the device."
+    },
+    "refusal": {
+      "primary_org": "another organization manages its updates",
+      "auto_update_off": "auto-update is off on the device",
+      "pin_downgrade": "the pin would downgrade it",
+      "other": "refused"
+    },
+    "codec": {
+      "hw": "Hardware-accelerated {codec} encoder",
+      "sw": "Software {codec} encoder",
+      "yuv444": " — can emit 4:4:4 (full colour resolution)",
+      "hwAvailable": "Hardware-accelerated {codec} encoder available",
+      "swAvailable": "Software {codec} encoder available"
+    },
+    "perm": {
+      "noScreen": "No screen access",
+      "noScreenTip": "The OS has not granted this device screen-capture permission, so the remote screen will be blank. On macOS: System Settings → Privacy & Security → Screen Recording.",
+      "noInput": "No input access",
+      "noInputTip": "The OS has not granted this device input-injection permission, so remote keyboard and mouse will do nothing. On macOS: System Settings → Privacy & Security → Accessibility."
+    },
+    "chat": {
+      "react": "React with emoji",
+      "reactShort": "React",
+      "replyInThread": "Reply in thread",
+      "editMessage": "Edit message",
+      "deleteMessage": "Delete message",
+      "actions": "Message actions",
+      "editPlaceholder": "Edit message...",
+      "replyOne": "{n} reply",
+      "replyMany": "{n} replies",
+      "viewThread": "View thread",
+      "deleteTitle": "Delete message?",
+      "cannotUndo": "This action cannot be undone.",
+      "writePlaceholder": "Write a message...",
+      "uploadFailed": "File upload failed. Please try again.",
+      "send": "Send",
+      "searchMembers": "Search members...",
+      "noMembers": "No members found",
+      "searchFiles": "Search files...",
+      "noFiles": "No files in this room",
+      "gifs": "GIFs",
+      "trending": "Trending",
+      "searchGifs": "Search GIFs...",
+      "poweredByGiphy": "Powered by GIPHY"
+    },
+    "notif": {
+      "title": "Notifications",
+      "markAllRead": "Mark all read",
+      "empty": "No notifications"
+    },
+    "search": {
+      "close": "Close search",
+      "placeholder": "Search messages, rooms, people...",
+      "intro": "Type to search across messages, rooms, and people",
+      "noResults": "No results found for \"{query}\"",
+      "messages": "Messages",
+      "rooms": "Rooms",
+      "people": "People",
+      "inRoom": "{author} in #{room}"
+    },
+    "layout": {
+      "collapseSidebar": "Collapse sidebar",
+      "selectOrg": "Select organization",
+      "newOrg": "New organization",
+      "allOrgs": "All organizations",
+      "openDevices": "Open the devices page",
+      "searchDevices": "Search devices",
+      "openRooms": "Open the rooms page",
+      "searchRooms": "Search rooms",
+      "menu": "Menu",
+      "inCallMuted": "In a call, muted — call controls",
+      "inCall": "In a call — call controls",
+      "call": "Call",
+      "returnToCall": "Return to call",
+      "cameraOff": "Turn camera off",
+      "cameraOn": "Turn camera on",
+      "hangUp": "Hang up",
+      "activeCallOne": "{n} active call",
+      "activeCallMany": "{n} active calls",
+      "activeCalls": "Active Calls",
+      "unreadOne": "{n} unread message",
+      "unreadMany": "{n} unread messages",
+      "lightMode": "Light mode",
+      "darkMode": "Dark mode",
+      "profile": "Profile",
+      "docs": "Documentation",
+      "reconnecting": "Disconnected. Reconnecting...",
+      "orgName": "Name",
+      "orgSlug": "Slug",
+      "orgSlugHint": "URL-friendly identifier, globally unique",
+      "create": "Create",
+      "createOrgFailed": "Failed to create organization",
+      "slugTaken": "That slug is already taken — pick another"
+    },
+    "chatView": {
+      "files": "Files",
+      "members": "Members",
+      "panels": "Room panels",
+      "agentSession": "Agent session",
+      "closeTranscript": "Close the transcript",
+      "thread": "Thread",
+      "replyPlaceholder": "Reply in thread..."
+    },
+    "notFound": {
+      "title": "Page Not Found",
+      "body": "The page you are looking for does not exist or has been moved.",
+      "home": "Go to Dashboard"
+    },
+    "oauth": {
+      "back": "Back to login",
+      "failed": "Failed to complete OAuth login"
+    },
+    "rooms": {
+      "discover": "Discover and join open rooms",
+      "noTopic": "No topic set",
+      "noMatch": "No rooms found matching \"{query}\"",
+      "noOpen": "No open rooms available. Try creating one!",
+      "empty": "No rooms yet",
+      "emptyBody": "Create your first room to start chatting, sharing files, or hosting calls with your team.",
+      "walkThrough": "Walk me through it",
+      "created": "Room created",
+      "deleteTitle": "Delete \"{name}\"?",
+      "deleteBody": "This will permanently delete the room and all its messages, files, and members. This cannot be undone.",
+      "assignRole": "Assign Role",
+      "role": "Role",
+      "roleAssigned": "Role assigned",
+      "assignFailed": "Failed to assign role"
+    },
+    "files": {
+      "search": "Search files",
+      "columns": "Configure columns",
+      "all": "All Files",
+      "room": "Room Files",
+      "uploading": "Uploading files...",
+      "col": {
+        "name": "Name",
+        "room": "Room",
+        "type": "Type",
+        "size": "Size",
+        "uploaded": "Uploaded",
+        "actions": "Actions"
+      }
+    },
+    "settings": {
+      "workspace": "Workspace Settings",
+      "workspaceName": "Workspace Name",
+      "slug": "Slug",
+      "exec": {
+        "title": "Remote command execution",
+        "warn": "When enabled, users holding the {perm} permission can run commands on devices that individually opt in. Commands run as {root} (Linux) or, on Windows, as {system} through the device's service once an administrator has anchored it. A Windows device that is not anchored runs them as the {user} on an attended install, and as SYSTEM in SystemContext mode. They are all recorded in the audit log.",
+        "signedInUser": "signed-in user",
+        "allow": "Allow remote command execution in this organization",
+        "requireSystem": "Windows: require SYSTEM",
+        "requireSystemHint": "A Windows device runs commands as SYSTEM once an administrator has anchored it ({cmd}, elevated). With this on, a device that is not anchored refuses commands instead of running them as whoever is signed in."
+      },
+      "offDeviceGate": "Off by default. Turning it on does not enable any device on its own — each device must also be allowed individually, and the device's own {setting} setting must permit it.",
+      "ssh": {
+        "title": "MeshHarbor SSH",
+        "warn": "When enabled, users holding the {perm} permission can open an interactive shell on devices that individually opt in. A session lasts, unlike a single command — and which account it runs as is set per device.",
+        "allow": "Allow SSH sessions in this organization"
+      },
+      "ext": {
+        "title": "External access",
+        "warn": "When enabled, people {outside} can control devices that individually opt in — the way a support technician reaches a machine they do not administer. They need the device's connect code and a password held {onDevice}, which this server never sees.",
+        "outside": "outside this organization",
+        "onDevice": "on the device itself",
+        "allow": "Allow people outside this organization to control devices",
+        "hint": "Off by default, and turning it on opens nothing by itself. Each device must be approved individually, its owner must enable it on the machine and set a password there, and whoever is at the device is still asked before a session starts."
+      },
+      "kb": {
+        "title": "Keep busy",
+        "body": "A controller with input can leave a device's pointer moving in a pattern so it stays active: no screensaver, idle lock or \"Away\". It pauses whenever someone uses the device. Some organizations do not allow this because it defeats a screen-lock policy.",
+        "allow": "Allow keep busy in this organization",
+        "hint": "On by default. Turning it off stops keep busy on every device in the organization, immediately for devices that are online and at the next connect for the rest. A device's owner can also turn it off on that device ({setting}).",
+        "notAllowed": "Not allowed",
+        "allowed": "Allowed"
+      },
+      "rc": {
+        "title": "Remote session features",
+        "body": "Choose what a remote-desktop session in this organization may use. {ask} allows a feature only when the person at the device approves the session on a prompt that names it; a session nobody there is asked about (an unattended device, your own device, an administrator's forced session) goes without it.",
+        "askWord": "Ask",
+        "hint": "On by default. A device's owner can also turn each one off on that device ({a}, {b}, {c}). A change applies to sessions that start after it.",
+        "clipboard": "Clipboard",
+        "fileTransfer": "File transfer",
+        "files": "Files",
+        "audio": "The device's audio",
+        "audioShort": "Audio",
+        "on": "On",
+        "ask": "Ask the person at the device",
+        "off": "Off",
+        "pol": {
+          "ask": "ask",
+          "off": "off",
+          "on": "on"
+        },
+        "allOn": "All on"
+      },
+      "keys": {
+        "title": "Ephemeral enrollment keys",
+        "warn": "When enabled, fleet admins can mint {reusable} enrollment keys that create {selfRemoving} devices (CI runners, containers). A key is a standing credential: anyone holding it can enroll devices into this organization until it is revoked, exhausted, or expired.",
+        "reusable": "reusable",
+        "selfRemoving": "self-removing",
+        "allow": "Allow ephemeral enrollment keys in this organization",
+        "hint": "Off by default. Turning it OFF is an org-wide revocation: every outstanding key stops working on its next use. Devices already minted are untouched — they remove themselves by their own deadline."
+      },
+      "lim": {
+        "title": "Remote session limits",
+        "max": "Maximum session length",
+        "maxHint": "A session ends this long after it started, and the person controlling it is told why. No limit by default. A change applies to sessions that start after it.",
+        "idle": "End a session after no activity for",
+        "idleHint": "No input from the person controlling it and no change on the screen for this long. They are warned shortly before the end. The device keeps this limit, so a device whose agent predates it does not. No limit by default.",
+        "none": "No limit",
+        "minutes": "{n} minutes",
+        "hour": "1 hour",
+        "hours": "{n} hours",
+        "maxPart": "{d} max",
+        "idlePart": "{d} idle",
+        "noLimits": "No limits"
+      }
+    },
+    "valid": {
+      "required": "This field is required",
+      "email": "Invalid email address",
+      "minLength": "Must be at least {n} characters",
+      "maxLength": "Must be at most {n} characters",
+      "positive": "Must be a positive number",
+      "slug": "Only lowercase letters, numbers and hyphens"
+    },
+    "roles": {
+      "title": "Roles & Permissions",
+      "new": "New Role",
+      "edit": "Edit Role",
+      "intro": "Roles bundle permissions; members can hold several. Mutations need the {perm} permission — the server rejects anything else. Assign roles to people in the Members section.",
+      "empty": "No roles yet — create one to start delegating permissions.",
+      "col": {
+        "role": "Role",
+        "permissions": "Permissions",
+        "actions": "Actions"
+      },
+      "default": "default",
+      "managed": "managed",
+      "adminAll": "Administrator (all)",
+      "noPermissions": "No permissions",
+      "permOne": "{n} permission",
+      "permMany": "{n} permissions",
+      "name": "Name",
+      "position": "Position (lower sorts first)",
+      "description": "Description (optional)",
+      "color": "Color",
+      "memberDefaults": "Member defaults",
+      "adminDefaults": "Admin defaults",
+      "none": "None",
+      "adminWarn": "Administrator bypasses every other permission check — holders can do everything, including managing roles and remote-controlling devices.",
+      "save": "Save",
+      "create": "Create",
+      "deleteTitle": "Delete role",
+      "deleteBody": "Delete {name}? Members holding it lose its permissions immediately.",
+      "nameRequired": "Name is required.",
+      "positionInvalid": "Position must be ≥ 0."
+    },
+    "members": {
+      "title": "Members",
+      "search": "Search name or email",
+      "add": "Add member",
+      "total": "{n} total",
+      "rolesFailed": "Loading roles failed: {error}",
+      "intro": "Assign roles to grant permissions — device access (remote control, device management, audit) is role-driven. Changing roles needs the {perm} permission. New people join via Invites, or add an existing account by email.",
+      "leave": "Leave",
+      "remove": "Remove",
+      "ownerFixed": "The organization owner cannot be removed",
+      "addTitle": "Add member by email",
+      "addBody": "Adds an account that already exists on this server. For someone without an account, use Invites instead.",
+      "email": "Email address",
+      "addBtn": "Add",
+      "leaveTitle": "Leave organization",
+      "removeTitle": "Remove member",
+      "rolesTitle": "Roles — {name}",
+      "rolesUnloaded": "Roles couldn't be loaded: {error}",
+      "noRoles": "No roles exist yet — create one in the Roles section first.",
+      "done": "Done",
+      "col": {
+        "member": "Member",
+        "email": "Email",
+        "roles": "Roles",
+        "joined": "Joined",
+        "actions": "Actions"
+      },
+      "leaveMsg": "Leave this organization? You lose access until someone re-adds or re-invites you.",
+      "removeMsg": "Remove {who} from the organization? Their account is untouched — they just lose access here.",
+      "thisMember": "this member"
+    },
+    "permFlag": {
+      "VIEW_CHANNELS": {
+        "label": "View channels"
+      },
+      "MANAGE_CHANNELS": {
+        "label": "Manage channels"
+      },
+      "MANAGE_ROLES": {
+        "label": "Manage roles"
+      },
+      "MANAGE_TENANT": {
+        "label": "Manage tenant"
+      },
+      "INVITE_MEMBERS": {
+        "label": "Invite members"
+      },
+      "ADMINISTRATOR": {
+        "label": "Administrator",
+        "description": "Bypasses ALL permission checks — grants everything below implicitly."
+      },
+      "SEND_MESSAGES": {
+        "label": "Send messages"
+      },
+      "SEND_THREADS": {
+        "label": "Create threads"
+      },
+      "EMBED_LINKS": {
+        "label": "Embed links"
+      },
+      "ATTACH_FILES": {
+        "label": "Attach files"
+      },
+      "READ_HISTORY": {
+        "label": "Read history"
+      },
+      "MENTION_EVERYONE": {
+        "label": "Mention {everyone}"
+      },
+      "MANAGE_MESSAGES": {
+        "label": "Manage messages"
+      },
+      "ADD_REACTIONS": {
+        "label": "Add reactions"
+      },
+      "CONNECT_VOICE": {
+        "label": "Connect to voice"
+      },
+      "SPEAK": {
+        "label": "Speak"
+      },
+      "STREAM_VIDEO": {
+        "label": "Stream video"
+      },
+      "MANAGE_MEETINGS": {
+        "label": "Manage meetings"
+      },
+      "KICK_MEMBERS": {
+        "label": "Kick members"
+      },
+      "BAN_MEMBERS": {
+        "label": "Ban members"
+      },
+      "MUTE_MEMBERS": {
+        "label": "Mute members"
+      },
+      "DEAFEN_MEMBERS": {
+        "label": "Deafen members"
+      },
+      "MOVE_MEMBERS": {
+        "label": "Move members"
+      },
+      "MANAGE_DOCUMENTS": {
+        "label": "Manage documents"
+      },
+      "MANAGE_AGENTS": {
+        "label": "Manage devices",
+        "description": "Enroll, rename, delete, reassign and set policy for remote-control devices."
+      },
+      "REMOTE_CONTROL": {
+        "label": "Remote control",
+        "description": "Start remote-control sessions against devices the user does NOT own (controlling one's own device never needs this)."
+      },
+      "VIEW_REMOTE_AUDIT": {
+        "label": "View remote audit log",
+        "description": "Read the remote-control session audit trail."
+      },
+      "EXEC_DEVICE": {
+        "label": "Run commands on devices",
+        "description": "Run a command on a device via Fleet RPC. Commands execute as root (Linux) or, on Windows, as the daemon's worker: the signed-in user on an attended install, SYSTEM in SystemContext mode. Also requires the org switch, the device policy, and the device-local key."
+      },
+      "VIEW_EXEC_AUDIT": {
+        "label": "View command audit log",
+        "description": "Read the Fleet-RPC audit trail — who ran what, where."
+      },
+      "SSH_DEVICE": {
+        "label": "SSH to devices",
+        "description": "Open an interactive meshharbor SSH session to a device. Strictly more than a single command: it lasts, and it carries file transfer."
+      },
+      "VIEW_SSH_AUDIT": {
+        "label": "View SSH audit log",
+        "description": "Read the meshharbor-SSH audit trail — who was granted, or refused, a session."
+      },
+      "RECORD_REMOTE_SCREEN": {
+        "label": "Record remote screens",
+        "description": "Record a device’s screen during a remote-control session. The device must allow it, and the person there sees it. A recording outlives the session, so no role gets this by default."
+      },
+      "HIVE_RUN": {
+        "label": "Run agent sessions",
+        "description": "Start and drive AI agent sessions on a device. A session runs as the account the device maps you to — never SYSTEM or root — and only where the device allows it. It runs commands on that device, so no role gets this by default."
+      }
+    },
+    "permGroup": {
+      "general": "General",
+      "messaging": "Messaging",
+      "voice": "Voice & video",
+      "moderation": "Moderation",
+      "remote": "Remote control",
+      "fleet": "Fleet access"
+    },
+    "audit": {
+      "refresh": "Refresh",
+      "retained": "Retained for 90 days.",
+      "col": {
+        "when": "When",
+        "device": "Device",
+        "what": "What",
+        "detail": "Detail",
+        "result": "Result",
+        "who": "Who",
+        "via": "Via",
+        "as": "As",
+        "command": "Command"
+      },
+      "showMore": "Show {n} more",
+      "showLess": "Show less",
+      "showAll": "Show all",
+      "exit": "exit {code}",
+      "ok": "ok",
+      "refused": "refused",
+      "granted": "granted",
+      "denied": "denied",
+      "deviceService": "device's service",
+      "deny": {
+        "org_disabled": "org switched off",
+        "no_permission": "no permission",
+        "device_disabled": "device switched off",
+        "caller_not_allowed": "caller not allowed",
+        "shell_not_allowed": "shell not allowed",
+        "origin_not_allowed": "origin not allowed",
+        "unsupported": "agent too old",
+        "offline": "device offline",
+        "consent_denied": "consent denied",
+        "rate_limited": "rate limited",
+        "agent_disabled": "disabled on device",
+        "system_required": "SYSTEM required",
+        "claim_refused": "claim refused",
+        "run_as_unavailable": "needs the SYSTEM service",
+        "no_overlay_address": "not on the mesh",
+        "bad_public_key": "bad public key",
+        "grant_expired_on_arrival": "grant expired (clock skew?)",
+        "grant_refused": "device refused grant",
+        "grant_unconfirmed": "device did not confirm"
+      },
+      "sshDeny": {
+        "agent_disabled": "SSH off on the device",
+        "claim_refused": "service claim refused"
+      },
+      "ranAs": {
+        "system": "SYSTEM",
+        "console_user": "as user"
+      },
+      "ranAsSystemTitle": "Ran as SYSTEM through the device's service",
+      "ranAsUserTitle": "Ran through the device's service as the signed-in user",
+      "exec": {
+        "title": "Command audit",
+        "subtitle": "Every remote command attempted on this organization's devices — including the ones that were refused. Retained for 90 days.",
+        "empty": "No commands have been attempted yet."
+      },
+      "ssh": {
+        "title": "SSH audit",
+        "subtitle": "Every SSH session requested on this organization's devices — including the ones that were refused. Retained for 90 days.",
+        "info": "These are access {decisions}, not session recordings. MeshHarbor SSH runs peer-to-peer over the mesh, so the server sees who was allowed in and as which account — never what was typed.",
+        "decisions": "decisions",
+        "empty": "No SSH sessions have been requested yet."
+      },
+      "act": {
+        "title": "SSH activity",
+        "subtitle": "What devices reported doing inside their SSH sessions. Retained for 90 days.",
+        "warn": "{emptyNote} Reporting is a per-device setting ({setting}) and is off by default, so a device that never opted in looks exactly like an idle one. These rows are also the device's own account of itself — a compromised host can simply stop talking. The {auditLog} log records every access decision the server made, regardless of what the device says afterwards.",
+        "emptyNote": "An empty list does not mean nothing happened.",
+        "info": "Commands are recorded; {notContent}. There is no terminal recording and no command output here — capturing a session would mean sending whatever was typed, passwords included, off the device. Commands are redacted and truncated before they leave the host.",
+        "notContent": "session content is not",
+        "empty": "No device has reported SSH activity."
+      },
+      "kind": {
+        "session_open": "connected",
+        "session_close": "disconnected",
+        "exec": "ran command",
+        "shell": "opened shell",
+        "sftp": "file transfer",
+        "forward": "port forward"
+      }
+    },
+    "sshAs": {
+      "systemTitle": "Served by the device's SYSTEM service, as SYSTEM",
+      "signedIn": "signed-in user",
+      "consoleTitle": "Served by the device's SYSTEM service, as the user signed in at its console",
+      "agentAccount": "agent's account",
+      "agentTitle": "The account the agent runs as: root on Linux and macOS, SYSTEM on a Windows service install, and the signed-in user on an attended Windows install.",
+      "userTitle": "The user signed in at the device's console",
+      "named": "named account",
+      "namedTitle": "A local account the policy names"
+    },
+    "console": {
+      "title": "Device console — {name}",
+      "close": "Close",
+      "warn": "Commands run with the MeshHarbor daemon's privileges: {root} on Linux. On Windows they run as the {user} on an attended install, or as {system} in SystemContext mode. Every attempt is recorded in the org's execution audit log.",
+      "shell": "Shell",
+      "timeout": "Timeout (s)",
+      "command": "Command",
+      "hint": "Ctrl+Enter to run",
+      "run": "Run",
+      "default": "default",
+      "truncated": "output truncated",
+      "copy": "Copy output",
+      "empty": "No commands run in this session yet.",
+      "hostDefaultPs": "Host default (PowerShell)",
+      "hostDefaultBash": "Host default (bash)",
+      "orgOff": "Remote execution is switched off for this organization. An org owner can enable it in Settings.",
+      "deviceOff": "This device does not accept remote commands. Enable it in the device’s execution policy.",
+      "offline": "This device is offline — commands will fail until it reconnects.",
+      "tooOld": "This device runs agent {version}, which predates remote execution. Update it first."
+    },
+    "enroll": {
+      "titleAgent": "Enroll a new device",
+      "titleTunnel": "Enroll a tunnel client",
+      "tokenNote": "The token below is {single} and expires in {n} minutes. Pick your platform — the recommended command installs everything and enrolls in one step.",
+      "singleUse": "single-use",
+      "copyToken": "Copy token",
+      "copied": "Copied",
+      "copy": "Copy",
+      "scope": "Install scope",
+      "scopeSystem": "Background service",
+      "scopeMachine": "Attended service",
+      "scopeUser": "This user only",
+      "hintSystem": "Starts before logon and survives logouts — recommended for servers and unattended machines.",
+      "hintMachine": "Machine-wide service that runs while a user is logged in.",
+      "hintUser": "Installs and autostarts for your account only — no admin rights needed.",
+      "anchorLabel": "Also let administrators run commands as SYSTEM on this device",
+      "anchorHint": "The token can then also anchor the device it enrolls, once. MeshHarbor Setup does that itself after a second administrator prompt; after the script or a manual install, run the anchor command below. Give this token only to the person installing it as an administrator.",
+      "download": "Download MeshHarbor Setup",
+      "thenPaste": "then paste the token into the wizard",
+      "close": "Close"
+    },
+    "enrollCmd": {
+      "oneLine": "Recommended — one-line install",
+      "oneLinePs": "Recommended — one-line install (PowerShell)",
+      "manual": "Already installed? Enroll manually",
+      "wizard": "Graphical installer (MeshHarbor Setup)",
+      "anchor": "Then anchor it, from the same Administrator PowerShell (replace {placeholder} with the id on the device's page)",
+      "noteWindows": "Machine-wide install — run the commands below from an Administrator PowerShell (Terminal (Admin)).",
+      "noteLinux": "Installs a root systemd system service (sudo will prompt). Screen capture needs a logged-in session — pick 'This user only' for desktops.",
+      "noteMac": "Installs the per-user half (screen sharing + input). To also join the overlay mesh, mint a second enrollment token and append --daemon-token {token} — that adds a root LaunchDaemon and a second device row for this Mac."
+    },
+    "invite": {
+      "title": "Invite Links",
+      "search": "Search code or email",
+      "status": "Status",
+      "batch": "Batch Invite",
+      "create": "Create Invite",
+      "unlimited": "unlimited",
+      "anyone": "Anyone",
+      "shareable": "Shareable Link",
+      "emailInvite": "Email Invite",
+      "email": "Email address",
+      "maxUses": "Max uses (leave empty for unlimited)",
+      "expires": "Expires in (hours)",
+      "expiresDefault": "168 (7 days)",
+      "createBtn": "Create",
+      "col": {
+        "code": "Code",
+        "status": "Status",
+        "target": "Target",
+        "usage": "Usage",
+        "created": "Created",
+        "actions": "Actions"
+      },
+      "copied": "Invite link copied to clipboard",
+      "created": "Invite created",
+      "createFailed": "Failed to create invite",
+      "revoked": "Invite revoked",
+      "revokeFailed": "Failed to revoke invite",
+      "st": {
+        "active": "active",
+        "expired": "expired",
+        "revoked": "revoked",
+        "exhausted": "exhausted"
+      },
+      "loading": "Loading invite...",
+      "notFound": "Invite not found",
+      "invalidLink": "This invite link may be invalid or expired.",
+      "goLogin": "Go to Login",
+      "invited": "You're invited!",
+      "join": "Join {org}",
+      "invitedBy": "Invited by {name}",
+      "noLongerValid": "This invite is no longer valid ({status}).",
+      "alreadyMember": "You're already a member of this tenant.",
+      "goTo": "Go to {org}",
+      "accept": "Accept & Join",
+      "registerJoin": "Register to Join",
+      "loginJoin": "Login to Join",
+      "batchIntro": "Add multiple email invites at once. Each invite can have a different role assigned.",
+      "emailShort": "Email",
+      "role": "Role",
+      "addAnother": "Add another",
+      "defaultHint": "Default: 168 (7 days)",
+      "nth": "Invite #{n}",
+      "done": "Done",
+      "sendAll": "Send All ({n})",
+      "invalidEmail": "Invalid email",
+      "emailOne": "{n} email sent.",
+      "emailMany": "{n} emails sent.",
+      "noEmails": "No emails sent — email delivery is not configured; share the invite links from the list.",
+      "allCreated": "All {n} invites created.",
+      "nSent": "{n} invites sent",
+      "nCreated": "{n} invites created",
+      "allFailed": "All {n} invites failed.",
+      "allFailedShort": "All invites failed",
+      "mixed": "{created} created, {failed} failed.",
+      "batchFailed": "Failed to send batch invites.",
+      "batchFailedShort": "Failed to send batch invites"
+    },
+    "news": {
+      "getUpdates": "Get product updates",
+      "blurbTo": "MeshHarbor Field Notes — never more than monthly, one-click unsubscribe, straight to {email}.",
+      "blurb": "MeshHarbor Field Notes — never more than monthly, one-click unsubscribe.",
+      "keepPosted": "Keep me posted",
+      "noThanks": "No thanks",
+      "subscribedToast": "Subscribed — product updates only, never more than monthly",
+      "subscribeFailed": "Could not subscribe — please try again",
+      "productUpdates": "Product updates",
+      "subscribeAria": "Subscribe to product updates",
+      "subscribed": "Subscribed to product updates",
+      "unsubscribed": "Unsubscribed from product updates",
+      "prefFailed": "Could not update your newsletter preference"
+    },
+    "dash": {
+      "firstWorkspace": "Create Your First Workspace",
+      "workspaceName": "Workspace Name",
+      "slug": "Slug",
+      "slugHint": "URL-friendly identifier",
+      "create": "Create",
+      "newOrg": "New organization",
+      "name": "Name",
+      "workspaceCreated": "Workspace created",
+      "createFailed": "Failed to create workspace",
+      "overview": "Workspace Overview",
+      "devicesOnline": "Devices Online",
+      "tunnels": "Tunnels",
+      "rooms": "Rooms",
+      "activeCalls": "Active Calls",
+      "messages": "Messages",
+      "insights": "Insights",
+      "machinesOnline": "Machines online — 24h",
+      "online": "Online",
+      "noSamples": "No samples yet — data appears within the hour",
+      "callMinutes": "Call minutes — 7d",
+      "today": "{n} today",
+      "minutes": "Minutes",
+      "noCalls": "No calls in the last 7 days",
+      "network": "Network",
+      "quick": "Quick Actions",
+      "newRoom": "New Room",
+      "startCall": "Start Call",
+      "uploadFile": "Upload File",
+      "manage": "Manage",
+      "devices": "Devices",
+      "devicesHint": "Remote control, enrollment, updates",
+      "networkHint": "Overlay mesh, tunnels, ACL, routes, DNS",
+      "membersRoles": "Members & Roles",
+      "membersHint": "People, permissions, org settings",
+      "invites": "Invites",
+      "invitesHint": "Bring teammates into this org",
+      "analytics": "Analytics",
+      "analyticsHint": "Machines, calls, tunnel traffic over time",
+      "callName": "Call - {when}"
+    },
+    "profile": {
+      "edit": "Edit Profile",
+      "displayName": "Display Name",
+      "bio": "Bio",
+      "avatar": "Avatar URL",
+      "avatarHint": "Direct link to an image",
+      "language": "Language",
+      "timezone": "Timezone",
+      "save": "Save",
+      "saved": "Profile saved",
+      "saveFailed": "Failed to save profile",
+      "memberSince": "Member since",
+      "presence": {
+        "online": "online",
+        "idle": "idle",
+        "dnd": "dnd",
+        "offline": "offline"
+      }
+    },
+    "conf": {
+      "call": "Call",
+      "ready": "Ready to join?",
+      "microphone": "Microphone",
+      "camera": "Camera",
+      "closeChat": "Close chat",
+      "alreadyTitle": "Already in a call",
+      "alreadyBody": "You are already in a call in \"{room}\". Leave that call and join this one?",
+      "switch": "Switch Call",
+      "device": "Device {n}",
+      "notOnScreen": "That video is not on screen right now",
+      "denied": "Camera/microphone access denied. Please allow permissions in your browser settings.",
+      "noDevice": "No camera or microphone found. Please connect a device and try again.",
+      "joinFailed": "Failed to join call: {error}",
+      "shareFailed": "Screen share failed: {error}",
+      "status": {
+        "in_progress": "in_progress",
+        "scheduled": "scheduled",
+        "ended": "ended"
+      },
+      "you": "You",
+      "youSuffix": " (You)",
+      "leavePip": "Leave picture-in-picture",
+      "pip": "Picture-in-picture",
+      "exitFullscreen": "Exit fullscreen",
+      "fullscreen": "Fullscreen",
+      "returnToCall": "Return to call",
+      "upload": "Upload a file",
+      "closeFiles": "Close files"
+    },
+    "connect": {
+      "title": "Connect to a device",
+      "intro": "Enter the connect code and the password the device's owner gave you. The device checks the password itself — this server never sees it — and whoever is at the device may still be asked to approve.",
+      "code": "Connect code",
+      "password": "Device password",
+      "chargeOrg": "Run this session for",
+      "chargeHint": "It uses this organization's remote-session quota.",
+      "connect": "Connect",
+      "signIn": "Sign in again, then connect.",
+      "noServer": "Not connected to the server. Check your connection and try again.",
+      "loginFailed": "The login could not be completed. Try again."
+    },
+    "consent": {
+      "title": "Remote control request",
+      "body": "Someone is requesting to remotely control your device. Approve only if you expected this — the session cannot start without your approval.",
+      "deny": "Deny",
+      "approve": "Approve",
+      "approved": "Approved — the session can now start.",
+      "denied": "Denied — the session will not start.",
+      "failed": "This request could not be processed — it may have expired or already been handled."
+    },
+    "tut": {
+      "done": "{done}/{total} done",
+      "reset": "Reset progress",
+      "tryIt": "Try it now",
+      "open": "Open",
+      "copy": "Copy: {code}",
+      "holdsUp": "Why it holds up",
+      "inDetail": "In detail",
+      "doneBtn": "Done",
+      "markDone": "Mark as done",
+      "copied": "Copied to clipboard"
+    },
+    "tour": {
+      "skip": "Skip",
+      "done": "Done",
+      "next": "Next"
+    },
+    "nl": {
+      "confirmTitle": "One click to confirm",
+      "confirmBody": "Confirm you want MeshHarbor product updates at this address. Never more than monthly, one-click unsubscribe in every email.",
+      "confirmBtn": "Confirm my subscription",
+      "onList": "You're on the list",
+      "onListBody": "Thanks for confirming. Product updates only, never more than monthly — and a one-click unsubscribe in every email.",
+      "home": "Go to meshharbor.itachi.fans",
+      "badLink": "That link didn't work",
+      "badLinkBody": "It may already have been used — if you confirmed before, you're set. Otherwise you can sign up again from the home page.",
+      "noServer": "Could not reach the server",
+      "noServerBody": "Nothing was changed. Check your connection and try again.",
+      "retry": "Try again",
+      "invalidBody": "It is no longer valid — it may already have been used. If you meant to subscribe, you can sign up again from the home page.",
+      "unsubscribed": "You're unsubscribed",
+      "unsubscribedBody": "No more product updates will be sent to your address. Changed your mind? Subscribe again any time from the home page — it will ask you to confirm again.",
+      "lede": "Not ready to sign up? Get an email when something notable ships.",
+      "yourEmail": "Your email address",
+      "keepPosted": "Keep me posted",
+      "thanks": "Thanks — check your inbox for a confirmation link.",
+      "fine": "Product updates only, and never more than monthly. One-click unsubscribe in every email. We do not share your address.",
+      "privacy": "Privacy Policy",
+      "serverFailed": "Could not reach the server. Please try again.",
+      "promptTitle": "Get an email when something notable ships",
+      "signup": "Newsletter signup",
+      "dismiss": "Dismiss"
+    },
+    "video": {
+      "fromYoutube": "Plays from YouTube when you press play.",
+      "play": "Play the video \"{title}\" ({n} minutes, plays from YouTube)"
     }
   }
 }

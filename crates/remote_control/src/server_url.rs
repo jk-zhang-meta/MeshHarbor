@@ -42,8 +42,8 @@ pub struct Secured {
 /// its dialler is a guard with a hole: C0 controls and spaces at either end
 /// are dropped and a tab or newline anywhere is ignored; the scheme is matched
 /// in any case (`HTTP://` is plaintext too); and the slashes after `http:` may
-/// be `\`, more or fewer, or none at all (`http:roomler.ai` is dialled as
-/// `http://roomler.ai/`).
+/// be `\`, more or fewer, or none at all (`http:meshharbor.itachi.fans` is dialled as
+/// `http://meshharbor.itachi.fans/`).
 pub fn secure(raw: &str, allow_plaintext: bool) -> Secured {
     let unchanged = || Secured {
         url: raw.to_string(),
@@ -111,14 +111,17 @@ mod tests {
     /// URL is promoted; loopback stays as it is.
     #[test]
     fn plaintext_to_a_remote_host_is_promoted() {
-        assert_eq!(s("http://roomler.ai"), ("https://roomler.ai".into(), true));
         assert_eq!(
-            s("http://roomler.ai/"),
-            ("https://roomler.ai/".into(), true)
+            s("http://meshharbor.itachi.fans"),
+            ("https://meshharbor.itachi.fans".into(), true)
         );
         assert_eq!(
-            s("ws://roomler.ai/ws"),
-            ("wss://roomler.ai/ws".into(), true)
+            s("http://meshharbor.itachi.fans/"),
+            ("https://meshharbor.itachi.fans/".into(), true)
+        );
+        assert_eq!(
+            s("ws://meshharbor.itachi.fans/ws"),
+            ("wss://meshharbor.itachi.fans/ws".into(), true)
         );
         assert_eq!(
             s("http://10.0.0.5:3000"),
@@ -157,16 +160,16 @@ mod tests {
     /// fragment, a path or a query, or that only looks like loopback (`0127`
     /// is octal to the dialler: `87.0.0.1`).
     const OFF_HOST: &[&str] = &[
-        "http://roomler.ai",
-        "HTTP://ROOMLER.AI",
-        "Ws://roomler.ai/ws",
-        " http://roomler.ai \n",
-        "ht\ttp://roomler.ai",
-        "http:roomler.ai",
-        "http:/roomler.ai",
-        "http:\\\\roomler.ai",
-        "http:///roomler.ai",
-        "WS:roomler.ai/ws",
+        "http://meshharbor.itachi.fans",
+        "HTTP://meshharbor.itachi.fans",
+        "Ws://meshharbor.itachi.fans/ws",
+        " http://meshharbor.itachi.fans \n",
+        "ht\ttp://meshharbor.itachi.fans",
+        "http:meshharbor.itachi.fans",
+        "http:/meshharbor.itachi.fans",
+        "http:\\\\meshharbor.itachi.fans",
+        "http:///meshharbor.itachi.fans",
+        "WS:meshharbor.itachi.fans/ws",
         "http://10.0.0.5:3000",
         "http://[2001:db8::1]:8080",
         "http://localhost:80@evil.example",
@@ -241,9 +244,9 @@ mod tests {
             }
         );
         for raw in [
-            "https://roomler.ai",
-            "wss://roomler.ai/ws",
-            "roomler.ai",
+            "https://meshharbor.itachi.fans",
+            "wss://meshharbor.itachi.fans/ws",
+            "meshharbor.itachi.fans",
             "ftp://x",
             "",
         ] {

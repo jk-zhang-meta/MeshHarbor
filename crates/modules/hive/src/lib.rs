@@ -7,7 +7,7 @@
 //! audit of every start and stop. Never what is IN a session: the transcript
 //! lives on the devices that run and replicate it, and no frame this module
 //! sends or reads carries a prompt, a tool call or an output
-//! (`docs/roomler-hive-design.md` §3.3).
+//! (`docs/meshharbor-hive-design.md` §3.3).
 //!
 //! Running a session is remote code execution on a device, so it is gated
 //! like exec and SSH: the server's gates in [`routes`] (`HIVE_RUN` in no
@@ -38,14 +38,14 @@ use axum::{
     extract::FromRef,
     routing::{get, post, put},
 };
-use roomler_ai_config::Settings;
-use roomler_ai_db::indexes::{IndexSet, index, index_ttl, index_unique};
-use roomler_ai_mod_chat::bound::BoundChat;
-use roomler_ai_mod_fleet::FleetState;
-use roomler_core::{
+use meshharbor_config::Settings;
+use meshharbor_core::{
     AgentSocketHooks, Capabilities, Core, Hooks, Module, Role, TenantCtx, WsHandlerSpec,
     WsRegistration, rate_limit::RateLimiter,
 };
+use meshharbor_db::indexes::{IndexSet, index, index_ttl, index_unique};
+use meshharbor_mod_chat::bound::BoundChat;
+use meshharbor_mod_fleet::FleetState;
 
 pub mod access;
 pub mod acks;

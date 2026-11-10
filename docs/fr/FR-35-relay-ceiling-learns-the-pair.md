@@ -8,7 +8,7 @@ measured-rate line (#678: a sender cannot see capacity it is not using). Operato
 
 ## What is in force today
 
-- `relay_max_bps()` = **3 Mbps** (`agents/roomlerd/src/encode/mod.rs:464`, env `RELAY_MAX_KBPS`),
+- `relay_max_bps()` = **3 Mbps** (`agents/meshharbord/src/encode/mod.rs:464`, env `RELAY_MAX_KBPS`),
   applied as the encoder's `maxrate` cap on every constrained session
   (`encoder.rs` ↔ `rate_profile::ffmpeg_maxrate_bps_scaled`, `peer.rs:3134`), opened at 85 % =
   **2.55 Mbps**, and as the AIMD's ceiling (`governor.rs:254-273`); the send-queue budget derives
@@ -20,7 +20,7 @@ measured-rate line (#678: a sender cannot see capacity it is not using). Operato
 
 ## The measurement (P0, 2026-08-29, the REAL pair `neo16 → CORPLAP-2`, DERP relay)
 
-`ROOMLERD_FFMPEG_MAXRATE_KBPS=25500` on CORPLAP-2 (machine env + scheduled restart), viewer on neo16
+`MESHHARBORD_FFMPEG_MAXRATE_KBPS=25500` on CORPLAP-2 (machine env + scheduled restart), viewer on neo16
 with the FR-31 harness, one 20 s synthetic drag; CORPLAP-2's own heartbeats read afterwards.
 
 | what | today (cap 2.55 Mbps) | cap 25.5 Mbps |

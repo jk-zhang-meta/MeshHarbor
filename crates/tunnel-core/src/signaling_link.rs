@@ -4,8 +4,8 @@
 //!
 //! [`crate::driver::run_tunnel_session`] speaks the `rc:tunnel.*` control
 //! protocol over this pair instead of owning a WebSocket, so the SAME driver
-//! serves both the `roomler` CLI (which backs it with a tokio-tungstenite
-//! WS carrying a `TunnelClient` JWT) and — at P3b-2 — the `roomlerd` daemon
+//! serves both the `mh` CLI (which backs it with a tokio-tungstenite
+//! WS carrying a `TunnelClient` JWT) and — at P3b-2 — the `meshharbord` daemon
 //! (which backs it with its existing agent-WS multiplexer + a per-session
 //! `ServerMsg` channel). The split into a cloneable **sink** + a single-consumer
 //! **source** maps 1:1 onto how `forward.rs` already worked: an
@@ -13,7 +13,7 @@
 //! `SplitStream` moved from the setup wait into the dispatch loop.
 
 use async_trait::async_trait;
-use roomler_ai_remote_control::signaling::{ClientMsg, ServerMsg};
+use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
 
 /// The **egress** half — every `ClientMsg` the driver emits (hello/open, the SDP
 /// offer, ICE trickle, per-flow forward-requests, half-close + closed audit)

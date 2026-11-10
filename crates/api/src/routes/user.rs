@@ -201,9 +201,9 @@ pub async fn remove_member(
             .tenants
             .get_member_permissions(tid, auth.user_id)
             .await?;
-        if !roomler_ai_db::models::role::permissions::has(
+        if !meshharbor_db::models::role::permissions::has(
             perms,
-            roomler_ai_db::models::role::permissions::KICK_MEMBERS,
+            meshharbor_db::models::role::permissions::KICK_MEMBERS,
         ) {
             return Err(ApiError::Forbidden(
                 "Missing KICK_MEMBERS permission".to_string(),
@@ -351,4 +351,4 @@ pub async fn my_membership(
 }
 
 // P4's `GET /api/user/unread-summary` is the `chat` module's since FR-69 P3
-// (`roomler_ai_mod_chat::user_unread`): it counts messages and rooms.
+// (`meshharbor_mod_chat::user_unread`): it counts messages and rooms.

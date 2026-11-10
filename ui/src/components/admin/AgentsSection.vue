@@ -14,7 +14,7 @@
         :disabled="agentStore.agents.length === 0"
         @click="updateAllDialogOpen = true"
       >
-        Update all
+        {{ $t('mh.dev.updateAll') }}
       </v-btn>
       <!-- The phone fallback (docs/ui.md: a toolbar item hidden below sm
            keeps a way in): the same action, icon-only. -->
@@ -25,8 +25,8 @@
         density="comfortable"
         class="mr-2 d-sm-none"
         :disabled="agentStore.agents.length === 0"
-        aria-label="Update all"
-        title="Update all"
+        :aria-label="$t('mh.dev.updateAll')"
+        :title="$t('mh.dev.updateAll')"
         @click="updateAllDialogOpen = true"
       />
       <!-- ONE enroll entry point for both kinds, at every width. -->
@@ -41,12 +41,12 @@
             variant="flat"
             size="small"
           >
-            Enroll
+            {{ $t('mh.dev.enroll') }}
           </v-btn>
         </template>
         <v-list density="compact">
-          <v-list-item prepend-icon="mdi-monitor" title="Device (remote desktop + mesh)" @click="openEnrollDialog" />
-          <v-list-item prepend-icon="mdi-lan-pending" title="Tunnel client (CLI-only)" @click="openTunnelEnrollDialog" />
+          <v-list-item prepend-icon="mdi-monitor" :title="$t('mh.dev.enrollDevice')" @click="openEnrollDialog" />
+          <v-list-item prepend-icon="mdi-lan-pending" :title="$t('mh.dev.enrollTunnel')" @click="openTunnelEnrollDialog" />
         </v-list>
       </v-menu>
     </v-card-title>
@@ -88,10 +88,10 @@
           hide-details
           clearable
           prepend-inner-icon="mdi-magnify"
-          placeholder="Search name, tag, IP, MagicDNS…"
+          :placeholder="$t('mh.dev.searchPlaceholder')"
           :class="mobile ? 'device-search--full' : undefined"
           :style="mobile ? undefined : 'max-width: 340px'"
-          aria-label="Search devices"
+          :aria-label="$t('mh.dev.searchAria')"
         />
         <!-- Kind filter. Default = devices WITHOUT tunnel clients — the
              remote-desktop fleet is what this page is about day-to-day;
@@ -102,16 +102,15 @@
           hide-details
           density="compact"
           :class="mobile ? 'flex-grow-0' : 'ml-4 flex-grow-0'"
-          aria-label="Filter by device kind"
+          :aria-label="$t('mh.dev.kindAria')"
         >
-          <v-radio label="Devices" value="agent" density="compact" />
-          <v-radio label="Tunnels" value="tunnel_client" density="compact" />
-          <v-radio label="Both" value="both" density="compact" />
+          <v-radio :label="$t('mh.dev.kindDevices')" value="agent" density="compact" />
+          <v-radio :label="$t('mh.dev.kindTunnels')" value="tunnel_client" density="compact" />
+          <v-radio :label="$t('mh.dev.kindBoth')" value="both" density="compact" />
         </v-radio-group>
         <v-spacer />
         <span class="text-caption text-medium-emphasis mr-2">
-          {{ deviceStore.total }}
-          {{ gridKind === 'tunnel_client' ? (deviceStore.total === 1 ? 'tunnel' : 'tunnels') : deviceStore.total === 1 ? 'device' : 'devices' }}
+          {{ gridKind === 'tunnel_client' ? $t('mh.dev.countTunnels', { n: deviceStore.total }, deviceStore.total) : $t('mh.dev.countDevices', { n: deviceStore.total }, deviceStore.total) }}
         </span>
         <!-- Columns are a grid concept; the cards have none. -->
         <v-btn
@@ -120,8 +119,8 @@
           size="small"
           variant="text"
           :color="colsCustomized ? 'primary' : undefined"
-          title="Configure columns"
-          aria-label="Configure columns"
+          :title="$t('mh.dev.configureColumns')"
+          :aria-label="$t('mh.dev.configureColumns')"
           @click="colDialogOpen = true"
         />
       </div>
@@ -161,7 +160,7 @@
                 color="primary"
                 :disabled="!item.is_online"
                 :to="{ name: 'agent-remote', params: { tenantId, agentId: item.id } }"
-                :aria-label="`Connect to ${deviceLabel(item)}`"
+                :aria-label="$t('mh.dev.connectTo', { name: deviceLabel(item) })"
               />
               <DeviceActionsMenu
                 :tenant-id="tenantId"
@@ -198,9 +197,9 @@
                 variant="tonal"
                 class="ml-2"
                 prepend-icon="mdi-clock-fast"
-                title="Ephemeral device — removes itself after inactivity or on clean shutdown; removal is final"
+                :title="$t('mh.dev.ephemeralTitle')"
               >
-                ephemeral
+                {{ $t('mh.dev.ephemeral') }}
               </v-chip>
               <v-btn
                 :icon="copiedAgentId === item.id ? 'mdi-check' : 'mdi-content-copy'"
@@ -209,8 +208,8 @@
                 :color="copiedAgentId === item.id ? 'success' : undefined"
                 class="ml-1"
                 @click="copyAgentId(item.id)"
-                :aria-label="`Copy device ID for ${deviceLabel(item)}`"
-                :title="copiedAgentId === item.id ? 'Copied!' : 'Copy device ID'"
+                :aria-label="$t('mh.dev.copyIdFor', { name: deviceLabel(item) })"
+                :title="copiedAgentId === item.id ? $t('mh.dev.copied') : $t('mh.dev.copyId')"
               />
             </div>
             <div class="text-caption text-medium-emphasis d-flex align-center flex-nowrap">
@@ -218,7 +217,7 @@
                    display name is set (column-picker checkbox; the remote
                    page reads the same preference). -->
               <span v-if="secondaryDeviceName(item, hideNameWhenDisplay)" class="mr-1">{{ item.name }} ·</span>
-              <span class="agent-id-preview" :title="`Device ID: ${item.id}`">
+              <span class="agent-id-preview" :title="$t('mh.dev.deviceIdTitle', { id: item.id })">
                 id: {{ shortId(item.id) }}
               </span>
               <span class="mx-1">·</span>
@@ -234,9 +233,9 @@
               <span
                 v-if="companionSkew(item)"
                 class="companion-skew ml-1"
-                :title="`roomler-desktop is on v${companionSkew(item)} while the daemon is on v${item.version} — the companion updates separately (its own .deb on Linux, the .pkg on macOS, a daemon-side swap on Windows)`"
+                :title="$t('mh.dev.skewTitleLong', { desktop: companionSkew(item), daemon: item.version })"
               >
-                · desktop v{{ companionSkew(item) }}
+                · {{ $t('mh.dev.desktopVersion', { v: companionSkew(item) }) }}
               </span>
               <!-- FR-100 P1a — the device's own key, as a person reads it, so
                    what a browser pins can be checked against this list. Absent
@@ -244,15 +243,15 @@
               <span
                 v-if="item.kind === 'agent' && agentFor(item)?.peer_auth_fingerprint"
                 class="ml-1 text-mono"
-                :title="`Device key fingerprint: ${agentFor(item)!.peer_auth_fingerprint}`"
+                :title="$t('mh.dev.keyFingerprintTitle', { fp: agentFor(item)!.peer_auth_fingerprint })"
               >
-                · key {{ agentFor(item)!.peer_auth_fingerprint!.slice(0, 9) }}…
+                · {{ $t('mh.dev.keyShort') }} {{ agentFor(item)!.peer_auth_fingerprint!.slice(0, 9) }}…
               </span>
             </div>
           </template>
           <template #item.kind="{ item }">
             <v-chip size="x-small" variant="tonal" :color="item.kind === 'agent' ? 'primary' : 'secondary'">
-              {{ item.kind === 'agent' ? 'device' : 'tunnel' }}
+              {{ item.kind === 'agent' ? $t('mh.dev.kindDevice') : $t('mh.dev.kindTunnel') }}
             </v-chip>
           </template>
           <template #item.status="{ item }">
@@ -333,9 +332,9 @@
               <div
                 v-if="item.overlay_public_key"
                 class="text-caption text-medium-emphasis text-mono"
-                :title="`Overlay public key, epoch ${item.overlay_key_epoch ?? 0}: ${item.overlay_public_key}`"
+                :title="$t('mh.dev.overlayKeyTitle', { epoch: item.overlay_key_epoch ?? 0, key: item.overlay_public_key })"
               >
-                key {{ item.overlay_public_key.slice(0, 10) }}… · e{{ item.overlay_key_epoch ?? 0 }}
+                {{ $t('mh.dev.keyShort') }} {{ item.overlay_public_key.slice(0, 10) }}… · e{{ item.overlay_key_epoch ?? 0 }}
               </div>
             </template>
             <span v-else class="text-caption text-medium-emphasis">—</span>
@@ -349,10 +348,10 @@
                 variant="text"
                 class="ml-1"
                 @click="copyAgentId(item.magic_dns_fqdn!)"
-                :aria-label="`Copy MagicDNS name for ${deviceLabel(item)}`"
+                :aria-label="$t('mh.dev.copyDnsFor', { name: deviceLabel(item) })"
               />
             </div>
-            <span v-else-if="item.magic_dns_name" class="text-caption text-mono" title="Tenant has no MagicDNS domain configured — bare overlay label">
+            <span v-else-if="item.magic_dns_name" class="text-caption text-mono" :title="$t('mh.dev.noDnsDomain')">
               {{ item.magic_dns_name }}
             </span>
             <span v-else class="text-caption text-medium-emphasis">—</span>
@@ -463,14 +462,13 @@
           <template #no-data>
             <div class="text-center pa-8 text-medium-emphasis">
               <template v-if="gridSearch">
-                No devices match "{{ gridSearch }}".
+                {{ $t('mh.dev.noMatch', { q: gridSearch }) }}
               </template>
               <template v-else>
                 <v-icon size="48" color="grey-lighten-1" class="mb-2">mdi-desktop-classic</v-icon>
-                <p class="mb-1">No devices enrolled yet.</p>
+                <p class="mb-1">{{ $t('mh.dev.noneYet') }}</p>
                 <p class="text-body-2">
-                  Click "Enroll" for a one-line installer per platform — the
-                  machine appears here as soon as it enrolls.
+                  {{ $t('mh.dev.noneHint') }}
                 </p>
                 <!-- FR-12 — the empty state is exactly where the tour helps. -->
                 <v-btn
@@ -481,7 +479,7 @@
                   :to="{ name: 'tutorial', params: { tenantId }, hash: '#devices' }"
                   class="mt-2"
                 >
-                  Walk me through it
+                  {{ $t('mh.dev.walkThrough') }}
                 </v-btn>
               </template>
             </div>
@@ -509,14 +507,13 @@
           class="text-center pa-4 pa-md-6 pa-lg-8 text-medium-emphasis"
         >
           <template v-if="gridSearch">
-            No devices match "{{ gridSearch }}".
+            {{ $t('mh.dev.noMatch', { q: gridSearch }) }}
           </template>
           <template v-else>
             <v-icon size="64" color="grey-lighten-1" class="mb-2">mdi-desktop-classic</v-icon>
-            <p class="mb-2">No devices enrolled yet.</p>
+            <p class="mb-2">{{ $t('mh.dev.noneYet') }}</p>
             <p class="text-body-2">
-              Tap "Enroll" for a one-line installer per platform — the
-              machine appears here as soon as it enrolls.
+              {{ $t('mh.dev.noneHint') }}
             </p>
             <v-btn
               size="small"
@@ -526,7 +523,7 @@
               :to="{ name: 'tutorial', params: { tenantId }, hash: '#devices' }"
               class="mt-2"
             >
-              Walk me through it
+              {{ $t('mh.dev.walkThrough') }}
             </v-btn>
           </template>
         </div>
@@ -582,7 +579,7 @@
                   variant="tonal"
                   color="secondary"
                 >
-                  tunnel
+                  {{ $t('mh.dev.kindTunnel') }}
                 </v-chip>
                 <!-- FR-51 — the vanishing must never be a surprise. -->
                 <v-chip
@@ -591,9 +588,9 @@
                   color="warning"
                   variant="tonal"
                   prepend-icon="mdi-clock-fast"
-                  title="Ephemeral device — removes itself after inactivity or on clean shutdown; removal is final"
+                  :title="$t('mh.dev.ephemeralTitle')"
                 >
-                  ephemeral
+                  {{ $t('mh.dev.ephemeral') }}
                 </v-chip>
                 <template v-if="agentFor(item)">
                   <!-- FR-103 — only when the device's credential needs someone. -->
@@ -648,9 +645,9 @@
                     size="x-small"
                     color="warning"
                     variant="tonal"
-                    :title="`roomler-desktop is on v${companionSkew(item)} while the daemon is on v${item.version} — the companion updates separately`"
+                    :title="$t('mh.dev.skewTitle', { desktop: companionSkew(item), daemon: item.version })"
                   >
-                    desktop v{{ companionSkew(item) }}
+                    {{ $t('mh.dev.desktopVersion', { v: companionSkew(item) }) }}
                   </v-chip>
                   <!-- FR-92 P5b — keep busy, only while it is ON: the device's
                        claim, shown as such; off or unknown shows nothing. -->
@@ -663,7 +660,7 @@
                     :title="keepBusyBriefTitle(agentFor(item)!.keep_busy)"
                     data-testid="agent-keep-busy-chip"
                   >
-                    keep busy · {{ agentFor(item)!.keep_busy!.phase }}
+                    {{ $t('mh.dev.keepBusy') }} · {{ agentFor(item)!.keep_busy!.phase }}
                   </v-chip>
                   <!-- A device the OS has muzzled looks identical to a healthy
                        one until you connect and get a black screen. -->
@@ -710,7 +707,7 @@
                   <v-expansion-panel-title>
                     <div class="device-card__panel-title">
                       <span class="text-body-2 font-weight-medium flex-shrink-0">
-                        <v-icon size="small" class="mr-1">mdi-shield-account-outline</v-icon>Access
+                        <v-icon size="small" class="mr-1">mdi-shield-account-outline</v-icon>{{ $t('mh.dev.access') }}
                       </span>
                       <span class="text-caption text-medium-emphasis device-card__panel-summary">
                         {{ policySummary(agentFor(item)!.access_policy, isOwnedByMe(agentFor(item)!)).join(' · ') }}
@@ -736,17 +733,17 @@
                   <v-expansion-panel-title>
                     <div class="device-card__panel-title">
                       <span class="text-body-2 font-weight-medium flex-shrink-0">
-                        <v-icon size="small" class="mr-1">mdi-information-outline</v-icon>Details
+                        <v-icon size="small" class="mr-1">mdi-information-outline</v-icon>{{ $t('mh.dev.details') }}
                       </span>
                       <span class="text-caption text-medium-emphasis device-card__panel-summary">
-                        {{ item.overlay_ip || 'no overlay address' }}
+                        {{ item.overlay_ip || $t('mh.dev.noOverlay') }}
                       </span>
                     </div>
                   </v-expansion-panel-title>
                   <v-expansion-panel-text>
                     <dl class="device-card__facts text-caption">
                       <template v-if="item.overlay_ip">
-                        <dt>Overlay</dt>
+                        <dt>{{ $t('mh.dev.col.overlay') }}</dt>
                         <dd class="text-mono">
                           {{ item.overlay_ip }}<br />{{ deriveOverlayV6(item.overlay_ip) }}
                         </dd>
@@ -761,7 +758,7 @@
                             size="x-small"
                             variant="text"
                             density="comfortable"
-                            :aria-label="`Copy MagicDNS name for ${deviceLabel(item)}`"
+                            :aria-label="$t('mh.dev.copyDnsFor', { name: deviceLabel(item) })"
                             @click="copyAgentId(item.magic_dns_fqdn!)"
                           />
                         </dd>
@@ -770,12 +767,12 @@
                            visible as a changed key rather than trusted from a
                            chip. -->
                       <template v-if="item.overlay_public_key">
-                        <dt>Overlay key</dt>
+                        <dt>{{ $t('mh.dev.overlayKey') }}</dt>
                         <dd class="text-mono">
-                          {{ item.overlay_public_key.slice(0, 10) }}… · epoch {{ item.overlay_key_epoch ?? 0 }}
+                          {{ item.overlay_public_key.slice(0, 10) }}… · {{ $t('mh.dev.epoch', { n: item.overlay_key_epoch ?? 0 }) }}
                         </dd>
                       </template>
-                      <dt>Device ID</dt>
+                      <dt>{{ $t('mh.dev.deviceId') }}</dt>
                       <dd class="text-mono">
                         {{ shortId(item.id) }}
                         <v-btn
@@ -784,20 +781,20 @@
                           variant="text"
                           density="comfortable"
                           :color="copiedAgentId === item.id ? 'success' : undefined"
-                          :aria-label="`Copy device ID for ${deviceLabel(item)}`"
+                          :aria-label="$t('mh.dev.copyIdFor', { name: deviceLabel(item) })"
                           @click="copyAgentId(item.id)"
                         />
                       </dd>
-                      <dt>Machine ID</dt>
+                      <dt>{{ $t('mh.dev.machineId') }}</dt>
                       <dd class="text-mono">{{ shortId(item.machine_id) }}</dd>
                       <!-- FR-100 P1a — the device's own key, as a person reads
                            it, so what a browser pins can be checked here. -->
                       <template v-if="agentFor(item)?.peer_auth_fingerprint">
-                        <dt>Device key</dt>
+                        <dt>{{ $t('mh.dev.deviceKey') }}</dt>
                         <dd class="text-mono">{{ agentFor(item)!.peer_auth_fingerprint }}</dd>
                       </template>
                       <template v-if="agentFor(item) && codecChips(agentFor(item)!).length > 0">
-                        <dt>Codecs</dt>
+                        <dt>{{ $t('mh.dev.col.codecs') }}</dt>
                         <dd class="d-flex flex-wrap ga-1">
                           <v-chip
                             v-for="codec in codecChips(agentFor(item)!)"
@@ -811,7 +808,7 @@
                           </v-chip>
                         </dd>
                       </template>
-                      <dt>Last seen</dt>
+                      <dt>{{ $t('mh.dev.col.lastSeen') }}</dt>
                       <dd>{{ fmtDate(item.last_seen_at) }}</dd>
                     </dl>
                   </v-expansion-panel-text>
@@ -826,10 +823,10 @@
                   prepend-icon="mdi-remote-desktop"
                   :disabled="!item.is_online"
                   :to="{ name: 'agent-remote', params: { tenantId, agentId: item.id } }"
-                  :aria-label="`Connect to ${deviceLabel(item)}`"
+                  :aria-label="$t('mh.dev.connectTo', { name: deviceLabel(item) })"
                   class="flex-grow-1"
                 >
-                  Connect
+                  {{ $t('mh.dev.connect') }}
                 </v-btn>
                 <v-spacer v-else />
                 <DeviceActionsMenu
@@ -904,7 +901,7 @@
         v-model="hideNameWhenDisplay"
         density="compact"
         class="px-2"
-        label="Hide device name when a display name is set"
+        :label="$t('mh.dev.hideName')"
       />
     </template>
   </GridColumnPickerDialog>
@@ -923,43 +920,42 @@
     <v-card>
       <v-card-title>
         {{ evictTarget?.will_rejoin
-          ? `Force a new overlay address for “${nodeLabel(evictTarget)}”?`
-          : `Remove “${nodeLabel(evictTarget)}” from the mesh?` }}
+          ? $t('mh.dev.evict.titleRejoin', { name: nodeLabel(evictTarget) })
+          : $t('mh.dev.evict.titleRemove', { name: nodeLabel(evictTarget) }) }}
       </v-card-title>
       <v-card-text>
         <ul class="text-body-2 mb-3 ps-4">
           <li>
-            It leaves the mesh immediately — every peer drops its routes, and
-            traffic to
-            <span class="text-mono">{{ evictTarget?.overlay_ip }}</span>
-            stops.
+            <i18n-t keypath="mh.dev.evict.leaves" tag="span">
+              <template #ip><span class="text-mono">{{ evictTarget?.overlay_ip }}</span></template>
+            </i18n-t>
           </li>
           <li>
-            That address is released back to this tenant's pool and may later
-            be assigned to a <strong>different</strong> machine.
+            <i18n-t keypath="mh.dev.evict.released" tag="span">
+              <template #different><strong>{{ $t('mh.dev.different') }}</strong></template>
+            </i18n-t>
           </li>
           <li v-if="evictTarget?.will_rejoin">
-            <strong>{{ nodeLabel(evictTarget) }}</strong> is still enrolled, so it
-            rejoins automatically on its next connect — with a
-            <strong>different</strong> overlay address. This does not revoke
-            access; to remove the device for good, delete the agent or tunnel
-            client.
+            <i18n-t keypath="mh.dev.evict.rejoins" tag="span">
+              <template #name><strong>{{ nodeLabel(evictTarget) }}</strong></template>
+              <template #different><strong>{{ $t('mh.dev.different') }}</strong></template>
+            </i18n-t>
           </li>
           <li v-else>
-            Its backing device is no longer enrolled, so it will not come back.
+            {{ $t('mh.dev.evict.gone') }}
           </li>
         </ul>
         <v-alert type="warning" variant="tonal" density="compact" class="mb-0">
-          Anything pinned to the old address stops working — firewall rules,
-          scripts, and any client configured with
-          <code>overlay_exit_node = "{{ evictTarget?.name }}"</code>.
+          <i18n-t keypath="mh.dev.evict.pinned" tag="span">
+            <template #cfg><code>overlay_exit_node = "{{ evictTarget?.name }}"</code></template>
+          </i18n-t>
         </v-alert>
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="evictDialogOpen = false">Cancel</v-btn>
+        <v-btn variant="text" @click="evictDialogOpen = false">{{ $t('common.cancel') }}</v-btn>
         <v-btn color="error" variant="flat" :loading="evicting" @click="performEvict">
-          {{ evictTarget?.will_rejoin ? 'Evict and reassign' : 'Remove from mesh' }}
+          {{ evictTarget?.will_rejoin ? $t('mh.dev.evict.doRejoin') : $t('mh.dev.evict.doRemove') }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -968,25 +964,23 @@
   <!-- Tunnel-client delete confirmation (folded from TunnelClientsSection) -->
   <v-dialog v-model="tunnelDeleteDialogOpen" max-width="480">
     <v-card>
-      <v-card-title>Delete tunnel client?</v-card-title>
+      <v-card-title>{{ $t('mh.dev.tunnelDelete.title') }}</v-card-title>
       <v-card-text>
         <p class="font-weight-medium mb-2">{{ deviceLabel(tunnelDeleteTarget) }}</p>
         <p class="text-body-2">
-          Its access token is revoked and, if it joined the overlay, its node
-          is evicted and the overlay address released. The CLI stays installed
-          on the machine and can be re-enrolled with a new token.
+          {{ $t('mh.dev.tunnelDelete.body') }}
         </p>
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="tunnelDeleteDialogOpen = false">Cancel</v-btn>
+        <v-btn variant="text" @click="tunnelDeleteDialogOpen = false">{{ $t('common.cancel') }}</v-btn>
         <v-btn
           color="error"
           variant="flat"
           :loading="tunnelDeleting"
           @click="performTunnelDelete"
         >
-          Delete
+          {{ $t('mh.dev.tunnelDelete.do') }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -1047,29 +1041,28 @@
   <!-- FR-40 — rotate-overlay-key confirmation -->
   <v-dialog v-model="rotateKeyDialogOpen" max-width="520">
     <v-card>
-      <v-card-title>Rotate the overlay key of {{ deviceLabel(rotateKeyTarget) }}?</v-card-title>
+      <v-card-title>{{ $t('mh.dev.rotate.title', { name: deviceLabel(rotateKeyTarget) }) }}</v-card-title>
       <v-card-text>
-        The device mints a fresh WireGuard key <strong>on the device</strong>, saves it and
-        re-joins the mesh under it. Every peer picks the new key up within seconds and the old
-        key stops working everywhere. The server never sees a private key.
+        <i18n-t keypath="mh.dev.rotate.body" tag="span">
+          <template #onDevice><strong>{{ $t('mh.dev.rotate.onDevice') }}</strong></template>
+        </i18n-t>
         <br /><br />
-        Immediate and disruptive by design: every session this device carries in this
-        organization (remote control, SSH over the overlay, tunnels) ends and reconnects.
+        {{ $t('mh.dev.rotate.disruptive') }}
         <template v-if="rotateKeyTarget && !rotateKeyTarget.is_online">
           <br /><br />
-          The device is offline — the order is queued and runs on its next connect.
+          {{ $t('mh.dev.rotate.offline') }}
         </template>
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="rotateKeyDialogOpen = false">Cancel</v-btn>
+        <v-btn variant="text" @click="rotateKeyDialogOpen = false">{{ $t('common.cancel') }}</v-btn>
         <v-btn
           color="warning"
           variant="flat"
           :loading="rotateKeyBusy !== null"
           @click="doRotateKey"
         >
-          Rotate key
+          {{ $t('mh.dev.rotate.do') }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -1078,16 +1071,11 @@
   <!-- S1a — Update-all confirmation -->
   <v-dialog v-model="updateAllDialogOpen" max-width="480">
     <v-card>
-      <v-card-title>Update all agents?</v-card-title>
+      <v-card-title>{{ $t('mh.dev.upd.title') }}</v-card-title>
       <v-card-text>
-        Pushes an immediate self-update to every agent in this tenant
-        ({{ agentStore.agents.length }} total,
-        {{ agentStore.agents.filter((a) => a.is_online).length }} online).
-        Each agent downloads the latest release, installs it, and restarts —
-        active remote-control sessions on updating agents will drop for a few
-        seconds. Offline agents update on their next periodic check.
+        {{ $t('mh.dev.upd.body', { total: agentStore.agents.length, online: agentStore.agents.filter((a) => a.is_online).length }) }}
         <div v-if="wontUpdateHere.length > 0" class="mt-3">
-          {{ wontUpdateHere.length }} will not take it from here:
+          {{ $t('mh.dev.upd.wont', { n: wontUpdateHere.length }) }}
           <ul class="ml-4">
             <li v-for="x in wontUpdateHere" :key="x.a.id">
               <strong>{{ deviceLabel(x.a) }}</strong> — {{ refusalShort(x.code) }}
@@ -1097,9 +1085,9 @@
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="updateAllDialogOpen = false">Cancel</v-btn>
+        <v-btn variant="text" @click="updateAllDialogOpen = false">{{ $t('common.cancel') }}</v-btn>
         <v-btn color="primary" variant="flat" @click="doUpdateAll" :loading="updatingAll">
-          Update all
+          {{ $t('mh.dev.updateAll') }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -1108,36 +1096,35 @@
   <!-- Delete confirmation -->
   <v-dialog v-model="deleteDialogOpen" max-width="540">
     <v-card>
-      <v-card-title>Remove this device from the tenant?</v-card-title>
+      <v-card-title>{{ $t('mh.dev.del.title') }}</v-card-title>
       <v-card-text>
         <p class="font-weight-medium mb-3">{{ deviceLabel(deleteTarget) }}</p>
         <ul class="text-body-2 mb-3 ps-4">
           <li>
-            It is evicted from the overlay mesh immediately — peers drop its
-            routes, and any live remote-control or tunnel session to it ends.
+            {{ $t('mh.dev.del.evicted') }}
           </li>
           <li>
-            Its overlay address is released back to this tenant's pool and may
-            later be assigned to a <strong>different</strong> machine.
+            <i18n-t keypath="mh.dev.evict.released" tag="span">
+              <template #different><strong>{{ $t('mh.dev.different') }}</strong></template>
+            </i18n-t>
           </li>
           <li>
-            The agent stays installed on the host. It can be enrolled again with
-            a new enrollment token, but it comes back with a
-            <strong>new overlay address and a new name</strong>.
+            <i18n-t keypath="mh.dev.del.stays" tag="span">
+              <template #fresh><strong>{{ $t('mh.dev.del.fresh') }}</strong></template>
+            </i18n-t>
           </li>
         </ul>
         <v-alert type="warning" variant="tonal" density="compact" class="mb-0">
-          Anything pinned to the old identity stops working — scripts using this
-          agent id, tunnel forwards targeting it, firewall rules on its old
-          overlay address, and any client configured with
-          <code>overlay_exit_node = "{{ deleteTarget?.name }}"</code>.
+          <i18n-t keypath="mh.dev.del.pinned" tag="span">
+            <template #cfg><code>overlay_exit_node = "{{ deleteTarget?.name }}"</code></template>
+          </i18n-t>
         </v-alert>
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="deleteDialogOpen = false">Cancel</v-btn>
+        <v-btn variant="text" @click="deleteDialogOpen = false">{{ $t('common.cancel') }}</v-btn>
         <v-btn color="error" variant="flat" @click="performDelete" :loading="deleting">
-          Remove device
+          {{ $t('mh.dev.del.do') }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -1149,12 +1136,12 @@
        only lists orgs where the caller actually has it. -->
   <v-dialog v-model="joinOrgDialogOpen" max-width="520">
     <v-card>
-      <v-card-title>Add to another organization</v-card-title>
+      <v-card-title>{{ $t('mh.dev.join.title') }}</v-card-title>
       <v-card-text>
         <p class="text-body-2 mb-3">
-          <strong>{{ deviceLabel(joinOrgTarget) }}</strong> keeps its current enrollment and gains a
-          second one. The device connects to both organizations at once; each sees only its
-          own sessions, and the new org gets its own encryption key.
+          <i18n-t keypath="mh.dev.join.body" tag="span">
+            <template #name><strong>{{ deviceLabel(joinOrgTarget) }}</strong></template>
+          </i18n-t>
         </p>
         <v-alert
           v-if="joinOrgLoaded && !joinOrgSupported"
@@ -1162,8 +1149,7 @@
           variant="tonal"
           density="compact"
           class="mb-3"
-          text="This device runs an agent version that predates remote org-join. Update it
-                first, or enroll it at the keyboard."
+          :text="$t('mh.dev.join.old')"
         />
         <v-alert
           v-else-if="joinOrgLoaded && !joinOrgOnline"
@@ -1171,7 +1157,7 @@
           variant="tonal"
           density="compact"
           class="mb-3"
-          text="This device is offline. It has to be connected to receive the invitation."
+          :text="$t('mh.dev.join.offline')"
         />
         <v-alert
           v-else-if="joinOrgLoaded && joinOrgItems.length === 0"
@@ -1179,15 +1165,14 @@
           variant="tonal"
           density="compact"
           class="mb-3"
-          text="You don't manage devices in any other organization. Ask an admin there to
-                grant you device management, then try again."
+          :text="$t('mh.dev.join.none')"
         />
         <v-select
           v-model="joinOrgTargetTenant"
           :items="joinOrgSelectItems"
           :loading="joinOrgLoading"
           :disabled="!joinOrgSupported || !joinOrgOnline || joinOrgItems.length === 0"
-          label="Organization"
+          :label="$t('mh.dev.join.org')"
           density="compact"
           variant="outlined"
           class="mb-3"
@@ -1196,11 +1181,11 @@
         <v-select
           v-model="joinOrgOverlayMode"
           :items="[
-            { title: 'No mesh access (default)', value: 'off' },
-            { title: 'Join the mesh (needs multi-org TUN enabled)', value: 'tun' },
+            { title: $t('mh.dev.join.meshOff'), value: 'off' },
+            { title: $t('mh.dev.join.meshTun'), value: 'tun' },
           ]"
           :disabled="!joinOrgSupported || !joinOrgOnline"
-          label="Private mesh"
+          :label="$t('mh.dev.join.mesh')"
           density="compact"
           variant="outlined"
           hide-details
@@ -1211,9 +1196,7 @@
           variant="tonal"
           density="compact"
           class="mt-3"
-          text="This device's agent started with a single organization, so it holds its
-                network adapter exclusively. The join is applied right away, but mesh
-                access begins after the agent restarts — the next auto-update does that."
+          :text="$t('mh.dev.join.restart')"
         />
         <v-alert
           v-if="joinOrgError"
@@ -1226,7 +1209,7 @@
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="joinOrgDialogOpen = false">Cancel</v-btn>
+        <v-btn variant="text" @click="joinOrgDialogOpen = false">{{ $t('common.cancel') }}</v-btn>
         <v-btn
           color="primary"
           variant="flat"
@@ -1234,7 +1217,7 @@
           :disabled="!joinOrgTargetTenant || !joinOrgSupported || !joinOrgOnline"
           @click="confirmJoinOrg"
         >
-          Add device
+          {{ $t('mh.dev.join.do') }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -1242,16 +1225,17 @@
 
   <v-dialog v-model="reassignDialogOpen" max-width="440">
     <v-card>
-      <v-card-title>Reassign device owner</v-card-title>
+      <v-card-title>{{ $t('mh.dev.owner.title') }}</v-card-title>
       <v-card-text>
         <p class="text-body-2 mb-3">
-          Owner of <strong>{{ deviceLabel(reassignTarget) }}</strong>. The owner self-controls
-          without an allowlist entry, and consent (email / push) routes to them.
+          <i18n-t keypath="mh.dev.owner.body" tag="span">
+            <template #name><strong>{{ deviceLabel(reassignTarget) }}</strong></template>
+          </i18n-t>
         </p>
         <v-select
           v-model="reassignOwnerId"
           :items="memberSelectItems"
-          label="New owner"
+          :label="$t('mh.dev.owner.new')"
           density="compact"
           variant="outlined"
           hide-details
@@ -1259,7 +1243,7 @@
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="reassignDialogOpen = false">Cancel</v-btn>
+        <v-btn variant="text" @click="reassignDialogOpen = false">{{ $t('common.cancel') }}</v-btn>
         <v-btn
           color="primary"
           variant="flat"
@@ -1267,7 +1251,7 @@
           :disabled="!reassignOwnerId || reassignOwnerId === reassignTarget?.owner_user_id"
           @click="confirmReassign"
         >
-          Reassign
+          {{ $t('mh.dev.owner.do') }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -1276,15 +1260,14 @@
   <!-- Subnet routes (mesh subnet-router, Phase 2 — MANAGE_AGENTS) -->
   <v-dialog v-model="routesDialogOpen" max-width="560">
     <v-card>
-      <v-card-title>Tunnel mesh routes</v-card-title>
+      <v-card-title>{{ $t('mh.dev.routes.title') }}</v-card-title>
       <v-card-text>
         <p class="text-body-2 mb-3">
-          CIDRs that <strong>{{ deviceLabel(routesTarget) }}</strong> advertises for the
-          mesh (<code>roomler socks5</code>). A LAN target IP matching one of
-          these routes is dialed by this agent, so the mesh can reach non-agent
-          devices behind it (a NAS, a printer, a database host). Access is still
-          gated by your <strong>Tunnel ACL</strong> — a route steers the dial, it
-          doesn't authorize it.
+          <i18n-t keypath="mh.dev.routes.body" tag="span">
+            <template #name><strong>{{ deviceLabel(routesTarget) }}</strong></template>
+            <template #cmd><code>mh socks5</code></template>
+            <template #acl><strong>{{ $t('mh.tp.title') }}</strong></template>
+          </i18n-t>
         </p>
 
         <div v-if="routesDraft.length" class="d-flex flex-wrap ga-2 mb-3">
@@ -1302,12 +1285,12 @@
           </v-chip>
         </div>
         <p v-else class="text-body-2 text-medium-emphasis mb-3">
-          No routes yet — this agent only reaches its own host.
+          {{ $t('mh.dev.routes.none') }}
         </p>
 
         <div v-if="advertisedSuggestions.length" class="mb-3">
           <p class="text-caption text-medium-emphasis mb-1">
-            Advertised by the agent — click to approve into the routes above:
+            {{ $t('mh.dev.routes.advertised') }}
           </p>
           <div class="d-flex flex-wrap ga-2">
             <v-chip
@@ -1319,7 +1302,7 @@
               prepend-icon="mdi-lan-pending"
               append-icon="mdi-plus"
               @click="approveAdvertised(cidr)"
-              :aria-label="`Approve advertised route ${cidr}`"
+              :aria-label="$t('mh.dev.routes.approve', { cidr })"
             >
               {{ cidr }}
             </v-chip>
@@ -1328,13 +1311,13 @@
 
         <v-text-field
           v-model="routeInput"
-          label="Add route (CIDR)"
+          :label="$t('mh.dev.routes.add')"
           placeholder="10.66.24.0/24"
           density="compact"
           variant="outlined"
           :error-messages="routeInputError ? [routeInputError] : []"
           append-inner-icon="mdi-plus"
-          hint="e.g. 10.66.24.0/24 (subnet) or 10.66.24.53/32 (single host)"
+          :hint="$t('mh.dev.routes.hint')"
           persistent-hint
           @click:append-inner="addRoute"
           @keyup.enter="addRoute"
@@ -1342,9 +1325,9 @@
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="routesDialogOpen = false">Cancel</v-btn>
+        <v-btn variant="text" @click="routesDialogOpen = false">{{ $t('common.cancel') }}</v-btn>
         <v-btn color="primary" variant="flat" :loading="routesBusy" @click="saveRoutes">
-          Save
+          {{ $t('common.save') }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -1353,6 +1336,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import {
@@ -1454,21 +1438,23 @@ watch(gridKind, (k) => {
  *  when one is set (default ON — the machine-reported title is noise once
  *  someone has named the device). Per user+org, like the column prefs, and
  *  shared with the remote-control page's header. */
+// `tr`, not `t`: the template already uses `t` for a tag.
+const { t: tr } = useI18n()
 const hideNameWhenDisplay = useHideDeviceName(() => `${auth.user?.id ?? 'anon'}:${props.tenantId}`)
 
 const deviceHeaders = computed(() => [
   // Leftmost on purpose — see the template comment (field bug 2026-05-01).
-  { title: 'Actions', key: 'actions', sortable: false, width: 96 },
-  { title: 'Name', key: 'name', sortable: true },
-  { title: 'Kind', key: 'kind', sortable: true },
-  { title: 'Status', key: 'status', sortable: true },
+  { title: tr('mh.dev.col.actions'), key: 'actions', sortable: false, width: 96 },
+  { title: tr('mh.dev.col.name'), key: 'name', sortable: true },
+  { title: tr('mh.dev.col.kind'), key: 'kind', sortable: true },
+  { title: tr('mh.dev.col.status'), key: 'status', sortable: true },
   { title: 'OS', key: 'os', sortable: true },
-  { title: 'Overlay', key: 'overlay_ip', sortable: true },
+  { title: tr('mh.dev.col.overlay'), key: 'overlay_ip', sortable: true },
   { title: 'MagicDNS', key: 'magic_dns', sortable: true },
-  { title: 'Tags', key: 'tags', sortable: false },
-  { title: 'Consent', key: 'consent', sortable: false },
-  { title: 'Codecs', key: 'codecs', sortable: false },
-  { title: 'Last seen', key: 'last_seen_at', sortable: true },
+  { title: tr('mh.dev.col.tags'), key: 'tags', sortable: false },
+  { title: tr('mh.dev.col.consent'), key: 'consent', sortable: false },
+  { title: tr('mh.dev.col.codecs'), key: 'codecs', sortable: false },
+  { title: tr('mh.dev.col.lastSeen'), key: 'last_seen_at', sortable: true },
 ])
 const {
   effectiveHeaders,
@@ -1626,7 +1612,7 @@ const pageRangeText = computed(() => {
   if (total === 0) return ''
   const first = (gridPage.value - 1) * gridPerPage.value + 1
   const last = Math.min(gridPage.value * gridPerPage.value, total)
-  return `${first}–${last} of ${total}`
+  return tr('mh.dev.pageRange', { first, last, total })
 })
 
 // Row-level presence rendering (DeviceRow carries presence directly).
@@ -1642,20 +1628,18 @@ function rowPresenceIcon(r: DeviceRow): string {
 }
 function rowPresenceTitle(r: DeviceRow): string {
   if (r.kind === 'tunnel_client')
-    return r.is_online ? 'Online (stored status)' : 'Offline (stored status)'
+    return r.is_online ? tr('mh.dev.presence.onlineStored') : tr('mh.dev.presence.offlineStored')
   return r.presence === 'online'
-    ? 'Online — a control socket is registered'
+    ? tr('mh.dev.presence.onlineTitle')
     : r.presence === 'stale'
-      ? 'Stale — heartbeat fresh but no socket registered (a half-open network leg or a ' +
-        'recent server roll). It should heal within minutes; otherwise restart the Roomler ' +
-        'service on the machine.'
-      : 'Offline'
+      ? tr('mh.dev.presence.staleTitle')
+      : tr('mh.dev.presence.offline')
 }
 function rowStatusColor(r: DeviceRow): string {
   return rowPresenceColor(r)
 }
 function rowStatusLabel(r: DeviceRow): string {
-  return r.presence
+  return tr(`mh.dev.presence.${r.presence}`)
 }
 
 // ── Edit name & tags ─────────────────────────────────────────────
@@ -1972,8 +1956,8 @@ async function doRotateKey() {
   try {
     const res = await agentStore.rotateOverlayKey(props.tenantId, a.id)
     updateNotice.value = res.delivered
-      ? `Key rotation ordered on ${deviceLabel(a)} — it mints a new key, re-joins the mesh and reports back within seconds.`
-      : `${deviceLabel(a)} is offline — the key rotation is queued and runs on its next connect.`
+      ? tr('mh.dev.rotate.ordered', { name: deviceLabel(a) })
+      : tr('mh.dev.rotate.queuedOffline', { name: deviceLabel(a) })
     rotateKeyDialogOpen.value = false
     await agentStore.fetchAgents(props.tenantId)
     fetchGrid()
@@ -1996,61 +1980,61 @@ function keyRotationChip(
       return {
         color: 'info',
         icon: 'mdi-key-chain',
-        text: 'key rotation queued',
-        tooltip: 'Ordered while the device was offline; it rotates on its next connect.',
+        text: tr('mh.dev.kr.queued'),
+        tooltip: tr('mh.dev.kr.queuedTip'),
       }
     case 'delivered':
       return {
         color: 'info',
         icon: 'mdi-key-chain',
-        text: 'rotating key…',
-        tooltip: 'The order reached the device; waiting for its answer.',
+        text: tr('mh.dev.kr.rotating'),
+        tooltip: tr('mh.dev.kr.deliveredTip'),
       }
     case 'rotating':
       return {
         color: 'info',
         icon: 'mdi-key-chain',
-        text: 'rotating key…',
-        tooltip: 'The device minted its new key and is re-joining the mesh.',
+        text: tr('mh.dev.kr.rotating'),
+        tooltip: tr('mh.dev.kr.rotatingTip'),
       }
     case 'rotated':
       return {
         color: 'success',
         icon: 'mdi-key-change',
-        text: `key rotated · e${kr.report?.key_epoch ?? '?'}`,
-        tooltip: `Rotated ${kr.report?.reported_at ?? ''} and joined the mesh under the new key.`,
+        text: tr('mh.dev.kr.rotated', { epoch: kr.report?.key_epoch ?? '?' }),
+        tooltip: tr('mh.dev.kr.rotatedTip', { at: kr.report?.reported_at ?? '' }),
       }
     case 'reported_not_joined':
       return {
         color: 'error',
         icon: 'mdi-key-alert',
-        text: 'key not re-joined',
+        text: tr('mh.dev.kr.notJoined'),
         tooltip:
-          'The device reported a rotation but has not joined the mesh under the new key — read its log.',
+          tr('mh.dev.kr.notJoinedTip'),
       }
     case 'refused':
       return {
         color: 'warning',
         icon: 'mdi-hand-back-left-outline',
-        text: `key rotation refused (${kr.report?.outcome ?? 'refused'})`,
-        tooltip: kr.report?.detail ?? 'The device refused the rotation order.',
+        text: tr('mh.dev.kr.refused', { outcome: kr.report?.outcome ?? 'refused' }),
+        tooltip: kr.report?.detail ?? tr('mh.dev.kr.refusedTip'),
       }
     case 'failed':
       return {
         color: 'error',
         icon: 'mdi-alert-circle-outline',
-        text: 'key rotation failed',
+        text: tr('mh.dev.kr.failed'),
         tooltip:
           kr.report?.detail ??
-          'The device could not mint or save a new key; its identity is unchanged.',
+          tr('mh.dev.kr.failedTip'),
       }
     case 'unsupported':
       return {
         color: 'grey',
         icon: 'mdi-update',
-        text: 'agent too old for key rotation',
+        text: tr('mh.dev.kr.old'),
         tooltip:
-          "This device's agent predates key rotation (0.4.25+). Update it — the order stays queued.",
+          tr('mh.dev.kr.oldTip'),
       }
     default:
       return null
@@ -2062,8 +2046,8 @@ async function triggerUpdate(a: Agent) {
   try {
     const delivered = await agentStore.triggerUpdate(props.tenantId, a.id)
     updateNotice.value = delivered
-      ? `Update pushed to ${deviceLabel(a)} — it will download, install, and restart shortly.`
-      : `${deviceLabel(a)} is offline — it will update on its next periodic check instead.`
+      ? tr('mh.dev.upd.pushed', { name: deviceLabel(a) })
+      : tr('mh.dev.upd.offline', { name: deviceLabel(a) })
   } catch (e) {
     agentStore.error = (e as Error).message
   } finally {
@@ -2092,16 +2076,16 @@ async function doUpdateAll() {
     const res = await agentStore.triggerUpdateAll(props.tenantId)
     const names = new Map(agentStore.agents.map((a) => [a.id, deviceLabel(a)]))
     const skipped = res.results.filter((r) => r.refused_code)
-    let notice =
-      `Update pushed to ${res.delivered} of ${res.requested} agents — ` +
-      `offline agents update on their next periodic check.`
+    let notice = tr('mh.dev.upd.pushedAll', { delivered: res.delivered, requested: res.requested })
     if (skipped.length > 0) {
       notice +=
-        ` ${skipped.length} not updated from here: ` +
-        skipped
-          .map((r) => `${names.get(r.agent_id) ?? r.agent_id} (${refusalShort(r.refused_code)})`)
-          .join(', ') +
-        '.'
+        ' ' +
+        tr('mh.dev.upd.skipped', {
+          n: skipped.length,
+          list: skipped
+            .map((r) => `${names.get(r.agent_id) ?? r.agent_id} (${refusalShort(r.refused_code)})`)
+            .join(', '),
+        })
     }
     updateNotice.value = notice
     updateAllDialogOpen.value = false
@@ -2190,43 +2174,43 @@ function remoteConfigChip(
       return {
         color: 'warning',
         icon: 'mdi-restart-alert',
-        text: 'restart needed',
-        tooltip: 'Config saved on the device but not yet in effect.',
+        text: tr('mh.dev.rc.restart'),
+        tooltip: tr('mh.dev.rc.restartTip'),
       }
     case 'refused':
       return {
         color: 'warning',
         icon: 'mdi-hand-back-left-outline',
-        text: 'config refused',
+        text: tr('mh.dev.rc.refused'),
         tooltip:
           a.remote_config?.report?.outcome === 'not_primary'
-            ? 'This org is a secondary on that host; only its primary enrollment may change machine-wide config.'
-            : 'The device has not opted in to remote configuration.',
+            ? tr('mh.dev.rc.notPrimary')
+            : tr('mh.dev.rc.notOptedIn'),
       }
     case 'failed':
       return {
         color: 'error',
         icon: 'mdi-alert-circle-outline',
-        text: 'config failed',
-        tooltip: a.remote_config?.report?.detail ?? 'The device could not write its config.',
+        text: tr('mh.dev.rc.failed'),
+        tooltip: a.remote_config?.report?.detail ?? tr('mh.dev.rc.failedTip'),
       }
     case 'pending':
       return {
         color: 'info',
         icon: 'mdi-clock-outline',
-        text: 'config pending',
-        tooltip: 'Waiting for the device to reconnect and reconcile.',
+        text: tr('mh.dev.rc.pending'),
+        tooltip: tr('mh.dev.rc.pendingTip'),
       }
     case 'reports_unsupported':
     case 'push_unsupported':
       return {
         color: 'grey',
         icon: 'mdi-update',
-        text: 'agent too old',
+        text: tr('mh.dev.rc.old'),
         tooltip:
           state === 'push_unsupported'
-            ? 'This agent predates remote configuration; nothing is sent to it.'
-            : 'This agent applies pushed config but cannot report what it did.',
+            ? tr('mh.dev.rc.oldPush')
+            : tr('mh.dev.rc.oldReport'),
       }
     default:
       return null
@@ -2256,17 +2240,17 @@ function fmtRelative(iso: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
   const diff = Date.now() - d.getTime()
-  if (diff < 0) return 'just now'
+  if (diff < 0) return tr('mh.ago.now')
   const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
+  if (mins < 1) return tr('mh.ago.now')
+  if (mins < 60) return tr('mh.ago.m', { n: mins })
   const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
+  if (hours < 24) return tr('mh.ago.h', { n: hours })
   const days = Math.floor(hours / 24)
-  if (days < 30) return `${days}d ago`
+  if (days < 30) return tr('mh.ago.d', { n: days })
   const months = Math.floor(days / 30)
-  if (months < 12) return `${months}mo ago`
-  return `${Math.floor(months / 12)}y ago`
+  if (months < 12) return tr('mh.ago.mo', { n: months })
+  return tr('mh.ago.y', { n: Math.floor(months / 12) })
 }
 
 // FR-12 — `/devices?enroll=1` opens this dialog, so a tutorial step can land
@@ -2316,7 +2300,7 @@ function closeEnrollDialog() {
 
 /**
  * Copy an agent's hex ObjectId to the clipboard so the operator can
- * paste it into `roomler forward --agent <hex>` (or any other
+ * paste it into `mh forward --agent <hex>` (or any other
  * CLI / API call that needs the agent identifier).
  *
  * Surfaces transient success state via [`copiedAgentId`] for 2 s —
@@ -2534,7 +2518,7 @@ function canonicalizeCidr(raw: string): string | null {
 function addRoute() {
   const canonical = canonicalizeCidr(routeInput.value)
   if (!canonical) {
-    routeInputError.value = 'Enter a valid CIDR, e.g. 10.66.24.0/24 or 10.66.24.53/32'
+    routeInputError.value = tr('mh.dev.routes.invalid')
     return
   }
   if (!routesDraft.value.includes(canonical)) {

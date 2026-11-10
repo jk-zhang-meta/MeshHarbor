@@ -5,13 +5,13 @@ use axum::{
     extract::{Path, Query, State},
 };
 use bson::oid::ObjectId;
-use roomler_ai_services::quota;
+use meshharbor_services::quota;
 use serde::{Deserialize, Serialize};
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::ConferenceState;
-use roomler_ai_services::dao::base::PaginationParams;
+use meshharbor_services::dao::base::PaginationParams;
 
 #[derive(Debug, Serialize)]
 pub struct RecordingResponse {
@@ -74,20 +74,21 @@ pub async fn create(
     // reads the data and flips the tenant to `Enforce`.
     let tenant = state.tenants.base.find_by_id(tid).await?;
     // FR-102 P4 — through core, which also counts the collision per org.
-    if let Err(d) = roomler_core::quota::require_feature(&state, &tenant, quota::Limit::Recordings)
+    if let Err(d) =
+        meshharbor_core::quota::require_feature(&state, &tenant, quota::Limit::Recordings)
     {
         return Err(ApiError::Forbidden(d.message()));
     }
 
     let recording_type = match body.recording_type.as_deref() {
-        Some("audio") => roomler_ai_db::models::recording::RecordingType::Audio,
-        Some("screen_share") => roomler_ai_db::models::recording::RecordingType::ScreenShare,
-        _ => roomler_ai_db::models::recording::RecordingType::Video,
+        Some("audio") => meshharbor_db::models::recording::RecordingType::Audio,
+        Some("screen_share") => meshharbor_db::models::recording::RecordingType::ScreenShare,
+        _ => meshharbor_db::models::recording::RecordingType::Video,
     };
 
     let now = bson::DateTime::now();
-    let storage_file = roomler_ai_db::models::recording::StorageFile {
-        storage_provider: roomler_ai_db::models::recording::StorageProvider::Local,
+    let storage_file = meshharbor_db::models::recording::StorageFile {
+        storage_provider: meshharbor_db::models::recording::StorageProvider::Local,
         bucket: "recordings".to_string(),
         key: format!("{}/{}/{}", tid.to_hex(), rid.to_hex(), uuid::Uuid::new_v4()),
         url: String::new(),
@@ -123,7 +124,7 @@ pub async fn delete(
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
-fn to_response(r: roomler_ai_db::models::Recording) -> RecordingResponse {
+fn to_response(r: meshharbor_db::models::Recording) -> RecordingResponse {
     RecordingResponse {
         id: r.id.unwrap().to_hex(),
         room_id: r.room_id.to_hex(),

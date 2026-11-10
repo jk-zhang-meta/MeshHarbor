@@ -1,4 +1,4 @@
-//! ROOMLER PATCH: a NewReno-lite controller (RFC 5681, RFC 6928 IW10, RFC 3465
+//! MESHHARBOR PATCH: a NewReno-lite controller (RFC 5681, RFC 6928 IW10, RFC 3465
 //! byte counting) in place of upstream's Reno, which started at 2 KiB, never
 //! cut cwnd on duplicate ACKs, and fell back to one MSS on every ACK once in
 //! congestion avoidance. It is only useful with the `tcp.rs` patch that makes

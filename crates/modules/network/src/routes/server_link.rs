@@ -21,13 +21,13 @@ use axum::{
     extract::{Path, State},
 };
 use bson::oid::ObjectId;
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::models::ServerLink;
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::models::ServerLink;
 use serde::{Deserialize, Serialize};
 
-use roomler_core::business_authority::{self, AuthenticatedDevice, BusinessZone};
-use roomler_core::guards::require_permission;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::business_authority::{self, AuthenticatedDevice, BusinessZone};
+use meshharbor_core::guards::require_permission;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::NetworkState;
 
@@ -363,7 +363,7 @@ async fn apply_once(state: &NetworkState, tenant_id: ObjectId, agents: [ObjectId
                 Ok(None) => {}
                 Err(_) => ok = false,
             },
-            Err(roomler_ai_services::dao::base::DaoError::NotFound) => {}
+            Err(meshharbor_services::dao::base::DaoError::NotFound) => {}
             Err(_) => ok = false,
         }
     }
@@ -372,7 +372,7 @@ async fn apply_once(state: &NetworkState, tenant_id: ObjectId, agents: [ObjectId
         .current_auth_revision(tenant_id)
         .await
         .unwrap_or(network.auth_revision.max(1));
-    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
+    meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
         state,
         "overlay_policy_sync",
         serde_json::json!({

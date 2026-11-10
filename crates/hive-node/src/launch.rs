@@ -41,7 +41,7 @@ pub struct LaunchSpec {
     pub state_dir: PathBuf,
     /// The daemon-written `--settings` file.
     pub settings: PathBuf,
-    /// The daemon-written `--mcp-config` file (the `roomler` toolbelt), if any.
+    /// The daemon-written `--mcp-config` file (the `meshharbor` toolbelt), if any.
     pub mcp_config: Option<PathBuf>,
     /// The loopback LLM sidecar for this session, if routed through one.
     pub sidecar_base_url: Option<String>,
@@ -69,12 +69,12 @@ pub struct LaunchSpec {
     pub disallowed_tools: Vec<String>,
 }
 
-/// The toolbelt's MCP server name: its tools are `mcp__roomler__<tool>`.
-pub const TOOLBELT_SERVER: &str = "roomler";
+/// The toolbelt's MCP server name: its tools are `mcp__meshharbor__<tool>`.
+pub const TOOLBELT_SERVER: &str = "meshharbor";
 
 /// The permission-prompt tool on the toolbelt (FR-90 P1a): Claude Code calls
 /// it, and waits, before every tool call nothing else allowed.
-pub const APPROVE_TOOL: &str = "mcp__roomler__approve";
+pub const APPROVE_TOOL: &str = "mcp__meshharbor__approve";
 
 /// The permission mode a Hive session runs in: `default`, Manual in Claude
 /// Code's UI — reads run, everything else asks [`APPROVE_TOOL`], and so a
@@ -264,7 +264,7 @@ impl LaunchSpec {
             a.push("--mcp-config".into());
             a.push(p.clone().into_os_string());
             // The toolbelt is the ONLY MCP config: a repository's `.mcp.json`
-            // must not be able to shadow `roomler`, and with it the tool that
+            // must not be able to shadow `meshharbor`, and with it the tool that
             // decides what runs.
             a.push("--strict-mcp-config".into());
         }
@@ -326,7 +326,7 @@ fn absolute(what: &'static str, path: &Path) -> Result<(), LaunchError> {
 }
 
 /// A clean base environment for a Unix account the daemon dropped to. The
-/// daemon's own environment (root's, with `ROOMLERD_*` knobs) must not leak into
+/// daemon's own environment (root's, with `MESHHARBORD_*` knobs) must not leak into
 /// a user's session, so the caller clears it and applies this, then
 /// [`LaunchSpec::env_overrides`].
 ///
@@ -611,7 +611,7 @@ mod tests {
         );
         assert!(
             a.windows(2)
-                .any(|w| w == ["--permission-prompt-tool", "mcp__roomler__approve"]),
+                .any(|w| w == ["--permission-prompt-tool", "mcp__meshharbor__approve"]),
             "{a:?}"
         );
         assert!(a.contains(&"--strict-mcp-config".to_string()), "{a:?}");
@@ -752,7 +752,7 @@ mod tests {
     #[test]
     fn settings_deny_proc_and_carry_the_helper_memory_dir_and_sandbox() {
         let doc = SettingsSpec {
-            api_key_helper: Some("meshharbor hive token --session 6f1c".into()),
+            api_key_helper: Some("mh hive token --session 6f1c".into()),
             auto_memory_directory: Some(root().join("memory")),
             sandbox_proxy: Some(SandboxProxy {
                 http_port: 47001,
@@ -760,19 +760,19 @@ mod tests {
             }),
             extra_read_denies: vec!["Read(//var/lib/meshharbor/hive/secrets/**)".into()],
             session_start_hook: Some("'/usr/bin/meshharbord' hive-resume-note '/run/n'".into()),
-            allow_tools: vec!["mcp__roomler__vault_list".into()],
-            ask_tools: vec!["mcp__roomler__vault_exec".into()],
+            allow_tools: vec!["mcp__meshharbor__vault_list".into()],
+            ask_tools: vec!["mcp__meshharbor__vault_exec".into()],
         }
         .to_json();
         // P3-4b — what is allowed is named, beside the denies.
         assert_eq!(
             doc["permissions"]["allow"],
-            json!(["mcp__roomler__vault_list"])
+            json!(["mcp__meshharbor__vault_list"])
         );
         // P3-4c — and what a person is asked for every time.
         assert_eq!(
             doc["permissions"]["ask"],
-            json!(["mcp__roomler__vault_exec"])
+            json!(["mcp__meshharbor__vault_exec"])
         );
         // P2e-7 — the resume note's hook: on a resume, and (P2f-3a) on a
         // fork's first launch, never on a first start.
@@ -789,7 +789,7 @@ mod tests {
             }]}),
             "the hook runs on a resume and a fork, never a first start"
         );
-        assert_eq!(doc["apiKeyHelper"], "meshharbor hive token --session 6f1c");
+        assert_eq!(doc["apiKeyHelper"], "mh hive token --session 6f1c");
         let deny = doc["permissions"]["deny"].as_array().unwrap();
         assert!(deny.iter().any(|d| d == "Read(//proc/**)"));
         assert_eq!(deny.len(), 2);

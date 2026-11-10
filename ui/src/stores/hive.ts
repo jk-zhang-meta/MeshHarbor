@@ -282,7 +282,7 @@ export function isAdopted(s?: Pick<HiveSession, 'origin'> | null): boolean {
 }
 
 /** P2j-5 — an adopted session its terminal ended (`exited`): the one the
- *  server makes a managed session (P2f-4b). One stopped from Roomler, whose
+ *  server makes a managed session (P2f-4b). One stopped from MeshHarbor, whose
  *  terminal went on after it, and one ended any other way, are not. */
 export function mayBecomeManaged(s?: Pick<HiveSession, 'origin' | 'status' | 'end_reason'> | null): boolean {
   return !!s && s.origin === 'adopted' && s.status === 'ended' && s.end_reason === 'exited'

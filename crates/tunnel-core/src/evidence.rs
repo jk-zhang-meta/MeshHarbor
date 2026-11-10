@@ -73,7 +73,7 @@ pub static DIRECT_INBOUND_DROPS: AtomicU64 = AtomicU64::new(0);
 pub static ROUTE_EVICTIONS: AtomicU64 = AtomicU64::new(0);
 
 /// FR-68 — rows we declined to evict **because they belong to a sibling
-/// roomler adapter** (another org's per-org TUN in this process, or a
+/// meshharbor adapter** (another org's per-org TUN in this process, or a
 /// co-tenant daemon's, matched by adapter alias).
 ///
 /// ⚠️ This is deliberately NOT "sibling evictions". After #1246 a sibling row

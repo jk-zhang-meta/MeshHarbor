@@ -13,7 +13,7 @@ and [`overlay-communication.md`](overlay-communication.md) (the mesh).
 
 ## 1. The problem
 
-Before this work a roomler device was enrolled in exactly **one** org: one
+Before this work a meshharbor device was enrolled in exactly **one** org: one
 config identity, one agent JWT, one WS, one overlay identity. Three
 consequences, each of which real deployments hit:
 
@@ -38,11 +38,11 @@ The alternative — N side-by-side installs — is structurally blocked, and it 
 worth recording why so nobody re-proposes it:
 
 - the TUN adapter has a fixed name and GUID, and the rc.279 adapter sweep
-  pnputil-removes any non-Up `^roomler` adapter — sibling daemons delete each
+  pnputil-removes any non-Up `^meshharbor` adapter — sibling daemons delete each
   other's interfaces;
 - two on-link `/10`s on one host are ambiguous, and each daemon's route guard
   purges what the other installs (a purge war);
-- the LocalAPI pipe (`\\.\pipe\roomler`) is a singleton, as are the SCM
+- the LocalAPI pipe (`\\.\pipe\meshharbor`) is a singleton, as are the SCM
   service name and the scheduled-task name;
 - exit-node split-defaults, NRPT DNS steering and WFP rules are all
   host-global;
@@ -60,14 +60,14 @@ MSI rollback safe. Additional enrollments live in an `[[orgs]]` array:
 
 ```toml
 # primary (scalar, unchanged)
-server_url  = "https://roomler.ai"
+server_url  = "https://meshharbor.itachi.fans"
 agent_token = "…"
 agent_id    = "…"
 tenant_id   = "…"
 
 [[orgs]]
 label        = "acme"
-server_url   = "https://roomler.ai"
+server_url   = "https://meshharbor.itachi.fans"
 agent_token  = "…"
 agent_id     = "…"
 tenant_id    = "…"
@@ -89,7 +89,7 @@ same device by pubkey. `machine_id` IS reused across orgs — the server dedupes
 per `{tenant_id, machine_id}`, so every org sees the same fingerprint and a
 re-enroll finds the existing row.
 
-CLI: `roomler org ls | rm | enable | disable | set-primary`, `enroll --label`,
+CLI: `mh org ls | rm | enable | disable | set-primary`, `enroll --label`,
 `re-enroll --org <label>` (with a same-tenant guard).
 
 **`org set-primary <label> [--demoted-label <name>]`** swaps a secondary into
@@ -113,9 +113,9 @@ then cost a two-org host its mesh path, measured on 2026-10-19.
 | Before | After the swap | Why |
 |---|---|---|
 | the promoted secondary was `tun` | the new primary is **on** (its own OS TUN) | it already ran an OS TUN on this host |
-| the promoted secondary was `netstack` | the new primary is **off** | a primary's netstack is the env key `ROOMLERD_OVERLAY_NETSTACK_SOCKS`, which `overlay_multi_org` overrides; config cannot express it |
+| the promoted secondary was `netstack` | the new primary is **off** | a primary's netstack is the env key `MESHHARBORD_OVERLAY_NETSTACK_SOCKS`, which `overlay_multi_org` overrides; config cannot express it |
 | the old primary was on, with `overlay_multi_org`, on the same control plane | the demoted entry is **`tun`** | it ran its own OS TUN; a `tun` org needs the primary's control plane |
-| the old primary was on, without either | the demoted entry is **off** | `roomlerd org overlay <label> netstack` keeps it on |
+| the old primary was on, without either | the demoted entry is **off** | `meshharbord org overlay <label> netstack` keeps it on |
 
 The command prints the outcome for each enrollment, with the way back on where
 it could not keep one.
@@ -131,7 +131,7 @@ it could not keep one.
   quarantined or refused there) costs **one WARN per start**, naming the ways
   out: `re-enroll --org <label>`, `org disable <label>` (kept and reversible)
   or `org rm <label>`. The same text is the org's terminal status in
-  `roomler status`. ⚠️ The daemon never drops the enrollment itself, because
+  `mh status`. ⚠️ The daemon never drops the enrollment itself, because
   `AgentDeleted` also covers a quarantine that an admin can lift (#1750);
 - invalid entries are skipped with a surfaced reason, never fatal.
 
@@ -226,9 +226,9 @@ message names the consequence and why a fresh carve WARNs
 
 | Key | Env | Default |
 |---|---|---|
-| `overlay.blocks_enabled` | `ROOMLER__OVERLAY__BLOCKS_ENABLED` | `true` (FR-47; `false` = kill switch) |
-| `overlay.block_prefix` | `ROOMLER__OVERLAY__BLOCK_PREFIX` | `22` (1022 devices; 4032 tenants fit) |
-| `overlay.block_version_floor` | `ROOMLER__OVERLAY__BLOCK_VERSION_FLOOR` | `0.3.0-rc.301` |
+| `overlay.blocks_enabled` | `MESHHARBOR__OVERLAY__BLOCKS_ENABLED` | `true` (FR-47; `false` = kill switch) |
+| `overlay.block_prefix` | `MESHHARBOR__OVERLAY__BLOCK_PREFIX` | `22` (1022 devices; 4032 tenants fit) |
+| `overlay.block_version_floor` | `MESHHARBOR__OVERLAY__BLOCK_VERSION_FLOOR` | `0.3.0-rc.301` |
 
 ### 4.3 The renumber runbook
 
@@ -237,15 +237,15 @@ TID=<tenant hex>;  TOKEN=<admin JWT>
 
 # 1. Pre-flight. `below_floor` MUST be empty; `capacity` must exceed `nodes`.
 curl -s -H "Authorization: Bearer $TOKEN" \
-  https://roomler.ai/api/tenant/$TID/overlay-block | jq
+  https://meshharbor.itachi.fans/api/tenant/$TID/overlay-block | jq
 
 # 2. Plan. This is the default — it writes NOTHING and consumes no block.
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{}' https://roomler.ai/api/tenant/$TID/overlay-block/renumber | jq '.new_cidr, .moves'
+  -d '{}' https://meshharbor.itachi.fans/api/tenant/$TID/overlay-block/renumber | jq '.new_cidr, .moves'
 
 # 3. Apply, during a maintenance window (see the warning below).
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"dry_run":false}' https://roomler.ai/api/tenant/$TID/overlay-block/renumber | jq
+  -d '{"dry_run":false}' https://meshharbor.itachi.fans/api/tenant/$TID/overlay-block/renumber | jq
 ```
 
 What the apply does, in order: quarantine the old block → allocate the new one
@@ -286,10 +286,10 @@ its free pool → cycle every agent's WS.
 > compensation stack around it, once its evidence counters (`mux_nat_rewrites`,
 > `restores`, `skip_as_source_flips`) had read zero fleet-wide for 7 days. Every
 > org now gets its own adapter ([Per-org TUN adapters](#per-org-tun-adapters-the-only-path-since-w7c),
-> `agents/roomlerd/src/overlay.rs:318`). This section records how the mux
+> `agents/meshharbord/src/overlay.rs:318`). This section records how the mux
 > worked, for the history it explains.
 
-One `roomler` adapter, N per-org runtimes. Each org's `OverlayRuntime` gets a
+One `meshharbor` adapter, N per-org runtimes. Each org's `OverlayRuntime` gets a
 `MuxPort` facade (`tunnel_core::overlay::tun_mux`) that looks exactly like its
 own TUN; a single reader pump demuxes the real device's packets by
 **destination, longest prefix first**. The demux table needs no netmap
@@ -302,7 +302,7 @@ non-ULA v6 (an exit client's egress) matches the installed v6 routes.
 Enable it (default **off**):
 
 ```toml
-overlay_multi_org = true          # or: roomler config set overlay_multi_org true
+overlay_multi_org = true          # or: mh config set overlay_multi_org true
 
 [[orgs]]
 label        = "acme"
@@ -329,7 +329,7 @@ stack and SOCKS5 front (#2493), on the loopback port its `[[orgs]]` entry
 names. It needs neither `overlay_multi_org` nor the primary's control plane,
 because it opens no adapter and installs no route. Only the PRIMARY's env-key
 netstack still yields to `overlay_multi_org`: with the flag on, the primary
-uses its OS TUN regardless of `ROOMLERD_OVERLAY_NETSTACK_SOCKS`.
+uses its OS TUN regardless of `MESHHARBORD_OVERLAY_NETSTACK_SOCKS`.
 
 ---
 
@@ -340,7 +340,7 @@ stable port base, deconflicted only by the blind band walk — so which org
 held 43648 was a spawn-order race that re-ran on every restart and swapped
 ports between orgs (NAT-mapping churn on the org that lost).
 
-With `overlay_shared_carrier` on (`ROOMLERD_OVERLAY_SHARED_CARRIER`,
+With `overlay_shared_carrier` on (`MESHHARBORD_OVERLAY_SHARED_CARRIER`,
 config key `overlay_shared_carrier`), the daemon binds **ONE process-wide
 socket set** (`crates/tunnel-core/src/overlay/carrier_plane.rs`) that every
 org's engine attaches to:
@@ -385,32 +385,32 @@ re-binds ONCE, and every org re-establishes on `Ready`.
 ### Per-org TUN adapters (the only path since W7c)
 
 The second half of multi-org v2: with `overlay_multi_org` on, each org gets its
-**own adapter** (`per_org_systun_factory`, `agents/roomlerd/src/overlay.rs:318`).
+**own adapter** (`per_org_systun_factory`, `agents/meshharbord/src/overlay.rs:318`).
 It shipped behind `overlay_tun_per_org`, default ON since rc.339; W7c deleted
 the switch along with the shared adapter it chose between, so neither the key
-nor `ROOMLERD_OVERLAY_TUN_PER_ORG` is read any more:
+nor `MESHHARBORD_OVERLAY_TUN_PER_ORG` is read any more:
 
-- the primary KEEPS the legacy `IF_NAME` (`roomler` on Windows, `roomler0`
+- the primary KEEPS the legacy `IF_NAME` (`meshharbor` on Windows, `meshharbor0`
   on Linux) + GUID (no adapter churn on the mode flip); a secondary is
   `<IF_NAME>-<tenant-prefix>` with a stable per-org GUID (`org_tun_guid` —
   SHA-256, RFC 4122-shaped). The tenant prefix is clamped to fit Linux's
-  15-char `IFNAMSIZ` (Windows `roomler-` → 7 hex; Linux `roomler0-` → 6),
+  15-char `IFNAMSIZ` (Windows `meshharbor-` → 7 hex; Linux `meshharbor0-` → 6),
   so the secondary adapter name never overflows and the org's TUN comes up;
 - ONE address per adapter ⇒ OS source selection is trivially correct — the
   mux NAT, SkipAsSource reconcile, and Linux src hints never engage (their
-  `roomler status` evidence counters stay zero, which is exactly the
+  `mh status` evidence counters stay zero, which is exactly the
   Phase-3 deletion gate);
 - each adapter's derived-ULA on-link is NARROWED to its block
   (`/(96 + v4_plen)`, a `/22` org → `/118`; the primary's is narrowed too —
   its whole `/96` would cover every sibling's embedded range), so v6
   longest-prefix picks the right adapter;
-- the boot stray-adapter sweep structurally EXEMPTS `roomler-*` (orgs come
+- the boot stray-adapter sweep structurally EXEMPTS `meshharbor-*` (orgs come
   up at their own pace; a sibling's persisted adapter is not a stray);
   explicit org removal owns real adapter deletion — a loop end only drops
   the process's device handle, so an EDR-watched host never sees device
   churn on reconnects;
-- ICE never gathers on `roomler-*` (the peer.rs interface deny-list), and
-  the LAN gather's `roomler` prefix filter already covers them.
+- ICE never gathers on `meshharbor-*` (the peer.rs interface deny-list), and
+  the LAN gather's `meshharbor` prefix filter already covers them.
 
 The kill switch it shipped with (`overlay_tun_per_org = false`, back to the
 shared-TUN mux of §4.4 and §4b) went with the mux in W7c.
@@ -451,7 +451,7 @@ Two-layer fix:
   destination on matching replies so the OS delivers them to the socket
   still anchored to the original address (`overlay/mux_nat.rs` +
   `tun_mux.rs` hooks). Kill switch: `overlay_mux_nat`
-  (`ROOMLERD_OVERLAY_MUX_NAT`), default **on**.
+  (`MESHHARBORD_OVERLAY_MUX_NAT`), default **on**.
 
 Accepted limitations (all narrow): no port translation — sockets on BOTH org
 addresses colliding on an identical (proto, local port, remote, remote port)
@@ -473,7 +473,7 @@ could kill it or inject SDP/ICE. The cross-pod terminate is authz'd and no
 longer a silent pod-local no-op that returned `{"terminated": true}`.
 
 Then capacity (#323): `rc_max_sessions` (1–8, default 2;
-`ROOMLERD_RC_MAX_SESSIONS`) plus the five latent single-session
+`MESHHARBORD_RC_MAX_SESSIONS`) plus the five latent single-session
 assumptions that made >1 unsafe — clipboard's single watcher slot, display-match
 restore firing on any session close, per-tx controller unregistration, the
 viewer's one-handler-per-type registry, and ungated INPUT/FILES data channels.
@@ -598,7 +598,7 @@ no blank row can render).
 
 | Area | Tests |
 |---|---|
-| Config v2 + enrollment dispatch | `agents/roomlerd/src/config.rs`, `enrollment.rs` units; the two-tenant integration test driving ONE agent lib into TWO TestApps |
+| Config v2 + enrollment dispatch | `agents/meshharbord/src/config.rs`, `enrollment.rs` units; the two-tenant integration test driving ONE agent lib into TWO TestApps |
 | Block grid + allocator | `crates/remote_control/src/models.rs` units (grid rendering, prefix→width, buddy-alignment property, in-block leases) |
 | Renumber planner + version floor | `crates/api/src/routes/overlay_block.rs` units (preservation, compaction ordering, determinism, capacity refusal, numeric rc compare, fail-closed unknowns) |
 | Renumber end-to-end | `crates/tests/src/overlay_tests.rs` — inert dry run, apply + invertibility + next lease, double renumber ⇒ quarantine trail, cross-tenant disjointness over mixed widths, floor refusal + force, permission gate, carve-new-networks-only |
@@ -614,7 +614,7 @@ no blank row can render).
   always unit-tested against a fake device; the half that touches the OS —
   a REFUSED registration leaving no address behind, a disjoint block really
   getting one, a released org really losing it — now runs on every CI push
-  (`tun_kernel_tests`, root + `ROOMLER_TUN_KERNEL_TEST=1`, skipped
+  (`tun_kernel_tests`, root + `MESHHARBOR_TUN_KERNEL_TEST=1`, skipped
   everywhere else). It earned its keep on its first run by catching
   `deregister` handing back the block BASE instead of the org's address.
   What is still untested is the same path driven by two real control
@@ -657,7 +657,7 @@ no blank row can render).
   front, so two orgs in netstack mode both get a mesh. What genuinely
   cannot be shared is the PORT (one TCP listener): it keeps an owner, and a
   second org configured onto the same one withholds with an actionable
-  message. The primary reads `ROOMLERD_OVERLAY_NETSTACK_SOCKS`; a
+  message. The primary reads `MESHHARBORD_OVERLAY_NETSTACK_SOCKS`; a
   secondary sets `netstack_socks_port` on its `[[orgs]]` entry and
   deliberately does not inherit the env key.
   ⚠️ **Until #2493 the secondary half of this was dead code.**
@@ -669,13 +669,13 @@ no blank row can render).
   when it has its own port and key (`crates/agent-core/src/config.rs:2114-2109`),
   and `derived_netstack` sends it to its stack rather than to the per-org TUN
   that the device-wide `overlay_multi_org` would pick
-  (`agents/roomlerd/src/overlay.rs:311`). A port that is unset is **picked**:
+  (`agents/meshharbord/src/overlay.rs:311`). A port that is unset is **picked**:
   - at `enroll --overlay`, `org overlay <org> netstack` and a pushed join;
   - at daemon start, for an entry from before the fix.
 
   The pick is the first free loopback port in 10800–10899, below every OS's
   ephemeral range, that no other enrollment claims
-  (`agents/roomlerd/src/org_join.rs`, `pick_netstack_port`). Free means
+  (`agents/meshharbord/src/org_join.rs`, `pick_netstack_port`). Free means
   nothing answers there and it binds: Windows and macOS let a loopback bind
   shadow another program's listener on the wildcard address, which only the
   connect sees. The CLI prints where the front is.

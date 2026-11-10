@@ -22,8 +22,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use roomler_ai_tests::fixtures::seed::SeededTenant;
-use roomler_ai_tests::fixtures::test_app::TestApp;
+use meshharbor_tests::fixtures::seed::SeededTenant;
+use meshharbor_tests::fixtures::test_app::TestApp;
 use serde_json::{Value, json};
 
 mod hive_support;
@@ -84,9 +84,9 @@ fn device_process() {
                 .build()
                 .unwrap();
             rt.block_on(async move {
-                let cfg =
-                    roomlerd::config::load(&dir.join("config.toml")).expect("the device's config");
-                roomlerd::hive::init_as_daemon(
+                let cfg = meshharbord::config::load(&dir.join("config.toml"))
+                    .expect("the device's config");
+                meshharbord::hive::init_as_daemon(
                     &cfg,
                     &dir.join("hive.db"),
                     &dir.join("run"),
@@ -147,7 +147,7 @@ fn device_dir(dir: &Path) -> PathBuf {
 }
 
 /// A device that runs the owner's sessions and holds copies of them.
-fn runs_and_holds(cfg: &mut roomlerd::config::AgentConfig, seeded: &SeededTenant, dir: &Path) {
+fn runs_and_holds(cfg: &mut meshharbord::config::AgentConfig, seeded: &SeededTenant, dir: &Path) {
     cfg.hive_enabled = true;
     cfg.hive_replica = true;
     cfg.hive_accounts
@@ -161,9 +161,9 @@ async fn device(
     app: &TestApp,
     seeded: &SeededTenant,
     dir: &Path,
-    cfg: &roomlerd::config::AgentConfig,
+    cfg: &meshharbord::config::AgentConfig,
 ) -> tokio::process::Child {
-    roomlerd::config::save(&dir.join("config.toml"), cfg).expect("the device's config");
+    meshharbord::config::save(&dir.join("config.toml"), cfg).expect("the device's config");
     let child = tokio::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "device_process",
@@ -241,7 +241,7 @@ async fn until_session(
 /// Every event of `sid` the store at `db` holds, and whether it keeps `sid`
 /// purged. Read with the device stopped: the store is its own.
 fn held(db: &Path, sid: &str) -> (usize, bool) {
-    let store = roomler_hive_node::store::Store::open(db).expect("the device's store");
+    let store = meshharbor_hive_node::store::Store::open(db).expect("the device's store");
     let events = store.page(sid, 0, 100_000).expect("its copy").len();
     (events, store.is_purged(sid).expect("its purged ids"))
 }
@@ -249,7 +249,7 @@ fn held(db: &Path, sid: &str) -> (usize, bool) {
 /// The word the store at `db` keeps for `sid`: its days, and the end it
 /// names. Read with the device stopped.
 fn word_of(db: &Path, sid: &str) -> Option<(u32, Option<i64>)> {
-    let store = roomler_hive_node::store::Store::open(db).expect("the device's store");
+    let store = meshharbor_hive_node::store::Store::open(db).expect("the device's store");
     store
         .retains()
         .expect("its words")

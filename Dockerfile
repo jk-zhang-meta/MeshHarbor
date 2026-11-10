@@ -58,7 +58,7 @@ COPY crates/vendored crates/vendored
 # stats producer byte-identical between the PoPs and the central fleet.
 # Package-qualified features are what let one build line serve both
 # packages: `derp-relay` has no features, so `--no-default-features` is
-# inert for it, and `roomler-ai-api/profile-…` names exactly the one crate
+# inert for it, and `meshharbor-api/profile-…` names exactly the one crate
 # that composes the modules.
 #
 # `cook --no-build` writes the skeleton (every workspace member reduced to
@@ -72,11 +72,11 @@ COPY crates/vendored crates/vendored
 # itself does after building: the real sources arrive by COPY with the
 # build context's OLDER mtimes, and cargo would otherwise keep the skeleton's
 # empty artefacts as "fresh" — a server whose main() is `{}`.
-RUN cargo chef cook --no-build --release --recipe-path recipe.json -p roomler-ai-api -p derp-relay --no-default-features \
-      --features "roomler-ai-api/profile-${PROFILE}$( [ "$SAAS" = "1" ] && printf ',roomler-ai-api/saas' )"
+RUN cargo chef cook --no-build --release --recipe-path recipe.json -p meshharbor-api -p derp-relay --no-default-features \
+      --features "meshharbor-api/profile-${PROFILE}$( [ "$SAAS" = "1" ] && printf ',meshharbor-api/saas' )"
 COPY crates/tcp-turn-conn crates/tcp-turn-conn
-RUN cargo build --release -p roomler-ai-api -p derp-relay --no-default-features \
-      --features "roomler-ai-api/profile-${PROFILE}$( [ "$SAAS" = "1" ] && printf ',roomler-ai-api/saas' )" \
+RUN cargo build --release -p meshharbor-api -p derp-relay --no-default-features \
+      --features "meshharbor-api/profile-${PROFILE}$( [ "$SAAS" = "1" ] && printf ',meshharbor-api/saas' )" \
  && cargo metadata --no-deps --format-version 1 \
       | python3 -c 'import json,sys; print("\n".join(p["name"] for p in json.load(sys.stdin)["packages"]))' \
       | xargs -n1 cargo clean --release -p
@@ -93,8 +93,8 @@ RUN cargo build --release -p roomler-ai-api -p derp-relay --no-default-features 
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 COPY scripts/install.sh scripts/install.ps1 scripts/
-RUN cargo build --release -p roomler-ai-api -p derp-relay --no-default-features \
-      --features "roomler-ai-api/profile-${PROFILE}$( [ "$SAAS" = "1" ] && printf ',roomler-ai-api/saas' )"
+RUN cargo build --release -p meshharbor-api -p derp-relay --no-default-features \
+      --features "meshharbor-api/profile-${PROFILE}$( [ "$SAAS" = "1" ] && printf ',meshharbor-api/saas' )"
 
 # --- Stage 2: Vue SPA build ---
 FROM oven/bun:1 AS ui-builder
@@ -110,26 +110,26 @@ FROM debian:trixie-slim AS runtime
 # ── OCI image metadata (FR-24) ──────────────────────────────────────────────
 # Renders on GHCR / Docker Hub listing pages and is what `docker inspect`
 # reports. `licenses` is AGPL-3.0-only because THIS IMAGE is the control
-# plane (roomler-ai-api + derp-relay + the Vue bundle) — the MPL-2.0 half of
+# plane (meshharbor-api + derp-relay + the Vue bundle) — the MPL-2.0 half of
 # the split ships as native agent binaries, never in this image. It must be
 # updated in lockstep with LICENSE/LICENSING.md; a stale value here
 # advertises the wrong terms to every registry that lists us.
 ARG VERSION=dev
 ARG GIT_SHA=unknown
-LABEL org.opencontainers.image.title="Roomler" \
+LABEL org.opencontainers.image.title="MeshHarbor" \
       org.opencontainers.image.description="Remote desktop in a browser tab + WireGuard mesh VPN. Self-hosted, end-to-end encrypted." \
-      org.opencontainers.image.url="https://roomler.ai" \
-      org.opencontainers.image.source="https://github.com/gjovanov/roomler-ai" \
-      org.opencontainers.image.documentation="https://roomler.ai/docs/" \
+      org.opencontainers.image.url="https://meshharbor.itachi.fans" \
+      org.opencontainers.image.source="https://github.com/jk-zhang-meta/MeshHarbor" \
+      org.opencontainers.image.documentation="https://meshharbor.itachi.fans/docs/" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.vendor="G ROX EOOD" \
-      org.opencontainers.image.authors="legal@roomler.ai" \
+      org.opencontainers.image.authors="legal@meshharbor.itachi.fans" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}"
 RUN apt-get update && apt-get install -y ca-certificates nginx && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/roomler-ai-api /usr/local/bin/
+COPY --from=builder /app/target/release/meshharbor-api /usr/local/bin/
 COPY --from=builder /app/target/release/derp-relay /usr/local/bin/
-COPY --from=ui-builder /app/ui/dist /var/www/roomler-ai
+COPY --from=ui-builder /app/ui/dist /var/www/meshharbor
 COPY files/nginx-pod.conf /etc/nginx/conf.d/default.conf
 # FR-91: the security headers live in one file that the pod nginx and the blog
 # lane's server both include. Outside conf.d/ on purpose: nginx.conf includes
@@ -146,20 +146,20 @@ COPY files/security-headers.conf /etc/nginx/snippets/security-headers.conf
 # `country: unknown`, a supported state. NOT GeoLite2: MaxMind's EULA forbids
 # handing its data to third parties, and a public image does exactly that.
 # Details: files/geoip/README.md.
-COPY files/geoip/ /usr/share/roomler/geoip/
+COPY files/geoip/ /usr/share/meshharbor/geoip/
 # The image names its own database, so a deployment needs no setting for it.
 # An env value overrides it (your own .mmdb, e.g. a licensed GeoIP2), and an
 # EMPTY value turns country lookups off. ⚠️ An env var outranks the config
 # files, so `geoip_mmdb` in config/local.toml cannot override this; use the
 # variable.
-ENV ROOMLER__STATS__GEOIP_MMDB=/usr/share/roomler/geoip/dbip-country-lite.mmdb
+ENV MESHHARBOR__STATS__GEOIP_MMDB=/usr/share/meshharbor/geoip/dbip-country-lite.mmdb
 # FR-20 P5 - unit costs for the metered relay/SFU resources. The binary
 # resolves `config/relay-costs.toml` relative to its CWD, which is `/` here.
 # Same contract as the GeoIP directory above: absent is a supported state and
 # renders "not priced", never a fabricated 0.00 (which would also imply 100%
-# margin). `ROOMLER__RELAY_COSTS__*` overrides it without an image rebuild.
+# margin). `MESHHARBOR__RELAY_COSTS__*` overrides it without an image rebuild.
 COPY config/ /config/
 RUN rm -f /etc/nginx/sites-enabled/default
-RUN printf '#!/bin/sh\nnginx\nexec roomler-ai-api\n' > /entrypoint.sh && chmod +x /entrypoint.sh
+RUN printf '#!/bin/sh\nnginx\nexec meshharbor-api\n' > /entrypoint.sh && chmod +x /entrypoint.sh
 EXPOSE 80
 CMD ["/entrypoint.sh"]

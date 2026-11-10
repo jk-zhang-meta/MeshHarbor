@@ -1,6 +1,6 @@
 # FR-20 — Per-tenant relay cost metering
 
-**Issue:** [#807](https://github.com/gjovanov/roomler-ai/issues/807) · **Status:** design · **Owner:** @gjovanov
+**Issue:** [#807](https://github.com/jk-zhang-meta/MeshHarbor/issues/807) · **Status:** design · **Owner:** @gjovanov
 
 ## Goal
 
@@ -129,7 +129,7 @@ an **unattributed** bucket, never a wrongly-attributed one.
 > set of label combinations it emits is:
 >
 > ```
-> {realm="roomler.ai"}   {type="TCP"}   {type="TLS/TCP"}   {type="UDP"}
+> {realm="meshharbor.itachi.fans"}   {type="TCP"}   {type="TLS/TCP"}   {type="UDP"}
 > ```
 >
 > `grep -c 'user=|username='` over the whole payload returns **0**. Every
@@ -253,9 +253,9 @@ must not be logged out of everything (`stats.rs:45-47`).
 
 - Child of the pricing program; **blocks** any tier reshape
 - A rising relayed fraction is a NAT-traversal regression signal for
-  [#767](https://github.com/gjovanov/roomler-ai/issues/767) (FR-1),
-  [#801](https://github.com/gjovanov/roomler-ai/issues/801) (FR-18)
-- [#805](https://github.com/gjovanov/roomler-ai/issues/805) (FR-19, peer relays)
+  [#767](https://github.com/jk-zhang-meta/MeshHarbor/issues/767) (FR-1),
+  [#801](https://github.com/jk-zhang-meta/MeshHarbor/issues/801) (FR-18)
+- [#805](https://github.com/jk-zhang-meta/MeshHarbor/issues/805) (FR-19, peer relays)
   would add a **fourth** relay tier that must also be metered
 
 ## Field-verification log
@@ -271,7 +271,7 @@ must not be logged out of everything (`stats.rs:45-47`).
 | 2026-08-30 | **NEGATIVE arm: 300 MB over a direct carrier (mars to zeus)** | overlay TX confirmed **313 MB in 5 s**, carrier `direct` at both ends; peak metered minute **145,650 B**, and that peak is a *pre-transfer* minute. Payload is **2,060x** the peak - **zero attributable** |
 | 2026-08-30 | **POSITIVE arm: same apparatus over a relayed carrier (mars to neo16-wsl-2)** | 6,116 pkts / 60 s; **19,545,144 B metered** vs 17,454,444 B of two-way ICMP payload (+12%, encapsulation-shaped, never less); **116x background**, decaying to background the minute it stops |
 | 2026-08-30 | Bucket attribution granularity | the flush timer writes the drained counter into the bucket current **at flush time**, so a minute's bytes can land one bucket late (2.67 MB / 16.87 MB for an even 60 s load). **Total conserved, placement coarse** - immaterial to the 1 h/1 d rollups billing reads; a per-minute chart must not be sold as packet-accurate |
-| 2026-08-30 | PoP metering path, end to end | `https://derp-<region>.roomler.ai/stats` gives **HTTP 200**, `per_network` present, `derp_registrations=0` on all four. Wired, polled and healthy - and **carrying nothing, because no agent is homed to a PoP**. The central `/derp` on the API pods carries all of it today |
+| 2026-08-30 | PoP metering path, end to end | `https://derp-<region>.meshharbor.itachi.fans/stats` gives **HTTP 200**, `per_network` present, `derp_registrations=0` on all four. Wired, polled and healthy - and **carrying nothing, because no agent is homed to a PoP**. The central `/derp` on the API pods carries all of it today |
 | 2026-08-31 | Forward-path overhead, measured (`bench_add_network_bytes_cost`, 8 threads on ONE network id — the realistic AND worst case) | atomic alone **16.39 ns**, `add_network_bytes` **99.92 ns**, so the DashMap lookup is **83.53 ns — 5x the atomic**. At 200 frames/s (the busiest recorded minute, 16.87 MB at ~1.4 KB/frame) that is **0.002 % of one core**, and ~500x headroom before it reaches 1 %. Against FR-18's 200 ms p99 the added per-frame latency is ~5e-7 of the budget |
 
 ## What the two arms actually establish (2026-08-30)

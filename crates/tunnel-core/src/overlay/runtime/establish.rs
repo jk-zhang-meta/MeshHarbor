@@ -246,7 +246,7 @@ pub(super) use crate::overlay::direct::bind_direct_socket;
 
 /// bind-to-interface-by-route (Phase 1, `OVERLAY_BIND_BY_ROUTE`) — pick the
 /// egress socket for a LAN direct carrier/probe to `dst`. Tailscale's
-/// `net/netns` `bindToInterfaceByRoute` adapted to roomler's per-interface
+/// `net/netns` `bindToInterfaceByRoute` adapted to meshharbor's per-interface
 /// sockets: when the gate is on, the OS route table is consulted via the
 /// `connect()`-trick ([`direct::os_src_ip_for`]) + [`direct::classify_egress`]
 /// so the chosen socket matches the interface that actually reaches `dst` (an
@@ -685,9 +685,9 @@ impl OverlayRuntime {
             let Some(handshake_done) = wg.peer_handshake_done(&e.pubkey) else {
                 continue;
             };
-            let hard_dead = wg.peer_carrier_dead(&e.pubkey).unwrap_or(false)
-                || (e.relay_kind == Some(RelayKind::Org)
-                    && relay.as_ref().is_some_and(|r| !r.holds_org_session(nid)));
+            let org_session_gone = e.relay_kind == Some(RelayKind::Org)
+                && relay.as_ref().is_some_and(|r| !r.holds_org_session(nid));
+            let hard_dead = wg.peer_carrier_dead(&e.pubkey).unwrap_or(false) || org_session_gone;
             // MeshHarbor B6 — while a peer is intentionally `Dormant` or `Waking`
             // (or was `Dormant` at any point since the previous health sweep, and
             // its carrier is not `hard_dead`), periodic keepalives and handshake
@@ -760,9 +760,10 @@ impl OverlayRuntime {
                 traffic: (tx, rx),
                 last_traffic: (last_tx, last_rx),
                 bad_sweeps: e.bad_sweeps,
-                relay_refresh_held: relay_refresh_cooldown
-                    .get(nid)
-                    .is_some_and(|&until| until > now),
+                relay_refresh_held: !org_session_gone
+                    && relay_refresh_cooldown
+                        .get(nid)
+                        .is_some_and(|&until| until > now),
                 poke,
             });
             // Diagnostic — per-carrier health/poke trace (see
@@ -1258,7 +1259,7 @@ impl OverlayRuntime {
 
     /// rc.131 — bind the shared direct-carrier socket + discover our LAN
     /// endpoint. Only in Relay mode (Direct mode is the loopback test/helper
-    /// path) and when `ROOMLERD_OVERLAY_DIRECT` isn't disabled. `None` if
+    /// path) and when `MESHHARBORD_OVERLAY_DIRECT` isn't disabled. `None` if
     /// disabled, not relay mode, the bind fails, or there's no usable LAN IP
     /// (offline / CGNAT-only) — the node then stays relay-only as before.
     pub(super) async fn setup_direct(&self) -> Option<DirectCtx> {

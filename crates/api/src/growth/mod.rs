@@ -10,10 +10,10 @@
 //! and 404 for everyone when `growth.enabled = false` (the kill switch).
 //!
 //! * [`exclusions`] — P1c: the explicit exclusion list and the implicit one
-//!   it folds into (`roomler_core::growth::ExclusionSet`).
+//!   it folds into (`meshharbor_core::growth::ExclusionSet`).
 //! * [`digest`] — P1d: the daily digest's sections, the once-only claim,
 //!   the delivery and the scheduler; [`purestat`] its one read of the web
-//!   plane (in `roomler-ai-services` since P6, re-exported here); [`render`]
+//!   plane (in `meshharbor-services` since P6, re-exported here); [`render`]
 //!   its email bodies; [`routes`] its four routes.
 //! * [`value`] — P2: the four value-event definitions every view shares.
 //! * [`org_daily`] — P2: `growth_org_daily`, the nightly fold and the
@@ -75,10 +75,10 @@ pub mod search;
 pub mod value;
 pub mod weekly;
 
-/// The purestat v1 client lives in `roomler-ai-services` since P6 — below
+/// The purestat v1 client lives in `meshharbor-services` since P6 — below
 /// the host AND the `saas` module, whose daily puller uses it too.
 /// Re-exported so `growth::purestat::…` keeps naming it.
-pub use roomler_ai_services::purestat;
+pub use meshharbor_services::purestat;
 
 use axum::{
     Router,

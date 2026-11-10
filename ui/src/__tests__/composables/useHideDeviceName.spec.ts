@@ -13,8 +13,8 @@ describe('useHideDeviceName', () => {
   beforeEach(() => localStorage.clear())
 
   it('keeps the key the Devices grid has always written, so saved choices carry over', () => {
-    expect(hideDeviceNameKey('u1:t1')).toBe('roomler:grid-name-pref:u1:t1:devices')
-    localStorage.setItem('roomler:grid-name-pref:u1:t1:devices', '0')
+    expect(hideDeviceNameKey('u1:t1')).toBe('meshharbor:grid-name-pref:u1:t1:devices')
+    localStorage.setItem('meshharbor:grid-name-pref:u1:t1:devices', '0')
     expect(useHideDeviceName(() => 'u1:t1').value).toBe(false)
   })
 
@@ -27,7 +27,7 @@ describe('useHideDeviceName', () => {
     const remote = useHideDeviceName(() => 'u1:t1')
     expect(remote.value).toBe(true)
     grid.value = false
-    expect(localStorage.getItem('roomler:grid-name-pref:u1:t1:devices')).toBe('0')
+    expect(localStorage.getItem('meshharbor:grid-name-pref:u1:t1:devices')).toBe('0')
     expect(remote.value).toBe(false)
     remote.value = true
     expect(grid.value).toBe(true)
@@ -40,7 +40,7 @@ describe('useHideDeviceName', () => {
   })
 
   it('re-reads when the scope changes (org switch, or the user arriving late)', () => {
-    localStorage.setItem('roomler:grid-name-pref:u1:t2:devices', '0')
+    localStorage.setItem('meshharbor:grid-name-pref:u1:t2:devices', '0')
     const scope = ref('u1:t1')
     const pref = useHideDeviceName(scope)
     expect(pref.value).toBe(true)
@@ -51,9 +51,9 @@ describe('useHideDeviceName', () => {
   it('follows a flip made in another tab', () => {
     const pref = useHideDeviceName(() => 'u1:t1')
     expect(pref.value).toBe(true)
-    localStorage.setItem('roomler:grid-name-pref:u1:t1:devices', '0')
+    localStorage.setItem('meshharbor:grid-name-pref:u1:t1:devices', '0')
     window.dispatchEvent(
-      new StorageEvent('storage', { key: 'roomler:grid-name-pref:u1:t1:devices', newValue: '0' }),
+      new StorageEvent('storage', { key: 'meshharbor:grid-name-pref:u1:t1:devices', newValue: '0' }),
     )
     expect(pref.value).toBe(false)
   })

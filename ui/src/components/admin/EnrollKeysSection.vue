@@ -11,7 +11,7 @@
   <v-card v-if="agentStore.orgEphemeralKeysEnabled === true" class="mt-4">
     <v-card-title class="d-flex align-center flex-wrap ga-2">
       <v-icon icon="mdi-clock-fast" color="warning" class="mr-2" />
-      Ephemeral enrollment keys
+      {{ $t('mh.ek.title') }}
       <v-spacer />
       <v-btn
         color="primary"
@@ -20,16 +20,15 @@
         :loading="minting"
         @click="openMint"
       >
-        Mint key
+        {{ $t('mh.ek.mintKey') }}
       </v-btn>
     </v-card-title>
     <v-card-text>
       <p class="text-body-2 text-medium-emphasis mb-3">
-        A reusable credential that enrolls <strong>self-removing</strong> devices —
-        CI runners, containers, autoscaled workers. Devices it mints are reaped
-        after inactivity (or immediately on a clean stop), and a restart is a
-        <em>new</em> device. Revoking a key stops new enrollments on the next
-        use; devices it already minted die by their own deadline.
+        <i18n-t keypath="mh.ek.intro" tag="span">
+          <template #selfRemoving><strong>{{ $t('mh.ek.selfRemoving') }}</strong></template>
+          <template #new><em>{{ $t('mh.ek.new') }}</em></template>
+        </i18n-t>
       </p>
 
       <!-- FR-116: `table-stack-xs` — on a phone each key is a block, with its
@@ -37,39 +36,39 @@
       <v-table v-if="keys.length" density="compact" class="table-stack-xs">
         <thead>
           <tr>
-            <th>Label</th>
-            <th>Uses</th>
-            <th>Expires</th>
-            <th>Device TTL</th>
-            <th>State</th>
-            <th class="text-right">Actions</th>
+            <th>{{ $t('mh.ek.col.label') }}</th>
+            <th>{{ $t('mh.ek.col.uses') }}</th>
+            <th>{{ $t('mh.ek.col.expires') }}</th>
+            <th>{{ $t('mh.ek.col.ttl') }}</th>
+            <th>{{ $t('mh.ek.col.state') }}</th>
+            <th class="text-right">{{ $t('mh.tp.col.actions') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="k in keys" :key="k.id">
             <td>
-              <span class="font-weight-medium">{{ k.label || '(unnamed)' }}</span>
+              <span class="font-weight-medium">{{ k.label || $t('mh.ek.unnamed') }}</span>
               <div class="text-caption text-medium-emphasis">
-                minted {{ fmtDate(k.created_at) }}
+                {{ $t('mh.ek.minted', { when: fmtDate(k.created_at) }) }}
               </div>
             </td>
-            <td data-label="Uses">{{ k.uses }} / {{ k.max_uses }}</td>
-            <td data-label="Expires" :title="k.expires_at">{{ fmtDate(k.expires_at) }}</td>
-            <td data-label="Device TTL">{{ k.ephemeral_ttl_secs ? `${k.ephemeral_ttl_secs}s` : 'default' }}</td>
-            <td data-label="State">
+            <td :data-label="$t('mh.ek.col.uses')">{{ k.uses }} / {{ k.max_uses }}</td>
+            <td :data-label="$t('mh.ek.col.expires')" :title="k.expires_at">{{ fmtDate(k.expires_at) }}</td>
+            <td :data-label="$t('mh.ek.col.ttl')">{{ k.ephemeral_ttl_secs ? `${k.ephemeral_ttl_secs}s` : $t('mh.ek.default') }}</td>
+            <td :data-label="$t('mh.ek.col.state')">
               <v-chip v-if="k.revoked_at" size="x-small" color="error" variant="tonal">
-                revoked
+                {{ $t('mh.ek.state.revoked') }}
               </v-chip>
-              <v-chip v-else-if="expired(k)" size="x-small" variant="tonal">expired</v-chip>
+              <v-chip v-else-if="expired(k)" size="x-small" variant="tonal">{{ $t('mh.ek.state.expired') }}</v-chip>
               <v-chip
                 v-else-if="k.uses >= k.max_uses"
                 size="x-small"
                 color="warning"
                 variant="tonal"
               >
-                exhausted
+                {{ $t('mh.ek.state.exhausted') }}
               </v-chip>
-              <v-chip v-else size="x-small" color="success" variant="tonal">active</v-chip>
+              <v-chip v-else size="x-small" color="success" variant="tonal">{{ $t('mh.ek.state.active') }}</v-chip>
             </td>
             <td class="text-right">
               <v-btn
@@ -77,17 +76,17 @@
                 size="x-small"
                 variant="text"
                 color="error"
-                :aria-label="`Revoke key ${k.label || k.id}`"
+                :aria-label="$t('mh.ek.revokeAria', { key: k.label || k.id })"
                 @click="revoke(k)"
               >
-                Revoke
+                {{ $t('mh.ek.revoke') }}
               </v-btn>
             </td>
           </tr>
         </tbody>
       </v-table>
       <div v-else class="text-center pa-4 text-medium-emphasis">
-        No keys minted yet.
+        {{ $t('mh.ek.empty') }}
       </div>
 
       <v-alert v-if="error" type="error" variant="tonal" density="compact" class="mt-3">
@@ -102,42 +101,42 @@
   <v-dialog v-model="mintOpen" max-width="560" :persistent="!!mintedKey" :fullscreen="fullscreen">
     <v-card>
       <v-card-title>
-        {{ mintedKey ? 'Ephemeral key — shown once' : 'Mint ephemeral enrollment key' }}
+        {{ mintedKey ? $t('mh.ek.shownOnce') : $t('mh.ek.mintTitle') }}
       </v-card-title>
       <v-card-text v-if="!mintedKey">
         <v-text-field
           v-model="form.label"
-          label="Label"
+          :label="$t('mh.ek.col.label')"
           placeholder="ci-runners"
           density="compact"
-          hint="Display only — name the fleet this key serves"
+          :hint="$t('mh.ek.labelHint')"
           persistent-hint
           class="mb-2"
         />
         <v-text-field
           v-model.number="form.max_uses"
-          label="Max uses"
+          :label="$t('mh.ek.maxUses')"
           type="number"
           density="compact"
-          hint="1–10 000; each enrollment consumes one"
+          :hint="$t('mh.ek.maxUsesHint')"
           persistent-hint
           class="mb-2"
         />
         <v-text-field
           v-model.number="form.expires_in_days"
-          label="Expires in (days)"
+          :label="$t('mh.ek.expiresDays')"
           type="number"
           density="compact"
-          hint="Up to 90 days; the key is dead after this whatever its uses"
+          :hint="$t('mh.ek.expiresHint')"
           persistent-hint
           class="mb-2"
         />
         <v-text-field
           v-model.number="form.ephemeral_ttl_secs"
-          label="Device inactivity deadline (seconds, optional)"
+          :label="$t('mh.ek.ttlLabel')"
           type="number"
           density="compact"
-          hint="60s–7d; blank = server default (15 min). How long a silent device lives before the reaper removes it"
+          :hint="$t('mh.ek.ttlHint')"
           persistent-hint
         />
         <v-alert v-if="mintError" type="error" variant="tonal" density="compact" class="mt-3">
@@ -146,8 +145,9 @@
       </v-card-text>
       <v-card-text v-else>
         <v-alert type="warning" variant="tonal" density="compact" class="mb-3">
-          Copy it now — the key is <strong>not stored</strong> and cannot be
-          shown again. Losing it means minting a new key.
+          <i18n-t keypath="mh.ek.copyNow" tag="span">
+            <template #notStored><strong>{{ $t('mh.ek.notStored') }}</strong></template>
+          </i18n-t>
         </v-alert>
         <v-textarea
           :model-value="mintedKey"
@@ -163,18 +163,18 @@
           variant="tonal"
           @click="copyKey"
         >
-          {{ copied ? 'Copied' : 'Copy key' }}
+          {{ copied ? $t('mh.ek.copied') : $t('mh.ek.copyKey') }}
         </v-btn>
         <p class="text-caption text-medium-emphasis mt-3 mb-0">
-          Enroll with:
-          <code>roomlerd enroll --server {{ origin }} --token &lt;key&gt; --name &lt;label&gt; --ephemeral</code>
+          {{ $t('mh.ek.enrollWith') }}
+          <code>meshharbord enroll --server {{ origin }} --token &lt;key&gt; --name &lt;label&gt; --ephemeral</code>
         </p>
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn v-if="!mintedKey" variant="text" @click="mintOpen = false">Cancel</v-btn>
-        <v-btn v-if="!mintedKey" color="primary" :loading="minting" @click="mint">Mint</v-btn>
-        <v-btn v-else color="primary" @click="closeMint">Done</v-btn>
+        <v-btn v-if="!mintedKey" variant="text" @click="mintOpen = false">{{ $t('common.cancel') }}</v-btn>
+        <v-btn v-if="!mintedKey" color="primary" :loading="minting" @click="mint">{{ $t('mh.ek.mint') }}</v-btn>
+        <v-btn v-else color="primary" @click="closeMint">{{ $t('mh.ek.done') }}</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>

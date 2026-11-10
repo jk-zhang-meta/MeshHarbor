@@ -29,12 +29,12 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Redirect},
 };
-use roomler_ai_db::models::IssueStatus;
-use roomler_ai_services::dao::subscriber::SubscribeOutcome;
+use meshharbor_db::models::IssueStatus;
+use meshharbor_services::dao::subscriber::SubscribeOutcome;
 use serde::Deserialize;
 use tracing::{info, warn};
 
-use roomler_core::ApiError;
+use meshharbor_core::ApiError;
 
 use crate::SaasState;
 
@@ -99,7 +99,7 @@ pub async fn subscribe(
     State(state): State<SaasState>,
     Json(body): Json<SubscribeRequest>,
 ) -> impl IntoResponse {
-    let email = roomler_ai_db::models::Subscriber::normalize_email(&body.email);
+    let email = meshharbor_db::models::Subscriber::normalize_email(&body.email);
     let source = clean_source(body.source);
 
     if !looks_like_an_address(&email) {
@@ -165,14 +165,14 @@ async fn send_confirmation(state: &SaasState, email: &str, token: &str) {
     // to a page "so an email prefetcher can't auto-approve via a GET".
     let link = format!("{base}/newsletter/confirm/{token}");
     let html = format!(
-        "<p>Please confirm you want product updates about Roomler.</p>\
+        "<p>Please confirm you want product updates about MeshHarbor.</p>\
          <p><a href=\"{link}\">Confirm my address</a></p>\
          <p style=\"color:#666;font-size:13px\">If you did not ask for this, ignore this \
          message — nothing is sent to an address that never confirms, and the link \
          stops working once the confirmation is used.</p>"
     );
     if let Err(e) = mailer
-        .send(email, "Confirm your Roomler updates", &html)
+        .send(email, "Confirm your MeshHarbor updates", &html)
         .await
     {
         warn!("subscribe: confirmation mail failed to send: {e:?}");
@@ -355,7 +355,7 @@ mod tests {
     /// be reached by the first one's unsubscribe link.
     #[test]
     fn addresses_normalize_to_one_row() {
-        use roomler_ai_db::models::Subscriber;
+        use meshharbor_db::models::Subscriber;
         assert_eq!(
             Subscriber::normalize_email("  Person@Example.COM  "),
             "person@example.com"

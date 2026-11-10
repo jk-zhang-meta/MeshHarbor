@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use bson::{DateTime, Document, doc, oid::ObjectId};
 use futures::TryStreamExt;
+use meshharbor_db::models::{IssueCounts, NewsletterSend, SendStatus};
 use mongodb::Database;
-use roomler_ai_db::models::{IssueCounts, NewsletterSend, SendStatus};
 use serde::Serialize;
 
 use super::base::{BaseDao, DaoError, DaoResult};

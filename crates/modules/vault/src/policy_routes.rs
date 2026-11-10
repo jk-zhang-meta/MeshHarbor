@@ -25,9 +25,9 @@ use axum::{
     http::StatusCode,
 };
 use bson::{DateTime, Document, doc, oid::ObjectId};
-use roomler_ai_remote_control::{models::SshAccountMode, vault::canonical_net_host};
-use roomler_ai_services::dao::base::DaoError;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_remote_control::{models::SshAccountMode, vault::canonical_net_host};
+use meshharbor_services::dao::base::DaoError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -48,7 +48,7 @@ use crate::rrn::{check_tag, secret_rrn};
 pub const MAX_TTL_S: i64 = 86_400;
 
 /// What a policy may name of the organization: its RRN prefix, its vault
-/// roles, its roomler roles.
+/// roles, its meshharbor roles.
 async fn org_names(state: &VaultState, tid: ObjectId) -> Result<OrgNames, ApiError> {
     let slug = org_slug(state, tid).await?;
     let roles = state
@@ -66,7 +66,7 @@ async fn org_names(state: &VaultState, tid: ObjectId) -> Result<OrgNames, ApiErr
     })
 }
 
-/// The organization's roomler roles, by name: every Cedar `Group` a policy
+/// The organization's meshharbor roles, by name: every Cedar `Group` a policy
 /// may name of it.
 pub(crate) async fn org_groups(state: &VaultState, tid: ObjectId) -> Result<Vec<String>, DaoError> {
     Ok(state
@@ -142,7 +142,7 @@ async fn check_for_org(
     Ok(checked)
 }
 
-/// The roomler roles (Cedar `Group`s) a member holds, by name. Empty for
+/// The meshharbor roles (Cedar `Group`s) a member holds, by name. Empty for
 /// someone who is not a member: no `Group` policy names them.
 pub(crate) async fn groups_of_member(
     state: &VaultState,
@@ -281,9 +281,9 @@ async fn admin_only(state: &VaultState, tid: ObjectId, auth: &AuthUser) -> Resul
         .tenants
         .get_member_permissions(tid, auth.user_id)
         .await?;
-    if roomler_ai_db::models::role::permissions::has(
+    if meshharbor_db::models::role::permissions::has(
         perms,
-        roomler_ai_db::models::role::permissions::ADMINISTRATOR,
+        meshharbor_db::models::role::permissions::ADMINISTRATOR,
     ) {
         Ok(())
     } else {
@@ -1157,19 +1157,19 @@ mod tests {
         let ps = [
             row(
                 "a",
-                r#"permit (principal in Roomler::Role::"dev", action, resource);"#,
+                r#"permit (principal in MeshHarbor::Role::"dev", action, resource);"#,
             ),
             row(
                 "b",
-                "permit (principal in Roomler :: Role :: \"dev\", action, resource);",
+                "permit (principal in MeshHarbor :: Role :: \"dev\", action, resource);",
             ),
             row(
                 "c",
-                r#"permit (principal in Roomler::Role::"developer", action, resource);"#,
+                r#"permit (principal in MeshHarbor::Role::"developer", action, resource);"#,
             ),
             row(
                 "d",
-                r#"permit (principal, action, resource) when { principal in Roomler::Role::"d\u{65}v" };"#,
+                r#"permit (principal, action, resource) when { principal in MeshHarbor::Role::"d\u{65}v" };"#,
             ),
             row("e", "not cedar at all"),
         ];

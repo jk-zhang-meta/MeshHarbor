@@ -6,7 +6,7 @@
 //!
 //! Stored on the tenant (`TenantSettings.rc_session`). The authz gate reads it
 //! from the row it already loads ([`crate::controller::resolve_session_authz`])
-//! and the hub applies it (`roomler_ai_mod_fleet::hub::feature_grant`): it
+//! and the hub applies it (`meshharbor_mod_fleet::hub::feature_grant`): it
 //! strips what the policy refuses and says why, in `rc:session.created` and
 //! in the session's audit row. The device enforcing it too (P2b) is what
 //! survives a hub that was bypassed.
@@ -19,9 +19,9 @@ use axum::{
     extract::{Path, State},
 };
 use bson::oid::ObjectId;
-use roomler_ai_db::models::{RcFeaturePolicy, RcSessionLimits, RcSessionPolicy, role::permissions};
-use roomler_ai_remote_control::models::{FeaturePolicy, SessionPolicy};
-use roomler_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
+use meshharbor_db::models::{RcFeaturePolicy, RcSessionLimits, RcSessionPolicy, role::permissions};
+use meshharbor_remote_control::models::{FeaturePolicy, SessionPolicy};
 use serde::Deserialize;
 use tracing::warn;
 

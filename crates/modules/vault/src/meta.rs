@@ -20,9 +20,9 @@
 //! [`lease_limits::MAX_LISTED`], and says `more` when the bound left some
 //! out. It never says which were refused, nor how many.
 
-use roomler_ai_mod_hive::model::AgentSession;
-use roomler_ai_remote_control::models::Agent;
-use roomler_ai_remote_control::vault::{LeaseRefusal, VaultSecretMeta, lease_limits};
+use meshharbor_mod_hive::model::AgentSession;
+use meshharbor_remote_control::models::Agent;
+use meshharbor_remote_control::vault::{LeaseRefusal, VaultSecretMeta, lease_limits};
 use tracing::warn;
 
 use crate::VaultState;

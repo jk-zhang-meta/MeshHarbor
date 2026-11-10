@@ -22,7 +22,7 @@ unhelpful here: a missing capture grant almost never produces an error.
 ## macOS
 
 :::danger Two grants, and macOS reports neither as an error
-Open **System Settings → Privacy & Security** and enable **Roomler Daemon**
+Open **System Settings → Privacy & Security** and enable **MeshHarbor Daemon**
 under both:
 
 - **Screen & System Audio Recording** — without it you get the desktop picture and nothing on it.
@@ -31,7 +31,7 @@ under both:
 Then restart the user half:
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.roomler.agent
+launchctl kickstart -k gui/$(id -u)/fans.itachi.meshharbor.agent
 ```
 :::
 
@@ -74,7 +74,7 @@ black screen that a reconnect fixes was almost certainly this.
 ## Confirming from the far side
 
 ```bash
-roomler status
+mh status
 ```
 
 The agent reports its capture state, so you can tell "no permission" from "no

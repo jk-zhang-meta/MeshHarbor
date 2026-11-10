@@ -245,7 +245,7 @@ impl OwnershipDirectory {
     }
 
     /// C-6 — cursor-driven `SCAN MATCH` (never `KEYS`): used by the
-    /// status snapshot for the handful of `roomler:pod-alive:*` records.
+    /// status snapshot for the handful of `meshharbor:pod-alive:*` records.
     pub async fn scan_keys(&self, pattern: &str) -> Result<Vec<String>, redis::RedisError> {
         let mut conn = self.conn.clone();
         let mut cursor: u64 = 0;
@@ -272,16 +272,16 @@ impl OwnershipDirectory {
 /// Key builders — ONE place per namespace so producers and readers can
 /// never drift. (`agent` keeps the Phase A-1 key name for continuity.)
 pub fn agent_key(agent_id_hex: &str) -> String {
-    format!("roomler:agent-online:{agent_id_hex}")
+    format!("meshharbor:agent-online:{agent_id_hex}")
 }
 pub fn pod_alive_key(pod_id: &str) -> String {
-    format!("roomler:pod-alive:{pod_id}")
+    format!("meshharbor:pod-alive:{pod_id}")
 }
 
 /// C-3 — tunnel session ownership records (observability + the C-6
 /// metrics; liveness is the session map, TTL reaps ≤90 s after teardown).
 pub fn tunnel_key(session_hex: &str) -> String {
-    format!("roomler:own:tunnel:{session_hex}")
+    format!("meshharbor:own:tunnel:{session_hex}")
 }
 
 /// C-4 — media room claims: the SET-NX namespace (creation is mutually
@@ -289,7 +289,7 @@ pub fn tunnel_key(session_hex: &str) -> String {
 /// room is unusable, so the claim must free fast for the rejoin path.
 pub const MEDIA_TTL_SECS: u64 = 30;
 pub fn media_key(room_hex: &str) -> String {
-    format!("roomler:own:media:{room_hex}")
+    format!("meshharbor:own:media:{room_hex}")
 }
 
 /// C-5 — DERP registrations (LWW: a reconnect for the same pubkey is
@@ -297,10 +297,10 @@ pub fn media_key(room_hex: &str) -> String {
 /// convergence sweep reads. Pubkeys as lowercase hex (base64 would put
 /// `/` inside the token format).
 pub fn derp_key(net_hex: &str, pubkey_hex: &str) -> String {
-    format!("roomler:own:derp:{net_hex}:{pubkey_hex}")
+    format!("meshharbor:own:derp:{net_hex}:{pubkey_hex}")
 }
 pub fn derpnet_key(net_hex: &str) -> String {
-    format!("roomler:own:derpnet:{net_hex}")
+    format!("meshharbor:own:derpnet:{net_hex}")
 }
 
 #[cfg(test)]

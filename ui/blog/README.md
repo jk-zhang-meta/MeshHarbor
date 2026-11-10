@@ -1,6 +1,6 @@
 # The blog
 
-Posts published at `https://roomler.ai/blog/<slug>/`, built by the docs generator
+Posts published at `https://meshharbor.itachi.fans/blog/<slug>/`, built by the docs generator
 (`ui/docs/build.ts`, [FR-87](../../docs/fr/FR-87-blog-and-google-indexing.md)).
 
 - **`posts/<slug>.md`** — one file per post. The file name is the URL, so it is

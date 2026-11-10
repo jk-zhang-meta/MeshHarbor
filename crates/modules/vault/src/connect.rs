@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //! P3-9-1 — a PERSON's use of a secret, through an endpoint their device
-//! serves them (`roomler connect`; `docs/fr/FR-90-hive-agent-sessions.md`
-//! §3e, "P3-9, `roomler connect`, as designed"): the vault's answer to
+//! serves them (`mh connect`; `docs/fr/FR-90-hive-agent-sessions.md`
+//! §3e, "P3-9, `mh connect`, as designed"): the vault's answer to
 //! `rc:vault.connect`.
 //!
 //! The device asks over its own control connection, in the queue its
@@ -54,11 +54,11 @@
 //! become audit rows.
 
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_remote_control::{
+use meshharbor_remote_control::{
     models::{Agent, RpcCap},
     vault::{LeaseRefusal, lease_limits},
 };
-use roomler_ai_services::dao::base::DaoError;
+use meshharbor_services::dao::base::DaoError;
 use tracing::warn;
 
 use crate::VaultState;
@@ -71,7 +71,7 @@ use crate::rrn;
 
 /// The one mode a person's lease is in: the device holds the value, and
 /// serves an endpoint that signs in with it. Never a value handed to the
-/// person (`raw`, the design's `roomler vault get`, is not this verb).
+/// person (`raw`, the design's `mh vault get`, is not this verb).
 pub const CONNECT_MODE: &str = "proxy";
 
 /// One `rc:vault.connect`, as it arrived.
@@ -439,10 +439,10 @@ mod tests {
         let roles = vec!["admin".to_string(), "member".to_string()];
         let set = policy_set([(
             "policy:0".to_string(),
-            r#"permit (principal in Roomler::Group::"member",
-                action == Roomler::Action::"secret:connect", resource)
+            r#"permit (principal in MeshHarbor::Group::"member",
+                action == MeshHarbor::Action::"secret:connect", resource)
                when { context has approval
-                      && context.approval.approver in Roomler::Group::"admin"
+                      && context.approval.approver in MeshHarbor::Group::"admin"
                       && context.approval.approver != principal };"#,
         )])
         .unwrap();
@@ -460,9 +460,9 @@ mod tests {
         // A policy that names one approver by id is not lifted by just any.
         let named = policy_set([(
             "policy:0".to_string(),
-            r#"permit (principal, action == Roomler::Action::"secret:connect", resource)
+            r#"permit (principal, action == MeshHarbor::Action::"secret:connect", resource)
                when { context has approval
-                      && context.approval.approver == Roomler::User::"65f0000000000000000000a1" };"#,
+                      && context.approval.approver == MeshHarbor::User::"65f0000000000000000000a1" };"#,
         )])
         .unwrap();
         assert!(!decide(&named, &probe).allow);

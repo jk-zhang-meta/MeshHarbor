@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchDaemon for the UPDATE HALF — `meshharbord update-helper`.
+
+  Why this exists: `installer -pkg … -target /` requires root, and the
+  DEFAULT macOS install is the per-user LaunchAgent alone (the privileged
+  overlay daemon is opt-in). So a default install could never self-update:
+  the agent either failed the install silently (pre-rc.469 it then exited 0
+  and `KeepAlive{SuccessfulExit=false}` left the machine OFFLINE — field
+  2026-08-25) or, after that fix, refused forever. This unit is the missing
+  root half of updating, and nothing else: no enrollment, no control WS, no
+  agent row — it resolves the PUBLIC release feed, verifies, installs, and
+  exits. The agents merely signal it.
+
+  It also removes the whole exit-to-update failure class on two-half Macs:
+  no agent process is ever the installer's parent and none exits for an
+  update — the pkg's postinstall re-bootstraps both halves, and the helper
+  is not long-running, so there is nothing to race.
+
+  Wake sources, all three deliberate:
+    RunAtLoad      — catch up right after boot / first install.
+    StartInterval  — the periodic cadence (owned HERE, not by the agents;
+                     one owner of "check+download+verify+install").
+    WatchPaths     — the trigger file the agents touch on rc:agent.update.
+                     /var/tmp is sticky/world-writable ON PURPOSE: the
+                     per-user agent is not root, and the trigger is
+                     ADVISORY-ONLY — whoever writes it can cause an update
+                     CHECK, never choose what gets installed (the helper
+                     independently resolves and verifies the release, and
+                     the install-storm cooldown bounds spam).
+
+  Not KeepAlive: the helper runs, decides, exits. launchd relaunches it on
+  the next wake source. ThrottleInterval guards a crash-looping helper.
+
+  ⚠️ postinstall must NEVER bootout a LOADED fans.itachi.meshharbor.update — during an
+  update the postinstall is a grandchild of this very job, and booting the
+  job kills the whole process group, `installer` included, mid-payload. It
+  bootstraps only when not yet loaded; a CHANGED plist therefore takes
+  effect at next boot, which is acceptable for a file that rarely changes.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>fans.itachi.meshharbor.update</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord</string>
+        <string>update-helper</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- 6 h — mirrors the agents' old 4 h ± the reality that pushes cover
+         the urgent case; the interval is the wedge-heal ceiling only. -->
+    <key>StartInterval</key>
+    <integer>21600</integer>
+
+    <key>WatchPaths</key>
+    <array>
+        <string>/private/var/tmp/meshharbor-update-check</string>
+    </array>
+
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/meshharbor/update.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/meshharbor/update.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info</string>
+    </dict>
+</dict>
+</plist>

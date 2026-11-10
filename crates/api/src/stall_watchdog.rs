@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! #1731 — the stall watchdog.
 //!
-//! A `roomler2` pod went completely silent twice in 9 h: not one log line,
+//! A `meshharbor2` pod went completely silent twice in 9 h: not one log line,
 //! `/health` unanswered, until the liveness probe killed it ~105 s later. A
 //! kill takes the only evidence with it, and a runtime that makes no progress
 //! cannot log why. So the evidence has to be taken by something that does not
@@ -307,7 +307,7 @@ fn sample(
     exe: &str,
 ) {
     let mut head = String::new();
-    let _ = writeln!(head, "=== roomler stall dump (#1731), sample {n} ===");
+    let _ = writeln!(head, "=== meshharbor stall dump (#1731), sample {n} ===");
     let _ = writeln!(head, "written_at_unix_ms: {}", unix_ms());
     let _ = writeln!(head, "heartbeat_age_ms: {heartbeat_age_ms}");
     let _ = writeln!(head, "server_version: {}", env!("CARGO_PKG_VERSION"));
@@ -919,7 +919,7 @@ mod tests {
 
     #[test]
     fn the_boot_summary_keeps_headers_and_suspicious_threads_only() {
-        let dump = "=== roomler stall dump (#1731), sample 1 ===\n\
+        let dump = "=== meshharbor stall dump (#1731), sample 1 ===\n\
                     heartbeat_age_ms: 11000\n\
                     tokio: workers=2 alive_tasks=40 global_queue_depth=7\n\
                     fd 1: pipe:[1]  unread_bytes=65536  pipe_capacity=65536\n\

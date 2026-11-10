@@ -40,7 +40,7 @@
 //! the grant to the org's ceiling, and asks the Hub for a session whose
 //! `rc:request` names the login. It decides nothing else — the device binds the
 //! session to that login or refuses it, asks its own consent, applies its own
-//! ceiling, and checks the offer's MAC (`agents/roomlerd/src/extauth.rs`). What
+//! ceiling, and checks the offer's MAC (`agents/meshharbord/src/extauth.rs`). What
 //! the server holds here is a bookkeeping entry, not a credential: without the
 //! device's key it can neither open the session nor impersonate either end.
 
@@ -50,15 +50,15 @@ use std::time::{Duration, Instant};
 
 use bson::oid::ObjectId;
 use dashmap::DashMap;
-use roomler_ai_mod_fleet::hub::OrgPolicy;
-use roomler_ai_remote_control::connect_code;
-use roomler_ai_remote_control::models::{
+use meshharbor_mod_fleet::hub::OrgPolicy;
+use meshharbor_remote_control::connect_code;
+use meshharbor_remote_control::models::{
     Agent, AgentStatus, ConsentMode, ExtauthRefusal, ExternalRcAuditAction, ExternalRcAuditEvent,
     RpcCap,
 };
-use roomler_ai_remote_control::permissions::Permissions;
-use roomler_ai_remote_control::session::ClientTx;
-use roomler_ai_remote_control::signaling::{ExternalGrant, ServerMsg};
+use meshharbor_remote_control::permissions::Permissions;
+use meshharbor_remote_control::session::ClientTx;
+use meshharbor_remote_control::signaling::{ExternalGrant, ServerMsg};
 use tokio::sync::oneshot;
 use tracing::{info, warn};
 
@@ -272,7 +272,8 @@ async fn forward(
     else {
         return false;
     };
-    let Some(pod) = roomler_core::cluster::directory::OwnerRecord::parse(&owner).map(|r| r.pod_id)
+    let Some(pod) =
+        meshharbor_core::cluster::directory::OwnerRecord::parse(&owner).map(|r| r.pod_id)
     else {
         return false;
     };
@@ -337,7 +338,7 @@ fn unavailable(attempt_id: Option<String>) -> ServerMsg {
 async fn gates(
     state: &RemoteState,
     agent: &Agent,
-) -> Result<roomler_ai_db::models::tenant::Tenant, &'static str> {
+) -> Result<meshharbor_db::models::tenant::Tenant, &'static str> {
     // The two refusals the org's OWN session gate applies before anything
     // else (`controller::resolve_session_authz`) — an outsider must not get
     // into a device a colleague could not. A tenant that cannot be read is a
@@ -820,8 +821,11 @@ pub async fn charge_scope(
     state: &RemoteState,
     principal: ObjectId,
     charge_org: Option<&str>,
-) -> Option<(roomler_core::cluster::session_slots::SlotScope, Option<u32>)> {
-    use roomler_core::cluster::session_slots::SlotScope;
+) -> Option<(
+    meshharbor_core::cluster::session_slots::SlotScope,
+    Option<u32>,
+)> {
+    use meshharbor_core::cluster::session_slots::SlotScope;
     let orgs: Vec<_> = state
         .tenants
         .find_user_tenants(principal)
@@ -839,7 +843,7 @@ pub async fn charge_scope(
         None => (
             SlotScope::User(principal),
             Some(
-                roomler_ai_db::models::Plan::Free
+                meshharbor_db::models::Plan::Free
                     .limits_for(1)
                     .max_concurrent_sessions,
             ),
@@ -852,14 +856,14 @@ pub async fn charge_scope(
 /// account in no org gets its own, since no org plan is involved.
 async fn session_limit_message(
     state: &RemoteState,
-    scope: roomler_core::cluster::session_slots::SlotScope,
+    scope: meshharbor_core::cluster::session_slots::SlotScope,
     cap: u32,
     holder_user: String,
     holder_agent: String,
 ) -> String {
-    use roomler_core::cluster::session_slots::SlotScope;
+    use meshharbor_core::cluster::session_slots::SlotScope;
     if let SlotScope::Org(_) = scope {
-        let e = roomler_ai_remote_control::Error::OrgSessionLimit {
+        let e = meshharbor_remote_control::Error::OrgSessionLimit {
             cap,
             holder_user,
             holder_agent,
@@ -999,7 +1003,7 @@ pub async fn handle_session(
         .rc_limits
         .max_secs
         .map(|secs| Duration::from_secs(u64::from(secs)));
-    let idle_secs = roomler_ai_remote_control::models::stricter_idle_limit(
+    let idle_secs = meshharbor_remote_control::models::stricter_idle_limit(
         tenant.settings.rc_limits.idle_secs,
         agent.access_policy.idle_limit_secs(),
     );
@@ -1106,7 +1110,7 @@ pub async fn handle_session(
         }
         Err(e) => {
             let refused = match e {
-                roomler_ai_remote_control::Error::AgentBusy => ExtauthRefusal::Busy,
+                meshharbor_remote_control::Error::AgentBusy => ExtauthRefusal::Busy,
                 _ => ExtauthRefusal::Unavailable,
             };
             let _ = tx.try_send(result(Some(attempt_id.clone()), Some(refused), None));
@@ -1143,7 +1147,7 @@ pub fn intercept(
         return None;
     }
     let msg =
-        serde_json::from_str::<roomler_ai_remote_control::signaling::ClientMsg>(frame.text).ok()?;
+        serde_json::from_str::<meshharbor_remote_control::signaling::ClientMsg>(frame.text).ok()?;
     // The raw frame too: if the device is on another pod, THIS is what the PR-2
     // relay forwards.
     let raw = serde_json::from_str::<serde_json::Value>(frame.text).ok()?;
@@ -1169,9 +1173,9 @@ pub fn on_relayed(
     principal: ObjectId,
     actor: &str,
     tx: &ClientTx,
-    msg: &roomler_ai_remote_control::signaling::ClientMsg,
+    msg: &meshharbor_remote_control::signaling::ClientMsg,
 ) -> Option<bool> {
-    use roomler_ai_remote_control::signaling::ClientMsg;
+    use meshharbor_remote_control::signaling::ClientMsg;
     if !matches!(
         msg,
         ClientMsg::ExtauthStart { .. }
@@ -1190,10 +1194,10 @@ fn dispatch(
     principal: ObjectId,
     actor: &str,
     tx: &ClientTx,
-    msg: roomler_ai_remote_control::signaling::ClientMsg,
+    msg: meshharbor_remote_control::signaling::ClientMsg,
     hop: Hop,
 ) -> Option<bool> {
-    use roomler_ai_remote_control::signaling::ClientMsg;
+    use meshharbor_remote_control::signaling::ClientMsg;
     let (state, actor, tx) = (state.clone(), actor.to_string(), tx.clone());
     match msg {
         ClientMsg::ExtauthStart { connect_code, ke1 } => {

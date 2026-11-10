@@ -1,10 +1,10 @@
-# Roomler — security contact (RFC 9116)
+# MeshHarbor — security contact (RFC 9116)
 # Operated by G ROX EOOD, UIC 205174895, Pazardzhik, Bulgaria.
 
-Contact: mailto:security@roomler.ai
-Contact: https://github.com/gjovanov/roomler-ai/security/advisories/new
+Contact: mailto:security@meshharbor.itachi.fans
+Contact: https://github.com/jk-zhang-meta/MeshHarbor/security/advisories/new
 Expires: 2027-08-28T00:00:00.000Z
 Preferred-Languages: en, de, bg
-Canonical: https://roomler.ai/.well-known/security.txt
-Policy: https://github.com/gjovanov/roomler-ai/blob/master/SECURITY.md
-Acknowledgments: https://github.com/gjovanov/roomler-ai/blob/master/SECURITY.md
+Canonical: https://meshharbor.itachi.fans/.well-known/security.txt
+Policy: https://github.com/jk-zhang-meta/MeshHarbor/blob/master/SECURITY.md
+Acknowledgments: https://github.com/jk-zhang-meta/MeshHarbor/blob/master/SECURITY.md

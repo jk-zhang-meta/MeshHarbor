@@ -10,9 +10,9 @@
 //! "not ours".
 
 use bson::oid::ObjectId;
-use roomler_ai_mod_fleet::hub::{DispatchCtx, OrgPolicy};
-use roomler_ai_mod_fleet::nudge::{note_agent_offline_evidence, spawn_agent_nudge};
-use roomler_ai_remote_control::{
+use meshharbor_mod_fleet::hub::{DispatchCtx, OrgPolicy};
+use meshharbor_mod_fleet::nudge::{note_agent_offline_evidence, spawn_agent_nudge};
+use meshharbor_remote_control::{
     models::ConsentMode,
     signaling::{ClientMsg, Role, ServerMsg},
 };
@@ -28,7 +28,7 @@ pub struct ControllerFrame<'a> {
     pub controller_name: &'a str,
     /// The Hub-registered sender for this browser connection: how replies
     /// and errors reach the tab.
-    pub controller_tx: &'a roomler_ai_remote_control::session::ClientTx,
+    pub controller_tx: &'a meshharbor_remote_control::session::ClientTx,
     /// The raw text frame (parsed here, not by the socket).
     pub text: &'a str,
     /// PR-1 rehome — the affinity key this connection dialed with (`None` =
@@ -37,6 +37,15 @@ pub struct ControllerFrame<'a> {
     pub conn_established_ms: i64,
     /// PR-2 relay — the connection id the owner pod's proxy routes replies to.
     pub connection_id: &'a str,
+}
+
+// Only this module can construct the post-authentication/PDP token. It owns
+// the exact parsed request and current sender; no wire or relay DTO carries it.
+struct LocalPdpRequest {
+    request: ClientMsg,
+    user_id: ObjectId,
+    controller_tx: meshharbor_remote_control::session::ClientTx,
+    policy_snapshot: Option<meshharbor_remote_control::session::FileChildPolicySnapshot>,
 }
 
 /// FR-101 P4a — how many session requests one caller may send one device in a
@@ -76,7 +85,17 @@ pub async fn handle_controller_frame(state: &RemoteState, frame: ControllerFrame
     // (self-control / admin / REMOTE_CONTROL + per-device allowlist +
     // quarantine). A non-request rc:* message resolves to `Ok(Prompt)` and
     // falls straight through to dispatch (the mode is unused for it).
-    let authz = match resolve_session_authz(state, frame.user_id, frame.text).await {
+    let mut local_pdp_verified = false;
+    let mut file_child_policy_snapshot = None;
+    let authz = match resolve_session_authz_with_origin(
+        state,
+        frame.user_id,
+        frame.text,
+        &mut local_pdp_verified,
+        &mut file_child_policy_snapshot,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reason) => {
             warn!(user_id = ?frame.user_id, %reason, "rc:session.request denied by authz gate");
@@ -120,8 +139,28 @@ pub async fn handle_controller_frame(state: &RemoteState, frame: ControllerFrame
         });
         return true;
     }
+    let local_pdp_request = match serde_json::from_str::<ClientMsg>(frame.text) {
+        Ok(
+            request @ ClientMsg::SessionRequest {
+                share_grant_id: None,
+                ..
+            },
+        ) if local_pdp_verified
+            && matches!(authz.mode, ConsentMode::Auto | ConsentMode::Prompt)
+            && authz.override_reason.is_none() =>
+        {
+            Some(LocalPdpRequest {
+                request,
+                user_id: frame.user_id,
+                controller_tx: frame.controller_tx.clone(),
+                policy_snapshot: file_child_policy_snapshot,
+            })
+        }
+        _ => None,
+    };
     dispatch_controller_rc(
         state,
+        local_pdp_request,
         frame.user_id,
         frame.controller_name,
         frame.controller_tx,
@@ -147,17 +186,18 @@ pub async fn handle_controller_frame(state: &RemoteState, frame: ControllerFrame
 /// Route a parsed `rc:*` message coming from a controller browser tab.
 /// Returns `true` if the message was handled, `false` if it wasn't rc:*.
 #[allow(clippy::too_many_arguments)]
-pub async fn dispatch_controller_rc(
+async fn dispatch_controller_rc(
     state: &RemoteState,
+    local_pdp_request: Option<LocalPdpRequest>,
     user_id: ObjectId,
     controller_name: &str,
-    controller_tx: &roomler_ai_remote_control::session::ClientTx,
+    controller_tx: &meshharbor_remote_control::session::ClientTx,
     text: &str,
     consent_mode: ConsentMode,
     override_reason: Option<String>,
     // P6 — the device's `AccessPolicy.input_mode` (resolved by the authz
     // gate alongside `consent_mode`); forwarded to the agent's arbiter.
-    input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+    input_mode: Option<meshharbor_remote_control::models::InputMode>,
     // Multi-org — the org name the host's consent prompt should name
     // (resolved by the same gate).
     tenant_name: Option<String>,
@@ -173,7 +213,7 @@ pub async fn dispatch_controller_rc(
     // P4b-2 — the idle limit, org's and device's (the same gate).
     idle_secs: Option<u32>,
     // FR-99 P3b — the device's lock ask (the same gate).
-    lock_on_end: Option<roomler_ai_remote_control::models::LockOnEnd>,
+    lock_on_end: Option<meshharbor_remote_control::models::LockOnEnd>,
     // FR-115 P3 — the device org's concurrent-session cap (the same gate).
     org_session_cap: Option<u32>,
     // PR-1 rehome direction inputs: the affinity key this conn DIALED
@@ -185,9 +225,83 @@ pub async fn dispatch_controller_rc(
     connection_id: &str,
 ) -> bool {
     let hub = &state.fleet.rc_hub;
-    let Ok(parsed) = serde_json::from_str::<ClientMsg>(text) else {
-        return false;
+    let (parsed, local_pdp, local_pdp_snapshot) = match local_pdp_request {
+        Some(token) => {
+            if token.user_id != user_id || !token.controller_tx.same_channel(controller_tx) {
+                return true; // private-token identity mismatch: never downgrade into legacy dispatch
+            }
+            (token.request, true, token.policy_snapshot)
+        }
+        None => match serde_json::from_str::<ClientMsg>(text) {
+            Ok(parsed) => (parsed, false, None),
+            Err(_) => return false,
+        },
     };
+    let file_child_session_id = match &parsed {
+        ClientMsg::FileChildReserve { session_id, .. }
+        | ClientMsg::FileSdpOffer { session_id, .. }
+        | ClientMsg::FileIce { session_id, .. }
+        | ClientMsg::FileChildComplete { session_id, .. }
+        | ClientMsg::FileChildRevokeAck { session_id, .. }
+        | ClientMsg::FileSdpAnswer { session_id, .. } => Some(*session_id),
+        _ => None,
+    };
+    let mut file_child_watch_ctx = None;
+    if let ClientMsg::FileChildReserve {
+        session_id,
+        direction,
+        ..
+    }
+    | ClientMsg::FileSdpOffer {
+        session_id,
+        direction,
+        ..
+    } = &parsed
+    {
+        match hub.session_file_child_target_for_direction(
+            *session_id,
+            user_id,
+            controller_tx,
+            *direction,
+        ) {
+            Ok((agent_id, tenant_id, _)) => {
+                let current_snapshot =
+                    resolve_file_child_policy_snapshot(state, user_id, agent_id, tenant_id).await;
+                match hub.admit_file_child_policy_snapshot_for_direction(
+                    *session_id,
+                    user_id,
+                    controller_tx,
+                    *direction,
+                    current_snapshot,
+                ) {
+                    Ok(start_watch) => {
+                        file_child_watch_ctx =
+                            Some((*session_id, agent_id, tenant_id, start_watch));
+                    }
+                    Err(e) => {
+                        let message = refusal_message(state, &e).await;
+                        let _ = controller_tx.try_send(ServerMsg::Error {
+                            session_id: Some(*session_id),
+                            code: controller_error_code(&e, true).to_string(),
+                            message,
+                            open_nonce: None,
+                        });
+                        return true;
+                    }
+                }
+            }
+            Err(e) => {
+                let message = refusal_message(state, &e).await;
+                let _ = controller_tx.try_send(ServerMsg::Error {
+                    session_id: error_session_id(&e).or(Some(*session_id)),
+                    code: controller_error_code(&e, true).to_string(),
+                    message,
+                    open_nonce: None,
+                });
+                return true;
+            }
+        }
+    }
     let is_session_request = matches!(&parsed, ClientMsg::SessionRequest { .. });
     // FR-115 P3b — on the pod that owns the device, the org's cap is a
     // cluster-wide slot, claimed here because the hub is synchronous: the
@@ -201,7 +315,7 @@ pub async fn dispatch_controller_rc(
         && let Some(org) = hub.agent_org(*agent_id)
     {
         use crate::slots::SlotDecision;
-        use roomler_core::cluster::session_slots::SlotScope;
+        use meshharbor_core::cluster::session_slots::SlotScope;
         match crate::slots::claim(state, SlotScope::Org(org), user_id, *agent_id, cap).await {
             SlotDecision::Claimed(lease) => {
                 slot = Some(lease);
@@ -213,7 +327,7 @@ pub async fn dispatch_controller_rc(
                 holder_user,
                 holder_agent,
             } => {
-                let e = roomler_ai_remote_control::Error::OrgSessionLimit {
+                let e = meshharbor_remote_control::Error::OrgSessionLimit {
                     cap,
                     holder_user,
                     holder_agent,
@@ -272,9 +386,27 @@ pub async fn dispatch_controller_rc(
     let mut created_session = None;
     let dispatched = if shared_scope.is_some() {
         hub.dispatch_capturing_session(&ctx, parsed, &mut created_session)
+    } else if local_pdp {
+        hub.dispatch_local_pdp_session_request(&ctx, parsed, local_pdp_snapshot)
     } else {
         hub.dispatch(&ctx, parsed)
     };
+    if let Some((session_id, agent_id, tenant_id, start_watch)) = file_child_watch_ctx {
+        if dispatched.is_ok() {
+            if start_watch || hub.ensure_file_child_watch_started(session_id) {
+                watch_file_child_session(
+                    state.clone(),
+                    session_id,
+                    user_id,
+                    controller_tx.clone(),
+                    agent_id,
+                    tenant_id,
+                );
+            }
+        } else {
+            hub.release_file_child_watch_if_idle(session_id);
+        }
+    }
     if dispatched.is_ok()
         && let (Some(scope), Some(session)) = (shared_scope, created_session)
     {
@@ -297,7 +429,7 @@ pub async fn dispatch_controller_rc(
         // 250 ms; on any probe failure fall through to the honest
         // `agent_offline`.
         if is_session_request
-            && let roomler_ai_remote_control::error::Error::AgentOffline(agent_hex) = &e
+            && let meshharbor_remote_control::error::Error::AgentOffline(agent_hex) = &e
             && let Some(redis) = &state.redis_pubsub
             && let Ok(Ok(Some(owner))) = tokio::time::timeout(
                 std::time::Duration::from_millis(250),
@@ -306,8 +438,10 @@ pub async fn dispatch_controller_rc(
             .await
         {
             note_agent_offline_evidence(state, agent_hex.clone(), "controller_session");
-            roomler_core::cluster::metrics::bump(&roomler_core::cluster::metrics::RC_REHOME_TOTAL);
-            let record = roomler_core::cluster::directory::OwnerRecord::parse(&owner);
+            meshharbor_core::cluster::metrics::bump(
+                &meshharbor_core::cluster::metrics::RC_REHOME_TOTAL,
+            );
+            let record = meshharbor_core::cluster::directory::OwnerRecord::parse(&owner);
             let owner_pod = record
                 .as_ref()
                 .map(|r| r.pod_id.clone())
@@ -382,7 +516,7 @@ pub async fn dispatch_controller_rc(
                     .unwrap_or_default(),
                 Err(_) => String::new(),
             };
-            let direction = roomler_ai_mod_fleet::nudge::rehome_direction(
+            let direction = meshharbor_mod_fleet::nudge::rehome_direction(
                 dialed_tid,
                 &agent_tenant_hex,
                 conn_established_ms,
@@ -390,9 +524,9 @@ pub async fn dispatch_controller_rc(
                 state.settings.rc.rehome_direction_guard_ms,
             );
             match direction {
-                roomler_ai_mod_fleet::nudge::RehomeDirection::ControllerMove { reason } => {
-                    roomler_core::cluster::metrics::bump(
-                        &roomler_core::cluster::metrics::RC_REHOME_CONTROLLER_TOTAL,
+                meshharbor_mod_fleet::nudge::RehomeDirection::ControllerMove { reason } => {
+                    meshharbor_core::cluster::metrics::bump(
+                        &meshharbor_core::cluster::metrics::RC_REHOME_CONTROLLER_TOTAL,
                     );
                     info!(
                         %user_id,
@@ -403,7 +537,7 @@ pub async fn dispatch_controller_rc(
                         "cross-pod rc miss: controller re-dials (nudge suppressed)"
                     );
                 }
-                roomler_ai_mod_fleet::nudge::RehomeDirection::NudgeAgent => {
+                meshharbor_mod_fleet::nudge::RehomeDirection::NudgeAgent => {
                     info!(
                         %user_id,
                         agent = %agent_hex,
@@ -430,7 +564,7 @@ pub async fn dispatch_controller_rc(
         // honest surface either way.
         if matches!(
             &e,
-            roomler_ai_remote_control::error::Error::SessionNotFound(_)
+            meshharbor_remote_control::error::Error::SessionNotFound(_)
         ) {
             let owners: Vec<String> = state
                 .remote_rc_conns
@@ -481,7 +615,7 @@ pub async fn dispatch_controller_rc(
         }
         // Phase A-1 split-evidence probe for the remaining offline paths
         // (non-session-request messages, probe timeouts).
-        if let roomler_ai_remote_control::error::Error::AgentOffline(agent_hex) = &e {
+        if let meshharbor_remote_control::error::Error::AgentOffline(agent_hex) = &e {
             note_agent_offline_evidence(state, agent_hex.clone(), "controller_session");
         }
         // Surface the failure to the controller so the UI can exit its
@@ -489,8 +623,8 @@ pub async fn dispatch_controller_rc(
         // the controller may already be closing.
         let message = refusal_message(state, &e).await;
         let _ = controller_tx.try_send(ServerMsg::Error {
-            session_id: error_session_id(&e),
-            code: error_code(&e).to_string(),
+            session_id: error_session_id(&e).or(file_child_session_id),
+            code: controller_error_code(&e, file_child_session_id.is_some()).to_string(),
             message,
             open_nonce: None,
         });
@@ -505,9 +639,9 @@ pub async fn dispatch_controller_rc(
 /// sentence, never to an error of its own.
 pub(crate) async fn refusal_message(
     state: &RemoteState,
-    e: &roomler_ai_remote_control::Error,
+    e: &meshharbor_remote_control::Error,
 ) -> String {
-    let roomler_ai_remote_control::Error::OrgSessionLimit {
+    let meshharbor_remote_control::Error::OrgSessionLimit {
         cap,
         holder_user,
         holder_agent,
@@ -568,7 +702,7 @@ pub struct SessionAuthz {
     pub mode: ConsentMode,
     pub override_reason: Option<String>,
     /// P6 — the device's `AccessPolicy.input_mode` (None = free default).
-    pub input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+    pub input_mode: Option<meshharbor_remote_control::models::InputMode>,
     /// Multi-org — display name of the organization this session happens in,
     /// so the host's consent prompt can say WHICH org is asking. Resolved
     /// from the agent row the gate already loads. `None` on the early-out
@@ -608,7 +742,7 @@ pub struct SessionAuthz {
     /// (`AccessPolicy::lock_on_end_ask`). It binds every controller, the
     /// owner and break-glass included: it describes the device, not who is
     /// asking. `None` when nothing is asked and on the early-out paths.
-    pub lock_on_end: Option<roomler_ai_remote_control::models::LockOnEnd>,
+    pub lock_on_end: Option<meshharbor_remote_control::models::LockOnEnd>,
     /// FR-115 P3 — how many remote sessions the device's org may run at once
     /// ([`org_session_cap_of`]), counted by the hub that owns the device. It
     /// binds every controller, the owner and break-glass included. `None`
@@ -635,7 +769,7 @@ impl SessionAuthz {
     }
     fn allow_with_input(
         mode: ConsentMode,
-        input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+        input_mode: Option<meshharbor_remote_control::models::InputMode>,
         tenant_name: Option<String>,
         rc_overlay: bool,
         session_policy: OrgPolicy,
@@ -673,7 +807,7 @@ impl SessionAuthz {
     /// FR-99 P3b — set the device's lock ask.
     fn lock_ask(
         mut self,
-        lock_on_end: Option<roomler_ai_remote_control::models::LockOnEnd>,
+        lock_on_end: Option<meshharbor_remote_control::models::LockOnEnd>,
     ) -> Self {
         self.lock_on_end = lock_on_end;
         self
@@ -690,7 +824,7 @@ impl SessionAuthz {
 /// ESTABLISHED like the device cap: `plan_enforcement` does not soften it.
 /// It landed with no org over it (the FR-115 census: peaks of four and three,
 /// both on unlimited plans), so no grandfathering arises.
-pub(crate) fn org_session_cap_of(t: &roomler_ai_db::models::Tenant) -> Option<u32> {
+pub(crate) fn org_session_cap_of(t: &meshharbor_db::models::Tenant) -> Option<u32> {
     let n = t.limits().max_concurrent_sessions;
     (n != u32::MAX).then_some(n)
 }
@@ -713,8 +847,22 @@ pub async fn resolve_session_authz(
     controller_user_id: ObjectId,
     text: &str,
 ) -> Result<SessionAuthz, String> {
-    use roomler_ai_db::models::role::permissions;
-    use roomler_ai_remote_control::models::AgentStatus;
+    resolve_session_authz_with_origin(state, controller_user_id, text, &mut false, &mut None).await
+}
+
+// Compatibility PDP includes "let Hub explain missing agent" early-outs.
+// Only actual known-agent allow branches attest the local creation source.
+async fn resolve_session_authz_with_origin(
+    state: &RemoteState,
+    controller_user_id: ObjectId,
+    text: &str,
+    local_pdp_verified: &mut bool,
+    file_child_policy_snapshot: &mut Option<
+        meshharbor_remote_control::session::FileChildPolicySnapshot,
+    >,
+) -> Result<SessionAuthz, String> {
+    use meshharbor_db::models::role::permissions;
+    use meshharbor_remote_control::models::AgentStatus;
 
     if let Ok(
         msg @ ClientMsg::SessionRequest {
@@ -784,7 +932,7 @@ pub async fn resolve_session_authz(
     // P4b-2 — and its idle limit, held to the device's own when that one is
     // shorter: a device may tighten its org's limit, never loosen it. A row
     // we could not see leaves the device's own, never a guess at the org's.
-    let idle_secs = roomler_ai_remote_control::models::stricter_idle_limit(
+    let idle_secs = meshharbor_remote_control::models::stricter_idle_limit(
         tenant.as_ref().and_then(|t| t.settings.rc_limits.idle_secs),
         agent.access_policy.idle_limit_secs(),
     );
@@ -798,6 +946,12 @@ pub async fn resolve_session_authz(
     } else {
         None
     };
+    let snapshot = tenant.as_ref().and_then(|t| {
+        meshharbor_remote_control::session::FileChildPolicySnapshot::new(
+            t.security_revision(),
+            agent.access_policy_revision(),
+        )
+    });
     let tenant_name = tenant.map(|t| t.name);
 
     // Controlling your OWN device is always allowed. Whether it also
@@ -814,6 +968,8 @@ pub async fn resolve_session_authz(
     // attended modes without a second account).
     if agent.owner_user_id == controller_user_id {
         // FR-85 P3 — the owner may record their own device.
+        *local_pdp_verified = true;
+        *file_child_policy_snapshot = snapshot;
         return Ok(SessionAuthz::allow_with_input(
             agent.access_policy.owner_consent_mode(),
             input_mode,
@@ -866,6 +1022,8 @@ pub async fn resolve_session_authz(
                 org_session_cap,
             });
         }
+        *local_pdp_verified = true;
+        *file_child_policy_snapshot = snapshot;
         return Ok(SessionAuthz::allow_with_input(
             mode,
             input_mode,
@@ -888,6 +1046,8 @@ pub async fn resolve_session_authz(
     // request; consent is the real gate). Non-empty ⇒ user or a role must match.
     let policy = &agent.access_policy;
     if policy.allowed_user_ids.is_empty() && policy.allowed_role_ids.is_empty() {
+        *local_pdp_verified = true;
+        *file_child_policy_snapshot = snapshot;
         return Ok(SessionAuthz::allow_with_input(
             mode,
             input_mode,
@@ -901,6 +1061,8 @@ pub async fn resolve_session_authz(
         .capped(org_session_cap));
     }
     if policy.allowed_user_ids.contains(&controller_user_id) {
+        *local_pdp_verified = true;
+        *file_child_policy_snapshot = snapshot;
         return Ok(SessionAuthz::allow_with_input(
             mode,
             input_mode,
@@ -919,6 +1081,8 @@ pub async fn resolve_session_authz(
         .await
         .unwrap_or_default();
     if policy.allowed_role_ids.iter().any(|r| role_ids.contains(r)) {
+        *local_pdp_verified = true;
+        *file_child_policy_snapshot = snapshot;
         return Ok(SessionAuthz::allow_with_input(
             mode,
             input_mode,
@@ -933,11 +1097,154 @@ pub async fn resolve_session_authz(
     }
     Err("you're not on this device's control allowlist".to_string())
 }
+
+/// X14 — re-verify live tenant and agent policies and extract the monotonic
+/// `(tenant.security_revision(), agent.access_policy_revision())` pair for
+/// download-only file child capability. Any lookup failure, missing/non-positive
+/// revision, quarantine, org archival, `files: off`, or allowlist tightening
+/// returns `None` (fail closed).
+async fn resolve_file_child_policy_snapshot(
+    state: &RemoteState,
+    controller_user_id: ObjectId,
+    agent_id: ObjectId,
+    tenant_id: ObjectId,
+) -> Option<meshharbor_remote_control::session::FileChildPolicySnapshot> {
+    use meshharbor_db::models::{RcFeaturePolicy, role::permissions};
+    use meshharbor_remote_control::models::AgentStatus;
+
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let agent = state.fleet.agents.base.find_by_id(agent_id).await.ok()?;
+        if agent.deleted_at.is_some()
+            || agent.status == AgentStatus::Quarantined
+            || agent.tenant_id != tenant_id
+        {
+            return None;
+        }
+        let tenant = state.tenants.base.find_by_id(tenant_id).await.ok()?;
+        if tenant.is_archived || tenant.settings.rc_session.files == RcFeaturePolicy::Off {
+            return None;
+        }
+        let effective_mode = if agent.owner_user_id == controller_user_id {
+            agent.access_policy.owner_consent_mode()
+        } else {
+            agent.access_policy.effective_consent_mode()
+        };
+        if tenant.settings.rc_session.files == RcFeaturePolicy::Ask
+            && effective_mode != ConsentMode::Prompt
+        {
+            return None;
+        }
+        if agent.owner_user_id != controller_user_id {
+            let perms = state
+                .tenants
+                .get_member_permissions(tenant_id, controller_user_id)
+                .await
+                .ok()?;
+            if !permissions::has(perms, permissions::ADMINISTRATOR) {
+                if !permissions::has(perms, permissions::REMOTE_CONTROL) {
+                    return None;
+                }
+                let policy = &agent.access_policy;
+                if !policy.allowed_user_ids.is_empty() || !policy.allowed_role_ids.is_empty() {
+                    let user_allowed = policy.allowed_user_ids.contains(&controller_user_id);
+                    let role_allowed = if user_allowed {
+                        true
+                    } else {
+                        let role_ids = state
+                            .tenants
+                            .member_role_ids(tenant_id, controller_user_id)
+                            .await
+                            .ok()?;
+                        policy.allowed_role_ids.iter().any(|r| role_ids.contains(r))
+                    };
+                    if !user_allowed && !role_allowed {
+                        return None;
+                    }
+                }
+            }
+        }
+        meshharbor_remote_control::session::FileChildPolicySnapshot::new(
+            tenant.security_revision(),
+            agent.access_policy_revision(),
+        )
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// X14 — background watchdog for an active file-child-enabled parent session:
+/// polls MongoDB every 1 second while at least one `Reserved` or `Active` file
+/// child slot exists, exiting when idle (`file_children.is_empty()`) and
+/// restarting on the next `rc:file.child.reserve`. Immediately triggers
+/// irreversible child revocation (`rc:file.child.revoke` + 5 s fail-closed ACK
+/// deadline) when any policy revision or permission gate changes.
+fn watch_file_child_session(
+    state: RemoteState,
+    session_id: ObjectId,
+    user_id: ObjectId,
+    controller_tx: meshharbor_remote_control::session::ClientTx,
+    agent_id: ObjectId,
+    tenant_id: ObjectId,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            match state.fleet.rc_hub.poll_file_child_watch_target(
+                session_id,
+                user_id,
+                &controller_tx,
+            ) {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return,
+            }
+            let current_snapshot =
+                resolve_file_child_policy_snapshot(&state, user_id, agent_id, tenant_id).await;
+            if state
+                .fleet
+                .rc_hub
+                .admit_file_child_policy_snapshot(
+                    session_id,
+                    user_id,
+                    &controller_tx,
+                    current_snapshot,
+                )
+                .is_err()
+            {
+                return;
+            }
+            if state
+                .fleet
+                .rc_hub
+                .release_file_child_watch_if_idle(session_id)
+            {
+                return;
+            }
+        }
+    });
+}
+/// X14 — child-specific error code emitted when a file-child signaling frame
+/// (`rc:file.child.*` / `rc:file.sdp.*` / `rc:file.ice`) fails on an existing
+/// parent session so the browser closes only its child transports without
+/// sniffing error messages or masking parent-session errors.
+pub const FILE_CHILD_ERROR_CODE: &str = "file_child_error";
+
+pub fn controller_error_code(
+    e: &meshharbor_remote_control::Error,
+    is_file_child_msg: bool,
+) -> &'static str {
+    if is_file_child_msg && !matches!(e, meshharbor_remote_control::Error::SessionNotFound(_)) {
+        FILE_CHILD_ERROR_CODE
+    } else {
+        error_code(e)
+    }
+}
+
 /// Stable short code for the wire. Exhaustive match so a new
 /// `remote_control::Error` variant triggers a compile error here rather
 /// than silently being reported as "internal".
-pub fn error_code(e: &roomler_ai_remote_control::Error) -> &'static str {
-    use roomler_ai_remote_control::Error::*;
+pub fn error_code(e: &meshharbor_remote_control::Error) -> &'static str {
+    use meshharbor_remote_control::Error::*;
     match e {
         AgentOffline(_) => "agent_offline",
         AgentNotFound(_) => "agent_not_found",
@@ -965,8 +1272,8 @@ pub fn error_code(e: &roomler_ai_remote_control::Error) -> &'static str {
 /// If the underlying error references a specific session, extract its id
 /// so the controller UI can route the error to the right spinner instead
 /// of assuming it's about the most recently attempted session.
-fn error_session_id(e: &roomler_ai_remote_control::Error) -> Option<bson::oid::ObjectId> {
-    use roomler_ai_remote_control::Error::*;
+fn error_session_id(e: &meshharbor_remote_control::Error) -> Option<bson::oid::ObjectId> {
+    use meshharbor_remote_control::Error::*;
     match e {
         SessionNotFound(hex) => bson::oid::ObjectId::parse_str(hex).ok(),
         BadPhase(hex, _) => bson::oid::ObjectId::parse_str(hex).ok(),

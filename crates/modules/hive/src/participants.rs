@@ -28,8 +28,8 @@ use axum::{
     extract::{Path, State},
 };
 use bson::oid::ObjectId;
-use roomler_ai_db::models::role::permissions;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_db::models::role::permissions;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 

@@ -38,12 +38,12 @@ use bson::{DateTime, doc, oid::ObjectId};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::error::Error as HubError;
-use roomler_ai_remote_control::models::{
+use meshharbor_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::error::Error as HubError;
+use meshharbor_remote_control::models::{
     Agent, ExecAnchor, ExecAuditEvent, ExecDenyReason, ExecOutcome, ExecPending, OsKind,
 };
-use roomler_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
 
 use crate::FleetState;
 use crate::auth_agent::AuthAgentService;
@@ -75,7 +75,7 @@ pub fn routes_via_service(state: &FleetState, agent: &Agent) -> bool {
 // The anchor
 // ────────────────────────────────────────────────────────────────────────────
 
-/// `POST /api/agent/anchor` — body of `roomlerd anchor`, run elevated by an
+/// `POST /api/agent/anchor` — body of `meshharbord anchor`, run elevated by an
 /// administrator on the device.
 #[derive(Debug, Deserialize)]
 pub struct AnchorRequest {
@@ -101,7 +101,7 @@ pub struct AnchorRequest {
 pub struct AnchorResponse {
     pub agent_id: String,
     pub tenant_id: String,
-    /// The device's name, for `roomlerd anchor` to confirm what it anchored.
+    /// The device's name, for `meshharbord anchor` to confirm what it anchored.
     pub name: String,
     /// The SYSTEM service's credential (`TokenType::AgentService`). Shown
     /// once. The server keeps who anchored the device, when, and the anchor's
@@ -148,7 +148,7 @@ pub async fn anchor(
         .find_live_in_tenant(tid, agent_id)
         .await
         .map_err(|e| match e {
-            roomler_ai_services::dao::base::DaoError::NotFound => {
+            meshharbor_services::dao::base::DaoError::NotFound => {
                 ApiError::NotFound("No such device in this organization".to_string())
             }
             other => ApiError::Internal(format!("agent lookup: {other}")),
@@ -185,7 +185,7 @@ pub async fn anchor(
         .claim(&use_key, "agent-anchor")
         .await
         .map_err(|e| match e {
-            roomler_ai_services::dao::base::DaoError::Validation(_) => {
+            meshharbor_services::dao::base::DaoError::Validation(_) => {
                 ApiError::Unauthorized("This enrollment token has already been used".into())
             }
             _ => ApiError::ServiceUnavailable(
@@ -200,16 +200,14 @@ pub async fn anchor(
     let service_token = state
         .auth
         .issue_agent_service_token(agent_id, tid, &anchor_id)?;
-    let anchor = bson::to_bson(&ExecAnchor {
+    let anchor = ExecAnchor {
         anchored_at: DateTime::now(),
         anchored_by: admin_uid,
         anchor_id,
-    })
-    .map_err(|e| ApiError::Internal(format!("anchor record: {e}")))?;
+    };
     state
         .agents
-        .base
-        .update_by_id(agent_id, doc! { "$set": { "exec_anchor": anchor } })
+        .set_exec_anchor(agent_id, &anchor)
         .await
         .map_err(|e| ApiError::Internal(format!("anchor record: {e}")))?;
     info!(
@@ -280,8 +278,7 @@ pub async fn unanchor(
     let was_anchored = agent.exec_anchor.is_some();
     state
         .agents
-        .base
-        .update_by_id(aid, doc! { "$unset": { "exec_anchor": "" } })
+        .clear_exec_anchor(aid)
         .await
         .map_err(|e| ApiError::Internal(format!("anchor record: {e}")))?;
     warn!(

@@ -40,7 +40,7 @@ impl Display {
         unsafe { CGDisplayPixelsHigh(self.0) }
     }
 
-    /// ROOMLER PATCH: the display's true width in PIXELS.
+    /// MESHHARBOR PATCH: the display's true width in PIXELS.
     ///
     /// [`Display::width`] is named for pixels but returns POINTS. Both are
     /// kept, because the distinction is load-bearing: a capture stream wants
@@ -52,7 +52,7 @@ impl Display {
         self.pixel_size().0
     }
 
-    /// ROOMLER PATCH: the display's true height in PIXELS. See
+    /// MESHHARBOR PATCH: the display's true height in PIXELS. See
     /// [`Display::pixel_width`].
     pub fn pixel_height(self) -> usize {
         self.pixel_size().1

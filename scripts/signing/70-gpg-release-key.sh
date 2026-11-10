@@ -29,10 +29,10 @@
 
 set -euo pipefail
 
-REPO="${REPO:-gjovanov/roomler-ai}"
+REPO="${REPO:-jk-zhang-meta/MeshHarbor}"
 OUTDIR="${OUTDIR:-$(cd "$(dirname "$0")" && pwd)/gpg}"
-REAL_NAME="${GPG_REAL_NAME:-Roomler Release Signing}"
-REAL_EMAIL="${GPG_REAL_EMAIL:-releases@roomler.ai}"
+REAL_NAME="${GPG_REAL_NAME:-MeshHarbor Release Signing}"
+REAL_EMAIL="${GPG_REAL_EMAIL:-releases@meshharbor.itachi.fans}"
 EXPIRE="${GPG_EXPIRE:-2y}"
 
 say()  { printf '==> %s\n' "$*"; }
@@ -117,8 +117,8 @@ cmd_export() {
     chmod 600 "$OUTDIR/signing-subkey.asc"
     ok "signing subkey (for CI): $OUTDIR/signing-subkey.asc"
 
-    gpg --armor --export "$fpr" > "$OUTDIR/roomler-release-pubkey.asc"
-    ok "public key (for users):  $OUTDIR/roomler-release-pubkey.asc"
+    gpg --armor --export "$fpr" > "$OUTDIR/meshharbor-release-pubkey.asc"
+    ok "public key (for users):  $OUTDIR/meshharbor-release-pubkey.asc"
 
     if [ "$push" -eq 1 ]; then
         need gh 'Install: https://cli.github.com/'
@@ -139,7 +139,7 @@ cmd_export() {
     cat <<EOF
 
 $(say 'Publish the public key so verification is possible')
-    Commit $OUTDIR/roomler-release-pubkey.asc to the repo and serve it from
+    Commit $OUTDIR/meshharbor-release-pubkey.asc to the repo and serve it from
     the API the same way scripts/install.sh is served -- see
     crates/api/src/routes/setup_release.rs, which does:
 
@@ -147,9 +147,9 @@ $(say 'Publish the public key so verification is possible')
 
     Users then verify with:
 
-        curl -fsSL https://roomler.ai/api/setup/roomler-release-pubkey.asc | gpg --import
-        gpg --verify roomler-agent-<v>-x86_64-unknown-linux-gnu.deb.asc \\
-                     roomler-agent-<v>-x86_64-unknown-linux-gnu.deb
+        curl -fsSL https://meshharbor.itachi.fans/api/setup/meshharbor-release-pubkey.asc | gpg --import
+        gpg --verify meshharbor-agent-<v>-x86_64-unknown-linux-gnu.deb.asc \\
+                     meshharbor-agent-<v>-x86_64-unknown-linux-gnu.deb
 EOF
 }
 

@@ -7,7 +7,7 @@
         <!-- Call header -->
         <v-toolbar density="compact" flat>
           <v-toolbar-title>
-            {{ roomStore.current?.name || 'Call' }}
+            {{ roomStore.current?.name || t('mh.conf.call') }}
           </v-toolbar-title>
           <v-spacer />
           <LayoutSwitcher
@@ -40,7 +40,7 @@
             </v-badge>
           </v-btn>
           <v-chip size="small" :color="statusColor">
-            {{ roomStore.current?.conference_status }}
+            {{ ['in_progress', 'scheduled', 'ended'].includes(roomStore.current?.conference_status ?? '') ? t(`mh.conf.status.${roomStore.current?.conference_status}`) : roomStore.current?.conference_status }}
           </v-chip>
         </v-toolbar>
 
@@ -54,14 +54,14 @@
             <!-- Pre-join state -->
             <div v-if="!joined" class="text-center text-white">
               <v-icon size="64" class="mb-4">mdi-video</v-icon>
-              <div class="text-h5">Ready to join?</div>
+              <div class="text-h5">{{ t('mh.conf.ready') }}</div>
               <div class="mt-4" style="width: 300px; max-width: 100%; margin: 0 auto;">
                 <v-select
                   v-model="conferenceStore.selectedAudioDeviceId"
                   :items="audioInputs"
                   item-title="label"
                   item-value="deviceId"
-                  label="Microphone"
+                  :label="t('mh.conf.microphone')"
                   density="compact"
                   variant="outlined"
                   class="mb-2"
@@ -73,7 +73,7 @@
                   :items="videoInputs"
                   item-title="label"
                   item-value="deviceId"
-                  label="Camera"
+                  :label="t('mh.conf.camera')"
                   density="compact"
                   variant="outlined"
                   class="mb-2"
@@ -124,7 +124,7 @@
               </v-toolbar-title>
               <v-spacer />
               <!-- Below 960 px the panel covers the video: this is the way back. -->
-              <v-btn class="d-md-none" icon="mdi-close" size="small" aria-label="Close chat" @click="showChat = false" />
+              <v-btn class="d-md-none" icon="mdi-close" size="small" :aria-label="t('mh.conf.closeChat')" @click="showChat = false" />
             </v-toolbar>
             <v-divider />
 
@@ -207,15 +207,14 @@
     <!-- Confirmation dialog for switching calls -->
     <v-dialog v-model="showSwitchDialog" max-width="400">
       <v-card>
-        <v-card-title class="text-h6">Already in a call</v-card-title>
+        <v-card-title class="text-h6">{{ t('mh.conf.alreadyTitle') }}</v-card-title>
         <v-card-text>
-          You are already in a call in "{{ conferenceStore.roomName }}".
-          Leave that call and join this one?
+          {{ t('mh.conf.alreadyBody', { room: conferenceStore.roomName }) }}
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="showSwitchDialog = false">Cancel</v-btn>
-          <v-btn color="primary" variant="tonal" @click="confirmSwitch">Switch Call</v-btn>
+          <v-btn variant="text" @click="showSwitchDialog = false">{{ t('common.cancel') }}</v-btn>
+          <v-btn color="primary" variant="tonal" @click="confirmSwitch">{{ t('mh.conf.switch') }}</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -245,6 +244,9 @@ import type { MentionItem } from '@/components/chat/MentionList.vue'
 import TiledLayout from '@/components/conference/layouts/TiledLayout.vue'
 import SpotlightLayout from '@/components/conference/layouts/SpotlightLayout.vue'
 import SidebarLayout from '@/components/conference/layouts/SidebarLayout.vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const router = useRouter()
@@ -266,12 +268,12 @@ const snackbar = useSnackbar()
 const audioInputs = computed(() =>
   conferenceStore.availableDevices
     .filter((d) => d.kind === 'audioinput')
-    .map((d, i) => ({ label: d.label || 'Device ' + i, deviceId: d.deviceId }))
+    .map((d, i) => ({ label: d.label || t('mh.conf.device', { n: i }), deviceId: d.deviceId }))
 )
 const videoInputs = computed(() =>
   conferenceStore.availableDevices
     .filter((d) => d.kind === 'videoinput')
-    .map((d, i) => ({ label: d.label || 'Device ' + i, deviceId: d.deviceId }))
+    .map((d, i) => ({ label: d.label || t('mh.conf.device', { n: i }), deviceId: d.deviceId }))
 )
 
 const tenantId = computed(() => route.params.tenantId as string)
@@ -400,7 +402,7 @@ async function handlePiP(streamKey: string) {
     `video[data-stream-key="${streamKey}"]`,
   ) as HTMLVideoElement | null
   if (!videoEl) {
-    snackbar.showError('That video is not on screen right now')
+    snackbar.showError(t('mh.conf.notOnScreen'))
     return
   }
   const failure = await pip.requestPiP(videoEl)
@@ -568,11 +570,11 @@ async function doJoin() {
   } catch (err: unknown) {
     const error = err as Error
     if (error.name === 'NotAllowedError') {
-      snackbar.showError('Camera/microphone access denied. Please allow permissions in your browser settings.')
+      snackbar.showError(t('mh.conf.denied'))
     } else if (error.name === 'NotFoundError') {
-      snackbar.showError('No camera or microphone found. Please connect a device and try again.')
+      snackbar.showError(t('mh.conf.noDevice'))
     } else {
-      snackbar.showError('Failed to join call: ' + error.message)
+      snackbar.showError(t('mh.conf.joinFailed', { error: error.message }))
     }
   } finally {
     joining.value = false
@@ -633,7 +635,7 @@ async function handleScreenShare() {
       if (error.name === 'AbortError' || error.name === 'NotAllowedError') {
         // User cancelled the screen share picker — do nothing
       } else {
-        snackbar.showError('Screen share failed: ' + error.message)
+        snackbar.showError(t('mh.conf.shareFailed', { error: error.message }))
       }
     }
   }

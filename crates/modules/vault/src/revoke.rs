@@ -14,7 +14,7 @@
 //! | the organization is no longer served, or (P3-9-1) a person's lease and the vault no longer lends to its people | the device's pod, at its sweep or hello | at that sweep |
 //! | P3-9-1 — a person's lease, and the device's row names another owner, or its owner is no longer a member | the device's pod, at its sweep or hello | at that sweep |
 //!
-//! A person's lease (`roomler connect`, [`crate::connect`]) names no
+//! A person's lease (`mh connect`, [`crate::connect`]) names no
 //! session: it stands on its owner instead, and on everything else a
 //! session's lease stands on.
 //!
@@ -45,14 +45,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bson::{DateTime, oid::ObjectId};
 use dashmap::DashMap;
-use roomler_ai_mod_hive::model::{AgentSession, SessionStatus};
-use roomler_ai_remote_control::{
+use meshharbor_core::{FleetLifecycle, ReleasedLease};
+use meshharbor_mod_hive::model::{AgentSession, SessionStatus};
+use meshharbor_remote_control::{
     models::{Agent, RpcCap},
     signaling::ServerMsg,
     vault::{RevokeReason, lease_limits},
 };
-use roomler_ai_services::dao::base::DaoError;
-use roomler_core::{FleetLifecycle, ReleasedLease};
+use meshharbor_services::dao::base::DaoError;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 

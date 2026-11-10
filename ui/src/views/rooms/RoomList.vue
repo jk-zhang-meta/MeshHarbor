@@ -18,9 +18,9 @@
 
     <v-card v-else-if="roomStore.rooms.length === 0" variant="outlined" class="text-center pa-4 pa-md-6 pa-lg-8">
       <v-icon size="48" color="medium-emphasis" class="mb-2">mdi-folder-open-outline</v-icon>
-      <h2 class="text-h6 mb-2">No rooms yet</h2>
+      <h2 class="text-h6 mb-2">{{ t('mh.rooms.empty') }}</h2>
       <p class="text-body-2 text-medium-emphasis mb-4">
-        Create your first room to start chatting, sharing files, or hosting calls with your team.
+        {{ t('mh.rooms.emptyBody') }}
       </p>
       <!-- FR-12 — the empty state is exactly where the tour helps. -->
       <v-btn
@@ -31,7 +31,7 @@
         :to="{ name: 'tutorial', params: { tenantId }, hash: '#rooms' }"
         class="mb-2"
       >
-        Walk me through it
+        {{ t('mh.rooms.walkThrough') }}
       </v-btn>
     </v-card>
 
@@ -78,6 +78,9 @@ import { ApiError } from '@/api/client'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { useValidation } from '@/composables/useValidation'
 import RoomTreeItem from '@/components/rooms/RoomTreeItem.vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const roomStore = useRoomStore()
@@ -97,7 +100,7 @@ const formRef = ref()
 const createError = ref<string | null>(null)
 
 const parentOptions = computed(() => [
-  { title: 'None (root room)', value: null },
+  { title: t('room.none'), value: null },
   ...roomStore.rooms.map(r => ({ title: r.name, value: r.id })),
 ])
 
@@ -123,7 +126,7 @@ async function createRoom() {
     newRoom.is_open = true
     newRoom.has_media = false
     newRoom.parent_id = null
-    showSuccess('Room created')
+    showSuccess(t('mh.rooms.created'))
   } catch (e) {
     if (e instanceof ApiError && typeof (e.data as Record<string, unknown>)?.error === 'string') {
       showError((e.data as Record<string, string>).error)

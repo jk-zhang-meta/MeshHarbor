@@ -3,9 +3,9 @@
 //! Synthetic identities, no agent session, desktop, production host or credentials.
 use crate::fixtures::test_app::TestApp;
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
-use roomler_ai_db::models::{AccountApprovalState, DeviceShareGrant, DeviceSharePermissions, User};
-use roomler_ai_remote_control::models::{Agent, OsKind};
-use roomler_ai_services::dao::agent::AgentDao;
+use meshharbor_db::models::{AccountApprovalState, DeviceShareGrant, DeviceSharePermissions, User};
+use meshharbor_remote_control::models::{Agent, OsKind};
+use meshharbor_services::dao::agent::AgentDao;
 use serde_json::{Value, json};
 
 struct Actor {
@@ -313,6 +313,7 @@ async fn grant(
         expires_at: DateTime::from_millis(expires),
         revoked_at: revoked.then(|| DateTime::from_millis(created)),
         revision: u32::from(revoked),
+        ssh_account: Some("alice".into()),
     };
     f.app
         .db

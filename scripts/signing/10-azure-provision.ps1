@@ -9,8 +9,8 @@
 #   pwsh scripts/signing/00-preflight.ps1 -Country AT
 #   pwsh scripts/signing/10-azure-provision.ps1 -OrganizationName "Example GmbH" `
 #        -BusinessIdentifier "FN 123456a" -Street "Mustergasse 1" -City "Wien" `
-#        -PostalCode "1010" -CountryCode AT -PrimaryEmail "codesign@roomler.ai" `
-#        -SecondaryEmail "admin@roomler.ai"
+#        -PostalCode "1010" -CountryCode AT -PrimaryEmail "codesign@meshharbor.itachi.fans" `
+#        -SecondaryEmail "admin@meshharbor.itachi.fans"
 #
 # Idempotent: re-running against an existing resource group / account is a
 # no-op plus a re-print of the portal field sheet.
@@ -32,7 +32,7 @@ param(
     # prefix. This is the public business-register identifier the validator
     # looks the company up by.
     [string]$BusinessIdentifier = '205174895',
-    [string]$WebsiteUrl         = 'https://roomler.ai',
+    [string]$WebsiteUrl         = 'https://meshharbor.itachi.fans',
     [string]$Street             = 'Plovdivska 110',
     [string]$City               = 'Pazardzhik',
     [string]$StateProvince      = '',

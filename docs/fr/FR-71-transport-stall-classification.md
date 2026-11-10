@@ -1,6 +1,6 @@
 # FR-71 — Transport stall classification: a transit stall is not an over-production signal
 
-**Issue:** [#1362](https://github.com/gjovanov/roomler-ai/issues/1362) · **Status:** proposed 2026-09-05; T1a+T1b+T1c shipped (hold default off); AC2 days 1–4 read (96 % gaps); **AC3 field hold-on half FAILED 2026-09-08 — the hold masks the wrong mover; deletion proposed (§Open decisions)**; **T1b, T2 and T2b were superseded 2026-09-08 by [FR-79](FR-79-one-validity-gate.md)'s one validity gate, which deleted all three and their switches** ·
+**Issue:** [#1362](https://github.com/jk-zhang-meta/MeshHarbor/issues/1362) · **Status:** proposed 2026-09-05; T1a+T1b+T1c shipped (hold default off); AC2 days 1–4 read (96 % gaps); **AC3 field hold-on half FAILED 2026-09-08 — the hold masks the wrong mover; deletion proposed (§Open decisions)**; **T1b, T2 and T2b were superseded 2026-09-08 by [FR-79](FR-79-one-validity-gate.md)'s one validity gate, which deleted all three and their switches** ·
 **Parent:** split out of FR-70 (#1330) on its own open question; FR-70's M0 is this FR's instrument.
 
 ## Goal
@@ -215,7 +215,7 @@ test then shows the clamp reading a growing report again two windows later.
 
 | Phase | What | Kill switch | Status |
 |---|---|---|---|
-| **T1a** | `encode::pipe_state` + heartbeat `pipe_state` + per-state counters; the B0 fixtures classified under the shipped-rule harness | `transit_classify` | **built 2026-09-05** ([#1366](https://github.com/gjovanov/roomler-ai/pull/1366)), shadow only — AC1's sim/unit half met (see *What the T1a cell taught*); the fleet half (AC2) waits for the next agent release |
+| **T1a** | `encode::pipe_state` + heartbeat `pipe_state` + per-state counters; the B0 fixtures classified under the shipped-rule harness | `transit_classify` | **built 2026-09-05** ([#1366](https://github.com/jk-zhang-meta/MeshHarbor/pull/1366)), shadow only — AC1's sim/unit half met (see *What the T1a cell taught*); the fleet half (AC2) waits for the next agent release |
 | **T1b** | the hold: no MD, no age-loop fire, clamp held on `TransitStalled` | `transit_hold` (default off) | **built 2026-09-05** — the verdict precedes every loop in the tick; ramp frozen, age loop masked + streak reset, clamp held, prior held, `transit_holds` in the heartbeat; default **off** |
 | **T1c** | the cells: `finding4_transit_stall` in B0 (the law), then the corp-VPN DERP path (the field), each shown to FAIL with the hold off first | — | **sim half done 2026-09-05**: the FAIL recorded (`t1c_finding_4_cuts_the_rate_with_the_hold_off`), the hold's cell green (`t1b_finding_4_hold_keeps_the_rate`), the no-stall cells byte-identical with the hold on and off; the field half waits for the release |
 | **T2** | a hard stall is a deferred verdict: a blocked send ≥ 1 s is quarantined and the ×0.5 held pending until the next REPORTED window — sends still blocking confirm it (fold + halve, one window late), nothing blocking is a pause (discard, no move) | — (the next window's own measurement gates it) | **built 2026-09-08**, test-first on the 12:15 numbers; field gate on the release carrying it |

@@ -13,7 +13,7 @@ first release**.
 
 | what | size |
 |---|---|
-| controllers / estimators / heuristics that move rate, fps, dims or force a keyframe | **34** in `agents/roomlerd/src/encode/*` + the two pumps |
+| controllers / estimators / heuristics that move rate, fps, dims or force a keyframe | **34** in `agents/meshharbord/src/encode/*` + the two pumps |
 | of which compensate for "a rate change costs an IDR" | 9: coarsen ladder, deferred applies + `DEFER_QUIET`, 15-s thrift, background swap, settle-KF thrift, refine-vs-cap fight, opener grace, FlipTracker cooldown, kf_gate rebuild cooldown |
 | of which are a second estimate of the same pipe | 8: occupancy AIMD, blocked-send goodput, FR-35 learner, rate memory, P1 floor relief, P3 arrival clamp, P4 drain, FR-15 age loop (+ P6/P8 glue) |
 | kill switches | 11 pub `*_enabled()` in `encode/mod.rs` + 2 private + ~11 env-only knobs; a config key touches six places (`config_surface.rs` KEYS/get/set, `config.rs` field + `env_bridge_bools`, `enrollment.rs` default) |
@@ -82,7 +82,7 @@ rc_max_rate = target; rc_buffer_size = target × hrd_pct/100`** (CBR: TargetKbps
 MaxKbps). Fix the existing NVENC bug: :1615 writes `rc_buffer_size = target` while the open sized it
 `maxrate × hrd_pct/100` (:262) — store `hrd_pct` on the struct. Dead-band: InPlace applies raw
 targets when `|Δ| ≥ 3 %` (a QSV Reset flushes the pipeline). Kill switch `encoder_inplace_rate`
-(env `ROOMLERD_ENCODER_INPLACE_RATE`), **default OFF in the PR, ON after A0 passes on CORPLAP-1**
+(env `MESHHARBORD_ENCODER_INPLACE_RATE`), **default OFF in the PR, ON after A0 passes on CORPLAP-1**
 (six places: `config_surface.rs` KEYS near :630 / get :877 / set :1290; `config.rs` field :879,
 default :1996, `env_bridge_bools` :2122 array 72→73; `enrollment.rs:203`; parity test :1935).
 Counters `rate_moves, rebuilds, idr_count` on `FfmpegEncoder` → heartbeat (`peer.rs:6818–6771`) with
@@ -99,7 +99,7 @@ optionally behind a private `reconfig_idr` option so it is upstreamable),
 (written, disabled, unmeasured). Applied in all three builders: Linux `patch -p1` after the tarball
 (`vendor-ffmpeg-windows.yml:198–200`), macOS after the clone (`vendor-ffmpeg-macos.yml:62–64`),
 Windows by injecting `PATCHES` into the copied portfile's `vcpkg_from_github(` (same anchor-replace
-technique :75–95). Drift gate: each builder writes `ROOMLER-PATCHES.txt` (sha256 per patch) into
+technique :75–95). Drift gate: each builder writes `MESHHARBOR-PATCHES.txt` (sha256 per patch) into
 the asset and `release-agent.yml`'s three fetch steps (:341–352, :1002–1004, :1926–1934) assert it
 matches `.github/ffmpeg-patches/*`. `const NVENC_RECONFIG_FORCES_IDR: bool` flips to false in the
 asset-bump PR; the pump's `held_increase` arm (`peer.rs:6294–6274`) keys on it.
@@ -180,7 +180,7 @@ floor + 150 ms`, `idr_count`, `pauses_on_direct == 0`. **Trace-replay fixtures**
 2-s heartbeat: `t_s,target_bps,frames_encoded_d,bytes_d,bytes_inflight,goodput_bps,viewer_age_ms,
 viewer_age_floor_ms,rx_bps,queue_ms,link_congested,drains,constrained,w,h,fps`) extracted by
 `scripts/rc-trace-extract.py` from `agent_logs` (`list_for_agent(?session_id=…)`,
-`routes/agent_log.rs:208`) into `agents/roomlerd/tests/fixtures/ratectl/`; ground truth per window =
+`routes/agent_log.rs:208`) into `agents/meshharbord/tests/fixtures/ratectl/`; ground truth per window =
 `rx_bps` when `queue_ms > 0`, else goodput, else hold; assertions = over-drive integral
 `Σ max(0, target − 1.1×pipe)` ≤ budget and recovery ≤ N windows per stall. Four fixtures: **airport
 hotspot** (goodput 65–395 k, target climbing → ≤ 1.1×pipe within 5 s, never climbs while age is
@@ -223,7 +223,7 @@ before B2).
 ## FR-C — The right data path (decision: never for RC)
 
 **C1 — ICE never selects an overlay address for remote desktop.** Three mechanisms, one kill switch
-`overlay_ice_candidates` (env `ROOMLERD_ICE_OVERLAY_CANDIDATES`; ON restores today):
+`overlay_ice_candidates` (env `MESHHARBORD_ICE_OVERLAY_CANDIDATES`; ON restores today):
 
 1. **Own-adapter `ip_filter` at gather** — `SettingEngine::set_ip_filter` next to `peer.rs:338`
    (`vendored/webrtc/src/api/setting_engine/mod.rs:195–197`, evaluated per address in
@@ -245,7 +245,7 @@ and in the FR-35 memory key (`peer.rs:4595` → `"{ip}|{class}"`, which fixes "a
 onto a slow one"); an additive `carrier` field on the LocalAPI peer entry (`localapi/src/lib.rs:32–38`
 has only `Relay`) so DERP / TURN / org relay are distinguishable. Mitigation for the one path lost
 (proxy-only egress, 443 only): a `turns:` listener on 443 on coturn, or the loopback-TURN opt-in.
-Update `docs/multi-org.md:340–341` (its "ICE never gathers on roomler-*" is true only on Linux) and
+Update `docs/multi-org.md:340–341` (its "ICE never gathers on meshharbor-*" is true only on Linux) and
 `docs/overlay-nat-traversal.md` with the rule.
 
 **Field verification** (CORPLAP-1 multi-org with the VPN on; CORPLAP-3 LAN): `ICE: gathered local
@@ -314,11 +314,11 @@ a routing hole; and the same missing notion of "own adapters" makes `non_overlay
 
 ## Verification
 
-- Unit: B0 fixtures in `cargo test -p roomlerd --lib` (default build); A0's sweep as `--ignored`
+- Unit: B0 fixtures in `cargo test -p meshharbord --lib` (default build); A0's sweep as `--ignored`
   on hardware hosts; C2's pure tests; the config-surface parity tests for every new key.
 - Field: `scripts/rc-ab.sh` on CORPLAP-1 (QSV over the corp VPN — after C1 that pair is TURN, not
   DERP) and CORPLAP-2 (real relay) from neo16; both arms recorded on each FR issue in the FR-59
   table; each field test shown to fail on the current deploy first.
 - Fleet: heartbeat counters (`idr_count`, `rate_moves`, `rebuilds`, `shadow_disagree_pct`) read
-  with `roomler exec` across Windows/Linux/macOS after every roll; the C2 eviction/revalidation
+  with `mh exec` across Windows/Linux/macOS after every roll; the C2 eviction/revalidation
   counts on the multi-org hosts.

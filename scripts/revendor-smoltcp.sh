@@ -15,7 +15,7 @@
 #                                                      (after editing the fork)
 #
 # Default version: 0.13.1 (the vendored release). After a rebuild, run
-# `cargo test -p roomler-ai-tunnel-core --features overlay-netstack netstack` —
+# `cargo test -p meshharbor-tunnel-core --features overlay-netstack netstack` —
 # the overlay netstack is the fork's only consumer.
 #
 # SMOLTCP_CRATE=<path to smoltcp-VER.crate> uses a local tarball (e.g. cargo's
@@ -83,7 +83,7 @@ check | revendor)
         rm -rf "$VENDORED"
         mv "$TMP/rebuilt" "$VENDORED"
         echo "revendored smoltcp $VER + patch into crates/vendored/smoltcp"
-        echo "next: cargo check -p roomlerd"
+        echo "next: cargo check -p meshharbord"
     fi
     ;;
 esac

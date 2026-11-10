@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P3-9-1 — a person's `roomler connect`, the vault's half:
+//! FR-90 P3-9-1 — a person's `mh connect`, the vault's half:
 //! `rc:vault.connect`, answered with one field sealed to the device's key.
 //!
 //! Driven through the RAW agent socket the lease tests use. What these lock
@@ -181,13 +181,13 @@ fn members_connect(slug: &str) -> [(&'static str, String); 2] {
         (
             "members-connect-to-db",
             format!(
-                r#"permit (principal in Roomler::Group::"member", action == Roomler::Action::"secret:connect", resource in Roomler::SecretFolder::"rrn:{slug}:secret:db");"#
+                r#"permit (principal in MeshHarbor::Group::"member", action == MeshHarbor::Action::"secret:connect", resource in MeshHarbor::SecretFolder::"rrn:{slug}:secret:db");"#
             ),
         ),
         (
             "members-connect-to-prod",
             format!(
-                r#"permit (principal in Roomler::Group::"member", action == Roomler::Action::"secret:connect", resource in Roomler::SecretFolder::"rrn:{slug}:secret:prod");"#
+                r#"permit (principal in MeshHarbor::Group::"member", action == MeshHarbor::Action::"secret:connect", resource in MeshHarbor::SecretFolder::"rrn:{slug}:secret:prod");"#
             ),
         ),
     ]
@@ -213,13 +213,13 @@ async fn a_person_connects_as_the_devices_owner_to_what_a_policy_names_for_them(
         // A policy written for sessions, its principal unconstrained.
         (
             "any-session-uses-anything",
-            r#"permit (principal, action == Roomler::Action::"secret:use", resource);"#.into(),
+            r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource);"#.into(),
         ),
         // A permit whose scope names no action, as one written before a
         // person's action existed would.
         (
             "members-do-anything",
-            r#"permit (principal in Roomler::Group::"member", action, resource);"#.into(),
+            r#"permit (principal in MeshHarbor::Group::"member", action, resource);"#.into(),
         ),
     ]);
     policies(&app, &t, &written).await;
@@ -472,7 +472,7 @@ async fn a_policy_that_asks_for_a_yes_is_refused_approval_unavailable() {
         &[(
             "members-connect-with-a-yes",
             format!(
-                r#"permit (principal in Roomler::Group::"member", action == Roomler::Action::"secret:connect", resource in Roomler::SecretFolder::"rrn:{}:secret:db") when {{ context has approval && context.approval.approver != principal }};"#,
+                r#"permit (principal in MeshHarbor::Group::"member", action == MeshHarbor::Action::"secret:connect", resource in MeshHarbor::SecretFolder::"rrn:{}:secret:db") when {{ context has approval && context.approval.approver != principal }};"#,
                 t.tenant_slug
             ),
         )],
@@ -551,7 +551,8 @@ async fn an_owner_who_is_no_member_is_nobodys_principal() {
         &t,
         &[(
             "anyone-connects",
-            r#"permit (principal, action == Roomler::Action::"secret:connect", resource);"#.into(),
+            r#"permit (principal, action == MeshHarbor::Action::"secret:connect", resource);"#
+                .into(),
         )],
     )
     .await;
@@ -595,7 +596,8 @@ async fn a_persons_lease_is_taken_back_when_the_owner_changes_or_leaves() {
         &t,
         &[(
             "anyone-connects",
-            r#"permit (principal, action == Roomler::Action::"secret:connect", resource);"#.into(),
+            r#"permit (principal, action == MeshHarbor::Action::"secret:connect", resource);"#
+                .into(),
         )],
     )
     .await;
@@ -672,7 +674,7 @@ async fn a_devices_requests_for_its_owner_are_held_to_a_ceiling() {
     let t = app.seed_tenant("vaultconnbusy").await;
     let mut dev = device(&app, &t, "conn-busy", "linux", TAKES_LEASES, true).await;
     set_owner(&app, &dev.agent_id, &t.member.id).await;
-    let ceiling = roomler_ai_remote_control::vault::lease_limits::CONNECT_PER_MINUTE;
+    let ceiling = meshharbor_remote_control::vault::lease_limits::CONNECT_PER_MINUTE;
     for i in 0..ceiling {
         let answer = ask_connect(
             &mut dev,

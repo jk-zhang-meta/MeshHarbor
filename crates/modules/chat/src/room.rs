@@ -5,15 +5,15 @@ use axum::{
     extract::{Path, Query, State},
 };
 use bson::oid::ObjectId;
-use roomler_ai_services::quota;
+use meshharbor_services::quota;
 use serde::{Deserialize, Serialize};
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::ChatState;
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_db::models::{MediaSettings, RoomVisibility};
-use roomler_ai_services::dao::base::PaginationParams;
+use meshharbor_db::models::role::permissions;
+use meshharbor_db::models::{MediaSettings, RoomVisibility};
+use meshharbor_services::dao::base::PaginationParams;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRoomRequest {
@@ -45,7 +45,7 @@ pub struct RoomResponse {
     /// a client renders such a room as that module's surface. Chat never
     /// interprets it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub binding: Option<roomler_ai_db::models::Binding>,
+    pub binding: Option<meshharbor_db::models::Binding>,
 }
 
 /// Optional sidebar-search params. Flat (never `#[serde(flatten)]` behind
@@ -89,7 +89,7 @@ pub async fn list(
                 tid,
                 auth.user_id,
                 params.q.as_deref().map(str::trim).unwrap_or(""),
-                &roomler_ai_services::dao::base::PaginationParams {
+                &meshharbor_services::dao::base::PaginationParams {
                     page: params.page.unwrap_or(1).max(1),
                     per_page: params.per_page.unwrap_or(20),
                     before: None,
@@ -150,7 +150,8 @@ pub async fn create(
         let tenant = state.tenants.base.find_by_id(tid).await?;
         let used = state.rooms.count_for_tenant(tid).await?;
         // FR-102 P4 — through core, which also counts the collision per org.
-        if let Err(d) = roomler_core::quota::check(&state, &tenant, quota::Limit::MaxChannels, used)
+        if let Err(d) =
+            meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxChannels, used)
         {
             return Err(ApiError::Forbidden(d.message()));
         }
@@ -280,7 +281,7 @@ pub async fn update(
         .map_err(|_| ApiError::BadRequest("Invalid room_id".to_string()))?;
 
     crate::guards::require_room_in_tenant(&state, tid, rid, auth.user_id).await?;
-    roomler_core::guards::require_permission(
+    meshharbor_core::guards::require_permission(
         &state,
         tid,
         auth.user_id,
@@ -329,7 +330,7 @@ pub async fn delete(
         .map_err(|_| ApiError::BadRequest("Invalid room_id".to_string()))?;
 
     crate::guards::require_room_in_tenant(&state, tid, rid, auth.user_id).await?;
-    roomler_core::guards::require_permission(
+    meshharbor_core::guards::require_permission(
         &state,
         tid,
         auth.user_id,
@@ -431,7 +432,7 @@ pub async fn explore(
     Ok(Json(response))
 }
 
-fn to_response(r: roomler_ai_db::models::Room) -> RoomResponse {
+fn to_response(r: meshharbor_db::models::Room) -> RoomResponse {
     // `r.id.unwrap()` previously panicked when a Mongo document
     // somehow lacked `_id` (or arrived stripped through a custom
     // projection in the future). Any panic inside Axum's handler

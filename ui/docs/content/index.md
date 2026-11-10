@@ -1,5 +1,5 @@
 ---
-title: Roomler documentation
+title: MeshHarbor documentation
 description: Remote desktop in a browser tab, a private WireGuard-style mesh network, and team chat and video — one agent, on Windows, macOS and Linux.
 tags: [overview, getting-started, remote-desktop, mesh, self-hosting]
 hero: hero-mesh.svg
@@ -7,7 +7,7 @@ heroAlt: Machines joined in a direct encrypted mesh with stable private addresse
 order: 0
 ---
 
-Roomler is **three products on one small daemon**. You install **one agent per
+MeshHarbor is **three products on one small daemon**. You install **one agent per
 machine**; everything else happens in a browser tab.
 
 :::badges
@@ -26,7 +26,7 @@ your keystrokes or your files.
 |---|---|
 | Reach one of your own machines from anywhere | [Quickstart](/docs/start/quickstart/) |
 | Install on a specific operating system | [Windows](/docs/start/install/windows/) · [macOS](/docs/start/install/macos/) · [Linux](/docs/start/install/linux/) |
-| Understand what Roomler actually is before installing | [What is Roomler?](/docs/start/what-is-roomler/) |
+| Understand what MeshHarbor actually is before installing | [What is MeshHarbor?](/docs/start/what-is-meshharbor/) |
 | Run the whole thing on your own server | [Self-hosting](/docs/start/self-hosting/) |
 | Give a machine a private address other machines can reach | [Private network](/docs/network/) |
 | Know what the server can and cannot see | [Security model](/docs/security/security-model/) |
@@ -51,7 +51,7 @@ then run the line for your operating system:
 :::enroll
 :::
 
-:::tip New to Roomler?
+:::tip New to MeshHarbor?
 [Quickstart](/docs/start/quickstart/) walks the whole path — create a workspace,
 enroll a machine, open its screen — in about five minutes.
 :::

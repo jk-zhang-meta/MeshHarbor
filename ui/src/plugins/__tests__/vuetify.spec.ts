@@ -60,7 +60,7 @@ describe('Vuetify theme configuration', () => {
   })
 
   it('getDefaultTheme returns dark when stored', async () => {
-    store['roomler-theme'] = 'dark'
+    store['meshharbor-theme'] = 'dark'
     const { getDefaultTheme } = await import('../vuetify')
     expect(getDefaultTheme()).toBe('dark')
   })

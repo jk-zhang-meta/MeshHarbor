@@ -3,7 +3,7 @@
 /**
  * FR-102 (#2127) §3c — the SPA loads purestat on the hosted site, and nowhere
  * else. Before this, `ui/index.html` carried the tag outright: every
- * self-hosted install, fork and `localhost` run beaconed as `roomler.ai`
+ * self-hosted install, fork and `localhost` run beaconed as `meshharbor.itachi.fans`
  * (42 % of 90 days of events, measured). The rule is stated here case by
  * case; `docs/__tests__/analytics.spec.ts` holds the static pages' plain-JS
  * loader to the same table.
@@ -30,13 +30,13 @@ describe('shouldLoadAnalytics — the rule', () => {
   })
 
   it('defaults to the two hostnames of the hosted site, and nothing else', () => {
-    expect(ANALYTICS_HOSTS).toEqual(['roomler.ai', 'www.roomler.ai'])
+    expect(ANALYTICS_HOSTS).toEqual(['meshharbor.itachi.fans', 'www.meshharbor.itachi.fans'])
     expect(ANALYTICS_SRC).toBe('https://purestat.ai/js/purestat.js')
-    expect(ANALYTICS_DOMAIN).toBe('roomler.ai')
+    expect(ANALYTICS_DOMAIN).toBe('meshharbor.itachi.fans')
   })
 
   it('takes the allowlist as an argument: an empty one loads nowhere (the kill switch)', () => {
-    const hosted: Where = { hostname: 'roomler.ai', protocol: 'https:', webdriver: false }
+    const hosted: Where = { hostname: 'meshharbor.itachi.fans', protocol: 'https:', webdriver: false }
     expect(shouldLoadAnalytics(hosted, [])).toBe(false)
     expect(shouldLoadAnalytics({ ...hosted, hostname: 'docs.example' }, ['docs.example'])).toBe(true)
   })
@@ -78,13 +78,13 @@ const trackers = (doc: Document) => [...doc.querySelectorAll('script[src^="https
 describe('loadAnalytics', () => {
   it('injects exactly the tag the hosted site always carried, deferred, into <head>', () => {
     const doc = blank()
-    expect(loadAnalytics(doc, { hostname: 'roomler.ai', protocol: 'https:', webdriver: false })).toBe(true)
+    expect(loadAnalytics(doc, { hostname: 'meshharbor.itachi.fans', protocol: 'https:', webdriver: false })).toBe(true)
     const tags = trackers(doc)
     expect(tags).toHaveLength(1)
     const tag = tags[0] as HTMLScriptElement
     expect(tag.parentElement).toBe(doc.head)
     expect(tag.defer).toBe(true)
-    expect(tag.getAttribute('data-domain')).toBe('roomler.ai')
+    expect(tag.getAttribute('data-domain')).toBe('meshharbor.itachi.fans')
     expect(tag.getAttribute('src')).toBe('https://purestat.ai/js/purestat.js')
     expect(tag.getAttribute('type')).toBeNull() // a classic script: purestat reads document.currentScript
     expectNoStorage()
@@ -113,7 +113,7 @@ describe('loadAnalytics', () => {
     doc.createElement = () => {
       throw new Error('boom')
     }
-    expect(loadAnalytics(doc, { hostname: 'roomler.ai', protocol: 'https:', webdriver: false })).toBe(false)
+    expect(loadAnalytics(doc, { hostname: 'meshharbor.itachi.fans', protocol: 'https:', webdriver: false })).toBe(false)
     const noLocation = blank() // a DOMParser document has no browsing context, so no location
     expect(loadAnalytics(noLocation)).toBe(false)
   })

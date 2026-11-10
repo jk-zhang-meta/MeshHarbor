@@ -1,14 +1,14 @@
 # FR-4: Conference media-path integrity — every mediasoup-serving node forwards the RTC range, and a dead media path is loud
 
 **Status:** shipped + field-verified 2026-08-27 (retroactive FR for the 2026-08-26 "no
-video" incident arc). Tracking issue: [#776](https://github.com/gjovanov/roomler-ai/issues/776).
+video" incident arc). Tracking issue: [#776](https://github.com/jk-zhang-meta/MeshHarbor/issues/776).
 
 ## Goal
 
 Two (or more) participants in the same room call see and hear each other **regardless of
 which pod their tenant hashes onto**. Concretely: the mediasoup RTC media path (UDP/TCP
 40000–49999 to each pod's announced public IP) works on **every** node that can host a
-roomler-ai pod, keeps working across host reboots and provisioning re-runs, and a broken
+meshharbor pod, keeps working across host reboots and provisioning re-runs, and a broken
 media path is **loud** — a WARN in the pod log within seconds and a GitHub issue from a
 weekly automated audit — never again "signalling green, video black, nothing logged".
 
@@ -23,7 +23,7 @@ Zero RTP flowed.
 
 Root cause: **zeus never had the RTC-range forwarding.** Browsers send mediasoup RTP
 straight at each pod's announced public IP (S6 per-node map:
-`ROOMLER__MEDIASOUP__ANNOUNCED_IP_MAP`, worker-2 → `5.9.157.226`), and the worker VMs sit
+`MESHHARBOR__MEDIASOUP__ANNOUNCED_IP_MAP`, worker-2 → `5.9.157.226`), and the worker VMs sit
 behind libvirt NAT — the physical host must DNAT the range into the VM. In
 `k8s-cluster-multi` the range was modeled as a *jupiter-only extra* from the single-pod
 era (flag literally named `host_firewall_jupiter_extra`;
@@ -46,9 +46,9 @@ Why it stayed invisible for ~3.5 weeks:
 
 | # | Layer | Where | Mechanism |
 |---|-------|-------|-----------|
-| 1 | **Provisioning (source of truth)** | `k8s-cluster-multi` `b02b91a` | `coturn_dnat_rules.<host>.port_ranges` includes `"40000:49999"` for every roomler-ai-hosting node; flag renamed → `host_firewall_mediasoup_rtc` (true jupiter+zeus, false mars). Playbook `11-host-networking` renders `/usr/local/bin/coturn-iptables.sh`, **flushes+rebuilds** the COTURN chains from the vars, and installs the boot service — reboots and re-runs converge to the model; a hand-fix without the model **reverts by design**. Run with `.env` sourced (else hosts resolve to TEST-NET placeholders). |
+| 1 | **Provisioning (source of truth)** | `k8s-cluster-multi` `b02b91a` | `coturn_dnat_rules.<host>.port_ranges` includes `"40000:49999"` for every meshharbor-hosting node; flag renamed → `host_firewall_mediasoup_rtc` (true jupiter+zeus, false mars). Playbook `11-host-networking` renders `/usr/local/bin/coturn-iptables.sh`, **flushes+rebuilds** the COTURN chains from the vars, and installs the boot service — reboots and re-runs converge to the model; a hand-fix without the model **reverts by design**. Run with `.env` sourced (else hosts resolve to TEST-NET placeholders). |
 | 2 | **Persisted live state** | zeus + jupiter | 7-rule contract live (mangle `COTURN_TTL` sport-range TTL 64; nat `COTURN_DNAT`/`COTURN_OUTPUT_DNAT` tcp+udp dport-range → VM; `COTURN_SNAT` sport-range → public IP) + `iptables-save` to `/etc/iptables/rules.v4`. |
-| 3 | **Drift guard** | `roomler-ai-deploy` `b0d0021`+`3c53516` | `scripts/mediasoup-rtc-forwarding.sh` (`check`/`apply` on the host, knows zeus+jupiter, validates live rules AND the persisted file, `iptables-restore --test` after apply) + `scripts/mediasoup-rtc-forwarding-audit.sh` weekly cron on the build host (Mon 04:15 UTC) reaching both hosts **over the overlay mesh** (direct public-IP ssh from the build host is denied); files a GitHub issue on drift. |
+| 3 | **Drift guard** | `meshharbor-deploy` `b0d0021`+`3c53516` | `scripts/mediasoup-rtc-forwarding.sh` (`check`/`apply` on the host, knows zeus+jupiter, validates live rules AND the persisted file, `iptables-restore --test` after apply) + `scripts/mediasoup-rtc-forwarding-audit.sh` weekly cron on the build host (Mon 04:15 UTC) reaching both hosts **over the overlay mesh** (direct public-IP ssh from the build host is denied); files a GitHub issue on drift. |
 | 4 | **Runtime detection (app)** | PR #752 → master `cf8e8bb7` | `RoomManager::spawn_media_path_watchdog`: 15 s after each successful `connect_transport`, a **weak-handle** task WARNs `media transport has no DTLS 15s after connect_transport …` with resolved announced IP + ICE/DTLS state + transport id (weak so the watchdog never extends a transport's life past the leave). `media:join` ICE diagnostics now log the pod's **resolved** per-pod announced IP — the static setting printed jupiter's IP while the candidates said zeus, which misled the diagnosis. `connect_transport` also releases its DashMap shard guards before awaiting (the deadlock pattern `sample_transports` documents). ⚠️ `DtlsState` imports as `mediasoup::types::data_structures::DtlsState` — the prelude doesn't re-export it and `mediasoup::data_structures` is private. |
 
 Considered and rejected:
@@ -93,18 +93,18 @@ Considered and rejected:
 - #754 — `call/join` after last-leave auto-end never restores `conference_status:
   in_progress`, so the C-4 claim gate refuses the re-join's `media:join` (and
   `call_join` broadcasts a hardcoded `"in_progress"`); pre-existing, tracked separately.
-- Pinning the host agents' ephemeral UDP ports outside 40000–49999 — zeus's `roomlerd`
+- Pinning the host agents' ephemeral UDP ports outside 40000–49999 — zeus's `meshharbord`
   holds sockets inside the range (one bound to the public IP); DNAT only captures NEW
   inbound flows and established carriers ride conntrack, and jupiter has run with the
   overlap since S6. Optional hardening if cold-inbound dials to fleet hosts ever matter.
-  → **They did** ([#1665](https://github.com/gjovanov/roomler-ai/issues/1665)): after a
+  → **They did** ([#1665](https://github.com/jk-zhang-meta/MeshHarbor/issues/1665)): after a
   roll both hosts sat on DERP. Done 2026-09-26: the overlay port is pinned to 21640 and
   `ip_local_reserved_ports=40000-49999` keeps ephemeral sockets out
   (`docs/deployment.md` › Cluster hosts).
 
 ## Related
 
-- Incident fix PR: [#752](https://github.com/gjovanov/roomler-ai/pull/752) (master `cf8e8bb7`)
-- Follow-up bug: [#754](https://github.com/gjovanov/roomler-ai/issues/754)
-- `k8s-cluster-multi` `b02b91a` · `roomler-ai-deploy` `b0d0021`, `3c53516`
+- Incident fix PR: [#752](https://github.com/jk-zhang-meta/MeshHarbor/pull/752) (master `cf8e8bb7`)
+- Follow-up bug: [#754](https://github.com/jk-zhang-meta/MeshHarbor/issues/754)
+- `k8s-cluster-multi` `b02b91a` · `meshharbor-deploy` `b0d0021`, `3c53516`
 - CLAUDE.md → Deployment → "Mediasoup RTC-range host forwarding (2026-08-26 incident)"

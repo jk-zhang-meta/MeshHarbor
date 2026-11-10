@@ -24,9 +24,9 @@
 //! | `POST …/vault/approval/{id}` | `{answer: "approve" \| "deny"}`: a driver's answer |
 //!
 //! Who answers: a driver who reads the session, while it is live — hive's
-//! own rule for its approvals (`roomler_ai_mod_hive::access::may_answer`) —
+//! own rule for its approvals (`meshharbor_mod_hive::access::may_answer`) —
 //! and whose yes the policy accepts. A policy may name its approvers
-//! (`context.approval.approver in Roomler::Group::"admin"`), so a yes is
+//! (`context.approval.approver in MeshHarbor::Group::"admin"`), so a yes is
 //! decided by Cedar with the person as the approver when it is given, and
 //! again when a lease would spend it; and a card is posted only when one of
 //! the session's drivers could give a yes that counts.
@@ -51,11 +51,11 @@ use axum::{
     extract::{Path, State},
 };
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::Binding;
-use roomler_ai_mod_hive::{access, model::AgentSession, room};
-use roomler_ai_remote_control::vault::lease_limits;
-use roomler_ai_services::dao::base::DaoError;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_db::models::Binding;
+use meshharbor_mod_hive::{access, model::AgentSession, room};
+use meshharbor_remote_control::vault::lease_limits;
+use meshharbor_services::dao::base::DaoError;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::warn;

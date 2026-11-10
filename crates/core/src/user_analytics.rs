@@ -11,7 +11,7 @@
 //! browser family, platform, country, page.
 //!
 //! Country resolution is OPTIONAL and pluggable — point
-//! `ROOMLER__STATS__GEOIP_MMDB` at a MaxMind-format country database
+//! `MESHHARBOR__STATS__GEOIP_MMDB` at a MaxMind-format country database
 //! (DB-IP, GeoLite2) and it resolves; leave it unset, or set it empty, and
 //! every session records `unknown`. The server image names DB-IP's
 //! CC BY 4.0 "IP to Country Lite" by default (#1896, `files/geoip/README.md`);
@@ -53,7 +53,7 @@ pub fn parse_ua(ua: &str) -> UaInfo {
         // Only after every Chromium brand is excluded: they all claim
         // "safari" for legacy reasons.
         "Safari"
-    } else if u.contains("electron") || u.contains("tauri") || u.contains("roomler") {
+    } else if u.contains("electron") || u.contains("tauri") || u.contains("meshharbor") {
         "Desktop app"
     } else if u.is_empty() {
         "unknown"

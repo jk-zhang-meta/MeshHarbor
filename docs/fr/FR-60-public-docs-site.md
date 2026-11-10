@@ -1,28 +1,28 @@
-# FR-60: Public documentation site at roomler.ai/docs
+# FR-60: Public documentation site at meshharbor.itachi.fans/docs
 
-**Issue:** [#1165](https://github.com/gjovanov/roomler-ai/issues/1165) ·
+**Issue:** [#1165](https://github.com/jk-zhang-meta/MeshHarbor/issues/1165) ·
 **Status:** proposed · **Owner:** web/docs
 
 ## Goal
 
-Ship `https://roomler.ai/docs` — a **static, searchable, individually-indexable**
+Ship `https://meshharbor.itachi.fans/docs` — a **static, searchable, individually-indexable**
 documentation site that onboards a visitor **per operating system** and showcases
 all three pillars (remote desktop · private mesh · conferencing & chat) in the
 visual language of `/landing` and the in-app tutorial.
 
-The bar is not "docs exist". It is: **a stranger who has never heard of Roomler
+The bar is not "docs exist". It is: **a stranger who has never heard of MeshHarbor
 can arrive from a search engine, understand what it is, install it on their own
 OS, and reach their first device — without an account and without reading Rust.**
 
 ## 1. Field evidence — what a visitor and a crawler get today
 
-Roomler is three products on one daemon across Windows, macOS and Linux, and
+MeshHarbor is three products on one daemon across Windows, macOS and Linux, and
 **there is no public documentation site at all**. What exists instead:
 
 | Surface | What it is | Why it does not serve a visitor |
 |---|---|---|
-| `roomler.ai/landing` | Marketing page | Sells the product, teaches nothing |
-| `roomler.ai/tenant/{id}/tutorial` | 8-chapter in-app tour (FR-12 #788) | **Behind auth** — invisible to a crawler and to anyone still evaluating |
+| `meshharbor.itachi.fans/landing` | Marketing page | Sells the product, teaches nothing |
+| `meshharbor.itachi.fans/tenant/{id}/tutorial` | 8-chapter in-app tour (FR-12 #788) | **Behind auth** — invisible to a crawler and to anyone still evaluating |
 | `docs/*.md` (39 files) | Engineering design docs | Right depth, wrong audience and wrong voice — and carries fleet host names, incident narratives and internal landmine notes that must not become a marketing surface |
 
 Four gaps measured while scoping, each closed by this FR:
@@ -32,7 +32,7 @@ Four gaps measured while scoping, each closed by this FR:
    sitemap is not forbidden from being indexed; it is just slower and shallower
    about it, and every page has to be found by link-walking a client-rendered SPA.
 
-2. **`ui/index.html` carries no SEO metadata at all** — `<title>Roomler</title>`
+2. **`ui/index.html` carries no SEO metadata at all** — `<title>MeshHarbor</title>`
    and nothing else. No description, no canonical, no Open Graph. Every public
    route (`/landing`, `/pricing`, `/privacy`, `/terms`, `/imprint`) shares that
    one title, and a link shared to Slack or X renders with no card.
@@ -78,7 +78,7 @@ Four reasons this shape, each checked against the tree rather than assumed:
 - **`markdown-it@14` and `dompurify` are already `ui` dependencies**
   (`ui/package.json`), so the renderer costs no new dependency.
 - **The Dockerfile is untouched.** Stage 2 is `COPY ui/ .`, stage 3 is
-  `COPY --from=ui-builder /app/ui/dist /var/www/roomler-ai`. A top-level
+  `COPY --from=ui-builder /app/ui/dist /var/www/meshharbor`. A top-level
   `docs-site/` would have needed a new build stage, a new COPY and a
   `.dockerignore` entry; `ui/docs/` needs none of them.
 - **`vite build` empties `dist/`**, so `bun docs/build.ts` must run *after* it.
@@ -160,7 +160,7 @@ best idea — over three pillar cards and the landing page's capability chip str
 
 ```
 /docs                      home · decision table · pillar cards · chips
-├── /start             9   what-is-roomler · quickstart · install/{windows,macos,linux}
+├── /start             9   what-is-meshharbor · quickstart · install/{windows,macos,linux}
 │                          · tunnel-cli · enrollment · verify-your-install · self-hosting
 ├── /remote-desktop    7   overview · first-session · unattended-access · consent
 │                          · codecs-and-performance · files-and-clipboard · per-os-permissions
@@ -215,7 +215,7 @@ an optimisation.
 
 ### 2h. SEO plumbing
 
-Per page: unique `<title>` (`{page} · {section} — Roomler Docs`), frontmatter
+Per page: unique `<title>` (`{page} · {section} — MeshHarbor Docs`), frontmatter
 `description`, absolute `<link rel="canonical">`, Open Graph + Twitter card
 (image from `docs/assets/social-preview.png`), exactly one `<h1>`, stable
 heading anchors with permalinks, prev/next and related links.
@@ -227,7 +227,7 @@ Site-wide, emitted into `ui/dist/` root: `sitemap.xml` (docs pages plus the
 public SPA routes, `lastmod` from git) and `robots.txt` (allow, `Sitemap:` line,
 `Disallow: /tenant/`). `ui/index.html` gains description + OG/Twitter so the
 marketing routes stop being title-only, and the Dockerfile's
-`org.opencontainers.image.documentation` label repoints at `https://roomler.ai/docs`.
+`org.opencontainers.image.documentation` label repoints at `https://meshharbor.itachi.fans/docs`.
 
 ### 2i. What this deliberately does NOT do
 
@@ -261,7 +261,7 @@ the boxes were never walked back to until FR-87's close-out.
 - [x] **AC3** — Every page emits a unique `<title>`, `<meta name="description">`, absolute canonical, OG/Twitter tags, and valid `TechArticle` + `BreadcrumbList` JSON-LD; `/docs/faq` emits valid `FAQPage`. *(#1165 result: FAQPage with 21 Q&A pairs.)*
 - [x] **AC4** — Search returns results and keyboard-navigates; tags filter; index <=150 KB gzipped, with the build failing above it. *(#1165 result: 59.4 KB gz.)*
 - [x] **AC5** — OS tabs work **with JavaScript disabled**, and persist across pages with JS on. *(#1165 result: CSS `:checked` baseline.)*
-- [x] **AC6** — `curl -sI https://roomler.ai/docs/start/install/windows/` returns the **same** CSP, HSTS and X-Frame-Options headers as `curl -sI https://roomler.ai/`. *(#1165 result; and since FR-87 P1 on every image, by `scripts/public-site-smoke.sh`.)*
+- [x] **AC6** — `curl -sI https://meshharbor.itachi.fans/docs/start/install/windows/` returns the **same** CSP, HSTS and X-Frame-Options headers as `curl -sI https://meshharbor.itachi.fans/`. *(#1165 result; and since FR-87 P1 on every image, by `scripts/public-site-smoke.sh`.)*
 - [x] **AC7** — Each of Windows, macOS and Linux has a complete install path, verified against the served installers rather than against memory. *(#1165 result.)*
 - [x] **AC8** — All three pillars plus architecture, security & access control, troubleshooting and FAQ are present and non-stub. *(#1165 result: 65 authored pages across 10 sections.)*
 - [x] **AC9** — Field: `/docs/`, `/robots.txt` and `/sitemap.xml` all 200 on production; Google Rich Results validates the FAQ page and one doc page. *(200s: #1165 result. Validation, run at FR-87's close-out on 2026-09-29 against production: `/docs/compare/teamviewer/` Article + Breadcrumbs, 2 valid, no issues; `/docs/faq/` Breadcrumbs valid, and its FAQPage 0 errors / 0 warnings in the Schema Markup Validator. The Rich Results Test does not list FAQPage for this site: Google has limited FAQ rich results to government and health sites since 2023.)*
@@ -294,15 +294,15 @@ strongest evidence the ledger has for its own central rule, and because it kept
 happening for exactly the reason the rule names.
 
 **First, at claim time**, `FR-57` was carried by **two** open issues —
-[#1161](https://github.com/gjovanov/roomler-ai/issues/1161) and
-[#1163](https://github.com/gjovanov/roomler-ai/issues/1163) — neither of which
+[#1161](https://github.com/jk-zhang-meta/MeshHarbor/issues/1161) and
+[#1163](https://github.com/jk-zhang-meta/MeshHarbor/issues/1163) — neither of which
 had reached this ledger. Taking a number already contested by two in-flight
 claims would have manufactured a three-way collision rather than resolving one,
 so this claimed **FR-58** and left 57 to settle between them.
 
 **Then FR-58 was taken anyway.** While this work was on a branch, master
 absorbed nine commits, among them
-[#1170](https://github.com/gjovanov/roomler-ai/issues/1170) — *newsletter
+[#1170](https://github.com/jk-zhang-meta/MeshHarbor/issues/1170) — *newsletter
 sending* — carrying a `FR-58` ledger row and `docs/fr/FR-58-newsletter-sending.md`.
 
 ⚠️ **The LEDGER arbitrated, and it moved this claim rather than theirs, even
@@ -313,7 +313,7 @@ memory file would be. A claim that never reached master moves — the same
 resolution FR-50 recorded when #1086 took its number mid-flight.
 
 **Then FR-59 was taken too** — while the FR-58 → FR-59 repair was being made,
-master gained [#1163](https://github.com/gjovanov/roomler-ai/issues/1163)
+master gained [#1163](https://github.com/jk-zhang-meta/MeshHarbor/issues/1163)
 (*slow-link latency priority*), which had itself just renumbered off FR-57 for
 the same reason. So this renumbered again, to **FR-60**.
 

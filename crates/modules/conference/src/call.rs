@@ -15,7 +15,7 @@ use axum::{
 use bson::oid::ObjectId;
 use serde::Deserialize;
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::ConferenceState;
 
@@ -82,7 +82,7 @@ pub async fn call_start(
                 "started_by": auth.user_id.to_hex(),
             }
         });
-        roomler_core::ws::dispatcher::broadcast_with_redis(
+        meshharbor_core::ws::dispatcher::broadcast_with_redis(
             &state.ws_storage,
             &state.redis_pubsub,
             &member_ids,
@@ -101,7 +101,7 @@ pub async fn call_start(
             .cloned()
             .unwrap_or_else(|| auth.user_id.to_hex());
 
-        roomler_core::notify::notify_call_started(
+        meshharbor_core::notify::notify_call_started(
             &state,
             tid,
             rid,
@@ -188,7 +188,7 @@ pub async fn call_join(
                 "conference_status": conference_status,
             }
         });
-        roomler_core::ws::dispatcher::broadcast_with_redis(
+        meshharbor_core::ws::dispatcher::broadcast_with_redis(
             &state.ws_storage,
             &state.redis_pubsub,
             &member_ids,
@@ -261,7 +261,7 @@ pub(crate) async fn close_call_media(
                     data["connection_id"] = serde_json::Value::String(cid.to_string());
                 }
                 let event = serde_json::json!({ "type": "media:peer_left", "data": data });
-                roomler_core::ws::dispatcher::broadcast_with_redis(
+                meshharbor_core::ws::dispatcher::broadcast_with_redis(
                     &state.ws_storage,
                     &state.redis_pubsub,
                     &remaining,
@@ -323,7 +323,7 @@ pub async fn finalize_call_leave_db(
                     "conference_status": status.clone().unwrap_or_else(|| "in_progress".into()),
                 }
             });
-            roomler_core::ws::dispatcher::broadcast_with_redis(
+            meshharbor_core::ws::dispatcher::broadcast_with_redis(
                 &state.ws_storage,
                 &state.redis_pubsub,
                 &member_ids,
@@ -349,7 +349,7 @@ pub async fn finalize_call_leave_db(
                     "room_id": rid.to_hex(),
                 }
             });
-            roomler_core::ws::dispatcher::broadcast_with_redis(
+            meshharbor_core::ws::dispatcher::broadcast_with_redis(
                 &state.ws_storage,
                 &state.redis_pubsub,
                 &member_ids,
@@ -444,7 +444,7 @@ pub async fn call_end(
                 "room_id": rid.to_hex(),
             }
         });
-        roomler_core::ws::dispatcher::broadcast_with_redis(
+        meshharbor_core::ws::dispatcher::broadcast_with_redis(
             &state.ws_storage,
             &state.redis_pubsub,
             &member_ids,

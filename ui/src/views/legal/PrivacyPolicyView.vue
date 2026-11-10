@@ -15,14 +15,14 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">1. Introduction</h2>
           <p class="text-body-1 legal-muted mb-4">
-            Roomler ("Roomler," "we," "us," or "our") is operated by <strong>G ROX EOOD</strong>, which is the
+            MeshHarbor ("MeshHarbor," "we," "us," or "our") is operated by <strong>G ROX EOOD</strong>, which is the
             data controller for the processing described here — see our
             <router-link to="/imprint" class="text-primary">Imprint</router-link> for full company details.
             This policy explains what we collect, why, and what we deliberately do not collect, when you use
-            <a href="https://roomler.ai" class="text-primary">roomler.ai</a>.
+            <a href="https://meshharbor.itachi.fans" class="text-primary">meshharbor.itachi.fans</a>.
           </p>
           <p class="text-body-1 legal-muted">
-            Roomler is three things at once: a <strong>remote desktop</strong> for devices you enroll, a
+            MeshHarbor is three things at once: a <strong>remote desktop</strong> for devices you enroll, a
             <strong>private encrypted network</strong> between them (with tunnels, subnet routers, exit nodes and
             SSH), and a <strong>collaboration</strong> layer of rooms, chat, files and video calls. Each collects
             different data, and section 3 is the one worth reading first — it describes the categories of data
@@ -55,7 +55,7 @@
 
           <h3 class="text-h6 font-weight-bold mb-2">2.4 Files and Uploads</h3>
           <p class="text-body-1 legal-muted mb-4">
-            Files you upload to Roomler are stored in our S3-compatible object storage. This includes
+            Files you upload to MeshHarbor are stored in our S3-compatible object storage. This includes
             documents, images, and any other files shared within rooms or direct messages. Files are associated
             with your account and the workspace where they were shared.
           </p>
@@ -71,7 +71,7 @@
           <p class="text-body-1 legal-muted mb-4">
             When you sign in using Google, Microsoft, GitHub, LinkedIn or Facebook, we receive your email address,
             display name, and profile picture from the respective provider. We do not receive or store your
-            passwords from these services. We use this information solely to create and authenticate your Roomler
+            passwords from these services. We use this information solely to create and authenticate your MeshHarbor
             account. Where a provider does not confirm that it has verified an email address, we record the claim
             separately and do not treat it as proof of ownership of that address.
           </p>
@@ -232,13 +232,13 @@
             analytics records that full address, as your browser reports it (2.15).
           </p>
           <p class="text-body-1 legal-muted mb-4">
-            The sign-up form also asks "How did you hear about Roomler?". Answering is optional; if you choose an
+            The sign-up form also asks "How did you hear about MeshHarbor?". Answering is optional; if you choose an
             answer, we store it with the account in the same way. If you sign up through Google or another
             provider, these details wait on our server for at most ten minutes while you sign in there, and are
             then attached to the new account or discarded.
           </p>
           <p class="text-body-1 legal-muted mb-4">
-            We use this for one purpose: to learn which of our channels bring people to Roomler, and we look at it
+            We use this for one purpose: to learn which of our channels bring people to MeshHarbor, and we look at it
             as counts per channel. It is recorded once, when the account is created, and never changed. It is not
             shown on your profile or to anyone in your workspace, and it is deleted together with your account. The
             legal basis is our legitimate interest in knowing which of our channels work (Art. 6(1)(f) GDPR); you
@@ -251,8 +251,8 @@
 
           <h3 class="text-h6 font-weight-bold mb-2">2.17 YouTube</h3>
           <p class="text-body-1 legal-muted mb-4">
-            Roomler uses YouTube API Services to publish Roomler's own videos to the Roomler YouTube channel and to
-            read that channel's statistics. This tool is used only by Roomler; it does not access, collect or store
+            MeshHarbor uses YouTube API Services to publish MeshHarbor's own videos to the MeshHarbor YouTube channel and to
+            read that channel's statistics. This tool is used only by MeshHarbor; it does not access, collect or store
             data about other YouTube users or channels. Using it is subject to the
             <a href="https://www.youtube.com/t/terms" class="text-primary" target="_blank" rel="noopener">YouTube Terms of Service</a>
             and the
@@ -260,7 +260,7 @@
             We store only the statistics of our own videos. Access we granted can be revoked at any time through
             <a href="https://myaccount.google.com/permissions" class="text-primary" target="_blank" rel="noopener">Google's security settings</a>,
             and we delete the stored YouTube data within 30 days of a revocation or on request to
-            <a href="mailto:privacy@roomler.ai" class="text-primary">privacy@roomler.ai</a>.
+            <a href="mailto:privacy@meshharbor.itachi.fans" class="text-primary">privacy@meshharbor.itachi.fans</a>.
           </p>
         </section>
 
@@ -313,7 +313,7 @@
           <h2 class="text-h5 font-weight-bold mb-3">5. How We Use Your Information</h2>
           <p class="text-body-1 legal-muted mb-2">We use the information we collect to:</p>
           <ul class="text-body-1 legal-muted ml-6 mb-2">
-            <li class="mb-1">Provide, maintain, and improve the Roomler platform</li>
+            <li class="mb-1">Provide, maintain, and improve the MeshHarbor platform</li>
             <li class="mb-1">Authenticate your identity and manage your account</li>
             <li class="mb-1">Deliver chat messages, files, and video/audio streams to the intended recipients</li>
             <li class="mb-1">Establish connections between your devices and route them over the private network</li>
@@ -321,7 +321,7 @@
             <li class="mb-1">Process call recordings when recording is enabled</li>
             <li class="mb-1">Process payments and manage subscription billing</li>
             <li class="mb-1">Send service-related communications (e.g., account verification, security alerts)</li>
-            <li class="mb-1">Learn which of our channels bring people to Roomler, counted per channel (section 2.16)</li>
+            <li class="mb-1">Learn which of our channels bring people to MeshHarbor, counted per channel (section 2.16)</li>
             <li class="mb-1">Diagnose faults, monitor performance and reliability, and detect abuse</li>
             <li class="mb-1">Comply with legal obligations</li>
           </ul>
@@ -397,7 +397,7 @@
           </ul>
           <p class="text-body-1 legal-muted">
             To exercise any of these rights, please contact us at
-            <a href="mailto:privacy@roomler.ai" class="text-primary">privacy@roomler.ai</a>.
+            <a href="mailto:privacy@meshharbor.itachi.fans" class="text-primary">privacy@meshharbor.itachi.fans</a>.
             We will respond to your request within 30 days. You also have the right to lodge a complaint with a
             supervisory authority — in Bulgaria, the Commission for Personal Data Protection.
           </p>
@@ -406,7 +406,7 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">10. Children's Privacy</h2>
           <p class="text-body-1 legal-muted">
-            Roomler is not intended for use by individuals under the age of 16. We do not knowingly collect
+            MeshHarbor is not intended for use by individuals under the age of 16. We do not knowingly collect
             personal data from children. If we become aware that we have collected data from a child under 16,
             we will take steps to delete that information promptly.
           </p>
@@ -417,7 +417,7 @@
           <p class="text-body-1 legal-muted">
             We may update this Privacy Policy from time to time. We will notify you of material changes by
             posting the updated policy on this page and updating the "Last updated" date. Your continued use
-            of Roomler after any changes constitutes acceptance of the updated policy.
+            of MeshHarbor after any changes constitutes acceptance of the updated policy.
           </p>
         </section>
 
@@ -428,7 +428,7 @@
             contact us at:
           </p>
           <p class="text-body-1 legal-muted mt-2">
-            <strong>Email:</strong> <a href="mailto:privacy@roomler.ai" class="text-primary">privacy@roomler.ai</a>
+            <strong>Email:</strong> <a href="mailto:privacy@meshharbor.itachi.fans" class="text-primary">privacy@meshharbor.itachi.fans</a>
           </p>
           <p class="text-body-1 legal-muted mt-2">
             The data controller is <strong>G ROX EOOD</strong>, registered in the Bulgarian Commercial Register

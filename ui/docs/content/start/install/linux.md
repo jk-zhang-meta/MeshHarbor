@@ -1,6 +1,6 @@
 ---
 title: Install on Linux
-description: Install the Roomler agent on Linux with one command — as a root systemd service or a per-user unit — including headless servers, containers and cluster nodes.
+description: Install MeshHarbor on Linux with one command — as a root systemd service or a per-user unit — including headless servers, containers and cluster nodes.
 tags: [install, linux, getting-started, enrollment, headless]
 order: 12
 ---
@@ -28,13 +28,13 @@ To make an installed machine a system service later, enroll the root daemon,
 then register it:
 
 ```bash
-sudo roomlerd --config /etc/roomler/config.toml enroll --server https://roomler.ai --token <token> --name "$(hostname)"
-sudo roomlerd service install --as-service      # alias: --system
+sudo meshharbord --config /etc/meshharbor/config.toml enroll --server https://meshharbor.itachi.fans --token <token> --name "$(hostname)"
+sudo meshharbord service install --as-service      # alias: --system
 ```
 
 It refuses until that config exists, and it says so if a per-user daemon also
 runs on the machine: one daemon per machine is the rule, so stop the per-user
-unit as that account (`systemctl --user disable --now roomler.service`).
+unit as that account (`systemctl --user disable --now meshharbor.service`).
 
 ## Install
 
@@ -43,22 +43,22 @@ Mint a token under **Devices → Enroll device**, then:
 **Headless server / cluster node** — root systemd service:
 
 ```bash
-curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
-  --role daemon --system --token <token> --server https://roomler.ai --name "$(hostname)"
+curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- \
+  --role daemon --system --token <token> --server https://meshharbor.itachi.fans --name "$(hostname)"
 ```
 
 **Desktop** — per-user unit:
 
 ```bash
-curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
-  --role daemon --token <token> --server https://roomler.ai --name "$(hostname)"
+curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- \
+  --role daemon --token <token> --server https://meshharbor.itachi.fans --name "$(hostname)"
 ```
 
 **Tunnels only** — just the CLI, no agent:
 
 ```bash
-curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
-  --role tunnel --token <token> --server https://roomler.ai --name "My laptop"
+curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- \
+  --role tunnel --token <token> --server https://meshharbor.itachi.fans --name "My laptop"
 ```
 
 The script installs the `.deb` on Debian and Ubuntu derivatives — **x86_64 and
@@ -71,21 +71,21 @@ Useful flags:
 |---|---|
 | `--download-only` | Fetch and verify the artifact, install nothing |
 | `--no-enroll` | Install and set up the service, but skip enrollment (do it later) |
-| `--server <url>` | Point at a self-hosted server instead of `roomler.ai` |
-| `--uninstall` | Remove Roomler from the machine — see [Uninstall](#uninstall) |
+| `--server <url>` | Point at a self-hosted server instead of `meshharbor.itachi.fans` |
+| `--uninstall` | Remove MeshHarbor from the machine — see [Uninstall](#uninstall) |
 
 ## Check it came up
 
 ```bash
-roomler status     # per-user install
-sudo roomler status # system install
+mh status     # per-user install
+sudo mh status # system install
 ```
 
 :::warning `systemctl is-active` can lie on a system install
 A machine that was enrolled before the current config convention can end up
 running a perfectly healthy daemon that systemd does not own. `systemctl
 is-active` then reads **inactive** while the device is online and answering.
-Check `pgrep -x roomlerd` and `roomler peers` before concluding anything is
+Check `pgrep -x meshharbord` and `mh peers` before concluding anything is
 wrong — and in particular, do not "restart to fix" on that basis.
 :::
 
@@ -105,10 +105,10 @@ see [per-OS permissions](/docs/remote-desktop/per-os-permissions/).
 
 | Item | Path |
 |---|---|
-| System config | `/etc/roomler/config.toml` |
-| Per-user config | `~/.config/roomler/config.toml` |
-| Binaries | `/usr/bin/roomlerd`, `/usr/bin/roomler` |
-| Logs | `journalctl -u roomlerd` (system) or `journalctl --user -u roomler` (per user) |
+| System config | `/etc/meshharbor/config.toml` |
+| Per-user config | `~/.config/meshharbor/config.toml` |
+| Binaries | `/usr/bin/meshharbord`, `/usr/bin/mh` |
+| Logs | `journalctl -u meshharbord` (system) or `journalctl --user -u meshharbor` (per user) |
 
 :::danger The config file holds a credential
 `config.toml` contains the agent token, and — if you enable SSH — the SSH host
@@ -121,8 +121,8 @@ Every release asset ships a SHA-256 sidecar, a **detached GPG signature**
 (`.asc`, against a published release key) and **SLSA build provenance**:
 
 ```bash
-gh attestation verify roomlerd-<version>-x86_64-unknown-linux-gnu.deb \
-  --repo gjovanov/roomler-ai
+gh attestation verify meshharbord-<version>-x86_64-unknown-linux-gnu.deb \
+  --repo jk-zhang-meta/MeshHarbor
 ```
 
 The agent's own updater verifies the GPG signature against a key **pinned inside
@@ -136,31 +136,31 @@ The agent self-updates on a timer, verifying the signature before handing off to
 
 :::warning `dpkg -i` alone does not restart the daemon
 Installing a package by hand replaces the file on disk while the running process
-keeps executing the **deleted inode** — so `roomler --version` reports the new
+keeps executing the **deleted inode** — so `mh --version` reports the new
 version while the daemon is still the old one. Restart the unit explicitly after
 a manual install.
 :::
 
 ## Uninstall
 
-One command removes everything Roomler put on the machine, however it got
+One command removes everything MeshHarbor put on the machine, however it got
 there: the daemon, the desktop companion and the tunnel CLI, from the `.deb`,
 the `.rpm`, the tarball or the install script.
 
 ```bash
-curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- --uninstall
+curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- --uninstall
 ```
 
 It stops each service through systemd **before** removing anything: the system
-`roomlerd.service`, the per-user `roomler.service` and the update helper
-(`roomler-update.timer` and `.path`). That stop is the daemon's clean stop, so
+`meshharbord.service`, the per-user `meshharbor.service` and the update helper
+(`meshharbor-update.timer` and `.path`). That stop is the daemon's clean stop, so
 the routes and DNS settings it added to the machine go with it. Then the
 packages and files, then the config. It prints `done.` only if every step
 worked; otherwise it lists what it could not remove and exits non-zero.
 
 | Flag | Effect |
 |---|---|
-| `--keep-config` | Keep `/etc/roomler` and `~/.config/roomler`: a reinstall comes back as the same device |
+| `--keep-config` | Keep `/etc/meshharbor` and `~/.config/meshharbor`: a reinstall comes back as the same device |
 
 Then remove the device in the dashboard under **Devices**. That revokes its
 credential and releases its mesh address. A device cannot do this for itself,

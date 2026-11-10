@@ -1,11 +1,11 @@
 ---
 title: Architecture
-description: How Roomler is put together — one control plane, three data planes, one agent per machine, and a server that coordinates without ever carrying your traffic.
+description: How MeshHarbor is put together — one control plane, three data planes, one agent per machine, and a server that coordinates without ever carrying your traffic.
 tags: [architecture, overview, security, design]
 order: 0
 ---
 
-Roomler's shape follows from two invariants. Almost every design question in the
+MeshHarbor's shape follows from two invariants. Almost every design question in the
 product is answered by one of them.
 
 :::badges

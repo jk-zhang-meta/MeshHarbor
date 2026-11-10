@@ -29,7 +29,7 @@
 ;(function () {
   'use strict'
 
-  var SIGNED_IN = 'roomler-signed-in'
+  var SIGNED_IN = 'meshharbor-signed-in'
   try {
     if (window.localStorage.getItem(SIGNED_IN) === '1') {
       // `/login`, not `/`: `/` would serve this page again (still no cookie).

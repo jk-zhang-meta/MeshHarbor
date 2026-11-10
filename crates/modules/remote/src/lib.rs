@@ -30,20 +30,20 @@ use axum::{
     extract::{DefaultBodyLimit, FromRef},
     routing::{get, post, put},
 };
-use roomler_ai_config::Settings;
-use roomler_ai_db::indexes::{IndexSet, index, index_ttl, index_unique};
-use roomler_ai_mod_fleet::FleetState;
-use roomler_ai_remote_control::models::{
+use meshharbor_config::Settings;
+use meshharbor_core::{
+    AgentSocketHooks, Capabilities, Core, Module, TenantCtx, rate_limit::RateLimiter,
+};
+use meshharbor_db::indexes::{IndexSet, index, index_ttl, index_unique};
+use meshharbor_mod_fleet::FleetState;
+use meshharbor_remote_control::models::{
     SessionFeedback, SessionFeedbackRequest, TouchPreset, TouchPresetRequest,
 };
-use roomler_ai_services::dao::{
+use meshharbor_services::dao::{
     privacy_activity::PrivacyActivityDao, recording_activity::RecordingActivityDao,
     remote_audit::RemoteAuditDao, remote_session::RemoteSessionDao,
     session_feedback::SessionFeedbackDao, touch_preset::TouchPresetDao,
     transfer_activity::TransferActivityDao,
-};
-use roomler_core::{
-    AgentSocketHooks, Capabilities, Core, Module, TenantCtx, rate_limit::RateLimiter,
 };
 
 pub mod agent_socket;
@@ -254,7 +254,7 @@ impl Module for RemoteState {
                     // policy's §7 (see `RemoteSession::TTL_SECONDS`).
                     index_ttl(
                         bson::doc! { "created_at": 1 },
-                        roomler_ai_remote_control::models::RemoteSession::TTL_SECONDS,
+                        meshharbor_remote_control::models::RemoteSession::TTL_SECONDS,
                     ),
                 ],
             },

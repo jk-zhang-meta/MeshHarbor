@@ -22,15 +22,15 @@ use axum::{
     extract::{Path, Query, State},
 };
 use bson::oid::ObjectId;
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::models::{
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::models::{
     OverlayAclMode, OverlayPolicy, OverlayRule, OverlaySelector, OverlayTarget,
 };
-use roomler_ai_services::dao::base::PaginationParams;
+use meshharbor_services::dao::base::PaginationParams;
 use serde::{Deserialize, Serialize};
 
-use roomler_core::guards::require_permission;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::guards::require_permission;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::NetworkState;
 

@@ -7,12 +7,12 @@ Everything else about how the codebase works lives in
 
 ## Which licence your PR falls under
 
-Roomler is split-licensed, and **the licence follows the directory you touch**:
+MeshHarbor is split-licensed, and **the licence follows the directory you touch**:
 
 | You edited… | Your contribution is |
 |---|---|
 | `crates/api`, `services`, `db`, `config`, `derp-relay`, `tests`, `ui/src` | AGPL-3.0-only |
-| `agents/*`, `crates/agent-core`, `roomler-setup-core`, `tunnel-core`, `remote_control`, `localapi`, `tcp-turn-conn` | MPL-2.0 |
+| `agents/*`, `crates/agent-core`, `meshharbor-setup-core`, `tunnel-core`, `remote_control`, `localapi`, `tcp-turn-conn` | MPL-2.0 |
 | `docs/` | CC-BY-4.0 |
 | `crates/vendored/*` | upstream's licence — do not add our headers |
 
@@ -54,7 +54,7 @@ cd ui && bun run build && bun run test:unit
 ```
 
 Backend changes that touch models, services or routes also want
-`cargo test -p roomler-ai-tests` (needs MongoDB on `:27019` and Redis on `:6379`).
+`cargo test -p meshharbor-tests` (needs MongoDB on `:27019` and Redis on `:6379`).
 
 ## Substantial changes need a Functional Requirement first
 

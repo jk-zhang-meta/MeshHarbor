@@ -71,7 +71,7 @@ export const RCAS_ONLY_MAX_SCALE = 1.05
  *  near-max crispness without ringing on hard text edges. */
 export const DEFAULT_RCAS_SHARPNESS = 0.25
 
-/** localStorage `roomler-rc-sharpen` → mode. FR-26 defaulted this to **'on'**
+/** localStorage `meshharbor-rc-sharpen` → mode. FR-26 defaulted this to **'on'**
  *  (always-sharpen for crisp 1:1 text), but 'on' runs RCAS on the
  *  `needScale <= 1` path (`computeRenderTarget`) which — as the comment there
  *  says — "invites shimmer": RCAS amplifies the encoder's per-frame
@@ -86,7 +86,7 @@ export function normalizeSharpenMode(v: unknown): SharpenMode {
   return v === 'on' || v === 'off' || v === 'auto' ? v : 'auto'
 }
 
-/** localStorage `roomler-rc-fsr-sharpness` → RCAS stops, clamped 0..2. */
+/** localStorage `meshharbor-rc-fsr-sharpness` → RCAS stops, clamped 0..2. */
 export function normalizeSharpness(v: unknown): number {
   const n = typeof v === 'number' ? v : typeof v === 'string' ? Number.parseFloat(v) : Number.NaN
   if (!Number.isFinite(n)) return DEFAULT_RCAS_SHARPNESS

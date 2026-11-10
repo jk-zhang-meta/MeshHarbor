@@ -1,5 +1,5 @@
 [package]
-name = "roomler-core"
+name = "meshharbor-core"
 license = "AGPL-3.0-only"
 publish = false
 version.workspace = true
@@ -7,7 +7,7 @@ edition.workspace = true
 description = "The server's composition contract (FR-69): the Module trait, capabilities, hooks, index plans and jobs every pillar module implements, plus the composition snapshot that gates every module move."
 
 [lib]
-name = "roomler_core"
+name = "meshharbor_core"
 path = "src/lib.rs"
 
 # FR-69 P0 — TYPES ONLY. This crate carries the contract every server module
@@ -17,17 +17,17 @@ path = "src/lib.rs"
 # workflow's dependency-graph assertion is what keeps it out of every shipped
 # agent binary — that assertion is AC10 of the FR.
 #
-# ⚠️ Not to be confused with `roomler-node-core` (crates/agent-core), the
+# ⚠️ Not to be confused with `meshharbor-node-core` (crates/agent-core), the
 # daemon's shared building blocks, which held THIS name from FR-21 until FR-69.
 [dependencies]
-roomler-ai-config = { path = "../config" }
-roomler-ai-db = { path = "../db" }
+meshharbor-config = { path = "../config" }
+meshharbor-db = { path = "../db" }
 # P1b — `Core` holds the auth service and the identity/tenancy DAOs, and the
 # relay-load poller writes `stats_relay` samples.
-roomler-ai-services = { path = "../services" }
+meshharbor-services = { path = "../services" }
 # P1b — TURN issuance (`TurnMap`, `RelayLoadMap`) is core: RC, tunnels and
 # the mediasoup ICE servers all issue from it.
-roomler-ai-remote-control = { path = "../remote_control" }
+meshharbor-remote-control = { path = "../remote_control" }
 
 axum.workspace = true
 anyhow.workspace = true

@@ -1,22 +1,22 @@
 [package]
-name = "roomler-node-core"
+name = "meshharbor-node-core"
 license = "MPL-2.0"
 publish = false
 version.workspace = true
 edition.workspace = true
-description = "Daemon-free agent building blocks: config, enrollment, machine id, logging, sentinels — shared by roomlerd and the desktop companion."
+description = "Daemon-free agent building blocks: config, enrollment, machine id, logging, sentinels — shared by meshharbord and the desktop companion."
 
 [lib]
-name = "roomler_node_core"
+name = "meshharbor_node_core"
 path = "src/lib.rs"
 
-# P3e lever E. These modules moved OUT of `roomlerd` verbatim because the
-# desktop companion (roomler-desktop) needs exactly them — config
+# P3e lever E. These modules moved OUT of `meshharbord` verbatim because the
+# desktop companion (meshharbor-desktop) needs exactly them — config
 # load/save, enrollment, machine-id, log tailing, the needs-attention
 # sentinel — and depending on the full agent lib compiled the entire data
 # plane behind it: tunnel-core's webrtc/quinn/turn/rustls are non-optional,
 # so the tray's 470-crate graph carried ~90 transport crates it never called.
-# `roomlerd` re-exports every module here under its old `crate::` path,
+# `meshharbord` re-exports every module here under its old `crate::` path,
 # so agent-internal call sites are unchanged.
 #
 # Keep this crate daemon-free: no capture, no encode, no input, no transport.
@@ -27,10 +27,10 @@ path = "src/lib.rs"
 # forward ACL, and OsKind for enrollment. default-features = false drops the
 # `server` half (Mongo audit DAO + Hub) — P3e Phase 3 closed the "this drags
 # the mongodb driver" caveat that used to live here.
-roomler-ai-remote-control = { path = "../remote_control", default-features = false }
+meshharbor-remote-control = { path = "../remote_control", default-features = false }
 # RouteDescriptor/FlowKind (the `[[tunnel_routes]]` config shape) and
 # ConfigEntry (the config surface's wire type). Leaf protocol crate.
-roomler-localapi = { path = "../localapi" }
+meshharbor-localapi = { path = "../localapi" }
 
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -50,7 +50,7 @@ tokio = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# FR-84 D6 — the companion's `…\Run\Roomler Desktop` value, written by the
+# FR-84 D6 — the companion's `…\Run\MeshHarbor Desktop` value, written by the
 # daemon (HKLM from the elevated service install, HKCU from the per-user one)
 # and by the companion (its own HKCU toggle). The 0.59 line the daemon and the
 # companion already resolve; Registry is the only feature this crate adds.
@@ -63,22 +63,23 @@ windows-sys = { version = "0.59", features = [
 [features]
 # Exposes `config::test_fixture` to DOWNSTREAM test builds (a foreign crate's
 # `cargo test` compiles this crate in normal mode, so `#[cfg(test)]` alone
-# hides it). Enabled from roomlerd's [dev-dependencies] only.
+# hides it). Also enables the explicit MESHHARBORD_TEST_STATE_ROOT override
+# for isolated native fixtures. Normal builds do not enable this feature.
 test-fixtures = []
-# Passthrough twins of roomlerd's overlay features, for ONE call site:
+# Passthrough twins of meshharbord's overlay features, for ONE call site:
 # enrollment's org-append mints the org's own WG identity when an overlay
 # surface is compiled in (`WgKeypair::generate`). Builds without the features
 # leave the key None and the daemon mints lazily at its first overlay-enabled
 # start — the designed fallback, and exactly what the tray's enroll (default
 # features) has always produced. Enabling these pulls tunnel-core INTO this
 # crate, so thin clients must never turn them on.
-overlay-l3 = ["dep:roomler-ai-tunnel-core", "roomler-ai-tunnel-core/overlay-l3"]
+overlay-l3 = ["dep:meshharbor-tunnel-core", "meshharbor-tunnel-core/overlay-l3"]
 overlay-netstack = [
-    "dep:roomler-ai-tunnel-core",
-    "roomler-ai-tunnel-core/overlay-netstack",
+    "dep:meshharbor-tunnel-core",
+    "meshharbor-tunnel-core/overlay-netstack",
 ]
 
-[dependencies.roomler-ai-tunnel-core]
+[dependencies.meshharbor-tunnel-core]
 path = "../tunnel-core"
 optional = true
 

@@ -33,8 +33,8 @@ use std::path::PathBuf;
 
 /// Markers delimiting the block this module owns. Anything between them is
 /// ours to rewrite; anything outside is never touched.
-const BEGIN: &str = "# BEGIN roomler magicdns (managed — edits here are overwritten)";
-const END: &str = "# END roomler magicdns";
+const BEGIN: &str = "# BEGIN meshharbor magicdns (managed — edits here are overwritten)";
+const END: &str = "# END meshharbor magicdns";
 
 /// One name's addresses. `v6` is `None` when AAAA answers are switched off.
 pub type Entry = (String, Ipv4Addr, Option<Ipv6Addr>);
@@ -150,7 +150,7 @@ pub fn clear_block() -> io::Result<bool> {
 /// managed hosts it exists for. The direct write is the lesser risk — the file
 /// is small and written in one call.
 fn write_atomic(path: &std::path::Path, content: &str) -> io::Result<()> {
-    let tmp = path.with_extension("roomler-tmp");
+    let tmp = path.with_extension("meshharbor-tmp");
     match std::fs::write(&tmp, content).and_then(|()| std::fs::rename(&tmp, path)) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -187,7 +187,7 @@ pub struct Ladder {
 }
 
 impl Ladder {
-    /// `enabled` is the kill switch (`ROOMLERD_MAGICDNS_HOSTS`).
+    /// `enabled` is the kill switch (`MESHHARBORD_MAGICDNS_HOSTS`).
     ///
     /// ⚠️ Construction CLEARS any existing block — the boot reconciler. A block
     /// left by a previous process describes a netmap we have not verified, and

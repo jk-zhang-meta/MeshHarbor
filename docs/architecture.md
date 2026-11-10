@@ -1,6 +1,6 @@
 # Architecture
 
-Roomler is one Rust server, one Vue SPA, and a small fleet of native binaries that
+MeshHarbor is one Rust server, one Vue SPA, and a small fleet of native binaries that
 turn every enrolled machine into a remote-desktop target, a tunnel exit, and an
 overlay-mesh node. This page is the map; every subsystem has a deeper doc linked
 along the way. (Counts stamped *as of 0.3.0-rc.381.*)
@@ -11,13 +11,13 @@ along the way. (Counts stamped *as of 0.3.0-rc.381.*)
 flowchart TB
     subgraph clients["Clients"]
         SPA["Vue 3 SPA<br/>chat · calls · remote viewer<br/>admin · observability"]
-        CLI["roomler CLI<br/>forward · socks5 · exec · ping"]
-        DESK["roomler-desktop<br/>tray companion (Tauri)"]
+        CLI["meshharbor CLI<br/>forward · socks5 · exec · ping"]
+        DESK["meshharbor-desktop<br/>tray companion (Tauri)"]
     end
 
-    subgraph server["roomler.ai — Axum API pod(s)"]
+    subgraph server["meshharbor.itachi.fans — Axum API pod(s)"]
         NG["nginx<br/>SPA + /api + /ws + /derp proxy"]
-        API["roomler-ai-api<br/>REST + WebSocket + signalling"]
+        API["meshharbor-api<br/>REST + WebSocket + signalling"]
         SFU["mediasoup SFU<br/>(in-process workers)"]
         DERPD["/derp relay<br/>(pubkey-addressed WSS)"]
     end
@@ -31,8 +31,8 @@ flowchart TB
     end
 
     subgraph fleet["Enrolled machines"]
-        D1["roomlerd daemon<br/>capture · encode · input<br/>tunnel exit · overlay node"]
-        D2["roomlerd daemon"]
+        D1["meshharbord daemon<br/>capture · encode · input<br/>tunnel exit · overlay node"]
+        D2["meshharbord daemon"]
     end
 
     SPA -->|REST /api| NG --> API
@@ -60,13 +60,13 @@ RTP without decoding it.
 
 ```mermaid
 flowchart LR
-    subgraph cp["Control plane — always through roomler.ai"]
+    subgraph cp["Control plane — always through meshharbor.itachi.fans"]
         C1["auth · enrollment · consent<br/>ACL policy · signalling · audit"]
     end
 
     subgraph dp["Data planes"]
         P1["💬 Conference media<br/>browser ⇄ mediasoup SFU<br/>WebRTC RTP (DTLS-SRTP)"]
-        P2["🖥️ Remote desktop<br/>browser ⇄ roomlerd, P2P<br/>WebRTC RTP + DataChannels"]
+        P2["🖥️ Remote desktop<br/>browser ⇄ meshharbord, P2P<br/>WebRTC RTP + DataChannels"]
         P3["🌐 Overlay & tunnels<br/>node ⇄ node WireGuard<br/>tunnels over QUIC / WebRTC DC"]
     end
 
@@ -76,8 +76,8 @@ flowchart LR
 | Plane | Endpoints | Direct path | Fallback ladder | Server sees |
 |---|---|---|---|---|
 | Conference | browser ⇄ server SFU | always via SFU | — | encrypted RTP it routes (SFU model) |
-| Remote desktop | browser ⇄ `roomlerd` | ICE P2P | host → STUN srflx → TURN (UDP → TCP/TLS :443) | signalling only; TURN relays ciphertext |
-| Overlay mesh | `roomlerd`/CLI ⇄ peer | LAN → public → srflx hole-punch | TURN relay (QUIC-upgraded) → DERP over WSS :443 | netmaps + relay grants; WG ciphertext only |
+| Remote desktop | browser ⇄ `meshharbord` | ICE P2P | host → STUN srflx → TURN (UDP → TCP/TLS :443) | signalling only; TURN relays ciphertext |
+| Overlay mesh | `meshharbord`/CLI ⇄ peer | LAN → public → srflx hole-punch | TURN relay (QUIC-upgraded) → DERP over WSS :443 | netmaps + relay grants; WG ciphertext only |
 
 Key invariants:
 
@@ -88,7 +88,7 @@ Key invariants:
 - **Everything is tenant-scoped.** Every route nests under
   `/api/tenant/{tenant_id}/…`, every collection carries `tenant_id`, and the six
   JWT audiences (below) cannot impersonate one another.
-- **Agents dial out only.** A `roomlerd` daemon holds one outbound WSS control
+- **Agents dial out only.** A `meshharbord` daemon holds one outbound WSS control
   connection; no inbound port is ever required on an enrolled machine.
 
 ## Workspace map
@@ -99,15 +99,15 @@ agent stack layers on shared leaf crates so thin clients never link the world.
 
 ```mermaid
 flowchart BT
-    config["crates/config<br/>settings (ROOMLER__ env)"]
+    config["crates/config<br/>settings (MESHHARBOR__ env)"]
     db["crates/db<br/>Mongo models + indexes"]
-    core["crates/core → roomler-core<br/>Core · module contract · composition snapshot"]
-    saas["crates/modules/saas → roomler-ai-mod-saas<br/>Stripe · newsletter · plan compliance (add-on)"]
-    chat["crates/modules/chat → roomler-ai-mod-chat<br/>rooms · messages · files · search · typing"]
-    conference["crates/modules/conference → roomler-ai-mod-conference<br/>mediasoup SFU · media:* · calls · recordings"]
-    fleet["crates/modules/fleet → roomler-ai-mod-fleet<br/>agents · enrollment · presence · Hub · consent · exec · releases"]
-    remote["crates/modules/remote → roomler-ai-mod-remote<br/>RC sessions · controller rc:* dispatch · cross-pod rc relay · TURN creds"]
-    network["crates/modules/network → roomler-ai-mod-network<br/>overlay engine · tunnels · peer relays · SSH · key rotation · DERP ACL"]
+    core["crates/core → meshharbor-core<br/>Core · module contract · composition snapshot"]
+    saas["crates/modules/saas → meshharbor-mod-saas<br/>Stripe · newsletter · plan compliance (add-on)"]
+    chat["crates/modules/chat → meshharbor-mod-chat<br/>rooms · messages · files · search · typing"]
+    conference["crates/modules/conference → meshharbor-mod-conference<br/>mediasoup SFU · media:* · calls · recordings"]
+    fleet["crates/modules/fleet → meshharbor-mod-fleet<br/>agents · enrollment · presence · Hub · consent · exec · releases"]
+    remote["crates/modules/remote → meshharbor-mod-remote<br/>RC sessions · controller rc:* dispatch · cross-pod rc relay · TURN creds"]
+    network["crates/modules/network → meshharbor-mod-network<br/>overlay engine · tunnels · peer relays · SSH · key rotation · DERP ACL"]
     rc["crates/remote_control<br/>signalling · consent · wire types¹ · ACL shapes"]
     services["crates/services<br/>DAOs · auth · billing · export"]
     api["crates/api<br/>Axum: core REST + /ws · composes the modules (/derp is network's)"]
@@ -118,13 +118,13 @@ flowchart BT
     tunnelcore["crates/tunnel-core<br/>tunnels · transports · overlay (WG)"]
     tcpturn["crates/tcp-turn-conn<br/>TURNS/TCP adapter"]
     derprelay["crates/derp-relay<br/>standalone DERP PoP"]
-    setupcore["crates/roomler-setup-core<br/>installer mechanics"]
+    setupcore["crates/meshharbor-setup-core<br/>installer mechanics"]
 
-    roomlerd["agents/roomlerd → roomlerd<br/>the daemon"]
-    tunnel["agents/roomler-cli → roomler<br/>tunnel CLI (surface lives in its lib)"]
-    shim["agents/roomler-cli-shim<br/>roomler.exe on daemon hosts → re-execs roomlerd cli"]
-    tray["agents/roomler-desktop → roomler-desktop"]
-    setup["agents/roomler-setup<br/>install wizard (Tauri)"]
+    meshharbord["agents/meshharbord → meshharbord<br/>the daemon"]
+    tunnel["agents/meshharbor-cli → meshharbor<br/>tunnel CLI (surface lives in its lib)"]
+    shim["agents/meshharbor-cli-shim<br/>mh.exe on daemon hosts → re-execs meshharbord cli"]
+    tray["agents/meshharbor-desktop → meshharbor-desktop"]
+    setup["agents/meshharbor-setup<br/>install wizard (Tauri)"]
 
     db --> config
     core --> services
@@ -137,11 +137,11 @@ flowchart BT
     rc --> db
     services --> rc
     api --> services & core & saas & chat & conference & fleet & remote & network
-    tests --> api & roomlerd & core
+    tests --> api & meshharbord & core
 
     tunnelcore --> localapi & tcpturn & rc
     agentcore --> config
-    roomlerd --> tunnelcore & agentcore
+    meshharbord --> tunnelcore & agentcore
     tunnel --> tunnelcore
     tray --> localapi & agentcore
     setup --> setupcore
@@ -175,7 +175,7 @@ contract, the profiles, the wire ownership, the hooks and the composition gate i
 
 ```mermaid
 flowchart BT
-    core["crates/core → roomler-core<br/>identity · tenancy · plans · notifications · storage<br/>/ws socket + fan-out · cluster · TURN creds · metering"]
+    core["crates/core → meshharbor-core<br/>identity · tenancy · plans · notifications · storage<br/>/ws socket + fan-out · cluster · TURN creds · metering"]
     fleet["modules/fleet<br/>agents · enrollment · presence · Hub · consent · exec · releases"]
     chat["modules/chat<br/>rooms · messages · files · search · export"]
     conference["modules/conference<br/>mediasoup · media:* · recordings"]
@@ -192,7 +192,7 @@ flowchart BT
 
 The rules that keep it a monolith rather than a pile of crates:
 
-- **One contract.** Every module implements `roomler_core::Module` — routes, WebSocket
+- **One contract.** Every module implements `meshharbor_core::Module` — routes, WebSocket
   namespaces, index specs, jobs, lifecycle hooks, capabilities — and the host composes the
   concrete types under `#[cfg(feature)]`. No dynamic loading, no runtime registry.
 - **A DAG, not peers.** Any module may call core; `conference → chat`, `remote → fleet`,
@@ -209,31 +209,31 @@ The rules that keep it a monolith rather than a pile of crates:
 - **Every move is checked.** A composition baseline — routes with their allowed methods, the
   index plan, the wire names — is asserted byte-identical after each module PR.
 
-**Crate naming, as of FR-69.** Server-side crates are `roomler-ai-*`; the server core is
-**`roomler-core`** (`crates/core`, AGPL-3.0-only); module crates are `roomler-ai-mod-<name>`.
+**Crate naming, as of FR-69.** Server-side crates are `meshharbor-*`; the server core is
+**`meshharbor-core`** (`crates/core`, AGPL-3.0-only); module crates are `meshharbor-mod-<name>`.
 The daemon's shared building blocks — config, enrollment, machine-id, logging — are
-**`roomler-node-core`** (`crates/agent-core`, MPL-2.0), which held the name `roomler-core` from
+**`meshharbor-node-core`** (`crates/agent-core`, MPL-2.0), which held the name `meshharbor-core` from
 FR-21 until FR-69. Its pre-FR-21 name is retired (FR-21); do not bring it back.
 
 ## The native stack on an enrolled machine
 
 | Binary | Role |
 |---|---|
-| **`roomlerd`** | The daemon: WS signalling, per-session WebRTC peers, capture → encode → RTP/DC, input injection, clipboard/file/apps/audio channels, tunnel *target* and tunnel *client* sides, overlay node runtime, LocalAPI server, loopback TURN host, watchdog, self-updater, Windows SCM/SystemContext machinery |
-| **`roomler`** | The CLI. On tunnel-only hosts it is the full standalone binary; on daemon hosts the MSI/.deb installs a ~150 KB shim that re-execs `roomlerd cli` — one command surface (`roomler_cli::cli`), never version-skewed against the daemon |
-| **`roomler-desktop`** | Tauri tray companion: node status, peers, tunnels, consent prompts — a thin LocalAPI client with zero transport crates |
-| **`roomler-setup`** | The unified install wizard ([installation.md](installation.md)) |
+| **`meshharbord`** | The daemon: WS signalling, per-session WebRTC peers, capture → encode → RTP/DC, input injection, clipboard/file/apps/audio channels, tunnel *target* and tunnel *client* sides, overlay node runtime, LocalAPI server, loopback TURN host, watchdog, self-updater, Windows SCM/SystemContext machinery |
+| **`mh`** | The CLI. On tunnel-only hosts it is the full standalone binary; on daemon hosts the MSI/.deb installs a ~150 KB shim that re-execs `meshharbord cli` — one command surface (`meshharbor_cli::cli`), never version-skewed against the daemon |
+| **`meshharbor-desktop`** | Tauri tray companion: node status, peers, tunnels, consent prompts — a thin LocalAPI client with zero transport crates |
+| **`meshharbor-setup`** | The unified install wizard ([installation.md](installation.md)) |
 
-The **LocalAPI** (named pipe `\\.\pipe\roomler` on Windows, `$XDG_RUNTIME_DIR/roomler.sock`
+The **LocalAPI** (named pipe `\\.\pipe\meshharbor` on Windows, `$XDG_RUNTIME_DIR/meshharbor.sock`
 elsewhere) is the on-host control surface all three clients share — status, peers,
 flows, routes, consent decisions. Protocol reference: [tunnels.md](tunnels.md).
 
-A **system** daemon listens at `/var/run/roomler/roomler.sock`, and also at the legacy
+A **system** daemon listens at `/var/run/meshharbor/meshharbor.sock`, and also at the legacy
 per-user path, for CLIs that predate the split. On macOS a per-user half answers a socket
 of its own. So two existing paths are not two daemons. When both exist, the CLI asks each
-for its peer's PID, and adds "a second roomler daemon is running" only when two processes
+for its peer's PID, and adds "a second meshharbor daemon is running" only when two processes
 answer (#2511). One process behind both is the system daemon's legacy bind, which every
-root `roomler status` used to report as a second daemon.
+root `mh status` used to report as a second daemon.
 
 ## Request flow & auth
 

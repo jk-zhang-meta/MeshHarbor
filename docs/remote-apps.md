@@ -25,7 +25,7 @@ The rest of the design follows from taking that sentence seriously.
 
 Everything is P2P over the session's existing `control` data channel — no
 server change, and the server never sees a window title. `peer.rs` routes three
-envelopes to `apps::handle_control_message` (`agents/roomlerd/src/peer.rs:9195`),
+envelopes to `apps::handle_control_message` (`agents/meshharbord/src/peer.rs:9195`),
 runs it on `spawn_blocking` because every backend shells out or calls FFI, and
 sends the returned reply back on the same channel. The request/reply shape and
 the id correlation are `rc:logs-fetch`'s.
@@ -63,9 +63,9 @@ Three properties of the wire are load-bearing:
   decimal on Windows, `tmux:<name>` for a detached session. The viewer only
   ever round-trips it, and the Linux backend re-validates the shape before
   handing it to `wmctrl -i -a` so a crafted id cannot become a flag
-  (`agents/roomlerd/src/apps/linux.rs:337`).
+  (`agents/meshharbord/src/apps/linux.rs:337`).
 - 🔑 **Launch takes a key, never a command.** `resolve_app`
-  (`agents/roomlerd/src/apps/mod.rs:536`) is the security gate: the key must be
+  (`agents/meshharbord/src/apps/mod.rs:536`) is the security gate: the key must be
   in the device's own allowlist and the entry's `command` is run as argv with
   no shell, so a compromised viewer can start only what the device's owner
   wrote into its config, and there is no injection surface to reason about.
@@ -78,9 +78,9 @@ Three properties of the wire are load-bearing:
 
 Until FR-56 P1 the gate was literally `env::var_os("DISPLAY").is_some()` on
 the **daemon**, which is true only when the daemon started its own Xvfb
-(`ROOMLERD_VIRTUAL_DESKTOP=1`). On every real login session the daemon has no
+(`MESHHARBORD_VIRTUAL_DESKTOP=1`). On every real login session the daemon has no
 `DISPLAY`, so the feature never failed — it never engaged. `discover()`
-(`agents/roomlerd/src/apps/linux.rs:480`) replaces that with the walk below.
+(`agents/meshharbord/src/apps/linux.rs:480`) replaces that with the walk below.
 
 ```mermaid
 flowchart TD
@@ -126,7 +126,7 @@ Three rules the session arm enforces, each paid for somewhere:
   where an Xvfb the daemon owns could not (`linux.rs:274`).
 
 The same `loginctl` walk serves FR-27's consent companion and FR-45's capture
-helper (`agents/roomlerd/src/companion.rs:598`) — one copy on purpose, because
+helper (`agents/meshharbord/src/companion.rs:598`) — one copy on purpose, because
 a compositor that reports its session differently should break all three in
 the same place.
 
@@ -137,13 +137,13 @@ questions asked of every row: **does the hello advertise anything this host
 cannot do**, and **does the refusal carry its reason in the reply** — not only
 in the daemon log. The hello column is `AgentCaps.apps`
 (`crates/remote_control/src/models.rs:203`), assigned once per process by
-`detect()` from `apps_caps()` (`agents/roomlerd/src/encode/caps.rs:1670`,
+`detect()` from `apps_caps()` (`agents/meshharbord/src/encode/caps.rs:1670`,
 `:624` via `with_config_lists` `:655`) — in the daemon, never in the
 caps-probe child (§4.3).
 
 | Tier / path | Hello `apps` on 0.4.102 | `rc:apps.list.reply` on 0.4.102 | Reason reached the screen? | After P6 |
 |---|---|---|---|---|
-| **Xvfb virtual desktop** (`ROOMLERD_VIRTUAL_DESKTOP=1`) | `list · focus · launch` | full list; `sources: x11`, nothing unlisted | n/a — complete. Field: three cluster nodes, one root xterm each | `+ status`; otherwise untouched (AC3) |
+| **Xvfb virtual desktop** (`MESHHARBORD_VIRTUAL_DESKTOP=1`) | `list · focus · launch` | full list; `sources: x11`, nothing unlisted | n/a — complete. Field: three cluster nodes, one root xterm each | `+ status`; otherwise untouched (AC3) |
 | **X11 login session** | `list · focus · launch` | full list | n/a | `+ status` |
 | **Wayland session with Xwayland** (GNOME, KDE) | `list · focus · launch` | Xwayland windows; `unlisted: "native Wayland windows: this compositor exposes no protocol to enumerate them"` | `unlisted` **yes** (P2) | `+ status` |
 | ↳ **GNOME native windows** (P3) | — | named by `unlisted` | yes — GNOME *refuses* `Introspect.GetWindows` (`Access denied`, two D-Bus clients, Shell 48.8) and has no activate at all, so this is a reported limit, not a TODO | — |
@@ -159,7 +159,7 @@ caps-probe child (§4.3).
 | **Windows** | `list · focus · launch` whenever enabled | `EnumWindows` on the active desktop; `sources: win32`, nothing to miss | n/a | `+ status`. ⚠️ Unverified: a SYSTEM worker with nobody logged in or a locked screen — `EnumWindows` on the wrong window station returns few or no windows, which is the P2 shape ("quiet desktop"); `windows.rs` names `SetThreadDesktop` as the fix *when observed* |
 | **user logs in after the daemon booted** | absent — **for the process lifetime** | the live reply says `supported:true` | NO — the button was hidden, so nobody asked | `status` shows the entry; the dialog is live |
 | **session gone by click time** (advertised at hello, user logged out) | `list · focus · launch` | bare `supported:false`; the entry greyed out with no tooltip | **NO** | reason in the dialog; the entry is never disabled |
-| **per-window capture** (P4, `ROOMLERD_WINDOW_CAPTURE=1`) | not a capability on this wire | the portal shows a picker on the host; unanswered, the helper times out and the capture cascade falls through | the *capture* reason travels as FR-80's `rc:media-unavailable` only if every later arm fails too | out of scope here; see [`linux-capture.md`](linux-capture.md#7-configuration) |
+| **per-window capture** (P4, `MESHHARBORD_WINDOW_CAPTURE=1`) | not a capability on this wire | the portal shows a picker on the host; unanswered, the helper times out and the capture cascade falls through | the *capture* reason travels as FR-80's `rc:media-unavailable` only if every later arm fails too | out of scope here; see [`linux-capture.md`](linux-capture.md#7-configuration) |
 
 Two numbers from the audit's denominator, read from the server rather than an
 exec sweep (an exec sweep reaches only what is online): on 0.4.102 **every**
@@ -177,7 +177,7 @@ that is the truth: a short list looks exactly like a quiet desktop. This is the
 `Some([])`-vs-`None` distinction on its fourth surface in this codebase
 (overlay ACL ingress rules, `ssh_activity`, FR-49's dark org): an empty list and
 an unenumerable source are different facts, and only the reply can tell them
-apart. `Coverage` (`agents/roomlerd/src/apps/mod.rs:127`) is a **trait method**,
+apart. `Coverage` (`agents/meshharbord/src/apps/mod.rs:127`) is a **trait method**,
 not a field set at construction, so the compiler forces every backend to answer
 — it caught the test fake the day it was added.
 
@@ -209,7 +209,7 @@ not a field set at construction, so the compiler forces every backend to answer
 
 Every reply that says `supported: false`, and every focus/launch refused for
 want of a backend, carries `unavailable: {code, reason}` (`Unavailable`,
-`agents/roomlerd/src/apps/mod.rs:176`). The sentence is composed on the agent,
+`agents/meshharbord/src/apps/mod.rs:176`). The sentence is composed on the agent,
 not in the viewer, because only the agent knows which arm it took — the same
 rule FR-80 applied to the capture reason. The `code` is a **closed set**, and a
 compatibility surface like every other `rc:*` string: a test locks that the
@@ -234,9 +234,9 @@ The legacy `error` string on a focus/launch refusal keeps its shape and
 
 `detect()` assigns `caps.apps = apps_caps()` once, beside `caps.rpc` and
 `caps.files` (the `with_config_lists` seam), and memoizes the whole
-`AgentCaps` behind a `OnceLock` (`agents/roomlerd/src/encode/caps.rs:37`,
+`AgentCaps` behind a `OnceLock` (`agents/meshharbord/src/encode/caps.rs:37`,
 `:624`, `:655`); both the hello and the FR-43 heartbeat re-announce
-(`agents/roomlerd/src/signaling.rs:1277`, `:1910`)
+(`agents/meshharbord/src/signaling.rs:1277`, `:1910`)
 hand out that same struct. So `list` missing from the hello can mean *nobody
 had logged in yet when the daemon started*, and nothing short of a daemon
 restart changes it. That is why P6 added a fourth value:
@@ -284,8 +284,8 @@ server outlives both), it is `ssh`-attachable from a real login
 
 | Entry kind | What `launch` does | How the list finds it again |
 |---|---|---|
-| `tmux = true` | `tmux new-session -d -s s<N> <command>`, then `xterm -T roomler:tmux:s<N> -e tmux attach -t s<N>`; at most **32** live sessions (`linux.rs:43`) — a bound on what a misbehaving viewer can spawn | title convention `roomler:tmux:<s>` → `session` |
-| `terminal = true` | `xterm -T roomler:app:<key> -e <command>` — for TUIs | `roomler:app:<key>` → `app_key` |
+| `tmux = true` | `tmux new-session -d -s s<N> <command>`, then `xterm -T meshharbor:tmux:s<N> -e tmux attach -t s<N>`; at most **32** live sessions (`linux.rs:43`) — a bound on what a misbehaving viewer can spawn | title convention `meshharbor:tmux:<s>` → `session` |
+| `terminal = true` | `xterm -T meshharbor:app:<key> -e <command>` — for TUIs | `meshharbor:app:<key>` → `app_key` |
 | neither | `<command>` as argv, detached, stdio to `/dev/null`; the app sets its own title | unmanaged — reported as-is |
 | **detached session** (no live xterm after a restart or a detach) | listed anyway, as `Terminal (s2) — detached` with the synthetic id `tmux:s2` (`linux.rs:39`); `focus` on it spawns a fresh attached xterm — "attach" fits the three-verb protocol with no fourth verb | `tmux list-sessions` minus the attached ones |
 
@@ -312,8 +312,8 @@ server outlives both), it is `ssh`-attachable from a real login
 
 Streaming **one application window** instead of the monitor reuses FR-45's
 whole portal pipeline with a single change: `SelectSources(types = WINDOW)`
-(`SOURCE_WINDOW`, `agents/roomlerd/src/capture/portal/screencast.rs:95`) behind
-`ROOMLERD_WINDOW_CAPTURE` (`agents/roomlerd/src/capture/portal/backend.rs:77`,
+(`SOURCE_WINDOW`, `agents/meshharbord/src/capture/portal/screencast.rs:95`) behind
+`MESHHARBORD_WINDOW_CAPTURE` (`agents/meshharbord/src/capture/portal/backend.rs:77`,
 config key `window_capture`, `crates/agent-core/src/config.rs:924`). It is
 **attended by construction**: the portal answers by showing the person at the
 screen a window picker, and nothing agent-side can name a window — GNOME
@@ -343,7 +343,7 @@ rule are [`linux-capture.md`](linux-capture.md) §4.
 | 2026-09-25 | three cluster nodes, over Fleet RPC | AC10, the Xvfb tier | `sources: x11`, `NOT listed: (nothing)`, `missing tools: (none)`, one root xterm each — complete and honest |
 | 2026-09-25 | GNOME Wayland (Asahi), over Fleet RPC | AC10, the missing-helper tier | the agent prints `missing tools: tmux …`; the viewer's parser was read and found to drop it — **P5 never reached a screen** |
 | 2026-09-25 | the WSL node | AC10 | refuses Fleet RPC (`exec_enabled` off — the device-owned gate) — *advertised, unprobed* |
-| 2026-09-26 | two headless cluster nodes, agent-v0.4.103, over Fleet RPC | P6, the `no_session` tier (the nodes run the daemon's own Xvfb, so the probe is run with `DISPLAY` unset to reach the session arm) | **before** (0.4.102, the arm's only output): *"no manageable desktop found. Either apps are disabled in the config, or there is no X display…"*; **after**: `reason [no_session]: No active graphical login session on this host — nobody is at its screen — …`, with the `config:` line naming `/etc/roomler/config.toml` and `enabled = true` |
+| 2026-09-26 | two headless cluster nodes, agent-v0.4.103, over Fleet RPC | P6, the `no_session` tier (the nodes run the daemon's own Xvfb, so the probe is run with `DISPLAY` unset to reach the session arm) | **before** (0.4.102, the arm's only output): *"no manageable desktop found. Either apps are disabled in the config, or there is no X display…"*; **after**: `reason [no_session]: No active graphical login session on this host — nobody is at its screen — …`, with the `config:` line naming `/etc/meshharbor/config.toml` and `enabled = true` |
 | 2026-09-26 | the same node, `DISPLAY` as the daemon has it | AC3 on 0.4.103 | Daemon arm unchanged: `supported: true`, `sources: x11`, one root xterm |
 | 2026-09-26 | GNOME Wayland (Asahi), 0.4.103 | the live session arm | `supported: true` · `NOT listed: native Wayland windows…` · `missing tools: tmux …` — the P2/P5 arms byte-for-byte |
 | 2026-09-26 | the server's `agents` collection | the hello on 0.4.103 | every online Linux/Windows device advertises `status · list · focus · launch`; macOS `null`; each probed host's `list` matches its live state |
@@ -359,7 +359,7 @@ two (somebody must answer the picker), and native enumeration on a wlroots host
 ## 8. Configuration and the probe
 
 ```toml
-# the device's config.toml — read at daemon start, or `roomler config`
+# the device's config.toml — read at daemon start, or `mh config`
 [virtual_desktop_apps]
 enabled = true                       # default true; false → `unavailable{disabled}`
 
@@ -380,12 +380,12 @@ label    = "Text editor"
 
 | Key | Where | Default | Notes |
 |---|---|---|---|
-| `virtual_desktop_apps.enabled` | config (`crates/agent-core/src/apps_config.rs:21`); `roomler config get virtual_desktop_apps` prints the JSON (`config_surface.rs:1502`) | `true` | the kill switch; the hello stops advertising `list` (on a caps-cache hit **and** a miss, since the review of #1667 — §4.3), and a request answers `disabled` |
+| `virtual_desktop_apps.enabled` | config (`crates/agent-core/src/apps_config.rs:21`); `mh config get virtual_desktop_apps` prints the JSON (`config_surface.rs:1502`) | `true` | the kill switch; the hello stops advertising `list` (on a caps-cache hit **and** a miss, since the review of #1667 — §4.3), and a request answers `disabled` |
 | `virtual_desktop_apps.allowlist.<key>` | config | `bash` on Linux, `cmd` on Windows | `command` is argv; an empty command is skipped from `launchable` and refused on launch |
-| `window_capture` | config / `ROOMLERD_WINDOW_CAPTURE` (`config_surface.rs:1044`) | **off** | P4 — attended by construction; restart required |
-| `ROOMLERD_VIRTUAL_DESKTOP` | env | off | the daemon's own Xvfb (§2 of [`linux-capture.md`](linux-capture.md)); when set, the Daemon arm wins and no session is discovered |
+| `window_capture` | config / `MESHHARBORD_WINDOW_CAPTURE` (`config_surface.rs:1044`) | **off** | P4 — attended by construction; restart required |
+| `MESHHARBORD_VIRTUAL_DESKTOP` | env | off | the daemon's own Xvfb (§2 of [`linux-capture.md`](linux-capture.md)); when set, the Daemon arm wins and no session is discovered |
 
-`roomlerd apps-probe` (`agents/roomlerd/src/main.rs:5893`) answers the whole
+`meshharbord apps-probe` (`agents/meshharbord/src/main.rs:5893`) answers the whole
 question on the host with no session and no browser, the way `capture-smoke`
 does for pixels: which config it loaded and whether apps are enabled there,
 whether a desktop was found and as whom (the display and the cookie), what the
@@ -393,7 +393,7 @@ listing covers and cannot, which helpers are missing, and the windows — or,
 since P6, the refusal's `code` and `reason`. Over Fleet RPC:
 
 ```bash
-roomler exec <device> -- roomlerd apps-probe
+mh exec <device> -- meshharbord apps-probe
 ```
 
 The prose beside an empty list says explicitly that empty is not unsupported
@@ -409,13 +409,13 @@ must never write the device's config as a side effect of being run.
 
 | File | Owns |
 |---|---|
-| `agents/roomlerd/src/apps/mod.rs` | the wire types (`Coverage` `:127`, `MissingTool` `:151`, `Unavailable` `:176` with `code` `:209` and `reason` `:221`), the `WindowManager` trait (`:259`), `availability` (`:314`) and `availability_for` (`:321`), `has_backend` (`:357`), `backend` (`:367`), `handle_control_message` (`:390`) and the pure `dispatch` seam (`:410`), the three reply builders (`:433`, `:471`, `:489`), `unavailable_reply` (`:521`), `resolve_app` (`:536`), the `wmctrl`/tmux parsers and `classify_title` (`:650`) |
-| `agents/roomlerd/src/apps/linux.rs` | `Target` (`:56`), `LinuxWm::cmd` and the privilege drop (`:102`), `on_path` (`:209`) and `HELPERS` (`:228`), `coverage` (`:254`), `list` (`:274`), `focus` (`:337`), `launch` (`:368`), `discover` (`:480`) and its test seam `discover_with` (`:497`), `refused` (`:579`), `Probe` (`:589`) and `probe` (`:605`), `find_xauthority` (`:648`) |
-| `agents/roomlerd/src/apps/windows.rs` | `EnumWindows` (`:49`), `coverage` (`:88`), `list` (`:100`), `focus` (`:120`), `launch` (`:149`) |
-| `agents/roomlerd/src/encode/caps.rs` | `apps_caps` / `apps_caps_for` (`:1612`, `:1618`), assigned by `with_config_lists` (`:777`) from `detect` (`:624`) beside `rpc` and `files` (`files_caps` / `files_caps_for`, `:1657`, `:1664`); `CACHED_CAPS` (`:37`) — why the hello is a snapshot; `cached_or_probed` (`:789`) — why the child's struct must carry no `apps` |
-| `agents/roomlerd/src/peer.rs` | the control-DC arm (`:8654`) |
-| `agents/roomlerd/src/companion.rs` | `graphical_session` (`:461`) |
-| `agents/roomlerd/src/main.rs` | `apps-probe` (`:4724`) — reads the device config through `read_if_present`, never `load` |
+| `agents/meshharbord/src/apps/mod.rs` | the wire types (`Coverage` `:127`, `MissingTool` `:151`, `Unavailable` `:176` with `code` `:209` and `reason` `:221`), the `WindowManager` trait (`:259`), `availability` (`:314`) and `availability_for` (`:321`), `has_backend` (`:357`), `backend` (`:367`), `handle_control_message` (`:390`) and the pure `dispatch` seam (`:410`), the three reply builders (`:433`, `:471`, `:489`), `unavailable_reply` (`:521`), `resolve_app` (`:536`), the `wmctrl`/tmux parsers and `classify_title` (`:650`) |
+| `agents/meshharbord/src/apps/linux.rs` | `Target` (`:56`), `LinuxWm::cmd` and the privilege drop (`:102`), `on_path` (`:209`) and `HELPERS` (`:228`), `coverage` (`:254`), `list` (`:274`), `focus` (`:337`), `launch` (`:368`), `discover` (`:480`) and its test seam `discover_with` (`:497`), `refused` (`:579`), `Probe` (`:589`) and `probe` (`:605`), `find_xauthority` (`:648`) |
+| `agents/meshharbord/src/apps/windows.rs` | `EnumWindows` (`:49`), `coverage` (`:88`), `list` (`:100`), `focus` (`:120`), `launch` (`:149`) |
+| `agents/meshharbord/src/encode/caps.rs` | `apps_caps` / `apps_caps_for` (`:1612`, `:1618`), assigned by `with_config_lists` (`:777`) from `detect` (`:624`) beside `rpc` and `files` (`files_caps` / `files_caps_for`, `:1657`, `:1664`); `CACHED_CAPS` (`:37`) — why the hello is a snapshot; `cached_or_probed` (`:789`) — why the child's struct must carry no `apps` |
+| `agents/meshharbord/src/peer.rs` | the control-DC arm (`:8654`) |
+| `agents/meshharbord/src/companion.rs` | `graphical_session` (`:461`) |
+| `agents/meshharbord/src/main.rs` | `apps-probe` (`:4724`) — reads the device config through `read_if_present`, never `load` |
 | `crates/remote_control/src/models.rs` | `AgentCaps.apps` and its known values (`:203`) |
 | `crates/agent-core/src/apps_config.rs` · `config_surface.rs` | the `[virtual_desktop_apps]` shapes (`:21`); the config-surface keys (`:1446`, `:988`) |
 | `ui/src/composables/useRemoteControl.ts` | the parsers (`parseAppsListReply` `:1105`, `parseAppsUnavailable` `:1181`), the request path (`:5474`, `refreshApps` `:5512`), the reply arm (`:8515`), the no-reason wording (`:890`) |

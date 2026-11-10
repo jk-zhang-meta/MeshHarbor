@@ -2,8 +2,8 @@
 //! The grant ledger; expiry is enforced in queries, not eventual TTL cleanup.
 use super::base::{BaseDao, DaoResult};
 use bson::{DateTime, Document, doc, oid::ObjectId};
+use meshharbor_db::models::DeviceShareGrant;
 use mongodb::{Database, options::ReturnDocument};
-use roomler_ai_db::models::DeviceShareGrant;
 
 pub struct DeviceShareDao {
     pub base: BaseDao<DeviceShareGrant>,

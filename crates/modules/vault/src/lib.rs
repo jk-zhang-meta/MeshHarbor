@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //! `vault` — IAM for secrets, the server side (FR-90 P3,
-//! `docs/roomler-hive-design.md` §8, `docs/vault.md`).
+//! `docs/meshharbor-hive-design.md` §8, `docs/vault.md`).
 //!
 //! ⚠️ **Managed custody.** This module holds the key-encryption key and can
 //! decrypt every secret it stores, so a compromised server can read them
@@ -20,10 +20,10 @@
 //! by one of its drivers. A session's own egress is the vault's to decide
 //! too (P3-7-1b, [`net`]): a grant, signed under its own audience, that the
 //! network module checks without calling the vault. So is a session's command
-//! on another device over Roomler SSH (P3-8-1a, [`ssh`]): a ticket, likewise
+//! on another device over MeshHarbor SSH (P3-8-1a, [`ssh`]): a ticket, likewise
 //! under its own audience, never naming the device the session runs on.
 //! And from P3-9-1 a PERSON's use, through an endpoint their device serves
-//! them (`roomler connect`, [`connect`]): decided by Cedar's own
+//! them (`mh connect`, [`connect`]): decided by Cedar's own
 //! `secret:connect` for the device's owner as its row names them, and lent
 //! only to the organizations `vault.people` lists.
 //!
@@ -39,9 +39,9 @@ use axum::{
     extract::FromRef,
     routing::{delete, get, post, put},
 };
-use roomler_ai_config::Settings;
-use roomler_ai_db::indexes::{IndexSet, index, index_ttl, index_unique, index_unique_partial};
-use roomler_core::{AgentSocketHooks, Capabilities, Core, Hooks, Module, TenantCtx};
+use meshharbor_config::Settings;
+use meshharbor_core::{AgentSocketHooks, Capabilities, Core, Hooks, Module, TenantCtx};
+use meshharbor_db::indexes::{IndexSet, index, index_ttl, index_unique, index_unique_partial};
 
 pub mod approval;
 pub mod connect;
@@ -76,16 +76,16 @@ pub struct VaultState {
     /// P3-3b — a lease is believed from the session record's device at its
     /// fence (hive's DAO, re-created: it is stateless), and sealed to the key
     /// on that device's row.
-    pub sessions: Arc<roomler_ai_mod_hive::dao::AgentSessionDao>,
-    pub agents: Arc<roomler_ai_services::dao::agent::AgentDao>,
+    pub sessions: Arc<meshharbor_mod_hive::dao::AgentSessionDao>,
+    pub agents: Arc<meshharbor_services::dao::agent::AgentDao>,
     /// P3-3b — each session's lease requests per minute on its device.
-    pub lease_limiter: Arc<roomler_core::rate_limit::RateLimiter>,
+    pub lease_limiter: Arc<meshharbor_core::rate_limit::RateLimiter>,
     /// P3-3c — this pod's devices' connections, and which hold live leases.
     pub revoker: Arc<revoke::Revoker>,
     /// P3-4d — what devices report doing with their leases, and each
     /// session's reports per minute on its device.
     pub activity: Arc<dao::VaultActivityDao>,
-    pub activity_limiter: Arc<roomler_core::rate_limit::RateLimiter>,
+    pub activity_limiter: Arc<meshharbor_core::rate_limit::RateLimiter>,
     /// P3-4e — the approvals policies asked for, and their answers.
     pub approvals: Arc<dao::VaultApprovalDao>,
     /// The organizations the vault serves (`vault.tenants`).
@@ -94,7 +94,7 @@ pub struct VaultState {
     /// opt-in: empty is none).
     pub people: Arc<scope::TenantScope>,
     /// P3-9-1 — each device's requests per minute for its owner.
-    pub person_limiter: Arc<roomler_core::rate_limit::RateLimiter>,
+    pub person_limiter: Arc<meshharbor_core::rate_limit::RateLimiter>,
     /// P3-6b — the providers a dynamic secret is leased for
     /// (`vault.providers`).
     pub providers: Arc<dynamic::ProviderScope>,
@@ -146,16 +146,16 @@ impl Module for VaultState {
             roles: Arc::new(dao::VaultRoleDao::new(db)),
             policies: Arc::new(dao::VaultPolicyDao::new(db)),
             leases: Arc::new(dao::VaultLeaseDao::new(db)),
-            sessions: Arc::new(roomler_ai_mod_hive::dao::AgentSessionDao::new(db)),
-            agents: Arc::new(roomler_ai_services::dao::agent::AgentDao::new(db)),
-            lease_limiter: Arc::new(roomler_core::rate_limit::RateLimiter::new()),
+            sessions: Arc::new(meshharbor_mod_hive::dao::AgentSessionDao::new(db)),
+            agents: Arc::new(meshharbor_services::dao::agent::AgentDao::new(db)),
+            lease_limiter: Arc::new(meshharbor_core::rate_limit::RateLimiter::new()),
             revoker: Arc::new(revoke::Revoker::default()),
             activity: Arc::new(dao::VaultActivityDao::new(db)),
-            activity_limiter: Arc::new(roomler_core::rate_limit::RateLimiter::new()),
+            activity_limiter: Arc::new(meshharbor_core::rate_limit::RateLimiter::new()),
             approvals: Arc::new(dao::VaultApprovalDao::new(db)),
             scope: Arc::new(scope),
             people: Arc::new(people),
-            person_limiter: Arc::new(roomler_core::rate_limit::RateLimiter::new()),
+            person_limiter: Arc::new(meshharbor_core::rate_limit::RateLimiter::new()),
             providers: Arc::new(providers),
             kek,
             core,

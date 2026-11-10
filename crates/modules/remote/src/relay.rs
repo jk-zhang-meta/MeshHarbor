@@ -37,9 +37,9 @@ use std::time::{Duration, Instant};
 
 use bson::oid::ObjectId;
 use dashmap::DashMap;
-use roomler_ai_mod_fleet::hub::{DispatchCtx, OrgPolicy};
-use roomler_ai_remote_control::models::{ConsentMode, InputMode, SessionPolicy};
-use roomler_ai_remote_control::signaling::{ClientMsg, Role};
+use meshharbor_mod_fleet::hub::{DispatchCtx, OrgPolicy};
+use meshharbor_remote_control::models::{ConsentMode, InputMode, SessionPolicy};
+use meshharbor_remote_control::signaling::{ClientMsg, Role};
 use tracing::{debug, info, warn};
 
 use crate::RemoteState;
@@ -49,7 +49,7 @@ use crate::RemoteState;
 pub struct ProxyController {
     pub user_id: ObjectId,
     /// The Hub-registered ClientTx (identity key for unregister).
-    pub tx: roomler_ai_remote_control::session::ClientTx,
+    pub tx: meshharbor_remote_control::session::ClientTx,
     /// Pod that holds the real browser socket (sweep probe target).
     pub origin_pod: String,
     /// Refreshed on every forwarded frame; the sweep only probes
@@ -198,7 +198,7 @@ pub fn wire_rc_relay(state: &RemoteState) {
                                     let Ok(val) = serde_json::to_value(&msg) else {
                                         continue;
                                     };
-                                    roomler_core::ws::dispatcher::send_to_connection_routed(
+                                    meshharbor_core::ws::dispatcher::send_to_connection_routed(
                                         &pump_state.ws_storage,
                                         &pump_state.redis_pubsub,
                                         &pump_conn,
@@ -240,7 +240,7 @@ pub fn wire_rc_relay(state: &RemoteState) {
                     && let Some(org) = state.fleet.rc_hub.agent_org(*agent_id)
                 {
                     use crate::slots::SlotDecision;
-                    use roomler_core::cluster::session_slots::SlotScope;
+                    use meshharbor_core::cluster::session_slots::SlotScope;
                     match crate::slots::claim(&state, SlotScope::Org(org), user_id, *agent_id, cap)
                         .await
                     {
@@ -254,7 +254,7 @@ pub fn wire_rc_relay(state: &RemoteState) {
                             holder_user,
                             holder_agent,
                         } => {
-                            let e = roomler_ai_remote_control::Error::OrgSessionLimit {
+                            let e = meshharbor_remote_control::Error::OrgSessionLimit {
                                 cap,
                                 holder_user,
                                 holder_agent,
@@ -446,7 +446,7 @@ pub async fn relay_rc_frame(
     idle_secs: Option<u32>,
     // FR-99 P3b — the device's lock ask; the owner pod's hub sends it to an
     // agent that honours it.
-    lock_on_end: Option<roomler_ai_remote_control::models::LockOnEnd>,
+    lock_on_end: Option<meshharbor_remote_control::models::LockOnEnd>,
     // FR-115 P3 — the device org's concurrent-session cap; the owner pod's
     // hub counts the org's live sessions against it. ⚠️ Without it a
     // session landing on the other pod would skip the cap.
@@ -492,8 +492,8 @@ pub async fn relay_rc_frame(
                     .entry(conn.to_string())
                     .or_default()
                     .insert(owner_pod.to_string());
-                roomler_core::cluster::metrics::bump(
-                    &roomler_core::cluster::metrics::RC_RELAY_TOTAL,
+                meshharbor_core::cluster::metrics::bump(
+                    &meshharbor_core::cluster::metrics::RC_RELAY_TOTAL,
                 );
                 Ok(None)
             } else {
@@ -586,8 +586,8 @@ fn session_policy_from_relay(v: Option<&serde_json::Value>) -> OrgPolicy {
 /// `LockOnEnd` reads one everywhere.
 fn lock_ask_from_relay(
     v: Option<&serde_json::Value>,
-) -> Option<roomler_ai_remote_control::models::LockOnEnd> {
-    use roomler_ai_remote_control::models::LockOnEnd;
+) -> Option<meshharbor_remote_control::models::LockOnEnd> {
+    use meshharbor_remote_control::models::LockOnEnd;
     match v {
         None | Some(serde_json::Value::Null) => None,
         Some(v) => serde_json::from_value::<LockOnEnd>(v.clone())
@@ -599,7 +599,7 @@ fn lock_ask_from_relay(
 #[cfg(test)]
 mod lock_ask_relay_tests {
     use super::*;
-    use roomler_ai_remote_control::models::LockOnEnd;
+    use meshharbor_remote_control::models::LockOnEnd;
 
     /// The ask crosses the relay as the origin's gate resolved it; an older
     /// origin pod's body (no field) asks nothing.
@@ -632,7 +632,7 @@ mod lock_ask_relay_tests {
 #[cfg(test)]
 mod session_policy_relay_tests {
     use super::*;
-    use roomler_ai_remote_control::models::FeaturePolicy;
+    use meshharbor_remote_control::models::FeaturePolicy;
 
     /// The origin pod's reading reaches the owner pod unchanged, both ways.
     #[test]

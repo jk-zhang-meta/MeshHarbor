@@ -86,7 +86,7 @@ export const useWsStore = defineStore('ws', () => {
     const fromPath = appRoutePath(location.pathname ?? '').match(/^\/tenant\/([0-9a-f]{24})\b/)?.[1]
     if (fromPath) return fromPath
     try {
-      return globalThis.localStorage?.getItem('roomler-current-tenant') ?? null
+      return globalThis.localStorage?.getItem('meshharbor-current-tenant') ?? null
     } catch {
       return null
     }

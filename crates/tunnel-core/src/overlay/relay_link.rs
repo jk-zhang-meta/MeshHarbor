@@ -53,8 +53,8 @@ use super::netmap::PeerConfig;
 use super::wg::Carrier;
 use crate::transport::derp::{DerpMux, MuxEvent};
 use crate::transport::relay::RelayConn;
-use roomler_ai_remote_control::signaling::{ClientMsg, IceServer, RelayStrategyWire};
-use roomler_ai_remote_control::worker_pick::pick_worker_fnv1a;
+use meshharbor_remote_control::signaling::{ClientMsg, IceServer, RelayStrategyWire};
+use meshharbor_remote_control::worker_pick::pick_worker_fnv1a;
 
 /// Minimum spacing between break-before-make regrades OFF an established DERP
 /// link for the same peer (see [`RelayCoordinator::derp_regrade_due`]).
@@ -166,7 +166,7 @@ pub enum RelayKind {
 }
 
 impl RelayKind {
-    /// The stable LocalAPI label (`meshharbor peers --json` → `relay_kind`).
+    /// The stable LocalAPI label (`mh peers --json` → `relay_kind`).
     /// Wire-visible: keep these strings as-is.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -253,6 +253,9 @@ pub struct ReadyLink {
 /// A peer we're coordinating a relay link to, before our allocation exists.
 struct PendingPeer {
     peer: PeerConfig,
+    /// Time the request entered the control channel. A refused line request
+    /// can remain ungranted without any wire response.
+    requested_at: Instant,
     /// coturn creds from `relay_grant` (`None` until granted).
     ice: Option<Vec<IceServer>>,
     /// symmetric per-pair key from `relay_grant` — drives the deterministic
@@ -1356,12 +1359,42 @@ impl RelayCoordinator {
             || self.org_binding.contains(node_id)
     }
 
+    /// An unanswered request reached the existing ORG recovery gap. Keep its
+    /// legacy slot: this is query eligibility, not permission to restart TURN.
+    pub(crate) fn ungranted_org_retry_due(&self, peer: &ObjectId, now: Instant) -> bool {
+        self.pending.get(peer).is_some_and(|pending| {
+            pending.ice.is_none()
+                && now.saturating_duration_since(pending.requested_at) >= ORG_FALLBACK_GAP
+        })
+    }
+
+    /// A topology hint can shorten only a matching, unanswered request's
+    /// initial grace. It grants no credentials and leaves its TURN owner intact.
+    pub(crate) fn matching_ungranted_peer(&self, peer: &ObjectId, current: &PeerConfig) -> bool {
+        self.pending.get(peer).is_some_and(|pending| {
+            pending.ice.is_none()
+                && pending.peer.public_key == current.public_key
+                && pending.peer.overlay_ip == current.overlay_ip
+        })
+    }
+
     /// Query only the ORG mint path, gated by fresh metadata in the runtime.
     /// Neither the installed DERP carrier nor legacy TURN pending is changed.
     pub(crate) async fn request_org_fallback(&mut self, peer: ObjectId, now: Instant) -> bool {
+        self.request_org_fallback_inner(peer, now, false).await
+    }
+
+    async fn request_org_fallback_inner(
+        &mut self,
+        peer: ObjectId,
+        now: Instant,
+        reactive: bool,
+    ) -> bool {
         if !self.org_relay
             || self.forced_derp_active(&peer)
-            || self.pending.contains_key(&peer)
+            || (self.pending.contains_key(&peer)
+                && !self.ungranted_org_retry_due(&peer, now)
+                && !(reactive && self.pending.get(&peer).is_some_and(|p| p.ice.is_none())))
             || self.org_binding.contains(&peer)
             || self
                 .death_streaks
@@ -1471,15 +1504,46 @@ impl RelayCoordinator {
     /// not let a stable traversal refresh the same first 64 peers forever.
     pub(crate) async fn request_org_fallback_batch(
         &mut self,
+        peers: Vec<ObjectId>,
+        now: Instant,
+    ) -> Vec<ObjectId> {
+        self.request_org_fallback_batch_inner(peers, now, false)
+            .await
+    }
+
+    pub(crate) async fn request_org_fallback_batch_reactive(
+        &mut self,
+        peers: Vec<(ObjectId, PeerConfig)>,
+        now: Instant,
+    ) -> Vec<ObjectId> {
+        let peers = peers
+            .into_iter()
+            .filter(|(id, current)| {
+                !self.pending.contains_key(id) || self.matching_ungranted_peer(id, current)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        self.request_org_fallback_batch_inner(peers, now, true)
+            .await
+    }
+
+    async fn request_org_fallback_batch_inner(
+        &mut self,
         mut peers: Vec<ObjectId>,
         now: Instant,
+        reactive: bool,
     ) -> Vec<ObjectId> {
         let cursor = self.org_fallback_cursor;
         peers.sort_unstable_by_key(|id| (cursor.is_some_and(|last| *id <= last), *id));
         peers.dedup();
         let mut sent = Vec::new();
         for peer in peers {
-            if self.request_org_fallback(peer, now).await {
+            let requested = if reactive {
+                self.request_org_fallback_inner(peer, now, true).await
+            } else {
+                self.request_org_fallback(peer, now).await
+            };
+            if requested {
                 sent.push(peer);
             }
         }
@@ -1667,6 +1731,7 @@ impl RelayCoordinator {
             node_id,
             PendingPeer {
                 peer,
+                requested_at: Instant::now(),
                 ice: None,
                 pair_key: None,
             },
@@ -1821,7 +1886,7 @@ impl RelayCoordinator {
                 // hostname URL (rc.140), which dials this same worker while
                 // keeping the SNI valid. The pin dials the grant's own UDP
                 // port, not a hardcoded 3478 — regional PoPs may differ.
-                let udp_port = roomler_ai_remote_control::turn_url::first_udp_port(
+                let udp_port = meshharbor_remote_control::turn_url::first_udp_port(
                     ice.iter().flat_map(|s| s.urls.iter()).map(String::as_str),
                 );
                 let mut pinned = vec![format!("turn:{h}:{udp_port}?transport=udp")];
@@ -2087,8 +2152,19 @@ impl RelayCoordinator {
         self.org_sessions.contains_key(peer)
     }
 
-    pub fn org_session_revoke(&mut self, vni: u32) -> Option<ObjectId> {
-        let peer = *self.org_sessions.iter().find(|(_, s)| s.vni == vni)?.0;
+    pub fn org_session_revoke(
+        &mut self,
+        vni: u32,
+        scope: &meshharbor_remote_control::signaling::RelayRevokeScopeWire,
+    ) -> Option<ObjectId> {
+        let peer = scope.peer_node_id?;
+        let session = self.org_sessions.get(&peer)?;
+        if session.vni != vni
+            || session.relay_node_id != scope.relay_node_id
+            || session.generation != scope.generation
+        {
+            return None;
+        }
         self.drop_org_session(&peer);
         Some(peer)
     }
@@ -2451,14 +2527,14 @@ pub(crate) fn turn_creds(ice_servers: &[IceServer]) -> Option<(Vec<String>, Stri
 }
 
 /// Host + port of the first `turn:`/`turns:` ICE url (e.g.
-/// `("coturn.roomler.ai", 3478)`). Skips `stun:` entries; the port defaults to
+/// `("coturn.meshharbor.itachi.fans", 3478)`). Skips `stun:` entries; the port defaults to
 /// 3478 when the url carries none.
 fn turn_host_port(ice: &[IceServer]) -> Option<(String, u16)> {
     ice.iter().flat_map(|s| s.urls.iter()).find_map(|u| {
         if !u.starts_with("turn:") && !u.starts_with("turns:") {
             return None;
         }
-        roomler_ai_remote_control::turn_url::host_port(u)
+        meshharbor_remote_control::turn_url::host_port(u)
     })
 }
 
@@ -2659,10 +2735,93 @@ mod tests {
             "a second request while binding queues nothing"
         );
 
-        assert_eq!(coord.org_session_revoke(7), Some(node));
+        let scope = meshharbor_remote_control::signaling::RelayRevokeScopeWire {
+            relay_node_id: coord.org_sessions[&node].relay_node_id,
+            generation: 1,
+            peer_node_id: Some(node),
+        };
+        assert_eq!(coord.org_session_revoke(7, &scope), Some(node));
         assert_ne!(coord.relay_strategy(&node, &peer), RelayStrategy::OrgRelay);
         assert!(!coord.is_tracking(&node), "revoke clears the tracking too");
-        assert_eq!(coord.org_session_revoke(7), None, "already gone");
+        assert_eq!(coord.org_session_revoke(7, &scope), None, "already gone");
+    }
+
+    #[tokio::test]
+    async fn org_revoke_scope_preserves_another_relay_and_a_replacement_generation() {
+        use meshharbor_remote_control::signaling::RelayRevokeScopeWire;
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let mut coord = RelayCoordinator::new(tx, [0u8; 32], true, vec![], None);
+        let a = ObjectId::new();
+        let b = ObjectId::new();
+        coord.org_session_accept(a, org_session(7, 60));
+        coord.org_session_accept(b, org_session(7, 60));
+        // Both relays may legitimately allocate VNI 7 and generation 1.
+        // Target the second map entry so the old first-VNI lookup is wrong
+        // deterministically, independently of HashMap iteration order.
+        let first = *coord
+            .org_sessions
+            .iter()
+            .find(|(_, s)| s.vni == 7)
+            .unwrap()
+            .0;
+        let target = if first == a { b } else { a };
+        let scope = RelayRevokeScopeWire {
+            relay_node_id: coord.org_sessions[&target].relay_node_id,
+            generation: 1,
+            peer_node_id: Some(target),
+        };
+        for invalid in [
+            RelayRevokeScopeWire {
+                relay_node_id: ObjectId::new(),
+                ..scope.clone()
+            },
+            RelayRevokeScopeWire {
+                generation: 2,
+                ..scope.clone()
+            },
+            RelayRevokeScopeWire {
+                peer_node_id: Some(first),
+                ..scope.clone()
+            },
+            RelayRevokeScopeWire {
+                peer_node_id: None,
+                ..scope.clone()
+            },
+        ] {
+            assert_eq!(coord.org_session_revoke(7, &invalid), None);
+            assert!(coord.holds_org_session(&a));
+            assert!(coord.holds_org_session(&b));
+        }
+        assert_eq!(coord.org_session_revoke(8, &scope), None);
+        assert_eq!(coord.org_session_revoke(7, &scope), Some(target));
+        assert!(
+            coord.holds_org_session(&first),
+            "another relay must survive"
+        );
+        assert!(!coord.holds_org_session(&target));
+
+        let mut replacement = org_session(7, 60);
+        replacement.relay_node_id = scope.relay_node_id;
+        replacement.generation = 2;
+        coord.org_session_accept(target, replacement);
+        assert_eq!(
+            coord.org_session_revoke(7, &scope),
+            None,
+            "a delayed revoke must preserve the replacement generation"
+        );
+        assert!(coord.holds_org_session(&target));
+        assert!(coord.holds_org_session(&first));
+        assert_eq!(
+            coord.org_session_revoke(
+                7,
+                &RelayRevokeScopeWire {
+                    generation: 2,
+                    ..scope.clone()
+                }
+            ),
+            Some(target)
+        );
+        assert!(coord.holds_org_session(&first));
     }
 
     /// Expiry reaps on the member's own clock; a bind that completes for a
@@ -2708,7 +2867,12 @@ mod tests {
         assert!(!coord.is_tracking(&node), "bound ⇒ no longer coordinating");
         assert!(fresh.is_alive());
 
-        coord.org_session_revoke(11);
+        let scope = meshharbor_remote_control::signaling::RelayRevokeScopeWire {
+            relay_node_id: coord.org_sessions[&node].relay_node_id,
+            generation: coord.org_sessions[&node].generation,
+            peer_node_id: Some(node),
+        };
+        coord.org_session_revoke(11, &scope);
         assert!(
             !fresh.is_alive(),
             "revoking a bound session closes its carrier"
@@ -2943,15 +3107,15 @@ mod tests {
                 username: None,
                 credential: None,
             },
-            ice("turn:coturn.roomler.ai:3478?transport=udp"),
+            ice("turn:coturn.meshharbor.itachi.fans:3478?transport=udp"),
         ];
         assert_eq!(
             turn_host_port(&servers),
-            Some(("coturn.roomler.ai".into(), 3478))
+            Some(("coturn.meshharbor.itachi.fans".into(), 3478))
         );
         assert_eq!(
-            turn_host_port(&[ice("turns:coturn.roomler.ai:443?transport=tcp")]),
-            Some(("coturn.roomler.ai".into(), 443))
+            turn_host_port(&[ice("turns:coturn.meshharbor.itachi.fans:443?transport=tcp")]),
+            Some(("coturn.meshharbor.itachi.fans".into(), 443))
         );
         // A portless url resolves on the default TURN port.
         assert_eq!(
@@ -3235,6 +3399,7 @@ mod tests {
                     public_key: [2u8; 32],
                     ..base_peer()
                 },
+                requested_at: Instant::now(),
                 ice: None,
                 pair_key: None,
             },
@@ -4532,6 +4697,7 @@ mod tests {
             n,
             PendingPeer {
                 peer: peer.clone(),
+                requested_at: Instant::now(),
                 ice: None,
                 pair_key: None,
             },
@@ -4702,6 +4868,170 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn backbone_only_unanswered_request_retries_org_after_gap_without_reopening_turn() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut c = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        c.set_org_relay(true);
+        let node = ObjectId::new();
+        let peer = PeerConfig {
+            backbone_only: true,
+            relay_strategy: Some(RelayStrategyWire::BothAllocate),
+            ..base_peer()
+        };
+        let began = Instant::now();
+        c.request(node, peer.clone()).await;
+        assert!(matches!(rx.try_recv(), Ok(ClientMsg::OverlayRelayRequest {
+            peer_node_id, ..
+        }) if peer_node_id == node));
+        // The real cross-zone handler can refuse without a Grant response.
+        // Keep that authenticated control connection open and withhold Grant.
+        let posted = Instant::now();
+        assert!(
+            !c.request_org_fallback(node, began + ORG_FALLBACK_GAP - Duration::from_millis(1))
+                .await
+        );
+        assert!(rx.try_recv().is_err(), "no retry before the existing gap");
+
+        let retry_at = posted + ORG_FALLBACK_GAP;
+        assert!(
+            c.request_org_fallback(node, retry_at).await,
+            "an unanswered line request must not block authorized ORG recovery forever"
+        );
+        let Ok(ClientMsg::OverlayOrgRelayFallbackRequest {
+            peer_node_id,
+            request_id,
+        }) = rx.try_recv()
+        else {
+            panic!("the retry must be an actual ORG-only request");
+        };
+        assert_eq!(peer_node_id, node);
+        c.request(node, peer).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "ORG retry must not reopen legacy TURN coordination"
+        );
+        assert!(
+            !c.request_org_fallback(node, retry_at + ORG_FALLBACK_GAP - Duration::from_millis(1))
+                .await
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "successful retry retains the existing rate limit"
+        );
+        assert!(
+            c.request_org_fallback(node, retry_at + ORG_FALLBACK_GAP)
+                .await
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest {
+            peer_node_id, request_id: next
+        }) if peer_node_id == node && next > request_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn org_retry_grace_preserves_young_pending_turn_grants_and_active_org_binds() {
+        for gate in 0..3 {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+            let mut c = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+            c.set_org_relay(true);
+            let node = ObjectId::new();
+            let peer = PeerConfig {
+                backbone_only: gate != 0,
+                relay_strategy: Some(RelayStrategyWire::BothAllocate),
+                ..base_peer()
+            };
+            let began = Instant::now();
+            c.request(node, peer.clone()).await;
+            assert!(matches!(rx.try_recv(), Ok(ClientMsg::OverlayRelayRequest {
+                peer_node_id, ..
+            }) if peer_node_id == node));
+            let posted = Instant::now();
+            match gate {
+                0 => {} // Ordinary establishment retains its initial grace.
+                1 => {
+                    assert!(
+                        c.grant_accept(node, vec![ice("turn:127.0.0.1:3478")], "pair".into())
+                            .is_some()
+                    );
+                }
+                2 => {
+                    assert!(c.org_session_accept(node, org_session(77, 120)));
+                    c.org_request_bind(node, peer.clone());
+                }
+                _ => unreachable!(),
+            }
+            let at = if gate == 0 {
+                began + ORG_FALLBACK_GAP - Duration::from_millis(1)
+            } else {
+                posted + ORG_FALLBACK_GAP * 10
+            };
+            assert!(
+                !c.request_org_fallback(node, at).await,
+                "retry must preserve young requests, granted ICE, and active ORG binds (gate {gate})"
+            );
+            assert!(rx.try_recv().is_err());
+            assert!(c.is_tracking(&node));
+            c.request(node, peer).await;
+            assert!(
+                rx.try_recv().is_err(),
+                "the original coordination remains owned"
+            );
+            if gate == 2 {
+                assert!(c.holds_org_session(&node));
+                let jobs = c.take_org_jobs();
+                assert_eq!(jobs.len(), 1, "the original bind work remains queued");
+                assert_eq!(jobs[0].node_id, node);
+                assert_eq!(jobs[0].vni, 77);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn late_ice_grant_after_unanswered_org_query_keeps_its_allocation_owned() {
+        for backbone_only in [false, true] {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+            let mut c = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+            c.set_org_relay(true);
+            let node = ObjectId::new();
+            let peer = PeerConfig {
+                backbone_only,
+                relay_strategy: Some(RelayStrategyWire::BothAllocate),
+                ..base_peer()
+            };
+            c.request(node, peer.clone()).await;
+            assert!(matches!(rx.try_recv(), Ok(ClientMsg::OverlayRelayRequest {
+                peer_node_id, ..
+            }) if peer_node_id == node));
+            let at = Instant::now() + ORG_FALLBACK_GAP;
+            assert!(c.request_org_fallback(node, at).await);
+            assert!(
+                matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest {
+                peer_node_id, ..
+            }) if peer_node_id == node)
+            );
+            let (servers, pair) = c
+                .grant_accept(node, vec![ice("turn:127.0.0.1:3478")], "late-pair".into())
+                .expect(
+                    "ORG-only recovery must retain a legitimate late ICE grant's pending owner",
+                );
+            assert_eq!(servers[0].urls, vec!["turn:127.0.0.1:3478"]);
+            assert_eq!(pair, "late-pair");
+            assert!(
+                !c.request_org_fallback(node, at + ORG_FALLBACK_GAP * 10)
+                    .await,
+                "once ICE negotiation starts its age must not reopen ORG queries"
+            );
+            c.request(node, peer).await;
+            assert!(
+                rx.try_recv().is_err(),
+                "the granted allocation remains the only owned coordination"
+            );
+            assert!(c.is_tracking(&node));
+        }
+    }
+
+    #[tokio::test]
     async fn org_fallback_respects_off_pin_pending_bind_and_death_backoff() {
         for gate in 0..5 {
             let (tx, mut rx) = tokio::sync::mpsc::channel(8);
@@ -4721,6 +5051,7 @@ mod tests {
                         node,
                         PendingPeer {
                             peer: base_peer(),
+                            requested_at: now,
                             ice: None,
                             pair_key: None,
                         },
@@ -4742,6 +5073,169 @@ mod tests {
             assert!(rx.try_recv().is_err());
             assert!(c.org_fallback_last.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn reactive_org_query_keeps_real_rpc_spacing_and_the_ungranted_owner() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut c = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        c.set_org_relay(true);
+        let id = ObjectId::new();
+        let peer = base_peer();
+        c.request(id, peer.clone()).await;
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMsg::OverlayRelayRequest { peer_node_id, .. }) if peer_node_id == id)
+        );
+        let now = Instant::now();
+        let original = c.pending[&id].requested_at;
+        assert_eq!(
+            c.request_org_fallback_batch_reactive(vec![(id, peer.clone())], now)
+                .await,
+            vec![id]
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. }) if peer_node_id == id)
+        );
+        assert_eq!(c.pending[&id].requested_at, original);
+        c.request(id, peer.clone()).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "the retained owner must not reopen TURN"
+        );
+        assert!(
+            c.request_org_fallback_batch_reactive(
+                vec![(id, peer.clone())],
+                now + ORG_FALLBACK_GAP - Duration::from_nanos(1)
+            )
+            .await
+            .is_empty()
+        );
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            c.request_org_fallback_batch_reactive(vec![(id, peer.clone())], now + ORG_FALLBACK_GAP)
+                .await,
+            vec![id]
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientMsg::OverlayOrgRelayFallbackRequest { .. })
+        ));
+        assert!(
+            c.grant_accept(
+                id,
+                vec![ice("turn:127.0.0.1:3478?transport=udp")],
+                "late-owned-ice".into()
+            )
+            .is_some()
+        );
+        assert!(
+            c.request_org_fallback_batch_reactive(vec![(id, peer)], now + ORG_FALLBACK_GAP * 2)
+                .await
+                .is_empty()
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(
+            c.is_tracking(&id),
+            "late credentials retain the original pending owner"
+        );
+    }
+
+    #[tokio::test]
+    async fn reactive_org_query_respects_identity_ice_bind_pin_off_and_death_guards() {
+        for gate in 0..7 {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+            let mut c = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+            c.set_org_relay(true);
+            let id = ObjectId::new();
+            let mut current = base_peer();
+            c.request(id, current.clone()).await;
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(ClientMsg::OverlayRelayRequest { .. })
+            ));
+            let now = Instant::now();
+            match gate {
+                0 => current.public_key = [99; 32],
+                1 => current.overlay_ip = Ipv4Addr::new(100, 64, 0, 99),
+                2 => {
+                    assert!(
+                        c.grant_accept(
+                            id,
+                            vec![ice("turn:127.0.0.1:3478?transport=udp")],
+                            "owned-ice".into()
+                        )
+                        .is_some()
+                    );
+                }
+                3 => {
+                    c.org_binding.insert(id);
+                }
+                4 => {
+                    c.forced_derp_until
+                        .insert(id, now + Duration::from_secs(120));
+                }
+                5 => c.set_org_relay(false),
+                6 => {
+                    c.death_streaks.insert(id, (3, now + ORG_FALLBACK_GAP));
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                c.request_org_fallback_batch_reactive(vec![(id, current)], now)
+                    .await
+                    .is_empty(),
+                "reactive gate {gate}"
+            );
+            assert!(rx.try_recv().is_err());
+            assert!(c.org_fallback_last.is_empty());
+            assert!(c.is_tracking(&id));
+        }
+    }
+
+    #[tokio::test]
+    async fn reactive_org_queue_failure_consumes_the_same_actual_rpc_gap() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let fill = tx.clone();
+        let mut c = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        c.set_org_relay(true);
+        let id = ObjectId::new();
+        let peer = base_peer();
+        c.request(id, peer.clone()).await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientMsg::OverlayRelayRequest { .. })
+        ));
+        fill.send(ClientMsg::OverlayWarmRelayRequest {})
+            .await
+            .unwrap();
+        let now = Instant::now();
+        assert!(
+            c.request_org_fallback_batch_reactive(vec![(id, peer.clone())], now)
+                .await
+                .is_empty()
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientMsg::OverlayWarmRelayRequest {})
+        ));
+        assert!(
+            c.request_org_fallback_batch_reactive(
+                vec![(id, peer.clone())],
+                now + Duration::from_secs(1)
+            )
+            .await
+            .is_empty()
+        );
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            c.request_org_fallback_batch_reactive(vec![(id, peer)], now + ORG_FALLBACK_GAP)
+                .await,
+            vec![id]
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientMsg::OverlayOrgRelayFallbackRequest { .. })
+        ));
     }
 
     #[tokio::test]

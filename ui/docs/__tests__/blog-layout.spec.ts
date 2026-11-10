@@ -22,9 +22,9 @@ const nav: ShellNav = { current: 'blog', hasBlog: true }
 const post: Post = {
   slug: 'self-hosted-teamviewer-alternative',
   title: 'My wife’s swearing at TeamViewer made me build my own remote desktop tool',
-  seoTitle: 'Self-hosted TeamViewer alternative: why I built Roomler',
+  seoTitle: 'Self-hosted TeamViewer alternative: why I built MeshHarbor',
   subtitle: 'An open-source, self-hosted TeamViewer alternative',
-  description: 'Why I built Roomler.',
+  description: 'Why I built MeshHarbor.',
   date: '2026-09-25T22:45:13Z',
   updated: '2026-09-28T20:52:50Z',
   authorKey: 'goran',
@@ -39,7 +39,7 @@ const post: Post = {
   outFile: 'self-hosted-teamviewer-alternative/index.html',
   sourceFile: 'ui/blog/posts/self-hosted-teamviewer-alternative.md',
   heroImage: { url: '/docs/assets/remote-desktop.cfab9256a7.svg', width: 760, height: 400 },
-  og: { url: 'https://roomler.ai/docs/assets/teamviewer-og.0123456789.png', width: 1200, height: 630, alt: 'A browser tab showing a remote desktop' },
+  og: { url: 'https://meshharbor.itachi.fans/docs/assets/teamviewer-og.0123456789.png', width: 1200, height: 630, alt: 'A browser tab showing a remote desktop' },
   html: '<p>Body.</p>',
   headings: [],
   plain: 'Body.',
@@ -51,12 +51,12 @@ const render = (p: Partial<Post> = {}) =>
 describe('a post page', () => {
   it('is its own canonical, with its share image and article metadata', () => {
     const html = render()
-    expect(html).toContain('<link rel="canonical" href="https://roomler.ai/blog/self-hosted-teamviewer-alternative/">')
-    expect(html).toContain('<title>Self-hosted TeamViewer alternative: why I built Roomler</title>')
-    expect(html).toContain('<meta property="og:image" content="https://roomler.ai/docs/assets/teamviewer-og.0123456789.png">')
+    expect(html).toContain('<link rel="canonical" href="https://meshharbor.itachi.fans/blog/self-hosted-teamviewer-alternative/">')
+    expect(html).toContain('<title>Self-hosted TeamViewer alternative: why I built MeshHarbor</title>')
+    expect(html).toContain('<meta property="og:image" content="https://meshharbor.itachi.fans/docs/assets/teamviewer-og.0123456789.png">')
     expect(html).toContain('<meta property="og:image:width" content="1200">')
     expect(html).toContain('<meta property="article:author" content="https://github.com/gjovanov">')
-    expect(html).toContain('<link rel="alternate" type="application/atom+xml" title="Roomler blog" href="/blog/feed.xml">')
+    expect(html).toContain('<link rel="alternate" type="application/atom+xml" title="MeshHarbor blog" href="/blog/feed.xml">')
     expect(html).toContain(`<link rel="stylesheet" href="${assets.blogCss}">`)
   })
 
@@ -90,7 +90,7 @@ describe('a post page', () => {
   it('renders no hero for a post without one, and still shares its image', () => {
     const html = render({ hero: undefined, heroAlt: undefined, heroImage: undefined })
     expect(html).not.toContain('class="hero"')
-    expect(html).toContain('<meta property="og:image" content="https://roomler.ai/docs/assets/teamviewer-og.0123456789.png">')
+    expect(html).toContain('<meta property="og:image" content="https://meshharbor.itachi.fans/docs/assets/teamviewer-og.0123456789.png">')
   })
 })
 
@@ -98,7 +98,7 @@ describe('the index', () => {
   it('fits its title, and links its neighbours on a middle page', () => {
     expect(indexTitle(1).length).toBeLessThanOrEqual(60)
     const html = renderBlogIndex({ assets, nav, tagIndexed: new Set(), posts: [post], pageNo: 2, pages: 3 })
-    expect(html).toContain('<link rel="canonical" href="https://roomler.ai/blog/page/2/">')
+    expect(html).toContain('<link rel="canonical" href="https://meshharbor.itachi.fans/blog/page/2/">')
     expect(html).toContain('<link rel="prev" href="/blog/">')
     expect(html).toContain('<link rel="next" href="/blog/page/3/">')
     expect(html).toContain('"@type":"Blog"')

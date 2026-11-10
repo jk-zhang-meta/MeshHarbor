@@ -1,8 +1,8 @@
-# Relinking the Roomler agent against your own FFmpeg
+# Relinking the MeshHarbor agent against your own FFmpeg
 
 This page exists to make an LGPL right **exercisable** rather than theoretical.
 
-The Windows Roomler agent (`roomlerd.exe`) links FFmpeg **statically**. FFmpeg is
+The Windows MeshHarbor agent (`meshharbord.exe`) links FFmpeg **statically**. FFmpeg is
 LGPL-2.1-or-later, and §6 of that licence gives you the right to modify FFmpeg
 and relink the application against your modified version. Below is how to do it.
 
@@ -27,8 +27,8 @@ Both halves are satisfied by publication, not by request:
 
 | §6(a) requires | Where it is |
 |---|---|
-| Complete source of **the Library** | [`vendored-ffmpeg-9.0.1`](https://github.com/gjovanov/roomler-ai/releases/tag/vendored-ffmpeg-9.0.1) → `ffmpeg-<version>-corresponding-source.tar.xz` (upstream + every patch our builds apply + the full build recipe) |
-| The **"work that uses the Library"**, as **source code** | This repository. The agent is MPL-2.0; `agents/roomlerd` and every crate it depends on are public. |
+| Complete source of **the Library** | [`vendored-ffmpeg-9.0.1`](https://github.com/jk-zhang-meta/MeshHarbor/releases/tag/vendored-ffmpeg-9.0.1) → `ffmpeg-<version>-corresponding-source.tar.xz` (upstream + every patch our builds apply + the full build recipe) |
+| The **"work that uses the Library"**, as **source code** | This repository. The agent is MPL-2.0; `agents/meshharbord` and every crate it depends on are public. |
 | Terms permitting modification and debugging | MPL-2.0 for our code; upstream licences for vendored crates |
 
 The written offer in [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md) stands
@@ -43,11 +43,18 @@ sets of source patches:
 | the vcpkg `ffmpeg` port's own (14: build-system fixes, plus one API addition) | the Windows build | `vcpkg-port-ffmpeg/`, at the baseline the recipe pins |
 
 So "the Library as used in that binary" is reproducible from what is published.
-Two checks keep it that way. Every shipped tree carries a `ROOMLER-PATCHES.txt`
-manifest that the release lane compares with the committed patches. And the
-release lane refuses to tag while the published tarball was built from a
+Local release preparation must retain both checks. New project-built vendor
+outputs are expected to carry `MESHHARBOR-PATCHES.txt`; this is not a claim about
+every previously published upstream tree. The public upstream Windows FFmpeg
+artifact reviewed for this migration retains its original `ROOMLER-PATCHES.txt`.
+The approved comparison found only three branding-text differences in the compared
+patch; that finding applies to the inspected artifact and patch, not all upstream
+builds. Verify its **original manifest and the approved byte-by-byte comparison
+proof** when mapping that exact artifact to source. Preserve the original manifest
+bytes and filename; do not rewrite it as a MeshHarbor manifest or infer provenance
+from the shared version/tag alone. Refuse publication while the published tarball was built from a
 different patch set, vcpkg baseline or build recipe than the release's own
-checkout. The recipe has been checked since FR-85 P4c: the configure options
+checkout. Historically the automated recipe check began with FR-85 P4c: the configure options
 live there, not in a patch, and P4c changed them (the software H.264 decoder
 and the AAC encoder the screen recorder needs).
 
@@ -63,7 +70,7 @@ tarball.
 ### 1. Get the FFmpeg corresponding source
 
 ```bash
-gh release download vendored-ffmpeg-9.0.1 --repo gjovanov/roomler-ai \
+gh release download vendored-ffmpeg-9.0.1 --repo jk-zhang-meta/MeshHarbor \
   --pattern 'ffmpeg-*-corresponding-source.tar.xz*'
 sha256sum -c ffmpeg-n9.0.1-corresponding-source.tar.xz.sha256
 tar xf ffmpeg-n9.0.1-corresponding-source.tar.xz
@@ -109,17 +116,20 @@ requires static linkage.
 ### 3. Relink the agent
 
 ```bash
-git clone https://github.com/gjovanov/roomler-ai
-cd roomler-ai
+git clone https://github.com/jk-zhang-meta/MeshHarbor
+cd meshharbor
 git checkout <the tag matching your binary, e.g. agent-v0.4.13>
 ```
 
-Point `pkg-config` at your build and rebuild. Windows (PowerShell), matching the
-release workflow:
+Point `pkg-config` at your build and rebuild. Windows (PowerShell): clear an
+inherited `FFMPEG_DIR`, which bypasses transitive libraries in pkg-config. This
+local build is unsigned under the current policy:
 
 ```powershell
+Remove-Item Env:FFMPEG_DIR -ErrorAction SilentlyContinue
 $env:PKG_CONFIG_PATH = "<your-prefix>/lib/pkgconfig"
-cargo build -p roomlerd --release --features `
+$env:PKG_CONFIG_ALLOW_SYSTEM_LIBS = "1"
+cargo build -p meshharbord --release --features `
   "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
 ```
 
@@ -128,11 +138,11 @@ Linux:
 ```bash
 export FFMPEG_DIR=<your-prefix>
 export PKG_CONFIG_PATH=<your-prefix>/lib/pkgconfig
-cargo build -p roomlerd --release \
+cargo build -p meshharbord --release \
   --features "full,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ffmpeg-encoder,ssh-server"
 ```
 
-The result is `target/release/roomlerd(.exe)`, linked against **your** FFmpeg.
+The result is `target/release/meshharbord(.exe)`, linked against **your** FFmpeg.
 
 ⚠️ Use the feature list for the platform you are reproducing — they differ. macOS
 ships FFmpeg again since 2026-08-25 (a `--disable-everything` tree with the three
@@ -141,18 +151,18 @@ nothing Homebrew is baked in), and Linux x86_64's tree carries libva + libdrm
 built into it since FR-77 P4. Since FR-85 P4c every platform's tree also carries
 the software `h264` decoder and the `aac` encoder, for the screen recorder's
 editor and sound (the `-h264dec-aac` assets; never an `hevc` decoder). The
-authoritative lists are the `cargo build` lines in
-`.github/workflows/release-agent.yml`, and the `recording` feature is in `full`.
+authoritative platform lists are in [local builds](local-build.md#native-binaries-and-features), and the `recording` feature is in `full`.
 
-⚠️ Windows also needs libvpx for the VP9-4:4:4 path; the workflow vendors it the
-same way (`vendor-libvpx-windows.yml`) and appends it to `PKG_CONFIG_PATH`. If
+⚠️ Windows also needs libvpx for the VP9-4:4:4 path; the retained
+[vendor input guide](local-build.md#vendor-inputs-and-assets) records its pin;
+the existing Windows staging helper configures `PKG_CONFIG_PATH`. If
 you do not need VP9-4:4:4, drop the `vp9-444` features.
 
 ### 4. Verify it works
 
 ```bash
-./roomlerd --version
-./roomlerd encoder-smoke --codec hevc     # exercises the FFmpeg encoder path
+./meshharbord --version
+./meshharbord encoder-smoke --codec hevc     # exercises the FFmpeg encoder path
 ```
 
 `encoder-smoke` feeds synthetic frames through the hardware cascade and reports
@@ -172,5 +182,5 @@ or manage updates yourself.
 
 ---
 
-Problems following this? **legal@roomler.ai** — if a step here does not work, the
+Problems following this? **legal@meshharbor.itachi.fans** — if a step here does not work, the
 compliance claim is wrong and we want to fix it.

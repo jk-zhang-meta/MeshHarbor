@@ -3,7 +3,7 @@
 <template>
   <v-card>
     <v-card-title class="d-flex align-center flex-wrap ga-2">
-      <span>Tunnel ACL</span>
+      <span>{{ $t('mh.tp.title') }}</span>
       <v-spacer />
       <v-btn
         prepend-icon="mdi-plus"
@@ -12,7 +12,7 @@
         size="small"
         @click="openCreateDialog"
       >
-        New policy
+        {{ $t('mh.tp.newPolicy') }}
       </v-btn>
     </v-card-title>
 
@@ -29,9 +29,10 @@
       </v-alert>
 
       <p v-if="!store.loading && store.policies.length === 0" class="text-medium-emphasis">
-        No tunnel policies defined yet. Server-side ACL is default-deny — until
-        you add at least one policy, every <code>roomler forward</code>
-        request will be rejected with <code>acl_denied</code>.
+        <i18n-t keypath="mh.tp.empty" tag="span">
+          <template #cmd><code>mh forward</code></template>
+          <template #code><code>acl_denied</code></template>
+        </i18n-t>
       </p>
 
       <div
@@ -46,23 +47,23 @@
       <v-table v-else-if="store.policies.length > 0" density="compact" class="table-stack-xs">
         <thead>
           <tr>
-            <th>Name</th>
-            <th>Subjects</th>
-            <th>Targets</th>
-            <th>Allowlist</th>
-            <th>Ceilings</th>
-            <th class="text-right">Actions</th>
+            <th>{{ $t('mh.tp.col.name') }}</th>
+            <th>{{ $t('mh.tp.col.subjects') }}</th>
+            <th>{{ $t('mh.tp.col.targets') }}</th>
+            <th>{{ $t('mh.tp.col.allowlist') }}</th>
+            <th>{{ $t('mh.tp.col.ceilings') }}</th>
+            <th class="text-right">{{ $t('mh.tp.col.actions') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="p in store.policies" :key="p.id">
-            <td data-label="Name">
+            <td :data-label="$t('mh.tp.col.name')">
               <div class="font-weight-medium">{{ p.name }}</div>
               <div class="text-caption text-medium-emphasis">
                 {{ formatDate(p.created_at) }}
               </div>
             </td>
-            <td data-label="Subjects">
+            <td :data-label="$t('mh.tp.col.subjects')">
               <v-chip
                 v-for="(s, i) in p.subjects"
                 :key="i"
@@ -73,7 +74,7 @@
                 {{ subjectLabel(s) }}
               </v-chip>
             </td>
-            <td data-label="Targets">
+            <td :data-label="$t('mh.tp.col.targets')">
               <v-chip
                 v-for="(t, i) in p.targets"
                 :key="i"
@@ -84,19 +85,19 @@
                 {{ targetLabel(t) }}
               </v-chip>
             </td>
-            <td data-label="Allowlist">
+            <td :data-label="$t('mh.tp.col.allowlist')">
               <div v-for="(r, i) in p.allowlist" :key="i" class="text-caption">
                 <code class="text-break">{{ hostLabel(r.host_pattern) }}:{{ portRangeLabel(r.port_range) }}</code>
                 <span class="text-medium-emphasis">/{{ (r.proto ?? 'any') }}</span>
               </div>
             </td>
-            <td class="text-caption" data-label="Ceilings">
+            <td class="text-caption" :data-label="$t('mh.tp.col.ceilings')">
               <div>
-                flows:
+                {{ $t('mh.tp.flows') }}
                 <strong>{{ p.max_concurrent_flows ?? '∞' }}</strong>
               </div>
               <div>
-                bytes:
+                {{ $t('mh.tp.bytes') }}
                 <strong>{{ p.max_bytes_per_session ? formatBytes(p.max_bytes_per_session) : '∞' }}</strong>
               </div>
             </td>
@@ -124,7 +125,7 @@
     <v-dialog v-model="editDialog" max-width="900" persistent scrollable :fullscreen="fullscreen">
       <v-card>
         <v-card-title>
-          {{ editingId ? 'Edit tunnel policy' : 'New tunnel policy' }}
+          {{ editingId ? $t('mh.tp.editTitle') : $t('mh.tp.newTitle') }}
         </v-card-title>
         <v-card-text>
           <v-alert
@@ -140,8 +141,8 @@
 
           <v-text-field
             v-model="form.name"
-            label="Name"
-            placeholder="e.g. ops-team-prod-postgres"
+            :label="$t('mh.tp.col.name')"
+            :placeholder="$t('mh.tp.namePlaceholder')"
             variant="outlined"
             density="compact"
             class="mb-4"
@@ -150,9 +151,9 @@
 
           <!-- Subjects -->
           <div class="d-flex align-center flex-wrap ga-1 mb-2">
-            <strong>Subjects</strong>
+            <strong>{{ $t('mh.tp.col.subjects') }}</strong>
             <span class="text-medium-emphasis text-caption ml-2">
-              Who this policy applies to. First-match-wins across all policies.
+              {{ $t('mh.tp.subjectsHint') }}
             </span>
             <v-spacer />
             <v-btn
@@ -161,7 +162,7 @@
               prepend-icon="mdi-plus"
               @click="addSubject"
             >
-              Add subject
+              {{ $t('mh.tp.addSubject') }}
             </v-btn>
           </div>
           <div
@@ -224,7 +225,7 @@
               style="flex: 1 1 200px"
             />
             <span v-else class="text-medium-emphasis text-caption">
-              (catch-all — matches every user in the tenant)
+              {{ $t('mh.tp.catchAllUsers') }}
             </span>
             <v-btn
               icon="mdi-close"
@@ -238,9 +239,9 @@
 
           <!-- Targets -->
           <div class="d-flex align-center flex-wrap ga-1 mb-2">
-            <strong>Targets</strong>
+            <strong>{{ $t('mh.tp.col.targets') }}</strong>
             <span class="text-medium-emphasis text-caption ml-2">
-              Which agents this policy lets the subjects reach.
+              {{ $t('mh.tp.targetsHint') }}
             </span>
             <v-spacer />
             <v-btn
@@ -249,7 +250,7 @@
               prepend-icon="mdi-plus"
               @click="addTarget"
             >
-              Add target
+              {{ $t('mh.tp.addTarget') }}
             </v-btn>
           </div>
           <div
@@ -270,14 +271,14 @@
               v-if="t.kind === 'agent_id'"
               v-model="t.id"
               :items="withCurrent(agentItems, t.id)"
-              label="Agent"
+              :label="$t('mh.tp.kind.agent_id')"
               variant="outlined"
               density="compact"
               hide-details
               style="flex: 1 1 200px"
             />
             <span v-else class="text-medium-emphasis text-caption">
-              (catch-all — matches every agent in the tenant)
+              {{ $t('mh.tp.catchAllAgents') }}
             </span>
             <v-btn
               icon="mdi-close"
@@ -291,9 +292,9 @@
 
           <!-- Allowlist -->
           <div class="d-flex align-center flex-wrap ga-1 mb-2">
-            <strong>Destination allowlist</strong>
+            <strong>{{ $t('mh.tp.allowlistTitle') }}</strong>
             <span class="text-medium-emphasis text-caption ml-2">
-              Host + port-range patterns the subjects may reach via the targets.
+              {{ $t('mh.tp.allowlistHint') }}
             </span>
             <v-spacer />
             <v-btn
@@ -302,7 +303,7 @@
               prepend-icon="mdi-plus"
               @click="addAllowRule"
             >
-              Add rule
+              {{ $t('mh.tp.addRule') }}
             </v-btn>
           </div>
           <div
@@ -313,7 +314,7 @@
             <v-select
               :model-value="r.host_pattern.kind"
               :items="hostKinds"
-              label="Match"
+              :label="$t('mh.tp.match')"
               variant="outlined"
               density="compact"
               hide-details
@@ -330,7 +331,7 @@
             />
             <v-text-field
               v-model.number="r.port_range.low"
-              label="Port (low)"
+              :label="$t('mh.tp.portLow')"
               type="number"
               variant="outlined"
               density="compact"
@@ -339,7 +340,7 @@
             />
             <v-text-field
               v-model.number="r.port_range.high"
-              label="Port (high)"
+              :label="$t('mh.tp.portHigh')"
               type="number"
               variant="outlined"
               density="compact"
@@ -349,7 +350,7 @@
             <v-select
               v-model="r.proto"
               :items="protoKinds"
-              label="Proto"
+              :label="$t('mh.tp.proto')"
               variant="outlined"
               density="compact"
               hide-details
@@ -367,32 +368,32 @@
 
           <!-- Ceilings -->
           <div class="d-flex align-center flex-wrap ga-1 mb-2">
-            <strong>Per-session ceilings</strong>
+            <strong>{{ $t('mh.tp.ceilingsTitle') }}</strong>
             <span class="text-medium-emphasis text-caption ml-2">
-              Leave blank for unlimited.
+              {{ $t('mh.tp.ceilingsHint') }}
             </span>
           </div>
           <div class="d-flex flex-wrap ga-3">
             <v-text-field
               v-model.number="form.max_concurrent_flows"
-              label="Max concurrent flows"
+              :label="$t('mh.tp.maxFlows')"
               type="number"
               variant="outlined"
               density="compact"
               hide-details
               clearable
-              placeholder="e.g. 64"
+              :placeholder="$t('mh.tp.flowsPlaceholder')"
               style="flex: 1 1 200px; max-width: 240px"
             />
             <v-text-field
               v-model.number="form.max_bytes_per_session"
-              label="Max bytes / session"
+              :label="$t('mh.tp.maxBytes')"
               type="number"
               variant="outlined"
               density="compact"
               hide-details
               clearable
-              placeholder="e.g. 10737418240 (10 GiB)"
+              :placeholder="$t('mh.tp.bytesPlaceholder')"
               style="flex: 1 1 200px; max-width: 280px"
             />
           </div>
@@ -400,9 +401,9 @@
 
         <v-card-actions>
           <v-spacer />
-          <v-btn @click="cancelEdit">Cancel</v-btn>
+          <v-btn @click="cancelEdit">{{ $t('common.cancel') }}</v-btn>
           <v-btn color="primary" :loading="saving" @click="savePolicy">
-            {{ editingId ? 'Save changes' : 'Create policy' }}
+            {{ editingId ? $t('mh.tp.saveChanges') : $t('mh.tp.createPolicy') }}
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -411,18 +412,19 @@
     <!-- Delete confirm dialog ──────────────────────────────────── -->
     <v-dialog v-model="deleteDialog" max-width="500">
       <v-card>
-        <v-card-title>Delete tunnel policy?</v-card-title>
+        <v-card-title>{{ $t('mh.tp.deleteTitle') }}</v-card-title>
         <v-card-text>
-          This will soft-delete <strong>{{ deleteTarget?.name }}</strong>.
-          Live tunnel sessions keep working; new
-          <code>TcpForwardRequest</code>s relying on this policy alone will
-          start being rejected with <code>acl_denied</code>.
+          <i18n-t keypath="mh.tp.deleteBody" tag="span">
+            <template #name><strong>{{ deleteTarget?.name }}</strong></template>
+            <template #req><code>TcpForwardRequest</code></template>
+            <template #code><code>acl_denied</code></template>
+          </i18n-t>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn @click="deleteDialog = false">Cancel</v-btn>
+          <v-btn @click="deleteDialog = false">{{ $t('common.cancel') }}</v-btn>
           <v-btn color="error" :loading="deleting" @click="doDelete">
-            Delete
+            {{ $t('mh.tp.delete') }}
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -432,6 +434,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   type DestinationRule,
   type HostPattern,
@@ -460,6 +463,8 @@ const roleStore = useRoleStore()
 const membersStore = useMembersStore()
 const { agentLabel, clientLabel } = useNodeLabel()
 const { fullscreen } = useResponsiveDialog()
+// `tr`, not `t`: the template and the helpers below already use `t` for a target.
+const { t: tr } = useI18n()
 
 // The pickers name devices as the Devices page does (FR-116), and roles and
 // people by name — the subject list used to show `Agent 64cd34…`.
@@ -487,30 +492,30 @@ function withCurrent(items: { title: string; value: string }[], current: string)
   return [...items, { title: `${current.slice(0, 6)}…`, value: current }]
 }
 
-const subjectKinds = [
-  { title: 'All users', value: 'all_users' },
-  { title: 'User', value: 'user_id' },
-  { title: 'Role', value: 'role_id' },
-  { title: 'Tunnel client', value: 'tunnel_client_id' },
+const subjectKinds = computed(() => [
+  { title: tr('mh.tp.kind.all_users'), value: 'all_users' },
+  { title: tr('mh.tp.kind.user_id'), value: 'user_id' },
+  { title: tr('mh.tp.kind.role_id'), value: 'role_id' },
+  { title: tr('mh.tp.kind.tunnel_client_id'), value: 'tunnel_client_id' },
   // 2026-08-04 — the wire supported AgentId subjects (node-stack
   // unification P3b-2: an agent acting as a tunnel ORIGIN) but the picker
   // never offered it.
-  { title: 'Agent', value: 'agent_id' },
-]
-const targetKinds = [
-  { title: 'All agents', value: 'all_agents' },
-  { title: 'Agent', value: 'agent_id' },
-]
-const hostKinds = [
-  { title: 'Exact', value: 'exact' },
-  { title: 'Wildcard', value: 'wildcard' },
+  { title: tr('mh.tp.kind.agent_id'), value: 'agent_id' },
+])
+const targetKinds = computed(() => [
+  { title: tr('mh.tp.kind.all_agents'), value: 'all_agents' },
+  { title: tr('mh.tp.kind.agent_id'), value: 'agent_id' },
+])
+const hostKinds = computed(() => [
+  { title: tr('mh.tp.host.exact'), value: 'exact' },
+  { title: tr('mh.tp.host.wildcard'), value: 'wildcard' },
   { title: 'CIDR', value: 'cidr' },
-]
-const protoKinds = [
-  { title: 'Any', value: 'any' },
+])
+const protoKinds = computed(() => [
+  { title: tr('mh.tp.protoAny'), value: 'any' },
   { title: 'TCP', value: 'tcp' },
   { title: 'UDP', value: 'udp' },
-]
+])
 
 const editDialog = ref(false)
 const editingId = ref<string | null>(null)
@@ -558,7 +563,7 @@ function emptyForm() {
 }
 
 const nameError = computed(() => {
-  if (!form.name.trim()) return 'Required.'
+  if (!form.name.trim()) return tr('mh.tp.required')
   return ''
 })
 
@@ -600,10 +605,11 @@ function setSubjectKind(i: number, kind: string) {
 }
 function subjectIdLabel(kind: string) {
   switch (kind) {
-    case 'user_id': return 'User'
-    case 'role_id': return 'Role'
-    case 'tunnel_client_id': return 'Tunnel client'
-    case 'agent_id': return 'Agent'
+    case 'user_id':
+    case 'role_id':
+    case 'tunnel_client_id':
+    case 'agent_id':
+      return tr(`mh.tp.kind.${kind}`)
     default: return 'ID'
   }
 }
@@ -633,10 +639,11 @@ function setHostKind(i: number, kind: string) {
 }
 function hostValueLabel(kind: string) {
   switch (kind) {
-    case 'exact': return 'Hostname (e.g. db.intranet)'
-    case 'wildcard': return 'Wildcard (e.g. *.intranet)'
-    case 'cidr': return 'CIDR (e.g. 10.0.0.0/24)'
-    default: return 'Value'
+    case 'exact':
+    case 'wildcard':
+    case 'cidr':
+      return tr(`mh.tp.hostValue.${kind}`)
+    default: return tr('mh.tp.hostValue.other')
   }
 }
 
@@ -660,26 +667,26 @@ function buildPayload(): TunnelPolicyCreate {
 }
 
 function validateForm(): string | null {
-  if (!form.name.trim()) return 'Name is required.'
-  if (form.subjects.length === 0) return 'At least one subject is required.'
-  if (form.targets.length === 0) return 'At least one target is required.'
-  if (form.allowlist.length === 0) return 'At least one allowlist rule is required.'
+  if (!form.name.trim()) return tr('mh.tp.err.name')
+  if (form.subjects.length === 0) return tr('mh.tp.err.subjects')
+  if (form.targets.length === 0) return tr('mh.tp.err.targets')
+  if (form.allowlist.length === 0) return tr('mh.tp.err.allowlist')
   for (const s of form.subjects) {
     if (s.kind !== 'all_users' && !s.id.trim()) {
-      return 'Each non-AllUsers subject needs an ID.'
+      return tr('mh.tp.err.subjectId')
     }
   }
   for (const t of form.targets) {
     if (t.kind === 'agent_id' && !t.id.trim()) {
-      return 'Agent-ID targets need an Agent ID.'
+      return tr('mh.tp.err.targetId')
     }
   }
   for (const r of form.allowlist) {
-    if (!r.host_pattern.value.trim()) return 'Each allowlist rule needs a host value.'
-    if (!r.port_range.low || !r.port_range.high) return 'Port range must be set.'
-    if (r.port_range.low < 1 || r.port_range.low > 65535) return 'Port-range low must be 1-65535.'
-    if (r.port_range.high < r.port_range.low) return 'Port-range high must be ≥ low.'
-    if (r.port_range.high > 65535) return 'Port-range high must be ≤ 65535.'
+    if (!r.host_pattern.value.trim()) return tr('mh.tp.err.host')
+    if (!r.port_range.low || !r.port_range.high) return tr('mh.tp.err.portSet')
+    if (r.port_range.low < 1 || r.port_range.low > 65535) return tr('mh.tp.err.portLow')
+    if (r.port_range.high < r.port_range.low) return tr('mh.tp.err.portOrder')
+    if (r.port_range.high > 65535) return tr('mh.tp.err.portHigh')
   }
   return null
 }
@@ -736,20 +743,20 @@ async function doDelete() {
 
 /** A subject by name — the id prefix only when the name is not known here. */
 function subjectLabel(s: PolicySubject): string {
-  if (s.kind === 'all_users') return 'All users'
+  if (s.kind === 'all_users') return tr('mh.tp.kind.all_users')
   const id = s.id.length > 8 ? `${s.id.slice(0, 6)}…` : s.id
   switch (s.kind) {
-    case 'user_id': return `User ${memberItems.value.find((m) => m.value === s.id)?.title ?? id}`
-    case 'role_id': return `Role ${roleItems.value.find((r) => r.value === s.id)?.title ?? id}`
-    case 'tunnel_client_id': return `Client ${clientLabel(s.id, id)}`
-    case 'agent_id': return `Agent ${agentLabel(s.id, id)}`
+    case 'user_id': return tr('mh.tp.label.user', { name: memberItems.value.find((m) => m.value === s.id)?.title ?? id })
+    case 'role_id': return tr('mh.tp.label.role', { name: roleItems.value.find((r) => r.value === s.id)?.title ?? id })
+    case 'tunnel_client_id': return tr('mh.tp.label.client', { name: clientLabel(s.id, id) })
+    case 'agent_id': return tr('mh.tp.label.agent', { name: agentLabel(s.id, id) })
   }
 }
 
 function targetLabel(t: PolicyTarget): string {
-  if (t.kind === 'all_agents') return 'All agents'
+  if (t.kind === 'all_agents') return tr('mh.tp.kind.all_agents')
   const id = t.id.length > 8 ? `${t.id.slice(0, 6)}…` : t.id
-  return `Agent ${agentLabel(t.id, id)}`
+  return tr('mh.tp.label.agent', { name: agentLabel(t.id, id) })
 }
 
 function hostLabel(h: HostPattern): string {

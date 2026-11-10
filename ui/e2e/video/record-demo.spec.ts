@@ -43,7 +43,7 @@ import { existsSync, mkdirSync, writeFile, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 /**
- * `E2E_DEMO_LOCKCHECK` (`record-demo.sh` passes `ROOMLER_DEMO_LOCKCHECK`): `roomler exec`
+ * `E2E_DEMO_LOCKCHECK` (`record-demo.sh` passes `MESHHARBOR_DEMO_LOCKCHECK`): `mh exec`
  * selectors with their OS, one per device in filming order — `"laptop-17:win,office-mac:mac"`.
  * Each device is checked right before it is FILMED, not just when the take starts: managed
  * laptops lock after a few idle minutes, and the second machine of a take sat idle while the
@@ -54,7 +54,7 @@ const LOCKCHECK = (process.env.E2E_DEMO_LOCKCHECK || '')
   .map((s) => s.trim())
   .filter(Boolean)
 
-/** Whether the device's screen is signed in now, by `roomler exec`. Anything unclear is "no". */
+/** Whether the device's screen is signed in now, by `mh exec`. Anything unclear is "no". */
 function signedIn(check: string): { ok: boolean; why: string } {
   const i = check.lastIndexOf(':')
   const [sel, os] = [check.slice(0, i), check.slice(i + 1)]
@@ -62,7 +62,7 @@ function signedIn(check: string): { ok: boolean; why: string } {
   if (!cmd) return { ok: false, why: `"${check}" needs :win or :mac` }
   let out: string
   try {
-    out = execFileSync('roomler', ['exec', sel, cmd], { encoding: 'utf8', timeout: 60_000 })
+    out = execFileSync('meshharbor', ['exec', sel, cmd], { encoding: 'utf8', timeout: 60_000 })
   } catch (e) {
     return { ok: false, why: `could not check ${sel}: ${(e as Error).message.split('\n')[0]}` }
   }
@@ -123,7 +123,7 @@ const LABELS = (process.env.E2E_DEMO_LABELS || '').split('|').map((s) => s.trim(
  * ⚠️ The dashboard names the org and the whole fleet, so this scene changes what the PAGE is told,
  * the way LABELS does. The mesh payload is rewritten: each filmed device under its label, every
  * other device as "device N", and no address, relay home or relay name. Its center is
- * "roomler.ai". The pointer stays off the graph, because a hover tooltip would show more. The
+ * "meshharbor.itachi.fans". The pointer stays off the graph, because a hover tooltip would show more. The
  * card's box goes into the manifest (`mark.box`), and the cut films that box and nothing else of
  * the page.
  */
@@ -543,7 +543,7 @@ async function stepsScene(
   }
 }
 
-test.describe('Roomler demo recording', () => {
+test.describe('MeshHarbor demo recording', () => {
   test('record the product demo', async ({ page }) => {
     test.setTimeout(900_000)
 
@@ -678,7 +678,7 @@ test.describe('Roomler demo recording', () => {
             delete n.overlay_ip
           }
           for (const e of json.edges ?? []) for (const end of e.ends ?? []) delete end.relay
-          if (json.center) json.center.name = 'roomler.ai'
+          if (json.center) json.center.name = 'meshharbor.itachi.fans'
           await route.fulfill({ response: resp, json })
         },
       )

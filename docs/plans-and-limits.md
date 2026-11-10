@@ -51,7 +51,7 @@ flowchart TD
 ```
 
 `services::quota::evaluate_for` (`crates/services/src/quota.rs:301`) is the only place a limit is
-compared. Call sites go through `roomler_core::quota::check` (`crates/core/src/quota.rs:38`), which adds
+compared. Call sites go through `meshharbor_core::quota::check` (`crates/core/src/quota.rs:38`), which adds
 two things: the FR-102 collision count per org (`growth_daily`), and `Core::plans_sold`
 (§6).
 
@@ -107,7 +107,7 @@ another pod — are where the design is unusual:
 ```mermaid
 sequenceDiagram
     participant UI as billing page
-    participant API as roomler (saas)
+    participant API as meshharbor (saas)
     participant S as Stripe
     UI->>API: POST /api/stripe/checkout {plan, interval, currency}
     API->>API: refuse a currency not on sale · refuse a 2nd subscription (409)
@@ -128,10 +128,10 @@ subscription's item instead of starting a second one (`crates/services/src/strip
 
 | Setting | Effect | Default |
 |---|---|---|
-| `ROOMLER__STRIPE__PRICE_PRO`, `…__PRICE_BUSINESS` | the monthly Prices (one unit per seat) | — |
-| `ROOMLER__STRIPE__PRICE_PRO_ANNUAL`, `…__PRICE_BUSINESS_ANNUAL` | the annual Prices (two months free); empty hides annual | empty |
-| `ROOMLER__STRIPE__CURRENCIES` | the currencies on sale; a currency joins once every Price carries it | `usd` |
-| `ROOMLER__STRIPE__SEAT_SYNC` | the 15-minute quantity reconcile | on |
+| `MESHHARBOR__STRIPE__PRICE_PRO`, `…__PRICE_BUSINESS` | the monthly Prices (one unit per seat) | — |
+| `MESHHARBOR__STRIPE__PRICE_PRO_ANNUAL`, `…__PRICE_BUSINESS_ANNUAL` | the annual Prices (two months free); empty hides annual | empty |
+| `MESHHARBOR__STRIPE__CURRENCIES` | the currencies on sale; a currency joins once every Price carries it | `usd` |
+| `MESHHARBOR__STRIPE__SEAT_SYNC` | the 15-minute quantity reconcile | on |
 
 ## 6. Plans bind only where they are sold
 
@@ -140,7 +140,7 @@ On the hosted service that is a plan; on a self-hosted server it only means nobo
 org anything. `Core::plans_sold` (`crates/core/src/state.rs:131`) is true only where the
 hosted `saas` module is compiled in and switched on (`crates/api/src/state.rs:298`); the
 published self-host image and the compose build both leave it out. With it false,
-`roomler_core::quota` refuses nothing and counts nothing (`crates/core/src/quota.rs:49`), and
+`meshharbor_core::quota` refuses nothing and counts nothing (`crates/core/src/quota.rs:49`), and
 the session cap (`crates/modules/remote/src/controller.rs:745`) and the meeting sweep
 (`crates/modules/conference/src/meeting_cap.rs:104`) stand down.
 
@@ -152,13 +152,13 @@ Each fence now has an integration test on a server without `saas`.
 
 | Switch | Turns off |
 |---|---|
-| `ROOMLER__RC__ORG_SESSION_CAP=false` | the concurrent-session cap |
-| `ROOMLER__RC__SESSION_SLOTS=false` | P3b's cluster-wide count: back to P3's count on the device's hub, and external (FR-52) sessions uncapped. On in production; it takes effect on a rollout restart, since the ConfigMap carries no content hash |
-| `ROOMLER__RELAY_ALLOWANCE__ENABLED=false` | the relay allowance on DERP (P4a): no over-allowance set is published, and the API pods and every PoP drop the one they hold within a period. On in production since 2026-10-21; like the line above, it takes effect on a rollout restart |
-| `ROOMLER__MEETINGS__FREE_CAP=false` | the meeting-length cap |
-| `ROOMLER__STRIPE__SEAT_SYNC=false` | the quantity reconcile (the quantity is then set at checkout only) |
+| `MESHHARBOR__RC__ORG_SESSION_CAP=false` | the concurrent-session cap |
+| `MESHHARBOR__RC__SESSION_SLOTS=false` | P3b's cluster-wide count: back to P3's count on the device's hub, and external (FR-52) sessions uncapped. On in production; it takes effect on a rollout restart, since the ConfigMap carries no content hash |
+| `MESHHARBOR__RELAY_ALLOWANCE__ENABLED=false` | the relay allowance on DERP (P4a): no over-allowance set is published, and the API pods and every PoP drop the one they hold within a period. On in production since 2026-10-21; like the line above, it takes effect on a rollout restart |
+| `MESHHARBOR__MEETINGS__FREE_CAP=false` | the meeting-length cap |
+| `MESHHARBOR__STRIPE__SEAT_SYNC=false` | the quantity reconcile (the quantity is then set at checkout only) |
 | an org's `settings.plan_enforcement = off` | every **staged** limit for that org (never an established one) |
-| `ROOMLER__MODULES__SAAS=false` | the hosted billing module itself, and with it every plan limit (no plans sold). Not a switch for the hosted service: it also takes checkout away |
+| `MESHHARBOR__MODULES__SAAS=false` | the hosted billing module itself, and with it every plan limit (no plans sold). Not a switch for the hosted service: it also takes checkout away |
 
 ## 8. Not built yet
 

@@ -1,6 +1,6 @@
 # FR-88: Measure what promotion brings — attribution to an activated device, a link hub, and video on the site
 
-**Issue:** [#1790](https://github.com/gjovanov/roomler-ai/issues/1790) · **Status:** P1 merged 2026-09-30, not yet
+**Issue:** [#1790](https://github.com/jk-zhang-meta/MeshHarbor/issues/1790) · **Status:** P1 merged 2026-09-30, not yet
 promoted: P1a, the server half, in #1800 (`d359ddf01`); P1b, the site and SPA half, in #1798. P0 merged
 2026-09-29 (#1791); P2–P4 not started · **Owner:** web / public site + auth · **Anchors:** master `dfb78e151` ·
 **Builds on:** [FR-87](FR-87-blog-and-google-indexing.md) (the static site, purestat on every page),
@@ -8,7 +8,7 @@ promoted: P1a, the server half, in #1800 (`d359ddf01`); P1b, the site and SPA ha
 
 ## 1. Goal
 
-Roomler is about to publish short and long videos on YouTube, TikTok, Instagram and Facebook on a
+MeshHarbor is about to publish short and long videos on YouTube, TikTok, Instagram and Facebook on a
 fixed cadence. Today nothing connects any of it to a user: purestat records `utm_*` on the visit,
 and the chain stops there. This FR makes one campaign id travel from a post's link to the account
 it produced and to that account's first enrolled device, **without storing anything on the
@@ -16,7 +16,7 @@ visitor's device**, and gives the videos a home on the site.
 
 1. **Attribution**: the landing page's UTM parameters ride on the site's own links into sign-up
    (email and OAuth) and the newsletter form. A new account records where it came from, plus an
-   optional answer to "How did you hear about Roomler?".
+   optional answer to "How did you hear about MeshHarbor?".
 2. **Conversions**: purestat goals for `signup`, `subscribe`, `install-copy` and `github-outbound`.
 3. **Activation**: a platform-admin view of signups, and of signups whose tenant enrolled a device
    within 7 days, by source and campaign.
@@ -34,7 +34,7 @@ this spec. Nothing here depends on it.
   page through the shared shell (`ui/docs/site.ts:152-157`). Its event schema stores
   `utm_source`/`utm_medium`/`utm_campaign`/`utm_content`/`utm_term`, and it has goals and a stats API
   keyed by an `X-API-Key` (purestat's `docs/api.md` and `docs/tracker.md`).
-- **Nothing in roomler reads a source.** No hit for `utm_`, `document.referrer` or `ref=` in `ui/`,
+- **Nothing in meshharbor reads a source.** No hit for `utm_`, `document.referrer` or `ref=` in `ui/`,
   `crates/` or `files/` outside a vendored README. `RegisterRequest`
   (`crates/api/src/routes/auth.rs:16`) and `User` (`crates/db/src/models/user.rs:7`) have no source
   field. The only hook is `subscribers.source` (`crates/db/src/models/subscriber.rs:33`), clamped to
@@ -110,7 +110,7 @@ sequenceDiagram
   - `#[serde(default, skip_serializing_if = "Option::is_none")]`. ⚠️ If any insert path builds its
     BSON by hand with `doc!{}`, it will silently drop the new field; the insert must serialise the
     struct, and a test asserts the round trip.
-- **"How did you hear about Roomler?"** is an optional select on the register form: search,
+- **"How did you hear about MeshHarbor?"** is an optional select on the register form: search,
   YouTube, TikTok, Instagram, Facebook, Reddit, Hacker News, a friend or colleague, other. It is
   stored as `self_reported`. It covers what links cannot: a URL said out loud, a screenshot shared
   in a chat, a conversation.
@@ -161,8 +161,8 @@ sequenceDiagram
   and `ORG.sameAs` names them to search engines next to the repository.
 - **nginx** (`files/nginx-pod.conf`): `location = /yt { return 302 /links/?utm_source=youtube&utm_medium=bio&utm_campaign=profile; }`,
   and the same for `/tt`, `/x` and `/fb`. More short paths are added only by a PR.
-  - **2026-10-11: X replaced Instagram.** Instagram disabled @roomler.ai on 2026-10-10, so its
-    channel and its `/ig` path left together, and @roomler_ai on X took the slot as `/x`. A short
+  - **2026-10-11: X replaced Instagram.** Instagram disabled @meshharbor.itachi.fans on 2026-10-10, so its
+    channel and its `/ig` path left together, and @meshharbor on X took the slot as `/x`. A short
     path lives only as long as its channel: the spec's both-ways check keeps nginx and `CHANNELS`
     equal.
   - `utm_medium=bio&utm_campaign=profile` is what every profile link of the program carries, a
@@ -219,7 +219,7 @@ sequenceDiagram
 | P1a | the server half of §3a — `RegisterRequest.attribution`, the `utm_*` query on `GET /api/oauth/{provider}` and its Redis parking spot, `users.signup_attribution` — and the §3c view | the SPA omits `attribution`; the view is platform-admin only | **merged** #1800 `d359ddf01`, promoted `hosted-20260930-60fe7a7` |
 | P1b | the site and SPA half of §3a (the shell script, the register view and its select, the provider buttons, the newsletter form), the goals (§3b), the privacy-policy section, and the `/landing` and `/pricing` redirects in nginx that now keep the query | `ATTRIBUTION_ENABLED = false` in `ui/src/utils/attribution.ts`; `ANALYTICS = null` | **merged** #1798 `71bba4bd3`, promoted `hosted-20260930-60fe7a7` |
 | P2 | `/links/` and the short paths (§3d) | remove the locations and the page | PR open |
-| P3 | video on the site (§3e, as built below it): the homepage, `/docs/start/what-is-roomler/`, the SPA landing and the tutorial's first chapter, with `docs/public-site.md` §7 | empty manifest; revert `frame-src` | PR open |
+| P3 | video on the site (§3e, as built below it): the homepage, `/docs/start/what-is-meshharbor/`, the SPA landing and the tutorial's first chapter, with `docs/public-site.md` §7 | empty manifest; revert `frame-src` | PR open |
 | P4 | docs: `docs/public-site.md` gains the attribution flow, the link hub and the video facade, with mermaid; the field log | — | — |
 
 **Deploy order:** P1 is promoted before the first video is published, so the first posts are
@@ -243,7 +243,7 @@ measured from their first view. Each phase is its own promote.
   a platform admin, and 404 for anyone else. With `fleet` unmounted, `activated` is `null`.
 - [ ] **AC6:** a scripted pass records exactly one event for each of the four purestat goals, and zero
   with `ANALYTICS = null` (control).
-- [ ] **AC7:** `curl -sI https://roomler.ai/yt` (and `/tt`, `/x`, `/fb`) returns a 302 whose relative
+- [ ] **AC7:** `curl -sI https://meshharbor.itachi.fans/yt` (and `/tt`, `/x`, `/fb`) returns a 302 whose relative
   `Location` is `/links/` with that channel's `utm_source`, `utm_medium=bio` and
   `utm_campaign=profile`, and no SPA route answers any of those paths. `/links/` answers 200 with the
   hub and `/links` a 301 to it. Checked by `scripts/public-site-smoke.sh` §5c, shown failing on the
@@ -293,9 +293,9 @@ measured from their first view. Each phase is its own promote.
 | Date | Build | What was checked | Result |
 |---|---|---|---|
 | 2026-09-30 | production, before P1b (`/health` 0.4.114) | AC12's red run: `curl -sI` on `/pricing?utm_source=smoke` and `/landing?utm_source=smoke&utm_campaign=fr88`; the smoke's new redirect block | **fails as expected**: `Location: /#pricing` and `Location: /`, the query dropped; the smoke block reports 2 of 4 red. The same block against `files/nginx-pod.conf` in `nginx:stable` (Docker): master's file 2 of 4 red, PR #1798's 4 of 4 green, `nginx -t` clean, and no query still gives exactly `/` and `/#pricing` |
-| 2026-09-30 | production, before P2 (`hosted-20260930-e7e7fad`, `/health` 0.4.114) | AC7's red run: `scripts/public-site-smoke.sh https://roomler.ai` with the §5c block P2 adds | **fails as expected**: `/yt`, `/tt`, `/ig` and `/fb` each answer **200 with the SPA shell** (a soft 404), `/links` answers 200 instead of a 301, `/links/` is not the hub, and `/links/fr88-smoke-missing/` answers 200. The same smoke against the P2 build, served by `files/nginx-pod.conf` in `nginx:stable` (Docker): every check green, `nginx -t` clean, and each short path answers `302 Location: /links/?utm_source=<channel>&utm_medium=bio&utm_campaign=profile` |
-| 2026-10-11 | production, before #2007 (`hosted-20261011-9443077`, `/health` 0.4.126) | the red run for X taking Instagram's place (`/ig` → `/x`): `scripts/public-site-smoke.sh https://roomler.ai` with #2007's §5c pairs | **fails as expected**: `/x -> 200`, the SPA shell answering; `/yt`, `/tt` and `/fb` 302 to `/links/`; no other check red |
-| 2026-10-12 | production, after #2007 (`hosted-20261011-ffa860c`, promoted 2026-10-11 20:48Z, `/health` 0.4.127) | the same smoke, from master | **passes**, every check: `/x` → `302 Location: /links/?utm_source=x&utm_medium=bio&utm_campaign=profile`. `/ig` now answers 200 with no redirect, as the both-ways rule requires. `/links/` lists YouTube, TikTok, X (@roomler_ai) and Facebook, with no instagram.com link left |
+| 2026-09-30 | production, before P2 (`hosted-20260930-e7e7fad`, `/health` 0.4.114) | AC7's red run: `scripts/public-site-smoke.sh https://meshharbor.itachi.fans` with the §5c block P2 adds | **fails as expected**: `/yt`, `/tt`, `/ig` and `/fb` each answer **200 with the SPA shell** (a soft 404), `/links` answers 200 instead of a 301, `/links/` is not the hub, and `/links/fr88-smoke-missing/` answers 200. The same smoke against the P2 build, served by `files/nginx-pod.conf` in `nginx:stable` (Docker): every check green, `nginx -t` clean, and each short path answers `302 Location: /links/?utm_source=<channel>&utm_medium=bio&utm_campaign=profile` |
+| 2026-10-11 | production, before #2007 (`hosted-20261011-9443077`, `/health` 0.4.126) | the red run for X taking Instagram's place (`/ig` → `/x`): `scripts/public-site-smoke.sh https://meshharbor.itachi.fans` with #2007's §5c pairs | **fails as expected**: `/x -> 200`, the SPA shell answering; `/yt`, `/tt` and `/fb` 302 to `/links/`; no other check red |
+| 2026-10-12 | production, after #2007 (`hosted-20261011-ffa860c`, promoted 2026-10-11 20:48Z, `/health` 0.4.127) | the same smoke, from master | **passes**, every check: `/x` → `302 Location: /links/?utm_source=x&utm_medium=bio&utm_campaign=profile`. `/ig` now answers 200 with no redirect, as the both-ways rule requires. `/links/` lists YouTube, TikTok, X (@meshharbor) and Facebook, with no instagram.com link left |
 
 ## 9. Related
 

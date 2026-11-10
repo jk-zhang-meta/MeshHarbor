@@ -105,7 +105,7 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_core::business_authority::BusinessZone::{Mainland, NonMainland};
+    use meshharbor_core::business_authority::BusinessZone::{Mainland, NonMainland};
 
     #[test]
     fn uncertain_edges_do_not_hide_a_later_known_violation() {

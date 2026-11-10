@@ -59,7 +59,7 @@ $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\sign
             Sort-Object FullName -Descending | Select-Object -First 1
 if (-not $signtool) { Warn 'signtool.exe not found -- falling back to Get-AuthenticodeSignature only (no chain policy check).' }
 
-$stage = Join-Path ([IO.Path]::GetTempPath()) ("roomler-verify-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$stage = Join-Path ([IO.Path]::GetTempPath()) ("meshharbor-verify-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 
 Say "Downloading $Tag from $Repo"

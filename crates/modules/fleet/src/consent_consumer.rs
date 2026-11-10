@@ -7,15 +7,15 @@
 
 use std::sync::Arc;
 
-use roomler_ai_remote_control::models::ConsentMode;
-use roomler_ai_services::{
+use meshharbor_core::ws::{redis_pubsub::RedisPubSub, storage::WsStorage};
+use meshharbor_remote_control::models::ConsentMode;
+use meshharbor_services::{
     EmailService, PushService,
     dao::{
         agent::AgentDao, consent_request::ConsentRequestDao, notification::NotificationDao,
         push_subscription::PushSubscriptionDao, user::UserDao,
     },
 };
-use roomler_core::ws::{redis_pubsub::RedisPubSub, storage::WsStorage};
 use tokio::sync::mpsc;
 
 use crate::hub::ConsentEvent;
@@ -55,11 +55,11 @@ async fn consent_in_app_notification(
         .create(
             ev.tenant_id,
             owner_id,
-            roomler_ai_db::models::NotificationType::ConsentRequest,
+            meshharbor_db::models::NotificationType::ConsentRequest,
             title,
             body,
             Some(link),
-            roomler_ai_db::models::NotificationSource {
+            meshharbor_db::models::NotificationSource {
                 entity_type: "remote_session".to_string(),
                 entity_id: ev.session_id,
                 actor_id: Some(ev.controller_user_id),
@@ -80,7 +80,7 @@ async fn consent_in_app_notification(
                     "created_at": n.created_at.try_to_rfc3339_string().unwrap_or_default(),
                 }
             });
-            roomler_core::ws::dispatcher::send_to_user_with_redis(
+            meshharbor_core::ws::dispatcher::send_to_user_with_redis(
                 &deps.ws_storage,
                 &deps.redis_pubsub,
                 &owner_id,

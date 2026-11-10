@@ -1445,6 +1445,25 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_real_pq_guard_reset_invalidates_proof_and_preserves_held_fifo() {
+        if std::env::var_os("MH_PQ_FIFO_ISOLATED").is_none() {
+            let exe = std::env::current_exe().expect("current_exe");
+            let out = std::process::Command::new(exe)
+                .env("MH_PQ_FIFO_ISOLATED", "1")
+                .args([
+                    "--exact",
+                    "overlay::wg::multipath_runtime::tests::runtime_real_pq_guard_reset_invalidates_proof_and_preserves_held_fifo",
+                    "--nocapture",
+                ])
+                .output()
+                .expect("spawn isolated pq guard reset fifo test");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.success() && stdout.contains("1 passed"),
+                "isolated runtime_real_pq_guard_reset_invalidates_proof_and_preserves_held_fifo failed:\n{stdout}\n{stderr}"
+            );
+            return;
+        }
         let (mut da, mut db, mut rx, _) =
             pair(MultipathMode::Redundant, MultipathMode::Redundant).await;
         retain_pair(&mut da, &mut db).await;

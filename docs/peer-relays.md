@@ -2,7 +2,7 @@
 
 When two of an organization's devices cannot reach each other directly, their
 WireGuard ciphertext has to cross a relay. Before FR-19 that relay was always
-ours, either coturn or DERP on the API pods, which put roomler's control plane on
+ours, either coturn or DERP on the API pods, which put meshharbor's control plane on
 the data path for exactly the pairs that need help most. A **peer relay** (or *org
 relay*) is one of the org's own enrolled devices, typically a well-connected box at
 headquarters, forwarding that ciphertext between the org's other devices over UDP.
@@ -19,10 +19,10 @@ cannot decrypt, exactly as DERP does.
 flowchart LR
     subgraph org["the org's own devices"]
         A["member A<br/>(symmetric NAT)"]
-        R["org relay<br/>roomlerd, UDP 3478"]
+        R["org relay<br/>meshharbord, UDP 3478"]
         B["member B"]
     end
-    S["roomler server<br/>(mints, audits)"]
+    S["meshharbor server<br/>(mints, audits)"]
     D["DERP floor<br/>(API pods, TLS :443)"]
 
     S -.->|"rc:overlay.relay_session"| A
@@ -97,7 +97,7 @@ own deny reason, so a blip is never mistaken for a policy decision.
 ⚠️ **Approval needs `EXEC_DEVICE` because there is no permission bit left.** The UI
 checks masks with JavaScript's signed 32-bit operators, and bit 30 is the ceiling
 (#888). The coupling grants nothing new: an `EXEC_DEVICE` holder can already run
-`roomler config set relay_server_enabled true` as root on any exec-enabled device. Clearing an
+`mh config set relay_server_enabled true` as root on any exec-enabled device. Clearing an
 approval needs `MANAGE_AGENTS` alone: revoking is not a grant, and the admin who can
 approve must not be the only one who can revoke.
 
@@ -109,7 +109,7 @@ survives a compromised server. Someone with local access sets it.
 secondary org's admin must not be able to mint sessions onto the device owner's
 listener. The server refuses (`SecondaryOrg`), and the device independently drops all
 three relay frames when they arrive on a secondary org's socket
-([`agents/roomlerd/src/overlay.rs:1026`](../agents/roomlerd/src/overlay.rs#L1026)).
+([`agents/meshharbord/src/overlay.rs:1026`](../agents/meshharbord/src/overlay.rs#L1026)).
 
 ## `auto` — a central Server role inside one business zone (MeshHarbor)
 
@@ -375,16 +375,16 @@ socket or a clock:
 - **The table has a ceiling and refuses rather than grows**: 64 sessions
   ([`session.rs:45`](../crates/tunnel-core/src/overlay/orgrelay/session.rs#L45)). An
   org must not be able to cost its HQ box its own remote access.
-- **A parser bug degrades the relay, not the node.** `roomlerd` runs as SYSTEM/root
+- **A parser bug degrades the relay, not the node.** `meshharbord` runs as SYSTEM/root
   and this is a parser for attacker-controlled bytes on a public UDP port. The
   decoders are fuzzed over arbitrary bytes, and the handler runs under `catch_unwind`
   ([`orgrelay/server.rs`](../crates/tunnel-core/src/overlay/orgrelay/server.rs)), so
   one bad datagram cannot take remote desktop, tunnels and SSH down with it.
 
-⚠️ **`roomler status` shows the relay's address and its PROBE counters only.** The
+⚠️ **`mh status` shows the relay's address and its PROBE counters only.** The
 forwarding and drop counters (`forwarded`, `bound`, and one per refusal reason, such as
 `drop_unbound_source` or `drop_bad_cookie`) are summarised into the daemon log every
-300 s ([`relay_server.rs:143`](../agents/roomlerd/src/relay_server.rs#L143)). A relay
+300 s ([`relay_server.rs:143`](../agents/meshharbord/src/relay_server.rs#L143)). A relay
 forwarding perfectly well reads `probes_answered=0`, and the first field run
 misread that. A nonzero `drop_unbound_source` means someone is *trying*.
 
@@ -490,7 +490,7 @@ sequenceDiagram
   the carrier.
 - **Direct is untouched.** The pin governs the relay tier only, so a pair that can go
   direct still re-upgrades.
-- **Kill switches:** `ROOMLER__OVERLAY__ORG_LOSS_PIN=0` on the server keeps every org
+- **Kill switches:** `MESHHARBOR__OVERLAY__ORG_LOSS_PIN=0` on the server keeps every org
   carrier (reports are logged only), and `OVERLAY_ORG_LOSS_REPORT=0` on a member stops
   its reports.
 
@@ -529,7 +529,7 @@ one-hop session and is never told the private endpoint.
 A pair that is direct but slow can move onto an org relay that is faster, and back once
 direct is no slower. This is latency-first routing (EasyTier's `--latency-first`);
 Tailscale never leaves a working direct path. It is **off by default**: the member
-needs `ROOMLERD_PATH_TRIAL=1`, and the tenant's peer-relay mode must be `on` (an
+needs `MESHHARBORD_PATH_TRIAL=1`, and the tenant's peer-relay mode must be `on` (an
 `auto` tenant gets the ranked mint, not trials).
 
 1. A member with a direct peer asks the server for a trial on a relay that discovery
@@ -546,8 +546,8 @@ needs `ROOMLERD_PATH_TRIAL=1`, and the tenant's peer-relay mode must be `on` (an
 The gap between 0.75× and 1.10× is the hysteresis: a pair does not flap between two
 paths of about the same RTT.
 
-**Lab, 2026-10-27 (houston, `ptlab`).** The lab used real `roomlerd`,
-`roomler-ai-api`, mongod and redis, each in its own network namespace. netem added
+**Lab, 2026-10-27 (houston, `ptlab`).** The lab used real `meshharbord`,
+`meshharbor-api`, mongod and redis, each in its own network namespace. netem added
 60 ms each way to m1↔m2 only, and the relay was next to both. The pair went direct
 first (public tier). Its trial was requested 0.3 s later. 8 s later it was ready
 (direct 120.2 ms, relay 0.26 ms), and both ends committed in the same millisecond.
@@ -592,7 +592,7 @@ department** and the traffic is often **an employee's remote-desktop session**.
 | | when each session starts and stops, and how long it lasts |
 | | **per-flow volume and timing**, with the host's own tools (`tcpdump`, conntrack) |
 
-`roomlerd` itself keeps only **aggregate** counters, with no per-session byte counts.
+`meshharbord` itself keeps only **aggregate** counters, with no per-session byte counts.
 The host's operating system sees every packet regardless. Remote-desktop traffic has a
 distinctive bitrate profile, so that metadata reveals **when a person is at their
 machine, and for how long**. Moving the relay in-house moves *content* into the
@@ -617,7 +617,7 @@ belongs in the MeshHarbor customer documentation as written.
 | one TCP stream (SSH `dd`) | org **10.1–19.7** Mbps at 86 ms · DERP **41.6** at 50 ms · direct 44.4 | 0.4.41 · 2026-09-01 |
 | relay killed mid-session | `blocked` +14 s, on DERP +26 s, never disconnected; re-upgraded after restore | 0.4.20 · 2026-08-29 |
 | port | 3478 is the **only** port the symmetric-NAT corporate laptop could reach (41641 and the coturn band failed) | 2026-08-28 |
-| relay socket census | flat for 24 h once [FR-48](fr/FR-48-roomlerd-ice-socket-leak.md) fixed the TURN client's socket leak (was ~9 sockets/h) | 0.4.100 · 2026-09-24 |
+| relay socket census | flat for 24 h once [FR-48](fr/FR-48-meshharbord-ice-socket-leak.md) fixed the TURN client's socket leak (was ~9 sockets/h) | 0.4.100 · 2026-09-24 |
 
 🔑 **The org relay's value is pod offload and raw headroom, not universal speed.** Both
 throughput rows are correct. The UDP blaster has no congestion control, so it measures
@@ -642,7 +642,7 @@ the capacity gained: the relay was in France and the members in Austria and Germ
    `{"serve": true, "static_endpoints": [...]}`.
 4. **An ACL grant** for each member, naming the relay node in `via` with a destination
    covering the relay's overlay address.
-5. **Locally on the relay**: `roomler config set relay_server_enabled true`, then
+5. **Locally on the relay**: `mh config set relay_server_enabled true`, then
    restart the daemon. Config keys are read at startup.
 6. **On each member**: `overlay_org_relay = true`, then a restart.
 7. **The org switch**: `warn` first, read the audit, then `on`.
@@ -654,11 +654,11 @@ the capacity gained: the relay was in France and the members in Austria and Germ
    "reason": "..."}`. Account approval must be enabled with an `owner_user_id`.
 2. Locally on the relay, gate 4 (never pushed). Either install the server with
    `install.sh --role daemon --system --relay-server` (Linux; implies `--overlay`), or
-   enroll it with `roomlerd enroll … --relay-server`. Both write `relay_server_enabled =
+   enroll it with `meshharbord enroll … --relay-server`. Both write `relay_server_enabled =
    true` with the enrolled config, so the first start already serves. On a device that is
    already enrolled, set `relay_server_enabled = true` and restart. `--relay-server`
    applies to the PRIMARY enrollment only: the listener is host-global
-   ([`org_join.rs`](../agents/roomlerd/src/org_join.rs), `apply_relay_server_flag`).
+   ([`org_join.rs`](../agents/meshharbord/src/org_join.rs), `apply_relay_server_flag`).
 3. The org switch: `{"mode": "auto"}`. A `zone_denied` row means a party had no zone, or
    the three were not in one zone. The fleet's agents must reach the server through the
    configured `business_trusted_proxy_cidrs` chain, or no connection has a zone at all.
@@ -679,8 +679,8 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 - **The audit names the gate.** Every refusal carries its reason, and a pair that never
   appears there never asked. That means the pair was settled on the DERP floor, so
   restart a member to make it climb.
-- `roomler peers` CONN reads `relay:org/udp` once a pair is on it, and
-  `roomler why <peer>` names the carrier and the relay.
+- `mh peers` CONN reads `relay:org/udp` once a pair is on it, and
+  `mh why <peer>` names the carrier and the relay.
 - ⚠️ After heavy enable/disable churn, a member can back off from re-requesting for a
   while. Nothing on the client forces it; wait, or restart it.
 
@@ -694,7 +694,7 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 | wire framing and shape rules | [`orgrelay/wire.rs`](../crates/tunnel-core/src/overlay/orgrelay/wire.rs) |
 | the authenticated bind | [`orgrelay/bind.rs`](../crates/tunnel-core/src/overlay/orgrelay/bind.rs) |
 | the relay's session table (pure) | [`orgrelay/session.rs`](../crates/tunnel-core/src/overlay/orgrelay/session.rs) |
-| the relay server + counters | [`orgrelay/server.rs`](../crates/tunnel-core/src/overlay/orgrelay/server.rs), [`agents/roomlerd/src/relay_server.rs`](../agents/roomlerd/src/relay_server.rs) |
+| the relay server + counters | [`orgrelay/server.rs`](../crates/tunnel-core/src/overlay/orgrelay/server.rs), [`agents/meshharbord/src/relay_server.rs`](../agents/meshharbord/src/relay_server.rs) |
 | the member: bind + `OrgRelayConn` | [`orgrelay/client.rs`](../crates/tunnel-core/src/overlay/orgrelay/client.rs) |
 | the member's coordinator | [`relay_link.rs`](../crates/tunnel-core/src/overlay/relay_link.rs) — `relay_strategy` `:1052`, `org_request_bind` `:1946`, `commit_org_bind` `:1972` |
 | loss: the member's measure and report | [`runtime/rx_loss.rs`](../crates/tunnel-core/src/overlay/runtime/rx_loss.rs) (windows, `take_reports` `:154`), [`relay_link.rs:1446`](../crates/tunnel-core/src/overlay/relay_link.rs#L1446) `report_org_loss` |
@@ -703,7 +703,7 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 | `auto`: the implicit grant and its revocations | [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) — candidates `:504`, the zone check `:631`, `revoke_implicit_for_agent` `:1530` |
 | `auto`: TestApp tests | [`crates/tests/src/peer_relay_auto_tests.rs`](../crates/tests/src/peer_relay_auto_tests.rs) |
 | the cross-border line: plan, mint, push, audit | [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) — `LineLeg` `:147`, `plan_line` `:1116`, `maybe_mint_line` `:1198`, `mint_line` `:1238`, `push_member` `:2063` |
-| the relays' two-leg bridge | [`orgrelay/backbone.rs:223`](../crates/tunnel-core/src/overlay/orgrelay/backbone.rs#L223) `start_authorized_bridge`, [`relay_server.rs:338`](../agents/roomlerd/src/relay_server.rs#L338) `install_bridge_from_wire` |
+| the relays' two-leg bridge | [`orgrelay/backbone.rs:223`](../crates/tunnel-core/src/overlay/orgrelay/backbone.rs#L223) `start_authorized_bridge`, [`relay_server.rs:338`](../agents/meshharbord/src/relay_server.rs#L338) `install_bridge_from_wire` |
 | pod-offload metric | `derp_bytes_relayed_total`, [`crates/api/src/cluster/metrics.rs:62`](../crates/api/src/cluster/metrics.rs#L62) |
 
 ## Not built

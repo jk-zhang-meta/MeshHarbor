@@ -21,7 +21,7 @@
 
 use std::net::IpAddr;
 
-use roomler_ai_remote_control::models::{OverlayRule, ProtocolKind};
+use meshharbor_remote_control::models::{OverlayRule, ProtocolKind};
 
 /// IP protocol numbers we care about. Anything else is `Other` — matched only
 /// by a rule that doesn't narrow protocol.
@@ -341,7 +341,7 @@ impl ReplyFlows {
 /// is judged by the rules.
 ///
 /// ⚠️ Unlike Tailscale, an echo REQUEST to the node itself passes too. The
-/// mesh measures itself with it (roomlerd's RTT prober pings every live peer's
+/// mesh measures itself with it (meshharbord's RTT prober pings every live peer's
 /// overlay address and feeds the path monitor), so a port-narrowed tenant ACL
 /// would otherwise blind path quality. It reaches no service, and the netmap
 /// already tells the peer this node is online. Only the node itself: an echo
@@ -507,7 +507,7 @@ mod tests {
         p[7] = 0x10; // fragment offset 16
         assert!(!admitted_reply(&p, &f, 0));
     }
-    use roomler_ai_remote_control::models::PortRange;
+    use meshharbor_remote_control::models::PortRange;
 
     fn rule(cidr: &str, low: u16, high: u16, proto: ProtocolKind) -> OverlayRule {
         OverlayRule {

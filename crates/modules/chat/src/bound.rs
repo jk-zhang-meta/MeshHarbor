@@ -22,11 +22,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bson::oid::ObjectId;
-use roomler_ai_db::models::{Binding, Message, Room};
-use roomler_ai_services::dao::base::{DaoError, DaoResult};
-use roomler_ai_services::dao::message::MessageDao;
-use roomler_ai_services::dao::room::RoomDao;
-use roomler_core::Core;
+use meshharbor_core::Core;
+use meshharbor_db::models::{Binding, Message, Room};
+use meshharbor_services::dao::base::{DaoError, DaoResult};
+use meshharbor_services::dao::message::MessageDao;
+use meshharbor_services::dao::room::RoomDao;
 
 /// Chat's bound-room surface for another module.
 #[derive(Clone)]
@@ -229,7 +229,7 @@ impl BoundChat {
         };
         let response = crate::message::to_response(message, &HashMap::new(), None);
         let event = serde_json::json!({ "type": kind, "data": &response });
-        roomler_core::ws::dispatcher::broadcast_with_redis(
+        meshharbor_core::ws::dispatcher::broadcast_with_redis(
             &self.core.ws_storage,
             &self.core.redis_pubsub,
             &members,

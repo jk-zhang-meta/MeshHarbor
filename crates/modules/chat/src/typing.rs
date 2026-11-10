@@ -5,11 +5,11 @@
 //! `typing:start` / `typing:stop` carry a `room_id`; the event is fanned out
 //! to the room's other members, cross-pod. FR-69 P3 — this used to be an arm
 //! of the host's socket dispatch; it is the first handler a module registers
-//! through [`roomler_core::Module::ws`], and the behaviour is unchanged.
+//! through [`meshharbor_core::Module::ws`], and the behaviour is unchanged.
 
 use async_trait::async_trait;
 use bson::oid::ObjectId;
-use roomler_core::{WsCtx, WsHandler, ws::dispatcher::broadcast_with_redis};
+use meshharbor_core::{WsCtx, WsHandler, ws::dispatcher::broadcast_with_redis};
 
 use crate::ChatState;
 

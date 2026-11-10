@@ -33,7 +33,7 @@ set -eu
 
 OWNER_DEFAULT="gjovanov"
 OWNER="${1-$OWNER_DEFAULT}"
-DEST="${2-$HOME/.config/gh-roomler}"
+DEST="${2-$HOME/.config/gh-meshharbor}"
 
 command -v gh >/dev/null 2>&1 || { echo "gh is not on PATH" >&2; exit 1; }
 

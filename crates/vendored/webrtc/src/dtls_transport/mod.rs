@@ -358,7 +358,7 @@ impl RTCDtlsTransport {
                 } else {
                     default_srtp_protection_profiles()
                 },
-                // roomler patch (FR-101): empty = webrtc-dtls' default list.
+                // meshharbor patch (FR-101): empty = webrtc-dtls' default list.
                 cipher_suites: self.setting_engine.dtls_cipher_suites.clone(),
                 client_auth: ClientAuthType::RequireAnyClientCert,
                 insecure_skip_verify: true,

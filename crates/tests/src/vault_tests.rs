@@ -833,7 +833,7 @@ async fn roles_and_policies_are_checked_before_they_are_kept() {
     assert_eq!(code, 400, "one spelling");
 
     let permit = format!(
-        r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"secret:use", resource in Roomler::SecretFolder::"rrn:{}:secret:staging");"#,
+        r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"secret:use", resource in MeshHarbor::SecretFolder::"rrn:{}:secret:staging");"#,
         t.tenant_slug
     );
     let (code, text, p) = post_json(
@@ -857,11 +857,11 @@ async fn roles_and_policies_are_checked_before_they_are_kept() {
 
     for (text, why) in [
         (
-            r#"permit (principal, action == Roomler::Action::"secret:use", resource in Roomler::SecretFolder::"rrn:someone-else:secret:prod");"#.to_string(),
+            r#"permit (principal, action == MeshHarbor::Action::"secret:use", resource in MeshHarbor::SecretFolder::"rrn:someone-else:secret:prod");"#.to_string(),
             "not this organization",
         ),
         (
-            r#"permit (principal in Roomler::Role::"ghost", action, resource);"#.to_string(),
+            r#"permit (principal in MeshHarbor::Role::"ghost", action, resource);"#.to_string(),
             "vault roles",
         ),
         (
@@ -869,12 +869,12 @@ async fn roles_and_policies_are_checked_before_they_are_kept() {
             "not a Cedar policy",
         ),
         (
-            r#"permit (principal, action == Roomler::Action::"secret:read", resource);"#.to_string(),
+            r#"permit (principal, action == MeshHarbor::Action::"secret:read", resource);"#.to_string(),
             "schema",
         ),
         (
             format!(
-                r#"forbid (principal == Roomler::User::"{}", action, resource);"#,
+                r#"forbid (principal == MeshHarbor::User::"{}", action, resource);"#,
                 ObjectId::new().to_hex()
             ),
             "not a member",
@@ -1025,7 +1025,7 @@ async fn simulate_says_what_would_decide_a_request() {
     let staging = staging["id"].as_str().unwrap().to_string();
     let prod = prod["id"].as_str().unwrap().to_string();
     let permit = format!(
-        r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"secret:use", resource in Roomler::SecretFolder::"rrn:{slug}:secret:staging");"#
+        r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"secret:use", resource in MeshHarbor::SecretFolder::"rrn:{slug}:secret:staging");"#
     );
     let (_, _, p) = post_json(
         &app,
@@ -1035,7 +1035,7 @@ async fn simulate_says_what_would_decide_a_request() {
     )
     .await;
     let pid = p["id"].as_str().unwrap().to_string();
-    let assume = r#"permit (principal in Roomler::Group::"member", action == Roomler::Action::"role:assume", resource == Roomler::Role::"dev") when { context.device.owner == principal };"#;
+    let assume = r#"permit (principal in MeshHarbor::Group::"member", action == MeshHarbor::Action::"role:assume", resource == MeshHarbor::Role::"dev") when { context.device.owner == principal };"#;
     let (code, text, _) = post_json(
         &app,
         &t,
@@ -1113,7 +1113,7 @@ async fn simulate_says_what_would_decide_a_request() {
     // A change not yet made: without the permit; with a broader one.
     let (_, _, v) = sim(&staging, "proxy", "linux", json!({ "without": [pid] })).await;
     assert_eq!(decided(&v).0, "deny", "{v}");
-    let everything = r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"secret:use", resource);"#;
+    let everything = r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"secret:use", resource);"#;
     let (_, _, v) = sim(&prod, "proxy", "linux", json!({ "with": [everything] })).await;
     assert_eq!(decided(&v), ("allow".into(), vec!["with:0".into()]), "{v}");
     let (_, _, v) = sim(&prod, "env", "linux", json!({ "with": [everything] })).await;
@@ -1196,7 +1196,7 @@ async fn net_policies_name_this_organizations_exits_and_simulate_decides_them() 
 
     let naming = |id: &str| {
         format!(
-            r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"net:socks", resource == Roomler::Node::"{id}");"#
+            r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"net:socks", resource == MeshHarbor::Node::"{id}");"#
         )
     };
     let (code, text, _) = post_json(
@@ -1224,7 +1224,7 @@ async fn net_policies_name_this_organizations_exits_and_simulate_decides_them() 
             "{why}: {text}"
         );
     }
-    let forward = r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"net:forward", resource) when { resource.tags.contains("office") && context.port == 5432 };"#;
+    let forward = r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"net:forward", resource) when { resource.tags.contains("office") && context.port == 5432 };"#;
     let (code, text, _) = post_json(
         &app,
         &t,
@@ -1289,9 +1289,9 @@ async fn a_policy_that_can_never_apply_is_refused_when_written() {
     let (node, _) = crate::vault_lease_tests::enroll(&app, &t, "never-node", "linux").await;
     let never = [
         format!(
-            r#"forbid (principal, action == Roomler::Action::"secret:use", resource == Roomler::Node::"{node}");"#
+            r#"forbid (principal, action == MeshHarbor::Action::"secret:use", resource == MeshHarbor::Node::"{node}");"#
         ),
-        r#"forbid (principal, action == Roomler::Action::"net:socks", resource) when { false };"#
+        r#"forbid (principal, action == MeshHarbor::Action::"net:socks", resource) when { false };"#
             .to_string(),
     ];
     for (i, text) in never.iter().enumerate() {
@@ -1333,7 +1333,7 @@ async fn a_policy_that_can_never_apply_is_refused_when_written() {
         "nothing was stored"
     );
     // One that can apply is kept, as before.
-    let can = r#"forbid (principal, action == Roomler::Action::"net:forward", resource) when { context.port == 22 };"#;
+    let can = r#"forbid (principal, action == MeshHarbor::Action::"net:forward", resource) when { context.port == 22 };"#;
     let (code, body, _) = post_json(
         &app,
         &t,
@@ -1356,7 +1356,7 @@ async fn a_change_is_replayed_against_the_recorded_decisions() {
     let tid = ObjectId::parse_str(&t.tenant_id).unwrap();
     post_json(&app, &t, "/role", json!({ "name": "dev" })).await;
     let text = format!(
-        r#"permit (principal == Roomler::User::"{}", action == Roomler::Action::"role:assume", resource == Roomler::Role::"dev") when {{ context.device.tags.contains("build") }};"#,
+        r#"permit (principal == MeshHarbor::User::"{}", action == MeshHarbor::Action::"role:assume", resource == MeshHarbor::Role::"dev") when {{ context.device.tags.contains("build") }};"#,
         t.admin.id
     );
     let (code, body, p) = post_json(
@@ -1426,7 +1426,7 @@ async fn a_change_is_replayed_against_the_recorded_decisions() {
 
     // With a permit for every device, the laptop's deny would be an allow.
     let anywhere = format!(
-        r#"permit (principal == Roomler::User::"{}", action == Roomler::Action::"role:assume", resource == Roomler::Role::"dev");"#,
+        r#"permit (principal == MeshHarbor::User::"{}", action == MeshHarbor::Action::"role:assume", resource == MeshHarbor::Role::"dev");"#,
         t.admin.id
     );
     let (_, _, v) = replay(json!({ "with": [anywhere] })).await;

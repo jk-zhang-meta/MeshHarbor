@@ -5,7 +5,7 @@
  * exactly as `vmtest-remote.spec.ts` does, and this spec SENDS input and says
  * what it sent: one `[vmtest-input] sent {…}` line per action. It decides
  * nothing about the host, because the browser cannot see it. The harness
- * (roomler-ai-deploy `vmtest/lab/measure/viewer-input.sh`) reads what ARRIVED
+ * (meshharbor-deploy `vmtest/lab/measure/viewer-input.sh`) reads what ARRIVED
  * from the lab guest's probe app, a fullscreen native Wayland client that logs
  * every pointer, button, scroll and key event, and from the shell's own state.
  *
@@ -24,7 +24,7 @@
  *     Activities hot corner.
  *
  *   - `cursor` (AC5): is the host's pointer visible in the viewer? The PERSON
- *     at the screen moves it (the harness, over QMP, outside every roomler
+ *     at the screen moves it (the harness, over QMP, outside every meshharbor
  *     input path), so this answers even where remote input reaches nothing.
  *     The harness signals each position with a marker file in the shared
  *     `/work`. At each one the spec reports what the picture shows there, and
@@ -203,7 +203,7 @@ test.describe('vmtest viewer input (named agent)', () => {
     const token = ((await loginResp.json()) as { access_token: string }).access_token
     await context.addInitScript(() => {
       try {
-        window.localStorage.setItem('roomler-signed-in', '1')
+        window.localStorage.setItem('meshharbor-signed-in', '1')
       } catch {
         /* storage blocked: the cookie still authenticates */
       }

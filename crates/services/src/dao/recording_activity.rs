@@ -19,8 +19,8 @@
 //! device. Rows TTL out after 90 days (the `remote` module's index plan).
 
 use bson::{doc, oid::ObjectId};
+use meshharbor_remote_control::models::RecordingActivityEvent;
 use mongodb::Database;
-use roomler_ai_remote_control::models::RecordingActivityEvent;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

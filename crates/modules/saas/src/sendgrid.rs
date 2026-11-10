@@ -57,12 +57,12 @@ use serde::Serialize;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use roomler_ai_services::dao::{base::DaoError, newsletter_send::DeliveryEvent};
+use meshharbor_core::Core;
+use meshharbor_services::dao::{base::DaoError, newsletter_send::DeliveryEvent};
 /// The key and the signature check live beside the Stripe one, in the
 /// services crate, so the host's views agree with this route on whether a
 /// configured key is usable.
-pub use roomler_ai_services::sendgrid::EventVerifier;
-use roomler_core::Core;
+pub use meshharbor_services::sendgrid::EventVerifier;
 
 use crate::SaasState;
 
@@ -89,7 +89,7 @@ pub const MAX_SIGNATURE_SKEW_SECS: i64 = 5 * 60;
 pub fn verifier_from_settings(raw: &str) -> Option<EventVerifier> {
     if raw.trim().is_empty() {
         info!(
-            "SendGrid Event Webhook off: no ROOMLER__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY — \
+            "SendGrid Event Webhook off: no MESHHARBOR__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY — \
              newsletter delivery reads \"not measured\""
         );
         return None;
@@ -102,7 +102,7 @@ pub fn verifier_from_settings(raw: &str) -> Option<EventVerifier> {
         Err(e) => {
             warn!(
                 error = %e,
-                "ROOMLER__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY is not usable — the SendGrid \
+                "MESHHARBOR__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY is not usable — the SendGrid \
                  webhook refuses every request until it is fixed"
             );
             None
@@ -228,7 +228,7 @@ pub async fn record_events(
                 id
             }
         };
-        let key = roomler_ai_db::models::Subscriber::normalize_email(&p.email);
+        let key = meshharbor_db::models::Subscriber::normalize_email(&p.email);
         let subscriber_id = match subscribers.get(&key) {
             Some(id) => *id,
             None => {

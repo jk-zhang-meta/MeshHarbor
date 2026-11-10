@@ -11,9 +11,9 @@ and **what does the machine say about itself**.
 ## The minimum
 
 ```bash
-roomler status
-roomler peers
-roomler --version
+mh status
+mh peers
+mh --version
 ```
 
 ## For a connectivity problem, gather BOTH ends
@@ -25,7 +25,7 @@ is itself a diagnosis.
 :::
 
 ```bash
-roomler diag pair <other-device>
+mh diag pair <other-device>
 ```
 
 That runs a paired diagnostic and reports what each end sees.
@@ -33,7 +33,7 @@ That runs a paired diagnostic and reports what each end sees.
 For one machine on its own:
 
 ```bash
-roomler diag host
+mh diag host
 ```
 
 :::tip Diagnostics live in the CLI, not in the agent
@@ -47,24 +47,24 @@ not have, update the CLI.
 :::os
 @windows
 ```powershell
-roomler logs --tail 200
+mh logs --tail 200
 ```
-Or the service log directory under `%PROGRAMDATA%\roomler\logs`.
+Or the service log directory under `%PROGRAMDATA%\meshharbor\logs`.
 
 @macos
 ```bash
-roomler logs --tail 200          # the user half
-sudo roomler logs --tail 200     # the root half
+mh logs --tail 200          # the user half
+sudo mh logs --tail 200     # the root half
 ```
 
 @linux
 ```bash
-journalctl -u roomler -n 200 --no-pager           # system unit
-journalctl --user -u roomler -n 200 --no-pager    # per-user unit
+journalctl -u meshharbor -n 200 --no-pager           # system unit
+journalctl --user -u meshharbor -n 200 --no-pager    # per-user unit
 ```
 :::
 
-:::warning `roomler logs --grep` reads only a recent tail
+:::warning `mh logs --grep` reads only a recent tail
 It searches a bounded slice of the end of the log, not the whole thing. **A
 negative result is not proof of absence** — if you are looking for something
 older, read the log directly.
@@ -91,13 +91,13 @@ the useful part.
 
 ## Where to send it
 
-[github.com/gjovanov/roomler-ai/issues](https://github.com/gjovanov/roomler-ai/issues).
+[github.com/jk-zhang-meta/MeshHarbor/issues](https://github.com/jk-zhang-meta/MeshHarbor/issues).
 Include:
 
 :::steps
 1. What you expected to happen.
 2. What happened instead, with the exact message.
-3. `roomler status` from the affected machine — and from both, for a connectivity problem.
+3. `mh status` from the affected machine — and from both, for a connectivity problem.
 4. Operating system and version, on each end.
 5. Whether it is the hosted service or self-hosted.
 6. Whether it ever worked, and what changed if so.

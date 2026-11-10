@@ -19,13 +19,13 @@
 //!   [`FRESH_FOR`] after it the snapshot reads as stale, and a heartbeat
 //!   never extends it. The node's own `observed_at_ms` is only shown.
 //!
-//! [`ClientMsg::NetInventory`]: roomler_ai_remote_control::signaling::ClientMsg::NetInventory
+//! [`ClientMsg::NetInventory`]: meshharbor_remote_control::signaling::ClientMsg::NetInventory
 
 use std::time::{Duration, Instant};
 
 use bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_remote_control::net_inventory::{MAX_BOOT_ID, MAX_PAGES, NetInventory};
-use roomler_core::AgentCtx;
+use meshharbor_core::AgentCtx;
+use meshharbor_remote_control::net_inventory::{MAX_BOOT_ID, MAX_PAGES, NetInventory};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -304,7 +304,7 @@ pub async fn get(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_ai_remote_control::net_inventory::{Route, Section};
+    use meshharbor_remote_control::net_inventory::{Route, Section};
 
     fn inv(routes: usize) -> NetInventory {
         NetInventory {
@@ -313,7 +313,7 @@ mod tests {
             routes: Section::capped(
                 (0..routes)
                     .map(|i| Route {
-                        family: roomler_ai_remote_control::net_inventory::Family::V4,
+                        family: meshharbor_remote_control::net_inventory::Family::V4,
                         table: "main".into(),
                         dst: format!("10.0.{}.0/24", i % 256),
                         kind: "unicast".into(),

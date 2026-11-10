@@ -4,8 +4,12 @@
      what is actually published. -->
 # Code signing
 
-How every published Roomler artifact gets signed, why the pipeline is shaped
-the way it is, and the exact sequence to (re)establish the credentials.
+Historical signed-distribution requirements, updater trust checks and credential
+setup reference. **For the current owner-directed local artifacts, Windows and
+Linux are unsigned; only macOS is signed.** The Windows/GPG provisioning and
+signing steps below are not prerequisites for those local builds. Existing updater
+verification remains unchanged; unsigned local output is not claimed compatible
+with the signed auto-update path. See [current local policy](local-build.md#packaging-and-signing).
 
 Publisher of record: **G ROX LTD** (Plovdivska 110, 4400 Pazardzhik, Bulgaria
 — UIC/EIK `205174895`, VAT `BG205174895`). The Windows "Verified publisher"
@@ -58,16 +62,16 @@ SmartScreen reputation organically from download volume. What signing buys
   EU *individuals* are not (US/Canada only), which is why signing runs under
   the company identity.
 
-## 2b. Live status — all three platforms sign (Azure 2026-08-22, Apple 2026-09-08)
+## 2b. Historical signing status (Azure 2026-08-22, Apple 2026-09-08)
 
 - Identity validation **Completed** for G ROX LTD (id
   `2390bcea-a3d5-4919-a624-cb209c875bf7`, valid to 2028-11-21).
-- Account `roomlersigning` (Basic) in **polandcentral**; profile
-  `roomler-public-trust`; subscription `cb6a5135-9bee-4a35-890f-a3f38f867e88`
-  under goran.jovanov@roomler.live.
-- Field-proven: a roomler binary signed from the dev box verifies with
+- Account `meshharborsigning` (Basic) in **polandcentral**; profile
+  `meshharbor-public-trust`; subscription `cb6a5135-9bee-4a35-890f-a3f38f867e88`
+  under goran.jovanov@meshharbor.itachi.fans.
+- Field-proven: a meshharbor binary signed from the dev box verifies with
   `signtool verify /pa` as `CN=G ROX LTD, O=G ROX LTD, L=Pazardzhik, C=BG`.
-- GitHub OIDC wired: app `roomler-ai-github-signing`
+- GitHub OIDC wired: app `meshharbor-github-signing`
   (`9a452e59-1312-49d8-bc4a-8f443be19c5f`), signer role scoped to the
   profile, all seven repo variables set.
 - **Federated-credential caveat**: this tenant rejects wildcard
@@ -79,7 +83,7 @@ SmartScreen reputation organically from download volume. What signing buys
   that line breaks the OIDC exchange for tag builds.
 - **GPG is LIVE** (re-checked 2026-08-24 — this line previously said "pending"
   and was stale). `agent-v0.3.0-rc.458` publishes 9 `.asc` sidecars plus
-  `roomler-release-pubkey.asc`: ed25519 primary `[C]` certify-only
+  `meshharbor-release-pubkey.asc`: ed25519 primary `[C]` certify-only
   `D654B016256FD92A81634A0E2AD1E9F025973A7F` + ed25519 `[S]` subkey
   `5DB8221F546288DE780C10D3A2C53E5FE6FA485A`, both to 2028-08-22. Signatures
   verify; a flipped byte gives `BAD signature`. **The agent checks them too**
@@ -100,8 +104,8 @@ SmartScreen reputation organically from download volume. What signing buys
   the path an end user's download actually takes:
   `spctl -a -vvv -t install` → `source=Notarized Developer ID`,
   `origin=Developer ID Installer: G ROX EOOD (4TG7586MY5)`
-  ([result](https://github.com/gjovanov/roomler-ai/issues/778#issuecomment-5589571740),
-  [on the published artifact](https://github.com/gjovanov/roomler-ai/issues/778#issuecomment-5589756486)).
+  ([result](https://github.com/jk-zhang-meta/MeshHarbor/issues/778#issuecomment-5589571740),
+  [on the published artifact](https://github.com/jk-zhang-meta/MeshHarbor/issues/778#issuecomment-5589756486)).
   That line is the only check that tells *signed* from *signed AND notarised*.
 - ⚠️ What a *release* carries and what the *machine installing an update*
   checks are different questions — §7b. The agent's own check of a `.pkg`
@@ -112,7 +116,7 @@ SmartScreen reputation organically from download volume. What signing buys
 ## 3. Credential setup — `scripts/signing/`
 
 Idempotent operator scripts, in order. State (public identifiers only) is
-shared through `scripts/signing/.roomler-signing.json` so each value is typed
+shared through `scripts/signing/.meshharbor-signing.json` so each value is typed
 once. Full per-script docs in `scripts/signing/README.md`.
 
 ```text
@@ -153,14 +157,14 @@ work). GPG (`70-gpg-release-key.sh create|export`): ed25519 signing subkey →
 `GPG_PRIVATE_KEY` / `GPG_PASSPHRASE` / `GPG_KEY_ID`; the primary key stays
 offline.
 
-## 4. What gets signed, where
+## 4. Historical signed distribution: what was signed, where
 
 ```mermaid
 graph LR
     TAG["a release tag<br/>agent-v* · setup-v* · tunnel-v*"]
 
     subgraph WIN["Windows — sign-windows · Azure Artifact Signing over OIDC"]
-        W1["the payload first<br/>roomlerd.exe · roomler.exe"]
+        W1["the payload first<br/>meshharbord.exe · mh.exe"]
         W2["wintun.dll staged<br/>NEVER re-signed —<br/>WireGuard LLC's signature survives"]
         W3["then the MSIs<br/>harvested, then signed"]
         W1 -->|"no cargo build after this —<br/>a relink strips the signature"| W2 --> W3
@@ -190,19 +194,19 @@ installing it, and is also bound to the release it claims to be: the Windows
 
 | Artifact | Workflow | Mechanism |
 |---|---|---|
-| `roomlerd.exe`, `roomler.exe` **inside** both MSIs | release-agent | sign-windows, *before* `cargo wix` harvests |
+| `meshharbord.exe`, `mh.exe` **inside** both MSIs | release-agent | sign-windows, *before* `cargo wix` harvests |
 | perUser + perMachine `.msi` | release-agent | sign-windows, before the size-budget/sha256 steps |
-| `roomler-desktop-<v>….exe` | release-agent | sign-windows |
-| `roomler-agent-<v>-aarch64-apple-darwin.pkg` | release-agent | inline codesign → productbuild → notarytool → staple → **verify** |
-| `roomler-setup.exe` (in the zip) | release-setup | sign-windows, before zipping |
-| `Roomler Setup.app` (in the macOS tarball) | release-setup | sign-macos: bundle → notarise → **staple** (ticket survives tar) |
-| `roomler.exe` (tunnel zip) | release-tunnel | sign-windows (was never signed before) |
-| `roomler` (macOS universal, tunnel tarball) | release-tunnel | sign-macos: bare binary → notarise, **no staple** (Apple can't staple a loose Mach-O; curl\|tar installs never set quarantine, so unaffected) |
+| `meshharbor-desktop-<v>….exe` | release-agent | sign-windows |
+| `meshharbor-agent-<v>-aarch64-apple-darwin.pkg` | release-agent | inline codesign → productbuild → notarytool → staple → **verify** |
+| `meshharbor-setup.exe` (in the zip) | release-setup | sign-windows, before zipping |
+| `MeshHarbor Setup.app` (in the macOS tarball) | release-setup | sign-macos: bundle → notarise → **staple** (ticket survives tar) |
+| `mh.exe` (tunnel zip) | release-tunnel | sign-windows (was never signed before) |
+| `mh` (macOS universal, tunnel tarball) | release-tunnel | sign-macos: bare binary → notarise, **no staple** (Apple can't staple a loose Mach-O; curl\|tar installs never set quarantine, so unaffected) |
 | every published asset | all three publish jobs | GPG `.asc` (when key configured) + SLSA provenance attestation (always) |
 | `wintun.dll` | — | **never re-signed** — WireGuard LLC's Authenticode signature must survive; CI asserts it still says WireGuard |
 | `.deb` contents | — | not signed (dpkg doesn't verify; apt-repo signing deferred until an apt channel exists) |
 
-Payload-before-wrapper ordering matters: the on-disk `roomlerd.exe` is what AV
+Payload-before-wrapper ordering matters: the on-disk `meshharbord.exe` is what AV
 scans, what Task Manager attributes, and what an AppLocker/WDAC publisher rule
 evaluates — an MSI-only signature covers none of that. The payload signing
 step sits after `encoder-smoke` (fail before spending a signature) and before
@@ -210,9 +214,15 @@ the wintun staging (so a folder sweep structurally *cannot* touch the
 third-party DLL). **Invariant: no step after payload signing may run
 `cargo build` in that job** — a relink silently strips the signatures.
 
-## 5. The composite actions
+## 5. Retired composite actions: retained signing requirements
 
-### `.github/actions/sign-windows`
+This project uses no CI. The following describes the former implementation;
+its trust, timestamp, publisher and notarization requirements still apply to
+manual releases. See [local packaging and signing](local-build.md#packaging-and-signing)
+and the [historical signing sources](local-build.md#historical-workflow-sources).
+
+
+### Windows signing requirements
 
 Modes: `auto` (azure if the six variables are set, else local PFX, else none)
 · `azure` · `local` · `off`. After signing it **verifies**: `signtool verify
@@ -231,7 +241,7 @@ the identical strict verification runs. `azure/login` and
 `azure/artifact-signing-action` are pinned to commit SHAs — they are the
 closest thing to a signing key in this pipeline.
 
-### `.github/actions/sign-macos`
+### macOS signing requirements
 
 All-or-nothing on the six Apple secrets (a partial set is a hard error —
 half-configured used to be able to publish a signed-but-unnotarised `.pkg`
@@ -243,22 +253,15 @@ with **no warning**, which Gatekeeper rejects just as hard as unsigned).
 release-setup additionally re-extracts its own tarball and re-validates, so
 "the ticket didn't survive tar" can never ship.
 
-## 6. Rehearsal — prove everything without spending a cent
+## 6. Local rehearsal
 
-```powershell
-# once: self-signed cert -> WIN_TEST_PFX_* secrets
-pwsh scripts/signing/50-selfsigned-dev-cert.ps1 -PushSecrets
-```
+Read `scripts/signing/README.md` and the native recipes before using a test
+certificate on an explicitly authorized host. `40-smoke-sign.ps1` and
+`90-verify-release.ps1`/`.sh` are existing entrypoints; inspect their parameters
+and effects first. Missing required signatures must fail verification. No workflow
+dispatch or tag creates an artifact. Local test certificates must not be published.
 
-```bash
-# artifacts-only runs (publish_release=false publishes nothing)
-gh workflow run release-agent.yml  -f version=<v> -f publish_release=false -f signing_mode=local -f require_signing=true
-gh workflow run release-setup.yml  -f version=<v> -f publish_release=false -f signing_mode=local
-gh workflow run release-tunnel.yml -f version=<v> -f publish_release=false -f signing_mode=local
-
-# negative test — the gate must FAIL, not warn
-gh workflow run release-agent.yml -f version=<v> -f publish_release=false -f signing_mode=off -f require_signing=true
-```
+The following incident is historical evidence from the retired release system.
 
 > ⚠️ **A green `publish_release=false` dispatch proves the BUILD, not the
 > PUBLISH path.** Several gates only arm on a release run and are deliberately
@@ -295,12 +298,12 @@ The PowerShell verifier also does an administrative extract of each MSI
 `wintun.dll` still says WireGuard LLC. Manual user-level checks:
 
 ```powershell
-Get-AuthenticodeSignature "$env:ProgramFiles\Roomler\roomlerd.exe"   # Valid, G ROX LTD
+Get-AuthenticodeSignature "$env:ProgramFiles\MeshHarbor\meshharbord.exe"   # Valid, G ROX LTD
 ```
 ```bash
-spctl -a -vvv -t install roomler-agent-<v>-aarch64-apple-darwin.pkg  # source=Notarized Developer ID
-gh attestation verify roomler-agent-<v>-x86_64-unknown-linux-gnu.deb --repo gjovanov/roomler-ai
-curl -fsSL https://github.com/gjovanov/roomler-ai/releases/latest/download/roomler-release-pubkey.asc | gpg --import
+spctl -a -vvv -t install meshharbor-agent-<v>-aarch64-apple-darwin.pkg  # source=Notarized Developer ID
+gh attestation verify meshharbor-agent-<v>-x86_64-unknown-linux-gnu.deb --repo jk-zhang-meta/MeshHarbor
+curl -fsSL https://github.com/jk-zhang-meta/MeshHarbor/releases/latest/download/meshharbor-release-pubkey.asc | gpg --import
 gpg --verify <asset>.asc <asset>
 ```
 
@@ -314,7 +317,7 @@ keeps the version it is already running.
 | Gate | Module | Answers | Enforced on |
 |---|---|---|---|
 | Authenticode + publisher name | `code_signature::verify_publisher` | *Whose* bytes are these? | Windows |
-| Detached `.asc` vs the signing subkey **pinned in the binary** | `pgp_verify::verify_release_artifact` | *Whose* bytes are these? | Linux, macOS (`.deb`, `.pkg`, tarball) — the `.asc` is **required**. Since FR-97 P6b it lives in tunnel-core, and the tunnel CLI's `roomler self-update` requires it too, on every OS |
+| Detached `.asc` vs the signing subkey **pinned in the binary** | `pgp_verify::verify_release_artifact` | *Whose* bytes are these? | Linux, macOS (`.deb`, `.pkg`, tarball) — the `.asc` is **required**. Since FR-97 P6b it lives in tunnel-core, and the tunnel CLI's `mh self-update` requires it too, on every OS |
 | Embedded version vs manifest claim | `artifact_version::verify_artifact_version` | *Which release* are they? | every installable: the `.msi`, and since FR-97 P6a the `.deb`, `.pkg` and tarball |
 
 **Neither is sufficient alone, and the second is the less obvious one.**
@@ -355,8 +358,8 @@ bytes, and the updater refuses when it disagrees with the tag
 |---|---|---|---|
 | `.msi` | `ProductVersion` in the `Property` table | the Windows Installer database API | `artifact_version.rs:482` |
 | `.deb` | `Version` in its control file, `0.4.142-1` — the Debian revision (cargo-deb's `-1`) and any epoch dropped, a `~` read back as `-` | `dpkg-deb --field`, from the dpkg the updater requires before it picks a `.deb` | `artifact_version.rs:288` |
-| `.pkg` | `version` on the component `PackageInfo`'s `<pkg-info identifier="com.roomler.agent">` | `pkgutil --expand` into a fresh directory | `artifact_version.rs:429` |
-| tarball | its one top directory, `roomlerd-<version>-<target>` | `tar -tzf`, which the tarball install runs anyway | `artifact_version.rs:386` |
+| `.pkg` | `version` on the component `PackageInfo`'s `<pkg-info identifier="fans.itachi.meshharbor.agent">` | `pkgutil --expand` into a fresh directory | `artifact_version.rs:429` |
+| tarball | its one top directory, `meshharbord-<version>-<target>` | `tar -tzf`, which the tarball install runs anyway | `artifact_version.rs:386` |
 
 ```mermaid
 flowchart LR
@@ -375,12 +378,12 @@ flowchart LR
 
 ⚠️ **`Unsupported` is not a refusal.** It means nothing was proved either way:
 a `.deb` on a host with no `dpkg-deb` (whose install would fail anyway), or
-`ROOMLERD_ARTIFACT_VERSION_CHECK=0`. Logged at INFO and the install proceeds.
+`MESHHARBORD_ARTIFACT_VERSION_CHECK=0`. Logged at INFO and the install proceeds.
 An **unreadable** artifact *is* a refusal — it is about to run as root, and
 nobody can say what it is.
 
 ⚠️ **A wrong reader refuses every update, fleet-wide.** So the three new
-readers sit behind `ROOMLERD_ARTIFACT_VERSION_CHECK=0` (the MSI's, older and
+readers sit behind `MESHHARBORD_ARTIFACT_VERSION_CHECK=0` (the MSI's, older and
 proven, does not), and each was read against the real artifacts of the last
 three releases before it shipped: 12 Linux artifacts × {their own release,
 a neighbour, a fabricated `0.4.999`} gave 12 binds and 24 refusals, and the
@@ -389,17 +392,17 @@ Re-check after any change to a reader, or to how the release workflow names
 and versions its artifacts:
 
 ```bash
-gh release download agent-v<version> --repo gjovanov/roomler-ai --pattern 'roomlerd-*' --dir /tmp/rel
-for f in /tmp/rel/roomlerd-*.deb /tmp/rel/roomlerd-*.tar.gz; do   # the .pkg on a Mac
-  roomlerd artifact-version "$f" agent-v<version>                 # hidden: bound / refused / unsupported
+gh release download agent-v<version> --repo jk-zhang-meta/MeshHarbor --pattern 'meshharbord-*' --dir /tmp/rel
+for f in /tmp/rel/meshharbord-*.deb /tmp/rel/meshharbord-*.tar.gz; do   # the .pkg on a Mac
+  meshharbord artifact-version "$f" agent-v<version>                 # hidden: bound / refused / unsupported
 done
 ```
 
 The `.deb`'s `Package` field is deliberately **not** bound (every published
-daemon `.deb` says `roomlerd`). A feed that swapped in the companion's `.deb` at
+daemon `.deb` says `meshharbord`). A feed that swapped in the companion's `.deb` at
 the same version would gain a freeze, which withholding the update gives it
 anyway, while a name check would be one more way to refuse every update. The
-`.pkg` reader names `com.roomler.agent` for a different reason: a product
+`.pkg` reader names `fans.itachi.meshharbor.agent` for a different reason: a product
 archive can carry several components, and it must read the right one.
 
 The key, verified 2026-08-24 against `agent-v0.3.0-rc.458`: an ed25519 primary
@@ -433,17 +436,18 @@ freeze, not an error. Re-check the Rust side against a real artifact after any
 change to either:
 
 ```bash
-gh release download agent-v<version> --repo gjovanov/roomler-ai \
+gh release download agent-v<version> --repo jk-zhang-meta/MeshHarbor \
   --pattern '*perMachine*.msi' --dir /tmp
-ROOMLER_TEST_MSI=/tmp/roomler-agent-<version>-perMachine-x86_64-pc-windows-msvc.msi \
-ROOMLER_TEST_MSI_TAG=agent-v<version> \
-  cargo test -p roomlerd --lib -- --ignored real_published_msi
+MESHHARBOR_TEST_MSI=/tmp/meshharbor-agent-<version>-perMachine-x86_64-pc-windows-msvc.msi \
+MESHHARBOR_TEST_MSI_TAG=agent-v<version> \
+  cargo test -p meshharbord --lib -- --ignored real_published_msi
 ```
 
 The same freeze risk applies to the signing gate: a release that ships an
 unsigned or mis-signed Windows artifact does not error, it just stops updating
-the fleet. The `require` mode in `.github/actions/sign-windows` is what
-prevents that reaching a release tag — do not weaken it.
+the fleet. The historical signed-distribution contract rejected missing/invalid signatures.
+That is not a signing prerequisite for the current unsigned Windows/Linux local
+artifacts; their build policy does not alter updater verification.
 
 ## 8. Enterprise pilot path (before/without the public cert)
 
@@ -462,9 +466,9 @@ The cert subject and every packaging surface must agree, or Windows shows one
 name in the UAC prompt and another in Add/Remove Programs. Current sweep
 (all `G ROX LTD`):
 
-- `agents/roomlerd/wix/main.wxs` + `wix-perMachine/main.wxs` — `Manufacturer` (2× each)
-- `agents/roomlerd/build.rs` + `agents/roomler-cli/build.rs` — `CompanyName`, `LegalCopyright`
-- `agents/roomler-desktop/tauri.conf.json` + `agents/roomler-setup/tauri.conf.json` — `bundle.publisher`, `bundle.copyright`
+- `agents/meshharbord/wix/main.wxs` + `wix-perMachine/main.wxs` — `Manufacturer` (2× each)
+- `agents/meshharbord/build.rs` + `agents/meshharbor-cli/build.rs` — `CompanyName`, `LegalCopyright`
+- `agents/meshharbor-desktop/tauri.conf.json` + `agents/meshharbor-setup/tauri.conf.json` — `bundle.publisher`, `bundle.copyright`
 - both `[package.metadata.deb]` blocks — `maintainer`, `copyright`
 
 The `AZURE_SIGNING_EXPECT_SUBJECT` variable enforces the cert side: if the
@@ -484,7 +488,7 @@ copyright grant to the company is a legal decision, not a packaging one.
 
 ## 10. Version info
 
-`roomlerd.exe` and `roomler.exe` embed a full `VS_VERSION_INFO` via
+`meshharbord.exe` and `mh.exe` embed a full `VS_VERSION_INFO` via
 `build.rs` + `embed-resource` (`compile_for` → per-binary
 `rustc-link-arg-bin`, chosen because `winres`/`winresource` link-lib
 directives would propagate a *second* version resource into the Tauri EXEs

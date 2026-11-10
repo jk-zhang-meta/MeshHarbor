@@ -46,17 +46,17 @@ use std::time::{Duration, Instant};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bson::{DateTime, oid::ObjectId};
 use dashmap::DashMap;
-use rand::RngCore;
-use roomler_ai_remote_control::{
+use meshharbor_remote_control::{
     models::{
         Agent, NodeRef, OverlayNode, PeerRelayAuditAction, PeerRelayAuditEvent,
         PeerRelayDenyReason, PeerRelayMode, RpcCap, peer_relay_limits as limits,
     },
     signaling::{
         OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire, RelayMemberWire, RelayPathWire,
-        RelayProbeTargetWire, ServerMsg,
+        RelayProbeTargetWire, RelayRevokeScopeWire, ServerMsg,
     },
 };
+use rand::RngCore;
 use tracing::{debug, info, warn};
 use tunnel_core::policy::{OverlayPeerRef, OverlaySource, evaluate_overlay};
 
@@ -65,8 +65,8 @@ use crate::overlay::{
     NodeIdentity, PolicyLoad, current_node, pair_key, send_to_node, send_to_node_ref, try_load_acl,
     try_overlay_source_of,
 };
-use roomler_core::business_authority::{AuthenticatedDevice, BusinessZone};
-use roomler_core::net::is_global_unicast;
+use meshharbor_core::business_authority::{AuthenticatedDevice, BusinessZone};
+use meshharbor_core::net::is_global_unicast;
 
 // Search over the currently authorized relay graph.
 #[allow(dead_code)]
@@ -131,7 +131,7 @@ pub mod candidate_test_support {
         nodes: Vec<ObjectId>,
         requester_at_exit: bool,
     ) -> Result<TrialPathSnapshot, PeerRelayDenyReason> {
-        let path = roomler_ai_remote_control::signaling::RelayPathWire::new(nodes)
+        let path = meshharbor_remote_control::signaling::RelayPathWire::new(nodes)
             .map_err(|_| PeerRelayDenyReason::RequesterUnsupported)?;
         let a = state
             .overlay_nodes
@@ -861,6 +861,41 @@ pub mod candidate_test_support {
             .chain(delivery.bridges)
             .collect())
     }
+    /// Read only: distinguish a missing current observation from GEO-04.
+    pub async fn zone_snapshot_for_fixture(
+        state: &NetworkState,
+        id: ObjectId,
+    ) -> Result<serde_json::Value, String> {
+        let node = state
+            .overlay_nodes
+            .base
+            .find_by_id(id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let observed = observed_zone(state, node.tenant_id, &node.node_ref)
+            .await
+            .map(|(zone, _)| format!("{zone:?}"));
+        let zone = node_zone(state, &node)
+            .await
+            .map(|zone| format!("{zone:?}"));
+        Ok(
+            serde_json::json!({"node":id.to_hex(),"observed":observed,"zone":zone,
+            "relay_withdrawn":state.org_relay.join_extras(id).relay_withdrawn,
+            "srflx":node.srflx_endpoints,"lan":node.lan_endpoints}),
+        )
+    }
+
+    pub fn last_mint_for_fixture(
+        state: &NetworkState,
+        a: ObjectId,
+        b: ObjectId,
+    ) -> Option<serde_json::Value> {
+        state.org_relay.last_mint_audit.get(&pair_key(a,b)).map(|entry| {
+            serde_json::json!({"denied":format!("{:?}",entry.0.0),"warn_only":entry.0.1,
+                "age_ms":entry.1.elapsed().as_millis(),"eligibility_epoch":state.org_relay.eligibility_generation()})
+        })
+    }
+
     pub async fn select_path(
         state: &NetworkState,
         requester: ObjectId,
@@ -1043,22 +1078,23 @@ impl OrgRelaySession {
     }
     fn involves_agent(&self, agent_id: ObjectId) -> bool {
         self.involves_device(
-            roomler_core::business_authority::DeviceKind::Agent,
+            meshharbor_core::business_authority::DeviceKind::Agent,
             agent_id,
         )
     }
 
     pub(crate) fn involves_device(
         &self,
-        kind: roomler_core::business_authority::DeviceKind,
+        kind: meshharbor_core::business_authority::DeviceKind,
         device_id: ObjectId,
     ) -> bool {
         let is = |n: &NodeRef| match (kind, n) {
-            (roomler_core::business_authority::DeviceKind::Agent, NodeRef::Agent { agent_id }) => {
-                *agent_id == device_id
-            }
             (
-                roomler_core::business_authority::DeviceKind::TunnelClient,
+                meshharbor_core::business_authority::DeviceKind::Agent,
+                NodeRef::Agent { agent_id },
+            ) => *agent_id == device_id,
+            (
+                meshharbor_core::business_authority::DeviceKind::TunnelClient,
                 NodeRef::TunnelClient { tunnel_client_id },
             ) => *tunnel_client_id == device_id,
             _ => false,
@@ -1070,10 +1106,10 @@ impl OrgRelaySession {
 
     fn involves_identity(&self, identity_id: ObjectId) -> bool {
         self.involves_device(
-            roomler_core::business_authority::DeviceKind::Agent,
+            meshharbor_core::business_authority::DeviceKind::Agent,
             identity_id,
         ) || self.involves_device(
-            roomler_core::business_authority::DeviceKind::TunnelClient,
+            meshharbor_core::business_authority::DeviceKind::TunnelClient,
             identity_id,
         )
     }
@@ -1102,7 +1138,7 @@ impl OrgRelaySession {
     fn has_removed_line_edge(
         &self,
         source: ObjectId,
-        approved: &[roomler_ai_remote_control::models::PeerRelayBackboneEdge],
+        approved: &[meshharbor_remote_control::models::PeerRelayBackboneEdge],
     ) -> bool {
         self.hops.iter().enumerate().any(|(i, hop)| {
             let predecessor = if i == 0 {
@@ -1134,7 +1170,14 @@ impl OrgRelaySession {
             };
             messages.push((
                 hop.relay.node_ref.clone(),
-                ServerMsg::OverlayRelayRevoke { vni: hop.vni },
+                ServerMsg::OverlayRelayRevoke {
+                    vni: hop.vni,
+                    scope: RelayRevokeScopeWire {
+                        relay_node_id: hop.relay.node_id,
+                        generation: hop.generation,
+                        peer_node_id: None,
+                    },
+                },
             ));
             messages.push((
                 source.clone(),
@@ -1690,7 +1733,7 @@ struct Plan {
     relay: OverlayNode,
     relay_agent_id: ObjectId,
     endpoints: Vec<String>,
-    backbone_edges: Vec<roomler_ai_remote_control::models::PeerRelayBackboneEdge>,
+    backbone_edges: Vec<meshharbor_remote_control::models::PeerRelayBackboneEdge>,
     /// Granted by role and zone (`auto`), not by an overlay policy.
     implicit: bool,
 }
@@ -1749,7 +1792,7 @@ pub fn valid_static_endpoint(s: &str) -> bool {
 pub(crate) fn agent_zone(state: &NetworkState, agent: &Agent) -> Option<BusinessZone> {
     let conn = state.org_relay.live_conn(agent.id?)?;
     let device = AuthenticatedDevice::from_agent(agent).ok()?;
-    roomler_core::business_authority::connection_zone(&state.core, &device, &conn)
+    meshharbor_core::business_authority::connection_zone(&state.core, &device, &conn)
 }
 
 /// The business zone of the device behind an overlay node: its live
@@ -1807,7 +1850,7 @@ async fn observed_zone(
             let conn = state.org_relay.live_conn(*tunnel_client_id)?;
             let device = AuthenticatedDevice::from_tunnel_client(&client).ok()?;
             let zone =
-                roomler_core::business_authority::connection_zone(&state.core, &device, &conn)?;
+                meshharbor_core::business_authority::connection_zone(&state.core, &device, &conn)?;
             Some((zone, client.machine_id))
         }
     }
@@ -1833,7 +1876,7 @@ fn addresses_agree(state: &NetworkState, node: &OverlayNode, zone: BusinessZone)
         .map(|sa| sa.ip())
         .filter(is_global_unicast)
         .find(|ip| {
-            roomler_core::business_authority::address_zone(&state.core, *ip)
+            meshharbor_core::business_authority::address_zone(&state.core, *ip)
                 .is_some_and(|z| z != zone)
         });
     let Some(ip) = conflict else {
@@ -1910,7 +1953,7 @@ async fn probe_targets_inner(
     let mut servers: Vec<ObjectId> = Vec::new();
     if mode == PeerRelayMode::Auto
         && let Ok(agents) =
-            roomler_core::business_authority::current_server_agents(&state.core, tenant_id).await
+            meshharbor_core::business_authority::current_server_agents(&state.core, tenant_id).await
     {
         for agent in agents {
             let Some(id) = agent.id else { continue };
@@ -2099,7 +2142,7 @@ async fn backbone_probe_targets_inner(
         .peer_relay_policy
         .approved_backbone_edges
         .iter()
-        .take(roomler_ai_remote_control::models::MAX_PEER_RELAY_BACKBONE_EDGES)
+        .take(meshharbor_remote_control::models::MAX_PEER_RELAY_BACKBONE_EDGES)
     {
         if out.len() >= MAX_PROBE_TARGETS {
             break;
@@ -2281,7 +2324,8 @@ async fn plan_mint_candidates_with_trial_diagnostics(
     let iso_mode = iso::mode(state);
     let unknown_role_mode = iso::unknown_role_mode(state);
     let approved_roles = if iso_mode == Mode::Enforce || unknown_role_mode != Mode::Off {
-        match roomler_core::business_authority::current_approved_roles(&state.core, tenant_id).await
+        match meshharbor_core::business_authority::current_approved_roles(&state.core, tenant_id)
+            .await
         {
             Ok(roles) => (unknown_role_mode != Mode::Off).then_some(roles),
             Err(e) if iso_mode == Mode::Enforce => {
@@ -2366,7 +2410,8 @@ async fn plan_mint_candidates_with_trial_diagnostics(
     let mut servers: Vec<ObjectId> = Vec::new();
     let mut servers_unreadable = false;
     if peer_relay_mode(state, tenant_id).await == PeerRelayMode::Auto {
-        match roomler_core::business_authority::current_server_agents(&state.core, tenant_id).await
+        match meshharbor_core::business_authority::current_server_agents(&state.core, tenant_id)
+            .await
         {
             Ok(agents) => {
                 for agent in agents {
@@ -2397,7 +2442,7 @@ async fn plan_mint_candidates_with_trial_diagnostics(
         let Some(agent_id) = agent.id else { continue };
         if let Some(roles) = approved_roles.as_ref()
             && !roles.contains_key(&(
-                roomler_core::business_authority::DeviceKind::Agent,
+                meshharbor_core::business_authority::DeviceKind::Agent,
                 agent_id,
             ))
         {
@@ -2668,7 +2713,7 @@ pub fn revoke_removed_backbone_edges_sync(
     state: &NetworkState,
     tenant: ObjectId,
     source: ObjectId,
-    approved: &[roomler_ai_remote_control::models::PeerRelayBackboneEdge],
+    approved: &[meshharbor_remote_control::models::PeerRelayBackboneEdge],
 ) -> Vec<PeerRelayAuditEvent> {
     let mut events = trial::revoke_removed_backbone_edges(state, tenant, source, approved);
     events.extend(revoke_matching_sync(state, "backbone_edge_revoked", |s| {
@@ -2691,7 +2736,7 @@ pub(crate) async fn cross_border_lines(
 }
 
 pub(crate) type PreloadedRoles<'a> = (
-    &'a std::collections::HashSet<(roomler_core::business_authority::DeviceKind, ObjectId)>,
+    &'a std::collections::HashSet<(meshharbor_core::business_authority::DeviceKind, ObjectId)>,
     crate::business_isolation::Mode,
     bool,
 );
@@ -2705,7 +2750,7 @@ pub(crate) async fn cross_border_lines_with_roles(
         return Vec::new();
     };
     let owned_roles: std::collections::HashSet<(
-        roomler_core::business_authority::DeviceKind,
+        meshharbor_core::business_authority::DeviceKind,
         ObjectId,
     )>;
     let (approved_roles, unknown_role_mode, roles_read_failed) = match preloaded_roles {
@@ -2725,7 +2770,7 @@ pub(crate) async fn cross_border_lines_with_roles(
             if crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce
                 && mode != crate::business_isolation::Mode::Off
             {
-                match roomler_core::business_authority::current_approved_roles(
+                match meshharbor_core::business_authority::current_approved_roles(
                     &state.core,
                     tenant_id,
                 )
@@ -2759,7 +2804,7 @@ pub(crate) async fn cross_border_lines_with_roles(
             return true;
         }
         if approved.contains(&(
-            roomler_core::business_authority::DeviceKind::Agent,
+            meshharbor_core::business_authority::DeviceKind::Agent,
             agent_id,
         )) {
             true
@@ -2903,7 +2948,7 @@ async fn plan_line(
             for edge in ingress
                 .backbone_edges
                 .iter()
-                .take(roomler_ai_remote_control::models::MAX_PEER_RELAY_BACKBONE_EDGES)
+                .take(meshharbor_remote_control::models::MAX_PEER_RELAY_BACKBONE_EDGES)
                 .filter(|e| e.cross_border)
             {
                 if !crate::routes::peer_relay::valid_backbone_endpoint(&edge.endpoint)
@@ -3436,7 +3481,7 @@ pub async fn discover(
     peer: &OverlayNode,
     request_id: u64,
     cursor: Option<OrgRelayDiscoveryCursorWire>,
-    scan: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryScanWire>,
+    scan: Option<meshharbor_remote_control::signaling::OrgRelayDiscoveryScanWire>,
 ) {
     let Some(peer_id) = peer.id else { return };
     let mut candidates = Vec::new();
@@ -3446,7 +3491,7 @@ pub async fn discover(
         .unwrap_or_default();
     let traversal =
         extras.supports_org_relay_multi_candidate && extras.supports_org_relay_discovery_cursor;
-    use roomler_ai_remote_control::signaling::OrgRelayDiscoveryScanWire as Scan;
+    use meshharbor_remote_control::signaling::OrgRelayDiscoveryScanWire as Scan;
     if traversal
         && let Some(Scan::Progress {
             scan_next: true,
@@ -4515,13 +4560,30 @@ fn revoke_matching_sync(
         {
             continue;
         }
-        let revoke = |vni| ServerMsg::OverlayRelayRevoke { vni };
-        push_control(state, &session.relay.node_ref, revoke(session.vni));
+        let revoke = |vni, relay_node_id, generation, peer_node_id| ServerMsg::OverlayRelayRevoke {
+            vni,
+            scope: RelayRevokeScopeWire {
+                relay_node_id,
+                generation,
+                peer_node_id,
+            },
+        };
+        push_control(
+            state,
+            &session.relay.node_ref,
+            revoke(session.vni, session.relay.node_id, session.generation, None),
+        );
         for (i, member) in session.members.iter().enumerate() {
+            let leg = session.member_leg(i);
             push_control(
                 state,
                 &member.party.node_ref,
-                revoke(session.member_leg(i).vni),
+                revoke(
+                    leg.vni,
+                    leg.relay_node_id,
+                    leg.generation,
+                    Some(session.members[1 - i].party.node_id),
+                ),
             );
         }
         for (recipient, message) in session.hop_revocations() {
@@ -4953,7 +5015,7 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) -> bool {
     let approved_relays: Option<
         std::collections::HashMap<
             ObjectId,
-            Vec<roomler_ai_remote_control::models::PeerRelayBackboneEdge>,
+            Vec<meshharbor_remote_control::models::PeerRelayBackboneEdge>,
         >,
     > = match state.fleet.agents.list_relay_approved(tenant_id).await {
         Ok(agents) => Some(
@@ -4976,7 +5038,8 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) -> bool {
         }
     }
     let server_agents: Option<std::collections::HashSet<ObjectId>> =
-        match roomler_core::business_authority::current_server_agents(&state.core, tenant_id).await
+        match meshharbor_core::business_authority::current_server_agents(&state.core, tenant_id)
+            .await
         {
             Ok(agents) => Some(agents.into_iter().filter_map(|a| a.id).collect()),
             Err(_) => {
@@ -5025,7 +5088,7 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) -> bool {
         'relays: for relay_id in s.relay_nodes() {
             let relay = match state.overlay_nodes.base.find_by_id(relay_id).await {
                 Ok(r) => r,
-                Err(roomler_ai_services::dao::base::DaoError::NotFound) => {
+                Err(meshharbor_services::dao::base::DaoError::NotFound) => {
                     granted = false;
                     break 'relays;
                 }
@@ -5051,7 +5114,7 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) -> bool {
             for m in &s.members {
                 let node = match state.overlay_nodes.base.find_by_id(m.party.node_id).await {
                     Ok(n) => n,
-                    Err(roomler_ai_services::dao::base::DaoError::NotFound) => {
+                    Err(meshharbor_services::dao::base::DaoError::NotFound) => {
                         granted = false;
                         break 'relays;
                     }
@@ -5465,7 +5528,7 @@ mod tests {
         assert_eq!(session.member_leg(0).relay_node_id, ids[0]);
         assert_eq!(session.member_leg(1).relay_node_id, ids[3]);
         assert_eq!(session.member_leg(1).vni, 13);
-        let edge = |i: usize| roomler_ai_remote_control::models::PeerRelayBackboneEdge {
+        let edge = |i: usize| meshharbor_remote_control::models::PeerRelayBackboneEdge {
             relay_agent_id: ids[i + 1].to_hex(),
             endpoint: session.hops[i].private_endpoint.clone(),
             cross_border: true,
@@ -5496,7 +5559,7 @@ mod tests {
         assert!(
             mixed.has_removed_line_edge(
                 ids[0],
-                &[roomler_ai_remote_control::models::PeerRelayBackboneEdge {
+                &[meshharbor_remote_control::models::PeerRelayBackboneEdge {
                     relay_agent_id: ids[1].to_hex(),
                     endpoint: mixed.hops[0].private_endpoint.clone(),
                     cross_border: false,
@@ -5515,7 +5578,10 @@ mod tests {
                 }
             );
             assert!(
-                matches!(messages[2*i].1, ServerMsg::OverlayRelayRevoke { vni } if vni == 11 + i as u32)
+                matches!(&messages[2*i].1, ServerMsg::OverlayRelayRevoke { vni, scope }
+                    if *vni == 11 + i as u32 && scope.generation == session.hops[i].generation
+                        && scope.relay_node_id == session.hops[i].relay.node_id
+                        && scope.peer_node_id.is_none())
             );
             assert_eq!(messages[2 * i + 1].0, NodeRef::Agent { agent_id: ids[i] });
             assert!(

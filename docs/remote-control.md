@@ -1,6 +1,6 @@
 # Remote Control — Architecture & Design
 
-> Adds TeamViewer / RustDesk-style unattended remote desktop access to roomler-ai, reusing the existing mediasoup SFU, WebSocket signaling, and COTURN cluster. Targets sub-150 ms input-to-glass latency on LAN, sub-300 ms over WAN.
+> Adds TeamViewer / RustDesk-style unattended remote desktop access to meshharbor, reusing the existing mediasoup SFU, WebSocket signaling, and COTURN cluster. Targets sub-150 ms input-to-glass latency on LAN, sub-300 ms over WAN.
 
 > **One device in N orgs, N users on one host, events from every org:** see
 > [`multi-org.md`](./multi-org.md) — the `[[orgs]]` config, per-org supervisors,
@@ -36,16 +36,16 @@ The current stack already gives us 80% of what's needed:
 | MongoDB + 18 collections | New collections: `agents`, `remote_sessions`, `remote_audit` |
 | WebSocket handler (presence, signaling) | New message namespace `rc:*` for agent registration and control signaling |
 | mediasoup 0.20 SFU + WorkerPool | New router kind `RemoteControlRouter` with one video producer (screen) + bidirectional `SCTP` data channels |
-| COTURN cluster (`coturn.roomler.live`) | Same TURN credentials path; agent fetches short-lived creds from the API |
+| COTURN cluster (`coturn.meshharbor.itachi.fans`) | Same TURN credentials path; agent fetches short-lived creds from the API |
 | JWT + httpOnly cookies | Agent uses a long-lived **agent token** (separate audience claim); controllers use the existing user JWT |
 | Vue 3 + Pinia + mediasoup-client | New view `RemoteControl.vue`, new store `remoteControl.ts`, new composable `useRemoteControl.ts` |
 | Notifications | "X requested control of your machine" goes through the existing notification bell |
 
 The only genuinely new component is the **native agent** (a separate Rust binary that ships per-OS) and a thin signaling extension on the server.
 
-> **See also — the `roomler` subsystem.** A sibling of remote-control that reuses the same agent binary, `rc:*` signaling, and coturn cluster, but for **TCP port-forwarding** (operator's `127.0.0.1:<port>` → agent → an internal service) rather than screen capture + input. Its data plane defaults to **QUIC** (`quic-v1`, quinn) with a WebRTC-data-channel fallback, and crosses corporate NAT / firewalls via the same direct → TURN(UDP) → TURNS/TCP tier walk. The server negotiates `quic-v1` only for agents new enough to speak it (≥ rc.104). Operator guide: [`docs/tunnel-install.md`](./tunnel-install.md).
+> **See also — the `mh` subsystem.** A sibling of remote-control that reuses the same agent binary, `rc:*` signaling, and coturn cluster, but for **TCP port-forwarding** (operator's `127.0.0.1:<port>` → agent → an internal service) rather than screen capture + input. Its data plane defaults to **QUIC** (`quic-v1`, quinn) with a WebRTC-data-channel fallback, and crosses corporate NAT / firewalls via the same direct → TURN(UDP) → TURNS/TCP tier walk. The server negotiates `quic-v1` only for agents new enough to speak it (≥ rc.104). Operator guide: [`docs/tunnel-install.md`](./tunnel-install.md).
 
-> **See also — the L3 overlay & its Windows firewall override.** The `overlay-l3` feature evolves the tunnel into a Tailscale-style per-tenant WireGuard+DERP mesh (Wintun NIC `roomler`, overlay IPs `100.64.0.0/10`). On a GPO-locked Windows host the corporate Defender Firewall drops unsolicited inbound on the overlay adapter; the agent overrides this by programming the Windows Filtering Platform directly (a LUID-scoped, high-weight hard-permit sublayer) from its LocalSystem service. Design, limits (callout/IPsec), and the `ROOMLERD_WFP_PERMIT` disable: [`docs/overlay-wfp.md`](./overlay-wfp.md).
+> **See also — the L3 overlay & its Windows firewall override.** The `overlay-l3` feature evolves the tunnel into a Tailscale-style per-tenant WireGuard+DERP mesh (Wintun NIC `meshharbor`, overlay IPs `100.64.0.0/10`). On a GPO-locked Windows host the corporate Defender Firewall drops unsolicited inbound on the overlay adapter; the agent overrides this by programming the Windows Filtering Platform directly (a LUID-scoped, high-weight hard-permit sublayer) from its LocalSystem service. Design, limits (callout/IPsec), and the `MESHHARBORD_WFP_PERMIT` disable: [`docs/overlay-wfp.md`](./overlay-wfp.md).
 
 ## 3. High-level topology
 
@@ -54,8 +54,8 @@ At a glance — session establishment and where the data actually flows:
 ```mermaid
 sequenceDiagram
     participant C as Controller (browser)
-    participant S as roomler.ai (signalling)
-    participant A as roomlerd (controlled host)
+    participant S as meshharbor.itachi.fans (signalling)
+    participant A as meshharbord (controlled host)
 
     C->>S: rc:session.request {agent_id}
     S->>A: rc:request (permissions, controller)
@@ -77,12 +77,12 @@ flowchart LR
         V["render: video / WebCodecs canvas"]
         DCs["DCs: input · control · clipboard ·<br/>files · cursor · video-DC"]
     end
-    subgraph H["Controlled host (roomlerd)"]
+    subgraph H["Controlled host (meshharbord)"]
         CAP["capture (WGC/DXGI/scrap/GDI)"]
         ENC["encoder cascade → encoders.md"]
         INJ["input injection (enigo / SystemContext)"]
     end
-    SRV["roomler.ai — signalling + consent + audit only"]
+    SRV["meshharbor.itachi.fans — signalling + consent + audit only"]
     B <-. "rc:* over /ws" .-> SRV <-. "rc:* over /ws" .-> H
     B <==>|"WebRTC P2P (TURN fallback)"| H
     CAP --> ENC --> V
@@ -107,7 +107,7 @@ The original wire-level view:
                │                                                                │
                │ WSS  (signaling: SDP-equivalent, ICE, session control)         │ WSS
                │                                                                │
-               └─────────────────────► Roomler API (Axum) ◄─────────────────────┘
+               └─────────────────────► MeshHarbor API (Axum) ◄─────────────────────┘
                                        ├─ rc_signaling::Hub
                                        ├─ mediasoup RemoteControlRouter
                                        └─ MongoDB (sessions, agents, audit)
@@ -115,21 +115,21 @@ The original wire-level view:
                                               ▲
                                               │ TURN credentials (REST API)
                                               │
-                                       coturn.roomler.live
+                                       coturn.meshharbor.itachi.fans
 ```
 
 The application server **never sees raw input or pixels** — those flow over the WebRTC PeerConnection between agent and controller, either P2P or relayed by TURN. The server only does signaling, authorization, mediasoup routing setup, and audit logging.
 
 ## 4. The agent
 
-A standalone Rust binary, distributed as `roomlerd` per OS. Two operating modes:
+A standalone Rust binary, distributed as `meshharbord` per OS. Two operating modes:
 
-1. **Attended** — user runs `roomlerd --pair` from the tray, gets a one-time PIN, types it in the controller UI. PIN is good for 10 minutes, single use.
+1. **Attended** — user runs `meshharbord --pair` from the tray, gets a one-time PIN, types it in the controller UI. PIN is good for 10 minutes, single use.
 2. **Unattended** — agent registers once with an `enrollment_token` (issued by an org Admin via the existing org settings UI), persists a per-machine `agent_token`, and stays connected to the API via WebSocket whenever the user is logged in.
 
 ### 4.1 Why a native binary (and not just `getDisplayMedia` + browser)
 
-`getDisplayMedia` works for *attended screen sharing* (which roomler already has via `produce`). It cannot:
+`getDisplayMedia` works for *attended screen sharing* (which meshharbor already has via `produce`). It cannot:
 
 - run when no browser tab is open,
 - inject mouse/keyboard into other apps,
@@ -150,16 +150,16 @@ So: native agent for the *host*, browser for the *controller*. This is the same 
 > ScreenCaptureKit code. Encode is `encode/{ffmpeg/, mf/, openh264_backend,
 > libvpx}.rs` with the rate-control modules beside them, VideoToolbox among
 > FFmpeg's encoders ([encoders.md](encoders.md)). The packaging is under
-> `agents/roomlerd/packaging/` and `agents/roomlerd/wix/`.
+> `agents/meshharbord/packaging/` and `agents/meshharbord/wix/`.
 
 ```
-agents/roomlerd/
+agents/meshharbord/
 ├── Cargo.toml                 # workspace member of the main repo
 ├── src/
 │   ├── main.rs                # tray/CLI entry
-│   ├── config.rs              # ~/.config/roomler/config.toml
+│   ├── config.rs              # ~/.config/meshharbor/config.toml
 │   ├── enrollment.rs          # one-shot enrollment → agent_token
-│   ├── signaling.rs           # WSS to roomler API, rc:* protocol
+│   ├── signaling.rs           # WSS to meshharbor API, rc:* protocol
 │   ├── peer.rs                # webrtc-rs PeerConnection wrapper
 │   ├── capture/
 │   │   ├── mod.rs             # trait ScreenCapture
@@ -190,7 +190,7 @@ agents/roomlerd/
     ├── windows.wxs            # MSI; auto-start at user login
     ├── macos.plist            # LaunchAgent (user, not Daemon, in v1)
     └── linux/
-        ├── roomler.service         # systemd --user
+        ├── meshharbor.service         # systemd --user
         └── flatpak/...
 ```
 
@@ -198,7 +198,7 @@ agents/roomlerd/
 
 ### 4.3 Why P2P, not always SFU
 
-For 1↔1 remote control, mediasoup as a relay buys you *nothing* and adds a hop. So the agent and controller form a **direct PeerConnection** (P2P with ICE → TURN fallback). The mediasoup SFU only enters the picture when **multiple controllers** observe the same session (e.g., a support session shadowed by a senior engineer, or screen-sharing a remote-control session into a roomler call). In that case, the agent's stream is republished to a mediasoup `RemoteControlRouter` and other controllers consume from the SFU as view-only.
+For 1↔1 remote control, mediasoup as a relay buys you *nothing* and adds a hop. So the agent and controller form a **direct PeerConnection** (P2P with ICE → TURN fallback). The mediasoup SFU only enters the picture when **multiple controllers** observe the same session (e.g., a support session shadowed by a senior engineer, or screen-sharing a remote-control session into a meshharbor call). In that case, the agent's stream is republished to a mediasoup `RemoteControlRouter` and other controllers consume from the SFU as view-only.
 
 ```
 1 controller : 1 agent           → direct PeerConnection (best path)
@@ -206,7 +206,7 @@ N controllers : 1 agent          → agent → mediasoup → N consumers (view-o
 1 active controller + N watchers → split: 1 PC for input controller, SFU for watchers
 ```
 
-This hybrid is exactly the `WorkerPool + RoomManager` pattern already in roomler — we just add a transport kind for "remote screen capture" and a one-producer router shape.
+This hybrid is exactly the `WorkerPool + RoomManager` pattern already in meshharbor — we just add a transport kind for "remote screen capture" and a one-producer router shape.
 
 ### 4.4 Whether a session may ride the overlay (#1882)
 
@@ -235,11 +235,11 @@ flowchart LR
     A --> F3["remote candidates + offer SDP:<br/>drop overlay addresses"]
 ```
 
-The overlay reaches a session's ICE three ways. The interface-name rule RC always had (`is_overlay_iface`: `roomler`, `roomler-*`, `roomler0`) covers only part of the first, so "off" needs one filter per way:
+The overlay reaches a session's ICE three ways. The interface-name rule RC always had (`is_overlay_iface`: `meshharbor`, `meshharbor-*`, `meshharbor0`) covers only part of the first, so "off" needs one filter per way:
 
 | How the overlay gets in | Filter (off) | Where |
 |---|---|---|
-| A **host** candidate on the overlay interface. On macOS that is a kernel-named `utunN`, which the name rule cannot see | `SettingEngine` IP filter: `RcOverlay::keeps_local` | `agents/roomlerd/src/peer.rs:386` |
+| A **host** candidate on the overlay interface. On macOS that is a kernel-named `utunN`, which the name rule cannot see | `SettingEngine` IP filter: `RcOverlay::keeps_local` | `agents/meshharbord/src/peer.rs:386` |
 | An **ICE server** on a mesh address: the loopback-TURN relay the Hub appends for a corp controller | Dropped from the session's servers (`RcOverlay::ice_servers`); the Hub also withholds it | `peer.rs:409`, `crates/modules/fleet/src/hub.rs:1700` |
 | A **remote** candidate on a mesh address. The agent's srflx and relay sockets are bound to `0.0.0.0`, so a check to it routes into the TUN even though the agent offered no overlay candidate | Dropped when trickled, again after an mDNS name resolves, and from the offer SDP | `peer.rs:1516`, `peer.rs:1558`, `peer.rs:1484` |
 
@@ -273,10 +273,10 @@ The overlay reaches a session's ICE three ways. The interface-name rule RC alway
 | OS | Primary API | Why | Fallback |
 |---|---|---|---|
 | Windows 10+ | `Windows.Graphics.Capture` (WGC) via `windows` crate | DXGI surface, no permission prompt for own session, handles DPI, supports per-window | DXGI Desktop Duplication |
-| macOS | CoreGraphics `CGDisplayStream`, through `scrap` (`agents/roomlerd/src/capture/scrap_backend.rs:8`) | The one macOS capture path today: there is no ScreenCaptureKit code. It reports no damage, so every frame counts as changed | — |
-| Linux, a host with scanout (X11 or Wayland) | **DRM/KMS** — the scanout plane read below the compositor (FR-36, opt-in `ROOMLERD_DRM_CAPTURE=1`) | Compositor-independent, needs no consent, sees the greeter and a locked screen — the unattended path | the portal, then X11 |
-| Linux Wayland, **no** scanout (WSL2, containers, nested compositors) | **`xdg-desktop-portal` ScreenCast → PipeWire**, through a privilege-dropped helper in the user's session (FR-45, opt-in `ROOMLERD_PORTAL_CAPTURE=1`) — or `org.gnome.Mutter.ScreenCast` directly where no portal backend can run (`ROOMLERD_MUTTER_CAPTURE=1`, GNOME only, unattended). A **per-user** install in its own Wayland session with no key set switches these on by itself: mutter on GNOME, else the portal (FR-93 P2) | The only route a Wayland compositor sanctions; **attended** — a logged-in user and a consent dialog, never the greeter or a locked screen | X11 |
-| Linux X11 | `XShm` via scrap, with XDamage deciding whether a frame is worth taking (FR-29) | Zero-copy via shared memory; on a headless box the daemon starts its own Xvfb (`ROOMLERD_VIRTUAL_DESKTOP=1`) | `NoopCapture` carrying the reason (§5.1a) |
+| macOS | CoreGraphics `CGDisplayStream`, through `scrap` (`agents/meshharbord/src/capture/scrap_backend.rs:8`) | The one macOS capture path today: there is no ScreenCaptureKit code. It reports no damage, so every frame counts as changed | — |
+| Linux, a host with scanout (X11 or Wayland) | **DRM/KMS** — the scanout plane read below the compositor (FR-36, opt-in `MESHHARBORD_DRM_CAPTURE=1`) | Compositor-independent, needs no consent, sees the greeter and a locked screen — the unattended path | the portal, then X11 |
+| Linux Wayland, **no** scanout (WSL2, containers, nested compositors) | **`xdg-desktop-portal` ScreenCast → PipeWire**, through a privilege-dropped helper in the user's session (FR-45, opt-in `MESHHARBORD_PORTAL_CAPTURE=1`) — or `org.gnome.Mutter.ScreenCast` directly where no portal backend can run (`MESHHARBORD_MUTTER_CAPTURE=1`, GNOME only, unattended). A **per-user** install in its own Wayland session with no key set switches these on by itself: mutter on GNOME, else the portal (FR-93 P2) | The only route a Wayland compositor sanctions; **attended** — a logged-in user and a consent dialog, never the greeter or a locked screen | X11 |
+| Linux X11 | `XShm` via scrap, with XDamage deciding whether a frame is worth taking (FR-29) | Zero-copy via shared memory; on a headless box the daemon starts its own Xvfb (`MESHHARBORD_VIRTUAL_DESKTOP=1`) | `NoopCapture` carrying the reason (§5.1a) |
 
 The portal path, and macOS's Screen Recording grant, produce a system permission prompt the *first* time. That's a feature, not a bug — it's the user consent layer. The Linux arms, their order and their gates are [`linux-capture.md`](linux-capture.md).
 
@@ -337,8 +337,8 @@ off while the machine stayed up (FR-55's keeper holds
 `PreventUserIdleSystemSleep`, which keeps the **machine** reachable and lets the
 display sleep, on purpose). The capture worker now takes
 `power::DisplayAwake` for its whole life
-(`agents/roomlerd/src/capture/scrap_backend.rs:140`,
-`agents/roomlerd/src/power.rs:284`): `IOPMAssertionDeclareUserActivity` wakes
+(`agents/meshharbord/src/capture/scrap_backend.rs:140`,
+`agents/meshharbord/src/power.rs:284`): `IOPMAssertionDeclareUserActivity` wakes
 the display (`caffeinate -u`), and `PreventUserIdleDisplaySleep` keeps it on,
 so a view-only session, which injects no input to count as activity, does not
 go dark at the display-sleep timeout. Only capture takes it: an SSH session or
@@ -384,17 +384,17 @@ flowchart LR
 ```
 
 The decision is one daemon-side seam, `with_honest_words`
-([`caps.rs:814`](../agents/roomlerd/src/encode/caps.rs#L814)), applied in
-`detect()` ([`caps.rs:624`](../agents/roomlerd/src/encode/caps.rs#L624))
+([`caps.rs:814`](../agents/meshharbord/src/encode/caps.rs#L814)), applied in
+`detect()` ([`caps.rs:624`](../agents/meshharbord/src/encode/caps.rs#L624))
 after the config lists, over plain `HostFacts`
-([`caps.rs:636`](../agents/roomlerd/src/encode/caps.rs#L636)), so it runs and
+([`caps.rs:636`](../agents/meshharbord/src/encode/caps.rs#L636)), so it runs and
 is tested on every OS.
 
 | Feature | When | What the hello says | What the viewer does |
 |---|---|---|---|
-| `audio` | the `audio` feature is built and the OS has no capture backend (macOS, until FR-97 P2a) | `audio` empty, so the daemon's session gate never adds a track ([`signaling.rs:3280`](../agents/roomlerd/src/signaling.rs#L3280)); `no-backend` | the receive-audio toggle is off, with the device's reason |
-| `audio` | Linux with no way to the computer's sound (FR-97 P3c, §5.1c) | `audio` empty; `no-sound-server` (no Pulse client library), `no-session` (a root build without the session helper), or `no-monitor` (`ROOMLERD_AUDIO_SESSION=0` with nothing named) | the same |
-| `clipboard` | a root Linux daemon with neither `DISPLAY` nor `WAYLAND_DISPLAY` ([`caps.rs:795`](../agents/roomlerd/src/encode/caps.rs#L795)) | `supports_clipboard: false`, no clipboard words; `no-session` | send, get and auto-sync are greyed, with the reason |
+| `audio` | the `audio` feature is built and the OS has no capture backend (macOS, until FR-97 P2a) | `audio` empty, so the daemon's session gate never adds a track ([`signaling.rs:3280`](../agents/meshharbord/src/signaling.rs#L3280)); `no-backend` | the receive-audio toggle is off, with the device's reason |
+| `audio` | Linux with no way to the computer's sound (FR-97 P3c, §5.1c) | `audio` empty; `no-sound-server` (no Pulse client library), `no-session` (a root build without the session helper), or `no-monitor` (`MESHHARBORD_AUDIO_SESSION=0` with nothing named) | the same |
+| `clipboard` | a root Linux daemon with neither `DISPLAY` nor `WAYLAND_DISPLAY` ([`caps.rs:795`](../agents/meshharbord/src/encode/caps.rs#L795)) | `supports_clipboard: false`, no clipboard words; `no-session` | send, get and auto-sync are greyed, with the reason |
 | `clipboard-image-events` | everywhere but Windows and (FR-97 P3e-3a) a Linux X11 session, whose watchers report copied images | the words stay: text syncs, and an image moves on request; `not-watched` | the auto-sync tooltip stops promising host images |
 | `sas` | Windows, Linux | `keys-only`: the button types three ordinary keys. Windows' lock and sign-in screens ignore them; Linux desktops bind them, GNOME and KDE to log out. A Windows host that can send the real sequence advertises `input: sas` instead and drops this entry (P4a, §5.1e) | the button stays, and says what the keys reach |
 | `sas` | macOS | `not-applicable`: the chord means nothing there | the button is hidden |
@@ -431,13 +431,13 @@ the words.
 ### 5.1c Session audio is the computer's sound, never a microphone (FR-97 P3c)
 
 "Receive host audio" carries what the host plays. One rule, in
-[`audio_source.rs`](../agents/roomlerd/src/audio_source.rs), decides what each
+[`audio_source.rs`](../agents/meshharbord/src/audio_source.rs), decides what each
 OS may open, and the session says why when it opens nothing.
 
 | OS | What a session captures | Where it cannot |
 |---|---|---|
 | Windows | WASAPI loopback of the default output device | no output device, usual on a server or a VM with no sound device: `no_output` |
-| Linux | the default output's monitor (`@DEFAULT_MONITOR@`) through Pulse's client library, in the daemon for a per-user install and through the seat user's helper for a root one (P3c-2, [`audio_source.rs:209`](../agents/roomlerd/src/audio_source.rs#L209)); a device named in `ROOMLERD_AUDIO_SOURCE` wins | no Pulse client library: the hello offers no track (`no-sound-server`, [`caps.rs:753`](../agents/roomlerd/src/encode/caps.rs#L753)); a root daemon with nobody at the screen: `no_session`; a named device that is not there: `source_not_found`; `ROOMLERD_AUDIO_SESSION=0`: P3c-1's rule, a named device or `no-monitor` |
+| Linux | the default output's monitor (`@DEFAULT_MONITOR@`) through Pulse's client library, in the daemon for a per-user install and through the seat user's helper for a root one (P3c-2, [`audio_source.rs:209`](../agents/meshharbord/src/audio_source.rs#L209)); a device named in `MESHHARBORD_AUDIO_SOURCE` wins | no Pulse client library: the hello offers no track (`no-sound-server`, [`caps.rs:753`](../agents/meshharbord/src/encode/caps.rs#L753)); a root daemon with nobody at the screen: `no_session`; a named device that is not there: `source_not_found`; `MESHHARBORD_AUDIO_SESSION=0`: P3c-1's rule, a named device or `no-monitor` |
 | macOS | nothing yet (ScreenCaptureKit audio is FR-97 P2a) | the hello offers no track (`no-backend`, §5.1b) |
 
 ⚠️ **On Linux the default input is a microphone, and before P3c-1 it was the
@@ -447,20 +447,20 @@ ALSA, so it lists ALSA devices and never a sound server's sources. Measured
 
 - the devices were exactly `pipewire`, `pulse` and `default`;
 - the auto-pick, a name ending in `.monitor`, never matched, and neither did
-  the documented `ROOMLERD_AUDIO_SOURCE=<sink>.monitor`;
+  the documented `MESHHARBORD_AUDIO_SOURCE=<sink>.monitor`;
 - so every session fell back to `default`, and PulseAudio showed the capture
   on the microphone while the speakers' monitor stayed suspended.
 
-P3c-1 removed that fallback ([`cpal_backend.rs:247`](../agents/roomlerd/src/audio/cpal_backend.rs#L247)).
+P3c-1 removed that fallback ([`cpal_backend.rs:247`](../agents/meshharbord/src/audio/cpal_backend.rs#L247)).
 A Linux host now offers no track until a device is named for it.
 
-**Naming the device (a per-user daemon).** `ROOMLERD_AUDIO_SOURCE` takes an ALSA
+**Naming the device (a per-user daemon).** `MESHHARBORD_AUDIO_SOURCE` takes an ALSA
 device name, as `arecord -L` prints it, not a PulseAudio source. To capture the
 speakers through PulseAudio or PipeWire's Pulse server, set both in the
 daemon's environment and restart it:
 
 ```text
-ROOMLERD_AUDIO_SOURCE=pulse
+MESHHARBORD_AUDIO_SOURCE=pulse
 PULSE_SOURCE=@DEFAULT_MONITOR@
 ```
 
@@ -472,14 +472,14 @@ speakers: the override is for a device the owner prefers.
 **The monitor, without naming anything (P3c-2).** PulseAudio and PipeWire's
 Pulse server both resolve the device name `@DEFAULT_MONITOR@` to the default
 sink's monitor, so the agent records that through Pulse's own client library
-([`pulse.rs`](../agents/roomlerd/src/audio/pulse.rs)). One route function
+([`pulse.rs`](../agents/meshharbord/src/audio/pulse.rs)). One route function
 decides, for the hello and for every session alike:
 
 ```mermaid
 flowchart TD
-    A["linux_route<br/>(audio_source.rs)"] --> N{"a device named in<br/>ROOMLERD_AUDIO_SOURCE?"}
+    A["linux_route<br/>(audio_source.rs)"] --> N{"a device named in<br/>MESHHARBORD_AUDIO_SOURCE?"}
     N -->|yes| C["cpal: that ALSA device<br/>(the owner's choice)"]
-    N -->|no| K{"ROOMLERD_AUDIO_SESSION=0?"}
+    N -->|no| K{"MESHHARBORD_AUDIO_SESSION=0?"}
     K -->|yes| R1["refuse: no_monitor<br/>(P3c-1's rule)"]
     K -->|no| L{"libpulse-simple.so.0<br/>present?"}
     L -->|no| R2["refuse: no_sound_server"]
@@ -490,24 +490,24 @@ flowchart TD
 ```
 
 - **In the daemon** for a per-user install, which is already the session's
-  owner ([`pulse.rs:369`](../agents/roomlerd/src/audio/pulse.rs#L369)). One
+  owner ([`pulse.rs:369`](../agents/meshharbord/src/audio/pulse.rs#L369)). One
   plain thread owns the blocking `pa_simple` stream and hands 10 ms frames
   (48 kHz stereo s16, the encoder's own format) to the pump.
 - **Through the seat user's helper** for a root daemon
-  ([`pulse.rs:519`](../agents/roomlerd/src/audio/pulse.rs#L519)). It is the same
+  ([`pulse.rs:519`](../agents/meshharbord/src/audio/pulse.rs#L519)). It is the same
   `portal-helper` subcommand, session lookup and privilege drop that portal
   capture and keep-busy use. PulseAudio admits a client by uid or cookie, so
   root cannot record the session's server itself. The helper writes one marked
-  line and then raw PCM on stdout ([`pulse.rs:443`](../agents/roomlerd/src/audio/pulse.rs#L443)).
+  line and then raw PCM on stdout ([`pulse.rs:443`](../agents/meshharbord/src/audio/pulse.rs#L443)).
   Closing the pipe stops it.
 - **The library is loaded at run time** (`dlopen`), as libpipewire is. It is on
   nearly every desktop and on few servers. A link would stop the agent from
   starting on a host without it; this way only session audio says why.
 - **The hello asks the disk, not the loader**
-  ([`pulse.rs:124`](../agents/roomlerd/src/audio/pulse.rs#L124)). libpulse pulls
+  ([`pulse.rs:124`](../agents/meshharbord/src/audio/pulse.rs#L124)). libpulse pulls
   a dozen libraries into whatever loads it, and a root daemon never needs them
   itself. A library somewhere unusual reads as absent: an honest no.
-- **Kill switch:** `ROOMLERD_AUDIO_SESSION=0` puts Linux back on P3c-1's rule.
+- **Kill switch:** `MESHHARBORD_AUDIO_SESSION=0` puts Linux back on P3c-1's rule.
 
 ⚠️ **None of these routes is the default input.** Each one records the
 default sink's monitor, or the device the owner named.
@@ -528,10 +528,10 @@ sequenceDiagram
     V-->>V: a snackbar once, and the reason<br/>on the audio control's title
 ```
 
-The pump ([`peer.rs:12978`](../agents/roomlerd/src/peer.rs#L12978)) sends it
+The pump ([`peer.rs:12978`](../agents/meshharbord/src/peer.rs#L12978)) sends it
 from every exit: a capture that does not open, an encoder that does not start,
 and a capture or encode that stops mid-session. The payload is built by
-[`peer.rs:5486`](../agents/roomlerd/src/peer.rs#L5486); the viewer parses it
+[`peer.rs:5486`](../agents/meshharbord/src/peer.rs#L5486); the viewer parses it
 at [`useRemoteControl.ts:1493`](../ui/src/composables/useRemoteControl.ts#L1493)
 and puts it on the toggle's title
 ([`RemoteControl.vue:3209`](../ui/src/views/remote/RemoteControl.vue#L3209)).
@@ -539,7 +539,7 @@ and puts it on the toggle's title
 | `code` | Means |
 |---|---|
 | `no_monitor` | Linux: nothing among the capture devices is the computer's sound, and the default input is not opened |
-| `source_not_found` | the device `ROOMLERD_AUDIO_SOURCE` names is not there, and no microphone is opened in its place |
+| `source_not_found` | the device `MESHHARBORD_AUDIO_SOURCE` names is not there, and no microphone is opened in its place |
 | `no_output` | Windows: no output device to loop back |
 | `backend_error` | the device failed to open, the Opus encoder did not start, or capture stopped mid-session; `detail` is the backend's own words |
 | `not_supported` | an OS with no capture backend |
@@ -554,7 +554,7 @@ the composition baseline.
 
 ⚠️ **The recorder shares the route.** A recording's computer audio opens the
 same loopback or monitor only. On Linux it takes `linux_route` too
-([`child.rs:128`](../agents/roomlerd/src/recording/child.rs#L128)), and since
+([`child.rs:128`](../agents/meshharbord/src/recording/child.rs#L128)), and since
 the recorder already runs as the person at the screen, it records the monitor
 in its own process. Before P3c-2 it refused its start on every Linux host,
 because the `.monitor` pick never matched.
@@ -566,19 +566,19 @@ machine awake while a session is live, per OS:
 
 | | Windows | Linux | macOS |
 |---|---|---|---|
-| The lock signal | the input desktop moves to `winsta0\Winlogon` (`lock_state`) | logind's `LockedHint` for seat0's active session, polled every 2 s ([`lock_state.rs:347`](../agents/roomlerd/src/lock_state.rs#L347)); GNOME, KDE and light-locker set it | the session dictionary's `CGSSessionScreenIsLocked`, or another user on the console, polled every 2 s ([`lock_state.rs:357`](../agents/roomlerd/src/lock_state.rs#L357)); only the GUI session's half can ask, so the root half says nothing |
+| The lock signal | the input desktop moves to `winsta0\Winlogon` (`lock_state`) | logind's `LockedHint` for seat0's active session, polled every 2 s ([`lock_state.rs:347`](../agents/meshharbord/src/lock_state.rs#L347)); GNOME, KDE and light-locker set it | the session dictionary's `CGSSessionScreenIsLocked`, or another user on the console, polled every 2 s ([`lock_state.rs:357`](../agents/meshharbord/src/lock_state.rs#L357)); only the GUI session's half can ask, so the root half says nothing |
 | What the session does | paints the "Host locked" overlay and suppresses input: the worker can neither capture nor inject there | **nothing**: the lock screen is captured like any other screen, and input reaches it | **nothing**: no overlay, and input is not suppressed |
-| `rc:host_locked` | `{locked}` | `{locked, input: "passes"}` ([`peer.rs:10005`](../agents/roomlerd/src/peer.rs#L10005)), retried until the control DC carries it | `{locked, input: "unknown"}`, the same way: whether the lock screen's password field takes injected keys is not measured |
+| `rc:host_locked` | `{locked}` | `{locked, input: "passes"}` ([`peer.rs:10005`](../agents/meshharbord/src/peer.rs#L10005)), retried until the control DC carries it | `{locked, input: "unknown"}`, the same way: whether the lock screen's password field takes injected keys is not measured |
 | The viewer's chip | "input is suppressed" | "Your input reaches it, so you can type the password to unlock" | "The remote host is on its lock screen.", claiming neither way ([`useRemoteControl.ts:1426`](../ui/src/composables/useRemoteControl.ts#L1426) `hostLockedChipTitle`) |
-| A request that waits for consent | `rc:consent.pending{host_locked}` (FR-34, §11.2) | not yet: the read is a `loginctl` run, which does not belong on the signalling loop | `rc:consent.pending{host_locked}`, from the same session dictionary ([`lock_state.rs:301-320`](../agents/roomlerd/src/lock_state.rs#L301-L320)) |
-| Holding the machine awake while a session is live (FR-55) | `PowerCreateRequest` | a logind **block** inhibitor ([`power.rs:670`](../agents/roomlerd/src/power.rs#L670)): `sleep:idle` for a root daemon, `idle` only for a per-user one | `IOPMAssertion` |
+| A request that waits for consent | `rc:consent.pending{host_locked}` (FR-34, §11.2) | not yet: the read is a `loginctl` run, which does not belong on the signalling loop | `rc:consent.pending{host_locked}`, from the same session dictionary ([`lock_state.rs:301-320`](../agents/meshharbord/src/lock_state.rs#L301-L320)) |
+| Holding the machine awake while a session is live (FR-55) | `PowerCreateRequest` | a logind **block** inhibitor ([`power.rs:670`](../agents/meshharbord/src/power.rs#L670)): `sleep:idle` for a root daemon, `idle` only for a per-user one | `IOPMAssertion` |
 
 ⚠️ **The Linux and macOS hints are advisory and never the pump's `LockState`.**
 The pump's overlay and the input path keep reading the Windows probe, which
 says Unlocked on both. Feeding the hint there would blank a lock screen the
 viewer can see and stop the very keystrokes that unlock it. On a Mac the
 consent probe alone reads it (`probe_lock_state_service`), as on Windows.
-`ROOMLERD_LOCK_HINT=0` turns the hint off on both.
+`MESHHARBORD_LOCK_HINT=0` turns the hint off on both.
 
 ⚠️ **The inhibitor is the FR-55 half, and it sits beside FR-93 P5h's.** P5h
 holds a logind **delay** inhibitor during a session so that a sleep the person
@@ -598,7 +598,7 @@ system install, the default, has both.
 
 The inhibitor lives exactly as long as its fd: logind drops it when the fd
 closes, so a daemon that crashes leaves nothing pinned. `systemd-inhibit
---list` shows it (`roomlerd`, `block`) only while a session or an SSH or exec
+--list` shows it (`meshharbord`, `block`) only while a session or an SSH or exec
 run is live.
 
 ### 5.1e Ctrl+Alt+Del that reaches the lock screen (FR-97 P4a)
@@ -631,15 +631,15 @@ sequenceDiagram
     Note over W: every hello: input sas,<br/>or keys-only with the missing half
     V->>W: {t: sas}, only if the hello said sas
     W->>W: the arbiter (input floor + permission),<br/>then availability() again
-    W->>H: SetEvent on Global\roomler-sas-pid<br/>(DACL: SYSTEM only)
+    W->>H: SetEvent on Global\meshharbor-sas-pid<br/>(DACL: SYSTEM only)
     H->>H: the policy again, then SendSAS(FALSE)
     Note over H: the lock screen asks for the password
 ```
 
 - **The decision is one pure function**
-  ([`sas.rs:97`](../agents/roomlerd/src/input/sas.rs#L97)), compiled on every
+  ([`sas.rs:97`](../agents/meshharbord/src/input/sas.rs#L97)), compiled on every
   OS so the lanes that never run Windows tests check it. It is made at every
-  announcement ([`signaling.rs:6865`](../agents/roomlerd/src/signaling.rs#L6865)),
+  announcement ([`signaling.rs:6865`](../agents/meshharbord/src/signaling.rs#L6865)),
   and the heartbeat re-announces the moment its answer changes, so a policy a
   GPO refresh changes reaches the server within a beat. Where it says no, the
   `keys-only` entry stays and its reason names the half that is missing.
@@ -650,27 +650,27 @@ sequenceDiagram
 - **The frame goes through the input arbiter like a key**, so it needs the
   input floor and the session's input permission, as typing does. The injector
   then checks again
-  ([`enigo_backend.rs:277`](../agents/roomlerd/src/input/enigo_backend.rs#L277)):
+  ([`enigo_backend.rs:277`](../agents/meshharbord/src/input/enigo_backend.rs#L277)):
   the policy can change between the hello and the click, and a viewer is not
   trusted to have read the hello.
-- **The relay** ([`sas_relay.rs:43`](../agents/roomlerd/src/win_service/sas_relay.rs#L43))
-  is one named, auto-reset event per host, `Global\roomler-sas-<host pid>`,
+- **The relay** ([`sas_relay.rs:43`](../agents/meshharbord/src/win_service/sas_relay.rs#L43))
+  is one named, auto-reset event per host, `Global\meshharbor-sas-<host pid>`,
   whose protected DACL grants SYSTEM alone. A process that is not SYSTEM cannot
   even open it (a test pins this), so an attended worker cannot ask for a SAS
   and says `keys-only`. A SAS is what the physical chord raises: a SYSTEM
   process that asks for one gains nothing it lacked. Signals that arrive while
   one is being answered coalesce into one more, never a queue.
 - **The host re-checks the policy before it sends**
-  ([`sas.rs:139`](../agents/roomlerd/src/input/sas.rs#L139)), never trusting
+  ([`sas.rs:139`](../agents/meshharbord/src/input/sas.rs#L139)), never trusting
   that the worker did.
 - **`sas.dll` is loaded when the host sends, never imported**
-  ([`sas.rs:224`](../agents/roomlerd/src/input/sas.rs#L224)). A binary that
+  ([`sas.rs:224`](../agents/meshharbord/src/input/sas.rs#L224)). A binary that
   imports a DLL some Windows edition lacks does not start at all. It is loaded
   from System32 only (`LOAD_LIBRARY_SEARCH_SYSTEM32`), so a SYSTEM process can
   never load a copy planted beside the binary.
 - ⚠️ **The policy is read, never written.** It is a security setting, and on
   a managed laptop it is the organisation's. Measured before the build
-  (2026-10-18, read-only over `roomler exec`), the three corporate laptops in
+  (2026-10-18, read-only over `mh exec`), the three corporate laptops in
   the fleet all set it to `1`.
 
 ### 5.2 Encoder selection
@@ -741,9 +741,9 @@ Key design choices:
 
 ### 6.1 The Wayland problem
 
-Wayland has no equivalent of XTest. The supported path is `/dev/uinput`, which requires the agent to be in the `input` group (or have `CAP_SYS_ADMIN`). No package adds that group or a udev rule: uinput is an opt-in of a root (system) install, `uinput = true` (`agents/roomlerd/packaging/linux/README.Debian`). If permission isn't granted, the agent runs in **view-only** mode and the UI clearly says so.
+Wayland has no equivalent of XTest. The supported path is `/dev/uinput`, which requires the agent to be in the `input` group (or have `CAP_SYS_ADMIN`). No package adds that group or a udev rule: uinput is an opt-in of a root (system) install, `uinput = true` (`agents/meshharbord/packaging/linux/README.Debian`). If permission isn't granted, the agent runs in **view-only** mode and the UI clearly says so.
 
-As shipped: uinput is FR-36's arm (`ROOMLERD_UINPUT=1`, paired with DRM capture; host-global, it injects into whatever has focus). Where the compositor is **nested** — WSL2, a compositor inside another — uinput publishes events that nothing reads, so the only input path is the portal's RemoteDesktop interface riding the capture session (FR-45 P4, `ROOMLERD_PORTAL_INPUT=1`), and on GNOME the person at the screen must also flip the dialog's *Allow Remote Interaction* switch. A per-user Wayland session whose portal switched itself on (FR-93 P4b, KDE and other desktops without mutter) asks for remote control with no key set. Both are in [`linux-capture.md`](linux-capture.md#43-input-rides-the-same-session-p4).
+As shipped: uinput is FR-36's arm (`MESHHARBORD_UINPUT=1`, paired with DRM capture; host-global, it injects into whatever has focus). Where the compositor is **nested** — WSL2, a compositor inside another — uinput publishes events that nothing reads, so the only input path is the portal's RemoteDesktop interface riding the capture session (FR-45 P4, `MESHHARBORD_PORTAL_INPUT=1`), and on GNOME the person at the screen must also flip the dialog's *Allow Remote Interaction* switch. A per-user Wayland session whose portal switched itself on (FR-93 P4b, KDE and other desktops without mutter) asks for remote control with no key set. Both are in [`linux-capture.md`](linux-capture.md#43-input-rides-the-same-session-p4).
 
 **Saying so (FR-93 P1).** An injector that reaches nothing does not fail. XTest
 into Xwayland *succeeds*, and moves only Xwayland's own pointer, which the
@@ -765,7 +765,7 @@ opens).
 | XTest on a real X server (Xorg, or the daemon's own Xvfb) | `full` |
 | XTest on Xwayland | `xwayland_only` |
 | XTest on an Xwayland that sends it through EI, read from that process: `-enable-ei-portal` on its command line (GNOME 49+), or a `LIBEI_SOCKET` in its environment (KWin) | `none` |
-| … through KWin, and the person allowed roomlerd in **Legacy X11 App Support** (kwinrc `[Xwayland] XwaylandEisNoPromptApps`, or the global `XwaylandEisNoPrompt`) | `full` |
+| … through KWin, and the person allowed meshharbord in **Legacy X11 App Support** (kwinrc `[Xwayland] XwaylandEisNoPromptApps`, or the global `XwaylandEisNoPrompt`) | `full` |
 | no X display and no uinput · a build without an injector · a Mac without Accessibility | `none` |
 
 ⚠️ **A sandboxed per-user daemon cannot read Xwayland's environment.** Wherever
@@ -789,7 +789,7 @@ oracle's `points` plan:
 | kwinrc `[Xwayland]` | result |
 |---|---|
 | stock | 🔴 0 events: KWin's prompter could not start, so nothing got through |
-| `XwaylandEisNoPromptApps=roomlerd` | ✅ every pointer target within 1 px, the click, the wheel, `hello 123`; 🔴 only Shift+A lost |
+| `XwaylandEisNoPromptApps=meshharbord` | ✅ every pointer target within 1 px, the click, the wheel, `hello 123`; 🔴 only Shift+A lost |
 
 The name is the one Xwayland gives an X11 client's EI connection, the process
 name. KWin applies the grant only once it has reloaded its options (System
@@ -948,7 +948,7 @@ crates/
 ```
 
 > **Same-worker TURN affinity (invariant I6).** With ≥2 coturn workers
-> configured (`ROOMLER__TURN__WORKER_URLS`), `turn_creds::issue_for_session`
+> configured (`MESHHARBOR__TURN__WORKER_URLS`), `turn_creds::issue_for_session`
 > puts one session-picked worker's URLs first in the creds issued
 > independently to controller and agent, so both ICE stacks converge on the
 > same worker — cross-worker relay↔relay drops under the dual-public-IP
@@ -1109,7 +1109,7 @@ A Mac says the same since FR-97 P2d-1: its prompt (the panel, or the
 companion's) is drawn in the console user's session, out of sight while that
 session's screen is locked or another user has the console, and the GUI
 session's half reads both from the session dictionary
-([`lock_state.rs:301-320`](../agents/roomlerd/src/lock_state.rs#L301-L320)).
+([`lock_state.rs:301-320`](../agents/meshharbord/src/lock_state.rs#L301-L320)).
 A Linux host does not say it yet (§5.1d).
 
 `prompt_then_email` is "and", not "then" — the mail goes out at once. What is
@@ -1143,7 +1143,7 @@ flowchart LR
   subgraph server["server — hub"]
     A["resolve_session_authz<br/>owner → auto (unless prompt_owner)<br/>else the device policy"] --> D["rc:request<br/>consent_mode + windows"]
   end
-  subgraph device["device — roomlerd"]
+  subgraph device["device — meshharbord"]
     L["auto_grant_session<br/>(config.toml — never remote)"] --> S
     D --> S{"strictest_of(directive, local)"}
     S -- "auto, local true" --> G["grant, ~1 ms"]
@@ -1175,7 +1175,7 @@ floor it is **deliberately not remotely configurable** — a control plane that
 could flip it would not be a floor. It **defaults to `true`** (auto-grant), so a
 device that prompts has it explicitly set to `false`; that `false` overrides both
 the `auto` directive *and* the owner shortcut. To change it, do so **on the
-host** — `roomler config set auto_grant_session <true|false>` — then restart the
+host** — `mh config set auto_grant_session <true|false>` — then restart the
 daemon (the config surface notes changes apply on the next start). Making a
 device auto-grant is a device-owner decision the server cannot make for it.
 
@@ -1187,16 +1187,16 @@ device auto-grant is a device-owner decision the server cannot make for it.
    see the Approve button), X11 (`viewer-indicator-x11`, an override-redirect
    window, no capture exclusion — X has no equivalent), macOS
    (`viewer-indicator-macos`, AppKit).
-2. **companion** — `roomler-desktop`'s always-on-top consent window. The daemon
+2. **companion** — `meshharbor-desktop`'s always-on-top consent window. The daemon
    starts it if it is not running (`companion::ensure_running`).
 3. **notification** (Linux, FR-93 P6f) — the desktop's own notification with
    **Approve** and **Deny**, where the companion cannot show the question: none
    is installed, or there is no marker for it to read. Posted from inside the
-   person's session by the session helper (`roomlerd portal-helper --notify`,
+   person's session by the session helper (`meshharbord portal-helper --notify`,
    `indicator/notify.rs`), at critical urgency: GNOME and KDE keep it on screen
    until it is answered, and show it under Do Not Disturb. Closing it is a Deny.
    The daemon takes it down when the question ends any other way.
-4. **CLI** — `roomlerd consent --list` / `--approve`, which works everywhere.
+4. **CLI** — `meshharbord consent --list` / `--approve`, which works everywhere.
 5. **none** — reported as `no_prompt_surface`, not as a deny.
 
 ⚠️ **A click on a notification's body is not an answer** (FR-93 P6f). GNOME 50
@@ -1212,7 +1212,7 @@ is a refusal, and both signals are read from one stream, in the server's order.
 is not `native`, so a new word would have a companion that starts late ask the
 question a second time. The helper's D-Bus work runs on a plain thread, because
 zbus's blocking API panics on a runtime thread: the first candidate's helper
-panicked there before it posted anything. Kill switch `ROOMLERD_NOTIFY_CONSENT=0`.
+panicked there before it posted anything. Kill switch `MESHHARBORD_NOTIFY_CONSENT=0`.
 
 ⚠️ **The X11 panel's unmap must be flushed** (FR-93 P6a). x11rb buffers
 requests, and the panel's loop flushed only when it repainted, which it stops
@@ -1229,12 +1229,12 @@ scale. Drawn at 1×, the panel came out at about 9-px text on a 4K desktop at
 KDE's 2.7×, with its buttons a third of their size (measured on real hardware,
 Plasma 6.6). It now reads `Xft.dpi` from the resources the desktop publishes
 for X11 clients and shows the same drawing at `round(dpi / 96)`, between 1 and
-4 (`scale`, `agents/roomlerd/src/indicator/x11.rs:82`). The drawing is painted
+4 (`scale`, `agents/meshharbord/src/indicator/x11.rs:82`). The drawing is painted
 at 1× into a pixmap, scaled up nearest-neighbour, and written in requests the
 server takes (`blit`, `:493`); a click maps back to the 1× layout. Measured:
 KDE at `Xft.dpi` 259 draws at 3× and GNOME at 192 at 2×, the size of the
 companion's own prompt, and **Approve** on the scaled panel granted the
-session. At 1× nothing changes. `ROOMLERD_CONSENT_PANEL_SCALE` overrides the
+session. At 1× nothing changes. `MESHHARBORD_CONSENT_PANEL_SCALE` overrides the
 scale; `1` is the kill switch. ⚠️ GNOME shows no X11 window during its
 Activities overview, which it opens after every login, so a prompt raised
 there is seen once the person leaves the overview.
@@ -1249,14 +1249,14 @@ native panel could not open had no prompt at all. "Already running" now means
 the session user's own companion (`pgrep -u`), not anyone's.
 
 ⚠️ The `.pending` marker is written in ALL cases, because it is also what
-`roomlerd consent --list` reads. `ConsentRequest.surface` is what stops the
+`meshharbord consent --list` reads. `ConsentRequest.surface` is what stops the
 companion from popping a second panel over a native one.
 
 ⚠️ **A virtual-desktop host declines the native surface, even though its X
 display connects.**
 <!-- RETIRED-NAME-ANCHOR: the LEGACY env spelling FR-21 P3 kept working, and
      the one every affected host actually carries in its systemd drop-in. -->
-`ROOMLER_AGENT_VIRTUAL_DESKTOP=1` means the daemon started
+`MESHHARBOR_AGENT_VIRTUAL_DESKTOP=1` means the daemon started
 the Xvfb itself so a headless box can be remote-controlled — so the display's
 only viewer is a remote controller, which is the worst possible place to ask
 "may this remote controller in?". Field-measured on mars, jupiter and the WSL
@@ -1265,7 +1265,7 @@ session dies `timeout` when the truth is `no_prompt_surface`; attended, viewer
 A can click **Approve** on viewer B's request. `indicator/x11.rs` reads the
 daemon's own configuration, not the display, so a real X session on the same
 machine is unaffected and the banner path is untouched. Consequence for such a
-host: use `email`/`push`, or answer with `roomlerd consent`.
+host: use `email`/`push`, or answer with `meshharbord consent`.
 
 ⚠️ **macOS native requires tokio off the main thread.** AppKit delivers events
 on the main run loop and `#[tokio::main]` parks it, so under
@@ -1274,7 +1274,7 @@ main thread to `NSApp`. That is why the feature is compiled by CI but not yet
 in the macOS release build.
 ⚠️ **The macOS panel appears in the captured stream.** `NSWindowSharingNone` is
 ignored by `CGDisplayStream`, which is what our capture uses. ⚠️ Since FR-27 the marker is written by **all three**
-consent-bearing subsystems — remote control, Fleet-RPC `exec` and Roomler SSH —
+consent-bearing subsystems — remote control, Fleet-RPC `exec` and MeshHarbor SSH —
 carrying a `kind` so the modal does not describe a root command as "wants to
 control this device". Before that only remote control wrote one, so an `exec` or
 SSH prompt reached no UI at all. The daemon also starts the companion when a
@@ -1316,10 +1316,10 @@ that socket goes with it. A viewer that redials asks again under a new session i
 nothing (`outbound consent send failed (channel closed)`), and the person at the
 screen saw two prompts for what was, to them, one request. Each prompt's task now races
 its answer against its connection's own outbound channel
-(`await_prompt_or_socket_end`, `agents/roomlerd/src/signaling.rs`). That channel's
+(`await_prompt_or_socket_end`, `agents/meshharbord/src/signaling.rs`). That channel's
 receiver lives in the connection's loop, so it closes when the connection ends and never
 before. The prompt is then withdrawn exactly as a `Terminate` withdraws it. The same
-holds for an **exec** prompt (`roomler exec` with consent on), where it matters more: an
+holds for an **exec** prompt (`mh exec` with consent on), where it matters more: an
 Approve on a stale panel would otherwise run the command for a caller no longer waiting
 for it, and twice if that caller retried.
 
@@ -1339,7 +1339,7 @@ name. The hash still lets an auditor tell one file sent five times from five dif
 ```mermaid
 sequenceDiagram
     participant V as Viewer (browser)
-    participant D as Device (roomlerd)
+    participant D as Device (meshharbord)
     participant H as Hub (remote module)
     participant DB as MongoDB
     V->>D: clipboard write / file upload (P2P data channel)
@@ -1384,7 +1384,7 @@ org or a device that sets nothing.
 sequenceDiagram
     participant V as viewer (browser)
     participant S as hub (server)
-    participant A as roomlerd
+    participant A as meshharbord
     participant DB as remote_audit
     V->>S: rc:session.request (clipboard, files, audio asked for)
     Note over S: org policy (tenant row) + the device's floor (its caps),<br/>the stricter wins (FeaturePolicy::stricter)
@@ -1398,7 +1398,7 @@ sequenceDiagram
 
 **What `ask` means.** A feature set to `ask` survives only a session that the person at the
 device approves on a prompt naming it ("Approving also allows clipboard, file transfer and
-audio.", [`session_policy.rs:183`](../agents/roomlerd/src/session_policy.rs#L183)). Every other
+audio.", [`session_policy.rs:183`](../agents/meshharbord/src/session_policy.rs#L183)). Every other
 session goes without it, with a reason:
 
 | Reason | When |
@@ -1410,8 +1410,8 @@ session goes without it, with a reason:
 | `policy_unavailable` | the org's row could not be read. The session goes ahead without the features asked for |
 
 - ⚠️ **The device enforces the floor itself.** The hub's strip is so the viewer can say why before
-  the person clicks. The agent masks the grant ([`mask`, `session_policy.rs:128`](../agents/roomlerd/src/session_policy.rs#L128),
-  applied at [`signaling.rs:3293`](../agents/roomlerd/src/signaling.rs#L3293)) the moment the consent
+  the person clicks. The agent masks the grant ([`mask`, `session_policy.rs:128`](../agents/meshharbord/src/session_policy.rs#L128),
+  applied at [`signaling.rs:3293`](../agents/meshharbord/src/signaling.rs#L3293)) the moment the consent
   mode resolves, before anything reads it. A request carrying `FILES` with no policy at all, as from a
   bypassed hub, is masked to no `FILES` when the floor says `off`
   (`the_device_floor_holds_when_the_server_sends_no_policy`). Field-verified on 0.4.136, with the red
@@ -1453,7 +1453,7 @@ sequenceDiagram
   autonumber
   participant B as Viewer (browser)
   participant H as Hub (relays, records the verdict)
-  participant D as Device (roomlerd)
+  participant D as Device (meshharbord)
   Note over D: P1a: one P-256 key per enrollment,<br/>peer-auth/#lt;tenant#gt;.json, the public half<br/>rides the hello and the device row
   Note over B: P2b: one P-256 key per user,<br/>non-extractable, in IndexedDB
   B->>H: rc:sdp.offer + peer_auth {nonce, key, sig}
@@ -1476,7 +1476,7 @@ sequenceDiagram
   ([`peerAuthCanVerify`, `peerAuth.ts:138`](../ui/src/utils/peerAuth.ts#L138)), or every answer would read
   as a bad signature.
 - **What the device signs** ([`peer_auth_transcript`, `signaling.rs:262`](../crates/remote_control/src/signaling.rs#L262);
-  [`sign_answer`, `peer_auth.rs:265`](../agents/roomlerd/src/peer_auth.rs#L265)): the transcript above,
+  [`sign_answer`, `peer_auth.rs:265`](../agents/meshharbord/src/peer_auth.rs#L265)): the transcript above,
   ECDSA P-256 over SHA-256 as WebCrypto verifies it. The daemon signs at both places an answer leaves it, so a
   GUI worker that built the answer never holds the key.
 - **What the page does with the answer** ([`judgePeerAuth`, `peerAuth.ts:267`](../ui/src/utils/peerAuth.ts#L267),
@@ -1493,10 +1493,10 @@ sequenceDiagram
   | `not-asked` | connects, exactly as before |
 
 - **The pins** ([`storagePins`, `peerAuth.ts:201`](../ui/src/utils/peerAuth.ts#L201)) are public keys in this
-  origin's `localStorage` (`roomler.peerAuth.pins.v1`, keyed `user:device`). A browser that refuses storage
+  origin's `localStorage` (`meshharbor.peerAuth.pins.v1`, keyed `user:device`). A browser that refuses storage
   keeps them for the page's life, so the next visit is first use again, never a false alarm. The server's copy
   of the key (the device row) is a hint for the person to compare, never what the page trusts.
-- **The kill switch** is per browser: `localStorage['roomler.peerAuth.ask'] = 'off'` stops asking.
+- **The kill switch** is per browser: `localStorage['meshharbor.peerAuth.ask'] = 'off'` stops asking.
 
 > ⚠️ **What P2a does not stop yet.** An unsigned answer proceeds. An attacker in the signalling path who strips
 > the nonce or the signature gets an **Unverified** session rather than a refusal. Refusing an unsigned answer
@@ -1511,7 +1511,7 @@ sequenceDiagram
 
 | Path | The key file |
 |---|---|
-| `install.sh --uninstall`, Linux and macOS | removed with the config trees: `/etc/roomler`, the caller's and root's. Another account's tree is listed, not removed, and its key with it |
+| `install.sh --uninstall`, Linux and macOS | removed with the config trees: `/etc/meshharbor`, the caller's and root's. Another account's tree is listed, not removed, and its key with it |
 | `install.sh --uninstall --keep-config` | kept |
 | Windows: the MSI, or `install.ps1 -Uninstall` | kept, exactly as they keep `config.toml` with the agent's credential |
 
@@ -1520,7 +1520,7 @@ changed** in every browser that pinned the old one, even when the server revives
 machine is a new identity until a person says otherwise.
 
 **The other direction: the device judges the browser (P1c).** The daemon judges the browser behind every in-org
-offer as it notes it ([`judge_offer`, `peer_auth.rs:220`](../agents/roomlerd/src/peer_auth.rs#L220)),
+offer as it notes it ([`judge_offer`, `peer_auth.rs:220`](../agents/meshharbord/src/peer_auth.rs#L220)),
 and the hub records the verdict on the session's `session_started` audit row
 ([`forward_answer`, `hub.rs:2151`](../crates/modules/fleet/src/hub.rs#L2151)). Nothing is refused
 before FR-100 P3; the record is what the fleet's audit week is counted over.
@@ -1535,7 +1535,7 @@ before FR-100 P3; the record is what the fleet's audit week is counted over.
 - **The keys it remembers** live in `<config dir>/peer-auth/<tenant>.controllers.json`, beside the device key and
   with its protections: public keys only, 16 per user (the oldest goes first), 256 users. They are why a later
   `enforce` can ask only about a browser the device has never met.
-- **The policy is the device owner's**: `roomler config set peer_auth off|audit` (default `audit`), live, and only
+- **The policy is the device owner's**: `mh config set peer_auth off|audit` (default `audit`), live, and only
   from the person at the console. It is never pushable by the server, and `enforce` is refused by name until P3.
   `off` stops the judging, the remembering and the record; the device still signs its answers.
 - **What the browser signs with (P2b)**: a key of its own, made on first use in IndexedDB per user, its private half
@@ -1557,7 +1557,7 @@ before FR-100 P3; the record is what the fleet's audit week is counted over.
 The person at the device can end a session from their own screen — the
 Windows badge's **Disconnect** (§18.3) or the companion banner's
 (`docs/desktop-companion.md` §12). Every one of those surfaces reaches the
-same arm of the agent's signalling loop (`kill_rx`, `agents/roomlerd/src/signaling.rs`),
+same arm of the agent's signalling loop (`kill_rx`, `agents/meshharbord/src/signaling.rs`),
 and that arm's job is to make the ending **final and attributed**: the viewer
 is told who ended it and does not come back on its own. Since FR-101 P4b-2 the
 same arm also ends a session that sat idle past its limit (`idle_rx`, §11.6),
@@ -1566,7 +1566,7 @@ the same way and under its own reason (`DeviceEnd`).
 ```mermaid
 sequenceDiagram
     participant H as person at the device
-    participant A as roomlerd
+    participant A as meshharbord
     participant S as hub (server)
     participant V as viewer (browser)
     H->>A: Disconnect (badge / banner over LocalAPI)
@@ -1595,7 +1595,7 @@ session up itself and scheduled the reconnect ladder — so the audit said
 | the hub forwards it to the controller **before** echoing it to the agent, and audits `SessionEnded { HostDisconnect }` | `Hub::terminate` | — |
 | only the **device** may claim it: a controller's `host_disconnect` is recorded as `controller_hangup` | the hub's `rc:terminate` arm | `host_disconnect_is_the_devices_claim_only` |
 | the viewer closes as "ended by the host", cancels the ladder, drops its replay args, then tears the peer down with the phase already `closed`, so the control DC's `onclose` stays quiet | `useRemoteControl.ts`, the `rc:terminate` handler | `FR-27 P10` in `useRemoteControl.spec.ts` |
-| the bare connection closes after a grace, off the loop | `ROOMLERD_HOST_DISCONNECT_GRACE_MS`, default 1000, `0` = the pre-P10 timing, capped at the 5 s close budget | `host_disconnect_grace_is_bounded_and_switchable` |
+| the bare connection closes after a grace, off the loop | `MESHHARBORD_HOST_DISCONNECT_GRACE_MS`, default 1000, `0` = the pre-P10 timing, capped at the 5 s close budget | `host_disconnect_grace_is_bounded_and_switchable` |
 
 ⚠️ The grace holds the **transport**, never the session's powers. A grace
 that kept the peer serving would hand the controller up to a second more of
@@ -1680,7 +1680,7 @@ things:
 sequenceDiagram
     participant V as viewer (browser)
     participant S as hub (server)
-    participant A as roomlerd
+    participant A as meshharbord
     V->>S: rc:session.request
     Note over S: authz gate: idle = shorter of the org's and the device's
     S->>A: rc:request idle_secs (every agent)
@@ -1739,7 +1739,7 @@ agent refuses before it builds a peer, and the session ends once, with a reason.
 sequenceDiagram
     participant V as viewer (browser)
     participant S as hub (server)
-    participant A as roomlerd
+    participant A as meshharbord
     V->>S: rc:session.request browser_caps=[vp8, vp9, av1]
     S->>A: rc:request
     Note over A: pick_best_codec: nothing in common, so H.264
@@ -1756,12 +1756,12 @@ sequenceDiagram
 
 | | |
 |---|---|
-| Decided by | the **agent**, the one party holding both halves: the codec its RTP track sends and the offer (`rtp_track_unanswerable`, `agents/roomlerd/src/peer.rs:12899`). A DataChannel transport is never refused: its track is a placeholder and takes VP8 instead (#2231, `rtp_track_codec`, `:12877`). An offer with no `m=video` is answered without the track |
-| Refused at | `rc:sdp.offer`, before the peer is built (`agents/roomlerd/src/signaling.rs:3819`). The warning names what the browser offered (`offered_video_codecs`, `peer.rs:12846`) |
+| Decided by | the **agent**, the one party holding both halves: the codec its RTP track sends and the offer (`rtp_track_unanswerable`, `agents/meshharbord/src/peer.rs:12899`). A DataChannel transport is never refused: its track is a placeholder and takes VP8 instead (#2231, `rtp_track_codec`, `:12877`). An offer with no `m=video` is answered without the track |
+| Refused at | `rc:sdp.offer`, before the peer is built (`agents/meshharbord/src/signaling.rs:3819`). The warning names what the browser offered (`offered_video_codecs`, `peer.rs:12846`) |
 | Wire | the existing `error` plus `limit: "no_common_codec"` (`LIMIT_NO_COMMON_CODEC`, `crates/remote_control/src/signaling.rs:104`). No new `EndReason`: an older server drops a frame that carries one it does not know (the FR-27 P10 lesson) |
 | Hub | names it only from the agent and only with `error` (`device_end_limit`, `crates/modules/fleet/src/hub.rs:576`), on both ends' `rc:terminate` and in the `session_ended` audit row |
 | Viewer | never retries it (`isRetryableTerminateReason`, `ui/src/composables/useRemoteControl.ts:316`) and says: *"This browser can't decode the video this device sends. Try Chrome, Edge or Safari, or turn on the OpenH264 plugin in Firefox's add-ons."* (`friendlyEndReason`, `:754`). An `rc:error` that arrives later for the same, already-ended session, from candidates still in flight, is ignored, so it cannot replace that sentence (`isFalloutOfEndedSession`, `:408`, #2326) |
-| Tests | the predicate on recorded offers (`codec_cap_tests` in `peer.rs`); the field's own offer, which `create_answer` fails on, is the one it refuses (`agents/roomlerd/tests/dc_track_codec.rs`); who may name the code (`only_the_device_names_no_common_codec`, `hub.rs:4672`); the real agent through a real server, with an H.264 offer as the control (`crates/tests/src/rc_no_common_codec_tests.rs:147`) |
+| Tests | the predicate on recorded offers (`codec_cap_tests` in `peer.rs`); the field's own offer, which `create_answer` fails on, is the one it refuses (`agents/meshharbord/tests/dc_track_codec.rs`); who may name the code (`only_the_device_names_no_common_codec`, `hub.rs:4672`); the real agent through a real server, with an H.264 offer as the control (`crates/tests/src/rc_no_common_codec_tests.rs:147`) |
 
 ⚠️ **The consent prompt has already been answered** by the time the offer
 arrives, so the person at the device approved a session that then cannot start.
@@ -1791,7 +1791,7 @@ asking (`ui/src/composables/rcSessionRating.ts`), and the server (`remote`,
 `POST /api/tenant/{tid}/session/{sid}/feedback`) accepts one rating per session per party to
 it (the controller and each watcher once), not before 30 s after the request, codes only, and
 answers the empty 404 while
-`ROOMLER__GROWTH__FEEDBACK=false`. Nothing here touches the session's data path: the rating is a
+`MESHHARBOR__GROWTH__FEEDBACK=false`. Nothing here touches the session's data path: the rating is a
 question asked after it. The rules, the row and the field plan:
 [growth-observability.md](growth-observability.md#the-post-session-rating-p9b).
 
@@ -1799,7 +1799,7 @@ question asked after it. The rules, the row and the field plan:
 
 Once a session reaches `Connected`, the agent records **what it rode** — `direct` · `turn` ·
 `turn_local` · `overlay_direct` · `overlay_turn` · `derp` · `org_relay` · `unknown`
-(`agents/roomlerd/src/session_carrier.rs`) — and carries it, additively, on every
+(`agents/meshharbord/src/session_carrier.rs`) — and carries it, additively, on every
 `rc:session.stats` (`#[serde(default)]`). **Record, never decide**: it reads the nominated ICE
 pair webrtc-rs already has and, when that pair rides the overlay, the overlay runtime's own
 carrier for the peer (the same LocalAPI lookup the adaptive-bitrate probe makes); no path choice
@@ -1819,8 +1819,8 @@ where the server still holds the session live: on the device-ended path (sent ah
 own `rc:terminate`), not on the controller-ended one, where `ended_at` is already set when the agent
 hears the terminate and `merge_live_stats` matches nothing. So a session with no tick after the
 observation — overwhelmingly a short one — recorded none, which the freeze reads as `unknown`. Since
-P9d the observation signals the signalling loop the moment it lands (`agents/roomlerd/src/peer.rs:944`)
-and the loop sends one `rc:session.stats` at once (`agents/roomlerd/src/signaling.rs:2224`), by the
+P9d the observation signals the signalling loop the moment it lands (`agents/meshharbord/src/peer.rs:944`)
+and the loop sends one `rc:session.stats` at once (`agents/meshharbord/src/signaling.rs:2224`), by the
 same road the tick uses: the shared `send_one_session_stats` (`signaling.rs:6751`) queues the sample on
 **the peer's own sender**, the FR-43 seam the peer was built with (`peer.rs:285`) — the loop's outbound
 queue for its own session, flushed to the WS one hop later, or the delegation channel for a delegated
@@ -1851,7 +1851,7 @@ delegation marker.
 
 Two practical observations:
 
-1. The single biggest WAN latency contributor is TURN relaying through a far-away region. Co-locate TURN with users; roomler already runs `coturn.roomler.live` — for a global rollout, deploy regional TURN endpoints and let the agent pick the lowest-RTT one at registration. **SHIPPED (multi-region relay PoPs, 2026-08)**: `ROOMLER__RELAY__REGIONS` declares regional coturn+DERP PoPs (`scripts/relay-pop/` provisions one per cheap VPS); agents advertising `supports_relay_regions` receive the region list (`rc:relay.regions`), time a STUN binding per PoP, and report (`rc:relay.probe_report`); the server derives a hysteresis-guarded `relay_home` per agent and issues every RC-session / overlay-pair / tunnel TURN grant from the nearest region (sticky per pair, same-worker pin preserved within a region). Regional DERP rides EdDSA admission tickets (`crates/derp-relay`, public-key-only PoPs) and is applied to force-DERP-pinned pairs; the ladder DERP tier stays central pending netmap self-home. Master gate `ROOMLER__RELAY__REGIONS_ENABLED` (default off = legacy single-region, byte-identical).
+1. The single biggest WAN latency contributor is TURN relaying through a far-away region. Co-locate TURN with users; meshharbor already runs `coturn.meshharbor.itachi.fans` — for a global rollout, deploy regional TURN endpoints and let the agent pick the lowest-RTT one at registration. **SHIPPED (multi-region relay PoPs, 2026-08)**: `MESHHARBOR__RELAY__REGIONS` declares regional coturn+DERP PoPs (`scripts/relay-pop/` provisions one per cheap VPS); agents advertising `supports_relay_regions` receive the region list (`rc:relay.regions`), time a STUN binding per PoP, and report (`rc:relay.probe_report`); the server derives a hysteresis-guarded `relay_home` per agent and issues every RC-session / overlay-pair / tunnel TURN grant from the nearest region (sticky per pair, same-worker pin preserved within a region). Regional DERP rides EdDSA admission tickets (`crates/derp-relay`, public-key-only PoPs) and is applied to force-DERP-pinned pairs; the ladder DERP tier stays central pending netmap self-home. Master gate `MESHHARBOR__RELAY__REGIONS_ENABLED` (default off = legacy single-region, byte-identical).
 2. The single biggest CPU/battery contributor is encoding *unchanged frames*. Dirty-rect skipping is non-negotiable.
 
 ### 12.1 Time-to-first-frame — the connect timeline (FR-22)
@@ -2090,7 +2090,7 @@ message text or hostname can enter the record — locked by
 route by `browser_connect_timing_record_parses` (`agent_log.rs:445`), because a
 422 is swallowed like every other failure and would look like nobody connecting.
 
-**Mining it** (`roomler2`, in the `mongodb-0` pod — credentials from the
+**Mining it** (`meshharbor2`, in the `mongodb-0` pod — credentials from the
 `mongodb-secret`, never on a transcript). Retention is the collection's **7 d
 TTL** (`lib.rs:475`, `crates/db/src/models/agent_log.rs:115`) — the same window
 as the agent's own logs, and the pod log is shorter still — so a stall must be
@@ -2239,8 +2239,8 @@ system guest, idle 60 s after each of three 2-minute DRM sessions, with gdb's
 | session 3 | 303 MB | 256 MB | 290 MB | **9.2 MB** | 32 |
 | one `malloc_trim(0)` | **89 MB** | **42 MB** | 290 MB | 9.2 MB | 32 |
 
-So `AgentPeer`'s drop (`agents/roomlerd/src/peer.rs:1739`) asks for a trim, and
-`agents/roomlerd/src/mem_trim.rs:33` runs `malloc_trim(0)` once, on a short-lived
+So `AgentPeer`'s drop (`agents/meshharbord/src/peer.rs:1739`) asks for a trim, and
+`agents/meshharbord/src/mem_trim.rs:33` runs `malloc_trim(0)` once, on a short-lived
 `mem-trim` thread, **5 s after the last session ended**. The delay lets the
 encoder thread finish freeing (`encode/thread.rs:265` joins it), and sessions
 ending together cost one trim. A trim takes each arena's lock in turn and nobody
@@ -2251,13 +2251,13 @@ number that falls.
 | | |
 |---|---|
 | Where | Linux/glibc only (`malloc_trim` is a glibc extension). Windows and macOS were not measured |
-| Kill switch | `ROOMLERD_MEM_TRIM=0` |
+| Kill switch | `MESHHARBORD_MEM_TRIM=0` |
 | Field signal | `mem-trim: handed the memory finished sessions freed back to the OS (#2024)` with `rss_before_mb`, `rss_after_mb`, `elapsed_ms` |
 
 ⚠️ **RSS is not the heap.** Read what is *in use* before calling anything a leak:
-`sudo gdb -p "$(systemctl show -p MainPID --value roomlerd)" -batch -ex 'call (void) malloc_stats()'`
+`sudo gdb -p "$(systemctl show -p MainPID --value meshharbord)" -batch -ex 'call (void) malloc_stats()'`
 prints every arena's system and in-use bytes on the daemon's stderr, which is
-`journalctl -u roomlerd`. A climbing RSS over a flat in-use is retention, and a
+`journalctl -u meshharbord`. A climbing RSS over a flat in-use is retention, and a
 trim answers it. A climbing in-use is a leak, and a trim hides nothing of it.
 
 ⚠️ **A wrong turn worth keeping.** heaptrack's "leaked at exit" listing read as
@@ -2293,7 +2293,7 @@ That's ~16 weeks for a properly hardened v1, which is in the right ballpark for 
 
 ## 15. Decisions worth flagging
 
-- **`webrtc-rs` over wrapping libwebrtc** — pure Rust toolchain matches the rest of roomler, avoids a C++ build dependency, and the API surface we need (PC + DC + RTP send) is well-supported. The trade-off is fewer mature codec integrations; we route around that by encoding ourselves and feeding raw H.264 NALUs into a `TrackLocalStaticSample`.
+- **`webrtc-rs` over wrapping libwebrtc** — pure Rust toolchain matches the rest of meshharbor, avoids a C++ build dependency, and the API surface we need (PC + DC + RTP send) is well-supported. The trade-off is fewer mature codec integrations; we route around that by encoding ourselves and feeding raw H.264 NALUs into a `TrackLocalStaticSample`.
 - **Tauri for the tray, not Electron** — keeps the agent under 20 MB and the dependency tree close to the rest of your stack.
 - **`enigo` as default, OS-specific only when needed** — same calculus RustDesk made; enigo handles 90% well, the remaining 10% (Wayland, IME, UIPI) needs direct backends.
 - **One unified room kind, not a separate "remote" service** — keeps notifications, RBAC, presence, chat, and recording free. The cost is one new `RoomKind::RemoteControl` variant and the discipline to keep `remote_control` crate's surface narrow.
@@ -2307,13 +2307,13 @@ SystemContext and Linux virtual desktops; (2) still a UX call, plumbing exists;
 keyboard component.*
 
 1. Do you want to allow **headless agents** (no logged-in user, e.g., a server in a rack)? That requires a system service, which is a much bigger blast radius. Recommend deferring past v1.
-2. Should an in-progress remote control session be **shareable into a roomler call** as a screen share automatically? The plumbing supports it; it's a UX call.
+2. Should an in-progress remote control session be **shareable into a meshharbor call** as a screen share automatically? The plumbing supports it; it's a UX call.
 3. **Recording storage**: piggyback on the existing MinIO setup, or push to S3-compatible per-org bucket? Existing MinIO is fine for v1.
 4. **Mobile controller** keyboard UX is genuinely hard (no physical keys, lots of host-OS shortcuts to send). v1 should be view + tap-to-click only on mobile, full input on desktop browsers.
 
 <!-- RETIRED-NAME-ANCHOR-BEGIN: §17-19 are historical appendices. They record what the
      product was called and what operators actually typed at the time (0.1.32 - rc.26),
-     so rewriting `roomler-agent` to `roomlerd` here would falsify the record rather
+     so rewriting `meshharbor-agent` to `meshharbord` here would falsify the record rather
      than update it. The CURRENT encoder reference is docs/encoders.md. docs/fr/FR-21 -->
 
 ## 17. Hardware encoder backends
@@ -2377,9 +2377,9 @@ they see native resolution. Logged at pump start:
 
 Three places, in decreasing priority:
 
-1. **CLI flag**: `roomler-agent run --encoder hardware` (also
+1. **CLI flag**: `meshharbor-agent run --encoder hardware` (also
    accepts `auto`, `software`, `hw`, `sw`, `mf`, `openh264`).
-2. **Env var**: `ROOMLER_AGENT_ENCODER=hardware`. Mostly for
+2. **Env var**: `MESHHARBOR_AGENT_ENCODER=hardware`. Mostly for
    systemd-user / Task Scheduler entries where editing the TOML is
    less convenient.
 3. **Config file** (`config.toml`): `encoder_preference = "hardware"`.
@@ -2399,15 +2399,15 @@ Verification priority: NVIDIA → Intel iGPU → AMD.
 
 ### Encoder smoke test
 
-Release builds run `roomler-agent encoder-smoke --encoder hardware`
+Release builds run `meshharbor-agent encoder-smoke --encoder hardware`
 as part of the Windows CI job. It opens the preferred encoder at
 640×480, feeds 10 synthetic frames, and fails the build if no
 keyframe comes out or the cascade bottoms at `NoopEncoder`.
 
 To reproduce locally:
 
-    cargo build -p roomlerd --release --features full-hw
-    target\release\roomler-agent.exe encoder-smoke --encoder hardware
+    cargo build -p meshharbord --release --features full-hw
+    target\release\meshharbor-agent.exe encoder-smoke --encoder hardware
 
 With the `full-hw` build, the MF backend code is present but only
 engaged when `--encoder hardware` is passed explicitly.
@@ -2466,7 +2466,7 @@ Three pieces, each tractable on its own:
 
 Status: **Phase 3 commits 1 + 2 + 3 landed**. Auto cascade on
 Windows now prefers MF-HW (commit 1A.3, 0.1.26) with
-`ROOMLER_AGENT_HW_AUTO=0` escape hatch. Async pipeline (commit
+`MESHHARBOR_AGENT_HW_AUTO=0` escape hatch. Async pipeline (commit
 1A.2) remains tracked for Intel QSV boxes.
 
 Live verification (2026-04-20, Win11 + RTX 5090 Laptop + AMD
@@ -2474,7 +2474,7 @@ Radeon 610M): cascade enumerates 2 adapters + 5 H.264 MFTs, winner
 is AMD Radeon 610M + H264 Encoder MFT, `encoder-smoke --encoder
 hardware` produces 1 keyframe + 9 P-frames, total 4212 bytes over
 10 frames. `encoder-smoke --encoder auto` picks `mf-h264` unless
-`ROOMLER_AGENT_HW_AUTO=0` is set, in which case it picks
+`MESHHARBOR_AGENT_HW_AUTO=0` is set, in which case it picks
 `openh264`.
 
 ### Future phases beyond Windows
@@ -2533,7 +2533,7 @@ to-activate, so the browser never sees a bait-and-switch.
   now renders black + white-outline rather than the old solid-white
   blob). The WGC backend's in-video cursor bake-in
   (`SetIsCursorCaptureEnabled`) is disabled by default
-  (`ROOMLER_AGENT_WGC_CURSOR=1` re-enables) so the low-latency overlay /
+  (`MESHHARBOR_AGENT_WGC_CURSOR=1` re-enables) so the low-latency overlay /
   CSS cursor is the single source with no double cursor. Additive +
   back-compat: old browsers ignore `css` and draw the bitmap.
 - **Clipboard DC** (0.1.32): thread-pinned `arboard::Clipboard` worker;
@@ -2601,12 +2601,12 @@ to-activate, so the browser never sees a bait-and-switch.
   push. Trust model = the TURN probe's: loopback-only bind + strict
   browser-origin CORS/PNA allowlist + no capability a local process
   doesn't already have (any local app can write the OS clipboard).
-  Escape `ROOMLER_AGENT_CLIPBOARD_BRIDGE=0`. Without a local bridge
+  Escape `MESHHARBOR_AGENT_CLIPBOARD_BRIDGE=0`. Without a local bridge
   (no viewer-side agent) the flow degrades to the v2.1 html lane.
 - **The watcher on X11 (FR-97 P3e-3a)**: an X11 session gets Windows'
   sequence number in another form. XFixes reports every change of the
   CLIPBOARD selection's owner, which is what a copy is
-  (`agents/roomlerd/src/clipboard.rs:632` `x11_gate`), so a tick whose
+  (`agents/meshharbord/src/clipboard.rs:632` `x11_gate`), so a tick whose
   counter did not move reads nothing (`clipboard.rs:1055`). That makes
   copied images affordable, and they are watched now, where before an
   image waited for the clipboard button; text no longer costs a read and
@@ -2616,11 +2616,11 @@ to-activate, so the browser never sees a bait-and-switch.
   because an X server buffers what a client does not read. Our own writes
   change the owner too, and the content hashes swallow them as before.
   `AgentCaps.unavailable["clipboard-image-events"]` goes away where the
-  gate opens (`agents/roomlerd/src/encode/caps.rs:725`). ⚠️ Not under
+  gate opens (`agents/meshharbord/src/encode/caps.rs:725`). ⚠️ Not under
   Wayland: the clipboard is the compositor's there, and Xwayland's copy
   of it is unmeasured. A broken gate connection drops back to text
   polling with images unwatched. Kill switch
-  `ROOMLERD_CLIPBOARD_X11_WATCH=0`.
+  `MESHHARBORD_CLIPBOARD_X11_WATCH=0`.
 - **File DC** (0.1.33): browser drag/pick → `files:begin` →
   64 KiB ArrayBuffer chunks with `bufferedAmount` back-pressure →
   `files:end` → agent writes into the controlled host's Downloads
@@ -2709,7 +2709,7 @@ to drop straight to VK_PACKET (which conhost ignores). Now
   post `WM_INPUTLANGCHANGEREQUEST` to the foreground window (the OS's
   own ALT+SHIFT) → verify-poll ≤100 ms → inject real VK+scancode under
   the new layout. Verify timeout → VK_PACKET + 3 s cooldown; ≤8
-  switches/call. Kill switch `ROOMLER_AGENT_AUTO_LAYOUT=0`. Switch
+  switches/call. Kill switch `MESHHARBOR_AGENT_AUTO_LAYOUT=0`. Switch
   logs carry a script class only — never the char (passwords).
 - **`rc:layout`** (control DC, agent→browser): active + installed
   layouts as opaque 8-hex HKL strings + BCP-47 tags, published on
@@ -2725,9 +2725,9 @@ to drop straight to VK_PACKET (which conhost ignores). Now
 - **FR-97 P3e, on both platforms:** `rc:layout.set` goes through the input
   arbiter, which refuses a session that may not type, and in exclusive mode
   anyone but the floor holder, as keep busy's switch does
-  (`agents/roomlerd/src/input/arbiter.rs:810`). Before, a view-only session
+  (`agents/meshharbord/src/input/arbiter.rs:810`). Before, a view-only session
   could switch the host's layout. And the current snapshot goes out once when
-  the control DC opens (`agents/roomlerd/src/peer.rs:1259`): the emitter
+  the control DC opens (`agents/meshharbord/src/peer.rs:1259`): the emitter
   starts before the channel does, so the snapshot it starts with found no
   channel, and went out again only on the next change.
 
@@ -2735,9 +2735,9 @@ to drop straight to VK_PACKET (which conhost ignores). Now
 
 The same chip and picker on an X11 desktop, through the same two messages. On
 Linux `input::layout` *is* `input::layout_x11`
-(`agents/roomlerd/src/input/mod.rs:97`), so the peer's emitter
-(`agents/roomlerd/src/peer.rs:1551`) and its `rc:layout.set` arm
-(`agents/roomlerd/src/peer.rs:10605`) serve both platforms.
+(`agents/meshharbord/src/input/mod.rs:97`), so the peer's emitter
+(`agents/meshharbord/src/peer.rs:1551`) and its `rc:layout.set` arm
+(`agents/meshharbord/src/peer.rs:10605`) serve both platforms.
 
 ```mermaid
 sequenceDiagram
@@ -2765,13 +2765,13 @@ sequenceDiagram
 | A layout is | an installed HKL | one of the keymap's XKB groups, at most four |
 | The list | `GetKeyboardLayoutList` | the root window's `_XKB_RULES_NAMES`, and the keymap's names for its groups |
 | The one in use | the foreground thread's HKL | XKB's locked group |
-| The token (`hkl`) | the HKL, 8 hex | the layout's FNV-1a hash (8 hex) and its group (1 hex), so a click that arrives after the desktop changed its layouts is refused (`agents/roomlerd/src/input/layout_x11.rs:498`) |
+| The token (`hkl`) | the HKL, 8 hex | the layout's FNV-1a hash (8 hex) and its group (1 hex), so a click that arrives after the desktop changed its layouts is refused (`agents/meshharbord/src/input/layout_x11.rs:498`) |
 | The tag (`active`) | BCP-47, from the LANGID | BCP-47 for a plain layout the table knows (`de` → `de-DE`, `layout_x11.rs:528`); otherwise the keymap's own name, `German (no dead keys)` (`layout_x11.rs:509`) |
 | Read | on input events, on the injector thread | polled every 500 ms on a thread of its own, and only while a session watches (`layout_x11.rs:164`) |
 | Switch | `WM_INPUTLANGCHANGEREQUEST` to the foreground window | `XkbLatchLockState`, then read back for up to 300 ms (`layout_x11.rs:360`) |
 | Switch while typing | yes, per character | no: typing on X11 (`enigo.text`, over XTest) maps each character to a spare keycode, and reaches it on any layout |
 | Offered | in every session | in an X11 session: `DISPLAY` set and no `WAYLAND_DISPLAY` (`layout_x11.rs:62`); `set` too, except under GNOME (`layout_x11.rs:79`, below) |
-| Kill switch | `ROOMLERD_AUTO_LAYOUT=0` (the auto-switch only) | `ROOMLERD_X11_LAYOUT=0`: no `layout` in the hello, so no chip |
+| Kill switch | `MESHHARBORD_AUTO_LAYOUT=0` (the auto-switch only) | `MESHHARBORD_X11_LAYOUT=0`: no `layout` in the hello, so no chip |
 
 ⚠️ **GNOME reports, and does not switch.** GNOME Shell keeps its own input
 source on Xorg as well: an XKB group locked from outside it is back on GNOME's
@@ -2799,7 +2799,7 @@ the compositor's, and no protocol the desktops share reads or sets it.
 Xwayland's XKB group is a copy of what the compositor sends, and locking it
 does not reach the compositor. A system install reaches the screen through DRM
 and has no X connection (FR-113). Both leave `layout` out of the hello
-(`agents/roomlerd/src/encode/caps.rs:854`), with no reason in `unavailable`:
+(`agents/meshharbord/src/encode/caps.rs:854`), with no reason in `unavailable`:
 there is no control to grey, so the chip does not appear, as before P3e.
 
 ### 18.4 Input fix — Windows VK path (0.1.34)
@@ -2939,11 +2939,11 @@ P0 cut.
 
 The five P0 phases that made the agent stop dying silently.
 
-**Persistent file logging + panic hook** (`agents/roomlerd/src/
+**Persistent file logging + panic hook** (`agents/meshharbord/src/
 logging.rs`): daily-rolling appender via `tracing-appender` at the
-platform data-local dir (`%LOCALAPPDATA%\roomler\roomler-agent\
-data\logs\` on Win; `~/.local/share/roomler-agent/logs/` on Linux;
-`~/Library/Application Support/live.roomler.roomler-agent/logs/`
+platform data-local dir (`%LOCALAPPDATA%\meshharbor\meshharbor-agent\
+data\logs\` on Win; `~/.local/share/meshharbor-agent/logs/` on Linux;
+`~/Library/Application Support/live.meshharbor.meshharbor-agent/logs/`
 on macOS). 14-day retention via prune-on-startup. `WorkerGuard`
 held in a `OnceLock<WorkerGuard>` so the writer thread survives
 process lifetime. Process-wide `std::panic::set_hook` writes a
@@ -2952,7 +2952,7 @@ output BEFORE delegating to the previous hook — the sync write
 is the belt-and-braces against the non-blocking appender's worker
 not draining the queue before the OS reaps a panicking process.
 
-**Windows Scheduled Task XML rewrite** (`agents/roomlerd/src/
+**Windows Scheduled Task XML rewrite** (`agents/meshharbord/src/
 service.rs::render_task_xml`): replaced `schtasks /Create /SC
 ONLOGON ...` with `schtasks /Create /XML <utf-16-le-bom-tempfile>`.
 Schema 1.2 (broadest universally-supported version, Win 7+).
@@ -2969,23 +2969,23 @@ Settings that were previously missing or wrong:
   fully ready
 
 Brings Windows to parity with systemd `Restart=on-failure` (already
-in `packaging/linux/roomler-agent.service`) and macOS launchd
-`KeepAlive` (already in `packaging/macos/com.roomler.agent.plist`).
+in `packaging/linux/meshharbor-agent.service`) and macOS launchd
+`KeepAlive` (already in `packaging/macos/fans.itachi.meshharbor.agent.plist`).
 
-**Single-instance lock** (`agents/roomlerd/src/instance_lock.rs`):
-prevents an interactive `roomler-agent run` from racing the
+**Single-instance lock** (`agents/meshharbord/src/instance_lock.rs`):
+prevents an interactive `meshharbor-agent run` from racing the
 Scheduled-Task / systemd-launched copy in the same user session.
-Win: `CreateMutexW` named `Local\RoomlerAgent-<sha-prefix12-of-
+Win: `CreateMutexW` named `Local\MeshHarborAgent-<sha-prefix12-of-
 config-path>` (`Local\` namespace = per-session scope; SHA disambig
 covers two enrolments on the same machine for the same user). Unix:
-`flock(LOCK_EX | LOCK_NB)` on `$XDG_RUNTIME_DIR/roomler-agent-<id>.
+`flock(LOCK_EX | LOCK_NB)` on `$XDG_RUNTIME_DIR/meshharbor-agent-<id>.
 lock` (or `~/.cache/...` fallback) with PID written for diagnostics.
 Both kernel-released on process death, no stale-lock cleanup needed
 after `kill -9`. Only `run` gates on the lock — `enroll`,
 `service install/uninstall`, `caps`, `displays`, `encoder-smoke`,
 `self-update` stay runnable alongside a live agent.
 
-**Internal liveness watchdog** (`agents/roomlerd/src/watchdog.
+**Internal liveness watchdog** (`agents/meshharbord/src/watchdog.
 rs`): process-singleton via `OnceLock<Arc<Watchdog>>`; pumps tick
 via global `watchdog::tick("name")` free helpers (no parameter
 threading). Per-pump thresholds — signaling: 90s (keepalive cadence
@@ -3007,19 +3007,19 @@ where it is. The signaling loop awaits inside its `select!` arms,
 so a stall is one arm whose await never returned, and the INFO log
 is silent while it waits.
 - Every arm therefore enters a named stage first
-  (`watchdog::enter`, `agents/roomlerd/src/watchdog.rs:375`):
+  (`watchdog::enter`, `agents/meshharbord/src/watchdog.rs:375`):
   `shutdown`, `keepalive`, `netchange`, `heartbeat`, `outbound`,
   `carrier_ready`, `consent`, `device_end`, `tunnel_reap`,
   `quic_setup`, `delegated`, and `ws.text` / `ws.ping` / `ws.pong` /
   `ws.close` / `ws.error` / `ws.other`
-  (`agents/roomlerd/src/signaling.rs:1881` onwards).
+  (`agents/meshharbord/src/signaling.rs:1881` onwards).
 - The connection's setup awaits too, with the pump already counting.
   It reads `setup`, and `setup.overlay` while the overlay runtime
-  starts or re-attaches (`agents/roomlerd/src/signaling.rs:1496`).
+  starts or re-attaches (`agents/meshharbord/src/signaling.rs:1496`).
   Only the loop waiting for its next event reads `select`.
 - A `ws.text` arm is refined to the message it is handling, read
   from the JSON's `t` (`ws.text:rc:ssh.response`; `server_msg_tag`,
-  `agents/roomlerd/src/signaling.rs:6462`). The dispatch awaits per
+  `agents/meshharbord/src/signaling.rs:6462`). The dispatch awaits per
   message, so that is where a stall inside it shows.
 - The `StageGuard` (`watchdog.rs:389`) puts the pump back to
   `select` when the arm's scope ends, however it ends. An arm that
@@ -3034,14 +3034,14 @@ is silent while it waits.
   own log line about 1 stall in 6, measured on a Windows dev box on
   2026-10-19.
 
-**Token revocation grace** (`agents/roomlerd/src/signaling.rs`):
+**Token revocation grace** (`agents/meshharbord/src/signaling.rs`):
 replaced the `AuthRejected → hard exit` branch with a backoff ladder
 (`auth_backoff_for`): 30s → 60s → 5min → 1h capped. Server-side
 JWT cache flushes during a deploy used to permanently break every
 agent in the field; now they back off and rejoin within seconds.
 After 3 consecutive 401s, raises `<config-dir>/needs-attention.txt`
 sentinel via `notify::raise_attention` describing the situation +
-recommending `roomlerd re-enroll --token <jwt>` (new CLI
+recommending `meshharbord re-enroll --token <jwt>` (new CLI
 that preserves `machine_id` + `machine_name` from the existing
 config). Sentinel auto-cleared on auth recovery.
 
@@ -3074,13 +3074,13 @@ back to its 5 s tick.
 ### 19.2 Update-path hardening (0.1.51)
 
 **Configurable update cadence**: `update_check_interval_h: Option<u32>`
-config field + `ROOMLER_AGENT_UPDATE_INTERVAL_H` env var override.
+config field + `MESHHARBOR_AGENT_UPDATE_INTERVAL_H` env var override.
 Pure resolver `resolve_check_interval_with(env_value, cfg_value)`
 extracted so tests don't race on process env. Defaults to the
 existing 24 h built-in.
 
-**Post-install watcher** (`agents/roomlerd/src/post_install.rs`):
-new hidden CLI subcommand `roomler-agent post-install-watch
+**Post-install watcher** (`agents/meshharbord/src/post_install.rs`):
+new hidden CLI subcommand `meshharbor-agent post-install-watch
 --installer-pid <pid> --installer-path <path> --expected-version
 <tag>`. Spawned by `updater::spawn_installer_with_watch` as a
 sibling of msiexec / dpkg / installer(8) just before the parent
@@ -3127,7 +3127,7 @@ yet forward the field).
 
 **`updater::pin_version(tag)`**: fetches a specific release from
 `https://api.github.com/repos/.../releases/tags/<tag>` directly
-(bypasses the roomler-ai proxy because pinning is rare per-agent
+(bypasses the mh proxy because pinning is rare per-agent
 crash-loop recovery, not a fleet-wide poll). Returns the same
 `CheckOutcome::UpdateReady` shape as the regular update path so
 the rest of the install flow composes.
@@ -3151,7 +3151,7 @@ document — both are Schema 1.3+ Settings.* children. schtasks /XML
 on Win10/11 correctly rejected the document with
 `(39,7):DisallowStartOnRemoteAppSession: ERROR: The task XML
 contains an unexpected node`. Field impact: anyone who tried
-`roomlerd service install` after 0.1.50–0.1.52 saw the error
+`meshharbord service install` after 0.1.50–0.1.52 saw the error
 and kept their pre-0.1.50 ONLOGON task. Their *binary* had all the
 in-process resilience features but their *Scheduled Task* still had
 the bad battery defaults.
@@ -3163,9 +3163,9 @@ so a future "let me bump these back in" diff fails CI.
 
 ### 19.5 MSI auto-registers Scheduled Task (0.1.54)
 
-WiX custom actions in `agents/roomlerd/wix/main.wxs`:
+WiX custom actions in `agents/meshharbord/wix/main.wxs`:
 
-- `RegisterAutostart`: `FileKey='roomler_agent_exe'
+- `RegisterAutostart`: `FileKey='meshharbor_agent_exe'
   ExeCommand='service install' Execute='deferred' Impersonate='yes'
   Return='ignore'`. Sequenced `After='InstallFiles'` with condition
   `NOT (REMOVE="ALL")` so it runs on fresh install + repair +
@@ -3212,10 +3212,10 @@ the unfiltered token).
 **Recovery** (one-time, per machine that hits this):
 ```powershell
 # Elevated PowerShell:
-schtasks /Delete /TN RoomlerAgent /F
+schtasks /Delete /TN MeshHarborAgent /F
 
 # Normal PowerShell (post-0.1.54):
-& "$env:LOCALAPPDATA\Programs\roomler-agent\roomler-agent.exe" service install
+& "$env:LOCALAPPDATA\Programs\meshharbor-agent\meshharbor-agent.exe" service install
 ```
 
 After this, the freshly-created task has a normal ACL and future
@@ -3230,7 +3230,7 @@ of Effort 2 are queued for follow-up.
 
 #### 19.8.1 agent-v0.1.55 — enrollment http→https normalization
 
-Field bug: `roomler-agent enroll --server http://roomler.ai ...` failed
+Field bug: `meshharbor-agent enroll --server http://meshharbor.itachi.fans ...` failed
 with `enrollment rejected (status 405 Method Not Allowed)`. Cause: the
 production ingress 301-redirects plaintext to TLS; reqwest follows the
 redirect but converts POST→GET (RFC 7231 historical behaviour for
@@ -3257,7 +3257,7 @@ dropping the WS. With this in place, "agent online" can be defined as
 `last_seen_at > now − 90 s` (3× cadence tolerance for one missed
 tick).
 
-Agent (`agents/roomlerd/src/signaling.rs`) adds a 30 s
+Agent (`agents/meshharbord/src/signaling.rs`) adds a 30 s
 `tokio::time::interval` arm to the connect_once `select!`. v1 sends
 `rss_mb=0`, `cpu_pct=0.0` (process-self metrics deferred to a follow-
 up that adds the `sysinfo` crate); `active_sessions = peers.len()`
@@ -3288,10 +3288,10 @@ Optional opt-in alternative to the Scheduled Task auto-start, for
 fleet / unattended deployments. Two milestones landed; M3 + M4 + M5
 are deferred (see §19.8.5).
 
-**M1 — service host skeleton** (`agents/roomlerd/src/win_service/
+**M1 — service host skeleton** (`agents/meshharbord/src/win_service/
 mod.rs`):
 
-  - `install(exe_path)` registers `RoomlerAgentService` with the SCM
+  - `install(exe_path)` registers `MeshHarborAgentService` with the SCM
     (LocalSystem, AutoStart, OWN_PROCESS), launches via the agent's
     own hidden `service-run` subcommand on start.
   - `uninstall()` stops (best-effort 5 s) + deletes; tolerates
@@ -3338,16 +3338,16 @@ feature-gated MF / WGC compilation paths.
 
 **M4 (MSI integration) deferred-by-design**: the agent MSI is
 `InstallScope='perUser'` (no UAC), but `CreateService` requires admin
-elevation. Auto-registering `RoomlerAgentService` from a perUser MSI
+elevation. Auto-registering `MeshHarborAgentService` from a perUser MSI
 is impossible. Operators install the MSI normally, then run
-`roomlerd service install --as-service` from an elevated
+`meshharbord service install --as-service` from an elevated
 PowerShell. Future per-machine MSI flavour can revisit.
 
 ### 19.8.5 Where the cycle ended
 
 Everything queued at the end of this cycle subsequently shipped: M3 pre-logon
 SystemContext capture (rc.1–rc.7, hardened through rc.26 behind
-`ROOMLER_AGENT_ENABLE_SYSTEM_SWAP`), M5 field verification, and the perMachine
+`MESHHARBOR_AGENT_ENABLE_SYSTEM_SWAP`), M5 field verification, and the perMachine
 MSI flavour (`wix-perMachine/`). The operator-facing verification procedure lives
 in [operator-systemcontext-smoke.md](operator-systemcontext-smoke.md).
 
@@ -3394,9 +3394,9 @@ The fix is a per-worker **named stop event**
   included) against `UPDATE_STOP_WINDOW` (10 min; the MSI's stop can lag the
   spawn by minutes under EDR). A suppressed unenroll is logged by name. The gate
   is platform-neutral; Linux never needed it only because `dpkg -i` does not
-  restart `roomlerd`.
+  restart `meshharbord`.
 - **A per-user install has no host to signal it.** Since FR-97 P4d, the
-  Scheduled Task's daemon holds its own event, which `roomlerd service stop`
+  Scheduled Task's daemon holds its own event, which `meshharbord service stop`
   signals, and hears sign-out and shutdown through a hidden window. Both reach
   this same arm (`docs/ephemeral-nodes.md`, "A per-user Windows install").
 - **Security** — the event's DACL (`STOP_EVENT_SDDL`, a protected `D:P`) grants
@@ -3444,7 +3444,7 @@ sequenceDiagram
 | `RUNNING` (0.4.105 → #2010) | `StopServiceFailed`. The service stays **stopped**, and the device stays offline: the service has no SCM recovery actions |
 | `STOP_PENDING` | warns "Waiting for service … to stop", waits, then starts it |
 
-- `on_control` (`agents/roomlerd/src/win_service/mod.rs`) reports
+- `on_control` (`agents/meshharbord/src/win_service/mod.rs`) reports
   `stop_pending_status()` **before** it posts `Shutdown` to the supervisor. In
   the other order, a fast supervisor could report `STOPPED` first and then have
   it overwritten with a pending state for a process that is already gone. A
@@ -3453,13 +3453,13 @@ sequenceDiagram
   interval, plus the graceful budget, plus the terminate wait, so raising any of
   those raises the hint with it.
 - ⚠️ Field case, CORPLAP-3 on 0.4.126: a stop took 2.31 s, and the SYSTEM task
-  running `Restart-Service Roomler -Force` exited 1 that same second. The device
+  running `Restart-Service MeshHarbor -Force` exited 1 that same second. The device
   was offline for 10 min 24 s. The same restart earlier that day took 1.74 s and
   came back 162 ms later. Because the failure depends on which side of 2 s a stop
   lands, it is intermittent.
-- `roomler restart` never had this problem. Under the SCM the worker exits 0 and
+- `mh restart` never had this problem. Under the SCM the worker exits 0 and
   the supervisor respawns it in-process, so the service itself never leaves
-  `RUNNING`. Prefer it remotely too: `roomler exec <host> -- roomler restart
+  `RUNNING`. Prefer it remotely too: `mh exec <host> -- mh restart
   --no-wait`.
 - ✅ Field-verified on 0.4.130 (CORPLAP-3). Ten milliseconds after Stop the state
   was `STOP_PENDING` with a 20 s wait hint. The stop took 2.29 s, and
@@ -3468,7 +3468,7 @@ sequenceDiagram
 
 #### 19.8.8 A host that dies comes back (#2087)
 
-Until #2087 the `Roomler` service had **no SCM recovery actions**. A service host
+Until #2087 the `MeshHarbor` service had **no SCM recovery actions**. A service host
 that died left the device dark until the next reboot. Worse, a supervisor that
 failed or panicked still ended with `STOPPED` and exit code 0, which looks like a
 clean stop. A startup error before the supervisor existed did not report
@@ -3501,8 +3501,8 @@ flowchart LR
   | The supervisor returned an error | `ServiceSpecific(2)` | restarts it |
   | The supervisor panicked | `ServiceSpecific(3)` | restarts it |
   | No supervisor at all (the worker path or the startup sequence failed) | `ServiceSpecific(4)` | restarts it |
-  | The worker found the single-instance lock held, and the orphan check read every roomlerd process without finding an earlier host's worker: a second installed flavour (#2465, §19.8.9) | `0` | leaves the service stopped |
-  | The same refusal, but some roomlerd process could not be read, so an orphan cannot be ruled out (#2465) | `ServiceSpecific(5)` | restarts it |
+  | The worker found the single-instance lock held, and the orphan check read every meshharbord process without finding an earlier host's worker: a second installed flavour (#2465, §19.8.9) | `0` | leaves the service stopped |
+  | The same refusal, but some meshharbord process could not be read, so an orphan cannot be ruled out (#2465) | `ServiceSpecific(5)` | restarts it |
 
   ⚠️ A requested stop must stay `0`. With non-crash failure actions on, any other
   code would have the SCM undo an operator's, an MSI's or the OS's stop.
@@ -3548,8 +3548,8 @@ sequenceDiagram
     Note over W: the device reconnects
 ```
 
-- **The rule** (`is_orphaned_worker`, `agents/roomlerd/src/win_service/orphan.rs:153`):
-  a running `roomlerd.exe run --supervisor scm` that this host does not
+- **The rule** (`is_orphaned_worker`, `agents/meshharbord/src/win_service/orphan.rs:153`):
+  a running `meshharbord.exe run --supervisor scm` that this host does not
   supervise. The SCM runs one host process per service, a host supervises one
   worker, and the check runs only while this host supervises none. So such a
   worker belongs to a host that is gone, or is one this host lost track of.
@@ -3580,12 +3580,12 @@ sequenceDiagram
     which needs only `PROCESS_QUERY_LIMITED_INFORMATION` (`cmdline_of`,
     `orphan.rs:313`).
 - **The redundant stop is clean again.** Suppose the `Stop` arm's pass finds no
-  orphan and could read every roomlerd process. Then the lock is held by a second
+  orphan and could read every meshharbord process. Then the lock is held by a second
   installed flavour: the supervisor returns `Redundant`, and the host ends with
   exit **0**, so the recovery actions leave the service stopped, as that arm
   always intended. #2087 had made this end `ServiceSpecific(1)`, a restart every
   minute.
-  - If any roomlerd could not be read, the supervisor returns
+  - If any meshharbord could not be read, the supervisor returns
     `RedundantUnconfirmed` and the host ends `ServiceSpecific(5)`. The SCM's retry
     then still recovers a lock held by a worker the check could not see.
 - ⚠️ **The order of the two fixes matters.** A clean redundant stop *without* the

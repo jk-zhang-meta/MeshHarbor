@@ -1,5 +1,5 @@
 /**
- * FR-93 lab: AC8's idle hold, driven by roomler-ai-deploy's `vmtest/lab/measure/idle-cost.sh`. One viewer
+ * FR-93 lab: AC8's idle hold, driven by meshharbor-deploy's `vmtest/lab/measure/idle-cost.sh`. One viewer
  * session held for
  * E2E_SOAK_MINUTES (30 by default). Every minute it checks that the session
  * still says connected and that the picture still changes. The lab probe's
@@ -87,7 +87,7 @@ test.describe('vmtest idle hold (named agent)', () => {
     const token = ((await loginResp.json()) as { access_token: string }).access_token
     await context.addInitScript(() => {
       try {
-        window.localStorage.setItem('roomler-signed-in', '1')
+        window.localStorage.setItem('meshharbor-signed-in', '1')
       } catch {
         /* the cookie still authenticates */
       }

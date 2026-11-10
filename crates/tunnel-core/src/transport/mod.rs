@@ -3,7 +3,7 @@
 //! Pluggable data-plane transport.
 //!
 //! v1 ships [`webrtc_dc::TunnelPeer`] (SCTP DataChannels over the
-//! existing Roomler WebRTC plane). v0.5 will add `WireGuardTransport`
+//! existing MeshHarbor WebRTC plane). v0.5 will add `WireGuardTransport`
 //! (userspace WG via boringtun + optional TUN). The [`Transport`]
 //! trait is the contract both implementations satisfy; capability
 //! negotiation in `rc:tunnel.hello` picks the strongest mutually-

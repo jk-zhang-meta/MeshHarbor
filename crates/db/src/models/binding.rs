@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 /// a client which module to ask about the rest. It is not an access control.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Binding {
-    /// The owning module's id, as `roomler_core::graph::MODULES` spells it.
+    /// The owning module's id, as `meshharbor_core::graph::MODULES` spells it.
     pub module: String,
     /// What the module calls the object; opaque to chat.
     #[serde(rename = "ref")]

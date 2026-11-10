@@ -3,7 +3,7 @@
 <template>
   <v-container fluid class="pa-2 pa-md-4 pa-xl-6">
     <h1 class="text-h5 text-md-h4 mb-2">{{ $t('nav.explore') }}</h1>
-    <p class="text-medium-emphasis mb-4">Discover and join open rooms</p>
+    <p class="text-medium-emphasis mb-4">{{ t('mh.rooms.discover') }}</p>
     <v-text-field
       v-model="query"
       :label="$t('common.search')"
@@ -35,7 +35,7 @@
               {{ room.topic.value }}
             </p>
             <p v-else class="text-body-2 text-medium-emphasis mb-3">
-              No topic set
+              {{ t('mh.rooms.noTopic') }}
             </p>
 
             <div class="d-flex align-center text-caption text-medium-emphasis">
@@ -67,8 +67,8 @@
     <v-row v-if="results.length === 0 && !loading && searched">
       <v-col cols="12" class="text-center text-medium-emphasis pa-4 pa-md-6 pa-lg-8">
         <v-icon size="48" class="mb-2">mdi-magnify-close</v-icon>
-        <p v-if="query">No rooms found matching "{{ query }}"</p>
-        <p v-else>No open rooms available. Try creating one!</p>
+        <p v-if="query">{{ t('mh.rooms.noMatch', { query }) }}</p>
+        <p v-else>{{ t('mh.rooms.noOpen') }}</p>
       </v-col>
     </v-row>
   </v-container>
@@ -78,6 +78,9 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useRoomStore, type Room } from '@/stores/rooms'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const router = useRouter()

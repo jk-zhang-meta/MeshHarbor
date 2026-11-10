@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bson::oid::ObjectId;
-use roomler_core::hooks::{TenantArchived, TenantLifecycle};
+use meshharbor_core::hooks::{TenantArchived, TenantLifecycle};
 
 use crate::FleetState;
 
@@ -59,8 +59,8 @@ impl TenantLifecycle for FleetTenantHooks {
 
 /// What fleet registers with the core registry: the tenant cascade only —
 /// fleet is the CALLER of the agent cascade, never a holder.
-pub fn hooks(state: &FleetState) -> roomler_core::Hooks {
-    roomler_core::Hooks {
+pub fn hooks(state: &FleetState) -> meshharbor_core::Hooks {
+    meshharbor_core::Hooks {
         tenant: Some(Arc::new(FleetTenantHooks {
             state: state.clone(),
         })),

@@ -24,7 +24,7 @@
 //!
 //! Servers: two devices whose central role is Server are judged by the
 //! tenant's server topology instead of their zones — an enabled
-//! [`ServerLink`](roomler_ai_remote_control::models::ServerLink) between them
+//! [`ServerLink`](meshharbor_remote_control::models::ServerLink) between them
 //! connects them, whatever their zones; none (or a disabled one) separates
 //! them, even inside one zone. A pair with any other device (a client, or a
 //! device with no current role) keeps the zone rule.
@@ -43,7 +43,7 @@
 //!   and permits client-pair fallback; `enforce` refuses new and existing pairs.
 //! - **`business_device_roles` DB read failed (`roles_read_failed = true`)**:
 //!   cannot distinguish a Server-Server pair (which requires an enabled
-//!   [`ServerLink`](roomler_ai_remote_control::models::ServerLink)) from a
+//!   [`ServerLink`](meshharbor_remote_control::models::ServerLink)) from a
 //!   Client pair. Therefore, whenever `app.business_isolation = enforce` —
 //!   **even if `app.business_unknown_role = warn`** — new admissions
 //!   (`overlay.join` netmap emission, `overlay.relay_request`, `tunnel_open`,
@@ -54,8 +54,8 @@
 use std::time::Duration;
 
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::models::{NodeRef, OverlayNode};
-use roomler_core::business_authority::BusinessZone;
+use meshharbor_core::business_authority::BusinessZone;
+use meshharbor_remote_control::models::{NodeRef, OverlayNode};
 
 use tracing::{debug, info, warn};
 
@@ -201,7 +201,7 @@ pub struct Lines {
     pub links: std::collections::HashSet<(ObjectId, ObjectId)>,
     pub unknown_role: Mode,
     pub approved_roles:
-        std::collections::HashSet<(roomler_core::business_authority::DeviceKind, ObjectId)>,
+        std::collections::HashSet<(meshharbor_core::business_authority::DeviceKind, ObjectId)>,
     /// True when reading `current_approved_roles` from storage failed.
     /// New-admission paths fail closed (`approved_roles` is empty under
     /// `enforce`), whereas revocation/teardown/reconcile paths must preserve
@@ -211,14 +211,16 @@ pub struct Lines {
 }
 
 impl Lines {
-    pub fn ref_identity(r: &NodeRef) -> (roomler_core::business_authority::DeviceKind, ObjectId) {
+    pub fn ref_identity(
+        r: &NodeRef,
+    ) -> (meshharbor_core::business_authority::DeviceKind, ObjectId) {
         match r {
             NodeRef::Agent { agent_id } => (
-                roomler_core::business_authority::DeviceKind::Agent,
+                meshharbor_core::business_authority::DeviceKind::Agent,
                 *agent_id,
             ),
             NodeRef::TunnelClient { tunnel_client_id } => (
-                roomler_core::business_authority::DeviceKind::TunnelClient,
+                meshharbor_core::business_authority::DeviceKind::TunnelClient,
                 *tunnel_client_id,
             ),
         }
@@ -313,7 +315,7 @@ impl Lines {
         };
         (self.servers.contains(x) && self.servers.contains(y)).then(|| {
             self.links
-                .contains(&roomler_ai_remote_control::models::ServerLink::ordered(
+                .contains(&meshharbor_remote_control::models::ServerLink::ordered(
                     *x, *y,
                 ))
         })
@@ -329,7 +331,8 @@ pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lin
     // empty), while `roles_read_failed` is exposed so teardown/reconcile
     // paths preserve existing sessions/carriers/DERP tables and retry.
     let (roles, mut roles_read_failed) =
-        match roomler_core::business_authority::current_approved_roles(&state.core, tenant_id).await
+        match meshharbor_core::business_authority::current_approved_roles(&state.core, tenant_id)
+            .await
         {
             Ok(r) => (r, false),
             Err(e) => {
@@ -340,13 +343,13 @@ pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lin
     let servers = roles
         .iter()
         .filter_map(|(&(kind, id), &role)| {
-            (kind == roomler_core::business_authority::DeviceKind::Agent
-                && role == roomler_core::business_authority::DeviceUseRole::Server)
+            (kind == meshharbor_core::business_authority::DeviceKind::Agent
+                && role == meshharbor_core::business_authority::DeviceUseRole::Server)
                 .then_some(id)
         })
         .collect();
     let approved_roles: std::collections::HashSet<(
-        roomler_core::business_authority::DeviceKind,
+        meshharbor_core::business_authority::DeviceKind,
         ObjectId,
     )> = roles.into_keys().collect();
     let links = match state.overlay_networks.find_for_tenant(tenant_id).await {

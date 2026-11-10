@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::ChatState;
 

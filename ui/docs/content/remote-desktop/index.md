@@ -1,6 +1,6 @@
 ---
 title: Remote desktop
-seoTitle: Remote desktop from any browser, no install — Roomler
+seoTitle: Remote desktop from any browser, no install — MeshHarbor
 description: Remote desktop from any browser — open an enrolled machine as a live screen in a tab, hardware-encoded, end-to-end encrypted and consent-gated.
 tags: [remote-desktop, overview, sessions]
 hero: remote-desktop.svg
@@ -10,7 +10,7 @@ order: 0
 
 Any machine running the agent can be opened as a **live screen in a browser
 tab**. The viewing side installs nothing — the controller is a plain browser, on
-any operating system, including one that has never heard of Roomler.
+any operating system, including one that has never heard of MeshHarbor.
 
 :::badges
 - **Nothing to install to watch** icon:monitor — only the machine you reach runs an agent.

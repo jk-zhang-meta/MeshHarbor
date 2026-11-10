@@ -14,8 +14,8 @@
 //! `.asc` does not verify against it.
 //!
 //! It lives in `tunnel-core` since FR-97 P6b, so the tunnel CLI's
-//! `roomler self-update` refuses its own artifacts the same way, on every
-//! OS. The agent re-exports it as `roomlerd::pgp_verify`.
+//! `mh self-update` refuses its own artifacts the same way, on every
+//! OS. The agent re-exports it as `meshharbord::pgp_verify`.
 //!
 //! Scope is deliberately narrow — this is NOT an OpenPGP implementation.
 //! It verifies exactly the shape our CI emits (`gpg --armor --detach-sign`
@@ -37,13 +37,13 @@ use anyhow::{Context, Result, bail};
 
 /// The ed25519 public point of the release SIGNING subkey, pinned.
 ///
-/// Key: `Roomler Release Signing <releases@roomler.ai>`
+/// Key: `MeshHarbor Release Signing <releases@meshharbor.itachi.fans>`
 /// Subkey fingerprint: `5DB8221F546288DE780C10D3A2C53E5FE6FA485A` (key id
 /// `A2C53E5FE6FA485A`), certified by the offline primary
 /// `D654B016256FD92A81634A0E2AD1E9F025973A7F`.
 ///
 /// The canonical armored key lives at
-/// `scripts/signing/gpg/roomler-release-pubkey.asc` and is republished as
+/// `scripts/signing/gpg/meshharbor-release-pubkey.asc` and is republished as
 /// a release asset; `pinned_key_matches_committed_pubkey` re-derives this
 /// constant from that file so the two can never drift silently.
 pub const PINNED_RELEASE_SIGNING_KEY: [u8; 32] = [
@@ -300,7 +300,7 @@ fn verify_detached(artifact: &[u8], asc: &str, pubkey: &[u8; 32]) -> Result<()> 
         .map_err(|_| {
             anyhow::anyhow!(
                 "ed25519 signature verification FAILED against the pinned release key — \
-                 this artifact was not signed by Roomler Release Signing"
+                 this artifact was not signed by MeshHarbor Release Signing"
             )
         })
 }
@@ -343,17 +343,17 @@ mod tests {
     /// A throwaway ed25519 key + a message it signed, generated once with
     /// gpg 2.4.8 in an isolated GNUPGHOME (2026-08-26). The key exists
     /// nowhere else; these bytes are test vectors, not secrets.
-    const FIXTURE_MSG: &[u8] = b"roomler pgp_verify fixture message v1\n";
+    const FIXTURE_MSG: &[u8] = b"meshharbor pgp_verify fixture message v1\n";
     const FIXTURE_KEY: [u8; 32] = [
-        0xeb, 0x45, 0x29, 0xff, 0x24, 0xe9, 0xf6, 0xb7, 0x21, 0x20, 0x7a, 0x34, 0x08, 0x01, 0xa2,
-        0x6b, 0xf7, 0x0f, 0xe4, 0x2d, 0xc4, 0xdf, 0x3e, 0xd3, 0xc3, 0x19, 0x5d, 0xc1, 0xcc, 0xbe,
-        0xce, 0x4e,
+        0x33, 0x84, 0x7b, 0x0e, 0x3c, 0xe9, 0x79, 0xba, 0xb0, 0x87, 0xfa, 0xd6, 0xce, 0xd4, 0x99,
+        0x26, 0x7c, 0xea, 0xf2, 0x07, 0xe3, 0x24, 0x04, 0x97, 0xcb, 0xcb, 0x3f, 0x6a, 0x29, 0x23,
+        0x1c, 0x02,
     ];
     const FIXTURE_ASC: &str = "-----BEGIN PGP SIGNATURE-----\n\n\
-iHUEABYKAB0WIQR+gSR1LCoEVCK5rt+0sI1x14/rFgUCao7qAAAKCRC0sI1x14/r\n\
-Fib9AQC7rcJIbBRX9OLFsijHeAtLA78lEFbZECl0rBM3Ui3ECAEAzAZhKfTmb0nJ\n\
-hV/0cAHGFizJ3Gl+qz5YZ4IEbnnXtgs=\n\
-=wJg0\n\
+iHUEABYKAB0WIQT5HAAzcK+uvp6HPP9btTenQXlVcAUCavAr5AAKCRBbtTenQXlV\n\
+cOQUAP4+Pzaeo/BJuXb1y7QGSXA41nWXaAAA2u5R0xCtACRK0QEAtHrUeLxTe9Y4\n\
+LSPRvB0G9xGjssS7PG6iG4Tedn3r8g4=\n\
+=lGyI\n\
 -----END PGP SIGNATURE-----\n";
 
     #[test]
@@ -376,7 +376,7 @@ hV/0cAHGFizJ3Gl+qz5YZ4IEbnnXtgs=\n\
     fn tampered_signature_is_refused() {
         // Flip one bit inside the base64 body (the CRC then also disagrees —
         // corruption must be caught no matter which check sees it first).
-        let tampered = FIXTURE_ASC.replace("Fib9AQC7", "Fib9AQC8");
+        let tampered = FIXTURE_ASC.replace("cOQUAP4+", "cOQUAP4/");
         verify_detached(FIXTURE_MSG, &tampered, &FIXTURE_KEY)
             .expect_err("a tampered signature body must fail");
     }
@@ -418,7 +418,7 @@ hV/0cAHGFizJ3Gl+qz5YZ4IEbnnXtgs=\n\
     fn pinned_key_matches_committed_pubkey() {
         let armored = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../scripts/signing/gpg/roomler-release-pubkey.asc"
+            "/../../scripts/signing/gpg/meshharbor-release-pubkey.asc"
         ));
         let data = dearmor(armored).expect("committed pubkey must dearmor");
         let mut r = Reader(&data);
@@ -461,7 +461,7 @@ hV/0cAHGFizJ3Gl+qz5YZ4IEbnnXtgs=\n\
         let point = subkey_point.expect("committed key must contain a signing subkey");
         assert_eq!(
             point, PINNED_RELEASE_SIGNING_KEY,
-            "the pinned constant no longer matches scripts/signing/gpg/roomler-release-pubkey.asc — \
+            "the pinned constant no longer matches scripts/signing/gpg/meshharbor-release-pubkey.asc — \
              if the key was rotated on purpose, update the pin AND read the rotation note in the \
              module docs; a silent mismatch would freeze every Linux/macOS update"
         );
@@ -473,16 +473,16 @@ hV/0cAHGFizJ3Gl+qz5YZ4IEbnnXtgs=\n\
     /// because it needs release files this repo does not carry:
     ///
     /// ```text
-    /// gh release download agent-v0.3.0-rc.475 --repo gjovanov/roomler-ai \
-    ///   --pattern 'roomler-agent-*aarch64-apple-darwin.pkg*' --dir /tmp/rel
-    /// ROOMLER_TEST_ARTIFACT=/tmp/rel/roomler-agent-0.3.0-rc.475-aarch64-apple-darwin.pkg \
-    ///   cargo test -p roomler-ai-tunnel-core --lib -- --ignored real_published_asc
+    /// gh release download agent-v0.3.0-rc.475 --repo jk-zhang-meta/MeshHarbor \
+    ///   --pattern 'meshharbor-agent-*aarch64-apple-darwin.pkg*' --dir /tmp/rel
+    /// MESHHARBOR_TEST_ARTIFACT=/tmp/rel/meshharbor-agent-0.3.0-rc.475-aarch64-apple-darwin.pkg \
+    ///   cargo test -p meshharbor-tunnel-core --lib -- --ignored real_published_asc
     /// ```
     #[test]
     #[ignore = "needs a published release artifact; see the doc comment"]
     fn real_published_asc_verifies_and_a_flipped_byte_fails() {
-        let artifact = std::env::var("ROOMLER_TEST_ARTIFACT")
-            .expect("set ROOMLER_TEST_ARTIFACT to a downloaded release artifact");
+        let artifact = std::env::var("MESHHARBOR_TEST_ARTIFACT")
+            .expect("set MESHHARBOR_TEST_ARTIFACT to a downloaded release artifact");
         let bytes = std::fs::read(&artifact).expect("reading the artifact");
         let asc = std::fs::read_to_string(format!("{artifact}.asc"))
             .expect("reading the .asc next to the artifact");

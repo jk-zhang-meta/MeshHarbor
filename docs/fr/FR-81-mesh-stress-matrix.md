@@ -1,6 +1,6 @@
 # FR-81: Overlay stress matrix — latency, throughput and carrier stability from a throwaway VM
 
-**Issue:** [#1546](https://github.com/gjovanov/roomler-ai/issues/1546) ·
+**Issue:** [#1546](https://github.com/jk-zhang-meta/MeshHarbor/issues/1546) ·
 **Status:** **closed 2026-09-25** — all nine criteria met. Reference run `20260924-155559` (every
 target on agent 0.4.101): PASS 26/0, SSH 30/30, 0 transitions over 189 **measured** samples on
 every pair. Docs: [`testing.md` → the overlay stress lane](../testing.md#the-overlay-stress-lane-fr-81).
@@ -31,7 +31,7 @@ it disqualifies the obvious matrix:
 | CORPLAP-3 | `stun/udp: ok` · relay band **BLOCKED** · nat **symmetric** | `relay:derp/tcp` | **No** — symmetric NAT, srflx ineligible (penalty 74.9) |
 | zeus / mars | stun ok · relay band reachable · nat cone | `direct` | Yes |
 
-⚠️ **`roomler why` says every tier is "eligible" for all three corp laptops — and that is not a
+⚠️ **`mh why` says every tier is "eligible" for all three corp laptops — and that is not a
 contradiction.** The ELIGIBLE column is the *local* end's willingness to offer a tier; the
 **MEASURED PATH** rows are the truth. CORPLAP-2's measured direct path runs at **83 % loss**,
 CORPLAP-3's at **100 %**. Reading "eligible" as "achievable" is the trap this table exists to
@@ -58,11 +58,11 @@ shows the relay arm's numbers are not an artefact of the forcing knob.
 
 | check | what it measures | how |
 |---|---|---|
-| `carrier` | the carrier actually in use, plus `why` | `roomler peers` + `roomler why` |
-| `latency` | p50 / p95 / max / loss over N samples | `roomler ping` ×N |
-| `ssh` | session establishment reliability + cost | `roomler ssh <t> -- <trivial>` ×M, success rate + wall time |
-| `throughput` | bulk bytes over the mesh, both directions, integrity-checked | `scp` via `roomler proxy` ProxyCommand, sha256 verified |
-| `stability` | carrier transitions during the run | sample `roomler peers` every 10 s; count changes |
+| `carrier` | the carrier actually in use, plus `why` | `mh peers` + `mh why` |
+| `latency` | p50 / p95 / max / loss over N samples | `mh ping` ×N |
+| `ssh` | session establishment reliability + cost | `mh ssh <t> -- <trivial>` ×M, success rate + wall time |
+| `throughput` | bulk bytes over the mesh, both directions, integrity-checked | `scp` via `mh proxy` ProxyCommand, sha256 verified |
+| `stability` | carrier transitions during the run | sample `mh peers` every 10 s; count changes |
 
 ## Key design decisions
 
@@ -95,7 +95,7 @@ transfer at a time.)*
       `teardown/org-baseline` on both orgs and no VM on zeus.*
 - [x] **AC2** every target's carrier is recorded with `why` evidence, and each is asserted against
       what that host can actually achieve — never a fixed expectation.
-      *`VMTEST-CARRIER` per target, `roomler why` captured to `/tmp/why-<t>.txt`, and the verdict
+      *`VMTEST-CARRIER` per target, `mh why` captured to `/tmp/why-<t>.txt`, and the verdict
       is reachability + stability, never which carrier won.*
 - [x] **AC3** latency is reported as a distribution (p50/p95/max/loss), not a single ping.
       *40 samples × 5 targets × 2 arms; 0.0 % loss on every one.*
@@ -164,13 +164,13 @@ the tail is the number to watch across releases.
 
 **Findings:** a VM running *on* zeus reaches zeus over DERP rather than LAN (2 ms, so cheap here,
 but the lan tier never won); CORPLAP-3 and mars report `ssh_enabled: true` while having never
-published an SSH host key, so `roomler ssh` correctly refuses and SSH reads as enabled-but-unusable;
-and a grant-issued session gets a shell but **cannot `scp`**, because `roomler proxy` carries no
+published an SSH host key, so `mh ssh` correctly refuses and SSH reads as enabled-but-unusable;
+and a grant-issued session gets a shell but **cannot `scp`**, because `mh proxy` carries no
 client identity.
 
 **Five harness defects, each found only by running it:**
 
-1. `roomler peers` CONN is field **5**, not 4 (a status bullet is field 1) — `$4` reported the IPv6
+1. `mh peers` CONN is field **5**, not 4 (a status bullet is field 1) — `$4` reported the IPv6
    *address* as a carrier. It looked like data.
 2. The ssh arm swallowed stderr and reported a bare `ssh_ok=0`; the real answer was a POLICY gate.
 3. That gate is `SshPolicy.can_originate`, default false — which forced the guest lane into
@@ -190,7 +190,7 @@ product on the way.
 
 #### Round one's conclusion was only a third right
 
-Round one recorded *"a grant session cannot `scp`, because `roomler proxy` carries no client
+Round one recorded *"a grant session cannot `scp`, because `mh proxy` carries no client
 identity."* True as a mechanism — but it was **reasoning, not measurement**: the lane discarded
 scp's stderr, so the missing identity was an inference from the docs rather than something the run
 had seen. With the key in place and stderr kept, **four** independent things had to be right, and
@@ -198,14 +198,14 @@ the identity was one of them.
 
 | # | wall | what it looked like |
 |---|---|---|
-| 1 | **`scp` dials 22; roomler SSH listens on 2222** | `Error: connecting to <ip>:22 … Connection timed out`. OpenSSH hands its port to the ProxyCommand as `%p`, so `roomler proxy` faithfully dialled `:22`. ⚠️ `roomler proxy --help`'s own example has this gap. |
+| 1 | **`scp` dials 22; meshharbor SSH listens on 2222** | `Error: connecting to <ip>:22 … Connection timed out`. OpenSSH hands its port to the ProxyCommand as `%p`, so `mh proxy` faithfully dialled `:22`. ⚠️ `mh proxy --help`'s own example has this gap. |
 | 2 | **an identity** | with `-i` + `IdentitiesOnly`: `Authenticated to … (via proxy) using "publickey"`, and the device logs `sftp session started … run_as=daemon privileged=true`. |
 | 3 | **the verdict must be the file, not scp's status** | see the first product bug below |
 | 4 | **`/C:/…` on Windows** | a bare relative destination lands in the sftp default cwd, which is `C:\WINDOWS\system32`. |
 
 #### Product bug 1 — `scp` exits 1 on a transfer that fully succeeded (#1559, merged)
 
-`roomlerd`'s sftp subsystem was the only channel path that never sent an `exit-status`; the pty,
+`meshharbord`'s sftp subsystem was the only channel path that never sent an `exit-status`; the pty,
 exec and every refusal do. OpenSSH reads it as the verdict on the transfer, logs `Exit status -1`
 and exits 1:
 
@@ -234,7 +234,7 @@ against a working sibling:
 
 The daemon detects it and fails closed — correct — but the mint was gated on `is_none()`, and
 `Some(garbage)` is not `None`, so it never replaced it. Two restarts (operator-approved) changed
-nothing. ⚠️ The one WARN that explains it sits past the ≤64 KiB tail `roomler logs --grep` reads;
+nothing. ⚠️ The one WARN that explains it sits past the ≤64 KiB tail `mh logs --grep` reads;
 it took a whole-file `Select-String` to surface.
 
 #### 🔑🔑 The cleanup check has now been wrong in three ways, and all three printed green
@@ -244,7 +244,7 @@ it took a whole-file `Select-String` to surface.
    hit;
 3. **an account that could not see the directory at all** — the transfer authenticates from the key
    list, so it runs as `ssh_account_mode = daemon` (SYSTEM) and writes `C:\Windows\Temp`, while a
-   `roomler ssh` verification is a *grant* session that policy resolves to `console_user`:
+   `mh ssh` verification is a *grant* session that policy resolves to `console_user`:
 
 ```
 --- did it land? ---
@@ -280,7 +280,7 @@ fact that the matrix would be greener.
 
 #### Known limit
 
-CORPLAP-3 cannot transfer files even once #1565 ships: it has no `sftp-server.exe`. roomler spawns
+CORPLAP-3 cannot transfer files even once #1565 ships: it has no `sftp-server.exe`. meshharbor spawns
 the platform's binary rather than embedding one, so that a transfer runs as the session's account
 instead of as the daemon — and on Windows that binary ships with the OpenSSH **Server** optional
 feature, which a corp-managed laptop need not have. `Test-Path` reads `False` there and `True` on
@@ -325,9 +325,9 @@ within-device test, not because it settled anything.
 #### Residue, checked as the identity that could actually see it
 
 `cleanup=verified_gone` on CORPLAP-1/2 over SFTP; on CORPLAP-3 **neither identity reachable from
-inside the VM can look** (sftp cannot start, and a `roomler ssh` grant session is `console_user`,
+inside the VM can look** (sftp cannot start, and a `mh ssh` grant session is `console_user`,
 denied on `C:\Windows\Temp`), so it correctly reported `UNVERIFIED` and was checked from mars with
-`roomler exec`, which runs as the daemon: **0 files** matching `roomler-stress*`. zeus and mars: 0.
+`mh exec`, which runs as the daemon: **0 files** matching `meshharbor-stress*`. zeus and mars: 0.
 Fleet org back to 21 devices, zero ghosts, no VM on zeus, k8s untouched.
 
 ### 2026-09-23 → 09-24 — round three: stability had never been measured, and an SSH race
@@ -337,15 +337,15 @@ Fleet org back to 21 devices, zero ghosts, no VM on zeus, k8s untouched.
 *(Found 2026-09-10; fixed in the lane on 09-23; merged with #11 on 09-24.)*
 `carrier_transitions=0` was printed for every pair across three runs (rounds one and two), and
 every one of them was 0 over **zero** samples. The collection was one remote command —
-`pkill -f 'roomler peers'; sudo cat /tmp/carrier.log` — and `pkill -f` matched the invoking shell's
+`pkill -f 'mh peers'; sudo cat /tmp/carrier.log` — and `pkill -f` matched the invoking shell's
 own command line, which contained that exact pattern: it killed the shell it ran in, so the `cat`
 never ran, the collected log was empty, and the counter found no transitions in nothing. The
 sampler itself had worked all along. AC6's round-one evidence is withdrawn above.
-Fixed in `roomler-ai-deploy` #11: collect first, kill second; the sampler's verdict is judged at
+Fixed in `meshharbor-deploy` #11: collect first, kill second; the sampler's verdict is judged at
 collection time on the lines captured; every result prints `transitions=<n>/<k>samples`.
 
 Once real samples arrived, the counter called healthy peers flapping: the `CONN` column of
-`roomler peers` carries **states** as well as carriers (`upgrading` is a make-before-break probe on
+`mh peers` carries **states** as well as carriers (`upgrading` is a make-before-break probe on
 a relayed peer, plus `stalled` and `offline`). Transitions are now counted only between carrier
 shapes on an allow-list (`direct`, `lan`, `relay:*`); states are tallied separately and anything
 unrecognised is reported, never counted.
@@ -365,10 +365,10 @@ dialled before the grant had crossed the laptop's slower control connection. FR-
 the server answer only after the device acknowledges the grant — shipped in 0.4.101, verified
 below.
 
-#### Product bug 4 — `roomler proxy`'s own `--help` recipe could not work (#1573)
+#### Product bug 4 — `mh proxy`'s own `--help` recipe could not work (#1573)
 
-Found while enabling SSH on the fleet servers for this lane: `Host *.roomler` hands the proxy
-`<name>.roomler`, which it looked up verbatim. Fixed in 0.4.101.
+Found while enabling SSH on the fleet servers for this lane: `Host *.meshharbor` hands the proxy
+`<name>.meshharbor`, which it looked up verbatim. Fixed in 0.4.101.
 
 #### ⚠️ One run's relay-arm SSH column was invalidated by a probe — `20260924-113449`
 

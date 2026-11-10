@@ -14,19 +14,19 @@
 import type { Where } from '@/utils/analytics'
 
 export const CASES: ReadonlyArray<[name: string, where: Where, loads: boolean]> = [
-  ['the hosted site', { hostname: 'roomler.ai', protocol: 'https:', webdriver: false }, true],
-  ['the www hostname', { hostname: 'www.roomler.ai', protocol: 'https:', webdriver: false }, true],
-  ['a browser that does not say whether it is driven', { hostname: 'roomler.ai', protocol: 'https:' }, true],
+  ['the hosted site', { hostname: 'meshharbor.itachi.fans', protocol: 'https:', webdriver: false }, true],
+  ['the www hostname', { hostname: 'www.meshharbor.itachi.fans', protocol: 'https:', webdriver: false }, true],
+  ['a browser that does not say whether it is driven', { hostname: 'meshharbor.itachi.fans', protocol: 'https:' }, true],
   ['localhost', { hostname: 'localhost', protocol: 'http:', webdriver: false }, false],
   ['localhost over https', { hostname: 'localhost', protocol: 'https:', webdriver: false }, false],
   ['127.0.0.1', { hostname: '127.0.0.1', protocol: 'http:', webdriver: false }, false],
   ['[::1]', { hostname: '[::1]', protocol: 'http:', webdriver: false }, false],
   ['a private host', { hostname: '192.168.1.20', protocol: 'https:', webdriver: false }, false],
   ["a fork's domain", { hostname: 'deskler.example', protocol: 'https:', webdriver: false }, false],
-  ['a subdomain of the hosted site', { hostname: 'app.roomler.ai', protocol: 'https:', webdriver: false }, false],
-  ['a look-alike with the hostname as a prefix', { hostname: 'roomler.ai.evil.example', protocol: 'https:', webdriver: false }, false],
-  ['a look-alike with the hostname as a suffix', { hostname: 'notroomler.ai', protocol: 'https:', webdriver: false }, false],
-  ['the hosted site over plain http', { hostname: 'roomler.ai', protocol: 'http:', webdriver: false }, false],
+  ['a subdomain of the hosted site', { hostname: 'app.meshharbor.itachi.fans', protocol: 'https:', webdriver: false }, false],
+  ['a look-alike with the hostname as a prefix', { hostname: 'meshharbor.itachi.fans.evil.example', protocol: 'https:', webdriver: false }, false],
+  ['a look-alike with the hostname as a suffix', { hostname: 'notmeshharbor.itachi.fans', protocol: 'https:', webdriver: false }, false],
+  ['the hosted site over plain http', { hostname: 'meshharbor.itachi.fans', protocol: 'http:', webdriver: false }, false],
   ['a file: URL', { hostname: '', protocol: 'file:', webdriver: false }, false],
-  ['a WebDriver (Playwright) on the hosted site', { hostname: 'roomler.ai', protocol: 'https:', webdriver: true }, false],
+  ['a WebDriver (Playwright) on the hosted site', { hostname: 'meshharbor.itachi.fans', protocol: 'https:', webdriver: true }, false],
 ]

@@ -23,8 +23,8 @@ use std::sync::LazyLock;
 
 use bson::oid::ObjectId;
 use dashmap::DashSet;
-use roomler_core::cluster::metrics::{RC_SLOT_CLAIM_FAILED_TOTAL, RC_SLOT_FULL_TOTAL, bump};
-use roomler_core::cluster::session_slots::{Lease, SlotClaim, SlotScope};
+use meshharbor_core::cluster::metrics::{RC_SLOT_CLAIM_FAILED_TOTAL, RC_SLOT_FULL_TOTAL, bump};
+use meshharbor_core::cluster::session_slots::{Lease, SlotClaim, SlotScope};
 use tracing::{debug, warn};
 
 use crate::RemoteState;

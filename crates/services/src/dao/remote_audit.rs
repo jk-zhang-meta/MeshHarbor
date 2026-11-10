@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::{doc, oid::ObjectId};
+use meshharbor_remote_control::models::RemoteAuditEvent;
 use mongodb::Database;
-use roomler_ai_remote_control::models::RemoteAuditEvent;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

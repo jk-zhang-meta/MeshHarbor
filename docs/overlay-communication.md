@@ -1,6 +1,6 @@
-# Roomler overlay communication — every path, inside and outside a VPN
+# MeshHarbor overlay communication — every path, inside and outside a VPN
 
-> **Scope.** How any two Roomler nodes actually exchange packets: the control
+> **Scope.** How any two MeshHarbor nodes actually exchange packets: the control
 > plane that introduces them, the five data-plane **carriers** they can pick
 > from, and exactly which one wins on each kind of network — open internet,
 > home NAT, corporate VPN, and the strict TCP-only firewall that only **DERP**
@@ -17,14 +17,14 @@
 
 ## 1. Two planes, one rule
 
-Roomler separates **who may talk** from **how bytes travel**. The rule that
+MeshHarbor separates **who may talk** from **how bytes travel**. The rule that
 falls out of it: *the server introduces peers; it never carries their plaintext.*
 
 | | Control plane | Data plane |
 |---|---|---|
-| Transport | ONE WSS to `roomler.ai:443` | a **carrier** — see §3 |
+| Transport | ONE WSS to `meshharbor.itachi.fans:443` | a **carrier** — see §3 |
 | Payload | JSON `rc:overlay.*` messages | WireGuard ciphertext |
-| Who terminates it | the Roomler API | the two nodes, end-to-end |
+| Who terminates it | the MeshHarbor API | the two nodes, end-to-end |
 | Server sees | membership, endpoints, pubkeys | nothing — opaque bytes at most |
 
 Every node holds the control WS open for its whole life. Through it the server
@@ -35,7 +35,7 @@ discovery protocol on the wire.
 
 ```mermaid
 graph TB
-    subgraph SRV["Roomler server — roomler.ai:443 behind nginx"]
+    subgraph SRV["MeshHarbor server — meshharbor.itachi.fans:443 behind nginx"]
         WS["/ws control plane<br/>JSON rc:overlay.*<br/>netmap fan-out"]
         DERP["/derp relay<br/>pubkey-addressed<br/>opaque forwarding"]
         DB[("MongoDB<br/>overlay_nodes<br/>networks")]
@@ -46,14 +46,14 @@ graph TB
     COTURN["coturn cluster<br/>UDP 3478 · TURNS TCP/UDP 443<br/>3 workers"]
 
     subgraph NA["Node A"]
-        TA["roomler0 TUN<br/>100.64.0.1/10 · MTU 1280"]
+        TA["meshharbor0 TUN<br/>100.64.0.1/10 · MTU 1280"]
         WA["WireGuard — boringtun<br/>Noise-IK, end-to-end"]
         CA["carrier"]
         TA --- WA --- CA
     end
 
     subgraph NB["Node B"]
-        TB["roomler0 TUN<br/>100.64.0.2/10"]
+        TB["meshharbor0 TUN<br/>100.64.0.2/10"]
         WB["WireGuard — boringtun"]
         CB["carrier"]
         TB --- WB --- CB
@@ -86,7 +86,7 @@ graph TB
 | server → node | `rc:overlay.relay_grant` | coturn ICE servers + a symmetric `pair_key` |
 
 The data plane is always **WireGuard**: a userspace boringtun tunnel presenting
-a `roomler0` TUN on `100.64.0.0/10` (CGNAT range, Tailscale convention) at MTU
+a `meshharbor0` TUN on `100.64.0.0/10` (CGNAT range, Tailscale convention) at MTU
 1280. Only the *envelope* under WireGuard changes between tiers.
 
 **A node's identity on the data plane is its WireGuard public key**, minted on the
@@ -124,10 +124,10 @@ plan doc is retired):
   every consumer (LocalAPI `status`/`peers`, the tray, the admin nodes table via
   a TS mirror of the derivation) computes it locally.
 - **MagicDNS answers AAAA** with the derived v6 by default;
-  `ROOMLERD_DNS_AAAA=0` reverts to A-only — the mixed-fleet escape hatch,
+  `MESHHARBORD_DNS_AAAA=0` reverts to A-only — the mixed-fleet escape hatch,
   since a pre-v6 peer's OS doesn't own its derived address and v6 toward it
   blackholes (happy-eyeballs apps fall back on their own).
-- `roomler ping <name> -6` resolves a peer's derived v6; the netstack SOCKS
+- `mh ping <name> -6` resolves a peer's derived v6; the netstack SOCKS
   front accepts genuine ATYP=IPv6 targets when they are derived-ULA (v4-mapped
   unwraps; any other v6 is host-unreachable by design).
 
@@ -166,7 +166,7 @@ Two consequences worth knowing:
   the operator recovery step when a previously rotated device (`key_epoch > 0`)
   loses its local config and reconnects with a fresh key at `key_epoch = 0`
   (which `rehydrate` otherwise rejects as stale epoch). Note that
-  `ROOMLER_OVERLAY_KEY_TTL_SECS` applies to all newly created node rows regardless
+  `MESHHARBOR_OVERLAY_KEY_TTL_SECS` applies to all newly created node rows regardless
   of agent version; legacy agents without `key-rotate` capability require manual
   update/intervention upon key expiry. To remove a device for good, delete it.
   There is deliberately no per-machine overlay denylist.
@@ -262,7 +262,7 @@ each socket's `rb`. Linux reports twice the request, so a carrier socket shows
 `rb14680064`, and every other socket of the daemon keeps the default. The
 daemon logs the granted sizes once per socket (*"overlay: carrier socket
 buffers"*) whatever `RUST_LOG` says. The packaged Linux units set
-`RUST_LOG=roomlerd=info,warn`, which drops `tunnel_core` INFO, so the logger
+`RUST_LOG=meshharbord=info,warn`, which drops `tunnel_core` INFO, so the logger
 appends this one target on its own (`crates/agent-core/src/logging.rs:225`). On
 Windows that line is the only evidence of the size.
 
@@ -276,7 +276,7 @@ so in a WARN line. Raise `net.core.rmem_max` and `net.core.wmem_max` to at least
 reader falls behind the arrival rate. Datagrams then wait rather than vanish,
 and for TCP inside the tunnel a drop costs more than the wait. The kernel
 charges a socket only for what is queued, so an idle carrier costs nothing.
-Kill switch: `ROOMLERD_OVERLAY_SOCKBUF=0`.
+Kill switch: `MESHHARBORD_OVERLAY_SOCKBUF=0`.
 
 ---
 
@@ -305,7 +305,7 @@ flowchart TD
 
     T1 & T2 & T3 --> DIRECT["No server in the data path"]
     T4 & T6 --> CT["Relayed via coturn"]
-    T5 --> DR["Relayed via roomler.ai /derp"]
+    T5 --> DR["Relayed via meshharbor.itachi.fans /derp"]
 
     style T1 fill:#d7f8d7
     style T2 fill:#d7f8d7
@@ -315,14 +315,14 @@ flowchart TD
     style T6 fill:#f0f0f0
 ```
 
-| # | Tier | Carrier | Wins when | Flag — `ROOMLERD_OVERLAY_…` |
+| # | Tier | Carrier | Wins when | Flag — `MESHHARBORD_OVERLAY_…` |
 |---|---|---|---|---|
 | 1 | LAN direct | UDP, interface socket | peer shares a /24 | `DIRECT` (**on**) |
 | 2 | direct-to-public | UDP, egress socket | peer's NIC is public | `PUBLIC_DIRECT` (off) |
 | 3 | srflx hole-punch | UDP, punch socket | both NAT'd, not both symmetric | `SRFLX` (**on**, rc.200) |
 | 4 | single-relay | 1 coturn alloc + raw dialer, QUIC | ≥1 side UDP-capable | `RELAY_SINGLE` (**on**, rc.200) |
 | 5 | **DERP** | `/derp` WSS, pubkey-addressed | **both** UDP-blocked | `DERP` (**on**, rc.203) |
-| 5′ | **org relay** (FR-19) | a tenant-owned `roomlerd` forwarding WG ciphertext on UDP 3478, Geneve-framed | the server **minted a session** for the pair — org switch on, an ACL rule granting each member the relay node, an approved + serving relay. A relay *kind* beside TURN/DERP on the relay tier, not a new tier | `ORG_RELAY` (off) |
+| 5′ | **org relay** (FR-19) | a tenant-owned `meshharbord` forwarding WG ciphertext on UDP 3478, Geneve-framed | the server **minted a session** for the pair — org switch on, an ACL rule granting each member the relay node, an approved + serving relay. A relay *kind* beside TURN/DERP on the relay tier, not a new tier | `ORG_RELAY` (off) |
 | — | both-allocate | 2 coturn allocations | mixed capability / fall-through | always available |
 
 Every gate accepts `0`/`false`/`no`/`off` to disable. Each direct tier carries
@@ -342,7 +342,7 @@ The happy path: L2 reachability, no NAT, no server in the data path.
 ```mermaid
 sequenceDiagram
     participant A as Node A · 192.168.1.10
-    participant S as roomler.ai /ws
+    participant S as meshharbor.itachi.fans /ws
     participant B as Node B · 192.168.1.20
 
     A->>S: rc:overlay.join {pubkey, lan_endpoints}
@@ -370,7 +370,7 @@ address it couldn't know in advance, after cryptographically authenticating it.
 sequenceDiagram
     participant A as Node A · behind NAT-A
     participant ST as coturn STUN 3478/udp
-    participant S as roomler.ai /ws
+    participant S as meshharbor.itachi.fans /ws
     participant B as Node B · behind NAT-B
 
     A->>ST: STUN Binding — from the punch socket
@@ -408,7 +408,7 @@ is chosen by **UDP capability, not pubkey**:
 ```mermaid
 sequenceDiagram
     participant C as Corp node · UDP-blocked
-    participant S as roomler.ai /ws
+    participant S as meshharbor.itachi.fans /ws
     participant T as coturn worker
     participant H as Home node · UDP-capable
 
@@ -448,7 +448,7 @@ deadlock because **both peers dial OUT** over TCP/TLS-443.
 ```mermaid
 sequenceDiagram
     participant A as Node A · all UDP blocked
-    participant D as roomler.ai /derp
+    participant D as meshharbor.itachi.fans /derp
     participant B as Node B · all UDP blocked
 
     Note over A,B: neither advertises srflx ⇒ both UDP-blocked<br/>both advertise supports_derp ⇒ relay_strategy = Derp
@@ -468,7 +468,7 @@ sequenceDiagram
 ```
 
 **Field-proven 2026-07-21**: buildhost↔fleet-host-2 network namespaces with *all* UDP and
-*all* coturn TCP blocked — only `roomler.ai:443` reachable. Both nodes reached
+*all* coturn TCP blocked — only `meshharbor.itachi.fans:443` reachable. Both nodes reached
 `/derp`, `relay_strategy` chose `Derp`, the WG handshake completed over the relay
 (INIT 148 B → RESP 92 B → data), and ping ran **0 % packet loss, ~2.7 ms RTT**
 both directions.
@@ -493,7 +493,7 @@ to the relay node, an approved relay that is online and advertising
 each member (its own secret, the relay's endpoints). Each member binds with a
 3-way authenticated handshake (`tag₁` covers no address — a NAT'd member cannot
 know its mapping on its first packet; the cookie binds it at the challenge) and
-installs an `OrgRelayConn` as a raw relay carrier: `relay:org/udp` in `roomler
+installs an `OrgRelayConn` as a raw relay carrier: `relay:org/udp` in `meshharbor
 peers`. Revocation is a **push** (org off, an ACL edit, approval cleared, a
 party gone), because the idle deadline never fires under a WireGuard keepalive.
 Sessions are 24-bit VNIs unique **per relay node**, capped at 64 per relay, 1 h
@@ -551,13 +551,13 @@ affects the mesh in one way only.
 | A hole-punched carrier | ✅ passes (a Fedora host, zone `FedoraServer`) | direct carriers initiate bilaterally (UC-1): each side's outbound probe makes the conntrack entry that lets the other side's reply in |
 | A LAN-direct carrier | ✅ passes (`tier=Lan`, 497 ms; zone `public`) | the same |
 | A service on the node's overlay address | ❌ refused unless the zone admits it | the overlay adapter is in no zone, so the default zone governs it |
-| Roomler's own services | ✅ untouched | roomler SSH is intercepted below the OS; exec, remote control and tunnels ride the daemon's own connections |
+| MeshHarbor's own services | ✅ untouched | meshharbor SSH is intercepted below the OS; exec, remote control and tunnels ride the daemon's own connections |
 
 ```mermaid
 flowchart LR
-    P["a packet for this node's<br/>overlay address"] --> A{"arrives on roomler0"}
+    P["a packet for this node's<br/>overlay address"] --> A{"arrives on meshharbor0"}
     A -->|"a reply to our own probe"| C["conntrack: accepted<br/>(carriers keep working)"]
-    A -->|"a new connection to a service"| Z{"the zone governing roomler0<br/>(no zone = the default zone)"}
+    A -->|"a new connection to a service"| Z{"the zone governing meshharbor0<br/>(no zone = the default zone)"}
     Z -->|"its services / ports"| OK["accepted"]
     Z -->|"anything else"| NO["refused<br/>(rc 7 at the client)"]
 ```
@@ -576,20 +576,20 @@ does instead:
   ([`lib.rs:120`](../crates/localapi/src/lib.rs#L120)), parsed from
   `firewall-cmd --info-zone` ([`hostfw.rs:45`](../crates/tunnel-core/src/overlay/hostfw.rs#L45))
   or `ufw status verbose` ([`hostfw.rs:130`](../crates/tunnel-core/src/overlay/hostfw.rs#L130)).
-- `roomler status` prints it only when the firewall limits what a mesh peer
-  reaches ([`localclient.rs:2751`](../agents/roomler-cli/src/localclient.rs#L2751)):
+- `mh status` prints it only when the firewall limits what a mesh peer
+  reaches ([`localclient.rs:2751`](../agents/meshharbor-cli/src/localclient.rs#L2751)):
 
   ```text
-    host fw     firewalld has roomler0 in no zone, so the default zone public applies: mesh peers reach only dhcpv6-client, ssh here
+    host fw     firewalld has meshharbor0 in no zone, so the default zone public applies: mesh peers reach only dhcpv6-client, ssh here
   ```
 
 To open the mesh, the owner runs one of these. Measured: the overlay address
 answered while the LAN address stayed as its zone said.
 
 ```bash
-sudo firewall-cmd --zone=trusted --add-interface=roomler0              # until firewalld reloads
-sudo firewall-cmd --permanent --zone=trusted --add-interface=roomler0  # and after
-sudo ufw allow in on roomler0
+sudo firewall-cmd --zone=trusted --add-interface=meshharbor0              # until firewalld reloads
+sudo firewall-cmd --permanent --zone=trusted --add-interface=meshharbor0  # and after
+sudo ufw allow in on meshharbor0
 ```
 
 ⚠️ **`trusted` admits every port to every peer the overlay ACL admits.** A
@@ -600,7 +600,7 @@ a zone's rich rules ("2 rich rules") rather than guessing what they admit, and
 a zone bound to a source range can admit more than the interface's zone says.
 
 ⚠️ **ufw needs root to answer**, so a per-user daemon reports no ufw line rather
-than a guess. `ROOMLERD_HOST_FW_PROBE=0` switches the probe off. macOS's
+than a guess. `MESHHARBORD_HOST_FW_PROBE=0` switches the probe off. macOS's
 Application Firewall is not asked: it passes forwarded traffic and filters per
 application ([`overlay-exit-nodes.md`](overlay-exit-nodes.md)).
 
@@ -610,7 +610,7 @@ application ([`overlay-exit-nodes.md`](overlay-exit-nodes.md)).
 
 ### Wire protocol
 
-Every frame is a WebSocket **binary** message on `wss://roomler.ai/derp`.
+Every frame is a WebSocket **binary** message on `wss://meshharbor.itachi.fans/derp`.
 
 | Frame | Layout | Meaning |
 |---|---|---|
@@ -664,7 +664,7 @@ graph TB
         MUX -->|"outbound frames"| WSO
         WSO -->|"inbound, demuxed by src"| MUX
     end
-    WSO -->|"WSS 443"| SRV["roomler.ai /derp"]
+    WSO -->|"WSS 443"| SRV["meshharbor.itachi.fans /derp"]
     SRV -->|"forwarded frames"| WSO
 ```
 
@@ -795,7 +795,7 @@ server. Detail and the negative-control test:
 > subscription".** An event inside the quiet window does not run a wave. It
 > pulls the TICK arm forward, and the tick counts the wave. A guard that feeds
 > itself therefore reads as tick-driven: the MacBook showed tick 22512, event
-> 8, with its monitor demonstrably live (#1282). `roomler status` now prints
+> 8, with its monitor demonstrably live (#1282). `mh status` now prints
 > `pulled=N` inside the arms bracket (`ROUTE_WAVES_PULLED`): the tick waves an
 > event pulled forward. `pulled ≈ tick` is a guard re-arming itself, and
 > `tick − pulled` is the real heartbeat.
@@ -815,7 +815,7 @@ server. Detail and the negative-control test:
   it either already won or cannot win:
   1. **Only a winner is evicted.** Before deleting anything, the guard asks
      the FIB which interface it would use (`GetBestRoute2` on the host, or on
-     the first address inside a prefix). If that is ours (a sibling roomler
+     the first address inside a prefix). If that is ours (a sibling meshharbor
      adapter counts as ours), the competitor's row loses every lookup and
      carries no traffic, so it is left alone. On CORPLAP-3 our v4 rows win
      (effective 1 vs Cisco's 26), so the per-wave v4 evictions stop entirely.
@@ -923,25 +923,25 @@ rejected with HTTP `409 Conflict`.
   `/1` split-default or a broader summary route) is still denied (`OtherPeer`).
 * **SNAT / symmetric return routing** — Subnet-Router HA assumes either:
   1. Both HA subnet routers perform **SNAT / MASQUERADE** toward the LAN
-     (Roomler's default in `overlay::nat::enable`), so LAN hosts always reply
+     (MeshHarbor's default in `overlay::nat::enable`), so LAN hosts always reply
      to the specific router that forwarded the packet; or
   2. In no-SNAT deployments, LAN return routing is symmetric or stateless across
      the router pair. If LAN hosts reply via the standby router while the
      active router holds stateful firewall state, LAN-side stateful firewalls
      must share state or permit asymmetric return paths; on the overlay side,
-     Roomler's RPF already accepts return packets from all equal-prefix HA
+     MeshHarbor's RPF already accepts return packets from all equal-prefix HA
      claimants.
 
 ---
 
 ## 8c. Optional Post-Quantum WireGuard PSK (B7)
 
-By default (`ROOMLERD_OVERLAY_PQ_PSK=off`), WireGuard peers use `preshared_key = None`
+By default (`MESHHARBORD_OVERLAY_PQ_PSK=off`), WireGuard peers use `preshared_key = None`
 and emit zero post-quantum control frames. Operators can enable out-of-band
 ML-KEM-768 (NIST FIPS 203) hybrid pre-shared key negotiation and periodic
 rotation (`crates/tunnel-core/src/overlay/pq_psk.rs`) in two modes:
 
-* **`Optional` / `Preferred` (`ROOMLERD_OVERLAY_PQ_PSK=optional` or `preferred`):**
+* **`Optional` / `Preferred` (`MESHHARBORD_OVERLAY_PQ_PSK=optional` or `preferred`):**
   Negotiates an ML-KEM-768 hybrid PSK with peers that support B7, and downgrades
   cleanly to classical `PSK=None` only when the remote peer replies with an
   authenticated `REJECT_MODE_OFF` (`HMAC-SHA256` keyed by the domain-separated
@@ -953,7 +953,7 @@ rotation (`crates/tunnel-core/src/overlay/pq_psk.rs`) in two modes:
     static DH key, an adversary that has *already* compromised a peer's static
     X25519 key in real time could forge `REJECT_MODE_OFF`; deployments requiring
     mandatory post-quantum authentication must use `Required`.
-* **`Required` (`ROOMLERD_OVERLAY_PQ_PSK=required` / `1` / `true`):**
+* **`Required` (`MESHHARBORD_OVERLAY_PQ_PSK=required` / `1` / `true`):**
   Fail-closed mode. On peer installation, `Tunn` is initialized with a fresh
   32-byte CSPRNG guard PSK (`initial_tunn_psk`) so no classical `PSK=None`
   WireGuard handshake can succeed before ML-KEM-768 agreement completes. On key
@@ -1001,9 +1001,9 @@ rotation (`crates/tunnel-core/src/overlay/pq_psk.rs`) in two modes:
 
 ## 8d. On-Demand Pair Tunneling (B6) & B1/B5/B6/B7 Composition
 
-By default (`ROOMLERD_OVERLAY_ON_DEMAND=off`), installed WireGuard peers
+By default (`MESHHARBORD_OVERLAY_ON_DEMAND=off`), installed WireGuard peers
 initiate handshakes immediately and maintain 25 s persistent keepalives plus
-periodic rekeys. When `ROOMLERD_OVERLAY_ON_DEMAND=on` (`1`/`true`/`yes`,
+periodic rekeys. When `MESHHARBORD_OVERLAY_ON_DEMAND=on` (`1`/`true`/`yes`,
 `crates/tunnel-core/src/overlay/on_demand.rs`), idle peer sessions transition
 through `Dormant -> Waking -> Active -> Dormant`:
 
@@ -1059,7 +1059,7 @@ through `Dormant -> Waking -> Active -> Dormant`:
 
 <!-- RETIRED-NAME-ANCHOR(4): names the legacy env prefix env::node_env still honours; an
      operator with it in a script needs to be able to grep for it. -->
-All flags take the `ROOMLERD_OVERLAY_` prefix; the legacy `ROOMLER_AGENT_`
+All flags take the `MESHHARBORD_OVERLAY_` prefix; the legacy `MESHHARBOR_AGENT_`
 prefix is still honoured.
 
 | Variable | Default | Effect |
@@ -1102,7 +1102,7 @@ asked for 7 MiB buffers (§2).
 
 Every tier in the cascade has now carried real WireGuard traffic between two
 genuinely separated hosts. The cascade is complete: there is no longer a network
-shape in which two Roomler nodes can reach `roomler.ai` yet fail to reach each
+shape in which two MeshHarbor nodes can reach `meshharbor.itachi.fans` yet fail to reach each
 other.
 
 ---
@@ -1111,7 +1111,7 @@ other.
 
 The netns lab that validates these tiers blocks egress with a default-DROP
 `OUTPUT` chain. That chain also matches the overlay's *own* traffic to
-`roomler0`, which makes a perfectly healthy carrier look like 100 % packet loss.
-Always add `iptables -I OUTPUT 1 -o roomler0 -j ACCEPT` inside the namespace, and
-pin `roomler.ai` in `/etc/netns/<ns>/hosts` — DNS via the systemd-resolved stub
+`meshharbor0`, which makes a perfectly healthy carrier look like 100 % packet loss.
+Always add `iptables -I OUTPUT 1 -o meshharbor0 -j ACCEPT` inside the namespace, and
+pin `meshharbor.itachi.fans` in `/etc/netns/<ns>/hosts` — DNS via the systemd-resolved stub
 does not resolve inside a namespace.

@@ -433,7 +433,7 @@ async fn a_worker_exit_is_kept_after_its_session_ended() {
 /// than a race.
 #[tokio::test]
 async fn one_millisecond_of_reports_lists_in_arrival_order() {
-    use roomler_ai_remote_control::models::{PrivacyActivityEvent, PrivacyActivityKind};
+    use meshharbor_remote_control::models::{PrivacyActivityEvent, PrivacyActivityKind};
 
     let app = TestApp::spawn().await;
     let seeded = app.seed_tenant("fr99p1dtie").await;

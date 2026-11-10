@@ -755,7 +755,7 @@ describe('useWsStore tenant affinity (PR-1)', () => {
   })
 
   it('falls back to the persisted tenant when off tenant pages', () => {
-    globalThis.localStorage.setItem('roomler-current-tenant', org)
+    globalThis.localStorage.setItem('meshharbor-current-tenant', org)
     const store = useWsStore()
     store.connect()
     expect(dialedUrl()).toContain(`?tid=${org}`)

@@ -19,7 +19,7 @@ served by your own instance names your origin automatically — but a command
 copied from elsewhere may not.
 
 ```bash
-roomler status    # which server does it think it belongs to?
+mh status    # which server does it think it belongs to?
 ```
 
 ### It cannot reach the server
@@ -27,7 +27,7 @@ roomler status    # which server does it think it belongs to?
 The agent needs outbound HTTPS and no inbound ports. From the machine:
 
 ```bash
-curl -sI https://roomler.ai/health
+curl -sI https://meshharbor.itachi.fans/health
 ```
 
 Failing here is a network problem — proxy, firewall, DNS or captive portal.
@@ -36,7 +36,7 @@ Failing here is a network problem — proxy, firewall, DNS or captive portal.
 
 :::tip Which hosts an allow-list needs
 The Windows installer (the MSI) and the tunnel CLI are served through
-`roomler.ai` (or your own server), so for those one hostname is enough. The
+`meshharbor.itachi.fans` (or your own server), so for those one hostname is enough. The
 Linux and macOS daemon packages, the desktop companion and every automatic
 update come from GitHub's release downloads, so an allow-list also needs
 `github.com` and `release-assets.githubusercontent.com`, the host GitHub
@@ -64,14 +64,14 @@ not a failure. Re-install with `-Role daemon-system`.
 retry. If a manually-registered service is in the way:
 
 ```powershell
-roomlerd service uninstall
+meshharbord service uninstall
 ```
 
 @macos
 **The Mac shows as two devices.** Expected — the root half is its own
 enrollment. See [Install on macOS](/docs/start/install/macos/).
 
-**The Mac is missing from `roomler peers` entirely.** You installed the user half
+**The Mac is missing from `mh peers` entirely.** You installed the user half
 only. Add the root half by re-running with a second token as `--daemon-token`.
 
 **Everything installed, screen is wallpaper.** A privacy grant, not an install
@@ -85,13 +85,13 @@ and without `sudo`.
 has outbound HTTPS:
 
 ```bash
-pgrep -x roomlerd
-journalctl -u roomler -n 50 --no-pager
+pgrep -x meshharbord
+journalctl -u meshharbor -n 50 --no-pager
 ```
 
 :::danger Do not judge by `systemctl is-active` alone
 A perfectly healthy daemon can be one systemd does not own, and `is-active` then
-reports **inactive**. Check `pgrep` and `roomler peers` before restarting
+reports **inactive**. Check `pgrep` and `mh peers` before restarting
 anything.
 :::
 

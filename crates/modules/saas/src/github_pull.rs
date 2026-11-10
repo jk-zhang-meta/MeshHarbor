@@ -19,7 +19,7 @@
 //! |---|---|---|
 //! | `repo` | `repo` | `stars` `forks` `watchers`; `downloads` (every asset but the sidecars of every published PRODUCT release) and `helper_downloads` (the rest) |
 //! | `release` | `repo`, `release` (the tag), `kind` (`product` · `helper`) | `downloads` |
-//! | `flavour` | `repo`, `flavour` (a product asset's name without its version: `roomlerd-x86_64-pc-windows-msvc.msi`) | `downloads` |
+//! | `flavour` | `repo`, `flavour` (a product asset's name without its version: `meshharbord-x86_64-pc-windows-msvc.msi`) | `downloads` |
 //!
 //! A **helper** release is one our own CI downloads from — vendored builds
 //! and caches ([`PRODUCT_TAG_PREFIXES`] names the product's): on
@@ -77,15 +77,15 @@ use std::collections::BTreeMap;
 
 use bson::DateTime;
 use chrono::Duration;
-use roomler_ai_config::GrowthSettings;
-use roomler_ai_services::dao::{
+use meshharbor_config::GrowthSettings;
+use meshharbor_core::Core;
+use meshharbor_services::dao::{
     base::DaoResult,
     growth::{
         GITHUB_SOURCE, GITHUB_TRAFFIC_SOURCE, GrowthDaily, GrowthDao, GrowthPull, PullStatus,
         PulledDay, daily_row,
     },
 };
-use roomler_core::Core;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{info, warn};
 
@@ -295,7 +295,7 @@ impl GithubClient {
         let repo = g.github_repo()?.to_string();
         let token = Some(g.github_token.trim().to_string()).filter(|t| !t.is_empty());
         let http = reqwest::Client::builder()
-            .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
             .timeout(TIMEOUT)
             .build()
             .ok()?;
@@ -475,9 +475,9 @@ fn version_len(s: &[u8], i: usize) -> Option<usize> {
 }
 
 /// An asset's FLAVOUR: its name without the version, so the same artifact
-/// of every release groups together — `roomlerd-0.4.140-x86_64-pc-windows-msvc.msi`
-/// is `roomlerd-x86_64-pc-windows-msvc.msi`, `roomlerd_0.4.140_amd64.deb` is
-/// `roomlerd_amd64.deb`. The FIRST version token preceded by `-`, `_` or a
+/// of every release groups together — `meshharbord-0.4.140-x86_64-pc-windows-msvc.msi`
+/// is `meshharbord-x86_64-pc-windows-msvc.msi`, `meshharbord_0.4.140_amd64.deb` is
+/// `meshharbord_amd64.deb`. The FIRST version token preceded by `-`, `_` or a
 /// `v` after one of them is removed together with that separator; a name
 /// without one is its own flavour.
 pub fn flavour(asset: &str) -> String {
@@ -520,8 +520,8 @@ pub fn is_product_release(tag: &str) -> bool {
 }
 
 /// The endings of a SIDECAR: a signature or checksum fetched beside the
-/// asset it describes (`roomlerd-0.4.140-x86_64-unknown-linux-gnu.deb.asc`,
-/// `….deb.sha256`), or the release key itself (`roomler-release-pubkey.asc`).
+/// asset it describes (`meshharbord-0.4.140-x86_64-unknown-linux-gnu.deb.asc`,
+/// `….deb.sha256`), or the release key itself (`meshharbor-release-pubkey.asc`).
 pub const SIDECAR_SUFFIXES: [&str; 4] = [".asc", ".sig", ".sha256", ".sha512"];
 
 /// Whether an asset is a sidecar (see [`SIDECAR_SUFFIXES`]). The updater
@@ -830,7 +830,7 @@ pub fn spawn_puller(core: Core) {
     }
     let Some(client) = GithubClient::from_settings(growth) else {
         info!(
-            "growth github puller: no repository configured (ROOMLER__GROWTH__GITHUB_REPO) — nothing is pulled"
+            "growth github puller: no repository configured (MESHHARBOR__GROWTH__GITHUB_REPO) — nothing is pulled"
         );
         return;
     };
@@ -892,23 +892,23 @@ mod tests {
     fn a_flavour_is_the_asset_name_without_its_version() {
         for (name, want) in [
             (
-                "roomlerd-0.4.140-x86_64-pc-windows-msvc.msi",
-                "roomlerd-x86_64-pc-windows-msvc.msi",
+                "meshharbord-0.4.140-x86_64-pc-windows-msvc.msi",
+                "meshharbord-x86_64-pc-windows-msvc.msi",
             ),
             (
-                "roomlerd-0.4.140-x86_64-pc-windows-msvc.msi.asc",
-                "roomlerd-x86_64-pc-windows-msvc.msi.asc",
+                "meshharbord-0.4.140-x86_64-pc-windows-msvc.msi.asc",
+                "meshharbord-x86_64-pc-windows-msvc.msi.asc",
             ),
-            ("roomlerd_0.4.140_amd64.deb", "roomlerd_amd64.deb"),
+            ("meshharbord_0.4.140_amd64.deb", "meshharbord_amd64.deb"),
             (
-                "roomler-setup-0.4.139-universal-apple-darwin.tar.gz",
-                "roomler-setup-universal-apple-darwin.tar.gz",
+                "meshharbor-setup-0.4.139-universal-apple-darwin.tar.gz",
+                "meshharbor-setup-universal-apple-darwin.tar.gz",
             ),
             (
-                "roomlerd-0.3.0-rc.480-x86_64-unknown-linux-gnu.deb",
-                "roomlerd-x86_64-unknown-linux-gnu.deb",
+                "meshharbord-0.3.0-rc.480-x86_64-unknown-linux-gnu.deb",
+                "meshharbord-x86_64-unknown-linux-gnu.deb",
             ),
-            ("roomler-v0.4.7.zip", "roomler.zip"),
+            ("meshharbor-v0.4.7.zip", "meshharbor.zip"),
             ("SHA256SUMS", "SHA256SUMS"),
             ("ffmpeg-n7.1-win64.zip", "ffmpeg-n7.1-win64.zip"),
         ] {
@@ -935,23 +935,23 @@ mod tests {
                 tag_name: "agent-v0.4.140".into(),
                 draft: false,
                 assets: vec![
-                    asset("roomlerd-0.4.140-x86_64-pc-windows-msvc.msi", 30),
+                    asset("meshharbord-0.4.140-x86_64-pc-windows-msvc.msi", 30),
                     // Sidecars: fetched beside the package, never a download.
-                    asset("roomlerd-0.4.140-x86_64-pc-windows-msvc.msi.asc", 25),
-                    asset("roomlerd-0.4.140-x86_64-pc-windows-msvc.msi.sha256", 4),
-                    asset("roomler-release-pubkey.asc", 3),
-                    asset("roomlerd_0.4.140_amd64.deb", 0),
+                    asset("meshharbord-0.4.140-x86_64-pc-windows-msvc.msi.asc", 25),
+                    asset("meshharbord-0.4.140-x86_64-pc-windows-msvc.msi.sha256", 4),
+                    asset("meshharbor-release-pubkey.asc", 3),
+                    asset("meshharbord_0.4.140_amd64.deb", 0),
                 ],
             },
             Release {
                 tag_name: "agent-v0.4.139".into(),
                 draft: false,
-                assets: vec![asset("roomlerd-0.4.139-x86_64-pc-windows-msvc.msi", 70)],
+                assets: vec![asset("meshharbord-0.4.139-x86_64-pc-windows-msvc.msi", 70)],
             },
             Release {
                 tag_name: "agent-v0.4.141".into(),
                 draft: true,
-                assets: vec![asset("roomlerd-0.4.141-x86_64-pc-windows-msvc.msi", 999)],
+                assets: vec![asset("meshharbord-0.4.141-x86_64-pc-windows-msvc.msi", 999)],
             },
             // A helper: a vendored build our CI downloads.
             Release {
@@ -960,7 +960,7 @@ mod tests {
                 assets: vec![asset("ffmpeg-linux64-lgpl-shared-minimal.tar.xz", 4000)],
             },
         ];
-        let rows = counter_rows("2026-10-16", "gjovanov/roomler-ai", &info, &releases);
+        let rows = counter_rows("2026-10-16", "jk-zhang-meta/MeshHarbor", &info, &releases);
         // The helper is counted apart: its own total, its release row marked,
         // no flavour of the product's.
         assert_eq!(value(&rows, "repo", None, "helper_downloads"), Some(4000));
@@ -1016,9 +1016,11 @@ mod tests {
             "no sidecar flavour"
         );
         assert!(is_sidecar(
-            "roomlerd-0.4.140-x86_64-unknown-linux-gnu.deb.ASC"
+            "meshharbord-0.4.140-x86_64-unknown-linux-gnu.deb.ASC"
         ));
-        assert!(!is_sidecar("roomlerd-0.4.140-x86_64-unknown-linux-gnu.deb"));
+        assert!(!is_sidecar(
+            "meshharbord-0.4.140-x86_64-unknown-linux-gnu.deb"
+        ));
         assert_eq!(
             value(
                 &rows,
@@ -1032,7 +1034,7 @@ mod tests {
             value(
                 &rows,
                 "flavour",
-                Some(("flavour", "roomlerd-x86_64-pc-windows-msvc.msi")),
+                Some(("flavour", "meshharbord-x86_64-pc-windows-msvc.msi")),
                 "downloads"
             ),
             Some(100),
@@ -1042,7 +1044,7 @@ mod tests {
             value(
                 &rows,
                 "flavour",
-                Some(("flavour", "roomlerd_amd64.deb")),
+                Some(("flavour", "meshharbord_amd64.deb")),
                 "downloads"
             ),
             None
@@ -1053,7 +1055,7 @@ mod tests {
         );
         assert!(
             rows.iter()
-                .all(|r| r.dims.get("repo").map(String::as_str) == Some("gjovanov/roomler-ai"))
+                .all(|r| r.dims.get("repo").map(String::as_str) == Some("jk-zhang-meta/MeshHarbor"))
         );
         let ids: std::collections::HashSet<&str> = rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids.len(), rows.len());

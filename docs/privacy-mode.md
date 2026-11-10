@@ -1,6 +1,6 @@
 # Privacy mode
 
-> **FR-99** ([#2091](https://github.com/gjovanov/roomler-ai/issues/2091),
+> **FR-99** ([#2091](https://github.com/jk-zhang-meta/MeshHarbor/issues/2091),
 > [spec](fr/FR-99-privacy-mode.md)).
 >
 > **Status: the curtain is released (agent 0.4.136, Windows 10 2004 and later) and
@@ -35,20 +35,20 @@ Two parties have to agree, and the device's owner speaks first.
    `DesiredConfig`, so no server can switch it on. Over the LocalAPI only the person at the
    console may change it, because it is their screen:
    ```
-   roomler config set privacy_mode_allowed true
+   mh config set privacy_mode_allowed true
    ```
 2. **The controller covers the screen.** On a device that allows it, the viewer's toolbar has an
    eye-off toggle ("Cover the device screen"). The session's consent prompt has already told
    the person "They may also cover this screen while they work."
-   ([`privacy.rs:151`](../agents/roomlerd/src/privacy.rs#L151)).
+   ([`privacy.rs:151`](../agents/meshharbord/src/privacy.rs#L151)).
 
 ```mermaid
 sequenceDiagram
     participant P as person at the device
-    participant A as roomlerd (+ its overlay)
+    participant A as meshharbord (+ its overlay)
     participant S as hub (server)
     participant V as viewer (browser)
-    P->>A: roomler config set privacy_mode_allowed true (console only)
+    P->>A: mh config set privacy_mode_allowed true (console only)
     A->>S: caps re-announced with privacy-mode
     V->>S: rc:session.request ... | PRIVACY (only from a device that serves it)
     Note over S: privacy_grant: device_cannot_curtain, break_glass,<br/>outside_the_org, device_not_opted_in strip it, each with its reason
@@ -85,12 +85,12 @@ session's `session_requested` audit row (`privacy_stripped`):
 > password and a name the stranger chose, and is the only one placed to see what that stranger
 > then does. A curtain would hide it from them, the same reason break-glass is refused. The
 > device strips `PRIVACY` again when it admits an outsider's session
-> ([`admit_session`, `extauth.rs:463`](../agents/roomlerd/src/extauth.rs#L463)), together with
+> ([`admit_session`, `extauth.rs:463`](../agents/meshharbord/src/extauth.rs#L463)), together with
 > `RECORD`, so the server's strip is not the only one. No `external_max_permissions` an owner sets
 > lets either back in.
 
 The device decides again at every "on", whatever the server sent
-([`set`, `privacy.rs:541`](../agents/roomlerd/src/privacy.rs#L541)):
+([`set`, `privacy.rs:541`](../agents/meshharbord/src/privacy.rs#L541)):
 
 | # | Gate | Refusal |
 |---|---|---|
@@ -107,7 +107,7 @@ Every reason is said in words ([`describePrivacyReason`, `usePrivacyMode.ts:47`]
 ## How the curtain works
 
 One window over the whole virtual desktop, drawn by the overlay that already paints the "being
-viewed" border and badge ([`set_privacy`, `indicator/win.rs:344`](../agents/roomlerd/src/indicator/win.rs#L344)):
+viewed" border and badge ([`set_privacy`, `indicator/win.rs:344`](../agents/meshharbord/src/indicator/win.rs#L344)):
 
 - topmost, click-through and never activated, so the controller's injected clicks reach the
   applications underneath;
@@ -132,7 +132,7 @@ Two records, written by two parties, as for recordings and transfers
 sequenceDiagram
     autonumber
     participant V as Viewer
-    participant A as roomlerd (the worker)
+    participant A as meshharbord (the worker)
     participant L as Ledger (privacy-curtains.json)
     participant S as Server
     V->>A: rc:privacy.set on
@@ -155,13 +155,13 @@ sequenceDiagram
 | `off` | `controller` | the viewer turned it off |
 | `off` | `session_end` | the session ended (the channel closed, or the overlay dropped the session) |
 | `off` | `disabled_on_device` | the owner switched privacy mode off mid-session |
-| `off` | `worker_exit` | the process that drew it died with it up, reported by the next one to start ([`collect_leftovers`, `privacy.rs:384`](../agents/roomlerd/src/privacy.rs#L384)) |
+| `off` | `worker_exit` | the process that drew it died with it up, reported by the next one to start ([`collect_leftovers`, `privacy.rs:384`](../agents/meshharbord/src/privacy.rs#L384)) |
 | `refused` | `disabled_on_device` · `unavailable` · `no_curtain` | the device's gates 2–4 above |
 
 - **The ledger** is a small file in the worker's own local data dir: SYSTEM's profile for a
   service's worker, the person's for a per-user install. Each curtain is written there *before*
   it goes up, so a process killed in between leaves an entry rather than a curtain with none
-  ([`Ledger`, `privacy.rs:276`](../agents/roomlerd/src/privacy.rs#L276)). A leftover is reported on
+  ([`Ledger`, `privacy.rs:276`](../agents/meshharbord/src/privacy.rs#L276)). A leftover is reported on
   the connection of the org its session belonged to, because the server looks the session up within
   that org.
 - **The server keeps a report only for a session of that device whose grant held `PRIVACY`**,
@@ -179,7 +179,7 @@ A remote admin who unlocks a computer to work on it should not leave it unlocked
 console:
 
 ```
-roomler config set lock_on_end auto      # never | auto | always
+mh config set lock_on_end auto      # never | auto | always
 ```
 
 | `lock_on_end` | When the last remote session ends |
@@ -192,7 +192,7 @@ roomler config set lock_on_end auto      # never | auto | always
 sequenceDiagram
     autonumber
     participant V as Viewer
-    participant A as roomlerd (the worker)
+    participant A as meshharbord (the worker)
     participant OS as Windows / logind
     V->>A: the session goes live
     A->>OS: auto: is the screen locked? anyone at it?
@@ -203,7 +203,7 @@ sequenceDiagram
 ```
 
 - **The decision is taken at the session's start**, because that is what `auto` restores
-  ([`lock_on_end.rs`](../agents/roomlerd/src/lock_on_end.rs)). Changing the key mid-session affects the
+  ([`lock_on_end.rs`](../agents/meshharbord/src/lock_on_end.rs)). Changing the key mid-session affects the
   next session, not the one already live.
 - **Only the last session's end locks.** Locking under a second controller who is still working would be a
   fault. A session whose answer never reached the viewer has no say.
@@ -230,7 +230,7 @@ sequenceDiagram
 A `MANAGE_AGENTS` admin can ask a device's sessions to lock at their end: **Lock when sessions end** on the
 device's row in the device list (`AccessPolicy.lock_on_end`: `auto` or `always`; `never` asks nothing).
 The device runs each session under the **stricter** of the ask and its owner's own `lock_on_end`
-([`effective_policy`](../agents/roomlerd/src/lock_on_end.rs)), so an ask can tighten the owner's setting and
+([`effective_policy`](../agents/meshharbord/src/lock_on_end.rs)), so an ask can tighten the owner's setting and
 never loosen it:
 
 | owner's `lock_on_end` | admin's ask | the session runs under |
@@ -245,7 +245,7 @@ sequenceDiagram
     autonumber
     participant Adm as Admin (device row)
     participant S as hub (server)
-    participant D as roomlerd (daemon)
+    participant D as meshharbord (daemon)
     participant W as worker
     Adm->>S: AccessPolicy.lock_on_end = always
     Note over S: the authz gate reads it for every controller,<br/>the owner and break-glass included
@@ -258,7 +258,7 @@ sequenceDiagram
 
 - **Only an install that can lift the lock remotely takes an ask**: the Windows service (its worker is SYSTEM
   in the console session and reaches the secure desktop) and the Linux root daemon. Only they advertise
-  `lock-on-end` ([`can_honour_ask`](../agents/roomlerd/src/lock_on_end.rs)). A per-user install never
+  `lock-on-end` ([`can_honour_ask`](../agents/meshharbord/src/lock_on_end.rs)). A per-user install never
   receives one, because a lock an admin asked for there would leave every later session at a padlock no
   session can lift. The owner's own setting stays theirs on any install.
 - The hub sends the ask on `rc:request` only to an agent that advertises `lock-on-end`. The

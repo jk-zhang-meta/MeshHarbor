@@ -1,6 +1,9 @@
+use std::collections::HashSet;
+
 use portable_atomic::{AtomicBool, AtomicU64};
 
 use arc_swap::ArcSwapOption;
+use tokio::sync::Notify;
 use util::sync::Mutex as SyncMutex;
 
 use super::agent_transport::*;
@@ -49,6 +52,8 @@ pub struct AgentInternal {
     pub(crate) tie_breaker: AtomicU64,
     pub(crate) is_controlling: AtomicBool,
     pub(crate) lite: AtomicBool,
+    pub(crate) controlled_probe_late_direct: AtomicBool,
+    pub(crate) ip_filter: Arc<Option<IpFilterFn>>,
 
     pub(crate) start_time: SyncMutex<Instant>,
     pub(crate) nominated_pair: Mutex<Option<Arc<CandidatePair>>>,
@@ -65,6 +70,11 @@ pub struct AgentInternal {
 
     // LRU of outbound Binding request Transaction IDs
     pub(crate) pending_binding_requests: Mutex<Vec<BindingRequest>>,
+    // VENDOR PATCH (F1): active detached STUN sends keyed by (local_id, dst_addr),
+    // capping each pair at <= 1 in-flight background send and letting close()
+    // wait boundedly until all spawned STUN sends drop their candidate Arcs.
+    pub(crate) inflight_stun_sends: Arc<SyncMutex<HashSet<(String, SocketAddr)>>>,
+    pub(crate) inflight_stun_done: Arc<Notify>,
 
     pub(crate) agent_conn: Arc<AgentConn>,
 
@@ -121,6 +131,14 @@ impl AgentInternal {
             tie_breaker: AtomicU64::new(rand::random::<u64>()),
             is_controlling: AtomicBool::new(config.is_controlling),
             lite: AtomicBool::new(config.lite),
+            controlled_probe_late_direct: AtomicBool::new(
+                super::agent_selector::controlled_probe_late_direct_policy(
+                    std::env::var("MESHHARBOR_ICE_CONTROLLED_PROBE_LATE_DIRECT")
+                        .ok()
+                        .as_deref(),
+                ),
+            ),
+            ip_filter: Arc::clone(&config.ip_filter),
 
             start_time: SyncMutex::new(Instant::now()),
             nominated_pair: Mutex::new(None),
@@ -160,6 +178,8 @@ impl AgentInternal {
 
             // LRU of outbound Binding request Transaction IDs
             pending_binding_requests: Mutex::new(vec![]),
+            inflight_stun_sends: Arc::new(SyncMutex::new(HashSet::new())),
+            inflight_stun_done: Arc::new(Notify::new()),
 
             // AgentConn
             agent_conn: Arc::new(AgentConn::new()),
@@ -342,7 +362,7 @@ impl AgentInternal {
         );
 
         if let Some(p) = p {
-            // Roomler patch (observability, 2026-07-28): selection changes at
+            // MeshHarbor patch (observability, 2026-07-28): selection changes at
             // WARN — the agent's default tracing filter uploads `warn`-level
             // events from this target fleet-wide, so which path media rides
             // (and every mid-session migration) becomes visible in the
@@ -551,8 +571,26 @@ impl AgentInternal {
         let _ = self.force_candidate_contact_tx.try_send(true);
     }
 
+    pub(crate) fn allows_remote_ip(&self, ip: std::net::IpAddr) -> bool {
+        match self.ip_filter.as_ref() {
+            Some(filter) => !ip.is_unspecified() && filter(ip),
+            None => true,
+        }
+    }
+
     /// Assumes you are holding the lock (must be execute using a.run).
     pub(crate) async fn add_remote_candidate(&self, c: &Arc<dyn Candidate + Send + Sync>) {
+        let resolved_ip = c.addr().ip();
+        if !self.allows_remote_ip(resolved_ip) {
+            log::info!(
+                "[{}]: remote candidate {} (resolved_ip={}) rejected by ip_filter",
+                self.get_name(),
+                c,
+                resolved_ip
+            );
+            return;
+        }
+
         let network_type = c.network_type();
 
         {
@@ -675,6 +713,18 @@ impl AgentInternal {
         // VENDOR PATCH (#1740): before the sweep, so a candidate gathered from
         // here on is turned away by add_candidate() instead of outliving us.
         self.closed.send_replace(true);
+        // VENDOR PATCH (F1): wait boundedly for any detached STUN sends woken by
+        // `self.closed` to drop their `Arc<dyn Candidate>` before closing sockets.
+        let _ = tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                let notified = self.inflight_stun_done.notified();
+                if self.inflight_stun_sends.lock().is_empty() {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await;
         self.delete_all_candidates().await;
         {
             let mut started_ch_tx = self.started_ch_tx.lock().await;
@@ -741,6 +791,19 @@ impl AgentInternal {
             }
             remote_candidates.clear();
         }
+        {
+            let mut nominated_pair = self.nominated_pair.lock().await;
+            nominated_pair.take();
+        }
+        self.agent_conn.selected_pair.store(None);
+        {
+            let mut checklist = self.agent_conn.checklist.lock().await;
+            checklist.clear();
+        }
+        {
+            let mut pending = self.pending_binding_requests.lock().await;
+            pending.clear();
+        }
     }
 
     pub(crate) async fn find_remote_candidate(
@@ -749,11 +812,32 @@ impl AgentInternal {
         addr: SocketAddr,
     ) -> Option<Arc<dyn Candidate + Send + Sync>> {
         let (ip, port) = (addr.ip(), addr.port());
+        let match_resolved_addr = self.controlled_probe_late_direct_enabled();
 
         let remote_candidates = self.remote_candidates.lock().await;
         if let Some(cands) = remote_candidates.get(&network_type) {
+            if let Some(selected) = self.agent_conn.get_selected_pair() {
+                let sel_rem = &selected.remote;
+                if ((sel_rem.address() == ip.to_string() && sel_rem.port() == port)
+                    || (match_resolved_addr && sel_rem.addr() == addr))
+                    && cands.iter().any(|c| c.equal(&**sel_rem))
+                {
+                    return Some(sel_rem.clone());
+                }
+            }
+            if match_resolved_addr {
+                if let Some(host) = cands.iter().find(|c| {
+                    c.candidate_type() == CandidateType::Host
+                        && c.address().parse::<std::net::IpAddr>().is_err()
+                        && c.addr() == addr
+                }) {
+                    return Some(host.clone());
+                }
+            }
             for c in cands {
-                if c.address() == ip.to_string() && c.port() == port {
+                if (c.address() == ip.to_string() && c.port() == port)
+                    || (match_resolved_addr && c.addr() == addr)
+                {
                     return Some(c.clone());
                 }
             }
@@ -981,6 +1065,14 @@ impl AgentInternal {
             }
 
             if remote_candidate.is_none() {
+                if !self.allows_remote_ip(remote.ip()) {
+                    log::debug!(
+                        "[{}]: remote peer-reflexive candidate {} rejected by ip_filter",
+                        self.get_name(),
+                        remote
+                    );
+                    return;
+                }
                 let (ip, port, network_type) = (remote.ip(), remote.port(), NetworkType::Udp4);
 
                 let prflx_candidate_config = CandidatePeerReflexiveConfig {
@@ -1067,18 +1159,97 @@ impl AgentInternal {
         Ok(())
     }
 
+    pub(crate) fn inflight_stun_send_count(&self) -> usize {
+        self.inflight_stun_sends.lock().len()
+    }
+
     pub(crate) async fn send_stun(
         &self,
         msg: &Message,
         local: &Arc<dyn Candidate + Send + Sync>,
         remote: &Arc<dyn Candidate + Send + Sync>,
     ) {
-        if let Err(err) = local.write_to(&msg.raw, &**remote).await {
-            log::trace!(
-                "[{}]: failed to send STUN message: {}",
-                self.get_name(),
-                err
-            );
+        // VENDOR PATCH (F1): isolate every STUN write so a single stalled
+        // `write_to().await` can never freeze `ping_all_candidates`,
+        // `connectivity_checks`, or inbound STUN handling.
+        // - Poll once inline so healthy sockets/vnet complete with zero spawn.
+        // - Cap concurrent detached sends per (local_id, dst_addr) to <= 1.
+        // - Bound detached sends by 200ms and cancel immediately on `close()`.
+        const STUN_SEND_TIMEOUT: Duration = Duration::from_millis(200);
+        struct InflightStunGuard {
+            set: Arc<SyncMutex<HashSet<(String, SocketAddr)>>>,
+            done: Arc<Notify>,
+            key: (String, SocketAddr),
+        }
+        impl Drop for InflightStunGuard {
+            fn drop(&mut self) {
+                self.set.lock().remove(&self.key);
+                self.done.notify_waiters();
+            }
+        }
+
+        if *self.closed.borrow() {
+            return;
+        }
+        let pair_key = (local.id(), remote.addr());
+        if self.inflight_stun_sends.lock().contains(&pair_key) {
+            return;
+        }
+
+        let raw = msg.raw.clone();
+        let local_c = Arc::clone(local);
+        let remote_c = Arc::clone(remote);
+        let mut write_fut = Box::pin(async move { local_c.write_to(&raw, &*remote_c).await });
+        match std::future::poll_fn(|cx| std::task::Poll::Ready(write_fut.as_mut().poll(cx))).await {
+            std::task::Poll::Ready(Ok(_)) => {}
+            std::task::Poll::Ready(Err(err)) => {
+                log::trace!(
+                    "[{}]: failed to send STUN message: {}",
+                    self.get_name(),
+                    err
+                );
+            }
+            std::task::Poll::Pending => {
+                let mut closed_rx = self.closed.subscribe();
+                {
+                    let mut inflight = self.inflight_stun_sends.lock();
+                    if *self.closed.borrow() || !inflight.insert(pair_key.clone()) {
+                        return;
+                    }
+                }
+                let guard = InflightStunGuard {
+                    set: Arc::clone(&self.inflight_stun_sends),
+                    done: Arc::clone(&self.inflight_stun_done),
+                    key: pair_key,
+                };
+                let name = self.get_name().to_owned();
+                let local_log = local.to_string();
+                let remote_log = remote.to_string();
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    tokio::select! {
+                        biased;
+                        _ = closed_rx.changed() => {}
+                        res = tokio::time::timeout(STUN_SEND_TIMEOUT, write_fut) => {
+                            match res {
+                                Ok(Ok(_)) => {}
+                                Ok(Err(err)) => {
+                                    log::trace!("[{}]: failed to send STUN message: {}", name, err);
+                                }
+                                Err(_) => {
+                                    log::debug!(
+                                        target: "webrtc_ice::send_stun",
+                                        "[{}]: timed out sending STUN message from {} to {}",
+                                        name,
+                                        local_log,
+                                        remote_log
+                                    );
+                                }
+                            }
+                        }
+                    }
+                });
+            }
         }
     }
 

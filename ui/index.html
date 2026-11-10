@@ -10,12 +10,14 @@
       change bumps the `?v=` below and in ui/docs/theme/shell.ts, or a returning
       visitor keeps the old one (docs/public-site.md §3).
     -->
-    <link rel="icon" href="%BASE_URL%meshharbor.svg" type="image/svg+xml" />
+    <link rel="icon" href="%BASE_URL%favicon.svg?v=4" type="image/svg+xml" />
+    <link rel="icon" href="%BASE_URL%favicon.ico?v=3" sizes="48x48" />
+    <link rel="apple-touch-icon" href="%BASE_URL%apple-touch-icon.png?v=3" />
     <link rel="manifest" href="%BASE_URL%meshharbor.webmanifest" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MeshHarbor · 织港 — remote desktop, private mesh network, chat &amp; video</title>
     <!--
-      FR-60 (#1165) — this file had NO metadata beyond `<title>Roomler</title>`,
+      FR-60 (#1165) — this file had NO metadata beyond `<title>MeshHarbor</title>`,
       so every public route (/landing, /pricing, /privacy, /terms, /imprint)
       shared one title and no shared link rendered a card.
 

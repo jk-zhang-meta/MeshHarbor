@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! `network` — pillar 2's server side as a module (FR-69 P7a): the overlay
 //! mesh (IPAM, netmaps, leases, the L3 ACL, relay grants, the DERP ACL
-//! cache), tunnels (clients, policies, audit), peer relays (FR-19), Roomler
+//! cache), tunnels (clients, policies, audit), peer relays (FR-19), MeshHarbor
 //! SSH (the grant decision, its audit and the device-reported activity) and
 //! overlay-key rotation.
 //!
@@ -29,22 +29,22 @@ use axum::{
 };
 use bson::oid::ObjectId;
 use dashmap::DashMap;
-use roomler_ai_config::Settings;
-use roomler_ai_db::indexes::{
+use meshharbor_config::Settings;
+use meshharbor_core::{
+    Capabilities, Core, Hooks, Module, TenantCtx, WsRegistration, rate_limit::RateLimiter,
+    ws::UpgradeSpec,
+};
+use meshharbor_db::indexes::{
     IndexOp, IndexSet, index, index_ttl, index_unique, index_unique_partial,
 };
-use roomler_ai_mod_fleet::FleetState;
-use roomler_ai_remote_control::signaling::ServerMsg;
-use roomler_ai_services::dao::{
+use meshharbor_mod_fleet::FleetState;
+use meshharbor_remote_control::signaling::ServerMsg;
+use meshharbor_services::dao::{
     key_rotation_audit::KeyRotationAuditDao, overlay_network::OverlayNetworkDao,
     overlay_node::OverlayNodeDao, overlay_policy::OverlayPolicyDao,
     peer_relay_audit::PeerRelayAuditDao, ssh_activity::SshActivityDao, ssh_audit::SshAuditDao,
     ssh_pending::SshPendingDao, tunnel_audit::TunnelAuditDao, tunnel_client::TunnelClientDao,
     tunnel_policy::TunnelPolicyDao,
-};
-use roomler_core::{
-    Capabilities, Core, Hooks, Module, TenantCtx, WsRegistration, rate_limit::RateLimiter,
-    ws::UpgradeSpec,
 };
 use std::collections::HashSet;
 use tokio::sync::mpsc;
@@ -59,6 +59,7 @@ pub mod derp_types;
 pub mod ephemeral;
 pub mod hooks;
 pub mod managed_forward;
+pub mod native_ssh_authorization;
 pub mod net_inventory;
 pub mod org_relay;
 pub mod overlay;
@@ -116,7 +117,7 @@ pub struct NetworkState {
     pub(crate) tunnel_overlay_locks:
         Arc<DashMap<ObjectId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
     /// Live join snapshots, for fail-closed security removal without Mongo IO.
-    pub admission_nodes: Arc<DashMap<ObjectId, roomler_ai_remote_control::models::OverlayNode>>,
+    pub admission_nodes: Arc<DashMap<ObjectId, meshharbor_remote_control::models::OverlayNode>>,
     /// DERP relay registry: `(network_id, wg_pubkey)` → the outbound frame
     /// sender for that node's live `/derp` WS. The pubkey-addressed
     /// forwarding map for the both-UDP-blocked carrier tier. The relay that
@@ -150,7 +151,7 @@ pub struct NetworkState {
     pub overlay_ctrl_tx: mpsc::Sender<serde_json::Value>,
 
     // Decision logs
-    /// Roomler-SSH grant log — every session request, granted or refused.
+    /// MeshHarbor-SSH grant log — every session request, granted or refused.
     pub ssh_audit: Arc<SshAuditDao>,
     /// P8 — device-reported session activity. Separate from `ssh_audit`
     /// because one is the server's decision and the other is a claim by the
@@ -191,9 +192,9 @@ pub struct NetworkState {
     /// Multi-region DERP ticket signer (`relay.derp_ticket_private_key`).
     /// `None` = no key configured — ticket requests go unanswered and agents
     /// keep using the central `/derp`.
-    pub derp_ticket: Option<Arc<roomler_ai_remote_control::derp_ticket::DerpTicketSigner>>,
+    pub derp_ticket: Option<Arc<meshharbor_remote_control::derp_ticket::DerpTicketSigner>>,
     /// C-3 — directory owner-tokens for LOCAL tunnel sessions
-    /// (`roomler:own:tunnel:<session>`). Written on open; refreshed by the
+    /// (`meshharbor:own:tunnel:<session>`). Written on open; refreshed by the
     /// directory heartbeat while the session map still holds the session;
     /// never explicitly released — the 90 s TTL reaps ≤90 s after any of
     /// the four teardown paths drops the map entry.
@@ -217,7 +218,7 @@ pub struct NetworkState {
     /// (P3b-2 agent-as-tunnel-client, i.e. declared routes) —
     /// `origin_agent_id → {tunnel_session_id}`. Twin of the by-target index
     /// above, consulted by fleet's `rc.agent_nudge` busy check through
-    /// [`roomler_core::hooks::FleetLifecycle::agent_busy`]: the
+    /// [`meshharbor_core::hooks::FleetLifecycle::agent_busy`]: the
     /// per-connection session map is invisible there, so without this a
     /// routes-only agent read as IDLE and got its WS cycled (tearing every
     /// declared route plus its overlay carriers).
@@ -227,14 +228,14 @@ pub struct NetworkState {
             ObjectId,
             (
                 ObjectId,
-                roomler_ai_remote_control::models::NodeRef,
+                meshharbor_remote_control::models::NodeRef,
                 ObjectId,
                 u64,
             ),
         >,
     >,
     /// C-5 — directory owner-tokens for LOCAL derp registrations
-    /// (`roomler:own:derp:<net>:<pubkey>`); refreshed by the directory
+    /// (`meshharbor:own:derp:<net>:<pubkey>`); refreshed by the directory
     /// heartbeat while the registry holds the key.
     pub derp_presence_tokens: Arc<DashMap<derp_types::DerpKey, String>>,
     /// C-5 — per-(network, pubkey) rehome pacing (60 s cooldown, 3
@@ -271,7 +272,7 @@ impl Module for NetworkState {
         // Regions carrying derp_urls without a key = loud warn, never fatal.
         let derp_ticket = match settings.relay.derp_ticket_private_key.as_deref() {
             Some(key) => {
-                match roomler_ai_remote_control::derp_ticket::DerpTicketSigner::from_pkcs8_b64(key)
+                match meshharbor_remote_control::derp_ticket::DerpTicketSigner::from_pkcs8_b64(key)
                 {
                     Ok(s) => {
                         tracing::info!(
@@ -281,7 +282,7 @@ impl Module for NetworkState {
                         Some(Arc::new(s))
                     }
                     Err(e) => {
-                        tracing::error!(%e, "ROOMLER__RELAY__DERP_TICKET_PRIVATE_KEY is unusable; regional DERP disabled");
+                        tracing::error!(%e, "MESHHARBOR__RELAY__DERP_TICKET_PRIVATE_KEY is unusable; regional DERP disabled");
                         None
                     }
                 }
@@ -290,7 +291,7 @@ impl Module for NetworkState {
                 if core.turn_map.enabled && core.turn_map.specs.iter().any(|s| s.derp_url.is_some())
                 {
                     tracing::warn!(
-                        "relay regions carry derp_urls but no ROOMLER__RELAY__DERP_TICKET_PRIVATE_KEY is set — regional DERP disabled"
+                        "relay regions carry derp_urls but no MESHHARBOR__RELAY__DERP_TICKET_PRIVATE_KEY is set — regional DERP disabled"
                     );
                 }
                 None
@@ -359,7 +360,7 @@ impl Module for NetworkState {
         let arms = Arc::new(agent_socket::NetworkAgentSocket::new(state.clone()));
         state.core.agent_socket.register(
             Self::ID,
-            roomler_core::AgentSocketHooks {
+            meshharbor_core::AgentSocketHooks {
                 handler: Some(arms.clone()),
                 lifecycle: Some(arms),
             },
@@ -410,7 +411,7 @@ impl Module for NetworkState {
                     }
                     for entry in tunnel_tokens.iter() {
                         let (sid, token) = (*entry.key(), entry.value().clone());
-                        let key = roomler_core::cluster::directory::tunnel_key(&sid.to_hex());
+                        let key = meshharbor_core::cluster::directory::tunnel_key(&sid.to_hex());
                         if let Err(e) = dir.refresh_if_mine(&key, &token, 90).await {
                             tracing::debug!(session = %sid, %e, "tunnel directory refresh failed");
                         }
@@ -430,7 +431,7 @@ impl Module for NetworkState {
                     }
                     for entry in derp_tokens.iter() {
                         let ((net, pk), token) = (*entry.key(), entry.value().clone());
-                        let key = roomler_core::cluster::directory::derp_key(
+                        let key = meshharbor_core::cluster::directory::derp_key(
                             &net.to_hex(),
                             &derp_cluster::pk_hex(&pk),
                         );
@@ -471,7 +472,7 @@ impl Module for NetworkState {
                 "/{agent_id}/overlay-key/ttl",
                 put(routes::overlay_key::set_overlay_key_ttl),
             )
-            // Roomler SSH — ask for a session on one device. Answers 200 with
+            // MeshHarbor SSH — ask for a session on one device. Answers 200 with
             // either where to dial or which gate refused; a denial is a policy
             // outcome the caller must read, not a transport failure.
             .route("/{agent_id}/ssh", post(routes::agent_ssh::request_session))
@@ -485,7 +486,7 @@ impl Module for NetworkState {
                 put(routes::peer_relay::set_policy),
             );
 
-        // roomler-cli routes — same enrollment two-step shape as the agent,
+        // meshharbor-cli routes — same enrollment two-step shape as the agent,
         // but a distinct audience (`TunnelClient` JWT) so a leaked agent token
         // can't impersonate a client and vice-versa.
         let tunnel_client = Router::new()
@@ -582,7 +583,7 @@ impl Module for NetworkState {
         let peer_relay_audit = Router::new().route("/", get(routes::peer_relay::audit));
         let ssh_audit = Router::new().route("/", get(routes::agent_ssh::audit));
         let ssh_activity = Router::new().route("/", get(routes::agent_ssh::activity));
-        // Roomler SSH — its own org kill-switch (gate 1). A separate switch
+        // MeshHarbor SSH — its own org kill-switch (gate 1). A separate switch
         // from the exec one on purpose: allowing bounded diagnostic commands
         // is not the same decision as allowing interactive sessions.
         let ssh_settings = Router::new().route(
@@ -643,6 +644,26 @@ impl Module for NetworkState {
             )
             .route("/device-shares/{id}/ssh", get(shared_ssh::metadata))
             .route("/device-shares/{id}/ssh/ws", get(shared_ssh::connect))
+            .route(
+                "/native/share-ssh/authorizations",
+                post(native_ssh_authorization::start)
+                    .layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            .route(
+                "/native/share-ssh/authorizations/exchange",
+                post(native_ssh_authorization::exchange)
+                    .layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            .route(
+                "/native/share-ssh/authorizations/{id}/preview",
+                post(native_ssh_authorization::preview)
+                    .layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            .route(
+                "/native/share-ssh/authorizations/{id}/decision",
+                post(native_ssh_authorization::decide)
+                    .layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
             .nest("/tenant/{tenant_id}/agent", agent)
             .nest("/tenant/{tenant_id}/tunnel-client", tunnel_client)
             .nest("/tenant/{tenant_id}/tunnel-policy", tunnel_policy)
@@ -730,12 +751,42 @@ impl Module for NetworkState {
         }
 
         vec![
+            IndexSet {
+                collection: meshharbor_db::models::NativeSshAuthorization::COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![
+                    index_unique(bson::doc! {"authorization_id":1}),
+                    index_unique(bson::doc! {"device_code_hash":1}),
+                    index_unique(bson::doc! {"client_hash":1,"client_slot":1}),
+                    index_unique_partial(
+                        bson::doc! {"share_hash":1,"share_slot":1},
+                        bson::doc! {"share_hash":{"$type":"string"}},
+                    ),
+                    index_unique_partial(
+                        bson::doc! {"grant_hash":1},
+                        bson::doc! {"grant_hash":{"$type":"string"}},
+                    ),
+                    index_ttl(bson::doc! {"expires_at":1}, 0),
+                ],
+            },
+            IndexSet {
+                collection: meshharbor_db::models::NativeSshAuditEvent::COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![
+                    index(bson::doc! {"authorization_id":1,"at":-1}),
+                    index(bson::doc! {"share_grant_id":1,"at":-1}),
+                    index(bson::doc! {"tenant_id":1,"at":-1}),
+                    index(bson::doc! {"device_id":1,"at":-1}),
+                    index(bson::doc! {"recipient_user_id":1,"at":-1}),
+                    index_ttl(bson::doc! {"at":1}, 90 * 24 * 60 * 60),
+                ],
+            },
             // Central-use approvals and observed source addresses are private
             // security records, not ordinary Agent/TunnelClient JSON fields.
             // Role approvals need no set here: their deterministic `_id` is the
             // only key, and MongoDB rejects an empty createIndexes request.
             IndexSet {
-                collection: roomler_core::business_authority::OBSERVATIONS_COLLECTION,
+                collection: meshharbor_core::business_authority::OBSERVATIONS_COLLECTION,
                 pre_ops: Vec::new(),
                 indexes: vec![index_ttl(bson::doc! { "expires_at": 1 }, 0)],
             },
@@ -898,7 +949,7 @@ impl Module for NetworkState {
                     index_ttl(bson::doc! { "at": 1 }, 90 * 24 * 60 * 60),
                 ],
             },
-            // Roomler-SSH grant decisions. Same three questions as
+            // MeshHarbor-SSH grant decisions. Same three questions as
             // `exec_audit`, same 90-day TTL — an SSH session is the bigger
             // power of the two, so its log must not be the shorter-lived one.
             IndexSet {
@@ -911,7 +962,7 @@ impl Module for NetworkState {
                     index_ttl(bson::doc! { "at": 1 }, 90 * 24 * 60 * 60),
                 ],
             },
-            // Roomler-SSH session activity (P8) — what devices REPORT doing
+            // MeshHarbor-SSH session activity (P8) — what devices REPORT doing
             // inside a session, as opposed to `ssh_audit`'s record of what the
             // server DECIDED. Separate collection on purpose (see
             // `SshActivityEvent`): one is authoritative, the other is a claim
@@ -1007,7 +1058,7 @@ impl Module for NetworkState {
                 state.tunnel_presence_tokens.remove(&sid);
                 let _ = dir
                     .release(
-                        &roomler_core::cluster::directory::tunnel_key(&sid.to_hex()),
+                        &meshharbor_core::cluster::directory::tunnel_key(&sid.to_hex()),
                         &token,
                     )
                     .await;
@@ -1025,14 +1076,14 @@ impl Module for NetworkState {
                 let member = derp_cluster::pk_hex(&pk);
                 if let Ok(true) = dir
                     .release(
-                        &roomler_core::cluster::directory::derp_key(&net_hex, &member),
+                        &meshharbor_core::cluster::directory::derp_key(&net_hex, &member),
                         &token,
                     )
                     .await
                 {
                     let _ = dir
                         .set_remove(
-                            &roomler_core::cluster::directory::derpnet_key(&net_hex),
+                            &meshharbor_core::cluster::directory::derpnet_key(&net_hex),
                             &member,
                         )
                         .await;

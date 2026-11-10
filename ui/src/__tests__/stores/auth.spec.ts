@@ -34,7 +34,7 @@ const mockApi = vi.mocked(api)
 const mockRouter = vi.mocked(router)
 
 /** The non-credential hint the store uses to render before `/auth/me`. */
-const SIGNED_IN = 'roomler-signed-in'
+const SIGNED_IN = 'meshharbor-signed-in'
 
 const USER = { id: '1', email: 'test@test.com', username: 'testuser', display_name: 'Test' }
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-use roomler_ai_config::OAuthSettings;
+use meshharbor_config::OAuthSettings;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -388,7 +388,7 @@ impl OAuthService {
                 let user: GitHubUser = self
                     .client
                     .get("https://api.github.com/user")
-                    .header("User-Agent", "roomler-ai")
+                    .header("User-Agent", "meshharbor")
                     .bearer_auth(access_token)
                     .send()
                     .await
@@ -404,7 +404,7 @@ impl OAuthService {
                 let emails: Vec<GitHubEmail> = self
                     .client
                     .get("https://api.github.com/user/emails")
-                    .header("User-Agent", "roomler-ai")
+                    .header("User-Agent", "meshharbor")
                     .bearer_auth(access_token)
                     .send()
                     .await

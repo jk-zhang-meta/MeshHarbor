@@ -155,7 +155,7 @@ async fn set_mask(app: &TestApp, tenant_id: &str, name: &str, mask: u64) {
 
 #[tokio::test]
 async fn the_reconcile_raises_a_stale_mask_and_keeps_what_the_org_added() {
-    use roomler_ai_db::models::role::{ManagedRole, permissions};
+    use meshharbor_db::models::role::{ManagedRole, permissions};
 
     let app = TestApp::spawn().await;
     let tenant = app.seed_tenant("fr81rec").await;
@@ -291,7 +291,7 @@ async fn the_grant_leaves_a_record_that_outlives_the_pod_that_made_it() {
     // only the current container and the emitting pod had been replaced, so
     // the sole record of a one-way grant across 63 organisations survived
     // purely because somebody was watching live. This is the durable half.
-    use roomler_ai_db::models::role::{ManagedRole, RoleReconcileEvent, permissions};
+    use meshharbor_db::models::role::{ManagedRole, RoleReconcileEvent, permissions};
 
     let app = TestApp::spawn().await;
     let tenant = app.seed_tenant("fr82audit").await;

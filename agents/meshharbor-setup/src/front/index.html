@@ -1,0 +1,342 @@
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Copyright (C) 2026 G ROX EOOD -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MeshHarbor Setup</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="app">
+    <!-- Step indicator (1 of 5) -->
+    <nav class="step-indicator" aria-label="Wizard progress">
+      <ol>
+        <li data-step="welcome">Welcome</li>
+        <li data-step="server">Server</li>
+        <li data-step="token">Token</li>
+        <li data-step="install">Install</li>
+        <li data-step="done">Done</li>
+      </ol>
+    </nav>
+
+    <!-- Step 1: Welcome + detection + role pick -->
+    <section id="step-welcome" class="step" hidden>
+      <h1>MeshHarbor Setup</h1>
+      <p class="lead">One wizard for everything: the always-on daemon (so this machine
+      can be accessed) or the tunnel client (so you can reach others). No terminal
+      commands required.</p>
+
+      <div id="detection-card" class="card">
+        <h2>Detected on this machine</h2>
+        <p id="detect-agent-summary" class="muted">Probing…</p>
+        <p id="detect-tunnel-summary" class="muted"></p>
+        <p id="detect-ambiguous-warning" class="warning" hidden>
+          Both perUser and perMachine daemon installs detected. The MSI's cleanup
+          custom action will remove the one not selected.
+        </p>
+      </div>
+
+      <div class="card">
+        <h2>What should this machine be?</h2>
+        <p id="platform-note" class="muted" hidden>This platform supports the tunnel
+        client only — the daemon roles are Windows-only.</p>
+        <fieldset id="role-fieldset">
+          <label class="radio role-daemon">
+            <input type="radio" name="role" value="daemon-system">
+            <div>
+              <strong>Be accessed — background service (pre-logon, recommended)</strong>
+              <p class="muted">perMachine install + SystemContext: remote control works on
+              the lock screen, UAC dialogs, and admin apps. Requires admin (UAC prompt).</p>
+            </div>
+          </label>
+          <label class="radio role-daemon">
+            <input type="radio" name="role" value="daemon-machine">
+            <div>
+              <strong>Be accessed — attended service</strong>
+              <p class="muted">perMachine install for all users on this PC, without the
+              SystemContext swap. Requires admin (UAC prompt) during install.</p>
+            </div>
+          </label>
+          <label class="radio role-daemon">
+            <input type="radio" name="role" value="daemon-user">
+            <div>
+              <strong>Be accessed — this user only</strong>
+              <p class="muted">perUser install under my account. No admin password needed.</p>
+            </div>
+          </label>
+          <label class="radio">
+            <input type="radio" name="role" value="tunnel-client">
+            <div>
+              <strong>Reach others only — tunnel client</strong>
+              <p class="muted">Installs the <code>meshharbor</code> CLI and enrolls it,
+              so this machine can forward ports through enrolled agents. No daemon.</p>
+            </div>
+          </label>
+        </fieldset>
+
+        <div id="cross-flavour-warning" class="warning" hidden>
+          <p id="cross-flavour-warning-text"></p>
+          <label class="checkbox">
+            <input type="checkbox" id="cross-flavour-ack">
+            I understand my existing enrollment will be lost; I have a fresh enrollment
+            token from my administrator.
+          </label>
+        </div>
+      </div>
+
+      <!-- FR-102 P3b: opt-in setup diagnostics. Unticked by default, held in
+           JS memory for this run only (never in the persisted WizardState,
+           never restored from an earlier run). The server named here is the
+           one the enrollment goes to; it follows the Server page's field. -->
+      <div class="card">
+        <label class="field checkline">
+          <input id="diag-opt-in" type="checkbox">
+          <span>Send anonymous setup diagnostics to
+            <code id="diag-server">https://www.itachi.fans/meshharbor</code></span>
+        </label>
+        <p class="muted">One record per step: which step, whether it passed, how long it
+        took and an error code — never the token, a name, a path or an address. Nothing
+        is sent unless you tick this, and it is not remembered for the next run.</p>
+      </div>
+
+      <footer class="actions">
+        <button id="welcome-cancel" class="secondary">Cancel</button>
+        <button id="welcome-continue" disabled>Continue →</button>
+      </footer>
+    </section>
+
+    <!-- Step 2: Server URL + device name -->
+    <section id="step-server" class="step" hidden>
+      <h1>Server + device</h1>
+      <p class="lead">Where to enroll this machine and what to call it.</p>
+
+      <div class="card">
+        <label class="field">
+          <span>Server URL</span>
+          <input id="server-url" type="url" required>
+          <small class="muted">Production: <code>https://www.itachi.fans/meshharbor</code></small>
+        </label>
+
+        <label class="field">
+          <span>Device name</span>
+          <input id="device-name" type="text" required>
+          <small class="muted">Pre-filled from hostname; edit if you want something
+          more memorable (e.g. "Reception PC — ground floor").</small>
+        </label>
+      </div>
+
+      <!-- S2: optional daemon config, folded into the enrolled config.toml.
+           Hidden for the tunnel-client role (these are daemon keys); every
+           value stays editable later in the desktop app's Settings. -->
+      <details id="advanced-wrap" class="card">
+        <summary>Advanced options (optional)</summary>
+        <div id="adv-firewall-wrap" hidden>
+          <label class="field checkline">
+            <input id="adv-firewall" type="checkbox">
+            <span>Allow direct connections on trusted networks (one administrator approval)</span>
+          </label>
+          <p class="muted">Optional for a per-user install. Prepares this MeshHarbor
+            app for Private and Domain networks before it starts. Your account
+            and the app keep their normal permissions.</p>
+          <label class="field checkline">
+            <input id="adv-firewall-public" type="checkbox" disabled>
+            <span>Also allow direct connections on Public networks</span>
+          </label>
+        </div>
+        <!-- FR-84 S2: the box follows the role until the operator touches it —
+             on for the service roles, off for a per-user install (app.js
+             renderServer). The Rust orchestrator applies the same default when
+             the option is absent. -->
+        <label class="field checkline">
+          <input id="adv-overlay" type="checkbox">
+          <span>Join the overlay network (private mesh between your devices)</span>
+        </label>
+        <p id="adv-overlay-hint" class="muted" hidden>The private network's TUN
+        adapter needs a service install: a per-user daemon runs with limited
+        rights and cannot create it, so the mesh will not come up on this install.
+        Pick a service role above if this machine should join it.</p>
+        <label class="field checkline">
+          <input id="adv-local-subnets" type="checkbox" checked>
+          <span>Advertise directly-connected subnets (admin approval required before use)</span>
+        </label>
+        <label class="field checkline">
+          <input id="adv-auto-grant" type="checkbox" checked>
+          <span>Auto-approve incoming remote-control sessions on this device</span>
+        </label>
+        <label class="field">
+          <span>Overlay subnet routes</span>
+          <input id="adv-overlay-routes" type="text" spellcheck="false"
+                 placeholder="192.168.1.0/24, 10.0.0.0/8">
+          <small class="muted">Comma-separated CIDRs this node offers to route
+          for overlay peers. Leave empty unless this is a subnet router.</small>
+        </label>
+        <label class="field">
+          <span>Tunnel subnet routes</span>
+          <input id="adv-tunnel-routes" type="text" spellcheck="false"
+                 placeholder="192.168.1.0/24">
+          <small class="muted">Comma-separated CIDRs for the tunnel/SOCKS mesh.</small>
+        </label>
+      </details>
+
+      <footer class="actions">
+        <button id="server-back" class="secondary">← Back</button>
+        <button id="server-continue" disabled>Continue →</button>
+      </footer>
+    </section>
+
+    <!-- Step 3: Enrollment token -->
+    <section id="step-token" class="step" hidden>
+      <h1>Enrollment token</h1>
+      <p class="lead" id="token-lead">Paste a fresh token from the MeshHarbor admin UI.</p>
+
+      <div class="card">
+        <label class="field">
+          <span>Token</span>
+          <textarea id="token-input" rows="4" autocomplete="off" spellcheck="false"
+                    placeholder="eyJhbGc..."></textarea>
+          <small class="muted">Stored only in memory, used once. Never persisted to disk.</small>
+        </label>
+
+        <div id="token-info" class="info" hidden>
+          <p><strong>Issuer:</strong> <span id="token-issuer">–</span></p>
+          <p><strong>Token type:</strong> <span id="token-type">–</span></p>
+          <p><strong>Expires:</strong> <span id="token-expiry">–</span></p>
+          <p id="token-anchor-yes" hidden><strong>Also anchors this device for SYSTEM
+            exec.</strong> After enrolling, Windows asks for administrator approval a second
+            time, so commands from the dashboard can run as SYSTEM here.</p>
+          <p id="token-anchor-no" class="muted" hidden>This token could also anchor the
+            device for SYSTEM exec, but this install type has no SYSTEM service; it is
+            only used to enroll.</p>
+        </div>
+        <div id="token-warn-audience" class="warning" hidden>
+          This is not a tunnel-enrollment token (token type is
+          <code id="token-warn-aud-name"></code>). You'll get one from
+          <strong>Admin → Tunnels</strong>; the agent-enrollment token from
+          Admin → Agents is a different one.
+        </div>
+        <div id="token-warn-expired" class="error" hidden>
+          This token has already expired. Ask your admin to issue a new one.
+        </div>
+        <div id="token-warn-parse" class="error" hidden>
+          Could not parse this as a JWT. Make sure you copied the whole token
+          (three dot-separated parts).
+        </div>
+      </div>
+
+      <footer class="actions">
+        <button id="token-back" class="secondary">← Back</button>
+        <button id="token-continue" disabled>Install →</button>
+      </footer>
+    </section>
+
+    <!-- Step 4: Install in progress -->
+    <section id="step-install" class="step" hidden>
+      <h1>Installing</h1>
+      <p class="lead" id="install-summary"></p>
+
+      <ol class="checklist" id="install-checklist">
+        <!-- Populated dynamically as ProgressEvents arrive. -->
+      </ol>
+
+      <div id="install-progress" hidden>
+        <div class="progress-bar">
+          <div class="progress-bar-fill" id="progress-fill"></div>
+        </div>
+        <p class="muted" id="progress-label"></p>
+      </div>
+
+      <div id="install-systemcontext-error" class="error" hidden>
+        <h3 id="systemcontext-error-stage"></h3>
+        <p id="systemcontext-error-message"></p>
+        <p id="systemcontext-error-hint" class="muted"></p>
+      </div>
+
+      <div id="install-error" class="error" hidden>
+        <h3 id="install-error-title">Install failed</h3>
+        <p id="install-error-message"></p>
+        <footer class="actions">
+          <button id="install-retry" class="secondary">Retry</button>
+          <button id="install-back-to-welcome">← Back to start</button>
+        </footer>
+      </div>
+
+      <!-- Force-kill confirmation (shown only after MsiSpawned + operator
+           clicked the relabelled button). -->
+      <div id="force-kill-confirm" class="warning" hidden>
+        <p><strong>Force-kill the MSI installer?</strong> This terminates msiexec
+        mid-run and may leave a partial install that needs manual cleanup
+        (re-run this wizard or uninstall from Windows Settings).</p>
+        <footer class="actions">
+          <button id="force-kill-back" class="secondary">Back</button>
+          <button id="force-kill-confirm-btn">Force-kill installer</button>
+        </footer>
+      </div>
+
+      <footer class="actions">
+        <button id="install-cancel" class="secondary">Cancel</button>
+      </footer>
+    </section>
+
+    <!-- Step 5: Done -->
+    <section id="step-done" class="step" hidden>
+      <h1>Done</h1>
+      <p class="lead" id="done-lead">Installed and enrolled.</p>
+
+      <div class="card">
+        <dl class="kv">
+          <dt id="done-principal-label">Enrolled ID</dt>
+          <dd id="done-principal-id" class="code"></dd>
+          <dt>Tenant ID</dt>
+          <dd id="done-tenant-id" class="code"></dd>
+          <dt>Role</dt>
+          <dd id="done-role"></dd>
+          <dt id="done-flavour-label" hidden>Mode</dt>
+          <dd id="done-flavour" hidden></dd>
+          <dt id="done-binary-label" hidden>CLI installed at</dt>
+          <dd id="done-binary-path" class="code" hidden></dd>
+          <dt id="done-config-label" hidden>Config saved to</dt>
+          <dd id="done-config-path" class="code" hidden></dd>
+          <dt>Version</dt>
+          <dd id="done-tag" class="code"></dd>
+        </dl>
+      </div>
+
+      <div id="done-path-note" class="info" hidden>
+        The <code>meshharbor</code> CLI is on your PATH after you open a new
+        shell. If it isn't found, run it directly via the path above.
+      </div>
+
+      <div id="done-anchor-note" class="warning" hidden>
+        <strong>Not anchored for SYSTEM exec.</strong>
+        <p id="done-anchor-reason"></p>
+        <p>The install itself is complete. To anchor this device later, run this from an
+        elevated shell, with a fresh enrollment token from the dashboard:</p>
+        <pre class="code" id="done-anchor-command"></pre>
+      </div>
+
+      <div id="done-systemcontext-note" class="info" hidden>
+        <strong>SystemContext mode active.</strong>
+        <p>The perMachine MSI is installed, the daemon is enrolled, and the SCM
+        service runs with <code>MESHHARBORD_ENABLE_SYSTEM_SWAP=1</code> in its
+        <code>Environment</code> block. Remote control can now drive the Windows
+        lock screen, UAC dialogs, and admin apps when an operator connects from
+        the browser.</p>
+        <p class="muted">To disable SystemContext mode later, run
+        <code>meshharbord disable-system-context</code> from an elevated shell,
+        or re-run this wizard and pick the attended-service role.</p>
+      </div>
+
+      <footer class="actions">
+        <button id="done-finish">Finish</button>
+      </footer>
+    </section>
+
+    <!-- Snackbar for transient messages (B9: "installer-already-running") -->
+    <div id="snackbar" class="snackbar" hidden></div>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

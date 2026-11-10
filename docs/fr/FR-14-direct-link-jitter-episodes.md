@@ -1,7 +1,7 @@
 # FR-14: Direct-link jitter episodes — the AIMD sawtooth on VPN-churning links
 
 Status: **design** (evidence collected 2026-08-27). Tracking issue: `FR-14` in
-gjovanov/roomler-ai/issues. Child of FR-1 (same program: RustDesk-parity drag
+jk-zhang-meta/MeshHarbor/issues. Child of FR-1 (same program: RustDesk-parity drag
 smoothness); split out because it is direct-path-specific where FR-10 was
 relay-specific.
 

@@ -7,7 +7,7 @@
 //! check the epoch, and reserve every node under the shared trial claim lock.
 
 use super::*;
-use roomler_ai_remote_control::signaling::RelayPathWire;
+use meshharbor_remote_control::signaling::RelayPathWire;
 
 #[derive(Clone, PartialEq, Eq)]
 struct MemberIdentity {

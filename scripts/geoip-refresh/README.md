@@ -42,8 +42,8 @@ Installation is a separately reviewed deployment operation. Before enabling:
    relative symlink `releases/<sha256>`. The updater does not bootstrap silently.
 4. Through the app's reviewed Compose replacement, read-only bind **the stable
    data parent directory**, not a single MMDB or resolved release, to
-   `/usr/share/roomler/geoip-managed`, and set
-   `ROOMLER__STATS__GEOIP_MMDB=/usr/share/roomler/geoip-managed/current/dbip-country-lite.mmdb`.
+   `/usr/share/meshharbor/geoip-managed`, and set
+   `MESHHARBOR__STATS__GEOIP_MMDB=/usr/share/meshharbor/geoip-managed/current/dbip-country-lite.mmdb`.
    The initial mount/env change has its own app replacement/rollback gates.
 5. Precreate `/opt/meshharbor/.app-update.lock` root-owned mode 0600. Both manual
    app deployment and this refresh must acquire this exact lock. The updater

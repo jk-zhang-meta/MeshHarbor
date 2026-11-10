@@ -1,6 +1,6 @@
 # FR-27 — Host consent: every mode, every OS, and a desktop companion that works
 
-**Issue:** [#854](https://github.com/gjovanov/roomler-ai/issues/854)
+**Issue:** [#854](https://github.com/jk-zhang-meta/MeshHarbor/issues/854)
 **Status:** design
 
 ## Goal
@@ -29,18 +29,18 @@ Every line below was read on `origin/master` at `861d4557`.
    device policy is consulted, and the UI does not say so. Every GROX device is
    owned by the operator, so the picker has never had an effect on this fleet.
    — `crates/api/src/ws/remote_control.rs:1610`
-2. **A host prompt has no screen surface unless `roomler-desktop` already runs.**
+2. **A host prompt has no screen surface unless `meshharbor-desktop` already runs.**
    The agent writes a `.pending` marker and waits; only the companion renders it
    (750 ms LocalAPI poll). Nothing starts the companion, and the daemon never
    checks whether anything can ask. Observable failure: 30 s of nothing, then a
-   deny. — `agents/roomlerd/src/signaling.rs:1956`,
-   `agents/roomler-desktop/src/main.rs` (`consent_watch_loop`)
+   deny. — `agents/meshharbord/src/signaling.rs:1956`,
+   `agents/meshharbor-desktop/src/main.rs` (`consent_watch_loop`)
 3. **"Nobody was there" is reported to the controller as "the user denied you".**
    `Decision::Timeout` maps to `granted: false`, and the hub terminates that as
    `EndReason::UserDenied`. The hub's own `ConsentTimeout` branch exists, but
    which of the two fires is a *race*: the agent's prompt window is set from the
    same `consent_timeout_secs` the hub is waiting on.
-   — `agents/roomlerd/src/consent.rs:79`, `crates/remote_control/src/hub.rs:967`
+   — `agents/meshharbord/src/consent.rs:79`, `crates/remote_control/src/hub.rs:967`
 
    ⚠️ **Corrected after the 2026-08-29 baseline.** This finding originally said
    the hub "loses the race every time". Measured on `mars`, it *wins*: the hub
@@ -64,7 +64,7 @@ Every line below was read on `origin/master` at `861d4557`.
    backstop for a dead agent and never a competitor of a live one. Locked by a
    paused-clock test that replays the 138 ms gap in both directions.
 4. **`.pending` has exactly one production call site.** Fleet-RPC exec and
-   Roomler SSH both prompt through the same broker and write no marker, so an
+   MeshHarbor SSH both prompt through the same broker and write no marker, so an
    `exec_policy` / `SshPolicy` of `prompt` can only be answered by someone who
    greps the daemon log for a request id and runs the CLI within 30 s.
    — `signaling.rs:2820`, `ssh.rs:2236` vs `git grep write_pending`
@@ -80,34 +80,34 @@ Every line below was read on `origin/master` at `861d4557`.
    Tauri 2.11 auto-creates a tray from `app.trayIcon` (id `main`, icon, no menu);
    `tray::install` then builds a *second* one and never calls `.icon()`. The
    blank one carries the menu — which is exactly what the operator described.
-   — `tauri-2.11.2/src/app.rs:2412`, `agents/roomler-desktop/src/tray.rs:53`
+   — `tauri-2.11.2/src/app.rs:2412`, `agents/meshharbor-desktop/src/tray.rs:53`
 7. **One bug breaks most pages on macOS and Linux: `agent_exe_path()`.** It
-   probes for a *sibling* `roomlerd`, then falls back to a bare name on `PATH`.
-   On macOS the companion is `/Applications/Roomler.app/Contents/MacOS/`, the
-   daemon is `/usr/local/bin/roomlerd`, and a LaunchAgent's `PATH` excludes
+   probes for a *sibling* `meshharbord`, then falls back to a bare name on `PATH`.
+   On macOS the companion is `/Applications/MeshHarbor.app/Contents/MacOS/`, the
+   daemon is `/usr/local/bin/meshharbord`, and a LaunchAgent's `PATH` excludes
    `/usr/local/bin` — hence the reported
    `Spawning self-update: No such file or directory (os error 2)`. The same
    failure kills apply-update, `probe_service_state`, service install/uninstall
-   and the log-dir probe. — `agents/roomler-desktop/src/commands.rs:1086`
+   and the log-dir probe. — `agents/meshharbor-desktop/src/commands.rs:1086`
 8. ~~**macOS "Check for updates" targets the wrong mechanism.**~~ **Wrong —
    corrected during implementation.** The reported
    `Spawning self-update: No such file or directory (os error 2)` made this
    look like a second, independent macOS defect. It is not: `self_update_cmd`
-   has queued the root `com.roomler.update` helper for a non-root macOS caller
+   has queued the root `fans.itachi.meshharbor.update` helper for a non-root macOS caller
    since FR-5 (`main.rs:3360`), so the mechanism was already correct and
    finding 7 alone accounts for the error. What WAS wrong is that
    `cmd_apply_update` spawned detached and discarded stdout, so the daemon's
    <!-- RETIRED-NAME-ANCHOR: quoting the daemon's OWN output; that log path is
         real on every Mac in the field and FR-21 froze it. docs/fr/FR-21 -->
-   "Queued for the root update helper — watch /var/log/roomler-agent/update.log"
+   "Queued for the root update helper — watch /var/log/meshharbor-agent/update.log"
    never reached the operator: on the one platform where the button did the
    right thing, it looked inert. Fixed by returning the output on non-Windows
    (Windows keeps the detached spawn — there the daemon hands off to msiexec
    and exits, so there is nothing to wait for).
 9. **`companion::refresh_if_stale` is Windows-only** and nothing reports the
    companion's version to the server, so "Update all" cannot tell anyone the
-   desktop stayed behind. — `agents/roomlerd/src/companion.rs:115`
-10. **`roomler-desktop` is not shipped for Linux at all** (`scripts/install.sh:529`),
+   desktop stayed behind. — `agents/meshharbord/src/companion.rs:115`
+10. **`meshharbor-desktop` is not shipped for Linux at all** (`scripts/install.sh:529`),
     although it already *compiles* there — `cargo clippy --workspace` installs
     webkit2gtk and walks the crate. This is packaging, not porting.
     — `.github/workflows/ci.yml:128`
@@ -127,7 +127,7 @@ The P6 stack is end-to-end complete. Four defects in it:
 
 12. `ArbiterState::close()` never resets `mode_seeded`, so an in-session toggle
     outlives every session and the device policy stops applying until the daemon
-    restarts. — `agents/roomlerd/src/input/arbiter.rs`
+    restarts. — `agents/meshharbord/src/input/arbiter.rs`
 13. A refused floor request is silent — no broadcast, so the holder never learns
     someone asked and the requester sees nothing.
 14. The participants rail renders only at `participants.length > 1`, so a single
@@ -147,8 +147,8 @@ daemon start and re-probed when one fails**:
 | 1 | native `win` | existing `viewer-indicator` window class |
 | 1 | native `mac` | AppKit reachable (see the main-thread note) |
 | 1 | native `x11` | `DISPLAY` set **and** `x11rb::connect` succeeds |
-| 2 | `companion` | `roomler-desktop` over LocalAPI, started on demand |
-| 3 | `cli` | `roomlerd consent` sentinel (works today) |
+| 2 | `companion` | `meshharbor-desktop` over LocalAPI, started on demand |
+| 3 | `cli` | `meshharbord consent` sentinel (works today) |
 | 4 | none | report `no_prompt_surface` rather than deny silently |
 
 The chosen surface is logged at startup, exposed in LocalAPI `Status` and
@@ -166,7 +166,7 @@ dependency tree; and the macOS daemon **already ships as an `.app` with
 `LSUIElement=true`** (`release-agent.yml:2343`), the bundle identity AppKit
 windows require.
 
-⚠️ **The macOS native backend has a prerequisite.** `agents/roomlerd/src/main.rs:688`
+⚠️ **The macOS native backend has a prerequisite.** `agents/meshharbord/src/main.rs:688`
 is `#[tokio::main]`, so the main thread is parked in `block_on` for the daemon's
 whole life — the main dispatch queue never drains and AppKit can never deliver a
 click to an Approve button. The macOS arm has to build the runtime explicitly, run
@@ -219,7 +219,7 @@ lets the channel handlers go, stops the media pumps and removes the session
 from the input arbiter, so its next event is denied and anything it holds is
 released. No channel closes, so the browser has nothing to react to yet. Only
 the bare connection then waits, closed in a task of its own after a grace
-(`ROOMLERD_HOST_DISCONNECT_GRACE_MS`, default 1000 ms, capped at the close
+(`MESHHARBORD_HOST_DISCONNECT_GRACE_MS`, default 1000 ms, capped at the close
 budget; a failed send closes at once — nothing to wait for on a dead WS). The
 banner comes down immediately. ⚠️ The grace holds the transport, never the
 session's powers: the first cut kept the peer serving through it, which handed
@@ -262,7 +262,7 @@ Locked by `pre_p10_end_reason_rejects_host_disconnect_so_old_servers_drop_the_fr
 (the "new agent, old server" cell, the way the rc.53 `Goodbye` lock documents
 its own cell) and the hub's `host_disconnect_is_the_devices_claim_only`.
 
-**Kill switch.** `ROOMLERD_HOST_DISCONNECT_GRACE_MS=0` closes the peer at once
+**Kill switch.** `MESHHARBORD_HOST_DISCONNECT_GRACE_MS=0` closes the peer at once
 (the pre-P10 timing; the reason still goes out). The viewer needs none: an
 unknown or missing reason is terminal by the allowlist's default.
 
@@ -274,7 +274,7 @@ pre-P10 behaviour, for the one case where the reason has no path to travel.
 ### P11 — the person at a Linux system install's screen reaches the daemon (#1911)
 
 **What was wrong, measured on 0.4.122** (the P10 Linux run below). A Linux
-**system** install's root daemon binds its LocalAPI at `/var/run/roomler/roomler.sock`,
+**system** install's root daemon binds its LocalAPI at `/var/run/meshharbor/meshharbor.sock`,
 with the directory at 0700 and the socket at 0600, both owned by root. The companion
 runs as the desktop user, so it read "Service offline". The banner never showed and the
 Disconnect was never offered. On GNOME/KDE Wayland, where the companion is the only
@@ -290,17 +290,17 @@ started themselves).
 
 | | What | Where |
 |---|---|---|
-| where | `/run/user/<uid>/roomler.sock`: the person's own `$XDG_RUNTIME_DIR/roomler.sock`, the path their companion and CLI ALREADY try first, so neither changes | `localapi::person_socket_path` |
-| whose | the user of the **active** graphical session on the seat, by the same `loginctl` walk the companion launch uses. Never the display manager's greeter, never a user switched away in the background (who must not answer consent for a view of someone else's desktop), never root (root uses the daemon's own socket). It moves when that person changes | `roomlerd::person_socket` (`step`, every 4 s) |
+| where | `/run/user/<uid>/meshharbor.sock`: the person's own `$XDG_RUNTIME_DIR/meshharbor.sock`, the path their companion and CLI ALREADY try first, so neither changes | `localapi::person_socket_path` |
+| whose | the user of the **active** graphical session on the seat, by the same `loginctl` walk the companion launch uses. Never the display manager's greeter, never a user switched away in the background (who must not answer consent for a view of someone else's desktop), never root (root uses the daemon's own socket). It moves when that person changes | `meshharbord::person_socket` (`step`, every 4 s) |
 | who may connect | the socket is MADE AS the person: bind and chmod 0600 run on a thread switched to their filesystem ids (`setfsuid`/`setfsgid`), so it is born theirs. ⚠️ Not a root bind followed by a chown: they own the dir, so they could swap the path to a symlink in between, and `chown` follows it (to `/etc/shadow`, say). Caught in self-review before merge. Each connection's `SO_PEERCRED` uid must be theirs or root | `bind_as_person`, `person_peer_ok` |
-| what it serves | `Status`, `RcSessions`, `RcDisconnect`, `ConsentPending`, `ConsentDecide` and `RecordStatus`, and nothing else. Anything else is answered with a pointer to `sudo roomler …`. The match is **exhaustive with no `_` arm**, so a verb added later must be placed by hand | `localapi::person_may`, `Scope::Person` |
+| what it serves | `Status`, `RcSessions`, `RcDisconnect`, `ConsentPending`, `ConsentDecide` and `RecordStatus`, and nothing else. Anything else is answered with a pointer to `sudo meshharbor …`. The match is **exhaustive with no `_` arm**, so a verb added later must be placed by hand | `localapi::person_may`, `Scope::Person` |
 | what it never does | replace a LIVE socket at the path (a per-user daemon of that person owns it); remove a non-socket file; create the runtime dir (logind's); remove anything but the inode it bound | `serve_person_socket` |
 
-The root-only `/var/run/roomler` socket is **unchanged**. A per-user daemon starts no
+The root-only `/var/run/meshharbor` socket is **unchanged**. A per-user daemon starts no
 person socket: its own socket already is its person's. Windows (the pipe admits
 Interactive Users) and macOS (the per-user worker, FR-43) are unaffected.
 
-**Kill switch.** `ROOMLERD_PERSON_SOCKET=0` (or `false` / `off` / `no`) is the pre-P11
+**Kill switch.** `MESHHARBORD_PERSON_SOCKET=0` (or `false` / `off` / `no`) is the pre-P11
 behaviour.
 
 **Version matrix.** The companion and the CLI need no change: they already try the
@@ -313,17 +313,17 @@ in place of `Permission denied (os error 13)` for everything else.
 | # | Phase | Kill switch | Status |
 |---|---|---|---|
 | 0 | FR + issue + ledger | n/a | **done** — the FR-24 collision was already repaired on master by #850 |
-| 1 | Consent correctness — owner override, local floor, timeout≠deny, `prompt_then_email`, `.pending` for exec+ssh, `roomlerd consent ls` | `prompt_owner` defaults to today's behaviour; the floor only tightens | **implemented** — timeout≠deny and `prompt_then_email` field-verified on 0.4.16, `.pending` for exec+ssh on 0.4.18, **the local floor on 2026-09-25** (AC4, WSL node, 0.4.102); `prompt_owner` still needs an owner-account run |
+| 1 | Consent correctness — owner override, local floor, timeout≠deny, `prompt_then_email`, `.pending` for exec+ssh, `meshharbord consent ls` | `prompt_owner` defaults to today's behaviour; the floor only tightens | **implemented** — timeout≠deny and `prompt_then_email` field-verified on 0.4.16, `.pending` for exec+ssh on 0.4.18, **the local floor on 2026-09-25** (AC4, WSL node, 0.4.102); `prompt_owner` still needs an owner-account run |
 | 2 | Desktop companion — one tray with an icon, daemon-path resolution, update-output surfacing, version honesty, `ensure_running()` | each item independent; no wire change | **implemented** (version honesty deferred to a follow-up) — field pending |
 | 3 | `PromptSurface` — 3.0 selection layer, 3.1 native Windows consent panel, 3.2 Tauri companion panels, 3.3 native X11, 3.4 native macOS | per-backend cargo feature; probe failure falls back to the companion | **all implemented** — field pending. ⚠️ `viewer-indicator-macos` is compiled by CI but deliberately **NOT in the macOS release feature set**: it moves tokio off the main thread, i.e. changes how every Mac agent STARTS, and macOS updates are owned by the root helper — a daemon that fails to start cannot pull its own fix. Enable only after a dispatch artifact runs on a real Mac |
-| 4 | Linux packaging — a **separate** `roomler-desktop` .deb | absent package = today's behaviour | **implemented** — field pending |
+| 4 | Linux packaging — a **separate** `meshharbor-desktop` .deb | absent package = today's behaviour | **implemented** — field pending |
 | 5 | Input arbitration — mode re-seed, visible floor requests, single-viewer rail, deterministic handover | none needed (bug fixes) | **implemented** — field pending |
 | 6 | Field test on the GROX fleet | n/a | **partly done, 2026-08-29 on 0.4.16** — the Windows native panel is verified end to end and the field log below lists exactly what is not. The test itself found 3 defects (#877), one of which froze the whole pre-0.4.16 Linux fleet |
 | 8 | Field fixes — release-asset ordering, the virtual-desktop guard, the CLI name, and phase 2d's `companion_version` | the ordering fix is server-only and additive; the x11 guard only ever DECLINES | **deployed** (#877; API `v20260829-0d5078f44e42`, agents ≥ 0.4.18) — the guard and the ordering were field-verified 2026-08-29; `companion_version` read on the live grid 2026-09-25: on the wire for all 21 devices, rendered only on a skew, and the fleet has none (AC10 half; see the log) |
 | 7 | Docs — `docs/remote-control.md` §11.2, `CLAUDE.md` known-issues | n/a | **done** — §11.2 rewritten (76bd6ef6) and the 2026-04-17 known-issue replaced rather than deleted; the resolution diagram + the floor's field line added to §11.2 on 2026-09-25; the docs criterion is in the list below |
-| 9 | The companion banner's Windows manners (macOS, Linux) — shown **without taking focus** (`orderFrontRegardless`; on macOS `show()` made it KEY, so the first click into the person's own window after every session start was lost), hides 2.5 s after the pointer leaves (after a 4 s first show), comes back after a 1.2 s rest at the top edge, stays while anything records, and a 2 px red frame round the screen for the session (macOS). Docs: `docs/desktop-companion.md` §12 | `ROOMLER_DESKTOP_BANNER_AUTOHIDE=0` (banner stays, as before), `ROOMLER_DESKTOP_FRAME=0` (no frame) | **field-verified on the Mac, 0.4.117, 2026-10-08** (field log) — every clause held; the reveal logic's 6 unit tests stand |
-| 10 | **The host's Disconnect ends the session for good** — the agent says it FIRST (`host_disconnect`, a new `EndReason`) and closes the peer after a grace; the hub forwards it to the controller as the device's word only; the viewer shows "The person at the device ended the session." with an explicit Reconnect and does not auto-reconnect; ordinary drops still do. Design + version matrix above. Docs: `docs/remote-control.md` §11.5, `docs/desktop-companion.md` §12 | `ROOMLERD_HOST_DISCONNECT_GRACE_MS=0` (close at once, the pre-P10 timing); the viewer needs none — an unknown reason is terminal | **shipped** — #1886 in agent **0.4.121** + `hosted-20261009-cac4761` (promoted 2026-10-09 07:42Z). RED on record: 0.4.119 + `hosted-20261005-d2dc0ef`, 2026-10-08 14:38:43Z. **GREEN on all three surfaces, 2026-10-09** (the field log). The Mac's banner: the reason at the viewer 72 ms after the click, 65 s held with no request, Reconnect explicit, an ordinary drop back in 6.3 s with no click. The Windows badge: told the server 1 ms after the click, 67 s held, Reconnect explicit, an ordinary drop back in 0.95 s. The Linux banner, where the companion reaches its daemon: 33 ms, 65.8 s held, 0.54 s Reconnect, 4.0 s drop. ⚠️ A Linux SYSTEM install's companion cannot reach its root daemon at all, so it has no banner and no Disconnect: #1911, which P11 fixes |
-| 11 | **The person at a Linux system install's screen reaches the daemon (#1911).** A socket in the person's own runtime dir, 0600 and theirs, admitting them or root (`SO_PEERCRED`), serving only the safety surface: status, the viewing sessions, their Disconnect, consent, and the recording state. It follows the active graphical session's user. The daemon's root-only socket is unchanged. Design above. Docs: `docs/desktop-companion.md` §12, `docs/security-baseline.md`, `docs/installation.md` | `ROOMLERD_PERSON_SOCKET=0` (the pre-P11 behaviour) | **field-verified on the 0.4.124 candidate** (2026-10-10, the log): RED on the released 0.4.123, then GREEN on the same vmtest system install after the upgrade, with the daemon's socket untouched and the companion left on 0.4.123. Ships in 0.4.124, whose tag waits on the operator's call on #1915, which rides with it |
+| 9 | The companion banner's Windows manners (macOS, Linux) — shown **without taking focus** (`orderFrontRegardless`; on macOS `show()` made it KEY, so the first click into the person's own window after every session start was lost), hides 2.5 s after the pointer leaves (after a 4 s first show), comes back after a 1.2 s rest at the top edge, stays while anything records, and a 2 px red frame round the screen for the session (macOS). Docs: `docs/desktop-companion.md` §12 | `MESHHARBOR_DESKTOP_BANNER_AUTOHIDE=0` (banner stays, as before), `MESHHARBOR_DESKTOP_FRAME=0` (no frame) | **field-verified on the Mac, 0.4.117, 2026-10-08** (field log) — every clause held; the reveal logic's 6 unit tests stand |
+| 10 | **The host's Disconnect ends the session for good** — the agent says it FIRST (`host_disconnect`, a new `EndReason`) and closes the peer after a grace; the hub forwards it to the controller as the device's word only; the viewer shows "The person at the device ended the session." with an explicit Reconnect and does not auto-reconnect; ordinary drops still do. Design + version matrix above. Docs: `docs/remote-control.md` §11.5, `docs/desktop-companion.md` §12 | `MESHHARBORD_HOST_DISCONNECT_GRACE_MS=0` (close at once, the pre-P10 timing); the viewer needs none — an unknown reason is terminal | **shipped** — #1886 in agent **0.4.121** + `hosted-20261009-cac4761` (promoted 2026-10-09 07:42Z). RED on record: 0.4.119 + `hosted-20261005-d2dc0ef`, 2026-10-08 14:38:43Z. **GREEN on all three surfaces, 2026-10-09** (the field log). The Mac's banner: the reason at the viewer 72 ms after the click, 65 s held with no request, Reconnect explicit, an ordinary drop back in 6.3 s with no click. The Windows badge: told the server 1 ms after the click, 67 s held, Reconnect explicit, an ordinary drop back in 0.95 s. The Linux banner, where the companion reaches its daemon: 33 ms, 65.8 s held, 0.54 s Reconnect, 4.0 s drop. ⚠️ A Linux SYSTEM install's companion cannot reach its root daemon at all, so it has no banner and no Disconnect: #1911, which P11 fixes |
+| 11 | **The person at a Linux system install's screen reaches the daemon (#1911).** A socket in the person's own runtime dir, 0600 and theirs, admitting them or root (`SO_PEERCRED`), serving only the safety surface: status, the viewing sessions, their Disconnect, consent, and the recording state. It follows the active graphical session's user. The daemon's root-only socket is unchanged. Design above. Docs: `docs/desktop-companion.md` §12, `docs/security-baseline.md`, `docs/installation.md` | `MESHHARBORD_PERSON_SOCKET=0` (the pre-P11 behaviour) | **field-verified on the 0.4.124 candidate** (2026-10-10, the log): RED on the released 0.4.123, then GREEN on the same vmtest system install after the upgrade, with the daemon's socket untouched and the companion left on 0.4.123. Ships in 0.4.124, whose tag waits on the operator's call on #1915, which rides with it |
 
 ## Acceptance criteria
 
@@ -381,7 +381,7 @@ Ticked only where a run is recorded in the field log below.
       after it, frozen: its unmap was never flushed; fixed in FR-93 P6a. The
       banner half of this criterion is the companion's, and still untested on
       X11.)*
-- [x] `roomler-desktop` shows exactly one tray icon, with a menu — **Windows**,
+- [x] `meshharbor-desktop` shows exactly one tray icon, with a menu — **Windows**,
       measured 2 → 1 against the 0.4.15 build. macOS/Linux untested.
 - [ ] macOS "Check for updates" and "Apply update" both work from the companion.
       **"Check for updates" verified — the Mac, 0.4.117, 2026-10-08**: the button
@@ -409,7 +409,7 @@ Ticked only where a run is recorded in the field log below.
       re-applies after every session ends. **Second half done** (re-seed proven on
       one daemon process, no restart); the two-viewer half is blocked by a
       same-host media failure and needs a second controller machine.
-- [x] The `roomlerd` .deb's `Depends` still contains no GTK/webkit entry —
+- [x] The `meshharbord` .deb's `Depends` still contains no GTK/webkit entry —
       `libasound2, libc6, libxcb-randr0, libxcb-shm0, libxcb1`, and the guard that
       asserts it actually runs now (#871).
 - [x] **Docs** — `docs/remote-control.md` §11.2 documents the consent model in
@@ -440,16 +440,16 @@ Ticked only where a run is recorded in the field log below.
 - **P11** — on a Linux **system** install with the daemon's socket untouched,
   the person at the screen reaches what is theirs and nothing else (#1911):
   - [x] the companion reads "Connected", not "Service offline", and as the
-        person `roomler status` answers — **the 0.4.124 candidate, 2026-10-10**
+        person `mh status` answers — **the 0.4.124 candidate, 2026-10-10**
         (the log): "● Connected" in the stream, where 0.4.123 read "Service
         offline", on the unchanged 0.4.123 companion
   - [x] the banner shows for a session, and its one-click Disconnect ends it as
         `host_disconnect` (the P10 checks) — `host_disconnect` 32 ms after the
         click, no break-glass beside the notice, 65.8 s held with no request,
         the audit, Reconnect in 566 ms
-  - [x] as the person, an administrative verb (`roomler peers`, a `config set`)
+  - [x] as the person, an administrative verb (`mh peers`, a `config set`)
         is refused with the pointer to `sudo`, and the daemon's own
-        `/var/run/roomler` socket is still 0700 / 0600 root — both verbs
+        `/var/run/meshharbor` socket is still 0700 / 0600 root — both verbs
         refused with the pointer; the root socket unchanged
   - [x] the socket is the person's (0600, their uid), and it is gone after
         they log out; it is never served for the greeter or for root —
@@ -493,14 +493,14 @@ Ticked only where a run is recorded in the field log below.
 
 ### 2026-08-29 — 0.4.15 baseline, then 0.4.16
 
-Full write-up on the issue ([baseline](https://github.com/gjovanov/roomler-ai/issues/854#issuecomment-5462090974) ·
-[result](https://github.com/gjovanov/roomler-ai/issues/854#issuecomment-5462384972)). Server
+Full write-up on the issue ([baseline](https://github.com/jk-zhang-meta/MeshHarbor/issues/854#issuecomment-5462090974) ·
+[result](https://github.com/jk-zhang-meta/MeshHarbor/issues/854#issuecomment-5462384972)). Server
 `v20260829-673a1686220f`; controller is an ADMINISTRATOR who is **not** the devices' owner,
 so `resolve_session_authz` takes the admin-without-override arm and the device's mode applies.
 
 | # | finding | 0.4.15 | 0.4.16 |
 |---|---|---|---|
-| 2 | on-screen prompt (Windows) | no consent window exists at all — only the two pre-existing indicator windows, both `vis=False`, for the whole 30 s | `RoomlerConsentWClass` `vis=True`, `460x232` at `(1050,48)`, `GetWindowDisplayAffinity = 0x11` **while shown** |
+| 2 | on-screen prompt (Windows) | no consent window exists at all — only the two pre-existing indicator windows, both `vis=False`, for the whole 30 s | `MeshHarborConsentWClass` `vis=True`, `460x232` at `(1050,48)`, `GetWindowDisplayAffinity = 0x11` **while shown** |
 | 3.0 | which surface served it | nothing logged | `consent prompt surface … native=true have_surface=true` |
 | — | Approve | — | human clicked at t+14.7 s → `allow=true` → `outcome=Granted`, session started |
 | 3 | Deny vs timeout | — | `outcome=Denied` → *"Someone at that device declined the request."*; `reason="timeout"` → *"Nobody answered the prompt on that device in time."* |
@@ -517,8 +517,8 @@ pre-0.4.16 Linux agent, because their picker takes the FIRST `.deb` for their ar
      the one those hosts set (read as a fallback by indicator/x11.rs), and the
      retired binary name is the defect being described — rewriting either
      would make the log describe something that did not happen. -->
-`ROOMLER_AGENT_VIRTUAL_DESKTOP=1` host wrongly counted as a consent surface, and that the one
-line a headless operator gets still named the FR-21-retired `roomler-agent`.
+`MESHHARBOR_AGENT_VIRTUAL_DESKTOP=1` host wrongly counted as a consent surface, and that the one
+line a headless operator gets still named the FR-21-retired `meshharbor-agent`.
 
 ⚠️ **Not verified, and why**
 
@@ -563,7 +563,7 @@ Same host, same policy, same click — with the hub now waiting 5 s past the win
 ```
 
 Controller, at t+30.3 s: *"That device could not show a prompt to anyone — nobody
-is signed in at its screen, or the Roomler desktop app is not running there. Start
+is signed in at its screen, or the MeshHarbor desktop app is not running there. Start
 it on the device, or set this device to email/push consent."* Before #892 the
 terminate line read `reason=ConsentTimeout` and came 138 ms BEFORE the verdict.
 
@@ -577,7 +577,7 @@ arches.
 
 ### 2026-09-25 — AC4 on the WSL node: the local floor holds against a server `auto`
 
-Device **NEO16-WSL** (display name; Linux, the root `roomlerd.service` unit,
+Device **NEO16-WSL** (display name; Linux, the root `meshharbord.service` unit,
 virtual desktop, no companion), API `0.4.101`. The controller is the device's
 **owner**, so `resolve_session_authz`
 (`crates/modules/remote/src/controller.rs:448`) resolves `auto` by the owner
@@ -603,9 +603,9 @@ The floor run, verbatim from the daemon (UTC; hostname prefix stripped):
 
 ```
 13:04:20.785  incoming session request — running consent broker … consent_timeout_secs=300 … consent_mode=Prompt { timeout: 30s } org=Some("Grox")
-13:04:20.785  no desktop companion on this host — an on-screen prompt is not possible; answer with `roomlerd consent --list` / `--approve`, or set this device to email/push consent
+13:04:20.785  no desktop companion on this host — an on-screen prompt is not possible; answer with `meshharbord consent --list` / `--approve`, or set this device to email/push consent
 13:04:20.785  consent prompt surface session=6ab6714c… native=false have_surface=false
-13:04:20.785  operator consent required — answer it with `roomlerd consent --session 6ab6714c… --approve|--deny` … timeout_secs=300
+13:04:20.785  operator consent required — answer it with `meshharbord consent --session 6ab6714c… --approve|--deny` … timeout_secs=300
 13:09:20.923  operator consent decision session="6ab6714c…" outcome=Timeout
 13:09:20.923  consent decision → sending rc:consent session=6ab6714c… decision=Timeout effective_mode=Prompt { timeout: 300s } granted=false reason="no_prompt_surface"
 13:09:20.964  session terminated by server session_id=6ab6714c… reason=NoPromptSurface
@@ -613,19 +613,19 @@ The floor run, verbatim from the daemon (UTC; hostname prefix stripped):
 
 The attribution is in the two windows. The device's own mode is `Prompt {
 timeout: 30s }` (line 1 prints `consent_broker.mode()`,
-`agents/roomlerd/src/signaling.rs:2414`), yet the prompt stood for **300 s** —
+`agents/meshharbord/src/signaling.rs:2414`), yet the prompt stood for **300 s** —
 the server's window — which is exactly the shape `strictest_of`
-(`agents/roomlerd/src/consent.rs:136`) produces when it downgrades an `auto`
+(`agents/meshharbord/src/consent.rs:136`) produces when it downgrades an `auto`
 directive: `Prompt { timeout: host_window }` (`signaling.rs:2397`). The control
 run pins the other half: same account, device and policy, only the local
 setting differs, and it auto-granted (`decision=Granted effective_mode=AutoGrant`,
-1.5 ms after the request). Meanwhile `roomlerd consent --list` on the device
+1.5 ms after the request). Meanwhile `meshharbord consent --list` on the device
 listed the outstanding `[rc]` request from the controller with its approve
 command — the CLI surface (chain step 3) was live for the whole five minutes;
 nobody used it, which is the point of the test.
 
 Controller, at t+5:00: *"That device could not show a prompt to anyone - nobody
-is signed in at its screen, or the Roomler desktop app is not running there.
+is signed in at its screen, or the MeshHarbor desktop app is not running there.
 Start it on the device, or set this device to email/push consent."*
 
 ⚠️ **Two things the run found on the way.**
@@ -650,7 +650,7 @@ Start it on the device, or set this device to email/push consent."*
   not the audit row. A separate defect that needs its own fix. (The session
   GET, `/session/{sid}`, works, and carries no `consent_mode`.)
 
-Restoration, verified: `/etc/roomler/config.toml` back to
+Restoration, verified: `/etc/meshharbor/config.toml` back to
 `auto_grant_session = true` (the only other diff against the as-found copy is
 the daemon's own `last_known_good_version`, `0.4.101 → 0.4.102`), broker
 `mode=AutoGrant` on the restart; the server policy PUT back to its as-found
@@ -677,7 +677,7 @@ card view's chip follows the same rule (`:697`).
 With a skew injected into the client store on the live page (NEO16-WSL's row
 given `companion_version = "0.4.99"`; no server call), the same row rendered
 `id: … · v0.4.101 · desktop v0.4.99` in warning colour (`rgb(255,193,7)`) with
-the tooltip *"roomler-desktop is on v0.4.99 while the daemon is on v0.4.101 —
+the tooltip *"meshharbor-desktop is on v0.4.99 while the daemon is on v0.4.101 —
 the companion updates separately …"*; reverting the store removed it. So the
 deployed rendering path works; what has not been seen is a real skew, and the
 fleet has none today.
@@ -697,7 +697,7 @@ which captures the viewer's own frames; on macOS the banner and the red frame
 are IN the `CGDisplayStream` capture (a recorded deviation), so the frames show
 them. The two things the stream cannot show were read straight off the Mac's
 window server with a read-only `osascript` **window census**
-(`CGWindowListCopyWindowInfo`, on-screen windows owned by a Roomler process):
+(`CGWindowListCopyWindowInfo`, on-screen windows owned by a MeshHarbor process):
 whether the banner and frame were present, and that they were gone once the
 session ended.
 
@@ -711,7 +711,7 @@ screen-edge strips:
 | hides 2.5 s after the pointer leaves, after the 4 s first show | banner down at +6.2 s (pointer away since the fullscreen click) |
 | returns after a 1.2 s rest at the top edge | back up at +14.5 s after a top-edge `move` at +13.6 s, and again at +24.9 s after a second one at +24.0 s; down again 3.0 s after the pointer left the top edge (`away` +18.3 s → +21.3 s), the one observation that times the 2.5 s hide itself. Each reveal came 0.9 s after its move's mark, shorter than the 1.2 s dwell: the harness's marks and frame times are not aligned that finely, so this run shows the reveal, not its exact delay |
 | stays while a recording runs | in a second session a remote recording ran ~87 s (`h264_videotoolbox`, native 3024×1964); the census had the banner on-screen at 0:03, 0:38 and 1:21 with the pointer parked at the top-right menu — far from the banner and well past the 4 s + 2.5 s window. It had auto-hidden and the recording brought it back (`tray::recording_now`). The A/B is the first session, which auto-hid at +6.2 s with no recording |
-| red frame for exactly the session's duration | the red frame was on every fullscreen frame of the live session, which did not end cleanly: the stream carried one frame between +32.7 s and +40.2 s, and at +40.2 s the viewer read "Connection lost — reconnecting (attempt 1)", consistent with the Mac's every-few-seconds drop that #1856 fixed later that day (in 0.4.119); the census found four 2 px strips (`1512×2` top & bottom, `2×982` left & right) during the session and **zero** Roomler windows 60 s after it ended — the "gone after" the stream cannot show |
+| red frame for exactly the session's duration | the red frame was on every fullscreen frame of the live session, which did not end cleanly: the stream carried one frame between +32.7 s and +40.2 s, and at +40.2 s the viewer read "Connection lost — reconnecting (attempt 1)", consistent with the Mac's every-few-seconds drop that #1856 fixed later that day (in 0.4.119); the census found four 2 px strips (`1512×2` top & bottom, `2×982` left & right) during the session and **zero** MeshHarbor windows 60 s after it ended — the "gone after" the stream cannot show |
 | the next click into the person's window acts | after a fresh banner reveal, one click into TextEdit placed the cursor and the typed "XY" appeared (then removed with two Backspaces). The banner did not steal focus |
 
 *Corrected 2026-10-10, after re-reading this run's frames.* As first written, this
@@ -736,7 +736,7 @@ session terminated by server session_id=… reason=ControllerHangup
 ```
 
 ⚠️ The banner window is not key, so the FIRST click only activates the companion
-(the menu bar went from TextEdit to Roomler) and a following click fired the
+(the menu bar went from TextEdit to MeshHarbor) and a following click fired the
 button — the webview has no `accept_first_mouse`. **Filed as #1852 and fixed in
 #1854** (agent 0.4.118, carried by 0.4.119); the GREEN re-run is the
 2026-10-08 (#1852) log at the end.
@@ -765,7 +765,7 @@ seconds").
 
 | check | 0.4.117 (RED) | 0.4.119 (GREEN) |
 |---|---|---|
-| one click on Disconnect | the first click only activated the companion (menu bar TextEdit → Roomler); the session kept running (`31s`), and a following click produced the `viewee requested disconnect` line (the P9 run above needed a multi-click sequence) | ONE click → `viewee requested disconnect via overlay badge` → `session terminated … ControllerHangup`, then the viewer auto-reconnected to a fresh session. Seen twice: 0.4.118 at 14:18:42Z and **0.4.119 at 14:38:43Z** (click and log line simultaneous within the +11.1 s Mac↔box clock skew) |
+| one click on Disconnect | the first click only activated the companion (menu bar TextEdit → MeshHarbor); the session kept running (`31s`), and a following click produced the `viewee requested disconnect` line (the P9 run above needed a multi-click sequence) | ONE click → `viewee requested disconnect via overlay badge` → `session terminated … ControllerHangup`, then the viewer auto-reconnected to a fresh session. Seen twice: 0.4.118 at 14:18:42Z and **0.4.119 at 14:38:43Z** (click and log line simultaneous within the +11.1 s Mac↔box clock skew) |
 
 The 0.4.119 Disconnect run re-confirmed the P9 clauses on the shipped build
 (frame detector over the banner box and the four screen-edge strips): banner up
@@ -859,8 +859,8 @@ viewer's ladder brings it back.
 Chrome, driven by Claude in Chrome, on the live site, from a background tab.
 
 **Aiming the click.** The badge is excluded from capture, so the stream cannot show it,
-and `roomler exec` runs in session 0, so it cannot enumerate the user's windows. The
-click was aimed by the badge's fixed geometry instead (`agents/roomlerd/src/indicator/win.rs`):
+and `mh exec` runs in session 0, so it cannot enumerate the user's windows. The
+click was aimed by the badge's fixed geometry instead (`agents/meshharbord/src/indicator/win.rs`):
 - the badge is 300×48, top-centre, at y = 4;
 - its Disconnect is at client (196–292, 9–39);
 - the agent is per-monitor DPI-aware, so that is physical (1006–1102, 13–43), centre
@@ -899,8 +899,8 @@ The viewer was a Playwright spec in the harness's own container on mars, signed 
 `vmtest-remote.spec.ts` is. The guest was destroyed after the run.
 
 **The gap, measured first.** The companion read *"Service offline"*. A root daemon's
-LocalAPI is `/var/run/roomler/roomler.sock`, with the directory at 0700 and the socket at
-0600, both root-owned. As the desktop user, `roomler status` fails with *"Permission
+LocalAPI is `/var/run/meshharbor/meshharbor.sock`, with the directory at 0700 and the socket at
+0600, both root-owned. As the desktop user, `mh status` fails with *"Permission
 denied (os error 13)"*. So on a Linux **system** install the companion cannot see sessions,
 and the person at the device gets no banner and no Disconnect. On Wayland, with no native
 overlay, there is no companion consent prompt either. This predates P10 and is filed as
@@ -934,15 +934,15 @@ The setup was one vmtest cell: Ubuntu 24.04, GNOME on Wayland, the installer `.d
 - **First, RED:** the released **0.4.123**.
 - **Then, GREEN:** the **0.4.124 candidate**, installed over it on the same guest. It came from rehearsal run 38008544269 of the bump branch, unsigned, with the `.deb`'s SHA-256 checked against its sidecar.
 - **The daemon's socket was never touched.**
-- **The companion stayed on the RELEASED 0.4.123 throughout.** P11 needs no companion change, since the companion already tries the person's own `$XDG_RUNTIME_DIR/roomler.sock` first. This run is the proof.
+- **The companion stayed on the RELEASED 0.4.123 throughout.** P11 needs no companion change, since the companion already tries the person's own `$XDG_RUNTIME_DIR/meshharbor.sock` first. This run is the proof.
 
 | check | 0.4.123 (RED) | 0.4.124 candidate (GREEN) |
 |---|---|---|
-| the person socket | none | `/run/user/1000/roomler.sock`, `srw-------`, the person's (`vmtest:vmtest`) |
-| the daemon's own socket | `/var/run/roomler` `drwx------ root:root`, socket `srw------- root:root` | unchanged |
-| `roomler status` as the person | `Permission denied (os error 13)` | answers: the device, `version 0.4.124`, `mode service (SYSTEM)` |
-| `roomler peers`, and `roomler config set auto_update false`, as the person | `Permission denied (os error 13)` | refused with the pointer "… Everything else goes to the daemon's own socket — run `sudo roomler …`"; the config line is unchanged |
-| the companion, in the stream of a live session | "● Service offline", "Not enrolled yet" and "The Roomler service is not running on this computer right now" | "● Connected", naming the enrolled device |
+| the person socket | none | `/run/user/1000/meshharbor.sock`, `srw-------`, the person's (`vmtest:vmtest`) |
+| the daemon's own socket | `/var/run/meshharbor` `drwx------ root:root`, socket `srw------- root:root` | unchanged |
+| `mh status` as the person | `Permission denied (os error 13)` | answers: the device, `version 0.4.124`, `mode service (SYSTEM)` |
+| `mh peers`, and `mh config set auto_update false`, as the person | `Permission denied (os error 13)` | refused with the pointer "… Everything else goes to the daemon's own socket — run `sudo meshharbor …`"; the config line is unchanged |
+| the companion, in the stream of a live session | "● Service offline", "Not enrolled yet" and "The MeshHarbor service is not running on this computer right now" | "● Connected", naming the enrolled device |
 | the banner during a session | none | *"Being viewed by vmtest admin · keyboard + mouse"*, with Disconnect (mutter centres it, as on 10-09) |
 | one click on its Disconnect | — | see below |
 | the person logs out | — | see below |
@@ -964,9 +964,9 @@ The setup was one vmtest cell: Ubuntu 24.04, GNOME on Wayland, the installer `.d
 Not field-tested: root at the seat, since GDM on this image refuses a root login. `step()` ignores uid 0 by construction, locked by `the_socket_follows_the_person_at_the_seat`.
 
 Found: the socket's own lifecycle lines never reach the log.
-- **The lines exist.** `localapi: person-at-the-device socket up` / `… down` are emitted at info by the `roomler_localapi` crate.
-- **The filter drops them.** That target is below every default filter: `roomlerd=info,tunnel_core=info,warn` in the generated units, and the binary's own default adds only the daemon's pre-FR-21 target. Only roomlerd's `person socket: …` lines (a move, a stop, a failure) are seen.
-- **The result.** `ls`, not `roomler logs`, answers "is the person socket up?".
+- **The lines exist.** `localapi: person-at-the-device socket up` / `… down` are emitted at info by the `meshharbor_localapi` crate.
+- **The filter drops them.** That target is below every default filter: `meshharbord=info,tunnel_core=info,warn` in the generated units, and the binary's own default adds only the daemon's pre-FR-21 target. Only meshharbord's `person socket: …` lines (a move, a stop, a failure) are seen.
+- **The result.** `ls`, not `mh logs`, answers "is the person socket up?".
 - **Why it is a follow-up.** Units already on disk set `RUST_LOG` wholesale, so a fix there needs the care FR-21's rename of the daemon's own target did (`logging.rs`, `mirror_legacy_log_target`).
 
 The guest was destroyed by name afterwards.

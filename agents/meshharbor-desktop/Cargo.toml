@@ -1,0 +1,233 @@
+[package]
+name = "meshharbor-desktop"
+license = "MPL-2.0"
+publish = false
+version.workspace = true
+edition.workspace = true
+description = "MeshHarbor desktop — tray-resident control surface: overview, devices, tunnels, settings, onboarding, consent."
+
+[[bin]]
+# The tray/desktop companion. P3d Slice B moved the OUTPUT binary to
+# `meshharbor-desktop`; FR-21 P2a brought the package name into line. CI renames
+# the release artifact to `meshharbor-desktop-{VERSION}-{TRIPLE}.exe` accordingly.
+name = "meshharbor-desktop"
+path = "src/main.rs"
+
+[dependencies]
+# P3e lever E: the tray calls `enrollment::enroll`, `config::save`,
+# `machine::derive_machine_id`, the log tail, and the sentinel reader — all of
+# which live in agent-core now. Before the split this was a lib dep on the
+# FULL `meshharbord`, which pulled the entire data plane (webrtc family,
+# quinn, turn, openh264-sys2, tokio-tungstenite, async_zip, …) into a GUI that
+# never opens a session. One deliberate loss: `win_service::default_log_dir`
+# — replaced by the same one-liner over `appdirs` (see commands.rs).
+meshharbor-node-core = { path = "../../crates/agent-core" }
+
+# LocalAPI client (unification P2): the tray reads live node/peer state from
+# the running daemon over the LocalAPI. P3e lever E: the dep is the LEAF
+# protocol crate, NOT tunnel-core — the tray only ever speaks the pipe
+# protocol, and depending on tunnel-core would compile the whole data plane
+# (webrtc, quinn, turn, rustls are non-optional there). The `use` paths below
+# say `meshharbor_localapi as localapi`, byte-compatible with the wire either way
+# because tunnel-core's own `localapi` is a re-export of this same crate.
+meshharbor-localapi = { path = "../../crates/localapi" }
+
+# Tauri 2.x runtime + tray + plugins.
+#
+# `custom-protocol` is REQUIRED for plain `cargo build --release` to
+# produce a self-contained binary — without it the runtime loads
+# from `devUrl` (localhost:1430) and the user sees ERR_CONNECTION_
+# REFUSED in the webview. `cargo tauri build` enables it automatically,
+# but our release-agent.yml uses `cargo build --release` for the tray
+# EXE artifact (no Tauri toolchain on the runner), so we opt in here
+# unconditionally. We don't have a Vite/Webpack dev-server for the
+# static `src/front/` HTML, so devUrl isn't load-bearing for any
+# workflow — embedding via custom-protocol is the only mode that
+# makes sense.
+# `protocol-asset` (FR-85 P5c): the Edit view's `<video>` preview. The scope
+# starts EMPTY (`tauri.conf.json`); `cmd_preview_src` allows one recording at
+# a time, never a folder.
+tauri = { version = "2", features = ["tray-icon", "custom-protocol", "protocol-asset"] }
+tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = "2"
+
+# Async + error handling — shared workspace versions.
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+gethostname = "0.5"
+
+# FR-27 — `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` on the two panel
+# windows, so the "Being viewed by …" banner never appears in the video going
+# back to the viewer (the recursive-picture-frame the daemon's native overlay
+# has always avoided). Windows-only, and deliberately the narrowest possible
+# feature set — P3e lever E exists to keep this crate's graph small.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    # FR-84 D3 — `meshharbord service start` spawned with `CreateProcessW`
+    # (bInheritHandles = FALSE, CREATE_NO_WINDOW): std's `Command` always
+    # inherits every inheritable handle (#1035). `Win32_Security` only because
+    # `CreateProcessW`'s signature names `SECURITY_ATTRIBUTES`.
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
+
+# FR-27 P9 — the session banner shown WITHOUT taking key status
+# (`orderFrontRegardless`), `NSWindowSharingNone` on the panels, and the red
+# frame round the screen (`panels.rs`). All three crates are already in the
+# lockfile (tauri pulls them on macOS, `meshharbord` declares them the same way),
+# so this is a target-scoped direct dep, not new supply-chain surface.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+    "NSColor",
+    "NSGraphics",
+    "NSResponder",
+    "NSScreen",
+    "NSView",
+    "NSWindow",
+] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
+
+# #2286 — KWin's scripting interface over D-Bus, to pin the banner to the top
+# on KDE. The same gio GTK already links (`libgio-2.0` is in the .rpm's
+# requires), at the version tauri's GTK 3 stack pins: no new library.
+[target.'cfg(target_os = "linux")'.dependencies]
+gio = "0.18"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+# FR-85 P5c — the edit-list save/load tests write into a real folder.
+tempfile = { workspace = true }
+
+# FR-27 — the Linux companion, as its OWN Debian package.
+#
+# Deliberately NOT folded into the `meshharbord` .deb. That package installs on
+# every headless node in the fleet — k8s workers, build hosts, relays — and
+# adding webkit2gtk + GTK + an app-indicator library to their dependency graph
+# to ship a menu-bar app none of them can display would be a real regression
+# for pillar 2. A separate package means a desktop gets the panel and a server
+# never hears about it. A CI guard asserts the daemon package's `depends`
+# gains no GTK/webkit entry.
+#
+# `meshharbor` is a hard package dependency: this app is a thin client over the daemon's
+# LocalAPI and does nothing at all without one.
+#
+# ⚠️ The runtime deps are the SONAME packages, not the `-dev` ones CI installs
+# to build. `libwebkit2gtk-4.1-0` is what Ubuntu 22.04+ ships;
+# `libayatana-appindicator3-1` is what `tray-icon` dlopens for the tray on
+# Linux, and without it the app starts with no tray at all — the exact failure
+# this FR is fixing on Windows, re-created on another platform.
+[package.metadata.deb]
+name = "meshharbor-desktop"
+maintainer = "G ROX LTD <goran.jovanov@gmail.com>"
+copyright = "2026, G ROX LTD"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+MeshHarbor desktop — the menu-bar companion for the MeshHarbor daemon: device \
+status, network peers, tunnel routes, and the on-screen consent prompt and \
+"being viewed" banner for remote-control sessions."""
+depends = "libc6, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, meshharbor"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/meshharbor-desktop", "usr/bin/", "755"],
+    ["packaging/linux/meshharbor-desktop.desktop", "usr/share/applications/", "644"],
+    # Autostart, because the companion is the device's consent PROMPT surface:
+    # a device set to "Prompt on host" whose companion is not running has no
+    # way to ask anyone, and the operator finds out by a session mysteriously
+    # timing out. `Hidden=true` in a same-named per-user file is the opt-out.
+    # FR-84 D6: its own source file, so the login start carries `--autostart`
+    # (stay in the tray) while the launcher entry above opens the window.
+    [
+        "packaging/linux/meshharbor-desktop-autostart.desktop",
+        "etc/xdg/autostart/meshharbor-desktop.desktop",
+        "644",
+    ],
+    ["icons/linux/hicolor/16x16/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/16x16/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/24x24/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/24x24/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/32x32/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/32x32/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/48x48/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/48x48/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/64x64/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/64x64/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/128x128/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/128x128/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/256x256/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/256x256/apps/meshharbor-desktop.png", "644"],
+    ["icons/linux/hicolor/512x512/apps/meshharbor-desktop.png", "usr/share/icons/hicolor/512x512/apps/meshharbor-desktop.png", "644"],
+]
+
+# FR-93 P6d — the same companion as an RPM, for the hosts with no dpkg: Fedora,
+# the RHEL family, openSUSE. Until it shipped, a system install there had no
+# consent prompt and no "being viewed" banner (FR-93 D1 kept DRM + uinput
+# opt-in for exactly that reason). `cargo generate-rpm -p agents/meshharbor-desktop`
+# in the companion's release job, from the workspace root: `target/release/…`
+# resolves there, the packaging files in this directory.
+#
+# ⚠️ The requires are written out, never discovered (`auto-req = "no"`). The
+# builtin discovery runs `ldd`, which lists the build host's transitive
+# libraries (Ubuntu 22.04's ICU 70 among them), and no Fedora satisfies those.
+# These are the binary's own DT_NEEDED (`readelf -d`), by soname: the spelling
+# every RPM distro provides. Plus the tray's library, which `tray-icon`
+# dlopens (so no DT_NEEDED names it), as the .deb's `depends` does. No
+# `ld-linux-*` (glibc carries the loader, and its name is per-arch) and no
+# `meshharbor`: these hosts install the daemon from the tarball, not a package.
+[package.metadata.generate-rpm]
+name = "meshharbor-desktop"
+summary = "MeshHarbor desktop: the consent prompt, banner and tray for the MeshHarbor daemon"
+release = "1"
+url = "https://meshharbor.itachi.fans"
+auto-req = "no"
+assets = [
+    { source = "target/release/meshharbor-desktop", dest = "/usr/bin/meshharbor-desktop", mode = "755" },
+    { source = "packaging/linux/meshharbor-desktop.desktop", dest = "/usr/share/applications/meshharbor-desktop.desktop", mode = "644" },
+    # The login start, as in the .deb (`--autostart`: stay in the tray).
+    { source = "packaging/linux/meshharbor-desktop-autostart.desktop", dest = "/etc/xdg/autostart/meshharbor-desktop.desktop", mode = "644", config = "noreplace" },
+    { source = "icons/linux/hicolor/16x16/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/16x16/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/24x24/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/24x24/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/32x32/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/32x32/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/48x48/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/48x48/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/64x64/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/64x64/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/128x128/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/128x128/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/256x256/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/256x256/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "icons/linux/hicolor/512x512/apps/meshharbor-desktop.png", dest = "/usr/share/icons/hicolor/512x512/apps/meshharbor-desktop.png", mode = "644" },
+    { source = "../../LICENSE", dest = "/usr/share/licenses/meshharbor-desktop/LICENSE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+"libc.so.6()(64bit)" = "*"
+"libc.so.6(GLIBC_2.34)(64bit)" = "*"
+"libm.so.6()(64bit)" = "*"
+"libgcc_s.so.1()(64bit)" = "*"
+"libssl.so.3()(64bit)" = "*"
+"libcrypto.so.3()(64bit)" = "*"
+"libdbus-1.so.3()(64bit)" = "*"
+"libglib-2.0.so.0()(64bit)" = "*"
+"libgobject-2.0.so.0()(64bit)" = "*"
+"libgio-2.0.so.0()(64bit)" = "*"
+"libcairo.so.2()(64bit)" = "*"
+# Linked by the aarch64 build only (measured by the release job's guard); every
+# GTK 3 stack carries both, so requiring them everywhere costs nothing.
+"libcairo-gobject.so.2()(64bit)" = "*"
+"libpango-1.0.so.0()(64bit)" = "*"
+"libgdk_pixbuf-2.0.so.0()(64bit)" = "*"
+"libgdk-3.so.0()(64bit)" = "*"
+"libgtk-3.so.0()(64bit)" = "*"
+"libsoup-3.0.so.0()(64bit)" = "*"
+"libjavascriptcoregtk-4.1.so.0()(64bit)" = "*"
+"libwebkit2gtk-4.1.so.0()(64bit)" = "*"
+"libayatana-appindicator3.so.1()(64bit)" = "*"
+
+# cargo-wix metadata — the tray ships as its own perUser MSI alongside
+# the agent's MSI(s). Operators install both: agent does the work,
+# tray surfaces the onboarding GUI + status.
+[package.metadata.wix]
+upgrade-guid = "C9F3E4A1-7D2B-4C6E-8F3A-1B2C9D4E5F60"
+path-guid = "D8E2F3B0-6C1A-3B5D-7E2A-9A1B8C3D4E5F"
+license = false
+eula = false

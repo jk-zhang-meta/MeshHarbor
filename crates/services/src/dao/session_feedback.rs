@@ -14,8 +14,8 @@
 //! exists today, so the TTL is what bounds them for now).
 
 use bson::{doc, oid::ObjectId};
+use meshharbor_remote_control::models::SessionFeedback;
 use mongodb::Database;
-use roomler_ai_remote_control::models::SessionFeedback;
 
 use super::base::{BaseDao, DaoError, DaoResult, duplicate_key_is_on};
 
@@ -74,7 +74,7 @@ impl SessionFeedbackDao {
 
 #[cfg(test)]
 mod tests {
-    use roomler_ai_remote_control::models::{
+    use meshharbor_remote_control::models::{
         FEEDBACK_REASONS, FeedbackRating, SessionFeedback, SessionFeedbackRequest,
     };
 

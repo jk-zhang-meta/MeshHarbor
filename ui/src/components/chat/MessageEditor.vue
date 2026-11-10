@@ -144,7 +144,7 @@
         size="x-small"
         variant="text"
         color="primary"
-        aria-label="Send"
+        :aria-label="t('mh.chat.send')"
         @click="handleSend"
       >
         <!-- Explicit: a v-btn renders its default slot INSTEAD of its `icon`,
@@ -186,6 +186,9 @@ import MentionList from './MentionList.vue'
 import type { MentionItem } from './MentionList.vue'
 import { api } from '@/api/client'
 import { useSnackbar } from '@/composables/useSnackbar'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const { showError } = useSnackbar()
 
@@ -200,7 +203,6 @@ const props = withDefaults(
     roomId?: string
   }>(),
   {
-    placeholder: 'Write a message...',
     initialContent: '',
     members: () => [],
     tenantId: '',
@@ -221,11 +223,11 @@ const emit = defineEmits<{
 }>()
 
 const mode = vueRef<EditorMode>(
-  (localStorage.getItem('roomler-editor-mode') as EditorMode) || 'minimal',
+  (localStorage.getItem('meshharbor-editor-mode') as EditorMode) || 'minimal',
 )
 // Ensure default is persisted
-if (!localStorage.getItem('roomler-editor-mode')) {
-  localStorage.setItem('roomler-editor-mode', 'minimal')
+if (!localStorage.getItem('meshharbor-editor-mode')) {
+  localStorage.setItem('meshharbor-editor-mode', 'minimal')
 }
 const pendingAttachmentIds = vueRef<string[]>([])
 const fileInputRef = vueRef<HTMLInputElement | null>(null)
@@ -233,7 +235,7 @@ const isDragging = vueRef(false)
 
 function toggleMode() {
   mode.value = mode.value === 'minimal' ? 'rich' : 'minimal'
-  localStorage.setItem('roomler-editor-mode', mode.value)
+  localStorage.setItem('meshharbor-editor-mode', mode.value)
 }
 
 function triggerFileInput() {
@@ -265,7 +267,7 @@ async function handleFileSelect(event: Event) {
       }
     } catch (err) {
       console.error('File upload failed:', err)
-      showError('File upload failed. Please try again.')
+      showError(t('mh.chat.uploadFailed'))
     }
   }
 
@@ -297,7 +299,7 @@ async function handleDrop(event: DragEvent) {
       }
     } catch (err) {
       console.error('File upload failed:', err)
-      showError('File upload failed. Please try again.')
+      showError(t('mh.chat.uploadFailed'))
     }
   }
 }
@@ -311,7 +313,7 @@ const editor = useEditor({
     StarterKit.configure({
       // Prevent duplicate extensions — tiptap-markdown may register its own
     }),
-    Placeholder.configure({ placeholder: props.placeholder }),
+    Placeholder.configure({ placeholder: props.placeholder ?? t('mh.chat.writePlaceholder') }),
     Link.configure({ openOnClick: false, autolink: true }),
     Underline,
     Image.configure({ inline: true, allowBase64: false }),

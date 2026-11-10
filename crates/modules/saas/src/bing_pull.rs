@@ -41,12 +41,12 @@ use std::collections::BTreeMap;
 
 use bson::DateTime;
 use chrono::{Duration, NaiveDate};
-use roomler_ai_config::GrowthSettings;
-use roomler_ai_services::dao::{
+use meshharbor_config::GrowthSettings;
+use meshharbor_core::Core;
+use meshharbor_services::dao::{
     base::DaoResult,
     growth::{BING_SOURCE, BING_WEEKLY_SOURCE, GrowthDaily, GrowthDao, PulledDay, daily_row},
 };
-use roomler_core::Core;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{info, warn};
 
@@ -192,7 +192,7 @@ impl BingClient {
             return None;
         }
         let http = reqwest::Client::builder()
-            .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
             .timeout(TIMEOUT)
             // The key rides the query string, and a redirect would carry it
             // to wherever the next hop points (and into reqwest's debug log
@@ -484,7 +484,7 @@ pub fn spawn_puller(core: Core) {
     }
     let Some(client) = BingClient::from_settings(growth) else {
         info!(
-            "growth bing puller: no Bing Webmaster API key configured (ROOMLER__GROWTH__BING_API_KEY) — nothing is pulled"
+            "growth bing puller: no Bing Webmaster API key configured (MESHHARBOR__GROWTH__BING_API_KEY) — nothing is pulled"
         );
         return;
     };
@@ -563,9 +563,9 @@ mod tests {
         assert!(day.iter().all(|r| r.source == BING_SOURCE));
 
         let weekly: Vec<KeyStats> = serde_json::from_str(
-            r#"[{"Query":"roomler","Date":"/Date(1760079600000-0700)/","Clicks":3,"Impressions":40,"AvgImpressionPosition":7,"AvgClickPosition":-1},
-                {"Query":" Roomler","Date":"/Date(1760079600000-0700)/","Clicks":1,"Impressions":15,"AvgImpressionPosition":2.5,"AvgClickPosition":2},
-                {"Query":"roomler","Date":"/Date(1760079600000-0700)/","Clicks":0,"Impressions":1,"AvgImpressionPosition":12,"AvgClickPosition":-1},
+            r#"[{"Query":"meshharbor","Date":"/Date(1760079600000-0700)/","Clicks":3,"Impressions":40,"AvgImpressionPosition":7,"AvgClickPosition":-1},
+                {"Query":" MeshHarbor","Date":"/Date(1760079600000-0700)/","Clicks":1,"Impressions":15,"AvgImpressionPosition":2.5,"AvgClickPosition":2},
+                {"Query":"meshharbor","Date":"/Date(1760079600000-0700)/","Clicks":0,"Impressions":1,"AvgImpressionPosition":12,"AvgClickPosition":-1},
                 {"Query":"jane doe 12 main street","Date":"/Date(1760079600000-0700)/","Clicks":1,"Impressions":3,"AvgImpressionPosition":1,"AvgClickPosition":1}]"#,
         )
         .unwrap();
@@ -577,20 +577,20 @@ mod tests {
                 .find(|r| r.dims.get("query").map(String::as_str) == Some(q) && r.metric == m)
                 .map(|r| r.value)
         };
-        assert_eq!(get("roomler", "clicks"), Some(3));
-        assert_eq!(get("roomler", "impressions"), Some(41));
+        assert_eq!(get("meshharbor", "clicks"), Some(3));
+        assert_eq!(get("meshharbor", "impressions"), Some(41));
         assert_eq!(
-            get("roomler", "avg_impression_position_x10"),
+            get("meshharbor", "avg_impression_position_x10"),
             Some(70),
             "the busiest row's"
         );
         assert_eq!(
-            get("roomler", "avg_click_position_x10"),
+            get("meshharbor", "avg_click_position_x10"),
             None,
             "-1 is Bing's none"
         );
         assert_eq!(
-            get("Roomler", "avg_impression_position_x10"),
+            get("MeshHarbor", "avg_impression_position_x10"),
             Some(25),
             "a decimal survives"
         );
@@ -604,7 +604,7 @@ mod tests {
             "{bucket:?}"
         );
         let pages: Vec<KeyStats> = serde_json::from_str(
-            r#"[{"Query":"https://roomler.ai/blog/a/","Date":"/Date(1760079600000-0700)/","Clicks":0,"Impressions":2,"AvgImpressionPosition":30,"AvgClickPosition":-1}]"#,
+            r#"[{"Query":"https://meshharbor.itachi.fans/blog/a/","Date":"/Date(1760079600000-0700)/","Clicks":0,"Impressions":2,"AvgImpressionPosition":30,"AvgClickPosition":-1}]"#,
         )
         .unwrap();
         let p = weekly_rows("page", &pages, d("2025-10-01"), d("2025-10-13"));

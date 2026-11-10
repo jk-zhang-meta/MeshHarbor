@@ -21,8 +21,8 @@ import { writeFileSync } from 'fs';
 const API = process.env.API_URL || 'http://localhost:5001';
 const WS_BASE = process.env.WS_URL || 'ws://localhost:5001/ws';
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27019';
-const DB_NAME = process.env.DB_NAME || 'roomler-ai';
-const RESULTS_FILE = process.env.RESULTS_FILE || `${process.env.HOME ?? '.'}/roomler-ai/stress-test-results.txt`;
+const DB_NAME = process.env.DB_NAME || 'meshharbor';
+const RESULTS_FILE = process.env.RESULTS_FILE || `${process.env.HOME ?? '.'}/meshharbor/stress-test-results.txt`;
 
 // Tuning
 const BATCH_SIZE = 10;
@@ -124,7 +124,7 @@ function getSystemStats() {
 
     let apiRssMb = 0;
     try {
-      const pid = execSync("pgrep -x roomler-ai-api").toString().trim().split('\n')[0];
+      const pid = execSync("pgrep -x meshharbor-api").toString().trim().split('\n')[0];
       if (pid) {
         const rssKb = execSync(`ps -o rss= -p ${pid}`).toString().trim();
         apiRssMb = Math.round(parseInt(rssKb) / 1024);

@@ -15,12 +15,12 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">1. Introduction and Acceptance</h2>
           <p class="text-body-1 legal-muted mb-4">
-            These Terms of Service ("Terms") govern your access to and use of Roomler ("Roomler," "we," "us,"
-            or "our"), available at <a href="https://roomler.ai" class="text-primary">roomler.ai</a> and
+            These Terms of Service ("Terms") govern your access to and use of MeshHarbor ("MeshHarbor," "we," "us,"
+            or "our"), available at <a href="https://meshharbor.itachi.fans" class="text-primary">meshharbor.itachi.fans</a> and
             operated by G ROX EOOD (see our <router-link to="/imprint" class="text-primary">Imprint</router-link>).
           </p>
           <p class="text-body-1 legal-muted mb-2">
-            Roomler is three products on one platform:
+            MeshHarbor is three products on one platform:
           </p>
           <ul class="text-body-1 legal-muted ml-6 mb-4">
             <li class="mb-1"><strong>Remote desktop</strong> — viewing and controlling the screen, keyboard and mouse of devices you have enrolled, from your browser.</li>
@@ -31,16 +31,16 @@
             Using the first two requires installing our agent software on the devices concerned. Sections 4 to 6
             set out obligations specific to those features; they matter more than the rest of this document,
             because they concern access to real machines and real networks. By creating an account or using
-            Roomler, you agree to be bound by these Terms. If you do not agree, please do not use the platform.
+            MeshHarbor, you agree to be bound by these Terms. If you do not agree, please do not use the platform.
           </p>
         </section>
 
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">2. Eligibility</h2>
           <p class="text-body-1 legal-muted">
-            You must be at least 16 years of age to use Roomler. By using the platform, you represent and warrant
+            You must be at least 16 years of age to use MeshHarbor. By using the platform, you represent and warrant
             that you meet this age requirement and have the legal capacity to enter into these Terms. If you are
-            using Roomler on behalf of an organization, you represent that you have the authority to bind that
+            using MeshHarbor on behalf of an organization, you represent that you have the authority to bind that
             organization to these Terms.
           </p>
         </section>
@@ -48,7 +48,7 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">3. Account Responsibilities</h2>
           <p class="text-body-1 legal-muted mb-2">
-            When you create an account on Roomler, you agree to:
+            When you create an account on MeshHarbor, you agree to:
           </p>
           <ul class="text-body-1 legal-muted ml-6 mb-2">
             <li class="mb-1">Provide accurate and complete registration information</li>
@@ -105,7 +105,7 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">6. The Private Network, Tunnels and Exit Nodes</h2>
           <p class="text-body-1 legal-muted mb-4">
-            Roomler can join your devices into an encrypted private network and route traffic between them. Some
+            MeshHarbor can join your devices into an encrypted private network and route traffic between them. Some
             of these features move other people's traffic through your infrastructure, or yours through theirs,
             and carry obligations accordingly.
           </p>
@@ -124,7 +124,7 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">7. Acceptable Use</h2>
           <p class="text-body-1 legal-muted mb-2">
-            You agree not to use Roomler to:
+            You agree not to use MeshHarbor to:
           </p>
           <ul class="text-body-1 legal-muted ml-6 mb-2">
             <li class="mb-1">Access, control or monitor any device without the authorisation of its owner and users</li>
@@ -137,7 +137,7 @@
             <li class="mb-1">Distribute malware, spam, or phishing content through messages, file uploads or an enrolled device</li>
             <li class="mb-1">Impersonate any person or entity, or misrepresent your identity</li>
             <li class="mb-1">Attempt to gain unauthorized access to other users' accounts, workspaces, devices or data</li>
-            <li class="mb-1">Interfere with or disrupt the platform, servers, relays, or networks connected to Roomler</li>
+            <li class="mb-1">Interfere with or disrupt the platform, servers, relays, or networks connected to MeshHarbor</li>
             <li class="mb-1">Use the platform to violate any applicable law or regulation, including export control and sanctions law</li>
             <li class="mb-1">Record, screenshot, or redistribute calls, sessions or content without the consent of all participants</li>
             <li class="mb-1">Use automated bots or scripts to access the platform without our prior written consent</li>
@@ -151,7 +151,7 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">8. Content Ownership and User-Generated Content</h2>
           <p class="text-body-1 legal-muted mb-4">
-            You retain ownership of all content you create, upload, or share on Roomler, including chat messages,
+            You retain ownership of all content you create, upload, or share on MeshHarbor, including chat messages,
             files, documents, and any other materials ("User Content"). By uploading or sharing User Content, you
             grant us a limited, non-exclusive, worldwide license to store, process, transmit, and display
             your content solely for the purpose of providing the platform services to you and your workspace members.
@@ -167,7 +167,7 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">9. Intellectual Property</h2>
           <p class="text-body-1 legal-muted">
-            The Roomler platform, including its software, agent, design, logos, trademarks, and documentation, is
+            The MeshHarbor platform, including its software, agent, design, logos, trademarks, and documentation, is
             owned by <strong>G ROX EOOD</strong> and is protected by intellectual property laws. These Terms do not
             grant you any right to use our trademarks, logos, or brand assets without our prior written permission.
             You may not reverse engineer, decompile or redistribute the agent except to the extent that applicable
@@ -179,7 +179,7 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">10. Recording Consent</h2>
           <p class="text-body-1 legal-muted mb-4">
-            Roomler offers call recording features for video and audio conferences.
+            MeshHarbor offers call recording features for video and audio conferences.
             By using these features, you acknowledge and agree to the following:
           </p>
           <ul class="text-body-1 legal-muted ml-6 mb-2">
@@ -194,7 +194,7 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">11. Billing and Subscriptions</h2>
           <p class="text-body-1 legal-muted mb-2">
-            Roomler offers free and paid subscription plans. For paid plans:
+            MeshHarbor offers free and paid subscription plans. For paid plans:
           </p>
           <ul class="text-body-1 legal-muted ml-6 mb-2">
             <li class="mb-1">All payments are processed securely by Stripe. We do not store your full payment card details.</li>
@@ -228,12 +228,12 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">13. Disclaimers</h2>
           <p class="text-body-1 legal-muted">
-            Roomler is provided on an "AS IS" and "AS AVAILABLE" basis without warranties of any kind, whether
+            MeshHarbor is provided on an "AS IS" and "AS AVAILABLE" basis without warranties of any kind, whether
             express or implied, including but not limited to warranties of merchantability, fitness for a
             particular purpose, and non-infringement. We do not warrant that the platform will be uninterrupted,
             error-free, or secure. Real-time performance — call quality, remote-desktop responsiveness and
             network throughput — depends on network conditions between the devices involved, which are outside
-            our control, and Roomler is not a substitute for physical access to a device or for your own backups.
+            our control, and MeshHarbor is not a substitute for physical access to a device or for your own backups.
           </p>
         </section>
 
@@ -267,7 +267,7 @@
             These Terms are governed by the laws of the <strong>Republic of Bulgaria</strong>, where G ROX EOOD is
             established, without regard to conflict of law principles. Any dispute shall first be attempted to be
             resolved through good-faith negotiation; please write to
-            <a href="mailto:legal@roomler.ai" class="text-primary">legal@roomler.ai</a>. Failing that, disputes
+            <a href="mailto:legal@meshharbor.itachi.fans" class="text-primary">legal@meshharbor.itachi.fans</a>. Failing that, disputes
             shall be subject to the courts of competent jurisdiction in Bulgaria. If you are a consumer resident
             in the EU, this does not deprive you of the protection of mandatory provisions of the law of your
             country of residence, or of your right to bring proceedings there.
@@ -279,7 +279,7 @@
           <p class="text-body-1 legal-muted">
             We may update these Terms from time to time. We will notify you of material changes by posting
             the updated Terms on this page and updating the "Last updated" date. For significant changes, we
-            may also notify you via email or an in-app notification. Your continued use of Roomler after the
+            may also notify you via email or an in-app notification. Your continued use of MeshHarbor after the
             effective date of any changes constitutes acceptance of the updated Terms.
           </p>
         </section>
@@ -299,10 +299,10 @@
             If you have any questions or concerns about these Terms of Service, please contact us at:
           </p>
           <p class="text-body-1 legal-muted mt-2">
-            <strong>Email:</strong> <a href="mailto:legal@roomler.ai" class="text-primary">legal@roomler.ai</a>
+            <strong>Email:</strong> <a href="mailto:legal@meshharbor.itachi.fans" class="text-primary">legal@meshharbor.itachi.fans</a>
           </p>
           <p class="text-body-1 legal-muted mt-2">
-            Roomler is operated by <strong>G ROX EOOD</strong>, registered in the Bulgarian Commercial Register
+            MeshHarbor is operated by <strong>G ROX EOOD</strong>, registered in the Bulgarian Commercial Register
             under UIC 205174895, with its registered office at Plovdivska 110, 4400 Pazardzhik, Bulgaria, and
             represented by Goran Jovanov, Manager. Full company details are set out in our
             <router-link to="/imprint" class="text-primary">Imprint</router-link>.

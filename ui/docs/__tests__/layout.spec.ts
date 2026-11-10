@@ -85,23 +85,23 @@ describe('the 404 page', () => {
   })
 
   it('leaves an ordinary page its canonical', () => {
-    expect(render({})).toContain('<link rel="canonical" href="https://roomler.ai/docs/start/quickstart/">')
+    expect(render({})).toContain('<link rel="canonical" href="https://meshharbor.itachi.fans/docs/start/quickstart/">')
   })
 })
 
 // ── P3: the head ──────────────────────────────────────────────────────────
 
 describe('the <title>', () => {
-  const section = { dir: 'compare', title: 'How Roomler compares', blurb: '', icon: 'compare', accent: 'coral' } as const
+  const section = { dir: 'compare', title: 'How MeshHarbor compares', blurb: '', icon: 'compare', accent: 'coral' } as const
   const leaf = (title: string, extra: Partial<DocPage> = {}): DocPage => ({ ...base, slug: 'compare/x', url: '/docs/compare/x/', section, title, ...extra })
 
   it('keeps the section when everything fits', () => {
-    expect(docsTitle(leaf('Roomler vs Tailscale'))).toBe('Roomler vs Tailscale · How Roomler compares — Roomler Docs')
+    expect(docsTitle(leaf('vs Tailscale'))).toBe('vs Tailscale · How MeshHarbor compares — MeshHarbor Docs')
   })
 
   it('drops the section, then the site name, to fit 60', () => {
     // 71 chars with the section — the kind of title FR-60 shipped, cut off in results.
-    expect(docsTitle(leaf('Roomler vs TeamViewer and AnyDesk'))).toBe('Roomler vs TeamViewer and AnyDesk — Roomler Docs')
+    expect(docsTitle(leaf('MeshHarbor vs TeamViewer and AnyDesk'))).toBe('MeshHarbor vs TeamViewer and AnyDesk — MeshHarbor Docs')
     const long = 'A title that is fifty-five characters long, near enough'
     expect(docsTitle(leaf(long))).toBe(long)
   })
@@ -144,7 +144,7 @@ describe('the head', () => {
   it('loads the hosted-only analytics loader the build published, never the tracker itself (FR-102)', () => {
     const analytics = '/docs/assets/analytics.9999999999.js'
     const html = renderPage({ nav: [], page: base, assets: { ...assets, analytics } }, new Set())
-    expect(html).toContain(`<script src="${analytics}" defer data-src="https://purestat.ai/js/purestat.js" data-domain="roomler.ai" data-hosts="roomler.ai,www.roomler.ai"></script>`)
+    expect(html).toContain(`<script src="${analytics}" defer data-src="https://purestat.ai/js/purestat.js" data-domain="meshharbor.itachi.fans" data-hosts="meshharbor.itachi.fans,www.meshharbor.itachi.fans"></script>`)
     expect(html).not.toMatch(/<script[^>]*\ssrc="https:\/\/purestat\.ai/) // `\ssrc`: the loader carries data-src
     // Without a published loader (ANALYTICS = null), nothing at all.
     expect(render({})).not.toMatch(/<script[^>]*data-hosts=/)
@@ -171,21 +171,21 @@ describe('the head', () => {
 describe('the brand', () => {
   it('links the favicon set, each reused name versioned past the old icon cached `immutable` for a year', () => {
     const html = render({})
-    expect(html).toContain('<link rel="icon" href="/favicon.ico?v=2" sizes="48x48">')
-    expect(html).toContain('<link rel="icon" href="/favicon.svg?v=3" type="image/svg+xml">')
-    expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">')
+    expect(html).toContain('<link rel="icon" href="/favicon.ico?v=3" sizes="48x48">')
+    expect(html).toContain('<link rel="icon" href="/favicon.svg?v=4" type="image/svg+xml">')
+    expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=3">')
     expect(html).toContain('<link rel="manifest" href="/site.webmanifest">')
     expect(html).not.toContain('href="/favicon.svg"')
   })
 
   it('puts the logo in the top bar when the build published one, and the word when not', () => {
-    const logo = '/docs/assets/roomler-logo.4444444444.svg'
+    const logo = '/docs/assets/meshharbor-logo.4444444444.svg'
     const withLogo = renderPage({ nav: [], page: base, assets: { ...assets, logo } }, new Set())
     const top = withLogo.slice(withLogo.indexOf('<header class="topbar">'), withLogo.indexOf('</header>'))
     expect(top).toContain(
-      `<a class="brand" href="/docs/"><img class="brand__logo" src="${logo}" alt="Roomler" width="113" height="32"><span class="brand__docs">Docs</span></a>`,
+      `<a class="brand" href="/docs/"><img class="brand__logo" src="${logo}" alt="MeshHarbor" width="113" height="32"><span class="brand__docs">Docs</span></a>`,
     )
     expect(top).not.toContain('brand__mark')
-    expect(render({})).toContain('<span class="brand__mark">Roomler</span>')
+    expect(render({})).toContain('<span class="brand__mark">MeshHarbor</span>')
   })
 })

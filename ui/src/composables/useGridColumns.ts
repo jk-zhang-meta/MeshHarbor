@@ -5,7 +5,7 @@ import { ref, computed, watch, type Ref, type ComputedRef } from 'vue'
 /**
  * Generic per-user column preferences (visibility + order) for list grids.
  * Ported from lgr's ui-shared (same Vuetify-3 stack), with the identity
- * decoupled: roomler keeps no JWT in localStorage (cookie session), so the
+ * decoupled: meshharbor keeps no JWT in localStorage (cookie session), so the
  * caller supplies a `scope` — typically `${userId}:${tenantId}` — instead of
  * this file reading identity stores.
  *
@@ -16,7 +16,7 @@ import { ref, computed, watch, type Ref, type ComputedRef } from 'vue'
  *     shipped later) are spliced back at their catalog position, so a new
  *     column doesn't dump at the end for customized users
  *
- * Storage: `roomler:grid-cols:<scope>:<gridId>` → { order: string[], hidden: string[] }.
+ * Storage: `meshharbor:grid-cols:<scope>:<gridId>` → { order: string[], hidden: string[] }.
  */
 
 export interface GridColumnEntry {
@@ -42,7 +42,7 @@ export function useGridColumns(opts: {
 }) {
   const scope = typeof opts.scope === 'function' ? computed(opts.scope) : opts.scope
   const storageKey = computed(
-    () => `roomler:grid-cols:${scope.value || 'anon'}:${opts.gridId || 'grid'}`,
+    () => `meshharbor:grid-cols:${scope.value || 'anon'}:${opts.gridId || 'grid'}`,
   )
 
   const pref = ref<GridColsPref>({ order: [], hidden: [] })

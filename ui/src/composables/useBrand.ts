@@ -12,9 +12,9 @@ import markDark from '@/assets/brand/meshharbor-mark-dark.svg'
 export const BRAND_LOGO_LIGHT = logoLight
 
 /**
- * The Roomler logo for the app's current theme: `logo` is the symbol plus the
+ * The MeshHarbor logo for the app's current theme: `logo` is the symbol plus the
  * wordmark, for a header with room for it; `mark` is the symbol alone, drawn
- * for 24–48 px (`roomler-mark-32`), where only the symbol fits. The light
+ * for 24–48 px (`meshharbor-mark-32`), where only the symbol fits. The light
  * files have a dark R and wordmark, the dark ones a white R and a brighter
  * mesh. Vite hashes all four, so a changed logo ships under a new URL.
  */

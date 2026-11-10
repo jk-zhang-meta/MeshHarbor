@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc};
+use meshharbor_db::models::NewsletterIssue;
 use mongodb::Database;
-use roomler_ai_db::models::NewsletterIssue;
 
 use super::base::{BaseDao, DaoResult};
 
@@ -123,7 +123,7 @@ impl NewsletterIssueDao {
     pub async fn complete(
         &self,
         slug: &str,
-        counts: roomler_ai_db::models::IssueCounts,
+        counts: meshharbor_db::models::IssueCounts,
     ) -> DaoResult<bool> {
         let counts = bson::to_bson(&counts)?;
         self.base

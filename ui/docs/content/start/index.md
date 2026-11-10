@@ -1,6 +1,6 @@
 ---
 title: Get started
-description: Create a workspace, install the Roomler agent on Windows, macOS or Linux, and reach your first machine from a browser tab.
+description: Create a workspace, install the MeshHarbor agent on Windows, macOS or Linux, and reach your first machine from a browser tab.
 tags: [getting-started, install, enrollment]
 order: 0
 ---

@@ -6,7 +6,7 @@ use crate::api::APIBuilder;
 use crate::peer_connection::peer_connection_test::*;
 use crate::rtp_transceiver::rtp_codec::RTPCodecType;
 
-// Roomler patch — locks the SCTP rwnd setter/getter so an upstream
+// MeshHarbor patch — locks the SCTP rwnd setter/getter so an upstream
 // Cargo bump can't silently un-do the patch. The default of 0 must
 // preserve the upstream 1 MiB fallback; a non-zero value must round-
 // trip exactly. Consumed by RTCSctpTransport::start at

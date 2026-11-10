@@ -1,19 +1,19 @@
-# Roomler tunnels — install, setup, and test (corporate environment)
+# MeshHarbor tunnels — install, setup, and test (corporate environment)
 
-A Roomler tunnel connection has three sides:
+A MeshHarbor tunnel connection has three sides:
 
 | Side | What it does | Where it runs |
 |---|---|---|
-| **Tunnel-client** (`roomler`) | Listens on a local TCP port on the operator's machine. Each incoming connection rides a **QUIC** stream to the agent by default (transparently falling back to a WebRTC data channel if QUIC setup fails). | Operator's laptop (Win11 / Linux / macOS) |
-| **Agent** (`roomlerd`) | Receives the forward request, dials the destination from inside the corp network, and pumps bytes back. | A host inside the corp network with route to the destination |
-| **Server** (`roomler.ai`) | Issues JWTs, enforces the tenant ACL policy, relays SDP / ICE between the two peers (it never sees the payload). | Roomler-managed |
+| **Tunnel-client** (`mh`) | Listens on a local TCP port on the operator's machine. Each incoming connection rides a **QUIC** stream to the agent by default (transparently falling back to a WebRTC data channel if QUIC setup fails). | Operator's laptop (Win11 / Linux / macOS) |
+| **Agent** (`meshharbord`) | Receives the forward request, dials the destination from inside the corp network, and pumps bytes back. | A host inside the corp network with route to the destination |
+| **Server** (`meshharbor.itachi.fans`) | Issues JWTs, enforces the tenant ACL policy, relays SDP / ICE between the two peers (it never sees the payload). | MeshHarbor-managed |
 
 This guide walks through the Win11-on-both-sides flavour. Linux and macOS commands are inline where they diverge.
 
 > **Enrolling one machine into several organisations** (a contractor's laptop, a
 > shared jump host): a second `enroll` against a different tenant now APPENDS an
 > org instead of rebinding the daemon. See [`multi-org.md`](./multi-org.md) §3
-> for the `[[orgs]]` config and the `roomler org ls|rm|enable|disable|set-primary`
+> for the `[[orgs]]` config and the `mh org ls|rm|enable|disable|set-primary`
 > verbs — and §4.4 for the one thing that is still primary-only: the overlay
 > mesh.
 
@@ -21,7 +21,7 @@ This guide walks through the Win11-on-both-sides flavour. Linux and macOS comman
 
 ## Transport: QUIC by default, WebRTC fallback
 
-Since `roomler` / `roomlerd` **0.3.0-rc.118**, the data plane defaults to **QUIC** (`quic-v1`, via [quinn](https://github.com/quinn-rs/quinn)) and falls back to the original **WebRTC data channel** (`webrtc-dc-v1`) only if QUIC can't be set up. Tuned QUIC is faster than WebRTC on a relayed path and reaches the same hard networks. Choose explicitly with `--transport`:
+Since `mh` / `meshharbord` **0.3.0-rc.118**, the data plane defaults to **QUIC** (`quic-v1`, via [quinn](https://github.com/quinn-rs/quinn)) and falls back to the original **WebRTC data channel** (`webrtc-dc-v1`) only if QUIC can't be set up. Tuned QUIC is faster than WebRTC on a relayed path and reaches the same hard networks. Choose explicitly with `--transport`:
 
 | `--transport` | Behaviour |
 |---|---|
@@ -43,12 +43,12 @@ The forward logs which path it took (`tunnel established transport=quic-v1 path=
 
 ## 0. Prerequisites
 
-- A Roomler tenant with an admin account
+- A MeshHarbor tenant with an admin account
 - Two Win11 machines:
   - **`AGENT-CORP`** — joined to the corp network, with TCP reachability to your DB / service
   - **`OPERATOR-LAPTOP`** — the operator's machine, where local clients (psql, ssh, RDP, …) will connect to `127.0.0.1`
-- Outbound HTTPS to `roomler.ai` from both machines (port 443)
-- Outbound UDP/3478, UDP/443 (or TCP/443 TURNS fallback) to the Roomler coturn cluster from both machines
+- Outbound HTTPS to `meshharbor.itachi.fans` from both machines (port 443)
+- Outbound UDP/3478, UDP/443 (or TCP/443 TURNS fallback) to the MeshHarbor coturn cluster from both machines
 
 The same machine can play both roles for smoke-testing — see §8.
 
@@ -56,57 +56,57 @@ The same machine can play both roles for smoke-testing — see §8.
 
 ## 1. Install the agent on `AGENT-CORP`
 
-The agent is the existing `roomlerd` MSI. Download from your Roomler server (proxied through `roomler.ai` so corp AV trusts it — no `github.com` fetch in the user's network path):
+The agent is the existing `meshharbord` MSI. Download from your MeshHarbor server (proxied through `meshharbor.itachi.fans` so corp AV trusts it — no `github.com` fetch in the user's network path):
 
 **Win11 (PowerShell as Administrator only if you choose perMachine):**
 
 ```powershell
 # perUser flavour — installs to %LOCALAPPDATA%, no UAC prompt
 Invoke-WebRequest `
-  "https://roomler.ai/api/agent/installer/peruser?version=latest" `
-  -OutFile "$env:USERPROFILE\Downloads\roomlerd.msi"
-msiexec /i "$env:USERPROFILE\Downloads\roomlerd.msi"
+  "https://meshharbor.itachi.fans/api/agent/installer/peruser?version=latest" `
+  -OutFile "$env:USERPROFILE\Downloads\meshharbord.msi"
+msiexec /i "$env:USERPROFILE\Downloads\meshharbord.msi"
 ```
 
 For unattended / fleet installs (boot-time, runs as `LocalSystem`):
 
 ```powershell
 Invoke-WebRequest `
-  "https://roomler.ai/api/agent/installer/permachine?version=latest" `
-  -OutFile "$env:USERPROFILE\Downloads\roomlerd-permachine.msi"
+  "https://meshharbor.itachi.fans/api/agent/installer/permachine?version=latest" `
+  -OutFile "$env:USERPROFILE\Downloads\meshharbord-permachine.msi"
 # Run elevated:
-msiexec /i "$env:USERPROFILE\Downloads\roomlerd-permachine.msi"
+msiexec /i "$env:USERPROFILE\Downloads\meshharbord-permachine.msi"
 ```
 
 **Linux (.deb):**
 
 ```bash
-curl -fsSL -o /tmp/roomlerd.deb \
-  "https://roomler.ai/api/agent/installer/peruser?version=latest&os=linux"
-sudo dpkg -i /tmp/roomlerd.deb
+curl -fsSL -o /tmp/meshharbord.deb \
+  "https://meshharbor.itachi.fans/api/agent/installer/peruser?version=latest&os=linux"
+sudo dpkg -i /tmp/meshharbord.deb
 ```
 
 **macOS (.pkg):**
 
 ```bash
-curl -fsSL -o /tmp/roomlerd.pkg \
-  "https://roomler.ai/api/agent/installer/peruser?version=latest&os=macos"
-sudo installer -pkg /tmp/roomlerd.pkg -target /
+curl -fsSL -o /tmp/meshharbord.pkg \
+  "https://meshharbor.itachi.fans/api/agent/installer/peruser?version=latest&os=macos"
+sudo installer -pkg /tmp/meshharbord.pkg -target /
 ```
 
 ---
 
 ## 2. Enroll the agent
 
-In the Roomler admin UI:
+In the MeshHarbor admin UI:
 
 1. **Admin → Tenant → Agents**.
-2. Click **"Issue enrollment token"**. A 10-minute single-use JWT appears with a copy-pasteable `roomlerd enroll …` command.
+2. Click **"Issue enrollment token"**. A 10-minute single-use JWT appears with a copy-pasteable `meshharbord enroll …` command.
 3. Run that command on `AGENT-CORP` (the enrollment token is single-use, embedded in the command):
 
 ```powershell
-roomlerd enroll `
-  --server https://roomler.ai `
+meshharbord enroll `
+  --server https://meshharbor.itachi.fans `
   --token <jwt-from-admin-ui> `
   --name "AGENT-CORP"
 ```
@@ -114,15 +114,15 @@ roomlerd enroll `
 4. Start the agent. Either foreground for testing:
 
 ```powershell
-roomlerd run
+meshharbord run
 ```
 
 …or register as an auto-start service for production:
 
 ```powershell
-roomlerd service install               # perUser scheduled task
+meshharbord service install               # perUser scheduled task
 # or:
-roomlerd service install --as-service  # SCM service, runs as LocalSystem (requires the perMachine MSI)
+meshharbord service install --as-service  # SCM service, runs as LocalSystem (requires the perMachine MSI)
 ```
 
 Verify in **Admin → Tenant → Agents** that the row turned green (`status: online`).
@@ -135,17 +135,17 @@ Verify in **Admin → Tenant → Agents** that the row turned green (`status: on
 
 ```powershell
 Invoke-WebRequest `
-  "https://roomler.ai/api/tunnel/installer/windows-x86_64?version=latest" `
-  -OutFile "$env:USERPROFILE\Downloads\roomler-cli.zip"
-Expand-Archive "$env:USERPROFILE\Downloads\roomler-cli.zip" `
-  -DestinationPath "$env:LOCALAPPDATA\roomler-cli"
-# RETIRED-NAME-ANCHOR(4): the ARCHIVE directory keeps the roomler-tunnel
+  "https://meshharbor.itachi.fans/api/tunnel/installer/windows-x86_64?version=latest" `
+  -OutFile "$env:USERPROFILE\Downloads\meshharbor-cli.zip"
+Expand-Archive "$env:USERPROFILE\Downloads\meshharbor-cli.zip" `
+  -DestinationPath "$env:LOCALAPPDATA\meshharbor-cli"
+# RETIRED-NAME-ANCHOR(4): the ARCHIVE directory keeps the meshharbor-tunnel
 # prefix by contract (release-tunnel.yml). Only the binary inside it was
-# renamed to `roomler`.
+# renamed to `meshharbor`.
 # Optional — add to PATH:
 [Environment]::SetEnvironmentVariable(
   "Path",
-  "$env:Path;$env:LOCALAPPDATA\roomler-cli\roomler-tunnel-0.3.0-rc.46-x86_64-pc-windows-msvc",
+  "$env:Path;$env:LOCALAPPDATA\meshharbor-cli\meshharbor-tunnel-0.3.0-rc.46-x86_64-pc-windows-msvc",
   "User"
 )
 ```
@@ -153,10 +153,10 @@ Expand-Archive "$env:USERPROFILE\Downloads\roomler-cli.zip" `
 **Linux (.deb):**
 
 ```bash
-curl -fsSL -o /tmp/roomler-cli.deb \
-  "https://roomler.ai/api/tunnel/installer/linux-deb?version=latest"
-sudo dpkg -i /tmp/roomler-cli.deb
-# `roomler` is now on $PATH at /usr/bin/roomler
+curl -fsSL -o /tmp/meshharbor-cli.deb \
+  "https://meshharbor.itachi.fans/api/tunnel/installer/linux-deb?version=latest"
+sudo dpkg -i /tmp/meshharbor-cli.deb
+# `mh` is now on $PATH at /usr/bin/mh
 ```
 
 > **On an arm64 host** (FR-97 P7b) the same two downloads are
@@ -171,35 +171,35 @@ sudo dpkg -i /tmp/roomler-cli.deb
 > `tunnel-v0.3.0-rc.266` depends on `libssl3t64`, the name Debian 13 and
 > Ubuntu 24.04 use; these two call it `libssl3`. `dpkg -i` leaves the package
 > unconfigured, and `apt-get -f install` removes it again. Use the plain tarball
-> below. `install.sh --role tunnel` checks that `roomler` runs and falls back
+> below. `install.sh --role tunnel` checks that `meshharbor` runs and falls back
 > to the tarball on its own. The CLI now declares both names
-> (`agents/roomler-cli/Cargo.toml`), so from tunnel-v0.4.149 on, the `.deb` is
+> (`agents/meshharbor-cli/Cargo.toml`), so from tunnel-v0.4.149 on, the `.deb` is
 > built to install on both generations.
 
 **Linux (plain tarball):**
 
 ```bash
-curl -fsSL -o /tmp/roomler-cli.tar.gz \
-  "https://roomler.ai/api/tunnel/installer/linux-x86_64?version=latest"
+curl -fsSL -o /tmp/meshharbor-cli.tar.gz \
+  "https://meshharbor.itachi.fans/api/tunnel/installer/linux-x86_64?version=latest"
 # RETIRED-NAME-ANCHOR(2): archive directory name, frozen (see above).
-mkdir -p ~/.local/opt && tar -C ~/.local/opt -xzf /tmp/roomler-cli.tar.gz
-ln -sf ~/.local/opt/roomler-tunnel-*-x86_64-unknown-linux-gnu/roomler ~/.local/bin/
+mkdir -p ~/.local/opt && tar -C ~/.local/opt -xzf /tmp/meshharbor-cli.tar.gz
+ln -sf ~/.local/opt/meshharbor-tunnel-*-x86_64-unknown-linux-gnu/meshharbor ~/.local/bin/
 ```
 
 **macOS (universal tarball):**
 
 ```bash
-curl -fsSL -o /tmp/roomler-cli.tar.gz \
-  "https://roomler.ai/api/tunnel/installer/macos?version=latest"
+curl -fsSL -o /tmp/meshharbor-cli.tar.gz \
+  "https://meshharbor.itachi.fans/api/tunnel/installer/macos?version=latest"
 # RETIRED-NAME-ANCHOR(2): archive directory name, frozen (see above).
-mkdir -p ~/.local/opt && tar -C ~/.local/opt -xzf /tmp/roomler-cli.tar.gz
-ln -sf ~/.local/opt/roomler-tunnel-*-universal-apple-darwin/roomler ~/.local/bin/
+mkdir -p ~/.local/opt && tar -C ~/.local/opt -xzf /tmp/meshharbor-cli.tar.gz
+ln -sf ~/.local/opt/meshharbor-tunnel-*-universal-apple-darwin/meshharbor ~/.local/bin/
 ```
 
 Verify:
 
 ```powershell
-roomler --version   # → roomler 0.4.16
+mh --version   # → meshharbor 0.4.16
 ```
 
 ---
@@ -209,25 +209,25 @@ roomler --version   # → roomler 0.4.16
 In the admin UI:
 
 1. **Admin → Tenant → Tunnels**.
-2. Click **"Issue enrollment token"**. A 10-minute single-use JWT appears with a copy-pasteable `roomler enroll …` command.
+2. Click **"Issue enrollment token"**. A 10-minute single-use JWT appears with a copy-pasteable `mh enroll …` command.
 3. Paste-and-run on `OPERATOR-LAPTOP`:
 
 ```powershell
-roomler enroll `
-  --server https://roomler.ai `
+mh enroll `
+  --server https://meshharbor.itachi.fans `
   --token <jwt-from-admin-ui> `
   --name "Operator laptop"
 ```
 
 <!-- RETIRED-NAME-ANCHOR(5): the CLI resolves its config through
-     ProjectDirs::from("ai", "roomler", "roomler-tunnel"). That segment is
+     ProjectDirs::from("ai", "meshharbor", "meshharbor-tunnel"). That segment is
      frozen: it holds the ENROLLED credential on tunnel only hosts, and
-     renaming it strands every one of them. agents/roomler-cli/src/config.rs -->
+     renaming it strands every one of them. agents/meshharbor-cli/src/config.rs -->
 This writes the long-lived `TunnelClient` JWT to:
 
-- Windows: `%APPDATA%\roomler\roomler-tunnel\config.toml`
-- Linux: `~/.config/roomler-tunnel/config.toml`
-- macOS: `~/Library/Application Support/roomler-tunnel/config.toml`
+- Windows: `%APPDATA%\meshharbor\meshharbor-tunnel\config.toml`
+- Linux: `~/.config/meshharbor-tunnel/config.toml`
+- macOS: `~/Library/Application Support/meshharbor-tunnel/config.toml`
 
 Verify in **Admin → Tenant → Tunnels** that the row appears.
 
@@ -269,7 +269,7 @@ Do not ship that to production — it disables the policy gate.
 In a regular (non-elevated) PowerShell on `OPERATOR-LAPTOP`:
 
 ```powershell
-roomler forward `
+mh forward `
   --agent <AGENT-CORP-hex from Admin → Agents> `
   --local 5432 `
   --remote db.intranet.corp:5432
@@ -278,7 +278,7 @@ roomler forward `
 Expected output:
 
 ```
-INFO connecting websocket   ws_base=wss://roomler.ai/ws
+INFO connecting websocket   ws_base=wss://meshharbor.itachi.fans/ws
 INFO websocket connected
 INFO rc:tunnel.opened   session_id=… transport=quic-v1 ice_servers=N quic=true
 INFO QUIC: server provided TURN creds — establishing QUIC-over-TURN (relay)
@@ -307,12 +307,12 @@ A foreground `forward` dies with its terminal, and even `forward --daemon`
 daemon start — the set-and-forget form of the same forward:
 
 ```powershell
-# Requires a local roomlerd (the device service) running on this host.
-roomler route add --agent <AGENT-CORP-hex> --local 5432 --remote db.intranet.corp:5432
-roomler route ls          # ID / KIND / NODE / LOCAL / REMOTE / TRANSPORT / STATE
-roomler route disable pg  # keep it declared, stop the listener
-roomler route enable pg   # also clears a terminal `failed` state
-roomler route rm pg       # remove entirely
+# Requires a local meshharbord (the device service) running on this host.
+mh route add --agent <AGENT-CORP-hex> --local 5432 --remote db.intranet.corp:5432
+mh route ls          # ID / KIND / NODE / LOCAL / REMOTE / TRANSPORT / STATE
+mh route disable pg  # keep it declared, stop the listener
+mh route enable pg   # also clears a terminal `failed` state
+mh route rm pg       # remove entirely
 ```
 
 Omit `--remote` for a supervised SOCKS5 listener toward the node. The
@@ -333,7 +333,7 @@ Omit `--remote` for a supervised SOCKS5 listener toward the node. The
 route to a switched-off machine read `active (fl-N)` with **no** listener
 and every connect refused, indistinguishable from a healthy one; its
 daemon log looped `tunnel session failed; retrying flow=fl-N`. A
-`roomler` or companion older than the fix reading a newer daemon shows such
+`meshharbor` or companion older than the fix reading a newer daemon shows such
 a route as `pending` / `backoff Ss: <error>` — true, less specific — because
 the wire keeps its state words and only adds fields. The desktop app's
 **Routes** page shows and manages the same list, appending `· device
@@ -346,9 +346,9 @@ Notes:
   LocalAPI (same trust boundary as the existing ephemeral
   `forward --daemon` / consent verbs — the logged-in user of an enrolled
   host is its operator).
-- On Linux fleet hosts where `roomlerd` runs as a root systemd unit, the
+- On Linux fleet hosts where `meshharbord` runs as a root systemd unit, the
   LocalAPI socket is root-owned — prefix the CLI with `sudo`
-  (`sudo roomler route ls`).
+  (`sudo mh route ls`).
 - Routes do not survive a crash-loop auto-rollback to a pre-P6 daemon
   build (the older binary rewrites the config without the field).
 
@@ -361,12 +361,12 @@ reach* (still policy-gated per destination, TCP **and** UDP):
 
 ```powershell
 # Exit through one agent:
-roomler socks5 --agent <AGENT-CORP-hex> --local 127.0.0.1:1080
+mh socks5 --agent <AGENT-CORP-hex> --local 127.0.0.1:1080
 
 # Mesh mode — omit --agent: one proxy for the whole tenant.
 # Address an agent by NAME (or 24-hex id) as the SOCKS hostname,
 # and LAN IPs route to whichever agent advertises that subnet:
-roomler socks5 --local 127.0.0.1:1080
+mh socks5 --local 127.0.0.1:1080
 curl --socks5-hostname 127.0.0.1:1080 http://agent-corp:8080/
 ```
 
@@ -376,8 +376,8 @@ longest-prefix LAN routing, transports): [tunnels.md](tunnels.md).
 
 <!-- RETIRED-NAME-ANCHOR(4): this note EXISTS to explain the retired name, so
      the name has to appear in it. FR-21 D6. -->
-> Naming note: the standalone binary is `roomler` (a `roomler-tunnel` alias is
-> still shipped); on daemon hosts `roomler` is a shim into `roomlerd cli` —
+> Naming note: the standalone binary is `mh` (a `meshharbor-tunnel` alias is
+> still shipped); on daemon hosts `mh` is a shim into `meshharbord cli` —
 > same commands either way.
 
 ---
@@ -391,14 +391,14 @@ longest-prefix LAN routing, transports): [tunnels.md](tunnels.md).
 ```powershell
 # RETIRED-NAME-ANCHOR: names the tracing target of pre-FR-21 builds. Renaming
 # a lib renames its target, so an operator on an older CLI needs the old one.
-$env:RUST_LOG = "roomler_cli=debug,tunnel_core=info"   # pre-FR-21 builds: roomler_tunnel=debug
-roomler forward --agent … --local 5432 --remote db.intranet:5432
+$env:RUST_LOG = "meshharbor_cli=debug,tunnel_core=info"   # pre-FR-21 builds: meshharbor_tunnel=debug
+mh forward --agent … --local 5432 --remote db.intranet:5432
 ```
 
 **Per-flow debug logs on the agent**: tail the existing log file:
 
-- Windows: `%LOCALAPPDATA%\roomler\roomler\data\logs\roomlerd.log.<date>`
-- Linux: `~/.local/share/roomler/logs/roomlerd.log.<date>` (root daemon: `/root/.local/share/roomler/logs/`; `journalctl -u roomler` works too)
+- Windows: `%LOCALAPPDATA%\meshharbor\meshharbor\data\logs\meshharbord.log.<date>`
+- Linux: `~/.local/share/meshharbor/logs/meshharbord.log.<date>` (root daemon: `/root/.local/share/meshharbor/logs/`; `journalctl -u meshharbor` works too)
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
@@ -418,20 +418,20 @@ If you want to validate the wire end-to-end before involving the corp network:
 # Shell 1 — start a TCP listener on the local machine
 python -m http.server 9999
 # Shell 2 — agent (already installed + enrolled per §2)
-roomlerd run
+meshharbord run
 # Shell 3 — tunnel-client (already installed + enrolled per §4)
-roomler forward --agent <same-machine agent hex> --local 8000 --remote 127.0.0.1:9999
+mh forward --agent <same-machine agent hex> --local 8000 --remote 127.0.0.1:9999
 # Shell 4 — test
 curl.exe http://127.0.0.1:8000/
 ```
 
-The HTTP listing from python's server should appear via the tunnel. Bytes flow: curl → 127.0.0.1:8000 (tunnel-client) → wss://roomler.ai (signalling only) → WebRTC DC → agent dial → 127.0.0.1:9999 (python).
+The HTTP listing from python's server should appear via the tunnel. Bytes flow: curl → 127.0.0.1:8000 (tunnel-client) → wss://meshharbor.itachi.fans (signalling only) → WebRTC DC → agent dial → 127.0.0.1:9999 (python).
 
 ---
 
 ## 9. Tear down / revoke
 
-**Stop the forward**: Ctrl-C on `roomler forward`. The agent's side closes automatically; audit row recorded.
+**Stop the forward**: Ctrl-C on `mh forward`. The agent's side closes automatically; audit row recorded.
 
 **Revoke a tunnel-client** (operator left the team, laptop lost, etc.): **Admin → Tenant → Tunnels → click client → Revoke**. The next WS read on that client gets a `rc:tunnel.revoked` message and the WS closes; further enrollment attempts with the same `machine_id` are rejected.
 
@@ -443,15 +443,15 @@ The HTTP listing from python's server should appear via the tunnel. Bytes flow: 
 
 ## 10. Keeping the CLI current
 
-**Tunnel-only hosts** (installed just the `roomler` CLI — the tunnel-client role,
+**Tunnel-only hosts** (installed just the `mh` CLI — the tunnel-client role,
 no daemon MSI) self-update in place:
 
 ```
-roomler self-update            # download + verify + swap the running exe
-roomler self-update --check    # report the latest version without installing
+mh self-update            # download + verify + swap the running exe
+mh self-update --check    # report the latest version without installing
 ```
 
-It polls `roomler.ai/api/tunnel/latest-release` and downloads the matching build
+It polls `meshharbor.itachi.fans/api/tunnel/latest-release` and downloads the matching build
 through the same corp-AV-friendly proxy. Before it swaps anything it checks two
 things (FR-97 P6b):
 
@@ -468,12 +468,12 @@ Then it installs by host:
 
 | Host | Installs |
 |---|---|
-| Windows | the zip's `roomler.exe` replaces the running exe |
-| macOS, and Linux where no package owns the binary | the tarball's `roomler`, written beside the running binary and renamed over it, so the swap is atomic |
+| Windows | the zip's `mh.exe` replaces the running exe |
+| macOS, and Linux where no package owns the binary | the tarball's `mh`, written beside the running binary and renamed over it, so the swap is atomic |
 | Linux where the binary came from the `.deb` (`install.sh --role tunnel` on Debian and Ubuntu) | `dpkg -i` of the verified `.deb`, so dpkg's record names the version on disk |
 
 A binary in a root-owned directory needs root to replace, and `dpkg -i` always
-does: run `sudo roomler self-update`. Under `sudo` it reads the server from your
+does: run `sudo mh self-update`. Under `sudo` it reads the server from your
 own config, not root's (which has no enrollment), unless `--config` names one. The
 Linux and macOS install works from tunnel-v0.4.149, the first tunnel release after
 P6b (field-verified on it: a tarball, a `.deb` and a Mac); an older CLI there, such as
@@ -481,8 +481,8 @@ rc.266, points at the manual download.
 This is the single updater for tunnel-only hosts.
 
 **Daemon hosts** (installed a "be-accessed" role — the agent MSI) do NOT need
-this: since the node-stack unification the daemon MSI *carries* `roomler.exe`, so
-the daemon's own auto-update refreshes the CLI alongside `roomlerd` on every MSI
-upgrade. `roomler self-update` there is refused, and names `roomlerd self-update`
-instead: that `roomler` is a shim over the daemon, and the MSI is the source of
+this: since the node-stack unification the daemon MSI *carries* `mh.exe`, so
+the daemon's own auto-update refreshes the CLI alongside `meshharbord` on every MSI
+upgrade. `mh self-update` there is refused, and names `meshharbord self-update`
+instead: that `mh` is a shim over the daemon, and the MSI is the source of
 truth.

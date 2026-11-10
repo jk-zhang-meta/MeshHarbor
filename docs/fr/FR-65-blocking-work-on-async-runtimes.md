@@ -1,11 +1,11 @@
 # FR-65 — Blocking work on async runtimes: measure first, then remove
 
-**Issue:** [#1255](https://github.com/gjovanov/roomler-ai/issues/1255) · **Status:** **P0 shipped and field-read on 0.4.60** — the watch (0.4.55, 100 ms bar, #1259), `open_ms`/`other_ms` (#1279), the `work_us` decision + off-thread encoder open (#1284), and the verdict as a pure tested type (#1304). **1 of 7 criteria ticked**: the rest are measurement criteria and none of them has its measurement yet, which is the point of an FR whose first rule is *measure first*. · **Parent:** the FR-62/63/64 rate-control arc (plan `immutable-doodling-neumann`)
+**Issue:** [#1255](https://github.com/jk-zhang-meta/MeshHarbor/issues/1255) · **Status:** **P0 shipped and field-read on 0.4.60** — the watch (0.4.55, 100 ms bar, #1259), `open_ms`/`other_ms` (#1279), the `work_us` decision + off-thread encoder open (#1284), and the verdict as a pure tested type (#1304). **1 of 7 criteria ticked**: the rest are measurement criteria and none of them has its measurement yet, which is the point of an FR whose first rule is *measure first*. · **Parent:** the FR-62/63/64 rate-control arc (plan `immutable-doodling-neumann`)
 
 ## Goal
 
 Find and remove synchronous vendor/OS calls that run on tokio worker threads in
-`roomlerd`'s hot paths — **driven by measurement, never by inference**. The
+`meshharbord`'s hot paths — **driven by measurement, never by inference**. The
 deliverable that matters most is the instrument: today nothing measures a stall,
 so stalls are found by accident, months late.
 
@@ -25,7 +25,7 @@ apply/rebuild phase was untimed and because a per-heartbeat *average* dilutes or
 hides a single outlier. It became visible only when `set_ms` was instrumented
 for FR-62 A0, for an unrelated reason.
 
-⚠️ `roomlerd` is **one process**: overlay, DERP, tunnels, the WS control plane
+⚠️ `meshharbord` is **one process**: overlay, DERP, tunnels, the WS control plane
 and RC share runtimes. A long synchronous call taxes all of them, which is why an
 encoder stall is not only an RC problem.
 
@@ -75,7 +75,7 @@ loop), rather than three wraps.
 >
 > 🔑 **Why the extraction, and not a test where the code was:** the decision
 > lived inline in `media_pump_ffmpeg_dc`, which is behind `ffmpeg-encoder` — a
-> NON-default feature, so `cargo test -p roomlerd --lib` compiled none of it.
+> NON-default feature, so `cargo test -p meshharbord --lib` compiled none of it.
 > The rule deciding whether an operator ever sees a stall was unreachable in
 > the lane everyone runs, which is the same shape as the defect this FR exists
 > to fix: an instrument nobody can check is not an instrument.
@@ -101,7 +101,7 @@ A per-iteration wall-clock watch on the pump loop, threshold-gated.
   per-phase breakdown, session id, `constrained`, encoder name and target.
 - ⚠️ **Rate-limit the WARN** (≤1 per 2 s per session): a stall storm that floods
   its own log becomes a second performance problem.
-- Kill switch `pump_stall_watch` (env `ROOMLERD_PUMP_STALL_WATCH`, default **on** —
+- Kill switch `pump_stall_watch` (env `MESHHARBORD_PUMP_STALL_WATCH`, default **on** —
   it is near-free, and its absence is what cost us the months above).
 
 **Generalisation is deliberately deferred**: P0 ships pump-local. If P3 needs the
@@ -190,7 +190,7 @@ Observed on neo16: a `caps-probe` **child process every ~10 s for nearly three
 hours**. `detect()` is meant to cache in a `OnceLock`, so this is a bug — a
 process spawn plus a driver enumeration on a repeating timer. Measure the spawn
 rate per host, find the trigger (unshared cache vs. genuine re-detection), fix.
-⚠️ Fleet-wide counts via `roomler exec` are a **biased sample** (only exec-enabled,
+⚠️ Fleet-wide counts via `mh exec` are a **biased sample** (only exec-enabled,
 reachable hosts) — say so rather than generalising.
 
 ### P5 — the remaining synchronous calls, triaged by measurement
@@ -235,7 +235,7 @@ of each is to produce a number.
       detection — `an_encoder_open_is_a_stall_and_is_attributed_to_open`,
       `a_gate_skip_is_attributed_to_gate_not_to_other`,
       `an_untimed_phase_surfaces_as_other_and_blames_nobody`. Re-run locally
-      2026-09-23: `cargo test -p roomlerd --lib` → **11 `encode::stall` tests, all
+      2026-09-23: `cargo test -p meshharbord --lib` → **11 `encode::stall` tests, all
       ok**.*
       *The **negative controls** are what make that set mean anything, and they
       are named here so nobody has to rediscover which ones they are:
@@ -251,7 +251,7 @@ of each is to produce a number.
       and none of them can be closed this way.*
       ⚠️ The reason this needed a PR at all is the FR's own subject: the rule
       lived inline behind `ffmpeg-encoder`, **not a default feature**, so
-      `cargo test -p roomlerd --lib` compiled none of it — the instrument this FR
+      `cargo test -p meshharbord --lib` compiled none of it — the instrument this FR
       exists to turn on was unreachable in the lane everyone runs. `pub mod stall`
       is now declared unconditionally; verified on master, not assumed, because a
       checked-out test file that no module registers runs nothing and still

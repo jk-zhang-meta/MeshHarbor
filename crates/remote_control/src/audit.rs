@@ -30,6 +30,16 @@ pub struct AuditSink {
 }
 
 impl AuditSink {
+    /// In-memory test seam: no database client, flusher task, or network IO.
+    /// Downstream crate tests explicitly enable `test-fixtures` because a
+    /// dependency does not inherit their `cfg(test)`.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[doc(hidden)]
+    pub fn channel_for_tests() -> (Self, mpsc::Receiver<RemoteAuditEvent>) {
+        let (tx, rx) = mpsc::channel(AUDIT_BUFFER);
+        (Self { tx }, rx)
+    }
+
     /// Spawns the background flusher. Drop the returned JoinHandle on shutdown.
     pub fn spawn(db: Database) -> (Self, tokio::task::JoinHandle<()>) {
         let coll: Collection<RemoteAuditEvent> = db.collection(RemoteAuditEvent::COLLECTION);

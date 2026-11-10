@@ -314,7 +314,7 @@ pub fn ensure_writable(dir: &Path) -> Result<(), String> {
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
     let probe = dir.join(format!(
-        ".roomler-write-probe-{}-{nanos}",
+        ".meshharbor-write-probe-{}-{nanos}",
         std::process::id()
     ));
     match std::fs::OpenOptions::new()
@@ -703,7 +703,7 @@ mod tests {
         for bad in [
             r"\\?\GLOBALROOT\Device\HarddiskVolume1\x",
             r"\\?\C:\Users\alice\Drops",
-            r"\\.\pipe\roomler",
+            r"\\.\pipe\meshharbor",
             r"\??\C:\x",
             r"\Device\HarddiskVolume1",
             "//?/C:/x",
@@ -726,7 +726,7 @@ mod tests {
             r"\\127.0.0.1\d$",
             r"\\host\ADMIN$\x",
             r"\\host\IPC$",
-            r"\\host\pipe\roomler",
+            r"\\host\pipe\meshharbor",
             r"\\host\print$\x",
             r"\\host",
             r"\\host\",
@@ -762,7 +762,7 @@ mod tests {
             r"C:\Windows\Temp",
             r"c:/windows/temp",
             r"C:\Windows",
-            r"C:\Program Files\Roomler\drops",
+            r"C:\Program Files\MeshHarbor\drops",
             r"C:\Program Files (x86)\x",
         ] {
             let err = resolve(bad, &alice(), &win()).unwrap_err();
@@ -847,7 +847,7 @@ mod tests {
             r"D:\Drops",
             r"C:\Users\bob\Drops",
             r"C:\Users",
-            r"C:\ProgramData\roomler\drops",
+            r"C:\ProgramData\meshharbor\drops",
             r"\\nas\public\drops",
         ] {
             let err = resolve(bad, &sys, &win()).unwrap_err();
@@ -1077,7 +1077,7 @@ mod tests {
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "roomler-files-dir-{tag}-{}-{}",
+            "meshharbor-files-dir-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

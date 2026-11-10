@@ -4,10 +4,10 @@
 // tested as plain functions. The wiring (the stage's listeners, its
 // `touch-action`) lives in useRemoteControl.ts and RemoteControl.vue.
 
-/** Viewer-side kill switch: `localStorage['roomler-rc-touch'] = 'legacy'` gives
+/** Viewer-side kill switch: `localStorage['meshharbor-rc-touch'] = 'legacy'` gives
  *  the stage back to the browser's own touch handling (pan and zoom over the
  *  picture), as before FR-111. */
-export const TOUCH_STORAGE_KEY = 'roomler-rc-touch'
+export const TOUCH_STORAGE_KEY = 'meshharbor-rc-touch'
 
 /** The stage's `touch-action`. `none` hands every touch on the picture to the
  *  viewer: without it a touch browser takes a drag over as a pan, ends the
@@ -70,7 +70,7 @@ export function releaseForCancelledPointer(
 export type TouchMode = 'direct' | 'trackpad'
 
 /** Where this browser remembers the touch mode. */
-export const TOUCH_MODE_STORAGE_KEY = 'roomler-rc-touch-mode'
+export const TOUCH_MODE_STORAGE_KEY = 'meshharbor-rc-touch-mode'
 
 /** A screen whose shorter side is under this many CSS px is a phone's. */
 export const PHONE_SHORT_SIDE_PX = 600

@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn is_deterministic_for_same_config_path() {
-        let p = PathBuf::from("/tmp/test-roomler/config.toml");
+        let p = PathBuf::from("/tmp/test-meshharbor/config.toml");
         let a = derive_machine_id(&p);
         let b = derive_machine_id(&p);
         assert_eq!(a, b);

@@ -32,11 +32,11 @@ use axum::{
     http::{header, request::Parts},
 };
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::models::{Agent, AgentStatus};
+use meshharbor_remote_control::models::{Agent, AgentStatus};
 
 use axum::extract::FromRef;
 
-use roomler_core::ApiError;
+use meshharbor_core::ApiError;
 
 use crate::FleetState;
 
@@ -288,7 +288,7 @@ pub async fn accepted_agent(
         .find_any_in_tenant(tenant_id, agent_id)
         .await
         .map_err(|e| match e {
-            roomler_ai_services::dao::base::DaoError::NotFound => {
+            meshharbor_services::dao::base::DaoError::NotFound => {
                 tracing::info!(%agent_id, %tenant_id, "refusing agent-authed request: row gone");
                 ApiError::Unauthorized("no such device".to_string())
             }
@@ -313,7 +313,7 @@ pub async fn accepted_agent(
         return Err(ApiError::Unauthorized(reason.to_string()));
     }
 
-    roomler_core::admission::authorize_user_id(&fleet.core, agent.owner_user_id, None).await?;
+    meshharbor_core::admission::authorize_user_id(&fleet.core, agent.owner_user_id, None).await?;
 
     Ok((agent_id, tenant_id, agent))
 }

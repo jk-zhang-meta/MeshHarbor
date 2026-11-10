@@ -8,7 +8,7 @@
 //!   billed (`billing_events`, the `saas` module's — `not_measured` without
 //!   it): an org's MRR at an instant is the recurring part of its newest
 //!   paid invoice whose period covers that instant, normalised to a month
-//!   (`roomler_ai_services::billing`). The list-price figure
+//!   (`meshharbor_services::billing`). The list-price figure
 //!   (`Plan::price_monthly_cents` × seats) stays, labelled an ESTIMATE —
 //!   for an org with no invoice yet it is the only figure there is.
 //! * **Months.** New, expansion, contraction and churned MRR per month per
@@ -40,8 +40,9 @@ use axum::{
     extract::{Query, State},
 };
 use bson::{Bson, DateTime, doc, oid::ObjectId};
-use roomler_ai_db::models::tenant::Plan;
-use roomler_ai_services::{
+use meshharbor_core::growth::ExclusionSet;
+use meshharbor_db::models::tenant::Plan;
+use meshharbor_services::{
     billing::{self, MonthMovements, OrgBilling},
     dao::{
         billing_event::{BillingEvent, BillingEventDao, BillingKind},
@@ -49,7 +50,6 @@ use roomler_ai_services::{
         growth_digest::ExcludedCounts,
     },
 };
-use roomler_core::growth::ExclusionSet;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -817,7 +817,7 @@ pub async fn get_revenue(
                             .map(|p| rfc3339_ms(p.attempted_at.timestamp_millis())),
                         rows: rows.len() as u64,
                         truncated: rows.len() as i64
-                            >= roomler_ai_services::dao::billing_event::MAX_ROWS,
+                            >= meshharbor_services::dao::billing_event::MAX_ROWS,
                     },
                     now: now_by.into_values().collect(),
                     months: month_blocks(&months, &live, &frozen, Some(first), now_ms),
@@ -945,7 +945,7 @@ pub async fn get_revenue(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_ai_services::billing::Paid;
+    use meshharbor_services::billing::Paid;
 
     fn ms(s: &str) -> i64 {
         DateTime::parse_rfc3339_str(s).unwrap().timestamp_millis()

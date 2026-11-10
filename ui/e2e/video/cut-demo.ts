@@ -11,7 +11,7 @@
  * an end card. Nothing inside a segment is cut or sped up: the time from
  * Connect to the first frame is what the viewer sees.
  *
- * Captions come from ROOMLER_DEMO_CAPTIONS, one per device, separated by `|`.
+ * Captions come from MESHHARBOR_DEMO_CAPTIONS, one per device, separated by `|`.
  * ffmpeg is the one on PATH, or WSL's when Windows has none.
  */
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -31,13 +31,13 @@ if (!process.argv[2] || !existsSync(join(TAKE, 'take.json'))) {
 /** Seconds of the page shown before Connect — the sidebar is collapsed by then. */
 const LEAD_S = 1.2
 /** Seconds of the desktop held full screen. */
-const HOLD_S = Number(process.env.ROOMLER_DEMO_HOLD_S || 5.5)
+const HOLD_S = Number(process.env.MESHHARBOR_DEMO_HOLD_S || 5.5)
 const XFADE_S = 0.35
 const CARD_S = 3.2
 const FPS = 30
 
 const take: Take = JSON.parse(readFileSync(join(TAKE, 'take.json'), 'utf8'))
-const captions = (process.env.ROOMLER_DEMO_CAPTIONS || '').split('|').map((s) => s.trim())
+const captions = (process.env.MESHHARBOR_DEMO_CAPTIONS || '').split('|').map((s) => s.trim())
 
 const useWsl = !Bun.which('ffmpeg') && !!Bun.which('wsl')
 /** A path on ffmpeg's command line, as the ffmpeg that will read it sees it. */
@@ -55,7 +55,7 @@ function ffPath(p: string): string {
   return p.replace(/\\/g, '/').replace(/^([A-Za-z]):/, '$1\\:')
 }
 const FONT =
-  process.env.ROOMLER_DEMO_FONT ||
+  process.env.MESHHARBOR_DEMO_FONT ||
   (useWsl ? '/mnt/c/Windows/Fonts/segoeuib.ttf' : process.platform === 'win32' ? 'C\\:/Windows/Fonts/segoeuib.ttf' : '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf')
 
 const frames = [...take.frames].sort((a, b) => a.t - b.t)
@@ -63,7 +63,7 @@ const frames = [...take.frames].sort((a, b) => a.t - b.t)
 type Seg = { device: string; list: string; dur: number; full: number | null }
 
 /**
- * Regions to blur, per device: ROOMLER_DEMO_BLUR is JSON,
+ * Regions to blur, per device: MESHHARBOR_DEMO_BLUR is JSON,
  * `[{"device": 0, "phase": "page" | "full", "rect": [x, y, w, h]}, …]`, in pixels of the 1920×1080
  * frame. A desktop's widgets and banners sit at different places in the page and full screen, so
  * each region is given for the phase it applies to: `page` until just after the fullscreen click,
@@ -79,11 +79,11 @@ type Seg = { device: string; list: string; dur: number; full: number | null }
  * 0 with it. Run that, and run it on the unblurred cut first, so the check is shown able to fail.
  */
 type Blur = { device: number; phase: 'page' | 'full'; rect: [number, number, number, number] }
-const blurs: Blur[] = JSON.parse(process.env.ROOMLER_DEMO_BLUR || '[]')
+const blurs: Blur[] = JSON.parse(process.env.MESHHARBOR_DEMO_BLUR || '[]')
 const EDGE_S = 0.3
 
-writeFileSync(join(TAKE, 'card1.txt'), 'roomler.ai')
-writeFileSync(join(TAKE, 'card2.txt'), process.env.ROOMLER_DEMO_TAGLINE || 'Open source · self-hostable')
+writeFileSync(join(TAKE, 'card1.txt'), 'meshharbor.itachi.fans')
+writeFileSync(join(TAKE, 'card2.txt'), process.env.MESHHARBOR_DEMO_TAGLINE || 'Open source · self-hostable')
 take.devices.forEach((d, i) => writeFileSync(join(TAKE, `cap${i}.txt`), captions[i] || d.name))
 
 /** One segment per device, holding each desktop `holdS` seconds full screen. */
@@ -202,9 +202,9 @@ function render(segs: Seg[], out: string, crf: string) {
   ])
 }
 
-const mp4 = join(OUT, 'roomler-demo.mp4')
+const mp4 = join(OUT, 'meshharbor-demo.mp4')
 const gif = join(OUT, 'demo-preview.gif')
-render(segments(HOLD_S, 'mp4'), mp4, process.env.ROOMLER_DEMO_CRF || '20')
+render(segments(HOLD_S, 'mp4'), mp4, process.env.MESHHARBOR_DEMO_CRF || '20')
 
 // The GIF gets its own, shorter cut, rendered near-lossless first. A GIF pays
 // for every pixel that changes, and a lock screen's wallpaper is often a
@@ -216,7 +216,7 @@ render(segments(HOLD_S, 'mp4'), mp4, process.env.ROOMLER_DEMO_CRF || '20')
 // stream's codec noise.
 // In OUT, not TAKE: a second cut of the same take into another folder must not overwrite it.
 const gifSrc = join(OUT, 'gif-source.mp4')
-render(segments(Number(process.env.ROOMLER_DEMO_GIF_HOLD_S || 3.5), 'gif'), gifSrc, '14')
+render(segments(Number(process.env.MESHHARBOR_DEMO_GIF_HOLD_S || 3.5), 'gif'), gifSrc, '14')
 function toGif(width: string, fps: string, out: string) {
   ff([
     '-hide_banner', '-loglevel', 'error', '-y', '-i', argPath(gifSrc),
@@ -228,17 +228,17 @@ function toGif(width: string, fps: string, out: string) {
     argPath(out),
   ])
 }
-toGif(process.env.ROOMLER_DEMO_GIF_WIDTH || '1280', process.env.ROOMLER_DEMO_GIF_FPS || '12', gif)
+toGif(process.env.MESHHARBOR_DEMO_GIF_WIDTH || '1280', process.env.MESHHARBOR_DEMO_GIF_FPS || '12', gif)
 
 // The blog's copy is smaller on purpose: the docs build refuses any image over
 // MAX_IMAGE_BYTES (3 MiB, ui/docs/theme/images.ts), because the site serves
 // images as they are. The README has no such limit and keeps the full one.
 const blogGif = join(OUT, 'demo-preview-blog.gif')
-toGif(process.env.ROOMLER_DEMO_BLOG_GIF_WIDTH || '560', process.env.ROOMLER_DEMO_BLOG_GIF_FPS || '6', blogGif)
+toGif(process.env.MESHHARBOR_DEMO_BLOG_GIF_WIDTH || '560', process.env.MESHHARBOR_DEMO_BLOG_GIF_FPS || '6', blogGif)
 
 const mb = (p: string) => (statSync(p).size / 1e6).toFixed(1)
 console.log(`\n  ${mp4}  ${mb(mp4)} MB\n  ${gif}  ${mb(gif)} MB\n  ${blogGif}  ${mb(blogGif)} MB`)
 if (statSync(blogGif).size > 3 * 1024 * 1024) {
-  console.error(`\n  ⚠️  ${blogGif} is over the docs build's 3 MiB image limit — lower ROOMLER_DEMO_BLOG_GIF_WIDTH or _FPS`)
+  console.error(`\n  ⚠️  ${blogGif} is over the docs build's 3 MiB image limit — lower MESHHARBOR_DEMO_BLOG_GIF_WIDTH or _FPS`)
   process.exit(1)
 }

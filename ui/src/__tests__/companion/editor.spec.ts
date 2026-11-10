@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 /**
- * FR-85 P5c — roomler-desktop's Edit view, driven in jsdom against a mocked
+ * FR-85 P5c — meshharbor-desktop's Edit view, driven in jsdom against a mocked
  * Tauri `invoke`.
  *
  * Like `recordings.spec.ts`, it loads the REAL `index.html` section and the
  * REAL `editor.js` and evaluates them the way the webview does. What it pins
  * is what the view promises: pieces that always cover the recording, split
  * and cut and sped up from the timeline; every change saved as the edit list
- * roomlerd reads (the SAME file `agents/roomlerd/src/recording/edit.rs`
+ * meshharbord reads (the SAME file `agents/meshharbord/src/recording/edit.rs`
  * parses in its own test, so the two ends cannot drift apart); an export
  * that waits for the last save, reports its progress, and says how it ended
  * in words.
@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const DESKTOP = join(HERE, '..', '..', '..', '..', 'agents', 'roomler-desktop')
+const DESKTOP = join(HERE, '..', '..', '..', '..', 'agents', 'meshharbor-desktop')
 const FRONT = join(DESKTOP, 'src', 'front')
 const HTML = readFileSync(join(FRONT, 'index.html'), 'utf8')
 const EDITOR = readFileSync(join(FRONT, 'editor.js'), 'utf8')
@@ -47,7 +47,7 @@ type Editor = {
   state: () => { segs: Seg[]; sound: Sound; selected: number } | null
 }
 
-const NAME = 'Roomler Recording 2026-09-26 10-00-00.mp4'
+const NAME = 'MeshHarbor Recording 2026-09-26 10-00-00.mp4'
 const $ = (id: string) => document.getElementById(id) as HTMLElement
 const settle = () => vi.advanceTimersByTimeAsync(0)
 
@@ -85,7 +85,7 @@ function mount(invoke: Invoke, scripts: string[] = [EDITOR]): Editor {
   video.pause = vi.fn()
   video.play = vi.fn(() => Promise.resolve())
   const w = window as unknown as Record<string, unknown>
-  w.Roomler = {
+  w.MeshHarbor = {
     $: (id: string) => document.getElementById(id),
     invoke,
     show: (el: HTMLElement | null) => el && (el.hidden = false),
@@ -97,7 +97,7 @@ function mount(invoke: Invoke, scripts: string[] = [EDITOR]): Editor {
     fmtBytes,
   }
   for (const s of scripts) window.eval(s)
-  return w.RoomlerEditor as Editor
+  return w.MeshHarborEditor as Editor
 }
 
 /** A service with one 10 s recording, recording what the page asked. */
@@ -140,8 +140,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   document.body.innerHTML = ''
-  delete (window as unknown as Record<string, unknown>).RoomlerEditor
-  delete (window as unknown as Record<string, unknown>).RoomlerRecordings
+  delete (window as unknown as Record<string, unknown>).MeshHarborEditor
+  delete (window as unknown as Record<string, unknown>).MeshHarborRecordings
 })
 
 describe('the pieces (pure)', () => {
@@ -181,7 +181,7 @@ describe('the pieces (pure)', () => {
     expect(e.splitAt(s, e.MIN_PIECE_MS)).toHaveLength(2)
   })
 
-  it("measures the export as roomlerd's time map does", () => {
+  it("measures the export as meshharbord's time map does", () => {
     const e = ed()
     // The plan's oracle: keep 2 s · cut 2 s · 4 s at 4× · keep 2 s = 5 s.
     const s: Seg[] = [
@@ -193,7 +193,7 @@ describe('the pieces (pure)', () => {
     expect(e.outputMs(s)).toBe(5000)
   })
 
-  it('writes exactly the list roomlerd reads (the shared fixture)', () => {
+  it('writes exactly the list meshharbord reads (the shared fixture)', () => {
     const e = ed()
     const list = e.toEditList(NAME, e.fromEditList(FIXTURE, 10_000).segs, {
       originalVolume: 0.8,
@@ -230,7 +230,7 @@ describe('the pieces (pure)', () => {
     // A shorter recording: clipped to it.
     const short = e.fromEditList(FIXTURE, 5000)
     expect(short.segs.at(-1)).toEqual({ start_ms: 4000, end_ms: 5000, action: 'speed', speed: 4 })
-    // A longer one: what follows the last piece is kept, as roomlerd keeps
+    // A longer one: what follows the last piece is kept, as meshharbord keeps
     // it. A kept last piece goes on; after a speed-up the rest is a piece of
     // its own.
     const long = e.fromEditList(FIXTURE, 12_000)
@@ -442,7 +442,7 @@ describe('the view', () => {
       refused: null,
       name: NAME,
       done: {
-        path: 'C:\\Users\\me\\Videos\\Roomler\\Roomler Recording 2026-09-26 10-00-00 (edited).mp4',
+        path: 'C:\\Users\\me\\Videos\\MeshHarbor\\MeshHarbor Recording 2026-09-26 10-00-00 (edited).mp4',
         duration_ms: 5000,
         bytes: 1024 * 1024,
         audio: 'original_and_music',
@@ -451,7 +451,7 @@ describe('the view', () => {
     await vi.advanceTimersByTimeAsync(400)
     expect($('ed-progress').hidden).toBe(true)
     expect($('ed-result-text').textContent).toBe(
-      "Saved as Roomler Recording 2026-09-26 10-00-00 (edited).mp4 — 0:05, 1.0 MiB, with the recording's sound and the music.",
+      "Saved as MeshHarbor Recording 2026-09-26 10-00-00 (edited).mp4 — 0:05, 1.0 MiB, with the recording's sound and the music.",
     )
     expect(($('ed-split') as HTMLButtonElement).disabled).toBe(false) // editable again
     ;($('ed-result-show') as HTMLButtonElement).click()
@@ -459,7 +459,7 @@ describe('the view', () => {
     // The page opens the new file by its BARE name; the companion joins it
     // with the daemon's folder, never with a path the page supplies.
     expect(svc.calls.find((c) => c.name === 'cmd_recording_open')!.payload).toEqual({
-      name: 'Roomler Recording 2026-09-26 10-00-00 (edited).mp4',
+      name: 'MeshHarbor Recording 2026-09-26 10-00-00 (edited).mp4',
       reveal: true,
     })
   })
@@ -518,7 +518,7 @@ describe('the view', () => {
     await e.open(NAME)
     ;($('ed-cut') as HTMLButtonElement).click()
     const closed = vi.fn()
-    document.addEventListener('roomler:editor-closed', closed)
+    document.addEventListener('meshharbor:editor-closed', closed)
     ;($('ed-back') as HTMLButtonElement).click()
     await settle()
     expect(saves(svc.calls)).toHaveLength(1)
@@ -536,7 +536,7 @@ describe('the Edit button in the list', () => {
       record_dir: null,
       state: { available: true, active: false, duration_ms: 0, bytes: 0 },
       listing: {
-        dir: 'C:\\Users\\me\\Videos\\Roomler',
+        dir: 'C:\\Users\\me\\Videos\\MeshHarbor',
         items: [{ name: NAME, bytes: 1024, duration_ms: 10_000, started_at: '2026-09-26T08:00:00Z', origin: 'local' }],
       },
     }
@@ -552,7 +552,7 @@ describe('the Edit button in the list', () => {
       const svc = service({ cmd_media_available: () => engine, cmd_recordings_view: () => recordingsView() })
       mount(svc.invoke, [EDITOR, RECORDINGS])
       await settle()
-      const rec = (window as unknown as Record<string, { render: (v: unknown) => void }>).RoomlerRecordings
+      const rec = (window as unknown as Record<string, { render: (v: unknown) => void }>).MeshHarborRecordings
       rec.render(recordingsView())
       await settle()
       expect(edit().hidden).toBe(!engine)
@@ -563,7 +563,7 @@ describe('the Edit button in the list', () => {
     const svc = service({ cmd_recordings_view: () => recordingsView() })
     mount(svc.invoke, [EDITOR, RECORDINGS])
     await settle()
-    const rec = (window as unknown as Record<string, { render: (v: unknown) => void }>).RoomlerRecordings
+    const rec = (window as unknown as Record<string, { render: (v: unknown) => void }>).MeshHarborRecordings
     rec.render(recordingsView())
     edit().click()
     await settle()

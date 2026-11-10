@@ -33,12 +33,12 @@
 //!   `url_inspection:<day>` (the UTC day of the read).
 
 use bson::DateTime;
-use roomler_ai_services::dao::{
+use meshharbor_core::Core;
+use meshharbor_services::dao::{
     base::DaoResult,
     growth::{GrowthDao, PulledDay},
     growth_content::{FeedPost, GrowthContentDao, Inspection},
 };
-use roomler_core::Core;
 use serde::Serialize;
 use tracing::warn;
 
@@ -49,7 +49,7 @@ use crate::{
 
 /// The `growth_pulls` sources of a feed read and of a day's URL inspections,
 /// spelled in the core DAO so the host's alert rules read the same rows.
-pub use roomler_ai_services::dao::growth::{
+pub use meshharbor_services::dao::growth::{
     CONTENT_SOURCE, URL_INSPECTION_SOURCE as INSPECTION_SOURCE,
 };
 pub const CYCLE_HOUR_UTC: u32 = 2;
@@ -259,11 +259,11 @@ pub fn feed_url_allowed(url: &str) -> bool {
 async fn read_feed(url: &str) -> Result<Vec<FeedPost>, String> {
     if !feed_url_allowed(url) {
         return Err(
-            "feed refused: its URL is not https (ROOMLER__GROWTH__BLOG_FEED_URL)".to_string(),
+            "feed refused: its URL is not https (MESHHARBOR__GROWTH__BLOG_FEED_URL)".to_string(),
         );
     }
     let http = reqwest::Client::builder()
-        .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
         .timeout(FEED_TIMEOUT)
         // A redirect is the site moving its feed: said, never followed.
         .redirect(reqwest::redirect::Policy::none())
@@ -277,7 +277,7 @@ async fn read_feed(url: &str) -> Result<Vec<FeedPost>, String> {
     let status = resp.status().as_u16();
     if (300..400).contains(&status) {
         return Err(format!(
-            "feed unreachable: HTTP {status}, a redirect, not followed (point ROOMLER__GROWTH__BLOG_FEED_URL at its target)"
+            "feed unreachable: HTTP {status}, a redirect, not followed (point MESHHARBOR__GROWTH__BLOG_FEED_URL at its target)"
         ));
     }
     if status == 404 {
@@ -333,11 +333,11 @@ pub async fn run_once(
     let content = GrowthContentDao::new(&core.db);
     let mut report = ContentReport::default();
     let today = day_str(pull_schedule::date_of(now));
-    let due = |pulls: &[roomler_ai_services::dao::growth::GrowthPull]| {
+    let due = |pulls: &[meshharbor_services::dao::growth::GrowthPull]| {
         now.timestamp_millis() >= pull_schedule::cycle_start_ms(now, CYCLE_HOUR_UTC)
             && pulls
                 .first()
-                .is_none_or(|p| p.status != roomler_ai_services::dao::growth::PullStatus::Ok)
+                .is_none_or(|p| p.status != meshharbor_services::dao::growth::PullStatus::Ok)
     };
 
     if due(&dao.pulls_between(CONTENT_SOURCE, &today, &today).await?) {
@@ -507,14 +507,14 @@ mod tests {
     /// The feed exactly as `ui/docs/theme/xml.ts` writes it.
     const FEED: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en">
-  <id>https://roomler.ai/blog/</id>
-  <title>Roomler blog</title>
-  <link rel="self" type="application/atom+xml" href="https://roomler.ai/blog/feed.xml"/>
+  <id>https://meshharbor.itachi.fans/blog/</id>
+  <title>MeshHarbor blog</title>
+  <link rel="self" type="application/atom+xml" href="https://meshharbor.itachi.fans/blog/feed.xml"/>
   <updated>2026-10-13T14:49:49Z</updated>
   <entry>
-    <id>https://roomler.ai/blog/self-hosted-teamviewer-alternative/</id>
+    <id>https://meshharbor.itachi.fans/blog/self-hosted-teamviewer-alternative/</id>
     <title>A self-hosted TeamViewer alternative &amp; why &lt;it&gt; matters</title>
-    <link rel="alternate" type="text/html" href="https://roomler.ai/blog/self-hosted-teamviewer-alternative/"/>
+    <link rel="alternate" type="text/html" href="https://meshharbor.itachi.fans/blog/self-hosted-teamviewer-alternative/"/>
     <published>2026-09-25T22:45:13Z</published>
     <updated>2026-10-01T08:00:00Z</updated>
     <author><name>Goran</name></author>
@@ -522,26 +522,26 @@ mod tests {
     <content type="html">&lt;title&gt;not the title&lt;/title&gt;&lt;p&gt;Body&lt;/p&gt;</content>
   </entry>
   <entry>
-    <id>https://roomler.ai/blog/ssh-without-port-forwarding/</id>
+    <id>https://meshharbor.itachi.fans/blog/ssh-without-port-forwarding/</id>
     <title>SSH without port forwarding</title>
-    <link rel="alternate" type="text/html" href="https://roomler.ai/blog/ssh-without-port-forwarding/"/>
+    <link rel="alternate" type="text/html" href="https://meshharbor.itachi.fans/blog/ssh-without-port-forwarding/"/>
     <published>2026-10-19T06:00:00+02:00</published>
     <updated>2026-10-19T06:00:00+02:00</updated>
     <author><name>Goran</name></author>
   </entry>
   <entry>
-    <id>https://roomler.ai/docs/x/</id>
+    <id>https://meshharbor.itachi.fans/docs/x/</id>
     <title>Not a post</title>
-    <link rel="alternate" type="text/html" href="https://roomler.ai/docs/x/"/>
+    <link rel="alternate" type="text/html" href="https://meshharbor.itachi.fans/docs/x/"/>
     <published>2026-10-01T00:00:00Z</published>
   </entry>
   <entry>
     <title>No date</title>
-    <link rel="alternate" type="text/html" href="https://roomler.ai/blog/undated/"/>
+    <link rel="alternate" type="text/html" href="https://meshharbor.itachi.fans/blog/undated/"/>
   </entry>
   <entry>
     <title>Plain http</title>
-    <link rel="alternate" type="text/html" href="http://roomler.ai/blog/plain/"/>
+    <link rel="alternate" type="text/html" href="http://meshharbor.itachi.fans/blog/plain/"/>
     <published>2026-10-02T00:00:00Z</published>
   </entry>
   <entry>
@@ -560,7 +560,7 @@ mod tests {
         assert_eq!(a.path, "/blog/self-hosted-teamviewer-alternative/");
         assert_eq!(
             a.url,
-            "https://roomler.ai/blog/self-hosted-teamviewer-alternative/"
+            "https://meshharbor.itachi.fans/blog/self-hosted-teamviewer-alternative/"
         );
         assert_eq!(
             a.title,
@@ -612,13 +612,15 @@ mod tests {
     /// site.
     #[test]
     fn the_feed_url_must_be_https() {
-        assert!(feed_url_allowed("https://roomler.ai/blog/feed.xml"));
+        assert!(feed_url_allowed(
+            "https://meshharbor.itachi.fans/blog/feed.xml"
+        ));
         assert!(feed_url_allowed("http://127.0.0.1:5000/blog/feed.xml"));
         assert!(feed_url_allowed("http://localhost/blog/feed.xml"));
         assert!(feed_url_allowed("http://[::1]:8080/blog/feed.xml"));
         for bad in [
-            "http://roomler.ai/blog/feed.xml",
-            "ftp://roomler.ai/feed.xml",
+            "http://meshharbor.itachi.fans/blog/feed.xml",
+            "ftp://meshharbor.itachi.fans/feed.xml",
             "file:///etc/passwd",
             "not a url",
             "",

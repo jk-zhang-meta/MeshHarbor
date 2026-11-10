@@ -20,7 +20,7 @@
 //! Upstream tracking: <https://github.com/webrtc-rs/webrtc/issues/690>
 //! — closed 2026-01-31 as **NOT_PLANNED**.
 //!
-//! For our `roomlerd` deployed on corporate Windows endpoints
+//! For our `meshharbord` deployed on corporate Windows endpoints
 //! that block ALL outbound UDP but allow outbound TCP/443, the only
 //! viable relay path is TURNS-over-TLS-over-TCP. This module adapts
 //! a `tokio_rustls::client::TlsStream<TcpStream>` into the
@@ -148,8 +148,8 @@ impl TcpTurnConn {
     /// wrap the result for use by `turn::client::Client`.
     ///
     /// `hostname` is used for SNI + server certificate verification.
-    /// For an enrollment URL `turns:coturn.roomler.ai:443?transport=tcp`,
-    /// pass `"coturn.roomler.ai"`.
+    /// For an enrollment URL `turns:coturn.meshharbor.itachi.fans:443?transport=tcp`,
+    /// pass `"coturn.meshharbor.itachi.fans"`.
     pub async fn connect_tls(tcp: TcpStream, hostname: &str) -> Result<Self, std::io::Error> {
         let local = tcp.local_addr()?;
         let remote = tcp.peer_addr()?;

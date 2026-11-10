@@ -25,7 +25,7 @@ abroad" arrangement, but on hardware you own.
 | **Be an exit** | IPv4 and IPv6, from a system (root) install | IPv4 only, and only where Windows has its Hyper-V NAT (Pro, Enterprise); IPv6 through a Windows exit is blocked rather than leaked. Windows **Home** cannot be one | IPv4, and IPv6 where the Mac has a global IPv6 route, from the root half |
 
 A machine that cannot be an exit offers nothing and says why — in
-`roomler status` and in the dashboard's routes table — rather than offering a
+`mh status` and in the dashboard's routes table — rather than offering a
 route that every client taking it would lose its internet through.
 
 :::warning Offering and approving are separate on purpose

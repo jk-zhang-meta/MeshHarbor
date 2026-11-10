@@ -2224,21 +2224,37 @@ impl CarrierPlane {
                  a straggler's lingering port)"
             );
         }
-        let had_binds = {
+        let (keepalive_task, mut old_binds) = {
             let mut st = self.lock();
-            if let Some(h) = st.keepalive.take() {
-                h.abort();
-            }
+            let keepalive_task = st.keepalive.take();
+            // F3a: clear cached SrflxShared (`punch: Option<(SocketAddr, Arc<UdpSocket>)>`)
+            // BEFORE re-binding; otherwise `srflx_watch` retains a clone of the old
+            // punch socket Arc across `ensure_bound()` and forces a port band-walk.
+            st.srflx_watch.send_replace(SrflxShared::default());
             // Fresh STUN sink: retired recv loops keep the dead sender; the
             // loops adopted below clone the new one — the same discipline as
             // the device-side `replace_stun_events`.
             let (tx, rx) = mpsc::channel(16);
             st.stun_tx = tx;
             st.stun_rx = Some(rx);
-            // Dropping the binds aborts the recv loops and releases the
-            // plane's own socket Arcs.
-            st.binds.take().is_some()
+            (keepalive_task, st.binds.take())
         };
+        let had_binds = old_binds.is_some();
+        // F3a: abort AND `.await` both the srflx keepalive task and all per-socket
+        // recv loops outside the mutex so every `Arc<UdpSocket>` clone owned by
+        // background tasks is guaranteed dropped before `ensure_bound()` re-binds.
+        if let Some(h) = keepalive_task {
+            h.abort();
+            let _ = h.await;
+        }
+        if let Some(mut b) = old_binds.take() {
+            let tasks = std::mem::take(&mut b.tasks);
+            drop(b);
+            for t in tasks {
+                t.abort();
+                let _ = t.await;
+            }
+        }
         // The srflx result was measured through sockets that no longer
         // exist — the next `ensure_srflx` re-gathers on the new binds.
         *self.srflx_gate.lock().await = false;
@@ -2540,6 +2556,16 @@ mod tests {
         let got1 =
             pump_until_delivered(&a1, &mut b1_rx, &synthetic_ipv4(ip_a1, ip_b1, b"org-one")).await;
         assert_eq!(&got1[20..], b"org-one");
+        // Under heavy CPU load, `pump_until_delivered` may emit multiple org-1
+        // retries while the initial X25519 handshake completes; drain any
+        // trailing org-1 duplicates before testing cross-org isolation of org-2.
+        while let Ok(Some(dup)) = timeout(Duration::from_millis(50), b1_rx.recv()).await {
+            assert_eq!(
+                &dup[20..],
+                b"org-one",
+                "unexpected non-org-1 packet while draining org-1 handshake pump retries"
+            );
+        }
         let got2 =
             pump_until_delivered(&a2, &mut b2_rx, &synthetic_ipv4(ip_a2, ip_b2, b"org-two")).await;
         assert_eq!(&got2[20..], b"org-two");
@@ -3033,8 +3059,12 @@ mod tests {
     /// Binds REAL host ports (band-walking if a local daemon holds the base);
     /// on a host with no usable LAN interface both callers get `None`, and
     /// the ≤1 assertion still locks the invariant.
+    static REAL_PORT_BIND_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
     #[tokio::test]
     async fn ensure_bound_binds_once_under_concurrent_attach() {
+        let _serial = REAL_PORT_BIND_LOCK.lock().await;
         let plane = CarrierPlane::new();
         let (a, b) = tokio::join!(plane.ensure_bound(), plane.ensure_bound());
         assert!(
@@ -3052,6 +3082,78 @@ mod tests {
             (None, None) => {} // no usable LAN interface (CI container)
             _ => panic!("one caller bound while the other didn't"),
         }
+    }
+
+    /// F3a — after `ensure_srflx` populates `srflx_watch` (`punch: Some(...)`)
+    /// and spawns the `keepalive` task holding `Arc<UdpSocket>`, `run_rebuild`
+    /// must clear `srflx_watch` and `.await` the aborted tasks BEFORE
+    /// `ensure_bound()`, re-binding the exact same stable port with
+    /// `direct_bind_walks == 0`.
+    #[tokio::test]
+    async fn rebuild_after_srflx_rebinds_same_port_with_zero_bind_walks() {
+        let _serial = REAL_PORT_BIND_LOCK.lock().await;
+        let plane = CarrierPlane::new();
+        let Some(v1) = plane.ensure_bound().await else {
+            return; // CI container with no usable non-loopback LAN interface
+        };
+        let lan_ip = v1.my_ips[0];
+        let endpoints_before = v1.endpoints.clone();
+
+        // Spawn a local RFC 5389 STUN responder on `lan_ip:0` returning public
+        // XOR-MAPPED-ADDRESS `203.0.113.42:43620` so `ensure_srflx` succeeds
+        // and enters ESTABLISHED (`srflx_watch` + `keepalive` both holding `punch`).
+        let stun_sock = tokio::net::UdpSocket::bind((lan_ip, 0)).await.unwrap();
+        let stun_addr = stun_sock.local_addr().unwrap();
+        let stun_srv = tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            while let Ok((n, peer)) = stun_sock.recv_from(&mut buf).await {
+                if n < 20 {
+                    continue;
+                }
+                let mut resp = [0u8; 32];
+                resp[0..2].copy_from_slice(&0x0101u16.to_be_bytes()); // Binding Success
+                resp[2..4].copy_from_slice(&12u16.to_be_bytes()); // attr len
+                resp[4..8].copy_from_slice(&0x2112_A442u32.to_be_bytes()); // magic cookie
+                resp[8..20].copy_from_slice(&buf[8..20]); // transaction ID
+                resp[20..22].copy_from_slice(&0x0020u16.to_be_bytes()); // XOR-MAPPED-ADDRESS
+                resp[22..24].copy_from_slice(&8u16.to_be_bytes());
+                resp[24] = 0;
+                resp[25] = 0x01; // IPv4
+                resp[26..28].copy_from_slice(&(43620u16 ^ 0x2112u16).to_be_bytes());
+                let xip = u32::from(Ipv4Addr::new(203, 0, 113, 42)) ^ 0x2112_A442u32;
+                resp[28..32].copy_from_slice(&xip.to_be_bytes());
+                let _ = stun_sock.send_to(&resp, peer).await;
+            }
+        });
+
+        let stun_url = format!("stun:{stun_addr}");
+        let shared = plane.ensure_srflx(&[stun_url], b"f3a-test-key").await;
+        assert!(
+            shared.punch.is_some(),
+            "local STUN server must populate punch socket in SrflxShared"
+        );
+        // Release caller copies (mirroring runtime Teardown) while plane's own
+        // `srflx_watch` + `keepalive` + `PlaneBinds` still hold `Arc<UdpSocket>`.
+        drop(shared);
+        drop(v1);
+
+        let walks_before = crate::evidence::DIRECT_BIND_WALKS.load(Ordering::Relaxed);
+        plane.clone().run_rebuild("f3a-unit-test").await;
+        let walks_after = crate::evidence::DIRECT_BIND_WALKS.load(Ordering::Relaxed);
+
+        let v2 = plane.view().expect("plane must re-bind after rebuild");
+        assert_eq!(
+            walks_after - walks_before,
+            0,
+            "rebuild must release all socket Arcs before re-binding (direct_bind_walks != 0)"
+        );
+        assert_eq!(
+            v2.endpoints, endpoints_before,
+            "rebuild must re-bind the exact same stable port"
+        );
+
+        stun_srv.abort();
+        let _ = stun_srv.await;
     }
 
     /// #2220 — the field case, on loopback. The plane's socket sends to ports

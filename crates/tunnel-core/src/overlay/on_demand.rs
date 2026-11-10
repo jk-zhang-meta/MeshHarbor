@@ -144,10 +144,10 @@ impl OnDemandConfig {
     }
 
     /// Parse configuration from node environment variables:
-    /// * `ROOMLERD_OVERLAY_ON_DEMAND` / `OVERLAY_ON_DEMAND`: `"1" | "true" | "on" | "yes"`
-    /// * `ROOMLERD_OVERLAY_ON_DEMAND_IDLE_SECS` / `OVERLAY_ON_DEMAND_IDLE_SECS`: seconds (`u64`, min 1s)
-    /// * `ROOMLERD_OVERLAY_ON_DEMAND_DEFER_INITIAL` / `OVERLAY_ON_DEMAND_DEFER_INITIAL`: `"0" | "false" | "off" | "no"` to disable initial deferral
-    /// * `ROOMLERD_OVERLAY_ON_DEMAND_WAKE_TIMEOUT_SECS` / `OVERLAY_ON_DEMAND_WAKE_TIMEOUT_SECS`: seconds (`u64`, min 1s)
+    /// * `MESHHARBORD_OVERLAY_ON_DEMAND` / `OVERLAY_ON_DEMAND`: `"1" | "true" | "on" | "yes"`
+    /// * `MESHHARBORD_OVERLAY_ON_DEMAND_IDLE_SECS` / `OVERLAY_ON_DEMAND_IDLE_SECS`: seconds (`u64`, min 1s)
+    /// * `MESHHARBORD_OVERLAY_ON_DEMAND_DEFER_INITIAL` / `OVERLAY_ON_DEMAND_DEFER_INITIAL`: `"0" | "false" | "off" | "no"` to disable initial deferral
+    /// * `MESHHARBORD_OVERLAY_ON_DEMAND_WAKE_TIMEOUT_SECS` / `OVERLAY_ON_DEMAND_WAKE_TIMEOUT_SECS`: seconds (`u64`, min 1s)
     pub fn from_env() -> Self {
         let enabled = crate::env::flag("OVERLAY_ON_DEMAND", false);
         if !enabled {

@@ -599,7 +599,7 @@ mod linux {
         /// `TUNSETOFFLOAD` accepted checksum + TSO: the kernel may hand us TCP
         /// super-packets, and takes coalesced ones back.
         tso: bool,
-        /// ... and UDP segmentation (opt-in, `ROOMLERD_OVERLAY_TUN_USO`).
+        /// ... and UDP segmentation (opt-in, `MESHHARBORD_OVERLAY_TUN_USO`).
         uso: bool,
         /// Cleared for the device's life the first time the kernel refuses a
         /// coalesced write; runs are then written segment by segment.
@@ -1321,7 +1321,7 @@ mod tun_bench {
     //! `OverlayRuntime::run`'s. Needs a kernel with TUN and CAP_NET_ADMIN +
     //! CAP_SYS_ADMIN over a fresh network namespace (`unshare -Urn`, `lo` up);
     //! `--ignored`. Env: MH_BENCH_SECS (10), MH_BENCH_STREAMS (1);
-    //! `ROOMLERD_OVERLAY_TUN_OFFLOAD=0` measures the plain device.
+    //! `MESHHARBORD_OVERLAY_TUN_OFFLOAD=0` measures the plain device.
     use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::Arc;
     use std::time::{Duration, Instant};

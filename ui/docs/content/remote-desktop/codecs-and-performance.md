@@ -1,11 +1,11 @@
 ---
 title: Codecs and performance
-description: Which video codecs and hardware encoders Roomler uses on Windows, macOS and Linux — and what to change when a remote session feels slow.
+description: Which video codecs and hardware encoders MeshHarbor uses on Windows, macOS and Linux — and what to change when a remote session feels slow.
 tags: [remote-desktop, performance, codecs, encoders, windows, macos, linux]
 order: 4
 ---
 
-Roomler encodes the remote screen as video and decodes it in your browser. Which
+MeshHarbor encodes the remote screen as video and decodes it in your browser. Which
 encoder it uses depends on the machine's hardware, and it is chosen by
 **probing** rather than by guessing.
 
@@ -35,8 +35,8 @@ can really do and advertises only what succeeded.
 Force one if you need to:
 
 ```powershell
-roomlerd run --encoder hardware   # try hardware first
-roomlerd run --encoder software   # skip hardware entirely
+meshharbord run --encoder hardware   # try hardware first
+meshharbord run --encoder software   # skip hardware entirely
 ```
 
 @macos

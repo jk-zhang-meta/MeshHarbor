@@ -6,18 +6,18 @@ use axum::{
     extract::{Path, State},
 };
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::{DeviceShareGrant, DeviceShareOperation};
-use roomler_ai_remote_control::{
-    models::{ConsentMode, EndReason},
-    permissions::Permissions,
-    signaling::ClientMsg,
-};
-use roomler_ai_services::dao::device_share::DeviceShareDao;
-use roomler_core::{
+use meshharbor_core::{
     ApiError,
     device_share::{SharedDeviceAccess, authorize_grant},
     extractors::auth::AuthUser,
 };
+use meshharbor_db::models::{DeviceShareGrant, DeviceShareOperation};
+use meshharbor_remote_control::{
+    models::{ConsentMode, EndReason},
+    permissions::Permissions,
+    signaling::ClientMsg,
+};
+use meshharbor_services::dao::device_share::DeviceShareDao;
 use serde::Serialize;
 
 #[derive(Clone)]
@@ -98,7 +98,7 @@ pub(crate) async fn scope_for_request(
     if !access
         .agent
         .capabilities
-        .has_rpc(roomler_ai_remote_control::models::RpcCap::SharedSessionLease)
+        .has_rpc(meshharbor_remote_control::models::RpcCap::SharedSessionLease)
     {
         return Err(
             "Shared sessions require an agent enforcing the short shared-session lease".into(),
@@ -161,11 +161,11 @@ pub(crate) async fn session_authz(
         tenant_name: Some(tenant.name.clone()),
         may_record: false,
         rc_overlay: false,
-        session_policy: roomler_ai_mod_fleet::hub::OrgPolicy::Read(crate::session_policy::wire(
+        session_policy: meshharbor_mod_fleet::hub::OrgPolicy::Read(crate::session_policy::wire(
             &tenant.settings.rc_session,
         )),
         max_duration: Some(std::time::Duration::from_secs(max_secs)),
-        idle_secs: roomler_ai_remote_control::models::stricter_idle_limit(
+        idle_secs: meshharbor_remote_control::models::stricter_idle_limit(
             tenant.settings.rc_limits.idle_secs,
             access.agent.access_policy.idle_limit_secs(),
         ),
@@ -186,7 +186,7 @@ pub(crate) async fn live_scope_valid(
         if !a
             .agent
             .capabilities
-            .has_rpc(roomler_ai_remote_control::models::RpcCap::SharedSessionLease)
+            .has_rpc(meshharbor_remote_control::models::RpcCap::SharedSessionLease)
             || a.grant.revision != scope.revision
             || !within_grant(&a.grant, scope.asked)
             || policy.effective_consent_mode() != scope.consent_mode
@@ -196,7 +196,7 @@ pub(crate) async fn live_scope_valid(
             return Err(ApiError::Forbidden("Shared device policy changed".into()));
         }
         let tenant = state.tenants.base.find_by_id(a.agent.tenant_id).await?;
-        use roomler_ai_db::models::RcFeaturePolicy;
+        use meshharbor_db::models::RcFeaturePolicy;
         if effective.contains(Permissions::FILES)
             && (tenant.settings.rc_session.files == RcFeaturePolicy::Off
                 || (tenant.settings.rc_session.files == RcFeaturePolicy::Ask
@@ -269,9 +269,9 @@ pub struct SharedRemoteDevice {
     pub display_name: Option<String>,
     /// Public key for this exact device; used by the existing end-to-end answer verifier.
     pub peer_auth_key: String,
-    pub os: roomler_ai_remote_control::models::OsKind,
-    pub capabilities: roomler_ai_remote_control::models::AgentCaps,
-    pub permissions: roomler_ai_db::models::DeviceSharePermissions,
+    pub os: meshharbor_remote_control::models::OsKind,
+    pub capabilities: meshharbor_remote_control::models::AgentCaps,
+    pub permissions: meshharbor_db::models::DeviceSharePermissions,
     pub share_grant_id: String,
     pub expires_at_ms: i64,
 }
@@ -336,6 +336,7 @@ mod tests {
             expires_at: now,
             revoked_at: None,
             revision: 0,
+            ssh_account: None,
         };
         g.permissions.files_read = true;
         assert!(!within_grant(&g, Permissions::FILES));
@@ -348,7 +349,7 @@ mod tests {
 /// Authenticated agent only. No heartbeat, cached approval, or user frame renews authority.
 pub(crate) async fn renew_lease(
     state: &RemoteState,
-    ctx: &roomler_core::AgentCtx,
+    ctx: &meshharbor_core::AgentCtx,
     session: ObjectId,
     grant: ObjectId,
     epoch: String,
@@ -389,7 +390,7 @@ pub(crate) async fn renew_lease(
         return;
     }
     let _ = ctx.tx.try_send(
-        roomler_ai_remote_control::signaling::ServerMsg::SharedLeaseRenewal {
+        meshharbor_remote_control::signaling::ServerMsg::SharedLeaseRenewal {
             session_id: session,
             grant_id: grant,
             lease_epoch: epoch,

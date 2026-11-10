@@ -13,7 +13,7 @@
 //! | the vault does not serve the organization | deny, `not_served` |
 //! | the role is not one of its live roles | deny, `unknown_role` |
 //! | the device's `os` is not a spelling the rows store | deny, the reason |
-//! | otherwise | Cedar's `role:assume`, with the person in a `Group` per roomler role they hold |
+//! | otherwise | Cedar's `role:assume`, with the person in a `Group` per meshharbor role they hold |
 //!
 //! ⚠️ The decision is RECORDED before it is answered, with the request as
 //! it was decided (for `simulate`'s replay): a decision that cannot be
@@ -21,7 +21,7 @@
 
 use async_trait::async_trait;
 use bson::DateTime;
-use roomler_core::{RoleAsk, RoleVerdict, SessionGate};
+use meshharbor_core::{RoleAsk, RoleVerdict, SessionGate};
 
 use crate::VaultState;
 use crate::model::VaultAuditEvent;

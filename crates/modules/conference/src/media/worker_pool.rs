@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 use mediasoup::worker::{Worker, WorkerSettings};
 use mediasoup::worker_manager::WorkerManager;
-use roomler_ai_config::MediasoupSettings;
+use meshharbor_config::MediasoupSettings;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{error, info};
 

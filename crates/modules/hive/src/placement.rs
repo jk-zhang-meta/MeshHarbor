@@ -21,9 +21,9 @@
 //! | P2c-4: deciding again keeps a member that still qualifies before it takes another, and a smaller `min` keeps the first | a copy that need not move does not: tagging an unrelated device must not move anyone's session |
 
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_remote_control::hive::HiveReplicaRole;
-use roomler_ai_remote_control::models::{Agent, RpcCap};
-use roomler_ai_services::dao::base::DaoResult;
+use meshharbor_remote_control::hive::HiveReplicaRole;
+use meshharbor_remote_control::models::{Agent, RpcCap};
+use meshharbor_services::dao::base::DaoResult;
 
 use crate::HiveState;
 use crate::model::{MemberState, ReplicaMember, Replicaset, SessionOrigin};
@@ -218,7 +218,7 @@ pub(crate) async fn old_primary_role(
         .await
     {
         Ok(a) => a,
-        Err(roomler_ai_services::dao::base::DaoError::NotFound) => return Ok(leaving),
+        Err(meshharbor_services::dao::base::DaoError::NotFound) => return Ok(leaving),
         Err(e) => return Err(e),
     };
     let new = fleet.find_live_in_tenant(s.tenant_id, new_primary).await?;
@@ -470,7 +470,7 @@ async fn replace_one(
         .await
     {
         Ok(a) => a,
-        Err(roomler_ai_services::dao::base::DaoError::NotFound) => return Ok(false),
+        Err(meshharbor_services::dao::base::DaoError::NotFound) => return Ok(false),
         Err(e) => return Err(e),
     };
     let rows = state
@@ -647,7 +647,7 @@ pub async fn place_unplaced(
     }
     let primary = match state.fleet.agents.find_live_in_tenant(tid, device).await {
         Ok(a) => a,
-        Err(roomler_ai_services::dao::base::DaoError::NotFound) => return Ok(0),
+        Err(meshharbor_services::dao::base::DaoError::NotFound) => return Ok(0),
         Err(e) => return Err(e),
     };
     let mut placed = 0;

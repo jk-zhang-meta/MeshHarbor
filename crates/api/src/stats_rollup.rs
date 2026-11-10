@@ -29,7 +29,7 @@ use bson::{Bson, DateTime, Document, doc};
 use tracing::{debug, info};
 
 use crate::state::AppState;
-use roomler_ai_services::dao::stats::{
+use meshharbor_services::dao::stats::{
     CALL_BUCKET_SECS, STATS_CALL, STATS_CALL_USER, STATS_MACHINE, STATS_RELAY, STATS_USAGE,
     STATS_USAGE_1D, STATS_USAGE_1H,
 };
@@ -616,7 +616,7 @@ pub fn spawn_stats_rollup(state: AppState) {
         loop {
             tokio::time::sleep(interval).await;
             if let Some(redis) = &state.redis_pubsub {
-                let key = format!("roomler:stats-rollup:{}", state.db.name());
+                let key = format!("meshharbor:stats-rollup:{}", state.db.name());
                 let ttl = ROLLUP_INTERVAL_SECS.saturating_sub(5);
                 match redis.try_claim(&key, ttl).await {
                     Ok(true) => {}

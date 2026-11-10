@@ -8,9 +8,9 @@
  *  Matched by equality, never as a prefix: an unknown word is ignored. */
 export const MOUSE_REL_CAP = 'mouse-rel'
 
-/** Viewer-side kill switch: `localStorage['roomler-rc-relative-mouse'] = 'off'`
+/** Viewer-side kill switch: `localStorage['meshharbor-rc-relative-mouse'] = 'off'`
  *  hides the relative-mouse control, whatever the agent advertises. */
-export const RELATIVE_MOUSE_STORAGE_KEY = 'roomler-rc-relative-mouse'
+export const RELATIVE_MOUSE_STORAGE_KEY = 'meshharbor-rc-relative-mouse'
 
 /** Does this agent take `mouse_rel` / `mouse_press`? Only one that says so:
  *  an older agent cannot parse either frame. */
@@ -63,9 +63,9 @@ export function createRelAccumulator(): RelAccumulator {
 }
 
 /** FR-109 P3 — viewer-side kill switch for the auto-switch alone:
- *  `localStorage['roomler-rc-relative-auto'] = 'off'` keeps relative mode
+ *  `localStorage['meshharbor-rc-relative-auto'] = 'off'` keeps relative mode
  *  manual (the toolbar control still works). */
-export const RELATIVE_AUTO_STORAGE_KEY = 'roomler-rc-relative-auto'
+export const RELATIVE_AUTO_STORAGE_KEY = 'meshharbor-rc-relative-auto'
 
 export function relativeAutoSwitchedOff(storage: Pick<Storage, 'getItem'> | null | undefined): boolean {
   try {
@@ -80,7 +80,7 @@ export function relativeAutoSwitchedOff(storage: Pick<Storage, 'getItem'> | null
 export interface AutoEnterState {
   /** The agent advertises `mouse-rel` and the viewer has not switched it off. */
   allowed: boolean
-  /** `roomler-rc-relative-auto` is `off`. */
+  /** `meshharbor-rc-relative-auto` is `off`. */
   autoOff: boolean
   /** The agent said `cursor:hide` and no `cursor:pos` has come since. */
   cursorHidden: boolean

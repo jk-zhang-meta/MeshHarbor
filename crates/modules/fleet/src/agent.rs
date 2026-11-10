@@ -11,13 +11,13 @@ use axum::{
     extract::{Path, Query, State},
 };
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::models::{AccessPolicy, AgentStatus, InstallInfo, OsKind};
-use roomler_ai_services::dao::base::PaginationParams;
-use roomler_ai_services::quota;
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::models::{AccessPolicy, AgentStatus, InstallInfo, OsKind};
+use meshharbor_services::dao::base::PaginationParams;
+use meshharbor_services::quota;
 use serde::{Deserialize, Serialize};
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::FleetState;
 
@@ -30,11 +30,11 @@ const ENROLLMENT_TTL_SECS: u64 = 600; // 10 minutes per §11.1
 /// `pub(crate)` so the sibling device-management surfaces in the same subsystem
 /// (`routes::overlay_route`, `routes::tunnel`) gate their destructive endpoints
 /// on the same `MANAGE_AGENTS` bit rather than re-deriving the check.
-// FR-69 P3 — the gate itself is `roomler_core::guards::require_permission`
+// FR-69 P3 — the gate itself is `meshharbor_core::guards::require_permission`
 // (the `chat` module's room routes need it too); re-exported so every
 // `super::remote_control::require_permission(&state, …)` in this crate reads
 // as before — an `&FleetState` argument derefs to `&Core`.
-pub(crate) use roomler_core::guards::require_permission;
+pub(crate) use meshharbor_core::guards::require_permission;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Agent enrollment
@@ -56,7 +56,7 @@ pub struct EnrollmentTokenResponse {
 #[derive(Debug, Default, Deserialize)]
 pub struct EnrollmentTokenRequest {
     /// FR-104 — let this token also anchor the Windows device it enrolls for
-    /// SYSTEM exec: the wizard's elevated `roomlerd anchor create`, with the
+    /// SYSTEM exec: the wizard's elevated `meshharbord anchor create`, with the
     /// same pasted token. Default off.
     #[serde(default)]
     pub anchor: bool,
@@ -217,7 +217,7 @@ pub async fn enroll_agent(
 
     // A signed delegation cannot outlive its issuer's admission. Check before
     // consuming either a single-use token or an ephemeral enrollment key.
-    roomler_core::admission::authorize_user_id(&state.core, admin_uid, None).await?;
+    meshharbor_core::admission::authorize_user_id(&state.core, admin_uid, None).await?;
 
     // An archived org accepts no devices — including back into an existing
     // row, which is what makes archiving a throwaway org actually final
@@ -261,7 +261,8 @@ pub async fn enroll_agent(
         // FR-32: decision + record in `quota::check`. `MaxDevices` is an
         // established limit, so it refuses whatever the tenant's mode says.
         // FR-102 P4 — through core, which also counts the collision per org.
-        if let Err(d) = roomler_core::quota::check(&state, &tenant, quota::Limit::MaxDevices, used)
+        if let Err(d) =
+            meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxDevices, used)
         {
             return Err(ApiError::Forbidden(format!(
                 "Device limit reached for the {:?} plan ({} of {} devices used). \
@@ -286,7 +287,7 @@ pub async fn enroll_agent(
         .claim(&claims.jti, "agent-enroll")
         .await
         .map_err(|e| match e {
-            roomler_ai_services::dao::base::DaoError::Validation(_) => {
+            meshharbor_services::dao::base::DaoError::Validation(_) => {
                 ApiError::Unauthorized("This enrollment token has already been used".into())
             }
             _ => ApiError::ServiceUnavailable(
@@ -428,7 +429,7 @@ async fn enroll_agent_ephemeral(
     // (FR-51 F5, the simple reading; the reaper is what gives them back).
     let used = state.agents.count_active_for_tenant(tid).await?;
     // FR-102 P4 — through core, which also counts the collision per org.
-    if let Err(d) = roomler_core::quota::check(state, &tenant, quota::Limit::MaxDevices, used) {
+    if let Err(d) = meshharbor_core::quota::check(state, &tenant, quota::Limit::MaxDevices, used) {
         return Err(ApiError::Forbidden(format!(
             "Device limit reached for the {:?} plan ({} of {} devices used). \
              Upgrade the plan or remove a device first.",
@@ -444,7 +445,7 @@ async fn enroll_agent_ephemeral(
             .enrollment_keys
             .refusal_reason(tid, jti)
             .await
-            .unwrap_or(roomler_ai_services::dao::enrollment_key::KeyRefusal::Unknown);
+            .unwrap_or(meshharbor_services::dao::enrollment_key::KeyRefusal::Unknown);
         tracing::warn!(tenant_id = %tid, jti, reason = reason.as_str(),
             "fr-51: ephemeral enrollment key refused");
         return Err(ApiError::Unauthorized(format!(
@@ -474,7 +475,7 @@ async fn enroll_agent_ephemeral(
         .await
     {
         Ok(a) => a,
-        Err(roomler_ai_services::dao::base::DaoError::DuplicateKey(_)) => {
+        Err(meshharbor_services::dao::base::DaoError::DuplicateKey(_)) => {
             return Err(ApiError::Conflict(
                 "A device with this machine_id is already enrolled in this organization; \
                  an ephemeral enrollment never revives or replaces an existing device"
@@ -657,7 +658,7 @@ pub struct AgentResponse {
     pub machine_id: String,
     pub os: OsKind,
     pub agent_version: String,
-    /// FR-27 — the `roomler-desktop` version installed on the host, as the
+    /// FR-27 — the `meshharbor-desktop` version installed on the host, as the
     /// device last reported it. Omitted when there is none / it could not be
     /// read / the agent predates the field: the grid must not turn three
     /// different situations into one string.
@@ -667,7 +668,7 @@ pub struct AgentResponse {
     /// device does not say (no keep busy there, an older agent, a supervised
     /// Mac's daemon): unknown, never "off".
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub keep_busy: Option<roomler_ai_remote_control::models::KeepBusyBrief>,
+    pub keep_busy: Option<meshharbor_remote_control::models::KeepBusyBrief>,
     pub status: AgentStatus,
     /// FR-51 — this device enrolled as temporary: the reaper removes it after
     /// its inactivity TTL, and removal is final (hard delete, no tombstone).
@@ -687,7 +688,7 @@ pub struct AgentResponse {
     pub last_seen_at: String,
     pub access_policy: AccessPolicy,
     /// Subnet-router CIDRs this agent advertises for the mesh (Phase 2). The
-    /// `roomler socks5` mesh longest-prefix-matches a LAN target IP
+    /// `mh socks5` mesh longest-prefix-matches a LAN target IP
     /// against these to pick the covering agent, which then dials the real
     /// IP. Admin-managed here; still gated by the tenant's `tunnel_policies`.
     pub routes: Vec<String>,
@@ -698,7 +699,7 @@ pub struct AgentResponse {
     /// Codec + HW backend availability advertised by the agent in its
     /// most recent rc:agent.hello. Default empty for pre-2A.1 agents
     /// that haven't reconnected since the schema change.
-    pub capabilities: roomler_ai_remote_control::models::AgentCaps,
+    pub capabilities: meshharbor_remote_control::models::AgentCaps,
     /// Public SSH host identity registered by the device's authenticated hello.
     /// Empty means unpublished; it grants no SSH access and is not a capability.
     pub ssh_host_pubkey: String,
@@ -738,7 +739,7 @@ pub struct AgentResponse {
     /// Absent on a row created before the install trace existed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install: Option<InstallInfo>,
-    /// Roomler-SSH gate 3 as stored, with the same replace-on-save warning as
+    /// MeshHarbor-SSH gate 3 as stored, with the same replace-on-save warning as
     /// [`Self::exec_policy`] — and this is the one that makes `Option`
     /// load-bearing rather than tidy.
     ///
@@ -749,7 +750,7 @@ pub struct AgentResponse {
     /// that dialog and undo exactly that protection — so a policy equal to the
     /// default is reported as absent instead.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ssh_policy: Option<roomler_ai_remote_control::models::SshPolicyBody>,
+    pub ssh_policy: Option<meshharbor_remote_control::models::SshPolicyBody>,
     /// FR-52 gate 2 as stored, with the same replace-on-save warning as
     /// [`Self::exec_policy`]: the dialog PUTs the WHOLE shape, so without
     /// this a save would silently drop a narrowed permission ceiling or an
@@ -814,7 +815,7 @@ pub struct KeyRotationView {
 #[derive(Debug, Serialize)]
 pub struct KeyRotationReportView {
     pub request_id: String,
-    pub outcome: roomler_ai_remote_control::models::KeyRotationOutcome,
+    pub outcome: meshharbor_remote_control::models::KeyRotationOutcome,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_public_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -862,10 +863,10 @@ pub enum KeyRotationState {
 const KEY_ROTATION_REJOIN_GRACE_SECS: i64 = 60;
 
 fn key_rotation_view(
-    request: Option<roomler_ai_remote_control::models::KeyRotationRequest>,
-    report: Option<roomler_ai_remote_control::models::KeyRotationReport>,
-    identity: Option<&roomler_ai_remote_control::models::OverlayIdentity>,
-    caps: &roomler_ai_remote_control::models::AgentCaps,
+    request: Option<meshharbor_remote_control::models::KeyRotationRequest>,
+    report: Option<meshharbor_remote_control::models::KeyRotationReport>,
+    identity: Option<&meshharbor_remote_control::models::OverlayIdentity>,
+    caps: &meshharbor_remote_control::models::AgentCaps,
 ) -> Option<KeyRotationView> {
     let req = request?;
     // Only a report about THIS order counts — an answer to a superseded one
@@ -910,12 +911,12 @@ fn key_rotation_view(
 /// The report-driven half of the resolution (everything short of a verified
 /// identity change).
 fn key_rotation_state_from_report(
-    req: &roomler_ai_remote_control::models::KeyRotationRequest,
-    current: Option<&roomler_ai_remote_control::models::KeyRotationReport>,
-    identity: Option<&roomler_ai_remote_control::models::OverlayIdentity>,
-    caps: &roomler_ai_remote_control::models::AgentCaps,
+    req: &meshharbor_remote_control::models::KeyRotationRequest,
+    current: Option<&meshharbor_remote_control::models::KeyRotationReport>,
+    identity: Option<&meshharbor_remote_control::models::OverlayIdentity>,
+    caps: &meshharbor_remote_control::models::AgentCaps,
 ) -> KeyRotationState {
-    use roomler_ai_remote_control::models::{KeyRotationOutcome, RpcCap};
+    use meshharbor_remote_control::models::{KeyRotationOutcome, RpcCap};
 
     match current.map(|r| r.outcome) {
         Some(KeyRotationOutcome::Rotated) => {
@@ -999,7 +1000,7 @@ pub enum RemoteConfigState {
     /// and will never say so. Distinct from `pending` because waiting is
     /// futile here and the fix is to update the device.
     ///
-    /// [`RpcCap::ConfigReport`]: roomler_ai_remote_control::models::RpcCap::ConfigReport
+    /// [`RpcCap::ConfigReport`]: meshharbor_remote_control::models::RpcCap::ConfigReport
     ReportsUnsupported,
     /// The device's agent predates `rc:agent.config` entirely — the push is
     /// not even sent. Nothing will happen until it is updated.
@@ -1008,7 +1009,7 @@ pub enum RemoteConfigState {
 
 /// [`DesiredConfig`] with hex ids and an RFC3339 timestamp.
 ///
-/// [`DesiredConfig`]: roomler_ai_remote_control::models::DesiredConfig
+/// [`DesiredConfig`]: meshharbor_remote_control::models::DesiredConfig
 #[derive(Debug, Serialize)]
 pub struct DesiredConfigView {
     pub revision: u64,
@@ -1032,7 +1033,7 @@ pub struct DesiredConfigView {
     pub updated_at: Option<String>,
 }
 
-impl From<roomler_ai_remote_control::models::DesiredConfig> for DesiredConfigView {
+impl From<meshharbor_remote_control::models::DesiredConfig> for DesiredConfigView {
     /// The ONE place a `DesiredConfig` becomes client-facing JSON.
     ///
     /// Extracted because it wasn't: the listing projected through this shape
@@ -1041,7 +1042,7 @@ impl From<roomler_ai_remote_control::models::DesiredConfig> for DesiredConfigVie
     /// and as hex + RFC3339 from the read. The client stores the write's
     /// answer, so its `updated_at` was an object where its own type said
     /// string — measured against prod, 2026-08-24.
-    fn from(d: roomler_ai_remote_control::models::DesiredConfig) -> Self {
+    fn from(d: meshharbor_remote_control::models::DesiredConfig) -> Self {
         Self {
             revision: d.revision,
             exec_enabled: d.exec_enabled,
@@ -1059,11 +1060,11 @@ impl From<roomler_ai_remote_control::models::DesiredConfig> for DesiredConfigVie
 
 /// [`ConfigReport`] with an RFC3339 timestamp.
 ///
-/// [`ConfigReport`]: roomler_ai_remote_control::models::ConfigReport
+/// [`ConfigReport`]: meshharbor_remote_control::models::ConfigReport
 #[derive(Debug, Serialize)]
 pub struct ConfigReportView {
     pub revision: u64,
-    pub outcome: roomler_ai_remote_control::models::ConfigOutcome,
+    pub outcome: meshharbor_remote_control::models::ConfigOutcome,
     pub live: Vec<String>,
     pub needs_restart: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1080,11 +1081,11 @@ pub struct ConfigReportView {
 /// read "there is a report". Both misreadings put a wrong answer on a screen
 /// an operator is using to decide whether a device is safe.
 fn remote_config_view(
-    desired: roomler_ai_remote_control::models::DesiredConfig,
-    report: Option<roomler_ai_remote_control::models::ConfigReport>,
-    caps: &roomler_ai_remote_control::models::AgentCaps,
+    desired: meshharbor_remote_control::models::DesiredConfig,
+    report: Option<meshharbor_remote_control::models::ConfigReport>,
+    caps: &meshharbor_remote_control::models::AgentCaps,
 ) -> Option<RemoteConfigView> {
-    use roomler_ai_remote_control::models::{ConfigOutcome, RpcCap};
+    use meshharbor_remote_control::models::{ConfigOutcome, RpcCap};
 
     if desired.is_empty() {
         return None;
@@ -1285,12 +1286,12 @@ pub async fn update_agent(
             .await
             .map_err(|e| ApiError::Internal(format!("rename propagation failed: {e}")))?
         {
-            roomler_core::RenamePropagation::Propagated(label) => {
+            meshharbor_core::RenamePropagation::Propagated(label) => {
                 dns_renamed = Some(true);
                 dns_name = Some(label);
             }
-            roomler_core::RenamePropagation::Failed => dns_renamed = Some(false),
-            roomler_core::RenamePropagation::NoLiveNode => {}
+            meshharbor_core::RenamePropagation::Failed => dns_renamed = Some(false),
+            meshharbor_core::RenamePropagation::NoLiveNode => {}
         }
     }
     if let Some(display_name) = body.display_name {
@@ -1475,7 +1476,7 @@ pub struct TriggerUpdateResult {
 /// frame sent anyway reached the socket, so it counted as `delivered`, while
 /// the device logged `rc:agent.update ignored` and stayed where it was.
 fn device_refusal(
-    caps: &roomler_ai_remote_control::models::AgentCaps,
+    caps: &meshharbor_remote_control::models::AgentCaps,
 ) -> Option<(&'static str, String)> {
     caps.update_refusal()
         .map(|r| (r.code(), r.reason().to_string()))
@@ -1530,7 +1531,7 @@ pub async fn trigger_agent_update(
         .rc_hub
         .send_to_agent(
             aid,
-            roomler_ai_remote_control::signaling::ServerMsg::UpdateNow { pin: pin.clone() },
+            meshharbor_remote_control::signaling::ServerMsg::UpdateNow { pin: pin.clone() },
         )
         .is_ok();
     tracing::info!(
@@ -1667,7 +1668,7 @@ pub async fn trigger_agents_update(
             .rc_hub
             .send_to_agent(
                 *aid,
-                roomler_ai_remote_control::signaling::ServerMsg::UpdateNow {
+                meshharbor_remote_control::signaling::ServerMsg::UpdateNow {
                     pin: body.pin.clone(),
                 },
             )
@@ -1705,7 +1706,7 @@ pub async fn trigger_agents_update(
 /// heartbeat disjunction, never to hard-offline.
 pub async fn agent_presence_batch(
     state: &FleetState,
-    agents: &[roomler_ai_remote_control::models::Agent],
+    agents: &[meshharbor_remote_control::models::Agent],
 ) -> std::collections::HashSet<ObjectId> {
     let Some(redis) = &state.redis_pubsub else {
         return Default::default();
@@ -1749,7 +1750,7 @@ pub async fn agent_presence_batch(
 /// heartbeat-only agents, which is what lied green).
 pub fn derive_agent_presence(
     state: &FleetState,
-    a: &roomler_ai_remote_control::models::Agent,
+    a: &meshharbor_remote_control::models::Agent,
     redis_fresh: bool,
 ) -> (AgentPresence, bool) {
     let hub_online =
@@ -1757,7 +1758,7 @@ pub fn derive_agent_presence(
             .unwrap_or(false);
     let recently_seen = matches!(
         a.status,
-        roomler_ai_remote_control::models::AgentStatus::Online
+        meshharbor_remote_control::models::AgentStatus::Online
     ) && {
         let age_ms = bson::DateTime::now().timestamp_millis() - a.last_seen_at.timestamp_millis();
         age_ms < 90_000
@@ -1775,7 +1776,7 @@ pub fn derive_agent_presence(
 
 fn to_agent_response(
     state: &FleetState,
-    a: roomler_ai_remote_control::models::Agent,
+    a: meshharbor_remote_control::models::Agent,
     redis_fresh: bool,
 ) -> AgentResponse {
     let id = a.id.map(|i| i.to_hex()).unwrap_or_default();
@@ -1796,7 +1797,7 @@ fn to_agent_response(
     // the fingerprint exists exactly when the key does. Derived here rather
     // than stored, so it can never disagree with the key.
     let peer_auth_fingerprint =
-        roomler_ai_remote_control::signaling::peer_auth_fingerprint(&a.peer_auth_key);
+        meshharbor_remote_control::signaling::peer_auth_fingerprint(&a.peer_auth_key);
     let peer_auth_key = peer_auth_fingerprint
         .is_some()
         .then(|| a.peer_auth_key.clone());
@@ -1842,7 +1843,7 @@ fn to_agent_response(
     }
 }
 
-/// FR-94 — [`roomler_ai_remote_control::models::ExecAnchor`] as the API shows
+/// FR-94 — [`meshharbor_remote_control::models::ExecAnchor`] as the API shows
 /// it.
 #[derive(Debug, Serialize)]
 pub struct ExecAnchorView {
@@ -1862,7 +1863,7 @@ pub fn fmt_dt(dt: DateTime) -> String {
 /// are dropped, and duplicates removed. A bare IP or any unparseable entry
 /// fails the whole request with 400 so the admin UI shows a clear error instead
 /// of silently storing a route the mesh client would skip. Mirrors the
-/// client-side parse in `roomler-cli`'s `mesh.rs` (both use `ipnet::IpNet`).
+/// client-side parse in `meshharbor-cli`'s `mesh.rs` (both use `ipnet::IpNet`).
 fn normalize_routes(raw: Vec<String>) -> Result<Vec<String>, ApiError> {
     use std::str::FromStr;
     const MAX_ROUTES: usize = 64;
@@ -1896,7 +1897,7 @@ fn normalize_routes(raw: Vec<String>) -> Result<Vec<String>, ApiError> {
 mod key_rotation_state_tests {
     use super::{KeyRotationState, key_rotation_view};
     use bson::{DateTime, oid::ObjectId};
-    use roomler_ai_remote_control::models::{
+    use meshharbor_remote_control::models::{
         AgentCaps, KeyRotationOutcome, KeyRotationReport, KeyRotationRequest, OverlayIdentity,
     };
 
@@ -2037,7 +2038,7 @@ mod key_rotation_state_tests {
 #[cfg(test)]
 mod remote_config_state_tests {
     use super::{RemoteConfigState, remote_config_view};
-    use roomler_ai_remote_control::models::{
+    use meshharbor_remote_control::models::{
         AgentCaps, ConfigOutcome, ConfigReport, DesiredConfig, RpcCap,
     };
 

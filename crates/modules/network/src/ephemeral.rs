@@ -33,8 +33,8 @@
 //! cannot match any pre-FR-51 row: they all deserialise permanent.
 
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::models::Agent;
-use roomler_ai_services::dao::base::DaoResult;
+use meshharbor_remote_control::models::Agent;
+use meshharbor_services::dao::base::DaoResult;
 use std::time::Duration;
 
 use crate::NetworkState;
@@ -57,14 +57,14 @@ fn effective_ttl_secs(agent: &Agent, state: &NetworkState) -> u64 {
 
 /// The ONE device-removal sequence behind the admin delete, the ephemeral
 /// self-unenroll and the reaper (FR-51 F3) — the fleet module's since FR-69
-/// P5a (`roomler_ai_mod_fleet::removal`), where the overlay release runs
+/// P5a (`meshharbor_mod_fleet::removal`), where the overlay release runs
 /// through the core hooks. The reaper reaches it through this wrapper.
 pub async fn remove_agent_device(
     state: &NetworkState,
     agent: &Agent,
     reason: &str,
-) -> DaoResult<Option<roomler_core::hooks::ReleasedLease>> {
-    roomler_ai_mod_fleet::removal::remove_agent_device(&state.fleet, agent, reason).await
+) -> DaoResult<Option<meshharbor_core::hooks::ReleasedLease>> {
+    meshharbor_mod_fleet::removal::remove_agent_device(&state.fleet, agent, reason).await
 }
 
 /// One reap cycle. Pub so integration tests can drive it deterministically
@@ -164,7 +164,7 @@ pub fn spawn_reaper(state: NetworkState) {
         loop {
             tokio::time::sleep(interval).await;
             if let Some(redis) = &state.redis_pubsub {
-                let key = format!("roomler:ephemeral-reap:{}", state.db.name());
+                let key = format!("meshharbor:ephemeral-reap:{}", state.db.name());
                 let ttl = state
                     .settings
                     .rc

@@ -1,12 +1,12 @@
 # Commercial licensing
 
-Most people never need this page. If you self-host Roomler, deploy the agent to
+Most people never need this page. If you self-host MeshHarbor, deploy the agent to
 your own or your clients' machines, or run a modified server inside your own
 organisation, the open-source licences already cover you — see
 [LICENSING.md](LICENSING.md).
 
 You need a commercial licence in exactly one situation: **you want to distribute
-or host the Roomler control plane as part of a proprietary product, without
+or host the MeshHarbor control plane as part of a proprietary product, without
 publishing your modifications under the AGPL.**
 
 ---
@@ -33,7 +33,7 @@ code you write around it — only on our files, if you modify them.
 
 - **Not a feature unlock.** There is no crippled community edition. The
   commercial licence changes your legal terms, not your build.
-- **Not required to use Roomler commercially.** Running it in a business, at any
+- **Not required to use MeshHarbor commercially.** Running it in a business, at any
   scale, on any number of devices, is already permitted.
 - **Not required to resell managed services** built on an unmodified server, or
   on a modified server whose changes you publish under the AGPL.
@@ -49,14 +49,14 @@ Quoted per engagement. What we need to know to quote:
 
 ## Contact
 
-**legal@roomler.ai** — a real address, read by a human.
+**legal@meshharbor.itachi.fans** — a real address, read by a human.
 
 G ROX EOOD
 Plovdivska 110, 4400 Pazardzhik, Bulgaria
 UIC 205174895 · VAT BG205174895
 Represented by Goran Jovanov, Manager
 
-Full company details: [roomler.ai/imprint](https://roomler.ai/imprint)
+Full company details: [meshharbor.itachi.fans/imprint](https://meshharbor.itachi.fans/imprint)
 
 ---
 

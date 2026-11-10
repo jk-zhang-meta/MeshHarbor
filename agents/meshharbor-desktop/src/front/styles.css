@@ -1,0 +1,1049 @@
+/*
+ * MeshHarbor desktop — design system.
+ *
+ * Tailscale-style shell: fixed left sidebar (brand + nav + connection
+ * indicator) and a scrollable content pane, one view visible at a time
+ * (app.js router). Light/dark follows the OS via prefers-color-scheme.
+ * No external assets — CSP is default-src 'self'.
+ */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f8;
+  --bg-elev: #ffffff;
+  --bg-inset: #eef0f2;
+  --fg: #16181d;
+  --muted: #667085;
+  --primary: #1976d2;
+  --primary-tint: rgba(25, 118, 210, 0.1);
+  --ok: #15803d;
+  --warn: #b45309;
+  --error: #b91c1c;
+  --border: #e4e7ec;
+  --code: #f1f3f5;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+  /* FR-84 D5c — carrier colours, the web dashboard's theme exactly
+   * (ui/src/plugins/vuetify.ts: success / warning / info / secondary /
+   * error), so a pair is the same colour in the browser and here. */
+  --mesh-direct: #69f0ae;
+  --mesh-relay: #ffc107;
+  --mesh-derp: #4db6ac;
+  --mesh-tunnel: #ef5350;
+  --mesh-blocked: #dd2c00;
+  --mesh-other: rgba(107, 114, 128, 0.45);
+  /* The relay amber, dark enough to read as TEXT on a light background. */
+  --relay-text: #8a6100;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", sans-serif;
+  font-size: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131417;
+    --bg-elev: #1b1d22;
+    --bg-inset: #17181c;
+    --fg: #eceef2;
+    --muted: #9aa1ac;
+    --border: #2c2f36;
+    --code: #22242a;
+    --primary-tint: rgba(64, 145, 224, 0.16);
+    --shadow: none;
+    --relay-text: #ffc107;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* The HTML `hidden` attribute only maps to display:none in the UA sheet —
+ * ANY author display rule (e.g. `.banner { display:flex }`) silently defeats
+ * it. Every show/hide in this app toggles `hidden`, so make it always win.
+ * (The old front hit exactly this on the consent modal and patched only that
+ * one selector.) */
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  height: 100vh;
+  display: flex;
+  overflow: hidden;
+}
+
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.error { color: var(--error); }
+
+/* ── Sidebar ───────────────────────────────────────────────────────── */
+
+#sidebar {
+  width: 168px;
+  flex: 0 0 168px;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 14px 10px 12px;
+  user-select: none;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px 12px;
+}
+
+.brand-mark {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 13px;
+  flex: 0 0 22px;
+}
+
+.brand-name {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.1px;
+}
+
+.brand-version {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+#nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  flex: 1;
+}
+
+#nav a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+#nav a svg {
+  width: 15px;
+  height: 15px;
+  stroke: var(--muted);
+  flex: 0 0 15px;
+}
+
+#nav a:hover { background: var(--bg-inset); }
+
+#nav a.active {
+  background: var(--primary-tint);
+  color: var(--primary);
+}
+
+#nav a.active svg { stroke: var(--primary); }
+
+#nav a[hidden] { display: none; }
+
+/* Onboarding nav entry gets an accent so a fresh install can't miss it. */
+#nav a.nav-onboard { color: var(--primary); }
+#nav a.nav-onboard svg { stroke: var(--primary); }
+
+/* Connection indicator pinned to the sidebar foot. */
+#conn-indicator {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 9px;
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#conn-indicator .dot { flex: 0 0 8px; }
+
+/* ── Content pane ──────────────────────────────────────────────────── */
+
+#content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px 24px;
+  min-width: 0;
+}
+
+.view[hidden] { display: none; }
+
+.view-head { margin: 0 0 4px; }
+
+.view-head h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.view-sub {
+  margin: 2px 0 16px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────── */
+
+.card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow);
+}
+
+.card h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.card-title-row h3 { margin: 0; }
+
+/* Key-value grid inside cards. */
+.kv {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 7px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.kv dt { color: var(--muted); }
+
+.kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ── Chips / badges / dots ─────────────────────────────────────────── */
+
+.chip {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  vertical-align: middle;
+}
+
+.chip-ok    { color: var(--ok);    background: rgba(21, 128, 61, 0.12);  border-color: var(--ok); }
+.chip-warn  { color: var(--warn);  background: rgba(180, 83, 9, 0.12);   border-color: var(--warn); }
+.chip-err   { color: var(--error); background: rgba(185, 28, 28, 0.12);  border-color: var(--error); }
+.chip-muted { color: var(--muted); background: rgba(107, 114, 128, 0.12); border-color: var(--muted); }
+
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+/* One colour per connection type — mirrors ConnectionType (snake_case).
+ * Relay is the web's amber (FR-84 D5c), not the primary blue it used to be:
+ * one carrier, one colour, in every MeshHarbor surface. */
+.badge-direct  { color: var(--ok);      background: rgba(21, 128, 61, 0.12);   border-color: var(--ok); }
+.badge-relay   { color: var(--relay-text); background: rgba(255, 193, 7, 0.16); border-color: var(--mesh-relay); }
+.badge-tunnel  { color: var(--warn);    background: rgba(180, 83, 9, 0.12);     border-color: var(--warn); }
+.badge-blocked { color: var(--error);   background: rgba(185, 28, 28, 0.12);    border-color: var(--error); }
+.badge-offline { color: var(--muted);   background: rgba(107, 114, 128, 0.12);  border-color: var(--muted); }
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.dot-on   { background: var(--ok); }
+.dot-off  { background: var(--muted); }
+.dot-warn { background: var(--warn); }
+
+/* ── Banners ───────────────────────────────────────────────────────── */
+
+.banner {
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.banner-ok    { background: rgba(21, 128, 61, 0.1);  border: 1px solid var(--ok); }
+.banner-warn  { background: rgba(180, 83, 9, 0.1);   border: 1px solid var(--warn); }
+.banner-error { background: rgba(185, 28, 28, 0.1);  border: 1px solid var(--error); }
+
+/* ── Tables ────────────────────────────────────────────────────────── */
+
+.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.tbl th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.tbl td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.tbl tr:last-child td { border-bottom: none; }
+
+.tbl td.ok   { color: var(--ok); }
+.tbl td.warn { color: var(--warn); }
+.tbl td.err  { color: var(--error); }
+
+.tbl-wrap { overflow-x: auto; }
+
+/* ── Buttons / forms ───────────────────────────────────────────────── */
+
+button {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg);
+  padding: 6px 14px;
+  border-radius: 7px;
+  font-size: 13px;
+  cursor: pointer;
+  font-weight: 500;
+  font-family: inherit;
+}
+
+button:hover { border-color: var(--primary); }
+
+button.primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+button.primary:hover { filter: brightness(0.95); }
+
+button.danger {
+  color: var(--error);
+  border-color: var(--error);
+  background: transparent;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.sm {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+input[type="text"],
+input[type="search"],
+input[type="number"],
+select,
+textarea {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: var(--fg);
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  width: 100%;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: -1px;
+  border-color: var(--primary);
+}
+
+textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.form-narrow { max-width: 460px; }
+
+.output {
+  margin-top: 12px;
+  padding: 10px;
+  background: var(--code);
+  border-radius: 7px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ── Devices view bits (FR-84 D5c) ─────────────────────────────────── */
+
+.dv-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.dv-toolbar #dv-search { flex: 1 1 220px; width: auto; min-width: 160px; }
+.dv-toolbar select { width: auto; }
+.dv-size { display: inline-flex; align-items: center; gap: 6px; }
+.dv-note { margin: 0 0 8px; }
+#dv-cols-btn.is-custom { border-color: var(--primary); color: var(--primary); }
+
+/* The grid keeps its natural widths and scrolls sideways in a narrow window;
+ * Actions + Name come first, so what matters never scrolls away. */
+.dv-grid th.sortable { cursor: pointer; user-select: none; }
+.dv-grid th.sortable:hover { color: var(--fg); }
+.dv-grid th.sorted { color: var(--primary); }
+.sort-ind { margin-left: 4px; font-size: 9px; }
+.dv-grid td { white-space: nowrap; }
+.dv-grid td.dv-col-name { white-space: normal; min-width: 150px; }
+.dv-grid.is-loading tbody { opacity: 0.55; }
+.dv-name-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dv-name-title { font-weight: 500; }
+.dv-sub { margin: 1px 0 0 14px; }
+.dv-chips .chip { font-size: 10px; padding: 0 7px; }
+.chip-self { color: var(--primary); background: var(--primary-tint); border-color: var(--primary); }
+.tag-chip {
+  display: inline-block;
+  padding: 0 7px;
+  margin: 1px 3px 1px 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+}
+.dv-col-actions button.is-error { border-color: var(--error); color: var(--error); }
+.dv-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ping-cell { white-space: nowrap; }
+.ping-result { font-size: 0.9em; }
+.ping-result.ok  { color: var(--ok); }
+.ping-result.err { color: var(--error); cursor: help; }
+
+/* The column chooser. */
+.cols-dialog {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  padding: 16px 18px;
+  width: min(420px, calc(100vw - 32px));
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+.cols-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+.cols-dialog h3 { margin: 0; font-size: 15px; }
+.cols-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 55vh;
+  overflow-y: auto;
+}
+.cols-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+.cols-item:hover { background: var(--bg-inset); }
+.cols-item label {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg);
+  font-size: 13px;
+}
+.cols-item.dragging { opacity: 0.5; }
+.cols-item.drag-over { border-color: var(--primary); }
+.drag-handle { cursor: grab; color: var(--muted); letter-spacing: -2px; user-select: none; }
+.cols-moves { display: inline-flex; gap: 4px; }
+.cols-move { padding: 0 7px; }
+
+/* The mesh graph (mesh.js). Colours come from the --mesh-* variables. */
+.mesh-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  margin-bottom: 4px;
+}
+.mesh-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+.mesh-filter-offline { margin-left: auto; }
+.mesh-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.mesh-dot.c-direct  { background: var(--mesh-direct); }
+.mesh-dot.c-relay   { background: var(--mesh-relay); }
+.mesh-dot.c-derp    { background: var(--mesh-derp); }
+.mesh-dot.c-tunnel  { background: var(--mesh-tunnel); }
+.mesh-dot.c-blocked { background: var(--mesh-blocked); }
+.mesh-wrap { position: relative; width: 100%; display: flex; justify-content: center; }
+.mesh-svg { overflow: visible; max-width: 100%; }
+.mesh-ring { fill: none; stroke: var(--border); stroke-dasharray: 2 4; }
+.mesh-spoke { stroke: var(--muted); stroke-opacity: 0.35; stroke-width: 1; }
+.mesh-spoke--off { stroke-dasharray: 2 4; stroke-opacity: 0.2; }
+.mesh-center { fill: var(--primary); }
+.mesh-center-label,
+.mesh-node-label { fill: var(--muted); font-size: 11px; }
+.mesh-node-label.is-self { fill: var(--fg); font-weight: 700; }
+.mesh-node-dot.is-online  { fill: var(--mesh-direct); }
+.mesh-node-dot.is-offline { fill: var(--muted); fill-opacity: 0.45; }
+.mesh-node-ring { fill: none; stroke: var(--primary); stroke-width: 2.5; }
+.mesh-edge { stroke-width: 1.6; opacity: 0.65; }
+.mesh-edge.is-hover { stroke-width: 3; opacity: 1; }
+.mesh-edge.c-direct  { stroke: var(--mesh-direct); }
+.mesh-edge.c-relay   { stroke: var(--mesh-relay); }
+.mesh-edge.c-derp    { stroke: var(--mesh-derp); }
+.mesh-edge.c-tunnel  { stroke: var(--mesh-tunnel); }
+.mesh-edge.c-blocked { stroke: var(--mesh-blocked); }
+.mesh-edge.c-other   { stroke: var(--mesh-other); }
+.mesh-stop.c-direct  { stop-color: var(--mesh-direct); }
+.mesh-stop.c-relay   { stop-color: var(--mesh-relay); }
+.mesh-stop.c-derp    { stop-color: var(--mesh-derp); }
+.mesh-stop.c-tunnel  { stop-color: var(--mesh-tunnel); }
+.mesh-stop.c-blocked { stop-color: var(--mesh-blocked); }
+.mesh-stop.c-other   { stop-color: var(--mesh-other); }
+.mesh-tooltip {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  pointer-events: none;
+  /* One line per direction — an asymmetric edge reads as two claims. */
+  white-space: pre-line;
+  z-index: 2;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+.mesh-legend { margin-top: 4px; text-align: center; }
+.mesh-asym-swatch {
+  display: inline-block;
+  width: 22px;
+  height: 6px;
+  border-radius: 3px;
+  vertical-align: middle;
+  background: linear-gradient(to right, var(--mesh-direct) 42%, var(--mesh-relay) 58%);
+}
+
+/* ── Tunnels view bits ─────────────────────────────────────────────── */
+
+#tn-add { margin-top: 12px; }
+#tn-add summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--primary);
+  font-weight: 500;
+}
+#tn-form { margin-top: 12px; }
+#tn-form label { display: block; }
+#tn-custom-node[hidden] { display: none; }
+
+/* ── Consent modal ─────────────────────────────────────────────────── */
+
+#consent-modal[hidden] { display: none; }
+
+#consent-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.consent-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.consent-card {
+  position: relative;
+  z-index: 1;
+  width: min(420px, calc(100vw - 32px));
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 22px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.consent-card h2 {
+  margin: 0 0 10px;
+  font-size: 17px;
+}
+
+.consent-lead { margin: 0 0 8px; }
+
+.consent-perms {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* FR-27 - the command an `exec` prompt would run, or what an SSH session
+   wants. Boxed and wrapping rather than truncated: this is the line the
+   decision actually rests on, and a command clipped at the card edge is one
+   an operator would approve without having read. Capped so a long one
+   scrolls instead of pushing the buttons off-screen. */
+.consent-detail {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.08);
+  font-size: 12px;
+  line-height: 1.45;
+  max-height: 8.5em;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.consent-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.consent-btn { min-width: 96px; }
+
+.consent-approve {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
+.consent-deny {
+  background: var(--bg-elev);
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.consent-hint {
+  margin: 12px 0 0;
+  min-height: 1em;
+}
+
+/* ── Settings: grouped configuration (FR-84 D2) ────────────────────── */
+
+.cfg-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+}
+
+.cfg-search input { flex: 1; }
+
+.cfg-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 12px;
+  margin: 8px 0 0;
+}
+
+.cfg-group > summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  font-size: 13px;
+  font-weight: 600;
+  list-style: none;
+  user-select: none;
+}
+
+.cfg-group > summary::-webkit-details-marker { display: none; }
+
+.cfg-group > summary::before {
+  content: "▸";
+  color: var(--muted);
+  font-size: 11px;
+  width: 10px;
+  flex: 0 0 10px;
+}
+
+.cfg-group[open] > summary::before { content: "▾"; }
+
+.cfg-group-name { flex: 1; }
+
+.cfg-group-count { font-weight: 400; }
+
+.cfg-group-body { padding: 0 0 10px; }
+
+/* A key whose value differs from its built-in default, and a section's
+ * count of them. */
+.cfg-chip-mod {
+  color: var(--primary);
+  background: var(--primary-tint);
+  border-color: var(--primary);
+  margin-left: 6px;
+}
+
+/* Sticks under the top edge of the scrolling content pane while the long
+ * configuration card scrolls beneath it. */
+.cfg-restart-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  justify-content: space-between;
+}
+
+.cfg-restart-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+/* FR-85 — the Recordings view's REC chip: a red dot that blinks, unless the
+ * person asked the OS for less motion. */
+.rec-dot {
+  background: var(--error);
+  animation: rec-blink 1.2s steps(2, start) infinite;
+}
+@keyframes rec-blink {
+  to { visibility: hidden; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rec-dot { animation: none; }
+}
+
+/* ── Overview: encoder matrix + incoming files (FR-84 D4) ───────────── */
+
+/* One row per codec, one column per backend the probe opened something on.
+ * Each cell holds a chip per chroma form: filled = hardware, outlined =
+ * software, struck through = denied by encoder_cells_deny (never opened). */
+.enc-matrix td { white-space: nowrap; }
+
+.enc-cell {
+  display: inline-block;
+  padding: 1px 7px;
+  margin: 1px 4px 1px 0;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.enc-hw     { color: var(--ok);    background: rgba(21, 128, 61, 0.12);  border-color: var(--ok); }
+.enc-sw     { color: var(--muted); background: transparent;              border-color: var(--muted); }
+.enc-denied {
+  color: var(--muted);
+  background: transparent;
+  border-color: var(--muted);
+  border-style: dashed;
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+
+.enc-legend { margin: 8px 0 0; }
+.enc-legend .enc-cell { margin-left: 6px; }
+.enc-legend .enc-cell:first-child { margin-left: 0; }
+
+#ov-enc-raw summary { cursor: pointer; margin-top: 6px; }
+
+/* ── Welcome tour (FR-84 D6) ───────────────────────────────────────── */
+
+.wl-progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  counter-reset: wl;
+  margin: 0 0 14px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.wl-progress li {
+  counter-increment: wl;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 4px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+
+.wl-progress li::before {
+  content: counter(wl);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--bg-inset);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.wl-progress li.active {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: var(--primary-tint);
+}
+
+.wl-progress li.active::before {
+  background: var(--primary);
+  color: #fff;
+}
+
+.wl-progress li.done::before {
+  content: "✓";
+  background: rgba(21, 128, 61, 0.15);
+  color: var(--ok);
+}
+
+.wl-card {
+  max-width: 720px;
+}
+
+/* The tour's step titles read as headings, not as the uppercase card
+ * captions the other views use. */
+.wl-card .wl-step h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--fg);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.wl-step p {
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+
+.wl-points {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  line-height: 1.5;
+}
+
+.wl-points li {
+  margin-bottom: 6px;
+}
+
+.wl-state {
+  margin: 4px 0 10px;
+}
+
+.wl-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 8px;
+  font-size: 13.5px;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.wl-check input {
+  width: 16px;
+  height: 16px;
+}
+
+.wl-check.disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.wl-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.wl-nav-spacer {
+  flex: 1;
+}
+
+button.wl-skip {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+button.wl-skip:hover {
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+.ok {
+  color: var(--ok);
+}
+
+/* ── FR-85 P5c — the Edit view ─────────────────────────────────────── */
+
+.ed-preview video {
+  display: block;
+  width: 100%;
+  max-height: 340px;
+  background: #000;
+  border-radius: 6px;
+}
+
+/* The pieces lie on the recording's timeline, each as wide as its share of
+ * it; the playhead rides on top and never takes a click. */
+.ed-timeline {
+  position: relative;
+  height: 44px;
+  margin: 10px 0 4px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.ed-seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  margin: 0;
+  padding: 0 4px;
+  border: none;
+  border-right: 1px solid var(--bg-elev);
+  border-radius: 0;
+  font-size: 12px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.ed-keep  { background: var(--primary-tint); color: var(--fg); }
+.ed-speed { background: rgba(180, 83, 9, 0.18); color: var(--warn); }
+.ed-cut {
+  color: var(--muted);
+  background: repeating-linear-gradient(
+    135deg,
+    var(--bg-inset) 0 6px,
+    var(--border) 6px 12px
+  );
+  text-decoration: line-through;
+}
+
+.ed-selected {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.ed-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--error);
+  pointer-events: none;
+  z-index: 1;
+}
+
+#ed-progress {
+  width: 100%;
+  margin-top: 8px;
+}

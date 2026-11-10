@@ -7,9 +7,9 @@ use redis::aio::ConnectionManager;
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
-const CHANNEL_NAME: &str = "roomler:ws";
+const CHANNEL_NAME: &str = "meshharbor:ws";
 
-/// TTL on `roomler:online:<uid>` keys. Refreshed by each pod's 30 s
+/// TTL on `meshharbor:online:<uid>` keys. Refreshed by each pod's 30 s
 /// heartbeat while the user has local connections — 3× headroom so a
 /// single missed beat (GC pause, Redis blip) doesn't flap presence.
 const ONLINE_TTL_SECS: u64 = 90;
@@ -94,14 +94,14 @@ impl RedisPubSub {
     // pods, the offline-dedupe in `routes/helpers.rs` would push+email
     // every user whose WS lives on the other pod. Each pod mirrors its
     // local user set into Redis: one SET per user
-    // (`roomler:online:<uid>`) whose members are instance ids, with a
+    // (`meshharbor:online:<uid>`) whose members are instance ids, with a
     // key TTL refreshed by a 30 s heartbeat — so a crashed pod's
     // entries age out within `ONLINE_TTL_SECS` instead of leaking
     // forever. The registry is advisory (dedupe/UX), not authoritative
     // presence: a ≤90 s stale window on pod crash is acceptable.
 
     fn online_key(user_id_hex: &str) -> String {
-        format!("roomler:online:{user_id_hex}")
+        format!("meshharbor:online:{user_id_hex}")
     }
 
     /// Mark a user online from this instance (idempotent) and refresh
@@ -152,7 +152,7 @@ impl RedisPubSub {
     // field incidents 2026-07-29 + 2026-08-02). Each pod now mirrors its
     // hub registrations into one Redis STRING per agent:
     //
-    //   roomler:agent-online:<agent_id_hex> = "<instance_id>:<conn_id>:<since_ms>"
+    //   meshharbor:agent-online:<agent_id_hex> = "<instance_id>:<conn_id>:<since_ms>"
     //
     // Semantics: plain SET (newest-wins — mirrors the Hub's displacement
     // rule where the newest live socket owns the slot); refreshed as a
@@ -165,7 +165,7 @@ impl RedisPubSub {
     // directory, not a database; every reader must fail-soft to the
     // pod-local answer when Redis is down.
 
-    /// TTL on `roomler:agent-online:<id>` — same 3×-heartbeat headroom as
+    /// TTL on `meshharbor:agent-online:<id>` — same 3×-heartbeat headroom as
     /// the user registry (agent heartbeats every 30 s).
     const AGENT_TTL_SECS: u64 = 90;
 
@@ -174,7 +174,7 @@ impl RedisPubSub {
     const AGENT_DEL_SCRIPT: &'static str = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end";
 
     fn agent_key(agent_id_hex: &str) -> String {
-        format!("roomler:agent-online:{agent_id_hex}")
+        format!("meshharbor:agent-online:{agent_id_hex}")
     }
 
     /// The owner token this instance writes for one agent registration.

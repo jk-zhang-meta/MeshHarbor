@@ -3,7 +3,7 @@
 <template>
   <v-card>
     <v-card-title class="d-flex align-center">
-      <span>Overlay routes</span>
+      <span>{{ $t('nav.subnetRoutes') }}</span>
       <v-chip
         v-if="nodeFilter"
         size="small"
@@ -12,7 +12,7 @@
         class="ml-3"
         @click:close="clearNodeFilter"
       >
-        {{ filteredNodeName ?? 'device filter' }}
+        {{ filteredNodeName ?? $t('mh.routes.deviceFilter') }}
       </v-chip>
       <v-spacer />
       <v-btn
@@ -22,7 +22,7 @@
         :loading="store.loading"
         @click="refresh"
       >
-        Refresh
+        {{ $t('common.refresh') }}
       </v-btn>
     </v-card-title>
 
@@ -39,10 +39,8 @@
       </v-alert>
 
       <p class="text-medium-emphasis mb-4">
-        A node advertises subnet CIDRs it can route (set
-        <code>overlay_advertised_routes</code> in its agent config). Approve a
-        route to distribute it to every other node in the mesh — they'll route
-        that LAN through this node. Nothing is routed until you approve it.
+        {{ $t('mh.routes.intro1') }}
+        <code>overlay_advertised_routes</code>{{ $t('mh.routes.intro2') }}
       </p>
 
       <div
@@ -56,7 +54,7 @@
         v-else-if="advertisingNodes.length === 0"
         class="text-medium-emphasis"
       >
-        No node is advertising subnet routes or offering to be an exit node yet.
+        {{ $t('mh.routes.empty') }}
       </p>
 
       <!-- A card per node below 600 px (table-stack-xs): the exit-node switch
@@ -65,25 +63,25 @@
       <v-table v-else density="compact" class="table-stack-xs">
         <thead>
           <tr>
-            <th>Node</th>
-            <th>Overlay IP</th>
-            <th>Advertised routes</th>
-            <th>Exit node</th>
-            <th class="text-right">Actions</th>
+            <th>{{ $t('mh.routes.col.node') }}</th>
+            <th>{{ $t('mh.routes.col.ip') }}</th>
+            <th>{{ $t('mh.routes.col.routes') }}</th>
+            <th>{{ $t('mh.routes.col.exit') }}</th>
+            <th class="text-right">{{ $t('mh.topo.col.actions') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="n in advertisingNodes" :key="n.id">
-            <td data-label="Node">
+            <td :data-label="$t('mh.routes.col.node')">
               <div class="font-weight-medium">
-                {{ nodeLabel(n) || '(unnamed)' }}
+                {{ nodeLabel(n) || $t('mh.routes.unnamed') }}
                 <v-chip
                   size="x-small"
                   :color="n.online ? 'success' : undefined"
                   variant="tonal"
                   class="ml-1"
                 >
-                  {{ n.online ? 'online' : 'offline' }}
+                  {{ n.online ? $t('mh.topo.online') : $t('mh.topo.offline') }}
                 </v-chip>
                 <v-chip
                   v-if="n.os"
@@ -96,13 +94,13 @@
               </div>
               <div class="text-caption text-medium-emphasis">{{ n.kind }}</div>
             </td>
-            <td data-label="Overlay IP">
+            <td :data-label="$t('mh.routes.col.ip')">
               <div>{{ n.overlay_ip }}</div>
               <div class="text-caption text-medium-emphasis">
                 {{ deriveOverlayV6(n.overlay_ip) }}
               </div>
             </td>
-            <td data-label="Advertised routes">
+            <td :data-label="$t('mh.routes.col.routes')">
               <span
                 v-if="n.advertised_routes.length === 0"
                 class="text-caption text-medium-emphasis"
@@ -119,7 +117,7 @@
                 @update:model-value="(v) => toggle(n.id, cidr, v)"
               />
             </td>
-            <td data-label="Exit node">
+            <td :data-label="$t('mh.routes.col.exit')">
               <v-switch
                 :model-value="n.is_exit_node"
                 :disabled="(!n.can_be_exit_node && !n.is_exit_node) || exitSaving === n.id"
@@ -127,26 +125,26 @@
                 color="warning"
                 density="compact"
                 hide-details
-                :label="n.is_exit_node ? 'Exit node' : (n.can_be_exit_node ? 'Off' : 'n/a')"
+                :label="n.is_exit_node ? $t('mh.routes.col.exit') : (n.can_be_exit_node ? $t('mh.topo.off') : $t('mh.routes.na'))"
                 @update:model-value="(v) => toggleExitNode(n, v)"
               />
               <div
                 v-if="n.route_offer_withheld"
                 class="text-caption text-warning"
               >
-                this device cannot serve routes: {{ n.route_offer_withheld }}
+                {{ $t('mh.routes.withheld', { why: n.route_offer_withheld }) }}
               </div>
               <div
                 v-else-if="n.is_exit_node && !n.can_be_exit_node"
                 class="text-caption text-medium-emphasis"
               >
-                approved, but the device no longer offers it, so no client uses it
+                {{ $t('mh.routes.noLongerOffered') }}
               </div>
               <div
                 v-else-if="!n.can_be_exit_node"
                 class="text-caption text-medium-emphasis"
               >
-                set overlay_exit_node_enabled in its config
+                {{ $t('mh.routes.enableHint') }}
               </div>
             </td>
             <td class="text-right">
@@ -158,7 +156,7 @@
                 :disabled="!dirty(n)"
                 @click="save(n)"
               >
-                Save
+                {{ $t('common.save') }}
               </v-btn>
             </td>
           </tr>

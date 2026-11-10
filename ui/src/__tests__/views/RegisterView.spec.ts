@@ -3,7 +3,7 @@
 //
 // FR-88 (#1790) — the register view: the campaign keys on its URL go out
 // ONCE, as `attribution` on the register request or on the OAuth start URL;
-// the optional "How did you hear about Roomler?" never blocks sign-up; the
+// the optional "How did you hear about MeshHarbor?" never blocks sign-up; the
 // `signup` goal fires on the server's yes; and nothing is written to the
 // device on the way (carry, don't store).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -86,7 +86,7 @@ async function clickProvider(w: Awaited<ReturnType<typeof mountAt>>['w'], label:
   await btn!.trigger('click')
   expect(mockStartOAuth).toHaveBeenCalledTimes(1)
   const [provider, attribution] = mockStartOAuth.mock.calls[0]!
-  return new URL(oauthStartUrl(provider, attribution), 'https://roomler.ai')
+  return new URL(oauthStartUrl(provider, attribution), 'https://meshharbor.itachi.fans')
 }
 
 let setItem: ReturnType<typeof vi.spyOn>
@@ -155,9 +155,9 @@ describe('RegisterView — attribution (FR-88)', () => {
     expect(registerBody()).not.toHaveProperty('attribution')
   })
 
-  it('asks "How did you hear about Roomler?" as an OPTIONAL question: unanswered, sign-up goes through', async () => {
+  it('asks "How did you hear about MeshHarbor?" as an OPTIONAL question: unanswered, sign-up goes through', async () => {
     const { w } = await mountAt('/register')
-    expect(w.text()).toContain('How did you hear about Roomler?')
+    expect(w.text()).toContain('How did you hear about MeshHarbor?')
     await fillAndSubmit(w) // the select left empty
     expect(mockApi.post).toHaveBeenCalledWith('/auth/register', expect.any(Object))
     expect(w.text()).not.toMatch(/required/i)
@@ -188,7 +188,7 @@ describe('RegisterView — attribution (FR-88)', () => {
     tagged.w.unmount()
 
     const plain = await mountAt('/register')
-    expect((await clickProvider(plain.w, 'Google')).href).toBe('https://roomler.ai/api/oauth/google')
+    expect((await clickProvider(plain.w, 'Google')).href).toBe('https://meshharbor.itachi.fans/api/oauth/google')
   })
 
   it('keeps the provider controls BUTTONS, as on the sign-in page (e2e finds them by that role)', async () => {
@@ -202,7 +202,7 @@ describe('RegisterView — attribution (FR-88)', () => {
     Object.defineProperty(document, 'referrer', { value: 'https://www.youtube.com/', configurable: true })
     try {
       const tagged = await mountAt('/register?utm_source=youtube&utm_campaign=c1&invite=abc')
-      const u = new URL(tagged.w.find('a[href^="/login"]').attributes('href')!, 'https://roomler.ai')
+      const u = new URL(tagged.w.find('a[href^="/login"]').attributes('href')!, 'https://meshharbor.itachi.fans')
       expect(Object.fromEntries(u.searchParams)).toEqual({
         utm_source: 'youtube',
         utm_campaign: 'c1',

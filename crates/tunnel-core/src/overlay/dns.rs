@@ -6,7 +6,7 @@
 //! with the search domain) are answered locally from the netmap's name→overlay-IP
 //! map; every other query is forwarded to an upstream nameserver and relayed
 //! back verbatim. The runtime binds it to the node's own overlay IP on :53 and
-//! points the roomler interface's DNS there (Tailscale uses a dedicated
+//! points the meshharbor interface's DNS there (Tailscale uses a dedicated
 //! `100.100.100.100`; the node's own overlay IP avoids an extra NIC-address
 //! assignment for v1).
 //!
@@ -16,7 +16,7 @@
 //!
 //! Dual-stack: an `AAAA` query for a known node answers its **derived** overlay
 //! IPv6 ([`derive_overlay_v6`]) — same map, no v6 state. Default-on;
-//! `ROOMLERD_DNS_AAAA=0` (read by the runtime into
+//! `MESHHARBORD_DNS_AAAA=0` (read by the runtime into
 //! [`DnsConfig::answer_aaaa`]) reverts to A-only, the mixed-fleet escape hatch:
 //! an old peer's OS doesn't own its derived v6, so v6 toward it blackholes —
 //! happy-eyeballs apps fall back to A, strictly-sequential ones may hang.
@@ -44,7 +44,7 @@ pub type NameMap = Arc<RwLock<HashMap<String, Ipv4Addr>>>;
 /// ⚠️ The hosts fallback must never write this name. Resolving it proves the OS
 /// reached THIS resolver; if the fallback could satisfy it, the probe would be
 /// answering itself and the ladder could never climb back to DNS.
-pub const PROBE_LABEL: &str = "_roomler-probe";
+pub const PROBE_LABEL: &str = "_meshharbor-probe";
 
 /// Resolver configuration. Cheap to clone (the map is an `Arc`), so each query
 /// gets its own task without blocking the receive loop on a slow upstream.
@@ -52,14 +52,14 @@ pub const PROBE_LABEL: &str = "_roomler-probe";
 pub struct DnsConfig {
     /// Where to bind + serve (the node's overlay IP on :53).
     pub bind: SocketAddr,
-    /// Tenant DNS suffix, lowercased, no trailing dot (e.g. `myorg.roomler.net`).
+    /// Tenant DNS suffix, lowercased, no trailing dot (e.g. `myorg.meshharbor.net`).
     pub magic_domain: String,
     /// Upstream resolver for non-overlay queries.
     pub upstream: SocketAddr,
     /// name → overlay IP.
     pub names: NameMap,
     /// Answer `AAAA` for known nodes with their derived overlay IPv6. `false`
-    /// (the `ROOMLERD_DNS_AAAA=0` escape hatch) answers NODATA instead.
+    /// (the `MESHHARBORD_DNS_AAAA=0` escape hatch) answers NODATA instead.
     pub answer_aaaa: bool,
 }
 
@@ -355,14 +355,14 @@ async fn forward_upstream(query: &[u8], upstream: SocketAddr) -> Option<Vec<u8>>
 
 /// The DEFAULT overlay NIC name (matches `tun.rs`) — the Linux fallback when
 /// the caller can't name its link. W2: multi-org hosts run one resolver PER
-/// ORG on that org's own TUN link (`roomler0`, `roomler0-<hex>`, …), and
+/// ORG on that org's own TUN link (`meshharbor0`, `meshharbor0-<hex>`, …), and
 /// `resolvectl dns/domain <link> …` REPLACES the link's settings — so every
-/// org steering the hard-coded `roomler0` meant the second org overwrote the
+/// org steering the hard-coded `meshharbor0` meant the second org overwrote the
 /// first, and either guard's Drop reverted BOTH zones. Callers now pass
 /// their own link name; the Windows path is unaffected (NRPT rules are
 /// keyed per namespace, not per interface).
 #[cfg(target_os = "linux")]
-const DNS_IF_NAME: &str = "roomler0";
+const DNS_IF_NAME: &str = "meshharbor0";
 
 /// RAII guard for the per-OS DNS config — points `<magic_domain>` queries at our
 /// resolver (Windows NRPT / Linux systemd-resolved routing domain). `Drop`
@@ -383,7 +383,7 @@ pub struct DnsOsGuard {
 
 impl DnsOsGuard {
     /// S2 — did the OS split-DNS steer actually take? (Rendered in the
-    /// desktop's DNS section + `meshharbor status`.)
+    /// desktop's DNS section + `mh status`.)
     pub fn active(&self) -> bool {
         self.active
     }
@@ -623,7 +623,7 @@ async fn run_cmd(args: Vec<String>) -> bool {
 //     (or 1.1.1.1). The query to that public resolver is itself captured by the
 //     split-default and egresses via the exit. No overlay names to preserve.
 // systemd-resolved routes a public name to the BEST-MATCHING routing domain
-// (most labels); an explicit `~.` on roomler0 is a match, so it wins over the
+// (most labels); an explicit `~.` on meshharbor0 is a match, so it wins over the
 // physical link's `DefaultRoute=yes` (which is only the no-match fallback) — no
 // physical-link demotion needed.
 
@@ -631,16 +631,16 @@ async fn run_cmd(args: Vec<String>) -> bool {
 /// purge removes exactly it (never a foreign `.`-namespace rule, e.g. a corp
 /// VPN's). Also the idempotent-clear selector on (re)steer.
 #[cfg(target_os = "windows")]
-const EXIT_DNS_NRPT_TAG: &str = "roomler-exit-dns";
+const EXIT_DNS_NRPT_TAG: &str = "meshharbor-exit-dns";
 
 /// Steer the default ("." catch-all) namespace at `target`. `magic_domain`:
 /// `Some` = MagicDNS on (keep the P2 suffix split, just add `~.`); `None` =
-/// MagicDNS off (point roomler0's own DNS at `target`). Best-effort — `false`
+/// MagicDNS off (point meshharbor0's own DNS at `target`). Best-effort — `false`
 /// when the OS tool is unavailable (surfaced via `dns_steered=false`). Reverted
 /// by [`unsteer_default_dns`] / [`purge_exit_dns`].
 #[cfg(target_os = "windows")]
 pub async fn steer_default_dns(target: Ipv4Addr, _magic_domain: Option<&str>) -> bool {
-    // Idempotent: drop any stale roomler catch-all (tag-scoped) then add ours.
+    // Idempotent: drop any stale meshharbor catch-all (tag-scoped) then add ours.
     // The `.`-root namespace is NRPT's catch-all; the P2 `.<domain>` rule is more
     // specific and still wins for overlay names.
     let _ = run_cmd(vec![
@@ -667,7 +667,7 @@ pub async fn steer_default_dns(target: Ipv4Addr, _magic_domain: Option<&str>) ->
 #[cfg(target_os = "linux")]
 pub async fn steer_default_dns(target: Ipv4Addr, magic_domain: Option<&str>) -> bool {
     match magic_domain {
-        // MagicDNS on: roomler0's DNS is already `self_v4` (== target) from the P2
+        // MagicDNS on: meshharbor0's DNS is already `self_v4` (== target) from the P2
         // suffix config. ADD `~.` so ALL names route to the local resolver (an
         // explicit `~.` is the best-match routing domain, beating the physical
         // link's DefaultRoute), while `~<domain>` keeps winning for overlay names.
@@ -681,7 +681,7 @@ pub async fn steer_default_dns(target: Ipv4Addr, magic_domain: Option<&str>) -> 
             ])
             .await
         }
-        // MagicDNS off: no local resolver. Point roomler0's own DNS at the public
+        // MagicDNS off: no local resolver. Point meshharbor0's own DNS at the public
         // upstream and make it the default route; the query to `target` is
         // captured by the split-default and egresses via the exit.
         None => {
@@ -782,9 +782,9 @@ pub async fn unsteer_default_dns(_magic_domain: Option<&str>) -> bool {
 /// P5 S4b crash-safety (A2) — synchronously drop the exit-node catch-all steer.
 /// Windows: the `.`-root NRPT rule is machine-global and PERSISTS across a crash
 /// / reboot, so a stale rule pointing at a dead resolver would blackhole ALL DNS
-/// until removed — this is the load-bearing path. Linux: the roomler0 link config
-/// is link-scoped and dies with the interface, so `resolvectl revert roomler0` is
-/// mostly belt (a harmless no-op when roomler0 is already gone; the P2 suffix
+/// until removed — this is the load-bearing path. Linux: the meshharbor0 link config
+/// is link-scoped and dies with the interface, so `resolvectl revert meshharbor0` is
+/// mostly belt (a harmless no-op when meshharbor0 is already gone; the P2 suffix
 /// config re-applies when the resolver next comes up). Called from the crate-root
 /// `purge_exit_routes` at every pre-`process::exit` site AND at boot. Context-free
 /// (no `self_v4`/domain in hand) — hence the blanket revert on Linux. No-op off
@@ -833,7 +833,7 @@ pub fn purge_exit_dns() {
 /// - `SupplementalMatchDomainsNoSearch = 1` keeps the zone out of the search
 ///   list, as `~zone` does on Linux.
 ///
-/// `ROOMLERD_MACOS_DNS_STEER=0` turns all of it off (`meshharbor status` then
+/// `MESHHARBORD_MACOS_DNS_STEER=0` turns all of it off (`mh status` then
 /// says `DNS NOT steered`, as before).
 #[cfg(target_os = "macos")]
 mod scdns {
@@ -848,13 +848,13 @@ mod scdns {
     use system_configuration::dynamic_store::{SCDynamicStore, SCDynamicStoreBuilder};
 
     /// The exit node's catch-all. One per host: one daemon, one exit.
-    pub(super) const EXIT_KEY: &str = "State:/Network/Service/roomler-exit-dns/DNS";
+    pub(super) const EXIT_KEY: &str = "State:/Network/Service/meshharbor-exit-dns/DNS";
 
     /// MagicDNS for one overlay adapter (`utunN`), so sibling orgs' zones
     /// coexist. Only alphanumerics reach the key.
     pub(super) fn split_key(link: &str) -> String {
         let link: String = link.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-        format!("State:/Network/Service/roomler-dns-{link}/DNS")
+        format!("State:/Network/Service/meshharbor-dns-{link}/DNS")
     }
 
     pub(super) fn enabled() -> bool {
@@ -883,9 +883,9 @@ mod scdns {
                 let (tx, rx) = mpsc::channel::<Op>();
                 let (ready, opened) = mpsc::channel::<bool>();
                 std::thread::Builder::new()
-                    .name("roomler-scdns".into())
+                    .name("meshharbor-scdns".into())
                     .spawn(move || {
-                        let Some(store) = SCDynamicStoreBuilder::new("roomlerd").build() else {
+                        let Some(store) = SCDynamicStoreBuilder::new("meshharbord").build() else {
                             let _ = ready.send(false);
                             return;
                         };
@@ -1065,14 +1065,14 @@ mod tests {
 
     #[test]
     fn parses_question_name_and_type() {
-        let q = parse_question(&query_for("devbox.myorg.roomler.net", 1)).unwrap();
-        assert_eq!(q.qname, "devbox.myorg.roomler.net");
+        let q = parse_question(&query_for("devbox.myorg.meshharbor.net", 1)).unwrap();
+        assert_eq!(q.qname, "devbox.myorg.meshharbor.net");
         assert_eq!(q.qtype, 1);
     }
 
     #[test]
     fn a_answer_is_well_formed() {
-        let query = query_for("devbox.myorg.roomler.net", 1);
+        let query = query_for("devbox.myorg.meshharbor.net", 1);
         let q = parse_question(&query).unwrap();
         let resp = build_a(&query, q.qend, Ipv4Addr::new(100, 64, 0, 7));
         assert_eq!(&resp[0..2], &query[0..2]); // ID echoed
@@ -1090,19 +1090,19 @@ mod tests {
         map.insert("devbox".to_string(), Ipv4Addr::new(100, 64, 0, 7));
         let cfg = DnsConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
-            magic_domain: "myorg.roomler.net".into(),
+            magic_domain: "myorg.meshharbor.net".into(),
             upstream: "127.0.0.1:0".parse().unwrap(),
             names: Arc::new(RwLock::new(map)),
             answer_aaaa: true,
         };
 
-        let hit = build_response(&query_for("devbox.myorg.roomler.net", 1), &cfg)
+        let hit = build_response(&query_for("devbox.myorg.meshharbor.net", 1), &cfg)
             .await
             .unwrap();
         assert_eq!(u16::from_be_bytes([hit[6], hit[7]]), 1); // one answer
         assert_eq!(&hit[hit.len() - 4..], &[100, 64, 0, 7]);
 
-        let miss = build_response(&query_for("ghost.myorg.roomler.net", 1), &cfg)
+        let miss = build_response(&query_for("ghost.myorg.meshharbor.net", 1), &cfg)
             .await
             .unwrap();
         assert_eq!(miss[3] & 0x0F, 3); // NXDOMAIN
@@ -1115,14 +1115,14 @@ mod tests {
         map.insert("devbox".to_string(), Ipv4Addr::new(100, 64, 0, 7));
         let mut cfg = DnsConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
-            magic_domain: "myorg.roomler.net".into(),
+            magic_domain: "myorg.meshharbor.net".into(),
             upstream: "127.0.0.1:0".parse().unwrap(),
             names: Arc::new(RwLock::new(map)),
             answer_aaaa: true,
         };
 
         // In-zone AAAA → one answer whose RDATA is the DERIVED overlay v6.
-        let hit = build_response(&query_for("devbox.myorg.roomler.net", 28), &cfg)
+        let hit = build_response(&query_for("devbox.myorg.meshharbor.net", 28), &cfg)
             .await
             .unwrap();
         assert_eq!(u16::from_be_bytes([hit[6], hit[7]]), 1); // one answer
@@ -1139,20 +1139,20 @@ mod tests {
         assert_eq!(&bare[bare.len() - 16..], &want);
 
         // Unknown in-zone name stays NXDOMAIN on AAAA too.
-        let miss = build_response(&query_for("ghost.myorg.roomler.net", 28), &cfg)
+        let miss = build_response(&query_for("ghost.myorg.meshharbor.net", 28), &cfg)
             .await
             .unwrap();
         assert_eq!(miss[3] & 0x0F, 3);
 
         // Kill switch: AAAA → NODATA (name exists, zero answers, rcode 0).
         cfg.answer_aaaa = false;
-        let off = build_response(&query_for("devbox.myorg.roomler.net", 28), &cfg)
+        let off = build_response(&query_for("devbox.myorg.meshharbor.net", 28), &cfg)
             .await
             .unwrap();
         assert_eq!(off[3] & 0x0F, 0);
         assert_eq!(u16::from_be_bytes([off[6], off[7]]), 0);
         // A records are unaffected by the switch.
-        let a = build_response(&query_for("devbox.myorg.roomler.net", 1), &cfg)
+        let a = build_response(&query_for("devbox.myorg.meshharbor.net", 1), &cfg)
             .await
             .unwrap();
         assert_eq!(&a[a.len() - 4..], &[100, 64, 0, 7]);
@@ -1164,7 +1164,7 @@ mod tests {
         map.insert("devbox".to_string(), Ipv4Addr::new(100, 64, 0, 9));
         let cfg = DnsConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
-            magic_domain: "myorg.roomler.net".into(),
+            magic_domain: "myorg.meshharbor.net".into(),
             upstream: "127.0.0.1:0".parse().unwrap(),
             names: Arc::new(RwLock::new(map)),
             answer_aaaa: true,
@@ -1187,7 +1187,7 @@ mod tests {
         };
         let cfg = DnsConfig {
             bind: format!("127.0.0.1:{port}").parse().unwrap(),
-            magic_domain: "myorg.roomler.net".into(),
+            magic_domain: "myorg.meshharbor.net".into(),
             upstream: "127.0.0.1:0".parse().unwrap(),
             names: Arc::new(RwLock::new(HashMap::new())),
             answer_aaaa: true,
@@ -1198,7 +1198,7 @@ mod tests {
         assert!(*rx.borrow_and_update(), "the resolver should bind");
 
         let server: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-        let probe = query_for(&format!("{PROBE_LABEL}.myorg.roomler.net"), 1);
+        let probe = query_for(&format!("{PROBE_LABEL}.myorg.meshharbor.net"), 1);
         for _ in 0..3 {
             // Blocking socket, no await between send and close: on this
             // current-thread runtime the resolver cannot answer before the
@@ -1242,7 +1242,7 @@ mod tests {
         };
         let cfg = |p: u16| DnsConfig {
             bind: format!("127.0.0.1:{p}").parse().unwrap(),
-            magic_domain: "myorg.roomler.net".into(),
+            magic_domain: "myorg.meshharbor.net".into(),
             upstream: "127.0.0.1:0".parse().unwrap(),
             names: Arc::new(RwLock::new(HashMap::new())),
             answer_aaaa: true,
@@ -1300,7 +1300,7 @@ mod tests {
 }
 
 /// FR-97 P1c — on a real Mac, as root: CI's `macos_kernel_tests` step runs
-/// these under `sudo` with `ROOMLER_TUN_KERNEL_TEST=1`.
+/// these under `sudo` with `MESHHARBOR_TUN_KERNEL_TEST=1`.
 #[cfg(all(test, target_os = "macos"))]
 mod macos_kernel_tests {
     use super::scdns;
@@ -1335,8 +1335,8 @@ mod macos_kernel_tests {
     }
 
     fn kernel_test() -> bool {
-        if std::env::var("ROOMLER_TUN_KERNEL_TEST").as_deref() != Ok("1") {
-            eprintln!("skipping: set ROOMLER_TUN_KERNEL_TEST=1 (needs root)");
+        if std::env::var("MESHHARBOR_TUN_KERNEL_TEST").as_deref() != Ok("1") {
+            eprintln!("skipping: set MESHHARBOR_TUN_KERNEL_TEST=1 (needs root)");
             return false;
         }
         true
@@ -1350,7 +1350,7 @@ mod macos_kernel_tests {
         if !kernel_test() {
             return;
         }
-        let zone = "roomler-p1c-ci.example";
+        let zone = "meshharbor-p1c-ci.example";
         let key = scdns::split_key("utun-ci");
         assert!(
             scdns::set(key.clone(), vec!["192.0.2.53".into()], vec![zone.into()]).await,
@@ -1405,7 +1405,7 @@ mod macos_kernel_tests {
         if !kernel_test() {
             return;
         }
-        let zone = "roomler-p1c-kill.example";
+        let zone = "meshharbor-p1c-kill.example";
         let mut holder = std::process::Command::new("scutil")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
@@ -1418,7 +1418,7 @@ mod macos_kernel_tests {
                 stdin,
                 "d.init\nd.add ServerAddresses * 192.0.2.55\n\
                  d.add SupplementalMatchDomains * {zone}\n\
-                 add State:/Network/Service/roomler-p1c-kill/DNS temporary\n"
+                 add State:/Network/Service/meshharbor-p1c-kill/DNS temporary\n"
             )
             .expect("write");
             stdin.flush().expect("flush");

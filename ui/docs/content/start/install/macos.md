@@ -1,6 +1,6 @@
 ---
 title: Install on macOS
-description: Install the Roomler agent on macOS, grant the two privacy permissions it needs, and add the root half if you want the machine on the private mesh.
+description: Install the MeshHarbor agent on macOS, grant the two privacy permissions it needs, and add the root half if you want the machine on the private mesh.
 tags: [install, macos, getting-started, enrollment, permissions]
 order: 11
 ---
@@ -35,28 +35,28 @@ Mint a token under **Devices → Enroll device**.
 **Screen sharing only** — one token, one device row:
 
 ```bash
-curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
-  --role daemon --token <token> --server https://roomler.ai --name "$(hostname)"
+curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- \
+  --role daemon --token <token> --server https://meshharbor.itachi.fans --name "$(hostname)"
 ```
 
 **Screen sharing *and* the private mesh** — mint a **second** token and pass it
 as `--daemon-token`:
 
 ```bash
-curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
+curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- \
   --role daemon --token <token> --daemon-token <second-token> \
-  --server https://roomler.ai --name "$(hostname)"
+  --server https://meshharbor.itachi.fans --name "$(hostname)"
 ```
 
 :::note The graphical installer cannot install the agent on a Mac
-On macOS, [Roomler Setup](https://roomler.ai/api/setup/macos) installs only
-`roomler`, the tunnel client. Install either half of the agent with one of the
+On macOS, [MeshHarbor Setup](https://meshharbor.itachi.fans/api/setup/macos) installs only
+`mh`, the tunnel client. Install either half of the agent with one of the
 commands above.
 :::
 
 `--daemon-token` is what installs the root LaunchDaemon *and* turns the overlay
 on — installing that half is itself the opt-in. Without it the Mac never joins
-the mesh, and it is **absent from `roomler peers` entirely** rather than showing
+the mesh, and it is **absent from `mh peers` entirely** rather than showing
 as offline.
 
 Running the one-liner under `sudo` is fine: the script resolves the console user
@@ -70,7 +70,7 @@ The screen streams as **wallpaper only**, and injected keys and clicks are
 shows a desktop with no windows, this is why.
 :::
 
-Open **System Settings → Privacy & Security** and enable **Roomler Daemon**
+Open **System Settings → Privacy & Security** and enable **MeshHarbor Daemon**
 under both:
 
 :::steps
@@ -78,7 +78,7 @@ under both:
 2. **Accessibility** — without it, your keyboard and mouse input is dropped on the floor.
 :::
 
-You do not have to hunt for these. The **Roomler menu-bar app** names whichever
+You do not have to hunt for these. The **MeshHarbor menu-bar app** names whichever
 grant is missing and gives you a button per permission that opens the right
 pane. The agent also probes both at startup, logs what is missing, and reports
 it to the server — so the device list shows *"No screen access"* / *"No input
@@ -87,7 +87,7 @@ access"* rather than letting you discover it by connecting to a blank desktop.
 Then restart the user half:
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.roomler.agent
+launchctl kickstart -k gui/$(id -u)/fans.itachi.meshharbor.agent
 ```
 
 :::warning Grants are bound to the signed binary
@@ -100,18 +100,18 @@ installer tells you when this has happened rather than leaving you to find out.
 
 | Path | What it is |
 |---|---|
-| `/Applications/Roomler.app` | The **menu-bar companion** — status, routes, and the permissions panel. No Dock tile. The only Roomler icon you should see. |
-| `/Library/Roomler/roomlerd.app` | The agent itself. A background service with nothing to launch, so deliberately not in `/Applications` — but still a bundle, because the two privacy grants attach to a bundle identity. |
-| `/usr/local/bin/roomler` | The CLI. |
-| `/usr/local/bin/roomlerd` | The agent on `PATH`, for `roomlerd enroll` and `--version`. A symlink into the bundle, not a second copy. |
+| `/Applications/MeshHarbor.app` | The **menu-bar companion** — status, routes, and the permissions panel. No Dock tile. The only MeshHarbor icon you should see. |
+| `/Library/MeshHarbor/meshharbord.app` | The agent itself. A background service with nothing to launch, so deliberately not in `/Applications` — but still a bundle, because the two privacy grants attach to a bundle identity. |
+| `/usr/local/bin/mh` | The CLI. |
+| `/usr/local/bin/meshharbord` | The agent on `PATH`, for `meshharbord enroll` and `--version`. A symlink into the bundle, not a second copy. |
 
-Configuration lives at `/etc/roomler/config.toml` for the root half.
+Configuration lives at `/etc/meshharbor/config.toml` for the root half.
 
 ## Talking to the right half
 
 :::tip "daemon not running" usually means you asked the wrong half
-The two halves listen on **different local sockets**. `roomler status` and
-`roomler peers` reach the **user** half; `sudo roomler …` reaches the **root**
+The two halves listen on **different local sockets**. `mh status` and
+`mh peers` reach the **user** half; `sudo meshharbor …` reaches the **root**
 half. If a command reports that the daemon is not running, try it with and
 without `sudo` before assuming anything is broken.
 :::
@@ -127,14 +127,14 @@ Being explicit rather than letting you discover these:
 ## Uninstall
 
 ```bash
-curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- --uninstall
+curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- --uninstall
 ```
 
 It stops both halves through launchd **before** removing anything: the
 per-user agent and the menu-bar app (for every account that has them), then the
 root half and the update helper. That stop is the daemon's clean stop, so the
 routes and DNS settings it added to the Mac go with it. Then it removes
-`/Library/Roomler`, `/Applications/Roomler.app`, the CLI, the package receipt
+`/Library/MeshHarbor`, `/Applications/MeshHarbor.app`, the CLI, the package receipt
 and the config, which holds the credentials. It also resets the Screen Recording
 and Accessibility grants, so a fresh install asks for them again rather than
 showing a toggle that is on for a binary that is gone.
@@ -154,5 +154,5 @@ the mesh address.
 
 - **Screen is the wallpaper and nothing else** → the Screen Recording grant. See above.
 - **Clicks and keys do nothing** → the Accessibility grant.
-- **The Mac is missing from `roomler peers`** → you installed the user half only. Add the root half with `--daemon-token`, or enroll it (`sudo /Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd --config /etc/roomler/config.toml enroll … --overlay`) and run `sudo roomlerd service install --as-service`.
+- **The Mac is missing from `mh peers`** → you installed the user half only. Add the root half with `--daemon-token`, or enroll it (`sudo /Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord --config /etc/meshharbor/config.toml enroll … --overlay`) and run `sudo meshharbord service install --as-service`.
 - **More** → [Troubleshooting](/docs/troubleshooting/).

@@ -26,10 +26,9 @@
 use std::{collections::HashSet, sync::Arc};
 
 use bson::oid::ObjectId;
-use mongodb::Database;
-use roomler_ai_config::Settings;
-use roomler_ai_remote_control::turn_creds::{RelayLoadMap, TurnMap};
-use roomler_ai_services::{
+use meshharbor_config::Settings;
+use meshharbor_remote_control::turn_creds::{RelayLoadMap, TurnMap};
+use meshharbor_services::{
     AuthService, EmailService, OAuthService, PushService, TaskService,
     dao::{
         activation_code::ActivationCodeDao, invite::InviteDao, notification::NotificationDao,
@@ -37,6 +36,7 @@ use roomler_ai_services::{
         used_token::UsedTokenDao, user::UserDao,
     },
 };
+use mongodb::Database;
 
 use crate::{
     cluster::{bus::PodBus, directory::OwnershipDirectory, identity::PodIdentity},
@@ -62,7 +62,7 @@ pub struct Core {
     pub push: Option<Arc<PushService>>,
     pub push_subscriptions: Arc<PushSubscriptionDao>,
     /// Single-use ledger for enrollment-token jtis. See
-    /// [`roomler_ai_services::dao::used_token`].
+    /// [`meshharbor_services::dao::used_token`].
     pub used_tokens: Arc<UsedTokenDao>,
     /// Background-task service (export jobs and the like).
     pub tasks: Arc<TaskService>,
@@ -85,7 +85,7 @@ pub struct Core {
     /// Writers gate on `settings.stats.enabled`.
     pub stats: Arc<StatsDao>,
     /// Stats PR-3 — platform-operator allowlist parsed from
-    /// `ROOMLER__STATS__PLATFORM_ADMINS` (user OBJECTIDS, deliberately not
+    /// `MESHHARBOR__STATS__PLATFORM_ADMINS` (user OBJECTIDS, deliberately not
     /// emails: OAuth links accounts by bare email, so an email allowlist
     /// would turn a provider-asserted address into platform-root).
     pub platform_admins: Arc<HashSet<ObjectId>>,

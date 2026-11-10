@@ -14,7 +14,7 @@
 //!   secret, the mode, the audience, no longer than the card named — and
 //!   the allow records who said yes; a no refuses the request `denied`;
 //! - only a driver who reads the session answers, and only one whose yes
-//!   the policy accepts (`approver in Roomler::Group::…`); no card is posted
+//!   the policy accepts (`approver in MeshHarbor::Group::…`); no card is posted
 //!   where no driver could give one;
 //! - a card nobody answered in time expires, and one for a session that
 //!   moved is withdrawn: neither can be answered, and neither keeps the
@@ -37,13 +37,13 @@ async fn seed(app: &TestApp, t: &SeededTenant, cond: &str) -> String {
     for (name, text) in [
         (
             "anyone-may-be-dev",
-            r#"permit (principal, action == Roomler::Action::"role:assume", resource == Roomler::Role::"dev");"#
+            r#"permit (principal, action == MeshHarbor::Action::"role:assume", resource == MeshHarbor::Role::"dev");"#
                 .to_string(),
         ),
         (
             "dev-uses-db-with-a-yes",
             format!(
-                r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"secret:use", resource in Roomler::SecretFolder::"rrn:{}:secret:db") when {{ {cond} }};"#,
+                r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"secret:use", resource in MeshHarbor::SecretFolder::"rrn:{}:secret:db") when {{ {cond} }};"#,
                 t.tenant_slug
             ),
         ),
@@ -130,7 +130,7 @@ async fn participant(app: &TestApp, t: &SeededTenant, sid: &str, user: &str, rol
     assert_eq!(resp.status().as_u16(), 200, "the owner names a {role}");
 }
 
-/// A roomler role `name` that runs agent sessions (HIVE_RUN), given to the
+/// A meshharbor role `name` that runs agent sessions (HIVE_RUN), given to the
 /// seeded member.
 async fn member_role(app: &TestApp, t: &SeededTenant, name: &str) {
     let tid = &t.tenant_id;
@@ -312,7 +312,7 @@ async fn a_yes_counts_only_from_a_driver_the_policy_names() {
     let value = seed(
         &app,
         &t,
-        r#"context has approval && context.approval.approver in Roomler::Group::"approvers""#,
+        r#"context has approval && context.approval.approver in MeshHarbor::Group::"approvers""#,
     )
     .await;
     let (mut dev, sid, fence) = running(&app, &t, "who-host").await;

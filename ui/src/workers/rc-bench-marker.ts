@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 /**
  * FR-16 L4 — the frame marker, the browser's half of
- * `agents/roomlerd/src/capture/synthetic_backend.rs` (`marker`), bit for bit.
+ * `agents/meshharbord/src/capture/synthetic_backend.rs` (`marker`), bit for bit.
  *
  * A bench agent paints two markers into every synthetic frame: the frame's
  * own sequence number bottom-left, and the last bench probe it received on

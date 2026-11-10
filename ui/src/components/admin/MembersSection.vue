@@ -3,7 +3,7 @@
 <template>
   <v-card>
     <v-card-title class="d-flex align-center flex-wrap ga-2">
-      <span>Members</span>
+      <span>{{ t('mh.members.title') }}</span>
       <v-spacer />
       <!-- FR-11: server-side search over display name / email / nickname.
            FR-116: a row of its own on a phone, where 260 px beside the
@@ -14,7 +14,7 @@
         hide-details
         clearable
         prepend-inner-icon="mdi-magnify"
-        placeholder="Search name or email"
+        :placeholder="t('mh.members.search')"
         :style="xs ? 'flex: 1 1 100%' : 'max-width: 260px'"
         :class="xs ? 'order-last' : 'flex-grow-0'"
       />
@@ -23,8 +23,8 @@
         size="small"
         variant="text"
         :color="colsCustomized ? 'primary' : undefined"
-        title="Configure columns"
-        aria-label="Configure columns"
+        :title="t('mh.files.columns')"
+        :aria-label="t('mh.files.columns')"
         @click="colDialogOpen = true"
       />
       <v-btn
@@ -34,9 +34,9 @@
         prepend-icon="mdi-account-plus"
         @click="openAddDialog"
       >
-        Add member
+        {{ t('mh.members.add') }}
       </v-btn>
-      <span class="text-body-2 text-medium-emphasis">{{ membersStore.total }} total</span>
+      <span class="text-body-2 text-medium-emphasis">{{ t('mh.members.total', { n: membersStore.total }) }}</span>
     </v-card-title>
 
     <v-card-text>
@@ -61,14 +61,13 @@
         class="mb-4"
         @click:close="roleStore.error = null"
       >
-        Loading roles failed: {{ roleStore.error }}
+        {{ t('mh.members.rolesFailed', { error: roleStore.error }) }}
       </v-alert>
 
       <p class="text-body-2 text-medium-emphasis mb-4">
-        Assign roles to grant permissions — device access (remote control,
-        device management, audit) is role-driven. Changing roles needs the
-        <span class="font-weight-medium">Manage roles</span> permission. New
-        people join via Invites, or add an existing account by email.
+        <i18n-t keypath="mh.members.intro" tag="span" scope="global">
+          <template #perm><span class="font-weight-medium">{{ permissionLabel('MANAGE_ROLES') }}</span></template>
+        </i18n-t>
       </p>
 
       <v-data-table-server
@@ -134,9 +133,9 @@
               :prepend-icon="item.user_id === myUserId ? 'mdi-exit-run' : 'mdi-account-remove'"
               @click="askRemove(item)"
             >
-              {{ item.user_id === myUserId ? 'Leave' : 'Remove' }}
+              {{ item.user_id === myUserId ? t('mh.members.leave') : t('mh.members.remove') }}
             </v-btn>
-            <v-tooltip v-else text="The organization owner cannot be removed" location="top">
+            <v-tooltip v-else :text="t('mh.members.ownerFixed')" location="top">
               <template #activator="{ props: tipProps }">
                 <v-icon v-bind="tipProps" size="small" class="ml-2 text-medium-emphasis">
                   mdi-crown
@@ -160,18 +159,17 @@
   <!-- FR-11: add an existing account by email — no invite round-trip. -->
   <v-dialog v-model="addDialog" max-width="440">
     <v-card>
-      <v-card-title>Add member by email</v-card-title>
+      <v-card-title>{{ t('mh.members.addTitle') }}</v-card-title>
       <v-card-text>
         <v-alert v-if="addError" type="error" variant="tonal" density="compact" class="mb-4">
           {{ addError }}
         </v-alert>
         <p class="text-body-2 text-medium-emphasis mb-3">
-          Adds an account that already exists on this server. For someone
-          without an account, use Invites instead.
+          {{ t('mh.members.addBody') }}
         </p>
         <v-text-field
           v-model="addEmail"
-          label="Email address"
+          :label="t('mh.members.email')"
           type="email"
           autofocus
           :rules="[rules.email]"
@@ -180,9 +178,9 @@
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="addDialog = false">Cancel</v-btn>
+        <v-btn variant="text" @click="addDialog = false">{{ t('common.cancel') }}</v-btn>
         <v-btn color="primary" :loading="addBusy" :disabled="!addEmail" @click="submitAdd">
-          Add
+          {{ t('mh.members.addBtn') }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -190,7 +188,7 @@
 
   <ConfirmDialog
     v-model="removeDialog"
-    :title="removeTarget?.user_id === myUserId ? 'Leave organization' : 'Remove member'"
+    :title="removeTarget?.user_id === myUserId ? t('mh.members.leaveTitle') : t('mh.members.removeTitle')"
     :message="removeMessage"
     confirm-color="error"
     @confirm="doRemove"
@@ -200,7 +198,7 @@
   <v-dialog v-model="rolesDialog" max-width="500">
     <v-card>
       <v-card-title>
-        Roles — {{ dialogMember?.display_name }}
+        {{ t('mh.members.rolesTitle', { name: dialogMember?.display_name }) }}
       </v-card-title>
       <v-card-text>
         <v-alert v-if="dialogError" type="error" variant="tonal" density="compact" class="mb-4">
@@ -208,10 +206,10 @@
         </v-alert>
 
         <p v-if="roleStore.error" class="text-error">
-          Roles couldn't be loaded: {{ roleStore.error }}
+          {{ t('mh.members.rolesUnloaded', { error: roleStore.error }) }}
         </p>
         <p v-else-if="roleStore.roles.length === 0" class="text-medium-emphasis">
-          No roles exist yet — create one in the Roles section first.
+          {{ t('mh.members.noRoles') }}
         </p>
 
         <v-list v-else density="compact">
@@ -239,7 +237,7 @@
                 :style="{ backgroundColor: roleStore.colorHex(role.color) || 'rgb(var(--v-theme-on-surface-variant))' }"
               />
               {{ role.name }}
-              <v-chip v-if="role.is_default" size="x-small" variant="tonal" class="ml-1">default</v-chip>
+              <v-chip v-if="role.is_default" size="x-small" variant="tonal" class="ml-1">{{ t('mh.roles.default') }}</v-chip>
             </v-list-item-title>
             <v-list-item-subtitle v-if="role.description">
               {{ role.description }}
@@ -249,7 +247,7 @@
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="rolesDialog = false">Done</v-btn>
+        <v-btn variant="text" @click="rolesDialog = false">{{ t('mh.members.done') }}</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -263,10 +261,13 @@ import { useRoleStore, type Role } from '@/stores/role'
 import { useTenantStore } from '@/stores/tenant'
 import { useAuthStore } from '@/stores/auth'
 import { useValidation } from '@/composables/useValidation'
-import { canManageInvites } from '@/utils/permissions'
+import { canManageInvites, permissionLabel } from '@/utils/permissions'
 import { useGridColumns } from '@/composables/useGridColumns'
 import GridColumnPickerDialog from '@/components/common/GridColumnPickerDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{ tenantId: string }>()
 
@@ -294,11 +295,11 @@ const gridDir = ref<'asc' | 'desc' | undefined>(undefined)
 
 const memberHeaders = computed(() => [
   // Keys double as the server sort keys (name | email | joined_at).
-  { title: 'Member', key: 'name', sortable: true },
-  { title: 'Email', key: 'email', sortable: true },
-  { title: 'Roles', key: 'roles', sortable: false },
-  { title: 'Joined', key: 'joined_at', sortable: true },
-  { title: 'Actions', key: 'actions', sortable: false, align: 'end' as const },
+  { title: t('mh.members.col.member'), key: 'name', sortable: true },
+  { title: t('mh.members.col.email'), key: 'email', sortable: true },
+  { title: t('mh.members.col.roles'), key: 'roles', sortable: false },
+  { title: t('mh.members.col.joined'), key: 'joined_at', sortable: true },
+  { title: t('mh.members.col.actions'), key: 'actions', sortable: false, align: 'end' as const },
 ])
 const colDialogOpen = ref(false)
 const {
@@ -407,8 +408,8 @@ const removeMessage = computed(() => {
   const m = removeTarget.value
   if (!m) return ''
   return m.user_id === myUserId.value
-    ? 'Leave this organization? You lose access until someone re-adds or re-invites you.'
-    : `Remove ${m.display_name || m.email || 'this member'} from the organization? Their account is untouched — they just lose access here.`
+    ? t('mh.members.leaveMsg')
+    : t('mh.members.removeMsg', { who: m.display_name || m.email || t('mh.members.thisMember') })
 })
 
 function askRemove(member: Member) {

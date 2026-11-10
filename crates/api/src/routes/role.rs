@@ -5,7 +5,7 @@ use axum::{
     extract::{Path, State},
 };
 use bson::oid::ObjectId;
-use roomler_ai_db::models::role::permissions;
+use meshharbor_db::models::role::permissions;
 use serde::{Deserialize, Serialize};
 
 use crate::{core_state::Core, error::ApiError, extractors::auth::AuthUser};
@@ -273,7 +273,7 @@ pub async fn unassign(
     Ok(Json(serde_json::json!({ "removed": true })))
 }
 
-fn to_response(r: roomler_ai_db::models::Role) -> RoleResponse {
+fn to_response(r: meshharbor_db::models::Role) -> RoleResponse {
     RoleResponse {
         id: r.id.unwrap().to_hex(),
         tenant_id: r.tenant_id.to_hex(),
