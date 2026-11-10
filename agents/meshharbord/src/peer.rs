@@ -455,15 +455,21 @@ impl AgentPeer {
         // so any lost RTP packet becomes a frozen decoder until the next
         // IDR. Browser observed 293 NACKs per minute with 0.1.4 going
         // nowhere — this is the missing piece.
-        let mut registry = webrtc::interceptor::registry::Registry::new();
-        registry =
-            webrtc::api::interceptor_registry::register_default_interceptors(registry, &mut engine)
-                .context("register default interceptors")?;
+        let registry = webrtc::interceptor::registry::Registry::new();
+        // Register the test-only packet drop interceptor BEFORE
+        // `register_default_interceptors` so `Chain::bind_local_stream` wraps
+        // `VideoDropRtpWriter` inside the NACK `ResponderInterceptor` (closest
+        // to the network writer). That way original RTP packets enter the NACK
+        // retransmit buffer before being dropped, and NACK-retransmitted
+        // packets also traverse the dropper.
         #[cfg(feature = "rc-latency-bench")]
         let registry = {
             crate::latency_bench::note_stage(session_id, "peer_new", serde_json::json!({}));
             crate::latency_bench::register_interceptor(registry, session_id)
         };
+        let registry =
+            webrtc::api::interceptor_registry::register_default_interceptors(registry, &mut engine)
+                .context("register default interceptors")?;
 
         // Keep the OVERLAY interface out of ICE. The STUN query that rides
         // that interface comes back reflected as the node's own overlay

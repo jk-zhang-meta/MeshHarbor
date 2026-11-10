@@ -485,4 +485,185 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn drop_interceptor_before_default_interceptors_allows_nack_retransmit() {
+        use webrtc::api::interceptor_registry::register_default_interceptors;
+        use webrtc::api::media_engine::MediaEngine;
+        use webrtc::interceptor::registry::Registry;
+        use webrtc::interceptor::stream_info::RTCPFeedback;
+        use webrtc::rtcp::transport_feedbacks::transport_layer_nack::{
+            NackPair, TransportLayerNack,
+        };
+
+        struct RecordingRtpWriter {
+            seqs: Mutex<Vec<u16>>,
+        }
+
+        #[async_trait]
+        impl RTPWriter for RecordingRtpWriter {
+            async fn write(
+                &self,
+                pkt: &webrtc::rtp::packet::Packet,
+                _attributes: &Attributes,
+            ) -> std::result::Result<usize, InterceptorError> {
+                self.seqs.lock().unwrap().push(pkt.header.sequence_number);
+                Ok(pkt.payload.len())
+            }
+        }
+
+        struct NoopRtcpWriter;
+
+        #[async_trait]
+        impl RTCPWriter for NoopRtcpWriter {
+            async fn write(
+                &self,
+                _pkts: &[Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>],
+                _attributes: &Attributes,
+            ) -> std::result::Result<usize, InterceptorError> {
+                Ok(0)
+            }
+        }
+
+        struct CannedNackRtcpReader {
+            media_ssrc: u32,
+            missing_seq: u16,
+        }
+
+        #[async_trait]
+        impl RTCPReader for CannedNackRtcpReader {
+            async fn read(
+                &self,
+                _buf: &mut [u8],
+                _attributes: &Attributes,
+            ) -> std::result::Result<
+                (
+                    Vec<Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>>,
+                    Attributes,
+                ),
+                InterceptorError,
+            > {
+                let nack = TransportLayerNack {
+                    sender_ssrc: 0x2222_3333,
+                    media_ssrc: self.media_ssrc,
+                    nacks: vec![NackPair {
+                        packet_id: self.missing_seq,
+                        lost_packets: 0,
+                    }],
+                };
+                Ok((vec![Box::new(nack)], Attributes::new()))
+            }
+        }
+
+        reset_session_counters();
+        let mut engine = MediaEngine::default();
+        engine.register_default_codecs().unwrap();
+
+        // Exact production registration order: VideoPacketDropInterceptor FIRST
+        // (innermost / closest to network writer), default interceptors SECOND
+        // (outermost / closest to TrackLocal).
+        let mut registry = Registry::new();
+        registry.add(Box::new(VideoPacketDropInterceptor {
+            drop_permille: 1000,
+        }));
+        let registry = register_default_interceptors(registry, &mut engine).unwrap();
+        let interceptor = registry.build("test-peer").unwrap();
+
+        let ssrc = 0x1122_3344u32;
+        let missing_seq = 42u16;
+        let rtcp_reader: Arc<dyn RTCPReader + Send + Sync> = Arc::new(CannedNackRtcpReader {
+            media_ssrc: ssrc,
+            missing_seq,
+        });
+        let bound_rtcp_reader = interceptor.bind_rtcp_reader(rtcp_reader).await;
+        let _bound_rtcp_writer = interceptor.bind_rtcp_writer(Arc::new(NoopRtcpWriter)).await;
+
+        let net_writer = Arc::new(RecordingRtpWriter {
+            seqs: Mutex::new(Vec::new()),
+        });
+        let stream_info = StreamInfo {
+            ssrc,
+            payload_type: 96,
+            mime_type: "video/H264".to_string(),
+            clock_rate: 90_000,
+            rtcp_feedback: vec![RTCPFeedback {
+                typ: "nack".to_string(),
+                parameter: String::new(),
+            }],
+            ..Default::default()
+        };
+        let bound_rtp_writer = interceptor
+            .bind_local_stream(&stream_info, net_writer.clone())
+            .await;
+
+        // 1. Arm 100% drop and send seq=42. Because NACK ResponderInterceptor is
+        // outer to VideoDropRtpWriter, ResponderInterceptor caches seq=42 first,
+        // then VideoDropRtpWriter drops it before `net_writer`.
+        set_drop_armed(true);
+        let pkt = webrtc::rtp::packet::Packet {
+            header: webrtc::rtp::header::Header {
+                version: 2,
+                payload_type: 96,
+                sequence_number: missing_seq,
+                timestamp: 9000,
+                ssrc,
+                ..Default::default()
+            },
+            payload: bytes::Bytes::from_static(&[0x65, 0x88, 0x84, 0x21]),
+        };
+        bound_rtp_writer
+            .write(&pkt, &Attributes::new())
+            .await
+            .unwrap();
+        assert!(
+            net_writer.seqs.lock().unwrap().is_empty(),
+            "initial packet should be dropped before reaching network writer"
+        );
+        assert_eq!(rtp_packet_counts(), (1, 1));
+
+        // 2. While dropper is STILL armed (100% drop), feed an incoming RTCP
+        // TransportLayerNack for seq=42. ResponderInterceptor resends seq=42
+        // through VideoDropRtpWriter, which drops the retransmission too!
+        let mut rtcp_buf = [0u8; 1500];
+        bound_rtcp_reader
+            .read(&mut rtcp_buf, &Attributes::new())
+            .await
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if rtp_packet_counts() == (2, 2) {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for NACK retransmission to traverse VideoDropRtpWriter"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            net_writer.seqs.lock().unwrap().is_empty(),
+            "retransmitted packet should also be subject to VideoDropRtpWriter"
+        );
+
+        // 3. Disarm dropper and feed a second RTCP TransportLayerNack for seq=42.
+        // Now the NACK retransmission passes through VideoDropRtpWriter to `net_writer`.
+        set_drop_armed(false);
+        bound_rtcp_reader
+            .read(&mut rtcp_buf, &Attributes::new())
+            .await
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if net_writer.seqs.lock().unwrap().as_slice() == [missing_seq] {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for NACK retransmission of dropped packet"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(rtp_packet_counts(), (3, 2));
+        let _ = interceptor.close().await;
+    }
 }

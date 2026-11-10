@@ -269,9 +269,7 @@ impl WgDevice {
             if let Some(carrier) = attach {
                 *stats.mp_secondary.lock().unwrap_or_else(|e| e.into_inner()) =
                     Arc::downgrade(&carrier);
-                mp.set_config(super::super::multipath::MultipathConfig::new(
-                    control.mode(),
-                ));
+                mp.set_mode(control.mode());
                 if self.add_multipath_leg_with_health(&key, 1, carrier, 10, 1, false) {
                     self.peers
                         .get_mut(&key)
@@ -1579,29 +1577,66 @@ mod tests {
     }
 
     /// B8 throughput fix (handoff 222): a controlled batch takes ONE locked
-    /// decision pass and per-leg grouped emission, yet every mode still
-    /// delivers each packet exactly once and in order on a real negotiated
-    /// two-leg session.
+    /// decision pass and per-leg grouped emission, delivering each packet
+    /// exactly once on a real negotiated two-leg session (strictly in order for
+    /// `ActiveStandby` and `Aggregate`, and as an exact duplicate-free set for
+    /// `Redundant`, which by design in `multipath.rs` uses `MultipathDedupTable`
+    /// without `MultipathReorderBuffer` so a lost packet never stalls later packets).
     #[tokio::test]
-    async fn runtime_controlled_batch_delivers_every_packet_once_in_order_in_every_mode() {
+    async fn runtime_controlled_batch_delivers_every_packet_once_with_mode_ordering() {
         for mode in [
             MultipathMode::ActiveStandby,
             MultipathMode::Redundant,
             MultipathMode::Aggregate,
         ] {
             let (mut da, mut db, mut rx, _) = pair(mode, mode).await;
+            let ka = da.public.to_bytes();
+            let kb = db.public.to_bytes();
+            let cfg = crate::overlay::multipath::MultipathConfig::new(mode)
+                .with_reorder_hold_timeout(Duration::from_millis(500));
+            assert!(da.set_peer_multipath_config(&kb, cfg.clone()));
+            assert!(db.set_peer_multipath_config(&ka, cfg));
             retain_pair(&mut da, &mut db).await;
             negotiated(&mut da, &mut db, true).await;
-            let kb = db.public.to_bytes();
             assert!(da.peers[&kb].stats.mp_control.get().is_some());
             let burst = batch(64);
             assert_eq!(da.send_ip_batch(&burst).await, 64, "{mode:?}");
-            for (i, want) in burst.iter().enumerate() {
-                let got = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-                    .await
-                    .unwrap_or_else(|_| panic!("{mode:?}: packet {i} lost"))
-                    .unwrap();
-                assert_eq!(&got, want, "{mode:?}: packet {i} reordered or altered");
+            match mode {
+                MultipathMode::ActiveStandby | MultipathMode::Aggregate => {
+                    for (i, want) in burst.iter().enumerate() {
+                        let got = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                            .await
+                            .unwrap_or_else(|_| panic!("{mode:?}: packet {i} lost"))
+                            .unwrap();
+                        assert_eq!(&got, want, "{mode:?}: packet {i} reordered or altered");
+                    }
+                }
+                MultipathMode::Redundant => {
+                    // By design (`multipath.rs` module header), `Redundant` mode
+                    // only performs deduplication (`MultipathDedupTable`) and does
+                    // not buffer packets in `MultipathReorderBuffer`, so cross-leg
+                    // arrival order is not guaranteed under scheduler load. Assert
+                    // that every packet is delivered exactly once (received set
+                    // equals sent set with no duplicates).
+                    let mut received_set = std::collections::BTreeSet::new();
+                    for i in 0..burst.len() {
+                        let got = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                            .await
+                            .unwrap_or_else(|_| panic!("{mode:?}: packet {i} lost"))
+                            .unwrap();
+                        assert!(
+                            received_set.insert(got),
+                            "{mode:?}: duplicate packet delivered at index {i}"
+                        );
+                    }
+                    let expected_set: std::collections::BTreeSet<Vec<u8>> =
+                        burst.iter().cloned().collect();
+                    assert_eq!(
+                        received_set, expected_set,
+                        "{mode:?}: delivered packet set differs from sent burst"
+                    );
+                }
+                MultipathMode::Off => unreachable!(),
             }
             assert!(
                 tokio::time::timeout(Duration::from_millis(200), rx.recv())

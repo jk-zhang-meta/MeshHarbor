@@ -37,6 +37,7 @@
 
 use std::sync::Arc;
 
+use rayon::prelude::*;
 use tunnel_core::env::node_env;
 
 use crate::capture::{Frame, PixelFormat};
@@ -52,6 +53,20 @@ fn lanczos_enabled() -> bool {
     !matches!(
         tunnel_core::env::node_env("LANCZOS").as_deref(),
         Some("0") | Some("false")
+    )
+}
+
+/// Kill switch for the vectorized + persistent-pool Lanczos-3 implementation.
+/// `MESHHARBORD_LANCZOS_FAST=0` (or `false`) reverts to `lanczos3_legacy`
+/// (scalar loops + per-frame `std::thread::scope`).
+fn lanczos_fast_enabled() -> bool {
+    parse_lanczos_fast_env(node_env("LANCZOS_FAST").as_deref())
+}
+
+fn parse_lanczos_fast_env(val: Option<&str>) -> bool {
+    !matches!(
+        val.map(str::trim),
+        Some("0") | Some("false") | Some("FALSE")
     )
 }
 
@@ -172,46 +187,68 @@ fn lanczos3_taps(src: u32, dst: u32) -> Vec<(i32, Vec<i32>)> {
 }
 
 /// One axis of cached, flattened taps: `index[i] = (lo, len)` into
-/// `weights`. Rebuilt only when the `(src, dst)` key changes (a refine
-/// rung flip — every few seconds at most, ~1 ms to rebuild), replacing
-/// the per-frame table build the old free function paid.
+/// `weights`, plus `offsets[i]` = start offset in `weights` and `pairs` =
+/// packed `(w0: i16, w1: i16)` weight pairs for SIMD `vpmaddwd`.
+/// Rebuilt only when the `(src, dst)` key changes (a refine rung flip —
+/// every few seconds at most, ~1 ms to rebuild), replacing the per-frame
+/// table build the old free function paid.
 #[derive(Default)]
 struct AxisTaps {
     key: (u32, u32),
     index: Vec<(u32, u32)>,
+    offsets: Vec<u32>,
     weights: Vec<i32>,
+    pair_offsets: Vec<u32>,
+    weight_pairs: Vec<i32>,
 }
 
 impl AxisTaps {
-    /// `index[i] = (lo, len)`; weights flattened in row order (offsets are
-    /// cumulative, recovered while iterating).
+    /// `index[i] = (lo, len)`; weights flattened in row order.
     fn ensure(&mut self, src: u32, dst: u32) {
         if self.key == (src, dst) && !self.index.is_empty() {
             return;
         }
         self.index.clear();
+        self.offsets.clear();
         self.weights.clear();
+        self.pair_offsets.clear();
+        self.weight_pairs.clear();
         for (lo, ws) in lanczos3_taps(src, dst) {
+            self.offsets.push(self.weights.len() as u32);
             self.index.push((lo as u32, ws.len() as u32));
             self.weights.extend_from_slice(&ws);
+
+            self.pair_offsets.push(self.weight_pairs.len() as u32);
+            let mut k = 0;
+            while k + 1 < ws.len() {
+                let w0 = (ws[k] as i16) as u16 as u32;
+                let w1 = (ws[k + 1] as i16) as u16 as u32;
+                self.weight_pairs.push((w0 | (w1 << 16)) as i32);
+                k += 2;
+            }
         }
         self.key = (src, dst);
     }
 }
 
 /// Pump-local resampler state: cached taps for both axes + the pooled
-/// i16 intermediate. See the module docs for what each cache removes.
+/// i16 intermediate + persistent worker pool. See the module docs for what
+/// each cache removes.
 #[derive(Default)]
 pub(crate) struct Resampler {
     h: AxisTaps,
     v: AxisTaps,
     /// Pooled horizontal-pass output (Q6 i16, stride-4 lanes, alpha lane
-    /// never written or read). High-water sized; `resize` only ever grows
-    /// it, and no per-frame zeroing happens — every element the vertical
-    /// pass reads was written by the horizontal pass this frame.
+    /// never read). High-water sized; `resize` only ever grows it, and no
+    /// per-frame zeroing happens — every element the vertical pass reads
+    /// was written by the horizontal pass this frame.
     mid: Vec<i16>,
     /// Worker count, read once at construction (env/config).
     threads: usize,
+    /// Persistent worker pool for `threads > 1` so Windows never pays
+    /// per-frame `CreateThread` / `DLL_THREAD_ATTACH` loader-lock stalls.
+    pool: Option<rayon::ThreadPool>,
+    pool_threads: usize,
 }
 
 impl Resampler {
@@ -222,20 +259,171 @@ impl Resampler {
         }
     }
 
-    /// Separable Lanczos-3 downscale for BGRA frames. P7: the kernel is a
-    /// true scaled Lanczos (support = 3·ratio) so it anti-aliases correctly
-    /// at ANY shrink — box is never *more* correct, only cheaper; box
-    /// survives below the `lanczos_min_scale` floor purely as a CPU guard
-    /// for huge (4K+) sources. Cost model: the horizontal pass is
-    /// ≈18·src_area MACs independent of ratio (3 live lanes since Phase A),
-    /// the vertical pass shrinks with scale, total ≈ 18·src_area·(1+scale).
-    /// Q12 integer accumulation (i32), horizontal pass into the pooled i16
-    /// intermediate (Q12 >> 6 = Q6; max |value| ≈ 255·4096·1.15/64 ≈ 18.8k —
-    /// fits i16 with the ~15 % negative-lobe overshoot headroom), vertical
-    /// pass back to u8 with clamping (the kernel has negative lobes).
-    /// Output alpha is constant 0xFF — every consumer (dcv BGRA→NV12/I444)
-    /// ignores it, so resampling it was pure waste.
+    fn ensure_pool(&mut self, threads: usize) -> Option<&rayon::ThreadPool> {
+        if threads <= 1 {
+            return None;
+        }
+        if self.pool.is_none() || self.pool_threads != threads {
+            self.pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(|idx| format!("mh-scale-{idx}"))
+                .build()
+                .ok();
+            self.pool_threads = threads;
+        }
+        self.pool.as_ref()
+    }
+
+    /// Separable Lanczos-3 downscale for BGRA frames. Dispatches to the
+    /// vectorized + persistent-pool implementation unless
+    /// `MESHHARBORD_LANCZOS_FAST=0` (or `false`) is set.
     fn lanczos3(
+        &mut self,
+        src: &[u8],
+        src_w: u32,
+        src_h: u32,
+        src_stride: u32,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Vec<u8> {
+        if lanczos_fast_enabled() {
+            self.lanczos3_fast(src, src_w, src_h, src_stride, dst_w, dst_h)
+        } else {
+            self.lanczos3_legacy(src, src_w, src_h, src_stride, dst_w, dst_h)
+        }
+    }
+
+    /// Vectorized (AVX2 + cache-local row-strip fallback) Lanczos-3 downscale
+    /// backed by a persistent thread pool. Produces bit-for-bit identical
+    /// B/G/R/A output (`max_diff == 0`) to [`Self::lanczos3_legacy`].
+    fn lanczos3_fast(
+        &mut self,
+        src: &[u8],
+        src_w: u32,
+        src_h: u32,
+        src_stride: u32,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Vec<u8> {
+        self.h.ensure(src_w, dst_w);
+        self.v.ensure(src_h, dst_h);
+        let mid_stride = (dst_w as usize) * 4;
+        let mid_len = mid_stride * (src_h as usize);
+        if self.mid.len() < mid_len {
+            self.mid.resize(mid_len, 0);
+        }
+        let threads = self.threads.max(1).min(src_h.max(1) as usize);
+        let _ = self.ensure_pool(threads);
+
+        let h_index = &self.h.index;
+        let h_offsets = &self.h.offsets;
+        let h_weights = &self.h.weights;
+        let h_pair_offsets = &self.h.pair_offsets;
+        let h_weight_pairs = &self.h.weight_pairs;
+        let v_index = &self.v.index;
+        let v_offsets = &self.v.offsets;
+        let v_weights = &self.v.weights;
+        let mid = &mut self.mid[..mid_len];
+
+        #[cfg(target_arch = "x86_64")]
+        let has_avx2 = std::arch::is_x86_feature_detected!("avx2");
+
+        let h_band = |rows: &mut [i16], y0: usize| {
+            #[cfg(target_arch = "x86_64")]
+            if has_avx2 {
+                // SAFETY: `has_avx2` verified via `is_x86_feature_detected!("avx2")`.
+                unsafe {
+                    lanczos3_h_band_avx2(
+                        src,
+                        src_w as usize,
+                        src_stride as usize,
+                        mid_stride,
+                        h_index,
+                        h_offsets,
+                        h_weights,
+                        h_pair_offsets,
+                        h_weight_pairs,
+                        rows,
+                        y0,
+                    );
+                }
+                return;
+            }
+            lanczos3_h_band_portable(
+                src,
+                src_w as usize,
+                src_stride as usize,
+                mid_stride,
+                h_index,
+                h_offsets,
+                h_weights,
+                rows,
+                y0,
+            );
+        };
+
+        if let Some(pool) = self.pool.as_ref() {
+            let rows_per = (src_h as usize).div_ceil(threads).max(1);
+            pool.install(|| {
+                mid.par_chunks_mut(rows_per * mid_stride)
+                    .enumerate()
+                    .for_each(|(b, band)| h_band(band, b * rows_per));
+            });
+        } else {
+            h_band(mid, 0);
+        }
+
+        let mid = &self.mid[..mid_len];
+        let mut dst = vec![0u8; (dst_w as usize) * (dst_h as usize) * 4];
+        let v_band = |rows: &mut [u8], y0: usize| {
+            #[cfg(target_arch = "x86_64")]
+            if has_avx2 {
+                // SAFETY: `has_avx2` verified via `is_x86_feature_detected!("avx2")`.
+                unsafe {
+                    lanczos3_v_band_avx2(
+                        mid,
+                        dst_w as usize,
+                        mid_stride,
+                        v_index,
+                        v_offsets,
+                        v_weights,
+                        rows,
+                        y0,
+                    );
+                }
+                return;
+            }
+            lanczos3_v_band_portable(
+                mid,
+                dst_w as usize,
+                mid_stride,
+                v_index,
+                v_offsets,
+                v_weights,
+                rows,
+                y0,
+            );
+        };
+
+        let threads_v = self.threads.max(1).min(dst_h.max(1) as usize);
+        if let Some(pool) = self.pool.as_ref()
+            && threads_v > 1
+        {
+            let rows_per = (dst_h as usize).div_ceil(threads_v).max(1);
+            pool.install(|| {
+                dst.par_chunks_mut(rows_per * mid_stride)
+                    .enumerate()
+                    .for_each(|(b, band)| v_band(band, b * rows_per));
+            });
+        } else {
+            v_band(&mut dst, 0);
+        }
+        dst
+    }
+
+    /// Legacy scalar + `std::thread::scope` Lanczos-3 downscale, retained behind
+    /// `MESHHARBORD_LANCZOS_FAST=0` and for differential unit tests.
+    fn lanczos3_legacy(
         &mut self,
         src: &[u8],
         src_w: u32,
@@ -343,6 +531,337 @@ impl Resampler {
             });
         }
         dst
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lanczos3_h_band_portable(
+    src: &[u8],
+    src_w: usize,
+    src_stride: usize,
+    mid_stride: usize,
+    h_index: &[(u32, u32)],
+    h_offsets: &[u32],
+    h_weights: &[i32],
+    rows: &mut [i16],
+    y0: usize,
+) {
+    let row_bytes = src_w * 4;
+    let mut row_chunks = rows.chunks_exact_mut(mid_stride * 4);
+    let mut band_y = 0usize;
+    for chunk4 in &mut row_chunks {
+        let (mr01, mr23) = chunk4.split_at_mut(mid_stride * 2);
+        let (mr0, mr1) = mr01.split_at_mut(mid_stride);
+        let (mr2, mr3) = mr23.split_at_mut(mid_stride);
+        let y = y0 + band_y;
+        let r0 = &src[y * src_stride..][..row_bytes];
+        let r1 = &src[(y + 1) * src_stride..][..row_bytes];
+        let r2 = &src[(y + 2) * src_stride..][..row_bytes];
+        let r3 = &src[(y + 3) * src_stride..][..row_bytes];
+        for (x, (&(lo, len), &woff)) in h_index.iter().zip(h_offsets.iter()).enumerate() {
+            let s0 = (lo as usize) * 4;
+            let slen = (len as usize) * 4;
+            let ws = &h_weights[woff as usize..woff as usize + len as usize];
+            let p0 = &r0[s0..s0 + slen];
+            let p1 = &r1[s0..s0 + slen];
+            let p2 = &r2[s0..s0 + slen];
+            let p3 = &r3[s0..s0 + slen];
+            let mut a0 = [0i32; 3];
+            let mut a1 = [0i32; 3];
+            let mut a2 = [0i32; 3];
+            let mut a3 = [0i32; 3];
+            for (k, &w) in ws.iter().enumerate() {
+                let off = k * 4;
+                a0[0] += w * p0[off] as i32;
+                a0[1] += w * p0[off + 1] as i32;
+                a0[2] += w * p0[off + 2] as i32;
+                a1[0] += w * p1[off] as i32;
+                a1[1] += w * p1[off + 1] as i32;
+                a1[2] += w * p1[off + 2] as i32;
+                a2[0] += w * p2[off] as i32;
+                a2[1] += w * p2[off + 1] as i32;
+                a2[2] += w * p2[off + 2] as i32;
+                a3[0] += w * p3[off] as i32;
+                a3[1] += w * p3[off + 1] as i32;
+                a3[2] += w * p3[off + 2] as i32;
+            }
+            let di = x * 4;
+            mr0[di] = (a0[0] >> 6) as i16;
+            mr0[di + 1] = (a0[1] >> 6) as i16;
+            mr0[di + 2] = (a0[2] >> 6) as i16;
+            mr1[di] = (a1[0] >> 6) as i16;
+            mr1[di + 1] = (a1[1] >> 6) as i16;
+            mr1[di + 2] = (a1[2] >> 6) as i16;
+            mr2[di] = (a2[0] >> 6) as i16;
+            mr2[di + 1] = (a2[1] >> 6) as i16;
+            mr2[di + 2] = (a2[2] >> 6) as i16;
+            mr3[di] = (a3[0] >> 6) as i16;
+            mr3[di + 1] = (a3[1] >> 6) as i16;
+            mr3[di + 2] = (a3[2] >> 6) as i16;
+        }
+        band_y += 4;
+    }
+    for (rem_idx, mid_row) in row_chunks
+        .into_remainder()
+        .chunks_exact_mut(mid_stride)
+        .enumerate()
+    {
+        let y = y0 + band_y + rem_idx;
+        let row = &src[y * src_stride..][..row_bytes];
+        for (x, (&(lo, len), &woff)) in h_index.iter().zip(h_offsets.iter()).enumerate() {
+            let px = &row[(lo as usize) * 4..][..(len as usize) * 4];
+            let ws = &h_weights[woff as usize..woff as usize + len as usize];
+            let mut acc = [0i32; 3];
+            for (chunk, &w) in px.chunks_exact(4).zip(ws) {
+                acc[0] += w * chunk[0] as i32;
+                acc[1] += w * chunk[1] as i32;
+                acc[2] += w * chunk[2] as i32;
+            }
+            let di = x * 4;
+            mid_row[di] = (acc[0] >> 6) as i16;
+            mid_row[di + 1] = (acc[1] >> 6) as i16;
+            mid_row[di + 2] = (acc[2] >> 6) as i16;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lanczos3_v_band_portable(
+    mid: &[i16],
+    dst_w: usize,
+    mid_stride: usize,
+    v_index: &[(u32, u32)],
+    v_offsets: &[u32],
+    v_weights: &[i32],
+    rows: &mut [u8],
+    y0: usize,
+) {
+    let mut acc_row = vec![0i32; mid_stride];
+    for (band_y, dst_row) in rows.chunks_exact_mut(mid_stride).enumerate() {
+        let y = y0 + band_y;
+        let (lo, len) = v_index[y];
+        let woff = v_offsets[y] as usize;
+        let ws = &v_weights[woff..woff + len as usize];
+        if ws.is_empty() {
+            continue;
+        }
+        let w0 = ws[0];
+        let first_mid = &mid[(lo as usize) * mid_stride..][..mid_stride];
+        for (a, &m) in acc_row.iter_mut().zip(first_mid.iter()) {
+            *a = w0 * (m as i32);
+        }
+        for (k, &w) in ws.iter().enumerate().skip(1) {
+            let m_row = &mid[(lo as usize + k) * mid_stride..][..mid_stride];
+            for (a, &m) in acc_row.iter_mut().zip(m_row.iter()) {
+                *a += w * (m as i32);
+            }
+        }
+        for x in 0..dst_w {
+            let di = x * 4;
+            dst_row[di] = ((acc_row[di] + (1 << 17)) >> 18).clamp(0, 255) as u8;
+            dst_row[di + 1] = ((acc_row[di + 1] + (1 << 17)) >> 18).clamp(0, 255) as u8;
+            dst_row[di + 2] = ((acc_row[di + 2] + (1 << 17)) >> 18).clamp(0, 255) as u8;
+            dst_row[di + 3] = 0xFF;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn lanczos3_h_band_avx2(
+    src: &[u8],
+    src_w: usize,
+    src_stride: usize,
+    mid_stride: usize,
+    h_index: &[(u32, u32)],
+    h_offsets: &[u32],
+    h_weights: &[i32],
+    h_pair_offsets: &[u32],
+    h_weight_pairs: &[i32],
+    rows: &mut [i16],
+    y0: usize,
+) {
+    use std::arch::x86_64::*;
+    let row_bytes = src_w * 4;
+    // Shuffle 2 BGRA pixels `[b0, g0, r0, a0, b1, g1, r1, a1]` (in low 64 bits of each 128-bit lane)
+    // into 8 `i16` values `[b0, b1, g0, g1, r0, r1, a0, a1]`.
+    let shuf_2px = _mm256_setr_epi8(
+        0, -1, 4, -1, 1, -1, 5, -1, 2, -1, 6, -1, 3, -1, 7, -1, 0, -1, 4, -1, 1, -1, 5, -1, 2, -1,
+        6, -1, 3, -1, 7, -1,
+    );
+
+    let mut row_chunks = rows.chunks_exact_mut(mid_stride * 4);
+    let mut band_y = 0usize;
+    for chunk4 in &mut row_chunks {
+        let (mr01, mr23) = chunk4.split_at_mut(mid_stride * 2);
+        let (mr0, mr1) = mr01.split_at_mut(mid_stride);
+        let (mr2, mr3) = mr23.split_at_mut(mid_stride);
+        let y = y0 + band_y;
+        let r0 = &src[y * src_stride..][..row_bytes];
+        let r1 = &src[(y + 1) * src_stride..][..row_bytes];
+        let r2 = &src[(y + 2) * src_stride..][..row_bytes];
+        let r3 = &src[(y + 3) * src_stride..][..row_bytes];
+        let r0_ptr = r0.as_ptr();
+        let r1_ptr = r1.as_ptr();
+        let r2_ptr = r2.as_ptr();
+        let r3_ptr = r3.as_ptr();
+        let mr0_ptr = mr0.as_mut_ptr();
+        let mr1_ptr = mr1.as_mut_ptr();
+        let mr2_ptr = mr2.as_mut_ptr();
+        let mr3_ptr = mr3.as_mut_ptr();
+
+        for x in 0..h_index.len() {
+            unsafe {
+                let (lo, len) = *h_index.get_unchecked(x);
+                let lo_bytes = (lo as usize) * 4;
+                let len_u = len as usize;
+                let pairs_len = len_u / 2;
+                let pair_off = *h_pair_offsets.get_unchecked(x) as usize;
+                let wp_ptr = h_weight_pairs.as_ptr().add(pair_off);
+
+                let mut acc01 = _mm256_setzero_si256();
+                let mut acc23 = _mm256_setzero_si256();
+
+                for p in 0..pairs_len {
+                    let w_pair = _mm256_set1_epi32(*wp_ptr.add(p));
+                    let s_off = lo_bytes + p * 8;
+
+                    let px0 = _mm_loadl_epi64(r0_ptr.add(s_off) as *const __m128i);
+                    let px1 = _mm_loadl_epi64(r1_ptr.add(s_off) as *const __m128i);
+                    let px01 = _mm256_shuffle_epi8(_mm256_set_m128i(px1, px0), shuf_2px);
+                    acc01 = _mm256_add_epi32(acc01, _mm256_madd_epi16(px01, w_pair));
+
+                    let px2 = _mm_loadl_epi64(r2_ptr.add(s_off) as *const __m128i);
+                    let px3 = _mm_loadl_epi64(r3_ptr.add(s_off) as *const __m128i);
+                    let px23 = _mm256_shuffle_epi8(_mm256_set_m128i(px3, px2), shuf_2px);
+                    acc23 = _mm256_add_epi32(acc23, _mm256_madd_epi16(px23, w_pair));
+                }
+
+                if (len_u & 1) != 0 {
+                    let woff = *h_offsets.get_unchecked(x) as usize;
+                    let w_last = _mm256_set1_epi32(*h_weights.get_unchecked(woff + len_u - 1));
+                    let s_off = lo_bytes + (len_u - 1) * 4;
+
+                    let u0 = (r0_ptr.add(s_off) as *const u32).read_unaligned();
+                    let u1 = (r1_ptr.add(s_off) as *const u32).read_unaligned();
+                    let p01 = _mm256_cvtepu8_epi32(_mm_set_epi32(0, 0, u1 as i32, u0 as i32));
+                    acc01 = _mm256_add_epi32(acc01, _mm256_mullo_epi32(p01, w_last));
+
+                    let u2 = (r2_ptr.add(s_off) as *const u32).read_unaligned();
+                    let u3 = (r3_ptr.add(s_off) as *const u32).read_unaligned();
+                    let p23 = _mm256_cvtepu8_epi32(_mm_set_epi32(0, 0, u3 as i32, u2 as i32));
+                    acc23 = _mm256_add_epi32(acc23, _mm256_mullo_epi32(p23, w_last));
+                }
+
+                let s01 = _mm256_srai_epi32::<6>(acc01);
+                let s23 = _mm256_srai_epi32::<6>(acc23);
+                let p01_16 = _mm_packs_epi32(
+                    _mm256_castsi256_si128(s01),
+                    _mm256_extracti128_si256::<1>(s01),
+                );
+                let p23_16 = _mm_packs_epi32(
+                    _mm256_castsi256_si128(s23),
+                    _mm256_extracti128_si256::<1>(s23),
+                );
+                let di = x * 4;
+                _mm_storel_epi64(mr0_ptr.add(di) as *mut __m128i, p01_16);
+                _mm_storel_epi64(mr1_ptr.add(di) as *mut __m128i, _mm_srli_si128::<8>(p01_16));
+                _mm_storel_epi64(mr2_ptr.add(di) as *mut __m128i, p23_16);
+                _mm_storel_epi64(mr3_ptr.add(di) as *mut __m128i, _mm_srli_si128::<8>(p23_16));
+            }
+        }
+        band_y += 4;
+    }
+
+    let rem = row_chunks.into_remainder();
+    if !rem.is_empty() {
+        lanczos3_h_band_portable(
+            src,
+            src_w,
+            src_stride,
+            mid_stride,
+            h_index,
+            h_offsets,
+            h_weights,
+            rem,
+            y0 + band_y,
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn lanczos3_v_band_avx2(
+    mid: &[i16],
+    dst_w: usize,
+    mid_stride: usize,
+    v_index: &[(u32, u32)],
+    v_offsets: &[u32],
+    v_weights: &[i32],
+    rows: &mut [u8],
+    y0: usize,
+) {
+    use std::arch::x86_64::*;
+    let bias = _mm256_set1_epi32(1 << 17);
+    let alpha_mask = _mm_set1_epi32(0xFF00_0000u32 as i32);
+    let mid_ptr = mid.as_ptr();
+
+    for (band_y, dst_row) in rows.chunks_exact_mut(mid_stride).enumerate() {
+        let y = y0 + band_y;
+        let (lo, len) = v_index[y];
+        let lo_u = lo as usize;
+        let len_u = len as usize;
+        let woff = v_offsets[y] as usize;
+        let ws = &v_weights[woff..woff + len_u];
+        let dst_ptr = dst_row.as_mut_ptr();
+
+        let mut x = 0usize;
+        while x + 4 <= dst_w {
+            unsafe {
+                let col_off = x * 4;
+                let mut acc0 = _mm256_setzero_si256();
+                let mut acc1 = _mm256_setzero_si256();
+                for (k, &w) in ws.iter().enumerate() {
+                    let w_vec = _mm256_set1_epi32(w);
+                    let row_ptr = mid_ptr.add((lo_u + k) * mid_stride + col_off);
+                    let m0 = _mm256_cvtepi16_epi32(_mm_loadu_si128(row_ptr as *const __m128i));
+                    let m1 =
+                        _mm256_cvtepi16_epi32(_mm_loadu_si128(row_ptr.add(8) as *const __m128i));
+                    acc0 = _mm256_add_epi32(acc0, _mm256_mullo_epi32(m0, w_vec));
+                    acc1 = _mm256_add_epi32(acc1, _mm256_mullo_epi32(m1, w_vec));
+                }
+                let s0 = _mm256_srai_epi32::<18>(_mm256_add_epi32(acc0, bias));
+                let s1 = _mm256_srai_epi32::<18>(_mm256_add_epi32(acc1, bias));
+                let p01_16 = _mm_packus_epi32(
+                    _mm256_castsi256_si128(s0),
+                    _mm256_extracti128_si256::<1>(s0),
+                );
+                let p23_16 = _mm_packus_epi32(
+                    _mm256_castsi256_si128(s1),
+                    _mm256_extracti128_si256::<1>(s1),
+                );
+                let out_u8 = _mm_or_si128(_mm_packus_epi16(p01_16, p23_16), alpha_mask);
+                _mm_storeu_si128(dst_ptr.add(col_off) as *mut __m128i, out_u8);
+            }
+            x += 4;
+        }
+        while x < dst_w {
+            let mut acc = [0i32; 3];
+            for (k, &w) in ws.iter().enumerate() {
+                let si = (lo_u + k) * mid_stride + x * 4;
+                acc[0] += w * mid[si] as i32;
+                acc[1] += w * mid[si + 1] as i32;
+                acc[2] += w * mid[si + 2] as i32;
+            }
+            let di = x * 4;
+            dst_row[di] = ((acc[0] + (1 << 17)) >> 18).clamp(0, 255) as u8;
+            dst_row[di + 1] = ((acc[1] + (1 << 17)) >> 18).clamp(0, 255) as u8;
+            dst_row[di + 2] = ((acc[2] + (1 << 17)) >> 18).clamp(0, 255) as u8;
+            dst_row[di + 3] = 0xFF;
+            x += 1;
+        }
     }
 }
 
@@ -787,6 +1306,78 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fast_lanczos3_matches_legacy_and_env_switch_parses() {
+        assert!(parse_lanczos_fast_env(None));
+        assert!(parse_lanczos_fast_env(Some("1")));
+        assert!(parse_lanczos_fast_env(Some("true")));
+        assert!(!parse_lanczos_fast_env(Some("0")));
+        assert!(!parse_lanczos_fast_env(Some("false")));
+        assert!(!parse_lanczos_fast_env(Some(" FALSE ")));
+
+        for &(sw, sh, dw, dh) in &[
+            (192u32, 120u32, 102u32, 64u32),
+            (197u32, 123u32, 95u32, 61u32),
+            (640u32, 400u32, 315u32, 197u32),
+            (1920u32, 1200u32, 946u32, 590u32),
+        ] {
+            let src = noise_frame(sw, sh);
+            let mut rs_fast = Resampler {
+                threads: 4,
+                ..Resampler::default()
+            };
+            let mut rs_leg = Resampler {
+                threads: 4,
+                ..Resampler::default()
+            };
+            let fast_out = rs_fast.lanczos3_fast(&src, sw, sh, sw * 4, dw, dh);
+            let leg_out = rs_leg.lanczos3_legacy(&src, sw, sh, sw * 4, dw, dh);
+            let port_h = {
+                let mut mid = vec![0i16; (dw as usize) * 4 * (sh as usize)];
+                lanczos3_h_band_portable(
+                    &src,
+                    sw as usize,
+                    (sw * 4) as usize,
+                    (dw * 4) as usize,
+                    &rs_fast.h.index,
+                    &rs_fast.h.offsets,
+                    &rs_fast.h.weights,
+                    &mut mid,
+                    0,
+                );
+                let mut dst = vec![0u8; (dw * dh * 4) as usize];
+                lanczos3_v_band_portable(
+                    &mid,
+                    dw as usize,
+                    (dw * 4) as usize,
+                    &rs_fast.v.index,
+                    &rs_fast.v.offsets,
+                    &rs_fast.v.weights,
+                    &mut dst,
+                    0,
+                );
+                dst
+            };
+            assert_eq!(fast_out.len(), leg_out.len());
+            let mut max_diff = 0u8;
+            for (f, l) in fast_out.iter().zip(leg_out.iter()) {
+                max_diff = max_diff.max(f.abs_diff(*l));
+            }
+            assert!(
+                max_diff <= 2,
+                "dims {sw}x{sh}->{dw}x{dh}: max per-channel diff {max_diff} > 2"
+            );
+            assert_eq!(
+                max_diff, 0,
+                "dims {sw}x{sh}->{dw}x{dh}: fast AVX2 path should be byte-identical to legacy"
+            );
+            assert_eq!(
+                port_h, leg_out,
+                "dims {sw}x{sh}->{dw}x{dh}: portable fast path should be byte-identical to legacy"
+            );
+        }
+    }
+
     /// FR-65 — what the downscale actually costs, at the shape the field hit.
     /// `#[ignore]`d because it is a MEASUREMENT, not an assertion: thread
     /// scaling is hardware-dependent, so asserting a number here would only
@@ -805,28 +1396,34 @@ mod tests {
     fn lanczos_cost_by_thread_count() {
         const SW: u32 = 1920;
         const SH: u32 = 1200;
-        const DW: u32 = 1280;
-        const DH: u32 = 800;
         let src = noise_frame(SW, SH);
         println!(
             "available_parallelism = {:?}",
             std::thread::available_parallelism()
         );
-        for threads in [1usize, 2, 4, 8] {
-            let mut rs = Resampler {
-                threads,
-                ..Resampler::default()
-            };
-            // Warm the tap tables and the pooled intermediate so the numbers
-            // describe steady state, not the first-frame build.
-            let _ = rs.lanczos3(&src, SW, SH, SW * 4, DW, DH);
-            const N: u32 = 20;
-            let t = std::time::Instant::now();
-            for _ in 0..N {
-                let _ = rs.lanczos3(&src, SW, SH, SW * 4, DW, DH);
+        for &(dw, dh) in &[(1280u32, 800u32), (946u32, 590u32)] {
+            for threads in [1usize, 2, 4, 8] {
+                let mut rs = Resampler {
+                    threads,
+                    ..Resampler::default()
+                };
+                let _ = rs.lanczos3_fast(&src, SW, SH, SW * 4, dw, dh);
+                const N: u32 = 20;
+                let t = std::time::Instant::now();
+                for _ in 0..N {
+                    let _ = rs.lanczos3_fast(&src, SW, SH, SW * 4, dw, dh);
+                }
+                let fast_ms = t.elapsed().as_secs_f64() * 1000.0 / f64::from(N);
+                let _ = rs.lanczos3_legacy(&src, SW, SH, SW * 4, dw, dh);
+                let t_leg = std::time::Instant::now();
+                for _ in 0..N {
+                    let _ = rs.lanczos3_legacy(&src, SW, SH, SW * 4, dw, dh);
+                }
+                let leg_ms = t_leg.elapsed().as_secs_f64() * 1000.0 / f64::from(N);
+                println!(
+                    "lanczos3 {SW}x{SH} -> {dw}x{dh}  threads={threads}  fast={fast_ms:.2} ms/frame  legacy={leg_ms:.2} ms/frame"
+                );
             }
-            let per_ms = t.elapsed().as_secs_f64() * 1000.0 / f64::from(N);
-            println!("lanczos3 {SW}x{SH} -> {DW}x{DH}  threads={threads}  {per_ms:.2} ms/frame");
         }
     }
 }

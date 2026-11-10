@@ -1057,6 +1057,17 @@ impl PeerMultipathState {
         self.refresh_active_flag(&st);
     }
 
+    /// Update the peer's multipath mode while preserving its existing
+    /// reorder-buffer and deduplicator configuration parameters.
+    pub fn set_mode(&self, mode: MultipathMode) {
+        let mut cfg = {
+            let st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            st.config.clone()
+        };
+        cfg.mode = mode;
+        self.set_config(cfg);
+    }
+
     /// Set the administrative / path-monitor health of a leg (`leg_id == 0` for
     /// primary, `leg_id > 0` for a secondary leg). Returns `true` if `leg_id`
     /// exists.
@@ -2180,5 +2191,29 @@ mod tests {
         assert_eq!(counts[0], 30);
         assert_eq!(counts[1], 20);
         assert_eq!(counts[2], 10);
+    }
+
+    #[test]
+    fn set_mode_preserves_reorder_hold_timeout_and_max_depth() {
+        let cfg = MultipathConfig::new(MultipathMode::Off)
+            .with_reorder_hold_timeout(Duration::from_millis(350))
+            .with_max_reorder_depth(128);
+        let mp = PeerMultipathState::new(cfg);
+
+        for mode in [
+            MultipathMode::ActiveStandby,
+            MultipathMode::Redundant,
+            MultipathMode::Aggregate,
+            MultipathMode::Off,
+        ] {
+            mp.set_mode(mode);
+            assert_eq!(mp.mode(), mode);
+            let st = mp.inner.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(st.config.mode, mode);
+            assert_eq!(st.config.reorder_hold_timeout, Duration::from_millis(350));
+            assert_eq!(st.config.max_reorder_depth, 128);
+            assert_eq!(st.reorder.hold_timeout, Duration::from_millis(350));
+            assert_eq!(st.reorder.max_depth, 128);
+        }
     }
 }
