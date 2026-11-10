@@ -1409,9 +1409,268 @@ pub async fn resolve_target_device(
     resolve_peer_scope(&status, &peers, target_host)
 }
 
+/// Phase C no-op credential store: credentials are always prompted directly by
+/// the OS native RDP client (`mstsc.exe` / FreeRDP); Phase C collects no
+/// passwords and keeps passwordless RDP off by default.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoSavedRdpCredentialStore;
+
+impl RdpCredentialStore for NoSavedRdpCredentialStore {
+    fn save(&self, _scope: &RdpCredentialScope, _cred: &StoredRdpCredential) -> Result<()> {
+        bail!("Phase C desktop RDP launch does not save credentials")
+    }
+
+    fn load(&self, _scope: &RdpCredentialScope) -> Result<Option<StoredRdpCredential>> {
+        Ok(None)
+    }
+
+    fn delete(&self, _scope: &RdpCredentialScope) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+/// Construct [`RdpCliOptions`] for the desktop `cmd_open_rdp` command.
+///
+/// Enforces Phase C invariants:
+/// - Rejects empty targets, flag-like targets (`-` or `/`), `@` user prefixes, or
+///   whitespace/control characters.
+/// - Defaults `port` to `3389` when `None` or `0`.
+/// - Keeps passwordless RDP strictly disabled (`save_credentials = false`,
+///   `use_saved_credentials = false`, `no_saved_credentials = true`) and passes
+///   zero extra arguments (`extra_args = []`).
+pub fn build_open_rdp_options(
+    target: &str,
+    org: Option<&str>,
+    port: Option<u16>,
+    cert_sha256: Option<&str>,
+    platform: &str,
+) -> std::result::Result<RdpCliOptions, String> {
+    let raw_target = target.trim();
+    if raw_target.is_empty() {
+        return Err("RDP target device must not be empty".to_string());
+    }
+    if raw_target.starts_with('-') || raw_target.starts_with('/') {
+        return Err("invalid RDP target device selector".to_string());
+    }
+    if raw_target.contains('@')
+        || raw_target
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(
+            "invalid RDP target device selector (must not contain credentials or whitespace)"
+                .to_string(),
+        );
+    }
+    let org_clean = org
+        .map(str::trim)
+        .filter(|o| !o.is_empty() && !o.eq_ignore_ascii_case(crate::config::PRIMARY_ORG_LABEL));
+    if let Some(o) = org_clean
+        && (o.contains('/')
+            || o.contains('@')
+            || o.chars().any(|c| c.is_whitespace() || c.is_control()))
+    {
+        return Err("invalid organization label for RDP target".to_string());
+    }
+    let selector = match (org_clean, raw_target.contains('/')) {
+        (Some(o), false) => format!("{o}/{raw_target}"),
+        _ => raw_target.to_string(),
+    };
+    let effective_port = port.filter(|&p| p > 0).unwrap_or(3389);
+    let effective_cert = if platform.trim().eq_ignore_ascii_case("windows") {
+        None
+    } else {
+        cert_sha256
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+    };
+    Ok(RdpCliOptions {
+        target: selector,
+        user: None,
+        domain: None,
+        port: effective_port,
+        cert_sha256: effective_cert,
+        save_credentials: false,
+        use_saved_credentials: false,
+        clear_credentials: false,
+        no_saved_credentials: true,
+        extra_args: Vec::new(),
+    })
+}
+
+/// Pure invocation planner for desktop `cmd_open_rdp` that constructs the native
+/// RDP client command line (`mstsc.exe` on Windows, FreeRDP on Linux/macOS) and
+/// guarantees that zero passwords or credentials appear in `args`, `env`, or
+/// `stdin_payload`.
+pub fn plan_desktop_open_rdp_invocation(
+    device: &ResolvedRdpDevice,
+    local_tunnel_addr: SocketAddr,
+    port: Option<u16>,
+    cert_sha256: Option<&str>,
+    platform: &str,
+) -> std::result::Result<PlannedRdpInvocation, String> {
+    let opts = build_open_rdp_options(&device.device_id, None, port, cert_sha256, platform)?;
+    let store = NoSavedRdpCredentialStore;
+    let plan = plan_rdp_session(
+        &opts,
+        device,
+        local_tunnel_addr,
+        &store,
+        None,
+        Some("1"),
+        platform,
+    )
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "RDP session planner returned no client invocation".to_string())?;
+    if plan.stdin_payload.is_some() || plan.windows_session_target.is_some() || !plan.env.is_empty()
+    {
+        return Err("Phase C desktop RDP invocation must not carry credentials".to_string());
+    }
+    Ok(plan)
+}
+
+/// Canonical per-target key `(org_id, device_id)` used to deduplicate
+/// concurrent desktop RDP sessions for the same target device.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DesktopRdpTargetKey {
+    pub org_id: String,
+    pub device_id: String,
+}
+
+impl DesktopRdpTargetKey {
+    pub fn from_device(device: &ResolvedRdpDevice) -> Self {
+        Self {
+            org_id: device.org_id.trim().to_ascii_lowercase(),
+            device_id: device.device_id.trim().to_ascii_lowercase(),
+        }
+    }
+}
+
+/// Registry of currently running desktop RDP sessions keyed by target device.
+/// Ensures repeated `openRdp` / `cmd_open_rdp` calls for the same target while
+/// an RDP client is already running do not spawn duplicate `mstsc` processes or
+/// loopback tunnels, and releases the slot automatically when the session exits.
+#[derive(Default, Clone)]
+pub struct DesktopRdpSessionRegistry {
+    active: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<DesktopRdpTargetKey>>>,
+}
+
+/// RAII guard that releases a target device's active RDP session slot on drop.
+pub struct ActiveDesktopRdpSessionGuard {
+    active: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<DesktopRdpTargetKey>>>,
+    key: DesktopRdpTargetKey,
+}
+
+impl Drop for ActiveDesktopRdpSessionGuard {
+    fn drop(&mut self) {
+        let mut set = self.active.lock().unwrap_or_else(|p| p.into_inner());
+        set.remove(&self.key);
+    }
+}
+
+impl DesktopRdpSessionRegistry {
+    pub fn try_acquire(&self, device: &ResolvedRdpDevice) -> Option<ActiveDesktopRdpSessionGuard> {
+        let key = DesktopRdpTargetKey::from_device(device);
+        let mut set = self.active.lock().unwrap_or_else(|p| p.into_inner());
+        if !set.insert(key.clone()) {
+            return None;
+        }
+        Some(ActiveDesktopRdpSessionGuard {
+            active: std::sync::Arc::clone(&self.active),
+            key,
+        })
+    }
+
+    pub fn is_active(&self, device: &ResolvedRdpDevice) -> bool {
+        let key = DesktopRdpTargetKey::from_device(device);
+        self.active
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(&key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cmd_open_rdp_argument_construction_contains_zero_passwords_and_validates_inputs() {
+        let device = ResolvedRdpDevice {
+            org_id: "66366f7a7230306d6c657231".to_string(),
+            device_id: "66366f7a7230306d6c657232".to_string(),
+            device_name: "surface-pro".to_string(),
+        };
+        let tunnel_addr: SocketAddr = "127.77.12.34:54321".parse().unwrap();
+        let cert_fp = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99";
+
+        // 1. Windows (`mstsc.exe`): only `/v:127.77.12.34:54321`, zero passwords in args/env/stdin.
+        let win_plan = plan_desktop_open_rdp_invocation(
+            &device,
+            tunnel_addr,
+            Some(3389),
+            Some(cert_fp),
+            "windows",
+        )
+        .unwrap();
+        assert_eq!(win_plan.program, "mstsc.exe");
+        assert_eq!(win_plan.args, vec!["/v:127.77.12.34:54321".to_string()]);
+        assert!(win_plan.stdin_payload.is_none());
+        assert!(win_plan.windows_session_target.is_none());
+        assert!(win_plan.env.is_empty());
+        for arg in &win_plan.args {
+            let lower = arg.to_ascii_lowercase();
+            assert!(!lower.contains("pass"));
+            assert!(!lower.starts_with("/p:"));
+            assert!(!lower.starts_with("/u:"));
+            assert!(!lower.contains("cmdkey"));
+        }
+
+        // 2. Linux/macOS (`xfreerdp3`): `/v:127.77.12.34:54321` + `/cert:fingerprint:sha256:...`, zero passwords.
+        let linux_plan = plan_desktop_open_rdp_invocation(
+            &device,
+            tunnel_addr,
+            Some(3390),
+            Some(cert_fp),
+            "linux",
+        )
+        .unwrap();
+        assert_eq!(
+            linux_plan.args,
+            vec![
+                "/v:127.77.12.34:54321".to_string(),
+                format!("/cert:fingerprint:sha256:{cert_fp}"),
+            ]
+        );
+        assert!(linux_plan.stdin_payload.is_none());
+        assert!(linux_plan.windows_session_target.is_none());
+        assert!(linux_plan.env.is_empty());
+        for arg in &linux_plan.args {
+            let lower = arg.to_ascii_lowercase();
+            assert!(!lower.contains("pass"));
+            assert!(!lower.starts_with("/p:"));
+            assert!(!lower.starts_with("-p"));
+            assert!(!lower.contains("from-stdin"));
+        }
+
+        // 3. Rejects credential-bearing or flag-injection targets.
+        assert!(
+            build_open_rdp_options("alice@surface-pro", None, Some(3389), None, "windows").is_err()
+        );
+        assert!(build_open_rdp_options("/p:secret", None, Some(3389), None, "windows").is_err());
+        assert!(build_open_rdp_options("-p", None, Some(3389), None, "windows").is_err());
+        assert!(build_open_rdp_options("surface pro", None, Some(3389), None, "windows").is_err());
+
+        // 4. Secondary org prefixing and port default.
+        let opts =
+            build_open_rdp_options("surface-pro", Some("acme"), None, None, "windows").unwrap();
+        assert_eq!(opts.target, "acme/surface-pro");
+        assert_eq!(opts.port, 3389);
+        assert!(!opts.save_credentials);
+        assert!(!opts.use_saved_credentials);
+        assert!(opts.no_saved_credentials);
+    }
 
     #[tokio::test]
     async fn socks5_client_connect_frames_rfc1928_no_auth_domain_connect_and_consumes_bnd_addr() {
@@ -1447,5 +1706,55 @@ mod tests {
         let first_payload = client.read_u8().await.unwrap();
         assert_eq!(first_payload, 0x03);
         srv.await.unwrap();
+    }
+
+    #[test]
+    fn desktop_rdp_session_registry_deduplicates_per_target_and_releases_on_exit() {
+        let registry = DesktopRdpSessionRegistry::default();
+        let dev_a = ResolvedRdpDevice {
+            org_id: "66366f7a7230306d6c657231".to_string(),
+            device_id: "66366f7a7230306d6c657232".to_string(),
+            device_name: "surface-pro".to_string(),
+        };
+        let dev_a_upper = ResolvedRdpDevice {
+            org_id: "66366F7A7230306D6C657231".to_string(),
+            device_id: "66366F7A7230306D6C657232".to_string(),
+            device_name: "surface-pro".to_string(),
+        };
+        let dev_b = ResolvedRdpDevice {
+            org_id: "66366f7a7230306d6c657231".to_string(),
+            device_id: "66366f7a7230306d6c657299".to_string(),
+            device_name: "workstation-b".to_string(),
+        };
+
+        assert!(!registry.is_active(&dev_a));
+        let guard_a = registry
+            .try_acquire(&dev_a)
+            .expect("first session for dev_a should acquire");
+        assert!(registry.is_active(&dev_a));
+
+        // Duplicate request for the same target (including case variation) is rejected while active.
+        assert!(registry.try_acquire(&dev_a).is_none());
+        assert!(registry.try_acquire(&dev_a_upper).is_none());
+
+        // A different target device can still start concurrently.
+        let guard_b = registry
+            .try_acquire(&dev_b)
+            .expect("concurrent session for dev_b should acquire");
+        assert!(registry.is_active(&dev_b));
+
+        // Dropping guard_a (when child RDP process exits) releases dev_a so a subsequent session can start.
+        drop(guard_a);
+        assert!(!registry.is_active(&dev_a));
+        assert!(registry.is_active(&dev_b));
+
+        let guard_a2 = registry
+            .try_acquire(&dev_a)
+            .expect("after exit, dev_a can acquire again");
+        assert!(registry.is_active(&dev_a));
+        drop(guard_a2);
+        drop(guard_b);
+        assert!(!registry.is_active(&dev_a));
+        assert!(!registry.is_active(&dev_b));
     }
 }

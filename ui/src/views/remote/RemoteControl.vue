@@ -1169,6 +1169,19 @@
         >
           Trust the new key and connect
         </v-btn>
+        <RdpFallbackCard
+          :phase="rc.phase.value"
+          :error-code="rc.errorCode.value"
+          :error-message="rc.error.value"
+          :media-unavailable-reason="rc.mediaUnavailable.value?.code ?? null"
+          :media-unavailable-hint="rc.mediaUnavailable.value?.hint ?? null"
+          :rdp-available="agent?.capabilities?.rdp_available ?? false"
+          :rdp-port="agent?.capabilities?.rdp_port ?? 3389"
+          :rdp-cert-sha256="agent?.capabilities?.rdp_cert_sha256 ?? null"
+          :device-id="agentId"
+          :device-name="agent?.name ?? null"
+          @retry-rc="startSession"
+        />
       </div>
 
       <div
@@ -1279,6 +1292,19 @@
           <p class="text-caption text-medium-emphasis mt-1">
             Remote shell, file transfer and the other channels are unaffected.
           </p>
+          <RdpFallbackCard
+            :phase="rc.phase.value"
+            :error-code="rc.errorCode.value"
+            :error-message="rc.error.value"
+            :media-unavailable-reason="rc.mediaUnavailable.value.code"
+            :media-unavailable-hint="rc.mediaUnavailable.value.hint"
+            :rdp-available="agent?.capabilities?.rdp_available ?? false"
+            :rdp-port="agent?.capabilities?.rdp_port ?? 3389"
+            :rdp-cert-sha256="agent?.capabilities?.rdp_cert_sha256 ?? null"
+            :device-id="agentId"
+            :device-name="agent?.name ?? null"
+            @retry-rc="startSession"
+          />
         </div>
         <!-- FR-93 P2d-2 — the host is asking the person at its screen to share
              it. Before this the canvas stayed blank and the viewer re-created
@@ -2358,6 +2384,7 @@ import MobileKeyboard from '@/components/remote/MobileKeyboard.vue'
 import KeepBusyMenu from '@/components/remote/KeepBusyMenu.vue'
 import TouchControls from '@/components/remote/TouchControls.vue'
 import TouchPresetEditor from '@/components/remote/TouchPresetEditor.vue'
+import RdpFallbackCard from '@/components/remote/RdpFallbackCard.vue'
 import { readMyPresets, writeMyPresets } from '@/composables/touchPresetEdit'
 import { useTenantStore } from '@/stores/tenant'
 import { canManageOrgSettings } from '@/utils/permissions'

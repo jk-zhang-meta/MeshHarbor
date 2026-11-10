@@ -165,6 +165,7 @@ fn main() {
             commands::cmd_open_files_dir,
             commands::cmd_tail_log,
             commands::cmd_open_remote,
+            commands::cmd_open_rdp,
             commands::cmd_open_meshharbor,
             commands::cmd_open_account,
             // FR-85 — the Recordings view.

@@ -556,12 +556,18 @@ pub struct AgentCaps {
     /// say, so an absent key never means "unavailable".
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub unavailable: std::collections::BTreeMap<String, Unavailable>,
-    /// RC/RDP Phase B — whether a local RDP server is listening on TCP port
-    /// 3389 (`Some(false)` on Windows Home SKUs, which ship no RDP server, or
-    /// when nothing is listening on 3389). Read-only probe; `None` on older
-    /// agents that predate the field.
+    /// RC/RDP Phase B — whether a local RDP server is listening on the
+    /// configured RDP TCP port (`Some(false)` on Windows Home SKUs, which ship
+    /// no RDP server, or when nothing is listening on the RDP port). Read-only
+    /// probe; `None` on older agents that predate the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rdp_available: Option<bool>,
+    /// RC/RDP Phase C — local TCP port of the RDP server (read from
+    /// `HKLM\...\RDP-Tcp\PortNumber` on Windows, falling back to `3389`), when
+    /// `rdp_available` is `Some(true)`. `None` when RDP is unavailable or on
+    /// older agents that predate the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdp_port: Option<u16>,
     /// RC/RDP Phase B — lowercase colon-separated SHA-256 fingerprint of the
     /// local RDP server's TLS certificate (`aa:bb:…`), when `rdp_available` is
     /// `Some(true)` and the certificate is readable without elevation or system
@@ -10244,16 +10250,19 @@ mod backbone_policy_tests {
         let legacy_json = r#"{"hw_encoders":[],"codecs":["h264"],"has_input_permission":true,"supports_clipboard":true,"supports_file_transfer":true,"max_simultaneous_sessions":4}"#;
         let parsed: AgentCaps = serde_json::from_str(legacy_json).unwrap();
         assert_eq!(parsed.rdp_available, None);
+        assert_eq!(parsed.rdp_port, None);
         assert_eq!(parsed.rdp_cert_sha256, None);
         let reserialized = serde_json::to_value(&parsed).unwrap();
         assert!(reserialized.get("rdp_available").is_none());
+        assert!(reserialized.get("rdp_port").is_none());
         assert!(reserialized.get("rdp_cert_sha256").is_none());
 
-        // 2. New payload carrying rdp_available + rdp_cert_sha256 round-trips
+        // 2. New payload carrying rdp_available + rdp_port + rdp_cert_sha256 round-trips
         //    through JSON and BSON, and is accepted without error by an older
-        //    reader struct that does not know either field.
+        //    reader struct that does not know any of those fields.
         let mut with_rdp = parsed.clone();
         with_rdp.rdp_available = Some(true);
+        with_rdp.rdp_port = Some(3389);
         with_rdp.rdp_cert_sha256 = Some(
             "00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff"
                 .to_string(),
@@ -10261,6 +10270,7 @@ mod backbone_policy_tests {
         let new_json = serde_json::to_string(&with_rdp).unwrap();
         let round_trip: AgentCaps = serde_json::from_str(&new_json).unwrap();
         assert_eq!(round_trip.rdp_available, Some(true));
+        assert_eq!(round_trip.rdp_port, Some(3389));
         assert_eq!(
             round_trip.rdp_cert_sha256.as_deref(),
             Some(
@@ -10270,6 +10280,7 @@ mod backbone_policy_tests {
         let encoded_bson = bson::to_bson(&with_rdp).unwrap();
         let from_bson: AgentCaps = bson::from_bson(encoded_bson).unwrap();
         assert_eq!(from_bson.rdp_available, Some(true));
+        assert_eq!(from_bson.rdp_port, Some(3389));
         assert_eq!(from_bson.rdp_cert_sha256, with_rdp.rdp_cert_sha256);
 
         #[derive(Deserialize)]

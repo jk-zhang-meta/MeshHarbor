@@ -238,6 +238,34 @@
     };
   }
 
+  function resetSplitMenuState(menu) {
+    if (!menu) return;
+    const item = menu.querySelector('.dv-split-item-rdp');
+    const confirmBox = menu.querySelector('.dv-rdp-confirm');
+    if (item) item.hidden = false;
+    if (confirmBox) confirmBox.hidden = true;
+  }
+
+  function closeAllSplitMenus(exceptMenu) {
+    const openMenus = document.querySelectorAll('.dv-split-menu:not([hidden])');
+    for (const m of openMenus) {
+      if (m !== exceptMenu) {
+        m.hidden = true;
+        resetSplitMenuState(m);
+        const wrap = m.closest('.dv-split-wrap');
+        const toggle = wrap && wrap.querySelector('.dv-split-toggle');
+        if (toggle) toggle.setAttribute('aria-expanded', 'false');
+      }
+    }
+  }
+
+  document.addEventListener('click', (ev) => {
+    const t = ev.target;
+    if (!(t instanceof Element) || !t.closest('.dv-split-wrap')) {
+      closeAllSplitMenus(null);
+    }
+  });
+
   const COLUMNS = [
     {
       key: 'actions',
@@ -245,11 +273,15 @@
       chooserTitle: 'Actions',
       cls: 'dv-col-actions',
       build(td) {
-        const s = { agentId: null };
-        const btn = el('button', 'sm', 'View screen');
+        const s = { agentId: null, rdpTarget: null };
+        const wrap = el('div', 'dv-split-wrap');
+        const group = el('div', 'dv-split-group');
+
+        const btn = el('button', 'sm dv-split-main', '连接');
         btn.type = 'button';
-        btn.title = 'Open the remote-control viewer in your browser (sign-in required)';
+        btn.title = '默认使用远控连接（不锁定远端本地屏幕）';
         btn.addEventListener('click', async () => {
+          closeAllSplitMenus(null);
           if (!s.agentId) return;
           btn.disabled = true;
           try {
@@ -262,15 +294,116 @@
             btn.disabled = false;
           }
         });
-        td.appendChild(btn);
+
+        const toggleBtn = el('button', 'sm dv-split-toggle', '▾');
+        toggleBtn.type = 'button';
+        toggleBtn.title = '更多连接方式（用 RDP 连接）';
+        toggleBtn.setAttribute('aria-haspopup', 'menu');
+        toggleBtn.setAttribute('aria-expanded', 'false');
+
+        const menu = el('div', 'dv-split-menu');
+        menu.setAttribute('role', 'menu');
+        menu.hidden = true;
+
+        async function runRdpConfirmed(acceptBtn) {
+          const target = s.rdpTarget || s.agentId;
+          if (!target) {
+            closeAllSplitMenus(null);
+            return;
+          }
+          acceptBtn.disabled = true;
+          toggleBtn.disabled = true;
+          closeAllSplitMenus(null);
+          try {
+            await invoke('cmd_open_rdp', { target, org: orgArg() });
+            toggleBtn.classList.remove('is-error');
+          } catch (err) {
+            toggleBtn.title = String(err);
+            toggleBtn.classList.add('is-error');
+          } finally {
+            acceptBtn.disabled = false;
+            toggleBtn.disabled = false;
+          }
+        }
+
+        const rdpItem = el('button', 'dv-split-item dv-split-item-rdp', '用 RDP 连接');
+        rdpItem.type = 'button';
+        rdpItem.setAttribute('role', 'menuitem');
+        rdpItem.title = '通过系统 RDP 客户端连接（RDP 会话会锁定远端电脑的本地屏幕）';
+
+        const confirmBox = el('div', 'dv-rdp-confirm');
+        confirmBox.setAttribute('role', 'alertdialog');
+        confirmBox.setAttribute('aria-label', '确认使用 RDP 连接');
+        confirmBox.hidden = true;
+
+        const confirmText = el(
+          'div',
+          'dv-rdp-confirm-text',
+          'RDP 会话会锁定远端电脑的本地屏幕'
+        );
+        const confirmActions = el('div', 'dv-rdp-confirm-actions');
+        const confirmAcceptBtn = el(
+          'button',
+          'sm primary dv-rdp-confirm-accept',
+          '确认连接'
+        );
+        confirmAcceptBtn.type = 'button';
+        const confirmCancelBtn = el(
+          'button',
+          'sm dv-rdp-confirm-cancel',
+          '取消'
+        );
+        confirmCancelBtn.type = 'button';
+
+        rdpItem.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          rdpItem.hidden = true;
+          confirmBox.hidden = false;
+        });
+
+        confirmAcceptBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          void runRdpConfirmed(confirmAcceptBtn);
+        });
+
+        confirmCancelBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          closeAllSplitMenus(null);
+        });
+
+        confirmActions.append(confirmAcceptBtn, confirmCancelBtn);
+        confirmBox.append(confirmText, confirmActions);
+        menu.append(rdpItem, confirmBox);
+
+        toggleBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const willOpen = menu.hidden;
+          closeAllSplitMenus(menu);
+          resetSplitMenuState(menu);
+          menu.hidden = !willOpen;
+          toggleBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+        });
+
+        group.append(btn, toggleBtn);
+        wrap.append(group, menu);
+        td.appendChild(wrap);
+        s.wrap = wrap;
         s.btn = btn;
+        s.toggleBtn = toggleBtn;
+        s.menu = menu;
         return s;
       },
       update(s, row) {
         // Agents only (a tunnel client has no screen), never this device.
         const ok = row.kind === 'agent' && !row.is_self && isHex24(row.id);
         s.agentId = ok ? row.id : null;
+        s.rdpTarget = ok ? (row.overlay_node_id || row.node_id || row.id || row.name || null) : null;
+        s.wrap.hidden = !ok;
         s.btn.hidden = !ok;
+        if (!ok && s.menu) {
+          s.menu.hidden = true;
+          s.toggleBtn.setAttribute('aria-expanded', 'false');
+        }
       },
     },
     {
