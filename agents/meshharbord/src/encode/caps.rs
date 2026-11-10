@@ -2217,9 +2217,10 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
         // FR-97 P0c — empty HERE: the honest "no" is the daemon's
         // (`with_honest_words`), like the config lists above.
         unavailable: Default::default(),
-        // RC/RDP Phase B — `None` HERE: filled live in `signaling::stub_caps`
+        // RC/RDP Phase B/C — `None` HERE: filled live in `signaling::stub_caps`
         // from `crate::rdp_caps::current()`.
         rdp_available: None,
+        rdp_port: None,
         rdp_cert_sha256: None,
     }
 }

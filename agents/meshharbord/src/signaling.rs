@@ -1718,8 +1718,12 @@ async fn connect_once(
     let mut last_announced_privacy = privacy_words_in(&hello_caps.rpc);
     // FR-101 P2b — and the owner's session-policy floor it carried, likewise.
     let mut last_announced_session_policy = hello_caps.session_policy;
-    // RC/RDP Phase B — and the read-only local RDP probe snapshot it carried.
-    let mut last_announced_rdp = (hello_caps.rdp_available, hello_caps.rdp_cert_sha256.clone());
+    // RC/RDP Phase B/C — and the read-only local RDP probe snapshot it carried.
+    let mut last_announced_rdp = (
+        hello_caps.rdp_available,
+        hello_caps.rdp_port,
+        hello_caps.rdp_cert_sha256.clone(),
+    );
     let mut last_announced_relay_server = hello_caps.rpc.iter().any(|word| word == "relay-server");
     let (arch, arch_emulated) = crate::arch::native();
     let hello = ClientMsg::AgentHello {
@@ -2389,7 +2393,7 @@ async fn connect_once(
                 let session_policy_now = crate::session_policy::caps_policy();
                 let rdp_now = {
                     let r = crate::rdp_caps::current();
-                    (Some(r.available), r.cert_sha256)
+                    (Some(r.available), r.port, r.cert_sha256)
                 };
                 let relay_server_now = relay_server_ready();
                 let caps = if relay_server_now == last_announced_relay_server
@@ -7591,10 +7595,11 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool) -> AgentCaps {
     if crate::lock_on_end::can_honour_ask() {
         caps.rpc.push(RpcCap::LockOnEnd.wire().to_string());
     }
-    // RC/RDP Phase B — read-only local TCP 3389 listener + certificate SHA-256
-    // probe (`Some(false)` on Windows Home SKUs or when nothing listens on 3389).
+    // RC/RDP Phase B/C — read-only local RDP port listener + certificate SHA-256
+    // probe (`Some(false)` on Windows Home SKUs or when nothing listens on the RDP port).
     let rdp = crate::rdp_caps::current();
     caps.rdp_available = Some(rdp.available);
+    caps.rdp_port = rdp.port;
     caps.rdp_cert_sha256 = rdp.cert_sha256;
     caps
 }

@@ -1047,3 +1047,62 @@ button.wl-skip:hover {
   width: 100%;
   margin-top: 8px;
 }
+
+/* ── RC/RDP Phase C — Devices split button ("连接" + dropdown) ─────── */
+
+.dv-split-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.dv-split-group {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.dv-split-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.dv-split-toggle {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  margin-left: -1px;
+  padding-left: 6px;
+  padding-right: 6px;
+  min-width: 24px;
+}
+
+.dv-split-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  min-width: 152px;
+  padding: 4px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+}
+
+.dv-split-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dv-split-item:hover {
+  background: var(--primary-tint);
+  color: var(--primary);
+}
+

@@ -1409,9 +1409,207 @@ pub async fn resolve_target_device(
     resolve_peer_scope(&status, &peers, target_host)
 }
 
+/// Phase C no-op credential store: credentials are always prompted directly by
+/// the OS native RDP client (`mstsc.exe` / FreeRDP); Phase C collects no
+/// passwords and keeps passwordless RDP off by default.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoSavedRdpCredentialStore;
+
+impl RdpCredentialStore for NoSavedRdpCredentialStore {
+    fn save(&self, _scope: &RdpCredentialScope, _cred: &StoredRdpCredential) -> Result<()> {
+        bail!("Phase C desktop RDP launch does not save credentials")
+    }
+
+    fn load(&self, _scope: &RdpCredentialScope) -> Result<Option<StoredRdpCredential>> {
+        Ok(None)
+    }
+
+    fn delete(&self, _scope: &RdpCredentialScope) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+/// Construct [`RdpCliOptions`] for the desktop `cmd_open_rdp` command.
+///
+/// Enforces Phase C invariants:
+/// - Rejects empty targets, flag-like targets (`-` or `/`), `@` user prefixes, or
+///   whitespace/control characters.
+/// - Defaults `port` to `3389` when `None` or `0`.
+/// - Keeps passwordless RDP strictly disabled (`save_credentials = false`,
+///   `use_saved_credentials = false`, `no_saved_credentials = true`) and passes
+///   zero extra arguments (`extra_args = []`).
+pub fn build_open_rdp_options(
+    target: &str,
+    org: Option<&str>,
+    port: Option<u16>,
+    cert_sha256: Option<&str>,
+    platform: &str,
+) -> std::result::Result<RdpCliOptions, String> {
+    let raw_target = target.trim();
+    if raw_target.is_empty() {
+        return Err("RDP target device must not be empty".to_string());
+    }
+    if raw_target.starts_with('-') || raw_target.starts_with('/') {
+        return Err("invalid RDP target device selector".to_string());
+    }
+    if raw_target.contains('@')
+        || raw_target
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(
+            "invalid RDP target device selector (must not contain credentials or whitespace)"
+                .to_string(),
+        );
+    }
+    let org_clean = org
+        .map(str::trim)
+        .filter(|o| !o.is_empty() && !o.eq_ignore_ascii_case(crate::config::PRIMARY_ORG_LABEL));
+    if let Some(o) = org_clean
+        && (o.contains('/')
+            || o.contains('@')
+            || o.chars().any(|c| c.is_whitespace() || c.is_control()))
+    {
+        return Err("invalid organization label for RDP target".to_string());
+    }
+    let selector = match (org_clean, raw_target.contains('/')) {
+        (Some(o), false) => format!("{o}/{raw_target}"),
+        _ => raw_target.to_string(),
+    };
+    let effective_port = port.filter(|&p| p > 0).unwrap_or(3389);
+    let effective_cert = if platform.trim().eq_ignore_ascii_case("windows") {
+        None
+    } else {
+        cert_sha256
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+    };
+    Ok(RdpCliOptions {
+        target: selector,
+        user: None,
+        domain: None,
+        port: effective_port,
+        cert_sha256: effective_cert,
+        save_credentials: false,
+        use_saved_credentials: false,
+        clear_credentials: false,
+        no_saved_credentials: true,
+        extra_args: Vec::new(),
+    })
+}
+
+/// Pure invocation planner for desktop `cmd_open_rdp` that constructs the native
+/// RDP client command line (`mstsc.exe` on Windows, FreeRDP on Linux/macOS) and
+/// guarantees that zero passwords or credentials appear in `args`, `env`, or
+/// `stdin_payload`.
+pub fn plan_desktop_open_rdp_invocation(
+    device: &ResolvedRdpDevice,
+    local_tunnel_addr: SocketAddr,
+    port: Option<u16>,
+    cert_sha256: Option<&str>,
+    platform: &str,
+) -> std::result::Result<PlannedRdpInvocation, String> {
+    let opts = build_open_rdp_options(&device.device_id, None, port, cert_sha256, platform)?;
+    let store = NoSavedRdpCredentialStore;
+    let plan = plan_rdp_session(
+        &opts,
+        device,
+        local_tunnel_addr,
+        &store,
+        None,
+        Some("1"),
+        platform,
+    )
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "RDP session planner returned no client invocation".to_string())?;
+    if plan.stdin_payload.is_some() || plan.windows_session_target.is_some() || !plan.env.is_empty()
+    {
+        return Err("Phase C desktop RDP invocation must not carry credentials".to_string());
+    }
+    Ok(plan)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cmd_open_rdp_argument_construction_contains_zero_passwords_and_validates_inputs() {
+        let device = ResolvedRdpDevice {
+            org_id: "66366f7a7230306d6c657231".to_string(),
+            device_id: "66366f7a7230306d6c657232".to_string(),
+            device_name: "surface-pro".to_string(),
+        };
+        let tunnel_addr: SocketAddr = "127.77.12.34:54321".parse().unwrap();
+        let cert_fp = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99";
+
+        // 1. Windows (`mstsc.exe`): only `/v:127.77.12.34:54321`, zero passwords in args/env/stdin.
+        let win_plan = plan_desktop_open_rdp_invocation(
+            &device,
+            tunnel_addr,
+            Some(3389),
+            Some(cert_fp),
+            "windows",
+        )
+        .unwrap();
+        assert_eq!(win_plan.program, "mstsc.exe");
+        assert_eq!(win_plan.args, vec!["/v:127.77.12.34:54321".to_string()]);
+        assert!(win_plan.stdin_payload.is_none());
+        assert!(win_plan.windows_session_target.is_none());
+        assert!(win_plan.env.is_empty());
+        for arg in &win_plan.args {
+            let lower = arg.to_ascii_lowercase();
+            assert!(!lower.contains("pass"));
+            assert!(!lower.starts_with("/p:"));
+            assert!(!lower.starts_with("/u:"));
+            assert!(!lower.contains("cmdkey"));
+        }
+
+        // 2. Linux/macOS (`xfreerdp3`): `/v:127.77.12.34:54321` + `/cert:fingerprint:sha256:...`, zero passwords.
+        let linux_plan = plan_desktop_open_rdp_invocation(
+            &device,
+            tunnel_addr,
+            Some(3390),
+            Some(cert_fp),
+            "linux",
+        )
+        .unwrap();
+        assert_eq!(
+            linux_plan.args,
+            vec![
+                "/v:127.77.12.34:54321".to_string(),
+                format!("/cert:fingerprint:sha256:{cert_fp}"),
+            ]
+        );
+        assert!(linux_plan.stdin_payload.is_none());
+        assert!(linux_plan.windows_session_target.is_none());
+        assert!(linux_plan.env.is_empty());
+        for arg in &linux_plan.args {
+            let lower = arg.to_ascii_lowercase();
+            assert!(!lower.contains("pass"));
+            assert!(!lower.starts_with("/p:"));
+            assert!(!lower.starts_with("-p"));
+            assert!(!lower.contains("from-stdin"));
+        }
+
+        // 3. Rejects credential-bearing or flag-injection targets.
+        assert!(
+            build_open_rdp_options("alice@surface-pro", None, Some(3389), None, "windows").is_err()
+        );
+        assert!(build_open_rdp_options("/p:secret", None, Some(3389), None, "windows").is_err());
+        assert!(build_open_rdp_options("-p", None, Some(3389), None, "windows").is_err());
+        assert!(build_open_rdp_options("surface pro", None, Some(3389), None, "windows").is_err());
+
+        // 4. Secondary org prefixing and port default.
+        let opts =
+            build_open_rdp_options("surface-pro", Some("acme"), None, None, "windows").unwrap();
+        assert_eq!(opts.target, "acme/surface-pro");
+        assert_eq!(opts.port, 3389);
+        assert!(!opts.save_credentials);
+        assert!(!opts.use_saved_credentials);
+        assert!(opts.no_saved_credentials);
+    }
 
     #[tokio::test]
     async fn socks5_client_connect_frames_rfc1928_no_auth_domain_connect_and_consumes_bnd_addr() {

@@ -34,12 +34,68 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Local RDP port checked by the read-only listener probe.
+/// Default local RDP port checked by the read-only listener probe when the OS
+/// registry value is absent, has the wrong type, or is out of range (`1..=65535`).
 pub const RDP_PORT: u16 = 3389;
+
+/// Windows registry `REG_DWORD` value type (`4`).
+pub const REG_DWORD_TYPE: u32 = 4;
 
 /// How long [`current`] caches a probe snapshot so heartbeat ticks do not
 /// re-read OS tables more than once per heartbeat window.
 const CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Source of the local RDP port probed by [`probe_now`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RdpPortSource {
+    /// Port came from `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp\PortNumber`.
+    Registry,
+    /// Registry key or `PortNumber` value was absent; fell back to [`RDP_PORT`] (`3389`).
+    MissingFallback,
+    /// Registry `PortNumber` had a non-`REG_DWORD` type or non-4-byte payload; fell back to [`RDP_PORT`] (`3389`).
+    WrongTypeFallback,
+    /// Registry `PortNumber` was `0` or `> 65535`; fell back to [`RDP_PORT`] (`3389`).
+    OutOfRangeFallback,
+    /// Non-Windows platform using the default port `3389` (e.g., Linux `xrdp`).
+    Default3389,
+    /// RDP probe skipped (e.g., Windows Home edition or unsupported OS).
+    NotApplicable,
+}
+
+impl RdpPortSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Registry => "registry",
+            Self::MissingFallback => "missing_fallback_3389",
+            Self::WrongTypeFallback => "wrong_type_fallback_3389",
+            Self::OutOfRangeFallback => "out_of_range_fallback_3389",
+            Self::Default3389 => "default_3389",
+            Self::NotApplicable => "not_applicable",
+        }
+    }
+}
+
+/// Pure parser for the Windows `RDP-Tcp\PortNumber` registry value (`REG_DWORD`).
+///
+/// Falls back to [`RDP_PORT`] (`3389`) when the value is missing (`reg_type == None`),
+/// has a registry type other than `REG_DWORD` (`4`) or byte length `!= 4`, or holds an
+/// out-of-range integer (`0` or `> 65535`).
+pub fn parse_rdp_port_number_reg_value(
+    reg_type: Option<u32>,
+    raw_bytes: &[u8],
+) -> (u16, RdpPortSource) {
+    let Some(kind) = reg_type else {
+        return (RDP_PORT, RdpPortSource::MissingFallback);
+    };
+    if kind != REG_DWORD_TYPE || raw_bytes.len() != 4 {
+        return (RDP_PORT, RdpPortSource::WrongTypeFallback);
+    }
+    let raw = u32::from_le_bytes([raw_bytes[0], raw_bytes[1], raw_bytes[2], raw_bytes[3]]);
+    if raw == 0 || raw > u32::from(u16::MAX) {
+        return (RDP_PORT, RdpPortSource::OutOfRangeFallback);
+    }
+    (raw as u16, RdpPortSource::Registry)
+}
 
 /// `OSVERSIONINFOEXW::wSuiteMask` bit set on Windows Home editions.
 pub const VER_SUITE_PERSONAL: u16 = 0x0200;
@@ -64,6 +120,9 @@ pub const PRODUCT_CORE: u32 = 0x0000_0065;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RdpCapsSnapshot {
     pub available: bool,
+    pub port: Option<u16>,
+    pub probed_port: u16,
+    pub port_source: RdpPortSource,
     pub cert_sha256: Option<String>,
 }
 
@@ -99,8 +158,25 @@ pub fn current() -> RdpCapsSnapshot {
         return snap.clone();
     }
     let snap = probe_now();
-    if let Ok(mut guard) = CACHE.lock() {
+    let changed = if let Ok(mut guard) = CACHE.lock() {
+        let changed = guard
+            .as_ref()
+            .map(|(_, prev)| prev != &snap)
+            .unwrap_or(true);
         *guard = Some((now, snap.clone()));
+        changed
+    } else {
+        true
+    };
+    if changed {
+        tracing::info!(
+            rdp_available = snap.available,
+            rdp_port = ?snap.port,
+            probed_port = snap.probed_port,
+            port_source = snap.port_source.as_str(),
+            has_cert_sha256 = snap.cert_sha256.is_some(),
+            "rdp capability probe completed"
+        );
     }
     snap
 }
@@ -269,10 +345,14 @@ fn probe_now() -> RdpCapsSnapshot {
         if windows_is_home_edition() {
             return RdpCapsSnapshot {
                 available: false,
+                port: None,
+                probed_port: RDP_PORT,
+                port_source: RdpPortSource::NotApplicable,
                 cert_sha256: None,
             };
         }
-        let available = port_listening_windows(RDP_PORT);
+        let (probed_port, port_source) = read_rdp_tcp_registry_port_number();
+        let available = port_listening_windows(probed_port);
         let cert_sha256 = if available {
             read_windows_rdp_cert_sha256()
         } else {
@@ -280,6 +360,9 @@ fn probe_now() -> RdpCapsSnapshot {
         };
         RdpCapsSnapshot {
             available,
+            port: available.then_some(probed_port),
+            probed_port,
+            port_source,
             cert_sha256,
         }
     }
@@ -295,6 +378,9 @@ fn probe_now() -> RdpCapsSnapshot {
         };
         RdpCapsSnapshot {
             available,
+            port: available.then_some(RDP_PORT),
+            probed_port: RDP_PORT,
+            port_source: RdpPortSource::Default3389,
             cert_sha256,
         }
     }
@@ -302,6 +388,9 @@ fn probe_now() -> RdpCapsSnapshot {
     {
         RdpCapsSnapshot {
             available: false,
+            port: None,
+            probed_port: RDP_PORT,
+            port_source: RdpPortSource::NotApplicable,
             cert_sha256: None,
         }
     }
@@ -423,6 +512,50 @@ fn port_listening_windows(port: u16) -> bool {
         }
     }
     false
+}
+
+#[cfg(target_os = "windows")]
+fn read_rdp_tcp_registry_port_number() -> (u16, RdpPortSource) {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
+    };
+
+    let subkey: Vec<u16> =
+        "SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp\0"
+            .encode_utf16()
+            .collect();
+    let value_name: Vec<u16> = "PortNumber\0".encode_utf16().collect();
+
+    let mut hkey: HKEY = std::ptr::null_mut();
+    // SAFETY: read-only open of HKLM\...\RDP-Tcp.
+    let rc = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), 0, KEY_READ, &mut hkey) };
+    if rc != ERROR_SUCCESS || hkey.is_null() {
+        return parse_rdp_port_number_reg_value(None, &[]);
+    }
+
+    let mut reg_type = 0u32;
+    let mut buf = [0u8; 16];
+    let mut cb = buf.len() as u32;
+    // SAFETY: `hkey` is open for `KEY_READ`, `buf` holds `cb` bytes.
+    let rc = unsafe {
+        RegQueryValueExW(
+            hkey,
+            value_name.as_ptr(),
+            std::ptr::null(),
+            &mut reg_type,
+            buf.as_mut_ptr(),
+            &mut cb,
+        )
+    };
+    unsafe {
+        RegCloseKey(hkey);
+    }
+    if rc != ERROR_SUCCESS {
+        return parse_rdp_port_number_reg_value(None, &[]);
+    }
+    let slice_len = (cb as usize).min(buf.len());
+    parse_rdp_port_number_reg_value(Some(reg_type), &buf[..slice_len])
 }
 
 #[cfg(target_os = "windows")]
@@ -769,5 +902,72 @@ mod tests {
         );
         assert_eq!(cert_sha256_from_pem(&pem).as_deref(), Some(fp.as_str()));
         assert_eq!(cert_sha256_from_pem("not a pem"), None);
+    }
+
+    #[test]
+    fn rdp_port_number_registry_parser_handles_valid_missing_wrong_type_and_out_of_range() {
+        // 1. Valid REG_DWORD values in 1..=65535
+        assert_eq!(
+            parse_rdp_port_number_reg_value(Some(REG_DWORD_TYPE), &3389u32.to_le_bytes()),
+            (3389, RdpPortSource::Registry)
+        );
+        assert_eq!(
+            parse_rdp_port_number_reg_value(Some(REG_DWORD_TYPE), &3390u32.to_le_bytes()),
+            (3390, RdpPortSource::Registry)
+        );
+        assert_eq!(
+            parse_rdp_port_number_reg_value(Some(REG_DWORD_TYPE), &1u32.to_le_bytes()),
+            (1, RdpPortSource::Registry)
+        );
+        assert_eq!(
+            parse_rdp_port_number_reg_value(Some(REG_DWORD_TYPE), &65535u32.to_le_bytes()),
+            (65535, RdpPortSource::Registry)
+        );
+
+        // 2. Missing value -> falls back to 3389
+        assert_eq!(
+            parse_rdp_port_number_reg_value(None, &[]),
+            (3389, RdpPortSource::MissingFallback)
+        );
+
+        // 3. Wrong registry value type (e.g., REG_SZ=1, REG_BINARY=3, REG_QWORD=11) or wrong byte length -> falls back to 3389
+        assert_eq!(
+            parse_rdp_port_number_reg_value(Some(1), b"3390\0"),
+            (3389, RdpPortSource::WrongTypeFallback)
+        );
+        assert_eq!(
+            parse_rdp_port_number_reg_value(Some(3), &3390u32.to_le_bytes()),
+            (3389, RdpPortSource::WrongTypeFallback)
+        );
+        assert_eq!(
+            parse_rdp_port_number_reg_value(Some(11), &3390u64.to_le_bytes()),
+            (3389, RdpPortSource::WrongTypeFallback)
+        );
+        assert_eq!(
+            parse_rdp_port_number_reg_value(Some(REG_DWORD_TYPE), &[0x3d, 0x0d]),
+            (3389, RdpPortSource::WrongTypeFallback)
+        );
+        assert_eq!(
+            parse_rdp_port_number_reg_value(Some(REG_DWORD_TYPE), &3390u64.to_le_bytes()),
+            (3389, RdpPortSource::WrongTypeFallback)
+        );
+
+        // 4. Out-of-range REG_DWORD values (0 or > 65535) -> falls back to 3389
+        assert_eq!(
+            parse_rdp_port_number_reg_value(Some(REG_DWORD_TYPE), &0u32.to_le_bytes()),
+            (3389, RdpPortSource::OutOfRangeFallback)
+        );
+        assert_eq!(
+            parse_rdp_port_number_reg_value(Some(REG_DWORD_TYPE), &65536u32.to_le_bytes()),
+            (3389, RdpPortSource::OutOfRangeFallback)
+        );
+        assert_eq!(
+            parse_rdp_port_number_reg_value(Some(REG_DWORD_TYPE), &70000u32.to_le_bytes()),
+            (3389, RdpPortSource::OutOfRangeFallback)
+        );
+        assert_eq!(
+            parse_rdp_port_number_reg_value(Some(REG_DWORD_TYPE), &u32::MAX.to_le_bytes()),
+            (3389, RdpPortSource::OutOfRangeFallback)
+        );
     }
 }

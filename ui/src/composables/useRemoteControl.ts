@@ -4939,6 +4939,7 @@ export function useRemoteControl(
    *  candidate range). Null until the probe finds one. */
   const localClipboardBridgePort = ref<number | null>(null)
   const error = ref<string | null>(null)
+  const errorCode = ref<string | null>(null)
   const sessionId = ref<string | null>(null)
   /**
    * Auto-reconnect state. `lastConnectArgs` remembers the user's
@@ -5183,7 +5184,7 @@ export function useRemoteControl(
       // distinguishes a half-open agent WS from a cross-pod split.
       logConnectTiming('abandoned')
       if (lastConnectArgs) scheduleReconnect()
-      else failWith('connection timed out')
+      else failWith('connection timed out', 'connection_timed_out')
     }, bound)
   }
 
@@ -8651,6 +8652,7 @@ export function useRemoteControl(
         msg.refused === 'session_limit' && typeof msg.message === 'string' && msg.message
           ? msg.message
           : friendlyExtauthRefusal(msg.refused, msg.retry_after_secs),
+        msg.refused === 'session_limit' ? 'org_session_limit' : 'external_session_ended',
       )
     })
     on('rc:ready', async (msg) => {
@@ -8674,7 +8676,7 @@ export function useRemoteControl(
         return
       }
       if (action === 'fail') {
-        failWith('session setup raced teardown')
+        failWith('session setup raced teardown', 'session_setup_raced_teardown')
         return
       }
       const livePc = pc
@@ -8740,7 +8742,11 @@ export function useRemoteControl(
         markConnect('offer_sent')
       } catch (e) {
         localIceOutbox.reset()
-        failWith((e as Error).message || 'createOffer failed')
+        const msgText = (e as Error).message || 'createOffer failed'
+        failWith(
+          msgText,
+          msgText === EXTERNAL_LOGIN_GONE ? 'external_login_gone' : 'create_offer_failed',
+        )
       }
     })
     on('rc:sdp.answer', async (msg) => {
@@ -8776,7 +8782,7 @@ export function useRemoteControl(
                 reason: 'controller_hangup',
               })
             }
-            failWith(EXTERNAL_ANSWER_UNSEALED)
+            failWith(EXTERNAL_ANSWER_UNSEALED, 'external_answer_unsealed')
             return
           }
         }
@@ -8824,6 +8830,7 @@ export function useRemoteControl(
               verdict.kind === 'key-changed'
                 ? peerAuthKeyChangedMessage(judged.pinnedFingerprint, judged.fingerprint)
                 : PEER_AUTH_BAD_SIGNATURE,
+              verdict.kind === 'key-changed' ? 'peer_auth_key_changed' : 'peer_auth_bad_signature',
             )
             return
           }
@@ -8842,7 +8849,7 @@ export function useRemoteControl(
         }
         pendingRemoteIce.length = 0
       } catch (e) {
-        failWith((e as Error).message || 'setRemoteDescription failed')
+        failWith((e as Error).message || 'setRemoteDescription failed', 'set_remote_description_failed')
       }
     })
     on('rc:ice', async (msg) => {
@@ -8956,7 +8963,13 @@ export function useRemoteControl(
         // mapping returns null for every nominal reason, so the set of
         // reasons that surface is the set that has something to say.
         const friendly = friendlyEndReason(msg.reason, msg.limit)
-        if (friendly) error.value = friendly
+        if (friendly) {
+          error.value = friendly
+          errorCode.value =
+            msg.reason === 'error' && msg.limit === 'no_common_codec'
+              ? 'no_common_codec'
+              : String(msg.reason)
+        }
       }
       teardown()
     })
@@ -8970,7 +8983,7 @@ export function useRemoteControl(
         if (!sessionGateAllows(msg.session_id, sessionId.value)) return
         attemptErrorCode = msg.code
         if (!lastConnectArgs) {
-          failWith(friendlyRcError(msg.code, msg.message))
+          failWith(friendlyRcError(msg.code, msg.message), msg.code)
           return
         }
         rehomeStreak += 1
@@ -9057,7 +9070,7 @@ export function useRemoteControl(
         )
         return
       }
-      failWith(friendlyRcError(msg.code, msg.message))
+      failWith(friendlyRcError(msg.code, msg.message), typeof msg.code === 'string' ? msg.code : 'internal')
     })
   }
 
@@ -9067,8 +9080,9 @@ export function useRemoteControl(
     rcUnsubs = []
   }
 
-  function failWith(message: string) {
+  function failWith(message: string, code?: string | null) {
     error.value = message
+    errorCode.value = code ?? attemptErrorCode ?? null
     phase.value = 'error'
     cancelReconnect()
     logConnectTiming('closed')
@@ -9133,12 +9147,12 @@ export function useRemoteControl(
           reason: 'controller_hangup',
         })
       }
-      failWith(EXTERNAL_SESSION_ENDED)
+      failWith(EXTERNAL_SESSION_ENDED, 'external_session_ended')
       return
     }
     // Without the original connect args we can't retry.
     if (!lastConnectArgs) {
-      failWith('peer connection failed')
+      failWith('peer connection failed', 'peer_connection_failed')
       return
     }
     // FR-22 part 4 - an attempt the ladder is advancing past without a
@@ -9387,7 +9401,7 @@ export function useRemoteControl(
     }
     // FR-52 P4e — an external viewer starts only from a login in hand.
     if (externalMode && !externalAuth) {
-      failWith(EXTERNAL_LOGIN_GONE)
+      failWith(EXTERNAL_LOGIN_GONE, 'external_login_gone')
       return
     }
     // #1631 - this attempt's generation, re-checked after every suspension
@@ -9409,6 +9423,7 @@ export function useRemoteControl(
       cancelReconnect()
     }
     error.value = null
+    errorCode.value = null
     sessionId.value = null
     // FR-22 - the clock starts HERE, not at `rc:session.request`.
     // Everything between this point and the request is a wait the
@@ -14508,6 +14523,7 @@ export function useRemoteControl(
   return {
     phase,
     error,
+    errorCode,
     notice,
     /** FR-27 P10 - `'host'` when the person at the device ended the last session. */
     endedBy,
