@@ -856,6 +856,73 @@ impl Conn for DtlsFlightBackoffConn {
 mod dtls_backoff_tests {
     use super::*;
 
+    struct MockCountingConn {
+        tx_payloads: std::sync::Mutex<Vec<Vec<u8>>>,
+        rx_payload: Vec<u8>,
+    }
+
+    impl MockCountingConn {
+        fn new(rx_payload: Vec<u8>) -> Self {
+            Self {
+                tx_payloads: std::sync::Mutex::new(Vec::new()),
+                rx_payload,
+            }
+        }
+
+        fn sent_count(&self) -> usize {
+            self.tx_payloads.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Conn for MockCountingConn {
+        async fn connect(&self, _addr: std::net::SocketAddr) -> std::result::Result<(), util::Error> {
+            Ok(())
+        }
+
+        async fn recv(&self, buf: &mut [u8]) -> std::result::Result<usize, util::Error> {
+            let n = self.rx_payload.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.rx_payload[..n]);
+            Ok(n)
+        }
+
+        async fn recv_from(
+            &self,
+            _buf: &mut [u8],
+        ) -> std::result::Result<(usize, std::net::SocketAddr), util::Error> {
+            Err(util::Error::Other("unused".into()))
+        }
+
+        async fn send(&self, buf: &[u8]) -> std::result::Result<usize, util::Error> {
+            self.tx_payloads.lock().unwrap().push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        async fn send_to(
+            &self,
+            buf: &[u8],
+            _target: std::net::SocketAddr,
+        ) -> std::result::Result<usize, util::Error> {
+            Ok(buf.len())
+        }
+
+        fn local_addr(&self) -> std::result::Result<std::net::SocketAddr, util::Error> {
+            Ok("127.0.0.1:0".parse().unwrap())
+        }
+
+        fn remote_addr(&self) -> Option<std::net::SocketAddr> {
+            None
+        }
+
+        async fn close(&self) -> std::result::Result<(), util::Error> {
+            Ok(())
+        }
+
+        fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+            self
+        }
+    }
+
     #[test]
     fn dtls_backoff_state_doubles_interval_between_retransmissions_and_resets_on_recv() {
         let base = std::time::Duration::from_millis(100);
@@ -894,5 +961,111 @@ mod dtls_backoff_tests {
         assert_eq!(st.burst_index, 0);
         assert!(st.allow_send(t0 + std::time::Duration::from_millis(820), base));
         assert_eq!(st.burst_index, 1);
+    }
+
+    #[tokio::test]
+    async fn next_send_after_recv_is_always_forwarded_even_during_suppressed_burst() {
+        let base = std::time::Duration::from_millis(100);
+        let handshake_done = Arc::new(AtomicBool::new(false));
+        let inner = Arc::new(MockCountingConn::new(vec![22, 254, 253, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 2]));
+        let conn = DtlsFlightBackoffConn::new(
+            Arc::clone(&inner) as Arc<dyn Conn + Send + Sync>,
+            base,
+            Arc::clone(&handshake_done),
+        );
+
+        // Drive state into a suppressed retransmission burst (burst 2 at +200 ms).
+        let t0 = std::time::Instant::now();
+        {
+            let mut st = conn.state.lock().unwrap();
+            assert!(st.allow_send(t0, base));
+            assert!(st.allow_send(t0 + std::time::Duration::from_millis(100), base));
+            assert!(!st.allow_send(t0 + std::time::Duration::from_millis(200), base));
+            assert!(!st.burst_allowed);
+        }
+
+        // Receiving any packet from the peer resets backoff state via `recv()`.
+        let mut rx_buf = [0u8; 64];
+        let n = conn.recv(&mut rx_buf).await.unwrap();
+        assert!(n > 0);
+
+        // The very next flight (including multiple records in that flight) MUST be forwarded.
+        conn.send(&[22, 254, 253, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 16])
+            .await
+            .unwrap();
+        conn.send(&[20, 254, 253, 0, 0, 0, 0, 0, 0, 0, 3, 0, 1, 1])
+            .await
+            .unwrap();
+        conn.send(&[22, 254, 253, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 20])
+            .await
+            .unwrap();
+        assert_eq!(inner.sent_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn multi_record_flight_within_burst_gap_forwards_all_records() {
+        let base = std::time::Duration::from_millis(100);
+        let t0 = std::time::Instant::now();
+        let mut st = DtlsBackoffState::default();
+
+        // Simulate a 5-record flight (e.g. ServerHello, Certificate, ServerKeyExchange,
+        // CertificateRequest, ServerHelloDone) emitted within burst_gap (50 ms for 100 ms base).
+        for offset_ms in [0_u64, 5, 12, 25, 40] {
+            assert!(
+                st.allow_send(t0 + std::time::Duration::from_millis(offset_ms), base),
+                "record at +{offset_ms}ms within burst_gap must be forwarded"
+            );
+            assert_eq!(st.burst_index, 0);
+        }
+        assert_eq!(st.tx_packets, 5);
+
+        // Also verify via DtlsFlightBackoffConn::send that 4 consecutive records in a flight
+        // are all forwarded to the underlying Conn.
+        let handshake_done = Arc::new(AtomicBool::new(false));
+        let inner = Arc::new(MockCountingConn::new(Vec::new()));
+        let conn = DtlsFlightBackoffConn::new(
+            Arc::clone(&inner) as Arc<dyn Conn + Send + Sync>,
+            base,
+            handshake_done,
+        );
+        for seq in 0..4u8 {
+            conn.send(&[22, 254, 253, 0, 0, 0, 0, 0, 0, 0, seq, 0, 1, 11])
+                .await
+                .unwrap();
+        }
+        assert_eq!(inner.sent_count(), 4);
+    }
+
+    #[tokio::test]
+    async fn after_handshake_done_no_packets_are_throttled() {
+        let base = std::time::Duration::from_millis(100);
+        let handshake_done = Arc::new(AtomicBool::new(false));
+        let inner = Arc::new(MockCountingConn::new(Vec::new()));
+        let conn = DtlsFlightBackoffConn::new(
+            Arc::clone(&inner) as Arc<dyn Conn + Send + Sync>,
+            base,
+            Arc::clone(&handshake_done),
+        );
+
+        // Put the backoff state into a suppressed burst right before handshake finishes.
+        let t0 = std::time::Instant::now();
+        {
+            let mut st = conn.state.lock().unwrap();
+            assert!(st.allow_send(t0, base));
+            assert!(st.allow_send(t0 + std::time::Duration::from_millis(100), base));
+            assert!(!st.allow_send(t0 + std::time::Duration::from_millis(200), base));
+            assert!(!st.burst_allowed);
+        }
+
+        // Flip handshake_done = true (as RTCDtlsTransport::start does after DTLSConn::new).
+        handshake_done.store(true, Ordering::SeqCst);
+
+        // Every subsequent send must pass through unconditionally with zero throttling.
+        for i in 0..10u8 {
+            conn.send(&[23, 254, 253, 0, 1, 0, 0, 0, 0, 0, i, 0, 1, 0xaa])
+                .await
+                .unwrap();
+        }
+        assert_eq!(inner.sent_count(), 10);
     }
 }

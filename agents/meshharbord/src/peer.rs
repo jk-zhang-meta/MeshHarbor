@@ -4065,6 +4065,7 @@ async fn media_pump(
                     let downscaled_init_started = std::time::Instant::now();
                     #[cfg(feature = "rc-latency-bench")]
                     let downscaled_init_start_agent_us = agent_epoch_us();
+                    #[cfg_attr(not(feature = "rc-latency-bench"), allow(unused_variables))]
                     let (enc, actual_downscaled) = encode::open_for_codec(
                         &chosen_codec,
                         frame.width,
