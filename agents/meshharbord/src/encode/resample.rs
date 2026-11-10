@@ -318,7 +318,9 @@ impl Resampler {
         let h_index = &self.h.index;
         let h_offsets = &self.h.offsets;
         let h_weights = &self.h.weights;
+        #[cfg(target_arch = "x86_64")]
         let h_pair_offsets = &self.h.pair_offsets;
+        #[cfg(target_arch = "x86_64")]
         let h_weight_pairs = &self.h.weight_pairs;
         let v_index = &self.v.index;
         let v_offsets = &self.v.offsets;

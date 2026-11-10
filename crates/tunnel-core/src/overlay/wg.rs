@@ -1388,8 +1388,7 @@ impl WgSender {
         };
         let response = control.receive(bytes, leg, Instant::now());
         if response.is_some() || control.peer_on(Instant::now()) {
-            peer.multipath
-                .set_config(super::multipath::MultipathConfig::new(control.mode()));
+            peer.multipath.set_mode(control.mode());
         }
         let Some(response) = response else { return };
         let Some(limit) = peer.stats.mp_replies.get() else {
