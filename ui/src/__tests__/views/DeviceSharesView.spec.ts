@@ -174,3 +174,35 @@ describe('single-device SSH share authorization and truthful native instructions
     expect(wrapper!.text()).not.toContain(metadata.name)
   })
 })
+describe('a recipient\'s file transfers run as a chosen account, never as root', () => {
+  function ownedAs(os: 'linux' | 'macos' | 'windows') {
+    vi.mocked(api.get).mockImplementation(async path => String(path).endsWith('/local-accounts') ? deviceAccounts : String(path).startsWith('/account/devices') ? { ...ownedPage, items: [{ ...ownedPage.items[0], os }] } : { items: [shared()], total: 1 })
+  }
+  it('asks for the account when files are shared from a Linux device, and sends it', async () => {
+    ownedAs('linux')
+    await open(); await form(); await checkbox('share-desktop-permission', false); await checkbox('share-files-permission', true)
+    const field = wrapper!.findAllComponents({ name: 'VTextField' }).find(c => c.props('label') === 'Device account for file transfers')
+    expect(field, 'the files account field').toBeDefined()
+    expect(String(field!.props('hint'))).toContain('never as root')
+    await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(api.post).not.toHaveBeenCalled()
+    expect(wrapper!.text()).toContain('Enter the device account for file transfers')
+    await account('alice'); await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(api.post).toHaveBeenCalledWith('/device-shares', expect.objectContaining({ permissions: { ...no, files_read: true, files_write: true }, ssh_account: 'alice' }))
+  })
+  it('refuses root as the files account on macOS too', async () => {
+    ownedAs('macos')
+    await open(); await form(); await checkbox('share-files-permission', true); await account('root')
+    await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+  it('takes no account for a Windows device: its file shares run as the device\'s own user', async () => {
+    ownedAs('windows')
+    await open(); await form(); await checkbox('share-files-permission', true)
+    expect(wrapper!.find('[data-testid="share-ssh-account"]').exists()).toBe(false)
+    await wrapper!.get('form').trigger('submit'); await flushPromises()
+    const body = vi.mocked(api.post).mock.calls[0]?.[1] as Record<string, unknown>
+    expect(body.permissions).toEqual({ ...no, desktop_view: true, files_read: true, files_write: true })
+    expect(body).not.toHaveProperty('ssh_account')
+  })
+})

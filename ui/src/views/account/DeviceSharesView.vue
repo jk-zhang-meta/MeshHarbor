@@ -23,10 +23,11 @@
         <v-select data-testid="share-device-id" v-model="deviceId" :items="ownedChoices" :loading="ownedLoading" :label="$t('mh.shares.device')" :no-data-text="$t('mh.shares.noOwned')" required />
         <v-text-field data-testid="share-recipient-id" v-model="recipientId" :label="$t('mh.shares.recipient')" :hint="$t('mh.shares.recipientHint')" persistent-hint autocomplete="off" required />
         <v-checkbox data-testid="share-ssh-permission" v-model="ssh" :label="$t('mh.shares.permSsh')" />
-        <!-- The account the recipient's SSH runs as: chosen here, never the device policy's (root). -->
-        <v-text-field v-if="ssh" data-testid="share-ssh-account" v-model="sshAccount" :label="$t('mh.shares.sshAccount')" :hint="$t('mh.shares.sshAccountHint')" persistent-hint autocomplete="off" class="mb-2" />
+        <!-- The account the recipient's SSH — and, on Linux/macOS, their file transfers — run as:
+             chosen here, never the device policy's (root). -->
+        <v-text-field v-if="needsAccount" data-testid="share-ssh-account" v-model="sshAccount" :label="ssh ? $t('mh.shares.sshAccount') : $t('mh.shares.filesAccount')" :hint="ssh ? (files && unixDevice ? $t('mh.shares.sshFilesAccountHint') : $t('mh.shares.sshAccountHint')) : $t('mh.shares.filesAccountHint')" persistent-hint autocomplete="off" class="mb-2" />
         <!-- The device's own login accounts, asked of the device itself; or a new one it creates. -->
-        <div v-if="ssh && deviceId" class="mb-3" data-testid="share-ssh-accounts">
+        <div v-if="needsAccount && deviceId" class="mb-3" data-testid="share-ssh-accounts">
           <v-progress-linear v-if="accountsLoading" indeterminate class="mb-1" />
           <div v-if="accounts.length" class="d-flex flex-wrap align-center ga-1">
             <span class="text-caption mr-1">{{ $t('mh.shares.acct.existing') }}</span>
@@ -90,6 +91,11 @@ function sharedRemoteUrl(share: DeviceShare) { return `${appOrigin(window.locati
 const direction = ref<'received' | 'sent'>(route.query.direction === 'sent' ? 'sent' : 'received'), page = ref(1), total = ref(0)
 const items = ref<DeviceShare[]>([]), loading = ref(false), saving = ref(false), error = ref('')
 const deviceId = ref(''), recipientId = ref(''), hours = ref(24), desktopView = ref(true), desktopControl = ref(false), files = ref(false), ssh = ref(false), sshAccount = ref('')
+// A recipient's file transfers never run as root/SYSTEM: on a Linux/macOS device they run as a
+// chosen account, exactly as SSH does; a Windows device runs them as its own (per-user) user.
+// An OS the listing did not report is treated as Linux/macOS — the server decides in the end.
+const unixDevice = computed(() => owned.value.find(d => d.id === deviceId.value)?.os !== 'windows')
+const needsAccount = computed(() => ssh.value || (files.value && unixDevice.value))
 // The server's rule for a share account (a portable POSIX user name), checked here to answer early.
 const SHARE_ACCOUNT = /^[a-z_][a-z0-9_-]{0,31}$/
 interface LocalAccount { name: string; uid: number; admin: boolean }
@@ -100,7 +106,7 @@ let accountsGeneration = 0
 async function loadAccounts() {
   const id = deviceId.value, attempt = ++accountsGeneration
   accounts.value = []; accountsError.value = ''; accountNotice.value = ''; accountsLoading.value = false
-  if (!ssh.value || !OBJECT_ID.test(id ?? '')) return
+  if (!needsAccount.value || !OBJECT_ID.test(id ?? '')) return
   accountsLoading.value = true
   try {
     const r = await api.get<{ accounts?: LocalAccount[] }>(`/account/devices/${encodeURIComponent(id)}/local-accounts`)
@@ -125,7 +131,7 @@ async function createAccount() {
 }
 const pendingRevoke = ref<DeviceShare | null>(null)
 // The share form picks from the devices this account owns — no one should need to know an id.
-interface OwnedDevice { id: string; name: string; status: string }
+interface OwnedDevice { id: string; name: string; status: string; os?: 'linux' | 'macos' | 'windows' }
 const owned = ref<OwnedDevice[]>([]), ownedLoading = ref(false), panel = ref<string[]>([])
 const ownedChoices = computed(() => owned.value.map(d => ({ title: `${d.name} (${d.status})`, value: d.id })))
 const OBJECT_ID = /^[a-f\d]{24}$/i
@@ -187,10 +193,11 @@ async function create() {
   const recipient = recipientId.value.trim()
   if (!OBJECT_ID.test(deviceId.value ?? '') || !recipient || recipient.length > 320 || !Number.isInteger(hours.value) || hours.value < 1 || hours.value > 720 || (!desktopView.value && !files.value && !ssh.value)) { error.value = t('mh.shares.invalid'); return }
   const account = sshAccount.value.trim()
-  if (ssh.value && account === 'root') { error.value = t('mh.shares.sshRootRefused'); return }
-  if (ssh.value && !SHARE_ACCOUNT.test(account)) { error.value = t('mh.shares.sshAccountInvalid'); return }
+  const withAccount = needsAccount.value
+  if (withAccount && account === 'root') { error.value = t('mh.shares.sshRootRefused'); return }
+  if (withAccount && !SHARE_ACCOUNT.test(account)) { error.value = t(ssh.value ? 'mh.shares.sshAccountInvalid' : 'mh.shares.filesAccountInvalid'); return }
   const user = auth.user?.id, identity = identityGeneration, attempt = generation; saving.value = true; error.value = ''
-  try { await api.post('/device-shares', { device_id: deviceId.value, recipient, permissions: { ssh: ssh.value, desktop_view: desktopView.value, desktop_control: desktopView.value && desktopControl.value, files_read: files.value, files_write: files.value }, tcp_ports: [], expires_in_secs: hours.value * 3600, ...(ssh.value ? { ssh_account: account } : {}) })
+  try { await api.post('/device-shares', { device_id: deviceId.value, recipient, permissions: { ssh: ssh.value, desktop_view: desktopView.value, desktop_control: desktopView.value && desktopControl.value, files_read: files.value, files_write: files.value }, tcp_ports: [], expires_in_secs: hours.value * 3600, ...(withAccount ? { ssh_account: account } : {}) })
     if (!alive || attempt !== generation || identity !== identityGeneration || auth.user?.id !== user) return
     direction.value = 'sent'; page.value = 1; await load()
   } catch (e) { if (alive && identity === identityGeneration && attempt === generation && auth.user?.id === user) error.value = (e as Error).message }
@@ -208,7 +215,7 @@ async function revoke() {
 watch(() => route.query.direction, value => { if (value === 'received' || value === 'sent') direction.value = value })
 watch(direction, () => { closeSsh(); page.value = 1; void load() })
 watch(page, () => { void load() })
-watch([ssh, deviceId], () => { void loadAccounts() })
+watch([needsAccount, deviceId], () => { void loadAccounts() })
 watch(() => auth.user?.id, () => { clearIdentity(); owned.value = []; void load(); void loadOwned(); preselect() }, { immediate: true })
 watch(() => route.query.share_device, () => preselect())
 onBeforeUnmount(() => { alive = false; clearInterval(recordClock); clearIdentity() })
