@@ -277,11 +277,11 @@ pub fn dtls_flight_interval_from_env() -> Duration {
     parse_dtls_flight_interval_ms(val.as_deref())
 }
 
-/// Default bounded wait (`50 ms`) after `set_local_description` for all local
-/// network interfaces' `host` candidates to finish gathering so they can be
-/// included directly in `rc:sdp.answer`. Setting `MESHHARBORD_ANSWER_WAIT_HOST_MS=0`
-/// (or `off`/`false`/`no`) restores immediate answer return.
-pub const DEFAULT_ANSWER_WAIT_HOST_MS: u64 = 50;
+/// Default bounded wait (`0 ms` = disabled) after `set_local_description` for
+/// local network interfaces' `host` candidates to finish gathering before
+/// returning `rc:sdp.answer`. Setting `MESHHARBORD_ANSWER_WAIT_HOST_MS=50`
+/// opts into bounded host-candidate gathering in the SDP answer.
+pub const DEFAULT_ANSWER_WAIT_HOST_MS: u64 = 0;
 
 /// Quiet window (`10 ms`) after at least one local `host` candidate has been
 /// gathered: `webrtc-ice`'s `gather_candidates_local` binds UDP sockets in a
@@ -2090,9 +2090,9 @@ impl AgentPeer {
             .await
             .context("set_local_description")?;
 
-        // Wait up to `MESHHARBORD_ANSWER_WAIT_HOST_MS` (default 50 ms) for all
-        // local network interfaces' `host` candidates to finish gathering so
-        // they can be embedded in `rc:sdp.answer` via `pc.local_description()`.
+        // When `MESHHARBORD_ANSWER_WAIT_HOST_MS` > 0 (default 0 = off), wait up
+        // to that budget for local network interfaces' `host` candidates to
+        // finish gathering so they can be embedded in `rc:sdp.answer`.
         let wait_host_budget = answer_wait_host_ms_from_env();
         let wait_started = std::time::Instant::now();
         if !wait_host_budget.is_zero() {
@@ -19629,14 +19629,13 @@ mod stopped_at_screen_tests {
     }
 
     #[test]
-    fn parse_answer_wait_host_ms_defaults_to_50ms_and_allows_disable() {
+    fn parse_answer_wait_host_ms_defaults_to_off_and_allows_opt_in() {
+        assert_eq!(DEFAULT_ANSWER_WAIT_HOST_MS, 0);
+        assert_eq!(parse_answer_wait_host_ms(None), Duration::ZERO);
+        assert_eq!(parse_answer_wait_host_ms(Some("")), Duration::ZERO);
         assert_eq!(
-            parse_answer_wait_host_ms(None),
-            Duration::from_millis(DEFAULT_ANSWER_WAIT_HOST_MS)
-        );
-        assert_eq!(
-            parse_answer_wait_host_ms(Some("")),
-            Duration::from_millis(DEFAULT_ANSWER_WAIT_HOST_MS)
+            parse_answer_wait_host_ms(Some("50")),
+            Duration::from_millis(50)
         );
         assert_eq!(
             parse_answer_wait_host_ms(Some("35")),
