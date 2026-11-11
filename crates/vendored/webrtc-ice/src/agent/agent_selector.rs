@@ -151,16 +151,16 @@ pub(crate) fn controlled_probe_late_direct_policy(env: Option<&str>) -> bool {
 /// Whether the controlled agent replies `Binding Success` on all valid
 /// `USE-CANDIDATE` checks, remembers the nomination across the triggered reverse
 /// check so `handle_success_response` selects the pair immediately, and sends
-/// `Binding Success` before `set_selected_pair` on `Succeeded` pairs (default OFF;
-/// opt-in via `MESHHARBOR_ICE_FAST_NOMINATION=1` or `MESHHARBORD_ICE_FAST_NOMINATION=1`).
+/// `Binding Success` before `set_selected_pair` on `Succeeded` pairs (default ON;
+/// opt-out via `MESHHARBOR_ICE_FAST_NOMINATION=0` or `MESHHARBORD_ICE_FAST_NOMINATION=0`).
 pub(crate) fn controlled_fast_nomination_policy(env: Option<&str>) -> bool {
-    matches!(
+    !matches!(
         env.map(str::trim),
         Some(v)
-            if v == "1"
-                || v.eq_ignore_ascii_case("true")
-                || v.eq_ignore_ascii_case("on")
-                || v.eq_ignore_ascii_case("yes")
+            if v == "0"
+                || v.eq_ignore_ascii_case("false")
+                || v.eq_ignore_ascii_case("off")
+                || v.eq_ignore_ascii_case("no")
     )
 }
 
@@ -2701,18 +2701,19 @@ mod same_session_failover_tests {
     }
 
     #[test]
-    fn controlled_fast_nomination_env_policy_is_default_off() {
-        assert!(!super::controlled_fast_nomination_policy(None));
-        assert!(!super::controlled_fast_nomination_policy(Some("")));
-        assert!(!super::controlled_fast_nomination_policy(Some("0")));
-        assert!(!super::controlled_fast_nomination_policy(Some("false")));
-        assert!(!super::controlled_fast_nomination_policy(Some("off")));
-        assert!(!super::controlled_fast_nomination_policy(Some("no")));
+    fn controlled_fast_nomination_env_policy_is_default_on() {
+        assert!(super::controlled_fast_nomination_policy(None));
+        assert!(super::controlled_fast_nomination_policy(Some("")));
         assert!(super::controlled_fast_nomination_policy(Some("1")));
         assert!(super::controlled_fast_nomination_policy(Some("true")));
         assert!(super::controlled_fast_nomination_policy(Some("TRUE")));
         assert!(super::controlled_fast_nomination_policy(Some("on")));
         assert!(super::controlled_fast_nomination_policy(Some("yes")));
+        assert!(!super::controlled_fast_nomination_policy(Some("0")));
+        assert!(!super::controlled_fast_nomination_policy(Some("false")));
+        assert!(!super::controlled_fast_nomination_policy(Some("FALSE")));
+        assert!(!super::controlled_fast_nomination_policy(Some("off")));
+        assert!(!super::controlled_fast_nomination_policy(Some("no")));
     }
 
     struct RecordingStunConn {
