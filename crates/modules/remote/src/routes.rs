@@ -378,11 +378,46 @@ pub async fn turn_credentials(
     // This route is session-less (a pre-fetch), so it issues the default
     // region's generic URL list; the per-session same-worker affinity and the
     // region pick happen on the Hub's issuance paths.
-    let user = match charge_org(&state, auth.user_id, &q).await {
+    let org = charge_org(&state, auth.user_id, &q).await;
+    let user = match org {
         Some(org) => turn_creds::charged(&auth.user_id.to_hex(), &org.to_hex()),
         None => auth.user_id.to_hex(),
     };
-    let ice_servers = ice_servers_for(&user, state.turn_map.cfg_for(None));
+    let mut ice_servers = ice_servers_for(&user, state.turn_map.cfg_for(None));
+    // MeshHarbor #21 relay locality. The viewer builds its peer connection
+    // from these servers, so they are kept to the TARGET device's business
+    // zone, the same list the hub hands that device. The zone is read only
+    // when the checks that charge the org passed (caller is a member, the
+    // named device is live in that org); otherwise there is no zone, and
+    // under `enforce` no server is handed out (host candidates still connect
+    // a direct path).
+    if let Some(gate) = state.fleet.rc_hub.ice_gate() {
+        let zone = org
+            .and(q.agent_id.as_deref())
+            .and_then(|a| ObjectId::parse_str(a).ok())
+            .and_then(|aid| state.fleet.rc_hub.agent_business_zone(aid));
+        let (kept, dropped) =
+            meshharbor_core::ice_zones::keep_in_zone(ice_servers.clone(), zone, |u| {
+                gate.zones.zone_of_url(u)
+            });
+        if dropped > 0 {
+            match gate.mode {
+                meshharbor_core::ice_zones::IceGateMode::Enforce => {
+                    info!(
+                        ?zone,
+                        withheld = dropped,
+                        "business isolation: TURN/STUN outside the target device's zone withheld from the viewer"
+                    );
+                    ice_servers = kept;
+                }
+                meshharbor_core::ice_zones::IceGateMode::Warn => warn!(
+                    ?zone,
+                    would_withhold = dropped,
+                    "business isolation (warn): would withhold TURN/STUN outside the target device's zone"
+                ),
+            }
+        }
+    }
     Ok(Json(TurnCredentialsResponse { ice_servers }))
 }
 

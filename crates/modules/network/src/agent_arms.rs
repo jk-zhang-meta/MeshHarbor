@@ -688,4 +688,23 @@ mod tests {
             super::zone_claim(BusinessZone::NonMainland)
         );
     }
+
+    /// The hub's ICE gate (core, which cannot see this crate) parses
+    /// `app.business_isolation` itself; it must agree with the isolation
+    /// module on every spelling, typos included.
+    #[test]
+    fn the_ice_gate_reads_the_isolation_setting_like_business_isolation() {
+        use crate::business_isolation::Mode;
+        use meshharbor_core::ice_zones::{IceGateMode, gate_mode};
+        for raw in [
+            "off", "OFF", "warn", " Warn ", "enforce", "", "enforec", "on",
+        ] {
+            let expect = match Mode::parse(raw) {
+                Mode::Off => None,
+                Mode::Warn => Some(IceGateMode::Warn),
+                Mode::Enforce => Some(IceGateMode::Enforce),
+            };
+            assert_eq!(gate_mode(raw), expect, "{raw:?}");
+        }
+    }
 }

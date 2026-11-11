@@ -207,6 +207,20 @@ impl Module for FleetState {
             Some(consent_tx),
             core.relay_load.clone(),
         ));
+        // MeshHarbor #21 relay locality: with business isolation on, RC ICE
+        // servers are handed out only in the device's own zone. The zones of
+        // the deployment's STUN/TURN hosts are resolved off the hot path, now
+        // and every 10 minutes.
+        if let Some(mode) = meshharbor_core::ice_zones::gate_mode(&settings.app.business_isolation)
+        {
+            let zones = Arc::new(meshharbor_core::ice_zones::IceServerZones::default());
+            meshharbor_core::ice_zones::spawn_refresh(
+                core.clone(),
+                zones.clone(),
+                meshharbor_core::ice_zones::all_urls(&core.turn_map),
+            );
+            rc_hub.set_ice_gate(hub::IceGate { zones, mode });
+        }
         // FR-115 P3b — the hub keeps its sessions' slots: renews this pod's
         // leases every round, and gives a slot back when its session ends.
         // Empty until `rc.session_slots` has a caller claim one.

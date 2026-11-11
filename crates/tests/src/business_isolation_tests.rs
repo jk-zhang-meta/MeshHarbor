@@ -44,6 +44,21 @@ impl Rig {
         isolation: &'static str,
         unknown_role: &'static str,
     ) -> Self {
+        Self::up_full(slug, isolation, unknown_role, None).await
+    }
+
+    /// `up`, with the legacy TURN config set to `turn_url` (a shared secret
+    /// included, so credentials are minted).
+    async fn up_with_turn(slug: &str, isolation: &'static str, turn_url: &'static str) -> Self {
+        Self::up_full(slug, isolation, "warn", Some(turn_url)).await
+    }
+
+    async fn up_full(
+        slug: &str,
+        isolation: &'static str,
+        unknown_role: &'static str,
+        turn_url: Option<&'static str>,
+    ) -> Self {
         let geo = tempfile::tempdir().unwrap();
         let mmdb = geo.path().join("dbip-country-lite.mmdb");
         std::fs::write(&mmdb, fixture_mmdb()).unwrap();
@@ -57,6 +72,10 @@ impl Rig {
             s.app.business_isolation = isolation.into();
             s.app.business_unknown_role = unknown_role.into();
             s.stats.geoip_mmdb = Some(mmdb);
+            if let Some(url) = turn_url {
+                s.turn.url = Some(url.into());
+                s.turn.shared_secret = Some("ice-zone-fixture-secret".into());
+            }
         })
         .await;
         let owner = approved_user(&app, &format!("{slug}_owner"), Some(owner_id)).await;
@@ -12111,4 +12130,79 @@ async fn tunnel_roster_without_ws_uses_request_origin_inner() {
             "no-WS unknown zone under warn must return devices as usual"
         );
     }
+}
+
+/// MeshHarbor #21 relay locality: under `enforce`, the TURN/STUN servers a
+/// viewer is handed for a device (`/api/turn/credentials?agent_id=…`, the list
+/// the RC viewer builds its peer connection from) sit in that DEVICE's zone.
+/// The fixture's only TURN server is on a CN address: a CN device gets it, a
+/// US device does not, and a request that names no device gets nothing.
+#[tokio::test]
+async fn rc_ice_servers_stay_in_the_devices_zone() {
+    const CN_TURN: &str = "turn:223.5.5.6:3478";
+    let rig = Rig::up_with_turn("iceloc", "enforce", CN_TURN).await;
+    // Enrolled and connected from each side of the line, as `Rig::device`
+    // does, keeping the agent ids.
+    let (cn_id, cn_tok) = enroll(&rig.app, &rig.seeded, "ice-cn").await;
+    let _cn = connect_from(&rig.app, &cn_tok, &[], Some(CN_A)).await;
+    assert_observed(&rig.app, &cn_id, Some(CN_A)).await;
+    let (us_id, us_tok) = enroll(&rig.app, &rig.seeded, "ice-us").await;
+    let _us = connect_from(&rig.app, &us_tok, &[], Some(US_A)).await;
+    assert_observed(&rig.app, &us_id, Some(US_A)).await;
+    let tid = rig.seeded.tenant_id.clone();
+    let creds = |agent: Option<String>| {
+        let app = &rig.app;
+        let tok = rig.seeded.admin.access_token.clone();
+        let tid = tid.clone();
+        async move {
+            let path = match agent {
+                Some(a) => format!("/api/turn/credentials?tenant_id={tid}&agent_id={a}"),
+                None => "/api/turn/credentials".to_string(),
+            };
+            let v: Value = app
+                .auth_get(&path, &tok)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            v["ice_servers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|s| s["urls"].as_array().unwrap().clone())
+                .map(|u| u.as_str().unwrap().to_owned())
+                .collect::<Vec<String>>()
+        }
+    };
+    // The host zones resolve in the background at boot; the CN device sees
+    // the CN TURN once they have.
+    let mut cn_urls = Vec::new();
+    for _ in 0..100 {
+        cn_urls = creds(Some(cn_id.clone())).await;
+        if cn_urls.iter().any(|u| u.starts_with("turn:223.5.5.6")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        cn_urls.iter().any(|u| u.starts_with("turn:223.5.5.6")),
+        "a CN device's viewer gets the CN TURN: {cn_urls:?}"
+    );
+    assert!(
+        cn_urls
+            .iter()
+            .all(|u| !u.contains("cloudflare") && !u.contains("google")),
+        "public STUN outside the line is withheld from a CN device: {cn_urls:?}"
+    );
+    let us_urls = creds(Some(us_id)).await;
+    assert!(
+        us_urls.iter().all(|u| !u.contains("223.5.5.6")),
+        "a US device's viewer never gets the CN TURN: {us_urls:?}"
+    );
+    assert!(
+        creds(None).await.is_empty(),
+        "naming no device names no zone, so nothing is handed out"
+    );
 }
