@@ -280,6 +280,17 @@ pub async fn handle_agent_ssh_request(
     }
 }
 
+/// A zone's spelling in a DERP ticket: exactly what `BusinessZone`
+/// serializes to (snake_case), so the PoP compares the strings the API's own
+/// JSON carries. Locked by `zone_claim_is_the_serde_spelling`.
+fn zone_claim(z: meshharbor_core::business_authority::BusinessZone) -> &'static str {
+    use meshharbor_core::business_authority::BusinessZone;
+    match z {
+        BusinessZone::Mainland => "mainland",
+        BusinessZone::NonMainland => "non_mainland",
+    }
+}
+
 /// Multi-region DERP: answer a ticket request. The ticket binds the agent's
 /// overlay `(network_id, wg_public_key)` — exactly the invariants the central
 /// `/derp` enforces from Mongo, so a PoP relay can enforce them with the
@@ -299,7 +310,23 @@ pub async fn handle_derp_ticket_request(
         debug!(%agent_id, "derp ticket requested but agent has no overlay node");
         return;
     };
-    match signer.mint(&node.network_id.to_hex(), &node.wg_public_key) {
+    // MeshHarbor #21 — under `enforce` the ticket names the node's zone, and a
+    // PoP relays only between equal zones (`derp_ticket::DerpTicketClaims::zone`).
+    // A node with no known zone relays to nobody, so it gets no ticket: it
+    // keeps the central `/derp`, whose table applies the same rule.
+    let zone = if crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce
+    {
+        match crate::org_relay::node_zone(state, &node).await {
+            Some(z) => Some(zone_claim(z)),
+            None => {
+                info!(%agent_id, "derp ticket withheld — business isolation is enforced and this node has no known zone");
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    match signer.mint_in_zone(&node.network_id.to_hex(), &node.wg_public_key, zone) {
         Ok((ticket, exp)) => {
             let _ = tx.try_send(ServerMsg::DerpTicket { ticket, exp });
         }
@@ -638,5 +665,27 @@ async fn relay_to_client(state: &NetworkState, session_id: bson::oid::ObjectId, 
     };
     if let Err(e) = tx.send(msg).await {
         debug!(%session_id, %e, "agent → client relay: channel closed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use meshharbor_core::business_authority::BusinessZone;
+
+    /// A PoP compares ticket zones as strings; renaming one here without the
+    /// enum's serde spelling (or vice versa) would make every zoned pair look
+    /// cross-zone, or worse, two zones look equal.
+    #[test]
+    fn zone_claim_is_the_serde_spelling() {
+        for z in [BusinessZone::Mainland, BusinessZone::NonMainland] {
+            assert_eq!(
+                serde_json::to_value(z).unwrap(),
+                serde_json::Value::String(super::zone_claim(z).to_string())
+            );
+        }
+        assert_ne!(
+            super::zone_claim(BusinessZone::Mainland),
+            super::zone_claim(BusinessZone::NonMainland)
+        );
     }
 }
