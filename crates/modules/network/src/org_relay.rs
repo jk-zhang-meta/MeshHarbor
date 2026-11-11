@@ -975,6 +975,25 @@ const MODE_CACHE_TTL: Duration = Duration::from_secs(30);
 /// Reports per (reporter, relay) kept; older ones fall off.
 const PROBES_PER_KEY: usize = 8;
 
+/// The first wait before a loss-pinned relay may serve its pair again as the
+/// pair's only relay ([`OrgRelayState::loss_pin_sole_retry_due`]).
+pub const LOSS_PIN_SOLE_RETRY: Duration = Duration::from_secs(120);
+/// A pin set again within this long of the last one is a further strike.
+const LOSS_PIN_STRIKE_WINDOW: Duration = Duration::from_secs(1200);
+/// How long a relay whose session for a pair never bound is ranked last
+/// for that pair ([`OrgRelayState::demote_unbound`]).
+pub const UNBOUND_DEMOTE: Duration = Duration::from_secs(180);
+/// Bound on the per-(pair, relay) marks kept in memory.
+const MAX_PAIR_RELAY_MARKS: usize = 8192;
+
+/// A per-pair loss pin on one relay ([`OrgRelayState::mark_lossy`]).
+#[derive(Clone, Copy, Debug)]
+struct LossPin {
+    until: Instant,
+    pinned_at: Instant,
+    strikes: u32,
+}
+
 /// What a join tells the mint that the persisted row does not carry.
 #[derive(Clone, Copy, Default)]
 pub struct JoinExtras {
@@ -1269,9 +1288,14 @@ pub struct OrgRelayState {
     /// evidence. Keyed by the device's ObjectId, unique across both kinds.
     live_conns: DashMap<ObjectId, LiveConnection>,
     trials: trial::PathTrials,
-    /// (pair key, relay node) a member measured lossy, until when: the
-    /// planner skips that relay for that pair (see [`Self::mark_lossy`]).
-    lossy: DashMap<(String, ObjectId), Instant>,
+    /// (pair key, relay node) a member measured lossy: the planner skips
+    /// that relay for that pair while the pair has another relay, until the
+    /// pin ends (see [`Self::mark_lossy`], [`Self::loss_pin_sole_retry_due`]).
+    lossy: DashMap<(String, ObjectId), LossPin>,
+    /// (pair key, relay node) whose last session for the pair outlived its
+    /// bind window while a member was still asking for a link: ranked last
+    /// for that pair until when (see [`Self::demote_unbound`]).
+    unbound: DashMap<(String, ObjectId), Instant>,
     /// Each pair's last mint row (its refusal, if any, and whether `warn`),
     /// and when it was written: a repeat of it is not written again within
     /// [`REPEAT_REFUSAL_AUDIT_GAP`] (see [`audit_mint`]).
@@ -1486,17 +1510,109 @@ impl OrgRelayState {
     /// planner skips that relay for that pair until `until`, so the pair
     /// moves to another relay in its zone, and to DERP only when none is
     /// left. Other pairs keep the relay.
+    ///
+    /// A pin set again within [`LOSS_PIN_STRIKE_WINDOW`] of the previous one
+    /// counts a strike: a relay that keeps losing the pair's packets earns a
+    /// longer wait before it is retried as the pair's only relay.
     pub fn mark_lossy(&self, pair_key: &str, relay_node_id: ObjectId, until: Instant) {
-        self.lossy
-            .insert((pair_key.to_string(), relay_node_id), until);
+        let now = Instant::now();
+        if self.lossy.len() >= MAX_PAIR_RELAY_MARKS {
+            self.lossy.retain(|_, pin| pin.until > now);
+        }
+        let key = (pair_key.to_string(), relay_node_id);
+        let strikes = self
+            .lossy
+            .get(&key)
+            .filter(|prev| now.saturating_duration_since(prev.pinned_at) < LOSS_PIN_STRIKE_WINDOW)
+            .map_or(1, |prev| prev.strikes.saturating_add(1));
+        self.lossy.insert(
+            key,
+            LossPin {
+                until,
+                pinned_at: now,
+                strikes,
+            },
+        );
     }
 
     pub fn is_lossy(&self, pair_key: &str, relay_node_id: ObjectId, now: Instant) -> bool {
         let key = (pair_key.to_string(), relay_node_id);
-        match self.lossy.get(&key).map(|u| *u) {
+        match self.lossy.get(&key).map(|p| p.until) {
             Some(until) if until > now => true,
             Some(_) => {
                 self.lossy.remove(&key);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a loss-pinned relay may be offered again to its pair as the
+    /// pair's ONLY relay (field, 2026-11-11: the pair's other relay froze
+    /// two minutes into a 10-minute pin and the pair sat on DERP for the
+    /// rest of it, the pinned relay healthy). The first strike waits
+    /// [`LOSS_PIN_SOLE_RETRY`], each further strike twice as long, never
+    /// past the pin itself. The pin still keeps the relay out while any
+    /// other relay can take the pair, and a retried relay that loses the
+    /// pair's packets again is re-pinned with a strike.
+    pub fn loss_pin_sole_retry_due(
+        &self,
+        pair_key: &str,
+        relay_node_id: ObjectId,
+        now: Instant,
+    ) -> bool {
+        let key = (pair_key.to_string(), relay_node_id);
+        let Some(pin) = self.lossy.get(&key).map(|p| *p) else {
+            return true;
+        };
+        if pin.until <= now {
+            return true;
+        }
+        let shift = pin.strikes.saturating_sub(1).min(16);
+        let wait = LOSS_PIN_SOLE_RETRY
+            .saturating_mul(1u32 << shift)
+            .min(pin.until.saturating_duration_since(pin.pinned_at));
+        now.saturating_duration_since(pin.pinned_at) >= wait
+    }
+
+    /// Test hook: as if `pair_key`'s loss pin on `relay_node_id` was set
+    /// `by` earlier (it ends `by` earlier too).
+    #[doc(hidden)]
+    pub fn age_loss_pin(&self, pair_key: &str, relay_node_id: ObjectId, by: Duration) {
+        if let Some(mut pin) = self.lossy.get_mut(&(pair_key.to_string(), relay_node_id))
+            && let (Some(at), Some(until)) =
+                (pin.pinned_at.checked_sub(by), pin.until.checked_sub(by))
+        {
+            pin.pinned_at = at;
+            pin.until = until;
+        }
+    }
+
+    /// A pair's session on `relay_node_id` passed its bind window while a
+    /// member still asked for a link: whatever the probes say, that relay
+    /// did not carry this pair. It is ranked last for the pair until
+    /// `until` — never excluded, so it still serves a pair it is the only
+    /// relay for, and one member can only demote it for its own pair.
+    pub fn demote_unbound(&self, pair_key: &str, relay_node_id: ObjectId, until: Instant) {
+        let now = Instant::now();
+        if self.unbound.len() >= MAX_PAIR_RELAY_MARKS {
+            self.unbound.retain(|_, u| *u > now);
+        }
+        self.unbound
+            .insert((pair_key.to_string(), relay_node_id), until);
+    }
+
+    pub fn is_unbound_demoted(
+        &self,
+        pair_key: &str,
+        relay_node_id: ObjectId,
+        now: Instant,
+    ) -> bool {
+        let key = (pair_key.to_string(), relay_node_id);
+        match self.unbound.get(&key).map(|u| *u) {
+            Some(until) if until > now => true,
+            Some(_) => {
+                self.unbound.remove(&key);
                 false
             }
             None => false,
@@ -1647,18 +1763,27 @@ fn verdict_of(
         .iter()
         .filter(|p| now.duration_since(p.at) < ttl)
         .collect();
-    if fresh.is_empty() {
+    // Records are kept in arrival order. The NEWEST decides: a failure
+    // measured after a success is the relay's state now, however good it
+    // was earlier in the window (field, 2026-11-11: a frozen relay was
+    // re-minted twice on 10-minute-old successes after both members had
+    // measured it unreachable). The RTT is the best since the last failure.
+    let Some(newest) = fresh.last() else {
         return ProbeVerdict::Unknown;
+    };
+    if !newest.reachable {
+        return ProbeVerdict::Unreachable;
     }
-    let best = fresh
+    let since = fresh
         .iter()
-        .filter(|p| p.reachable)
+        .rposition(|p| !p.reachable)
+        .map_or(0, |i| i + 1);
+    let best = fresh[since..]
+        .iter()
         .map(|p| p.rtt_ms.unwrap_or(0))
-        .min();
-    match best {
-        Some(rtt) => ProbeVerdict::Reachable(rtt),
-        None => ProbeVerdict::Unreachable,
-    }
+        .min()
+        .unwrap_or(0);
+    ProbeVerdict::Reachable(best)
 }
 
 /// A staged path can only use measurements made against its current approved
@@ -2482,6 +2607,7 @@ async fn plan_mint_candidates_with_trial_diagnostics(
     let now = Instant::now();
     let pk = pair_key(req_id, peer_id);
     let mut candidates: Vec<Plan> = Vec::new();
+    let mut loss_pinned_plans: Vec<Plan> = Vec::new();
     let mut acl_denied = 0usize;
     let mut zone_denied = 0usize;
     let mut bad_static = false;
@@ -2520,8 +2646,12 @@ async fn plan_mint_candidates_with_trial_diagnostics(
         if relay_id == req_id || relay_id == peer_id {
             continue;
         }
-        // A relay a member measured lossy for this pair sits out its pin.
-        if state.org_relay.is_lossy(&pk, relay_id, now) {
+        // A relay a member measured lossy for this pair sits out its pin
+        // while the pair has another relay to go to. Past its sole-retry
+        // wait it is held aside rather than dropped, and offered only if no
+        // other relay is left (else the pair sat on DERP for the whole pin).
+        let loss_pinned = state.org_relay.is_lossy(&pk, relay_id, now);
+        if loss_pinned && !state.org_relay.loss_pin_sole_retry_due(&pk, relay_id, now) {
             continue;
         }
         let extras = state.org_relay.join_extras(relay_id);
@@ -2599,13 +2729,23 @@ async fn plan_mint_candidates_with_trial_diagnostics(
             debug!(%tenant_id, relay = %relay_id, "org-relay: candidate has no public endpoint; skipped");
             continue;
         }
-        candidates.push(Plan {
+        let plan = Plan {
             relay: node,
             relay_agent_id: agent_id,
             endpoints,
             backbone_edges: agent.peer_relay_policy.approved_backbone_edges,
             implicit,
-        });
+        };
+        if loss_pinned {
+            loss_pinned_plans.push(plan);
+        } else {
+            candidates.push(plan);
+        }
+    }
+    if candidates.is_empty() && !loss_pinned_plans.is_empty() {
+        info!(%tenant_id, %pk, relays = loss_pinned_plans.len(),
+            "org-relay: only loss-pinned relays are left for the pair; retrying them before DERP");
+        candidates = loss_pinned_plans;
     }
     if candidates.is_empty() {
         return Err(if bad_static {
@@ -2622,11 +2762,17 @@ async fn plan_mint_candidates_with_trial_diagnostics(
     }
 
     // Rank: a relay BOTH members have measured reachable wins, by RTT; never
-    // measured next; one a member measured unreachable last — last, not
-    // excluded, because a stale negative must not starve the only relay.
+    // measured next; one a member measured unreachable after; one whose last
+    // session for this pair never bound last of all — last, not excluded,
+    // because a stale negative must not starve the only relay.
     candidates.sort_by_key(|c| {
         let relay_id = c.relay.id.unwrap_or_default();
         let (class, rtt) = rank_key(state, req_id, peer_id, relay_id, now);
+        let class = if state.org_relay.is_unbound_demoted(&pk, relay_id, now) {
+            3
+        } else {
+            class
+        };
         (class, rtt, state.org_relay.sessions_on_relay(relay_id))
     });
     Ok(candidates)
@@ -4132,6 +4278,16 @@ pub async fn maybe_mint_fallback(
             return;
         }
         if authorized && !bindable && mode != PeerRelayMode::Warn {
+            // The member is asking again, so this session never gave it a
+            // link (one-way or dead carrier): rank its relay last for the
+            // pair, so the re-mint below tries another one first.
+            if session.hops.is_empty() {
+                state.org_relay.demote_unbound(
+                    &pk,
+                    session.relay.node_id,
+                    Instant::now() + UNBOUND_DEMOTE,
+                );
+            }
             revoke_where(state, "org-fallback-bind-window-passed", |current| {
                 current.pair_key == pk
                     && current.vni == session.vni
@@ -5697,6 +5853,99 @@ mod tests {
         assert_eq!(
             st.probe_verdict(b, relay, Instant::now()),
             ProbeVerdict::Unreachable
+        );
+    }
+
+    #[test]
+    fn the_newest_probe_decides_and_rtt_counts_only_since_the_last_failure() {
+        let map = DashMap::new();
+        let (reporter, relay) = (ObjectId::new(), ObjectId::new());
+        let now = Instant::now();
+        let rec = |reachable, rtt_ms| ProbeRecord {
+            endpoint: "8.8.8.8:3478".into(),
+            reachable,
+            rtt_ms,
+            at: now,
+        };
+        map.insert(
+            (reporter, relay),
+            vec![rec(true, Some(5)), rec(false, None)],
+        );
+        assert_eq!(
+            verdict_of(&map, reporter, relay, now),
+            ProbeVerdict::Unreachable,
+            "a failure measured after a success is the relay's state now"
+        );
+        map.get_mut(&(reporter, relay))
+            .unwrap()
+            .push(rec(true, Some(40)));
+        assert_eq!(
+            verdict_of(&map, reporter, relay, now),
+            ProbeVerdict::Reachable(40),
+            "an RTT measured before the failure no longer counts"
+        );
+        map.get_mut(&(reporter, relay))
+            .unwrap()
+            .push(rec(true, Some(30)));
+        assert_eq!(
+            verdict_of(&map, reporter, relay, now),
+            ProbeVerdict::Reachable(30)
+        );
+        let stale = now + Duration::from_secs(limits::PROBE_TTL_SECS);
+        assert_eq!(
+            verdict_of(&map, reporter, relay, stale),
+            ProbeVerdict::Unknown
+        );
+    }
+
+    #[test]
+    fn a_loss_pin_offers_its_relay_as_the_only_one_after_a_growing_wait() {
+        let st = OrgRelayState::new();
+        let relay = ObjectId::new();
+        st.mark_lossy("pk", relay, Instant::now() + Duration::from_secs(600));
+        assert!(st.is_lossy("pk", relay, Instant::now()));
+        assert!(!st.loss_pin_sole_retry_due("pk", relay, Instant::now()));
+        st.age_loss_pin("pk", relay, LOSS_PIN_SOLE_RETRY);
+        assert!(
+            st.loss_pin_sole_retry_due("pk", relay, Instant::now()),
+            "first strike: due after LOSS_PIN_SOLE_RETRY"
+        );
+        assert!(
+            st.is_lossy("pk", relay, Instant::now()),
+            "and still pinned while another relay can take the pair"
+        );
+        // Pinned again inside the strike window: the wait doubles.
+        st.mark_lossy("pk", relay, Instant::now() + Duration::from_secs(600));
+        st.age_loss_pin("pk", relay, LOSS_PIN_SOLE_RETRY);
+        assert!(!st.loss_pin_sole_retry_due("pk", relay, Instant::now()));
+        st.age_loss_pin("pk", relay, LOSS_PIN_SOLE_RETRY);
+        assert!(st.loss_pin_sole_retry_due("pk", relay, Instant::now()));
+        // However many strikes, the wait never outlasts the pin.
+        for _ in 0..8 {
+            st.mark_lossy("pk", relay, Instant::now() + Duration::from_secs(300));
+        }
+        st.age_loss_pin("pk", relay, Duration::from_secs(299));
+        assert!(!st.loss_pin_sole_retry_due("pk", relay, Instant::now()));
+        st.age_loss_pin("pk", relay, Duration::from_secs(1));
+        assert!(st.loss_pin_sole_retry_due("pk", relay, Instant::now()));
+        assert!(!st.is_lossy("pk", relay, Instant::now()));
+        // Another pair is not touched.
+        assert!(!st.is_lossy("other", relay, Instant::now()));
+        assert!(st.loss_pin_sole_retry_due("other", relay, Instant::now()));
+    }
+
+    #[test]
+    fn an_unbound_demotion_is_scoped_to_its_pair_and_ends() {
+        let st = OrgRelayState::new();
+        let relay = ObjectId::new();
+        let now = Instant::now();
+        st.demote_unbound("pk", relay, now + Duration::from_secs(5));
+        assert!(st.is_unbound_demoted("pk", relay, now));
+        assert!(!st.is_unbound_demoted("other", relay, now));
+        assert!(!st.is_unbound_demoted("pk", relay, now + Duration::from_secs(5)));
+        assert!(
+            !st.is_unbound_demoted("pk", relay, now),
+            "an expired mark is gone"
         );
     }
 

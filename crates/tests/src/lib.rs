@@ -188,6 +188,10 @@ mod newsletter_tests;
 mod notification_tests;
 #[cfg(test)]
 mod oauth_tests;
+/// Org-relay takeover: a failed relay is not re-minted, and a loss-pinned
+/// relay serves its pair again once it is the only one left.
+#[cfg(test)]
+mod org_relay_takeover_tests;
 /// FR-115 P3 — an organization's concurrent remote-session cap: refused at
 /// start with the holder named, per seat on Pro, carried across pods.
 #[cfg(test)]
