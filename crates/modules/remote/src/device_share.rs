@@ -309,42 +309,6 @@ pub async fn device(
         expires_at_ms: a.grant.expires_at.timestamp_millis(),
     }))
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn device_share_remote_ceiling_refuses_extra_services_and_read_only_files() {
-        for p in [
-            Permissions::CLIPBOARD,
-            Permissions::AUDIO,
-            Permissions::RECORD,
-            Permissions::PRIVACY,
-            Permissions::INPUT,
-        ] {
-            assert!(requested_operation(p).is_err())
-        }
-        let now = DateTime::now();
-        let mut g = DeviceShareGrant {
-            id: None,
-            device_id: ObjectId::new(),
-            tenant_id: ObjectId::new(),
-            owner_user_id: ObjectId::new(),
-            recipient_user_id: ObjectId::new(),
-            permissions: Default::default(),
-            tcp_ports: vec![],
-            created_at: now,
-            expires_at: now,
-            revoked_at: None,
-            revision: 0,
-            ssh_account: None,
-        };
-        g.permissions.files_read = true;
-        assert!(!within_grant(&g, Permissions::FILES));
-        g.permissions.files_write = true;
-        assert!(within_grant(&g, Permissions::FILES));
-        assert!(!within_grant(&g, Permissions::VIEW));
-    }
-}
 
 /// Authenticated agent only. No heartbeat, cached approval, or user frame renews authority.
 pub(crate) async fn renew_lease(
@@ -397,4 +361,41 @@ pub(crate) async fn renew_lease(
             challenge_id,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn device_share_remote_ceiling_refuses_extra_services_and_read_only_files() {
+        for p in [
+            Permissions::CLIPBOARD,
+            Permissions::AUDIO,
+            Permissions::RECORD,
+            Permissions::PRIVACY,
+            Permissions::INPUT,
+        ] {
+            assert!(requested_operation(p).is_err())
+        }
+        let now = DateTime::now();
+        let mut g = DeviceShareGrant {
+            id: None,
+            device_id: ObjectId::new(),
+            tenant_id: ObjectId::new(),
+            owner_user_id: ObjectId::new(),
+            recipient_user_id: ObjectId::new(),
+            permissions: Default::default(),
+            tcp_ports: vec![],
+            created_at: now,
+            expires_at: now,
+            revoked_at: None,
+            revision: 0,
+            ssh_account: None,
+        };
+        g.permissions.files_read = true;
+        assert!(!within_grant(&g, Permissions::FILES));
+        g.permissions.files_write = true;
+        assert!(within_grant(&g, Permissions::FILES));
+        assert!(!within_grant(&g, Permissions::VIEW));
+    }
 }
