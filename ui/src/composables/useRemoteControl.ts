@@ -2062,6 +2062,7 @@ interface TurnCredsResponse {
 }
 
 export const RC_PREFLIGHT_OPT_STORAGE_KEY = 'mh_rc_opt_preflight'
+export const RC_INIT_RES_OPT_STORAGE_KEY = 'mh_rc_opt_init_res'
 export const DEFAULT_TURN_CREDS_TTL_MS = 10 * 60 * 1000 // 10 min (600 s)
 
 export function isRcPreflightOptEnabled(
@@ -2076,6 +2077,27 @@ export function isRcPreflightOptEnabled(
   try {
     const raw = storage?.getItem(RC_PREFLIGHT_OPT_STORAGE_KEY)?.trim().toLowerCase()
     if (raw === '0' || raw === 'false' || raw === 'off') return false
+  } catch {
+    /* localStorage may be disabled or unavailable (SSR). */
+  }
+  return true
+}
+
+export function isRcInitialResolutionOptEnabled(
+  storage: Pick<Storage, 'getItem'> | null | undefined = (() => {
+    try {
+      return globalThis.localStorage ?? null
+    } catch {
+      return null
+    }
+  })(),
+): boolean {
+  try {
+    const rawInit = storage?.getItem(RC_INIT_RES_OPT_STORAGE_KEY)?.trim().toLowerCase()
+    if (rawInit === '0' || rawInit === 'false' || rawInit === 'off') return false
+    if (rawInit === '1' || rawInit === 'true' || rawInit === 'on') return true
+    const rawPre = storage?.getItem(RC_PREFLIGHT_OPT_STORAGE_KEY)?.trim().toLowerCase()
+    if (rawPre === '0' || rawPre === 'false' || rawPre === 'off') return false
   } catch {
     /* localStorage may be disabled or unavailable (SSR). */
   }
@@ -2457,6 +2479,23 @@ export function resolutionWireMessage(
   const h = Math.round(s.height)
   if (w < 1 || h < 1) return null
   return { t: 'rc:resolution', mode: s.mode, width: w, height: h }
+}
+
+/** Translate an `RcResolutionSetting` into the optional `initial_resolution`
+ *  field carried on `rc:session.request` (`{ mode, max_w, max_h }`). Returns
+ *  `null` when `fit`/`custom` dimensions are not yet known. */
+export function initialResolutionWireField(
+  s: RcResolutionSetting,
+): { mode: RcResolutionMode; max_w?: number; max_h?: number } | null {
+  if (s.mode === 'original') {
+    return { mode: 'original' }
+  }
+  if (s.width == null || s.height == null) return null
+  if (!Number.isFinite(s.width) || !Number.isFinite(s.height)) return null
+  const w = Math.round(s.width)
+  const h = Math.round(s.height)
+  if (w < 1 || h < 1) return null
+  return { mode: s.mode, max_w: w, max_h: h }
 }
 
 /** rc.188 — viewer→agent sustainable-rate feedback. Each stats window the
@@ -11231,6 +11270,12 @@ export function useRemoteControl(
     // pushes nothing extra, so old servers/agents are unaffected.
     if (localRelayState.desc) {
       requestPayload.local_relay = localRelayState.desc
+    }
+    if (!externalMode && isRcInitialResolutionOptEnabled()) {
+      const initRes = initialResolutionWireField(resolution.value)
+      if (initRes) {
+        requestPayload.initial_resolution = initRes
+      }
     }
     sessionDcTransport = preferredTransport
     // FR-77 — which chroma cell this session runs in (mirrors the chroma_pref

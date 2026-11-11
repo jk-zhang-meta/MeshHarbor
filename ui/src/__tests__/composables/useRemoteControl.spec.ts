@@ -22,6 +22,9 @@ import {
   isKeyboardLockSupported,
   filterCapsByPreference,
   resolutionWireMessage,
+  initialResolutionWireField,
+  isRcInitialResolutionOptEnabled,
+  RC_INIT_RES_OPT_STORAGE_KEY,
   RESOLUTION_STORAGE_PREFIX,
   readStoredResolution,
   clampFitDimensions,
@@ -7221,6 +7224,35 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
       api.get = origApiGet
       ws.sendRaw = origSendRaw
     }
+  })
+
+  it('formats initial_resolution wire field and honours mh_rc_opt_init_res / mh_rc_opt_preflight', () => {
+    expect(initialResolutionWireField({ mode: 'original' })).toEqual({ mode: 'original' })
+    expect(initialResolutionWireField({ mode: 'fit', width: 946.4, height: 678.2 })).toEqual({
+      mode: 'fit',
+      max_w: 946,
+      max_h: 678,
+    })
+    expect(initialResolutionWireField({ mode: 'fit' })).toBeNull()
+
+    const mockStore = (map: Record<string, string>) => ({
+      getItem: (k: string) => map[k] ?? null,
+    })
+    expect(isRcInitialResolutionOptEnabled(mockStore({}))).toBe(true)
+    expect(isRcInitialResolutionOptEnabled(mockStore({ [RC_INIT_RES_OPT_STORAGE_KEY]: '0' }))).toBe(
+      false,
+    )
+    expect(
+      isRcInitialResolutionOptEnabled(mockStore({ [RC_PREFLIGHT_OPT_STORAGE_KEY]: '0' })),
+    ).toBe(false)
+    expect(
+      isRcInitialResolutionOptEnabled(
+        mockStore({
+          [RC_PREFLIGHT_OPT_STORAGE_KEY]: '0',
+          [RC_INIT_RES_OPT_STORAGE_KEY]: '1',
+        }),
+      ),
+    ).toBe(true)
   })
 })
 

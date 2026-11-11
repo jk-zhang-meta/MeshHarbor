@@ -1564,6 +1564,7 @@ impl Hub {
             slot,
             None,
             SessionCreationOrigin::Unknown,
+            None,
         )
     }
 
@@ -1624,6 +1625,7 @@ impl Hub {
         slot: Option<Lease>,
         share_grant_id: Option<ObjectId>,
         origin: SessionCreationOrigin,
+        initial_resolution: Option<meshharbor_remote_control::signaling::InitialResolution>,
     ) -> Result<ObjectId> {
         // Positive provenance requires the dedicated, post-PDP local entry.
         // Optional scopes below only veto it; their absence never creates it.
@@ -2100,6 +2102,7 @@ impl Hub {
             // this session to. Kept in `pending_request` below, so a re-push
             // after an agent-socket flap carries it too.
             external,
+            initial_resolution,
         };
         // Keep the Request while consent is pending so `register_agent` can
         // re-push it if the agent's control WS flaps before `rc:consent`
@@ -4491,6 +4494,7 @@ impl Hub {
                     // self-minted local-agent TURN; safe to pass through (the
                     // media is DTLS-E2E), overlay-IP-validated in forward_offer.
                     local_relay,
+                    initial_resolution,
                 },
             ) => {
                 // Forward browser codec caps verbatim to the agent in
@@ -4540,6 +4544,7 @@ impl Hub {
                     ctx.slot.clone(),
                     share_grant_id,
                     origin,
+                    initial_resolution,
                 )?;
                 *created = Some(session_id);
                 Ok(())
@@ -5943,6 +5948,7 @@ mod tests {
             audio_enabled: false,
             override_reason: None,
             local_relay: None,
+            initial_resolution: None,
         }
     }
 

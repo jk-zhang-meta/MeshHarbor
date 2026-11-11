@@ -1281,6 +1281,7 @@ async fn file_child_local_controller_source_requires_http_authentication_and_act
             audio_enabled: false,
             override_reason: None,
             local_relay: None,
+            initial_resolution: None,
         })
         .unwrap()
     }
@@ -1466,6 +1467,7 @@ async fn file_child_upload_direction_default_off_opt_in_kill_switch_and_revocati
                 audio_enabled: false,
                 override_reason: None,
                 local_relay: None,
+                initial_resolution: None,
             })
             .unwrap()
             .into(),
@@ -1547,6 +1549,7 @@ async fn file_child_upload_direction_default_off_opt_in_kill_switch_and_revocati
                 audio_enabled: false,
                 override_reason: None,
                 local_relay: None,
+                initial_resolution: None,
             })
             .unwrap()
             .into(),
