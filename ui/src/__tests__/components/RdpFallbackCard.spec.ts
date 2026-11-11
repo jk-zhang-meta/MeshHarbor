@@ -19,6 +19,14 @@ import {
   shouldShowRdpFallbackCard,
 } from '@/utils/rdpFallback'
 
+// The desktop companion (devices.js) is English; the web UI keeps its own
+// strings in utils/rdpFallback.ts.
+const DESKTOP_RDP_SCREEN_LOCK_WARNING = 'An RDP session locks the remote computer’s local screen.'
+const DESKTOP_RDP_UNPINNED_NOTICE =
+  'This device reported no certificate fingerprint; the RDP client will check the certificate itself.'
+const DESKTOP_RDP_MESH_HINT =
+  'Turn on RDP over the mesh on the target device (rdp_over_mesh = true).'
+
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DESKTOP_FRONT = join(
   HERE,
@@ -301,7 +309,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
   })
 
   describe('5. Desktop device list split button (`agents/meshharbor-desktop/src/front/devices.js`)', () => {
-    it('renders primary "连接" (cmd_open_remote), removes duplicate "独立会话（高级）", and requires in-app screen-lock confirmation before invoking cmd_open_rdp', async () => {
+    it('renders primary "Connect" (cmd_open_remote), removes the duplicate standalone-session item, and requires in-app screen-lock confirmation before invoking cmd_open_rdp', async () => {
       const parsed = new DOMParser().parseFromString(DESKTOP_HTML, 'text/html')
       const section = document.importNode(parsed.getElementById('view-devices')!, true)
       section.hidden = false
@@ -378,17 +386,17 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       ) as HTMLButtonElement | null
 
       expect(mainBtn).not.toBeNull()
-      expect(mainBtn!.textContent).toBe('连接')
+      expect(mainBtn!.textContent).toBe('Connect')
       expect(toggleBtn).not.toBeNull()
       expect(menu).not.toBeNull()
       expect(menu!.hidden).toBe(true)
-      expect(rdpItem?.textContent).toBe('用 RDP 连接')
+      expect(rdpItem?.textContent).toBe('Connect with RDP')
       expect(standaloneItem).toBeNull()
       expect(confirmBox).not.toBeNull()
       expect(confirmBox!.hidden).toBe(true)
-      expect(confirmText?.textContent).toBe(RDP_SCREEN_LOCK_WARNING)
+      expect(confirmText?.textContent).toBe(DESKTOP_RDP_SCREEN_LOCK_WARNING)
 
-      // 1. Clicking primary "连接" invokes cmd_open_remote
+      // 1. Clicking primary "Connect" invokes cmd_open_remote
       mainBtn!.click()
       await new Promise((r) => setTimeout(r, 10))
       expect(invokeSpy).toHaveBeenCalledWith('cmd_open_remote', {
@@ -396,7 +404,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
         org: null,
       })
 
-      // 2. Clicking dropdown toggle opens menu; clicking "用 RDP 连接" shows in-app confirmation without calling cmd_open_rdp yet
+      // 2. Clicking dropdown toggle opens menu; clicking "Connect with RDP" shows in-app confirmation without calling cmd_open_rdp yet
       invokeSpy.mockClear()
       toggleBtn!.click()
       expect(menu!.hidden).toBe(false)
@@ -410,7 +418,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       expect(confirmBox!.hidden).toBe(false)
       expect(invokeSpy).not.toHaveBeenCalledWith('cmd_open_rdp', expect.anything())
 
-      // 3. Clicking "取消" closes menu and resets state without calling cmd_open_rdp
+      // 3. Clicking "Cancel" closes menu and resets state without calling cmd_open_rdp
       confirmCancelBtn!.click()
       await new Promise((r) => setTimeout(r, 10))
       expect(menu!.hidden).toBe(true)
@@ -418,14 +426,14 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       expect(confirmBox!.hidden).toBe(true)
       expect(invokeSpy).not.toHaveBeenCalledWith('cmd_open_rdp', expect.anything())
 
-      // 4. Re-opening menu, clicking "用 RDP 连接", then clicking "确认连接" invokes cmd_open_rdp
+      // 4. Re-opening menu, clicking "Connect with RDP", then clicking "Connect" invokes cmd_open_rdp
       toggleBtn!.click()
       rdpItem!.click()
       expect(confirmBox!.hidden).toBe(false)
       const unpinnedEl = document.querySelector('.dv-rdp-unpinned-note') as HTMLElement | null
       expect(unpinnedEl).not.toBeNull()
       expect(unpinnedEl!.hidden).toBe(false)
-      expect(unpinnedEl!.textContent).toBe(RDP_UNPINNED_CERT_MSTSC_NOTICE)
+      expect(unpinnedEl!.textContent).toBe(DESKTOP_RDP_UNPINNED_NOTICE)
       confirmAcceptBtn!.click()
       await new Promise((r) => setTimeout(r, 10))
       expect(menu!.hidden).toBe(true)
@@ -494,7 +502,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       expect(wrapper.find('[data-test="rdp-auto-toggle"]').exists()).toBe(true)
     })
 
-    it('desktop menu: hint instead of "用 RDP 连接" when not reachable, and no dropdown without RDP', async () => {
+    it('desktop menu: hint instead of "Connect with RDP" when not reachable, and no dropdown without RDP', async () => {
       const parsed = new DOMParser().parseFromString(DESKTOP_HTML, 'text/html')
       const section = document.importNode(parsed.getElementById('view-devices')!, true)
       section.hidden = false
@@ -566,7 +574,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       toggle1.click()
       expect(item1.hidden).toBe(true)
       expect(hint1.hidden).toBe(false)
-      expect(hint1.textContent).toBe(RDP_MESH_DISABLED_HINT)
+      expect(hint1.textContent).toBe(DESKTOP_RDP_MESH_HINT)
       for (const w of linuxWraps) {
         expect((w.querySelector('.dv-split-toggle') as HTMLButtonElement).hidden).toBe(true)
       }
