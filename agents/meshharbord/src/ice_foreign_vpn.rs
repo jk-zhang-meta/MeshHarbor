@@ -26,8 +26,13 @@
 //! Our own overlay interface is never matched (`peer::is_overlay_iface`), and
 //! the overlay's own ULA (`fd72:6f6f:6d6c::/48`) is a different prefix.
 //!
-//! Default ON; `MESHHARBORD_ICE_SKIP_TAILSCALE_HOST=0` (or `false`/`off`/`no`)
-//! keeps the candidates, which is the behaviour from before this module.
+//! Default OFF (opt-in: `MESHHARBORD_ICE_SKIP_TAILSCALE_HOST=1`/`true`/`yes`/`on`).
+//! Field A/B 2026-11-11, interleaved 3 vs 3 on that same LAN: ON removed the
+//! Tailscale pair every time (0/3 first pairs on it vs 3/3 OFF), but ttff got
+//! WORSE (1.24–1.52 s ON vs 0.85–0.90 s OFF): the next pair the browser
+//! nominates is srflx or relay, not the LAN host pair, which arrives late in
+//! both arms. Until the LAN pair is first, the Tailscale pair is the faster
+//! start, so the skip stays opt-in.
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv6Addr};
@@ -51,14 +56,14 @@ fn in_tailscale_ula(ip: &IpAddr) -> bool {
     }
 }
 
-/// `MESHHARBORD_ICE_SKIP_TAILSCALE_HOST`: default on; only `0`/`false`/`off`/`no` turn it off.
+/// `MESHHARBORD_ICE_SKIP_TAILSCALE_HOST`: default off; only `1`/`true`/`yes`/`on` turn it on.
 pub fn parse_skip_enabled(raw: Option<&str>) -> bool {
-    !matches!(
+    matches!(
         raw.map(str::trim),
-        Some(v) if v == "0"
-            || v.eq_ignore_ascii_case("false")
-            || v.eq_ignore_ascii_case("off")
-            || v.eq_ignore_ascii_case("no")
+        Some(v) if v == "1"
+            || v.eq_ignore_ascii_case("true")
+            || v.eq_ignore_ascii_case("yes")
+            || v.eq_ignore_ascii_case("on")
     )
 }
 
@@ -194,13 +199,13 @@ mod tests {
     }
 
     #[test]
-    fn kill_switch_defaults_on_and_only_explicit_values_turn_it_off() {
-        assert!(parse_skip_enabled(None));
-        assert!(parse_skip_enabled(Some("")));
-        assert!(parse_skip_enabled(Some("1")));
-        assert!(parse_skip_enabled(Some("garbage")));
-        for off in ["0", "false", "OFF", " no "] {
-            assert!(!parse_skip_enabled(Some(off)), "{off}");
+    fn switch_defaults_off_and_only_explicit_values_turn_it_on() {
+        assert!(!parse_skip_enabled(None));
+        assert!(!parse_skip_enabled(Some("")));
+        assert!(!parse_skip_enabled(Some("0")));
+        assert!(!parse_skip_enabled(Some("garbage")));
+        for on in ["1", "true", "ON", " yes "] {
+            assert!(parse_skip_enabled(Some(on)), "{on}");
         }
     }
 

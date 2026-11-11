@@ -141,7 +141,7 @@ pub mod person_socket;
 /// still names it.
 pub use tunnel_core::pgp_verify;
 /// Keep this host's Tailscale interface addresses out of a remote-desktop
-/// session's ICE host candidates (default on, `MESHHARBORD_ICE_SKIP_TAILSCALE_HOST=0`).
+/// session's ICE host candidates (opt-in, `MESHHARBORD_ICE_SKIP_TAILSCALE_HOST=1`).
 pub mod ice_foreign_vpn;
 /// Device-owned login-account RPC, independent of the overlay transport.
 /// The handler enforces `ssh_enabled` and the device's privilege ceiling.

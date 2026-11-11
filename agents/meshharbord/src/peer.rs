@@ -614,14 +614,13 @@ impl AgentPeer {
         // whole CGNAT `/10` (the CGNAT caveat above still holds). Remote
         // candidates and ICE servers get the same rule below and in
         // `add_remote_candidate`.
-        // 2026-11-11 — and, whatever the overlay policy, this host's Tailscale
-        // addresses: a pair on them carried the first frames inside another
-        // mesh's tunnel and switched paths twice per session (`ice_foreign_vpn`).
+        // 2026-11-11 — and, when opted in, this host's Tailscale addresses
+        // (`ice_foreign_vpn`, default off: the field A/B showed a slower start).
         let skip_foreign = crate::ice_foreign_vpn::host_ips_to_skip();
         if !skip_foreign.is_empty() {
             info!(
                 skipped = skip_foreign.len(),
-                "ice: leaving this host's Tailscale interface addresses out of host candidates (MESHHARBORD_ICE_SKIP_TAILSCALE_HOST=0 keeps them)"
+                "ice: leaving this host's Tailscale interface addresses out of host candidates (MESHHARBORD_ICE_SKIP_TAILSCALE_HOST is set)"
             );
         }
         if let Some(filter) = crate::ice_foreign_vpn::local_ip_filter(&rc_overlay, skip_foreign) {
