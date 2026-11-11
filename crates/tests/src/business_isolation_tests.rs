@@ -11155,12 +11155,14 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
             }
         }
     }
+    /// `(relay, reachable, rtt_ms)` as each member reported its probes.
+    type ProbeLog = Arc<StdMutex<Vec<(ObjectId, bool, Option<u32>)>>>;
     struct Member {
         handle: NetstackHandle,
         view: watch::Receiver<OverlayView>,
         requests: Arc<StdMutex<Vec<ObjectId>>>,
         join_caps: Arc<StdMutex<Vec<Value>>>,
-        probes: Arc<StdMutex<Vec<(ObjectId, bool, Option<u32>)>>>,
+        probes: ProbeLog,
         metadata_seen: Arc<AtomicBool>,
         forbidden_carrier: Arc<AtomicBool>,
         runtime: usize,
@@ -11803,9 +11805,9 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
         tokio::time::timeout(Duration::from_secs(20),tcp64(&a.handle,&b.handle,b_ip,35201)).await.unwrap().unwrap();
         tokio::time::timeout(Duration::from_secs(20),tcp64(&b.handle,&a.handle,a_ip,35202)).await.unwrap().unwrap();
         let mut evidence=Vec::new();
-        for index in 0..2 {
+        for (index,relay) in native.iter().enumerate().take(2) {
             let hop=&recovered.hops[index];let generation=if index==0 {recovered.generation}else{recovered.hops[index-1].generation};
-            let (watch,sockets)=native[index].lock().await.bridge_evidence(hop.bridge_id,generation).unwrap();
+            let (watch,sockets)=relay.lock().await.bridge_evidence(hop.bridge_id,generation).unwrap();
             evidence.push((hop.bridge_id,watch,sockets));
         }
         trace.0.phase("modeoff");

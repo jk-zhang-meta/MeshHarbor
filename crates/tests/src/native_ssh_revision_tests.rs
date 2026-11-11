@@ -3188,9 +3188,10 @@ async fn persistent_decision_audit() {
         .expect("valid single-use grant dispatch must upgrade");
     let (sid, setup) = tokio::time::timeout(Duration::from_secs(6), async {
         loop {
-            match target.recv().await.expect("target agent channel closed") {
-                ServerMsg::SharedSshSetup { session_id, setup } => break (session_id, setup),
-                _ => {}
+            if let ServerMsg::SharedSshSetup { session_id, setup } =
+                target.recv().await.expect("target agent channel closed")
+            {
+                break (session_id, setup);
             }
         }
     })

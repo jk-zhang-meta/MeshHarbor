@@ -885,7 +885,7 @@ pub async fn exchange(
         }
         let dao = NativeSshAuthorizationDao::new(&state.core.db);
         let row = match storage(dao.poll(&body.device_code, &body.code_verifier).await)? {
-            Poll::Found(row) => row,
+            Poll::Found(row) => *row,
             Poll::Limited => {
                 record_audit(
                     &state,
