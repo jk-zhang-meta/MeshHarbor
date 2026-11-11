@@ -3405,7 +3405,8 @@ async fn media_pump(
         #[cfg(feature = "ffmpeg-encoder")]
         {
             let wants_444 = matches!(chroma_pref.as_deref(), Some("yuv444"));
-            if crate::encode::ffmpeg::available() {
+            if crate::encode::ffmpeg::available() && !crate::encode::caps::hw_probe_failed_for_run()
+            {
                 use crate::encode::ffmpeg::FfmpegEncoder;
                 // FR-77 P3b — a 4:4:4 session tries the HARDWARE profile-1
                 // cell first (vp9_qsv over packed VUYX, `cells::names_444`);
@@ -3413,16 +3414,21 @@ async fn media_pump(
                 // The quick probe opens the exact cell at the caps-probe
                 // resolution, so a host that cannot open it falls to libvpx —
                 // the path that emits profile 1 in software — transparently.
-                let probe = if wants_444 {
-                    crate::encode::cells::names_444(
-                        meshharbor_remote_control::models::VideoCodec::Vp9,
-                    )
-                    .first()
-                    .copied()
-                    .and_then(|name| FfmpegEncoder::new_named_probe(name, 480, 270, true).ok())
-                } else {
-                    FfmpegEncoder::new_vp9(480, 270).ok()
-                };
+                let probe = tokio::task::spawn_blocking(move || {
+                    if wants_444 {
+                        crate::encode::cells::names_444(
+                            meshharbor_remote_control::models::VideoCodec::Vp9,
+                        )
+                        .first()
+                        .copied()
+                        .and_then(|name| FfmpegEncoder::new_named_probe(name, 480, 270, true).ok())
+                    } else {
+                        FfmpegEncoder::new_vp9(480, 270).ok()
+                    }
+                })
+                .await
+                .ok()
+                .flatten();
                 if let Some(enc) = probe {
                     drop(enc);
                     tracing::info!(
@@ -3997,12 +4003,13 @@ async fn media_pump(
             let encoder_init_started = std::time::Instant::now();
             #[cfg(feature = "rc-latency-bench")]
             let encoder_init_start_agent_us = agent_epoch_us();
-            let (enc, actual) = encode::open_for_codec(
-                &chosen_codec,
+            let (enc, actual) = encode::open_for_codec_async(
+                chosen_codec.clone(),
                 frame.width,
                 frame.height,
                 encoder_preference,
-            );
+            )
+            .await;
             let encoder_init_ms = encoder_init_started.elapsed().as_millis() as u64;
             #[cfg(feature = "rc-latency-bench")]
             crate::latency_bench::note_stage(
@@ -4235,12 +4242,13 @@ async fn media_pump(
                     #[cfg(feature = "rc-latency-bench")]
                     let downscaled_init_start_agent_us = agent_epoch_us();
                     #[cfg_attr(not(feature = "rc-latency-bench"), allow(unused_variables))]
-                    let (enc, actual_downscaled) = encode::open_for_codec(
-                        &chosen_codec,
+                    let (enc, actual_downscaled) = encode::open_for_codec_async(
+                        chosen_codec.clone(),
                         frame.width,
                         frame.height,
                         encoder_preference,
-                    );
+                    )
+                    .await;
                     let downscaled_init_ms = downscaled_init_started.elapsed().as_millis() as u64;
                     let downscaled_backend = enc.name();
                     #[cfg(feature = "rc-latency-bench")]
@@ -5755,7 +5763,12 @@ async fn media_pump_vp9_444_dc(
                 })
                 .unwrap_or_else(crate::encode::libvpx::vp9_chroma_from_env);
             info!(%session_id, w, h, target_fps, chroma = chroma.as_str(), chroma_source = if chroma_pref.is_some() { "session_request" } else { "env_var" }, "VP9-444 encoder rebuild for dims");
-            match Vp9Encoder::new_with_fps_chroma(w, h, target_fps, chroma) {
+            let opened_vp9 = tokio::task::spawn_blocking(move || {
+                Vp9Encoder::new_with_fps_chroma(w, h, target_fps, chroma)
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("VP9 encoder open task failed: {e}")));
+            match opened_vp9 {
                 Ok(e) => {
                     let handle = crate::encode::thread::EncoderHandle::new(
                         e,
@@ -6368,6 +6381,11 @@ impl FfmpegDcCodec {
         constrained: bool,
         preferred: Option<&'static str>,
     ) -> anyhow::Result<crate::encode::ffmpeg::FfmpegEncoder> {
+        if crate::encode::caps::hw_probe_failed_for_run() {
+            anyhow::bail!(
+                "caps-probe child failed or hung during this run — skipping in-process FFmpeg hardware open"
+            );
+        }
         use crate::encode::ffmpeg::FfmpegEncoder;
         if !chroma444
             && let Some(name) = preferred

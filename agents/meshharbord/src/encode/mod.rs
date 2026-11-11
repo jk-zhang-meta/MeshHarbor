@@ -1358,103 +1358,167 @@ pub fn resolved_preference() -> Option<EncoderPreference> {
 ///
 /// Each fallback is logged; the picked backend reports via
 /// `.name()` so pump-level observability can attribute.
-pub fn open_default(
+/// Whether `open_default` should attempt Media Foundation hardware probing first.
+///
+/// When the out-of-process `caps-probe` child failed or hung during this daemon
+/// run (`hw_probe_failed == true`), the daemon treats this run as "no hardware
+/// encoding" and MUST NOT enter in-process MF probing (even under `Auto` or
+/// `Hardware` preference).
+pub(crate) fn should_try_mf_first(
+    preference: EncoderPreference,
+    hw_auto_off: bool,
+    hw_probe_failed: bool,
+) -> bool {
+    if hw_probe_failed {
+        return false;
+    }
+    match preference {
+        EncoderPreference::Hardware => true,
+        EncoderPreference::Auto => !hw_auto_off,
+        EncoderPreference::Software => false,
+    }
+}
+
+/// Testable core of [`open_default`]: invokes `try_mf` only when
+/// [`should_try_mf_first`] permits, otherwise goes straight to `open_sw`
+/// (`openh264`) and finally `NoopEncoder`.
+pub(crate) fn open_default_with<FMf, FSw>(
     width: u32,
     height: u32,
     preference: EncoderPreference,
-) -> Box<dyn VideoEncoder> {
-    // Auto prefers MF-HW on Windows unless the operator flips the
-    // escape hatch. Hardware always tries MF first regardless. Software
-    // skips MF entirely.
-    let try_mf_first = match preference {
-        EncoderPreference::Hardware => true,
-        EncoderPreference::Auto => !hw_auto_disabled(),
-        EncoderPreference::Software => false,
-    };
-
+    hw_auto_off: bool,
+    hw_probe_failed: bool,
+    try_mf: FMf,
+    open_sw: FSw,
+) -> Box<dyn VideoEncoder>
+where
+    FMf: FnOnce(u32, u32) -> Option<Box<dyn VideoEncoder>>,
+    FSw: FnOnce(u32, u32) -> Option<Box<dyn VideoEncoder>>,
+{
+    let try_mf_first = should_try_mf_first(preference, hw_auto_off, hw_probe_failed);
     if try_mf_first {
-        #[cfg(all(target_os = "windows", feature = "mf-encoder"))]
-        {
-            match mf::MfEncoder::new(width, height) {
-                Ok(e)
-                    if !keeps_mf(
-                        preference,
-                        e.is_pure_software(),
-                        cfg!(feature = "openh264-encoder"),
-                    ) =>
-                {
-                    tracing::info!(
-                        width,
-                        height,
-                        "mf-encoder ended on Microsoft's software MFT with no GPU behind it — \
-                         using openh264 instead (#2283)"
-                    );
-                    drop(e);
-                }
-                Ok(e) => {
-                    if e.is_hardware() {
-                        tracing::info!(
-                            width,
-                            height,
-                            preference = ?preference,
-                            "encoder selected: mf-h264 (hardware)"
-                        );
-                    } else {
-                        tracing::info!(
-                            width,
-                            height,
-                            preference = ?preference,
-                            "encoder selected: mf-h264 (software MFT)"
-                        );
-                    }
-                    return Box::new(e);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        %e,
-                        "mf-encoder init failed — falling back to openh264"
-                    );
-                }
-            }
+        if let Some(enc) = try_mf(width, height) {
+            return enc;
         }
-        #[cfg(not(all(target_os = "windows", feature = "mf-encoder")))]
-        {
-            if preference == EncoderPreference::Hardware {
-                tracing::warn!(
-                    "Hardware encoder requested but this build has no HW backend \
-                     compiled in (rebuild with --features mf-encoder on Windows); \
-                     falling back to software"
-                );
-            }
-            // On Auto with no mf-encoder feature, fall through silently —
-            // openh264 is the expected default for Linux/macOS and for
-            // Windows builds that didn't opt into MF.
-        }
+    } else if hw_probe_failed && preference != EncoderPreference::Software {
+        tracing::warn!(
+            width,
+            height,
+            ?preference,
+            "caps-probe child failed or hung in this run — skipping in-process MF probe and using software encoder directly"
+        );
     } else if preference == EncoderPreference::Auto {
         tracing::info!(
             "MESHHARBORD_HW_AUTO=0 — skipping MF-HW on Auto, going straight to openh264"
         );
     }
 
-    #[cfg(feature = "openh264-encoder")]
-    {
-        match openh264_backend::Openh264Encoder::new(width, height) {
-            Ok(e) => {
-                tracing::info!(width, height, "encoder selected: openh264 (software)");
-                return Box::new(e);
-            }
-            Err(e) => tracing::warn!(%e, "openh264 init failed — falling back to NoopEncoder"),
-        }
-    }
-    #[cfg(not(feature = "openh264-encoder"))]
-    {
-        let _ = (width, height);
-        tracing::info!(
-            "built without openh264-encoder feature — using NoopEncoder. \
-             Rebuild with `--features openh264-encoder` (or `--features media`)."
-        );
+    if let Some(enc) = open_sw(width, height) {
+        return enc;
     }
     Box::new(NoopEncoder)
+}
+
+pub fn open_default(
+    width: u32,
+    height: u32,
+    preference: EncoderPreference,
+) -> Box<dyn VideoEncoder> {
+    let hw_auto_off = hw_auto_disabled();
+    let hw_probe_failed = caps::hw_probe_failed_for_run();
+    open_default_with(
+        width,
+        height,
+        preference,
+        hw_auto_off,
+        hw_probe_failed,
+        |width, height| {
+            #[cfg(all(target_os = "windows", feature = "mf-encoder"))]
+            {
+                match mf::MfEncoder::new(width, height) {
+                    Ok(e)
+                        if !keeps_mf(
+                            preference,
+                            e.is_pure_software(),
+                            cfg!(feature = "openh264-encoder"),
+                        ) =>
+                    {
+                        tracing::info!(
+                            width,
+                            height,
+                            "mf-encoder ended on Microsoft's software MFT with no GPU behind it — \
+                             using openh264 instead (#2283)"
+                        );
+                        drop(e);
+                        None
+                    }
+                    Ok(e) => {
+                        if e.is_hardware() {
+                            tracing::info!(
+                                width,
+                                height,
+                                preference = ?preference,
+                                "encoder selected: mf-h264 (hardware)"
+                            );
+                        } else {
+                            tracing::info!(
+                                width,
+                                height,
+                                preference = ?preference,
+                                "encoder selected: mf-h264 (software MFT)"
+                            );
+                        }
+                        Some(Box::new(e) as Box<dyn VideoEncoder>)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            %e,
+                            "mf-encoder init failed — falling back to openh264"
+                        );
+                        None
+                    }
+                }
+            }
+            #[cfg(not(all(target_os = "windows", feature = "mf-encoder")))]
+            {
+                let _ = (width, height);
+                if preference == EncoderPreference::Hardware {
+                    tracing::warn!(
+                        "Hardware encoder requested but this build has no HW backend \
+                         compiled in (rebuild with --features mf-encoder on Windows); \
+                         falling back to software"
+                    );
+                }
+                // On Auto with no mf-encoder feature, fall through silently —
+                // openh264 is the expected default for Linux/macOS and for
+                // Windows builds that didn't opt into MF.
+                None
+            }
+        },
+        |width, height| {
+            #[cfg(feature = "openh264-encoder")]
+            {
+                match openh264_backend::Openh264Encoder::new(width, height) {
+                    Ok(e) => {
+                        tracing::info!(width, height, "encoder selected: openh264 (software)");
+                        return Some(Box::new(e) as Box<dyn VideoEncoder>);
+                    }
+                    Err(e) => {
+                        tracing::warn!(%e, "openh264 init failed — falling back to NoopEncoder");
+                    }
+                }
+            }
+            #[cfg(not(feature = "openh264-encoder"))]
+            {
+                let _ = (width, height);
+                tracing::info!(
+                    "built without openh264-encoder feature — using NoopEncoder. \
+                     Rebuild with `--features openh264-encoder` (or `--features media`)."
+                );
+            }
+            None
+        },
+    )
 }
 
 /// Open a codec-specific encoder, falling back to H.264 if the
@@ -1535,6 +1599,26 @@ pub fn open_for_codec(
     }
 }
 
+/// Open a codec-specific encoder off the Tokio worker pool (`spawn_blocking`)
+/// so a slow or wedged driver/encoder constructor never stalls runtime worker
+/// threads servicing ICE/DTLS/signaling.
+pub async fn open_for_codec_async(
+    codec: String,
+    width: u32,
+    height: u32,
+    preference: EncoderPreference,
+) -> (Box<dyn VideoEncoder>, &'static str) {
+    match tokio::task::spawn_blocking(move || open_for_codec(&codec, width, height, preference))
+        .await
+    {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::warn!(%e, "open_for_codec_async blocking task failed — falling back to NoopEncoder");
+            (Box::new(NoopEncoder), "h264")
+        }
+    }
+}
+
 /// AV1 opener, factored out so the `#[cfg]` branches don't clutter the
 /// main match. See `open_for_codec` for fail-closed reasoning — when
 /// AV1 init fails we return a `NoopEncoder` rather than demoting to
@@ -1542,6 +1626,14 @@ pub fn open_for_codec(
 /// in the peer and substituting a different codec's bitstream would
 /// produce decoder garbage on the other end.
 fn open_for_codec_av1(width: u32, height: u32) -> (Box<dyn VideoEncoder>, &'static str) {
+    if caps::hw_probe_failed_for_run() {
+        tracing::warn!(
+            width,
+            height,
+            "caps-probe child failed or hung during this run — skipping in-process mf-av1 open"
+        );
+        return (Box::new(NoopEncoder), "av1");
+    }
     #[cfg(all(target_os = "windows", feature = "mf-encoder"))]
     {
         match mf::MfEncoder::new_av1(width, height) {
@@ -1576,6 +1668,14 @@ fn open_for_codec_av1(width: u32, height: u32) -> (Box<dyn VideoEncoder>, &'stat
 /// FFmpeg construction failure so a misconfigured opt-in doesn't break
 /// existing sessions. Unset = MF default (preserves rc.71 behaviour).
 fn open_for_codec_hevc(width: u32, height: u32) -> (Box<dyn VideoEncoder>, &'static str) {
+    if caps::hw_probe_failed_for_run() {
+        tracing::warn!(
+            width,
+            height,
+            "caps-probe child failed or hung during this run — skipping in-process HEVC hardware open"
+        );
+        return (Box::new(NoopEncoder), "h265");
+    }
     #[cfg(feature = "ffmpeg-encoder")]
     {
         if ffmpeg::available() {
@@ -2221,6 +2321,91 @@ mod tests {
         assert!(!relay_addr_is_fast_local("192.168.1.10"));
         assert!(!relay_addr_is_fast_local("2001:4860:4860::8888"));
         assert!(!relay_addr_is_fast_local("garbage"));
+    }
+
+    struct FakeSwOpenh264;
+    #[async_trait::async_trait]
+    impl VideoEncoder for FakeSwOpenh264 {
+        async fn encode(&mut self, _frame: Arc<Frame>) -> Result<Vec<EncodedPacket>> {
+            Ok(Vec::new())
+        }
+        fn request_keyframe(&mut self) {}
+        fn set_bitrate(&mut self, _bps: u32) {}
+        fn name(&self) -> &'static str {
+            "openh264"
+        }
+    }
+
+    #[tokio::test]
+    async fn hung_caps_probe_child_forces_software_encoder_without_in_process_mf_probe() {
+        let _guard = caps::HW_PROBE_FAILED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        caps::clear_hw_probe_failed_for_run();
+
+        // Simulate the caps-probe child hanging / timing out (outcome = None).
+        let (probed_caps, child_succeeded) = caps::resolve_child_probe_outcome(None, Some(1), &[]);
+        assert!(!child_succeeded);
+        assert!(caps::hw_probe_failed_for_run());
+        #[cfg(feature = "openh264-encoder")]
+        assert_eq!(probed_caps.hw_encoders, vec!["openh264-sw".to_string()]);
+        #[cfg(not(feature = "openh264-encoder"))]
+        assert!(
+            probed_caps
+                .hw_encoders
+                .iter()
+                .all(|e| e.ends_with("-sw") || e == "noop")
+        );
+
+        // Verify that under Auto, Hardware, and Software preferences, open_default_with
+        // selects software encoding (openh264) and NEVER invokes the in-process MF
+        // probe closure.
+        for pref in [
+            EncoderPreference::Auto,
+            EncoderPreference::Hardware,
+            EncoderPreference::Software,
+        ] {
+            let mut mf_probe_called = false;
+            let enc = open_default_with(
+                320,
+                180,
+                pref,
+                false,
+                caps::hw_probe_failed_for_run(),
+                |_w, _h| {
+                    mf_probe_called = true;
+                    panic!("in-process MF probe must not be called when caps-probe child hung");
+                },
+                |_w, _h| Some(Box::new(FakeSwOpenh264) as Box<dyn VideoEncoder>),
+            );
+            assert!(
+                !mf_probe_called,
+                "MF probe must not run for preference {pref:?} after child probe hang"
+            );
+            assert_eq!(enc.name(), "openh264");
+            assert!(!enc.is_hardware());
+        }
+
+        // Also verify the async session opener (`open_for_codec_async`) runs off
+        // the Tokio worker thread and selects software encoding while hw_probe_failed_for_run() is set.
+        let (enc, codec) =
+            open_for_codec_async("h264".to_string(), 320, 180, EncoderPreference::Auto).await;
+        assert_eq!(codec, "h264");
+        #[cfg(feature = "openh264-encoder")]
+        assert_eq!(enc.name(), "openh264");
+        assert!(!enc.is_hardware());
+
+        // And AV1 / HEVC fail closed immediately without touching MF/FFmpeg drivers.
+        let (av1_enc, av1_codec) =
+            open_for_codec_async("av1".to_string(), 320, 180, EncoderPreference::Auto).await;
+        assert_eq!(av1_codec, "av1");
+        assert_eq!(av1_enc.name(), "noop");
+        let (hevc_enc, hevc_codec) =
+            open_for_codec_async("h265".to_string(), 320, 180, EncoderPreference::Auto).await;
+        assert_eq!(hevc_codec, "h265");
+        assert_eq!(hevc_enc.name(), "noop");
+
+        caps::clear_hw_probe_failed_for_run();
     }
 }
 // RETIRED-NAME-ANCHOR-END
