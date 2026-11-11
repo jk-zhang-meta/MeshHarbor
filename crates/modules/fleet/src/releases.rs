@@ -148,6 +148,13 @@ impl ReleasesCache {
     /// Every successful fetch is stored even if `expect_tag` is still
     /// missing: the payload is strictly fresher than what we held.
     pub async fn force_refresh(&self, pod_id: &str, expect_tag: Option<&str>) -> PodRefresh {
+        // A refresh is the release workflow saying "something was just
+        // published": re-probe every family instead of trusting a remembered
+        // "nothing published here".
+        UNPUBLISHED_FAMILIES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         let mut last_err: Option<String> = None;
         for attempt in 1..=EXPECT_TAG_ATTEMPTS {
             match fetch_releases().await {
@@ -165,7 +172,7 @@ impl ReleasesCache {
                     // roll proceeds.
                     if !satisfied && let Some(tag) = expect_tag {
                         match fetch_release_by_tag(tag).await {
-                            Ok(r) if !r.draft => {
+                            Ok(Some(r)) if !r.draft => {
                                 tracing::info!(
                                     %tag,
                                     "releases refresh: list endpoint lagging — recovered the expected tag via the by-tag endpoint"
@@ -238,7 +245,13 @@ pub async fn cached(state: &FleetState) -> Result<Vec<AgentRelease>, ApiError> {
 /// One release by exact tag — GitHub's by-tag endpoint stays consistent
 /// through the list-index lag its `/releases` endpoint exhibits after API
 /// incidents (see the fallback in [`ReleasesCache::force_refresh`]).
-async fn fetch_release_by_tag(tag: &str) -> anyhow::Result<AgentRelease> {
+///
+/// `Ok(None)` is "this tag has no release" (GitHub answers 404). That is a
+/// state, not a failure: the repo carries `tunnel-v*` tags from before the
+/// rename that never had a Release created in this repo, and reporting each of
+/// them as a fetch failure warned on every cache refill about a release that
+/// was never published.
+async fn fetch_release_by_tag(tag: &str) -> anyhow::Result<Option<AgentRelease>> {
     let url = format!("https://api.github.com/repos/{RELEASES_REPO}/releases/tags/{tag}");
     let client = reqwest::Client::builder()
         .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
@@ -249,10 +262,56 @@ async fn fetch_release_by_tag(tag: &str) -> anyhow::Result<AgentRelease> {
         .header("Accept", "application/vnd.github+json")
         .send()
         .await?;
+    if tag_has_no_release(resp.status()) {
+        return Ok(None);
+    }
     if !resp.status().is_success() {
         anyhow::bail!("GitHub returned {}", resp.status());
     }
-    Ok(resp.json::<AgentRelease>().await?)
+    Ok(Some(resp.json::<AgentRelease>().await?))
+}
+
+/// GitHub's by-tag endpoint answers 404 for a tag that exists with no release
+/// behind it. Rate limiting is 403/429 and outages are 5xx, so those stay
+/// failures.
+fn tag_has_no_release(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::NOT_FOUND
+}
+
+/// How long a family whose newest tags carry no published release is not
+/// probed again. Each probe is up to four calls against GitHub's 60-req/h
+/// unauthenticated quota, made on every cache refill otherwise. Bounded, so a
+/// release that somehow appears without reaching page 1 is still found; and
+/// [`ReleasesCache::force_refresh`] clears it, so a published release never
+/// waits on it.
+const UNPUBLISHED_FAMILY_TTL: Duration = Duration::from_secs(60 * 60);
+
+/// Families the last probe found tags but no published release for, and when.
+static UNPUBLISHED_FAMILIES: std::sync::Mutex<UnpublishedFamilies> =
+    std::sync::Mutex::new(UnpublishedFamilies(Vec::new()));
+
+#[derive(Debug, Default)]
+struct UnpublishedFamilies(Vec<(&'static str, Instant)>);
+
+impl UnpublishedFamilies {
+    fn is_fresh(&self, prefix: &str, now: Instant, ttl: Duration) -> bool {
+        self.0
+            .iter()
+            .any(|(p, at)| *p == prefix && now.saturating_duration_since(*at) < ttl)
+    }
+
+    fn mark(&mut self, prefix: &'static str, now: Instant) {
+        self.forget(prefix);
+        self.0.push((prefix, now));
+    }
+
+    fn forget(&mut self, prefix: &str) {
+        self.0.retain(|(p, _)| *p != prefix);
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
 }
 
 /// The newest page of releases, plus the newest release of every family the
@@ -262,8 +321,20 @@ async fn fetch_release_by_tag(tag: &str) -> anyhow::Result<AgentRelease> {
 async fn fetch_releases() -> anyhow::Result<Vec<AgentRelease>> {
     let mut releases = fetch_release_page().await?;
     for prefix in missing_families(&releases) {
+        let skip = UNPUBLISHED_FAMILIES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_fresh(prefix, Instant::now(), UNPUBLISHED_FAMILY_TTL);
+        if skip {
+            tracing::debug!(%prefix, "releases: family recently probed with no published release; not re-probing yet");
+            continue;
+        }
         match fetch_newest_of_family(prefix).await {
             Ok(Some(r)) => {
+                UNPUBLISHED_FAMILIES
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .forget(prefix);
                 tracing::info!(
                     %prefix,
                     tag = %r.tag_name,
@@ -272,6 +343,10 @@ async fn fetch_releases() -> anyhow::Result<Vec<AgentRelease>> {
                 releases.push(r);
             }
             Ok(None) => {
+                UNPUBLISHED_FAMILIES
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .mark(prefix, Instant::now());
                 tracing::debug!(%prefix, "releases: no published release in this family");
             }
             Err(e) => tracing::warn!(
@@ -302,10 +377,30 @@ fn missing_families(releases: &[AgentRelease]) -> Vec<&'static str> {
 /// draft, falls through to the next newest (three at most).
 async fn fetch_newest_of_family(prefix: &str) -> anyhow::Result<Option<AgentRelease>> {
     let tags = fetch_tags_with_prefix(prefix).await?;
+    let newest: Vec<String> = newest_first(&tags, prefix).into_iter().take(3).collect();
+    newest_published(
+        newest,
+        |tag| async move { fetch_release_by_tag(&tag).await },
+    )
+    .await
+}
+
+/// The first of `tags` (newest first) with a published release. A tag with no
+/// release (`Ok(None)`) or only a draft is "not published" and falls through;
+/// any other failure is kept and returned only if no tag yielded a release, so
+/// an outage still reads as an outage and never as "nothing published".
+async fn newest_published<F, Fut>(
+    tags: Vec<String>,
+    mut by_tag: F,
+) -> anyhow::Result<Option<AgentRelease>>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<Option<AgentRelease>>>,
+{
     let mut last_err = None;
-    for tag in newest_first(&tags, prefix).into_iter().take(3) {
-        match fetch_release_by_tag(&tag).await {
-            Ok(r) if !r.draft => return Ok(Some(r)),
+    for tag in tags {
+        match by_tag(tag.clone()).await {
+            Ok(Some(r)) if !r.draft => return Ok(Some(r)),
             Ok(_) => {}
             Err(e) => last_err = Some(e.context(format!("release {tag}"))),
         }
@@ -729,5 +824,96 @@ mod tests {
         assert_eq!(back.attempts, 2);
         assert_eq!(back.newest.agent.as_deref(), Some("agent-v0.3.0-rc.305"));
         assert!(back.error.is_none());
+    }
+
+    #[test]
+    fn a_404_by_tag_means_no_release_and_other_statuses_stay_failures() {
+        assert!(tag_has_no_release(reqwest::StatusCode::NOT_FOUND));
+        for s in [
+            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            reqwest::StatusCode::BAD_GATEWAY,
+        ] {
+            assert!(!tag_has_no_release(s), "{s}");
+        }
+    }
+
+    #[tokio::test]
+    async fn tags_without_a_release_are_not_published_rather_than_a_failure() {
+        // The field shape: `tunnel-v*` tags exist, no Release behind any of
+        // them. Before, each answered "GitHub returned 404" and the family
+        // was logged as a failed recovery on every refill.
+        let tags: Vec<String> = ["tunnel-v0.3.0-rc.242", "tunnel-v0.3.0-rc.241"]
+            .map(String::from)
+            .to_vec();
+        let mut asked = Vec::new();
+        let out = newest_published(tags, |tag| {
+            asked.push(tag);
+            async { Ok(None) }
+        })
+        .await
+        .unwrap();
+        assert!(out.is_none());
+        assert_eq!(asked.len(), 2, "every candidate tag is still tried");
+    }
+
+    #[tokio::test]
+    async fn the_newest_published_tag_wins_over_unreleased_and_draft_tags() {
+        let tags: Vec<String> = ["tunnel-v0.4.3", "tunnel-v0.4.2", "tunnel-v0.4.1"]
+            .map(String::from)
+            .to_vec();
+        let out = newest_published(tags, |tag| async move {
+            Ok(match tag.as_str() {
+                "tunnel-v0.4.3" => None,
+                "tunnel-v0.4.2" => Some(release(&tag, true)),
+                _ => Some(release(&tag, false)),
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(out.unwrap().tag_name, "tunnel-v0.4.1");
+    }
+
+    #[tokio::test]
+    async fn a_real_failure_with_no_published_tag_is_still_an_error() {
+        let tags: Vec<String> = ["tunnel-v0.4.3", "tunnel-v0.4.2"]
+            .map(String::from)
+            .to_vec();
+        let out = newest_published(tags, |tag| async move {
+            if tag == "tunnel-v0.4.3" {
+                Err(anyhow::anyhow!("GitHub returned 502 Bad Gateway"))
+            } else {
+                Ok(None)
+            }
+        })
+        .await;
+        let e = out.expect_err("an outage must not read as nothing published");
+        assert!(format!("{e:#}").contains("tunnel-v0.4.3"), "{e:#}");
+    }
+
+    #[test]
+    fn an_unpublished_family_is_remembered_for_the_ttl_then_probed_again() {
+        let ttl = Duration::from_secs(3600);
+        let t0 = Instant::now();
+        let mut m = UnpublishedFamilies::default();
+        assert!(!m.is_fresh("tunnel-v", t0, ttl));
+        m.mark("tunnel-v", t0);
+        assert!(m.is_fresh("tunnel-v", t0 + Duration::from_secs(3599), ttl));
+        assert!(
+            !m.is_fresh("tunnel-v", t0 + ttl, ttl),
+            "bounded, not forever"
+        );
+        assert!(!m.is_fresh("setup-v", t0, ttl), "per family");
+        // Re-marking replaces the timestamp rather than stacking entries.
+        m.mark("tunnel-v", t0 + ttl);
+        assert_eq!(m.0.len(), 1);
+        assert!(m.is_fresh("tunnel-v", t0 + ttl, ttl));
+        m.forget("tunnel-v");
+        assert!(!m.is_fresh("tunnel-v", t0 + ttl, ttl));
+        m.mark("tunnel-v", t0);
+        m.mark("setup-v", t0);
+        m.clear();
+        assert!(m.0.is_empty(), "a forced refresh re-probes every family");
     }
 }
