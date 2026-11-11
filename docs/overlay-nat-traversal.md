@@ -704,6 +704,7 @@ switches below flipped on one binary:
 | all switches below off | 30.1 s | 7.3 / 8.0 / 8.1 s | 42.3 / 43.0 / 48.0 s |
 | all on, before F2 | 1.3 s | 3.5 / 4.0 / 4.2 s | 4.2 / 4.7 / 4.9 s |
 | all on, with F2 standby copies | 1.3 s | 1.8 / 2.0 s (2 runs; 4.1 s with copies off) | 4.5 / 4.8 s |
+| all on, with F5 business watch (interleaved 3 vs 3, 2026-11-11) | 3.3 s | 0.96 / 0.96 / 1.26 s (1.96–2.06 s with F5 off) | 3.0–3.3 s (4.0 s with F5 off) |
 
 A 90 s outage came back 40 s after the heal before F3c, and 4 s after it.
 
@@ -762,6 +763,7 @@ sequenceDiagram
 | Birth probe | a fresh peer whose first carrier is the DERP floor starts its LAN probe in the same walk, not on the next ~30 s re-upgrade walk | `OVERLAY_BIRTH_LAN_PROBE=0` | `runtime/establish.rs`, floor block of the relay birth branch |
 | Fast promote | a latched probe is promoted on the 1 s tick instead of the 5 s fallback sweep | `OVERLAY_FAST_PROBE_PROMOTE=0` | `runtime.rs`, `business_scout` arm |
 | F4 probe watch | while a probe is in flight, its latch is checked every 100 ms. The responder promotes as soon as the initiator's first direct packet lands; until the initiator promotes too, its stream still rides `/derp` in the relay carrier's session, which the responder has just replaced. The 1 s scout tick is phase-locked to the 5 s walk that starts the probe, so that dark window was a steady ~0.72 s on the mainland pair | `OVERLAY_PROBE_WATCH=0` (also off with `OVERLAY_FAST_PROBE_PROMOTE=0`) | `runtime.rs` `PROBE_WATCH_TICK`, `probe_watch` arm |
+| F5 business watch | every 250 ms, an established direct carrier whose business tx climbed while rx stayed flat for 400 ms (counted from the first sample that saw it, never from the last rx, so idle time is not counted) arms the same business proof the 1 s scout arms; it never settles a proof or judges a carrier, and a pending proof blocks re-arming. Arming 0.65–0.9 s in puts the F2 copies on `/derp` before TCP's ~1.4 s retransmission instead of after it | `OVERLAY_BUSINESS_WATCH_MS=0` (or a different window in ms) | `runtime.rs` `BUSINESS_WATCH_*`, `business_watch_step`; `runtime/establish.rs` `watch_business_traffic` |
 | F2 standby copies | while a proof has gone unanswered for 200 ms, the peer's data is also sent over `/derp`, tagged `STANDBY_MAGIC`; the receiver takes it into the same session through the same ingress gate, and the replay window drops the second of original and copy | `OVERLAY_STANDBY_COPIES=0` | `transport/derp.rs` `STANDBY_MAGIC`; `wg.rs` `StandbyTee`, `decap_standby`; `runtime/establish.rs` `sweep_standby`, `standby_tee_wanted` |
 
 > ⚠️ F2's invariants. A pre-F2 `DerpMux` routes any non-WG payload it cannot
@@ -771,8 +773,8 @@ sequenceDiagram
 > change. A copy counts in no rx stat: a receiver whose own rx advanced on
 > copies would be blind to its own dead direct tx. The tee waits 200 ms for
 > the proof's answer, so a healthy one-way stream's recurring proofs copy
-> nothing. What is left of the stall is the business scout's 1–2 s detection
-> plus that wait.
+> nothing. What is left of the stall is detection (the F5 watch's 0.65–0.9 s;
+> the 1 s scout's 1–2 s before it) plus that wait.
 >
 > ⚠️ What F0-WAN does not cover yet:
 > - its `/derp` is a TCP splice, not the real relay server and its queueing;
