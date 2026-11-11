@@ -152,16 +152,39 @@ export const useAuthStore = defineStore('auth', () => {
    * this store.
    */
   function forgetLocalSession() {
+    cancelMeRetry()
     useAccountApprovalStore().reset()
     user.value = null
     signedIn.value = false
     clearSignedIn()
   }
 
-  async function fetchMe() {
+  /**
+   * A failure that is NOT a refusal (429, 5xx, unreachable) keeps the session
+   * but leaves `user` unknown — and every view keyed on `user.id` then sits on
+   * an empty list with nothing to ask again. Measured on the desktop
+   * companion's account window (`/my-devices?desktop=1`) with the rate limit
+   * spent: counts "—" and "No shares in this view." for an account holding
+   * eight, no error, no retry. So retry on a short, bounded backoff; a
+   * success, a refusal or a sign-out stops it.
+   */
+  const ME_RETRY_MS = [2000, 5000, 15000, 30000]
+  let meRetry: ReturnType<typeof setTimeout> | null = null
+  let meAttempt = 0
+  function cancelMeRetry() {
+    if (meRetry !== null) clearTimeout(meRetry)
+    meRetry = null
+    meAttempt = 0
+  }
+
+  async function loadMe(isRetry: boolean) {
     if (!signedIn.value) return
+    if (meRetry !== null) clearTimeout(meRetry)
+    meRetry = null
+    if (!isRetry) meAttempt = 0
     try {
       adoptSession(await api.get<User>('/auth/me'))
+      meAttempt = 0
       subscribePush().catch(() => {})
     } catch {
       // Sign out only if the server REFUSED the session (#1788). The api
@@ -171,8 +194,22 @@ export const useAuthStore = defineStore('auth', () => {
       // Logging out on one would ask the server to expire a perfectly valid
       // session: measured with a spent rate limit, `/auth/me` answered 429
       // and this line signed the user out for real.
-      if (!looksSignedIn()) await logout()
+      if (!looksSignedIn()) {
+        await logout()
+        return
+      }
+      if (meAttempt < ME_RETRY_MS.length) {
+        const delay = ME_RETRY_MS[meAttempt++]
+        meRetry = setTimeout(() => {
+          meRetry = null
+          void loadMe(true)
+        }, delay)
+      }
     }
+  }
+
+  function fetchMe() {
+    return loadMe(false)
   }
 
   /**
@@ -189,6 +226,7 @@ export const useAuthStore = defineStore('auth', () => {
    * locally rather than trapping the user in a session they asked to leave.
    */
   async function logout() {
+    cancelMeRetry()
     useAccountApprovalStore().reset()
     unsubscribePush().catch(() => {})
     try {
