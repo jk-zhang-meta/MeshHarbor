@@ -78,62 +78,6 @@ pub struct ConnectQuery {
 fn deny(message: &str) -> ApiError {
     ApiError::Forbidden(message.into())
 }
-
-/// The refusal a cross-zone shared SSH request gets under `enforce` (#21).
-const ZONE_REFUSAL: &str = "Shared SSH is not available between these regions";
-
-/// MeshHarbor #21. This bridge carries business bytes through a server hop
-/// (recipient CLI ↔ center ↔ device), and the isolation rule says no share
-/// and no server hop may cross the mainland line. So the recipient's request
-/// and the shared device must be in ONE known zone. It is the same rule a
-/// tunnel client and its agent are held to (`routes/tunnel.rs`).
-///
-/// The recipient's zone comes from this request's `ConnectionOrigin`, with
-/// the same capture and trusted-proxy rules as `/ws`; the device's from its
-/// live connection (`org_relay::agent_zone`). An unknown zone on either side
-/// refuses under `enforce`. `warn` only logs, and `off` skips the check.
-/// Returns `true` when the request must be refused.
-fn crosses_zone(
-    state: &NetworkState,
-    headers: &HeaderMap,
-    peer: Option<std::net::SocketAddr>,
-    agent: &meshharbor_remote_control::models::Agent,
-) -> bool {
-    use crate::business_isolation::Mode;
-    let mode = crate::business_isolation::mode(state);
-    if mode == Mode::Off {
-        return false;
-    }
-    let origin = meshharbor_core::client_ip::ConnectionOrigin::capture(
-        headers,
-        peer,
-        &state.core.settings.app.business_trusted_proxy_cidrs,
-        state.core.settings.app.rate_limit_trusted_hops,
-    );
-    let recipient = meshharbor_core::business_authority::origin_zone(&state.core, &origin);
-    let device = crate::org_relay::agent_zone(state, agent);
-    if matches!((recipient, device), (Some(a), Some(b)) if a == b) {
-        return false;
-    }
-    let agent_id = agent.id.map(|i| i.to_hex()).unwrap_or_default();
-    if mode == Mode::Enforce {
-        tracing::info!(
-            agent = %agent_id,
-            recipient_zone = ?recipient,
-            device_zone = ?device,
-            "business isolation: shared SSH refused — recipient and device are not in one known zone"
-        );
-        true
-    } else {
-        tracing::warn!(
-            agent = %agent_id,
-            recipient_zone = ?recipient,
-            device_zone = ?device,
-            "business isolation (warn): would refuse shared SSH — recipient and device are not in one known zone"
-        );
-        false
-    }
-}
 /// The account a shared session becomes: the share's own, re-validated on every read.
 fn shared_account(grant: &meshharbor_db::models::DeviceShareGrant) -> Option<String> {
     grant
@@ -270,7 +214,6 @@ pub async fn connect(
     State(state): State<NetworkState>,
     Path(id): Path<String>,
     Query(q): Query<ConnectQuery>,
-    meshharbor_core::client_ip::PeerAddr(peer): meshharbor_core::client_ip::PeerAddr,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
@@ -409,20 +352,6 @@ pub async fn connect(
                 return Err(e);
             }
         };
-        if crosses_zone(&state, &headers, peer, &access.agent) {
-            crate::native_ssh_authorization::record_audit(
-                &state,
-                crate::native_ssh_authorization::audit_from_row(
-                    &row,
-                    Some(&scope),
-                    "dispatch",
-                    "refused",
-                    Some("business_isolation"),
-                ),
-            )
-            .await;
-            return Err(deny(ZONE_REFUSAL));
-        }
         let Ok(slot) = state.shared_ssh_slots.clone().try_acquire_owned() else {
             crate::native_ssh_authorization::record_audit(
                 &state,
@@ -478,9 +407,6 @@ pub async fn connect(
     let id =
         ObjectId::parse_str(id).map_err(|_| ApiError::BadRequest("Invalid share ID".into()))?;
     let access = pdp(&state, auth.user_id, id).await?;
-    if crosses_zone(&state, &headers, peer, &access.agent) {
-        return Err(deny(ZONE_REFUSAL));
-    }
     if q.public_key.len() > 1024
         || !crate::routes::agent_ssh::is_supported_public_key(&q.public_key)
     {
