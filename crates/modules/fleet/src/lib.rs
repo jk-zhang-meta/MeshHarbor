@@ -71,6 +71,7 @@ pub mod external_access;
 pub mod hub;
 pub mod install_trace;
 pub mod keep_busy;
+mod local_releases;
 pub mod nudge;
 pub mod presence;
 mod release_delivery;

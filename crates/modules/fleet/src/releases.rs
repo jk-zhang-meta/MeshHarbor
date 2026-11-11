@@ -236,6 +236,18 @@ impl ReleasesCache {
 /// TTL-respecting read against the state's cache — the entry point every
 /// `latest-release` / installer handler uses.
 pub async fn cached(state: &FleetState) -> Result<Vec<AgentRelease>, ApiError> {
+    // `releases.local_dir` set ⇒ this server's own directory is the ONLY
+    // source: no GitHub call, and no fallback to GitHub when it is empty
+    // (an update channel never silently switches publisher).
+    if let Some(dir) = state
+        .settings
+        .releases
+        .local_dir
+        .as_deref()
+        .filter(|d| !d.trim().is_empty())
+    {
+        return crate::local_releases::cached(dir).await;
+    }
     state
         .releases_cache
         .get(Duration::from_secs(state.settings.releases.cache_ttl_secs))

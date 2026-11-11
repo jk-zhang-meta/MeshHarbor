@@ -242,6 +242,10 @@ mod role_reconcile_tests;
 mod role_tests;
 #[cfg(test)]
 mod room_visibility_tests;
+/// Item 17 — releases served from the center's own directory
+/// (`releases.local_dir`): own URLs, exact bytes, no `.asc` no serve.
+#[cfg(test)]
+mod self_hosted_release_tests;
 /// FR-102 P9c — the carrier a session rides: the agent records it on
 /// `rc:session.stats` once Active, and the server stores it on
 /// `remote_sessions.carrier` — a code only, absent read as unknown, never

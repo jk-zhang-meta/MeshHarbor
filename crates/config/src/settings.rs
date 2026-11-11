@@ -934,6 +934,16 @@ pub struct ReleasesSettings {
     /// cap, while bounding worst-case staleness when the refresh call never
     /// lands. Env: `MESHHARBOR__RELEASES__CACHE_TTL_SECS`.
     pub cache_ttl_secs: u64,
+    /// Serve releases from this server's own directory instead of GitHub.
+    /// Set ⇒ every release route (`/api/{agent,tunnel,setup}/latest-release`,
+    /// the installers, `/api/agent/artifacts/*`) reads `<dir>/<tag>/<file>`
+    /// and never contacts github.com; unset ⇒ the GitHub path, unchanged.
+    /// Each artifact must sit next to its `.asc` (the agents verify it
+    /// against the key compiled into them, so this directory is a delivery
+    /// channel, never a trust anchor). Layout + publishing:
+    /// `docs/self-hosted-releases.md`. Env: `MESHHARBOR__RELEASES__LOCAL_DIR`.
+    #[serde(default)]
+    pub local_dir: Option<String>,
 }
 
 impl Default for ReleasesSettings {
@@ -941,6 +951,7 @@ impl Default for ReleasesSettings {
         Self {
             refresh_token: None,
             cache_ttl_secs: 900,
+            local_dir: None,
         }
     }
 }
@@ -1720,6 +1731,7 @@ impl Settings {
             .set_default("relay.busy_tx_mbps", 400.0)?
             .set_default("releases.refresh_token", None::<String>)?
             .set_default("releases.cache_ttl_secs", 900)?
+            .set_default("releases.local_dir", None::<String>)?
             .set_default("stats.enabled", true)?
             .set_default("stats.platform_admins", None::<String>)?
             .set_default("stats.geoip_mmdb", None::<String>)?
