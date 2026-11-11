@@ -778,6 +778,7 @@ pub(crate) fn device_row_from_server(row: VisibleDeviceRow) -> DeviceRowLite {
         rdp_available,
         rdp_port,
         rdp_cert_sha256,
+        rdp_mesh_reachable,
     } = row;
     DeviceRowLite {
         kind,
@@ -800,6 +801,7 @@ pub(crate) fn device_row_from_server(row: VisibleDeviceRow) -> DeviceRowLite {
         rdp_available,
         rdp_port,
         rdp_cert_sha256,
+        rdp_mesh_reachable,
     }
 }
 
@@ -840,6 +842,7 @@ mod tests {
             is_self: true,
             rdp_available: Some(true),
             rdp_port: Some(13389),
+            rdp_mesh_reachable: Some(true),
             rdp_cert_sha256: Some(
                 "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
                     .into(),
@@ -877,6 +880,7 @@ mod tests {
                 is_self: true,
                 rdp_available: Some(true),
                 rdp_port: Some(13389),
+                rdp_mesh_reachable: Some(true),
                 rdp_cert_sha256: Some(
                     "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
                         .into(),

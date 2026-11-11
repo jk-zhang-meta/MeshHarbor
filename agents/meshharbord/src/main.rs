@@ -4170,6 +4170,10 @@ async fn run_cmd(
     let netstack_pinger = meshharbord::overlay::netstack_pinger(&cfg);
     #[cfg(not(feature = "overlay-netstack"))]
     let netstack_pinger: Option<std::sync::Arc<dyn localapi_state::NetstackPinger>> = None;
+    // RDP over the mesh: report `rdp_mesh_reachable`, and on a netstack node
+    // forward the owner-opted-in RDP port (`rdp_over_mesh`, default off) to
+    // loopback only.
+    meshharbord::rdp_mesh::start(&cfg, config_path);
     // S1b — ONE pinger for BOTH the interactive `Ping` verb and the RTT
     // prober: netstack when the userspace stack runs, OS ICMP fallback
     // otherwise. The verb previously got the raw Option (no fallback)

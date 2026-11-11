@@ -574,6 +574,13 @@ pub struct AgentCaps {
     /// modification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rdp_cert_sha256: Option<String>,
+    /// RDP over the mesh — whether a controller can reach this device's RDP
+    /// server through the overlay: `rdp_available` and either OS-TUN mode or
+    /// the owner's `rdp_over_mesh` opt-in on a netstack node. `None` on older
+    /// agents. The web fallback card and the desktop RDP menu offer RDP only
+    /// when this is `Some(true)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdp_mesh_reachable: Option<bool>,
 }
 
 /// FR-67 P7 — why an enrollment will not act on a pushed `rc:agent.update`;
@@ -3339,6 +3346,11 @@ pub struct VisibleDeviceRow {
     /// certificate when `rdp_available == Some(true)` and readable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rdp_cert_sha256: Option<String>,
+    /// Whether that RDP server is reachable through the overlay (OS-TUN mode,
+    /// or the owner's `rdp_over_mesh` opt-in). Present only alongside
+    /// `rdp_available == Some(true)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdp_mesh_reachable: Option<bool>,
 }
 
 /// The page `GET /api/agent/self/devices` answers with.
@@ -3396,6 +3408,7 @@ mod visible_device_tests {
             rdp_available: None,
             rdp_port: None,
             rdp_cert_sha256: None,
+            rdp_mesh_reachable: None,
         }
     }
 
@@ -9506,6 +9519,8 @@ mod tests {
         // opted into remote config; until a change argues that here, none is.)
         for forbidden in [
             "remote_config_enabled",
+            // RDP over the mesh is the device owner's opt-in, like the rest.
+            "rdp_over_mesh",
             "ssh_max_privilege",
             "local_restart_enabled",
             "hive_enabled",
@@ -9594,6 +9609,7 @@ mod tests {
             "ssh_enabled": true,
             "ssh_max_privilege": "daemon",
             "remote_config_enabled": true,
+            "rdp_over_mesh": true,
             "local_restart_enabled": true,
         }))
         .expect("unknown keys are ignored, not fatal");
@@ -10265,6 +10281,34 @@ mod backbone_policy_tests {
         };
         let encoded = bson::to_bson(&policy).unwrap();
         assert_eq!(bson::from_bson::<PeerRelayPolicy>(encoded).unwrap(), policy);
+    }
+
+    #[test]
+    fn agent_caps_rdp_mesh_reachable_is_additive() {
+        // An older agent (no key) parses to None and re-serialises without it.
+        let legacy_json = r#"{"hw_encoders":[],"codecs":["h264"],"has_input_permission":true,"supports_clipboard":true,"supports_file_transfer":true,"max_simultaneous_sessions":4,"rdp_available":true}"#;
+        let legacy: AgentCaps = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(legacy.rdp_mesh_reachable, None);
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("rdp_mesh_reachable")
+                .is_none()
+        );
+        // A newer agent round-trips the field ...
+        let mut newer = legacy.clone();
+        newer.rdp_mesh_reachable = Some(false);
+        let v = serde_json::to_value(&newer).unwrap();
+        assert_eq!(v["rdp_mesh_reachable"], serde_json::json!(false));
+        let back: AgentCaps = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(back.rdp_mesh_reachable, Some(false));
+        // ... and an older reader, which never heard of it, ignores it.
+        #[derive(serde::Deserialize)]
+        struct OlderReader {
+            #[allow(dead_code)]
+            rdp_available: Option<bool>,
+        }
+        let _: OlderReader = serde_json::from_value(v).expect("unknown key ignored");
     }
 
     #[test]

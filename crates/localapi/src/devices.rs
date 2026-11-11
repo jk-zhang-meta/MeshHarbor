@@ -132,6 +132,8 @@ pub struct DeviceRowLite {
     pub rdp_port: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rdp_cert_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdp_mesh_reachable: Option<bool>,
 }
 
 /// One page of [`DeviceRowLite`]s plus the envelope — the answer to
@@ -413,6 +415,7 @@ mod tests {
             rdp_available: None,
             rdp_port: None,
             rdp_cert_sha256: None,
+            rdp_mesh_reachable: None,
         }
     }
 

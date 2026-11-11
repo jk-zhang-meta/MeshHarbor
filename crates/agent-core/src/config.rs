@@ -263,6 +263,24 @@ pub struct AgentConfig {
     #[serde(default)]
     pub external_access_enabled: bool,
 
+    /// RDP over the mesh on a node without OS TUN — let a controller in this
+    /// organization reach this device's RDP server through the overlay.
+    ///
+    /// Default **`false`**. A netstack node (a per-user Windows install, a
+    /// user-level macOS daemon) answers overlay TCP only on ports it listens
+    /// on, so RDP to it is refused. With this on it listens on the RDP port the
+    /// device reports (`rdp_caps`) and forwards each connection to
+    /// `127.0.0.1:<that port>` and nowhere else, after the overlay ingress check
+    /// (ACL + business-zone shaping) has admitted the packet. An OS-TUN node
+    /// needs no opt-in: its OS stack answers.
+    ///
+    /// ⚠️ **Not server-settable, structurally.** Like `remote_config_enabled`,
+    /// absent from `DesiredConfig`; a test asserts a push carrying it is
+    /// ignored. LIVE: the forward re-reads the file for every connection and
+    /// refuses when it cannot.
+    #[serde(default)]
+    pub rdp_over_mesh: bool,
+
     /// FR-52 gate 4 — the OPAQUE **server setup**, base64.
     ///
     /// Long-lived, per-device, and minted once on the first
@@ -2802,6 +2820,7 @@ pub fn test_fixture() -> AgentConfig {
         remote_config_enabled: false,
         local_restart_enabled: true,
         external_access_enabled: false,
+        rdp_over_mesh: false,
         external_access_setup: None,
         external_access_verifier: None,
         external_consent_mode: None,

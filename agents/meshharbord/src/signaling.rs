@@ -1724,6 +1724,7 @@ async fn connect_once(
         hello_caps.rdp_available,
         hello_caps.rdp_port,
         hello_caps.rdp_cert_sha256.clone(),
+        hello_caps.rdp_mesh_reachable,
     );
     let mut last_announced_relay_server = hello_caps.rpc.iter().any(|word| word == "relay-server");
     let (arch, arch_emulated) = crate::arch::native();
@@ -2394,7 +2395,8 @@ async fn connect_once(
                 let session_policy_now = crate::session_policy::caps_policy();
                 let rdp_now = {
                     let r = crate::rdp_caps::current();
-                    (Some(r.available), r.port, r.cert_sha256)
+                    let reachable = crate::rdp_mesh::mesh_reachable(r.available);
+                    (Some(r.available), r.port, r.cert_sha256, Some(reachable))
                 };
                 let relay_server_now = relay_server_ready();
                 let caps = if relay_server_now == last_announced_relay_server
@@ -7618,6 +7620,9 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool) -> AgentCaps {
     caps.rdp_available = Some(rdp.available);
     caps.rdp_port = rdp.port;
     caps.rdp_cert_sha256 = rdp.cert_sha256;
+    // RDP over the mesh — whether that server is reachable through the overlay
+    // (OS-TUN mode, or the owner's `rdp_over_mesh` on a netstack node).
+    caps.rdp_mesh_reachable = Some(crate::rdp_mesh::mesh_reachable(rdp.available));
     caps
 }
 

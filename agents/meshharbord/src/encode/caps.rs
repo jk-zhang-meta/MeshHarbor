@@ -2260,6 +2260,7 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
         rdp_available: None,
         rdp_port: None,
         rdp_cert_sha256: None,
+        rdp_mesh_reachable: None,
     }
 }
 

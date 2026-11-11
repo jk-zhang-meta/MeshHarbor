@@ -341,6 +341,16 @@ const KEYS: &[KeyMeta] = &[
         description: "Accept configuration pushed by the control plane. NEVER settable by the server — it is what keeps exec_enabled/ssh_enabled refusable by a compromised one. Turning it ON delegates that last refusal. Default: OFF.",
     },
     KeyMeta {
+        key: "rdp_over_mesh",
+        group: Group::Access,
+        tier: Tier::Standard,
+        // LIVE: the forward re-reads the FILE for every connection, so an OFF
+        // refuses the very next one.
+        live: true,
+        kind: "bool",
+        description: "RDP over the mesh on a node without OS TUN (a per-user install running the userspace stack): forward overlay connections on the RDP port this device reports to 127.0.0.1 only, after the overlay ACL and zone checks. An OS-TUN node needs no opt-in. NEVER settable by the server. Default: OFF.",
+    },
+    KeyMeta {
         key: "external_access_enabled",
         group: Group::Access,
         tier: Tier::Standard,
@@ -2018,6 +2028,7 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "remote_config_enabled" => Some(fmt_bool(cfg.remote_config_enabled)),
         "local_restart_enabled" => Some(fmt_bool(cfg.local_restart_enabled)),
         "external_access_enabled" => Some(fmt_bool(cfg.external_access_enabled)),
+        "rdp_over_mesh" => Some(fmt_bool(cfg.rdp_over_mesh)),
         "external_consent_mode" => cfg.external_consent_mode.clone(),
         "external_max_permissions" => cfg.external_max_permissions.clone(),
         "ssh_enabled" => Some(fmt_bool(cfg.ssh_enabled)),
@@ -2305,6 +2316,9 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         // explicitly; if the server could set it, every other gate here would
         // be one push away from meaningless. See `docs/remote-config.md`.
         "remote_config_enabled" => cfg.remote_config_enabled = parse_bool_or(value, false)?,
+        // Same fail-safe direction and the same locality: settable here (CLI,
+        // desktop companion), never from a server push.
+        "rdp_over_mesh" => cfg.rdp_over_mesh = parse_bool_or(value, false)?,
         // FR-84 D3 — clearing restores the built-in ON: unlike the gates
         // above, this grants nothing, so OFF is an owner's choice rather than
         // the fail-safe direction. Settable only from here (never pushed).
@@ -3361,6 +3375,7 @@ mod tests {
         let expected: std::collections::BTreeSet<String> = [
             "exec_enabled",
             "remote_config_enabled",
+            "rdp_over_mesh",
             "record_dir",
             "local_restart_enabled",
             "files_dir",

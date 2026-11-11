@@ -1003,6 +1003,15 @@ fn ns_handle_tx(
         .clone()
 }
 
+/// RDP over the mesh — `org_key`'s netstack handle (`None` until the userspace
+/// stack is up; replaced whenever it is rebuilt).
+#[cfg(feature = "overlay-netstack")]
+pub(crate) fn netstack_handle_rx(
+    org_key: &str,
+) -> watch::Receiver<Option<tunnel_core::overlay::netstack::NetstackHandle>> {
+    ns_handle_tx(org_key).subscribe()
+}
+
 /// Which org holds each loopback SOCKS port.
 ///
 /// The per-org split removes the shared-stack hazard but not this one: a

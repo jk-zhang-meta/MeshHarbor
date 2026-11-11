@@ -1015,6 +1015,7 @@ async fn rdp_fields_are_omitted_unless_rdp_available_is_true_and_capabilities_ne
                 "capabilities.rdp_available": false,
                 "capabilities.rdp_port": 3389_i32,
                 "capabilities.rdp_cert_sha256": fp,
+                "capabilities.rdp_mesh_reachable": true,
             } },
         )
         .await
@@ -1030,6 +1031,7 @@ async fn rdp_fields_are_omitted_unless_rdp_available_is_true_and_capabilities_ne
                 "capabilities.rdp_available": true,
                 "capabilities.rdp_port": 13389_i32,
                 "capabilities.rdp_cert_sha256": fp,
+                "capabilities.rdp_mesh_reachable": true,
             } },
         )
         .await
@@ -1045,7 +1047,12 @@ async fn rdp_fields_are_omitted_unless_rdp_available_is_true_and_capabilities_ne
             .find(|r| r["id"] == json!(id))
             .unwrap_or_else(|| panic!("{id} missing from {page}"));
         let obj = row.as_object().unwrap();
-        for rdp_key in ["rdp_available", "rdp_port", "rdp_cert_sha256"] {
+        for rdp_key in [
+            "rdp_available",
+            "rdp_port",
+            "rdp_cert_sha256",
+            "rdp_mesh_reachable",
+        ] {
             assert!(
                 !obj.contains_key(rdp_key),
                 "{rdp_key} must be omitted when rdp_available != true: {row}"
@@ -1065,6 +1072,7 @@ async fn rdp_fields_are_omitted_unless_rdp_available_is_true_and_capabilities_ne
     assert_eq!(c_row["rdp_available"], json!(true));
     assert_eq!(c_row["rdp_port"], json!(13389));
     assert_eq!(c_row["rdp_cert_sha256"], json!(fp));
+    assert_eq!(c_row["rdp_mesh_reachable"], json!(true));
     assert!(
         !c_obj.contains_key("capabilities"),
         "capabilities leaked: {c_row}"

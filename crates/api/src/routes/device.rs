@@ -117,6 +117,8 @@ pub struct DeviceRow {
     pub rdp_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rdp_cert_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rdp_mesh_reachable: Option<bool>,
 }
 
 /// GET /api/tenant/{tenant_id}/device — membership-gated like every other
@@ -401,6 +403,8 @@ pub(crate) fn agent_row(
     } else {
         (None, None, None)
     };
+    // Only alongside `rdp_available == Some(true)`, like the three above.
+    let rdp_mesh_reachable = rdp_available.and(a.capabilities.rdp_mesh_reachable);
     DeviceRow {
         kind: "agent",
         id: a.id.map(|i| i.to_hex()).unwrap_or_default(),
@@ -426,6 +430,7 @@ pub(crate) fn agent_row(
         rdp_available,
         rdp_port,
         rdp_cert_sha256,
+        rdp_mesh_reachable,
     }
 }
 
@@ -466,6 +471,7 @@ pub(crate) fn client_row(
         rdp_available: None,
         rdp_port: None,
         rdp_cert_sha256: None,
+        rdp_mesh_reachable: None,
     }
 }
 

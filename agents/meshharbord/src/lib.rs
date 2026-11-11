@@ -177,6 +177,7 @@ pub mod rc_transport;
 /// RC/RDP Phase B — read-only local TCP 3389 listener + RDP certificate SHA-256
 /// probe (`rdp_available`, `rdp_cert_sha256` on `AgentCaps`).
 pub mod rdp_caps;
+pub mod rdp_mesh;
 #[cfg(feature = "recording")]
 pub mod recording;
 pub mod relay_probe;
