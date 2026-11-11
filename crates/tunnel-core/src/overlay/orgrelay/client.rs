@@ -61,7 +61,8 @@
 //! itself instead: when traffic it sent has gone unanswered for
 //! [`LIVENESS_SILENCE`], it re-binds in band, and a relay that leaves
 //! [`LIVENESS_FAST_BINDS`] of those unanswered is declared dead
-//! ([`OrgRelayConn::poll_liveness`]), about two seconds after it stopped.
+//! ([`OrgRelayConn::poll_liveness`]), about a second and a half after it
+//! stopped (two on a leg whose bind round trip is above 100 ms).
 //!
 //! The question is "does the relay still answer for this session", never
 //! "did the peer answer": a Challenge settles the round whatever the peer
@@ -109,8 +110,13 @@ pub const LIVENESS_SILENCE: Duration = Duration::from_millis(400);
 /// before ([`LIVENESS_FLOWING`]): a stream that stops at once, and then
 /// three unanswered binds, is the relay and not the peer.
 pub const LIVENESS_FAST_BINDS: u32 = 3;
-/// Spacing of those binds.
-pub const LIVENESS_FAST_GAP: Duration = Duration::from_millis(450);
+/// Spacing of those binds. With [`LIVENESS_SILENCE`] and
+/// [`LIVENESS_ECHO_WAIT`] the verdict falls 1.4 s after the last frame heard
+/// (it was 1.65 s with 450 and 350 ms; the field run of 2026-11-12 put the
+/// pair back on a working carrier at 2.3 s, and the session riding it resumes
+/// one retransmission and a round trip later, which left too little of the
+/// 3 s the stall is allowed).
+pub const LIVENESS_FAST_GAP: Duration = Duration::from_millis(350);
 /// Binds a round sends when nothing was arriving anyway (a one-way stream,
 /// an idle pair's keepalive, the first packet after a pause). No abrupt stop
 /// backs the verdict there, so it takes more of them, further apart: random
@@ -121,7 +127,7 @@ pub const LIVENESS_SLOW_BINDS: u32 = 5;
 pub const LIVENESS_SLOW_GAP: Duration = Duration::from_millis(700);
 /// How long the last bind of a round may stay unanswered before the verdict
 /// (raised to two bind round trips plus a margin on a slow leg).
-pub const LIVENESS_ECHO_WAIT: Duration = Duration::from_millis(350);
+pub const LIVENESS_ECHO_WAIT: Duration = Duration::from_millis(300);
 /// A peer frame this recently before a round starts makes the round fast.
 pub const LIVENESS_FLOWING: Duration = Duration::from_secs(2);
 /// After a Challenge proved the relay while the peer stays silent, the next
@@ -1586,7 +1592,7 @@ mod tests {
         );
         let dead = dead.expect("a relay that answers nothing is convicted");
         assert!(
-            (11_500..=12_000).contains(&dead),
+            (11_400..=11_800).contains(&dead),
             "verdict {} ms after the last frame; binds {binds:?}",
             dead - 10_000
         );
@@ -1686,7 +1692,7 @@ mod tests {
         let fast = timing();
         assert_eq!(
             (fast.silence, fast.fast_gap, fast.echo_wait),
-            (400, 450, 350)
+            (400, 350, 300)
         );
         let slow = LivenessTiming::for_rtt(Duration::from_millis(300));
         assert_eq!(
@@ -1806,7 +1812,7 @@ mod tests {
         let took = frozen.elapsed();
         assert_eq!(binds, LIVENESS_FAST_BINDS);
         assert!(
-            took > Duration::from_millis(1_200) && took < Duration::from_secs(3),
+            took > Duration::from_millis(1_100) && took < Duration::from_millis(2_200),
             "convicted after {took:?}"
         );
         assert!(!a.is_alive(), "the verdict closes the carrier");

@@ -267,7 +267,7 @@ struct PendingPeer {
 /// Acceptance item 6 — `MESHHARBORD_OVERLAY_ORG_LIVENESS` (default ON; only
 /// `0|false|no|off` turns it off): a member asks the relay behind each of its
 /// bound ORG carriers whether it still answers, and falls to the DERP floor
-/// about two seconds after it stops (`orgrelay::client`, "Liveness of the
+/// 1.5 to 2 s after it stops (`orgrelay::client`, "Liveness of the
 /// bound leg"). Off, a dead relay is found by the health sweep alone: 15–20 s
 /// under traffic, 60–85 s without. Read once.
 pub(crate) fn org_liveness_enabled() -> bool {
