@@ -34,28 +34,6 @@ fn test_sctp_max_receive_buffer_size_roundtrip() -> Result<()> {
 }
 
 #[test]
-fn test_dtls_flight_interval_roundtrip() -> Result<()> {
-    let mut s = SettingEngine::default();
-    assert_eq!(
-        s.get_dtls_flight_interval(),
-        Duration::ZERO,
-        "default must be ZERO so upstream INITIAL_TICKER_INTERVAL (1 s) applies"
-    );
-
-    s.set_dtls_flight_interval(Duration::from_millis(100));
-    assert_eq!(s.get_dtls_flight_interval(), Duration::from_millis(100));
-
-    s.set_dtls_flight_interval(Duration::ZERO);
-    assert_eq!(
-        s.get_dtls_flight_interval(),
-        Duration::ZERO,
-        "reset to ZERO must restore upstream default behaviour"
-    );
-
-    Ok(())
-}
-
-#[test]
 fn test_set_connection_timeout() -> Result<()> {
     let mut s = SettingEngine::default();
 

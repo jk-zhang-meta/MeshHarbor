@@ -248,35 +248,6 @@ struct ChildPeerHandle {
     stop: tokio_util::sync::CancellationToken,
 }
 
-/// Default initial DTLS flight retransmission interval (`0 ms`, disabled by
-/// default so `webrtc-dtls` uses its upstream `1 s` fixed timer unless explicitly
-/// enabled via `MESHHARBORD_DTLS_FLIGHT_INTERVAL_MS=100`).
-pub const DEFAULT_DTLS_FLIGHT_INTERVAL_MS: u64 = 0;
-
-pub fn parse_dtls_flight_interval_ms(raw: Option<&str>) -> Duration {
-    let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
-        return Duration::from_millis(DEFAULT_DTLS_FLIGHT_INTERVAL_MS);
-    };
-    if s == "0"
-        || s == "1000"
-        || s.eq_ignore_ascii_case("legacy")
-        || s.eq_ignore_ascii_case("off")
-        || s.eq_ignore_ascii_case("false")
-    {
-        return Duration::ZERO;
-    }
-    match s.parse::<u64>() {
-        Ok(ms) => Duration::from_millis(ms.clamp(20, 5000)),
-        Err(_) => Duration::from_millis(DEFAULT_DTLS_FLIGHT_INTERVAL_MS),
-    }
-}
-
-pub fn dtls_flight_interval_from_env() -> Duration {
-    let val = node_env("DTLS_FLIGHT_INTERVAL_MS")
-        .or_else(|| std::env::var("MESHHARBOR_DTLS_FLIGHT_INTERVAL_MS").ok());
-    parse_dtls_flight_interval_ms(val.as_deref())
-}
-
 /// Default bounded wait (`50 ms`) after `set_local_description` for all local
 /// network interfaces' `host` candidates to finish gathering so they can be
 /// included directly in `rc:sdp.answer`. Setting `MESHHARBORD_ANSWER_WAIT_HOST_MS=0`
@@ -630,13 +601,6 @@ impl AgentPeer {
         // replay windows pinned at 64 (webrtc-srtp's session default too).
         let transport = crate::rc_transport::Policy::from_env();
         transport.apply(&mut setting);
-        let dtls_flight_interval = dtls_flight_interval_from_env();
-        setting.set_dtls_flight_interval(dtls_flight_interval);
-        let dtls_flight_interval_ms = if dtls_flight_interval.is_zero() {
-            1000
-        } else {
-            dtls_flight_interval.as_millis() as u64
-        };
         // FR-16 L0 — the loopback harness routes this session's ICE through a
         // webrtc-util vnet (a set delay, jitter and loss). Only the test-only
         // `synthetic-frame-source` build carries the hook. Applied last, so
@@ -648,7 +612,6 @@ impl AgentPeer {
             overlay_blocks = rc_overlay.v4_nets.len(),
             srtp_replay_window = transport.replay_window,
             dtls_gcm_only = transport.gcm_only,
-            dtls_flight_interval_ms,
             "rc ICE: overlay {}",
             rc_overlay.describe()
         );
@@ -19692,27 +19655,6 @@ mod stopped_at_screen_tests {
             ),
             "normal IDLE_KEEPALIVE still fires once 1,000 ms have elapsed"
         );
-    }
-
-    #[test]
-    fn parse_dtls_flight_interval_ms_defaults_to_zero_and_supports_explicit_opt_in() {
-        assert_eq!(parse_dtls_flight_interval_ms(None), Duration::ZERO);
-        assert_eq!(parse_dtls_flight_interval_ms(Some("")), Duration::ZERO);
-        assert_eq!(
-            parse_dtls_flight_interval_ms(Some("100")),
-            Duration::from_millis(100)
-        );
-        assert_eq!(
-            parse_dtls_flight_interval_ms(Some("150")),
-            Duration::from_millis(150)
-        );
-        for legacy in ["0", "1000", "legacy", "off", "false", "FALSE"] {
-            assert_eq!(
-                parse_dtls_flight_interval_ms(Some(legacy)),
-                Duration::ZERO,
-                "legacy value `{legacy}` must restore upstream 1 s fixed timer"
-            );
-        }
     }
 
     #[test]
