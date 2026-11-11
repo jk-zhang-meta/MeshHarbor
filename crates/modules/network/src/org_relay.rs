@@ -2778,21 +2778,38 @@ async fn plan_mint_candidates_with_trial_diagnostics(
         });
     }
 
-    // Rank: a relay BOTH members have measured reachable wins, by RTT; never
-    // measured next; one a member measured unreachable after; one whose last
-    // session for this pair never bound last of all — last, not excluded,
-    // because a stale negative must not starve the only relay.
+    // Rank by [`mint_class`], then RTT. Nothing is excluded: a stale negative
+    // must not starve the only relay.
     candidates.sort_by_key(|c| {
         let relay_id = c.relay.id.unwrap_or_default();
         let (class, rtt) = rank_key(state, req_id, peer_id, relay_id, now);
-        let class = if state.org_relay.is_unbound_demoted(&pk, relay_id, now) {
-            3
-        } else {
-            class
-        };
+        let class = mint_class(
+            class,
+            state.org_relay.is_unbound_demoted(&pk, relay_id, now),
+        );
         (class, rtt, state.org_relay.sessions_on_relay(relay_id))
     });
     Ok(candidates)
+}
+
+/// A candidate relay's class for a pair's mint, best first: `0` both members
+/// measured it reachable; `1` unmeasured; `2` its last session for this pair
+/// never bound ([`UNBOUND_DEMOTE`]); `3` a member's newest measurement says
+/// it cannot reach it (`measured` is [`rank_key`]'s class).
+///
+/// A relay a member measures unreachable NOW is tried after one that only
+/// failed this pair a moment ago: the demotion is a guess about a relay
+/// nobody saw fail, the measurement is not. The two used to share the last
+/// class, and its tie went to the unreachable relay, because an unreachable
+/// leg adds no RTT. A pair whose first relay had recovered inside the
+/// demotion window was then re-minted onto its second relay while that one
+/// was frozen (item 6: two failures less than `UNBOUND_DEMOTE` apart).
+fn mint_class(measured: u8, unbound_demoted: bool) -> u8 {
+    match (measured, unbound_demoted) {
+        (2.., _) => 3,
+        (_, true) => 2,
+        (class, false) => class,
+    }
 }
 
 /// A relay's rank for the pair `a`–`b`: its class (0 both measured it
@@ -5425,6 +5442,25 @@ pub(crate) fn reported_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Item 6 — a relay a member measures unreachable now ranks behind one
+    /// that was only demoted for the pair, so two failures inside the
+    /// demotion window send the pair back to the recovered relay instead of
+    /// re-minting it onto the frozen one.
+    #[test]
+    fn an_unreachable_relay_ranks_behind_one_that_was_only_demoted() {
+        // Unchanged: reachable, then unmeasured, then a demoted relay.
+        assert!(mint_class(0, false) < mint_class(1, false));
+        assert!(mint_class(1, false) < mint_class(0, true));
+        assert!(mint_class(1, false) < mint_class(1, true));
+        // The fix: measured unreachable is last, demoted or not ...
+        assert!(mint_class(0, true) < mint_class(2, false));
+        assert!(mint_class(1, true) < mint_class(2, false));
+        assert_eq!(mint_class(2, true), mint_class(2, false));
+        // ... so the recovered-but-demoted relay beats the frozen one that
+        // has just been demoted too.
+        assert!(mint_class(0, true) < mint_class(2, true));
+    }
 
     #[test]
     fn trial_zone_party_read_budget_bounds_starts_per_window() {
