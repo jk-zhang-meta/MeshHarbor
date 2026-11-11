@@ -200,8 +200,20 @@ pub fn allocate_session_loopback_ip() -> std::net::Ipv4Addr {
     std::net::Ipv4Addr::new(127, 77, x, y)
 }
 
-/// Bind a unique per-session local loopback listener in `127.77.x.y:0`.
+/// Bind the per-session local loopback listener the RDP client connects to.
+///
+/// Windows binds a unique `127.77.x.y:0`: the `TERMSRV/<ip>` credential target
+/// that lets `mstsc.exe` log on without a prompt is keyed by that address, so it
+/// must never collide with another session or a user-saved `127.0.0.1` entry.
+/// Every other platform binds `127.0.0.1:0`. macOS configures only `127.0.0.1`
+/// on `lo0`, so a `127.77.x.y` bind fails there (`EADDRNOTAVAIL`), and FreeRDP
+/// keys nothing by the loopback address.
 pub async fn bind_unique_session_loopback_listener() -> Result<tokio::net::TcpListener> {
+    if !cfg!(windows) {
+        return tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .context("failed to bind local per-session loopback listener for RDP tunnel");
+    }
     let mut last_err = None;
     for _ in 0..8 {
         let ip = allocate_session_loopback_ip();
@@ -2959,6 +2971,36 @@ mod tests {
         assert!(err_b.to_string().contains("经网格无法连到目标 RDP 端口"));
         pump_b.abort();
         srv_b.abort();
+    }
+
+    #[tokio::test]
+    async fn session_loopback_listener_is_unique_127_77_on_windows_and_localhost_elsewhere() {
+        let a = bind_unique_session_loopback_listener().await.unwrap();
+        let b = bind_unique_session_loopback_listener().await.unwrap();
+        let (sa, sb) = (a.local_addr().unwrap(), b.local_addr().unwrap());
+        assert!(sa.ip().is_loopback() && sb.ip().is_loopback());
+        assert_ne!(
+            sa, sb,
+            "two concurrent sessions must never share a listener"
+        );
+        if cfg!(windows) {
+            for ip in [sa.ip(), sb.ip()] {
+                match ip {
+                    std::net::IpAddr::V4(v4) => assert_eq!(v4.octets()[..2], [127, 77]),
+                    std::net::IpAddr::V6(_) => panic!("session loopback must be IPv4"),
+                }
+            }
+            assert_ne!(
+                sa.ip(),
+                sb.ip(),
+                "Windows TERMSRV/<ip> targets must stay unique per session"
+            );
+        } else {
+            // macOS has only 127.0.0.1 on lo0; a 127.77.x.y bind would fail there.
+            let localhost = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+            assert_eq!(sa.ip(), localhost);
+            assert_eq!(sb.ip(), localhost);
+        }
     }
 
     #[test]
