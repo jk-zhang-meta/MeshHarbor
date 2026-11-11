@@ -248,6 +248,109 @@ struct ChildPeerHandle {
     stop: tokio_util::sync::CancellationToken,
 }
 
+/// Default initial DTLS flight retransmission interval (`0 ms`, disabled by
+/// default so `webrtc-dtls` uses its upstream `1 s` fixed timer unless explicitly
+/// enabled via `MESHHARBORD_DTLS_FLIGHT_INTERVAL_MS=100`).
+pub const DEFAULT_DTLS_FLIGHT_INTERVAL_MS: u64 = 0;
+
+pub fn parse_dtls_flight_interval_ms(raw: Option<&str>) -> Duration {
+    let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Duration::from_millis(DEFAULT_DTLS_FLIGHT_INTERVAL_MS);
+    };
+    if s == "0"
+        || s == "1000"
+        || s.eq_ignore_ascii_case("legacy")
+        || s.eq_ignore_ascii_case("off")
+        || s.eq_ignore_ascii_case("false")
+    {
+        return Duration::ZERO;
+    }
+    match s.parse::<u64>() {
+        Ok(ms) => Duration::from_millis(ms.clamp(20, 5000)),
+        Err(_) => Duration::from_millis(DEFAULT_DTLS_FLIGHT_INTERVAL_MS),
+    }
+}
+
+pub fn dtls_flight_interval_from_env() -> Duration {
+    let val = node_env("DTLS_FLIGHT_INTERVAL_MS")
+        .or_else(|| std::env::var("MESHHARBOR_DTLS_FLIGHT_INTERVAL_MS").ok());
+    parse_dtls_flight_interval_ms(val.as_deref())
+}
+
+/// Default bounded wait (`50 ms`) after `set_local_description` for all local
+/// network interfaces' `host` candidates to finish gathering so they can be
+/// included directly in `rc:sdp.answer`. Setting `MESHHARBORD_ANSWER_WAIT_HOST_MS=0`
+/// (or `off`/`false`/`no`) restores immediate answer return.
+pub const DEFAULT_ANSWER_WAIT_HOST_MS: u64 = 50;
+
+/// Quiet window (`10 ms`) after at least one local `host` candidate has been
+/// gathered: `webrtc-ice`'s `gather_candidates_local` binds UDP sockets in a
+/// tight loop across all local interfaces (~2-4 ms apart), so once no new
+/// `host` candidate arrives for `10 ms`, all local interfaces' `host`
+/// candidates have been gathered.
+const ANSWER_HOST_QUIET_WINDOW_MS: u64 = 10;
+
+pub fn parse_answer_wait_host_ms(raw: Option<&str>) -> Duration {
+    let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Duration::from_millis(DEFAULT_ANSWER_WAIT_HOST_MS);
+    };
+    if s == "0"
+        || s.eq_ignore_ascii_case("off")
+        || s.eq_ignore_ascii_case("false")
+        || s.eq_ignore_ascii_case("no")
+    {
+        return Duration::ZERO;
+    }
+    match s.parse::<u64>() {
+        Ok(0) => Duration::ZERO,
+        Ok(ms) => Duration::from_millis(ms.clamp(5, 250)),
+        Err(_) => Duration::from_millis(DEFAULT_ANSWER_WAIT_HOST_MS),
+    }
+}
+
+pub fn answer_wait_host_ms_from_env() -> Duration {
+    let val = node_env("ANSWER_WAIT_HOST_MS")
+        .or_else(|| std::env::var("MESHHARBOR_ANSWER_WAIT_HOST_MS").ok());
+    parse_answer_wait_host_ms(val.as_deref())
+}
+
+pub fn parse_rc_initial_resolution_enabled(raw: Option<&str>) -> bool {
+    !matches!(
+        raw.map(str::trim),
+        Some(v)
+            if v == "0"
+                || v.eq_ignore_ascii_case("off")
+                || v.eq_ignore_ascii_case("false")
+                || v.eq_ignore_ascii_case("no")
+    )
+}
+
+pub fn rc_initial_resolution_enabled_from_env() -> bool {
+    let val = node_env("RC_INITIAL_RESOLUTION")
+        .or_else(|| std::env::var("MESHHARBOR_RC_INITIAL_RESOLUTION").ok());
+    parse_rc_initial_resolution_enabled(val.as_deref())
+}
+
+pub(crate) fn parse_initial_target_resolution(
+    init: &meshharbor_remote_control::signaling::InitialResolution,
+) -> Option<TargetResolution> {
+    match init.mode.trim() {
+        "original" => Some(TargetResolution::Native),
+        mode @ ("fit" | "custom") => {
+            let raw_w = init.max_w.filter(|&w| w > 0)?;
+            let raw_h = init.max_h.filter(|&h| h > 0)?;
+            let width = (raw_w & !1).max(160);
+            let height = (raw_h & !1).max(90);
+            if mode == "fit" {
+                Some(TargetResolution::Fit { width, height })
+            } else {
+                Some(TargetResolution::Fixed { width, height })
+            }
+        }
+        _ => None,
+    }
+}
+
 pub struct AgentPeer {
     file_child_authorization: Arc<std::sync::Mutex<FileChildAuthorization>>,
     ice_servers: Vec<IceServer>,
@@ -318,6 +421,11 @@ pub struct AgentPeer {
     /// delegation channel, relayed by the daemon under the DAEMON's identity,
     /// which is the identity the session row carries.
     outbound: mpsc::Sender<ClientMsg>,
+    target_resolution: Arc<std::sync::Mutex<TargetResolution>>,
+    initial_resolution_applied: Arc<std::sync::atomic::AtomicBool>,
+    host_candidate_count: Arc<std::sync::atomic::AtomicU32>,
+    host_gather_done: Arc<std::sync::atomic::AtomicBool>,
+    host_candidate_notify: Arc<tokio::sync::Notify>,
 }
 
 /// FR-16 L0 — the in-process latency harness's one seam into a session.
@@ -514,6 +622,13 @@ impl AgentPeer {
         // replay windows pinned at 64 (webrtc-srtp's session default too).
         let transport = crate::rc_transport::Policy::from_env();
         transport.apply(&mut setting);
+        let dtls_flight_interval = dtls_flight_interval_from_env();
+        setting.set_dtls_flight_interval(dtls_flight_interval);
+        let dtls_flight_interval_ms = if dtls_flight_interval.is_zero() {
+            1000
+        } else {
+            dtls_flight_interval.as_millis() as u64
+        };
         // FR-16 L0 — the loopback harness routes this session's ICE through a
         // webrtc-util vnet (a set delay, jitter and loss). Only the test-only
         // `synthetic-frame-source` build carries the hook. Applied last, so
@@ -525,6 +640,7 @@ impl AgentPeer {
             overlay_blocks = rc_overlay.v4_nets.len(),
             srtp_replay_window = transport.replay_window,
             dtls_gcm_only = transport.gcm_only,
+            dtls_flight_interval_ms,
             "rc ICE: overlay {}",
             rc_overlay.describe()
         );
@@ -717,6 +833,10 @@ impl AgentPeer {
         // sync pump loop and writes from the async DC callback are
         // both brief.
         let target_resolution = Arc::new(std::sync::Mutex::new(TargetResolution::Native));
+        let initial_resolution_applied = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let host_candidate_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let host_gather_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let host_candidate_notify = Arc::new(tokio::sync::Notify::new());
         // Native (pre-downscale) capture dimensions, published by the
         // active media pump each frame (packed w:h) so the cursor pump can
         // express the OS cursor position in the encoded frame's pixel
@@ -922,22 +1042,64 @@ impl AgentPeer {
         {
             let tx = outbound.clone();
             let tally = Arc::new(GatherTally::default());
+            let first_host_logged = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let host_count_for_cb = host_candidate_count.clone();
+            let host_done_for_cb = host_gather_done.clone();
+            let host_notify_for_cb = host_candidate_notify.clone();
             pc.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
                 let tx = tx.clone();
                 let tally = tally.clone();
+                let first_host_logged = first_host_logged.clone();
+                let host_count_for_cb = host_count_for_cb.clone();
+                let host_done_for_cb = host_done_for_cb.clone();
+                let host_notify_for_cb = host_notify_for_cb.clone();
                 Box::pin(async move {
                     let Some(c) = c else {
                         // webrtc-rs signals end-of-gather with `None`.
+                        host_done_for_cb.store(true, std::sync::atomic::Ordering::SeqCst);
+                        host_notify_for_cb.notify_waiters();
                         tally.log_summary(session_id, relay_tcp);
                         return;
                     };
                     tally.note(c.typ);
+                    let elapsed_us = peer_created_at.elapsed().as_micros() as u64;
+                    let elapsed_ms = peer_created_at.elapsed().as_millis() as u64;
+                    let ip_category = crate::session_carrier::classify_ip_category(&c.address);
+                    if c.typ == webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType::Host
+                    {
+                        host_count_for_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        host_notify_for_cb.notify_waiters();
+                        if !first_host_logged.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                            info!(
+                                %session_id,
+                                elapsed_ms,
+                                elapsed_us,
+                                protocol = %c.protocol,
+                                ip_category,
+                                "ICE: first local host candidate gathered"
+                            );
+                            #[cfg(feature = "rc-latency-bench")]
+                            crate::latency_bench::note_stage(
+                                session_id,
+                                "first_local_host_candidate",
+                                serde_json::json!({
+                                    "elapsed_ms": elapsed_ms,
+                                    "elapsed_us": elapsed_us,
+                                    "protocol": c.protocol.to_string(),
+                                    "ip_category": ip_category,
+                                }),
+                            );
+                        }
+                    }
                     info!(
                         %session_id,
                         typ = %c.typ,
                         protocol = %c.protocol,
                         address = %c.address,
                         port = c.port,
+                        ip_category,
+                        elapsed_ms,
+                        elapsed_us,
                         related = %format_args!("{}:{}", c.related_address, c.related_port),
                         "ICE: gathered local candidate"
                     );
@@ -1729,6 +1891,7 @@ impl AgentPeer {
             encoder_preference,
             chosen_codec,
             target_resolution.clone(),
+            initial_resolution_applied.clone(),
             negotiated_transport,
             chroma_pref,
             chunk_framing,
@@ -1773,7 +1936,36 @@ impl AgentPeer {
             _sleep_notice: sleep_notice,
             carrier,
             outbound,
+            target_resolution,
+            initial_resolution_applied,
+            host_candidate_count,
+            host_gather_done,
+            host_candidate_notify,
         })
+    }
+
+    pub fn set_initial_resolution(
+        &self,
+        init: Option<&meshharbor_remote_control::signaling::InitialResolution>,
+    ) {
+        if !rc_initial_resolution_enabled_from_env() {
+            return;
+        }
+        let Some(init) = init else {
+            return;
+        };
+        let Some(target) = parse_initial_target_resolution(init) else {
+            return;
+        };
+        *self.target_resolution.lock().unwrap() = target;
+        self.initial_resolution_applied
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        info!(
+            session = %self.session_id,
+            mode = %init.mode,
+            ?target,
+            "rc: applied initial_resolution from session request before pre-warm"
+        );
     }
 
     /// FR-43 P2b-2 / FR-102 P9d — the sender this peer was constructed with:
@@ -1898,11 +2090,76 @@ impl AgentPeer {
             .await
             .context("set_local_description")?;
 
+        // Wait up to `MESHHARBORD_ANSWER_WAIT_HOST_MS` (default 50 ms) for all
+        // local network interfaces' `host` candidates to finish gathering so
+        // they can be embedded in `rc:sdp.answer` via `pc.local_description()`.
+        let wait_host_budget = answer_wait_host_ms_from_env();
+        let wait_started = std::time::Instant::now();
+        if !wait_host_budget.is_zero() {
+            let deadline = tokio::time::Instant::now() + wait_host_budget;
+            let quiet_window = Duration::from_millis(ANSWER_HOST_QUIET_WINDOW_MS);
+            loop {
+                let notified = self.host_candidate_notify.notified();
+                if self
+                    .host_gather_done
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    break;
+                }
+                let count = self
+                    .host_candidate_count
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                let step_deadline = if count == 0 {
+                    deadline
+                } else {
+                    deadline.min(tokio::time::Instant::now() + quiet_window)
+                };
+                if tokio::time::Instant::now() >= step_deadline {
+                    break;
+                }
+                if tokio::time::timeout_at(step_deadline, notified)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+        let answer_wait_host_ms = wait_started.elapsed().as_millis() as u64;
+        let final_answer = if wait_host_budget.is_zero() {
+            answer
+        } else {
+            self.pc.local_description().await.unwrap_or(answer)
+        };
+
         // Reverse the HEVC → H265 munge on the outgoing answer so the
         // browser's SDP parser recognises the rtpmap subtype.
-        let munged_answer = answer.sdp.replace("HEVC/90000", "H265/90000");
+        let munged_answer = final_answer.sdp.replace("HEVC/90000", "H265/90000");
+        let answer_candidate_count = munged_answer
+            .lines()
+            .filter(|l| l.starts_with("a=candidate:"))
+            .count();
+        let answer_host_candidate_count = munged_answer
+            .lines()
+            .filter(|l| l.starts_with("a=candidate:") && l.contains(" typ host"))
+            .count();
+        info!(
+            session = %self.session_id,
+            answer_candidate_count,
+            answer_host_candidate_count,
+            answer_wait_host_ms,
+            "rc:sdp.answer created"
+        );
         #[cfg(feature = "rc-latency-bench")]
-        crate::latency_bench::note_stage(self.session_id, "answer_created", serde_json::json!({}));
+        crate::latency_bench::note_stage(
+            self.session_id,
+            "answer_created",
+            serde_json::json!({
+                "answer_candidate_count": answer_candidate_count,
+                "answer_host_candidate_count": answer_host_candidate_count,
+                "answer_wait_host_ms": answer_wait_host_ms,
+            }),
+        );
         Ok(munged_answer)
     }
 
@@ -2917,6 +3174,7 @@ async fn media_pump(
     encoder_preference: encode::EncoderPreference,
     chosen_codec: String,
     target_resolution: Arc<std::sync::Mutex<TargetResolution>>,
+    initial_resolution_applied: Arc<std::sync::atomic::AtomicBool>,
     negotiated_transport: Option<String>,
     chroma_pref: Option<String>,
     // FR-17 — the controller can parse the framed DataChannel wire format.
@@ -3147,7 +3405,8 @@ async fn media_pump(
         #[cfg(feature = "ffmpeg-encoder")]
         {
             let wants_444 = matches!(chroma_pref.as_deref(), Some("yuv444"));
-            if crate::encode::ffmpeg::available() {
+            if crate::encode::ffmpeg::available() && !crate::encode::caps::hw_probe_failed_for_run()
+            {
                 use crate::encode::ffmpeg::FfmpegEncoder;
                 // FR-77 P3b — a 4:4:4 session tries the HARDWARE profile-1
                 // cell first (vp9_qsv over packed VUYX, `cells::names_444`);
@@ -3155,16 +3414,21 @@ async fn media_pump(
                 // The quick probe opens the exact cell at the caps-probe
                 // resolution, so a host that cannot open it falls to libvpx —
                 // the path that emits profile 1 in software — transparently.
-                let probe = if wants_444 {
-                    crate::encode::cells::names_444(
-                        meshharbor_remote_control::models::VideoCodec::Vp9,
-                    )
-                    .first()
-                    .copied()
-                    .and_then(|name| FfmpegEncoder::new_named_probe(name, 480, 270, true).ok())
-                } else {
-                    FfmpegEncoder::new_vp9(480, 270).ok()
-                };
+                let probe = tokio::task::spawn_blocking(move || {
+                    if wants_444 {
+                        crate::encode::cells::names_444(
+                            meshharbor_remote_control::models::VideoCodec::Vp9,
+                        )
+                        .first()
+                        .copied()
+                        .and_then(|name| FfmpegEncoder::new_named_probe(name, 480, 270, true).ok())
+                    } else {
+                        FfmpegEncoder::new_vp9(480, 270).ok()
+                    }
+                })
+                .await
+                .ok()
+                .flatten();
                 if let Some(enc) = probe {
                     drop(enc);
                     tracing::info!(
@@ -3739,12 +4003,13 @@ async fn media_pump(
             let encoder_init_started = std::time::Instant::now();
             #[cfg(feature = "rc-latency-bench")]
             let encoder_init_start_agent_us = agent_epoch_us();
-            let (enc, actual) = encode::open_for_codec(
-                &chosen_codec,
+            let (enc, actual) = encode::open_for_codec_async(
+                chosen_codec.clone(),
                 frame.width,
                 frame.height,
                 encoder_preference,
-            );
+            )
+            .await;
             let encoder_init_ms = encoder_init_started.elapsed().as_millis() as u64;
             #[cfg(feature = "rc-latency-bench")]
             crate::latency_bench::note_stage(
@@ -3853,7 +4118,9 @@ async fn media_pump(
                     native_dims.1,
                 );
                 let mut auto_downscale_just_fired = false;
-                if let Some(cap) = sw_cap_long_edge {
+                if !initial_resolution_applied.load(std::sync::atomic::Ordering::SeqCst)
+                    && let Some(cap) = sw_cap_long_edge
+                {
                     let (tw, th) = aspect_preserved_target(frame.width, frame.height, cap);
                     let mut guard = target_resolution.lock().unwrap();
                     if matches!(*guard, TargetResolution::Native) {
@@ -3972,14 +4239,33 @@ async fn media_pump(
                         std::sync::atomic::Ordering::Relaxed,
                     );
                     let downscaled_init_started = std::time::Instant::now();
-                    let (enc, _actual) = encode::open_for_codec(
-                        &chosen_codec,
+                    #[cfg(feature = "rc-latency-bench")]
+                    let downscaled_init_start_agent_us = agent_epoch_us();
+                    #[cfg_attr(not(feature = "rc-latency-bench"), allow(unused_variables))]
+                    let (enc, actual_downscaled) = encode::open_for_codec_async(
+                        chosen_codec.clone(),
                         frame.width,
                         frame.height,
                         encoder_preference,
-                    );
+                    )
+                    .await;
                     let downscaled_init_ms = downscaled_init_started.elapsed().as_millis() as u64;
                     let downscaled_backend = enc.name();
+                    #[cfg(feature = "rc-latency-bench")]
+                    crate::latency_bench::note_stage(
+                        session_id,
+                        "encoder_init_done",
+                        serde_json::json!({
+                            "w": frame.width,
+                            "h": frame.height,
+                            "codec": actual_downscaled.to_string(),
+                            "backend": downscaled_backend,
+                            "rebuild_reason": rebuild_reason,
+                            "encoder_init_start_agent_us": downscaled_init_start_agent_us,
+                            "encoder_init_us": downscaled_init_started.elapsed().as_micros() as u64,
+                            "encoder_init_ms": downscaled_init_ms,
+                        }),
+                    );
                     encoder = Some(enc);
                     encoder_dims = Some((frame.width, frame.height));
                     last_applied_quality = 0xFF;
@@ -5477,7 +5763,12 @@ async fn media_pump_vp9_444_dc(
                 })
                 .unwrap_or_else(crate::encode::libvpx::vp9_chroma_from_env);
             info!(%session_id, w, h, target_fps, chroma = chroma.as_str(), chroma_source = if chroma_pref.is_some() { "session_request" } else { "env_var" }, "VP9-444 encoder rebuild for dims");
-            match Vp9Encoder::new_with_fps_chroma(w, h, target_fps, chroma) {
+            let opened_vp9 = tokio::task::spawn_blocking(move || {
+                Vp9Encoder::new_with_fps_chroma(w, h, target_fps, chroma)
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("VP9 encoder open task failed: {e}")));
+            match opened_vp9 {
                 Ok(e) => {
                     let handle = crate::encode::thread::EncoderHandle::new(
                         e,
@@ -6090,6 +6381,11 @@ impl FfmpegDcCodec {
         constrained: bool,
         preferred: Option<&'static str>,
     ) -> anyhow::Result<crate::encode::ffmpeg::FfmpegEncoder> {
+        if crate::encode::caps::hw_probe_failed_for_run() {
+            anyhow::bail!(
+                "caps-probe child failed or hung during this run — skipping in-process FFmpeg hardware open"
+            );
+        }
         use crate::encode::ffmpeg::FfmpegEncoder;
         if !chroma444
             && let Some(name) = preferred
@@ -19309,5 +19605,167 @@ mod stopped_at_screen_tests {
             ),
             "normal IDLE_KEEPALIVE still fires once 1,000 ms have elapsed"
         );
+    }
+
+    #[test]
+    fn parse_dtls_flight_interval_ms_defaults_to_zero_and_supports_explicit_opt_in() {
+        assert_eq!(parse_dtls_flight_interval_ms(None), Duration::ZERO);
+        assert_eq!(parse_dtls_flight_interval_ms(Some("")), Duration::ZERO);
+        assert_eq!(
+            parse_dtls_flight_interval_ms(Some("100")),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            parse_dtls_flight_interval_ms(Some("150")),
+            Duration::from_millis(150)
+        );
+        for legacy in ["0", "1000", "legacy", "off", "false", "FALSE"] {
+            assert_eq!(
+                parse_dtls_flight_interval_ms(Some(legacy)),
+                Duration::ZERO,
+                "legacy value `{legacy}` must restore upstream 1 s fixed timer"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_answer_wait_host_ms_defaults_to_50ms_and_allows_disable() {
+        assert_eq!(DEFAULT_ANSWER_WAIT_HOST_MS, 50);
+        assert_eq!(
+            parse_answer_wait_host_ms(None),
+            Duration::from_millis(DEFAULT_ANSWER_WAIT_HOST_MS)
+        );
+        assert_eq!(
+            parse_answer_wait_host_ms(Some("")),
+            Duration::from_millis(DEFAULT_ANSWER_WAIT_HOST_MS)
+        );
+        assert_eq!(
+            parse_answer_wait_host_ms(Some("35")),
+            Duration::from_millis(35)
+        );
+        for disabled in ["0", "off", "OFF", "false", "FALSE", "no", "NO"] {
+            assert_eq!(
+                parse_answer_wait_host_ms(Some(disabled)),
+                Duration::ZERO,
+                "disable value `{disabled}` must return Duration::ZERO"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_initial_target_resolution_maps_modes_and_rounds_to_even_dims() {
+        use meshharbor_remote_control::signaling::InitialResolution;
+        assert_eq!(
+            parse_initial_target_resolution(&InitialResolution {
+                mode: "original".into(),
+                max_w: None,
+                max_h: None,
+            }),
+            Some(TargetResolution::Native)
+        );
+        assert_eq!(
+            parse_initial_target_resolution(&InitialResolution {
+                mode: "fit".into(),
+                max_w: Some(947),
+                max_h: Some(679),
+            }),
+            Some(TargetResolution::Fit {
+                width: 946,
+                height: 678,
+            })
+        );
+        assert_eq!(
+            parse_initial_target_resolution(&InitialResolution {
+                mode: "custom".into(),
+                max_w: Some(1280),
+                max_h: Some(720),
+            }),
+            Some(TargetResolution::Fixed {
+                width: 1280,
+                height: 720,
+            })
+        );
+        assert_eq!(
+            parse_initial_target_resolution(&InitialResolution {
+                mode: "fit".into(),
+                max_w: None,
+                max_h: Some(678),
+            }),
+            None
+        );
+        assert!(parse_rc_initial_resolution_enabled(None));
+        assert!(parse_rc_initial_resolution_enabled(Some("1")));
+        assert!(!parse_rc_initial_resolution_enabled(Some("0")));
+        assert!(!parse_rc_initial_resolution_enabled(Some("false")));
+        assert!(!parse_rc_initial_resolution_enabled(Some("off")));
+    }
+
+    #[tokio::test]
+    async fn handle_offer_embeds_host_candidates_by_default() {
+        use meshharbor_remote_control::permissions::Permissions;
+        use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+        use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+        use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+
+        let session_id = bson::oid::ObjectId::new();
+        let (tx, _rx) = mpsc::channel(32);
+        let peer = AgentPeer::new(
+            session_id,
+            &[],
+            tx,
+            crate::encode::EncoderPreference::Software,
+            "h264".into(),
+            "h264".into(),
+            None,
+            None,
+            false,
+            false,
+            Permissions::VIEW,
+            "v0021-host-cand-test".into(),
+            None,
+            crate::rc_overlay::RcOverlay::default(),
+            crate::rc_sessions::RcSessionRegistry::new(),
+            mpsc::channel(1).0,
+        )
+        .await
+        .expect("AgentPeer::new");
+
+        let mut engine = MediaEngine::default();
+        engine
+            .register_default_codecs()
+            .expect("register_default_codecs");
+        let api = APIBuilder::new().with_media_engine(engine).build();
+        let offer_pc = api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("offer_pc");
+        offer_pc
+            .add_transceiver_from_kind(
+                webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video,
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Recvonly,
+                    send_encodings: Vec::new(),
+                }),
+            )
+            .await
+            .expect("video transceiver");
+        let _dc = offer_pc
+            .create_data_channel("control", None)
+            .await
+            .expect("control dc");
+        let offer = offer_pc.create_offer(None).await.expect("create_offer");
+        let _ = offer_pc.close().await;
+        let _ = RTCRtpCodecCapability::default();
+
+        let answer_sdp = peer.handle_offer(offer.sdp).await.expect("handle_offer");
+        let host_cands: Vec<&str> = answer_sdp
+            .lines()
+            .filter(|l| l.starts_with("a=candidate:") && l.contains(" typ host"))
+            .collect();
+        assert!(
+            !host_cands.is_empty(),
+            "default handle_offer must embed gathered host candidates in rc:sdp.answer, got sdp:\n{answer_sdp}"
+        );
+        peer.close().await;
     }
 }

@@ -229,6 +229,48 @@ async fn overlay_path(remote_addr: &str) -> Option<OverlayPath> {
     })
 }
 
+/// Classify an IP address string into a privacy-safe network category
+/// (`lan_rfc1918`, `cgnat_100_64`, `public`, `loopback`, etc.) without
+/// exposing the literal address.
+pub fn classify_ip_category(addr: &str) -> &'static str {
+    let host = addr
+        .rsplit_once(':')
+        .map(|(h, _)| h.trim_matches(&['[', ']'][..]))
+        .unwrap_or(addr);
+    let ip = host
+        .parse::<std::net::IpAddr>()
+        .or_else(|_| addr.parse::<std::net::IpAddr>());
+    match ip {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            let octets = v4.octets();
+            if v4.is_loopback() {
+                "loopback"
+            } else if v4.is_private() {
+                "lan_rfc1918"
+            } else if octets[0] == 100 && (octets[1] & 0b1100_0000) == 64 {
+                "cgnat_100_64"
+            } else if v4.is_link_local() {
+                "link_local"
+            } else {
+                "public"
+            }
+        }
+        Ok(std::net::IpAddr::V6(v6)) => {
+            let seg0 = v6.segments()[0];
+            if v6.is_loopback() {
+                "loopback"
+            } else if (seg0 & 0xfe00) == 0xfc00 {
+                "ula_ipv6"
+            } else if (seg0 & 0xffc0) == 0xfe80 {
+                "link_local_ipv6"
+            } else {
+                "public_ipv6"
+            }
+        }
+        Err(_) => "mdns_or_hostname",
+    }
+}
+
 /// Observe the carrier of a session that just reached `Connected`: wait for
 /// the nomination, settle, read the pair once more, ask the overlay when the
 /// remote is one of its addresses, and record what the rule says. Logged at
@@ -239,6 +281,28 @@ pub async fn observe(pc: &RTCPeerConnection, session_id: bson::oid::ObjectId) ->
         debug!(%session_id, "session carrier: no nominated pair within the wait — unknown");
         return SessionCarrier::Unknown;
     };
+    let initial_local_cat = classify_ip_category(&first.local_addr);
+    let initial_remote_cat = classify_ip_category(&first.remote_addr);
+    info!(
+        %session_id,
+        phase = "initial",
+        local_typ = ?first.local_kind,
+        local_ip_category = initial_local_cat,
+        remote_typ = ?first.remote_kind,
+        remote_ip_category = initial_remote_cat,
+        "selected_candidate_pair_category"
+    );
+    #[cfg(feature = "rc-latency-bench")]
+    crate::latency_bench::note_stage(
+        session_id,
+        "selected_candidate_pair_initial",
+        serde_json::json!({
+            "local_typ": format!("{:?}", first.local_kind),
+            "local_ip_category": initial_local_cat,
+            "remote_typ": format!("{:?}", first.remote_kind),
+            "remote_ip_category": initial_remote_cat,
+        }),
+    );
     tokio::time::sleep(SETTLE).await;
     let pair = nominated_pair(pc, Duration::from_millis(500))
         .await
@@ -249,6 +313,30 @@ pub async fn observe(pc: &RTCPeerConnection, session_id: bson::oid::ObjectId) ->
         None
     };
     let carrier = carrier_of(&pair, overlay.as_ref());
+    let settled_local_cat = classify_ip_category(&pair.local_addr);
+    let settled_remote_cat = classify_ip_category(&pair.remote_addr);
+    info!(
+        %session_id,
+        phase = "settled",
+        carrier = carrier.as_str(),
+        local_typ = ?pair.local_kind,
+        local_ip_category = settled_local_cat,
+        remote_typ = ?pair.remote_kind,
+        remote_ip_category = settled_remote_cat,
+        "selected_candidate_pair_category"
+    );
+    #[cfg(feature = "rc-latency-bench")]
+    crate::latency_bench::note_stage(
+        session_id,
+        "selected_candidate_pair_settled",
+        serde_json::json!({
+            "carrier": carrier.as_str(),
+            "local_typ": format!("{:?}", pair.local_kind),
+            "local_ip_category": settled_local_cat,
+            "remote_typ": format!("{:?}", pair.remote_kind),
+            "remote_ip_category": settled_remote_cat,
+        }),
+    );
     info!(
         %session_id,
         carrier = carrier.as_str(),
@@ -472,5 +560,15 @@ mod tests {
             CandidateKind::from(T::Unspecified),
             CandidateKind::Unspecified
         );
+    }
+
+    #[test]
+    fn classify_ip_category_buckets_private_cgnat_and_public_ranges() {
+        assert_eq!(classify_ip_category("192.168.1.10"), "lan_rfc1918");
+        assert_eq!(classify_ip_category("100.64.0.10"), "cgnat_100_64");
+        assert_eq!(classify_ip_category("203.0.113.5"), "public");
+        assert_eq!(classify_ip_category("127.0.0.1"), "loopback");
+        assert_eq!(classify_ip_category("2001:db8::1"), "public_ipv6");
+        assert_eq!(classify_ip_category("peer-a.local"), "mdns_or_hostname");
     }
 }

@@ -247,6 +247,7 @@ type SessionMeta = (
     Option<u32>,
     Option<meshharbor_remote_control::models::LockOnEnd>,
     Option<PendingFileChildParent>,
+    Option<meshharbor_remote_control::signaling::InitialResolution>,
 );
 
 /// A candidate from the server Request, never a claim from control/proof JSON.
@@ -2854,6 +2855,7 @@ async fn connect_once(
                                         // FR-99 P3b — and so is the lock ask.
                                         p.lock_on_end,
                                         None,
+                                        p.initial_resolution,
                                     ),
                                 );
                                 info!(session_id = %sid, "delegation: session params received");
@@ -3755,6 +3757,7 @@ async fn handle_server_msg(
             // the session's start.
             lock_on_end,
             external,
+            initial_resolution,
         } => {
             if !shared_leases.note_optional(session_id, shared_lease.as_ref()) {
                 let _ = reply_for_session(
@@ -3913,6 +3916,7 @@ async fn handle_server_msg(
                     // FR-99 P3b — `None` from an older server: no ask.
                     lock_on_end,
                     None,
+                    initial_resolution.clone(),
                 ),
             );
             info!(
@@ -3923,6 +3927,7 @@ async fn handle_server_msg(
                 requested_transport = ?preferred_transport,
                 negotiated_transport = ?negotiated_transport,
                 chroma_pref = ?chroma_pref,
+                initial_resolution = ?initial_resolution,
                 audio_requested = audio_enabled,
                 audio_negotiated,
                 consent_mode = ?consent_broker.mode(),
@@ -4088,6 +4093,7 @@ async fn handle_server_msg(
                         // FR-99 P3b — and takes the lock ask into the lock:
                         // the session goes live in its process.
                         lock_on_end,
+                        initial_resolution: initial_resolution.clone(),
                     }),
                 ));
                 if !sent {
@@ -4453,6 +4459,7 @@ async fn handle_server_msg(
                 idle_secs,
                 lock_ask,
                 pending_file_child_parent,
+                initial_resolution,
             ) = pending_session_meta.remove(&session_id).unwrap_or_else(|| {
                 (
                     "Controller".to_string(),
@@ -4460,6 +4467,7 @@ async fn handle_server_msg(
                     None,
                     None,
                     crate::rc_overlay::RcOverlay::resolve(false),
+                    None,
                     None,
                     None,
                     None,
@@ -4559,6 +4567,7 @@ async fn handle_server_msg(
                 close_within_budget(peer.close(), session_id, "shared_lease_expired").await;
                 return Ok(());
             }
+            peer.set_initial_resolution(initial_resolution.as_ref());
             // Only the actual local Request/consent candidate may bind; worker
             // params and unsupported sources have no candidate to inherit.
             let _ = crate::peer::bind_file_child_parent(

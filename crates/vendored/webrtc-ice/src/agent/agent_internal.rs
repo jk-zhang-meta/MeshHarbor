@@ -53,6 +53,7 @@ pub struct AgentInternal {
     pub(crate) is_controlling: AtomicBool,
     pub(crate) lite: AtomicBool,
     pub(crate) controlled_probe_late_direct: AtomicBool,
+    pub(crate) controlled_fast_nomination: AtomicBool,
     pub(crate) ip_filter: Arc<Option<IpFilterFn>>,
 
     pub(crate) start_time: SyncMutex<Instant>,
@@ -134,6 +135,14 @@ impl AgentInternal {
             controlled_probe_late_direct: AtomicBool::new(
                 super::agent_selector::controlled_probe_late_direct_policy(
                     std::env::var("MESHHARBOR_ICE_CONTROLLED_PROBE_LATE_DIRECT")
+                        .ok()
+                        .as_deref(),
+                ),
+            ),
+            controlled_fast_nomination: AtomicBool::new(
+                super::agent_selector::controlled_fast_nomination_policy(
+                    std::env::var("MESHHARBOR_ICE_FAST_NOMINATION")
+                        .or_else(|_| std::env::var("MESHHARBORD_ICE_FAST_NOMINATION"))
                         .ok()
                         .as_deref(),
                 ),

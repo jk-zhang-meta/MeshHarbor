@@ -228,6 +228,9 @@ pub struct SessionParams {
     /// the field) leaves the owner's own `lock_on_end`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock_on_end: Option<meshharbor_remote_control::models::LockOnEnd>,
+    /// Optional initial resolution preference forwarded from `Request.initial_resolution`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_resolution: Option<meshharbor_remote_control::signaling::InitialResolution>,
 }
 
 /// FR-85 P1e-mac — what a delegated session's `record` channel needs, carried
@@ -1989,6 +1992,7 @@ mod params_tests {
             rc_overlay: None,
             idle_secs: None,
             lock_on_end: None,
+            initial_resolution: None,
         };
         let wire = serde_json::to_string(&DelegateFrame::SessionParams(Box::new(params)))
             .expect("serialises");
@@ -2031,6 +2035,7 @@ mod params_tests {
             rc_overlay: None,
             idle_secs: None,
             lock_on_end: None,
+            initial_resolution: None,
         };
         let track = serde_json::to_string(&p).unwrap();
         p.transport = Some("data-channel-h264".into());
@@ -2058,6 +2063,7 @@ mod params_tests {
             rc_overlay: None,
             idle_secs: None,
             lock_on_end: None,
+            initial_resolution: None,
         }
     }
 
@@ -2388,6 +2394,7 @@ mod shared_lease_delegation_tests {
                 rc_overlay: None,
                 idle_secs: None,
                 lock_on_end: None,
+                initial_resolution: None,
             }))
         };
         assert!(!host.send_params(params()));
@@ -2459,6 +2466,7 @@ mod shared_lease_params_scope_regressions {
             rc_overlay: None,
             idle_secs: None,
             lock_on_end: None,
+            initial_resolution: None,
         };
         let raw = serde_json::to_string(&DelegateFrame::SessionParams(Box::new(params))).unwrap();
         let DelegateFrame::SessionParams(p) = serde_json::from_str(&raw).unwrap() else {

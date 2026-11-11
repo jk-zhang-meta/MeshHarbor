@@ -199,6 +199,12 @@ pub(super) fn activate_and_probe_pipeline_for_codec(
     width: u32,
     height: u32,
 ) -> Result<MfPipeline> {
+    if crate::encode::caps::hw_probe_failed_for_run() {
+        return Err(anyhow!(
+            "mf-encoder: caps-probe child failed or hung in this run — refusing in-process MF probe for {}",
+            codec.backend_name()
+        ));
+    }
     let deny = crate::encode::cells::denied_cells();
     if crate::encode::caps::mf_codec_denied(&deny, codec.backend_name()) {
         return Err(anyhow!(

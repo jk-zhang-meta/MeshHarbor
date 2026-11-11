@@ -131,7 +131,7 @@ pub fn summarize_cached() -> tunnel_core::localapi::EncoderCapsSummary {
 /// as "codec unavailable"**. That retires the whole class rather than the one
 /// CUDA symptom: any future driver that faults, hangs, or calls `exit()` costs
 /// this host its HW advertisement and nothing more.
-mod child {
+pub(crate) mod child {
     use super::AgentCaps;
     use meshharbor_remote_control::models::{ChromaFormat, VideoBackend, VideoCodec};
 
@@ -174,7 +174,7 @@ mod child {
     /// lift. It rides this envelope now and the parent installs it
     /// (`install_vp9_qsv_idr`), and the cache keeps it with the caps.
     #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-    pub(super) struct ProbeReport {
+    pub(crate) struct ProbeReport {
         pub(super) caps: AgentCaps,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub(super) vp9_qsv_idr: Option<(bool, bool)>,
@@ -987,6 +987,7 @@ fn cached_or_probed() -> AgentCaps {
                     hardware = %key.hardware,
                     "caps probe: cache hit — reusing the last probe's encoder matrix"
                 );
+                clear_hw_probe_failed_for_run();
                 install_vp9_qsv_idr(hit.vp9_qsv_idr);
                 return merge_cached(hit);
             }
@@ -1005,49 +1006,86 @@ fn cached_or_probed() -> AgentCaps {
         _ => tracing::debug!("caps probe: no cache key on this platform — probing"),
     }
 
-    match child::probe() {
-        Some(report) => {
-            install_vp9_qsv_idr(report.vp9_qsv_idr);
-            install_mf_winners_from_child(
-                &report.mf_winners,
-                current_windows_session_id(),
-                &denied_cells(),
+    let outcome = child::probe();
+    let vp9_qsv_idr = outcome.as_ref().and_then(|r| r.vp9_qsv_idr);
+    let (caps, child_succeeded) =
+        resolve_child_probe_outcome(outcome, current_windows_session_id(), &denied_cells());
+    if child_succeeded && let (Some(key), Some(path)) = (key, path) {
+        if cache::worth_caching(&caps) {
+            let file = cache::CacheFile::new(
+                key,
+                now,
+                caps.probe_ms.unwrap_or(0),
+                caps.clone(),
+                vp9_qsv_idr,
             );
-            if let (Some(key), Some(path)) = (key, path) {
-                if cache::worth_caching(&report.caps) {
-                    let file = cache::CacheFile::new(
-                        key,
-                        now,
-                        report.caps.probe_ms.unwrap_or(0),
-                        report.caps.clone(),
-                        report.vp9_qsv_idr,
-                    );
-                    match cache::store(&path, &file) {
-                        Ok(()) => tracing::info!(
-                            path = %path.display(),
-                            "caps probe: result cached for the next start"
-                        ),
-                        Err(e) => tracing::warn!(
-                            %e,
-                            path = %path.display(),
-                            "caps probe: could not write the cache — harmless, the next start probes again"
-                        ),
-                    }
-                } else {
-                    tracing::info!(
-                        "caps probe: no hardware cell opened — not cached (a boot-time driver race must not be frozen for a week)"
-                    );
-                }
+            match cache::store(&path, &file) {
+                Ok(()) => tracing::info!(
+                    path = %path.display(),
+                    "caps probe: result cached for the next start"
+                ),
+                Err(e) => tracing::warn!(
+                    %e,
+                    path = %path.display(),
+                    "caps probe: could not write the cache — harmless, the next start probes again"
+                ),
             }
-            report.caps
+        } else {
+            tracing::info!(
+                "caps probe: no hardware cell opened — not cached (a boot-time driver race must not be frozen for a week)"
+            );
+        }
+    }
+    caps
+}
+
+/// Whether the `caps-probe` child process failed, hung, or could not be
+/// spawned during this daemon run. When `true`, sessions MUST NOT attempt
+/// in-process hardware encoder probing (MF / FFmpeg) and must go straight to
+/// software encoding (`openh264`).
+static HW_PROBE_FAILED_FOR_RUN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn mark_hw_probe_failed_for_run() {
+    HW_PROBE_FAILED_FOR_RUN.store(true, std::sync::atomic::Ordering::Release);
+}
+
+pub(crate) fn clear_hw_probe_failed_for_run() {
+    HW_PROBE_FAILED_FOR_RUN.store(false, std::sync::atomic::Ordering::Release);
+}
+
+pub(crate) fn hw_probe_failed_for_run() -> bool {
+    HW_PROBE_FAILED_FOR_RUN.load(std::sync::atomic::Ordering::Acquire)
+}
+
+#[cfg(test)]
+pub(crate) static HW_PROBE_FAILED_TEST_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
+
+/// Apply the `caps-probe` child outcome to process state (`HW_PROBE_FAILED_FOR_RUN`,
+/// `vp9_qsv_idr`, `MF_CASCADE_WINNERS`) and return `(AgentCaps, child_succeeded)`.
+pub(crate) fn resolve_child_probe_outcome(
+    outcome: Option<child::ProbeReport>,
+    parent_session_id: Option<u32>,
+    deny: &[String],
+) -> (AgentCaps, bool) {
+    match outcome {
+        Some(report) => {
+            clear_hw_probe_failed_for_run();
+            install_vp9_qsv_idr(report.vp9_qsv_idr);
+            install_mf_winners_from_child(&report.mf_winners, parent_session_id, deny);
+            (report.caps, true)
         }
         None => {
-            // The child died, hung, or could not be launched. "Codec
-            // unavailable" is the only honest reading: we have no
-            // evidence this host can encode with any of them, and
-            // advertising one we cannot produce costs a black session.
-            // Everything that needs no driver still stands.
-            compute_caps(false, false)
+            // The child died, hung, or could not be launched. Record that
+            // this run has no hardware encoding so no session later enters
+            // an in-process MF/vendor-driver probe that could hang the daemon.
+            mark_hw_probe_failed_for_run();
+            tracing::warn!(
+                "caps probe: child probe failed or hung — marking hardware encoding unavailable \
+                 for this run; sessions will use software encoding directly without in-process MF probing"
+            );
+            (compute_caps(false, false), false)
         }
     }
 }

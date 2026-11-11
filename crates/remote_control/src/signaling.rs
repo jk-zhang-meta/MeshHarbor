@@ -2014,6 +2014,12 @@ pub enum ClientMsg {
         /// omit it get today's behaviour. See [`LocalRelayDescriptor`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         local_relay: Option<LocalRelayDescriptor>,
+        /// Optional initial resolution preference (`{ mode, max_w, max_h }`)
+        /// carried on `rc:session.request` so the agent can initialize its
+        /// encoder at the target resolution before pre-warming (avoiding
+        /// multiple encoder rebuilds on first frame).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        initial_resolution: Option<InitialResolution>,
     },
 
     /// Controller sends an SDP offer (after consent granted).
@@ -3781,6 +3787,10 @@ pub enum ServerMsg {
         /// agent advertising `RpcCap::ExternalSession`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         external: Option<ExternalGrant>,
+        /// Optional initial resolution preference forwarded verbatim from
+        /// [`ClientMsg::SessionRequest::initial_resolution`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        initial_resolution: Option<InitialResolution>,
     },
 
     /// Server forwards SDP offer from controller → agent.
@@ -6146,6 +6156,21 @@ pub struct LocalRelayDescriptor {
     pub username: String,
     /// coturn-REST credential (hex HMAC-SHA1 over `username`) matching it.
     pub credential: String,
+}
+
+/// Optional initial resolution directive carried in [`ClientMsg::SessionRequest`]
+/// and forwarded in [`ServerMsg::Request`] so the agent can initialize its
+/// encoder once at the target dimensions before pre-warming.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct InitialResolution {
+    /// `"fit"`, `"original"`, or `"custom"`.
+    pub mode: String,
+    /// Target bounding-box width in physical pixels (for `"fit"` / `"custom"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_w: Option<u32>,
+    /// Target bounding-box height in physical pixels (for `"fit"` / `"custom"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_h: Option<u32>,
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -9604,6 +9629,7 @@ mod tests {
             audio_enabled: false,
             override_reason: None,
             local_relay: None,
+            initial_resolution: None,
         };
         let s = serde_json::to_string(&req).unwrap();
         assert!(!s.contains("$oid"));
@@ -9628,6 +9654,7 @@ mod tests {
             audio_enabled: true,
             override_reason: None,
             local_relay: None,
+            initial_resolution: None,
         };
         let s = serde_json::to_string(&req_with_t).unwrap();
         assert!(s.contains("\"preferred_transport\":\"data-channel-vp9-444\""));
@@ -9655,6 +9682,7 @@ mod tests {
                 username: "1700000600:507f1f77bcf86cd799439012".into(),
                 credential: "deadbeef".into(),
             }),
+            initial_resolution: None,
         };
         let s = serde_json::to_string(&req_lr).unwrap();
         assert!(
@@ -9701,6 +9729,7 @@ mod tests {
             idle_secs: None,
             lock_on_end: None,
             external: None,
+            initial_resolution: None,
         };
         let off = serde_json::to_string(&req(false)).unwrap();
         assert!(
@@ -9749,6 +9778,7 @@ mod tests {
             idle_secs: None,
             lock_on_end: None,
             external: None,
+            initial_resolution: None,
         };
         let none = serde_json::to_string(&req(None)).unwrap();
         assert!(!none.contains("session_policy"), "{none}");
@@ -9843,6 +9873,7 @@ mod tests {
             idle_secs,
             lock_on_end: None,
             external: None,
+            initial_resolution: None,
         };
         let none = serde_json::to_string(&req(None)).unwrap();
         assert!(!none.contains("idle_secs"), "{none}");
@@ -9925,6 +9956,7 @@ mod tests {
             idle_secs: None,
             lock_on_end,
             external: None,
+            initial_resolution: None,
         };
         let none = serde_json::to_string(&req(None)).unwrap();
         assert!(!none.contains("lock_on_end"), "{none}");
@@ -9952,6 +9984,121 @@ mod tests {
             }
             _ => panic!("expected Request"),
         }
+    }
+
+    #[test]
+    fn initial_resolution_is_additive_round_trips_and_ignores_unknown_fields() {
+        let sid = ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap();
+        let aid = ObjectId::parse_str("507f1f77bcf86cd799439012").unwrap();
+        let client_req = |initial_resolution| ClientMsg::SessionRequest {
+            share_grant_id: None,
+            agent_id: aid,
+            permissions: Permissions::VIEW | Permissions::INPUT,
+            browser_caps: vec!["h264".into()],
+            preferred_transport: None,
+            chroma_pref: None,
+            chunk_framing: None,
+            audio_enabled: false,
+            override_reason: None,
+            local_relay: None,
+            initial_resolution,
+        };
+        let server_req = |initial_resolution| ServerMsg::Request {
+            shared_lease: None,
+            session_id: sid,
+            controller_user_id: aid,
+            controller_name: "Alice".into(),
+            permissions: Permissions::VIEW | Permissions::INPUT,
+            consent_timeout_secs: 30,
+            browser_caps: vec!["h264".into()],
+            preferred_transport: None,
+            chroma_pref: None,
+            chunk_framing: None,
+            audio_enabled: false,
+            consent_mode: None,
+            host_prompt_timeout_secs: None,
+            input_mode: None,
+            tenant_name: None,
+            rc_overlay: false,
+            session_policy: None,
+            idle_secs: None,
+            lock_on_end: None,
+            external: None,
+            initial_resolution,
+        };
+
+        // 1. Omitted when None, and deserializes as None when absent on the wire.
+        let c_none = serde_json::to_string(&client_req(None)).unwrap();
+        assert!(!c_none.contains("initial_resolution"), "{c_none}");
+        match serde_json::from_str::<ClientMsg>(&c_none).unwrap() {
+            ClientMsg::SessionRequest {
+                initial_resolution, ..
+            } => assert_eq!(initial_resolution, None),
+            other => panic!("expected SessionRequest, got {other:?}"),
+        }
+        let s_none = serde_json::to_string(&server_req(None)).unwrap();
+        assert!(!s_none.contains("initial_resolution"), "{s_none}");
+        match serde_json::from_str::<ServerMsg>(&s_none).unwrap() {
+            ServerMsg::Request {
+                initial_resolution, ..
+            } => assert_eq!(initial_resolution, None),
+            other => panic!("expected Request, got {other:?}"),
+        }
+
+        // 2. Round-trips fit (with max_w / max_h) and original (omitting max_w / max_h).
+        let fit = InitialResolution {
+            mode: "fit".into(),
+            max_w: Some(946),
+            max_h: Some(678),
+        };
+        let c_fit = serde_json::to_string(&client_req(Some(fit.clone()))).unwrap();
+        assert!(
+            c_fit.contains(r#""initial_resolution":{"mode":"fit","max_w":946,"max_h":678}"#),
+            "{c_fit}"
+        );
+        match serde_json::from_str::<ClientMsg>(&c_fit).unwrap() {
+            ClientMsg::SessionRequest {
+                initial_resolution, ..
+            } => assert_eq!(initial_resolution, Some(fit.clone())),
+            other => panic!("expected SessionRequest, got {other:?}"),
+        }
+        let s_fit = serde_json::to_string(&server_req(Some(fit.clone()))).unwrap();
+        assert!(
+            s_fit.contains(r#""initial_resolution":{"mode":"fit","max_w":946,"max_h":678}"#),
+            "{s_fit}"
+        );
+        match serde_json::from_str::<ServerMsg>(&s_fit).unwrap() {
+            ServerMsg::Request {
+                initial_resolution, ..
+            } => assert_eq!(initial_resolution, Some(fit)),
+            other => panic!("expected Request, got {other:?}"),
+        }
+
+        let orig = InitialResolution {
+            mode: "original".into(),
+            max_w: None,
+            max_h: None,
+        };
+        let c_orig = serde_json::to_string(&client_req(Some(orig.clone()))).unwrap();
+        assert!(
+            c_orig.contains(r#""initial_resolution":{"mode":"original"}"#),
+            "{c_orig}"
+        );
+        match serde_json::from_str::<ClientMsg>(&c_orig).unwrap() {
+            ClientMsg::SessionRequest {
+                initial_resolution, ..
+            } => assert_eq!(initial_resolution, Some(orig)),
+            other => panic!("expected SessionRequest, got {other:?}"),
+        }
+
+        // 3. Unknown future fields on both SessionRequest and Request are ignored cleanly.
+        let mut c_val: serde_json::Value = serde_json::from_str(&c_none).unwrap();
+        c_val["future_unknown_field"] = serde_json::json!({"nested": 123});
+        assert!(serde_json::from_value::<ClientMsg>(c_val).is_ok());
+
+        let mut s_val: serde_json::Value = serde_json::from_str(&s_none).unwrap();
+        s_val["future_unknown_field"] = serde_json::json!({"nested": 456});
+        assert!(serde_json::from_value::<ServerMsg>(s_val).is_ok());
     }
 
     #[test]
