@@ -480,10 +480,11 @@ impl Rebind {
 /// What [`OrgRelayConn::poll_liveness`] found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LivenessPoll {
-    /// Nothing sent is waiting for an answer: there is nothing to judge.
+    /// Nothing was sent since the relay's last word (a peer frame it
+    /// forwarded, or its own Challenge): there is nothing to ask about.
     Quiet,
-    /// Traffic is unanswered and the relay is being asked, or was heard
-    /// from recently enough. Poll again soon.
+    /// Traffic sent since then is unanswered, and the relay is being asked
+    /// or was heard from recently enough. Poll again soon.
     Watching,
     /// The relay left a whole round of binds unanswered. The carrier is
     /// closed; reported once.
@@ -530,9 +531,9 @@ impl LivenessTiming {
 struct LivenessSample {
     /// The peer's last frame through the relay.
     last_data_rx: u64,
-    /// The last thing the relay itself proved: a peer frame or a Challenge.
+    /// The relay's last word: a peer frame it forwarded, or its Challenge.
     last_relay_rx: u64,
-    /// The first frame sent since the peer's last one.
+    /// The first frame sent since the relay's last word.
     pending_since: u64,
 }
 
@@ -556,23 +557,26 @@ enum LivenessStep {
 
 /// The whole rule, free of sockets and clocks.
 ///
-/// A round starts once traffic has been unanswered for `silence` and the
-/// relay has been silent as long (`recheck` when the last word was its own
-/// Challenge, so a one-way stream is asked once per interval). It ends the
-/// moment the relay says anything. It convicts only after every bind of the
-/// round has gone unanswered and the last one has had `echo_wait`.
+/// Only traffic sent since the relay's last word is in question: a
+/// Challenge answers for everything sent before it, so an idle pair's
+/// keepalive costs one round, not one per `recheck` until the peer speaks.
+/// A round starts once such traffic has waited `silence` and the relay has
+/// been silent as long (`recheck` when its last word was a Challenge, so a
+/// one-way stream is asked once per interval). It ends the moment the relay
+/// says anything. It convicts only after every bind of the round has gone
+/// unanswered and the last one has had `echo_wait`.
 fn liveness_step(
     t: &LivenessTiming,
     round: &mut LivenessRound,
     s: LivenessSample,
     now: u64,
 ) -> LivenessStep {
-    if s.pending_since <= s.last_data_rx {
-        *round = LivenessRound::default();
-        return LivenessStep::Quiet;
-    }
     if round.binds > 0 && s.last_relay_rx >= round.first {
         *round = LivenessRound::default();
+    }
+    if s.pending_since <= s.last_relay_rx {
+        *round = LivenessRound::default();
+        return LivenessStep::Quiet;
     }
     if round.binds == 0 {
         let wait = if s.last_relay_rx > s.last_data_rx {
@@ -641,12 +645,12 @@ impl Liveness {
         }
     }
 
-    /// A frame is leaving for the peer: the first one since its last frame
-    /// starts the unanswered clock.
+    /// A frame is leaving for the peer: the first one since the relay's last
+    /// word starts the unanswered clock.
     fn on_send(&self) {
-        let heard = self.last_data_rx.load(Ordering::Relaxed);
+        let heard = self.last_relay_rx.load(Ordering::Relaxed);
         if self.pending_since.load(Ordering::Relaxed) <= heard {
-            // Strictly after the peer's last frame, even inside its millisecond.
+            // Strictly after the relay's last word, even inside its millisecond.
             self.pending_since.store(
                 self.now_ms().max(heard.saturating_add(1)),
                 Ordering::Relaxed,
@@ -1541,6 +1545,25 @@ mod tests {
         }
     }
 
+    /// The stamping of [`Liveness`] on a virtual clock.
+    #[derive(Default)]
+    struct Leg(LivenessSample);
+
+    impl Leg {
+        fn send(&mut self, now: u64) {
+            if self.0.pending_since <= self.0.last_relay_rx {
+                self.0.pending_since = now.max(self.0.last_relay_rx + 1);
+            }
+        }
+        fn peer_frame(&mut self, now: u64) {
+            self.0.last_data_rx = now;
+            self.0.last_relay_rx = now;
+        }
+        fn challenge(&mut self, now: u64) {
+            self.0.last_relay_rx = now;
+        }
+    }
+
     /// Poll every 100 ms (the hot tick) from `from` to `until` against a relay
     /// that never answers: when each bind left, and when the verdict fell.
     fn silent_relay(
@@ -1599,31 +1622,76 @@ mod tests {
     }
 
     /// A Challenge settles the round whatever the peer does: behind a healthy
-    /// relay a silent peer costs one bind per recheck and is never a death.
+    /// relay a peer that never answers a stream costs one bind per recheck
+    /// and is never a death.
     #[test]
     fn an_answering_relay_is_never_convicted_however_silent_the_peer() {
         let t = timing();
         let mut round = LivenessRound::default();
-        let (last_data_rx, pending_since) = (10_000, 10_050);
-        let mut last_relay_rx = last_data_rx;
+        let mut leg = Leg::default();
+        leg.peer_frame(10_000);
+        let mut challenge_at = None;
         let mut binds = Vec::new();
-        let mut now = 10_100;
+        let mut now = 10_050;
         while now <= 20_000 {
-            let s = sample(last_data_rx, last_relay_rx, pending_since);
-            match liveness_step(&t, &mut round, s, now) {
-                LivenessStep::Bind => {
-                    binds.push(now);
-                    last_relay_rx = now + 60; // the Challenge, 60 ms later
-                }
-                LivenessStep::Dead => panic!("convicted an answering relay at {now}"),
-                LivenessStep::Quiet | LivenessStep::Wait => {}
+            if challenge_at.is_some_and(|at| at <= now) {
+                leg.challenge(challenge_at.take().unwrap());
             }
-            now += 100;
+            leg.send(now); // a one-way stream: a frame every 50 ms
+            if now % 100 == 0 {
+                match liveness_step(&t, &mut round, leg.0, now) {
+                    LivenessStep::Bind => {
+                        binds.push(now);
+                        challenge_at = Some(now + 60);
+                    }
+                    LivenessStep::Dead => panic!("convicted an answering relay at {now}"),
+                    LivenessStep::Quiet | LivenessStep::Wait => {}
+                }
+            }
+            now += 50;
         }
         assert!((4..=6).contains(&binds.len()), "one per recheck: {binds:?}");
         assert!(
             binds.windows(2).all(|w| w[1] - w[0] >= 2_000),
             "never closer than the recheck: {binds:?}"
+        );
+    }
+
+    /// An idle pair: one keepalive every 25 s, a peer that says nothing in
+    /// between. The relay's Challenge answers for the keepalive, so each one
+    /// costs a single bind; nothing is asked again until something is sent.
+    #[test]
+    fn an_idle_pairs_keepalive_costs_one_bind_and_then_nothing() {
+        let t = timing();
+        let mut round = LivenessRound::default();
+        let mut leg = Leg::default();
+        leg.peer_frame(1_000);
+        let mut challenge_at = None;
+        let (mut binds, mut watching) = (Vec::new(), 0u64);
+        let mut now = 30_000;
+        while now <= 90_000 {
+            if challenge_at.is_some_and(|at| at <= now) {
+                leg.challenge(challenge_at.take().unwrap());
+            }
+            if now % 25_000 == 5_000 {
+                leg.send(now); // 30 s, 55 s, 80 s
+            }
+            match liveness_step(&t, &mut round, leg.0, now) {
+                LivenessStep::Bind => {
+                    binds.push(now);
+                    challenge_at = Some(now + 60);
+                    watching += 100;
+                }
+                LivenessStep::Wait => watching += 100,
+                LivenessStep::Dead => panic!("convicted an answering relay at {now}"),
+                LivenessStep::Quiet => {}
+            }
+            now += 100;
+        }
+        assert_eq!(binds, [30_400, 55_400, 80_400], "one bind per keepalive");
+        assert!(
+            watching <= 3 * 600,
+            "the scan is hot for {watching} ms of 60 s, not all of it"
         );
     }
 
