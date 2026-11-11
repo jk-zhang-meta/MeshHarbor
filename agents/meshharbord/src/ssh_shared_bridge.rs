@@ -203,6 +203,7 @@ mod tests {
         let scope = SharedSessionLease {
             grant_id: ObjectId::new(),
             lease_epoch: "11111111-1111-4111-8111-111111111111".into(),
+            account: None,
         };
         let setup = SharedSshSetup {
             device_id: device,

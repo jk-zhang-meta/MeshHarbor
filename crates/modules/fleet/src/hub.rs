@@ -1563,6 +1563,7 @@ impl Hub {
             org_session_cap,
             slot,
             None,
+            None,
             SessionCreationOrigin::Unknown,
             None,
         )
@@ -1624,6 +1625,9 @@ impl Hub {
         // (a refusal, or a coalesced duplicate that returned another id).
         slot: Option<Lease>,
         share_grant_id: Option<ObjectId>,
+        // MeshHarbor — the share account a shared session's file operations
+        // run as (`DispatchCtx::share_files_account`); ignored without a share.
+        share_files_account: Option<String>,
         origin: SessionCreationOrigin,
         initial_resolution: Option<meshharbor_remote_control::signaling::InitialResolution>,
     ) -> Result<ObjectId> {
@@ -1960,6 +1964,11 @@ impl Hub {
         if let Some(scope) = device_share_scope {
             live.bind_device_share(scope)?;
             live.set_shared_lease_epoch(uuid::Uuid::new_v4().to_string())?;
+            // The account rides the lease only when the session can touch
+            // files at all; the device decides what an absent one means.
+            if live.permissions().contains(Permissions::FILES) {
+                live.set_shared_files_account(share_files_account)?;
+            }
         }
         // Loopback-TURN corp-relay (Phase 2): remember the controller's local
         // agent TURN descriptor so `forward_offer` can hand the REMOTE agent a
@@ -2378,6 +2387,7 @@ impl Hub {
                                         "shared session missing immutable lease",
                                     ))?
                                     .to_string(),
+                                account: s.shared_files_account().map(str::to_owned),
                             })
                         }
                         None => None,
@@ -3719,6 +3729,7 @@ impl Hub {
         Some(meshharbor_remote_control::signaling::SharedSessionLease {
             grant_id: s.device_share_scope()?.grant_id,
             lease_epoch: s.shared_lease_epoch()?.to_string(),
+            account: s.shared_files_account().map(str::to_owned),
         })
     }
     pub fn claim_device_share_watch(&self, session_id: ObjectId, grant_id: ObjectId) -> bool {
@@ -4369,6 +4380,13 @@ pub struct DispatchCtx {
     /// (`create_session_full`'s `slot`); set only by the pod that owns the
     /// device, together with `org_session_cap: None`. `None` everywhere else.
     pub slot: Option<Lease>,
+    /// MeshHarbor — the share account a SHARED session's file operations run
+    /// as on the device, resolved by the API WS layer's share gate from the
+    /// grant (`device_share::files_gate`) and frozen into the session's
+    /// `SharedSessionLease::account`. `None` for every non-shared request and
+    /// for a share without an account; the device then decides by its own
+    /// privilege. Never taken from the controller's frame.
+    pub share_files_account: Option<String>,
 }
 
 impl Hub {
@@ -4543,6 +4561,9 @@ impl Hub {
                     // FR-115 P3b — the slot the owner pod claimed, if any.
                     ctx.slot.clone(),
                     share_grant_id,
+                    // Server-resolved by the share gate, never read from the
+                    // controller's frame.
+                    ctx.share_files_account.clone(),
                     origin,
                     initial_resolution,
                 )?;
@@ -5625,6 +5646,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         hub.dispatch(
             &device,
@@ -5777,6 +5799,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         let offer = || ClientMsg::SdpOffer {
             session_id: sid,
@@ -5890,6 +5913,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         assert!(matches!(
             ctl_rx.recv().await,
@@ -6059,6 +6083,7 @@ mod tests {
                 lock_on_end: None,
                 org_session_cap: None,
                 slot: None,
+                share_files_account: None,
             }
         }
         fn ctx(&self) -> DispatchCtx {
@@ -6535,6 +6560,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         let owner_ctx = context(Role::Controller, Some(owner), None, Some(ctl_tx.clone()));
         hub.dispatch_local_pdp_session_request(&owner_ctx, file_child_session_request(agent), None)
@@ -6830,6 +6856,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         f.hub
             .dispatch(
@@ -7213,6 +7240,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         let stranger = ctx_for(Role::Controller, Some(ObjectId::new()), None);
         let owner_ctx = ctx_for(Role::Controller, Some(owner), None);
@@ -7386,6 +7414,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         let device = ctx_for(Role::Agent, None, Some(agent_id));
         let viewer = ctx_for(Role::Controller, Some(owner), None);

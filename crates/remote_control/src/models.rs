@@ -1275,6 +1275,14 @@ pub enum RpcCap {
     /// the change back unless `rc:forward.confirm` comes back in time. A
     /// device without it is never sent an `nft` forward.
     ManagedForwardNft,
+    /// MeshHarbor — a SHARED session's file operations (list, read, download,
+    /// upload) run as the share's account
+    /// ([`crate::signaling::SharedSessionLease::account`]), and never as
+    /// root/SYSTEM: with no account, a privileged install refuses the file
+    /// channel. The server gives a shared session FILES only on an agent that
+    /// advertises this. An older agent ran a recipient's file operations as
+    /// whatever the daemon was, root/SYSTEM included.
+    SharedFilesAsAccount,
 }
 
 impl RpcCap {
@@ -1295,6 +1303,7 @@ impl RpcCap {
             Self::RelayServer => "relay-server",
             Self::ManagedForward => "managed-forward",
             Self::ManagedForwardNft => "managed-forward-nft",
+            Self::SharedFilesAsAccount => "shared-files-as-account",
             Self::KeyRotate => "key-rotate",
             Self::SshGrantAck => "ssh-grant-ack",
             Self::Hive => "hive",
@@ -1333,7 +1342,7 @@ impl RpcCap {
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 43] = [
+    pub const ALL: [RpcCap; 44] = [
         Self::Exec,
         Self::Originate,
         Self::Ssh,
@@ -1377,6 +1386,7 @@ impl RpcCap {
         Self::LocalAccounts,
         Self::ManagedForward,
         Self::ManagedForwardNft,
+        Self::SharedFilesAsAccount,
     ];
 
     /// Parse a wire verb. `None` for anything unrecognised — see

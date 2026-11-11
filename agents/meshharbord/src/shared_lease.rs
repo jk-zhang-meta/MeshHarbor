@@ -382,6 +382,7 @@ mod tests {
         SharedSessionLease {
             grant_id: ObjectId::new(),
             lease_epoch: "11111111-1111-4111-8111-111111111111".to_string(),
+            account: None,
         }
     }
     #[test]
@@ -478,6 +479,7 @@ mod shared_lease_scope_regressions {
         SharedSessionLease {
             grant_id: ObjectId::new(),
             lease_epoch: "11111111-1111-4111-8111-111111111111".into(),
+            account: None,
         }
     }
     fn offer(sid: ObjectId, scope: Option<SharedSessionLease>) -> ServerMsg {
@@ -573,6 +575,7 @@ mod shared_ssh_lease_tests {
         let scope = SharedSessionLease {
             grant_id: ObjectId::new(),
             lease_epoch: "11111111-1111-4111-8111-111111111111".into(),
+            account: None,
         };
         let mut r = SharedLeases::default();
         assert!(r.note_ssh(sid, scope.clone()));

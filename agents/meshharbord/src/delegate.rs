@@ -2374,6 +2374,7 @@ mod shared_lease_delegation_tests {
         let scope = SharedSessionLease {
             grant_id: bson::oid::ObjectId::new(),
             lease_epoch: "11111111-1111-4111-8111-111111111111".into(),
+            account: None,
         };
         let (to_worker, mut worker) = tokio::sync::mpsc::channel(8);
         *host.inner.to_worker.lock().unwrap() = Some(to_worker);
@@ -2449,6 +2450,7 @@ mod shared_lease_params_scope_regressions {
         let scope = SharedSessionLease {
             grant_id: bson::oid::ObjectId::new(),
             lease_epoch: "11111111-1111-4111-8111-111111111111".into(),
+            account: None,
         };
         let params = SessionParams {
             session_id: sid.to_hex(),

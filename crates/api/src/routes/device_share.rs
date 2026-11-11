@@ -194,26 +194,27 @@ fn validate(body: &mut CreateShare) -> Result<(), ApiError> {
         .take()
         .map(|a| a.trim().to_string())
         .filter(|a| !a.is_empty());
-    match (&body.ssh_account, body.permissions.ssh) {
-        (None, true) => {
+    let files = body.permissions.files_read || body.permissions.files_write;
+    match (&body.ssh_account, body.permissions.ssh, files) {
+        (None, true, _) => {
             return Err(ApiError::BadRequest(
                 "Choose the device account this SSH share runs as".into(),
             ));
         }
-        (Some(_), false) => {
+        (Some(_), false, false) => {
             return Err(ApiError::BadRequest(
-                "A device account is chosen only for an SSH share".into(),
+                "A device account is chosen only for an SSH or file share".into(),
             ));
         }
         // The device refuses to become uid 0 by name (`exec.rs`), so a root share could
         // never connect: root rights come from an administrator account instead.
-        (Some(a), true) if a == "root" => {
+        (Some(a), _, _) if a == "root" => {
             return Err(ApiError::BadRequest(
                 "root cannot be shared directly; create an administrator account for the recipient"
                     .into(),
             ));
         }
-        (Some(a), true) if !valid_share_account(a) => {
+        (Some(a), _, _) if !valid_share_account(a) => {
             return Err(ApiError::BadRequest(
                 "The device account must be a Linux/macOS user name (lowercase letters, digits, _ and -)"
                     .into(),
@@ -222,6 +223,29 @@ fn validate(body: &mut CreateShare) -> Result<(), ApiError> {
         _ => {}
     }
     Ok(())
+}
+
+/// MeshHarbor — the device-dependent half of the account rule. A recipient's
+/// file operations never run as root/SYSTEM: on Linux/macOS they run as a
+/// chosen account, so a file share needs one, just as an SSH share does. A
+/// Windows device has no Unix account to become; its file shares run as the
+/// device's own user (a per-user install) or not at all (the device refuses
+/// on a system-service install).
+fn account_rule_for_os(
+    os: OsKind,
+    permissions: &DeviceSharePermissions,
+    account: Option<&str>,
+) -> Result<(), &'static str> {
+    let files = permissions.files_read || permissions.files_write;
+    match os {
+        OsKind::Windows if account.is_some() => Err(
+            "A device account applies to Linux and macOS devices; a Windows file share runs as the device's own user",
+        ),
+        OsKind::Linux | OsKind::Macos if files && account.is_none() => {
+            Err("Choose the device account file transfers in this share run as")
+        }
+        _ => Ok(()),
+    }
 }
 pub async fn create(
     State(core): State<Core>,
@@ -267,6 +291,8 @@ pub async fn create(
             "SSH sharing is available for Linux and macOS devices".into(),
         ));
     }
+    account_rule_for_os(agent.os, &body.permissions, body.ssh_account.as_deref())
+        .map_err(|m| ApiError::BadRequest(m.into()))?;
     let owner = core.users.base.find_by_id(auth.user_id).await?;
     meshharbor_core::admission::require_user(&core, &owner, None)?;
     if !owner.is_verified {
@@ -488,5 +514,58 @@ mod tests {
         b.expires_in_secs = DeviceShareGrant::MAX_LIFETIME_SECS + 1;
         assert!(validate(&mut b).is_err());
         assert!(serde_json::from_value::<CreateShare>(serde_json::json!({"device_id":"x","recipient_user_id":"y","permissions":{"ssh":true},"expires_in_secs":60,"tenant_id":"injected"})).is_err());
+    }
+
+    fn files_body(account: Option<&str>) -> CreateShare {
+        CreateShare {
+            permissions: DeviceSharePermissions {
+                files_read: true,
+                files_write: true,
+                ..Default::default()
+            },
+            tcp_ports: vec![],
+            ssh_account: account.map(str::to_string),
+            ..body()
+        }
+    }
+
+    #[test]
+    fn a_file_share_may_carry_a_valid_account_and_root_or_junk_is_refused() {
+        let mut b = files_body(Some("alice"));
+        validate(&mut b).unwrap();
+        let mut b = files_body(None);
+        validate(&mut b).unwrap(); // the OS half decides whether one is required
+        for bad in ["root", "Alice", "a b", "../x"] {
+            let mut b = files_body(Some(bad));
+            assert!(validate(&mut b).is_err(), "{bad:?}");
+        }
+        // Still: an account with neither SSH nor files is refused.
+        let mut b = files_body(Some("alice"));
+        b.permissions = DeviceSharePermissions {
+            desktop_view: true,
+            ..Default::default()
+        };
+        assert!(validate(&mut b).is_err());
+    }
+
+    #[test]
+    fn a_linux_or_macos_file_share_requires_an_account_and_windows_takes_none() {
+        let files = DeviceSharePermissions {
+            files_read: true,
+            files_write: true,
+            ..Default::default()
+        };
+        let view = DeviceSharePermissions {
+            desktop_view: true,
+            ..Default::default()
+        };
+        for os in [OsKind::Linux, OsKind::Macos] {
+            assert!(account_rule_for_os(os, &files, None).is_err());
+            assert!(account_rule_for_os(os, &files, Some("alice")).is_ok());
+            assert!(account_rule_for_os(os, &view, None).is_ok());
+        }
+        assert!(account_rule_for_os(OsKind::Windows, &files, None).is_ok());
+        assert!(account_rule_for_os(OsKind::Windows, &files, Some("alice")).is_err());
+        assert!(account_rule_for_os(OsKind::Windows, &view, None).is_ok());
     }
 }
