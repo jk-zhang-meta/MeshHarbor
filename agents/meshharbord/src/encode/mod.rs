@@ -2338,9 +2338,7 @@ mod tests {
 
     #[tokio::test]
     async fn hung_caps_probe_child_forces_software_encoder_without_in_process_mf_probe() {
-        let _guard = caps::HW_PROBE_FAILED_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = caps::HW_PROBE_FAILED_TEST_LOCK.lock().await;
         caps::clear_hw_probe_failed_for_run();
 
         // Simulate the caps-probe child hanging / timing out (outcome = None).

@@ -1059,7 +1059,8 @@ pub(crate) fn hw_probe_failed_for_run() -> bool {
 }
 
 #[cfg(test)]
-pub(crate) static HW_PROBE_FAILED_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static HW_PROBE_FAILED_TEST_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
 
 /// Apply the `caps-probe` child outcome to process state (`HW_PROBE_FAILED_FOR_RUN`,
 /// `vp9_qsv_idr`, `MF_CASCADE_WINNERS`) and return `(AgentCaps, child_succeeded)`.
