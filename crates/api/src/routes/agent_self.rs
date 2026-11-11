@@ -311,6 +311,9 @@ pub async fn devices(
                 tags: r.tags,
                 reachable,
                 ephemeral: r.ephemeral,
+                rdp_available: r.rdp_available,
+                rdp_port: r.rdp_port,
+                rdp_cert_sha256: r.rdp_cert_sha256,
             }
         })
         .collect();

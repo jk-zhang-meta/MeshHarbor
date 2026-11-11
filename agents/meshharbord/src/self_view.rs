@@ -775,6 +775,9 @@ pub(crate) fn device_row_from_server(row: VisibleDeviceRow) -> DeviceRowLite {
         reachable,
         ephemeral,
         is_self,
+        rdp_available,
+        rdp_port,
+        rdp_cert_sha256,
     } = row;
     DeviceRowLite {
         kind,
@@ -794,6 +797,9 @@ pub(crate) fn device_row_from_server(row: VisibleDeviceRow) -> DeviceRowLite {
         reachable,
         ephemeral,
         is_self,
+        rdp_available,
+        rdp_port,
+        rdp_cert_sha256,
     }
 }
 
@@ -832,6 +838,12 @@ mod tests {
             reachable: true,
             ephemeral: true,
             is_self: true,
+            rdp_available: Some(true),
+            rdp_port: Some(13389),
+            rdp_cert_sha256: Some(
+                "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+                    .into(),
+            ),
         }
     }
 
@@ -863,6 +875,12 @@ mod tests {
                 reachable: true,
                 ephemeral: true,
                 is_self: true,
+                rdp_available: Some(true),
+                rdp_port: Some(13389),
+                rdp_cert_sha256: Some(
+                    "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+                        .into(),
+                ),
             }
         );
         assert_eq!(

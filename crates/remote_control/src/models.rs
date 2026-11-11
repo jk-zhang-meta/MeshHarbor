@@ -3328,6 +3328,17 @@ pub struct VisibleDeviceRow {
     /// The caller itself.
     #[serde(default)]
     pub is_self: bool,
+    /// Present (`Some(true)`) only when the agent reports a listening RDP
+    /// server; omitted otherwise so non-RDP rows never emit RDP keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdp_available: Option<bool>,
+    /// Reported RDP TCP port when `rdp_available == Some(true)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdp_port: Option<u16>,
+    /// Lowercase colon-separated SHA-256 fingerprint of the RDP TLS leaf
+    /// certificate when `rdp_available == Some(true)` and readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdp_cert_sha256: Option<String>,
 }
 
 /// The page `GET /api/agent/self/devices` answers with.
@@ -3382,6 +3393,9 @@ mod visible_device_tests {
             reachable: true,
             ephemeral: false,
             is_self: false,
+            rdp_available: None,
+            rdp_port: None,
+            rdp_cert_sha256: None,
         }
     }
 

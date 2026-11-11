@@ -111,6 +111,12 @@ pub struct DeviceRow {
     /// permanent device omit it).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub ephemeral: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rdp_available: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rdp_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rdp_cert_sha256: Option<String>,
 }
 
 /// GET /api/tenant/{tenant_id}/device — membership-gated like every other
@@ -386,6 +392,15 @@ pub(crate) fn agent_row(
     dns_domain: Option<&str>,
 ) -> DeviceRow {
     let (overlay_ip, overlay_node_id, magic_dns_name, magic_dns_fqdn) = node_bits(node, dns_domain);
+    let (rdp_available, rdp_port, rdp_cert_sha256) = if a.capabilities.rdp_available == Some(true) {
+        (
+            Some(true),
+            a.capabilities.rdp_port,
+            a.capabilities.rdp_cert_sha256,
+        )
+    } else {
+        (None, None, None)
+    };
     DeviceRow {
         kind: "agent",
         id: a.id.map(|i| i.to_hex()).unwrap_or_default(),
@@ -408,6 +423,9 @@ pub(crate) fn agent_row(
         overlay_public_key: node.map(|n| n.wg_public_key.clone()),
         overlay_key_epoch: node.map(|n| n.key_epoch),
         ephemeral: a.ephemeral,
+        rdp_available,
+        rdp_port,
+        rdp_cert_sha256,
     }
 }
 
@@ -445,6 +463,9 @@ pub(crate) fn client_row(
         overlay_key_epoch: node.map(|n| n.key_epoch),
         // Tunnel clients have no ephemeral kind (FR-51 P5 decides theirs).
         ephemeral: false,
+        rdp_available: None,
+        rdp_port: None,
+        rdp_cert_sha256: None,
     }
 }
 
