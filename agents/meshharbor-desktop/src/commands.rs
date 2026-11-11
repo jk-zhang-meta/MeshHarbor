@@ -966,6 +966,7 @@ pub fn open_web_window<R: tauri::Runtime>(
         return Ok(());
     }
     let allowed_origin = parsed.clone();
+    let app_for_bridge = app.clone();
     tauri::WebviewWindowBuilder::new(app, WEB_WINDOW_LABEL, tauri::WebviewUrl::External(parsed))
         .title("MeshHarbor")
         .inner_size(1280.0, 800.0)
@@ -974,12 +975,26 @@ pub fn open_web_window<R: tauri::Runtime>(
             let (response, bridge_req) =
                 decide_web_window_new_window::<R>(&req_url, &allowed_origin);
             if let Some(req) = bridge_req {
+                let app_handle = app_for_bridge.clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) =
+                    let res =
                         launch_desktop_rdp_session(req.target, req.org, req.port, req.cert_sha256)
-                            .await
-                    {
+                            .await;
+                    if let Err(ref e) = res {
                         tracing::warn!(%e, "WebView2 bridge open_rdp failed");
+                    }
+                    if let Some(req_id) = req.req_id
+                        && let Some(win) = app_handle.get_webview_window(WEB_WINDOW_LABEL)
+                    {
+                        let detail = serde_json::json!({
+                            "reqId": req_id,
+                            "ok": res.is_ok(),
+                            "error": res.err(),
+                        });
+                        let js = format!(
+                            "window.dispatchEvent(new CustomEvent('__meshharbor_desktop_open_rdp_result__', {{ detail: {detail} }}));"
+                        );
+                        let _ = win.eval(&js);
                     }
                 });
             }
@@ -1138,6 +1153,21 @@ fn remote_target(cfg: &AgentConfig, org: Option<&str>) -> Result<(String, String
 pub const WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT: &str = r#"(function () {
   if (typeof window === 'undefined') return;
   try {
+    var seq = 0;
+    var pending = Object.create(null);
+    window.addEventListener('__meshharbor_desktop_open_rdp_result__', function (ev) {
+      var d = ev && ev.detail;
+      if (!d || typeof d.reqId !== 'string') return;
+      var entry = pending[d.reqId];
+      if (!entry) return;
+      delete pending[d.reqId];
+      clearTimeout(entry.timer);
+      if (d.ok) {
+        entry.resolve();
+      } else {
+        entry.reject(new Error(typeof d.error === 'string' && d.error ? d.error : 'RDP 连接失败'));
+      }
+    });
     Object.defineProperty(window, '__MESHHARBOR_DESKTOP_BRIDGE__', {
       configurable: false,
       enumerable: false,
@@ -1147,8 +1177,10 @@ pub const WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT: &str = r#"(function () {
           if (!payload || typeof payload.target !== 'string' || !payload.target.trim()) {
             return Promise.reject(new Error('invalid RDP target'));
           }
+          var reqId = 'rdp-' + (++seq);
           var u = new URL('/__meshharbor_desktop__/open_rdp', window.location.origin);
           u.searchParams.set('target', payload.target.trim());
+          u.searchParams.set('req_id', reqId);
           if (typeof payload.org === 'string' && payload.org.trim()) {
             u.searchParams.set('org', payload.org.trim());
           }
@@ -1158,8 +1190,17 @@ pub const WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT: &str = r#"(function () {
           if (typeof payload.certSha256 === 'string' && payload.certSha256.trim()) {
             u.searchParams.set('cert_sha256', payload.certSha256.trim());
           }
-          window.open(u.toString(), '_blank', 'noopener,noreferrer');
-          return Promise.resolve();
+          return new Promise(function (resolve, reject) {
+            // Outer bound only: device lookup (<= 1.5 s) + the 5 s pre-check +
+            // LocalAPI round trips. The real verdict arrives via the result event.
+            var timer = setTimeout(function () {
+              if (!pending[reqId]) return;
+              delete pending[reqId];
+              reject(new Error('桌面 RDP 预检未在 12 秒内返回结果'));
+            }, 12000);
+            pending[reqId] = { resolve: resolve, reject: reject, timer: timer };
+            window.open(u.toString(), '_blank', 'noopener,noreferrer');
+          });
         }
       })
     });
@@ -1174,6 +1215,7 @@ pub struct DesktopBridgeOpenRdpRequest {
     pub org: Option<String>,
     pub port: Option<u16>,
     pub cert_sha256: Option<String>,
+    pub req_id: Option<String>,
 }
 
 /// Parse and origin-validate a `/__meshharbor_desktop__/open_rdp` URL intercepted
@@ -1193,6 +1235,7 @@ pub fn parse_desktop_bridge_open_rdp_url(
     let mut org: Option<String> = None;
     let mut port: Option<u16> = None;
     let mut cert_sha256: Option<String> = None;
+    let mut req_id: Option<String> = None;
     for (k, v) in req_url.query_pairs() {
         match k.as_ref() {
             "target" => {
@@ -1220,6 +1263,17 @@ pub fn parse_desktop_bridge_open_rdp_url(
                     cert_sha256 = Some(c.to_string());
                 }
             }
+            "req_id" => {
+                let id = v.trim();
+                if !id.is_empty()
+                    && id.len() <= 64
+                    && id
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+                {
+                    req_id = Some(id.to_string());
+                }
+            }
             _ => {}
         }
     }
@@ -1228,6 +1282,7 @@ pub fn parse_desktop_bridge_open_rdp_url(
         org,
         port,
         cert_sha256,
+        req_id,
     })
 }
 
@@ -1299,18 +1354,73 @@ pub async fn launch_desktop_rdp_session(
     let local_tunnel_addr = listener
         .local_addr()
         .map_err(|e| format!("failed to query local RDP tunnel address: {e}"))?;
-    let plan = plan_desktop_open_rdp_invocation(
+    let remote_port = meshharbor_node_core::rdp_client::effective_rdp_port(&opts, &device);
+    let pinned_cert =
+        meshharbor_node_core::rdp_client::effective_pinned_cert_sha256(&opts, &device)
+            .map_err(|e| e.to_string())?;
+    let (tunnel_task, probe) =
+        meshharbor_node_core::rdp_client::spawn_rdp_loopback_tunnel_with_probe(
+            listener,
+            dial_ip,
+            remote_port,
+            socks_port,
+        );
+
+    // Pre-check runs within a 5 s budget BEFORE spawning `mstsc.exe` / FreeRDP
+    // (`V0028` + `V0029 §3.1`): verifies mesh reachability and (when a fingerprint
+    // is available) X.224 + TLS 1.2/1.3 leaf certificate SHA-256.
+    if let Some(expected_fp) = pinned_cert.as_deref() {
+        if let Err(err) = meshharbor_node_core::rdp_client::precheck_rdp_tunnel_tls(
+            local_tunnel_addr,
+            &probe,
+            &device.device_name,
+            remote_port,
+            Some(expected_fp),
+        )
+        .await
+        {
+            tunnel_task.abort();
+            return Err(err.to_string());
+        }
+    } else {
+        if let Err(err) = meshharbor_node_core::rdp_client::precheck_rdp_tunnel_reachability(
+            local_tunnel_addr,
+            &probe,
+            &device.device_name,
+            remote_port,
+        )
+        .await
+        {
+            tunnel_task.abort();
+            return Err(err.to_string());
+        }
+        tracing::info!(
+            device = %device.device_name,
+            "{}",
+            meshharbor_node_core::rdp_client::UNPINNED_CERT_MSTSC_NOTICE
+        );
+    }
+
+    let plan = match plan_desktop_open_rdp_invocation(
         &device,
         local_tunnel_addr,
-        Some(opts.port),
-        cert_sha256.as_deref(),
+        Some(remote_port),
+        pinned_cert.as_deref(),
         std::env::consts::OS,
-    )?;
-    let mut child = meshharbor_node_core::rdp_client::spawn_planned_rdp_client(&plan)
-        .map_err(|e| e.to_string())?;
-    let tunnel_task = meshharbor_node_core::rdp_client::spawn_rdp_loopback_tunnel(
-        listener, dial_ip, opts.port, socks_port,
-    );
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            tunnel_task.abort();
+            return Err(e);
+        }
+    };
+    let mut child = match meshharbor_node_core::rdp_client::spawn_planned_rdp_client(&plan) {
+        Ok(c) => c,
+        Err(e) => {
+            tunnel_task.abort();
+            return Err(e.to_string());
+        }
+    };
     tokio::task::spawn_blocking(move || {
         let _guard = session_guard;
         let _ = child.wait();
@@ -3540,6 +3650,7 @@ mod tests {
             org_id: "66366f7a7230306d6c657231".to_string(),
             device_id: "66366f7a7230306d6c657232".to_string(),
             device_name: "surface-pro".to_string(),
+            ..Default::default()
         };
         let tunnel_addr: std::net::SocketAddr = "127.77.12.34:54321".parse().unwrap();
         let cert_fp = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99";
@@ -3614,7 +3725,7 @@ mod tests {
         let allowed: tauri::Url = "https://meshharbor.example.invalid/tenant/66366f7a7230306d6c657231/agent/66366f7a7230306d6c657232/remote"
             .parse()
             .unwrap();
-        let req_ok: tauri::Url = "https://meshharbor.example.invalid/__meshharbor_desktop__/open_rdp?target=66366f7a7230306d6c657232&org=acme&port=3389"
+        let req_ok: tauri::Url = "https://meshharbor.example.invalid/__meshharbor_desktop__/open_rdp?target=66366f7a7230306d6c657232&org=acme&port=3389&req_id=rdp-1"
             .parse()
             .unwrap();
         assert_eq!(
@@ -3624,6 +3735,7 @@ mod tests {
                 org: Some("acme".to_string()),
                 port: Some(3389),
                 cert_sha256: None,
+                req_id: Some("rdp-1".to_string()),
             })
         );
         let req_evil: tauri::Url = "https://evil.example.invalid/__meshharbor_desktop__/open_rdp?target=66366f7a7230306d6c657232"
@@ -3657,6 +3769,7 @@ mod tests {
                 org: Some("acme".to_string()),
                 port: Some(3389),
                 cert_sha256: None,
+                req_id: None,
             })
         );
 
@@ -3699,16 +3812,19 @@ mod tests {
             org_id: "66366f7a7230306d6c657231".to_string(),
             device_id: "66366f7a7230306d6c657232".to_string(),
             device_name: "surface-pro".to_string(),
+            ..Default::default()
         };
         let dev_a_upper = meshharbor_node_core::rdp_client::ResolvedRdpDevice {
             org_id: "66366F7A7230306D6C657231".to_string(),
             device_id: "66366F7A7230306D6C657232".to_string(),
             device_name: "surface-pro".to_string(),
+            ..Default::default()
         };
         let dev_b = meshharbor_node_core::rdp_client::ResolvedRdpDevice {
             org_id: "66366f7a7230306d6c657231".to_string(),
             device_id: "66366f7a7230306d6c657299".to_string(),
             device_name: "workstation-b".to_string(),
+            ..Default::default()
         };
 
         assert!(!registry.is_active(&dev_a));

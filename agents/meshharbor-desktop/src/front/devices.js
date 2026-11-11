@@ -77,6 +77,7 @@
     inFlight: 0,
     nextAt: 0,
     timer: null,
+    rdpActionError: null,
   };
   const mesh = {
     view: null,
@@ -273,7 +274,7 @@
       chooserTitle: 'Actions',
       cls: 'dv-col-actions',
       build(td) {
-        const s = { agentId: null, rdpTarget: null };
+        const s = { agentId: null, rdpTarget: null, rdpPort: null, rdpCertSha256: null };
         const wrap = el('div', 'dv-split-wrap');
         const group = el('div', 'dv-split-group');
 
@@ -283,6 +284,7 @@
         btn.addEventListener('click', async () => {
           closeAllSplitMenus(null);
           if (!s.agentId) return;
+          st.rdpActionError = null;
           btn.disabled = true;
           try {
             await invoke('cmd_open_remote', { agentId: s.agentId, org: orgArg() });
@@ -311,15 +313,30 @@
             closeAllSplitMenus(null);
             return;
           }
+          st.rdpActionError = null;
+          const errBanner = $('dv-grid-error');
+          if (errBanner && !st.error) {
+            setText(errBanner, '');
+            errBanner.hidden = true;
+          }
           acceptBtn.disabled = true;
           toggleBtn.disabled = true;
           closeAllSplitMenus(null);
+          const payload = { target, org: orgArg() };
+          if (s.rdpPort !== null) payload.port = s.rdpPort;
+          if (s.rdpCertSha256 !== null) payload.certSha256 = s.rdpCertSha256;
           try {
-            await invoke('cmd_open_rdp', { target, org: orgArg() });
+            await invoke('cmd_open_rdp', payload);
             toggleBtn.classList.remove('is-error');
           } catch (err) {
-            toggleBtn.title = String(err);
+            const msg = err && typeof err === 'object' && 'message' in err ? String(err.message) : String(err);
+            toggleBtn.title = msg;
             toggleBtn.classList.add('is-error');
+            st.rdpActionError = msg;
+            if (errBanner) {
+              setText(errBanner, msg);
+              errBanner.hidden = false;
+            }
           } finally {
             acceptBtn.disabled = false;
             toggleBtn.disabled = false;
@@ -341,6 +358,11 @@
           'dv-rdp-confirm-text',
           'RDP 会话会锁定远端电脑的本地屏幕'
         );
+        const unpinnedNote = el(
+          'div',
+          'dv-rdp-unpinned-note',
+          '被控端未上报证书指纹，由 mstsc 自行校验证书'
+        );
         const confirmActions = el('div', 'dv-rdp-confirm-actions');
         const confirmAcceptBtn = el(
           'button',
@@ -358,6 +380,7 @@
         rdpItem.addEventListener('click', (ev) => {
           ev.stopPropagation();
           rdpItem.hidden = true;
+          unpinnedNote.hidden = !!s.rdpCertSha256;
           confirmBox.hidden = false;
         });
 
@@ -372,7 +395,7 @@
         });
 
         confirmActions.append(confirmAcceptBtn, confirmCancelBtn);
-        confirmBox.append(confirmText, confirmActions);
+        confirmBox.append(confirmText, unpinnedNote, confirmActions);
         menu.append(rdpItem, confirmBox);
 
         toggleBtn.addEventListener('click', (ev) => {
@@ -391,6 +414,7 @@
         s.btn = btn;
         s.toggleBtn = toggleBtn;
         s.menu = menu;
+        s.unpinnedNote = unpinnedNote;
         return s;
       },
       update(s, row) {
@@ -398,6 +422,17 @@
         const ok = row.kind === 'agent' && !row.is_self && isHex24(row.id);
         s.agentId = ok ? row.id : null;
         s.rdpTarget = ok ? (row.overlay_node_id || row.node_id || row.id || row.name || null) : null;
+        s.rdpPort =
+          ok && typeof row.rdp_port === 'number' && row.rdp_port >= 1 && row.rdp_port <= 65535
+            ? row.rdp_port
+            : null;
+        s.rdpCertSha256 =
+          ok && typeof row.rdp_cert_sha256 === 'string' && row.rdp_cert_sha256.trim()
+            ? row.rdp_cert_sha256.trim()
+            : null;
+        if (s.unpinnedNote) {
+          s.unpinnedNote.hidden = !!s.rdpCertSha256;
+        }
         s.wrap.hidden = !ok;
         s.btn.hidden = !ok;
         if (!ok && s.menu) {
@@ -901,10 +936,15 @@
         '. Showing the devices this one reaches directly' +
         retryText();
     }
+    const combinedWarn = st.rdpActionError
+      ? warn
+        ? st.rdpActionError + ' · ' + warn
+        : st.rdpActionError
+      : warn;
     setText(status, note || '');
     status.hidden = !note;
-    setText(error, warn || '');
-    error.hidden = !warn;
+    setText(error, combinedWarn || '');
+    error.hidden = !combinedWarn;
   }
 
   function retryText() {

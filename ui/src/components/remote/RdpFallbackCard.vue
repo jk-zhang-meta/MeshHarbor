@@ -13,6 +13,13 @@
     <div class="rc-rdp-fallback-warning" data-test="rdp-screen-lock-warning" role="alert">
       {{ RDP_SCREEN_LOCK_WARNING }}
     </div>
+    <p
+      v-if="hasBridge && !hasPinnedCert"
+      class="rc-rdp-unpinned-note"
+      data-test="rdp-unpinned-cert-notice"
+    >
+      {{ RDP_UNPINNED_CERT_MSTSC_NOTICE }}
+    </p>
 
     <div class="rc-rdp-fallback-actions">
       <button
@@ -110,6 +117,7 @@
 import { computed, ref, watch } from 'vue'
 import {
   RDP_SCREEN_LOCK_WARNING,
+  RDP_UNPINNED_CERT_MSTSC_NOTICE,
   formatMhRdpCommand,
   getDeviceAutoRdpFallback,
   hasDesktopRdpBridge,
@@ -167,6 +175,7 @@ const visible = computed(() =>
 )
 
 const hasBridge = computed(() => hasDesktopRdpBridge())
+const hasPinnedCert = computed(() => Boolean(props.rdpCertSha256?.trim()))
 
 const displayReason = computed(() => {
   if (props.mediaUnavailableHint?.trim()) {
@@ -407,5 +416,11 @@ async function onCopyCliCommand() {
   margin: 8px 0 0;
   font-size: 12px;
   color: #fca5a5;
+}
+
+.rc-rdp-unpinned-note {
+  margin: -4px 0 10px;
+  font-size: 12px;
+  color: #cbd5e1;
 }
 </style>

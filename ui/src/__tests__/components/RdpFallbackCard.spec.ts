@@ -10,6 +10,7 @@ import RdpFallbackCard from '@/components/remote/RdpFallbackCard.vue'
 import {
   RC_ERROR_CODE_TABLE,
   RDP_SCREEN_LOCK_WARNING,
+  RDP_UNPINNED_CERT_MSTSC_NOTICE,
   formatMhRdpCommand,
   getDeviceAutoRdpFallback,
   hasDesktopRdpBridge,
@@ -208,6 +209,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       })
 
       expect(wrapper.find('[data-test="rdp-fallback-no-bridge"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="rdp-unpinned-cert-notice"]').exists()).toBe(false)
       const connectBtn = wrapper.find('[data-test="rdp-fallback-connect-btn"]')
       expect(connectBtn.exists()).toBe(true)
       expect(connectBtn.text()).toBe('用 RDP 连接')
@@ -221,6 +223,38 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
         certSha256:
           'aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99',
       })
+    })
+
+    it('displays unpinned certificate notice when rdpCertSha256 is absent and surfaces offline precheck error', async () => {
+      const openRdpErrSpy = vi.fn(async () => {
+        throw new Error('经网格无法连到目标 RDP 端口 (surface-pro:3389)：Host unreachable')
+      })
+      ;(window as unknown as Record<string, unknown>).__MESHHARBOR_DESKTOP_BRIDGE__ = {
+        openRdp: openRdpErrSpy,
+      }
+
+      const wrapper = mount(RdpFallbackCard, {
+        props: {
+          phase: 'error',
+          errorCode: 'agent_offline',
+          errorMessage: 'agent offline',
+          rdpAvailable: true,
+          rdpPort: 3389,
+          rdpCertSha256: null,
+          deviceId: DEVICE_ID,
+          deviceName: DEVICE_NAME,
+        },
+      })
+
+      const notice = wrapper.find('[data-test="rdp-unpinned-cert-notice"]')
+      expect(notice.exists()).toBe(true)
+      expect(notice.text()).toBe(RDP_UNPINNED_CERT_MSTSC_NOTICE)
+
+      await wrapper.find('[data-test="rdp-fallback-connect-btn"]').trigger('click')
+      await nextTick()
+      const errEl = wrapper.find('[data-test="rdp-fallback-bridge-error"]')
+      expect(errEl.exists()).toBe(true)
+      expect(errEl.text()).toContain('经网格无法连到目标 RDP 端口')
     })
   })
 
@@ -381,6 +415,10 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       toggleBtn!.click()
       rdpItem!.click()
       expect(confirmBox!.hidden).toBe(false)
+      const unpinnedEl = document.querySelector('.dv-rdp-unpinned-note') as HTMLElement | null
+      expect(unpinnedEl).not.toBeNull()
+      expect(unpinnedEl!.hidden).toBe(false)
+      expect(unpinnedEl!.textContent).toBe(RDP_UNPINNED_CERT_MSTSC_NOTICE)
       confirmAcceptBtn!.click()
       await new Promise((r) => setTimeout(r, 10))
       expect(menu!.hidden).toBe(true)

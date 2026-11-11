@@ -8,6 +8,9 @@
 
 export const RDP_SCREEN_LOCK_WARNING = 'RDP 会话会锁定远端电脑的本地屏幕'
 
+export const RDP_UNPINNED_CERT_MSTSC_NOTICE =
+  '被控端未上报证书指纹，由 mstsc 自行校验证书'
+
 export const RDP_AUTO_FALLBACK_STORAGE_PREFIX = 'meshharbor:rdp-auto-fallback:v1:'
 
 export type RcErrorSource =

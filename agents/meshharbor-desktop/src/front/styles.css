@@ -1115,6 +1115,14 @@ button.wl-skip:hover {
   font-size: 12px;
   line-height: 1.4;
   color: var(--warn);
+  margin-bottom: 6px;
+  white-space: normal;
+}
+
+.dv-rdp-unpinned-note {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--muted, #94a3b8);
   margin-bottom: 8px;
   white-space: normal;
 }
