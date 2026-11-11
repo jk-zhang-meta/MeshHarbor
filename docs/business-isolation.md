@@ -119,6 +119,11 @@ cross-network remote desktop to it breaks. Field case: home devices classified
 mainland against a non-mainland test-center STUN/TURN. Turning that on is a product
 decision, not a side effect of enforcing isolation.
 
+The default `warn` is consistent with the person↔device decision below: TURN for a
+browser is not gated by default. `enforce` is an opt-in for strict deployments, for
+example a host under a "never connect outside the mainland" rule, where a
+remote-desktop relay hop in the other zone is not acceptable either.
+
 | value | effect |
 |---|---|
 | `off` | no gate is installed; no zone lookups are made |
@@ -149,7 +154,6 @@ Read the `rc ice zone (warn)` lines before choosing `enforce`.
 | TURN grant and forced-DERP escalation | `overlay::handle_overlay_relay_request`, after the org offer | no grant is sent |
 | `/derp` forwarding | `derp_acl` table: each node's zone beside the ACL allow set; built before a node may register (`derp_acl::ensure_built`) | a frame passes only between two nodes with the same known zone, whatever the ACL mode; a network with no table drops every frame |
 | regional PoP `derp-relay` | the ticket's `zone` claim, minted by the API with the node's zone (`agent_arms::handle_derp_ticket_request`) | a frame passes only between equal ticket zones; a node with no zone gets no ticket and keeps the central `/derp` |
-| shared SSH (a device-share recipient's CLI, bridged by the center) | `shared_ssh::crosses_zone`, at `/device-shares/{id}/ssh/ws` | refused unless the recipient's request origin and the device are in one known zone; native grants audited `business_isolation` |
 | center-brokered tunnel (`rc:tunnel.open`, from a tunnel client or an agent) | `tunnel::handle_tunnel_open`, step 3d, before any TURN credential or QUIC token is minted | `rc:error` `business_isolation`; no session (#22) |
 | managed forward (#20) | `managed_forward::plan`: `region` over ingress and destination, and `source region` over every overlay node its sources admit (GEO-03), whatever the overlay ACL's mode | the plan fails and nothing is pushed; an applied forward whose gate later fails is withheld at the next push. A source in the other zone would otherwise reach the destination behind the ingress's address |
 | subnet route and exit node | ride their router peer (the netmap row above) | a router in the other zone is withheld, so its LAN and `0.0.0.0/0` are never offered (`a_subnet_route_stays_in_its_routers_zone`) |
@@ -357,13 +361,12 @@ overlay SSH banner from the mainland member to Tokyo):
   line-only peer's, and the client never answers a direct handshake from that peer.
 
 - **Sessions with a person on one end are not gated, by product decision
-  (2026-10-26).** Remote desktop (`rc:session.request`) and the hive viewer pair a
-  person with a device. They are a person operating a device, treated like management,
-  not business traffic between devices, so a person in one zone may operate a device in
-  the other. Their STUN/TURN locality is the separate `app.rc_ice_zone_mode` above.
-  ⚠️ **Shared SSH is an exception since 2026-11-11:** under `enforce` its server-bridged
-  stream is zone-gated (gates table). That reverses the 10-26 decision for shared SSH
-  only, and needs the owner's confirmation.
+  (2026-10-26, reaffirmed 2026-11-11).** Remote desktop (`rc:session.request`), the
+  hive viewer and shared SSH (a device-share recipient's CLI, bridged by the center)
+  pair a person with a device. They are a person operating a device, treated like
+  management, not business traffic between devices, so a person in one zone may
+  operate a device in the other. Remote desktop's STUN/TURN locality is the separate,
+  opt-in `app.rc_ice_zone_mode` above (default `warn`: nothing is withheld).
 - **Hive replica streams** (member device ↔ source device, `hive/src/stream.rs`) pair
   two zoned devices but live in the hive module, outside these gates.
 
