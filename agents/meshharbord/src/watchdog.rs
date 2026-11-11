@@ -498,6 +498,9 @@ pub fn spawn_thread_watchdog(wd: Arc<Watchdog>) {
     let _ = std::thread::Builder::new()
         .name("meshharbord-watchdog-of-watchdog".into())
         .spawn(move || {
+            // Spawned now, so a trip below allocates nothing on this thread.
+            #[cfg(target_os = "linux")]
+            crate::thread_dump::prepare();
             let mut prev_count = wd.own_heartbeat();
             let mut prev_at = Instant::now();
             loop {
@@ -514,11 +517,26 @@ pub fn spawn_thread_watchdog(wd: Arc<Watchdog>) {
                     // FR-97 P6e (#1538) — never `eprintln!` here: on a failing
                     // stderr it panics, this thread dies, and the exit below,
                     // the last line of defense, never happens.
+                    // Linux: raw write(2), not the `Stderr` lock — a thread
+                    // blocked writing to a stalled pipe holds that lock, and
+                    // this exit must not wait on it.
+                    #[cfg(target_os = "linux")]
+                    crate::thread_dump::raw_stderr(
+                        b"watchdog-of-watchdog: async watchdog has not heartbeat in over 60s; forcing exit(2)\n",
+                    );
+                    #[cfg(not(target_os = "linux"))]
                     crate::logging::say_on_stderr(format_args!(
                         "watchdog-of-watchdog: async watchdog has not heartbeat in {:?}; \
                          forcing exit({STALL_EXIT_CODE})",
                         stuck_for
                     ));
+                    // Every thread's state and stack, so the trip carries its
+                    // own cause. Bounded: the exit below happens regardless.
+                    #[cfg(target_os = "linux")]
+                    crate::thread_dump::request_and_wait(
+                        "watchdog-of-watchdog",
+                        Duration::from_secs(5),
+                    );
                     // P5/A2 — this exit bypasses RAII; drop any exit-node
                     // split-default first so a stalled host doesn't stay
                     // blackholed until the supervisor's restart reconciles it.
@@ -550,6 +568,10 @@ pub fn force_exit_on_stall(stalled: &[(&'static str, Duration)]) -> bool {
     // context: the watchdog runs inside the worker process; the SCM
     // supervisor's own crash detection (Phase 1B site 3) excludes
     // STALL_EXIT_CODE explicitly to avoid double-recording.
+    // Every thread's state and stack, bounded, before the sidecar and exit.
+    #[cfg(target_os = "linux")]
+    crate::thread_dump::request_and_wait("pump-stall", Duration::from_secs(5));
+
     crate::crash_recorder::record(
         crate::crash_recorder::Reason::WatchdogStall,
         &format!("pumps stalled ({summary})"),

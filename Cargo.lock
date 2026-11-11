@@ -6837,6 +6837,7 @@ dependencies = [
  "async-trait",
  "async_zip",
  "audiopus",
+ "backtrace",
  "base64 0.22.1",
  "bson",
  "bytes",

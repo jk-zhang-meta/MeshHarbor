@@ -249,6 +249,9 @@ pub use meshharbor_node_core::tcc;
 #[cfg(target_os = "linux")]
 pub mod tarball_owner;
 pub mod telemetry;
+/// Last-moment thread state + stacks for the watchdog exits (Linux only).
+#[cfg(target_os = "linux")]
+pub mod thread_dump;
 /// FR-103 — renewing each enrollment's agent token before it expires.
 pub mod token_renewal;
 pub mod tunnel;
