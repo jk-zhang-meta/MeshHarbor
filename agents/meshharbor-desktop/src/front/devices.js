@@ -314,9 +314,9 @@
         const wrap = el('div', 'dv-split-wrap');
         const group = el('div', 'dv-split-group');
 
-        const btn = el('button', 'sm dv-split-main', '连接');
+        const btn = el('button', 'sm dv-split-main', 'Connect');
         btn.type = 'button';
-        btn.title = '默认使用远控连接（不锁定远端本地屏幕）';
+        btn.title = 'Remote control (does not lock the remote screen)';
         btn.addEventListener('click', async () => {
           closeAllSplitMenus(null);
           if (!s.agentId) return;
@@ -335,7 +335,7 @@
 
         const toggleBtn = el('button', 'sm dv-split-toggle', '▾');
         toggleBtn.type = 'button';
-        toggleBtn.title = '更多连接方式（用 RDP 连接）';
+        toggleBtn.title = 'More ways to connect (RDP)';
         toggleBtn.setAttribute('aria-haspopup', 'menu');
         toggleBtn.setAttribute('aria-expanded', 'false');
 
@@ -383,41 +383,41 @@
           }
         }
 
-        const rdpItem = el('button', 'dv-split-item dv-split-item-rdp', '用 RDP 连接');
+        const rdpItem = el('button', 'dv-split-item dv-split-item-rdp', 'Connect with RDP');
         rdpItem.type = 'button';
         rdpItem.setAttribute('role', 'menuitem');
-        rdpItem.title = '通过系统 RDP 客户端连接（RDP 会话会锁定远端电脑的本地屏幕）';
+        rdpItem.title = 'Open the system RDP client (an RDP session locks the remote computer’s local screen)';
         // RDP over the mesh: offered only when the target reports it reachable
         // (`rdp_mesh_reachable`); an RDP server with no mesh path gets a hint.
-        const meshHint = el('div', 'dv-split-hint', '需在目标设备上开启 RDP over mesh（rdp_over_mesh = true）');
+        const meshHint = el('div', 'dv-split-hint', 'Turn on RDP over the mesh on the target device (rdp_over_mesh = true).');
         meshHint.hidden = true;
 
         const confirmBox = el('div', 'dv-rdp-confirm');
         confirmBox.setAttribute('role', 'alertdialog');
-        confirmBox.setAttribute('aria-label', '确认使用 RDP 连接');
+        confirmBox.setAttribute('aria-label', 'Confirm RDP connection');
         confirmBox.hidden = true;
 
         const confirmText = el(
           'div',
           'dv-rdp-confirm-text',
-          'RDP 会话会锁定远端电脑的本地屏幕'
+          'An RDP session locks the remote computer’s local screen.'
         );
         const unpinnedNote = el(
           'div',
           'dv-rdp-unpinned-note',
-          '被控端未上报证书指纹，由 mstsc 自行校验证书'
+          'This device reported no certificate fingerprint; the RDP client will check the certificate itself.'
         );
         const confirmActions = el('div', 'dv-rdp-confirm-actions');
         const confirmAcceptBtn = el(
           'button',
           'sm primary dv-rdp-confirm-accept',
-          '确认连接'
+          'Connect'
         );
         confirmAcceptBtn.type = 'button';
         const confirmCancelBtn = el(
           'button',
           'sm dv-rdp-confirm-cancel',
-          '取消'
+          'Cancel'
         );
         confirmCancelBtn.type = 'button';
 
@@ -946,7 +946,8 @@
       case 'unavailable':
         return 'This server has no private-network module, so only this device is listed.';
       default:
-        if (searched || (Number(p.total) || 0) > 1) return null;
+        if (searched) return (Number(p.total) || 0) === 0 ? 'No devices match “' + st.q.trim() + '”.' : null;
+        if ((Number(p.total) || 0) > 1) return null;
         return p.acl_mode === 'enforce'
           ? 'Your organization’s access rules (ACL enforce) let this device see no other device.'
           : 'No other devices are on your private network yet.';
