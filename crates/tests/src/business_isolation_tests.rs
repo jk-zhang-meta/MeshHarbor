@@ -8467,7 +8467,14 @@ async fn run_multihop_discovery_bilateral_client_wg(flipped: bool, restart_liste
             assert_eq!(native[1].session_counts().sessions_installed,0);
             line_join(&mut relays[1],11,&format!("223.6.6.7:{port}"),
                 json!({"relay_backbone_ready":true,"relay_port":port})).await;
-            assert_observed(&rig.app,&agents[1],Some(CN_R)).await;
+            // No `assert_observed` here: this is the SAME relay WS whose
+            // placement was asserted at connect, and its observation row is
+            // deleted by the TTL index 60 s after capture
+            // (`OBSERVATION_TTL_MILLIS`), while the zone it observed lives on
+            // for the connection (`auto_zone_evidence_outlives_the_expiring_
+            // observation_row`). Re-reading the row passed or failed on whether
+            // Mongo's TTL monitor had run yet. The re-mint below is what proves
+            // the zone is still known.
             assert_eq!(rig.node(&format!("{slug}-r1")).await,nodes[1]);
 
             // Keep the SAME live member owners, WG state and authenticated WS.
@@ -11030,8 +11037,15 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
 /// Full legacy member runtimes own discovery, WG, carrier health and retries.
 /// The enclosing disposable network namespace supplies only the ingress/exit
 /// public aliases; the middle's advertised member endpoint is unreachable.
+///
+/// Ignored in a plain `cargo test`, which has none of that: run it with
+/// `scripts/netns-integration-test.sh <meshharbor_tests binary> \
+///   business_isolation_tests::legacy_three_relay_runtime_recovers_automatically_after_middle_restart \
+///   223.6.6.6,1.1.1.1 MESHHARBORD_PATH_TRIAL=1 MESHHARBORD_OVERLAY_BACKBONE_ENABLED=1 \
+///   MESHHARBORD_OVERLAY_DIRECT=0`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(target_os = "linux")]
+#[ignore = "needs scripts/netns-integration-test.sh: a namespace NIC carrying the ingress/exit aliases, MESHHARBORD_PATH_TRIAL=1, MESHHARBORD_OVERLAY_BACKBONE_ENABLED=1, MESHHARBORD_OVERLAY_DIRECT=0"]
 async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart() {
     use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     use meshharbord::relay_server::backbone_test_support::{
