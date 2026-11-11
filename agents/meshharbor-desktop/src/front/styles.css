@@ -1108,6 +1108,15 @@ button.wl-skip:hover {
   color: var(--primary);
 }
 
+.dv-split-hint {
+  max-width: 240px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted, #94a3b8);
+  white-space: normal;
+}
+
 .dv-rdp-confirm {
   min-width: 220px;
   padding: 6px 8px;

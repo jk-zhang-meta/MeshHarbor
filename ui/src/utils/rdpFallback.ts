@@ -11,6 +11,11 @@ export const RDP_SCREEN_LOCK_WARNING = 'RDP 会话会锁定远端电脑的本地
 export const RDP_UNPINNED_CERT_MSTSC_NOTICE =
   '被控端未上报证书指纹，由 mstsc 自行校验证书'
 
+/** Shown instead of the RDP actions when the target has an RDP server but no
+ *  path to it over the mesh (`rdp_mesh_reachable` not true). */
+export const RDP_MESH_DISABLED_HINT =
+  '需在目标设备上开启 RDP over mesh（rdp_over_mesh = true）'
+
 export const RDP_AUTO_FALLBACK_STORAGE_PREFIX = 'meshharbor:rdp-auto-fallback:v1:'
 
 export type RcErrorSource =

@@ -9,6 +9,7 @@ import { nextTick } from 'vue'
 import RdpFallbackCard from '@/components/remote/RdpFallbackCard.vue'
 import {
   RC_ERROR_CODE_TABLE,
+  RDP_MESH_DISABLED_HINT,
   RDP_SCREEN_LOCK_WARNING,
   RDP_UNPINNED_CERT_MSTSC_NOTICE,
   formatMhRdpCommand,
@@ -149,6 +150,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
           mediaUnavailableReason: 'no_display',
           mediaUnavailableHint: 'No physical display attached',
           rdpAvailable: true,
+          rdpMeshReachable: true,
           rdpPort: 3389,
           deviceId: DEVICE_ID,
           deviceName: DEVICE_NAME,
@@ -199,6 +201,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
           errorCode: 'connection_timed_out',
           errorMessage: 'connection timed out',
           rdpAvailable: true,
+          rdpMeshReachable: true,
           rdpPort: 3389,
           rdpCertSha256:
             'aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99',
@@ -239,6 +242,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
           errorCode: 'agent_offline',
           errorMessage: 'agent offline',
           rdpAvailable: true,
+          rdpMeshReachable: true,
           rdpPort: 3389,
           rdpCertSha256: null,
           deviceId: DEVICE_ID,
@@ -273,6 +277,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
           mediaUnavailableReason: 'no_display',
           mediaUnavailableHint: 'The host has no physical display attached.',
           rdpAvailable: true,
+          rdpMeshReachable: true,
           rdpPort: 3389,
           deviceId: DEVICE_ID,
           deviceName: DEVICE_NAME,
@@ -315,6 +320,8 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
                 is_self: false,
                 presence: 'online',
                 os: 'windows',
+                rdp_available: true,
+                rdp_mesh_reachable: true,
               },
             ],
             total: 1,
@@ -427,6 +434,143 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
         target: 'node-surface-01',
         org: null,
       })
+    })
+  })
+
+  describe('6. RDP over the mesh: offered only when `rdp_mesh_reachable` is true', () => {
+    it('shows only the one-line hint (no connect, no auto, no auto-launch) when RDP exists but is not reachable over the mesh', async () => {
+      const openRdpSpy = vi.fn(async () => undefined)
+      ;(window as unknown as Record<string, unknown>).__MESHHARBOR_DESKTOP_BRIDGE__ = {
+        openRdp: openRdpSpy,
+      }
+      expect(setDeviceAutoRdpFallback(DEVICE_ID, true, true)).toBe(true)
+      const wrapper = mount(RdpFallbackCard, {
+        props: {
+          phase: 'error',
+          errorCode: 'connection_timed_out',
+          errorMessage: 'connection timed out',
+          rdpAvailable: true,
+          rdpMeshReachable: false,
+          rdpPort: 3389,
+          deviceId: DEVICE_ID,
+          deviceName: DEVICE_NAME,
+        },
+      })
+      await nextTick()
+      expect(wrapper.find('[data-test="rdp-fallback-card"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="rdp-mesh-hint"]').text()).toBe(RDP_MESH_DISABLED_HINT)
+      expect(wrapper.find('[data-test="rdp-fallback-connect-btn"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="rdp-auto-toggle"]').exists()).toBe(false)
+      expect(openRdpSpy).not.toHaveBeenCalled()
+    })
+
+    it('without the desktop bridge, shows the hint and no `mh rdp` command when not reachable', () => {
+      const wrapper = mount(RdpFallbackCard, {
+        props: {
+          phase: 'error',
+          errorCode: 'connection_timed_out',
+          rdpAvailable: true,
+          deviceId: DEVICE_ID,
+          deviceName: DEVICE_NAME,
+        },
+      })
+      expect(wrapper.find('[data-test="rdp-mesh-hint"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="rdp-fallback-no-bridge"]').exists()).toBe(false)
+    })
+
+    it('offers the RDP actions and no hint when reachable', () => {
+      const wrapper = mount(RdpFallbackCard, {
+        props: {
+          phase: 'error',
+          errorCode: 'connection_timed_out',
+          rdpAvailable: true,
+          rdpMeshReachable: true,
+          deviceId: DEVICE_ID,
+          deviceName: DEVICE_NAME,
+        },
+      })
+      expect(wrapper.find('[data-test="rdp-mesh-hint"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="rdp-fallback-no-bridge"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="rdp-auto-toggle"]').exists()).toBe(true)
+    })
+
+    it('desktop menu: hint instead of "用 RDP 连接" when not reachable, and no dropdown without RDP', async () => {
+      const parsed = new DOMParser().parseFromString(DESKTOP_HTML, 'text/html')
+      const section = document.importNode(parsed.getElementById('view-devices')!, true)
+      section.hidden = false
+      document.body.innerHTML = ''
+      document.body.appendChild(section)
+      const OTHER_ID = '66366f7a7230306d6c657299'
+      const invokeSpy = vi.fn(async (cmd: string) => {
+        if (cmd === 'cmd_devices') {
+          return {
+            items: [
+              {
+                id: DEVICE_ID,
+                overlay_node_id: 'node-surface-01',
+                name: DEVICE_NAME,
+                kind: 'agent',
+                is_self: false,
+                presence: 'online',
+                os: 'windows',
+                rdp_available: true,
+                rdp_mesh_reachable: false,
+              },
+              {
+                id: OTHER_ID,
+                overlay_node_id: 'node-linux-01',
+                name: 'linux-box',
+                kind: 'agent',
+                is_self: false,
+                presence: 'online',
+                os: 'linux',
+              },
+            ],
+            total: 2,
+            page: 1,
+            per_page: 25,
+          }
+        }
+        return { ok: true }
+      })
+      const w = window as unknown as Record<string, unknown>
+      w.MeshHarbor = {
+        $: (id: string) => document.getElementById(id),
+        invoke: invokeSpy,
+        show: (el: HTMLElement | null) => el && (el.hidden = false),
+        hide: (el: HTMLElement | null) => el && (el.hidden = true),
+        fmtRelative: () => 'just now',
+        on: () => undefined,
+        get: () => ({ available: true, orgs: [{ label: 'primary', primary: true }], peers: [] }),
+        currentView: () => 'devices',
+        Mesh: { create: () => ({ render: () => undefined }) },
+      }
+      window.eval(DESKTOP_GRID_JS)
+      window.eval(DESKTOP_DEVICES_JS)
+      document.dispatchEvent(new Event('DOMContentLoaded'))
+      document.dispatchEvent(new CustomEvent('meshharbor:view', { detail: 'devices' }))
+      await new Promise((r) => setTimeout(r, 20))
+
+      // Rows are keyed by device; an earlier test's devices.js instance may
+      // render too, so select by key rather than counting widgets.
+      const wrapsFor = (id: string) =>
+        Array.from(document.querySelectorAll(`tr[data-key*="${id}"] .dv-split-wrap`)) as HTMLElement[]
+      const surfaceWraps = wrapsFor(DEVICE_ID)
+      const linuxWraps = wrapsFor(OTHER_ID)
+      expect(surfaceWraps.length).toBeGreaterThan(0)
+      expect(linuxWraps.length).toBeGreaterThan(0)
+      const toggle1 = surfaceWraps[0].querySelector('.dv-split-toggle') as HTMLButtonElement
+      const item1 = surfaceWraps[0].querySelector('.dv-split-item-rdp') as HTMLButtonElement
+      const hint1 = surfaceWraps[0].querySelector('.dv-split-hint') as HTMLElement
+      expect(toggle1.hidden).toBe(false)
+      toggle1.click()
+      expect(item1.hidden).toBe(true)
+      expect(hint1.hidden).toBe(false)
+      expect(hint1.textContent).toBe(RDP_MESH_DISABLED_HINT)
+      for (const w of linuxWraps) {
+        expect((w.querySelector('.dv-split-toggle') as HTMLButtonElement).hidden).toBe(true)
+      }
+      expect(invokeSpy).not.toHaveBeenCalledWith('cmd_open_rdp', expect.anything())
     })
   })
 })

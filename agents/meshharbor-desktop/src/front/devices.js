@@ -243,7 +243,7 @@
     if (!menu) return;
     const item = menu.querySelector('.dv-split-item-rdp');
     const confirmBox = menu.querySelector('.dv-rdp-confirm');
-    if (item) item.hidden = false;
+    if (item) item.hidden = item.dataset.offer !== '1';
     if (confirmBox) confirmBox.hidden = true;
   }
 
@@ -304,7 +304,13 @@
       chooserTitle: 'Actions',
       cls: 'dv-col-actions',
       build(td) {
-        const s = { agentId: null, rdpTarget: null, rdpPort: null, rdpCertSha256: null };
+        const s = {
+          agentId: null,
+          rdpTarget: null,
+          rdpPort: null,
+          rdpCertSha256: null,
+          rdpOffer: false,
+        };
         const wrap = el('div', 'dv-split-wrap');
         const group = el('div', 'dv-split-group');
 
@@ -338,6 +344,10 @@
         menu.hidden = true;
 
         async function runRdpConfirmed(acceptBtn) {
+          if (!s.rdpOffer) {
+            closeAllSplitMenus(null);
+            return;
+          }
           const target = s.rdpTarget || s.agentId;
           if (!target) {
             closeAllSplitMenus(null);
@@ -377,6 +387,10 @@
         rdpItem.type = 'button';
         rdpItem.setAttribute('role', 'menuitem');
         rdpItem.title = '通过系统 RDP 客户端连接（RDP 会话会锁定远端电脑的本地屏幕）';
+        // RDP over the mesh: offered only when the target reports it reachable
+        // (`rdp_mesh_reachable`); an RDP server with no mesh path gets a hint.
+        const meshHint = el('div', 'dv-split-hint', '需在目标设备上开启 RDP over mesh（rdp_over_mesh = true）');
+        meshHint.hidden = true;
 
         const confirmBox = el('div', 'dv-rdp-confirm');
         confirmBox.setAttribute('role', 'alertdialog');
@@ -427,7 +441,7 @@
 
         confirmActions.append(confirmAcceptBtn, confirmCancelBtn);
         confirmBox.append(confirmText, unpinnedNote, confirmActions);
-        menu.append(rdpItem, confirmBox);
+        menu.append(rdpItem, meshHint, confirmBox);
 
         toggleBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
@@ -447,6 +461,8 @@
         s.toggleBtn = toggleBtn;
         s.menu = menu;
         s.unpinnedNote = unpinnedNote;
+        s.rdpItem = rdpItem;
+        s.meshHint = meshHint;
         return s;
       },
       update(s, row) {
@@ -465,6 +481,14 @@
         if (s.unpinnedNote) {
           s.unpinnedNote.hidden = !!s.rdpCertSha256;
         }
+        s.rdpOffer = ok && row.rdp_mesh_reachable === true;
+        const rdpHint = ok && !s.rdpOffer && row.rdp_available === true;
+        if (s.rdpItem) {
+          s.rdpItem.dataset.offer = s.rdpOffer ? '1' : '0';
+          s.rdpItem.hidden = !s.rdpOffer;
+        }
+        if (s.meshHint) s.meshHint.hidden = !rdpHint;
+        if (s.toggleBtn) s.toggleBtn.hidden = !(s.rdpOffer || rdpHint);
         s.wrap.hidden = !ok;
         s.btn.hidden = !ok;
         if (!ok && s.menu) {

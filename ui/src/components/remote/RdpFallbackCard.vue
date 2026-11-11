@@ -13,8 +13,11 @@
     <div class="rc-rdp-fallback-warning" data-test="rdp-screen-lock-warning" role="alert">
       {{ RDP_SCREEN_LOCK_WARNING }}
     </div>
+    <p v-if="!meshReachable" class="rc-rdp-mesh-hint" data-test="rdp-mesh-hint">
+      {{ RDP_MESH_DISABLED_HINT }}
+    </p>
     <p
-      v-if="hasBridge && !hasPinnedCert"
+      v-if="hasBridge && meshReachable && !hasPinnedCert"
       class="rc-rdp-unpinned-note"
       data-test="rdp-unpinned-cert-notice"
     >
@@ -23,7 +26,7 @@
 
     <div class="rc-rdp-fallback-actions">
       <button
-        v-if="hasBridge"
+        v-if="hasBridge && meshReachable"
         type="button"
         class="rc-rdp-btn rc-rdp-btn-primary"
         data-test="rdp-fallback-connect-btn"
@@ -44,7 +47,7 @@
     </div>
 
     <div
-      v-if="!hasBridge"
+      v-if="!hasBridge && meshReachable"
       class="rc-rdp-no-bridge"
       data-test="rdp-fallback-no-bridge"
     >
@@ -65,7 +68,7 @@
       </div>
     </div>
 
-    <div class="rc-rdp-auto-row">
+    <div v-if="meshReachable" class="rc-rdp-auto-row">
       <label class="rc-rdp-auto-label">
         <input
           type="checkbox"
@@ -117,6 +120,7 @@
 import { computed, ref, watch } from 'vue'
 import {
   RDP_SCREEN_LOCK_WARNING,
+  RDP_MESH_DISABLED_HINT,
   RDP_UNPINNED_CERT_MSTSC_NOTICE,
   formatMhRdpCommand,
   getDeviceAutoRdpFallback,
@@ -136,6 +140,8 @@ const props = withDefaults(
     rdpAvailable?: boolean | null
     rdpPort?: number | null
     rdpCertSha256?: string | null
+    /** `AgentCaps.rdp_mesh_reachable`: RDP is offered only when true. */
+    rdpMeshReachable?: boolean | null
     deviceId: string
     deviceName?: string | null
     org?: string | null
@@ -148,6 +154,7 @@ const props = withDefaults(
     rdpAvailable: false,
     rdpPort: null,
     rdpCertSha256: null,
+    rdpMeshReachable: false,
     deviceName: null,
     org: null,
   },
@@ -176,6 +183,8 @@ const visible = computed(() =>
 
 const hasBridge = computed(() => hasDesktopRdpBridge())
 const hasPinnedCert = computed(() => Boolean(props.rdpCertSha256?.trim()))
+// RDP over the mesh: an RDP server the overlay cannot deliver to is not offered.
+const meshReachable = computed(() => props.rdpMeshReachable === true)
 
 const displayReason = computed(() => {
   if (props.mediaUnavailableHint?.trim()) {
@@ -216,6 +225,7 @@ watch(
     }
     if (
       autoFallbackEnabled.value &&
+      meshReachable.value &&
       hasBridge.value &&
       !autoTriggeredForCurrentFailure.value
     ) {
@@ -422,5 +432,11 @@ async function onCopyCliCommand() {
   margin: -4px 0 10px;
   font-size: 12px;
   color: #cbd5e1;
+}
+
+.rc-rdp-mesh-hint {
+  margin: -4px 0 10px;
+  font-size: 12px;
+  color: #fcd34d;
 }
 </style>
