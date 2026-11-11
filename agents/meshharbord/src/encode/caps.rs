@@ -2402,6 +2402,11 @@ fn rpc_caps() -> Vec<String> {
         RpcCap::ConfigReport,
         RpcCap::ExternalAccess,
         RpcCap::SharedSessionLease,
+        // MeshHarbor — a shared session's file operations run as the share's
+        // account and never as root/SYSTEM (`crate::share_files`). A property
+        // of the BUILD: whether this install may serve them is decided per
+        // session, by its own privilege.
+        RpcCap::SharedFilesAsAccount,
     ];
     // FR-97 P5a — a Linux or macOS build runs `console_user` as the person at
     // its screen: SSH's account mode, and the `run_as` of `rc:rpc.exec`,

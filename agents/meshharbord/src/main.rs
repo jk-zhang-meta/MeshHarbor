@@ -3482,6 +3482,9 @@ async fn run_cmd(
         detail = ?supervision,
         "supervision: who relaunches this daemon if it exits (FR-84 D3)"
     );
+    // A worker a privileged supervisor spawned serves a system install, even
+    // when its own token is the person's: shared file sessions decide by it.
+    meshharbord::share_files::note_supervision(supervision);
 
     #[cfg(target_os = "macos")]
     macos_permission_preflight();

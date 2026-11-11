@@ -13826,23 +13826,54 @@ pub fn attach_files_denied(
         session = %session_id,
         "files DC attached in DENY mode — session lacks FILES permission"
     );
+    attach_files_refusing(
+        dc,
+        session_end,
+        "FILES permission not granted for this session".to_string(),
+    );
+}
+
+/// A files channel that answers every request with `reason`: a transfer's
+/// `files:error` (by its `id`), a listing's `files:dir-error` (by its
+/// `req_id`), so neither of the browser's waiters times out instead.
+fn attach_files_refusing(
+    dc: Arc<RTCDataChannel>,
+    session_end: &tokio_util::sync::CancellationToken,
+    reason: String,
+) {
     let dc_for_handler = dc.clone();
+    let reason = Arc::new(reason);
     dc.on_message(Box::new(move |msg| {
         let dc = dc_for_handler.clone();
+        let reason = reason.clone();
         Box::pin(async move {
             if !msg.is_string {
                 return; // chunk for a transfer that was never accepted
             }
-            let id = std::str::from_utf8(&msg.data)
+            let v = std::str::from_utf8(&msg.data)
                 .ok()
-                .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
-                .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string))
-                .unwrap_or_default();
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok());
+            let field = |k: &str| {
+                v.as_ref()
+                    .and_then(|v| v.get(k).and_then(|i| i.as_str()).map(str::to_string))
+            };
+            if let Some(req_id) = field("req_id") {
+                send_files_json(
+                    &dc,
+                    &crate::files::FilesOutgoing::DirError {
+                        req_id: &req_id,
+                        message: &reason,
+                    },
+                )
+                .await;
+                return;
+            }
+            let id = field("id").unwrap_or_default();
             send_files_json(
                 &dc,
                 &crate::files::FilesOutgoing::Error {
                     id: &id,
-                    message: "FILES permission not granted for this session",
+                    message: &reason,
                 },
             )
             .await;
@@ -13852,6 +13883,25 @@ pub fn attach_files_denied(
     on_session_end(&dc, session_end, || async {});
 }
 
+/// MeshHarbor — the files handler a session gets: an ordinary session's, as
+/// always; a SHARED session's runs every step as the share account, or the
+/// channel refuses with the reason (`crate::share_files`). `Err` = refuse.
+fn files_handler_for(
+    session_id: bson::oid::ObjectId,
+) -> Result<crate::files::FilesHandler, String> {
+    match crate::share_files::for_session(session_id) {
+        None => Ok(crate::files::FilesHandler::new()),
+        Some(crate::share_files::SharedFiles::As(who)) => {
+            info!(%session_id, ?who, "files: shared session — every step runs as the share identity");
+            Ok(crate::files::FilesHandler::acting_as(who))
+        }
+        Some(crate::share_files::SharedFiles::Refused(reason)) => {
+            warn!(%session_id, %reason, "files: shared session's file channel refused");
+            Err(reason)
+        }
+    }
+}
+
 pub fn attach_files_handler(
     dc: Arc<RTCDataChannel>,
     session_id: bson::oid::ObjectId,
@@ -13859,7 +13909,13 @@ pub fn attach_files_handler(
     // ends, whether or not the channel says it closed.
     session_end: &tokio_util::sync::CancellationToken,
 ) {
-    let handler = crate::files::FilesHandler::new();
+    let handler = match files_handler_for(session_id) {
+        Ok(h) => h,
+        Err(reason) => {
+            attach_files_refusing(dc, session_end, reason);
+            return;
+        }
+    };
     let dc_for_handler = dc.clone();
     let handler_for_close = handler.clone();
     dc.on_close(Box::new(move || {
@@ -13896,6 +13952,16 @@ pub fn attach_child_files_handler(
     session_id: bson::oid::ObjectId,
     child_end: &tokio_util::sync::CancellationToken,
 ) {
+    // The hub never gives a shared session file children; were one to
+    // arrive, it is refused here too, never served as the daemon.
+    if crate::share_files::is_shared(session_id) {
+        attach_files_refusing(
+            dc,
+            child_end,
+            "file children are not available in a shared session".to_string(),
+        );
+        return;
+    }
     let handler = crate::files::FilesHandler::new();
     let dc_for_handler = dc.clone();
     let handler_for_close = handler.clone();
@@ -14024,6 +14090,15 @@ pub fn attach_child_upload_files_handler(
     viewer_report: Arc<crate::encode::viewer_rate::ViewerFeedback>,
     child_end: &tokio_util::sync::CancellationToken,
 ) {
+    // As the download child: a shared session never writes through one.
+    if crate::share_files::is_shared(session_id) {
+        attach_files_refusing(
+            dc,
+            child_end,
+            "file children are not available in a shared session".to_string(),
+        );
+        return;
+    }
     let bound_stripe_id: Arc<tokio::sync::Mutex<Option<String>>> =
         Arc::new(tokio::sync::Mutex::new(None));
     let dc_for_handler = dc.clone();
@@ -14558,7 +14633,7 @@ async fn handle_files_control(
                 .await;
                 return;
             }
-            match crate::files::list_dir(&path).await {
+            match handler.list(&path).await {
                 Ok(listing) => {
                     info!(
                         %session_id, %req_id,
@@ -14834,8 +14909,10 @@ fn spawn_outgoing_zip_pump(
         let cancel = offer.cancel.clone();
         let path = offer.path.clone();
         let walk_cancel = cancel.clone();
+        // A shared session walks as its share identity (`None` otherwise).
+        let walk_as = handler.shared_identity();
         let walk_handle = tokio::spawn(async move {
-            crate::files::walk_and_zip(writer_half, &path, walk_cancel).await
+            crate::files::walk_and_zip_as(writer_half, &path, walk_cancel, walk_as).await
         });
 
         let dc_for_pump = dc.clone();

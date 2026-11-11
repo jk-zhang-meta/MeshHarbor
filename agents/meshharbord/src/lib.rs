@@ -202,6 +202,9 @@ pub mod session_idle;
 /// device's half: the owner's floor, and the masking every grant goes through.
 pub mod session_policy;
 pub mod session_telemetry;
+/// MeshHarbor — who a shared session's file operations run as (never
+/// root/SYSTEM).
+pub mod share_files;
 pub mod shared_lease;
 pub mod signaling;
 /// FR-93 P5h — a computer going to sleep tells every viewer first.

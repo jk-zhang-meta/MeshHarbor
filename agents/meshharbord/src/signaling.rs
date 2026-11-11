@@ -3586,6 +3586,7 @@ async fn handle_server_msg(
     // session that was not external.) FR-100 P1b's notes end with it.
     if let ServerMsg::Terminate { session_id, .. } = &msg {
         shared_leases.end(*session_id);
+        crate::share_files::forget(*session_id);
         crate::extauth::end_session(remote_cfg, *session_id);
         remote_cfg.peer_auth_offers().forget(*session_id);
     }
@@ -4566,6 +4567,13 @@ async fn handle_server_msg(
             if !shared_leases.attach(session_id, shared_lease.as_ref(), peer.shared_lease_stop()) {
                 close_within_budget(peer.close(), session_id, "shared_lease_expired").await;
                 return Ok(());
+            }
+            // MeshHarbor — a shared session's file channel runs as the share
+            // account, never as root/SYSTEM. Noted here, in the process that
+            // serves the peer, before the answer exists: no data channel can
+            // open earlier than that.
+            if let Some(lease) = shared_lease.as_ref() {
+                crate::share_files::note(session_id, lease);
             }
             peer.set_initial_resolution(initial_resolution.as_ref());
             // Only the actual local Request/consent candidate may bind; worker
