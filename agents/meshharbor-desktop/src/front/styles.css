@@ -1075,8 +1075,10 @@ button.wl-skip:hover {
 }
 
 .dv-split-menu {
-  position: absolute;
-  top: calc(100% + 4px);
+  /* Fixed, placed by devices.js `placeSplitMenu`, so the grid's scroll
+   * container (`.tbl-wrap`) cannot clip it on a one-row table. */
+  position: fixed;
+  top: 0;
   left: 0;
   z-index: 30;
   min-width: 152px;

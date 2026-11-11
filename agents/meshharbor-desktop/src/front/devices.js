@@ -267,6 +267,36 @@
     }
   });
 
+  // The grid sits in a scroll container (`.tbl-wrap`), which clips an
+  // absolutely positioned dropdown whenever the table is short (one row).
+  // Pin the open menu to the viewport instead: below the button, or above
+  // it when there is no room below.
+  function placeSplitMenu(menu) {
+    if (!menu || menu.hidden) return;
+    const wrap = menu.closest('.dv-split-wrap');
+    if (!wrap) return;
+    const a = wrap.getBoundingClientRect();
+    const gap = 4;
+    const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    const h = menu.offsetHeight;
+    const w = menu.offsetWidth;
+    let top = a.bottom + gap;
+    if (vh && top + h > vh && a.top - gap - h >= 0) top = a.top - gap - h;
+    let left = a.left;
+    if (vw && left + w > vw) left = Math.max(0, vw - w - gap);
+    menu.style.top = Math.round(top) + 'px';
+    menu.style.left = Math.round(left) + 'px';
+  }
+
+  function placeOpenSplitMenus() {
+    for (const m of document.querySelectorAll('.dv-split-menu:not([hidden])')) {
+      placeSplitMenu(m);
+    }
+  }
+  window.addEventListener('resize', placeOpenSplitMenus);
+  document.addEventListener('scroll', placeOpenSplitMenus, true);
+
   const COLUMNS = [
     {
       key: 'actions',
@@ -382,6 +412,7 @@
           rdpItem.hidden = true;
           unpinnedNote.hidden = !!s.rdpCertSha256;
           confirmBox.hidden = false;
+          placeSplitMenu(menu);
         });
 
         confirmAcceptBtn.addEventListener('click', (ev) => {
@@ -404,6 +435,7 @@
           closeAllSplitMenus(menu);
           resetSplitMenuState(menu);
           menu.hidden = !willOpen;
+          if (willOpen) placeSplitMenu(menu);
           toggleBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
         });
 
