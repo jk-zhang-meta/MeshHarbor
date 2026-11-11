@@ -2,9 +2,12 @@
 // Copyright (C) 2026 G ROX EOOD
 //! Pinned-key verification of the release `.asc` sidecars.
 //!
-//! Windows updates are anchored by Authenticode + a signer-name check
-//! (`code_signature::verify_publisher`). The `.deb` and `.pkg` had no
-//! equivalent: their SHA256 arrives in the SAME manifest, from the SAME
+//! Since the self-hosted release channel this is the update anchor on EVERY
+//! platform, Windows included (`updater::download_asset`): Windows used to be
+//! anchored by Authenticode + a signer-name check
+//! (`code_signature::verify_publisher`), which no artifact this project
+//! builds can satisfy (unsigned by policy, `docs/local-build.md`). Before
+//! that, the `.deb` and `.pkg` had no equivalent: their SHA256 arrives in the SAME manifest, from the SAME
 //! origin, as the download URL — a transport check, not a tamper anchor —
 //! so anything able to serve the manifest could serve matching "proof".
 //! Every release since rc.458 ships detached GPG signatures, but a key
@@ -37,18 +40,30 @@ use anyhow::{Context, Result, bail};
 
 /// The ed25519 public point of the release SIGNING subkey, pinned.
 ///
-/// Key: `MeshHarbor Release Signing <releases@meshharbor.itachi.fans>`
-/// Subkey fingerprint: `5DB8221F546288DE780C10D3A2C53E5FE6FA485A` (key id
-/// `A2C53E5FE6FA485A`), certified by the offline primary
-/// `D654B016256FD92A81634A0E2AD1E9F025973A7F`.
+/// Key: `MeshHarbor Release Signing <releases@meshharbor.itachi.fans>`,
+/// generated 2026-11-11 for the self-hosted release channel
+/// (`docs/self-hosted-releases.md`): signing subkey
+/// `A323047747FA652D8D74BB709482E0B7193780A1` (key id `9482E0B7193780A1`),
+/// certified by the certify-only primary
+/// `38442E987FDC5492F8C722D43A8B20AA3BC5C4B4`. Its secret halves never enter
+/// this repository.
+///
+/// ⚠️ It REPLACED the inherited upstream pin (subkey
+/// `5DB8221F546288DE780C10D3A2C53E5FE6FA485A`), whose secret this project
+/// does not hold — under that pin no artifact this project can build would
+/// ever pass the updater, so the update path was closed, not merely
+/// inconvenient. Agents built before the swap still carry the old pin and
+/// refuse every new-key release; they move to this key by ONE manual
+/// install, after which updates flow again. That is the rotation note below
+/// applied without an overlap window, which needs the old key's secret.
 ///
 /// The canonical armored key lives at
-/// `scripts/signing/gpg/meshharbor-release-pubkey.asc` and is republished as
-/// a release asset; `pinned_key_matches_committed_pubkey` re-derives this
-/// constant from that file so the two can never drift silently.
+/// `scripts/signing/gpg/meshharbor-release-pubkey.asc`;
+/// `pinned_key_matches_committed_pubkey` re-derives this constant from that
+/// file so the two can never drift silently.
 pub const PINNED_RELEASE_SIGNING_KEY: [u8; 32] = [
-    0xc2, 0x7e, 0x10, 0x54, 0xd2, 0x42, 0x57, 0xdc, 0x8d, 0x66, 0x00, 0x50, 0x15, 0xf0, 0xdb, 0x31,
-    0x9b, 0x7a, 0xf4, 0x47, 0xa0, 0x38, 0x77, 0x3c, 0xc0, 0x11, 0xff, 0xfa, 0x8b, 0xa6, 0xd9, 0xfa,
+    0x64, 0x75, 0xda, 0xa9, 0x5a, 0xfc, 0xfa, 0x07, 0x2b, 0x53, 0x2e, 0x3b, 0xc9, 0x0f, 0xd3, 0x5e,
+    0xe1, 0x8e, 0x34, 0xab, 0xf8, 0x4d, 0xe8, 0xfe, 0x27, 0x87, 0x72, 0x3a, 0xe7, 0x80, 0x6d, 0xb1,
 ];
 
 /// Verify `artifact` against the armored detached signature `asc`, using
@@ -356,6 +371,32 @@ LSPRvB0G9xGjssS7PG6iG4Tedn3r8g4=\n\
 =lGyI\n\
 -----END PGP SIGNATURE-----\n";
 
+    /// A message signed by the PINNED key's signing subkey with the same
+    /// command the publish script uses (`gpg --armor --detach-sign`, gpg
+    /// 2.4.7, 2026-11-11). It proves what `pinned_key_matches_committed_pubkey`
+    /// cannot: that what our gpg emits for our key is a shape this parser
+    /// accepts, so a release signed by `scripts/release-local.sh` verifies.
+    const PINNED_KEY_VECTOR_MSG: &[u8] = b"meshharbor release key vector v1\n";
+    const PINNED_KEY_VECTOR_ASC: &str = "-----BEGIN PGP SIGNATURE-----\n\n\
+iHUEABYKAB0WIQSjIwR3R/plLY10u3CUguC3GTeAoQUCavQ+kAAKCRCUguC3GTeA\n\
+oTanAQCgipHTlHg2sSt5z8ttM8+eZ+6GiMU0KhgqUaOB9MlZrAEAsISNQ1OBJTi/\n\
+aHdMs4RDcgWllsRLyXIIbRmg7WHb+AM=\n\
+=rEb1\n\
+-----END PGP SIGNATURE-----\n";
+
+    #[test]
+    fn a_signature_by_the_pinned_key_verifies_and_a_flipped_byte_fails() {
+        verify_release_artifact(PINNED_KEY_VECTOR_MSG, PINNED_KEY_VECTOR_ASC)
+            .expect("our own release signature must verify against the pin");
+        let mut flipped = PINNED_KEY_VECTOR_MSG.to_vec();
+        flipped[0] ^= 0x01;
+        verify_release_artifact(&flipped, PINNED_KEY_VECTOR_ASC)
+            .expect_err("a flipped byte must be refused");
+        // And the fixture key's signature is still foreign to the pin.
+        verify_release_artifact(FIXTURE_MSG, FIXTURE_ASC)
+            .expect_err("a signature by any other key must be refused");
+    }
+
     #[test]
     fn fixture_signature_verifies() {
         verify_detached(FIXTURE_MSG, FIXTURE_ASC, &FIXTURE_KEY)
@@ -467,15 +508,12 @@ LSPRvB0G9xGjssS7PG6iG4Tedn3r8g4=\n\
         );
     }
 
-    // RETIRED-NAME-ANCHOR(8): names a PUBLISHED release asset. Filenames are fixed by
-    // what is already on GitHub Releases (FR-21 D6).
     /// Verifies a REAL published artifact against the real pin. `#[ignore]`
     /// because it needs release files this repo does not carry:
     ///
     /// ```text
-    /// gh release download agent-v0.3.0-rc.475 --repo jk-zhang-meta/MeshHarbor \
-    ///   --pattern 'meshharbor-agent-*aarch64-apple-darwin.pkg*' --dir /tmp/rel
-    /// MESHHARBOR_TEST_ARTIFACT=/tmp/rel/meshharbor-agent-0.3.0-rc.475-aarch64-apple-darwin.pkg \
+    /// # any artifact published with scripts/release-local.sh, plus its .asc
+    /// MESHHARBOR_TEST_ARTIFACT=/srv/meshharbor-releases/agent-v0.4.152/meshharbord-0.4.152-x86_64-unknown-linux-gnu.deb \
     ///   cargo test -p meshharbor-tunnel-core --lib -- --ignored real_published_asc
     /// ```
     #[test]

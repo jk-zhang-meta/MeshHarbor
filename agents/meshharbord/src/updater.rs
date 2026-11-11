@@ -1624,51 +1624,31 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
     write_installer(&path, &bytes).context("writing installer to disk")?;
 
     // Publisher check — the anchor the serving channel cannot forge. Whatever
-    // is on disk here is about to run as SYSTEM, so it must be attributable to
-    // us and not merely to "someone with a code-signing certificate": a valid
-    // Authenticode signature alone would let any commercial cert holder
-    // through, so the signer's name is checked too.
+    // is on disk here is about to run as SYSTEM/root, so it must be
+    // attributable to us, by an identity compiled into this binary, never one
+    // fetched alongside the artifact.
     //
     // Fail-closed, and the failure is SKIPPING the update: the file is
     // discarded and the agent keeps running the version it already has. That
     // is deliberately the safe direction — a false negative costs an update
     // cycle, a false positive costs the fleet.
     //
-    // Windows: Authenticode + the signer-name check.
-    #[cfg(windows)]
-    {
-        use crate::code_signature::{EXPECTED_PUBLISHER, verify_publisher};
-        match verify_publisher(&path, EXPECTED_PUBLISHER) {
-            Ok(signer) => {
-                tracing::info!(asset = %asset.name, %signer, "installer signature verified");
-            }
-            Err(e) => {
-                discard_download(&path);
-                bail!(
-                    "refusing to install {}: {e}. The download was discarded and this \
-                     agent keeps its current version.",
-                    asset.name
-                );
-            }
-        }
-    }
-
-    // Linux/macOS: the detached GPG `.asc` verified against the key PINNED
-    // in this binary (`pgp_verify`). Same fail-closed direction as Windows,
-    // and the sidecar is REQUIRED: every release since rc.458 ships one, the
-    // updater only ever moves FORWARD, and "the .asc is missing" means the
-    // release's signing job failed — freezing on it, loudly, is correct.
-    // (⚠️ the release workflow skips GPG signing gracefully when its secret
-    // is absent; from this change on, that grace would freeze Linux/macOS
-    // updates — the freeze is visible here as a refusal + sentinel, which is
-    // the intended alarm, not a silent stall.)
+    // EVERY platform, Windows included: the detached GPG `.asc` verified
+    // against the key PINNED in this binary (`pgp_verify`). Windows used to be
+    // anchored by Authenticode + an `EXPECTED_PUBLISHER` signer name instead;
+    // this project ships unsigned Windows artifacts by policy
+    // (`docs/local-build.md`), so that check could only ever refuse, and the
+    // self-hosted release channel (`docs/self-hosted-releases.md`) signs every
+    // artifact's `.asc` on all three platforms. One anchor, one rule.
     //
-    // The sidecar URL is derived (`<asset-url>.asc` — GitHub names release
-    // assets verbatim) and fetched over the SAME channel as the artifact.
-    // That is fine: the point of the pin is that the channel cannot mint a
-    // signature, only withhold one — and withholding is a refusal, not an
-    // install.
-    #[cfg(not(windows))]
+    // The sidecar is REQUIRED: "the .asc is missing" means the release was
+    // published wrong — freezing on it, loudly, is correct (the server also
+    // refuses to serve an artifact without its `.asc`).
+    //
+    // The sidecar URL is derived (`<asset-url>.asc`) and fetched over the SAME
+    // channel as the artifact. That is fine: the point of the pin is that the
+    // channel cannot mint a signature, only withhold one — and withholding is
+    // a refusal, not an install.
     {
         let mut asc_url = origin
             .asset_url(&asset.browser_download_url)

@@ -2,6 +2,15 @@
 // Copyright (C) 2026 G ROX EOOD
 //! Authenticode verification for anything the agent is about to EXECUTE.
 //!
+//! ⚠️ No longer the self-updater's anchor (2026-11-11). This project ships
+//! unsigned Windows artifacts by policy (`docs/local-build.md`), so a check
+//! for the inherited `EXPECTED_PUBLISHER` could only ever refuse. The updater
+//! now anchors every platform, Windows included, on the detached `.asc`
+//! against the key compiled into the binary (`pgp_verify`,
+//! `docs/self-hosted-releases.md`). This module stays as the verifier for a
+//! future signed distribution; the rationale below is why an anchor must be
+//! compiled in, and it applies to the `.asc` pin unchanged.
+//!
 //! ## Why this exists
 //!
 //! The self-updater downloads an installer and runs it as the daemon's
