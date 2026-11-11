@@ -1313,13 +1313,18 @@ fn spawn_org_bind(
         )
         .await
         {
-            Ok((sock, relay, outcomes)) => (
-                Some(Arc::new(
-                    OrgRelayConn::new(Arc::new(sock), relay, job.vni, relay_label)
-                        .with_rebind(job.generation, job.secret.clone()),
-                )),
-                outcomes,
-            ),
+            Ok((sock, relay, outcomes)) => {
+                let conn = OrgRelayConn::new(Arc::new(sock), relay, job.vni, relay_label)
+                    .with_rebind(job.generation, job.secret.clone());
+                // Item 6 — watch the bound leg, timed by the bind round trip
+                // just measured (the winning endpoint is the last outcome).
+                let conn = if crate::overlay::relay_link::org_liveness_enabled() {
+                    conn.with_liveness(outcomes.last().and_then(|o| o.rtt).unwrap_or_default())
+                } else {
+                    conn
+                };
+                (Some(Arc::new(conn)), outcomes)
+            }
             Err((e, outcomes)) => {
                 debug!(peer = %job.node_id, vni = job.vni, %e,
                     "overlay relay: org-relay bind failed on every endpoint");
@@ -3627,6 +3632,10 @@ impl OverlayRuntime {
             super::direct::fast_probe_promote_enabled() && super::direct::probe_watch_enabled();
         let mut probe_watch = tokio::time::interval(PROBE_WATCH_TICK);
         probe_watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Item 6 — liveness of the bound ORG legs; armed only while one exists.
+        let mut org_liveness =
+            tokio::time::interval(crate::overlay::relay_link::ORG_LIVENESS_IDLE_TICK);
+        org_liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // netstate PR-2 — subscribe to the process-wide network monitor
         // (typed deltas replace the P4 string feed; ONE OS registration per
         // process, see `netstate`). `None` (either kill-switch off /
@@ -4006,6 +4015,32 @@ impl OverlayRuntime {
                 _ = &mut outbound_pump => {
                     debug!("overlay: outbound pump ended; runtime exiting");
                     break;
+                },
+                // Item 6 — liveness of the bound ORG legs. The coordinator asks
+                // each carrier's relay whether it still answers and convicts
+                // the ones that do not; a death is then handled exactly like a
+                // server revoke of its session: reported, the candidate
+                // cancelled, and the sweep pulled forward so the pair sends on
+                // the DERP floor at once. Where it goes next is the server's
+                // verdict on the report and the ordinary paced ORG request.
+                _ = org_liveness.tick(), if relay.as_ref().is_some_and(|r| r.has_bound_org_carrier()) => {
+                    if let Some(r) = relay.as_mut() {
+                        let (dead, watching) = r.scan_org_liveness(Instant::now());
+                        for death in &dead {
+                            r.report_org_relay_dead(death).await;
+                            org_q.invalidate(&death.peer);
+                            cancel_org_upgrade_candidate(&death.peer, &mut wg, &mut by_node);
+                        }
+                        if !dead.is_empty() {
+                            org_discovery.invalidate(); // as on a revoke: no stale hint survives
+                            fallback.reset_immediately();
+                        }
+                        org_liveness.reset_after(if watching {
+                            crate::overlay::relay_link::ORG_LIVENESS_HOT_TICK
+                        } else {
+                            crate::overlay::relay_link::ORG_LIVENESS_IDLE_TICK
+                        });
+                    }
                 },
                 // F5 — the business watch: lock-free counter reads every
                 // 250 ms; it may arm a proof (one forced initiation), never

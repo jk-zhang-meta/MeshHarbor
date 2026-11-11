@@ -38,7 +38,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use super::orgrelay::{
-    client::OrgRelayConn,
+    client::{LivenessPoll, OrgRelayConn},
     member::{OrgBindJob, OrgSession, per_endpoint_budget},
 };
 use std::net::{IpAddr, SocketAddr};
@@ -264,6 +264,37 @@ struct PendingPeer {
     pair_key: Option<String>,
 }
 
+/// Acceptance item 6 — `MESHHARBORD_OVERLAY_ORG_LIVENESS` (default ON; only
+/// `0|false|no|off` turns it off): a member asks the relay behind each of its
+/// bound ORG carriers whether it still answers, and falls to the DERP floor
+/// about two seconds after it stops (`orgrelay::client`, "Liveness of the
+/// bound leg"). Off, a dead relay is found by the health sweep alone: 15–20 s
+/// under traffic, 60–85 s without. Read once.
+pub(crate) fn org_liveness_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env::flag("OVERLAY_ORG_LIVENESS", true))
+}
+
+/// How often [`RelayCoordinator::scan_org_liveness`] runs while some bound
+/// carrier has traffic unanswered: the granularity of a liveness round.
+pub(crate) const ORG_LIVENESS_HOT_TICK: Duration = Duration::from_millis(100);
+/// The cadence while every bound carrier is quiet. Such a scan reads three
+/// counters per carrier, and it finds newly unanswered traffic well inside
+/// the silence a round waits for anyway, so the slower cadence costs no
+/// detection time.
+pub(crate) const ORG_LIVENESS_IDLE_TICK: Duration = Duration::from_millis(250);
+
+/// One ORG carrier [`RelayCoordinator::scan_org_liveness`] convicted: the
+/// relay behind it stopped answering for the session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OrgCarrierDeath {
+    pub peer: ObjectId,
+    pub relay_node_id: ObjectId,
+    /// The relay endpoint the carrier was bound to.
+    pub endpoint: SocketAddr,
+    pub vni: u32,
+}
+
 /// A relay allocation made for one peer, awaiting that peer's relayed
 /// address before the carrier can be built.
 struct Allocated {
@@ -430,6 +461,9 @@ pub struct RelayCoordinator {
     org_jobs: Vec<OrgBindJob>,
     /// `overlay_org_relay` — the client half of FR-19, default ON (MeshHarbor).
     org_relay: bool,
+    /// [`org_liveness_enabled`], read once: watch each bound ORG carrier's
+    /// relay leg ([`scan_org_liveness`](Self::scan_org_liveness)).
+    org_liveness: bool,
     /// Multi-region DERP — lazily-opened muxes for REGIONAL relays, keyed by
     /// their `derp_url`. A pair force-pinned with a `derp_url` builds its
     /// [`DerpConn`] off that region's mux; everything else keeps the central
@@ -605,6 +639,7 @@ impl RelayCoordinator {
             org_binding: HashSet::new(),
             org_jobs: Vec::new(),
             org_relay: super::direct::org_relay_enabled(),
+            org_liveness: org_liveness_enabled(),
             regional_muxes: HashMap::new(),
             event_sink: None,
             forced_urls: HashMap::new(),
@@ -2192,6 +2227,81 @@ impl RelayCoordinator {
         }
     }
 
+    /// Does any ORG carrier stand bound? The liveness tick sleeps otherwise.
+    pub(crate) fn has_bound_org_carrier(&self) -> bool {
+        self.org_liveness && self.org_sessions.values().any(|s| s.conn.is_some())
+    }
+
+    /// Acceptance item 6 — poll every bound ORG carrier's liveness once.
+    ///
+    /// A carrier whose relay left a whole round of binds unanswered is
+    /// convicted HERE and nowhere else: its session is dropped exactly as a
+    /// server revoke drops it (the health sweep then finds the carrier
+    /// hard-dead and the pair sends on the DERP floor), and the pacing gap of
+    /// the request that produced it is released on the revoke's own
+    /// once-per-gap budget, so the pair can ask again at once without a
+    /// stream of deaths ever driving more than one extra request. The caller
+    /// reports each death ([`report_org_relay_dead`](Self::report_org_relay_dead))
+    /// and pulls the sweep forward; which relay the pair rides next is the
+    /// server's verdict.
+    ///
+    /// Returns the deaths and whether any carrier still has traffic
+    /// unanswered (poll again at [`ORG_LIVENESS_HOT_TICK`]).
+    pub(crate) fn scan_org_liveness(&mut self, now: Instant) -> (Vec<OrgCarrierDeath>, bool) {
+        let mut dead = Vec::new();
+        let mut watching = false;
+        if !self.org_liveness {
+            return (dead, watching);
+        }
+        for (peer, s) in &self.org_sessions {
+            let Some(conn) = &s.conn else {
+                continue;
+            };
+            match conn.poll_liveness() {
+                LivenessPoll::Quiet => {}
+                LivenessPoll::Watching => watching = true,
+                LivenessPoll::Dead { binds, silent } => {
+                    warn!(peer = %peer, vni = s.vni, relay = %s.relay_node_id,
+                        binds, silent_ms = silent.as_millis() as u64,
+                        "overlay relay: org-relay carrier stopped answering (every bind of a liveness round went unanswered with traffic waiting) — falling to the DERP floor and reporting the relay unreachable");
+                    dead.push(OrgCarrierDeath {
+                        peer: *peer,
+                        relay_node_id: s.relay_node_id,
+                        endpoint: conn.relay_addr(),
+                        vni: s.vni,
+                    });
+                }
+            }
+        }
+        for d in &dead {
+            self.drop_org_session(&d.peer);
+            self.release_org_fallback_gap(d.peer, now);
+        }
+        (dead, watching)
+    }
+
+    /// Tell the server what [`scan_org_liveness`](Self::scan_org_liveness)
+    /// measured: this node cannot reach that relay endpoint now. An ordinary
+    /// `rc:overlay.relay_probe` row, the newest of which decides the relay's
+    /// rank for this node's pairs; the node's periodic prober overwrites it
+    /// with the next measurement, so a recovered relay is never held against.
+    /// `false` when the control channel did not take it.
+    pub(crate) async fn report_org_relay_dead(&mut self, death: &OrgCarrierDeath) -> bool {
+        matches!(
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                self.outbound.send(ClientMsg::OverlayRelayProbe {
+                    relay_node_id: death.relay_node_id,
+                    endpoint: death.endpoint.to_string(),
+                    reachable: false,
+                    rtt_ms: None,
+                })
+            )
+            .await,
+            Ok(Ok(()))
+        )
+    }
+
     /// The off-loop bind for `peer` failed on every endpoint: the session is
     /// unusable from here. Drop it and forget the pair, so the next request
     /// takes the TURN/DERP path; the server re-mints on a later
@@ -2233,6 +2343,12 @@ impl RelayCoordinator {
     #[cfg(test)]
     pub(crate) fn set_org_relay(&mut self, on: bool) {
         self.org_relay = on;
+    }
+
+    /// Test hook — the production value comes from `OVERLAY_ORG_LIVENESS`.
+    #[cfg(test)]
+    pub(crate) fn set_org_liveness(&mut self, on: bool) {
+        self.org_liveness = on;
     }
 
     /// Binds decided by `request` that the runtime has not spawned yet.
@@ -2719,6 +2835,225 @@ mod tests {
             expires_at: Instant::now() + Duration::from_secs(secs),
             conn: None,
         }
+    }
+
+    /// A coordinator holding one ORG carrier bound at a real relay on
+    /// loopback, the way the runtime's off-loop bind leaves it, with the
+    /// peer's frames arriving: the relay's serve task (stop it to freeze the
+    /// relay; the socket stays open), the coordinator, its control channel,
+    /// the peer id, the carrier's conn and the relay's endpoint.
+    async fn bound_org_carrier(
+        liveness: bool,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        RelayCoordinator,
+        tokio::sync::mpsc::Receiver<ClientMsg>,
+        ObjectId,
+        Arc<OrgRelayConn>,
+        SocketAddr,
+    ) {
+        use crate::overlay::orgrelay::bind::{BindSecret, CookieKey};
+        use crate::overlay::orgrelay::client::{bind, bind_any};
+        use crate::overlay::orgrelay::server::{RelayServer, RelayStats};
+        use crate::overlay::orgrelay::session::{Member, Session};
+
+        let relay_sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let relay_addr = relay_sock.local_addr().unwrap();
+        let (server, handle) = RelayServer::new(
+            CookieKey::from_bytes([7; 32]),
+            Arc::new(RelayStats::default()),
+        );
+        let serve = tokio::spawn(server.serve(relay_sock));
+        let now = Instant::now();
+        assert!(handle.install(Session {
+            vni: 7,
+            generation: 1,
+            members: [
+                Member {
+                    wg_public: [0xAA; 32],
+                    secret: BindSecret::from_bytes([1; 32]),
+                },
+                Member {
+                    wg_public: [0xBB; 32],
+                    secret: BindSecret::from_bytes([2; 32]),
+                },
+            ],
+            bound: [None, None],
+            max_lifetime: now + Duration::from_secs(60),
+            idle_deadline: now + Duration::from_secs(60),
+            bind_deadline: now + Duration::from_secs(30),
+        }));
+
+        let (tx, control) = tokio::sync::mpsc::channel(8);
+        let mut coord = RelayCoordinator::new(tx, [0u8; 32], true, vec![], None);
+        coord.set_org_relay(true);
+        coord.set_org_liveness(liveness);
+        let node = ObjectId::new();
+        let mut session = org_session(7, 60);
+        session.endpoints = vec![relay_addr];
+        coord.org_session_accept(node, session);
+        coord.request(node, base_peer()).await;
+        let job = coord.take_org_jobs().pop().expect("the org bind job");
+        // The runtime's `spawn_org_bind`, inline.
+        let (sock, bound_to, _) = bind_any(
+            &job.endpoints,
+            job.vni,
+            job.generation,
+            &job.secret,
+            job.per_endpoint,
+        )
+        .await
+        .expect("the member binds at the relay");
+        let conn = OrgRelayConn::new(Arc::new(sock), bound_to, job.vni, "r".into())
+            .with_rebind(job.generation, job.secret.clone());
+        let conn = Arc::new(if liveness {
+            conn.with_liveness(Duration::ZERO)
+        } else {
+            conn
+        });
+        coord
+            .commit_org_bind(node, job.generation, conn.clone())
+            .expect("the bound carrier is committed");
+        // The WG peer's receive task, in production.
+        let (heard_tx, mut heard) = tokio::sync::mpsc::channel(8);
+        let reader = conn.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            while reader.recv_from(&mut buf).await.is_ok() {
+                let _ = heard_tx.try_send(());
+            }
+        });
+        // The peer binds too and its frames flow through the relay.
+        let peer_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer_secret = BindSecret::from_bytes([2; 32]);
+        bind(
+            &peer_sock,
+            relay_addr,
+            7,
+            1,
+            &peer_secret,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let frame = crate::overlay::orgrelay::build_data(7, b"the peer's ciphertext");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                peer_sock.send_to(&frame, relay_addr).await.unwrap();
+                if let Ok(Some(())) =
+                    tokio::time::timeout(Duration::from_millis(50), heard.recv()).await
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the relay forwards the peer's frames to the member");
+        (serve, coord, control, node, conn, relay_addr)
+    }
+
+    /// Acceptance item 6 at the coordinator. The relay behind a bound ORG
+    /// carrier freezes while the member keeps sending: the scan convicts the
+    /// carrier inside three seconds, drops its session exactly as a revoke
+    /// does (the sweep then finds the carrier hard-dead and the pair sends on
+    /// the DERP floor), releases the pacing gap of the request that produced
+    /// it once, and the relay is reported unreachable on the control channel
+    /// before the next ORG request leaves.
+    #[tokio::test]
+    async fn a_frozen_org_relay_is_convicted_dropped_and_reported_by_the_scan() {
+        let (serve, mut coord, mut control, node, conn, relay_addr) = bound_org_carrier(true).await;
+        let relay_node_id = coord.org_sessions[&node].relay_node_id;
+        assert!(coord.has_bound_org_carrier());
+        // The request that produced this session left a moment ago.
+        coord.org_fallback_last.insert(node, Instant::now());
+        // A healthy relay is scanned and nothing dies.
+        for _ in 0..6 {
+            conn.send_to(b"data", conn.synth_peer()).await.unwrap();
+            let (dead, _) = coord.scan_org_liveness(Instant::now());
+            assert!(dead.is_empty(), "a healthy relay was convicted");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        serve.abort();
+        let _ = serve.await;
+        let frozen = Instant::now();
+        let dead = loop {
+            let _ = conn.send_to(b"into the silence", conn.synth_peer()).await;
+            let (dead, watching) = coord.scan_org_liveness(Instant::now());
+            if !dead.is_empty() {
+                break dead;
+            }
+            assert!(watching, "unanswered traffic keeps the scan hot");
+            assert!(
+                frozen.elapsed() < Duration::from_secs(3),
+                "a frozen relay must be convicted inside three seconds"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert_eq!(
+            dead,
+            vec![OrgCarrierDeath {
+                peer: node,
+                relay_node_id,
+                endpoint: relay_addr,
+                vni: 7,
+            }]
+        );
+        assert!(!conn.is_alive(), "the carrier is closed");
+        assert!(
+            !coord.holds_org_session(&node),
+            "the session is dropped: the sweep reads the carrier hard-dead"
+        );
+        assert!(!coord.has_bound_org_carrier());
+        assert!(coord.scan_org_liveness(Instant::now()).0.is_empty());
+
+        // The member only reports; the report leaves before the request.
+        assert!(coord.report_org_relay_dead(&dead[0]).await);
+        assert!(
+            coord.request_org_fallback(node, Instant::now()).await,
+            "the dead session's request gap is released"
+        );
+        match control.try_recv().expect("the reachability report") {
+            ClientMsg::OverlayRelayProbe {
+                relay_node_id: reported,
+                endpoint,
+                reachable,
+                rtt_ms,
+            } => {
+                assert_eq!(reported, relay_node_id);
+                assert_eq!(endpoint, relay_addr.to_string());
+                assert!(!reachable);
+                assert_eq!(rtt_ms, None);
+            }
+            _ => panic!("the reachability report must leave before the ORG request"),
+        }
+        assert!(matches!(
+            control.try_recv().expect("then the ORG request"),
+            ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. } if peer_node_id == node
+        ));
+        // Pacing: the release is the revoke's own once-per-gap budget, so a
+        // second death inside the gap cannot buy another request.
+        coord.release_org_fallback_gap(node, Instant::now());
+        assert!(!coord.request_org_fallback(node, Instant::now()).await);
+    }
+
+    /// `MESHHARBORD_OVERLAY_ORG_LIVENESS=0`: the carrier is built without
+    /// liveness and the scan judges nothing, however long the relay is frozen.
+    #[tokio::test]
+    async fn with_org_liveness_off_a_frozen_relay_is_left_to_the_health_sweep() {
+        let (serve, mut coord, _control, node, conn, _) = bound_org_carrier(false).await;
+        assert!(!coord.has_bound_org_carrier(), "the tick stays disarmed");
+        serve.abort();
+        let _ = serve.await;
+        let frozen = Instant::now();
+        while frozen.elapsed() < Duration::from_millis(2_500) {
+            conn.send_to(b"into the silence", conn.synth_peer())
+                .await
+                .unwrap();
+            assert_eq!(coord.scan_org_liveness(Instant::now()), (Vec::new(), false));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(conn.is_alive() && coord.holds_org_session(&node));
     }
 
     /// A live session decides the strategy only with the flag on; `request`

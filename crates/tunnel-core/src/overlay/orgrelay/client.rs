@@ -49,11 +49,31 @@
 //! source and drops the member's frames from the unbound new one (lab R8
 //! lc-odlate-as, handoff 267). The Bind carries a fresh nonce; the receive
 //! path answers only the Challenge that echoes it.
+//!
+//! ## Liveness of the bound leg
+//!
+//! A relay that stops forwarding without closing anything (a frozen process,
+//! a dead host, a dropped route) leaves the member sending into silence, and
+//! the only detectors above this file are WireGuard-sized: three one-way
+//! sweeps (15–20 s) while traffic flows, a forced rekey judged over the relay
+//! tier's 45 s establishment deadline when it does not (field, 2026-11-11:
+//! 62–84 s). A carrier built [`OrgRelayConn::with_liveness`] asks the relay
+//! itself instead: when traffic it sent has gone unanswered for
+//! [`LIVENESS_SILENCE`], it re-binds in band, and a relay that leaves
+//! [`LIVENESS_FAST_BINDS`] of those unanswered is declared dead
+//! ([`OrgRelayConn::poll_liveness`]), about two seconds after it stopped.
+//!
+//! The question is "does the relay still answer for this session", never
+//! "did the peer answer": a Challenge settles the round whatever the peer
+//! does, so a silent, sleeping or one-way peer is never a dead relay. The
+//! same exchange re-binds a member whose NAT mapping moved, without waiting
+//! out [`IDLE_REBIND`]. The member only convicts its own carrier; where the
+//! pair goes next stays the server's decision.
 
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -79,6 +99,37 @@ const REBIND_ATTEMPTS: u32 = 4;
 /// Data frames: the overlay MTU plus WireGuard and org-relay overhead, with
 /// headroom. Anything larger is not ours.
 const DATA_BUF: usize = 2048;
+
+/// Traffic unanswered for this long, with nothing heard from the relay for
+/// as long, starts a liveness round. Above a request's ordinary wait for its
+/// answer (it is raised to three bind round trips on a slow leg), so a
+/// healthy exchange never starts one.
+pub const LIVENESS_SILENCE: Duration = Duration::from_millis(400);
+/// Binds a round sends when the peer's frames were arriving until just
+/// before ([`LIVENESS_FLOWING`]): a stream that stops at once, and then
+/// three unanswered binds, is the relay and not the peer.
+pub const LIVENESS_FAST_BINDS: u32 = 3;
+/// Spacing of those binds.
+pub const LIVENESS_FAST_GAP: Duration = Duration::from_millis(450);
+/// Binds a round sends when nothing was arriving anyway (a one-way stream,
+/// an idle pair's keepalive, the first packet after a pause). No abrupt stop
+/// backs the verdict there, so it takes more of them, further apart: random
+/// loss on a healthy leg must not be able to convict it.
+pub const LIVENESS_SLOW_BINDS: u32 = 5;
+/// Spacing of those binds. Every round stays inside the relay's per-source
+/// budget for unauthenticated control frames (4 per 2 s, `responder.rs`).
+pub const LIVENESS_SLOW_GAP: Duration = Duration::from_millis(700);
+/// How long the last bind of a round may stay unanswered before the verdict
+/// (raised to two bind round trips plus a margin on a slow leg).
+pub const LIVENESS_ECHO_WAIT: Duration = Duration::from_millis(350);
+/// A peer frame this recently before a round starts makes the round fast.
+pub const LIVENESS_FLOWING: Duration = Duration::from_secs(2);
+/// After a Challenge proved the relay while the peer stays silent, the next
+/// round waits this long: a one-way stream costs one re-bind per interval.
+pub const LIVENESS_RECHECK: Duration = Duration::from_secs(2);
+/// The bind round trip a leg's timing is scaled by is capped here, so a
+/// mismeasured bind cannot stretch the verdict without bound.
+const LIVENESS_RTT_CAP: Duration = Duration::from_secs(1);
 
 /// Why a bind did not complete.
 #[derive(Debug)]
@@ -327,6 +378,9 @@ pub struct OrgRelayConn {
     /// In-band re-bind after silence ([`Self::with_rebind`]); `None` keeps
     /// the carrier exactly as bound.
     rebind: Option<Rebind>,
+    /// Liveness of the bound leg ([`Self::with_liveness`]); `None` leaves the
+    /// carrier to the health sweep alone.
+    liveness: Option<Liveness>,
 }
 
 /// What a member carrier needs to re-bind itself, and its one outstanding
@@ -391,14 +445,226 @@ impl Rebind {
             return None;
         }
         *pending = None;
-        Some(
-            ControlFrame::Answer {
-                nonce,
-                cookie,
-                tag2: tag2(&self.secret, &cookie, &nonce),
-            }
-            .encode(vni),
-        )
+        Some(self.answer_frame(vni, nonce, cookie))
+    }
+
+    fn bind_frame(&self, vni: u32, nonce: Nonce) -> [u8; super::wire::CONTROL_FRAME_LEN] {
+        ControlFrame::Bind {
+            nonce,
+            tag1: tag1(&self.secret, vni, self.generation, &nonce),
+        }
+        .encode(vni)
+    }
+
+    fn answer_frame(
+        &self,
+        vni: u32,
+        nonce: Nonce,
+        cookie: super::bind::Mac,
+    ) -> [u8; super::wire::CONTROL_FRAME_LEN] {
+        ControlFrame::Answer {
+            nonce,
+            cookie,
+            tag2: tag2(&self.secret, &cookie, &nonce),
+        }
+        .encode(vni)
+    }
+}
+
+/// What [`OrgRelayConn::poll_liveness`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LivenessPoll {
+    /// Nothing sent is waiting for an answer: there is nothing to judge.
+    Quiet,
+    /// Traffic is unanswered and the relay is being asked, or was heard
+    /// from recently enough. Poll again soon.
+    Watching,
+    /// The relay left a whole round of binds unanswered. The carrier is
+    /// closed; reported once.
+    Dead {
+        /// Binds the round sent.
+        binds: u32,
+        /// How long the relay had been silent on this leg at the verdict.
+        silent: Duration,
+    },
+}
+
+/// A leg's liveness timing, in milliseconds: the module constants, raised
+/// where the leg's own bind round trip is slow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LivenessTiming {
+    silence: u64,
+    fast_gap: u64,
+    slow_gap: u64,
+    echo_wait: u64,
+    flowing: u64,
+    recheck: u64,
+}
+
+impl LivenessTiming {
+    fn for_rtt(rtt: Duration) -> Self {
+        let ms = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        let rtt = ms(rtt.min(LIVENESS_RTT_CAP));
+        let echo_wait = ms(LIVENESS_ECHO_WAIT).max(rtt * 2 + 100);
+        Self {
+            silence: ms(LIVENESS_SILENCE).max(rtt * 3),
+            // A bind's answer is due before the next one leaves.
+            fast_gap: ms(LIVENESS_FAST_GAP).max(echo_wait),
+            slow_gap: ms(LIVENESS_SLOW_GAP).max(echo_wait),
+            echo_wait,
+            flowing: ms(LIVENESS_FLOWING),
+            recheck: ms(LIVENESS_RECHECK),
+        }
+    }
+}
+
+/// The leg's clocks as the send and receive paths stamp them: milliseconds
+/// since the carrier was built, `0` = never.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct LivenessSample {
+    /// The peer's last frame through the relay.
+    last_data_rx: u64,
+    /// The last thing the relay itself proved: a peer frame or a Challenge.
+    last_relay_rx: u64,
+    /// The first frame sent since the peer's last one.
+    pending_since: u64,
+}
+
+/// One round of binds; all zero between rounds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct LivenessRound {
+    binds: u32,
+    first: u64,
+    last: u64,
+    fast: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LivenessStep {
+    Quiet,
+    Wait,
+    /// Send one bind now.
+    Bind,
+    Dead,
+}
+
+/// The whole rule, free of sockets and clocks.
+///
+/// A round starts once traffic has been unanswered for `silence` and the
+/// relay has been silent as long (`recheck` when the last word was its own
+/// Challenge, so a one-way stream is asked once per interval). It ends the
+/// moment the relay says anything. It convicts only after every bind of the
+/// round has gone unanswered and the last one has had `echo_wait`.
+fn liveness_step(
+    t: &LivenessTiming,
+    round: &mut LivenessRound,
+    s: LivenessSample,
+    now: u64,
+) -> LivenessStep {
+    if s.pending_since <= s.last_data_rx {
+        *round = LivenessRound::default();
+        return LivenessStep::Quiet;
+    }
+    if round.binds > 0 && s.last_relay_rx >= round.first {
+        *round = LivenessRound::default();
+    }
+    if round.binds == 0 {
+        let wait = if s.last_relay_rx > s.last_data_rx {
+            t.recheck
+        } else {
+            t.silence
+        };
+        if now.saturating_sub(s.last_relay_rx) < wait
+            || now.saturating_sub(s.pending_since) < t.silence
+        {
+            return LivenessStep::Wait;
+        }
+        *round = LivenessRound {
+            binds: 1,
+            first: now,
+            last: now,
+            fast: s.last_data_rx != 0 && now.saturating_sub(s.last_data_rx) <= t.flowing,
+        };
+        return LivenessStep::Bind;
+    }
+    let (need, gap) = if round.fast {
+        (LIVENESS_FAST_BINDS, t.fast_gap)
+    } else {
+        (LIVENESS_SLOW_BINDS, t.slow_gap)
+    };
+    if round.binds < need {
+        if now.saturating_sub(round.last) < gap {
+            return LivenessStep::Wait;
+        }
+        round.binds += 1;
+        round.last = now;
+        return LivenessStep::Bind;
+    }
+    if now.saturating_sub(round.last) >= t.echo_wait {
+        LivenessStep::Dead
+    } else {
+        LivenessStep::Wait
+    }
+}
+
+/// A member carrier's liveness state ([`OrgRelayConn::with_liveness`]).
+struct Liveness {
+    timing: LivenessTiming,
+    born: Instant,
+    last_data_rx: AtomicU64,
+    last_relay_rx: AtomicU64,
+    pending_since: AtomicU64,
+    /// The poller's round and the nonces of its binds: a Challenge echoing
+    /// any of them counts, so a slow answer to an earlier bind is not lost.
+    round: std::sync::Mutex<(LivenessRound, Vec<Nonce>)>,
+}
+
+impl Liveness {
+    /// Milliseconds since the carrier was built; never `0`.
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.born.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .saturating_add(1)
+    }
+
+    fn sample(&self) -> LivenessSample {
+        LivenessSample {
+            last_data_rx: self.last_data_rx.load(Ordering::Relaxed),
+            last_relay_rx: self.last_relay_rx.load(Ordering::Relaxed),
+            pending_since: self.pending_since.load(Ordering::Relaxed),
+        }
+    }
+
+    /// A frame is leaving for the peer: the first one since its last frame
+    /// starts the unanswered clock.
+    fn on_send(&self) {
+        let heard = self.last_data_rx.load(Ordering::Relaxed);
+        if self.pending_since.load(Ordering::Relaxed) <= heard {
+            // Strictly after the peer's last frame, even inside its millisecond.
+            self.pending_since.store(
+                self.now_ms().max(heard.saturating_add(1)),
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    fn on_peer_frame(&self) {
+        let now = self.now_ms();
+        self.last_data_rx.store(now, Ordering::Relaxed);
+        self.last_relay_rx.store(now, Ordering::Relaxed);
+    }
+
+    fn on_challenge(&self) {
+        self.last_relay_rx.store(self.now_ms(), Ordering::Relaxed);
+    }
+
+    /// Is `nonce` one of the current round's binds?
+    fn owns(&self, nonce: &Nonce) -> bool {
+        self.round
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .1
+            .contains(nonce)
     }
 }
 
@@ -419,6 +685,7 @@ impl OrgRelayConn {
             label,
             alive: AtomicBool::new(true),
             rebind: None,
+            liveness: None,
         }
     }
 
@@ -434,6 +701,80 @@ impl OrgRelayConn {
             pending: std::sync::Mutex::new(None),
         });
         self
+    }
+
+    /// Watch the bound leg (module docs). `rtt` is the bind round trip just
+    /// measured to this relay; a slow leg gets proportionally more patience.
+    /// A no-op without [`Self::with_rebind`]: the question is asked with the
+    /// session's bind secret. The clocks start now, so the bind itself is
+    /// the first word heard from the relay.
+    pub fn with_liveness(mut self, rtt: Duration) -> Self {
+        if self.rebind.is_some() {
+            self.liveness = Some(Liveness {
+                timing: LivenessTiming::for_rtt(rtt),
+                born: Instant::now(),
+                last_data_rx: AtomicU64::new(0),
+                last_relay_rx: AtomicU64::new(1),
+                pending_since: AtomicU64::new(0),
+                round: std::sync::Mutex::new((LivenessRound::default(), Vec::new())),
+            });
+        }
+        self
+    }
+
+    /// One liveness poll: cheap, never blocks, and safe to call at any rate.
+    /// Sends at most one bind. On [`LivenessPoll::Dead`] the carrier is
+    /// already closed and every later poll answers [`LivenessPoll::Quiet`].
+    pub fn poll_liveness(&self) -> LivenessPoll {
+        let (Some(live), Some(rebind)) = (&self.liveness, &self.rebind) else {
+            return LivenessPoll::Quiet;
+        };
+        if !self.is_alive() {
+            return LivenessPoll::Quiet;
+        }
+        let now = live.now_ms();
+        let sample = live.sample();
+        let mut held = live.round.lock().unwrap_or_else(|e| e.into_inner());
+        let mut round = held.0;
+        match liveness_step(&live.timing, &mut round, sample, now) {
+            LivenessStep::Quiet => {
+                *held = (round, Vec::new());
+                LivenessPoll::Quiet
+            }
+            LivenessStep::Wait => {
+                if round.binds == 0 {
+                    held.1.clear();
+                }
+                held.0 = round;
+                LivenessPoll::Watching
+            }
+            LivenessStep::Bind => {
+                let nonce = fresh_nonce();
+                // A bind the socket did not take was not sent: the round
+                // keeps its previous state and the next poll tries again.
+                if self
+                    .sock
+                    .try_send_to(&rebind.bind_frame(self.vni, nonce), self.relay)
+                    .is_ok()
+                {
+                    if round.binds == 1 {
+                        held.1.clear();
+                    }
+                    held.1.push(nonce);
+                    held.0 = round;
+                }
+                LivenessPoll::Watching
+            }
+            LivenessStep::Dead => {
+                *held = (LivenessRound::default(), Vec::new());
+                drop(held);
+                self.close();
+                LivenessPoll::Dead {
+                    binds: round.binds,
+                    silent: Duration::from_millis(now.saturating_sub(sample.last_relay_rx)),
+                }
+            }
+        }
     }
 
     #[cfg(test)]
@@ -487,6 +828,9 @@ impl RelayConn for OrgRelayConn {
         self.sock
             .send_to(&build_data(self.vni, buf), self.relay)
             .await?;
+        if let Some(live) = &self.liveness {
+            live.on_send();
+        }
         Ok(buf.len())
     }
 
@@ -510,10 +854,22 @@ impl RelayConn for OrgRelayConn {
                 && let Some((vni, ControlFrame::Challenge { nonce, cookie })) =
                     ControlFrame::decode(&tmp[..n])
             {
-                if vni == self.vni
-                    && let Some(answer) = r.answer(vni, nonce, cookie)
-                {
-                    let _ = self.sock.send_to(&answer, self.relay).await;
+                if vni == self.vni {
+                    // The idle re-bind's attempt, or one of the liveness
+                    // round's binds: either way the relay just answered for
+                    // this session, and the Answer (re)binds this source.
+                    let answer = r.answer(vni, nonce, cookie).or_else(|| {
+                        self.liveness
+                            .as_ref()
+                            .is_some_and(|l| l.owns(&nonce))
+                            .then(|| r.answer_frame(vni, nonce, cookie))
+                    });
+                    if let Some(answer) = answer {
+                        if let Some(live) = &self.liveness {
+                            live.on_challenge();
+                        }
+                        let _ = self.sock.send_to(&answer, self.relay).await;
+                    }
                 }
                 continue;
             }
@@ -522,6 +878,9 @@ impl RelayConn for OrgRelayConn {
             };
             if vni != self.vni {
                 continue;
+            }
+            if let Some(live) = &self.liveness {
+                live.on_peer_frame();
             }
             let len = payload.len().min(buf.len());
             buf[..len].copy_from_slice(&payload[..len]);
@@ -1160,5 +1519,406 @@ mod tests {
             .expect("the relay now forwards to a's NEW source")
             .unwrap();
         assert_eq!(&buf[..n], b"to the new address");
+    }
+
+    // ─── Liveness of the bound leg (acceptance item 6) ─────────────────────
+
+    fn timing() -> LivenessTiming {
+        LivenessTiming::for_rtt(Duration::ZERO)
+    }
+
+    fn sample(last_data_rx: u64, last_relay_rx: u64, pending_since: u64) -> LivenessSample {
+        LivenessSample {
+            last_data_rx,
+            last_relay_rx,
+            pending_since,
+        }
+    }
+
+    /// Poll every 100 ms (the hot tick) from `from` to `until` against a relay
+    /// that never answers: when each bind left, and when the verdict fell.
+    fn silent_relay(
+        t: &LivenessTiming,
+        s: LivenessSample,
+        from: u64,
+        until: u64,
+    ) -> (Vec<u64>, Option<u64>) {
+        let mut round = LivenessRound::default();
+        let mut binds = Vec::new();
+        let mut now = from;
+        while now <= until {
+            match liveness_step(t, &mut round, s, now) {
+                LivenessStep::Bind => binds.push(now),
+                LivenessStep::Dead => return (binds, Some(now)),
+                LivenessStep::Quiet | LivenessStep::Wait => {}
+            }
+            now += 100;
+        }
+        (binds, None)
+    }
+
+    #[test]
+    fn answered_traffic_is_quiet_and_a_fresh_send_only_waits() {
+        let t = timing();
+        let mut round = LivenessRound::default();
+        // The peer's frame came after our last send: nothing is unanswered.
+        assert_eq!(
+            liveness_step(&t, &mut round, sample(1_000, 1_000, 900), 9_000),
+            LivenessStep::Quiet
+        );
+        // A send 300 ms old is a request still waiting for its answer.
+        assert_eq!(
+            liveness_step(&t, &mut round, sample(1_000, 1_000, 1_010), 1_310),
+            LivenessStep::Wait
+        );
+        assert_eq!(round, LivenessRound::default(), "no round was started");
+    }
+
+    /// The oracle's case: frames were flowing, the relay froze. Three binds,
+    /// and the verdict inside two seconds of the last frame heard.
+    #[test]
+    fn a_stream_that_stops_is_convicted_inside_two_seconds() {
+        let (binds, dead) = silent_relay(&timing(), sample(10_000, 10_000, 10_050), 10_100, 20_000);
+        assert_eq!(binds.len() as u32, LIVENESS_FAST_BINDS, "{binds:?}");
+        assert!(
+            binds[0] - 10_050 >= 400,
+            "not before the silence: {binds:?}"
+        );
+        let dead = dead.expect("a relay that answers nothing is convicted");
+        assert!(
+            (11_500..=12_000).contains(&dead),
+            "verdict {} ms after the last frame; binds {binds:?}",
+            dead - 10_000
+        );
+    }
+
+    /// A Challenge settles the round whatever the peer does: behind a healthy
+    /// relay a silent peer costs one bind per recheck and is never a death.
+    #[test]
+    fn an_answering_relay_is_never_convicted_however_silent_the_peer() {
+        let t = timing();
+        let mut round = LivenessRound::default();
+        let (last_data_rx, pending_since) = (10_000, 10_050);
+        let mut last_relay_rx = last_data_rx;
+        let mut binds = Vec::new();
+        let mut now = 10_100;
+        while now <= 20_000 {
+            let s = sample(last_data_rx, last_relay_rx, pending_since);
+            match liveness_step(&t, &mut round, s, now) {
+                LivenessStep::Bind => {
+                    binds.push(now);
+                    last_relay_rx = now + 60; // the Challenge, 60 ms later
+                }
+                LivenessStep::Dead => panic!("convicted an answering relay at {now}"),
+                LivenessStep::Quiet | LivenessStep::Wait => {}
+            }
+            now += 100;
+        }
+        assert!((4..=6).contains(&binds.len()), "one per recheck: {binds:?}");
+        assert!(
+            binds.windows(2).all(|w| w[1] - w[0] >= 2_000),
+            "never closer than the recheck: {binds:?}"
+        );
+    }
+
+    /// One lost Challenge is not a verdict: the round's later bind is
+    /// answered and the round ends.
+    #[test]
+    fn a_lost_answer_is_absorbed_by_the_next_bind() {
+        let t = timing();
+        let mut round = LivenessRound::default();
+        let mut last_relay_rx = 10_000;
+        let mut binds = 0;
+        let mut now = 10_100;
+        while now <= 13_000 {
+            let s = sample(10_000, last_relay_rx, 10_050);
+            match liveness_step(&t, &mut round, s, now) {
+                LivenessStep::Bind => {
+                    binds += 1;
+                    if binds == 2 {
+                        last_relay_rx = now + 60; // only the second is answered
+                    }
+                }
+                LivenessStep::Dead => panic!("one lost answer convicted the relay"),
+                LivenessStep::Quiet | LivenessStep::Wait => {}
+            }
+            now += 100;
+        }
+        assert!(binds >= 2);
+    }
+
+    /// With nothing arriving beforehand there is no abrupt stop to back the
+    /// verdict (a one-way stream, an idle pair's keepalive, the first packet
+    /// after a pause, a candidate the peer has not bound yet): five binds,
+    /// further apart.
+    #[test]
+    fn without_a_recent_peer_frame_the_round_is_slow() {
+        for last_data_rx in [1_000, 0] {
+            let s = sample(last_data_rx, 1_000, 20_000);
+            let (binds, dead) = silent_relay(&timing(), s, 20_000, 40_000);
+            assert_eq!(binds.len() as u32, LIVENESS_SLOW_BINDS, "{binds:?}");
+            assert!(binds.windows(2).all(|w| w[1] - w[0] >= 700), "{binds:?}");
+            let dead = dead.expect("still convicted, later");
+            assert!(dead - 20_000 >= 3_500, "verdict after {} ms", dead - 20_000);
+            // Never more than four control frames in any 2 s: the relay's
+            // per-source budget is what an answer has to fit in.
+            assert!(binds.windows(4).all(|w| w[3] - w[0] >= 2_000), "{binds:?}");
+        }
+    }
+
+    #[test]
+    fn a_peer_frame_mid_round_ends_it() {
+        let t = timing();
+        let mut round = LivenessRound::default();
+        let s = sample(10_000, 10_000, 10_050);
+        assert_eq!(liveness_step(&t, &mut round, s, 10_500), LivenessStep::Bind);
+        assert_eq!(liveness_step(&t, &mut round, s, 11_000), LivenessStep::Bind);
+        let heard = sample(11_200, 11_200, 10_050);
+        assert_eq!(
+            liveness_step(&t, &mut round, heard, 11_300),
+            LivenessStep::Quiet
+        );
+        assert_eq!(round, LivenessRound::default());
+    }
+
+    #[test]
+    fn a_slow_leg_gets_proportionally_more_patience() {
+        let fast = timing();
+        assert_eq!(
+            (fast.silence, fast.fast_gap, fast.echo_wait),
+            (400, 450, 350)
+        );
+        let slow = LivenessTiming::for_rtt(Duration::from_millis(300));
+        assert_eq!(
+            (slow.silence, slow.fast_gap, slow.echo_wait),
+            (900, 700, 700)
+        );
+        assert_eq!(slow.slow_gap, 700);
+        // A mismeasured bind cannot stretch the verdict without bound.
+        let capped = LivenessTiming::for_rtt(Duration::from_secs(30));
+        assert_eq!(capped, LivenessTiming::for_rtt(Duration::from_secs(1)));
+    }
+
+    /// A relay whose serve task can be stopped while its socket stays open:
+    /// a frozen process, not a closed port.
+    async fn stoppable_relay(
+        secrets: [[u8; 32]; 2],
+    ) -> (
+        SocketAddr,
+        Arc<RelayStats>,
+        tokio::task::JoinHandle<()>,
+        Arc<UdpSocket>,
+    ) {
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr = sock.local_addr().unwrap();
+        let stats = Arc::new(RelayStats::default());
+        let (server, handle) = RelayServer::new(CookieKey::from_bytes([7; 32]), stats.clone());
+        let serve = tokio::spawn(server.serve(sock.clone()));
+        let mut session = retry_fixture_session();
+        session.members[0].secret = BindSecret::from_bytes(secrets[0]);
+        session.members[1].secret = BindSecret::from_bytes(secrets[1]);
+        assert!(handle.install(session));
+        (addr, stats, serve, sock)
+    }
+
+    /// Both members bound. `a` is the carrier under test, liveness on, its
+    /// reader running; `b` is the peer.
+    async fn live_pair(
+        relay: SocketAddr,
+        stats: &RelayStats,
+    ) -> (
+        Arc<OrgRelayConn>,
+        OrgRelayConn,
+        tokio::sync::mpsc::Receiver<Vec<u8>>,
+    ) {
+        let sa = BindSecret::from_bytes([1; 32]);
+        let sb = BindSecret::from_bytes([2; 32]);
+        let a_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let b_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        bind(&a_sock, relay, VNI, GEN, &sa, Duration::from_secs(5))
+            .await
+            .unwrap();
+        bind(&b_sock, relay, VNI, GEN, &sb, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(bound_count(stats, 2).await);
+        let a = Arc::new(
+            OrgRelayConn::new(a_sock, relay, VNI, "r".into())
+                .with_rebind(GEN, sa)
+                .with_liveness(Duration::ZERO),
+        );
+        let b = OrgRelayConn::new(b_sock, relay, VNI, "r".into());
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let reader = a.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            while let Ok((n, _)) = reader.recv_from(&mut buf).await {
+                if tx.send(buf[..n].to_vec()).await.is_err() {
+                    break;
+                }
+            }
+        });
+        (a, b, rx)
+    }
+
+    /// One answered exchange: `a` sends, the peer answers, `a` hears it.
+    async fn exchange(
+        a: &OrgRelayConn,
+        b: &OrgRelayConn,
+        rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
+    ) {
+        a.send_to(b"ping", a.synth_peer()).await.unwrap();
+        b.send_to(b"pong", b.synth_peer()).await.unwrap();
+        timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the relay forwards the peer's answer")
+            .unwrap();
+    }
+
+    /// The field failure, end to end on a real relay: frames flow, the relay
+    /// freezes with its socket open, and the member that keeps sending
+    /// convicts the carrier inside three seconds and closes it.
+    #[tokio::test]
+    async fn a_frozen_relay_is_convicted_inside_three_seconds_and_the_carrier_closes() {
+        let (relay, stats, serve, _open_socket) = stoppable_relay([[1; 32], [2; 32]]).await;
+        let (a, b, mut rx) = live_pair(relay, &stats).await;
+        for _ in 0..5 {
+            exchange(&a, &b, &mut rx).await;
+            assert!(!matches!(a.poll_liveness(), LivenessPoll::Dead { .. }));
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(stats.snapshot().bound, 2, "a live exchange asks nothing");
+
+        serve.abort();
+        let _ = serve.await;
+        let frozen = Instant::now();
+        let binds = loop {
+            let _ = a.send_to(b"into the silence", a.synth_peer()).await;
+            if let LivenessPoll::Dead { binds, .. } = a.poll_liveness() {
+                break binds;
+            }
+            assert!(
+                frozen.elapsed() < Duration::from_secs(5),
+                "a frozen relay was never convicted"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        let took = frozen.elapsed();
+        assert_eq!(binds, LIVENESS_FAST_BINDS);
+        assert!(
+            took > Duration::from_millis(1_200) && took < Duration::from_secs(3),
+            "convicted after {took:?}"
+        );
+        assert!(!a.is_alive(), "the verdict closes the carrier");
+        assert!(a.send_to(b"x", a.synth_peer()).await.is_err());
+        assert_eq!(a.poll_liveness(), LivenessPoll::Quiet, "reported once");
+    }
+
+    /// The peer goes silent, the relay does not: the member keeps sending for
+    /// 4.5 s, is answered by the relay each round, and convicts nothing.
+    #[tokio::test]
+    async fn a_silent_peer_behind_a_healthy_relay_is_never_convicted() {
+        let (relay, stats, _serve, _sock) = stoppable_relay([[1; 32], [2; 32]]).await;
+        let (a, b, mut rx) = live_pair(relay, &stats).await;
+        exchange(&a, &b, &mut rx).await;
+        let began = Instant::now();
+        while began.elapsed() < Duration::from_millis(4_500) {
+            a.send_to(b"one way", a.synth_peer()).await.unwrap();
+            assert!(
+                !matches!(a.poll_liveness(), LivenessPoll::Dead { .. }),
+                "convicted a healthy relay after {:?}",
+                began.elapsed()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(a.is_alive());
+        let rebinds = stats.snapshot().bound - 2;
+        assert!(
+            (1..=4).contains(&rebinds),
+            "one answered re-bind per recheck, got {rebinds}"
+        );
+        // And the leg still carries the peer's frames afterwards.
+        exchange(&a, &b, &mut rx).await;
+    }
+
+    /// The round is the re-bind: a member whose mapping moved (its frames
+    /// now leave from a source the relay never saw) is re-bound by its first
+    /// round while it keeps sending, where the idle re-bind never fires.
+    #[tokio::test]
+    async fn a_liveness_round_rebinds_a_member_whose_mapping_moved() {
+        let (relay, stats, _serve, _sock) = stoppable_relay([[1; 32], [2; 32]]).await;
+        let sa = BindSecret::from_bytes([1; 32]);
+        let sb = BindSecret::from_bytes([2; 32]);
+        let a_old = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let b_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        bind(&a_old, relay, VNI, GEN, &sa, Duration::from_secs(5))
+            .await
+            .unwrap();
+        bind(&b_sock, relay, VNI, GEN, &sb, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(bound_count(&stats, 2).await);
+        let a_new = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let a = Arc::new(
+            OrgRelayConn::new(a_new, relay, VNI, "r".into())
+                .with_rebind(GEN, sa)
+                .with_liveness(Duration::ZERO),
+        );
+        let b = OrgRelayConn::new(b_sock, relay, VNI, "r".into());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let reader = a.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            while let Ok((n, _)) = reader.recv_from(&mut buf).await {
+                if tx.send(buf[..n].to_vec()).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let began = Instant::now();
+        while stats.snapshot().bound < 3 {
+            a.send_to(b"from the new source", a.synth_peer())
+                .await
+                .unwrap();
+            assert!(!matches!(a.poll_liveness(), LivenessPoll::Dead { .. }));
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "the round never re-bound the member"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        b.send_to(b"to the new source", b.synth_peer())
+            .await
+            .unwrap();
+        let got = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the relay forwards to a's new source")
+            .unwrap();
+        assert_eq!(got, b"to the new source");
+    }
+
+    /// Liveness is opt-in per carrier: without it (the kill switch, a path
+    /// trial's carrier) a frozen relay is never judged here.
+    #[tokio::test]
+    async fn a_carrier_built_without_liveness_is_never_judged() {
+        let (relay, stats, serve, _open_socket) = stoppable_relay([[1; 32], [2; 32]]).await;
+        let sa = BindSecret::from_bytes([1; 32]);
+        let a_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        bind(&a_sock, relay, VNI, GEN, &sa, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(bound_count(&stats, 1).await);
+        let a = OrgRelayConn::new(a_sock, relay, VNI, "r".into()).with_rebind(GEN, sa);
+        serve.abort();
+        let _ = serve.await;
+        let began = Instant::now();
+        while began.elapsed() < Duration::from_millis(2_500) {
+            a.send_to(b"into the silence", a.synth_peer())
+                .await
+                .unwrap();
+            assert_eq!(a.poll_liveness(), LivenessPoll::Quiet);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(a.is_alive());
     }
 }
