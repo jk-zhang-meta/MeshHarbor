@@ -541,6 +541,63 @@ impl OverlayRuntime {
         view_changed
     }
 
+    /// F5 — the business watch. Arms the same business proof the scout
+    /// does, once business traffic has gone unanswered for
+    /// [`super::business_watch_window`], sampling every
+    /// [`super::BUSINESS_WATCH_TICK`] instead of every second. It never
+    /// settles a proof or judges a carrier, and leaves the F1 re-send to the
+    /// scout. Returns whether it armed one.
+    pub(super) fn watch_business_traffic(
+        &self,
+        wg: &mut WgDevice,
+        by_node: &mut HashMap<ObjectId, Installed>,
+        samples: &mut HashMap<ObjectId, super::BusinessWatchSample>,
+    ) -> bool {
+        let Some(window) = super::business_watch_window() else {
+            return false;
+        };
+        samples.retain(|nid, _| by_node.contains_key(nid));
+        let now = Instant::now();
+        let mut armed = false;
+        for (nid, e) in by_node.iter_mut() {
+            if wg.peer_is_dormant_or_waking(&e.pubkey) == Some(true)
+                || !e.is_direct
+                || !wg.peer_handshake_done(&e.pubkey).unwrap_or(false)
+                || now.saturating_duration_since(e.since) < crate::overlay::lifecycle::DIRECT_GRACE
+            {
+                samples.remove(nid);
+                continue;
+            }
+            let Some((tx, rx)) = wg.peer_business_traffic(&e.pubkey) else {
+                samples.remove(nid);
+                continue;
+            };
+            let s = samples
+                .entry(*nid)
+                .or_insert_with(|| super::BusinessWatchSample::new(e.since, tx, rx));
+            if e.poke.is_some() {
+                // A proof is already out: the scout and the sweep own it. Keep
+                // the sample fresh so its settlement starts a new window.
+                *s = super::BusinessWatchSample::new(e.since, tx, rx);
+                continue;
+            }
+            if !super::business_watch_step(s, e.since, tx, rx, now, window) {
+                continue;
+            }
+            if wg.request_carrier_revalidation(&e.pubkey) {
+                e.poke = Some(PokeArm {
+                    at: now,
+                    from_major: false,
+                    from_business: true,
+                });
+                armed = true;
+                info!(peer = %nid, tier = ?e.tier, watch_ms = window.as_millis() as u64,
+                    "overlay: unanswered business traffic — fast validation of the direct carrier");
+            }
+        }
+        armed
+    }
+
     /// F2 — standby upkeep, once per scout tick. Every peer on a direct
     /// carrier keeps a standby sink (a rebuilt peer gets a new one) and hears
     /// our `STANDBY_HELLO` every [`STANDBY_HELLO_EVERY`], sent only while that
