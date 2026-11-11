@@ -63,6 +63,7 @@ fn sample_device() -> ResolvedRdpDevice {
         org_id: "65f000000000000000000001".to_string(),
         device_id: "65f000000000000000000099".to_string(),
         device_name: "win-workstation".to_string(),
+        ..Default::default()
     }
 }
 
@@ -107,6 +108,8 @@ fn cli_parses_rdp_subcommand_with_default_passwordless_off() {
     assert!(opts.user.is_none());
     assert!(opts.domain.is_none());
     assert_eq!(opts.port, 3389);
+    assert!(opts.explicit_port.is_none());
+    assert!(!opts.check);
     assert!(opts.cert_sha256.is_none());
     assert!(
         !opts.save_credentials && !opts.use_saved_credentials,
@@ -115,6 +118,32 @@ fn cli_parses_rdp_subcommand_with_default_passwordless_off() {
     assert!(!opts.clear_credentials);
     assert!(!opts.no_saved_credentials);
     assert!(opts.extra_args.is_empty());
+
+    let check_opts = parse_rdp_from(["mh", "rdp", "win-workstation", "--check", "--port", "13389"])
+        .expect("parse --check");
+    assert!(check_opts.check);
+    assert_eq!(check_opts.port, 13389);
+    assert_eq!(check_opts.explicit_port, Some(13389));
+
+    // Verify no skip-verification CLI flag exists (`V0028 §3`), neither as a
+    // top-level `mh rdp` option nor smuggled via trailing client args.
+    for forbidden_flag in [
+        "--insecure",
+        "--skip-cert-check",
+        "--no-verify-cert",
+        "--ignore-cert",
+    ] {
+        assert!(
+            parse_rdp_from(["mh", "rdp", forbidden_flag, "win-workstation"]).is_err(),
+            "forbidden skip-verification flag must be rejected by clap before <device>: {forbidden_flag}"
+        );
+        if let Ok(trailing) = parse_rdp_from(["mh", "rdp", "win-workstation", forbidden_flag]) {
+            assert!(
+                validate_extra_client_args(&trailing.extra_args).is_err(),
+                "forbidden skip-verification flag must be rejected in trailing extra_args: {forbidden_flag}"
+            );
+        }
+    }
 
     let (parsed_user, parsed_host) = parse_user_and_device("alice@win-workstation").unwrap();
     assert_eq!(parsed_user.as_deref(), Some("alice"));
@@ -136,6 +165,7 @@ fn default_off_neither_reads_nor_writes_credential_store() {
         clear_credentials: false,
         no_saved_credentials: false,
         extra_args: vec![],
+        ..Default::default()
     };
 
     let addr = loopback_addr();
@@ -174,6 +204,7 @@ fn kill_switch_cli_flag_and_env_reject_saved_credentials_and_never_touch_store()
         clear_credentials: false,
         no_saved_credentials: true,
         extra_args: vec![],
+        ..Default::default()
     };
     let err = plan_rdp_session(
         &opts_cli_kill,
@@ -204,6 +235,7 @@ fn kill_switch_cli_flag_and_env_reject_saved_credentials_and_never_touch_store()
         clear_credentials: false,
         no_saved_credentials: false,
         extra_args: vec![],
+        ..Default::default()
     };
     let err2 = plan_rdp_session(
         &opts_env_kill,
@@ -240,6 +272,7 @@ fn configure_once_then_repeat_use_without_prompt_or_argv_leak() {
         clear_credentials: false,
         no_saved_credentials: false,
         extra_args: vec![],
+        ..Default::default()
     };
     let plan1 = plan_rdp_session(
         &save_opts,
@@ -276,6 +309,7 @@ fn configure_once_then_repeat_use_without_prompt_or_argv_leak() {
         clear_credentials: false,
         no_saved_credentials: false,
         extra_args: vec![],
+        ..Default::default()
     };
     let win_addr = loopback_addr();
     let plan2 = plan_rdp_session(
@@ -304,6 +338,7 @@ fn configure_once_then_repeat_use_without_prompt_or_argv_leak() {
         clear_credentials: true,
         no_saved_credentials: false,
         extra_args: vec![],
+        ..Default::default()
     };
     let cleared = plan_rdp_session(
         &clear_opts,
@@ -372,6 +407,7 @@ fn pins_tls_certificate_sha256_fingerprint_and_never_disables_verification() {
         clear_credentials: false,
         no_saved_credentials: false,
         extra_args: vec![],
+        ..Default::default()
     };
     let plan = plan_rdp_session(&opts, &dev, loopback_addr(), &store, None, None, "linux")
         .unwrap()
@@ -385,14 +421,16 @@ fn pins_tls_certificate_sha256_fingerprint_and_never_disables_verification() {
         plan.args
     );
 
-    // On Windows (mstsc.exe), --cert-sha256 must be explicitly rejected (never silently ignored)
-    let win_err = plan_rdp_session(&opts, &dev, loopback_addr(), &store, None, None, "windows")
-        .expect_err("Windows must reject --cert-sha256 rather than silently ignoring it");
-    assert!(
-        win_err.to_string().contains("--cert-sha256")
-            && win_err.to_string().to_ascii_lowercase().contains("windows"),
-        "unexpected Windows --cert-sha256 error: {win_err}"
-    );
+    // V0028: On Windows (`mstsc.exe`), `--cert-sha256` is accepted and retained on
+    // `PlannedRdpInvocation::pinned_cert_sha256` (enforced fail-closed by
+    // `precheck_rdp_tunnel_tls` before spawning `mstsc.exe`).
+    let win_addr = loopback_addr();
+    let win_plan = plan_rdp_session(&opts, &dev, win_addr, &store, None, None, "windows")
+        .expect("Windows must accept --cert-sha256 for pre-mstsc TLS verification")
+        .expect("should return Windows mstsc plan");
+    assert_eq!(win_plan.program, "mstsc.exe");
+    assert_eq!(win_plan.args, vec![format!("/v:{win_addr}")]);
+    assert_eq!(win_plan.pinned_cert_sha256.as_deref(), Some(fp.as_str()));
 }
 
 #[test]
@@ -421,6 +459,7 @@ fn windows_per_session_loopback_is_unique_and_shared_localhost_is_refused() {
         clear_credentials: false,
         no_saved_credentials: false,
         extra_args: vec![],
+        ..Default::default()
     };
 
     // Shared 127.0.0.1 must be refused for Windows session credential target
