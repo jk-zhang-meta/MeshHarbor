@@ -429,6 +429,10 @@ fn test_settings() -> Settings {
             business_trusted_proxy_cidrs: vec![],
             business_isolation: "warn".to_string(),
             business_unknown_role: "warn".to_string(),
+            // Off by default here (production defaults to `warn`): the gate
+            // resolves the public STUN hostnames over DNS at boot, which no
+            // ordinary test needs. The relay-locality tests set it explicitly.
+            rc_ice_zone_mode: "off".to_string(),
             auth_rate_limit_per_min: 10,
             auth_rate_limit_burst: 20,
             host: "127.0.0.1".to_string(),

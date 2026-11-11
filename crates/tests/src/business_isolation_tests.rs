@@ -44,13 +44,25 @@ impl Rig {
         isolation: &'static str,
         unknown_role: &'static str,
     ) -> Self {
-        Self::up_full(slug, isolation, unknown_role, None).await
+        Self::up_full(slug, isolation, unknown_role, None, None).await
     }
 
     /// `up`, with the legacy TURN config set to `turn_url` (a shared secret
-    /// included, so credentials are minted).
-    async fn up_with_turn(slug: &str, isolation: &'static str, turn_url: &'static str) -> Self {
-        Self::up_full(slug, isolation, "warn", Some(turn_url)).await
+    /// included, so credentials are minted) and `app.rc_ice_zone_mode` set.
+    async fn up_with_turn(
+        slug: &str,
+        isolation: &'static str,
+        turn_url: &'static str,
+        rc_ice_zone_mode: &'static str,
+    ) -> Self {
+        Self::up_full(
+            slug,
+            isolation,
+            "warn",
+            Some(turn_url),
+            Some(rc_ice_zone_mode),
+        )
+        .await
     }
 
     async fn up_full(
@@ -58,6 +70,7 @@ impl Rig {
         isolation: &'static str,
         unknown_role: &'static str,
         turn_url: Option<&'static str>,
+        rc_ice_zone_mode: Option<&'static str>,
     ) -> Self {
         let geo = tempfile::tempdir().unwrap();
         let mmdb = geo.path().join("dbip-country-lite.mmdb");
@@ -75,6 +88,9 @@ impl Rig {
             if let Some(url) = turn_url {
                 s.turn.url = Some(url.into());
                 s.turn.shared_secret = Some("ice-zone-fixture-secret".into());
+            }
+            if let Some(mode) = rc_ice_zone_mode {
+                s.app.rc_ice_zone_mode = mode.into();
             }
         })
         .await;
@@ -12132,15 +12148,15 @@ async fn tunnel_roster_without_ws_uses_request_origin_inner() {
     }
 }
 
-/// MeshHarbor #21 relay locality: under `enforce`, the TURN/STUN servers a
-/// viewer is handed for a device (`/api/turn/credentials?agent_id=…`, the list
+/// MeshHarbor #21 relay locality: under `app.rc_ice_zone_mode = enforce`, the
+/// TURN/STUN servers a viewer is handed for a device (`/api/turn/credentials?agent_id=…`, the list
 /// the RC viewer builds its peer connection from) sit in that DEVICE's zone.
 /// The fixture's only TURN server is on a CN address: a CN device gets it, a
 /// US device does not, and a request that names no device gets nothing.
 #[tokio::test]
 async fn rc_ice_servers_stay_in_the_devices_zone() {
     const CN_TURN: &str = "turn:223.5.5.6:3478";
-    let rig = Rig::up_with_turn("iceloc", "enforce", CN_TURN).await;
+    let rig = Rig::up_with_turn("iceloc", "enforce", CN_TURN, "enforce").await;
     // Enrolled and connected from each side of the line, as `Rig::device`
     // does, keeping the agent ids.
     let (cn_id, cn_tok) = enroll(&rig.app, &rig.seeded, "ice-cn").await;
@@ -12205,4 +12221,46 @@ async fn rc_ice_servers_stay_in_the_devices_zone() {
         creds(None).await.is_empty(),
         "naming no device names no zone, so nothing is handed out"
     );
+}
+
+/// `app.rc_ice_zone_mode` is independent of `business_isolation`: with
+/// isolation ENFORCED, `warn` (the production default) and `off` still hand a
+/// US device's viewer the CN TURN, and a request that names no device still
+/// gets it. Only `rc_ice_zone_mode = enforce` withholds (the test above).
+#[tokio::test]
+async fn rc_ice_zone_warn_and_off_change_nothing_even_under_enforced_isolation() {
+    const CN_TURN: &str = "turn:223.5.5.6:3478";
+    for mode in ["warn", "off"] {
+        let rig = Rig::up_with_turn(&format!("icenop{mode}"), "enforce", CN_TURN, mode).await;
+        let (us_id, us_tok) = enroll(&rig.app, &rig.seeded, "ice-us").await;
+        let _us = connect_from(&rig.app, &us_tok, &[], Some(US_A)).await;
+        assert_observed(&rig.app, &us_id, Some(US_A)).await;
+        let tid = rig.seeded.tenant_id.clone();
+        let tok = rig.seeded.admin.access_token.clone();
+        for path in [
+            format!("/api/turn/credentials?tenant_id={tid}&agent_id={us_id}"),
+            "/api/turn/credentials".to_string(),
+        ] {
+            let v: Value = rig
+                .app
+                .auth_get(&path, &tok)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let urls: Vec<String> = v["ice_servers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|s| s["urls"].as_array().unwrap().clone())
+                .map(|u| u.as_str().unwrap().to_owned())
+                .collect();
+            assert!(
+                urls.iter().any(|u| u.starts_with("turn:223.5.5.6")),
+                "mode={mode} {path}: nothing may be withheld: {urls:?}"
+            );
+        }
+    }
 }

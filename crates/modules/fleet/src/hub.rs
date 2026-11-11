@@ -765,11 +765,23 @@ pub struct HubInner {
     agent_zones: DashMap<ObjectId, (String, BusinessZone)>,
 }
 
-/// MeshHarbor #21 — the hub's relay-locality gate: which ICE servers sit in
-/// which zone, and whether withholding the others is enforced or only logged.
+/// MeshHarbor #21 — the hub's relay-locality gate (`app.rc_ice_zone_mode`):
+/// which ICE servers sit in which zone, whether withholding the others is
+/// enforced or only logged, and the `warn` line dedupe.
 pub struct IceGate {
     pub zones: Arc<IceServerZones>,
     pub mode: IceGateMode,
+    pub dedupe: meshharbor_core::ice_zones::LogDedupe,
+}
+
+impl IceGate {
+    pub fn new(zones: Arc<IceServerZones>, mode: IceGateMode) -> Self {
+        Self {
+            zones,
+            mode,
+            dedupe: Default::default(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -929,10 +941,10 @@ impl Hub {
             return ice;
         };
         let zone = self.agent_business_zone(agent_id);
-        let (kept, dropped) = meshharbor_core::ice_zones::keep_in_zone(ice.clone(), zone, |u| {
+        let f = meshharbor_core::ice_zones::keep_in_zone(ice.clone(), zone, |u| {
             gate.zones.zone_of_url(u)
         });
-        if dropped == 0 {
+        if f.withheld_urls == 0 {
             return ice;
         }
         match gate.mode {
@@ -941,20 +953,36 @@ impl Hub {
                     session = %session_id.to_hex(),
                     agent = %agent_id.to_hex(),
                     ?zone,
-                    withheld = dropped,
-                    kept = kept.len(),
-                    "business isolation: ICE servers outside the device's zone withheld"
+                    withheld = f.withheld_urls,
+                    kept = f.kept_urls,
+                    reason = f.reason,
+                    "rc ice zone: STUN/TURN outside the device's zone withheld"
                 );
-                kept
+                f.kept
             }
             IceGateMode::Warn => {
-                warn!(
-                    session = %session_id.to_hex(),
-                    agent = %agent_id.to_hex(),
-                    ?zone,
-                    would_withhold = dropped,
-                    "business isolation (warn): would withhold ICE servers outside the device's zone"
+                // One line per device while the verdict stays the same: the
+                // three issuances of one session, and every later session within
+                // `WARN_DEDUPE`, would otherwise each repeat it.
+                let verdict = format!(
+                    "zone={zone:?} kept={} withheld={} reason={}",
+                    f.kept_urls, f.withheld_urls, f.reason
                 );
+                if gate.dedupe.first_in(
+                    &agent_id.to_hex(),
+                    &verdict,
+                    meshharbor_core::ice_zones::WARN_DEDUPE,
+                ) {
+                    warn!(
+                        session = %session_id.to_hex(),
+                        agent = %agent_id.to_hex(),
+                        device_zone = ?zone,
+                        kept = f.kept_urls,
+                        would_withhold = f.withheld_urls,
+                        reason = f.reason,
+                        "rc ice zone (warn): would withhold STUN/TURN outside the device's zone; nothing changed (app.rc_ice_zone_mode=enforce applies it)"
+                    );
+                }
                 ice
             }
         }
@@ -10372,10 +10400,7 @@ mod ice_zone_gate_tests {
         // No gate (isolation off, or a test hub): handed out unchanged.
         assert_eq!(urls(hub.zone_local_ice(agent, session, ice())), urls(ice()));
 
-        hub.set_ice_gate(IceGate {
-            zones: zones(),
-            mode: IceGateMode::Enforce,
-        });
+        hub.set_ice_gate(IceGate::new(zones(), IceGateMode::Enforce));
         // A device with no zone on record gets no ICE server at all.
         assert!(hub.zone_local_ice(agent, session, ice()).is_empty());
 
@@ -10398,14 +10423,40 @@ mod ice_zone_gate_tests {
     async fn warn_mode_hands_everything_out() {
         let (audit, _ev) = AuditSink::channel_for_tests();
         let hub = Hub::new(audit, Some(turn()));
-        hub.set_ice_gate(IceGate {
-            zones: zones(),
-            mode: IceGateMode::Warn,
-        });
+        hub.set_ice_gate(IceGate::new(zones(), IceGateMode::Warn));
         let ice = ice_servers_for_session("u", "s", Some(&turn()));
         let (agent, session) = (ObjectId::new(), ObjectId::new());
+        hub.set_agent_business_zone(agent, "c1", Some(BusinessZone::Mainland));
+        // Withholding would apply (both STUN URLs and the US TURN), but `warn`
+        // changes nothing, every time.
+        for _ in 0..3 {
+            assert_eq!(
+                urls(hub.zone_local_ice(agent, session, ice.clone())),
+                urls(ice.clone())
+            );
+        }
+        // The verdict was recorded once for this device (then suppressed).
+        let gate = hub.ice_gate().unwrap();
+        assert!(!gate.dedupe.first_in(
+            &agent.to_hex(),
+            "zone=Some(Mainland) kept=1 withheld=3 reason=outside_device_zone",
+            meshharbor_core::ice_zones::WARN_DEDUPE
+        ));
+    }
+
+    /// `off` installs no gate at all (`ice_zones::gate_mode` is `None`), and a
+    /// hub with no gate hands out exactly what it did before #21.
+    #[tokio::test]
+    async fn off_installs_no_gate_and_changes_nothing() {
+        assert!(meshharbor_core::ice_zones::gate_mode("off").is_none());
+        let (audit, _ev) = AuditSink::channel_for_tests();
+        let hub = Hub::new(audit, Some(turn()));
+        assert!(hub.ice_gate().is_none());
+        let ice = ice_servers_for_session("u", "s", Some(&turn()));
+        let agent = ObjectId::new();
+        hub.set_agent_business_zone(agent, "c1", Some(BusinessZone::Mainland));
         assert_eq!(
-            urls(hub.zone_local_ice(agent, session, ice.clone())),
+            urls(hub.zone_local_ice(agent, ObjectId::new(), ice.clone())),
             urls(ice)
         );
     }

@@ -5,8 +5,14 @@
 //! The isolation rule is that a mainland node connects only to mainland nodes
 //! (and non-mainland only to non-mainland), through ANY hop. A STUN/TURN server
 //! handed to a device is a hop the device itself connects to, so under
-//! `app.business_isolation = enforce` a device is handed only the ICE servers
+//! `app.rc_ice_zone_mode = enforce` a device is handed only the ICE servers
 //! that sit in its own business zone.
+//!
+//! The setting is its OWN, not `app.business_isolation`'s: withholding every
+//! server outside a device's zone removes that device's srflx and relay
+//! candidates, which breaks cross-network remote desktop to a device whose zone
+//! differs from the deployment's relays. Turning that on is a product decision,
+//! never a side effect of enforcing isolation. The default is `warn`.
 //!
 //! A server's zone is what its address geolocates to, under the same GeoIP
 //! dataset rule every other zone decision uses
@@ -37,15 +43,50 @@ pub enum IceGateMode {
     Enforce,
 }
 
-/// `app.business_isolation` → the gate's mode, `None` for `off`. Mirrors
-/// `meshharbor_mod_network::business_isolation::Mode::parse` (anything but
-/// `off` / `warn` is `enforce`: a mistyped security setting must not disable
-/// it). A test in the network module locks the two together.
+/// `app.rc_ice_zone_mode` → the gate's mode, `None` for `off`.
+///
+/// ⚠️ Unlike `app.business_isolation`, an unknown value reads as `Warn`, not
+/// `Enforce`, and is logged loudly. `enforce` here withholds STUN/TURN, which
+/// can cut the operator's own remote access, so a typo must never switch it
+/// on.
 pub fn gate_mode(raw: &str) -> Option<IceGateMode> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "off" => None,
         "warn" => Some(IceGateMode::Warn),
-        _ => Some(IceGateMode::Enforce),
+        "enforce" => Some(IceGateMode::Enforce),
+        other => {
+            tracing::error!(
+                value = %other,
+                "app.rc_ice_zone_mode: unknown value, reading it as `warn` (expected off | warn | enforce)"
+            );
+            Some(IceGateMode::Warn)
+        }
+    }
+}
+
+/// How long an identical `warn` line for one device is suppressed.
+pub const WARN_DEDUPE: Duration = Duration::from_secs(600);
+
+/// Per-key suppression of repeated identical log lines (`warn` mode: one line
+/// per device per [`WARN_DEDUPE`], not one per issuance).
+#[derive(Default)]
+pub struct LogDedupe {
+    seen: DashMap<String, (String, std::time::Instant)>,
+}
+
+impl LogDedupe {
+    /// `true` when `line` should be logged for `key`: no identical line was
+    /// logged for it within `window`. Records the line when it returns `true`.
+    pub fn first_in(&self, key: &str, line: &str, window: Duration) -> bool {
+        let now = std::time::Instant::now();
+        if let Some(prev) = self.seen.get(key)
+            && prev.0 == line
+            && now.saturating_duration_since(prev.1) < window
+        {
+            return false;
+        }
+        self.seen.insert(key.to_string(), (line.to_string(), now));
+        true
     }
 }
 
@@ -169,27 +210,56 @@ pub fn spawn_refresh(core: Core, zones: Arc<IceServerZones>, urls: Vec<String>) 
     });
 }
 
+/// What [`keep_in_zone`] kept, and why it withheld the rest.
+#[derive(Debug)]
+pub struct Filtered {
+    pub kept: Vec<IceServer>,
+    pub kept_urls: usize,
+    pub withheld_urls: usize,
+    /// `none` (nothing withheld) | `device_zone_unknown` | `outside_device_zone`
+    /// | `server_zone_unknown` | `outside_device_zone_or_unknown`.
+    pub reason: &'static str,
+}
+
 /// Keep only the ICE URLs whose server is in `zone`, dropping an
 /// [`IceServer`] whose URL list empties. `zone == None` (the device's own zone
-/// is unknown) keeps nothing. Returns what remains and how many URLs were
-/// withheld.
+/// is unknown) keeps nothing.
 pub fn keep_in_zone(
     servers: Vec<IceServer>,
     zone: Option<BusinessZone>,
     zone_of: impl Fn(&str) -> Option<BusinessZone>,
-) -> (Vec<IceServer>, usize) {
-    let mut dropped = 0;
+) -> Filtered {
+    let (mut kept_urls, mut other_zone, mut unknown) = (0, 0, 0);
     let kept = servers
         .into_iter()
         .filter_map(|mut s| {
-            let before = s.urls.len();
-            s.urls
-                .retain(|u| zone.is_some_and(|z| zone_of(u) == Some(z)));
-            dropped += before - s.urls.len();
+            s.urls.retain(|u| {
+                let server = zone_of(u);
+                let keep = zone.is_some() && server == zone;
+                match (keep, server) {
+                    (true, _) => kept_urls += 1,
+                    (false, Some(_)) => other_zone += 1,
+                    (false, None) => unknown += 1,
+                }
+                keep
+            });
             (!s.urls.is_empty()).then_some(s)
         })
         .collect();
-    (kept, dropped)
+    let withheld_urls = other_zone + unknown;
+    let reason = match (zone, other_zone, unknown) {
+        _ if withheld_urls == 0 => "none",
+        (None, _, _) => "device_zone_unknown",
+        (Some(_), _, 0) => "outside_device_zone",
+        (Some(_), 0, _) => "server_zone_unknown",
+        (Some(_), _, _) => "outside_device_zone_or_unknown",
+    };
+    Filtered {
+        kept,
+        kept_urls,
+        withheld_urls,
+        reason,
+    }
 }
 
 #[cfg(test)]
@@ -262,38 +332,76 @@ mod tests {
                 "turn:us-turn.example:3478",
             ]),
         ];
-        let (kept, dropped) = keep_in_zone(list.clone(), Some(Mainland), |u| zones.zone_of_url(u));
-        assert_eq!(kept.len(), 1, "the STUN entry empties and is dropped");
+        let f = keep_in_zone(list.clone(), Some(Mainland), |u| zones.zone_of_url(u));
+        assert_eq!(f.kept.len(), 1, "the STUN entry empties and is dropped");
         assert_eq!(
-            kept[0].urls,
+            f.kept[0].urls,
             vec!["turn:cn-turn.example:3478?transport=udp"]
         );
-        assert_eq!(dropped, 3);
+        assert_eq!((f.kept_urls, f.withheld_urls), (1, 3));
+        assert_eq!(f.reason, "outside_device_zone_or_unknown");
 
-        let (kept, _) = keep_in_zone(list.clone(), Some(NonMainland), |u| zones.zone_of_url(u));
-        let urls: Vec<_> = kept.iter().flat_map(|s| s.urls.clone()).collect();
+        let f = keep_in_zone(list.clone(), Some(NonMainland), |u| zones.zone_of_url(u));
+        let urls: Vec<_> = f.kept.iter().flat_map(|s| s.urls.clone()).collect();
         assert_eq!(
             urls,
             vec!["stun:us-turn.example:3478", "turn:us-turn.example:3478"]
         );
 
-        let (kept, dropped) = keep_in_zone(list, None, |u| zones.zone_of_url(u));
+        let f = keep_in_zone(list.clone(), None, |u| zones.zone_of_url(u));
         assert!(
-            kept.is_empty(),
+            f.kept.is_empty(),
             "a device with no known zone gets no ICE server"
         );
-        assert_eq!(dropped, 4, "every URL of both servers");
+        assert_eq!(
+            (f.kept_urls, f.withheld_urls),
+            (0, 4),
+            "every URL of both servers"
+        );
+        assert_eq!(f.reason, "device_zone_unknown");
+
+        let only_cn = vec![server(&["turn:cn-turn.example:3478"])];
+        let f = keep_in_zone(only_cn.clone(), Some(NonMainland), |u| zones.zone_of_url(u));
+        assert_eq!(f.reason, "outside_device_zone");
+        let f = keep_in_zone(only_cn, Some(Mainland), |u| zones.zone_of_url(u));
+        assert_eq!((f.withheld_urls, f.reason), (0, "none"));
+        let f = keep_in_zone(
+            vec![server(&["stun:unknown.example"])],
+            Some(Mainland),
+            |u| zones.zone_of_url(u),
+        );
+        assert_eq!(f.reason, "server_zone_unknown");
     }
 
     #[test]
-    fn the_gate_mode_reads_like_the_isolation_setting() {
+    fn the_mode_has_three_values_and_a_typo_only_warns() {
         assert_eq!(gate_mode("off"), None);
         assert_eq!(gate_mode(" Warn "), Some(IceGateMode::Warn));
-        assert_eq!(gate_mode("enforce"), Some(IceGateMode::Enforce));
+        assert_eq!(gate_mode("ENFORCE"), Some(IceGateMode::Enforce));
         assert_eq!(
             gate_mode("enforec"),
-            Some(IceGateMode::Enforce),
-            "a typo enforces"
+            Some(IceGateMode::Warn),
+            "unlike business_isolation, a typo must never enforce here"
+        );
+        assert_eq!(gate_mode(""), Some(IceGateMode::Warn));
+    }
+
+    #[test]
+    fn an_identical_line_per_key_is_logged_once_per_window() {
+        let d = LogDedupe::default();
+        assert!(d.first_in("dev1", "zone=Mainland withheld=2", WARN_DEDUPE));
+        assert!(!d.first_in("dev1", "zone=Mainland withheld=2", WARN_DEDUPE));
+        assert!(
+            d.first_in("dev2", "zone=Mainland withheld=2", WARN_DEDUPE),
+            "per key"
+        );
+        assert!(
+            d.first_in("dev1", "zone=Mainland withheld=3", WARN_DEDUPE),
+            "a change logs"
+        );
+        assert!(
+            d.first_in("dev1", "zone=Mainland withheld=3", Duration::ZERO),
+            "window over"
         );
     }
 }

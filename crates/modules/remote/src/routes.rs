@@ -392,29 +392,46 @@ pub async fn turn_credentials(
     // under `enforce` no server is handed out (host candidates still connect
     // a direct path).
     if let Some(gate) = state.fleet.rc_hub.ice_gate() {
-        let zone = org
+        let agent = org
             .and(q.agent_id.as_deref())
-            .and_then(|a| ObjectId::parse_str(a).ok())
-            .and_then(|aid| state.fleet.rc_hub.agent_business_zone(aid));
-        let (kept, dropped) =
-            meshharbor_core::ice_zones::keep_in_zone(ice_servers.clone(), zone, |u| {
-                gate.zones.zone_of_url(u)
-            });
-        if dropped > 0 {
+            .and_then(|a| ObjectId::parse_str(a).ok());
+        let zone = agent.and_then(|aid| state.fleet.rc_hub.agent_business_zone(aid));
+        let f = meshharbor_core::ice_zones::keep_in_zone(ice_servers.clone(), zone, |u| {
+            gate.zones.zone_of_url(u)
+        });
+        if f.withheld_urls > 0 {
             match gate.mode {
                 meshharbor_core::ice_zones::IceGateMode::Enforce => {
                     info!(
                         ?zone,
-                        withheld = dropped,
-                        "business isolation: TURN/STUN outside the target device's zone withheld from the viewer"
+                        withheld = f.withheld_urls,
+                        kept = f.kept_urls,
+                        reason = f.reason,
+                        "rc ice zone: TURN/STUN outside the target device's zone withheld from the viewer"
                     );
-                    ice_servers = kept;
+                    ice_servers = f.kept;
                 }
-                meshharbor_core::ice_zones::IceGateMode::Warn => warn!(
-                    ?zone,
-                    would_withhold = dropped,
-                    "business isolation (warn): would withhold TURN/STUN outside the target device's zone"
-                ),
+                meshharbor_core::ice_zones::IceGateMode::Warn => {
+                    let key = agent.map(|a| format!("viewer:{}", a.to_hex()));
+                    let key = key.as_deref().unwrap_or("viewer:-");
+                    let verdict = format!(
+                        "zone={zone:?} kept={} withheld={} reason={}",
+                        f.kept_urls, f.withheld_urls, f.reason
+                    );
+                    if gate
+                        .dedupe
+                        .first_in(key, &verdict, meshharbor_core::ice_zones::WARN_DEDUPE)
+                    {
+                        warn!(
+                            device = key,
+                            device_zone = ?zone,
+                            kept = f.kept_urls,
+                            would_withhold = f.withheld_urls,
+                            reason = f.reason,
+                            "rc ice zone (warn): would withhold TURN/STUN outside the target device's zone from the viewer; nothing changed"
+                        );
+                    }
+                }
             }
         }
     }
