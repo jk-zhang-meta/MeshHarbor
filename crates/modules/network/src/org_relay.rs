@@ -1763,27 +1763,44 @@ fn verdict_of(
         .iter()
         .filter(|p| now.duration_since(p.at) < ttl)
         .collect();
-    // Records are kept in arrival order. The NEWEST decides: a failure
-    // measured after a success is the relay's state now, however good it
-    // was earlier in the window (field, 2026-11-11: a frozen relay was
-    // re-minted twice on 10-minute-old successes after both members had
-    // measured it unreachable). The RTT is the best since the last failure.
-    let Some(newest) = fresh.last() else {
+    // Records are kept in arrival order. Per ENDPOINT, the newest decides: a
+    // failure measured after a success is that endpoint's state now, however
+    // good it was earlier in the window (field, 2026-11-11: a frozen relay
+    // was re-minted twice on 10-minute-old successes after both members had
+    // measured it unreachable). The relay is reachable when any endpoint's
+    // newest record is, at the best RTT any such endpoint measured since its
+    // own last failure; per endpoint, so a relay with one dead address and
+    // one live one does not flip with the order a round's reports arrive in.
+    if fresh.is_empty() {
         return ProbeVerdict::Unknown;
-    };
-    if !newest.reachable {
-        return ProbeVerdict::Unreachable;
     }
-    let since = fresh
-        .iter()
-        .rposition(|p| !p.reachable)
-        .map_or(0, |i| i + 1);
-    let best = fresh[since..]
-        .iter()
-        .map(|p| p.rtt_ms.unwrap_or(0))
-        .min()
-        .unwrap_or(0);
-    ProbeVerdict::Reachable(best)
+    let mut best: Option<u32> = None;
+    let mut endpoints: Vec<&str> = Vec::new();
+    for p in &fresh {
+        if !endpoints.contains(&p.endpoint.as_str()) {
+            endpoints.push(p.endpoint.as_str());
+        }
+    }
+    for ep in endpoints {
+        let of_ep: Vec<&&ProbeRecord> = fresh.iter().filter(|p| p.endpoint == ep).collect();
+        if !of_ep.last().is_some_and(|p| p.reachable) {
+            continue;
+        }
+        let since = of_ep
+            .iter()
+            .rposition(|p| !p.reachable)
+            .map_or(0, |i| i + 1);
+        let rtt = of_ep[since..]
+            .iter()
+            .map(|p| p.rtt_ms.unwrap_or(0))
+            .min()
+            .unwrap_or(0);
+        best = Some(best.map_or(rtt, |b| b.min(rtt)));
+    }
+    match best {
+        Some(rtt) => ProbeVerdict::Reachable(rtt),
+        None => ProbeVerdict::Unreachable,
+    }
 }
 
 /// A staged path can only use measurements made against its current approved
@@ -5895,6 +5912,39 @@ mod tests {
         assert_eq!(
             verdict_of(&map, reporter, relay, stale),
             ProbeVerdict::Unknown
+        );
+    }
+
+    #[test]
+    fn a_relay_with_one_live_endpoint_stays_reachable_whatever_the_report_order() {
+        let map = DashMap::new();
+        let (reporter, relay) = (ObjectId::new(), ObjectId::new());
+        let now = Instant::now();
+        let rec = |endpoint: &str, reachable, rtt_ms| ProbeRecord {
+            endpoint: endpoint.into(),
+            reachable,
+            rtt_ms,
+            at: now,
+        };
+        map.insert(
+            (reporter, relay),
+            vec![
+                rec("8.8.8.8:3478", true, Some(9)),
+                rec("8.8.4.4:3478", false, None),
+            ],
+        );
+        assert_eq!(
+            verdict_of(&map, reporter, relay, now),
+            ProbeVerdict::Reachable(9),
+            "the dead endpoint's newer report does not hide the live one"
+        );
+        map.get_mut(&(reporter, relay))
+            .unwrap()
+            .push(rec("8.8.8.8:3478", false, None));
+        assert_eq!(
+            verdict_of(&map, reporter, relay, now),
+            ProbeVerdict::Unreachable,
+            "every endpoint's newest report failed"
         );
     }
 

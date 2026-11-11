@@ -148,6 +148,11 @@ pub(crate) fn unknown_role_log_due(
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     if seen.len() >= UNKNOWN_ROLE_LOG_KEYS {
         seen.retain(|_, (at, _)| now.saturating_duration_since(*at) < UNKNOWN_ROLE_LOG_GAP);
+        // Still full: start over rather than grow, or scan the whole map on
+        // every call. The cost is one early repeat of a line.
+        if seen.len() >= UNKNOWN_ROLE_LOG_KEYS {
+            seen.clear();
+        }
     }
     match seen.get_mut(&key) {
         Some((at, repeats)) if now.saturating_duration_since(*at) < UNKNOWN_ROLE_LOG_GAP => {

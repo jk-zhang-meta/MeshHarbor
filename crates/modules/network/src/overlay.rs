@@ -4459,13 +4459,15 @@ fn union_endpoints(lan: &[String], rest: &[String]) -> Vec<String> {
 /// of every netmap build; one line per (source, peer) per
 /// [`crate::business_isolation::UNKNOWN_ROLE_LOG_GAP`] says the same.
 fn unknown_role_shaping_log_due(source: ObjectId, peer: &str) -> bool {
-    crate::business_isolation::unknown_role_log_due(
-        source,
-        "netmap_peer",
-        &[peer.to_owned()],
-        std::time::Instant::now(),
-    )
-    .is_some()
+    // Both lines are `debug!`: with debug off, skip the hash and the lock.
+    tracing::enabled!(tracing::Level::DEBUG)
+        && crate::business_isolation::unknown_role_log_due(
+            source,
+            "netmap_peer",
+            &[peer.to_owned()],
+            std::time::Instant::now(),
+        )
+        .is_some()
 }
 
 pub fn pair_key(a: ObjectId, b: ObjectId) -> String {
