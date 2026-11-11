@@ -291,6 +291,9 @@ pub struct RelayCoordinator {
     warned_detached: bool,
     // Explicit ORG-only bootstrap requests never occupy legacy TURN pending.
     org_fallback_last: HashMap<ObjectId, Instant>,
+    /// When a server revoke last released a peer's fallback gap: once per
+    /// gap, so a stream of revokes cannot drive more than one extra request.
+    org_fallback_revoke_release: HashMap<ObjectId, Instant>,
     org_fallback_serial: u64,
     org_fallback_cursor: Option<ObjectId>,
     /// Requested (and maybe granted), not yet allocated.
@@ -567,6 +570,7 @@ impl RelayCoordinator {
             outbound: outbound.into(),
             warned_detached: false,
             org_fallback_last: HashMap::new(),
+            org_fallback_revoke_release: HashMap::new(),
             org_fallback_serial: 0,
             org_fallback_cursor: None,
             pending: HashMap::new(),
@@ -2166,7 +2170,26 @@ impl RelayCoordinator {
             return None;
         }
         self.drop_org_session(&peer);
+        self.release_org_fallback_gap(peer, Instant::now());
         Some(peer)
+    }
+
+    /// The server revoked the session the last ORG request produced: the
+    /// pacing gap was spent on a session that is gone, so the pair may ask
+    /// again at once instead of riding DERP for the rest of it (field,
+    /// 2026-11-11: a relay stopped 8 s after an unrelated request, and the
+    /// pair waited 56 s for its next one). At most once per gap per peer.
+    fn release_org_fallback_gap(&mut self, peer: ObjectId, now: Instant) {
+        self.org_fallback_revoke_release
+            .retain(|_, at| now.saturating_duration_since(*at) < ORG_FALLBACK_GAP);
+        if self.org_fallback_revoke_release.contains_key(&peer)
+            || self.org_fallback_revoke_release.len() >= ORG_FALLBACK_MAX_PEERS
+        {
+            return;
+        }
+        if self.org_fallback_last.remove(&peer).is_some() {
+            self.org_fallback_revoke_release.insert(peer, now);
+        }
     }
 
     /// The off-loop bind for `peer` failed on every endpoint: the session is
@@ -3056,6 +3079,57 @@ mod tests {
     /// so any id without a pin works).
     fn test_nid() -> ObjectId {
         ObjectId::from_bytes([0x42; 12])
+    }
+
+    #[tokio::test]
+    async fn a_server_revoke_releases_the_org_fallback_gap_once_per_gap() {
+        use meshharbor_remote_control::signaling::RelayRevokeScopeWire;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut c = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        c.set_org_relay(true);
+        let node = ObjectId::new();
+        let now = Instant::now();
+        assert!(c.request_org_fallback(node, now).await);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientMsg::OverlayOrgRelayFallbackRequest { .. })
+        ));
+        assert!(
+            !c.request_org_fallback(node, now + Duration::from_secs(8))
+                .await,
+            "the gap paces requests while nothing was revoked"
+        );
+        c.org_session_accept(node, org_session(7, 60));
+        let scope = RelayRevokeScopeWire {
+            relay_node_id: c.org_sessions[&node].relay_node_id,
+            generation: 1,
+            peer_node_id: Some(node),
+        };
+        assert_eq!(c.org_session_revoke(7, &scope), Some(node));
+        assert!(
+            c.request_org_fallback(node, now + Duration::from_secs(8))
+                .await,
+            "a server revoke frees the gap: the pair asks again at once"
+        );
+        assert!(rx.try_recv().is_ok());
+        c.org_session_accept(node, org_session(8, 60));
+        let scope = RelayRevokeScopeWire {
+            relay_node_id: c.org_sessions[&node].relay_node_id,
+            generation: 1,
+            peer_node_id: Some(node),
+        };
+        assert_eq!(c.org_session_revoke(8, &scope), Some(node));
+        assert!(
+            !c.request_org_fallback(node, now + Duration::from_secs(9))
+                .await,
+            "a second revoke inside the same gap does not release it again"
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(
+            c.request_org_fallback(node, now + Duration::from_secs(8) + ORG_FALLBACK_GAP)
+                .await,
+            "the ordinary gap still elapses"
+        );
     }
 
     fn base_peer() -> PeerConfig {
