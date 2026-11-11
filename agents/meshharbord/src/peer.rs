@@ -614,9 +614,18 @@ impl AgentPeer {
         // whole CGNAT `/10` (the CGNAT caveat above still holds). Remote
         // candidates and ICE servers get the same rule below and in
         // `add_remote_candidate`.
-        if !rc_overlay.allow {
-            let keep = rc_overlay.clone();
-            setting.set_ip_filter(Box::new(move |ip| keep.keeps_local(ip)));
+        // 2026-11-11 — and, whatever the overlay policy, this host's Tailscale
+        // addresses: a pair on them carried the first frames inside another
+        // mesh's tunnel and switched paths twice per session (`ice_foreign_vpn`).
+        let skip_foreign = crate::ice_foreign_vpn::host_ips_to_skip();
+        if !skip_foreign.is_empty() {
+            info!(
+                skipped = skip_foreign.len(),
+                "ice: leaving this host's Tailscale interface addresses out of host candidates (MESHHARBORD_ICE_SKIP_TAILSCALE_HOST=0 keeps them)"
+            );
+        }
+        if let Some(filter) = crate::ice_foreign_vpn::local_ip_filter(&rc_overlay, skip_foreign) {
+            setting.set_ip_filter(filter);
         }
         // FR-101 P1 — GCM-only DTLS, with its switch back, and the SRTP/SRTCP
         // replay windows pinned at 64 (webrtc-srtp's session default too).
@@ -2361,9 +2370,11 @@ impl AgentPeer {
         let registry = webrtc::interceptor::registry::Registry::new();
         let mut setting = webrtc::api::setting_engine::SettingEngine::default();
         setting.set_interface_filter(Box::new(|name: &str| !is_overlay_iface(name)));
-        if !self.rc_overlay.allow {
-            let keep = self.rc_overlay.clone();
-            setting.set_ip_filter(Box::new(move |ip| keep.keeps_local(ip)));
+        if let Some(filter) = crate::ice_foreign_vpn::local_ip_filter(
+            &self.rc_overlay,
+            crate::ice_foreign_vpn::host_ips_to_skip(),
+        ) {
+            setting.set_ip_filter(filter);
         }
         let transport = crate::rc_transport::Policy::from_env();
         transport.apply(&mut setting);

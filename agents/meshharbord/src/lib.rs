@@ -140,6 +140,9 @@ pub mod person_socket;
 /// so the CLI's `self-update` shares it. Re-exported, so `crate::pgp_verify`
 /// still names it.
 pub use tunnel_core::pgp_verify;
+/// Keep this host's Tailscale interface addresses out of a remote-desktop
+/// session's ICE host candidates (default on, `MESHHARBORD_ICE_SKIP_TAILSCALE_HOST=0`).
+pub mod ice_foreign_vpn;
 /// Device-owned login-account RPC, independent of the overlay transport.
 /// The handler enforces `ssh_enabled` and the device's privilege ceiling.
 pub mod local_accounts;
