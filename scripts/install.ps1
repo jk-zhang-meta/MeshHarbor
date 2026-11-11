@@ -61,6 +61,11 @@
 #                   shows it and the autostart lands in the wrong account.
 #                   Only use this on UAC-disabled boxes where the shell is
 #                   unavoidably full-token.
+#   -NoOverlay      daemon-user only: do not join the private mesh. By default
+#                   the per-user role enrolls with --overlay: a per-user daemon
+#                   joins through its userspace netstack (loopback SOCKS5, no
+#                   TUN adapter, no routes, no firewall rule). The machine roles
+#                   keep the daemon's own default (off) in this script.
 #
 # The enrollment token is single-use and is never echoed.
 
@@ -83,7 +88,8 @@ param(
     [switch]$PrepareFirewall,
     [switch]$AllowPublicFirewall,
     [switch]$Uninstall,
-    [switch]$AllowElevated
+    [switch]$AllowElevated,
+    [switch]$NoOverlay
 )
 
 $ErrorActionPreference = 'Stop'
@@ -226,6 +232,15 @@ if (-not $machineRole -and -not $DownloadOnly -and -not $Uninstall -and -not $Al
 $mgFlag = ''
 if ($Role -eq 'daemon-system') { $mgFlag = ' --machine-global' }
 
+# Windows per-user default mesh: the per-user role enrolls with --overlay,
+# because a per-user daemon joins through its userspace netstack (no TUN, no
+# routes, no firewall rule). -NoOverlay opts out. The machine roles keep the
+# daemon's default here (FR-84 open decision 1: flipping it would silently
+# change automation that already runs them).
+$ovFlag = ''
+if ($Role -eq 'daemon-user' -and -not $NoOverlay) { $ovFlag = ' --overlay' }
+if ($NoOverlay -and $Role -ne 'daemon-user') { Warn "-NoOverlay only applies to -Role daemon-user; ignored" }
+
 Say "meshharbor install.ps1 -- role=$Role server=$Server"
 
 # --- daemon roles: MSI (carries meshharbord + the meshharbor CLI) -----------------
@@ -256,7 +271,7 @@ function Install-Daemon {
     if ($DownloadOnly) {
         Say "download-only: would run: msiexec $msiArgs"
         if ($PrepareFirewall) { Say "download-only: would request administrator approval for '$daemon' service prepare-firewall before enrollment/autostart" }
-        Say "download-only: would enroll via: '$daemon' enroll --server $Server --token <token> --name '$Name'$mgFlag"
+        Say "download-only: would enroll via: '$daemon' enroll --server $Server --token <token> --name '$Name'$mgFlag$ovFlag"
         if (-not $SkipDesktop) { Say "download-only: would place meshharbor-desktop.exe into $installDir" }
         return
     }
@@ -296,7 +311,7 @@ function Install-Daemon {
 
     if ($NoEnroll -or -not $Token) {
         if (-not $NoEnroll) { Warn "no -Token given -- skipping enrollment" }
-        Say "enroll later with: & '$daemon' enroll --server $Server --token <agent-enrollment-jwt> --name '$Name'$mgFlag"
+        Say "enroll later with: & '$daemon' enroll --server $Server --token <agent-enrollment-jwt> --name '$Name'$mgFlag$ovFlag"
         return
     }
 
@@ -305,6 +320,7 @@ function Install-Daemon {
     # S1b: machine-global is the SystemContext flavour's config source only
     # (see the $mgFlag comment above).
     if ($Role -eq 'daemon-system') { $enrollArgs += '--machine-global' }
+    if ($Role -eq 'daemon-user' -and -not $NoOverlay) { $enrollArgs += '--overlay' }
     # FR-102 -- the install trace: tell the server HOW this install happened
     # (the device row's install.method / install.scope). Through the
     # ENVIRONMENT, never the --install-method flag: this script installs

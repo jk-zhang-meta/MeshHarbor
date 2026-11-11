@@ -599,6 +599,32 @@ mod tests {
         );
     }
 
+    /// Windows per-user default mesh: `-Role daemon-user` enrolls with
+    /// `--overlay` (the per-user daemon joins through the userspace netstack:
+    /// no TUN, no routes, no firewall rule) unless the operator passes
+    /// `-NoOverlay`. No other role gains the flag — the per-machine roles keep
+    /// the script's own default (FR-84 open decision 1), because flipping it
+    /// would silently change corporate automation that already runs them.
+    #[test]
+    fn install_ps1_puts_only_the_per_user_role_on_the_mesh_by_default() {
+        assert!(
+            INSTALL_PS1.contains("[switch]$NoOverlay"),
+            "install.ps1 must offer the -NoOverlay opt-out"
+        );
+        let gate =
+            "if ($Role -eq 'daemon-user' -and -not $NoOverlay) { $enrollArgs += '--overlay' }";
+        assert_eq!(
+            INSTALL_PS1.matches(gate).count(),
+            1,
+            "the per-user role must add --overlay unless -NoOverlay"
+        );
+        assert_eq!(
+            INSTALL_PS1.matches("'--overlay'").count(),
+            1,
+            "no other role may add --overlay to the enroll argv"
+        );
+    }
+
     #[test]
     fn substitutable_origin_accepts_a_plain_scheme_host_port() {
         for (input, want) in [
