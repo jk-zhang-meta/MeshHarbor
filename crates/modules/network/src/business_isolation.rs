@@ -132,7 +132,7 @@ pub const UNKNOWN_ROLE_LOG_GAP: Duration = Duration::from_secs(600);
 const UNKNOWN_ROLE_LOG_KEYS: usize = 4096;
 
 /// `Some(repeats suppressed since the last line)` when a line is due.
-fn unknown_role_log_due(
+pub(crate) fn unknown_role_log_due(
     tenant_id: ObjectId,
     context: &'static str,
     unknown_devices: &[String],
@@ -721,6 +721,33 @@ pub async fn refuses_parties_with_lines_and_fallback_zone(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_identical_unknown_role_line_is_logged_once_per_gap_with_its_repeats() {
+        let tenant = ObjectId::new();
+        let devices = vec!["agent:a:m1".to_string()];
+        let t0 = std::time::Instant::now();
+        assert_eq!(
+            unknown_role_log_due(tenant, "probe_targets", &devices, t0),
+            Some(0)
+        );
+        for _ in 0..5 {
+            assert_eq!(
+                unknown_role_log_due(tenant, "probe_targets", &devices, t0),
+                None
+            );
+        }
+        assert_eq!(
+            unknown_role_log_due(tenant, "org_relay_pair", &devices, t0),
+            Some(0),
+            "another context is another line"
+        );
+        assert_eq!(
+            unknown_role_log_due(tenant, "probe_targets", &devices, t0 + UNKNOWN_ROLE_LOG_GAP),
+            Some(5),
+            "after the gap: one line carrying the repeats it stood for"
+        );
+    }
+
     use super::*;
     use BusinessZone::{Mainland, NonMainland};
 

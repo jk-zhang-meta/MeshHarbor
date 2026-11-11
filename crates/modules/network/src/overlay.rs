@@ -4191,7 +4191,7 @@ fn shape_peer(
     // is shaped like any other (the ACL still decides), then stripped to the
     // line: no address to dial, no DERP or TURN to try.
     if zones.line_only() {
-        if zones.unknown_role_denies() {
+        if zones.unknown_role_denies() && unknown_role_shaping_log_due(src.node_id, &peer.name) {
             debug!(
                 source = %src.node_id,
                 peer = %peer.name,
@@ -4270,12 +4270,14 @@ fn shape_peer_zoned(
             return None;
         }
         if zones.unknown_role_denies() {
-            debug!(
-                source = %src.node_id,
-                peer = %peer.name,
-                ?zones,
-                "business isolation [warn]: would refuse: unknown_role"
-            );
+            if unknown_role_shaping_log_due(src.node_id, &peer.name) {
+                debug!(
+                    source = %src.node_id,
+                    peer = %peer.name,
+                    ?zones,
+                    "business isolation [warn]: would refuse: unknown_role"
+                );
+            }
         } else {
             debug!(source = %src.node_id, peer = %peer.name, ?zones,
                 "business isolation [warn]: would WITHHOLD peer (zones differ or unknown, or servers without a link)");
@@ -4453,6 +4455,19 @@ fn union_endpoints(lan: &[String], rest: &[String]) -> Vec<String> {
 }
 
 /// Symmetric per-pair key so both ends mint identical coturn creds.
+/// The per-peer `unknown_role` line of netmap shaping fires for every peer
+/// of every netmap build; one line per (source, peer) per
+/// [`crate::business_isolation::UNKNOWN_ROLE_LOG_GAP`] says the same.
+fn unknown_role_shaping_log_due(source: ObjectId, peer: &str) -> bool {
+    crate::business_isolation::unknown_role_log_due(
+        source,
+        "netmap_peer",
+        &[peer.to_owned()],
+        std::time::Instant::now(),
+    )
+    .is_some()
+}
+
 pub fn pair_key(a: ObjectId, b: ObjectId) -> String {
     let (x, y) = (a.to_hex(), b.to_hex());
     if x <= y {
