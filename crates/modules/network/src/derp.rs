@@ -95,6 +95,11 @@ static DERP_FULL_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// hundreds of identical lines per dead pair per minute.
 static MISS_LOG_AT: LazyLock<DashMap<DerpKey, Instant>> = LazyLock::new(DashMap::new);
 static FULL_LOG_AT: LazyLock<DashMap<DerpKey, Instant>> = LazyLock::new(DashMap::new);
+/// Frames dropped because their network had no relay table in this process
+/// (#18/#21 load-before-serve). Nonzero after boot means a registration path
+/// skipped `derp_acl::ensure_built`, or a table was removed under live nodes.
+static DERP_NO_TABLE_TOTAL: AtomicU64 = AtomicU64::new(0);
+static NO_TABLE_LOG_AT: LazyLock<DashMap<DerpKey, Instant>> = LazyLock::new(DashMap::new);
 /// R4 — tunnel-leg shaping. The `quic-derp-v1` tunnel flavor multiplexes
 /// QUIC over this relay, and unlike the WG floor traffic the plane was
 /// sized for, a tunnel can be an elephant flow (a git clone). Per
@@ -311,6 +316,7 @@ pub fn spawn_registry_census(state: &NetworkState) {
                 %summary,
                 derp_miss_total = DERP_MISS_TOTAL.load(Ordering::Relaxed),
                 derp_full_total = DERP_FULL_TOTAL.load(Ordering::Relaxed),
+                derp_no_table_total = DERP_NO_TABLE_TOTAL.load(Ordering::Relaxed),
                 "derp registry census"
             );
             last_summary = summary;
@@ -532,6 +538,18 @@ async fn handle_derp_socket(state: NetworkState, socket: WebSocket, agent_id: Ob
     {
         return;
     }
+    // Load before serve (#18/#21): no frame from this node is forwarded until
+    // its network's DERP table exists in this process. After a restart the
+    // cache is empty, and `forward_frame` drops on a missing table, so the
+    // first registration of each network builds it here (single-flight,
+    // bounded). On failure we refuse; the client's reconnect retries.
+    if !crate::derp_acl::ensure_built(&state, node.tenant_id, network_id).await {
+        info!(
+            %agent_id, %network_id, node = %node_hex,
+            "derp: registration DEFERRED — the network's relay table could not be built yet; closing so the client reconnects"
+        );
+        return;
+    }
     let key_epoch = node.key_epoch;
     let admission_watchdog = async {
         loop {
@@ -682,8 +700,9 @@ async fn handle_derp_socket(state: NetworkState, socket: WebSocket, agent_id: Ob
 /// destination — otherwise a stale or modified client holding a denied peer's
 /// key could relay straight around the netmap (an honest client never learns a
 /// withheld key). The decision is a precomputed [`crate::derp_acl`] table read,
-/// not a policy query: this is a synchronous per-datagram path. A missing table
-/// permits the frame — see that module for the fail-open rationale.
+/// not a policy query: this is a synchronous per-datagram path. A MISSING table
+/// drops the frame: every built network has an entry (open when nothing gates),
+/// and registration builds it first — see that module.
 fn forward_frame(
     registry: &DerpRegistry,
     acl: &DerpAclCache,
@@ -697,20 +716,33 @@ fn forward_frame(
     let mut dst = [0u8; 32];
     dst.copy_from_slice(&frame[..32]);
     let payload = &frame[32..];
-    // One lock-free lookup. Absent ⇒ fail open (no table built for this
-    // network: ACL off, or not yet rebuilt after a restart).
-    if let Some(table) = acl.get(&network_id)
-        && !table.permits(src_pubkey, &dst)
-    {
-        // Rate-limited by the tenant's own churn, not per frame: a denied
-        // pair retries on the WG handshake timer (~5 s), not per packet.
-        info!(
-            %network_id,
-            src = %pk8(src_pubkey),
-            dst = %pk8(&dst),
-            "derp: dropped a frame the overlay ACL or business isolation denies"
-        );
-        return;
+    // One lock-free lookup. Absent ⇒ DROP: the network has not been built in
+    // this process (an ungated network carries an open table), so there is no
+    // decision to apply yet — fail closed (#18/#21).
+    match acl.get(&network_id) {
+        None => {
+            DERP_NO_TABLE_TOTAL.fetch_add(1, Ordering::Relaxed);
+            if drop_log_due(&NO_TABLE_LOG_AT, (network_id, *src_pubkey)) {
+                info!(
+                    %network_id,
+                    src = %pk8(src_pubkey),
+                    "derp: dropped a frame — no relay table built for this network yet"
+                );
+            }
+            return;
+        }
+        Some(table) if !table.permits(src_pubkey, &dst) => {
+            // Rate-limited by the tenant's own churn, not per frame: a denied
+            // pair retries on the WG handshake timer (~5 s), not per packet.
+            info!(
+                %network_id,
+                src = %pk8(src_pubkey),
+                dst = %pk8(&dst),
+                "derp: dropped a frame the overlay ACL or business isolation denies"
+            );
+            return;
+        }
+        Some(_) => {}
     }
     // FR-115 P4a — the relay allowance. A network whose org is past its
     // plan's monthly relay has its BULK frames held to its rate; a WireGuard
@@ -826,6 +858,10 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(1024);
         registry.insert((network, dst), tx);
         let acl: DerpAclCache = Arc::new(DashMap::new());
+        acl.insert(
+            network,
+            Arc::new(crate::derp_acl::DerpAllowTable::default()),
+        );
         let frame = |head: [u8; 4], body: usize| {
             let mut f = dst.to_vec();
             f.extend_from_slice(&head);
@@ -937,16 +973,47 @@ mod tests {
         f.extend_from_slice(payload);
         f
     }
-    /// No table for any network — the fail-open posture, and the pre-ACL
-    /// behaviour every test above asserts.
-    fn no_acl() -> DerpAclCache {
-        Arc::new(DashMap::new())
+    /// The given networks are BUILT and ungated: each carries the open table
+    /// `derp_acl::rebuild` writes for an Off tenant, which is the pre-ACL
+    /// behaviour the forwarding tests assert. (A network with no entry at all
+    /// is "not built" and drops — see `a_network_with_no_table_relays_nothing`.)
+    fn open_acl(nets: &[ObjectId]) -> DerpAclCache {
+        let c: DerpAclCache = Arc::new(DashMap::new());
+        for n in nets {
+            c.insert(*n, Arc::new(crate::derp_acl::DerpAllowTable::default()));
+        }
+        c
     }
     /// A cache holding one network's table.
     fn acl_with(net: ObjectId, table: crate::derp_acl::DerpAllowTable) -> DerpAclCache {
         let c: DerpAclCache = Arc::new(DashMap::new());
         c.insert(net, Arc::new(table));
         c
+    }
+    /// #18/#21 load-before-serve: a network with NO table in this process (it
+    /// was never built here, e.g. right after a restart) relays nothing and
+    /// bills nothing — even between two registered nodes. Before 2026-11-11 a
+    /// miss failed open, so an enforcing tenant's ACL and the cross-zone rule
+    /// were both off on this tier until the next join or policy change.
+    #[test]
+    fn a_network_with_no_table_relays_nothing() {
+        let reg: DerpRegistry = Arc::new(DashMap::new());
+        let net = ObjectId::new();
+        let (a, b) = (pk(0xAA), pk(0xBB));
+        let (b_tx, mut b_rx) = mpsc::channel::<Vec<u8>>(8);
+        reg.insert((net, b), b_tx);
+        let empty: DerpAclCache = Arc::new(DashMap::new());
+        let before = DERP_NO_TABLE_TOTAL.load(Ordering::Relaxed);
+        forward_frame(&reg, &empty, net, &a, &frame(&b, &[1, 2, 3]));
+        assert!(
+            b_rx.try_recv().is_err(),
+            "an unbuilt network must not relay a frame"
+        );
+        assert_eq!(billed(net), 0, "and must not bill one");
+        assert!(DERP_NO_TABLE_TOTAL.load(Ordering::Relaxed) > before);
+        // Once the network is built (ungated ⇒ open table), the same frame passes.
+        forward_frame(&reg, &open_acl(&[net]), net, &a, &frame(&b, &[1, 2, 3]));
+        assert!(b_rx.try_recv().is_ok(), "a built, ungated network relays");
     }
     #[test]
     fn forwards_within_network_and_rewrites_src() {
@@ -956,7 +1023,7 @@ mod tests {
         let (b_tx, mut b_rx) = mpsc::channel::<Vec<u8>>(8);
         reg.insert((net, b), b_tx);
         // A → B with payload [1,2,3]; B should receive [A-pubkey || 1,2,3].
-        forward_frame(&reg, &no_acl(), net, &a, &frame(&b, &[1, 2, 3]));
+        forward_frame(&reg, &open_acl(&[net]), net, &a, &frame(&b, &[1, 2, 3]));
         let got = b_rx.try_recv().expect("B should receive the frame");
         assert_eq!(&got[..32], &a, "src prefix must be rewritten to the sender");
         assert_eq!(&got[32..], &[1, 2, 3]);
@@ -972,7 +1039,7 @@ mod tests {
         reg.insert((net_a, b), b_in_a_tx);
         reg.insert((net_b, b), b_in_b_tx);
         // A sends from net_a → only net_a's B receives; net_b's B never does.
-        forward_frame(&reg, &no_acl(), net_a, &a, &frame(&b, &[9]));
+        forward_frame(&reg, &open_acl(&[net_a]), net_a, &a, &frame(&b, &[9]));
         assert!(b_in_a_rx.try_recv().is_ok(), "same-network dst delivered");
         assert!(
             b_in_b_rx.try_recv().is_err(),
@@ -984,7 +1051,13 @@ mod tests {
         let reg: DerpRegistry = Arc::new(DashMap::new());
         let net = ObjectId::new();
         // No registrations at all — forwarding must not panic.
-        forward_frame(&reg, &no_acl(), net, &pk(0xAA), &frame(&pk(0xCC), &[1]));
+        forward_frame(
+            &reg,
+            &open_acl(&[net]),
+            net,
+            &pk(0xAA),
+            &frame(&pk(0xCC), &[1]),
+        );
     }
     /// The bypass this gate closes: both ends are registered in the same
     /// network and hold each other's pubkeys, but the ACL denies the pair.
@@ -1030,7 +1103,7 @@ mod tests {
         let (dst_tx, mut dst_rx) = mpsc::channel::<Vec<u8>>(8);
         reg.insert((net, pk(0xBB)), dst_tx);
         // 10 bytes < 32 → no dst pubkey → dropped, nothing delivered.
-        forward_frame(&reg, &no_acl(), net, &pk(0xAA), &[0u8; 10]);
+        forward_frame(&reg, &open_acl(&[net]), net, &pk(0xAA), &[0u8; 10]);
         assert!(dst_rx.try_recv().is_err());
     }
     // ── FR-20: the billing invariant ────────────────────────────────────
@@ -1059,7 +1132,7 @@ mod tests {
         let (a, b) = (pk(0xAA), pk(0xBB));
         let (b_tx, mut b_rx) = mpsc::channel::<Vec<u8>>(8);
         reg.insert((net, b), b_tx);
-        forward_frame(&reg, &no_acl(), net, &a, &frame(&b, &[1, 2, 3]));
+        forward_frame(&reg, &open_acl(&[net]), net, &a, &frame(&b, &[1, 2, 3]));
         assert!(b_rx.try_recv().is_ok(), "precondition: the frame relayed");
         // What goes on the wire is `src_pubkey || payload` — 32 + 3 — not the
         // inbound frame length. Billing the inbound length would double-count
@@ -1077,8 +1150,8 @@ mod tests {
         let (a, b) = (pk(0xAA), pk(0xBB));
         let (b_tx, _b_rx) = mpsc::channel::<Vec<u8>>(8);
         reg.insert((net, b), b_tx);
-        forward_frame(&reg, &no_acl(), net, &a, &frame(&b, &[1, 2, 3]));
-        forward_frame(&reg, &no_acl(), net, &a, &frame(&b, &[4, 5]));
+        forward_frame(&reg, &open_acl(&[net]), net, &a, &frame(&b, &[1, 2, 3]));
+        forward_frame(&reg, &open_acl(&[net]), net, &a, &frame(&b, &[4, 5]));
         assert_eq!(billed(net), 35 + 34, "the bucket is additive across frames");
     }
     #[test]
@@ -1088,7 +1161,7 @@ mod tests {
         // Nobody registered: the frame is dropped before it is ever built.
         forward_frame(
             &reg,
-            &no_acl(),
+            &open_acl(&[net]),
             net,
             &pk(0xAA),
             &frame(&pk(0xBB), &[1, 2, 3]),
@@ -1107,7 +1180,13 @@ mod tests {
         let (b_tx, _rx) = mpsc::channel::<Vec<u8>>(8);
         // B exists, but only in net_b. A sends from net_a.
         reg.insert((net_b, b), b_tx);
-        forward_frame(&reg, &no_acl(), net_a, &pk(0xAA), &frame(&b, &[1, 2, 3]));
+        forward_frame(
+            &reg,
+            &open_acl(&[net_a]),
+            net_a,
+            &pk(0xAA),
+            &frame(&b, &[1, 2, 3]),
+        );
         assert_eq!(billed(net_a), 0, "the sender's network carried nothing");
         assert_eq!(
             billed(net_b),
@@ -1144,7 +1223,7 @@ mod tests {
         let (b_tx, _b_rx) = mpsc::channel::<Vec<u8>>(1);
         b_tx.try_send(vec![0u8; 4]).expect("prime the queue");
         reg.insert((net, b), b_tx);
-        forward_frame(&reg, &no_acl(), net, &a, &frame(&b, &[1, 2, 3]));
+        forward_frame(&reg, &open_acl(&[net]), net, &a, &frame(&b, &[1, 2, 3]));
         assert_eq!(
             billed(net),
             0,
@@ -1178,7 +1257,7 @@ mod tests {
         let (b_tx, _rx) = mpsc::channel::<Vec<u8>>(8);
         reg.insert((net, pk(0xBB)), b_tx);
         // Under 32 bytes: no dst pubkey to parse.
-        forward_frame(&reg, &no_acl(), net, &pk(0xAA), &[0u8; 10]);
+        forward_frame(&reg, &open_acl(&[net]), net, &pk(0xAA), &[0u8; 10]);
         assert_eq!(billed(net), 0);
     }
 }
