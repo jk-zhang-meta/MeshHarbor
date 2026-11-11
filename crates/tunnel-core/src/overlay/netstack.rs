@@ -113,6 +113,20 @@ const TCP_BUF_MAX: usize = 16 * 1024 * 1024;
 /// it within [`TCP_MIN_RTO_RANGE`]; 1000 restores the RFC floor.
 const TCP_MIN_RTO_MS: u64 = 200;
 const TCP_MIN_RTO_RANGE: std::ops::RangeInclusive<u64> = 10..=1000;
+/// For how long into an outage (ms) a thin netstack TCP stream, one with
+/// less than four segments' worth in flight, resends at the same RTO before
+/// the timer starts doubling (the vendored smoltcp's `set_linear_timeouts`;
+/// Linux's `tcp_thin_linear_timeouts` allows six such timeouts). An SSH or
+/// remote-desktop control stream has nothing to shed by backing off, and the
+/// backoff is what decides how long it stalls after its carrier fails over:
+/// the resends land at 1, 3, 7 and 15 x RTO, so a path healed 2.3 s after a
+/// relay froze was not used until 3.5-4.6 s (field, 2026-11-12, RTO
+/// 0.23-0.31 s). Linear, the next resend is at most one RTO after the path
+/// heals, for any outage up to this long. `OVERLAY_NETSTACK_TCP_LINEAR_MS`
+/// overrides it within [`TCP_LINEAR_MS_MAX`]; `0` restores the backoff on
+/// every timeout.
+const TCP_LINEAR_MS: u64 = 4_000;
+const TCP_LINEAR_MS_MAX: u64 = 10_000;
 /// Max bytes moved between a smoltcp socket buffer and an app channel in one
 /// chunk — bounds per-copy allocation and keeps chunks SCTP-friendly.
 const CHUNK: usize = 16 * 1024;
@@ -678,6 +692,14 @@ fn tcp_min_rto_ms() -> u64 {
         .unwrap_or(TCP_MIN_RTO_MS)
 }
 
+/// [`TCP_LINEAR_MS`], or `OVERLAY_NETSTACK_TCP_LINEAR_MS` when in range.
+fn tcp_linear_ms() -> u64 {
+    crate::env::node_env("OVERLAY_NETSTACK_TCP_LINEAR_MS")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|ms| *ms <= TCP_LINEAR_MS_MAX)
+        .unwrap_or(TCP_LINEAR_MS)
+}
+
 fn tcp_buf(name: &str, default: usize) -> usize {
     crate::env::node_env(name)
         .and_then(|v| v.trim().parse::<usize>().ok())
@@ -697,14 +719,16 @@ impl PollLoop {
     }
 
     fn new_tcp_socket() -> tcp::Socket<'static> {
-        Self::new_tcp_socket_with(
+        let mut sock = Self::new_tcp_socket_with(
             tcp_buf("OVERLAY_NETSTACK_TCP_RX_BUF", TCP_RX_BUF),
             tcp_buf("OVERLAY_NETSTACK_TCP_TX_BUF", TCP_TX_BUF),
             tcp_cc(),
             tcp_pacing(),
             tcp_sack(),
             tcp_min_rto_ms(),
-        )
+        );
+        sock.set_linear_timeouts(smoltcp::time::Duration::from_millis(tcp_linear_ms()));
+        sock
     }
 
     fn new_tcp_socket_with(
@@ -1576,6 +1600,110 @@ mod tests {
         assert!(
             first_after_recovery.is_some_and(|ms| ms <= 14_550),
             "small ongoing writes should recover shortly after the carrier, not wait for 20 s RTO: {first_after_recovery:?}"
+        );
+    }
+
+    /// When a record written at 5.0 s, into a carrier that is down from 5.0 s
+    /// to 7.3 s, reaches the peer (ms). One write and then nothing, the way a
+    /// keystroke enters an interactive session, so no later segment draws
+    /// duplicate ACKs and only the retransmission timer can deliver it.
+    /// `linear_ms` overrides the production helper's linear-timeout window.
+    fn thin_write_delivered_at(linear_ms: Option<u64>) -> Option<i64> {
+        fn node(
+            ip: Ipv4Addr,
+        ) -> (
+            NetstackDevice,
+            Interface,
+            SocketSet<'static>,
+            mpsc::UnboundedReceiver<Vec<u8>>,
+        ) {
+            let (out_tx, out_rx) = mpsc::unbounded_channel();
+            let mut dev = NetstackDevice {
+                rx: VecDeque::new(),
+                out_tx,
+                mtu: 1280,
+            };
+            let mut cfg = Config::new(HardwareAddress::Ip);
+            cfg.random_seed = 7;
+            let mut iface = Interface::new(cfg, &mut dev, SmolInstant::from_millis(0));
+            iface.update_ip_addrs(|a| {
+                a.push(IpCidr::new(IpAddress::from(ip), 24)).unwrap();
+            });
+            (dev, iface, SocketSet::new(vec![]), out_rx)
+        }
+        let a_ip = Ipv4Addr::new(100, 64, 0, 1);
+        let b_ip = Ipv4Addr::new(100, 64, 0, 2);
+        let (mut ad, mut ai, mut sockets_a, mut a_out) = node(a_ip);
+        let (mut bd, mut bi, mut sockets_b, mut b_out) = node(b_ip);
+        let mut server = PollLoop::new_tcp_socket();
+        let mut client = PollLoop::new_tcp_socket();
+        if let Some(ms) = linear_ms {
+            let window = smoltcp::time::Duration::from_millis(ms);
+            server.set_linear_timeouts(window);
+            client.set_linear_timeouts(window);
+        }
+        server.listen(2222).unwrap();
+        let sh = sockets_b.add(server);
+        client
+            .connect(ai.context(), (IpAddress::from(b_ip), 2222), 49152)
+            .unwrap();
+        let ch = sockets_a.add(client);
+        let mut delivered_at = None;
+        let mut received = 0usize;
+        for ms in 0..12_000i64 {
+            let now = SmolInstant::from_millis(ms);
+            let lost = (5_000..7_300).contains(&ms);
+            // A few answered records first, so the RTO is the measured one.
+            if (1_000..4_000).contains(&ms) && ms % 500 == 0 || ms == 5_000 {
+                sockets_b
+                    .get_mut::<tcp::Socket>(sh)
+                    .send_slice(b"one keystroke and its line of output\n")
+                    .unwrap();
+            }
+            for _ in 0..8 {
+                let _ = ai.poll(now, &mut ad, &mut sockets_a);
+                while let Ok(pkt) = a_out.try_recv() {
+                    if !lost {
+                        bd.rx.push_back(pkt);
+                    }
+                }
+                let _ = bi.poll(now, &mut bd, &mut sockets_b);
+                while let Ok(pkt) = b_out.try_recv() {
+                    if !lost {
+                        ad.rx.push_back(pkt);
+                    }
+                }
+            }
+            if sockets_a.get::<tcp::Socket>(ch).can_recv() {
+                received += sockets_a
+                    .get_mut::<tcp::Socket>(ch)
+                    .recv(|b| (b.len(), b.len()))
+                    .unwrap();
+                if ms >= 5_000 && delivered_at.is_none() {
+                    delivered_at = Some(ms);
+                }
+            }
+        }
+        assert_eq!(received, 7 * 37, "every record arrives exactly once");
+        delivered_at
+    }
+
+    /// Item 6 — early in an outage a thin stream resends at the same RTO, so
+    /// what it wrote into a 2.3 s outage crosses within one RTO (200 ms) of
+    /// the path healing. Backing off on every timeout, the resends fall at
+    /// 0.2, 0.6, 1.4 and 3.0 s: the one that crosses is 0.7 s late, and in
+    /// the field (RTO 0.23-0.31 s) it was 1.2-2.3 s late.
+    #[test]
+    fn a_thin_stream_crosses_a_healed_outage_within_one_rto() {
+        let linear = thin_write_delivered_at(None).expect("delivered");
+        assert!(
+            (7_300..=7_500).contains(&linear),
+            "the production socket resends linearly: delivered at {linear} ms"
+        );
+        let backed_off = thin_write_delivered_at(Some(0)).expect("delivered");
+        assert!(
+            (7_900..=8_100).contains(&backed_off),
+            "with the window off the fourth resend delivers it: {backed_off} ms"
         );
     }
 

@@ -179,6 +179,13 @@ struct RttEstimator {
     /// MESHHARBOR PATCH: the floor `sample` clamps the RTO to (see
     /// `Socket::set_min_rto`), RFC 6298's 1 s unless set.
     min_rto: u32,
+    /// MESHHARBOR PATCH: for how long (ms of expired timers) a thin stream's
+    /// timeouts keep the RTO instead of doubling it (see
+    /// `Socket::set_linear_timeouts`); `0` is RFC 6298's backoff on every
+    /// timeout.
+    linear_ms: u32,
+    /// The timers that have expired since the last RTT sample, summed (ms).
+    timed_out_ms: u32,
 }
 
 impl Default for RttEstimator {
@@ -192,6 +199,8 @@ impl Default for RttEstimator {
             max_seq_sent: None,
             rto_count: 0,
             min_rto: RTTE_MIN_RTO,
+            linear_ms: 0,
+            timed_out_ms: 0,
         }
     }
 }
@@ -219,6 +228,7 @@ impl RttEstimator {
         self.rto = (self.srtt + margin).clamp(self.min_rto, RTTE_MAX_RTO);
 
         self.rto_count = 0;
+        self.timed_out_ms = 0;
 
         tcp_trace!(
             "rtte: sample={:?} srtt={:?} rttvar={:?} rto={:?}",
@@ -252,17 +262,34 @@ impl RttEstimator {
         }
     }
 
-    fn on_retransmit(&mut self) {
+    /// `thin`: fewer than four segments' worth of data was in flight when the
+    /// timer expired.
+    fn on_retransmit(&mut self, thin: bool) {
         if self.timestamp.is_some() {
             tcp_trace!("rtte: abort sampling due to retransmit");
         }
         self.timestamp = None;
 
-        // RFC 6298 (5.5) The host MUST set RTO <- RTO * 2 ("back off the timer").  The
-        // maximum value discussed in (2.5) above may be used to provide
-        // an upper bound to this doubling operation.
-        self.rto = (self.rto * 2).min(RTTE_MAX_RTO);
-        tcp_trace!("rtte: doubling rto to {:?}", self.rto);
+        // MESHHARBOR PATCH: linear timeouts for a thin stream (Linux's
+        // `tcp_thin_linear_timeouts`, by time rather than by count): while
+        // the timers expired since the last RTT sample add up to less than
+        // `linear_ms`, it resends at the same RTO. Doubling exists to shed
+        // load from a congested path, and a stream with almost nothing in
+        // flight has none to shed; what doubling does to it is turn a 2 s
+        // outage into a 4 s one, because the resend that would cross the
+        // healed path is the one the backoff postponed (field, 2026-11-12: an
+        // SSH session over a carrier that failed over in 2.3 s resumed at
+        // 15 x RTO, 3.5-4.6 s). Past the window, and for anything with more
+        // in flight, RFC 6298 (5.5) applies as before.
+        let linear = thin && self.timed_out_ms < self.linear_ms;
+        self.timed_out_ms = self.timed_out_ms.saturating_add(self.rto);
+        if !linear {
+            // RFC 6298 (5.5) The host MUST set RTO <- RTO * 2 ("back off the timer").  The
+            // maximum value discussed in (2.5) above may be used to provide
+            // an upper bound to this doubling operation.
+            self.rto = (self.rto * 2).min(RTTE_MAX_RTO);
+            tcp_trace!("rtte: doubling rto to {:?}", self.rto);
+        }
 
         // RFC 6298: a TCP implementation MAY clear SRTT and RTTVAR after
         // backing off the timer multiple times as it is likely that the current
@@ -928,6 +955,16 @@ impl<'a> Socket<'a> {
         self.rtte.min_rto = (min.total_millis() as u32).clamp(1, RTTE_MAX_RTO);
     }
 
+    /// MESHHARBOR PATCH: for the first `window` of an outage, let a thin
+    /// stream's timeouts (less than four segments' worth in flight) resend at
+    /// the same RTO instead of doubling it: Linux's
+    /// `tcp_thin_linear_timeouts`, bounded by time where Linux counts six.
+    /// Zero (the default) keeps RFC 6298's backoff on every timeout. Survives
+    /// a reset.
+    pub fn set_linear_timeouts(&mut self, window: Duration) {
+        self.rtte.linear_ms = window.total_millis().min(RTTE_MAX_RTO as u64) as u32;
+    }
+
     /// MESHHARBOR PATCH: whether SACK recovery applies to this connection.
     fn sack_on(&self) -> bool {
         self.sack_recovery && self.remote_has_sack
@@ -1235,6 +1272,7 @@ impl<'a> Socket<'a> {
         // MESHHARBOR PATCH: the RTO floor is configuration, not connection state.
         self.rtte = RttEstimator {
             min_rto: self.rtte.min_rto,
+            linear_ms: self.rtte.linear_ms,
             ..RttEstimator::default()
         };
         self.assembler = Assembler::new();
@@ -2801,6 +2839,10 @@ impl<'a> Socket<'a> {
             // three duplicate ACKs (see `RttEstimator::on_fast_retransmit`).
             let timed_out = matches!(self.timer, Timer::Retransmit { .. });
 
+            // MESHHARBOR PATCH: a thin stream (see `set_linear_timeouts`),
+            // judged on what was in flight when the timer expired.
+            let thin = self.remote_last_seq - self.local_seq_no < 4 * self.remote_mss;
+
             // Rewind "last sequence number sent", as if we never
             // had sent them. This will cause all data in the queue
             // to be sent again.
@@ -2817,7 +2859,7 @@ impl<'a> Socket<'a> {
 
             // Inform RTTE, so that it can avoid bogus measurements.
             if timed_out {
-                self.rtte.on_retransmit();
+                self.rtte.on_retransmit(thin);
             } else {
                 self.rtte.on_fast_retransmit();
             }
@@ -9499,8 +9541,81 @@ mod test {
         }
         assert_eq!(r.retransmission_timeout(), Duration::from_millis(6000));
         assert!(r.have_measurement, "three loss events keep SRTT");
-        r.on_retransmit();
+        r.on_retransmit(true);
         assert_eq!(r.retransmission_timeout(), Duration::from_millis(12000));
+    }
+
+    /// MESHHARBOR PATCH: a thin stream's timeouts keep the RTO while the
+    /// expired timers add up to less than `linear_ms`; after that, without
+    /// it, and for a stream that is not thin, every timeout doubles it. A new
+    /// RTT sample starts the window again.
+    #[test]
+    fn test_rtt_estimator_linear_timeouts_for_a_thin_stream() {
+        let mut r = RttEstimator {
+            linear_ms: 12_000,
+            ..RttEstimator::default()
+        };
+        r.sample(2000);
+        assert_eq!(r.retransmission_timeout(), Duration::from_millis(6000));
+        r.on_retransmit(true);
+        r.on_retransmit(true);
+        assert_eq!(r.retransmission_timeout(), Duration::from_millis(6000));
+        r.on_retransmit(true);
+        assert_eq!(r.retransmission_timeout(), Duration::from_millis(12000));
+        r.sample(2000);
+        r.on_retransmit(true);
+        assert_eq!(
+            r.retransmission_timeout(),
+            Duration::from_millis(6000),
+            "a new sample restores the window"
+        );
+
+        let mut bulk = RttEstimator {
+            linear_ms: 12_000,
+            ..RttEstimator::default()
+        };
+        bulk.sample(2000);
+        bulk.on_retransmit(false);
+        assert_eq!(bulk.retransmission_timeout(), Duration::from_millis(12000));
+
+        let mut stock = RttEstimator::default();
+        stock.sample(2000);
+        stock.on_retransmit(true);
+        assert_eq!(stock.retransmission_timeout(), Duration::from_millis(12000));
+    }
+
+    /// MESHHARBOR PATCH: end to end on a socket: with a linear window of two
+    /// RTOs a thin stream resends at RTO, 2 x RTO and 3 x RTO, then backs off.
+    #[test]
+    fn test_retransmit_linear_then_exponential_backoff() {
+        let mut s = socket_established();
+        let window = s.rtte.retransmission_timeout() * 2;
+        s.set_linear_timeouts(window);
+        s.send_slice(b"abcdef").unwrap();
+        recv!(s, time 0, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"abcdef"[..],
+            ..RECV_TEMPL
+        }));
+        let rto = s.rtte.retransmission_timeout().total_millis() as i64;
+        for expiry in [rto, 2 * rto, 3 * rto] {
+            recv_nothing!(s, time expiry - 1);
+            recv!(s, time expiry, Ok(TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1),
+                payload:    &b"abcdef"[..],
+                ..RECV_TEMPL
+            }));
+        }
+        // The third expiry was past the window: the next one is 2 x RTO on.
+        recv_nothing!(s, time 5 * rto - 1);
+        recv!(s, time 5 * rto, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"abcdef"[..],
+            ..RECV_TEMPL
+        }));
     }
 
     /// MESHHARBOR PATCH: `set_min_rto` lowers the floor under a computed RTO,
