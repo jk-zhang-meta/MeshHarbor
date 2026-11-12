@@ -74,6 +74,7 @@ pub mod on_demand;
 /// holds session state.
 pub mod orgrelay;
 pub(crate) mod path;
+pub(crate) mod path_quality;
 /// FR-97 P1b — a Mac serves as an exit or subnet router through pf.
 pub(crate) mod pf;
 /// MeshHarbor §6 item 5 — UDP port mapping on the local gateway (PCP, then

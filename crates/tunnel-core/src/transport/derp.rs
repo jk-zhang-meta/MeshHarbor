@@ -100,6 +100,31 @@ fn is_follow_control(payload: &[u8]) -> bool {
         && payload[9..16] == [0; 7]
 }
 
+/// A path-quality echo: a disco ping or pong (`overlay::disco`, 85 bytes,
+/// kinds 1 and 2) carried as a [`STANDBY_MAGIC`] payload. It measures the
+/// pair's relay path while the pair itself rides a direct carrier, and it
+/// travels as a standby copy because that is the one `/derp` payload a
+/// receiver can be sent without being told to follow its peer onto DERP: a
+/// receiver that predates the echo hands it to its standby sink, where
+/// anything that is not a WireGuard data datagram is dropped unread.
+fn is_path_echo(standby_payload: &[u8]) -> bool {
+    standby_payload.len() == 85
+        && standby_payload.starts_with(b"RMDISCO1")
+        && matches!(standby_payload[8], 1 | 2)
+}
+
+/// One path-quality echo as the mux received it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathEcho {
+    /// The peer that sent it, as the relay stamped it.
+    pub src: DerpPubKey,
+    /// The disco frame, magic stripped.
+    pub frame: Vec<u8>,
+    /// When it arrived here. Stamped on the receive path because the round
+    /// trip is measured to this instant, not to whenever the sink is read.
+    pub at: Instant,
+}
+
 /// #27/#28 — something happened on this mux that the RUNTIME must react to.
 /// One channel rather than one per signal, so a mux acquired later (the
 /// coordinator arms each as it arrives) can never be half-wired.
@@ -426,6 +451,10 @@ pub struct DerpMux {
     dropped_hive: Arc<std::sync::atomic::AtomicU64>,
     /// F2 — STANDBY copies with no standby sink to take them.
     dropped_standby: Arc<std::sync::atomic::AtomicU64>,
+    /// Where path-quality echoes ([`is_path_echo`]) go, with the peer that
+    /// sent them. `None` until the runtime arms it; echoes then stay
+    /// ordinary standby payloads, as on a build without the feature.
+    echo_tx: Mutex<Option<mpsc::Sender<PathEcho>>>,
 }
 
 impl DerpMux {
@@ -447,8 +476,16 @@ impl DerpMux {
             dropped_stale: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             dropped_hive: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             dropped_standby: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            echo_tx: Mutex::new(None),
         });
         (mux, ws_out_rx)
+    }
+
+    /// Install (`Some`) or remove (`None`) the sink for path-quality echoes.
+    /// A setter for the reason [`Self::set_event_sink`] is one: the runtime
+    /// wants a single channel, and re-arming replaces the sender.
+    pub fn set_echo_sink(&self, tx: Option<mpsc::Sender<PathEcho>>) {
+        *self.echo_tx.lock().unwrap() = tx;
     }
 
     /// #27/#28 — install the runtime's [`MuxEvent`] sink. A SETTER rather than
@@ -672,6 +709,19 @@ impl DerpMux {
         // else. A miss is counted, never `Unrouted`: its sender is still on
         // its direct carrier, merely suspecting it, so #27 must not follow.
         if let Some(rest) = payload.strip_prefix(STANDBY_MAGIC.as_slice()) {
+            // A path-quality echo is the runtime's, not the WG session's. A
+            // full sink drops it: an echo is a sample, and a lost one reads
+            // as loss on a relay path that is not keeping up.
+            if is_path_echo(rest)
+                && let Some(tx) = self.echo_tx.lock().unwrap().clone()
+            {
+                let _ = tx.try_send(PathEcho {
+                    src,
+                    frame: rest.to_vec(),
+                    at: Instant::now(),
+                });
+                return;
+            }
             let tx = {
                 let peers = self.peers.lock().unwrap();
                 peers.get(&src).and_then(|r| r.standby.clone())
@@ -1153,6 +1203,62 @@ mod tests {
         let (n, _) = wg_conn.recv_from(&mut buf).await.unwrap();
         assert_eq!(&buf[..n], &data[..], "a carrier conn takes its own frames");
         assert!(sink.try_recv().is_err());
+    }
+
+    /// A path-quality echo rides as a standby payload. With the echo sink
+    /// armed it goes there, with its sender, and nowhere else. Without one
+    /// (a build or a host with the feature off) it stays an ordinary standby
+    /// payload, which the WG session's sink drops unread. Either way it never
+    /// reports `Unrouted`: the peer that sent it is on its direct carrier,
+    /// and following it onto DERP is the flap this must not cause.
+    #[tokio::test]
+    async fn a_path_echo_reaches_only_the_echo_sink_and_never_reports_unrouted() {
+        let (mux, _out_rx) = DerpMux::new(pk(0x01));
+        let (ev_tx, mut ev_rx) = mpsc::channel(DerpMux::EVENT_SINK_DEPTH);
+        mux.set_event_sink(ev_tx);
+        let peer = pk(0x02);
+        let mut echo = vec![0u8; 85];
+        echo[..8].copy_from_slice(b"RMDISCO1");
+        echo[8] = 1; // ping
+        let mut copy = STANDBY_MAGIC.to_vec();
+        copy.extend_from_slice(&echo);
+
+        // No echo sink: an ordinary standby payload.
+        let mut standby = mux.standby_route(peer);
+        mux.deliver(&frame(peer, &copy));
+        assert_eq!(standby.recv().await.unwrap(), echo);
+
+        let (echo_tx, mut echo_rx) = mpsc::channel(8);
+        mux.set_echo_sink(Some(echo_tx));
+        mux.deliver(&frame(peer, &copy));
+        let got: PathEcho = echo_rx.recv().await.unwrap();
+        assert_eq!((got.src, &got.frame), (peer, &echo));
+        assert!(
+            standby.try_recv().is_err(),
+            "the WG session never sees an echo"
+        );
+        // A pong is an echo too; a WG data copy and a follow-control frame
+        // (kinds 3..=6, 160 bytes) are not.
+        echo[8] = 2;
+        let mut pong = STANDBY_MAGIC.to_vec();
+        pong.extend_from_slice(&echo);
+        mux.deliver(&frame(peer, &pong));
+        assert_eq!(echo_rx.recv().await.unwrap().frame[8], 2);
+        let mut data = STANDBY_MAGIC.to_vec();
+        data.extend_from_slice(&[4, 0, 0, 0, 9, 9]);
+        mux.deliver(&frame(peer, &data));
+        assert_eq!(standby.recv().await.unwrap(), [4, 0, 0, 0, 9, 9]);
+        echo[8] = 3;
+        let mut other = STANDBY_MAGIC.to_vec();
+        other.extend_from_slice(&echo);
+        mux.deliver(&frame(peer, &other));
+        assert!(echo_rx.try_recv().is_err(), "kind 3 is not an echo");
+        assert_eq!(standby.recv().await.unwrap()[8], 3);
+        // A peer with no route at all: still no `Unrouted`.
+        mux.set_echo_sink(None);
+        mux.deliver(&frame(pk(0x03), &copy));
+        assert_eq!(mux.standby_drops(), 1);
+        assert!(ev_rx.try_recv().is_err(), "an echo never reports Unrouted");
     }
 
     #[tokio::test]

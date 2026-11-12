@@ -206,6 +206,35 @@ pub async fn relay_overlay_msg_from_node(
             handle_org_relay_loss(state, ident, peer_node_id, vni, packets, lost).await;
             None
         }
+        ClientMsg::OverlayPathQuality {
+            peer_node_id,
+            window_ms,
+            direct_sent,
+            direct_lost,
+            direct_rtt_ms,
+            relay_sent,
+            relay_lost,
+            relay_rtt_ms,
+            on_relay,
+        } => {
+            crate::path_quality::handle(
+                state,
+                ident,
+                peer_node_id,
+                crate::path_quality::Report {
+                    window_ms,
+                    direct_sent,
+                    direct_lost,
+                    direct_rtt_ms,
+                    relay_sent,
+                    relay_lost,
+                    relay_rtt_ms,
+                    on_relay,
+                },
+            )
+            .await;
+            None
+        }
         ClientMsg::OverlayPathTrialRequest {
             peer_node_id,
             request_id,
@@ -982,6 +1011,7 @@ async fn handle_overlay_join(
                 cidrs: join_blocks.cidrs().to_vec(),
                 org_relay_fallback_v1: true,
                 org_relay_loss_v1: true,
+                path_quality_v1: state.path_quality.mode() != crate::path_quality::Mode::Off,
                 mtu: network.mtu,
                 magic_domain,
                 nameservers,
@@ -1038,7 +1068,7 @@ async fn handle_overlay_join(
         let (upserts, removes) =
             match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, true, zones) {
                 Some(mut u) => {
-                    stamp_verdict(&mut u, verdict);
+                    stamp_row(state, &mut u, peer, &self_node, verdict);
                     (vec![u], vec![])
                 }
                 None => (vec![], vec![self_node.id.unwrap_or_default()]),
@@ -1282,6 +1312,7 @@ async fn try_complete_join_netmap(
                 cidrs: join_blocks.cidrs().to_vec(),
                 org_relay_fallback_v1: true,
                 org_relay_loss_v1: true,
+                path_quality_v1: state.path_quality.mode() != crate::path_quality::Mode::Off,
                 mtu: network.mtu,
                 magic_domain,
                 nameservers,
@@ -1323,7 +1354,7 @@ async fn try_complete_join_netmap(
             zones,
         ) {
             Some(mut u) => {
-                stamp_verdict(&mut u, verdict);
+                stamp_row(state, &mut u, peer, &self_node, verdict);
                 (vec![u], vec![])
             }
             None => (vec![], vec![self_node.id.unwrap_or_default()]),
@@ -1556,6 +1587,7 @@ pub async fn handle_overlay_leave(state: &NetworkState, ident: NodeIdentity) {
     };
     let Some(self_id) = self_node.id else { return };
     state.admission_nodes.remove(&self_id);
+    state.path_quality.forget_node(self_id);
     // FR-19 — a party that leaves takes its relay sessions with it: the
     // other member and the relay hear the revoke now rather than at the
     // session's absolute lifetime.
@@ -3038,7 +3070,7 @@ async fn fan_upsert_shaped(
         let (upserts, removes) =
             match shape_peer(&acl, &src, node, node_src.as_ref(), reachable, zones) {
                 Some(mut u) => {
-                    stamp_verdict(&mut u, verdict);
+                    stamp_row(state, &mut u, peer, node, verdict);
                     (vec![u], vec![])
                 }
                 None => (vec![], vec![node.id.unwrap_or_default()]),
@@ -3077,7 +3109,7 @@ async fn fan_upsert_shaped(
                 is_reachable(&peer_reach, peer),
                 back,
             ) {
-                stamp_verdict(&mut r, rev_verdict);
+                stamp_row(state, &mut r, node, peer, rev_verdict);
                 reverse_rows.push(r);
             } else if iso == business_isolation::Mode::Enforce
                 && let Some(pid) = peer.id
@@ -3118,6 +3150,34 @@ async fn fan_upsert_shaped(
 /// verdict for its outgoing edge — the same two halves
 /// [`fan_upsert_shaped`] maintains on ordinary changes.
 async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNode) {
+    fan_pair_rows(state, a, b, None).await;
+}
+
+/// Push the pair's prefer-relay verdict (`path_quality`) to both ends, now:
+/// each end receives the other's row with the verdict's remaining lifetime,
+/// or with `prefer_relay_ms: Some(0)` when `withdraw` takes it back. `a` is
+/// the member whose report decided it, on a live socket by construction.
+///
+/// Unlike the relay-tier stamp this does not need
+/// `supports_server_relay_strategy`: a member that reports path quality
+/// reads the field, and one that does not ignores it.
+pub(crate) async fn fan_pair_prefer_relay(
+    state: &NetworkState,
+    a: &OverlayNode,
+    b: &OverlayNode,
+    withdraw: bool,
+) {
+    fan_pair_rows(state, a, b, Some(withdraw)).await;
+}
+
+/// The two halves of a pair fan: `prefer` = `None` for a relay-tier re-stamp
+/// (D2), `Some(withdraw)` for a prefer-relay verdict.
+async fn fan_pair_rows(
+    state: &NetworkState,
+    a: &OverlayNode,
+    b: &OverlayNode,
+    prefer: Option<bool>,
+) {
     let acl = load_acl(state, a.tenant_id).await;
     let auth_revision = state
         .overlay_networks
@@ -3148,7 +3208,7 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
         );
         return;
     }
-    if a.supports_server_relay_strategy
+    if (prefer.is_some() || a.supports_server_relay_strategy)
         && let Some(mut row) = shape_peer(
             &acl,
             &a_src,
@@ -3165,7 +3225,8 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             ),
         )
     {
-        stamp_verdict(&mut row, server_relay_verdict(state, a, b));
+        stamp_row(state, &mut row, a, b, server_relay_verdict(state, a, b));
+        withdraw_prefer_relay(&mut row, prefer);
         send_to_node(
             state,
             a,
@@ -3178,7 +3239,7 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
         )
         .await;
     }
-    if b.supports_server_relay_strategy
+    if (prefer.is_some() || b.supports_server_relay_strategy)
         && let Some(mut row) = shape_peer(
             &acl,
             &b_src,
@@ -3195,7 +3256,8 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             ),
         )
     {
-        stamp_verdict(&mut row, server_relay_verdict(state, b, a));
+        stamp_row(state, &mut row, b, a, server_relay_verdict(state, b, a));
+        withdraw_prefer_relay(&mut row, prefer);
         send_to_node(
             state,
             b,
@@ -3209,8 +3271,8 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
         .await;
     }
     debug!(
-        a = %a.name, b = %b.name, epoch,
-        "overlay: pair verdicts re-stamped at escalation (D2)"
+        a = %a.name, b = %b.name, epoch, ?prefer,
+        "overlay: pair verdicts re-stamped (D2, or a prefer-relay verdict)"
     );
 }
 
@@ -4141,7 +4203,13 @@ pub async fn shape_full_netmap_with_lines(
                 }
             }
             // U2 — the recipient's full-netmap edge is `self_node → n`.
-            stamp_verdict(&mut p, server_relay_verdict(state, self_node, n));
+            stamp_row(
+                state,
+                &mut p,
+                self_node,
+                n,
+                server_relay_verdict(state, self_node, n),
+            );
             peers.push(p);
         }
     }
@@ -4228,6 +4296,42 @@ fn routes_outside_their_zone(peer: &OverlayNode, zones: Zones) -> Option<Overlay
 fn stamp_verdict(p: &mut NetmapPeer, verdict: Option<RelayStrategyWire>) {
     if !p.backbone_only {
         p.relay_strategy = verdict;
+    }
+}
+
+/// Stamp everything the server decides per edge `recipient → peer` onto a
+/// shaped row: the relay-tier verdict (U2) and, while one stands, the
+/// prefer-relay verdict's remaining lifetime (`path_quality`). Every row a
+/// member receives goes through here, so a row built for any other reason
+/// (an endpoint trickle, an ACL change) carries the standing verdict too and
+/// re-anchors the member's hold instead of leaving it to run out.
+fn stamp_row(
+    state: &NetworkState,
+    p: &mut NetmapPeer,
+    recipient: &OverlayNode,
+    peer: &OverlayNode,
+    verdict: Option<RelayStrategyWire>,
+) {
+    stamp_verdict(p, verdict);
+    stamp_prefer_relay(
+        p,
+        match (recipient.id, peer.id) {
+            (Some(a), Some(b)) => state.path_quality.standing_ms(a, b),
+            _ => None,
+        },
+    );
+}
+
+/// A line peer rides its line alone: it is never told to prefer a relay.
+fn stamp_prefer_relay(p: &mut NetmapPeer, standing_ms: Option<u32>) {
+    p.prefer_relay_ms = standing_ms.filter(|_| !p.backbone_only);
+}
+
+/// A withdrawal is said out loud (`Some(0)`): an absent field says nothing,
+/// and the member would hold on until its own lifetime ran out.
+fn withdraw_prefer_relay(p: &mut NetmapPeer, prefer: Option<bool>) {
+    if prefer == Some(true) && !p.backbone_only {
+        p.prefer_relay_ms = Some(0);
     }
 }
 
@@ -4400,6 +4504,7 @@ fn to_netmap_peer(node: &OverlayNode, reachable: bool) -> NetmapPeer {
         // floored on DERP at birth when BOTH ends run the permanent mux.
         supports_derp_floor: node.supports_derp_floor,
         relay_strategy: None,
+        prefer_relay_ms: None,
         backbone_only: false,
         // Data-probe — echo the peer's overlay-native-echo capability so
         // probers pick the engine echo over ICMP for capable peers.
@@ -4925,6 +5030,35 @@ mod tests {
         let mut line = line_only(to_netmap_peer(&n, true));
         stamp_verdict(&mut line, Some(RelayStrategyWire::Derp));
         assert_eq!(line.relay_strategy, None);
+    }
+
+    /// The prefer-relay verdict rides the row as a remaining lifetime while
+    /// it stands, says nothing when none does, and is withdrawn out loud. A
+    /// line peer is told none of it: nothing but its line may carry it.
+    #[test]
+    fn a_row_carries_the_standing_prefer_relay_verdict_and_its_withdrawal() {
+        let n = node("member", "100.64.0.15");
+        let mut row = to_netmap_peer(&n, true);
+        assert_eq!(row.prefer_relay_ms, None, "the plain shape says nothing");
+        stamp_prefer_relay(&mut row, Some(42_000));
+        assert_eq!(row.prefer_relay_ms, Some(42_000));
+        // A later row with no verdict standing clears the stamp on THAT row;
+        // the member then lets its hold run out.
+        stamp_prefer_relay(&mut row, None);
+        assert_eq!(row.prefer_relay_ms, None);
+        // A relay-tier re-stamp (`None`) and a renewal (`Some(false)`) leave
+        // the lifetime alone; a withdrawal overrides it with zero.
+        stamp_prefer_relay(&mut row, Some(42_000));
+        withdraw_prefer_relay(&mut row, None);
+        withdraw_prefer_relay(&mut row, Some(false));
+        assert_eq!(row.prefer_relay_ms, Some(42_000));
+        withdraw_prefer_relay(&mut row, Some(true));
+        assert_eq!(row.prefer_relay_ms, Some(0));
+
+        let mut line = line_only(to_netmap_peer(&n, true));
+        stamp_prefer_relay(&mut line, Some(42_000));
+        withdraw_prefer_relay(&mut line, Some(true));
+        assert_eq!(line.prefer_relay_ms, None);
     }
 
     #[test]

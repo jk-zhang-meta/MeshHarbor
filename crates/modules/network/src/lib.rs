@@ -63,6 +63,7 @@ pub mod native_ssh_authorization;
 pub mod net_inventory;
 pub mod org_relay;
 pub mod overlay;
+pub mod path_quality;
 pub mod relay_allowance;
 pub mod shared_ssh;
 pub mod ssh_grant_acks;
@@ -144,6 +145,9 @@ pub struct NetworkState {
     /// table is the truth a restart falls back on (sessions then run out
     /// their `max_lifetime`).
     pub org_relay: Arc<org_relay::OrgRelayState>,
+    /// The prefer-relay verdict per pair, judged from the members' path
+    /// quality reports. Pod-local for the reason `relay_pair_churn` is.
+    pub path_quality: Arc<path_quality::PathQualityState>,
     /// #1186 — the sender the host's Redis ctrl subscriber feeds cross-pod
     /// `overlay_removes` envelopes into; the applier draining it is spawned
     /// by [`Module::init`]. Bounded + `try_send` on the feeding side: losing
@@ -330,6 +334,7 @@ impl Module for NetworkState {
             relay_pair_churn: Arc::new(DashMap::new()),
             node_instances: Arc::new(DashMap::new()),
             org_relay: Arc::new(org_relay::OrgRelayState::new()),
+            path_quality: Arc::new(path_quality::PathQualityState::default()),
             overlay_ctrl_tx,
             ssh_audit: Arc::new(SshAuditDao::new(db)),
             ssh_activity: Arc::new(SshActivityDao::new(db)),

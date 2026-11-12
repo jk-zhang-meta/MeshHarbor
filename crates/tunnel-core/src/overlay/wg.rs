@@ -7890,6 +7890,7 @@ mod tests {
             caps: None,
             supports_overlay_echo: false,
             relay_strategy: None,
+            prefer_relay_ms: None,
             routes: vec![],
             agent_id: None,
             ingress_rules: None,

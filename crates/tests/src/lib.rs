@@ -204,6 +204,10 @@ mod overlay_route_offer_tests;
 mod overlay_tests;
 #[cfg(test)]
 mod pagination_tests;
+/// Path quality: both members' reports stamp a prefer-relay verdict on both
+/// netmap rows, every later row carries it, and it is withdrawn out loud.
+#[cfg(test)]
+mod path_quality_tests;
 #[cfg(test)]
 mod pdf_export_tests;
 /// FR-100 P1a — a device's identity key as the fleet stores and shows it, and
