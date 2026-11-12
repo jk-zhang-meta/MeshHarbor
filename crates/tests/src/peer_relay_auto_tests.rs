@@ -133,7 +133,7 @@ pub(crate) async fn assert_observed(app: &TestApp, agent_id: &str, from: Option<
         filter.insert("client_ip", ip);
     }
     let mut row = None;
-    for _ in 0..30 {
+    for _ in 0..100 {
         row = rows.find_one(filter.clone()).await.unwrap();
         if row.is_some() {
             break;

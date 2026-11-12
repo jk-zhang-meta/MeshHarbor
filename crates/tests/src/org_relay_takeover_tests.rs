@@ -14,11 +14,13 @@
 use crate::agent_presence_tests::enroll;
 use crate::fixtures::seed::SeededTenant;
 use crate::fixtures::test_app::TestApp;
-use crate::peer_relay_auto_tests::{US_A, US_B, approved_user, fixture_mmdb};
+use crate::peer_relay_auto_tests::{US_A, US_B, approved_user, assert_observed, fixture_mmdb};
 use crate::peer_relay_mint_tests::{Ws, connect_from, join, node_id, put, recv_t, set_mode};
 use bson::oid::ObjectId;
 use futures::SinkExt;
-use meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture;
+use meshharbor_mod_network::org_relay::candidate_test_support::{
+    eligibility_generation, record_member_probe_fixture,
+};
 use serde_json::json;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
@@ -81,8 +83,8 @@ impl Rig {
             member,
             rooms: Vec::new(),
         };
-        let (_, a_tok) = enroll(&app, &seeded, &format!("{slug}-a")).await;
-        let (_, b_tok) = enroll(&app, &seeded, &format!("{slug}-b")).await;
+        let (a_agent, a_tok) = enroll(&app, &seeded, &format!("{slug}-a")).await;
+        let (b_agent, b_tok) = enroll(&app, &seeded, &format!("{slug}-b")).await;
         let (r1_agent, r1_tok) = enroll(&app, &seeded, &format!("{slug}-r1")).await;
         let (r2_agent, r2_tok) = enroll(&app, &seeded, &format!("{slug}-r2")).await;
         let mut a = connect_from(&app, &a_tok, &[], Some(US_A)).await;
@@ -90,6 +92,14 @@ impl Rig {
         let mut r1 = connect_from(&app, &r1_tok, &["relay-server"], Some(US_R1)).await;
         let mut r2 = connect_from(&app, &r2_tok, &["relay-server"], Some(US_R2)).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
+        for (agent, ip) in [
+            (&a_agent, Some(US_A)),
+            (&b_agent, Some(US_B)),
+            (&r1_agent, Some(US_R1)),
+            (&r2_agent, Some(US_R2)),
+        ] {
+            assert_observed(&app, agent, ip).await;
+        }
         join(&mut r1, 3, Some(true), "8.8.8.8:41641").await;
         join(&mut r2, 4, Some(true), "9.9.9.9:41641").await;
         join(&mut a, 1, Some(true), "203.0.113.10:41641").await;
@@ -264,5 +274,74 @@ async fn a_loss_pinned_relay_serves_its_pair_once_it_is_the_only_one_left() {
         rig.minted_relay(Duration::from_secs(5)).await,
         Some(rig.r1_node),
         "the only relay left serves the pair again after the sole-retry wait"
+    );
+}
+
+/// Regression for V0037 §2.2: every `TestApp` shares one local Redis pub/sub
+/// channel (`rc_ctrl`). An `overlay_policy_sync` published without `"db"`
+/// (from `business_authority` or `server_link`) bypasses `apply_policy_sync_ctrl`'s
+/// DB filter on sibling `TestApp`s and calls `invalidate_eligibility()`,
+/// aborting concurrent `maybe_mint_fallback` calls with `None` under load.
+#[tokio::test]
+async fn foreign_db_authority_sync_does_not_bump_eligibility_generation() {
+    let app_a = TestApp::spawn().await;
+    assert!(
+        app_a.state.redis_pubsub.is_some(),
+        "test requires local Redis pub/sub to exercise cross-DB rc_ctrl isolation"
+    );
+    let owner_id = ObjectId::new();
+    let app_b = TestApp::spawn_with_settings(move |s| {
+        s.auth.account_approval.enabled = true;
+        s.auth.account_approval.owner_user_id = Some(owner_id.to_hex());
+    })
+    .await;
+    assert_ne!(app_a.db.name(), app_b.db.name());
+
+    // Give both Redis subscribers a moment to finish subscribing.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let before = eligibility_generation(app_a.state.network());
+
+    let owner_b = approved_user(&app_b, "orgtk_xdb_owner", Some(owner_id)).await;
+    let admin_b = approved_user(&app_b, "orgtk_xdb_admin", None).await;
+    let member_b = approved_user(&app_b, "orgtk_xdb_member", None).await;
+    let tid_b = app_b
+        .state
+        .tenants
+        .create(
+            "XDB Corp".into(),
+            "orgtk-xdb".into(),
+            ObjectId::parse_str(&admin_b.id).unwrap(),
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap()
+        .to_hex();
+    let seeded_b = SeededTenant {
+        tenant_id: tid_b,
+        tenant_slug: "orgtk-xdb".into(),
+        admin: admin_b,
+        member: member_b,
+        rooms: Vec::new(),
+    };
+    let (agent_b, _) = enroll(&app_b, &seeded_b, "orgtk-xdb-r1").await;
+    let path = format!(
+        "/api/admin/business-authority/agent/{}/{}",
+        seeded_b.tenant_id, agent_b
+    );
+    let (s, v) = put(
+        &app_b,
+        &path,
+        &owner_b.access_token,
+        json!({ "role": "server", "reason": "cross-db check" }),
+    )
+    .await;
+    assert_eq!(s, 200, "set server role on foreign db: {v}");
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        eligibility_generation(app_a.state.network()),
+        before,
+        "foreign-DB overlay_policy_sync must not bump app_a's eligibility_generation"
     );
 }

@@ -212,6 +212,10 @@ pub mod candidate_test_support {
                 .record_probe(member, *relay, endpoint.clone(), *reachable, *rtt)
         })
     }
+    /// Pod-wide eligibility generation (`maybe_mint_fallback` aborts when bumped mid-flight).
+    pub fn eligibility_generation(state: &NetworkState) -> u64 {
+        state.org_relay.eligibility_generation()
+    }
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     use tokio::sync::oneshot;

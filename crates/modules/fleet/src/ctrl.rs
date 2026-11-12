@@ -31,6 +31,10 @@ pub async fn publish_rc_ctrl(state: &Core, evt: &str, mut fields: serde_json::Va
     if let Some(obj) = fields.as_object_mut() {
         obj.insert("class".into(), serde_json::json!("rc"));
         obj.insert("evt".into(), serde_json::json!(evt));
+        // ponytail: stamp the publisher's DB once here so no caller can omit it
+        // and contaminate sibling DBs sharing one Redis pub/sub channel.
+        obj.entry("db")
+            .or_insert_with(|| serde_json::json!(state.db.name()));
     }
     let env = serde_json::json!({ "origin": redis.instance_id(), "ctrl": fields });
     if let Err(e) = redis.publish(&env.to_string()).await {
