@@ -2780,6 +2780,40 @@ pub enum ClientMsg {
         lost: u64,
     },
 
+    /// Path quality report: one closed window of this member's own echo
+    /// probes toward `peer_node_id`, over the pair's direct path and over its
+    /// relay path. Counts and medians only; the member never says which path
+    /// is better. The server judges a run of these reports and, when the relay
+    /// is clearly better, stamps [`NetmapPeer::prefer_relay_ms`] on both ends.
+    ///
+    /// Sent only after the server's [`OverlayNetworkInfo::path_quality_v1`]:
+    /// an older server ignores an unknown tag on the agent socket but answers
+    /// it with a `bad_request` error on the tunnel-client socket.
+    #[serde(rename = "rc:overlay.path_quality")]
+    OverlayPathQuality {
+        #[serde(with = "oid_hex")]
+        peer_node_id: ObjectId,
+        /// How long the window is, in ms.
+        window_ms: u32,
+        /// Direct-path probes sent in the window, and how many of them went
+        /// unanswered. A probe is a round trip, so loss in either direction
+        /// counts.
+        direct_sent: u32,
+        direct_lost: u32,
+        /// Median round trip of the answered direct probes; absent when none
+        /// was answered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direct_rtt_ms: Option<u32>,
+        /// The same three readings for the relay path.
+        relay_sent: u32,
+        relay_lost: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_rtt_ms: Option<u32>,
+        /// What carries the reporter's side of the pair now.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        on_relay: bool,
+    },
+
     /// C4 stage 1 — pair-less coturn credentials for the node's standing
     /// WARM allocation (one TURN/UDP allocation established while UDP
     /// works and kept alive so corp-VPN flow-grandfathering preserves a
@@ -3067,6 +3101,7 @@ impl ClientMsg {
                 "rc:overlay.org_relay_fallback_request"
             }
             ClientMsg::OverlayOrgRelayLoss { .. } => "rc:overlay.org_relay_loss",
+            ClientMsg::OverlayPathQuality { .. } => "rc:overlay.path_quality",
             ClientMsg::OverlayPathTrialRequest { .. } => "rc:overlay.path_trial_request",
             ClientMsg::OverlayPathTrialReady { .. } => "rc:overlay.path_trial_ready",
             ClientMsg::OverlayPathTrialCommitted { .. } => "rc:overlay.path_trial_committed",
@@ -3163,6 +3198,7 @@ impl ClientMsg {
             | ClientMsg::OverlayOrgRelayDiscover { .. }
             | ClientMsg::OverlayOrgRelayFallbackRequest { .. }
             | ClientMsg::OverlayOrgRelayLoss { .. }
+            | ClientMsg::OverlayPathQuality { .. }
             | ClientMsg::OverlayPathTrialRequest { .. }
             | ClientMsg::OverlayPathTrialReady { .. }
             | ClientMsg::OverlayPathTrialCommitted { .. }
@@ -3302,6 +3338,7 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:overlay.org_relay_discover", Owner::Network),
     ("rc:overlay.org_relay_fallback_request", Owner::Network),
     ("rc:overlay.org_relay_loss", Owner::Network),
+    ("rc:overlay.path_quality", Owner::Network),
     ("rc:overlay.path_trial_request", Owner::Network),
     ("rc:overlay.path_trial_ready", Owner::Network),
     ("rc:overlay.path_trial_committed", Owner::Network),
@@ -6456,6 +6493,21 @@ pub struct NetmapPeer {
         skip_serializing_if = "Option::is_none"
     )]
     pub relay_strategy: Option<RelayStrategyWire>,
+    /// The server's time-limited verdict that this pair's relay path is
+    /// clearly better than its direct path: ride the relay for this many ms
+    /// from receipt, after which the direct tiers are eligible again. The
+    /// server decides it from both members' [`ClientMsg::OverlayPathQuality`]
+    /// reports and renews it only while fresh reports still support it, so it
+    /// cannot outlive the measurements behind it.
+    ///
+    /// A remaining lifetime, not a wall-clock deadline, because the two
+    /// clocks need not agree (the reason [`ServerMsg::OverlayForceDerp`]
+    /// carries `ttl_ms`). `Some(0)` withdraws a standing verdict at once.
+    /// Absent says nothing: a standing verdict then runs out on its own
+    /// lifetime. The member also caps the lifetime it will honor. Absent from
+    /// an older server, and an older member ignores the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_relay_ms: Option<u32>,
     /// MeshHarbor #21 — this peer is in the other business zone and an
     /// approved cross-border line connects the two: reach it ONLY through a
     /// backbone path trial over that line. It carries no endpoints, and
@@ -6528,6 +6580,13 @@ pub struct OverlayNetworkInfo {
     /// client must not send the report to them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub org_relay_loss_v1: bool,
+    /// Explicit support for the path quality report
+    /// ([`ClientMsg::OverlayPathQuality`]), and the server's wish to receive
+    /// it: `false` from an older server, and from this one while its
+    /// prefer-relay mode is off. A member measures the relay path and
+    /// reports only after a netmap said `true`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub path_quality_v1: bool,
     /// The block containing **this recipient's own** overlay address.
     ///
     /// FR-47 P5d — this used to be the network's single CIDR, and for every
@@ -11383,6 +11442,7 @@ mod tests {
         let net = OverlayNetworkInfo {
             org_relay_fallback_v1: false,
             org_relay_loss_v1: false,
+            path_quality_v1: false,
             cidr: "100.65.0.0/22".into(),
             cidrs: vec!["100.65.0.0/22".into()],
             mtu: 1280,
@@ -11447,6 +11507,7 @@ mod tests {
             network: OverlayNetworkInfo {
                 org_relay_fallback_v1: false,
                 org_relay_loss_v1: false,
+                path_quality_v1: false,
                 cidr: "100.65.8.0/22".into(),
                 cidrs: vec!["100.65.4.0/22".into(), "100.65.8.0/22".into()],
                 mtu: 1280,
@@ -12282,6 +12343,7 @@ mod tests {
             network: OverlayNetworkInfo {
                 org_relay_fallback_v1: false,
                 org_relay_loss_v1: false,
+                path_quality_v1: false,
                 cidr: "100.64.0.0/10".into(),
                 cidrs: vec![],
                 mtu: 1280,
@@ -12315,6 +12377,7 @@ mod tests {
                 supports_org_relay: false,
                 supports_overlay_echo: false,
                 relay_strategy: Some(RelayStrategyWire::SingleRelayDialer),
+                prefer_relay_ms: None,
                 routes: vec!["10.0.0.0/24".into()],
                 agent_id: Some(agent_id),
                 ingress_rules: None,
@@ -13409,6 +13472,117 @@ mod org_fallback_wire_tests {
         assert!(matches!(parsed, ClientMsg::OverlayOrgRelayLoss {
             peer_node_id, vni: 42, packets: 31_000, lost: 2_294 } if peer_node_id == id));
         assert!(matches!(parsed.namespace(), Owner::Network));
+    }
+
+    /// The path quality report and both netmap fields are additive in both
+    /// directions. An old server never says `path_quality_v1`, so a new
+    /// member never sends it the report (the tunnel-client socket answers an
+    /// unknown tag with a `bad_request`). An old member reads a netmap row
+    /// that carries `prefer_relay_ms` as if the field were not there.
+    #[test]
+    fn path_quality_wire_defaults_closed_and_its_fields_are_additive() {
+        let old = r#"{"cidr":"100.64.0.0/10","mtu":1280,"org_relay_loss_v1":true}"#;
+        let mut network: OverlayNetworkInfo = serde_json::from_str(old).unwrap();
+        assert!(!network.path_quality_v1, "an old server never said it");
+        assert!(
+            !serde_json::to_string(&network)
+                .unwrap()
+                .contains("path_quality_v1"),
+            "and a server with the mode off sends the old shape"
+        );
+        network.path_quality_v1 = true;
+        assert!(
+            serde_json::from_value::<OverlayNetworkInfo>(serde_json::to_value(network).unwrap())
+                .unwrap()
+                .path_quality_v1
+        );
+
+        // The report: a full window, and one with nothing answered.
+        let id = ObjectId::new();
+        let value = serde_json::to_value(ClientMsg::OverlayPathQuality {
+            peer_node_id: id,
+            window_ms: 10_000,
+            direct_sent: 11,
+            direct_lost: 0,
+            direct_rtt_ms: Some(960),
+            relay_sent: 11,
+            relay_lost: 1,
+            relay_rtt_ms: Some(620),
+            on_relay: false,
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"t":"rc:overlay.path_quality","peer_node_id":id.to_hex(),
+                "window_ms":10_000,"direct_sent":11,"direct_lost":0,"direct_rtt_ms":960,
+                "relay_sent":11,"relay_lost":1,"relay_rtt_ms":620})
+        );
+        let parsed: ClientMsg = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.wire_tag(), "rc:overlay.path_quality");
+        assert!(matches!(parsed.namespace(), Owner::Network));
+        let dark: ClientMsg = serde_json::from_value(serde_json::json!({
+            "t":"rc:overlay.path_quality","peer_node_id":id.to_hex(),"window_ms":10_000,
+            "direct_sent":11,"direct_lost":11,"relay_sent":0,"relay_lost":0,"on_relay":true}))
+        .unwrap();
+        assert!(matches!(
+            dark,
+            ClientMsg::OverlayPathQuality {
+                direct_rtt_ms: None,
+                relay_rtt_ms: None,
+                on_relay: true,
+                ..
+            }
+        ));
+
+        // The verdict on a netmap row.
+        let row = serde_json::json!({"node_id":id.to_hex(),"overlay_ip":"100.64.0.4",
+            "wg_public_key":"cGVlcg==","reachable":true});
+        let mut peer: NetmapPeer = serde_json::from_value(row.clone()).unwrap();
+        assert_eq!(peer.prefer_relay_ms, None, "an old server never stamps it");
+        assert!(
+            !serde_json::to_string(&peer)
+                .unwrap()
+                .contains("prefer_relay_ms"),
+            "no verdict: the row keeps the shape an old member knows"
+        );
+        peer.prefer_relay_ms = Some(60_000);
+        let stamped = serde_json::to_value(&peer).unwrap();
+        assert_eq!(stamped["prefer_relay_ms"], 60_000);
+        assert_eq!(
+            serde_json::from_value::<NetmapPeer>(stamped)
+                .unwrap()
+                .prefer_relay_ms,
+            Some(60_000)
+        );
+        // A withdrawal is zero, not absence.
+        peer.prefer_relay_ms = Some(0);
+        assert_eq!(serde_json::to_value(&peer).unwrap()["prefer_relay_ms"], 0);
+        // An old member's `NetmapPeer` has no such field. It decodes the row
+        // exactly as this struct decodes a field IT does not know.
+        let mut newer = row;
+        newer["a_field_from_a_newer_server"] = serde_json::json!(60_000);
+        assert_eq!(
+            serde_json::from_value::<NetmapPeer>(newer.clone()).unwrap(),
+            serde_json::from_value::<NetmapPeer>({
+                newer
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("a_field_from_a_newer_server");
+                newer
+            })
+            .unwrap(),
+            "an unknown row field is ignored, never a parse failure"
+        );
+        let delta: ServerMsg = serde_json::from_value(serde_json::json!({
+            "t":"rc:overlay.netmap_delta","epoch":7,"upserts":[{"node_id":id.to_hex(),
+            "overlay_ip":"100.64.0.4","wg_public_key":"cGVlcg==","reachable":true,
+            "prefer_relay_ms":0,"a_field_from_a_newer_server":true}]}))
+        .unwrap();
+        assert!(matches!(
+            delta,
+            ServerMsg::OverlayNetmapDelta { upserts, .. }
+                if upserts.len() == 1 && upserts[0].prefer_relay_ms == Some(0)
+        ));
     }
 
     #[test]

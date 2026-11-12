@@ -265,6 +265,22 @@ pub(crate) const FAST_RETURN_MAX: Duration = Duration::from_secs(300);
 /// outage ran (a 60 s ceiling left 50–60 s gaps in a 150 s outage, F0).
 pub(crate) const FAST_RETURN_BACKOFF_CAP: Duration = Duration::from_secs(20);
 
+/// The longest prefer-relay hold this member honors from one netmap row,
+/// whatever lifetime the row carries: a hold must be renewed by the server,
+/// from fresh measurements, to last longer.
+pub(crate) const PREFER_RELAY_MAX: Duration = Duration::from_secs(120);
+/// A demote-follow booked this close before a hold began was the peer acting
+/// on the same verdict a moment earlier, not a disagreement.
+const PREFER_RELAY_FOLLOW_SLACK: Duration = Duration::from_secs(5);
+/// How long the direct tiers are held when a direct carrier dies on a path
+/// this member was measuring as lossy but alive
+/// ([`PathMonitor::note_lossy_direct`]): long enough for the server to judge
+/// the report that goes out with the death and answer with its verdict, and
+/// no longer. Without it the make-before-break probe latches on the lossy
+/// path within milliseconds (a handshake is two small packets) and the pair
+/// is back on it before any verdict can arrive.
+pub(crate) const PENDING_VERDICT_HOLD: Duration = Duration::from_secs(10);
+
 /// `base` doubled once per in-lane failure so far (F3c), capped at `cap`.
 fn lane_backoff(base: Duration, fails: u32, cap: Duration) -> Duration {
     base.saturating_mul(1u32 << fails.min(8)).min(cap)
@@ -436,6 +452,23 @@ struct PeerPath {
     /// leaves a peer on a long window.
     relayed_instead_strikes: u32,
     relayed_instead_at: Option<Instant>,
+    /// The server's prefer-relay verdict for this pair: its relay path is
+    /// clearly better than its direct path, so until this passes no direct
+    /// tier is eligible. Like #30 this is a hard window, and for the same
+    /// reason: nothing about a penalty can hold a tier whose probe would
+    /// latch. Unlike #30 it is not this node's inference. The server judged
+    /// both members' measurements (`rc:overlay.path_quality`), and it renews
+    /// or withdraws the window as they change; it only ever runs out here.
+    prefer_relay_until: Option<Instant>,
+    /// When the standing prefer-relay window began.
+    prefer_relay_since: Option<Instant>,
+    /// The standing window is this member's own [`PENDING_VERDICT_HOLD`],
+    /// not yet a server verdict.
+    prefer_relay_pending: bool,
+    /// Until when this member's own echo probes say the direct path is lossy
+    /// but alive. A direct carrier that dies inside this window is held for
+    /// [`PENDING_VERDICT_HOLD`] instead of being re-probed at once.
+    lossy_direct_until: Option<Instant>,
     /// Voluntary-switch hysteresis bookkeeping (disabled-at-flip machinery).
     hysteresis: Hysteresis,
     /// FR-33 P2 — the peer's LAN candidate lies inside a prefix that THIS
@@ -699,6 +732,21 @@ impl PathMonitor {
         mbb: bool,
         now: Instant,
     ) {
+        // A direct carrier died on a path this member's own probes read as
+        // lossy but alive: wait, briefly, for the server's word before the
+        // make-before-break probe climbs straight back onto it. A dead path
+        // (nothing answered) never gets here: its return is the fast-return
+        // lane's business, and must not be slowed.
+        if tier.is_direct() {
+            let p = self.peers.entry(*peer).or_default();
+            if p.lossy_direct_until.take().is_some_and(|until| until > now)
+                && p.prefer_relay_until.is_none_or(|until| until <= now)
+            {
+                p.prefer_relay_until = Some(now + PENDING_VERDICT_HOLD);
+                p.prefer_relay_since = Some(now);
+                p.prefer_relay_pending = true;
+            }
+        }
         // Both active-proof deaths book NO penalty: the relay they fall back
         // to is the reliable path, and a transient blip should re-attempt
         // direct via make-before-break with zero suppression.
@@ -969,6 +1017,82 @@ impl PathMonitor {
         p.relay_q = Ewma::default();
     }
 
+    /// The server prefers the relay for this pair for `ttl` from `now`
+    /// (`NetmapPeer::prefer_relay_ms`): no direct tier is eligible until it
+    /// passes. A renewal moves the end; it never restarts the window's age.
+    /// The lifetime is capped at [`PREFER_RELAY_MAX`], so a verdict the
+    /// server stops renewing runs out however long it claimed to be.
+    pub(crate) fn on_prefer_relay(&mut self, peer: &ObjectId, ttl: Duration, now: Instant) {
+        let p = self.peers.entry(*peer).or_default();
+        if p.prefer_relay_until.is_none_or(|until| until <= now) {
+            p.prefer_relay_since = Some(now);
+        }
+        p.prefer_relay_until = Some(now + ttl.min(PREFER_RELAY_MAX));
+        p.prefer_relay_pending = false;
+    }
+
+    /// This member's own echo probes read `peer`'s direct path as lossy but
+    /// alive, good until `until` (the runtime renews it each second while
+    /// that holds). It moves nothing: it only decides what
+    /// [`on_death`](Self::on_death) does if the direct carrier then dies.
+    pub(crate) fn note_lossy_direct(&mut self, peer: &ObjectId, until: Instant) {
+        self.peers.entry(*peer).or_default().lossy_direct_until = Some(until);
+    }
+
+    /// Is the standing window this member's own wait for a verdict, rather
+    /// than a verdict?
+    pub(crate) fn prefer_relay_pending(&self, peer: &ObjectId, now: Instant) -> bool {
+        self.peers.get(peer).is_some_and(|p| {
+            p.prefer_relay_pending && p.prefer_relay_until.is_some_and(|until| until > now)
+        })
+    }
+
+    /// End the prefer-relay window now; `true` if one was standing.
+    ///
+    /// `withdrawn` = the server took its verdict back because the direct path
+    /// measures healthy again, so both ends are returning to it. A
+    /// demote-follow booked while the window stood (or just before it, when
+    /// the peer's row arrived first) was the peer obeying that same verdict,
+    /// and its hold-down would keep this end off the direct path for minutes
+    /// after the server said to go back. It is forgotten with the window. A
+    /// window this end voids on its own (the relay stopped carrying) keeps
+    /// every other suppression as it was.
+    pub(crate) fn clear_prefer_relay(
+        &mut self,
+        peer: &ObjectId,
+        withdrawn: bool,
+        now: Instant,
+    ) -> bool {
+        let Some(p) = self.peers.get_mut(peer) else {
+            return false;
+        };
+        let standing = p.prefer_relay_until.take().is_some_and(|until| until > now);
+        let since = p.prefer_relay_since.take();
+        p.prefer_relay_pending = false;
+        if withdrawn
+            && let (Some(since), Some(followed)) = (since, p.relayed_instead_at)
+            && followed + PREFER_RELAY_FOLLOW_SLACK >= since
+        {
+            p.relayed_instead_until = None;
+            p.relayed_instead_strikes = 0;
+            p.relayed_instead_at = None;
+            for t in &mut p.tiers {
+                // The strike and penalty the follow booked with it.
+                t.penalty = None;
+                t.fails = 0;
+            }
+        }
+        standing
+    }
+
+    /// Does the server's prefer-relay verdict stand for this peer?
+    pub(crate) fn prefer_relay_active(&self, peer: &ObjectId, now: Instant) -> bool {
+        self.peers
+            .get(peer)
+            .and_then(|p| p.prefer_relay_until)
+            .is_some_and(|until| until > now)
+    }
+
     /// A disco round heard `tier`'s candidate answer again after it went
     /// silent: the path is back. Lift the tier's suppression so the next walk
     /// probes it at once (Tailscale upgrades on a disco pong the same way);
@@ -1050,6 +1174,11 @@ impl PathMonitor {
             Some(p) => p,
             None => return true, // fresh peer: no penalties anywhere
         };
+        // The server's prefer-relay verdict: the relay measured clearly
+        // better, so no direct tier is selected until the window passes.
+        if p.prefer_relay_until.is_some_and(|until| now < until) {
+            return false;
+        }
         // #30 — the peer is relaying to us instead of using ANY direct tier.
         // That is not a quality judgement about a path, it is a fact about
         // where the peer is, so it gates eligibility outright rather than
@@ -1117,6 +1246,7 @@ impl PathMonitor {
                 .map(|u| u.saturating_duration_since(now).as_secs())
         };
         let relayed_instead_s = remaining(p.and_then(|p| p.relayed_instead_until));
+        let prefer_relay_s = remaining(p.and_then(|p| p.prefer_relay_until));
         let tiers = DIRECT_TIERS
             .iter()
             .chain(std::iter::once(&DirectTier::Relay))
@@ -1130,6 +1260,8 @@ impl PathMonitor {
                 // so the text can never disagree with the verdict it explains.
                 let blocked_by = if eligible {
                     None
+                } else if prefer_relay_s.is_some() {
+                    Some(BlockedBy::PreferRelay)
                 } else if relayed_instead_s.is_some() {
                     Some(BlockedBy::PeerRelaysInstead)
                 } else if tier == DirectTier::Lan && p.is_some_and(|p| p.lan_captured) {
@@ -1470,8 +1602,18 @@ impl PathMonitor {
         //
         // `eligible` still governs every outbound decision, so the hold-down
         // keeps its whole purpose: we do not PROMOTE into a flap.
-        let free_to_answer =
-            mbb && incumbent == Incumbent::Relay && super::direct::answer_while_followed();
+        //
+        // The prefer-relay window is the exception: under it an answered
+        // probe must not latch either. Both ends hold the same verdict, so a
+        // peer still initiating has lost its window, and promoting its probe
+        // here would put this end back on the path the server just measured
+        // as worse. Echo probes are answered regardless, so the direct path
+        // keeps being measured and the server takes the verdict back when it
+        // heals.
+        let free_to_answer = mbb
+            && incumbent == Incumbent::Relay
+            && super::direct::answer_while_followed()
+            && !self.prefer_relay_active(peer, now);
         if !free_to_answer && !self.eligible(peer, tier, now) {
             return None;
         }
@@ -1516,6 +1658,11 @@ pub(crate) fn classify(legacy: PathAction, monitor: PathAction) -> DivergenceCla
 /// cannot drift apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlockedBy {
+    /// The server's prefer-relay verdict stands: the relay path measured
+    /// clearly better than the direct one. A decision about the PAIR, taken
+    /// by the server from both ends' reports; it lifts when the server
+    /// withdraws it or stops renewing it.
+    PreferRelay,
     /// #30 — the peer is demonstrably relaying to us instead of using ANY
     /// direct tier, so every direct tier is held down until the window
     /// passes. This is a fact about the PEER, not a quality judgement about
@@ -1535,6 +1682,7 @@ pub(crate) enum BlockedBy {
 impl BlockedBy {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
+            BlockedBy::PreferRelay => "prefer-relay",
             BlockedBy::PeerRelaysInstead => "peer-relays-instead",
             BlockedBy::LanCaptured => "lan-captured",
             BlockedBy::Penalty => "penalty",
@@ -3549,5 +3697,250 @@ mod tests {
         // Strikes cleared: the NEXT failure books the ordinary window again.
         m.on_death(&a, DirectTier::Public, DeathReason::RxStale, true, t);
         assert!(m.eligible(&a, DirectTier::Public, t + Duration::from_secs(61)));
+    }
+
+    /// The server's prefer-relay verdict holds every direct tier down, for
+    /// exactly as long as it stands: a relay incumbent is kept, a fresh peer
+    /// is sent to the relay, and the moment the window lapses the ordinary
+    /// upgrade is back. Without the gate a relay incumbent is probed at once
+    /// and the pair climbs back onto the path the server measured as worse.
+    #[test]
+    fn a_prefer_relay_hold_keeps_the_pair_on_the_relay_until_it_lapses() {
+        let mut m = PathMonitor::default();
+        let a = oid(1);
+        let t0 = Instant::now();
+        assert_eq!(
+            m.decide(&a, Incumbent::Relay, all_avail(), true, t0, true),
+            PathAction::Probe(DirectTier::Lan),
+            "no verdict: a relay incumbent is upgraded"
+        );
+        m.on_prefer_relay(&a, Duration::from_secs(60), t0);
+        assert!(m.prefer_relay_active(&a, t0));
+        let mid = t0 + Duration::from_secs(59);
+        for tier in DIRECT_TIERS {
+            assert!(!m.eligible(&a, tier, mid), "{tier:?} is held");
+        }
+        assert!(
+            m.eligible(&a, DirectTier::Relay, mid),
+            "the floor always is"
+        );
+        assert_eq!(
+            m.decide(&a, Incumbent::Relay, all_avail(), true, mid, true),
+            PathAction::Keep
+        );
+        assert_eq!(
+            m.decide(&a, Incumbent::None, all_avail(), true, mid, true),
+            PathAction::Relay,
+            "a fresh peer rides the relay, never an unproven direct dial"
+        );
+        let e = m.explain(&a, mid);
+        assert!(
+            e.tiers[..3]
+                .iter()
+                .all(|t| t.blocked_by == Some(BlockedBy::PreferRelay)),
+            "the reason is readable: {:?}",
+            e.tiers
+        );
+        // It only ever runs out: no renewal, and the pair goes back.
+        let after = t0 + Duration::from_secs(61);
+        assert!(!m.prefer_relay_active(&a, after));
+        assert_eq!(
+            m.decide(&a, Incumbent::Relay, all_avail(), true, after, true),
+            PathAction::Probe(DirectTier::Lan)
+        );
+    }
+
+    /// Never ratchet: whatever lifetime a row carries, this member honors at
+    /// most [`PREFER_RELAY_MAX`] of it, so a verdict has to be renewed from
+    /// fresh measurements to last.
+    #[test]
+    fn a_prefer_relay_hold_is_capped_and_a_renewal_only_moves_its_end() {
+        let mut m = PathMonitor::default();
+        let a = oid(1);
+        let t0 = Instant::now();
+        m.on_prefer_relay(&a, Duration::from_secs(86_400), t0);
+        assert!(m.prefer_relay_active(&a, t0 + PREFER_RELAY_MAX - Duration::from_secs(1)));
+        assert!(!m.prefer_relay_active(&a, t0 + PREFER_RELAY_MAX));
+        // Renewed at +100 s for 60 s: stands until +160 s.
+        let t1 = t0 + Duration::from_secs(100);
+        m.on_prefer_relay(&a, Duration::from_secs(60), t1);
+        assert!(m.prefer_relay_active(&a, t0 + Duration::from_secs(159)));
+        assert!(!m.prefer_relay_active(&a, t0 + Duration::from_secs(160)));
+        assert_eq!(
+            m.peers[&a].prefer_relay_since,
+            Some(t0),
+            "one window, renewed"
+        );
+        // A shorter renewal shortens it: the server's latest word stands.
+        m.on_prefer_relay(&a, Duration::from_secs(5), t1);
+        assert!(!m.prefer_relay_active(&a, t1 + Duration::from_secs(5)));
+    }
+
+    /// Under the hold an inbound direct initiation is refused outright, even
+    /// where #33 would answer it as a shadow probe: a probe that latches is
+    /// promoted, and the pair would be back on the direct path with the
+    /// verdict still standing.
+    #[test]
+    fn a_prefer_relay_hold_refuses_an_inbound_direct_initiation() {
+        let mut m = PathMonitor::default();
+        let a = oid(1);
+        let t0 = Instant::now();
+        assert_eq!(
+            m.inbound_init(&a, DirectTier::Lan, Incumbent::Relay, true, t0),
+            Some(PathAction::Probe(DirectTier::Lan)),
+            "no verdict: the initiation is answered as a probe"
+        );
+        m.on_prefer_relay(&a, Duration::from_secs(60), t0);
+        for tier in DIRECT_TIERS {
+            assert_eq!(
+                m.inbound_init(&a, tier, Incumbent::Relay, true, t0),
+                None,
+                "{tier:?}"
+            );
+        }
+        assert!(
+            m.inbound_init(
+                &a,
+                DirectTier::Lan,
+                Incumbent::Relay,
+                true,
+                t0 + Duration::from_secs(61)
+            )
+            .is_some(),
+            "and answered again once the window has passed"
+        );
+    }
+
+    /// When the server withdraws its verdict both ends go back to direct, so
+    /// the demote-follow this end booked because the peer obeyed that same
+    /// verdict must not keep it off the direct path for minutes more.
+    #[test]
+    fn a_withdrawn_hold_frees_direct_and_forgets_the_follow_it_caused() {
+        let mut m = PathMonitor::default();
+        let a = oid(1);
+        let t0 = Instant::now();
+        // The peer's row arrived first: its relayed frames reach us 300 ms
+        // before our own row does, and #27 follows it.
+        m.on_peer_relayed_instead(&a, DirectTier::Lan, true, t0);
+        let t1 = t0 + Duration::from_millis(300);
+        m.on_prefer_relay(&a, Duration::from_secs(60), t1);
+        let t2 = t0 + Duration::from_secs(40);
+        assert!(!m.eligible(&a, DirectTier::Lan, t2));
+        assert!(m.clear_prefer_relay(&a, true, t2), "a window was standing");
+        assert!(
+            m.eligible(&a, DirectTier::Lan, t2),
+            "the server said go back: no hold-down may outlive its verdict"
+        );
+        assert_eq!(m.strikes(&a, DirectTier::Lan), 0);
+        assert_eq!(
+            m.decide(&a, Incumbent::Relay, all_avail(), true, t2, true),
+            PathAction::Probe(DirectTier::Lan)
+        );
+        assert!(!m.clear_prefer_relay(&a, true, t2), "nothing left to clear");
+    }
+
+    /// A follow that predates the verdict is a real disagreement about the
+    /// pair, and a hold this end voids on its own is no word from the server:
+    /// in both cases the #30 window stays.
+    #[test]
+    fn clearing_a_hold_keeps_an_unrelated_follow() {
+        let t0 = Instant::now();
+        let a = oid(1);
+        // An old follow, then a verdict a minute later, then its withdrawal.
+        let mut m = PathMonitor::default();
+        m.on_peer_relayed_instead(&a, DirectTier::Lan, true, t0);
+        let t1 = t0 + Duration::from_secs(60);
+        m.on_prefer_relay(&a, Duration::from_secs(60), t1);
+        let t2 = t1 + Duration::from_secs(30);
+        assert!(m.clear_prefer_relay(&a, true, t2));
+        assert!(
+            !m.eligible(&a, DirectTier::Lan, t2),
+            "the peer was relaying before any verdict"
+        );
+        // A follow under the hold, and the hold voided locally.
+        let mut m = PathMonitor::default();
+        m.on_prefer_relay(&a, Duration::from_secs(60), t0);
+        m.on_peer_relayed_instead(&a, DirectTier::Lan, true, t0 + Duration::from_secs(1));
+        let t3 = t0 + Duration::from_secs(30);
+        assert!(m.clear_prefer_relay(&a, false, t3));
+        assert!(!m.eligible(&a, DirectTier::Lan, t3));
+    }
+
+    /// A direct carrier that dies on a path this member measures as lossy but
+    /// alive is not re-probed at once: the direct tiers are held for
+    /// [`PENDING_VERDICT_HOLD`] while the server judges the report. The same
+    /// death on a path nobody flagged, or flagged too long ago, keeps today's
+    /// immediate make-before-break return.
+    #[test]
+    fn a_lossy_direct_carriers_death_waits_for_the_verdict() {
+        let a = oid(1);
+        let t0 = Instant::now();
+        // Not flagged: the poke death books nothing and direct is probed at once.
+        let mut m = PathMonitor::default();
+        m.on_death(&a, DirectTier::Lan, DeathReason::RekeyUnanswered, true, t0);
+        assert_eq!(
+            m.decide(&a, Incumbent::Relay, all_avail(), true, t0, true),
+            PathAction::Probe(DirectTier::Lan)
+        );
+        // Flagged, but the flag ran out before the death: the same.
+        let mut m = PathMonitor::default();
+        m.note_lossy_direct(&a, t0 + Duration::from_secs(3));
+        let late = t0 + Duration::from_secs(4);
+        m.on_death(
+            &a,
+            DirectTier::Lan,
+            DeathReason::RekeyUnanswered,
+            true,
+            late,
+        );
+        assert!(m.eligible(&a, DirectTier::Lan, late));
+
+        // Flagged and fresh: held, and marked as this member's own wait.
+        let mut m = PathMonitor::default();
+        m.note_lossy_direct(&a, t0 + Duration::from_secs(3));
+        let died = t0 + Duration::from_secs(1);
+        m.on_death(
+            &a,
+            DirectTier::Lan,
+            DeathReason::RekeyUnanswered,
+            true,
+            died,
+        );
+        assert!(m.prefer_relay_active(&a, died) && m.prefer_relay_pending(&a, died));
+        assert_eq!(
+            m.decide(&a, Incumbent::Relay, all_avail(), true, died, true),
+            PathAction::Keep,
+            "the lossy path is not climbed back onto while the server decides"
+        );
+        // No verdict comes: the wait runs out and today's behavior is back.
+        let after = died + PENDING_VERDICT_HOLD;
+        assert!(!m.prefer_relay_active(&a, after));
+        assert_eq!(
+            m.decide(&a, Incumbent::Relay, all_avail(), true, after, true),
+            PathAction::Probe(DirectTier::Lan)
+        );
+
+        // The verdict comes: it replaces the wait, and is no longer pending.
+        let mut m = PathMonitor::default();
+        m.note_lossy_direct(&a, t0 + Duration::from_secs(3));
+        m.on_death(
+            &a,
+            DirectTier::Lan,
+            DeathReason::RekeyUnanswered,
+            true,
+            died,
+        );
+        m.on_prefer_relay(
+            &a,
+            Duration::from_secs(60),
+            died + Duration::from_millis(300),
+        );
+        assert!(!m.prefer_relay_pending(&a, died + Duration::from_secs(1)));
+        assert!(m.prefer_relay_active(&a, died + Duration::from_secs(59)));
+        // A relay carrier's death never takes the wait.
+        let mut m = PathMonitor::default();
+        m.note_lossy_direct(&a, t0 + Duration::from_secs(3));
+        m.on_death(&a, DirectTier::Relay, DeathReason::RxStale, true, died);
+        assert!(!m.prefer_relay_active(&a, died));
     }
 }

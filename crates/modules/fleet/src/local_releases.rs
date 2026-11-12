@@ -44,6 +44,9 @@ pub(crate) const SCAN_TTL: Duration = Duration::from_secs(30);
 /// Bounds on one scan, so a mis-pointed directory cannot make every release
 /// request walk an unbounded tree.
 const MAX_RELEASES: usize = 512;
+/// How many tag directories one pass looks at (names only). Larger than
+/// [`MAX_RELEASES`] so the cut below drops the OLDEST, never the newest.
+const MAX_TAG_DIRS: usize = 8192;
 const MAX_ASSETS_PER_RELEASE: usize = 64;
 
 struct Scan {
@@ -109,8 +112,15 @@ fn plain_name(entry: &std::fs::DirEntry) -> Option<String> {
 
 /// One synchronous pass over `dir`. Blocking I/O (it may hash new files):
 /// call it from `spawn_blocking`.
+///
+/// Newest first, the order GitHub lists releases in: every reader that takes
+/// "the first release with a match" (`?version=latest` on the installer and
+/// its health route) depends on it. `read_dir` order is the filesystem's, so
+/// the tags are ordered here by [`crate::agent::release_ord`] — the same
+/// ordering `/api/agent/latest-release` sorts by — before the
+/// [`MAX_RELEASES`] cut, and only the kept tags are read.
 pub(crate) fn scan(dir: &Path) -> std::io::Result<Vec<AgentRelease>> {
-    let mut releases = Vec::new();
+    let mut tags = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         // `DirEntry::file_type` does not follow symlinks: a symlinked tag
@@ -124,8 +134,22 @@ pub(crate) fn scan(dir: &Path) -> std::io::Result<Vec<AgentRelease>> {
         if crate::release_delivery::validate_path(&tag, "probe").is_err() {
             continue;
         }
+        tags.push((tag, entry.path()));
+        if tags.len() >= MAX_TAG_DIRS {
+            break;
+        }
+    }
+    // Unparseable tags sort last; equal versions keep a stable name order.
+    tags.sort_by(|(a, _), (b, _)| {
+        crate::agent::release_ord(b)
+            .cmp(&crate::agent::release_ord(a))
+            .then_with(|| a.cmp(b))
+    });
+    tags.truncate(MAX_RELEASES);
+    let mut releases = Vec::with_capacity(tags.len());
+    for (tag, tag_dir) in tags {
         let mut assets = Vec::new();
-        for file in std::fs::read_dir(entry.path())? {
+        for file in std::fs::read_dir(&tag_dir)? {
             let file = file?;
             if !file.file_type()?.is_file() {
                 continue;
@@ -161,9 +185,6 @@ pub(crate) fn scan(dir: &Path) -> std::io::Result<Vec<AgentRelease>> {
             published_at: None,
             assets,
         });
-        if releases.len() >= MAX_RELEASES {
-            break;
-        }
     }
     Ok(releases)
 }
@@ -256,6 +277,59 @@ mod tests {
         assert_eq!(
             r.assets[1].name,
             "meshharbord-0.4.152-x86_64-unknown-linux-gnu.deb.asc"
+        );
+    }
+
+    /// T7-1 — newest first whatever order the filesystem lists the tags in
+    /// (`?version=latest` takes the first), by version and not by name
+    /// (0.4.10 is newer than 0.4.9).
+    #[test]
+    fn releases_are_listed_newest_first_by_version() {
+        let d = TempDir::new();
+        for patch in [9, 152, 10, 151, 0, 99, 100, 1, 150, 11] {
+            write(&d.path().join(format!("agent-v0.4.{patch}/x.deb")), b"x");
+        }
+        let tags: Vec<_> = scan(d.path())
+            .unwrap()
+            .into_iter()
+            .map(|r| r.tag_name)
+            .collect();
+        assert_eq!(
+            tags,
+            [
+                "agent-v0.4.152",
+                "agent-v0.4.151",
+                "agent-v0.4.150",
+                "agent-v0.4.100",
+                "agent-v0.4.99",
+                "agent-v0.4.11",
+                "agent-v0.4.10",
+                "agent-v0.4.9",
+                "agent-v0.4.1",
+                "agent-v0.4.0",
+            ]
+        );
+    }
+
+    /// T7-1 — more tags than [`MAX_RELEASES`]: the cut drops the oldest, so
+    /// the newest release is always served.
+    #[test]
+    fn the_release_cap_never_cuts_the_newest() {
+        let d = TempDir::new();
+        let n = MAX_RELEASES + 88;
+        // Created in a scrambled order (389 is coprime with n), so no
+        // filesystem's listing order (tmpfs lists newest-created first,
+        // ext4 by hash) happens to be the version order.
+        for k in 0..n {
+            let patch = (k * 389) % n;
+            std::fs::create_dir_all(d.path().join(format!("agent-v0.4.{patch}"))).unwrap();
+        }
+        let releases = scan(d.path()).unwrap();
+        assert_eq!(releases.len(), MAX_RELEASES);
+        assert_eq!(releases[0].tag_name, format!("agent-v0.4.{}", n - 1));
+        assert_eq!(
+            releases[MAX_RELEASES - 1].tag_name,
+            format!("agent-v0.4.{}", n - MAX_RELEASES)
         );
     }
 

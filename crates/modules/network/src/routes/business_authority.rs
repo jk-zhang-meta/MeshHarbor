@@ -312,6 +312,7 @@ async fn run_role_change_reconcile(
         state,
         "overlay_policy_sync",
         serde_json::json!({
+            "db": state.core.db.name(),
             "tenant_id": tenant_id.to_hex(),
             "auth_revision": auth_revision,
             "reason": "role_changed",

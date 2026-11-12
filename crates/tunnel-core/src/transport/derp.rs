@@ -100,6 +100,31 @@ fn is_follow_control(payload: &[u8]) -> bool {
         && payload[9..16] == [0; 7]
 }
 
+/// A path-quality echo: a disco ping or pong (`overlay::disco`, 85 bytes,
+/// kinds 1 and 2) carried as a [`STANDBY_MAGIC`] payload. It measures the
+/// pair's relay path while the pair itself rides a direct carrier, and it
+/// travels as a standby copy because that is the one `/derp` payload a
+/// receiver can be sent without being told to follow its peer onto DERP: a
+/// receiver that predates the echo hands it to its standby sink, where
+/// anything that is not a WireGuard data datagram is dropped unread.
+fn is_path_echo(standby_payload: &[u8]) -> bool {
+    standby_payload.len() == 85
+        && standby_payload.starts_with(b"RMDISCO1")
+        && matches!(standby_payload[8], 1 | 2)
+}
+
+/// One path-quality echo as the mux received it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathEcho {
+    /// The peer that sent it, as the relay stamped it.
+    pub src: DerpPubKey,
+    /// The disco frame, magic stripped.
+    pub frame: Vec<u8>,
+    /// When it arrived here. Stamped on the receive path because the round
+    /// trip is measured to this instant, not to whenever the sink is read.
+    pub at: Instant,
+}
+
 /// #27/#28 — something happened on this mux that the RUNTIME must react to.
 /// One channel rather than one per signal, so a mux acquired later (the
 /// coordinator arms each as it arrives) can never be half-wired.
@@ -179,6 +204,14 @@ pub const HIVE_MAGIC: &[u8; 8] = b"RMHIVE01";
 /// #27 must not follow a suspicion. Sent only to a peer that announced it
 /// takes standby copies: an older receiver would route it as a demotion.
 pub const STANDBY_MAGIC: &[u8; 8] = b"RMSTBY01";
+
+/// Item 3 kill switch, the transport half: `OVERLAY_INPLACE_RELAY=0` keeps
+/// an unrouted data frame out of the standby sink (the pre-item-3 drop). The
+/// overlay runtime reads the same switch for the in-place carrier swap.
+fn inplace_relay_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env::flag("OVERLAY_INPLACE_RELAY", true))
+}
 
 /// FR-90 P2d-2c — which Hive stream a payload belongs to: its grant's id, 12
 /// bytes. A peer pair carries any number of streams at once (two sessions,
@@ -418,6 +451,10 @@ pub struct DerpMux {
     dropped_hive: Arc<std::sync::atomic::AtomicU64>,
     /// F2 — STANDBY copies with no standby sink to take them.
     dropped_standby: Arc<std::sync::atomic::AtomicU64>,
+    /// Where path-quality echoes ([`is_path_echo`]) go, with the peer that
+    /// sent them. `None` until the runtime arms it; echoes then stay
+    /// ordinary standby payloads, as on a build without the feature.
+    echo_tx: Mutex<Option<mpsc::Sender<PathEcho>>>,
 }
 
 impl DerpMux {
@@ -439,8 +476,16 @@ impl DerpMux {
             dropped_stale: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             dropped_hive: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             dropped_standby: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            echo_tx: Mutex::new(None),
         });
         (mux, ws_out_rx)
+    }
+
+    /// Install (`Some`) or remove (`None`) the sink for path-quality echoes.
+    /// A setter for the reason [`Self::set_event_sink`] is one: the runtime
+    /// wants a single channel, and re-arming replaces the sender.
+    pub fn set_echo_sink(&self, tx: Option<mpsc::Sender<PathEcho>>) {
+        *self.echo_tx.lock().unwrap() = tx;
     }
 
     /// #27/#28 — install the runtime's [`MuxEvent`] sink. A SETTER rather than
@@ -664,6 +709,19 @@ impl DerpMux {
         // else. A miss is counted, never `Unrouted`: its sender is still on
         // its direct carrier, merely suspecting it, so #27 must not follow.
         if let Some(rest) = payload.strip_prefix(STANDBY_MAGIC.as_slice()) {
+            // A path-quality echo is the runtime's, not the WG session's. A
+            // full sink drops it: an echo is a sample, and a lost one reads
+            // as loss on a relay path that is not keeping up.
+            if is_path_echo(rest)
+                && let Some(tx) = self.echo_tx.lock().unwrap().clone()
+            {
+                let _ = tx.try_send(PathEcho {
+                    src,
+                    frame: rest.to_vec(),
+                    at: Instant::now(),
+                });
+                return;
+            }
             let tx = {
                 let peers = self.peers.lock().unwrap();
                 peers.get(&src).and_then(|r| r.standby.clone())
@@ -714,13 +772,41 @@ impl DerpMux {
                 }
             }
             None => {
-                self.dropped_unrouted.fetch_add(1, Ordering::Relaxed);
-                crate::evidence::DERP_INBOUND_UNROUTED.fetch_add(1, Ordering::Relaxed);
+                // Item 3 — the frame is still REPORTED (the runtime follows
+                // the peer onto DERP exactly as before), but it is no longer
+                // lost when this peer's standby sink can take it.
+                if !self.adopt_into_standby(&src, payload) {
+                    self.dropped_unrouted.fetch_add(1, Ordering::Relaxed);
+                    crate::evidence::DERP_INBOUND_UNROUTED.fetch_add(1, Ordering::Relaxed);
+                }
                 if !is_follow_control(payload) {
                     self.emit(MuxEvent::Unrouted(src));
                 }
             }
         }
+    }
+
+    /// Item 3 — a WG DATA frame from a peer we hold no carrier conn for, but
+    /// whose standby sink is attached: the peer moved its LIVE session onto
+    /// `/derp` before we did (it convicted its direct carrier first), so the
+    /// frame is sealed for the very session that sink feeds. Take it there
+    /// instead of dropping it for however long our own fall or follow takes —
+    /// that lag was a hole in the peer→us direction on every break where the
+    /// two ends convicted at different moments.
+    ///
+    /// Data only (type 4): a handshake needs a carrier to answer on, and gets
+    /// one when the runtime follows. A peer that REPLACED its session (an
+    /// older build) fails the sink's decryption and is dropped there, as
+    /// here before. `true` when the sink took the frame.
+    fn adopt_into_standby(&self, src: &DerpPubKey, payload: &[u8]) -> bool {
+        if payload.len() < 32 || payload[..4] != [4, 0, 0, 0] || !inplace_relay_enabled() {
+            return false;
+        }
+        let tx = {
+            let peers = self.peers.lock().unwrap();
+            peers.get(src).and_then(|r| r.standby.clone())
+        };
+        tx.is_some_and(|tx| tx.try_send(payload.to_vec()).is_ok())
     }
 
     /// Report a [`MuxEvent`], if anyone is listening. Never blocks and never
@@ -1075,6 +1161,104 @@ mod tests {
             !mux.send_standby(&peer, &[4, 1, 2]),
             "a down mux drops the copy"
         );
+    }
+
+    /// Item 3 — a plain WG DATA frame from a peer that has a standby sink but
+    /// no carrier conn (it moved its live session onto `/derp` first) lands
+    /// in that sink instead of being dropped, and is still REPORTED so the
+    /// runtime follows. A handshake, or a peer with no sink, is the old
+    /// counted drop; with a carrier conn the sink never sees the frame.
+    #[tokio::test]
+    async fn an_unrouted_data_frame_reaches_the_standby_sink_and_still_reports() {
+        let (mux, _out_rx) = DerpMux::new(pk(0x01));
+        let (ev_tx, mut ev_rx) = mpsc::channel(DerpMux::EVENT_SINK_DEPTH);
+        mux.set_event_sink(ev_tx);
+        let peer = pk(0x02);
+        let mut data = vec![4u8, 0, 0, 0];
+        data.extend_from_slice(&[7u8; 28]);
+
+        mux.deliver(&frame(peer, &data));
+        assert_eq!(mux.drop_counts().0, 1, "no sink: the counted drop");
+        assert_eq!(ev_rx.try_recv().ok(), Some(MuxEvent::Unrouted(peer)));
+
+        let mut sink = mux.standby_route(peer);
+        mux.deliver(&frame(peer, &data));
+        assert_eq!(sink.recv().await.unwrap(), data);
+        assert_eq!(mux.drop_counts().0, 1, "an adopted frame is not a drop");
+        assert_eq!(
+            ev_rx.try_recv().ok(),
+            Some(MuxEvent::Unrouted(peer)),
+            "the follow signal is unchanged"
+        );
+
+        let mut init = vec![1u8, 0, 0, 0];
+        init.extend_from_slice(&[7u8; 144]);
+        mux.deliver(&frame(peer, &init));
+        assert_eq!(mux.drop_counts().0, 2, "a handshake is never adopted");
+        assert!(sink.try_recv().is_err());
+
+        let wg_conn = mux.conn_for(peer);
+        mux.deliver(&frame(peer, &data));
+        let mut buf = [0u8; 64];
+        let (n, _) = wg_conn.recv_from(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], &data[..], "a carrier conn takes its own frames");
+        assert!(sink.try_recv().is_err());
+    }
+
+    /// A path-quality echo rides as a standby payload. With the echo sink
+    /// armed it goes there, with its sender, and nowhere else. Without one
+    /// (a build or a host with the feature off) it stays an ordinary standby
+    /// payload, which the WG session's sink drops unread. Either way it never
+    /// reports `Unrouted`: the peer that sent it is on its direct carrier,
+    /// and following it onto DERP is the flap this must not cause.
+    #[tokio::test]
+    async fn a_path_echo_reaches_only_the_echo_sink_and_never_reports_unrouted() {
+        let (mux, _out_rx) = DerpMux::new(pk(0x01));
+        let (ev_tx, mut ev_rx) = mpsc::channel(DerpMux::EVENT_SINK_DEPTH);
+        mux.set_event_sink(ev_tx);
+        let peer = pk(0x02);
+        let mut echo = vec![0u8; 85];
+        echo[..8].copy_from_slice(b"RMDISCO1");
+        echo[8] = 1; // ping
+        let mut copy = STANDBY_MAGIC.to_vec();
+        copy.extend_from_slice(&echo);
+
+        // No echo sink: an ordinary standby payload.
+        let mut standby = mux.standby_route(peer);
+        mux.deliver(&frame(peer, &copy));
+        assert_eq!(standby.recv().await.unwrap(), echo);
+
+        let (echo_tx, mut echo_rx) = mpsc::channel(8);
+        mux.set_echo_sink(Some(echo_tx));
+        mux.deliver(&frame(peer, &copy));
+        let got: PathEcho = echo_rx.recv().await.unwrap();
+        assert_eq!((got.src, &got.frame), (peer, &echo));
+        assert!(
+            standby.try_recv().is_err(),
+            "the WG session never sees an echo"
+        );
+        // A pong is an echo too; a WG data copy and a follow-control frame
+        // (kinds 3..=6, 160 bytes) are not.
+        echo[8] = 2;
+        let mut pong = STANDBY_MAGIC.to_vec();
+        pong.extend_from_slice(&echo);
+        mux.deliver(&frame(peer, &pong));
+        assert_eq!(echo_rx.recv().await.unwrap().frame[8], 2);
+        let mut data = STANDBY_MAGIC.to_vec();
+        data.extend_from_slice(&[4, 0, 0, 0, 9, 9]);
+        mux.deliver(&frame(peer, &data));
+        assert_eq!(standby.recv().await.unwrap(), [4, 0, 0, 0, 9, 9]);
+        echo[8] = 3;
+        let mut other = STANDBY_MAGIC.to_vec();
+        other.extend_from_slice(&echo);
+        mux.deliver(&frame(peer, &other));
+        assert!(echo_rx.try_recv().is_err(), "kind 3 is not an echo");
+        assert_eq!(standby.recv().await.unwrap()[8], 3);
+        // A peer with no route at all: still no `Unrouted`.
+        mux.set_echo_sink(None);
+        mux.deliver(&frame(pk(0x03), &copy));
+        assert_eq!(mux.standby_drops(), 1);
+        assert!(ev_rx.try_recv().is_err(), "an echo never reports Unrouted");
     }
 
     #[tokio::test]

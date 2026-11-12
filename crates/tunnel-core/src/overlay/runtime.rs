@@ -60,6 +60,7 @@ mod birthday;
 mod establish;
 mod inbound;
 mod path_trial;
+mod prefer_relay;
 #[cfg(feature = "path-trial-test-support")]
 #[doc(hidden)]
 pub use path_trial::test_support::{
@@ -67,6 +68,8 @@ pub use path_trial::test_support::{
 };
 #[cfg(test)]
 mod failover_bench;
+#[cfg(test)]
+mod prefer_relay_bench;
 mod route_guard;
 mod rx_loss;
 
@@ -438,6 +441,12 @@ fn business_watch_window() -> Option<Duration> {
     })
 }
 
+/// Item 3 kill switch (`OVERLAY_INPLACE_RELAY`, see
+/// [`crate::overlay::wg::inplace_relay_enabled`]).
+fn inplace_relay_enabled() -> bool {
+    crate::overlay::wg::inplace_relay_enabled()
+}
+
 /// An installed peer carrier + the bookkeeping the direct→relay fallback
 /// (rc.136/137) needs.
 #[derive(Clone)]
@@ -462,6 +471,20 @@ struct Installed {
     /// — `WgDevice::peer_initiator_hs_answered`); an unanswered poke past its
     /// window is a `DeathReason::RekeyUnanswered`.
     poke: Option<PokeArm>,
+    /// F6 — the early standby: business traffic on this direct carrier has
+    /// gone unanswered for [`EARLY_STANDBY_AFTER`], so its data is copied
+    /// onto `/derp` already, ahead of any proof. Cleared when business rx
+    /// moves again or the proof that follows is answered; a conviction
+    /// replaces the entry.
+    early_standby: bool,
+    /// F6 — when the early standby last said so at `info` (once per
+    /// [`EARLY_STANDBY_HOLDOFF`] per carrier; `debug` in between).
+    early_standby_logged: Option<Instant>,
+    /// F6 — when a business proof on this carrier was last ANSWERED: the
+    /// path is alive and the traffic simply one-way, so the early standby
+    /// stays off for [`EARLY_STANDBY_HOLDOFF`] (the proof-gated copies of F2
+    /// still cover a real outage).
+    biz_proof_ok_at: Option<Instant>,
     /// #280 — when an answered-but-unconfirmed handshake on this direct
     /// carrier comes due (`RESPONDER_CONFIRM_DEADLINE` after we answered); the
     /// 1 s scout sets it so [`business_poke_recheck`] pulls the sweep forward.
@@ -592,6 +615,9 @@ impl Installed {
             primary_traffic: (0, 0),
             bad_sweeps: 0,
             poke: None,
+            early_standby: false,
+            early_standby_logged: None,
+            biz_proof_ok_at: None,
             confirm_due: None,
             stalled: false,
             initiated: false,
@@ -667,6 +693,44 @@ const BUSINESS_WATCH_TICK: Duration = Duration::from_millis(250);
 /// window; a slower one (above ~0.4 s RTT) only gets a proof whose answer
 /// stops the copies again — the trade F1 already makes.
 const BUSINESS_WATCH_UNANSWERED: Duration = Duration::from_millis(400);
+
+/// F6 — the early standby. Business traffic on an established direct carrier
+/// that has gone unanswered this long starts its `/derp` copies at once,
+/// without waiting for the F5 proof (armed 0.75–1.0 s into an outage) and the
+/// F2 arm delay behind it (0.2–0.3 s more).
+///
+/// Why this value, and why it matters. A TCP stream over a low-latency direct
+/// path retransmits 0.2, 0.6, 1.4 and 3.0 s after a loss (the netstack's and
+/// Linux's 200 ms minimum RTO, doubling). Whichever retransmission is the
+/// first to find the copies running resumes the stream one relay round trip
+/// later. F5 + F2 started the copies 0.95–1.3 s in, so that was the 1.4 s
+/// one: on a 620 ms relay the stream came back 2.0 s after the break, never
+/// sooner (lab 2026-11-12, and the netstack in virtual time). Copies that
+/// run by 0.45 s catch the 0.6 s retransmission: 1.2 s.
+///
+/// It is measured exactly (`WgDevice::peer_unanswered_for`: the first send
+/// after the last receive), and it copies, nothing more: no proof is armed
+/// and no carrier is judged here, so the verdict on a jittery-but-alive path
+/// is exactly what it was. A healthy path answers inside the window; a slow
+/// one costs duplicates on `/derp` until its next packet arrives.
+const EARLY_STANDBY_AFTER: Duration = Duration::from_millis(400);
+/// F6 — while some direct carrier is inside its early-standby window, the
+/// decision is re-taken this often (lock-free reads). Idle otherwise.
+const EARLY_STANDBY_TICK: Duration = Duration::from_millis(50);
+/// F6 — after a business proof was ANSWERED on a carrier, the early standby
+/// stays off this long. An answered proof behind unanswered traffic is a
+/// one-way stream on a live path (a video uplink, a peer gone quiet); each of
+/// its recurring proofs renews the hold, so such a stream is copied early
+/// once, not every time its peer pauses.
+const EARLY_STANDBY_HOLDOFF: Duration = Duration::from_secs(30);
+
+/// F6 kill switch: `OVERLAY_STANDBY_EARLY=0` leaves the copies to F5 + F2
+/// (the proof first, then its arm delay) and turns the reciprocal copies off
+/// (`StandbyTee::reciprocate`). Read once.
+fn early_standby_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env::flag("OVERLAY_STANDBY_EARLY", true))
+}
 
 // This is a bounded authorization query, never a session/cache authorization.
 // Discovery hints are invalidated by ordinary D0 deltas and quality cooldowns,
@@ -1252,13 +1316,18 @@ fn spawn_org_bind(
         )
         .await
         {
-            Ok((sock, relay, outcomes)) => (
-                Some(Arc::new(
-                    OrgRelayConn::new(Arc::new(sock), relay, job.vni, relay_label)
-                        .with_rebind(job.generation, job.secret.clone()),
-                )),
-                outcomes,
-            ),
+            Ok((sock, relay, outcomes)) => {
+                let conn = OrgRelayConn::new(Arc::new(sock), relay, job.vni, relay_label)
+                    .with_rebind(job.generation, job.secret.clone());
+                // Item 6 — watch the bound leg, timed by the bind round trip
+                // just measured (the winning endpoint is the last outcome).
+                let conn = if crate::overlay::relay_link::org_liveness_enabled() {
+                    conn.with_liveness(outcomes.last().and_then(|o| o.rtt).unwrap_or_default())
+                } else {
+                    conn
+                };
+                (Some(Arc::new(conn)), outcomes)
+            }
             Err((e, outcomes)) => {
                 debug!(peer = %job.node_id, vni = job.vni, %e,
                     "overlay relay: org-relay bind failed on every endpoint");
@@ -2633,6 +2702,7 @@ impl OverlayRuntime {
         prober: &mut super::disco::Prober,
         path_trials: &mut path_trial::Engine,
         birthday: &mut birthday::Engine,
+        prefer: &mut prefer_relay::PreferRelay,
         rx: &mut Option<mpsc::Receiver<super::disco::DiscoInbound>>,
         wg: &WgDevice,
         by_node: &HashMap<ObjectId, Installed>,
@@ -2649,6 +2719,7 @@ impl OverlayRuntime {
                 path_trials.active_pong(&p);
                 birthday.on_pong(&p);
                 prober.on_pong(&p);
+                prefer.on_pong(&p, by_node);
             }
         }
         let revived = prober.take_revived();
@@ -3536,6 +3607,12 @@ impl OverlayRuntime {
         let mut path_trials = path_trial::Engine::new();
         // Hard-NAT punching (default OFF); driven on the path-trial tick.
         let mut birthday = birthday::Engine::default();
+        // Path quality: measure both paths of a suspect pair, report them,
+        // and honor the server's prefer-relay verdict (`prefer_relay`).
+        let mut prefer = prefer_relay::PreferRelay::new();
+        prefer.server_wants = network.path_quality_v1;
+        let mut prefer_tick = tokio::time::interval(super::path_quality::PROBE_EVERY);
+        prefer_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let _path_trial_view_guard = path_trial::ObservationViewGuard::new(
             self.peer_view.clone(),
             path_trials.observation_runtime_id(),
@@ -3556,10 +3633,20 @@ impl OverlayRuntime {
         let mut standby_peers: HashMap<[u8; 32], Option<Instant>> = HashMap::new();
         let mut standby_watch = tokio::time::interval(STANDBY_WATCH_TICK);
         standby_watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // F6 — the early-standby lane rides the F5 watch's 250 ms tick while
+        // idle and its own 50 ms one while a carrier is inside its window.
+        let early_standby_on = early_standby_enabled() && super::direct::standby_copies_enabled();
+        let mut early_standby_fast = false;
+        let mut early_standby_tick = tokio::time::interval(EARLY_STANDBY_TICK);
+        early_standby_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let probe_watch_on =
             super::direct::fast_probe_promote_enabled() && super::direct::probe_watch_enabled();
         let mut probe_watch = tokio::time::interval(PROBE_WATCH_TICK);
         probe_watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Item 6 — liveness of the bound ORG legs; armed only while one exists.
+        let mut org_liveness =
+            tokio::time::interval(crate::overlay::relay_link::ORG_LIVENESS_IDLE_TICK);
+        org_liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // netstate PR-2 — subscribe to the process-wide network monitor
         // (typed deltas replace the P4 string feed; ONE OS registration per
         // process, see `netstate`). `None` (either kill-switch off /
@@ -3758,6 +3845,7 @@ impl OverlayRuntime {
             epoch: 0,
             tx: alloc_tx,
         };
+        self.note_prefer_relay_rows(&prefer, &first_peers);
         self.install_peers(
             &mut wg,
             &mut by_node,
@@ -3940,22 +4028,59 @@ impl OverlayRuntime {
                     debug!("overlay: outbound pump ended; runtime exiting");
                     break;
                 },
+                // Item 6 — liveness of the bound ORG legs. The coordinator asks
+                // each carrier's relay whether it still answers and convicts
+                // the ones that do not; a death is then handled exactly like a
+                // server revoke of its session: reported, the candidate
+                // cancelled, and the sweep pulled forward so the pair sends on
+                // the DERP floor at once. Where it goes next is the server's
+                // verdict on the report and the ordinary paced ORG request.
+                _ = org_liveness.tick(), if relay.as_ref().is_some_and(|r| r.has_bound_org_carrier()) => {
+                    if let Some(r) = relay.as_mut() {
+                        let (dead, watching) = r.scan_org_liveness(Instant::now());
+                        for death in &dead {
+                            r.report_org_relay_dead(death).await;
+                            org_q.invalidate(&death.peer);
+                            cancel_org_upgrade_candidate(&death.peer, &mut wg, &mut by_node);
+                        }
+                        if !dead.is_empty() {
+                            org_discovery.invalidate(); // as on a revoke: no stale hint survives
+                            fallback.reset_immediately();
+                        }
+                        org_liveness.reset_after(if watching {
+                            crate::overlay::relay_link::ORG_LIVENESS_HOT_TICK
+                        } else {
+                            crate::overlay::relay_link::ORG_LIVENESS_IDLE_TICK
+                        });
+                    }
+                },
                 // F5 — the business watch: lock-free counter reads every
                 // 250 ms; it may arm a proof (one forced initiation), never
                 // judge one. The verdict keeps F1's deadline and recheck.
-                _ = business_watch.tick(), if business_watch_on => {
-                    if self.watch_business_traffic(&mut wg, &mut by_node, &mut business_watch_samples)
+                _ = business_watch.tick(), if business_watch_on || early_standby_on => {
+                    if business_watch_on
+                        && self.watch_business_traffic(&mut wg, &mut by_node, &mut business_watch_samples)
                         && business_poke_fast()
                         && let Some(wait) = business_poke_recheck(&by_node, Instant::now())
                     {
                         fallback.reset_after(wait);
                     }
+                    if early_standby_on && !standby_peers.is_empty() {
+                        early_standby_fast = self.early_standby_pass(&wg, &mut by_node, &relay);
+                    }
+                },
+                // F6 — the early standby, while some direct carrier's business
+                // traffic is unanswered but not yet for EARLY_STANDBY_AFTER:
+                // lock-free reads every 50 ms, then idle again. It starts
+                // copies; it never arms a proof or judges a carrier.
+                _ = early_standby_tick.tick(), if early_standby_fast => {
+                    early_standby_fast = self.early_standby_pass(&wg, &mut by_node, &relay);
                 },
                 // Only lock-free traffic reads and a bounded fresh proof:
                 // carrier verdicts, retries and the heavier work stay on the
                 // original fallback cadence.
                 _ = standby_watch.tick(), if !standby_peers.is_empty()
-                    && by_node.values().any(|e| e.poke.is_some()) =>
+                    && by_node.values().any(|e| e.poke.is_some() || e.early_standby) =>
                 {
                     if super::direct::standby_copies_enabled()
                         && let Some(mux) = relay.as_ref().and_then(|r| r.derp_mux_handle())
@@ -3980,6 +4105,32 @@ impl OverlayRuntime {
                         self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                     }
                 }
+                // Path quality: the probes that are due, the windows that
+                // closed, and the server's prefer-relay verdict. Off with
+                // `OVERLAY_PREFER_RELAY=0`: the arm then never runs.
+                _ = prefer_tick.tick(), if prefer.on() => {
+                    let t_arm = Instant::now();
+                    if let Some(rx) = disco_rx.as_mut() {
+                        while let Ok(p) = rx.try_recv() {
+                            path_trials.active_pong(&p);
+                            birthday.on_pong(&p);
+                            disco.on_pong(&p);
+                            prefer.on_pong(&p, &by_node);
+                        }
+                    }
+                    let out = self.prefer_relay_tick(
+                        &mut prefer, &mut wg, &mut by_node, &mut relay, &tun, &current_peers,
+                        direct_ctx.as_ref(), &mut relay_bq, &mut upgrade_probes,
+                    ).await;
+                    if out.walk {
+                        fast_reupgrade_until = Some(Instant::now() + PATH_REVIVED_WALK);
+                    }
+                    if out.changed {
+                        self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
+                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                    }
+                    warn_if_slow("arm:prefer_relay", t_arm);
+                },
                 _ = business_scout.tick() => {
                     let multipath_promoted = self.sweep_multipath(&mut wg, &mut by_node, &mut relay).await;
                     let hs_changed = self.scout_business_traffic(&mut wg, &mut by_node, &mut business_samples);
@@ -4504,7 +4655,7 @@ impl OverlayRuntime {
                     // replies. MEASUREMENT ONLY — nothing below reads the
                     // table to make a routing decision (that is C3/C6, behind
                     // their own flags). Default OFF.
-                    let revived = self.disco_round(&mut disco, &mut path_trials, &mut birthday, &mut disco_rx, &wg, &by_node, &current_peers, direct_ctx.as_ref()).await;
+                    let revived = self.disco_round(&mut disco, &mut path_trials, &mut birthday, &mut prefer, &mut disco_rx, &wg, &by_node, &current_peers, direct_ctx.as_ref()).await;
                     // A relayed peer's direct candidate answers disco again:
                     // lift its suppression and walk this very tick, so the
                     // make-before-break probe starts now instead of up to a
@@ -4928,6 +5079,7 @@ impl OverlayRuntime {
                 _ = path_trial_tick.tick() => {
                     if let Some(rx) = disco_rx.as_mut() { while let Ok(p) = rx.try_recv() {
                         path_trials.active_pong(&p); birthday.on_pong(&p); disco.on_pong(&p);
+                        prefer.on_pong(&p, &by_node);
                     }}
                     path_trials.tick(&self, &mut wg, &current_peers, &mut by_node, &mut org_discovery, server_path_trial_v1).await;
                     birthday.tick(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
@@ -5166,6 +5318,7 @@ impl OverlayRuntime {
                         server_org_discovery = false; // await explicit support on the NEW full netmap
                         server_org_fallback = false;
                         server_org_loss = false;
+                        prefer.server_wants = false;
                         org_discovery.invalidate(); // old WS replies cannot refresh metadata
                         self.outbound.swap(outbound);
                         // Join-send failure = the new session died within ms.
@@ -5291,6 +5444,7 @@ impl OverlayRuntime {
                         server_org_discovery = org_relay_discovery;
                         server_org_fallback = new_network.org_relay_fallback_v1;
                         server_org_loss = new_network.org_relay_loss_v1;
+                        prefer.server_wants = new_network.path_quality_v1;
                         probe_targets_tx.send_replace(super::orgrelay::prober::targets_from_wire(
                             &new_network.relay_probe_targets,
                             &new_network.backbone_probe_targets,
@@ -5380,8 +5534,12 @@ impl OverlayRuntime {
                             &by_node, &current_peers, &mut relay, Instant::now(), Some(&positive),
                         ).await;
                         let t0 = Instant::now();
+                        if self.note_prefer_relay_rows(&prefer, &peers) {
+                            fast_reupgrade_until = Some(Instant::now() + prefer_relay::WITHDRAWN_WALK);
+                        }
                         self.install_peers(&mut wg, &mut by_node, &mut relay, &tun, &peers, direct_ctx.as_ref(), &mut upgrade_probes, &mut relay_bq, "netmap").await;
                         warn_if_slow("install_peers(netmap)", t0);
+                        self.enforce_prefer_relay(&mut prefer, &mut wg, &mut by_node, &mut relay, &tun, &current_peers, &mut relay_bq, &mut upgrade_probes).await;
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
                         self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                         if applied_auth_revision > 0 || applied_netmap_epoch > 0 {
@@ -5480,8 +5638,15 @@ impl OverlayRuntime {
                             &by_node, &current_peers, &mut relay, Instant::now(), Some(&positive),
                         ).await;
                         let t0 = Instant::now();
+                        // The server's prefer-relay verdict rides the rows:
+                        // read before the walk (a withdrawn verdict lets this
+                        // walk probe direct), enforced after it.
+                        if self.note_prefer_relay_rows(&prefer, &upserts) {
+                            fast_reupgrade_until = Some(Instant::now() + prefer_relay::WITHDRAWN_WALK);
+                        }
                         self.install_peers(&mut wg, &mut by_node, &mut relay, &tun, &upserts, direct_ctx.as_ref(), &mut upgrade_probes, &mut relay_bq, "delta").await;
                         warn_if_slow("install_peers(delta)", t0);
+                        self.enforce_prefer_relay(&mut prefer, &mut wg, &mut by_node, &mut relay, &tun, &current_peers, &mut relay_bq, &mut upgrade_probes).await;
                         if let Some(names) = &dns_names { sync_name_map(names, &current_peers, network.self_name.as_deref(), self_v4).await; }
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
                         self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
@@ -6419,6 +6584,7 @@ mod tests {
             supports_overlay_echo: false,
             supports_org_relay: false,
             relay_strategy: None,
+            prefer_relay_ms: None,
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
@@ -6833,6 +6999,7 @@ mod tests {
             supports_overlay_echo: false,
             supports_org_relay: false,
             relay_strategy: None,
+            prefer_relay_ms: None,
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
@@ -7032,6 +7199,7 @@ mod tests {
                 supports_overlay_echo: false,
                 supports_org_relay: false,
                 relay_strategy: None,
+                prefer_relay_ms: None,
                 routes: vec![],
                 agent_id: None,
                 ingress_rules: None,
@@ -7129,6 +7297,179 @@ mod tests {
             )
             .await,
             "the per-peer cooldown must bound how often a follow can fire"
+        );
+    }
+
+    /// The member's half of the server's prefer-relay verdict, end to end. A
+    /// pair on a healthy-looking DIRECT carrier whose netmap row arrives with
+    /// `prefer_relay_ms` moves to the relay and stays there: no direct tier
+    /// is selected, and nothing is booked against the tier it left, so the
+    /// moment the server withdraws the verdict the ordinary upgrade is back.
+    /// With the kill switch thrown the same row does nothing at all.
+    ///
+    /// Before this the pair had no way onto the relay short of its direct
+    /// carrier dying (lab 2026-11-11: ten minutes on a 960 ms direct path
+    /// with a 620 ms relay beside it).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_prefer_relay_verdict_moves_a_direct_pair_to_the_relay_and_holds_it() {
+        let kp = WgKeypair::generate();
+        let peer_kp = WgKeypair::generate();
+        let pk = peer_kp.public.to_bytes();
+        let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+        let (tun_mock, _inj, _del) = MockTun::new();
+        let tf: TunFactory = {
+            let m = tun_mock.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx.clone(), tf, 1280);
+        let mux = DerpMux::new(kp.public.to_bytes()).0;
+        let mut relay = Some(RelayCoordinator::new(
+            out_tx,
+            kp.public.to_bytes(),
+            true,
+            vec![],
+            Some(mux),
+        ));
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        wg.ensure_direct_demux(sock.clone());
+        let dst: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let overlay_ip = Ipv4Addr::new(100, 65, 4, 29);
+        let nid = ObjectId::from_bytes([9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let tun: Arc<dyn TunIo> = tun_mock;
+        let mut bq = test_relay_bq();
+        let mut probes: HashMap<ObjectId, UpgradeProbe> = HashMap::new();
+        let mut current_peers: HashMap<ObjectId, NetmapPeer> = HashMap::new();
+        current_peers.insert(nid, test_netmap_peer(nid, overlay_ip, &peer_kp));
+        let lan = path::TierAvailability {
+            lan: true,
+            ..Default::default()
+        };
+        let stamped = |ms: Option<u32>| NetmapPeer {
+            prefer_relay_ms: ms,
+            ..current_peers[&nid].clone()
+        };
+
+        // -- the kill switch: the row is ignored, the pair stays direct --------
+        wg.add_direct_peer(sock.clone(), pk, overlay_ip, dst, true)
+            .await;
+        let mut by_node = HashMap::new();
+        by_node.insert(
+            nid,
+            Installed {
+                hs_done: true,
+                ..Installed::base(pk, overlay_ip, DirectTier::Lan, Instant::now())
+            },
+        );
+        let mut off = prefer_relay::PreferRelay::with(false);
+        assert!(!rt.note_prefer_relay_rows(&off, &[stamped(Some(60_000))]));
+        assert!(
+            !rt.enforce_prefer_relay(
+                &mut off,
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &current_peers,
+                &mut bq,
+                &mut probes,
+            )
+            .await
+        );
+        assert!(by_node[&nid].is_direct, "switched off: nothing moves");
+        assert!(
+            !rt.path_shadow
+                .lock()
+                .unwrap()
+                .mon
+                .prefer_relay_active(&nid, Instant::now()),
+            "and no hold is taken"
+        );
+
+        // -- on: no verdict, nothing moves ---------------------------------
+        let mut st = prefer_relay::PreferRelay::with(true);
+        rt.note_prefer_relay_rows(&st, &[stamped(None)]);
+        assert!(
+            !rt.enforce_prefer_relay(
+                &mut st,
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &current_peers,
+                &mut bq,
+                &mut probes,
+            )
+            .await
+        );
+        assert!(by_node[&nid].is_direct);
+
+        // -- the verdict: the pair moves to the relay ------------------------
+        rt.note_prefer_relay_rows(&st, &[stamped(Some(60_000))]);
+        assert!(
+            rt.enforce_prefer_relay(
+                &mut st,
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &current_peers,
+                &mut bq,
+                &mut probes,
+            )
+            .await,
+            "a held pair on a direct carrier is moved"
+        );
+        let e = by_node.get(&nid).expect("still installed");
+        assert_eq!(e.relay_kind, Some(RelayKind::Derp));
+        assert!(!e.is_direct);
+        {
+            let mut shadow = rt.path_shadow.lock().unwrap();
+            let now = Instant::now();
+            assert_eq!(
+                shadow.mon.strikes(&nid, DirectTier::Lan),
+                0,
+                "nothing is booked against the tier it left: the path did not fail"
+            );
+            assert_eq!(
+                shadow
+                    .mon
+                    .decide(&nid, path::Incumbent::Relay, lan, true, now, true),
+                path::PathAction::Keep,
+                "and while the verdict stands the direct tier is not probed"
+            );
+        }
+        // Enforcing again is a no-op: the pair is where the verdict wants it.
+        assert!(
+            !rt.enforce_prefer_relay(
+                &mut st,
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &current_peers,
+                &mut bq,
+                &mut probes,
+            )
+            .await
+        );
+
+        // -- withdrawn: the ordinary upgrade is back at once ------------------
+        assert!(
+            rt.note_prefer_relay_rows(&st, &[stamped(Some(0))]),
+            "a withdrawal is reported, so the loop walks now"
+        );
+        let mut shadow = rt.path_shadow.lock().unwrap();
+        assert_eq!(
+            shadow.mon.decide(
+                &nid,
+                path::Incumbent::Relay,
+                lan,
+                true,
+                Instant::now(),
+                true
+            ),
+            path::PathAction::Probe(DirectTier::Lan)
         );
     }
 
@@ -9875,6 +10216,7 @@ mod tests {
                 supports_overlay_echo: false,
                 supports_org_relay: false,
                 relay_strategy: None,
+                prefer_relay_ms: None,
                 routes: vec![],
                 agent_id: None,
                 ingress_rules: None,
@@ -10093,6 +10435,7 @@ mod tests {
         OverlayNetworkInfo {
             org_relay_fallback_v1: false,
             org_relay_loss_v1: false,
+            path_quality_v1: false,
             cidr: "100.64.0.0/10".into(),
             cidrs: vec![],
             mtu: 1280,
@@ -10128,6 +10471,7 @@ mod tests {
             supports_overlay_echo: false,
             supports_org_relay: false,
             relay_strategy: None,
+            prefer_relay_ms: None,
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
@@ -10750,6 +11094,7 @@ mod tests {
             supports_forced_derp: false,
             supports_derp_floor: false,
             relay_strategy: None,
+            prefer_relay_ms: None,
             backbone_only: false,
             supports_overlay_echo: false,
             supports_org_relay: false,
@@ -11141,6 +11486,7 @@ mod tests {
             supports_overlay_echo: false,
             supports_org_relay: false,
             relay_strategy: None,
+            prefer_relay_ms: None,
             routes,
             agent_id: None,
             ingress_rules: None,
@@ -11317,6 +11663,7 @@ mod tests {
             supports_overlay_echo: false,
             supports_org_relay: false,
             relay_strategy: None,
+            prefer_relay_ms: None,
             routes: vec!["192.168.5.0/24".into(), "0.0.0.0/0".into()],
             agent_id: None,
             ingress_rules: None,
@@ -13179,6 +13526,7 @@ mod org_upgrade_tests {
             supports_overlay_echo: false,
             supports_org_relay: false,
             relay_strategy: None,
+            prefer_relay_ms: None,
             routes: vec![],
             agent_id: None,
             ingress_rules: None,

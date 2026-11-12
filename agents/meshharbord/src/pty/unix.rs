@@ -178,7 +178,8 @@ impl PtyProcess {
         // needs session leadership, not root) but it is the conventional order
         // and it keeps the drop as the last thing that happens before exec.
         //
-        // SAFETY: both calls are async-signal-safe syscalls with no allocation
+        // SAFETY: every call below (`setsid`, `ioctl`, `sigemptyset`,
+        // `sigaction`, `sigprocmask`) is async-signal-safe with no allocation
         // and no locks, which is the whole contract for `pre_exec`.
         unsafe {
             cmd.pre_exec(|| {
@@ -194,6 +195,39 @@ impl PtyProcess {
                 // macOS — the same platform-width care the privilege drop
                 // needed, and the same reason: macOS compiles at tag time only.
                 if libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                // `execve` preserves `SIG_IGN` and the blocked-signal mask from
+                // the parent. If the daemon was started under `nohup` or a
+                // wrapper that ignores/masks `SIGHUP`..`SIGTERM`, the login
+                // shell would inherit that and never exit when its terminal
+                // closes. Reset interactive/hangup dispositions to `SIG_DFL`
+                // and clear the signal mask before `exec`.
+                let mut dfl: libc::sigaction = std::mem::zeroed();
+                dfl.sa_sigaction = libc::SIG_DFL;
+                if libc::sigemptyset(&mut dfl.sa_mask) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                // SIGCHLD too: a shell whose parent ignored it would have its
+                // own children reaped behind its back and lose their status.
+                for sig in [
+                    libc::SIGHUP,
+                    libc::SIGINT,
+                    libc::SIGQUIT,
+                    libc::SIGPIPE,
+                    libc::SIGTERM,
+                    libc::SIGCHLD,
+                ] {
+                    if libc::sigaction(sig, std::ptr::addr_of!(dfl), std::ptr::null_mut()) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
+                if libc::sigprocmask(
+                    libc::SIG_SETMASK,
+                    std::ptr::addr_of!(dfl.sa_mask),
+                    std::ptr::null_mut(),
+                ) != 0
+                {
                     return Err(io::Error::last_os_error());
                 }
                 Ok(())
@@ -590,6 +624,116 @@ mod tests {
             .expect("resizing a live terminal");
         pty.kill_group();
         let _ = pty.wait().await;
+    }
+
+    /// Even when the daemon itself was started under `nohup` (so `SIGHUP` is
+    /// `SIG_IGN`) or with signals masked, a PTY session's shell must start with
+    /// default signal dispositions and an empty signal mask so closing the
+    /// terminal ends the shell within 2 s instead of leaking or hanging.
+    #[tokio::test]
+    async fn a_pty_shell_exits_on_close_even_when_parent_ignores_sighup() {
+        const CHILD_ENV: &str = "MH_PTY_SIGHUP_IGNORED_SUBPROC";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let exe = std::env::current_exe().expect("test binary path");
+            let mut cmd = tokio::process::Command::new(exe);
+            cmd.arg("--exact")
+                .arg("pty::unix::tests::a_pty_shell_exits_on_close_even_when_parent_ignores_sighup")
+                .arg("--nocapture")
+                .env(CHILD_ENV, "1");
+            unsafe {
+                cmd.pre_exec(|| {
+                    for sig in [
+                        libc::SIGHUP,
+                        libc::SIGINT,
+                        libc::SIGQUIT,
+                        libc::SIGPIPE,
+                        libc::SIGTERM,
+                    ] {
+                        if libc::signal(sig, libc::SIG_IGN) == libc::SIG_ERR {
+                            return Err(io::Error::last_os_error());
+                        }
+                    }
+                    let mut mask: libc::sigset_t = std::mem::zeroed();
+                    if libc::sigemptyset(&mut mask) != 0
+                        || libc::sigaddset(&mut mask, libc::SIGHUP) != 0
+                        || libc::sigaddset(&mut mask, libc::SIGTERM) != 0
+                        || libc::sigprocmask(
+                            libc::SIG_BLOCK,
+                            std::ptr::addr_of!(mask),
+                            std::ptr::null_mut(),
+                        ) != 0
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let out = tokio::time::timeout(std::time::Duration::from_secs(10), cmd.output())
+                .await
+                .expect("subprocess test timed out")
+                .expect("spawn subprocess test");
+            assert!(
+                out.status.success(),
+                "subprocess failed ({}):\nstdout:\n{}\nstderr:\n{}",
+                out.status,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+
+        // Inside the child process where SIGHUP..SIGTERM are SIG_IGN and masked:
+        let mut cur: libc::sigaction = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::sigaction(libc::SIGHUP, std::ptr::null(), &mut cur) },
+            0
+        );
+        assert_eq!(
+            cur.sa_sigaction,
+            libc::SIG_IGN,
+            "precondition: parent must have SIGHUP = SIG_IGN"
+        );
+
+        let mut pty = PtyProcess::spawn(
+            None,
+            "xterm",
+            WinSize { cols: 80, rows: 24 },
+            &crate::exec::RunAs::Daemon,
+        )
+        .expect("a pty session");
+        let handle = pty.handle();
+        handle
+            .write_all(b"echo pty-sighup-ready-4019\n")
+            .await
+            .expect("write probe command");
+        drop(handle);
+
+        let mut seen = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut buf = [0u8; 512];
+            loop {
+                let n = pty.read(&mut buf).await.expect("read pty");
+                assert!(n > 0, "shell exited unexpectedly before readiness marker");
+                seen.extend_from_slice(&buf[..n]);
+                if String::from_utf8_lossy(&seen).contains("pty-sighup-ready-4019") {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("shell should print readiness marker");
+
+        // Closing the session sends SIGHUP to the process group; the shell must
+        // exit within 2 s rather than ignore SIGHUP.
+        pty.kill_group();
+        match tokio::time::timeout(std::time::Duration::from_secs(2), pty.wait()).await {
+            Ok(_status) => {}
+            Err(_) => {
+                pty.hard_kill_on_drop();
+                drop(pty);
+                panic!("shell ignored SIGHUP and did not exit within 2 s on terminal close");
+            }
+        }
     }
 
     /// The PTY path refuses what every other execution path refuses, for the
