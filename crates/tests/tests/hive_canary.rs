@@ -113,19 +113,61 @@ impl Watch {
         }
     }
 
-    /// The SERVER's lines that carried `s`: every crate of the server is
-    /// `meshharbor_*` or `meshharbor_core`; the device's are `meshharbord` and
-    /// `meshharbor_node_core`, and its store `meshharbor_hive_node`.
+    /// The SERVER's lines that carried `s` — see [`is_server_target`].
     fn server_hits(&self, s: &str) -> Vec<String> {
         self.hits
             .lock()
             .unwrap()
             .iter()
-            .filter(|(t, w)| {
-                w == s && (t.starts_with("meshharbor") || t.starts_with("meshharbor_core"))
-            })
+            .filter(|(t, w)| w == s && is_server_target(t))
             .map(|(t, _)| t.clone())
             .collect()
+    }
+}
+
+/// The device's crates: the daemon, its building blocks, its store, the
+/// LocalAPI leaf and the two local front ends. Every other `meshharbor*`
+/// crate is the server's.
+const DEVICE_CRATES: &[&str] = &[
+    "meshharbord",
+    "meshharbor_node_core",
+    "meshharbor_hive_node",
+    "meshharbor_localapi",
+    "meshharbor_cli",
+    "meshharbor_desktop",
+];
+
+/// Whether a tracing target is a SERVER line.
+///
+/// ⚠️ Never a bare `starts_with("meshharbor")`: `meshharbord` starts with it
+/// too. Before the rename (9e04c0399) the server's crates shared a prefix
+/// that no device crate had, so a prefix test was enough. The rename gave
+/// both sides the one `meshharbor` prefix, made every device line a server
+/// line, and the canary then failed on the device's own debug line for a
+/// harness's stderr — a line that never leaves the device.
+fn is_server_target(target: &str) -> bool {
+    let krate = target.split("::").next().unwrap_or(target);
+    krate.starts_with("meshharbor") && !DEVICE_CRATES.contains(&krate)
+}
+
+#[test]
+fn a_server_line_is_a_server_crates_and_never_the_devices() {
+    for t in [
+        "meshharbor_mod_hive::routes",
+        "meshharbor_core::ws",
+        "meshharbor_api",
+        "meshharbor_remote_control::signaling",
+    ] {
+        assert!(is_server_target(t), "{t} is the server's");
+    }
+    for t in [
+        "meshharbord::hive::supervisor",
+        "meshharbord",
+        "meshharbor_node_core::config",
+        "meshharbor_hive_node::store",
+        "tunnel_core::overlay",
+    ] {
+        assert!(!is_server_target(t), "{t} is the device's");
     }
 }
 
