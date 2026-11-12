@@ -285,6 +285,8 @@ pub fn wire_rc_relay(state: &RemoteState) {
                     lock_on_end,
                     org_session_cap,
                     slot: slot.clone(),
+                    // Shared requests never cross pods (refused above).
+                    share_files_account: None,
                 };
                 let dispatched = state.fleet.rc_hub.dispatch(&ctx, frame);
                 if let Some(lease) = &slot {

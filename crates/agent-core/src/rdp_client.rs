@@ -29,24 +29,49 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use meshharbor_localapi as localapi;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
+use rustls::{DigitallySignedStruct, SignatureScheme};
+use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Environment variable that acts as an operator/user kill switch for saved RDP
 /// credentials (`1`, `true`, `yes`, `on` case-insensitively).
 pub const KILL_SWITCH_ENV: &str = "MESHHARBOR_RDP_PASSWORDLESS_DISABLED";
 
+/// Bounded wall-clock budget for the pre-`mstsc` RDP reachability / X.224 / TLS
+/// certificate check (`V0028` / `V0029 §3.1`).
+pub const RDP_PRECHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// User-facing notice emitted when neither `--cert-sha256` nor a server-reported
+/// `rdp_cert_sha256` is available, so `mstsc.exe` / OS trust store performs its
+/// own certificate check (`V0028 §2`).
+pub const UNPINNED_CERT_MSTSC_NOTICE: &str = "被控端未上报证书指纹，由 mstsc 自行校验证书";
+
 /// Options configuring an RDP session launch (parsed from `mh rdp` or constructed
 /// by `meshharbor-desktop`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RdpCliOptions {
     pub target: String,
     pub user: Option<String>,
     pub domain: Option<String>,
     pub port: u16,
+    /// Set when the caller explicitly passed `--port` (or an explicit port in
+    /// desktop `openRdp`), overriding `ResolvedRdpDevice::rdp_port`.
+    pub explicit_port: Option<u16>,
     pub cert_sha256: Option<String>,
+    /// Diagnostic / headless pre-check mode (`mh rdp <target> --check`): resolves
+    /// the target, opens the per-session loopback tunnel, completes X.224 + TLS
+    /// certificate verification, prints the result, and exits without ever
+    /// reading/writing credentials or spawning any RDP client.
+    pub check: bool,
     pub save_credentials: bool,
     pub use_saved_credentials: bool,
     pub clear_credentials: bool,
@@ -141,11 +166,14 @@ impl Drop for StoredRdpCredential {
 
 /// Resolved target device metadata from the local daemon / server (never
 /// includes any RDP password or secret).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ResolvedRdpDevice {
     pub org_id: String,
     pub device_id: String,
     pub device_name: String,
+    pub rdp_available: Option<bool>,
+    pub rdp_port: Option<u16>,
+    pub rdp_cert_sha256: Option<String>,
 }
 
 static SESSION_LOOPBACK_BASE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -172,8 +200,20 @@ pub fn allocate_session_loopback_ip() -> std::net::Ipv4Addr {
     std::net::Ipv4Addr::new(127, 77, x, y)
 }
 
-/// Bind a unique per-session local loopback listener in `127.77.x.y:0`.
+/// Bind the per-session local loopback listener the RDP client connects to.
+///
+/// Windows binds a unique `127.77.x.y:0`: the `TERMSRV/<ip>` credential target
+/// that lets `mstsc.exe` log on without a prompt is keyed by that address, so it
+/// must never collide with another session or a user-saved `127.0.0.1` entry.
+/// Every other platform binds `127.0.0.1:0`. macOS configures only `127.0.0.1`
+/// on `lo0`, so a `127.77.x.y` bind fails there (`EADDRNOTAVAIL`), and FreeRDP
+/// keys nothing by the loopback address.
 pub async fn bind_unique_session_loopback_listener() -> Result<tokio::net::TcpListener> {
+    if !cfg!(windows) {
+        return tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .context("failed to bind local per-session loopback listener for RDP tunnel");
+    }
     let mut last_err = None;
     for _ in 0..8 {
         let ip = allocate_session_loopback_ip();
@@ -255,6 +295,95 @@ where
     Ok(())
 }
 
+/// Shared probe state tracking whether the loopback tunnel's upstream dial over
+/// the mesh (`socks5_client_connect` or direct overlay TCP) has connected, or
+/// failed before reaching the remote RDP port.
+#[derive(Debug, Default, Clone)]
+pub struct RdpLoopbackTunnelProbe {
+    inner: Arc<RdpLoopbackTunnelProbeInner>,
+}
+
+#[derive(Debug, Default)]
+struct RdpLoopbackTunnelProbeInner {
+    upstream_connected: AtomicBool,
+    last_upstream_error: std::sync::Mutex<Option<String>>,
+}
+
+impl RdpLoopbackTunnelProbe {
+    pub fn upstream_connected(&self) -> bool {
+        self.inner.upstream_connected.load(Ordering::Acquire)
+    }
+
+    pub fn last_upstream_error(&self) -> Option<String> {
+        self.inner
+            .last_upstream_error
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    fn mark_connected(&self) {
+        self.inner.upstream_connected.store(true, Ordering::Release);
+    }
+
+    fn record_error(&self, err: impl Into<String>) {
+        let mut slot = self
+            .inner
+            .last_upstream_error
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *slot = Some(err.into());
+    }
+}
+
+/// Spawn the background local loopback TCP forwarding pump together with an
+/// [`RdpLoopbackTunnelProbe`] so the pre-`mstsc` check can distinguish an
+/// unreachable mesh/RDP endpoint from a post-TCP X.224/TLS stall.
+pub fn spawn_rdp_loopback_tunnel_with_probe(
+    listener: tokio::net::TcpListener,
+    dial_ip: String,
+    forward_port: u16,
+    socks_port: Option<u16>,
+) -> (tokio::task::JoinHandle<()>, RdpLoopbackTunnelProbe) {
+    let probe = RdpLoopbackTunnelProbe::default();
+    let task_probe = probe.clone();
+    let handle = tokio::spawn(async move {
+        while let Ok((mut tcp, _)) = listener.accept().await {
+            let h = dial_ip.clone();
+            let conn_probe = task_probe.clone();
+            tokio::spawn(async move {
+                let upstream_res = match socks_port {
+                    Some(sp) => {
+                        match tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, sp))
+                            .await
+                        {
+                            Ok(mut s) => socks5_client_connect(&mut s, &h, forward_port)
+                                .await
+                                .map(|()| s)
+                                .map_err(|e| std::io::Error::other(e.to_string())),
+                            Err(e) => Err(e),
+                        }
+                    }
+                    None => tokio::net::TcpStream::connect((h.as_str(), forward_port)).await,
+                };
+                match upstream_res {
+                    Ok(mut remote) => {
+                        conn_probe.mark_connected();
+                        let _ = tcp.set_nodelay(true);
+                        let _ = remote.set_nodelay(true);
+                        let _ = tokio::io::copy_bidirectional(&mut tcp, &mut remote).await;
+                    }
+                    Err(e) => {
+                        conn_probe.record_error(e.to_string());
+                        let _ = tcp.shutdown().await;
+                    }
+                }
+            });
+        }
+    });
+    (handle, probe)
+}
+
 /// Spawn the background local loopback TCP forwarding pump that bridges
 /// accepted connections on `listener` (`127.77.x.y:<port>`) to `dial_ip:forward_port`
 /// either via the daemon's loopback SOCKS5 proxy (`socks_port == Some(sp)`,
@@ -265,38 +394,534 @@ pub fn spawn_rdp_loopback_tunnel(
     forward_port: u16,
     socks_port: Option<u16>,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        while let Ok((mut tcp, _)) = listener.accept().await {
-            let h = dial_ip.clone();
-            tokio::spawn(async move {
-                let upstream_res = match socks_port {
-                    Some(sp) => {
-                        match tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, sp))
-                            .await
-                        {
-                            Ok(mut s) => {
-                                if socks5_client_connect(&mut s, &h, forward_port)
-                                    .await
-                                    .is_ok()
-                                {
-                                    Ok(s)
-                                } else {
-                                    Err(std::io::Error::other("SOCKS5 connect failed"))
-                                }
-                            }
-                            Err(e) => Err(e),
-                        }
-                    }
-                    None => tokio::net::TcpStream::connect((h.as_str(), forward_port)).await,
-                };
-                if let Ok(mut remote) = upstream_res {
-                    let _ = tcp.set_nodelay(true);
-                    let _ = remote.set_nodelay(true);
-                    let _ = tokio::io::copy_bidirectional(&mut tcp, &mut remote).await;
-                }
-            });
+    spawn_rdp_loopback_tunnel_with_probe(listener, dial_ip, forward_port, socks_port).0
+}
+
+/// Distinct fail-closed error classes for the pre-`mstsc` RDP tunnel check
+/// (`V0028 §4.4` + `V0029 §3.1`).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RdpPrecheckError {
+    #[error("经网格无法连到目标 RDP 端口 ({target}:{port})：{detail}")]
+    Unreachable {
+        target: String,
+        port: u16,
+        detail: String,
+    },
+    #[error("目标 RDP 拒绝 TLS 升级或尝试降级为明文 RDP ({target}:{port})：{detail}")]
+    ProtocolDowngrade {
+        target: String,
+        port: u16,
+        detail: String,
+    },
+    #[error(
+        "目标 RDP TLS 握手失败（协议版本低于 TLS 1.2 或证书签名无效）({target}:{port})：{detail}"
+    )]
+    TlsInvalid {
+        target: String,
+        port: u16,
+        detail: String,
+    },
+    #[error("目标 RDP 证书 SHA-256 指纹不匹配 ({target}:{port})：期望 {expected}，实际 {actual}")]
+    FingerprintMismatch {
+        target: String,
+        port: u16,
+        expected: String,
+        actual: String,
+    },
+    #[error("目标 RDP 握手预检超时（阶段：{stage}）({target}:{port})")]
+    Timeout {
+        target: String,
+        port: u16,
+        stage: &'static str,
+    },
+}
+
+/// Verified outcome of a pre-`mstsc` RDP tunnel pre-check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RdpPrecheckOutcome {
+    /// Selected `[MS-BCGR]` negotiation protocol (`0x01` SSL, `0x02` Hybrid/NLA,
+    /// `0x08` HybridEx, or `0x00` classic RDP in unpinned reachability-only mode).
+    pub selected_protocol: u32,
+    /// Lowercase colon-separated SHA-256 of the presented TLS leaf certificate
+    /// DER when a TLS handshake was performed.
+    pub leaf_cert_sha256: Option<String>,
+    /// `true` iff `leaf_cert_sha256` was matched against a non-empty pinned
+    /// SHA-256 fingerprint.
+    pub pinned_verified: bool,
+}
+
+const X224_PROTOCOL_RDP: u32 = 0x0000_0000;
+const X224_PROTOCOL_SSL: u32 = 0x0000_0001;
+const X224_PROTOCOL_HYBRID: u32 = 0x0000_0002;
+const X224_PROTOCOL_HYBRID_EX: u32 = 0x0000_0008;
+
+/// `[MS-BCGR] §2.2.1.1` 19-byte TPKT + X.224 Connection Request PDU carrying
+/// `RDP_NEG_REQ` for `PROTOCOL_SSL | PROTOCOL_HYBRID` (`0x0000_0003` LE).
+/// Requesting both `SSL` and `HYBRID` allows Windows NLA (`TermService`, which
+/// requires `HYBRID` by default) and `xrdp` (`SSL` or `HYBRID`) to proceed
+/// directly into the TLS 1.2/1.3 handshake.
+const X224_TLS_CONNECTION_REQUEST: [u8; 19] = [
+    0x03, 0x00, 0x00, 0x13, // TPKT v3, reserved=0, length=19 (BE)
+    0x0e, // X.224 LI = 14 bytes following
+    0xe0, // X.224 CR (0xE0)
+    0x00, 0x00, // DST-REF
+    0x00, 0x00, // SRC-REF
+    0x00, // Class 0
+    0x01, // TYPE_RDP_NEG_REQ
+    0x00, // flags
+    0x08, 0x00, // length = 8 (LE)
+    0x03, 0x00, 0x00, 0x00, // PROTOCOL_SSL | PROTOCOL_HYBRID (LE)
+];
+
+fn format_sha256_colon_hex(der: &[u8]) -> String {
+    let digest = Sha256::digest(der);
+    digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+#[derive(Debug)]
+struct RdpLeafCaptureVerifier {
+    provider: Arc<CryptoProvider>,
+    observed_leaf_sha256: std::sync::Mutex<Option<String>>,
+}
+
+impl RdpLeafCaptureVerifier {
+    fn new(provider: Arc<CryptoProvider>) -> Self {
+        Self {
+            provider,
+            observed_leaf_sha256: std::sync::Mutex::new(None),
         }
-    })
+    }
+
+    fn observed(&self) -> Option<String> {
+        self.observed_leaf_sha256
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+}
+
+impl ServerCertVerifier for RdpLeafCaptureVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> std::result::Result<ServerCertVerified, rustls::Error> {
+        if end_entity.as_ref().is_empty() {
+            return Err(rustls::Error::General(
+                "server presented empty leaf certificate".into(),
+            ));
+        }
+        let fp = format_sha256_colon_hex(end_entity.as_ref());
+        *self
+            .observed_leaf_sha256
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(fp);
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum X224ConfirmResult {
+    SelectedProtocol(u32),
+    NegFailure(u32),
+}
+
+async fn exchange_x224_connection_request(
+    tcp: &mut tokio::net::TcpStream,
+    probe: &RdpLoopbackTunnelProbe,
+    target_label: &str,
+    remote_port: u16,
+) -> std::result::Result<X224ConfirmResult, RdpPrecheckError> {
+    let map_io = |err: std::io::Error| -> RdpPrecheckError {
+        if !probe.upstream_connected() {
+            let detail = probe
+                .last_upstream_error()
+                .unwrap_or_else(|| err.to_string());
+            RdpPrecheckError::Unreachable {
+                target: target_label.to_string(),
+                port: remote_port,
+                detail,
+            }
+        } else {
+            RdpPrecheckError::ProtocolDowngrade {
+                target: target_label.to_string(),
+                port: remote_port,
+                detail: format!("X.224 握手读取失败：{err}"),
+            }
+        }
+    };
+
+    tcp.write_all(&X224_TLS_CONNECTION_REQUEST)
+        .await
+        .map_err(map_io)?;
+    tcp.flush().await.map_err(map_io)?;
+
+    let mut tpkt = [0u8; 4];
+    tcp.read_exact(&mut tpkt).await.map_err(map_io)?;
+    if tpkt[0] != 0x03 {
+        return Err(RdpPrecheckError::ProtocolDowngrade {
+            target: target_label.to_string(),
+            port: remote_port,
+            detail: format!("非 TPKT v3 响应头 ({:#04x})", tpkt[0]),
+        });
+    }
+    let tpkt_len = u16::from_be_bytes([tpkt[2], tpkt[3]]) as usize;
+    if !(11..=1024).contains(&tpkt_len) {
+        return Err(RdpPrecheckError::ProtocolDowngrade {
+            target: target_label.to_string(),
+            port: remote_port,
+            detail: format!("非法 TPKT 长度 ({tpkt_len})"),
+        });
+    }
+    let mut body = vec![0u8; tpkt_len - 4];
+    tcp.read_exact(&mut body).await.map_err(map_io)?;
+    let li = body[0] as usize;
+    if li < 6 || 1 + li > body.len() {
+        return Err(RdpPrecheckError::ProtocolDowngrade {
+            target: target_label.to_string(),
+            port: remote_port,
+            detail: format!("非法 X.224 LI 长度 ({li})"),
+        });
+    }
+    let pdu_type = body[1] & 0xf0;
+    if pdu_type != 0xd0 {
+        return Err(RdpPrecheckError::ProtocolDowngrade {
+            target: target_label.to_string(),
+            port: remote_port,
+            detail: format!(
+                "期望 X.224 Connection Confirm (0xD0)，收到 {:#04x}",
+                body[1]
+            ),
+        });
+    }
+    if body.len() < 15 {
+        return Ok(X224ConfirmResult::SelectedProtocol(X224_PROTOCOL_RDP));
+    }
+    let neg_type = body[7];
+    let neg_len = u16::from_le_bytes([body[9], body[10]]);
+    if neg_len < 8 {
+        return Err(RdpPrecheckError::ProtocolDowngrade {
+            target: target_label.to_string(),
+            port: remote_port,
+            detail: format!("非法 RDP_NEG 长度 ({neg_len})"),
+        });
+    }
+    let code = u32::from_le_bytes([body[11], body[12], body[13], body[14]]);
+    match neg_type {
+        0x02 => Ok(X224ConfirmResult::SelectedProtocol(code)),
+        0x03 => Ok(X224ConfirmResult::NegFailure(code)),
+        other => Err(RdpPrecheckError::ProtocolDowngrade {
+            target: target_label.to_string(),
+            port: remote_port,
+            detail: format!("未知 RDP_NEG 类型 ({other:#04x})"),
+        }),
+    }
+}
+
+/// Perform the pre-`mstsc` X.224 + TLS 1.2/1.3 handshake and leaf-certificate
+/// SHA-256 verification over `local_tunnel_addr` within `timeout_budget`.
+///
+/// Security & timing model (`V0028 §4.3`):
+/// - The pre-check connection and `mstsc.exe`'s subsequent connection are two
+///   separate TCP streams on `127.77.x.y:<port>`, but both traverse the exact
+///   same WireGuard-authenticated overlay peer (`dial_ip:remote_port`).
+/// - The SHA-256 fingerprint comparison proves the identity of the TLS endpoint
+///   answering on that WireGuard-authenticated peer at the moment of the pre-check.
+/// - Under TLS 1.3 (RFC 8446), the server `Certificate` message is encrypted
+///   after `ServerHello`, so the local TCP forwarder cannot passively inspect
+///   the certificate inside `mstsc.exe`'s own TLS connection in transit; we
+///   therefore accept this bounded pre-check-to-`mstsc` window.
+pub async fn precheck_rdp_tunnel_tls_with_timeout(
+    local_tunnel_addr: SocketAddr,
+    probe: &RdpLoopbackTunnelProbe,
+    target_label: &str,
+    remote_port: u16,
+    expected_cert_sha256: Option<&str>,
+    timeout_budget: Duration,
+) -> std::result::Result<RdpPrecheckOutcome, RdpPrecheckError> {
+    let normalized_expected =
+        match expected_cert_sha256 {
+            Some(raw) if !raw.trim().is_empty() => Some(normalize_cert_sha256(raw).map_err(
+                |e| RdpPrecheckError::TlsInvalid {
+                    target: target_label.to_string(),
+                    port: remote_port,
+                    detail: e.to_string(),
+                },
+            )?),
+            _ => None,
+        };
+
+    let stage_cell = std::sync::Mutex::new("连接网格与 X.224 协商");
+    let fut = async {
+        let mut tcp = tokio::net::TcpStream::connect(local_tunnel_addr)
+            .await
+            .map_err(|e| RdpPrecheckError::Unreachable {
+                target: target_label.to_string(),
+                port: remote_port,
+                detail: format!("本地回环隧道连接失败：{e}"),
+            })?;
+        let _ = tcp.set_nodelay(true);
+
+        let selected_protocol =
+            match exchange_x224_connection_request(&mut tcp, probe, target_label, remote_port)
+                .await?
+            {
+                X224ConfirmResult::SelectedProtocol(p)
+                    if p == X224_PROTOCOL_SSL
+                        || p == X224_PROTOCOL_HYBRID
+                        || p == X224_PROTOCOL_HYBRID_EX =>
+                {
+                    p
+                }
+                X224ConfirmResult::SelectedProtocol(X224_PROTOCOL_RDP) => {
+                    return Err(RdpPrecheckError::ProtocolDowngrade {
+                        target: target_label.to_string(),
+                        port: remote_port,
+                        detail: "对端仅选择明文 PROTOCOL_RDP (0x00)，未启用 TLS".to_string(),
+                    });
+                }
+                X224ConfirmResult::SelectedProtocol(other) => {
+                    return Err(RdpPrecheckError::ProtocolDowngrade {
+                        target: target_label.to_string(),
+                        port: remote_port,
+                        detail: format!("对端返回不支持的协议标志 {other:#x}"),
+                    });
+                }
+                X224ConfirmResult::NegFailure(code) => {
+                    return Err(RdpPrecheckError::ProtocolDowngrade {
+                        target: target_label.to_string(),
+                        port: remote_port,
+                        detail: format!("对端返回 RDP_NEG_FAILURE (code={code:#x})"),
+                    });
+                }
+            };
+
+        *stage_cell.lock().unwrap_or_else(|p| p.into_inner()) = "TLS 1.2/1.3 证书握手";
+
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let verifier = Arc::new(RdpLeafCaptureVerifier::new(Arc::clone(&provider)));
+        let tls_cfg = rustls::ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+            .map_err(|e| RdpPrecheckError::TlsInvalid {
+                target: target_label.to_string(),
+                port: remote_port,
+                detail: e.to_string(),
+            })?
+            .dangerous()
+            .with_custom_certificate_verifier(verifier.clone())
+            .with_no_client_auth();
+
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(tls_cfg));
+        let server_name =
+            ServerName::try_from("rdp.meshharbor.internal").expect("static valid DNS name for SNI");
+        let mut tls_stream = connector.connect(server_name, tcp).await.map_err(|e| {
+            RdpPrecheckError::TlsInvalid {
+                target: target_label.to_string(),
+                port: remote_port,
+                detail: e.to_string(),
+            }
+        })?;
+
+        let actual_fp = tls_stream
+            .get_ref()
+            .1
+            .peer_certificates()
+            .and_then(|certs| certs.first())
+            .map(|c| format_sha256_colon_hex(c.as_ref()))
+            .or_else(|| verifier.observed())
+            .ok_or_else(|| RdpPrecheckError::TlsInvalid {
+                target: target_label.to_string(),
+                port: remote_port,
+                detail: "对端未提供任何 X.509 叶子证书".to_string(),
+            })?;
+
+        let _ = tls_stream.shutdown().await;
+
+        let pinned_verified = if let Some(expected) = normalized_expected {
+            if actual_fp != expected {
+                return Err(RdpPrecheckError::FingerprintMismatch {
+                    target: target_label.to_string(),
+                    port: remote_port,
+                    expected,
+                    actual: actual_fp,
+                });
+            }
+            true
+        } else {
+            false
+        };
+
+        Ok(RdpPrecheckOutcome {
+            selected_protocol,
+            leaf_cert_sha256: Some(actual_fp),
+            pinned_verified,
+        })
+    };
+
+    match tokio::time::timeout(timeout_budget, fut).await {
+        Ok(res) => res,
+        Err(_) => {
+            if !probe.upstream_connected() {
+                let detail = probe.last_upstream_error().unwrap_or_else(|| {
+                    format!(
+                        "{} 秒内未建立网格连接（被控端可能已离线或端口未开放）",
+                        timeout_budget.as_secs().max(1)
+                    )
+                });
+                Err(RdpPrecheckError::Unreachable {
+                    target: target_label.to_string(),
+                    port: remote_port,
+                    detail,
+                })
+            } else {
+                let stage = *stage_cell.lock().unwrap_or_else(|p| p.into_inner());
+                Err(RdpPrecheckError::Timeout {
+                    target: target_label.to_string(),
+                    port: remote_port,
+                    stage,
+                })
+            }
+        }
+    }
+}
+
+/// Perform the pre-`mstsc` X.224 + TLS 1.2/1.3 certificate check using the
+/// default 5-second budget ([`RDP_PRECHECK_TIMEOUT`]).
+pub async fn precheck_rdp_tunnel_tls(
+    local_tunnel_addr: SocketAddr,
+    probe: &RdpLoopbackTunnelProbe,
+    target_label: &str,
+    remote_port: u16,
+    expected_cert_sha256: Option<&str>,
+) -> std::result::Result<RdpPrecheckOutcome, RdpPrecheckError> {
+    precheck_rdp_tunnel_tls_with_timeout(
+        local_tunnel_addr,
+        probe,
+        target_label,
+        remote_port,
+        expected_cert_sha256,
+        RDP_PRECHECK_TIMEOUT,
+    )
+    .await
+}
+
+/// Reachability pre-check used when `pinned_cert_sha256 == None` in normal
+/// (non-`--check`) sessions (`V0028 §2` + `V0029 §3.1`): verifies within 5 s
+/// that the remote RDP port answers an X.224 Connection Request over the mesh
+/// (failing fast with `"经网格无法连到目标 RDP 端口 ..."` when the target daemon
+/// is stopped) while allowing `mstsc.exe` to apply its native trust-store check.
+pub async fn precheck_rdp_tunnel_reachability_with_timeout(
+    local_tunnel_addr: SocketAddr,
+    probe: &RdpLoopbackTunnelProbe,
+    target_label: &str,
+    remote_port: u16,
+    timeout_budget: Duration,
+) -> std::result::Result<RdpPrecheckOutcome, RdpPrecheckError> {
+    let fut = async {
+        let mut tcp = tokio::net::TcpStream::connect(local_tunnel_addr)
+            .await
+            .map_err(|e| RdpPrecheckError::Unreachable {
+                target: target_label.to_string(),
+                port: remote_port,
+                detail: format!("本地回环隧道连接失败：{e}"),
+            })?;
+        let _ = tcp.set_nodelay(true);
+        let confirm =
+            exchange_x224_connection_request(&mut tcp, probe, target_label, remote_port).await?;
+        let _ = tcp.shutdown().await;
+        let selected_protocol = match confirm {
+            X224ConfirmResult::SelectedProtocol(p) => p,
+            X224ConfirmResult::NegFailure(_) => X224_PROTOCOL_RDP,
+        };
+        Ok(RdpPrecheckOutcome {
+            selected_protocol,
+            leaf_cert_sha256: None,
+            pinned_verified: false,
+        })
+    };
+
+    match tokio::time::timeout(timeout_budget, fut).await {
+        Ok(res) => res,
+        Err(_) => {
+            if !probe.upstream_connected() {
+                let detail = probe.last_upstream_error().unwrap_or_else(|| {
+                    format!(
+                        "{} 秒内未建立网格连接（被控端可能已离线或端口未开放）",
+                        timeout_budget.as_secs().max(1)
+                    )
+                });
+                Err(RdpPrecheckError::Unreachable {
+                    target: target_label.to_string(),
+                    port: remote_port,
+                    detail,
+                })
+            } else {
+                Err(RdpPrecheckError::Timeout {
+                    target: target_label.to_string(),
+                    port: remote_port,
+                    stage: "X.224 可达性预检",
+                })
+            }
+        }
+    }
+}
+
+/// Reachability pre-check with the default 5-second budget ([`RDP_PRECHECK_TIMEOUT`]).
+pub async fn precheck_rdp_tunnel_reachability(
+    local_tunnel_addr: SocketAddr,
+    probe: &RdpLoopbackTunnelProbe,
+    target_label: &str,
+    remote_port: u16,
+) -> std::result::Result<RdpPrecheckOutcome, RdpPrecheckError> {
+    precheck_rdp_tunnel_reachability_with_timeout(
+        local_tunnel_addr,
+        probe,
+        target_label,
+        remote_port,
+        RDP_PRECHECK_TIMEOUT,
+    )
+    .await
 }
 
 /// Spawn the planned native RDP client process and deliver `stdin_payload`
@@ -454,6 +1079,11 @@ pub fn validate_extra_client_args(args: &[String]) -> Result<()> {
         if lower == "/cert:ignore"
             || lower == "/cert-ignore"
             || lower == "--ignore-certificate"
+            || lower == "--ignore-cert"
+            || lower == "--insecure"
+            || lower == "/insecure"
+            || lower == "--skip-cert-check"
+            || lower == "--no-verify-cert"
             || lower == "/cert:tofu"
             || lower == "/cert-tofu"
         {
@@ -556,12 +1186,48 @@ pub fn build_macos_security_store_plan(
     ))
 }
 
-/// Pure session planner that enforces all X17 security invariants:
+/// Compute the effective remote RDP TCP port using precedence:
+/// `(1) explicit CLI/bridge port -> (2) device.rdp_port -> (3) opts.port / 3389`.
+pub fn effective_rdp_port(opts: &RdpCliOptions, device: &ResolvedRdpDevice) -> u16 {
+    opts.explicit_port
+        .filter(|&p| p > 0)
+        .or_else(|| device.rdp_port.filter(|&p| p > 0))
+        .unwrap_or(if opts.port > 0 { opts.port } else { 3389 })
+}
+
+/// Compute the normalized pinned SHA-256 certificate fingerprint using precedence:
+/// `(1) explicit opts.cert_sha256 -> (2) device.rdp_cert_sha256 -> (3) None`.
+pub fn effective_pinned_cert_sha256(
+    opts: &RdpCliOptions,
+    device: &ResolvedRdpDevice,
+) -> Result<Option<String>> {
+    if let Some(raw) = opts
+        .cert_sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(Some(normalize_cert_sha256(raw)?));
+    }
+    if let Some(raw) = device
+        .rdp_cert_sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(Some(normalize_cert_sha256(raw)?));
+    }
+    Ok(None)
+}
+
+/// Pure session planner that enforces all X17 + V0028 security invariants:
 /// - Default OFF (neither reads nor writes `store` unless explicitly opted in).
 /// - Kill switch (`--no-saved-credentials` or `MESHHARBOR_RDP_PASSWORDLESS_DISABLED=1`).
 /// - `--clear-credentials` deletes from `store` and returns `Ok(None)`.
 /// - Rejects non-loopback tunnel addresses and forbidden extra arguments.
-/// - Pins target TLS certificate SHA-256 fingerprint when available.
+/// - Pins target TLS certificate SHA-256 fingerprint when available (enforced via
+///   [`precheck_rdp_tunnel_tls`] prior to launching `mstsc.exe` on Windows, and
+///   additionally via `/cert:fingerprint:sha256:<fp>` on FreeRDP).
 pub fn plan_rdp_session(
     opts: &RdpCliOptions,
     device: &ResolvedRdpDevice,
@@ -572,7 +1238,8 @@ pub fn plan_rdp_session(
     platform: &str,
 ) -> Result<Option<PlannedRdpInvocation>> {
     validate_extra_client_args(&opts.extra_args)?;
-    if opts.port == 0 {
+    let port_to_check = opts.explicit_port.unwrap_or(opts.port);
+    if port_to_check == 0 {
         bail!("remote RDP port must be between 1 and 65535");
     }
     if !local_tunnel_addr.ip().is_loopback() {
@@ -617,17 +1284,8 @@ pub fn plan_rdp_session(
         .filter(|d| !d.is_empty())
         .map(ToOwned::to_owned);
 
-    let pinned_cert_sha256 = match opts.cert_sha256.as_deref() {
-        Some(raw) if !raw.trim().is_empty() => Some(normalize_cert_sha256(raw)?),
-        _ => None,
-    };
-
+    let pinned_cert_sha256 = effective_pinned_cert_sha256(opts, device)?;
     let platform_norm = platform.trim().to_ascii_lowercase();
-    if platform_norm == "windows" && pinned_cert_sha256.is_some() {
-        bail!(
-            "--cert-sha256 is not supported on Windows because mstsc.exe validates server certificates via the Windows trust store and does not accept a SHA-256 fingerprint pin; use FreeRDP on Linux/macOS for --cert-sha256 pinning"
-        );
-    }
 
     let mut active_cred: Option<StoredRdpCredential> = None;
 
@@ -1384,14 +2042,55 @@ pub fn resolve_peer_scope(
             org_id,
             device_id,
             device_name,
+            rdp_available: None,
+            rdp_port: None,
+            rdp_cert_sha256: None,
         },
         dial_ip,
         status.overlay_socks5_port,
     ))
 }
 
+/// Enrich a [`ResolvedRdpDevice`] with server-reported RDP metadata
+/// (`rdp_available`, `rdp_port`, `rdp_cert_sha256`) from LocalAPI `devices` rows.
+pub fn enrich_device_rdp_metadata(
+    device: &mut ResolvedRdpDevice,
+    agent_id_hint: Option<&str>,
+    overlay_ip_hint: Option<&str>,
+    rows: &[localapi::DeviceRowLite],
+) {
+    let matched: Vec<&localapi::DeviceRowLite> = rows
+        .iter()
+        .filter(|r| {
+            (r.kind.is_empty() || r.kind.eq_ignore_ascii_case("agent"))
+                && (r
+                    .overlay_node_id
+                    .as_deref()
+                    .is_some_and(|nid| nid.eq_ignore_ascii_case(&device.device_id))
+                    || r.id.eq_ignore_ascii_case(&device.device_id)
+                    || agent_id_hint
+                        .filter(|s| !s.is_empty())
+                        .is_some_and(|aid| r.id.eq_ignore_ascii_case(aid))
+                    || overlay_ip_hint
+                        .filter(|s| !s.is_empty())
+                        .is_some_and(|ip| r.overlay_ip.as_deref() == Some(ip)))
+        })
+        .collect();
+    if matched.len() == 1 {
+        let row = matched[0];
+        device.rdp_available = row.rdp_available;
+        device.rdp_port = row.rdp_port.filter(|&p| p > 0);
+        device.rdp_cert_sha256 = row
+            .rdp_cert_sha256
+            .as_deref()
+            .and_then(|s| normalize_cert_sha256(s).ok());
+    }
+}
+
 /// Connect to the local MeshHarbor daemon (`meshharbord`) over LocalAPI and
-/// resolve `(ResolvedRdpDevice, dial_ip, overlay_socks5_port)` for `target_host`.
+/// resolve `(ResolvedRdpDevice, dial_ip, overlay_socks5_port)` for `target_host`,
+/// enriching RDP port/certificate metadata from `GET /api/agent/self/devices`
+/// when available within a bounded 1.5 s window.
 pub async fn resolve_target_device(
     target_host: &str,
 ) -> Result<(ResolvedRdpDevice, String, Option<u16>)> {
@@ -1406,7 +2105,37 @@ pub async fn resolve_target_device(
         .peers()
         .await
         .context("failed to query local daemon peer list for device identity")?;
-    resolve_peer_scope(&status, &peers, target_host)
+    let (mut device, dial_ip, socks_port) = resolve_peer_scope(&status, &peers, target_host)?;
+
+    let matched_peer = peers.iter().find(|p| {
+        p.overlay_ip.as_deref() == Some(dial_ip.as_str())
+            && (p.node_id.eq_ignore_ascii_case(&device.device_id)
+                || p.agent_id
+                    .as_deref()
+                    .is_some_and(|aid| aid.eq_ignore_ascii_case(&device.device_id)))
+    });
+    let org_label = matched_peer
+        .map(|p| p.org.trim())
+        .filter(|o| !o.is_empty() && !o.eq_ignore_ascii_case(crate::config::PRIMARY_ORG_LABEL))
+        .unwrap_or("");
+    let agent_id_hint = matched_peer.and_then(|p| p.agent_id.as_deref());
+    let query = localapi::DevicesQuery {
+        page: 1,
+        per_page: 100,
+        q: Some(dial_ip.clone()),
+        sort: None,
+        dir: None,
+    };
+    if let Ok(Ok(page)) = tokio::time::timeout(
+        Duration::from_millis(1500),
+        client.devices(org_label, &query),
+    )
+    .await
+    {
+        enrich_device_rdp_metadata(&mut device, agent_id_hint, Some(&dial_ip), &page.items);
+    }
+
+    Ok((device, dial_ip, socks_port))
 }
 
 /// Phase C no-op credential store: credentials are always prompted directly by
@@ -1476,21 +2205,21 @@ pub fn build_open_rdp_options(
         (Some(o), false) => format!("{o}/{raw_target}"),
         _ => raw_target.to_string(),
     };
-    let effective_port = port.filter(|&p| p > 0).unwrap_or(3389);
-    let effective_cert = if platform.trim().eq_ignore_ascii_case("windows") {
-        None
-    } else {
-        cert_sha256
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToOwned::to_owned)
-    };
+    let explicit_port = port.filter(|&p| p > 0);
+    let effective_port = explicit_port.unwrap_or(3389);
+    let _ = platform;
+    let effective_cert = cert_sha256
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
     Ok(RdpCliOptions {
         target: selector,
         user: None,
         domain: None,
         port: effective_port,
+        explicit_port,
         cert_sha256: effective_cert,
+        check: false,
         save_credentials: false,
         use_saved_credentials: false,
         clear_credentials: false,
@@ -1601,6 +2330,7 @@ mod tests {
             org_id: "66366f7a7230306d6c657231".to_string(),
             device_id: "66366f7a7230306d6c657232".to_string(),
             device_name: "surface-pro".to_string(),
+            ..Default::default()
         };
         let tunnel_addr: SocketAddr = "127.77.12.34:54321".parse().unwrap();
         let cert_fp = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99";
@@ -1715,16 +2445,19 @@ mod tests {
             org_id: "66366f7a7230306d6c657231".to_string(),
             device_id: "66366f7a7230306d6c657232".to_string(),
             device_name: "surface-pro".to_string(),
+            ..Default::default()
         };
         let dev_a_upper = ResolvedRdpDevice {
             org_id: "66366F7A7230306D6C657231".to_string(),
             device_id: "66366F7A7230306D6C657232".to_string(),
             device_name: "surface-pro".to_string(),
+            ..Default::default()
         };
         let dev_b = ResolvedRdpDevice {
             org_id: "66366f7a7230306d6c657231".to_string(),
             device_id: "66366f7a7230306d6c657299".to_string(),
             device_name: "workstation-b".to_string(),
+            ..Default::default()
         };
 
         assert!(!registry.is_active(&dev_a));
@@ -1756,5 +2489,582 @@ mod tests {
         drop(guard_b);
         assert!(!registry.is_active(&dev_a));
         assert!(!registry.is_active(&dev_b));
+    }
+
+    fn generate_test_cert(
+        cn: &str,
+    ) -> (
+        CertificateDer<'static>,
+        rustls_pki_types::PrivateKeyDer<'static>,
+        String,
+    ) {
+        let certified = rcgen::generate_simple_self_signed(vec![cn.to_string()]).unwrap();
+        let cert_der = CertificateDer::from(certified.cert.der().to_vec());
+        let fp = format_sha256_colon_hex(cert_der.as_ref());
+        let key = rustls_pki_types::PrivateKeyDer::Pkcs8(
+            rustls_pki_types::PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()),
+        );
+        (cert_der, key, fp)
+    }
+
+    fn x224_cc_neg_rsp(selected_protocol: u32) -> [u8; 19] {
+        let p = selected_protocol.to_le_bytes();
+        [
+            0x03, 0x00, 0x00, 0x13, // TPKT v3, len=19
+            0x0e, // LI=14
+            0xd0, // X.224 CC
+            0x00, 0x00, 0x12, 0x34, 0x00, // refs + class
+            0x02, // TYPE_RDP_NEG_RSP
+            0x00, // flags
+            0x08, 0x00, // length=8 (LE)
+            p[0], p[1], p[2], p[3],
+        ]
+    }
+
+    fn x224_cc_neg_failure(failure_code: u32) -> [u8; 19] {
+        let c = failure_code.to_le_bytes();
+        [
+            0x03, 0x00, 0x00, 0x13, // TPKT v3, len=19
+            0x0e, // LI=14
+            0xd0, // X.224 CC
+            0x00, 0x00, 0x12, 0x34, 0x00, 0x03, // TYPE_RDP_NEG_FAILURE
+            0x00, 0x08, 0x00, c[0], c[1], c[2], c[3],
+        ]
+    }
+
+    #[tokio::test]
+    async fn precheck_valid_cert_passes_and_same_loopback_listener_serves_second_tls_connection() {
+        let (cert_der, key_der, good_fp) = generate_test_cert("surface-rdp.local");
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let srv_tls = rustls::ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], key_der)
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(srv_tls));
+
+        let upstream = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<usize>();
+        let served_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let served_clone = Arc::clone(&served_count);
+        let srv_task = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = upstream.accept().await {
+                let acc = acceptor.clone();
+                let ctr = Arc::clone(&served_clone);
+                let tx = done_tx.clone();
+                tokio::spawn(async move {
+                    let mut req = [0u8; 19];
+                    stream.read_exact(&mut req).await.unwrap();
+                    assert_eq!(req, X224_TLS_CONNECTION_REQUEST);
+                    stream
+                        .write_all(&x224_cc_neg_rsp(X224_PROTOCOL_HYBRID))
+                        .await
+                        .unwrap();
+                    let mut tls = acc.accept(stream).await.unwrap();
+                    let n = ctr.fetch_add(1, Ordering::SeqCst) + 1;
+                    let _ = tx.send(n);
+                    let _ = tls.shutdown().await;
+                });
+            }
+        });
+
+        let tunnel_listener = bind_unique_session_loopback_listener().await.unwrap();
+        let local_addr = tunnel_listener.local_addr().unwrap();
+        let (pump, probe) = spawn_rdp_loopback_tunnel_with_probe(
+            tunnel_listener,
+            "127.0.0.1".to_string(),
+            upstream_port,
+            None,
+        );
+
+        // Connection #1: pre-check verifies pinned leaf SHA-256 over `127.77.x.y:<port>`.
+        let out1 = precheck_rdp_tunnel_tls(
+            local_addr,
+            &probe,
+            "surface-rdp",
+            upstream_port,
+            Some(&good_fp),
+        )
+        .await
+        .expect("connection #1 precheck should succeed");
+        assert!(out1.pinned_verified);
+        assert_eq!(out1.selected_protocol, X224_PROTOCOL_HYBRID);
+        assert_eq!(out1.leaf_cert_sha256.as_deref(), Some(good_fp.as_str()));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), done_rx.recv())
+                .await
+                .unwrap(),
+            Some(1)
+        );
+
+        // Connection #2 (`V0028 §3`): second X.224 + TLS connection on the EXACT SAME
+        // `127.77.x.y:<port>` listener (simulating `mstsc.exe` connecting right after precheck).
+        let out2 = precheck_rdp_tunnel_tls(
+            local_addr,
+            &probe,
+            "surface-rdp",
+            upstream_port,
+            Some(&good_fp),
+        )
+        .await
+        .expect("connection #2 on same 127.77.x.y listener should succeed");
+        assert!(out2.pinned_verified);
+        assert_eq!(out2.leaf_cert_sha256.as_deref(), Some(good_fp.as_str()));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), done_rx.recv())
+                .await
+                .unwrap(),
+            Some(2)
+        );
+        assert_eq!(served_count.load(Ordering::SeqCst), 2);
+
+        pump.abort();
+        srv_task.abort();
+    }
+
+    #[tokio::test]
+    async fn precheck_fails_closed_on_cert_fingerprint_mismatch() {
+        let (cert_a, key_a, actual_fp) = generate_test_cert("rdp-actual.local");
+        let (_cert_b, _key_b, expected_fp) = generate_test_cert("rdp-expected.local");
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let srv_tls = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_a], key_a)
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(srv_tls));
+
+        let upstream = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
+        let srv_task = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = upstream.accept().await {
+                let mut req = [0u8; 19];
+                stream.read_exact(&mut req).await.unwrap();
+                stream
+                    .write_all(&x224_cc_neg_rsp(X224_PROTOCOL_SSL))
+                    .await
+                    .unwrap();
+                if let Ok(mut tls) = acceptor.accept(stream).await {
+                    let _ = tls.shutdown().await;
+                }
+            }
+        });
+
+        let listener = bind_unique_session_loopback_listener().await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
+        let (pump, probe) = spawn_rdp_loopback_tunnel_with_probe(
+            listener,
+            "127.0.0.1".to_string(),
+            upstream_port,
+            None,
+        );
+
+        let err = precheck_rdp_tunnel_tls(
+            local_addr,
+            &probe,
+            "target-mismatch",
+            upstream_port,
+            Some(&expected_fp),
+        )
+        .await
+        .expect_err("mismatched fingerprint must fail closed");
+        match &err {
+            RdpPrecheckError::FingerprintMismatch {
+                expected, actual, ..
+            } => {
+                assert_eq!(expected, &expected_fp);
+                assert_eq!(actual, &actual_fp);
+            }
+            other => panic!("expected FingerprintMismatch, got {other:?}"),
+        }
+        assert!(err.to_string().contains("指纹不匹配"));
+
+        pump.abort();
+        srv_task.abort();
+    }
+
+    #[tokio::test]
+    async fn precheck_fails_closed_on_protocol_rdp_downgrade_and_neg_failure() {
+        for (label, response_bytes) in [
+            ("protocol_rdp_0", x224_cc_neg_rsp(X224_PROTOCOL_RDP)),
+            ("neg_failure_2", x224_cc_neg_failure(0x0000_0002)),
+        ] {
+            let upstream = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
+            let upstream_port = upstream.local_addr().unwrap().port();
+            let srv_task = tokio::spawn(async move {
+                if let Ok((mut stream, _)) = upstream.accept().await {
+                    let mut req = [0u8; 19];
+                    let _ = stream.read_exact(&mut req).await;
+                    let _ = stream.write_all(&response_bytes).await;
+                }
+            });
+
+            let listener = bind_unique_session_loopback_listener().await.unwrap();
+            let local_addr = listener.local_addr().unwrap();
+            let (pump, probe) = spawn_rdp_loopback_tunnel_with_probe(
+                listener,
+                "127.0.0.1".to_string(),
+                upstream_port,
+                None,
+            );
+
+            let err = precheck_rdp_tunnel_tls(local_addr, &probe, label, upstream_port, None)
+                .await
+                .expect_err("downgrade or neg_failure must fail closed");
+            assert!(
+                matches!(err, RdpPrecheckError::ProtocolDowngrade { .. }),
+                "case {label}: expected ProtocolDowngrade, got {err:?}"
+            );
+            assert!(err.to_string().contains("降级") || err.to_string().contains("拒绝 TLS"));
+
+            pump.abort();
+            srv_task.abort();
+        }
+    }
+
+    #[derive(Debug)]
+    struct MismatchedKeyCertResolver(Arc<rustls::sign::CertifiedKey>);
+
+    impl rustls::server::ResolvesServerCert for MismatchedKeyCertResolver {
+        fn resolve(
+            &self,
+            _client_hello: rustls::server::ClientHello<'_>,
+        ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+            Some(Arc::clone(&self.0))
+        }
+    }
+
+    #[tokio::test]
+    async fn precheck_fails_closed_on_invalid_tls_signature_or_legacy_tls_version() {
+        // Subcase A: Server presents `cert_a` (even matching `expected_fp`!),
+        // but signs the TLS handshake transcript with `key_b` (wrong private key).
+        // `ring` handshake signature verification must reject with `TlsInvalid`.
+        let (cert_a, _key_a, fp_a) = generate_test_cert("cert-a.local");
+        let (_cert_b, key_b, _fp_b) = generate_test_cert("cert-b.local");
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let signing_key_b = provider.key_provider.load_private_key(key_b).unwrap();
+        let forged_ck = Arc::new(rustls::sign::CertifiedKey::new(vec![cert_a], signing_key_b));
+        let srv_tls = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(MismatchedKeyCertResolver(forged_ck)));
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(srv_tls));
+
+        let upstream_a = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port_a = upstream_a.local_addr().unwrap().port();
+        let srv_a = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = upstream_a.accept().await {
+                let mut req = [0u8; 19];
+                let _ = stream.read_exact(&mut req).await;
+                let _ = stream
+                    .write_all(&x224_cc_neg_rsp(X224_PROTOCOL_HYBRID))
+                    .await;
+                let _ = acceptor.accept(stream).await;
+            }
+        });
+        let listener_a = bind_unique_session_loopback_listener().await.unwrap();
+        let addr_a = listener_a.local_addr().unwrap();
+        let (pump_a, probe_a) =
+            spawn_rdp_loopback_tunnel_with_probe(listener_a, "127.0.0.1".into(), port_a, None);
+
+        let err_a = precheck_rdp_tunnel_tls(addr_a, &probe_a, "bad-sig", port_a, Some(&fp_a))
+            .await
+            .expect_err("forged TLS signature must fail closed even if cert DER matches");
+        assert!(
+            matches!(err_a, RdpPrecheckError::TlsInvalid { .. }),
+            "expected TlsInvalid for forged signature, got {err_a:?}"
+        );
+        pump_a.abort();
+        srv_a.abort();
+
+        // Subcase B: Server attempts TLS 1.0 (0x0301) ServerHello downgrade after X.224 CC.
+        let upstream_b = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port_b = upstream_b.local_addr().unwrap().port();
+        let srv_b = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = upstream_b.accept().await {
+                let mut req = [0u8; 19];
+                let _ = stream.read_exact(&mut req).await;
+                let _ = stream.write_all(&x224_cc_neg_rsp(X224_PROTOCOL_SSL)).await;
+                // Read part of ClientHello, then emit a TLS 1.0 (0x03, 0x01) ServerHello record.
+                let mut ch_hdr = [0u8; 5];
+                let _ = stream.read_exact(&mut ch_hdr).await;
+                let tls10_server_hello = [
+                    0x16, 0x03, 0x01, 0x00, 0x2a, // Handshake record, TLS 1.0, len=42
+                    0x02, 0x00, 0x00, 0x26, // ServerHello, len=38
+                    0x03, 0x01, // server_version = TLS 1.0 (0x0301)
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // random (32B)
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,    //
+                    0x00, // session_id len = 0
+                    0x00, 0x2f, // cipher_suite TLS_RSA_WITH_AES_128_CBC_SHA
+                    0x00, // compression = null
+                ];
+                let _ = stream.write_all(&tls10_server_hello).await;
+            }
+        });
+        let listener_b = bind_unique_session_loopback_listener().await.unwrap();
+        let addr_b = listener_b.local_addr().unwrap();
+        let (pump_b, probe_b) =
+            spawn_rdp_loopback_tunnel_with_probe(listener_b, "127.0.0.1".into(), port_b, None);
+
+        let err_b = precheck_rdp_tunnel_tls(addr_b, &probe_b, "tls10-host", port_b, None)
+            .await
+            .expect_err("TLS 1.0 downgrade must fail closed");
+        assert!(
+            matches!(err_b, RdpPrecheckError::TlsInvalid { .. }),
+            "expected TlsInvalid for TLS 1.0 ServerHello, got {err_b:?}"
+        );
+        pump_b.abort();
+        srv_b.abort();
+    }
+
+    #[tokio::test]
+    async fn precheck_fails_closed_on_post_tcp_handshake_timeout() {
+        let upstream = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
+        let srv_task = tokio::spawn(async move {
+            if let Ok((_stalled_stream, _)) = upstream.accept().await {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+
+        let listener = bind_unique_session_loopback_listener().await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
+        let (pump, probe) = spawn_rdp_loopback_tunnel_with_probe(
+            listener,
+            "127.0.0.1".to_string(),
+            upstream_port,
+            None,
+        );
+
+        let err = precheck_rdp_tunnel_tls_with_timeout(
+            local_addr,
+            &probe,
+            "stalled-rdp",
+            upstream_port,
+            None,
+            Duration::from_millis(250),
+        )
+        .await
+        .expect_err("post-TCP stall must time out fail-closed");
+        assert!(
+            matches!(err, RdpPrecheckError::Timeout { .. }),
+            "expected Timeout, got {err:?}"
+        );
+        assert!(err.to_string().contains("超时"));
+
+        pump.abort();
+        srv_task.abort();
+    }
+
+    #[tokio::test]
+    async fn precheck_fails_closed_when_target_port_or_socks5_mesh_is_unreachable() {
+        // Subcase A: SOCKS5 proxy returns REP=0x04 (Host unreachable) when target daemon is offline.
+        let socks_srv = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let socks_port = socks_srv.local_addr().unwrap().port();
+        let srv_a = tokio::spawn(async move {
+            while let Ok((mut s, _)) = socks_srv.accept().await {
+                tokio::spawn(async move {
+                    let mut greet = [0u8; 3];
+                    let _ = s.read_exact(&mut greet).await;
+                    let _ = s.write_all(&[0x05, 0x00]).await;
+                    let mut head = [0u8; 5];
+                    if s.read_exact(&mut head).await.is_ok() {
+                        let dlen = head[4] as usize;
+                        let mut rest = vec![0u8; dlen + 2];
+                        let _ = s.read_exact(&mut rest).await;
+                        // Reply REP=0x04 (Host unreachable)
+                        let _ = s
+                            .write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                            .await;
+                    }
+                });
+            }
+        });
+
+        let listener_a = bind_unique_session_loopback_listener().await.unwrap();
+        let addr_a = listener_a.local_addr().unwrap();
+        let (pump_a, probe_a) = spawn_rdp_loopback_tunnel_with_probe(
+            listener_a,
+            "100.64.0.77".to_string(),
+            3389,
+            Some(socks_port),
+        );
+
+        let err_a = precheck_rdp_tunnel_tls(addr_a, &probe_a, "offline-box", 3389, None)
+            .await
+            .expect_err("offline SOCKS5 target must fail closed");
+        assert!(
+            matches!(err_a, RdpPrecheckError::Unreachable { .. }),
+            "expected Unreachable, got {err_a:?}"
+        );
+        assert!(
+            err_a.to_string().contains("经网格无法连到目标 RDP 端口"),
+            "unexpected message: {err_a}"
+        );
+
+        let err_reach = precheck_rdp_tunnel_reachability(addr_a, &probe_a, "offline-box", 3389)
+            .await
+            .expect_err("reachability check on offline target must also fail closed");
+        assert!(
+            err_reach
+                .to_string()
+                .contains("经网格无法连到目标 RDP 端口"),
+            "unexpected reachability error: {err_reach}"
+        );
+        pump_a.abort();
+        srv_a.abort();
+
+        // Subcase B: SOCKS5 proxy stalls during CONNECT (stopped remote WireGuard daemon
+        // drops SYN packets silently) -> fails within timeout budget with `Unreachable`.
+        let blackhole_socks = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let bh_port = blackhole_socks.local_addr().unwrap().port();
+        let srv_b = tokio::spawn(async move {
+            if let Ok((mut s, _)) = blackhole_socks.accept().await {
+                let mut greet = [0u8; 3];
+                let _ = s.read_exact(&mut greet).await;
+                let _ = s.write_all(&[0x05, 0x00]).await;
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+        let listener_b = bind_unique_session_loopback_listener().await.unwrap();
+        let addr_b = listener_b.local_addr().unwrap();
+        let (pump_b, probe_b) = spawn_rdp_loopback_tunnel_with_probe(
+            listener_b,
+            "100.64.0.88".to_string(),
+            3389,
+            Some(bh_port),
+        );
+        let err_b = precheck_rdp_tunnel_tls_with_timeout(
+            addr_b,
+            &probe_b,
+            "stopped-daemon-box",
+            3389,
+            None,
+            Duration::from_millis(250),
+        )
+        .await
+        .expect_err("blackholed mesh CONNECT must fail within budget");
+        assert!(
+            matches!(err_b, RdpPrecheckError::Unreachable { .. }),
+            "expected Unreachable when upstream never connected, got {err_b:?}"
+        );
+        assert!(err_b.to_string().contains("经网格无法连到目标 RDP 端口"));
+        pump_b.abort();
+        srv_b.abort();
+    }
+
+    #[tokio::test]
+    async fn session_loopback_listener_is_unique_127_77_on_windows_and_localhost_elsewhere() {
+        let a = bind_unique_session_loopback_listener().await.unwrap();
+        let b = bind_unique_session_loopback_listener().await.unwrap();
+        let (sa, sb) = (a.local_addr().unwrap(), b.local_addr().unwrap());
+        assert!(sa.ip().is_loopback() && sb.ip().is_loopback());
+        assert_ne!(
+            sa, sb,
+            "two concurrent sessions must never share a listener"
+        );
+        if cfg!(windows) {
+            for ip in [sa.ip(), sb.ip()] {
+                match ip {
+                    std::net::IpAddr::V4(v4) => assert_eq!(v4.octets()[..2], [127, 77]),
+                    std::net::IpAddr::V6(_) => panic!("session loopback must be IPv4"),
+                }
+            }
+            assert_ne!(
+                sa.ip(),
+                sb.ip(),
+                "Windows TERMSRV/<ip> targets must stay unique per session"
+            );
+        } else {
+            // macOS has only 127.0.0.1 on lo0; a 127.77.x.y bind would fail there.
+            let localhost = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+            assert_eq!(sa.ip(), localhost);
+            assert_eq!(sb.ip(), localhost);
+        }
+    }
+
+    #[test]
+    fn enrich_device_rdp_metadata_and_precedence_rules() {
+        let server_fp = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+        let cli_fp = "11:22:33:44:55:66:77:88:99:00:AA:BB:CC:DD:EE:FF:11:22:33:44:55:66:77:88:99:00:AA:BB:CC:DD:EE:FF";
+
+        let mut dev = ResolvedRdpDevice {
+            org_id: "66366f7a7230306d6c657231".into(),
+            device_id: "node-surface-01".into(),
+            device_name: "surface-pro".into(),
+            ..Default::default()
+        };
+        let row = localapi::DeviceRowLite {
+            kind: "agent".into(),
+            id: "66366f7a7230306d6c657232".into(),
+            name: "surface-pro".into(),
+            overlay_ip: Some("100.64.0.12".into()),
+            overlay_node_id: Some("node-surface-01".into()),
+            rdp_available: Some(true),
+            rdp_port: Some(13389),
+            rdp_cert_sha256: Some(server_fp.into()),
+            ..Default::default()
+        };
+        enrich_device_rdp_metadata(
+            &mut dev,
+            Some("66366f7a7230306d6c657232"),
+            Some("100.64.0.12"),
+            &[row],
+        );
+        assert_eq!(dev.rdp_available, Some(true));
+        assert_eq!(dev.rdp_port, Some(13389));
+        assert_eq!(
+            dev.rdp_cert_sha256.as_deref(),
+            Some(normalize_cert_sha256(server_fp).unwrap().as_str())
+        );
+
+        let default_opts = RdpCliOptions {
+            target: "surface-pro".into(),
+            port: 3389,
+            explicit_port: None,
+            ..Default::default()
+        };
+        assert_eq!(effective_rdp_port(&default_opts, &dev), 13389);
+        assert_eq!(
+            effective_pinned_cert_sha256(&default_opts, &dev)
+                .unwrap()
+                .as_deref(),
+            Some(normalize_cert_sha256(server_fp).unwrap().as_str())
+        );
+
+        let override_opts = RdpCliOptions {
+            target: "surface-pro".into(),
+            port: 23389,
+            explicit_port: Some(23389),
+            cert_sha256: Some(cli_fp.into()),
+            ..Default::default()
+        };
+        assert_eq!(effective_rdp_port(&override_opts, &dev), 23389);
+        assert_eq!(
+            effective_pinned_cert_sha256(&override_opts, &dev)
+                .unwrap()
+                .as_deref(),
+            Some(normalize_cert_sha256(cli_fp).unwrap().as_str())
+        );
     }
 }

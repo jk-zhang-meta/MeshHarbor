@@ -64,6 +64,7 @@ pub mod graph;
 pub mod growth;
 pub mod guards;
 pub mod hooks;
+pub mod ice_zones;
 pub mod job;
 pub mod module;
 pub mod net;

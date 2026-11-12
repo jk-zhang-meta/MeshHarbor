@@ -422,6 +422,9 @@ libc = "0.2"
 # FR-97 P3e adds `xkb`: the keyboard layout an X11 desktop has in use (its
 # locked group) and the switch to another (`input::layout_x11`).
 [target.'cfg(target_os = "linux")'.dependencies]
+# Watchdog stall dumps (`thread_dump`): each thread records its own return
+# addresses in a signal handler; already in the lockfile, no new package.
+backtrace = "0.3"
 x11rb = { version = "0.13", features = ["damage", "screensaver", "randr", "xkb"], optional = true }
 
 # FR-96 security review (#2055) — the root update helper stages each download in

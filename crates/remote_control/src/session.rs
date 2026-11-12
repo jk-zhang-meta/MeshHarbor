@@ -123,6 +123,9 @@ pub struct LiveSession {
     device_share_scope: Option<DeviceShareSessionScope>,
     share_watch_started: bool,
     shared_lease_epoch: Option<String>,
+    // MeshHarbor — the share account a shared session's file operations run
+    // as on the device, frozen with the lease (`SharedSessionLease::account`).
+    shared_files_account: Option<String>,
     pub phase: SessionPhase,
     pub created_at: DateTime,
     pub started_at: Option<DateTime>,
@@ -228,6 +231,28 @@ impl LiveSession {
         self.shared_lease_epoch = Some(epoch);
         Ok(())
     }
+    /// The share account this shared session's file operations run as.
+    pub fn shared_files_account(&self) -> Option<&str> {
+        self.shared_files_account.as_deref()
+    }
+    /// Freeze the share account into the session, once, before publication:
+    /// only a share-bound session carries one, and a second, different value
+    /// is refused, as a second lease epoch is.
+    pub fn set_shared_files_account(&mut self, account: Option<String>) -> Result<()> {
+        let Some(account) = account else {
+            return Ok(());
+        };
+        if self.device_share_scope.is_none()
+            || self
+                .shared_files_account
+                .as_ref()
+                .is_some_and(|a| a != &account)
+        {
+            return Err(Error::PermissionDenied("immutable shared files account"));
+        }
+        self.shared_files_account = Some(account);
+        Ok(())
+    }
     pub fn permissions(&self) -> Permissions {
         self.permissions
     }
@@ -301,6 +326,7 @@ impl LiveSession {
             device_share_scope: None,
             share_watch_started: false,
             shared_lease_epoch: None,
+            shared_files_account: None,
             phase: SessionPhase::Pending,
             created_at: DateTime::now(),
             started_at: None,

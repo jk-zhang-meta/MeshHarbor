@@ -19,8 +19,10 @@ path = "src/lib.rs"
 # `meshharbord` re-exports every module here under its old `crate::` path,
 # so agent-internal call sites are unchanged.
 #
-# Keep this crate daemon-free: no capture, no encode, no input, no transport.
-# The one designed exception is the OPTIONAL tunnel-core dep below, gated on
+# Keep this crate daemon-free: no capture, no encode, no input, no WebRTC/QUIC
+# transport. `rdp_client` uses ring-only `rustls` + `tokio-rustls` (already in
+# Cargo.lock, zero aws-lc-rs) for the pre-`mstsc` X.224 + TLS certificate check.
+# The one optional data-plane dep is `meshharbor-tunnel-core` below, gated on
 # the overlay features, for minting a WireGuard identity at org-append time.
 [dependencies]
 # Rule shapes (DestinationRule/HostPattern/PortRange) + dst_matches for the
@@ -46,6 +48,9 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 bson = { workspace = true }
 tokio = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-pki-types = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -85,3 +90,4 @@ optional = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
+rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem"] }

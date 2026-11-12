@@ -160,12 +160,16 @@ Details worth knowing:
   loop, and the device went offline. To rescue a host in that state, run
   `meshharbord enable-system-context` from an elevated shell. Start `msiexec` with
   `Start-Process -Wait -PassThru` so the exit code you read is the installer's.
-- **The private network is on by default for the two machine roles** (FR-84 S2):
-  the Advanced **overlay** box follows the role — checked for *Daemon — system* and
-  *Daemon — machine*, unchecked for *Daemon — per user* (the WireGuard adapter
-  needs a service install; a per-user host can still join through the userspace
-  netstack) — until you touch it, after which your choice sticks across role
-  changes. The served `install.ps1` / `install.sh` keep their own defaults.
+- **The private network is on by default for every daemon role** (FR-84 S2):
+  the Advanced **overlay** box starts checked for *Daemon — system*, *Daemon —
+  machine* and *Daemon — per user* until you touch it, after which your choice
+  sticks across role changes. A per-user daemon cannot create the WireGuard
+  adapter, so it joins through the userspace netstack: the same mesh behind a
+  loopback SOCKS5 front, with no TUN, no routes and no firewall rule. The SOCKS5
+  port is picked at start (`mh status --json` reports it as
+  `overlay_socks5_port`). `install.ps1 -Role daemon-user` does the same
+  (`-NoOverlay` opts out); the script's machine roles and `install.sh` keep the
+  daemon's own default (off).
 - **The wizard ships with every agent release** (FR-84 S1): `agent-v<V>` also
   publishes `setup-v<V>` at the same commit, so `/api/setup/*` serves a wizard as
   new as the daemon it installs.

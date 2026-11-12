@@ -214,7 +214,7 @@ pub async fn handle_agent_socket(
     let business_observation = meshharbor_core::business_authority::ObservationTask::spawn({
         let (state, origin, conn_id) = (state.clone(), connection_origin.clone(), conn_id.clone());
         async move {
-            observe_business_connection(
+            let device = observe_business_connection(
                 &state,
                 tenant_id,
                 agent_id,
@@ -223,7 +223,17 @@ pub async fn handle_agent_socket(
                 &origin,
                 &conn_id,
             )
-            .await
+            .await;
+            // MeshHarbor #21 relay locality: the hub hands this agent (and its
+            // controllers) only ICE servers in the zone this connection was
+            // observed in. No evidence, no zone: the hub then hands out none.
+            let zone = device.as_ref().and_then(|d| {
+                meshharbor_core::business_authority::connection_zone(&state.core, d, &conn_id)
+            });
+            state
+                .rc_hub
+                .set_agent_business_zone(agent_id, &conn_id, zone);
+            device
         }
     });
 
@@ -618,6 +628,7 @@ pub async fn handle_agent_socket(
         lock_on_end: None,
         org_session_cap: None,
         slot: None,
+        share_files_account: None,
     };
 
     // Phase A-1 — server-side receive-liveness, symmetric to the agent's
@@ -1189,6 +1200,7 @@ pub async fn handle_agent_socket(
     } else {
         debug!(%agent_id, "teardown skipped Offline+presence (newer connection owns the slot)");
     }
+    state.rc_hub.clear_agent_business_zone(agent_id, &conn_id);
     business_observation.finish(&state.core, &conn_id).await;
     info!(%agent_id, "remote-control agent WS disconnected");
 }

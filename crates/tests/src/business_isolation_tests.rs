@@ -44,6 +44,34 @@ impl Rig {
         isolation: &'static str,
         unknown_role: &'static str,
     ) -> Self {
+        Self::up_full(slug, isolation, unknown_role, None, None).await
+    }
+
+    /// `up`, with the legacy TURN config set to `turn_url` (a shared secret
+    /// included, so credentials are minted) and `app.rc_ice_zone_mode` set.
+    async fn up_with_turn(
+        slug: &str,
+        isolation: &'static str,
+        turn_url: &'static str,
+        rc_ice_zone_mode: &'static str,
+    ) -> Self {
+        Self::up_full(
+            slug,
+            isolation,
+            "warn",
+            Some(turn_url),
+            Some(rc_ice_zone_mode),
+        )
+        .await
+    }
+
+    async fn up_full(
+        slug: &str,
+        isolation: &'static str,
+        unknown_role: &'static str,
+        turn_url: Option<&'static str>,
+        rc_ice_zone_mode: Option<&'static str>,
+    ) -> Self {
         let geo = tempfile::tempdir().unwrap();
         let mmdb = geo.path().join("dbip-country-lite.mmdb");
         std::fs::write(&mmdb, fixture_mmdb()).unwrap();
@@ -57,6 +85,13 @@ impl Rig {
             s.app.business_isolation = isolation.into();
             s.app.business_unknown_role = unknown_role.into();
             s.stats.geoip_mmdb = Some(mmdb);
+            if let Some(url) = turn_url {
+                s.turn.url = Some(url.into());
+                s.turn.shared_secret = Some("ice-zone-fixture-secret".into());
+            }
+            if let Some(mode) = rc_ice_zone_mode {
+                s.app.rc_ice_zone_mode = mode.into();
+            }
         })
         .await;
         let owner = approved_user(&app, &format!("{slug}_owner"), Some(owner_id)).await;
@@ -8467,7 +8502,14 @@ async fn run_multihop_discovery_bilateral_client_wg(flipped: bool, restart_liste
             assert_eq!(native[1].session_counts().sessions_installed,0);
             line_join(&mut relays[1],11,&format!("223.6.6.7:{port}"),
                 json!({"relay_backbone_ready":true,"relay_port":port})).await;
-            assert_observed(&rig.app,&agents[1],Some(CN_R)).await;
+            // No `assert_observed` here: this is the SAME relay WS whose
+            // placement was asserted at connect, and its observation row is
+            // deleted by the TTL index 60 s after capture
+            // (`OBSERVATION_TTL_MILLIS`), while the zone it observed lives on
+            // for the connection (`auto_zone_evidence_outlives_the_expiring_
+            // observation_row`). Re-reading the row passed or failed on whether
+            // Mongo's TTL monitor had run yet. The re-mint below is what proves
+            // the zone is still known.
             assert_eq!(rig.node(&format!("{slug}-r1")).await,nodes[1]);
 
             // Keep the SAME live member owners, WG state and authenticated WS.
@@ -11030,8 +11072,15 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
 /// Full legacy member runtimes own discovery, WG, carrier health and retries.
 /// The enclosing disposable network namespace supplies only the ingress/exit
 /// public aliases; the middle's advertised member endpoint is unreachable.
+///
+/// Ignored in a plain `cargo test`, which has none of that: run it with
+/// `scripts/netns-integration-test.sh <meshharbor_tests binary> \
+///   business_isolation_tests::legacy_three_relay_runtime_recovers_automatically_after_middle_restart \
+///   223.6.6.6,1.1.1.1 MESHHARBORD_PATH_TRIAL=1 MESHHARBORD_OVERLAY_BACKBONE_ENABLED=1 \
+///   MESHHARBORD_OVERLAY_DIRECT=0`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(target_os = "linux")]
+#[ignore = "needs scripts/netns-integration-test.sh: a namespace NIC carrying the ingress/exit aliases, MESHHARBORD_PATH_TRIAL=1, MESHHARBORD_OVERLAY_BACKBONE_ENABLED=1, MESHHARBORD_OVERLAY_DIRECT=0"]
 async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart() {
     use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     use meshharbord::relay_server::backbone_test_support::{
@@ -11155,12 +11204,14 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
             }
         }
     }
+    /// `(relay, reachable, rtt_ms)` as each member reported its probes.
+    type ProbeLog = Arc<StdMutex<Vec<(ObjectId, bool, Option<u32>)>>>;
     struct Member {
         handle: NetstackHandle,
         view: watch::Receiver<OverlayView>,
         requests: Arc<StdMutex<Vec<ObjectId>>>,
         join_caps: Arc<StdMutex<Vec<Value>>>,
-        probes: Arc<StdMutex<Vec<(ObjectId, bool, Option<u32>)>>>,
+        probes: ProbeLog,
         metadata_seen: Arc<AtomicBool>,
         forbidden_carrier: Arc<AtomicBool>,
         runtime: usize,
@@ -11803,9 +11854,9 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
         tokio::time::timeout(Duration::from_secs(20),tcp64(&a.handle,&b.handle,b_ip,35201)).await.unwrap().unwrap();
         tokio::time::timeout(Duration::from_secs(20),tcp64(&b.handle,&a.handle,a_ip,35202)).await.unwrap().unwrap();
         let mut evidence=Vec::new();
-        for index in 0..2 {
+        for (index,relay) in native.iter().enumerate().take(2) {
             let hop=&recovered.hops[index];let generation=if index==0 {recovered.generation}else{recovered.hops[index-1].generation};
-            let (watch,sockets)=native[index].lock().await.bridge_evidence(hop.bridge_id,generation).unwrap();
+            let (watch,sockets)=relay.lock().await.bridge_evidence(hop.bridge_id,generation).unwrap();
             evidence.push((hop.bridge_id,watch,sockets));
         }
         trace.0.phase("modeoff");
@@ -12094,5 +12145,122 @@ async fn tunnel_roster_without_ws_uses_request_origin_inner() {
             BTreeSet::from([w_us_id, w_cn_id]),
             "no-WS unknown zone under warn must return devices as usual"
         );
+    }
+}
+
+/// MeshHarbor #21 relay locality: under `app.rc_ice_zone_mode = enforce`, the
+/// TURN/STUN servers a viewer is handed for a device (`/api/turn/credentials?agent_id=…`, the list
+/// the RC viewer builds its peer connection from) sit in that DEVICE's zone.
+/// The fixture's only TURN server is on a CN address: a CN device gets it, a
+/// US device does not, and a request that names no device gets nothing.
+#[tokio::test]
+async fn rc_ice_servers_stay_in_the_devices_zone() {
+    const CN_TURN: &str = "turn:223.5.5.6:3478";
+    let rig = Rig::up_with_turn("iceloc", "enforce", CN_TURN, "enforce").await;
+    // Enrolled and connected from each side of the line, as `Rig::device`
+    // does, keeping the agent ids.
+    let (cn_id, cn_tok) = enroll(&rig.app, &rig.seeded, "ice-cn").await;
+    let _cn = connect_from(&rig.app, &cn_tok, &[], Some(CN_A)).await;
+    assert_observed(&rig.app, &cn_id, Some(CN_A)).await;
+    let (us_id, us_tok) = enroll(&rig.app, &rig.seeded, "ice-us").await;
+    let _us = connect_from(&rig.app, &us_tok, &[], Some(US_A)).await;
+    assert_observed(&rig.app, &us_id, Some(US_A)).await;
+    let tid = rig.seeded.tenant_id.clone();
+    let creds = |agent: Option<String>| {
+        let app = &rig.app;
+        let tok = rig.seeded.admin.access_token.clone();
+        let tid = tid.clone();
+        async move {
+            let path = match agent {
+                Some(a) => format!("/api/turn/credentials?tenant_id={tid}&agent_id={a}"),
+                None => "/api/turn/credentials".to_string(),
+            };
+            let v: Value = app
+                .auth_get(&path, &tok)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            v["ice_servers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|s| s["urls"].as_array().unwrap().clone())
+                .map(|u| u.as_str().unwrap().to_owned())
+                .collect::<Vec<String>>()
+        }
+    };
+    // The host zones resolve in the background at boot; the CN device sees
+    // the CN TURN once they have.
+    let mut cn_urls = Vec::new();
+    for _ in 0..100 {
+        cn_urls = creds(Some(cn_id.clone())).await;
+        if cn_urls.iter().any(|u| u.starts_with("turn:223.5.5.6")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        cn_urls.iter().any(|u| u.starts_with("turn:223.5.5.6")),
+        "a CN device's viewer gets the CN TURN: {cn_urls:?}"
+    );
+    assert!(
+        cn_urls
+            .iter()
+            .all(|u| !u.contains("cloudflare") && !u.contains("google")),
+        "public STUN outside the line is withheld from a CN device: {cn_urls:?}"
+    );
+    let us_urls = creds(Some(us_id)).await;
+    assert!(
+        us_urls.iter().all(|u| !u.contains("223.5.5.6")),
+        "a US device's viewer never gets the CN TURN: {us_urls:?}"
+    );
+    assert!(
+        creds(None).await.is_empty(),
+        "naming no device names no zone, so nothing is handed out"
+    );
+}
+
+/// `app.rc_ice_zone_mode` is independent of `business_isolation`: with
+/// isolation ENFORCED, `warn` (the production default) and `off` still hand a
+/// US device's viewer the CN TURN, and a request that names no device still
+/// gets it. Only `rc_ice_zone_mode = enforce` withholds (the test above).
+#[tokio::test]
+async fn rc_ice_zone_warn_and_off_change_nothing_even_under_enforced_isolation() {
+    const CN_TURN: &str = "turn:223.5.5.6:3478";
+    for mode in ["warn", "off"] {
+        let rig = Rig::up_with_turn(&format!("icenop{mode}"), "enforce", CN_TURN, mode).await;
+        let (us_id, us_tok) = enroll(&rig.app, &rig.seeded, "ice-us").await;
+        let _us = connect_from(&rig.app, &us_tok, &[], Some(US_A)).await;
+        assert_observed(&rig.app, &us_id, Some(US_A)).await;
+        let tid = rig.seeded.tenant_id.clone();
+        let tok = rig.seeded.admin.access_token.clone();
+        for path in [
+            format!("/api/turn/credentials?tenant_id={tid}&agent_id={us_id}"),
+            "/api/turn/credentials".to_string(),
+        ] {
+            let v: Value = rig
+                .app
+                .auth_get(&path, &tok)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let urls: Vec<String> = v["ice_servers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|s| s["urls"].as_array().unwrap().clone())
+                .map(|u| u.as_str().unwrap().to_owned())
+                .collect();
+            assert!(
+                urls.iter().any(|u| u.starts_with("turn:223.5.5.6")),
+                "mode={mode} {path}: nothing may be withheld: {urls:?}"
+            );
+        }
     }
 }

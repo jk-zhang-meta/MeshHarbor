@@ -20,7 +20,9 @@ use std::sync::Arc;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
+use meshharbor_core::business_authority::BusinessZone;
 use meshharbor_core::cluster::session_slots::{Lease, SessionSlots};
+use meshharbor_core::ice_zones::{IceGateMode, IceServerZones};
 
 use meshharbor_remote_control::audit::AuditSink;
 use meshharbor_remote_control::consent::{
@@ -750,6 +752,36 @@ pub struct HubInner {
     /// affects download (and vice versa).
     file_child_download_disabled: std::sync::atomic::AtomicBool,
     file_child_upload_disabled: std::sync::atomic::AtomicBool,
+
+    /// MeshHarbor #21 — relay locality. Set once at startup when
+    /// `app.business_isolation` is not `off`; unset (tests, isolation off)
+    /// hands every ICE server out as before.
+    ice_gate: std::sync::OnceLock<IceGate>,
+    /// #21 — each online agent's business zone, as its CURRENT control
+    /// connection (named by `conn_id`) was observed opening. Written once the
+    /// connection's observation lands, removed at that connection's teardown
+    /// only while it still names it; a displaced connection never clears, or
+    /// overwrites, its replacement's zone.
+    agent_zones: DashMap<ObjectId, (String, BusinessZone)>,
+}
+
+/// MeshHarbor #21 — the hub's relay-locality gate (`app.rc_ice_zone_mode`):
+/// which ICE servers sit in which zone, whether withholding the others is
+/// enforced or only logged, and the `warn` line dedupe.
+pub struct IceGate {
+    pub zones: Arc<IceServerZones>,
+    pub mode: IceGateMode,
+    pub dedupe: meshharbor_core::ice_zones::LogDedupe,
+}
+
+impl IceGate {
+    pub fn new(zones: Arc<IceServerZones>, mode: IceGateMode) -> Self {
+        Self {
+            zones,
+            mode,
+            dedupe: Default::default(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -793,6 +825,8 @@ impl Hub {
                 slotted: DashMap::new(),
                 file_child_download_disabled: std::sync::atomic::AtomicBool::new(download_disabled),
                 file_child_upload_disabled: std::sync::atomic::AtomicBool::new(upload_disabled),
+                ice_gate: std::sync::OnceLock::new(),
+                agent_zones: DashMap::new(),
             }),
         }
     }
@@ -845,6 +879,113 @@ impl Hub {
     /// FR-115 P3b — hand the hub the slot record (once, at startup).
     pub fn set_session_slots(&self, slots: SessionSlots) {
         let _ = self.inner.session_slots.set(slots);
+    }
+
+    /// #21 — install the relay-locality gate (once, at startup).
+    pub fn set_ice_gate(&self, gate: IceGate) {
+        let _ = self.inner.ice_gate.set(gate);
+    }
+
+    /// #21 — the relay-locality gate, when isolation is on.
+    pub fn ice_gate(&self) -> Option<&IceGate> {
+        self.inner.ice_gate.get()
+    }
+
+    /// #21 — record `agent_id`'s zone as connection `conn_id` observed it.
+    /// `None` (no zone evidence) removes any earlier entry, so it is never
+    /// stale.
+    pub fn set_agent_business_zone(
+        &self,
+        agent_id: ObjectId,
+        conn_id: &str,
+        zone: Option<BusinessZone>,
+    ) {
+        match zone {
+            Some(z) => {
+                self.inner
+                    .agent_zones
+                    .insert(agent_id, (conn_id.to_string(), z));
+            }
+            None => {
+                self.inner.agent_zones.remove(&agent_id);
+            }
+        }
+    }
+
+    /// #21 — drop `agent_id`'s zone, but only while it still belongs to
+    /// connection `conn_id`.
+    pub fn clear_agent_business_zone(&self, agent_id: ObjectId, conn_id: &str) {
+        self.inner
+            .agent_zones
+            .remove_if(&agent_id, |_, (c, _)| c == conn_id);
+    }
+
+    /// #21 — `agent_id`'s current business zone, if its connection has one.
+    pub fn agent_business_zone(&self, agent_id: ObjectId) -> Option<BusinessZone> {
+        self.inner.agent_zones.get(&agent_id).map(|e| e.1)
+    }
+
+    /// #21 relay locality: the ICE servers of a session with `agent_id`, kept
+    /// to the device's own business zone. Both ends receive the same filtered
+    /// list (`Ready`/`SdpAnswer` to the controller, `SdpOffer` to the agent),
+    /// so neither end allocates a relay the device would then connect to
+    /// across the line. With no zone on record for the device, nothing is
+    /// kept: host candidates still connect a direct path, and nothing crosses.
+    fn zone_local_ice(
+        &self,
+        agent_id: ObjectId,
+        session_id: ObjectId,
+        ice: Vec<IceServer>,
+    ) -> Vec<IceServer> {
+        let Some(gate) = self.inner.ice_gate.get() else {
+            return ice;
+        };
+        let zone = self.agent_business_zone(agent_id);
+        let f = meshharbor_core::ice_zones::keep_in_zone(ice.clone(), zone, |u| {
+            gate.zones.zone_of_url(u)
+        });
+        if f.withheld_urls == 0 {
+            return ice;
+        }
+        match gate.mode {
+            IceGateMode::Enforce => {
+                info!(
+                    session = %session_id.to_hex(),
+                    agent = %agent_id.to_hex(),
+                    ?zone,
+                    withheld = f.withheld_urls,
+                    kept = f.kept_urls,
+                    reason = f.reason,
+                    "rc ice zone: STUN/TURN outside the device's zone withheld"
+                );
+                f.kept
+            }
+            IceGateMode::Warn => {
+                // One line per device while the verdict stays the same: the
+                // three issuances of one session, and every later session within
+                // `WARN_DEDUPE`, would otherwise each repeat it.
+                let verdict = format!(
+                    "zone={zone:?} kept={} withheld={} reason={}",
+                    f.kept_urls, f.withheld_urls, f.reason
+                );
+                if gate.dedupe.first_in(
+                    &agent_id.to_hex(),
+                    &verdict,
+                    meshharbor_core::ice_zones::WARN_DEDUPE,
+                ) {
+                    warn!(
+                        session = %session_id.to_hex(),
+                        agent = %agent_id.to_hex(),
+                        device_zone = ?zone,
+                        kept = f.kept_urls,
+                        would_withhold = f.withheld_urls,
+                        reason = f.reason,
+                        "rc ice zone (warn): would withhold STUN/TURN outside the device's zone; nothing changed (app.rc_ice_zone_mode=enforce applies it)"
+                    );
+                }
+                ice
+            }
+        }
     }
 
     /// FR-115 P3b — this pod's live slot leases, for the renewal round.
@@ -1563,6 +1704,7 @@ impl Hub {
             org_session_cap,
             slot,
             None,
+            None,
             SessionCreationOrigin::Unknown,
             None,
         )
@@ -1624,6 +1766,9 @@ impl Hub {
         // (a refusal, or a coalesced duplicate that returned another id).
         slot: Option<Lease>,
         share_grant_id: Option<ObjectId>,
+        // MeshHarbor — the share account a shared session's file operations
+        // run as (`DispatchCtx::share_files_account`); ignored without a share.
+        share_files_account: Option<String>,
         origin: SessionCreationOrigin,
         initial_resolution: Option<meshharbor_remote_control::signaling::InitialResolution>,
     ) -> Result<ObjectId> {
@@ -1960,6 +2105,11 @@ impl Hub {
         if let Some(scope) = device_share_scope {
             live.bind_device_share(scope)?;
             live.set_shared_lease_epoch(uuid::Uuid::new_v4().to_string())?;
+            // The account rides the lease only when the session can touch
+            // files at all; the device decides what an absent one means.
+            if live.permissions().contains(Permissions::FILES) {
+                live.set_shared_files_account(share_files_account)?;
+            }
         }
         // Loopback-TURN corp-relay (Phase 2): remember the controller's local
         // agent TURN descriptor so `forward_offer` can hand the REMOTE agent a
@@ -2214,10 +2364,14 @@ impl Hub {
                     // aware, agent-nearest) at create — all three issuance
                     // pushes read it so both ICE ends land on one PoP.
                     let region = self.session_relay_region(session_id);
-                    let ice = ice_servers_for_session(
-                        &Self::turn_user(user_id, tenant_id),
-                        &session_id.to_hex(),
-                        self.inner.turn.cfg_for(region.as_deref()),
+                    let ice = self.zone_local_ice(
+                        agent_id,
+                        session_id,
+                        ice_servers_for_session(
+                            &Self::turn_user(user_id, tenant_id),
+                            &session_id.to_hex(),
+                            self.inner.turn.cfg_for(region.as_deref()),
+                        ),
                     );
                     let _ = tx.try_send(ServerMsg::Ready {
                         session_id,
@@ -2378,6 +2532,7 @@ impl Hub {
                                         "shared session missing immutable lease",
                                     ))?
                                     .to_string(),
+                                account: s.shared_files_account().map(str::to_owned),
                             })
                         }
                         None => None,
@@ -2385,10 +2540,17 @@ impl Hub {
                 ))
             })?;
         let user_id = self.controller_for(session_id).unwrap_or_default();
-        let mut ice = ice_servers_for_session(
-            &Self::turn_user(user_id, org),
-            &session_id.to_hex(),
-            self.inner.turn.cfg_for(region.as_deref()),
+        // #21 — filtered BEFORE the loopback overlay relay is added below: that
+        // relay is an overlay address the agent reaches over the mesh, which the
+        // netmap already keeps inside one zone.
+        let mut ice = self.zone_local_ice(
+            agent_id,
+            session_id,
+            ice_servers_for_session(
+                &Self::turn_user(user_id, org),
+                &session_id.to_hex(),
+                self.inner.turn.cfg_for(region.as_deref()),
+            ),
         );
         // Loopback-TURN corp-relay (Phase 2): if the controller forwarded its
         // local agent's TURN descriptor, hand the REMOTE agent a relay it can
@@ -2459,7 +2621,7 @@ impl Hub {
         peer_auth: Option<meshharbor_remote_control::signaling::PeerAuthAnswer>,
         peer_auth_verdict: Option<String>,
     ) -> Result<()> {
-        let (controller_tx, user_id, region, org) = {
+        let (controller_tx, user_id, region, org, agent_id) = {
             let arc = self
                 .inner
                 .sessions
@@ -2471,13 +2633,18 @@ impl Hub {
                 s.controller_user_id,
                 s.relay_region.clone(),
                 s.tenant_id,
+                s.agent_id,
             )
         };
         let tx = controller_tx.ok_or(Error::SendFailed)?;
-        let ice = ice_servers_for_session(
-            &Self::turn_user(user_id, org),
-            &session_id.to_hex(),
-            self.inner.turn.cfg_for(region.as_deref()),
+        let ice = self.zone_local_ice(
+            agent_id,
+            session_id,
+            ice_servers_for_session(
+                &Self::turn_user(user_id, org),
+                &session_id.to_hex(),
+                self.inner.turn.cfg_for(region.as_deref()),
+            ),
         );
         tx.try_send(ServerMsg::SdpAnswer {
             session_id,
@@ -3719,6 +3886,7 @@ impl Hub {
         Some(meshharbor_remote_control::signaling::SharedSessionLease {
             grant_id: s.device_share_scope()?.grant_id,
             lease_epoch: s.shared_lease_epoch()?.to_string(),
+            account: s.shared_files_account().map(str::to_owned),
         })
     }
     pub fn claim_device_share_watch(&self, session_id: ObjectId, grant_id: ObjectId) -> bool {
@@ -4369,6 +4537,13 @@ pub struct DispatchCtx {
     /// (`create_session_full`'s `slot`); set only by the pod that owns the
     /// device, together with `org_session_cap: None`. `None` everywhere else.
     pub slot: Option<Lease>,
+    /// MeshHarbor — the share account a SHARED session's file operations run
+    /// as on the device, resolved by the API WS layer's share gate from the
+    /// grant (`device_share::files_gate`) and frozen into the session's
+    /// `SharedSessionLease::account`. `None` for every non-shared request and
+    /// for a share without an account; the device then decides by its own
+    /// privilege. Never taken from the controller's frame.
+    pub share_files_account: Option<String>,
 }
 
 impl Hub {
@@ -4543,6 +4718,9 @@ impl Hub {
                     // FR-115 P3b — the slot the owner pod claimed, if any.
                     ctx.slot.clone(),
                     share_grant_id,
+                    // Server-resolved by the share gate, never read from the
+                    // controller's frame.
+                    ctx.share_files_account.clone(),
                     origin,
                     initial_resolution,
                 )?;
@@ -4656,22 +4834,28 @@ impl Hub {
                 },
             ) => {
                 self.check_session_party(ctx, session_id)?;
-                let (controller_tx, user_id, region, org) = self.with_session(session_id, |s| {
-                    if !s.has_active_file_child(child_id, &transfer_id) {
-                        return Err(Error::PermissionDenied("file child is not active"));
-                    }
-                    Ok((
-                        s.controller_tx.clone(),
-                        s.controller_user_id,
-                        s.relay_region.clone(),
-                        s.tenant_id,
-                    ))
-                })?;
+                let (controller_tx, user_id, region, org, agent_id) =
+                    self.with_session(session_id, |s| {
+                        if !s.has_active_file_child(child_id, &transfer_id) {
+                            return Err(Error::PermissionDenied("file child is not active"));
+                        }
+                        Ok((
+                            s.controller_tx.clone(),
+                            s.controller_user_id,
+                            s.relay_region.clone(),
+                            s.tenant_id,
+                            s.agent_id,
+                        ))
+                    })?;
                 let tx = controller_tx.ok_or(Error::SendFailed)?;
-                let ice_servers = ice_servers_for_session(
-                    &Self::turn_user(user_id, org),
-                    &session_id.to_hex(),
-                    self.inner.turn.cfg_for(region.as_deref()),
+                let ice_servers = self.zone_local_ice(
+                    agent_id,
+                    session_id,
+                    ice_servers_for_session(
+                        &Self::turn_user(user_id, org),
+                        &session_id.to_hex(),
+                        self.inner.turn.cfg_for(region.as_deref()),
+                    ),
                 );
                 tx.try_send(ServerMsg::FileSdpAnswer {
                     session_id,
@@ -5625,6 +5809,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         hub.dispatch(
             &device,
@@ -5777,6 +5962,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         let offer = || ClientMsg::SdpOffer {
             session_id: sid,
@@ -5890,6 +6076,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         assert!(matches!(
             ctl_rx.recv().await,
@@ -6059,6 +6246,7 @@ mod tests {
                 lock_on_end: None,
                 org_session_cap: None,
                 slot: None,
+                share_files_account: None,
             }
         }
         fn ctx(&self) -> DispatchCtx {
@@ -6535,6 +6723,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         let owner_ctx = context(Role::Controller, Some(owner), None, Some(ctl_tx.clone()));
         hub.dispatch_local_pdp_session_request(&owner_ctx, file_child_session_request(agent), None)
@@ -6830,6 +7019,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         f.hub
             .dispatch(
@@ -7213,6 +7403,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         let stranger = ctx_for(Role::Controller, Some(ObjectId::new()), None);
         let owner_ctx = ctx_for(Role::Controller, Some(owner), None);
@@ -7386,6 +7577,7 @@ mod tests {
             lock_on_end: None,
             org_session_cap: None,
             slot: None,
+            share_files_account: None,
         };
         let device = ctx_for(Role::Agent, None, Some(agent_id));
         let viewer = ctx_for(Role::Controller, Some(owner), None);
@@ -10164,5 +10356,108 @@ mod tests {
                 "server/agent shared parser must treat {val:?} as not disabled"
             );
         }
+    }
+}
+
+/// MeshHarbor #21 relay locality — the hub's ICE gate.
+#[cfg(test)]
+mod ice_zone_gate_tests {
+    use super::*;
+    use meshharbor_remote_control::audit::AuditSink;
+
+    fn turn() -> TurnConfig {
+        TurnConfig {
+            urls: vec![
+                "turn:cn-turn.example:3478?transport=udp".into(),
+                "turn:us-turn.example:3478?transport=udp".into(),
+            ],
+            workers: vec![],
+            shared_secret: "s".into(),
+            ttl_secs: 600,
+        }
+    }
+
+    fn zones() -> Arc<IceServerZones> {
+        let z = Arc::new(IceServerZones::default());
+        z.set("cn-turn.example", Some(BusinessZone::Mainland));
+        z.set("us-turn.example", Some(BusinessZone::NonMainland));
+        z.set("stun.cloudflare.com", Some(BusinessZone::NonMainland));
+        z.set("stun.l.google.com", Some(BusinessZone::NonMainland));
+        z
+    }
+
+    fn urls(v: Vec<IceServer>) -> Vec<String> {
+        v.into_iter().flat_map(|s| s.urls).collect()
+    }
+
+    #[tokio::test]
+    async fn rc_ice_is_kept_to_the_devices_zone_and_a_zoneless_device_gets_none() {
+        let (audit, _ev) = AuditSink::channel_for_tests();
+        let hub = Hub::new(audit, Some(turn()));
+        let ice = || ice_servers_for_session("u", "s", Some(&turn()));
+        let (agent, session) = (ObjectId::new(), ObjectId::new());
+
+        // No gate (isolation off, or a test hub): handed out unchanged.
+        assert_eq!(urls(hub.zone_local_ice(agent, session, ice())), urls(ice()));
+
+        hub.set_ice_gate(IceGate::new(zones(), IceGateMode::Enforce));
+        // A device with no zone on record gets no ICE server at all.
+        assert!(hub.zone_local_ice(agent, session, ice()).is_empty());
+
+        // A mainland device keeps only the mainland TURN; every STUN server
+        // here is outside the line, so none survives.
+        hub.set_agent_business_zone(agent, "c1", Some(BusinessZone::Mainland));
+        assert_eq!(
+            urls(hub.zone_local_ice(agent, session, ice())),
+            vec!["turn:cn-turn.example:3478?transport=udp".to_string()]
+        );
+
+        // A displaced connection's teardown never clears its replacement.
+        hub.clear_agent_business_zone(agent, "c0");
+        assert_eq!(hub.agent_business_zone(agent), Some(BusinessZone::Mainland));
+        hub.clear_agent_business_zone(agent, "c1");
+        assert_eq!(hub.agent_business_zone(agent), None);
+    }
+
+    #[tokio::test]
+    async fn warn_mode_hands_everything_out() {
+        let (audit, _ev) = AuditSink::channel_for_tests();
+        let hub = Hub::new(audit, Some(turn()));
+        hub.set_ice_gate(IceGate::new(zones(), IceGateMode::Warn));
+        let ice = ice_servers_for_session("u", "s", Some(&turn()));
+        let (agent, session) = (ObjectId::new(), ObjectId::new());
+        hub.set_agent_business_zone(agent, "c1", Some(BusinessZone::Mainland));
+        // Withholding would apply (both STUN URLs and the US TURN), but `warn`
+        // changes nothing, every time.
+        for _ in 0..3 {
+            assert_eq!(
+                urls(hub.zone_local_ice(agent, session, ice.clone())),
+                urls(ice.clone())
+            );
+        }
+        // The verdict was recorded once for this device (then suppressed).
+        let gate = hub.ice_gate().unwrap();
+        assert!(!gate.dedupe.first_in(
+            &agent.to_hex(),
+            "zone=Some(Mainland) kept=1 withheld=3 reason=outside_device_zone",
+            meshharbor_core::ice_zones::WARN_DEDUPE
+        ));
+    }
+
+    /// `off` installs no gate at all (`ice_zones::gate_mode` is `None`), and a
+    /// hub with no gate hands out exactly what it did before #21.
+    #[tokio::test]
+    async fn off_installs_no_gate_and_changes_nothing() {
+        assert!(meshharbor_core::ice_zones::gate_mode("off").is_none());
+        let (audit, _ev) = AuditSink::channel_for_tests();
+        let hub = Hub::new(audit, Some(turn()));
+        assert!(hub.ice_gate().is_none());
+        let ice = ice_servers_for_session("u", "s", Some(&turn()));
+        let agent = ObjectId::new();
+        hub.set_agent_business_zone(agent, "c1", Some(BusinessZone::Mainland));
+        assert_eq!(
+            urls(hub.zone_local_ice(agent, ObjectId::new(), ice.clone())),
+            urls(ice)
+        );
     }
 }

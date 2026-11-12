@@ -24,15 +24,28 @@
 //! predicate is what keeps the two tiers from drifting apart — a pair that is
 //! invisible in the netmap can never become relayable here.
 //!
-//! # Failure posture: OPEN
+//! # Failure posture: a MISSING table denies; the table is built before serve
 //!
-//! A missing table entry permits the frame. This matches
-//! `ws::overlay::load_acl`, which also fails open, and the reasoning is the
-//! same: a spurious deny here would sever a corp pair's ONLY working carrier
-//! (DERP serves precisely the both-UDP-blocked pairs that have no alternative),
-//! whereas a spurious allow costs one relayed datagram on a tier an honest
-//! client would not have used. The table is rebuilt on every policy change and
-//! on join, so the open window is a brief one after a restart.
+//! Every network that has been built carries an entry, including a network
+//! whose ACL and isolation are both off: it gets an OPEN table
+//! ([`DerpAllowTable::default`] permits everything). So a cache miss means
+//! only "not built in this process yet", and `forward_frame` drops the frame.
+//!
+//! What keeps that from severing the floor is LOAD BEFORE SERVE:
+//! `derp::handle_derp_socket` calls [`ensure_built`] before a node may
+//! register, single-flight per network and bounded by
+//! [`ENSURE_BUILT_TIMEOUT`]. A build that fails or times out refuses the
+//! registration; the client reconnects on its own backoff, which retries the
+//! build. It stays deny until a build succeeds and never turns into allow.
+//!
+//! Before this (MeshHarbor items #18/#21, 2026-11-11), a miss permitted the
+//! frame, and after every restart the cache was empty until each network's
+//! next join or policy change. That left a window in which an enforcing
+//! tenant's ACL and the cross-zone rule were both open on this tier.
+//!
+//! What still fails open is unchanged and lives upstream:
+//! `overlay::load_acl` reads a failed policy load as "no ACL". That case
+//! builds an open table here, as before.
 //!
 //! # MeshHarbor #21 isolation
 //!
@@ -40,13 +53,14 @@
 //! node's business zone, and a frame passes only between two nodes with the
 //! same known zone, whatever the ACL mode (a node with no zone relays to
 //! nobody). The table is built for that even when the ACL is off. The
-//! restart window above stays open for it too; the netmap, which withholds
-//! the cross-zone key from an honest client, is the first line.
+//! netmap, which withholds the cross-zone key from an honest client, is the
+//! first line; this table is the second.
 
 use bson::oid::ObjectId;
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use meshharbor_core::business_authority::BusinessZone;
@@ -141,8 +155,47 @@ impl DerpAllowTable {
     }
 }
 
-/// `network_id → allow table`. Lives in [`AppState`]; absent = fail open.
+/// `network_id → allow table`. Lives in [`AppState`]. An entry exists for
+/// every network built in this process (an OPEN table when nothing gates),
+/// so absent = not built yet, which DENIES (see the module docs).
 pub type DerpAclCache = Arc<DashMap<ObjectId, Arc<DerpAllowTable>>>;
+
+/// Upper bound on how long a `/derp` registration waits for its network's
+/// first table build after a restart. Past it the registration is refused
+/// and the client's reconnect retries.
+pub const ENSURE_BUILT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Single-flight per network: a reconnect wave after a restart builds each
+/// table ONCE, not once per registering node (the build is O(N²)).
+static BUILD_LOCKS: LazyLock<DashMap<ObjectId, Arc<tokio::sync::Mutex<()>>>> =
+    LazyLock::new(DashMap::new);
+
+/// Load before serve: make sure `network_id` has a table in this process.
+///
+/// Returns `true` when an entry exists, whether it was already built or built
+/// now. Returns `false` when the build failed or overran
+/// [`ENSURE_BUILT_TIMEOUT`]; the caller must then refuse to serve the node. A
+/// `false` never inserts anything, so the network stays deny.
+pub async fn ensure_built(state: &NetworkState, tenant_id: ObjectId, network_id: ObjectId) -> bool {
+    if state.derp_acl.contains_key(&network_id) {
+        return true;
+    }
+    let lock = BUILD_LOCKS
+        .entry(network_id)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let build = async {
+        let _single_flight = lock.lock().await;
+        // Another registration may have built it while we waited.
+        if state.derp_acl.contains_key(&network_id) {
+            return true;
+        }
+        rebuild(state, tenant_id, network_id).await && state.derp_acl.contains_key(&network_id)
+    };
+    tokio::time::timeout(ENSURE_BUILT_TIMEOUT, build)
+        .await
+        .unwrap_or(false)
+}
 
 /// Decode a node's stored base64 WireGuard key into the 32-byte DERP address.
 /// `None` for a malformed/short key — such a node simply gets no entry, which
@@ -153,19 +206,23 @@ fn pubkey_of(node: &OverlayNode) -> Option<DerpPubKey> {
 
 /// Recompute one network's table and publish it atomically.
 ///
-/// Build-then-swap, never invalidate-then-rebuild: there is no window in which
-/// the network has no table (which, being fail-open, would be a window with no
-/// gate at all). O(N²) over the network's nodes, but it runs only on policy
+/// Build-then-swap, never invalidate-then-rebuild: once built, there is no
+/// window in which the network has no table (which would now drop every frame
+/// of a live network). O(N²) over the network's nodes, but it runs only on policy
 /// changes and joins — never per datagram, and never on an endpoint trickle,
 /// which cannot change an ACL decision.
 pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: ObjectId) -> bool {
     let acl = super::overlay::load_acl(state, tenant_id).await;
     let isolating =
         super::business_isolation::mode(state) == super::business_isolation::Mode::Enforce;
-    // `Off` needs no table: `permits` would allow everything anyway, and
-    // dropping the entry keeps a disabled tenant's memory at zero.
+    // `Off` gets an OPEN table rather than no entry: a miss now means "not
+    // built" and denies, so an ungated network must still be marked built.
+    // `DerpAllowTable::default()` permits every pair, and costs a few empty
+    // collections per network.
     if !acl.gating() && !isolating {
-        state.derp_acl.remove(&network_id);
+        state
+            .derp_acl
+            .insert(network_id, Arc::new(DerpAllowTable::default()));
         return true;
     }
     let now = bson::DateTime::now();
@@ -418,12 +475,13 @@ mod tests {
     }
 
     #[test]
-    fn absent_table_is_fail_open_at_the_call_site() {
-        // The cache miss (not the table) is what fails open; a DEFAULT table is
-        // non-enforcing, so a bug that inserts one can't silently sever a
-        // network either.
+    fn the_default_table_is_the_open_marker_for_an_ungated_network() {
+        // An ungated network is marked built with a DEFAULT table, which must
+        // permit every pair. The cache MISS is what denies, at the call site in
+        // `derp::forward_frame`, not this table.
         let t = DerpAllowTable::default();
         assert!(t.permits(&pk(1), &pk(2)));
+        assert!(!t.enforcing());
     }
 
     #[test]

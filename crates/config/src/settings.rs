@@ -934,6 +934,16 @@ pub struct ReleasesSettings {
     /// cap, while bounding worst-case staleness when the refresh call never
     /// lands. Env: `MESHHARBOR__RELEASES__CACHE_TTL_SECS`.
     pub cache_ttl_secs: u64,
+    /// Serve releases from this server's own directory instead of GitHub.
+    /// Set ⇒ every release route (`/api/{agent,tunnel,setup}/latest-release`,
+    /// the installers, `/api/agent/artifacts/*`) reads `<dir>/<tag>/<file>`
+    /// and never contacts github.com; unset ⇒ the GitHub path, unchanged.
+    /// Each artifact must sit next to its `.asc` (the agents verify it
+    /// against the key compiled into them, so this directory is a delivery
+    /// channel, never a trust anchor). Layout + publishing:
+    /// `docs/self-hosted-releases.md`. Env: `MESHHARBOR__RELEASES__LOCAL_DIR`.
+    #[serde(default)]
+    pub local_dir: Option<String>,
 }
 
 impl Default for ReleasesSettings {
@@ -941,6 +951,7 @@ impl Default for ReleasesSettings {
         Self {
             refresh_token: None,
             cache_ttl_secs: 900,
+            local_dir: None,
         }
     }
 }
@@ -1259,6 +1270,18 @@ pub struct AppSettings {
     /// business connectivity for `Unknown` `Agent` and `TunnelClient` devices).
     #[serde(default = "default_business_unknown_role")]
     pub business_unknown_role: String,
+    /// MeshHarbor #21 relay locality for remote desktop: keep the STUN/TURN
+    /// servers handed out for an RC session to the device's business zone.
+    /// Deliberately INDEPENDENT of `business_isolation`: `enforce` withholds
+    /// every server outside the device's zone, so a device whose zone differs
+    /// from the deployment's relays loses its srflx and relay candidates, and
+    /// cross-network remote desktop to it breaks. `off`; `warn` (the default:
+    /// log what would be withheld, once per device per 10 min, change
+    /// nothing); `enforce`. Any other value reads as `warn`, logged loudly: a
+    /// typo must never switch on something that can cut the operator's own
+    /// remote access. Env: `MESHHARBOR__APP__RC_ICE_ZONE_MODE`.
+    #[serde(default = "default_rc_ice_zone_mode")]
+    pub rc_ice_zone_mode: String,
     /// Sustained auth-endpoint attempts per minute, per (client IP, account).
     /// Deliberately far stricter than the general `/api` limit: this is the
     /// brute-force gate, and it must not depend on starving the whole API.
@@ -1298,6 +1321,10 @@ fn default_rate_limit_burst() -> u32 {
 }
 
 fn default_business_isolation() -> String {
+    "warn".to_string()
+}
+
+fn default_rc_ice_zone_mode() -> String {
     "warn".to_string()
 }
 
@@ -1720,6 +1747,7 @@ impl Settings {
             .set_default("relay.busy_tx_mbps", 400.0)?
             .set_default("releases.refresh_token", None::<String>)?
             .set_default("releases.cache_ttl_secs", 900)?
+            .set_default("releases.local_dir", None::<String>)?
             .set_default("stats.enabled", true)?
             .set_default("stats.platform_admins", None::<String>)?
             .set_default("stats.geoip_mmdb", None::<String>)?
@@ -1790,6 +1818,7 @@ mod rate_limit_tests {
             business_trusted_proxy_cidrs: vec![],
             business_isolation: super::default_business_isolation(),
             business_unknown_role: super::default_business_unknown_role(),
+            rc_ice_zone_mode: super::default_rc_ice_zone_mode(),
             auth_rate_limit_per_min: auth_per_min,
             auth_rate_limit_burst: 20,
         }

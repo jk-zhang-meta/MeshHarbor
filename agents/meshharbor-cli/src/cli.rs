@@ -74,6 +74,7 @@ where
             domain,
             port,
             cert_sha256,
+            check,
             save_credentials,
             use_saved_credentials,
             clear_credentials,
@@ -83,8 +84,10 @@ where
             target: device,
             user,
             domain,
-            port,
+            port: port.unwrap_or(3389),
+            explicit_port: port,
             cert_sha256,
+            check,
             save_credentials,
             use_saved_credentials,
             clear_credentials,
@@ -555,16 +558,24 @@ enum Command {
         /// Remote RDP domain.
         #[arg(short = 'd', long)]
         domain: Option<String>,
-        /// Target RDP TCP port on the remote device.
-        #[arg(long, default_value_t = 3389)]
-        port: u16,
+        /// Target RDP TCP port on the remote device (defaults to the target
+        /// agent's reported `rdp_port`, or `3389` when unreported).
+        #[arg(long)]
+        port: Option<u16>,
         /// Pinned SHA-256 fingerprint of the target's RDP TLS certificate
-        /// (64 hex chars or colon-separated `AA:BB:...`). Enforced via FreeRDP
-        /// `/cert:fingerprint:sha256` on Linux/macOS; rejected on Windows where
-        /// `mstsc.exe` performs its own certificate validation and does not
-        /// accept a fingerprint pin.
+        /// (64 hex chars or colon-separated `AA:BB:...`). Verified via the
+        /// pre-client X.224 + TLS 1.2/1.3 handshake on all platforms (including
+        /// Windows prior to launching `mstsc.exe`) and additionally passed to
+        /// FreeRDP on Linux/macOS.
         #[arg(long)]
         cert_sha256: Option<String>,
+        /// Diagnostic pre-check only: resolve the target, open the per-session
+        /// loopback tunnel, verify X.224 + TLS certificate over the mesh within
+        /// 5 seconds, confirm the same loopback listener serves a second
+        /// connection (as the RDP client's would), print the result, and exit
+        /// without touching credentials or launching an RDP client.
+        #[arg(long)]
+        check: bool,
         /// Save the RDP password (read from stdin or interactive prompt, never
         /// CLI flags) into this client machine's OS secure store (opt-in; default OFF).
         #[arg(long)]
@@ -1373,6 +1384,7 @@ where
             domain,
             port,
             cert_sha256,
+            check,
             save_credentials,
             use_saved_credentials,
             clear_credentials,
@@ -1383,8 +1395,10 @@ where
                 target: device,
                 user,
                 domain,
-                port,
+                port: port.unwrap_or(3389),
+                explicit_port: port,
                 cert_sha256,
+                check,
                 save_credentials,
                 use_saved_credentials,
                 clear_credentials,

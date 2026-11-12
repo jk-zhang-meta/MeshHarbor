@@ -181,16 +181,89 @@ describe('useAuthStore', () => {
     // 429 and fetchMe signed the user out FOR REAL (`POST /auth/logout` 200).
     // A throttled, failed or unreachable server has not refused anything.
     it('keeps the session when /auth/me fails without a refusal (429, 5xx, unreachable): the client left the hint alone', async () => {
-      localStorage.setItem(SIGNED_IN, '1')
-      mockApi.get.mockRejectedValueOnce(new Error('no verdict'))
+      vi.useFakeTimers()
+      try {
+        localStorage.setItem(SIGNED_IN, '1')
+        mockApi.get.mockRejectedValueOnce(new Error('no verdict'))
 
-      const store = useAuthStore()
-      await store.fetchMe()
+        const store = useAuthStore()
+        await store.fetchMe()
 
-      expect(mockApi.post).not.toHaveBeenCalledWith('/auth/logout', {})
-      expect(store.isAuthenticated).toBe(true)
-      expect(localStorage.getItem(SIGNED_IN)).toBe('1')
-      expect(mockRouter.push).not.toHaveBeenCalled()
+        expect(mockApi.post).not.toHaveBeenCalledWith('/auth/logout', {})
+        expect(store.isAuthenticated).toBe(true)
+        expect(localStorage.getItem(SIGNED_IN)).toBe('1')
+        expect(mockRouter.push).not.toHaveBeenCalled()
+        store.forgetLocalSession() // drops the pending retry
+        await vi.runAllTimersAsync()
+        expect(mockApi.get).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    // Measured on the desktop companion's account window: `/auth/me` answered
+    // 429, `user` stayed null, and the share pages keyed on `user.id` showed an
+    // empty list with nothing to ask again until a reload.
+    it('retries a non-refusal failure on a short backoff and adopts the user once the server answers', async () => {
+      vi.useFakeTimers()
+      try {
+        localStorage.setItem(SIGNED_IN, '1')
+        mockApi.get.mockRejectedValueOnce(new Error('API error 429')).mockResolvedValueOnce(USER)
+
+        const store = useAuthStore()
+        await store.fetchMe()
+        expect(store.user).toBeNull()
+
+        await vi.advanceTimersByTimeAsync(2000)
+        expect(mockApi.get).toHaveBeenCalledTimes(2)
+        expect(store.user).toEqual(USER)
+        expect(store.isAuthenticated).toBe(true)
+        await vi.runAllTimersAsync()
+        expect(mockApi.get).toHaveBeenCalledTimes(2) // nothing left scheduled
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('gives up after a bounded number of retries, and a later fetchMe starts afresh', async () => {
+      vi.useFakeTimers()
+      try {
+        localStorage.setItem(SIGNED_IN, '1')
+        mockApi.get.mockRejectedValue(new Error('API error 503'))
+
+        const store = useAuthStore()
+        await store.fetchMe()
+        await vi.runAllTimersAsync()
+        expect(mockApi.get).toHaveBeenCalledTimes(5) // the call + 4 retries
+        expect(store.isAuthenticated).toBe(true)
+        expect(mockApi.post).not.toHaveBeenCalledWith('/auth/logout', {})
+
+        await store.fetchMe()
+        await vi.runAllTimersAsync()
+        expect(mockApi.get).toHaveBeenCalledTimes(10)
+      } finally {
+        mockApi.get.mockReset()
+        vi.useRealTimers()
+      }
+    })
+
+    it('a sign-out cancels a pending retry', async () => {
+      vi.useFakeTimers()
+      try {
+        localStorage.setItem(SIGNED_IN, '1')
+        mockApi.get.mockRejectedValueOnce(new Error('API error 429'))
+        mockApi.post.mockResolvedValueOnce({})
+
+        const store = useAuthStore()
+        await store.fetchMe()
+        await store.logout()
+        await vi.runAllTimersAsync()
+
+        expect(mockApi.get).toHaveBeenCalledTimes(1)
+        expect(store.isAuthenticated).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 

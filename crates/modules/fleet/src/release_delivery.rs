@@ -86,13 +86,24 @@ pub(crate) fn public_base(raw: &str) -> Result<Url, ApiError> {
     base.set_path(&format!("{}/", base.path().trim_end_matches('/')));
     Ok(base)
 }
-pub(crate) fn source_url(
+/// Where an asset's bytes come from. `Local` exists only for assets the
+/// server's own directory scan produced (`local_releases`): the path rides a
+/// `serde(skip)` field, so no parsed input can ever select it.
+pub(crate) enum Source<'a> {
+    Github(Url),
+    Local(&'a std::path::Path),
+}
+
+pub(crate) fn source<'a>(
     release: &AgentRelease,
-    asset: &AgentReleaseAsset,
-) -> Result<Url, ApiError> {
+    asset: &'a AgentReleaseAsset,
+) -> Result<Source<'a>, ApiError> {
     validate_path(&release.tag_name, &asset.name)?;
     if release.draft {
         return Err(ApiError::NotFound("draft release unavailable".into()));
+    }
+    if let Some(path) = asset.local_path.as_deref() {
+        return Ok(Source::Local(path));
     }
     let expected = format!(
         "https://github.com/{}/releases/download/{}/{}",
@@ -105,7 +116,7 @@ pub(crate) fn source_url(
             "asset is not from the exact owned repository/tag/name".into(),
         ));
     }
-    Url::parse(&expected).map_err(|_| bad())
+    Url::parse(&expected).map(Source::Github).map_err(|_| bad())
 }
 pub(crate) fn own_urls(
     mut items: Vec<AgentRelease>,
@@ -115,7 +126,7 @@ pub(crate) fn own_urls(
     for release in &mut items {
         // Validate all metadata before changing any URL; never use a request Host.
         for asset in &release.assets {
-            source_url(release, asset)?;
+            source(release, asset)?;
         }
         for asset in &mut release.assets {
             asset.browser_download_url = base
@@ -145,14 +156,14 @@ fn paired(release: &AgentRelease, asset: &AgentReleaseAsset) -> Result<(), ApiEr
         .iter()
         .find(|a| a.name == other)
         .ok_or_else(|| ApiError::NotFound("detached signature absent".into()))?;
-    source_url(release, companion)?;
+    source(release, companion)?;
     Ok(())
 }
 pub(crate) fn validate_asset(
     release: &AgentRelease,
     asset: &AgentReleaseAsset,
 ) -> Result<(), ApiError> {
-    source_url(release, asset)?;
+    source(release, asset)?;
     paired(release, asset)
 }
 fn redirect_allowed(raw: &str, previous: usize) -> bool {
@@ -194,7 +205,7 @@ pub(crate) async fn stream_asset(
     asset: &AgentReleaseAsset,
     content_type: &'static str,
 ) -> Result<Response, ApiError> {
-    let url = source_url(release, asset)?;
+    let src = source(release, asset)?;
     paired(release, asset)?;
     let cap = if asset.name.ends_with(".asc") {
         1024 * 1024
@@ -206,6 +217,12 @@ pub(crate) async fn stream_asset(
             "release asset exceeds delivery size cap".into(),
         ));
     }
+    let url = match src {
+        Source::Github(url) => url,
+        Source::Local(path) => {
+            return local_response(path, asset.size, cap, &asset.name, content_type).await;
+        }
+    };
     let client = reqwest::Client::builder()
         .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(60))
@@ -234,6 +251,44 @@ pub(crate) async fn stream_asset(
     }
     bounded_response(upstream, asset.size, cap, &asset.name, content_type)
 }
+/// Stream a file from the server's own release directory under the same
+/// bounds as an upstream body: the size the scan recorded must still hold,
+/// and a file that grows or shrinks mid-stream ends the stream in an error
+/// instead of serving bytes nobody hashed.
+async fn local_response(
+    path: &std::path::Path,
+    expected: u64,
+    cap: u64,
+    name: &str,
+    content_type: &'static str,
+) -> Result<Response, ApiError> {
+    let unavailable = || ApiError::NotFound("owned release bytes unavailable".into());
+    // Re-checked at serve time: the scan skipped symlinks, and a file swapped
+    // for one since is refused rather than followed.
+    let meta = tokio::fs::symlink_metadata(path)
+        .await
+        .map_err(|_| unavailable())?;
+    if !meta.is_file() {
+        return Err(unavailable());
+    }
+    if meta.len() > cap || (expected > 0 && meta.len() != expected) {
+        return Err(ApiError::Internal("release content length mismatch".into()));
+    }
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| unavailable())?;
+    let chunks = stream::try_unfold(file, |mut file| async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; 64 * 1024];
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            return Ok::<_, std::io::Error>(None);
+        }
+        buf.truncate(n);
+        Ok(Some((axum::body::Bytes::from(buf), file)))
+    });
+    bounded_stream_response(chunks, Some(meta.len()), expected, cap, name, content_type)
+}
 // Kept separate only to exercise the real streaming body against a local HTTP fixture.
 fn bounded_response(
     upstream: reqwest::Response,
@@ -243,8 +298,28 @@ fn bounded_response(
     content_type: &'static str,
 ) -> Result<Response, ApiError> {
     let length = upstream.content_length();
+    bounded_stream_response(
+        upstream.bytes_stream(),
+        length,
+        expected,
+        cap,
+        name,
+        content_type,
+    )
+}
+fn bounded_stream_response<S, E>(
+    input: S,
+    length: Option<u64>,
+    expected: u64,
+    cap: u64,
+    name: &str,
+    content_type: &'static str,
+) -> Result<Response, ApiError>
+where
+    S: futures::Stream<Item = Result<axum::body::Bytes, E>> + Send + 'static,
+{
     let stream = stream::try_unfold(
-        (Box::pin(upstream.bytes_stream()), 0u64),
+        (Box::pin(input), 0u64),
         move |(mut input, seen)| async move {
             match input.next().await {
                 Some(Ok(bytes)) => {
@@ -307,4 +382,124 @@ pub(crate) async fn artifact_proxy(
         },
     )
     .await
+}
+
+/// The server's own release directory through the delivery rules every
+/// GitHub asset already obeys: own URLs, the `.asc` pairing, the size bound.
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+    use crate::local_releases::{scan, test_support::TempDir};
+
+    const DEB: &str = "meshharbord-0.4.152-x86_64-unknown-linux-gnu.deb";
+
+    fn publish(dir: &TempDir, with_asc: bool) -> AgentRelease {
+        let rel = dir.path().join("agent-v0.4.152");
+        std::fs::create_dir_all(&rel).unwrap();
+        std::fs::write(rel.join(DEB), b"daemon package bytes").unwrap();
+        if with_asc {
+            std::fs::write(rel.join(format!("{DEB}.asc")), b"detached signature").unwrap();
+        }
+        scan(dir.path()).unwrap().remove(0)
+    }
+
+    async fn body(resp: Response) -> Vec<u8> {
+        axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec()
+    }
+
+    #[test]
+    fn own_urls_rewrites_local_assets_to_the_center_and_hides_the_path() {
+        let dir = TempDir::new();
+        let release = publish(&dir, true);
+        let base = public_base("https://center.example/meshharbor").unwrap();
+        let out = own_urls(vec![release], &base).unwrap();
+        let urls: Vec<_> = out[0]
+            .assets
+            .iter()
+            .map(|a| a.browser_download_url.as_str())
+            .collect();
+        assert_eq!(
+            urls,
+            [
+                format!(
+                    "https://center.example/meshharbor/api/agent/artifacts/agent-v0.4.152/{DEB}"
+                ),
+                format!(
+                    "https://center.example/meshharbor/api/agent/artifacts/agent-v0.4.152/{DEB}.asc"
+                ),
+            ]
+        );
+        let json = serde_json::to_string(&out).unwrap();
+        assert!(!json.contains(dir.path().to_str().unwrap()), "{json}");
+    }
+
+    /// Same rule as GitHub: an artifact without its detached signature is
+    /// not served at all — the agent would refuse it anyway, and serving it
+    /// would only turn a publishing mistake into a fleet-wide refusal storm.
+    #[tokio::test]
+    async fn a_local_artifact_without_its_asc_is_not_served() {
+        let dir = TempDir::new();
+        let release = publish(&dir, false);
+        let asset = &release.assets[0];
+        assert!(validate_asset(&release, asset).is_err());
+        assert!(
+            stream_asset(&release, asset, "application/octet-stream")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_local_artifact_streams_exactly_the_scanned_bytes() {
+        let dir = TempDir::new();
+        let release = publish(&dir, true);
+        let asset = release.assets.iter().find(|a| a.name == DEB).unwrap();
+        validate_asset(&release, asset).unwrap();
+        let resp = stream_asset(&release, asset, "application/octet-stream")
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body(resp).await, b"daemon package bytes");
+    }
+
+    /// The scan recorded a size (and the digest the agent checks). A file
+    /// replaced after the scan is refused rather than served unhashed.
+    #[tokio::test]
+    async fn a_local_file_changed_since_the_scan_is_refused() {
+        let dir = TempDir::new();
+        let release = publish(&dir, true);
+        let asset = release.assets.iter().find(|a| a.name == DEB).unwrap();
+        std::fs::write(
+            asset.local_path.as_ref().unwrap(),
+            b"a different, longer payload",
+        )
+        .unwrap();
+        assert!(
+            stream_asset(&release, asset, "application/octet-stream")
+                .await
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_local_file_swapped_for_a_symlink_is_refused() {
+        let dir = TempDir::new();
+        let release = publish(&dir, true);
+        let asset = release.assets.iter().find(|a| a.name == DEB).unwrap();
+        let path = asset.local_path.clone().unwrap();
+        let outside = TempDir::new();
+        let target = outside.path().join("same-size");
+        std::fs::write(&target, b"daemon package bytes").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(
+            stream_asset(&release, asset, "application/octet-stream")
+                .await
+                .is_err()
+        );
+    }
 }

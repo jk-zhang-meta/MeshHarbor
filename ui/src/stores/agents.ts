@@ -264,6 +264,10 @@ export interface AgentCapabilities {
    *  local RDP server's TLS certificate (`aa:bb:…`), when readable. Mirrors
    *  `AgentCaps.rdp_cert_sha256`. */
   rdp_cert_sha256?: string
+  /** RDP over the mesh — whether that RDP server is reachable through the
+   *  overlay (OS-TUN mode, or the owner's `rdp_over_mesh` opt-in on a netstack
+   *  node). Absent on older agents. Mirrors `AgentCaps.rdp_mesh_reachable`. */
+  rdp_mesh_reachable?: boolean
 }
 
 /** FR-77 — one encoder and the chroma formats it opened in. Wire strings:

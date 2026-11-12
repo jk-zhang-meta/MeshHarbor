@@ -55,6 +55,14 @@ pub struct AgentReleaseAsset {
     /// case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
+    /// Set ONLY by the server's own release directory scan
+    /// (`local_releases`): where the bytes live on this server. `serde(skip)`
+    /// in both directions is the security property, not a tidy-up — nothing
+    /// parsed from GitHub's JSON (or any other input) can ever name a local
+    /// file for `release_delivery` to stream, and the path never reaches a
+    /// client.
+    #[serde(skip)]
+    pub(crate) local_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -362,6 +370,7 @@ mod tests {
             browser_download_url: format!("https://example/{name}"),
             size: 1024,
             digest: Some("sha256:deadbeef".to_string()),
+            local_path: None,
         }
     }
 

@@ -348,6 +348,53 @@ async fn an_exit_node_can_always_be_turned_off_but_not_on() {
     );
 }
 
+/// Setting MagicDNS rewrites every node's DNS upstream, so it needs
+/// `MANAGE_AGENTS`: a plain member is refused and nothing changes, while
+/// reading the config stays member-visible.
+#[tokio::test]
+async fn a_plain_member_cannot_set_magic_dns_but_can_read_it() {
+    let app = TestApp::spawn().await;
+    let t = app.seed_tenant("dnsperm").await;
+    let url = format!("/api/tenant/{}/magic-dns", t.tenant_id);
+    let body = serde_json::json!({
+        "magic_dns_domain": "dnsperm.example",
+        "magic_dns_nameservers": ["192.0.2.53"],
+    });
+    let refused = app
+        .auth_put(&url, &t.member.access_token)
+        .json(&body)
+        .send()
+        .await
+        .expect("member put failed");
+    assert_eq!(
+        refused.status(),
+        403,
+        "a plain member must not set MagicDNS"
+    );
+    let read = app
+        .auth_get(&url, &t.member.access_token)
+        .send()
+        .await
+        .expect("member get failed");
+    assert_eq!(read.status(), 200, "reading MagicDNS stays member-visible");
+    let v: serde_json::Value = read.json().await.unwrap();
+    assert!(
+        v["magic_dns_domain"].is_null(),
+        "the refused write changed nothing: {v}"
+    );
+    let ok = app
+        .auth_put(&url, &t.admin.access_token)
+        .json(&body)
+        .send()
+        .await
+        .expect("admin put failed");
+    assert!(
+        ok.status().is_success(),
+        "the admin may set it, got {}",
+        ok.status()
+    );
+}
+
 /// FR-115 — MagicDNS is on every plan, Free included.
 #[tokio::test]
 async fn free_can_set_a_magic_dns_zone() {

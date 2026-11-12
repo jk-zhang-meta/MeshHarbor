@@ -52,6 +52,66 @@ fn within_grant(g: &DeviceShareGrant, asked: Permissions) -> bool {
         && (!asked.contains(Permissions::FILES)
             || (g.permissions.files_read && g.permissions.files_write))
 }
+/// What a shared session's FILES becomes on one agent, decided by the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FilesGate {
+    /// The permissions the session is created with.
+    pub permissions: Permissions,
+    /// The share account the device runs file operations as (the lease's
+    /// `account`); `None` when FILES is absent or the owner chose none.
+    pub account: Option<String>,
+}
+
+/// MeshHarbor — a share recipient's file operations never run as root or
+/// SYSTEM. An agent advertising `shared-files-as-account` runs them as the
+/// share's account, carried on the lease, and refuses them on a privileged
+/// install that has none. An older agent would run them as whatever its daemon
+/// is, so FILES is stripped for it (fail closed): view/control are untouched,
+/// and a request for files alone is refused.
+pub(crate) fn files_gate(
+    access: &SharedDeviceAccess,
+    asked: Permissions,
+) -> Result<FilesGate, String> {
+    files_gate_for(
+        &access.agent.capabilities,
+        access.grant.ssh_account.as_deref(),
+        asked,
+    )
+}
+
+fn files_gate_for(
+    caps: &meshharbor_remote_control::models::AgentCaps,
+    grant_account: Option<&str>,
+    asked: Permissions,
+) -> Result<FilesGate, String> {
+    if !asked.contains(Permissions::FILES) {
+        return Ok(FilesGate {
+            permissions: asked,
+            account: None,
+        });
+    }
+    if !caps.has_rpc(meshharbor_remote_control::models::RpcCap::SharedFilesAsAccount) {
+        let rest = asked - Permissions::FILES;
+        if rest.is_empty() {
+            return Err(
+                "This device's agent is too old to share files safely; update it to use \
+                 shared file transfer"
+                    .into(),
+            );
+        }
+        return Ok(FilesGate {
+            permissions: rest,
+            account: None,
+        });
+    }
+    Ok(FilesGate {
+        permissions: asked,
+        account: grant_account
+            .filter(|a| meshharbor_db::models::device_share::valid_share_account(a))
+            .map(str::to_owned),
+    })
+}
+
 pub(crate) async fn scope_for_request(
     state: &RemoteState,
     user: ObjectId,
@@ -309,42 +369,6 @@ pub async fn device(
         expires_at_ms: a.grant.expires_at.timestamp_millis(),
     }))
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn device_share_remote_ceiling_refuses_extra_services_and_read_only_files() {
-        for p in [
-            Permissions::CLIPBOARD,
-            Permissions::AUDIO,
-            Permissions::RECORD,
-            Permissions::PRIVACY,
-            Permissions::INPUT,
-        ] {
-            assert!(requested_operation(p).is_err())
-        }
-        let now = DateTime::now();
-        let mut g = DeviceShareGrant {
-            id: None,
-            device_id: ObjectId::new(),
-            tenant_id: ObjectId::new(),
-            owner_user_id: ObjectId::new(),
-            recipient_user_id: ObjectId::new(),
-            permissions: Default::default(),
-            tcp_ports: vec![],
-            created_at: now,
-            expires_at: now,
-            revoked_at: None,
-            revision: 0,
-            ssh_account: None,
-        };
-        g.permissions.files_read = true;
-        assert!(!within_grant(&g, Permissions::FILES));
-        g.permissions.files_write = true;
-        assert!(within_grant(&g, Permissions::FILES));
-        assert!(!within_grant(&g, Permissions::VIEW));
-    }
-}
 
 /// Authenticated agent only. No heartbeat, cached approval, or user frame renews authority.
 pub(crate) async fn renew_lease(
@@ -397,4 +421,88 @@ pub(crate) async fn renew_lease(
             challenge_id,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use meshharbor_remote_control::models::{AgentCaps, RpcCap};
+
+    fn caps(rpc: &[RpcCap]) -> AgentCaps {
+        AgentCaps {
+            rpc: rpc.iter().map(|c| c.wire().to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn files_gate_strips_files_for_an_agent_without_the_verb_and_refuses_files_alone() {
+        let old = caps(&[RpcCap::SharedSessionLease]);
+        let view_files = Permissions::VIEW | Permissions::INPUT | Permissions::FILES;
+        let g = files_gate_for(&old, Some("alice"), view_files).unwrap();
+        assert_eq!(g.permissions, Permissions::VIEW | Permissions::INPUT);
+        assert_eq!(g.account, None, "no account rides a session without FILES");
+        assert!(files_gate_for(&old, Some("alice"), Permissions::FILES).is_err());
+        // View/control alone never consults the verb.
+        let v = files_gate_for(&old, None, Permissions::VIEW).unwrap();
+        assert_eq!(v.permissions, Permissions::VIEW);
+    }
+
+    #[test]
+    fn files_gate_carries_only_a_valid_share_account_to_a_capable_agent() {
+        let new = caps(&[RpcCap::SharedSessionLease, RpcCap::SharedFilesAsAccount]);
+        let g = files_gate_for(&new, Some("alice"), Permissions::FILES).unwrap();
+        assert_eq!(g.permissions, Permissions::FILES);
+        assert_eq!(g.account.as_deref(), Some("alice"));
+        // No account: FILES stays, the device decides by its own privilege.
+        let none = files_gate_for(&new, None, Permissions::FILES).unwrap();
+        assert_eq!((none.permissions, none.account), (Permissions::FILES, None));
+        // A name the share rule refuses never reaches the device.
+        for bad in ["", "Root", "a b", "../x", "x".repeat(33).as_str()] {
+            let g = files_gate_for(&new, Some(bad), Permissions::FILES).unwrap();
+            assert_eq!(g.account, None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn files_gate_verb_match_is_equality_not_prefix() {
+        let mut c = caps(&[RpcCap::SharedSessionLease]);
+        c.rpc.push("shared-files-as-account-v0".into());
+        c.rpc.push("shared-files".into());
+        let g = files_gate_for(&c, Some("alice"), Permissions::VIEW | Permissions::FILES).unwrap();
+        assert_eq!(g.permissions, Permissions::VIEW);
+    }
+
+    #[test]
+    fn device_share_remote_ceiling_refuses_extra_services_and_read_only_files() {
+        for p in [
+            Permissions::CLIPBOARD,
+            Permissions::AUDIO,
+            Permissions::RECORD,
+            Permissions::PRIVACY,
+            Permissions::INPUT,
+        ] {
+            assert!(requested_operation(p).is_err())
+        }
+        let now = DateTime::now();
+        let mut g = DeviceShareGrant {
+            id: None,
+            device_id: ObjectId::new(),
+            tenant_id: ObjectId::new(),
+            owner_user_id: ObjectId::new(),
+            recipient_user_id: ObjectId::new(),
+            permissions: Default::default(),
+            tcp_ports: vec![],
+            created_at: now,
+            expires_at: now,
+            revoked_at: None,
+            revision: 0,
+            ssh_account: None,
+        };
+        g.permissions.files_read = true;
+        assert!(!within_grant(&g, Permissions::FILES));
+        g.permissions.files_write = true;
+        assert!(within_grant(&g, Permissions::FILES));
+        assert!(!within_grant(&g, Permissions::VIEW));
+    }
 }

@@ -753,6 +753,10 @@
       "sshAccount": "Device account for SSH",
       "sshAccountHint": "An existing Linux/macOS user on that device. The recipient's SSH sessions run as this account, and only this one.",
       "sshAccountInvalid": "Enter the device account for SSH: a Linux/macOS user name (lowercase letters, digits, _ and -).",
+      "filesAccount": "Device account for file transfers",
+      "filesAccountHint": "A Linux/macOS user on that device. The recipient's file transfers run as this account, never as root, so they reach only what this account can.",
+      "filesAccountInvalid": "Enter the device account for file transfers: a Linux/macOS user name (lowercase letters, digits, _ and -).",
+      "sshFilesAccountHint": "An existing Linux/macOS user on that device. The recipient's SSH sessions and file transfers run as this account, and only this one — never as root.",
       "sshRootRefused": "root cannot be shared directly. Create an administrator account for the recipient instead.",
       "acct": {
         "existing": "Accounts on this device:",

@@ -9,13 +9,23 @@ import { nextTick } from 'vue'
 import RdpFallbackCard from '@/components/remote/RdpFallbackCard.vue'
 import {
   RC_ERROR_CODE_TABLE,
+  RDP_MESH_DISABLED_HINT,
   RDP_SCREEN_LOCK_WARNING,
+  RDP_UNPINNED_CERT_MSTSC_NOTICE,
   formatMhRdpCommand,
   getDeviceAutoRdpFallback,
   hasDesktopRdpBridge,
   setDeviceAutoRdpFallback,
   shouldShowRdpFallbackCard,
 } from '@/utils/rdpFallback'
+
+// The desktop companion (devices.js) is English; the web UI keeps its own
+// strings in utils/rdpFallback.ts.
+const DESKTOP_RDP_SCREEN_LOCK_WARNING = 'An RDP session locks the remote computer’s local screen.'
+const DESKTOP_RDP_UNPINNED_NOTICE =
+  'This device reported no certificate fingerprint; the RDP client will check the certificate itself.'
+const DESKTOP_RDP_MESH_HINT =
+  'Turn on RDP over the mesh on the target device (rdp_over_mesh = true).'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DESKTOP_FRONT = join(
@@ -148,6 +158,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
           mediaUnavailableReason: 'no_display',
           mediaUnavailableHint: 'No physical display attached',
           rdpAvailable: true,
+          rdpMeshReachable: true,
           rdpPort: 3389,
           deviceId: DEVICE_ID,
           deviceName: DEVICE_NAME,
@@ -198,6 +209,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
           errorCode: 'connection_timed_out',
           errorMessage: 'connection timed out',
           rdpAvailable: true,
+          rdpMeshReachable: true,
           rdpPort: 3389,
           rdpCertSha256:
             'aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99',
@@ -208,6 +220,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       })
 
       expect(wrapper.find('[data-test="rdp-fallback-no-bridge"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="rdp-unpinned-cert-notice"]').exists()).toBe(false)
       const connectBtn = wrapper.find('[data-test="rdp-fallback-connect-btn"]')
       expect(connectBtn.exists()).toBe(true)
       expect(connectBtn.text()).toBe('用 RDP 连接')
@@ -221,6 +234,39 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
         certSha256:
           'aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99',
       })
+    })
+
+    it('displays unpinned certificate notice when rdpCertSha256 is absent and surfaces offline precheck error', async () => {
+      const openRdpErrSpy = vi.fn(async () => {
+        throw new Error('经网格无法连到目标 RDP 端口 (surface-pro:3389)：Host unreachable')
+      })
+      ;(window as unknown as Record<string, unknown>).__MESHHARBOR_DESKTOP_BRIDGE__ = {
+        openRdp: openRdpErrSpy,
+      }
+
+      const wrapper = mount(RdpFallbackCard, {
+        props: {
+          phase: 'error',
+          errorCode: 'agent_offline',
+          errorMessage: 'agent offline',
+          rdpAvailable: true,
+          rdpMeshReachable: true,
+          rdpPort: 3389,
+          rdpCertSha256: null,
+          deviceId: DEVICE_ID,
+          deviceName: DEVICE_NAME,
+        },
+      })
+
+      const notice = wrapper.find('[data-test="rdp-unpinned-cert-notice"]')
+      expect(notice.exists()).toBe(true)
+      expect(notice.text()).toBe(RDP_UNPINNED_CERT_MSTSC_NOTICE)
+
+      await wrapper.find('[data-test="rdp-fallback-connect-btn"]').trigger('click')
+      await nextTick()
+      const errEl = wrapper.find('[data-test="rdp-fallback-bridge-error"]')
+      expect(errEl.exists()).toBe(true)
+      expect(errEl.text()).toContain('经网格无法连到目标 RDP 端口')
     })
   })
 
@@ -239,6 +285,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
           mediaUnavailableReason: 'no_display',
           mediaUnavailableHint: 'The host has no physical display attached.',
           rdpAvailable: true,
+          rdpMeshReachable: true,
           rdpPort: 3389,
           deviceId: DEVICE_ID,
           deviceName: DEVICE_NAME,
@@ -262,7 +309,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
   })
 
   describe('5. Desktop device list split button (`agents/meshharbor-desktop/src/front/devices.js`)', () => {
-    it('renders primary "连接" (cmd_open_remote), removes duplicate "独立会话（高级）", and requires in-app screen-lock confirmation before invoking cmd_open_rdp', async () => {
+    it('renders primary "Connect" (cmd_open_remote), removes the duplicate standalone-session item, and requires in-app screen-lock confirmation before invoking cmd_open_rdp', async () => {
       const parsed = new DOMParser().parseFromString(DESKTOP_HTML, 'text/html')
       const section = document.importNode(parsed.getElementById('view-devices')!, true)
       section.hidden = false
@@ -281,6 +328,8 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
                 is_self: false,
                 presence: 'online',
                 os: 'windows',
+                rdp_available: true,
+                rdp_mesh_reachable: true,
               },
             ],
             total: 1,
@@ -337,17 +386,17 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       ) as HTMLButtonElement | null
 
       expect(mainBtn).not.toBeNull()
-      expect(mainBtn!.textContent).toBe('连接')
+      expect(mainBtn!.textContent).toBe('Connect')
       expect(toggleBtn).not.toBeNull()
       expect(menu).not.toBeNull()
       expect(menu!.hidden).toBe(true)
-      expect(rdpItem?.textContent).toBe('用 RDP 连接')
+      expect(rdpItem?.textContent).toBe('Connect with RDP')
       expect(standaloneItem).toBeNull()
       expect(confirmBox).not.toBeNull()
       expect(confirmBox!.hidden).toBe(true)
-      expect(confirmText?.textContent).toBe(RDP_SCREEN_LOCK_WARNING)
+      expect(confirmText?.textContent).toBe(DESKTOP_RDP_SCREEN_LOCK_WARNING)
 
-      // 1. Clicking primary "连接" invokes cmd_open_remote
+      // 1. Clicking primary "Connect" invokes cmd_open_remote
       mainBtn!.click()
       await new Promise((r) => setTimeout(r, 10))
       expect(invokeSpy).toHaveBeenCalledWith('cmd_open_remote', {
@@ -355,7 +404,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
         org: null,
       })
 
-      // 2. Clicking dropdown toggle opens menu; clicking "用 RDP 连接" shows in-app confirmation without calling cmd_open_rdp yet
+      // 2. Clicking dropdown toggle opens menu; clicking "Connect with RDP" shows in-app confirmation without calling cmd_open_rdp yet
       invokeSpy.mockClear()
       toggleBtn!.click()
       expect(menu!.hidden).toBe(false)
@@ -369,7 +418,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       expect(confirmBox!.hidden).toBe(false)
       expect(invokeSpy).not.toHaveBeenCalledWith('cmd_open_rdp', expect.anything())
 
-      // 3. Clicking "取消" closes menu and resets state without calling cmd_open_rdp
+      // 3. Clicking "Cancel" closes menu and resets state without calling cmd_open_rdp
       confirmCancelBtn!.click()
       await new Promise((r) => setTimeout(r, 10))
       expect(menu!.hidden).toBe(true)
@@ -377,10 +426,14 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       expect(confirmBox!.hidden).toBe(true)
       expect(invokeSpy).not.toHaveBeenCalledWith('cmd_open_rdp', expect.anything())
 
-      // 4. Re-opening menu, clicking "用 RDP 连接", then clicking "确认连接" invokes cmd_open_rdp
+      // 4. Re-opening menu, clicking "Connect with RDP", then clicking "Connect" invokes cmd_open_rdp
       toggleBtn!.click()
       rdpItem!.click()
       expect(confirmBox!.hidden).toBe(false)
+      const unpinnedEl = document.querySelector('.dv-rdp-unpinned-note') as HTMLElement | null
+      expect(unpinnedEl).not.toBeNull()
+      expect(unpinnedEl!.hidden).toBe(false)
+      expect(unpinnedEl!.textContent).toBe(DESKTOP_RDP_UNPINNED_NOTICE)
       confirmAcceptBtn!.click()
       await new Promise((r) => setTimeout(r, 10))
       expect(menu!.hidden).toBe(true)
@@ -389,6 +442,143 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
         target: 'node-surface-01',
         org: null,
       })
+    })
+  })
+
+  describe('6. RDP over the mesh: offered only when `rdp_mesh_reachable` is true', () => {
+    it('shows only the one-line hint (no connect, no auto, no auto-launch) when RDP exists but is not reachable over the mesh', async () => {
+      const openRdpSpy = vi.fn(async () => undefined)
+      ;(window as unknown as Record<string, unknown>).__MESHHARBOR_DESKTOP_BRIDGE__ = {
+        openRdp: openRdpSpy,
+      }
+      expect(setDeviceAutoRdpFallback(DEVICE_ID, true, true)).toBe(true)
+      const wrapper = mount(RdpFallbackCard, {
+        props: {
+          phase: 'error',
+          errorCode: 'connection_timed_out',
+          errorMessage: 'connection timed out',
+          rdpAvailable: true,
+          rdpMeshReachable: false,
+          rdpPort: 3389,
+          deviceId: DEVICE_ID,
+          deviceName: DEVICE_NAME,
+        },
+      })
+      await nextTick()
+      expect(wrapper.find('[data-test="rdp-fallback-card"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="rdp-mesh-hint"]').text()).toBe(RDP_MESH_DISABLED_HINT)
+      expect(wrapper.find('[data-test="rdp-fallback-connect-btn"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="rdp-auto-toggle"]').exists()).toBe(false)
+      expect(openRdpSpy).not.toHaveBeenCalled()
+    })
+
+    it('without the desktop bridge, shows the hint and no `mh rdp` command when not reachable', () => {
+      const wrapper = mount(RdpFallbackCard, {
+        props: {
+          phase: 'error',
+          errorCode: 'connection_timed_out',
+          rdpAvailable: true,
+          deviceId: DEVICE_ID,
+          deviceName: DEVICE_NAME,
+        },
+      })
+      expect(wrapper.find('[data-test="rdp-mesh-hint"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="rdp-fallback-no-bridge"]').exists()).toBe(false)
+    })
+
+    it('offers the RDP actions and no hint when reachable', () => {
+      const wrapper = mount(RdpFallbackCard, {
+        props: {
+          phase: 'error',
+          errorCode: 'connection_timed_out',
+          rdpAvailable: true,
+          rdpMeshReachable: true,
+          deviceId: DEVICE_ID,
+          deviceName: DEVICE_NAME,
+        },
+      })
+      expect(wrapper.find('[data-test="rdp-mesh-hint"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="rdp-fallback-no-bridge"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="rdp-auto-toggle"]').exists()).toBe(true)
+    })
+
+    it('desktop menu: hint instead of "Connect with RDP" when not reachable, and no dropdown without RDP', async () => {
+      const parsed = new DOMParser().parseFromString(DESKTOP_HTML, 'text/html')
+      const section = document.importNode(parsed.getElementById('view-devices')!, true)
+      section.hidden = false
+      document.body.innerHTML = ''
+      document.body.appendChild(section)
+      const OTHER_ID = '66366f7a7230306d6c657299'
+      const invokeSpy = vi.fn(async (cmd: string) => {
+        if (cmd === 'cmd_devices') {
+          return {
+            items: [
+              {
+                id: DEVICE_ID,
+                overlay_node_id: 'node-surface-01',
+                name: DEVICE_NAME,
+                kind: 'agent',
+                is_self: false,
+                presence: 'online',
+                os: 'windows',
+                rdp_available: true,
+                rdp_mesh_reachable: false,
+              },
+              {
+                id: OTHER_ID,
+                overlay_node_id: 'node-linux-01',
+                name: 'linux-box',
+                kind: 'agent',
+                is_self: false,
+                presence: 'online',
+                os: 'linux',
+              },
+            ],
+            total: 2,
+            page: 1,
+            per_page: 25,
+          }
+        }
+        return { ok: true }
+      })
+      const w = window as unknown as Record<string, unknown>
+      w.MeshHarbor = {
+        $: (id: string) => document.getElementById(id),
+        invoke: invokeSpy,
+        show: (el: HTMLElement | null) => el && (el.hidden = false),
+        hide: (el: HTMLElement | null) => el && (el.hidden = true),
+        fmtRelative: () => 'just now',
+        on: () => undefined,
+        get: () => ({ available: true, orgs: [{ label: 'primary', primary: true }], peers: [] }),
+        currentView: () => 'devices',
+        Mesh: { create: () => ({ render: () => undefined }) },
+      }
+      window.eval(DESKTOP_GRID_JS)
+      window.eval(DESKTOP_DEVICES_JS)
+      document.dispatchEvent(new Event('DOMContentLoaded'))
+      document.dispatchEvent(new CustomEvent('meshharbor:view', { detail: 'devices' }))
+      await new Promise((r) => setTimeout(r, 20))
+
+      // Rows are keyed by device; an earlier test's devices.js instance may
+      // render too, so select by key rather than counting widgets.
+      const wrapsFor = (id: string) =>
+        Array.from(document.querySelectorAll(`tr[data-key*="${id}"] .dv-split-wrap`)) as HTMLElement[]
+      const surfaceWraps = wrapsFor(DEVICE_ID)
+      const linuxWraps = wrapsFor(OTHER_ID)
+      expect(surfaceWraps.length).toBeGreaterThan(0)
+      expect(linuxWraps.length).toBeGreaterThan(0)
+      const toggle1 = surfaceWraps[0].querySelector('.dv-split-toggle') as HTMLButtonElement
+      const item1 = surfaceWraps[0].querySelector('.dv-split-item-rdp') as HTMLButtonElement
+      const hint1 = surfaceWraps[0].querySelector('.dv-split-hint') as HTMLElement
+      expect(toggle1.hidden).toBe(false)
+      toggle1.click()
+      expect(item1.hidden).toBe(true)
+      expect(hint1.hidden).toBe(false)
+      expect(hint1.textContent).toBe(DESKTOP_RDP_MESH_HINT)
+      for (const w of linuxWraps) {
+        expect((w.querySelector('.dv-split-toggle') as HTMLButtonElement).hidden).toBe(true)
+      }
+      expect(invokeSpy).not.toHaveBeenCalledWith('cmd_open_rdp', expect.anything())
     })
   })
 })

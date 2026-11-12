@@ -25,7 +25,7 @@ pub fn random_code() -> String {
 }
 
 pub enum Poll {
-    Found(NativeSshAuthorization),
+    Found(Box<NativeSshAuthorization>),
     Limited,
     Invalid,
 }
@@ -244,7 +244,7 @@ impl NativeSshAuthorizationDao {
                 .return_document(ReturnDocument::After)
                 .await?
             {
-                Some(row) => Poll::Found(row),
+                Some(row) => Poll::Found(Box::new(row)),
                 None => Poll::Limited,
             },
         )

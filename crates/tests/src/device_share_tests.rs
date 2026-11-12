@@ -546,7 +546,8 @@ async fn device_share_remote_real_ws_session_and_live_revoke() {
     let mut body = create_body(&f);
     body["permissions"] =
         json!({"desktop_view":true,"desktop_control":true,"files_read":true,"files_write":true});
-    body.as_object_mut().unwrap().remove("ssh_account");
+    // A Linux file share names the account its file operations run as
+    // (`create_body`'s "alice"), never root.
     let grant: Value = f
         .app
         .auth_post("/api/device-shares", &f.owner.token)
@@ -565,7 +566,9 @@ async fn device_share_remote_real_ws_session_and_live_revoke() {
         .collection::<Agent>("agents")
         .update_one(
             doc! {"_id":f.device},
-            doc! {"$set":{"peer_auth_key":public_key}},
+            // An agent that runs a shared session's file operations as the
+            // share account: only it is given FILES on a shared session.
+            doc! {"$set":{"peer_auth_key":public_key,"capabilities.rpc":["shared-session-lease-v1","shared-files-as-account"]}},
         )
         .await
         .unwrap();
@@ -622,10 +625,11 @@ async fn device_share_remote_real_ws_session_and_live_revoke() {
                 session_id,
                 permissions,
                 rc_overlay,
+                shared_lease,
                 ..
             }) = agent_rx.recv().await
             {
-                break (session_id, permissions, rc_overlay);
+                break (session_id, permissions, rc_overlay, shared_lease);
             }
         }
     })
@@ -637,6 +641,11 @@ async fn device_share_remote_real_ws_session_and_live_revoke() {
             .contains(meshharbor_remote_control::permissions::Permissions::FILES)
     );
     assert!(!request.2);
+    assert_eq!(
+        request.3.as_ref().and_then(|l| l.account.as_deref()),
+        Some("alice"),
+        "the device is told the account the recipient's file operations run as"
+    );
     assert_eq!(hub.session_grant(request.0).unwrap().1, f.recipient.id);
     hub.deliver_consent(request.0, true, None).unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -704,6 +713,125 @@ async fn device_share_remote_real_ws_session_and_live_revoke() {
     );
     let _ = ws.close(None).await;
 }
+/// MeshHarbor — a share recipient's file operations never run as root/SYSTEM.
+/// A Linux file share must name its account, and a shared session gets FILES
+/// only from an agent that runs them as that account: one that does not
+/// (`shared-files-as-account` absent) loses FILES — view/control intact — and
+/// a request for files alone is refused before anything reaches the device.
+#[tokio::test]
+async fn device_share_files_need_an_account_and_an_agent_that_runs_them_as_it() {
+    use futures::{SinkExt, StreamExt};
+    use meshharbor_remote_control::permissions::Permissions;
+    use meshharbor_remote_control::signaling::ServerMsg;
+    use std::time::Duration;
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
+    let f = fixture().await;
+    let mut body = create_body(&f);
+    body["permissions"] =
+        json!({"desktop_view":true,"desktop_control":true,"files_read":true,"files_write":true});
+    body.as_object_mut().unwrap().remove("ssh_account");
+    let refused = f
+        .app
+        .auth_post("/api/device-shares", &f.owner.token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status().as_u16(), 400);
+    assert!(
+        refused
+            .text()
+            .await
+            .unwrap()
+            .contains("Choose the device account"),
+        "a Linux file share without an account is refused at creation"
+    );
+
+    body["ssh_account"] = json!("alice");
+    let grant: Value = f
+        .app
+        .auth_post("/api/device-shares", &f.owner.token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = grant["id"]
+        .as_str()
+        .expect("the grant with an account")
+        .to_owned();
+    // The fixture agent advertises only `shared-session-lease-v1`: an agent
+    // that would run a recipient's file operations as its own daemon.
+    let hub = &f.app.state.modules.fleet.as_ref().unwrap().rc_hub;
+    let (_agent_tx, _cancel, mut agent_rx) = hub.register_agent(
+        f.device,
+        f.tenant,
+        f.owner.id,
+        OsKind::Linux,
+        4,
+        false,
+        false,
+    );
+    let (mut ws, _) = connect_async(format!(
+        "ws://{}/ws?token={}&role=controller",
+        f.app.addr, f.recipient.token
+    ))
+    .await
+    .unwrap();
+
+    ws.send(Message::Text(json!({"t":"rc:session.request","agent_id":f.device.to_hex(),"share_grant_id":id,"permissions":"FILES"}).to_string().into())).await.unwrap();
+    let denied = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(Ok(Message::Text(t))) = ws.next().await {
+                let v: Value = serde_json::from_str(&t).unwrap();
+                if v["t"] == "rc:error" {
+                    break v;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(denied["code"], "permission_denied");
+    assert!(
+        denied["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("too old"),
+        "{denied}"
+    );
+    assert!(agent_rx.try_recv().is_err(), "nothing reached the device");
+
+    ws.send(Message::Text(json!({"t":"rc:session.request","agent_id":f.device.to_hex(),"share_grant_id":id,"permissions":"VIEW | INPUT | FILES"}).to_string().into())).await.unwrap();
+    let (permissions, lease) = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if let Some(ServerMsg::Request {
+                permissions,
+                shared_lease,
+                ..
+            }) = agent_rx.recv().await
+            {
+                break (permissions, shared_lease);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(permissions.contains(Permissions::VIEW | Permissions::INPUT));
+    assert!(
+        !permissions.contains(Permissions::FILES),
+        "FILES never reaches an agent that would run it as its daemon"
+    );
+    let lease = lease.expect("still a shared session");
+    assert_eq!(
+        lease.account, None,
+        "no account rides a session without FILES"
+    );
+    let _ = ws.close(None).await;
+}
+
 #[tokio::test]
 async fn device_share_remote_escalation_and_unshared_org_request_are_denied() {
     use futures::{SinkExt, StreamExt};
@@ -712,7 +840,8 @@ async fn device_share_remote_escalation_and_unshared_org_request_are_denied() {
     let f = fixture().await;
     let mut body = create_body(&f);
     body["permissions"] = json!({"desktop_view":true,"files_read":true});
-    body.as_object_mut().unwrap().remove("ssh_account");
+    // The account stays: a Linux file share needs one, and without the grant
+    // the requests below would be refused for the wrong reason.
     let g: Value = f
         .app
         .auth_post("/api/device-shares", &f.owner.token)
@@ -723,6 +852,7 @@ async fn device_share_remote_escalation_and_unshared_org_request_are_denied() {
         .json()
         .await
         .unwrap();
+    assert!(g["id"].is_string(), "the read-only grant exists: {g}");
     let hub = &f.app.state.modules.fleet.as_ref().unwrap().rc_hub;
     let (_tx, _cancel, mut agent_rx) = hub.register_agent(
         f.device,

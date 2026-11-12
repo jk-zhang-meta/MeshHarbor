@@ -44,6 +44,14 @@ pub struct DerpTicketClaims {
     /// base64 WG public key — the ONLY key this ticket may register.
     pub pk: String,
     pub exp: u64,
+    /// MeshHarbor #21: the node's business zone (`mainland` | `non_mainland`).
+    /// The API sets it exactly when it ENFORCES business isolation, and then
+    /// mints no ticket at all for a node with no known zone. A PoP delivers a
+    /// frame only between two registrations whose `zone` is EQUAL, where
+    /// absent equals absent. So a zoned node never meets an unzoned one, and
+    /// a pre-#21 ticket (absent) keeps working with another pre-#21 ticket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
 }
 
 /// The API-side minting half. Built from the configured private key; derives
@@ -78,6 +86,17 @@ impl DerpTicketSigner {
     /// Mint a ticket for `(network hex, wg pubkey b64)`. Returns
     /// `(token, exp_unix)`.
     pub fn mint(&self, network_hex: &str, wg_pubkey_b64: &str) -> Result<(String, u64), String> {
+        self.mint_in_zone(network_hex, wg_pubkey_b64, None)
+    }
+
+    /// [`Self::mint`] carrying the node's business zone (see
+    /// [`DerpTicketClaims::zone`]). `None` mints the pre-#21 ticket.
+    pub fn mint_in_zone(
+        &self,
+        network_hex: &str,
+        wg_pubkey_b64: &str,
+        zone: Option<&str>,
+    ) -> Result<(String, u64), String> {
         let exp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -88,6 +107,7 @@ impl DerpTicketSigner {
             net: network_hex.to_string(),
             pk: wg_pubkey_b64.to_string(),
             exp,
+            zone: zone.map(str::to_string),
         };
         let token = jsonwebtoken::encode(&Header::new(Algorithm::EdDSA), &claims, &self.enc)
             .map_err(|e| format!("derp ticket mint: {e}"))?;
@@ -210,6 +230,34 @@ mod tests {
         assert_eq!(claims.net, "6a54bf440b4fd609a7356f97");
         assert_eq!(claims.pk, "cHVia2V5");
         assert_eq!(claims.exp, exp);
+        assert_eq!(claims.zone, None, "a plain mint carries no zone");
+    }
+
+    /// #21 — the zone claim round-trips, and is absent from a plain mint's
+    /// payload, so a ticket minted without isolation is byte-shaped like the
+    /// pre-#21 ones.
+    #[test]
+    fn a_zoned_ticket_carries_its_zone_and_a_plain_one_omits_it() {
+        let (signer, key) = test_signer();
+        let (zoned, _) = signer
+            .mint_in_zone("6a54bf440b4fd609a7356f97", "cHVia2V5", Some("mainland"))
+            .unwrap();
+        assert_eq!(
+            verify(&zoned, &key).unwrap().zone.as_deref(),
+            Some("mainland")
+        );
+        let (plain, _) = signer.mint("6a54bf440b4fd609a7356f97", "cHVia2V5").unwrap();
+        let payload = plain.split('.').nth(1).unwrap();
+        let json = String::from_utf8(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !json.contains("zone"),
+            "plain ticket omits the claim: {json}"
+        );
     }
 
     #[test]

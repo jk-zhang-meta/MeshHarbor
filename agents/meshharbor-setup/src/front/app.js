@@ -31,10 +31,6 @@ const { listen } = window.__TAURI__.event;
 
 const STEPS = ["welcome", "server", "token", "install", "done"];
 const ROLES = ["daemon-system", "daemon-machine", "daemon-user", "tunnel-client"];
-// The roles whose MSI is perMachine (Role::msi_flavour → "permachine*"): the
-// daemon runs as a service that can create the overlay's TUN adapter, so the
-// private network is on by default for them (FR-84 S2).
-const PER_MACHINE_ROLES = ["daemon-system", "daemon-machine"];
 
 const state = {
   step: "welcome",
@@ -257,16 +253,13 @@ function flavourLabel(flavour) {
   return flavour;
 }
 
-function isPerMachine(role) {
-  return PER_MACHINE_ROLES.includes(role);
-}
-
 // FR-84 S2 — what the overlay box shows: the operator's explicit choice if
-// they made one, else the role's default. Mirrors
-// `AdvancedOptions::with_flavour_defaults` on the Rust side, which applies
-// the same rule when the option never reaches it.
+// they made one, else the role's default — on for every daemon role (a
+// per-user daemon joins through the userspace netstack; the hint says so).
+// Mirrors `AdvancedOptions::with_flavour_defaults` on the Rust side, which
+// applies the same rule when the option never reaches it.
 function overlayChecked(role, choice) {
-  return choice ?? isPerMachine(role);
+  return choice ?? role !== "tunnel-client";
 }
 
 // ─── Step 1: Welcome ────────────────────────────────────────────────────────
@@ -437,11 +430,11 @@ function renderServer() {
   // the tunnel-client role.
   document.getElementById("advanced-wrap").hidden = state.role === "tunnel-client";
   document.getElementById("adv-firewall-wrap").hidden = state.role !== "daemon-user";
-  // FR-84 S2: the overlay box follows the role until touched — on for the
-  // perMachine roles (the service can create the TUN adapter), off for a
-  // per-user install (its worker runs with a filtered token and cannot;
-  // the hint says so). The box stays enabled: the choice is the
-  // operator's, the default is only the likely one.
+  // FR-84 S2: the overlay box follows the role until touched — on for every
+  // daemon role. A per-user worker runs with a filtered token and cannot
+  // create the TUN adapter, so it joins through the userspace netstack (the
+  // hint says so). The box stays enabled: the choice is the operator's, the
+  // default is only the likely one.
   document.getElementById("adv-overlay").checked = overlayChecked(state.role, state.overlayChoice);
   document.getElementById("adv-overlay-hint").hidden = state.role !== "daemon-user";
 }

@@ -248,35 +248,6 @@ struct ChildPeerHandle {
     stop: tokio_util::sync::CancellationToken,
 }
 
-/// Default initial DTLS flight retransmission interval (`0 ms`, disabled by
-/// default so `webrtc-dtls` uses its upstream `1 s` fixed timer unless explicitly
-/// enabled via `MESHHARBORD_DTLS_FLIGHT_INTERVAL_MS=100`).
-pub const DEFAULT_DTLS_FLIGHT_INTERVAL_MS: u64 = 0;
-
-pub fn parse_dtls_flight_interval_ms(raw: Option<&str>) -> Duration {
-    let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
-        return Duration::from_millis(DEFAULT_DTLS_FLIGHT_INTERVAL_MS);
-    };
-    if s == "0"
-        || s == "1000"
-        || s.eq_ignore_ascii_case("legacy")
-        || s.eq_ignore_ascii_case("off")
-        || s.eq_ignore_ascii_case("false")
-    {
-        return Duration::ZERO;
-    }
-    match s.parse::<u64>() {
-        Ok(ms) => Duration::from_millis(ms.clamp(20, 5000)),
-        Err(_) => Duration::from_millis(DEFAULT_DTLS_FLIGHT_INTERVAL_MS),
-    }
-}
-
-pub fn dtls_flight_interval_from_env() -> Duration {
-    let val = node_env("DTLS_FLIGHT_INTERVAL_MS")
-        .or_else(|| std::env::var("MESHHARBOR_DTLS_FLIGHT_INTERVAL_MS").ok());
-    parse_dtls_flight_interval_ms(val.as_deref())
-}
-
 /// Default bounded wait (`50 ms`) after `set_local_description` for all local
 /// network interfaces' `host` candidates to finish gathering so they can be
 /// included directly in `rc:sdp.answer`. Setting `MESHHARBORD_ANSWER_WAIT_HOST_MS=0`
@@ -614,21 +585,22 @@ impl AgentPeer {
         // whole CGNAT `/10` (the CGNAT caveat above still holds). Remote
         // candidates and ICE servers get the same rule below and in
         // `add_remote_candidate`.
-        if !rc_overlay.allow {
-            let keep = rc_overlay.clone();
-            setting.set_ip_filter(Box::new(move |ip| keep.keeps_local(ip)));
+        // 2026-11-11 — and, when opted in, this host's Tailscale addresses
+        // (`ice_foreign_vpn`, default off: the field A/B showed a slower start).
+        let skip_foreign = crate::ice_foreign_vpn::host_ips_to_skip();
+        if !skip_foreign.is_empty() {
+            info!(
+                skipped = skip_foreign.len(),
+                "ice: leaving this host's Tailscale interface addresses out of host candidates (MESHHARBORD_ICE_SKIP_TAILSCALE_HOST is set)"
+            );
+        }
+        if let Some(filter) = crate::ice_foreign_vpn::local_ip_filter(&rc_overlay, skip_foreign) {
+            setting.set_ip_filter(filter);
         }
         // FR-101 P1 — GCM-only DTLS, with its switch back, and the SRTP/SRTCP
         // replay windows pinned at 64 (webrtc-srtp's session default too).
         let transport = crate::rc_transport::Policy::from_env();
         transport.apply(&mut setting);
-        let dtls_flight_interval = dtls_flight_interval_from_env();
-        setting.set_dtls_flight_interval(dtls_flight_interval);
-        let dtls_flight_interval_ms = if dtls_flight_interval.is_zero() {
-            1000
-        } else {
-            dtls_flight_interval.as_millis() as u64
-        };
         // FR-16 L0 — the loopback harness routes this session's ICE through a
         // webrtc-util vnet (a set delay, jitter and loss). Only the test-only
         // `synthetic-frame-source` build carries the hook. Applied last, so
@@ -640,7 +612,6 @@ impl AgentPeer {
             overlay_blocks = rc_overlay.v4_nets.len(),
             srtp_replay_window = transport.replay_window,
             dtls_gcm_only = transport.gcm_only,
-            dtls_flight_interval_ms,
             "rc ICE: overlay {}",
             rc_overlay.describe()
         );
@@ -2361,9 +2332,11 @@ impl AgentPeer {
         let registry = webrtc::interceptor::registry::Registry::new();
         let mut setting = webrtc::api::setting_engine::SettingEngine::default();
         setting.set_interface_filter(Box::new(|name: &str| !is_overlay_iface(name)));
-        if !self.rc_overlay.allow {
-            let keep = self.rc_overlay.clone();
-            setting.set_ip_filter(Box::new(move |ip| keep.keeps_local(ip)));
+        if let Some(filter) = crate::ice_foreign_vpn::local_ip_filter(
+            &self.rc_overlay,
+            crate::ice_foreign_vpn::host_ips_to_skip(),
+        ) {
+            setting.set_ip_filter(filter);
         }
         let transport = crate::rc_transport::Policy::from_env();
         transport.apply(&mut setting);
@@ -13826,23 +13799,54 @@ pub fn attach_files_denied(
         session = %session_id,
         "files DC attached in DENY mode — session lacks FILES permission"
     );
+    attach_files_refusing(
+        dc,
+        session_end,
+        "FILES permission not granted for this session".to_string(),
+    );
+}
+
+/// A files channel that answers every request with `reason`: a transfer's
+/// `files:error` (by its `id`), a listing's `files:dir-error` (by its
+/// `req_id`), so neither of the browser's waiters times out instead.
+fn attach_files_refusing(
+    dc: Arc<RTCDataChannel>,
+    session_end: &tokio_util::sync::CancellationToken,
+    reason: String,
+) {
     let dc_for_handler = dc.clone();
+    let reason = Arc::new(reason);
     dc.on_message(Box::new(move |msg| {
         let dc = dc_for_handler.clone();
+        let reason = reason.clone();
         Box::pin(async move {
             if !msg.is_string {
                 return; // chunk for a transfer that was never accepted
             }
-            let id = std::str::from_utf8(&msg.data)
+            let v = std::str::from_utf8(&msg.data)
                 .ok()
-                .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
-                .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string))
-                .unwrap_or_default();
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok());
+            let field = |k: &str| {
+                v.as_ref()
+                    .and_then(|v| v.get(k).and_then(|i| i.as_str()).map(str::to_string))
+            };
+            if let Some(req_id) = field("req_id") {
+                send_files_json(
+                    &dc,
+                    &crate::files::FilesOutgoing::DirError {
+                        req_id: &req_id,
+                        message: &reason,
+                    },
+                )
+                .await;
+                return;
+            }
+            let id = field("id").unwrap_or_default();
             send_files_json(
                 &dc,
                 &crate::files::FilesOutgoing::Error {
                     id: &id,
-                    message: "FILES permission not granted for this session",
+                    message: &reason,
                 },
             )
             .await;
@@ -13852,6 +13856,25 @@ pub fn attach_files_denied(
     on_session_end(&dc, session_end, || async {});
 }
 
+/// MeshHarbor — the files handler a session gets: an ordinary session's, as
+/// always; a SHARED session's runs every step as the share account, or the
+/// channel refuses with the reason (`crate::share_files`). `Err` = refuse.
+fn files_handler_for(
+    session_id: bson::oid::ObjectId,
+) -> Result<crate::files::FilesHandler, String> {
+    match crate::share_files::for_session(session_id) {
+        None => Ok(crate::files::FilesHandler::new()),
+        Some(crate::share_files::SharedFiles::As(who)) => {
+            info!(%session_id, ?who, "files: shared session — every step runs as the share identity");
+            Ok(crate::files::FilesHandler::acting_as(who))
+        }
+        Some(crate::share_files::SharedFiles::Refused(reason)) => {
+            warn!(%session_id, %reason, "files: shared session's file channel refused");
+            Err(reason)
+        }
+    }
+}
+
 pub fn attach_files_handler(
     dc: Arc<RTCDataChannel>,
     session_id: bson::oid::ObjectId,
@@ -13859,7 +13882,13 @@ pub fn attach_files_handler(
     // ends, whether or not the channel says it closed.
     session_end: &tokio_util::sync::CancellationToken,
 ) {
-    let handler = crate::files::FilesHandler::new();
+    let handler = match files_handler_for(session_id) {
+        Ok(h) => h,
+        Err(reason) => {
+            attach_files_refusing(dc, session_end, reason);
+            return;
+        }
+    };
     let dc_for_handler = dc.clone();
     let handler_for_close = handler.clone();
     dc.on_close(Box::new(move || {
@@ -13896,6 +13925,16 @@ pub fn attach_child_files_handler(
     session_id: bson::oid::ObjectId,
     child_end: &tokio_util::sync::CancellationToken,
 ) {
+    // The hub never gives a shared session file children; were one to
+    // arrive, it is refused here too, never served as the daemon.
+    if crate::share_files::is_shared(session_id) {
+        attach_files_refusing(
+            dc,
+            child_end,
+            "file children are not available in a shared session".to_string(),
+        );
+        return;
+    }
     let handler = crate::files::FilesHandler::new();
     let dc_for_handler = dc.clone();
     let handler_for_close = handler.clone();
@@ -14024,6 +14063,15 @@ pub fn attach_child_upload_files_handler(
     viewer_report: Arc<crate::encode::viewer_rate::ViewerFeedback>,
     child_end: &tokio_util::sync::CancellationToken,
 ) {
+    // As the download child: a shared session never writes through one.
+    if crate::share_files::is_shared(session_id) {
+        attach_files_refusing(
+            dc,
+            child_end,
+            "file children are not available in a shared session".to_string(),
+        );
+        return;
+    }
     let bound_stripe_id: Arc<tokio::sync::Mutex<Option<String>>> =
         Arc::new(tokio::sync::Mutex::new(None));
     let dc_for_handler = dc.clone();
@@ -14558,7 +14606,7 @@ async fn handle_files_control(
                 .await;
                 return;
             }
-            match crate::files::list_dir(&path).await {
+            match handler.list(&path).await {
                 Ok(listing) => {
                     info!(
                         %session_id, %req_id,
@@ -14834,8 +14882,10 @@ fn spawn_outgoing_zip_pump(
         let cancel = offer.cancel.clone();
         let path = offer.path.clone();
         let walk_cancel = cancel.clone();
+        // A shared session walks as its share identity (`None` otherwise).
+        let walk_as = handler.shared_identity();
         let walk_handle = tokio::spawn(async move {
-            crate::files::walk_and_zip(writer_half, &path, walk_cancel).await
+            crate::files::walk_and_zip_as(writer_half, &path, walk_cancel, walk_as).await
         });
 
         let dc_for_pump = dc.clone();
@@ -19605,27 +19655,6 @@ mod stopped_at_screen_tests {
             ),
             "normal IDLE_KEEPALIVE still fires once 1,000 ms have elapsed"
         );
-    }
-
-    #[test]
-    fn parse_dtls_flight_interval_ms_defaults_to_zero_and_supports_explicit_opt_in() {
-        assert_eq!(parse_dtls_flight_interval_ms(None), Duration::ZERO);
-        assert_eq!(parse_dtls_flight_interval_ms(Some("")), Duration::ZERO);
-        assert_eq!(
-            parse_dtls_flight_interval_ms(Some("100")),
-            Duration::from_millis(100)
-        );
-        assert_eq!(
-            parse_dtls_flight_interval_ms(Some("150")),
-            Duration::from_millis(150)
-        );
-        for legacy in ["0", "1000", "legacy", "off", "false", "FALSE"] {
-            assert_eq!(
-                parse_dtls_flight_interval_ms(Some(legacy)),
-                Duration::ZERO,
-                "legacy value `{legacy}` must restore upstream 1 s fixed timer"
-            );
-        }
     }
 
     #[test]

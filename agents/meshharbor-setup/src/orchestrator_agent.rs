@@ -1048,20 +1048,27 @@ pub fn force_kill_msi() -> Result<(), String> {
 
 /// FR-84 S2 — the overlay default when the wizard sent no explicit choice.
 ///
-/// A perMachine install runs the daemon as an SCM service, which can create
-/// the overlay's Wintun adapter, so the private network is ON unless the
+/// The private network is ON for every Windows daemon install unless the
 /// operator turned it off: the mesh is the reason the always-on daemon
 /// exists, and an install that leaves it off by default was the first thing
-/// every operator had to go back and fix. A perUser install's worker runs
-/// with the interactive user's UAC-filtered token (`RunLevel` LeastPrivilege
-/// on its Scheduled Task) and `WintunCreateAdapter` refuses it, so the key
-/// is left UNTOUCHED there — the agent's own default (off) — rather than
-/// written as a promise the daemon cannot keep. An explicit choice always
-/// wins: the box the operator saw is the box that lands in config.toml.
+/// every operator had to go back and fix.
+///
+/// - perMachine: the daemon runs as an SCM service, which creates the
+///   overlay's Wintun adapter.
+/// - perUser: the worker runs with the interactive user's UAC-filtered token
+///   (`RunLevel` LeastPrivilege on its Scheduled Task) and
+///   `WintunCreateAdapter` refuses it — so that daemon builds the userspace
+///   netstack instead. A non-elevated Windows process takes that branch up
+///   front (the F1 fallback in `meshharbord::overlay`): the same mesh behind a
+///   loopback SOCKS5 front, with no TUN, no routes and no firewall rule. No
+///   `netstack_socks_port` is written here; the daemon picks a free port at
+///   start, so a fixed one can never collide with a declared route.
+///
+/// An explicit choice always wins: the box the operator saw is the box that
+/// lands in config.toml.
 fn overlay_enabled_default(explicit: Option<bool>, flavour: WindowsInstallFlavour) -> Option<bool> {
     explicit.or(match flavour {
-        WindowsInstallFlavour::PerMachine => Some(true),
-        WindowsInstallFlavour::PerUser => None,
+        WindowsInstallFlavour::PerMachine | WindowsInstallFlavour::PerUser => Some(true),
     })
 }
 
@@ -1443,13 +1450,15 @@ mod tests {
     }
 
     #[test]
-    fn peruser_without_a_choice_leaves_the_overlay_untouched() {
-        // Untouched, not `Some(false)`: the wizard writes no promise the
-        // per-user daemon cannot keep, and the agent's own default (off)
-        // stays the one source of that answer.
+    fn peruser_without_a_choice_turns_the_overlay_on() {
+        // The per-user worker cannot create the Wintun adapter, but the
+        // daemon no longer needs it to: a non-elevated Windows process
+        // builds the userspace netstack up front (overlay.rs, F1 fallback),
+        // so "on" is a promise a per-user install keeps — with no TUN, no
+        // routes and no firewall rule.
         assert_eq!(
             overlay_enabled_default(None, WindowsInstallFlavour::PerUser),
-            None
+            Some(true)
         );
     }
 
@@ -1462,6 +1471,10 @@ mod tests {
         assert_eq!(
             overlay_enabled_default(Some(true), WindowsInstallFlavour::PerUser),
             Some(true)
+        );
+        assert_eq!(
+            overlay_enabled_default(Some(false), WindowsInstallFlavour::PerUser),
+            Some(false)
         );
     }
 
@@ -1483,9 +1496,24 @@ mod tests {
             .with_flavour_defaults(WindowsInstallFlavour::PerUser)
             .apply_to(&mut cfg)
             .expect("apply");
+        assert!(cfg.overlay_enabled, "perUser + no choice → overlay on");
+        assert_eq!(
+            cfg.netstack_socks_port, None,
+            "the wizard pins no SOCKS5 port: the daemon picks a free one at start"
+        );
+
+        let mut cfg = meshharbord::config::test_fixture();
+        cfg.overlay_enabled = false;
+        AdvancedOptions {
+            overlay_enabled: Some(false),
+            ..Default::default()
+        }
+        .with_flavour_defaults(WindowsInstallFlavour::PerUser)
+        .apply_to(&mut cfg)
+        .expect("apply");
         assert!(
             !cfg.overlay_enabled,
-            "perUser + no choice → untouched (off)"
+            "an explicit off on perUser is respected"
         );
 
         let mut cfg = meshharbord::config::test_fixture();

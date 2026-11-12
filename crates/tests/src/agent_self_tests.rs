@@ -991,3 +991,90 @@ async fn without_the_fleet_module_both_routes_answer_503() {
         assert_eq!(resp.status().as_u16(), 503, "{path}");
     }
 }
+
+/// V0028 §4.2: top-level RDP fields (`rdp_available`, `rdp_port`,
+/// `rdp_cert_sha256`) appear ONLY when an agent reports
+/// `capabilities.rdp_available == true`. Rows with `rdp_available == None` or
+/// `rdp_available == Some(false)` (even if stale port/cert fields exist in DB)
+/// emit NONE of the three keys, and `capabilities` as a whole never leaks on
+/// `GET /api/agent/self/devices`.
+#[tokio::test]
+async fn rdp_fields_are_omitted_unless_rdp_available_is_true_and_capabilities_never_leak() {
+    let rig = Rig::up("self-rdp-fields").await;
+    let fp = "11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00";
+
+    // A: default (`rdp_available` absent / None).
+    // B: `rdp_available = false`, plus port + cert_sha256 set in DB to prove
+    //    `rdp_available != Some(true)` suppresses all three keys.
+    rig.app
+        .db
+        .collection::<bson::Document>("agents")
+        .update_one(
+            doc! { "_id": ObjectId::parse_str(&rig.b_id).unwrap() },
+            doc! { "$set": {
+                "capabilities.rdp_available": false,
+                "capabilities.rdp_port": 3389_i32,
+                "capabilities.rdp_cert_sha256": fp,
+                "capabilities.rdp_mesh_reachable": true,
+            } },
+        )
+        .await
+        .unwrap();
+
+    // C: `rdp_available = true`, with explicit port and cert SHA-256.
+    rig.app
+        .db
+        .collection::<bson::Document>("agents")
+        .update_one(
+            doc! { "_id": ObjectId::parse_str(&rig.c_id).unwrap() },
+            doc! { "$set": {
+                "capabilities.rdp_available": true,
+                "capabilities.rdp_port": 13389_i32,
+                "capabilities.rdp_cert_sha256": fp,
+                "capabilities.rdp_mesh_reachable": true,
+            } },
+        )
+        .await
+        .unwrap();
+
+    let (s, page) = get_devices(&rig.app, &rig.a_tok, "").await;
+    assert_eq!(s, 200);
+    let rows = items(&page);
+
+    for id in [&rig.a_id, &rig.b_id] {
+        let row = rows
+            .iter()
+            .find(|r| r["id"] == json!(id))
+            .unwrap_or_else(|| panic!("{id} missing from {page}"));
+        let obj = row.as_object().unwrap();
+        for rdp_key in [
+            "rdp_available",
+            "rdp_port",
+            "rdp_cert_sha256",
+            "rdp_mesh_reachable",
+        ] {
+            assert!(
+                !obj.contains_key(rdp_key),
+                "{rdp_key} must be omitted when rdp_available != true: {row}"
+            );
+        }
+        assert!(
+            !obj.contains_key("capabilities"),
+            "capabilities leaked: {row}"
+        );
+    }
+
+    let c_row = rows
+        .iter()
+        .find(|r| r["id"] == json!(rig.c_id))
+        .expect("C in visible list");
+    let c_obj = c_row.as_object().unwrap();
+    assert_eq!(c_row["rdp_available"], json!(true));
+    assert_eq!(c_row["rdp_port"], json!(13389));
+    assert_eq!(c_row["rdp_cert_sha256"], json!(fp));
+    assert_eq!(c_row["rdp_mesh_reachable"], json!(true));
+    assert!(
+        !c_obj.contains_key("capabilities"),
+        "capabilities leaked: {c_row}"
+    );
+}

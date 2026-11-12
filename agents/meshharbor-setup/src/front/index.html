@@ -146,17 +146,18 @@
           </label>
         </div>
         <!-- FR-84 S2: the box follows the role until the operator touches it —
-             on for the service roles, off for a per-user install (app.js
-             renderServer). The Rust orchestrator applies the same default when
-             the option is absent. -->
+             on for every daemon role; a per-user install joins through the
+             userspace netstack (app.js renderServer). The Rust orchestrator
+             applies the same default when the option is absent. -->
         <label class="field checkline">
           <input id="adv-overlay" type="checkbox">
           <span>Join the overlay network (private mesh between your devices)</span>
         </label>
-        <p id="adv-overlay-hint" class="muted" hidden>The private network's TUN
-        adapter needs a service install: a per-user daemon runs with limited
-        rights and cannot create it, so the mesh will not come up on this install.
-        Pick a service role above if this machine should join it.</p>
+        <p id="adv-overlay-hint" class="muted" hidden>A per-user daemon runs with
+        limited rights and cannot create the private network's TUN adapter, so it
+        joins through a userspace network stack instead: no system routes and no
+        firewall change. Apps on this machine reach the mesh through a local SOCKS5
+        proxy; remote desktop needs nothing.</p>
         <label class="field checkline">
           <input id="adv-local-subnets" type="checkbox" checked>
           <span>Advertise directly-connected subnets (admin approval required before use)</span>

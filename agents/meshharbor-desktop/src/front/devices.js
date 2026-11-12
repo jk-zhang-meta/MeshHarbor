@@ -77,6 +77,7 @@
     inFlight: 0,
     nextAt: 0,
     timer: null,
+    rdpActionError: null,
   };
   const mesh = {
     view: null,
@@ -242,7 +243,7 @@
     if (!menu) return;
     const item = menu.querySelector('.dv-split-item-rdp');
     const confirmBox = menu.querySelector('.dv-rdp-confirm');
-    if (item) item.hidden = false;
+    if (item) item.hidden = item.dataset.offer !== '1';
     if (confirmBox) confirmBox.hidden = true;
   }
 
@@ -266,6 +267,36 @@
     }
   });
 
+  // The grid sits in a scroll container (`.tbl-wrap`), which clips an
+  // absolutely positioned dropdown whenever the table is short (one row).
+  // Pin the open menu to the viewport instead: below the button, or above
+  // it when there is no room below.
+  function placeSplitMenu(menu) {
+    if (!menu || menu.hidden) return;
+    const wrap = menu.closest('.dv-split-wrap');
+    if (!wrap) return;
+    const a = wrap.getBoundingClientRect();
+    const gap = 4;
+    const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    const h = menu.offsetHeight;
+    const w = menu.offsetWidth;
+    let top = a.bottom + gap;
+    if (vh && top + h > vh && a.top - gap - h >= 0) top = a.top - gap - h;
+    let left = a.left;
+    if (vw && left + w > vw) left = Math.max(0, vw - w - gap);
+    menu.style.top = Math.round(top) + 'px';
+    menu.style.left = Math.round(left) + 'px';
+  }
+
+  function placeOpenSplitMenus() {
+    for (const m of document.querySelectorAll('.dv-split-menu:not([hidden])')) {
+      placeSplitMenu(m);
+    }
+  }
+  window.addEventListener('resize', placeOpenSplitMenus);
+  document.addEventListener('scroll', placeOpenSplitMenus, true);
+
   const COLUMNS = [
     {
       key: 'actions',
@@ -273,16 +304,23 @@
       chooserTitle: 'Actions',
       cls: 'dv-col-actions',
       build(td) {
-        const s = { agentId: null, rdpTarget: null };
+        const s = {
+          agentId: null,
+          rdpTarget: null,
+          rdpPort: null,
+          rdpCertSha256: null,
+          rdpOffer: false,
+        };
         const wrap = el('div', 'dv-split-wrap');
         const group = el('div', 'dv-split-group');
 
-        const btn = el('button', 'sm dv-split-main', '连接');
+        const btn = el('button', 'sm dv-split-main', 'Connect');
         btn.type = 'button';
-        btn.title = '默认使用远控连接（不锁定远端本地屏幕）';
+        btn.title = 'Remote control (does not lock the remote screen)';
         btn.addEventListener('click', async () => {
           closeAllSplitMenus(null);
           if (!s.agentId) return;
+          st.rdpActionError = null;
           btn.disabled = true;
           try {
             await invoke('cmd_open_remote', { agentId: s.agentId, org: orgArg() });
@@ -297,7 +335,7 @@
 
         const toggleBtn = el('button', 'sm dv-split-toggle', '▾');
         toggleBtn.type = 'button';
-        toggleBtn.title = '更多连接方式（用 RDP 连接）';
+        toggleBtn.title = 'More ways to connect (RDP)';
         toggleBtn.setAttribute('aria-haspopup', 'menu');
         toggleBtn.setAttribute('aria-expanded', 'false');
 
@@ -306,59 +344,89 @@
         menu.hidden = true;
 
         async function runRdpConfirmed(acceptBtn) {
+          if (!s.rdpOffer) {
+            closeAllSplitMenus(null);
+            return;
+          }
           const target = s.rdpTarget || s.agentId;
           if (!target) {
             closeAllSplitMenus(null);
             return;
           }
+          st.rdpActionError = null;
+          const errBanner = $('dv-grid-error');
+          if (errBanner && !st.error) {
+            setText(errBanner, '');
+            errBanner.hidden = true;
+          }
           acceptBtn.disabled = true;
           toggleBtn.disabled = true;
           closeAllSplitMenus(null);
+          const payload = { target, org: orgArg() };
+          if (s.rdpPort !== null) payload.port = s.rdpPort;
+          if (s.rdpCertSha256 !== null) payload.certSha256 = s.rdpCertSha256;
           try {
-            await invoke('cmd_open_rdp', { target, org: orgArg() });
+            await invoke('cmd_open_rdp', payload);
             toggleBtn.classList.remove('is-error');
           } catch (err) {
-            toggleBtn.title = String(err);
+            const msg = err && typeof err === 'object' && 'message' in err ? String(err.message) : String(err);
+            toggleBtn.title = msg;
             toggleBtn.classList.add('is-error');
+            st.rdpActionError = msg;
+            if (errBanner) {
+              setText(errBanner, msg);
+              errBanner.hidden = false;
+            }
           } finally {
             acceptBtn.disabled = false;
             toggleBtn.disabled = false;
           }
         }
 
-        const rdpItem = el('button', 'dv-split-item dv-split-item-rdp', '用 RDP 连接');
+        const rdpItem = el('button', 'dv-split-item dv-split-item-rdp', 'Connect with RDP');
         rdpItem.type = 'button';
         rdpItem.setAttribute('role', 'menuitem');
-        rdpItem.title = '通过系统 RDP 客户端连接（RDP 会话会锁定远端电脑的本地屏幕）';
+        rdpItem.title = 'Open the system RDP client (an RDP session locks the remote computer’s local screen)';
+        // RDP over the mesh: offered only when the target reports it reachable
+        // (`rdp_mesh_reachable`); an RDP server with no mesh path gets a hint.
+        const meshHint = el('div', 'dv-split-hint', 'Turn on RDP over the mesh on the target device (rdp_over_mesh = true).');
+        meshHint.hidden = true;
 
         const confirmBox = el('div', 'dv-rdp-confirm');
         confirmBox.setAttribute('role', 'alertdialog');
-        confirmBox.setAttribute('aria-label', '确认使用 RDP 连接');
+        confirmBox.setAttribute('aria-label', 'Confirm RDP connection');
         confirmBox.hidden = true;
 
         const confirmText = el(
           'div',
           'dv-rdp-confirm-text',
-          'RDP 会话会锁定远端电脑的本地屏幕'
+          'An RDP session locks the remote computer’s local screen.'
+        );
+        const unpinnedNote = el(
+          'div',
+          'dv-rdp-unpinned-note',
+          'This device reported no certificate fingerprint; the RDP client will check the certificate itself.'
         );
         const confirmActions = el('div', 'dv-rdp-confirm-actions');
         const confirmAcceptBtn = el(
           'button',
           'sm primary dv-rdp-confirm-accept',
-          '确认连接'
+          'Connect'
         );
         confirmAcceptBtn.type = 'button';
         const confirmCancelBtn = el(
           'button',
           'sm dv-rdp-confirm-cancel',
-          '取消'
+          'Cancel'
         );
         confirmCancelBtn.type = 'button';
 
         rdpItem.addEventListener('click', (ev) => {
           ev.stopPropagation();
           rdpItem.hidden = true;
+          unpinnedNote.hidden = !!s.rdpCertSha256;
           confirmBox.hidden = false;
+          placeSplitMenu(menu);
         });
 
         confirmAcceptBtn.addEventListener('click', (ev) => {
@@ -372,8 +440,8 @@
         });
 
         confirmActions.append(confirmAcceptBtn, confirmCancelBtn);
-        confirmBox.append(confirmText, confirmActions);
-        menu.append(rdpItem, confirmBox);
+        confirmBox.append(confirmText, unpinnedNote, confirmActions);
+        menu.append(rdpItem, meshHint, confirmBox);
 
         toggleBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
@@ -381,6 +449,7 @@
           closeAllSplitMenus(menu);
           resetSplitMenuState(menu);
           menu.hidden = !willOpen;
+          if (willOpen) placeSplitMenu(menu);
           toggleBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
         });
 
@@ -391,6 +460,9 @@
         s.btn = btn;
         s.toggleBtn = toggleBtn;
         s.menu = menu;
+        s.unpinnedNote = unpinnedNote;
+        s.rdpItem = rdpItem;
+        s.meshHint = meshHint;
         return s;
       },
       update(s, row) {
@@ -398,6 +470,25 @@
         const ok = row.kind === 'agent' && !row.is_self && isHex24(row.id);
         s.agentId = ok ? row.id : null;
         s.rdpTarget = ok ? (row.overlay_node_id || row.node_id || row.id || row.name || null) : null;
+        s.rdpPort =
+          ok && typeof row.rdp_port === 'number' && row.rdp_port >= 1 && row.rdp_port <= 65535
+            ? row.rdp_port
+            : null;
+        s.rdpCertSha256 =
+          ok && typeof row.rdp_cert_sha256 === 'string' && row.rdp_cert_sha256.trim()
+            ? row.rdp_cert_sha256.trim()
+            : null;
+        if (s.unpinnedNote) {
+          s.unpinnedNote.hidden = !!s.rdpCertSha256;
+        }
+        s.rdpOffer = ok && row.rdp_mesh_reachable === true;
+        const rdpHint = ok && !s.rdpOffer && row.rdp_available === true;
+        if (s.rdpItem) {
+          s.rdpItem.dataset.offer = s.rdpOffer ? '1' : '0';
+          s.rdpItem.hidden = !s.rdpOffer;
+        }
+        if (s.meshHint) s.meshHint.hidden = !rdpHint;
+        if (s.toggleBtn) s.toggleBtn.hidden = !(s.rdpOffer || rdpHint);
         s.wrap.hidden = !ok;
         s.btn.hidden = !ok;
         if (!ok && s.menu) {
@@ -855,7 +946,8 @@
       case 'unavailable':
         return 'This server has no private-network module, so only this device is listed.';
       default:
-        if (searched || (Number(p.total) || 0) > 1) return null;
+        if (searched) return (Number(p.total) || 0) === 0 ? 'No devices match “' + st.q.trim() + '”.' : null;
+        if ((Number(p.total) || 0) > 1) return null;
         return p.acl_mode === 'enforce'
           ? 'Your organization’s access rules (ACL enforce) let this device see no other device.'
           : 'No other devices are on your private network yet.';
@@ -901,10 +993,15 @@
         '. Showing the devices this one reaches directly' +
         retryText();
     }
+    const combinedWarn = st.rdpActionError
+      ? warn
+        ? st.rdpActionError + ' · ' + warn
+        : st.rdpActionError
+      : warn;
     setText(status, note || '');
     status.hidden = !note;
-    setText(error, warn || '');
-    error.hidden = !warn;
+    setText(error, combinedWarn || '');
+    error.hidden = !combinedWarn;
   }
 
   function retryText() {

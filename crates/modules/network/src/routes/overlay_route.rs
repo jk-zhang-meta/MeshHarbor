@@ -645,9 +645,20 @@ pub async fn set_magic_dns(
 ) -> Result<Json<MagicDnsResponse>, ApiError> {
     let tid = ObjectId::parse_str(&tenant_id)
         .map_err(|_| ApiError::BadRequest("Invalid tenant_id".to_string()))?;
-    if !state.tenants.is_member(tid, auth.user_id).await? {
-        return Err(ApiError::NotAMember);
-    }
+    // The domain and the upstream nameservers are pushed to EVERY node in the
+    // tenant, and the nameservers become each node's DNS forward target
+    // (`tunnel-core` overlay runtime, `dns_upstream`). Steering the whole
+    // fleet's resolution is an agent-management action, like approving a
+    // route or an exit node — bare membership must not authorise it. Reading
+    // the config (`get_magic_dns`) stays member-visible.
+    require_permission(
+        &state,
+        tid,
+        auth.user_id,
+        permissions::MANAGE_AGENTS,
+        "MANAGE_AGENTS",
+    )
+    .await?;
     // Normalize: blank domain → None (off); lowercase, strip surrounding dots.
     let domain = body
         .magic_dns_domain

@@ -107,6 +107,44 @@ GeoIP database, no trusted proxy configured) would otherwise cut every business 
 the moment it is deployed. Switch to `enforce` once the `[warn]` lines show only the
 refusals you expect.
 
+## Remote-desktop relay locality: a separate setting
+
+The STUN and TURN servers handed out for a remote-desktop session are hops the
+device itself connects to. `app.rc_ice_zone_mode`
+(`MESHHARBOR__APP__RC_ICE_ZONE_MODE`) keeps them to the device's own zone. It is
+**deliberately not tied to `app.business_isolation`**: withholding every server
+outside a device's zone removes that device's srflx and relay candidates. A device
+whose zone differs from the deployment's relays then has only host candidates, so
+cross-network remote desktop to it breaks. Field case: home devices classified
+mainland against a non-mainland test-center STUN/TURN. Turning that on is a product
+decision, not a side effect of enforcing isolation.
+
+The default `warn` is consistent with the person↔device decision below: TURN for a
+browser is not gated by default. `enforce` is an opt-in for strict deployments, for
+example a host under a "never connect outside the mainland" rule, where a
+remote-desktop relay hop in the other zone is not acceptable either.
+
+| value | effect |
+|---|---|
+| `off` | no gate is installed; no zone lookups are made |
+| `warn` (default) | the verdict is computed and **logged**, one line per device while it stays the same (deduplicated for 10 min), with the device zone, the kept and withheld URL counts and the reason (`device_zone_unknown`, `outside_device_zone`, `server_zone_unknown`); nothing changes |
+| `enforce` | every STUN/TURN URL outside the device's zone is withheld; a device with no zone gets none (host candidates still connect a direct path) |
+
+Unlike `business_isolation`, any other value reads as **`warn`**, logged loudly: a
+typo must never switch on something that can cut the operator's own remote access.
+Read the `rc ice zone (warn)` lines before choosing `enforce`.
+
+- **Where it applies:** the hub's per-session lists (`Ready`, `SdpOffer`,
+  `SdpAnswer`, `FileSdpAnswer`), and `/api/turn/credentials`, which is the list the
+  viewer builds its peer connection from. That route uses the named device's zone,
+  read only after the org-charge checks pass. The loopback overlay relay is added
+  after the filter.
+- **A server's zone:** its hostname is resolved at boot and every 10 min, and every
+  address must geolocate to the same zone. Unresolved or mixed means no zone.
+- **A device's zone:** what its current control connection was observed in.
+- **Code:** [`ice_zones.rs`](../crates/core/src/ice_zones.rs), `Hub::zone_local_ice`
+  in [`hub.rs`](../crates/modules/fleet/src/hub.rs).
+
 ## The gates
 
 | carrier | gate | under `enforce` |
@@ -114,7 +152,8 @@ refusals you expect.
 | netmap (full and every delta) and the device's own listing | `overlay::shape_peer`, checked before the ACL | the peer is withheld; a delta sends it as `removes`, which tears down an installed carrier |
 | org relay mint, discovery, fallback, backbone | `org_relay::plan_mint_candidates_reusing` | the pair must share a zone (`zone_denied`, audited), and each candidate relay must be in that zone, explicit grants included; the one exception is an approved cross-border line (below) |
 | TURN grant and forced-DERP escalation | `overlay::handle_overlay_relay_request`, after the org offer | no grant is sent |
-| `/derp` forwarding | `derp_acl` table: each node's zone beside the ACL allow set | a frame passes only between two nodes with the same known zone, whatever the ACL mode |
+| `/derp` forwarding | `derp_acl` table: each node's zone beside the ACL allow set; built before a node may register (`derp_acl::ensure_built`) | a frame passes only between two nodes with the same known zone, whatever the ACL mode; a network with no table drops every frame |
+| regional PoP `derp-relay` | the ticket's `zone` claim, minted by the API with the node's zone (`agent_arms::handle_derp_ticket_request`) | a frame passes only between equal ticket zones; a node with no zone gets no ticket and keeps the central `/derp` |
 | center-brokered tunnel (`rc:tunnel.open`, from a tunnel client or an agent) | `tunnel::handle_tunnel_open`, step 3d, before any TURN credential or QUIC token is minted | `rc:error` `business_isolation`; no session (#22) |
 | managed forward (#20) | `managed_forward::plan`: `region` over ingress and destination, and `source region` over every overlay node its sources admit (GEO-03), whatever the overlay ACL's mode | the plan fails and nothing is pushed; an applied forward whose gate later fails is withheld at the next push. A source in the other zone would otherwise reach the destination behind the ingress's address |
 | subnet route and exit node | ride their router peer (the netmap row above) | a router in the other zone is withheld, so its LAN and `0.0.0.0/0` are never offered (`a_subnet_route_stays_in_its_routers_zone`) |
@@ -307,14 +346,14 @@ overlay SSH banner from the mainland member to Tokyo):
 - **A member that goes offline darkens its line** until it reconnects: no other carrier
   may carry a cross-zone pair.
 
-- **The DERP restart window.** The `/derp` table is rebuilt on every join and policy
-  change. After a server restart, a network has no table until its first join, and a
-  missing table permits frames (the ACL's fail-open posture). Every node re-joins on
-  reconnect, so the window is short, and the netmap has already withheld the cross-zone
-  key from honest clients.
-- **Regional PoP DERP relays** (`derp-relay`) forward by ticket and see no zones. A
-  pair pinned to a regional relay is gated only where the grant is issued (the TURN and
-  forced-DERP gate above).
+- **The DERP restart window is closed (2026-11-11).** A missing `/derp` table used to
+  permit frames until a network's first join after a restart. Now an ungated network
+  carries an open table, a missing one drops, and a registration builds its network's
+  table first (bounded; on failure it is refused and the client retries).
+- **Regional PoP DERP relays** (`derp-relay`) now carry the zone in the ticket
+  (2026-11-11). A ticket minted before that has no zone and meets only other unzoned
+  tickets. A zone claim is fixed for the ticket's 24 h life; the netmap stays the
+  first line for a node that moves.
 - **Direct paths** need both endpoints, which only the netmap hands out. A client that
   learned a peer's address some other way can still send to it, and the server cannot
   see that traffic. The handshake still fails: a node configures WireGuard peers only
@@ -322,10 +361,12 @@ overlay SSH banner from the mainland member to Tokyo):
   line-only peer's, and the client never answers a direct handshake from that peer.
 
 - **Sessions with a person on one end are not gated, by product decision
-  (2026-10-26).** Remote desktop (`rc:session.request`, TURN for a browser), the hive
-  viewer and shared SSH (a device-share recipient's CLI) pair a person with a device.
-  They are a person operating a device, treated like management, not business traffic
-  between devices, so a person in one zone may operate a device in the other.
+  (2026-10-26, reaffirmed 2026-11-11).** Remote desktop (`rc:session.request`), the
+  hive viewer and shared SSH (a device-share recipient's CLI, bridged by the center)
+  pair a person with a device. They are a person operating a device, treated like
+  management, not business traffic between devices, so a person in one zone may
+  operate a device in the other. Remote desktop's STUN/TURN locality is the separate,
+  opt-in `app.rc_ice_zone_mode` above (default `warn`: nothing is withheld).
 - **Hive replica streams** (member device ↔ source device, `hive/src/stream.rs`) pair
   two zoned devices but live in the hive module, outside these gates.
 
@@ -336,7 +377,9 @@ overlay SSH banner from the mainland member to Tokyo):
 | mode, `Zones`, `pair_zone`, `refuses_pair` | [`business_isolation.rs`](../crates/modules/network/src/business_isolation.rs) |
 | a node's zone | `node_zone` in [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) |
 | netmap shaping | `shape_peer`, `shape_full_netmap`, `fan_upsert_shaped` in [`overlay.rs`](../crates/modules/network/src/overlay.rs) |
-| DERP table | [`derp_acl.rs`](../crates/modules/network/src/derp_acl.rs) |
+| DERP table | [`derp_acl.rs`](../crates/modules/network/src/derp_acl.rs); load-before-serve test in [`derp_load_before_serve_tests.rs`](../crates/tests/src/derp_load_before_serve_tests.rs) |
+| PoP zone | `DerpTicketClaims::zone` in [`derp_ticket.rs`](../crates/remote_control/src/derp_ticket.rs); `forward_frame` in [`derp-relay`](../crates/derp-relay/src/main.rs) |
+| RC relay locality | [`ice_zones.rs`](../crates/core/src/ice_zones.rs); tests `rc_ice_servers_stay_in_the_devices_zone`, `rc_ice_zone_warn_and_off_change_nothing_even_under_enforced_isolation` in [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |
 | netmap TestApp tests | [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |
 | the cross-border line: planner, mint, audit, revocation | `plan_line`, `maybe_mint_line`, `mint_line`, `audit_line`, `revoke_line_node_sync` in [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) |
 | the line's netmap shaping | `Lines`, `rides_lines`, `Zones::line_only` in [`business_isolation.rs`](../crates/modules/network/src/business_isolation.rs); `line_only` in [`overlay.rs`](../crates/modules/network/src/overlay.rs) |

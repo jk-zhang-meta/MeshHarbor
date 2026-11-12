@@ -29,6 +29,12 @@
 //! per-peer allow-lists yet, so a PoP enforces network scoping only; ACL
 //! claims are the designed extension (the netmap already withholds denied
 //! peers' keys from honest clients).
+//!
+//! MeshHarbor #21 (business isolation): the ticket carries the node's zone
+//! whenever the API enforces isolation, and a frame is delivered only between
+//! two registrations of EQUAL zone (absent == absent). That is the same
+//! same-zone rule the central table applies (`derp_acl.rs`), checked here
+//! from the ticket alone, so the PoP still holds no database.
 
 use axum::{
     Router,
@@ -60,7 +66,19 @@ use tracing::{debug, info, warn};
 type DerpPubKey = [u8; 32];
 /// Registry key: a pubkey is reachable only WITHIN its overlay network.
 type DerpKey = (String, DerpPubKey);
-type Registry = Arc<DashMap<DerpKey, mpsc::Sender<Vec<u8>>>>;
+type Registry = Arc<DashMap<DerpKey, Registered>>;
+
+/// One registration: its outbound queue, and the business zone its ticket
+/// named (#21; `None` for a ticket minted without isolation).
+#[derive(Clone)]
+struct Registered {
+    tx: mpsc::Sender<Vec<u8>>,
+    zone: Option<String>,
+}
+
+/// Frames dropped because sender and receiver hold tickets of different
+/// zones (#21). Served on `/stats` so an operator can see the gate working.
+static ZONE_DROPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// Same limits as the central relay (`api/src/ws/derp.rs`).
 const DERP_SEND_QUEUE: usize = 256;
@@ -370,6 +388,7 @@ async fn stats(State(state): State<RelayState>) -> axum::Json<serde_json::Value>
         "net_tx_bytes": tx,
         "uptime_s": uptime_s,
         "derp_registrations": state.registry.len(),
+        "derp_zone_dropped_total": ZONE_DROPPED_TOTAL.load(Ordering::Relaxed),
         // FR-20 B — cumulative relayed bytes per overlay network, since this
         // process started. The API poller diffs successive samples and resolves
         // network → tenant; this binary never learns which tenant is which.
@@ -442,13 +461,19 @@ async fn derp_upgrade(
                 .unwrap();
         }
     };
-    ws.on_upgrade(move |socket| handle_socket(state, socket, claims.net, claims.pk))
+    ws.on_upgrade(move |socket| handle_socket(state, socket, claims.net, claims.pk, claims.zone))
 }
 
 /// Drive one connection: validate the registration frame against the ticket's
 /// pubkey, register, pump frames until close. Mirrors the central relay's
 /// loop (last-writer-wins re-registration, identity-gated deregistration).
-async fn handle_socket(state: RelayState, socket: WebSocket, network: String, ticket_pk: String) {
+async fn handle_socket(
+    state: RelayState,
+    socket: WebSocket,
+    network: String,
+    ticket_pk: String,
+    zone: Option<String>,
+) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // First frame MUST be the 32-byte registration pubkey and MUST equal the
@@ -473,8 +498,14 @@ async fn handle_socket(state: RelayState, socket: WebSocket, network: String, ti
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(DERP_SEND_QUEUE);
     // Last-writer-wins on re-registration (a reconnect replaces the stale
     // sender; the displaced socket keeps working as a SENDER until it closes).
-    state.registry.insert(key.clone(), out_tx.clone());
-    info!(%network, "derp-relay: node registered");
+    state.registry.insert(
+        key.clone(),
+        Registered {
+            tx: out_tx.clone(),
+            zone: zone.clone(),
+        },
+    );
+    info!(%network, zone = zone.as_deref().unwrap_or("-"), "derp-relay: node registered");
 
     let mut write = tokio::spawn(async move {
         while let Some(frame) = out_rx.recv().await {
@@ -495,6 +526,7 @@ async fn handle_socket(state: RelayState, socket: WebSocket, network: String, ti
                         &state.allowance,
                         &network,
                         &self_pubkey,
+                        zone.as_deref(),
                         &frame[..],
                     );
                 }
@@ -509,20 +541,22 @@ async fn handle_socket(state: RelayState, socket: WebSocket, network: String, ti
     // reconnect may have replaced us; we must not evict it).
     state
         .registry
-        .remove_if(&key, |_, tx| tx.same_channel(&out_tx));
+        .remove_if(&key, |_, r| r.tx.same_channel(&out_tx));
     write.abort();
     info!(%network, "derp-relay: node disconnected");
 }
 
 /// `[dst_pk(32)‖payload]` from `src` → `[src_pk(32)‖payload]` to dst, only
-/// within `network`. Drops silently on short/oversized frames, unknown dst,
-/// or a full destination queue (the carrier is loss-tolerant).
+/// within `network` and only between equal ticket zones (#21). Drops silently
+/// on short/oversized frames, unknown dst, a zone mismatch, or a full
+/// destination queue (the carrier is loss-tolerant).
 fn forward_frame(
     registry: &Registry,
     network_bytes: &NetworkBytes,
     allowance: &Allowance,
     network: &str,
     src_pubkey: &DerpPubKey,
+    src_zone: Option<&str>,
     frame: &[u8],
 ) {
     if frame.len() < 32 || frame.len() > DERP_MAX_FRAME {
@@ -543,7 +577,13 @@ fn forward_frame(
         return;
     }
     let sender = match registry.get(&(network.to_string(), dst)) {
-        Some(r) => r.clone(),
+        // #21: a zoned node relays only to its own zone, and never to an
+        // unzoned registration (and vice versa).
+        Some(r) if r.zone.as_deref() == src_zone => r.tx.clone(),
+        Some(_) => {
+            ZONE_DROPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         None => return,
     };
     let mut out = Vec::with_capacity(32 + payload.len());
@@ -669,6 +709,59 @@ mod tests {
             tokio_tungstenite::connect_async(&url).await.is_err(),
             "foreign-signed ticket must 401"
         );
+    }
+
+    /// #21 — a zoned ticket relays only to the same zone, and a zoned node
+    /// never meets an unzoned (pre-isolation) registration in either direction.
+    #[tokio::test]
+    async fn relays_only_between_equal_ticket_zones() {
+        let (signer, key) = test_signer();
+        let (addr, _) = serve(key).await;
+        let (cn_a, cn_b, us, legacy) = (pk(0x31), pk(0x32), pk(0x33), pk(0x34));
+        let mint = |k: DerpPubKey, z: Option<&str>| {
+            signer.mint_in_zone("net1", &BASE64.encode(k), z).unwrap().0
+        };
+        let mut ws_a = connect(addr, &mint(cn_a, Some("mainland")), cn_a).await;
+        let mut ws_b = connect(addr, &mint(cn_b, Some("mainland")), cn_b).await;
+        let mut ws_us = connect(addr, &mint(us, Some("non_mainland")), us).await;
+        let mut ws_legacy = connect(addr, &mint(legacy, None), legacy).await;
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let send = |dst: DerpPubKey| {
+            let mut f = dst.to_vec();
+            f.extend_from_slice(&[7]);
+            WsMsg::Binary(f.into())
+        };
+        let quiet = std::time::Duration::from_millis(400);
+
+        ws_a.send(send(cn_b)).await.unwrap();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), ws_b.next())
+            .await
+            .expect("same zone relays")
+            .unwrap()
+            .unwrap();
+        assert_eq!(&got.into_data()[..32], &cn_a);
+
+        ws_a.send(send(us)).await.unwrap();
+        assert!(
+            tokio::time::timeout(quiet, ws_us.next()).await.is_err(),
+            "mainland → non_mainland must not relay"
+        );
+        ws_us.send(send(cn_a)).await.unwrap();
+        assert!(
+            tokio::time::timeout(quiet, ws_a.next()).await.is_err(),
+            "non_mainland → mainland must not relay"
+        );
+        ws_a.send(send(legacy)).await.unwrap();
+        assert!(
+            tokio::time::timeout(quiet, ws_legacy.next()).await.is_err(),
+            "zoned → unzoned must not relay"
+        );
+        ws_legacy.send(send(cn_b)).await.unwrap();
+        assert!(
+            tokio::time::timeout(quiet, ws_b.next()).await.is_err(),
+            "unzoned → zoned must not relay"
+        );
+        assert!(ZONE_DROPPED_TOTAL.load(Ordering::Relaxed) >= 4);
     }
 
     #[tokio::test]

@@ -208,6 +208,13 @@ Unsigned Windows artifacts likewise are not claimed compatible with the existing
 signed update path. Local packaging does not disable either verifier. A SHA
 sidecar alone is not a trust anchor.
 
+**Self-hosted update path (2026-11-11):** the update path for these unsigned
+local artifacts is [self-hosted-releases.md](self-hosted-releases.md). Each
+artifact gets a detached `.asc` from this project's own release signing subkey
+(`scripts/release-local.sh`), the agents pin that key on all three platforms,
+and the center serves the release from its own directory. Code-signing
+certificates stay out of scope; the compiled-in anchor does not.
+
 `scripts/signing/90-verify-release.{sh,ps1}` checks the historical signed release
 contract and may read the network. It is not a syntax-only check or the pass/fail
 oracle for the intentionally unsigned Windows/Linux local outputs. Publishing

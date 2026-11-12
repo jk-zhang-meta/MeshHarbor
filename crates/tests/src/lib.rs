@@ -71,6 +71,8 @@ mod cluster_tests;
 #[cfg(test)]
 mod cors_tests;
 #[cfg(test)]
+mod derp_load_before_serve_tests;
+#[cfg(test)]
 mod device_list_tests;
 #[cfg(test)]
 mod device_naming_tests;
@@ -186,6 +188,10 @@ mod newsletter_tests;
 mod notification_tests;
 #[cfg(test)]
 mod oauth_tests;
+/// Org-relay takeover: a failed relay is not re-minted, and a loss-pinned
+/// relay serves its pair again once it is the only one left.
+#[cfg(test)]
+mod org_relay_takeover_tests;
 /// FR-115 P3 — an organization's concurrent remote-session cap: refused at
 /// start with the holder named, per seat on Pro, carried across pods.
 #[cfg(test)]
@@ -242,6 +248,10 @@ mod role_reconcile_tests;
 mod role_tests;
 #[cfg(test)]
 mod room_visibility_tests;
+/// Item 17 — releases served from the center's own directory
+/// (`releases.local_dir`): own URLs, exact bytes, no `.asc` no serve.
+#[cfg(test)]
+mod self_hosted_release_tests;
 /// FR-102 P9c — the carrier a session rides: the agent records it on
 /// `rc:session.stats` once Active, and the server stores it on
 /// `remote_sessions.carrier` — a code only, absent read as unknown, never

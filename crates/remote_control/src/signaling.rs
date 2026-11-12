@@ -3501,6 +3501,15 @@ pub struct SharedSessionLease {
     #[serde(with = "oid_hex")]
     pub grant_id: ObjectId,
     pub lease_epoch: String,
+    /// MeshHarbor — the local Linux/macOS account the share's FILE operations
+    /// run as: the grant's own (`DeviceShareGrant::ssh_account`), set only
+    /// when the session carries FILES. `None` means the owner chose none. The
+    /// device then runs file operations as itself only if it is an
+    /// unprivileged install, and refuses them on a root/SYSTEM one
+    /// ([`crate::models::RpcCap::SharedFilesAsAccount`]). Additive: an older
+    /// peer skips it, and an absent field reads as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// MeshHarbor — one local login account on a device, as the device reports it:
@@ -9984,6 +9993,30 @@ mod tests {
             }
             _ => panic!("expected Request"),
         }
+    }
+
+    /// MeshHarbor — the share account rides the lease additively: an old
+    /// lease (no `account`) still parses as `None`, `None` is never written,
+    /// and a set account survives the round trip.
+    #[test]
+    fn shared_lease_account_is_additive_and_round_trips() {
+        let gid = ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap();
+        let old = r#"{"grant_id":"507f1f77bcf86cd799439011","lease_epoch":"e1"}"#;
+        let parsed: SharedSessionLease = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.grant_id, gid);
+        assert_eq!(parsed.account, None);
+        let back = serde_json::to_value(&parsed).unwrap();
+        assert!(back.get("account").is_none(), "{back}");
+
+        let with = SharedSessionLease {
+            grant_id: gid,
+            lease_epoch: "e1".into(),
+            account: Some("alice".into()),
+        };
+        let json = serde_json::to_string(&with).unwrap();
+        assert!(json.contains(r#""account":"alice""#), "{json}");
+        let again: SharedSessionLease = serde_json::from_str(&json).unwrap();
+        assert_eq!(again, with);
     }
 
     #[test]

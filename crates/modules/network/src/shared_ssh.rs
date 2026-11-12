@@ -606,6 +606,8 @@ async fn run(
     let lease = SharedSessionLease {
         grant_id: grant,
         lease_epoch: uuid::Uuid::new_v4().to_string(),
+        // An SSH stream carries its account in `SharedSshSetup`, not here.
+        account: None,
     };
     let s = SharedSshSession {
         id: sid,

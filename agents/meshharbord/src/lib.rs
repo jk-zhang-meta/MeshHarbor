@@ -140,6 +140,9 @@ pub mod person_socket;
 /// so the CLI's `self-update` shares it. Re-exported, so `crate::pgp_verify`
 /// still names it.
 pub use tunnel_core::pgp_verify;
+/// Keep this host's Tailscale interface addresses out of a remote-desktop
+/// session's ICE host candidates (opt-in, `MESHHARBORD_ICE_SKIP_TAILSCALE_HOST=1`).
+pub mod ice_foreign_vpn;
 /// Device-owned login-account RPC, independent of the overlay transport.
 /// The handler enforces `ssh_enabled` and the device's privilege ceiling.
 pub mod local_accounts;
@@ -174,6 +177,7 @@ pub mod rc_transport;
 /// RC/RDP Phase B — read-only local TCP 3389 listener + RDP certificate SHA-256
 /// probe (`rdp_available`, `rdp_cert_sha256` on `AgentCaps`).
 pub mod rdp_caps;
+pub mod rdp_mesh;
 #[cfg(feature = "recording")]
 pub mod recording;
 pub mod relay_probe;
@@ -202,6 +206,9 @@ pub mod session_idle;
 /// device's half: the owner's floor, and the masking every grant goes through.
 pub mod session_policy;
 pub mod session_telemetry;
+/// MeshHarbor — who a shared session's file operations run as (never
+/// root/SYSTEM).
+pub mod share_files;
 pub mod shared_lease;
 pub mod signaling;
 /// FR-93 P5h — a computer going to sleep tells every viewer first.
@@ -242,6 +249,9 @@ pub use meshharbor_node_core::tcc;
 #[cfg(target_os = "linux")]
 pub mod tarball_owner;
 pub mod telemetry;
+/// Last-moment thread state + stacks for the watchdog exits (Linux only).
+#[cfg(target_os = "linux")]
+pub mod thread_dump;
 /// FR-103 — renewing each enrollment's agent token before it expires.
 pub mod token_renewal;
 pub mod tunnel;

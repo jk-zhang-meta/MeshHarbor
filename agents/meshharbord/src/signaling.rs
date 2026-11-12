@@ -1724,6 +1724,7 @@ async fn connect_once(
         hello_caps.rdp_available,
         hello_caps.rdp_port,
         hello_caps.rdp_cert_sha256.clone(),
+        hello_caps.rdp_mesh_reachable,
     );
     let mut last_announced_relay_server = hello_caps.rpc.iter().any(|word| word == "relay-server");
     let (arch, arch_emulated) = crate::arch::native();
@@ -2394,7 +2395,8 @@ async fn connect_once(
                 let session_policy_now = crate::session_policy::caps_policy();
                 let rdp_now = {
                     let r = crate::rdp_caps::current();
-                    (Some(r.available), r.port, r.cert_sha256)
+                    let reachable = crate::rdp_mesh::mesh_reachable(r.available);
+                    (Some(r.available), r.port, r.cert_sha256, Some(reachable))
                 };
                 let relay_server_now = relay_server_ready();
                 let caps = if relay_server_now == last_announced_relay_server
@@ -3586,6 +3588,7 @@ async fn handle_server_msg(
     // session that was not external.) FR-100 P1b's notes end with it.
     if let ServerMsg::Terminate { session_id, .. } = &msg {
         shared_leases.end(*session_id);
+        crate::share_files::forget(*session_id);
         crate::extauth::end_session(remote_cfg, *session_id);
         remote_cfg.peer_auth_offers().forget(*session_id);
     }
@@ -4566,6 +4569,13 @@ async fn handle_server_msg(
             if !shared_leases.attach(session_id, shared_lease.as_ref(), peer.shared_lease_stop()) {
                 close_within_budget(peer.close(), session_id, "shared_lease_expired").await;
                 return Ok(());
+            }
+            // MeshHarbor — a shared session's file channel runs as the share
+            // account, never as root/SYSTEM. Noted here, in the process that
+            // serves the peer, before the answer exists: no data channel can
+            // open earlier than that.
+            if let Some(lease) = shared_lease.as_ref() {
+                crate::share_files::note(session_id, lease);
             }
             peer.set_initial_resolution(initial_resolution.as_ref());
             // Only the actual local Request/consent candidate may bind; worker
@@ -7610,6 +7620,9 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool) -> AgentCaps {
     caps.rdp_available = Some(rdp.available);
     caps.rdp_port = rdp.port;
     caps.rdp_cert_sha256 = rdp.cert_sha256;
+    // RDP over the mesh — whether that server is reachable through the overlay
+    // (OS-TUN mode, or the owner's `rdp_over_mesh` on a netstack node).
+    caps.rdp_mesh_reachable = Some(crate::rdp_mesh::mesh_reachable(rdp.available));
     caps
 }
 

@@ -97,18 +97,78 @@ pub fn unknown_role_mode(state: &NetworkState) -> Mode {
 
 /// Log `"would refuse: unknown_role"` with the `Unknown` devices that currently
 /// have business peers under `business_unknown_role = warn`.
+///
+/// The same (tenant, context, devices) is logged once per
+/// [`UNKNOWN_ROLE_LOG_GAP`], with how many repeats it stood for: every
+/// planner and netmap pass asks, and a field run logged it 8 143 times for
+/// two role-less members of one pair.
 pub fn log_unknown_role_with_peers(
     tenant_id: ObjectId,
     context: &'static str,
     unknown_devices: &[String],
 ) {
-    if !unknown_devices.is_empty() {
-        info!(
-            %tenant_id,
-            context,
-            ?unknown_devices,
-            "business isolation [warn]: would refuse: unknown_role"
-        );
+    if unknown_devices.is_empty() {
+        return;
+    }
+    let Some(suppressed) = unknown_role_log_due(
+        tenant_id,
+        context,
+        unknown_devices,
+        std::time::Instant::now(),
+    ) else {
+        return;
+    };
+    info!(
+        %tenant_id,
+        context,
+        ?unknown_devices,
+        suppressed,
+        "business isolation [warn]: would refuse: unknown_role"
+    );
+}
+
+/// The quiet period between two identical `unknown_role` lines.
+pub const UNKNOWN_ROLE_LOG_GAP: Duration = Duration::from_secs(600);
+const UNKNOWN_ROLE_LOG_KEYS: usize = 4096;
+
+/// `Some(repeats suppressed since the last line)` when a line is due.
+pub(crate) fn unknown_role_log_due(
+    tenant_id: ObjectId,
+    context: &'static str,
+    unknown_devices: &[String],
+    now: std::time::Instant,
+) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    static SEEN: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<u64, (std::time::Instant, u64)>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (tenant_id, context, unknown_devices).hash(&mut h);
+    let key = h.finish();
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.len() >= UNKNOWN_ROLE_LOG_KEYS {
+        seen.retain(|_, (at, _)| now.saturating_duration_since(*at) < UNKNOWN_ROLE_LOG_GAP);
+        // Still full: start over rather than grow, or scan the whole map on
+        // every call. The cost is one early repeat of a line.
+        if seen.len() >= UNKNOWN_ROLE_LOG_KEYS {
+            seen.clear();
+        }
+    }
+    match seen.get_mut(&key) {
+        Some((at, repeats)) if now.saturating_duration_since(*at) < UNKNOWN_ROLE_LOG_GAP => {
+            *repeats = repeats.saturating_add(1);
+            None
+        }
+        Some((at, repeats)) => {
+            let suppressed = *repeats;
+            *at = now;
+            *repeats = 0;
+            Some(suppressed)
+        }
+        None => {
+            seen.insert(key, (now, 0));
+            Some(0)
+        }
     }
 }
 
@@ -666,6 +726,33 @@ pub async fn refuses_parties_with_lines_and_fallback_zone(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_identical_unknown_role_line_is_logged_once_per_gap_with_its_repeats() {
+        let tenant = ObjectId::new();
+        let devices = vec!["agent:a:m1".to_string()];
+        let t0 = std::time::Instant::now();
+        assert_eq!(
+            unknown_role_log_due(tenant, "probe_targets", &devices, t0),
+            Some(0)
+        );
+        for _ in 0..5 {
+            assert_eq!(
+                unknown_role_log_due(tenant, "probe_targets", &devices, t0),
+                None
+            );
+        }
+        assert_eq!(
+            unknown_role_log_due(tenant, "org_relay_pair", &devices, t0),
+            Some(0),
+            "another context is another line"
+        );
+        assert_eq!(
+            unknown_role_log_due(tenant, "probe_targets", &devices, t0 + UNKNOWN_ROLE_LOG_GAP),
+            Some(5),
+            "after the gap: one line carrying the repeats it stood for"
+        );
+    }
+
     use super::*;
     use BusinessZone::{Mainland, NonMainland};
 

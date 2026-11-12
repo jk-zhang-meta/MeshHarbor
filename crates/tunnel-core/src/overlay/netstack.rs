@@ -252,6 +252,8 @@ enum Control {
         port: u16,
         accepted: mpsc::Sender<NsTcpStream>,
     },
+    /// The [`NsListener`] for `port` was dropped: stop listening on it.
+    Unlisten { port: u16 },
     UdpBind {
         resp: oneshot::Sender<io::Result<NsUdpSocket>>,
     },
@@ -299,7 +301,11 @@ impl NetstackHandle {
             .send(Control::Listen { port, accepted })
             .await
             .map_err(|_| io::Error::other("netstack poll loop gone"))?;
-        Ok(NsListener { rx })
+        Ok(NsListener {
+            rx,
+            port,
+            ctl: self.ctl.clone(),
+        })
     }
 
     /// Bind a UDP socket on an ephemeral overlay port. The returned
@@ -343,6 +349,18 @@ impl NetstackHandle {
 /// Yields inbound connections to a listened port, in arrival order.
 pub struct NsListener {
     rx: mpsc::Receiver<NsTcpStream>,
+    port: u16,
+    ctl: mpsc::Sender<Control>,
+}
+
+impl Drop for NsListener {
+    /// Dropping the listener stops listening: the queue is closed first, so the
+    /// poll loop sees it gone, then the loop is told to close the idle socket
+    /// rather than accept the next connection onto a queue nobody reads.
+    fn drop(&mut self) {
+        self.rx.close();
+        let _ = self.ctl.try_send(Control::Unlisten { port: self.port });
+    }
 }
 
 impl NsListener {
@@ -747,6 +765,26 @@ impl PollLoop {
         self.arm_listener(port, accepted);
     }
 
+    /// Close `port`'s idle listening sockets whose [`NsListener`] is gone, so a
+    /// SYN arriving next is refused. A live listener on the same port (its own
+    /// queue still open) is untouched.
+    fn do_unlisten(&mut self, port: u16) {
+        let gone: Vec<SocketHandle> = self
+            .pending_listen
+            .iter()
+            .filter(|(h, pl)| {
+                pl.port == port
+                    && pl.accepted.is_closed()
+                    && self.sockets.get::<tcp::Socket>(**h).state() == tcp::State::Listen
+            })
+            .map(|(h, _)| *h)
+            .collect();
+        for h in gone {
+            self.pending_listen.remove(&h);
+            self.sockets.remove(h);
+        }
+    }
+
     fn arm_listener(&mut self, port: u16, accepted: mpsc::Sender<NsTcpStream>) {
         let mut sock = Self::new_tcp_socket();
         if let Err(e) = sock.listen(port) {
@@ -939,9 +977,14 @@ impl PollLoop {
             .collect();
         for h in ready {
             let pl = self.pending_listen.remove(&h).unwrap();
+            // A listener whose `NsListener` was dropped is not re-armed, so the
+            // port stops listening instead of accepting into a closed queue.
+            let listening = !pl.accepted.is_closed();
             if self.sockets.get::<tcp::Socket>(h).state() == tcp::State::Closed {
                 self.sockets.remove(h);
-                self.arm_listener(pl.port, pl.accepted);
+                if listening {
+                    self.arm_listener(pl.port, pl.accepted);
+                }
                 continue;
             }
             let peer = self
@@ -953,7 +996,9 @@ impl PollLoop {
             let (conn, stream) = self.make_pair(peer);
             self.conns.insert(h, conn);
             // Re-arm a fresh listener for the next connection before delivering.
-            self.arm_listener(pl.port, pl.accepted.clone());
+            if listening {
+                self.arm_listener(pl.port, pl.accepted.clone());
+            }
             if pl.accepted.try_send(stream).is_err() {
                 debug!(
                     port = pl.port,
@@ -1218,6 +1263,7 @@ impl PollLoop {
                 ctl = self.ctl_rx.recv() => match ctl {
                     Some(Control::Connect { dst, resp }) => self.do_connect(dst, resp),
                     Some(Control::Listen { port, accepted }) => self.do_listen(port, accepted),
+                    Some(Control::Unlisten { port }) => self.do_unlisten(port),
                     Some(Control::UdpBind { resp }) => self.do_udp_bind(resp),
                     Some(Control::Ping { dst, resp }) => self.do_ping(dst, resp),
                     None => break, // handle dropped ⇒ shut down
@@ -2457,6 +2503,73 @@ mod tests {
         )
         .await
         .expect("round trip over the WG bridge in time");
+    }
+
+    /// A dropped [`NsListener`] stops listening. Before, the port was re-armed
+    /// for ever, so every later connection was accepted and then dropped on a
+    /// queue nobody read — a live OFF (RDP over the mesh) could not refuse.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_dropped_listener_stops_listening() {
+        use crate::overlay::WgKeypair;
+        use crate::overlay::bridge::run_bridge;
+        use crate::overlay::wg::{Carrier, WgDevice};
+        use tokio::net::UdpSocket;
+
+        let a_ip = Ipv4Addr::new(100, 64, 0, 1);
+        let b_ip = Ipv4Addr::new(100, 64, 0, 2);
+        let ka = WgKeypair::generate();
+        let kb = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+        let (mut dev_a, rx_a) = WgDevice::new(ka.secret.clone());
+        let (mut dev_b, rx_b) = WgDevice::new(kb.secret.clone());
+        dev_a.add_peer(
+            kb.public.to_bytes(),
+            b_ip,
+            Carrier::direct(sock_a.clone(), addr_b),
+            true,
+        );
+        dev_b.add_peer(
+            ka.public.to_bytes(),
+            a_ip,
+            Carrier::direct(sock_b.clone(), addr_a),
+            false,
+        );
+        let (dev_a, dev_b) = (Arc::new(dev_a), Arc::new(dev_b));
+        let a = Netstack::start(a_ip, 10, 1280);
+        let b = Netstack::start(b_ip, 10, 1280);
+        tokio::spawn(run_bridge(a.tun.clone() as Arc<dyn TunIo>, dev_a, rx_a));
+        tokio::spawn(run_bridge(b.tun.clone() as Arc<dyn TunIo>, dev_b, rx_b));
+
+        let mut listener = b.handle.listen(3389).await.unwrap();
+        let served = tokio::spawn(async move {
+            if let Some(s) = listener.accept().await {
+                echo(s).await;
+            }
+            // `listener` is dropped here.
+        });
+        let dst = SocketAddr::from((b_ip, 3389));
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            round_trip(&a.handle, dst, b"listening-before-the-drop"),
+        )
+        .await
+        .expect("served while the listener lives");
+        tokio::time::timeout(Duration::from_secs(10), served)
+            .await
+            .expect("the accept task ends")
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let after = tokio::time::timeout(Duration::from_secs(15), a.handle.connect(dst))
+            .await
+            .expect("answered, not hung");
+        assert!(
+            after.is_err(),
+            "a dropped listener must refuse new connections, not accept and drop them"
+        );
     }
 
     /// The Phase B proof: **IPv6 rides the same WG mesh with no v6 routing

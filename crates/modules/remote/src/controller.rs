@@ -225,7 +225,7 @@ async fn dispatch_controller_rc(
     connection_id: &str,
 ) -> bool {
     let hub = &state.fleet.rc_hub;
-    let (parsed, local_pdp, local_pdp_snapshot) = match local_pdp_request {
+    let (mut parsed, local_pdp, local_pdp_snapshot) = match local_pdp_request {
         Some(token) => {
             if token.user_id != user_id || !token.controller_tx.same_channel(controller_tx) {
                 return true; // private-token identity mismatch: never downgrade into legacy dispatch
@@ -342,7 +342,7 @@ async fn dispatch_controller_rc(
             }
         }
     }
-    let ctx = DispatchCtx {
+    let mut ctx = DispatchCtx {
         role: Role::Controller,
         user_id: Some(user_id),
         agent_id: None,
@@ -361,13 +361,30 @@ async fn dispatch_controller_rc(
         lock_on_end,
         org_session_cap,
         slot: slot.clone(),
+        // Set below by the share gate, and only for a shared request.
+        share_files_account: None,
     };
     // …and so does the cross-pod relay, for the same reason.
     let relay_tenant_name = tenant_name;
     // Recheck the share at the actual creation site, not just a UI/check endpoint.
-    let shared_scope = match crate::device_share::scope_for_request(state, user_id, &parsed).await {
-        Ok(v) => v.map(|(mut scope, _)| {
+    // The files gate runs here too: what FILES becomes on THIS agent (stripped
+    // for one that would run a recipient's file operations as root/SYSTEM) and
+    // the share account the device runs them as.
+    let shared_scope = match crate::device_share::scope_for_request(state, user_id, &parsed)
+        .await
+        .and_then(|v| {
+            v.map(|(scope, access)| {
+                crate::device_share::files_gate(&access, scope.asked).map(|gate| (scope, gate))
+            })
+            .transpose()
+        }) {
+        Ok(v) => v.map(|(mut scope, gate)| {
             scope.consent_mode = ctx.consent_mode;
+            scope.asked = gate.permissions;
+            if let ClientMsg::SessionRequest { permissions, .. } = &mut parsed {
+                *permissions = gate.permissions;
+            }
+            ctx.share_files_account = gate.account;
             scope
         }),
         Err(reason) => {

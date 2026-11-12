@@ -753,6 +753,10 @@
       "sshAccount": "SSH 使用的设备账号",
       "sshAccountHint": "该设备上已有的 Linux/macOS 用户。对方的 SSH 会话只能以这个账号运行。",
       "sshAccountInvalid": "请填写 SSH 使用的设备账号：Linux/macOS 用户名（小写字母、数字、_ 和 -）。",
+      "filesAccount": "文件传输使用的设备账号",
+      "filesAccountHint": "该设备上的 Linux/macOS 用户。对方的文件传输以这个账号运行，绝不以 root 运行，只能访问这个账号本身能访问的文件。",
+      "filesAccountInvalid": "请填写文件传输使用的设备账号：Linux/macOS 用户名（小写字母、数字、_ 和 -）。",
+      "sshFilesAccountHint": "该设备上已有的 Linux/macOS 用户。对方的 SSH 会话和文件传输都只能以这个账号运行，绝不以 root 运行。",
       "sshRootRefused": "不能直接分享 root。请为对方新建一个管理员账号。",
       "acct": {
         "existing": "设备上的账号：",

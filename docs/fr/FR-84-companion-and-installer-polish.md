@@ -338,6 +338,10 @@ are registered in the config surface like every other key.
    option and the Linux `install.sh --system` path passes no `--overlay`. Keeping them as
    they are: flipping the default would silently change corporate automation. Revisit with
    an explicit `--no-overlay` if the operator wants parity.
+   *2026-11-11:* the Windows **per-user** role is now on by default in both the wizard and
+   `install.ps1 -Role daemon-user` (`-NoOverlay` opts out): the per-user daemon joins
+   through the userspace netstack, so the default is a promise it keeps. The machine roles
+   of the served scripts are unchanged.
 2. **Tags in the device grid** — shown, as the same class of admin-authored label as
    `display_name`.
 3. **Listener pool size** — 4; revisit with field data.

@@ -1300,6 +1300,13 @@ pub struct FilesHandler {
     /// otherwise start a download after the teardown, whose pump outlives
     /// it (found in review; the clipboard's `stopped` is the same guard).
     ended: Arc<AtomicBool>,
+    /// MeshHarbor — the identity EVERY filesystem step of this channel runs
+    /// as, fixed for its life: `Some` for a shared session
+    /// (`crate::share_files`), whose recipient's file operations never run as
+    /// root/SYSTEM — list, stat, open for reading and the folder walk too,
+    /// not only the writes. `None` is the ordinary session, unchanged: a
+    /// transfer writes as [`FsAs::now`], and reads run as the daemon.
+    who: Option<FsAs>,
 }
 
 impl Default for FilesHandler {
@@ -1314,6 +1321,34 @@ impl FilesHandler {
             incoming: Arc::new(Mutex::new(None)),
             outgoing: Arc::new(Mutex::new(None)),
             ended: Arc::new(AtomicBool::new(false)),
+            who: None,
+        }
+    }
+
+    /// A channel whose every filesystem step runs as `who` (a shared session).
+    pub(crate) fn acting_as(who: FsAs) -> Self {
+        Self {
+            who: Some(who),
+            ..Self::new()
+        }
+    }
+
+    /// Who an upload starting now writes as.
+    fn who_now(&self) -> FsAs {
+        self.who.clone().unwrap_or_else(FsAs::now)
+    }
+
+    /// The fixed identity of a shared session's channel, if this is one.
+    pub(crate) fn shared_identity(&self) -> Option<FsAs> {
+        self.who.clone()
+    }
+
+    /// List a directory for this channel: as its fixed identity for a shared
+    /// session, else exactly [`list_dir`].
+    pub async fn list(&self, path: &str) -> Result<DirListing> {
+        match &self.who {
+            None => list_dir(path).await,
+            Some(who) => list_dir_as(who, path).await,
         }
     }
 
@@ -1348,8 +1383,9 @@ impl FilesHandler {
         dest_path: Option<&str>,
     ) -> Result<PathBuf> {
         // FR-97 P3d — who this transfer writes as, for its whole life: on a
-        // Linux system install the person at seat0, in their own folder.
-        self.begin_as(FsAs::now(), id, name, expected, rel_path, dest_path)
+        // Linux system install the person at seat0, in their own folder; on a
+        // shared session, the channel's fixed identity.
+        self.begin_as(self.who_now(), id, name, expected, rel_path, dest_path)
             .await
     }
 
@@ -1833,7 +1869,7 @@ impl FilesHandler {
                 // legacy escape-hatch path / non-Windows. FR-97 P3d —
                 // probed, like everything after, as whoever a drop would
                 // be written as now.
-                let who = FsAs::now();
+                let who = self.who_now();
                 let canonical = {
                     #[cfg(target_os = "windows")]
                     {
@@ -1977,19 +2013,32 @@ impl FilesHandler {
         offset: Option<u64>,
         length: Option<u64>,
     ) -> Result<OutgoingOffer> {
-        let resolved = validate_outgoing_path(path).context("validating outgoing path")?;
-        if is_agent_secret(&resolved) {
-            return Err(anyhow!(
-                "{} holds the agent's own credentials — file transfer never sends it",
-                resolved.display()
-            ));
-        }
-
-        // Stat to surface a real error before we set state, AND get
-        // the size for the offer.
-        let meta = tokio::fs::metadata(&resolved)
-            .await
-            .with_context(|| format!("stat {}", resolved.display()))?;
+        let (resolved, meta) = match &self.who {
+            None => {
+                let resolved = validate_outgoing_path(path).context("validating outgoing path")?;
+                refuse_agent_secret(&resolved)?;
+                // Stat to surface a real error before we set state, AND get
+                // the size for the offer.
+                let meta = tokio::fs::metadata(&resolved)
+                    .await
+                    .with_context(|| format!("stat {}", resolved.display()))?;
+                (resolved, meta)
+            }
+            // A shared session resolves and stats as its own identity: a
+            // path that account cannot reach is an error, never root's.
+            Some(who) => {
+                let input = path.to_string();
+                who.run(move || {
+                    let resolved =
+                        validate_outgoing_path(&input).context("validating outgoing path")?;
+                    refuse_agent_secret(&resolved)?;
+                    let meta = std::fs::metadata(&resolved)
+                        .with_context(|| format!("stat {}", resolved.display()))?;
+                    Ok((resolved, meta))
+                })
+                .await?
+            }
+        };
         if !meta.is_file() {
             return Err(anyhow!("not a regular file: {}", resolved.display()));
         }
@@ -2064,9 +2113,22 @@ impl FilesHandler {
             }
             (state.path.clone(), state.offset)
         };
-        let mut file = File::open(&path)
-            .await
-            .with_context(|| format!("opening {}", path.display()))?;
+        let mut file = match &self.who {
+            None => File::open(&path)
+                .await
+                .with_context(|| format!("opening {}", path.display()))?,
+            // The open is where access is checked: as the shared identity.
+            // Reading the descriptor afterwards needs no identity at all.
+            Some(who) => {
+                let p = path.clone();
+                let std_file = who
+                    .run(move || {
+                        std::fs::File::open(&p).with_context(|| format!("opening {}", p.display()))
+                    })
+                    .await?;
+                File::from_std(std_file)
+            }
+        };
         if offset > 0 {
             use tokio::io::AsyncSeekExt;
             file.seek(std::io::SeekFrom::Start(offset))
@@ -2354,6 +2416,17 @@ fn agent_state_run(path: &std::path::Path) -> Option<String> {
 /// transfer, whatever the daemon's privilege. The rest of its state — logs,
 /// crash dumps, uploads — stays reachable: that is how a supporter fetches
 /// them from the drawer.
+/// [`is_agent_secret`] as the refusal a download returns.
+fn refuse_agent_secret(path: &std::path::Path) -> Result<()> {
+    if is_agent_secret(path) {
+        return Err(anyhow!(
+            "{} holds the agent's own credentials — file transfer never sends it",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 fn is_agent_secret(path: &std::path::Path) -> bool {
     let Some(name) = path.file_name().map(|n| n.to_string_lossy()) else {
         return false;
@@ -2442,6 +2515,86 @@ pub async fn list_dir(path: &str) -> Result<DirListing> {
         return list_staging().await;
     }
     list_canonical(&PathBuf::from(path)).await
+}
+
+/// [`list_dir`] as a shared session's identity: the canonicalisation, the
+/// listing and every entry's metadata run as `who`, so a directory that
+/// account cannot read is an error and never root's view of it. Roots list
+/// as before (a fixed label, no filesystem read); the staging sentinel is the
+/// daemon's own folder, never a share recipient's.
+pub(crate) async fn list_dir_as(who: &FsAs, path: &str) -> Result<DirListing> {
+    if path.is_empty() || path == "~" || path == "/" {
+        return Ok(DirListing {
+            path: roots_label(),
+            parent: None,
+            entries: enumerate_roots(),
+        });
+    }
+    if path == STAGING_SENTINEL {
+        return Err(anyhow!(
+            "the staging folder is the device's own and is not listed in a shared session"
+        ));
+    }
+    let pb = PathBuf::from(path);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(DIR_LIST_TIMEOUT_SECS),
+        who.run(move || list_canonical_blocking(&pb)),
+    )
+    .await
+    .map_err(|_| anyhow!("listing timed out"))?
+}
+
+/// The blocking body of [`list_canonical`], for a thread that took on an
+/// identity: same entry cap, same shaping, same order.
+fn list_canonical_blocking(pb: &std::path::Path) -> Result<DirListing> {
+    let canon =
+        std::fs::canonicalize(pb).with_context(|| format!("canonicalising {}", pb.display()))?;
+    let parent = canon.parent().map(|p| p.to_string_lossy().to_string());
+    let read = std::fs::read_dir(&canon).with_context(|| format!("reading {}", canon.display()))?;
+    let mut entries: Vec<DirEntryView> = Vec::new();
+    for (count, entry) in read.enumerate() {
+        if count >= 10_000 {
+            break;
+        }
+        let Ok(entry) = entry else { break };
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue; // skip non-UTF-8 names
+        };
+        let Ok(meta) = entry.metadata() else {
+            continue; // permission denied / vanished — skip
+        };
+        entries.push(dir_entry_view(name, &meta));
+    }
+    sort_dir_entries(&mut entries);
+    Ok(DirListing {
+        path: canon.to_string_lossy().to_string(),
+        parent,
+        entries,
+    })
+}
+
+/// One listed entry, shaped as every listing shapes it.
+fn dir_entry_view(name: String, meta: &std::fs::Metadata) -> DirEntryView {
+    let is_dir = meta.is_dir();
+    DirEntryView {
+        name,
+        is_dir,
+        size: if is_dir { None } else { Some(meta.len()) },
+        mtime_unix: meta.modified().ok().and_then(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs() as i64)
+        }),
+    }
+}
+
+/// Dirs first, then files; both alphabetical, case-insensitive.
+fn sort_dir_entries(entries: &mut [DirEntryView]) {
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
 }
 
 /// Canonicalise, enumerate and shape one directory. Shared by the plain path
@@ -2613,10 +2766,26 @@ impl FilesHandler {
     /// (folder zips have unknown size up front — it's a streaming
     /// stream).
     pub async fn begin_outgoing_zip(&self, id: String, path: &str) -> Result<OutgoingOffer> {
-        let resolved = validate_outgoing_path(path).context("validating folder path")?;
-        let meta = tokio::fs::metadata(&resolved)
-            .await
-            .with_context(|| format!("stat {}", resolved.display()))?;
+        let (resolved, meta) = match &self.who {
+            None => {
+                let resolved = validate_outgoing_path(path).context("validating folder path")?;
+                let meta = tokio::fs::metadata(&resolved)
+                    .await
+                    .with_context(|| format!("stat {}", resolved.display()))?;
+                (resolved, meta)
+            }
+            Some(who) => {
+                let input = path.to_string();
+                who.run(move || {
+                    let resolved =
+                        validate_outgoing_path(&input).context("validating folder path")?;
+                    let meta = std::fs::metadata(&resolved)
+                        .with_context(|| format!("stat {}", resolved.display()))?;
+                    Ok((resolved, meta))
+                })
+                .await?
+            }
+        };
         if !meta.is_dir() {
             return Err(anyhow!("not a directory: {}", resolved.display()));
         }
@@ -2682,13 +2851,109 @@ pub async fn walk_and_zip<W>(
 where
     W: tokio::io::AsyncWrite + Unpin + Send,
 {
+    walk_and_zip_as(writer, root, cancel, None).await
+}
+
+/// One directory entry of a zip walk, as the walking identity saw it.
+enum ZipWalkEntry {
+    /// A directory, with its canonical path when that resolved (cycle check).
+    Dir(PathBuf, Option<PathBuf>),
+    File(PathBuf),
+    /// Unreadable metadata, a pipe, a socket, a device: counted, skipped.
+    Other,
+}
+
+/// Enumerate one directory of a zip walk. `None` is the daemon, exactly as
+/// before; `Some` is a shared session's identity, under which the listing,
+/// every entry's metadata and the cycle check's canonicalisation all run.
+async fn zip_walk_dir(who: Option<&FsAs>, dir: PathBuf) -> std::io::Result<Vec<ZipWalkEntry>> {
+    match who {
+        None => {
+            let mut read_dir = tokio::fs::read_dir(&dir).await?;
+            let mut out = Vec::new();
+            while let Ok(Some(entry)) = read_dir.next_entry().await {
+                let path = entry.path();
+                out.push(match entry.metadata().await {
+                    Ok(m) if m.is_dir() => {
+                        let canon = std::fs::canonicalize(&path).ok();
+                        ZipWalkEntry::Dir(path, canon)
+                    }
+                    Ok(m) if m.is_file() => ZipWalkEntry::File(path),
+                    _ => ZipWalkEntry::Other,
+                });
+                if out.len() > ZIP_MAX_ENTRIES as usize {
+                    break; // the caller refuses at the cap; no need to read on
+                }
+            }
+            Ok(out)
+        }
+        Some(who) => who
+            .run(move || {
+                let mut out = Vec::new();
+                for entry in std::fs::read_dir(&dir)? {
+                    let Ok(entry) = entry else { break };
+                    let path = entry.path();
+                    out.push(match entry.metadata() {
+                        Ok(m) if m.is_dir() => {
+                            let canon = std::fs::canonicalize(&path).ok();
+                            ZipWalkEntry::Dir(path, canon)
+                        }
+                        Ok(m) if m.is_file() => ZipWalkEntry::File(path),
+                        _ => ZipWalkEntry::Other,
+                    });
+                    if out.len() > ZIP_MAX_ENTRIES as usize {
+                        break;
+                    }
+                }
+                Ok(out)
+            })
+            .await
+            .map_err(|e| std::io::Error::other(format!("{e:#}"))),
+    }
+}
+
+/// Open one file of a zip walk as the walking identity.
+async fn zip_walk_open(who: Option<&FsAs>, path: &std::path::Path) -> std::io::Result<File> {
+    match who {
+        None => File::open(path).await,
+        Some(who) => {
+            let p = path.to_path_buf();
+            let f = who
+                .run(move || Ok(std::fs::File::open(&p)?))
+                .await
+                .map_err(|e| std::io::Error::other(format!("{e:#}")))?;
+            Ok(File::from_std(f))
+        }
+    }
+}
+
+/// [`walk_and_zip`] as an explicit identity: `Some` for a shared session,
+/// whose recipient may zip only what that identity can read.
+pub(crate) async fn walk_and_zip_as<W>(
+    writer: W,
+    root: &std::path::Path,
+    cancel: tokio_util::sync::CancellationToken,
+    who: Option<FsAs>,
+) -> Result<u32>
+where
+    W: tokio::io::AsyncWrite + Unpin + Send,
+{
     use async_zip::tokio::write::ZipFileWriter;
     use async_zip::{Compression, ZipEntryBuilder};
     use std::collections::HashSet;
     use tokio_util::compat::FuturesAsyncWriteCompatExt;
 
-    let root_canon = std::fs::canonicalize(root)
-        .with_context(|| format!("canonicalising {}", root.display()))?;
+    let root_canon = match &who {
+        None => std::fs::canonicalize(root)
+            .with_context(|| format!("canonicalising {}", root.display()))?,
+        Some(id) => {
+            let r = root.to_path_buf();
+            id.run(move || {
+                std::fs::canonicalize(&r).with_context(|| format!("canonicalising {}", r.display()))
+            })
+            .await?
+        }
+    };
 
     let mut zip = ZipFileWriter::with_tokio(writer);
     let mut stack: Vec<PathBuf> = vec![root_canon.clone()];
@@ -2700,14 +2965,14 @@ where
         if cancel.is_cancelled() {
             return Err(anyhow!("cancelled by browser"));
         }
-        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+        let listed = match zip_walk_dir(who.as_ref(), dir.clone()).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::debug!(dir = %dir.display(), %e, "zip walk: skipping unreadable dir");
                 continue;
             }
         };
-        while let Ok(Some(entry)) = read_dir.next_entry().await {
+        for entry in listed {
             if cancel.is_cancelled() {
                 return Err(anyhow!("cancelled by browser"));
             }
@@ -2717,27 +2982,22 @@ where
                     "folder exceeds {ZIP_MAX_ENTRIES} entries — refusing to stream"
                 ));
             }
-            let path = entry.path();
-            let meta = match entry.metadata().await {
-                Ok(m) => m,
-                Err(_) => continue, // permission denied — skip
-            };
-
-            if meta.is_dir() {
-                // Cycle protection: canonical path already visited?
-                // (Else branch — already-visited — is a silent skip:
-                // symlink loop or hard-linked dir.)
-                if let Ok(canon) = std::fs::canonicalize(&path)
-                    && visited.insert(canon)
-                {
-                    stack.push(path);
+            let path = match entry {
+                ZipWalkEntry::Dir(path, canon) => {
+                    // Cycle protection: canonical path already visited?
+                    // (Else branch — already-visited — is a silent skip:
+                    // symlink loop or hard-linked dir.)
+                    if let Some(canon) = canon
+                        && visited.insert(canon)
+                    {
+                        stack.push(path);
+                    }
+                    continue;
                 }
-                continue;
-            }
-
-            if !meta.is_file() {
-                continue; // skip pipes / sockets / device files
-            }
+                ZipWalkEntry::File(path) => path,
+                // Permission denied, or a pipe / socket / device file — skip.
+                ZipWalkEntry::Other => continue,
+            };
             if is_agent_secret(&path) {
                 // A folder download of e.g. the machine-global root carries
                 // its logs and crash dumps — never the agent's credentials.
@@ -2764,7 +3024,7 @@ where
             // a single file are logged at debug and skipped — we
             // don't want one unreadable file to abort the whole
             // archive.
-            let mut src = match tokio::fs::File::open(&path).await {
+            let mut src = match zip_walk_open(who.as_ref(), &path).await {
                 Ok(f) => f,
                 Err(e) => {
                     tracing::debug!(file = %path.display(), %e, "zip walk: skipping unreadable file");
@@ -6212,6 +6472,156 @@ mod seat_user_tests {
                 account: person.clone(),
                 home: home.to_path_buf(),
             }
+        }
+
+        /// A folder only root may enter, holding a file only root may read;
+        /// and an open folder holding a file anyone may read.
+        fn roots_and_open_folders() -> (tempfile::TempDir, PathBuf, tempfile::TempDir, PathBuf) {
+            let roots_only = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(roots_only.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            let secret = roots_only.path().join("secret.txt");
+            std::fs::write(&secret, b"SECRET-MARK").unwrap();
+            std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let open = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(open.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+            let public = open.path().join("public.txt");
+            std::fs::write(&public, b"hello").unwrap();
+            std::fs::set_permissions(&public, std::fs::Permissions::from_mode(0o644)).unwrap();
+            (roots_only, secret, open, public)
+        }
+
+        /// MeshHarbor — a SHARED channel acts as its share account for every
+        /// step, reads included: a folder and a file only root may read stay
+        /// unreadable to the recipient, and what the account may read is
+        /// served. The control: an ordinary channel (the daemon, root) lists
+        /// the same root-only folder.
+        #[tokio::test]
+        async fn a_shared_channel_lists_and_reads_only_what_its_account_can() {
+            if !root() {
+                return;
+            }
+            let (home, person) = nobodys_home();
+            let (roots_only, secret, open, public) = roots_and_open_folders();
+            let shared = FilesHandler::acting_as(as_person(&person, home.path()));
+
+            let ordinary = FilesHandler::new();
+            ordinary
+                .list(&roots_only.path().to_string_lossy())
+                .await
+                .expect("the control: root lists its own folder");
+
+            let err = shared
+                .list(&roots_only.path().to_string_lossy())
+                .await
+                .err()
+                .expect("the share account cannot list a 0700 root folder");
+            assert!(format!("{err:#}").contains("Permission denied"), "{err:#}");
+            let err = shared
+                .begin_outgoing_range("dl-secret".into(), &secret.to_string_lossy(), None, None)
+                .await
+                .err()
+                .expect("the share account cannot read root's file");
+            assert!(format!("{err:#}").contains("Permission denied"), "{err:#}");
+
+            let listing = shared
+                .list(&open.path().to_string_lossy())
+                .await
+                .expect("a folder the account may read lists");
+            assert!(listing.entries.iter().any(|e| e.name == "public.txt"));
+            let offer = shared
+                .begin_outgoing_range("dl-public".into(), &public.to_string_lossy(), None, None)
+                .await
+                .expect("a file the account may read is offered");
+            assert_eq!(offer.size, Some(5));
+            let mut f = shared
+                .open_outgoing("dl-public")
+                .await
+                .expect("opened as the account");
+            let mut buf = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut f, &mut buf)
+                .await
+                .unwrap();
+            assert_eq!(buf, b"hello");
+            shared.finish_outgoing("dl-public").await;
+        }
+
+        /// A shared folder download zips only what the share account can read:
+        /// a root-only file inside the folder is skipped, never sent as root.
+        #[tokio::test]
+        async fn a_shared_folder_zip_holds_only_what_its_account_can_read() {
+            if !root() {
+                return;
+            }
+            let (home, person) = nobodys_home();
+            let folder = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(folder.path(), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            let public = folder.path().join("public-a.txt");
+            std::fs::write(&public, b"PUBLIC-MARK").unwrap();
+            std::fs::set_permissions(&public, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let secret = folder.path().join("secret-b.txt");
+            std::fs::write(&secret, b"SECRET-MARK").unwrap();
+            std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+            let zip = |who: Option<FsAs>| {
+                let root = folder.path().to_path_buf();
+                async move {
+                    let (w, mut r) = tokio::io::duplex(64 * 1024);
+                    let cancel = tokio_util::sync::CancellationToken::new();
+                    let walk =
+                        tokio::spawn(async move { walk_and_zip_as(w, &root, cancel, who).await });
+                    let mut out = Vec::new();
+                    tokio::io::AsyncReadExt::read_to_end(&mut r, &mut out)
+                        .await
+                        .unwrap();
+                    walk.await.unwrap().expect("zip walk");
+                    out
+                }
+            };
+            let has = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+
+            // The control: as the daemon (root) both files are in the zip.
+            let as_root = zip(None).await;
+            assert!(has(&as_root, b"PUBLIC-MARK") && has(&as_root, b"SECRET-MARK"));
+
+            let shared = zip(Some(as_person(&person, home.path()))).await;
+            assert!(
+                has(&shared, b"PUBLIC-MARK"),
+                "what the account may read is zipped"
+            );
+            assert!(
+                !has(&shared, b"SECRET-MARK"),
+                "root's file never leaves as root"
+            );
+            assert!(!has(&shared, b"secret-b.txt"), "nor does its name");
+        }
+
+        /// A shared channel's upload is born the share account's, through the
+        /// ordinary `begin` (not the identity seam): the channel's identity is
+        /// what the upload writes as.
+        #[tokio::test]
+        async fn a_shared_upload_is_born_the_share_accounts() {
+            if !root() {
+                return;
+            }
+            let _lock = crate::files::FILES_DIR_TEST_LOCK.lock().await;
+            let (home, person) = nobodys_home();
+            let shared = FilesHandler::acting_as(as_person(&person, home.path()));
+            let id = format!("share-born-{}", std::process::id());
+            shared
+                .begin(id.clone(), "probe.txt".into(), 5, None, None)
+                .await
+                .expect("begin as the share account");
+            shared.chunk(b"hello").await.expect("chunk");
+            let (path, _) = shared.end(&id).await.expect("end");
+            let md = std::fs::metadata(&path).unwrap();
+            assert_eq!(
+                (md.uid(), md.gid()),
+                (person.uid, person.gid),
+                "born the share account's"
+            );
+            assert!(path.starts_with(home.path()), "in the account's own folder");
         }
 
         /// The file is born the person's, in their folder, and nothing of the

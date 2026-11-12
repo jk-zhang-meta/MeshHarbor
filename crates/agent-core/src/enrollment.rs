@@ -264,6 +264,7 @@ pub async fn enroll(inputs: EnrollInputs<'_>) -> Result<AgentConfig> {
         // owner's OFF across a re-enrollment.
         local_restart_enabled: true,
         external_access_enabled: false,
+        rdp_over_mesh: false,
         external_access_setup: None,
         external_access_verifier: None,
         external_consent_mode: None,

@@ -1075,8 +1075,10 @@ button.wl-skip:hover {
 }
 
 .dv-split-menu {
-  position: absolute;
-  top: calc(100% + 4px);
+  /* Fixed, placed by devices.js `placeSplitMenu`, so the grid's scroll
+   * container (`.tbl-wrap`) cannot clip it on a one-row table. */
+  position: fixed;
+  top: 0;
   left: 0;
   z-index: 30;
   min-width: 152px;
@@ -1106,6 +1108,15 @@ button.wl-skip:hover {
   color: var(--primary);
 }
 
+.dv-split-hint {
+  max-width: 240px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted, #94a3b8);
+  white-space: normal;
+}
+
 .dv-rdp-confirm {
   min-width: 220px;
   padding: 6px 8px;
@@ -1115,6 +1126,14 @@ button.wl-skip:hover {
   font-size: 12px;
   line-height: 1.4;
   color: var(--warn);
+  margin-bottom: 6px;
+  white-space: normal;
+}
+
+.dv-rdp-unpinned-note {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--muted, #94a3b8);
   margin-bottom: 8px;
   white-space: normal;
 }

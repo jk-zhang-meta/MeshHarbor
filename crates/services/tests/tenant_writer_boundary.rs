@@ -13,6 +13,7 @@
 //! - api/stats_rollup.rs::roll_family ($merge destination is in the pipeline).
 //! - modules/vault/src/dao.rs::tombstone_row<T> (generic BaseDao write).
 //! - services/src/dao/stats.rs::StatsDao::coll(name) (public raw handle).
+//!
 //! A dynamic collection name, imported/type-disguised handle, out-of-line alias
 //! or mutation hidden by macro expansion can evade this visible boundary.
 //! Generic APIs and other document revisions are not sealed by this test.
@@ -351,29 +352,26 @@ fn models(items: &[Item], file: &str, into: &mut BTreeMap<String, String>) {
         into.insert(key, value);
     }
     for item in items {
-        if let Item::Const(c) = item {
-            if let syn::Expr::Lit(e) = &*c.expr {
-                if let syn::Lit::Str(v) = &e.lit {
-                    literal(into, format!("{file}::{}", c.ident), v.value());
-                }
-            }
+        if let Item::Const(c) = item
+            && let syn::Expr::Lit(e) = &*c.expr
+            && let syn::Lit::Str(v) = &e.lit
+        {
+            literal(into, format!("{file}::{}", c.ident), v.value());
         }
         if let Item::Impl(i) = item {
             if !production(&i.attrs) {
                 continue;
             }
-            if let syn::Type::Path(p) = i.self_ty.as_ref() {
-                if let Some(name) = p.path.segments.last() {
-                    for member in &i.items {
-                        if let syn::ImplItem::Const(c) = member {
-                            if c.ident == "COLLECTION" {
-                                if let syn::Expr::Lit(e) = &c.expr {
-                                    if let syn::Lit::Str(s) = &e.lit {
-                                        literal(into, name.ident.to_string(), s.value());
-                                    }
-                                }
-                            }
-                        }
+            if let syn::Type::Path(p) = i.self_ty.as_ref()
+                && let Some(name) = p.path.segments.last()
+            {
+                for member in &i.items {
+                    if let syn::ImplItem::Const(c) = member
+                        && c.ident == "COLLECTION"
+                        && let syn::Expr::Lit(e) = &c.expr
+                        && let syn::Lit::Str(s) = &e.lit
+                    {
+                        literal(into, name.ident.to_string(), s.value());
                     }
                 }
             }
@@ -427,11 +425,10 @@ impl Check<'_> {
                         .to_string()
                         .contains("Collection")
                     || f.facts.writes)
+                && self.interfaces.insert(name, fingerprint(sig)).is_some()
             {
-                if self.interfaces.insert(name, fingerprint(sig)).is_some() {
-                    self.errors
-                        .push("duplicate/conditional BaseDao interface requires review".into());
-                }
+                self.errors
+                    .push("duplicate/conditional BaseDao interface requires review".into());
             }
             return; // only interfaces, explicitly no implementation proof
         }
@@ -708,7 +705,7 @@ fn same_name_exceptions_cannot_add_security_fields_or_operators() {
             let Item::Impl(i) = item else { return false; };
             let syn::Type::Path(owner) = i.self_ty.as_ref() else { return false; };
             let owner = owner.path.segments.last().unwrap().ident.to_string();
-            i.items.retain(|member| matches!(member, syn::ImplItem::Fn(f) if BODIES.iter().any(|(p,o,n,_)| *p==file && *o==owner && *n==f.sig.ident.to_string() || (file == DAO && owner == "TenantDao" && (SCALARS.iter().any(|(n,_,_)| *n==f.sig.ident.to_string()) || GATEWAYS.iter().any(|(n,_,_)| *n==f.sig.ident.to_string()))))));
+            i.items.retain(|member| matches!(member, syn::ImplItem::Fn(f) if BODIES.iter().any(|(p,o,n,_)| *p==file && *o==owner && f.sig.ident == *n || (file == DAO && owner == "TenantDao" && (SCALARS.iter().any(|(n,_,_)| f.sig.ident == *n) || GATEWAYS.iter().any(|(n,_,_)| f.sig.ident == *n))))));
             !i.items.is_empty()
         });
         ast.to_token_stream().to_string()

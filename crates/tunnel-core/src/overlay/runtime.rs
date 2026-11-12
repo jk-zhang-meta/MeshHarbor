@@ -369,6 +369,75 @@ struct BusinessTrafficSample {
     retapped: Option<Instant>,
 }
 
+/// F5 — the business watch's per-carrier state ([`business_watch_step`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BusinessWatchSample {
+    installed_at: Instant,
+    rx: u64,
+    /// tx when rx last moved: anything sent after it is unanswered so far.
+    tx_at_rx: u64,
+    /// The first sample that saw tx above `tx_at_rx` with rx flat.
+    unanswered_since: Option<Instant>,
+}
+
+impl BusinessWatchSample {
+    fn new(installed_at: Instant, tx: u64, rx: u64) -> Self {
+        Self {
+            installed_at,
+            rx,
+            tx_at_rx: tx,
+            unanswered_since: None,
+        }
+    }
+}
+
+/// F5 — one watch sample: `true` when business traffic on the carrier has
+/// gone unanswered for `window`. Pure, so the timing rule is unit-tested.
+/// A judged window restarts from here, so a proof answered with no data (a
+/// one-way stream) re-arms only after a whole new window of unanswered tx.
+fn business_watch_step(
+    s: &mut BusinessWatchSample,
+    installed_at: Instant,
+    tx: u64,
+    rx: u64,
+    now: Instant,
+    window: Duration,
+) -> bool {
+    if s.installed_at != installed_at {
+        *s = BusinessWatchSample::new(installed_at, tx, rx);
+        return false;
+    }
+    if rx != s.rx {
+        *s = BusinessWatchSample::new(installed_at, tx, rx);
+        return false;
+    }
+    if tx <= s.tx_at_rx {
+        return false;
+    }
+    let since = *s.unanswered_since.get_or_insert(now);
+    if now.saturating_duration_since(since) < window {
+        return false;
+    }
+    *s = BusinessWatchSample::new(installed_at, tx, rx);
+    true
+}
+
+/// F5 kill switch / tuning: `OVERLAY_BUSINESS_WATCH_MS` (default
+/// [`BUSINESS_WATCH_UNANSWERED`]; `0` turns the watch off, leaving only the
+/// 1 s scout). Read once.
+fn business_watch_window() -> Option<Duration> {
+    static W: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+    *W.get_or_init(|| {
+        match crate::env::node_env("OVERLAY_BUSINESS_WATCH_MS")
+            .and_then(|v| v.trim().parse::<u64>().ok())
+        {
+            Some(0) => None,
+            Some(ms) => Some(Duration::from_millis(ms.clamp(100, 5_000))),
+            None => Some(BUSINESS_WATCH_UNANSWERED),
+        }
+    })
+}
+
 /// An installed peer carrier + the bookkeeping the direct→relay fallback
 /// (rc.136/137) needs.
 #[derive(Clone)]
@@ -581,6 +650,23 @@ const STANDBY_WATCH_TICK: Duration = Duration::from_millis(100);
 /// scout tick's phase).
 const PROBE_WATCH_TICK: Duration = Duration::from_millis(100);
 const BUSINESS_SCOUT_TICK: Duration = Duration::from_secs(1);
+/// F5 — the business watch: between scout ticks, each established direct
+/// carrier's business tx/rx counters are sampled this often (lock-free reads).
+const BUSINESS_WATCH_TICK: Duration = Duration::from_millis(250);
+/// F5 — business traffic left unanswered this long on an established direct
+/// carrier arms the proof. It is counted from the first sample that saw tx
+/// climb with rx flat, never from the last rx, so an idle carrier's first
+/// packet is judged on its own wait and not on the idle time before it.
+///
+/// Why this value. TCP backs its retransmissions off at roughly 0.2 / 0.6 /
+/// 1.4 / 3.0 s after a loss. The 1 s scout armed 1–2 s into an outage, so the
+/// standby copies (F2) reached `/derp` after the 1.4 s retransmission and the
+/// stream waited for the 3.0 s one: every break in the 11-11 field run
+/// stalled the business stream 3.4 s. Armed here 0.65–0.9 s in, the copies
+/// are on `/derp` before 1.4 s. A healthy direct path answers far inside the
+/// window; a slower one (above ~0.4 s RTT) only gets a proof whose answer
+/// stops the copies again — the trade F1 already makes.
+const BUSINESS_WATCH_UNANSWERED: Duration = Duration::from_millis(400);
 
 // This is a bounded authorization query, never a session/cache authorization.
 // Discovery hints are invalidated by ordinary D0 deltas and quality cooldowns,
@@ -3463,6 +3549,10 @@ impl OverlayRuntime {
         let mut business_scout = tokio::time::interval(BUSINESS_SCOUT_TICK);
         business_scout.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut business_samples = HashMap::new();
+        let business_watch_on = business_watch_window().is_some();
+        let mut business_watch = tokio::time::interval(BUSINESS_WATCH_TICK);
+        business_watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut business_watch_samples: HashMap<ObjectId, BusinessWatchSample> = HashMap::new();
         let mut standby_peers: HashMap<[u8; 32], Option<Instant>> = HashMap::new();
         let mut standby_watch = tokio::time::interval(STANDBY_WATCH_TICK);
         standby_watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -3849,6 +3939,17 @@ impl OverlayRuntime {
                 _ = &mut outbound_pump => {
                     debug!("overlay: outbound pump ended; runtime exiting");
                     break;
+                },
+                // F5 — the business watch: lock-free counter reads every
+                // 250 ms; it may arm a proof (one forced initiation), never
+                // judge one. The verdict keeps F1's deadline and recheck.
+                _ = business_watch.tick(), if business_watch_on => {
+                    if self.watch_business_traffic(&mut wg, &mut by_node, &mut business_watch_samples)
+                        && business_poke_fast()
+                        && let Some(wait) = business_poke_recheck(&by_node, Instant::now())
+                    {
+                        fallback.reset_after(wait);
+                    }
                 },
                 // Only lock-free traffic reads and a bounded fresh proof:
                 // carrier verdicts, retries and the heavier work stay on the
@@ -7937,6 +8038,148 @@ mod tests {
             by_node.contains_key(&new_nid),
             "the existing establish walk repairs all peers"
         );
+    }
+
+    /// F5 — a dead direct carrier under traffic is judged inside the window:
+    /// tx climbs, rx stays flat, and the proof arms once the first unanswered
+    /// sample is `window` old — not before, and not on the 1 s scout grid.
+    #[test]
+    fn business_watch_arms_once_traffic_is_unanswered_for_the_window() {
+        let t0 = Instant::now();
+        let w = Duration::from_millis(400);
+        let tick = Duration::from_millis(250);
+        let mut s = BusinessWatchSample::new(t0, 100, 50);
+        // Healthy: every sample sees rx move with tx. Never arms.
+        for k in 1..=8u64 {
+            assert!(!business_watch_step(
+                &mut s,
+                t0,
+                100 + 10 * k,
+                50 + 10 * k,
+                t0 + tick * k as u32,
+                w
+            ));
+        }
+        // The path dies after k=8: tx keeps climbing, rx is frozen at 130.
+        let (tx0, rx0) = (180u64, 130u64);
+        let mut armed_at = None;
+        for k in 9..=16u64 {
+            let now = t0 + tick * k as u32;
+            if business_watch_step(&mut s, t0, tx0 + 10 * (k - 8), rx0, now, w) {
+                armed_at = Some(now);
+                break;
+            }
+        }
+        let armed_at = armed_at.expect("a frozen rx under climbing tx must arm");
+        // First unanswered sample at k=9; armed at the first sample >= 400 ms
+        // after it (k=11), i.e. 0.5 s after the last answer at k=8.
+        assert_eq!(armed_at, t0 + tick * 11);
+    }
+
+    /// F5 — an idle carrier's first packet is judged on its own wait: a
+    /// long silence before it does not count as "unanswered".
+    #[test]
+    fn business_watch_does_not_count_idle_time_against_the_first_packet() {
+        let t0 = Instant::now();
+        let w = Duration::from_millis(400);
+        let mut s = BusinessWatchSample::new(t0, 100, 50);
+        // 10 s of nothing at all.
+        assert!(!business_watch_step(
+            &mut s,
+            t0,
+            100,
+            50,
+            t0 + Duration::from_secs(10),
+            w
+        ));
+        // One packet goes out; the next sample sees it, the answer is not back yet.
+        assert!(!business_watch_step(
+            &mut s,
+            t0,
+            101,
+            50,
+            t0 + Duration::from_millis(10_250),
+            w
+        ));
+        // The answer lands within the window: no proof, ever.
+        assert!(!business_watch_step(
+            &mut s,
+            t0,
+            101,
+            51,
+            t0 + Duration::from_millis(10_500),
+            w
+        ));
+        assert!(!business_watch_step(
+            &mut s,
+            t0,
+            101,
+            51,
+            t0 + Duration::from_secs(20),
+            w
+        ));
+    }
+
+    /// F5 — a judged window restarts, so a one-way stream (rx never moves)
+    /// gets one proof per window of NEW unanswered tx, and a reinstalled
+    /// carrier starts from scratch.
+    #[test]
+    fn business_watch_restarts_after_a_verdict_and_on_reinstall() {
+        let t0 = Instant::now();
+        let w = Duration::from_millis(400);
+        let mut s = BusinessWatchSample::new(t0, 0, 0);
+        assert!(!business_watch_step(
+            &mut s,
+            t0,
+            10,
+            0,
+            t0 + Duration::from_millis(250),
+            w
+        ));
+        assert!(business_watch_step(
+            &mut s,
+            t0,
+            20,
+            0,
+            t0 + Duration::from_millis(750),
+            w
+        ));
+        // Right after the verdict: same counters, no immediate re-arm.
+        assert!(!business_watch_step(
+            &mut s,
+            t0,
+            20,
+            0,
+            t0 + Duration::from_millis(1_000),
+            w
+        ));
+        assert!(!business_watch_step(
+            &mut s,
+            t0,
+            30,
+            0,
+            t0 + Duration::from_millis(1_250),
+            w
+        ));
+        assert!(business_watch_step(
+            &mut s,
+            t0,
+            40,
+            0,
+            t0 + Duration::from_millis(1_750),
+            w
+        ));
+        // A reinstall (new `installed_at`) resets the state.
+        let t1 = t0 + Duration::from_secs(5);
+        assert!(!business_watch_step(
+            &mut s,
+            t1,
+            50,
+            0,
+            t1 + Duration::from_millis(250),
+            w
+        ));
+        assert_eq!(s, BusinessWatchSample::new(t1, 50, 0));
     }
 
     #[test]

@@ -47,8 +47,17 @@ struct Device {
 
 async fn hive_app() -> TestApp {
     // The module's switch defaults OFF; every test here but the first
-    // turns it on.
-    TestApp::spawn_with_settings(|s| s.modules.hive = true).await
+    // turns it on. Raise the per-IP governor like `hive_app_polling` /
+    // `replicaset_app`: `device()`, `start()`, `wait_status()`, and
+    // `wait_offline()` all poll `/api` every 50 ms, which under loaded runs
+    // exhausts `test_settings()`'s 60-request burst (1 req/s refill) and gets
+    // a plain-text 429 before the awaited condition arrives.
+    TestApp::spawn_with_settings(|s| {
+        s.modules.hive = true;
+        s.app.rate_limit_per_sec = 100;
+        s.app.rate_limit_burst = 1000;
+    })
+    .await
 }
 
 async fn connect(app: &TestApp, token: &str, machine: &str, rpc: &[&str]) -> AgentWs {
@@ -190,17 +199,16 @@ async fn stored(app: &TestApp, sid: &str) -> Document {
 
 async fn wait_offline(app: &TestApp, seeded: &SeededTenant, agent_id: &str) {
     for _ in 0..100 {
-        let row: Value = app
+        let resp = app
             .auth_get(
                 &format!("/api/tenant/{}/agent/{agent_id}", seeded.tenant_id),
                 &seeded.admin.access_token,
             )
             .send()
             .await
-            .unwrap()
-            .json()
-            .await
             .unwrap();
+        assert_eq!(resp.status().as_u16(), 200, "agent status read");
+        let row: Value = resp.json().await.unwrap();
         if row["status"].as_str() != Some("online") {
             return;
         }
@@ -14207,4 +14215,33 @@ async fn a_session_moves_with_its_role_only_where_the_vault_allows_it() {
             ("teleport".to_string(), "allow".to_string(), pid),
         ]
     );
+}
+
+/// Regression for loaded `hive_app()` runs: under CPU/DB load, `device()`,
+/// `start()`, and `wait_offline()` together spend more than `test_settings()`'s
+/// default 60-request burst (1 req/s refill) against one in-process server,
+/// causing `tower_governor` to answer `wait_offline` with a plain-text 429 that
+/// failed JSON decoding (`expected value at line 1 column 1`).
+#[tokio::test]
+async fn hive_app_sustains_loaded_polling_without_per_ip_429() {
+    let app = hive_app().await;
+    let seeded = app.seed_tenant("hiveloadpoll").await;
+    let dev = device(&app, &seeded, "hive-load-poll", RUNS_HIVE).await;
+
+    // Simulate ~2.5 s of 50 ms polling spent waiting for registration / status
+    // under suite load before the disconnect poll runs.
+    for _ in 0..55 {
+        let resp = app
+            .auth_get(
+                &format!("/api/tenant/{}/agent/{}", seeded.tenant_id, dev.agent_id),
+                &seeded.admin.access_token,
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+    }
+
+    drop(dev.ws);
+    wait_offline(&app, &seeded, &dev.agent_id).await;
 }

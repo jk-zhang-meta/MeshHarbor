@@ -56,12 +56,14 @@ struct NativeBridge {
     generation: u64,
     task: tokio::task::JoinHandle<()>,
     // Observability only: no authorization or forwarding behavior differs.
-    #[cfg(any(test, feature = "backbone-test-support"))]
+    // Linux-only because every reader (the backbone tests and
+    // `backbone_test_support`) is Linux-only.
+    #[cfg(all(any(test, feature = "backbone-test-support"), target_os = "linux"))]
     sockets: watch::Receiver<Option<[std::net::SocketAddr; 2]>>,
 }
-#[cfg(any(test, feature = "backbone-test-support"))]
+#[cfg(all(any(test, feature = "backbone-test-support"), target_os = "linux"))]
 struct BridgeSocketEvidence(watch::Sender<Option<[std::net::SocketAddr; 2]>>);
-#[cfg(any(test, feature = "backbone-test-support"))]
+#[cfg(all(any(test, feature = "backbone-test-support"), target_os = "linux"))]
 impl Drop for BridgeSocketEvidence {
     fn drop(&mut self) {
         self.0.send_replace(None);
@@ -384,10 +386,10 @@ fn install_bridge_for(
     let generation = grant.generation;
     let local = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let received = std::time::Instant::now();
-    #[cfg(any(test, feature = "backbone-test-support"))]
+    #[cfg(all(any(test, feature = "backbone-test-support"), target_os = "linux"))]
     let (socket_tx, socket_rx) = watch::channel(None);
     let task = tokio::spawn(async move {
-        #[cfg(any(test, feature = "backbone-test-support"))]
+        #[cfg(all(any(test, feature = "backbone-test-support"), target_os = "linux"))]
         let _evidence = BridgeSocketEvidence(socket_tx.clone());
         let lifetime = std::time::Duration::from_secs(u64::from(grant.max_lifetime_secs))
             .saturating_sub(received.elapsed());
@@ -410,7 +412,7 @@ fn install_bridge_for(
         };
         match backbone::start_authorized_bridge(grant, local, &policy).await {
             Ok(mut bridge) => {
-                #[cfg(any(test, feature = "backbone-test-support"))]
+                #[cfg(all(any(test, feature = "backbone-test-support"), target_os = "linux"))]
                 socket_tx.send_replace(Some(bridge.local_addrs()));
                 let _ = bridge.wait().await;
             }
@@ -430,7 +432,7 @@ fn install_bridge_for(
         NativeBridge {
             generation,
             task,
-            #[cfg(any(test, feature = "backbone-test-support"))]
+            #[cfg(all(any(test, feature = "backbone-test-support"), target_os = "linux"))]
             sockets: socket_rx,
         },
     );
@@ -549,6 +551,7 @@ mod tests {
                 NativeBridge {
                     generation: 5,
                     task: tokio::spawn(std::future::pending()),
+                    #[cfg(target_os = "linux")]
                     sockets: watch::channel(None).1,
                 },
             );
@@ -561,6 +564,8 @@ mod tests {
         assert_eq!(entries.len(), 64);
         entries.clear(); // Drop aborts every pending task.
     }
+    // Only the Linux-only backbone tests below observe bridge sockets.
+    #[cfg(target_os = "linux")]
     async fn manager_evidence(
         mut rx: watch::Receiver<Option<[std::net::SocketAddr; 2]>>,
         live: bool,
@@ -579,6 +584,8 @@ mod tests {
         .await
         .expect("manager must reach requested actual socket state")
     }
+    // Only the Linux-only backbone tests below observe bridge sockets.
+    #[cfg(target_os = "linux")]
     async fn manager_ports_released(addrs: [std::net::SocketAddr; 2]) {
         for addr in addrs {
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
