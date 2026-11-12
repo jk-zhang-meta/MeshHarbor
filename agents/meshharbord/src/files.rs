@@ -1428,6 +1428,15 @@ impl FilesHandler {
         let target_dir = match dest_path {
             Some(dp) => match resolve_dest_path_as(&who, dp).await {
                 Ok(d) => d,
+                // T7-2 — a shared session's upload lands where its operator
+                // picked, or nowhere: a folder the share account cannot use is
+                // refused, never quietly swapped for the account's Downloads
+                // (the operator would not know where the file went).
+                Err(e) if self.who.is_some() => {
+                    return Err(anyhow!(
+                        "the destination folder {dp} is not available to the share account: {e}"
+                    ));
+                }
                 Err(e) => {
                     tracing::warn!(
                         dest_path = dp,
@@ -6622,6 +6631,43 @@ mod seat_user_tests {
                 "born the share account's"
             );
             assert!(path.starts_with(home.path()), "in the account's own folder");
+        }
+
+        /// T7-2 — a shared session's upload to a folder the share account
+        /// cannot use is refused, and nothing lands anywhere else: before,
+        /// it fell back to the account's Downloads without telling the
+        /// operator.
+        #[tokio::test]
+        async fn a_shared_upload_to_a_folder_the_account_cannot_use_is_refused() {
+            if !root() {
+                return;
+            }
+            let _lock = crate::files::FILES_DIR_TEST_LOCK.lock().await;
+            let (home, person) = nobodys_home();
+            let locked = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(locked.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            let dest = locked.path().to_str().unwrap().to_string();
+            let shared = FilesHandler::acting_as(as_person(&person, home.path()));
+            let id = format!("share-dest-{}", std::process::id());
+            let err = shared
+                .begin(id, "probe.txt".into(), 5, None, Some(&dest))
+                .await
+                .expect_err("an unusable destination is refused on a shared session");
+            assert!(
+                err.to_string()
+                    .contains("not available to the share account"),
+                "{err:#}"
+            );
+            let left: Vec<_> = std::fs::read_dir(home.path())
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name())
+                .collect();
+            assert!(
+                !left.iter().any(|n| n.to_string_lossy().contains("probe")),
+                "nothing lands in the account's own folder: {left:?}"
+            );
         }
 
         /// The file is born the person's, in their folder, and nothing of the
