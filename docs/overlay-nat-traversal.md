@@ -705,6 +705,13 @@ switches below flipped on one binary:
 | all on, before F2 | 1.3 s | 3.5 / 4.0 / 4.2 s | 4.2 / 4.7 / 4.9 s |
 | all on, with F2 standby copies | 1.3 s | 1.8 / 2.0 s (2 runs; 4.1 s with copies off) | 4.5 / 4.8 s |
 | all on, with F5 business watch (interleaved 3 vs 3, 2026-11-11) | 3.3 s | 0.96 / 0.96 / 1.26 s (1.96–2.06 s with F5 off) | 3.0–3.3 s (4.0 s with F5 off) |
+| relay 310 ms away each way (`MH_FO_DERP_DELAY_MS=310`), in-place fall off, 3 runs, 2026-11-12 | 3.0 s | two gaps per fall: 1.37–1.49 s, then 1.59–1.61 s at the verdict | 1.1–1.2 s |
+| the same, in-place fall on (interleaved) | 3.0 s | one gap: 1.35–1.53 s; none at the verdict | 1.2–1.5 s |
+
+The harness's relay is in-process, so a fall that has to cross the relay before
+the stream resumes looks free there. `MH_FO_DERP_DELAY_MS` gives the fake relay
+a one-way latency, and the `FAILOVER-GAPS` line lists every gap of a fall, not
+only the longest: the second one was the new session's handshake.
 
 A 90 s outage came back 40 s after the heal before F3c, and 4 s after it.
 
@@ -743,8 +750,8 @@ sequenceDiagram
   A->>A: business scout (1 s tick): tx up, rx flat, so arm a proof (forced handshake)
   A->>B: unanswered after 0.2 s: data also rides /derp as tagged standby copies (F2)
   A->>A: unanswered after 0.8 s: second initiation (F1)
-  A->>A: unanswered at 2 s: RekeyUnanswered, onto the DERP floor, lane opens (F3)
-  B->>B: the same, or #27 demote-follow on A's /derp frames
+  A->>A: unanswered at 2 s: RekeyUnanswered, the live session moves onto the DERP floor in place, lane opens (F3)
+  B->>B: the same, or #27 demote-follow on A's /derp frames (also in place)
   loop inside the lane (up to 5 min, F3c)
     A->>B: make-before-break probe (LAN spacing 5 s, backing off to 20 s)
   end
@@ -765,6 +772,8 @@ sequenceDiagram
 | F4 probe watch | while a probe is in flight, its latch is checked every 100 ms. The responder promotes as soon as the initiator's first direct packet lands; until the initiator promotes too, its stream still rides `/derp` in the relay carrier's session, which the responder has just replaced. The 1 s scout tick is phase-locked to the 5 s walk that starts the probe, so that dark window was a steady ~0.72 s on the mainland pair | `OVERLAY_PROBE_WATCH=0` (also off with `OVERLAY_FAST_PROBE_PROMOTE=0`) | `runtime.rs` `PROBE_WATCH_TICK`, `probe_watch` arm |
 | F5 business watch | every 250 ms, an established direct carrier whose business tx climbed while rx stayed flat for 400 ms (counted from the first sample that saw it, never from the last rx, so idle time is not counted) arms the same business proof the 1 s scout arms; it never settles a proof or judges a carrier, and a pending proof blocks re-arming. Arming 0.65–0.9 s in puts the F2 copies on `/derp` before TCP's ~1.4 s retransmission instead of after it | `OVERLAY_BUSINESS_WATCH_MS=0` (or a different window in ms) | `runtime.rs` `BUSINESS_WATCH_*`, `business_watch_step`; `runtime/establish.rs` `watch_business_traffic` |
 | F2 standby copies | while a proof has gone unanswered for 200 ms, the peer's data is also sent over `/derp`, tagged `STANDBY_MAGIC`; the receiver takes it into the same session through the same ingress gate, and the replay window drops the second of original and copy | `OVERLAY_STANDBY_COPIES=0` | `transport/derp.rs` `STANDBY_MAGIC`; `wg.rs` `StandbyTee`, `decap_standby`; `runtime/establish.rs` `sweep_standby`, `standby_tee_wanted` |
+| F6 early standby | business traffic unanswered for 400 ms (measured exactly: the first send after the last receive) starts the copies at once, ahead of the F5 proof; a peer whose copies arrive before its direct packets is copied back to for 1.5 s (at most once per 10 s). It copies only: no proof is armed and no carrier judged. Held off for 30 s after an answered business proof (a one-way stream on a live path) | `OVERLAY_STANDBY_EARLY=0` | `runtime.rs` `EARLY_STANDBY_*`; `runtime/establish.rs` `watch_early_standby`, `standby_tee_decision`; `wg.rs` `PeerStats::biz_unanswered_since`, `StandbyTee::reciprocate` |
+| In-place fall | a convicted direct carrier's LIVE session moves onto the DERP floor without a new `Tunn`: same session, same route, same standby sink, only the transport changes. The demote-follow, a server DERP pin and a relay-to-relay change (floor to TURN and back) land on the same move; a `/derp` data frame from a peer we hold no carrier conn for is taken by its standby sink | `OVERLAY_INPLACE_RELAY=0` | `wg.rs` `rehome_peer_onto_relay`; `runtime/establish.rs` `rehome_dead_direct`, `rehome_onto_relay`, `install_built`; `transport/derp.rs` `adopt_into_standby` |
 
 > ⚠️ F2's invariants. A pre-F2 `DerpMux` routes any non-WG payload it cannot
 > place as `Unrouted`, i.e. as a demotion that #27 follows. So copies go only
@@ -784,6 +793,26 @@ sequenceDiagram
 >
 > F1's 2 s window assumes a direct RTT below about 1 s; on a GEO-satellite
 > path the kill switch restores the 6 s window.
+
+**What a fall costs, and why (netns lab, 2026-11-12).** Two netstack
+nodes, an SSH echo stream at 50 lines/s, the relay about 200 ms away each way.
+A fall used to go dark twice:
+
+| | When | How long | Cause |
+|---|---|---|---|
+| First gap | from the break | 1.8 s | TCP retransmits 0.2, 0.6, 1.4 and 3.0 s after a loss (a 200 ms minimum RTO, doubling). The first retransmission to find the standby copies running resumes the stream one relay round trip later. F5 + F2 started the copies 0.95–1.3 s in, so it was the 1.4 s one |
+| Second gap | at the verdict, about 3 s in | 1.6–2.3 s (up to 8.9 s) | the fall replaced the peer: a new `Tunn`, whose handshake had to cross the relay, initiated by one end only, and dropped as unroutable if it reached the other end before that end had fallen too. The peer's copies, sealed for the session just thrown away, were lost meanwhile |
+
+F6 puts the copies on `/derp` 0.4 s in, so the 0.6 s retransmission is the one
+that gets through: 1.0 s. The in-place fall removes the second gap: nothing has
+to handshake. The way back is unchanged: a make-before-break probe with its
+own session, promoted when it latches (about 0.8 s of stall on this stream,
+as before).
+
+> ⚠️ An in-place move keeps the session only if BOTH ends keep it. The end the
+> replace path would have made the initiator still starts a fresh handshake
+> over the relay, so a far end on an older build (which replaces its peer on
+> the same event) re-syncs exactly as before, and costs what it cost before.
 
 ## Phase D: the relay tiers
 

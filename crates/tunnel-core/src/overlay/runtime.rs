@@ -438,6 +438,12 @@ fn business_watch_window() -> Option<Duration> {
     })
 }
 
+/// Item 3 kill switch (`OVERLAY_INPLACE_RELAY`, see
+/// [`crate::overlay::wg::inplace_relay_enabled`]).
+fn inplace_relay_enabled() -> bool {
+    crate::overlay::wg::inplace_relay_enabled()
+}
+
 /// An installed peer carrier + the bookkeeping the direct→relay fallback
 /// (rc.136/137) needs.
 #[derive(Clone)]
@@ -462,6 +468,20 @@ struct Installed {
     /// — `WgDevice::peer_initiator_hs_answered`); an unanswered poke past its
     /// window is a `DeathReason::RekeyUnanswered`.
     poke: Option<PokeArm>,
+    /// F6 — the early standby: business traffic on this direct carrier has
+    /// gone unanswered for [`EARLY_STANDBY_AFTER`], so its data is copied
+    /// onto `/derp` already, ahead of any proof. Cleared when business rx
+    /// moves again or the proof that follows is answered; a conviction
+    /// replaces the entry.
+    early_standby: bool,
+    /// F6 — when the early standby last said so at `info` (once per
+    /// [`EARLY_STANDBY_HOLDOFF`] per carrier; `debug` in between).
+    early_standby_logged: Option<Instant>,
+    /// F6 — when a business proof on this carrier was last ANSWERED: the
+    /// path is alive and the traffic simply one-way, so the early standby
+    /// stays off for [`EARLY_STANDBY_HOLDOFF`] (the proof-gated copies of F2
+    /// still cover a real outage).
+    biz_proof_ok_at: Option<Instant>,
     /// #280 — when an answered-but-unconfirmed handshake on this direct
     /// carrier comes due (`RESPONDER_CONFIRM_DEADLINE` after we answered); the
     /// 1 s scout sets it so [`business_poke_recheck`] pulls the sweep forward.
@@ -592,6 +612,9 @@ impl Installed {
             primary_traffic: (0, 0),
             bad_sweeps: 0,
             poke: None,
+            early_standby: false,
+            early_standby_logged: None,
+            biz_proof_ok_at: None,
             confirm_due: None,
             stalled: false,
             initiated: false,
@@ -667,6 +690,44 @@ const BUSINESS_WATCH_TICK: Duration = Duration::from_millis(250);
 /// window; a slower one (above ~0.4 s RTT) only gets a proof whose answer
 /// stops the copies again — the trade F1 already makes.
 const BUSINESS_WATCH_UNANSWERED: Duration = Duration::from_millis(400);
+
+/// F6 — the early standby. Business traffic on an established direct carrier
+/// that has gone unanswered this long starts its `/derp` copies at once,
+/// without waiting for the F5 proof (armed 0.75–1.0 s into an outage) and the
+/// F2 arm delay behind it (0.2–0.3 s more).
+///
+/// Why this value, and why it matters. A TCP stream over a low-latency direct
+/// path retransmits 0.2, 0.6, 1.4 and 3.0 s after a loss (the netstack's and
+/// Linux's 200 ms minimum RTO, doubling). Whichever retransmission is the
+/// first to find the copies running resumes the stream one relay round trip
+/// later. F5 + F2 started the copies 0.95–1.3 s in, so that was the 1.4 s
+/// one: on a 620 ms relay the stream came back 2.0 s after the break, never
+/// sooner (lab 2026-11-12, and the netstack in virtual time). Copies that
+/// run by 0.45 s catch the 0.6 s retransmission: 1.2 s.
+///
+/// It is measured exactly (`WgDevice::peer_unanswered_for`: the first send
+/// after the last receive), and it copies, nothing more: no proof is armed
+/// and no carrier is judged here, so the verdict on a jittery-but-alive path
+/// is exactly what it was. A healthy path answers inside the window; a slow
+/// one costs duplicates on `/derp` until its next packet arrives.
+const EARLY_STANDBY_AFTER: Duration = Duration::from_millis(400);
+/// F6 — while some direct carrier is inside its early-standby window, the
+/// decision is re-taken this often (lock-free reads). Idle otherwise.
+const EARLY_STANDBY_TICK: Duration = Duration::from_millis(50);
+/// F6 — after a business proof was ANSWERED on a carrier, the early standby
+/// stays off this long. An answered proof behind unanswered traffic is a
+/// one-way stream on a live path (a video uplink, a peer gone quiet); each of
+/// its recurring proofs renews the hold, so such a stream is copied early
+/// once, not every time its peer pauses.
+const EARLY_STANDBY_HOLDOFF: Duration = Duration::from_secs(30);
+
+/// F6 kill switch: `OVERLAY_STANDBY_EARLY=0` leaves the copies to F5 + F2
+/// (the proof first, then its arm delay) and turns the reciprocal copies off
+/// (`StandbyTee::reciprocate`). Read once.
+fn early_standby_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env::flag("OVERLAY_STANDBY_EARLY", true))
+}
 
 // This is a bounded authorization query, never a session/cache authorization.
 // Discovery hints are invalidated by ordinary D0 deltas and quality cooldowns,
@@ -3556,6 +3617,12 @@ impl OverlayRuntime {
         let mut standby_peers: HashMap<[u8; 32], Option<Instant>> = HashMap::new();
         let mut standby_watch = tokio::time::interval(STANDBY_WATCH_TICK);
         standby_watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // F6 — the early-standby lane rides the F5 watch's 250 ms tick while
+        // idle and its own 50 ms one while a carrier is inside its window.
+        let early_standby_on = early_standby_enabled() && super::direct::standby_copies_enabled();
+        let mut early_standby_fast = false;
+        let mut early_standby_tick = tokio::time::interval(EARLY_STANDBY_TICK);
+        early_standby_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let probe_watch_on =
             super::direct::fast_probe_promote_enabled() && super::direct::probe_watch_enabled();
         let mut probe_watch = tokio::time::interval(PROBE_WATCH_TICK);
@@ -3943,19 +4010,30 @@ impl OverlayRuntime {
                 // F5 — the business watch: lock-free counter reads every
                 // 250 ms; it may arm a proof (one forced initiation), never
                 // judge one. The verdict keeps F1's deadline and recheck.
-                _ = business_watch.tick(), if business_watch_on => {
-                    if self.watch_business_traffic(&mut wg, &mut by_node, &mut business_watch_samples)
+                _ = business_watch.tick(), if business_watch_on || early_standby_on => {
+                    if business_watch_on
+                        && self.watch_business_traffic(&mut wg, &mut by_node, &mut business_watch_samples)
                         && business_poke_fast()
                         && let Some(wait) = business_poke_recheck(&by_node, Instant::now())
                     {
                         fallback.reset_after(wait);
                     }
+                    if early_standby_on && !standby_peers.is_empty() {
+                        early_standby_fast = self.early_standby_pass(&wg, &mut by_node, &relay);
+                    }
+                },
+                // F6 — the early standby, while some direct carrier's business
+                // traffic is unanswered but not yet for EARLY_STANDBY_AFTER:
+                // lock-free reads every 50 ms, then idle again. It starts
+                // copies; it never arms a proof or judges a carrier.
+                _ = early_standby_tick.tick(), if early_standby_fast => {
+                    early_standby_fast = self.early_standby_pass(&wg, &mut by_node, &relay);
                 },
                 // Only lock-free traffic reads and a bounded fresh proof:
                 // carrier verdicts, retries and the heavier work stay on the
                 // original fallback cadence.
                 _ = standby_watch.tick(), if !standby_peers.is_empty()
-                    && by_node.values().any(|e| e.poke.is_some()) =>
+                    && by_node.values().any(|e| e.poke.is_some() || e.early_standby) =>
                 {
                     if super::direct::standby_copies_enabled()
                         && let Some(mux) = relay.as_ref().and_then(|r| r.derp_mux_handle())

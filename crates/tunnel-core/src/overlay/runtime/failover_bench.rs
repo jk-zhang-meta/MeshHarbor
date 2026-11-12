@@ -142,6 +142,23 @@ fn relay(
     copies: Stamps,
 ) {
     let to_pk = to.self_pubkey();
+    // `MH_FO_DERP_DELAY_MS` — one-way latency of the fake relay (0 = none).
+    // A real relay is a WAN round trip away, and what a fall costs depends on
+    // it: whatever must cross the relay BEFORE the stream resumes (a new
+    // session's handshake, the first standby copy) pays it in full.
+    let delay = Duration::from_millis(
+        std::env::var("MH_FO_DERP_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+    );
+    let (late_tx, mut late_rx) = mpsc::unbounded_channel::<(Instant, Vec<u8>)>();
+    tokio::spawn(async move {
+        while let Some((due, inbound)) = late_rx.recv().await {
+            tokio::time::sleep_until(due.into()).await;
+            to.deliver(&inbound);
+        }
+    });
     tokio::spawn(async move {
         while let Some((_, frame)) = rx.recv().await {
             if frame.len() < 32 || frame[..32] != to_pk[..] {
@@ -154,9 +171,29 @@ fn relay(
             }
             let mut inbound = from.to_vec();
             inbound.extend_from_slice(&frame[32..]);
-            to.deliver(&inbound);
+            if late_tx.send((Instant::now() + delay, inbound)).is_err() {
+                break;
+            }
         }
     });
+}
+
+/// Every arrival gap of at least `min` that ends inside `(from, to]`, as
+/// `(start, length)` in ms after `from`: the longest one is the stall, and a
+/// SECOND one is a fall that went dark twice (detection, then a new session).
+fn gaps(seen: &[Instant], from: Instant, to: Instant, min: Duration) -> String {
+    let mut prev = seen.iter().rev().find(|t| **t <= from).copied();
+    let mut out = Vec::new();
+    for &t in seen.iter().filter(|t| **t > from && **t <= to) {
+        if let Some(p) = prev
+            && t - p >= min
+        {
+            let start = p.saturating_duration_since(from).as_millis();
+            out.push(format!("{start}+{}", (t - p).as_millis()));
+        }
+        prev = Some(t);
+    }
+    format!("[{}]", out.join(", "))
 }
 
 fn stream(
@@ -403,6 +440,14 @@ async fn failover_stall_and_return() {
         "FAILOVER-TIMELINE a={} b={}",
         render(&tl_a.lock().unwrap(), cut),
         render(&tl_b.lock().unwrap(), cut)
+    );
+    let min_gap = Duration::from_millis(200);
+    println!(
+        "FAILOVER-GAPS break_ab={} break_ba={} heal_ab={} heal_ba={}",
+        gaps(&at_b, cut, heal, min_gap),
+        gaps(&at_a, cut, heal, min_gap),
+        gaps(&at_b, heal, end, min_gap),
+        gaps(&at_a, heal, end, min_gap)
     );
     assert!(
         floored > 0,

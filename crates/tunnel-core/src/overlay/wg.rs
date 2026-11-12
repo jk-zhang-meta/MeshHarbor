@@ -524,6 +524,19 @@ impl Carrier {
     }
 }
 
+/// Item 3 kill switch: `OVERLAY_INPLACE_RELAY=0` restores the replace path
+/// wherever a live session would be moved onto a relay carrier in place
+/// ([`WgDevice::rehome_peer_onto_relay`]). Read once. `transport::derp` reads
+/// the same switch for its half (an unrouted data frame taken by a standby
+/// sink).
+pub(crate) fn inplace_relay_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env::flag("OVERLAY_INPLACE_RELAY", true))
+}
+
+/// F2 — a standby sink logs the first copy after this long without one.
+const STANDBY_SINK_LOG_GAP: Duration = Duration::from_secs(2);
+
 /// rc.137 — lock-free per-peer traffic counters. `tx` = IP packets we
 /// encapsulated + sent; `rx` = inbound IP packets we decapsulated to the TUN.
 /// The runtime's direct→relay fallback reads these WITHOUT locking the `Tunn`
@@ -539,7 +552,21 @@ pub(crate) struct StandbyTee {
     /// A standby sink is attached for this peer instance.
     sink: AtomicBool,
     to: std::sync::Mutex<Option<(Arc<crate::transport::derp::DerpMux>, [u8; 32])>>,
+    /// F6 — reciprocal copies: mono-ms until which the tee stays armed
+    /// because the PEER's copies reached us ahead of their direct originals
+    /// ([`Self::reciprocate`]), and when that window last opened (0 = never).
+    recip_until: AtomicU64,
+    recip_opened: AtomicU64,
 }
+
+/// F6 — how long a peer's copies keep our own tee armed. Long enough for our
+/// own proof to take the tee over (the F5 watch arms one 0.75–1.0 s after our
+/// first unanswered reply, and its copies start 0.2–0.3 s later), no longer.
+const STANDBY_RECIP_WINDOW_MS: u64 = 1_500;
+/// F6 — at most one reciprocal window per this long, so two healthy ends can
+/// never keep each other copying: a window is opened only by a copy that
+/// beat its direct original, and only this often.
+const STANDBY_RECIP_HOLDOFF_MS: u64 = 10_000;
 
 impl StandbyTee {
     fn set(&self, to: Option<(Arc<crate::transport::derp::DerpMux>, [u8; 32])>) {
@@ -550,6 +577,34 @@ impl StandbyTee {
 
     fn armed(&self) -> bool {
         self.armed.load(Ordering::Relaxed)
+    }
+
+    /// F6 — the peer's copy carried a packet its direct original had not
+    /// delivered. The direct path is failing toward us, and our answers ride
+    /// the same path the other way, where WE cannot see them die until our
+    /// own traffic has gone unanswered for a while — or at all, if we were
+    /// idle and only answer. So copy back at once, for
+    /// [`STANDBY_RECIP_WINDOW_MS`]. Without it the first answer to a copied
+    /// packet left on the dead path, and the stream waited for our own
+    /// detection plus a TCP retransmission (0.6–1.4 s more).
+    fn reciprocate(&self, mux: &Arc<crate::transport::derp::DerpMux>, pk: [u8; 32]) -> bool {
+        let now = mono_ms_now().max(1);
+        let opened = self.recip_opened.load(Ordering::Relaxed);
+        if opened != 0 && now.saturating_sub(opened) < STANDBY_RECIP_HOLDOFF_MS {
+            return false;
+        }
+        self.recip_opened.store(now, Ordering::Relaxed);
+        self.recip_until
+            .store(now + STANDBY_RECIP_WINDOW_MS, Ordering::Relaxed);
+        if !self.armed() {
+            self.set(Some((mux.clone(), pk)));
+        }
+        true
+    }
+
+    /// F6 — is a reciprocal window open?
+    fn reciprocal(&self) -> bool {
+        self.recip_until.load(Ordering::Relaxed) > mono_ms_now()
     }
 
     /// Copy `datagram` when armed and it is WG data (type 4); a handshake or a
@@ -593,6 +648,13 @@ pub struct PeerStats {
     /// Encapsulated business sends submitted to the carrier, including errors.
     /// Only SendPeer::send advances this; handshake/keepalive timer sends do not.
     tx_attempted: AtomicU64,
+    /// F6 — mono-ms (0 = none) of the OLDEST business send that no business
+    /// packet has answered: stamped by the first send after an rx
+    /// ([`Self::note_business_tx`]), cleared by the next rx
+    /// ([`Self::note_business_rx`]). Exact, where the F5 watch's 250 ms
+    /// samples place the same instant 0.25–0.5 s late; the early standby
+    /// reads it. One relaxed load per packet either way.
+    biz_unanswered_since: AtomicU64,
     rx: AtomicU64,
     /// rc.206 — count of authenticated inbound packets from this peer since the
     /// health sweep last drained it (`peer_take_rx_any`): data, a handshake step,
@@ -715,6 +777,29 @@ fn compute_router_health(carrier: &Carrier, stats: &PeerStats) -> super::router:
 }
 
 impl PeerStats {
+    /// `n` business sends submitted to the carrier (see `tx_attempted`).
+    #[inline]
+    fn note_business_tx(&self, n: u64) {
+        self.tx_attempted.fetch_add(n, Ordering::Relaxed);
+        if n != 0 && self.biz_unanswered_since.load(Ordering::Relaxed) == 0 {
+            let _ = self.biz_unanswered_since.compare_exchange(
+                0,
+                mono_ms_now().max(1),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    /// One business packet delivered by the carrier the sweep judges.
+    #[inline]
+    fn note_business_rx(&self) {
+        self.rx.fetch_add(1, Ordering::Relaxed);
+        if self.biz_unanswered_since.load(Ordering::Relaxed) != 0 {
+            self.biz_unanswered_since.store(0, Ordering::Relaxed);
+        }
+    }
+
     /// Outer None is the unchanged B7 path; Some(None) freezes an initial
     /// B8 session which has not activated yet, rather than waiving the fence.
     pub(super) fn multipath_pending_binding(
@@ -1116,6 +1201,11 @@ struct Peer {
     /// counter-ordered reassembly state.
     multipath: Arc<super::multipath::PeerMultipathState>,
     retained: Option<RetainedMultipathCarrier>,
+    /// F2 — the standby sink task ([`WgDevice::attach_standby_sink`]). It
+    /// belongs to the SESSION, not to the carrier, so it is not one of
+    /// `tasks`: a carrier swapped in place under the same `Tunn`
+    /// ([`WgDevice::rehome_peer_onto_relay`]) keeps taking the peer's copies.
+    standby_sink: Option<JoinHandle<()>>,
 }
 
 struct RetainedMultipathCarrier {
@@ -1161,6 +1251,9 @@ impl Drop for Peer {
         }
         self.multipath.clear_secondary_legs();
         for t in &self.tasks {
+            t.abort();
+        }
+        if let Some(t) = &self.standby_sink {
             t.abort();
         }
     }
@@ -1832,7 +1925,7 @@ impl SendPeer {
             if !releasing_hold && let Some(held) = control.queue_if_held_with(packet, Instant::now)
             {
                 if held {
-                    self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
+                    self.stats.note_business_tx(1);
                 } else {
                     let snapshot = control.hold_snapshot();
                     if snapshot.overflow.is_power_of_two() {
@@ -1885,7 +1978,7 @@ impl SendPeer {
         match encap {
             super::on_demand::OutboundEncap::SendWire(n) => {
                 if !releasing_hold {
-                    self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
+                    self.stats.note_business_tx(1);
                 }
                 SendStep::Frame {
                     len: n,
@@ -1895,7 +1988,7 @@ impl SendPeer {
             }
             super::on_demand::OutboundEncap::QueuedForWake => {
                 if !releasing_hold {
-                    self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
+                    self.stats.note_business_tx(1);
                 }
                 SendStep::Done(true)
             }
@@ -2316,8 +2409,7 @@ impl SendPeer {
                 }
             }
             self.stats
-                .tx_attempted
-                .fetch_add((frames.len() + queued_for_wake) as u64, Ordering::Relaxed);
+                .note_business_tx((frames.len() + queued_for_wake) as u64);
             let mut sent = 0;
             for f in &frames {
                 if self.send_wire_frame(f, None).await {
@@ -2391,10 +2483,7 @@ impl SendPeer {
             }
         }
         let stats = &self.stats;
-        stats.tx_attempted.fetch_add(
-            (lens.len() + control.len() + queued_for_wake) as u64,
-            Ordering::Relaxed,
-        );
+        stats.note_business_tx((lens.len() + control.len() + queued_for_wake) as u64);
         let mut sent = 0;
         for c in &control {
             if send_wg_recorded(&self.carrier, stats, c).await.is_ok() {
@@ -3356,6 +3445,75 @@ impl WgDevice {
             );
         }
 
+        let recv_task =
+            self.spawn_carrier_recv(peer_public, &tunn, &carrier, &stats, &multipath, disco_sink);
+
+        let timer_task = Self::spawn_carrier_timer(
+            tunn.clone(),
+            carrier.clone(),
+            stats.clone(),
+            multipath.clone(),
+        );
+
+        let peer = Peer {
+            tunn: tunn.clone(),
+            carrier: carrier.clone(),
+            overlay_ip,
+            tasks: vec![recv_task, timer_task],
+            stats: stats.clone(),
+            direct_src: None,
+            plane_idx: self.plane.as_ref().map(|_| index),
+            direct_index: self.plane.is_none().then_some(index),
+            multipath,
+            retained: None,
+            standby_sink: None,
+        };
+        if !defer_init
+            && self.pq_psk.mode != super::pq_psk::PqPskMode::Off
+            && (initiate || pq_handle.is_primary_initiator())
+        {
+            let pq_init = pq_handle.clone();
+            tokio::spawn(async move {
+                if !pq_init.is_primary_initiator() {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                let _ = pq_init.start_initial().await;
+            });
+        }
+        if initiate && !defer_init && !pq_handle.should_defer_initial_wg_handshake() {
+            let init_stats = stats.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; WG_BUF];
+                // rc.211 — same lock-then-send split as the timer tasks.
+                let out = {
+                    let mut t = tunn.lock().await;
+                    match t.format_handshake_initiation(&mut buf, false) {
+                        TunnResult::WriteToNetwork(b) => Some(b.to_vec()),
+                        _ => None,
+                    }
+                };
+                if let Some(b) = out {
+                    let _ = send_wg_recorded(&carrier, &init_stats, &b).await;
+                }
+            });
+        }
+        peer
+    }
+
+    /// The per-peer receive task of a relay-style carrier: carrier →
+    /// decapsulate into `tunn` → TUN, with the B8 / DERP-follow / disco / PQ
+    /// control frames split off first. One body for a peer built on the
+    /// carrier ([`Self::make_carrier_peer`]) and for a live session moved onto
+    /// it in place ([`Self::rehome_peer_onto_relay`]), so the two cannot drift.
+    fn spawn_carrier_recv(
+        &self,
+        peer_public: [u8; 32],
+        tunn: &Arc<Mutex<Tunn>>,
+        carrier: &Arc<Carrier>,
+        stats: &Arc<PeerStats>,
+        multipath: &Arc<super::multipath::PeerMultipathState>,
+        disco_sink: mpsc::Sender<super::disco::DiscoInbound>,
+    ) -> JoinHandle<()> {
         // recv task: carrier → decapsulate → tun / network echo.
         let recv_tunn = tunn.clone();
         let recv_carrier = carrier.clone();
@@ -3368,7 +3526,7 @@ impl WgDevice {
         let disco_secret = self.secret.clone();
         let disco_public = self.public;
         let disco_replies = Arc::new(Semaphore::new(1));
-        let recv_task = tokio::spawn(async move {
+        tokio::spawn(async move {
             let mut buf = vec![0u8; WG_BUF];
             loop {
                 let n = match recv_carrier.recv(&mut buf).await {
@@ -3545,57 +3703,7 @@ impl WgDevice {
                 let mut t = recv_tunn.lock().await;
                 process_inbound(&mut t, n, &mut buf, &recv_carrier, &tun_tx, &recv_ingress).await;
             }
-        });
-
-        let timer_task = Self::spawn_carrier_timer(
-            tunn.clone(),
-            carrier.clone(),
-            stats.clone(),
-            multipath.clone(),
-        );
-
-        let peer = Peer {
-            tunn: tunn.clone(),
-            carrier: carrier.clone(),
-            overlay_ip,
-            tasks: vec![recv_task, timer_task],
-            stats: stats.clone(),
-            direct_src: None,
-            plane_idx: self.plane.as_ref().map(|_| index),
-            direct_index: self.plane.is_none().then_some(index),
-            multipath,
-            retained: None,
-        };
-        if !defer_init
-            && self.pq_psk.mode != super::pq_psk::PqPskMode::Off
-            && (initiate || pq_handle.is_primary_initiator())
-        {
-            let pq_init = pq_handle.clone();
-            tokio::spawn(async move {
-                if !pq_init.is_primary_initiator() {
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                let _ = pq_init.start_initial().await;
-            });
-        }
-        if initiate && !defer_init && !pq_handle.should_defer_initial_wg_handshake() {
-            let init_stats = stats.clone();
-            tokio::spawn(async move {
-                let mut buf = vec![0u8; WG_BUF];
-                // rc.211 — same lock-then-send split as the timer tasks.
-                let out = {
-                    let mut t = tunn.lock().await;
-                    match t.format_handshake_initiation(&mut buf, false) {
-                        TunnResult::WriteToNetwork(b) => Some(b.to_vec()),
-                        _ => None,
-                    }
-                };
-                if let Some(b) = out {
-                    let _ = send_wg_recorded(&carrier, &init_stats, &b).await;
-                }
-            });
-        }
-        peer
+        })
     }
 
     fn spawn_carrier_timer(
@@ -5057,6 +5165,7 @@ impl WgDevice {
             direct_index,
             multipath,
             retained: None,
+            standby_sink: None,
         })
     }
 
@@ -5548,6 +5657,161 @@ impl WgDevice {
             .active_subnet_owner_with_live(cidr, |pk| g.live_router_health(pk))
     }
 
+    /// Item 3 — may `peer_public`'s session be moved onto a relay carrier in
+    /// place ([`Self::rehome_peer_onto_relay`])? It holds a session that can
+    /// still seal a packet, on a direct carrier or a plain relay one (DERP,
+    /// raw TURN), and nothing else owns its carrier: no ORG session (that
+    /// tier has its own upgrade and follow protocol), no QUIC stream, no B8
+    /// leg or control, no path trial, not dormant or waking (B6), not behind
+    /// the B7 guard.
+    pub(crate) async fn peer_rehomable(&self, peer_public: &[u8; 32]) -> bool {
+        let Some(p) = self.peers.get(peer_public) else {
+            return false;
+        };
+        if matches!(*p.carrier, Carrier::QuicRelay { .. })
+            || p.stats.org_role.load(Ordering::Relaxed)
+            || self.org_upgrades.contains_key(peer_public)
+            || self.org_floor_receivers.contains_key(peer_public)
+            || !p.stats.handshake.load(Ordering::Relaxed)
+            || p.stats.mp_control.get().is_some()
+            || p.retained.is_some()
+            || p.stats.on_demand.is_dormant_or_waking()
+            || p.stats.pq_guard_active.load(Ordering::Acquire)
+            || self
+                .path_trials
+                .values()
+                .any(|t| &t.public_key == peer_public)
+            || self
+                .path_trial_drains
+                .values()
+                .any(|(pk, _, _)| pk == peer_public)
+        {
+            return false;
+        }
+        // The latch above is set-once; this is "a session exists right now".
+        let tunn = p.tunn.clone();
+        tunn.lock().await.has_current_session()
+    }
+
+    /// Item 3 — move `peer_public`'s LIVE session off the carrier it rides
+    /// (direct, or another plain relay) and onto `carrier` (a relay carrier),
+    /// IN PLACE: the `Tunn` and its sessions, the stats, the standby sink and
+    /// every route stay, and only the transport under them changes. Nothing
+    /// has to handshake before data flows again.
+    ///
+    /// That is the point. The fall used to be `remove_peer` + `add_peer`, and
+    /// `add_peer` starts from a NEW `Tunn`: over a 620 ms relay its first
+    /// handshake was a second stall of 1.0–2.7 s on every direct→relay fall,
+    /// and the peer's standby copies, sealed for the session just thrown
+    /// away, were dropped until it had fallen too (field 2026-11-12, lab:
+    /// 40 of 40 breaks).
+    ///
+    /// The session ends up registered exactly as [`Self::make_carrier_peer`]
+    /// registers a relay peer's: by receiver index with no expected source.
+    /// So a far end that still sends this session DIRECT (it has not left its
+    /// own direct carrier yet, or the path came back) is heard, and its
+    /// upgrade probe's initiation still reaches the runtime as a probe. The
+    /// way back to direct is unchanged: a make-before-break probe with its
+    /// own `Tunn`, promoted when it latches.
+    ///
+    /// `initiate` ⇒ also start a fresh handshake over the new carrier — the
+    /// end `add_peer` would have made the initiator. The live session carries
+    /// data meanwhile; the handshake is what re-syncs a far end that did NOT
+    /// keep its session (an older build replaces its peer on the same event),
+    /// and it is the health sweep's proof of the relay path.
+    ///
+    /// The same move serves a relay-to-relay change (the DERP floor giving
+    /// way to a TURN link, and the follow back when the peer stays on
+    /// `/derp`): replacing the peer there reset the session twice within
+    /// milliseconds whenever the two ends did not switch together.
+    ///
+    /// `false`, with nothing changed, unless [`Self::peer_rehomable`]. The
+    /// caller then falls back to the replace path, which is always safe.
+    pub(crate) async fn rehome_peer_onto_relay(
+        &mut self,
+        peer_public: &[u8; 32],
+        carrier: Arc<Carrier>,
+        initiate: bool,
+    ) -> bool {
+        if !matches!(*carrier, Carrier::Relay { .. })
+            || carrier.is_dead()
+            || !self.peer_rehomable(peer_public).await
+        {
+            return false;
+        }
+        let Some(p) = self.peers.get(peer_public) else {
+            return false;
+        };
+        let (tunn, stats, multipath, overlay_ip) = (
+            p.tunn.clone(),
+            p.stats.clone(),
+            p.multipath.clone(),
+            p.overlay_ip,
+        );
+        let index = p.plane_idx.or(p.direct_index);
+        self.cancel_org_upgrade(peer_public);
+        self.drop_org_floor_receiver(peer_public);
+        if let Some(p) = self.peers.get(peer_public) {
+            self.unregister_direct(p).await;
+        }
+        if let (Some(h), Some(index)) = (&self.plane, index) {
+            h.register_route(
+                index,
+                tunn.clone(),
+                self.ingress_for(*peer_public, stats.clone(), multipath.clone()),
+                SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                Arc::downgrade(&carrier),
+                false,
+            );
+        }
+        let on_plane = self.plane.is_some();
+        let disco_sink = self.disco_events_tx.clone();
+        let Some(p) = self.peers.get_mut(peer_public) else {
+            return false; // unreachable: `&mut self` held since the lookup
+        };
+        // The old carrier's tasks (its timer, and a relay's recv). The standby
+        // sink is the session's and stays: the peer may copy for a while yet.
+        for t in p.tasks.drain(..) {
+            t.abort();
+        }
+        p.carrier = carrier.clone();
+        p.direct_src = None;
+        p.plane_idx = index.filter(|_| on_plane);
+        p.direct_index = index.filter(|_| !on_plane);
+        // Our copies' path is the carrier itself now.
+        stats.standby.set(None);
+        if let Some(pq) = stats.pq.get() {
+            pq.set_carrier(&carrier);
+        }
+        let recv_task = self.spawn_carrier_recv(
+            *peer_public,
+            &tunn,
+            &carrier,
+            &stats,
+            &multipath,
+            disco_sink,
+        );
+        let timer_task = Self::spawn_carrier_timer(
+            tunn.clone(),
+            carrier.clone(),
+            stats.clone(),
+            multipath.clone(),
+        );
+        if let Some(p) = self.peers.get_mut(peer_public) {
+            p.tasks = vec![recv_task, timer_task];
+        }
+        // One write lock: the pump sees the old triple or the new one.
+        self.send_install(*peer_public, overlay_ip, tunn, carrier, stats, multipath);
+        self.sync_peer_on_demand_hold(peer_public);
+        self.debug_assert_send_synced();
+        if initiate {
+            self.poke_handshake(peer_public);
+        }
+        info!(event = "session_rehomed", peer_key = %short_key(peer_public), initiate,
+            "overlay: live session moved onto the relay carrier in place (no new session)");
+        true
+    }
+
     /// Remove a peer (drops its `Tunn` + aborts its tasks + clears its
     /// route). Used when the netmap drops a peer (ACL change / leave) or to
     /// re-install it with a different carrier (relay→direct upgrade, rc.134).
@@ -5803,6 +6067,13 @@ impl WgDevice {
             return false;
         }
         let armed = mux.is_some();
+        // A state change tells "the copies never left" from "they left and
+        // never arrived" in a field log (debug: a slow peer can toggle it).
+        if p.stats.standby.armed() != armed {
+            debug!(peer_key = %short_key(peer_public), armed,
+                "overlay: standby copies over /derp {}",
+                if armed { "started" } else { "stopped" });
+        }
         p.stats.standby.set(mux.map(|m| (m, *peer_public)));
         if armed {
             p.stats.on_demand.note_hold_active(mono_ns_now());
@@ -5814,10 +6085,14 @@ impl WgDevice {
     /// `DerpMux::standby_route`) into its WG session via [`decap_standby`]:
     /// the ingress gate of any inbound packet, no rx stat. The task is the
     /// peer's, so it ends with the peer; a rebuilt peer needs a new sink.
+    ///
+    /// F6 — `reciprocate`: the mux to copy BACK on when a copy beats its
+    /// direct original (`StandbyTee::reciprocate`); `None` = never.
     pub(crate) fn attach_standby_sink(
         &mut self,
         peer_public: &[u8; 32],
         mut rx: mpsc::Receiver<Vec<u8>>,
+        reciprocate: Option<Arc<crate::transport::derp::DerpMux>>,
     ) -> bool {
         let Some((stats, multipath)) = self
             .peers
@@ -5833,12 +6108,37 @@ impl WgDevice {
         };
         let tunn = p.tunn.clone();
         p.stats.standby.sink.store(true, Ordering::Relaxed);
-        p.tasks.push(tokio::spawn(async move {
+        let pk = *peer_public;
+        let sink = tokio::spawn(async move {
+            // When the last copy arrived: a burst after a silence is logged
+            // once, so a field log shows whether the peer's copies got here.
+            let mut last: Option<Instant> = None;
             while let Some(copy) = rx.recv().await {
+                let now = Instant::now();
+                if last.is_none_or(|t| now.saturating_duration_since(t) >= STANDBY_SINK_LOG_GAP) {
+                    info!(peer_key = %short_key(&pk),
+                        on_derp = ingress.stats.derp_role.load(Ordering::Relaxed),
+                        "overlay: the peer's /derp copies are arriving (standby sink)");
+                }
+                last = Some(now);
                 let packet = {
                     let mut t = tunn.lock().await;
                     decap_standby(&mut t, &copy, &ingress)
                 };
+                // F6 — a copy that decrypted is one its direct original did
+                // not deliver first (that one would have made this a replay).
+                // Arm our own tee BEFORE the packet reaches the stack, so the
+                // answer it provokes is already copied. Not on a session that
+                // rides /derp itself: its carrier is the copies' path.
+                if packet.is_some()
+                    && let Some(mux) = &reciprocate
+                    && !ingress.stats.derp_role.load(Ordering::Relaxed)
+                    && ingress.stats.mp_control.get().is_none()
+                    && ingress.stats.standby.reciprocate(mux, pk)
+                {
+                    info!(peer_key = %short_key(&pk),
+                        "overlay: the peer's /derp copies are ahead of its direct packets — copying back (reciprocal standby)");
+                }
                 if let Some(packet) = packet
                     && tun_tx.send(packet).await.is_err()
                 {
@@ -5852,8 +6152,32 @@ impl WgDevice {
                     }
                 }
             }
-        }));
+        });
+        if let Some(old) = p.standby_sink.replace(sink) {
+            old.abort();
+        }
         true
+    }
+
+    /// F6 — is `peer_public`'s reciprocal-copy window open (its copies were
+    /// arriving ahead of its direct packets moments ago)?
+    pub(crate) fn peer_standby_reciprocal(&self, peer_public: &[u8; 32]) -> bool {
+        self.peers
+            .get(peer_public)
+            .is_some_and(|p| p.stats.standby.reciprocal())
+    }
+
+    /// F6 — how long `peer_public`'s oldest unanswered business send has
+    /// waited (`None` = everything sent since the last rx was answered, or
+    /// nothing was sent). Lock-free; see `PeerStats::biz_unanswered_since`.
+    pub(crate) fn peer_unanswered_for(&self, peer_public: &[u8; 32]) -> Option<Duration> {
+        let at = self
+            .peers
+            .get(peer_public)?
+            .stats
+            .biz_unanswered_since
+            .load(Ordering::Relaxed);
+        (at != 0).then(|| Duration::from_millis(mono_ms_now().saturating_sub(at)))
     }
 
     /// F2 — is a standby sink attached for `peer_public`'s current session?
@@ -6071,6 +6395,25 @@ impl WgDevice {
             }
         });
         true
+    }
+
+    /// Test-only: set how long `peer_public`'s oldest business send has gone
+    /// unanswered (`None` = nothing unanswered), as the data path would.
+    #[cfg(test)]
+    pub(crate) fn test_set_unanswered_for(&self, peer_public: &[u8; 32], ago: Option<Duration>) {
+        if let Some(p) = self.peers.get(peer_public) {
+            let at = ago.map_or(0, |d| {
+                mono_ms_now().saturating_sub(d.as_millis() as u64).max(1)
+            });
+            p.stats.biz_unanswered_since.store(at, Ordering::Relaxed);
+        }
+    }
+
+    /// Test-only: an identity for `peer_public`'s `Tunn` (its address), so a
+    /// test can tell a session moved in place from a peer replaced.
+    #[cfg(test)]
+    pub(crate) fn test_tunn_id(&self, peer_public: &[u8; 32]) -> Option<usize> {
+        Some(Arc::as_ptr(&self.peers.get(peer_public)?.tunn) as usize)
     }
 
     /// Test fixture for the carrier sweep's lock-free IP traffic inputs.
@@ -6531,7 +6874,23 @@ pub(crate) fn decap_standby(t: &mut Tunn, datagram: &[u8], ingress: &Ingress) ->
     };
     // The packet arrived, whichever carrier delivered it: it is not loss.
     ingress.stats.note_rx_counter(datagram);
+    // Item 3 — once this peer's session rides /derp itself
+    // ([`WgDevice::rehome_peer_onto_relay`]), a copy came over the very
+    // carrier the sweep judges, so it is evidence for it: a peer still copying
+    // (it has not left its own direct carrier yet) must not read as a one-way
+    // relay here. On a direct carrier it stays uncounted, as before.
+    let on_derp = ingress.stats.derp_role.load(Ordering::Relaxed);
+    if on_derp {
+        ingress.stats.rx_any.fetch_add(1, Ordering::Relaxed);
+        ingress
+            .stats
+            .data_rx_at
+            .store(mono_ms_now().max(1), Ordering::Relaxed);
+    }
     let delivered = if ingress.permits(src, pkt) {
+        if on_derp {
+            ingress.stats.note_business_rx();
+        }
         ingress
             .stats
             .on_demand
@@ -6811,7 +7170,7 @@ pub(crate) fn decap_inbound(
         TunnResult::WriteToTunnelV4(pkt, src) => {
             flush_ready_session_queue(t);
             if ingress.permits(IpAddr::V4(src), pkt) {
-                stats.rx.fetch_add(1, Ordering::Relaxed);
+                stats.note_business_rx();
                 stats.on_demand.on_inbound_business_packet(now_ns);
                 let (at, len) = (pkt.as_ptr() as usize, pkt.len());
                 let span = (at - out.as_ptr() as usize, len);
@@ -6821,7 +7180,7 @@ pub(crate) fn decap_inbound(
         TunnResult::WriteToTunnelV6(pkt, src) => {
             flush_ready_session_queue(t);
             if ingress.permits(IpAddr::V6(src), pkt) {
-                stats.rx.fetch_add(1, Ordering::Relaxed);
+                stats.note_business_rx();
                 stats.on_demand.on_inbound_business_packet(now_ns);
                 let (at, len) = (pkt.as_ptr() as usize, pkt.len());
                 let span = (at - out.as_ptr() as usize, len);
@@ -8149,7 +8508,7 @@ mod tests {
         wait_connected(&dev_a, &pk_b).await;
 
         let mux_b = crate::transport::derp::DerpMux::new(pk_b).0;
-        assert!(dev_b.attach_standby_sink(&pk_a, mux_b.standby_route(pk_a)));
+        assert!(dev_b.attach_standby_sink(&pk_a, mux_b.standby_route(pk_a), None));
         // One packet A's session seals that travels ONLY as a standby copy.
         let pkt = synthetic_ipv4(IP_A, IP_B, b"standby-copy");
         let mut wire = vec![0u8; WG_BUF];
@@ -8183,6 +8542,225 @@ mod tests {
                 .await
                 .is_err(),
             "a replayed copy is dropped"
+        );
+    }
+
+    /// F6 — the exact unanswered clock: the first business send after a
+    /// receive stamps it, later sends leave it, a receive clears it.
+    #[test]
+    fn the_unanswered_clock_starts_at_the_first_send_after_a_receive() {
+        let s = PeerStats::default();
+        assert_eq!(s.biz_unanswered_since.load(Ordering::Relaxed), 0);
+        s.note_business_tx(0);
+        assert_eq!(
+            s.biz_unanswered_since.load(Ordering::Relaxed),
+            0,
+            "nothing sent"
+        );
+        s.note_business_tx(1);
+        let first = s.biz_unanswered_since.load(Ordering::Relaxed);
+        assert_ne!(first, 0, "stamped by the first send");
+        std::thread::sleep(Duration::from_millis(5));
+        s.note_business_tx(3);
+        assert_eq!(
+            s.biz_unanswered_since.load(Ordering::Relaxed),
+            first,
+            "the OLDEST unanswered send keeps the stamp"
+        );
+        assert_eq!(s.tx_attempted.load(Ordering::Relaxed), 4);
+        s.note_business_rx();
+        assert_eq!(
+            s.biz_unanswered_since.load(Ordering::Relaxed),
+            0,
+            "answered"
+        );
+        assert_eq!(s.rx.load(Ordering::Relaxed), 1);
+    }
+
+    /// F6 — a reciprocal window opens once per holdoff, arms the tee itself,
+    /// and a second copy inside the holdoff opens nothing: two healthy ends
+    /// cannot keep each other copying.
+    #[test]
+    fn a_reciprocal_window_opens_once_per_holdoff() {
+        let tee = StandbyTee::default();
+        let mux = crate::transport::derp::DerpMux::new([1; 32]).0;
+        // The stamps are ms on the process clock, where 0 means "never":
+        // step off its first milliseconds so `1` below is in the past.
+        let _ = mono_ms_now();
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!tee.reciprocal() && !tee.armed());
+        assert!(tee.reciprocate(&mux, [2; 32]));
+        assert!(tee.reciprocal() && tee.armed(), "copies back at once");
+        assert!(
+            !tee.reciprocate(&mux, [2; 32]),
+            "one window per holdoff, however many copies arrive"
+        );
+        // The window lapses; the holdoff has not.
+        tee.recip_until.store(1, Ordering::Relaxed);
+        assert!(!tee.reciprocal());
+        assert!(!tee.reciprocate(&mux, [2; 32]), "still inside the holdoff");
+        const { assert!(STANDBY_RECIP_WINDOW_MS < STANDBY_RECIP_HOLDOFF_MS) };
+        // Never opened (or long enough ago): it may open again.
+        tee.recip_opened.store(0, Ordering::Relaxed);
+        assert!(tee.reciprocate(&mux, [2; 32]));
+    }
+
+    /// Item 3 — a live session moved onto a relay carrier IN PLACE keeps
+    /// carrying data, and needs no handshake to do it: the relay here drops
+    /// every handshake frame, so a REPLACED peer (a new `Tunn`) could never
+    /// pass a packet through it. The three states a real fall goes through:
+    ///
+    /// 1. A has fallen and B is still direct: A's plain `/derp` data reaches
+    ///    B's session through B's standby sink; B, hearing A on `/derp` ahead
+    ///    of anything direct, copies back at once (F6); and B's copies reach
+    ///    A's session through the sink A kept, counted as carrier rx now;
+    /// 2. B falls too: plain data both ways over the two relay carriers;
+    /// 3. only a direct peer with a live session is ever moved.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_rehomed_session_carries_data_with_no_new_handshake() {
+        use crate::transport::derp::{DerpMux, STANDBY_MAGIC};
+        async fn expect(rx: &mut mpsc::Receiver<Vec<u8>>, want: &[u8], why: &str) {
+            let got = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("nothing arrived: {why}"))
+                .expect("tun channel open");
+            assert_eq!(got, want, "{why}");
+        }
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let (pk_a, pk_b) = (a.public.to_bytes(), b.public.to_bytes());
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+        let (mut dev_a, mut rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        dev_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a.clone(), addr_b), true);
+        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b.clone(), addr_a), false);
+        wait_connected(&dev_a, &pk_b).await;
+        wait_connected(&dev_b, &pk_a).await;
+
+        // The two nodes' `/derp` muxes, joined by a relay that carries data
+        // and standby copies but never a handshake.
+        let (mux_a, out_a) = DerpMux::new(pk_a);
+        let (mux_b, out_b) = DerpMux::new(pk_b);
+        let lost_handshakes = Arc::new(AtomicU64::new(0));
+        for (from, mut out, to) in [(pk_a, out_a, mux_b.clone()), (pk_b, out_b, mux_a.clone())] {
+            let lost = lost_handshakes.clone();
+            tokio::spawn(async move {
+                while let Some((_, frame)) = out.recv().await {
+                    let payload = &frame[32..];
+                    let wg = payload
+                        .strip_prefix(STANDBY_MAGIC.as_slice())
+                        .unwrap_or(payload);
+                    if matches!(wg.first(), Some(1 | 2)) {
+                        lost.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    let mut inbound = from.to_vec();
+                    inbound.extend_from_slice(payload);
+                    to.deliver(&inbound);
+                }
+            });
+        }
+        assert!(dev_a.attach_standby_sink(&pk_b, mux_a.standby_route(pk_b), Some(mux_a.clone())));
+        assert!(dev_b.attach_standby_sink(&pk_a, mux_b.standby_route(pk_a), Some(mux_b.clone())));
+        let derp = |mux: &Arc<DerpMux>, peer: [u8; 32]| {
+            let conn = mux.conn_for(peer);
+            let dst = conn.synth_peer();
+            Carrier::relay(Arc::new(conn), dst)
+        };
+
+        // 3. Nothing to move: an unknown peer, and a "relay" that is direct.
+        assert!(
+            !dev_a
+                .rehome_peer_onto_relay(&[9; 32], derp(&mux_a, [9; 32]), false)
+                .await
+        );
+        assert!(
+            !dev_a
+                .rehome_peer_onto_relay(&pk_b, Carrier::direct(sock_a.clone(), addr_b), false)
+                .await
+        );
+
+        // 1. A falls in place; its fresh handshake is lost on this relay.
+        let tunn_a = Arc::as_ptr(&dev_a.peers[&pk_b].tunn);
+        assert!(
+            dev_a
+                .rehome_peer_onto_relay(&pk_b, derp(&mux_a, pk_b), true)
+                .await
+        );
+        dev_a.set_peer_relay_role(&pk_b, true, false);
+        assert_eq!(
+            Arc::as_ptr(&dev_a.peers[&pk_b].tunn),
+            tunn_a,
+            "the session keeps its Tunn"
+        );
+        assert!(!dev_a.peers[&pk_b].carrier.is_direct());
+        assert!(dev_a.has_standby_sink(&pk_b), "the sink survives the swap");
+        let p1 = synthetic_ipv4(IP_A, IP_B, b"a-fell-first");
+        assert!(
+            dev_a.send_to_peer(&pk_b, &p1).await,
+            "the session still seals"
+        );
+        expect(
+            &mut rx_b,
+            &p1,
+            "A's plain /derp data reaches B's session through B's standby sink",
+        )
+        .await;
+        // B, still on its direct carrier, heard A on /derp ahead of anything
+        // direct, so it copies back without being told (F6).
+        assert!(
+            dev_b.peer_standby_reciprocal(&pk_a),
+            "a copy that beat its direct original opens B's reciprocal window"
+        );
+        let rx_before = dev_a.peers[&pk_b].stats.rx.load(Ordering::Relaxed);
+        let p2 = synthetic_ipv4(IP_B, IP_A, b"b-still-copies");
+        assert!(dev_b.send_to_peer(&pk_a, &p2).await);
+        expect(&mut rx_a, &p2, "B's copy reaches A through the sink A kept").await;
+        assert!(
+            dev_a.peers[&pk_b].stats.rx.load(Ordering::Relaxed) > rx_before,
+            "on a /derp-homed session a copy is carrier rx"
+        );
+        assert!(
+            !dev_a.peer_standby_reciprocal(&pk_b),
+            "a session that rides /derp itself has nothing to copy back"
+        );
+
+        // 2. B falls too: plain frames both ways, carrier to carrier.
+        assert!(
+            dev_b
+                .rehome_peer_onto_relay(&pk_a, derp(&mux_b, pk_a), false)
+                .await
+        );
+        dev_b.set_peer_relay_role(&pk_a, true, false);
+        let p3 = synthetic_ipv4(IP_A, IP_B, b"both-on-derp-ab");
+        assert!(dev_a.send_to_peer(&pk_b, &p3).await);
+        expect(&mut rx_b, &p3, "A→B over the two relay carriers").await;
+        let p4 = synthetic_ipv4(IP_B, IP_A, b"both-on-derp-ba");
+        assert!(dev_b.send_to_peer(&pk_a, &p4).await);
+        expect(&mut rx_a, &p4, "B→A over the two relay carriers").await;
+        // A relay-to-relay move keeps the session as well (the floor giving
+        // way to another relay link): B onto a second conn of the same mux.
+        let tunn_b = Arc::as_ptr(&dev_b.peers[&pk_a].tunn);
+        assert!(
+            dev_b
+                .rehome_peer_onto_relay(&pk_a, derp(&mux_b, pk_a), false)
+                .await
+        );
+        assert_eq!(Arc::as_ptr(&dev_b.peers[&pk_a].tunn), tunn_b);
+        let p5 = synthetic_ipv4(IP_A, IP_B, b"relay-to-relay");
+        assert!(dev_a.send_to_peer(&pk_b, &p5).await);
+        expect(&mut rx_b, &p5, "the moved session still hears A").await;
+        for _ in 0..50 {
+            if lost_handshakes.load(Ordering::Relaxed) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            lost_handshakes.load(Ordering::Relaxed) > 0,
+            "the initiating end did start a fresh handshake over the relay"
         );
     }
 
@@ -11594,8 +12172,8 @@ mod tests {
         //    for every direct peer) must NOT count as a hold or wake `Dormant`.
         let (_st_tx_a, st_rx_a) = mpsc::channel(8);
         let (_st_tx_b, st_rx_b) = mpsc::channel(8);
-        assert!(dev_a.attach_standby_sink(&pk_b, st_rx_a));
-        assert!(dev_b.attach_standby_sink(&pk_a, st_rx_b));
+        assert!(dev_a.attach_standby_sink(&pk_b, st_rx_a, None));
+        assert!(dev_b.attach_standby_sink(&pk_a, st_rx_b, None));
         assert!(!dev_a.peer_on_demand_snapshot(&pk_b).unwrap().held);
         assert_eq!(dev_a.peer_is_dormant(&pk_b), Some(true));
         assert_eq!(dev_b.peer_is_dormant(&pk_a), Some(true));

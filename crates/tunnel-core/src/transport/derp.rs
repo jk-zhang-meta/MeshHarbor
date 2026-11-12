@@ -180,6 +180,14 @@ pub const HIVE_MAGIC: &[u8; 8] = b"RMHIVE01";
 /// takes standby copies: an older receiver would route it as a demotion.
 pub const STANDBY_MAGIC: &[u8; 8] = b"RMSTBY01";
 
+/// Item 3 kill switch, the transport half: `OVERLAY_INPLACE_RELAY=0` keeps
+/// an unrouted data frame out of the standby sink (the pre-item-3 drop). The
+/// overlay runtime reads the same switch for the in-place carrier swap.
+fn inplace_relay_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env::flag("OVERLAY_INPLACE_RELAY", true))
+}
+
 /// FR-90 P2d-2c — which Hive stream a payload belongs to: its grant's id, 12
 /// bytes. A peer pair carries any number of streams at once (two sessions,
 /// a renewal beside the grant it replaces), where the tunnel's route is one
@@ -714,13 +722,41 @@ impl DerpMux {
                 }
             }
             None => {
-                self.dropped_unrouted.fetch_add(1, Ordering::Relaxed);
-                crate::evidence::DERP_INBOUND_UNROUTED.fetch_add(1, Ordering::Relaxed);
+                // Item 3 — the frame is still REPORTED (the runtime follows
+                // the peer onto DERP exactly as before), but it is no longer
+                // lost when this peer's standby sink can take it.
+                if !self.adopt_into_standby(&src, payload) {
+                    self.dropped_unrouted.fetch_add(1, Ordering::Relaxed);
+                    crate::evidence::DERP_INBOUND_UNROUTED.fetch_add(1, Ordering::Relaxed);
+                }
                 if !is_follow_control(payload) {
                     self.emit(MuxEvent::Unrouted(src));
                 }
             }
         }
+    }
+
+    /// Item 3 — a WG DATA frame from a peer we hold no carrier conn for, but
+    /// whose standby sink is attached: the peer moved its LIVE session onto
+    /// `/derp` before we did (it convicted its direct carrier first), so the
+    /// frame is sealed for the very session that sink feeds. Take it there
+    /// instead of dropping it for however long our own fall or follow takes —
+    /// that lag was a hole in the peer→us direction on every break where the
+    /// two ends convicted at different moments.
+    ///
+    /// Data only (type 4): a handshake needs a carrier to answer on, and gets
+    /// one when the runtime follows. A peer that REPLACED its session (an
+    /// older build) fails the sink's decryption and is dropped there, as
+    /// here before. `true` when the sink took the frame.
+    fn adopt_into_standby(&self, src: &DerpPubKey, payload: &[u8]) -> bool {
+        if payload.len() < 32 || payload[..4] != [4, 0, 0, 0] || !inplace_relay_enabled() {
+            return false;
+        }
+        let tx = {
+            let peers = self.peers.lock().unwrap();
+            peers.get(src).and_then(|r| r.standby.clone())
+        };
+        tx.is_some_and(|tx| tx.try_send(payload.to_vec()).is_ok())
     }
 
     /// Report a [`MuxEvent`], if anyone is listening. Never blocks and never
@@ -1075,6 +1111,48 @@ mod tests {
             !mux.send_standby(&peer, &[4, 1, 2]),
             "a down mux drops the copy"
         );
+    }
+
+    /// Item 3 — a plain WG DATA frame from a peer that has a standby sink but
+    /// no carrier conn (it moved its live session onto `/derp` first) lands
+    /// in that sink instead of being dropped, and is still REPORTED so the
+    /// runtime follows. A handshake, or a peer with no sink, is the old
+    /// counted drop; with a carrier conn the sink never sees the frame.
+    #[tokio::test]
+    async fn an_unrouted_data_frame_reaches_the_standby_sink_and_still_reports() {
+        let (mux, _out_rx) = DerpMux::new(pk(0x01));
+        let (ev_tx, mut ev_rx) = mpsc::channel(DerpMux::EVENT_SINK_DEPTH);
+        mux.set_event_sink(ev_tx);
+        let peer = pk(0x02);
+        let mut data = vec![4u8, 0, 0, 0];
+        data.extend_from_slice(&[7u8; 28]);
+
+        mux.deliver(&frame(peer, &data));
+        assert_eq!(mux.drop_counts().0, 1, "no sink: the counted drop");
+        assert_eq!(ev_rx.try_recv().ok(), Some(MuxEvent::Unrouted(peer)));
+
+        let mut sink = mux.standby_route(peer);
+        mux.deliver(&frame(peer, &data));
+        assert_eq!(sink.recv().await.unwrap(), data);
+        assert_eq!(mux.drop_counts().0, 1, "an adopted frame is not a drop");
+        assert_eq!(
+            ev_rx.try_recv().ok(),
+            Some(MuxEvent::Unrouted(peer)),
+            "the follow signal is unchanged"
+        );
+
+        let mut init = vec![1u8, 0, 0, 0];
+        init.extend_from_slice(&[7u8; 144]);
+        mux.deliver(&frame(peer, &init));
+        assert_eq!(mux.drop_counts().0, 2, "a handshake is never adopted");
+        assert!(sink.try_recv().is_err());
+
+        let wg_conn = mux.conn_for(peer);
+        mux.deliver(&frame(peer, &data));
+        let mut buf = [0u8; 64];
+        let (n, _) = wg_conn.recv_from(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], &data[..], "a carrier conn takes its own frames");
+        assert!(sink.try_recv().is_err());
     }
 
     #[tokio::test]

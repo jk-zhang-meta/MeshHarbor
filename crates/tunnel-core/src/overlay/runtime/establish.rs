@@ -169,6 +169,24 @@ pub(super) fn standby_tee_wanted(
         })
 }
 
+/// F6 — the whole tee decision. F2's proof-gated copies, or the early
+/// standby (business unanswered for `EARLY_STANDBY_AFTER`, running until the
+/// proof that follows is answered), or the peer's own copies arriving ahead
+/// of its direct packets (the reciprocal window, which needs no hello: a
+/// peer that copies to us takes copies).
+pub(super) fn standby_tee_decision(
+    poke: Option<PokeArm>,
+    answered: bool,
+    capable: bool,
+    early: bool,
+    reciprocal: bool,
+    now: Instant,
+) -> bool {
+    reciprocal
+        || (early && capable && !answered)
+        || standby_tee_wanted(poke, answered, capable, now)
+}
+
 pub(super) fn resolve_direct_candidates(
     direct_ctx: Option<&DirectCtx>,
     cfg: &PeerConfig,
@@ -617,7 +635,27 @@ impl OverlayRuntime {
             .filter(|e| e.is_direct)
             .map(|e| e.pubkey)
             .collect();
-        standby.retain(|pk, _| {
+        // Item 3 — a session moved onto a relay in place keeps the sink it had
+        // on its direct carrier: the peer may copy to us for a while yet (it
+        // falls at its own verdict), and those copies — like its plain
+        // `/derp` data when we have left `/derp` for another relay — are
+        // sealed for this very session. A peer REPLACED on the relay has no
+        // sink and is retired as before. No hello while off direct, and the
+        // next direct carrier says its hello at once.
+        let rehomed: std::collections::HashSet<[u8; 32]> = by_node
+            .values()
+            .filter(|e| {
+                !e.is_direct
+                    && e.relay_kind != Some(RelayKind::Org)
+                    && wg.has_standby_sink(&e.pubkey)
+            })
+            .map(|e| e.pubkey)
+            .collect();
+        standby.retain(|pk, last| {
+            if rehomed.contains(pk) {
+                *last = None;
+                return true;
+            }
             let keep = direct.contains(pk);
             if !keep {
                 mux.clear_standby(pk);
@@ -626,7 +664,11 @@ impl OverlayRuntime {
         });
         for e in by_node.values().filter(|e| e.is_direct) {
             if !wg.has_standby_sink(&e.pubkey) {
-                wg.attach_standby_sink(&e.pubkey, mux.standby_route(e.pubkey));
+                wg.attach_standby_sink(
+                    &e.pubkey,
+                    mux.standby_route(e.pubkey),
+                    super::early_standby_enabled().then(|| mux.clone()),
+                );
             }
             if wg.peer_is_dormant(&e.pubkey) == Some(true) {
                 continue;
@@ -669,9 +711,104 @@ impl OverlayRuntime {
                 .poke
                 .is_some_and(|p| poke_settled(wg, &e.pubkey, e.is_direct, p).0);
             let capable = crate::overlay::disco::standby_capable(&e.pubkey, now);
-            let tee = standby_tee_wanted(e.poke, answered, capable, now);
+            let tee = standby_tee_decision(
+                e.poke,
+                answered,
+                capable,
+                e.early_standby,
+                wg.peer_standby_reciprocal(&e.pubkey),
+                now,
+            );
             wg.set_standby_tee(&e.pubkey, tee.then(|| mux.clone()));
         }
+    }
+
+    /// F6 — the early standby: flag each established direct carrier whose
+    /// business traffic has gone unanswered for [`EARLY_STANDBY_AFTER`]
+    /// (exactly: the first send after the last receive), so its copies start
+    /// now rather than after the F5 proof and F2's arm delay; and unflag it
+    /// when business rx moves again or the proof that followed is answered.
+    /// It arms no proof and judges nothing. Not while a proof is already out
+    /// (F2 owns those copies) and not for [`EARLY_STANDBY_HOLDOFF`] after an
+    /// answered one (a one-way stream on a live path).
+    ///
+    /// Returns `(changed, pending)`: a flag moved (the caller re-decides the
+    /// tees), and some carrier is still inside its window (the caller keeps
+    /// the fast tick running).
+    pub(super) fn watch_early_standby(
+        &self,
+        wg: &WgDevice,
+        by_node: &mut HashMap<ObjectId, Installed>,
+    ) -> (bool, bool) {
+        let now = Instant::now();
+        let (mut changed, mut pending) = (false, false);
+        for (nid, e) in by_node.iter_mut() {
+            let unanswered = (e.is_direct
+                && wg.peer_handshake_done(&e.pubkey) == Some(true)
+                && wg.peer_is_dormant_or_waking(&e.pubkey) != Some(true)
+                && now.saturating_duration_since(e.since)
+                    >= crate::overlay::lifecycle::DIRECT_GRACE)
+                .then(|| wg.peer_unanswered_for(&e.pubkey))
+                .flatten();
+            let Some(waited) = unanswered else {
+                if e.early_standby {
+                    e.early_standby = false;
+                    changed = true;
+                    debug!(peer = %nid, "overlay: early standby off — business rx is back");
+                }
+                continue;
+            };
+            if e.early_standby {
+                if e.poke
+                    .is_some_and(|p| poke_settled(wg, &e.pubkey, e.is_direct, p).0)
+                {
+                    e.early_standby = false;
+                    changed = true;
+                }
+                continue;
+            }
+            if e.poke.is_some()
+                || e.biz_proof_ok_at.is_some_and(|t| {
+                    now.saturating_duration_since(t) < super::EARLY_STANDBY_HOLDOFF
+                })
+            {
+                continue;
+            }
+            if waited >= super::EARLY_STANDBY_AFTER {
+                e.early_standby = true;
+                changed = true;
+                let waited_ms = waited.as_millis() as u64;
+                // A peer that answers slower than the window (not a dead one)
+                // lands here on every exchange, so say it once per holdoff.
+                if e.early_standby_logged.is_none_or(|t| {
+                    now.saturating_duration_since(t) >= super::EARLY_STANDBY_HOLDOFF
+                }) {
+                    e.early_standby_logged = Some(now);
+                    info!(peer = %nid, tier = ?e.tier, waited_ms,
+                        "overlay: business traffic unanswered — copying onto /derp ahead of the proof (early standby)");
+                } else {
+                    debug!(peer = %nid, tier = ?e.tier, waited_ms, "overlay: early standby on");
+                }
+            } else {
+                pending = true;
+            }
+        }
+        (changed, pending)
+    }
+
+    /// F6 — one pass of the early-standby lane: flags, then the tees if a
+    /// flag moved. `true` while some carrier is inside its window.
+    pub(super) fn early_standby_pass(
+        &self,
+        wg: &WgDevice,
+        by_node: &mut HashMap<ObjectId, Installed>,
+        relay: &Option<RelayCoordinator>,
+    ) -> bool {
+        let (changed, pending) = self.watch_early_standby(wg, by_node);
+        if changed && let Some(mux) = relay.as_ref().and_then(|r| r.derp_mux_handle()) {
+            self.arm_standby_tees(wg, by_node, &mux);
+        }
+        pending
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -792,8 +929,14 @@ impl OverlayRuntime {
             let trace_poke = poke
                 .as_ref()
                 .map(|p| (p.since_poke, p.answered, p.from_major));
-            if poke.as_ref().is_some_and(|p| p.answered) {
+            if let Some(p) = poke.as_ref().filter(|p| p.answered) {
                 e.poke = None;
+                // F6 — the path is alive: no early copies for a while (the
+                // traffic that armed this proof is one-way, not lost).
+                e.early_standby = false;
+                if p.from_business {
+                    e.biz_proof_ok_at = Some(now);
+                }
             }
             // P2 — every rule that can kill this carrier lives in ONE pure
             // transition (`lifecycle::carrier_tick`): the per-tier handshake
@@ -1114,12 +1257,31 @@ impl OverlayRuntime {
                     s.assert_ineligible(&nid, tier, now);
                 }
             });
-            wg.remove_peer(&e.pubkey).await;
-            // A carrier REPAIR, not an eviction (the relay is re-requested
-            // below), so it deliberately does NOT go through `evict_peer` —
-            // forgetting the monitor evidence/probe here would undo proven behaviour.
-            // It does need the recycled-address guard.
-            del_peer_route_if_unowned(tun, by_node, e.overlay_ip).await;
+            // Item 3 — a direct carrier whose session is LIVE falls onto the
+            // DERP floor IN PLACE: the session, its `/32` route and its
+            // standby sink stay, and only the transport moves. Replacing the
+            // peer instead (below) starts a new `Tunn`, whose first handshake
+            // over the relay was a second stall of 1.0–2.7 s on every fall,
+            // and threw away the session the peer's standby copies are sealed
+            // for (lab 2026-11-12, 40/40 breaks). The floor is built here
+            // rather than by the carrier-loss walk that follows, which then
+            // finds a relay incumbent and goes straight to its upgrade probe.
+            let rehomed = tier.is_direct()
+                && e.hs_done
+                && self
+                    .rehome_dead_direct(wg, by_node, relay, current_peers, &nid, &e)
+                    .await;
+            if rehomed {
+                info!(peer = %nid, tier = ?tier, reason = reason.as_str(),
+                    "overlay: direct carrier convicted — live session moved onto the /derp floor in place (no new handshake)");
+            } else {
+                wg.remove_peer(&e.pubkey).await;
+                // A carrier REPAIR, not an eviction (the relay is re-requested
+                // below), so it deliberately does NOT go through `evict_peer` —
+                // forgetting the monitor evidence/probe here would undo proven behaviour.
+                // It does need the recycled-address guard.
+                del_peer_route_if_unowned(tun, by_node, e.overlay_ip).await;
+            }
             if tier.is_direct() {
                 // PR-E — `PathMonitor::on_death` (fed above) IS the failure
                 // bookkeeping now: strike + suppression penalty on the
@@ -1289,7 +1451,11 @@ impl OverlayRuntime {
                 // the establish walk's `!is_floored()` gate saw a floor that
                 // no longer existed and fell through to a ladder that, with
                 // no srflx and no dialer role, could not build either.
-                coord.clear_floor(&nid);
+                // Item 3 — not when the session was just moved onto that
+                // very floor: it IS the installed carrier again.
+                if !rehomed {
+                    coord.clear_floor(&nid);
+                }
                 if !tier.is_direct() {
                     coord.forget(&nid);
                 }
@@ -1304,7 +1470,14 @@ impl OverlayRuntime {
                 // re-mints one past its bind window.
                 let line = cfg.backbone_only
                     && e.relay_kind == Some(crate::overlay::relay_link::RelayKind::Org);
-                if !(line && coord.request_org_fallback(nid, now).await) {
+                // Item 3 — on the floor already: the better tiers are asked
+                // for exactly as the birth floor asks (a DERP-strategy pair
+                // has its link, and a second request would rebuild it).
+                if rehomed {
+                    if !coord.strategy_is_derp(&nid, &cfg) {
+                        coord.request(nid, cfg).await;
+                    }
+                } else if !(line && coord.request_org_fallback(nid, now).await) {
                     coord.request(nid, cfg).await;
                 }
             }
@@ -1312,6 +1485,103 @@ impl OverlayRuntime {
         // P3 PR-A — the 10-min shadow summary rides the 5 s sweep cadence.
         self.shadow(|s| s.maybe_summary(now));
         carrier_lost
+    }
+
+    /// Item 3 — the death half: build `nid`'s DERP floor and move the
+    /// convicted direct peer's live session onto it. `false`, with the floor
+    /// bookkeeping left clear, when the switch is off, the netmap no longer
+    /// names this key at this address, the floor is withheld (mux down, peer
+    /// not floor-capable, a cross-border line) or the device refuses; the
+    /// caller then replaces the peer as before.
+    async fn rehome_dead_direct(
+        &self,
+        wg: &mut WgDevice,
+        by_node: &mut HashMap<ObjectId, Installed>,
+        relay: &mut Option<RelayCoordinator>,
+        current_peers: &HashMap<ObjectId, NetmapPeer>,
+        nid: &ObjectId,
+        e: &Installed,
+    ) -> bool {
+        // Asked before the floor is built, so a peer that cannot be moved
+        // costs the coordinator nothing.
+        if !super::inplace_relay_enabled() || !wg.peer_rehomable(&e.pubkey).await {
+            return false;
+        }
+        let Some(coord) = relay.as_mut() else {
+            return false;
+        };
+        let Some(cfg) = current_peers
+            .get(nid)
+            .and_then(peer_config_from_netmap)
+            .filter(|c| c.public_key == e.pubkey && c.overlay_ip == e.overlay_ip)
+        else {
+            return false;
+        };
+        // The entry may still say "floored" from before the direct promote
+        // (the death tail clears the same stale bookkeeping).
+        coord.clear_floor(nid);
+        let Some(link) = coord.build_floor(*nid, &cfg) else {
+            return false;
+        };
+        if self.rehome_onto_relay(wg, by_node, &link).await {
+            return true;
+        }
+        coord.clear_floor(nid);
+        false
+    }
+
+    /// Item 3 — move the live session of `link`'s peer onto `link`'s relay
+    /// carrier (DERP or raw TURN) in place
+    /// ([`WgDevice::rehome_peer_onto_relay`]) and book the peer as that relay
+    /// entry. The end `install_built` would have made the initiator starts a
+    /// fresh handshake over the relay, so a far end that replaced its session
+    /// re-syncs as it always did. `false` = nothing changed.
+    pub(super) async fn rehome_onto_relay(
+        &self,
+        wg: &mut WgDevice,
+        by_node: &mut HashMap<ObjectId, Installed>,
+        link: &ReadyLink,
+    ) -> bool {
+        if !super::inplace_relay_enabled()
+            || link.relay_kind == RelayKind::Org
+            || link.carrier.is_direct()
+        {
+            return false;
+        }
+        let initiate = self.keypair.public.to_bytes() < link.public_key;
+        if !wg
+            .rehome_peer_onto_relay(&link.public_key, link.carrier.clone(), initiate)
+            .await
+        {
+            return false;
+        }
+        wg.set_peer_relay_role(&link.public_key, link.relay_kind == RelayKind::Derp, false);
+        let (relay_local, relay_dst) = match &link.relay_parts {
+            Some((conn, dst)) => (conn.local_addr().ok(), Some(*dst)),
+            None => (None, None),
+        };
+        let traffic = wg.peer_traffic(&link.public_key).unwrap_or((0, 0));
+        by_node.insert(
+            link.node_id,
+            Installed {
+                initiated: true,
+                hs_done: true,
+                last_traffic: traffic,
+                primary_traffic: wg.peer_primary_traffic(&link.public_key).unwrap_or(traffic),
+                carrier_local: relay_local,
+                carrier_dst: relay_dst,
+                relay_kind: Some(link.relay_kind),
+                relay_local,
+                relay_dst,
+                ..Installed::base(
+                    link.public_key,
+                    link.overlay_ip,
+                    DirectTier::Relay,
+                    Instant::now(),
+                )
+            },
+        );
+        true
     }
 
     /// rc.131 — bind the shared direct-carrier socket + discover our LAN
@@ -3305,6 +3575,7 @@ impl OverlayRuntime {
             Some((conn, dst)) => (conn.local_addr().ok(), Some(*dst)),
             None => (None, None),
         };
+        let quic_built = quic.as_ref().map(|_| ());
         let carrier = quic.unwrap_or_else(|| link.carrier.clone());
         if link.relay_kind == RelayKind::Org
             && by_node.get(&link.node_id).is_some_and(|e| {
@@ -3323,6 +3594,29 @@ impl OverlayRuntime {
                     .expect("incumbent checked")
                     .org_upgrade = Some((link, Instant::now()));
             }
+            return;
+        }
+        // Item 3 — a raw relay link (DERP, TURN) landing on a peer that still
+        // holds a LIVE session — on its direct carrier (the demote-follow, a
+        // server DERP pin) or on another relay (the floor giving way to a
+        // TURN link, and the follow back when the peer stays on `/derp`):
+        // move that session onto the link in place rather than replace it.
+        // A far end that moved its own half needs no handshake; one that
+        // replaced it (an older build) is re-synced by the initiating end's
+        // fresh handshake, as before. Not an ORG session, whose upgrade and
+        // follow are their own protocol (above), and not a QUIC stream.
+        if quic_built.is_none()
+            && by_node.get(&link.node_id).is_some_and(|e| {
+                e.pubkey == link.public_key
+                    && e.overlay_ip == link.overlay_ip
+                    && e.relay_kind != Some(RelayKind::Org)
+            })
+            && self.rehome_onto_relay(wg, by_node, &link).await
+        {
+            self.reconcile_peer_subnets(wg, tun, link.node_id, link.public_key, &link.subnets)
+                .await;
+            info!(peer = %link.node_id, overlay_ip = %link.overlay_ip, kind = ?link.relay_kind,
+                "overlay: peer's live session moved onto the relay link in place (no new handshake)");
             return;
         }
         let initiate = carrier.is_direct() || self.keypair.public.to_bytes() < link.public_key;
@@ -4170,6 +4464,129 @@ mod tests {
         assert!(!standby_tee_wanted(other, false, true, now));
     }
 
+    /// F6 — the tee decision beside F2's: the early flag copies with no
+    /// proof out (to a capable peer, until a proof is answered), and a
+    /// reciprocal window copies whatever else is true.
+    #[test]
+    fn early_and_reciprocal_standby_copy_without_a_proof() {
+        let now = Instant::now();
+        let d = |poke, answered, capable, early, recip| {
+            standby_tee_decision(poke, answered, capable, early, recip, now)
+        };
+        assert!(
+            !d(None, false, true, false, false),
+            "nothing asks for copies"
+        );
+        assert!(d(None, false, true, true, false), "early: no proof needed");
+        assert!(
+            !d(None, false, false, true, false),
+            "early: a capable peer only"
+        );
+        let young = Some(PokeArm {
+            at: now,
+            from_major: false,
+            from_business: true,
+        });
+        assert!(
+            d(young, false, true, true, false),
+            "early copies bridge F2's arm delay once the proof is out"
+        );
+        assert!(
+            !d(young, true, true, true, false),
+            "an answered proof stops the early copies"
+        );
+        assert!(
+            d(None, false, false, false, true),
+            "reciprocal: no hello needed"
+        );
+        assert!(
+            d(young, true, true, false, true),
+            "reciprocal: whatever else"
+        );
+    }
+
+    /// F6 — the early standby flags a direct carrier once its business
+    /// traffic has been unanswered for `EARLY_STANDBY_AFTER`, and only then:
+    /// not inside the window (it reports `pending` instead, which keeps the
+    /// fast tick running), not on a young carrier, not while a proof is out,
+    /// not for `EARLY_STANDBY_HOLDOFF` after an answered proof. Business rx
+    /// coming back clears it. It never arms a proof.
+    #[tokio::test]
+    async fn early_standby_flags_unanswered_business_at_its_window() {
+        let kp = WgKeypair::generate();
+        let pk = WgKeypair::generate().public.to_bytes();
+        let (tx, _rx) = mpsc::channel(16);
+        let tun: Arc<dyn TunIo> = Arc::new(NoopTun);
+        let tf: TunFactory = {
+            let t = tun.clone();
+            Box::new(move |_, _, _| Ok(t.clone()))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), tx, tf, 1280);
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        wg.ensure_direct_demux(sock.clone());
+        let ip = Ipv4Addr::new(100, 64, 9, 41);
+        wg.add_direct_peer(sock, pk, ip, "127.0.0.1:9".parse().unwrap(), true)
+            .await;
+        wg.test_latch_handshake_done(&pk);
+        let nid = ObjectId::new();
+        let aged = Instant::now() - Duration::from_secs(20);
+        let mut by_node = HashMap::from([(nid, Installed::base(pk, ip, DirectTier::Lan, aged))]);
+        let after = super::super::EARLY_STANDBY_AFTER;
+
+        assert_eq!(rt.watch_early_standby(&wg, &mut by_node), (false, false));
+        // The clock is real (ms on the process clock): stamp "sent just now"
+        // and let the window run out.
+        wg.test_set_unanswered_for(&pk, Some(Duration::ZERO));
+        tokio::time::sleep(after / 4).await;
+        assert_eq!(
+            rt.watch_early_standby(&wg, &mut by_node),
+            (false, true),
+            "inside the window: pending, not flagged"
+        );
+        assert!(!by_node[&nid].early_standby);
+        tokio::time::sleep(after).await;
+        assert_eq!(rt.watch_early_standby(&wg, &mut by_node), (true, false));
+        assert!(by_node[&nid].early_standby, "flagged at the window");
+        assert!(by_node[&nid].poke.is_none(), "and no proof armed by it");
+        assert_eq!(
+            rt.watch_early_standby(&wg, &mut by_node),
+            (false, false),
+            "it stays flagged, quietly"
+        );
+        wg.test_set_unanswered_for(&pk, None);
+        assert_eq!(rt.watch_early_standby(&wg, &mut by_node), (true, false));
+        assert!(!by_node[&nid].early_standby, "business rx is back");
+
+        // Held off: a proof is out, a proof was answered recently, or the
+        // carrier is still inside its warm-up.
+        wg.test_set_unanswered_for(&pk, Some(Duration::ZERO));
+        tokio::time::sleep(after + Duration::from_millis(20)).await;
+        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
+            at: Instant::now(),
+            from_major: false,
+            from_business: true,
+        });
+        assert_eq!(rt.watch_early_standby(&wg, &mut by_node), (false, false));
+        by_node.get_mut(&nid).unwrap().poke = None;
+        by_node.get_mut(&nid).unwrap().biz_proof_ok_at = Some(Instant::now());
+        assert_eq!(rt.watch_early_standby(&wg, &mut by_node), (false, false));
+        by_node.get_mut(&nid).unwrap().biz_proof_ok_at =
+            Some(Instant::now() - super::super::EARLY_STANDBY_HOLDOFF - Duration::from_secs(1));
+        by_node.get_mut(&nid).unwrap().since = Instant::now();
+        assert_eq!(
+            rt.watch_early_standby(&wg, &mut by_node),
+            (false, false),
+            "a carrier inside its warm-up is not watched"
+        );
+        by_node.get_mut(&nid).unwrap().since = aged;
+        assert_eq!(rt.watch_early_standby(&wg, &mut by_node), (true, false));
+        assert!(
+            by_node[&nid].early_standby,
+            "past the holdoff it flags again"
+        );
+    }
+
     #[tokio::test]
     async fn lan_candidate_comes_from_the_shared_slash24_only() {
         let c = ctx(None, None).await;
@@ -4222,6 +4639,225 @@ mod tests {
         async fn write_packet(&self, _: &[u8]) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    /// Item 3 fixture — our `wg` holds a LIVE direct session with a real peer
+    /// device, which initiated it: our own initiator stamp stays unset, so a
+    /// proof armed on it is unanswered. With it a coordinator over a live
+    /// `/derp` mux, a netmap entry that makes the peer floor-capable, and the
+    /// standby sink every direct peer carries.
+    struct LivePair {
+        rt: OverlayRuntime,
+        wg: WgDevice,
+        _peer_wg: WgDevice,
+        relay: Option<RelayCoordinator>,
+        mux: Arc<crate::transport::derp::DerpMux>,
+        mux_out: mpsc::Receiver<crate::transport::derp::OutboundFrame>,
+        by_node: HashMap<ObjectId, Installed>,
+        current_peers: HashMap<ObjectId, NetmapPeer>,
+        nid: ObjectId,
+        pk: [u8; 32],
+        ip: Ipv4Addr,
+        tun: Arc<dyn TunIo>,
+        _keep: (mpsc::Receiver<ClientMsg>, mpsc::Receiver<Vec<u8>>),
+    }
+
+    async fn live_direct_pair() -> LivePair {
+        let kp = WgKeypair::generate();
+        let peer_kp = WgKeypair::generate();
+        let pk = peer_kp.public.to_bytes();
+        let (ip, my_ip) = (Ipv4Addr::new(100, 64, 9, 31), Ipv4Addr::new(100, 64, 9, 30));
+        let (out_tx, out_rx) = mpsc::channel::<ClientMsg>(64);
+        let tun: Arc<dyn TunIo> = Arc::new(NoopTun);
+        let tf: TunFactory = {
+            let t = tun.clone();
+            Box::new(move |_, _, _| Ok(t.clone()))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx.clone(), tf, 1280);
+        let (mux, mux_out) = crate::transport::derp::DerpMux::new(kp.public.to_bytes());
+        let relay = Some(RelayCoordinator::new(
+            out_tx,
+            kp.public.to_bytes(),
+            true,
+            vec![],
+            Some(mux.clone()),
+        ));
+        let (mut wg, tun_rx) = WgDevice::new(kp.secret.clone());
+        let (mut peer_wg, _peer_rx) = WgDevice::new(peer_kp.secret.clone());
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let peer_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr, peer_addr) = (sock.local_addr().unwrap(), peer_sock.local_addr().unwrap());
+        wg.ensure_direct_demux(sock.clone());
+        peer_wg.ensure_direct_demux(peer_sock.clone());
+        wg.add_direct_peer(sock, pk, ip, peer_addr, false).await;
+        peer_wg
+            .add_direct_peer(peer_sock, kp.public.to_bytes(), my_ip, addr, true)
+            .await;
+        for _ in 0..100 {
+            if wg.is_connected(&pk).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(wg.is_connected(&pk).await, "the direct session came up");
+        assert!(wg.attach_standby_sink(&pk, mux.standby_route(pk), None));
+        let mut np = super::super::tests::peer(&peer_kp, &ip.to_string());
+        np.supports_derp = true;
+        np.supports_derp_floor = true;
+        let nid = np.node_id;
+        LivePair {
+            rt,
+            wg,
+            _peer_wg: peer_wg,
+            relay,
+            mux,
+            mux_out,
+            by_node: HashMap::new(),
+            current_peers: HashMap::from([(nid, np)]),
+            nid,
+            pk,
+            ip,
+            tun,
+            _keep: (out_rx, tun_rx),
+        }
+    }
+
+    /// Item 3 — a convicted direct carrier with a live session falls onto the
+    /// DERP floor IN PLACE: the peer stays installed as a DERP relay entry on
+    /// the SAME `Tunn`, so what leaves on `/derp` next is data of the live
+    /// session and not a handshake that must first cross the relay (the
+    /// 1.0–2.7 s second stall of every fall, lab 2026-11-12). The sweep
+    /// still reports the loss, so the repair walk runs and probes direct
+    /// again; and the entry keeps its standby sink, so a peer that has not
+    /// fallen yet is still heard.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_convicted_direct_carrier_falls_onto_the_derp_floor_in_place() {
+        let mut f = live_direct_pair().await;
+        let tunn = f.wg.test_tunn_id(&f.pk);
+        let now = Instant::now();
+        f.by_node.insert(
+            f.nid,
+            Installed {
+                since: now - Duration::from_secs(20),
+                last_rx_at: now,
+                poke: Some(PokeArm {
+                    at: now
+                        - crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE
+                        - Duration::from_secs(1),
+                    from_major: false,
+                    from_business: true,
+                }),
+                ..Installed::base(f.pk, f.ip, DirectTier::Lan, now)
+            },
+        );
+        let mut refresh = HashMap::new();
+        let lost =
+            f.rt.sweep_carrier_health(
+                &mut f.wg,
+                &mut f.by_node,
+                &mut f.relay,
+                &f.tun,
+                &mut refresh,
+                &f.current_peers,
+                ForcedPoke::No,
+            )
+            .await;
+        assert!(lost, "still a lost carrier: the repair walk must run");
+        let e = f.by_node.get(&f.nid).expect("the peer stays installed");
+        assert!(!e.is_direct && e.tier == DirectTier::Relay);
+        assert_eq!(e.relay_kind, Some(RelayKind::Derp));
+        assert_eq!(
+            f.wg.test_tunn_id(&f.pk),
+            tunn,
+            "the same Tunn: no new session has to handshake over the relay"
+        );
+        assert!(
+            f.relay.as_ref().unwrap().is_floored(&f.nid),
+            "booked as this peer's floor"
+        );
+
+        // The next business packet leaves on /derp as DATA, at once.
+        let mut pkt = vec![0u8; 20 + 64];
+        pkt[0] = 0x45;
+        pkt[3] = 84;
+        pkt[8] = 64;
+        pkt[9] = 17;
+        pkt[12..16].copy_from_slice(&Ipv4Addr::new(100, 64, 9, 30).octets());
+        pkt[16..20].copy_from_slice(&f.ip.octets());
+        assert!(f.wg.send_to_peer(&f.pk, &pkt).await, "the session seals");
+        let data = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let (_, frame) = f.mux_out.recv().await.expect("mux open");
+                if frame[..32] == f.pk && frame.len() > 32 + 32 && frame[32..36] == [4, 0, 0, 0] {
+                    break frame;
+                }
+            }
+        })
+        .await
+        .expect("a data frame of the live session on /derp");
+        assert!(data.len() >= 32 + 32 + pkt.len());
+
+        // The sink it had on direct stays, with no hello while off direct.
+        assert!(f.wg.has_standby_sink(&f.pk));
+        let mut standby = HashMap::from([(f.pk, Some(Instant::now()))]);
+        f.rt.sweep_standby(&mut f.wg, &f.by_node, &f.mux, &mut standby)
+            .await;
+        assert_eq!(standby.get(&f.pk), Some(&None), "kept, and no hello");
+        let drops = f.mux.standby_drops();
+        let mut copy = f.pk.to_vec();
+        copy.extend_from_slice(crate::transport::derp::STANDBY_MAGIC);
+        copy.extend_from_slice(&[4, 0, 0, 0]);
+        copy.extend_from_slice(&[7u8; 60]);
+        f.mux.deliver(&copy);
+        assert_eq!(
+            f.mux.standby_drops(),
+            drops,
+            "a late copy from the peer still has a sink"
+        );
+    }
+
+    /// Item 3 — the demote-follow lands on the same in-place move: a peer
+    /// relaying to us over `/derp` while we hold a live direct session with
+    /// it has moved ITS half of that session, so ours follows on the same
+    /// `Tunn` instead of answering with a new one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_demote_follow_moves_the_live_session_onto_derp_in_place() {
+        let mut f = live_direct_pair().await;
+        let tunn = f.wg.test_tunn_id(&f.pk);
+        f.by_node.insert(
+            f.nid,
+            Installed::base(
+                f.pk,
+                f.ip,
+                DirectTier::Lan,
+                Instant::now() - PROMOTE_FOLLOW_GRACE - Duration::from_secs(1),
+            ),
+        );
+        let (tx, _rx) = mpsc::channel(4);
+        let mut bq = RelayBuildQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx,
+        };
+        let mut cooldown = HashMap::new();
+        assert!(
+            f.rt.demote_follow(
+                f.pk,
+                &mut f.wg,
+                &mut f.by_node,
+                &mut f.relay,
+                &f.tun,
+                &f.current_peers,
+                &mut bq,
+                &mut cooldown,
+            )
+            .await
+        );
+        let e = &f.by_node[&f.nid];
+        assert!(!e.is_direct);
+        assert_eq!(e.relay_kind, Some(RelayKind::Derp));
+        assert_eq!(f.wg.test_tunn_id(&f.pk), tunn, "followed on the same Tunn");
+        assert!(f.wg.has_standby_sink(&f.pk));
     }
 
     /// MeshHarbor B6 — a `Dormant` peer must never be convicted or poked by
