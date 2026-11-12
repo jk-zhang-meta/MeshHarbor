@@ -70,3 +70,74 @@ async fn testapp_teardown_drops_its_database() {
          mid-run."
     );
 }
+
+/// Regression test for post-`dropDatabase` DB resurrection:
+///
+/// Many test rigs (`Rig`, `TwoRelays`, `Searchable`, and in-process agent
+/// loops) store `app: TestApp` as their first struct field and keep live
+/// HTTP/WebSocket connections or background tasks in later fields. Rust drops
+/// struct fields in declaration order, so `app` drops BEFORE those sockets
+/// close. Without severing `TestApp`'s server and Mongo gate in `Drop`, an
+/// already-accepted connection or detached handler writes (`insert_one` /
+/// `upsert`) milliseconds AFTER `dropDatabase` and resurrects the dropped DB.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn testapp_teardown_severs_post_drop_writers() {
+    let app = TestApp::spawn().await;
+    let db_name = app.db.name().to_string();
+    let uri = app.settings.database.url.clone();
+    let probe = Client::with_uri_str(&uri).await.expect("probe client");
+
+    // Warm a pooled HTTP/1.1 keep-alive connection on `app.client` BEFORE drop,
+    // matching rigs/tasks whose connection outlives `TestApp` field drop order.
+    let _seeded = app.seed_tenant("teardown-keepalive").await;
+    let keepalive_client = app.client.clone();
+    let register_url = app.url("/api/auth/register");
+
+    drop(app);
+
+    let _ = keepalive_client
+        .post(&register_url)
+        .json(&serde_json::json!({
+            "email": "ghost-after-drop@test.meshharbor.invalid",
+            "username": "ghostafterdrop",
+            "display_name": "Ghost After Drop",
+            "password": "Password123!",
+        }))
+        .send()
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let after = probe.list_database_names().await.expect("listDatabases");
+    assert!(
+        !after.iter().any(|n| n == &db_name),
+        "post-drop connection resurrected {db_name} after TestApp::drop"
+    );
+}
+
+/// `TestApp::spawn_pair` points two pods at ONE shared database: dropping pod 1
+/// must keep the shared database alive for pod 2, and dropping pod 2 must leave
+/// zero database behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn testapp_spawn_pair_refcounts_shared_database() {
+    let (app1, app2) = TestApp::spawn_pair(|_| {}).await;
+    let pair_db = app1.db.name().to_string();
+    let uri = app1.settings.database.url.clone();
+    assert_eq!(pair_db, app2.db.name());
+    let probe = Client::with_uri_str(&uri).await.expect("probe client");
+    let _seeded = app1.seed_tenant("pair-refcount").await;
+
+    drop(app1);
+    let mid_pair = probe.list_database_names().await.expect("listDatabases");
+    assert!(
+        mid_pair.iter().any(|n| n == &pair_db),
+        "dropping pod 1 of spawn_pair prematurely dropped shared DB {pair_db}"
+    );
+
+    drop(app2);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let after_pair = probe.list_database_names().await.expect("listDatabases");
+    assert!(
+        !after_pair.iter().any(|n| n == &pair_db),
+        "spawn_pair leaked shared DB {pair_db} after both pods dropped"
+    );
+}

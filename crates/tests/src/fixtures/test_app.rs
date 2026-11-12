@@ -3,9 +3,204 @@
 use meshharbor_api::{build_router, state::AppState};
 use meshharbor_config::Settings;
 use meshharbor_db::indexes::ensure_indexes;
-use mongodb::{Client, Database, options::ClientOptions};
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
+use mongodb::{
+    Client, Database,
+    options::{ClientOptions, ServerAddress},
+};
+use std::{
+    io::Read as _,
+    net::SocketAddr,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
+};
+use tokio::{net::TcpListener, task::AbortHandle};
+
+/// Per-`TestApp` loopback TCP gate in front of `mongod`.
+///
+/// `TestApp::drop` blocks the test thread while the test's Tokio runtime is
+/// paused, so calling async `mongodb::Client::shutdown().await` would deadlock
+/// waiting on topology tasks parked on that runtime. Routing this `TestApp`'s
+/// `Client` through a local gate lets `Drop` synchronously `SHUT_RDWR` every
+/// client socket at the OS level before `dropDatabase` runs — preventing
+/// detached `axum::serve` connection tasks or background loops from writing
+/// milliseconds after `dropDatabase` and resurrecting the dropped database.
+struct DbGate {
+    accept_abort: AbortHandle,
+    conn_aborts: Arc<Mutex<Vec<AbortHandle>>>,
+    downstream_sockets: Arc<Mutex<Vec<std::net::TcpStream>>>,
+    upstream_sockets: Arc<Mutex<Vec<std::net::TcpStream>>>,
+}
+
+impl DbGate {
+    async fn spawn(upstream_host: String, upstream_port: u16) -> (u16, Self) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind MongoDB gate listener");
+        let port = listener.local_addr().unwrap().port();
+        let conn_aborts = Arc::new(Mutex::new(Vec::new()));
+        let downstream_sockets = Arc::new(Mutex::new(Vec::new()));
+        let upstream_sockets = Arc::new(Mutex::new(Vec::new()));
+        let aborts_ref = Arc::clone(&conn_aborts);
+        let down_ref = Arc::clone(&downstream_sockets);
+        let up_ref = Arc::clone(&upstream_sockets);
+        let accept_task = tokio::spawn(async move {
+            while let Ok((downstream, _)) = listener.accept().await {
+                let Ok(upstream) =
+                    tokio::net::TcpStream::connect((upstream_host.as_str(), upstream_port)).await
+                else {
+                    continue;
+                };
+                let Ok(std_down) = downstream.into_std() else {
+                    continue;
+                };
+                if let Ok(dup) = std_down.try_clone() {
+                    down_ref.lock().unwrap().push(dup);
+                }
+                let Ok(mut downstream) = tokio::net::TcpStream::from_std(std_down) else {
+                    continue;
+                };
+                let Ok(std_up) = upstream.into_std() else {
+                    continue;
+                };
+                if let Ok(dup) = std_up.try_clone() {
+                    up_ref.lock().unwrap().push(dup);
+                }
+                let Ok(mut upstream) = tokio::net::TcpStream::from_std(std_up) else {
+                    continue;
+                };
+                let fwd = tokio::spawn(async move {
+                    let _ = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await;
+                });
+                aborts_ref.lock().unwrap().push(fwd.abort_handle());
+            }
+        });
+        (
+            port,
+            Self {
+                accept_abort: accept_task.abort_handle(),
+                conn_aborts,
+                downstream_sockets,
+                upstream_sockets,
+            },
+        )
+    }
+
+    fn sever(&self) -> Vec<std::net::TcpStream> {
+        self.accept_abort.abort();
+        for h in self.conn_aborts.lock().unwrap().drain(..) {
+            h.abort();
+        }
+        for s in self.downstream_sockets.lock().unwrap().drain(..) {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        }
+        let upstreams: Vec<std::net::TcpStream> =
+            self.upstream_sockets.lock().unwrap().drain(..).collect();
+        for s in &upstreams {
+            let _ = s.shutdown(std::net::Shutdown::Write);
+        }
+        upstreams
+    }
+}
+
+/// RAII lease over one `TestApp`'s MongoDB gate and shared-DB reference count.
+/// Armed BEFORE `ensure_indexes` so a mid-boot panic still drops the partial DB,
+/// and refcounted across `spawn_pair` so pod 1's drop keeps the shared DB alive
+/// for pod 2 while pod 2's drop removes it once zero writers remain.
+struct DbLease {
+    uri: String,
+    name: String,
+    owners: Arc<AtomicUsize>,
+    gate: Option<DbGate>,
+}
+
+impl DbLease {
+    fn new(uri: String, name: String, owners: Arc<AtomicUsize>, gate: DbGate) -> Self {
+        owners.fetch_add(1, Ordering::Relaxed);
+        Self {
+            uri,
+            name,
+            owners,
+            gate: Some(gate),
+        }
+    }
+
+    fn teardown(&mut self) {
+        let Some(gate) = self.gate.take() else {
+            return;
+        };
+        let upstreams = gate.sever();
+        let is_last_owner = self.owners.fetch_sub(1, Ordering::AcqRel) == 1;
+        if !is_last_owner {
+            for s in upstreams {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+            return;
+        }
+        let uri = self.uri.clone();
+        let name = self.name.clone();
+        let _ = std::thread::spawn(move || {
+            // Wait (bounded) for mongod to observe our TCP FIN and finish any
+            // already-buffered command on this pod's connections before we
+            // issue `dropDatabase` on a fresh connection.
+            let drain_deadline = Instant::now() + Duration::from_millis(250);
+            let mut buf = [0u8; 64];
+            for mut s in upstreams {
+                loop {
+                    match s.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            if Instant::now() >= drain_deadline {
+                                break;
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if Instant::now() >= drain_deadline {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async {
+                // ⚠️ Bound the wait. If mongod is already gone — which is
+                // exactly the state this teardown exists to prevent — the
+                // driver's 30 s default server selection would be spent once
+                // PER TEST, and ~290 of those turn a diagnosable failure into
+                // a job that hits its wall-clock limit having reported
+                // nothing. Three seconds is generous for a local socket.
+                let Ok(mut opts) = ClientOptions::parse(&uri).await else {
+                    return;
+                };
+                opts.server_selection_timeout = Some(Duration::from_secs(3));
+                opts.connect_timeout = Some(Duration::from_secs(3));
+                opts.max_pool_size = Some(1);
+                if let Ok(client) = Client::with_options(opts) {
+                    let _ = client.database(&name).drop().await;
+                }
+            });
+        })
+        .join();
+    }
+}
+
+impl Drop for DbLease {
+    fn drop(&mut self) {
+        self.teardown();
+    }
+}
 
 /// A running test application with its own MongoDB database.
 pub struct TestApp {
@@ -17,6 +212,8 @@ pub struct TestApp {
     /// The server's own state — lets tests drive in-process surfaces the
     /// HTTP API doesn't expose (rc-hub introspection, `shutdown_cleanup`).
     pub state: AppState,
+    server_abort: AbortHandle,
+    db_lease: DbLease,
 }
 
 /// Install a tracing subscriber ONCE per test binary, only when `RUST_LOG`
@@ -83,74 +280,7 @@ impl TestApp {
     /// Set MESHHARBOR__DATABASE__URL env var to override the connection string.
     /// Each test gets a unique database name for isolation.
     pub async fn spawn() -> Self {
-        init_tracing();
-        let db_name = format!("meshharbor_test_{}", uuid::Uuid::new_v4().simple());
-
-        let mut settings = Settings::load().unwrap_or_else(|_| {
-            // Fallback to minimal settings for tests
-            test_settings()
-        });
-        // Allow env var override for database URL
-        if let Ok(url) = std::env::var("MESHHARBOR__DATABASE__URL") {
-            settings.database.url = url;
-        }
-        settings.database.name = db_name.clone();
-
-        let mut client_options = ClientOptions::parse(&settings.database.url)
-            .await
-            .expect("Failed to parse MongoDB URL");
-        cap_pool(&mut client_options);
-        let mongo_client =
-            Client::with_options(client_options).expect("Failed to create MongoDB client");
-        let db = mongo_client.database(&db_name);
-
-        ensure_indexes(&db, settings.overlay.multi_block_enabled)
-            .await
-            .expect("Failed to create indexes");
-
-        // FR-69 P4 — boxed: the server-construction future (every module init,
-        // the mediasoup worker pool) is the largest state machine in the crate,
-        // and a test that builds several servers in one body carried it inline
-        // on the test thread (2 MiB) until `peer_relay_mint_tests` overflowed.
-        let app_state = Box::pin(AppState::new(db.clone(), settings.clone()))
-            .await
-            .expect("Failed to create AppState");
-        // FR-69 — the module crates' index sets, after the core plan (the
-        // same two steps `main.rs` runs).
-        meshharbor_db::indexes::apply_index_sets(&db, &app_state.modules.index_sets())
-            .await
-            .expect("Failed to create module indexes");
-        let state = app_state.clone();
-        let app = build_router(app_state);
-
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("Failed to bind to random port");
-        let addr = listener.local_addr().unwrap();
-
-        tokio::spawn(async move {
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .await
-            .unwrap();
-        });
-
-        let base_url = format!("http://{}", addr);
-        let client = reqwest::Client::builder()
-            .cookie_store(true)
-            .build()
-            .expect("Failed to build HTTP client");
-
-        Self {
-            addr,
-            base_url,
-            db,
-            settings,
-            client,
-            state,
-        }
+        Self::spawn_with_settings(|_| {}).await
     }
 
     pub fn url(&self, path: &str) -> String {
@@ -165,22 +295,31 @@ impl TestApp {
     pub async fn spawn_pair(mutator: fn(&mut Settings)) -> (Self, Self) {
         init_tracing();
         let shared_db = format!("meshharbor_test_{}", uuid::Uuid::new_v4().simple());
+        let owners = Arc::new(AtomicUsize::new(0));
         let run = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
         let (db1, pod1) = (shared_db.clone(), format!("testpod1-{run}"));
-        let app1 = Self::spawn_with_settings(move |s| {
-            s.database.name = db1.clone();
-            // C-1: distinct stable pod identities per in-process app (env
-            // vars are process-global, so identity must ride Settings).
-            s.app.pod_id = Some(pod1.clone());
-            mutator(s);
-        })
+        let app1 = Self::spawn_inner(
+            move |s| {
+                s.database.name = db1.clone();
+                // C-1: distinct stable pod identities per in-process app (env
+                // vars are process-global, so identity must ride Settings).
+                s.app.pod_id = Some(pod1.clone());
+                mutator(s);
+            },
+            reqwest::Client::builder().cookie_store(true),
+            Arc::clone(&owners),
+        )
         .await;
-        let (db2, pod2) = (shared_db.clone(), format!("testpod2-{run}"));
-        let app2 = Self::spawn_with_settings(move |s| {
-            s.database.name = db2.clone();
-            s.app.pod_id = Some(pod2.clone());
-            mutator(s);
-        })
+        let (db2, pod2) = (shared_db, format!("testpod2-{run}"));
+        let app2 = Self::spawn_inner(
+            move |s| {
+                s.database.name = db2.clone();
+                s.app.pod_id = Some(pod2.clone());
+                mutator(s);
+            },
+            reqwest::Client::builder().cookie_store(true),
+            owners,
+        )
         .await;
         (app1, app2)
     }
@@ -190,14 +329,59 @@ impl TestApp {
     /// The `mutator` closure receives a `&mut Settings` after defaults are applied,
     /// allowing tests to tweak specific fields (e.g., TURN config).
     pub async fn spawn_with_settings(mutator: impl FnOnce(&mut Settings)) -> Self {
+        Self::spawn_inner(
+            mutator,
+            reqwest::Client::builder().cookie_store(true),
+            Arc::new(AtomicUsize::new(0)),
+        )
+        .await
+    }
+
+    /// Spawn a test server with OAuth providers configured (fake client IDs).
+    /// Uses a no-redirect reqwest client so we can inspect the 302/307 Location header.
+    pub async fn spawn_with_oauth() -> Self {
+        // No-redirect client for OAuth redirect tests
+        let client_builder = reqwest::Client::builder()
+            .cookie_store(true)
+            .redirect(reqwest::redirect::Policy::none());
+        Self::spawn_inner(
+            |settings| {
+                // Configure fake OAuth provider credentials
+                settings.oauth.base_url = "http://localhost:5001".to_string();
+                settings.oauth.google.client_id = "test-google-id".to_string();
+                settings.oauth.google.client_secret = "test-google-secret".to_string();
+                settings.oauth.facebook.client_id = "test-facebook-id".to_string();
+                settings.oauth.facebook.client_secret = "test-facebook-secret".to_string();
+                settings.oauth.github.client_id = "test-github-id".to_string();
+                settings.oauth.github.client_secret = "test-github-secret".to_string();
+                settings.oauth.linkedin.client_id = "test-linkedin-id".to_string();
+                settings.oauth.linkedin.client_secret = "test-linkedin-secret".to_string();
+                settings.oauth.microsoft.client_id = "test-microsoft-id".to_string();
+                settings.oauth.microsoft.client_secret = "test-microsoft-secret".to_string();
+            },
+            client_builder,
+            Arc::new(AtomicUsize::new(0)),
+        )
+        .await
+    }
+
+    async fn spawn_inner(
+        mutator: impl FnOnce(&mut Settings),
+        client_builder: reqwest::ClientBuilder,
+        db_owners: Arc<AtomicUsize>,
+    ) -> Self {
         init_tracing();
         let db_name = format!("meshharbor_test_{}", uuid::Uuid::new_v4().simple());
 
-        let mut settings = Settings::load().unwrap_or_else(|_| test_settings());
+        let mut settings = Settings::load().unwrap_or_else(|_| {
+            // Fallback to minimal settings for tests
+            test_settings()
+        });
+        // Allow env var override for database URL
         if let Ok(url) = std::env::var("MESHHARBOR__DATABASE__URL") {
             settings.database.url = url;
         }
-        settings.database.name = db_name.clone();
+        settings.database.name = db_name;
 
         // Apply caller's customizations
         mutator(&mut settings);
@@ -206,6 +390,22 @@ impl TestApp {
             .await
             .expect("Failed to parse MongoDB URL");
         cap_pool(&mut client_options);
+        let (upstream_host, upstream_port) = match client_options.hosts.first() {
+            Some(ServerAddress::Tcp { host, port }) => (host.clone(), port.unwrap_or(27017)),
+            other => panic!("TestApp requires a single TCP MongoDB host, got {other:?}"),
+        };
+        let (gate_port, gate) = DbGate::spawn(upstream_host, upstream_port).await;
+        client_options.hosts = vec![ServerAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: Some(gate_port),
+        }];
+        let db_lease = DbLease::new(
+            settings.database.url.clone(),
+            settings.database.name.clone(),
+            db_owners,
+            gate,
+        );
+
         let mongo_client =
             Client::with_options(client_options).expect("Failed to create MongoDB client");
         // Phase A-1: honor a mutator-overridden db name — `spawn_pair`
@@ -238,7 +438,7 @@ impl TestApp {
             .expect("Failed to bind to random port");
         let addr = listener.local_addr().unwrap();
 
-        tokio::spawn(async move {
+        let server_task = tokio::spawn(async move {
             axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -246,12 +446,10 @@ impl TestApp {
             .await
             .unwrap();
         });
+        let server_abort = server_task.abort_handle();
 
         let base_url = format!("http://{}", addr);
-        let client = reqwest::Client::builder()
-            .cookie_store(true)
-            .build()
-            .expect("Failed to build HTTP client");
+        let client = client_builder.build().expect("Failed to build HTTP client");
 
         Self {
             addr,
@@ -260,90 +458,8 @@ impl TestApp {
             settings,
             client,
             state,
-        }
-    }
-
-    /// Spawn a test server with OAuth providers configured (fake client IDs).
-    /// Uses a no-redirect reqwest client so we can inspect the 302/307 Location header.
-    pub async fn spawn_with_oauth() -> Self {
-        init_tracing();
-        let db_name = format!("meshharbor_test_{}", uuid::Uuid::new_v4().simple());
-
-        let mut settings = Settings::load().unwrap_or_else(|_| test_settings());
-        if let Ok(url) = std::env::var("MESHHARBOR__DATABASE__URL") {
-            settings.database.url = url;
-        }
-        settings.database.name = db_name.clone();
-
-        // Configure fake OAuth provider credentials
-        settings.oauth.base_url = "http://localhost:5001".to_string();
-        settings.oauth.google.client_id = "test-google-id".to_string();
-        settings.oauth.google.client_secret = "test-google-secret".to_string();
-        settings.oauth.facebook.client_id = "test-facebook-id".to_string();
-        settings.oauth.facebook.client_secret = "test-facebook-secret".to_string();
-        settings.oauth.github.client_id = "test-github-id".to_string();
-        settings.oauth.github.client_secret = "test-github-secret".to_string();
-        settings.oauth.linkedin.client_id = "test-linkedin-id".to_string();
-        settings.oauth.linkedin.client_secret = "test-linkedin-secret".to_string();
-        settings.oauth.microsoft.client_id = "test-microsoft-id".to_string();
-        settings.oauth.microsoft.client_secret = "test-microsoft-secret".to_string();
-
-        let mut client_options = ClientOptions::parse(&settings.database.url)
-            .await
-            .expect("Failed to parse MongoDB URL");
-        cap_pool(&mut client_options);
-        let mongo_client =
-            Client::with_options(client_options).expect("Failed to create MongoDB client");
-        let db = mongo_client.database(&db_name);
-
-        ensure_indexes(&db, settings.overlay.multi_block_enabled)
-            .await
-            .expect("Failed to create indexes");
-
-        // FR-69 P4 — boxed: the server-construction future (every module init,
-        // the mediasoup worker pool) is the largest state machine in the crate,
-        // and a test that builds several servers in one body carried it inline
-        // on the test thread (2 MiB) until `peer_relay_mint_tests` overflowed.
-        let app_state = Box::pin(AppState::new(db.clone(), settings.clone()))
-            .await
-            .expect("Failed to create AppState");
-        // FR-69 — the module crates' index sets, after the core plan (the
-        // same two steps `main.rs` runs).
-        meshharbor_db::indexes::apply_index_sets(&db, &app_state.modules.index_sets())
-            .await
-            .expect("Failed to create module indexes");
-        let state = app_state.clone();
-        let app = build_router(app_state);
-
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("Failed to bind to random port");
-        let addr = listener.local_addr().unwrap();
-
-        tokio::spawn(async move {
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .await
-            .unwrap();
-        });
-
-        let base_url = format!("http://{}", addr);
-        // No-redirect client for OAuth redirect tests
-        let client = reqwest::Client::builder()
-            .cookie_store(true)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("Failed to build HTTP client");
-
-        Self {
-            addr,
-            base_url,
-            db,
-            settings,
-            client,
-            state,
+            server_abort,
+            db_lease,
         }
     }
 }
@@ -387,34 +503,8 @@ impl Drop for TestApp {
     /// registered with exactly that driver, so their readiness would never be
     /// delivered. The cleanup must own every part of its own I/O.
     fn drop(&mut self) {
-        let uri = self.settings.database.url.clone();
-        let name = self.db.name().to_string();
-        let _ = std::thread::spawn(move || {
-            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            else {
-                return;
-            };
-            rt.block_on(async {
-                // ⚠️ Bound the wait. If mongod is already gone — which is
-                // exactly the state this teardown exists to prevent — the
-                // driver's 30 s default server selection would be spent once
-                // PER TEST, and ~290 of those turn a diagnosable failure into
-                // a job that hits its wall-clock limit having reported
-                // nothing. Three seconds is generous for a local socket.
-                let Ok(mut opts) = ClientOptions::parse(&uri).await else {
-                    return;
-                };
-                opts.server_selection_timeout = Some(std::time::Duration::from_secs(3));
-                opts.connect_timeout = Some(std::time::Duration::from_secs(3));
-                opts.max_pool_size = Some(1);
-                if let Ok(client) = Client::with_options(opts) {
-                    let _ = client.database(&name).drop().await;
-                }
-            });
-        })
-        .join();
+        self.server_abort.abort();
+        self.db_lease.teardown();
     }
 }
 
