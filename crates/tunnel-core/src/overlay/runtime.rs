@@ -1712,6 +1712,30 @@ async fn run_srflx_keepalive(
 /// task, not mutate it. `None` when any precondition is missing (no punch
 /// socket / no STUN server / keepalive disabled / nothing advertised) —
 /// exactly the startup semantics.
+/// T12 — the device's own srflx STUN list when it set a non-empty one, else the
+/// server's.
+fn pick_srflx_stun_urls(own: Option<&[String]>, server: &[String]) -> Vec<String> {
+    match own {
+        Some(urls) if !urls.is_empty() => urls.to_vec(),
+        _ => server.to_vec(),
+    }
+}
+
+#[cfg(test)]
+mod t12_srflx_stun_tests {
+    use super::pick_srflx_stun_urls;
+
+    #[test]
+    fn t12_the_devices_own_stun_list_replaces_the_servers_for_srflx() {
+        let server = vec!["stun:203.0.113.7:3478".to_string()];
+        let own = vec!["stun:198.51.100.9:3478".to_string()];
+        assert_eq!(pick_srflx_stun_urls(Some(&own), &server), own);
+        assert_eq!(pick_srflx_stun_urls(None, &server), server);
+        // An empty own list is "unset", never "no STUN at all".
+        assert_eq!(pick_srflx_stun_urls(Some(&[]), &server), server);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_srflx_keepalive(
     direct_ctx: &Option<DirectCtx>,
@@ -2264,6 +2288,9 @@ pub struct OverlayRuntime {
     /// steers the host's DNS. Set via
     /// [`with_netstack_socks`](Self::with_netstack_socks).
     netstack_socks: Option<u16>,
+    /// T12 — the device's own srflx STUN servers (`overlay_stun_urls`);
+    /// `None` uses the server's `stun_urls`. See [`Self::srflx_stun_urls`].
+    srflx_stun_override: Option<Vec<String>>,
     /// Phase D (DERP) — a factory that OPENS this node's `/derp` WS + returns
     /// its demux, called LAZILY by [`run`](Self::run) only when the node is
     /// itself UDP-blocked (its srflx gather found nothing). A UDP-capable node
@@ -2522,6 +2549,7 @@ impl OverlayRuntime {
             exit_node: None,
             exit_server_ips: Vec::new(),
             netstack_socks: None,
+            srflx_stun_override: None,
             derp_mux_factory: None,
             regional_derp_factory: None,
             path_shadow: std::sync::Mutex::new(PathShadow::new()),
@@ -2561,6 +2589,7 @@ impl OverlayRuntime {
             exit_node: None,
             exit_server_ips: Vec::new(),
             netstack_socks: None,
+            srflx_stun_override: None,
             derp_mux_factory: None,
             regional_derp_factory: None,
             path_shadow: std::sync::Mutex::new(PathShadow::new()),
@@ -2643,6 +2672,20 @@ impl OverlayRuntime {
     pub fn with_netstack_socks(mut self, port: Option<u16>) -> Self {
         self.netstack_socks = port;
         self
+    }
+
+    /// T12 — gather srflx candidates from these STUN servers instead of the
+    /// server's list. `None`, or an empty list, keeps the server's.
+    pub fn with_srflx_stun_urls(mut self, urls: Option<Vec<String>>) -> Self {
+        self.srflx_stun_override = urls.filter(|u| !u.is_empty());
+        self
+    }
+
+    /// The STUN servers the srflx gather and its keepalive use: the device's
+    /// own list when it set one, else the server's. Relay (TURN) worker
+    /// identification deliberately keeps `network.stun_urls`.
+    fn srflx_stun_urls(&self, network: &OverlayNetworkInfo) -> Vec<String> {
+        pick_srflx_stun_urls(self.srflx_stun_override.as_deref(), &network.stun_urls)
     }
 
     /// Unification P1 — publish this node's live overlay view (self IP + peers
@@ -3370,8 +3413,9 @@ impl OverlayRuntime {
         // `gather_and_advertise_srflx` now (establish.rs), callable again by
         // the direct-plane rebuild; these three locals keep their original
         // roles (keepalive seed + reattach restore).
+        let srflx_stun = self.srflx_stun_urls(&network);
         let gathered = self
-            .gather_and_advertise_srflx(&mut direct_ctx, &network.stun_urls)
+            .gather_and_advertise_srflx(&mut direct_ctx, &srflx_stun)
             .await;
         let mut srflx_stun_server: Option<SocketAddr> = gathered.stun_server;
         let mut srflx_advertised: Vec<String> = gathered.advertised;
@@ -3450,7 +3494,7 @@ impl OverlayRuntime {
                 &direct_ctx,
                 srflx_stun_server,
                 wg.take_stun_events(),
-                &network.stun_urls,
+                &self.srflx_stun_urls(&network),
                 &srflx_advertised,
                 &srflx_my_nat,
                 self.outbound.clone(),
@@ -4601,8 +4645,9 @@ impl OverlayRuntime {
                             {
                                 warn!("overlay: rebuild join failed (detached); reattach will re-join");
                             }
+                            let srflx_stun = self.srflx_stun_urls(&network);
                             let gathered = self
-                                .gather_and_advertise_srflx(&mut direct_ctx, &network.stun_urls)
+                                .gather_and_advertise_srflx(&mut direct_ctx, &srflx_stun)
                                 .await;
                             srflx_stun_server = gathered.stun_server;
                             srflx_advertised = gathered.advertised;
@@ -4628,7 +4673,7 @@ impl OverlayRuntime {
                                     &direct_ctx,
                                     srflx_stun_server,
                                     stun_rx,
-                                    &network.stun_urls,
+                                    &self.srflx_stun_urls(&network),
                                     &srflx_advertised,
                                     &srflx_my_nat,
                                     self.outbound.clone(),

@@ -416,6 +416,8 @@ pub async fn maybe_start(
         // exit then carries only what the front dials, and the host's DNS is
         // left alone.
         .with_netstack_socks(effective_socks_port)
+        // T12 — this device's own srflx STUN servers, when it set them.
+        .with_srflx_stun_urls(cfg.overlay_stun_urls.clone())
         // Phase D — LAZY `/derp`: the runtime opens the WS via this factory only
         // if the node is itself UDP-blocked (else no idle WS).
         .with_derp_mux_factory(derp_factory)

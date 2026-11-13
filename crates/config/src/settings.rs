@@ -1264,6 +1264,18 @@ pub struct AppSettings {
     /// `www.itachi.fans` is never subject to it.
     #[serde(default = "default_business_isolation")]
     pub business_isolation: String,
+    /// T12 — the server owner's pinned business zone per device:
+    /// `"<device id hex>" = "mainland" | "non_mainland"`. It replaces the
+    /// GeoIP zone of the device's control connection — for a device whose
+    /// control path cannot show where it is (a mainland host whose management
+    /// connection arrives over a private line from outside the mainland). It
+    /// grants nothing else: the connection must still be a fresh, attributable
+    /// observation, and GEO-04 still withdraws the zone when an address the
+    /// device advertises lies in the other one. Empty (the default) changes
+    /// nothing. A list-shaped value, so it is set in a config file, not an env
+    /// var.
+    #[serde(default)]
+    pub business_zone_pins: std::collections::BTreeMap<String, String>,
     /// MeshHarbor Item #96 — staged gate for `Unknown`-role devices when
     /// `business_isolation != off`: `"warn"` (default: log `"would refuse: unknown_role"`
     /// and list `Unknown` devices with business peers) or `"enforce"` (deny all
@@ -1817,6 +1829,7 @@ mod rate_limit_tests {
             rate_limit_trusted_hops: 1,
             business_trusted_proxy_cidrs: vec![],
             business_isolation: super::default_business_isolation(),
+            business_zone_pins: Default::default(),
             business_unknown_role: super::default_business_unknown_role(),
             rc_ice_zone_mode: super::default_rc_ice_zone_mode(),
             auth_rate_limit_per_min: auth_per_min,

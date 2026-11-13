@@ -428,6 +428,27 @@ pub fn origin_zone(core: &Core, origin: &ConnectionOrigin) -> Option<BusinessZon
     address_zone(core, origin.client_ip()?)
 }
 
+/// T12 — the zone `app.business_zone_pins` pins `device_id` to. An unparseable
+/// value pins nothing (and says so): a typo must never become a zone.
+pub fn zone_pin(
+    pins: &std::collections::BTreeMap<String, String>,
+    device_id: &str,
+) -> Option<BusinessZone> {
+    let value = pins.get(device_id)?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "mainland" => Some(BusinessZone::Mainland),
+        "non_mainland" | "nonmainland" => Some(BusinessZone::NonMainland),
+        other => {
+            tracing::warn!(
+                device = device_id,
+                value = other,
+                "business isolation: app.business_zone_pins value is not mainland/non_mainland; ignored"
+            );
+            None
+        }
+    }
+}
+
 fn known_zone(code: Option<&str>) -> Option<BusinessZone> {
     match code {
         Some("CN") => Some(BusinessZone::Mainland),
@@ -524,7 +545,7 @@ pub async fn record_connection_observation(
             dataset: None,
             country_code: None,
         });
-    let row = observation(
+    let mut row = observation(
         device,
         origin,
         connection_id,
@@ -533,6 +554,17 @@ pub async fn record_connection_observation(
         current_owner(core)?,
         DateTime::now(),
     )?;
+    // T12 — the server owner's pin replaces the control connection's GeoIP
+    // zone. Insertion below still requires a current observation, and GEO-04
+    // (the device's own advertised addresses) still applies on top.
+    let device_hex = device.identity.device_id.to_hex();
+    if let Some(pinned) = zone_pin(&core.settings.app.business_zone_pins, &device_hex) {
+        if row.zone != Some(pinned) {
+            tracing::info!(device = %device_hex, observed = ?row.zone, ?pinned,
+                "business isolation: zone pinned by app.business_zone_pins");
+        }
+        row.zone = Some(pinned);
+    }
     core.db
         .collection::<ConnectionObservation>(OBSERVATIONS_COLLECTION)
         .insert_one(&row)
@@ -1148,6 +1180,31 @@ pub async fn get_device_authority(
         observation_is_current: current_observation.is_some(),
         current_observation,
     })
+}
+
+#[cfg(test)]
+mod t12_zone_pin_tests {
+    use super::{BusinessZone, zone_pin};
+
+    #[test]
+    fn t12_a_pin_names_exactly_one_zone_and_a_typo_names_none() {
+        let mut pins = std::collections::BTreeMap::new();
+        pins.insert("aa".to_string(), "mainland".to_string());
+        pins.insert("bb".to_string(), " Non_Mainland ".to_string());
+        pins.insert("cc".to_string(), "mainlnd".to_string());
+        assert_eq!(zone_pin(&pins, "aa"), Some(BusinessZone::Mainland));
+        assert_eq!(zone_pin(&pins, "bb"), Some(BusinessZone::NonMainland));
+        assert_eq!(
+            zone_pin(&pins, "cc"),
+            None,
+            "a typo must never become a zone"
+        );
+        assert_eq!(
+            zone_pin(&pins, "dd"),
+            None,
+            "an unpinned device keeps GeoIP"
+        );
+    }
 }
 
 #[cfg(test)]
