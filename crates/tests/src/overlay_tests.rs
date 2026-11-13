@@ -1336,6 +1336,187 @@ async fn a_live_overlay_acl_policy_whose_deleted_at_field_is_absent_is_still_liv
     );
 }
 
+/// T9-3 — when Overlay ACL posture is `warn`, live join netmaps AND live mode-flip
+/// deltas (`off -> warn -> enforce -> off`) ship `ingress_rules_preview` in `warn`
+/// while keeping `ingress_rules` absent (`None`), then switch cleanly to
+/// `ingress_rules` under `enforce` and clear both under `off`.
+#[tokio::test]
+async fn t9_3_warn_mode_pushes_ingress_rules_preview_on_join_and_mode_flip() {
+    use crate::agent_presence_tests::enroll;
+    use crate::peer_relay_mint_tests::{connect_from, node_id, recv_t};
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    use futures::SinkExt;
+    use serde_json::json;
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("ovaclt93").await;
+    let tenant_id = &seeded.tenant_id;
+    let jwt = &seeded.admin.access_token;
+
+    let (_, tok_a) = enroll(&app, &seeded, "t93-node-a").await;
+    let (_, tok_b) = enroll(&app, &seeded, "t93-node-b").await;
+    let mut ws_a = connect_from(&app, &tok_a, &[], None).await;
+    let mut ws_b = connect_from(&app, &tok_b, &[], None).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let pk_a = [0x61u8; 32];
+    let pk_b = [0x62u8; 32];
+    ws_a.send(Message::Text(
+        json!({
+            "t": "rc:overlay.join",
+            "wg_public_key": B64.encode(pk_a),
+            "mtu": 1280,
+            "endpoints": ["198.51.100.61:51820"],
+            "supports_derp": true,
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let nm_a = recv_t(&mut ws_a, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .expect("initial netmap A");
+    ws_b.send(Message::Text(
+        json!({
+            "t": "rc:overlay.join",
+            "wg_public_key": B64.encode(pk_b),
+            "mtu": 1280,
+            "endpoints": ["198.51.100.62:51820"],
+            "supports_derp": true,
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let nm_b = recv_t(&mut ws_b, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .expect("initial netmap B");
+    let ip_b = nm_b["self_ip"].as_str().unwrap().to_string();
+    let _ = nm_a;
+    // Drain initial join deltas while mode is `off`.
+    let _ = recv_t(
+        &mut ws_a,
+        "rc:overlay.netmap_delta",
+        Duration::from_millis(400),
+    )
+    .await;
+    let _ = recv_t(
+        &mut ws_b,
+        "rc:overlay.netmap_delta",
+        Duration::from_millis(400),
+    )
+    .await;
+
+    let nid_a = node_id(&app, &seeded, "t93-node-a").await;
+    let nid_b = node_id(&app, &seeded, "t93-node-b").await;
+
+    // Create one-way port-narrowed policy `A -> B:2222/tcp` while mode is `off`.
+    let resp = app
+        .auth_post(&format!("/api/tenant/{tenant_id}/overlay-acl"), jwt)
+        .json(&json!({
+            "name": "t93-a-to-b-2222",
+            "enabled": true,
+            "sources": [{ "kind": "node_id", "id": nid_a }],
+            "via": [{ "kind": "node_id", "id": nid_b }],
+            "destinations": [{
+                "cidr": format!("{ip_b}/32"),
+                "port_range": { "low": 2222, "high": 2222 },
+                "proto": "tcp"
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(matches!(resp.status().as_u16(), 200 | 201));
+    let _ = recv_t(
+        &mut ws_a,
+        "rc:overlay.netmap_delta",
+        Duration::from_millis(400),
+    )
+    .await;
+    let _ = recv_t(
+        &mut ws_b,
+        "rc:overlay.netmap_delta",
+        Duration::from_millis(400),
+    )
+    .await;
+
+    // 1. Flip mode `off -> warn`: B's delta for A must carry `ingress_rules_preview`
+    //    with `[B:2222/tcp]` and NO `ingress_rules`; A's delta for B must carry
+    //    `ingress_rules_preview: []` and NO `ingress_rules`.
+    let resp = app
+        .auth_put(&format!("/api/tenant/{tenant_id}/overlay-acl/mode"), jwt)
+        .json(&json!({ "mode": "warn" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let delta_b = recv_t(&mut ws_b, "rc:overlay.netmap_delta", Duration::from_secs(5))
+        .await
+        .expect("B must receive netmap_delta on flip to warn");
+    let up_a_on_b = &delta_b["upserts"][0];
+    assert_eq!(up_a_on_b["node_id"].as_str(), Some(nid_a.as_str()));
+    assert!(
+        up_a_on_b.get("ingress_rules").is_none(),
+        "warn delta must omit enforcing ingress_rules: {up_a_on_b}"
+    );
+    let preview_on_b = up_a_on_b["ingress_rules_preview"]
+        .as_array()
+        .expect("warn delta on B must populate ingress_rules_preview");
+    assert_eq!(preview_on_b.len(), 1);
+    assert_eq!(preview_on_b[0]["port_range"]["low"].as_u64(), Some(2222));
+
+    let delta_a = recv_t(&mut ws_a, "rc:overlay.netmap_delta", Duration::from_secs(5))
+        .await
+        .expect("A must receive netmap_delta on flip to warn");
+    let up_b_on_a = &delta_a["upserts"][0];
+    assert_eq!(up_b_on_a["node_id"].as_str(), Some(nid_b.as_str()));
+    assert!(up_b_on_a.get("ingress_rules").is_none());
+    assert_eq!(
+        up_b_on_a["ingress_rules_preview"].as_array().map(Vec::len),
+        Some(0),
+        "A's preview for B must be empty Vec since B has no grant to A"
+    );
+
+    // 2. Also verify full-netmap join while already in `warn`: a rejoining B
+    //    receives `ingress_rules_preview` on its initial `rc:overlay.netmap`.
+    drop(ws_b);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let mut ws_b2 = connect_from(&app, &tok_b, &[], None).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    ws_b2
+        .send(Message::Text(
+            json!({
+                "t": "rc:overlay.join",
+                "wg_public_key": B64.encode(pk_b),
+                "mtu": 1280,
+                "endpoints": ["198.51.100.62:51820"],
+                "supports_derp": true,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let nm_b2 = recv_t(&mut ws_b2, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .expect("rejoin netmap B in warn");
+    let peer_a_in_nm = &nm_b2["peers"][0];
+    assert!(peer_a_in_nm.get("ingress_rules").is_none());
+    assert_eq!(
+        peer_a_in_nm["ingress_rules_preview"]
+            .as_array()
+            .map(Vec::len),
+        Some(1),
+        "full join netmap in warn must carry ingress_rules_preview"
+    );
+}
+
 /// T9-1 — under `enforce`, a one-way Overlay ACL rule (`A -> B:22/tcp`) must
 /// keep BOTH `A` and `B` mutually visible in live netmap deltas AND permit
 /// `/derp` frames in both directions (while still withholding an unrelated

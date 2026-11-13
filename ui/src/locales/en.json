@@ -941,11 +941,13 @@
       "newRule": "New rule",
       "subtitle": "Peer visibility + routes — enforced on direct, TURN-relayed and DERP-relayed paths alike",
       "enforcement": "Enforcement",
-      "narrowed1": "{n} rule(s) narrow ports or protocol. Each node enforces those on the traffic it receives only under ",
+      "narrowed1": "{n} rule(s) narrow ports or protocol. Nodes block ungranted ports only under ",
       "narrowed2": "; in ",
-      "narrowed3": " they are ",
-      "notChecked": "not checked",
-      "narrowed4": ". Either way a port-narrowed rule makes the whole peer visible.",
+      "narrowed3": " traffic is ",
+      "notChecked": "not dropped",
+      "narrowed4": ", while updated nodes preview port/protocol denials in ",
+      "narrowed5": " (inspect via ",
+      "narrowed6": " or daemon logs).",
       "empty1": "No overlay rules yet. While enforcement is ",
       "empty2": " every node sees every peer and all of its approved routes — the pre-ACL behaviour. Add rules, switch to ",
       "empty3": " to see what they would deny against real traffic, then ",
@@ -992,7 +994,7 @@
       "any": "any",
       "hint": {
         "off": "Rules are stored but ignored — every node sees every peer, as before.",
-        "warn": "Rules are evaluated and denials are logged, but the permissive netmap still ships. Use this to validate rules against real traffic.",
+        "warn": "Rules are evaluated without blocking traffic: updated nodes preview port/protocol denials in rx_would_deny (mh peers / mh peers --json and daemon logs) before you switch to enforce.",
         "enforce": "Rules are applied. A node that no rule grants loses the peer, and an installed peer is explicitly torn down."
       },
       "v": {

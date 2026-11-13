@@ -327,7 +327,7 @@ before it leaves the host.
 | PUT | `…/overlay-node/{nid}/exit-node` | `{enabled: bool}` — designate an exit node (also adds `/0` to approved routes) |
 | DELETE | `…/overlay-node/{nid}` | Evict from the mesh + release the address back to the pool |
 | GET/POST | `…/overlay-acl` | Overlay L3 ACL policies |
-| GET/PUT | `…/overlay-acl/mode` | Tenant posture: `off` (default) \| `warn` \| `enforce` |
+| GET/PUT | `…/overlay-acl/mode` | Tenant posture: `off` (default) \| `warn` (ships `ingress_rules_preview` so updated nodes count `rx_would_deny` in `mh peers` / `mh peers --json` and log preview denials without dropping traffic) \| `enforce` |
 | GET/PUT | `…/server-link` | Server topology: `GET` lists the current servers (with the `country` and `zone` of each one's last observed connection, for the map) and links; `PUT {a, b, enabled}` (agent ids, `ADMINISTRATOR`) adds, enables or disables the link between two servers |
 | DELETE | `…/server-link/{a}/{b}` | Remove a server link (`ADMINISTRATOR`) |
 | GET/PUT/DELETE | `…/overlay-acl/{pid}` | ACL policy CRUD. A deleted policy is a **404 on all three** (GET, PUT, repeat DELETE), exactly as it is absent from the listing and from the netmap compiler's set — it is never served, edited (in particular never re-`enabled`) or compiled again, and a repeat DELETE re-fans nobody |

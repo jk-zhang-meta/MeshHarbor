@@ -230,6 +230,7 @@ mod tests {
                 relay_kind: Some(k.into()),
                 rx_denied: 0,
                 rx_denied_noroute: 0,
+                rx_would_deny: 0,
             }),
         }
     }

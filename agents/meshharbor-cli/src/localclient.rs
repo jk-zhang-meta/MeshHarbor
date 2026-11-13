@@ -710,6 +710,9 @@ fn print_why(p: &PeerInfo) {
         if d.tx > 0 && d.rx == 0 {
             println!("            ^ ONE-WAY: we are sending and receiving nothing");
         }
+        if let Some(acl_line) = fmt_why_acl_line(p) {
+            println!("{acl_line}");
+        }
     }
     // A — what the prober actually measured, printed next to the decision.
     // A clean path the selector will not use is the single most useful thing
@@ -2951,8 +2954,30 @@ fn print_peers(named: &[NamedPeer<'_>], display: bool, now_ms: u64) {
         for (n, label) in group {
             let cell = fit_label(label, name_w, display);
             println!("{}", fmt_peer_row_as(n.peer, &cell, name_w, now_ms));
+            if let Some(note) = fmt_peer_acl_preview_note(n.peer) {
+                println!("{note}");
+            }
         }
     }
+}
+
+fn fmt_peer_acl_preview_note(p: &PeerInfo) -> Option<String> {
+    let d = p.debug.as_ref()?;
+    if d.rx_would_deny == 0 {
+        return None;
+    }
+    Some(format!("    acl warn: rx_would_deny={}", d.rx_would_deny))
+}
+
+fn fmt_why_acl_line(p: &PeerInfo) -> Option<String> {
+    let d = p.debug.as_ref()?;
+    if d.rx_denied == 0 && d.rx_would_deny == 0 {
+        return None;
+    }
+    Some(format!(
+        "  acl       rx_denied {}   rx_would_deny {}",
+        d.rx_denied, d.rx_would_deny
+    ))
 }
 
 /// FR-84 D5b — the `devices` table, one row per listed device, then the page
@@ -4453,5 +4478,55 @@ mod display_name_tests {
         assert!(with[1]["display_name"].is_null());
         assert_eq!(with[0]["name"], "laptop", "the mesh name stays alongside");
         assert_eq!(with.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn t9_3_peers_and_why_surface_rx_would_deny_while_keeping_zero_rows_byte_identical() {
+        let mut p = peer("n1", "laptop");
+        assert!(
+            fmt_peer_acl_preview_note(&p).is_none(),
+            "peer without debug or zero rx_would_deny must keep peers table byte-identical"
+        );
+        assert!(fmt_why_acl_line(&p).is_none());
+
+        p.debug = Some(localapi::PeerCarrierDebug {
+            tier: "lan".into(),
+            initiated: true,
+            hs_done: true,
+            local: None,
+            dst: None,
+            tx: 10,
+            rx: 10,
+            last_rx_age_s: 1,
+            relay_kind: None,
+            rx_denied: 0,
+            rx_denied_noroute: 0,
+            rx_would_deny: 0,
+        });
+        assert!(fmt_peer_acl_preview_note(&p).is_none());
+        assert!(fmt_why_acl_line(&p).is_none());
+
+        if let Some(d) = p.debug.as_mut() {
+            d.rx_would_deny = 7;
+        }
+        let note = fmt_peer_acl_preview_note(&p)
+            .expect("mh peers must display rx_would_deny when non-zero");
+        assert!(
+            note.contains("rx_would_deny=7"),
+            "expected rx_would_deny=7 in peers note, got: {note}"
+        );
+        let why_line =
+            fmt_why_acl_line(&p).expect("mh why must display rx_would_deny when non-zero");
+        assert!(
+            why_line.contains("rx_would_deny 7"),
+            "expected rx_would_deny 7 in why output, got: {why_line}"
+        );
+        let named = [NamedPeer {
+            peer: &p,
+            display_name: None,
+        }];
+        let js: serde_json::Value =
+            serde_json::from_str(&peers_json(&named, false).unwrap()).unwrap();
+        assert_eq!(js[0]["debug"]["rx_would_deny"], 7);
     }
 }

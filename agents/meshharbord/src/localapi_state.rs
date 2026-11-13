@@ -3374,6 +3374,7 @@ mod tests {
             relay_kind: None,
             rx_denied: 0,
             rx_denied_noroute: 0,
+            rx_would_deny: 0,
         });
         v.peers[1].debug = Some(PeerCarrierDebug {
             tier: "relay".into(),
@@ -3387,6 +3388,7 @@ mod tests {
             relay_kind: Some("derp".into()),
             rx_denied: 0,
             rx_denied_noroute: 0,
+            rx_would_deny: 0,
         });
 
         let normal_targets = rtt_prober_targets(&v, false);

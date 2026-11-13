@@ -31,12 +31,15 @@ write rules between tags rather than between machines.
 
 :::danger Always go through Warn first
 Switch an organization to **Warn**, then read what it reports. Every packet that
-*would* have been denied is recorded without being dropped, so you can see which
-of your rules are wrong before they cost anyone their access.
+*would* have been denied — including port- and protocol-narrowed rules shipped in
+`ingress_rules_preview` — is counted in per-peer `rx_would_deny` without being
+dropped (older nodes ignore the preview field and never drop traffic either).
+Inspect `mh peers`, `mh peers --json` (`debug.rx_would_deny`), `mh why <peer>`,
+or the receiving daemon's logs (`overlay acl [warn]: inbound packet WOULD BE DENIED`)
+so you can see which rules are wrong before they cost anyone their access.
 
-Network ACLs are feature-complete but have not yet been widely exercised in
-enforcing mode in the field. Warn mode is not ceremony here — it is the
-recommended path.
+Warn mode is not ceremony here — it is the recommended rollout path before
+flipping to **Enforce**.
 :::
 
 ## Enforced at both ends
@@ -89,7 +92,7 @@ A small organization with laptops, a build server and a production database:
 2. Allow `laptop → build` on the ports developers actually use.
 3. Allow `build → prod` on the database port only.
 4. Allow **nothing** from `laptop → prod`. If someone needs the production database, they go through the build host, and that hop is visible.
-5. Switch to **Warn**, work for a week, read the log.
+5. Switch to **Warn**, run real traffic, and check `rx_would_deny` (`mh peers` / `mh peers --json`) and daemon logs on receiving hosts.
 6. Switch to **Enforce**.
 :::
 

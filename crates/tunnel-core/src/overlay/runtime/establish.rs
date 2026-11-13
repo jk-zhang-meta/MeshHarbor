@@ -358,6 +358,7 @@ impl OverlayRuntime {
             relay_dst: dst,
             rx_denied: e.rx_denied,
             rx_denied_noroute: e.rx_denied_noroute,
+            rx_would_deny: e.rx_would_deny,
             ..Installed::base(e.pubkey, e.overlay_ip, DirectTier::Relay, Instant::now())
         };
     }
@@ -873,6 +874,7 @@ impl OverlayRuntime {
             // view. Monotonic, so a plain read (not a drain like `rx_any`).
             e.rx_denied = wg.peer_rx_denied(&e.pubkey);
             e.rx_denied_noroute = wg.peer_rx_denied_noroute(&e.pubkey);
+            e.rx_would_deny = wg.peer_rx_would_deny(&e.pubkey);
             // The peer exists (peer_traffic answered just above, no await in
             // between), so the latch read always answers too — the `else` is
             // unreachable belt-and-braces.

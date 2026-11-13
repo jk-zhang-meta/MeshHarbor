@@ -543,6 +543,14 @@ pub(crate) fn acl_reject_reply_enabled() -> bool {
     *ON.get_or_init(|| crate::env::flag("OVERLAY_ACL_REJECT_REPLY", true))
 }
 
+/// T9-3 kill switch: `MESHHARBORD_OVERLAY_ACL_WARN_PREVIEW=0` disables
+/// evaluating `ingress_rules_preview` (`rx_would_deny` counting and throttled
+/// preview logging) when the tenant's overlay ACL posture is `warn`.
+pub(crate) fn acl_warn_preview_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env::flag("OVERLAY_ACL_WARN_PREVIEW", true))
+}
+
 /// T9-2 per-peer maximum ACL reject replies per 1-second window
 /// (`MESHHARBORD_OVERLAY_ACL_REJECT_RATE`, default `20`).
 pub(crate) fn acl_reject_rate_per_sec() -> u32 {
@@ -761,6 +769,13 @@ pub struct PeerStats {
     /// T9-2 — packed `(window_sec: u32, count: u32)` bucket rate-limiting
     /// outbound TCP RST / ICMP Administratively Prohibited replies per peer.
     acl_reject_bucket: AtomicU64,
+    /// T9-3 — inbound packets from this peer that matched NO rule in
+    /// `ingress_rules_preview` while the tenant's overlay ACL posture is `warn`.
+    /// Monotonic; never drops packets and never increments `rx_denied`.
+    rx_would_deny: AtomicU64,
+    /// T9-3 — mono-ms (against [`wg_epoch`]) of the last `warn`-preview log
+    /// line emitted for this peer; 0 = never.
+    preview_logged_at: AtomicU64,
     /// Passive loss of the WG stream this peer sends us, from the counters of
     /// the transport packets that authenticated ([`Self::note_rx_counter`]).
     /// `rx_ctr_span` grows by how far a session's highest counter advanced,
@@ -1102,15 +1117,20 @@ impl Ingress {
         // `tun_tx.send().await` below.
         let routing_dst = Router::dst_of_ip_packet(packet);
         let off = self.mode == RpfMode::Off;
-        let (verdict, in_scope, rules, reply) = {
+        let (verdict, in_scope, rules, preview_rules, reply) = {
             let g = self.send.0.read().unwrap();
             let rules = g.ingress_acls.get(&self.peer).cloned();
-            if off && rules.is_none() {
+            let preview_rules = if rules.is_none() {
+                g.ingress_acls_preview.get(&self.peer).cloned()
+            } else {
+                None
+            };
+            if off && rules.is_none() && preview_rules.is_none() {
                 return (true, false);
             }
             // #18 — a packet addressed to THIS node is judged by the rules too,
             // unless it belongs to a flow already admitted (a reply).
-            let reply = rules.is_some()
+            let reply = (rules.is_some() || preview_rules.is_some())
                 && g.scope.is_self_dst(routing_dst)
                 && super::ingress::admitted_reply(packet, &g.flows, mono_ms_now());
             (
@@ -1121,9 +1141,41 @@ impl Ingress {
                 },
                 off || g.scope.permits_dst(routing_dst),
                 rules,
+                preview_rules,
                 reply,
             )
         };
+        if let Some(preview) = preview_rules
+            && in_scope
+            && !reply
+        {
+            let dst = dst_ip_of(packet);
+            let l4 = parse_l4(packet);
+            let preview_denied = match dst {
+                Some(dst) => !rules_permit(&preview, dst, l4.as_ref()),
+                None => true,
+            };
+            if preview_denied {
+                let count = self.stats.rx_would_deny.fetch_add(1, Ordering::Relaxed) + 1;
+                let now = mono_ms_now();
+                let last = self.stats.preview_logged_at.load(Ordering::Relaxed);
+                if (last == 0 || now.saturating_sub(last) >= RPF_LOG_THROTTLE_MS)
+                    && self
+                        .stats
+                        .preview_logged_at
+                        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    let peer = short_key(&self.peer);
+                    let proto = l4.as_ref().map(|x| x.proto);
+                    let dst_port = l4.as_ref().and_then(|x| x.dst_port);
+                    warn!(
+                        %peer, %src, ?dst, ?proto, ?dst_port, rx_would_deny = count,
+                        "overlay acl [warn]: inbound packet WOULD BE DENIED under `enforce` — delivered anyway"
+                    );
+                }
+            }
+        }
         // Per-source rules govern what a peer may reach through us AND on us
         // (#18: the tenant's ACL narrows node-to-node traffic by protocol and
         // port, not only by visibility). Parsing is deferred to here so the
@@ -1412,8 +1464,13 @@ struct SendState {
     /// ACL compiled nothing for that peer and only [`scope`](Self::scope)
     /// applies. `Arc` so the per-packet path clones a pointer, not the rules.
     ingress_acls: HashMap<[u8; 32], Arc<Vec<OverlayRule>>>,
+    /// T9-3 — server-compiled per-source preview rules for `warn` mode, keyed
+    /// by the sending peer's WG public key. Evaluated ONLY when `ingress_acls`
+    /// has no entry for that peer; never drops packets, only increments
+    /// `PeerStats::rx_would_deny` and emits a throttled log line.
+    ingress_acls_preview: HashMap<[u8; 32], Arc<Vec<OverlayRule>>>,
     /// #18 — the UDP flows and ICMP echoes this node sent toward peers in
-    /// `ingress_acls`, so their replies pass those peers' rules.
+    /// `ingress_acls` or `ingress_acls_preview`, so their replies pass those peers' rules.
     flows: super::ingress::ReplyFlows,
     /// Mirror of `WgDevice::peers`' send triples, maintained at the same
     /// mutation choke points ([`WgDevice::send_install`] /
@@ -1665,6 +1722,7 @@ impl WgSender {
             router: Router::new(),
             scope: LocalScope::default(),
             ingress_acls: HashMap::new(),
+            ingress_acls_preview: HashMap::new(),
             flows: Default::default(),
             peers: HashMap::new(),
         })))
@@ -1757,7 +1815,7 @@ impl SendState {
     /// #18 — remember a flow this node starts toward a peer whose ingress the
     /// tenant's ACL governs, so that peer's replies pass its rules.
     fn note_outbound(&self, peer: &[u8; 32], packet: &[u8]) {
-        if self.ingress_acls.contains_key(peer) {
+        if self.ingress_acls.contains_key(peer) || self.ingress_acls_preview.contains_key(peer) {
             self.flows.note_outbound(packet, mono_ms_now());
         }
     }
@@ -6037,6 +6095,16 @@ impl WgDevice {
             .unwrap_or(0)
     }
 
+    /// T9-3 — inbound packets from `peer_public` that matched NO rule in
+    /// `ingress_rules_preview` while the tenant's overlay ACL posture is `warn`.
+    /// Monotonic; 0 for an unknown peer.
+    pub fn peer_rx_would_deny(&self, peer_public: &[u8; 32]) -> u64 {
+        self.peers
+            .get(peer_public)
+            .map(|p| p.stats.rx_would_deny.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
     /// P4 — the device's reverse-path mode, for status/diagnostics.
     pub fn rpf_mode(&self) -> RpfMode {
         self.rpf
@@ -6079,14 +6147,18 @@ impl WgDevice {
         peers: &HashMap<bson::oid::ObjectId, meshharbor_remote_control::signaling::NetmapPeer>,
     ) {
         let mut table: HashMap<[u8; 32], Arc<Vec<OverlayRule>>> = HashMap::new();
+        let mut preview_table: HashMap<[u8; 32], Arc<Vec<OverlayRule>>> = HashMap::new();
         for p in peers.values() {
-            let (Some(rules), Some(pk)) = (
-                p.ingress_rules.as_ref(),
-                super::decode_public(&p.wg_public_key),
-            ) else {
+            let Some(pk) = super::decode_public(&p.wg_public_key) else {
                 continue;
             };
-            table.insert(pk, Arc::new(rules.clone()));
+            if let Some(rules) = p.ingress_rules.as_ref() {
+                table.insert(pk, Arc::new(rules.clone()));
+            } else if acl_warn_preview_enabled()
+                && let Some(preview) = p.ingress_rules_preview.as_ref()
+            {
+                preview_table.insert(pk, Arc::new(preview.clone()));
+            }
         }
         let mut g = self.send.0.write().unwrap();
         // Any change, not only a count change: a narrowed or widened grant
@@ -6099,6 +6171,14 @@ impl WgDevice {
                 .keys()
                 .filter(|k| !table.contains_key(*k))
                 .count();
+        let preview_changed = preview_table
+            .iter()
+            .filter(|(k, v)| g.ingress_acls_preview.get(*k) != Some(*v))
+            .count()
+            + g.ingress_acls_preview
+                .keys()
+                .filter(|k| !preview_table.contains_key(*k))
+                .count();
         if changed > 0 {
             tracing::info!(
                 peers_with_rules = table.len(),
@@ -6106,7 +6186,15 @@ impl WgDevice {
                 "overlay: per-source ingress rules updated"
             );
         }
+        if preview_changed > 0 {
+            tracing::info!(
+                peers_with_preview = preview_table.len(),
+                changed_peers = preview_changed,
+                "overlay: per-source warn preview rules updated"
+            );
+        }
         g.ingress_acls = table;
+        g.ingress_acls_preview = preview_table;
     }
 
     /// Test-only — override the reverse-path mode. Must run BEFORE `add_peer`:
@@ -7987,6 +8075,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         }
     }
@@ -8638,6 +8727,146 @@ mod tests {
             "off mode must deliver"
         );
         assert_eq!(dev_b.peer_rx_denied(&pk_a), 0);
+    }
+
+    /// T9-3 — `ingress_rules_preview` (`warn` mode) evaluates port/protocol
+    /// grants WITHOUT dropping any packet and WITHOUT incrementing `rx_denied`,
+    /// counting only `rx_would_deny` on packets that `enforce` would block (and
+    /// never counting allowed ports or admitted replies).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn t9_3_ingress_rules_preview_counts_rx_would_deny_without_dropping_or_touching_rx_denied()
+     {
+        use meshharbor_remote_control::models::{PortRange, ProtocolKind};
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+
+        let (mut dev_a, mut rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        dev_b.set_rpf_mode(RpfMode::Warn);
+        dev_b.set_local_scope(Some(IP_B), &[]);
+        dev_a.set_rpf_mode(RpfMode::Warn);
+        dev_a.set_local_scope(Some(IP_A), &[]);
+
+        // Wire-compatibility check: `None` omits `ingress_rules_preview` on the
+        // wire, and an older peer struct without `ingress_rules_preview` ignores
+        // the unknown field when `Some` is serialized.
+        let mut wire_np = netmap_peer_for(&a, IP_A);
+        let wire_clean = serde_json::to_string(&wire_np).unwrap();
+        assert!(
+            !wire_clean.contains("ingress_rules_preview"),
+            "None must omit ingress_rules_preview on the wire"
+        );
+        wire_np.ingress_rules_preview = Some(vec![OverlayRule {
+            cidr: format!("{IP_B}/32"),
+            port_range: PortRange {
+                low: 2222,
+                high: 2222,
+            },
+            proto: ProtocolKind::Tcp,
+        }]);
+        let wire_preview = serde_json::to_string(&wire_np).unwrap();
+        assert!(wire_preview.contains("ingress_rules_preview"));
+        #[derive(serde::Deserialize)]
+        struct OldNetmapPeer {
+            node_id: bson::oid::ObjectId,
+            #[serde(default)]
+            ingress_rules: Option<Vec<OverlayRule>>,
+        }
+        let old_parsed: OldNetmapPeer = serde_json::from_str(&wire_preview).unwrap();
+        assert_eq!(old_parsed.node_id, wire_np.node_id);
+        assert!(
+            old_parsed.ingress_rules.is_none(),
+            "old nodes ignore ingress_rules_preview and keep ingress_rules=None (never dropping)"
+        );
+
+        let mut peers_b = HashMap::new();
+        peers_b.insert(wire_np.node_id, wire_np);
+        dev_b.sync_peer_ingress(&peers_b);
+
+        dev_a.add_peer(
+            b.public.to_bytes(),
+            IP_B,
+            Carrier::direct(sock_a.clone(), addr_b),
+            true,
+        );
+        dev_b.add_peer(
+            a.public.to_bytes(),
+            IP_A,
+            Carrier::direct(sock_b.clone(), addr_a),
+            false,
+        );
+        wait_connected(&dev_a, &b.public.to_bytes()).await;
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+
+        // 1. Allowed TCP port 2222: delivered AND rx_would_deny stays 0.
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_l4(IP_A, IP_B, false, (40000, 2222), 0x02),
+        )
+        .await;
+        let got_ok = tokio::time::timeout(Duration::from_secs(3), rx_b.recv())
+            .await
+            .expect("allowed port 2222 must be delivered")
+            .unwrap();
+        assert_eq!(got_ok.len(), 40);
+        assert_eq!(dev_b.peer_rx_would_deny(&pk_a), 0);
+        assert_eq!(dev_b.peer_rx_denied(&pk_a), 0);
+
+        // 2. Unlisted TCP port 3389: STILL delivered (`warn` never drops!),
+        //    rx_denied stays 0, AND rx_would_deny increments to 1.
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_l4(IP_A, IP_B, false, (40001, 3389), 0x02),
+        )
+        .await;
+        let got_warn = tokio::time::timeout(Duration::from_secs(3), rx_b.recv())
+            .await
+            .expect("warn mode MUST deliver unlisted port 3389 without dropping")
+            .unwrap();
+        assert_eq!(got_warn.len(), 40);
+        assert_eq!(
+            dev_b.peer_rx_denied(&pk_a),
+            0,
+            "warn preview must not increment rx_denied"
+        );
+        assert_eq!(
+            dev_b.peer_rx_would_deny(&pk_a),
+            1,
+            "warn preview MUST increment rx_would_deny for unlisted port 3389"
+        );
+
+        // 3. Outbound UDP flow started by B -> A: A's UDP reply back to B must
+        //    be recognized by ReplyFlows and NOT counted in B's rx_would_deny.
+        send_until_ok(
+            &dev_b,
+            &pk_a,
+            &synthetic_l4(IP_B, IP_A, true, (55000, 5353), 0),
+        )
+        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(3), rx_a.recv())
+            .await
+            .expect("A receives B's UDP query");
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_l4(IP_A, IP_B, true, (5353, 55000), 0),
+        )
+        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(3), rx_b.recv())
+            .await
+            .expect("B receives A's UDP reply");
+        assert_eq!(
+            dev_b.peer_rx_would_deny(&pk_a),
+            1,
+            "admitted reply to B's own outbound UDP flow must not increment rx_would_deny"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

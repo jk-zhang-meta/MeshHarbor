@@ -523,6 +523,9 @@ struct Installed {
     /// peer owns, whose replies this node cannot route back (the multi-org
     /// wrong-source signature). Snapshotted beside it.
     rx_denied_noroute: u64,
+    /// T9-3 — inbound packets from this peer that matched NO rule in
+    /// `ingress_rules_preview` while the tenant's overlay ACL posture is `warn`.
+    rx_would_deny: u64,
     /// Stats PR-5 — the prober's last RTT measurement for this peer (the
     /// B1 `RttSample` events previously fed only the path-monitor Q).
     /// Published through [`build_overlay_view`] so `mh peers` and the
@@ -636,6 +639,7 @@ impl Installed {
             public_direct_dst: None,
             rx_denied: 0,
             rx_denied_noroute: 0,
+            rx_would_deny: 0,
             reinit_recent: 0,
             reinit_window_from: now,
             tier,
@@ -2438,6 +2442,7 @@ fn build_overlay_view(
                     relay_kind: i.relay_kind.map(|k| k.as_str().to_string()),
                     rx_denied: i.rx_denied,
                     rx_denied_noroute: i.rx_denied_noroute,
+                    rx_would_deny: i.rx_would_deny,
                 }),
                 // F — grafted on by `publish_view`, which holds the monitor;
                 // the pure builder cannot see the selector state.
@@ -2893,6 +2898,18 @@ impl OverlayRuntime {
                 epoch_now_ms,
                 &relay_transport,
             );
+            for p in &mut view.peers {
+                if let Some(d) = p.debug.as_mut()
+                    && let Ok(nid) = ObjectId::parse_str(&p.node_id)
+                    && let Some(inst) = by_node.get(&nid)
+                {
+                    d.rx_denied = d.rx_denied.max(wg.peer_rx_denied(&inst.pubkey));
+                    d.rx_denied_noroute = d
+                        .rx_denied_noroute
+                        .max(wg.peer_rx_denied_noroute(&inst.pubkey));
+                    d.rx_would_deny = d.rx_would_deny.max(wg.peer_rx_would_deny(&inst.pubkey));
+                }
+            }
             // A — attach the disco measurements, keyed peer-pubkey → view row.
             // Deliberately alongside `why`: the interesting case is the two
             // DISAGREEING (a path the prober says is clean that the selector
@@ -6588,6 +6605,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         };
         let base = mk(
@@ -7003,6 +7021,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         }
     }
@@ -7203,6 +7222,7 @@ mod tests {
                 routes: vec![],
                 agent_id: None,
                 ingress_rules: None,
+                ingress_rules_preview: None,
                 backbone_only: false,
             },
         );
@@ -10388,6 +10408,7 @@ mod tests {
                 routes: vec![],
                 agent_id: None,
                 ingress_rules: None,
+                ingress_rules_preview: None,
                 backbone_only: false,
             }
         }
@@ -10643,6 +10664,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         }
     }
@@ -11269,6 +11291,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
         };
 
         // 1. Peer Y delta (epoch = 105) arrives FIRST at auth_revision = 5.
@@ -11658,6 +11681,7 @@ mod tests {
             routes,
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         }
     }
@@ -11835,6 +11859,7 @@ mod tests {
             routes: vec!["192.168.5.0/24".into(), "0.0.0.0/0".into()],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         };
         let strs: Vec<String> = exit_peer_allowed_ips(&exit)
@@ -13698,6 +13723,7 @@ mod org_upgrade_tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         }
     }

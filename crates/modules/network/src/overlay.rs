@@ -1053,7 +1053,7 @@ async fn handle_overlay_join(
     for peer in all.iter().filter(|n| n.id != self_node.id) {
         let peer_src = overlay_source_of(state, peer).await;
         // The shaped peer here is the JOINER, whose identity we already have.
-        let joiner_ingress = acl.enforcing().then_some(&joiner_src);
+        let joiner_ingress = acl.gating().then_some(&joiner_src);
         // U2 — this recipient's edge is `peer → self_node` (the joiner).
         let verdict = server_relay_verdict(state, peer, &self_node);
         let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
@@ -1341,7 +1341,7 @@ async fn try_complete_join_netmap(
             return false;
         }
         let peer_src = overlay_source_of(state, peer).await;
-        let joiner_ingress = acl.enforcing().then_some(&joiner_src);
+        let joiner_ingress = acl.gating().then_some(&joiner_src);
         let verdict = server_relay_verdict(state, peer, &self_node);
         let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
         let zones = lines.zones_for(
@@ -3006,7 +3006,7 @@ async fn fan_upsert_shaped(
     }
     // P4 — the fanned node is the SHAPED peer for every recipient, so its
     // identity is resolved once, not per recipient.
-    let node_src = if acl.enforcing() {
+    let node_src = if acl.gating() {
         Some(overlay_source_of(state, node).await)
     } else {
         None
@@ -3074,7 +3074,7 @@ async fn fan_upsert_shaped(
         // real presence, not the changed node's).
         if let Some(rsrc) = node_recip_src.as_ref() {
             let rev_verdict = server_relay_verdict(state, node, peer);
-            let peer_src_arg = if acl.enforcing() { Some(&src) } else { None };
+            let peer_src_arg = if acl.gating() { Some(&src) } else { None };
             let back = lines.zones_for(
                 iso,
                 node,
@@ -3175,7 +3175,7 @@ async fn fan_pair_rows(
     // is on a live WS by construction; `b`'s presence comes from the
     // snapshot so a dead peer's row does not read dialable.
     let b_reach = is_reachable(&reach, b);
-    let enforcing = acl.enforcing();
+    let gating = acl.gating();
     let iso = business_isolation::mode(state);
     let (a_zone, b_zone) = (
         business_isolation::zone_of(state, iso, a).await,
@@ -3197,7 +3197,7 @@ async fn fan_pair_rows(
             a,
             &a_src,
             b,
-            if enforcing { Some(&b_src) } else { None },
+            if gating { Some(&b_src) } else { None },
             b_reach,
             lines.zones_for(
                 iso,
@@ -3229,7 +3229,7 @@ async fn fan_pair_rows(
             b,
             &b_src,
             a,
-            if enforcing { Some(&a_src) } else { None },
+            if gating { Some(&a_src) } else { None },
             true,
             lines.zones_for(
                 iso,
@@ -4162,10 +4162,10 @@ pub async fn shape_full_netmap_with_lines(
     for n in all.iter().filter(|n| n.id != self_node.id) {
         let peer_zone = business_isolation::zone_of(state, iso, n).await;
         let zones = lines.zones_for(iso, self_node, self_zone, n, peer_zone, rides);
-        // P4 — resolving the peer's own identity costs up to 2 reads, so do it
-        // ONLY when the tenant is enforcing and the rules will actually ship.
-        // An `off`/`warn` tenant's join path is unchanged.
-        let peer_src = if acl.enforcing() {
+        // P4 / T9-3 — resolving the peer's own identity costs up to 2 reads, so do
+        // it ONLY when the tenant is gating (`warn` ships `ingress_rules_preview`;
+        // `enforce` ships `ingress_rules`). An `off` tenant's join path is unchanged.
+        let peer_src = if acl.gating() {
             Some(overlay_source_of(state, n).await)
         } else {
             None
@@ -4229,6 +4229,21 @@ pub async fn shape_full_netmap_with_lines(
 /// and new-flow ingress unidirectional via `ingress_rules`.
 pub(crate) fn bidir_peer_visibility_enabled() -> bool {
     std::env::var("MESHHARBOR__OVERLAY__BIDIR_PEER_VISIBILITY")
+        .ok()
+        .map(|v| {
+            !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no"
+            )
+        })
+        .unwrap_or(true)
+}
+
+/// T9-3 — feature switch (`MESHHARBOR__OVERLAY__WARN_PREVIEW`, default `true`):
+/// under `warn`, populate `ingress_rules_preview` on `NetmapPeer` so updated
+/// nodes count `rx_would_deny` without dropping packets.
+pub(crate) fn warn_preview_enabled() -> bool {
+    std::env::var("MESHHARBOR__OVERLAY__WARN_PREVIEW")
         .ok()
         .map(|v| {
             !matches!(
@@ -4496,7 +4511,15 @@ fn shape_peer_zoned(
                 granted = access.routes.len(), approved = routes.len(),
                 "overlay acl [warn]: would narrow routes");
         }
-        return Some(to_netmap_peer(peer, reachable));
+        let mut shaped = to_netmap_peer(peer, reachable);
+        if matches!(acl.mode, OverlayAclMode::Warn)
+            && warn_preview_enabled()
+            && let Some(ps) = peer_src
+        {
+            shaped.ingress_rules_preview =
+                Some(evaluate_overlay_ingress(&acl.policies, ps, src.node_id));
+        }
+        return Some(shaped);
     }
     if !access.visible && !reverse_visible {
         return None;
@@ -4612,6 +4635,7 @@ fn to_netmap_peer(node: &OverlayNode, reachable: bool) -> NetmapPeer {
         // leaving it `None` here is what makes an `off`/`warn` tenant's netmap
         // byte-identical to a pre-P4 server's.
         ingress_rules: None,
+        ingress_rules_preview: None,
     }
 }
 
@@ -6055,5 +6079,144 @@ mod tests {
         pc.last_grant_at = Some(late - Duration::from_secs(30));
         assert!(!churn_note_request(&mut pc, late));
         assert_eq!(pc.cycles, 1, "stale window must reset, not accumulate");
+    }
+
+    /// T9-3 — in `warn` mode, `shape_peer` keeps the permissive netmap (`ingress_rules: None`,
+    /// all peer routes intact, unrelated peers still visible) while populating
+    /// `ingress_rules_preview` with the exact per-source rules `enforce` would compile;
+    /// in `off` mode, BOTH `ingress_rules` and `ingress_rules_preview` remain `None`.
+    #[test]
+    fn t9_3_warn_mode_ships_ingress_rules_preview_without_enforcing_ingress_rules() {
+        use meshharbor_remote_control::models::{
+            OverlayRule, OverlaySelector, OverlayTarget, PortRange, ProtocolKind,
+        };
+        let now = bson::DateTime::now();
+        let mut node_a = node("node-a-t93", "100.64.0.61");
+        node_a.id = Some(ObjectId::new());
+        let mut node_b = node("node-b-t93", "100.64.0.62");
+        node_b.id = Some(ObjectId::new());
+        node_b.advertised_routes = vec!["10.77.0.0/24".to_string()];
+        node_b.approved_routes = vec!["10.77.0.0/24".to_string()];
+        let mut node_c = node("node-c-t93", "100.64.0.63");
+        node_c.id = Some(ObjectId::new());
+
+        let src_a = OverlaySource {
+            node_id: node_a.id.unwrap(),
+            owner_user_id: None,
+            role_ids: vec![],
+        };
+        let src_b = OverlaySource {
+            node_id: node_b.id.unwrap(),
+            owner_user_id: None,
+            role_ids: vec![],
+        };
+        let src_c = OverlaySource {
+            node_id: node_c.id.unwrap(),
+            owner_user_id: None,
+            role_ids: vec![],
+        };
+
+        let granted_rules = vec![OverlayRule {
+            cidr: "100.64.0.62/32".to_string(),
+            port_range: PortRange {
+                low: 2222,
+                high: 2222,
+            },
+            proto: ProtocolKind::Tcp,
+        }];
+        let warn_acl = AclCtx {
+            mode: OverlayAclMode::Warn,
+            policies: vec![OverlayPolicy {
+                id: None,
+                tenant_id: node_a.tenant_id,
+                name: "a-to-b-2222-only".to_string(),
+                enabled: true,
+                sources: vec![OverlaySelector::NodeId {
+                    node_id: node_a.id.unwrap(),
+                }],
+                via: vec![OverlayTarget::NodeId {
+                    node_id: node_b.id.unwrap(),
+                }],
+                destinations: granted_rules.clone(),
+                created_at: now,
+                updated_at: now,
+                deleted_at: None,
+            }],
+        };
+
+        // Recipient B seeing peer A in `warn`: `ingress_rules` MUST stay `None`
+        // (old nodes never drop), while `ingress_rules_preview` carries `[B:2222/tcp]`.
+        let a_for_b = shape_peer(
+            &warn_acl,
+            &node_b,
+            &src_b,
+            &node_a,
+            Some(&src_a),
+            true,
+            Zones::OFF,
+        )
+        .expect("warn mode never withholds a peer");
+        assert!(
+            a_for_b.ingress_rules.is_none(),
+            "warn mode must NEVER populate enforcing ingress_rules"
+        );
+        assert_eq!(
+            a_for_b.ingress_rules_preview,
+            Some(granted_rules),
+            "warn mode MUST populate ingress_rules_preview with compiled per-source rules"
+        );
+
+        // Recipient A seeing peer B in `warn`: permissive routes stay intact,
+        // `ingress_rules` is `None`, and `ingress_rules_preview` is `Some([])`
+        // (since B has no grant toward A).
+        let b_for_a = shape_peer(
+            &warn_acl,
+            &node_a,
+            &src_a,
+            &node_b,
+            Some(&src_b),
+            true,
+            Zones::OFF,
+        )
+        .expect("warn mode never withholds B");
+        assert_eq!(
+            b_for_a.routes,
+            vec!["10.77.0.0/24".to_string()],
+            "warn mode preserves permissive routes"
+        );
+        assert!(b_for_a.ingress_rules.is_none());
+        assert_eq!(b_for_a.ingress_rules_preview, Some(Vec::new()));
+
+        // Unrelated peer C is still visible in `warn` with `ingress_rules_preview = Some([])`.
+        let c_for_b = shape_peer(
+            &warn_acl,
+            &node_b,
+            &src_b,
+            &node_c,
+            Some(&src_c),
+            true,
+            Zones::OFF,
+        )
+        .expect("warn mode keeps C visible");
+        assert!(c_for_b.ingress_rules.is_none());
+        assert_eq!(c_for_b.ingress_rules_preview, Some(Vec::new()));
+
+        // In `off` mode, both fields stay `None`.
+        let off_acl = AclCtx {
+            mode: OverlayAclMode::Off,
+            policies: warn_acl.policies,
+        };
+        let a_for_b_off = shape_peer(
+            &off_acl,
+            &node_b,
+            &src_b,
+            &node_a,
+            Some(&src_a),
+            true,
+            Zones::OFF,
+        )
+        .unwrap();
+        assert!(a_for_b_off.ingress_rules.is_none());
+        assert!(a_for_b_off.ingress_rules_preview.is_none());
     }
 }
