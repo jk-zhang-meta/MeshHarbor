@@ -223,8 +223,6 @@ async fn socks_bridge(
 /// A literal IP passes straight through, so `%h` works whether the user wrote
 /// a device name or an address.
 pub async fn proxy(host: &str, port: u16) -> Result<()> {
-    use tokio::net::TcpStream;
-
     // An address is already an answer. Only a NAME needs the daemon, so a
     // proxy to a literal address keeps working when the daemon is busy.
     let literal = host.parse::<std::net::IpAddr>().ok();
@@ -241,20 +239,56 @@ pub async fn proxy(host: &str, port: u16) -> Result<()> {
         }
     };
 
-    let sock = TcpStream::connect((addr.as_str(), port))
-        .await
-        .with_context(|| {
-            let hint = match literal {
-                Some(ip) if !is_overlay_address(ip) => HOSTNAME_BEFORE_PERCENT_H,
-                _ => "",
-            };
-            format!("connecting to {addr}:{port}{hint}")
-        })?;
+    // T11 — a netstack node installs no OS route to the overlay, so an OS
+    // connect to a mesh address leaves by the default route and times out
+    // (os error 110: every `ProxyCommand mh proxy` on a netstack node failed).
+    // Ask the daemon for its SOCKS5 front exactly as `mh ssh` does, for every
+    // overlay destination. A non-overlay literal (an advertised subnet, or the
+    // `HostName` trap below) keeps the OS route and never asks the daemon.
+    let overlay_dst = literal.is_none_or(is_overlay_address);
+    let socks = if overlay_dst {
+        match localclient::overlay_socks_port().await {
+            Ok(p) => p,
+            // A literal keeps working when the daemon cannot be asked: it is
+            // the old behaviour, and right for an OS-TUN node.
+            Err(_) if literal.is_some() => None,
+            Err(e) => return Err(e),
+        }
+    } else {
+        None
+    };
+    let sock = dial(&addr, port, socks).await.with_context(|| {
+        let hint = match literal {
+            Some(ip) if !is_overlay_address(ip) => HOSTNAME_BEFORE_PERCENT_H,
+            _ => "",
+        };
+        format!("connecting to {addr}:{port}{hint}")
+    })?;
     // Nagle would add up to 40 ms to every keystroke of an interactive
     // session riding this pipe.
     let _ = sock.set_nodelay(true);
 
     pump(sock, tokio::io::stdin(), tokio::io::stdout()).await
+}
+
+/// Reach `addr:port` for [`proxy`]: through the daemon's overlay SOCKS5 front
+/// when it has one (netstack mode), else by the OS route (OS TUN). Like
+/// [`socks_bridge`], a SOCKS failure never falls back to an OS route — on a
+/// netstack node that route leads off the mesh.
+async fn dial(addr: &str, port: u16, socks: Option<u16>) -> Result<tokio::net::TcpStream> {
+    use tokio::net::TcpStream;
+    let Some(socks_port) = socks else {
+        return Ok(TcpStream::connect((addr, port)).await?);
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, socks_port))
+            .await
+            .context("connecting to the daemon's overlay SOCKS5 front")?;
+        tunnel_core::socks5::client_connect(&mut stream, addr, port).await?;
+        Ok::<_, anyhow::Error>(stream)
+    })
+    .await
+    .context("overlay SOCKS5 connection timed out")?
 }
 
 /// Appended to a failed connect when `%h` was an address the mesh does not
@@ -512,6 +546,63 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn t11_proxy_dial_on_a_netstack_node_goes_through_the_socks_front() {
+        // T11: on a netstack node `mh proxy` dialled the overlay address by the
+        // OS route, which does not exist there, so every `ProxyCommand mh
+        // proxy` timed out. With the daemon's front known, the dial must ask
+        // the front for the overlay target and carry bytes over it.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let socks = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socks_port = socks.local_addr().unwrap().port();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let server = async {
+                let (mut s, _) = socks.accept().await.unwrap();
+                assert_eq!(
+                    tunnel_core::socks5::accept_connect(&mut s).await.unwrap(),
+                    ("100.64.0.9".into(), 2222)
+                );
+                tunnel_core::socks5::reply(&mut s, tunnel_core::socks5::REP_SUCCESS).await;
+                s.write_all(b"SSH-2.0-t11\r\n").await.unwrap();
+            };
+            let (mut stream, ()) = tokio::join!(
+                async { dial("100.64.0.9", 2222, Some(socks_port)).await.unwrap() },
+                server
+            );
+            let mut banner = [0u8; 13];
+            stream.read_exact(&mut banner).await.unwrap();
+            assert_eq!(&banner, b"SSH-2.0-t11\r\n");
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn t11_proxy_dial_never_falls_back_to_the_os_route_after_a_socks_refusal() {
+        use tokio::net::TcpListener;
+        let trap = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = trap.local_addr().unwrap().port();
+        let socks = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socks_port = socks.local_addr().unwrap().port();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let server = async {
+                let (mut s, _) = socks.accept().await.unwrap();
+                let _ = tunnel_core::socks5::accept_connect(&mut s).await.unwrap();
+                tunnel_core::socks5::reply(&mut s, tunnel_core::socks5::REP_GENERAL_FAILURE).await;
+            };
+            let (res, ()) = tokio::join!(dial("127.0.0.1", target, Some(socks_port)), server);
+            assert!(res.is_err(), "a refused SOCKS CONNECT must fail the dial");
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            trap.into_std().unwrap().accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "the OS route must not be tried after the front refused"
+        );
     }
 
     #[tokio::test]

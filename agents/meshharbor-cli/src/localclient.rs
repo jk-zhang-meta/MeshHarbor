@@ -446,6 +446,16 @@ pub async fn ssh_target(target: &str) -> Result<(String, Option<u16>)> {
     Ok((node, socks))
 }
 
+/// The overlay SOCKS5 front `mh proxy` must dial through — the same answer
+/// `mh ssh` acts on ([`ssh_target`]). `None` on an OS-TUN node, whose overlay
+/// addresses the OS routes; an error when the daemon is in netstack mode but
+/// has not reported its front yet, so the caller never guesses an OS route.
+pub async fn overlay_socks_port() -> Result<Option<u16>> {
+    let mut client = localapi::connect().await.map_err(daemon_err)?;
+    let status = client.status().await.map_err(daemon_err)?;
+    ssh_socks_port(&status)
+}
+
 fn ssh_socks_port(status: &tunnel_core::localapi::NodeStatus) -> Result<Option<u16>> {
     let port = status
         .overlay_socks5_port
