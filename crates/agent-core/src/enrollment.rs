@@ -312,6 +312,7 @@ pub async fn enroll(inputs: EnrollInputs<'_>) -> Result<AgentConfig> {
         overlay_server_relay_strategy: None,
         overlay_derp_floor: None,
         overlay_stun_urls: None,
+        overlay_turn_relay: None,
         overlay_org_relay: None,
         overlay_netcheck: None,
         relay_server_enabled: None,

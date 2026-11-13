@@ -1415,6 +1415,30 @@ fn intercept_with_bridge_installer(
             let _ = evt_tx.try_send(OverlayEvent::ControlDetached);
             return None;
         }
+        // T12 — a host with the TURN tier switched off never dials a coturn
+        // worker. A pair grant stops here, before any allocation exists.
+        ServerMsg::OverlayRelayGrant { .. }
+            if !tunnel_core::overlay::direct::turn_relay_enabled() =>
+        {
+            static NOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !NOTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!(
+                    "overlay: TURN relay tier is off on this host (overlay_turn_relay = false) — \
+                     relay grants are ignored and no coturn worker is dialled"
+                );
+            }
+            return None;
+        }
+        // The warm grant also carries the netcheck measurement, which waits
+        // for it: forward it WITHOUT credentials, so the measurement completes
+        // with the relay band honestly unmeasured and nothing is allocated.
+        ServerMsg::OverlayWarmRelayGrant { .. }
+            if !tunnel_core::overlay::direct::turn_relay_enabled() =>
+        {
+            OverlayEvent::WarmRelayGrant {
+                ice_servers: Vec::new(),
+            }
+        }
         ServerMsg::OverlayRelayGrant {
             ice_servers,
             peer_node_id,
