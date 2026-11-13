@@ -534,6 +534,26 @@ pub(crate) fn inplace_relay_enabled() -> bool {
     *ON.get_or_init(|| crate::env::flag("OVERLAY_INPLACE_RELAY", true))
 }
 
+/// T9-2 kill switch: `MESHHARBORD_OVERLAY_ACL_REJECT_REPLY=0` disables
+/// returning rate-limited TCP RST / ICMP Administratively Prohibited frames
+/// over the arriving WireGuard carrier when an inbound packet is dropped by
+/// `IngressDeny::NotPermitted`.
+pub(crate) fn acl_reject_reply_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env::flag("OVERLAY_ACL_REJECT_REPLY", true))
+}
+
+/// T9-2 per-peer maximum ACL reject replies per 1-second window
+/// (`MESHHARBORD_OVERLAY_ACL_REJECT_RATE`, default `20`).
+pub(crate) fn acl_reject_rate_per_sec() -> u32 {
+    static RATE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *RATE.get_or_init(|| {
+        crate::env::node_env("OVERLAY_ACL_REJECT_RATE")
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(20)
+    })
+}
+
 /// F2 — a standby sink logs the first copy after this long without one.
 const STANDBY_SINK_LOG_GAP: Duration = Duration::from_secs(2);
 
@@ -738,6 +758,9 @@ pub struct PeerStats {
     /// per [`RPF_LOG_THROTTLE_MS`] so neither a spoofing flood nor a
     /// misconfigured subnet router turns a per-packet check into a log flood.
     rpf_logged_at: AtomicU64,
+    /// T9-2 — packed `(window_sec: u32, count: u32)` bucket rate-limiting
+    /// outbound TCP RST / ICMP Administratively Prohibited replies per peer.
+    acl_reject_bucket: AtomicU64,
     /// Passive loss of the WG stream this peer sends us, from the counters of
     /// the transport packets that authenticated ([`Self::note_rx_counter`]).
     /// `rx_ctr_span` grows by how far a session's highest counter advanced,
@@ -797,6 +820,37 @@ impl PeerStats {
         self.rx.fetch_add(1, Ordering::Relaxed);
         if self.biz_unanswered_since.load(Ordering::Relaxed) != 0 {
             self.biz_unanswered_since.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// T9-2 — claim one per-peer ACL reject-reply slot in the current 1 s window.
+    #[inline]
+    fn take_acl_reject_slot(&self, now_ms: u64) -> bool {
+        let rate = acl_reject_rate_per_sec();
+        if rate == 0 {
+            return false;
+        }
+        let win = (now_ms / 1000) as u32;
+        loop {
+            let cur = self.acl_reject_bucket.load(Ordering::Relaxed);
+            let cur_win = (cur >> 32) as u32;
+            let cur_cnt = (cur & 0xffff_ffff) as u32;
+            let next_cnt = if cur_win == win {
+                if cur_cnt >= rate {
+                    return false;
+                }
+                cur_cnt + 1
+            } else {
+                1
+            };
+            let next = ((win as u64) << 32) | (next_cnt as u64);
+            if self
+                .acl_reject_bucket
+                .compare_exchange_weak(cur, next, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return true;
+            }
         }
     }
 
@@ -1035,6 +1089,14 @@ impl Ingress {
     /// Counts and throttled-logs every failure; returns `false` (drop) ONLY in
     /// [`RpfMode::Enforce`].
     fn permits(&self, src: IpAddr, packet: &[u8]) -> bool {
+        self.permits_inner(src, packet, false).0
+    }
+
+    fn permits_with_reject(&self, src: IpAddr, packet: &[u8]) -> (bool, bool) {
+        self.permits_inner(src, packet, true)
+    }
+
+    fn permits_inner(&self, src: IpAddr, packet: &[u8], allow_reject: bool) -> (bool, bool) {
         // ONE tight sync block for every check. `SendState`'s guard is a std
         // (!Send) one, so the compiler rejects holding it across the
         // `tun_tx.send().await` below.
@@ -1044,7 +1106,7 @@ impl Ingress {
             let g = self.send.0.read().unwrap();
             let rules = g.ingress_acls.get(&self.peer).cloned();
             if off && rules.is_none() {
-                return true;
+                return (true, false);
             }
             // #18 — a packet addressed to THIS node is judged by the rules too,
             // unless it belongs to a flow already admitted (a reply).
@@ -1086,7 +1148,7 @@ impl Ingress {
             _ if !in_scope => IngressDeny::OutOfScope,
             _ if rule_denied => IngressDeny::NotPermitted,
             RpfVerdict::Deny(r) => IngressDeny::Rpf(r),
-            RpfVerdict::Allow => return true,
+            RpfVerdict::Allow => return (true, false),
         };
         // The precedence above makes this subset exact: OutOfScope and
         // NotPermitted win over Rpf, so `noroute` counts ONLY packets whose
@@ -1139,7 +1201,12 @@ impl Ingress {
                 );
             }
         }
-        !drop
+        let send_reject = allow_reject
+            && drop
+            && matches!(reason, IngressDeny::NotPermitted)
+            && acl_reject_reply_enabled()
+            && self.stats.take_acl_reject_slot(now);
+        (!drop, send_reject)
     }
 }
 
@@ -7169,22 +7236,48 @@ pub(crate) fn decap_inbound(
         // peer with a live session write an arbitrary source into our TUN.
         TunnResult::WriteToTunnelV4(pkt, src) => {
             flush_ready_session_queue(t);
-            if ingress.permits(IpAddr::V4(src), pkt) {
+            let (permitted, send_reject) = ingress.permits_with_reject(IpAddr::V4(src), pkt);
+            if permitted {
                 stats.note_business_rx();
                 stats.on_demand.on_inbound_business_packet(now_ns);
                 let (at, len) = (pkt.as_ptr() as usize, pkt.len());
                 let span = (at - out.as_ptr() as usize, len);
                 delivered = Some(into_packet(out, span));
+            } else if send_reject
+                && let Some(reply_ip) = super::ingress::build_acl_reject_packet(pkt)
+            {
+                let mut enc = vec![0u8; WG_BUF];
+                if let TunnResult::WriteToNetwork(b) = t.encapsulate(&reply_ip, &mut enc) {
+                    let frame = b.to_vec();
+                    let c = carrier.clone();
+                    let send_stats = stats.clone();
+                    tokio::spawn(async move {
+                        let _ = send_wg_recorded(&c, &send_stats, &frame).await;
+                    });
+                }
             }
         }
         TunnResult::WriteToTunnelV6(pkt, src) => {
             flush_ready_session_queue(t);
-            if ingress.permits(IpAddr::V6(src), pkt) {
+            let (permitted, send_reject) = ingress.permits_with_reject(IpAddr::V6(src), pkt);
+            if permitted {
                 stats.note_business_rx();
                 stats.on_demand.on_inbound_business_packet(now_ns);
                 let (at, len) = (pkt.as_ptr() as usize, pkt.len());
                 let span = (at - out.as_ptr() as usize, len);
                 delivered = Some(into_packet(out, span));
+            } else if send_reject
+                && let Some(reply_ip) = super::ingress::build_acl_reject_packet(pkt)
+            {
+                let mut enc = vec![0u8; WG_BUF];
+                if let TunnResult::WriteToNetwork(b) = t.encapsulate(&reply_ip, &mut enc) {
+                    let frame = b.to_vec();
+                    let c = carrier.clone();
+                    let send_stats = stats.clone();
+                    tokio::spawn(async move {
+                        let _ = send_wg_recorded(&c, &send_stats, &frame).await;
+                    });
+                }
             }
         }
         TunnResult::Done => {
@@ -8373,6 +8466,105 @@ mod tests {
         assert!(
             delivered(&mut rx_b).await.is_some(),
             "an ACK segment of an established connection"
+        );
+    }
+
+    /// T9-2 — when `Ingress::permits` drops an inbound packet for
+    /// `IngressDeny::NotPermitted`, B sends a per-peer rate-limited reject
+    /// packet (TCP RST for TCP SYN, ICMPv4 Admin Prohibited for UDP) back over
+    /// the arriving WireGuard carrier while still incrementing `rx_denied` on
+    /// every denied packet, so A gets immediate refusal and A's `data_rx_at` +
+    /// business `rx` both advance (preventing false one-way convictions).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn t9_2_acl_not_permitted_sends_rate_limited_reject_on_source_carrier() {
+        use meshharbor_remote_control::models::{PortRange, ProtocolKind};
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+        let (mut dev_a, mut rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        dev_a.set_local_scope(Some(IP_A), &[]);
+        dev_b.set_local_scope(Some(IP_B), &[]);
+
+        // One-way grant A -> B:22/tcp: A has `Some([])` for B, B has `:22/tcp` for A.
+        let mut np_b_on_a = netmap_peer_for(&b, IP_B);
+        np_b_on_a.ingress_rules = Some(Vec::new());
+        dev_a.sync_peer_ingress(&HashMap::from([(np_b_on_a.node_id, np_b_on_a)]));
+
+        let mut np_a_on_b = netmap_peer_for(&a, IP_A);
+        np_a_on_b.ingress_rules = Some(vec![OverlayRule {
+            cidr: format!("{IP_B}/32"),
+            port_range: PortRange { low: 22, high: 22 },
+            proto: ProtocolKind::Tcp,
+        }]);
+        dev_b.sync_peer_ingress(&HashMap::from([(np_a_on_b.node_id, np_a_on_b)]));
+
+        let (pk_a, pk_b) = (a.public.to_bytes(), b.public.to_bytes());
+        dev_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a.clone(), addr_b), true);
+        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b.clone(), addr_a), false);
+        wait_connected(&dev_a, &pk_b).await;
+
+        let (_, rx_before) = dev_a.peer_business_traffic(&pk_b).unwrap();
+        let before_poke = Instant::now();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        // 1. Denied TCP SYN to B:3389 -> dropped on B, encrypted TCP RST arrives on A.
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_l4(IP_A, IP_B, false, (49152, 3389), 0x02),
+        )
+        .await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), rx_b.recv())
+                .await
+                .is_err(),
+            "denied TCP SYN must not reach B's TUN"
+        );
+        let rst = tokio::time::timeout(Duration::from_secs(2), rx_a.recv())
+            .await
+            .expect("A must receive encrypted TCP RST from B over direct carrier")
+            .unwrap();
+        assert_eq!(rst[9], 6, "TCP protocol");
+        assert_eq!(rst[33] & 0x04, 0x04, "TCP RST flag set");
+        assert_eq!(dev_b.peer_rx_denied(&pk_a), 1);
+        assert!(
+            dev_a.peer_data_rx_since(&pk_b, before_poke),
+            "reject frame stamps A's data_rx_at (#279)"
+        );
+        let (_, rx_after) = dev_a.peer_business_traffic(&pk_b).unwrap();
+        assert!(
+            rx_after > rx_before,
+            "reject packet passes admitted_reply on A and advances business rx"
+        );
+
+        // 2. Burst of 50 denied UDP datagrams within one second: rx_denied counts
+        //    every single packet (1 + 50 = 51), while reject replies are capped by
+        //    the per-peer rate limit (<= 20/s).
+        for i in 0..50u16 {
+            let _ = dev_a
+                .send_to_peer(&pk_b, &synthetic_l4(IP_A, IP_B, true, (50000 + i, 9999), 0))
+                .await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            dev_b.peer_rx_denied(&pk_a),
+            51,
+            "rx_denied must still count every denied packet regardless of rate limit"
+        );
+        let mut icmp_replies = 0usize;
+        while let Ok(Some(pkt)) = tokio::time::timeout(Duration::from_millis(50), rx_a.recv()).await
+        {
+            if pkt.get(9) == Some(&1) && pkt.get(20) == Some(&3) && pkt.get(21) == Some(&13) {
+                icmp_replies += 1;
+            }
+        }
+        assert!(
+            (1..=20).contains(&icmp_replies),
+            "expected rate-limited ICMP Admin Prohibited replies in 1..=20, got {icmp_replies}"
         );
     }
 

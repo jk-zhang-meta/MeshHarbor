@@ -403,6 +403,226 @@ pub fn admitted_reply(packet: &[u8], flows: &ReplyFlows, now_ms: u64) -> bool {
     }
 }
 
+fn internet_checksum(chunks: &[&[u8]]) -> u16 {
+    let mut sum: u32 = 0;
+    let mut carry_byte: Option<u8> = None;
+    for chunk in chunks {
+        let mut slice = *chunk;
+        if let Some(prev) = carry_byte.take() {
+            if let Some((&first, rest)) = slice.split_first() {
+                sum += u16::from_be_bytes([prev, first]) as u32;
+                slice = rest;
+            } else {
+                carry_byte = Some(prev);
+                continue;
+            }
+        }
+        let mut chunks_exact = slice.chunks_exact(2);
+        for pair in &mut chunks_exact {
+            sum += u16::from_be_bytes([pair[0], pair[1]]) as u32;
+        }
+        if let Some(&rem) = chunks_exact.remainder().first() {
+            carry_byte = Some(rem);
+        }
+    }
+    if let Some(rem) = carry_byte {
+        sum += u16::from_be_bytes([rem, 0]) as u32;
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn build_tcp_rst_l4(l4: &[u8]) -> Option<[u8; 20]> {
+    if l4.len() < 20 {
+        return None;
+    }
+    let flags = l4[13];
+    // RFC 793 §3.4: an incoming segment carrying RST must NEVER elicit a RST.
+    if flags & 0x04 != 0 {
+        return None;
+    }
+    let in_seq = u32::from_be_bytes(l4[4..8].try_into().ok()?);
+    let in_ack = u32::from_be_bytes(l4[8..12].try_into().ok()?);
+    let tcp_hdr_len = ((l4[12] >> 4) as usize) * 4;
+    if tcp_hdr_len < 20 || l4.len() < tcp_hdr_len {
+        return None;
+    }
+    let seg_data_len = (l4.len() - tcp_hdr_len) as u32;
+    let (out_seq, out_ack, out_flags) = if flags & 0x10 != 0 {
+        (in_ack, 0u32, 0x04u8)
+    } else {
+        let syn_fin = u32::from(flags & 0x02 != 0) + u32::from(flags & 0x01 != 0);
+        (
+            0u32,
+            in_seq.wrapping_add(seg_data_len).wrapping_add(syn_fin),
+            0x14u8,
+        )
+    };
+    let mut tcp = [0u8; 20];
+    tcp[0..2].copy_from_slice(&l4[2..4]);
+    tcp[2..4].copy_from_slice(&l4[0..2]);
+    tcp[4..8].copy_from_slice(&out_seq.to_be_bytes());
+    tcp[8..12].copy_from_slice(&out_ack.to_be_bytes());
+    tcp[12] = 0x50;
+    tcp[13] = out_flags;
+    Some(tcp)
+}
+
+/// T9-2 — build a minimal, checksum-valid L3/L4 reject packet (TCP RST for
+/// non-RST TCP segments; ICMPv4 Type 3 Code 13 / ICMPv6 Type 1 Code 1
+/// Administratively Prohibited for non-TCP packets that are not themselves
+/// ICMP errors) to return over the source WireGuard carrier when an inbound
+/// packet is dropped by `IngressDeny::NotPermitted`.
+pub fn build_acl_reject_packet(packet: &[u8]) -> Option<Vec<u8>> {
+    match packet.first()? >> 4 {
+        4 => {
+            if packet.len() < 20 {
+                return None;
+            }
+            let ihl = ((packet[0] & 0x0f) as usize) * 4;
+            if ihl < 20 || packet.len() < ihl {
+                return None;
+            }
+            let total_len = u16::from_be_bytes([packet[2], packet[3]]) as usize;
+            let pkt_len = if total_len >= ihl {
+                total_len.min(packet.len())
+            } else {
+                packet.len()
+            };
+            let packet = &packet[..pkt_len];
+            // RFC 1812 §4.3.2.7: never generate an error/reject for a non-first fragment.
+            let frag_off = (((packet[6] & 0x1f) as u16) << 8) | packet[7] as u16;
+            if frag_off != 0 {
+                return None;
+            }
+            let src: [u8; 4] = packet[12..16].try_into().ok()?;
+            let dst: [u8; 4] = packet[16..20].try_into().ok()?;
+            if src == [0, 0, 0, 0]
+                || src == [255, 255, 255, 255]
+                || dst == [255, 255, 255, 255]
+                || (src[0] & 0xf0) == 0xe0
+                || (dst[0] & 0xf0) == 0xe0
+            {
+                return None;
+            }
+            let proto = packet[9];
+            let l4 = &packet[ihl..];
+            if proto == 6 {
+                let mut tcp = build_tcp_rst_l4(l4)?;
+                let pseudo = [
+                    dst[0], dst[1], dst[2], dst[3], src[0], src[1], src[2], src[3], 0, 6, 0, 20,
+                ];
+                let tcp_csum = internet_checksum(&[&pseudo, &tcp]);
+                tcp[16..18].copy_from_slice(&tcp_csum.to_be_bytes());
+                let mut out = vec![0u8; 40];
+                out[0] = 0x45;
+                out[2..4].copy_from_slice(&40u16.to_be_bytes());
+                out[6] = 0x40; // DF
+                out[8] = 64; // TTL
+                out[9] = 6; // TCP
+                out[12..16].copy_from_slice(&dst);
+                out[16..20].copy_from_slice(&src);
+                let ip_csum = internet_checksum(&[&out[..20]]);
+                out[10..12].copy_from_slice(&ip_csum.to_be_bytes());
+                out[20..40].copy_from_slice(&tcp);
+                Some(out)
+            } else {
+                // RFC 1812 §4.3.2.7: never emit an ICMP error for any ICMP packet
+                // other than an Echo Request (type 8).
+                if proto == 1 && l4.first() != Some(&8) {
+                    return None;
+                }
+                let quote_len = packet.len().min(ihl + 64).min(576 - 28);
+                let quoted = &packet[..quote_len];
+                let icmp_len = 8 + quoted.len();
+                let total = (20 + icmp_len) as u16;
+                let mut out = vec![0u8; total as usize];
+                out[0] = 0x45;
+                out[2..4].copy_from_slice(&total.to_be_bytes());
+                out[6] = 0x40;
+                out[8] = 64;
+                out[9] = 1; // ICMPv4
+                out[12..16].copy_from_slice(&dst);
+                out[16..20].copy_from_slice(&src);
+                let ip_csum = internet_checksum(&[&out[..20]]);
+                out[10..12].copy_from_slice(&ip_csum.to_be_bytes());
+                out[20] = 3; // Destination Unreachable
+                out[21] = 13; // Communication Administratively Prohibited
+                out[28..].copy_from_slice(quoted);
+                let icmp_csum = internet_checksum(&[&out[20..]]);
+                out[22..24].copy_from_slice(&icmp_csum.to_be_bytes());
+                Some(out)
+            }
+        }
+        6 => {
+            if packet.len() < 40 {
+                return None;
+            }
+            let payload_len = u16::from_be_bytes([packet[4], packet[5]]) as usize;
+            let pkt_len = 40usize.saturating_add(payload_len).min(packet.len());
+            if pkt_len < 40 {
+                return None;
+            }
+            let packet = &packet[..pkt_len];
+            let (nh, Some(off)) = l4_header(packet)? else {
+                return None;
+            };
+            if off > packet.len() {
+                return None;
+            }
+            let src: [u8; 16] = packet[8..24].try_into().ok()?;
+            let dst: [u8; 16] = packet[24..40].try_into().ok()?;
+            if src == [0u8; 16] || src[0] == 0xff || dst[0] == 0xff {
+                return None;
+            }
+            let l4 = &packet[off..];
+            if nh == 6 {
+                let mut tcp = build_tcp_rst_l4(l4)?;
+                let upper_len = 20u32.to_be_bytes();
+                let next_hdr = [0, 0, 0, 6u8];
+                let tcp_csum = internet_checksum(&[&dst, &src, &upper_len, &next_hdr, &tcp]);
+                tcp[16..18].copy_from_slice(&tcp_csum.to_be_bytes());
+                let mut out = vec![0u8; 60];
+                out[0] = 0x60;
+                out[4..6].copy_from_slice(&20u16.to_be_bytes());
+                out[6] = 6;
+                out[7] = 64;
+                out[8..24].copy_from_slice(&dst);
+                out[24..40].copy_from_slice(&src);
+                out[40..60].copy_from_slice(&tcp);
+                Some(out)
+            } else {
+                // RFC 4443 §2.4(e): only allow ICMPv6 Echo Request (type 128)
+                // among ICMPv6 inputs; never reply to ICMPv6 errors or ND.
+                if nh == 58 && l4.first() != Some(&128) {
+                    return None;
+                }
+                let quote_len = packet.len().min(off + 64).min(1280 - 48);
+                let quoted = &packet[..quote_len];
+                let icmp_len = 8 + quoted.len();
+                let mut out = vec![0u8; 40 + icmp_len];
+                out[0] = 0x60;
+                out[4..6].copy_from_slice(&(icmp_len as u16).to_be_bytes());
+                out[6] = 58; // ICMPv6
+                out[7] = 64;
+                out[8..24].copy_from_slice(&dst);
+                out[24..40].copy_from_slice(&src);
+                out[40] = 1; // Destination Unreachable
+                out[41] = 1; // Communication with destination administratively prohibited
+                out[48..].copy_from_slice(quoted);
+                let upper_len = (icmp_len as u32).to_be_bytes();
+                let next_hdr = [0, 0, 0, 58u8];
+                let icmp_csum = internet_checksum(&[&dst, &src, &upper_len, &next_hdr, &out[40..]]);
+                out[42..44].copy_from_slice(&icmp_csum.to_be_bytes());
+                Some(out)
+            }
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,5 +911,87 @@ mod tests {
     fn a_malformed_cidr_never_grants() {
         let rules = [any_rule("not-a-cidr")];
         assert!(!rules_permit(&rules, dst(), None));
+    }
+
+    #[test]
+    fn t9_2_build_acl_reject_packet_tcp_rst_and_icmp_admin_prohibited() {
+        let flows = ReplyFlows::default();
+
+        // 1. Bare TCP SYN (IPv4) -> 40-byte IPv4 TCP RST|ACK with ack = seq + 1,
+        //    admitted as a reply on the initiator's side.
+        let mut syn = pkt4(6, PEER, ME, &tcp(51234, 3389, 0x02));
+        syn[24..28].copy_from_slice(&1000u32.to_be_bytes());
+        let rst = build_acl_reject_packet(&syn).expect("TCP SYN must yield TCP RST");
+        assert_eq!(rst.len(), 40);
+        assert_eq!(rst[9], 6);
+        assert_eq!(&rst[12..16], &ME, "src swapped to responder");
+        assert_eq!(&rst[16..20], &PEER, "dst swapped to initiator");
+        assert_eq!(u16::from_be_bytes([rst[20], rst[21]]), 3389);
+        assert_eq!(u16::from_be_bytes([rst[22], rst[23]]), 51234);
+        assert_eq!(rst[33], 0x14, "RST|ACK for bare SYN");
+        assert_eq!(u32::from_be_bytes(rst[28..32].try_into().unwrap()), 1001);
+        assert!(
+            admitted_reply(&rst, &flows, 0),
+            "generated TCP RST must pass admitted_reply on the initiator"
+        );
+
+        // 2. Incoming TCP RST must NEVER elicit a reply RST (RFC 793 loop guard).
+        let in_rst = pkt4(6, PEER, ME, &tcp(51234, 3389, 0x04));
+        assert!(build_acl_reject_packet(&in_rst).is_none());
+
+        // 3. Denied UDP datagram (IPv4) -> ICMPv4 Type 3 Code 13 (Admin Prohibited),
+        //    admitted as an ICMP error on the initiator's side.
+        let u = pkt4(17, PEER, ME, &udp(53000, 9999));
+        let ic = build_acl_reject_packet(&u).expect("UDP must yield ICMPv4 Admin Prohibited");
+        assert_eq!(ic[9], 1, "ICMPv4");
+        assert_eq!(ic[20], 3, "Destination Unreachable");
+        assert_eq!(ic[21], 13, "Communication Administratively Prohibited");
+        assert!(
+            admitted_reply(&ic, &flows, 0),
+            "generated ICMPv4 Admin Prohibited must pass admitted_reply on the initiator"
+        );
+
+        // 4. Incoming ICMP error must NEVER elicit an ICMP error (RFC 1812 loop guard).
+        let in_icmp_err = pkt4(1, PEER, ME, &icmp(3, 0));
+        assert!(build_acl_reject_packet(&in_icmp_err).is_none());
+
+        // 5. Checksums verify cleanly (ones-complement folded sum == 0) + IPv6 coverage.
+        assert_eq!(internet_checksum(&[&rst[..20]]), 0, "IPv4 header csum");
+        assert_eq!(internet_checksum(&[&ic[..20]]), 0, "ICMPv4 IPv4 hdr csum");
+        assert_eq!(internet_checksum(&[&ic[20..]]), 0, "ICMPv4 body csum");
+        let me6: [u8; 16] = "fd72:6f6f:6d6c::6440:2"
+            .parse::<std::net::Ipv6Addr>()
+            .unwrap()
+            .octets();
+        let peer6: [u8; 16] = "fd72:6f6f:6d6c::6440:7"
+            .parse::<std::net::Ipv6Addr>()
+            .unwrap()
+            .octets();
+        let mut syn6 = vec![0u8; 40];
+        syn6[0] = 0x60;
+        syn6[4..6].copy_from_slice(&20u16.to_be_bytes());
+        syn6[6] = 6;
+        syn6[7] = 64;
+        syn6[8..24].copy_from_slice(&peer6);
+        syn6[24..40].copy_from_slice(&me6);
+        syn6.extend_from_slice(&tcp(49000, 3389, 0x02));
+        let rst6 = build_acl_reject_packet(&syn6).expect("IPv6 TCP SYN must yield TCP RST");
+        assert_eq!(rst6.len(), 60);
+        assert_eq!(rst6[6], 6);
+        assert!(admitted_reply(&rst6, &flows, 0));
+        let mut u6 = vec![0u8; 40];
+        u6[0] = 0x60;
+        u6[4..6].copy_from_slice(&8u16.to_be_bytes());
+        u6[6] = 17;
+        u6[7] = 64;
+        u6[8..24].copy_from_slice(&peer6);
+        u6[24..40].copy_from_slice(&me6);
+        u6.extend_from_slice(&udp(49001, 9999));
+        let ic6 =
+            build_acl_reject_packet(&u6).expect("IPv6 UDP must yield ICMPv6 Admin Prohibited");
+        assert_eq!(ic6[6], 58);
+        assert_eq!(ic6[40], 1);
+        assert_eq!(ic6[41], 1);
+        assert!(admitted_reply(&ic6, &flows, 0));
     }
 }
