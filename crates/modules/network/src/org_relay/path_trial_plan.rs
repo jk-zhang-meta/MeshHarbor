@@ -166,24 +166,23 @@ pub(super) async fn plan_reusing(
         .await
         .map_err(|_| D::PolicyUnreadable)?;
     if acl.enforcing() {
-        for (source, destination) in [(&fresh_a, &fresh_b), (&fresh_b, &fresh_a)] {
-            let source = try_overlay_source_of(state, source)
-                .await
-                .map_err(|_| D::PolicyUnreadable)?;
-            let routes = destination.effective_routes();
-            if !evaluate_overlay(
-                &acl.policies,
-                &source,
-                OverlayPeerRef {
-                    node_id: destination.id.ok_or(D::PeerUnsupported)?,
-                    overlay_ip: &destination.overlay_ip,
-                    approved_routes: &routes,
-                },
-            )
-            .visible
-            {
-                return Err(D::AclDenied);
-            }
+        let (Some(_), Some(_)) = (fresh_a.id, fresh_b.id) else {
+            return Err(D::PeerUnsupported);
+        };
+        let src_a = try_overlay_source_of(state, &fresh_a)
+            .await
+            .map_err(|_| D::PolicyUnreadable)?;
+        let src_b = try_overlay_source_of(state, &fresh_b)
+            .await
+            .map_err(|_| D::PolicyUnreadable)?;
+        if !crate::overlay::pair_any_direction_visible(
+            &acl.policies,
+            &fresh_a,
+            &src_a,
+            &fresh_b,
+            &src_b,
+        ) {
+            return Err(D::AclDenied);
         }
     }
     let prepared = path_candidate::prepare_reusing(

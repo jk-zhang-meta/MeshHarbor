@@ -1065,14 +1065,21 @@ async fn handle_overlay_join(
             joiner_zone,
             business_isolation::rides_lines(state, peer),
         );
-        let (upserts, removes) =
-            match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, true, zones) {
-                Some(mut u) => {
-                    stamp_row(state, &mut u, peer, &self_node, verdict);
-                    (vec![u], vec![])
-                }
-                None => (vec![], vec![self_node.id.unwrap_or_default()]),
-            };
+        let (upserts, removes) = match shape_peer(
+            &acl,
+            peer,
+            &peer_src,
+            &self_node,
+            joiner_ingress,
+            true,
+            zones,
+        ) {
+            Some(mut u) => {
+                stamp_row(state, &mut u, peer, &self_node, verdict);
+                (vec![u], vec![])
+            }
+            None => (vec![], vec![self_node.id.unwrap_or_default()]),
+        };
         send_to_node(
             state,
             peer,
@@ -1347,6 +1354,7 @@ async fn try_complete_join_netmap(
         );
         let (upserts, removes) = match shape_peer(
             &acl,
+            peer,
             &peer_src,
             &self_node,
             joiner_ingress,
@@ -1676,18 +1684,10 @@ async fn handle_org_relay_discover(
         let Ok(source) = try_overlay_source_of(state, &requester).await else {
             return;
         };
-        let routes = peer.effective_routes();
-        if !evaluate_overlay(
-            &acl.policies,
-            &source,
-            OverlayPeerRef {
-                node_id: peer_node_id,
-                overlay_ip: &peer.overlay_ip,
-                approved_routes: &routes,
-            },
-        )
-        .visible
-        {
+        let Ok(peer_source) = try_overlay_source_of(state, &peer).await else {
+            return;
+        };
+        if !pair_any_direction_visible(&acl.policies, &requester, &source, &peer, &peer_source) {
             return;
         }
     }
@@ -1741,18 +1741,10 @@ async fn handle_org_relay_fallback_request(
         let Ok(source) = try_overlay_source_of(state, &requester).await else {
             return;
         };
-        let routes = peer.effective_routes();
-        if !evaluate_overlay(
-            &acl.policies,
-            &source,
-            OverlayPeerRef {
-                node_id: peer_node_id,
-                overlay_ip: &peer.overlay_ip,
-                approved_routes: &routes,
-            },
-        )
-        .visible
-        {
+        let Ok(peer_source) = try_overlay_source_of(state, &peer).await else {
+            return;
+        };
+        if !pair_any_direction_visible(&acl.policies, &requester, &source, &peer, &peer_source) {
             return;
         }
     }
@@ -1815,18 +1807,8 @@ async fn handle_overlay_relay_request(
     let acl = load_acl(state, self_node.tenant_id).await;
     if !matches!(acl.mode, OverlayAclMode::Off) {
         let src = overlay_source_of(state, &self_node).await;
-        // FR-97 P0b — the same offered set the netmap fans.
-        let routes = peer.effective_routes();
-        let access = evaluate_overlay(
-            &acl.policies,
-            &src,
-            OverlayPeerRef {
-                node_id: peer_node_id,
-                overlay_ip: &peer.overlay_ip,
-                approved_routes: &routes,
-            },
-        );
-        if !access.visible {
+        let peer_src = overlay_source_of(state, &peer).await;
+        if !pair_any_direction_visible(&acl.policies, &self_node, &src, &peer, &peer_src) {
             if acl.enforcing() {
                 warn!(%self_id, peer = %peer_node_id,
                     "overlay acl: relay_request for a peer this node may not reach; refusing");
@@ -3068,7 +3050,7 @@ async fn fan_upsert_shaped(
             business_isolation::rides_lines(state, peer),
         );
         let (upserts, removes) =
-            match shape_peer(&acl, &src, node, node_src.as_ref(), reachable, zones) {
+            match shape_peer(&acl, peer, &src, node, node_src.as_ref(), reachable, zones) {
                 Some(mut u) => {
                     stamp_row(state, &mut u, peer, node, verdict);
                     (vec![u], vec![])
@@ -3103,6 +3085,7 @@ async fn fan_upsert_shaped(
             );
             if let Some(mut r) = shape_peer(
                 &acl,
+                node,
                 rsrc,
                 peer,
                 peer_src_arg,
@@ -3211,6 +3194,7 @@ async fn fan_pair_rows(
     if (prefer.is_some() || a.supports_server_relay_strategy)
         && let Some(mut row) = shape_peer(
             &acl,
+            a,
             &a_src,
             b,
             if enforcing { Some(&b_src) } else { None },
@@ -3242,6 +3226,7 @@ async fn fan_pair_rows(
     if (prefer.is_some() || b.supports_server_relay_strategy)
         && let Some(mut row) = shape_peer(
             &acl,
+            b,
             &b_src,
             a,
             if enforcing { Some(&a_src) } else { None },
@@ -4187,6 +4172,7 @@ pub async fn shape_full_netmap_with_lines(
         };
         if let Some(mut p) = shape_peer(
             &acl,
+            self_node,
             &self_src,
             n,
             peer_src.as_ref(),
@@ -4236,8 +4222,67 @@ pub async fn shape_full_netmap_with_lines(
     }
 }
 
+/// T9-1 — feature switch (`MESHHARBOR__OVERLAY__BIDIR_PEER_VISIBILITY`, default
+/// `true`): under `enforce`, a one-way grant (`A -> B` or `B -> A`) makes both
+/// nodes mutually visible in netmaps, DERP allow tables, and pair relay gates
+/// so their WireGuard handshake and return packets work, while keeping routes
+/// and new-flow ingress unidirectional via `ingress_rules`.
+pub(crate) fn bidir_peer_visibility_enabled() -> bool {
+    std::env::var("MESHHARBOR__OVERLAY__BIDIR_PEER_VISIBILITY")
+        .ok()
+        .map(|v| {
+            !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no"
+            )
+        })
+        .unwrap_or(true)
+}
+
+/// T9-1 — pair-level visibility check composed from `evaluate_overlay` in both
+/// directions (without altering `evaluate_overlay` itself): true iff `a -> b`
+/// is visible OR (`bidir_peer_visibility_enabled()` and `b -> a` is visible).
+pub(crate) fn pair_any_direction_visible(
+    policies: &[OverlayPolicy],
+    a: &OverlayNode,
+    a_src: &OverlaySource,
+    b: &OverlayNode,
+    b_src: &OverlaySource,
+) -> bool {
+    let b_routes = b.effective_routes();
+    if evaluate_overlay(
+        policies,
+        a_src,
+        OverlayPeerRef {
+            node_id: b.id.unwrap_or_default(),
+            overlay_ip: &b.overlay_ip,
+            approved_routes: &b_routes,
+        },
+    )
+    .visible
+    {
+        return true;
+    }
+    if !bidir_peer_visibility_enabled() {
+        return false;
+    }
+    let a_routes = a.effective_routes();
+    evaluate_overlay(
+        policies,
+        b_src,
+        OverlayPeerRef {
+            node_id: a.id.unwrap_or_default(),
+            overlay_ip: &a.overlay_ip,
+            approved_routes: &a_routes,
+        },
+    )
+    .visible
+}
+
+#[allow(clippy::too_many_arguments)]
 fn shape_peer(
     acl: &AclCtx,
+    recipient: &OverlayNode,
     src: &OverlaySource,
     peer: &OverlayNode,
     peer_src: Option<&OverlaySource>,
@@ -4247,13 +4292,21 @@ fn shape_peer(
     if !peer.is_key_authorized_at(bson::DateTime::now()) {
         return None;
     }
-    let unbound;
-    let peer = match routes_outside_their_zone(peer, zones) {
+    let unbound_peer;
+    let peer = match routes_outside_their_zone_for(peer, zones.mode, zones.peer) {
         Some(p) => {
-            unbound = p;
-            &unbound
+            unbound_peer = p;
+            &unbound_peer
         }
         None => peer,
+    };
+    let unbound_recipient;
+    let recipient = match routes_outside_their_zone_for(recipient, zones.mode, zones.recipient) {
+        Some(r) => {
+            unbound_recipient = r;
+            &unbound_recipient
+        }
+        None => recipient,
     };
     // MeshHarbor #21 exception — a cross-zone peer an approved line connects
     // is shaped like any other (the ACL still decides), then stripped to the
@@ -4269,23 +4322,28 @@ fn shape_peer(
         }
         debug!(source = %src.node_id, peer = %peer.name, ?zones,
             "business isolation: peer shown backbone-only (an approved cross-border line)");
-        return shape_peer_zoned(acl, src, peer, peer_src, reachable, Zones::OFF).map(line_only);
+        return shape_peer_zoned(acl, recipient, src, peer, peer_src, reachable, Zones::OFF)
+            .map(line_only);
     }
-    shape_peer_zoned(acl, src, peer, peer_src, reachable, zones)
+    shape_peer_zoned(acl, recipient, src, peer, peer_src, reachable, zones)
 }
 
-/// v039 GEO-06 — `peer` without its routes, when its route approval is bound
+/// v039 GEO-06 — `node` without its routes, when its route approval is bound
 /// to a zone it is not observed in under `enforce`: a router that roamed (or
 /// whose zone evidence is gone) keeps its peer entry but offers nothing, so
 /// it never claims a private CIDR another zone's router serves.
-fn routes_outside_their_zone(peer: &OverlayNode, zones: Zones) -> Option<OverlayNode> {
-    let bound = peer.routes_zone.as_deref()?;
-    (zones.mode == business_isolation::Mode::Enforce
-        && !peer.approved_routes.is_empty()
-        && zones.peer.map(business_isolation::zone_tag) != Some(bound))
+fn routes_outside_their_zone_for(
+    node: &OverlayNode,
+    mode: business_isolation::Mode,
+    observed: Option<meshharbor_core::business_authority::BusinessZone>,
+) -> Option<OverlayNode> {
+    let bound = node.routes_zone.as_deref()?;
+    (mode == business_isolation::Mode::Enforce
+        && !node.approved_routes.is_empty()
+        && observed.map(business_isolation::zone_tag) != Some(bound))
     .then(|| OverlayNode {
         approved_routes: Vec::new(),
-        ..peer.clone()
+        ..node.clone()
     })
 }
 
@@ -4352,8 +4410,10 @@ fn line_only(mut p: NetmapPeer) -> NetmapPeer {
     p
 }
 
+#[allow(clippy::too_many_arguments)]
 fn shape_peer_zoned(
     acl: &AclCtx,
+    recipient: &OverlayNode,
     src: &OverlaySource,
     peer: &OverlayNode,
     peer_src: Option<&OverlaySource>,
@@ -4409,22 +4469,44 @@ fn shape_peer_zoned(
             approved_routes: &routes,
         },
     );
+    // T9-1 — compose reverse visibility (`peer -> recipient`) at the caller so
+    // a one-way grant installs the WG peer on BOTH ends while keeping routes
+    // and new-flow ingress unidirectional.
+    let reverse_visible = !access.visible
+        && bidir_peer_visibility_enabled()
+        && peer_src.is_some_and(|ps| {
+            let recipient_routes = recipient.effective_routes();
+            evaluate_overlay(
+                &acl.policies,
+                ps,
+                OverlayPeerRef {
+                    node_id: src.node_id,
+                    overlay_ip: &recipient.overlay_ip,
+                    approved_routes: &recipient_routes,
+                },
+            )
+            .visible
+        });
     if !acl.enforcing() {
-        if !access.visible {
+        if !access.visible && !reverse_visible {
             debug!(source = %src.node_id, peer = %peer.name,
                 "overlay acl [warn]: would WITHHOLD peer");
-        } else if access.routes.len() != routes.len() {
+        } else if access.visible && access.routes.len() != routes.len() {
             debug!(source = %src.node_id, peer = %peer.name,
                 granted = access.routes.len(), approved = routes.len(),
                 "overlay acl [warn]: would narrow routes");
         }
         return Some(to_netmap_peer(peer, reachable));
     }
-    if !access.visible {
+    if !access.visible && !reverse_visible {
         return None;
     }
     let mut shaped = to_netmap_peer(peer, reachable);
-    shaped.routes = access.routes;
+    shaped.routes = if access.visible {
+        access.routes
+    } else {
+        Vec::new()
+    };
     // P4 — per-source ingress rules: what THIS peer may address through the
     // recipient, including the port/proto dimensions `routes` cannot carry.
     // Always `Some` when compiled, even when empty — an empty grant is a DENY
@@ -5000,21 +5082,22 @@ mod tests {
                 deleted_at: None,
             }],
         };
+        let recipient = node("member", "100.64.0.2");
         let src = OverlaySource {
-            node_id: ObjectId::new(),
+            node_id: recipient.id.unwrap(),
             owner_user_id: None,
             role_ids: vec![],
         };
         let mut router = node("router", "100.64.0.9");
         router.approved_routes = vec!["10.1.0.0/24".into()];
         router.advertised_routes = vec!["10.1.0.0/24".into()];
-        let shaped = shape_peer(&acl, &src, &router, None, true, Zones::OFF)
+        let shaped = shape_peer(&acl, &recipient, &src, &router, None, true, Zones::OFF)
             .expect("visible through the subnet it offers");
         assert_eq!(shaped.routes, vec!["10.1.0.0/24".to_string()]);
 
         router.advertised_routes.clear();
         assert!(
-            shape_peer(&acl, &src, &router, None, true, Zones::OFF).is_none(),
+            shape_peer(&acl, &recipient, &src, &router, None, true, Zones::OFF).is_none(),
             "an approval the device no longer offers grants nothing"
         );
     }
@@ -5067,14 +5150,15 @@ mod tests {
             mode: OverlayAclMode::Off,
             policies: vec![],
         };
+        let recipient = node("self-b4", "100.64.0.41");
         let src = OverlaySource {
-            node_id: ObjectId::new(),
+            node_id: recipient.id.unwrap(),
             owner_user_id: None,
             role_ids: vec![],
         };
         let mut peer = node("peer-b4", "100.64.0.42");
         assert!(
-            shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_some(),
+            shape_peer(&acl, &recipient, &src, &peer, None, true, Zones::OFF).is_some(),
             "authorized peer key must be shaped"
         );
 
@@ -5083,7 +5167,7 @@ mod tests {
             bson::DateTime::now().timestamp_millis() - 1_000,
         ));
         assert!(
-            shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_none(),
+            shape_peer(&acl, &recipient, &src, &peer, None, true, Zones::OFF).is_none(),
             "expired peer key must be withheld from netmap"
         );
 
@@ -5091,14 +5175,153 @@ mod tests {
         peer.key_expires_at = Some(bson::DateTime::from_millis(
             bson::DateTime::now().timestamp_millis() + 60_000,
         ));
-        assert!(shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_some());
+        assert!(shape_peer(&acl, &recipient, &src, &peer, None, true, Zones::OFF).is_some());
 
         // Explicit revocation (`reauth_required` / `key_revoked_at`) withholds peer.
         peer.reauth_required = true;
-        assert!(shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_none());
+        assert!(shape_peer(&acl, &recipient, &src, &peer, None, true, Zones::OFF).is_none());
         peer.reauth_required = false;
         peer.key_revoked_at = Some(bson::DateTime::now());
-        assert!(shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_none());
+        assert!(shape_peer(&acl, &recipient, &src, &peer, None, true, Zones::OFF).is_none());
+    }
+
+    /// T9-1 — a one-way grant `A -> B:22/tcp` makes BOTH nodes mutually visible
+    /// in netmaps so their WireGuard handshake completes, while keeping routes
+    /// and new-flow ingress unidirectional:
+    /// * `B` receives `A` with `routes = []` and `ingress_rules = Some([B:22/tcp, 10.9.0.0/24])`;
+    /// * `A` receives `B` with `routes = ["10.9.0.0/24"]` and `ingress_rules = Some([])`
+    ///   (new `B -> A` connections denied, `admitted_reply` lets `A -> B` replies back);
+    /// * an unrelated peer `C` remains withheld (`None`) in both directions.
+    #[test]
+    fn t9_1_shape_peer_one_way_grant_is_mutually_visible_with_asymmetric_ingress_rules() {
+        use meshharbor_remote_control::models::{
+            OverlayPolicy, OverlayRule, OverlaySelector, OverlayTarget, PortRange, ProtocolKind,
+        };
+        let now = bson::DateTime::now();
+        let tid = ObjectId::new();
+        let mut node_a = node("node-a", "100.64.0.10");
+        node_a.id = Some(ObjectId::new());
+        node_a.tenant_id = tid;
+        node_a.approved_routes = vec!["10.8.0.0/24".into()];
+        node_a.advertised_routes = vec!["10.8.0.0/24".into()];
+        let mut node_b = node("node-b", "100.64.0.11");
+        node_b.id = Some(ObjectId::new());
+        node_b.tenant_id = tid;
+        node_b.approved_routes = vec!["10.9.0.0/24".into()];
+        node_b.advertised_routes = vec!["10.9.0.0/24".into()];
+        let mut node_c = node("node-c", "100.64.0.12");
+        node_c.id = Some(ObjectId::new());
+        node_c.tenant_id = tid;
+
+        let src_a = OverlaySource {
+            node_id: node_a.id.unwrap(),
+            owner_user_id: None,
+            role_ids: vec![],
+        };
+        let src_b = OverlaySource {
+            node_id: node_b.id.unwrap(),
+            owner_user_id: None,
+            role_ids: vec![],
+        };
+        let src_c = OverlaySource {
+            node_id: node_c.id.unwrap(),
+            owner_user_id: None,
+            role_ids: vec![],
+        };
+
+        let granted_rules = vec![
+            OverlayRule {
+                cidr: "100.64.0.11/32".into(),
+                port_range: PortRange { low: 22, high: 22 },
+                proto: ProtocolKind::Tcp,
+            },
+            OverlayRule {
+                cidr: "10.9.0.0/24".into(),
+                port_range: PortRange {
+                    low: 443,
+                    high: 443,
+                },
+                proto: ProtocolKind::Tcp,
+            },
+        ];
+        let acl = AclCtx {
+            mode: OverlayAclMode::Enforce,
+            policies: vec![OverlayPolicy {
+                id: Some(ObjectId::new()),
+                tenant_id: tid,
+                name: "one-way-a-to-b".into(),
+                enabled: true,
+                sources: vec![OverlaySelector::NodeId {
+                    node_id: node_a.id.unwrap(),
+                }],
+                via: vec![OverlayTarget::NodeId {
+                    node_id: node_b.id.unwrap(),
+                }],
+                destinations: granted_rules.clone(),
+                created_at: now,
+                updated_at: now,
+                deleted_at: None,
+            }],
+        };
+
+        // Forward: A sees B with granted routes and empty ingress_rules (`Some([])`).
+        let b_for_a = shape_peer(
+            &acl,
+            &node_a,
+            &src_a,
+            &node_b,
+            Some(&src_b),
+            true,
+            Zones::OFF,
+        )
+        .expect("A must see B on forward grant");
+        assert_eq!(b_for_a.routes, vec!["10.9.0.0/24".to_string()]);
+        assert_eq!(b_for_a.ingress_rules, Some(Vec::new()));
+
+        // Reverse: B MUST ALSO see A so their WG session can establish, with empty
+        // routes (`A`'s 10.8.0.0/24 is NOT granted to B) and `ingress_rules`
+        // compiled from `A -> B`.
+        let a_for_b = shape_peer(
+            &acl,
+            &node_b,
+            &src_b,
+            &node_a,
+            Some(&src_a),
+            true,
+            Zones::OFF,
+        )
+        .expect("B must see A when reverse direction A -> B is granted");
+        assert!(
+            a_for_b.routes.is_empty(),
+            "reverse-only visibility must grant B none of A's routes"
+        );
+        assert_eq!(a_for_b.ingress_rules, Some(granted_rules));
+
+        // Unrelated peer C remains completely invisible to both A and B.
+        assert!(
+            shape_peer(
+                &acl,
+                &node_a,
+                &src_a,
+                &node_c,
+                Some(&src_c),
+                true,
+                Zones::OFF
+            )
+            .is_none()
+        );
+        assert!(
+            shape_peer(
+                &acl,
+                &node_c,
+                &src_c,
+                &node_b,
+                Some(&src_b),
+                true,
+                Zones::OFF
+            )
+            .is_none()
+        );
     }
 
     /// #18 — an unreadable policy never shapes as "ACL off": the last one read

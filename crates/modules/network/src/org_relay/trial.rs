@@ -729,18 +729,17 @@ pub async fn request(
         let Ok(source) = try_overlay_source_of(state, &requester).await else {
             return;
         };
-        let routes = peer.effective_routes();
+        let Ok(peer_source) = try_overlay_source_of(state, &peer).await else {
+            return;
+        };
         if acl.enforcing()
-            && !evaluate_overlay(
+            && !crate::overlay::pair_any_direction_visible(
                 &acl.policies,
+                &requester,
                 &source,
-                OverlayPeerRef {
-                    node_id: peer_id,
-                    overlay_ip: &peer.overlay_ip,
-                    approved_routes: &routes,
-                },
+                &peer,
+                &peer_source,
             )
-            .visible
         {
             return;
         }
