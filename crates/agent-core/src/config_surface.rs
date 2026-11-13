@@ -994,6 +994,14 @@ const KEYS: &[KeyMeta] = &[
         description: "Force overlay coturn allocations onto the TURNS/TCP (TLS) tier — corp-VPN probe. Built-in default: off.",
     },
     KeyMeta {
+        key: "overlay_turn_relay",
+        group: Group::NetworkCarriers,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "tribool",
+        description: "The TURN relay tier at all. Built-in default: on. Off means this host ignores every relay grant and never dials a coturn worker, so a pair with no direct path stays down instead of relaying. For a host whose traffic must stay inside its own region while the relay workers sit outside it. Env: MESHHARBORD_OVERLAY_TURN_RELAY. Restart required.",
+    },
+    KeyMeta {
         key: "overlay_shared_carrier",
         group: Group::NetworkCarriers,
         tier: Tier::Advanced,
@@ -2112,6 +2120,7 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "overlay_iface_metric" => cfg.overlay_iface_metric.map(|v| v.to_string()),
         "shared_encoder" => cfg.shared_encoder.map(fmt_bool),
         "overlay_relay_tls" => cfg.overlay_relay_tls.map(fmt_bool),
+        "overlay_turn_relay" => cfg.overlay_turn_relay.map(fmt_bool),
         "overlay_shared_carrier" => cfg.overlay_shared_carrier.map(fmt_bool),
         "overlay_roam" => cfg.overlay_roam.map(fmt_bool),
         "overlay_plane_watchdog" => cfg.overlay_plane_watchdog.map(fmt_bool),
@@ -2736,6 +2745,7 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         }
         "shared_encoder" => cfg.shared_encoder = parse_tribool(value)?,
         "overlay_relay_tls" => cfg.overlay_relay_tls = parse_tribool(value)?,
+        "overlay_turn_relay" => cfg.overlay_turn_relay = parse_tribool(value)?,
         "overlay_shared_carrier" => cfg.overlay_shared_carrier = parse_tribool(value)?,
         "overlay_roam" => cfg.overlay_roam = parse_tribool(value)?,
         "overlay_plane_watchdog" => cfg.overlay_plane_watchdog = parse_tribool(value)?,

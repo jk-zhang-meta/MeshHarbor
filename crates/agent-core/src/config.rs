@@ -885,6 +885,13 @@ pub struct AgentConfig {
     /// Built-in default: off.
     #[serde(default)]
     pub overlay_relay_tls: Option<bool>,
+    /// T12 — the TURN relay tier at all (`MESHHARBORD_OVERLAY_TURN_RELAY`).
+    /// Built-in default: on. `false` makes this host ignore pair relay grants
+    /// and warm / netcheck allocations, so it never dials a coturn worker —
+    /// for a node that must not reach an out-of-region relay (with
+    /// `overlay_derp = false` it then carries direct paths only).
+    #[serde(default)]
+    pub overlay_turn_relay: Option<bool>,
     /// Multi-org v2 shared carrier plane — ONE process-wide direct-socket
     /// set shared by every org's engine, inbound demultiplexed by WireGuard
     /// receiver index (`MESHHARBORD_OVERLAY_SHARED_CARRIER`). Retires the
@@ -2867,6 +2874,7 @@ pub fn test_fixture() -> AgentConfig {
         overlay_server_relay_strategy: None,
         overlay_derp_floor: None,
         overlay_stun_urls: None,
+        overlay_turn_relay: None,
         overlay_org_relay: None,
         overlay_netcheck: None,
         relay_server_enabled: None,
@@ -3121,7 +3129,7 @@ mod derived_port_tests {
     }
 }
 
-pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 95] {
+pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 96] {
     [
         ("SHARED_ENCODER", cfg.shared_encoder),
         ("AREA_MIN_BITRATE", cfg.area_min_bitrate),
@@ -3200,6 +3208,7 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 95]
         ("OVERLAY_ROUTE_EVENTS", cfg.overlay_route_events),
         ("OVERLAY_NETMON", cfg.overlay_netmon),
         ("OVERLAY_RELAY_TLS", cfg.overlay_relay_tls),
+        ("OVERLAY_TURN_RELAY", cfg.overlay_turn_relay),
         ("OVERLAY_SHARED_CARRIER", cfg.overlay_shared_carrier),
         ("OVERLAY_ROAM", cfg.overlay_roam),
         ("OVERLAY_PLANE_WATCHDOG", cfg.overlay_plane_watchdog),

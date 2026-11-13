@@ -1152,6 +1152,41 @@ pub fn relay_single_enabled() -> bool {
     }
 }
 
+/// T12 — the TURN relay tier at all (`MESHHARBORD_OVERLAY_TURN_RELAY`).
+/// **Default ON.** Off (`0`/`false`/`no`/`off`) is the per-host switch for a
+/// node that must never open a connection to an out-of-region relay: it uses
+/// no pair relay grant and no warm / netcheck allocation, so it never dials a
+/// coturn worker. With DERP also off, such a node carries only direct and
+/// in-region paths — a peer it cannot reach directly stays unreachable rather
+/// than riding a relay outside its region.
+pub fn turn_relay_enabled() -> bool {
+    turn_relay_from(crate::env::node_env("OVERLAY_TURN_RELAY").as_deref())
+}
+
+fn turn_relay_from(v: Option<&str>) -> bool {
+    match v.map(str::trim) {
+        Some(t) => {
+            !(t.eq_ignore_ascii_case("0")
+                || t.eq_ignore_ascii_case("false")
+                || t.eq_ignore_ascii_case("no")
+                || t.eq_ignore_ascii_case("off"))
+        }
+        None => true,
+    }
+}
+
+#[cfg(test)]
+mod t12_turn_relay_tests {
+    #[test]
+    fn t12_the_turn_relay_tier_is_on_unless_switched_off() {
+        assert!(super::turn_relay_from(None));
+        assert!(super::turn_relay_from(Some("1")));
+        for off in ["0", "false", "No", " off "] {
+            assert!(!super::turn_relay_from(Some(off)), "{off:?}");
+        }
+    }
+}
+
 /// rc.276 (B-probe) — force ALL overlay coturn allocations onto the
 /// **TURNS/TCP (TLS) tier** (`MESHHARBORD_OVERLAY_RELAY_TLS`). **Default OFF**
 /// opt-in (positive truthy only), mirroring `public_direct_enabled` — this is
