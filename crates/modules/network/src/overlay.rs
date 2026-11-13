@@ -4294,6 +4294,54 @@ pub(crate) fn pair_any_direction_visible(
     .visible
 }
 
+/// T9-1 review — the org-relay PATH TRIAL gate (`org_relay::path_trial_plan`).
+/// Before T9 a pair qualified only when BOTH directions were granted; with
+/// [`bidir_peer_visibility_enabled`] either direction suffices, as for the
+/// netmap and the DERP table. Switching it off restores the old rule exactly,
+/// which [`pair_any_direction_visible`] (forward-only when off, the rule the
+/// relay REQUEST gate always had) would not.
+pub(crate) fn pair_trial_visible(
+    policies: &[OverlayPolicy],
+    a: &OverlayNode,
+    a_src: &OverlaySource,
+    b: &OverlayNode,
+    b_src: &OverlaySource,
+) -> bool {
+    pair_trial_visible_with(
+        policies,
+        a,
+        a_src,
+        b,
+        b_src,
+        bidir_peer_visibility_enabled(),
+    )
+}
+
+fn pair_trial_visible_with(
+    policies: &[OverlayPolicy],
+    a: &OverlayNode,
+    a_src: &OverlaySource,
+    b: &OverlayNode,
+    b_src: &OverlaySource,
+    bidir: bool,
+) -> bool {
+    let sees = |src: &OverlaySource, peer: &OverlayNode| {
+        let routes = peer.effective_routes();
+        evaluate_overlay(
+            policies,
+            src,
+            OverlayPeerRef {
+                node_id: peer.id.unwrap_or_default(),
+                overlay_ip: &peer.overlay_ip,
+                approved_routes: &routes,
+            },
+        )
+        .visible
+    };
+    let (ab, ba) = (sees(a_src, b), sees(b_src, a));
+    if bidir { ab || ba } else { ab && ba }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn shape_peer(
     acl: &AclCtx,
@@ -5207,6 +5255,73 @@ mod tests {
         peer.reauth_required = false;
         peer.key_revoked_at = Some(bson::DateTime::now());
         assert!(shape_peer(&acl, &recipient, &src, &peer, None, true, Zones::OFF).is_none());
+    }
+
+    /// T9-1 review — the path-trial gate: a one-way grant qualifies the pair
+    /// with bidirectional visibility on, and NOT with it off (the pre-T9 rule
+    /// required both directions); a two-way grant qualifies either way, and an
+    /// unrelated pair never does.
+    #[test]
+    fn t9_1_path_trial_gate_switch_off_restores_the_both_directions_rule() {
+        use meshharbor_remote_control::models::{
+            OverlayPolicy, OverlayRule, OverlaySelector, OverlayTarget, PortRange, ProtocolKind,
+        };
+        let now = bson::DateTime::now();
+        let tid = ObjectId::new();
+        let mk = |name: &str, ip: &str| {
+            let mut n = node(name, ip);
+            n.id = Some(ObjectId::new());
+            n.tenant_id = tid;
+            n
+        };
+        let (a, b, c) = (
+            mk("a", "100.64.0.20"),
+            mk("b", "100.64.0.21"),
+            mk("c", "100.64.0.22"),
+        );
+        let src = |n: &OverlayNode| OverlaySource {
+            node_id: n.id.unwrap(),
+            owner_user_id: None,
+            role_ids: vec![],
+        };
+        let grant = |from: &OverlayNode, to: &OverlayNode| OverlayPolicy {
+            id: Some(ObjectId::new()),
+            tenant_id: tid,
+            name: format!("{}-to-{}", from.name, to.name),
+            enabled: true,
+            sources: vec![OverlaySelector::NodeId {
+                node_id: from.id.unwrap(),
+            }],
+            via: vec![OverlayTarget::NodeId {
+                node_id: to.id.unwrap(),
+            }],
+            destinations: vec![OverlayRule {
+                cidr: format!("{}/32", to.overlay_ip),
+                port_range: PortRange { low: 22, high: 22 },
+                proto: ProtocolKind::Tcp,
+            }],
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        };
+        let one_way = vec![grant(&a, &b)];
+        let two_way = vec![grant(&a, &b), grant(&b, &a)];
+        let (sa, sb, sc) = (src(&a), src(&b), src(&c));
+        assert!(pair_trial_visible_with(&one_way, &a, &sa, &b, &sb, true));
+        assert!(
+            pair_trial_visible_with(&one_way, &b, &sb, &a, &sa, true),
+            "order-independent"
+        );
+        assert!(
+            !pair_trial_visible_with(&one_way, &a, &sa, &b, &sb, false),
+            "pre-T9 rule when off"
+        );
+        assert!(pair_trial_visible_with(&two_way, &a, &sa, &b, &sb, false));
+        assert!(pair_trial_visible_with(&two_way, &a, &sa, &b, &sb, true));
+        assert!(
+            !pair_trial_visible_with(&one_way, &a, &sa, &c, &sc, true),
+            "unrelated pair"
+        );
     }
 
     /// T9-1 — a one-way grant `A -> B:22/tcp` makes BOTH nodes mutually visible

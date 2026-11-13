@@ -1196,6 +1196,11 @@ impl Ingress {
         // Same counter + throttle as a reverse-path failure, distinct reasons so
         // a field report separates "forged its source" from "aimed past us"
         // from "not granted this destination".
+        // T9-2 review — a reject answers only a source the sending peer owns.
+        // `NotPermitted` outranks a reverse-path failure below, so without this
+        // a packet with a forged source would still be answered (to an address
+        // the peer does not hold); it is dropped and counted, never answered.
+        let source_owned = matches!(verdict, RpfVerdict::Allow);
         let reason = match verdict {
             _ if !in_scope => IngressDeny::OutOfScope,
             _ if rule_denied => IngressDeny::NotPermitted,
@@ -1256,6 +1261,7 @@ impl Ingress {
         let send_reject = allow_reject
             && drop
             && matches!(reason, IngressDeny::NotPermitted)
+            && source_owned
             && acl_reject_reply_enabled()
             && self.stats.take_acl_reject_slot(now);
         (!drop, send_reject)
@@ -8654,6 +8660,69 @@ mod tests {
         assert!(
             (1..=20).contains(&icmp_replies),
             "expected rate-limited ICMP Admin Prohibited replies in 1..=20, got {icmp_replies}"
+        );
+    }
+
+    /// T9-2 review — a denied packet whose source the sending peer does not own
+    /// (reverse-path failure) is dropped and counted but never answered: the
+    /// reject would go to an address the peer does not hold.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn t9_2_a_denied_packet_from_a_source_the_peer_does_not_own_gets_no_reject() {
+        use meshharbor_remote_control::models::{PortRange, ProtocolKind};
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        dev_a.set_local_scope(Some(IP_A), &[]);
+        dev_b.set_local_scope(Some(IP_B), &[]);
+
+        let mut np_a_on_b = netmap_peer_for(&a, IP_A);
+        np_a_on_b.ingress_rules = Some(vec![OverlayRule {
+            cidr: format!("{IP_B}/32"),
+            port_range: PortRange { low: 22, high: 22 },
+            proto: ProtocolKind::Tcp,
+        }]);
+        dev_b.sync_peer_ingress(&HashMap::from([(np_a_on_b.node_id, np_a_on_b)]));
+
+        let (pk_a, pk_b) = (a.public.to_bytes(), b.public.to_bytes());
+        dev_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a.clone(), addr_b), true);
+        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b.clone(), addr_a), false);
+        wait_connected(&dev_a, &pk_b).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let before = Instant::now();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        // A source A does not own, to a port A is not granted.
+        let forged = Ipv4Addr::new(100, 64, 9, 9);
+        let _ = dev_a
+            .send_to_peer(
+                &pk_b,
+                &synthetic_l4(forged, IP_B, false, (49152, 3389), 0x02),
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(rx_b.try_recv().is_err(), "the packet never reaches B's TUN");
+        assert_eq!(dev_b.peer_rx_denied(&pk_a), 1, "it is counted");
+        assert!(
+            !dev_a.peer_data_rx_since(&pk_b, before),
+            "B sends nothing back: no reject to a source the peer does not own"
+        );
+
+        // Control: the same packet from A's own address is answered.
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_l4(IP_A, IP_B, false, (49153, 3389), 0x02),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            dev_a.peer_data_rx_since(&pk_b, before),
+            "the control is answered with a reject"
         );
     }
 

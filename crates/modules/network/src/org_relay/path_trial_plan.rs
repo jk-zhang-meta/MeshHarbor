@@ -175,13 +175,7 @@ pub(super) async fn plan_reusing(
         let src_b = try_overlay_source_of(state, &fresh_b)
             .await
             .map_err(|_| D::PolicyUnreadable)?;
-        if !crate::overlay::pair_any_direction_visible(
-            &acl.policies,
-            &fresh_a,
-            &src_a,
-            &fresh_b,
-            &src_b,
-        ) {
+        if !crate::overlay::pair_trial_visible(&acl.policies, &fresh_a, &src_a, &fresh_b, &src_b) {
             return Err(D::AclDenied);
         }
     }
