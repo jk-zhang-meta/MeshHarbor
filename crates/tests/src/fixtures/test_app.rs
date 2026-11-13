@@ -517,6 +517,7 @@ fn test_settings() -> Settings {
             // hop — trust the peer address, not any client-sent header.
             rate_limit_trusted_hops: 0,
             business_trusted_proxy_cidrs: vec![],
+            business_zone_pins: Default::default(),
             business_isolation: "warn".to_string(),
             business_unknown_role: "warn".to_string(),
             // Off by default here (production defaults to `warn`): the gate

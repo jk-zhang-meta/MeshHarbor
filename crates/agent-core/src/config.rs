@@ -675,6 +675,16 @@ pub struct AgentConfig {
     /// is the per-host off-switch.
     #[serde(default)]
     pub overlay_derp_floor: Option<bool>,
+    /// T12 — this device's own STUN servers for srflx gathering (`stun:host:port`
+    /// entries), in place of the coordination server's list. For a node whose
+    /// UDP to the server's out-of-region STUN leaves by a different egress than
+    /// its traffic to in-region peers — a mainland host on a split campus
+    /// network — so the address it advertises is the one its peers reach, and
+    /// the server's GEO-04 check sees one zone. Unset (the default) keeps the
+    /// server's list. Only the srflx gather and its keepalive read it; relay
+    /// (TURN) worker identification keeps the server's list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_stun_urls: Option<Vec<String>>,
     /// FR-19 P4b — ride tenant-owned org relays (tunnel-core
     /// `OVERLAY_ORG_RELAY`). Built-in default: **on** (MeshHarbor §6 item
     /// 4c); explicit `false` is the per-host off-switch.
@@ -2856,6 +2866,7 @@ pub fn test_fixture() -> AgentConfig {
         overlay_derp: None,
         overlay_server_relay_strategy: None,
         overlay_derp_floor: None,
+        overlay_stun_urls: None,
         overlay_org_relay: None,
         overlay_netcheck: None,
         relay_server_enabled: None,
