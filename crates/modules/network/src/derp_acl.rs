@@ -204,6 +204,48 @@ fn pubkey_of(node: &OverlayNode) -> Option<DerpPubKey> {
     BASE64.decode(&node.wg_public_key).ok()?.try_into().ok()
 }
 
+fn build_overlay_allow_table(
+    policies: &[meshharbor_remote_control::models::OverlayPolicy],
+    nodes: &[OverlayNode],
+    sources: &[tunnel_core::policy::OverlaySource],
+) -> HashMap<DerpPubKey, HashSet<DerpPubKey>> {
+    let bidir = super::overlay::bidir_peer_visibility_enabled();
+    let mut allow: HashMap<DerpPubKey, HashSet<DerpPubKey>> = HashMap::new();
+    for (src_node, src) in nodes.iter().zip(sources) {
+        let Some(src_pk) = pubkey_of(src_node) else {
+            continue;
+        };
+        allow.entry(src_pk).or_default();
+        for peer in nodes.iter().filter(|p| p.id != src_node.id) {
+            let Some(peer_pk) = pubkey_of(peer) else {
+                continue;
+            };
+            // FR-97 P0b — the routes the peer OFFERS, as the netmap fans them.
+            let routes = peer.effective_routes();
+            let access = evaluate_overlay(
+                policies,
+                src,
+                OverlayPeerRef {
+                    node_id: peer.id.unwrap_or_default(),
+                    overlay_ip: &peer.overlay_ip,
+                    approved_routes: &routes,
+                },
+            );
+            if access.visible {
+                allow.entry(src_pk).or_default().insert(peer_pk);
+                // T9-1 — if either direction passes `evaluate_overlay`, `/derp`
+                // must forward frames in BOTH directions so WireGuard handshakes
+                // and admitted replies complete; direction & port/proto stay
+                // enforced on the receiving node by `Ingress::permits`.
+                if bidir {
+                    allow.entry(peer_pk).or_default().insert(src_pk);
+                }
+            }
+        }
+    }
+    allow
+}
+
 /// Recompute one network's table and publish it atomically.
 ///
 /// Build-then-swap, never invalidate-then-rebuild: once built, there is no
@@ -264,32 +306,7 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
         }
     }
 
-    let mut allow: HashMap<DerpPubKey, HashSet<DerpPubKey>> = HashMap::new();
-    for (src_node, src) in nodes.iter().zip(&sources) {
-        let Some(src_pk) = pubkey_of(src_node) else {
-            continue;
-        };
-        let entry = allow.entry(src_pk).or_default();
-        for peer in nodes.iter().filter(|p| p.id != src_node.id) {
-            let Some(peer_pk) = pubkey_of(peer) else {
-                continue;
-            };
-            // FR-97 P0b — the routes the peer OFFERS, as the netmap fans them.
-            let routes = peer.effective_routes();
-            let access = evaluate_overlay(
-                &acl.policies,
-                src,
-                OverlayPeerRef {
-                    node_id: peer.id.unwrap_or_default(),
-                    overlay_ip: &peer.overlay_ip,
-                    approved_routes: &routes,
-                },
-            );
-            if access.visible {
-                entry.insert(peer_pk);
-            }
-        }
-    }
+    let allow = build_overlay_allow_table(&acl.policies, &nodes, &sources);
 
     // The server topology and approved-role set: which keys are servers, which
     // server pairs are linked, and which keys hold an approved role.
@@ -507,5 +524,113 @@ mod tests {
         ]);
         t.allow.entry(pk(1)).or_default().insert(pk(2));
         assert!(!t.enforcing() && !t.permits(&pk(1), &pk(2)));
+    }
+
+    #[test]
+    fn t9_1_one_way_policy_permits_derp_frames_in_both_directions() {
+        use meshharbor_remote_control::models::{
+            AgentStatus, NodeRef, OverlayPolicy, OverlayRule, OverlaySelector, OverlayTarget,
+            PortRange, ProtocolKind,
+        };
+        use tunnel_core::policy::OverlaySource;
+
+        let now = bson::DateTime::now();
+        let tid = ObjectId::new();
+        let net_id = ObjectId::new();
+        let mk_node = |name: &str, ip: &str, key: DerpPubKey| OverlayNode {
+            id: Some(ObjectId::new()),
+            tenant_id: tid,
+            node_ref: NodeRef::Agent {
+                agent_id: ObjectId::new(),
+            },
+            network_id: net_id,
+            machine_id: name.into(),
+            name: name.into(),
+            overlay_ip: ip.into(),
+            wg_public_key: BASE64.encode(key),
+            key_epoch: 0,
+            retired_wg_keys: vec![],
+            key_issued_at: Some(now),
+            key_ttl_secs: None,
+            key_expires_at: None,
+            key_revoked_at: None,
+            reauth_required: false,
+            endpoints: vec![],
+            lan_endpoints: vec![],
+            srflx_endpoints: vec![],
+            srflx_nat: None,
+            caps: None,
+            caps_measured_at: None,
+            udp_dialer_ok: None,
+            relay_home: None,
+            warm_relay_endpoint: None,
+            supports_quic: false,
+            supports_relay_single: false,
+            supports_derp: true,
+            supports_forced_derp: false,
+            supports_server_relay_strategy: false,
+            supports_derp_floor: false,
+            supports_overlay_echo: false,
+            supports_org_relay: false,
+            advertised_routes: vec![],
+            approved_routes: vec![],
+            is_exit_node: false,
+            routes_zone: None,
+            route_offer_withheld: None,
+            status: AgentStatus::Online,
+            last_seen_at: now,
+            applied_auth_revision: 0,
+            applied_netmap_epoch: 0,
+            applied_auth_at: None,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        };
+        let (ka, kb, kc) = (pk(0x11), pk(0x22), pk(0x33));
+        let na = mk_node("a", "100.64.0.10", ka);
+        let nb = mk_node("b", "100.64.0.11", kb);
+        let nc = mk_node("c", "100.64.0.12", kc);
+        let nodes = vec![na.clone(), nb.clone(), nc.clone()];
+        let sources: Vec<OverlaySource> = nodes
+            .iter()
+            .map(|n| OverlaySource {
+                node_id: n.id.unwrap(),
+                owner_user_id: None,
+                role_ids: vec![],
+            })
+            .collect();
+        let policies = vec![OverlayPolicy {
+            id: Some(ObjectId::new()),
+            tenant_id: tid,
+            name: "one-way-a-to-b".into(),
+            enabled: true,
+            sources: vec![OverlaySelector::NodeId {
+                node_id: na.id.unwrap(),
+            }],
+            via: vec![OverlayTarget::NodeId {
+                node_id: nb.id.unwrap(),
+            }],
+            destinations: vec![OverlayRule {
+                cidr: "100.64.0.11/32".into(),
+                port_range: PortRange { low: 22, high: 22 },
+                proto: ProtocolKind::Tcp,
+            }],
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        }];
+        let allow = build_overlay_allow_table(&policies, &nodes, &sources);
+        let t = DerpAllowTable {
+            enforcing: true,
+            allow,
+            ..DerpAllowTable::default()
+        };
+        assert!(t.permits(&ka, &kb), "forward A -> B DERP frame permitted");
+        assert!(
+            t.permits(&kb, &ka),
+            "reverse B -> A DERP frame must ALSO be permitted for WG handshake & replies"
+        );
+        assert!(!t.permits(&ka, &kc) && !t.permits(&kc, &ka));
+        assert!(!t.permits(&kb, &kc) && !t.permits(&kc, &kb));
     }
 }

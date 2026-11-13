@@ -729,20 +729,21 @@ pub async fn request(
         let Ok(source) = try_overlay_source_of(state, &requester).await else {
             return;
         };
-        let routes = peer.effective_routes();
-        if acl.enforcing()
-            && !evaluate_overlay(
+        // T9-1 review — the peer's source is read only when the ACL enforces:
+        // with it off, a failed lookup must not drop the request.
+        if acl.enforcing() {
+            let Ok(peer_source) = try_overlay_source_of(state, &peer).await else {
+                return;
+            };
+            if !crate::overlay::pair_any_direction_visible(
                 &acl.policies,
+                &requester,
                 &source,
-                OverlayPeerRef {
-                    node_id: peer_id,
-                    overlay_ip: &peer.overlay_ip,
-                    approved_routes: &routes,
-                },
-            )
-            .visible
-        {
-            return;
+                &peer,
+                &peer_source,
+            ) {
+                return;
+            }
         }
         let mut trial_diagnostic = TrialUnknownZoneDiagnostics::default();
         let Ok(plans) = plan_mint_candidates_with_trial_diagnostics(

@@ -176,6 +176,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         }
     }

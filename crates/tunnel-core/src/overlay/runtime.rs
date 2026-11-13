@@ -523,6 +523,9 @@ struct Installed {
     /// peer owns, whose replies this node cannot route back (the multi-org
     /// wrong-source signature). Snapshotted beside it.
     rx_denied_noroute: u64,
+    /// T9-3 — inbound packets from this peer that matched NO rule in
+    /// `ingress_rules_preview` while the tenant's overlay ACL posture is `warn`.
+    rx_would_deny: u64,
     /// Stats PR-5 — the prober's last RTT measurement for this peer (the
     /// B1 `RttSample` events previously fed only the path-monitor Q).
     /// Published through [`build_overlay_view`] so `mh peers` and the
@@ -636,6 +639,7 @@ impl Installed {
             public_direct_dst: None,
             rx_denied: 0,
             rx_denied_noroute: 0,
+            rx_would_deny: 0,
             reinit_recent: 0,
             reinit_window_from: now,
             tier,
@@ -2438,6 +2442,7 @@ fn build_overlay_view(
                     relay_kind: i.relay_kind.map(|k| k.as_str().to_string()),
                     rx_denied: i.rx_denied,
                     rx_denied_noroute: i.rx_denied_noroute,
+                    rx_would_deny: i.rx_would_deny,
                 }),
                 // F — grafted on by `publish_view`, which holds the monitor;
                 // the pure builder cannot see the selector state.
@@ -2893,6 +2898,18 @@ impl OverlayRuntime {
                 epoch_now_ms,
                 &relay_transport,
             );
+            for p in &mut view.peers {
+                if let Some(d) = p.debug.as_mut()
+                    && let Ok(nid) = ObjectId::parse_str(&p.node_id)
+                    && let Some(inst) = by_node.get(&nid)
+                {
+                    d.rx_denied = d.rx_denied.max(wg.peer_rx_denied(&inst.pubkey));
+                    d.rx_denied_noroute = d
+                        .rx_denied_noroute
+                        .max(wg.peer_rx_denied_noroute(&inst.pubkey));
+                    d.rx_would_deny = d.rx_would_deny.max(wg.peer_rx_would_deny(&inst.pubkey));
+                }
+            }
             // A — attach the disco measurements, keyed peer-pubkey → view row.
             // Deliberately alongside `why`: the interesting case is the two
             // DISAGREEING (a path the prober says is clean that the selector
@@ -6588,6 +6605,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         };
         let base = mk(
@@ -7003,6 +7021,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         }
     }
@@ -7203,6 +7222,7 @@ mod tests {
                 routes: vec![],
                 agent_id: None,
                 ingress_rules: None,
+                ingress_rules_preview: None,
                 backbone_only: false,
             },
         );
@@ -7745,6 +7765,174 @@ mod tests {
             "data back on the direct carrier settles B's proof"
         );
         assert!(by_node.contains_key(&nb), "and B keeps its direct carrier");
+    }
+
+    /// T9-2 + #279 non-regression:
+    /// 1) When a direct carrier is healthy in both directions and the peer's
+    ///    ACL drops traffic as `NotPermitted`, the peer's rate-limited reject
+    ///    reply settles A's business proof and keeps `bad_sweeps == 0`, so the
+    ///    healthy direct carrier is NEVER falsely convicted.
+    /// 2) When the direct carrier's `B -> A` transport data path is genuinely
+    ///    blackholed (handshakes types 1..=3 pass, type-4 transport drops — the
+    ///    exact #279 failure mode), B's reject frame is lost on that broken
+    ///    direct path too, so `sweep_carrier_health` STILL convicts the direct
+    ///    carrier past `BUSINESS_DATA_DEADLINE`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn t9_2_acl_denied_traffic_keeps_healthy_direct_alive_while_279_still_convicts_one_way_blackhole()
+     {
+        use crate::overlay::router::RpfMode;
+        use meshharbor_remote_control::models::{OverlayRule, PortRange, ProtocolKind};
+
+        async fn run_case(drop_b_to_a_transport: bool) -> bool {
+            let kp_a = WgKeypair::generate();
+            let kp_b = WgKeypair::generate();
+            let (pk_a, pk_b) = (kp_a.public.to_bytes(), kp_b.public.to_bytes());
+            let (ip_a, ip_b) = (Ipv4Addr::new(100, 64, 0, 21), Ipv4Addr::new(100, 64, 0, 22));
+
+            let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            let proxy_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            let proxy_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            let addr_a = sock_a.local_addr().unwrap();
+            let addr_b = sock_b.local_addr().unwrap();
+            let p_for_a = proxy_a.local_addr().unwrap();
+            let p_for_b = proxy_b.local_addr().unwrap();
+
+            let pa = proxy_a.clone();
+            let pb = proxy_b.clone();
+            let fwd_ab = tokio::spawn(async move {
+                let mut buf = [0u8; 2048];
+                while let Ok((n, _)) = pa.recv_from(&mut buf).await {
+                    let _ = pb.send_to(&buf[..n], addr_b).await;
+                }
+            });
+            let pa2 = proxy_a.clone();
+            let pb2 = proxy_b.clone();
+            let dropping = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let drop_flag = dropping.clone();
+            let fwd_ba = tokio::spawn(async move {
+                let mut buf = [0u8; 2048];
+                while let Ok((n, _)) = pb2.recv_from(&mut buf).await {
+                    let is_transport = n >= 32 && buf[..4] == [4, 0, 0, 0];
+                    if is_transport && drop_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        continue;
+                    }
+                    let _ = pa2.send_to(&buf[..n], addr_a).await;
+                }
+            });
+
+            let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+            let (tun_mock, _inj, _del) = MockTun::new();
+            let tf: TunFactory = {
+                let m = tun_mock.clone();
+                Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+            };
+            let rt = OverlayRuntime::new_relay(kp_a.clone(), out_tx, tf, 1280);
+            let (mut wg_a, mut rx_a) = WgDevice::new(kp_a.secret.clone());
+            let (mut wg_b, _rx_b) = WgDevice::new(kp_b.secret.clone());
+            wg_a.set_rpf_mode(RpfMode::Warn);
+            wg_b.set_rpf_mode(RpfMode::Warn);
+            wg_a.set_local_scope(Some(ip_a), &[]);
+            wg_b.set_local_scope(Some(ip_b), &[]);
+
+            let mut np_a = test_netmap_peer(ObjectId::new(), ip_a, &kp_a);
+            np_a.ingress_rules = Some(vec![OverlayRule {
+                cidr: format!("{ip_b}/32"),
+                port_range: PortRange { low: 22, high: 22 },
+                proto: ProtocolKind::Tcp,
+            }]);
+            wg_b.sync_peer_ingress(&HashMap::from([(np_a.node_id, np_a)]));
+            let mut np_b = test_netmap_peer(ObjectId::new(), ip_b, &kp_b);
+            np_b.ingress_rules = Some(Vec::new());
+            wg_a.sync_peer_ingress(&HashMap::from([(np_b.node_id, np_b.clone())]));
+
+            wg_a.ensure_direct_demux(sock_a.clone());
+            wg_b.ensure_direct_demux(sock_b.clone());
+            wg_a.add_direct_peer(sock_a.clone(), pk_b, ip_b, p_for_a, true)
+                .await;
+            wg_b.add_direct_peer(sock_b.clone(), pk_a, ip_a, p_for_b, false)
+                .await;
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !wg_a.is_connected(&pk_b).await && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(
+                wg_a.is_connected(&pk_b).await,
+                "direct WG handshake established"
+            );
+
+            dropping.store(drop_b_to_a_transport, std::sync::atomic::Ordering::Relaxed);
+
+            let window = crate::overlay::lifecycle::BUSINESS_DATA_DEADLINE;
+            let poke_at = Instant::now()
+                .checked_sub(window + Duration::from_secs(2))
+                .unwrap_or_else(Instant::now);
+            tokio::time::sleep(Duration::from_millis(5)).await;
+
+            let mut syn = vec![0u8; 40];
+            syn[0] = 0x45;
+            syn[2..4].copy_from_slice(&40u16.to_be_bytes());
+            syn[8] = 64;
+            syn[9] = 6;
+            syn[12..16].copy_from_slice(&ip_a.octets());
+            syn[16..20].copy_from_slice(&ip_b.octets());
+            syn[20..22].copy_from_slice(&50100u16.to_be_bytes());
+            syn[22..24].copy_from_slice(&3389u16.to_be_bytes());
+            syn[32] = 0x50;
+            syn[33] = 0x02;
+
+            let (tx0, rx0) = wg_a.peer_traffic(&pk_b).unwrap();
+            let _ = wg_a.send_to_peer(&pk_b, &syn).await;
+            let _ = tokio::time::timeout(Duration::from_millis(250), rx_a.recv()).await;
+            wg_a.test_stamp_initiator_hs(&pk_b);
+
+            let nb = np_b.node_id;
+            let mut by_node = HashMap::from([(
+                nb,
+                Installed {
+                    since: Instant::now()
+                        .checked_sub(Duration::from_secs(60))
+                        .unwrap_or_else(Instant::now),
+                    last_rx_at: Instant::now(),
+                    last_traffic: (tx0, rx0),
+                    bad_sweeps: 2,
+                    poke: Some(PokeArm {
+                        at: poke_at,
+                        from_major: false,
+                        from_business: true,
+                    }),
+                    ..Installed::base(pk_b, ip_b, DirectTier::Srflx, Instant::now())
+                },
+            )]);
+            let tun: Arc<dyn TunIo> = tun_mock;
+            let mut relay = None;
+            let mut refresh = HashMap::new();
+            let peers = HashMap::new();
+            let lost = rt
+                .sweep_carrier_health(
+                    &mut wg_a,
+                    &mut by_node,
+                    &mut relay,
+                    &tun,
+                    &mut refresh,
+                    &peers,
+                    ForcedPoke::No,
+                )
+                .await;
+            fwd_ab.abort();
+            fwd_ba.abort();
+            lost
+        }
+
+        assert!(
+            !run_case(false).await,
+            "healthy direct carrier MUST NOT be convicted when traffic is ACL-denied on B"
+        );
+        assert!(
+            run_case(true).await,
+            "#279 non-regression: genuinely blackholed B->A transport MUST STILL convict direct"
+        );
     }
 
     /// #280 — the scout books an answered-but-unconfirmed handshake's due
@@ -10220,6 +10408,7 @@ mod tests {
                 routes: vec![],
                 agent_id: None,
                 ingress_rules: None,
+                ingress_rules_preview: None,
                 backbone_only: false,
             }
         }
@@ -10475,6 +10664,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         }
     }
@@ -11101,6 +11291,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
         };
 
         // 1. Peer Y delta (epoch = 105) arrives FIRST at auth_revision = 5.
@@ -11490,6 +11681,7 @@ mod tests {
             routes,
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         }
     }
@@ -11667,6 +11859,7 @@ mod tests {
             routes: vec!["192.168.5.0/24".into(), "0.0.0.0/0".into()],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         };
         let strs: Vec<String> = exit_peer_allowed_ips(&exit)
@@ -13530,6 +13723,7 @@ mod org_upgrade_tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            ingress_rules_preview: None,
             backbone_only: false,
         }
     }

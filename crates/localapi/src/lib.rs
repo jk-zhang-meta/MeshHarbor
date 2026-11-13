@@ -873,6 +873,13 @@ pub struct PeerCarrierDebug {
     /// Omitted when 0.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub rx_denied_noroute: u64,
+    /// T9-3 — inbound packets from this peer that matched NO rule in
+    /// `ingress_rules_preview` while the tenant's overlay ACL posture is `warn`.
+    /// Never dropped (`warn` observes without denying); monotonic since the
+    /// carrier was installed. Omitted when 0 so a healthy fleet's `peers --json`
+    /// stays unchanged.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub rx_would_deny: u64,
 }
 
 fn is_zero_u64(v: &u64) -> bool {
@@ -6056,6 +6063,7 @@ mod tests {
             relay_kind: Some("turn".into()),
             rx_denied: 0,
             rx_denied_noroute: 0,
+            rx_would_deny: 0,
         });
         let s = serde_json::to_string(&p2).unwrap();
         assert!(s.contains(r#""tier":"relay""#) && s.contains(r#""tx":42"#));
@@ -7651,6 +7659,7 @@ mod tests {
             relay_kind: None,
             rx_denied: 0,
             rx_denied_noroute: 0,
+            rx_would_deny: 0,
         });
         let Response::Peers(out) = person_view(Response::Peers(vec![p.clone()])) else {
             panic!("a Peers answer stays a Peers answer");

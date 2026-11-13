@@ -79,7 +79,7 @@
         density="compact"
         class="mb-4"
       >
-        {{ $t('mh.acl.narrowed1', { n: narrowedRules }) }}<code>enforce</code>{{ $t('mh.acl.narrowed2') }}<code>warn</code>{{ $t('mh.acl.narrowed3') }}<strong>{{ $t('mh.acl.notChecked') }}</strong>{{ $t('mh.acl.narrowed4') }}
+        {{ $t('mh.acl.narrowed1', { n: narrowedRules }) }}<code>enforce</code>{{ $t('mh.acl.narrowed2') }}<code>warn</code>{{ $t('mh.acl.narrowed3') }}<strong>{{ $t('mh.acl.notChecked') }}</strong>{{ $t('mh.acl.narrowed4') }}<code>rx_would_deny</code>{{ $t('mh.acl.narrowed5') }}<code>mh peers</code> / <code>mh peers --json</code>{{ $t('mh.acl.narrowed6') }}
       </v-alert>
 
       <p v-if="!store.loading && store.policies.length === 0" class="text-medium-emphasis">

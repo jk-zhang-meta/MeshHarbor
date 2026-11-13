@@ -6565,6 +6565,14 @@ pub struct NetmapPeer {
     /// unchanged (13 serde wire-lock tests depend on that).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress_rules: Option<Vec<crate::models::OverlayRule>>,
+    /// T9-3 — **server-compiled preview ingress rules** shipped ONLY when the
+    /// tenant's `acl_mode` is `warn` (`ingress_rules` stays `None`). Older
+    /// nodes ignore unknown fields and keep `ingress_rules: None`, so `warn`
+    /// can never cause any node (old or new) to drop packets; updated nodes
+    /// evaluate this preview table to count `rx_would_deny` and emit throttled
+    /// logs before an operator flips to `enforce`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingress_rules_preview: Option<Vec<crate::models::OverlayRule>>,
 }
 
 /// Network-wide parameters carried in a full netmap so the node can size
@@ -12381,6 +12389,7 @@ mod tests {
                 routes: vec!["10.0.0.0/24".into()],
                 agent_id: Some(agent_id),
                 ingress_rules: None,
+                ingress_rules_preview: None,
                 backbone_only: false,
             }],
             epoch: 7,

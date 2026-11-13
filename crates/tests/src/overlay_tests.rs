@@ -1336,6 +1336,375 @@ async fn a_live_overlay_acl_policy_whose_deleted_at_field_is_absent_is_still_liv
     );
 }
 
+/// T9-3 — when Overlay ACL posture is `warn`, live join netmaps AND live mode-flip
+/// deltas (`off -> warn -> enforce -> off`) ship `ingress_rules_preview` in `warn`
+/// while keeping `ingress_rules` absent (`None`), then switch cleanly to
+/// `ingress_rules` under `enforce` and clear both under `off`.
+#[tokio::test]
+async fn t9_3_warn_mode_pushes_ingress_rules_preview_on_join_and_mode_flip() {
+    use crate::agent_presence_tests::enroll;
+    use crate::peer_relay_mint_tests::{connect_from, node_id, recv_t};
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    use futures::SinkExt;
+    use serde_json::json;
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("ovaclt93").await;
+    let tenant_id = &seeded.tenant_id;
+    let jwt = &seeded.admin.access_token;
+
+    let (_, tok_a) = enroll(&app, &seeded, "t93-node-a").await;
+    let (_, tok_b) = enroll(&app, &seeded, "t93-node-b").await;
+    let mut ws_a = connect_from(&app, &tok_a, &[], None).await;
+    let mut ws_b = connect_from(&app, &tok_b, &[], None).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let pk_a = [0x61u8; 32];
+    let pk_b = [0x62u8; 32];
+    ws_a.send(Message::Text(
+        json!({
+            "t": "rc:overlay.join",
+            "wg_public_key": B64.encode(pk_a),
+            "mtu": 1280,
+            "endpoints": ["198.51.100.61:51820"],
+            "supports_derp": true,
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let nm_a = recv_t(&mut ws_a, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .expect("initial netmap A");
+    ws_b.send(Message::Text(
+        json!({
+            "t": "rc:overlay.join",
+            "wg_public_key": B64.encode(pk_b),
+            "mtu": 1280,
+            "endpoints": ["198.51.100.62:51820"],
+            "supports_derp": true,
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let nm_b = recv_t(&mut ws_b, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .expect("initial netmap B");
+    let ip_b = nm_b["self_ip"].as_str().unwrap().to_string();
+    let _ = nm_a;
+    // Drain initial join deltas while mode is `off`.
+    let _ = recv_t(
+        &mut ws_a,
+        "rc:overlay.netmap_delta",
+        Duration::from_millis(400),
+    )
+    .await;
+    let _ = recv_t(
+        &mut ws_b,
+        "rc:overlay.netmap_delta",
+        Duration::from_millis(400),
+    )
+    .await;
+
+    let nid_a = node_id(&app, &seeded, "t93-node-a").await;
+    let nid_b = node_id(&app, &seeded, "t93-node-b").await;
+
+    // Create one-way port-narrowed policy `A -> B:2222/tcp` while mode is `off`.
+    let resp = app
+        .auth_post(&format!("/api/tenant/{tenant_id}/overlay-acl"), jwt)
+        .json(&json!({
+            "name": "t93-a-to-b-2222",
+            "enabled": true,
+            "sources": [{ "kind": "node_id", "id": nid_a }],
+            "via": [{ "kind": "node_id", "id": nid_b }],
+            "destinations": [{
+                "cidr": format!("{ip_b}/32"),
+                "port_range": { "low": 2222, "high": 2222 },
+                "proto": "tcp"
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(matches!(resp.status().as_u16(), 200 | 201));
+    let _ = recv_t(
+        &mut ws_a,
+        "rc:overlay.netmap_delta",
+        Duration::from_millis(400),
+    )
+    .await;
+    let _ = recv_t(
+        &mut ws_b,
+        "rc:overlay.netmap_delta",
+        Duration::from_millis(400),
+    )
+    .await;
+
+    // 1. Flip mode `off -> warn`: B's delta for A must carry `ingress_rules_preview`
+    //    with `[B:2222/tcp]` and NO `ingress_rules`; A's delta for B must carry
+    //    `ingress_rules_preview: []` and NO `ingress_rules`.
+    let resp = app
+        .auth_put(&format!("/api/tenant/{tenant_id}/overlay-acl/mode"), jwt)
+        .json(&json!({ "mode": "warn" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let delta_b = recv_t(&mut ws_b, "rc:overlay.netmap_delta", Duration::from_secs(5))
+        .await
+        .expect("B must receive netmap_delta on flip to warn");
+    let up_a_on_b = &delta_b["upserts"][0];
+    assert_eq!(up_a_on_b["node_id"].as_str(), Some(nid_a.as_str()));
+    assert!(
+        up_a_on_b.get("ingress_rules").is_none(),
+        "warn delta must omit enforcing ingress_rules: {up_a_on_b}"
+    );
+    let preview_on_b = up_a_on_b["ingress_rules_preview"]
+        .as_array()
+        .expect("warn delta on B must populate ingress_rules_preview");
+    assert_eq!(preview_on_b.len(), 1);
+    assert_eq!(preview_on_b[0]["port_range"]["low"].as_u64(), Some(2222));
+
+    let delta_a = recv_t(&mut ws_a, "rc:overlay.netmap_delta", Duration::from_secs(5))
+        .await
+        .expect("A must receive netmap_delta on flip to warn");
+    let up_b_on_a = &delta_a["upserts"][0];
+    assert_eq!(up_b_on_a["node_id"].as_str(), Some(nid_b.as_str()));
+    assert!(up_b_on_a.get("ingress_rules").is_none());
+    assert_eq!(
+        up_b_on_a["ingress_rules_preview"].as_array().map(Vec::len),
+        Some(0),
+        "A's preview for B must be empty Vec since B has no grant to A"
+    );
+
+    // 2. Also verify full-netmap join while already in `warn`: a rejoining B
+    //    receives `ingress_rules_preview` on its initial `rc:overlay.netmap`.
+    drop(ws_b);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let mut ws_b2 = connect_from(&app, &tok_b, &[], None).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    ws_b2
+        .send(Message::Text(
+            json!({
+                "t": "rc:overlay.join",
+                "wg_public_key": B64.encode(pk_b),
+                "mtu": 1280,
+                "endpoints": ["198.51.100.62:51820"],
+                "supports_derp": true,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let nm_b2 = recv_t(&mut ws_b2, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .expect("rejoin netmap B in warn");
+    let peer_a_in_nm = &nm_b2["peers"][0];
+    assert!(peer_a_in_nm.get("ingress_rules").is_none());
+    assert_eq!(
+        peer_a_in_nm["ingress_rules_preview"]
+            .as_array()
+            .map(Vec::len),
+        Some(1),
+        "full join netmap in warn must carry ingress_rules_preview"
+    );
+}
+
+/// T9-1 — under `enforce`, a one-way Overlay ACL rule (`A -> B:22/tcp`) must
+/// keep BOTH `A` and `B` mutually visible in live netmap deltas AND permit
+/// `/derp` frames in both directions (while still withholding an unrelated
+/// peer `C` and dropping `C`'s `/derp` frames).
+#[tokio::test]
+async fn t9_1_one_way_overlay_acl_grant_keeps_both_netmaps_and_derp_bidirectional() {
+    use crate::agent_presence_tests::enroll;
+    use crate::peer_relay_mint_tests::{Ws, connect_from, node_id, recv_t};
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    use futures::{SinkExt, StreamExt};
+    use serde_json::json;
+    use std::time::Duration;
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+    async fn join_ws(ws: &mut Ws, pk: [u8; 32], ep: &str) -> Value {
+        let msg = json!({
+            "t": "rc:overlay.join",
+            "wg_public_key": B64.encode(pk),
+            "mtu": 1280,
+            "endpoints": [ep],
+            "supports_derp": true,
+        });
+        ws.send(Message::Text(msg.to_string().into()))
+            .await
+            .unwrap();
+        recv_t(ws, "rc:overlay.netmap", Duration::from_secs(5))
+            .await
+            .expect("initial netmap")
+    }
+
+    async fn collect_deltas(ws: &mut Ws, wait: Duration) -> (Vec<Value>, Vec<String>) {
+        let mut upserts = Vec::new();
+        let mut removes = Vec::new();
+        let deadline = tokio::time::Instant::now() + wait;
+        while let Ok(Some(Ok(msg))) = tokio::time::timeout_at(deadline, ws.next()).await {
+            if let Message::Text(txt) = msg
+                && let Ok(v) = serde_json::from_str::<Value>(&txt)
+                && v["t"] == "rc:overlay.netmap_delta"
+            {
+                if let Some(u) = v["upserts"].as_array() {
+                    upserts.extend(u.iter().cloned());
+                }
+                if let Some(r) = v["removes"].as_array() {
+                    removes.extend(r.iter().filter_map(|x| x.as_str().map(str::to_string)));
+                }
+            }
+        }
+        (upserts, removes)
+    }
+
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("t91oneway").await;
+    let admin = &seeded.admin.access_token;
+    let (_, tok_a) = enroll(&app, &seeded, "t91-a").await;
+    let (_, tok_b) = enroll(&app, &seeded, "t91-b").await;
+    let (_, tok_c) = enroll(&app, &seeded, "t91-c").await;
+
+    let mut ws_a = connect_from(&app, &tok_a, &[], None).await;
+    let mut ws_b = connect_from(&app, &tok_b, &[], None).await;
+    let mut ws_c = connect_from(&app, &tok_c, &[], None).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let (ka, kb, kc) = ([0x41u8; 32], [0x42u8; 32], [0x43u8; 32]);
+    let _ = join_ws(&mut ws_a, ka, "203.0.113.41:41641").await;
+    let _ = join_ws(&mut ws_b, kb, "203.0.113.42:41641").await;
+    let _ = join_ws(&mut ws_c, kc, "203.0.113.43:41641").await;
+    let _ = collect_deltas(&mut ws_a, Duration::from_millis(250)).await;
+    let _ = collect_deltas(&mut ws_b, Duration::from_millis(250)).await;
+    let _ = collect_deltas(&mut ws_c, Duration::from_millis(250)).await;
+
+    let nid_a = node_id(&app, &seeded, "t91-a").await;
+    let nid_b = node_id(&app, &seeded, "t91-b").await;
+    let nid_c = node_id(&app, &seeded, "t91-c").await;
+    let b_doc = app
+        .state
+        .network()
+        .overlay_nodes
+        .base
+        .find_by_id(tid(&nid_b))
+        .await
+        .unwrap();
+
+    // Configure ONLY `A -> B:22/tcp` and switch tenant to `enforce`.
+    let acl_url = format!("/api/tenant/{}/overlay-acl", seeded.tenant_id);
+    let resp = app
+        .auth_post(&acl_url, admin)
+        .json(&json!({
+            "name": "only-a-to-b-22",
+            "enabled": true,
+            "sources": [{"kind": "node_id", "id": nid_a}],
+            "via": [{"kind": "node_id", "id": nid_b}],
+            "destinations": [{
+                "cidr": format!("{}/32", b_doc.overlay_ip),
+                "port_range": {"low": 22, "high": 22},
+                "proto": "tcp"
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(matches!(resp.status().as_u16(), 200 | 201));
+    let _ = collect_deltas(&mut ws_a, Duration::from_millis(200)).await;
+    let _ = collect_deltas(&mut ws_b, Duration::from_millis(200)).await;
+
+    let mode_url = format!("{acl_url}/mode");
+    let resp = app
+        .auth_put(&mode_url, admin)
+        .json(&json!({"mode": "enforce"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let (up_a, rem_a) = collect_deltas(&mut ws_a, Duration::from_millis(500)).await;
+    let (up_b, rem_b) = collect_deltas(&mut ws_b, Duration::from_millis(500)).await;
+    assert!(
+        !rem_a.contains(&nid_b),
+        "A must NOT lose B under A -> B grant"
+    );
+    assert!(
+        !rem_b.contains(&nid_a),
+        "B must NOT lose A under one-way A -> B grant"
+    );
+    assert!(
+        rem_a.contains(&nid_c) && rem_b.contains(&nid_c),
+        "unrelated peer C must be removed from both A and B"
+    );
+    let b_row_on_a = up_a
+        .iter()
+        .rfind(|u| u["node_id"] == nid_b)
+        .expect("A receives upserted row for B");
+    assert_eq!(b_row_on_a["ingress_rules"], json!([]));
+    let a_row_on_b = up_b
+        .iter()
+        .rfind(|u| u["node_id"] == nid_a)
+        .expect("B receives upserted row for A");
+    assert_eq!(a_row_on_b["routes"], json!([]));
+    assert_eq!(a_row_on_b["ingress_rules"].as_array().unwrap().len(), 1);
+
+    // DERP frames must relay in BOTH directions between A and B, and drop C.
+    let reg = |tok: String, pk: [u8; 32]| {
+        let addr = app.addr;
+        async move {
+            let (mut dws, _) = connect_async(&format!("ws://{addr}/derp?token={tok}"))
+                .await
+                .unwrap();
+            dws.send(Message::Binary(pk.to_vec().into())).await.unwrap();
+            dws
+        }
+    };
+    let mut derp_a = reg(tok_a.clone(), ka).await;
+    let mut derp_b = reg(tok_b.clone(), kb).await;
+    let mut derp_c = reg(tok_c.clone(), kc).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    async fn recv_bin(ws: &mut Ws) -> Option<Vec<u8>> {
+        tokio::time::timeout(Duration::from_millis(600), async {
+            while let Some(Ok(m)) = ws.next().await {
+                if let Message::Binary(b) = m {
+                    return Some(b.to_vec());
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    let mut f_ab = kb.to_vec();
+    f_ab.extend_from_slice(&[4, 0, 0, 0, 1]);
+    derp_a.send(Message::Binary(f_ab.into())).await.unwrap();
+    assert!(recv_bin(&mut derp_b).await.is_some(), "DERP A -> B allowed");
+
+    let mut f_ba = ka.to_vec();
+    f_ba.extend_from_slice(&[4, 0, 0, 0, 2]);
+    derp_b.send(Message::Binary(f_ba.into())).await.unwrap();
+    assert!(
+        recv_bin(&mut derp_a).await.is_some(),
+        "DERP B -> A must ALSO be allowed under one-way A -> B policy"
+    );
+
+    let mut f_cb = kb.to_vec();
+    f_cb.extend_from_slice(&[4, 0, 0, 0, 3]);
+    derp_c.send(Message::Binary(f_cb.into())).await.unwrap();
+    assert!(recv_bin(&mut derp_b).await.is_none(), "DERP C -> B dropped");
+}
+
 /// An agent and a tunnel client on the SAME box share a `machine_id`, and only
 /// one of them can own the overlay node. Deleting the agent must not release a
 /// node the still-enrolled tunnel client owns.
