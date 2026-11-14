@@ -362,6 +362,25 @@
             Return='ignore' />
 
         <!--
+          Start the daemon once the install has SUCCEEDED (commit phase):
+          its logon task relaunches only a failed exit, and both the
+          self-updater (which exits cleanly to make room) and a plain
+          upgrade leave the daemon stopped. Field, 2026-11-14 (an unattended
+          0.4.151 -> 0.4.154 self-update): MSI success, new binary verified,
+          and the machine off the mesh until its next logon. In the package
+          rather than the updater because the updater that runs an upgrade is
+          the OLD version. `service start` is harmless to repeat (the task's
+          IgnoreNew) and the scheduler, not msiexec, spawns the daemon.
+        -->
+        <CustomAction
+            Id='StartAutostart'
+            FileKey='meshharbor_agent_exe'
+            ExeCommand='service start'
+            Execute='commit'
+            Impersonate='yes'
+            Return='ignore' />
+
+        <!--
           Symmetric uninstall hook: tear down the Scheduled Task
           BEFORE the EXE is removed from disk (the action shells
           out to the EXE itself, so it must still be present).
@@ -434,6 +453,10 @@
             -->
             <Custom Action='CleanupLegacyPerMachine' After='InstallFiles'>
                 NOT (REMOVE="ALL")
+            </Custom>
+            <!-- After a successful install or upgrade: start the daemon. -->
+            <Custom Action='StartAutostart' Before='InstallFinalize'>
+                NOT (REMOVE="ALL") AND NOT MESH_SKIP_AUTOSTART
             </Custom>
             <!--
               Run UnregisterAutostart only during full uninstall,
