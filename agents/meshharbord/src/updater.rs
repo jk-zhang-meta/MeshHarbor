@@ -1979,7 +1979,12 @@ pub fn spawn_installer_with_watch(
 /// doesn't accumulate.
 #[cfg(any(target_os = "windows", test))]
 pub fn msiexec_argv(installer: &std::path::Path, flavour: WindowsInstallFlavour) -> Vec<String> {
-    let path = installer.to_string_lossy().into_owned();
+    // MSI's package engine rejects verbatim paths (1619), although its
+    // read-only database API accepts them. Keep canonical paths for hashing
+    // and owner receipts; use the existing DOS/UNC conversion at the CLI edge.
+    let path = crate::files_dir::strip_verbatim(installer.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
     let ui = match flavour {
         WindowsInstallFlavour::PerUser => "/qn",
         WindowsInstallFlavour::PerMachine => "/qn",
@@ -6616,6 +6621,24 @@ mod tests {
         );
         assert_eq!(argv[0], "/i");
         assert_eq!(argv[1], r"D:\meshharbor-agent.msi");
+    }
+
+    #[test]
+    fn msiexec_argv_converts_verbatim_drive_and_unc_only_at_cli_edge() {
+        for (input, expected) in [
+            (r"\\?\C:\用户\with space\release.msi", r"C:\用户\with space\release.msi"),
+            (r"\\?\UNC\host\share\release.msi", r"\\host\share\release.msi"),
+            (r"C:\normal\release.msi", r"C:\normal\release.msi"),
+        ] {
+            for flavour in [WindowsInstallFlavour::PerUser, WindowsInstallFlavour::PerMachine] {
+                let argv = msiexec_argv(std::path::Path::new(input), flavour);
+                assert_eq!(argv[1], expected);
+                assert_eq!(argv[5], format!("{expected}.log"));
+                assert_eq!(argv[0], "/i");
+                assert_eq!(argv[2], "/qn");
+                assert_eq!(argv[3], "/norestart");
+            }
+        }
     }
 
     // ----- rc.44 P4: msiexec_argv_with_properties (SystemContext) ----
