@@ -322,6 +322,26 @@ impl Module for FleetState {
             core,
         };
 
+        // Temporary devices end on time: every 30 s the reaper ends each
+        // invitation whose access period is over and removes its device. A
+        // task of its own because the host does not run declared module jobs
+        // yet (FR-69). The first round is a full period out, so a short-lived
+        // test server never races a test driving `reap_once` itself. The
+        // ending is a compare-and-set, so a second pod's round is a no-op.
+        if settings.auth.native_device_invite_enabled {
+            let st = state.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    match device_invite::reap_once(&st).await {
+                        Ok(0) => {}
+                        Ok(n) => tracing::info!(ended = n, "device-invite: reaper round"),
+                        Err(e) => tracing::debug!(error = %e, "device-invite: reaper round failed"),
+                    }
+                }
+            });
+        }
+
         // C-1 — the directory heartbeat: every 30 s, re-assert this pod's
         // agent presence records (gated on STILL holding the hub slot).
         // Redundant with the per-received-heartbeat refresh in the socket
@@ -831,27 +851,6 @@ impl Module for FleetState {
                 ],
             },
         ]
-    }
-
-    /// Temporary devices end on time: the reaper ends every invitation whose
-    /// access period is over and removes its device. Off with the feature.
-    fn jobs(&self) -> Vec<meshharbor_core::job::Job> {
-        if !self.settings.auth.native_device_invite_enabled {
-            return Vec::new();
-        }
-        let state = self.clone();
-        vec![meshharbor_core::job::Job::every(
-            "device-invite-reap",
-            std::time::Duration::from_secs(30),
-            true,
-            move || {
-                let state = state.clone();
-                async move {
-                    device_invite::reap_once(&state).await?;
-                    Ok(())
-                }
-            },
-        )]
     }
 
     /// Phase A-1 graceful shutdown: make this pod's death honest BEFORE the
