@@ -29,41 +29,33 @@
 //! stack is ring-only by invariant) plus `sha2`; the code here only
 //! parses RFC 4880 framing and builds the v4 hash trailer.
 //!
-//! ⚠️ Key rotation therefore requires a RELEASE (the pin is a constant).
-//! That is the point of pinning, and the same property Windows has: the
-//! `EXPECTED_PUBLISHER` name is compiled in too. Rotate by shipping a
-//! release signed by BOTH keys' overlap window: publish releases signed by
-//! the old key that CONTAIN the new pin, then switch CI's signing key once
-//! the fleet has updated past the pivot.
+//! Key rotation requires a new binary: the pin is compiled in. Normally a
+//! release containing the new pin is signed by the still-held old key first.
+//! On 2026-11-14 the user explicitly authorized replacing the unavailable key
+//! and a one-time controlled bootstrap. There is NO overlap or disabled check:
+//! old-pin clients refuse new-key signatures until externally upgraded once.
 
 use anyhow::{Context, Result, bail};
 
 /// The ed25519 public point of the release SIGNING subkey, pinned.
 ///
-/// Key: `MeshHarbor Release Signing <releases@meshharbor.itachi.fans>`,
-/// generated 2026-11-11 for the self-hosted release channel
-/// (`docs/self-hosted-releases.md`): signing subkey
-/// `A323047747FA652D8D74BB709482E0B7193780A1` (key id `9482E0B7193780A1`),
+/// User-authorized replacement generated 2026-11-14. Signing subkey
+/// `8DA83F223C23F4EE02B86FF30CB5688FB46980E8` (key id `0CB5688FB46980E8`),
 /// certified by the certify-only primary
-/// `38442E987FDC5492F8C722D43A8B20AA3BC5C4B4`. Its secret halves never enter
-/// this repository.
-///
-/// ⚠️ It REPLACED the inherited upstream pin (subkey
-/// `5DB8221F546288DE780C10D3A2C53E5FE6FA485A`), whose secret this project
-/// does not hold — under that pin no artifact this project can build would
-/// ever pass the updater, so the update path was closed, not merely
-/// inconvenient. Agents built before the swap still carry the old pin and
-/// refuse every new-key release; they move to this key by ONE manual
-/// install, after which updates flow again. That is the rotation note below
-/// applied without an overlap window, which needs the old key's secret.
+/// `B7CD4106EC3BE560C4B023E857ADA6182E5684DA`. Secret material never enters
+/// this repository. This replaces the unavailable 2026-11-11 signing subkey
+/// `A323047747FA652D8D74BB709482E0B7193780A1`; no old-key overlap is possible.
+/// Existing clients require the explicitly authorized one-time controlled
+/// bootstrap, retaining their configuration, identity and installation scope.
+/// Subsequent built-in updates must pass this new pin normally.
 ///
 /// The canonical armored key lives at
 /// `scripts/signing/gpg/meshharbor-release-pubkey.asc`;
 /// `pinned_key_matches_committed_pubkey` re-derives this constant from that
 /// file so the two can never drift silently.
 pub const PINNED_RELEASE_SIGNING_KEY: [u8; 32] = [
-    0x64, 0x75, 0xda, 0xa9, 0x5a, 0xfc, 0xfa, 0x07, 0x2b, 0x53, 0x2e, 0x3b, 0xc9, 0x0f, 0xd3, 0x5e,
-    0xe1, 0x8e, 0x34, 0xab, 0xf8, 0x4d, 0xe8, 0xfe, 0x27, 0x87, 0x72, 0x3a, 0xe7, 0x80, 0x6d, 0xb1,
+    0xd7, 0x4a, 0xba, 0xf1, 0x3e, 0xc3, 0x2b, 0x85, 0x2e, 0x6c, 0x56, 0x50, 0xcd, 0xf8, 0x36, 0x8d,
+    0xf9, 0x81, 0x00, 0x8c, 0x38, 0xd9, 0x9a, 0x62, 0x4f, 0x88, 0x43, 0xe7, 0x77, 0xc1, 0xa0, 0xd2,
 ];
 
 /// Verify `artifact` against the armored detached signature `asc`, using
@@ -371,13 +363,13 @@ LSPRvB0G9xGjssS7PG6iG4Tedn3r8g4=\n\
 =lGyI\n\
 -----END PGP SIGNATURE-----\n";
 
-    /// A message signed by the PINNED key's signing subkey with the same
-    /// command the publish script uses (`gpg --armor --detach-sign`, gpg
-    /// 2.4.7, 2026-11-11). It proves what `pinned_key_matches_committed_pubkey`
-    /// cannot: that what our gpg emits for our key is a shape this parser
-    /// accepts, so a release signed by `scripts/release-local.sh` verifies.
-    const PINNED_KEY_VECTOR_MSG: &[u8] = b"meshharbor release key vector v1\n";
-    const PINNED_KEY_VECTOR_ASC: &str = "-----BEGIN PGP SIGNATURE-----\n\n\
+    /// Public proof signed by the replacement subkey on 2026-11-14. Only
+    /// message/signature bytes are fixtures; no secret material is embedded.
+    const PINNED_KEY_VECTOR_MSG: &[u8] = b"MeshHarbor authorized signing-key rotation 2026-11-14\n";
+    const PINNED_KEY_VECTOR_ASC: &str = "-----BEGIN PGP SIGNATURE-----\n\niHUEABYKAB0WIQSNqD8iPCP07gK4b/MMtWiPtGmA6AUCaviAewAKCRAMtWiPtGmA\n6HcyAQDHAnYiXcmTKwzct4XX+SMd2p7ZyPHoCanBoqK7DTqV1gEAjLKYQ0KrQuus\n8qSYQw7lxMhxnxkfssnmKSCkJ2vPyw4=\n=O6ux\n-----END PGP SIGNATURE-----\n";
+    const RESTORED_KEY_VECTOR_ASC: &str = "-----BEGIN PGP SIGNATURE-----\n\niHUEABYKAB0WIQSNqD8iPCP07gK4b/MMtWiPtGmA6AUCaviAfAAKCRAMtWiPtGmA\n6KLpAP0clocwdnWxhSUv7v6t1jdPmvzmMH2XSxYpr+tZGCkjeAD+KlZPZqzcY1Og\n3DIOGWop6adfpcURzze1+nu4PuVeigo=\n=pisj\n-----END PGP SIGNATURE-----\n";
+    const PREVIOUS_KEY_VECTOR_MSG: &[u8] = b"meshharbor release key vector v1\n";
+    const PREVIOUS_KEY_VECTOR_ASC: &str = "-----BEGIN PGP SIGNATURE-----\n\n\
 iHUEABYKAB0WIQSjIwR3R/plLY10u3CUguC3GTeAoQUCavQ+kAAKCRCUguC3GTeA\n\
 oTanAQCgipHTlHg2sSt5z8ttM8+eZ+6GiMU0KhgqUaOB9MlZrAEAsISNQ1OBJTi/\n\
 aHdMs4RDcgWllsRLyXIIbRmg7WHb+AM=\n\
@@ -395,6 +387,25 @@ aHdMs4RDcgWllsRLyXIIbRmg7WHb+AM=\n\
         // And the fixture key's signature is still foreign to the pin.
         verify_release_artifact(FIXTURE_MSG, FIXTURE_ASC)
             .expect_err("a signature by any other key must be refused");
+    }
+
+    #[test]
+    fn replacement_key_has_no_implicit_old_key_overlap() {
+        let previous_key: [u8; 32] = [
+            0x64, 0x75, 0xda, 0xa9, 0x5a, 0xfc, 0xfa, 0x07, 0x2b, 0x53, 0x2e, 0x3b, 0xc9, 0x0f,
+            0xd3, 0x5e, 0xe1, 0x8e, 0x34, 0xab, 0xf8, 0x4d, 0xe8, 0xfe, 0x27, 0x87, 0x72, 0x3a,
+            0xe7, 0x80, 0x6d, 0xb1,
+        ];
+        verify_detached(PINNED_KEY_VECTOR_MSG, PINNED_KEY_VECTOR_ASC, &previous_key)
+            .expect_err("old pin must refuse the replacement signature before bootstrap");
+        verify_release_artifact(PREVIOUS_KEY_VECTOR_MSG, PREVIOUS_KEY_VECTOR_ASC)
+            .expect_err("new pin must not silently retain trust in the unavailable key");
+    }
+
+    #[test]
+    fn restored_replacement_key_public_proof_verifies() {
+        verify_release_artifact(PINNED_KEY_VECTOR_MSG, RESTORED_KEY_VECTOR_ASC)
+            .expect("public proof from the restored key must verify");
     }
 
     #[test]

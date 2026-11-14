@@ -23,7 +23,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PUBKEY="$ROOT/scripts/signing/gpg/meshharbor-release-pubkey.asc"
 # The pinned signing subkey (pgp_verify::PINNED_RELEASE_SIGNING_KEY).
-SUBKEY_FPR="${MESHHARBOR_RELEASE_SUBKEY:-A323047747FA652D8D74BB709482E0B7193780A1}"
+SUBKEY_FPR="${MESHHARBOR_RELEASE_SUBKEY:-8DA83F223C23F4EE02B86FF30CB5688FB46980E8}"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 valid_token() { [[ "$1" =~ ^[A-Za-z0-9._+-]{1,240}$ && "$1" != . && "$1" != .. && "$1" != .* ]]; }

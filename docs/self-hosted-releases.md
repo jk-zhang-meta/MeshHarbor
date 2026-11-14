@@ -47,7 +47,7 @@ flowchart LR
 | Source switch | `crates/modules/fleet/src/releases.rs` `cached()` | the one branch every release route goes through |
 | Scan | `crates/modules/fleet/src/local_releases.rs` | `<dir>/<tag>/<file>` → the same `AgentRelease` list GitHub produced; symlinks skipped, dot-entries skipped, tag/name token rules shared with the GitHub path |
 | Delivery | `crates/modules/fleet/src/release_delivery.rs` `Source::Local` + `local_response` | streams from disk under the GitHub path's bounds: the `.asc` must be paired, the scanned size must still hold, and a symlink swapped in after the scan is refused |
-| Anchor | `crates/tunnel-core/src/pgp_verify.rs` `PINNED_RELEASE_SIGNING_KEY` | our release signing subkey `A323047747FA652D8D74BB709482E0B7193780A1`, certified by primary `38442E987FDC5492F8C722D43A8B20AA3BC5C4B4` |
+| Anchor | `crates/tunnel-core/src/pgp_verify.rs` `PINNED_RELEASE_SIGNING_KEY` | replacement release signing subkey `8DA83F223C23F4EE02B86FF30CB5688FB46980E8`, certified by primary `B7CD4106EC3BE560C4B023E857ADA6182E5684DA` (2026-11-14) |
 | Updater | `agents/meshharbord/src/updater.rs` `download_asset` | the pinned `.asc` check on **every** platform (Windows previously used Authenticode) |
 | Publish | `scripts/release-local.sh` | signs, verifies against `scripts/signing/gpg/meshharbor-release-pubkey.asc`, then makes the tag visible in one atomic rename |
 
@@ -85,16 +85,26 @@ scripts/release-local.sh publish /srv/meshharbor-releases agent-v0.4.152 \
 On the server, mount the directory read-only into the container and set
 `MESHHARBOR__RELEASES__LOCAL_DIR` to the mount point.
 
-## The one-time key move
+## The authorized one-time key move (2026-11-14)
 
-> ⚠️ Agents built **before** this change pin the inherited key and refuse every
-> release signed by ours. They move by **one manual install** of a build from this
-> branch. From then on, updates flow from the center. A rotation with an overlap
-> window would need the old key's secret, which this project does not hold.
+The previous signing subkey `A323047747FA652D8D74BB709482E0B7193780A1`
+was unavailable. The user explicitly authorized a replacement key and a one-time
+controlled bootstrap. The new certify-only primary is
+`B7CD4106EC3BE560C4B023E857ADA6182E5684DA`; its signing subkey is
+`8DA83F223C23F4EE02B86FF30CB5688FB46980E8`. Only the public certificate and
+public proof signatures are committed. There is no overlap, trust-on-first-use,
+old-pin fallback, or disabled verification.
 
-The signing subkey's secret and its passphrase live only on the build host's
-private runtime directory, never in the repository, OneDrive or a log. Losing them
-means every agent needs one more manual install to a new pin, so keep a backup.
+Existing old-pin agents necessarily refuse artifacts signed by the replacement.
+Their first upgrade must use the authorized, independently verified local
+bootstrap, preserving account/device identity, configuration and installation
+scope. Bootstrap alone does not prove built-in updates: a subsequent genuine
+next-version update must verify the new signature and pass its normal operational
+acceptance. Publishing new signatures cannot update old clients by itself.
+
+The secret key and passphrase stay in private, nonsynchronized signing storage,
+with a separately protected recovery backup, never in the repository, OneDrive
+or logs. No private-key locator or secret is part of these release documents.
 
 ## Verification record
 
@@ -103,4 +113,5 @@ means every agent needs one more manual install to a new pin, so keep a backup.
 | `pgp_verify` committed vector signed by the pinned key | verifies; a flipped byte and a foreign key are refused |
 | `local_releases` scan rules (hidden, family, symlink, re-hash, serde) | unit tests |
 | `release_delivery` local mode (own URLs, `.asc` pairing, exact bytes, changed file, symlink swap) | unit tests |
-| End-to-end Linux upgrade (old `.deb` → new through a center on its own directory, plus a tampered release refused) | see the item 17 field record |
+| Historical pre-rotation Linux update | item 17 field record; not evidence for the replacement-key bootstrap |
+| Replacement-key bootstrap and subsequent native next-version update | separate operational acceptance required; not established by public proof-vector tests |
