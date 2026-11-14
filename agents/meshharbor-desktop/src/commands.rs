@@ -407,6 +407,66 @@ pub async fn cmd_enroll(
     token: String,
     device_name: String,
 ) -> Result<StatusReport, String> {
+    enroll_with_token(server, token, device_name).await
+}
+
+/// The device login in progress, between `cmd_login_start` and
+/// `cmd_login_wait`. Holds the device code + PKCE verifier in memory only.
+static LOGIN: tokio::sync::Mutex<Option<meshharbor_node_core::device_login::Pending>> =
+    tokio::sync::Mutex::const_new(None);
+
+#[derive(Debug, Serialize)]
+pub struct LoginStarted {
+    pub user_code: String,
+    pub url: String,
+    pub opened: bool,
+}
+
+/// Sign in with an account (`mh login` in the app): start a device login and
+/// open its approval page in the browser.
+#[tauri::command]
+pub async fn cmd_login_start(server: String, device_name: String) -> Result<LoginStarted, String> {
+    use meshharbor_node_core::device_login;
+    let server = if server.trim().is_empty() {
+        device_login::DEFAULT_SERVER.to_string()
+    } else {
+        server
+    };
+    let pending = device_login::start(&server, device_name.trim())
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    let opened = device_login::open_browser(&pending.verification_uri_complete);
+    let out = LoginStarted {
+        user_code: pending.user_code.clone(),
+        url: pending.verification_uri_complete.clone(),
+        opened,
+    };
+    *LOGIN.lock().await = Some(pending);
+    Ok(out)
+}
+
+/// Wait for the browser approval, then enroll exactly as `cmd_enroll` does.
+#[tauri::command]
+pub async fn cmd_login_wait(device_name: String) -> Result<StatusReport, String> {
+    let pending = LOGIN
+        .lock()
+        .await
+        .take()
+        .ok_or_else(|| "No sign-in is in progress".to_string())?;
+    let approved = pending.wait().await.map_err(|e| format!("{e:#}"))?;
+    enroll_with_token(
+        pending.server_url.clone(),
+        approved.enrollment_token,
+        device_name,
+    )
+    .await
+}
+
+async fn enroll_with_token(
+    server: String,
+    token: String,
+    device_name: String,
+) -> Result<StatusReport, String> {
     let trimmed_token = token.trim().to_string();
     let trimmed_name = device_name.trim().to_string();
     if trimmed_token.is_empty() {

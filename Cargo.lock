@@ -6582,6 +6582,7 @@ name = "meshharbor-node-core"
 version = "0.4.151"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bson",
  "directories",
  "hex",
@@ -6589,6 +6590,7 @@ dependencies = [
  "meshharbor-localapi",
  "meshharbor-remote-control",
  "meshharbor-tunnel-core",
+ "rand 0.9.4",
  "rcgen",
  "reqwest 0.12.28",
  "rustls",
