@@ -328,6 +328,31 @@ pub async fn claim(
         .await
     {
         Ok(Some(row)) => {
+            if !crate::device_invite::stored_service_epoch_current(
+                &state,
+                svc.agent_id,
+                "exec_pending",
+                "request_id",
+                &request_id,
+            )
+            .await?
+            {
+                let outcome = ExecOutcome {
+                    error: Some("Device capabilities changed after authorization".into()),
+                    ..Default::default()
+                };
+                state
+                    .exec_pending
+                    .complete(&request_id, svc.agent_id, svc.tenant_id, &outcome)
+                    .await
+                    .map_err(|_| {
+                        ApiError::ServiceUnavailable("Could not settle obsolete command".into())
+                    })?;
+                return Err(ApiError::Forbidden(
+                    "Device capabilities changed after this command was authorized".into(),
+                ));
+            }
+
             info!(
                 agent = %svc.agent_id, %request_id, run_as = %row.run_as,
                 "fleet-rpc: SYSTEM service claimed a command"

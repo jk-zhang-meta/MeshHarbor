@@ -95,6 +95,7 @@ pub async fn relay_overlay_msg_from_node(
 ) -> Option<ClientMsg> {
     match parsed {
         ClientMsg::OverlayJoin {
+            supports_invite_deadlines,
             wg_public_key,
             key_epoch,
             instance,
@@ -124,6 +125,7 @@ pub async fn relay_overlay_msg_from_node(
                 state,
                 ident,
                 connection_id,
+                supports_invite_deadlines,
                 wg_public_key,
                 key_epoch,
                 instance,
@@ -373,7 +375,7 @@ pub async fn relay_overlay_msg_from_node(
             epoch,
             auth_revision,
         } => {
-            handle_overlay_netmap_ack(state, ident, epoch, auth_revision).await;
+            handle_overlay_netmap_ack(state, ident, connection_id, epoch, auth_revision).await;
             None
         }
         other => Some(other),
@@ -385,14 +387,28 @@ pub async fn relay_overlay_msg_from_node(
 async fn handle_overlay_netmap_ack(
     state: &NetworkState,
     ident: NodeIdentity,
+    connection_id: &str,
     epoch: u64,
     auth_revision: u64,
 ) {
+    if state.org_relay.live_conn(ident.connection_key()).as_deref() != Some(connection_id) {
+        return;
+    }
     let Some(self_node) = current_node(state, ident).await else {
         debug!(?ident, "overlay.netmap_ack before join; ignoring");
         return;
     };
     let Some(node_id) = self_node.id else { return };
+    let result=state.core.db.collection::<bson::Document>("overlay_nodes").update_one(bson::doc! {
+        "_id":node_id,"deleted_at":null,"access_connection_id":connection_id,
+        "access_connection_origin":state.pod.origin(),
+        "access_sent_auth_revision":auth_revision as i64,"access_sent_epoch":epoch as i64,
+    },bson::doc! {"$set":{"access_applied_connection_id":connection_id,"access_applied_origin":state.pod.origin(),
+        "access_applied_auth_revision":auth_revision as i64,"access_applied_epoch":epoch as i64}}).await;
+    if result.as_ref().is_ok_and(|r| r.matched_count == 1) {
+        debug!(%node_id,auth_revision,"exact-connection access netmap applied");
+    }
+
     if let Err(e) = state
         .overlay_nodes
         .record_applied_auth_revision(node_id, epoch, auth_revision)
@@ -447,6 +463,7 @@ async fn handle_overlay_join(
     state: &NetworkState,
     ident: NodeIdentity,
     connection_id: &str,
+    supports_invite_deadlines: bool,
     wg_public_key: String,
     key_epoch: u32,
     instance: Option<String>,
@@ -603,7 +620,7 @@ async fn handle_overlay_join(
         _ => None,
     };
 
-    let self_node = match state
+    let mut self_node = match state
         .overlay_nodes
         .find_live_by_tenant_and_machine(tenant_id, &machine_id)
         .await
@@ -619,23 +636,6 @@ async fn handle_overlay_join(
                 )
                 .await;
                 warn!(%tenant_id, %machine_id, "overlay.join: temporary device met an unmarked node; refused");
-                return;
-            }
-            // Its invitations changed since the mark was written (one more,
-            // one fewer): the mark follows them before anything is fanned.
-            if temporary_mark.is_some()
-                && existing.temporary != temporary_mark
-                && state
-                    .overlay_nodes
-                    .set_temporary(id, temporary_mark.as_ref())
-                    .await
-                    .is_err()
-            {
-                refuse(
-                    OverlayJoinRefusal::StoreUnavailable,
-                    "temporary device: mark update failed".to_string(),
-                )
-                .await;
                 return;
             }
             // Keep the existing stable name (DNS mustn't churn on rejoin);
@@ -778,6 +778,9 @@ async fn handle_overlay_join(
                 match state
                     .overlay_nodes
                     .create(NewOverlayNode {
+                        supports_invite_deadlines,
+                        personal_access_owner_id: matches!(node_ref, NodeRef::Agent { .. })
+                            .then(|| ObjectId::from_bytes([0; 12])),
                         tenant_id,
                         node_ref: node_ref.clone(),
                         network_id,
@@ -822,6 +825,57 @@ async fn handle_overlay_join(
         }
         Err(e) => {
             warn!(%tenant_id, %e, "overlay.join: node lookup failed");
+            return;
+        }
+    };
+    let join_access_revision = if let NodeRef::Agent { agent_id } = node_ref {
+        let result = async {
+            let revision = reserve_access_revision(state, tenant_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("overlay network disappeared"))?;
+            let node = store_access_projection(
+                state,
+                tenant_id,
+                agent_id,
+                revision,
+                Some((
+                    connection_id,
+                    instance.as_deref().unwrap_or(""),
+                    supports_invite_deadlines,
+                )),
+            )
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("joining overlay node disappeared"))?;
+            Ok::<_, anyhow::Error>((revision, node))
+        }
+        .await;
+        match result {
+            Ok((revision, node)) => {
+                self_node = node;
+                Some(revision)
+            }
+            Err(error) => {
+                refuse(
+                    OverlayJoinRefusal::StoreUnavailable,
+                    format!("access projection not committed: {error}"),
+                )
+                .await;
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let network = match state.overlay_networks.find_for_tenant(tenant_id).await {
+        Ok(Some(network)) if join_access_revision.is_none_or(|r| network.auth_revision == r) => {
+            network
+        }
+        _ => {
+            refuse(
+                OverlayJoinRefusal::StoreUnavailable,
+                "authority changed during join".into(),
+            )
+            .await;
             return;
         }
     };
@@ -1034,6 +1088,20 @@ async fn handle_overlay_join(
     let join_blocks = state.overlay_networks.block_list(&network).await;
     let epoch = next_epoch();
 
+    if state
+        .overlay_networks
+        .current_auth_revision(tenant_id)
+        .await
+        .ok()
+        != Some(network.auth_revision.max(1))
+    {
+        refuse(
+            OverlayJoinRefusal::StoreUnavailable,
+            "authority changed before join netmap; retry".into(),
+        )
+        .await;
+        return;
+    }
     // Full netmap → joiner.
     send_to_node(
         state,
@@ -1228,6 +1296,7 @@ fn schedule_join_netmap_retry(
                     self_id,
                     &slot.generation,
                     my_gen,
+                    None,
                 )
                 .await
             };
@@ -1293,6 +1362,7 @@ async fn try_complete_join_netmap(
     self_id: ObjectId,
     generation: &std::sync::atomic::AtomicU64,
     my_gen: u64,
+    access: Option<(&str, u64)>,
 ) -> bool {
     let self_node = match state.overlay_nodes.base.find_by_id(self_id).await {
         Ok(n) => n,
@@ -1312,6 +1382,12 @@ async fn try_complete_join_netmap(
     else {
         return false;
     };
+    let Some(self_node) = all.iter().find(|n| n.id == Some(self_id)).cloned() else {
+        return false;
+    };
+    if access.is_some_and(|(_, revision)| network.auth_revision != revision) {
+        return false;
+    }
     let iso = business_isolation::mode(state);
     let joiner_zone = business_isolation::joiner_zone(state, iso, &self_node).await;
     let identity_id = match &self_node.node_ref {
@@ -1356,7 +1432,25 @@ async fn try_complete_join_netmap(
         return false;
     }
     let epoch = next_epoch();
-    send_to_node(
+    if state
+        .overlay_networks
+        .current_auth_revision(tenant_id)
+        .await
+        .ok()
+        != Some(network.auth_revision.max(1))
+    {
+        return false;
+    }
+    if let Some((connection, revision)) = access {
+        let written=state.core.db.collection::<bson::Document>("overlay_nodes").update_one(bson::doc! {
+            "_id":self_id,"deleted_at":null,"access_connection_id":connection,"access_connection_origin":state.pod.origin(),
+            "access_projection_revision":revision as i64,
+        },bson::doc! {"$set":{"access_sent_auth_revision":revision as i64,"access_sent_epoch":epoch as i64}}).await;
+        if !written.is_ok_and(|r| r.matched_count == 1) {
+            return false;
+        }
+    }
+    if !send_to_node_checked(
         state,
         &self_node,
         ServerMsg::OverlayNetmap {
@@ -1384,8 +1478,12 @@ async fn try_complete_join_netmap(
             peers,
             epoch,
         },
+        access.is_some(),
     )
-    .await;
+    .await
+    {
+        return false;
+    }
     let auth_revision = network.auth_revision.max(1);
     let self_reachable = is_reachable(&reach, &self_node);
     for peer in all.iter().filter(|n| n.id != self_node.id) {
@@ -2810,6 +2908,9 @@ pub fn temporary_mark_of(
     g: &meshharbor_mod_fleet::device_invite::TemporaryGrant,
 ) -> meshharbor_remote_control::models::TemporaryMark {
     meshharbor_remote_control::models::TemporaryMark {
+        feature_grants: g.feature_grants.clone(),
+        ssh_port: g.ssh_port,
+        rdp_port: g.rdp_port,
         invite_id: g.invite_id,
         inviter_user_id: g.inviter_user_id,
         allow_role_ids: g.allow_role_ids.clone(),
@@ -2821,32 +2922,446 @@ pub fn temporary_mark_of(
 /// (one attached, one ended). Only ever writes a mark, never clears one: a
 /// device with none left is being removed (or made ordinary, which unmarks
 /// explicitly). `Ok(true)` = the mark changed.
-pub async fn sync_temporary_mark(
+async fn personal_owner(
+    state: &NetworkState,
+    agent_id: ObjectId,
+) -> anyhow::Result<Option<ObjectId>> {
+    if meshharbor_mod_fleet::device_invite::host_network_revocation_pending(&state.fleet, agent_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("host revocation lookup: {e:?}"))?
+    {
+        // A temporary deny-all ingress marker, not a change to the agent's
+        // trusted personal owner. Recomputed from the agent after ACK.
+        return Ok(Some(ObjectId::from_bytes([0; 12])));
+    }
+    let raw = state
+        .core
+        .db
+        .collection::<bson::Document>("agents")
+        .find_one(bson::doc! { "_id": agent_id })
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("agent missing"))?;
+    // Preserve the ceiling even when ownership changes; only an explicit reviewed
+    // profile migration may move it. No administrative reassign bypass.
+    Ok(raw
+        .get_object_id("personal_access_owner_id")
+        .ok()
+        .map(|owner| {
+            if raw.get_object_id("owner_user_id").ok() == Some(owner) {
+                owner
+            } else {
+                ObjectId::from_bytes([0; 12])
+            }
+        }))
+}
+
+/// Reserve the authority generation BEFORE reading any capability inputs.
+async fn reserve_access_revision(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+) -> anyhow::Result<Option<u64>> {
+    if state
+        .overlay_networks
+        .find_for_tenant(tenant_id)
+        .await?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(
+        state.overlay_networks.bump_auth_revision(tenant_id).await?,
+    ))
+}
+
+async fn store_access_projection(
     state: &NetworkState,
     tenant_id: ObjectId,
     agent_id: ObjectId,
-) -> anyhow::Result<bool> {
-    if !state.settings.auth.native_device_invite_enabled {
-        return Ok(false);
-    }
-    let grant = meshharbor_mod_fleet::device_invite::grant_for_agent(&state.fleet, agent_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("temporary-device lookup: {e:?}"))?;
-    let Some(grant) = grant else { return Ok(false) };
-    let mark = temporary_mark_of(&grant);
+    revision: u64,
+    connection: Option<(&str, &str, bool)>,
+) -> anyhow::Result<Option<OverlayNode>> {
     let Some(node) = state
         .overlay_nodes
         .find_live_by_agent(tenant_id, agent_id)
         .await?
     else {
-        return Ok(false); // not on the overlay yet: born marked at its join
+        return Ok(None);
     };
-    if node.temporary.as_ref() == Some(&mark) {
-        return Ok(false);
+    let owner = personal_owner(state, agent_id).await?;
+    let grant = if state.settings.auth.native_device_invite_enabled {
+        meshharbor_mod_fleet::device_invite::grant_for_agent(&state.fleet, agent_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("temporary-device lookup: {e:?}"))?
+    } else {
+        None
+    };
+    let mark = grant
+        .as_ref()
+        .map(temporary_mark_of)
+        .or(node.temporary.clone());
+    access_projection_pause(state, agent_id).await;
+    anyhow::ensure!(
+        state
+            .overlay_networks
+            .current_auth_revision(tenant_id)
+            .await?
+            == revision,
+        "stale access projection generation before commit"
+    );
+    let mut set = bson::doc! {"personal_access_owner_id":bson::to_bson(&owner)?,
+    "temporary":bson::to_bson(&mark)?,"access_projection_revision":revision as i64};
+    let mut update = bson::doc! {};
+    if let Some((conn, instance, supports_deadlines)) = connection {
+        anyhow::ensure!(
+            state.org_relay.live_conn(agent_id).as_deref() == Some(conn),
+            "stale overlay join connection"
+        );
+        set.insert("access_connection_id", conn);
+        set.insert("access_connection_origin", state.pod.origin());
+        set.insert("access_process_instance", instance);
+        set.insert("supports_invite_deadlines", supports_deadlines);
+        update.insert("$unset",bson::doc! {"access_applied_connection_id":"","access_applied_origin":"",
+            "access_applied_auth_revision":"","access_applied_epoch":"","access_sent_auth_revision":"","access_sent_epoch":""});
     }
-    let nid = node.id.ok_or_else(|| anyhow::anyhow!("node missing _id"))?;
-    state.overlay_nodes.set_temporary(nid, Some(&mark)).await?;
-    Ok(true)
+    update.insert("$set", set);
+    let id = node
+        .id
+        .ok_or_else(|| anyhow::anyhow!("overlay node missing id"))?;
+    let committed=state.overlay_nodes.base.collection().update_one(bson::doc! {
+        "_id":id,"tenant_id":tenant_id,"deleted_at":null,
+        "$or":[{"access_projection_revision":{"$exists":false}},{"access_projection_revision":{"$lt":revision as i64}}]
+    },update).await?;
+    anyhow::ensure!(
+        committed.matched_count == 1,
+        "stale access projection writer rejected"
+    );
+    anyhow::ensure!(
+        state
+            .overlay_networks
+            .current_auth_revision(tenant_id)
+            .await?
+            == revision,
+        "access authority changed during projection commit"
+    );
+    Ok(Some(state.overlay_nodes.base.find_by_id(id).await?))
+}
+
+pub async fn sync_temporary_mark(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+) -> anyhow::Result<bool> {
+    let Some(revision) = reserve_access_revision(state, tenant_id).await? else {
+        return Ok(false);
+    };
+    Ok(
+        store_access_projection(state, tenant_id, agent_id, revision, None)
+            .await?
+            .is_some(),
+    )
+}
+
+#[cfg(feature = "access-authority-test-support")]
+static ACCESS_PROJECTION_PAUSES: std::sync::LazyLock<
+    dashmap::DashMap<
+        (String, ObjectId),
+        (
+            std::sync::Arc<tokio::sync::Notify>,
+            std::sync::Arc<tokio::sync::Notify>,
+        ),
+    >,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+#[cfg(feature = "access-authority-test-support")]
+pub fn pause_next_access_projection(
+    state: &NetworkState,
+    agent_id: ObjectId,
+) -> (
+    std::sync::Arc<tokio::sync::Notify>,
+    std::sync::Arc<tokio::sync::Notify>,
+) {
+    let gates = (
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
+    ACCESS_PROJECTION_PAUSES.insert((state.pod.origin(), agent_id), gates.clone());
+    gates
+}
+async fn access_projection_pause(state: &NetworkState, agent_id: ObjectId) {
+    #[cfg(feature = "access-authority-test-support")]
+    if let Some((_, (ready, resume))) =
+        ACCESS_PROJECTION_PAUSES.remove(&(state.pod.origin(), agent_id))
+    {
+        ready.notify_one();
+        resume.notified().await;
+    }
+    let _ = (state, agent_id);
+}
+
+/// Strict authority path used only by holder-selected capability changes.
+/// Offline sockets need no delivery, but every required read, local fan and
+/// configured cluster publication must succeed before the API reports success.
+pub async fn refresh_access_authority(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+) -> anyhow::Result<()> {
+    let Some(revision) = reserve_access_revision(state, tenant_id).await? else {
+        return Ok(());
+    };
+    store_access_projection(state, tenant_id, agent_id, revision, None).await?;
+    refresh_access_projection(state, tenant_id, revision).await?;
+    access_refresh_checkpoint(state, tenant_id, "publish")?;
+    meshharbor_mod_fleet::ctrl::publish_rc_ctrl_checked(state, "overlay_policy_sync", serde_json::json!({
+        "db":state.core.db.name(),"tenant_id":tenant_id.to_hex(),"auth_revision":revision,"reason":"agent_access_changed","agent_id":agent_id.to_hex()
+    })).await?;
+    push_access_barrier_if_local(state, tenant_id, agent_id, revision).await?;
+    wait_access_applied(state, tenant_id, agent_id, revision).await?;
+    Ok(())
+}
+
+async fn refresh_access_projection(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    revision: u64,
+) -> anyhow::Result<u64> {
+    state.org_relay.invalidate_mode(tenant_id);
+    state.org_relay.invalidate_eligibility();
+    access_refresh_checkpoint(state, tenant_id, "network")?;
+    let Some(network) = state.overlay_networks.find_for_tenant(tenant_id).await? else {
+        return Ok(0);
+    };
+    let network_id = network
+        .id
+        .ok_or_else(|| anyhow::anyhow!("overlay network missing id"))?;
+    anyhow::ensure!(
+        state
+            .overlay_networks
+            .current_auth_revision(tenant_id)
+            .await?
+            == revision,
+        "access authority generation changed before propagation"
+    );
+    let acl = try_load_acl(state, tenant_id, PolicyLoad::WhenGating).await?;
+    LAST_GOOD_ACL.insert(tenant_id, acl);
+    access_refresh_checkpoint(state, tenant_id, "nodes")?;
+    let nodes = state
+        .overlay_nodes
+        .list_active_in_network(tenant_id, network_id)
+        .await?;
+    if !crate::derp_acl::rebuild(state, tenant_id, network_id).await {
+        anyhow::bail!("capability DERP authority rebuild failed");
+    }
+    for node in &nodes {
+        access_refresh_checkpoint(state, tenant_id, "refan")?;
+        let reach = reachability(state, std::slice::from_ref(node)).await;
+        if !fan_upsert_shaped_mode(state, node, next_epoch(), is_reachable(&reach, node), true)
+            .await
+        {
+            anyhow::bail!("capability node refan failed: {:?}", node.id);
+        }
+    }
+    crate::org_relay::reconcile_acl(state, tenant_id).await;
+    anyhow::ensure!(
+        state
+            .overlay_networks
+            .current_auth_revision(tenant_id)
+            .await?
+            == revision,
+        "access authority generation changed during propagation"
+    );
+    Ok(revision)
+}
+
+/// Only the pod actually holding this connection can deliver its full barrier.
+async fn push_access_barrier_if_local(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+    revision: u64,
+) -> anyhow::Result<()> {
+    if !state.fleet.rc_hub.is_agent_online(agent_id) {
+        return Ok(());
+    }
+    let Some(node) = state
+        .overlay_nodes
+        .find_live_by_agent(tenant_id, agent_id)
+        .await?
+    else {
+        return Ok(());
+    };
+    if !matches!(node.status, AgentStatus::Online) {
+        return Ok(());
+    }
+    let connection = state
+        .org_relay
+        .live_conn(agent_id)
+        .ok_or_else(|| anyhow::anyhow!("online access target lacks a connection binding"))?;
+    access_refresh_checkpoint(state, tenant_id, "receiver")?;
+    let generation = std::sync::atomic::AtomicU64::new(1);
+    anyhow::ensure!(
+        try_complete_join_netmap(
+            state,
+            tenant_id,
+            node.network_id,
+            node.id.ok_or_else(|| anyhow::anyhow!("node missing id"))?,
+            &generation,
+            1,
+            Some((&connection, revision))
+        )
+        .await,
+        "access target full netmap barrier failed"
+    );
+    Ok(())
+}
+
+/// A live target's actual apply receipt, not Redis PUBLISH, completes this
+/// phase. Both connection identity and exact transmitted map epoch are bound.
+async fn wait_access_applied(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+    revision: u64,
+) -> anyhow::Result<()> {
+    let Some(node) = state
+        .overlay_nodes
+        .find_live_by_agent(tenant_id, agent_id)
+        .await?
+    else {
+        return Ok(());
+    };
+    let presence = if let Some(redis) = &state.redis_pubsub {
+        redis
+            .agent_presence_get_many(&[agent_id.to_hex()])
+            .await?
+            .into_iter()
+            .next()
+            .flatten()
+    } else {
+        None
+    };
+    if !matches!(node.status, AgentStatus::Online) {
+        return Ok(());
+    }
+    let id = node
+        .id
+        .ok_or_else(|| anyhow::anyhow!("access target node missing id"))?;
+    let raw_nodes = state.core.db.collection::<bson::Document>("overlay_nodes");
+    let raw = raw_nodes
+        .find_one(bson::doc! {"_id":id,"deleted_at":null})
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("access target disappeared"))?;
+    let connection = raw.get_str("access_connection_id")?.to_owned();
+    let origin = raw.get_str("access_connection_origin")?.to_owned();
+    if let Some(token) = presence.as_deref() {
+        let owner = meshharbor_core::cluster::directory::OwnerRecord::parse(token)
+            .ok_or_else(|| anyhow::anyhow!("invalid connection owner record"))?;
+        anyhow::ensure!(
+            format!("{}/{}", owner.pod_id, owner.epoch) == origin && owner.extra == connection,
+            "access target reconnected before apply barrier"
+        );
+    } else {
+        anyhow::ensure!(
+            state.fleet.rc_hub.is_agent_online(agent_id)
+                && state.org_relay.live_conn(agent_id).as_deref() == Some(connection.as_str())
+                && origin == state.pod.origin(),
+            "online overlay target has no confirmed connection owner"
+        );
+    }
+    let timeout = if cfg!(feature = "access-authority-test-support") {
+        std::time::Duration::from_millis(1200)
+    } else {
+        std::time::Duration::from_secs(5)
+    };
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        anyhow::ensure!(
+            state
+                .overlay_networks
+                .current_auth_revision(tenant_id)
+                .await?
+                == revision,
+            "authority changed while waiting for access apply"
+        );
+        let raw = raw_nodes
+            .find_one(bson::doc! {"_id":id,"deleted_at":null})
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("access target disappeared during apply"))?;
+        anyhow::ensure!(
+            raw.get_str("access_connection_id").ok() == Some(connection.as_str())
+                && raw.get_str("access_connection_origin").ok() == Some(origin.as_str()),
+            "access target connection changed during apply"
+        );
+        // Recheck the directory too: a reconnect whose new join has not yet
+        // persisted must not inherit an old connection's receipt.
+        if let Some(redis) = &state.redis_pubsub {
+            let now = redis
+                .agent_presence_get_many(&[agent_id.to_hex()])
+                .await?
+                .into_iter()
+                .next()
+                .flatten();
+            anyhow::ensure!(now == presence, "access target owner changed during apply");
+        }
+        let sent_epoch = raw.get_i64("access_sent_epoch").ok();
+        if raw.get_i64("access_sent_auth_revision").ok() == Some(revision as i64)
+            && raw.get_i64("access_applied_auth_revision").ok() == Some(revision as i64)
+            && sent_epoch.is_some()
+            && raw.get_i64("access_applied_epoch").ok() == sent_epoch
+            && raw.get_str("access_applied_connection_id").ok() == Some(connection.as_str())
+            && raw.get_str("access_applied_origin").ok() == Some(origin.as_str())
+        {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            tokio::time::Instant::now() < deadline,
+            "access target has not applied this connection-bound authority revision"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[cfg(feature = "access-authority-test-support")]
+static ACCESS_REFRESH_FAULTS: std::sync::LazyLock<
+    dashmap::DashMap<(String, ObjectId), (&'static str, usize)>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// Deterministic, per-tenant one-shot fault injection; compiled only in tests.
+#[cfg(feature = "access-authority-test-support")]
+pub fn inject_access_refresh_fault(tenant_id: ObjectId, stage: &'static str, skip: usize) {
+    ACCESS_REFRESH_FAULTS.insert((String::new(), tenant_id), (stage, skip));
+}
+#[cfg(feature = "access-authority-test-support")]
+pub fn inject_access_refresh_fault_on_pod(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    stage: &'static str,
+    skip: usize,
+) {
+    ACCESS_REFRESH_FAULTS.insert((state.pod.origin(), tenant_id), (stage, skip));
+}
+fn access_refresh_checkpoint(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    stage: &str,
+) -> anyhow::Result<()> {
+    #[cfg(feature = "access-authority-test-support")]
+    if let Some(mut fault) = ACCESS_REFRESH_FAULTS
+        .get_mut(&(state.pod.origin(), tenant_id))
+        .or_else(|| ACCESS_REFRESH_FAULTS.get_mut(&(String::new(), tenant_id)))
+    {
+        if fault.0 == stage {
+            if fault.1 > 0 {
+                fault.1 -= 1;
+            } else {
+                let key = fault.key().clone();
+                drop(fault);
+                ACCESS_REFRESH_FAULTS.remove(&key);
+                anyhow::bail!("injected capability refresh {stage} failure");
+            }
+        }
+    }
+    let _ = (state, tenant_id, stage);
+    Ok(())
 }
 
 pub async fn refan_tenant_authority_local(state: &NetworkState, tenant_id: ObjectId, reason: &str) {
@@ -3005,7 +3520,23 @@ pub async fn apply_policy_sync_ctrl(state: &NetworkState, ctrl: &serde_json::Val
         .get("reason")
         .and_then(|v| v.as_str())
         .unwrap_or("policy_sync");
-    refan_tenant_authority_local(state, tid, reason).await;
+    if reason == "agent_access_changed" {
+        if let Err(error) = refresh_access_projection(state, tid, auth_revision).await {
+            warn!(%tid, %error, "capability policy sync failed on receiving pod; no apply acknowledgement");
+            return;
+        }
+        if let Some(aid) = ctrl
+            .get("agent_id")
+            .and_then(|v| v.as_str())
+            .and_then(|v| ObjectId::parse_str(v).ok())
+        {
+            if let Err(error) = push_access_barrier_if_local(state, tid, aid, auth_revision).await {
+                warn!(%tid,%error,"capability target apply barrier failed on receiving pod");
+            }
+        }
+    } else {
+        refan_tenant_authority_local(state, tid, reason).await;
+    }
     debug!(%tid, auth_revision, reason,
         "overlay: policy sync applied from another pod");
 }
@@ -3070,11 +3601,25 @@ async fn fan_upsert_shaped(
     epoch: u64,
     reachable: bool,
 ) -> bool {
-    let auth_revision = state
+    fan_upsert_shaped_mode(state, node, epoch, reachable, false).await
+}
+
+async fn fan_upsert_shaped_mode(
+    state: &NetworkState,
+    node: &OverlayNode,
+    epoch: u64,
+    reachable: bool,
+    strict: bool,
+) -> bool {
+    let auth_revision = match state
         .overlay_networks
         .current_auth_revision(node.tenant_id)
         .await
-        .unwrap_or(1);
+    {
+        Ok(revision) => revision,
+        Err(_) if strict => return false,
+        Err(_) => 1,
+    };
     let peers = match state
         .overlay_nodes
         .list_active_in_network(node.tenant_id, node.network_id)
@@ -3090,7 +3635,21 @@ async fn fan_upsert_shaped(
         debug!(node = ?node.id, "overlay: skipping delta fan-out for tombstoned node");
         return true;
     }
-    let acl = load_acl(state, node.tenant_id).await;
+    // The caller may hold a pre-change row. Never stamp that stale profile
+    // with a revision read after the change; use this batch's current row.
+    let node = peers
+        .iter()
+        .find(|p| p.id == node.id)
+        .expect("live node checked above");
+    let mut deliveries = Vec::new();
+    let acl = if strict {
+        match try_load_acl(state, node.tenant_id, PolicyLoad::WhenGating).await {
+            Ok(acl) => acl,
+            Err(_) => return false,
+        }
+    } else {
+        load_acl(state, node.tenant_id).await
+    };
     let iso = business_isolation::mode(state);
     let node_zone = business_isolation::zone_of(state, iso, node).await;
     let lines = business_isolation::lines(state, iso, node.tenant_id).await;
@@ -3158,17 +3717,15 @@ async fn fan_upsert_shaped(
                 }
                 None => (vec![], vec![node.id.unwrap_or_default()]),
             };
-        send_to_node(
-            state,
-            peer,
+        deliveries.push((
+            peer.clone(),
             ServerMsg::OverlayNetmapDelta {
                 epoch,
                 auth_revision,
                 upserts,
                 removes,
             },
-        )
-        .await;
+        ));
         // D0 — the mirror row for the changed node: recipient=node,
         // shaped=peer, verdict for the `node → peer` edge. Same shaping
         // rules as any row toward `node` (ACL from its source; the peer's
@@ -3214,17 +3771,31 @@ async fn fan_upsert_shaped(
             epoch,
             "overlay: reverse verdict delta — re-stamping the changed node's outgoing edges (D0)"
         );
-        send_to_node(
-            state,
-            node,
+        deliveries.push((
+            node.clone(),
             ServerMsg::OverlayNetmapDelta {
                 epoch,
                 auth_revision,
                 upserts: reverse_rows,
                 removes: reverse_removes,
             },
-        )
-        .await;
+        ));
+    }
+    // A changed authority discards the prepared batch; an older batch must
+    // not be relabeled with a newer revision. The next authority pass retries.
+    if state
+        .overlay_networks
+        .current_auth_revision(node.tenant_id)
+        .await
+        .ok()
+        != Some(auth_revision)
+    {
+        return false;
+    }
+    for (recipient, msg) in deliveries {
+        if !send_to_node_checked(state, &recipient, msg, strict).await {
+            return false;
+        }
     }
     true
 }
@@ -3408,6 +3979,34 @@ async fn fan_delta_to(
 /// agent nodes go through the Hub, tunnel-client nodes through the
 /// connection-lifetime registry. Best-effort — an offline node is
 /// simply skipped (it re-syncs on its next join).
+async fn send_to_node_checked(
+    state: &NetworkState,
+    node: &OverlayNode,
+    msg: ServerMsg,
+    strict: bool,
+) -> bool {
+    if !strict {
+        send_to_node(state, node, msg).await;
+        return true;
+    }
+    match node.node_ref {
+        NodeRef::Agent { agent_id } => {
+            !state.fleet.rc_hub.is_agent_online(agent_id)
+                || state.fleet.rc_hub.send_to_agent(agent_id, msg).is_ok()
+        }
+        NodeRef::TunnelClient { tunnel_client_id } => {
+            let tx = state
+                .overlay_nodes_by_id
+                .get(&tunnel_client_id)
+                .map(|e| e.value().clone());
+            match tx {
+                Some(tx) => tx.send(msg).await.is_ok(),
+                None => true,
+            }
+        }
+    }
+}
+
 pub async fn send_to_node(state: &NetworkState, node: &OverlayNode, msg: ServerMsg) {
     match &node.node_ref {
         NodeRef::Agent { agent_id } => {
@@ -4471,6 +5070,34 @@ fn shape_peer(
     reachable: bool,
     zones: Zones,
 ) -> Option<NetmapPeer> {
+    let mut p = shape_peer_unprofiled(acl, recipient, src, peer, peer_src, reachable, zones)?;
+    // Keep reply paths and explicitly authorized outbound connections usable.
+    // The personal target rejects new inbound flows from every other owner.
+    if recipient.personal_access_owner_id.is_some_and(|owner| {
+        owner == ObjectId::from_bytes([0; 12])
+            || peer_src.and_then(|s| s.owner_user_id) != Some(owner)
+    }) {
+        p.ingress_rules = Some(Vec::new());
+        p.ingress_rules_preview = None;
+    }
+    if peer
+        .personal_access_owner_id
+        .is_some_and(|owner| src.owner_user_id != Some(owner))
+    {
+        p.routes = Vec::new();
+    }
+    Some(p)
+}
+
+fn shape_peer_unprofiled(
+    acl: &AclCtx,
+    recipient: &OverlayNode,
+    src: &OverlaySource,
+    peer: &OverlayNode,
+    peer_src: Option<&OverlaySource>,
+    reachable: bool,
+    zones: Zones,
+) -> Option<NetmapPeer> {
     if !peer.is_key_authorized_at(bson::DateTime::now()) {
         return None;
     }
@@ -4731,6 +5358,11 @@ fn shape_temporary_pair(
     peer_src: Option<&OverlaySource>,
     reachable: bool,
 ) -> Option<NetmapPeer> {
+    // Both directions must understand timed admission/replies. Old runtimes
+    // cannot silently ignore a deadline carried on an otherwise valid rule.
+    if !recipient.supports_invite_deadlines || !peer.supports_invite_deadlines {
+        return None;
+    }
     match (&recipient.temporary, &peer.temporary) {
         (None, Some(mark)) => {
             if !mark.allows(src.owner_user_id, &src.role_ids) {
@@ -4749,6 +5381,55 @@ fn shape_temporary_pair(
             }
             let mut p = to_netmap_peer(peer, reachable);
             p.routes = Vec::new();
+            use meshharbor_remote_control::models::{OverlayRule, PortRange, ProtocolKind};
+            let mut rules = Vec::new();
+            for grant in &mark.feature_grants {
+                if ps.owner_user_id != Some(grant.inviter_user_id)
+                    && !ps.role_ids.iter().any(|r| grant.allow_role_ids.contains(r))
+                {
+                    continue;
+                }
+                // Missing deadline metadata never grants unbounded legacy access.
+                let Some(deadline) = grant.access_until_ms else {
+                    continue;
+                };
+                if deadline <= bson::DateTime::now().timestamp_millis().max(0) as u64 {
+                    continue;
+                }
+                let f = grant
+                    .features
+                    .unwrap_or_else(meshharbor_remote_control::models::DeviceAccessFeatures::all);
+                let mut add = |low, high, proto| {
+                    rules.push(OverlayRule {
+                        expires_at_ms: Some(deadline),
+                        cidr: format!("{}/32", recipient.overlay_ip),
+                        port_range: PortRange { low, high },
+                        proto,
+                    })
+                };
+                if f.network {
+                    add(1, u16::MAX, ProtocolKind::Any);
+                } else {
+                    for port in [
+                        if f.ssh { mark.ssh_port } else { None },
+                        if f.ssh {
+                            Some(meshharbor_remote_control::models::ssh_limits::SERVICE_PORT)
+                        } else {
+                            None
+                        },
+                        if f.rdp { mark.rdp_port } else { None },
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        if port != 0 {
+                            add(port, port, ProtocolKind::Tcp);
+                        }
+                    }
+                }
+            }
+            p.ingress_rules = Some(rules);
+            p.ingress_rules_preview = None;
             Some(p)
         }
         _ => None,
@@ -5185,6 +5866,8 @@ mod tests {
     fn node(name: &str, ip: &str) -> OverlayNode {
         let now = bson::DateTime::now();
         OverlayNode {
+            supports_invite_deadlines: true,
+            personal_access_owner_id: None,
             temporary: None,
             id: Some(ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap()),
             tenant_id: ObjectId::new(),
@@ -5310,6 +5993,7 @@ mod tests {
                 // Covers the subnet, NOT the router's own overlay address: the
                 // router is visible only through the route it carries.
                 destinations: vec![OverlayRule {
+                    expires_at_ms: None,
                     cidr: "10.1.0.0/24".into(),
                     port_range: PortRange {
                         low: 1,
@@ -5464,6 +6148,7 @@ mod tests {
                 node_id: to.id.unwrap(),
             }],
             destinations: vec![OverlayRule {
+                expires_at_ms: None,
                 cidr: format!("{}/32", to.overlay_ip),
                 port_range: PortRange { low: 22, high: 22 },
                 proto: ProtocolKind::Tcp,
@@ -5538,11 +6223,13 @@ mod tests {
 
         let granted_rules = vec![
             OverlayRule {
+                expires_at_ms: None,
                 cidr: "100.64.0.11/32".into(),
                 port_range: PortRange { low: 22, high: 22 },
                 proto: ProtocolKind::Tcp,
             },
             OverlayRule {
+                expires_at_ms: None,
                 cidr: "10.9.0.0/24".into(),
                 port_range: PortRange {
                     low: 443,
@@ -6400,6 +7087,7 @@ mod tests {
         };
 
         let granted_rules = vec![OverlayRule {
+            expires_at_ms: None,
             cidr: "100.64.0.62/32".to_string(),
             port_range: PortRange {
                 low: 2222,
@@ -6516,6 +7204,9 @@ mod tests {
     fn temporary_node(inviter: ObjectId, roles: Vec<ObjectId>) -> OverlayNode {
         let mut n = node("helper-pc", "100.64.0.77");
         n.temporary = Some(meshharbor_remote_control::models::TemporaryMark {
+            feature_grants: Vec::new(),
+            ssh_port: None,
+            rdp_port: None,
             invite_id: ObjectId::new(),
             inviter_user_id: inviter,
             allow_role_ids: roles,
@@ -6546,6 +7237,7 @@ mod tests {
                     sources: vec![meshharbor_remote_control::models::OverlaySelector::AllNodes],
                     via: vec![meshharbor_remote_control::models::OverlayTarget::AllNodes],
                     destinations: vec![meshharbor_remote_control::models::OverlayRule {
+                        expires_at_ms: None,
                         cidr: "0.0.0.0/0".into(),
                         port_range: meshharbor_remote_control::models::PortRange {
                             low: 1,
@@ -6559,6 +7251,155 @@ mod tests {
                 }],
             },
         ]
+    }
+
+    #[test]
+    fn selected_ports_stay_paired_with_their_inviter() {
+        use meshharbor_remote_control::models::{DeviceAccessFeatures as F, DeviceFeatureGrant};
+        let alice = ObjectId::new();
+        let bob = ObjectId::new();
+        let mut target = temporary_node(alice, vec![]);
+        let mark = target.temporary.as_mut().unwrap();
+        mark.also_user_ids.push(bob);
+        mark.ssh_port = Some(2222);
+        mark.rdp_port = Some(3389);
+        mark.feature_grants = vec![
+            DeviceFeatureGrant {
+                access_until_ms: Some(u64::MAX),
+                inviter_user_id: alice,
+                allow_role_ids: vec![],
+                features: Some(F {
+                    ssh: true,
+                    ..F::none()
+                }),
+            },
+            DeviceFeatureGrant {
+                access_until_ms: Some(u64::MAX),
+                inviter_user_id: bob,
+                allow_role_ids: vec![],
+                features: Some(F {
+                    rdp: true,
+                    ..F::none()
+                }),
+            },
+        ];
+        let peer = node("caller", "100.64.0.8");
+        for acl in acl_modes() {
+            for (user, port) in [(alice, 2222), (bob, 3389)] {
+                let src = temp_src(Some(user), vec![]);
+                let row = shape_peer(
+                    &acl,
+                    &target,
+                    &temp_src(Some(alice), vec![]),
+                    &peer,
+                    Some(&src),
+                    true,
+                    Zones::OFF,
+                )
+                .unwrap();
+                let rules = row.ingress_rules.unwrap();
+                assert_eq!(rules.len(), if user == alice { 2 } else { 1 });
+                assert_eq!(rules[0].port_range.low, port);
+                assert_eq!(rules[0].port_range.high, port);
+                assert_eq!(
+                    rules[0].proto,
+                    meshharbor_remote_control::models::ProtocolKind::Tcp
+                );
+                assert_eq!(rules[0].cidr, format!("{}/32", target.overlay_ip));
+                assert!(row.routes.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn personal_profile_denies_other_owners_inbound_without_temporary_origin_rules() {
+        let owner = ObjectId::new();
+        let mut target = node("personal", "100.64.0.9");
+        target.personal_access_owner_id = Some(owner);
+        let peer = node("peer", "100.64.0.8");
+        let acl = acl_modes().into_iter().next().unwrap();
+        let other = temp_src(Some(ObjectId::new()), vec![]);
+        let own = temp_src(Some(owner), vec![]);
+        let denied =
+            shape_peer(&acl, &target, &own, &peer, Some(&other), true, Zones::OFF).unwrap();
+        assert!(denied.ingress_rules.unwrap().is_empty());
+        let allowed = shape_peer(&acl, &target, &own, &peer, Some(&own), true, Zones::OFF).unwrap();
+        assert!(allowed.ingress_rules.is_none());
+        assert!(target.temporary.is_none());
+        target.personal_access_owner_id = Some(ObjectId::from_bytes([0; 12]));
+        for peer_owner in [None, Some(ObjectId::from_bytes([0; 12])), Some(owner)] {
+            let source = temp_src(peer_owner, vec![]);
+            let row =
+                shape_peer(&acl, &target, &own, &peer, Some(&source), true, Zones::OFF).unwrap();
+            assert!(
+                row.ingress_rules.unwrap().is_empty(),
+                "pending sentinel always denies {peer_owner:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn invitation_rules_keep_each_deadline_and_withhold_old_runtimes() {
+        use meshharbor_remote_control::models::{DeviceAccessFeatures as F, DeviceFeatureGrant};
+        let caller = ObjectId::new();
+        let mut target = temporary_node(caller, vec![]);
+        let later = bson::DateTime::now().timestamp_millis() as u64 + 60000;
+        target.temporary.as_mut().unwrap().feature_grants = vec![
+            DeviceFeatureGrant {
+                inviter_user_id: caller,
+                allow_role_ids: vec![],
+                features: Some(F::all()),
+                access_until_ms: Some(later),
+            },
+            DeviceFeatureGrant {
+                inviter_user_id: caller,
+                allow_role_ids: vec![],
+                features: Some(F::all()),
+                access_until_ms: Some(later + 60000),
+            },
+        ];
+        let mut peer = node("caller", "100.64.0.8");
+        let src = temp_src(Some(caller), vec![]);
+        for acl in acl_modes() {
+            let rules = shape_peer(&acl, &target, &src, &peer, Some(&src), true, Zones::OFF)
+                .unwrap()
+                .ingress_rules
+                .unwrap();
+            assert_eq!(rules.len(), 2);
+            assert_eq!(rules[0].expires_at_ms, Some(later));
+            assert_eq!(rules[1].expires_at_ms, Some(later + 60000));
+            assert_eq!(
+                rules[0].proto,
+                meshharbor_remote_control::models::ProtocolKind::Any
+            );
+        }
+        peer.supports_invite_deadlines = false;
+        assert!(
+            shape_peer(
+                &AclCtx::off(),
+                &target,
+                &src,
+                &peer,
+                Some(&src),
+                true,
+                Zones::OFF
+            )
+            .is_none()
+        );
+        peer.supports_invite_deadlines = true;
+        target.supports_invite_deadlines = false;
+        assert!(
+            shape_peer(
+                &AclCtx::off(),
+                &target,
+                &src,
+                &peer,
+                Some(&src),
+                true,
+                Zones::OFF
+            )
+            .is_none()
+        );
     }
 
     /// The inviter's own device sees the temporary device, one-way: an EMPTY

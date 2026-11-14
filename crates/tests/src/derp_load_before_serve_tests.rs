@@ -28,6 +28,8 @@ async fn seed_node(
 ) {
     meshharbor_services::dao::overlay_node::OverlayNodeDao::new(&app.db)
         .create(meshharbor_services::dao::overlay_node::NewOverlayNode {
+            supports_invite_deadlines: true,
+            personal_access_owner_id: None,
             temporary: None,
             tenant_id: tid,
             node_ref: NodeRef::Agent {

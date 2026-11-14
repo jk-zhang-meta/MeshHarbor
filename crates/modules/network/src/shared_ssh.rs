@@ -95,6 +95,11 @@ pub(crate) async fn authorization_policy(
     tokio::time::timeout(Duration::from_secs(3),async {
         let access=authorize_grant(&state.core,user,grant,DeviceShareOperation::Ssh).await?;
         let a=&access.agent;
+        if !meshharbor_mod_fleet::device_invite::allows_feature(&state.fleet, a.id.unwrap_or_default(), user,
+            meshharbor_remote_control::models::DeviceAccessFeature::Ssh).await.unwrap_or(false) {
+            return Err(deny("Device holder did not allow SSH for this recipient"));
+        }
+
         let tenant=state.tenants.base.find_by_id(a.tenant_id).await?;
         if !tenant.settings.remote_ssh_enabled {return Err(deny("The organization has disabled embedded SSH"));}
         // The share's own account, never the device policy's (often the daemon's root). A row

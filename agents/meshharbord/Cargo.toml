@@ -382,7 +382,7 @@ async_zip = { package = "async_zip", version = "=0.0.17", features = ["tokio", "
 # entry writers as `futures::AsyncWrite` (its tokio feature internally
 # wraps the user writer with Compat) but `tokio::io::copy` requires
 # `tokio::AsyncWrite`. Same platform-agnostic placement as `async_zip`.
-tokio-util = { version = "0.7", features = ["compat"] }
+tokio-util = { version = "0.7", features = ["compat", "rt"] }
 
 # Windows Media Foundation H.264 encoder (hardware-accelerated).
 # Gated behind target_os and an explicit feature; non-Windows builds

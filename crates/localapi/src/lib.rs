@@ -1235,13 +1235,18 @@ pub enum Request {
     /// Remote-control sessions awaiting an operator consent decision.
     ConsentPending,
     /// Approve (`allow=true`) or deny a pending consent, by session id.
-    ConsentDecide { session_id: String, allow: bool },
+    ConsentDecide {
+        session_id: String,
+        allow: bool,
+    },
     /// FR-27 — remote-control sessions currently LIVE on this device.
     RcSessions,
     /// FR-27 — end a live remote-control session from the device side. This is
     /// the Disconnect the "Being viewed by …" banner offers; mutating, and the
     /// pipe/socket ACL is the trust boundary, like [`Self::ConsentDecide`].
-    RcDisconnect { session_id: String },
+    RcDisconnect {
+        session_id: String,
+    },
     /// ICMP-ping an overlay peer (by name or IP) over the userspace netstack —
     /// the OS-free reachability probe. `timeout_ms` 0 ⇒ the daemon's default.
     Ping {
@@ -1286,7 +1291,9 @@ pub enum Request {
     },
     /// Stop + deregister a daemon flow by its id. Returns
     /// [`Response::FlowKilled`] (`ok=false` if the id was unknown).
-    KillFlow { id: String },
+    KillFlow {
+        id: String,
+    },
     /// Declared routes + their live runtime state (P6). Read-only.
     RouteList,
     /// Declare a new supervised route: the daemon persists it to config
@@ -1294,16 +1301,23 @@ pub enum Request {
     /// the pipe/socket ACL is the trust boundary, same as
     /// [`Request::CreateForward`]. Returns [`Response::RouteAdded`] with
     /// the effective descriptor (id generated if empty).
-    RouteAdd { route: RouteDescriptor },
+    RouteAdd {
+        route: RouteDescriptor,
+    },
     /// Remove a declared route by id: kills its live flow (if any) and
     /// deletes it from config. Returns [`Response::RouteRemoved`]
     /// (`ok=false` if the id was unknown).
-    RouteRemove { id: String },
+    RouteRemove {
+        id: String,
+    },
     /// Enable/disable a declared route by id without deleting it.
     /// Disabling kills the live flow; enabling clears a terminal
     /// `Failed` state and re-supervises. Returns
     /// [`Response::RouteUpdated`].
-    RouteSetEnabled { id: String, enabled: bool },
+    RouteSetEnabled {
+        id: String,
+        enabled: bool,
+    },
     /// FR-84 D1 — replace a declared route IN ONE STEP, keyed by `route.id`.
     /// The daemon validates the new descriptor exactly as [`Self::RouteAdd`]
     /// does (bad node, missing/forbidden `remote`, a local port another
@@ -1315,7 +1329,9 @@ pub enum Request {
     /// entirely when the add fails. Unknown id ⇒ [`Response::Error`].
     /// Mutating — the pipe/socket ACL is the trust boundary. Returns
     /// [`Response::RouteReplaced`] with the effective descriptor.
-    RouteUpdate { route: RouteDescriptor },
+    RouteUpdate {
+        route: RouteDescriptor,
+    },
     /// Rename this device: the daemon persists the new `machine_name` to ITS
     /// OWN config file — profile-correct by construction (under a SYSTEM/SCM
     /// install the machine-global config is writable by the daemon but NOT by
@@ -1323,7 +1339,9 @@ pub enum Request {
     /// the pipe/socket ACL is the trust boundary, like [`Request::RouteAdd`].
     /// The new name is announced on the next server reconnect. Returns
     /// [`Response::DeviceNameSet`] with the effective (trimmed) name.
-    SetDeviceName { name: String },
+    SetDeviceName {
+        name: String,
+    },
     /// S1b — archive the STALE config copy on a host carrying both a
     /// per-user and a machine-global `config.toml` (the desktop's
     /// "Two configurations found" banner). The DAEMON does the work —
@@ -1366,7 +1384,9 @@ pub enum Request {
     /// Mutating; the pipe/socket ACL is the trust boundary — the same authority
     /// that already flips `exec_enabled`, which is a strictly stronger grant.
     /// Returns [`Response::ExternalPassword`] or [`Response::Error`].
-    ExternalPasswordSet { password: Secret },
+    ExternalPasswordSet {
+        password: Secret,
+    },
     /// FR-52 gate 4 — forget the device-held password, closing gate 4.
     ///
     /// Clears **both** halves of the record together: a half-cleared credential
@@ -1455,7 +1475,9 @@ pub enum Request {
     RecordingsList,
     /// FR-85 — delete one recording (and its sidecar) from the folder, by file
     /// name. Console user only. Returns [`Response::RecordingDeleted`].
-    RecordingDelete { name: String },
+    RecordingDelete {
+        name: String,
+    },
     /// FR-92 — keep busy on this device (pointer patterns that keep it active
     /// until switched off): what it is doing and why. Read-only. Returns
     /// [`Response::KeepBusy`].
@@ -1524,6 +1546,13 @@ pub enum Request {
     /// once that answer is written — or an `Error` carrying the refusal. A
     /// daemon older than the verb answers `Error("bad request: unknown
     /// variant ...")` ([`RestartAnswer::Unsupported`]).
+    CloseAccess {
+        invite_id: String,
+        expected_revision: u32,
+    },
+    AccessReady {
+        agent_id: String,
+    },
     RestartDaemon {
         /// Why — logged by the daemon and kept in its restart record.
         #[serde(default)]
@@ -1558,11 +1587,15 @@ pub enum Request {
     /// root or SYSTEM, an elevated administrator, or the daemon's own account
     /// may ask ([`peer_may_connect`]); never on the person socket. A daemon
     /// older than the verb answers `Error("bad request: …")`.
-    Connect { args: ConnectArgs },
+    Connect {
+        args: ConnectArgs,
+    },
     /// FR-90 P3-9-2b — where endpoint `id`, opened by a [`Request::Connect`]
     /// on this same connection, stands: [`Response::ConnectState`]. Any other
     /// id is refused.
-    ConnectStatus { id: u64 },
+    ConnectStatus {
+        id: u64,
+    },
 }
 
 /// FR-90 P3-9-2b — what `mh connect` asks for: the arguments a
@@ -1902,6 +1935,17 @@ pub enum Response {
         /// supervisor), where the caller keeps its own fixed wait.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         restart_within_s: Option<u64>,
+    },
+    /// Exact host-request scopes have completed cleanup; admission stays
+    /// frozen until the coordinator restarts/reconnects and ACKs the server.
+    AccessClosed {
+        invite_id: String,
+        features_revision: u32,
+    },
+    AccessReady {
+        agent_id: String,
+        ready: bool,
+        overlay_required: bool,
     },
     /// The verb couldn't be served (bad request, state unavailable).
     Error {
@@ -2930,6 +2974,18 @@ pub trait LocalApiState: Send + Sync {
     /// FR-84 D3 — decide a restart request: [`Response::DaemonRestarting`]
     /// when accepted (the implementation arms it, it does NOT exit yet), or
     /// an `Error` with the refusal. Default: this node cannot restart itself.
+    async fn access_ready(&self, _agent_id: &str) -> Response {
+        Response::Error {
+            message: "post-restart overlay readiness is unsupported".into(),
+        }
+    }
+
+    async fn close_access(&self, _invite_id: &str, _revision: u32) -> Response {
+        Response::Error {
+            message: "confirmed access cleanup is unsupported by this daemon".into(),
+        }
+    }
+
     async fn restart_daemon(&self, _reason: &str) -> Response {
         Response::Error {
             message: "restarting is not supported on this node".into(),
@@ -3113,6 +3169,8 @@ pub fn person_may(req: &Request) -> bool {
         | Request::RecordStop
         | Request::RecordingsList
         | Request::RecordingDelete { .. }
+        | Request::AccessReady { .. }
+        | Request::CloseAccess { .. }
         | Request::RestartDaemon { .. }
         | Request::EncoderCaps
         | Request::HiveUpdateHold
@@ -3215,6 +3273,8 @@ pub fn handle(req: &Request, state: &dyn LocalApiState) -> Response {
         | Request::RecordingDelete { .. }
         | Request::Devices { .. }
         | Request::Mesh { .. }
+        | Request::AccessReady { .. }
+        | Request::CloseAccess { .. }
         | Request::RestartDaemon { .. }
         | Request::HiveUpdateHold
         | Request::Connect { .. }
@@ -3517,6 +3577,18 @@ where
                 Ok(Request::Mesh { org }) => state.mesh(&org).await,
                 // FR-84 D3 — the daemon decides (and records) here; it leaves only
                 // after the answer below is on the wire.
+                Ok(Request::CloseAccess { .. })
+                    if !peer.is_console_user()
+                        && peer.system_account != Some(true)
+                        && peer.elevated != Some(true) =>
+                {
+                    not_the_console_user()
+                }
+                Ok(Request::CloseAccess {
+                    invite_id,
+                    expected_revision,
+                }) => state.close_access(&invite_id, expected_revision).await,
+                Ok(Request::AccessReady { agent_id }) => state.access_ready(&agent_id).await,
                 Ok(Request::RestartDaemon { reason }) => state.restart_daemon(&reason).await,
                 // FR-90 P1h-2 — root alone holds the daemon for an update: the
                 // hold refuses every new agent prompt and start until it ends.
@@ -6137,6 +6209,35 @@ mod tests {
     /// there: its serde answers `unknown variant`, which is the exact phrase
     /// a newer client turns into "this service predates Apply now" — so the
     /// phrase is pinned here too, on a spelling no build will ever accept.
+    #[tokio::test]
+    async fn close_access_requires_explicit_full_scope_and_supported_daemon() {
+        let request = Request::CloseAccess {
+            invite_id: "0123456789abcdef01234567".into(),
+            expected_revision: 7,
+        };
+        assert_eq!(
+            serde_json::from_str::<Request>(&serde_json::to_string(&request).unwrap()).unwrap(),
+            request
+        );
+        assert!(!person_may(&request));
+        assert!(matches!(
+            Mock.close_access("0123456789abcdef01234567", 7).await,
+            Response::Error { .. }
+        ));
+        assert!(matches!(handle(&request, &Mock), Response::Error { .. }));
+        let response = Response::AccessClosed {
+            invite_id: "0123456789abcdef01234567".into(),
+            features_revision: 7,
+        };
+        assert!(matches!(
+            serde_json::from_str::<Response>(&serde_json::to_string(&response).unwrap()).unwrap(),
+            Response::AccessClosed {
+                features_revision: 7,
+                ..
+            }
+        ));
+    }
+
     #[test]
     fn restart_daemon_verb_is_on_the_wire() {
         let req: Result<Request, _> =

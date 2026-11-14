@@ -863,7 +863,10 @@
           <p class="muted small">
             Opens the MeshHarbor website in your browser. Approve this device
             there and it joins your organization; your devices then show under
-            Devices.
+            Devices. A new personal device enables supported owner services,
+            including SSH and commands as its service account (possibly root / SYSTEM).
+            Existing local OFF choices and operating-system permissions are retained.
+            Features also require their components in the installed package; choosing permission does not install support.
           </p>
           <div class="actions">
             <button type="button" id="btn-login" class="primary">Sign in…</button>
@@ -888,6 +891,13 @@
             <button type="button" id="btn-join" class="primary">Join</button>
           </div>
           <div id="join-pending" class="banner" hidden></div>
+        </div>
+
+        <div class="card form-narrow">
+          <h3 style="margin-top:0">Invitations this device holds</h3>
+          <p class="muted small">You choose the exposed features. Saving briefly interrupts existing MeshHarbor-managed connections and foreground commands across ALL organizations on this device; their authorization settings stay unchanged. It does not undo completed commands or deliberately detached tasks. Cleanup must be confirmed before pending revocation is cleared.</p>
+          <button type="button" id="refresh-invitations">Refresh invitations</button>
+          <div id="held-invitations"></div>
         </div>
 
         <div class="card form-narrow">

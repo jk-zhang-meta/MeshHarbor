@@ -67,6 +67,8 @@ impl OverlayNodeDao {
 /// the whole point is that someone decides what it should be there. A default
 /// would restore the silent-drift class this replaces.
 pub struct NewOverlayNode {
+    pub supports_invite_deadlines: bool,
+    pub personal_access_owner_id: Option<ObjectId>,
     pub tenant_id: ObjectId,
     pub node_ref: NodeRef,
     pub network_id: ObjectId,
@@ -231,6 +233,8 @@ impl OverlayNodeDao {
     /// Insert a fresh node with a freshly-allocated overlay IP.
     pub async fn create(&self, new: NewOverlayNode) -> DaoResult<OverlayNode> {
         let NewOverlayNode {
+            supports_invite_deadlines,
+            personal_access_owner_id,
             tenant_id,
             node_ref,
             network_id,
@@ -327,6 +331,8 @@ impl OverlayNodeDao {
             (Some(issued), ttl, expires)
         };
         let node = OverlayNode {
+            supports_invite_deadlines,
+            personal_access_owner_id,
             id: None,
             tenant_id,
             node_ref,

@@ -49,6 +49,10 @@ struct EnrollResponse {
     /// pre-FR-51 server (which omits the field) reads as permanent.
     #[serde(default)]
     ephemeral: bool,
+    /// Only a server-verified personal device login carries this flag.
+    /// Missing on older servers and ordinary enrollment tokens: stay closed.
+    #[serde(default)]
+    personal_device: bool,
 }
 
 pub struct EnrollInputs<'a> {
@@ -183,7 +187,45 @@ pub fn resolve_install_from(
     Ok(InstallInfo::new(method, scope))
 }
 
+/// Decode only enough UNVERIFIED JWT payload to select an existing local
+/// proof. No decoded claim authorizes anything; the server validates it.
+/// Never send a different tenant's or another server's agent credential.
+pub fn existing_identity_for<'a>(
+    cfg: &'a AgentConfig,
+    server: &str,
+    enrollment_token: &str,
+) -> Option<&'a str> {
+    use base64::Engine as _;
+    if enrollment_token.len() > 16 * 1024 {
+        return None;
+    }
+    let payload = enrollment_token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let tenant = claims.get("tenant_id")?.as_str()?;
+    let server = normalize_server_url(server);
+    if normalize_server_url(&cfg.server_url) == server && cfg.tenant_id == tenant {
+        return Some(&cfg.agent_token);
+    }
+    cfg.orgs
+        .iter()
+        .find(|org| normalize_server_url(&org.server_url) == server && org.tenant_id == tenant)
+        .map(|org| org.agent_token.as_str())
+}
+
 pub async fn enroll(inputs: EnrollInputs<'_>) -> Result<AgentConfig> {
+    enroll_with_existing_identity(inputs, None).await
+}
+
+/// Existing credentials prove possession of a protected temporary/proof-linked
+/// device. The enrollment token still chooses the organization; the server
+/// validates both credentials and their exact current identity/generation.
+pub async fn enroll_with_existing_identity(
+    inputs: EnrollInputs<'_>,
+    existing_agent_token: Option<&str>,
+) -> Result<AgentConfig> {
     // Promote http:// to https://. The production ingress 301-redirects
     // plaintext to TLS; reqwest then downgrades the POST to a GET (RFC
     // 7231 historical behavior for 301/302) so the second hop hits a
@@ -203,8 +245,12 @@ pub async fn enroll(inputs: EnrollInputs<'_>) -> Result<AgentConfig> {
         "posting enrollment"
     );
 
-    let resp = reqwest::Client::new()
-        .post(&url)
+    let request = reqwest::Client::new().post(&url);
+    let request = match existing_agent_token {
+        Some(token) => request.bearer_auth(token),
+        None => request,
+    };
+    let resp = request
         .json(&EnrollRequest {
             enrollment_token: inputs.enrollment_token,
             machine_id: inputs.machine_id,
@@ -242,10 +288,10 @@ pub async fn enroll(inputs: EnrollInputs<'_>) -> Result<AgentConfig> {
         enable_remote_browse: true,
         files_dir: None,
         auto_grant_session: true,
-        // Fleet RPC stays OFF on a freshly enrolled device: enabling it is a
-        // deliberate act by whoever holds the box, never a side effect of
-        // joining an org.
-        exec_enabled: false,
+        // A personally approved fresh device enables its owner's services.
+        // Ordinary/invited enrollment stays closed. apply_enrollment preserves
+        // existing local choices, so signing in again cannot undo an OFF.
+        exec_enabled: body.personal_device,
         // FR-43 P1 — macOS root-daemon supervision of the GUI worker; off at
         // enrollment like every other posture switch.
         macos_supervise_gui_worker: false,
@@ -264,7 +310,7 @@ pub async fn enroll(inputs: EnrollInputs<'_>) -> Result<AgentConfig> {
         // owner's OFF across a re-enrollment.
         local_restart_enabled: true,
         external_access_enabled: false,
-        rdp_over_mesh: false,
+        rdp_over_mesh: body.personal_device,
         external_access_setup: None,
         external_access_verifier: None,
         external_consent_mode: None,
@@ -273,7 +319,7 @@ pub async fn enroll(inputs: EnrollInputs<'_>) -> Result<AgentConfig> {
         // `preserve_operator_config` keeps all three across a RE-enrollment
         // (they sit in the `..existing` tail), so a device that opted in stays
         // opted in.
-        ssh_enabled: false,
+        ssh_enabled: body.personal_device,
         ssh_port: None,
         ssh_authorized_keys: Vec::new(),
         // Minted on the first SSH-enabled start, not at enrollment: a device
@@ -486,7 +532,7 @@ pub async fn enroll(inputs: EnrollInputs<'_>) -> Result<AgentConfig> {
         // Remote app-launch: default = enabled with a seeded bash/tmux entry.
         virtual_desktop_apps: crate::apps_config::VirtualDesktopAppsConfig::default(),
         // Phase 3b: overlay opt-in, off until the operator enables it.
-        overlay_enabled: false,
+        overlay_enabled: body.personal_device,
         // Multi-org P2c: secondary-org TUN sharing, off until opted in.
         overlay_multi_org: false,
         netstack_socks_port: None,
@@ -779,6 +825,176 @@ mod tests {
     use super::*;
 
     #[test]
+    fn existing_identity_proof_is_selected_only_for_exact_server_and_tenant() {
+        use base64::Engine as _;
+        let mut cfg = crate::config::test_fixture();
+        cfg.server_url = "https://first.invalid".into();
+        cfg.tenant_id = "primary".into();
+        cfg.agent_token = "primary-fixture".into();
+        cfg.orgs
+            .push(org("secondary", "https://first.invalid", "secondary"));
+        cfg.orgs[0].agent_token = "secondary-fixture".into();
+        let token = |tenant| {
+            format!(
+                "header.{}.signature",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(serde_json::json!({"tenant_id":tenant}).to_string())
+            )
+        };
+        assert_eq!(
+            existing_identity_for(&cfg, "https://first.invalid/", &token("primary")),
+            Some("primary-fixture")
+        );
+        assert_eq!(
+            existing_identity_for(&cfg, "https://first.invalid", &token("secondary")),
+            Some("secondary-fixture")
+        );
+        assert_eq!(
+            existing_identity_for(&cfg, "https://other.invalid", &token("primary")),
+            None
+        );
+        assert_eq!(
+            existing_identity_for(&cfg, "https://first.invalid", &token("unknown")),
+            None
+        );
+        assert_eq!(
+            existing_identity_for(&cfg, "https://first.invalid", "malformed"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_identity_is_carried_as_bearer_not_enrollment_body() {
+        use std::io::{BufRead, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(&mut stream);
+            let mut line = String::new();
+            let mut length = 0;
+            let mut proof = false;
+            loop {
+                line.clear();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                let lower = line.to_ascii_lowercase();
+                if lower.trim() == "authorization: bearer existing-fixture" {
+                    proof = true;
+                }
+                if let Some(value) = lower.strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            assert!(proof);
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["enrollment_token"], "enrollment-fixture");
+            assert!(body.get("existing_agent_token").is_none());
+            let reply = r#"{"agent_id":"a","tenant_id":"t","agent_token":"fixture"}"#;
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",reply.len(),reply).unwrap();
+        });
+        enroll_with_existing_identity(
+            EnrollInputs {
+                server_url: &server,
+                enrollment_token: "enrollment-fixture",
+                machine_id: "fixture",
+                machine_name: "fixture",
+                install: None,
+            },
+            Some("existing-fixture"),
+        )
+        .await
+        .unwrap();
+        fixture.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn fresh_enrollment_http_applies_only_verified_personal_defaults() {
+        use std::io::{BufRead, Read, Write};
+        for personal in [true, false] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let server = format!("http://{}", listener.local_addr().unwrap());
+            let fixture = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.starts_with("POST /api/agent/enroll "));
+                let mut length = 0;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                let mut request = vec![0; length];
+                reader.read_exact(&mut request).unwrap();
+                let mut body = serde_json::json!({"agent_id":"a", "tenant_id":"t", "agent_token":"fixture-only"});
+                if personal {
+                    body["personal_device"] = true.into();
+                }
+                let body = body.to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            });
+            let cfg = enroll(EnrollInputs {
+                server_url: &server,
+                enrollment_token: "fixture-only",
+                machine_id: "fixture-machine",
+                machine_name: "fixture",
+                install: None,
+            })
+            .await
+            .unwrap();
+            fixture.join().unwrap();
+            println!(
+                "personal_device={personal} ssh={} exec={} rdp={} overlay={}",
+                cfg.ssh_enabled, cfg.exec_enabled, cfg.rdp_over_mesh, cfg.overlay_enabled
+            );
+            assert_eq!(
+                (
+                    cfg.ssh_enabled,
+                    cfg.exec_enabled,
+                    cfg.rdp_over_mesh,
+                    cfg.overlay_enabled
+                ),
+                (personal, personal, personal, personal)
+            );
+            assert!(!cfg.remote_config_enabled);
+        }
+    }
+
+    #[test]
+    fn personal_defaults_require_explicit_server_provenance() {
+        let legacy = r#"{"agent_id":"a","tenant_id":"t","agent_token":"test"}"#;
+        assert!(
+            !serde_json::from_str::<EnrollResponse>(legacy)
+                .unwrap()
+                .personal_device
+        );
+        let personal =
+            r#"{"agent_id":"a","tenant_id":"t","agent_token":"test","personal_device":true}"#;
+        assert!(
+            serde_json::from_str::<EnrollResponse>(personal)
+                .unwrap()
+                .personal_device
+        );
+    }
+
+    #[test]
     fn http_is_promoted_to_https() {
         assert_eq!(
             normalize_server_url("http://meshharbor.itachi.fans"),
@@ -954,6 +1170,9 @@ mod tests {
     #[test]
     fn preserve_operator_config_keeps_operator_state_and_takes_identity() {
         let mut existing = crate::config::test_fixture();
+        existing.ssh_enabled = false;
+        existing.exec_enabled = false;
+        existing.rdp_over_mesh = false;
         existing.overlay_enabled = true;
         existing.overlay_wg_secret_key = Some("OLD-WG-KEY".into());
         existing.overlay_advertised_routes = vec!["192.168.1.0/24".into()];
@@ -963,6 +1182,9 @@ mod tests {
         existing.last_known_good_version = Some("0.3.0-rc.199".into());
 
         let mut fresh = crate::config::test_fixture();
+        fresh.ssh_enabled = true;
+        fresh.exec_enabled = true;
+        fresh.rdp_over_mesh = true;
         fresh.server_url = "https://meshharbor.itachi.fans".into();
         fresh.agent_token = "NEW-TOKEN".into();
         fresh.agent_id = "NEW-AGENT-ID".into();
@@ -993,6 +1215,10 @@ mod tests {
         assert_eq!(merged.config_schema_version.as_deref(), Some("9"));
 
         // …and the operator state survives the re-enroll.
+        assert!(
+            !merged.ssh_enabled && !merged.exec_enabled && !merged.rdp_over_mesh,
+            "existing explicit OFF survives personal defaults"
+        );
         assert!(merged.overlay_enabled, "overlay opt-in must survive");
         assert_eq!(
             merged.overlay_wg_secret_key.as_deref(),

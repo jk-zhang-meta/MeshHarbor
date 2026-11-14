@@ -133,6 +133,8 @@ fn main() {
             commands::cmd_login_start,
             commands::cmd_join_preview,
             commands::cmd_join,
+            commands::cmd_invitations,
+            commands::cmd_invite_features,
             commands::cmd_leave,
             commands::cmd_login_wait,
             commands::cmd_re_enroll,

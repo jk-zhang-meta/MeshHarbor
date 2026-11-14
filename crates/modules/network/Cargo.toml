@@ -18,6 +18,7 @@ path = "src/lib.rs"
 # the host still depends on this crate unconditionally until then.
 [features]
 path-planner-test-support = []
+access-authority-test-support = []
 
 [dependencies]
 meshharbor-core = { path = "../../core" }

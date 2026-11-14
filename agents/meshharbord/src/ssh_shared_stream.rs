@@ -90,9 +90,9 @@ impl SharedSshStream {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let _live = crate::ssh::LiveConnection::open();
-        let transport = CancelStream::new(stream, cancel.clone());
         let handler =
             crate::ssh::sshd::Handler::new_shared(self.ctx.clone(), peer, self.grant, cancel);
+        let transport = CancelStream::new(stream, handler.cancellation());
         if let Ok(session) =
             russh::server::run_stream(self.ctx.config.clone(), transport, handler).await
         {
@@ -138,13 +138,13 @@ pub(crate) async fn while_authorized<T>(
 }
 /// A lease cancellation wakes an idle SSH read immediately (EOF) and refuses
 /// every later write. Closing only the tunnel signalling socket is insufficient.
-struct CancelStream<S> {
+pub(crate) struct CancelStream<S> {
     inner: S,
     read_cancel: Pin<Box<dyn Future<Output = ()> + Send>>,
     write_cancel: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 impl<S> CancelStream<S> {
-    fn new(inner: S, cancel: CancellationToken) -> Self {
+    pub(crate) fn new(inner: S, cancel: CancellationToken) -> Self {
         Self {
             inner,
             read_cancel: Box::pin(cancel.clone().cancelled_owned()),

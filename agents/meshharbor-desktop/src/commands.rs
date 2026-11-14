@@ -407,7 +407,7 @@ pub async fn cmd_enroll(
     token: String,
     device_name: String,
 ) -> Result<StatusReport, String> {
-    enroll_with_token(server, token, device_name).await
+    enroll_with_token(server, token, device_name, false).await
 }
 
 /// The device login in progress, between `cmd_login_start` and
@@ -427,8 +427,8 @@ pub struct LoginStarted {
 /// invitation it holds, with the enrollment (agent id) holding it. Read from
 /// `temporary.json`, which the daemon keeps current from the server (so a
 /// renewal shows up here too). `None` = not enrolled.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Invitations {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Invitations {
     pub own_account: bool,
     pub grants: Vec<(String, meshharbor_node_core::device_invite::GrantInfo)>,
 }
@@ -468,11 +468,46 @@ pub(crate) fn invitations() -> Option<Invitations> {
     None
 }
 
+#[tauri::command]
+pub async fn cmd_invitations() -> Result<Option<Invitations>, String> {
+    tokio::task::spawn_blocking(invitations)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_invite_features(
+    invite_id: String,
+    features: String,
+    expected_revision: u32,
+) -> Result<String, String> {
+    if invite_id.len() != 24 || !invite_id.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err("not an invitation id".into());
+    }
+    let selection = meshharbor_node_core::device_invite::parse_features(&features)
+        .map_err(|e| e.to_string())?;
+    let selection = meshharbor_node_core::device_invite::feature_names(&selection);
+    tokio::task::spawn_blocking(move || {
+        run_daemon_verb(&[
+            "invite-features",
+            "--invite",
+            &invite_id,
+            "--features",
+            &selection,
+            "--expected-revision",
+            &expected_revision.to_string(),
+        ])
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[derive(Debug, Serialize)]
 pub struct JoinPreview {
     pub from: String,
     pub remaining: String,
     pub access_until_ms: i64,
+    pub features_supported: bool,
 }
 
 /// Look at an invite code before accepting it: who, from which organization,
@@ -512,6 +547,7 @@ pub async fn cmd_join_preview(code: String) -> Result<JoinPreview, String> {
         from,
         remaining: device_invite::remaining_words(p.access_until_ms, now),
         access_until_ms: p.access_until_ms,
+        features_supported: p.features_supported,
     })
 }
 
@@ -546,12 +582,25 @@ fn run_daemon_verb(args: &[&str]) -> Result<String, String> {
 /// machine's others, or (signed in nowhere) enrolls a fresh identity; records
 /// the marker; and starts or restarts the service.
 #[tauri::command]
-pub async fn cmd_join(code: String, device_name: String) -> Result<StatusReport, String> {
+pub async fn cmd_join(
+    code: String,
+    device_name: String,
+    features: String,
+) -> Result<StatusReport, String> {
+    let features = meshharbor_node_core::device_invite::parse_features(&features)
+        .map_err(|e| e.to_string())?;
+    let features = meshharbor_node_core::device_invite::feature_names(&features);
     let code = meshharbor_node_core::device_invite::normalize_code(&code)
         .ok_or_else(|| "An invite code is 8 digits, like 1234-5678.".to_string())?;
     let name = device_name.trim().to_string();
     tokio::task::spawn_blocking(move || {
-        let mut args = vec!["join", code.as_str(), "--yes"];
+        let mut args = vec![
+            "join",
+            code.as_str(),
+            "--yes",
+            "--features",
+            features.as_str(),
+        ];
         if !name.is_empty() {
             args.extend(["--name", name.as_str()]);
         }
@@ -614,29 +663,47 @@ pub async fn cmd_login_wait(device_name: String) -> Result<StatusReport, String>
         .take()
         .ok_or_else(|| "No sign-in is in progress".to_string())?;
     let approved = pending.wait().await.map_err(|e| format!("{e:#}"))?;
-    let status = enroll_with_token(
+    enroll_with_token(
         pending.server_url.clone(),
         approved.enrollment_token,
         device_name,
+        true,
     )
     .await?;
-    // Signed in: bring the device service up on its new enrollment now, the
-    // way it is supervised (logon task / LaunchAgent / systemd user unit),
-    // instead of at the next logon.
-    if let Err(e) = tokio::task::spawn_blocking(run_service_start)
-        .await
-        .map_err(|e| e.to_string())
-        .and_then(|r| r)
-    {
-        tracing::warn!(error = %e, "signed in, but the device service did not start");
+    // A running service must reload the merged enrollment, not just receive a
+    // no-op `service start`. Never report a refused restart as online success.
+    if localapi::connect().await.is_ok() {
+        let restart = cmd_restart_daemon("personal account enrollment changed".into()).await?;
+        if !restart.started {
+            return Err(format!(
+                "Account saved, but the device service could not reload: {}",
+                restart
+                    .refusal
+                    .as_deref()
+                    .unwrap_or("upgrade or restart the service manually")
+            ));
+        }
+        cmd_restart_wait(
+            restart.pid,
+            restart.started_at_ms,
+            restart.restart_by,
+            restart.restart_within_s,
+        )
+        .await?;
+    } else {
+        tokio::task::spawn_blocking(run_service_start)
+            .await
+            .map_err(|e| format!("Account saved; service start task: {e}"))?
+            .map_err(|e| format!("Account saved; service start failed: {e}"))?;
     }
-    Ok(status)
+    Ok(cmd_status().await)
 }
 
 async fn enroll_with_token(
     server: String,
     token: String,
     device_name: String,
+    personal_login: bool,
 ) -> Result<StatusReport, String> {
     let trimmed_token = token.trim().to_string();
     let trimmed_name = device_name.trim().to_string();
@@ -657,22 +724,71 @@ async fn enroll_with_token(
         Ok(p) => p,
         Err(_) => config::default_config_path().map_err(|e| format!("Config path: {e}"))?,
     };
-    let machine_id = meshharbor_node_core::machine::derive_machine_id(&path);
-    let cfg = enrollment::enroll(EnrollInputs {
-        server_url: &server,
-        enrollment_token: &trimmed_token,
-        machine_id: &machine_id,
-        machine_name: &trimmed_name,
-        // FR-102 P3 — a person pasted a token into the companion's form: the
-        // package got here some other way, and this enroll is by hand.
-        install: Some(enrollment::InstallInfo::new(
-            enrollment::InstallMethod::Manual,
-            enrollment::InstallScope::Unknown,
-        )),
-    })
+    let existing = if path.exists() {
+        Some(config::load(&path).map_err(|e| format!("Reading existing config: {e}"))?)
+    } else {
+        None
+    };
+    let machine_id = existing
+        .as_ref()
+        .map(|cfg| cfg.machine_id.clone())
+        .unwrap_or_else(|| meshharbor_node_core::machine::derive_machine_id(&path));
+    let cfg = enrollment::enroll_with_existing_identity(
+        EnrollInputs {
+            server_url: &server,
+            enrollment_token: &trimmed_token,
+            machine_id: &machine_id,
+            machine_name: &trimmed_name,
+            // FR-102 P3 — a person pasted a token into the companion's form: the
+            // package got here some other way, and this enroll is by hand.
+            install: Some(enrollment::InstallInfo::new(
+                enrollment::InstallMethod::Manual,
+                enrollment::InstallScope::Unknown,
+            )),
+        },
+        existing
+            .as_ref()
+            .and_then(|cfg| enrollment::existing_identity_for(cfg, &server, &trimmed_token)),
+    )
     .await
     .map_err(|e| format!("Enrollment failed: {e:#}"))?;
+    // An account login beside invitations must not discard those enrollments,
+    // and a refresh must not reset local opt-outs to fresh defaults.
+    let markers = meshharbor_node_core::device_invite::read_markers(&path);
+    let old_primary = existing.as_ref().map(|c| c.agent_id.clone());
+    let primary_was_invited = old_primary.as_ref().is_some_and(|id| {
+        markers.contains_key(id)
+            || markers.contains_key(meshharbor_node_core::device_invite::PRIMARY_KEY)
+    });
+    let (mut cfg, outcome) = enrollment::apply_enrollment(existing, cfg, None, false)
+        .map_err(|e| format!("Merging enrollment: {e}"))?;
+    if personal_login
+        && primary_was_invited
+        && let enrollment::EnrollOutcome::AppendedOrg { label } = outcome
+    {
+        if let Some(org) = cfg.orgs.iter_mut().find(|o| o.label == label) {
+            org.overlay_mode = config::OrgOverlayMode::Netstack;
+        }
+        config::promote_keeping_mesh(&mut cfg, &label, None)
+            .map_err(|e| format!("Promoting own account: {e}"))?;
+        if let (Some(id), Some(info)) = (
+            old_primary,
+            markers.get(meshharbor_node_core::device_invite::PRIMARY_KEY),
+        ) {
+            meshharbor_node_core::device_invite::write_marker_for(&path, &id, true, Some(info))
+                .map_err(|e| format!("Preserving invitation marker: {e}"))?;
+        }
+    }
     config::save(&path, &cfg).map_err(|e| format!("Saving config: {e}"))?;
+    if personal_login {
+        let history = meshharbor_node_core::device_invite::read_history(&path);
+        if let Err(e) =
+            meshharbor_node_core::device_invite::link(&cfg.server_url, &cfg.agent_token, &history)
+                .await
+        {
+            tracing::warn!(error = %e, "signed in; invitation history link will retry when the daemon connects");
+        }
+    }
     Ok(status_report())
 }
 
@@ -694,15 +810,18 @@ pub async fn cmd_re_enroll(token: String) -> Result<StatusReport, String> {
     let path = active_config_path(is_scm)?;
     let machine_global = is_machine_global(&path);
     let existing = config::load(&path).map_err(|e| format!("Loading config: {e}"))?;
-    let fresh = enrollment::enroll(EnrollInputs {
-        server_url: &existing.server_url,
-        enrollment_token: &trimmed,
-        machine_id: &existing.machine_id,
-        machine_name: &existing.machine_name,
-        // A token refresh says nothing about how the binary got here; the
-        // server keeps the row's recorded install.
-        install: None,
-    })
+    let fresh = enrollment::enroll_with_existing_identity(
+        EnrollInputs {
+            server_url: &existing.server_url,
+            enrollment_token: &trimmed,
+            machine_id: &existing.machine_id,
+            machine_name: &existing.machine_name,
+            // A token refresh says nothing about how the binary got here; the
+            // server keeps the row's recorded install.
+            install: None,
+        },
+        Some(&existing.agent_token),
+    )
     .await
     .map_err(|e| format!("Re-enrollment failed: {e:#}"))?;
     // As `meshharbord re-enroll`: a token for another org is an ADD, which is

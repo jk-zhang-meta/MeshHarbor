@@ -48,7 +48,7 @@
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
@@ -1687,10 +1687,38 @@ mod unix_priv {
     }
 }
 
+/// Dropping a running execution is not cleanup evidence. A panic or task abort
+/// can return its semaphore permit while a child is still being killed; latch
+/// failure until the process is restarted instead of acknowledging revocation.
+struct ExecCompletion<'a> {
+    failed: &'a AtomicBool,
+    complete: bool,
+}
+impl<'a> ExecCompletion<'a> {
+    fn new(failed: &'a AtomicBool) -> Self {
+        Self {
+            failed,
+            complete: false,
+        }
+    }
+    fn confirm(&mut self) {
+        self.complete = true;
+    }
+}
+impl Drop for ExecCompletion<'_> {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.failed.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
 /// Serialises + bounds every exec on this device.
 pub struct ExecEngine {
     sem: Arc<Semaphore>,
     inflight: Mutex<HashMap<String, oneshot::Sender<()>>>,
+    closing: AtomicBool,
+    cleanup_failed: AtomicBool,
 }
 
 impl Default for ExecEngine {
@@ -1704,6 +1732,8 @@ impl ExecEngine {
         Self {
             sem: Arc::new(Semaphore::new(exec_limits::MAX_CONCURRENT_PER_AGENT)),
             inflight: Mutex::new(HashMap::new()),
+            closing: AtomicBool::new(false),
+            cleanup_failed: AtomicBool::new(false),
         }
     }
 
@@ -1718,6 +1748,44 @@ impl ExecEngine {
             }
             None => false,
         }
+    }
+
+    /// Freeze admission, cancel every command, then wait until every execution
+    /// permit is returned AFTER spawn_and_wait has killed and reaped its child.
+    /// Sending cancel alone is not completion evidence. Failure stays frozen.
+    pub async fn close_all_and_wait(&self) -> Result<(), String> {
+        {
+            let mut inflight = self.inflight.lock().await;
+            self.closing.store(true, Ordering::SeqCst);
+            for (_, cancel) in inflight.drain() {
+                let _ = cancel.send(());
+            }
+        }
+        let _all = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            self.sem
+                .clone()
+                .acquire_many_owned(exec_limits::MAX_CONCURRENT_PER_AGENT as u32),
+        )
+        .await
+        .map_err(|_| "commands did not finish cleanup within 15 seconds".to_string())?
+        .map_err(|_| "command completion semaphore closed".to_string())?;
+        if self.cleanup_failed.load(Ordering::SeqCst) {
+            return Err("a command's process-tree cleanup was not confirmed".into());
+        }
+        Ok(())
+    }
+
+    /// Only the close coordinator may reopen after all device scopes and the
+    /// exact server revision have completed. No config or policy is changed.
+    pub fn resume_after_close(&self) -> Result<(), String> {
+        if self.cleanup_failed.load(Ordering::SeqCst)
+            || self.sem.available_permits() != exec_limits::MAX_CONCURRENT_PER_AGENT
+        {
+            return Err("commands are still cleaning up".into());
+        }
+        self.closing.store(false, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Run one command to completion (or timeout / cancel). Its stdin is
@@ -1768,10 +1836,16 @@ impl ExecEngine {
         };
 
         let (cancel_tx, cancel_rx) = oneshot::channel();
-        self.inflight
-            .lock()
-            .await
-            .insert(req.request_id.clone(), cancel_tx);
+        {
+            let mut inflight = self.inflight.lock().await;
+            if self.closing.load(Ordering::SeqCst) {
+                return ExecOutcome::failed(
+                    "device access is being withdrawn; command admission is paused",
+                );
+            }
+            inflight.insert(req.request_id.clone(), cancel_tx);
+        }
+        let mut completion = ExecCompletion::new(&self.cleanup_failed);
 
         info!(
             request_id = %req.request_id,
@@ -1824,6 +1898,7 @@ impl ExecEngine {
             error = ?outcome.error,
             "fleet-rpc: command finished"
         );
+        completion.confirm();
         outcome
     }
 
@@ -1870,10 +1945,16 @@ impl ExecEngine {
         };
 
         let (cancel_tx, cancel_rx) = oneshot::channel();
-        self.inflight
-            .lock()
-            .await
-            .insert(req.request_id.clone(), cancel_tx);
+        {
+            let mut inflight = self.inflight.lock().await;
+            if self.closing.load(Ordering::SeqCst) {
+                return StreamedOutcome::failed(
+                    "device access is being withdrawn; command admission is paused",
+                );
+            }
+            inflight.insert(req.request_id.clone(), cancel_tx);
+        }
+        let mut completion = ExecCompletion::new(&self.cleanup_failed);
 
         info!(
             request_id = %req.request_id,
@@ -1927,11 +2008,30 @@ impl ExecEngine {
             error = ?error,
             "exec: streamed command finished"
         );
+        completion.confirm();
         StreamedOutcome {
             exit_code: outcome.exit_code,
             duration_ms,
             bytes,
             error,
+        }
+    }
+
+    fn observed_child_exit(
+        &self,
+        result: std::io::Result<std::process::ExitStatus>,
+    ) -> (Option<std::process::ExitStatus>, Option<String>) {
+        match result {
+            Ok(status) => (Some(status), None),
+            Err(error) => {
+                self.cleanup_failed.store(true, Ordering::SeqCst);
+                (
+                    None,
+                    Some(format!(
+                        "cleanup unconfirmed: waiting for the command failed: {error}"
+                    )),
+                )
+            }
         }
     }
 
@@ -1969,10 +2069,18 @@ impl ExecEngine {
             } else {
                 win_console::StartIn::Dir(req.cwd.clone())
             };
-            return win_console::run(
+            let outcome = win_console::run(
                 program, args, &command, start_in, timeout_ms, output, cancel, stdin,
             )
             .await;
+            if outcome
+                .error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("cleanup unconfirmed:"))
+            {
+                self.cleanup_failed.store(true, Ordering::SeqCst);
+            }
+            return outcome;
         }
 
         let mut cmd = tokio::process::Command::new(program);
@@ -2069,17 +2177,18 @@ impl ExecEngine {
         tokio::pin!(cancel);
 
         let (status, error) = tokio::select! {
-            res = child.wait() => match res {
-                Ok(s) => (Some(s), None),
-                Err(e) => (None, Some(format!("waiting for the command failed: {e}"))),
-            },
+            res = child.wait() => self.observed_child_exit(res),
             _ = &mut timeout => {
-                kill_tree(&mut child, pid).await;
-                (None, Some(format!("timed out after {}ms", timeout_ms.unwrap_or_default())))
+                let cleanup = kill_tree(&mut child, pid).await;
+                if cleanup.is_err() { self.cleanup_failed.store(true, Ordering::SeqCst); }
+                (None, Some(cleanup.err().map(|e| format!("cleanup unconfirmed: {e}"))
+                    .unwrap_or_else(|| format!("timed out after {}ms", timeout_ms.unwrap_or_default()))))
             }
             _ = &mut cancel => {
-                kill_tree(&mut child, pid).await;
-                (None, Some("cancelled by the caller".to_string()))
+                let cleanup = kill_tree(&mut child, pid).await;
+                if cleanup.is_err() { self.cleanup_failed.store(true, Ordering::SeqCst); }
+                (None, Some(cleanup.err().map(|e| format!("cleanup unconfirmed: {e}"))
+                    .unwrap_or_else(|| "cancelled by the caller".to_string())))
             }
         };
         // The command is gone. A feeder still waiting on a client that has
@@ -2311,40 +2420,53 @@ where
 /// `OwnedProcess` rather than a `tokio::process::Child` — the tree still has to
 /// die, and `TerminateProcess` on the parent alone leaves grandchildren behind.
 #[cfg(windows)]
-async fn kill_tree_pid(pid: u32) {
-    let _ = tokio::process::Command::new("taskkill.exe")
+async fn kill_tree_pid(pid: u32) -> Result<(), String> {
+    let status = tokio::process::Command::new("taskkill.exe")
         .args(["/T", "/F", "/PID", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .await;
+        .await
+        .map_err(|e| format!("taskkill could not run: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "taskkill did not confirm process-tree termination: {status}"
+        ))
+    }
 }
 
-async fn kill_tree(child: &mut tokio::process::Child, pid: Option<u32>) {
+async fn kill_tree(child: &mut tokio::process::Child, pid: Option<u32>) -> Result<(), String> {
+    let mut failure = None;
     #[cfg(windows)]
-    {
-        if let Some(pid) = pid {
-            // `taskkill /T` is the only way to reach grandchildren without
-            // building a Job Object around every spawn.
-            kill_tree_pid(pid).await;
-        }
+    if let Some(pid) = pid {
+        failure = kill_tree_pid(pid).await.err();
     }
     #[cfg(unix)]
-    {
-        if let Some(pid) = pid {
-            // Negative pid = the process group we created with
-            // `process_group(0)`.
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
+    if let Some(pid) = pid {
+        // Signal only the unreaped child-owned process group, never a recycled PID.
+        if unsafe { libc::kill(-(pid as i32), libc::SIGKILL) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                failure = Some(error.to_string());
             }
         }
     }
     #[cfg(not(any(windows, unix)))]
     let _ = pid;
-
-    if let Err(e) = child.kill().await {
-        warn!(%e, "fleet-rpc: killing the command failed");
+    if let Err(error) = child.kill().await {
+        if !matches!(child.try_wait(), Ok(Some(_))) {
+            failure = Some(error.to_string());
+        }
+    }
+    if let Err(error) = child.wait().await {
+        failure = Some(error.to_string());
+    }
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
@@ -2600,6 +2722,240 @@ mod tests {
         // The bound is what's promised — a 30 s sleep must not have run to
         // completion.
         assert!(out.duration_ms < 10_000, "took {}ms", out.duration_ms);
+    }
+
+    #[tokio::test]
+    async fn system_policy_direct_exec_preserves_daemon_scope() {
+        let (identity, _) = crate::exec_service::run_as_of("system").unwrap();
+        assert!(matches!(identity, RunAs::Daemon));
+        let mut request = req("hostname");
+        request.run_as = identity;
+        let result = engine().run(request, &Redactor::default()).await;
+        let expected = std::process::Command::new("hostname").output().unwrap();
+        assert!(expected.status.success());
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(
+            result.stdout.trim(),
+            String::from_utf8(expected.stdout).unwrap().trim()
+        );
+        assert!(result.error.is_none(), "{:?}", result.error);
+        println!(
+            "system-policy direct hostname: inherits daemon identity; exit=0; matches local hostname"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_wait_error_and_panicked_execution_never_acknowledge_close() {
+        let eng = engine();
+        eng.observed_child_exit(Err(std::io::Error::other("injected child.wait failure")));
+        assert!(eng.close_all_and_wait().await.is_err());
+        assert!(eng.resume_after_close().is_err());
+
+        let panicked = Arc::new(engine());
+        let task = {
+            let eng = panicked.clone();
+            tokio::spawn(async move {
+                let _completion = ExecCompletion::new(&eng.cleanup_failed);
+                panic!("injected running task panic");
+            })
+        };
+        assert!(task.await.is_err());
+        assert!(panicked.close_all_and_wait().await.is_err());
+        assert!(panicked.resume_after_close().is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn aborted_live_execution_is_not_mistaken_for_cleanup_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("aborted.pid");
+        let eng = Arc::new(engine());
+        let request = req(&format!(
+            "echo $$ > '{}'; exec sleep 30",
+            pid_file.display()
+        ));
+        let task = {
+            let eng = eng.clone();
+            tokio::spawn(async move { eng.run(request, &Redactor::default()).await })
+        };
+        for _ in 0..100 {
+            if pid_file.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(eng.close_all_and_wait().await.is_err());
+        assert!(eng.resume_after_close().is_err());
+        // The fixture's child still gets kill_on_drop cleanup, but the close
+        // API must not turn that best-effort destructor into a positive ACK.
+        for _ in 0..100 {
+            if unsafe { libc::kill(pid, 0) } == -1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn close_does_not_claim_to_undo_deliberately_detached_command_effects() {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("detached.pid");
+        let eng = engine();
+        let command = format!(
+            r#"setsid sh -c 'echo $$ > "{}"; exec sleep 30' >/dev/null 2>&1 &"#,
+            pid_file.display()
+        );
+        assert_eq!(
+            eng.run(req(&command), &Redactor::default()).await.exit_code,
+            Some(0)
+        );
+        for _ in 0..100 {
+            if pid_file.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) as i32 };
+        assert!(
+            fd >= 0,
+            "test needs a PIDfd so cleanup cannot signal a recycled PID"
+        );
+        let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+        eng.close_all_and_wait().await.unwrap();
+        let alive = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                owned.as_raw_fd(),
+                0,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        // This is a fixture-owned detached process, not a product cleanup path.
+        let killed = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                owned.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        assert_eq!(killed, 0);
+        assert_eq!(
+            alive, 0,
+            "detached completed-command effects are outside managed-session revocation"
+        );
+        println!(
+            "boundary: deliberately detached task survived managed close; test-owned PIDfd cleanup completed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_all_reaps_a_live_exec_process_before_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("exec.pid");
+        let eng = Arc::new(engine());
+        let mut request = req(&format!(
+            "echo $$ > '{}'; exec sleep 30",
+            pid_file.display()
+        ));
+        request.request_id = "live-close-all".into();
+        request.timeout_ms = 30_000;
+        let runner = {
+            let eng = eng.clone();
+            tokio::spawn(async move { eng.run(request, &Redactor::default()).await })
+        };
+        for _ in 0..100 {
+            if pid_file.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "process must actually be running before close"
+        );
+        eng.close_all_and_wait().await.unwrap();
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "completion must wait for reaping"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        assert!(runner.await.unwrap().error.unwrap().contains("cancelled"));
+        println!(
+            "exec process: observed running -> close_all awaited -> ESRCH; admission remains frozen"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_all_waits_for_long_commands_and_refuses_new_admission() {
+        let eng = Arc::new(engine());
+        let mut request = req(if cfg!(windows) {
+            "Start-Sleep -Seconds 30"
+        } else {
+            "sleep 30"
+        });
+        request.request_id = "close-all".into();
+        request.timeout_ms = 30_000;
+        let runner = {
+            let eng = eng.clone();
+            tokio::spawn(async move { eng.run(request, &Redactor::default()).await })
+        };
+        for _ in 0..100 {
+            if eng.inflight.lock().await.contains_key("close-all") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(eng.inflight.lock().await.contains_key("close-all"));
+        eng.close_all_and_wait().await.unwrap();
+        assert_eq!(
+            eng.sem.available_permits(),
+            exec_limits::MAX_CONCURRENT_PER_AGENT
+        );
+        assert!(runner.await.unwrap().error.unwrap().contains("cancelled"));
+        assert!(
+            eng.run(req("echo denied"), &Redactor::default())
+                .await
+                .error
+                .unwrap()
+                .contains("paused")
+        );
+        eng.resume_after_close().unwrap();
+        assert_eq!(
+            eng.run(req("echo reopened"), &Redactor::default())
+                .await
+                .exit_code,
+            Some(0)
+        );
     }
 
     #[tokio::test]
@@ -3649,19 +4005,27 @@ mod win_console {
         tokio::pin!(timeout);
         tokio::pin!(cancel);
 
-        let error = tokio::select! {
-            _ = &mut wait => None,
+        let mut reaped = false;
+        let mut error = tokio::select! {
+            result = &mut wait => { reaped = true; result.err().map(|e| format!("cleanup unconfirmed: process waiter failed: {e}")) },
             _ = &mut timeout => {
-                super::kill_tree_pid(pid).await;
+                let cleanup = super::kill_tree_pid(pid).await;
                 process.terminate();
-                Some(format!("timed out after {}ms", timeout_ms.unwrap_or_default()))
+                Some(cleanup.err().map(|e| format!("cleanup unconfirmed: {e}"))
+                    .unwrap_or_else(|| format!("timed out after {}ms", timeout_ms.unwrap_or_default())))
             }
             _ = &mut cancel => {
-                super::kill_tree_pid(pid).await;
+                let cleanup = super::kill_tree_pid(pid).await;
                 process.terminate();
-                Some("cancelled by the caller".to_string())
+                Some(cleanup.err().map(|e| format!("cleanup unconfirmed: {e}"))
+                    .unwrap_or_else(|| "cancelled by the caller".to_string()))
             }
         };
+        if !reaped && let Err(failure) = wait.await {
+            error = Some(format!(
+                "cleanup unconfirmed: process waiter failed: {failure}"
+            ));
+        }
         // As on the other path: the command is gone, so a feeder still
         // waiting for the client's EOF ends here. A write in flight fails on
         // its own (the reader died) and drops the last copy of the pipe.
@@ -3685,6 +4049,9 @@ mod win_console {
             Ok(Some(code)) => Some(code as i32),
             _ => None,
         };
+        if exit_code.is_none() {
+            error = Some("cleanup unconfirmed: console process exit was not observed".into());
+        }
 
         // The text views are filled after redaction (`run_fed`).
         ExecOutcome {

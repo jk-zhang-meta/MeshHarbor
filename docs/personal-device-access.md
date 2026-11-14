@@ -71,12 +71,41 @@ inviter override it. Revision checks reject stale simultaneous edits. A local
 service switched OFF remains OFF; enabling its invitation capability does not
 silently turn that service on or change another invitation.
 
-Current implementation status: a selection update returns HTTP 202 with
-`revocation_pending: true`. New authorizations use the new ceiling, but ending
-already-established SSH/exec and other connections is not yet confirmed by the
-server. The management and native interfaces must show this distinction; a
-local daemon restart is not a server-side completion acknowledgment. Full
-active-session revocation remains a rollout blocker, not a completed feature.
+A selection update returns HTTP 202 and remains pending while the host closes
+managed access. The native client must collect successful closure evidence,
+including any independently anchored service domain, restart the relevant
+daemon runtime and observe its target organization's first applied network map
+before acknowledging the exact selection revision. Failed cleanup or readiness
+checks leave the operation pending; a process exit alone is not completion.
+
+The server retains a durable activation barrier while applying the new network
+projection. Projection writes are fenced by an authorization generation, so an
+older calculation cannot overwrite a newer restriction or connection's deadline
+capability. Redis publication alone does not complete activation: online affected
+host-family nodes must acknowledge the full map actually sent to their current connection,
+matching the required revision and epoch. Errors/timeouts remain retryable and
+must not be presented as successful propagation. Managed-session closure is the
+native host's responsibility; the network ACK is not a server attestation that
+every OS process restarted. Ordinary reconnect/offline-continuity behavior is
+not redefined by this contract.
+
+Invitation network grants carry individual deadlines enforced in the receiving
+data plane, including existing flows. A pair with an older client that cannot
+enforce these deadlines is withheld rather than silently granting unbounded
+access. Upgrade both ends before treating those invitation paths as available.
+These implementation guarantees still require supported-platform and real
+rollout verification; source review or isolated tests alone are not deployment
+completion.
+
+The close operation may temporarily interrupt this machine's connections and
+in-flight managed commands across **all** of its organizations; the other
+organizations' permission settings and invitation relationships are preserved.
+The native interface must disclose this before a capability change. Revocation
+ends MeshHarbor-managed access; it cannot undo changes made by previously
+authorized commands, remove a service that a user deliberately installed, or
+retract work deliberately detached from MeshHarbor's process management.
+Do not describe a terminated session leader as proof that every historical
+descendant or external side effect has disappeared.
 
 Old invitations with no recorded selection are displayed as legacy/unknown,
 not as explicit permission for every feature. New clients refuse a server that

@@ -36,13 +36,14 @@
 //! self-reported machine id never links anything.
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use bson::{DateTime, doc, oid::ObjectId};
 use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::models::{DeviceAccessFeature, DeviceAccessFeatures};
 use meshharbor_services::dao::native_ssh_authorization::hash_secret;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -93,6 +94,18 @@ pub struct DeviceInviteRow {
     /// Members holding any of these roles may also control / reach the device.
     #[serde(default)]
     pub allow_role_ids: Vec<ObjectId>,
+    /// The accepting host's ceiling; absent is the legacy invitation, not an
+    /// instruction to turn on any previously disabled service.
+    #[serde(default)]
+    pub features: Option<DeviceAccessFeatures>,
+    #[serde(default)]
+    pub features_revision: u32,
+    #[serde(default)]
+    pub revocation_pending: bool,
+    /// Local close completed, but authoritative network activation is not yet
+    /// confirmed. Persisted independently so a DB failure cannot erase retry state.
+    #[serde(default)]
+    pub activation_pending: bool,
     pub code_hash: String,
     /// `open` → `redeemed` (token minted) → `enrolled` (device bound) →
     /// `ended`; `open`/`redeemed` may also go straight to `ended`.
@@ -162,6 +175,9 @@ pub struct Renewal {
 /// device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemporaryGrant {
+    pub ssh_port: Option<u16>,
+    pub rdp_port: Option<u16>,
+    pub feature_grants: Vec<meshharbor_remote_control::models::DeviceFeatureGrant>,
     /// The oldest live invitation (or, while the device's end is being
     /// settled, the one that ended last).
     pub invite_id: ObjectId,
@@ -190,6 +206,9 @@ impl TemporaryGrant {
     pub fn of(rows: &[DeviceInviteRow]) -> Option<Self> {
         let first = rows.first()?;
         let mut g = TemporaryGrant {
+            ssh_port: None,
+            rdp_port: None,
+            feature_grants: Vec::new(),
             invite_id: first.id,
             inviter_user_id: first.inviter_user_id,
             also_inviter_user_ids: Vec::new(),
@@ -197,6 +216,17 @@ impl TemporaryGrant {
             access_until: first.access_until,
         };
         for r in rows {
+            g.feature_grants
+                .push(meshharbor_remote_control::models::DeviceFeatureGrant {
+                    access_until_ms: Some(r.access_until.timestamp_millis().max(0) as u64),
+                    inviter_user_id: r.inviter_user_id,
+                    allow_role_ids: r.allow_role_ids.clone(),
+                    features: if rows.iter().any(|row| row.revocation_pending) {
+                        Some(DeviceAccessFeatures::none())
+                    } else {
+                        r.features
+                    },
+                });
             if r.inviter_user_id != g.inviter_user_id
                 && !g.also_inviter_user_ids.contains(&r.inviter_user_id)
             {
@@ -236,6 +266,8 @@ pub struct Redeem {
     /// invitation from the same organization): the grant attaches to it.
     #[serde(default)]
     attach_token: Option<String>,
+    #[serde(default)]
+    features: Option<DeviceAccessFeatures>,
 }
 
 #[derive(Deserialize)]
@@ -370,6 +402,10 @@ fn parse_tid(raw: &str) -> Result<ObjectId, ApiError> {
 fn row_view(r: &DeviceInviteRow) -> Value {
     json!({
         "id": r.id.to_hex(),
+        "features": r.features,
+        "features_revision": r.features_revision,
+        "revocation_pending": r.revocation_pending || r.activation_pending,
+        "activation_pending": r.activation_pending,
         "inviter_user_id": r.inviter_user_id.to_hex(),
         "label": r.label,
         "allow_role_ids": r.allow_role_ids.iter().map(|x| x.to_hex()).collect::<Vec<_>>(),
@@ -472,6 +508,10 @@ pub async fn create(
             inviter_user_id: auth.user_id,
             label: label.clone(),
             allow_role_ids: allow_role_ids.clone(),
+            features: None,
+            features_revision: 0,
+            revocation_pending: false,
+            activation_pending: false,
             code_hash: code_hash(&state, &code),
             state: STATE_OPEN.into(),
             access_until: DateTime::from_millis(until_ms),
@@ -603,11 +643,16 @@ pub async fn end_invite_by(
     if row.state == STATE_ENDED {
         return Ok(false);
     }
+    let mut end_filter = doc! { "_id": row.id, "state": { "$ne": STATE_ENDED } };
+    if reason == REASON_EXPIRED {
+        end_filter.insert("revocation_pending", doc! { "$ne": true });
+        end_filter.insert("activation_pending", doc! { "$ne": true });
+    }
     let now = DateTime::now();
     let r = storage(
         coll!(state)
             .update_one(
-                doc! { "_id": row.id, "state": { "$ne": STATE_ENDED } },
+                end_filter,
                 doc! { "$set": {
                     "state": STATE_ENDED,
                     "ended_at": now,
@@ -645,7 +690,7 @@ pub async fn settle_device(
     if live > 0 {
         state
             .hooks
-            .agent_updated(tenant_id, agent_id)
+            .agent_access_changed(tenant_id, agent_id)
             .await
             .map_err(|e| ApiError::ServiceUnavailable(format!("netmaps not refreshed: {e}")))?;
     } else if let Ok(agent) = state.agents.base.find_by_id(agent_id).await
@@ -777,6 +822,7 @@ pub async fn preview(
             "org": org_display(&state, row.tenant_id).await,
             "inviter": inviter_display(&state, row.inviter_user_id).await,
             "access_until_ms": row.access_until.timestamp_millis(),
+            "features_supported": true,
         }),
     ))
 }
@@ -791,6 +837,11 @@ pub async fn redeem(
     headers: HeaderMap,
     Json(body): Json<Redeem>,
 ) -> Result<Response, ApiError> {
+    if body.features.is_some_and(|f| !f.valid()) {
+        return Err(ApiError::BadRequest(
+            "Desktop control and clipboard require desktop view".into(),
+        ));
+    }
     enabled(&state)?;
     if !valid_device_name(&body.device_name) || !valid_os(&body.device_os) {
         return Err(ApiError::BadRequest("Invalid device".into()));
@@ -842,6 +893,8 @@ pub async fn redeem(
         "device_name": &body.device_name,
         "device_os": &body.device_os,
         "device_proof_hash": &proof_hash,
+        "features": bson::to_bson(&body.features).map_err(|_| ApiError::Internal("Invalid features".into()))?,
+        "features_revision": 0_i64,
     };
     if let Some((aid, agent)) = &attach_to {
         set.insert("agent_id", *aid);
@@ -896,6 +949,8 @@ pub async fn redeem(
             StatusCode::OK,
             json!({
                 "attached": true,
+                "features": body.features,
+                "features_revision": 0,
                 "agent_id": aid.to_hex(),
                 "invite_id": row.id.to_hex(),
                 "device_proof": proof,
@@ -939,6 +994,8 @@ pub async fn redeem(
         StatusCode::OK,
         json!({
             "enrollment_token": token,
+            "features": body.features,
+            "features_revision": 0,
             "expires_in": ENROLLMENT_TTL_SECS,
             "invite_id": row.id.to_hex(),
             "device_proof": proof,
@@ -1006,7 +1063,7 @@ pub async fn live_for_agent(
     storage(
         storage(
             coll!(state)
-                .find(doc! { "agent_id": agent_id, "state": STATE_ENROLLED })
+                .find(doc! { "agent_id": agent_id, "state": STATE_ENROLLED, "access_until": { "$gt": DateTime::now() } })
                 .sort(doc! { "created_at": 1 })
                 .limit(100)
                 .await,
@@ -1025,21 +1082,597 @@ pub async fn grant_for_agent(
     agent_id: ObjectId,
 ) -> Result<Option<TemporaryGrant>, ApiError> {
     let rows = live_for_agent(state, agent_id).await?;
-    if let Some(g) = TemporaryGrant::of(&rows) {
+    if let Some(mut g) = TemporaryGrant::of(&rows) {
+        let agent = state.agents.base.find_by_id(agent_id).await?;
+        // The grant API routes the embedded worker to 2222 (service uses its reserved port).
+        g.ssh_port = Some(2222);
+        g.rdp_port = if agent.capabilities.rdp_available == Some(true) {
+            agent.capabilities.rdp_port.filter(|port| *port != 0)
+        } else {
+            None
+        };
         return Ok(Some(g));
     }
     let pending = storage(
         coll!(state)
-            .find_one(doc! { "agent_id": agent_id, "removal_pending": true })
+            .find_one(doc! { "agent_id": agent_id, "$or": [{ "removal_pending": true }, { "state": STATE_ENROLLED }] })
             .await,
     )?;
     Ok(pending.map(|r| TemporaryGrant {
+        ssh_port: None,
+        rdp_port: None,
+        feature_grants: Vec::new(),
         invite_id: r.id,
         inviter_user_id: NOBODY,
         also_inviter_user_ids: Vec::new(),
         allow_role_ids: Vec::new(),
         access_until: r.access_until,
     }))
+}
+
+/// The host's ceiling for THIS caller. Never union another inviter's rights.
+/// None means an ordinary device with no selected access profile. Legacy
+/// invitations retain their old service gates; they do not enable services.
+pub async fn features_for_caller(
+    state: &FleetState,
+    agent_id: ObjectId,
+    user_id: ObjectId,
+) -> Result<Option<DeviceAccessFeatures>, ApiError> {
+    if host_revocation_pending(state, agent_id).await? {
+        return Ok(Some(DeviceAccessFeatures::none()));
+    }
+    let rows = live_for_agent(state, agent_id).await?;
+    if rows.is_empty() {
+        if grant_for_agent(state, agent_id).await?.is_some() {
+            return Ok(Some(DeviceAccessFeatures::none()));
+        }
+        let raw = storage(
+            state
+                .core
+                .db
+                .collection::<bson::Document>("agents")
+                .find_one(doc! { "_id": agent_id })
+                .await,
+        )?;
+        if let Some(raw) = raw
+            && let Ok(owner) = raw.get_object_id("personal_access_owner_id")
+        {
+            return Ok(Some(
+                if owner == user_id && raw.get_object_id("owner_user_id").ok() == Some(owner) {
+                    DeviceAccessFeatures::all()
+                } else {
+                    DeviceAccessFeatures::none()
+                },
+            ));
+        }
+        return Ok(None);
+    }
+    let roles = state
+        .tenants
+        .member_role_ids(rows[0].tenant_id, user_id)
+        .await
+        .map_err(|_| ApiError::ServiceUnavailable("Could not verify invitation roles".into()))?;
+    Ok(Some(selected_for_caller(&rows, user_id, &roles)))
+}
+
+fn selected_for_caller(
+    rows: &[DeviceInviteRow],
+    user: ObjectId,
+    roles: &[ObjectId],
+) -> DeviceAccessFeatures {
+    let mut selected = DeviceAccessFeatures::none();
+    if rows
+        .iter()
+        .any(|row| row.revocation_pending || row.activation_pending)
+    {
+        return selected;
+    }
+    for row in rows.iter().filter(|r| {
+        r.inviter_user_id == user || roles.iter().any(|id| r.allow_role_ids.contains(id))
+    }) {
+        let f = row.features.unwrap_or_else(DeviceAccessFeatures::all);
+        selected.desktop_view |= f.desktop_view;
+        selected.desktop_control |= f.desktop_control;
+        selected.clipboard |= f.clipboard;
+        selected.files |= f.files;
+        selected.ssh |= f.ssh;
+        selected.exec |= f.exec;
+        selected.rdp |= f.rdp;
+        selected.network |= f.network;
+    }
+    selected
+}
+
+pub async fn allows_feature(
+    state: &FleetState,
+    agent_id: ObjectId,
+    user: ObjectId,
+    feature: DeviceAccessFeature,
+) -> Result<bool, ApiError> {
+    Ok(features_for_caller(state, agent_id, user)
+        .await?
+        .is_none_or(|f| f.allows(feature)))
+}
+
+/// Proof-linked enrollments share a physical host. Freeze the whole family
+/// until close/ack, including its primary service and other invitations.
+/// One bounded connected component over target and verified host identities.
+/// The same closure drives freeze, epoch fencing, and every refan.
+async fn host_family(
+    state: &FleetState,
+    agent_id: ObjectId,
+) -> Result<(Vec<(ObjectId, ObjectId)>, Vec<DeviceInviteRow>), ApiError> {
+    use futures::TryStreamExt;
+    let agent = match state.agents.base.find_by_id(agent_id).await {
+        Ok(agent) => agent,
+        Err(meshharbor_services::dao::base::DaoError::NotFound) => {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let mut identities = vec![(agent_id, agent.tenant_id)];
+    loop {
+        let mut scopes = Vec::new();
+        for (id, tid) in &identities {
+            scopes.push(doc! { "agent_id": id, "tenant_id": tid });
+            scopes.push(doc! { "hosts": { "$elemMatch": { "agent_id": id, "tenant_id": tid } } });
+        }
+        let rows: Vec<DeviceInviteRow> = storage(
+            storage(
+                coll!(state)
+                    .find(doc! { "$or": scopes })
+                    .sort(doc! { "_id": 1 })
+                    .limit(101)
+                    .await,
+            )?
+            .try_collect()
+            .await,
+        )?;
+        if rows.len() > 100 {
+            return Err(ApiError::ServiceUnavailable(
+                "Host proof component exceeds verification bound".into(),
+            ));
+        }
+        let before = identities.len();
+        for row in &rows {
+            if let Some(id) = row.agent_id {
+                if !identities.contains(&(id, row.tenant_id)) {
+                    identities.push((id, row.tenant_id));
+                }
+            }
+            for host in &row.hosts {
+                if !identities.contains(&(host.agent_id, host.tenant_id)) {
+                    identities.push((host.agent_id, host.tenant_id));
+                }
+            }
+        }
+        if identities.len() > 100 {
+            return Err(ApiError::ServiceUnavailable(
+                "Host proof component exceeds verification bound".into(),
+            ));
+        }
+        if identities.len() == before {
+            return Ok((identities, rows));
+        }
+    }
+}
+
+async fn host_scopes(
+    state: &FleetState,
+    agent_id: ObjectId,
+) -> Result<Vec<bson::Document>, ApiError> {
+    let (identities, _) = host_family(state, agent_id).await?;
+    let mut scopes = Vec::new();
+    for (id, tid) in identities {
+        scopes.push(doc! { "agent_id": id, "tenant_id": tid });
+        scopes.push(doc! { "hosts": { "$elemMatch": { "agent_id": id, "tenant_id": tid } } });
+    }
+    Ok(scopes)
+}
+
+async fn host_change_exists(
+    state: &FleetState,
+    agent_id: ObjectId,
+    since: Option<DateTime>,
+) -> Result<bool, ApiError> {
+    let scopes = host_scopes(state, agent_id).await?;
+    if scopes.is_empty() {
+        return Ok(false);
+    }
+    let change = match since {
+        Some(at) => {
+            doc! { "$or": [{ "revocation_pending": true }, {"activation_pending": true}, { "features_updated_at": { "$gte": at } }] }
+        }
+        None => doc! { "$or": [{"revocation_pending":true},{"activation_pending":true}] },
+    };
+    Ok(storage(
+        coll!(state)
+            .find_one(doc! { "$and": [{ "$or": scopes }, change] })
+            .await,
+    )?
+    .is_some())
+}
+
+/// Opaque revision fence, independent of clocks on different API pods.
+pub async fn authorization_epoch(
+    state: &FleetState,
+    agent_id: ObjectId,
+) -> Result<String, ApiError> {
+    use futures::TryStreamExt;
+    let scopes = host_scopes(state, agent_id).await?;
+    if scopes.is_empty() {
+        return Err(ApiError::NotFound("No such device".into()));
+    }
+    let rows: Vec<DeviceInviteRow> = storage(
+        storage(
+            coll!(state)
+                .find(doc! { "$or": scopes })
+                .sort(doc! { "_id": 1 })
+                .limit(101)
+                .await,
+        )?
+        .try_collect()
+        .await,
+    )?;
+    if rows.len() > 100 {
+        return Err(ApiError::ServiceUnavailable(
+            "Host proof family exceeds epoch bound".into(),
+        ));
+    }
+    let now = DateTime::now();
+    let snapshot: Vec<_> = rows.iter().map(|row| json!({
+        "id": row.id.to_hex(), "revision": row.features_revision, "pending": row.revocation_pending, "activation_pending": row.activation_pending,
+        "active": row.state == STATE_ENROLLED && row.access_until > now,
+        "hosts": row.hosts.iter().map(|host| (host.agent_id.to_hex(), host.tenant_id.to_hex())).collect::<Vec<_>>()
+    })).collect();
+    Ok(hash_secret(
+        "device-access-epoch",
+        &serde_json::to_string(&snapshot)
+            .map_err(|_| ApiError::Internal("Could not encode authorization epoch".into()))?,
+    ))
+}
+
+pub async fn stamp_service_epoch(
+    state: &FleetState,
+    collection: &str,
+    id_field: &str,
+    id: &str,
+    epoch: &str,
+) -> Result<(), ApiError> {
+    let mut filter = doc! {};
+    filter.insert(id_field, id);
+    let result = storage(
+        state
+            .core
+            .db
+            .collection::<bson::Document>(collection)
+            .update_one(filter, doc! { "$set": { "device_access_epoch": epoch } })
+            .await,
+    )?;
+    if result.matched_count != 1 {
+        return Err(ApiError::Conflict("Service request disappeared".into()));
+    }
+    Ok(())
+}
+
+pub async fn stored_service_epoch_current(
+    state: &FleetState,
+    agent_id: ObjectId,
+    collection: &str,
+    id_field: &str,
+    id: &str,
+) -> Result<bool, ApiError> {
+    if host_revocation_pending(state, agent_id).await? {
+        return Ok(false);
+    }
+    let mut filter = doc! { "agent_id": agent_id };
+    filter.insert(id_field, id);
+    let row = storage(
+        state
+            .core
+            .db
+            .collection::<bson::Document>(collection)
+            .find_one(filter)
+            .await,
+    )?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    if let Ok(epoch) = row.get_str("device_access_epoch") {
+        return Ok(epoch == authorization_epoch(state, agent_id).await?);
+    }
+    // Backward-compatible ordinary requests may predate epochs. Once a host
+    // selection changed, no unversioned request may pass, irrespective of clocks.
+    let scopes = host_scopes(state, agent_id).await?;
+    if scopes.is_empty() {
+        return Ok(false);
+    }
+    Ok(storage(coll!(state).find_one(doc! { "$and": [{ "$or": scopes }, { "features_updated_at": { "$exists": true } }] }).await)?.is_none())
+}
+
+pub async fn host_revocation_pending(
+    state: &FleetState,
+    agent_id: ObjectId,
+) -> Result<bool, ApiError> {
+    host_change_exists(state, agent_id, None).await
+}
+
+/// Network projection can install only the newly selected (already closed)
+/// profile during activation. Application grants remain frozen by BOTH phases.
+pub async fn host_network_revocation_pending(
+    state: &FleetState,
+    agent_id: ObjectId,
+) -> Result<bool, ApiError> {
+    let scopes = host_scopes(state, agent_id).await?;
+    if scopes.is_empty() {
+        return Ok(false);
+    }
+    Ok(storage(
+        coll!(state)
+            .find_one(doc! {"$and":[{"$or":scopes},{"revocation_pending":true}]})
+            .await,
+    )?
+    .is_some())
+}
+
+/// Reject work authorized before any proof-linked host capability change,
+/// including inserts racing cancellation and service claims on another pod.
+pub async fn service_request_is_current(
+    state: &FleetState,
+    agent_id: ObjectId,
+    authorized_at: DateTime,
+) -> Result<bool, ApiError> {
+    Ok(!host_change_exists(state, agent_id, Some(authorized_at)).await?)
+}
+
+/// Re-fan all proof-linked enrollments before acknowledging a selection/ack.
+pub async fn refan_host_family(state: &FleetState, agent_id: ObjectId) -> Result<(), ApiError> {
+    let (identities, _) = host_family(state, agent_id).await?;
+    for (id, tid) in identities {
+        match state.agents.find_live_in_tenant(tid, id).await {
+            Err(meshharbor_services::dao::base::DaoError::NotFound) => continue,
+            Err(e) => return Err(e.into()),
+            Ok(_) => {}
+        }
+        {
+            state
+                .hooks
+                .agent_access_changed(tid, id)
+                .await
+                .map_err(|_| {
+                    ApiError::ServiceUnavailable(
+                        "Capabilities saved but host-family network refresh failed".into(),
+                    )
+                })?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeatureRevision {
+    expected_revision: u32,
+}
+
+/// An anchored SYSTEM service validates a local close request with its own
+/// credential. A worker/user-supplied URL or invitation is never authority.
+pub async fn service_features_pending(
+    State(state): State<FleetState>,
+    service: crate::auth_agent::AuthAgentService,
+    Path(invite_id): Path<String>,
+    Query(query): Query<FeatureRevision>,
+) -> Result<Json<Value>, ApiError> {
+    enabled(&state)?;
+    let id = ObjectId::parse_str(&invite_id)
+        .map_err(|_| ApiError::NotFound("No pending host capability change".into()))?;
+    let found = storage(
+        coll!(state)
+            .find_one(doc! {
+                "_id": id, "$or": [
+                    { "agent_id": service.agent_id, "tenant_id": service.tenant_id },
+                    { "hosts": { "$elemMatch": { "agent_id": service.agent_id, "tenant_id": service.tenant_id } } }
+                ],
+                "features_revision": i64::from(query.expected_revision),
+                "$and": [{"$or":[{"revocation_pending":true},{"activation_pending":true}]}],
+            })
+            .await,
+    )?;
+    let row =
+        found.ok_or_else(|| ApiError::NotFound("No pending host capability change".into()))?;
+    Ok(Json(
+        json!({ "invite_id": invite_id, "features_revision": query.expected_revision,
+        "revocation_pending": true, "agent_id": row.agent_id.map(|id| id.to_hex()), "tenant_id": row.tenant_id.to_hex(),
+        "host_agent_id": service.agent_id.to_hex(), "host_tenant_id": service.tenant_id.to_hex() }),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectFeatures {
+    features: DeviceAccessFeatures,
+    expected_revision: u32,
+}
+
+/// Only the bound device may change its accepted ceiling; not the inviter or
+/// an organization administrator. Revision fences two stale settings pages.
+pub async fn self_features(
+    State(state): State<FleetState>,
+    agent: crate::auth_agent::AuthAgent,
+    Path(invite_id): Path<String>,
+    Json(body): Json<SelectFeatures>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    enabled(&state)?;
+    if !body.features.valid() || body.expected_revision == u32::MAX {
+        return Err(ApiError::BadRequest(
+            "Invalid feature selection or revision".into(),
+        ));
+    }
+    let id = ObjectId::parse_str(&invite_id)
+        .map_err(|_| ApiError::BadRequest("Invalid invitation id".into()))?;
+    let now = DateTime::now();
+    let mut filter = doc! { "_id": id, "agent_id": agent.agent_id, "tenant_id": agent.tenant_id,
+    "state": STATE_ENROLLED, "access_until": { "$gt": now } };
+    if body.expected_revision == 0 {
+        filter.insert(
+            "$or",
+            vec![
+                doc! { "features_revision": 0_i64 },
+                doc! { "features_revision": { "$exists": false } },
+            ],
+        );
+    } else {
+        filter.insert("features_revision", i64::from(body.expected_revision));
+    }
+    let changed = storage(coll!(state).update_one(filter, doc! { "$set": {
+        "features": bson::to_bson(&body.features).map_err(|_| ApiError::Internal("Invalid features".into()))?,
+        "features_revision": i64::from(body.expected_revision) + 1,
+        "revocation_pending": true, "activation_pending": false,
+        "features_updated_at": now,
+    }}).await)?;
+    if changed.modified_count != 1 {
+        return Err(ApiError::Conflict(
+            "Invitation changed or is not held by this device; reload".into(),
+        ));
+    }
+    // Cancel stored unconsumed work; a concurrent insert is fenced again at
+    // the service claim by its pre-authorization timestamp.
+    for collection in ["exec_pending", "ssh_pending"] {
+        storage(state.core.db.collection::<bson::Document>(collection).update_many(
+            doc! { "agent_id": agent.agent_id, "tenant_id": agent.tenant_id, "state": "pending" },
+            doc! { "$set": { "state": "cancelled" } },
+        ).await)?;
+    }
+    // Existing desktop/file scopes must not retain an obsolete ceiling.
+    state.rc_hub.end_agent_sessions(agent.agent_id);
+    refan_host_family(&state, agent.agent_id).await?;
+    // New authorization is restricted now; do not claim that old SSH/exec
+    // processes have ended without a device-side close acknowledgement.
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "invite_id": invite_id, "features": body.features,
+            "features_revision": body.expected_revision + 1,
+            "revocation_pending": true,
+            "message": "New authorization updated; termination of existing sessions is not yet confirmed"
+        })),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcknowledgeFeatures {
+    expected_revision: u32,
+    closed: bool,
+}
+
+/// The authenticated host acknowledges its completed local close barrier.
+/// Expiry cannot restore an invitation: it only permits finishing cleanup.
+pub async fn self_features_ack(
+    State(state): State<FleetState>,
+    host: crate::auth_agent::AuthAgent,
+    Path(invite_id): Path<String>,
+    Json(body): Json<AcknowledgeFeatures>,
+) -> Result<Json<Value>, ApiError> {
+    enabled(&state)?;
+    if !body.closed {
+        return Err(ApiError::BadRequest(
+            "Existing sessions must be confirmed closed".into(),
+        ));
+    }
+    let id = ObjectId::parse_str(&invite_id)
+        .map_err(|_| ApiError::NotFound("No matching host capability change".into()))?;
+    let authority = doc! { "_id": id, "$or": [
+        { "agent_id": host.agent_id, "tenant_id": host.tenant_id },
+        { "hosts": { "$elemMatch": { "agent_id": host.agent_id, "tenant_id": host.tenant_id } } }
+    ] };
+    let row = storage(coll!(state).find_one(authority.clone()).await)?
+        .ok_or_else(|| ApiError::NotFound("No matching host capability change".into()))?;
+    if row.features_revision != body.expected_revision {
+        return Err(ApiError::Conflict(
+            "Capability revision changed; close the current revision first".into(),
+        ));
+    }
+    let target = row
+        .agent_id
+        .ok_or_else(|| ApiError::Conflict("Invitation is not enrolled".into()))?;
+    // Complete a strict frozen-map pass before lifting the persisted barrier.
+    // Retry reads authoritative storage, never a stale success cached in memory.
+    refan_host_family(&state, target).await?;
+    if row.revocation_pending {
+        let mut filter = authority.clone();
+        filter.insert("features_revision", i64::from(body.expected_revision));
+        filter.insert("revocation_pending", true);
+        let staged = storage(coll!(state).update_one(filter, doc! {"$set": {
+            "revocation_pending":false,"activation_pending":true,
+            "revocation_closed_revision": i64::from(body.expected_revision)
+        }, "$unset":{"revocation_acked_revision":"","revocation_acked_at":"","revocation_acked_by_agent":""}}).await)?;
+        if staged.modified_count != 1 {
+            return Err(ApiError::Conflict(
+                "Capability revision changed during close acknowledgement".into(),
+            ));
+        }
+    } else if !row.activation_pending {
+        let mut acked = authority.clone();
+        acked.insert("features_revision", i64::from(body.expected_revision));
+        acked.insert("revocation_pending", false);
+        acked.insert("activation_pending", doc! {"$ne":true});
+        acked.insert(
+            "revocation_acked_revision",
+            i64::from(body.expected_revision),
+        );
+        if storage(
+            state
+                .core
+                .db
+                .collection::<bson::Document>(COLLECTION)
+                .find_one(acked)
+                .await,
+        )?
+        .is_none()
+        {
+            return Err(ApiError::Conflict(
+                "Capability revision changed or was never acknowledged".into(),
+            ));
+        }
+    }
+    if row.revocation_pending || row.activation_pending {
+        // Failure at any read/fan/publication leaves activation_pending durable.
+        // No compensation write is required to preserve the retry barrier.
+        refan_host_family(&state, target).await?;
+        let mut finish = authority.clone();
+        finish.insert("features_revision", i64::from(body.expected_revision));
+        finish.insert("revocation_pending", false);
+        finish.insert("activation_pending", true);
+        finish.insert(
+            "revocation_closed_revision",
+            i64::from(body.expected_revision),
+        );
+        let committed = storage(coll!(state).update_one(finish,doc! {"$set": {
+            "activation_pending":false,"revocation_acked_revision":i64::from(body.expected_revision),
+            "revocation_acked_at":DateTime::now(),"revocation_acked_by_agent":host.agent_id
+        }}).await)?;
+        if committed.modified_count != 1 {
+            return Err(ApiError::Conflict(
+                "Capability revision changed during activation".into(),
+            ));
+        }
+    }
+    if row.access_until <= DateTime::now() && row.state != STATE_ENDED {
+        end_invite_by(&state, &row, REASON_EXPIRED, None).await?;
+        // A reaper may have won the end CAS after ACK; await settlement here
+        // too so enrollment_removed describes this response, not a future task.
+        settle_device(&state, row.tenant_id, target, REASON_EXPIRED).await?;
+    }
+    let enrollment_removed = match state.agents.base.find_by_id(target).await {
+        Ok(agent) => agent.deleted_at.is_some(),
+        Err(meshharbor_services::dao::base::DaoError::NotFound) => true,
+        Err(e) => return Err(e.into()),
+    };
+    Ok(Json(
+        json!({ "invite_id": invite_id, "features_revision": body.expected_revision,
+        "revocation_pending": false, "enrollment_removed": enrollment_removed }),
+    ))
 }
 
 pub const REASON_MADE_PERMANENT: &str = "temporary_made_permanent";
@@ -1052,6 +1685,20 @@ pub async fn end_keeping_device(
     agent_id: ObjectId,
     by: ObjectId,
 ) -> Result<u64, ApiError> {
+    // An inviter/admin cannot erase a host-selected ceiling by converting
+    // the enrollment. The host can leave and personally sign in instead.
+    if storage(
+        coll!(state)
+            .find_one(doc! {
+                "agent_id": agent_id, "state": STATE_ENROLLED,
+                "features": { "$ne": bson::Bson::Null, "$exists": true },
+            })
+            .await,
+    )?
+    .is_some()
+    {
+        return Err(ApiError::Forbidden("A host-selected device must leave its invitation and sign in personally before becoming permanent".into()));
+    }
     let now = DateTime::now();
     let r = storage(
         coll!(state)
@@ -1179,6 +1826,11 @@ pub async fn create_bound(
     let agent_id = agent
         .id
         .ok_or_else(|| ApiError::Internal("agent missing _id".into()))?;
+    if storage(state.core.db.collection::<bson::Document>("agents").find_one(doc! {
+        "_id": agent_id, "personal_access_owner_id": { "$exists": true, "$ne": bson::Bson::Null }
+    }).await)?.is_some() {
+        return Err(ApiError::Forbidden("A personal device must accept invitations on the host; an administrator cannot convert its owner-only profile".into()));
+    }
     if grant_for_agent(state, agent_id).await?.is_some() {
         return Err(ApiError::Conflict(
             "This device is already temporary".into(),
@@ -1191,6 +1843,10 @@ pub async fn create_bound(
         inviter_user_id: by,
         label: String::new(),
         allow_role_ids,
+        features: None,
+        features_revision: 0,
+        revocation_pending: false,
+        activation_pending: false,
         // Not a code anyone can type: a hash of nothing anyone holds.
         code_hash: hash_secret("device-invite-converted", &uuid::Uuid::new_v4().to_string()),
         state: STATE_ENROLLED.into(),
@@ -1228,7 +1884,25 @@ pub async fn self_view(
     if !state.settings.auth.native_device_invite_enabled {
         return Ok(Json(json!({ "temporary": false })));
     }
-    let rows = live_for_agent(&state, agent.agent_id).await?;
+    use futures::TryStreamExt;
+    // Expired pending rows are cleanup authority only, never access grants.
+    let rows: Vec<DeviceInviteRow> = storage(
+        storage(
+            coll!(state)
+                .find(doc! {
+                    "agent_id": agent.agent_id, "$or": [
+                        { "state": STATE_ENROLLED, "access_until": { "$gt": DateTime::now() } },
+                        { "revocation_pending": true }, { "activation_pending": true }
+                    ]
+                })
+                .sort(doc! { "created_at": 1 })
+                .limit(100)
+                .await,
+        )?
+        .try_collect()
+        .await,
+    )?;
+
     // No live grant but an end still settling: still temporary (the device
     // keeps its marker, so the removal that follows is a planned end).
     let Some(g) = (match TemporaryGrant::of(&rows) {
@@ -1242,6 +1916,10 @@ pub async fn self_view(
     for r in &rows {
         grants.push(json!({
             "invite_id": r.id.to_hex(),
+            "features": r.features,
+            "features_revision": r.features_revision,
+        "revocation_pending": r.revocation_pending || r.activation_pending,
+        "activation_pending": r.activation_pending,
             "inviter": inviter_display(&state, r.inviter_user_id).await,
             "org": org,
             "access_until_ms": r.access_until.timestamp_millis(),
@@ -1342,6 +2020,11 @@ pub async fn self_link(
         tracing::info!(agent = %agent.agent_id, tenant = %agent.tenant_id, linked,
             "device-invite: the device linked the invitations its machine accepted");
     }
+    // A newly proven primary host can already have open overlay sessions.
+    // Reconcile pending deny-all marks even on an idempotent link retry.
+    if !body.proofs.is_empty() {
+        refan_host_family(&state, agent.agent_id).await?;
+    }
     Ok(Json(json!({ "linked": linked })))
 }
 
@@ -1357,6 +2040,10 @@ fn host_view(
     let host = r.hosts.iter().find(|h| h.tenant_id == tid);
     json!({
         "id": r.id.to_hex(),
+        "features": r.features,
+        "features_revision": r.features_revision,
+        "revocation_pending": r.revocation_pending || r.activation_pending,
+        "activation_pending": r.activation_pending,
         "host_agent_id": host.map(|h| h.agent_id.to_hex()),
         "host_device_name": host.and_then(|h| names.get(&h.agent_id).cloned()),
         "inviter": inviter,
@@ -1489,6 +2176,12 @@ pub async fn reap_once(state: &FleetState) -> anyhow::Result<usize> {
     let mut ended = 0;
     for row in due {
         let expired = row.access_until <= now;
+        // Keep the host's cleanup credential until its recorded close/ack
+        // finishes. Authorization already fails closed at the expired deadline.
+        if expired && (row.revocation_pending || row.activation_pending) {
+            continue;
+        }
+
         let reason = if expired {
             REASON_EXPIRED
         } else {
@@ -1565,6 +2258,9 @@ mod tests {
         let inviter = ObjectId::new();
         let role = ObjectId::new();
         let g = TemporaryGrant {
+            ssh_port: None,
+            rdp_port: None,
+            feature_grants: Vec::new(),
             invite_id: ObjectId::new(),
             inviter_user_id: inviter,
             also_inviter_user_ids: Vec::new(),
@@ -1584,6 +2280,10 @@ mod tests {
             inviter_user_id: inviter,
             label: String::new(),
             allow_role_ids: roles,
+            features: None,
+            features_revision: 0,
+            revocation_pending: false,
+            activation_pending: false,
             code_hash: String::new(),
             state: STATE_ENROLLED.into(),
             access_until: DateTime::from_millis(until_ms),
@@ -1603,6 +2303,37 @@ mod tests {
             hosts: Vec::new(),
             removal_pending: false,
         }
+    }
+
+    #[test]
+    fn capability_union_never_borrows_another_inviters_features() {
+        let alice = ObjectId::new();
+        let bob = ObjectId::new();
+        let role = ObjectId::new();
+        let mut a = row(alice, vec![], i64::MAX);
+        let mut b = row(bob, vec![role], i64::MAX);
+        a.features = Some(DeviceAccessFeatures {
+            ssh: true,
+            ..DeviceAccessFeatures::none()
+        });
+        b.features = Some(DeviceAccessFeatures {
+            exec: true,
+            ..DeviceAccessFeatures::none()
+        });
+        let rows = vec![a, b];
+        let f = selected_for_caller(&rows, alice, &[]);
+        assert!(f.ssh && !f.exec && !f.network);
+        let f = selected_for_caller(&rows, bob, &[]);
+        assert!(!f.ssh && f.exec);
+        let f = selected_for_caller(&rows, ObjectId::new(), &[role]);
+        assert!(!f.ssh && f.exec);
+        assert_eq!(
+            selected_for_caller(&rows, ObjectId::new(), &[]),
+            DeviceAccessFeatures::none()
+        );
+        let grants = TemporaryGrant::of(&rows).unwrap().feature_grants;
+        assert_eq!(grants[0].inviter_user_id, alice);
+        assert_eq!(grants[1].features, rows[1].features);
     }
 
     #[test]
@@ -1626,6 +2357,9 @@ mod tests {
     #[test]
     fn a_settling_device_admits_nobody() {
         let g = TemporaryGrant {
+            ssh_port: None,
+            rdp_port: None,
+            feature_grants: Vec::new(),
             invite_id: ObjectId::new(),
             inviter_user_id: NOBODY,
             also_inviter_user_ids: Vec::new(),

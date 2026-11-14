@@ -1483,6 +1483,7 @@ mod tests {
     fn overlay_rules_match_address_port_and_protocol() {
         use meshharbor_remote_control::models::{OverlayRule, PortRange, ProtocolKind};
         let rule = |cidr: &str, low: u16, high: u16, proto: ProtocolKind| OverlayRule {
+            expires_at_ms: None,
             cidr: cidr.into(),
             port_range: PortRange { low, high },
             proto,

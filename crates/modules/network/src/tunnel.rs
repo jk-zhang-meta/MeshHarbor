@@ -2797,6 +2797,17 @@ async fn temporary_flow_refusal(
             Err(_) => return Some("temporary_device_unverified"),
         }
     }
+    if !meshharbor_mod_fleet::device_invite::allows_feature(
+        &state.fleet,
+        s.agent_id,
+        s.flow_user(orig),
+        meshharbor_remote_control::models::DeviceAccessFeature::Network,
+    )
+    .await
+    .unwrap_or(false)
+    {
+        return Some("device_network_not_selected");
+    }
     match grant_for_agent(&state.fleet, s.agent_id).await {
         Ok(None) => None,
         Ok(Some(grant)) => {

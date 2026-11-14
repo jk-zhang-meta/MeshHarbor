@@ -1587,6 +1587,122 @@ impl LocalApiState for DaemonState {
     /// be recorded must not happen — the record is the loop bound), then arms
     /// the exit code and answers. The shutdown itself starts in
     /// [`Self::restart_commit`], after the answer is written.
+    async fn access_ready(&self, agent_id: &str) -> Response {
+        let Some(orgs) = self.orgs.as_ref() else {
+            return Response::Error {
+                message: "organization runtime state unavailable".into(),
+            };
+        };
+        let Ok(orgs) = orgs.lock() else {
+            return Response::Error {
+                message: "organization runtime state unavailable".into(),
+            };
+        };
+        let Some(org) = orgs.iter().find(|org| org.agent_id == agent_id) else {
+            return Response::Error {
+                message: "target organization is not in this daemon".into(),
+            };
+        };
+        if !org.enabled {
+            return Response::AccessReady {
+                agent_id: agent_id.into(),
+                ready: true,
+                overlay_required: false,
+            };
+        }
+        let view = if org.primary {
+            Some(self.overlay.borrow().clone())
+        } else {
+            self.org_views.as_ref().and_then(|views| {
+                views.lock().ok().and_then(|views| {
+                    views
+                        .iter()
+                        .find(|(label, _)| label == &org.label)
+                        .map(|(_, rx)| rx.borrow().clone())
+                })
+            })
+        };
+        let terminal = org
+            .terminal_error
+            .lock()
+            .map(|error| error.is_some())
+            .unwrap_or(true);
+        let (ready, overlay_required) = access_runtime_ready(
+            org.connected.load(Ordering::SeqCst),
+            terminal,
+            org.overlay_mode,
+            view.as_ref(),
+            cfg!(any(feature = "overlay-l3", feature = "overlay-netstack")),
+        );
+        Response::AccessReady {
+            agent_id: agent_id.into(),
+            ready,
+            overlay_required,
+        }
+    }
+
+    async fn close_access(&self, invite_id: &str, revision: u32) -> Response {
+        let close = async {
+            if !crate::exec_service::valid_object_id(invite_id) {
+                return Err("invalid invitation id".to_string());
+            }
+            let Some((path, lock)) = self.config_persist.as_ref() else {
+                return Err("this daemon has no authoritative config".into());
+            };
+            let cfg = {
+                let _guard = lock.lock().await;
+                crate::config::load(path).map_err(|e| e.to_string())?
+            };
+            let mut identities = vec![(cfg.server_url.clone(), cfg.agent_token.clone())];
+            identities.extend(
+                cfg.orgs
+                    .iter()
+                    .map(|org| (org.server_url.clone(), org.agent_token.clone())),
+            );
+            let mut matched = false;
+            for (server, token) in identities {
+                let info = meshharbor_node_core::device_invite::self_status(&server, &token)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if info.as_ref().is_some_and(|info| {
+                    info.grants.iter().any(|grant| {
+                        grant.invite_id == invite_id
+                            && grant.features_revision == revision
+                            && grant.revocation_pending
+                    })
+                }) {
+                    matched = true;
+                    break;
+                }
+            }
+            if !matched {
+                return Err("no exact live pending host request; refresh before retrying".into());
+            }
+            // Ordinary daemon and separate SYSTEM scopes must both finish.
+            // Running these concurrently lets buffered SSH commands be cancelled
+            // by the exec engine while the SSH registry waits for its task.
+            let (ssh, exec, service) = tokio::join!(
+                crate::ssh::close_all_and_wait(),
+                crate::exec::shared().close_all_and_wait(),
+                crate::exec_service::close_access(invite_id, revision)
+            );
+            ssh?;
+            exec?;
+            service?;
+            Ok::<(), String>(())
+        }
+        .await;
+        match close {
+            Ok(()) => Response::AccessClosed {
+                invite_id: invite_id.into(),
+                features_revision: revision,
+            },
+            Err(message) => Response::Error {
+                message: format!("access policy remains pending: {message}"),
+            },
+        }
+    }
+
     async fn restart_daemon(&self, reason: &str) -> Response {
         use crate::supervision as sup;
         let refuse = |message: String| Response::Error { message };
@@ -2213,9 +2329,56 @@ fn is_hex_object_id(s: &str) -> bool {
     s.len() == 24 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Runtime self_ip is published only AFTER the first server Netmap is applied
+/// (overlay/runtime.rs initial apply_peers -> publish_view), not from config.
+fn access_runtime_ready(
+    connected: bool,
+    terminal: bool,
+    mode: &str,
+    view: Option<&OverlayView>,
+    compiled: bool,
+) -> (bool, bool) {
+    let required = compiled && mode != "off";
+    (
+        connected && !terminal && (!required || view.is_some_and(|v| v.self_ip.is_some())),
+        required,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn post_restart_readiness_uses_applied_view_not_configured_overlay() {
+        let mut view = OverlayView::default();
+        assert_eq!(
+            access_runtime_ready(true, false, "netstack", Some(&view), true),
+            (false, true)
+        );
+        view.self_ip = Some("100.64.0.2".into());
+        assert_eq!(
+            access_runtime_ready(true, false, "netstack", Some(&view), true),
+            (true, true)
+        );
+        assert_eq!(
+            access_runtime_ready(false, false, "netstack", Some(&view), true),
+            (false, true)
+        );
+        assert_eq!(
+            access_runtime_ready(true, true, "netstack", Some(&view), true),
+            (false, true)
+        );
+        assert_eq!(
+            access_runtime_ready(true, false, "off", None, true),
+            (true, false)
+        );
+        assert_eq!(
+            access_runtime_ready(true, false, "netstack", None, false),
+            (true, false)
+        );
+    }
+
     use std::net::Ipv4Addr;
     use tunnel_core::localapi::ConnectionType;
 

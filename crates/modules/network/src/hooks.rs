@@ -105,13 +105,35 @@ impl FleetLifecycle for NetworkHooks {
         // A temporary device's invitations may be what changed: its mark
         // follows them BEFORE the fan, or an ended inviter would keep it.
         crate::overlay::sync_temporary_mark(&self.state, tenant_id, agent_id).await?;
+        // Capability revocation must not silently fall back to revision 1
+        // when the store cannot advance the authority fence.
+        if self
+            .state
+            .overlay_networks
+            .find_for_tenant(tenant_id)
+            .await?
+            .is_some()
+        {
+            self.state
+                .overlay_networks
+                .bump_auth_revision(tenant_id)
+                .await?;
+        }
         crate::overlay::publish_and_refan_tenant_authority(
             &self.state,
             tenant_id,
-            true,
+            false,
             "agent_updated",
         )
         .await;
+        Ok(())
+    }
+    async fn agent_access_changed(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+    ) -> anyhow::Result<()> {
+        crate::overlay::refresh_access_authority(&self.state, tenant_id, agent_id).await?;
         Ok(())
     }
 }

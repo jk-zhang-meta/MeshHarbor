@@ -40,6 +40,8 @@ pub use unix::{PtyHandle, PtyProcess};
 #[cfg(all(windows, feature = "ssh-server"))]
 mod windows;
 #[cfg(all(windows, feature = "ssh-server"))]
+pub(crate) use windows::SftpJob;
+#[cfg(all(windows, feature = "ssh-server"))]
 pub use windows::{PtyHandle, PtyProcess};
 
 /// Terminal geometry, in the order SSH sends it.

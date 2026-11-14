@@ -215,7 +215,33 @@ fn cidr_contains(cidr: &str, ip: IpAddr) -> bool {
 /// fragmented packet must not be able to slip past a `:22`-only rule by hiding
 /// its port.
 pub fn rules_permit(rules: &[OverlayRule], dst: IpAddr, l4: Option<&L4>) -> bool {
+    rules_permit_at(rules, dst, l4, wall_ms_now())
+}
+
+pub(crate) fn wall_ms_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or(u64::MAX)
+}
+
+pub(crate) fn rules_permit_at(
+    rules: &[OverlayRule],
+    dst: IpAddr,
+    l4: Option<&L4>,
+    now_ms: u64,
+) -> bool {
+    rules_match(rules, dst, l4, Some(now_ms))
+}
+
+fn rules_match(rules: &[OverlayRule], dst: IpAddr, l4: Option<&L4>, now_ms: Option<u64>) -> bool {
     rules.iter().any(|r| {
+        if r.expires_at_ms
+            .zip(now_ms)
+            .is_some_and(|(deadline, now)| now >= deadline)
+        {
+            return false;
+        }
         if !cidr_contains(&r.cidr, dst) {
             return false;
         }
@@ -259,7 +285,7 @@ fn u16_at(packet: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_be_bytes([*packet.get(at)?, *packet.get(at + 1)?]))
 }
 
-/// The UDP flows and ICMP echoes this node sent toward peers whose ingress
+/// The TCP/UDP flows and ICMP echoes this node sent toward peers whose ingress
 /// the tenant's ACL governs, so their replies are not judged as new traffic.
 /// Bounded: a full shard drops what has gone idle, and is emptied if that is
 /// not enough (a forgotten flow's replies are judged by the rules again, so
@@ -278,7 +304,7 @@ impl ReplyFlows {
     }
 
     /// Remember the flow an outbound packet belongs to, if it is one whose
-    /// replies need remembering (a UDP datagram or an ICMP echo request).
+    /// replies need remembering (TCP, UDP, or an ICMP echo request).
     pub fn note_outbound(&self, packet: &[u8], now_ms: u64) {
         let Some((nh, Some(off))) = l4_header(packet) else {
             return;
@@ -287,9 +313,9 @@ impl ReplyFlows {
             return;
         };
         let key = match nh {
-            17 => match (u16_at(packet, off), u16_at(packet, off + 2)) {
+            6 | 17 => match (u16_at(packet, off), u16_at(packet, off + 2)) {
                 (Some(local_id), Some(remote_id)) => FlowKey {
-                    proto: 17,
+                    proto: nh,
                     local,
                     remote,
                     local_id,
@@ -317,6 +343,17 @@ impl ReplyFlows {
             if m.len() >= FLOWS_PER_SHARD {
                 m.clear();
             }
+        }
+        // Only this node's bare SYN may create a TCP reply admission. Its
+        // later outbound packets refresh it, but a SYN-ACK to an inbound
+        // invitation flow must never manufacture a bypass of that grant.
+        if nh == 6
+            && !m.contains_key(&key)
+            && !packet
+                .get(off + 13)
+                .is_some_and(|flags| flags & 0x12 == 0x02)
+        {
+            return;
         }
         m.insert(key, now_ms);
     }
@@ -401,6 +438,65 @@ pub fn admitted_reply(packet: &[u8], flows: &ReplyFlows, now_ms: u64) -> bool {
         }
         _ => false,
     }
+}
+
+/// Timed invitation rules are checked before the legacy reply shortcut.
+/// A matching, expired grant cannot borrow an unrelated grant's lifetime.
+/// True locally initiated flows retain reply semantics while a peer grant lives.
+pub(crate) fn timed_reply_permitted(
+    packet: &[u8],
+    rules: &[OverlayRule],
+    flows: &ReplyFlows,
+    mono_ms: u64,
+    wall_ms: u64,
+) -> bool {
+    if !rules.iter().any(|r| r.expires_at_ms.is_some()) {
+        return admitted_reply(packet, flows, mono_ms);
+    }
+    let Some(dst) = dst_ip_of(packet) else {
+        return false;
+    };
+    let l4 = parse_l4(packet);
+    if rules_permit_at(rules, dst, l4.as_ref(), wall_ms) {
+        return true;
+    }
+    // Match without time to distinguish an expired capability from a reply.
+    if rules_match(rules, dst, l4.as_ref(), None)
+        || !rules
+            .iter()
+            .any(|r| r.expires_at_ms.is_none_or(|t| wall_ms < t))
+    {
+        return false;
+    }
+    let Some((nh, Some(off))) = l4_header(packet) else {
+        return false;
+    };
+    if nh == 6 {
+        let (Some(remote), Some(local), Some(remote_id), Some(local_id)) = (
+            src_ip_of(packet),
+            dst_ip_of(packet),
+            u16_at(packet, off),
+            u16_at(packet, off + 2),
+        ) else {
+            return false;
+        };
+        return admitted_reply(packet, flows, mono_ms)
+            && flows.admits(
+                FlowKey {
+                    proto: nh,
+                    local,
+                    remote,
+                    local_id,
+                    remote_id,
+                },
+                mono_ms,
+            );
+    }
+    // No unsolicited echo requests under an invitation-only grant.
+    if matches!(nh, 1 | 58) && packet.get(off) == Some(&if nh == 1 { 8 } else { 128 }) {
+        return false;
+    }
+    admitted_reply(packet, flows, mono_ms)
 }
 
 fn internet_checksum(chunks: &[&[u8]]) -> u16 {
@@ -731,10 +827,52 @@ mod tests {
 
     fn rule(cidr: &str, low: u16, high: u16, proto: ProtocolKind) -> OverlayRule {
         OverlayRule {
+            expires_at_ms: None,
             cidr: cidr.into(),
             port_range: PortRange { low, high },
             proto,
         }
+    }
+
+    #[test]
+    fn invitation_deadline_matches_each_grant_and_tracks_real_replies() {
+        let mut short = rule("100.64.0.2/32", 22, 22, ProtocolKind::Any);
+        short.expires_at_ms = Some(100);
+        let mut long = rule("100.64.0.2/32", 8443, 8443, ProtocolKind::Tcp);
+        long.expires_at_ms = Some(200);
+        let rules = vec![short, long];
+        let flows = ReplyFlows::default();
+        let ssh = pkt4(6, PEER, ME, &tcp(40000, 22, 0x10));
+        let files = pkt4(6, PEER, ME, &tcp(40000, 8443, 0x02));
+        assert!(timed_reply_permitted(&ssh, &rules, &flows, 0, 99));
+        assert!(!timed_reply_permitted(&ssh, &rules, &flows, 0, 100));
+        assert!(timed_reply_permitted(&files, &rules, &flows, 0, 100));
+        assert!(!timed_reply_permitted(&files, &rules, &flows, 0, 200));
+        // Outbound responses never turn the original inbound flow into a reply.
+        flows.note_outbound(&pkt4(6, ME, PEER, &tcp(22, 40000, 0x12)), 0);
+        flows.note_outbound(&pkt4(17, ME, PEER, &udp(22, 40000)), 0);
+        assert!(!timed_reply_permitted(&ssh, &rules, &flows, 1, 100));
+        assert!(!timed_reply_permitted(
+            &pkt4(17, PEER, ME, &udp(40000, 22)),
+            &rules,
+            &flows,
+            1,
+            100
+        ));
+        let reply = pkt4(6, PEER, ME, &tcp(443, 40001, 0x12));
+        assert!(!timed_reply_permitted(&reply, &rules, &flows, 1, 100));
+        flows.note_outbound(&pkt4(6, ME, PEER, &tcp(40001, 443, 0x02)), 1);
+        assert!(timed_reply_permitted(&reply, &rules, &flows, 2, 100));
+        assert!(!timed_reply_permitted(&reply, &rules, &flows, 2, 200));
+        // A separate explicit network-wide live grant really does authorize SSH.
+        let mut network = any_rule("100.64.0.2/32");
+        network.expires_at_ms = Some(300);
+        let mut network_rules = rules.clone();
+        network_rules.push(network);
+        assert!(timed_reply_permitted(&ssh, &network_rules, &flows, 2, 200));
+        let mut zero = rules[0].clone();
+        zero.expires_at_ms = Some(0);
+        assert!(!timed_reply_permitted(&ssh, &[zero], &flows, 2, 0));
     }
 
     fn any_rule(cidr: &str) -> OverlayRule {

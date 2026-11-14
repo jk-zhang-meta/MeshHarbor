@@ -108,6 +108,8 @@ async fn b3_overlay_node_record_applied_auth_revision_is_cas_monotonic() {
 
     let created = nodes
         .create(NewOverlayNode {
+            supports_invite_deadlines: true,
+            personal_access_owner_id: None,
             temporary: None,
             tenant_id,
             node_ref: NodeRef::Agent {

@@ -42,6 +42,28 @@ pub async fn publish_rc_ctrl(state: &Core, evt: &str, mut fields: serde_json::Va
     }
 }
 
+/// Strict publication for capability changes. None means configured single-pod
+/// operation; an enabled Redis transport failure is never degraded to success.
+pub async fn publish_rc_ctrl_checked(
+    state: &Core,
+    evt: &str,
+    mut fields: serde_json::Value,
+) -> anyhow::Result<()> {
+    let Some(redis) = &state.redis_pubsub else {
+        return Ok(());
+    };
+    let obj = fields
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("control payload must be an object"))?;
+    obj.insert("class".into(), serde_json::json!("rc"));
+    obj.insert("evt".into(), serde_json::json!(evt));
+    obj.entry("db")
+        .or_insert_with(|| serde_json::json!(state.db.name()));
+    let env = serde_json::json!({"origin":redis.instance_id(),"ctrl":fields});
+    redis.publish(&env.to_string()).await?;
+    Ok(())
+}
+
 /// C-2 — apply a received rc control event to THIS pod's hub. Idempotent:
 /// misses are no-ops (the entity lives elsewhere or is already gone).
 pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {

@@ -881,6 +881,26 @@ async fn resolve_session_authz_with_origin(
     use meshharbor_db::models::role::permissions;
     use meshharbor_remote_control::models::AgentStatus;
 
+    if let Ok(ClientMsg::SessionRequest {
+        agent_id,
+        permissions,
+        ..
+    }) = serde_json::from_str::<ClientMsg>(text)
+    {
+        let ceiling = meshharbor_mod_fleet::device_invite::features_for_caller(
+            &state.fleet,
+            agent_id,
+            controller_user_id,
+        )
+        .await
+        .map_err(|_| "Could not verify device access selection".to_string())?;
+        if ceiling.is_some_and(|f| !f.permits_session(permissions)) {
+            return Err(
+                "The personal or temporary device holder has not allowed these capabilities for this caller".into(),
+            );
+        }
+    }
+
     if let Ok(
         msg @ ClientMsg::SessionRequest {
             share_grant_id: Some(_),

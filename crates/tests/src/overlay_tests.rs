@@ -87,6 +87,8 @@ impl Ipam {
     ) -> Result<OverlayNode, DaoError> {
         self.nodes
             .create(NewOverlayNode {
+                supports_invite_deadlines: true,
+                personal_access_owner_id: None,
                 temporary: None,
                 tenant_id: self.tenant_id,
                 node_ref: NodeRef::Agent {
@@ -809,6 +811,8 @@ async fn agent_delete_releases_the_overlay_node() {
     let node = ipam
         .nodes
         .create(NewOverlayNode {
+            supports_invite_deadlines: true,
+            personal_access_owner_id: None,
             temporary: None,
             tenant_id: ipam.tenant_id,
             node_ref: NodeRef::Agent {
@@ -898,6 +902,8 @@ async fn a_re_enrolled_removed_machine_gets_a_fresh_overlay_node() {
     let first = ipam
         .nodes
         .create(NewOverlayNode {
+            supports_invite_deadlines: true,
+            personal_access_owner_id: None,
             temporary: None,
             tenant_id: ipam.tenant_id,
             node_ref: NodeRef::Agent {
@@ -1020,6 +1026,8 @@ async fn tunnel_client_delete_releases_the_overlay_node() {
     let node = ipam
         .nodes
         .create(NewOverlayNode {
+            supports_invite_deadlines: true,
+            personal_access_owner_id: None,
             temporary: None,
             tenant_id: ipam.tenant_id,
             node_ref: NodeRef::TunnelClient {
@@ -1731,6 +1739,8 @@ async fn agent_delete_does_not_release_a_tunnel_clients_node() {
     let node = ipam
         .nodes
         .create(NewOverlayNode {
+            supports_invite_deadlines: true,
+            personal_access_owner_id: None,
             temporary: None,
             tenant_id: ipam.tenant_id,
             node_ref: NodeRef::TunnelClient {
@@ -2057,6 +2067,8 @@ async fn renumber_refuses_a_fleet_below_the_version_floor() {
     ipam.alloc().await.unwrap();
     ipam.nodes
         .create(NewOverlayNode {
+            supports_invite_deadlines: true,
+            personal_access_owner_id: None,
             temporary: None,
             tenant_id: ipam.tenant_id,
             node_ref: NodeRef::Agent {
@@ -2853,6 +2865,8 @@ async fn b4_evicted_node_allows_same_machine_rejoin_with_same_key_and_rejects_ot
     let hijack = ipam
         .nodes
         .create(NewOverlayNode {
+            supports_invite_deadlines: true,
+            personal_access_owner_id: None,
             temporary: None,
             tenant_id: ipam.tenant_id,
             node_ref: NodeRef::Agent {

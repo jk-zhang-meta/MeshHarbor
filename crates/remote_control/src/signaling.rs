@@ -2443,6 +2443,8 @@ pub enum ClientMsg {
     /// `OverlayNode`, and replies with a full `rc:overlay.netmap`.
     #[serde(rename = "rc:overlay.join")]
     OverlayJoin {
+        #[serde(default)]
+        supports_invite_deadlines: bool,
         /// Optional hint for which network to join (multi-network is a
         /// later phase; today the tenant has exactly one).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -11618,6 +11620,7 @@ mod tests {
     #[test]
     fn overlay_join_roundtrip() {
         let m = ClientMsg::OverlayJoin {
+            supports_invite_deadlines: true,
             network_hint: None,
             wg_public_key: "cHVia2V5".into(),
             key_epoch: 0,
@@ -12410,6 +12413,7 @@ mod tests {
         let mut m2 = m.clone();
         if let ServerMsg::OverlayNetmap { peers, .. } = &mut m2 {
             peers[0].ingress_rules = Some(vec![crate::models::OverlayRule {
+                expires_at_ms: None,
                 cidr: "10.66.0.0/16".into(),
                 port_range: crate::models::PortRange { low: 22, high: 22 },
                 proto: crate::models::ProtocolKind::Tcp,

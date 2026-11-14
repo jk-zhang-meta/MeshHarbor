@@ -9,6 +9,7 @@
 use axum::{
     Json,
     extract::{Path, Query, State},
+    http::HeaderMap,
 };
 use bson::{DateTime, oid::ObjectId};
 use meshharbor_db::models::role::permissions;
@@ -192,6 +193,7 @@ pub struct EnrollResponse {
     /// row will be reaped after its inactivity TTL, and re-enrolling later
     /// creates a NEW device rather than reviving this one.
     pub ephemeral: bool,
+    pub personal_device: bool,
 }
 
 /// POST /api/agent/enroll — public (no user JWT); authenticates via the
@@ -205,6 +207,7 @@ pub struct EnrollResponse {
 /// reaper, or schedule a permanent device for silent deletion).
 pub async fn enroll_agent(
     State(state): State<FleetState>,
+    headers: HeaderMap,
     Json(body): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, ApiError> {
     let (claims, is_ephemeral) = state
@@ -240,6 +243,9 @@ pub async fn enroll_agent(
         return enroll_agent_ephemeral(&state, tid, admin_uid, &claims.jti, body).await;
     }
 
+    let personal_device =
+        crate::device_login::is_personal_enrollment(&state, &claims.jti, tid, admin_uid).await?;
+
     // Temporary devices — a token minted by an invitation's redemption
     // enrolls a NEW device only, bound to that invitation. The lookup fails
     // CLOSED: a temporary device that enrolled as an ordinary one would be
@@ -271,6 +277,67 @@ pub async fn enroll_agent(
              adds a new temporary device only"
                 .to_string(),
         ));
+    }
+    // Account authority cannot impersonate a physical host that holds an
+    // invitation or a proof-linked host role, even through personal login.
+    if let Some(a) = &existing {
+        let aid = a.id.unwrap_or_default();
+        let temporary = crate::device_invite::grant_for_agent(&state, aid)
+            .await?
+            .is_some();
+        let linked = state.core.db.collection::<bson::Document>(crate::device_invite::COLLECTION).find_one(bson::doc! {
+            "hosts": { "$elemMatch": { "agent_id": aid, "tenant_id": tid } },
+            "$or": [{ "state": "enrolled", "access_until": { "$gt": DateTime::now() } }, { "revocation_pending": true }, { "activation_pending": true }]
+        }).await.map_err(|_| ApiError::ServiceUnavailable("Could not verify device proof links".into()))?.is_some();
+        if temporary || linked {
+            let proof = crate::auth_agent::authenticate(&state, &headers)
+                .await
+                .map_err(|_| {
+                    ApiError::Forbidden(
+                        "Re-enrolling an invitation host requires its current device credential"
+                            .into(),
+                    )
+                })?;
+            if proof.agent_id != aid || proof.tenant_id != tid {
+                return Err(ApiError::Forbidden(
+                    "Device credential does not belong to this enrollment".into(),
+                ));
+            }
+        }
+    }
+    if let Some(a) = &existing {
+        let raw = state
+            .core
+            .db
+            .collection::<bson::Document>("agents")
+            .find_one(bson::doc! { "_id": a.id })
+            .await
+            .map_err(|_| {
+                ApiError::ServiceUnavailable("Could not verify device owner profile".into())
+            })?;
+        if raw
+            .as_ref()
+            .and_then(|r| r.get_object_id("personal_access_owner_id").ok())
+            .is_some_and(|owner| owner != admin_uid || a.owner_user_id != owner)
+        {
+            return Err(ApiError::Forbidden(
+                "Only the personal device owner may re-enroll this machine".into(),
+            ));
+        }
+    }
+    let is_new = existing.is_none();
+    if personal_device {
+        if let Some(a) = &existing {
+            if a.owner_user_id != admin_uid
+                || crate::device_invite::grant_for_agent(&state, a.id.unwrap_or_default())
+                    .await?
+                    .is_some()
+            {
+                return Err(ApiError::Forbidden(
+                    "Personal login cannot take over another owner or temporary device".into(),
+                ));
+            }
+        }
     }
     if existing.is_none() {
         let tenant = state.tenants.base.find_by_id(tid).await?;
@@ -370,6 +437,77 @@ pub async fn enroll_agent(
         tracing::info!(agent = %agent_id, invite = %inv.id, tenant = %tid,
             "device-invite: temporary device enrolled");
     }
+    // Bootstrap only a newly created device. Re-login must preserve local/admin vetoes.
+    let selected = if personal_device {
+        Some(meshharbor_remote_control::models::DeviceAccessFeatures::all())
+    } else {
+        invite.as_ref().and_then(|i| i.features)
+    };
+    if is_new {
+        if selected.is_some() {
+            let mut set = bson::doc! {
+                "ssh_policy.mode": "on",
+                "exec_policy.mode": "on",
+                "ssh_policy.can_originate": personal_device,
+                "exec_policy.can_originate": personal_device,
+                "ssh_policy.consent_mode": "auto", "exec_policy.consent_mode": "auto",
+            };
+            if personal_device {
+                set.insert("personal_access_owner_id", admin_uid);
+                set.insert("ssh_policy.allowed_user_ids", vec![admin_uid]);
+                set.insert("exec_policy.allowed_user_ids", vec![admin_uid]);
+            }
+            let initialized = state
+                .core
+                .db
+                .collection::<bson::Document>("agents")
+                .update_one(
+                    bson::doc! { "_id": agent_id, "owner_user_id": admin_uid },
+                    bson::doc! { "$set": set },
+                )
+                .await
+                .map_err(|_| {
+                    ApiError::ServiceUnavailable(
+                        "Could not initialize device access profile".into(),
+                    )
+                })?;
+            if initialized.matched_count != 1 {
+                return Err(ApiError::Conflict(
+                    "Device changed during profile initialization".into(),
+                ));
+            }
+        }
+    }
+    if personal_device && !is_new {
+        // A fresh browser approval binds existing own devices, but does not
+        // undo an existing server or local service veto.
+        let bound_profile = state
+            .core
+            .db
+            .collection::<bson::Document>("agents")
+            .update_one(
+                bson::doc! { "_id": agent_id, "owner_user_id": admin_uid },
+                bson::doc! { "$set": { "personal_access_owner_id": admin_uid } },
+            )
+            .await
+            .map_err(|_| {
+                ApiError::ServiceUnavailable("Could not bind existing personal device".into())
+            })?;
+        if bound_profile.matched_count != 1 {
+            return Err(ApiError::Conflict(
+                "Device changed during personal login".into(),
+            ));
+        }
+        state
+            .hooks
+            .agent_access_changed(tid, agent_id)
+            .await
+            .map_err(|_| {
+                ApiError::ServiceUnavailable(
+                    "Personal device saved but network refresh failed".into(),
+                )
+            })?;
+    }
     // Only the signed, single-use credential grants this policy. The narrow
     // update preserves endpoints and fails closed against removal/generation
     // changes. A failed write can leave an ordinary row and a consumed token;
@@ -425,6 +563,7 @@ pub async fn enroll_agent(
         tenant_id: tid.to_hex(),
         agent_token,
         ephemeral: false,
+        personal_device,
     }))
 }
 
@@ -552,6 +691,7 @@ async fn enroll_agent_ephemeral(
         tenant_id: tid.to_hex(),
         agent_token,
         ephemeral: true,
+        personal_device: false,
     }))
 }
 

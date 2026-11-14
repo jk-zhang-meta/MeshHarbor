@@ -44,16 +44,17 @@ use windows_sys::Win32::System::Console::{
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject,
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, CreateProcessW,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, CreateProcessW,
     DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
     InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-    UpdateProcThreadAttribute, WaitForSingleObject,
+    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES,
+    STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use super::WinSize;
@@ -243,7 +244,23 @@ impl PtyProcess {
         // Everything the child started dies with the job. Windows has no
         // process group to signal, so this IS the `killpg` equivalent — and it
         // must be set up before anything can escape.
-        let job = Arc::new(make_job(pi.hProcess)?);
+        let job = match make_job(pi.hProcess) {
+            Ok(job) => Arc::new(job),
+            Err(error) => {
+                unsafe {
+                    TerminateProcess(pi.hProcess, 1);
+                    WaitForSingleObject(pi.hProcess, INFINITE);
+                }
+                return Err(error);
+            }
+        };
+        if unsafe { ResumeThread(pi.hThread) } == u32::MAX {
+            unsafe {
+                TerminateJobObject(job.0, 1);
+                WaitForSingleObject(pi.hProcess, INFINITE);
+            }
+            return Err(last_error("ResumeThread"));
+        }
 
         // THE WAITER. Without this the session never ends: the console host
         // holds the output pipe's write end for as long as the pseudoconsole
@@ -438,6 +455,25 @@ impl PtyProcess {
     /// it leaves the handle valid for `Drop`, and one call reaches every
     /// process in the job — no enumeration, and no race with a child that
     /// spawns while a snapshot is being walked.
+    pub(crate) async fn terminate_and_wait(&mut self) -> Result<u32, String> {
+        if !self.job.0.is_null() && unsafe { TerminateJobObject(self.job.0, 1) } == 0 {
+            return Err(format!(
+                "PTY job termination: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        wait_job_empty(&self.job).await?;
+        if let Some(code) = self.exit {
+            return Ok(code);
+        }
+        let rx = self.exit_rx.take().ok_or("PTY waiter missing")?;
+        let code = rx
+            .await
+            .map_err(|_| "PTY waiter ended without reaping evidence")?;
+        self.exit = Some(code);
+        Ok(code)
+    }
+
     pub fn kill_group(&self) {
         if !self.job.0.is_null() {
             // SAFETY: a job handle this struct owns.
@@ -660,7 +696,7 @@ fn spawn_attached(
             // CONSOLE's (`CreatePseudoConsole` owns them), and what ends the
             // output stream is `ClosePseudoConsole`, not the child's copies.
             1,
-            EXTENDED_STARTUPINFO_PRESENT,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED,
             std::ptr::null(),
             std::ptr::null(),
             &si.StartupInfo,
@@ -764,7 +800,7 @@ fn spawn_attached_as_console_user(
             // No `CREATE_NO_WINDOW`: the pseudoconsole IS this child's console,
             // and suppressing console creation fights the attribute that just
             // gave it one.
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
             env.raw,
             profile.as_ref().map_or(std::ptr::null(), |d| d.as_ptr()),
             &startup.si.StartupInfo,
@@ -801,14 +837,49 @@ fn make_job(process: HANDLE) -> Result<Owned, String> {
     }
     // SAFETY: both handles are live and owned.
     if unsafe { AssignProcessToJobObject(job.0, process) } == 0 {
-        // Not fatal on its own — the session still works, it just loses the
-        // "kills descendants" guarantee. Say so rather than pretend.
-        warn!(
-            err = %io::Error::last_os_error(),
-            "ssh: could not put the session in a job object — descendants may outlive it"
-        );
+        return Err(last_error("AssignProcessToJobObject"));
     }
     Ok(job)
+}
+
+/// Reuse the same kill-on-close containment for the trusted SFTP executable.
+/// Unlike PTY's suspended launch, tokio exposes only the process handle here.
+pub(crate) struct SftpJob(Owned);
+impl SftpJob {
+    pub(crate) fn attach(child: &tokio::process::Child) -> Result<Self, String> {
+        make_job(child.raw_handle().ok_or("SFTP child already reaped")? as HANDLE).map(Self)
+    }
+    pub(crate) async fn terminate_and_wait(&self) -> Result<(), String> {
+        if unsafe { TerminateJobObject(self.0.0, 1) } == 0 {
+            return Err(last_error("TerminateJobObject"));
+        }
+        wait_job_empty(&self.0).await
+    }
+}
+async fn wait_job_empty(job: &Owned) -> Result<(), String> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+            if unsafe {
+                QueryInformationJobObject(
+                    job.0,
+                    JobObjectBasicAccountingInformation,
+                    &mut info as *mut _ as *mut _,
+                    std::mem::size_of_val(&info) as u32,
+                    std::ptr::null_mut(),
+                )
+            } == 0
+            {
+                return Err(last_error("QueryInformationJobObject"));
+            }
+            if info.ActiveProcesses == 0 {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| "SSH job still has active processes".to_string())?
 }
 
 #[cfg(test)]

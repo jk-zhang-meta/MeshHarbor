@@ -71,6 +71,129 @@ use tracing::debug;
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 use tracing::warn;
 
+/// One process-wide admission generation. Handler tokens keep close waiting even
+/// while russh is inside consent; child task tokens extend it through reaping.
+#[cfg(feature = "ssh-server")]
+#[derive(Default)]
+struct SessionGeneration {
+    cancel: tokio_util::sync::CancellationToken,
+    tasks: tokio_util::task::TaskTracker,
+    errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    confirmed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+#[cfg(feature = "ssh-server")]
+static SESSIONS: std::sync::LazyLock<std::sync::Mutex<SessionGeneration>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(SessionGeneration::default()));
+
+/// TaskTracker counts tasks, not successful reaps. An aborted/panicking child
+/// owner must leave negative evidence rather than silently satisfy the barrier.
+#[cfg(feature = "ssh-server")]
+struct ReapEvidence {
+    errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    observed: bool,
+}
+#[cfg(feature = "ssh-server")]
+impl ReapEvidence {
+    // A method forces async-move to capture the entire Drop guard. Assigning
+    // only its Copy bool field lets RFC 2229 drop the guard at spawn time.
+    fn mark_observed(&mut self) {
+        self.observed = true;
+    }
+
+    // Console SFTP bypasses ExecEngine's cleanup-failed latch. Only a real
+    // terminal status or the backend's clean-cancellation result is sufficient.
+    #[cfg(any(windows, test))]
+    fn observe_console_outcome(&mut self, exit_code: Option<i32>, error: Option<&str>) {
+        match (exit_code, error) {
+            (Some(_), None) | (_, Some("cancelled by the caller")) => {}
+            (_, error) => self
+                .errors
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(format!(
+                    "console SFTP cleanup not confirmed: {}",
+                    error.unwrap_or("no terminal status")
+                )),
+        }
+        self.observed = true;
+    }
+}
+#[cfg(feature = "ssh-server")]
+impl Drop for ReapEvidence {
+    fn drop(&mut self) {
+        if !self.observed {
+            self.errors
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push("SSH child task ended without cleanup evidence".into());
+        }
+    }
+}
+
+/// Freeze admission, discard unredeemed grants, cancel sessions, and wait for
+/// their active managed foreground processes/process groups/jobs. A timeout/error
+/// leaves admission frozen. This is not rollback of completed side effects and
+/// cannot revoke a command which deliberately detached (setsid/daemonization).
+pub async fn close_all_and_wait() -> Result<(), String> {
+    #[cfg(feature = "ssh-server")]
+    close_generation(&SESSIONS, true).await?;
+    Ok(())
+}
+
+#[cfg(feature = "ssh-server")]
+async fn close_generation(
+    registry: &std::sync::Mutex<SessionGeneration>,
+    clear_grants: bool,
+) -> Result<(), String> {
+    let (tasks, errors, confirmed) = {
+        let generation = registry.lock().unwrap_or_else(|e| e.into_inner());
+        generation.cancel.cancel();
+        if clear_grants {
+            GRANTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        }
+        generation.tasks.close();
+        (
+            generation.tasks.clone(),
+            generation.errors.clone(),
+            generation.confirmed.clone(),
+        )
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(15), tasks.wait())
+        .await
+        .map_err(|_| "SSH cleanup timed out; admission remains frozen".to_string())?;
+    let errors = errors.lock().unwrap_or_else(|e| e.into_inner());
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    confirmed.store(true, std::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
+/// Only reopen after the previous generation is fully drained and error-free.
+pub fn resume_after_close() -> Result<(), String> {
+    #[cfg(feature = "ssh-server")]
+    {
+        let mut generation = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+        if !generation.cancel.is_cancelled() {
+            return Ok(());
+        }
+        if !generation
+            .confirmed
+            .load(std::sync::atomic::Ordering::Acquire)
+            || !generation.tasks.is_empty()
+            || !generation
+                .errors
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+        {
+            return Err("SSH cleanup is not confirmed".into());
+        }
+        *generation = SessionGeneration::default();
+    }
+    Ok(())
+}
+
 /// Process services a session depends on, threaded EXPLICITLY from the daemon
 /// into the SSH server instead of discovered through process globals.
 ///
@@ -1010,6 +1133,9 @@ pub(crate) mod sshd {
     /// Per-connection state.
     pub struct Handler {
         ctx: Arc<Ctx>,
+        tasks: tokio_util::task::TaskTracker,
+        cleanup_errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        _session_task: tokio_util::task::task_tracker::TaskTrackerToken,
         /// The calling node's overlay address. Unforgeable — the packet reached
         /// us only by clearing WireGuard against a key from our netmap — so it
         /// is what every log line and audit record is keyed on.
@@ -1070,6 +1196,14 @@ pub(crate) mod sshd {
 
     impl Handler {
         pub fn new(ctx: Arc<Ctx>, peer: std::net::SocketAddr) -> Self {
+            Self::new_in_generation(ctx, peer, &super::SESSIONS)
+        }
+
+        pub(super) fn new_in_generation(
+            ctx: Arc<Ctx>,
+            peer: std::net::SocketAddr,
+            registry: &std::sync::Mutex<super::SessionGeneration>,
+        ) -> Self {
             // Taken before `ctx` moves into the struct below.
             let awake = ctx
                 .services
@@ -1077,12 +1211,16 @@ pub(crate) mod sshd {
                 .as_ref()
                 .map(crate::power::ActivityGuard::new);
             let asker = ctx.services.asker.clone();
+            let generation = registry.lock().unwrap_or_else(|e| e.into_inner());
             Self {
                 ctx,
                 peer,
                 policy: None,
                 shared_stream: false,
-                shared_cancel: None,
+                shared_cancel: Some(generation.cancel.child_token()),
+                tasks: generation.tasks.clone(),
+                cleanup_errors: generation.errors.clone(),
+                _session_task: generation.tasks.token(),
                 stream_grant: None,
                 deadline_armed: false,
                 pty_req: None,
@@ -1103,9 +1241,15 @@ pub(crate) mod sshd {
         ) -> Self {
             let mut handler = Self::new(ctx, peer);
             handler.shared_stream = true;
-            handler.shared_cancel = Some(cancel);
+            let own = handler.shared_cancel.as_ref().unwrap().clone();
+            handler.tasks.spawn(async move {
+                tokio::select! { _ = cancel.cancelled() => own.cancel(), _ = own.cancelled() => {} }
+            });
             handler.stream_grant = Some(grant);
             handler
+        }
+        pub(crate) fn cancellation(&self) -> tokio_util::sync::CancellationToken {
+            self.shared_cancel.as_ref().unwrap().clone()
         }
         /// FR-90 P3-8-2a — was this session granted one command? `false`
         /// before authentication, when russh delivers no request anyway.
@@ -1162,8 +1306,9 @@ pub(crate) mod sshd {
             let caller = policy.caller.clone();
             self.deadline_armed = true;
             let handle = session.handle();
-            tokio::spawn(async move {
-                tokio::time::sleep_until(deadline).await;
+            let cancel = self.cancellation();
+            self.tasks.spawn(async move {
+                tokio::select! { _ = cancel.cancelled() => return, _ = tokio::time::sleep_until(deadline) => {} }
                 warn!(%caller, "ssh: session reached its granted time limit — disconnecting");
                 let _ = handle
                     .disconnect(
@@ -1259,13 +1404,16 @@ pub(crate) mod sshd {
             let asker = self.asker.clone();
 
             if let Some(sentinel) = consent
-                && let Err(why) = await_consent(
-                    &asker,
-                    &handle,
-                    channel,
-                    &caller,
-                    &sentinel,
-                    "transfer files over SFTP",
+                && let Err(why) = crate::ssh_shared_stream::while_authorized(
+                    self.shared_cancel.as_ref(),
+                    await_consent(
+                        &asker,
+                        &handle,
+                        channel,
+                        &caller,
+                        &sentinel,
+                        "transfer files over SFTP",
+                    ),
                 )
                 .await
             {
@@ -1298,6 +1446,12 @@ pub(crate) mod sshd {
                 return Ok(());
             }
 
+            if self.cancellation().is_cancelled() {
+                return Ok(());
+            }
+            cmd.kill_on_drop(true);
+            #[cfg(unix)]
+            cmd.process_group(0);
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
                 Err(e) => {
@@ -1309,6 +1463,24 @@ pub(crate) mod sshd {
                                 .into_bytes(),
                         )
                         .await;
+                    let _ = handle.close(channel).await;
+                    return Ok(());
+                }
+            };
+
+            #[cfg(windows)]
+            let job = match crate::pty::SftpJob::attach(&child) {
+                Ok(job) => job,
+                Err(error) => {
+                    let kill = child.kill().await;
+                    let reap = child.wait().await;
+                    if kill.is_err() || reap.is_err() {
+                        self.cleanup_errors
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(format!("SFTP rejected job cleanup: {kill:?}; {reap:?}"));
+                    }
+                    let _ = handle.extended_data(channel, 1, error.into_bytes()).await;
                     let _ = handle.close(channel).await;
                     return Ok(());
                 }
@@ -1327,82 +1499,98 @@ pub(crate) mod sshd {
             self.channel_input = Some(tx);
 
             let mut stdin = child.stdin.take().expect("stdin was piped");
-            tokio::spawn(async move {
+            let cancel = self.cancellation();
+            self.tasks.spawn(async move {
                 use tokio::io::AsyncWriteExt;
-                while let Some(chunk) = rx.recv().await {
-                    if stdin.write_all(&chunk).await.is_err() {
-                        break;
+                let write = async {
+                    while let Some(chunk) = rx.recv().await {
+                        if stdin.write_all(&chunk).await.is_err() {
+                            break;
+                        }
                     }
-                }
-                // EOF to the child, so it finishes and exits rather than
-                // waiting on a client that has already gone.
-                let _ = stdin.shutdown().await;
+                    let _ = stdin.shutdown().await;
+                };
+                tokio::select! { _ = cancel.cancelled() => {}, _ = write => {} }
             });
-
             let mut stdout = child.stdout.take().expect("stdout was piped");
             let stderr = child.stderr.take();
-            tokio::spawn(async move {
+            let cancel = self.cancellation();
+            let errors = self.cleanup_errors.clone();
+            let mut evidence = super::ReapEvidence {
+                errors: errors.clone(),
+                observed: false,
+            };
+            self.tasks.spawn(async move {
                 use tokio::io::AsyncReadExt;
-                let mut buf = vec![0u8; 32 * 1024];
-                loop {
-                    match stdout.read(&mut buf).await {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            if handle.data(channel, buf[..n].to_vec()).await.is_err() {
-                                break;
+                let read = async {
+                    let mut buf = vec![0u8; 32 * 1024];
+                    loop {
+                        match stdout.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                if handle.data(channel, buf[..n].to_vec()).await.is_err() {
+                                    break;
+                                }
                             }
                         }
-                        Err(_) => break,
+                    }
+                };
+                tokio::select! { biased; _ = cancel.cancelled() => {}, _ = read => {} }
+                // Preserve normal SFTP completion (scp consumes the exit code).
+                // Cancellation instead kills the still-owned group BEFORE reap.
+                let completed = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => None,
+                    result = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()) => result.ok(),
+                };
+                if completed.is_none() {
+                #[cfg(unix)]
+                if let Some(pid) = child.id() {
+                    // The unreaped child pins the owned process-group ID.
+                    if unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) } != 0 {
+                        let error = std::io::Error::last_os_error();
+                        if error.raw_os_error() != Some(libc::ESRCH) {
+                            errors
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .push(format!("SFTP kill: {error}"));
+                        }
                     }
                 }
-                // Reap before closing so the child cannot outlive the channel
-                // as a zombie holding the user's files open — but WAIT for it
-                // first rather than killing it. It closed stdout because it is
-                // finishing, and a kill here would throw away the exit code the
-                // client is about to be told.
-                //
-                // ⚠️ That status is not a nicety: `scp` reads it as the verdict
-                // on the whole transfer. Without an `exit-status` message
-                // OpenSSH reports `Exit status -1` and exits 1 — so before this
-                // every scp against a meshharbor device FAILED on the caller's
-                // side while the file arrived complete and byte-correct on the
-                // device (measured 2026-09-09 from mars to a corp laptop: 2 MiB
-                // uploaded, SHA matched on the far end, `scp rc=1`). A script
-                // that branches on that status retries a transfer that already
-                // worked. Every other channel path here — pty, exec, and each
-                // refusal — sends it; the sftp subsystem was the one that did
-                // not.
-                let status =
-                    match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
-                        .await
-                    {
-                        Ok(Ok(st)) => st.code().unwrap_or(0).max(0) as u32,
-                        Ok(Err(_)) => 1,
-                        Err(_) => {
-                            // Only now, and the status is the timeout's, not the
-                            // child's — a hung sftp-server must not hang the
-                            // channel too.
-                            let _ = child.kill().await;
-                            let _ = child.wait().await;
-                            1
-                        }
-                    };
+                }
+                #[cfg(windows)]
+                if let Err(error) = job.terminate_and_wait().await {
+                    errors.lock().unwrap_or_else(|e| e.into_inner()).push(error);
+                }
+                let status = match match completed { Some(result) => result, None => child.wait().await } {
+                    Ok(status) => status.code().unwrap_or(1).max(0) as u32,
+                    Err(error) => {
+                        errors
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(format!("SFTP reap: {error}"));
+                        1
+                    }
+                };
+                evidence.mark_observed();
                 let _ = handle.exit_status_request(channel, status).await;
                 let _ = handle.eof(channel).await;
                 let _ = handle.close(channel).await;
             });
-
-            // sftp-server writes diagnostics here. They belong in OUR log, not
-            // on the client's channel: the SFTP stream is a binary protocol
-            // and injecting text into it corrupts the transfer.
             if let Some(mut stderr) = stderr {
-                let peer = self.peer;
-                tokio::spawn(async move {
+                let cancel = self.cancellation();
+                self.tasks.spawn(async move {
                     use tokio::io::AsyncReadExt;
-                    let mut s = String::new();
-                    if stderr.read_to_string(&mut s).await.is_ok() && !s.trim().is_empty() {
-                        warn!(%peer, msg = %s.trim(), "ssh: sftp-server stderr");
-                    }
+                    // Bound diagnostic storage; discarded on close.
+                    let mut buf = [0u8; 4096];
+                    let drain = async {
+                        while let Ok(n) = stderr.read(&mut buf).await {
+                            if n == 0 {
+                                break;
+                            }
+                        }
+                    };
+                    tokio::select! { _ = cancel.cancelled() => {}, _ = drain => {} }
                 });
             }
 
@@ -1436,7 +1624,7 @@ pub(crate) mod sshd {
             let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
             self.channel_input = Some(tx);
             let (raw_tx, mut raw_rx) = tokio::sync::mpsc::channel::<crate::exec::Chunk>(4);
-            let abort = tokio_util::sync::CancellationToken::new();
+            let abort = self.cancellation().child_token();
             self.exec_aborts.insert(channel, abort.clone());
             let peer = self.peer;
             info!(
@@ -1447,7 +1635,7 @@ pub(crate) mod sshd {
 
             let pump_handle = handle.clone();
             let pump_abort = abort.clone();
-            let pump = tokio::spawn(async move {
+            let pump = self.tasks.spawn(async move {
                 while let Some(chunk) = raw_rx.recv().await {
                     match chunk.stream {
                         crate::exec::OutStream::Stdout => {
@@ -1467,11 +1655,22 @@ pub(crate) mod sshd {
             });
 
             let program = program.to_string_lossy().into_owned();
-            tokio::spawn(async move {
+            let errors = self.cleanup_errors.clone();
+            let mut evidence = super::ReapEvidence {
+                errors: errors.clone(),
+                observed: false,
+            };
+            self.tasks.spawn(async move {
                 let outcome =
                     crate::exec::run_console_user_program(&program, rx, raw_tx, abort).await;
                 // Every byte reaches the client before its verdict does.
-                let _ = pump.await;
+                if let Err(error) = pump.await {
+                    errors
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(format!("console SFTP output task failed: {error}"));
+                }
+                evidence.observe_console_outcome(outcome.exit_code, outcome.error.as_deref());
                 if let Some(e) = &outcome.error {
                     warn!(%peer, error = %e, "ssh: sftp-server as the console user");
                     // The stderr stream, beside the binary one: the client
@@ -1583,15 +1782,12 @@ pub(crate) mod sshd {
                 }
             };
 
-            // A shared lease is a hard authorization deadline, not a terminal
-            // hangup request that a shell may ignore. Only Unix needs this
-            // distinction (the Windows pseudoconsole already owns its job).
+            // Fallback on task panic/abort is also a hard termination, never
+            // a SIGHUP which an owned shell can ignore. Normal close awaits reap.
             #[cfg(unix)]
             let pty = {
                 let mut pty = pty;
-                if self.shared_stream {
-                    pty.hard_kill_on_drop();
-                }
+                pty.hard_kill_on_drop();
                 pty
             };
 
@@ -1608,46 +1804,52 @@ pub(crate) mod sshd {
             self.pty_handle = Some(pty.handle());
 
             let writer = pty.handle();
-            tokio::spawn(async move {
-                while let Some(chunk) = rx.recv().await {
-                    if writer.write_all(&chunk).await.is_err() {
-                        break;
-                    }
-                }
-            });
-
-            let caller_for_pump = caller.clone();
-            let mut pump = tokio::spawn(async move {
-                let mut pty = pty;
-                let mut buf = vec![0u8; 16 * 1024];
-                loop {
-                    match pty.read(&mut buf).await {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            if handle.data(channel, buf[..n].to_vec()).await.is_err() {
-                                // The client vanished. Drop the session rather
-                                // than keep a shell alive against a channel
-                                // nobody reads.
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            warn!(%e, "ssh: terminal read failed");
+            let cancel = self.cancellation();
+            self.tasks.spawn(async move {
+                let write = async {
+                    while let Some(chunk) = rx.recv().await {
+                        if writer.write_all(&chunk).await.is_err() {
                             break;
                         }
                     }
-                }
-                let status = pty.wait().await;
-                info!(caller = %caller_for_pump, status, "ssh: interactive session ended");
+                };
+                tokio::select! { _ = cancel.cancelled() => {}, _ = write => {} }
+            });
+
+            let cancel = self.cancellation();
+            let errors = self.cleanup_errors.clone();
+            let mut evidence = super::ReapEvidence {
+                errors: errors.clone(),
+                observed: false,
+            };
+            self.tasks.spawn(async move {
+                let mut pty = pty;
+                let read = async {
+                    let mut buf = vec![0u8; 16 * 1024];
+                    loop {
+                        match pty.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                if handle.data(channel, buf[..n].to_vec()).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                };
+                tokio::select! { biased; _ = cancel.cancelled() => {}, _ = read => {} }
+                // Never abort a task which owns a child: terminate and reap it.
+                let status = match pty.terminate_and_wait().await {
+                    Ok(status) => status,
+                    Err(error) => {
+                        errors.lock().unwrap_or_else(|e| e.into_inner()).push(error);
+                        1
+                    }
+                };
+                evidence.mark_observed();
                 let _ = handle.exit_status_request(channel, status).await;
                 let _ = handle.close(channel).await;
-                // `pty` drops here, which kills anything still in the group.
             });
-            if let Some(cancel) = self.shared_cancel.clone() {
-                tokio::spawn(async move {
-                    tokio::select! { biased; _ = cancel.cancelled() => pump.abort(), _ = &mut pump => {} }
-                });
-            }
 
             Ok(())
         }
@@ -1673,6 +1875,7 @@ pub(crate) mod sshd {
     /// runtime either.
     impl Drop for Handler {
         fn drop(&mut self) {
+            self.cancellation().cancel();
             self.report(SshActivityKind::SessionClose, None, None, true);
             for (_, abort) in self.exec_aborts.drain() {
                 abort.cancel();
@@ -1924,13 +2127,14 @@ pub(crate) mod sshd {
                 None,
                 true,
             );
-            tokio::spawn(async move {
+            let cancel = self.cancellation();
+            self.tasks.spawn(async move {
                 let mut stream = channel.into_stream();
                 let mut target = target;
                 // Bidirectional until either side closes — `copy_bidirectional`
                 // already half-closes correctly, which is the thing a
                 // hand-rolled select! gets wrong (see `sshcmd::pump`).
-                let _ = tokio::io::copy_bidirectional(&mut stream, &mut target).await;
+                tokio::select! { _ = cancel.cancelled() => {}, _ = tokio::io::copy_bidirectional(&mut stream, &mut target) => {} }
                 drop(permit);
             });
             Ok(())
@@ -2042,10 +2246,9 @@ pub(crate) mod sshd {
                 abort,
                 // Shared sessions must remain cancellable even when ordinary SSH opts
                 // into the legacy buffered engine (which has no abort input).
-                shared_stream: self.shared_stream,
                 streaming: self.ctx.exec_streaming || self.shared_stream,
             };
-            tokio::spawn(run_exec(job));
+            self.tasks.spawn(run_exec(job));
             Ok(())
         }
 
@@ -2541,8 +2744,6 @@ pub(crate) mod sshd {
         stdin: crate::exec::StdinFeed,
         /// FR-89 — fired when the channel closes or the session ends.
         abort: tokio_util::sync::CancellationToken,
-        /// Shared sessions require immediate revocation, including during consent.
-        shared_stream: bool,
         /// Ordinary device setting; shared sessions always use the abortable engine.
         streaming: bool,
     }
@@ -2594,7 +2795,6 @@ pub(crate) mod sshd {
             activity,
             stdin,
             abort,
-            shared_stream,
             streaming,
         } = job;
 
@@ -2604,7 +2804,7 @@ pub(crate) mod sshd {
         // would surface as a connection that rejects them for no stated reason.
         if let Some(sentinel) = consent
             && let Err(why) = crate::ssh_shared_stream::while_authorized(
-                if shared_stream { Some(&abort) } else { None },
+                Some(&abort),
                 await_consent(
                     &asker,
                     &handle,
@@ -2852,6 +3052,7 @@ async fn serve_conn(stream: tunnel_core::overlay::netstack::NsTcpStream, ctx: Se
     info!(%peer, "ssh: session opening");
     let _live = LiveConnection::open();
     let handler = sshd::Handler::new(ctx.clone(), peer);
+    let stream = crate::ssh_shared_stream::CancelStream::new(stream, handler.cancellation());
     match russh::server::run_stream(ctx.config.clone(), stream, handler).await {
         Ok(session) => match session.await {
             Ok(()) => info!(%peer, "ssh: session closed"),
@@ -2888,6 +3089,7 @@ pub async fn serve_for_service<S>(
         return;
     };
     let handler = sshd::Handler::new(ctx.clone(), peer);
+    let stream = crate::ssh_shared_stream::CancelStream::new(stream, handler.cancellation());
     match russh::server::run_stream(ctx.config.clone(), stream, handler).await {
         Ok(session) => match session.await {
             Ok(()) => tracing::info!(%peer, "ssh-service: session closed"),
@@ -3033,6 +3235,7 @@ const MAX_PENDING_GRANTS: usize = 16;
 #[cfg(feature = "ssh-server")]
 #[derive(Debug)]
 pub enum GrantRejected {
+    AdmissionClosed,
     /// The key the server validated does not parse here.
     UnparseableKey(String),
     /// Nothing is left of the window between arrival and the server's
@@ -3047,6 +3250,7 @@ impl GrantRejected {
     pub fn refusal(&self) -> meshharbor_remote_control::models::SshGrantRefusal {
         use meshharbor_remote_control::models::SshGrantRefusal;
         match self {
+            Self::AdmissionClosed => SshGrantRefusal::Invalid,
             Self::UnparseableKey(_) => SshGrantRefusal::Invalid,
             Self::ExpiredOnArrival => SshGrantRefusal::Expired,
         }
@@ -3057,6 +3261,7 @@ impl GrantRejected {
 impl std::fmt::Display for GrantRejected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::AdmissionClosed => f.write_str("SSH admission is closed"),
             Self::UnparseableKey(e) => write!(f, "grant carries an unparseable public key: {e}"),
             Self::ExpiredOnArrival => {
                 f.write_str("grant is already expired on arrival (clock skew?)")
@@ -3118,6 +3323,10 @@ pub fn record_grant(
         deadline: Instant::now() + window,
     };
 
+    let generation = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+    if generation.cancel.is_cancelled() {
+        return Err(GrantRejected::AdmissionClosed);
+    }
     let mut grants = GRANTS.lock().unwrap_or_else(|e| e.into_inner());
     prune(&mut grants);
     if grants.len() >= MAX_PENDING_GRANTS {
@@ -3375,6 +3584,228 @@ mod tests {
             .expect("auth exchange");
         assert!(res.success(), "expected the authorized key to be accepted");
         session
+    }
+
+    #[tokio::test]
+    async fn reap_evidence_moves_into_task_and_abort_records_negative_only_on_drop() {
+        let errors = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut evidence = super::ReapEvidence {
+            errors: errors.clone(),
+            observed: false,
+        };
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+            evidence.mark_observed();
+        });
+        started_rx.await.unwrap();
+        assert!(
+            errors.lock().unwrap().is_empty(),
+            "guard must live inside running task"
+        );
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            errors.lock().unwrap().len(),
+            1,
+            "aborted owner must record one negative reap"
+        );
+
+        let errors = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut evidence = super::ReapEvidence {
+            errors: errors.clone(),
+            observed: false,
+        };
+        tokio::spawn(async move {
+            evidence.mark_observed();
+        })
+        .await
+        .unwrap();
+        assert!(
+            errors.lock().unwrap().is_empty(),
+            "observed completion drops guard cleanly"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_generation_console_sftp_evidence_rejects_errors_missing_status_and_panic() {
+        for (status, error, good) in [
+            (Some(0), None, true),
+            (None, Some("cancelled by the caller"), true),
+            (None, Some("cleanup unconfirmed: fixture job failed"), false),
+            (None, Some("spawn task panicked: fixture"), false),
+            (None, None, false),
+        ] {
+            let registry = std::sync::Mutex::new(super::SessionGeneration::default());
+            let errors = registry.lock().unwrap().errors.clone();
+            let mut evidence = super::ReapEvidence {
+                errors,
+                observed: false,
+            };
+            evidence.observe_console_outcome(status, error);
+            drop(evidence);
+            assert_eq!(
+                super::close_generation(&registry, false).await.is_ok(),
+                good
+            );
+        }
+        let registry = std::sync::Mutex::new(super::SessionGeneration::default());
+        let generation = registry.lock().unwrap();
+        let evidence = super::ReapEvidence {
+            errors: generation.errors.clone(),
+            observed: false,
+        };
+        let task = generation.tasks.spawn(async move {
+            let _evidence = evidence;
+            panic!("fixture console owner panic");
+        });
+        drop(generation);
+        assert!(task.await.unwrap_err().is_panic());
+        assert!(
+            super::close_generation(&registry, false)
+                .await
+                .unwrap_err()
+                .contains("without cleanup evidence")
+        );
+    }
+
+    #[tokio::test]
+    async fn close_generation_failure_remains_frozen_without_confirmation() {
+        let registry = std::sync::Mutex::new(super::SessionGeneration::default());
+        registry
+            .lock()
+            .unwrap()
+            .errors
+            .lock()
+            .unwrap()
+            .push("fixture reap failure".into());
+        assert_eq!(
+            super::close_generation(&registry, false).await.unwrap_err(),
+            "fixture reap failure"
+        );
+        let generation = registry.lock().unwrap();
+        assert!(generation.cancel.is_cancelled());
+        assert!(
+            !generation
+                .confirmed
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn close_generation_reaps_real_ssh_pty_and_freezes_admission() {
+        let registry = Arc::new(std::sync::Mutex::new(super::SessionGeneration::default()));
+        let (key, line) = client_key(91);
+        let cfg = cfg_with_mode(vec![line], Some("daemon"));
+        let ctx = super::sshd::Ctx::build(&cfg, test_services()).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let registry_server = registry.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, peer) = listener.accept().await.unwrap();
+                let handler =
+                    super::sshd::Handler::new_in_generation(ctx.clone(), peer, &registry_server);
+                let stream =
+                    crate::ssh_shared_stream::CancelStream::new(stream, handler.cancellation());
+                if let Ok(session) =
+                    russh::server::run_stream(ctx.config.clone(), stream, handler).await
+                {
+                    let _ = session.await;
+                }
+            }
+        });
+        let client = connect(addr, key).await;
+        let mut channel = client.channel_open_session().await.unwrap();
+        channel
+            .request_pty(true, "xterm", 80, 24, 0, 0, &[])
+            .await
+            .unwrap();
+        channel
+            .exec(
+                true,
+                "set +m; sleep 300 & child=$!; printf 'owned=%s child=%s\n' $$ $child; wait",
+            )
+            .await
+            .unwrap();
+        let (pid, descendant): (i32, i32) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let mut out = String::new();
+                loop {
+                    if let Some(russh::ChannelMsg::Data { data }) = channel.wait().await {
+                        out.push_str(&String::from_utf8_lossy(&data));
+                        for line in out.lines() {
+                            if let Some((parent, child)) = line
+                                .strip_prefix("owned=")
+                                .and_then(|s| s.split_once(" child="))
+                                && let (Ok(parent), Ok(child)) =
+                                    (parent.trim().parse(), child.trim().parse())
+                            {
+                                return (parent, child);
+                            }
+                        }
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "owned child is running before close"
+        );
+        let running = |pid: i32| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|s| {
+                    s.rsplit_once(") ")
+                        .map(|(_, fields)| fields.starts_with('Z') || fields.starts_with('X'))
+                })
+                .is_some_and(|dead| !dead)
+        };
+        assert!(running(descendant), "incidental child is live before close");
+        super::close_generation(&registry, false).await.unwrap();
+        // Leader ESRCH alone is NOT tree evidence. Observe the incidental
+        // member separately; an orphan zombie is dead, not a running task.
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while running(descendant) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("owned process-group descendant must stop");
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "close must await owned child reaping"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.channel_open_session()
+            )
+            .await
+            .unwrap()
+            .is_err()
+        );
+        let stream = TcpStream::connect(addr).await.unwrap();
+        assert!(
+            russh::client::connect_stream(
+                Arc::new(russh::client::Config::default()),
+                stream,
+                TestClient
+            )
+            .await
+            .is_err()
+        );
+        server.await.unwrap();
+        assert!(registry.lock().unwrap().cancel.is_cancelled());
     }
 
     #[test]

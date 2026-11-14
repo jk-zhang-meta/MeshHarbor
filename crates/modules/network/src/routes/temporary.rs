@@ -11,7 +11,6 @@ use meshharbor_core::guards::require_permission;
 use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 use meshharbor_db::models::role::permissions;
 use meshharbor_mod_fleet::device_invite;
-use meshharbor_remote_control::models::TemporaryMark;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -79,12 +78,10 @@ pub async fn make_temporary(
         roles,
     )
     .await?;
-    let mark = TemporaryMark {
-        invite_id: row.id,
-        inviter_user_id: row.inviter_user_id,
-        allow_role_ids: row.allow_role_ids.clone(),
-        also_user_ids: Vec::new(),
-    };
+    let grant = device_invite::grant_for_agent(&state.fleet, aid)
+        .await?
+        .ok_or_else(|| ApiError::ServiceUnavailable("Temporary grant missing".into()))?;
+    let mark = crate::overlay::temporary_mark_of(&grant);
     let node = match state.overlay_nodes.find_live_by_agent(tid, aid).await {
         Ok(n) => n,
         Err(_) => {

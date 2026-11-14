@@ -16,6 +16,7 @@
 //!   organization, that enrollment presents the proofs (`self/link`) and the
 //!   owner's admins see what this machine accepted.
 use anyhow::{Context, Result, bail};
+use meshharbor_remote_control::models::DeviceAccessFeatures;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -40,6 +41,8 @@ pub struct Preview {
     #[serde(default)]
     pub inviter: String,
     pub access_until_ms: i64,
+    #[serde(default)]
+    pub features_supported: bool,
 }
 
 /// What a redemption hands back.
@@ -60,6 +63,10 @@ pub struct Redeemed {
     pub device_proof: String,
     #[serde(default)]
     pub attached: bool,
+    #[serde(default)]
+    pub features: Option<DeviceAccessFeatures>,
+    #[serde(default)]
+    pub features_revision: u32,
 }
 
 impl std::fmt::Debug for Redeemed {
@@ -91,6 +98,156 @@ fn client() -> Result<reqwest::Client> {
 /// `https://host/x/` and `https://host/x` are the same server.
 pub fn base(server: &str) -> String {
     server.trim().trim_end_matches('/').to_string()
+}
+
+/// The same vocabulary is used by the native picker and the CLI. Unknown
+/// names fail before a one-use invite is spent; an empty selection is explicit.
+pub fn parse_features(raw: &str) -> Result<DeviceAccessFeatures> {
+    if raw.trim() == "all" {
+        return Ok(DeviceAccessFeatures::all());
+    }
+    if raw.trim() == "none" {
+        return Ok(DeviceAccessFeatures::none());
+    }
+    let mut f = DeviceAccessFeatures::none();
+    for name in raw.split(',').map(str::trim) {
+        match name {
+            "desktop_view" => f.desktop_view = true,
+            "desktop_control" => f.desktop_control = true,
+            "clipboard" => f.clipboard = true,
+            "files" => f.files = true,
+            "ssh" => f.ssh = true,
+            "exec" => f.exec = true,
+            "rdp" => f.rdp = true,
+            "network" => f.network = true,
+            _ => bail!(
+                "unknown invitation feature {name:?}; use all, none, or comma-separated desktop_view,desktop_control,clipboard,files,ssh,exec,rdp,network"
+            ),
+        }
+    }
+    if !f.valid() {
+        bail!("desktop control and clipboard require desktop view");
+    }
+    Ok(f)
+}
+
+pub fn feature_names(f: &DeviceAccessFeatures) -> String {
+    let names: Vec<_> = [
+        (f.desktop_view, "desktop_view"),
+        (f.desktop_control, "desktop_control"),
+        (f.clipboard, "clipboard"),
+        (f.files, "files"),
+        (f.ssh, "ssh"),
+        (f.exec, "exec"),
+        (f.rdp, "rdp"),
+        (f.network, "network"),
+    ]
+    .into_iter()
+    .filter_map(|(on, name)| on.then_some(name))
+    .collect();
+    if names.is_empty() {
+        "none".into()
+    } else {
+        names.join(",")
+    }
+}
+
+/// An explicit host selection can start a NEW invitation-only installation's
+/// services. Never use this to overwrite the person's existing local choices.
+pub fn apply_fresh_features(cfg: &mut crate::config::AgentConfig, f: &DeviceAccessFeatures) {
+    cfg.ssh_enabled = f.ssh;
+    cfg.exec_enabled = f.exec;
+    cfg.rdp_over_mesh = f.rdp;
+    cfg.enable_remote_browse = f.files;
+}
+
+/// Change only this invitation's capability ceiling, authenticated as its
+/// device, using the revision the device just read. No administrator token.
+pub async fn set_features(
+    server: &str,
+    agent_token: &str,
+    invite_id: &str,
+    features: DeviceAccessFeatures,
+    expected_revision: u32,
+) -> Result<(u32, bool)> {
+    if invite_id.len() != 24
+        || !invite_id.bytes().all(|c| c.is_ascii_hexdigit())
+        || !features.valid()
+    {
+        bail!("invalid invitation or feature selection");
+    }
+    let resp = client()?
+        .post(format!(
+            "{}/api/agent/self/temporary/{invite_id}/features",
+            base(server)
+        ))
+        .bearer_auth(agent_token)
+        .json(&serde_json::json!({"features": features, "expected_revision": expected_revision}))
+        .send()
+        .await
+        .context("could not update invitation features")?;
+    if !resp.status().is_success() {
+        return Err(refusal(resp).await);
+    }
+    let status = resp.status();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .context("invalid feature update response")?;
+    let received: DeviceAccessFeatures = serde_json::from_value(body["features"].clone())?;
+    let revision = body["features_revision"]
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+        .context("missing invitation revision")?;
+    if body["invite_id"].as_str() != Some(invite_id)
+        || received != features
+        || revision
+            != expected_revision
+                .checked_add(1)
+                .context("revision overflow")?
+    {
+        bail!("server did not confirm the exact invitation feature update");
+    }
+    // No explicit completed-revocation proof means pending, including an old
+    // server that only reports a policy write. HTTP 202 is never full success.
+    Ok((revision, update_revocation_pending(status, &body)))
+}
+
+/// Host ACK only after confirmed native cleanup AND overlay reconnect.
+pub async fn acknowledge_features(
+    server: &str,
+    token: &str,
+    invite_id: &str,
+    revision: u32,
+) -> Result<bool> {
+    if invite_id.len() != 24 || !invite_id.bytes().all(|c| c.is_ascii_hexdigit()) {
+        bail!("invalid invitation id");
+    }
+    let response = client()?
+        .post(format!(
+            "{}/api/agent/self/temporary/{invite_id}/features/ack",
+            base(server)
+        ))
+        .bearer_auth(token)
+        .json(&serde_json::json!({"expected_revision":revision,"closed":true}))
+        .send()
+        .await
+        .context("could not acknowledge completed access cleanup")?;
+    if response.status() != reqwest::StatusCode::OK {
+        return Err(refusal(response).await);
+    }
+    let body: serde_json::Value = response.json().await?;
+    if body["invite_id"].as_str() != Some(invite_id)
+        || body["features_revision"].as_u64() != Some(u64::from(revision))
+        || body["revocation_pending"].as_bool() != Some(false)
+    {
+        bail!("server did not confirm this exact cleanup acknowledgment");
+    }
+    Ok(body["enrollment_removed"].as_bool().unwrap_or(false))
+}
+
+fn update_revocation_pending(status: reqwest::StatusCode, body: &serde_json::Value) -> bool {
+    status == reqwest::StatusCode::ACCEPTED || body["revocation_pending"].as_bool().unwrap_or(true)
 }
 
 fn os() -> &'static str {
@@ -155,7 +312,11 @@ pub async fn redeem(
     code: &str,
     device_name: &str,
     attach_token: Option<&str>,
+    features: DeviceAccessFeatures,
 ) -> Result<Redeemed> {
+    if !features.valid() {
+        bail!("desktop control and clipboard require desktop view");
+    }
     let Some(code) = normalize_code(code) else {
         bail!("an invite code is 8 digits, like 1234-5678");
     };
@@ -164,6 +325,7 @@ pub async fn redeem(
     if let Some(t) = attach_token {
         body["attach_token"] = serde_json::json!(t);
     }
+    body["features"] = serde_json::to_value(features)?;
     let resp = client()?
         .post(format!("{}/api/native/device-invite/redeem", base(server)))
         .json(&body)
@@ -171,10 +333,16 @@ pub async fn redeem(
         .await
         .context("could not reach the MeshHarbor server")?;
     if resp.status().is_success() {
-        return resp
+        let accepted: Redeemed = resp
             .json()
             .await
-            .context("unexpected answer from the server");
+            .context("unexpected answer from the server")?;
+        if accepted.features != Some(features) {
+            bail!(
+                "the server did not confirm the selected capabilities; enrollment was not started"
+            );
+        }
+        return Ok(accepted);
     }
     Err(refusal(resp).await)
 }
@@ -189,6 +357,21 @@ pub struct GrantInfo {
     #[serde(default)]
     pub org: String,
     pub access_until_ms: i64,
+    #[serde(default)]
+    pub features: Option<DeviceAccessFeatures>,
+    #[serde(default)]
+    pub features_revision: u32,
+    #[serde(default)]
+    pub revocation_pending: bool,
+}
+
+impl GrantInfo {
+    /// Retry cleanup without creating another policy revision. This also lets
+    /// a pending request finish after its invitation's access window expired.
+    pub fn matching_pending_revision(&self, features: &DeviceAccessFeatures) -> Option<u32> {
+        (self.revocation_pending && self.features.as_ref() == Some(features))
+            .then_some(self.features_revision)
+    }
 }
 
 /// The server's word on one enrollment of this machine.
@@ -216,6 +399,9 @@ impl TemporaryInfo {
                 inviter: self.inviter.clone(),
                 org: self.org.clone(),
                 access_until_ms: self.access_until_ms,
+                features: None,
+                features_revision: 0,
+                revocation_pending: false,
             }]
         } else {
             self.grants.clone()
@@ -563,6 +749,98 @@ mod tests {
     use super::*;
 
     #[test]
+    fn accepted_or_unconfirmed_updates_never_claim_session_revocation() {
+        use reqwest::StatusCode;
+        assert!(update_revocation_pending(
+            StatusCode::ACCEPTED,
+            &serde_json::json!({"revocation_pending":false})
+        ));
+        assert!(update_revocation_pending(
+            StatusCode::OK,
+            &serde_json::json!({})
+        ));
+        assert!(update_revocation_pending(
+            StatusCode::OK,
+            &serde_json::json!({"revocation_pending":true})
+        ));
+        assert!(!update_revocation_pending(
+            StatusCode::OK,
+            &serde_json::json!({"revocation_pending":false})
+        ));
+    }
+
+    #[test]
+    fn explicit_feature_selection_is_validated_and_round_trips() {
+        for features in [
+            DeviceAccessFeatures::all(),
+            DeviceAccessFeatures::none(),
+            DeviceAccessFeatures {
+                ssh: true,
+                files: true,
+                ..DeviceAccessFeatures::none()
+            },
+        ] {
+            assert_eq!(parse_features(&feature_names(&features)).unwrap(), features);
+        }
+        for bad in ["", "admin", "ssh,", "desktop_control", "clipboard"] {
+            assert!(parse_features(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn selected_services_do_not_delegate_remote_configuration() {
+        let mut cfg = crate::config::test_fixture();
+        apply_fresh_features(&mut cfg, &parse_features("ssh,files").unwrap());
+        assert!(cfg.ssh_enabled && cfg.enable_remote_browse);
+        assert!(!cfg.exec_enabled && !cfg.rdp_over_mesh && !cfg.remote_config_enabled);
+    }
+
+    #[test]
+    fn an_old_server_does_not_advertise_selection_support() {
+        let preview: Preview =
+            serde_json::from_str(r#"{"tenant_id":"t","access_until_ms":1}"#).unwrap();
+        assert!(!preview.features_supported);
+        let redeemed: Redeemed =
+            serde_json::from_str(r#"{"tenant_id":"t","access_until_ms":1}"#).unwrap();
+        assert_eq!(redeemed.features, None);
+    }
+
+    #[test]
+    fn only_the_exact_pending_selection_reuses_its_revision() {
+        let mut grant = info(10, "fixture").grants.remove(0);
+        grant.features = Some(DeviceAccessFeatures::all());
+        grant.features_revision = 4;
+        assert_eq!(
+            grant.matching_pending_revision(&DeviceAccessFeatures::all()),
+            None
+        );
+        grant.revocation_pending = true;
+        assert_eq!(
+            grant.matching_pending_revision(&DeviceAccessFeatures::all()),
+            Some(4)
+        );
+        assert_eq!(
+            grant.matching_pending_revision(&DeviceAccessFeatures::none()),
+            None
+        );
+        grant.features = None;
+        assert_eq!(
+            grant.matching_pending_revision(&DeviceAccessFeatures::all()),
+            None
+        );
+    }
+
+    #[test]
+    fn legacy_grant_never_implies_all_features() {
+        let grant: GrantInfo = serde_json::from_str(
+            r#"{"invite_id":"aa","inviter":"a","org":"o","access_until_ms":1}"#,
+        )
+        .unwrap();
+        assert_eq!(grant.features, None);
+        assert_eq!(grant.features_revision, 0);
+    }
+
+    #[test]
     fn codes_normalize_leniently_and_nothing_else_passes() {
         assert_eq!(normalize_code("1234-5678").as_deref(), Some("12345678"));
         assert_eq!(normalize_code(" 1234 5678 ").as_deref(), Some("12345678"));
@@ -588,6 +866,9 @@ mod tests {
                 inviter: who.into(),
                 org: "Acme".into(),
                 access_until_ms: until,
+                features: None,
+                features_revision: 0,
+                revocation_pending: false,
             }],
         }
     }

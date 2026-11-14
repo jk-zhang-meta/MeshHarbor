@@ -71,6 +71,10 @@ pub struct DeviceLoginRow {
     pub state: String,
     pub tenant_id: Option<ObjectId>,
     pub approved_by: Option<ObjectId>,
+    /// Server-recorded provenance of the enrollment credential. Never supplied
+    /// by an enrollment request or inferred from its self-reported machine id.
+    #[serde(default)]
+    pub enrollment_jti: Option<String>,
     pub polls: i32,
     pub created_at: DateTime,
     pub expires_at: DateTime,
@@ -314,6 +318,7 @@ pub async fn start(
         state: "pending".into(),
         tenant_id: None,
         approved_by: None,
+        enrollment_jti: None,
         polls: 0,
         created_at: now,
         expires_at: DateTime::from_millis(now.timestamp_millis() + REQUEST_TTL_SECS * 1000),
@@ -378,6 +383,7 @@ pub async fn preview(
         json!({
             "device": { "name": row.device_name, "os": row.device_os },
             "client": row.client_display,
+            "personal_device": true,
             "requested_at_ms": row.created_at.timestamp_millis(),
             "expires_at_ms": row.expires_at.timestamp_millis(),
         }),
@@ -526,6 +532,15 @@ pub async fn exchange(
         .auth
         .issue_enrollment_token_with_relay(approver, tenant, ENROLLMENT_TTL_SECS, false, false)
         .map_err(|_| ApiError::ServiceUnavailable("Could not mint an enrollment token".into()))?;
+    let stamped = storage(c.update_one(
+        doc! { "_id": row.id, "state": "consumed" },
+        doc! { "$set": { "enrollment_jti": &jti, "expires_at": DateTime::from_millis(DateTime::now().timestamp_millis() + (ENROLLMENT_TTL_SECS as i64) * 1000) } },
+    ).await)?;
+    if stamped.modified_count != 1 {
+        return Err(ApiError::ServiceUnavailable(
+            "Could not bind personal device approval".into(),
+        ));
+    }
     if let Err(e) = state
         .enroll_tokens
         .record_issued(&jti, tenant, approver, DateTime::now())
@@ -545,6 +560,23 @@ pub async fn exchange(
             "tenant_id": tenant.to_hex(),
         }),
     ))
+}
+
+pub async fn is_personal_enrollment(
+    state: &FleetState,
+    jti: &str,
+    tenant: ObjectId,
+    owner: ObjectId,
+) -> Result<bool, ApiError> {
+    Ok(storage(
+        coll!(state)
+            .find_one(doc! {
+                "enrollment_jti": jti, "state": "consumed", "tenant_id": tenant,
+                "approved_by": owner, "expires_at": { "$gt": DateTime::now() },
+            })
+            .await,
+    )?
+    .is_some())
 }
 
 #[cfg(test)]

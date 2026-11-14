@@ -120,6 +120,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         }
         LOGIN_ITEM_ID => start_login(app),
         JOIN_ITEM_ID => show_window(app, "/onboarding"),
+        "invite-features" => show_window(app, "/onboarding"),
         id if id.starts_with(INVITE_ITEM_PREFIX) => {
             start_leave(app, id[INVITE_ITEM_PREFIX.len()..].to_string())
         }
@@ -1219,6 +1220,17 @@ fn spawn_account_watch<R: Runtime>(
                             let _ = invites.append(&item);
                         }
                     }
+                    if !view.invitations.is_empty()
+                        && let Ok(item) = MenuItem::with_id(
+                            &app,
+                            "invite-features",
+                            "Choose exposed features…",
+                            true,
+                            None::<&str>,
+                        )
+                    {
+                        let _ = invites.append(&item);
+                    }
                 }
                 if shown.as_ref().map(|s| &s.devices) != Some(&view.devices) {
                     if let Ok(items) = devices.items() {
@@ -1291,6 +1303,9 @@ mod account_tests {
                 inviter: who.into(),
                 org: "Acme".into(),
                 access_until_ms: until,
+                features: None,
+                features_revision: 0,
+                revocation_pending: false,
             },
         )
     }

@@ -1132,7 +1132,16 @@ impl Ingress {
             // unless it belongs to a flow already admitted (a reply).
             let reply = (rules.is_some() || preview_rules.is_some())
                 && g.scope.is_self_dst(routing_dst)
-                && super::ingress::admitted_reply(packet, &g.flows, mono_ms_now());
+                && match rules.as_ref() {
+                    Some(rules) => super::ingress::timed_reply_permitted(
+                        packet,
+                        rules,
+                        &g.flows,
+                        mono_ms_now(),
+                        super::ingress::wall_ms_now(),
+                    ),
+                    None => super::ingress::admitted_reply(packet, &g.flows, mono_ms_now()),
+                };
             (
                 if off {
                     RpfVerdict::Allow
@@ -8330,6 +8339,7 @@ mod tests {
         // The server granted A only TCP/22 into the LAN B fronts.
         let mut np = netmap_peer_for(&a, IP_A);
         np.ingress_rules = Some(vec![OverlayRule {
+            expires_at_ms: None,
             cidr: "10.66.0.0/16".into(),
             port_range: PortRange { low: 22, high: 22 },
             proto: ProtocolKind::Tcp,
@@ -8457,6 +8467,121 @@ mod tests {
         p
     }
 
+    /// Cached netmap only: no reaper, delta or second sync occurs at expiry.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invitation_deadline_expires_packets_without_netmap_refresh() {
+        use meshharbor_remote_control::models::{PortRange, ProtocolKind};
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        dev_b.set_rpf_mode(RpfMode::Off);
+        dev_b.set_local_scope(Some(IP_B), &[]);
+        let (pk_a, pk_b) = (a.public.to_bytes(), b.public.to_bytes());
+        dev_a.add_peer(
+            pk_b,
+            IP_B,
+            Carrier::direct(sock_a.clone(), sock_b.local_addr().unwrap()),
+            true,
+        );
+        dev_b.add_peer(
+            pk_a,
+            IP_A,
+            Carrier::direct(sock_b.clone(), sock_a.local_addr().unwrap()),
+            false,
+        );
+        wait_connected(&dev_a, &pk_b).await;
+        let deadline = super::super::ingress::wall_ms_now() + 500;
+        let mut np = netmap_peer_for(&a, IP_A);
+        np.ingress_rules = Some(vec![
+            OverlayRule {
+                cidr: format!("{IP_B}/32"),
+                port_range: PortRange { low: 22, high: 22 },
+                proto: ProtocolKind::Any,
+                expires_at_ms: Some(deadline),
+            },
+            OverlayRule {
+                cidr: format!("{IP_B}/32"),
+                port_range: PortRange {
+                    low: 8443,
+                    high: 8443,
+                },
+                proto: ProtocolKind::Tcp,
+                expires_at_ms: Some(deadline + 60_000),
+            },
+        ]);
+        dev_b.sync_peer_ingress(&HashMap::from([(np.node_id, np)]));
+        async fn arrives(rx: &mut mpsc::Receiver<Vec<u8>>) -> bool {
+            tokio::time::timeout(Duration::from_millis(150), rx.recv())
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+        }
+        let ssh_syn = synthetic_l4(IP_A, IP_B, false, (40000, 22), 0x02);
+        send_until_ok(&dev_a, &pk_b, &ssh_syn).await;
+        assert!(arrives(&mut rx_b).await, "BASELINE short SSH SYN admitted");
+        let ssh_ack = synthetic_l4(IP_A, IP_B, false, (40000, 22), 0x10);
+        send_until_ok(&dev_a, &pk_b, &ssh_ack).await;
+        assert!(
+            arrives(&mut rx_b).await,
+            "BASELINE SSH established packet admitted"
+        );
+        // Populate the existing UDP reply cache with B's response to A.
+        send_until_ok(
+            &dev_b,
+            &pk_a,
+            &synthetic_l4(IP_B, IP_A, true, (22, 40000), 0),
+        )
+        .await;
+        // An actual locally originated TCP flow must still receive its answer.
+        send_until_ok(
+            &dev_b,
+            &pk_a,
+            &synthetic_l4(IP_B, IP_A, false, (41000, 443), 0x02),
+        )
+        .await;
+        let remaining = deadline.saturating_sub(super::super::ingress::wall_ms_now());
+        tokio::time::sleep(Duration::from_millis(remaining + 30)).await;
+        for packet in [
+            ssh_syn,
+            ssh_ack,
+            synthetic_l4(IP_A, IP_B, true, (40000, 22), 0),
+            synthetic_l4(IP_A, IP_B, false, (40000, 9999), 0x10),
+        ] {
+            send_until_ok(&dev_a, &pk_b, &packet).await;
+            assert!(
+                !arrives(&mut rx_b).await,
+                "expired/new/ACK/cached UDP cannot borrow long files grant"
+            );
+        }
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_l4(IP_A, IP_B, false, (40000, 8443), 0x02),
+        )
+        .await;
+        assert!(
+            arrives(&mut rx_b).await,
+            "long files grant remains independently live"
+        );
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_l4(IP_A, IP_B, false, (443, 41000), 0x12),
+        )
+        .await;
+        assert!(
+            arrives(&mut rx_b).await,
+            "true outbound TCP reply preserved"
+        );
+        println!(
+            "cached netmap: baseline SSH allowed; expired SYN/ACK/UDP and forged ACK denied; long files and true outbound reply allowed (RPF off)"
+        );
+    }
+
     /// #18 — the tenant's rules decide whatever `overlay_rpf` says (here its
     /// default, warn), and they narrow traffic to the node itself statefully:
     /// a new connection or datagram is judged, a reply to a flow the node
@@ -8478,6 +8603,7 @@ mod tests {
         // The server granted A only TCP/22 on B.
         let mut np = netmap_peer_for(&a, IP_A);
         np.ingress_rules = Some(vec![OverlayRule {
+            expires_at_ms: None,
             cidr: format!("{IP_B}/32"),
             port_range: PortRange { low: 22, high: 22 },
             proto: ProtocolKind::Tcp,
@@ -8591,6 +8717,7 @@ mod tests {
 
         let mut np_a_on_b = netmap_peer_for(&a, IP_A);
         np_a_on_b.ingress_rules = Some(vec![OverlayRule {
+            expires_at_ms: None,
             cidr: format!("{IP_B}/32"),
             port_range: PortRange { low: 22, high: 22 },
             proto: ProtocolKind::Tcp,
@@ -8682,6 +8809,7 @@ mod tests {
 
         let mut np_a_on_b = netmap_peer_for(&a, IP_A);
         np_a_on_b.ingress_rules = Some(vec![OverlayRule {
+            expires_at_ms: None,
             cidr: format!("{IP_B}/32"),
             port_range: PortRange { low: 22, high: 22 },
             proto: ProtocolKind::Tcp,
@@ -8830,6 +8958,7 @@ mod tests {
             "None must omit ingress_rules_preview on the wire"
         );
         wire_np.ingress_rules_preview = Some(vec![OverlayRule {
+            expires_at_ms: None,
             cidr: format!("{IP_B}/32"),
             port_range: PortRange {
                 low: 2222,

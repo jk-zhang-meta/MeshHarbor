@@ -1313,7 +1313,7 @@ impl Hub {
     }
 
     /// Force-close every session tied to this agent.
-    fn end_agent_sessions(&self, agent_id: ObjectId) {
+    pub(crate) fn end_agent_sessions(&self, agent_id: ObjectId) {
         let dead: Vec<ObjectId> = self
             .inner
             .sessions

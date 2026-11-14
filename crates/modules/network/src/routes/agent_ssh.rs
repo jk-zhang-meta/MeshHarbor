@@ -475,6 +475,13 @@ async fn decide(
     public_key: &str,
     session_secs: u64,
 ) -> Result<Granted, SshDenyReason> {
+    let authorization_started = bson::DateTime::now();
+    let access_epoch = meshharbor_mod_fleet::device_invite::authorization_epoch(
+        &state.fleet,
+        agent.id.unwrap_or_default(),
+    )
+    .await
+    .map_err(|_| SshDenyReason::CallerNotAllowed)?;
     let agent_id = agent.id.unwrap_or_default();
 
     // Validate the key BEFORE consulting policy: a caller who sent garbage
@@ -511,6 +518,17 @@ async fn decide(
         }
     }
 
+    if !meshharbor_mod_fleet::device_invite::allows_feature(
+        &state.fleet,
+        agent_id,
+        caller.user_id,
+        meshharbor_remote_control::models::DeviceAccessFeature::Ssh,
+    )
+    .await
+    .unwrap_or(false)
+    {
+        return Err(SshDenyReason::CallerNotAllowed);
+    }
     authorize(state, tenant_id, &gates, caller).await?;
 
     // Ceiling, enforced AFTER the identity gates so a refusal is attributable
@@ -601,7 +619,7 @@ async fn decide(
             consent_mode,
             one_command: session.is_some(),
             state: SshPending::PENDING.to_string(),
-            created_at: now,
+            created_at: authorization_started,
             claim_by: at(ssh_limits::GRANT_ACK_TIMEOUT_SECS),
             expires_at: at(ssh_limits::GRANT_TTL_SECS * 2),
             claimed_at: None,
@@ -614,6 +632,18 @@ async fn decide(
         }
     }
 
+    if via_service {
+        meshharbor_mod_fleet::device_invite::stamp_service_epoch(
+            &state.fleet,
+            "ssh_pending",
+            "grant_id",
+            &grant_id,
+            &access_epoch,
+        )
+        .await
+        .map_err(|_| SshDenyReason::GrantUnconfirmed)?;
+    }
+
     // FR-83 — park on the target's answer BEFORE the push: an ack that beats
     // this function back here must find somewhere to land. Dropping the guard
     // (any early return below) deregisters it.
@@ -623,6 +653,24 @@ async fn decide(
         state.ssh_grant_acks.expect(&grant_id, agent_id)
     };
     let pushed_at = std::time::Instant::now();
+    if meshharbor_mod_fleet::device_invite::authorization_epoch(&state.fleet, agent_id)
+        .await
+        .ok()
+        .as_deref()
+        != Some(access_epoch.as_str())
+        || !meshharbor_mod_fleet::device_invite::service_request_is_current(
+            &state.fleet,
+            agent_id,
+            authorization_started,
+        )
+        .await
+        .unwrap_or(false)
+    {
+        if via_service {
+            withdraw_service_grant(state, &grant_id, tenant_id).await;
+        }
+        return Err(SshDenyReason::CallerNotAllowed);
+    }
     let acks = match state.fleet.rc_hub.push_ssh_grant(agent_id, tenant_id, msg) {
         Ok(acks) => acks,
         // The hub distinguishes "not connected" from "connected but cannot
@@ -1393,6 +1441,24 @@ pub async fn claim_service_grant(
         .await
     {
         Ok(Some(row)) => {
+            if !meshharbor_mod_fleet::device_invite::stored_service_epoch_current(
+                &state.fleet,
+                svc.agent_id,
+                "ssh_pending",
+                "grant_id",
+                &grant_id,
+            )
+            .await?
+            {
+                state.ssh_pending.base.collection().update_one(
+                    bson::doc! { "grant_id": &grant_id, "agent_id": svc.agent_id, "state": "claimed" },
+                    bson::doc! { "$set": { "state": "cancelled" } },
+                ).await.map_err(|_| ApiError::ServiceUnavailable("Could not withdraw obsolete SSH grant".into()))?;
+                return Err(ApiError::Forbidden(
+                    "Device capabilities changed after this SSH grant was authorized".into(),
+                ));
+            }
+
             let delivered_here = state.ssh_grant_acks.deliver_claim(&grant_id, svc.agent_id);
             info!(
                 agent = %svc.agent_id, %grant_id, account_mode = %row.account_mode, delivered_here,

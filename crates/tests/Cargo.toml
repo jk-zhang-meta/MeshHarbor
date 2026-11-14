@@ -23,7 +23,7 @@ redis.workspace = true
 # (room manager, media claims) through `AppState::modules`.
 meshharbor-mod-conference = { path = "../modules/conference" }
 meshharbor-mod-fleet = { path = "../modules/fleet" }
-meshharbor-mod-network = { path = "../modules/network", features = ["path-planner-test-support"] }
+meshharbor-mod-network = { path = "../modules/network", features = ["path-planner-test-support", "access-authority-test-support"] }
 # FR-115 P3b — the external session's charge scope (`extauth::charge_scope`).
 meshharbor-mod-remote = { path = "../modules/remote" }
 # FR-102 P6 — the purestat puller is the `saas` module's; its test drives

@@ -278,6 +278,17 @@ pub async fn authorize(
     caller: &Caller,
     shell: &str,
 ) -> Result<(), ExecDenyReason> {
+    if !crate::device_invite::allows_feature(
+        state,
+        agent.id.unwrap_or_default(),
+        caller.user_id,
+        meshharbor_remote_control::models::DeviceAccessFeature::Exec,
+    )
+    .await
+    .unwrap_or(false)
+    {
+        return Err(ExecDenyReason::CallerNotAllowed);
+    }
     // Gate 1 — the org kill-switch. Checked first because it is the cheapest
     // and the most likely reason a fleet says no.
     let tenant = match state.tenants.base.find_by_id(tenant_id).await {
@@ -435,6 +446,10 @@ pub async fn dispatch(
         )
     };
 
+    let authorization_started = audit.at;
+    let access_epoch = crate::device_invite::authorization_epoch(state, agent_id)
+        .await
+        .ok();
     let (audit, outcome) = match authorize(state, tenant_id, agent, caller, &shell).await {
         Err(reason) => {
             let message = deny_message(reason, agent.os);
@@ -475,7 +490,21 @@ pub async fn dispatch(
             if consent_mode != meshharbor_remote_control::models::ConsentMode::Auto {
                 deadline += CONSENT_GRACE;
             }
-            let result = if via_service {
+            let result = if access_epoch.is_none()
+                || crate::device_invite::authorization_epoch(state, agent_id)
+                    .await
+                    .ok()
+                    != access_epoch
+                || !crate::device_invite::service_request_is_current(
+                    state,
+                    agent_id,
+                    authorization_started,
+                )
+                .await
+                .unwrap_or(false)
+            {
+                Err(HubError::SendFailed)
+            } else if via_service {
                 run_via_service(
                     state,
                     tenant_id,
@@ -488,6 +517,8 @@ pub async fn dispatch(
                     run_as,
                     msg,
                     deadline,
+                    authorization_started,
+                    access_epoch.as_deref().unwrap_or_default(),
                 )
                 .await
             } else {
@@ -605,6 +636,8 @@ async fn run_via_service(
     run_as: ExecRunAs,
     msg: ServerMsg,
     deadline: std::time::Duration,
+    authorization_started: DateTime,
+    access_epoch: &str,
 ) -> Result<ExecOutcome, HubError> {
     let now_ms = DateTime::now().timestamp_millis();
     let ms = |d: std::time::Duration| i64::try_from(d.as_millis()).unwrap_or(i64::MAX / 4);
@@ -627,7 +660,7 @@ async fn run_via_service(
         caller: caller.display.clone(),
         run_as: run_as.wire().to_string(),
         state: ExecPending::PENDING.to_string(),
-        created_at: DateTime::from_millis(now_ms),
+        created_at: authorization_started,
         claim_by: DateTime::from_millis(claim_by_ms),
         expires_at: DateTime::from_millis(now_ms + ms(deadline) + PENDING_RETAIN_MS),
         claimed_at: None,
@@ -642,6 +675,15 @@ async fn run_via_service(
         );
         return Err(HubError::SendFailed);
     }
+    crate::device_invite::stamp_service_epoch(
+        state,
+        "exec_pending",
+        "request_id",
+        request_id,
+        access_epoch,
+    )
+    .await
+    .map_err(|_| HubError::SendFailed)?;
     let started = match state
         .rc_hub
         .start_exec(agent_id, tenant_id, request_id.to_string(), msg)

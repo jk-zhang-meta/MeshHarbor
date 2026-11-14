@@ -193,6 +193,12 @@ pub enum DoorbellRequest {
     /// FR-105 — claim this SSH grant from the server and hold it for the
     /// service's own SSH endpoint (`ssh_service`).
     SshGrant { grant_id: String },
+    /// No arbitrary close-all authority: the service verifies this exact host
+    /// request with its own anchored server credential before touching sessions.
+    CloseAccess {
+        invite_id: String,
+        expected_revision: u32,
+    },
 }
 
 /// The service's answer.
@@ -225,9 +231,142 @@ pub enum DoorbellReply {
     Cancelled {
         found: bool,
     },
+    AccessClosed {
+        invite_id: String,
+        features_revision: u32,
+    },
     Refused {
         error: String,
     },
+}
+
+/// A service close proof is usable only for this independently anchored host.
+/// Target invitation may be a proof-linked secondary org; the server, not a
+/// machine-id comparison on the user-writable config, establishes that link.
+fn validate_close_proof(
+    anchor: &Anchor,
+    invite_id: &str,
+    revision: u32,
+    body: &serde_json::Value,
+) -> Result<(), String> {
+    if body["invite_id"].as_str() != Some(invite_id)
+        || body["features_revision"].as_u64() != Some(u64::from(revision))
+        || body["revocation_pending"].as_bool() != Some(true)
+        || body["host_agent_id"].as_str() != Some(anchor.agent_id.as_str())
+        || body["host_tenant_id"].as_str() != Some(anchor.tenant_id.as_str())
+    {
+        return Err("the server did not authorize this exact host/revision close request".into());
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct CloseEpoch {
+    epoch: u64,
+    frozen: bool,
+    completed: bool,
+}
+impl CloseEpoch {
+    fn accepts(&self, epoch: u64) -> bool {
+        self.epoch == epoch && (!self.frozen || self.completed)
+    }
+}
+
+static CLOSE_EPOCH: std::sync::Mutex<CloseEpoch> = std::sync::Mutex::new(CloseEpoch {
+    epoch: 0,
+    frozen: false,
+    completed: false,
+});
+
+/// Called before a SYSTEM claim leaves the host, and again after its reply.
+/// A reply that predates a close can never resurrect an old command or grant.
+pub(crate) fn claim_close_epoch() -> Result<u64, String> {
+    let state = CLOSE_EPOCH
+        .lock()
+        .map_err(|_| "service close state unavailable")?;
+    if state.frozen && !state.completed {
+        return Err("service access is being withdrawn".into());
+    }
+    Ok(state.epoch)
+}
+
+pub(crate) fn accept_claim_epoch(epoch: u64) -> Result<(), String> {
+    let mut state = CLOSE_EPOCH
+        .lock()
+        .map_err(|_| "service close state unavailable")?;
+    if !state.accepts(epoch) {
+        return Err("this claim predates the device access withdrawal".into());
+    }
+    // Only a freshly server-authorized claim reaches this function; pending
+    // revocations are denied by the server, across proof-linked host orgs.
+    if state.frozen {
+        crate::ssh::resume_after_close()?;
+        crate::exec::shared().resume_after_close()?;
+        state.frozen = false;
+    }
+    Ok(())
+}
+
+// Only two exact SCM not-found answers prove there is no separate service
+// domain. Stopped, access denied and stale/missing advertisements never do.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn service_domain_absent(
+    new_error: Option<i32>,
+    legacy_error: Option<i32>,
+    advertised: bool,
+) -> bool {
+    new_error == Some(1060) && legacy_error == Some(1060) && !advertised
+}
+
+#[cfg(windows)]
+fn no_installed_service_domain() -> Result<bool, String> {
+    use windows_service::service::ServiceAccess;
+    use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|e| format!("cannot verify SYSTEM service installation: {e}"))?;
+    let missing = |name: &str| match manager.open_service(name, ServiceAccess::QUERY_STATUS) {
+        Err(windows_service::Error::Winapi(error)) => error.raw_os_error(),
+        _ => None,
+    };
+    Ok(service_domain_absent(
+        missing(crate::win_service::NEW_SERVICE_NAME),
+        missing(crate::win_service::LEGACY_SERVICE_NAME),
+        anchored_agent().is_some(),
+    ))
+}
+
+/// Called by the authenticated daemon LocalAPI, never with a server/token
+/// supplied by the interactive caller. Windows must positively hear from the
+/// separate service unless both exact SCM service names are authoritatively
+/// absent. Unavailable/old/unanchored installed services remain pending.
+pub async fn close_access(invite_id: &str, expected_revision: u32) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if no_installed_service_domain()? {
+            return Ok(());
+        }
+        let response = win::ask(
+            &DoorbellRequest::CloseAccess {
+                invite_id: invite_id.into(),
+                expected_revision,
+            },
+            std::time::Duration::from_secs(45),
+        )
+        .await?;
+        match response {
+            DoorbellReply::AccessClosed {
+                invite_id: returned,
+                features_revision,
+            } if returned == invite_id && features_revision == expected_revision => Ok(()),
+            DoorbellReply::Refused { error } => Err(error),
+            _ => Err("the SYSTEM service did not confirm exact-revision cleanup".into()),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (invite_id, expected_revision);
+        Ok(())
+    }
 }
 
 /// The `exp` of a JWT, read without verifying it: the service only uses it
@@ -789,6 +928,69 @@ mod svc {
                 DoorbellReply::Cancelled { found }
             }
             DoorbellRequest::SshGrant { grant_id } => ssh_grant(grant_id, limiter).await,
+            DoorbellRequest::CloseAccess {
+                invite_id,
+                expected_revision,
+            } => close_access(invite_id, expected_revision).await,
+        }
+    }
+
+    static CLOSE_ONE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    async fn close_access(invite_id: String, revision: u32) -> DoorbellReply {
+        if !valid_object_id(&invite_id) {
+            return refused("invalid invitation id");
+        }
+        let _one = CLOSE_ONE.lock().await;
+        let anchor = match load_anchor() {
+            Ok(Some(anchor)) => anchor,
+            _ => return refused("the service has no trusted anchor to verify this close request"),
+        };
+        let proof = async {
+            let response = client(Duration::from_secs(10))?
+                .get(format!(
+                    "{}/api/agent/service/temporary/{}/features/pending?expected_revision={}",
+                    anchor.server, invite_id, revision
+                ))
+                .bearer_auth(&anchor.service_token)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if response.status() != reqwest::StatusCode::OK {
+                return Err("no matching live pending close request for this service".to_string());
+            }
+            let body = response
+                .json::<serde_json::Value>()
+                .await
+                .map_err(|e| e.to_string())?;
+            super::validate_close_proof(&anchor, &invite_id, revision, &body)
+        }
+        .await;
+        if let Err(error) = proof {
+            return refused(error);
+        }
+        {
+            let mut state = super::CLOSE_EPOCH.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(epoch) = state.epoch.checked_add(1) else {
+                return refused("service close epoch exhausted");
+            };
+            state.epoch = epoch;
+            state.frozen = true;
+            state.completed = false;
+        }
+        let (ssh, exec) = tokio::join!(
+            crate::ssh::close_all_and_wait(),
+            crate::exec::shared().close_all_and_wait()
+        );
+        if let Err(error) = ssh.and(exec) {
+            return refused(format!("service cleanup unconfirmed: {error}"));
+        }
+        super::CLOSE_EPOCH
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .completed = true;
+        DoorbellReply::AccessClosed {
+            invite_id,
+            features_revision: revision,
         }
     }
 
@@ -903,6 +1105,10 @@ mod svc {
                  (`meshharbord anchor exec on`, elevated)",
             );
         }
+        let epoch = match super::claim_close_epoch() {
+            Ok(epoch) => epoch,
+            Err(error) => return refused(error),
+        };
         let claimed = match claim(&anchor, &request_id).await {
             Ok(c) => c,
             Err(e) => {
@@ -925,7 +1131,7 @@ mod svc {
             %request_id, caller = %claimed.caller, run_as = ran_as,
             "exec-service: running a command for the server"
         );
-        tokio::spawn(run_and_post(anchor, claimed, run_as, ran_as));
+        tokio::spawn(run_and_post(anchor, claimed, run_as, ran_as, epoch));
         DoorbellReply::Rang {
             claimed: true,
             error: None,
@@ -999,7 +1205,12 @@ mod svc {
         claimed: Claimed,
         run_as: crate::exec::RunAs,
         ran_as: &'static str,
+        epoch: u64,
     ) {
+        if let Err(error) = super::accept_claim_epoch(epoch) {
+            post_result(&anchor, &claimed.request_id, &failed(&error), None).await;
+            return;
+        }
         // Masked out of whatever the command prints, as the agent token is.
         crate::exec::register_secret(&anchor.service_token);
         let request_id = claimed.request_id.clone();
@@ -2054,6 +2265,54 @@ mod tests {
         assert!(origin_ok("ftp://meshharbor.itachi.fans").is_err());
         assert!(origin_ok("https://meshharbor.itachi.fans/?x=1").is_err());
         assert!(origin_ok("meshharbor.itachi.fans").is_err());
+    }
+
+    #[test]
+    fn service_domain_absence_requires_both_exact_not_found_and_no_advertisement() {
+        assert!(service_domain_absent(Some(1060), Some(1060), false));
+        assert!(!service_domain_absent(Some(1060), Some(1060), true));
+        // An opened service (including STOPPED) has no open error.
+        assert!(!service_domain_absent(None, Some(1060), false));
+        assert!(!service_domain_absent(Some(1060), None, false));
+        assert!(!service_domain_absent(Some(5), Some(1060), false));
+        assert!(!service_domain_absent(Some(1060), Some(5), false));
+        assert!(!service_domain_absent(None, None, false));
+    }
+
+    #[test]
+    fn service_close_proof_rejects_other_hosts_and_stale_or_finished_requests() {
+        let anchor = anchor();
+        let invite = "0123456789abcdef01234567";
+        let valid = serde_json::json!({"invite_id":invite,"features_revision":3,"revocation_pending":true,
+            "host_agent_id":anchor.agent_id,"host_tenant_id":anchor.tenant_id});
+        assert!(validate_close_proof(&anchor, invite, 3, &valid).is_ok());
+        for (key, value) in [
+            ("host_agent_id", serde_json::json!("another-device")),
+            ("host_tenant_id", serde_json::json!("another-tenant")),
+            ("features_revision", serde_json::json!(2)),
+            ("revocation_pending", serde_json::json!(false)),
+            ("invite_id", serde_json::json!("another-invitation")),
+        ] {
+            let mut forged = valid.clone();
+            forged[key] = value;
+            assert!(
+                validate_close_proof(&anchor, invite, 3, &forged).is_err(),
+                "{key}"
+            );
+        }
+        assert!(validate_close_proof(&anchor, invite, 3, &serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn service_epoch_rejects_late_claims_and_failed_cleanup() {
+        let mut state = CloseEpoch::default();
+        assert!(state.accepts(0));
+        state.epoch += 1;
+        state.frozen = true;
+        assert!(!state.accepts(0) && !state.accepts(1));
+        state.completed = true;
+        assert!(!state.accepts(0));
+        assert!(state.accepts(1)); // only a fresh, server-approved claim may resume
     }
 
     fn anchor() -> Anchor {

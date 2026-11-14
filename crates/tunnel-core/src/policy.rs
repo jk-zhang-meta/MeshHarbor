@@ -1394,6 +1394,7 @@ mod tests {
             destinations: cidrs
                 .iter()
                 .map(|c| OverlayRule {
+                    expires_at_ms: None,
                     cidr: (*c).to_string(),
                     port_range: PortRange {
                         low: 1,

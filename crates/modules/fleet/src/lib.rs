@@ -516,6 +516,14 @@ impl Module for FleetState {
             // Temporary devices — the device's own deadline and inviter.
             .route("/self/temporary", get(device_invite::self_view))
             .route(
+                "/self/temporary/{invite_id}/features",
+                post(device_invite::self_features),
+            )
+            .route(
+                "/self/temporary/{invite_id}/features/ack",
+                post(device_invite::self_features_ack),
+            )
+            .route(
                 "/self/temporary/{invite_id}/leave",
                 post(device_invite::self_leave),
             )
@@ -534,6 +542,10 @@ impl Module for FleetState {
             // agent token the signed-in user can read.
             .route("/anchor", post(exec_service::anchor))
             .route("/service/renew", post(exec_service::renew))
+            .route(
+                "/service/temporary/{invite_id}/features/pending",
+                get(device_invite::service_features_pending),
+            )
             .route("/service/rpc/{request_id}/claim", post(exec_service::claim))
             .route(
                 "/service/rpc/{request_id}/result",

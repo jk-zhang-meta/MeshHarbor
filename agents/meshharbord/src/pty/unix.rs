@@ -325,7 +325,32 @@ impl PtyProcess {
         }
     }
 
-    /// Shared-only teardown; set before handing this owner to the output task.
+    /// Hard terminate this still-owned group and confirm the leader is reaped.
+    pub(crate) async fn terminate_and_wait(&mut self) -> Result<u32, String> {
+        self.hard_kill = true;
+        if self.pgid > 0
+            && self.child.id().is_some()
+            && unsafe { libc::killpg(self.pgid, libc::SIGKILL) } != 0
+        {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(format!("PTY kill: {error}"));
+            }
+        }
+        let status = self
+            .child
+            .wait()
+            .await
+            .map_err(|e| format!("PTY reap: {e}"))?;
+        self.pgid = 0;
+        use std::os::unix::process::ExitStatusExt;
+        Ok(status
+            .code()
+            .map(|s| s.clamp(0, 255) as u32)
+            .unwrap_or_else(|| status.signal().map(|s| 128 + s as u32).unwrap_or(1)))
+    }
+
+    /// Hard teardown fallback; set before handing this owner to the output task.
     /// The unreaped direct child pins its PID/PGID, so drop can synchronously
     /// SIGKILL the still-owned group without a delayed recycled-PGID race.
     pub(crate) fn hard_kill_on_drop(&mut self) {

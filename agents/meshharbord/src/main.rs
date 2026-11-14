@@ -186,6 +186,22 @@ enum Command {
         /// machine's hostname.
         #[arg(long)]
         name: Option<String>,
+        /// Capabilities to expose: all, none, or a comma-separated selection.
+        /// Required with --yes. SSH/exec can run as root/SYSTEM; network gives
+        /// access to other listening services. OS permissions still apply.
+        #[arg(long)]
+        features: Option<String>,
+    },
+    /// Change the capabilities exposed by one invitation THIS device holds.
+    /// Does not alter other invitations or this machine's own account.
+    InviteFeatures {
+        #[arg(long)]
+        invite: String,
+        #[arg(long)]
+        features: String,
+        /// Reject a stale UI edit; omitted in an explicit CLI replacement.
+        #[arg(long)]
+        expected_revision: Option<u32>,
     },
     /// End an invitation's access now. With one invitation on this machine it
     /// is that one; with several, name it (`--invite <id>`, listed by
@@ -1252,7 +1268,10 @@ fn self_heal_machine_global_config(_loaded_path: &std::path::Path, _cfg: &config
 /// Every other argv passes through unchanged.
 fn daemon_argv(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
     let mut v: Vec<std::ffi::OsString> = args.into_iter().collect();
-    if v.len() >= 3 && v[1] == "cli" && (v[2] == "login" || v[2] == "join" || v[2] == "leave") {
+    if v.len() >= 3
+        && v[1] == "cli"
+        && (v[2] == "login" || v[2] == "join" || v[2] == "leave" || v[2] == "invite-features")
+    {
         v.remove(1);
     }
     v
@@ -1457,6 +1476,7 @@ async fn join_cmd(
     code: &str,
     name: Option<&str>,
     yes: bool,
+    features: Option<&str>,
 ) -> Result<()> {
     use meshharbor_node_core::device_invite;
     let existing = if config_path.exists() {
@@ -1473,6 +1493,38 @@ async fn join_cmd(
         (_, s) => s.to_string(),
     };
     let pv = device_invite::preview(&server, code).await?;
+    if !pv.features_supported {
+        bail!(
+            "this server cannot enforce selected invitation capabilities; update it before accepting"
+        );
+    }
+    let selected = match features {
+        Some(raw) => device_invite::parse_features(raw)?,
+        None if yes => bail!(
+            "--yes requires an explicit --features selection (all, none, or comma-separated names)"
+        ),
+        None => {
+            use std::io::{BufRead, IsTerminal, Write};
+            if !std::io::stdin().is_terminal() {
+                bail!("choose capabilities with --features before accepting an invitation");
+            }
+            println!(
+                "Choose: desktop_view,desktop_control,clipboard,files,ssh,exec,rdp,network, or all/none."
+            );
+            println!(
+                "SSH/exec may run as root/SYSTEM. Network can reach other listening services. OS permission and local OFF choices still apply."
+            );
+            print!("Capabilities [all]: ");
+            let _ = std::io::stdout().flush();
+            let mut answer = String::new();
+            std::io::stdin().lock().read_line(&mut answer)?;
+            device_invite::parse_features(if answer.trim().is_empty() {
+                "all"
+            } else {
+                answer.trim()
+            })?
+        }
+    };
     let from = match (pv.inviter.is_empty(), pv.org.is_empty()) {
         (false, false) => format!("{} ({})", pv.inviter, pv.org),
         (false, true) => pv.inviter.clone(),
@@ -1489,11 +1541,19 @@ async fn join_cmd(
                 .to_string())
             .unwrap_or_default()
     );
-    println!("They will be able to reach and control this device; it cannot reach theirs.");
+    println!(
+        "Expose only: {}. This invitation cannot originate access to their devices.",
+        device_invite::feature_names(&selected)
+    );
+    println!(
+        "SSH/exec may run as root/SYSTEM. Network includes native SSH/RDP and other listening services, even when their dedicated feature is off. Local OFF, administrator policy and OS permissions still apply."
+    );
     if !yes {
         use std::io::{BufRead, IsTerminal, Write};
         if !std::io::stdin().is_terminal() {
-            bail!("not accepted: run `mh join {code} --yes` to accept without the question");
+            bail!(
+                "not accepted: run `mh join {code} --yes --features <selection>` to accept without the question"
+            );
         }
         print!("Accept? [y/N] ");
         let _ = std::io::stdout().flush();
@@ -1519,6 +1579,7 @@ async fn join_cmd(
         code,
         &name,
         here.as_ref().map(|(.., token, _)| token.as_str()),
+        selected,
     )
     .await?;
     let (agent_id, primary) = if redeemed.attached {
@@ -1552,6 +1613,8 @@ async fn join_cmd(
         .await?;
         let mut cfg = config::load(config_path).context("reading the new enrollment")?;
         if existing.is_none() {
+            device_invite::apply_fresh_features(&mut cfg, &selected);
+            config::save(config_path, &cfg).context("saving the selected local services")?;
             (cfg.agent_id.clone(), true)
         } else {
             // An additional enrollment: on its mesh through the userspace
@@ -1584,6 +1647,9 @@ async fn join_cmd(
         inviter: redeemed.inviter.clone(),
         org: redeemed.org.clone(),
         access_until_ms: redeemed.access_until_ms,
+        features: redeemed.features,
+        features_revision: redeemed.features_revision,
+        revocation_pending: false,
     });
     info.access_until_ms = info.access_until_ms.max(redeemed.access_until_ms);
     if let Err(e) = device_invite::write_marker_for(config_path, &agent_id, primary, Some(&info)) {
@@ -1625,6 +1691,149 @@ async fn join_cmd(
         restart_service(config_path).await;
     }
     Ok(())
+}
+
+/// Use the current server revision, never cached markers, for a host's edit.
+async fn invite_features_cmd(
+    config_path: &std::path::PathBuf,
+    invite: &str,
+    raw: &str,
+    expected_revision: Option<u32>,
+) -> Result<()> {
+    use meshharbor_node_core::device_invite;
+    let selected = device_invite::parse_features(raw)?;
+    println!(
+        "This briefly interrupts existing MeshHarbor-managed connections and foreground commands across ALL organizations on this device; authorization settings for other grants are unchanged. It does not undo completed commands or deliberately detached tasks. Run this from the local console/tray, not a managed SSH session that will itself be closed."
+    );
+    let cfg = config::load(config_path).context("this machine is not signed in")?;
+    for (_, server, _, aid, token, primary) in enrollments(&cfg) {
+        let Some(info) = device_invite::self_status(&server, &token).await? else {
+            continue;
+        };
+        let Some(grant) = info.grants.iter().find(|g| g.invite_id == invite) else {
+            continue;
+        };
+        if expected_revision.is_some_and(|revision| revision != grant.features_revision) {
+            device_invite::write_marker_for(config_path, &aid, primary, Some(&info))?;
+            bail!(
+                "invitation features changed; refresh the device's invitation list before saving"
+            );
+        }
+        let (revision, revocation_pending) = if let Some(revision) =
+            grant.matching_pending_revision(&selected)
+        {
+            (revision, true)
+        } else {
+            device_invite::set_features(&server, &token, invite, selected, grant.features_revision)
+                .await?
+        };
+        if revocation_pending {
+            use tunnel_core::localapi::{Request, Response};
+            let mut client = tunnel_core::localapi::connect().await.context(
+                "policy saved, but native cleanup could not be reached; revocation remains pending",
+            )?;
+            match client
+                .request(&Request::CloseAccess {
+                    invite_id: invite.into(),
+                    expected_revision: revision,
+                })
+                .await?
+            {
+                Response::AccessClosed {
+                    invite_id,
+                    features_revision,
+                } if invite_id == invite && features_revision == revision => {}
+                Response::Error { message } => {
+                    bail!("policy saved; cleanup remains pending: {message}")
+                }
+                _ => bail!("policy saved; daemon did not confirm exact-revision cleanup"),
+            }
+        }
+        // Confirm the old daemon actually exited and overlay/netstack routes
+        // were rebuilt before acknowledging the exact pending server revision.
+        meshharbor_cli::localclient::restart(
+            "this device changed an invitation's exposed capabilities",
+            false,
+            std::env::current_exe().ok(),
+        ).await.context("capabilities were saved, but old sessions could not be confirmed closed; restart this device's MeshHarbor service")?;
+        if revocation_pending {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
+            loop {
+                use tunnel_core::localapi::{Request, Response};
+                let mut client = tunnel_core::localapi::connect()
+                    .await
+                    .context("cleanup completed, but restarted daemon readiness is unavailable")?;
+                match client
+                    .request(&Request::AccessReady {
+                        agent_id: aid.clone(),
+                    })
+                    .await?
+                {
+                    Response::AccessReady {
+                        agent_id,
+                        ready: true,
+                        ..
+                    } if agent_id == aid => break,
+                    Response::AccessReady { .. } if tokio::time::Instant::now() < deadline => {
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await
+                    }
+                    Response::Error { message } => bail!("cleanup remains pending: {message}"),
+                    _ => bail!(
+                        "cleanup remains pending: target organization has not applied its fresh overlay map"
+                    ),
+                }
+            }
+        }
+        let enrollment_removed = if revocation_pending {
+            device_invite::acknowledge_features(&server, &token, invite, revision).await
+                .context("native cleanup and restart completed, but server ACK is unconfirmed; revocation remains pending")?
+        } else {
+            false
+        };
+        if enrollment_removed {
+            // self_status selected this exact target enrollment, not a linked
+            // primary host. Preserve every other organization and identity.
+            let ended = device_invite::end_enrollment_locally(config_path, &aid)?;
+            device_invite::write_marker_for(config_path, &aid, primary, None)?;
+            println!(
+                "Invitation {invite}: cleanup confirmed (revision {revision}); expired target enrollment removed locally ({ended:?}). Other accounts and invitation permissions are unchanged."
+            );
+            return Ok(());
+        }
+        let updated = device_invite::self_status(&server, &token)
+            .await
+            .context("capabilities saved and connections restarted, but status refresh failed")?;
+        device_invite::write_marker_for(config_path, &aid, primary, updated.as_ref())?;
+        if let Some(current) = updated
+            .as_ref()
+            .and_then(|info| info.grants.iter().find(|grant| grant.invite_id == invite))
+        {
+            if current.features_revision != revision || current.revocation_pending {
+                bail!(
+                    "cleanup of revision {revision} was acknowledged, but the invitation changed again; refresh its current pending state"
+                );
+            }
+        } else {
+            println!(
+                "Invitation {invite}: cleanup of revision {revision} confirmed; this invitation is no longer active."
+            );
+            return Ok(());
+        }
+        println!(
+            "Invitation {invite}: {} (revision {revision}). Other invitations and local service switches are unchanged.",
+            device_invite::feature_names(&selected)
+        );
+        if (selected.ssh && !cfg.ssh_enabled)
+            || (selected.exec && !cfg.exec_enabled)
+            || (selected.rdp && !cfg.rdp_over_mesh)
+        {
+            println!(
+                "Some selected services remain disabled locally. Enable them in this device's settings if intended; the invitation cannot override a local OFF."
+            );
+        }
+        return Ok(());
+    }
+    bail!("this machine holds no invitation {invite:?}")
 }
 
 /// `meshharbord leave` / `mh leave`: end invitations' access from the machine.
@@ -1751,6 +1960,24 @@ async fn leave_cmd(
     Ok(())
 }
 
+/// Invitation mutation and cleanup must address the same running daemon, not
+/// a stale default config beside a named installation.
+fn active_invitation_config(
+    explicit: Option<&std::path::Path>,
+    active: Option<&str>,
+) -> Result<PathBuf> {
+    let active = active.filter(|path| !path.is_empty())
+        .context("the running daemon did not identify its config; update it before changing invitation features")?;
+    let active = std::fs::canonicalize(active).context("resolving the active daemon config")?;
+    if let Some(explicit) = explicit {
+        let explicit = std::fs::canonicalize(explicit).context("resolving --config")?;
+        if explicit != active {
+            bail!("--config does not match the running daemon; no policy was changed");
+        }
+    }
+    Ok(active)
+}
+
 fn embedded_cli_args() -> Option<Vec<std::ffi::OsString>> {
     let mut it = std::env::args_os();
     let _exe = it.next()?;
@@ -1762,7 +1989,7 @@ fn embedded_cli_args() -> Option<Vec<std::ffi::OsString>> {
     // command (`daemon_argv` drops the `cli`), not the tunnel CLI's.
     if it
         .peek()
-        .is_some_and(|a| a == "login" || a == "join" || a == "leave")
+        .is_some_and(|a| a == "login" || a == "join" || a == "leave" || a == "invite-features")
     {
         return None;
     }
@@ -2167,7 +2394,17 @@ async fn daemon_main() -> Result<()> {
         );
     }
 
-    let config_path = resolve_config_path(cli.config.clone())?;
+    let config_path = if matches!(cli.command.as_ref(), Some(Command::InviteFeatures { .. })) {
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut client = tunnel_core::localapi::connect().await?;
+            client.status().await
+        })
+        .await
+        .context("timed out locating the active daemon config; no policy was changed")??;
+        active_invitation_config(cli.config.as_deref(), status.config_path.as_deref())?
+    } else {
+        resolve_config_path(cli.config.clone())?
+    };
     updater::set_update_config_path(config_path.clone())?;
 
     let cmd = cli.command.unwrap_or(Command::Run {
@@ -2252,7 +2489,23 @@ async fn daemon_main() -> Result<()> {
             yes,
             server,
             name,
-        } => join_cmd(&config_path, &server, &code, name.as_deref(), yes).await,
+            features,
+        } => {
+            join_cmd(
+                &config_path,
+                &server,
+                &code,
+                name.as_deref(),
+                yes,
+                features.as_deref(),
+            )
+            .await
+        }
+        Command::InviteFeatures {
+            invite,
+            features,
+            expected_revision,
+        } => invite_features_cmd(&config_path, &invite, &features, expected_revision).await,
         Command::Leave { invite, all } => leave_cmd(&config_path, invite.as_deref(), all).await,
         Command::ReEnroll { token, org } => {
             re_enroll_cmd(&config_path, &token, org.as_deref()).await
@@ -3224,13 +3477,18 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
         }
     };
 
-    let fresh = enrollment::enroll(enrollment::EnrollInputs {
-        server_url: server,
-        enrollment_token,
-        machine_id: &machine_id,
-        machine_name,
-        install: Some(install),
-    })
+    let fresh = enrollment::enroll_with_existing_identity(
+        enrollment::EnrollInputs {
+            server_url: server,
+            enrollment_token,
+            machine_id: &machine_id,
+            machine_name,
+            install: Some(install),
+        },
+        existing
+            .as_ref()
+            .and_then(|cfg| enrollment::existing_identity_for(cfg, server, enrollment_token)),
+    )
     .await
     .context("enrollment failed")?;
 
@@ -3509,15 +3767,18 @@ async fn re_enroll_cmd(
         "re-enrolling against existing config (machine_id preserved)"
     );
 
-    let new_cfg = enrollment::enroll(enrollment::EnrollInputs {
-        server_url: &server_url,
-        enrollment_token,
-        machine_id: &machine_id,
-        machine_name: &existing.machine_name,
-        // FR-102 P3 — a token refresh knows nothing about how the binary
-        // got here; sending nothing leaves the row's recorded install alone.
-        install: None,
-    })
+    let new_cfg = enrollment::enroll_with_existing_identity(
+        enrollment::EnrollInputs {
+            server_url: &server_url,
+            enrollment_token,
+            machine_id: &machine_id,
+            machine_name: &existing.machine_name,
+            // FR-102 P3 — a token refresh knows nothing about how the binary
+            // got here; sending nothing leaves the row's recorded install alone.
+            install: None,
+        },
+        enrollment::existing_identity_for(&existing, &server_url, enrollment_token),
+    )
     .await
     .context("re-enrollment failed")?;
 
@@ -7502,6 +7763,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn invitation_config_uses_live_named_path_and_rejects_stale_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("siat-63.toml");
+        let stale = dir.path().join("config.toml");
+        std::fs::write(&live, "live").unwrap();
+        std::fs::write(&stale, "stale").unwrap();
+        // Windows canonicalization returns the extended-length \\?\ prefix;
+        // the production comparison canonicalizes BOTH operands.
+        let canonical_live = std::fs::canonicalize(&live).unwrap();
+        assert_eq!(
+            active_invitation_config(None, live.to_str()).unwrap(),
+            canonical_live
+        );
+        assert_eq!(
+            active_invitation_config(Some(&live), live.to_str()).unwrap(),
+            canonical_live
+        );
+        assert!(active_invitation_config(Some(&stale), live.to_str()).is_err());
+        assert!(active_invitation_config(None, None).is_err());
+        assert_eq!(std::fs::read_to_string(stale).unwrap(), "stale");
+    }
+
+    #[test]
     fn cli_raw_dispatch_help_and_version_are_not_outer_informational_exits() {
         for args in [
             vec!["meshharbord", "cli", "--help"],
@@ -7588,6 +7872,39 @@ mod tests {
     /// `mh login` execs `meshharbord cli login …`: that is the DAEMON's own
     /// `login` (it enrolls this install), never the embedded tunnel CLI. Every
     /// other `cli …` argv is untouched.
+    #[test]
+    fn host_feature_selection_is_a_daemon_command() {
+        use std::ffi::OsString;
+        let args = [
+            "meshharbord",
+            "cli",
+            "invite-features",
+            "--invite",
+            "abcdef",
+            "--features",
+            "ssh",
+        ]
+        .into_iter()
+        .map(OsString::from);
+        let cli = Cli::try_parse_from(daemon_argv(args)).unwrap();
+        assert!(
+            matches!(cli.command, Some(Command::InviteFeatures { invite, features, .. })
+            if invite == "abcdef" && features == "ssh")
+        );
+        let cli = Cli::try_parse_from([
+            "meshharbord",
+            "join",
+            "12345678",
+            "--yes",
+            "--features",
+            "none",
+        ])
+        .unwrap();
+        assert!(
+            matches!(cli.command, Some(Command::Join { features: Some(f), .. }) if f == "none")
+        );
+    }
+
     #[test]
     fn mh_login_is_the_daemons_own_login_command() {
         use std::ffi::OsString;

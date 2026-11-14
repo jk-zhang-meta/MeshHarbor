@@ -139,6 +139,13 @@ pub(crate) async fn scope_for_request(
             "A device share cannot request break-glass, audio, overlay relay, or transit".into(),
         );
     }
+    if meshharbor_mod_fleet::device_invite::features_for_caller(&state.fleet, *agent_id, user)
+        .await
+        .map_err(|_| "Could not verify host capability selection")?
+        .is_some_and(|f| !f.permits_session(*permissions))
+    {
+        return Err("Device holder did not allow these shared capabilities".into());
+    }
     let op = requested_operation(*permissions)?;
     let access = authorize_grant(&state.core, user, *grant_id, op)
         .await

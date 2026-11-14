@@ -14,6 +14,94 @@
   'use strict';
   const { $, invoke, show, on, navigate, refreshStatus } = window.MeshHarbor;
 
+  const featureLabels = [
+    ['desktop_view', 'View screen'], ['desktop_control', 'Control keyboard and mouse'],
+    ['clipboard', 'Clipboard'], ['files', 'Read and write files'],
+    ['ssh', 'SSH shell (may run as root / SYSTEM)'], ['exec', 'Run commands (may run as root / SYSTEM)'],
+    ['rdp', 'Remote Desktop (RDP)'], ['network', 'Any network service, including system SSH / RDP'],
+  ];
+
+  function featurePicker(parent, initial) {
+    const group = document.createElement('fieldset');
+    const legend = document.createElement('legend');
+    legend.textContent = 'Features this invitation may use';
+    group.appendChild(legend);
+    const inputs = {};
+    for (const [name, label] of featureLabels) {
+      const row = document.createElement('label');
+      row.style.display = 'block';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = initial === null ? true : initial[name] === true;
+      inputs[name] = input;
+      row.append(input, document.createTextNode(' ' + label));
+      group.appendChild(row);
+    }
+    const sync = () => {
+      for (const name of ['desktop_control', 'clipboard']) {
+        inputs[name].disabled = !inputs.desktop_view.checked;
+        if (!inputs.desktop_view.checked) inputs[name].checked = false;
+      }
+    };
+    inputs.desktop_view.addEventListener('change', sync);
+    sync();
+    parent.appendChild(group);
+    const warning = document.createElement('p');
+    warning.className = 'muted small';
+    warning.textContent = 'SSH and commands can give full system privileges. Network access may reach other services even if their dedicated feature is off. This selects permission, not installed build support: missing capture/input/SSH components require a full package. Local OFF switches, administrator service policies and OS permissions still apply. You may narrow or revoke this invitation later.';
+    parent.appendChild(warning);
+    return () => featureLabels.filter(([name]) => inputs[name].checked).map(([name]) => name).join(',') || 'none';
+  }
+
+  async function refreshInvitations() {
+    const target = $('held-invitations');
+    if (!target) return;
+    target.replaceChildren();
+    try {
+      const held = await invoke('cmd_invitations');
+      if (!held || !held.grants.length) {
+        target.textContent = 'No invitation is recorded on this device.';
+        return;
+      }
+      for (const [, grant] of held.grants) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        const title = document.createElement('p');
+        title.textContent = (grant.inviter || grant.org || 'Invitation') + ' · until ' + new Date(grant.access_until_ms).toLocaleString();
+        card.appendChild(title);
+        if (grant.revocation_pending) {
+          const pending = document.createElement('p');
+          pending.textContent = 'New authorizations are updated. Revocation of existing SSH / command sessions is still unconfirmed; restarting the device agent does not confirm its separate system service has closed them.';
+          card.appendChild(pending);
+        }
+        if (!grant.features) {
+          const note = document.createElement('p');
+          note.textContent = 'Legacy invitation: its prior feature scope was not recorded. Choose an explicit scope before saving; no features are preselected.';
+          card.appendChild(note);
+        }
+        const selection = featurePicker(card, grant.features || {});
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.textContent = grant.revocation_pending ? 'Save / retry confirmed cleanup' : 'Save features and restart connections';
+        save.disabled = !grant.invite_id;
+        const result = document.createElement('p');
+        result.className = 'small';
+        save.addEventListener('click', async () => {
+          save.disabled = true;
+          result.textContent = 'Saving and interrupting managed connections / foreground commands across ALL organizations on this device. Other authorization settings stay unchanged; completed command effects and deliberately detached tasks are not undone. Waiting for confirmed cleanup.';
+          try {
+            result.textContent = await invoke('cmd_invite_features', { inviteId: grant.invite_id, features: selection(), expectedRevision: grant.features_revision || 0 });
+            await refreshInvitations();
+          }
+          catch (e) { result.textContent = 'Not fully completed: ' + e; }
+          finally { save.disabled = false; }
+        });
+        card.append(save, result);
+        target.appendChild(card);
+      }
+    } catch (e) { target.textContent = 'Could not read invitations: ' + e; }
+  }
+
   async function prefillDeviceName() {
     try {
       const name = await invoke('cmd_default_device_name');
@@ -119,6 +207,8 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     void prefillDeviceName();
+    void refreshInvitations();
+    $('refresh-invitations').addEventListener('click', refreshInvitations);
 
     on('status', (s) => {
       enrolledMode = !!s.enrolled;
@@ -201,6 +291,7 @@
       let p;
       try {
         p = await invoke('cmd_join_preview', { code });
+        if (!p.features_supported) throw new Error('Update the server first: it cannot enforce selected invitation features.');
       } catch (e) {
         showError('Could not check the code: ' + e);
         joinBtn.disabled = false;
@@ -213,8 +304,8 @@
         ' (until ' + new Date(p.access_until_ms).toLocaleString() + ').';
       const how = document.createElement('p');
       how.className = 'muted small';
-      how.textContent = 'They will be able to reach and control this device; it cannot reach theirs. ' +
-        'You can leave at any time from the tray menu.';
+      how.textContent = 'Choose what this invitation may access. It cannot initiate access to their devices. ' +
+        'You can change the selection here or leave at any time from the tray menu.';
       const row = document.createElement('div');
       row.className = 'actions';
       const accept = document.createElement('button');
@@ -225,7 +316,9 @@
       cancel.type = 'button';
       cancel.textContent = 'Cancel';
       row.append(accept, cancel);
-      box.append(what, how, row);
+      box.append(what, how);
+      const selection = featurePicker(box, null);
+      box.appendChild(row);
       box.hidden = false;
       const reset = () => {
         box.hidden = true;
@@ -238,11 +331,12 @@
         cancel.disabled = true;
         accept.textContent = 'Joining…';
         try {
-          const s = await invoke('cmd_join', { code, deviceName });
+          const s = await invoke('cmd_join', { code, deviceName, features: selection() });
           reset();
           $('join-code').value = '';
           showEnrolled(s);
           void refreshStatus();
+          void refreshInvitations();
         } catch (e) {
           reset();
           showError('Could not join: ' + e);

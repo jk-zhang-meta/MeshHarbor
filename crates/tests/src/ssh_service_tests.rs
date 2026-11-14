@@ -194,6 +194,8 @@ async fn device(
         .unwrap();
     OverlayNodeDao::new(&app.db)
         .create(NewOverlayNode {
+            supports_invite_deadlines: true,
+            personal_access_owner_id: None,
             temporary: None,
             tenant_id: tid,
             node_ref: NodeRef::Agent { agent_id: aid },

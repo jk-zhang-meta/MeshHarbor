@@ -538,6 +538,8 @@ mod tests {
         let tid = ObjectId::new();
         let net_id = ObjectId::new();
         let mk_node = |name: &str, ip: &str, key: DerpPubKey| OverlayNode {
+            supports_invite_deadlines: true,
+            personal_access_owner_id: None,
             temporary: None,
             id: Some(ObjectId::new()),
             tenant_id: tid,
@@ -612,6 +614,7 @@ mod tests {
                 node_id: nb.id.unwrap(),
             }],
             destinations: vec![OverlayRule {
+                expires_at_ms: None,
                 cidr: "100.64.0.11/32".into(),
                 port_range: PortRange { low: 22, high: 22 },
                 proto: ProtocolKind::Tcp,

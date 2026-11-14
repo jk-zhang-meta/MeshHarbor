@@ -3082,6 +3082,7 @@ impl OverlayRuntime {
     /// next reconnect without a runtime rebuild.
     fn make_join(&self, endpoints: Vec<String>) -> ClientMsg {
         ClientMsg::OverlayJoin {
+            supports_invite_deadlines: true,
             network_hint: None,
             wg_public_key: self.keypair.public_base64(),
             key_epoch: self.key_epoch,
@@ -7882,6 +7883,7 @@ mod tests {
 
             let mut np_a = test_netmap_peer(ObjectId::new(), ip_a, &kp_a);
             np_a.ingress_rules = Some(vec![OverlayRule {
+                expires_at_ms: None,
                 cidr: format!("{ip_b}/32"),
                 port_range: PortRange { low: 22, high: 22 },
                 proto: ProtocolKind::Tcp,
@@ -12543,6 +12545,20 @@ mod tests {
             ),
             "the status names the device's cause"
         );
+    }
+
+    #[test]
+    fn invitation_deadline_capability_is_advertised_on_join() {
+        let (out, _) = mpsc::channel(1);
+        let tf: TunFactory = Box::new(|_, _, _| panic!("join test must not create TUN"));
+        let rt = OverlayRuntime::new_relay(WgKeypair::generate(), out, tf, 1280);
+        assert!(matches!(
+            rt.make_join(vec![]),
+            ClientMsg::OverlayJoin {
+                supports_invite_deadlines: true,
+                ..
+            }
+        ));
     }
 
     #[test]

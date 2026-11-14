@@ -3,6 +3,7 @@
 use bson::{DateTime, oid::ObjectId};
 use serde::{Deserialize, Serialize};
 
+pub use crate::device_access::{DeviceAccessFeature, DeviceAccessFeatures, DeviceFeatureGrant};
 use crate::permissions::Permissions;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -3710,6 +3711,9 @@ pub enum OverlayTarget {
 /// ICMP errors and echo requests to the node itself always pass.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct OverlayRule {
+    /// Absolute invitation deadline, enforced on every packet by capable recipients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
     /// Destination prefix, e.g. `"10.84.6.0/24"` or a peer's `"100.64.0.7/32"`.
     pub cidr: String,
     #[serde(default = "OverlayRule::all_ports")]
@@ -6523,6 +6527,12 @@ pub struct RetiredWgKey {
 /// ships the node unmarked.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct TemporaryMark {
+    #[serde(default)]
+    pub feature_grants: Vec<DeviceFeatureGrant>,
+    #[serde(default)]
+    pub ssh_port: Option<u16>,
+    #[serde(default)]
+    pub rdp_port: Option<u16>,
     pub invite_id: ObjectId,
     pub inviter_user_id: ObjectId,
     #[serde(default)]
@@ -6546,6 +6556,11 @@ impl TemporaryMark {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct OverlayNode {
+    #[serde(default)]
+    pub supports_invite_deadlines: bool,
+    /// Trusted personal-login provenance; not a temporary-device marker.
+    #[serde(default)]
+    pub personal_access_owner_id: Option<ObjectId>,
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
     pub id: Option<ObjectId>,
     pub tenant_id: ObjectId,

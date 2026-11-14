@@ -15,7 +15,13 @@ fn challenge(v: &str) -> String {
 }
 
 async fn enabled_app() -> TestApp {
-    TestApp::spawn_with_settings(|s| s.auth.native_device_login_enabled = true).await
+    TestApp::spawn_with_settings(|s| {
+        s.auth.native_device_login_enabled = true;
+        if let Ok(url) = std::env::var("MESHHARBOR__REDIS__URL") {
+            s.redis.url = url;
+        }
+    })
+    .await
 }
 
 async fn start(app: &TestApp, name: &str) -> reqwest::Response {
@@ -105,6 +111,7 @@ async fn device_login_enrolls_into_the_approvers_org_exactly_once() {
     assert_eq!(s, 200, "preview: {p}");
     assert_eq!(p["device"]["name"], "laptop-1");
     assert_eq!(p["device"]["os"], "linux");
+    assert_eq!(p["personal_device"], true);
 
     // A member without MANAGE_AGENTS cannot approve a device into the org.
     let (s, _) = browser_post(
@@ -160,6 +167,128 @@ async fn device_login_enrolls_into_the_approvers_org_exactly_once() {
         "{ej}"
     );
     assert!(ej["agent_token"].as_str().is_some_and(|t| !t.is_empty()));
+    assert_eq!(ej["personal_device"], true);
+    let id = bson::oid::ObjectId::parse_str(ej["agent_id"].as_str().unwrap()).unwrap();
+    let raw = app
+        .db
+        .collection::<bson::Document>("agents")
+        .find_one(bson::doc! { "_id": id })
+        .await
+        .unwrap()
+        .unwrap();
+    let owner = raw.get_object_id("owner_user_id").unwrap();
+    assert_eq!(
+        raw.get_object_id("personal_access_owner_id").unwrap(),
+        owner
+    );
+    use meshharbor_remote_control::models::DeviceAccessFeatures as F;
+    let fleet = app.state.fleet();
+    assert_eq!(
+        meshharbor_mod_fleet::device_invite::features_for_caller(fleet, id, owner)
+            .await
+            .unwrap(),
+        Some(F::all())
+    );
+    let other = bson::oid::ObjectId::parse_str(&seeded.member.id).unwrap();
+    assert_eq!(
+        meshharbor_mod_fleet::device_invite::features_for_caller(fleet, id, other)
+            .await
+            .unwrap(),
+        Some(F::none())
+    );
+    let external = app.seed_tenant("dlogin-outsider").await;
+    let external_admin = bson::oid::ObjectId::parse_str(&external.admin.id).unwrap();
+    assert_eq!(
+        meshharbor_mod_fleet::device_invite::features_for_caller(fleet, id, external_admin)
+            .await
+            .unwrap(),
+        Some(F::none())
+    );
+    let target = fleet.agents.base.find_by_id(id).await.unwrap();
+    let exec_caller = meshharbor_mod_fleet::agent_exec::Caller {
+        user_id: owner,
+        display: "owner".into(),
+        origin_agent_id: Some(id),
+        source: "cli",
+    };
+    let ssh_caller = meshharbor_mod_network::routes::agent_ssh::Caller {
+        user_id: owner,
+        display: "owner".into(),
+        origin_agent_id: Some(id),
+        session: meshharbor_mod_network::routes::agent_ssh::CallerSession::None,
+    };
+    let gates = target.ssh_policy.clone().split().0;
+    app.db
+        .collection::<bson::Document>("tenants")
+        .update_one(
+            bson::doc! { "_id": target.tenant_id },
+            bson::doc! { "$set": {
+                "settings.remote_exec_enabled": true, "settings.remote_ssh_enabled": true
+            }},
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        meshharbor_mod_fleet::agent_exec::authorize(
+            fleet,
+            target.tenant_id,
+            &target,
+            &exec_caller,
+            "sh"
+        )
+        .await,
+        Ok(())
+    );
+    assert_eq!(
+        meshharbor_mod_network::routes::agent_ssh::authorize(
+            app.state.network(),
+            target.tenant_id,
+            &gates,
+            &ssh_caller
+        )
+        .await,
+        Ok(())
+    );
+    app.db
+        .collection::<bson::Document>("tenants")
+        .update_one(
+            bson::doc! { "_id": target.tenant_id },
+            bson::doc! { "$set": {
+                "settings.remote_exec_enabled": false, "settings.remote_ssh_enabled": false
+            }},
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        meshharbor_mod_fleet::agent_exec::authorize(
+            fleet,
+            target.tenant_id,
+            &target,
+            &exec_caller,
+            "sh"
+        )
+        .await,
+        Err(meshharbor_remote_control::models::ExecDenyReason::OrgDisabled)
+    );
+    assert_eq!(
+        meshharbor_mod_network::routes::agent_ssh::authorize(
+            app.state.network(),
+            target.tenant_id,
+            &gates,
+            &ssh_caller
+        )
+        .await,
+        Err(meshharbor_remote_control::models::SshDenyReason::OrgDisabled)
+    );
+    for key in ["ssh_policy", "exec_policy"] {
+        let policy = raw.get_document(key).unwrap();
+        assert_eq!(policy.get_str("mode").unwrap(), "on");
+        assert!(policy.get_bool("can_originate").unwrap());
+        assert_eq!(
+            policy.get_array("allowed_user_ids").unwrap(),
+            &vec![bson::Bson::ObjectId(owner)]
+        );
+    }
 }
 
 #[tokio::test]
@@ -239,4 +368,114 @@ async fn device_login_is_off_by_default_a_denial_is_final_and_starts_are_bounded
         .await
         .unwrap();
     assert_eq!(r.status().as_u16(), 400);
+}
+
+#[tokio::test]
+async fn trusted_login_binds_an_existing_own_device_without_reopening_service_vetoes() {
+    let app = enabled_app().await;
+    let seeded = app.seed_tenant("dlogin-existing").await;
+    let ordinary: Value = app
+        .auth_post(
+            &format!("/api/tenant/{}/agent/enroll-token", seeded.tenant_id),
+            &seeded.admin.access_token,
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let enroll_body = |token: &str| json!({ "enrollment_token": token, "machine_id":"existing-login-host", "machine_name":"existing-login-host", "os":"linux", "agent_version":"0.4.157" });
+    let original: Value = app
+        .client
+        .post(app.url("/api/agent/enroll"))
+        .json(&enroll_body(ordinary["enrollment_token"].as_str().unwrap()))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(original["personal_device"], false);
+    let started: Value = start(&app, "existing-login-host")
+        .await
+        .json()
+        .await
+        .unwrap();
+    let (status, _) = browser_post(
+        &app,
+        "decision",
+        &seeded.admin.access_token,
+        Some(&app.settings.app.frontend_url),
+        json!({"user_code":started["user_code"], "approve":true, "tenant_id":seeded.tenant_id}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, approved) =
+        exchange(&app, started["device_code"].as_str().unwrap(), VERIFIER).await;
+    assert_eq!(status, 200);
+    // An approved account login is still not possession of a linked host.
+    let linked_id = bson::oid::ObjectId::new();
+    let primary_id =
+        bson::oid::ObjectId::parse_str(original["agent_id"].as_str().unwrap()).unwrap();
+    let tenant_id = bson::oid::ObjectId::parse_str(&seeded.tenant_id).unwrap();
+    let links = app
+        .db
+        .collection::<bson::Document>(meshharbor_mod_fleet::device_invite::COLLECTION);
+    links
+        .insert_one(bson::doc! {"_id":linked_id,"state":"enrolled",
+        "access_until":bson::DateTime::from_millis(bson::DateTime::now().timestamp_millis()+60000),
+        "hosts":[{"agent_id":primary_id,"tenant_id":tenant_id}]})
+        .await
+        .unwrap();
+    let denied = app
+        .client
+        .post(app.url("/api/agent/enroll"))
+        .json(&enroll_body(approved["enrollment_token"].as_str().unwrap()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        denied.status().as_u16(),
+        403,
+        "trusted account login must not replace host possession"
+    );
+    links
+        .delete_one(bson::doc! {"_id":linked_id})
+        .await
+        .unwrap();
+    let rebound: Value = app
+        .client
+        .post(app.url("/api/agent/enroll"))
+        .json(&enroll_body(approved["enrollment_token"].as_str().unwrap()))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rebound["agent_id"], original["agent_id"]);
+    assert_eq!(rebound["personal_device"], true, "{rebound}");
+    let id = bson::oid::ObjectId::parse_str(rebound["agent_id"].as_str().unwrap()).unwrap();
+    let raw = app
+        .db
+        .collection::<bson::Document>("agents")
+        .find_one(bson::doc! {"_id":id})
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        raw.get_object_id("personal_access_owner_id").unwrap(),
+        raw.get_object_id("owner_user_id").unwrap()
+    );
+    let device = app.state.fleet().agents.base.find_by_id(id).await.unwrap();
+    assert_eq!(
+        device.ssh_policy.mode,
+        meshharbor_remote_control::models::SshMode::Off
+    );
+    assert_eq!(
+        device.exec_policy.mode,
+        meshharbor_remote_control::models::ExecMode::Off
+    );
+    assert!(!device.ssh_policy.can_originate && !device.exec_policy.can_originate);
 }

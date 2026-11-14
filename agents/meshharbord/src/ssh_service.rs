@@ -677,6 +677,7 @@ pub(crate) async fn claim_grant(
     if !SSH_PIPE_UP.load(Ordering::SeqCst) {
         return Err("the SYSTEM service's SSH pipe is not up".into());
     }
+    let epoch = crate::exec_service::claim_close_epoch()?;
     let resp = http(CLAIM_TIMEOUT)?
         .post(claim_url(&anchor.server, grant_id, &anchor.tenant_id))
         .bearer_auth(&anchor.service_token)
@@ -706,6 +707,7 @@ pub(crate) async fn claim_grant(
                 %grant_id, %caller, %account_mode, one_command,
                 "ssh-service: claimed a grant for the SYSTEM service's SSH"
             );
+            crate::exec_service::accept_claim_epoch(epoch)?;
             // No named account: the service never serves one.
             crate::ssh::record_grant(
                 grant_id,

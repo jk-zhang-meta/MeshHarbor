@@ -156,6 +156,16 @@ pub trait FleetLifecycle: Send + Sync {
         Ok(())
     }
 
+    /// Capability changes must report authority refresh failures, unlike
+    /// ordinary metadata updates whose holders may retain best-effort behavior.
+    async fn agent_access_changed(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+    ) -> anyhow::Result<()> {
+        self.agent_updated(tenant_id, agent_id).await
+    }
+
     /// Is the agent doing something a holder would lose if its socket were
     /// cycled? Fleet's owner-side rehome nudge asks this before cycling an
     /// idle-looking agent (P7b): `network` answers while tunnel sessions
@@ -374,6 +384,19 @@ impl HookRegistry {
             hook.agent_updated(tenant_id, agent_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("{module}: agent_updated: {e}"))?;
+        }
+        Ok(())
+    }
+
+    pub async fn agent_access_changed(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+    ) -> anyhow::Result<()> {
+        for (module, hook) in self.fleet_lifecycles() {
+            hook.agent_access_changed(tenant_id, agent_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("{module}: agent_access_changed: {e}"))?;
         }
         Ok(())
     }

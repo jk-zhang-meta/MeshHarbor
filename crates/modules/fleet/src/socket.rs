@@ -570,12 +570,10 @@ pub async fn handle_agent_socket(
     // same-pod reconnect's late teardown can't release the new socket's
     // claim. Best-effort: Redis down ⇒ pod-local behavior only.
     let agent_hex = agent_id.to_hex();
-    let presence_token = state.redis_pubsub.as_ref().map(|r| {
-        r.agent_owner_token(
-            &uuid::Uuid::new_v4().to_string(),
-            bson::DateTime::now().timestamp_millis(),
-        )
-    });
+    let presence_token = state
+        .redis_pubsub
+        .as_ref()
+        .map(|r| r.agent_owner_token(&conn_id, bson::DateTime::now().timestamp_millis()));
     if let (Some(redis), Some(token)) = (&state.redis_pubsub, &presence_token) {
         if let Err(e) = redis.agent_presence_set(&agent_hex, token).await {
             warn!(%agent_id, %e, "agent presence SET failed (register)");
