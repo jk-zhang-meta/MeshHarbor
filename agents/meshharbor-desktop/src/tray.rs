@@ -30,16 +30,24 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, Runtime};
 
 pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // Build the menu. IDs are inspected in `on_menu_event` below.
-    let open_status = MenuItem::with_id(app, "open_status", "Device status", true, None::<&str>)?;
+    // Account rows first, as Tailscale has them: who/what this device is,
+    // Log in…, and the network's devices. `spawn_account_watch` keeps them
+    // current.
+    let account_status =
+        MenuItem::with_id(app, "account_status", "MeshHarbor", false, None::<&str>)?;
+    let login = MenuItem::with_id(app, LOGIN_ITEM_ID, "Log in…", false, None::<&str>)?;
+    let devices = Submenu::with_id(app, "devices", "Network devices", true)?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let open_status = MenuItem::with_id(app, "open_status", "Open MeshHarbor", true, None::<&str>)?;
     // S7 — the embedded web-app window (WebView2 on Windows; browser
     // elsewhere). Distinct from the LOCAL status window above.
-    let open_web = MenuItem::with_id(app, "open_web", "Open MeshHarbor…", true, None::<&str>)?;
+    let open_web = MenuItem::with_id(app, "open_web", "Admin console…", true, None::<&str>)?;
     // FR-85 — disabled until the service says it has a recorder.
     let record = MenuItem::with_id(app, RECORD_ITEM_ID, "Start recording", false, None::<&str>)?;
     // FR-92 — disabled until the service says what keep busy is doing.
@@ -61,15 +69,20 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     )?;
     let open_logs = MenuItem::with_id(app, "open_logs", "Open Logs Folder", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    // `onboarding` / `welcome` stay reachable from the window; the tray keeps
+    // to the account rows and the everyday actions.
+    let _ = (&onboarding, &welcome);
     let menu = Menu::with_items(
         app,
         &[
+            &account_status,
+            &login,
+            &devices,
+            &sep,
             &open_status,
             &open_web,
             &record,
             &keep_busy,
-            &onboarding,
-            &welcome,
             &check_updates_item,
             &open_logs,
             &quit,
@@ -94,6 +107,8 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         "quit" => {
             app.exit(0);
         }
+        LOGIN_ITEM_ID => start_login(app),
+        id if id.starts_with(DEVICE_ITEM_PREFIX) => show_window(app, "/devices"),
         _ => {}
     };
     let on_icon = |tray: &tauri::tray::TrayIcon<R>, event: tauri::tray::TrayIconEvent| {
@@ -109,6 +124,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         }
     };
 
+    spawn_account_watch(app.clone(), account_status, login, devices);
     spawn_recording_watch(app.clone(), record);
     spawn_keep_busy_watch(keep_busy);
 
@@ -812,5 +828,215 @@ mod tests {
         );
         assert_eq!(red_pixels(&idle, false), 0, "the idle icon has red in it");
         assert_eq!((rec.width(), rec.height()), (idle.width(), idle.height()));
+    }
+}
+
+// ─── account: status line, Log in…, Network devices (Tailscale-style) ─────
+
+/// What the tray's sign-in is doing right now (one at a time).
+#[derive(Default)]
+struct LoginUi {
+    busy: bool,
+    code: Option<String>,
+    error: Option<(String, std::time::Instant)>,
+}
+
+static LOGIN_UI: Mutex<LoginUi> = Mutex::new(LoginUi {
+    busy: false,
+    code: None,
+    error: None,
+});
+
+pub(crate) const LOGIN_ITEM_ID: &str = "login";
+const DEVICE_ITEM_PREFIX: &str = "dev:";
+
+/// `Log in…`: start a device login, open the approval page in the browser,
+/// wait for the decision, enroll. The status line shows the code meanwhile.
+fn start_login<R: Runtime>(app: &AppHandle<R>) {
+    {
+        let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
+        if ui.busy {
+            return;
+        }
+        ui.busy = true;
+        ui.error = None;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let name = crate::commands::cmd_default_device_name();
+        let outcome = match crate::commands::cmd_login_start(String::new(), name.clone()).await {
+            Ok(started) => {
+                LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).code =
+                    Some(started.user_code.clone());
+                if !started.opened {
+                    // No browser could be opened: the window shows the link.
+                    show_window(&app, "/onboarding");
+                }
+                crate::commands::cmd_login_wait(name).await.map(|_| ())
+            }
+            Err(e) => Err(e),
+        };
+        let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
+        ui.busy = false;
+        ui.code = None;
+        if let Err(e) = outcome {
+            tracing::warn!(error = %e, "tray: sign-in did not complete");
+            ui.error = Some((e, std::time::Instant::now()));
+        } else {
+            tracing::info!("tray: signed in");
+        }
+    });
+}
+
+/// One poll's view of the account, for the three account rows.
+#[derive(Clone, PartialEq, Eq)]
+struct AccountView {
+    status: String,
+    login_text: String,
+    login_enabled: bool,
+    devices: Vec<String>,
+}
+
+fn account_view(
+    enrolled: bool,
+    node: Option<&meshharbor_localapi::NodeStatus>,
+    peers: &[meshharbor_localapi::PeerInfo],
+) -> AccountView {
+    let ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
+    let recent_error = ui
+        .error
+        .as_ref()
+        .filter(|(_, at)| at.elapsed() < std::time::Duration::from_secs(60))
+        .map(|(e, _)| e.clone());
+    let status = if ui.busy {
+        match &ui.code {
+            Some(code) => format!("Approve in your browser — code {code}"),
+            None => "Signing in…".to_string(),
+        }
+    } else if let Some(e) = recent_error {
+        let mut e = e;
+        e.truncate(80);
+        format!("Sign-in failed: {e}")
+    } else if !enrolled {
+        "Not signed in".to_string()
+    } else {
+        match node {
+            None => "MeshHarbor service is not running".to_string(),
+            Some(n) => {
+                let ip = n.overlay_ip.as_deref().unwrap_or("no address yet");
+                if n.connected {
+                    format!("{} · {ip}", n.name)
+                } else {
+                    format!("{} · {ip} (offline)", n.name)
+                }
+            }
+        }
+    };
+    let (login_text, login_enabled) = if ui.busy {
+        ("Waiting for approval…".to_string(), false)
+    } else if enrolled {
+        ("Signed in".to_string(), false)
+    } else {
+        ("Log in…".to_string(), true)
+    };
+    let mut devices: Vec<String> = peers
+        .iter()
+        .map(|p| {
+            let ip = p.overlay_ip.as_deref().unwrap_or("-");
+            let mark = if p.online { "●" } else { "○" };
+            format!("{mark} {}  {ip}", p.name)
+        })
+        .collect();
+    devices.sort_by(|a, b| a.get(4..).cmp(&b.get(4..)));
+    AccountView {
+        status,
+        login_text,
+        login_enabled,
+        devices,
+    }
+}
+
+fn spawn_account_watch<R: Runtime>(
+    app: AppHandle<R>,
+    status: MenuItem<R>,
+    login: MenuItem<R>,
+    devices: tauri::menu::Submenu<R>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut shown: Option<AccountView> = None;
+        loop {
+            let enrolled = tokio::task::spawn_blocking(crate::commands::is_enrolled)
+                .await
+                .unwrap_or(false);
+            let (node, peers) = match meshharbor_localapi::connect().await {
+                Ok(mut c) => {
+                    let node = c.status().await.ok();
+                    let peers = if node.is_some() {
+                        c.peers().await.unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    (node, peers)
+                }
+                Err(_) => (None, Vec::new()),
+            };
+            let view = account_view(enrolled, node.as_ref(), &peers);
+            if shown.as_ref() != Some(&view) {
+                let _ = status.set_text(&view.status);
+                let _ = login.set_text(&view.login_text);
+                let _ = login.set_enabled(view.login_enabled);
+                if shown.as_ref().map(|s| &s.devices) != Some(&view.devices) {
+                    if let Ok(items) = devices.items() {
+                        for item in items {
+                            let _ = devices.remove(&item);
+                        }
+                    }
+                    if view.devices.is_empty()
+                        && let Ok(none) = MenuItem::with_id(
+                            &app,
+                            "dev:none",
+                            "No devices yet",
+                            false,
+                            None::<&str>,
+                        )
+                    {
+                        let _ = devices.append(&none);
+                    }
+                    for (i, label) in view.devices.iter().enumerate() {
+                        if let Ok(item) = MenuItem::with_id(
+                            &app,
+                            format!("{DEVICE_ITEM_PREFIX}{i}"),
+                            label,
+                            true,
+                            None::<&str>,
+                        ) {
+                            let _ = devices.append(&item);
+                        }
+                    }
+                }
+                shown = Some(view);
+            }
+            let busy = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).busy;
+            tokio::time::sleep(std::time::Duration::from_secs(if busy { 1 } else { 4 })).await;
+        }
+    });
+}
+
+#[cfg(test)]
+mod account_tests {
+    use super::*;
+
+    #[test]
+    fn the_status_line_follows_the_account_like_tailscale() {
+        let v = account_view(false, None, &[]);
+        assert_eq!(v.status, "Not signed in");
+        assert_eq!((v.login_text.as_str(), v.login_enabled), ("Log in…", true));
+        assert!(v.devices.is_empty());
+        let v = account_view(true, None, &[]);
+        assert_eq!(v.status, "MeshHarbor service is not running");
+        assert_eq!(
+            (v.login_text.as_str(), v.login_enabled),
+            ("Signed in", false)
+        );
     }
 }
