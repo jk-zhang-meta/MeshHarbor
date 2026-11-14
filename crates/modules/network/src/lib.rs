@@ -80,6 +80,7 @@ pub mod routes {
     pub mod overlay_route;
     pub mod peer_relay;
     pub mod server_link;
+    pub mod temporary;
     pub mod tunnel;
 }
 
@@ -463,6 +464,13 @@ impl Module for NetworkState {
         // The per-device sub-routes under the fleet module's `/agent` prefix
         // (the rest of `/tenant/{tenant_id}/agent` is fleet's).
         let agent = Router::new()
+            // Temporary devices — make an enrolled device temporary.
+            .route(
+                "/{agent_id}/temporary",
+                post(routes::temporary::make_temporary)
+                    .delete(routes::temporary::make_permanent)
+                    .layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
             // FR-40 — order the device to retire its overlay key
             // (MANAGE_AGENTS; cap-gated, audited, queued for an offline device).
             .route(

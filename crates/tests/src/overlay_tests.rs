@@ -87,6 +87,7 @@ impl Ipam {
     ) -> Result<OverlayNode, DaoError> {
         self.nodes
             .create(NewOverlayNode {
+                temporary: None,
                 tenant_id: self.tenant_id,
                 node_ref: NodeRef::Agent {
                     agent_id: ObjectId::new(),
@@ -808,6 +809,7 @@ async fn agent_delete_releases_the_overlay_node() {
     let node = ipam
         .nodes
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id: ipam.tenant_id,
             node_ref: NodeRef::Agent {
                 agent_id: tid(&agent_id),
@@ -896,6 +898,7 @@ async fn a_re_enrolled_removed_machine_gets_a_fresh_overlay_node() {
     let first = ipam
         .nodes
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id: ipam.tenant_id,
             node_ref: NodeRef::Agent {
                 agent_id: tid(&agent_id),
@@ -1017,6 +1020,7 @@ async fn tunnel_client_delete_releases_the_overlay_node() {
     let node = ipam
         .nodes
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id: ipam.tenant_id,
             node_ref: NodeRef::TunnelClient {
                 tunnel_client_id: tid(&client_id),
@@ -1727,6 +1731,7 @@ async fn agent_delete_does_not_release_a_tunnel_clients_node() {
     let node = ipam
         .nodes
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id: ipam.tenant_id,
             node_ref: NodeRef::TunnelClient {
                 tunnel_client_id: ObjectId::new(),
@@ -2052,6 +2057,7 @@ async fn renumber_refuses_a_fleet_below_the_version_floor() {
     ipam.alloc().await.unwrap();
     ipam.nodes
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id: ipam.tenant_id,
             node_ref: NodeRef::Agent {
                 agent_id: ObjectId::parse_str(&agent_id).unwrap(),
@@ -2847,6 +2853,7 @@ async fn b4_evicted_node_allows_same_machine_rejoin_with_same_key_and_rejects_ot
     let hijack = ipam
         .nodes
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id: ipam.tenant_id,
             node_ref: NodeRef::Agent {
                 agent_id: ObjectId::new(),

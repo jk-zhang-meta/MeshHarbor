@@ -382,4 +382,6 @@ mod native_ssh_revision_tests;
 #[cfg(test)]
 mod account_devices_tests;
 #[cfg(test)]
+mod device_invite_tests;
+#[cfg(test)]
 mod device_login_tests;

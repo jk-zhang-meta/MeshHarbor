@@ -112,6 +112,7 @@ async fn seed_node(
     let network_id = networks.get_or_create(tid).await.unwrap().id.unwrap();
     nodes
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id: tid,
             node_ref,
             network_id,

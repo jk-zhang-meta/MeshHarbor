@@ -31,6 +31,7 @@ pub mod config_surface;
 pub mod crash_recorder;
 /// FR-84 D6 — the companion's per-user state (Welcome done, login opt-out).
 pub mod desktop_state;
+pub mod device_invite;
 pub mod device_login;
 pub mod enrollment;
 /// FR-84 D4 — the `files_dir` validator: shape (shared with the config

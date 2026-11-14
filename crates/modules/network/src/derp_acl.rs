@@ -538,6 +538,7 @@ mod tests {
         let tid = ObjectId::new();
         let net_id = ObjectId::new();
         let mk_node = |name: &str, ip: &str, key: DerpPubKey| OverlayNode {
+            temporary: None,
             id: Some(ObjectId::new()),
             tenant_id: tid,
             node_ref: NodeRef::Agent {

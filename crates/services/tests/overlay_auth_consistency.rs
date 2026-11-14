@@ -108,6 +108,7 @@ async fn b3_overlay_node_record_applied_auth_revision_is_cas_monotonic() {
 
     let created = nodes
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id,
             node_ref: NodeRef::Agent {
                 agent_id: ObjectId::new(),

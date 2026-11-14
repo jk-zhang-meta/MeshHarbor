@@ -124,6 +124,8 @@
       enrolledMode = !!s.enrolled;
       const loginCard = $('login-card');
       if (loginCard) loginCard.hidden = enrolledMode;
+      const joinCard = $('join-card');
+      if (joinCard) joinCard.hidden = enrolledMode;
       const btn = $('btn-enroll');
       if (btn) btn.textContent = enrolledMode ? 'Re-enroll this device' : 'Enroll this device';
       const note = $('onboard-reenroll-note');
@@ -182,6 +184,31 @@
       } finally {
         loginBtn.disabled = false;
         loginBtn.textContent = 'Sign in…';
+      }
+    });
+
+    // Temporary devices: redeem an invite code (no account).
+    const joinBtn = $('btn-join');
+    if (joinBtn) joinBtn.addEventListener('click', async () => {
+      const code = ($('join-code').value || '').trim();
+      if (!/^\d{4}[- ]?\d{4}$/.test(code)) {
+        showError('An invite code is 8 digits, like 1234-5678.');
+        return;
+      }
+      const deviceName = ($('device-name').value || '').trim();
+      const box = $('join-pending');
+      joinBtn.disabled = true;
+      joinBtn.textContent = 'Joining…';
+      try {
+        const s = await invoke('cmd_join', { code, deviceName });
+        box.hidden = true;
+        showEnrolled(s);
+        void refreshStatus();
+      } catch (e) {
+        showError('Could not join: ' + e);
+      } finally {
+        joinBtn.disabled = false;
+        joinBtn.textContent = 'Join';
       }
     });
 

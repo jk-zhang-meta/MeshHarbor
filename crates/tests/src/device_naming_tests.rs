@@ -257,6 +257,7 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
     let nodes = OverlayNodeDao::new(&app.db);
     let network_id = networks.get_or_create(tid_oid).await.unwrap().id.unwrap();
     let mk_node = |node_ref: NodeRef, machine: &str, name: &str, ip: &str| NewOverlayNode {
+        temporary: None,
         tenant_id: tid_oid,
         node_ref,
         network_id,

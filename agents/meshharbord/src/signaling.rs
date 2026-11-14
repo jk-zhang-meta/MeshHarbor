@@ -1065,6 +1065,16 @@ pub async fn run(
         ctx.renewal,
         ctx.renewal_connected.clone(),
     )));
+    // Temporary devices — the server's word on this device's deadline (a
+    // renewal moves it), kept in `temporary.json` beside the config so the
+    // goodbye at the end is told apart from a fault. Primary org only.
+    let _temporary_task = ctx.is_primary.then(|| {
+        AbortOnDrop(tokio::spawn(temporary_watch(
+            cfg.server_url.clone(),
+            ctx.token.clone(),
+            remote_cfg.config_path().to_path_buf(),
+        )))
+    });
     // FR-103 — the previous attempt was a recovery's prompt retry (see the
     // `AuthRejected` arm): a second refusal in a row waits out the ladder.
     let mut recovered_last = false;
@@ -1205,6 +1215,28 @@ pub async fn run(
                         "{gone} — stopping this org's loop (other orgs unaffected)"
                     );
                     return Err(gone.into());
+                }
+                // Temporary devices: the server removing a temporary device
+                // is the planned end of its access (the deadline, a
+                // revocation, a leave) — not a fault for anyone to fix. Set
+                // the enrollment aside and stop cleanly; nothing restarts a
+                // clean exit, and the machine is simply not signed in.
+                if meshharbor_node_core::device_invite::read_marker(remote_cfg.config_path())
+                    .is_some()
+                {
+                    match meshharbor_node_core::device_invite::end_locally(remote_cfg.config_path())
+                    {
+                        Ok(aside) => info!(
+                            aside = ?aside,
+                            ?reason,
+                            "temporary device: access ended; this machine is no longer signed in"
+                        ),
+                        Err(e) => {
+                            warn!(error = %e, "temporary device: could not set the enrollment aside")
+                        }
+                    }
+                    crate::purge_exit_routes();
+                    std::process::exit(0);
                 }
                 // rc.53: server told us to stop reconnecting. The
                 // teardown of in-flight peers already ran in the
@@ -7732,6 +7764,32 @@ pub(crate) fn urlencode(s: &str) -> String {
     s.replace('+', "%2B")
         .replace('/', "%2F")
         .replace('=', "%3D")
+}
+
+/// Temporary devices — ask the server, shortly after start and every 30
+/// minutes, whether this device is temporary and until when; record it in
+/// `temporary.json` (removed again for an ordinary device). Best-effort: a
+/// failed look keeps the last answer.
+async fn temporary_watch(
+    server_url: String,
+    token: crate::token_slot::TokenSlot,
+    config_path: std::path::PathBuf,
+) {
+    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+    loop {
+        let current = token.get();
+        match meshharbor_node_core::device_invite::self_status(&server_url, &current).await {
+            Ok(info) => {
+                if let Err(e) =
+                    meshharbor_node_core::device_invite::write_marker(&config_path, info.as_ref())
+                {
+                    debug!(error = %e, "temporary watch: could not record the answer");
+                }
+            }
+            Err(e) => debug!(error = %e, "temporary watch: no answer this round"),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1800)).await;
+    }
 }
 
 #[cfg(test)]

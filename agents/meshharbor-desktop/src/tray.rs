@@ -42,6 +42,13 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let account_status =
         MenuItem::with_id(app, "account_status", "MeshHarbor", false, None::<&str>)?;
     let login = MenuItem::with_id(app, LOGIN_ITEM_ID, "Log in…", false, None::<&str>)?;
+    let join = MenuItem::with_id(
+        app,
+        JOIN_ITEM_ID,
+        "Join with an invite code…",
+        false,
+        None::<&str>,
+    )?;
     let devices = Submenu::with_id(app, "devices", "Network devices", true)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let open_status = MenuItem::with_id(app, "open_status", "Open MeshHarbor", true, None::<&str>)?;
@@ -77,6 +84,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         &[
             &account_status,
             &login,
+            &join,
             &devices,
             &sep,
             &open_status,
@@ -107,7 +115,14 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         "quit" => {
             app.exit(0);
         }
-        LOGIN_ITEM_ID => start_login(app),
+        LOGIN_ITEM_ID => {
+            if crate::commands::temporary_info().is_some() {
+                start_leave(app)
+            } else {
+                start_login(app)
+            }
+        }
+        JOIN_ITEM_ID => show_window(app, "/onboarding"),
         id if id.starts_with(DEVICE_ITEM_PREFIX) => show_window(app, "/devices"),
         _ => {}
     };
@@ -124,7 +139,14 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         }
     };
 
-    spawn_account_watch(app.clone(), account_status, login, devices);
+    spawn_account_watch(
+        app.clone(),
+        account_status,
+        login,
+        join,
+        devices,
+        open_web.clone(),
+    );
     spawn_recording_watch(app.clone(), record);
     spawn_keep_busy_watch(keep_busy);
 
@@ -848,6 +870,7 @@ static LOGIN_UI: Mutex<LoginUi> = Mutex::new(LoginUi {
 });
 
 pub(crate) const LOGIN_ITEM_ID: &str = "login";
+pub(crate) const JOIN_ITEM_ID: &str = "join";
 const DEVICE_ITEM_PREFIX: &str = "dev:";
 
 /// `Log in…`: start a device login, open the approval page in the browser,
@@ -888,12 +911,41 @@ fn start_login<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
-/// One poll's view of the account, for the three account rows.
+/// `Leave (end access now)` on a temporary device: the daemon's `leave`.
+fn start_leave<R: Runtime>(app: &AppHandle<R>) {
+    {
+        let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
+        if ui.busy {
+            return;
+        }
+        ui.busy = true;
+        ui.error = None;
+    }
+    let _ = app;
+    tauri::async_runtime::spawn(async move {
+        let outcome = crate::commands::cmd_leave().await;
+        let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
+        ui.busy = false;
+        ui.code = None;
+        match outcome {
+            Ok(()) => tracing::info!("tray: temporary device left"),
+            Err(e) => {
+                tracing::warn!(error = %e, "tray: leave did not complete");
+                ui.error = Some((e, std::time::Instant::now()));
+            }
+        }
+    });
+}
+
+/// One poll's view of the account, for the account rows.
 #[derive(Clone, PartialEq, Eq)]
 struct AccountView {
     status: String,
     login_text: String,
     login_enabled: bool,
+    join_enabled: bool,
+    /// A temporary device shows no device list and no admin console.
+    temporary: bool,
     devices: Vec<String>,
 }
 
@@ -902,6 +954,30 @@ fn account_view(
     node: Option<&meshharbor_localapi::NodeStatus>,
     peers: &[meshharbor_localapi::PeerInfo],
 ) -> AccountView {
+    account_view_at(
+        enrolled,
+        node,
+        peers,
+        crate::commands::temporary_info(),
+        now_ms(),
+    )
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn account_view_at(
+    enrolled: bool,
+    node: Option<&meshharbor_localapi::NodeStatus>,
+    peers: &[meshharbor_localapi::PeerInfo],
+    temporary: Option<meshharbor_node_core::device_invite::TemporaryInfo>,
+    now_ms: i64,
+) -> AccountView {
+    let temporary = temporary.filter(|_| enrolled);
     let ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
     let recent_error = ui
         .error
@@ -919,6 +995,13 @@ fn account_view(
         format!("Sign-in failed: {e}")
     } else if !enrolled {
         "Not signed in".to_string()
+    } else if let Some(t) = &temporary {
+        let left = meshharbor_node_core::device_invite::remaining_words(t.access_until_ms, now_ms);
+        if t.inviter.is_empty() {
+            format!("Temporary device · {left} left")
+        } else {
+            format!("Managed by {} · {left} left", t.inviter)
+        }
     } else {
         match node {
             None => "MeshHarbor service is not running".to_string(),
@@ -934,12 +1017,16 @@ fn account_view(
     };
     let (login_text, login_enabled) = if ui.busy {
         ("Waiting for approval…".to_string(), false)
+    } else if temporary.is_some() {
+        ("Leave (end access now)".to_string(), true)
     } else if enrolled {
         ("Signed in".to_string(), false)
     } else {
         ("Log in…".to_string(), true)
     };
-    let mut devices: Vec<String> = peers
+    let shown_peers: &[meshharbor_localapi::PeerInfo] =
+        if temporary.is_some() { &[] } else { peers };
+    let mut devices: Vec<String> = shown_peers
         .iter()
         .map(|p| {
             let ip = p.overlay_ip.as_deref().unwrap_or("-");
@@ -952,6 +1039,8 @@ fn account_view(
         status,
         login_text,
         login_enabled,
+        join_enabled: !enrolled && !ui.busy,
+        temporary: temporary.is_some(),
         devices,
     }
 }
@@ -960,7 +1049,9 @@ fn spawn_account_watch<R: Runtime>(
     app: AppHandle<R>,
     status: MenuItem<R>,
     login: MenuItem<R>,
+    join: MenuItem<R>,
     devices: tauri::menu::Submenu<R>,
+    admin: MenuItem<R>,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut shown: Option<AccountView> = None;
@@ -985,6 +1076,9 @@ fn spawn_account_watch<R: Runtime>(
                 let _ = status.set_text(&view.status);
                 let _ = login.set_text(&view.login_text);
                 let _ = login.set_enabled(view.login_enabled);
+                let _ = join.set_enabled(view.join_enabled);
+                let _ = devices.set_enabled(!view.temporary);
+                let _ = admin.set_enabled(!view.temporary);
                 if shown.as_ref().map(|s| &s.devices) != Some(&view.devices) {
                     if let Ok(items) = devices.items() {
                         for item in items {
@@ -1028,15 +1122,36 @@ mod account_tests {
 
     #[test]
     fn the_status_line_follows_the_account_like_tailscale() {
-        let v = account_view(false, None, &[]);
+        let v = account_view_at(false, None, &[], None, 0);
         assert_eq!(v.status, "Not signed in");
         assert_eq!((v.login_text.as_str(), v.login_enabled), ("Log in…", true));
         assert!(v.devices.is_empty());
-        let v = account_view(true, None, &[]);
+        let v = account_view_at(true, None, &[], None, 0);
         assert_eq!(v.status, "MeshHarbor service is not running");
         assert_eq!(
             (v.login_text.as_str(), v.login_enabled),
             ("Signed in", false)
         );
+        assert!(!v.join_enabled && !v.temporary);
+    }
+
+    #[test]
+    fn a_temporary_device_shows_its_manager_and_time_and_no_devices() {
+        let t = meshharbor_node_core::device_invite::TemporaryInfo {
+            access_until_ms: 50 * 3_600_000,
+            inviter: "Alex".into(),
+        };
+        let v = account_view_at(true, None, &[], Some(t.clone()), 0);
+        assert_eq!(v.status, "Managed by Alex · 2 d 2 h left");
+        assert_eq!(
+            (v.login_text.as_str(), v.login_enabled),
+            ("Leave (end access now)", true)
+        );
+        assert!(v.temporary && !v.join_enabled && v.devices.is_empty());
+        // A marker left behind on a machine that is no longer enrolled is
+        // not a temporary device.
+        let v = account_view_at(false, None, &[], Some(t), 0);
+        assert_eq!(v.status, "Not signed in");
+        assert!(v.join_enabled && !v.temporary);
     }
 }

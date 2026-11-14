@@ -1151,6 +1151,11 @@ pub struct AuthSettings {
     /// receives a standard single-use enrollment token. Default off.
     #[serde(default)]
     pub native_device_login_enabled: bool,
+    /// Temporary devices: a person with `MANAGE_AGENTS` invites a device with
+    /// an 8-digit code; the device joins without an account, reachable only by
+    /// the inviter, and is removed when the access period ends. Default off.
+    #[serde(default)]
+    pub native_device_invite_enabled: bool,
     /// When true, `register` sets `is_verified: true` on the new user
     /// directly, bypassing the email activation flow. Default false —
     /// production keeps the email-link activation as the only path.
@@ -1190,6 +1195,7 @@ impl Default for AuthSettings {
             account_approval: AccountApprovalSettings::default(),
             native_share_ssh_authorization_enabled: false,
             native_device_login_enabled: false,
+            native_device_invite_enabled: false,
             reconcile_managed_roles: default_true(),
         }
     }
@@ -1806,6 +1812,7 @@ impl Settings {
             .set_default("auth.auto_verify", false)?
             .set_default("auth.native_share_ssh_authorization_enabled", false)?
             .set_default("auth.native_device_login_enabled", false)?
+            .set_default("auth.native_device_invite_enabled", false)?
             .build()?;
 
         config.try_deserialize()
