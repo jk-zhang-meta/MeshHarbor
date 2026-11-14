@@ -2470,7 +2470,7 @@
     "renewFrom": "从当前到期时间（{until}）往后延长。",
     "extendBy": "延长",
     "revokeConfirm": "让邀请“{name}”立即失效？邀请码将无法再使用。",
-    "revokeConfirmDevice": "让“{name}”立即失效？该设备会被立即移除并断开。",
+    "revokeConfirmDevice": "让“{name}”的这条邀请立即失效？如果这是该设备的最后一条邀请，设备会被移除并断开。",
     "dh": "{d} 天 {h} 小时",
     "hm": "{h} 小时 {m} 分钟",
     "m": "{m} 分钟",
@@ -2486,7 +2486,8 @@
       "left": "设备自行退出",
       "removed": "设备已被删除",
       "unbound": "未完成加入",
-      "made_permanent": "已恢复为普通设备"
+      "made_permanent": "已恢复为普通设备",
+      "ended_by_owner": "由设备主人结束"
     },
     "unit": {
       "minute": "分钟",
@@ -2515,5 +2516,20 @@
     "notFound": "找不到这个验证码对应的请求，可能已经过期（10 分钟）。请在设备上重新运行 `mh login`。",
     "noPermission": "你没有向该组织添加设备的权限。",
     "failed": "出了点问题，请重试。"
+  },
+  "acceptedInvites": {
+    "title": "本组织设备接受的邀请",
+    "intro": "别人邀请了本组织的这些设备一段时间，设备接受了。每条邀请只让邀请人在到期前连接和控制该设备，不会让设备进入对方的网络。你可以随时结束其中任何一条。",
+    "col": {
+      "device": "你的设备",
+      "from": "邀请人"
+    },
+    "unknownDevice": "本组织的一台设备",
+    "someone": "某人",
+    "inEffect": "生效中",
+    "accepted": "接受于 {when}",
+    "end": "立即结束",
+    "endConfirm": "立即结束 {who} 对“{name}”的邀请？对方会立刻失去对该设备的访问。",
+    "noneActive": "当前没有生效的邀请。"
   }
 }
