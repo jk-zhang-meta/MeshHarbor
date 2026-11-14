@@ -260,7 +260,7 @@ pub fn watch(
     match exit {
         WaitOutcome::Exited(code) => {
             outcome.installer_exit_code = Some(code);
-            if code != 0 {
+            if !installer_exit_succeeded(code, cfg!(target_os = "windows")) {
                 outcome.status = InstallStatus::InstallerFailed;
                 outcome.note = format!("installer exited with {code}");
                 tracing::error!(exit = code, "installer failed");
@@ -302,11 +302,28 @@ pub fn watch(
             tracing::error!(error = %e, "installer wait failed");
         }
     }
-    outcome.finished_unix = Some(unix_now());
     // Last act on Windows: whatever the verdict, never leave the daemon
     // stopped (perMachine: the SCM service; perUser: the logon task).
     #[cfg(target_os = "windows")]
     ensure_service_running(&mut outcome, install_flavour(origin_exe.as_deref()));
+    #[cfg(target_os = "windows")]
+    if matches!(outcome.status, InstallStatus::SucceededVerified) {
+        match verify_windows_live(&expected_version, origin_exe.as_deref()) {
+            Ok(evidence) => outcome.note.push_str(&format!("; {evidence}")),
+            Err(error) => {
+                outcome.status = InstallStatus::SucceededUnverified;
+                outcome
+                    .note
+                    .push_str(&format!("; live daemon NOT verified: {error:#}"));
+            }
+        }
+    }
+    if outcome.installer_exit_code == Some(3010) {
+        outcome
+            .note
+            .push_str("; Windows Installer requested reboot (3010); no automatic reboot performed");
+    }
+    outcome.finished_unix = Some(unix_now());
     let _ = write_outcome(&outcome);
     Ok(outcome)
 }
@@ -360,6 +377,166 @@ fn settle_before_probe(already_exited: bool) -> Duration {
     } else {
         POST_INSTALL_SETTLE
     }
+}
+
+/// Windows 3010 is successful installation with a reboot request, not a
+/// verified running daemon. The separate live check remains mandatory.
+fn installer_exit_succeeded(code: i32, windows: bool) -> bool {
+    code == 0 || (windows && code == 3010)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn live_instance_matches(
+    version: &str,
+    expected: &str,
+    pid: Option<u32>,
+    started: Option<u64>,
+    leaving: Option<(u32, u64)>,
+) -> bool {
+    version_matches(version, expected)
+        && matches!((pid, started), (Some(p), Some(t)) if p != 0 && t != 0 && leaving != Some((p, t)))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn live_scope_matches(
+    agent: &str,
+    expected_agent: &str,
+    config: &std::path::Path,
+    expected_config: &std::path::Path,
+) -> bool {
+    !agent.is_empty() && agent == expected_agent && config == expected_config
+}
+
+#[cfg(target_os = "windows")]
+fn verify_windows_live(expected: &str, origin: Option<&std::path::Path>) -> Result<String> {
+    use tunnel_core::localapi;
+    let config = crate::updater::update_config_path().context("watcher config path missing")?;
+    let config = std::fs::canonicalize(config).context("canonical watcher config")?;
+    let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(&config)?)?;
+    let agent = parsed
+        .get("agent_id")
+        .and_then(toml::Value::as_str)
+        .context("watcher config has no agent identity")?
+        .to_owned();
+    let origin = origin
+        .context("watcher original executable missing")?
+        .to_path_buf();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(120), async {
+            let read = || async {
+                let mut client = localapi::connect().await?;
+                let status = client.status().await?;
+                let actual = status
+                    .config_path
+                    .as_deref()
+                    .context("LocalAPI config missing")?;
+                anyhow::ensure!(
+                    live_scope_matches(
+                        &status.node_id,
+                        &agent,
+                        &std::fs::canonicalize(actual)?,
+                        &config
+                    ),
+                    "LocalAPI agent/config differs from update config"
+                );
+                Ok::<_, anyhow::Error>((client, status))
+            };
+            // Existing supervisor has just been started; allow its normal boot.
+            let mut initial = None;
+            for _ in 0..30 {
+                match read().await {
+                    Ok(status) => {
+                        initial = Some(status);
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "waiting for update LocalAPI");
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+            let (mut client, before) = initial.context("updated daemon did not answer LocalAPI")?;
+            let leaving = if !version_matches(&before.version, expected) {
+                let identity = (
+                    before.pid.context("old daemon PID missing")?,
+                    before
+                        .started_at_ms
+                        .context("old daemon start identity missing")?,
+                );
+                // Send the mutation on the SAME authenticated connection whose
+                // identity/config was checked above. Never reconnect between
+                // that check and restart: the default pipe may change owners.
+                let answer = client
+                    .restart_daemon("finish verified Windows update")
+                    .await?;
+                drop(client);
+                let (instance, caller_starts, hint) = match answer {
+                    localapi::RestartAnswer::Accepted {
+                        leaving,
+                        restart_by,
+                        restart_within_s,
+                        ..
+                    } => {
+                        anyhow::ensure!(
+                            leaving.pid == Some(identity.0)
+                                && leaving.started_at_ms == Some(identity.1),
+                            "restart answer differs from verified instance"
+                        );
+                        (leaving, restart_by == "caller", restart_within_s)
+                    }
+                    other => anyhow::bail!("daemon did not accept update restart: {other:?}"),
+                };
+                let start = || async {
+                    let out = tokio::process::Command::new(&origin)
+                        .args(["service", "start"])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::piped())
+                        .kill_on_drop(true)
+                        .output()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if out.status.success() {
+                        Ok(())
+                    } else {
+                        Err("original service start failed".to_owned())
+                    }
+                };
+                localapi::wait_for_restart(
+                    instance,
+                    caller_starts,
+                    start,
+                    localapi::restart_wait(hint, std::time::Duration::from_secs(60)),
+                )
+                .await
+                .map_err(anyhow::Error::msg)?;
+                Some(identity)
+            } else {
+                None
+            };
+            let (_, after) = read().await?;
+            anyhow::ensure!(
+                live_instance_matches(
+                    &after.version,
+                    expected,
+                    after.pid,
+                    after.started_at_ms,
+                    leaving
+                ),
+                "live daemon version/instance did not advance to expected update"
+            );
+            Ok(format!(
+                "live LocalAPI version {} pid {} verified for original config",
+                after.version,
+                after.pid.unwrap()
+            ))
+        })
+        .await
+        .context("live daemon update verification timed out")?
+    })
 }
 
 fn verify_new_binary(
@@ -473,8 +650,8 @@ fn recover_wedged_install(
     outcome.installer_pid = retry_pid;
     let _ = write_outcome(outcome);
     match wait_for_pid(retry_pid, INSTALLER_BUDGET) {
-        WaitOutcome::Exited(0) => {
-            outcome.installer_exit_code = Some(0);
+        WaitOutcome::Exited(code) if installer_exit_succeeded(code, true) => {
+            outcome.installer_exit_code = Some(code);
             // `false`: this is the wedge-recovery retry, where we genuinely
             // waited on msiexec. That is exactly the case POST_INSTALL_SETTLE
             // was written for — cargo-wix can fsync after process exit — so the
@@ -781,6 +958,68 @@ fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn windows_update_scope_refuses_replacement_named_instance_before_restart() {
+        use std::path::Path;
+        let target = Path::new("siat-63/config.toml");
+        assert!(super::live_scope_matches(
+            "agent-a", "agent-a", target, target
+        ));
+        // A newly observed connection must pass the guard before it can own
+        // the restart request. Neither a changed account nor named config is
+        // authorized by a previously valid observation.
+        let mut restart_requests = 0;
+        for (agent, config) in [
+            ("agent-b", target),
+            ("agent-a", Path::new("other/config.toml")),
+        ] {
+            if super::live_scope_matches(agent, "agent-a", config, target) {
+                restart_requests += 1;
+            }
+        }
+        assert_eq!(restart_requests, 0);
+    }
+
+    #[test]
+    fn windows_update_exit_and_live_instance_contract() {
+        assert!(super::installer_exit_succeeded(0, true));
+        assert!(super::installer_exit_succeeded(3010, true));
+        assert!(!super::installer_exit_succeeded(3010, false));
+        for code in [1603, 1618, -1, 1641] {
+            assert!(!super::installer_exit_succeeded(code, true));
+        }
+        let check = super::live_instance_matches;
+        assert!(!check(
+            "0.4.158",
+            "agent-v0.4.159",
+            Some(10),
+            Some(100),
+            None
+        ));
+        assert!(!check(
+            "0.4.159",
+            "agent-v0.4.159",
+            Some(10),
+            Some(100),
+            Some((10, 100))
+        ));
+        assert!(check(
+            "0.4.159",
+            "agent-v0.4.159",
+            Some(11),
+            Some(101),
+            Some((10, 100))
+        ));
+        assert!(check(
+            "0.4.159",
+            "agent-v0.4.159",
+            Some(10),
+            Some(101),
+            Some((10, 100))
+        ));
+        assert!(!check("0.4.159", "agent-v0.4.159", None, Some(101), None));
+        assert!(!check("0.4.159", "agent-v0.4.159", Some(11), None, None));
+    }
     use super::*;
 
     // P4b: pure path derivation behind the folder-rename fallback.

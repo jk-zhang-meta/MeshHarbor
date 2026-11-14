@@ -36,6 +36,11 @@ pub fn set_update_config_path(path: PathBuf) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn update_config_path() -> Option<&'static std::path::Path> {
+    UPDATE_CONFIG_PATH.get().map(PathBuf::as_path)
+}
+
 fn update_origin() -> Result<origin::UpdateOrigin> {
     #[derive(Deserialize)]
     struct Center {
@@ -2826,6 +2831,9 @@ fn spawn_watcher(
         );
     }
     let mut cmd = std::process::Command::new(&launch);
+    if let Some(config) = UPDATE_CONFIG_PATH.get() {
+        cmd.arg("--config").arg(config);
+    }
     cmd.arg("post-install-watch")
         .arg("--installer-pid")
         .arg(installer_pid.to_string())
