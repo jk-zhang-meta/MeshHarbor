@@ -233,6 +233,10 @@
       "methods": "GET,HEAD"
     },
     {
+      "path": "/api/agent/self/link",
+      "methods": "POST"
+    },
+    {
       "path": "/api/agent/self/mesh",
       "methods": "GET,HEAD"
     },
@@ -243,6 +247,10 @@
     {
       "path": "/api/agent/self/temporary",
       "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/agent/self/temporary/{invite_id}/leave",
+      "methods": "POST"
     },
     {
       "path": "/api/agent/self/unenroll",
@@ -370,6 +378,10 @@
     },
     {
       "path": "/api/log/browser",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/device-invite/preview",
       "methods": "POST"
     },
     {
@@ -647,6 +659,14 @@
     {
       "path": "/api/tenant/{tenant_id}/device",
       "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/device-grants",
+      "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/device-grants/{invite_id}",
+      "methods": "DELETE"
     },
     {
       "path": "/api/tenant/{tenant_id}/device-invite",

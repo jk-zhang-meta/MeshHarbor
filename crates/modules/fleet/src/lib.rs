@@ -515,6 +515,16 @@ impl Module for FleetState {
             .route("/self/unenroll", post(agent::self_unenroll))
             // Temporary devices — the device's own deadline and inviter.
             .route("/self/temporary", get(device_invite::self_view))
+            .route(
+                "/self/temporary/{invite_id}/leave",
+                post(device_invite::self_leave),
+            )
+            // The machine's proofs of the invitations it accepted, presented
+            // by its ordinary enrollment (its owner's view).
+            .route(
+                "/self/link",
+                post(device_invite::self_link).layer(axum::extract::DefaultBodyLimit::max(65536)),
+            )
             // FR-103 — a device renews its own agent token (a bounded grace
             // past `exp`, the row checked like `AuthAgent`).
             .route("/self/renew", post(agent::self_renew))
@@ -633,7 +643,20 @@ impl Module for FleetState {
             )
             .route(
                 "/native/device-invite/redeem",
-                post(device_invite::redeem).layer(axum::extract::DefaultBodyLimit::max(4096)),
+                post(device_invite::redeem).layer(axum::extract::DefaultBodyLimit::max(8192)),
+            )
+            .route(
+                "/native/device-invite/preview",
+                post(device_invite::preview).layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            // The device owner's side: invitations its devices accepted.
+            .route(
+                "/tenant/{tenant_id}/device-grants",
+                get(device_invite::host_list),
+            )
+            .route(
+                "/tenant/{tenant_id}/device-grants/{invite_id}",
+                delete(device_invite::host_end),
             )
             .with_state(self.clone())
     }

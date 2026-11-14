@@ -101,7 +101,10 @@ impl FleetLifecycle for NetworkHooks {
         }
     }
 
-    async fn agent_updated(&self, tenant_id: ObjectId, _agent_id: ObjectId) -> anyhow::Result<()> {
+    async fn agent_updated(&self, tenant_id: ObjectId, agent_id: ObjectId) -> anyhow::Result<()> {
+        // A temporary device's invitations may be what changed: its mark
+        // follows them BEFORE the fan, or an ended inviter would keep it.
+        crate::overlay::sync_temporary_mark(&self.state, tenant_id, agent_id).await?;
         crate::overlay::publish_and_refan_tenant_authority(
             &self.state,
             tenant_id,

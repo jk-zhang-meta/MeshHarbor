@@ -658,8 +658,8 @@ pub async fn self_unenroll(
         crate::removal::SELF_UNENROLL_REASON,
     )
     .await?;
-    if let Some(g) = &temporary {
-        crate::device_invite::mark_left(&state, g.invite_id).await;
+    if temporary.is_some() {
+        crate::device_invite::mark_left(&state, agent.agent_id).await;
     }
     tracing::info!(
         tenant_id = %agent.tenant_id, agent_id = %agent.agent_id, name = %agent.agent.name,
